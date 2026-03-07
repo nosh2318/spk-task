@@ -810,6 +810,32 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
     return bars;
   },[data,fleet,dates,maintenance,vehicles]);
 
+  // 車両ごとの月別稼働率（表示期間の月の1日〜末日で計算）
+  const utilRates=useMemo(()=>{
+    const bd=new Date(baseDate);const y=bd.getFullYear(),m=bd.getMonth();
+    const dim=new Date(y,m+1,0).getDate(); // 月の日数
+    const rates={};
+    vehicles.forEach(v=>{
+      let days=0;
+      // 予約による稼働日数
+      data.forEach(r=>{if(fleet[r.id]!==v.code)return;
+        const ld=new Date(norm(r.lendDate)),rd=new Date(norm(r.returnDate));
+        const ms=new Date(y,m,1),me=new Date(y,m,dim);
+        const s=ld>ms?ld:ms;const e=rd<me?rd:me;
+        if(s<=e)days+=Math.round((e-s)/86400000)+1;
+      });
+      // メンテナンスによる稼働日数
+      (maintenance||[]).forEach(mt=>{if(mt.vehicleCode!==v.code)return;
+        const ld=new Date(norm(mt.startDate)),rd=new Date(norm(mt.endDate));
+        const ms=new Date(y,m,1),me=new Date(y,m,dim);
+        const s=ld>ms?ld:ms;const e=rd<me?rd:me;
+        if(s<=e)days+=Math.round((e-s)/86400000)+1;
+      });
+      rates[v.code]={days:Math.min(days,dim),total:dim,pct:Math.min(Math.round(days/dim*100),100)};
+    });
+    return rates;
+  },[data,fleet,vehicles,maintenance,baseDate]);
+
   // セルクリック → アクション選択
   const[cellAction,setCellAction]=useState(null);
   const handleCellClick=(vehicleCode,dateStr)=>{
@@ -914,7 +940,7 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
               <td style={{position:"sticky",left:0,zIndex:5,height:ROW_H,background:isDT?(dropTarget.ok?"#dcfce7":"#fef2f2"):"#fff",borderBottom:"1px solid #f1f5f9",borderRight:"2px solid #94a3b8",padding:isMobile?"0 4px":"0 10px",overflow:"hidden",whiteSpace:"nowrap",transition:"background .15s"}}>
                 <span style={{fontSize:isMobile?9:10,fontWeight:700,color:"#2563eb"}}>{v.no}</span>
                 {!isMobile&&<span style={{fontSize:9,color:"#64748b",marginLeft:4}}>{v.name}</span>}
-                {!isMobile&&<span style={{fontSize:9,color:"#94a3b8",marginLeft:2}}>({v.seats})</span>}
+                {(()=>{const u=utilRates[v.code];if(!u)return null;const pc=u.pct;const cl=pc>=80?"#dc2626":pc>=50?"#f59e0b":"#22c55e";return <span style={{fontSize:8,fontWeight:700,color:cl,marginLeft:4,background:pc>=80?"#fef2f2":pc>=50?"#fffbeb":"#f0fdf4",padding:"0 3px",borderRadius:3}}>{u.days}日{!isMobile&&" "+pc+"%"}</span>;})()}
               </td>
               {dates.map((d,di)=>{const isToday=d===today;return <td key={d} style={{position:"relative",height:ROW_H,borderBottom:"1px solid #f1f5f9",borderRight:"1px solid #e2e8f0",cursor:dragInfo?"copy":"pointer",background:isDT?rowHL:(isToday?"#eff6ff":"transparent"),padding:0,transition:"background .15s"}} onClick={()=>{if(!dragInfo)handleCellClick(v.code,d);}}>
                 {di===0&&bars.map((b,bi)=>{const isRes=b.type==="reservation";const isDragging=dragInfo===b.r?.id;return <div key={bi} className="tl-bar" draggable={isRes} onDragStart={isRes?e=>handleDragStart(e,b.r.id):undefined} onDragEnd={handleDragEnd} onClick={e=>handleBarClick(e,b)} style={{left:b.left,width:Math.max(b.width,20),background:isRes?(isDragging?"#f87171":"#dc2626"):"#2563eb",color:"#fff",fontSize:9,fontWeight:600,boxShadow:isDragging?"0 4px 12px rgba(0,0,0,.3)":"0 1px 3px rgba(0,0,0,.2)",position:"absolute",top:3,bottom:3,zIndex:isDragging?10:2,opacity:isDragging?0.7:1,cursor:isRes?"grab":"pointer",transition:"opacity .15s, box-shadow .15s"}}><span style={{overflow:"hidden",textOverflow:"ellipsis"}}>{isRes?`${b.r.lendTime}-${b.r.returnTime} ${b.r.name} 様`:(b.m.label)}</span></div>;})}
