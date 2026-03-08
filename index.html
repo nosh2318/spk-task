@@ -133,8 +133,8 @@ const DB = {
     }finally{DB._pendingSave--;}
   },
   async deleteTasks(date){try{localStorage.removeItem(DB._lsKey(date));}catch(e){} if(!sb)return;const{error}=await sb.from("tasks").delete().eq("date",date);if(error)dbLog("deleteTasks",false,error.message);},
-  _toDbTask(t,date,i){return{_id:t._id,date:date,type:t.type||"",time:t.time||"",name:t.name||"",assignee:t.assignee||"",done:!!t.done,memo:t.memo||"",reservation_id:t.reservationId||"",ota:t.ota||"",tel:t.tel||"",mail:t.mail||"",assigned_vehicle:t.assignedVehicle||"",plate_no:t.plateNo||"",people:t.people||0,place:t.place||"",vehicle:t.vehicle||"",insurance:t.insurance||"",insurance_change:t.insuranceChange||"",flight:t.flight||"",return_date:t.returnDate||"",return_time:t.returnTime||"",return_type:t.returnType||"",col_place:t.colPlace||"",opt_b:!!t.opts?.b,opt_c:!!t.opts?.c,opt_j:!!t.opts?.j,opt_usb:!!t.opts?.usb,opt_parasol:!!t.opts?.parasol,yakkan:!!t.yakkan,line:!!t.line,payment:!!t.payment,sort_order:i,assignee_custom:!!t._assigneeCustom,time_changed:!!t._timeChanged};},
-  _fromDbTask(d){return{_id:d._id,type:d.type,time:d.time,name:d.name,assignee:d.assignee,done:d.done,memo:d.memo,reservationId:d.reservation_id,ota:d.ota,tel:d.tel,mail:d.mail,assignedVehicle:d.assigned_vehicle,plateNo:d.plate_no,people:d.people,place:d.place,vehicle:d.vehicle,insurance:d.insurance,insuranceChange:d.insurance_change,flight:d.flight,returnDate:norm(d.return_date),returnTime:d.return_time,returnType:d.return_type,colPlace:d.col_place,opts:{b:d.opt_b,c:d.opt_c,j:d.opt_j,usb:d.opt_usb,parasol:d.opt_parasol},yakkan:d.yakkan,line:d.line,payment:d.payment,_sortOrder:d.sort_order,_assigneeCustom:d.assignee_custom,_timeChanged:d.time_changed};},
+  _toDbTask(t,date,i){return{_id:t._id,date:date,type:t.type||"",time:t.time||"",name:t.name||"",assignee:t.assignee||"",done:!!t.done,memo:t.memo||"",reservation_id:t.reservationId||"",ota:t.ota||"",tel:t.tel||"",mail:t.mail||"",assigned_vehicle:t.assignedVehicle||"",plate_no:t.plateNo||"",people:t.people||0,place:t.place||"",vehicle:t.vehicle||"",insurance:t.insurance||"",insurance_change:t.insuranceChange||"",flight:t.flight||"",return_date:t.returnDate||"",return_time:t.returnTime||"",return_type:t.returnType||"",col_place:t.colPlace||"",opt_b:!!t.opts?.b,opt_c:!!t.opts?.c,opt_j:!!t.opts?.j,opt_usb:!!t.opts?.usb,opt_parasol:!!t.opts?.parasol,yakkan:!!t.yakkan,line:!!t.line,payment:!!t.payment,sort_order:i,assignee_custom:!!t._assigneeCustom,time_changed:!!t._timeChanged,changed_json:JSON.stringify(t._changed||{})};},
+  _fromDbTask(d){const ch=(()=>{try{const p=JSON.parse(d.changed_json||"{}");return Object.keys(p).length?p:undefined;}catch(e){return undefined;}})();return{_id:d._id,type:d.type,time:d.time,name:d.name,assignee:d.assignee,done:d.done,memo:d.memo,reservationId:d.reservation_id,ota:d.ota,tel:d.tel,mail:d.mail,assignedVehicle:d.assigned_vehicle,plateNo:d.plate_no,people:d.people,place:d.place,vehicle:d.vehicle,insurance:d.insurance,insuranceChange:d.insurance_change,flight:d.flight,returnDate:norm(d.return_date),returnTime:d.return_time,returnType:d.return_type,colPlace:d.col_place,opts:{b:d.opt_b,c:d.opt_c,j:d.opt_j,usb:d.opt_usb,parasol:d.opt_parasol},yakkan:d.yakkan,line:d.line,payment:d.payment,_sortOrder:d.sort_order,_assigneeCustom:d.assignee_custom,_timeChanged:d.time_changed,_changed:ch};},
   // --- スタッフ ---
   async fetchStaff(){if(!sb)return null;const{data,error}=await sb.from("staff").select("*").order("sort_order");if(error){dbLog("fetchStaff",false,error.message);return null;}dbLog("fetchStaff",true,data.length+"件");return(data||[]).map(s=>({name:s.name,type:s.type,memo:s.memo||""}));},
   async saveStaff(arr){if(!sb)return;const rows=arr.map((s,i)=>({name:s.name,type:s.type,memo:s.memo||"",sort_order:i,active:true}));const{error}=await sb.from("staff").upsert(rows,{onConflict:"name"});if(error)dbLog("saveStaff",false,error.message);else dbLog("saveStaff",true,arr.length+"件保存");},
@@ -1254,24 +1254,17 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
         const vn=vehicles.find(v=>v.code===vc);
         return{...t,assignedVehicle:vc,plateNo:vn?vn.no:"",vehicle:vn?vn.type:t.vehicle};
       });
-      // ★ localStorageから_changedフラグ＋実際の変更値を復元 + リモート変更検出
-      const CHK_FIELDS_LOAD=['assignee','time','type','place','colPlace','done','memo','assignedVehicle','plateNo','vehicle','insurance'];
+      // ★ DBのchanged_jsonから_changedを復元済み。ローカル変更をマージ
       fixedWithFleet.forEach(t=>{
         const ls=lsMap[t._id];
         if(!ls)return;
-        const ch={...(ls._changed||{})};
-        // DBの値とLS値が異なる＝他端末で変更された → ハイライト
-        CHK_FIELDS_LOAD.forEach(f=>{
-          if(t[f]!==undefined&&ls[f]!==undefined&&t[f]!==ls[f]&&!ch[f]){ch[f]=true;}
-        });
-        if(Object.keys(ch).length)t._changed=ch;
         if(ls._changed){
-          // ローカル変更値はLS優先（保存中データ保持）
+          const merged={...(t._changed||{}),...ls._changed};
+          t._changed=Object.keys(merged).length?merged:undefined;
           Object.keys(ls._changed).forEach(f=>{
             if(ls._changed[f]&&ls[f]!==undefined&&ls[f]!==null&&f!=='_changed'&&f!=='opts'&&typeof ls[f]!=='object'){t[f]=ls[f];}
           });
         }
-        // ★ 場所データ: LSにあってDBにない場合はLS値を採用
         if(ls.place&&!t.place)t.place=ls.place;
         if(ls.colPlace&&!t.colPlace)t.colPlace=ls.colPlace;
       });
@@ -1300,18 +1293,14 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
           const lm={};if(lsD)lsD.forEach(x=>{lm[x._id]=x;});
           const fresh=await DB.fetchTasks(selDate);
           if(fresh&&fresh.length){
-            // ★ _changedフラグの同期: ローカル変更を保持 + リモート変更を検出
-            const CHK_FIELDS=['assignee','time','type','place','colPlace','done','memo','assignedVehicle','plateNo','vehicle','insurance'];
+            // ★ DBから取得した_changedをそのまま使用（changed_jsonカラムで同期）
+            // ローカル変更を保持（保存中のデータが上書きされないように）
             fresh.forEach(t=>{
               const ls=lm[t._id];if(!ls)return;
-              const ch={...(ls._changed||{})};
-              // リモートで変更されたフィールドを検出してハイライト
-              CHK_FIELDS.forEach(f=>{
-                if(t[f]!==undefined&&ls[f]!==undefined&&t[f]!==ls[f]&&!ch[f]){ch[f]=true;}
-              });
-              t._changed=Object.keys(ch).length?ch:undefined;
-              // ローカル変更値を優先（保存中のデータ保持）
+              // ローカルで_changedがあればマージ（ローカル優先）
               if(ls._changed){
+                const merged={...(t._changed||{}),...ls._changed};
+                t._changed=Object.keys(merged).length?merged:undefined;
                 Object.keys(ls._changed).forEach(f=>{if(ls._changed[f]&&ls[f]!==undefined&&ls[f]!==null&&f!=='_changed'&&f!=='opts'&&typeof ls[f]!=='object'){t[f]=ls[f];}});
               }
               if(ls.place&&!t.place)t.place=ls.place;
@@ -1545,6 +1534,17 @@ function App(){
   useEffect(()=>{
     if(!SB_ENABLED)return;
     (async()=>{
+      // ★ changed_jsonカラム自動追加（初回のみ試行）
+      if(sb&&!window._changedColChecked){
+        window._changedColChecked=true;
+        try{
+          const{data:test}=await sb.from("tasks").select("changed_json").limit(1);
+          if(test===null){
+            // カラムが存在しない可能性→RPC経由で追加試行
+            await sb.rpc("exec_sql",{sql:"ALTER TABLE tasks ADD COLUMN IF NOT EXISTS changed_json text DEFAULT '{}'"}).catch(()=>{});
+          }
+        }catch(e){console.log("[init] changed_json check:",e.message);}
+      }
       try{
         const[resDB,flDB,stDB,vhDB,shDB,mtDB]=await Promise.all([
           DB.fetchReservations(),DB.fetchFleet(),DB.fetchStaff(),DB.fetchVehicles(),DB.fetchShifts(),DB.fetchMaintenance()
