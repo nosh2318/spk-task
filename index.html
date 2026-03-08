@@ -127,47 +127,6 @@ const DB = {
     }else{DB._dbSaveOk=true;}
   },
   async deleteTasks(date){try{localStorage.removeItem(DB._lsKey(date));}catch(e){} if(!sb)return;const{error}=await sb.from("tasks").delete().eq("date",date);if(error)dbLog("deleteTasks",false,error.message);},
-  // 起動時カラムチェック: テスト行でupsertして不足カラムを検知→追加
-  async checkAndFixColumns(){
-    if(!sb)return;
-    const testId="__col_check__";
-    const full=DB._toDbTask({_id:testId,type:"",time:"",name:"",assignee:"",done:false,memo:"",reservationId:"",ota:"",tel:"",mail:"",assignedVehicle:"",plateNo:"",people:0,place:"",vehicle:"",insurance:"",insuranceChange:"",flight:"",returnDate:"",returnTime:"",returnType:"",colPlace:"",opts:{},yakkan:false,line:false,payment:false,_assigneeCustom:false,_timeChanged:false},"1970-01-01",0);
-    const{error}=await sb.from("tasks").upsert(full,{onConflict:"_id"});
-    if(error){
-      dbLog("colCheck",false,error.message);
-      // カラム不足の場合: ALTER TABLEで追加を試みる
-      const missingCols=[];
-      const optionalCols={
-        opt_b:"boolean default false",opt_c:"boolean default false",opt_j:"boolean default false",
-        opt_usb:"boolean default false",opt_parasol:"boolean default false",
-        yakkan:"boolean default false",line:"boolean default false",payment:"boolean default false",
-        assignee_custom:"boolean default false",time_changed:"boolean default false"
-      };
-      for(const[col,def] of Object.entries(optionalCols)){
-        const testRow={_id:testId,date:"1970-01-01",[col]:false};
-        const{error:e}=await sb.from("tasks").upsert(testRow,{onConflict:"_id"});
-        if(e)missingCols.push(col);
-      }
-      if(missingCols.length){
-        dbLog("colCheck",false,"不足カラム: "+missingCols.join(", "));
-        // rpc経由でALTER TABLE実行を試行
-        for(const col of missingCols){
-          const def=optionalCols[col];
-          try{await sb.rpc("exec_sql",{query:`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS ${col} ${def}`});}catch(e){}
-        }
-        // 再チェック
-        const{error:e2}=await sb.from("tasks").upsert(full,{onConflict:"_id"});
-        DB._dbSaveOk=!e2;
-        if(e2)dbLog("colCheck",false,"カラム追加後も保存失敗: "+e2.message);
-        else dbLog("colCheck",true,"カラム修正完了");
-      }
-    }else{
-      DB._dbSaveOk=true;
-      dbLog("colCheck",true,"全カラムOK");
-    }
-    // テスト行を削除
-    await sb.from("tasks").delete().eq("_id",testId);
-  },
   _toDbTask(t,date,i){return{_id:t._id,date:date,type:t.type||"",time:t.time||"",name:t.name||"",assignee:t.assignee||"",done:!!t.done,memo:t.memo||"",reservation_id:t.reservationId||"",ota:t.ota||"",tel:t.tel||"",mail:t.mail||"",assigned_vehicle:t.assignedVehicle||"",plate_no:t.plateNo||"",people:t.people||0,place:t.place||"",vehicle:t.vehicle||"",insurance:t.insurance||"",insurance_change:t.insuranceChange||"",flight:t.flight||"",return_date:t.returnDate||"",return_time:t.returnTime||"",return_type:t.returnType||"",col_place:t.colPlace||"",opt_b:!!t.opts?.b,opt_c:!!t.opts?.c,opt_j:!!t.opts?.j,opt_usb:!!t.opts?.usb,opt_parasol:!!t.opts?.parasol,yakkan:!!t.yakkan,line:!!t.line,payment:!!t.payment,sort_order:i,assignee_custom:!!t._assigneeCustom,time_changed:!!t._timeChanged};},
   _fromDbTask(d){return{_id:d._id,type:d.type,time:d.time,name:d.name,assignee:d.assignee,done:d.done,memo:d.memo,reservationId:d.reservation_id,ota:d.ota,tel:d.tel,mail:d.mail,assignedVehicle:d.assigned_vehicle,plateNo:d.plate_no,people:d.people,place:d.place,vehicle:d.vehicle,insurance:d.insurance,insuranceChange:d.insurance_change,flight:d.flight,returnDate:norm(d.return_date),returnTime:d.return_time,returnType:d.return_type,colPlace:d.col_place,opts:{b:d.opt_b,c:d.opt_c,j:d.opt_j,usb:d.opt_usb,parasol:d.opt_parasol},yakkan:d.yakkan,line:d.line,payment:d.payment,_sortOrder:d.sort_order,_assigneeCustom:d.assignee_custom,_timeChanged:d.time_changed};},
   // --- スタッフ ---
@@ -1221,7 +1180,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
   const loadTasks=React.useCallback(async(date,force)=>{
     // 自分の変更直後（5秒以内）はDBリロードをスキップ（自分の変更を上書きしない）
     if(!force&&selfUpdateRef.current&&Date.now()-selfUpdateRef.current<5000){
-      dbLog("loadTasks","skip","自分の変更直後のためスキップ");return;
+      console.log("[loadTasks] 自分の変更直後のためスキップ");return;
     }
     // 1. DB(+localStorage)から取得
     const saved=await DB.fetchTasks(date);
@@ -1478,8 +1437,6 @@ function App(){
     if(!SB_ENABLED)return;
     (async()=>{
       try{
-        // まずカラムチェック
-        await DB.checkAndFixColumns();
         const[resDB,flDB,stDB,vhDB,shDB,mtDB]=await Promise.all([
           DB.fetchReservations(),DB.fetchFleet(),DB.fetchStaff(),DB.fetchVehicles(),DB.fetchShifts(),DB.fetchMaintenance()
         ]);
