@@ -1804,6 +1804,133 @@ function Dashboard({data,fleet,vehicles}){
         <span style={{fontSize:14,fontWeight:900,color:utilRate>=70?"#059669":utilRate>=40?"#d97706":"#dc2626"}}>{utilRate}%</span>
       </div>
     </div>
+
+    {/* クラス別売上 */}
+    {(()=>{
+      const CLASS_C={"A":"#7c3aed","B":"#0284c7","C":"#059669","S":"#d97706","F":"#db2777","H":"#64748b"};
+      // 車両コード→クラスtype マッピング
+      const codeToType={};vehicles.forEach(v=>{codeToType[v.code]=v.type;});
+      // クラス別集計
+      const classRevMap={};
+      INIT_CLASSES.forEach(cl=>{classRevMap[cl.type]={label:cl.label,count:0,revenue:0,days:0};});
+      monthData.forEach(r=>{
+        const vc=fleet[r.id];
+        const tp=vc?codeToType[vc]:r.vehicle;
+        const key=tp&&classRevMap[tp]?tp:"?";
+        if(!classRevMap[key])classRevMap[key]={label:"不明",count:0,revenue:0,days:0};
+        classRevMap[key].count++;classRevMap[key].revenue+=(r.price||0);
+        if(r.lendDate&&r.returnDate){
+          const ld=new Date(r.lendDate+"T00:00:00"),rd=new Date(r.returnDate+"T00:00:00");
+          classRevMap[key].days+=Math.max(1,Math.ceil((rd-ld)/(1000*60*60*24)));
+        }
+      });
+      const classEntries=Object.entries(classRevMap).filter(([,v])=>v.count>0).sort((a,b)=>b[1].revenue-a[1].revenue);
+      const maxClassRev=Math.max(1,...classEntries.map(([,v])=>v.revenue));
+      return <div style={cardS}>
+        <div style={{fontSize:12,fontWeight:800,color:"#1e293b",marginBottom:10}}>🏷️ クラス別売上</div>
+        {classEntries.length===0&&<div style={{textAlign:"center",fontSize:11,color:"#94a3b8",padding:12}}>データなし</div>}
+        {classEntries.map(([tp,st])=>{
+          const pct=totalRevenue>0?Math.round(st.revenue/totalRevenue*100):0;
+          const c=CLASS_C[tp]||"#64748b";
+          const avgP=st.count>0?Math.round(st.revenue/st.count):0;
+          return <div key={tp} style={{marginBottom:10}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:3}}>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <span style={{display:"inline-flex",alignItems:"center",justifyContent:"center",width:24,height:24,borderRadius:6,background:c+"18",color:c,fontSize:12,fontWeight:900}}>{tp}</span>
+                <div>
+                  <div style={{fontSize:11,fontWeight:700,color:"#1e293b"}}>{st.label}</div>
+                  <div style={{fontSize:9,color:"#94a3b8"}}>{st.count}件 ・{st.days}日 ・平均¥{avgP.toLocaleString()}</div>
+                </div>
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:13,fontWeight:800,color:"#1e293b"}}>¥{st.revenue.toLocaleString()}</div>
+                <div style={{fontSize:9,color:"#64748b"}}>{pct}%</div>
+              </div>
+            </div>
+            <div style={{height:8,background:"#f1f5f9",borderRadius:4,overflow:"hidden"}}>
+              <div style={{height:"100%",width:Math.round(st.revenue/maxClassRev*100)+"%",background:c,borderRadius:4,transition:"width .5s"}}></div>
+            </div>
+          </div>;
+        })}
+      </div>;
+    })()}
+
+    {/* クラス別稼働率 */}
+    {(()=>{
+      const CLASS_C={"A":"#7c3aed","B":"#0284c7","C":"#059669","S":"#d97706","F":"#db2777","H":"#64748b"};
+      const codeToType={};vehicles.forEach(v=>{codeToType[v.code]=v.type;});
+      // クラスごとの車両台数
+      const classVehCount={};
+      INIT_CLASSES.forEach(cl=>{classVehCount[cl.type]=0;});
+      vehicles.forEach(v=>{if(classVehCount[v.type]!==undefined)classVehCount[v.type]++;});
+      // クラスごとの稼働日（車両別のSetをクラス別に集約）
+      const classUsedDays={};
+      INIT_CLASSES.forEach(cl=>{classUsedDays[cl.type]={};});
+      data.forEach(r=>{
+        if(!r.lendDate||!r.returnDate)return;
+        const vc=fleet[r.id];if(!vc)return;
+        const tp=codeToType[vc];if(!tp||!classUsedDays[tp])return;
+        if(!classUsedDays[tp][vc])classUsedDays[tp][vc]=new Set();
+        const ld=new Date(r.lendDate+"T00:00:00"),rd=new Date(r.returnDate+"T00:00:00");
+        for(let d=new Date(ld);d<=rd;d.setDate(d.getDate()+1)){
+          const ds=toLD(d);
+          if(toYM(ds)===selYM)classUsedDays[tp][vc].add(ds);
+        }
+      });
+      const classUtilEntries=INIT_CLASSES.map(cl=>{
+        const vehCount=classVehCount[cl.type]||0;
+        const totalPossible=vehCount*daysInMo;
+        let used=0;
+        Object.values(classUsedDays[cl.type]||{}).forEach(s=>used+=s.size);
+        const rate=totalPossible>0?Math.round(used/totalPossible*100):0;
+        return{type:cl.type,label:cl.label,vehCount,used,totalPossible,rate};
+      }).filter(e=>e.vehCount>0);
+      return <div style={cardS}>
+        <div style={{fontSize:12,fontWeight:800,color:"#1e293b",marginBottom:10}}>📅 クラス別稼働率（{ymLabel(selYM)}）</div>
+        {classUtilEntries.map(e=>{
+          const c=CLASS_C[e.type]||"#64748b";
+          return <div key={e.type} style={{marginBottom:8}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:2}}>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <span style={{display:"inline-flex",alignItems:"center",justifyContent:"center",width:22,height:22,borderRadius:6,background:c+"18",color:c,fontSize:11,fontWeight:900}}>{e.type}</span>
+                <div>
+                  <span style={{fontSize:11,fontWeight:700}}>{e.label}</span>
+                  <span style={{fontSize:9,color:"#94a3b8",marginLeft:4}}>({e.vehCount}台)</span>
+                </div>
+              </div>
+              <div style={{fontSize:11}}>
+                <span style={{fontWeight:700,color:e.rate>=70?"#059669":e.rate>=40?"#d97706":"#dc2626"}}>{e.rate}%</span>
+                <span style={{fontSize:9,color:"#94a3b8",marginLeft:4}}>{e.used}/{e.totalPossible}日</span>
+              </div>
+            </div>
+            <div style={{height:8,background:"#f1f5f9",borderRadius:4,overflow:"hidden"}}>
+              <div style={{height:"100%",width:e.rate+"%",background:e.rate>=70?c:e.rate>=40?"#fbbf24":"#fca5a5",borderRadius:4,transition:"width .5s"}}></div>
+            </div>
+          </div>;
+        })}
+      </div>;
+    })()}
+
+    {/* デバッグ: 売上検証（確認後に削除） */}
+    <div style={{...cardS,background:"#fffbeb",border:"1px solid #fbbf24"}}>
+      <div style={{fontSize:12,fontWeight:800,color:"#92400e",marginBottom:8}}>🔍 売上検証（デバッグ）</div>
+      <div style={{fontSize:10,color:"#78350f",lineHeight:1.8}}>
+        <div>全予約データ数: {data.length}件</div>
+        <div>返却月={ymLabel(selYM)}: {monthData.length}件</div>
+        <div>貸出月={ymLabel(selYM)}: {data.filter(r=>r.lendDate&&toYM(r.lendDate)===selYM).length}件</div>
+        <div>合計売上(返却日基準): ¥{totalRevenue.toLocaleString()}</div>
+        <div>合計売上(貸出日基準): ¥{data.filter(r=>r.lendDate&&toYM(r.lendDate)===selYM).reduce((s,r)=>s+(r.price||0),0).toLocaleString()}</div>
+        <div style={{marginTop:4,fontWeight:700}}>--- price=0 の予約 ---</div>
+        {monthData.filter(r=>!r.price||r.price===0).length===0
+          ?<div>なし</div>
+          :<div>{monthData.filter(r=>!r.price||r.price===0).map((r,i)=><div key={i}>ID:{r.id} / {r.name} / OTA:{r.ota} / 貸出:{r.lendDate} / 返却:{r.returnDate} / price:{String(r.price)}</div>)}</div>
+        }
+        <div style={{marginTop:4,fontWeight:700}}>--- 全予約のprice一覧（{ymLabel(selYM)}返却分）---</div>
+        <div style={{maxHeight:150,overflow:"auto",fontSize:9}}>
+          {monthData.map((r,i)=><div key={i}>{r.ota}/{r.id}/{r.name}: ¥{(r.price||0).toLocaleString()} (貸出:{r.lendDate} 返却:{r.returnDate})</div>)}
+        </div>
+      </div>
+    </div>
   </div>;
 }
 
