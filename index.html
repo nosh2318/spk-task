@@ -75,6 +75,7 @@ const DB = {
   // --- 予約 ---
   async fetchReservations(){if(!sb)return[];const{data,error}=await sb.from("reservations").select("*");if(error){dbLog("fetchRes",false,error.message);return[];}dbLog("fetchRes",true,data.length+"件");return(data||[]).map(DB._fromDbRes);},
   async upsertReservations(arr){if(!sb||!arr.length)return;const rows=arr.map(DB._toDbRes);const{error}=await sb.from("reservations").upsert(rows,{onConflict:"id"});if(error)dbLog("upsertRes",false,error.message);else dbLog("upsertRes",true,arr.length+"件保存");},
+  async deleteReservations(ids){if(!sb||!ids.length)return;const{error}=await sb.from("reservations").delete().in("id",ids);if(error)dbLog("deleteRes",false,error.message);else dbLog("deleteRes",true,ids.length+"件削除");},
   _toDbRes(r){return{id:r.id,ota:r.ota,name:r.name,lend_date:r.lendDate,lend_time:r.lendTime,return_date:r.returnDate,return_time:r.returnTime,people:r.people,vehicle:r.vehicle,insurance:r.insurance,tel:r.tel,mail:r.mail,price:r.price,status:r.status,visit_type:r.visitType,return_type:r.returnType,del_time:r.delTime||"",del_place:r.delPlace||"",col_time:r.colTime||"",col_place:r.colPlace||"",flight:r.flight||"",opt_b:!!r.optB,opt_c:!!r.optC,opt_j:!!r.optJ,opt_usb:!!r.optUSB,opt_parasol:!!r.optParasol};},
   _fromDbRes(d){return{id:d.id,ota:d.ota,name:d.name,lendDate:d.lend_date,lendTime:d.lend_time,returnDate:d.return_date,returnTime:d.return_time,people:d.people,vehicle:d.vehicle,insurance:d.insurance,tel:d.tel,mail:d.mail,price:d.price,status:d.status,visitType:d.visit_type,returnType:d.return_type,delTime:d.del_time,delPlace:d.del_place,colTime:d.col_time,colPlace:d.col_place,flight:d.flight,optB:d.opt_b,optC:d.opt_c,optJ:d.opt_j,optUSB:d.opt_usb,optParasol:d.opt_parasol};},
   // --- 配車 ---
@@ -1290,8 +1291,12 @@ function App(){
     if(pendingPlaces&&Object.keys(pendingPlaces).length>0){
       imported=d.map(r=>{const p=pendingPlaces[r.id];if(p)return{...r,delPlace:p.delPlace||r.delPlace,colPlace:p.colPlace||r.colPlace};return r;});
     }
-    // 既存データとマージ: 同一予約番号は上書き、新規は追加
-    const map=new Map(data.map(r=>[r.id,r]));
+    // 既存データとマージ: インポートしたOTAの予約はCSV内容で置換、他OTAはそのまま
+    const importedOTAs=new Set(imported.map(r=>r.ota));
+    const importedIds=new Set(imported.map(r=>r.id));
+    // インポート対象OTAの古い予約でCSVに含まれないものは削除
+    const kept=data.filter(r=>!importedOTAs.has(r.ota)||importedIds.has(r.id));
+    const map=new Map(kept.map(r=>[r.id,r]));
     imported.forEach(r=>map.set(r.id,r));
     const allData=[...map.values()];
     setData(allData);
@@ -1306,6 +1311,9 @@ function App(){
     const newResOpts={...resOpts};
     imported.forEach(r=>{newResOpts[r.id]={b:!!r.optB,c:!!r.optC,j:!!r.optJ,usb:!!r.optUSB,parasol:!!r.optParasol};});
     saveResOpts(newResOpts);
+    // CSVから消えた予約をDBから削除
+    const removedIds=data.filter(r=>importedOTAs.has(r.ota)&&!importedIds.has(r.id)).map(r=>r.id);
+    if(removedIds.length){DB.deleteReservations(removedIds);removedIds.forEach(id=>DB.deleteFleetOne(id));}
     // DB保存（非同期）
     DB.upsertReservations(imported).then(()=>dbLog("imp reservations",true,imported.length+"件")).catch(e=>dbLog("imp reservations",false,e.message));
     DB.upsertFleet(newFleet).catch(e=>dbLog("imp fleet",false,e.message));
