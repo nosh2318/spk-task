@@ -69,6 +69,12 @@ if(SB_ENABLED){
   sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 }
 
+/* ===== 駐車場用 Supabase (別プロジェクト) ===== */
+const PARKING_SB_URL = "https://rkrvjpipvpybkmqadmrb.supabase.co";
+const PARKING_SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJrcnZqcGlwdnB5YmttcWFkbXJiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI4MjI4MjQsImV4cCI6MjA4ODM5ODgyNH0.Jq_yIfAp1gsXdOtigwEwMb43iPD188PRKKdwc0D4tU4";
+let sbParking = null;
+try{ sbParking = window.supabase.createClient(PARKING_SB_URL, PARKING_SB_KEY); }catch(e){}
+
 /* ===== Supabase DB ヘルパー ===== */
 function dbLog(op,ok,detail){console.log(`[DB ${ok?"✓":"✗"}] ${op}`,detail||"");}
 const DB = {
@@ -158,6 +164,15 @@ const DB = {
   async fetchPlaces(){if(!sb)return{};const{data}=await sb.from("places").select("*");const p={};(data||[]).forEach(r=>p[r.reservation_id]={delPlace:r.del_place,colPlace:r.col_place});return p;},
   // --- 認証 ---
   async checkPassword(pw){if(!sb)return true;const{data}=await sb.from("app_settings").select("value").eq("key","team_password").single();return data&&data.value===pw;},
+  // --- 駐車場 (別Supabase) ---
+  parking:{
+    async fetch(){if(!sbParking)return null;try{const{data,error}=await sbParking.from("parking_state").select("data").eq("id",1).single();if(error||!data||!data.data||Object.keys(data.data).length===0)return null;return data.data;}catch(e){return null;}},
+    _saveTimer:null,
+    save(stateData){if(!sbParking)return;clearTimeout(DB.parking._saveTimer);DB.parking._saveTimer=setTimeout(async()=>{try{await sbParking.from("parking_state").update({data:stateData,updated_at:new Date().toISOString()}).eq("id",1);}catch(e){console.log("Parking save error",e);}},500);},
+    LS_KEY:"parking-mgr-v1",
+    lsLoad(){try{const r=localStorage.getItem(DB.parking.LS_KEY);return r?JSON.parse(r):null;}catch(e){return null;}},
+    lsSave(d){try{localStorage.setItem(DB.parking.LS_KEY,JSON.stringify(d));}catch(e){}},
+  },
 };
 
 /* ===== 認証コンポーネント ===== */
@@ -1479,6 +1494,519 @@ function AddTaskForm({onAdd,onClose,activeMembers,vehicles}){
 }
 
 /* ==========================================
+   🅿️ 駐車場管理
+   ========================================== */
+const PARKING_DEFAULT_CARS = [
+  {id:"VEL-7673",name:"VEL",plate:"7673"},{id:"NRH-5398",name:"NRH",plate:"5398"},
+  {id:"DLC-6057",name:"DLC",plate:"6057"},{id:"RKY-299",name:"RKY",plate:"299"},
+  {id:"CX3-4576",name:"CX3",plate:"4576"},{id:"SLO-8529",name:"SLO",plate:"8529"},
+  {id:"AXL-8403",name:"AXL",plate:"8403"},{id:"HRI-5512",name:"HRI",plate:"5512"},
+  {id:"CX5-8065",name:"CX5",plate:"8065"},{id:"DLC-未登録",name:"DLC",plate:"未登録"},
+];
+const PARKING_INIT_SPOTS = [
+  {id:1,no:"221",key:179,carId:null,memo:"",restricted:null},
+  {id:2,no:"260",key:180,carId:null,memo:"",restricted:null},
+  {id:3,no:"234",key:181,carId:null,memo:"CX3/SLO/RKY 専用",restricted:["CX3-4576","SLO-8529","RKY-299"]},
+  {id:4,no:"172",key:169,carId:null,memo:"",restricted:null},
+  {id:5,no:"174",key:174,carId:null,memo:"",restricted:null},
+  {id:6,no:"200",key:175,carId:null,memo:"",restricted:null},
+  {id:7,no:"282",key:176,carId:null,memo:"",restricted:null},
+];
+function canParkInSpot(spot,carId){return !spot.restricted||spot.restricted.includes(carId);}
+function pCarLabel(c){return c.name+" ("+c.plate+")";}
+const PARKING_VENDORS=["オートバックス","イエローハット","ディーラー","板金工場","タイヤ館","車検場","その他"];
+const WASH_STATUSES=["未洗車","内洗済","洗車済"];
+const washStyleLight=s=>({"未洗車":{bg:"#fef2f2",c:"#dc2626",icon:"❌"},"内洗済":{bg:"#fffbeb",c:"#d97706",icon:"🧹"},"洗車済":{bg:"#ecfdf5",c:"#059669",icon:"✨"}}[s]||{bg:"#f1f5f9",c:"#64748b",icon:"?"});
+
+function ParkingManager(){
+  const s0=useRef(DB.parking.lsLoad());
+  const init=s0.current;
+  const[cars,setCars]=useState(init&&init.cars?init.cars:PARKING_DEFAULT_CARS);
+  const getCar=id=>cars.find(c=>c.id===id)||null;
+  const initWash={};cars.forEach(c=>{initWash[c.id]="未洗車";});
+  const initWashTime={};cars.forEach(c=>{initWashTime[c.id]=null;});
+  const[spots,setSpots]=useState(init?init.spots:PARKING_INIT_SPOTS);
+  const[pTab,setPTab]=useState("home");
+  const[selectedCar,setSelectedCar]=useState(null);
+  const[parkStep,setParkStep]=useState("select");
+  const[doneInfo,setDoneInfo]=useState(null);
+  const[history,setHistory]=useState(init?init.history:[]);
+  const[modal,setModal]=useState(null);
+  const[washMap,setWashMap]=useState(init?init.washMap:initWash);
+  const[washTimeMap,setWashTimeMap]=useState(init?init.washTimeMap:initWashTime);
+  const[maintMap,setMaintMap]=useState(init?init.maintMap:{});
+  const[syncStatus,setSyncStatus]=useState("loading");
+  const isRemoteUpdate=useRef(false);
+
+  // Supabase初回読み込み＋Realtime
+  useEffect(()=>{
+    let mounted=true;
+    if(!sbParking){setSyncStatus("offline");return;}
+    DB.parking.fetch().then(remote=>{
+      if(!mounted)return;
+      if(remote&&remote.spots){
+        setSpots(remote.spots);if(remote.cars)setCars(remote.cars);
+        if(remote.washMap)setWashMap(remote.washMap);if(remote.washTimeMap)setWashTimeMap(remote.washTimeMap);
+        if(remote.maintMap)setMaintMap(remote.maintMap);if(remote.history)setHistory(remote.history);
+      }
+      setSyncStatus("online");
+    });
+    const ch=sbParking.channel("parking-rt").on("postgres_changes",{event:"UPDATE",schema:"public",table:"parking_state",filter:"id=eq.1"},payload=>{
+      const d=payload.new&&payload.new.data;if(!d||!d.spots)return;
+      isRemoteUpdate.current=true;
+      if(d.spots)setSpots(d.spots);if(d.cars)setCars(d.cars);if(d.washMap)setWashMap(d.washMap);
+      if(d.washTimeMap)setWashTimeMap(d.washTimeMap);if(d.maintMap)setMaintMap(d.maintMap);if(d.history)setHistory(d.history);
+      setSyncStatus("online");setTimeout(()=>{isRemoteUpdate.current=false;},100);
+    }).subscribe();
+    return()=>{mounted=false;sbParking.removeChannel(ch);};
+  },[]);
+
+  // 自動保存
+  useEffect(()=>{
+    const d={spots,cars,washMap,washTimeMap,maintMap,history,savedAt:new Date().toISOString()};
+    DB.parking.lsSave(d);if(!isRemoteUpdate.current)DB.parking.save(d);
+  },[spots,cars,washMap,washTimeMap,maintMap,history]);
+
+  // 関数群
+  const addCar=(name,plate)=>{const id=name+"-"+plate;if(cars.find(c=>c.id===id)){alert("同じ車両が既に登録されています");return false;}setCars(p=>[...p,{id,name,plate}]);setWashMap(p=>({...p,[id]:"未洗車"}));setWashTimeMap(p=>({...p,[id]:null}));addLog("【車両登録】"+name+" ("+plate+")");return true;};
+  const removeCar=(carId)=>{const sp=spots.find(s=>s.carId===carId);if(sp)setSpots(p=>p.map(s=>s.id===sp.id?{...s,carId:null}:s));if(maintMap[carId])setMaintMap(p=>{const n={...p};delete n[carId];return n;});setCars(p=>p.filter(c=>c.id!==carId));addLog("【車両削除】"+pCarLabel(getCar(carId)));};
+  const setWashStatus=(carId,st)=>{const now=new Date();const stamp=(now.getMonth()+1)+"/"+now.getDate()+" "+String(now.getHours()).padStart(2,"0")+":"+String(now.getMinutes()).padStart(2,"0");setWashMap(p=>({...p,[carId]:st}));setWashTimeMap(p=>({...p,[carId]:stamp}));addLog("【洗車】"+pCarLabel(getCar(carId))+" → "+st);};
+  const registerMaint=(carId,vendor,entryDate,pickupDate)=>{setMaintMap(p=>({...p,[carId]:{vendor,entryDate,pickupDate}}));addLog("【メンテ入庫】"+pCarLabel(getCar(carId))+" → "+vendor+" ("+entryDate+"〜"+pickupDate+")");};
+  const clearMaint=(carId)=>{setMaintMap(p=>{const n={...p};delete n[carId];return n;});addLog("【メンテ回収】"+pCarLabel(getCar(carId)));};
+  const pTs=()=>{const d=new Date();return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");};
+  const addLog=(msg)=>setHistory(h=>[...h,{time:pTs(),msg}]);
+  const parkCar=(spotId,carId)=>{const sp=spots.find(s=>s.id===spotId);const car=getCar(carId);if(!sp||!car)return;if(sp.carId){alert("この枠は使用中です");return;}setSpots(p=>p.map(s=>s.id===spotId?{...s,carId}:s));addLog("【入庫】"+pCarLabel(car)+" → No."+sp.no+" (Key:"+sp.key+")");setModal(null);};
+  const releaseCar=(spotId)=>{const sp=spots.find(s=>s.id===spotId);if(!sp||!sp.carId)return;const car=getCar(sp.carId);setSpots(p=>p.map(s=>s.id===spotId?{...s,carId:null}:s));addLog("【出庫】"+pCarLabel(car)+" ← No."+sp.no+" (Key:"+sp.key+")");setModal(null);};
+  const swapCar=(spotId,newCarId)=>{const sp=spots.find(s=>s.id===spotId);if(!sp)return;const oldCar=getCar(sp.carId);const newCar=getCar(newCarId);setSpots(p=>p.map(s=>s.id===spotId?{...s,carId:newCarId}:s));addLog("【入替】No."+sp.no+": "+(oldCar?pCarLabel(oldCar):"空")+" → "+pCarLabel(newCar));setModal(null);};
+  const updateMemo=(spotId,memo)=>setSpots(p=>p.map(s=>s.id===spotId?{...s,memo}:s));
+  const exportData=()=>{const d={spots,cars,washMap,washTimeMap,maintMap,history,exportedAt:new Date().toISOString()};const json=JSON.stringify(d,null,2);if(navigator.clipboard){navigator.clipboard.writeText(json).then(()=>alert("クリップボードにコピーしました")).catch(()=>{});}};
+  const importData=()=>{const input=prompt("JSONデータを貼り付け:");if(!input)return;try{const d=JSON.parse(input);if(d.spots)setSpots(d.spots);if(d.cars)setCars(d.cars);if(d.washMap)setWashMap(d.washMap);if(d.washTimeMap)setWashTimeMap(d.washTimeMap);if(d.maintMap)setMaintMap(d.maintMap);if(d.history)setHistory(d.history);alert("インポートしました");}catch(e){alert("読み込み失敗");}};
+  const resetData=()=>{if(!confirm("全データを初期化しますか？"))return;setCars(PARKING_DEFAULT_CARS);setSpots(PARKING_INIT_SPOTS);const iw={};PARKING_DEFAULT_CARS.forEach(c=>{iw[c.id]="未洗車";});setWashMap(iw);const iwt={};PARKING_DEFAULT_CARS.forEach(c=>{iwt[c.id]=null;});setWashTimeMap(iwt);setMaintMap({});setHistory([]);localStorage.removeItem(DB.parking.LS_KEY);if(sbParking){sbParking.from("parking_state").update({data:{},updated_at:new Date().toISOString()}).eq("id",1).then(()=>{});}alert("初期化しました");};
+
+  // 計算
+  const parkedCarIds=useMemo(()=>spots.filter(s=>s.carId).map(s=>s.carId),[spots]);
+  const outCars=useMemo(()=>cars.filter(c=>!parkedCarIds.includes(c.id)),[parkedCarIds,cars]);
+  const occupied=parkedCarIds.length;
+  const empty=spots.length-occupied;
+  const parkedCars=useMemo(()=>cars.filter(c=>parkedCarIds.includes(c.id)),[parkedCarIds,cars]);
+  const washCounts=useMemo(()=>{const ct={"未洗車":0,"内洗済":0,"洗車済":0};parkedCars.forEach(c=>{const s=washMap[c.id];if(ct[s]!==undefined)ct[s]++;});return ct;},[washMap,parkedCars]);
+  const maintCars=useMemo(()=>outCars.filter(c=>maintMap[c.id]),[outCars,maintMap]);
+  const nonMaintOutCars=useMemo(()=>outCars.filter(c=>!maintMap[c.id]),[outCars,maintMap]);
+  const alertLv=empty===0?"critical":empty===1?"warning":"safe";
+  const parkableCars=useMemo(()=>outCars.filter(c=>!maintMap[c.id]),[outCars,maintMap]);
+  const carStatus=useCallback(carId=>{const spot=spots.find(s=>s.carId===carId);if(spot)return{type:"parked",label:"🅿️ No."+spot.no,color:"#059669"};if(maintMap[carId])return{type:"maint",label:"🔧 "+maintMap[carId].vendor,color:"#d97706"};return{type:"out",label:"🚙 出庫中",color:"#dc2626"};},[spots,maintMap]);
+  const dateOptions=useMemo(()=>{const opts=[];const today=new Date();for(let i=0;i<30;i++){const d=new Date(today);d.setDate(today.getDate()+i);const label=(d.getMonth()+1)+"/"+d.getDate()+"("+["日","月","火","水","木","金","土"][d.getDay()]+")";const val=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");opts.push({label,val});}return opts;},[]);
+
+  // スタイルヘルパー
+  const cardStyle={background:"#fff",borderRadius:14,padding:16,border:"1px solid #e2e8f0",marginBottom:12,boxShadow:"0 1px 3px rgba(0,0,0,.06)"};
+  const subHdr={fontSize:13,fontWeight:800,marginBottom:10,color:"#1e293b"};
+
+  // ===== 入庫(home)タブ =====
+  const homeContent=<>
+    {/* ヘッダーサマリー */}
+    <div style={{background:"linear-gradient(135deg,#1e40af,#2563eb)",borderRadius:14,padding:16,marginBottom:12,color:"#fff"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+        <div>
+          <div style={{fontSize:15,fontWeight:800}}>🅿️ 駐車場管理</div>
+          <div style={{fontSize:11,opacity:.8}}>🅿️{spots.length}枠 ／ 🚗{cars.length}台 ／ 出庫{outCars.length}台</div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:6}}>
+          <span style={{width:8,height:8,borderRadius:"50%",background:syncStatus==="online"?"#4ade80":syncStatus==="loading"?"#fbbf24":"#f87171"}}></span>
+          <span style={{padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,background:alertLv==="safe"?"rgba(255,255,255,.2)":alertLv==="warning"?"#fbbf24":"#ef4444",color:"#fff"}}>
+            {alertLv==="safe"?"空き"+empty+"枠":alertLv==="warning"?"⚠️ 残1枠":"🚨 満車"}
+          </span>
+        </div>
+      </div>
+      <div style={{padding:"6px 10px",borderRadius:8,background:"rgba(255,255,255,.1)",fontSize:12}}>
+        {empty>0?<><span style={{fontWeight:700}}>✅ 入庫OK</span> ・空き{empty}枠{empty===1&&<span style={{color:"#fde68a"}}> ・次の返却前に出庫を！</span>}</>:<><span style={{fontWeight:700}}>🚨 満車</span> 入庫するには先に1台出庫してください</>}
+      </div>
+    </div>
+
+    {/* 入庫ウィザード */}
+    {empty===0?
+      <div style={{...cardStyle,textAlign:"center",borderColor:"#fca5a5",background:"#fef2f2"}}>
+        <div style={{fontSize:40,marginBottom:8}}>🚨</div>
+        <div style={{fontSize:18,fontWeight:900,color:"#dc2626",marginBottom:8}}>満　車</div>
+        <div style={{fontSize:12,color:"#dc2626"}}>全{spots.length}枠が使用中です。</div>
+        <button onClick={()=>setPTab("spots")} style={{marginTop:12,padding:"10px 24px",borderRadius:10,border:"1px solid #dc2626",background:"transparent",color:"#dc2626",fontSize:12,fontWeight:700,cursor:"pointer"}}>🅿️ ステータスで出庫する</button>
+      </div>
+    :
+      <div style={cardStyle}>
+        {parkStep==="done"&&doneInfo&&<div style={{textAlign:"center"}}>
+          <div style={{fontSize:40,marginBottom:6}}>✅</div>
+          <div style={{fontSize:16,fontWeight:900,color:"#059669",marginBottom:4}}>入庫完了</div>
+          <div style={{fontSize:13,color:"#334155"}}>{pCarLabel(doneInfo.car)}</div>
+          <div style={{fontSize:13,color:"#64748b",marginBottom:12}}>No.{doneInfo.spot.no} (Key:{doneInfo.spot.key}) に入庫</div>
+          <button onClick={()=>{setParkStep("select");setSelectedCar(null);setDoneInfo(null);}} className="btn-primary" style={{padding:"10px 28px"}}>OK</button>
+        </div>}
+        {parkStep==="confirm"&&selectedCar&&(()=>{
+          const car=getCar(selectedCar);const avail=spots.filter(s=>!s.carId&&canParkInSpot(s,selectedCar));
+          if(!avail.length)return <div style={{textAlign:"center"}}><div style={{padding:12,borderRadius:10,background:"#fef2f2",border:"1px solid #fca5a5",fontSize:12,color:"#dc2626",marginBottom:10}}>この車両を入庫できる空き枠がありません</div><button onClick={()=>{setParkStep("select");setSelectedCar(null);}} className="btn-ghost">戻る</button></div>;
+          const rec=avail.find(s=>s.restricted)||avail[0];
+          return <div>
+            <div style={{background:"#ecfdf5",borderRadius:14,border:"2px solid #10b981",padding:20,marginBottom:12,textAlign:"center"}}>
+              <div style={{fontSize:36,marginBottom:4}}>📍</div>
+              <div style={{fontSize:13,color:"#059669",fontWeight:700,marginBottom:6}}>こちらに駐車してください</div>
+              <div style={{fontSize:36,fontWeight:900,color:"#1e293b"}}>No.{rec.no}</div>
+              <div style={{fontSize:14,color:"#64748b",marginTop:4}}>キーナンバー: {rec.key}</div>
+              {rec.restricted&&<div style={{fontSize:10,color:"#7c3aed",marginTop:4}}>📌 専用枠</div>}
+            </div>
+            <div style={{background:"#f8fafc",borderRadius:12,padding:12,marginBottom:12,textAlign:"center"}}>
+              <div style={{fontSize:13,fontWeight:700,color:"#1e293b"}}>{pCarLabel(car)} を</div>
+              <div style={{fontSize:14,fontWeight:800,color:"#059669"}}>No.{rec.no} に入庫しますか？</div>
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>setParkStep("select")} className="btn-ghost" style={{flex:1,padding:12}}>戻る</button>
+              <button onClick={()=>{parkCar(rec.id,selectedCar);setDoneInfo({car,spot:rec});setParkStep("done");}} className="btn-primary" style={{flex:1,padding:12}}>はい</button>
+            </div>
+          </div>;
+        })()}
+        {parkStep==="select"&&<>
+          <div style={subHdr}>🚗 入庫する車両を選択</div>
+          {parkableCars.length>0?<>
+            <select value={selectedCar||""} onChange={ev=>setSelectedCar(ev.target.value||null)} className="input-s" style={{marginBottom:10,fontSize:14,padding:"10px 8px"}}>
+              <option value="">-- 車両を選択 --</option>
+              {parkableCars.map(c=><option key={c.id} value={c.id}>{pCarLabel(c)}</option>)}
+            </select>
+            {selectedCar&&<button onClick={()=>setParkStep("confirm")} className="btn-primary" style={{width:"100%",padding:12}}>次へ →</button>}
+          </>:<div style={{padding:12,borderRadius:10,background:"#f8fafc",textAlign:"center",fontSize:12,color:"#64748b"}}>{outCars.length===0?"全車両が駐車場またはメンテ中":"入庫可能な車両なし"}</div>}
+        </>}
+      </div>
+    }
+
+    {/* 駐車場状況サマリー */}
+    <div style={cardStyle}>
+      <div style={subHdr}>🅿️ 駐車場の状況</div>
+      <div style={{display:"flex",gap:6,marginBottom:10}}>
+        <div style={{flex:1,background:"#ecfdf5",borderRadius:10,padding:"8px 4px",textAlign:"center"}}><div style={{fontSize:20,fontWeight:900,color:"#059669"}}>{occupied}</div><div style={{fontSize:9,color:"#64748b"}}>駐車中</div></div>
+        <div style={{flex:1,background:empty===0?"#fef2f2":"#eff6ff",borderRadius:10,padding:"8px 4px",textAlign:"center"}}><div style={{fontSize:20,fontWeight:900,color:empty===0?"#dc2626":"#2563eb"}}>{empty}</div><div style={{fontSize:9,color:"#64748b"}}>空き</div></div>
+        <div style={{flex:1,background:"#f8fafc",borderRadius:10,padding:"8px 4px",textAlign:"center"}}><div style={{fontSize:20,fontWeight:900,color:"#64748b"}}>{outCars.length}</div><div style={{fontSize:9,color:"#64748b"}}>出庫中</div></div>
+      </div>
+      {spots.map(sp=>{const car=sp.carId?getCar(sp.carId):null;return <div key={sp.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 8px",borderRadius:8,marginBottom:3,background:"#f8fafc",borderLeft:"3px solid "+(car?"#10b981":"#e2e8f0")}}>
+        <div style={{display:"flex",alignItems:"center",gap:6}}>
+          <span style={{fontSize:11,fontWeight:800,color:car?"#1e293b":"#94a3b8",minWidth:32}}>No.{sp.no}</span>
+          <span style={{fontSize:9,color:"#94a3b8"}}>Key:{sp.key}</span>
+        </div>
+        {car?<div style={{display:"flex",alignItems:"center",gap:4}}>
+          <span style={{fontSize:11,fontWeight:700,color:"#059669"}}>{pCarLabel(car)}</span>
+          <button onClick={()=>setModal({type:"moveSpot",spotId:sp.id,carId:sp.carId})} style={{padding:"2px 6px",borderRadius:4,border:"1px solid #bfdbfe",background:"transparent",color:"#2563eb",fontSize:8,cursor:"pointer"}}>変更</button>
+        </div>:<span style={{fontSize:10,color:"#94a3b8",fontStyle:"italic"}}>空き{sp.restricted?" 📌":""}</span>}
+      </div>;})}
+    </div>
+
+    {/* 洗車状況 */}
+    <div style={cardStyle}>
+      <div style={subHdr}>🚿 洗車状況</div>
+      <div style={{display:"flex",gap:6,marginBottom:8}}>
+        {WASH_STATUSES.map(s=>{const ws=washStyleLight(s);return <div key={s} style={{flex:1,background:ws.bg,borderRadius:10,padding:"8px 4px",textAlign:"center"}}><div style={{fontSize:14}}>{ws.icon}</div><div style={{fontSize:18,fontWeight:800,color:ws.c}}>{washCounts[s]}</div><div style={{fontSize:8,color:"#64748b"}}>{s}</div></div>;})}
+      </div>
+      {washCounts["未洗車"]>0&&<div style={{fontSize:10,color:"#dc2626",fontWeight:600}}>⚠️ 未洗車: {parkedCars.filter(c=>washMap[c.id]==="未洗車").map(c=>pCarLabel(c)).join(", ")}</div>}
+    </div>
+
+    {/* メンテ状況 */}
+    <div style={cardStyle}>
+      <div style={subHdr}>🔧 メンテナンス</div>
+      {maintCars.length>0?maintCars.map(c=>{const m=maintMap[c.id];return <div key={c.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 10px",borderRadius:8,marginBottom:4,background:"#fffbeb",borderLeft:"3px solid #d97706"}}>
+        <div><div style={{fontSize:12,fontWeight:700,color:"#92400e"}}>{pCarLabel(c)}</div><div style={{fontSize:10,color:"#92400e"}}>🏭 {m.vendor} ({m.entryDate}〜{m.pickupDate})</div></div>
+      </div>;}):<div style={{padding:10,textAlign:"center",fontSize:11,color:"#94a3b8"}}>メンテ中の車両なし</div>}
+    </div>
+
+    {/* 最近の履歴 */}
+    <div style={cardStyle}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+        <span style={subHdr}>📋 最近の操作</span>
+        {history.length>5&&<span style={{fontSize:9,color:"#94a3b8"}}>直近5件</span>}
+      </div>
+      {history.length>0?history.slice().reverse().slice(0,5).map((h,i)=><div key={i} style={{padding:"4px 0",fontSize:10,borderBottom:i<4?"1px solid #f1f5f9":"none"}}>
+        <span style={{color:"#94a3b8",marginRight:6}}>{h.time}</span>
+        <span style={{color:h.msg.includes("入庫")?"#059669":h.msg.includes("出庫")?"#dc2626":"#2563eb"}}>{h.msg}</span>
+      </div>):<div style={{textAlign:"center",fontSize:11,color:"#94a3b8",padding:12}}>履歴なし</div>}
+    </div>
+  </>;
+
+  // ===== ステータス(spots)タブ =====
+  const spotsContent=<>
+    {spots.map((sp,idx)=>{const car=sp.carId?getCar(sp.carId):null;const borderC=!car?(sp.restricted?"#8b5cf6":"#e2e8f0"):"#10b981";
+      return <div key={sp.id} className="fade-in" style={{...cardStyle,borderLeft:"5px solid "+borderC,animationDelay:(idx*30)+"ms"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <div style={{width:48,height:44,borderRadius:10,background:car?"#ecfdf5":"#f8fafc",border:"2px solid "+(car?"#10b981":"#e2e8f0"),display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
+              <div style={{fontSize:6,color:"#94a3b8",fontWeight:700}}>SPOT</div>
+              <div style={{fontSize:16,fontWeight:800,color:car?"#1e293b":"#94a3b8"}}>{sp.no}</div>
+              <div style={{fontSize:7,color:"#94a3b8"}}>Key:{sp.key}</div>
+            </div>
+            {car?<div><div style={{fontSize:14,fontWeight:700,color:"#1e293b"}}>{car.name}{sp.restricted&&<span style={{fontSize:8,color:"#7c3aed",marginLeft:4}}>📌専用枠</span>}</div><div style={{fontSize:11,color:"#64748b"}}>{car.plate}</div></div>
+              :<div><div style={{fontSize:12,color:"#94a3b8",fontStyle:"italic"}}>— 空き —</div>{sp.restricted&&<div style={{fontSize:8,color:"#7c3aed"}}>📌 {sp.restricted.map(id=>{const c=getCar(id);return c?c.name:"";}).join("/")} 専用</div>}</div>}
+          </div>
+          <div style={{display:"flex",gap:4}}>
+            {car?<button onClick={()=>setModal({type:"release",spotId:sp.id})} className="btn-danger" style={{padding:"6px 10px",fontSize:10}}>出庫</button>
+              :<button onClick={()=>setModal({type:"park",spotId:sp.id})} className="btn-primary" style={{padding:"6px 10px",fontSize:10}}>入庫</button>}
+            <button onClick={()=>setModal({type:"detail",spotId:sp.id})} className="btn-ghost" style={{padding:"6px 8px",fontSize:10}}>詳細</button>
+          </div>
+        </div>
+        {sp.memo&&<div style={{marginTop:6,fontSize:10,color:"#64748b"}}>📝 {sp.memo}</div>}
+      </div>;
+    })}
+    {/* 駐車場外の車両 */}
+    <div style={{...cardStyle,borderColor:empty===0?"#fca5a5":"#e2e8f0",background:empty===0?"#fef2f2":"#fff"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+        <div><div style={{fontSize:13,fontWeight:700,color:empty===0?"#dc2626":"#1e293b"}}>{empty===0?"🚨 駐車できていない車両":"🚙 駐車場外の車両"}</div><div style={{fontSize:10,color:"#64748b"}}>{outCars.length}台 ／ 全{cars.length}台</div></div>
+        <span style={{padding:"2px 8px",borderRadius:12,fontSize:10,fontWeight:700,background:empty===0?"#fca5a5":"#e2e8f0",color:empty===0?"#7f1d1d":"#64748b"}}>{empty===0?"満車":"空き"+empty}</span>
+      </div>
+      {outCars.map(c=><div key={c.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 8px",borderRadius:8,marginBottom:3,background:empty===0?"#fef2f2":"#f8fafc"}}>
+        <span style={{fontSize:12,fontWeight:700,color:empty===0?"#dc2626":"#1e293b"}}>{pCarLabel(c)}</span>
+        {empty>0?<button onClick={()=>setModal({type:"parkChoose",carId:c.id})} style={{padding:"4px 10px",borderRadius:6,border:"none",cursor:"pointer",fontSize:9,fontWeight:700,background:"#059669",color:"#fff"}}>入庫 →</button>
+          :<span style={{fontSize:9,color:"#dc2626",fontWeight:600}}>枠なし</span>}
+      </div>)}
+    </div>
+  </>;
+
+  // ===== メンテタブ =====
+  const maintContent=<>
+    <div style={cardStyle}>
+      <div style={subHdr}>🔧 メンテナンス入庫</div>
+      <div style={{fontSize:11,color:"#64748b",lineHeight:1.6}}>業者にメンテナンス入庫中の車両を管理します。</div>
+    </div>
+    {maintCars.length>0&&<div style={{marginBottom:12}}>
+      <div style={{fontSize:11,fontWeight:700,color:"#d97706",marginBottom:6}}>⚙️ メンテナンス中 {maintCars.length}台</div>
+      {maintCars.map(c=>{const m=maintMap[c.id];return <div key={c.id} style={{...cardStyle,borderLeft:"4px solid #d97706",background:"#fffbeb"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:16}}>🔧</span><div><div style={{fontSize:14,fontWeight:700,color:"#92400e"}}>{c.name}</div><div style={{fontSize:11,color:"#92400e"}}>{c.plate}</div></div></div>
+          <button onClick={()=>clearMaint(c.id)} style={{padding:"5px 10px",borderRadius:8,border:"none",cursor:"pointer",fontSize:10,fontWeight:700,background:"#059669",color:"#fff"}}>回収済</button>
+        </div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          <span style={{padding:"3px 8px",borderRadius:6,background:"#fef3c7",fontSize:10,color:"#92400e"}}>🏭 {m.vendor}</span>
+          <span style={{padding:"3px 8px",borderRadius:6,background:"#f8fafc",fontSize:10,color:"#64748b"}}>📅 入庫: {m.entryDate}</span>
+          <span style={{padding:"3px 8px",borderRadius:6,background:"#f8fafc",fontSize:10,color:"#64748b"}}>📅 回収: {m.pickupDate}</span>
+        </div>
+      </div>;})}
+    </div>}
+    {nonMaintOutCars.length>0&&<div>
+      <div style={{fontSize:11,fontWeight:700,color:"#64748b",marginBottom:6}}>🚙 駐車場外 {nonMaintOutCars.length}台</div>
+      {nonMaintOutCars.map(c=><div key={c.id} style={{...cardStyle,borderLeft:"4px solid #e2e8f0",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:16}}>🚙</span><div><div style={{fontSize:13,fontWeight:700}}>{c.name}</div><div style={{fontSize:10,color:"#64748b"}}>{c.plate}</div></div></div>
+        <button onClick={()=>setModal({type:"maint",carId:c.id})} style={{padding:"6px 12px",borderRadius:8,border:"none",cursor:"pointer",fontSize:10,fontWeight:700,background:"#d97706",color:"#fff"}}>メンテ入庫</button>
+      </div>)}
+    </div>}
+    {outCars.length===0&&<div style={{textAlign:"center",color:"#94a3b8",padding:30}}>全車両が駐車場にあります</div>}
+  </>;
+
+  // ===== 洗車タブ =====
+  const washContent=<>
+    <div style={{display:"flex",gap:6,marginBottom:12}}>
+      {WASH_STATUSES.map(s=>{const ws=washStyleLight(s);return <div key={s} style={{flex:1,background:ws.bg,borderRadius:12,padding:"8px 4px",textAlign:"center"}}><div style={{fontSize:16}}>{ws.icon}</div><div style={{fontSize:18,fontWeight:800,color:ws.c}}>{washCounts[s]}</div><div style={{fontSize:9,color:"#64748b"}}>{s}</div></div>;})}
+    </div>
+    {washCounts["未洗車"]>0&&<div style={{background:"#fef2f2",border:"1px solid #fca5a5",borderRadius:10,padding:"6px 10px",marginBottom:12,display:"flex",alignItems:"center",gap:6}}>
+      <span style={{fontSize:14}}>⚠️</span><span style={{fontSize:11,color:"#dc2626",fontWeight:600}}>{washCounts["未洗車"]}台が未洗車</span>
+    </div>}
+    {parkedCars.length===0&&<div style={{textAlign:"center",color:"#94a3b8",padding:24,fontSize:12}}>駐車場に車両がありません</div>}
+    {parkedCars.map((c,i)=>{const ws=washMap[c.id];const wst=washStyleLight(ws);const wTime=washTimeMap[c.id];const spot=spots.find(s=>s.carId===c.id);
+      return <div key={c.id} className="fade-in" style={{...cardStyle,borderLeft:"4px solid "+wst.c,animationDelay:(i*25)+"ms"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:16}}>{wst.icon}</span>
+            <div><span style={{fontSize:13,fontWeight:700}}>{c.name}</span><span style={{fontSize:10,color:"#64748b",marginLeft:4}}>{c.plate}</span>{spot&&<span style={{fontSize:9,color:"#94a3b8",marginLeft:4}}>📍No.{spot.no}</span>}</div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <span style={{display:"inline-block",padding:"1px 8px",borderRadius:10,fontSize:10,fontWeight:600,background:wst.bg,color:wst.c}}>{ws}</span>
+            {wTime?<div style={{fontSize:8,color:"#94a3b8",marginTop:1}}>🕐 {wTime}</div>:<div style={{fontSize:8,color:"#cbd5e1",marginTop:1}}>未変更</div>}
+          </div>
+        </div>
+        <div style={{display:"flex",gap:4}}>
+          {WASH_STATUSES.map(s=>{const active=ws===s;const sty=washStyleLight(s);return <button key={s} onClick={()=>{if(!active)setWashStatus(c.id,s);}} style={{flex:1,padding:"5px 0",borderRadius:8,border:"none",cursor:"pointer",fontSize:10,fontWeight:600,background:active?sty.c+"22":"#f8fafc",color:active?sty.c:"#94a3b8",outline:active?"2px solid "+sty.c:"none"}}>{s}</button>;})}
+        </div>
+      </div>;
+    })}
+  </>;
+
+  // ===== 設定タブ =====
+  const settingsContent=<>
+    <div style={cardStyle}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+        <div style={subHdr}>🚗 車両一覧（{cars.length}台）</div>
+        <button onClick={()=>setModal({type:"addCar"})} className="btn-primary" style={{padding:"4px 12px",fontSize:10}}>＋ 追加</button>
+      </div>
+      {cars.map(c=>{const st=carStatus(c.id);return <div key={c.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 8px",borderRadius:8,marginBottom:3,background:"#f8fafc"}}>
+        <div style={{display:"flex",alignItems:"center",gap:6}}>
+          <span style={{fontSize:13,fontWeight:700}}>{c.name}</span><span style={{fontSize:10,color:"#64748b"}}>{c.plate}</span>
+          <span style={{padding:"1px 6px",borderRadius:8,fontSize:7,background:st.color+"18",color:st.color}}>{st.label}</span>
+        </div>
+        <button onClick={()=>setModal({type:"removeCar",carId:c.id})} style={{padding:"3px 8px",borderRadius:6,border:"1px solid #fca5a5",background:"transparent",color:"#dc2626",fontSize:9,cursor:"pointer"}}>削除</button>
+      </div>;})}
+    </div>
+    <div style={cardStyle}>
+      <div style={subHdr}>📤 データ管理</div>
+      <button onClick={exportData} className="btn-primary" style={{width:"100%",marginBottom:6,padding:10,fontSize:12}}>📋 データコピー</button>
+      <button onClick={importData} className="btn-ghost" style={{width:"100%",marginBottom:6,padding:10,fontSize:12}}>📥 インポート</button>
+      <button onClick={resetData} className="btn-danger" style={{width:"100%",padding:10,fontSize:12}}>🗑️ 全リセット</button>
+    </div>
+  </>;
+
+  // ===== モーダル =====
+  let modalEl=null;
+  if(modal){
+    const sp=spots.find(s=>s.id===modal.spotId);
+    const overlay={position:"fixed",inset:0,background:"rgba(0,0,0,.3)",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:12};
+    const sheet={background:"#fff",borderRadius:16,padding:20,width:"100%",maxWidth:420,maxHeight:"80vh",overflowY:"auto",position:"relative"};
+    const closeBtn=<button onClick={()=>setModal(null)} style={{position:"absolute",top:12,right:12,background:"#f1f5f9",border:"none",borderRadius:"50%",width:28,height:28,color:"#64748b",fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>;
+
+    if(modal.type==="park"&&sp){
+      const available=outCars.filter(c=>canParkInSpot(sp,c.id));
+      modalEl=<div onClick={ev=>{if(ev.target===ev.currentTarget)setModal(null);}} style={overlay}><div className="fade-in" style={sheet}>
+        {closeBtn}
+        <div style={{fontSize:15,fontWeight:800,marginBottom:12}}>🅿️ No.{sp.no} に入庫</div>
+        <div style={{fontSize:11,color:"#64748b",marginBottom:sp.restricted?6:14}}>キーナンバー: {sp.key}</div>
+        {sp.restricted&&<div style={{padding:"4px 8px",borderRadius:8,background:"#f5f3ff",border:"1px solid #c4b5fd",marginBottom:12,fontSize:10,color:"#7c3aed"}}>📌 {sp.restricted.map(id=>{const c=getCar(id);return c?c.name:"";}).join(" / ")} 専用</div>}
+        {available.length>0?<>
+          <div style={{fontSize:11,color:"#64748b",marginBottom:8}}>入庫する車両を選択:</div>
+          {available.map(c=><button key={c.id} onClick={()=>parkCar(sp.id,c.id)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",padding:"10px 12px",borderRadius:10,border:"1px solid #e2e8f0",background:"#f8fafc",cursor:"pointer",fontSize:13,fontWeight:600,marginBottom:6}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:18}}>🚗</span><div style={{textAlign:"left"}}><div>{c.name}</div><div style={{fontSize:10,color:"#64748b"}}>{c.plate}</div></div></div>
+            <span style={{fontSize:11,color:"#059669",fontWeight:700}}>入庫 →</span>
+          </button>)}
+        </>:<div style={{textAlign:"center",padding:20,color:"#94a3b8"}}>入庫可能な車両なし</div>}
+      </div></div>;
+    }
+    if(modal.type==="release"&&sp){
+      const car=getCar(sp.carId);
+      modalEl=<div onClick={ev=>{if(ev.target===ev.currentTarget)setModal(null);}} style={overlay}><div className="fade-in" style={sheet}>
+        {closeBtn}
+        <div style={{fontSize:15,fontWeight:800,marginBottom:12}}>🚙 出庫確認</div>
+        <div style={{background:"#f8fafc",borderRadius:12,padding:14,marginBottom:14,textAlign:"center"}}>
+          <div style={{fontSize:13,color:"#1e293b",marginBottom:4}}>{car?pCarLabel(car):""}</div>
+          <div style={{fontSize:13,color:"#64748b"}}>No.{sp.no} を出庫しますか？</div>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>setModal(null)} className="btn-ghost" style={{flex:1,padding:12}}>キャンセル</button>
+          <button onClick={()=>releaseCar(sp.id)} className="btn-danger" style={{flex:1,padding:12}}>出庫完了</button>
+        </div>
+      </div></div>;
+    }
+    if(modal.type==="parkChoose"){
+      const car=getCar(modal.carId);const freeSpots=spots.filter(s=>!s.carId);const allowed=freeSpots.filter(s=>canParkInSpot(s,modal.carId));
+      modalEl=<div onClick={ev=>{if(ev.target===ev.currentTarget)setModal(null);}} style={overlay}><div className="fade-in" style={sheet}>
+        {closeBtn}
+        <div style={{fontSize:15,fontWeight:800,marginBottom:4}}>🚗 {car?pCarLabel(car):""} を入庫</div>
+        <div style={{fontSize:11,color:"#64748b",marginBottom:14}}>入庫先を選択:</div>
+        {allowed.map(sp2=><button key={sp2.id} onClick={()=>parkCar(sp2.id,modal.carId)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",padding:"10px 12px",borderRadius:10,border:"1px solid #e2e8f0",background:"#f8fafc",cursor:"pointer",fontSize:12,fontWeight:600,marginBottom:6}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <div style={{width:40,height:36,borderRadius:8,background:"#ecfdf5",border:"2px solid #10b981",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}><div style={{fontSize:6,color:"#94a3b8"}}>SPOT</div><div style={{fontSize:12,fontWeight:800}}>{sp2.no}</div></div>
+            <div style={{fontSize:10,color:"#64748b"}}>Key:{sp2.key}{sp2.restricted&&<span style={{color:"#7c3aed"}}> 📌</span>}</div>
+          </div>
+          <span style={{fontSize:11,color:"#059669",fontWeight:700}}>ここに入庫</span>
+        </button>)}
+        {allowed.length===0&&<div style={{textAlign:"center",padding:16,color:"#dc2626",fontSize:12}}>入庫できる空き枠なし</div>}
+      </div></div>;
+    }
+    if(modal.type==="moveSpot"){
+      const fromSpot=spots.find(s=>s.id===modal.spotId);const car=getCar(modal.carId);const freeSpots=spots.filter(s=>!s.carId&&canParkInSpot(s,modal.carId));
+      modalEl=<div onClick={ev=>{if(ev.target===ev.currentTarget)setModal(null);}} style={overlay}><div className="fade-in" style={sheet}>
+        {closeBtn}
+        <div style={{fontSize:15,fontWeight:800,marginBottom:4}}>🔄 駐車場所の変更</div>
+        <div style={{fontSize:11,color:"#64748b",marginBottom:14}}>{car?pCarLabel(car):""} ・現在 No.{fromSpot?fromSpot.no:""}</div>
+        {freeSpots.map(sp2=><button key={sp2.id} onClick={()=>{setSpots(p=>p.map(s=>{if(s.id===modal.spotId)return{...s,carId:null};if(s.id===sp2.id)return{...s,carId:modal.carId};return s;}));addLog("【移動】"+pCarLabel(car)+" No."+(fromSpot?fromSpot.no:"")+" → No."+sp2.no);setModal(null);}} style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",padding:"10px 12px",borderRadius:10,border:"1px solid #e2e8f0",background:"#f8fafc",cursor:"pointer",marginBottom:6}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:40,height:36,borderRadius:8,background:"#ecfdf5",border:"2px solid #10b981",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}><div style={{fontSize:6,color:"#94a3b8"}}>SPOT</div><div style={{fontSize:12,fontWeight:800}}>{sp2.no}</div></div><span style={{fontSize:10,color:"#64748b"}}>Key:{sp2.key}</span></div>
+          <span style={{fontSize:11,color:"#059669",fontWeight:700}}>ここに移動</span>
+        </button>)}
+        {freeSpots.length===0&&<div style={{textAlign:"center",padding:16,color:"#dc2626",fontSize:12}}>移動先なし</div>}
+      </div></div>;
+    }
+    if(modal.type==="maint"){
+      const car=getCar(modal.carId);const todayVal=dateOptions[0]?.val;const weekVal=dateOptions.length>7?dateOptions[7].val:dateOptions[dateOptions.length-1].val;
+      modalEl=<div onClick={ev=>{if(ev.target===ev.currentTarget)setModal(null);}} style={overlay}><div className="fade-in" style={sheet}>
+        {closeBtn}
+        <div style={{fontSize:15,fontWeight:800,marginBottom:4}}>🔧 メンテナンス入庫</div>
+        <div style={{fontSize:11,color:"#64748b",marginBottom:14}}>{car?pCarLabel(car):""}</div>
+        <div style={{marginBottom:10}}><div style={{fontSize:11,color:"#64748b",marginBottom:4,fontWeight:600}}>🏭 業者</div>
+          <select id="pk-maint-vendor" defaultValue={PARKING_VENDORS[0]} className="input-s">{PARKING_VENDORS.map(v=><option key={v} value={v}>{v}</option>)}</select></div>
+        <div style={{marginBottom:10}}><div style={{fontSize:11,color:"#64748b",marginBottom:4,fontWeight:600}}>📅 入庫日</div>
+          <select id="pk-maint-entry" defaultValue={todayVal} className="input-s">{dateOptions.map(d=><option key={d.val} value={d.val}>{d.label}</option>)}</select></div>
+        <div style={{marginBottom:14}}><div style={{fontSize:11,color:"#64748b",marginBottom:4,fontWeight:600}}>📅 回収予定日</div>
+          <select id="pk-maint-pickup" defaultValue={weekVal} className="input-s">{dateOptions.map(d=><option key={d.val} value={d.val}>{d.label}</option>)}</select></div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>setModal(null)} className="btn-ghost" style={{flex:1,padding:12}}>キャンセル</button>
+          <button onClick={()=>{const v=document.getElementById("pk-maint-vendor").value;const e=document.getElementById("pk-maint-entry");const p=document.getElementById("pk-maint-pickup");registerMaint(modal.carId,v,e.options[e.selectedIndex].text,p.options[p.selectedIndex].text);setModal(null);}} style={{flex:1,padding:12,borderRadius:8,border:"none",background:"#d97706",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>登録</button>
+        </div>
+      </div></div>;
+    }
+    if(modal.type==="detail"&&sp){
+      const car=sp.carId?getCar(sp.carId):null;
+      modalEl=<div onClick={ev=>{if(ev.target===ev.currentTarget)setModal(null);}} style={overlay}><div className="fade-in" style={sheet}>
+        {closeBtn}
+        <div style={{fontSize:15,fontWeight:800,marginBottom:12}}>🅿️ No.{sp.no} 詳細</div>
+        <div style={{background:"#f8fafc",borderRadius:12,padding:12,marginBottom:12}}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}><span style={{fontSize:11,color:"#64748b"}}>駐車場No</span><span style={{fontSize:13,fontWeight:700}}>{sp.no}</span></div>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}><span style={{fontSize:11,color:"#64748b"}}>キーナンバー</span><span style={{fontSize:13,fontWeight:700}}>{sp.key}</span></div>
+          <div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontSize:11,color:"#64748b"}}>状態</span>{car?<span style={{fontSize:13,fontWeight:700,color:"#059669"}}>使用中: {pCarLabel(car)}</span>:<span style={{fontSize:13,color:"#94a3b8"}}>空き</span>}</div>
+        </div>
+        {sp.restricted&&<div style={{padding:"4px 8px",borderRadius:8,background:"#f5f3ff",border:"1px solid #c4b5fd",marginBottom:12,fontSize:10,color:"#7c3aed"}}>📌 専用枠: {sp.restricted.map(id=>{const c=getCar(id);return c?c.name:"";}).join(" / ")}</div>}
+        {car&&<div style={{marginBottom:12}}><div style={{fontSize:11,color:"#64748b",marginBottom:4,fontWeight:600}}>🔄 車両入替</div>
+          <select value={sp.carId} onChange={ev=>{if(ev.target.value!==sp.carId)swapCar(sp.id,ev.target.value);}} className="input-s">
+            <option value={sp.carId}>{pCarLabel(car)} (現在)</option>
+            {outCars.filter(c=>canParkInSpot(sp,c.id)).map(c=><option key={c.id} value={c.id}>{pCarLabel(c)}</option>)}
+          </select></div>}
+        <div style={{marginBottom:12}}><div style={{fontSize:11,color:"#64748b",marginBottom:4,fontWeight:600}}>📝 メモ</div>
+          <textarea value={sp.memo} onChange={ev=>updateMemo(sp.id,ev.target.value)} placeholder="メモ..." rows={3} className="input-s" style={{resize:"vertical",fontFamily:"inherit"}}/></div>
+        <button onClick={()=>setModal(null)} className="btn-primary" style={{width:"100%",padding:12}}>閉じる</button>
+      </div></div>;
+    }
+    if(modal.type==="addCar"){
+      modalEl=<div onClick={ev=>{if(ev.target===ev.currentTarget)setModal(null);}} style={overlay}><div className="fade-in" style={sheet}>
+        {closeBtn}
+        <div style={{fontSize:15,fontWeight:800,marginBottom:14}}>🚗 新しい車両を登録</div>
+        <div style={{marginBottom:10}}><div style={{fontSize:11,color:"#64748b",marginBottom:4}}>車名（例: VEL, CX3）</div><input id="pk-add-name" placeholder="車名" className="input-s"/></div>
+        <div style={{marginBottom:14}}><div style={{fontSize:11,color:"#64748b",marginBottom:4}}>ナンバー（例: 7673）</div><input id="pk-add-plate" placeholder="ナンバー" className="input-s"/></div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>setModal(null)} className="btn-ghost" style={{flex:1,padding:12}}>キャンセル</button>
+          <button onClick={()=>{const n=document.getElementById("pk-add-name").value.trim();const p=document.getElementById("pk-add-plate").value.trim();if(!n||!p){alert("車名とナンバーを入力");return;}if(addCar(n,p))setModal(null);}} className="btn-primary" style={{flex:1,padding:12}}>登録</button>
+        </div>
+      </div></div>;
+    }
+    if(modal.type==="removeCar"){
+      const car=getCar(modal.carId);
+      modalEl=<div onClick={ev=>{if(ev.target===ev.currentTarget)setModal(null);}} style={overlay}><div className="fade-in" style={sheet}>
+        {closeBtn}
+        <div style={{fontSize:15,fontWeight:800,marginBottom:8}}>🗑️ 車両削除</div>
+        <div style={{fontSize:13,color:"#dc2626",marginBottom:14}}>{car?pCarLabel(car)+"を削除しますか？":""}</div>
+        <div style={{fontSize:11,color:"#64748b",marginBottom:14}}>駐車中・メンテ中の場合は自動で解除されます。</div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>setModal(null)} className="btn-ghost" style={{flex:1,padding:12}}>キャンセル</button>
+          <button onClick={()=>{removeCar(modal.carId);setModal(null);}} className="btn-danger" style={{flex:1,padding:12}}>削除</button>
+        </div>
+      </div></div>;
+    }
+  }
+
+  // ===== 内部タブ =====
+  const pTabs=[
+    {id:"home",icon:"🚗",label:"入庫"},
+    {id:"spots",icon:"🅿️",label:"ステータス"},
+    {id:"maint",icon:"🔧",label:"メンテ",badge:maintCars.length},
+    {id:"wash",icon:"🚿",label:"洗車",badge:washCounts["未洗車"]},
+    {id:"settings",icon:"⚙️",label:"設定"},
+  ];
+
+  return <div style={{display:"flex",flexDirection:"column",height:"100%"}}>
+    {/* 内部タブバー */}
+    <div style={{display:"flex",gap:2,padding:"8px 4px",background:"#f8fafc",borderBottom:"1px solid #e2e8f0",flexShrink:0,overflowX:"auto"}}>
+      {pTabs.map(t=><button key={t.id} onClick={()=>setPTab(t.id)} style={{flex:"0 0 auto",padding:"6px 12px",borderRadius:8,border:"none",cursor:"pointer",fontSize:11,fontWeight:600,background:pTab===t.id?"#2563eb":"transparent",color:pTab===t.id?"#fff":"#64748b",position:"relative",display:"flex",alignItems:"center",gap:3}}>
+        <span style={{fontSize:14}}>{t.icon}</span>{t.label}
+        {t.badge>0&&<span style={{background:"#dc2626",color:"#fff",fontSize:8,fontWeight:700,borderRadius:10,padding:"1px 4px",minWidth:14,textAlign:"center"}}>{t.badge}</span>}
+      </button>)}
+    </div>
+    {/* コンテンツ */}
+    <div style={{flex:1,overflow:"auto",padding:12}} className="fade-in">
+      {pTab==="home"&&homeContent}
+      {pTab==="spots"&&spotsContent}
+      {pTab==="maint"&&maintContent}
+      {pTab==="wash"&&washContent}
+      {pTab==="settings"&&settingsContent}
+    </div>
+    {/* モーダル */}
+    {modalEl}
+  </div>;
+}
+
+/* ==========================================
    統合データ
    ========================================== */
 function DataTable({data,sheetPlaces,onUpdatePlaces}){
@@ -1779,7 +2307,7 @@ function App(){
   },[data]);
 
   const oc=useMemo(()=>{const c={};data.forEach(t=>{c[t.ota]=(c[t.ota]||0)+1;});return c;},[data]);
-  const navItems=[{id:"import",ico:"📁",l:"CSV"},{id:"staff",ico:"👥",l:"スタッフ"},{id:"shift",ico:"📅",l:"出勤簿"},{id:"fleet",ico:"🚗",l:"配車"},{id:"vehicle",ico:"🔧",l:"車両"},{id:"data",ico:"📊",l:"データ"}];
+  const navItems=[{id:"import",ico:"📁",l:"CSV"},{id:"staff",ico:"👥",l:"スタッフ"},{id:"shift",ico:"📅",l:"出勤簿"},{id:"fleet",ico:"🚗",l:"配車"},{id:"vehicle",ico:"🔧",l:"車両"},{id:"parking",ico:"🅿️",l:"駐車場"},{id:"data",ico:"📊",l:"データ"}];
 
   if(!dbLoaded)return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#f3f4f6"}}><div style={{textAlign:"center"}}><div style={{width:48,height:48,border:"4px solid #e5e7eb",borderTopColor:"#2563eb",borderRadius:"50%",animation:"spin 1s linear infinite",margin:"0 auto 12px"}}></div><p style={{color:"#64748b",fontSize:13}}>データ読込中...</p></div></div>;
 
@@ -1788,7 +2316,7 @@ function App(){
     {showOP&&<OPScreen reservations={data} today={today} shifts={shifts} fleet={fleet} onFleetChange={setFleetSync} onClose={()=>setShowOP(false)} vehicles={vehicles} staff={staff} resOpts={resOpts} sheetPlaces={sheetPlaces} onUpdateSheetPlaces={saveSheetPlaces}/>}
     <div style={{display:showOP?"none":"flex",flex:1,overflow:"hidden",flexDirection:"column"}}>
       <div className="top-nav">
-        {navItems.filter(n=>n.id==="import"||n.id==="vehicle"||n.id==="staff"||data.length>0).map(n=><button key={n.id} onClick={()=>setTab(n.id)} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
+        {navItems.filter(n=>n.id==="import"||n.id==="vehicle"||n.id==="staff"||n.id==="parking"||data.length>0).map(n=><button key={n.id} onClick={()=>setTab(n.id)} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
         {data.length>0&&<button onClick={()=>setShowOP(true)} style={{color:"#60a5fa"}}><span className="ico">📋</span>OP</button>}
         {SB_ENABLED&&<button onClick={reloadAll} disabled={reloading===1} style={{background:reloading===2?"#d1fae5":"none",border:"none",cursor:reloading===1?"wait":"pointer",fontSize:14,padding:"2px 4px",borderRadius:6,opacity:reloading===1?0.5:1,transition:"background .3s"}}>{reloading===1?"⏳":reloading===2?"✅":"🔄"}</button>}
         {SB_ENABLED&&<SyncBadge connected={sbConnected} inline={true}/>}
@@ -1796,20 +2324,21 @@ function App(){
       <div style={{display:"flex",flex:1,overflow:"hidden"}}>
       <div className="sidebar">
         <div style={{width:36,height:36,borderRadius:8,background:"linear-gradient(135deg,#3b82f6,#1d4ed8)",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:800,fontSize:14,marginBottom:8}}>S</div>
-        {navItems.filter(n=>n.id==="import"||n.id==="vehicle"||n.id==="staff"||data.length>0).map(n=><button key={n.id} onClick={()=>setTab(n.id)} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
+        {navItems.filter(n=>n.id==="import"||n.id==="vehicle"||n.id==="staff"||n.id==="parking"||data.length>0).map(n=><button key={n.id} onClick={()=>setTab(n.id)} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
         {data.length>0&&<button onClick={()=>setShowOP(true)} style={{marginTop:4,background:"linear-gradient(135deg,#1e40af,#2563eb)",color:"#fff",borderRadius:10}}><span className="ico">📋</span><span style={{fontSize:8}}>OP</span></button>}
       </div>
-      <div className="main-area" style={{flex:1,overflow:tab==="fleet"?"hidden":"auto",padding:tab==="fleet"?0:12,display:"flex",flexDirection:"column"}}>
-        {tab!=="fleet"&&<div style={{marginBottom:8,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8,flexShrink:0}}>
+      <div className="main-area" style={{flex:1,overflow:tab==="fleet"||tab==="parking"?"hidden":"auto",padding:tab==="fleet"||tab==="parking"?0:12,display:"flex",flexDirection:"column"}}>
+        {tab!=="fleet"&&tab!=="parking"&&<div style={{marginBottom:8,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8,flexShrink:0}}>
           <div className="flex items-center gap-2"><div style={{width:28,height:28,borderRadius:6,background:"linear-gradient(135deg,#3b82f6,#1d4ed8)",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:800,fontSize:12}}>S</div><div><div className="font-bold text-sm text-gray-900">SPK タスク管理</div>{data.length>0&&<div className="text-xs text-gray-500 flex items-center gap-1">{data.length}件{Object.entries(oc).map(([k,v])=><span key={k}><OBadge ota={k}/>{v}</span>)}</div>}</div></div>
           {data.length>0&&<button onClick={()=>setShowOP(true)} className="px-3 py-1.5 rounded-lg text-xs font-bold text-white shadow" style={{background:"linear-gradient(135deg,#1e40af,#2563eb)"}}>📋 OPシート</button>}
         </div>}
-        <div className="fade-in" style={{flex:1,minHeight:0,display:tab==="fleet"?"flex":"block",flexDirection:"column"}}>
+        <div className="fade-in" style={{flex:1,minHeight:0,display:(tab==="fleet"||tab==="parking")?"flex":"block",flexDirection:"column"}}>
           {tab==="import"&&<CSVPanel onImport={imp} onUpdatePlaces={updatePlaces} dataCount={data.length} pendingPlaces={pendingPlaces} onSetPendingPlaces={setPendingPlaces} files={csvFiles} setFiles={setCsvFiles} logs={csvLogs} setLogs={setCsvLogs} placeLogs={csvPlaceLogs} setPlaceLogs={setCsvPlaceLogs}/>}
           {tab==="staff"&&<StaffManager staff={staff} onStaffChange={setStaffSync} onDeleteStaff={(name)=>DB.deleteStaff(name)}/>}
           {tab==="shift"&&<ShiftCalendar shifts={shifts} onShiftsChange={setShiftsSync} today={today} staff={staff} sbSaveShift={DB.saveShift}/>}
           {tab==="fleet"&&<FleetTimeline data={data} fleet={fleet} onFleetChange={setFleetSync} today={today} maintenance={maintenance} onMaintenanceChange={setMaintenance} vehicles={vehicles} vehicleClasses={vehicleClasses} onAddReservation={addReservation} onBulkAddReservation={bulkAddReservation} onCancelReservation={cancelReservation} onReassignVehicle={reassignVehicle}/>}
           {tab==="vehicle"&&<VehicleManager vehicles={vehicles} onVehiclesChange={setVehiclesSync} vehicleClasses={vehicleClasses} onDeleteVehicle={(code)=>DB.deleteVehicle(code)}/>}
+          {tab==="parking"&&<ParkingManager/>}
           {tab==="data"&&data.length>0&&<DataTable data={data} sheetPlaces={sheetPlaces} onUpdatePlaces={saveSheetPlaces}/>}
         </div>
       </div>
