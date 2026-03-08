@@ -83,11 +83,35 @@ const DB = {
   async upsertFleet(fleet){if(!sb)return;const rows=Object.entries(fleet).map(([k,v])=>({reservation_id:k,vehicle_code:v}));if(rows.length){const{error}=await sb.from("fleet").upsert(rows,{onConflict:"reservation_id"});if(error)dbLog("upsertFleet",false,error.message);else dbLog("upsertFleet",true,rows.length+"件");}},
   async updateFleetOne(resId,code){if(!sb)return;const{error}=await sb.from("fleet").upsert({reservation_id:resId,vehicle_code:code},{onConflict:"reservation_id"});if(error)dbLog("updateFleet1",false,error.message);},
   async deleteFleetOne(resId){if(!sb)return;const{error}=await sb.from("fleet").delete().eq("reservation_id",resId);if(error)dbLog("deleteFleet1",false,error.message);},
-  // --- タスク ---
-  async fetchTasks(date){if(!sb)return[];const{data}=await sb.from("tasks").select("*").eq("date",date).order("sort_order");return(data||[]).map(DB._fromDbTask);},
-  async upsertTasks(tasks,date){if(!sb||!tasks.length)return;const rows=tasks.map((t,i)=>DB._toDbTask(t,date,i));await sb.from("tasks").upsert(rows,{onConflict:"_id"});},
-  async updateTask(t,date){if(!sb)return;await sb.from("tasks").upsert(DB._toDbTask(t,date,t._sortOrder||0),{onConflict:"_id"});},
-  async deleteTasks(date){if(!sb)return;await sb.from("tasks").delete().eq("date",date);},
+  // --- タスク（localStorage併用で確実に保存） ---
+  _lsKey(date){return"spk_tasks_"+date;},
+  _lsSave(tasks,date){try{localStorage.setItem(DB._lsKey(date),JSON.stringify(tasks));}catch(e){}},
+  _lsLoad(date){try{const s=localStorage.getItem(DB._lsKey(date));return s?JSON.parse(s):null;}catch(e){return null;}},
+  async fetchTasks(date){
+    if(!sb){return DB._lsLoad(date)||[];}
+    const{data,error}=await sb.from("tasks").select("*").eq("date",date).order("sort_order");
+    if(error){dbLog("fetchTasks",false,error.message);return DB._lsLoad(date)||[];}
+    const tasks=(data||[]).map(DB._fromDbTask);
+    if(tasks.length)DB._lsSave(tasks,date);
+    return tasks;
+  },
+  async upsertTasks(tasks,date){
+    DB._lsSave(tasks,date);
+    if(!sb||!tasks.length)return;
+    const rows=tasks.map((t,i)=>DB._toDbTask(t,date,i));
+    const{error}=await sb.from("tasks").upsert(rows,{onConflict:"_id"});
+    if(error)dbLog("upsertTasks",false,error.message);
+  },
+  async updateTask(t,date){
+    // localStorageの該当タスクも更新
+    const ls=DB._lsLoad(date);
+    if(ls){const idx=ls.findIndex(x=>x._id===t._id);if(idx>=0){ls[idx]=t;DB._lsSave(ls,date);}else{ls.push(t);DB._lsSave(ls,date);}}
+    else{DB._lsSave([t],date);}
+    if(!sb)return;
+    const{error}=await sb.from("tasks").upsert(DB._toDbTask(t,date,t._sortOrder||0),{onConflict:"_id"});
+    if(error)dbLog("updateTask",false,error.message);
+  },
+  async deleteTasks(date){try{localStorage.removeItem(DB._lsKey(date));}catch(e){} if(!sb)return;const{error}=await sb.from("tasks").delete().eq("date",date);if(error)dbLog("deleteTasks",false,error.message);},
   _toDbTask(t,date,i){return{_id:t._id,date:date,type:t.type||"",time:t.time||"",name:t.name||"",assignee:t.assignee||"",done:!!t.done,memo:t.memo||"",reservation_id:t.reservationId||"",ota:t.ota||"",tel:t.tel||"",mail:t.mail||"",assigned_vehicle:t.assignedVehicle||"",plate_no:t.plateNo||"",people:t.people||0,place:t.place||"",vehicle:t.vehicle||"",insurance:t.insurance||"",insurance_change:t.insuranceChange||"",flight:t.flight||"",return_date:t.returnDate||"",return_time:t.returnTime||"",return_type:t.returnType||"",col_place:t.colPlace||"",opt_b:!!t.opts?.b,opt_c:!!t.opts?.c,opt_j:!!t.opts?.j,opt_usb:!!t.opts?.usb,opt_parasol:!!t.opts?.parasol,yakkan:!!t.yakkan,line:!!t.line,payment:!!t.payment,sort_order:i,assignee_custom:!!t._assigneeCustom,time_changed:!!t._timeChanged};},
   _fromDbTask(d){return{_id:d._id,type:d.type,time:d.time,name:d.name,assignee:d.assignee,done:d.done,memo:d.memo,reservationId:d.reservation_id,ota:d.ota,tel:d.tel,mail:d.mail,assignedVehicle:d.assigned_vehicle,plateNo:d.plate_no,people:d.people,place:d.place,vehicle:d.vehicle,insurance:d.insurance,insuranceChange:d.insurance_change,flight:d.flight,returnDate:norm(d.return_date),returnTime:d.return_time,returnType:d.return_type,colPlace:d.col_place,opts:{b:d.opt_b,c:d.opt_c,j:d.opt_j,usb:d.opt_usb,parasol:d.opt_parasol},yakkan:d.yakkan,line:d.line,payment:d.payment,_sortOrder:d.sort_order,_assigneeCustom:d.assignee_custom,_timeChanged:d.time_changed};},
   // --- スタッフ ---
@@ -1086,45 +1110,58 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
       return changed?next:prev;
     });
   },[fleet,vehicles]);
-  // タスクロード: 日付変更時のみDBから読み込み or 自動生成
-  const loadedDateRef=React.useRef(null);
-  const selfUpdateRef=React.useRef(false); // 自分の変更フラグ
-  const loadTasks=React.useCallback(async(date,force)=>{
-    if(!force&&loadedDateRef.current===date)return; // 同じ日付の再ロード防止
-    loadedDateRef.current=date;
-    if(SB_ENABLED){
-      const dbTasks=await DB.fetchTasks(date);
-      if(dbTasks&&dbTasks.length>0){
-        setTasks(dbTasks);return;
+  // タスクロード
+  const selfUpdateRef=React.useRef(false);
+  const loadTasks=React.useCallback(async(date)=>{
+    // 1. DB(+localStorage)から取得
+    const saved=await DB.fetchTasks(date);
+    if(saved&&saved.length>0){
+      // 日付ズレ修正: DELタスクの予約lendDateがこの日と合わないものを除去
+      const fixed=saved.filter(t=>{
+        if(!t.reservationId||t.manual)return true;
+        const r=reservations.find(x=>x.id===t.reservationId);
+        if(!r)return true;
+        if(t.type==="DEL"&&!sD(r.lendDate,date))return false;
+        if(t.type==="COL"&&!sD(r.returnDate,date))return false;
+        return true;
+      });
+      // 不足予約を追加
+      const gen=generateTasks(reservations,date,fleetRef.current,vehicles);
+      const existIds=new Set(fixed.filter(t=>t.reservationId).map(t=>t.reservationId+":"+t.type));
+      gen.forEach(g=>{if(g.reservationId&&!existIds.has(g.reservationId+":"+g.type))fixed.push(g);});
+      if(fixed.length!==saved.length||fixed.some((t,i)=>t._id!==saved[i]?._id)){
+        DB.upsertTasks(fixed,date);
       }
+      setTasks(fixed);return;
     }
+    // 2. DBにタスクなし→自動生成
     const gen=generateTasks(reservations,date,fleetRef.current,vehicles);
     setTasks(gen);
-    if(SB_ENABLED&&gen.length)DB.upsertTasks(gen,date);
+    if(gen.length)DB.upsertTasks(gen,date);
   },[reservations,vehicles]);
-  useEffect(()=>{loadTasks(selDate,false);},[selDate]);
-  // 予約データ変更時: DBタスクが無い日のみ再生成（CSVインポート直後用）
-  const prevResLenRef=React.useRef(0);
-  useEffect(()=>{
-    if(!reservations.length)return;
-    // 予約数が変わった時だけ（Realtime個別更新では発火しない）
-    if(reservations.length===prevResLenRef.current)return;
-    prevResLenRef.current=reservations.length;
-    loadedDateRef.current=null; // 強制リロード許可
-    loadTasks(selDate,true);
-  },[reservations.length,selDate]);
-  // Realtimeでタスク更新を受信（他端末の変更のみ反映）
+  useEffect(()=>{loadTasks(selDate);},[selDate]);
+  // Realtimeでタスク更新を受信（他端末の変更を反映）
   useEffect(()=>{
     if(!sb)return;
+    let debounce=null;
     const ch=sb.channel("tasks-"+selDate)
-      .on("postgres_changes",{event:"*",schema:"public",table:"tasks",filter:"date=eq."+selDate},async()=>{
-        if(selfUpdateRef.current){selfUpdateRef.current=false;return;} // 自分の変更は無視
-        const fresh=await DB.fetchTasks(selDate);
-        if(fresh&&fresh.length)setTasks(fresh);
+      .on("postgres_changes",{event:"*",schema:"public",table:"tasks",filter:"date=eq."+selDate},()=>{
+        if(selfUpdateRef.current){selfUpdateRef.current=false;return;}
+        clearTimeout(debounce);
+        debounce=setTimeout(async()=>{
+          const fresh=await DB.fetchTasks(selDate);
+          if(fresh&&fresh.length)setTasks(fresh);
+        },500);
       }).subscribe();
-    return()=>{sb.removeChannel(ch);};
+    return()=>{clearTimeout(debounce);sb.removeChannel(ch);};
   },[selDate]);
-  const upd=(id,t)=>{selfUpdateRef.current=true;setTasks(ts=>ts.map(x=>x._id===id?t:x));DB.updateTask(t,selDate);};
+  // タブ復帰・画面復帰時にDBから最新データ再取得
+  useEffect(()=>{
+    const onVis=()=>{if(document.visibilityState==="visible")loadTasks(selDate);};
+    document.addEventListener("visibilitychange",onVis);
+    return()=>document.removeEventListener("visibilitychange",onVis);
+  },[selDate,loadTasks]);
+  const upd=(id,t)=>{selfUpdateRef.current=true;setTasks(ts=>{const next=ts.map(x=>x._id===id?t:x);DB._lsSave(next,selDate);return next;});DB.updateTask(t,selDate);};
   const confirmUpd=(id,t,label)=>{if(!window.confirm(`${label}\n本当に変更しますか？`))return;upd(id,t);};
   const add=(t)=>{selfUpdateRef.current=true;setTasks(ts=>{const next=[...ts,t].sort((a,b)=>(a.time||"").localeCompare(b.time||""));DB.upsertTasks(next,selDate);return next;});};
   const TIME_OPTS=useMemo(()=>{const opts=[""];for(let h=6;h<=22;h++)for(let m=0;m<60;m+=30){if(h===22&&m>0)break;opts.push(`${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`);}return opts;},[]);
