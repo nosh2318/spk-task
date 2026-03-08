@@ -1494,6 +1494,320 @@ function AddTaskForm({onAdd,onClose,activeMembers,vehicles}){
 }
 
 /* ==========================================
+   📊 ダッシュボード
+   ========================================== */
+function Dashboard({data,fleet,vehicles}){
+  // 月選択
+  const allMonths=useMemo(()=>{
+    const ms=new Set();
+    data.forEach(r=>{if(r.lendDate)ms.add(toYM(r.lendDate));if(r.returnDate)ms.add(toYM(r.returnDate));});
+    return[...ms].sort();
+  },[data]);
+  const curYM=toYM(new Date());
+  const[selYM,setSelYM]=useState(curYM);
+  const prevYM=ymOff(selYM,-1);
+
+  // 対象月のデータ抽出（貸出日が選択月に含まれる予約）
+  const monthData=useMemo(()=>data.filter(r=>r.lendDate&&toYM(r.lendDate)===selYM),[data,selYM]);
+  const prevMonthData=useMemo(()=>data.filter(r=>r.lendDate&&toYM(r.lendDate)===prevYM),[data,prevYM]);
+
+  // === KPI計算 ===
+  // 売上
+  const totalRevenue=useMemo(()=>monthData.reduce((s,r)=>s+(r.price||0),0),[monthData]);
+  const prevRevenue=useMemo(()=>prevMonthData.reduce((s,r)=>s+(r.price||0),0),[prevMonthData]);
+  const revDiff=prevRevenue>0?((totalRevenue-prevRevenue)/prevRevenue*100):0;
+
+  // 予約件数
+  const totalCount=monthData.length;
+  const prevCount=prevMonthData.length;
+
+  // 平均単価
+  const avgPrice=totalCount>0?Math.round(totalRevenue/totalCount):0;
+  const prevAvgPrice=prevCount>0?Math.round(prevRevenue/prevCount):0;
+
+  // OTA別売上
+  const otaStats=useMemo(()=>{
+    const m={};
+    monthData.forEach(r=>{const k=r.ota||"?";if(!m[k])m[k]={count:0,revenue:0};m[k].count++;m[k].revenue+=(r.price||0);});
+    return Object.entries(m).sort((a,b)=>b[1].revenue-a[1].revenue);
+  },[monthData]);
+
+  // 車両別売上（fleet配車コードで集計）
+  const vehStats=useMemo(()=>{
+    const m={};
+    monthData.forEach(r=>{
+      const vc=fleet[r.id]||"未配車";
+      if(!m[vc])m[vc]={count:0,revenue:0,days:0};
+      m[vc].count++;m[vc].revenue+=(r.price||0);
+      // レンタル日数計算
+      if(r.lendDate&&r.returnDate){
+        const ld=new Date(r.lendDate+"T00:00:00"),rd=new Date(r.returnDate+"T00:00:00");
+        const diff=Math.max(1,Math.ceil((rd-ld)/(1000*60*60*24)));
+        m[vc].days+=diff;
+      }
+    });
+    return Object.entries(m).sort((a,b)=>b[1].revenue-a[1].revenue);
+  },[monthData,fleet]);
+
+  // 稼働率（月内の各車両の稼働日数 / 月の日数）
+  const daysInMo=daysInMonth(selYM);
+  const activeVehicles=vehicles.length||8;
+  const totalVehDays=activeVehicles*daysInMo; // 全車両×月日数
+  const usedDays=useMemo(()=>{
+    let total=0;
+    // 各予約の配車車両の稼働日数を集計（重複は車両別にSetで管理）
+    const vehDayMap={};
+    data.forEach(r=>{
+      if(!r.lendDate||!r.returnDate)return;
+      const vc=fleet[r.id];if(!vc)return;
+      const ld=new Date(r.lendDate+"T00:00:00"),rd=new Date(r.returnDate+"T00:00:00");
+      if(!vehDayMap[vc])vehDayMap[vc]=new Set();
+      for(let d=new Date(ld);d<=rd;d.setDate(d.getDate()+1)){
+        const ds=toLD(d);
+        if(toYM(ds)===selYM)vehDayMap[vc].add(ds);
+      }
+    });
+    Object.values(vehDayMap).forEach(s=>total+=s.size);
+    return total;
+  },[data,fleet,selYM]);
+  const utilRate=totalVehDays>0?Math.round(usedDays/totalVehDays*100):0;
+  // 前月稼働率
+  const prevDaysInMo=daysInMonth(prevYM);
+  const prevTotalVehDays=activeVehicles*prevDaysInMo;
+  const prevUsedDays=useMemo(()=>{
+    let total=0;const vehDayMap={};
+    data.forEach(r=>{
+      if(!r.lendDate||!r.returnDate)return;
+      const vc=fleet[r.id];if(!vc)return;
+      const ld=new Date(r.lendDate+"T00:00:00"),rd=new Date(r.returnDate+"T00:00:00");
+      if(!vehDayMap[vc])vehDayMap[vc]=new Set();
+      for(let d=new Date(ld);d<=rd;d.setDate(d.getDate()+1)){
+        const ds=toLD(d);
+        if(toYM(ds)===prevYM)vehDayMap[vc].add(ds);
+      }
+    });
+    Object.values(vehDayMap).forEach(s=>total+=s.size);
+    return total;
+  },[data,fleet,prevYM]);
+  const prevUtilRate=prevTotalVehDays>0?Math.round(prevUsedDays/prevTotalVehDays*100):0;
+
+  // 日別売上（棒グラフ用）
+  const dailyRevenue=useMemo(()=>{
+    const m={};
+    for(let d=1;d<=daysInMo;d++){
+      const ds=selYM+"-"+String(d).padStart(2,"0");
+      m[ds]=0;
+    }
+    monthData.forEach(r=>{
+      if(!r.lendDate||!r.price)return;
+      const ds=r.lendDate;if(m[ds]!==undefined)m[ds]+=r.price;
+    });
+    return Object.entries(m).map(([d,v])=>({day:parseInt(d.split("-")[2]),value:v}));
+  },[monthData,selYM,daysInMo]);
+  const maxDaily=Math.max(1,...dailyRevenue.map(d=>d.value));
+
+  // 月次推移データ（最大12ヶ月）
+  const monthlyTrend=useMemo(()=>{
+    const months=[];
+    for(let i=11;i>=0;i--){const ym=ymOff(curYM,-i);months.push(ym);}
+    return months.map(ym=>{
+      const md=data.filter(r=>r.lendDate&&toYM(r.lendDate)===ym);
+      return{ym,label:(parseInt(ym.split("-")[1]))+"月",revenue:md.reduce((s,r)=>s+(r.price||0),0),count:md.length};
+    });
+  },[data,curYM]);
+  const maxMonthlyRev=Math.max(1,...monthlyTrend.map(m=>m.revenue));
+
+  // 車種別稼働率
+  const vehUtilDetail=useMemo(()=>{
+    const vehDayMap={};
+    data.forEach(r=>{
+      if(!r.lendDate||!r.returnDate)return;
+      const vc=fleet[r.id];if(!vc)return;
+      if(!vehDayMap[vc])vehDayMap[vc]=new Set();
+      const ld=new Date(r.lendDate+"T00:00:00"),rd=new Date(r.returnDate+"T00:00:00");
+      for(let d=new Date(ld);d<=rd;d.setDate(d.getDate()+1)){
+        const ds=toLD(d);if(toYM(ds)===selYM)vehDayMap[vc].add(ds);
+      }
+    });
+    return vehicles.map(v=>{
+      const days=(vehDayMap[v.code]||new Set()).size;
+      return{code:v.code,name:v.name,no:v.no,days,rate:Math.round(days/daysInMo*100)};
+    }).sort((a,b)=>b.rate-a.rate);
+  },[data,fleet,vehicles,selYM,daysInMo]);
+
+  // フォーマットヘルパー
+  const fmtY=n=>{if(n>=10000)return(n/10000).toFixed(n>=100000?0:1)+"万";return n.toLocaleString();};
+  const diffBadge=(cur,prev,unit="%")=>{
+    const d=cur-prev;
+    if(d===0)return <span style={{fontSize:9,color:"#94a3b8"}}>±0{unit}</span>;
+    return <span style={{fontSize:9,fontWeight:700,color:d>0?"#059669":"#dc2626"}}>{d>0?"▲":"▼"}{Math.abs(d).toFixed(unit==="%"?1:0)}{unit}</span>;
+  };
+  const cardS={background:"#fff",borderRadius:14,padding:14,border:"1px solid #e2e8f0",marginBottom:10,boxShadow:"0 1px 3px rgba(0,0,0,.05)"};
+  const OTA_C={S:"#0ea5e9",J:"#ec4899",R:"#ef4444",A:"#22c55e",O:"#6366f1",RC:"#f97316"};
+
+  return <div style={{maxWidth:640,margin:"0 auto"}}>
+    {/* 月選択 */}
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+      <button onClick={()=>setSelYM(ymOff(selYM,-1))} className="btn-ghost" style={{padding:"4px 10px",fontSize:12}}>◀</button>
+      <div style={{textAlign:"center"}}>
+        <div style={{fontSize:18,fontWeight:900,color:"#1e293b"}}>{ymLabel(selYM)}</div>
+        <div style={{fontSize:10,color:"#94a3b8"}}>ダッシュボード</div>
+      </div>
+      <button onClick={()=>{if(selYM<curYM)setSelYM(ymOff(selYM,1));}} className="btn-ghost" style={{padding:"4px 10px",fontSize:12,opacity:selYM>=curYM?0.3:1}}>▶</button>
+    </div>
+
+    {/* KPIカード */}
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+      <div style={{...cardS,background:"linear-gradient(135deg,#eff6ff,#dbeafe)"}}>
+        <div style={{fontSize:10,color:"#2563eb",fontWeight:600,marginBottom:4}}>💰 月間売上</div>
+        <div style={{fontSize:22,fontWeight:900,color:"#1e40af"}}>¥{fmtY(totalRevenue)}</div>
+        <div style={{marginTop:2}}>{diffBadge(totalRevenue,prevRevenue," 円")}<span style={{fontSize:8,color:"#94a3b8",marginLeft:4}}>vs 前月</span></div>
+      </div>
+      <div style={{...cardS,background:"linear-gradient(135deg,#ecfdf5,#d1fae5)"}}>
+        <div style={{fontSize:10,color:"#059669",fontWeight:600,marginBottom:4}}>📋 予約件数</div>
+        <div style={{fontSize:22,fontWeight:900,color:"#065f46"}}>{totalCount}<span style={{fontSize:12}}>件</span></div>
+        <div style={{marginTop:2}}>{diffBadge(totalCount,prevCount," 件")}<span style={{fontSize:8,color:"#94a3b8",marginLeft:4}}>vs 前月</span></div>
+      </div>
+      <div style={{...cardS,background:"linear-gradient(135deg,#fefce8,#fef9c3)"}}>
+        <div style={{fontSize:10,color:"#ca8a04",fontWeight:600,marginBottom:4}}>💵 平均単価</div>
+        <div style={{fontSize:22,fontWeight:900,color:"#854d0e"}}>¥{fmtY(avgPrice)}</div>
+        <div style={{marginTop:2}}>{diffBadge(avgPrice,prevAvgPrice," 円")}<span style={{fontSize:8,color:"#94a3b8",marginLeft:4}}>vs 前月</span></div>
+      </div>
+      <div style={{...cardS,background:"linear-gradient(135deg,#faf5ff,#ede9fe)"}}>
+        <div style={{fontSize:10,color:"#7c3aed",fontWeight:600,marginBottom:4}}>🚗 稼働率</div>
+        <div style={{fontSize:22,fontWeight:900,color:"#5b21b6"}}>{utilRate}<span style={{fontSize:12}}>%</span></div>
+        <div style={{marginTop:2}}>{diffBadge(utilRate,prevUtilRate)}<span style={{fontSize:8,color:"#94a3b8",marginLeft:4}}>vs 前月</span></div>
+      </div>
+    </div>
+
+    {/* 日別売上グラフ */}
+    <div style={cardS}>
+      <div style={{fontSize:12,fontWeight:800,color:"#1e293b",marginBottom:10}}>📊 日別売上</div>
+      <div style={{display:"flex",alignItems:"flex-end",gap:1,height:100}}>
+        {dailyRevenue.map((d,i)=>{
+          const h=maxDaily>0?Math.max(2,d.value/maxDaily*90):2;
+          const isToday=selYM===curYM&&d.day===new Date().getDate();
+          return <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:1}}>
+            <div style={{width:"100%",height:h,background:isToday?"#2563eb":d.value>0?"#93c5fd":"#e2e8f0",borderRadius:"2px 2px 0 0",transition:"height .3s"}} title={d.day+"日: ¥"+d.value.toLocaleString()}></div>
+            {(d.day===1||d.day===10||d.day===20||d.day===daysInMo)&&<div style={{fontSize:7,color:"#94a3b8"}}>{d.day}</div>}
+          </div>;
+        })}
+      </div>
+    </div>
+
+    {/* 月次推移 */}
+    <div style={cardS}>
+      <div style={{fontSize:12,fontWeight:800,color:"#1e293b",marginBottom:10}}>📈 月次売上推移</div>
+      <div style={{display:"flex",alignItems:"flex-end",gap:3,height:100}}>
+        {monthlyTrend.map((m,i)=>{
+          const h=maxMonthlyRev>0?Math.max(4,m.revenue/maxMonthlyRev*85):4;
+          const isCur=m.ym===selYM;
+          return <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+            {m.revenue>0&&<div style={{fontSize:7,color:isCur?"#1e40af":"#94a3b8",fontWeight:isCur?700:400}}>{fmtY(m.revenue)}</div>}
+            <div style={{width:"100%",height:h,background:isCur?"#2563eb":"#bfdbfe",borderRadius:3,transition:"height .3s"}}></div>
+            <div style={{fontSize:7,color:isCur?"#1e40af":"#94a3b8",fontWeight:isCur?700:400}}>{m.label}</div>
+          </div>;
+        })}
+      </div>
+    </div>
+
+    {/* OTA別売上 */}
+    <div style={cardS}>
+      <div style={{fontSize:12,fontWeight:800,color:"#1e293b",marginBottom:10}}>🏢 OTA別売上</div>
+      {otaStats.length===0&&<div style={{textAlign:"center",fontSize:11,color:"#94a3b8",padding:12}}>データなし</div>}
+      {otaStats.map(([ota,st])=>{
+        const pct=totalRevenue>0?Math.round(st.revenue/totalRevenue*100):0;
+        const c=OTA_C[ota]||"#64748b";
+        return <div key={ota} style={{marginBottom:8}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:3}}>
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              <span style={{display:"inline-block",padding:"1px 8px",borderRadius:6,fontSize:10,fontWeight:700,background:c+"18",color:c}}>{ota}</span>
+              <span style={{fontSize:10,color:"#64748b"}}>{st.count}件</span>
+            </div>
+            <div style={{fontSize:12,fontWeight:700,color:"#1e293b"}}>¥{st.revenue.toLocaleString()}<span style={{fontSize:9,color:"#94a3b8",marginLeft:4}}>{pct}%</span></div>
+          </div>
+          <div style={{height:6,background:"#f1f5f9",borderRadius:3,overflow:"hidden"}}>
+            <div style={{height:"100%",width:pct+"%",background:c,borderRadius:3,transition:"width .5s"}}></div>
+          </div>
+        </div>;
+      })}
+    </div>
+
+    {/* 車両別売上 */}
+    <div style={cardS}>
+      <div style={{fontSize:12,fontWeight:800,color:"#1e293b",marginBottom:10}}>🚗 車両別売上</div>
+      {vehStats.length===0&&<div style={{textAlign:"center",fontSize:11,color:"#94a3b8",padding:12}}>データなし</div>}
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+          <thead><tr style={{borderBottom:"2px solid #e2e8f0"}}>
+            <th style={{textAlign:"left",padding:"4px 6px",fontSize:10,color:"#64748b",fontWeight:600}}>車両</th>
+            <th style={{textAlign:"right",padding:"4px 6px",fontSize:10,color:"#64748b",fontWeight:600}}>件数</th>
+            <th style={{textAlign:"right",padding:"4px 6px",fontSize:10,color:"#64748b",fontWeight:600}}>日数</th>
+            <th style={{textAlign:"right",padding:"4px 6px",fontSize:10,color:"#64748b",fontWeight:600}}>売上</th>
+            <th style={{textAlign:"right",padding:"4px 6px",fontSize:10,color:"#64748b",fontWeight:600}}>構成比</th>
+          </tr></thead>
+          <tbody>
+            {vehStats.map(([vc,st])=>{
+              const pct=totalRevenue>0?Math.round(st.revenue/totalRevenue*100):0;
+              const veh=vehicles.find(v=>v.code===vc);
+              const c=V_COLORS[vc]||"#64748b";
+              return <tr key={vc} style={{borderBottom:"1px solid #f1f5f9"}}>
+                <td style={{padding:"6px",display:"flex",alignItems:"center",gap:4}}>
+                  <span style={{width:8,height:8,borderRadius:"50%",background:c,flexShrink:0}}></span>
+                  <span style={{fontWeight:700}}>{vc}</span>
+                  {veh&&<span style={{fontSize:9,color:"#94a3b8"}}>{veh.no}</span>}
+                </td>
+                <td style={{textAlign:"right",padding:"6px"}}>{st.count}</td>
+                <td style={{textAlign:"right",padding:"6px"}}>{st.days}日</td>
+                <td style={{textAlign:"right",padding:"6px",fontWeight:700,color:"#1e293b"}}>¥{st.revenue.toLocaleString()}</td>
+                <td style={{textAlign:"right",padding:"6px"}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:4}}>
+                    <div style={{width:40,height:5,background:"#f1f5f9",borderRadius:3,overflow:"hidden"}}><div style={{height:"100%",width:pct+"%",background:c,borderRadius:3}}></div></div>
+                    <span style={{fontSize:9,color:"#64748b",minWidth:24}}>{pct}%</span>
+                  </div>
+                </td>
+              </tr>;
+            })}
+            <tr style={{borderTop:"2px solid #e2e8f0",fontWeight:800}}>
+              <td style={{padding:"6px"}}>合計</td>
+              <td style={{textAlign:"right",padding:"6px"}}>{totalCount}</td>
+              <td style={{textAlign:"right",padding:"6px"}}></td>
+              <td style={{textAlign:"right",padding:"6px",color:"#1e40af"}}>¥{totalRevenue.toLocaleString()}</td>
+              <td style={{textAlign:"right",padding:"6px"}}>100%</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    {/* 車両別稼働率 */}
+    <div style={cardS}>
+      <div style={{fontSize:12,fontWeight:800,color:"#1e293b",marginBottom:10}}>📅 車両別稼働率（{ymLabel(selYM)}・{daysInMo}日間）</div>
+      {vehUtilDetail.map(v=>{
+        const c=V_COLORS[v.code]||"#64748b";
+        return <div key={v.code} style={{marginBottom:6}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:2}}>
+            <div style={{display:"flex",alignItems:"center",gap:4}}>
+              <span style={{width:8,height:8,borderRadius:"50%",background:c,flexShrink:0}}></span>
+              <span style={{fontSize:11,fontWeight:700}}>{v.code}</span>
+              <span style={{fontSize:9,color:"#94a3b8"}}>{v.name} ({v.no})</span>
+            </div>
+            <div style={{fontSize:11}}><span style={{fontWeight:700,color:v.rate>=70?"#059669":v.rate>=40?"#d97706":"#dc2626"}}>{v.rate}%</span><span style={{fontSize:9,color:"#94a3b8",marginLeft:4}}>{v.days}/{daysInMo}日</span></div>
+          </div>
+          <div style={{height:6,background:"#f1f5f9",borderRadius:3,overflow:"hidden"}}>
+            <div style={{height:"100%",width:v.rate+"%",background:v.rate>=70?c:v.rate>=40?"#fbbf24":"#fca5a5",borderRadius:3,transition:"width .5s"}}></div>
+          </div>
+        </div>;
+      })}
+      <div style={{marginTop:8,padding:"6px 10px",background:"#f8fafc",borderRadius:8,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <span style={{fontSize:11,fontWeight:700,color:"#1e293b"}}>全体稼働率</span>
+        <span style={{fontSize:14,fontWeight:900,color:utilRate>=70?"#059669":utilRate>=40?"#d97706":"#dc2626"}}>{utilRate}%</span>
+      </div>
+    </div>
+  </div>;
+}
+
+/* ==========================================
    🅿️ 駐車場管理
    ========================================== */
 const PARKING_DEFAULT_CARS = [
@@ -2307,7 +2621,7 @@ function App(){
   },[data]);
 
   const oc=useMemo(()=>{const c={};data.forEach(t=>{c[t.ota]=(c[t.ota]||0)+1;});return c;},[data]);
-  const navItems=[{id:"import",ico:"📁",l:"CSV"},{id:"staff",ico:"👥",l:"スタッフ"},{id:"shift",ico:"📅",l:"出勤簿"},{id:"fleet",ico:"🚗",l:"配車"},{id:"vehicle",ico:"🔧",l:"車両"},{id:"parking",ico:"🅿️",l:"駐車場"},{id:"data",ico:"📊",l:"データ"}];
+  const navItems=[{id:"import",ico:"📁",l:"CSV"},{id:"staff",ico:"👥",l:"スタッフ"},{id:"shift",ico:"📅",l:"出勤簿"},{id:"fleet",ico:"🚗",l:"配車"},{id:"vehicle",ico:"🔧",l:"車両"},{id:"parking",ico:"🅿️",l:"駐車場"},{id:"dashboard",ico:"📊",l:"売上"},{id:"data",ico:"📋",l:"データ"}];
 
   if(!dbLoaded)return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#f3f4f6"}}><div style={{textAlign:"center"}}><div style={{width:48,height:48,border:"4px solid #e5e7eb",borderTopColor:"#2563eb",borderRadius:"50%",animation:"spin 1s linear infinite",margin:"0 auto 12px"}}></div><p style={{color:"#64748b",fontSize:13}}>データ読込中...</p></div></div>;
 
@@ -2339,6 +2653,7 @@ function App(){
           {tab==="fleet"&&<FleetTimeline data={data} fleet={fleet} onFleetChange={setFleetSync} today={today} maintenance={maintenance} onMaintenanceChange={setMaintenance} vehicles={vehicles} vehicleClasses={vehicleClasses} onAddReservation={addReservation} onBulkAddReservation={bulkAddReservation} onCancelReservation={cancelReservation} onReassignVehicle={reassignVehicle}/>}
           {tab==="vehicle"&&<VehicleManager vehicles={vehicles} onVehiclesChange={setVehiclesSync} vehicleClasses={vehicleClasses} onDeleteVehicle={(code)=>DB.deleteVehicle(code)}/>}
           {tab==="parking"&&<ParkingManager/>}
+          {tab==="dashboard"&&data.length>0&&<Dashboard data={data} fleet={fleet} vehicles={vehicles}/>}
           {tab==="data"&&data.length>0&&<DataTable data={data} sheetPlaces={sheetPlaces} onUpdatePlaces={saveSheetPlaces}/>}
         </div>
       </div>
