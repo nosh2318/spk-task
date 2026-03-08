@@ -147,6 +147,7 @@ const DB = {
   async fetchShifts(){if(!sb)return null;const{data}=await sb.from("shifts").select("*");const s={};(data||[]).forEach(r=>{if(!s[r.date])s[r.date]=[];s[r.date].push({name:r.staff_name,symbol:r.symbol,start:r.start_time,end:r.end_time,memo:r.memo});});return s;},
   async saveShift(date,staffName,shift){if(!sb)return;await sb.from("shifts").upsert({date,staff_name:staffName,symbol:shift.symbol||"",start_time:shift.start||"",end_time:shift.end||"",memo:shift.memo||""},{onConflict:"date,staff_name"});},
   async saveShiftsForDate(date,shifts){if(!sb)return;const rows=shifts.map(s=>({date,staff_name:s.name,symbol:s.symbol||"",start_time:s.start||"",end_time:s.end||"",memo:s.memo||""}));await sb.from("shifts").upsert(rows,{onConflict:"date,staff_name"});},
+  async deleteShift(date,staffName){if(!sb)return;const{error}=await sb.from("shifts").delete().eq("date",date).eq("staff_name",staffName);if(error)dbLog("deleteShift",false,error.message);else dbLog("deleteShift",true,date+"/"+staffName);},
   // --- メンテナンス ---
   async fetchMaintenance(){if(!sb)return[];const{data,error}=await sb.from("maintenance").select("*");if(error){dbLog("fetchMaint",false,error.message);return[];}dbLog("fetchMaint",true,(data||[]).length+"件");return(data||[]).map(m=>({id:m.id,vehicleCode:m.vehicle_code,startDate:m.start_date,endDate:m.end_date,label:m.label||""}));},
   async saveMaintenance(arr){if(!sb)return;const rows=arr.map(m=>({id:m.id,vehicle_code:m.vehicleCode,start_date:m.startDate,end_date:m.endDate,label:m.label||""}));if(rows.length){const{error}=await sb.from("maintenance").upsert(rows,{onConflict:"id"});if(error)dbLog("saveMaint",false,error.message);else dbLog("saveMaint",true,rows.length+"件");}},
@@ -609,7 +610,15 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
   const[selCells,setSelCells]=useState([]); // [{dateStr,name},...] 選択中セル群
   const[clipData,setClipData]=useState(null); // コピーしたシンボル配列 ["●","希",...]
   // Supabase同期付きシフト更新
-  const updateShifts=(next)=>{onShiftsChange(next);if(sbSaveShift){Object.entries(next).forEach(([date,arr])=>{if(arr!==shifts[date])arr.forEach(s=>sbSaveShift(date,s.name,s));});}};
+  const updateShifts=(next)=>{onShiftsChange(next);if(sbSaveShift){Object.entries(next).forEach(([date,arr])=>{if(arr!==shifts[date]){
+    // 新しい配列のスタッフ名セット
+    const newNames=new Set(arr.map(s=>s.name));
+    // 古い配列から消えたスタッフをDBから削除
+    const prev=shifts[date]||[];
+    prev.forEach(s=>{if(!newNames.has(s.name))DB.deleteShift(date,s.name);});
+    // 残りを保存
+    arr.forEach(s=>sbSaveShift(date,s.name,s));
+  }});}};
   const _onSC=updateShifts;
 
   // Cmd+C / Cmd+V キーボードハンドラ
@@ -662,7 +671,12 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
       const cur=getShift(dateStr);const idx=cur.findIndex(s=>s.name===name);
       if(idx>=0){
         const shift=cur[idx];const symIdx=SYMBOLS.indexOf(shift.symbol||"");const nextSym=symIdx>=0?SYMBOLS[(symIdx+1)%SYMBOLS.length]:"●";
-        const updated=[...cur];updated[idx]={...shift,symbol:nextSym};_onSC({...shifts,[dateStr]:updated});
+        if(nextSym===""){
+          // 空シンボル = シフト削除（レコードをDBからも消す）
+          _onSC({...shifts,[dateStr]:cur.filter(s=>s.name!==name)});
+        }else{
+          const updated=[...cur];updated[idx]={...shift,symbol:nextSym};_onSC({...shifts,[dateStr]:updated});
+        }
       }else{
         const newShift={name,type,symbol:"●",start:"09:00",end:"18:00"};_onSC({...shifts,[dateStr]:[...cur,newShift]});
       }
@@ -783,22 +797,23 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
         <tbody>
           {staff.map(s=>{
             const staffSymCounts={};let workDays=0;
+            const isP=s.type==="アルバイト";
             dates.forEach(ds=>{
               const dayShifts=getShift(ds);
               const sShift=dayShifts.find(sh=>sh.name===s.name);
               if(!sShift)return;
               if(sShift.symbol){
                 staffSymCounts[sShift.symbol]=(staffSymCounts[sShift.symbol]||0)+1;
-              }else if(sShift.start&&sShift.end){
+              }else if(isP&&sShift.start&&sShift.end){
+                // アルバイトのみ: シンボルなしでも時間があれば出勤カウント
                 workDays++;
               }
             });
             const symWork=staffSymCounts["●"]||0;
             const totalWork=symWork+workDays;
             const total=totalWork+(staffSymCounts["希"]||0)+(staffSymCounts["公"]||0)+(staffSymCounts["出"]||0);
-            const isPartTime=s.type==="アルバイト";
-            return <tr key={s.name} style={{background:isPartTime?"#fffbeb":"#fff",borderBottom:"1px solid #d1d5db"}}>
-              <td style={{padding:"2px 6px",border:"1px solid #d1d5db",fontWeight:600}}><span style={{fontSize:8,fontWeight:700,padding:"1px 4px",borderRadius:3,background:isPartTime?"#fef3c7":"#dbeafe",color:isPartTime?"#92400e":"#1d4ed8",marginRight:3}}>{isPartTime?"ア":"社"}</span>{s.name}</td>
+            return <tr key={s.name} style={{background:isP?"#fffbeb":"#fff",borderBottom:"1px solid #d1d5db"}}>
+              <td style={{padding:"2px 6px",border:"1px solid #d1d5db",fontWeight:600}}><span style={{fontSize:8,fontWeight:700,padding:"1px 4px",borderRadius:3,background:isP?"#fef3c7":"#dbeafe",color:isP?"#92400e":"#1d4ed8",marginRight:3}}>{isP?"ア":"社"}</span>{s.name}</td>
               <td style={{padding:"2px 6px",border:"1px solid #d1d5db",textAlign:"center",fontWeight:totalWork>0?700:400,color:totalWork>0?"#1d4ed8":"#94a3b8"}}>{totalWork}</td>
               <td style={{padding:"2px 6px",border:"1px solid #d1d5db",textAlign:"center"}}>{staffSymCounts["希"]||0}</td>
               <td style={{padding:"2px 6px",border:"1px solid #d1d5db",textAlign:"center"}}>{staffSymCounts["公"]||0}</td>
@@ -974,25 +989,26 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
   // 車両ごとの月別稼働率（表示期間の月の1日〜末日で計算）
   const utilRates=useMemo(()=>{
     const bd=new Date(baseDate+"T00:00:00");const y=bd.getFullYear(),m=bd.getMonth();
-    const dim=new Date(y,m+1,0).getDate(); // 月の日数
+    const dim=new Date(y,m+1,0).getDate();
     const rates={};
     vehicles.forEach(v=>{
-      let days=0;
-      // 予約による稼働日数
+      // ★ 日単位のSetで重複カウントを防止
+      const usedDays=new Set();
+      const ms=new Date(y,m,1),me=new Date(y,m,dim);
+      // 予約による稼働日
       data.forEach(r=>{if(fleet[r.id]!==v.code)return;
         const ld=new Date(norm(r.lendDate)+"T00:00:00"),rd=new Date(norm(r.returnDate)+"T00:00:00");
-        const ms=new Date(y,m,1),me=new Date(y,m,dim);
         const s=ld>ms?ld:ms;const e=rd<me?rd:me;
-        if(s<=e)days+=Math.round((e-s)/86400000)+1;
+        for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1)){usedDays.add(toLD(d));}
       });
-      // メンテナンスによる稼働日数
+      // メンテナンスによる稼働日
       (maintenance||[]).forEach(mt=>{if(mt.vehicleCode!==v.code)return;
         const ld=new Date(norm(mt.startDate)+"T00:00:00"),rd=new Date(norm(mt.endDate)+"T00:00:00");
-        const ms=new Date(y,m,1),me=new Date(y,m,dim);
         const s=ld>ms?ld:ms;const e=rd<me?rd:me;
-        if(s<=e)days+=Math.round((e-s)/86400000)+1;
+        for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1)){usedDays.add(toLD(d));}
       });
-      rates[v.code]={days:Math.min(days,dim),total:dim,pct:Math.min(Math.round(days/dim*100),100)};
+      const days=usedDays.size;
+      rates[v.code]={days,total:dim,pct:Math.min(Math.round(days/dim*100),100)};
     });
     return rates;
   },[data,fleet,vehicles,maintenance,baseDate]);
@@ -1212,7 +1228,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
       });
       // ★ 日付不整合タスクをDBからも削除（幽霊タスク防止）
       if(removed.length&&sb){
-        sb.from("tasks").delete().in("_id",removed).then(()=>dbLog("cleanStale",true,removed.length+"件削除")).catch(()=>{});
+        sb.from("tasks").delete().in("_id",removed).then(()=>dbLog("cleanStale",true,removed.length+"件削除")).catch(e=>dbLog("cleanStale",false,e.message));
       }
       // 不足予約を追加
       const gen=generateTasks(reservations,date,fleetRef.current,vehicles);
@@ -1230,15 +1246,21 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
         const vn=vehicles.find(v=>v.code===vc);
         return{...t,assignedVehicle:vc,plateNo:vn?vn.no:"",vehicle:vn?vn.type:t.vehicle};
       });
-      // ★ localStorageから_changedフラグ＋実際の変更値を復元
+      // ★ localStorageから_changedフラグ＋実際の変更値を復元 + リモート変更検出
+      const CHK_FIELDS_LOAD=['assignee','time','type','place','colPlace','done','memo','assignedVehicle','plateNo','vehicle','insurance'];
       fixedWithFleet.forEach(t=>{
         const ls=lsMap[t._id];
         if(!ls)return;
+        const ch={...(ls._changed||{})};
+        // DBの値とLS値が異なる＝他端末で変更された → ハイライト
+        CHK_FIELDS_LOAD.forEach(f=>{
+          if(t[f]!==undefined&&ls[f]!==undefined&&t[f]!==ls[f]&&!ch[f]){ch[f]=true;}
+        });
+        if(Object.keys(ch).length)t._changed=ch;
         if(ls._changed){
-          t._changed=ls._changed;
-          // 変更されたフィールドの値もlocalStorageから復元
+          // ローカル変更値はLS優先（保存中データ保持）
           Object.keys(ls._changed).forEach(f=>{
-            if(ls._changed[f]&&ls[f]!==undefined&&ls[f]!==null){t[f]=ls[f];}
+            if(ls._changed[f]&&ls[f]!==undefined&&ls[f]!==null&&f!=='_changed'&&f!=='opts'&&typeof ls[f]!=='object'){t[f]=ls[f];}
           });
         }
         // ★ 場所データ: LSにあってDBにない場合はLS値を採用
@@ -1270,16 +1292,25 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
           const lm={};if(lsD)lsD.forEach(x=>{lm[x._id]=x;});
           const fresh=await DB.fetchTasks(selDate);
           if(fresh&&fresh.length){
+            // ★ _changedフラグの同期: ローカル変更を保持 + リモート変更を検出
+            const CHK_FIELDS=['assignee','time','type','place','colPlace','done','memo','assignedVehicle','plateNo','vehicle','insurance'];
             fresh.forEach(t=>{
               const ls=lm[t._id];if(!ls)return;
+              const ch={...(ls._changed||{})};
+              // リモートで変更されたフィールドを検出してハイライト
+              CHK_FIELDS.forEach(f=>{
+                if(t[f]!==undefined&&ls[f]!==undefined&&t[f]!==ls[f]&&!ch[f]){ch[f]=true;}
+              });
+              t._changed=Object.keys(ch).length?ch:undefined;
+              // ローカル変更値を優先（保存中のデータ保持）
               if(ls._changed){
-                t._changed=ls._changed;
-                Object.keys(ls._changed).forEach(f=>{if(ls._changed[f]&&ls[f]!==undefined&&ls[f]!==null){t[f]=ls[f];}});
+                Object.keys(ls._changed).forEach(f=>{if(ls._changed[f]&&ls[f]!==undefined&&ls[f]!==null&&f!=='_changed'&&f!=='opts'&&typeof ls[f]!=='object'){t[f]=ls[f];}});
               }
               if(ls.place&&!t.place)t.place=ls.place;
               if(ls.colPlace&&!t.colPlace)t.colPlace=ls.colPlace;
             });
             setTasks(fresh);
+            DB._lsSave(fresh,selDate);
           }
         },500);
       }).subscribe();
@@ -1361,12 +1392,12 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
   const sortedTasks=useMemo(()=>{const arr=[...tasks];if(!sortKey)return arr;const dir=sortAsc?1:-1;arr.sort((a,b)=>{let va,vb;switch(sortKey){case"time":va=a.time||"99:99";vb=b.time||"99:99";break;case"type":va=a.type||"";vb=b.type||"";break;case"assignee":va=a.assignee||"zzz";vb=b.assignee||"zzz";break;case"name":va=a.name||"";vb=b.name||"";break;case"vehicle":va=a.assignedVehicle||"";vb=b.assignedVehicle||"";break;case"done":va=a.done?1:0;vb=b.done?1:0;break;default:va="";vb="";}if(typeof va==="number")return(va-vb)*dir;return va.localeCompare(vb,"ja")*dir;});return arr;},[tasks,sortKey,sortAsc]);
   const sortIcon=(key)=>sortKey===key?(sortAsc?"▲":"▼"):"";
   // 行移動
-  const moveRow=(id,dir)=>{selfUpdateRef.current=true;const base=sortKey?sortedTasks:tasks;const idx=base.findIndex(t=>t._id===id);const ni=idx+dir;if(ni<0||ni>=base.length)return;const arr=[...base];[arr[idx],arr[ni]]=[arr[ni],arr[idx]];setTasks(arr);setSortKey(null);DB.upsertTasks(arr,selDate);};
+  const moveRow=(id,dir)=>{selfUpdateRef.current=Date.now();const base=sortKey?sortedTasks:tasks;const idx=base.findIndex(t=>t._id===id);const ni=idx+dir;if(ni<0||ni>=base.length)return;const arr=[...base];[arr[idx],arr[ni]]=[arr[ni],arr[idx]];setTasks(arr);setSortKey(null);DB.upsertTasks(arr,selDate);};
 
   return <div className="op-fullscreen">
     <div className="op-header">
       <div className="flex items-center gap-2" style={{minWidth:0}}><button onClick={onClose} className="text-white text-lg font-bold px-2 hover:bg-white hover:bg-opacity-20 rounded">←</button><div><h4 className="font-bold text-white text-sm" style={{margin:0}}>OPシート</h4><span className="text-blue-200" style={{fontSize:10}}>{fmtFull(selDate)} / 出勤{staffCount}名</span></div></div>
-      <div className="flex items-center gap-2">{saveStatus==="saving"&&<span style={{fontSize:9,color:"#fbbf24",fontWeight:700}}>💾保存中...</span>}{saveStatus==="error"&&<span style={{fontSize:9,color:"#ef4444",fontWeight:700,cursor:"pointer"}} onClick={()=>{alert("DB保存エラーが発生しています。\nコンソールログを確認してください。\n\nローカルには保存されていますが、他の端末には反映されません。")}}>⚠️DB保存失敗</span>}{saveStatus==="ok"&&SB_ENABLED&&<span style={{fontSize:9,color:"#86efac"}}>✓同期済</span>}<span className="text-xs text-blue-200">{done}/{tasks.length}</span><div className="w-14 h-1.5 bg-blue-900 rounded-full overflow-hidden"><div className="h-full bg-green-400 rounded-full" style={{width:`${tasks.length?done/tasks.length*100:0}%`}}/></div><button onClick={()=>{const newTask={_id:uid(),type:"その他",time:"",name:"",people:0,place:"",vehicle:"",insurance:"",flight:"",reservationId:"",ota:"",tel:"",mail:"",done:false,assignee:"",memo:"",assignedVehicle:"",plateNo:"",insuranceChange:"",opts:{b:false,c:false,j:false,usb:false,parasol:false},yakkan:false,line:false,payment:false,returnDate:"",returnTime:"",returnType:"",colPlace:"",manual:true};setTasks(ts=>[...ts,newTask]);}} className="px-2 py-1 bg-white text-blue-700 rounded text-xs font-bold shadow-sm">＋</button><button onClick={updatePlaces} disabled={placeLoading} className="px-2 py-1 rounded text-xs font-bold shadow-sm" style={{background:placeLoading?"#94a3b8":"#fbbf24",color:"#78350f",whiteSpace:"nowrap"}}>{placeLoading?"取得中...":"📍場所更新"}</button></div>
+      <div className="flex items-center gap-2">{saveStatus==="saving"&&<span style={{fontSize:9,color:"#fbbf24",fontWeight:700}}>💾保存中...</span>}{saveStatus==="error"&&<span style={{fontSize:9,color:"#ef4444",fontWeight:700,cursor:"pointer"}} onClick={()=>{alert("DB保存エラーが発生しています。\nコンソールログを確認してください。\n\nローカルには保存されていますが、他の端末には反映されません。")}}>⚠️DB保存失敗</span>}{saveStatus==="ok"&&SB_ENABLED&&<span style={{fontSize:9,color:"#86efac"}}>✓同期済</span>}<span className="text-xs text-blue-200">{done}/{tasks.length}</span><div className="w-14 h-1.5 bg-blue-900 rounded-full overflow-hidden"><div className="h-full bg-green-400 rounded-full" style={{width:`${tasks.length?done/tasks.length*100:0}%`}}/></div><button onClick={()=>{const newTask={_id:uid(),type:"その他",time:"",name:"",people:0,place:"",vehicle:"",insurance:"",flight:"",reservationId:"",ota:"",tel:"",mail:"",done:false,assignee:"",memo:"",assignedVehicle:"",plateNo:"",insuranceChange:"",opts:{b:false,c:false,j:false,usb:false,parasol:false},yakkan:false,line:false,payment:false,returnDate:"",returnTime:"",returnType:"",colPlace:"",manual:true};setTasks(ts=>[...ts,newTask]);}} className="px-2 py-1 bg-white text-blue-700 rounded text-xs font-bold shadow-sm">＋</button><button onClick={updatePlaces} disabled={placeLoading} className="px-2 py-1 rounded text-xs font-bold shadow-sm" style={{background:placeLoading?"#94a3b8":"#fbbf24",color:"#78350f",whiteSpace:"nowrap"}}>{placeLoading?"取得中...":"📍場所更新"}</button><button onClick={()=>loadTasks(selDate,true)} className="px-2 py-1 rounded text-xs font-bold shadow-sm" style={{background:"#e0f2fe",color:"#0369a1",whiteSpace:"nowrap"}}>🔄更新</button></div>
     </div>
     <div style={{padding:"4px 6px",background:"#fff",borderBottom:"1px solid #e5e7eb",overflowX:"auto",display:"flex",gap:3,flexShrink:0}}>
       {dayButtons.map(db=>{const sel=dayOff===db.i;const dt=new Date(db.d);return <button key={db.i} onClick={()=>setDayOff(db.i)} style={{flexShrink:0,padding:"3px 8px",borderRadius:6,fontSize:10,fontWeight:sel?700:500,background:sel?"#2563eb":"#f1f5f9",color:sel?"#fff":"#374151",border:"none",cursor:"pointer",minWidth:48,textAlign:"center"}}><div style={{fontWeight:700}}>{db.i===0?"今日":db.i===1?"明日":`${dt.getMonth()+1}/${dt.getDate()}`}</div><div style={{fontSize:8,opacity:.7}}>{WK[dt.getDay()]}</div>{db.tc>0&&<div style={{fontSize:7,background:sel?"rgba(255,255,255,.25)":"#dbeafe",color:sel?"#fff":"#1d4ed8",borderRadius:6,padding:"0 3px"}}>{db.tc}件</div>}</button>;})}
@@ -1390,8 +1421,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
             const liveOpts=resOptsDirect||storedOpts||t.opts||{};const rowBg=t.done?"#f9fafb":isWash?"#FFFDE7":t.manual?"#f0fdf4":ri%2===0?"#fff":"#fafbfc";
             const ch=t._changed||{};
             const cellS=(i,field)=>({position:i<4?"sticky":"static",left:i===0?0:i===1?28:i===2?58:i===3?106:undefined,zIndex:i<4?2:0,background:field&&ch[field]?"#fefce8":rowBg,padding:"2px 2px",borderBottom:"1px solid #f1f5f9",borderRight:i===3?"2px solid #cbd5e1":"1px solid #f1f5f9",textAlign:i>=11&&i<=15?"center":i===6?"center":"left",opacity:t.done?0.4:1,verticalAlign:"middle"});
-            const delTask=()=>{if(!window.confirm("この行を削除しますか？"))return;setTasks(ts=>ts.filter(x=>x._id!==t._id));};
-            return <tr key={t._id}><td style={{...cellS(0),textAlign:"center",padding:0}}><div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:0}}><button onClick={()=>moveRow(t._id,-1)} style={{background:"none",border:"none",cursor:"pointer",fontSize:8,color:"#94a3b8",lineHeight:1,padding:0}}>▲</button><button onClick={()=>moveRow(t._id,1)} style={{background:"none",border:"none",cursor:"pointer",fontSize:8,color:"#94a3b8",lineHeight:1,padding:0}}>▼</button></div></td><td style={cellS(1)}>{t.manual?<button onClick={delTask} style={{background:"none",border:"none",cursor:"pointer",fontSize:11,color:"#ef4444",fontWeight:700}}>×</button>:<input type="checkbox" checked={t.done} onChange={e=>upd(t._id,mark({...t,done:e.target.checked},"done"))} style={{width:12,height:12,accentColor:tm.c}}/>}</td>
+            const delTask=async()=>{if(!window.confirm("この行を削除しますか？"))return;setTasks(ts=>{const next=ts.filter(x=>x._id!==t._id);DB._lsSave(next,selDate);return next;});if(sb){sb.from("tasks").delete().eq("_id",t._id).then(()=>dbLog("delRow",true,t._id)).catch(e=>dbLog("delRow",false,e.message));}};
+            return <tr key={t._id}><td style={{...cellS(0),textAlign:"center",padding:0}}><div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:0}}><button onClick={()=>moveRow(t._id,-1)} style={{background:"none",border:"none",cursor:"pointer",fontSize:8,color:"#94a3b8",lineHeight:1,padding:0}}>▲</button><button onClick={delTask} style={{background:"none",border:"none",cursor:"pointer",fontSize:9,color:"#ef4444",lineHeight:1,padding:0,fontWeight:700}}>×</button><button onClick={()=>moveRow(t._id,1)} style={{background:"none",border:"none",cursor:"pointer",fontSize:8,color:"#94a3b8",lineHeight:1,padding:0}}>▼</button></div></td><td style={cellS(1)}><input type="checkbox" checked={t.done} onChange={e=>upd(t._id,mark({...t,done:e.target.checked},"done"))} style={{width:12,height:12,accentColor:tm.c}}/></td>
               <td style={cellS(2,"assignee")}>{t._assigneeCustom?<input defaultValue={t.assignee||""} onBlur={e=>{const v=e.target.value.trim();if(!v){upd(t._id,mark({...t,_assigneeCustom:false,assignee:""},"assignee"));}else{upd(t._id,mark({...t,assignee:v,_assigneeCustom:false},"assignee"));}}} onKeyDown={e=>{if(e.key==="Enter"){e.target.blur();}}} autoFocus style={{border:"1px solid #3b82f6",background:"#eff6ff",fontSize:9,width:"100%",padding:"1px 3px",fontWeight:600,borderRadius:3,outline:"none"}} placeholder="名前を入力"/>:<select value={activeMembers.includes(t.assignee)?t.assignee:["乗り捨て","無人"].includes(t.assignee)?t.assignee:t.assignee?"__custom":""}  onChange={e=>{const v=e.target.value;if(v==="__other"){upd(t._id,mark({...t,_assigneeCustom:true,assignee:""},"assignee"));return;}if(v==="乗り捨て"||v==="無人"){upd(t._id,mark({...t,assignee:v,_assigneeCustom:false},"assignee"));return;}if(!window.confirm("担当を「"+(v||"未割当")+"」に変更\n本当に変更しますか？"))return;upd(t._id,mark({...t,assignee:v,_assigneeCustom:false},"assignee"));}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,color:t.assignee?"#111":"#ccc",fontWeight:600}}><option value="">-</option>{activeMembers.map(m=><option key={m}>{m}</option>)}<option value="乗り捨て">乗り捨て</option><option value="無人">無人</option><option value="__other">その他...</option>{t.assignee&&!activeMembers.includes(t.assignee)&&!["乗り捨て","無人"].includes(t.assignee)&&<option value="__custom">{t.assignee}</option>}</select>}</td>
               <td style={cellS(3,"time")}><select value={t.time||""} onChange={e=>{const v=e.target.value;confirmUpd(t._id,mark({...t,time:v},"time"),`時間を「${v||"未設定"}」に変更`);}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,fontWeight:700,color:ch.time?"#92400e":"#1e293b"}}>{TIME_OPTS.map(o=><option key={o} value={o}>{o||"-"}</option>)}{t.time&&!TIME_OPTS.includes(t.time)&&<option value={t.time}>{t.time}</option>}</select></td>
               <td style={{...cellS(4,"type"),fontWeight:700,color:tm.c,fontSize:10,padding:"1px"}}><select value={t.type||"DEL"} onChange={e=>{const v=e.target.value;confirmUpd(t._id,mark({...t,type:v},"type"),`内容を「${v}」に変更`);}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,fontWeight:700,color:tm.c}}>{CONTENT_OPTIONS.map(opt=><option key={opt} value={opt}>{opt}</option>)}</select></td>
@@ -1509,6 +1540,24 @@ function App(){
     })();
   },[]);
 
+  // --- 手動リロード（スマホ用） ---
+  const[reloading,setReloading]=useState(false);
+  const reloadAll=async()=>{
+    if(!SB_ENABLED||reloading)return;
+    setReloading(true);
+    try{
+      const[resDB,flDB,stDB,vhDB,shDB,mtDB]=await Promise.all([
+        DB.fetchReservations(),DB.fetchFleet(),DB.fetchStaff(),DB.fetchVehicles(),DB.fetchShifts(),DB.fetchMaintenance()
+      ]);
+      if(resDB.length)setData(resDB);
+      if(Object.keys(flDB).length)setFleet(flDB);
+      if(stDB&&stDB.length)setStaff(stDB);
+      if(vhDB&&vhDB.length)setVehicles(vhDB);
+      if(shDB)setShifts(shDB);
+      if(mtDB&&mtDB.length)setMaintenance(mtDB);
+    }catch(e){console.error("reload error:",e);}
+    setReloading(false);
+  };
   // --- タブ復帰時にDB再読み込み（Realtime未受信の変更を補完）---
   useEffect(()=>{
     if(!SB_ENABLED)return;
@@ -1719,6 +1768,7 @@ function App(){
       <div className="top-nav">
         {navItems.filter(n=>n.id==="import"||n.id==="vehicle"||n.id==="staff"||data.length>0).map(n=><button key={n.id} onClick={()=>setTab(n.id)} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
         {data.length>0&&<button onClick={()=>setShowOP(true)} style={{color:"#60a5fa"}}><span className="ico">📋</span>OP</button>}
+        {SB_ENABLED&&<button onClick={reloadAll} disabled={reloading} style={{background:"none",border:"none",cursor:reloading?"wait":"pointer",fontSize:14,padding:"2px 4px",opacity:reloading?0.5:1}}>{reloading?"⏳":"🔄"}</button>}
         {SB_ENABLED&&<SyncBadge connected={sbConnected} inline={true}/>}
       </div>
       <div style={{display:"flex",flex:1,overflow:"hidden"}}>
