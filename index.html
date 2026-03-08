@@ -506,8 +506,8 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
   const getShift=(date)=>shifts[date]||[];
   const regularStaff=staff.filter(s=>s.type==="正社員");const partTimeStaff=staff.filter(s=>s.type==="アルバイト");
   const[editTime,setEditTime]=useState(null);
-  const[selectedCell,setSelectedCell]=useState(null); // {dateStr,name} 選択中セル
-  const[clipSymbol,setClipSymbol]=useState(null); // Ctrl+Cでコピーしたシンボル
+  const[selCells,setSelCells]=useState([]); // [{dateStr,name},...] 選択中セル群
+  const[clipData,setClipData]=useState(null); // コピーしたシンボル配列 ["●","希",...]
   // Supabase同期付きシフト更新
   const updateShifts=(next)=>{onShiftsChange(next);if(sbSaveShift){Object.entries(next).forEach(([date,arr])=>{if(arr!==shifts[date])arr.forEach(s=>sbSaveShift(date,s.name,s));});}};
   const _onSC=updateShifts;
@@ -515,29 +515,46 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
   // Cmd+C / Cmd+V キーボードハンドラ
   React.useEffect(()=>{
     const handler=(e)=>{
-      if(!selectedCell)return;
       const isMeta=e.metaKey||e.ctrlKey;
-      if(isMeta&&e.key==="c"){
+      if(isMeta&&e.key==="c"&&selCells.length>0){
         e.preventDefault();
-        const cur=getShift(selectedCell.dateStr);const shift=cur.find(s=>s.name===selectedCell.name);
-        setClipSymbol(shift?shift.symbol||"":"");
+        // 選択セルのシンボルを日付順にコピー
+        const sorted=[...selCells].sort((a,b)=>a.dateStr.localeCompare(b.dateStr));
+        const syms=sorted.map(c=>{const sh=getShift(c.dateStr).find(s=>s.name===c.name);return sh?sh.symbol||"":"";});
+        setClipData({symbols:syms,name:sorted[0].name});
       }
-      if(isMeta&&e.key==="v"&&clipSymbol!==null){
+      if(isMeta&&e.key==="v"&&clipData&&selCells.length>0){
         e.preventDefault();
-        const cur=getShift(selectedCell.dateStr);const idx=cur.findIndex(s=>s.name===selectedCell.name);
-        if(idx>=0){const updated=[...cur];updated[idx]={...cur[idx],symbol:clipSymbol};_onSC({...shifts,[selectedCell.dateStr]:updated});}
-        else{const newShift={name:selectedCell.name,type:"正社員",symbol:clipSymbol,start:"09:00",end:"18:00"};_onSC({...shifts,[selectedCell.dateStr]:[...cur,newShift]});}
+        // 選択位置から右方向へペースト
+        const anchor=selCells[0];const startIdx=dates.indexOf(anchor.dateStr);
+        if(startIdx<0)return;
+        const next={...shifts};
+        clipData.symbols.forEach((sym,i)=>{
+          const ds=dates[startIdx+i];if(!ds)return;
+          const cur=next[ds]||[];const idx=cur.findIndex(s=>s.name===anchor.name);
+          if(idx>=0){const updated=[...cur];updated[idx]={...cur[idx],symbol:sym};next[ds]=updated;}
+          else{next[ds]=[...cur,{name:anchor.name,type:"正社員",symbol:sym,start:"09:00",end:"18:00"}];}
+        });
+        _onSC(next);
       }
-      if(e.key==="Escape"){setSelectedCell(null);}
+      if(e.key==="Escape"){setSelCells([]);}
     };
     window.addEventListener("keydown",handler);
     return()=>window.removeEventListener("keydown",handler);
-  },[selectedCell,clipSymbol,shifts]);
+  },[selCells,clipData,shifts,dates]);
 
-  const handleCellClick=(dateStr,name,type)=>{
+  const handleCellClick=(e,dateStr,name,type)=>{
     if(type==="正社員"){
-      // セル選択（Cmd+C/V用）
-      setSelectedCell({dateStr,name});
+      if(e.shiftKey&&selCells.length>0&&selCells[0].name===name){
+        // Shift+クリック: 同じスタッフ行で範囲選択
+        const anchor=selCells[0].dateStr;
+        const i1=dates.indexOf(anchor),i2=dates.indexOf(dateStr);
+        const lo=Math.min(i1,i2),hi=Math.max(i1,i2);
+        setSelCells(dates.slice(lo,hi+1).map(ds=>({dateStr:ds,name})));
+      }else{
+        // 通常クリック: 単一セル選択
+        setSelCells([{dateStr,name}]);
+      }
       return;
     }
     const cur=getShift(dateStr);const idx=cur.findIndex(s=>s.name===name);
@@ -557,6 +574,7 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
       const newShift={name,type:"正社員",symbol:"●",start:"09:00",end:"18:00"};_onSC({...shifts,[dateStr]:[...cur,newShift]});
     }
   };
+  const isCellSelected=(ds,name)=>selCells.some(c=>c.dateStr===ds&&c.name===name);
 
   const handleTimeChange=(dateStr,name,startTime,endTime)=>{
     const cur=getShift(dateStr);const idx=cur.findIndex(s=>s.name===name);
@@ -621,8 +639,8 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
         <button onClick={()=>setBulkMode(!bulkMode)} className="px-3 py-1 rounded-lg text-xs font-semibold border" style={{background:bulkMode?"#2563eb":"#fff",color:bulkMode?"#fff":"#374151"}}>{bulkMode?"閉じる":"一括設定"}</button>
       </div>
     </div>
-    {clipSymbol!==null&&<div className="px-4 py-1 border-b border-green-300 bg-green-50 flex items-center gap-2" style={{fontSize:10}}>
-      <span style={{color:"#166534"}}>📋 コピー中: <b>{clipSymbol||"(空白)"}</b> — セルを選択して ⌘V で貼り付け</span>
+    {clipData&&<div className="px-4 py-1 border-b border-green-300 bg-green-50 flex items-center gap-2" style={{fontSize:10}}>
+      <span style={{color:"#166534"}}>📋 コピー中: <b>{clipData.symbols.map(s=>s||"空").join(" | ")}</b>（{clipData.symbols.length}日分） — セル選択して ⌘V</span>
     </div>}
     {bulkMode&&<div className="px-4 py-3 border-b border-gray-200 bg-blue-50 flex items-center gap-3 flex-wrap">
       <div><label className="text-xs text-gray-600 block">スタッフ</label><select value={bulkName} onChange={e=>setBulkName(e.target.value)} className="input-s" style={{width:100}}>{staff.map(s=><option key={s.name}>{s.name}</option>)}</select></div>
@@ -638,9 +656,9 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
           </tr>
         </thead>
         <tbody>
-          {regularStaff.map(staff=><tr key={staff.name}><td className="shift-col" style={{position:"sticky",left:0,zIndex:2,width:60,minWidth:60,padding:"2px 4px",fontWeight:600,fontSize:9,background:"#fff",borderRight:"1px solid #999",borderBottom:"1px solid #d1d5db"}}>{staff.name}</td>{dates.map(ds=>{const shift=getShift(ds).find(s=>s.name===staff.name);const down=new Date(ds).getDay();const bgc=down===0?"#E0E0FF":down===6?"#FFE0E0":"#FFF";let cellBg=bgc;if(shift){if(shift.symbol==="●")cellBg="#D4EBFA";else if(shift.symbol==="希")cellBg="#FFF3CD";else if(shift.symbol==="公")cellBg="#E8E8E8";else if(shift.symbol==="出")cellBg="#D4EDDA";}const isSel=selectedCell&&selectedCell.dateStr===ds&&selectedCell.name===staff.name;return <td key={ds} onClick={()=>handleCellClick(ds,staff.name,"正社員")} onDoubleClick={()=>handleCellDblClick(ds,staff.name)} style={{width:44,minWidth:44,padding:"1px",textAlign:"center",fontSize:9,fontWeight:600,background:cellBg,borderRight:"1px solid #d1d5db",borderBottom:"1px solid #d1d5db",cursor:"pointer",outline:isSel?"2px solid #2563eb":"none",outlineOffset:isSel?"-2px":0}}>{shift?shift.symbol:""}</td>;})}</tr>)}
+          {regularStaff.map(staff=><tr key={staff.name}><td className="shift-col" style={{position:"sticky",left:0,zIndex:2,width:60,minWidth:60,padding:"2px 4px",fontWeight:600,fontSize:9,background:"#fff",borderRight:"1px solid #999",borderBottom:"1px solid #d1d5db"}}>{staff.name}</td>{dates.map(ds=>{const shift=getShift(ds).find(s=>s.name===staff.name);const down=new Date(ds).getDay();const bgc=down===0?"#E0E0FF":down===6?"#FFE0E0":"#FFF";let cellBg=bgc;if(shift){if(shift.symbol==="●")cellBg="#D4EBFA";else if(shift.symbol==="希")cellBg="#FFF3CD";else if(shift.symbol==="公")cellBg="#E8E8E8";else if(shift.symbol==="出")cellBg="#D4EDDA";}const isSel=isCellSelected(ds,staff.name);return <td key={ds} onClick={e=>handleCellClick(e,ds,staff.name,"正社員")} onDoubleClick={()=>handleCellDblClick(ds,staff.name)} style={{width:44,minWidth:44,padding:"1px",textAlign:"center",fontSize:9,fontWeight:600,background:isSel?"#bfdbfe":cellBg,borderRight:"1px solid #d1d5db",borderBottom:"1px solid #d1d5db",cursor:"pointer",outline:isSel?"2px solid #2563eb":"none",outlineOffset:isSel?"-2px":0}}>{shift?shift.symbol:""}</td>;})}</tr>)}
           {partTimeStaff.map(staff=><tr key={staff.name}><td className="shift-col" style={{position:"sticky",left:0,zIndex:2,width:60,minWidth:60,padding:"2px 4px",fontWeight:600,fontSize:9,background:"#fff",borderRight:"1px solid #999",borderBottom:"1px solid #d1d5db"}}>{staff.name}</td>{dates.map(ds=>{const shift=getShift(ds).find(s=>s.name===staff.name);const down=new Date(ds).getDay();const bgc=down===0?"#E0E0FF":down===6?"#FFE0E0":"#FFF";return <td key={ds} style={{width:44,minWidth:44,padding:"1px",textAlign:"center",fontSize:9,background:shift?"#FFF9E6":bgc,borderRight:"1px solid #d1d5db",borderBottom:"1px solid #d1d5db",cursor:"pointer",position:"relative"}}>
-            {shift?<div style={{display:"inline-block",cursor:"pointer"}} onClick={()=>setEditTime({dateStr:ds,name:staff.name,start:shift.start,end:shift.end})}>{shift.start}-{shift.end}</div>:<button onClick={()=>handleCellClick(ds,staff.name,"アルバイト")} style={{background:"none",border:"none",cursor:"pointer",fontSize:10,color:"#ccc"}}>+</button>}</td>;})}</tr>)}
+            {shift?<div style={{display:"inline-block",cursor:"pointer"}} onClick={()=>setEditTime({dateStr:ds,name:staff.name,start:shift.start,end:shift.end})}>{shift.start}-{shift.end}</div>:<button onClick={e=>handleCellClick(e,ds,staff.name,"アルバイト")} style={{background:"none",border:"none",cursor:"pointer",fontSize:10,color:"#ccc"}}>+</button>}</td>;})}</tr>)}
           <tr style={{fontWeight:700,background:"#D2B48C"}}>
             <td className="shift-col" style={{position:"sticky",left:0,zIndex:2,width:60,minWidth:60,padding:"2px 4px",fontSize:9,fontWeight:700,background:"#D2B48C",borderRight:"1px solid #999",borderBottom:"1px solid #999"}}>人員</td>
             {dates.map(ds=>{return <td key={ds} style={{width:44,minWidth:44,padding:"2px 1px",textAlign:"center",fontSize:9,fontWeight:700,background:"#D2B48C",borderRight:"1px solid #999",borderBottom:"1px solid #999"}}>{calcHeadcount(ds)}</td>;})}
