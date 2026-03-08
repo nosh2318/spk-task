@@ -203,8 +203,9 @@ const INIT_VEHICLES=[
 ];
 const V_COLORS={VEL:"#7c3aed",NRH:"#0284c7",DLC:"#0891b2",RKY:"#059669",CX3:"#16a34a",HRI:"#d97706",CX5:"#ea580c",SLO:"#db2777"};
 
-function fmtD(d){if(!d)return"";const dt=new Date(d);if(isNaN(dt))return d;const w=["日","月","火","水","木","金","土"];return`${dt.getMonth()+1}/${dt.getDate()}(${w[dt.getDay()]})`;}
-function fmtFull(d){if(!d)return"";const dt=new Date(d);if(isNaN(dt))return d;const w=["日","月","火","水","木","金","土"];return`${dt.getFullYear()}年${dt.getMonth()+1}月${dt.getDate()}日(${w[dt.getDay()]})`;}
+function toLD(dt){return dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");}
+function fmtD(d){if(!d)return"";const s=String(d);const dt=new Date(s.length===10?s+"T00:00:00":s);if(isNaN(dt))return d;const w=["日","月","火","水","木","金","土"];return`${dt.getMonth()+1}/${dt.getDate()}(${w[dt.getDay()]})`;}
+function fmtFull(d){if(!d)return"";const s=String(d);const dt=new Date(s.length===10?s+"T00:00:00":s);if(isNaN(dt))return d;const w=["日","月","火","水","木","金","土"];return`${dt.getFullYear()}年${dt.getMonth()+1}月${dt.getDate()}日(${w[dt.getDay()]})`;}
 function dOff(b,n){const d=new Date(b+"T00:00:00");d.setDate(d.getDate()+n);return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");}
 function sD(a,b){return(a||"").replace(/\//g,"-")===(b||"").replace(/\//g,"-");}
 function norm(d){return(d||"").replace(/\//g,"-");}
@@ -215,7 +216,7 @@ function checkVehicleConflict(targetVc,resId,data,fleet){
   const conflict=data.find(r=>r.id!==resId&&r.status!=="cancelled"&&fleet[r.id]===targetVc&&norm(r.lendDate)<=rd&&norm(r.returnDate)>=ld);
   return conflict||null;
 }
-function toYM(d){const dt=new Date(d);return`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}`;}
+function toYM(d){const s=String(d);const dt=new Date(s.length===10?s+"T00:00:00":s);return`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}`;}
 function daysInMonth(ym){const[y,m]=ym.split("-").map(Number);return new Date(y,m,0).getDate();}
 function ymLabel(ym){const[y,m]=ym.split("-").map(Number);return`${y}年${m}月`;}
 function ymOff(ym,n){const[y,m]=ym.split("-").map(Number);const d=new Date(y,m-1+n,1);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;}
@@ -505,12 +506,19 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
   const getShift=(date)=>shifts[date]||[];
   const regularStaff=staff.filter(s=>s.type==="正社員");const partTimeStaff=staff.filter(s=>s.type==="アルバイト");
   const[editTime,setEditTime]=useState(null);
+  const[copiedSymbol,setCopiedSymbol]=useState(null); // コピー&ペースト用
   // Supabase同期付きシフト更新
   const updateShifts=(next)=>{onShiftsChange(next);if(sbSaveShift){Object.entries(next).forEach(([date,arr])=>{if(arr!==shifts[date])arr.forEach(s=>sbSaveShift(date,s.name,s));});}};
   const _onSC=updateShifts;
 
   const handleCellClick=(dateStr,name,type)=>{
     const cur=getShift(dateStr);const idx=cur.findIndex(s=>s.name===name);
+    // ペーストモード（正社員のみ）
+    if(copiedSymbol!==null&&type==="正社員"){
+      if(idx>=0){const updated=[...cur];updated[idx]={...cur[idx],symbol:copiedSymbol};_onSC({...shifts,[dateStr]:updated});}
+      else{const newShift={name,type,symbol:copiedSymbol,start:"09:00",end:"18:00"};_onSC({...shifts,[dateStr]:[...cur,newShift]});}
+      return;
+    }
     if(idx>=0){
       if(type==="正社員"){
         const shift=cur[idx];const symIdx=SYMBOLS.indexOf(shift.symbol||"");const nextSym=symIdx>=0?SYMBOLS[(symIdx+1)%SYMBOLS.length]:"●";
@@ -521,6 +529,13 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
     }else{
       const newShift={name,type,symbol:type==="正社員"?"●":"",start:"09:00",end:"18:00"};_onSC({...shifts,[dateStr]:[...cur,newShift]});
     }
+  };
+  const handleCellRightClick=(e,dateStr,name,type)=>{
+    e.preventDefault();
+    if(type!=="正社員")return;
+    const cur=getShift(dateStr);const shift=cur.find(s=>s.name===name);
+    const sym=shift?shift.symbol||"":"";
+    setCopiedSymbol(sym);
   };
 
   const handleTimeChange=(dateStr,name,startTime,endTime)=>{
@@ -586,6 +601,12 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
         <button onClick={()=>setBulkMode(!bulkMode)} className="px-3 py-1 rounded-lg text-xs font-semibold border" style={{background:bulkMode?"#2563eb":"#fff",color:bulkMode?"#fff":"#374151"}}>{bulkMode?"閉じる":"一括設定"}</button>
       </div>
     </div>
+    {copiedSymbol!==null&&<div className="px-4 py-2 border-b border-yellow-300 bg-yellow-50 flex items-center gap-3 flex-wrap" style={{fontSize:11}}>
+      <span style={{fontWeight:700,color:"#92400e"}}>📋 ペーストモード</span>
+      <span style={{padding:"2px 8px",background:"#fff",border:"1px solid #d97706",borderRadius:4,fontWeight:700,fontSize:12}}>{copiedSymbol||"(空白)"}</span>
+      <span style={{color:"#78716c"}}>をコピー中 — セルをクリックで貼り付け</span>
+      <button onClick={()=>setCopiedSymbol(null)} className="px-3 py-1 rounded text-xs font-bold border border-red-300 bg-red-50 text-red-600 hover:bg-red-100 ml-auto">解除</button>
+    </div>}
     {bulkMode&&<div className="px-4 py-3 border-b border-gray-200 bg-blue-50 flex items-center gap-3 flex-wrap">
       <div><label className="text-xs text-gray-600 block">スタッフ</label><select value={bulkName} onChange={e=>setBulkName(e.target.value)} className="input-s" style={{width:100}}>{staff.map(s=><option key={s.name}>{s.name}</option>)}</select></div>
       <div><label className="text-xs text-gray-600 block">曜日</label><div className="flex gap-1">{WK.map((w,i)=><button key={i} onClick={()=>setBulkDows(p=>p.includes(i)?p.filter(x=>x!==i):[...p,i])} className="w-7 h-7 rounded text-xs font-bold" style={{background:bulkDows.includes(i)?"#2563eb":"#e2e8f0",color:bulkDows.includes(i)?"#fff":"#64748b"}}>{w}</button>)}</div></div>
@@ -600,7 +621,7 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
           </tr>
         </thead>
         <tbody>
-          {regularStaff.map(staff=><tr key={staff.name}><td className="shift-col" style={{position:"sticky",left:0,zIndex:2,width:60,minWidth:60,padding:"2px 4px",fontWeight:600,fontSize:9,background:"#fff",borderRight:"1px solid #999",borderBottom:"1px solid #d1d5db"}}>{staff.name}</td>{dates.map(ds=>{const shift=getShift(ds).find(s=>s.name===staff.name);const down=new Date(ds).getDay();const bgc=down===0?"#E0E0FF":down===6?"#FFE0E0":"#FFF";let cellBg=bgc;if(shift){if(shift.symbol==="●")cellBg="#D4EBFA";else if(shift.symbol==="希")cellBg="#FFF3CD";else if(shift.symbol==="公")cellBg="#E8E8E8";else if(shift.symbol==="出")cellBg="#D4EDDA";}return <td key={ds} onClick={()=>handleCellClick(ds,staff.name,"正社員")} style={{width:44,minWidth:44,padding:"1px",textAlign:"center",fontSize:9,fontWeight:600,background:cellBg,borderRight:"1px solid #d1d5db",borderBottom:"1px solid #d1d5db",cursor:"pointer"}}>{shift?shift.symbol:""}</td>;})}</tr>)}
+          {regularStaff.map(staff=><tr key={staff.name}><td className="shift-col" style={{position:"sticky",left:0,zIndex:2,width:60,minWidth:60,padding:"2px 4px",fontWeight:600,fontSize:9,background:"#fff",borderRight:"1px solid #999",borderBottom:"1px solid #d1d5db"}}>{staff.name}</td>{dates.map(ds=>{const shift=getShift(ds).find(s=>s.name===staff.name);const down=new Date(ds).getDay();const bgc=down===0?"#E0E0FF":down===6?"#FFE0E0":"#FFF";let cellBg=bgc;if(shift){if(shift.symbol==="●")cellBg="#D4EBFA";else if(shift.symbol==="希")cellBg="#FFF3CD";else if(shift.symbol==="公")cellBg="#E8E8E8";else if(shift.symbol==="出")cellBg="#D4EDDA";}return <td key={ds} onClick={()=>handleCellClick(ds,staff.name,"正社員")} onContextMenu={e=>handleCellRightClick(e,ds,staff.name,"正社員")} style={{width:44,minWidth:44,padding:"1px",textAlign:"center",fontSize:9,fontWeight:600,background:cellBg,borderRight:"1px solid #d1d5db",borderBottom:"1px solid #d1d5db",cursor:copiedSymbol!==null?"copy":"pointer",outline:copiedSymbol!==null?"1px dashed #d97706":"none"}}>{shift?shift.symbol:""}</td>;})}</tr>)}
           {partTimeStaff.map(staff=><tr key={staff.name}><td className="shift-col" style={{position:"sticky",left:0,zIndex:2,width:60,minWidth:60,padding:"2px 4px",fontWeight:600,fontSize:9,background:"#fff",borderRight:"1px solid #999",borderBottom:"1px solid #d1d5db"}}>{staff.name}</td>{dates.map(ds=>{const shift=getShift(ds).find(s=>s.name===staff.name);const down=new Date(ds).getDay();const bgc=down===0?"#E0E0FF":down===6?"#FFE0E0":"#FFF";return <td key={ds} style={{width:44,minWidth:44,padding:"1px",textAlign:"center",fontSize:9,background:shift?"#FFF9E6":bgc,borderRight:"1px solid #d1d5db",borderBottom:"1px solid #d1d5db",cursor:"pointer",position:"relative"}}>
             {shift?<div style={{display:"inline-block",cursor:"pointer"}} onClick={()=>setEditTime({dateStr:ds,name:staff.name,start:shift.start,end:shift.end})}>{shift.start}-{shift.end}</div>:<button onClick={()=>handleCellClick(ds,staff.name,"アルバイト")} style={{background:"none",border:"none",cursor:"pointer",fontSize:10,color:"#ccc"}}>+</button>}</td>;})}</tr>)}
           <tr style={{fontWeight:700,background:"#D2B48C"}}>
@@ -791,17 +812,17 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
   const[dragInfo,setDragInfo]=useState(null);const[dropTarget,setDropTarget]=useState(null);
   const WK=["日","月","火","水","木","金","土"];
 
-  const dates=useMemo(()=>{const dt=new Date(baseDate);if(viewMode==="month"){const y=dt.getFullYear(),m=dt.getMonth();const days=new Date(y,m+1,0).getDate();return Array.from({length:days},(_,i)=>{const d=new Date(y,m,i+1);return d.toISOString().split("T")[0];});}else if(viewMode==="week"){const d=new Date(baseDate);d.setDate(d.getDate()-d.getDay());return Array.from({length:7},(_,i)=>dOff(d.toISOString().split("T")[0],i));}else return[baseDate];},[baseDate,viewMode]);
+  const dates=useMemo(()=>{const dt=new Date(baseDate+"T00:00:00");if(viewMode==="month"){const y=dt.getFullYear(),m=dt.getMonth();const days=new Date(y,m+1,0).getDate();return Array.from({length:days},(_,i)=>toLD(new Date(y,m,i+1)));}else if(viewMode==="week"){const d=new Date(baseDate+"T00:00:00");d.setDate(d.getDate()-d.getDay());return Array.from({length:7},(_,i)=>dOff(toLD(d),i));}else return[baseDate];},[baseDate,viewMode]);
 
   const[isMobile,setIsMobile]=useState(window.innerWidth<=768);
   useEffect(()=>{const h=()=>setIsMobile(window.innerWidth<=768);window.addEventListener("resize",h);return()=>window.removeEventListener("resize",h);},[]);
   const COL_W=viewMode==="month"?(isMobile?60:80):viewMode==="week"?(isMobile?100:140):600;const LEFT_W=isMobile?100:260;const ROW_H=30;const CLASS_H=28;
-  const monthLabel=useMemo(()=>{const dt=new Date(baseDate);return`${dt.getFullYear()}年${dt.getMonth()+1}月`;},[baseDate]);
+  const monthLabel=useMemo(()=>{const dt=new Date(baseDate+"T00:00:00");return`${dt.getFullYear()}年${dt.getMonth()+1}月`;},[baseDate]);
 
   useEffect(()=>{if(scrollRef.current){const ti=dates.indexOf(today);if(ti>=0)scrollRef.current.scrollLeft=Math.max(0,(ti-2)*COL_W);}},[dates,today]);
   const goToday=()=>setBaseDate(today);
-  const goPrev=()=>{const dt=new Date(baseDate);if(viewMode==="month")dt.setMonth(dt.getMonth()-1);else if(viewMode==="week")dt.setDate(dt.getDate()-7);else dt.setDate(dt.getDate()-1);setBaseDate(dt.toISOString().split("T")[0]);};
-  const goNext=()=>{const dt=new Date(baseDate);if(viewMode==="month")dt.setMonth(dt.getMonth()+1);else if(viewMode==="week")dt.setDate(dt.getDate()+7);else dt.setDate(dt.getDate()+1);setBaseDate(dt.toISOString().split("T")[0]);};
+  const goPrev=()=>{const dt=new Date(baseDate+"T00:00:00");if(viewMode==="month")dt.setMonth(dt.getMonth()-1);else if(viewMode==="week")dt.setDate(dt.getDate()-7);else dt.setDate(dt.getDate()-1);setBaseDate(toLD(dt));};
+  const goNext=()=>{const dt=new Date(baseDate+"T00:00:00");if(viewMode==="month")dt.setMonth(dt.getMonth()+1);else if(viewMode==="week")dt.setDate(dt.getDate()+7);else dt.setDate(dt.getDate()+1);setBaseDate(toLD(dt));};
   const toggleClass=(t)=>setCollapsed(p=>({...p,[t]:!p[t]}));
 
   const vehicleBars=useMemo(()=>{
@@ -813,21 +834,21 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
 
   // 車両ごとの月別稼働率（表示期間の月の1日〜末日で計算）
   const utilRates=useMemo(()=>{
-    const bd=new Date(baseDate);const y=bd.getFullYear(),m=bd.getMonth();
+    const bd=new Date(baseDate+"T00:00:00");const y=bd.getFullYear(),m=bd.getMonth();
     const dim=new Date(y,m+1,0).getDate(); // 月の日数
     const rates={};
     vehicles.forEach(v=>{
       let days=0;
       // 予約による稼働日数
       data.forEach(r=>{if(fleet[r.id]!==v.code)return;
-        const ld=new Date(norm(r.lendDate)),rd=new Date(norm(r.returnDate));
+        const ld=new Date(norm(r.lendDate)+"T00:00:00"),rd=new Date(norm(r.returnDate)+"T00:00:00");
         const ms=new Date(y,m,1),me=new Date(y,m,dim);
         const s=ld>ms?ld:ms;const e=rd<me?rd:me;
         if(s<=e)days+=Math.round((e-s)/86400000)+1;
       });
       // メンテナンスによる稼働日数
       (maintenance||[]).forEach(mt=>{if(mt.vehicleCode!==v.code)return;
-        const ld=new Date(norm(mt.startDate)),rd=new Date(norm(mt.endDate));
+        const ld=new Date(norm(mt.startDate)+"T00:00:00"),rd=new Date(norm(mt.endDate)+"T00:00:00");
         const ms=new Date(y,m,1),me=new Date(y,m,dim);
         const s=ld>ms?ld:ms;const e=rd<me?rd:me;
         if(s<=e)days+=Math.round((e-s)/86400000)+1;
@@ -1187,7 +1208,7 @@ function DataTable({data}){
    App
    ========================================== */
 function App(){
-  const[data,setData]=useState([]);const[tab,setTab]=useState("import");const today=new Date().toISOString().split("T")[0];
+  const[data,setData]=useState([]);const[tab,setTab]=useState("import");const today=toLD(new Date());
   const[fleet,setFleet]=useState({});const[maintenance,setMaintenance]=useState([]);const[shifts,setShifts]=useState({});const[showOP,setShowOP]=useState(false);
   const[staff,setStaff]=useState(INIT_STAFF);
   const[vehicles,setVehicles]=useState(INIT_VEHICLES);
