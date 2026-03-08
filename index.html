@@ -95,23 +95,79 @@ const DB = {
     if(tasks.length)DB._lsSave(tasks,date);
     return tasks;
   },
+  // カラム不足時のフォールバック用ミニマルタスク
+  _toDbTaskMin(t,date,i){return{_id:t._id,date:date,type:t.type||"",time:t.time||"",name:t.name||"",assignee:t.assignee||"",done:!!t.done,memo:t.memo||"",reservation_id:t.reservationId||"",ota:t.ota||"",tel:t.tel||"",mail:t.mail||"",assigned_vehicle:t.assignedVehicle||"",plate_no:t.plateNo||"",people:t.people||0,place:t.place||"",vehicle:t.vehicle||"",insurance:t.insurance||"",insurance_change:t.insuranceChange||"",flight:t.flight||"",return_date:t.returnDate||"",return_time:t.returnTime||"",return_type:t.returnType||"",col_place:t.colPlace||"",sort_order:i};},
+  _dbSaveOk:true,
   async upsertTasks(tasks,date){
     DB._lsSave(tasks,date);
     if(!sb||!tasks.length)return;
     const rows=tasks.map((t,i)=>DB._toDbTask(t,date,i));
     const{error}=await sb.from("tasks").upsert(rows,{onConflict:"_id"});
-    if(error)dbLog("upsertTasks",false,error.message);
+    if(error){
+      dbLog("upsertTasks",false,error.message);
+      // フォールバック: 必須カラムのみでリトライ
+      const minRows=tasks.map((t,i)=>DB._toDbTaskMin(t,date,i));
+      const{error:e2}=await sb.from("tasks").upsert(minRows,{onConflict:"_id"});
+      if(e2){dbLog("upsertTasks-fallback",false,e2.message);DB._dbSaveOk=false;}
+      else{dbLog("upsertTasks-fallback",true,"ミニマル保存成功");DB._dbSaveOk=true;}
+    }else{DB._dbSaveOk=true;}
   },
   async updateTask(t,date){
-    // localStorageの該当タスクも更新
     const ls=DB._lsLoad(date);
     if(ls){const idx=ls.findIndex(x=>x._id===t._id);if(idx>=0){ls[idx]=t;DB._lsSave(ls,date);}else{ls.push(t);DB._lsSave(ls,date);}}
     else{DB._lsSave([t],date);}
     if(!sb)return;
     const{error}=await sb.from("tasks").upsert(DB._toDbTask(t,date,t._sortOrder||0),{onConflict:"_id"});
-    if(error)dbLog("updateTask",false,error.message);
+    if(error){
+      dbLog("updateTask",false,error.message);
+      // フォールバック
+      const{error:e2}=await sb.from("tasks").upsert(DB._toDbTaskMin(t,date,t._sortOrder||0),{onConflict:"_id"});
+      if(e2){dbLog("updateTask-fallback",false,e2.message);DB._dbSaveOk=false;}
+      else{dbLog("updateTask-fallback",true,"ミニマル保存成功");DB._dbSaveOk=true;}
+    }else{DB._dbSaveOk=true;}
   },
   async deleteTasks(date){try{localStorage.removeItem(DB._lsKey(date));}catch(e){} if(!sb)return;const{error}=await sb.from("tasks").delete().eq("date",date);if(error)dbLog("deleteTasks",false,error.message);},
+  // 起動時カラムチェック: テスト行でupsertして不足カラムを検知→追加
+  async checkAndFixColumns(){
+    if(!sb)return;
+    const testId="__col_check__";
+    const full=DB._toDbTask({_id:testId,type:"",time:"",name:"",assignee:"",done:false,memo:"",reservationId:"",ota:"",tel:"",mail:"",assignedVehicle:"",plateNo:"",people:0,place:"",vehicle:"",insurance:"",insuranceChange:"",flight:"",returnDate:"",returnTime:"",returnType:"",colPlace:"",opts:{},yakkan:false,line:false,payment:false,_assigneeCustom:false,_timeChanged:false},"1970-01-01",0);
+    const{error}=await sb.from("tasks").upsert(full,{onConflict:"_id"});
+    if(error){
+      dbLog("colCheck",false,error.message);
+      // カラム不足の場合: ALTER TABLEで追加を試みる
+      const missingCols=[];
+      const optionalCols={
+        opt_b:"boolean default false",opt_c:"boolean default false",opt_j:"boolean default false",
+        opt_usb:"boolean default false",opt_parasol:"boolean default false",
+        yakkan:"boolean default false",line:"boolean default false",payment:"boolean default false",
+        assignee_custom:"boolean default false",time_changed:"boolean default false"
+      };
+      for(const[col,def] of Object.entries(optionalCols)){
+        const testRow={_id:testId,date:"1970-01-01",[col]:false};
+        const{error:e}=await sb.from("tasks").upsert(testRow,{onConflict:"_id"});
+        if(e)missingCols.push(col);
+      }
+      if(missingCols.length){
+        dbLog("colCheck",false,"不足カラム: "+missingCols.join(", "));
+        // rpc経由でALTER TABLE実行を試行
+        for(const col of missingCols){
+          const def=optionalCols[col];
+          try{await sb.rpc("exec_sql",{query:`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS ${col} ${def}`});}catch(e){}
+        }
+        // 再チェック
+        const{error:e2}=await sb.from("tasks").upsert(full,{onConflict:"_id"});
+        DB._dbSaveOk=!e2;
+        if(e2)dbLog("colCheck",false,"カラム追加後も保存失敗: "+e2.message);
+        else dbLog("colCheck",true,"カラム修正完了");
+      }
+    }else{
+      DB._dbSaveOk=true;
+      dbLog("colCheck",true,"全カラムOK");
+    }
+    // テスト行を削除
+    await sb.from("tasks").delete().eq("_id",testId);
+  },
   _toDbTask(t,date,i){return{_id:t._id,date:date,type:t.type||"",time:t.time||"",name:t.name||"",assignee:t.assignee||"",done:!!t.done,memo:t.memo||"",reservation_id:t.reservationId||"",ota:t.ota||"",tel:t.tel||"",mail:t.mail||"",assigned_vehicle:t.assignedVehicle||"",plate_no:t.plateNo||"",people:t.people||0,place:t.place||"",vehicle:t.vehicle||"",insurance:t.insurance||"",insurance_change:t.insuranceChange||"",flight:t.flight||"",return_date:t.returnDate||"",return_time:t.returnTime||"",return_type:t.returnType||"",col_place:t.colPlace||"",opt_b:!!t.opts?.b,opt_c:!!t.opts?.c,opt_j:!!t.opts?.j,opt_usb:!!t.opts?.usb,opt_parasol:!!t.opts?.parasol,yakkan:!!t.yakkan,line:!!t.line,payment:!!t.payment,sort_order:i,assignee_custom:!!t._assigneeCustom,time_changed:!!t._timeChanged};},
   _fromDbTask(d){return{_id:d._id,type:d.type,time:d.time,name:d.name,assignee:d.assignee,done:d.done,memo:d.memo,reservationId:d.reservation_id,ota:d.ota,tel:d.tel,mail:d.mail,assignedVehicle:d.assigned_vehicle,plateNo:d.plate_no,people:d.people,place:d.place,vehicle:d.vehicle,insurance:d.insurance,insuranceChange:d.insurance_change,flight:d.flight,returnDate:norm(d.return_date),returnTime:d.return_time,returnType:d.return_type,colPlace:d.col_place,opts:{b:d.opt_b,c:d.opt_c,j:d.opt_j,usb:d.opt_usb,parasol:d.opt_parasol},yakkan:d.yakkan,line:d.line,payment:d.payment,_sortOrder:d.sort_order,_assigneeCustom:d.assignee_custom,_timeChanged:d.time_changed};},
   // --- スタッフ ---
@@ -246,6 +302,56 @@ function ymLabel(ym){const[y,m]=ym.split("-").map(Number);return`${y}年${m}月`
 function ymOff(ym,n){const[y,m]=ym.split("-").map(Number);const d=new Date(y,m-1+n,1);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;}
 let _id=0;function uid(){return"t"+(++_id);}
 let _vid=100;function vuid(){return"v"+(++_vid);}
+
+/* ===== Googleスプレッドシートから場所データ取得 ===== */
+const PLACE_SHEET_CSV="https://docs.google.com/spreadsheets/d/e/2PACX-1vSmoTxMEh8u9F-C5Se4-Jcl1E7cIIzgXIgbgO0XcRAxI7sveR8nNdy06b4qQnnaDW5-QJrn3IgtAPVA/pub?gid=854005754&single=true&output=csv";
+function parseCSV(text){
+  const lines=[];let cur="";let inQ=false;
+  for(let i=0;i<text.length;i++){
+    const c=text[i];
+    if(c==='"'){if(inQ&&text[i+1]==='"'){cur+='"';i++;}else{inQ=!inQ;}}
+    else if(c===","&&!inQ){lines.length===0?lines.push([cur]):lines[lines.length-1].push(cur);cur="";}
+    else if((c==="\n"||(c==="\r"&&text[i+1]==="\n"))&&!inQ){
+      if(c==="\r")i++;
+      if(lines.length===0){lines.push([cur]);lines.push([]);}else{lines[lines.length-1].push(cur);lines.push([]);}
+      cur="";
+    }else{cur+=c;}
+  }
+  if(cur||lines.length>0){if(lines.length===0)lines.push([cur]);else lines[lines.length-1].push(cur);}
+  return lines.filter(r=>r.some(c=>c.trim()));
+}
+async function fetchPlaceData(targetResIds){
+  const resp=await fetch(PLACE_SHEET_CSV);
+  if(!resp.ok)throw new Error("CSV取得失敗: "+resp.status);
+  const text=await resp.text();
+  const rows=parseCSV(text);
+  if(rows.length<2)throw new Error("データが空です");
+  // I列(index8)=DEL場所, L列(index11)=COL場所, 予約番号を探す
+  const header=rows[0];
+  let resCol=-1;
+  header.forEach((h,i)=>{if(h.includes("予約番号")||h.includes("予約ID")||h.includes("Reservation"))resCol=i;});
+  if(resCol<0){
+    // ヘッダーに見つからない場合、予約IDパターンで列を推定
+    for(let ci=0;ci<header.length;ci++){
+      const sample=rows.slice(1,Math.min(6,rows.length)).map(r=>r[ci]||"");
+      if(sample.some(s=>/^[A-Z0-9]{8,}$/.test(s.trim()))){resCol=ci;break;}
+    }
+  }
+  if(resCol<0)throw new Error("予約番号の列が見つかりません");
+  const delPlaceCol=8; // I列
+  const colPlaceCol=11; // L列
+  const targetSet=new Set(targetResIds);
+  const result={};
+  rows.slice(1).forEach(r=>{
+    const rid=(r[resCol]||"").trim();
+    if(!rid||!targetSet.has(rid))return;
+    result[rid]={
+      delPlace:(r[delPlaceCol]||"").trim(),
+      colPlace:(r[colPlaceCol]||"").trim()
+    };
+  });
+  return result;
+}
 
 /* ===== タスク生成 ===== */
 function generateTasks(reservations,date,fleet,vehicles){
@@ -1089,7 +1195,7 @@ function MaintForm({vehicleCode,startDate,onAdd,onClose,vehicles}){
 /* ==========================================
    OPシート（独立フルスクリーン）
    ========================================== */
-function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicles,staff,resOpts}){
+function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicles,staff,resOpts,sheetPlaces,onUpdateSheetPlaces}){
   const[dayOff,setDayOff]=useState(0);const selDate=dOff(today,dayOff);const[tasks,setTasks]=useState([]);
   const activeMembers=useMemo(()=>(shifts[selDate]||[]).filter(s=>s.type==="アルバイト"||s.symbol==="●").map(s=>s.name),[shifts,selDate]);
   const fleetRef=React.useRef(fleet);fleetRef.current=fleet;
@@ -1112,7 +1218,11 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
   },[fleet,vehicles]);
   // タスクロード
   const selfUpdateRef=React.useRef(0);
-  const loadTasks=React.useCallback(async(date)=>{
+  const loadTasks=React.useCallback(async(date,force)=>{
+    // 自分の変更直後（5秒以内）はDBリロードをスキップ（自分の変更を上書きしない）
+    if(!force&&selfUpdateRef.current&&Date.now()-selfUpdateRef.current<5000){
+      dbLog("loadTasks","skip","自分の変更直後のためスキップ");return;
+    }
     // 1. DB(+localStorage)から取得
     const saved=await DB.fetchTasks(date);
     if(saved&&saved.length>0){
@@ -1151,7 +1261,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
     setTasks(gen);
     if(gen.length)DB.upsertTasks(gen,date);
   },[reservations,vehicles]);
-  useEffect(()=>{loadTasks(selDate);},[selDate]);
+  useEffect(()=>{loadTasks(selDate,true);},[selDate]);
   // Realtimeでタスク更新を受信（他端末の変更を反映）
   useEffect(()=>{
     if(!sb)return;
@@ -1173,16 +1283,63 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
     document.addEventListener("visibilitychange",onVis);
     return()=>document.removeEventListener("visibilitychange",onVis);
   },[selDate,loadTasks]);
-  const upd=(id,t)=>{selfUpdateRef.current=Date.now();setTasks(ts=>{const next=ts.map(x=>x._id===id?t:x);DB._lsSave(next,selDate);return next;});DB.updateTask(t,selDate);};
+  const[saveStatus,setSaveStatus]=useState("ok"); // "ok"|"saving"|"error"
+  const pendingSaves=React.useRef(0);
+  const upd=async(id,t)=>{
+    selfUpdateRef.current=Date.now();
+    let allTasks;
+    setTasks(ts=>{const next=ts.map(x=>x._id===id?t:x);DB._lsSave(next,selDate);allTasks=next;return next;});
+    pendingSaves.current++;setSaveStatus("saving");
+    await DB.updateTask(t,selDate);
+    pendingSaves.current--;
+    setSaveStatus(DB._dbSaveOk?(pendingSaves.current>0?"saving":"ok"):"error");
+  };
   const confirmUpd=(id,t,label)=>{if(!window.confirm(`${label}\n本当に変更しますか？`))return;upd(id,t);};
-  const add=(t)=>{selfUpdateRef.current=Date.now();setTasks(ts=>{const next=[...ts,t].sort((a,b)=>(a.time||"").localeCompare(b.time||""));DB.upsertTasks(next,selDate);return next;});};
+  const add=async(t)=>{
+    selfUpdateRef.current=Date.now();
+    let allTasks;
+    setTasks(ts=>{const next=[...ts,t].sort((a,b)=>(a.time||"").localeCompare(b.time||""));allTasks=next;return next;});
+    pendingSaves.current++;setSaveStatus("saving");
+    await DB.upsertTasks(allTasks||[t],selDate);
+    pendingSaves.current--;
+    setSaveStatus(DB._dbSaveOk?(pendingSaves.current>0?"saving":"ok"):"error");
+  };
   const TIME_OPTS=useMemo(()=>{const opts=[""];for(let h=6;h<=22;h++)for(let m=0;m<60;m+=30){if(h===22&&m>0)break;opts.push(`${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`);}return opts;},[]);
   const assignVehicle=(taskId,vehicleCode)=>{selfUpdateRef.current=Date.now();const task=tasks.find(t=>t._id===taskId);if(!task)return;const v=vehicles.find(x=>x.code===vehicleCode);const updated={...task,assignedVehicle:vehicleCode,plateNo:v?v.no:""};setTasks(ts=>ts.map(x=>x._id===taskId?updated:x));DB.updateTask(updated,selDate);if(task.reservationId&&vehicleCode)onFleetChange({...fleet,[task.reservationId]:vehicleCode});else if(task.reservationId&&!vehicleCode){const nf={...fleet};delete nf[task.reservationId];onFleetChange(nf);}};
   const done=tasks.filter(t=>t.done).length;const staffCount=activeMembers.length;
   const WK=["日","月","火","水","木","金","土"];
   const dayButtons=useMemo(()=>{const arr=[];for(let i=0;i<=14;i++){const d=dOff(today,i);const ds=shifts[d]||[];const tc=reservations.filter(t=>sD(t.lendDate,d)||sD(t.returnDate,d)).length;if(ds.length>0||tc>0||i<=2)arr.push({i,d,staff:ds.length,tc});}return arr;},[today,shifts,reservations]);
   const CONTENT_OPTIONS=["DEL","COL","洗車","送り","鍵入れ","回収","事前駐車","持ち帰り","MTG","その他"];
-
+  const[placeLoading,setPlaceLoading]=useState(false);
+  const updatePlaces=async()=>{
+    const resIds=[...new Set(tasks.filter(t=>t.reservationId).map(t=>t.reservationId))];
+    if(!resIds.length){alert("予約がありません");return;}
+    setPlaceLoading(true);
+    try{
+      const placeMap=await fetchPlaceData(resIds);
+      const matched=Object.keys(placeMap).length;
+      if(!matched){setPlaceLoading(false);alert("該当する予約番号がスプレッドシートに見つかりませんでした");return;}
+      selfUpdateRef.current=Date.now();
+      setTasks(prev=>{
+        const next=prev.map(t=>{
+          if(!t.reservationId||!placeMap[t.reservationId])return t;
+          const p=placeMap[t.reservationId];
+          const updates={};
+          if(t.type==="DEL"&&p.delPlace)updates.place=p.delPlace;
+          if(t.type==="COL"&&p.colPlace)updates.place=p.colPlace;
+          if(t.type==="DEL"&&p.colPlace)updates.colPlace=p.colPlace;
+          if(Object.keys(updates).length===0)return t;
+          return{...t,...updates};
+        });
+        DB._lsSave(next,selDate);
+        DB.upsertTasks(next,selDate);
+        return next;
+      });
+      if(onUpdateSheetPlaces)onUpdateSheetPlaces({...sheetPlaces,...placeMap});
+      alert(`${matched}件の予約の場所情報を更新しました`);
+    }catch(e){alert("場所データ取得エラー: "+e.message);}
+    setPlaceLoading(false);
+  };
   // ソート
   const[sortKey,setSortKey]=useState(null);const[sortAsc,setSortAsc]=useState(true);
   const handleSort=(key)=>{if(sortKey===key){if(sortAsc){setSortAsc(false);}else{setSortKey(null);setSortAsc(true);}}else{setSortKey(key);setSortAsc(true);}};
@@ -1194,7 +1351,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
   return <div className="op-fullscreen">
     <div className="op-header">
       <div className="flex items-center gap-2" style={{minWidth:0}}><button onClick={onClose} className="text-white text-lg font-bold px-2 hover:bg-white hover:bg-opacity-20 rounded">←</button><div><h4 className="font-bold text-white text-sm" style={{margin:0}}>OPシート</h4><span className="text-blue-200" style={{fontSize:10}}>{fmtFull(selDate)} / 出勤{staffCount}名</span></div></div>
-      <div className="flex items-center gap-2"><span className="text-xs text-blue-200">{done}/{tasks.length}</span><div className="w-14 h-1.5 bg-blue-900 rounded-full overflow-hidden"><div className="h-full bg-green-400 rounded-full" style={{width:`${tasks.length?done/tasks.length*100:0}%`}}/></div><button onClick={()=>{const newTask={_id:uid(),type:"その他",time:"",name:"",people:0,place:"",vehicle:"",insurance:"",flight:"",reservationId:"",ota:"",tel:"",mail:"",done:false,assignee:"",memo:"",assignedVehicle:"",plateNo:"",insuranceChange:"",opts:{b:false,c:false,j:false,usb:false,parasol:false},yakkan:false,line:false,payment:false,returnDate:"",returnTime:"",returnType:"",colPlace:"",manual:true};setTasks(ts=>[...ts,newTask]);}} className="px-2 py-1 bg-white text-blue-700 rounded text-xs font-bold shadow-sm">＋</button></div>
+      <div className="flex items-center gap-2">{saveStatus==="saving"&&<span style={{fontSize:9,color:"#fbbf24",fontWeight:700}}>💾保存中...</span>}{saveStatus==="error"&&<span style={{fontSize:9,color:"#ef4444",fontWeight:700,cursor:"pointer"}} onClick={()=>{alert("DB保存エラーが発生しています。\nコンソールログを確認してください。\n\nローカルには保存されていますが、他の端末には反映されません。")}}>⚠️DB保存失敗</span>}{saveStatus==="ok"&&SB_ENABLED&&<span style={{fontSize:9,color:"#86efac"}}>✓同期済</span>}<span className="text-xs text-blue-200">{done}/{tasks.length}</span><div className="w-14 h-1.5 bg-blue-900 rounded-full overflow-hidden"><div className="h-full bg-green-400 rounded-full" style={{width:`${tasks.length?done/tasks.length*100:0}%`}}/></div><button onClick={()=>{const newTask={_id:uid(),type:"その他",time:"",name:"",people:0,place:"",vehicle:"",insurance:"",flight:"",reservationId:"",ota:"",tel:"",mail:"",done:false,assignee:"",memo:"",assignedVehicle:"",plateNo:"",insuranceChange:"",opts:{b:false,c:false,j:false,usb:false,parasol:false},yakkan:false,line:false,payment:false,returnDate:"",returnTime:"",returnType:"",colPlace:"",manual:true};setTasks(ts=>[...ts,newTask]);}} className="px-2 py-1 bg-white text-blue-700 rounded text-xs font-bold shadow-sm">＋</button><button onClick={updatePlaces} disabled={placeLoading} className="px-2 py-1 rounded text-xs font-bold shadow-sm" style={{background:placeLoading?"#94a3b8":"#fbbf24",color:"#78350f",whiteSpace:"nowrap"}}>{placeLoading?"取得中...":"📍場所更新"}</button></div>
     </div>
     <div style={{padding:"4px 6px",background:"#fff",borderBottom:"1px solid #e5e7eb",overflowX:"auto",display:"flex",gap:3,flexShrink:0}}>
       {dayButtons.map(db=>{const sel=dayOff===db.i;const dt=new Date(db.d);return <button key={db.i} onClick={()=>setDayOff(db.i)} style={{flexShrink:0,padding:"3px 8px",borderRadius:6,fontSize:10,fontWeight:sel?700:500,background:sel?"#2563eb":"#f1f5f9",color:sel?"#fff":"#374151",border:"none",cursor:"pointer",minWidth:48,textAlign:"center"}}><div style={{fontWeight:700}}>{db.i===0?"今日":db.i===1?"明日":`${dt.getMonth()+1}/${dt.getDate()}`}</div><div style={{fontSize:8,opacity:.7}}>{WK[dt.getDay()]}</div>{db.tc>0&&<div style={{fontSize:7,background:sel?"rgba(255,255,255,.25)":"#dbeafe",color:sel?"#fff":"#1d4ed8",borderRadius:6,padding:"0 3px"}}>{db.tc}件</div>}</button>;})}
@@ -1267,17 +1424,32 @@ function AddTaskForm({onAdd,onClose,activeMembers,vehicles}){
 /* ==========================================
    統合データ
    ========================================== */
-function DataTable({data}){
-  const[s,setS]=useState("");const[f,setF]=useState("all");
+function DataTable({data,sheetPlaces,onUpdatePlaces}){
+  const[s,setS]=useState("");const[f,setF]=useState("all");const[plLoading,setPlLoading]=useState(false);
   const list=useMemo(()=>data.filter(t=>{if(f!=="all"&&t.ota!==f)return false;if(s&&!t.name.includes(s)&&!t.id.includes(s))return false;return true;}),[data,s,f]);
+  const doFetchPlaces=async()=>{
+    const resIds=data.map(r=>r.id);
+    if(!resIds.length){alert("予約データがありません");return;}
+    setPlLoading(true);
+    try{
+      const placeMap=await fetchPlaceData(resIds);
+      const matched=Object.keys(placeMap).length;
+      if(!matched){setPlLoading(false);alert("該当する予約番号がスプレッドシートに見つかりませんでした");return;}
+      onUpdatePlaces({...sheetPlaces,...placeMap});
+      alert(`${matched}件の場所情報を取得しました`);
+    }catch(e){alert("場所データ取得エラー: "+e.message);}
+    setPlLoading(false);
+  };
+  const getPlace=(resId)=>sheetPlaces[resId]||{};
   return <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
     <div className="p-3 border-b border-gray-200 flex items-center gap-2 flex-wrap">
       <input value={s} onChange={e=>setS(e.target.value)} placeholder="検索" className="input-s" style={{width:140}}/>
       <div className="flex gap-1"><button onClick={()=>setF("all")} className={`px-2 py-1 rounded text-xs font-semibold ${f==="all"?"bg-gray-800 text-white":"bg-gray-100 text-gray-600"}`}>All</button>{Object.keys(OTA).map(k=><button key={k} onClick={()=>setF(k)} className="px-2 py-1 rounded text-xs font-semibold" style={{background:f===k?OTA[k].c:OTA[k].bg,color:f===k?"#fff":OTA[k].c}}>{k}</button>)}</div>
+      <button onClick={doFetchPlaces} disabled={plLoading} className="px-2 py-1 rounded text-xs font-bold shadow-sm" style={{background:plLoading?"#94a3b8":"#fbbf24",color:"#78350f"}}>{plLoading?"取得中...":"📍場所取得"}</button>
       <span className="ml-auto text-xs text-gray-500">{list.length}件</span>
     </div>
-    <div style={{overflowX:"auto",maxHeight:"70vh"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}><thead className="bg-gray-50 sticky top-0"><tr>{["OTA","予約番号","予約者","貸出日","時間","返却日","時間","種別","車種","補償","人数"].map(h=><th key={h} className="px-2 py-1.5 text-left font-semibold text-gray-600 border-b border-gray-200" style={{fontSize:10}}>{h}</th>)}</tr></thead><tbody>
-      {list.map((t,i)=><tr key={t.id+i} className="border-b border-gray-100 hover:bg-blue-50"><td className="px-2 py-1"><OBadge ota={t.ota}/></td><td className="px-2 py-1 font-mono" style={{fontSize:9}}>{t.id}</td><td className="px-2 py-1 font-medium">{t.name}</td><td className="px-2 py-1">{t.lendDate}</td><td className="px-2 py-1">{t.lendTime}</td><td className="px-2 py-1">{t.returnDate}</td><td className="px-2 py-1">{t.returnTime}</td><td className="px-2 py-1"><span style={{background:(TASK_META[t.visitType]||{}).bg,color:(TASK_META[t.visitType]||{}).c,padding:"1px 5px",borderRadius:4,fontSize:10,fontWeight:600}}>DEL</span></td><td className="px-2 py-1 font-semibold">{t.vehicle}</td><td className="px-2 py-1">{t.insurance}</td><td className="px-2 py-1 text-center">{t.people}</td></tr>)}
+    <div style={{overflowX:"auto",maxHeight:"70vh"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}><thead className="bg-gray-50 sticky top-0"><tr>{["OTA","予約番号","予約者","貸出日","時間","返却日","時間","種別","車種","補償","人数","DEL場所","COL場所"].map(h=><th key={h} className="px-2 py-1.5 text-left font-semibold text-gray-600 border-b border-gray-200" style={{fontSize:10}}>{h}</th>)}</tr></thead><tbody>
+      {list.map((t,i)=>{const pl=getPlace(t.id);return <tr key={t.id+i} className="border-b border-gray-100 hover:bg-blue-50"><td className="px-2 py-1"><OBadge ota={t.ota}/></td><td className="px-2 py-1 font-mono" style={{fontSize:9}}>{t.id}</td><td className="px-2 py-1 font-medium">{t.name}</td><td className="px-2 py-1">{t.lendDate}</td><td className="px-2 py-1">{t.lendTime}</td><td className="px-2 py-1">{t.returnDate}</td><td className="px-2 py-1">{t.returnTime}</td><td className="px-2 py-1"><span style={{background:(TASK_META[t.visitType]||{}).bg,color:(TASK_META[t.visitType]||{}).c,padding:"1px 5px",borderRadius:4,fontSize:10,fontWeight:600}}>DEL</span></td><td className="px-2 py-1 font-semibold">{t.vehicle}</td><td className="px-2 py-1">{t.insurance}</td><td className="px-2 py-1 text-center">{t.people}</td><td className="px-2 py-1" style={{fontSize:9,color:pl.delPlace?"#059669":"#ccc",fontWeight:pl.delPlace?600:400}}>{pl.delPlace||t.delPlace||"-"}</td><td className="px-2 py-1" style={{fontSize:9,color:pl.colPlace?"#059669":"#ccc",fontWeight:pl.colPlace?600:400}}>{pl.colPlace||t.colPlace||"-"}</td></tr>;})}
     </tbody></table></div>
   </div>;
 }
@@ -1292,6 +1464,8 @@ function App(){
   const[vehicles,setVehicles]=useState(INIT_VEHICLES);
   const vehicleClasses=INIT_CLASSES;
   const[pendingPlaces,setPendingPlaces]=useState(null);
+  const[sheetPlaces,setSheetPlaces]=useState(()=>{try{return JSON.parse(localStorage.getItem("spk_sheet_places")||"{}}");}catch(e){return{};}});
+  const saveSheetPlaces=(p)=>{setSheetPlaces(p);try{localStorage.setItem("spk_sheet_places",JSON.stringify(p));}catch(e){}};
   // オプション情報をlocalStorageで管理（DB非依存）
   const[resOpts,setResOpts]=useState(()=>{try{return JSON.parse(localStorage.getItem("spk_res_opts")||"{}}");}catch(e){return{};}});
   const saveResOpts=(newOpts)=>{setResOpts(newOpts);try{localStorage.setItem("spk_res_opts",JSON.stringify(newOpts));}catch(e){}};
@@ -1304,6 +1478,8 @@ function App(){
     if(!SB_ENABLED)return;
     (async()=>{
       try{
+        // まずカラムチェック
+        await DB.checkAndFixColumns();
         const[resDB,flDB,stDB,vhDB,shDB,mtDB]=await Promise.all([
           DB.fetchReservations(),DB.fetchFleet(),DB.fetchStaff(),DB.fetchVehicles(),DB.fetchShifts(),DB.fetchMaintenance()
         ]);
@@ -1524,7 +1700,7 @@ function App(){
 
   return <div style={{height:"100vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
     {SB_ENABLED&&<div className="sync-desktop"><SyncBadge connected={sbConnected}/></div>}
-    {showOP&&<OPScreen reservations={data} today={today} shifts={shifts} fleet={fleet} onFleetChange={setFleetSync} onClose={()=>setShowOP(false)} vehicles={vehicles} staff={staff} resOpts={resOpts}/>}
+    {showOP&&<OPScreen reservations={data} today={today} shifts={shifts} fleet={fleet} onFleetChange={setFleetSync} onClose={()=>setShowOP(false)} vehicles={vehicles} staff={staff} resOpts={resOpts} sheetPlaces={sheetPlaces} onUpdateSheetPlaces={saveSheetPlaces}/>}
     <div style={{display:showOP?"none":"flex",flex:1,overflow:"hidden",flexDirection:"column"}}>
       <div className="top-nav">
         {navItems.filter(n=>n.id==="import"||n.id==="vehicle"||n.id==="staff"||data.length>0).map(n=><button key={n.id} onClick={()=>setTab(n.id)} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
@@ -1548,7 +1724,7 @@ function App(){
           {tab==="shift"&&<ShiftCalendar shifts={shifts} onShiftsChange={setShiftsSync} today={today} staff={staff} sbSaveShift={DB.saveShift}/>}
           {tab==="fleet"&&<FleetTimeline data={data} fleet={fleet} onFleetChange={setFleetSync} today={today} maintenance={maintenance} onMaintenanceChange={setMaintenance} vehicles={vehicles} vehicleClasses={vehicleClasses} onAddReservation={addReservation} onBulkAddReservation={bulkAddReservation} onCancelReservation={cancelReservation} onReassignVehicle={reassignVehicle}/>}
           {tab==="vehicle"&&<VehicleManager vehicles={vehicles} onVehiclesChange={setVehiclesSync} vehicleClasses={vehicleClasses} onDeleteVehicle={(code)=>DB.deleteVehicle(code)}/>}
-          {tab==="data"&&data.length>0&&<DataTable data={data}/>}
+          {tab==="data"&&data.length>0&&<DataTable data={data} sheetPlaces={sheetPlaces} onUpdatePlaces={saveSheetPlaces}/>}
         </div>
       </div>
     </div>
