@@ -10,6 +10,9 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/encoding-japanese/2.1.0/encoding.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.heat/0.2.0/leaflet-heat.js"></script>
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;overflow:hidden}
@@ -242,6 +245,30 @@ const SLOTS=["08:00","08:30","09:00","09:30","10:00","10:30","11:00","11:30","12
 const TASK_META={DEL:{c:"#2563eb",bg:"#eff6ff"},PU:{c:"#059669",bg:"#ecfdf5"},"来店":{c:"#7c3aed",bg:"#f5f3ff"},COL:{c:"#ea580c",bg:"#fff7ed"},BD:{c:"#e11d48",bg:"#fff1f2"},"返却":{c:"#d97706",bg:"#fffbeb"},"洗車":{c:"#64748b",bg:"#f8fafc"},"送り":{c:"#0891b2",bg:"#ecfeff"},"鍵入れ":{c:"#a855f7",bg:"#faf5ff"},"回収":{c:"#f97316",bg:"#fff7ed"},"事前駐車":{c:"#6366f1",bg:"#eef2ff"},"持ち帰り":{c:"#84cc16",bg:"#f7fee7"},MTG:{c:"#f59e0b",bg:"#fffbeb"},"その他":{c:"#6b7280",bg:"#f9fafb"}};
 
 const INIT_STAFF=[{name:"齊藤",type:"正社員",memo:""},{name:"伊江",type:"正社員",memo:""},{name:"廣瀬",type:"正社員",memo:""},{name:"武山",type:"正社員",memo:""},{name:"赤嶺",type:"アルバイト",memo:""},{name:"大城",type:"アルバイト",memo:""},{name:"渡名喜",type:"アルバイト",memo:""},{name:"西村",type:"アルバイト",memo:""},{name:"仲間",type:"アルバイト",memo:""}];
+
+// スポットマスター（DEL/COL需要ヒートマップ用）
+const INIT_SPOTS_GEO=[
+  {name:"新千歳空港",lat:42.7752,lng:141.6924,aliases:["千歳空港","CTS","新千歳"]},
+  {name:"札幌駅",lat:43.0687,lng:141.3508,aliases:["札幌Station","JR札幌"]},
+  {name:"すすきの",lat:43.0536,lng:141.3530,aliases:["ススキノ","薄野"]},
+  {name:"大通公園",lat:43.0590,lng:141.3465,aliases:["大通"]},
+  {name:"札幌ドーム",lat:43.0152,lng:141.4100,aliases:["ドーム"]},
+  {name:"丘珠空港",lat:43.1175,lng:141.3817,aliases:["丘珠"]},
+  {name:"小樽駅",lat:43.1975,lng:140.9942,aliases:["小樽"]},
+  {name:"定山渓温泉",lat:42.9686,lng:141.1667,aliases:["定山渓","じょうざんけい"]},
+  {name:"北海道大学",lat:43.0727,lng:141.3408,aliases:["北大"]},
+  {name:"円山公園",lat:43.0534,lng:141.3203,aliases:["円山"]},
+  {name:"白い恋人パーク",lat:43.0818,lng:141.2756,aliases:["白い恋人"]},
+  {name:"藻岩山",lat:43.0226,lng:141.3280,aliases:["もいわ"]},
+  {name:"旭山記念公園",lat:43.0386,lng:141.3169,aliases:["旭山"]},
+  {name:"ニセコ",lat:42.8604,lng:140.6874,aliases:["NISEKO","倶知安"]},
+  {name:"富良野",lat:43.3422,lng:142.3833,aliases:["FURANO"]},
+  {name:"旭川",lat:43.7707,lng:142.3650,aliases:["旭川駅","旭川空港"]},
+  {name:"洞爺湖",lat:42.5667,lng:140.8500,aliases:["洞爺","トウヤ"]},
+  {name:"登別温泉",lat:42.4906,lng:141.1550,aliases:["登別","のぼりべつ"]},
+  {name:"苫小牧",lat:42.6340,lng:141.6054,aliases:["苫小牧駅","苫小牧港"]},
+  {name:"千歳アウトレットモール・レラ",lat:42.8230,lng:141.6650,aliases:["レラ","アウトレット"]},
+];
 
 // 車両クラスマスター(初期)
 const INIT_CLASSES=[
@@ -1496,6 +1523,143 @@ function AddTaskForm({onAdd,onClose,activeMembers,vehicles}){
 /* ==========================================
    📊 ダッシュボード
    ========================================== */
+function HeatmapSection({monthData,allData,selYM,ymLabel}){
+  const mapRef=useRef(null);
+  const mapInst=useRef(null);
+  const heatLayer=useRef(null);
+  const[spots,setSpots]=useState(INIT_SPOTS_GEO);
+  const[showMgr,setShowMgr]=useState(false);
+  const[newSpot,setNewSpot]=useState({name:"",lat:"",lng:"",aliases:""});
+
+  // 場所テキスト→スポットマッチング
+  const matchSpot=(placeText)=>{
+    if(!placeText||placeText.length<2)return null;
+    const t=placeText.trim();
+    const SKIP=["なし","無し","ー","-","FALSE","0","—",""];
+    if(SKIP.includes(t))return null;
+    for(const sp of spots){
+      if(t.includes(sp.name)||sp.name.includes(t))return sp;
+      for(const a of(sp.aliases||[])){if(t.includes(a)||a.includes(t))return sp;}
+    }
+    return null;
+  };
+
+  // 月データから場所集計
+  const areaStats=useMemo(()=>{
+    const m={};const unmatched={};
+    monthData.forEach(r=>{
+      [["DEL",r.delPlace],["COL",r.colPlace]].forEach(([typ,place])=>{
+        if(!place||place.length<2)return;
+        const SKIP=["なし","無し","ー","-","FALSE","0","—",""];
+        if(SKIP.includes(place.trim()))return;
+        const sp=matchSpot(place);
+        if(sp){
+          if(!m[sp.name])m[sp.name]={name:sp.name,lat:sp.lat,lng:sp.lng,del:0,col:0,total:0};
+          if(typ==="DEL")m[sp.name].del++;else m[sp.name].col++;
+          m[sp.name].total++;
+        }else{
+          if(!unmatched[place])unmatched[place]={text:place,count:0};
+          unmatched[place].count++;
+        }
+      });
+    });
+    return{matched:Object.values(m).sort((a,b)=>b.total-a.total),unmatched:Object.values(unmatched).sort((a,b)=>b.count-a.count)};
+  },[monthData,spots]);
+
+  // Leaflet初期化＋ヒートマップ更新
+  useEffect(()=>{
+    if(!mapRef.current)return;
+    if(!mapInst.current){
+      mapInst.current=L.map(mapRef.current,{zoomControl:true,attributionControl:false}).setView([43.06,141.35],10);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:18}).addTo(mapInst.current);
+    }
+    if(heatLayer.current){mapInst.current.removeLayer(heatLayer.current);}
+    const pts=[];
+    areaStats.matched.forEach(s=>{for(let i=0;i<s.total;i++)pts.push([s.lat,s.lng,0.5]);});
+    if(pts.length>0){
+      heatLayer.current=L.heatLayer(pts,{radius:30,blur:20,maxZoom:13,gradient:{0.2:"blue",0.4:"lime",0.6:"yellow",0.8:"orange",1:"red"}}).addTo(mapInst.current);
+    }
+    // マーカー追加
+    mapInst.current.eachLayer(l=>{if(l instanceof L.CircleMarker)mapInst.current.removeLayer(l);});
+    areaStats.matched.forEach(s=>{
+      L.circleMarker([s.lat,s.lng],{radius:Math.max(5,Math.min(s.total*2,20)),color:"#2563eb",fillColor:"#3b82f6",fillOpacity:0.7,weight:1}).bindTooltip(`${s.name}: ${s.total}件 (DEL:${s.del} / COL:${s.col})`,{permanent:false}).addTo(mapInst.current);
+    });
+    setTimeout(()=>{if(mapInst.current)mapInst.current.invalidateSize();},200);
+  },[areaStats]);
+
+  // スポット追加
+  const addSpot=()=>{
+    const n=newSpot.name.trim(),la=parseFloat(newSpot.lat),lo=parseFloat(newSpot.lng);
+    if(!n||isNaN(la)||isNaN(lo))return;
+    const al=newSpot.aliases?newSpot.aliases.split(",").map(s=>s.trim()).filter(Boolean):[];
+    setSpots(prev=>[...prev,{name:n,lat:la,lng:lo,aliases:al}]);
+    setNewSpot({name:"",lat:"",lng:"",aliases:""});
+  };
+  const removeSpot=(idx)=>setSpots(prev=>prev.filter((_,i)=>i!==idx));
+
+  const cardS={background:"#fff",borderRadius:12,padding:14,boxShadow:"0 1px 4px rgba(0,0,0,.06)"};
+  const maxBar=areaStats.matched.length>0?areaStats.matched[0].total:1;
+
+  return <>
+    {/* ヒートマップ */}
+    <div style={cardS}>
+      <div style={{fontSize:12,fontWeight:800,color:"#1e293b",marginBottom:10}}>🗺️ 需要エリアヒートマップ（{ymLabel(selYM)}）</div>
+      <div ref={mapRef} style={{height:320,borderRadius:8,border:"1px solid #e2e8f0",zIndex:1}}></div>
+      <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>マッチ済: {areaStats.matched.reduce((s,a)=>s+a.total,0)}件 / 未マッチ: {areaStats.unmatched.reduce((s,a)=>s+a.count,0)}件</div>
+    </div>
+
+    {/* エリア別ランキング */}
+    <div style={cardS}>
+      <div style={{fontSize:12,fontWeight:800,color:"#1e293b",marginBottom:10}}>📊 エリア別ランキング（{ymLabel(selYM)}）</div>
+      {areaStats.matched.length===0?<div style={{color:"#94a3b8",fontSize:11}}>場所データなし</div>:
+        areaStats.matched.slice(0,10).map((s,i)=><div key={s.name} style={{marginBottom:6}}>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:11,marginBottom:2}}>
+            <span style={{fontWeight:700}}>{i+1}. {s.name}</span>
+            <span style={{fontWeight:600}}>{s.total}件</span>
+          </div>
+          <div style={{display:"flex",height:14,borderRadius:4,overflow:"hidden",background:"#f1f5f9"}}>
+            <div style={{width:Math.round(s.del/maxBar*100)+"%",background:"#3b82f6",display:"flex",alignItems:"center",justifyContent:"center",fontSize:8,color:"#fff",fontWeight:700}}>{s.del>0?`DEL ${s.del}`:""}</div>
+            <div style={{width:Math.round(s.col/maxBar*100)+"%",background:"#f97316",display:"flex",alignItems:"center",justifyContent:"center",fontSize:8,color:"#fff",fontWeight:700}}>{s.col>0?`COL ${s.col}`:""}</div>
+          </div>
+        </div>)
+      }
+    </div>
+
+    {/* 未マッチ場所 */}
+    {areaStats.unmatched.length>0&&<div style={{...cardS,background:"#fefce8",border:"1px solid #fde68a"}}>
+      <div style={{fontSize:12,fontWeight:800,color:"#92400e",marginBottom:6}}>⚠️ 未マッチの場所（{areaStats.unmatched.length}件）</div>
+      <div style={{fontSize:10,color:"#78350f",maxHeight:100,overflow:"auto"}}>
+        {areaStats.unmatched.map((u,i)=><div key={i}>「{u.text}」× {u.count}件</div>)}
+      </div>
+      <div style={{fontSize:9,color:"#a16207",marginTop:4}}>→ 下のスポット管理から追加できます</div>
+    </div>}
+
+    {/* スポットマスター管理 */}
+    <div style={cardS}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+        <div style={{fontSize:12,fontWeight:800,color:"#1e293b"}}>📍 スポットマスター管理</div>
+        <button onClick={()=>setShowMgr(!showMgr)} style={{fontSize:10,color:"#2563eb",background:"none",border:"none",cursor:"pointer",fontWeight:700}}>{showMgr?"▲ 閉じる":"▼ 開く"}</button>
+      </div>
+      {showMgr&&<>
+        <div style={{fontSize:10,color:"#64748b",marginBottom:6}}>登録済: {spots.length}件</div>
+        <div style={{maxHeight:200,overflow:"auto",marginBottom:8}}>
+          {spots.map((sp,i)=><div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"3px 0",borderBottom:"1px solid #f1f5f9",fontSize:10}}>
+            <span style={{fontWeight:600}}>{sp.name}</span>
+            <span style={{color:"#94a3b8"}}>{sp.lat.toFixed(4)},{sp.lng.toFixed(4)} <button onClick={()=>removeSpot(i)} style={{color:"#dc2626",background:"none",border:"none",cursor:"pointer",fontWeight:700,marginLeft:4}}>✕</button></span>
+          </div>)}
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr auto",gap:4,alignItems:"end"}}>
+          <div><div style={{fontSize:9,color:"#64748b"}}>場所名</div><input value={newSpot.name} onChange={e=>setNewSpot({...newSpot,name:e.target.value})} style={{width:"100%",fontSize:10,padding:"3px 6px",border:"1px solid #d1d5db",borderRadius:4}} placeholder="ホテルA"/></div>
+          <div><div style={{fontSize:9,color:"#64748b"}}>緯度</div><input value={newSpot.lat} onChange={e=>setNewSpot({...newSpot,lat:e.target.value})} style={{width:"100%",fontSize:10,padding:"3px 6px",border:"1px solid #d1d5db",borderRadius:4}} placeholder="43.06"/></div>
+          <div><div style={{fontSize:9,color:"#64748b"}}>経度</div><input value={newSpot.lng} onChange={e=>setNewSpot({...newSpot,lng:e.target.value})} style={{width:"100%",fontSize:10,padding:"3px 6px",border:"1px solid #d1d5db",borderRadius:4}} placeholder="141.35"/></div>
+          <div><div style={{fontSize:9,color:"#64748b"}}>別名(,区切)</div><input value={newSpot.aliases} onChange={e=>setNewSpot({...newSpot,aliases:e.target.value})} style={{width:"100%",fontSize:10,padding:"3px 6px",border:"1px solid #d1d5db",borderRadius:4}} placeholder="別名1,別名2"/></div>
+          <button onClick={addSpot} style={{background:"#2563eb",color:"#fff",border:"none",borderRadius:6,padding:"4px 10px",fontSize:10,fontWeight:700,cursor:"pointer"}}>追加</button>
+        </div>
+      </>}
+    </div>
+  </>;
+}
+
 function Dashboard({data,fleet,vehicles}){
   // 月選択
   const allMonths=useMemo(()=>{
@@ -1910,6 +2074,9 @@ function Dashboard({data,fleet,vehicles}){
         })}
       </div>;
     })()}
+
+    {/* エリア需要ヒートマップ */}
+    <HeatmapSection monthData={monthData} allData={data} selYM={selYM} ymLabel={ymLabel}/>
 
     {/* デバッグ: 売上検証（確認後に削除） */}
     <div style={{...cardS,background:"#fffbeb",border:"1px solid #fbbf24"}}>
