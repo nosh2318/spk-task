@@ -506,29 +506,55 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
   const getShift=(date)=>shifts[date]||[];
   const regularStaff=staff.filter(s=>s.type==="正社員");const partTimeStaff=staff.filter(s=>s.type==="アルバイト");
   const[editTime,setEditTime]=useState(null);
-  const[pasteMode,setPasteMode]=useState(false); // コピペモードON/OFF
-  const[pasteSymbol,setPasteSymbol]=useState(null); // 選択中のシンボル
+  const[selectedCell,setSelectedCell]=useState(null); // {dateStr,name} 選択中セル
+  const[clipSymbol,setClipSymbol]=useState(null); // Ctrl+Cでコピーしたシンボル
   // Supabase同期付きシフト更新
   const updateShifts=(next)=>{onShiftsChange(next);if(sbSaveShift){Object.entries(next).forEach(([date,arr])=>{if(arr!==shifts[date])arr.forEach(s=>sbSaveShift(date,s.name,s));});}};
   const _onSC=updateShifts;
 
+  // Cmd+C / Cmd+V キーボードハンドラ
+  React.useEffect(()=>{
+    const handler=(e)=>{
+      if(!selectedCell)return;
+      const isMeta=e.metaKey||e.ctrlKey;
+      if(isMeta&&e.key==="c"){
+        e.preventDefault();
+        const cur=getShift(selectedCell.dateStr);const shift=cur.find(s=>s.name===selectedCell.name);
+        setClipSymbol(shift?shift.symbol||"":"");
+      }
+      if(isMeta&&e.key==="v"&&clipSymbol!==null){
+        e.preventDefault();
+        const cur=getShift(selectedCell.dateStr);const idx=cur.findIndex(s=>s.name===selectedCell.name);
+        if(idx>=0){const updated=[...cur];updated[idx]={...cur[idx],symbol:clipSymbol};_onSC({...shifts,[selectedCell.dateStr]:updated});}
+        else{const newShift={name:selectedCell.name,type:"正社員",symbol:clipSymbol,start:"09:00",end:"18:00"};_onSC({...shifts,[selectedCell.dateStr]:[...cur,newShift]});}
+      }
+      if(e.key==="Escape"){setSelectedCell(null);}
+    };
+    window.addEventListener("keydown",handler);
+    return()=>window.removeEventListener("keydown",handler);
+  },[selectedCell,clipSymbol,shifts]);
+
   const handleCellClick=(dateStr,name,type)=>{
-    const cur=getShift(dateStr);const idx=cur.findIndex(s=>s.name===name);
-    // コピペモード（正社員のみ）: 選択シンボルをそのまま貼り付け
-    if(pasteMode&&pasteSymbol!==null&&type==="正社員"){
-      if(idx>=0){const updated=[...cur];updated[idx]={...cur[idx],symbol:pasteSymbol};_onSC({...shifts,[dateStr]:updated});}
-      else{const newShift={name,type,symbol:pasteSymbol,start:"09:00",end:"18:00"};_onSC({...shifts,[dateStr]:[...cur,newShift]});}
+    if(type==="正社員"){
+      // セル選択（Cmd+C/V用）
+      setSelectedCell({dateStr,name});
       return;
     }
+    const cur=getShift(dateStr);const idx=cur.findIndex(s=>s.name===name);
     if(idx>=0){
-      if(type==="正社員"){
-        const shift=cur[idx];const symIdx=SYMBOLS.indexOf(shift.symbol||"");const nextSym=symIdx>=0?SYMBOLS[(symIdx+1)%SYMBOLS.length]:"●";
-        const updated=[...cur];updated[idx]={...shift,symbol:nextSym};_onSC({...shifts,[dateStr]:updated});
-      }else{
-        _onSC({...shifts,[dateStr]:cur.filter(s=>s.name!==name)});
-      }
+      _onSC({...shifts,[dateStr]:cur.filter(s=>s.name!==name)});
     }else{
-      const newShift={name,type,symbol:type==="正社員"?"●":"",start:"09:00",end:"18:00"};_onSC({...shifts,[dateStr]:[...cur,newShift]});
+      const newShift={name,type,symbol:"",start:"09:00",end:"18:00"};_onSC({...shifts,[dateStr]:[...cur,newShift]});
+    }
+  };
+  // ダブルクリックでシンボル切替（従来の動作）
+  const handleCellDblClick=(dateStr,name)=>{
+    const cur=getShift(dateStr);const idx=cur.findIndex(s=>s.name===name);
+    if(idx>=0){
+      const shift=cur[idx];const symIdx=SYMBOLS.indexOf(shift.symbol||"");const nextSym=symIdx>=0?SYMBOLS[(symIdx+1)%SYMBOLS.length]:"●";
+      const updated=[...cur];updated[idx]={...shift,symbol:nextSym};_onSC({...shifts,[dateStr]:updated});
+    }else{
+      const newShift={name,type:"正社員",symbol:"●",start:"09:00",end:"18:00"};_onSC({...shifts,[dateStr]:[...cur,newShift]});
     }
   };
 
@@ -593,13 +619,10 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
       <div className="flex items-center gap-2">
         <label className="px-3 py-1 rounded-lg text-xs font-semibold border border-blue-300 bg-blue-50 text-blue-700 cursor-pointer hover:bg-blue-100"><span>📥 CSV取込</span><input type="file" accept=".csv,.txt" className="hidden" onChange={handleCSVUpload}/></label>
         <button onClick={()=>setBulkMode(!bulkMode)} className="px-3 py-1 rounded-lg text-xs font-semibold border" style={{background:bulkMode?"#2563eb":"#fff",color:bulkMode?"#fff":"#374151"}}>{bulkMode?"閉じる":"一括設定"}</button>
-        <button onClick={()=>{setPasteMode(!pasteMode);if(!pasteMode)setPasteSymbol("●");else setPasteSymbol(null);}} className="px-3 py-1 rounded-lg text-xs font-semibold border" style={{background:pasteMode?"#d97706":"#fff",color:pasteMode?"#fff":"#374151"}}>{pasteMode?"コピペOFF":"コピペ"}</button>
       </div>
     </div>
-    {pasteMode&&<div className="px-4 py-2 border-b border-yellow-300 bg-yellow-50 flex items-center gap-3 flex-wrap" style={{fontSize:11}}>
-      <span style={{fontWeight:700,color:"#92400e"}}>貼り付けるステータスを選択:</span>
-      {SYMBOLS.map(sym=><button key={sym||"blank"} onClick={()=>setPasteSymbol(sym)} style={{padding:"3px 10px",background:pasteSymbol===sym?"#d97706":"#fff",color:pasteSymbol===sym?"#fff":"#374151",border:pasteSymbol===sym?"2px solid #92400e":"1px solid #d1d5db",borderRadius:4,fontWeight:700,fontSize:12,cursor:"pointer",minWidth:32}}>{sym||"空"}</button>)}
-      <span style={{color:"#78716c",marginLeft:8}}>→ セルをクリックで貼り付け</span>
+    {clipSymbol!==null&&<div className="px-4 py-1 border-b border-green-300 bg-green-50 flex items-center gap-2" style={{fontSize:10}}>
+      <span style={{color:"#166534"}}>📋 コピー中: <b>{clipSymbol||"(空白)"}</b> — セルを選択して ⌘V で貼り付け</span>
     </div>}
     {bulkMode&&<div className="px-4 py-3 border-b border-gray-200 bg-blue-50 flex items-center gap-3 flex-wrap">
       <div><label className="text-xs text-gray-600 block">スタッフ</label><select value={bulkName} onChange={e=>setBulkName(e.target.value)} className="input-s" style={{width:100}}>{staff.map(s=><option key={s.name}>{s.name}</option>)}</select></div>
@@ -615,7 +638,7 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
           </tr>
         </thead>
         <tbody>
-          {regularStaff.map(staff=><tr key={staff.name}><td className="shift-col" style={{position:"sticky",left:0,zIndex:2,width:60,minWidth:60,padding:"2px 4px",fontWeight:600,fontSize:9,background:"#fff",borderRight:"1px solid #999",borderBottom:"1px solid #d1d5db"}}>{staff.name}</td>{dates.map(ds=>{const shift=getShift(ds).find(s=>s.name===staff.name);const down=new Date(ds).getDay();const bgc=down===0?"#E0E0FF":down===6?"#FFE0E0":"#FFF";let cellBg=bgc;if(shift){if(shift.symbol==="●")cellBg="#D4EBFA";else if(shift.symbol==="希")cellBg="#FFF3CD";else if(shift.symbol==="公")cellBg="#E8E8E8";else if(shift.symbol==="出")cellBg="#D4EDDA";}return <td key={ds} onClick={()=>handleCellClick(ds,staff.name,"正社員")} style={{width:44,minWidth:44,padding:"1px",textAlign:"center",fontSize:9,fontWeight:600,background:cellBg,borderRight:"1px solid #d1d5db",borderBottom:"1px solid #d1d5db",cursor:pasteMode?"cell":"pointer",outline:pasteMode?"1px dashed #d97706":"none"}}>{shift?shift.symbol:""}</td>;})}</tr>)}
+          {regularStaff.map(staff=><tr key={staff.name}><td className="shift-col" style={{position:"sticky",left:0,zIndex:2,width:60,minWidth:60,padding:"2px 4px",fontWeight:600,fontSize:9,background:"#fff",borderRight:"1px solid #999",borderBottom:"1px solid #d1d5db"}}>{staff.name}</td>{dates.map(ds=>{const shift=getShift(ds).find(s=>s.name===staff.name);const down=new Date(ds).getDay();const bgc=down===0?"#E0E0FF":down===6?"#FFE0E0":"#FFF";let cellBg=bgc;if(shift){if(shift.symbol==="●")cellBg="#D4EBFA";else if(shift.symbol==="希")cellBg="#FFF3CD";else if(shift.symbol==="公")cellBg="#E8E8E8";else if(shift.symbol==="出")cellBg="#D4EDDA";}const isSel=selectedCell&&selectedCell.dateStr===ds&&selectedCell.name===staff.name;return <td key={ds} onClick={()=>handleCellClick(ds,staff.name,"正社員")} onDoubleClick={()=>handleCellDblClick(ds,staff.name)} style={{width:44,minWidth:44,padding:"1px",textAlign:"center",fontSize:9,fontWeight:600,background:cellBg,borderRight:"1px solid #d1d5db",borderBottom:"1px solid #d1d5db",cursor:"pointer",outline:isSel?"2px solid #2563eb":"none",outlineOffset:isSel?"-2px":0}}>{shift?shift.symbol:""}</td>;})}</tr>)}
           {partTimeStaff.map(staff=><tr key={staff.name}><td className="shift-col" style={{position:"sticky",left:0,zIndex:2,width:60,minWidth:60,padding:"2px 4px",fontWeight:600,fontSize:9,background:"#fff",borderRight:"1px solid #999",borderBottom:"1px solid #d1d5db"}}>{staff.name}</td>{dates.map(ds=>{const shift=getShift(ds).find(s=>s.name===staff.name);const down=new Date(ds).getDay();const bgc=down===0?"#E0E0FF":down===6?"#FFE0E0":"#FFF";return <td key={ds} style={{width:44,minWidth:44,padding:"1px",textAlign:"center",fontSize:9,background:shift?"#FFF9E6":bgc,borderRight:"1px solid #d1d5db",borderBottom:"1px solid #d1d5db",cursor:"pointer",position:"relative"}}>
             {shift?<div style={{display:"inline-block",cursor:"pointer"}} onClick={()=>setEditTime({dateStr:ds,name:staff.name,start:shift.start,end:shift.end})}>{shift.start}-{shift.end}</div>:<button onClick={()=>handleCellClick(ds,staff.name,"アルバイト")} style={{background:"none",border:"none",cursor:"pointer",fontSize:10,color:"#ccc"}}>+</button>}</td>;})}</tr>)}
           <tr style={{fontWeight:700,background:"#D2B48C"}}>
