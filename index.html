@@ -971,7 +971,7 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
           <span style={{fontWeight:700,color:"#1e293b"}}>配車:</span>
           <select value={tooltip.vc||""} onChange={e=>{const newVc=e.target.value;if(!newVc){if(!window.confirm("配車を解除しますか？"))return;const nf={...fleet};delete nf[tooltip.id];onFleetChange(nf);setTooltip({...tooltip,vc:""});return;}const conflict=checkVehicleConflict(newVc,tooltip.id,data,fleet);if(conflict){const cv=vehicles.find(x=>x.code===newVc);alert((cv?cv.name:newVc)+" は "+fmtD(conflict.lendDate)+"〜"+fmtD(conflict.returnDate)+" に「"+conflict.name+"」様の予約が入っているため変更できません。");return;}const targetV=vehicles.find(x=>x.code===newVc);if(!window.confirm("配車を「"+(targetV?targetV.name:newVc)+"」に変更しますか？"))return;if(onReassignVehicle){onReassignVehicle(tooltip.id,newVc);}else{onFleetChange({...fleet,[tooltip.id]:newVc});}setTooltip({...tooltip,vc:newVc});}} style={{border:"1px solid #d1d5db",borderRadius:6,padding:"3px 6px",fontSize:11,fontWeight:600,color:"#1d4ed8",flex:1}}>
             <option value="">— 未割当 —</option>
-            {vehicleClasses.map(cls=><optgroup key={cls} label={cls+"クラス"}>{vehicles.filter(v=>v.type===cls).map(v=><option key={v.code} value={v.code}>{v.name} ({v.no})</option>)}</optgroup>)}
+            {vehicleClasses.map(cls=><optgroup key={cls.type} label={cls.type+"クラス"}>{vehicles.filter(v=>v.type===cls.type).map(v=><option key={v.code} value={v.code}>{v.name} ({v.no})</option>)}</optgroup>)}
           </select>
         </div>
         <div className="flex gap-2 mt-3">
@@ -1034,14 +1034,18 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
         if(dbTasks&&dbTasks.length>0){
           // 予約データからオプション・車両情報を同期（DEL/COL/洗車全て）
           const rMap={};reservations.forEach(r=>{rMap[r.id]={b:!!r.optB,c:!!r.optC,j:!!r.optJ,usb:!!r.optUSB,parasol:!!r.optParasol};});
+          const fl=fleetRef.current;
           let changed=false;
           const synced=dbTasks.map(t=>{
             const rid=t.reservationId;if(!rid)return t;
-            // 洗車タスクは翌日出発の予約IDを持つのでrMapにある
-            const ro=rMap[rid];if(!ro)return t;
-            const curOpts=t.opts||{};
-            if(ro.b!==!!curOpts.b||ro.c!==!!curOpts.c||ro.j!==!!curOpts.j||ro.usb!==!!curOpts.usb||ro.parasol!==!!curOpts.parasol){changed=true;return{...t,opts:{...ro}};}
-            return t;
+            let updated=t;
+            // fleet同期
+            const vc=fl[rid];
+            if(vc&&vc!==t.assignedVehicle){const vn=vehicles.find(v=>v.code===vc);updated={...updated,assignedVehicle:vc,plateNo:vn?vn.no:"",vehicle:vn?vn.type:t.vehicle};changed=true;}
+            // opts同期
+            const ro=rMap[rid];
+            if(ro){const co=updated.opts||{};if(ro.b!==!!co.b||ro.c!==!!co.c||ro.j!==!!co.j||ro.usb!==!!co.usb||ro.parasol!==!!co.parasol){updated={...updated,opts:{...ro}};changed=true;}}
+            return updated;
           });
           if(changed)DB.upsertTasks(synced,selDate);
           setTasks(synced);return;
@@ -1057,7 +1061,17 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
     if(!sb)return;
     const ch=sb.channel("tasks-"+selDate)
       .on("postgres_changes",{event:"*",schema:"public",table:"tasks",filter:"date=eq."+selDate},async()=>{
-        const fresh=await DB.fetchTasks(selDate);if(fresh&&fresh.length)setTasks(fresh);
+        const fresh=await DB.fetchTasks(selDate);if(fresh&&fresh.length){
+          // fleet最新値で車種情報を同期してからセット
+          const fl=fleetRef.current;
+          const synced=fresh.map(t=>{
+            if(!t.reservationId)return t;
+            const vc=fl[t.reservationId];
+            if(vc&&vc!==t.assignedVehicle){const vn=vehicles.find(v=>v.code===vc);return{...t,assignedVehicle:vc,plateNo:vn?vn.no:"",vehicle:vn?vn.type:t.vehicle};}
+            return t;
+          });
+          setTasks(synced);
+        }
       }).subscribe();
     return()=>{sb.removeChannel(ch);};
   },[selDate]);
