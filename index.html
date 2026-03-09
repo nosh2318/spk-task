@@ -140,6 +140,7 @@ const DB = {
     }finally{DB._pendingSave--;}
   },
   async deleteTasks(date){try{localStorage.removeItem(DB._lsKey(date));}catch(e){} if(!sb)return;const{error}=await sb.from("tasks").delete().eq("date",date);if(error)dbLog("deleteTasks",false,error.message);},
+  async fetchTasksRange(fromDate,toDate){if(!sb)return[];const{data,error}=await sb.from("tasks").select("*").gte("date",fromDate).lte("date",toDate).order("date",{ascending:false}).order("sort_order");if(error){dbLog("fetchTasksRange",false,error.message);return[];}return(data||[]).map(r=>({...DB._fromDbTask(r),_date:r.date}));},
   _toDbTask(t,date,i){return{_id:t._id,date:date,type:t.type||"",time:t.time||"",name:t.name||"",assignee:t.assignee||"",done:!!t.done,memo:t.memo||"",reservation_id:t.reservationId||"",ota:t.ota||"",tel:t.tel||"",mail:t.mail||"",assigned_vehicle:t.assignedVehicle||"",plate_no:t.plateNo||"",people:t.people||0,place:t.place||"",vehicle:t.vehicle||"",insurance:t.insurance||"",insurance_change:t.insuranceChange||"",flight:t.flight||"",return_date:t.returnDate||"",return_time:t.returnTime||"",return_type:t.returnType||"",col_place:t.colPlace||"",opt_b:!!t.opts?.b,opt_c:!!t.opts?.c,opt_j:!!t.opts?.j,opt_usb:!!t.opts?.usb,opt_parasol:!!t.opts?.parasol,yakkan:!!t.yakkan,line:!!t.line,payment:!!t.payment,sort_order:i,assignee_custom:!!t._assigneeCustom,time_changed:!!t._timeChanged,changed_json:JSON.stringify(t._changed||{})};},
   _fromDbTask(d){const ch=(()=>{try{const p=JSON.parse(d.changed_json||"{}");return Object.keys(p).length?p:undefined;}catch(e){return undefined;}})();return{_id:d._id,type:d.type,time:d.time,name:d.name,assignee:d.assignee,done:d.done,memo:d.memo,reservationId:d.reservation_id,ota:d.ota,tel:d.tel,mail:d.mail,assignedVehicle:d.assigned_vehicle,plateNo:d.plate_no,people:d.people,place:d.place,vehicle:d.vehicle,insurance:d.insurance,insuranceChange:d.insurance_change,flight:d.flight,returnDate:norm(d.return_date),returnTime:d.return_time,returnType:d.return_type,colPlace:d.col_place,opts:{b:d.opt_b,c:d.opt_c,j:d.opt_j,usb:d.opt_usb,parasol:d.opt_parasol},yakkan:d.yakkan,line:d.line,payment:d.payment,_sortOrder:d.sort_order,_assigneeCustom:d.assignee_custom,_timeChanged:d.time_changed,_changed:ch};},
   // --- スタッフ ---
@@ -1404,7 +1405,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
   const assignVehicle=(taskId,vehicleCode)=>{selfUpdateRef.current=Date.now();const task=tasks.find(t=>t._id===taskId);if(!task)return;const v=vehicles.find(x=>x.code===vehicleCode);const updated={...task,assignedVehicle:vehicleCode,plateNo:v?v.no:""};setTasks(ts=>ts.map(x=>x._id===taskId?updated:x));DB.updateTask(updated,selDate);if(task.reservationId&&vehicleCode)onFleetChange({...fleet,[task.reservationId]:vehicleCode});else if(task.reservationId&&!vehicleCode){const nf={...fleet};delete nf[task.reservationId];onFleetChange(nf);}};
   const done=tasks.filter(t=>t.done).length;const staffCount=activeMembers.length;
   const WK=["日","月","火","水","木","金","土"];
-  const dayButtons=useMemo(()=>{const arr=[];for(let i=-7;i<=14;i++){const d=dOff(today,i);const ds=shifts[d]||[];const tc=reservations.filter(t=>sD(t.lendDate,d)||sD(t.returnDate,d)).length;if(i<0){if(tc>0)arr.push({i,d,staff:ds.length,tc,past:true});}else{if(ds.length>0||tc>0||i<=2)arr.push({i,d,staff:ds.length,tc});}}return arr;},[today,shifts,reservations]);
+  const dayButtons=useMemo(()=>{const arr=[];for(let i=0;i<=14;i++){const d=dOff(today,i);const ds=shifts[d]||[];const tc=reservations.filter(t=>sD(t.lendDate,d)||sD(t.returnDate,d)).length;if(ds.length>0||tc>0||i<=2)arr.push({i,d,staff:ds.length,tc});}return arr;},[today,shifts,reservations]);
   const CONTENT_OPTIONS=["DEL","COL","洗車","送り","鍵入れ","回収","事前駐車","持ち帰り","MTG","その他"];
   const[placeLoading,setPlaceLoading]=useState(false);
   const updatePlaces=async()=>{
@@ -1469,7 +1470,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
       </div>
     </div>
     <div style={{padding:"4px 6px",background:"#fff",borderBottom:"1px solid #e5e7eb",overflowX:"auto",display:"flex",gap:3,flexShrink:0}}>
-      {dayButtons.map(db=>{const sel=dayOff===db.i;const dt=new Date(db.d);const isPast=db.past;return <button key={db.i} onClick={()=>setDayOff(db.i)} style={{flexShrink:0,padding:"3px 8px",borderRadius:6,fontSize:10,fontWeight:sel?700:500,background:sel?"#2563eb":isPast?"#fef2f2":"#f1f5f9",color:sel?"#fff":isPast?"#9ca3af":"#374151",border:isPast?"1px dashed #d1d5db":"none",cursor:"pointer",minWidth:48,textAlign:"center"}}><div style={{fontWeight:700}}>{db.i===0?"今日":db.i===1?"明日":`${dt.getMonth()+1}/${dt.getDate()}`}</div><div style={{fontSize:8,opacity:.7}}>{WK[dt.getDay()]}</div>{db.tc>0&&<div style={{fontSize:7,background:sel?"rgba(255,255,255,.25)":isPast?"#fecaca":"#dbeafe",color:sel?"#fff":isPast?"#dc2626":"#1d4ed8",borderRadius:6,padding:"0 3px"}}>{db.tc}件</div>}</button>;})}
+      {dayButtons.map(db=>{const sel=dayOff===db.i;const dt=new Date(db.d);return <button key={db.i} onClick={()=>setDayOff(db.i)} style={{flexShrink:0,padding:"3px 8px",borderRadius:6,fontSize:10,fontWeight:sel?700:500,background:sel?"#2563eb":"#f1f5f9",color:sel?"#fff":"#374151",border:"none",cursor:"pointer",minWidth:48,textAlign:"center"}}><div style={{fontWeight:700}}>{db.i===0?"今日":db.i===1?"明日":`${dt.getMonth()+1}/${dt.getDate()}`}</div><div style={{fontSize:8,opacity:.7}}>{WK[dt.getDay()]}</div>{db.tc>0&&<div style={{fontSize:7,background:sel?"rgba(255,255,255,.25)":"#dbeafe",color:sel?"#fff":"#1d4ed8",borderRadius:6,padding:"0 3px"}}>{db.tc}件</div>}</button>;})}
     </div>
     {activeMembers.length>0&&<div style={{padding:"3px 6px",background:"#f8fafc",borderBottom:"1px solid #e5e7eb",display:"flex",gap:3,flexWrap:"wrap",flexShrink:0}}><span style={{fontSize:9,color:"#64748b",fontWeight:600}}>出勤:</span>{activeMembers.map(name=>{const isReg=staff.find(x=>x.name===name)?.type==="正社員";return <span key={name} style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:3,background:isReg?"#dbeafe":"#fef3c7",color:isReg?"#1d4ed8":"#92400e"}}>{name}</span>;})}</div>}
     <div className="op-body">
@@ -2676,6 +2677,59 @@ function ParkingManager(){
 }
 
 /* ==========================================
+   過去タスク
+   ========================================== */
+function PastTasksTable({today}){
+  const[tasks,setTasks]=useState([]);const[loading,setLoading]=useState(false);
+  const[search,setSearch]=useState("");const[typeFilter,setTypeFilter]=useState("all");
+  // デフォルト: 過去7日
+  const[fromDate,setFromDate]=useState(()=>{const d=new Date();d.setDate(d.getDate()-7);return toLD(d);});
+  const[toDate,setToDate]=useState(()=>{const d=new Date();d.setDate(d.getDate()-1);return toLD(d);});
+  const loadPast=async()=>{setLoading(true);try{const t=await DB.fetchTasksRange(fromDate,toDate);setTasks(t);}catch(e){console.error(e);}setLoading(false);};
+  useEffect(()=>{loadPast();},[fromDate,toDate]);
+  const types=[...new Set(tasks.map(t=>t.type))].sort();
+  const filtered=useMemo(()=>tasks.filter(t=>{
+    if(typeFilter!=="all"&&t.type!==typeFilter)return false;
+    if(search&&!t.name?.includes(search)&&!t.reservationId?.includes(search)&&!t.place?.includes(search)&&!t.memo?.includes(search))return false;
+    return true;
+  }),[tasks,search,typeFilter]);
+  // 日付ごとにグループ化
+  const grouped=useMemo(()=>{const m={};filtered.forEach(t=>{const d=t._date||"不明";if(!m[d])m[d]=[];m[d].push(t);});return Object.entries(m).sort((a,b)=>b[0].localeCompare(a[0]));},[filtered]);
+  const WK=["日","月","火","水","木","金","土"];
+  const fmtDate=(d)=>{const dt=new Date(d+"T00:00:00");return `${dt.getMonth()+1}/${dt.getDate()}(${WK[dt.getDay()]})`;};
+  return <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+    <div className="p-3 border-b border-gray-200 flex items-center gap-2 flex-wrap">
+      <span style={{fontSize:11,fontWeight:600,color:"#374151"}}>期間:</span>
+      <input type="date" value={fromDate} onChange={e=>setFromDate(e.target.value)} style={{fontSize:11,padding:"2px 6px",borderRadius:6,border:"1px solid #d1d5db"}}/>
+      <span style={{fontSize:11,color:"#9ca3af"}}>〜</span>
+      <input type="date" value={toDate} onChange={e=>setToDate(e.target.value)} style={{fontSize:11,padding:"2px 6px",borderRadius:6,border:"1px solid #d1d5db"}}/>
+      <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="検索（名前/予約番号）" className="input-s" style={{width:140}}/>
+      <div className="flex gap-1"><button onClick={()=>setTypeFilter("all")} className={`px-2 py-1 rounded text-xs font-semibold ${typeFilter==="all"?"bg-gray-800 text-white":"bg-gray-100 text-gray-600"}`}>All</button>{types.map(tp=><button key={tp} onClick={()=>setTypeFilter(tp)} className="px-2 py-1 rounded text-xs font-semibold" style={{background:typeFilter===tp?(TASK_META[tp]||{}).c||"#6b7280":"#f3f4f6",color:typeFilter===tp?"#fff":(TASK_META[tp]||{}).c||"#6b7280"}}>{tp}</button>)}</div>
+      <span className="ml-auto text-xs text-gray-500">{loading?"読込中...":filtered.length+"件"}</span>
+    </div>
+    <div style={{overflowX:"auto",maxHeight:"70vh"}}>
+      {grouped.map(([date,items])=><div key={date}>
+        <div style={{background:"#f8fafc",padding:"4px 10px",borderBottom:"1px solid #e5e7eb",fontWeight:700,fontSize:12,color:"#374151",position:"sticky",top:0,zIndex:1}}>{fmtDate(date)} <span style={{fontWeight:400,color:"#9ca3af",fontSize:10}}>— {items.length}件</span></div>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}><thead className="bg-gray-50"><tr>{["種別","時間","予約者","車種","ナンバー","担当","場所","メモ","完了"].map(h=><th key={h} className="px-2 py-1 text-left font-semibold text-gray-600 border-b border-gray-200" style={{fontSize:10}}>{h}</th>)}</tr></thead><tbody>
+          {items.map((t,i)=><tr key={t._id||i} className="border-b border-gray-100 hover:bg-blue-50" style={{opacity:t.done?0.5:1}}>
+            <td className="px-2 py-1"><span style={{background:(TASK_META[t.type]||{}).bg||"#f3f4f6",color:(TASK_META[t.type]||{}).c||"#374151",padding:"1px 5px",borderRadius:4,fontSize:10,fontWeight:600}}>{t.type}</span></td>
+            <td className="px-2 py-1" style={{fontSize:10}}>{t.time||"-"}</td>
+            <td className="px-2 py-1 font-medium">{t.name||"-"}</td>
+            <td className="px-2 py-1">{t.vehicle||"-"}</td>
+            <td className="px-2 py-1 font-mono" style={{fontSize:9}}>{t.plateNo||"-"}</td>
+            <td className="px-2 py-1">{t.assignee||"-"}</td>
+            <td className="px-2 py-1" style={{fontSize:9,maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.place||t.colPlace||"-"}</td>
+            <td className="px-2 py-1" style={{fontSize:9,color:"#6b7280",maxWidth:100,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.memo||"-"}</td>
+            <td className="px-2 py-1 text-center">{t.done?"✅":"—"}</td>
+          </tr>)}
+        </tbody></table>
+      </div>)}
+      {!loading&&grouped.length===0&&<div style={{padding:24,textAlign:"center",color:"#9ca3af",fontSize:13}}>該当する過去タスクがありません</div>}
+    </div>
+  </div>;
+}
+
+/* ==========================================
    統合データ
    ========================================== */
 function DataTable({data,sheetPlaces,onUpdatePlaces}){
@@ -2976,7 +3030,7 @@ function App(){
   },[data]);
 
   const oc=useMemo(()=>{const c={};data.forEach(t=>{c[t.ota]=(c[t.ota]||0)+1;});return c;},[data]);
-  const navItems=[{id:"import",ico:"📁",l:"CSV"},{id:"staff",ico:"👥",l:"スタッフ"},{id:"shift",ico:"📅",l:"出勤簿"},{id:"fleet",ico:"🚗",l:"配車"},{id:"vehicle",ico:"🔧",l:"車両"},{id:"parking",ico:"🅿️",l:"駐車場"},{id:"dashboard",ico:"📊",l:"売上"},{id:"data",ico:"📋",l:"データ"}];
+  const navItems=[{id:"import",ico:"📁",l:"CSV"},{id:"staff",ico:"👥",l:"スタッフ"},{id:"shift",ico:"📅",l:"出勤簿"},{id:"fleet",ico:"🚗",l:"配車"},{id:"vehicle",ico:"🔧",l:"車両"},{id:"parking",ico:"🅿️",l:"駐車場"},{id:"dashboard",ico:"📊",l:"売上"},{id:"data",ico:"📋",l:"データ"},{id:"history",ico:"📜",l:"過去"}];
 
   if(!dbLoaded)return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#f3f4f6"}}><div style={{textAlign:"center"}}><div style={{width:48,height:48,border:"4px solid #e5e7eb",borderTopColor:"#2563eb",borderRadius:"50%",animation:"spin 1s linear infinite",margin:"0 auto 12px"}}></div><p style={{color:"#64748b",fontSize:13}}>データ読込中...</p></div></div>;
 
@@ -2985,7 +3039,7 @@ function App(){
     {showOP&&<OPScreen reservations={data} today={today} shifts={shifts} fleet={fleet} onFleetChange={setFleetSync} onClose={()=>setShowOP(false)} vehicles={vehicles} staff={staff} resOpts={resOpts} sheetPlaces={sheetPlaces} onUpdateSheetPlaces={saveSheetPlaces}/>}
     <div style={{display:showOP?"none":"flex",flex:1,overflow:"hidden",flexDirection:"column"}}>
       <div className="top-nav">
-        {navItems.filter(n=>n.id==="import"||n.id==="vehicle"||n.id==="staff"||n.id==="parking"||n.id==="fleet"||data.length>0).map(n=><button key={n.id} onClick={()=>setTab(n.id)} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
+        {navItems.filter(n=>n.id==="import"||n.id==="vehicle"||n.id==="staff"||n.id==="parking"||n.id==="fleet"||n.id==="history"||data.length>0).map(n=><button key={n.id} onClick={()=>setTab(n.id)} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
         {data.length>0&&<button onClick={()=>setShowOP(true)} style={{color:"#60a5fa"}}><span className="ico">📋</span>OP</button>}
         {SB_ENABLED&&<button onClick={reloadAll} disabled={reloading===1} style={{background:reloading===2?"#d1fae5":"none",border:"none",cursor:reloading===1?"wait":"pointer",fontSize:14,padding:"2px 4px",borderRadius:6,opacity:reloading===1?0.5:1,transition:"background .3s"}}>{reloading===1?"⏳":reloading===2?"✅":"🔄"}</button>}
         {SB_ENABLED&&<SyncBadge connected={sbConnected} inline={true}/>}
@@ -2993,7 +3047,7 @@ function App(){
       <div style={{display:"flex",flex:1,overflow:"hidden"}}>
       <div className="sidebar">
         <div style={{width:36,height:36,borderRadius:8,background:"linear-gradient(135deg,#3b82f6,#1d4ed8)",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:800,fontSize:14,marginBottom:8}}>S</div>
-        {navItems.filter(n=>n.id==="import"||n.id==="vehicle"||n.id==="staff"||n.id==="parking"||n.id==="fleet"||data.length>0).map(n=><button key={n.id} onClick={()=>setTab(n.id)} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
+        {navItems.filter(n=>n.id==="import"||n.id==="vehicle"||n.id==="staff"||n.id==="parking"||n.id==="fleet"||n.id==="history"||data.length>0).map(n=><button key={n.id} onClick={()=>setTab(n.id)} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
         {data.length>0&&<button onClick={()=>setShowOP(true)} style={{marginTop:4,background:"linear-gradient(135deg,#1e40af,#2563eb)",color:"#fff",borderRadius:10}}><span className="ico">📋</span><span style={{fontSize:8}}>OP</span></button>}
       </div>
       <div className="main-area" style={{flex:1,overflow:tab==="fleet"||tab==="parking"?"hidden":"auto",padding:tab==="fleet"||tab==="parking"?0:12,display:"flex",flexDirection:"column"}}>
@@ -3010,6 +3064,7 @@ function App(){
           {tab==="parking"&&<ParkingManager/>}
           {tab==="dashboard"&&data.length>0&&<Dashboard data={data} fleet={fleet} vehicles={vehicles}/>}
           {tab==="data"&&data.length>0&&<DataTable data={data} sheetPlaces={sheetPlaces} onUpdatePlaces={saveSheetPlaces}/>}
+          {tab==="history"&&<PastTasksTable today={today}/>}
         </div>
       </div>
     </div>
