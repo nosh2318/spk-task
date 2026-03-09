@@ -95,6 +95,7 @@ const DB = {
   _lsSave(tasks,date){try{localStorage.setItem(DB._lsKey(date),JSON.stringify(tasks));}catch(e){}},
   _lsLoad(date){try{const s=localStorage.getItem(DB._lsKey(date));return s?JSON.parse(s):null;}catch(e){return null;}},
   _pendingSave:0,
+  _hasChangedCol:null, // null=未チェック, true=あり, false=なし
   async fetchTasks(date){
     if(!sb){return DB._lsLoad(date)||[];}
     const{data,error}=await sb.from("tasks").select("*").eq("date",date).order("sort_order");
@@ -102,25 +103,49 @@ const DB = {
     const tasks=(data||[]).map(DB._fromDbTask);
     // ★ 保存中の場合はlocalStorageを上書きしない（保存中のデータが消えるのを防ぐ）
     if(tasks.length&&DB._pendingSave<=0)DB._lsSave(tasks,date);
+    // ★ changed_jsonカラムの存在を自動検出（初回のみ）
+    if(DB._hasChangedCol===null&&data&&data.length>0){
+      DB._hasChangedCol="changed_json" in data[0];
+      dbLog("changed_col_detect",true,DB._hasChangedCol?"あり":"なし");
+    }
     return tasks;
   },
-  // カラム不足時のフォールバック用ミニマルタスク
-  _toDbTaskMin(t,date,i){return{_id:t._id,date:date,type:t.type||"",time:t.time||"",name:t.name||"",assignee:t.assignee||"",done:!!t.done,memo:t.memo||"",reservation_id:t.reservationId||"",ota:t.ota||"",tel:t.tel||"",mail:t.mail||"",assigned_vehicle:t.assignedVehicle||"",plate_no:t.plateNo||"",people:t.people||0,place:t.place||"",vehicle:t.vehicle||"",insurance:t.insurance||"",insurance_change:t.insuranceChange||"",flight:t.flight||"",return_date:t.returnDate||"",return_time:t.returnTime||"",return_type:t.returnType||"",col_place:t.colPlace||"",sort_order:i};},
+  // 3段階保存: full → mid(changed_json付きmin) → bare(changed_jsonなしmin)
+  _toDbTaskBare(t,date,i){return{_id:t._id,date:date,type:t.type||"",time:t.time||"",name:t.name||"",assignee:t.assignee||"",done:!!t.done,memo:t.memo||"",reservation_id:t.reservationId||"",ota:t.ota||"",tel:t.tel||"",mail:t.mail||"",assigned_vehicle:t.assignedVehicle||"",plate_no:t.plateNo||"",people:t.people||0,place:t.place||"",vehicle:t.vehicle||"",insurance:t.insurance||"",insurance_change:t.insuranceChange||"",flight:t.flight||"",return_date:t.returnDate||"",return_time:t.returnTime||"",return_type:t.returnType||"",col_place:t.colPlace||"",sort_order:i};},
+  _toDbTaskMin(t,date,i){const b=DB._toDbTaskBare(t,date,i);b.changed_json=JSON.stringify(t._changed||{});b.assignee_custom=!!t._assigneeCustom;b.time_changed=!!t._timeChanged;return b;},
   _dbSaveOk:true,
+  // ★ 3段階フォールバック保存関数
+  async _upsertWithFallback(rows,label){
+    if(!sb||!rows.length)return;
+    // 1) フル保存
+    const{error}=await sb.from("tasks").upsert(rows,{onConflict:"_id"});
+    if(!error){DB._dbSaveOk=true;DB._hasChangedCol=true;return;}
+    dbLog(label,false,error.message);
+    // 2) changed_jsonカラムが使えない場合を考慮してbare保存
+    if(DB._hasChangedCol===false){
+      const bareRows=rows.map(r=>{const b={...r};delete b.changed_json;delete b.assignee_custom;delete b.time_changed;delete b.opt_b;delete b.opt_c;delete b.opt_j;delete b.opt_usb;delete b.opt_parasol;delete b.yakkan;delete b.line;delete b.payment;return b;});
+      const{error:e2}=await sb.from("tasks").upsert(bareRows,{onConflict:"_id"});
+      if(!e2){dbLog(label+"-bare",true,"ベア保存成功");DB._dbSaveOk=true;return;}
+      dbLog(label+"-bare",false,e2.message);DB._dbSaveOk=false;return;
+    }
+    // 3) mid保存（changed_json付き、opt系なし）
+    const midRows=rows.map(r=>{const b={...r};delete b.opt_b;delete b.opt_c;delete b.opt_j;delete b.opt_usb;delete b.opt_parasol;delete b.yakkan;delete b.line;delete b.payment;return b;});
+    const{error:e2}=await sb.from("tasks").upsert(midRows,{onConflict:"_id"});
+    if(!e2){dbLog(label+"-mid",true,"ミッド保存成功");DB._dbSaveOk=true;return;}
+    dbLog(label+"-mid",false,e2.message);
+    // 4) bare保存（changed_jsonもなし）
+    const bareRows=rows.map(r=>{const b={...r};delete b.changed_json;delete b.assignee_custom;delete b.time_changed;delete b.opt_b;delete b.opt_c;delete b.opt_j;delete b.opt_usb;delete b.opt_parasol;delete b.yakkan;delete b.line;delete b.payment;return b;});
+    const{error:e3}=await sb.from("tasks").upsert(bareRows,{onConflict:"_id"});
+    if(!e3){dbLog(label+"-bare",true,"ベア保存成功");DB._dbSaveOk=true;DB._hasChangedCol=false;}
+    else{dbLog(label+"-bare",false,e3.message);DB._dbSaveOk=false;}
+  },
   async upsertTasks(tasks,date){
     DB._lsSave(tasks,date);
     if(!sb||!tasks.length)return;
     DB._pendingSave++;
     try{
       const rows=tasks.map((t,i)=>DB._toDbTask(t,date,i));
-      const{error}=await sb.from("tasks").upsert(rows,{onConflict:"_id"});
-      if(error){
-        dbLog("upsertTasks",false,error.message);
-        const minRows=tasks.map((t,i)=>DB._toDbTaskMin(t,date,i));
-        const{error:e2}=await sb.from("tasks").upsert(minRows,{onConflict:"_id"});
-        if(e2){dbLog("upsertTasks-fallback",false,e2.message);DB._dbSaveOk=false;}
-        else{dbLog("upsertTasks-fallback",true,"ミニマル保存成功");DB._dbSaveOk=true;}
-      }else{DB._dbSaveOk=true;}
+      await DB._upsertWithFallback(rows,"upsertTasks");
     }finally{DB._pendingSave--;}
   },
   async updateTask(t,date){
@@ -130,13 +155,8 @@ const DB = {
     if(!sb)return;
     DB._pendingSave++;
     try{
-      const{error}=await sb.from("tasks").upsert(DB._toDbTask(t,date,t._sortOrder||0),{onConflict:"_id"});
-      if(error){
-        dbLog("updateTask",false,error.message);
-        const{error:e2}=await sb.from("tasks").upsert(DB._toDbTaskMin(t,date,t._sortOrder||0),{onConflict:"_id"});
-        if(e2){dbLog("updateTask-fallback",false,e2.message);DB._dbSaveOk=false;}
-        else{dbLog("updateTask-fallback",true,"ミニマル保存成功");DB._dbSaveOk=true;}
-      }else{DB._dbSaveOk=true;}
+      const row=DB._toDbTask(t,date,t._sortOrder||0);
+      await DB._upsertWithFallback([row],"updateTask");
     }finally{DB._pendingSave--;}
   },
   async deleteTasks(date){try{localStorage.removeItem(DB._lsKey(date));}catch(e){} if(!sb)return;const{error}=await sb.from("tasks").delete().eq("date",date);if(error)dbLog("deleteTasks",false,error.message);},
@@ -1342,19 +1362,24 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
         const vn=vehicles.find(v=>v.code===vc);
         return{...t,assignedVehicle:vc,plateNo:vn?vn.no:"",vehicle:vn?vn.type:t.vehicle};
       });
-      // ★ DBのchanged_jsonから_changedを復元済み。ローカル変更をマージ
+      // ★ 手動変更を保護: DB _changed + LS _changed をマージ（LSがなくてもDB _changedで保護）
       fixedWithFleet.forEach(t=>{
         const ls=lsMap[t._id];
-        if(!ls)return;
-        if(ls._changed){
-          const merged={...(t._changed||{}),...ls._changed};
-          t._changed=Object.keys(merged).length?merged:undefined;
-          Object.keys(ls._changed).forEach(f=>{
-            if(ls._changed[f]&&ls[f]!==undefined&&ls[f]!==null&&f!=='_changed'&&f!=='opts'&&typeof ls[f]!=='object'){t[f]=ls[f];}
+        // DB側に_changedがあれば、その値を保護（DBが正の値を持っている前提）
+        const dbChanged=t._changed||{};
+        const lsChanged=(ls&&ls._changed)||{};
+        const merged={...dbChanged,...lsChanged};
+        if(Object.keys(merged).length){
+          t._changed=merged;
+          // LSに_changedがあればLS値を優先（より新しい変更の可能性）
+          Object.keys(lsChanged).forEach(f=>{
+            if(lsChanged[f]&&ls[f]!==undefined&&ls[f]!==null&&f!=='_changed'&&f!=='opts'&&typeof ls[f]!=='object'){t[f]=ls[f];}
           });
         }
-        if(ls.place&&!t.place)t.place=ls.place;
-        if(ls.colPlace&&!t.colPlace)t.colPlace=ls.colPlace;
+        if(ls){
+          if(ls.place&&!t.place)t.place=ls.place;
+          if(ls.colPlace&&!t.colPlace)t.colPlace=ls.colPlace;
+        }
       });
       if(fixedWithFleet.length!==saved.length||fixedWithFleet.some((t,i)=>t._id!==saved[i]?._id)||fleetApplied||removed.length){
         DB.upsertTasks(fixedWithFleet,date);
@@ -1391,18 +1416,23 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
           const lm={};if(lsD)lsD.forEach(x=>{lm[x._id]=x;});
           const fresh=await DB.fetchTasks(selDate);
           if(fresh&&fresh.length){
-            // ★ DBから取得した_changedをそのまま使用（changed_jsonカラムで同期）
-            // ローカル変更を保持（保存中のデータが上書きされないように）
+            // ★ 手動変更保護: DB _changed + LS _changed のマージ（LSなしでもDB _changedで保護）
             fresh.forEach(t=>{
-              const ls=lm[t._id];if(!ls)return;
-              // ローカルで_changedがあればマージ（ローカル優先）
-              if(ls._changed){
-                const merged={...(t._changed||{}),...ls._changed};
-                t._changed=Object.keys(merged).length?merged:undefined;
-                Object.keys(ls._changed).forEach(f=>{if(ls._changed[f]&&ls[f]!==undefined&&ls[f]!==null&&f!=='_changed'&&f!=='opts'&&typeof ls[f]!=='object'){t[f]=ls[f];}});
+              const ls=lm[t._id];
+              const dbChanged=t._changed||{};
+              const lsChanged=(ls&&ls._changed)||{};
+              const merged={...dbChanged,...lsChanged};
+              if(Object.keys(merged).length){
+                t._changed=merged;
+                // LSの_changedフィールドはLS値を優先（より新しい変更の可能性）
+                Object.keys(lsChanged).forEach(f=>{
+                  if(lsChanged[f]&&ls[f]!==undefined&&ls[f]!==null&&f!=='_changed'&&f!=='opts'&&typeof ls[f]!=='object'){t[f]=ls[f];}
+                });
               }
-              if(ls.place&&!t.place)t.place=ls.place;
-              if(ls.colPlace&&!t.colPlace)t.colPlace=ls.colPlace;
+              if(ls){
+                if(ls.place&&!t.place)t.place=ls.place;
+                if(ls.colPlace&&!t.colPlace)t.colPlace=ls.colPlace;
+              }
             });
             setTasks(fresh);
             DB._lsSave(fresh,selDate);
@@ -1511,7 +1541,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
         <span className="font-bold text-white" style={{fontSize:13,whiteSpace:"nowrap"}}>OPシート</span>
         <span className="text-blue-200" style={{fontSize:10,whiteSpace:"nowrap"}}>{fmtFull(selDate)} / 出勤{staffCount}名</span>
         {saveStatus==="saving"&&<span style={{fontSize:9,color:"#fbbf24",fontWeight:700}}>💾</span>}
-        {saveStatus==="error"&&<span style={{fontSize:9,color:"#ef4444",fontWeight:700,cursor:"pointer"}} onClick={()=>{alert("DB保存エラーが発生しています。\nコンソールログを確認してください。\n\nローカルには保存されていますが、他の端末には反映されません。")}}>⚠️</span>}
+        {saveStatus==="error"&&<span style={{fontSize:9,color:"#ef4444",fontWeight:700,cursor:"pointer"}} onClick={()=>{alert("⚠️ DB保存エラーが発生しています。\n\n変更はこの端末のローカルに保存済みですが、\n他の端末には反映されない可能性があります。\n\nページをリロードせず、しばらく待ってから再度変更してください。")}}>⚠️保存エラー</span>}
         {saveStatus==="ok"&&SB_ENABLED&&<span style={{fontSize:9,color:"#86efac"}}>✓</span>}
       </div>
       <div style={{display:"flex",alignItems:"center",gap:4,marginLeft:"auto",flex:"0 0 auto"}}>
@@ -2735,16 +2765,23 @@ function App(){
   useEffect(()=>{
     if(!SB_ENABLED)return;
     (async()=>{
-      // ★ changed_jsonカラム自動追加（初回のみ試行）
+      // ★ changed_jsonカラム存在チェック＋自動追加試行
       if(sb&&!window._changedColChecked){
         window._changedColChecked=true;
         try{
-          const{data:test}=await sb.from("tasks").select("changed_json").limit(1);
-          if(test===null){
-            // カラムが存在しない可能性→RPC経由で追加試行
-            await sb.rpc("exec_sql",{sql:"ALTER TABLE tasks ADD COLUMN IF NOT EXISTS changed_json text DEFAULT '{}'"}).catch(()=>{});
+          const{data:test,error:testErr}=await sb.from("tasks").select("changed_json").limit(1);
+          if(testErr||test===null){
+            DB._hasChangedCol=false;
+            // カラムが存在しない→RPC経由で追加試行
+            try{
+              await sb.rpc("exec_sql",{sql:"ALTER TABLE tasks ADD COLUMN IF NOT EXISTS changed_json text DEFAULT '{}'"});
+              DB._hasChangedCol=true;
+              dbLog("add_changed_col",true,"changed_jsonカラム追加成功");
+            }catch(e2){dbLog("add_changed_col",false,"RPC未対応:"+e2.message);}
+          }else{
+            DB._hasChangedCol=true;
           }
-        }catch(e){console.log("[init] changed_json check:",e.message);}
+        }catch(e){DB._hasChangedCol=false;}
       }
       try{
         const[resDB,flDB,stDB,vhDB,shDB,mtDB,plDB]=await Promise.all([
@@ -3099,7 +3136,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v2026.03.09e";
+const APP_VERSION="v2026.03.10a";
 function Root(){
   const[auth,setAuth]=useState(!SB_ENABLED||localStorage.getItem("spk_auth")==="1");
   if(!auth)return <LoginScreen onLogin={()=>setAuth(true)}/>;
