@@ -2814,7 +2814,7 @@ function DataTable({data,sheetPlaces,onUpdatePlaces}){
    App
    ========================================== */
 function App(){
-  const[data,setData]=useState([]);const[tab,setTab]=useState("import");const today=toLD(new Date());
+  const[data,setData]=useState([]);const[tab,setTab]=useState("import");const today=toLD(new Date());const importingRef=useRef(false);
   const[fleet,setFleet]=useState({});const[maintenance,setMaintenance]=useState([]);const[shifts,setShifts]=useState({});const[showOP,setShowOP]=useState(true);
   const[staff,setStaff]=useState(INIT_STAFF);
   const[vehicles,setVehicles]=useState(INIT_VEHICLES);
@@ -2867,7 +2867,7 @@ function App(){
   // --- 手動リロード（スマホ用） ---
   const[reloading,setReloading]=useState(0); // 0=idle, 1=loading, 2=done
   const reloadAll=async()=>{
-    if(!SB_ENABLED||reloading===1)return;
+    if(!SB_ENABLED||reloading===1||importingRef.current)return;
     setReloading(1);
     try{
       const[resDB,flDB,stDB,vhDB,shDB,mtDB]=await Promise.all([
@@ -2887,8 +2887,10 @@ function App(){
   useEffect(()=>{
     if(!SB_ENABLED)return;
     const onFocus=async()=>{
+      if(importingRef.current)return; // インポート中はDB再読込をスキップ
       try{
         const[resDB,flDB]=await Promise.all([DB.fetchReservations(),DB.fetchFleet()]);
+        if(importingRef.current)return; // 非同期完了時にも再チェック
         if(resDB.length)setData(resDB);
         if(Object.keys(flDB).length)setFleet(flDB);
       }catch(e){}
@@ -2978,7 +2980,8 @@ function App(){
     }catch(e){console.error("task vehicle update error:",e);}
   },[fleet,vehicles,data]);
 
-  const imp=useCallback(d=>{
+  const imp=useCallback(async(d)=>{
+    importingRef.current=true; // インポート中フラグON（onFocus再読込を抑止）
     let imported=d;
     if(pendingPlaces&&Object.keys(pendingPlaces).length>0){
       imported=d.map(r=>{const p=pendingPlaces[r.id];if(p)return{...r,delPlace:p.delPlace||r.delPlace,colPlace:p.colPlace||r.colPlace};return r;});
@@ -3006,10 +3009,16 @@ function App(){
     saveResOpts(newResOpts);
     // CSVから消えた予約をDBから削除
     const removedIds=data.filter(r=>importedOTAs.has(r.ota)&&!importedIds.has(r.id)).map(r=>r.id);
-    if(removedIds.length){DB.deleteReservations(removedIds);removedIds.forEach(id=>DB.deleteFleetOne(id));}
-    // DB保存（非同期）
-    DB.upsertReservations(imported).then(()=>dbLog("imp reservations",true,imported.length+"件")).catch(e=>dbLog("imp reservations",false,e.message));
-    DB.upsertFleet(newFleet).catch(e=>dbLog("imp fleet",false,e.message));
+    if(removedIds.length){await DB.deleteReservations(removedIds);removedIds.forEach(id=>DB.deleteFleetOne(id));}
+    // DB保存（awaitで完了を待つ → onFocusの上書き防止）
+    try{
+      await DB.upsertReservations(imported);
+      dbLog("imp reservations",true,imported.length+"件");
+      await DB.upsertFleet(newFleet);
+      dbLog("imp fleet",true,"saved");
+    }catch(e){dbLog("imp reservations/fleet",false,e.message);}
+    // DB保存完了後にフラグ解除（少し遅延させてonFocusとの競合を防ぐ）
+    setTimeout(()=>{importingRef.current=false;},3000);
     // インポート後、既存タスクのオプション情報を強制更新
     (async()=>{
       const rOptsMap={};imported.forEach(r=>{rOptsMap[r.id]={b:!!r.optB,c:!!r.optC,j:!!r.optJ,usb:!!r.optUSB,parasol:!!r.optParasol};});
