@@ -500,12 +500,16 @@ function CSVPanel({onImport,onUpdatePlaces,dataCount,pendingPlaces,onSetPendingP
     </div>
     {logs.length>0&&<div className="bg-white rounded-xl shadow-sm border border-gray-200 p-3 mb-4">{logs.map((l,i)=><div key={i} className="text-xs px-2 py-1 rounded mb-1" style={{background:l.t==="err"?"#fef2f2":"#f0fdf4",color:l.t==="err"?"#b91c1c":"#15803d"}}>{l.t==="err"?"✗":"✓"} {l.m}</div>)}</div>}
     {total>0&&(()=>{
-      const allD=Object.values(files).flatMap(f=>f.data);
+      const rawD=Object.values(files).flatMap(f=>f.data);
+      // ★ 重複ID解消: price>0の予約を優先（楽天price=0 vs RC正しいprice の問題対策）
+      const dmap=new Map();let dupCnt=0;
+      rawD.forEach(r=>{const ex=dmap.get(r.id);if(ex){dupCnt++;if((Number(r.price)||0)>(Number(ex.price)||0))dmap.set(r.id,r);}else dmap.set(r.id,r);});
+      const allD=[...dmap.values()];
       const mBreak={};let tPrice=0;
       allD.forEach(r=>{const ym=r.returnDate?r.returnDate.substring(0,7):"不明";mBreak[ym]=(mBreak[ym]||{cnt:0,sum:0});mBreak[ym].cnt++;mBreak[ym].sum+=(r.price||0);tPrice+=(r.price||0);});
       const sortedM=Object.entries(mBreak).sort(([a],[b])=>a.localeCompare(b));
       return <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
-      <div className="flex items-center gap-2 mb-3 flex-wrap">{Object.entries(files).map(([k,f])=><div key={k} className="flex items-center gap-1"><OBadge ota={k}/><span className="text-xs font-bold">{f.data.length}件</span></div>)}<span className="text-gray-400">→</span><span className="text-base font-black text-blue-700">合計 {total}件 / ¥{tPrice.toLocaleString()}</span></div>
+      <div className="flex items-center gap-2 mb-3 flex-wrap">{Object.entries(files).map(([k,f])=><div key={k} className="flex items-center gap-1"><OBadge ota={k}/><span className="text-xs font-bold">{f.data.length}件</span></div>)}<span className="text-gray-400">→</span><span className="text-base font-black text-blue-700">合計 {allD.length}件 / ¥{tPrice.toLocaleString()}</span>{dupCnt>0&&<span className="text-xs text-amber-600 font-bold">（重複{dupCnt}件→price優先で統合）</span>}</div>
       <div style={{fontSize:10,color:"#475569",marginBottom:8,padding:"6px 8px",background:"#f8fafc",borderRadius:6}}>📅 返却月別: {sortedM.map(([ym,d])=><span key={ym} style={{marginRight:8}}><b>{ym.replace("-","/")}</b>:{d.cnt}件(¥{d.sum.toLocaleString()})</span>)}</div>
       <button onClick={()=>onImport(allD)} className="btn-primary" style={{padding:"10px 24px",fontSize:14}}>統合してタスクを生成 →</button>
     </div>;})()}
@@ -2927,12 +2931,17 @@ function App(){
     if(pendingPlaces&&Object.keys(pendingPlaces).length>0){
       imported=imported.map(r=>{const p=pendingPlaces[r.id];if(p)return{...r,delPlace:p.delPlace||r.delPlace,colPlace:p.colPlace||r.colPlace};return r;});
     }
+    // ★ 重複ID解消: 同じIDが複数OTAに存在する場合、price>0の方を優先
+    const dedupMap=new Map();
+    imported.forEach(r=>{const ex=dedupMap.get(r.id);if(ex){if((Number(r.price)||0)>(Number(ex.price)||0))dedupMap.set(r.id,r);else{/* 既存の方がprice高い→既存のpriceを現在のに反映 */if(!r.price&&ex.price){r.price=ex.price;}}}else dedupMap.set(r.id,r);});
+    imported=[...dedupMap.values()];
     // 既存データとマージ: インポートしたOTAの予約はCSV内容で置換、他OTAはそのまま
     const importedOTAs=new Set(imported.map(r=>r.ota));
     const importedIds=new Set(imported.map(r=>r.id));
     const kept=data.filter(r=>!importedOTAs.has(r.ota)||importedIds.has(r.id));
     const map=new Map(kept.map(r=>[r.id,r]));
-    imported.forEach(r=>map.set(r.id,r));
+    // ★ マージ時もprice>0優先
+    imported.forEach(r=>{const ex=map.get(r.id);if(ex&&!r.price&&ex.price){r.price=ex.price;}map.set(r.id,r);});
     const allData=[...map.values()].map(r=>({...r,price:Number(r.price)||0})); // 全データのprice正規化
     // ★ localStorageにもバックアップ保存（DB障害時の保険）
     try{localStorage.setItem("spk_reservations_backup",JSON.stringify(allData));}catch(e){}
@@ -3117,7 +3126,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v2026.03.09b";
+const APP_VERSION="v2026.03.09c";
 function Root(){
   const[auth,setAuth]=useState(!SB_ENABLED||localStorage.getItem("spk_auth")==="1");
   if(!auth)return <LoginScreen onLogin={()=>setAuth(true)}/>;
