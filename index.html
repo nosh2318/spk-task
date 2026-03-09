@@ -1147,7 +1147,7 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
       </div>
     </div>
 
-    {((unassigned)=>{const ua=data.filter(r=>r.status!=="cancelled"&&!fleet[r.id]);return ua.length>0?<div style={{borderBottom:"1px solid #fca5a5",background:"#fef2f2",padding:isMobile?"4px 8px":"12px 16px",flexShrink:0,maxHeight:collapsed.unassignedAlert?36:isMobile?120:undefined,overflow:"hidden"}}>
+    {((unassigned)=>{const ua=data.filter(r=>r.status!=="cancelled"&&!fleet[r.id]&&r.returnDate&&r.returnDate>=today);return ua.length>0?<div style={{borderBottom:"1px solid #fca5a5",background:"#fef2f2",padding:isMobile?"4px 8px":"12px 16px",flexShrink:0,maxHeight:collapsed.unassignedAlert?36:isMobile?120:undefined,overflow:"hidden"}}>
       <div style={{display:"flex",alignItems:"center",gap:6,fontSize:isMobile?10:12,fontWeight:700,color:"#dc2626"}}>
         <span>⚠</span>
         <span>未配車 {ua.length}件</span>
@@ -1855,10 +1855,15 @@ function Dashboard({data,fleet,vehicles}){
   },[monthData,selYM,daysInMo]);
   const maxDaily=Math.max(1,...dailyRevenue.map(d=>d.value));
 
-  // 月次推移データ（最大12ヶ月）
+  // 月次推移データ（データが存在する全月を表示）
   const monthlyTrend=useMemo(()=>{
-    const months=[];
-    for(let i=11;i>=0;i--){const ym=ymOff(curYM,-i);months.push(ym);}
+    const dataMonths=new Set();
+    data.forEach(r=>{if(r.returnDate)dataMonths.add(toYM(r.returnDate));});
+    dataMonths.add(curYM);
+    const sorted=[...dataMonths].sort();
+    const firstYM=sorted[0],lastYM=sorted[sorted.length-1];
+    const months=[];let ym=firstYM;
+    for(let i=0;i<36&&ym<=lastYM;i++){months.push(ym);ym=ymOff(ym,1);}
     return months.map(ym=>{
       const md=data.filter(r=>r.returnDate&&toYM(r.returnDate)===ym);
       return{ym,label:(parseInt(ym.split("-")[1]))+"月",revenue:md.reduce((s,r)=>s+(Number(r.price)||0),0),count:md.length};
@@ -2164,55 +2169,88 @@ function Dashboard({data,fleet,vehicles}){
     <HeatmapSection monthData={monthData} allData={data} selYM={selYM} ymLabel={ymLabel}/>
 
     {/* デバッグ: 売上検証（確認後に削除） */}
-    <div style={{...cardS,background:"#fffbeb",border:"1px solid #fbbf24"}}>
-      <div style={{fontSize:12,fontWeight:800,color:"#92400e",marginBottom:8}}>🔍 売上検証（デバッグ）</div>
-      <div style={{fontSize:10,color:"#78350f",lineHeight:1.8}}>
-        <div>全予約データ数: {data.length}件</div>
-        <div>返却月={ymLabel(selYM)}: {monthData.length}件</div>
-        <div>合計売上(返却日基準): ¥{totalRevenue.toLocaleString()}</div>
-
-        <div style={{marginTop:8,fontWeight:700}}>--- OTA別 売上フィールド名 ---</div>
-        <div>①A(エアトリ):「合計料金」/ 札幌フィルター有</div>
-        <div>②O(オフィシャル):「請求金額」/ フィルターなし</div>
-        <div>③R(楽天):「料金合計」/ 札幌フィルター有</div>
-        <div>④J(じゃらん):「合計金額（予約時）」/ 札幌フィルター有</div>
-        <div>⑤S(スカイチケット):「合計金額」/ 札幌フィルター有</div>
-        <div>RC(レンタカードットコム):「合計金額」/「料金合計」/ 札幌フィルター有</div>
-        <div style={{marginTop:4,fontSize:9,color:"#b45309"}}>※売上計上月＝返却日の月 / キャンセル除外 / 全期間取込</div>
-
-        <div style={{marginTop:8,fontWeight:700}}>--- OTA別 内訳（{ymLabel(selYM)}返却分）---</div>
-        {(()=>{
-          const otaMap={};
-          monthData.forEach(r=>{
-            const k=r.ota||"?";
-            if(!otaMap[k])otaMap[k]={count:0,revenue:0,zero:0};
-            otaMap[k].count++;
-            otaMap[k].revenue+=(r.price||0);
-            if(!r.price||r.price===0)otaMap[k].zero++;
-          });
-          return Object.entries(otaMap).sort((a,b)=>b[1].revenue-a[1].revenue).map(([k,v])=>
-            <div key={k} style={{fontWeight:600}}>
-              {k}: {v.count}件 / ¥{v.revenue.toLocaleString()}{v.zero>0?` (⚠️ price=0が${v.zero}件)`:""}
-            </div>
-          );
-        })()}
-
-        <div style={{marginTop:8,fontWeight:700}}>--- price型チェック ---</div>
-        {(()=>{
-          const types={};monthData.forEach(r=>{const t=typeof r.price;types[t]=(types[t]||0)+1;});
-          return <div>{Object.entries(types).map(([t,c])=><span key={t} style={{marginRight:8,color:t==="number"?"#059669":"#dc2626",fontWeight:700}}>{t}:{c}件</span>)}</div>;
-        })()}
-        <div style={{marginTop:8,fontWeight:700}}>--- price=0 の予約 ---</div>
-        {monthData.filter(r=>!r.price||r.price===0).length===0
-          ?<div>なし</div>
-          :<div>{monthData.filter(r=>!r.price||r.price===0).map((r,i)=><div key={i} style={{color:"#dc2626"}}>ID:{r.id} / {r.name} / OTA:{r.ota} / 貸出:{r.lendDate} / 返却:{r.returnDate} / price:{String(r.price)} / typeof:{typeof r.price}</div>)}</div>
-        }
-        <div style={{marginTop:8,fontWeight:700}}>--- 全予約price一覧（{ymLabel(selYM)}返却分）---</div>
-        <div style={{maxHeight:300,overflow:"auto",fontSize:9}}>
-          {monthData.sort((a,b)=>{const oa=(a.ota||"").localeCompare(b.ota||"");if(oa!==0)return oa;return(a.id||"").localeCompare(b.id||"");}).map((r,i)=><div key={i} style={{color:typeof r.price!=="number"?"#dc2626":"inherit"}}>{r.ota}/{r.id}/{r.name}: ¥{(Number(r.price)||0).toLocaleString()} [typeof:{typeof r.price}] (貸出:{r.lendDate} 返却:{r.returnDate})</div>)}
+    {(()=>{
+      const[dbg,setDbg]=React.useState({open:false,dbData:null,loading:false});
+      const fetchDB=async()=>{
+        setDbg(p=>({...p,loading:true}));
+        try{
+          const res=await DB.fetchReservations();
+          setDbg(p=>({...p,dbData:res,loading:false}));
+        }catch(e){setDbg(p=>({...p,loading:false}));}
+      };
+      const dbMonth=dbg.dbData?dbg.dbData.filter(r=>r.returnDate&&toYM(r.returnDate)===selYM):[];
+      const dbTotal=dbMonth.reduce((s,r)=>s+(Number(r.price)||0),0);
+      // LS backup check
+      let lsData=[];try{lsData=JSON.parse(localStorage.getItem("spk_reservations_backup")||"[]");}catch(e){}
+      const lsMonth=lsData.filter(r=>r.returnDate&&(r.returnDate.substring(0,7)===selYM||toYM(r.returnDate)===selYM));
+      const lsTotal=lsMonth.reduce((s,r)=>s+(Number(r.price)||0),0);
+      // 全月サマリー
+      const allMBreak={};data.forEach(r=>{const ym=r.returnDate?toYM(r.returnDate):"?";if(!allMBreak[ym])allMBreak[ym]={cnt:0,sum:0,z:0};allMBreak[ym].cnt++;allMBreak[ym].sum+=(Number(r.price)||0);if(!r.price)allMBreak[ym].z++;});
+      return <div style={{...cardS,background:"#fffbeb",border:"1px solid #fbbf24"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}} onClick={()=>setDbg(p=>({...p,open:!p.open}))}>
+          <div style={{fontSize:12,fontWeight:800,color:"#92400e"}}>🔍 売上検証（デバッグ）{!dbg.open?" ▼":" ▲"}</div>
+          <div style={{fontSize:10,color:"#b45309"}}>メモリ:¥{totalRevenue.toLocaleString()} / LS:¥{lsTotal.toLocaleString()}</div>
         </div>
-      </div>
-    </div>
+        {dbg.open&&<div style={{fontSize:10,color:"#78350f",lineHeight:1.8,marginTop:8}}>
+          {/* 全月サマリー */}
+          <div style={{fontWeight:700,marginBottom:4}}>📊 全月売上サマリー（メモリ内データ）</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:4,marginBottom:8}}>
+            {Object.entries(allMBreak).sort(([a],[b])=>a.localeCompare(b)).map(([ym,d])=>
+              <div key={ym} style={{padding:"3px 6px",background:d.z>0?"#fef2f2":"#ecfdf5",borderRadius:4,fontSize:9}}>
+                <b>{ym}</b>: {d.cnt}件 ¥{d.sum.toLocaleString()}{d.z>0&&<span style={{color:"#dc2626"}}> ⚠️{d.z}件price=0</span>}
+              </div>
+            )}
+          </div>
+
+          <div style={{fontWeight:700}}>--- {ymLabel(selYM)} 詳細 ---</div>
+          <div>メモリ: {monthData.length}件 / ¥{totalRevenue.toLocaleString()}</div>
+          <div>LS: {lsMonth.length}件 / ¥{lsTotal.toLocaleString()}{lsTotal!==totalRevenue&&<span style={{color:"#dc2626",fontWeight:700}}> ← 差額¥{Math.abs(lsTotal-totalRevenue).toLocaleString()}</span>}</div>
+
+          <button onClick={fetchDB} style={{margin:"6px 0",padding:"4px 12px",background:"#92400e",color:"#fff",border:"none",borderRadius:6,fontSize:10,cursor:"pointer"}}>
+            {dbg.loading?"読込中...":"🔄 DBから直接読込して比較"}
+          </button>
+          {dbg.dbData&&<div>
+            <div style={{color:dbTotal===totalRevenue?"#059669":"#dc2626",fontWeight:700}}>
+              DB: {dbMonth.length}件 / ¥{dbTotal.toLocaleString()}
+              {dbTotal!==totalRevenue&&` ← メモリと¥${Math.abs(dbTotal-totalRevenue).toLocaleString()}差額！`}
+              {dbTotal===totalRevenue&&" ✅ 一致"}
+            </div>
+            {dbTotal!==totalRevenue&&<div style={{marginTop:4,fontWeight:700}}>--- DB vs メモリ 差分 ---</div>}
+            {dbTotal!==totalRevenue&&dbMonth.map((dr,i)=>{
+              const mr=monthData.find(r=>r.id===dr.id);
+              const dp=Number(dr.price)||0,mp=mr?(Number(mr.price)||0):0;
+              if(dp===mp)return null;
+              return <div key={i} style={{color:"#dc2626",fontSize:9}}>
+                {dr.ota}/{dr.id}: DB=¥{dp.toLocaleString()} vs メモリ=¥{mp.toLocaleString()} (差=¥{(mp-dp).toLocaleString()}) [DBtype:{typeof dr.price}]
+              </div>;
+            })}
+          </div>}
+
+          <div style={{marginTop:8,fontWeight:700}}>--- OTA別 内訳（{ymLabel(selYM)}）---</div>
+          {(()=>{
+            const otaMap={};
+            monthData.forEach(r=>{const k=r.ota||"?";if(!otaMap[k])otaMap[k]={count:0,revenue:0,zero:0};otaMap[k].count++;otaMap[k].revenue+=(Number(r.price)||0);if(!r.price)otaMap[k].zero++;});
+            return Object.entries(otaMap).sort((a,b)=>b[1].revenue-a[1].revenue).map(([k,v])=>
+              <div key={k} style={{fontWeight:600}}>{k}: {v.count}件 / ¥{v.revenue.toLocaleString()}{v.zero>0?` (⚠️ price=0が${v.zero}件)`:""}</div>
+            );
+          })()}
+
+          <div style={{marginTop:8,fontWeight:700}}>--- price型チェック ---</div>
+          {(()=>{const types={};monthData.forEach(r=>{const t=typeof r.price;types[t]=(types[t]||0)+1;});return <div>{Object.entries(types).map(([t,c])=><span key={t} style={{marginRight:8,color:t==="number"?"#059669":"#dc2626",fontWeight:700}}>{t}:{c}件</span>)}</div>;})()}
+
+          <div style={{marginTop:8,fontWeight:700}}>--- price=0 の予約 ---</div>
+          {monthData.filter(r=>!r.price).length===0?<div style={{color:"#059669"}}>なし ✅</div>
+            :<div>{monthData.filter(r=>!r.price).map((r,i)=><div key={i} style={{color:"#dc2626"}}>ID:{r.id} / {r.name} / OTA:{r.ota} / 返却:{r.returnDate} / price:{JSON.stringify(r.price)} / typeof:{typeof r.price}</div>)}</div>}
+
+          <div style={{marginTop:8,fontWeight:700}}>--- 全予約一覧（{ymLabel(selYM)}返却分）---</div>
+          <div style={{maxHeight:300,overflow:"auto",fontSize:9}}>
+            {monthData.sort((a,b)=>{const oa=(a.ota||"").localeCompare(b.ota||"");if(oa!==0)return oa;return(Number(b.price)||0)-(Number(a.price)||0);}).map((r,i)=>
+              <div key={i} style={{color:!r.price?"#dc2626":"inherit"}}>{r.ota}/{r.id}/{r.name}: ¥{(Number(r.price)||0).toLocaleString()} (返却:{r.returnDate}){!r.price&&" ⚠️ZERO"}</div>
+            )}
+          </div>
+        </div>}
+      </div>;
+    })()}
   </div>;
 }
 
@@ -2931,7 +2969,16 @@ function App(){
         if(importingRef.current)return; // インポート中はRT更新をスキップ
         if(payload.eventType==="INSERT"||payload.eventType==="UPDATE"){
           const r=DB._fromDbRes(payload.new);
-          setData(prev=>{const idx=prev.findIndex(x=>x.id===r.id);if(idx>=0){const n=[...prev];n[idx]=r;return n;}return[...prev,r];});
+          setData(prev=>{
+            const idx=prev.findIndex(x=>x.id===r.id);
+            if(idx>=0){
+              const n=[...prev];
+              // ★ DBからprice=0/nullが来ても、既存にpriceがあれば保持（DB型問題の防御）
+              if(!r.price&&prev[idx].price){console.warn(`[RT] price保護: ${r.id} DB=0 → メモリ=${prev[idx].price}`);r.price=prev[idx].price;}
+              n[idx]=r;return n;
+            }
+            return[...prev,r];
+          });
         }else if(payload.eventType==="DELETE"){
           setData(prev=>prev.filter(x=>x.id!==payload.old.id));
         }
@@ -3008,9 +3055,10 @@ function App(){
 
   const imp=useCallback(async(d)=>{
     importingRef.current=true; // ★ 全てのDB再読込・RT更新をブロック
-    let imported=d;
+    // ★ 全priceをNumber型に正規化
+    let imported=d.map(r=>({...r,price:Number(r.price)||0}));
     if(pendingPlaces&&Object.keys(pendingPlaces).length>0){
-      imported=d.map(r=>{const p=pendingPlaces[r.id];if(p)return{...r,delPlace:p.delPlace||r.delPlace,colPlace:p.colPlace||r.colPlace};return r;});
+      imported=imported.map(r=>{const p=pendingPlaces[r.id];if(p)return{...r,delPlace:p.delPlace||r.delPlace,colPlace:p.colPlace||r.colPlace};return r;});
     }
     // 既存データとマージ: インポートしたOTAの予約はCSV内容で置換、他OTAはそのまま
     const importedOTAs=new Set(imported.map(r=>r.ota));
@@ -3018,7 +3066,7 @@ function App(){
     const kept=data.filter(r=>!importedOTAs.has(r.ota)||importedIds.has(r.id));
     const map=new Map(kept.map(r=>[r.id,r]));
     imported.forEach(r=>map.set(r.id,r));
-    const allData=[...map.values()];
+    const allData=[...map.values()].map(r=>({...r,price:Number(r.price)||0})); // 全データのprice正規化
     // ★ localStorageにもバックアップ保存（DB障害時の保険）
     try{localStorage.setItem("spk_reservations_backup",JSON.stringify(allData));}catch(e){}
     setData(allData);
@@ -3052,10 +3100,11 @@ function App(){
       // ★ DB保存完了後もしばらくガードを維持（RTイベントの遅延対策）
       setTimeout(()=>{importingRef.current=false;console.log("[imp] ガード解除");},15000);
     })();
-    // ★ インポート結果をalertで通知（ユーザーが確認できる）
-    const mBreak={};allData.forEach(r=>{const ym=r.returnDate?r.returnDate.substring(0,7):"?";mBreak[ym]=(mBreak[ym]||0)+1;});
-    const mStr=Object.entries(mBreak).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>`${k}:${v}件`).join(", ");
-    alert(`✅ ${allData.length}件取込完了\n\n月別内訳:\n${mStr}\n\n※DB保存中です。15秒間お待ちください。`);
+    // ★ インポート結果をalertで通知（件数＋売上）
+    const mBreak={};allData.forEach(r=>{const ym=r.returnDate?r.returnDate.substring(0,7):"?";if(!mBreak[ym])mBreak[ym]={cnt:0,sum:0};mBreak[ym].cnt++;mBreak[ym].sum+=(Number(r.price)||0);});
+    const mStr=Object.entries(mBreak).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>`${k}: ${v.cnt}件 ¥${v.sum.toLocaleString()}`).join("\n");
+    const totalSum=allData.reduce((s,r)=>s+(Number(r.price)||0),0);
+    alert(`✅ ${allData.length}件取込完了 / 総売上¥${totalSum.toLocaleString()}\n\n月別内訳:\n${mStr}\n\n※DB保存中です。15秒間お待ちください。`);
     // インポート後、既存タスクのオプション情報を強制更新
     (async()=>{
       const rOptsMap={};imported.forEach(r=>{rOptsMap[r.id]={b:!!r.optB,c:!!r.optC,j:!!r.optJ,usb:!!r.optUSB,parasol:!!r.optParasol};});
