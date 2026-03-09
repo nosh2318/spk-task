@@ -225,7 +225,7 @@ function SyncBadge({connected,inline}){
 }
 
 /* ===== CSV/TSV Parser ===== */
-function parseCSV(text){const lines=[];let cur="",inQ=false;for(let i=0;i<text.length;i++){const c=text[i];if(c==='"')inQ=!inQ;else if((c==="\n"||c==="\r")&&!inQ){if(cur.trim())lines.push(cur);cur="";if(c==="\r"&&text[i+1]==="\n")i++;}else cur+=c;}if(cur.trim())lines.push(cur);if(!lines.length)return[];const firstLine=lines[0];const tabs=firstLine.split("\t").length;const commas=firstLine.split(",").length;const sep=tabs>commas?"\t":",";return lines.map(l=>{const cells=[];let cell="",q=false;for(let i=0;i<l.length;i++){const c=l[i];if(c==='"')q=!q;else if(c===sep&&!q){cells.push(cell.trim());cell="";}else cell+=c;}cells.push(cell.trim());return cells;});}
+function parseCSV(text){const t=text.replace(/^\uFEFF/,"").replace(/\u200B/g,"");const lines=[];let cur="",inQ=false;for(let i=0;i<text.length;i++){const c=text[i];if(c==='"')inQ=!inQ;else if((c==="\n"||c==="\r")&&!inQ){if(cur.trim())lines.push(cur);cur="";if(c==="\r"&&text[i+1]==="\n")i++;}else cur+=c;}if(cur.trim())lines.push(cur);if(!lines.length)return[];const firstLine=lines[0];const tabs=firstLine.split("\t").length;const commas=firstLine.split(",").length;const sep=tabs>commas?"\t":",";return lines.map(l=>{const cells=[];let cell="",q=false;for(let i=0;i<l.length;i++){const c=l[i];if(c==='"')q=!q;else if(c===sep&&!q){cells.push(cell.trim());cell="";}else cell+=c;}cells.push(cell.trim());return cells;});}
 function readFile(file,cb){const r=new FileReader();r.onload=e=>{const a=new Uint8Array(e.target.result);let t;if(typeof Encoding!=="undefined"){const d=Encoding.detect(a);const u=Encoding.convert(a,{to:"UNICODE",from:d||"AUTO"});t=Encoding.codeToString(u);}else{t=new TextDecoder("utf-8").decode(a);if(!t.includes("事業者")&&!t.includes("予約")&&!t.includes("貸出"))try{t=new TextDecoder("shift_jis").decode(a);}catch(e){}}cb(t);};r.readAsArrayBuffer(file);}
 
 // 金額パース（カンマ・￥除去、複数フィールド名対応）
@@ -234,14 +234,32 @@ function parsePrice(g){return function(){for(let i=0;i<arguments.length;i++){con
 function isCancel(st,rowArr){if(st.includes("キャンセル"))return true;if(rowArr){const txt=rowArr.join(",");if(txt.includes("キャンセル"))return true;}return false;}
 // シート検出ヘルパー（チャイルド/ジュニア/ベビーを行全体からも検出）
 function detectSeats(opts,rowArr){const all=opts+(rowArr?","+rowArr.join(","):"");return{b:all.includes("ベビーシート")||all.includes("ベビー"),c:all.includes("チャイルドシート")||all.includes("チャイルド"),j:all.includes("ジュニアシート")||all.includes("ジュニア")};}
+// ロバストなCSV列取得（exact→正規化→部分一致のフォールバック）
+function makeG(r,h){
+  const hNorm=h.map(s=>(s||"").replace(/[\s\u3000\uFEFF\u200B]/g,""));
+  return function(n){
+    // 1) exact match
+    let i=h.indexOf(n);
+    if(i>=0)return r[i]||"";
+    // 2) normalized match（空白・全角スペース除去）
+    const nn=n.replace(/[\s\u3000\uFEFF\u200B]/g,"");
+    i=hNorm.indexOf(nn);
+    if(i>=0)return r[i]||"";
+    // 3) 部分一致（ヘッダーがnを含む or nがヘッダーを含む）
+    for(let j=0;j<hNorm.length;j++){
+      if(hNorm[j]&&(hNorm[j].includes(nn)||nn.includes(hNorm[j])))return r[j]||"";
+    }
+    return"";
+  };
+}
 /* ===== OTA Parsers ===== */
 const OTA={
-  S:{key:"S",name:"スカイチケット",c:"#0ea5e9",bg:"#f0f9ff",det:r=>r.join(",").includes("氏名カナ")&&r.join(",").includes("事業者名"),parse:(r,h)=>{const g=n=>r[h.indexOf(n)]||"";const ld=g("出発日"),rd=g("返却日"),cls=g("車両クラス"),opts=g("オプション項目"),seat=g("シート"),allOpts=[opts,seat].filter(Boolean).join(",");const ss=detectSeats(allOpts,r);return{ota:"S",id:g("予約番号"),name:g("氏名カナ"),lendDate:ld.split(" ")[0]?.replace(/\//g,"-"),lendTime:ld.split(" ")[1]?.substr(0,5),returnDate:rd.split(" ")[0]?.replace(/\//g,"-"),returnTime:rd.split(" ")[1]?.substr(0,5),people:+(g("ご利用人数(大人)")||0)+ +(g("ご利用人数(子供)")||0),vehicle:cls.replace(/_SPK|_HKD|^HKD_/g,""),insurance:allOpts.includes("NOC")?"NOC":"免責",tel:g("電話番号"),mail:g("メールアドレス"),price:parsePrice(g)("合計金額"),_priceRaw:g("合計金額"),status:isCancel(g("ステータス"),r)?"cancelled":"confirmed",visitType:"DEL",returnType:"COL",flight:g("到着便名"),optB:ss.b,optC:ss.c,optJ:ss.j,optUSB:allOpts.includes("USB"),optParasol:allOpts.includes("日傘")};}},
-  J:{key:"J",name:"じゃらん",c:"#ec4899",bg:"#fdf2f8",det:r=>r.join(",").includes("貸出日時")&&r.join(",").includes("料金プラン"),parse:(r,h)=>{const g=n=>r[h.indexOf(n)]||"";const ld=g("貸出日時"),rd=g("返却日時"),st=g("ステータス"),ins=g("免責補償"),opts=g("オプション")||"";const ss=detectSeats(opts,r);return{ota:"J",id:g("予約番号")||g("御社管理番号"),name:g("予約者氏名（カナ）")||g("予約者氏名(カナ)")||g("予約者氏名"),lendDate:ld.split(" ")[0]?.replace(/\//g,"-"),lendTime:ld.split(" ")[1]?.substr(0,5),returnDate:rd.split(" ")[0]?.replace(/\//g,"-"),returnTime:rd.split(" ")[1]?.substr(0,5),people:+(g("乗車人数")||0),vehicle:g("車両クラス").replace(/_SPK|_HKD|HKD_/g,""),insurance:ins.includes("ノンオペレーション")?"NOC":"免責",tel:g("運転者電話番号"),mail:g("予約者メールアドレス"),price:parsePrice(g)("合計金額（予約時）","合計金額(予約時)"),_priceRaw:(g("合計金額（予約時）")||g("合計金額(予約時)")||""),status:isCancel(st,r)?"cancelled":"confirmed",visitType:"DEL",returnType:"COL",flight:g("到着便"),optB:ss.b,optC:ss.c,optJ:ss.j,optUSB:opts.includes("USB"),optParasol:opts.includes("日傘")};}},
-  R:{key:"R",name:"楽天",c:"#ef4444",bg:"#fef2f2",det:r=>r.join(",").includes("楽天予約番号"),parse:(r,h)=>{const g=n=>r[h.indexOf(n)]||"";const ld=g("貸渡日時"),rd=g("返却日時"),m=g("貸渡方法"),st=g("予約ステータス"),opts=g("付帯サービス")||"";const ss=detectSeats(opts,r);return{ota:"R",id:g("楽天予約番号"),name:g("予約者氏名カナ")||g("予約者氏名"),lendDate:ld.split(" ")[0]?.replace(/\//g,"-"),lendTime:ld.split(" ")[1]?.substr(0,5),returnDate:rd.split(" ")[0]?.replace(/\//g,"-"),returnTime:rd.split(" ")[1]?.substr(0,5),people:+(g("乗車人数")||0),vehicle:(g("事業者車両クラスコード")||g("詳細車両クラスコード")||"").replace(/_SPK|_HKD|HKD_/g,""),insurance:opts.includes("NOC")?"NOC":"免責",tel:g("利用者連絡先"),mail:"",price:parsePrice(g)("料金合計"),_priceRaw:g("料金合計"),status:isCancel(st,r)?"cancelled":"confirmed",visitType:m==="来店"?"来店":"DEL",returnType:m==="来店"?"返却":"COL",flight:"",optB:ss.b,optC:ss.c,optJ:ss.j,optUSB:opts.includes("USB"),optParasol:opts.includes("日傘")};}},
-  A:{key:"A",name:"エアトリ",c:"#22c55e",bg:"#f0fdf4",det:r=>{const j=r.join(",");return j.includes("貸渡店舗")&&(j.includes("予約ID")||j.includes("予約番号"));},parse:(r,h)=>{const g=n=>r[h.indexOf(n)]||"";const ld=g("貸出日時"),rd=g("返却日時"),cls=g("詳細車両クラス")||g("事業者車両クラス")||"";const cm=cls.match(/_([A-Z])/);let v=cm?cm[1]:"C";const opts=g("オプション")||"";const ins=opts.includes("免責補償")?"NOC":"免責";const st=g("予約タイプ")||g("予約ステータス")||"";const ss=detectSeats(opts,r);return{ota:"A",id:g("予約番号"),name:g("予約者氏名(かな)")||g("予約者氏名(漢字)"),lendDate:ld.split(" ")[0]?.replace(/\//g,"-"),lendTime:ld.split(" ")[1]?.substr(0,5),returnDate:rd.split(" ")[0]?.replace(/\//g,"-"),returnTime:rd.split(" ")[1]?.substr(0,5),people:0,vehicle:v,insurance:ins,tel:g("運転者電話番号"),mail:g("予約者メールアドレス"),price:parsePrice(g)("合計料金"),_priceRaw:g("合計料金"),status:isCancel(st,r)?"cancelled":"confirmed",visitType:"DEL",returnType:"COL",flight:g("到着便名"),optB:ss.b,optC:ss.c,optJ:ss.j,optUSB:opts.includes("USB"),optParasol:opts.includes("日傘")};}},
-  O:{key:"O",name:"オフィシャル",c:"#6366f1",bg:"#eef2ff",skipSPKFilter:true,det:r=>{const j=r.join(",");return j.includes("デリバリー（お届け）")&&j.includes("予約元");},parse:(r,h)=>{const g=n=>{const i=h.indexOf(n);return i>=0?r[i]||"":"";};const src=g("予約元");if(src!=="オフィシャル"&&src!=="直予約")return null;const hd=g("デリバリー（お届け）選択有無")==="TRUE",hc=g("デリバリー（回収）選択有無")==="TRUE";const cls=g("車両クラス名");const cm=cls.match(/^([A-Z])/);let v=cm?cm[1]:"C";const cdw=+(g("オプション1001（免責補償制度（CDW））数")||0);const noc=+(g("オプション1002（レンタカー安心パック）数")||0);const ins=noc>0?"安心パック":cdw>0?"CDW":"なし";const fl=g("到着便名（行き）");return{ota:"O",id:g("予約番号"),name:g("予約者名"),lendDate:g("貸出日"),lendTime:g("貸出時間"),returnDate:g("返却日"),returnTime:g("返却時間"),people:+(g("大人数")||0)+ +(g("子供数")||0),vehicle:v,insurance:ins,tel:g("電話番号"),mail:g("メールアドレス"),price:parsePrice(g)("請求金額"),_priceRaw:g("請求金額"),status:isCancel(g("ステータス")||"",r)?"cancelled":"confirmed",visitType:hd?"DEL":"来店",returnType:hc?"COL":"返却",delTime:hd?g("デリバリー（お届け）時間"):"",delPlace:hd?g("デリバリー（お届け）場所"):"",colTime:hc?g("デリバリー（回収）時間"):"",colPlace:hc?g("デリバリー（回収）場所"):"",flight:fl&&fl!=="-"?fl:"",optB:+(g("ベビーシート数")||0)>0,optC:+(g("チャイルドシート数")||0)>0,optJ:+(g("ジュニアシート数")||0)>0,optUSB:+(g("USBポート数")||0)>0,optParasol:+(g("日傘数")||0)>0};}},
-  RC:{key:"RC",name:"レンタカードットコム",c:"#f97316",bg:"#fff7ed",det:r=>{const j=r.join(",");return j.includes("ブランド名")&&j.includes("貸出地域");},parse:(r,h)=>{const g=n=>r[h.indexOf(n)]||"";const ld=g("貸出日時"),rd=g("返却日時"),st=g("ステータス"),plan=g("プラン")||"",ins=g("免責補償"),opts=g("オプション内容")||"";const ss=detectSeats(opts,r);const cm=plan.match(/_([A-Z])/);let v=cm?cm[1]:"C";return{ota:"RC",id:g("予約番号"),name:g("予約者名カナ")||g("予約者名"),lendDate:ld.split(" ")[0]?.replace(/\//g,"-"),lendTime:ld.split(" ")[1]?.substr(0,5),returnDate:rd.split(" ")[0]?.replace(/\//g,"-"),returnTime:rd.split(" ")[1]?.substr(0,5),people:0,vehicle:v,insurance:ins==="加入する"?"NOC":"免責",tel:g("電話番号"),mail:"",price:parsePrice(g)("合計金額","料金合計","請求金額"),_priceRaw:(g("合計金額")||g("料金合計")||g("請求金額")||""),status:isCancel(st,r)?"cancelled":"confirmed",visitType:"DEL",returnType:"COL",flight:"",delPlace:g("貸出場所"),colPlace:g("返却場所"),optB:ss.b,optC:ss.c,optJ:ss.j,optUSB:opts.includes("USB"),optParasol:opts.includes("日傘")};}},
+  S:{key:"S",name:"スカイチケット",c:"#0ea5e9",bg:"#f0f9ff",det:r=>r.join(",").includes("氏名カナ")&&r.join(",").includes("事業者名"),parse:(r,h)=>{const g=makeG(r,h);const ld=g("出発日"),rd=g("返却日"),cls=g("車両クラス"),opts=g("オプション項目"),seat=g("シート"),allOpts=[opts,seat].filter(Boolean).join(",");const ss=detectSeats(allOpts,r);return{ota:"S",id:g("予約番号"),name:g("氏名カナ"),lendDate:ld.split(" ")[0]?.replace(/\//g,"-"),lendTime:ld.split(" ")[1]?.substr(0,5),returnDate:rd.split(" ")[0]?.replace(/\//g,"-"),returnTime:rd.split(" ")[1]?.substr(0,5),people:+(g("ご利用人数(大人)")||0)+ +(g("ご利用人数(子供)")||0),vehicle:cls.replace(/_SPK|_HKD|^HKD_/g,""),insurance:allOpts.includes("NOC")?"NOC":"免責",tel:g("電話番号"),mail:g("メールアドレス"),price:parsePrice(g)("合計金額"),_priceRaw:g("合計金額"),status:isCancel(g("ステータス"),r)?"cancelled":"confirmed",visitType:"DEL",returnType:"COL",flight:g("到着便名"),optB:ss.b,optC:ss.c,optJ:ss.j,optUSB:allOpts.includes("USB"),optParasol:allOpts.includes("日傘")};}},
+  J:{key:"J",name:"じゃらん",c:"#ec4899",bg:"#fdf2f8",det:r=>r.join(",").includes("貸出日時")&&r.join(",").includes("料金プラン"),parse:(r,h)=>{const g=makeG(r,h);const ld=g("貸出日時"),rd=g("返却日時"),st=g("ステータス"),ins=g("免責補償"),opts=g("オプション")||"";const ss=detectSeats(opts,r);return{ota:"J",id:g("予約番号")||g("御社管理番号"),name:g("予約者氏名（カナ）")||g("予約者氏名(カナ)")||g("予約者氏名"),lendDate:ld.split(" ")[0]?.replace(/\//g,"-"),lendTime:ld.split(" ")[1]?.substr(0,5),returnDate:rd.split(" ")[0]?.replace(/\//g,"-"),returnTime:rd.split(" ")[1]?.substr(0,5),people:+(g("乗車人数")||0),vehicle:g("車両クラス").replace(/_SPK|_HKD|HKD_/g,""),insurance:ins.includes("ノンオペレーション")?"NOC":"免責",tel:g("運転者電話番号"),mail:g("予約者メールアドレス"),price:parsePrice(g)("合計金額（予約時）","合計金額(予約時)"),_priceRaw:(g("合計金額（予約時）")||g("合計金額(予約時)")||""),status:isCancel(st,r)?"cancelled":"confirmed",visitType:"DEL",returnType:"COL",flight:g("到着便"),optB:ss.b,optC:ss.c,optJ:ss.j,optUSB:opts.includes("USB"),optParasol:opts.includes("日傘")};}},
+  R:{key:"R",name:"楽天",c:"#ef4444",bg:"#fef2f2",det:r=>r.join(",").includes("楽天予約番号"),parse:(r,h)=>{const g=makeG(r,h);const ld=g("貸渡日時"),rd=g("返却日時"),m=g("貸渡方法"),st=g("予約ステータス"),opts=g("付帯サービス")||"";const ss=detectSeats(opts,r);return{ota:"R",id:g("楽天予約番号"),name:g("予約者氏名カナ")||g("予約者氏名"),lendDate:ld.split(" ")[0]?.replace(/\//g,"-"),lendTime:ld.split(" ")[1]?.substr(0,5),returnDate:rd.split(" ")[0]?.replace(/\//g,"-"),returnTime:rd.split(" ")[1]?.substr(0,5),people:+(g("乗車人数")||0),vehicle:(g("事業者車両クラスコード")||g("詳細車両クラスコード")||"").replace(/_SPK|_HKD|HKD_/g,""),insurance:opts.includes("NOC")?"NOC":"免責",tel:g("利用者連絡先"),mail:"",price:parsePrice(g)("料金合計"),_priceRaw:g("料金合計"),status:isCancel(st,r)?"cancelled":"confirmed",visitType:m==="来店"?"来店":"DEL",returnType:m==="来店"?"返却":"COL",flight:"",optB:ss.b,optC:ss.c,optJ:ss.j,optUSB:opts.includes("USB"),optParasol:opts.includes("日傘")};}},
+  A:{key:"A",name:"エアトリ",c:"#22c55e",bg:"#f0fdf4",det:r=>{const j=r.join(",");return j.includes("貸渡店舗")&&(j.includes("予約ID")||j.includes("予約番号"));},parse:(r,h)=>{const g=makeG(r,h);const ld=g("貸出日時"),rd=g("返却日時"),cls=g("詳細車両クラス")||g("事業者車両クラス")||"";const cm=cls.match(/_([A-Z])/);let v=cm?cm[1]:"C";const opts=g("オプション")||"";const ins=opts.includes("免責補償")?"NOC":"免責";const st=g("予約タイプ")||g("予約ステータス")||"";const ss=detectSeats(opts,r);return{ota:"A",id:g("予約番号"),name:g("予約者氏名(かな)")||g("予約者氏名(漢字)"),lendDate:ld.split(" ")[0]?.replace(/\//g,"-"),lendTime:ld.split(" ")[1]?.substr(0,5),returnDate:rd.split(" ")[0]?.replace(/\//g,"-"),returnTime:rd.split(" ")[1]?.substr(0,5),people:0,vehicle:v,insurance:ins,tel:g("運転者電話番号"),mail:g("予約者メールアドレス"),price:parsePrice(g)("合計料金"),_priceRaw:g("合計料金"),status:isCancel(st,r)?"cancelled":"confirmed",visitType:"DEL",returnType:"COL",flight:g("到着便名"),optB:ss.b,optC:ss.c,optJ:ss.j,optUSB:opts.includes("USB"),optParasol:opts.includes("日傘")};}},
+  O:{key:"O",name:"オフィシャル",c:"#6366f1",bg:"#eef2ff",skipSPKFilter:true,det:r=>{const j=r.join(",");return j.includes("デリバリー（お届け）")&&j.includes("予約元");},parse:(r,h)=>{const g=makeG(r,h);const src=g("予約元");if(src!=="オフィシャル"&&src!=="直予約")return null;const hd=g("デリバリー（お届け）選択有無")==="TRUE",hc=g("デリバリー（回収）選択有無")==="TRUE";const cls=g("車両クラス名");const cm=cls.match(/^([A-Z])/);let v=cm?cm[1]:"C";const cdw=+(g("オプション1001（免責補償制度（CDW））数")||0);const noc=+(g("オプション1002（レンタカー安心パック）数")||0);const ins=noc>0?"安心パック":cdw>0?"CDW":"なし";const fl=g("到着便名（行き）");return{ota:"O",id:g("予約番号"),name:g("予約者名"),lendDate:g("貸出日"),lendTime:g("貸出時間"),returnDate:g("返却日"),returnTime:g("返却時間"),people:+(g("大人数")||0)+ +(g("子供数")||0),vehicle:v,insurance:ins,tel:g("電話番号"),mail:g("メールアドレス"),price:parsePrice(g)("請求金額"),_priceRaw:g("請求金額"),status:isCancel(g("ステータス")||"",r)?"cancelled":"confirmed",visitType:hd?"DEL":"来店",returnType:hc?"COL":"返却",delTime:hd?g("デリバリー（お届け）時間"):"",delPlace:hd?g("デリバリー（お届け）場所"):"",colTime:hc?g("デリバリー（回収）時間"):"",colPlace:hc?g("デリバリー（回収）場所"):"",flight:fl&&fl!=="-"?fl:"",optB:+(g("ベビーシート数")||0)>0,optC:+(g("チャイルドシート数")||0)>0,optJ:+(g("ジュニアシート数")||0)>0,optUSB:+(g("USBポート数")||0)>0,optParasol:+(g("日傘数")||0)>0};}},
+  RC:{key:"RC",name:"レンタカードットコム",c:"#f97316",bg:"#fff7ed",det:r=>{const j=r.join(",");return j.includes("ブランド名")&&j.includes("貸出地域");},parse:(r,h)=>{const g=makeG(r,h);const ld=g("貸出日時"),rd=g("返却日時"),st=g("ステータス"),plan=g("プラン")||"",ins=g("免責補償"),opts=g("オプション内容")||"";const ss=detectSeats(opts,r);const cm=plan.match(/_([A-Z])/);let v=cm?cm[1]:"C";return{ota:"RC",id:g("予約番号"),name:g("予約者名カナ")||g("予約者名"),lendDate:ld.split(" ")[0]?.replace(/\//g,"-"),lendTime:ld.split(" ")[1]?.substr(0,5),returnDate:rd.split(" ")[0]?.replace(/\//g,"-"),returnTime:rd.split(" ")[1]?.substr(0,5),people:0,vehicle:v,insurance:ins==="加入する"?"NOC":"免責",tel:g("電話番号"),mail:"",price:parsePrice(g)("合計金額","料金合計","請求金額"),_priceRaw:(g("合計金額")||g("料金合計")||g("請求金額")||""),status:isCancel(st,r)?"cancelled":"confirmed",visitType:"DEL",returnType:"COL",flight:"",delPlace:g("貸出場所"),colPlace:g("返却場所"),optB:ss.b,optC:ss.c,optJ:ss.j,optUSB:opts.includes("USB"),optParasol:opts.includes("日傘")};}},
 };
 function detectParse(rows){for(let i=0;i<Math.min(rows.length,10);i++){for(const[k,cfg]of Object.entries(OTA)){if(cfg.det(rows[i])){const hd=rows[i],data=[];let totalValid=0,skippedOther=0;const skipSPK=!!cfg.skipSPKFilter;
 // ★ ヘッダー診断ログ
@@ -2717,6 +2735,7 @@ function App(){
   const[resOpts,setResOpts]=useState(()=>{try{return JSON.parse(localStorage.getItem("spk_res_opts")||"{}}");}catch(e){return{};}});
   const saveResOpts=(newOpts)=>{setResOpts(newOpts);try{localStorage.setItem("spk_res_opts",JSON.stringify(newOpts));}catch(e){}};
   const[csvFiles,setCsvFiles]=useState({});const[csvLogs,setCsvLogs]=useState([]);const[csvPlaceLogs,setCsvPlaceLogs]=useState([]);
+  const[importDiag,setImportDiag]=useState(null); // インポート売上診断
   const[sbConnected,setSbConnected]=useState(false);
   const[dbLoaded,setDbLoaded]=useState(!SB_ENABLED);
 
@@ -2962,7 +2981,10 @@ function App(){
     console.log("%c[IMPORT診断] price=0件:"+zeroAll.length+" / 全件:"+allData.length,"color:#dc2626;font-weight:bold;font-size:14px");
     zeroAll.forEach(r=>console.warn(`[PRICE=0] ${r.ota}/${r.id}/${r.name} returnDate:${r.returnDate} _priceRaw:「${r._priceRaw}」 price:${r.price}`));
     Object.entries(mBreak).sort(([a],[b])=>a.localeCompare(b)).forEach(([ym,v])=>console.log(`[IMPORT] ${ym}: ${v.cnt}件 ¥${v.sum.toLocaleString()} (price=0: ${v.zeros.length}件)`));
-    alert(`✅ ${allData.length}件取込完了 / 総売上¥${totalSum.toLocaleString()}\n\n【今回インポート分 OTA別】\n${impOtaStr}\n\n【全体 月別内訳】\n${mStr}${zeroDetail}\n\n※ブラウザF12→Consoleで詳細ログ確認可能\n※DB保存中です。15秒間お待ちください。`);
+    // ★ 画面上に売上診断バナーを表示（alertの代わり）
+    const diagOta={};allData.forEach(r=>{const k=r.ota||"?";if(!diagOta[k])diagOta[k]={cnt:0,sum:0,z:0};diagOta[k].cnt++;diagOta[k].sum+=(Number(r.price)||0);if(!r.price)diagOta[k].z++;});
+    setImportDiag({ts:new Date().toLocaleTimeString(),total:allData.length,totalSum,mBreak,diagOta,zeroAll:zeroAll.slice(0,20)});
+    alert(`✅ ${allData.length}件取込完了 / 総売上¥${totalSum.toLocaleString()}\n\n【今回インポート分 OTA別】\n${impOtaStr}\n\n【全体 月別内訳】\n${mStr}${zeroDetail}\n\n※ 画面右上「v${APP_VERSION}」表示を確認\n※DB保存中です。15秒間お待ちください。`);
     // インポート後、既存タスクのオプション情報を強制更新
     (async()=>{
       const rOptsMap={};imported.forEach(r=>{rOptsMap[r.id]={b:!!r.optB,c:!!r.optC,j:!!r.optJ,usb:!!r.optUSB,parasol:!!r.optParasol};});
@@ -3068,7 +3090,24 @@ function App(){
           {tab==="fleet"&&<FleetTimeline data={data} fleet={fleet} onFleetChange={setFleetSync} today={today} maintenance={maintenance} onMaintenanceChange={setMaintenance} vehicles={vehicles} vehicleClasses={vehicleClasses} onAddReservation={addReservation} onBulkAddReservation={bulkAddReservation} onCancelReservation={cancelReservation} onReassignVehicle={reassignVehicle} unassignedReasons={unassignedReasons}/>}
           {tab==="vehicle"&&<VehicleManager vehicles={vehicles} onVehiclesChange={setVehiclesSync} vehicleClasses={vehicleClasses} onDeleteVehicle={(code)=>DB.deleteVehicle(code)}/>}
           {tab==="parking"&&<ParkingManager/>}
-          {tab==="dashboard"&&data.length>0&&<Dashboard data={data} fleet={fleet} vehicles={vehicles}/>}
+          {tab==="dashboard"&&data.length>0&&<>
+            {importDiag&&<div style={{background:"#fef3c7",border:"2px solid #f59e0b",borderRadius:12,padding:12,marginBottom:12,fontSize:11}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                <b style={{color:"#92400e",fontSize:13}}>📊 インポート売上診断 ({importDiag.ts})</b>
+                <button onClick={()=>setImportDiag(null)} style={{background:"none",border:"none",cursor:"pointer",fontSize:14}}>✕</button>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                <div><b>OTA別:</b>{Object.entries(importDiag.diagOta).map(([k,v])=><div key={k}>{k}: {v.cnt}件 ¥{v.sum.toLocaleString()}{v.z>0&&<span style={{color:"#dc2626"}}> ⚠️{v.z}件=0</span>}</div>)}</div>
+                <div><b>月別:</b>{Object.entries(importDiag.mBreak).sort(([a],[b])=>a.localeCompare(b)).map(([ym,v])=><div key={ym}>{ym}: {v.cnt}件 ¥{v.sum.toLocaleString()}{v.zeros?.length>0&&<span style={{color:"#dc2626"}}> ⚠️{v.zeros.length}件=0</span>}</div>)}</div>
+              </div>
+              {importDiag.zeroAll.length>0&&<div style={{marginTop:8,borderTop:"1px solid #f59e0b",paddingTop:8}}>
+                <b style={{color:"#dc2626"}}>price=0の予約:</b>
+                {importDiag.zeroAll.map((r,i)=><div key={i} style={{color:"#dc2626"}}>{r.ota}/{r.id}/{r.name} 返却:{r.returnDate} raw:「{r._priceRaw||"空"}」</div>)}
+              </div>}
+              <div style={{marginTop:6,fontSize:10,color:"#78350f"}}>合計: {importDiag.total}件 / ¥{importDiag.totalSum.toLocaleString()} | この数字がCSVの正しい合計と合っていますか？</div>
+            </div>}
+            <Dashboard data={data} fleet={fleet} vehicles={vehicles}/>
+          </>}
           {tab==="data"&&data.length>0&&<DataTable data={data} sheetPlaces={sheetPlaces} onUpdatePlaces={saveSheetPlaces}/>}
           {tab==="history"&&<PastTasksTable today={today}/>}
         </div>
@@ -3078,10 +3117,11 @@ function App(){
   </div>;
 }
 
+const APP_VERSION="v2026.03.09a";
 function Root(){
   const[auth,setAuth]=useState(!SB_ENABLED||localStorage.getItem("spk_auth")==="1");
   if(!auth)return <LoginScreen onLogin={()=>setAuth(true)}/>;
-  return <App/>;
+  return <><App/><div style={{position:"fixed",bottom:2,right:8,fontSize:9,color:"#94a3b8",zIndex:9999,pointerEvents:"none"}}>{APP_VERSION}</div></>;
 }
 ReactDOM.render(<Root/>,document.getElementById("root"));
 </script>
