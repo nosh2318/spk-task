@@ -470,7 +470,11 @@ function EditablePlace({value,field,mark:markFn,task,updFn}){
    CSV取込
    ========================================== */
 function CSVPanel({onImport,onUpdatePlaces,dataCount,pendingPlaces,onSetPendingPlaces,files,setFiles,logs,setLogs,placeLogs,setPlaceLogs}){
-  const handle=(e,k)=>{const f=e.target.files?.[0];if(!f)return;readFile(f,text=>{const rows=parseCSV(text);let res;if(k){const cfg=OTA[k];if(cfg){const skipSPK=!!cfg.skipSPKFilter;for(let i=0;i<Math.min(rows.length,10);i++){if(cfg.det(rows[i])){const hd=rows[i],data=[];let totalValid=0,skippedOther=0;for(let j=i+1;j<rows.length;j++){if(rows[j].length<3||!rows[j][0])continue;try{const p=cfg.parse(rows[j],hd);if(p&&p.lendDate&&p.status!=="cancelled"){totalValid++;if(!skipSPK){const rowText=rows[j].join(",").toUpperCase();if(!rowText.includes("札幌")){skippedOther++;continue;}}p.delTime=p.delTime||p.lendTime;p.colTime=p.colTime||p.returnTime;p.delPlace=p.delPlace||"";p.colPlace=p.colPlace||"";data.push(p);}}catch(e){}}res={ota:k,data,totalValid,skippedOther};break;}}}}if(!res)res=detectParse(rows);if(!res){setLogs(p=>[...p,{t:"err",m:`${f.name}: 検出失敗`}]);return;}const now=new Date();const ts=`${now.getMonth()+1}/${now.getDate()} ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;setFiles(p=>({...p,[res.ota]:{name:f.name,data:res.data,importedAt:ts}}));const isOfficial=OTA[res.ota]?.skipSPKFilter;const skipMsg=res.skippedOther>0?` (他店舗${res.skippedOther}件除外)`:"";const countLabel=isOfficial?`${res.data.length}件 (OTA${res.totalValid-res.data.length}件除外)`:`札幌${res.data.length}件${skipMsg}`;setLogs(p=>[...p,{t:"ok",m:`[${ts}] ${f.name} → ${OTA[res.ota].name} ${countLabel}`}]);});};
+  const handle=(e,k)=>{const f=e.target.files?.[0];if(!f)return;readFile(f,text=>{const rows=parseCSV(text);let res;if(k){const cfg=OTA[k];if(cfg){const skipSPK=!!cfg.skipSPKFilter;for(let i=0;i<Math.min(rows.length,10);i++){if(cfg.det(rows[i])){const hd=rows[i],data=[];let totalValid=0,skippedOther=0;for(let j=i+1;j<rows.length;j++){if(rows[j].length<3||!rows[j][0])continue;try{const p=cfg.parse(rows[j],hd);if(p&&p.lendDate&&p.status!=="cancelled"){totalValid++;if(!skipSPK){const rowText=rows[j].join(",").toUpperCase();if(!rowText.includes("札幌")){skippedOther++;continue;}}p.delTime=p.delTime||p.lendTime;p.colTime=p.colTime||p.returnTime;p.delPlace=p.delPlace||"";p.colPlace=p.colPlace||"";data.push(p);}}catch(e){}}res={ota:k,data,totalValid,skippedOther};break;}}}}if(!res)res=detectParse(rows);if(!res){setLogs(p=>[...p,{t:"err",m:`${f.name}: 検出失敗`}]);return;}const now=new Date();const ts=`${now.getMonth()+1}/${now.getDate()} ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;setFiles(p=>({...p,[res.ota]:{name:f.name,data:res.data,importedAt:ts}}));const isOfficial=OTA[res.ota]?.skipSPKFilter;const skipMsg=res.skippedOther>0?` (他店舗${res.skippedOther}件除外)`:"";const countLabel=isOfficial?`${res.data.length}件 (OTA${res.totalValid-res.data.length}件除外)`:`札幌${res.data.length}件${skipMsg}`;
+    // 月別内訳を生成
+    const monthBreak={};let totalPrice=0;res.data.forEach(r=>{const ym=r.returnDate?r.returnDate.substring(0,7):"不明";monthBreak[ym]=(monthBreak[ym]||0)+1;totalPrice+=(r.price||0);});
+    const monthStr=Object.entries(monthBreak).sort(([a],[b])=>a.localeCompare(b)).map(([ym,cnt])=>`${ym.replace("-","/")}:${cnt}件`).join(" / ");
+    setLogs(p=>[...p,{t:"ok",m:`[${ts}] ${f.name} → ${OTA[res.ota].name} ${countLabel} ¥${totalPrice.toLocaleString()} 【全期間】${monthStr}`}]);});};
   const total=Object.values(files).reduce((s,f)=>s+f.data.length,0);
   return <div style={{maxWidth:960,margin:"0 auto"}}>
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-4">
@@ -486,10 +490,16 @@ function CSVPanel({onImport,onUpdatePlaces,dataCount,pendingPlaces,onSetPendingP
       </div>
     </div>
     {logs.length>0&&<div className="bg-white rounded-xl shadow-sm border border-gray-200 p-3 mb-4">{logs.map((l,i)=><div key={i} className="text-xs px-2 py-1 rounded mb-1" style={{background:l.t==="err"?"#fef2f2":"#f0fdf4",color:l.t==="err"?"#b91c1c":"#15803d"}}>{l.t==="err"?"✗":"✓"} {l.m}</div>)}</div>}
-    {total>0&&<div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
-      <div className="flex items-center gap-2 mb-3 flex-wrap">{Object.entries(files).map(([k,f])=><div key={k} className="flex items-center gap-1"><OBadge ota={k}/><span className="text-xs font-bold">{f.data.length}件</span></div>)}<span className="text-gray-400">→</span><span className="text-base font-black text-blue-700">合計 {total}件</span></div>
-      <button onClick={()=>onImport(Object.values(files).flatMap(f=>f.data))} className="btn-primary" style={{padding:"10px 24px",fontSize:14}}>統合してタスクを生成 →</button>
-    </div>}
+    {total>0&&(()=>{
+      const allD=Object.values(files).flatMap(f=>f.data);
+      const mBreak={};let tPrice=0;
+      allD.forEach(r=>{const ym=r.returnDate?r.returnDate.substring(0,7):"不明";mBreak[ym]=(mBreak[ym]||{cnt:0,sum:0});mBreak[ym].cnt++;mBreak[ym].sum+=(r.price||0);tPrice+=(r.price||0);});
+      const sortedM=Object.entries(mBreak).sort(([a],[b])=>a.localeCompare(b));
+      return <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+      <div className="flex items-center gap-2 mb-3 flex-wrap">{Object.entries(files).map(([k,f])=><div key={k} className="flex items-center gap-1"><OBadge ota={k}/><span className="text-xs font-bold">{f.data.length}件</span></div>)}<span className="text-gray-400">→</span><span className="text-base font-black text-blue-700">合計 {total}件 / ¥{tPrice.toLocaleString()}</span></div>
+      <div style={{fontSize:10,color:"#475569",marginBottom:8,padding:"6px 8px",background:"#f8fafc",borderRadius:6}}>📅 返却月別: {sortedM.map(([ym,d])=><span key={ym} style={{marginRight:8}}><b>{ym.replace("-","/")}</b>:{d.cnt}件(¥{d.sum.toLocaleString()})</span>)}</div>
+      <button onClick={()=>onImport(allD)} className="btn-primary" style={{padding:"10px 24px",fontSize:14}}>統合してタスクを生成 →</button>
+    </div>;})()}
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mt-4">
       <h3 className="text-base font-bold mb-1" style={{display:"flex",alignItems:"center",gap:8}}><span style={{background:"#4f46e5",color:"#fff",borderRadius:"50%",width:24,height:24,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700}}>2</span>場所CSV取込</h3>
       <p className="text-xs text-gray-500 mb-3">予約番号でお届け場所・回収場所を一括更新 → OPシートにGoogleマップリンク付きで表示されます<br/>CSVフォーマット: 予約番号, お届け場所, 回収場所{dataCount===0&&<span style={{color:"#b45309",fontWeight:600}}><br/>※ Step 1のCSV取込後にマッチングされます（先に読み込みも可能）</span>}</p>
@@ -2982,6 +2992,7 @@ function App(){
     imported.forEach(r=>map.set(r.id,r));
     const allData=[...map.values()];
     setData(allData);
+    console.log(`[imp] imported=${imported.length}件, allData=${allData.length}件, OTAs=${[...importedOTAs].join(",")}`);
     // 配車データ: CSVにない予約のfleetエントリを削除
     const allIds=new Set(allData.map(r=>r.id));
     const cleanFleet={};Object.entries(fleet).forEach(([rid,vc])=>{if(allIds.has(rid))cleanFleet[rid]=vc;});
