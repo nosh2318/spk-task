@@ -1301,7 +1301,15 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
       // 不足予約を追加
       const gen=generateTasks(reservations,date,fleetRef.current,vehicles);
       const existIds=new Set(fixed.filter(t=>t.reservationId).map(t=>t.reservationId+":"+t.type));
-      gen.forEach(g=>{if(g.reservationId&&!existIds.has(g.reservationId+":"+g.type))fixed.push(g);});
+      // ★ 新規生成タスクにsheetPlacesの場所情報を補完
+      gen.forEach(g=>{
+        if(g.reservationId&&!existIds.has(g.reservationId+":"+g.type)){
+          const sp=sheetPlaces[g.reservationId];
+          if(sp&&!g.place){if(g.type==="DEL"&&sp.delPlace)g.place=sp.delPlace;if(g.type==="COL"&&sp.colPlace)g.place=sp.colPlace;}
+          if(sp&&g.type==="DEL"&&!g.colPlace&&sp.colPlace)g.colPlace=sp.colPlace;
+          fixed.push(g);
+        }
+      });
       // fleet情報をタスクに反映（DBが古い場合の対策）
       const fl=fleetRef.current;let fleetApplied=false;
       const fixedWithFleet=fixed.map(t=>{
@@ -1330,11 +1338,21 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
       });
       if(fixedWithFleet.length!==saved.length||fixedWithFleet.some((t,i)=>t._id!==saved[i]?._id)||fleetApplied||removed.length){
         DB.upsertTasks(fixedWithFleet,date);
+      } else {
+        // ★ upsertTasksを呼ばない場合でも、マージ結果（_changed/place等）をLSに確実に保存
+        DB._lsSave(fixedWithFleet,date);
       }
       setTasks(fixedWithFleet);return;
     }
     // 2. DBにタスクなし→自動生成
     const gen=generateTasks(reservations,date,fleetRef.current,vehicles);
+    // ★ sheetPlacesから場所情報を補完
+    gen.forEach(g=>{
+      if(!g.reservationId)return;
+      const sp=sheetPlaces[g.reservationId];
+      if(sp&&!g.place){if(g.type==="DEL"&&sp.delPlace)g.place=sp.delPlace;if(g.type==="COL"&&sp.colPlace)g.place=sp.colPlace;}
+      if(sp&&g.type==="DEL"&&!g.colPlace&&sp.colPlace)g.colPlace=sp.colPlace;
+    });
     setTasks(gen);
     if(gen.length)DB.upsertTasks(gen,date);
   },[reservations,vehicles]);
@@ -1439,6 +1457,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
       pendingSaves.current--;
       setSaveStatus(DB._dbSaveOk?(pendingSaves.current>0?"saving":"ok"):"error");
       if(onUpdateSheetPlaces)onUpdateSheetPlaces({...sheetPlaces,...placeMap});
+      // ★ placesテーブルにも保存（他端末・リロード時にも場所情報を復元可能にする）
+      DB.upsertPlaces(placeMap);
       alert(`${matched}件の予約の場所情報を更新しました`);
     }catch(e){alert("場所データ取得エラー: "+e.message);}
     setPlaceLoading(false);
@@ -2797,8 +2817,8 @@ function App(){
         }catch(e){console.log("[init] changed_json check:",e.message);}
       }
       try{
-        const[resDB,flDB,stDB,vhDB,shDB,mtDB]=await Promise.all([
-          DB.fetchReservations(),DB.fetchFleet(),DB.fetchStaff(),DB.fetchVehicles(),DB.fetchShifts(),DB.fetchMaintenance()
+        const[resDB,flDB,stDB,vhDB,shDB,mtDB,plDB]=await Promise.all([
+          DB.fetchReservations(),DB.fetchFleet(),DB.fetchStaff(),DB.fetchVehicles(),DB.fetchShifts(),DB.fetchMaintenance(),DB.fetchPlaces()
         ]);
         if(resDB.length)setData(resDB);
         if(Object.keys(flDB).length)setFleet(flDB);
@@ -2806,6 +2826,10 @@ function App(){
         if(vhDB&&vhDB.length)setVehicles(vhDB);
         if(shDB)setShifts(shDB);
         if(mtDB&&mtDB.length)setMaintenance(mtDB);
+        // ★ DBのplacesテーブルとlocalStorageをマージ（場所情報の消失防止）
+        if(plDB&&Object.keys(plDB).length){
+          setSheetPlaces(prev=>{const merged={...prev,...plDB};try{localStorage.setItem("spk_sheet_places",JSON.stringify(merged));}catch(e){}return merged;});
+        }
         setSbConnected(true);
       }catch(e){console.error("DB load error:",e);}
       setDbLoaded(true);
