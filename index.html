@@ -243,7 +243,24 @@ const OTA={
   O:{key:"O",name:"オフィシャル",c:"#6366f1",bg:"#eef2ff",skipSPKFilter:true,det:r=>{const j=r.join(",");return j.includes("デリバリー（お届け）")&&j.includes("予約元");},parse:(r,h)=>{const g=n=>{const i=h.indexOf(n);return i>=0?r[i]||"":"";};const src=g("予約元");if(src!=="オフィシャル"&&src!=="直予約")return null;const hd=g("デリバリー（お届け）選択有無")==="TRUE",hc=g("デリバリー（回収）選択有無")==="TRUE";const cls=g("車両クラス名");const cm=cls.match(/^([A-Z])/);let v=cm?cm[1]:"C";const cdw=+(g("オプション1001（免責補償制度（CDW））数")||0);const noc=+(g("オプション1002（レンタカー安心パック）数")||0);const ins=noc>0?"安心パック":cdw>0?"CDW":"なし";const fl=g("到着便名（行き）");return{ota:"O",id:g("予約番号"),name:g("予約者名"),lendDate:g("貸出日"),lendTime:g("貸出時間"),returnDate:g("返却日"),returnTime:g("返却時間"),people:+(g("大人数")||0)+ +(g("子供数")||0),vehicle:v,insurance:ins,tel:g("電話番号"),mail:g("メールアドレス"),price:parsePrice(g)("請求金額"),_priceRaw:g("請求金額"),status:isCancel(g("ステータス")||"",r)?"cancelled":"confirmed",visitType:hd?"DEL":"来店",returnType:hc?"COL":"返却",delTime:hd?g("デリバリー（お届け）時間"):"",delPlace:hd?g("デリバリー（お届け）場所"):"",colTime:hc?g("デリバリー（回収）時間"):"",colPlace:hc?g("デリバリー（回収）場所"):"",flight:fl&&fl!=="-"?fl:"",optB:+(g("ベビーシート数")||0)>0,optC:+(g("チャイルドシート数")||0)>0,optJ:+(g("ジュニアシート数")||0)>0,optUSB:+(g("USBポート数")||0)>0,optParasol:+(g("日傘数")||0)>0};}},
   RC:{key:"RC",name:"レンタカードットコム",c:"#f97316",bg:"#fff7ed",det:r=>{const j=r.join(",");return j.includes("ブランド名")&&j.includes("貸出地域");},parse:(r,h)=>{const g=n=>r[h.indexOf(n)]||"";const ld=g("貸出日時"),rd=g("返却日時"),st=g("ステータス"),plan=g("プラン")||"",ins=g("免責補償"),opts=g("オプション内容")||"";const ss=detectSeats(opts,r);const cm=plan.match(/_([A-Z])/);let v=cm?cm[1]:"C";return{ota:"RC",id:g("予約番号"),name:g("予約者名カナ")||g("予約者名"),lendDate:ld.split(" ")[0]?.replace(/\//g,"-"),lendTime:ld.split(" ")[1]?.substr(0,5),returnDate:rd.split(" ")[0]?.replace(/\//g,"-"),returnTime:rd.split(" ")[1]?.substr(0,5),people:0,vehicle:v,insurance:ins==="加入する"?"NOC":"免責",tel:g("電話番号"),mail:"",price:parsePrice(g)("合計金額","料金合計","請求金額"),_priceRaw:(g("合計金額")||g("料金合計")||g("請求金額")||""),status:isCancel(st,r)?"cancelled":"confirmed",visitType:"DEL",returnType:"COL",flight:"",delPlace:g("貸出場所"),colPlace:g("返却場所"),optB:ss.b,optC:ss.c,optJ:ss.j,optUSB:opts.includes("USB"),optParasol:opts.includes("日傘")};}},
 };
-function detectParse(rows){for(let i=0;i<Math.min(rows.length,10);i++){for(const[k,cfg]of Object.entries(OTA)){if(cfg.det(rows[i])){const hd=rows[i],data=[];let totalValid=0,skippedOther=0;const skipSPK=!!cfg.skipSPKFilter;for(let j=i+1;j<rows.length;j++){if(rows[j].length<3||!rows[j][0])continue;try{const p=cfg.parse(rows[j],hd);if(p&&p.lendDate&&p.status!=="cancelled"){totalValid++;if(!skipSPK){const rowText=rows[j].join(",").toUpperCase();if(!rowText.includes("札幌")){skippedOther++;continue;}}p.delTime=p.delTime||p.lendTime;p.colTime=p.colTime||p.returnTime;p.delPlace=p.delPlace||"";p.colPlace=p.colPlace||"";data.push(p);}}catch(e){}}return{ota:k,data,totalValid,skippedOther};}}}return null;}
+function detectParse(rows){for(let i=0;i<Math.min(rows.length,10);i++){for(const[k,cfg]of Object.entries(OTA)){if(cfg.det(rows[i])){const hd=rows[i],data=[];let totalValid=0,skippedOther=0;const skipSPK=!!cfg.skipSPKFilter;
+// ★ ヘッダー診断ログ
+const priceColNames={"S":["合計金額"],"J":["合計金額（予約時）","合計金額(予約時)"],"R":["料金合計"],"A":["合計料金"],"O":["請求金額"],"RC":["合計金額","料金合計","請求金額"]}[k]||[];
+const foundPriceCols=priceColNames.map(n=>({name:n,idx:hd.indexOf(n),found:hd.indexOf(n)>=0}));
+console.log(`%c[CSV診断] OTA=${k} ヘッダー全${hd.length}列: ${JSON.stringify(hd)}`,"color:#2563eb;font-weight:bold");
+console.log(`%c[CSV診断] 金額列チェック: ${JSON.stringify(foundPriceCols)}`,"color:"+(foundPriceCols.some(c=>c.found)?"#059669":"#dc2626")+";font-weight:bold");
+// ★ 金額列が見つからない場合、類似列名を探す
+if(!foundPriceCols.some(c=>c.found)){const candidates=hd.filter(h=>h&&(h.includes("金額")||h.includes("料金")||h.includes("price")||h.includes("Price")||h.includes("合計")||h.includes("請求")));console.warn(`[CSV診断] ⚠️ 金額列が見つかりません! 類似列: ${JSON.stringify(candidates)}`);}
+let priceZeroCnt=0,priceTotalSum=0;
+for(let j=i+1;j<rows.length;j++){if(rows[j].length<3||!rows[j][0])continue;try{const p=cfg.parse(rows[j],hd);if(p&&p.lendDate&&p.status!=="cancelled"){totalValid++;
+// ★ price診断（最初の5件 + price=0の件）
+if(totalValid<=5||!p.price){const g=n=>rows[j][hd.indexOf(n)]||"";const rawVals=priceColNames.map(n=>`${n}=[${g(n)}]`).join(", ");console.log(`[CSV診断] row${j} ${p.id}: price=${p.price}, _priceRaw="${p._priceRaw}", 列値: ${rawVals}`);}
+if(!p.price)priceZeroCnt++;priceTotalSum+=(Number(p.price)||0);
+if(!skipSPK){const rowText=rows[j].join(",").toUpperCase();if(!rowText.includes("札幌")){skippedOther++;continue;}}p.delTime=p.delTime||p.lendTime;p.colTime=p.colTime||p.returnTime;p.delPlace=p.delPlace||"";p.colPlace=p.colPlace||"";data.push(p);}}catch(e){}}
+console.log(`%c[CSV診断] OTA=${k} 結果: 有効${totalValid}件(内price=0:${priceZeroCnt}件) / 札幌フィルタ後${data.length}件 / スキップ${skippedOther}件 / 売上合計¥${priceTotalSum.toLocaleString()}`,"color:#7c3aed;font-weight:bold");
+// ★ 札幌フィルタでスキップされた予約のprice合計
+if(skippedOther>0){const skippedSum=priceTotalSum-data.reduce((s,r)=>s+(Number(r.price)||0),0);console.warn(`[CSV診断] ⚠️ 札幌以外でスキップ${skippedOther}件の売上: ¥${skippedSum.toLocaleString()}`);}
+return{ota:k,data,totalValid,skippedOther};}}}return null;}
 
 /* ===== 定数 ===== */
 const SLOTS=["08:00","08:30","09:00","09:30","10:00","10:30","11:00","11:30","12:00","12:30","13:00","13:30","14:00","14:30","15:00","15:30","16:00","16:30","17:00","17:30","18:00","18:30","19:00"];
@@ -2932,17 +2949,20 @@ function App(){
       setTimeout(()=>{importingRef.current=false;console.log("[imp] ガード解除");},15000);
     })();
     // ★ インポート結果をalertで通知（件数＋売上）
+    // --- 今回インポート分だけのOTA別サマリー ---
+    const impOtaSum={};imported.forEach(r=>{const k=r.ota||"?";if(!impOtaSum[k])impOtaSum[k]={cnt:0,sum:0,z:0};impOtaSum[k].cnt++;impOtaSum[k].sum+=(Number(r.price)||0);if(!r.price)impOtaSum[k].z++;});
+    const impOtaStr=Object.entries(impOtaSum).map(([k,v])=>`  ${k}: ${v.cnt}件 ¥${v.sum.toLocaleString()}${v.z?` (${v.z}件=0)`:""}`).join("\n");
+    // --- 全体の月別サマリー ---
     const mBreak={};allData.forEach(r=>{const ym=r.returnDate?r.returnDate.substring(0,7):"?";if(!mBreak[ym])mBreak[ym]={cnt:0,sum:0,zeros:[]};mBreak[ym].cnt++;mBreak[ym].sum+=(Number(r.price)||0);if(!r.price)mBreak[ym].zeros.push(r);});
     const mStr=Object.entries(mBreak).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>`${k}: ${v.cnt}件 ¥${v.sum.toLocaleString()}${v.zeros.length?` ⚠️${v.zeros.length}件price=0`:""}`).join("\n");
     const totalSum=allData.reduce((s,r)=>s+(Number(r.price)||0),0);
     const zeroAll=allData.filter(r=>!r.price);
     const zeroDetail=zeroAll.length>0?`\n\n⚠️ price=0: ${zeroAll.length}件\n`+zeroAll.slice(0,10).map(r=>`  ${r.ota}/${r.id} raw:「${r._priceRaw||"なし"}」`).join("\n")+(zeroAll.length>10?`\n  ...他${zeroAll.length-10}件`:""):"";
-    // ★ 診断ログ: 全予約のprice + _priceRaw をコンソールに出力
-    console.log("[IMPORT診断] price=0件:",zeroAll.length,"/ 全件:",allData.length);
+    // ★ 診断ログ
+    console.log("%c[IMPORT診断] price=0件:"+zeroAll.length+" / 全件:"+allData.length,"color:#dc2626;font-weight:bold;font-size:14px");
     zeroAll.forEach(r=>console.warn(`[PRICE=0] ${r.ota}/${r.id}/${r.name} returnDate:${r.returnDate} _priceRaw:「${r._priceRaw}」 price:${r.price}`));
-    // 月別サマリーもログ
     Object.entries(mBreak).sort(([a],[b])=>a.localeCompare(b)).forEach(([ym,v])=>console.log(`[IMPORT] ${ym}: ${v.cnt}件 ¥${v.sum.toLocaleString()} (price=0: ${v.zeros.length}件)`));
-    alert(`✅ ${allData.length}件取込完了 / 総売上¥${totalSum.toLocaleString()}\n\n月別内訳:\n${mStr}${zeroDetail}\n\n※DB保存中です。15秒間お待ちください。`);
+    alert(`✅ ${allData.length}件取込完了 / 総売上¥${totalSum.toLocaleString()}\n\n【今回インポート分 OTA別】\n${impOtaStr}\n\n【全体 月別内訳】\n${mStr}${zeroDetail}\n\n※ブラウザF12→Consoleで詳細ログ確認可能\n※DB保存中です。15秒間お待ちください。`);
     // インポート後、既存タスクのオプション情報を強制更新
     (async()=>{
       const rOptsMap={};imported.forEach(r=>{rOptsMap[r.id]={b:!!r.optB,c:!!r.optC,j:!!r.optJ,usb:!!r.optUSB,parasol:!!r.optParasol};});
