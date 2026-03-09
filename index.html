@@ -2904,6 +2904,7 @@ function App(){
     if(!sb)return;
     const ch=sb.channel("spk-realtime")
       .on("postgres_changes",{event:"*",schema:"public",table:"reservations"},payload=>{
+        if(importingRef.current)return; // インポート中はRT更新をスキップ
         if(payload.eventType==="INSERT"||payload.eventType==="UPDATE"){
           const r=DB._fromDbRes(payload.new);
           setData(prev=>{const idx=prev.findIndex(x=>x.id===r.id);if(idx>=0){const n=[...prev];n[idx]=r;return n;}return[...prev,r];});
@@ -2912,6 +2913,7 @@ function App(){
         }
       })
       .on("postgres_changes",{event:"*",schema:"public",table:"fleet"},payload=>{
+        if(importingRef.current)return; // インポート中はRT更新をスキップ
         if(payload.eventType==="DELETE"){
           setFleet(prev=>{const n={...prev};delete n[payload.old.reservation_id];return n;});
         }else{
@@ -3009,16 +3011,42 @@ function App(){
     saveResOpts(newResOpts);
     // CSVから消えた予約をDBから削除
     const removedIds=data.filter(r=>importedOTAs.has(r.ota)&&!importedIds.has(r.id)).map(r=>r.id);
-    if(removedIds.length){await DB.deleteReservations(removedIds);removedIds.forEach(id=>DB.deleteFleetOne(id));}
-    // DB保存（awaitで完了を待つ → onFocusの上書き防止）
+    if(removedIds.length){
+      try{await DB.deleteReservations(removedIds);removedIds.forEach(id=>DB.deleteFleetOne(id));}catch(e){console.error("delete error:",e);}
+    }
+    // DB保存（バッチ分割 + await で確実に完了を待つ）
+    let saveOk=false;
     try{
-      await DB.upsertReservations(imported);
+      // 50件ずつバッチでupsert（大量データでのタイムアウト防止）
+      const batch=50;
+      for(let i=0;i<imported.length;i+=batch){
+        const chunk=imported.slice(i,i+batch);
+        const rows=chunk.map(DB._toDbRes);
+        const{error}=await sb.from("reservations").upsert(rows,{onConflict:"id"});
+        if(error)throw new Error(`batch ${i}-${i+chunk.length}: ${error.message}`);
+      }
       dbLog("imp reservations",true,imported.length+"件");
       await DB.upsertFleet(newFleet);
-      dbLog("imp fleet",true,"saved");
-    }catch(e){dbLog("imp reservations/fleet",false,e.message);}
-    // DB保存完了後にフラグ解除（少し遅延させてonFocusとの競合を防ぐ）
-    setTimeout(()=>{importingRef.current=false;},3000);
+      saveOk=true;
+    }catch(e){
+      console.error("imp save error:",e);
+      dbLog("imp save",false,e.message);
+      alert("⚠️ DB保存エラー: "+e.message);
+    }
+    // 保存成功後、DBから再読込して確実にデータを定着
+    if(saveOk){
+      try{
+        const verified=await DB.fetchReservations();
+        if(verified&&verified.length>0){
+          setData(verified);
+          console.log(`[imp] 検証完了: DB=${verified.length}件`);
+          const savedMonths={};verified.forEach(r=>{const ym=r.returnDate?r.returnDate.substring(0,7):"?";savedMonths[ym]=(savedMonths[ym]||0)+1;});
+          console.log("[imp] DB月別:",savedMonths);
+        }
+      }catch(e){console.error("verify fetch error:",e);}
+    }
+    // フラグ解除（5秒後 - RTイベントの遅延分を余裕を持って待つ）
+    setTimeout(()=>{importingRef.current=false;},5000);
     // インポート後、既存タスクのオプション情報を強制更新
     (async()=>{
       const rOptsMap={};imported.forEach(r=>{rOptsMap[r.id]={b:!!r.optB,c:!!r.optC,j:!!r.optJ,usb:!!r.optUSB,parasol:!!r.optParasol};});
