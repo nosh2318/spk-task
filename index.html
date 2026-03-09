@@ -426,11 +426,17 @@ function autoAssign(reservations,vehicles,existingFleet,maintenance){
   const fleet={...existingFleet};
   const maints=maintenance||[];
   const sorted=[...reservations].sort((a,b)=>norm(a.lendDate).localeCompare(norm(b.lendDate)));
+  const _reasons={}; // 未配車理由のログ
   sorted.forEach(r=>{
     if(fleet[r.id])return; // 既に割当済み
     const cls=r.vehicle; // 予約のクラス
     const rL=norm(r.lendDate),rR=norm(r.returnDate);
     const candidates=vehicles.filter(v=>v.type===cls);
+    if(candidates.length===0){
+      _reasons[r.id]=`クラス"${cls}"の車両が登録されていません`;
+      return;
+    }
+    let tried=[];
     for(const v of candidates){
       // メンテナンス期間と重複する車両は除外
       const inMaint=maints.some(m=>{
@@ -438,17 +444,25 @@ function autoAssign(reservations,vehicles,existingFleet,maintenance){
         const mL=norm(m.startDate),mR=norm(m.endDate);
         return rL<=mR&&rR>=mL;
       });
-      if(inMaint)continue;
+      if(inMaint){tried.push(`${v.code}:メンテ中`);continue;}
       // この車両がこの期間に空いているかチェック
-      const conflict=sorted.some(other=>{
+      const conflictRes=sorted.find(other=>{
         if(other.id===r.id)return false;
         if(fleet[other.id]!==v.code)return false;
         const oL=norm(other.lendDate),oR=norm(other.returnDate);
         return rL<=oR&&rR>=oL; // 期間重複
       });
-      if(!conflict){fleet[r.id]=v.code;break;}
+      if(conflictRes){tried.push(`${v.code}:${conflictRes.name||conflictRes.id}と重複`);continue;}
+      fleet[r.id]=v.code;break;
+    }
+    if(!fleet[r.id]){
+      _reasons[r.id]=`${cls}クラス全${candidates.length}台が使用中(${tried.join(", ")})`;
     }
   });
+  if(Object.keys(_reasons).length>0){
+    console.log("[autoAssign] 未配車理由:",_reasons);
+  }
+  fleet._unassignedReasons=_reasons;
   return fleet;
 }
 
@@ -1043,7 +1057,7 @@ function TimeTable({tasks,staffCount}){
 /* ==========================================
    配車管理タイムライン（ガントチャート）
    ========================================== */
-function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenanceChange,vehicles,vehicleClasses,onAddReservation,onBulkAddReservation,onCancelReservation,onReassignVehicle}){
+function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenanceChange,vehicles,vehicleClasses,onAddReservation,onBulkAddReservation,onCancelReservation,onReassignVehicle,unassignedReasons}){
   const scrollRef=useRef(null);const[tooltip,setTooltip]=useState(null);const[viewMode,setViewMode]=useState("month");const[baseDate,setBaseDate]=useState(today);const[collapsed,setCollapsed]=useState(()=>window.innerWidth<=768?{unassignedAlert:true}:{});const[showMaintForm,setShowMaintForm]=useState(null);const[showResForm,setShowResForm]=useState(null);
   const[dragInfo,setDragInfo]=useState(null);const[dropTarget,setDropTarget]=useState(null);
   const WK=["日","月","火","水","木","金","土"];
@@ -1160,24 +1174,29 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
             <th style={{padding:"4px 6px",textAlign:"left",fontWeight:700,border:"1px solid #fca5a5"}}>予約番号</th>
             <th style={{padding:"4px 6px",textAlign:"left",fontWeight:700,border:"1px solid #fca5a5"}}>予約者名</th>
             <th style={{padding:"4px 6px",textAlign:"center",fontWeight:700,border:"1px solid #fca5a5"}}>クラス</th>
-            <th style={{padding:"4px 6px",textAlign:"center",fontWeight:700,border:"1px solid #fca5a5"}}>貸出日/時間</th>
-            <th style={{padding:"4px 6px",textAlign:"center",fontWeight:700,border:"1px solid #fca5a5"}}>返却日/時間</th>
-            <th style={{padding:"4px 6px",textAlign:"center",fontWeight:700,border:"1px solid #fca5a5"}}>補償</th>
-            <th style={{padding:"4px 6px",textAlign:"left",fontWeight:700,border:"1px solid #fca5a5"}}>お届け場所</th>
-            <th style={{padding:"4px 6px",textAlign:"left",fontWeight:700,border:"1px solid #fca5a5"}}>回収場所</th>
+            <th style={{padding:"4px 6px",textAlign:"center",fontWeight:700,border:"1px solid #fca5a5"}}>貸出日</th>
+            <th style={{padding:"4px 6px",textAlign:"center",fontWeight:700,border:"1px solid #fca5a5"}}>返却日</th>
+            <th style={{padding:"4px 6px",textAlign:"left",fontWeight:700,border:"1px solid #fca5a5"}}>未配車理由</th>
+            <th style={{padding:"4px 6px",textAlign:"center",fontWeight:700,border:"1px solid #fca5a5"}}>手動配車</th>
           </tr></thead>
           <tbody>
-            {ua.map(r=><tr key={r.id} style={{background:"#fff5f5",borderBottom:"1px solid #fca5a5"}}>
+            {ua.map(r=>{
+              const reason=(unassignedReasons||{})[r.id]||"";
+              return <tr key={r.id} style={{background:"#fff5f5",borderBottom:"1px solid #fca5a5"}}>
               <td style={{padding:"4px 6px",border:"1px solid #fca5a5"}}><OBadge ota={r.ota}/></td>
               <td style={{padding:"4px 6px",border:"1px solid #fca5a5",fontFamily:"monospace",fontSize:9}}>{r.id}</td>
               <td style={{padding:"4px 6px",border:"1px solid #fca5a5"}}>{r.name}</td>
               <td style={{padding:"4px 6px",border:"1px solid #fca5a5",textAlign:"center"}}>{r.vehicle}</td>
               <td style={{padding:"4px 6px",border:"1px solid #fca5a5",textAlign:"center",fontSize:9}}>{fmtD(r.lendDate)}<br/>{r.lendTime}</td>
               <td style={{padding:"4px 6px",border:"1px solid #fca5a5",textAlign:"center",fontSize:9}}>{fmtD(r.returnDate)}<br/>{r.returnTime}</td>
-              <td style={{padding:"4px 6px",border:"1px solid #fca5a5",textAlign:"center"}}>{r.insurance}</td>
-              <td style={{padding:"4px 6px",border:"1px solid #fca5a5"}}>{r.delPlace||"—"}</td>
-              <td style={{padding:"4px 6px",border:"1px solid #fca5a5"}}>{r.colPlace||"—"}</td>
-            </tr>)}
+              <td style={{padding:"4px 6px",border:"1px solid #fca5a5",fontSize:8,color:"#b91c1c",maxWidth:180}}>{reason||"不明"}</td>
+              <td style={{padding:"4px 6px",border:"1px solid #fca5a5",textAlign:"center"}}>
+                <select onChange={e=>{if(!e.target.value)return;if(onReassignVehicle)onReassignVehicle(r.id,e.target.value);else onFleetChange({...fleet,[r.id]:e.target.value});e.target.value="";}} style={{fontSize:9,border:"1px solid #d1d5db",borderRadius:4,padding:"2px 4px"}}>
+                  <option value="">車両選択</option>
+                  {vehicles.map(v=><option key={v.code} value={v.code}>{v.code}({v.type})</option>)}
+                </select>
+              </td>
+            </tr>;})}
           </tbody>
         </table>
       </div>}
@@ -2858,7 +2877,15 @@ function DataTable({data,sheetPlaces,onUpdatePlaces}){
    ========================================== */
 function App(){
   const[data,setData]=useState([]);const[tab,setTab]=useState("import");const today=toLD(new Date());const importingRef=useRef(false);
-  const[fleet,setFleet]=useState({});const[maintenance,setMaintenance]=useState([]);const[shifts,setShifts]=useState({});const[showOP,setShowOP]=useState(true);
+  const[fleet,setFleet_]=useState({});const[unassignedReasons,setUnassignedReasons]=useState({});
+  const setFleet=React.useCallback((v)=>{
+    const val=typeof v==="function"?v:()=>v;
+    setFleet_(prev=>{const next=val(prev);
+      if(next._unassignedReasons){const r={...next._unassignedReasons};delete next._unassignedReasons;setUnassignedReasons(r);return next;}
+      return next;
+    });
+  },[]);
+  const[maintenance,setMaintenance]=useState([]);const[shifts,setShifts]=useState({});const[showOP,setShowOP]=useState(true);
   const[staff,setStaff]=useState(INIT_STAFF);
   const[vehicles,setVehicles]=useState(INIT_VEHICLES);
   const vehicleClasses=INIT_CLASSES;
@@ -3207,7 +3234,7 @@ function App(){
           {tab==="import"&&<CSVPanel onImport={imp} onUpdatePlaces={updatePlaces} dataCount={data.length} pendingPlaces={pendingPlaces} onSetPendingPlaces={setPendingPlaces} files={csvFiles} setFiles={setCsvFiles} logs={csvLogs} setLogs={setCsvLogs} placeLogs={csvPlaceLogs} setPlaceLogs={setCsvPlaceLogs}/>}
           {tab==="staff"&&<StaffManager staff={staff} onStaffChange={setStaffSync} onDeleteStaff={(name)=>DB.deleteStaff(name)}/>}
           {tab==="shift"&&<ShiftCalendar shifts={shifts} onShiftsChange={setShiftsSync} today={today} staff={staff} sbSaveShift={DB.saveShift}/>}
-          {tab==="fleet"&&<FleetTimeline data={data} fleet={fleet} onFleetChange={setFleetSync} today={today} maintenance={maintenance} onMaintenanceChange={setMaintenance} vehicles={vehicles} vehicleClasses={vehicleClasses} onAddReservation={addReservation} onBulkAddReservation={bulkAddReservation} onCancelReservation={cancelReservation} onReassignVehicle={reassignVehicle}/>}
+          {tab==="fleet"&&<FleetTimeline data={data} fleet={fleet} onFleetChange={setFleetSync} today={today} maintenance={maintenance} onMaintenanceChange={setMaintenance} vehicles={vehicles} vehicleClasses={vehicleClasses} onAddReservation={addReservation} onBulkAddReservation={bulkAddReservation} onCancelReservation={cancelReservation} onReassignVehicle={reassignVehicle} unassignedReasons={unassignedReasons}/>}
           {tab==="vehicle"&&<VehicleManager vehicles={vehicles} onVehiclesChange={setVehiclesSync} vehicleClasses={vehicleClasses} onDeleteVehicle={(code)=>DB.deleteVehicle(code)}/>}
           {tab==="parking"&&<ParkingManager/>}
           {tab==="dashboard"&&data.length>0&&<Dashboard data={data} fleet={fleet} vehicles={vehicles}/>}
