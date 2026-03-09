@@ -2848,7 +2848,17 @@ function App(){
         const[resDB,flDB,stDB,vhDB,shDB,mtDB,plDB]=await Promise.all([
           DB.fetchReservations(),DB.fetchFleet(),DB.fetchStaff(),DB.fetchVehicles(),DB.fetchShifts(),DB.fetchMaintenance(),DB.fetchPlaces()
         ]);
-        if(resDB.length)setData(resDB);
+        // ★ DBデータとlocalStorageバックアップを比較し、多い方を採用
+        let useRes=resDB;
+        try{
+          const backup=JSON.parse(localStorage.getItem("spk_reservations_backup")||"[]");
+          if(backup.length>resDB.length){
+            console.log(`[init] LSバックアップ(${backup.length}件) > DB(${resDB.length}件) → バックアップを使用`);
+            useRes=backup;
+            DB.upsertReservations(backup).catch(e=>console.error("[init] DB復元エラー:",e));
+          }
+        }catch(e){}
+        if(useRes.length)setData(useRes);
         if(Object.keys(flDB).length)setFleet(flDB);
         if(stDB&&stDB.length)setStaff(stDB);
         if(vhDB&&vhDB.length)setVehicles(vhDB);
@@ -2873,7 +2883,10 @@ function App(){
       const[resDB,flDB,stDB,vhDB,shDB,mtDB]=await Promise.all([
         DB.fetchReservations(),DB.fetchFleet(),DB.fetchStaff(),DB.fetchVehicles(),DB.fetchShifts(),DB.fetchMaintenance()
       ]);
-      if(resDB)setData(resDB);
+      // ★ LSバックアップ優先
+      let useRes=resDB||[];
+      try{const bk=JSON.parse(localStorage.getItem("spk_reservations_backup")||"[]");if(bk.length>useRes.length)useRes=bk;}catch(e){}
+      if(useRes.length)setData(useRes);
       if(flDB)setFleet(flDB);
       if(stDB)setStaff(stDB);
       if(vhDB)setVehicles(vhDB);
@@ -2887,11 +2900,17 @@ function App(){
   useEffect(()=>{
     if(!SB_ENABLED)return;
     const onFocus=async()=>{
-      if(importingRef.current)return; // インポート中はDB再読込をスキップ
+      if(importingRef.current)return;
       try{
         const[resDB,flDB]=await Promise.all([DB.fetchReservations(),DB.fetchFleet()]);
-        if(importingRef.current)return; // 非同期完了時にも再チェック
-        if(resDB.length)setData(resDB);
+        if(importingRef.current)return;
+        // ★ LSバックアップの方が多ければそちらを優先
+        let useRes=resDB;
+        try{
+          const backup=JSON.parse(localStorage.getItem("spk_reservations_backup")||"[]");
+          if(backup.length>resDB.length)useRes=backup;
+        }catch(e){}
+        if(useRes.length)setData(useRes);
         if(Object.keys(flDB).length)setFleet(flDB);
       }catch(e){}
     };
@@ -2983,7 +3002,7 @@ function App(){
   },[fleet,vehicles,data]);
 
   const imp=useCallback(async(d)=>{
-    importingRef.current=true; // インポート中フラグON（onFocus再読込を抑止）
+    importingRef.current=true; // ★ 全てのDB再読込・RT更新をブロック
     let imported=d;
     if(pendingPlaces&&Object.keys(pendingPlaces).length>0){
       imported=d.map(r=>{const p=pendingPlaces[r.id];if(p)return{...r,delPlace:p.delPlace||r.delPlace,colPlace:p.colPlace||r.colPlace};return r;});
@@ -2991,62 +3010,47 @@ function App(){
     // 既存データとマージ: インポートしたOTAの予約はCSV内容で置換、他OTAはそのまま
     const importedOTAs=new Set(imported.map(r=>r.ota));
     const importedIds=new Set(imported.map(r=>r.id));
-    // インポート対象OTAの古い予約でCSVに含まれないものは削除
     const kept=data.filter(r=>!importedOTAs.has(r.ota)||importedIds.has(r.id));
     const map=new Map(kept.map(r=>[r.id,r]));
     imported.forEach(r=>map.set(r.id,r));
     const allData=[...map.values()];
+    // ★ localStorageにもバックアップ保存（DB障害時の保険）
+    try{localStorage.setItem("spk_reservations_backup",JSON.stringify(allData));}catch(e){}
     setData(allData);
-    console.log(`[imp] imported=${imported.length}件, allData=${allData.length}件, OTAs=${[...importedOTAs].join(",")}`);
-    // 配車データ: CSVにない予約のfleetエントリを削除
+    console.log(`[imp] imported=${imported.length}件, allData=${allData.length}件`);
+    // 配車データ
     const allIds=new Set(allData.map(r=>r.id));
     const cleanFleet={};Object.entries(fleet).forEach(([rid,vc])=>{if(allIds.has(rid))cleanFleet[rid]=vc;});
-    // 自動配車: 未配車の予約に車両を自動割当
     const newFleet=autoAssign(allData,vehicles,cleanFleet,maintenance);
     setFleet(newFleet);
     setTab("fleet");
-    // オプション情報をlocalStorageに保存（DB非依存で確実）
+    // オプション情報をlocalStorageに保存
     const newResOpts={...resOpts};
     imported.forEach(r=>{newResOpts[r.id]={b:!!r.optB,c:!!r.optC,j:!!r.optJ,usb:!!r.optUSB,parasol:!!r.optParasol};});
     saveResOpts(newResOpts);
-    // CSVから消えた予約をDBから削除
+    // ★ DB保存（バックグラウンド・エラー時はalert）
     const removedIds=data.filter(r=>importedOTAs.has(r.ota)&&!importedIds.has(r.id)).map(r=>r.id);
-    if(removedIds.length){
-      try{await DB.deleteReservations(removedIds);removedIds.forEach(id=>DB.deleteFleetOne(id));}catch(e){console.error("delete error:",e);}
-    }
-    // DB保存（バッチ分割 + await で確実に完了を待つ）
-    let saveOk=false;
-    try{
-      // 50件ずつバッチでupsert（大量データでのタイムアウト防止）
-      const batch=50;
-      for(let i=0;i<imported.length;i+=batch){
-        const chunk=imported.slice(i,i+batch);
-        const rows=chunk.map(DB._toDbRes);
-        const{error}=await sb.from("reservations").upsert(rows,{onConflict:"id"});
-        if(error)throw new Error(`batch ${i}-${i+chunk.length}: ${error.message}`);
-      }
-      dbLog("imp reservations",true,imported.length+"件");
-      await DB.upsertFleet(newFleet);
-      saveOk=true;
-    }catch(e){
-      console.error("imp save error:",e);
-      dbLog("imp save",false,e.message);
-      alert("⚠️ DB保存エラー: "+e.message);
-    }
-    // 保存成功後、DBから再読込して確実にデータを定着
-    if(saveOk){
+    (async()=>{
       try{
-        const verified=await DB.fetchReservations();
-        if(verified&&verified.length>0){
-          setData(verified);
-          console.log(`[imp] 検証完了: DB=${verified.length}件`);
-          const savedMonths={};verified.forEach(r=>{const ym=r.returnDate?r.returnDate.substring(0,7):"?";savedMonths[ym]=(savedMonths[ym]||0)+1;});
-          console.log("[imp] DB月別:",savedMonths);
+        if(removedIds.length){await DB.deleteReservations(removedIds);removedIds.forEach(id=>DB.deleteFleetOne(id));}
+        // 30件ずつバッチupsert
+        for(let i=0;i<imported.length;i+=30){
+          const chunk=imported.slice(i,i+30);
+          await DB.upsertReservations(chunk);
         }
-      }catch(e){console.error("verify fetch error:",e);}
-    }
-    // フラグ解除（5秒後 - RTイベントの遅延分を余裕を持って待つ）
-    setTimeout(()=>{importingRef.current=false;},5000);
+        await DB.upsertFleet(newFleet);
+        console.log("[imp] DB保存完了 "+imported.length+"件");
+      }catch(e){
+        console.error("[imp] DB保存エラー:",e);
+        alert("⚠️ DB保存でエラーが発生しました: "+e.message+"\nページをリロードしないでください。データはメモリ上に保持されています。");
+      }
+      // ★ DB保存完了後もしばらくガードを維持（RTイベントの遅延対策）
+      setTimeout(()=>{importingRef.current=false;console.log("[imp] ガード解除");},15000);
+    })();
+    // ★ インポート結果をalertで通知（ユーザーが確認できる）
+    const mBreak={};allData.forEach(r=>{const ym=r.returnDate?r.returnDate.substring(0,7):"?";mBreak[ym]=(mBreak[ym]||0)+1;});
+    const mStr=Object.entries(mBreak).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>`${k}:${v}件`).join(", ");
+    alert(`✅ ${allData.length}件取込完了\n\n月別内訳:\n${mStr}\n\n※DB保存中です。15秒間お待ちください。`);
     // インポート後、既存タスクのオプション情報を強制更新
     (async()=>{
       const rOptsMap={};imported.forEach(r=>{rOptsMap[r.id]={b:!!r.optB,c:!!r.optC,j:!!r.optJ,usb:!!r.optUSB,parasol:!!r.optParasol};});
