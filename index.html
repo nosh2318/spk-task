@@ -58,6 +58,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 </head>
 <body>
 <div id="root"></div>
+<script>
+window.onerror=function(msg,src,line,col,err){
+  var d=document.createElement("div");
+  d.style.cssText="position:fixed;top:0;left:0;right:0;background:#fee2e2;color:#991b1b;padding:12px;font-size:12px;z-index:99999;white-space:pre-wrap;max-height:200px;overflow:auto";
+  d.textContent="[JS Error] "+msg+"\nLine: "+line+" Col: "+col+(err?"\n"+err.stack:"");
+  document.body.appendChild(d);
+};
+window.addEventListener("unhandledrejection",function(e){
+  console.error("Unhandled promise:",e.reason);
+});
+</script>
 <script type="text/babel">
 const {useState,useMemo,useCallback,useEffect,useRef}=React;
 
@@ -652,15 +663,18 @@ function VehicleManager({vehicles,onVehiclesChange,vehicleClasses,onDeleteVehicl
 /* ==========================================
    車両タブ（マスター＋整備管理）
    ========================================== */
-function VehicleTab({vehicles,onVehiclesChange,vehicleClasses,onDeleteVehicle,hmCars,hmCarData,hmLogs,hmClasses,hmReload}){
-  const[subTab,setSubTab]=useState("master");
-  return <div style={{display:"flex",flexDirection:"column",height:"100%"}}>
-    <div className="flex gap-2 mb-3 border-b border-gray-200 pb-2">
-      <button onClick={()=>setSubTab("master")} style={{padding:"8px 12px",fontSize:13,fontWeight:subTab==="master"?700:500,color:subTab==="master"?"#2563eb":"#64748b",background:"none",border:"none",cursor:"pointer",borderBottom:subTab==="master"?"2px solid #2563eb":"none"}}>マスター</button>
-      <button onClick={()=>setSubTab("fleet")} style={{padding:"8px 12px",fontSize:13,fontWeight:subTab==="fleet"?700:500,color:subTab==="fleet"?"#2563eb":"#64748b",background:"none",border:"none",cursor:"pointer",borderBottom:subTab==="fleet"?"2px solid #2563eb":"none"}}>整備管理</button>
+function VehicleTab(props){
+  var subTab=props._subTab||"master";
+  var setSubTab=function(v){props.onSubTab&&props.onSubTab(v);};
+  // フォールバック: 自前state
+  var _st=useState("master");subTab=_st[0];setSubTab=_st[1];
+  return <div>
+    <div style={{display:"flex",gap:8,marginBottom:12,borderBottom:"1px solid #e2e8f0",paddingBottom:8}}>
+      <button onClick={function(){setSubTab("master")}} style={{padding:"8px 12px",fontSize:13,fontWeight:subTab==="master"?700:500,color:subTab==="master"?"#2563eb":"#64748b",background:"none",border:"none",cursor:"pointer",borderBottom:subTab==="master"?"2px solid #2563eb":"none"}}>マスター</button>
+      <button onClick={function(){setSubTab("fleet")}} style={{padding:"8px 12px",fontSize:13,fontWeight:subTab==="fleet"?700:500,color:subTab==="fleet"?"#2563eb":"#64748b",background:"none",border:"none",cursor:"pointer",borderBottom:subTab==="fleet"?"2px solid #2563eb":"none"}}>整備管理</button>
     </div>
-    {subTab==="master"&&<VehicleManager vehicles={vehicles} onVehiclesChange={onVehiclesChange} vehicleClasses={vehicleClasses} onDeleteVehicle={onDeleteVehicle}/>}
-    {subTab==="fleet"&&<FleetManager cars={hmCars} carData={hmCarData} logs={hmLogs} classes={hmClasses} hmReload={hmReload}/>}
+    {subTab==="master"&&<VehicleManager vehicles={props.vehicles} onVehiclesChange={props.onVehiclesChange} vehicleClasses={props.vehicleClasses} onDeleteVehicle={props.onDeleteVehicle}/>}
+    {subTab==="fleet"&&<FleetManager cars={props.hmCars||[]} carData={props.hmCarData||[]} logs={props.hmLogs||[]} classes={props.hmClasses||[]} hmReload={props.hmReload}/>}
   </div>;
 }
 
@@ -671,17 +685,18 @@ function FleetManager({cars,carData,logs,classes,hmReload}){
   const[view,setView]=useState("dashboard");
   const[editingCar,setEditingCar]=useState(null);
   const[formData,setFormData]=useState({name:"",plate:"",class_id:"",status:"active",notes:""});
-  const[formLog,setFormLog]=useState({car_id:"",date:new Date().toISOString().split("T")[0],type:"oil",description:"",cost:"",mileage:""});
+  const[formLog,setFormLog]=useState({car_id:"",date:new Date().toISOString().slice(0,10),type:"oil",description:"",cost:"",mileage:""});
+  const[saving,setSaving]=useState(false);
 
-  const save=async(fn)=>{await fn();await hmReload();};
+  const save=async(fn)=>{setSaving(true);try{await fn();await hmReload();}catch(e){console.error("HM save error:",e);}finally{setSaving(false);}};
 
-  const addCar=async()=>{if(!formData.name.trim())return;const car={id:crypto.randomUUID(),store_id:"sapporo",name:formData.name,plate:formData.plate,class_id:formData.class_id||"",status:formData.status,notes:formData.notes};await save(()=>DB.hm.saveCar(car));setFormData({name:"",plate:"",class_id:"",status:"active",notes:""});};
-  const editCar=async()=>{if(!editingCar||!formData.name.trim())return;const car={...editingCar,name:formData.name,plate:formData.plate,class_id:formData.class_id,status:formData.status,notes:formData.notes};await save(()=>DB.hm.saveCar(car));setEditingCar(null);setFormData({name:"",plate:"",class_id:"",status:"active",notes:""});};
-  const delCar=async(id)=>{await save(()=>DB.hm.deleteCar(id));};
-  const addLog=async()=>{if(!formLog.car_id||!formLog.date||!formLog.type)return;const log={id:crypto.randomUUID(),store_id:"sapporo",car_id:formLog.car_id,date:formLog.date,type:formLog.type,description:formLog.description,cost:formLog.cost?Number(formLog.cost):0,mileage:formLog.mileage?Number(formLog.mileage):0};await save(()=>DB.hm.saveLog(log));setFormLog({car_id:"",date:new Date().toISOString().split("T")[0],type:"oil",description:"",cost:"",mileage:""});};
-  const delLog=async(id)=>{await save(()=>DB.hm.deleteLog(id));};
+  const addCar=async()=>{if(!formData.name.trim())return;const car={id:crypto.randomUUID(),store_id:"sapporo",name:formData.name,plate:formData.plate,class_id:formData.class_id||"",status:formData.status||"active",notes:formData.notes||""};await save(function(){return DB.hm.saveCar(car)});setFormData({name:"",plate:"",class_id:"",status:"active",notes:""});};
+  const editCar=async()=>{if(!editingCar||!formData.name.trim())return;const car={id:editingCar.id,store_id:editingCar.store_id||"sapporo",name:formData.name,plate:formData.plate,class_id:formData.class_id,status:formData.status,notes:formData.notes};await save(function(){return DB.hm.saveCar(car)});setEditingCar(null);setFormData({name:"",plate:"",class_id:"",status:"active",notes:""});};
+  const delCar=async(id)=>{if(!window.confirm("削除しますか？"))return;await save(function(){return DB.hm.deleteCar(id)});};
+  const addLog=async()=>{if(!formLog.car_id||!formLog.date||!formLog.type)return;const log={id:crypto.randomUUID(),store_id:"sapporo",car_id:formLog.car_id,date:formLog.date,type:formLog.type,description:formLog.description||"",cost:formLog.cost?Number(formLog.cost):0,mileage:formLog.mileage?Number(formLog.mileage):0};await save(function(){return DB.hm.saveLog(log)});setFormLog({car_id:"",date:new Date().toISOString().slice(0,10),type:"oil",description:"",cost:"",mileage:""});};
+  const delLog=async(id)=>{if(!window.confirm("削除しますか？"))return;await save(function(){return DB.hm.deleteLog(id)});};
 
-  const totalCars=cars.length;const activeCars=cars.filter(c=>c.status==="active").length;const repairCars=cars.filter(c=>c.status==="repair").length;const waitingCars=cars.filter(c=>c.status==="waiting").length;
+  var totalCars=cars.length;var activeCars=cars.filter(function(c){return c.status==="active"}).length;var repairCars=cars.filter(function(c){return c.status==="repair"}).length;var waitingCars=cars.filter(function(c){return c.status==="waiting"}).length;
 
   return <div style={{maxWidth:1000,margin:"0 auto"}}>
     <div className="flex gap-2 mb-4 flex-wrap">
@@ -722,7 +737,7 @@ function FleetManager({cars,carData,logs,classes,hmReload}){
           <input value={formData.plate} onChange={e=>setFormData({...formData,plate:e.target.value})} placeholder="ナンバー" className="input-s"/>
           <select value={formData.class_id} onChange={e=>setFormData({...formData,class_id:e.target.value})} className="input-s">
             <option value="">クラスを選択</option>
-            {classes.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+            {(classes||[]).map(function(c){return <option key={c.id} value={c.id}>{c.name}</option>})}
           </select>
           <select value={formData.status} onChange={e=>setFormData({...formData,status:e.target.value})} className="input-s">
             <option value="active">稼働中</option>
@@ -739,12 +754,12 @@ function FleetManager({cars,carData,logs,classes,hmReload}){
       <div style={{background:"white",borderRadius:8,border:"1px solid #e2e8f0",overflow:"hidden"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
           <thead><tr style={{background:"#f8fafc"}}><th className="px-3 py-2 text-left text-xs font-semibold">車名</th><th className="px-3 py-2 text-left text-xs font-semibold">ナンバー</th><th className="px-3 py-2 text-left text-xs font-semibold">ステータス</th><th className="px-3 py-2 text-right text-xs font-semibold">操作</th></tr></thead>
-          <tbody>{cars.map(c=><tr key={c.id} className="border-t border-gray-100 hover:bg-blue-50">
-            <td className="px-3 py-2">{c.name}</td>
-            <td className="px-3 py-2 font-mono">{c.plate}</td>
-            <td className="px-3 py-2"><span style={{fontSize:10,padding:"2px 6px",borderRadius:4,background:c.status==="active"?"#f0fdf4":c.status==="repair"?"#fee2e2":"#dbeafe",color:c.status==="active"?"#15803d":c.status==="repair"?"#991b1b":"#1e40af"}}>{c.status}</span></td>
-            <td className="px-3 py-2 text-right"><button onClick={()=>{setEditingCar(c);setFormData({name:c.name,plate:c.plate,class_id:c.class_id||"",status:c.status,notes:c.notes||""});}} style={{fontSize:11,color:"#2563eb",background:"none",border:"none",cursor:"pointer",marginRight:8}}>編集</button><button onClick={()=>delCar(c.id)} style={{fontSize:11,color:"#dc2626",background:"none",border:"none",cursor:"pointer"}}>削除</button></td>
-          </tr>)}</tbody>
+          <tbody>{(cars||[]).map(function(c){return <tr key={c.id} className="border-t border-gray-100 hover:bg-blue-50">
+            <td className="px-3 py-2">{c.name||""}</td>
+            <td className="px-3 py-2 font-mono">{c.plate||""}</td>
+            <td className="px-3 py-2"><span style={{fontSize:10,padding:"2px 6px",borderRadius:4,background:c.status==="active"?"#f0fdf4":c.status==="repair"?"#fee2e2":"#dbeafe",color:c.status==="active"?"#15803d":c.status==="repair"?"#991b1b":"#1e40af"}}>{c.status||""}</span></td>
+            <td className="px-3 py-2 text-right"><button onClick={function(){setEditingCar(c);setFormData({name:c.name||"",plate:c.plate||"",class_id:c.class_id||"",status:c.status||"active",notes:c.notes||""});}} style={{fontSize:11,color:"#2563eb",background:"none",border:"none",cursor:"pointer",marginRight:8}}>編集</button><button onClick={function(){delCar(c.id)}} style={{fontSize:11,color:"#dc2626",background:"none",border:"none",cursor:"pointer"}}>削除</button></td>
+          </tr>})}</tbody>
         </table>
       </div>
     </div>}
@@ -756,7 +771,7 @@ function FleetManager({cars,carData,logs,classes,hmReload}){
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:8}}>
           <select value={formLog.car_id} onChange={e=>setFormLog({...formLog,car_id:e.target.value})} className="input-s">
             <option value="">車両を選択</option>
-            {cars.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+            {(cars||[]).map(function(c){return <option key={c.id} value={c.id}>{c.name}</option>})}
           </select>
           <input type="date" value={formLog.date} onChange={e=>setFormLog({...formLog,date:e.target.value})} className="input-s"/>
           <select value={formLog.type} onChange={e=>setFormLog({...formLog,type:e.target.value})} className="input-s">
@@ -779,15 +794,15 @@ function FleetManager({cars,carData,logs,classes,hmReload}){
       <div style={{background:"white",borderRadius:8,border:"1px solid #e2e8f0",overflow:"hidden"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
           <thead><tr style={{background:"#f8fafc"}}><th className="px-3 py-2 text-left text-xs font-semibold">日付</th><th className="px-3 py-2 text-left text-xs font-semibold">車名</th><th className="px-3 py-2 text-left text-xs font-semibold">種類</th><th className="px-3 py-2 text-right text-xs font-semibold">走行距離</th><th className="px-3 py-2 text-right text-xs font-semibold">費用</th><th className="px-3 py-2 text-left text-xs font-semibold">内容</th><th className="px-3 py-2 text-right text-xs font-semibold">操作</th></tr></thead>
-          <tbody>{logs.map(l=>{const car=cars.find(c=>c.id===l.car_id);return <tr key={l.id} className="border-t border-gray-100 hover:bg-blue-50">
-            <td className="px-3 py-2">{l.date}</td>
-            <td className="px-3 py-2">{car?.name||"-"}</td>
-            <td className="px-3 py-2"><span style={{fontSize:10,padding:"2px 6px",borderRadius:3,background:"#dbeafe",color:"#1e40af"}}>{l.type}</span></td>
-            <td className="px-3 py-2 text-right font-mono">{l.mileage?l.mileage.toLocaleString():""}km</td>
-            <td className="px-3 py-2 text-right font-mono">¥{l.cost.toLocaleString()}</td>
-            <td className="px-3 py-2 text-xs text-gray-600">{l.description}</td>
-            <td className="px-3 py-2 text-right"><button onClick={()=>delLog(l.id)} style={{fontSize:11,color:"#dc2626",background:"none",border:"none",cursor:"pointer"}}>削除</button></td>
-          </tr>;})}
+          <tbody>{(logs||[]).map(function(l,idx){var car=cars.find(function(c){return c.id===l.car_id});return <tr key={l.id||idx} className="border-t border-gray-100 hover:bg-blue-50">
+            <td className="px-3 py-2">{l.date||""}</td>
+            <td className="px-3 py-2">{(car&&car.name)||"-"}</td>
+            <td className="px-3 py-2"><span style={{fontSize:10,padding:"2px 6px",borderRadius:3,background:"#dbeafe",color:"#1e40af"}}>{l.type||""}</span></td>
+            <td className="px-3 py-2 text-right font-mono">{l.mileage?Number(l.mileage).toLocaleString():"-"}</td>
+            <td className="px-3 py-2 text-right font-mono">¥{Number(l.cost||0).toLocaleString()}</td>
+            <td className="px-3 py-2 text-xs text-gray-600">{l.description||""}</td>
+            <td className="px-3 py-2 text-right"><button onClick={function(){delLog(l.id)}} style={{fontSize:11,color:"#dc2626",background:"none",border:"none",cursor:"pointer"}}>削除</button></td>
+          </tr>})}
           </tbody>
         </table>
       </div>
@@ -2973,9 +2988,9 @@ function App(){
           setSheetPlaces(prev=>{const merged={...prev,...plDB};try{localStorage.setItem("spk_sheet_places",JSON.stringify(merged));}catch(e){}return merged;});
         }
         setSbConnected(true);
-        // HANDYMAN Fleet data
-        try{await hmReload();}catch(e){console.error("HM load error:",e);}
       }catch(e){console.error("DB load error:",e);}
+      // HANDYMAN Fleet data (init後に非同期で読込、失敗しても画面に影響なし)
+      try{await hmReload();}catch(e){}
       setDbLoaded(true);
     })();
   },[]);
@@ -3304,7 +3319,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v2026.03.10b";
+const APP_VERSION="v2026.03.10c";
 function Root(){
   const[auth,setAuth]=useState(!SB_ENABLED||localStorage.getItem("spk_auth")==="1");
   if(!auth)return <LoginScreen onLogin={()=>setAuth(true)}/>;
