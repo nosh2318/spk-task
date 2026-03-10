@@ -679,170 +679,312 @@ function VehicleTab(props){
 }
 
 /* ==========================================
-   HANDYMAN 整備管理（マスターデータ＋5機能）
+   HANDYMAN 整備管理（5機能＋コスト集計）
    ========================================== */
 function FleetManager(p){
-  var view_st=useState("list");var view=view_st[0];var setView=view_st[1];
-  var selected_st=useState(null);var selectedCar=selected_st[0];var setSelectedCar=selected_st[1];
-  var mileage_st=useState("");var mileageInput=mileage_st[0];var setMileageInput=mileage_st[1];
-  var oil_st=useState("");var oilMileageInput=oil_st[0];var setOilMileageInput=oil_st[1];
-  var interval_st=useState("");var intervalInput=interval_st[0];var setIntervalInput=interval_st[1];
-  var status_st=useState("");var statusInput=status_st[0];var setStatusInput=status_st[1];
-  var insurance_st=useState("");var insuranceInput=insurance_st[0];var setInsuranceInput=insurance_st[1];
-  var saving_st=useState(false);var isSaving=saving_st[0];var setIsSaving=saving_st[1];
+  var E=React.createElement;
+  var _v=useState("list");var view=_v[0];var setView=_v[1];
+  var _sel=useState(null);var selCar=_sel[0];var setSelCar=_sel[1];
+  var _mi=useState("");var miIn=_mi[0];var setMiIn=_mi[1];
+  var _oi=useState("");var oiIn=_oi[0];var setOiIn=_oi[1];
+  var _iv=useState("");var ivIn=_iv[0];var setIvIn=_iv[1];
+  var _ins=useState("");var insIn=_ins[0];var setInsIn=_ins[1];
+  var _sav=useState(false);var busy=_sav[0];var setBusy=_sav[1];
+  // 整備記録入力用
+  var _ld=useState(new Date().toISOString().slice(0,10));var logDate=_ld[0];var setLogDate=_ld[1];
+  var _lc=useState("");var logCost=_lc[0];var setLogCost=_lc[1];
+  var _ldesc=useState("");var logDesc=_ldesc[0];var setLogDesc=_ldesc[1];
+  var _lcat=useState("oil");var logCat=_lcat[0];var setLogCat=_lcat[1];
+  var COST_CATS=[{v:"inspection",l:"車検"},{v:"semi_annual",l:"半年点検"},{v:"repair",l:"修理"},{v:"oil",l:"オイル交換"},{v:"other",l:"その他"}];
+  var catLabel=function(v){var f=COST_CATS.filter(function(c){return c.v===v});return f.length?f[0].l:v||""}
+  // 集計期間選択
+  var _yr=useState(new Date().getFullYear());var filterYear=_yr[0];var setFilterYear=_yr[1];
 
-  var cars=p.cars||[];
-  var carData=p.carData||[];
-  var logs=p.logs||[];
+  var cars=p.cars||[];var carData=p.carData||[];var logs=p.logs||[];
+  var today=new Date().toISOString().slice(0,10);
 
-  var save=function(fn){setIsSaving(true);var prom=Promise.resolve();prom=prom.then(function(){return fn();}).then(function(){if(p.hmReload){return p.hmReload();}}).catch(function(e){console.error("Save error:",e);}).finally(function(){setIsSaving(false);});return prom;};
+  var save=function(fn){setBusy(true);return Promise.resolve().then(function(){return fn()}).then(function(){if(p.hmReload)return p.hmReload()}).catch(function(e){console.error("HM save:",e)}).finally(function(){setBusy(false)})};
 
-  var saveMileage=function(){if(!selectedCar||!mileageInput.trim()){return;}var km=Number(mileageInput||0);if(km<=0){return;}var rec={id:crypto.randomUUID(),store_id:"sapporo",car_id:selectedCar.id,type:"mileage",date:new Date().toISOString().slice(0,10),value:km,memo:""};save(function(){return DB.hm.saveCarData(rec);}).then(function(){setMileageInput("");});};
+  // --- ヘルパー ---
+  var sortDesc=function(arr){return arr.slice().sort(function(a,b){return(b.date||"").localeCompare(a.date||"")})};
+  var cdFilter=function(carId,type){return(carData).filter(function(d){return d&&d.car_id===carId&&d.type===type})};
+  var latestCD=function(carId,type){var items=sortDesc(cdFilter(carId,type));return items.length?items[0]:null};
+  var getMileage=function(cid){var m=latestCD(cid,"mileage");return m?Number(m.value||0):0};
+  // オイル交換間隔は全車両共通（car_id="__global__"に保存）
+  var getOilInterval=function(){var items=(carData).filter(function(d){return d&&d.car_id==="__global__"&&d.type==="oil_interval"});if(!items.length)return 5000;var sorted=sortDesc(items);return Number(sorted[0].value||0)||5000};
+  var getLastOil=function(cid){return latestCD(cid,"oil_change")};
+  var getNextOil=function(cid){var last=getLastOil(cid);var iv=getOilInterval();return last?Number(last.value||0)+iv:iv};
+  var getInsurance=function(cid){var m=latestCD(cid,"insurance");return m?Number(m.value||0):0};
+  var totalInsurance=function(){var t=0;cars.forEach(function(c){t+=getInsurance(c.id)});return t};
+  var carLogs=function(cid){return(logs).filter(function(l){return l&&l.car_id===cid})};
 
-  var saveOilChange=function(){if(!selectedCar||!oilMileageInput.trim()){return;}var km=Number(oilMileageInput||0);if(km<=0){return;}var rec={id:crypto.randomUUID(),store_id:"sapporo",car_id:selectedCar.id,type:"oil_change",date:new Date().toISOString().slice(0,10),value:km,memo:""};save(function(){return DB.hm.saveCarData(rec);}).then(function(){setOilMileageInput("");});};
+  // 月別集計: {YYYY-MM: amount}
+  var monthlyCost=function(logArr){var m={};(logArr||[]).forEach(function(l){var ym=(l.date||"").slice(0,7);if(ym){m[ym]=(m[ym]||0)+Number(l.cost||0)}});return m};
+  // 年間集計
+  var yearlyCost=function(logArr,yr){var t=0;(logArr||[]).forEach(function(l){if((l.date||"").slice(0,4)===String(yr)){t+=Number(l.cost||0)}});return t};
 
-  var saveInterval=function(){if(!selectedCar||!intervalInput.trim()){return;}var km=Number(intervalInput||0);if(km<=0){return;}var rec={id:crypto.randomUUID(),store_id:"sapporo",car_id:selectedCar.id,type:"oil_interval",date:new Date().toISOString().slice(0,10),value:km,memo:""};save(function(){return DB.hm.saveCarData(rec);}).then(function(){setIntervalInput("");});};
+  // --- 保存処理 ---
+  var saveMileage=function(){if(!selCar||!miIn)return;var km=Number(miIn);if(km<=0)return;save(function(){return DB.hm.saveCarData({id:crypto.randomUUID(),store_id:"sapporo",car_id:selCar.id,type:"mileage",date:today,value:km,memo:""})}).then(function(){setMiIn("")})};
+  var saveOil=function(){if(!selCar||!oiIn)return;var km=Number(oiIn);if(km<=0)return;save(function(){return DB.hm.saveCarData({id:crypto.randomUUID(),store_id:"sapporo",car_id:selCar.id,type:"oil_change",date:today,value:km,memo:""})}).then(function(){setOiIn("")})};
+  var saveIv=function(){if(!ivIn)return;var km=Number(ivIn);if(km<=0)return;save(function(){return DB.hm.saveCarData({id:crypto.randomUUID(),store_id:"sapporo",car_id:"__global__",type:"oil_interval",date:today,value:km,memo:""})}).then(function(){setIvIn("")})};
+  var saveSt=function(st){if(!selCar)return;var u={id:selCar.id,store_id:selCar.store_id||"sapporo",name:selCar.name||"",plate:selCar.plate||"",class_id:selCar.class_id||"",status:st,notes:selCar.notes||""};save(function(){return DB.hm.saveCar(u)}).then(function(){setSelCar(u)})};
+  var saveIns=function(){if(!selCar||!insIn)return;var v=Number(insIn);if(v<=0)return;save(function(){return DB.hm.saveCarData({id:crypto.randomUUID(),store_id:"sapporo",car_id:selCar.id,type:"insurance",date:today,value:v,memo:""})}).then(function(){setInsIn("")})};
+  var saveLog=function(){if(!selCar||!logDate||!logCost||!logDesc.trim())return;var c=Number(logCost);if(c<=0)return;save(function(){return DB.hm.saveLog({id:crypto.randomUUID(),store_id:"sapporo",car_id:selCar.id,date:logDate,type:logCat||"other",description:logDesc||"",cost:c,mileage:getMileage(selCar.id)})}).then(function(){setLogCost("");setLogDesc("")})};
+  var delLog=function(id){if(!window.confirm("削除しますか？"))return;save(function(){return DB.hm.deleteLog(id)})};
 
-  var saveStatus=function(){if(!selectedCar||!statusInput.trim()){return;}var updated={id:selectedCar.id,store_id:selectedCar.store_id||"sapporo",name:selectedCar.name||"",plate:selectedCar.plate||"",class_id:selectedCar.class_id||"",status:statusInput,notes:selectedCar.notes||""};save(function(){return DB.hm.saveCar(updated);}).then(function(){setSelectedCar(updated);setStatusInput("");});};
+  // --- 共通パーツ ---
+  var navBtn=function(id,label){return E("button",{key:id,onClick:function(){setView(id)},style:{padding:"6px 14px",fontSize:12,fontWeight:view===id?700:500,background:view===id?"#2563eb":"#f1f5f9",color:view===id?"#fff":"#64748b",border:"none",borderRadius:6,cursor:"pointer"}},label)};
+  var nav=E("div",{style:{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}},navBtn("list","車両一覧"),navBtn("summary","コスト集計"));
+  var statusBadge=function(s){var bg=s==="active"?"#f0fdf4":s==="repair"?"#fee2e2":s==="waiting"?"#fef3c7":"#dbeafe";var fg=s==="active"?"#15803d":s==="repair"?"#991b1b":s==="waiting"?"#92400e":"#1e40af";var lb=s==="active"?"稼働中":s==="repair"?"修理中":s==="waiting"?"修理待機中":"見積中";return E("span",{style:{fontSize:10,padding:"2px 8px",borderRadius:4,background:bg,color:fg,fontWeight:600}},lb)};
+  var section=function(bg,border,title,children){return E("div",{style:{background:bg,border:"1px solid "+border,borderRadius:8,padding:12,marginBottom:10}},E("div",{style:{fontSize:13,fontWeight:700,marginBottom:8}},title),children)};
+  var card=function(bg,border,fg,val,label){return E("div",{style:{background:bg,border:"1px solid "+border,borderRadius:8,padding:14,textAlign:"center",minWidth:120}},E("div",{style:{fontSize:22,fontWeight:700,color:fg}},val),E("div",{style:{fontSize:11,color:fg,marginTop:4}},label))};
 
-  var saveInsurance=function(){if(!selectedCar||!insuranceInput.trim()){return;}var yen=Number(insuranceInput||0);if(yen<=0){return;}var rec={id:crypto.randomUUID(),store_id:"sapporo",car_id:selectedCar.id,type:"insurance",date:new Date().toISOString().slice(0,10),value:yen,memo:""};save(function(){return DB.hm.saveCarData(rec);}).then(function(){setInsuranceInput("");});};
-
-  var getLatestMileage=function(carId){var items=(carData||[]).filter(function(d){return d&&d.car_id===carId&&d.type==="mileage";});if(items.length===0){return null;}var sorted=items.sort(function(a,b){var dA=a.date||"";var dB=b.date||"";if(dA>dB){return -1;}if(dA<dB){return 1;}return 0;});return sorted[0];};
-
-  var getLatestOilChange=function(carId){var items=(carData||[]).filter(function(d){return d&&d.car_id===carId&&d.type==="oil_change";});if(items.length===0){return null;}var sorted=items.sort(function(a,b){var dA=a.date||"";var dB=b.date||"";if(dA>dB){return -1;}if(dA<dB){return 1;}return 0;});return sorted[0];};
-
-  var getOilInterval=function(carId){var items=(carData||[]).filter(function(d){return d&&d.car_id===carId&&d.type==="oil_interval";});if(items.length===0){return 5000;}var sorted=items.sort(function(a,b){var dA=a.date||"";var dB=b.date||"";if(dA>dB){return -1;}if(dA<dB){return 1;}return 0;});var last=sorted[0];return Number(last&&last.value)||5000;};
-
-  var getNextOilChangeMileage=function(carId){var lastChange=getLatestOilChange(carId);var interval=getOilInterval(carId);if(!lastChange){return interval;}return Number(lastChange.value||0)+interval;};
-
-  var getLatestInsurance=function(carId){var items=(carData||[]).filter(function(d){return d&&d.car_id===carId&&d.type==="insurance";});if(items.length===0){return null;}var sorted=items.sort(function(a,b){var dA=a.date||"";var dB=b.date||"";if(dA>dB){return -1;}if(dA<dB){return 1;}return 0;});return sorted[0];};
-
-  var getTotalInsurance=function(){var total=0;(cars||[]).forEach(function(c){var ins=getLatestInsurance(c.id);if(ins){total+=Number(ins.value||0);}});return total;};
-
-  var getCostSum=function(carId){var sum=0;(logs||[]).forEach(function(l){if(l&&l.car_id===carId){sum+=Number(l.cost||0);}});return sum;};
-
-  var getMileageHistory=function(carId){var items=(carData||[]).filter(function(d){return d&&d.car_id===carId&&d.type==="mileage";});var sorted=items.sort(function(a,b){var dA=a.date||"";var dB=b.date||"";if(dA>dB){return -1;}if(dA<dB){return 1;}return 0;});return sorted;};
-
+  // ========== 車両一覧 ==========
   if(view==="list"){
-    return React.createElement("div",{style:{maxWidth:1000,margin:"0 auto"}},
-      React.createElement("h3",{className:"font-bold mb-3"},"車両一覧"),
-      React.createElement("div",{style:{display:"grid",gap:8}},
-        (cars||[]).map(function(car){
-          if(!car||!car.id){return null;}
-          var latestMil=getLatestMileage(car.id);
-          var milText=latestMil?""+Number(latestMil.value||0).toLocaleString()+"km":"未記録";
-          return React.createElement("div",{key:car.id,style:{background:"white",border:"1px solid #e2e8f0",borderRadius:8,padding:12,cursor:"pointer"},onClick:function(){setSelectedCar(car);setView("detail");}},
-            React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},
-              React.createElement("div",null,
-                React.createElement("div",{style:{fontWeight:700,fontSize:14}},car.name||""),
-                React.createElement("div",{style:{fontSize:12,color:"#64748b"}},(car.plate||"")+" ("+milText+")")
-              ),
-              React.createElement("span",{style:{fontSize:10,padding:"2px 6px",borderRadius:4,background:car.status==="active"?"#f0fdf4":car.status==="repair"?"#fee2e2":"#dbeafe",color:car.status==="active"?"#15803d":car.status==="repair"?"#991b1b":"#1e40af"}},car.status||"")
+    return E("div",{style:{maxWidth:1000,margin:"0 auto"}},nav,
+      // オイル交換間隔（全車共通）
+      E("div",{style:{background:"#fff7ed",border:"1px solid #fed7aa",borderRadius:8,padding:10,marginBottom:12,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}},
+        E("span",{style:{fontSize:12,fontWeight:600,color:"#9a3412"}},"🛢 オイル交換間隔（全車共通）: "+getOilInterval().toLocaleString()+"km"),
+        E("input",{type:"number",value:ivIn,onChange:function(e){setIvIn(e.target.value)},placeholder:"新しい間隔(km)",className:"input-s",style:{maxWidth:140,fontSize:11}}),
+        E("button",{onClick:saveIv,className:"btn-ghost",style:{fontSize:11,padding:"4px 10px"},disabled:busy},"変更")
+      ),
+      E("div",{style:{display:"grid",gap:8}},
+        cars.map(function(c){
+          if(!c||!c.id)return null;
+          var mil=getMileage(c.id);var ins=getInsurance(c.id);var cost=yearlyCost(carLogs(c.id),filterYear);
+          return E("div",{key:c.id,style:{background:"white",border:"1px solid #e2e8f0",borderRadius:8,padding:12,cursor:"pointer"},onClick:function(){setSelCar(c);setView("detail")}},
+            E("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}},
+              E("div",null,E("span",{style:{fontWeight:700,fontSize:14}},c.name||""),E("span",{style:{fontSize:11,color:"#64748b",marginLeft:8}},c.plate||"")),
+              statusBadge(c.status||"active")
+            ),
+            E("div",{style:{display:"flex",gap:16,fontSize:11,color:"#475569"}},
+              E("span",null,"走行: "+(mil?mil.toLocaleString()+"km":"未記録")),
+              E("span",null,"保険: "+(ins?"¥"+ins.toLocaleString()+"/月":"未設定")),
+              E("span",null,"整備("+filterYear+"): ¥"+cost.toLocaleString())
             )
           );
-        })
+        }),
+        cars.length===0&&E("div",{style:{textAlign:"center",color:"#94a3b8",padding:40,fontSize:13}},"HANDYMANのcarsテーブルに車両を登録してください")
       )
     );
   }
 
-  if(view==="detail"&&selectedCar){
-    return React.createElement("div",{style:{maxWidth:800,margin:"0 auto"}},
-      React.createElement("button",{onClick:function(){setView("list");},style:{padding:"6px 12px",background:"#f1f5f9",border:"1px solid #cbd5e1",borderRadius:6,cursor:"pointer",marginBottom:12}},"戻る"),
-      React.createElement("h3",{className:"font-bold mb-3"},selectedCar.name||""),
+  // ========== 車両詳細 ==========
+  if(view==="detail"&&selCar){
+    var cid=selCar.id;
+    var milHist=sortDesc(cdFilter(cid,"mileage"));
+    var oilHist=sortDesc(cdFilter(cid,"oil_change"));
+    var myLogs=sortDesc(carLogs(cid));
+    var myMonthly=monthlyCost(carLogs(cid));
+    var myYearly=yearlyCost(carLogs(cid),filterYear);
+    var monthKeys=Object.keys(myMonthly).sort().reverse();
 
-      React.createElement("div",{style:{background:"#e3f2fd",border:"1px solid #90caf9",borderRadius:8,padding:12,marginBottom:12}},
-        React.createElement("div",{style:{fontSize:12,marginBottom:8}},React.createElement("strong",null,"走行距離")),
-        React.createElement("input",{type:"number",value:mileageInput,onChange:function(e){setMileageInput(e.target.value);},placeholder:"現在の走行距離（km）",className:"input-s",style:{marginBottom:8}}),
-        React.createElement("button",{onClick:saveMileage,className:"btn-primary",disabled:isSaving},"記録する"),
-        React.createElement("div",{style:{marginTop:8,fontSize:11}},
-          (getMileageHistory(selectedCar.id)||[]).map(function(m,i){
-            return React.createElement("div",{key:i,style:{padding:"4px 0",borderBottom:"1px solid #e0e0e0"}},(m.date||"")+" : "+Number(m.value||0).toLocaleString()+"km");
-          })
-        )
+    return E("div",{style:{maxWidth:800,margin:"0 auto"}},
+      E("div",{style:{display:"flex",alignItems:"center",gap:8,marginBottom:12}},
+        E("button",{onClick:function(){setView("list")},className:"btn-ghost",style:{padding:"4px 10px",fontSize:11}},"← 一覧へ"),
+        E("h3",{style:{fontSize:16,fontWeight:700,margin:0}},selCar.name||""),
+        E("span",{style:{fontSize:12,color:"#64748b"}},selCar.plate||""),
+        statusBadge(selCar.status||"active")
       ),
 
-      React.createElement("div",{style:{background:"#fff3e0",border:"1px solid #ffe0b2",borderRadius:8,padding:12,marginBottom:12}},
-        React.createElement("div",{style:{fontSize:12,marginBottom:8}},React.createElement("strong",null,"オイル交換")),
-        React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}},
-          React.createElement("div",null,
-            React.createElement("div",{style:{fontSize:11,color:"#666",marginBottom:4}},"交換時走行距離"),
-            React.createElement("input",{type:"number",value:oilMileageInput,onChange:function(e){setOilMileageInput(e.target.value);},placeholder:"km",className:"input-s"}),
-            React.createElement("button",{onClick:saveOilChange,className:"btn-primary",style:{width:"100%",marginTop:4},disabled:isSaving},"交換記録")
+      // ③ ステータス
+      section("#f8f4ff","#d8b4fe","③ 車両ステータス",
+        E("div",{style:{display:"flex",gap:8,alignItems:"center"}},
+          E("select",{value:selCar.status||"active",onChange:function(e){saveSt(e.target.value)},className:"input-s",style:{maxWidth:200},disabled:busy},
+            E("option",{value:"active"},"稼働中"),E("option",{value:"repair"},"修理中"),E("option",{value:"waiting"},"修理待機中"),E("option",{value:"estimating"},"見積中")
           ),
-          React.createElement("div",null,
-            React.createElement("div",{style:{fontSize:11,color:"#666",marginBottom:4}},"交換間隔"),
-            React.createElement("input",{type:"number",value:intervalInput,onChange:function(e){setIntervalInput(e.target.value);},placeholder:"km（デフォ5000）",className:"input-s"}),
-            React.createElement("button",{onClick:saveInterval,className:"btn-primary",style:{width:"100%",marginTop:4},disabled:isSaving},"設定")
+          busy&&E("span",{style:{fontSize:11,color:"#94a3b8"}},"保存中...")
+        )
+      ),
+
+      // ① 走行距離
+      section("#eff6ff","#93c5fd","① 走行距離管理",
+        E("div",null,
+          E("div",{style:{display:"flex",gap:8,alignItems:"center",marginBottom:8}},
+            E("input",{type:"number",value:miIn,onChange:function(e){setMiIn(e.target.value)},placeholder:"現在の走行距離（km）",className:"input-s",style:{maxWidth:200}}),
+            E("button",{onClick:saveMileage,className:"btn-primary",disabled:busy},"記録")
+          ),
+          milHist.length>0&&E("div",{style:{fontSize:11,maxHeight:120,overflowY:"auto",background:"#f8fafc",borderRadius:4,padding:6}},
+            milHist.map(function(m,i){return E("div",{key:m.id||i,style:{padding:"3px 0",borderBottom:"1px solid #e2e8f0"}},(m.date||"")+"　"+Number(m.value||0).toLocaleString()+"km")})
           )
-        ),
-        React.createElement("div",{style:{fontSize:11,padding:8,background:"#f5f5f5",borderRadius:4}},
-          React.createElement("div",null,"最終交換: "+(getLatestOilChange(selectedCar.id)?Number(getLatestOilChange(selectedCar.id).value||0).toLocaleString()+"km":"未記録")),
-          React.createElement("div",null,"次回目安: "+Number(getNextOilChangeMileage(selectedCar.id)).toLocaleString()+"km")
         )
       ),
 
-      React.createElement("div",{style:{background:"#f3e5f5",border:"1px solid #ce93d8",borderRadius:8,padding:12,marginBottom:12}},
-        React.createElement("div",{style:{fontSize:12,marginBottom:8}},React.createElement("strong",null,"ステータス")),
-        React.createElement("select",{value:statusInput||selectedCar.status||"",onChange:function(e){setStatusInput(e.target.value);},className:"input-s",style:{marginBottom:8}},
-          React.createElement("option",{value:"active"},"稼働中"),
-          React.createElement("option",{value:"repair"},"修理中"),
-          React.createElement("option",{value:"waiting"},"待機中"),
-          React.createElement("option",{value:"estimating"},"見積中")
-        ),
-        React.createElement("button",{onClick:saveStatus,className:"btn-primary",disabled:isSaving},"更新")
-      ),
-
-      React.createElement("div",{style:{background:"#e8f5e9",border:"1px solid #a5d6a7",borderRadius:8,padding:12,marginBottom:12}},
-        React.createElement("div",{style:{fontSize:12,marginBottom:8}},React.createElement("strong",null,"保険月額")),
-        React.createElement("input",{type:"number",value:insuranceInput,onChange:function(e){setInsuranceInput(e.target.value);},placeholder:"月額（円）",className:"input-s",style:{marginBottom:8}}),
-        React.createElement("button",{onClick:saveInsurance,className:"btn-primary",disabled:isSaving},"登録"),
-        React.createElement("div",{style:{fontSize:11,marginTop:8,padding:8,background:"#f5f5f5",borderRadius:4}},
-          React.createElement("div",null,"現在: "+(getLatestInsurance(selectedCar.id)?Number(getLatestInsurance(selectedCar.id).value||0).toLocaleString()+"円/月":"未設定"))
+      // ② オイル交換
+      section("#fff7ed","#fed7aa","② オイル交換管理",
+        E("div",null,
+          E("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:8}},
+            E("div",null,
+              E("div",{style:{fontSize:11,color:"#78716c",marginBottom:4}},"交換時の走行距離"),
+              E("div",{style:{display:"flex",gap:4}},
+                E("input",{type:"number",value:oiIn,onChange:function(e){setOiIn(e.target.value)},placeholder:"km",className:"input-s"}),
+                E("button",{onClick:saveOil,className:"btn-primary",disabled:busy},"記録")
+              )
+            ),
+            E("div",null,
+              E("div",{style:{fontSize:11,color:"#78716c",marginBottom:4}},"交換間隔【全車共通】（現在: "+getOilInterval().toLocaleString()+"km）"),
+              E("div",{style:{display:"flex",gap:4}},
+                E("input",{type:"number",value:ivIn,onChange:function(e){setIvIn(e.target.value)},placeholder:"例:5000",className:"input-s"}),
+                E("button",{onClick:saveIv,className:"btn-ghost",disabled:busy},"変更")
+              )
+            )
+          ),
+          E("div",{style:{background:"#fefce8",borderRadius:6,padding:8,fontSize:12}},
+            E("div",null,"最終交換: "+(getLastOil(cid)?Number(getLastOil(cid).value||0).toLocaleString()+"km（"+(getLastOil(cid).date||"")+")":"未記録")),
+            E("div",{style:{fontWeight:700,color:"#ea580c"}},"次回交換目安: "+getNextOil(cid).toLocaleString()+"km")
+          ),
+          oilHist.length>1&&E("div",{style:{fontSize:11,marginTop:6,maxHeight:80,overflowY:"auto",background:"#f8fafc",borderRadius:4,padding:6}},
+            oilHist.map(function(o,i){return E("div",{key:o.id||i,style:{padding:"2px 0"}},(o.date||"")+"　"+Number(o.value||0).toLocaleString()+"km")})
+          )
         )
       ),
 
-      React.createElement("div",{style:{background:"#fce4ec",border:"1px solid #f8bbd0",borderRadius:8,padding:12}},
-        React.createElement("div",{style:{fontSize:12,marginBottom:8}},React.createElement("strong",null,"整備コスト")),
-        React.createElement("div",{style:{fontSize:11,padding:8,background:"#f5f5f5",borderRadius:4}},
-          React.createElement("div",null,"合計: ¥"+Number(getCostSum(selectedCar.id)).toLocaleString())
+      // ④ 保険金額
+      section("#f0fdf4","#86efac","④ 保険金額",
+        E("div",null,
+          E("div",{style:{display:"flex",gap:8,alignItems:"center",marginBottom:6}},
+            E("input",{type:"number",value:insIn,onChange:function(e){setInsIn(e.target.value)},placeholder:"月額（円）",className:"input-s",style:{maxWidth:180}}),
+            E("button",{onClick:saveIns,className:"btn-primary",disabled:busy},"登録")
+          ),
+          E("div",{style:{fontSize:12,padding:6,background:"#f8fafc",borderRadius:4}},
+            "現在の月額: ",E("strong",null,getInsurance(cid)?"¥"+getInsurance(cid).toLocaleString():"未設定"),
+            getInsurance(cid)?E("span",{style:{marginLeft:12,color:"#64748b"}},"(年額: ¥"+(getInsurance(cid)*12).toLocaleString()+")"):null
+          )
+        )
+      ),
+
+      // ⑤ 整備記録
+      section("#fef2f2","#fecaca","⑤ 整備記録",
+        E("div",null,
+          E("div",{style:{fontSize:11,color:"#991b1b",marginBottom:6}},"1項目ごとに 種別・日付・金額・詳細 を入力（複数回登録可）"),
+          E("div",{style:{display:"grid",gridTemplateColumns:"110px 120px 110px 1fr",gap:6,marginBottom:8}},
+            E("select",{value:logCat,onChange:function(e){setLogCat(e.target.value)},className:"input-s"},
+              COST_CATS.map(function(c){return E("option",{key:c.v,value:c.v},c.l)})
+            ),
+            E("input",{type:"date",value:logDate,onChange:function(e){setLogDate(e.target.value)},className:"input-s"}),
+            E("input",{type:"number",value:logCost,onChange:function(e){setLogCost(e.target.value)},placeholder:"金額（円）",className:"input-s"}),
+            E("input",{value:logDesc,onChange:function(e){setLogDesc(e.target.value)},placeholder:"詳細（必須）",className:"input-s"})
+          ),
+          E("button",{onClick:saveLog,className:"btn-primary",disabled:busy||!logDesc.trim()},"整備記録を追加"),
+
+          // 月別集計
+          monthKeys.length>0&&E("div",{style:{marginTop:12}},
+            E("div",{style:{fontSize:12,fontWeight:700,marginBottom:6}},"月別集計"),
+            E("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(100px,1fr))",gap:4}},
+              monthKeys.map(function(ym){return E("div",{key:ym,style:{background:"#fff",border:"1px solid #e2e8f0",borderRadius:4,padding:6,textAlign:"center",fontSize:11}},
+                E("div",{style:{color:"#64748b"}},ym),E("div",{style:{fontWeight:700}},"¥"+myMonthly[ym].toLocaleString())
+              )})
+            ),
+            E("div",{style:{marginTop:6,fontSize:12,fontWeight:700,color:"#991b1b"}},"年間("+filterYear+"): ¥"+myYearly.toLocaleString())
+          ),
+
+          // 履歴一覧
+          myLogs.length>0&&E("div",{style:{marginTop:12,maxHeight:250,overflowY:"auto"}},
+            E("div",{style:{fontSize:12,fontWeight:700,marginBottom:4}},"履歴（"+myLogs.length+"件）"),
+            E("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:11}},
+              E("thead",null,E("tr",{style:{background:"#f8fafc"}},
+                E("th",{style:{padding:"4px 8px",textAlign:"left"}},"日付"),
+                E("th",{style:{padding:"4px 8px",textAlign:"left"}},"種別"),
+                E("th",{style:{padding:"4px 8px",textAlign:"right"}},"金額"),
+                E("th",{style:{padding:"4px 8px",textAlign:"left"}},"詳細"),
+                E("th",{style:{padding:"4px 8px",textAlign:"right"}},"")
+              )),
+              E("tbody",null,myLogs.map(function(l,i){return E("tr",{key:l.id||i,style:{borderBottom:"1px solid #f1f5f9"}},
+                E("td",{style:{padding:"4px 8px"}},l.date||""),
+                E("td",{style:{padding:"4px 8px"}},E("span",{style:{fontSize:10,padding:"1px 6px",borderRadius:3,background:"#dbeafe",color:"#1e40af"}},catLabel(l.type))),
+                E("td",{style:{padding:"4px 8px",textAlign:"right",fontWeight:600}},"¥"+Number(l.cost||0).toLocaleString()),
+                E("td",{style:{padding:"4px 8px",color:"#475569"}},l.description||""),
+                E("td",{style:{padding:"4px 8px",textAlign:"right"}},E("button",{onClick:function(){delLog(l.id)},style:{fontSize:10,color:"#dc2626",background:"none",border:"none",cursor:"pointer"}},"削除"))
+              )}))
+            )
+          )
         )
       )
     );
   }
 
+  // ========== コスト集計 ==========
   if(view==="summary"){
-    var totalMonthlyCost=0;
-    (cars||[]).forEach(function(c){totalMonthlyCost+=Number(getCostSum(c.id)||0);});
-    var totalInsurance=getTotalInsurance();
+    var tIns=totalInsurance();
+    var yearOpts=[];for(var yi=2024;yi<=2027;yi++){yearOpts.push(yi)}
+    var allLogsYear=(logs||[]).filter(function(l){return(l.date||"").slice(0,4)===String(filterYear)});
+    var allMonthly=monthlyCost(allLogsYear);
+    var allYearly=yearlyCost(logs,filterYear);
+    var allMonthKeys=Object.keys(allMonthly).sort().reverse();
 
-    return React.createElement("div",{style:{maxWidth:800,margin:"0 auto"}},
-      React.createElement("button",{onClick:function(){setView("list");},style:{padding:"6px 12px",background:"#f1f5f9",border:"1px solid #cbd5e1",borderRadius:6,cursor:"pointer",marginBottom:12}},"戻る"),
-      React.createElement("h3",{className:"font-bold mb-3"},"コスト集計"),
-      React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}},
-        React.createElement("div",{style:{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,padding:12,textAlign:"center"}},
-          React.createElement("div",{style:{fontSize:20,fontWeight:700,color:"#15803d"}},"¥"+Number(totalInsurance).toLocaleString()),
-          React.createElement("div",{style:{fontSize:11,color:"#15803d",marginTop:4}},"保険月額")
-        ),
-        React.createElement("div",{style:{background:"#fef3c7",border:"1px solid #fcd34d",borderRadius:8,padding:12,textAlign:"center"}},
-          React.createElement("div",{style:{fontSize:20,fontWeight:700,color:"#92400e"}},"¥"+Number(totalInsurance*12).toLocaleString()),
-          React.createElement("div",{style:{fontSize:11,color:"#92400e",marginTop:4}},"保険年額")
-        ),
-        React.createElement("div",{style:{background:"#fee2e2",border:"1px solid #fca5a5",borderRadius:8,padding:12,textAlign:"center"}},
-          React.createElement("div",{style:{fontSize:20,fontWeight:700,color:"#991b1b"}},"¥"+Number(totalMonthlyCost).toLocaleString()),
-          React.createElement("div",{style:{fontSize:11,color:"#991b1b",marginTop:4}},"整備月額")
+    return E("div",{style:{maxWidth:1000,margin:"0 auto"}},nav,
+
+      // 年度切替
+      E("div",{style:{display:"flex",gap:8,alignItems:"center",marginBottom:14}},
+        E("span",{style:{fontSize:12,fontWeight:600}},"年度:"),
+        yearOpts.map(function(y){return E("button",{key:y,onClick:function(){setFilterYear(y)},style:{padding:"4px 10px",fontSize:12,fontWeight:filterYear===y?700:400,background:filterYear===y?"#2563eb":"#f1f5f9",color:filterYear===y?"#fff":"#64748b",border:"none",borderRadius:4,cursor:"pointer"}},String(y))})
+      ),
+
+      // サマリーカード
+      E("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:10,marginBottom:16}},
+        card("#f0fdf4","#86efac","#15803d","¥"+tIns.toLocaleString(),"保険 月額合計"),
+        card("#fefce8","#fde68a","#92400e","¥"+(tIns*12).toLocaleString(),"保険 年間合計"),
+        card("#fee2e2","#fca5a5","#991b1b","¥"+allYearly.toLocaleString(),"整備 年間合計("+filterYear+")"),
+        card("#dbeafe","#93c5fd","#1e40af",cars.length+"台","管理車両数")
+      ),
+
+      // 保険内訳
+      E("div",{style:{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,padding:12,marginBottom:12}},
+        E("div",{style:{fontSize:13,fontWeight:700,marginBottom:8}},"保険内訳（車両別）"),
+        E("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:12}},
+          E("thead",null,E("tr",{style:{borderBottom:"2px solid #86efac"}},
+            E("th",{style:{padding:"6px 8px",textAlign:"left"}},"車両"),E("th",{style:{padding:"6px 8px",textAlign:"right"}},"月額"),E("th",{style:{padding:"6px 8px",textAlign:"right"}},"年額"))),
+          E("tbody",null,
+            cars.map(function(c){var iv=getInsurance(c.id);return E("tr",{key:c.id,style:{borderBottom:"1px solid #e2e8f0"}},
+              E("td",{style:{padding:"6px 8px"}},(c.name||"")+" "+(c.plate||"")),
+              E("td",{style:{padding:"6px 8px",textAlign:"right"}},iv?"¥"+iv.toLocaleString():"未設定"),
+              E("td",{style:{padding:"6px 8px",textAlign:"right"}},iv?"¥"+(iv*12).toLocaleString():"-")
+            )}),
+            E("tr",{style:{borderTop:"2px solid #15803d",fontWeight:700}},
+              E("td",{style:{padding:"6px 8px"}},"合計"),
+              E("td",{style:{padding:"6px 8px",textAlign:"right"}},"¥"+tIns.toLocaleString()),
+              E("td",{style:{padding:"6px 8px",textAlign:"right"}},"¥"+(tIns*12).toLocaleString())
+            )
+          )
         )
       ),
-      React.createElement("div",{style:{marginTop:12,fontSize:11,color:"#94a3b8"}},"最終更新: "+new Date().toLocaleString("ja-JP"))
+
+      // 整備費内訳（車両別）
+      E("div",{style:{background:"#fef2f2",border:"1px solid #fecaca",borderRadius:8,padding:12,marginBottom:12}},
+        E("div",{style:{fontSize:13,fontWeight:700,marginBottom:8}},"整備費内訳（車両別 / "+filterYear+"年）"),
+        E("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:12}},
+          E("thead",null,E("tr",{style:{borderBottom:"2px solid #fca5a5"}},
+            E("th",{style:{padding:"6px 8px",textAlign:"left"}},"車両"),E("th",{style:{padding:"6px 8px",textAlign:"right"}},"年間合計"),E("th",{style:{padding:"6px 8px",textAlign:"right"}},"件数"))),
+          E("tbody",null,
+            cars.map(function(c){var cl=carLogs(c.id).filter(function(l){return(l.date||"").slice(0,4)===String(filterYear)});var ct=0;cl.forEach(function(l){ct+=Number(l.cost||0)});return E("tr",{key:c.id,style:{borderBottom:"1px solid #e2e8f0"}},
+              E("td",{style:{padding:"6px 8px"}},(c.name||"")+" "+(c.plate||"")),
+              E("td",{style:{padding:"6px 8px",textAlign:"right",fontWeight:600}},"¥"+ct.toLocaleString()),
+              E("td",{style:{padding:"6px 8px",textAlign:"right"}},cl.length+"件")
+            )}),
+            E("tr",{style:{borderTop:"2px solid #991b1b",fontWeight:700}},
+              E("td",{style:{padding:"6px 8px"}},"全車両合計"),
+              E("td",{style:{padding:"6px 8px",textAlign:"right"}},"¥"+allYearly.toLocaleString()),
+              E("td",{style:{padding:"6px 8px",textAlign:"right"}},allLogsYear.length+"件")
+            )
+          )
+        )
+      ),
+
+      // 月別推移（全車両）
+      allMonthKeys.length>0&&E("div",{style:{background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:8,padding:12}},
+        E("div",{style:{fontSize:13,fontWeight:700,marginBottom:8}},"月別整備費（全車両 / "+filterYear+"年）"),
+        E("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(100px,1fr))",gap:6}},
+          allMonthKeys.map(function(ym){return E("div",{key:ym,style:{background:"#fff",border:"1px solid #e2e8f0",borderRadius:6,padding:8,textAlign:"center"}},
+            E("div",{style:{fontSize:11,color:"#64748b"}},ym),
+            E("div",{style:{fontSize:14,fontWeight:700,color:"#991b1b"}},"¥"+allMonthly[ym].toLocaleString())
+          )})
+        )
+      )
     );
   }
 
-  return React.createElement("div",{style:{maxWidth:1000,margin:"0 auto"}},
-    React.createElement("div",{style:{display:"flex",gap:8,marginBottom:12}},
-      React.createElement("button",{onClick:function(){setView("list");},style:{padding:"6px 12px",fontSize:12,fontWeight:view==="list"?700:500,background:view==="list"?"#2563eb":"#f1f5f9",color:view==="list"?"#fff":"#64748b",border:"none",borderRadius:6,cursor:"pointer"}},"一覧"),
-      React.createElement("button",{onClick:function(){setView("summary");},style:{padding:"6px 12px",fontSize:12,fontWeight:view==="summary"?700:500,background:view==="summary"?"#2563eb":"#f1f5f9",color:view==="summary"?"#fff":"#64748b",border:"none",borderRadius:6,cursor:"pointer"}},"コスト集計")
-    ),
-    view==="list"&&React.createElement("div",null,"読み込み中...")
-  );
+  // デフォルト（fallback）
+  return E("div",{style:{maxWidth:1000,margin:"0 auto"}},nav,E("div",{style:{textAlign:"center",padding:40,color:"#94a3b8"}},"ビューを選択してください"));
 }
 
 /* ==========================================
@@ -3354,7 +3496,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v2026.03.10d";
+const APP_VERSION="v2026.03.10e";
 function Root(){
   const[auth,setAuth]=useState(!SB_ENABLED||localStorage.getItem("spk_auth")==="1");
   if(!auth)return <LoginScreen onLogin={()=>setAuth(true)}/>;
