@@ -195,6 +195,22 @@ const DB = {
     lsLoad(){try{const r=localStorage.getItem(DB.parking.LS_KEY);return r?JSON.parse(r):null;}catch(e){return null;}},
     lsSave(d){try{localStorage.setItem(DB.parking.LS_KEY,JSON.stringify(d));}catch(e){}},
   },
+  // --- HANDYMAN Fleet (store_id=sapporo) ---
+  hm:{
+    STORE:'sapporo',
+    async fetchCars(){if(!sb)return[];const{data,error}=await sb.from("cars").select("*").eq("store_id",DB.hm.STORE);if(error){dbLog("hm.cars",false,error.message);return[];}return data||[];},
+    async saveCar(car){if(!sb)return;const{error}=await sb.from("cars").upsert(car,{onConflict:"id"});if(error)dbLog("hm.saveCar",false,error.message);},
+    async deleteCar(id){if(!sb)return;await sb.from("cars").delete().eq("id",id);},
+    async fetchCarData(){if(!sb)return[];const{data,error}=await sb.from("car_data").select("*").eq("store_id",DB.hm.STORE);if(error){dbLog("hm.carData",false,error.message);return[];}return data||[];},
+    async saveCarData(rec){if(!sb)return;const{error}=await sb.from("car_data").upsert(rec,{onConflict:"id"});if(error)dbLog("hm.saveCD",false,error.message);},
+    async deleteCarData(id){if(!sb)return;await sb.from("car_data").delete().eq("id",id);},
+    async fetchLogs(){if(!sb)return[];const{data,error}=await sb.from("logs").select("*").eq("store_id",DB.hm.STORE).order("date",{ascending:false});if(error){dbLog("hm.logs",false,error.message);return[];}return data||[];},
+    async saveLog(log){if(!sb)return;const{error}=await sb.from("logs").upsert(log,{onConflict:"id"});if(error)dbLog("hm.saveLog",false,error.message);},
+    async deleteLog(id){if(!sb)return;await sb.from("logs").delete().eq("id",id);},
+    async fetchClasses(){if(!sb)return[];const{data,error}=await sb.from("classes").select("*").eq("store_id",DB.hm.STORE);if(error){dbLog("hm.classes",false,error.message);return[];}return data||[];},
+    async saveClass(cls){if(!sb)return;const{error}=await sb.from("classes").upsert(cls,{onConflict:"id"});if(error)dbLog("hm.saveCls",false,error.message);},
+    async deleteClass(id){if(!sb)return;await sb.from("classes").delete().eq("id",id);},
+  },
 };
 
 /* ===== 認証コンポーネント ===== */
@@ -630,6 +646,152 @@ function VehicleManager({vehicles,onVehiclesChange,vehicleClasses,onDeleteVehicl
       </div>}
     </div>)}
     <div className="text-xs text-gray-400 mt-4">合計: {vehicles.length}台</div>
+  </div>;
+}
+
+/* ==========================================
+   車両タブ（マスター＋整備管理）
+   ========================================== */
+function VehicleTab({vehicles,onVehiclesChange,vehicleClasses,onDeleteVehicle,hmCars,hmCarData,hmLogs,hmClasses,hmReload}){
+  const[subTab,setSubTab]=useState("master");
+  return <div style={{display:"flex",flexDirection:"column",height:"100%"}}>
+    <div className="flex gap-2 mb-3 border-b border-gray-200 pb-2">
+      <button onClick={()=>setSubTab("master")} style={{padding:"8px 12px",fontSize:13,fontWeight:subTab==="master"?700:500,color:subTab==="master"?"#2563eb":"#64748b",background:"none",border:"none",cursor:"pointer",borderBottom:subTab==="master"?"2px solid #2563eb":"none"}}>マスター</button>
+      <button onClick={()=>setSubTab("fleet")} style={{padding:"8px 12px",fontSize:13,fontWeight:subTab==="fleet"?700:500,color:subTab==="fleet"?"#2563eb":"#64748b",background:"none",border:"none",cursor:"pointer",borderBottom:subTab==="fleet"?"2px solid #2563eb":"none"}}>整備管理</button>
+    </div>
+    {subTab==="master"&&<VehicleManager vehicles={vehicles} onVehiclesChange={onVehiclesChange} vehicleClasses={vehicleClasses} onDeleteVehicle={onDeleteVehicle}/>}
+    {subTab==="fleet"&&<FleetManager cars={hmCars} carData={hmCarData} logs={hmLogs} classes={hmClasses} hmReload={hmReload}/>}
+  </div>;
+}
+
+/* ==========================================
+   HANDYMAN 整備管理
+   ========================================== */
+function FleetManager({cars,carData,logs,classes,hmReload}){
+  const[view,setView]=useState("dashboard");
+  const[editingCar,setEditingCar]=useState(null);
+  const[formData,setFormData]=useState({name:"",plate:"",class_id:"",status:"active",notes:""});
+  const[formLog,setFormLog]=useState({car_id:"",date:new Date().toISOString().split("T")[0],type:"oil",description:"",cost:"",mileage:""});
+
+  const save=async(fn)=>{await fn();await hmReload();};
+
+  const addCar=async()=>{if(!formData.name.trim())return;const car={id:crypto.randomUUID(),store_id:"sapporo",name:formData.name,plate:formData.plate,class_id:formData.class_id||"",status:formData.status,notes:formData.notes};await save(()=>DB.hm.saveCar(car));setFormData({name:"",plate:"",class_id:"",status:"active",notes:""});};
+  const editCar=async()=>{if(!editingCar||!formData.name.trim())return;const car={...editingCar,name:formData.name,plate:formData.plate,class_id:formData.class_id,status:formData.status,notes:formData.notes};await save(()=>DB.hm.saveCar(car));setEditingCar(null);setFormData({name:"",plate:"",class_id:"",status:"active",notes:""});};
+  const delCar=async(id)=>{await save(()=>DB.hm.deleteCar(id));};
+  const addLog=async()=>{if(!formLog.car_id||!formLog.date||!formLog.type)return;const log={id:crypto.randomUUID(),store_id:"sapporo",car_id:formLog.car_id,date:formLog.date,type:formLog.type,description:formLog.description,cost:formLog.cost?Number(formLog.cost):0,mileage:formLog.mileage?Number(formLog.mileage):0};await save(()=>DB.hm.saveLog(log));setFormLog({car_id:"",date:new Date().toISOString().split("T")[0],type:"oil",description:"",cost:"",mileage:""});};
+  const delLog=async(id)=>{await save(()=>DB.hm.deleteLog(id));};
+
+  const totalCars=cars.length;const activeCars=cars.filter(c=>c.status==="active").length;const repairCars=cars.filter(c=>c.status==="repair").length;const waitingCars=cars.filter(c=>c.status==="waiting").length;
+
+  return <div style={{maxWidth:1000,margin:"0 auto"}}>
+    <div className="flex gap-2 mb-4 flex-wrap">
+      <button onClick={()=>setView("dashboard")} style={{padding:"8px 12px",fontSize:12,fontWeight:view==="dashboard"?700:500,color:view==="dashboard"?"#fff":"#64748b",background:view==="dashboard"?"#2563eb":"#f1f5f9",border:"none",borderRadius:6,cursor:"pointer"}}>ダッシュボード</button>
+      <button onClick={()=>setView("cars")} style={{padding:"8px 12px",fontSize:12,fontWeight:view==="cars"?700:500,color:view==="cars"?"#fff":"#64748b",background:view==="cars"?"#2563eb":"#f1f5f9",border:"none",borderRadius:6,cursor:"pointer"}}>車両管理</button>
+      <button onClick={()=>setView("maintenance")} style={{padding:"8px 12px",fontSize:12,fontWeight:view==="maintenance"?700:500,color:view==="maintenance"?"#fff":"#64748b",background:view==="maintenance"?"#2563eb":"#f1f5f9",border:"none",borderRadius:6,cursor:"pointer"}}>整備履歴</button>
+    </div>
+
+    {view==="dashboard"&&<div>
+      <h3 className="font-bold mb-3">整備管理ダッシュボード</h3>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:12,marginBottom:16}}>
+        <div style={{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,padding:12,textAlign:"center"}}>
+          <div style={{fontSize:24,fontWeight:700,color:"#15803d"}}>{totalCars}</div>
+          <div style={{fontSize:11,color:"#15803d",marginTop:4}}>全車両数</div>
+        </div>
+        <div style={{background:"#fef3c7",border:"1px solid #fcd34d",borderRadius:8,padding:12,textAlign:"center"}}>
+          <div style={{fontSize:24,fontWeight:700,color:"#92400e"}}>{activeCars}</div>
+          <div style={{fontSize:11,color:"#92400e",marginTop:4}}>稼働中</div>
+        </div>
+        <div style={{background:"#fee2e2",border:"1px solid #fca5a5",borderRadius:8,padding:12,textAlign:"center"}}>
+          <div style={{fontSize:24,fontWeight:700,color:"#991b1b"}}>{repairCars}</div>
+          <div style={{fontSize:11,color:"#991b1b",marginTop:4}}>修理中</div>
+        </div>
+        <div style={{background:"#dbeafe",border:"1px solid #93c5fd",borderRadius:8,padding:12,textAlign:"center"}}>
+          <div style={{fontSize:24,fontWeight:700,color:"#1e40af"}}>{waitingCars}</div>
+          <div style={{fontSize:11,color:"#1e40af",marginTop:4}}>待機中</div>
+        </div>
+      </div>
+      <div style={{fontSize:11,color:"#94a3b8"}}>最終更新: {new Date().toLocaleString("ja-JP")}</div>
+    </div>}
+
+    {view==="cars"&&<div>
+      <h3 className="font-bold mb-3">車両管理</h3>
+      <div style={{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,padding:12,marginBottom:12}}>
+        <h4 style={{fontSize:12,fontWeight:700,marginBottom:8,color:"#15803d"}}>車両を{editingCar?"編集":"追加"}</h4>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:8}}>
+          <input value={formData.name} onChange={e=>setFormData({...formData,name:e.target.value})} placeholder="車名（例：ヴェルファイア）" className="input-s"/>
+          <input value={formData.plate} onChange={e=>setFormData({...formData,plate:e.target.value})} placeholder="ナンバー" className="input-s"/>
+          <select value={formData.class_id} onChange={e=>setFormData({...formData,class_id:e.target.value})} className="input-s">
+            <option value="">クラスを選択</option>
+            {classes.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <select value={formData.status} onChange={e=>setFormData({...formData,status:e.target.value})} className="input-s">
+            <option value="active">稼働中</option>
+            <option value="repair">修理中</option>
+            <option value="waiting">待機中</option>
+            <option value="estimating">見積中</option>
+          </select>
+        </div>
+        <input value={formData.notes} onChange={e=>setFormData({...formData,notes:e.target.value})} placeholder="備考" className="input-s w-full mb-2"/>
+        <div className="flex gap-2">
+          {editingCar?<><button onClick={editCar} className="btn-primary">更新</button><button onClick={()=>{setEditingCar(null);setFormData({name:"",plate:"",class_id:"",status:"active",notes:""});}} className="btn-ghost">キャンセル</button></>:<button onClick={addCar} className="btn-primary">追加</button>}
+        </div>
+      </div>
+      <div style={{background:"white",borderRadius:8,border:"1px solid #e2e8f0",overflow:"hidden"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+          <thead><tr style={{background:"#f8fafc"}}><th className="px-3 py-2 text-left text-xs font-semibold">車名</th><th className="px-3 py-2 text-left text-xs font-semibold">ナンバー</th><th className="px-3 py-2 text-left text-xs font-semibold">ステータス</th><th className="px-3 py-2 text-right text-xs font-semibold">操作</th></tr></thead>
+          <tbody>{cars.map(c=><tr key={c.id} className="border-t border-gray-100 hover:bg-blue-50">
+            <td className="px-3 py-2">{c.name}</td>
+            <td className="px-3 py-2 font-mono">{c.plate}</td>
+            <td className="px-3 py-2"><span style={{fontSize:10,padding:"2px 6px",borderRadius:4,background:c.status==="active"?"#f0fdf4":c.status==="repair"?"#fee2e2":"#dbeafe",color:c.status==="active"?"#15803d":c.status==="repair"?"#991b1b":"#1e40af"}}>{c.status}</span></td>
+            <td className="px-3 py-2 text-right"><button onClick={()=>{setEditingCar(c);setFormData({name:c.name,plate:c.plate,class_id:c.class_id||"",status:c.status,notes:c.notes||""});}} style={{fontSize:11,color:"#2563eb",background:"none",border:"none",cursor:"pointer",marginRight:8}}>編集</button><button onClick={()=>delCar(c.id)} style={{fontSize:11,color:"#dc2626",background:"none",border:"none",cursor:"pointer"}}>削除</button></td>
+          </tr>)}</tbody>
+        </table>
+      </div>
+    </div>}
+
+    {view==="maintenance"&&<div>
+      <h3 className="font-bold mb-3">整備履歴</h3>
+      <div style={{background:"#fef3c7",border:"1px solid #fcd34d",borderRadius:8,padding:12,marginBottom:12}}>
+        <h4 style={{fontSize:12,fontWeight:700,marginBottom:8,color:"#92400e"}}>整備記録を追加</h4>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:8}}>
+          <select value={formLog.car_id} onChange={e=>setFormLog({...formLog,car_id:e.target.value})} className="input-s">
+            <option value="">車両を選択</option>
+            {cars.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <input type="date" value={formLog.date} onChange={e=>setFormLog({...formLog,date:e.target.value})} className="input-s"/>
+          <select value={formLog.type} onChange={e=>setFormLog({...formLog,type:e.target.value})} className="input-s">
+            <option value="oil">オイル交換</option>
+            <option value="battery">バッテリー</option>
+            <option value="tire">タイヤ</option>
+            <option value="semi_annual">6ヶ月点検</option>
+            <option value="inspection">車検</option>
+            <option value="repair">修理</option>
+            <option value="other">その他</option>
+          </select>
+          <input type="number" value={formLog.mileage} onChange={e=>setFormLog({...formLog,mileage:e.target.value})} placeholder="走行距離" className="input-s"/>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:8,marginBottom:8}}>
+          <input value={formLog.description} onChange={e=>setFormLog({...formLog,description:e.target.value})} placeholder="内容・備考" className="input-s"/>
+          <input type="number" value={formLog.cost} onChange={e=>setFormLog({...formLog,cost:e.target.value})} placeholder="費用（円）" className="input-s"/>
+        </div>
+        <button onClick={addLog} className="btn-primary">記録を追加</button>
+      </div>
+      <div style={{background:"white",borderRadius:8,border:"1px solid #e2e8f0",overflow:"hidden"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+          <thead><tr style={{background:"#f8fafc"}}><th className="px-3 py-2 text-left text-xs font-semibold">日付</th><th className="px-3 py-2 text-left text-xs font-semibold">車名</th><th className="px-3 py-2 text-left text-xs font-semibold">種類</th><th className="px-3 py-2 text-right text-xs font-semibold">走行距離</th><th className="px-3 py-2 text-right text-xs font-semibold">費用</th><th className="px-3 py-2 text-left text-xs font-semibold">内容</th><th className="px-3 py-2 text-right text-xs font-semibold">操作</th></tr></thead>
+          <tbody>{logs.map(l=>{const car=cars.find(c=>c.id===l.car_id);return <tr key={l.id} className="border-t border-gray-100 hover:bg-blue-50">
+            <td className="px-3 py-2">{l.date}</td>
+            <td className="px-3 py-2">{car?.name||"-"}</td>
+            <td className="px-3 py-2"><span style={{fontSize:10,padding:"2px 6px",borderRadius:3,background:"#dbeafe",color:"#1e40af"}}>{l.type}</span></td>
+            <td className="px-3 py-2 text-right font-mono">{l.mileage?l.mileage.toLocaleString():""}km</td>
+            <td className="px-3 py-2 text-right font-mono">¥{l.cost.toLocaleString()}</td>
+            <td className="px-3 py-2 text-xs text-gray-600">{l.description}</td>
+            <td className="px-3 py-2 text-right"><button onClick={()=>delLog(l.id)} style={{fontSize:11,color:"#dc2626",background:"none",border:"none",cursor:"pointer"}}>削除</button></td>
+          </tr>;})}
+          </tbody>
+        </table>
+      </div>
+    </div>}
   </div>;
 }
 
@@ -2750,6 +2912,9 @@ function App(){
   const[staff,setStaff]=useState(INIT_STAFF);
   const[vehicles,setVehicles]=useState(INIT_VEHICLES);
   const vehicleClasses=INIT_CLASSES;
+  // --- HANDYMAN Fleet state ---
+  const[hmCars,setHmCars]=useState([]);const[hmCarData,setHmCarData]=useState([]);const[hmLogs,setHmLogs]=useState([]);const[hmClasses,setHmClasses]=useState([]);
+  const hmReload=async()=>{const[c,cd,l,cl]=await Promise.all([DB.hm.fetchCars(),DB.hm.fetchCarData(),DB.hm.fetchLogs(),DB.hm.fetchClasses()]);setHmCars(c);setHmCarData(cd);setHmLogs(l);setHmClasses(cl);};
   const[pendingPlaces,setPendingPlaces]=useState(null);
   const[sheetPlaces,setSheetPlaces]=useState(()=>{try{return JSON.parse(localStorage.getItem("spk_sheet_places")||"{}}");}catch(e){return{};}});
   const saveSheetPlaces=(p)=>{setSheetPlaces(p);try{localStorage.setItem("spk_sheet_places",JSON.stringify(p));}catch(e){}};
@@ -2808,6 +2973,8 @@ function App(){
           setSheetPlaces(prev=>{const merged={...prev,...plDB};try{localStorage.setItem("spk_sheet_places",JSON.stringify(merged));}catch(e){}return merged;});
         }
         setSbConnected(true);
+        // HANDYMAN Fleet data
+        try{await hmReload();}catch(e){console.error("HM load error:",e);}
       }catch(e){console.error("DB load error:",e);}
       setDbLoaded(true);
     })();
@@ -2831,6 +2998,7 @@ function App(){
       if(vhDB)setVehicles(vhDB);
       if(shDB)setShifts(shDB);
       if(mtDB)setMaintenance(mtDB);
+      try{await hmReload();}catch(e){}
     }catch(e){console.error("reload error:",e);}
     setReloading(2);
     setTimeout(()=>setReloading(0),1200);
@@ -3116,7 +3284,7 @@ function App(){
           {tab==="staff"&&<StaffManager staff={staff} onStaffChange={setStaffSync} onDeleteStaff={(name)=>DB.deleteStaff(name)}/>}
           {tab==="shift"&&<ShiftCalendar shifts={shifts} onShiftsChange={setShiftsSync} today={today} staff={staff} sbSaveShift={DB.saveShift}/>}
           {tab==="fleet"&&<FleetTimeline data={data} fleet={fleet} onFleetChange={setFleetSync} today={today} maintenance={maintenance} onMaintenanceChange={setMaintenance} vehicles={vehicles} vehicleClasses={vehicleClasses} onAddReservation={addReservation} onBulkAddReservation={bulkAddReservation} onCancelReservation={cancelReservation} onReassignVehicle={reassignVehicle} unassignedReasons={unassignedReasons}/>}
-          {tab==="vehicle"&&<VehicleManager vehicles={vehicles} onVehiclesChange={setVehiclesSync} vehicleClasses={vehicleClasses} onDeleteVehicle={(code)=>DB.deleteVehicle(code)}/>}
+          {tab==="vehicle"&&<VehicleTab vehicles={vehicles} onVehiclesChange={setVehiclesSync} vehicleClasses={vehicleClasses} onDeleteVehicle={(code)=>DB.deleteVehicle(code)} hmCars={hmCars} hmCarData={hmCarData} hmLogs={hmLogs} hmClasses={hmClasses} hmReload={hmReload}/>}
           {tab==="parking"&&<ParkingManager/>}
           {tab==="dashboard"&&data.length>0&&<>
             {importDiag&&(()=>{const hz=importDiag.zeroAll.length>0;return <div style={{background:hz?"#fef3c7":"#f0fdf4",border:`1px solid ${hz?"#f59e0b":"#86efac"}`,borderRadius:10,padding:"8px 12px",marginBottom:10,fontSize:11}}>
@@ -3136,7 +3304,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v2026.03.10a";
+const APP_VERSION="v2026.03.10b";
 function Root(){
   const[auth,setAuth]=useState(!SB_ENABLED||localStorage.getItem("spk_auth")==="1");
   if(!auth)return <LoginScreen onLogin={()=>setAuth(true)}/>;
