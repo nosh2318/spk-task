@@ -210,13 +210,13 @@ const DB = {
   hm:{
     STORE:'sapporo',
     async fetchCars(){if(!sb)return[];const{data,error}=await sb.from("cars").select("*").eq("store_id",DB.hm.STORE);if(error){dbLog("hm.cars",false,error.message);return[];}return data||[];},
-    async saveCar(car){if(!sb)return;const{error}=await sb.from("cars").upsert(car,{onConflict:"id"});if(error)dbLog("hm.saveCar",false,error.message);},
+    async saveCar(car){if(!sb)throw new Error("DB未接続");const{error}=await sb.from("cars").upsert(car,{onConflict:"id"});if(error){dbLog("hm.saveCar",false,error.message);throw new Error(error.message);}},
     async deleteCar(id){if(!sb)return;await sb.from("cars").delete().eq("id",id);},
     async fetchCarData(){if(!sb)return[];const{data,error}=await sb.from("car_data").select("*").eq("store_id",DB.hm.STORE);if(error){dbLog("hm.carData",false,error.message);return[];}return data||[];},
-    async saveCarData(rec){if(!sb)return;const{error}=await sb.from("car_data").upsert(rec,{onConflict:"id"});if(error)dbLog("hm.saveCD",false,error.message);},
+    async saveCarData(rec){if(!sb)throw new Error("DB未接続");const{error}=await sb.from("car_data").upsert(rec,{onConflict:"id"});if(error){dbLog("hm.saveCD",false,error.message);throw new Error(error.message);}},
     async deleteCarData(id){if(!sb)return;await sb.from("car_data").delete().eq("id",id);},
     async fetchLogs(){if(!sb)return[];const{data,error}=await sb.from("logs").select("*").eq("store_id",DB.hm.STORE).order("date",{ascending:false});if(error){dbLog("hm.logs",false,error.message);return[];}return data||[];},
-    async saveLog(log){if(!sb)return;const{error}=await sb.from("logs").upsert(log,{onConflict:"id"});if(error)dbLog("hm.saveLog",false,error.message);},
+    async saveLog(log){if(!sb)throw new Error("DB未接続");const{error}=await sb.from("logs").upsert(log,{onConflict:"id"});if(error){dbLog("hm.saveLog",false,error.message);throw new Error(error.message);}},
     async deleteLog(id){if(!sb)return;await sb.from("logs").delete().eq("id",id);},
     async fetchClasses(){if(!sb)return[];const{data,error}=await sb.from("classes").select("*").eq("store_id",DB.hm.STORE);if(error){dbLog("hm.classes",false,error.message);return[];}return data||[];},
     async saveClass(cls){if(!sb)return;const{error}=await sb.from("classes").upsert(cls,{onConflict:"id"});if(error)dbLog("hm.saveCls",false,error.message);},
@@ -703,7 +703,10 @@ function FleetManager(p){
   var cars=p.cars||[];var carData=p.carData||[];var logs=p.logs||[];
   var today=new Date().toISOString().slice(0,10);
 
-  var save=function(fn){setBusy(true);return Promise.resolve().then(function(){return fn()}).then(function(){if(p.hmReload)return p.hmReload()}).catch(function(e){console.error("HM save:",e)}).finally(function(){setBusy(false)})};
+  // 保存通知用
+  var _msg=useState("");var saveMsg=_msg[0];var setSaveMsg=_msg[1];
+  var showMsg=function(text,isErr){setSaveMsg(text);setTimeout(function(){setSaveMsg("")},isErr?5000:2000)};
+  var save=function(fn){setBusy(true);return Promise.resolve().then(function(){return fn()}).then(function(){if(p.hmReload)return p.hmReload()}).then(function(){showMsg("保存しました",false)}).catch(function(e){console.error("HM save:",e);showMsg("保存エラー: "+String(e&&e.message||e),true)}).finally(function(){setBusy(false)})};
 
   // --- ヘルパー ---
   var sortDesc=function(arr){return arr.slice().sort(function(a,b){return(b.date||"").localeCompare(a.date||"")})};
@@ -734,7 +737,8 @@ function FleetManager(p){
 
   // --- 共通パーツ ---
   var navBtn=function(id,label){return E("button",{key:id,onClick:function(){setView(id)},style:{padding:"6px 14px",fontSize:12,fontWeight:view===id?700:500,background:view===id?"#2563eb":"#f1f5f9",color:view===id?"#fff":"#64748b",border:"none",borderRadius:6,cursor:"pointer"}},label)};
-  var nav=E("div",{style:{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}},navBtn("list","車両一覧"),navBtn("summary","コスト集計"));
+  var msgBar=saveMsg?E("div",{style:{position:"fixed",top:10,left:"50%",transform:"translateX(-50%)",zIndex:9999,background:saveMsg.indexOf("エラー")>=0?"#fee2e2":"#dcfce7",color:saveMsg.indexOf("エラー")>=0?"#991b1b":"#15803d",border:"1px solid "+(saveMsg.indexOf("エラー")>=0?"#fca5a5":"#86efac"),borderRadius:8,padding:"8px 20px",fontSize:13,fontWeight:700,boxShadow:"0 4px 12px rgba(0,0,0,0.15)"}},saveMsg):null;
+  var nav=E("div",{style:{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}},navBtn("list","車両一覧"),navBtn("summary","コスト集計"),msgBar);
   var statusBadge=function(s){var bg=s==="active"?"#f0fdf4":s==="repair"?"#fee2e2":s==="waiting"?"#fef3c7":"#dbeafe";var fg=s==="active"?"#15803d":s==="repair"?"#991b1b":s==="waiting"?"#92400e":"#1e40af";var lb=s==="active"?"稼働中":s==="repair"?"修理中":s==="waiting"?"修理待機中":"見積中";return E("span",{style:{fontSize:10,padding:"2px 8px",borderRadius:4,background:bg,color:fg,fontWeight:600}},lb)};
   var section=function(bg,border,title,children){return E("div",{style:{background:bg,border:"1px solid "+border,borderRadius:8,padding:12,marginBottom:10}},E("div",{style:{fontSize:13,fontWeight:700,marginBottom:8}},title),children)};
   var card=function(bg,border,fg,val,label){return E("div",{style:{background:bg,border:"1px solid "+border,borderRadius:8,padding:14,textAlign:"center",minWidth:120}},E("div",{style:{fontSize:22,fontWeight:700,color:fg}},val),E("div",{style:{fontSize:11,color:fg,marginTop:4}},label))};
