@@ -1019,77 +1019,133 @@ function FleetManager(p){
     var tIns=totalInsurance();
     var yearOpts=[];for(var yi=2024;yi<=2027;yi++){yearOpts.push(yi)}
     var allLogsYear=(logs||[]).filter(function(l){return(l.date||"").slice(0,4)===String(filterYear)});
-    var allMonthly=monthlyCost(allLogsYear);
     var allYearly=yearlyCost(logs,filterYear);
-    var allMonthKeys=Object.keys(allMonthly).sort().reverse();
 
-    return E("div",{style:{maxWidth:1000,margin:"0 auto"}},msgPopup,nav,
+    // カテゴリ別年間集計
+    var yearCatTotals={};COST_CATS.forEach(function(c){yearCatTotals[c.v]=0});
+    allLogsYear.forEach(function(l){yearCatTotals[l.type||"other"]=(yearCatTotals[l.type||"other"]||0)+Number(l.cost||0)});
+
+    // 月別＋カテゴリ別集計 {YYYY-MM: {total:N, inspection:N, repair:N, ...}}
+    var monthCatData={};
+    allLogsYear.forEach(function(l){
+      var ym=(l.date||"").slice(0,7);if(!ym)return;
+      if(!monthCatData[ym]){monthCatData[ym]={total:0};COST_CATS.forEach(function(c){monthCatData[ym][c.v]=0})}
+      monthCatData[ym].total+=Number(l.cost||0);
+      monthCatData[ym][l.type||"other"]=(monthCatData[ym][l.type||"other"]||0)+Number(l.cost||0);
+    });
+    var allMonthKeys=Object.keys(monthCatData).sort();
+
+    // カテゴリ色
+    var catColor=function(v){return v==="inspection"?"#1e40af":v==="semi_annual"?"#92400e":v==="repair"?"#991b1b":v==="oil"?"#9a3412":"#475569"};
+    var catBg=function(v){return v==="inspection"?"#dbeafe":v==="semi_annual"?"#fef3c7":v==="repair"?"#fee2e2":v==="oil"?"#fff7ed":"#f1f5f9"};
+
+    return E("div",{style:{maxWidth:1100,margin:"0 auto"}},msgPopup,nav,
 
       // 年度切替
       E("div",{style:{display:"flex",gap:8,alignItems:"center",marginBottom:14}},
         E("span",{style:{fontSize:12,fontWeight:600}},"年度:"),
-        yearOpts.map(function(y){return E("button",{key:y,onClick:function(){setFilterYear(y)},style:{padding:"4px 10px",fontSize:12,fontWeight:filterYear===y?700:400,background:filterYear===y?"#2563eb":"#f1f5f9",color:filterYear===y?"#fff":"#64748b",border:"none",borderRadius:4,cursor:"pointer"}},String(y))})
+        yearOpts.map(function(y){return E("button",{key:y,onClick:function(){setFilterYear(y)},style:{padding:"5px 14px",fontSize:12,fontWeight:filterYear===y?700:400,background:filterYear===y?"#2563eb":"#f1f5f9",color:filterYear===y?"#fff":"#64748b",border:"none",borderRadius:6,cursor:"pointer"}},String(y))})
       ),
 
-      // サマリーカード
-      E("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:10,marginBottom:16}},
+      // サマリーカード（上段）
+      E("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:10,marginBottom:10}},
         card("#f0fdf4","#86efac","#15803d","¥"+tIns.toLocaleString(),"保険 月額合計"),
         card("#fefce8","#fde68a","#92400e","¥"+(tIns*12).toLocaleString(),"保険 年間合計"),
         card("#fee2e2","#fca5a5","#991b1b","¥"+allYearly.toLocaleString(),"整備 年間合計("+filterYear+")"),
         card("#dbeafe","#93c5fd","#1e40af",cars.length+"台","管理車両数")
       ),
 
-      // 保険内訳
+      // カテゴリ別年間サマリー
+      E("div",{style:{display:"grid",gridTemplateColumns:"repeat("+COST_CATS.length+",1fr)",gap:6,marginBottom:14}},
+        COST_CATS.map(function(c){return E("div",{key:c.v,style:{background:catBg(c.v),border:"1px solid #e2e8f0",borderRadius:6,padding:8,textAlign:"center"}},
+          E("div",{style:{fontSize:10,color:catColor(c.v),fontWeight:600}},c.l),
+          E("div",{style:{fontSize:15,fontWeight:800,color:catColor(c.v)}},"¥"+(yearCatTotals[c.v]||0).toLocaleString())
+        )})
+      ),
+
+      // 保険内訳（車両別）
       E("div",{style:{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,padding:12,marginBottom:12}},
         E("div",{style:{fontSize:13,fontWeight:700,marginBottom:8}},"保険内訳（車両別）"),
         E("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:12}},
-          E("thead",null,E("tr",{style:{borderBottom:"2px solid #86efac"}},
+          E("thead",null,E("tr",{style:{borderBottom:"2px solid #86efac",background:"#f0fdf4"}},
             E("th",{style:{padding:"6px 8px",textAlign:"left"}},"車両"),E("th",{style:{padding:"6px 8px",textAlign:"right"}},"月額"),E("th",{style:{padding:"6px 8px",textAlign:"right"}},"年額"))),
           E("tbody",null,
             cars.map(function(c){var iv=getInsurance(c.id);return E("tr",{key:c.id,style:{borderBottom:"1px solid #e2e8f0"}},
-              E("td",{style:{padding:"6px 8px"}},(c.name||"")+" "+(c.plate||"")),
+              E("td",{style:{padding:"6px 8px",fontWeight:600}},(c.name||"")+" "+(c.plate||"")),
               E("td",{style:{padding:"6px 8px",textAlign:"right"}},iv?"¥"+iv.toLocaleString():"未設定"),
               E("td",{style:{padding:"6px 8px",textAlign:"right"}},iv?"¥"+(iv*12).toLocaleString():"-")
             )}),
-            E("tr",{style:{borderTop:"2px solid #15803d",fontWeight:700}},
-              E("td",{style:{padding:"6px 8px"}},"合計"),
-              E("td",{style:{padding:"6px 8px",textAlign:"right"}},"¥"+tIns.toLocaleString()),
-              E("td",{style:{padding:"6px 8px",textAlign:"right"}},"¥"+(tIns*12).toLocaleString())
+            E("tr",{style:{borderTop:"2px solid #15803d",fontWeight:700,background:"#dcfce7"}},
+              E("td",{style:{padding:"8px"}},"合計"),
+              E("td",{style:{padding:"8px",textAlign:"right",fontSize:14}},"¥"+tIns.toLocaleString()),
+              E("td",{style:{padding:"8px",textAlign:"right",fontSize:14}},"¥"+(tIns*12).toLocaleString())
             )
           )
         )
       ),
 
-      // 整備費内訳（車両別）
+      // 整備費内訳（車両別 × カテゴリ別）
       E("div",{style:{background:"#fef2f2",border:"1px solid #fecaca",borderRadius:8,padding:12,marginBottom:12}},
         E("div",{style:{fontSize:13,fontWeight:700,marginBottom:8}},"整備費内訳（車両別 / "+filterYear+"年）"),
-        E("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:12}},
-          E("thead",null,E("tr",{style:{borderBottom:"2px solid #fca5a5"}},
-            E("th",{style:{padding:"6px 8px",textAlign:"left"}},"車両"),E("th",{style:{padding:"6px 8px",textAlign:"right"}},"年間合計"),E("th",{style:{padding:"6px 8px",textAlign:"right"}},"件数"))),
-          E("tbody",null,
-            cars.map(function(c){var cl=carLogs(c.id).filter(function(l){return(l.date||"").slice(0,4)===String(filterYear)});var ct=0;cl.forEach(function(l){ct+=Number(l.cost||0)});return E("tr",{key:c.id,style:{borderBottom:"1px solid #e2e8f0"}},
-              E("td",{style:{padding:"6px 8px"}},(c.name||"")+" "+(c.plate||"")),
-              E("td",{style:{padding:"6px 8px",textAlign:"right",fontWeight:600}},"¥"+ct.toLocaleString()),
-              E("td",{style:{padding:"6px 8px",textAlign:"right"}},cl.length+"件")
-            )}),
-            E("tr",{style:{borderTop:"2px solid #991b1b",fontWeight:700}},
-              E("td",{style:{padding:"6px 8px"}},"全車両合計"),
-              E("td",{style:{padding:"6px 8px",textAlign:"right"}},"¥"+allYearly.toLocaleString()),
-              E("td",{style:{padding:"6px 8px",textAlign:"right"}},allLogsYear.length+"件")
+        E("div",{style:{overflowX:"auto"}},
+          E("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:600}},
+            E("thead",null,E("tr",{style:{borderBottom:"2px solid #fca5a5",background:"#fef2f2"}},
+              E("th",{style:{padding:"6px 8px",textAlign:"left",fontSize:12}},"車両"),
+              COST_CATS.map(function(c){return E("th",{key:c.v,style:{padding:"6px 8px",textAlign:"right",color:catColor(c.v),fontSize:11}},c.l)}),
+              E("th",{style:{padding:"6px 8px",textAlign:"right",fontSize:12,fontWeight:800}},"合計"),
+              E("th",{style:{padding:"6px 8px",textAlign:"right"}},"件数")
+            )),
+            E("tbody",null,
+              cars.map(function(c){
+                var cl=carLogs(c.id).filter(function(l){return(l.date||"").slice(0,4)===String(filterYear)});
+                var ct={};COST_CATS.forEach(function(cat){ct[cat.v]=0});
+                var total=0;
+                cl.forEach(function(l){ct[l.type||"other"]=(ct[l.type||"other"]||0)+Number(l.cost||0);total+=Number(l.cost||0)});
+                return E("tr",{key:c.id,style:{borderBottom:"1px solid #e2e8f0"}},
+                  E("td",{style:{padding:"6px 8px",fontWeight:600}},(c.name||"")),
+                  COST_CATS.map(function(cat){return E("td",{key:cat.v,style:{padding:"6px 8px",textAlign:"right",color:ct[cat.v]>0?catColor(cat.v):"#cbd5e1"}},ct[cat.v]>0?"¥"+ct[cat.v].toLocaleString():"-")}),
+                  E("td",{style:{padding:"6px 8px",textAlign:"right",fontWeight:700,fontSize:12}},total>0?"¥"+total.toLocaleString():"-"),
+                  E("td",{style:{padding:"6px 8px",textAlign:"right",color:"#64748b"}},cl.length+"件")
+                );
+              }),
+              E("tr",{style:{borderTop:"2px solid #991b1b",fontWeight:700,background:"#fee2e2"}},
+                E("td",{style:{padding:"8px"}},"全車両合計"),
+                COST_CATS.map(function(c){return E("td",{key:c.v,style:{padding:"8px",textAlign:"right",color:catColor(c.v),fontWeight:700}},"¥"+(yearCatTotals[c.v]||0).toLocaleString())}),
+                E("td",{style:{padding:"8px",textAlign:"right",fontSize:14,fontWeight:800}},"¥"+allYearly.toLocaleString()),
+                E("td",{style:{padding:"8px",textAlign:"right"}},allLogsYear.length+"件")
+              )
             )
           )
         )
       ),
 
-      // 月別推移（全車両）
-      allMonthKeys.length>0&&E("div",{style:{background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:8,padding:12}},
-        E("div",{style:{fontSize:13,fontWeight:700,marginBottom:8}},"月別整備費（全車両 / "+filterYear+"年）"),
-        E("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(100px,1fr))",gap:6}},
-          allMonthKeys.map(function(ym){return E("div",{key:ym,style:{background:"#fff",border:"1px solid #e2e8f0",borderRadius:6,padding:8,textAlign:"center"}},
-            E("div",{style:{fontSize:11,color:"#64748b"}},ym),
-            E("div",{style:{fontSize:14,fontWeight:700,color:"#991b1b"}},"¥"+allMonthly[ym].toLocaleString())
-          )})
-        )
+      // 月別推移（カテゴリ内訳付き）
+      E("div",{style:{background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:8,padding:12}},
+        E("div",{style:{fontSize:13,fontWeight:700,marginBottom:10}},"月別整備費（"+filterYear+"年）"),
+        allMonthKeys.length>0?E("div",{style:{overflowX:"auto"}},
+          E("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:500}},
+            E("thead",null,E("tr",{style:{borderBottom:"2px solid #cbd5e1",background:"#f1f5f9"}},
+              E("th",{style:{padding:"6px 8px",textAlign:"left",fontSize:12}},"月"),
+              COST_CATS.map(function(c){return E("th",{key:c.v,style:{padding:"6px 8px",textAlign:"right",color:catColor(c.v),fontSize:11}},c.l)}),
+              E("th",{style:{padding:"6px 8px",textAlign:"right",fontSize:12,fontWeight:800}},"月合計")
+            )),
+            E("tbody",null,
+              allMonthKeys.map(function(ym){
+                var md=monthCatData[ym];
+                return E("tr",{key:ym,style:{borderBottom:"1px solid #e2e8f0"}},
+                  E("td",{style:{padding:"6px 8px",fontWeight:600,fontSize:12}},ym),
+                  COST_CATS.map(function(c){return E("td",{key:c.v,style:{padding:"6px 8px",textAlign:"right",color:(md[c.v]||0)>0?catColor(c.v):"#cbd5e1"}},(md[c.v]||0)>0?"¥"+(md[c.v]).toLocaleString():"-")}),
+                  E("td",{style:{padding:"6px 8px",textAlign:"right",fontWeight:700,fontSize:13,color:"#991b1b"}},"¥"+(md.total||0).toLocaleString())
+                );
+              }),
+              E("tr",{style:{borderTop:"2px solid #475569",fontWeight:700,background:"#e2e8f0"}},
+                E("td",{style:{padding:"8px",fontSize:12}},"年間合計"),
+                COST_CATS.map(function(c){return E("td",{key:c.v,style:{padding:"8px",textAlign:"right",color:catColor(c.v),fontWeight:700}},"¥"+(yearCatTotals[c.v]||0).toLocaleString())}),
+                E("td",{style:{padding:"8px",textAlign:"right",fontSize:14,fontWeight:800,color:"#991b1b"}},"¥"+allYearly.toLocaleString())
+              )
+            )
+          )
+        ):E("div",{style:{textAlign:"center",color:"#94a3b8",padding:20,fontSize:12}},"まだ整備記録がありません")
       )
     );
   }
