@@ -210,13 +210,13 @@ const DB = {
   hm:{
     STORE:'sapporo',
     async fetchCars(){if(!sb)return[];const{data,error}=await sb.from("cars").select("*").eq("store_id",DB.hm.STORE);if(error){dbLog("hm.cars",false,error.message);return[];}return data||[];},
-    async saveCar(car){if(!sb)return;const{error}=await sb.from("cars").upsert(car,{onConflict:"id"});if(error)dbLog("hm.saveCar",false,error.message);},
+    async saveCar(car){if(!sb)throw new Error("DB未接続");const{error}=await sb.from("cars").upsert(car,{onConflict:"id"});if(error){dbLog("hm.saveCar",false,error.message);throw new Error(error.message);}},
     async deleteCar(id){if(!sb)return;await sb.from("cars").delete().eq("id",id);},
     async fetchCarData(){if(!sb)return[];const{data,error}=await sb.from("car_data").select("*").eq("store_id",DB.hm.STORE);if(error){dbLog("hm.carData",false,error.message);return[];}return data||[];},
-    async saveCarData(rec){if(!sb)return;const{error}=await sb.from("car_data").upsert(rec,{onConflict:"id"});if(error)dbLog("hm.saveCD",false,error.message);},
+    async saveCarData(rec){if(!sb)throw new Error("DB未接続");const{error}=await sb.from("car_data").upsert(rec,{onConflict:"id"});if(error){dbLog("hm.saveCD",false,error.message);throw new Error(error.message);}},
     async deleteCarData(id){if(!sb)return;await sb.from("car_data").delete().eq("id",id);},
     async fetchLogs(){if(!sb)return[];const{data,error}=await sb.from("logs").select("*").eq("store_id",DB.hm.STORE).order("date",{ascending:false});if(error){dbLog("hm.logs",false,error.message);return[];}return data||[];},
-    async saveLog(log){if(!sb)return;const{error}=await sb.from("logs").upsert(log,{onConflict:"id"});if(error)dbLog("hm.saveLog",false,error.message);},
+    async saveLog(log){if(!sb)throw new Error("DB未接続");const{error}=await sb.from("logs").upsert(log,{onConflict:"id"});if(error){dbLog("hm.saveLog",false,error.message);throw new Error(error.message);}},
     async deleteLog(id){if(!sb)return;await sb.from("logs").delete().eq("id",id);},
     async fetchClasses(){if(!sb)return[];const{data,error}=await sb.from("classes").select("*").eq("store_id",DB.hm.STORE);if(error){dbLog("hm.classes",false,error.message);return[];}return data||[];},
     async saveClass(cls){if(!sb)return;const{error}=await sb.from("classes").upsert(cls,{onConflict:"id"});if(error)dbLog("hm.saveCls",false,error.message);},
@@ -703,7 +703,10 @@ function FleetManager(p){
   var cars=p.cars||[];var carData=p.carData||[];var logs=p.logs||[];
   var today=new Date().toISOString().slice(0,10);
 
-  var save=function(fn){setBusy(true);return Promise.resolve().then(function(){return fn()}).then(function(){if(p.hmReload)return p.hmReload()}).catch(function(e){console.error("HM save:",e)}).finally(function(){setBusy(false)})};
+  // 保存通知用（画面中央にポップアップ）
+  var _msg=useState("");var saveMsg=_msg[0];var setSaveMsg=_msg[1];
+  var showMsg=function(text,isErr){setSaveMsg(text);setTimeout(function(){setSaveMsg("")},isErr?6000:2500)};
+  var save=function(fn){setBusy(true);return Promise.resolve().then(function(){return fn()}).then(function(){if(p.hmReload)return p.hmReload()}).then(function(){showMsg("登録完了",false)}).catch(function(e){console.error("HM save:",e);showMsg("保存エラー: "+String(e&&e.message||e),true)}).finally(function(){setBusy(false)})};
 
   // --- ヘルパー ---
   var sortDesc=function(arr){return arr.slice().sort(function(a,b){return(b.date||"").localeCompare(a.date||"")})};
@@ -734,6 +737,14 @@ function FleetManager(p){
 
   // --- 共通パーツ ---
   var navBtn=function(id,label){return E("button",{key:id,onClick:function(){setView(id)},style:{padding:"6px 14px",fontSize:12,fontWeight:view===id?700:500,background:view===id?"#2563eb":"#f1f5f9",color:view===id?"#fff":"#64748b",border:"none",borderRadius:6,cursor:"pointer"}},label)};
+  // 通知ポップアップ（画面中央に大きく表示、全画面で常に見える）
+  var isErr=saveMsg&&saveMsg.indexOf("エラー")>=0;
+  var msgPopup=saveMsg?E("div",{style:{position:"fixed",top:0,left:0,right:0,bottom:0,display:"flex",alignItems:"center",justifyContent:"center",zIndex:99999,pointerEvents:"none"}},
+    E("div",{style:{background:isErr?"#fee2e2":"#dcfce7",color:isErr?"#991b1b":"#15803d",border:"2px solid "+(isErr?"#f87171":"#4ade80"),borderRadius:12,padding:"20px 40px",fontSize:18,fontWeight:800,boxShadow:"0 8px 30px rgba(0,0,0,0.2)",textAlign:"center",pointerEvents:"auto"}},
+      E("div",{style:{fontSize:28,marginBottom:4}},isErr?"❌":"✅"),
+      saveMsg
+    )
+  ):null;
   var nav=E("div",{style:{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}},navBtn("list","車両一覧"),navBtn("summary","コスト集計"));
   var statusBadge=function(s){var bg=s==="active"?"#f0fdf4":s==="repair"?"#fee2e2":s==="waiting"?"#fef3c7":"#dbeafe";var fg=s==="active"?"#15803d":s==="repair"?"#991b1b":s==="waiting"?"#92400e":"#1e40af";var lb=s==="active"?"稼働中":s==="repair"?"修理中":s==="waiting"?"修理待機中":"見積中";return E("span",{style:{fontSize:10,padding:"2px 8px",borderRadius:4,background:bg,color:fg,fontWeight:600}},lb)};
   var section=function(bg,border,title,children){return E("div",{style:{background:bg,border:"1px solid "+border,borderRadius:8,padding:12,marginBottom:10}},E("div",{style:{fontSize:13,fontWeight:700,marginBottom:8}},title),children)};
@@ -741,13 +752,38 @@ function FleetManager(p){
 
   // ========== 車両一覧 ==========
   if(view==="list"){
-    return E("div",{style:{maxWidth:1000,margin:"0 auto"}},nav,
+    var tIns=totalInsurance();
+    var allYearlyList=yearlyCost(logs,filterYear);
+    return E("div",{style:{maxWidth:1000,margin:"0 auto"}},msgPopup,nav,
+
+      // 全車両サマリー（保険合計＋整備費合計）
+      E("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:8,marginBottom:12}},
+        E("div",{style:{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,padding:12,textAlign:"center"}},
+          E("div",{style:{fontSize:10,color:"#15803d",fontWeight:600}},"保険 月額合計"),
+          E("div",{style:{fontSize:20,fontWeight:800,color:"#15803d"}},"¥"+tIns.toLocaleString())
+        ),
+        E("div",{style:{background:"#fefce8",border:"1px solid #fde68a",borderRadius:8,padding:12,textAlign:"center"}},
+          E("div",{style:{fontSize:10,color:"#92400e",fontWeight:600}},"保険 年間合計"),
+          E("div",{style:{fontSize:20,fontWeight:800,color:"#92400e"}},"¥"+(tIns*12).toLocaleString())
+        ),
+        E("div",{style:{background:"#fee2e2",border:"1px solid #fca5a5",borderRadius:8,padding:12,textAlign:"center"}},
+          E("div",{style:{fontSize:10,color:"#991b1b",fontWeight:600}},"整備費 年間合計("+filterYear+")"),
+          E("div",{style:{fontSize:20,fontWeight:800,color:"#991b1b"}},"¥"+allYearlyList.toLocaleString())
+        ),
+        E("div",{style:{background:"#dbeafe",border:"1px solid #93c5fd",borderRadius:8,padding:12,textAlign:"center"}},
+          E("div",{style:{fontSize:10,color:"#1e40af",fontWeight:600}},"管理車両数"),
+          E("div",{style:{fontSize:20,fontWeight:800,color:"#1e40af"}},cars.length+"台")
+        )
+      ),
+
       // オイル交換間隔（全車共通）
       E("div",{style:{background:"#fff7ed",border:"1px solid #fed7aa",borderRadius:8,padding:10,marginBottom:12,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}},
-        E("span",{style:{fontSize:12,fontWeight:600,color:"#9a3412"}},"🛢 オイル交換間隔（全車共通）: "+getOilInterval().toLocaleString()+"km"),
+        E("span",{style:{fontSize:12,fontWeight:600,color:"#9a3412"}},"オイル交換間隔（全車共通）: "+getOilInterval().toLocaleString()+"km"),
         E("input",{type:"number",value:ivIn,onChange:function(e){setIvIn(e.target.value)},placeholder:"新しい間隔(km)",className:"input-s",style:{maxWidth:140,fontSize:11}}),
         E("button",{onClick:saveIv,className:"btn-ghost",style:{fontSize:11,padding:"4px 10px"},disabled:busy},"変更")
       ),
+
+      // 車両リスト
       E("div",{style:{display:"grid",gap:8}},
         cars.map(function(c){
           if(!c||!c.id)return null;
@@ -765,6 +801,14 @@ function FleetManager(p){
           );
         }),
         cars.length===0&&E("div",{style:{textAlign:"center",color:"#94a3b8",padding:40,fontSize:13}},"HANDYMANのcarsテーブルに車両を登録してください")
+      ),
+      // デバッグ情報（問題特定用・後で削除）
+      E("div",{style:{marginTop:16,background:"#fef3c7",border:"1px solid #fcd34d",borderRadius:8,padding:10,fontSize:11,color:"#92400e"}},
+        E("div",{style:{fontWeight:700,marginBottom:4}},"[デバッグ情報]"),
+        E("div",null,"cars: "+cars.length+"件"),
+        E("div",null,"carData: "+carData.length+"件"),
+        E("div",null,"logs: "+logs.length+"件"),
+        E("div",null,"hmReload関数: "+(p.hmReload?"あり":"なし"))
       )
     );
   }
@@ -774,17 +818,40 @@ function FleetManager(p){
     var cid=selCar.id;
     var milHist=sortDesc(cdFilter(cid,"mileage"));
     var oilHist=sortDesc(cdFilter(cid,"oil_change"));
+    var insHist=sortDesc(cdFilter(cid,"insurance"));
     var myLogs=sortDesc(carLogs(cid));
     var myMonthly=monthlyCost(carLogs(cid));
     var myYearly=yearlyCost(carLogs(cid),filterYear);
     var monthKeys=Object.keys(myMonthly).sort().reverse();
+    var curMileage=getMileage(cid);
+    var curIns=getInsurance(cid);
+    var lastOil=getLastOil(cid);
 
-    return E("div",{style:{maxWidth:800,margin:"0 auto"}},
-      E("div",{style:{display:"flex",alignItems:"center",gap:8,marginBottom:12}},
-        E("button",{onClick:function(){setView("list")},className:"btn-ghost",style:{padding:"4px 10px",fontSize:11}},"← 一覧へ"),
-        E("h3",{style:{fontSize:16,fontWeight:700,margin:0}},selCar.name||""),
-        E("span",{style:{fontSize:12,color:"#64748b"}},selCar.plate||""),
-        statusBadge(selCar.status||"active")
+    // 種別ごとの小計
+    var catTotals={};COST_CATS.forEach(function(c){catTotals[c.v]=0});
+    myLogs.forEach(function(l){if((l.date||"").slice(0,4)===String(filterYear)){catTotals[l.type||"other"]=(catTotals[l.type||"other"]||0)+Number(l.cost||0)}});
+
+    // セクションヘッダー共通
+    var secHead=function(emoji,title,badge){return E("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}},E("div",{style:{fontSize:13,fontWeight:700}},emoji+" "+title),badge||null)};
+    // 小テーブルヘッダー
+    var tblHead=function(cols){return E("thead",null,E("tr",{style:{background:"#f1f5f9",borderBottom:"2px solid #cbd5e1"}},cols.map(function(c,i){return E("th",{key:i,style:{padding:"5px 8px",fontSize:11,fontWeight:600,textAlign:c.align||"left",color:"#475569"}},c.label)})))};
+
+    return E("div",{style:{maxWidth:800,margin:"0 auto"}},msgPopup,
+      // ヘッダー
+      E("div",{style:{background:"white",border:"1px solid #e2e8f0",borderRadius:10,padding:14,marginBottom:14,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}},
+        E("button",{onClick:function(){setView("list")},className:"btn-ghost",style:{padding:"5px 12px",fontSize:12}},"← 一覧へ"),
+        E("div",{style:{flex:1}},
+          E("div",{style:{display:"flex",alignItems:"center",gap:8}},
+            E("span",{style:{fontSize:18,fontWeight:800}},selCar.name||""),
+            E("span",{style:{fontSize:13,color:"#64748b"}},selCar.plate||""),
+            statusBadge(selCar.status||"active")
+          ),
+          E("div",{style:{display:"flex",gap:16,fontSize:11,color:"#64748b",marginTop:4}},
+            E("span",null,"走行: "+(curMileage?curMileage.toLocaleString()+"km":"未記録")),
+            E("span",null,"保険: "+(curIns?"¥"+curIns.toLocaleString()+"/月":"未設定")),
+            E("span",null,"整備("+filterYear+"): ¥"+myYearly.toLocaleString())
+          )
+        )
       ),
 
       // ③ ステータス
@@ -798,107 +865,151 @@ function FleetManager(p){
       ),
 
       // ① 走行距離
-      section("#eff6ff","#93c5fd","① 走行距離管理",
-        E("div",null,
-          E("div",{style:{display:"flex",gap:8,alignItems:"center",marginBottom:8}},
-            E("input",{type:"number",value:miIn,onChange:function(e){setMiIn(e.target.value)},placeholder:"現在の走行距離（km）",className:"input-s",style:{maxWidth:200}}),
-            E("button",{onClick:saveMileage,className:"btn-primary",disabled:busy},"記録")
-          ),
-          milHist.length>0&&E("div",{style:{fontSize:11,maxHeight:120,overflowY:"auto",background:"#f8fafc",borderRadius:4,padding:6}},
-            milHist.map(function(m,i){return E("div",{key:m.id||i,style:{padding:"3px 0",borderBottom:"1px solid #e2e8f0"}},(m.date||"")+"　"+Number(m.value||0).toLocaleString()+"km")})
+      E("div",{style:{background:"#eff6ff",border:"1px solid #93c5fd",borderRadius:8,padding:12,marginBottom:10}},
+        secHead("①","走行距離管理",curMileage?E("span",{style:{fontSize:14,fontWeight:800,color:"#1e40af"}},curMileage.toLocaleString()+"km"):null),
+        E("div",{style:{display:"flex",gap:8,alignItems:"center",marginBottom:10}},
+          E("input",{type:"number",value:miIn,onChange:function(e){setMiIn(e.target.value)},placeholder:"現在の走行距離（km）",className:"input-s",style:{maxWidth:200}}),
+          E("button",{onClick:saveMileage,className:"btn-primary",disabled:busy},"記録")
+        ),
+        milHist.length>0?E("div",null,
+          E("div",{style:{fontSize:11,fontWeight:600,color:"#1e40af",marginBottom:4}},"記録履歴（"+milHist.length+"件）"),
+          E("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:11,background:"#fff",borderRadius:4}},
+            tblHead([{label:"日付"},{label:"走行距離",align:"right"}]),
+            E("tbody",null,milHist.map(function(m,i){return E("tr",{key:m.id||i,style:{borderBottom:"1px solid #e2e8f0"}},
+              E("td",{style:{padding:"5px 8px"}},m.date||""),
+              E("td",{style:{padding:"5px 8px",textAlign:"right",fontWeight:600}},Number(m.value||0).toLocaleString()+"km")
+            )}))
           )
-        )
+        ):E("div",{style:{fontSize:11,color:"#94a3b8",padding:8,textAlign:"center"}},"まだ記録がありません")
       ),
 
       // ② オイル交換
-      section("#fff7ed","#fed7aa","② オイル交換管理",
-        E("div",null,
-          E("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:8}},
-            E("div",null,
-              E("div",{style:{fontSize:11,color:"#78716c",marginBottom:4}},"交換時の走行距離"),
-              E("div",{style:{display:"flex",gap:4}},
-                E("input",{type:"number",value:oiIn,onChange:function(e){setOiIn(e.target.value)},placeholder:"km",className:"input-s"}),
-                E("button",{onClick:saveOil,className:"btn-primary",disabled:busy},"記録")
-              )
-            ),
-            E("div",null,
-              E("div",{style:{fontSize:11,color:"#78716c",marginBottom:4}},"交換間隔【全車共通】（現在: "+getOilInterval().toLocaleString()+"km）"),
-              E("div",{style:{display:"flex",gap:4}},
-                E("input",{type:"number",value:ivIn,onChange:function(e){setIvIn(e.target.value)},placeholder:"例:5000",className:"input-s"}),
-                E("button",{onClick:saveIv,className:"btn-ghost",disabled:busy},"変更")
-              )
+      E("div",{style:{background:"#fff7ed",border:"1px solid #fed7aa",borderRadius:8,padding:12,marginBottom:10}},
+        secHead("②","オイル交換管理",null),
+        // ステータスボックス
+        E("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:10}},
+          E("div",{style:{background:"#fefce8",borderRadius:6,padding:8,textAlign:"center"}},
+            E("div",{style:{fontSize:10,color:"#92400e"}},"最終交換"),
+            E("div",{style:{fontSize:13,fontWeight:700}},lastOil?Number(lastOil.value||0).toLocaleString()+"km":"未記録"),
+            lastOil?E("div",{style:{fontSize:10,color:"#78716c"}},lastOil.date||""):null
+          ),
+          E("div",{style:{background:"#fff7ed",borderRadius:6,padding:8,textAlign:"center"}},
+            E("div",{style:{fontSize:10,color:"#92400e"}},"次回交換目安"),
+            E("div",{style:{fontSize:13,fontWeight:700,color:"#ea580c"}},getNextOil(cid).toLocaleString()+"km")
+          ),
+          E("div",{style:{background:"#f0fdf4",borderRadius:6,padding:8,textAlign:"center"}},
+            E("div",{style:{fontSize:10,color:"#15803d"}},"交換間隔（全車共通）"),
+            E("div",{style:{fontSize:13,fontWeight:700}},getOilInterval().toLocaleString()+"km")
+          )
+        ),
+        // 入力欄
+        E("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:8}},
+          E("div",null,
+            E("div",{style:{fontSize:11,color:"#78716c",marginBottom:4}},"交換時の走行距離を記録"),
+            E("div",{style:{display:"flex",gap:4}},
+              E("input",{type:"number",value:oiIn,onChange:function(e){setOiIn(e.target.value)},placeholder:"km",className:"input-s"}),
+              E("button",{onClick:saveOil,className:"btn-primary",disabled:busy},"記録")
             )
           ),
-          E("div",{style:{background:"#fefce8",borderRadius:6,padding:8,fontSize:12}},
-            E("div",null,"最終交換: "+(getLastOil(cid)?Number(getLastOil(cid).value||0).toLocaleString()+"km（"+(getLastOil(cid).date||"")+")":"未記録")),
-            E("div",{style:{fontWeight:700,color:"#ea580c"}},"次回交換目安: "+getNextOil(cid).toLocaleString()+"km")
-          ),
-          oilHist.length>1&&E("div",{style:{fontSize:11,marginTop:6,maxHeight:80,overflowY:"auto",background:"#f8fafc",borderRadius:4,padding:6}},
-            oilHist.map(function(o,i){return E("div",{key:o.id||i,style:{padding:"2px 0"}},(o.date||"")+"　"+Number(o.value||0).toLocaleString()+"km")})
+          E("div",null,
+            E("div",{style:{fontSize:11,color:"#78716c",marginBottom:4}},"交換間隔を変更"),
+            E("div",{style:{display:"flex",gap:4}},
+              E("input",{type:"number",value:ivIn,onChange:function(e){setIvIn(e.target.value)},placeholder:"例:5000",className:"input-s"}),
+              E("button",{onClick:saveIv,className:"btn-ghost",disabled:busy},"変更")
+            )
           )
-        )
+        ),
+        // 履歴
+        oilHist.length>0?E("div",null,
+          E("div",{style:{fontSize:11,fontWeight:600,color:"#9a3412",marginBottom:4}},"交換履歴（"+oilHist.length+"件）"),
+          E("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:11,background:"#fff",borderRadius:4}},
+            tblHead([{label:"日付"},{label:"交換時走行距離",align:"right"}]),
+            E("tbody",null,oilHist.map(function(o,i){return E("tr",{key:o.id||i,style:{borderBottom:"1px solid #e2e8f0"}},
+              E("td",{style:{padding:"5px 8px"}},o.date||""),
+              E("td",{style:{padding:"5px 8px",textAlign:"right",fontWeight:600}},Number(o.value||0).toLocaleString()+"km")
+            )}))
+          )
+        ):E("div",{style:{fontSize:11,color:"#94a3b8",padding:8,textAlign:"center"}},"まだ交換記録がありません")
       ),
 
       // ④ 保険金額
-      section("#f0fdf4","#86efac","④ 保険金額",
-        E("div",null,
-          E("div",{style:{display:"flex",gap:8,alignItems:"center",marginBottom:6}},
-            E("input",{type:"number",value:insIn,onChange:function(e){setInsIn(e.target.value)},placeholder:"月額（円）",className:"input-s",style:{maxWidth:180}}),
-            E("button",{onClick:saveIns,className:"btn-primary",disabled:busy},"登録")
+      E("div",{style:{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,padding:12,marginBottom:10}},
+        secHead("④","保険金額",curIns?E("span",{style:{fontSize:14,fontWeight:800,color:"#15803d"}},"¥"+curIns.toLocaleString()+"/月"):null),
+        E("div",{style:{display:"flex",gap:8,alignItems:"center",marginBottom:10}},
+          E("input",{type:"number",value:insIn,onChange:function(e){setInsIn(e.target.value)},placeholder:"月額（円）",className:"input-s",style:{maxWidth:180}}),
+          E("button",{onClick:saveIns,className:"btn-primary",disabled:busy},"登録")
+        ),
+        // 現在の保険情報
+        curIns?E("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}},
+          E("div",{style:{background:"#dcfce7",borderRadius:6,padding:10,textAlign:"center"}},
+            E("div",{style:{fontSize:10,color:"#15803d"}},"月額"),
+            E("div",{style:{fontSize:16,fontWeight:800,color:"#15803d"}},"¥"+curIns.toLocaleString())
           ),
-          E("div",{style:{fontSize:12,padding:6,background:"#f8fafc",borderRadius:4}},
-            "現在の月額: ",E("strong",null,getInsurance(cid)?"¥"+getInsurance(cid).toLocaleString():"未設定"),
-            getInsurance(cid)?E("span",{style:{marginLeft:12,color:"#64748b"}},"(年額: ¥"+(getInsurance(cid)*12).toLocaleString()+")"):null
+          E("div",{style:{background:"#fefce8",borderRadius:6,padding:10,textAlign:"center"}},
+            E("div",{style:{fontSize:10,color:"#92400e"}},"年額"),
+            E("div",{style:{fontSize:16,fontWeight:800,color:"#92400e"}},"¥"+(curIns*12).toLocaleString())
           )
-        )
+        ):E("div",{style:{fontSize:11,color:"#94a3b8",padding:8,textAlign:"center"}},"保険金額が未設定です"),
+        // 変更履歴
+        insHist.length>1?E("div",null,
+          E("div",{style:{fontSize:11,fontWeight:600,color:"#15803d",marginBottom:4}},"変更履歴（"+insHist.length+"件）"),
+          E("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:11,background:"#fff",borderRadius:4}},
+            tblHead([{label:"日付"},{label:"月額",align:"right"},{label:"年額",align:"right"}]),
+            E("tbody",null,insHist.map(function(h,i){var v=Number(h.value||0);return E("tr",{key:h.id||i,style:{borderBottom:"1px solid #e2e8f0"}},
+              E("td",{style:{padding:"5px 8px"}},h.date||""),
+              E("td",{style:{padding:"5px 8px",textAlign:"right",fontWeight:600}},"¥"+v.toLocaleString()),
+              E("td",{style:{padding:"5px 8px",textAlign:"right",color:"#64748b"}},"¥"+(v*12).toLocaleString())
+            )}))
+          )
+        ):null
       ),
 
       // ⑤ 整備記録
-      section("#fef2f2","#fecaca","⑤ 整備記録",
-        E("div",null,
-          E("div",{style:{fontSize:11,color:"#991b1b",marginBottom:6}},"1項目ごとに 種別・日付・金額・詳細 を入力（複数回登録可）"),
-          E("div",{style:{display:"grid",gridTemplateColumns:"110px 120px 110px 1fr",gap:6,marginBottom:8}},
-            E("select",{value:logCat,onChange:function(e){setLogCat(e.target.value)},className:"input-s"},
-              COST_CATS.map(function(c){return E("option",{key:c.v,value:c.v},c.l)})
-            ),
-            E("input",{type:"date",value:logDate,onChange:function(e){setLogDate(e.target.value)},className:"input-s"}),
-            E("input",{type:"number",value:logCost,onChange:function(e){setLogCost(e.target.value)},placeholder:"金額（円）",className:"input-s"}),
-            E("input",{value:logDesc,onChange:function(e){setLogDesc(e.target.value)},placeholder:"詳細（必須）",className:"input-s"})
+      E("div",{style:{background:"#fef2f2",border:"1px solid #fecaca",borderRadius:8,padding:12,marginBottom:10}},
+        secHead("⑤","整備記録",E("span",{style:{fontSize:14,fontWeight:800,color:"#991b1b"}},"年間("+filterYear+"): ¥"+myYearly.toLocaleString())),
+        E("div",{style:{fontSize:11,color:"#991b1b",marginBottom:6}},"1項目ごとに 種別・日付・金額・詳細 を入力（複数回登録可）"),
+        E("div",{style:{display:"grid",gridTemplateColumns:"110px 120px 110px 1fr",gap:6,marginBottom:8}},
+          E("select",{value:logCat,onChange:function(e){setLogCat(e.target.value)},className:"input-s"},
+            COST_CATS.map(function(c){return E("option",{key:c.v,value:c.v},c.l)})
           ),
-          E("button",{onClick:saveLog,className:"btn-primary",disabled:busy||!logDesc.trim()},"整備記録を追加"),
+          E("input",{type:"date",value:logDate,onChange:function(e){setLogDate(e.target.value)},className:"input-s"}),
+          E("input",{type:"number",value:logCost,onChange:function(e){setLogCost(e.target.value)},placeholder:"金額（円）",className:"input-s"}),
+          E("input",{value:logDesc,onChange:function(e){setLogDesc(e.target.value)},placeholder:"詳細（必須）",className:"input-s"})
+        ),
+        E("button",{onClick:saveLog,className:"btn-primary",disabled:busy||!logDesc.trim()},"整備記録を追加"),
 
-          // 月別集計
-          monthKeys.length>0&&E("div",{style:{marginTop:12}},
-            E("div",{style:{fontSize:12,fontWeight:700,marginBottom:6}},"月別集計"),
-            E("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(100px,1fr))",gap:4}},
-              monthKeys.map(function(ym){return E("div",{key:ym,style:{background:"#fff",border:"1px solid #e2e8f0",borderRadius:4,padding:6,textAlign:"center",fontSize:11}},
-                E("div",{style:{color:"#64748b"}},ym),E("div",{style:{fontWeight:700}},"¥"+myMonthly[ym].toLocaleString())
-              )})
-            ),
-            E("div",{style:{marginTop:6,fontSize:12,fontWeight:700,color:"#991b1b"}},"年間("+filterYear+"): ¥"+myYearly.toLocaleString())
-          ),
+        // 種別ごとの年間小計
+        E("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(90px,1fr))",gap:4,marginTop:12,marginBottom:8}},
+          COST_CATS.map(function(c){return E("div",{key:c.v,style:{background:"#fff",border:"1px solid #fecaca",borderRadius:4,padding:6,textAlign:"center"}},
+            E("div",{style:{fontSize:10,color:"#64748b"}},c.l),
+            E("div",{style:{fontSize:12,fontWeight:700,color:catTotals[c.v]>0?"#991b1b":"#cbd5e1"}},"¥"+(catTotals[c.v]||0).toLocaleString())
+          )})
+        ),
 
-          // 履歴一覧
-          myLogs.length>0&&E("div",{style:{marginTop:12,maxHeight:250,overflowY:"auto"}},
-            E("div",{style:{fontSize:12,fontWeight:700,marginBottom:4}},"履歴（"+myLogs.length+"件）"),
-            E("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:11}},
-              E("thead",null,E("tr",{style:{background:"#f8fafc"}},
-                E("th",{style:{padding:"4px 8px",textAlign:"left"}},"日付"),
-                E("th",{style:{padding:"4px 8px",textAlign:"left"}},"種別"),
-                E("th",{style:{padding:"4px 8px",textAlign:"right"}},"金額"),
-                E("th",{style:{padding:"4px 8px",textAlign:"left"}},"詳細"),
-                E("th",{style:{padding:"4px 8px",textAlign:"right"}},"")
-              )),
-              E("tbody",null,myLogs.map(function(l,i){return E("tr",{key:l.id||i,style:{borderBottom:"1px solid #f1f5f9"}},
-                E("td",{style:{padding:"4px 8px"}},l.date||""),
-                E("td",{style:{padding:"4px 8px"}},E("span",{style:{fontSize:10,padding:"1px 6px",borderRadius:3,background:"#dbeafe",color:"#1e40af"}},catLabel(l.type))),
-                E("td",{style:{padding:"4px 8px",textAlign:"right",fontWeight:600}},"¥"+Number(l.cost||0).toLocaleString()),
-                E("td",{style:{padding:"4px 8px",color:"#475569"}},l.description||""),
-                E("td",{style:{padding:"4px 8px",textAlign:"right"}},E("button",{onClick:function(){delLog(l.id)},style:{fontSize:10,color:"#dc2626",background:"none",border:"none",cursor:"pointer"}},"削除"))
-              )}))
-            )
+        // 月別集計
+        monthKeys.length>0?E("div",{style:{marginTop:8,marginBottom:12}},
+          E("div",{style:{fontSize:11,fontWeight:600,color:"#991b1b",marginBottom:4}},"月別集計"),
+          E("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(90px,1fr))",gap:4}},
+            monthKeys.map(function(ym){return E("div",{key:ym,style:{background:"#fff",border:"1px solid #e2e8f0",borderRadius:4,padding:6,textAlign:"center",fontSize:11}},
+              E("div",{style:{color:"#64748b"}},ym),E("div",{style:{fontWeight:700}},"¥"+myMonthly[ym].toLocaleString())
+            )})
           )
-        )
+        ):null,
+
+        // 履歴一覧
+        myLogs.length>0?E("div",{style:{marginTop:8}},
+          E("div",{style:{fontSize:11,fontWeight:600,color:"#991b1b",marginBottom:4}},"整備履歴（"+myLogs.length+"件）"),
+          E("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:11,background:"#fff",borderRadius:4}},
+            tblHead([{label:"日付"},{label:"種別"},{label:"金額",align:"right"},{label:"詳細"},{label:"",align:"right"}]),
+            E("tbody",null,myLogs.map(function(l,i){return E("tr",{key:l.id||i,style:{borderBottom:"1px solid #f1f5f9"}},
+              E("td",{style:{padding:"5px 8px"}},l.date||""),
+              E("td",{style:{padding:"5px 8px"}},E("span",{style:{fontSize:10,padding:"2px 8px",borderRadius:4,background:l.type==="inspection"?"#dbeafe":l.type==="repair"?"#fee2e2":l.type==="semi_annual"?"#fef3c7":l.type==="oil"?"#fff7ed":"#f1f5f9",color:l.type==="inspection"?"#1e40af":l.type==="repair"?"#991b1b":l.type==="semi_annual"?"#92400e":l.type==="oil"?"#9a3412":"#475569",fontWeight:600}},catLabel(l.type))),
+              E("td",{style:{padding:"5px 8px",textAlign:"right",fontWeight:700}},"¥"+Number(l.cost||0).toLocaleString()),
+              E("td",{style:{padding:"5px 8px",color:"#475569",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis"}},l.description||""),
+              E("td",{style:{padding:"5px 8px",textAlign:"right"}},E("button",{onClick:function(){delLog(l.id)},style:{fontSize:10,color:"#dc2626",background:"none",border:"none",cursor:"pointer"}},"削除"))
+            )}))
+          )
+        ):E("div",{style:{fontSize:11,color:"#94a3b8",padding:12,textAlign:"center"}},"まだ整備記録がありません。上のフォームから追加してください。")
       )
     );
   }
@@ -912,7 +1023,7 @@ function FleetManager(p){
     var allYearly=yearlyCost(logs,filterYear);
     var allMonthKeys=Object.keys(allMonthly).sort().reverse();
 
-    return E("div",{style:{maxWidth:1000,margin:"0 auto"}},nav,
+    return E("div",{style:{maxWidth:1000,margin:"0 auto"}},msgPopup,nav,
 
       // 年度切替
       E("div",{style:{display:"flex",gap:8,alignItems:"center",marginBottom:14}},
@@ -984,7 +1095,7 @@ function FleetManager(p){
   }
 
   // デフォルト（fallback）
-  return E("div",{style:{maxWidth:1000,margin:"0 auto"}},nav,E("div",{style:{textAlign:"center",padding:40,color:"#94a3b8"}},"ビューを選択してください"));
+  return E("div",{style:{maxWidth:1000,margin:"0 auto"}},msgPopup,nav,E("div",{style:{textAlign:"center",padding:40,color:"#94a3b8"}},"ビューを選択してください"));
 }
 
 /* ==========================================
@@ -3166,8 +3277,14 @@ function App(){
         }
         setSbConnected(true);
       }catch(e){console.error("DB load error:",e);}
-      // HANDYMAN Fleet data (init後に非同期で読込、失敗しても画面に影響なし)
-      try{await hmReload();}catch(e){}
+      // HANDYMAN Fleet data (init後に非同期で読込)
+      try{await hmReload();console.log("[HM] cars:",hmCars.length,"carData:",hmCarData.length,"logs:",hmLogs.length);}catch(e){console.error("[HM] reload error:",e);}
+      // テーブル存在チェック
+      try{
+        var chk=await sb.from("car_data").select("id",{count:"exact",head:true});
+        console.log("[HM] car_data table check:",chk.error?("ERROR: "+chk.error.message):("OK, count="+chk.count));
+        if(chk.error)console.error("[HM] car_dataテーブルが存在しないか、RLSでブロックされています:",chk.error.message);
+      }catch(e){console.error("[HM] table check error:",e);}
       setDbLoaded(true);
     })();
   },[]);
