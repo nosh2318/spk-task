@@ -1962,11 +1962,12 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
       }).subscribe();
     return()=>{clearTimeout(debounce);sb.removeChannel(ch);};
   },[selDate]);
-  // タブ復帰・画面復帰時にDBから最新データ再取得
+  // タブ復帰・画面復帰時+30秒ポーリングでDBから最新データ再取得
   useEffect(()=>{
     const onVis=()=>{if(document.visibilityState==="visible")loadTasks(selDate);};
     document.addEventListener("visibilitychange",onVis);
-    return()=>document.removeEventListener("visibilitychange",onVis);
+    const timer=setInterval(()=>{if(document.visibilityState==="visible")loadTasks(selDate);},30000);
+    return()=>{document.removeEventListener("visibilitychange",onVis);clearInterval(timer);};
   },[selDate,loadTasks]);
   const[saveStatus,setSaveStatus]=useState("ok"); // "ok"|"saving"|"error"
   const pendingSaves=React.useRef(0);
@@ -2728,6 +2729,27 @@ function ParkingManager(){
     return()=>{mounted=false;sbParking.removeChannel(ch);};
   },[]);
 
+  // 定期ポーリング+タブ復帰リフレッシュ（Realtime切断時のフォールバック）
+  useEffect(()=>{
+    const refresh=async()=>{
+      try{
+        const remote=await DB.parking.fetch();
+        if(!remote||!remote.spots)return;
+        isRemoteUpdate.current=true;
+        setSpots(remote.spots);if(remote.cars)setCars(remote.cars);
+        if(remote.washMap)setWashMap(remote.washMap);if(remote.washTimeMap)setWashTimeMap(remote.washTimeMap);
+        if(remote.maintMap)setMaintMap(remote.maintMap);if(remote.history)setHistory(remote.history);
+        if(remote.staffCarMap)setStaffCarMap(remote.staffCarMap);if(remote.warehouseMap)setWarehouseMap(remote.warehouseMap);
+        setSyncStatus("online");
+        setTimeout(()=>{isRemoteUpdate.current=false;},100);
+      }catch(e){console.error("[parking poll]",e);}
+    };
+    const onVis=()=>{if(document.visibilityState==="visible")refresh();};
+    document.addEventListener("visibilitychange",onVis);
+    const timer=setInterval(()=>{if(document.visibilityState==="visible")refresh();},15000);
+    return()=>{document.removeEventListener("visibilitychange",onVis);clearInterval(timer);};
+  },[]);
+
   // 自動保存
   useEffect(()=>{
     const d={spots,cars,washMap,washTimeMap,maintMap,staffCarMap,warehouseMap,history,savedAt:new Date().toISOString()};
@@ -3472,27 +3494,34 @@ function App(){
     setReloading(2);
     setTimeout(()=>setReloading(0),1200);
   };
-  // --- タブ復帰時にDB再読み込み（Realtime未受信の変更を補完）---
+  // --- タブ復帰時+定期ポーリングでDB再読み込み（Realtime未受信の変更を補完）---
+  const silentRefresh=React.useCallback(async()=>{
+    if(!SB_ENABLED||importingRef.current||reloading===1)return;
+    try{
+      const[resDB,flDB,stDB,vhDB,shDB,mtDB]=await Promise.all([
+        DB.fetchReservations(),DB.fetchFleet(),DB.fetchStaff(),DB.fetchVehicles(),DB.fetchShifts(),DB.fetchMaintenance()
+      ]);
+      if(importingRef.current)return;
+      let useRes=resDB;
+      try{const bk=JSON.parse(localStorage.getItem("spk_reservations_backup")||"[]");if(bk.length>=resDB.length&&bk.length>0)useRes=bk;}catch(e){}
+      if(useRes.length)setData(useRes);
+      if(flDB&&Object.keys(flDB).length)setFleet(flDB);
+      if(stDB&&stDB.length)setStaff(stDB);
+      if(vhDB&&vhDB.length)setVehicles(vhDB);
+      if(shDB)setShifts(shDB);
+      if(mtDB&&mtDB.length)setMaintenance(mtDB);
+      try{await hmReload();}catch(e){}
+    }catch(e){console.error("[silentRefresh]",e);}
+  },[reloading]);
   useEffect(()=>{
     if(!SB_ENABLED)return;
-    const onFocus=async()=>{
-      if(importingRef.current)return;
-      try{
-        const[resDB,flDB]=await Promise.all([DB.fetchReservations(),DB.fetchFleet()]);
-        if(importingRef.current)return;
-        // ★ LSバックアップが同数以上ならLS優先（最新インポートの価格保護）
-        let useRes=resDB;
-        try{
-          const backup=JSON.parse(localStorage.getItem("spk_reservations_backup")||"[]");
-          if(backup.length>=resDB.length&&backup.length>0)useRes=backup;
-        }catch(e){}
-        if(useRes.length)setData(useRes);
-        if(Object.keys(flDB).length)setFleet(flDB);
-      }catch(e){}
-    };
-    window.addEventListener("focus",onFocus);
-    return()=>window.removeEventListener("focus",onFocus);
-  },[]);
+    // タブ復帰時に即時リフレッシュ
+    const onVis=()=>{if(document.visibilityState==="visible")silentRefresh();};
+    document.addEventListener("visibilitychange",onVis);
+    // 30秒ポーリング（Realtime切断時のフォールバック）
+    const timer=setInterval(()=>{if(document.visibilityState==="visible")silentRefresh();},30000);
+    return()=>{document.removeEventListener("visibilitychange",onVis);clearInterval(timer);};
+  },[silentRefresh]);
 
   // --- Supabase Realtime ---
   useEffect(()=>{
