@@ -2283,7 +2283,7 @@ function AddTaskForm({onAdd,onClose,activeMembers,vehicles}){
    ========================================== */
 
 
-function Dashboard({data,fleet,vehicles}){
+function Dashboard({data,fleet,vehicles,maintenance}){
   // 月選択
   const allMonths=useMemo(()=>{
     const ms=new Set();
@@ -2319,63 +2319,57 @@ function Dashboard({data,fleet,vehicles}){
     return Object.entries(m).sort((a,b)=>b[1].revenue-a[1].revenue);
   },[monthData]);
 
-  // 車両別売上（fleet配車コードで集計）
+  // 車両別売上（fleet配車コードで集計 + 月内実稼働日数で計算）
   const vehStats=useMemo(()=>{
     const m={};
     monthData.forEach(r=>{
       const vc=fleet[r.id]||"未配車";
       if(!m[vc])m[vc]={count:0,revenue:0,days:0};
       m[vc].count++;m[vc].revenue+=(Number(r.price)||0);
-      // レンタル日数計算
-      if(r.lendDate&&r.returnDate){
-        const ld=new Date(r.lendDate+"T00:00:00"),rd=new Date(r.returnDate+"T00:00:00");
-        const diff=Math.max(1,Math.ceil((rd-ld)/(1000*60*60*24)));
-        m[vc].days+=diff;
-      }
+    });
+    // 稼働日数は月内のSet日数を使用（稼働率と完全一致）
+    Object.entries(m).forEach(([vc,stat])=>{
+      if(curVehDayMap[vc]){stat.days=curVehDayMap[vc].size;}
     });
     return Object.entries(m).sort((a,b)=>b[1].revenue-a[1].revenue);
-  },[monthData,fleet]);
+  },[monthData,fleet,curVehDayMap]);
 
-  // 稼働率（月内の各車両の稼働日数 / 月の日数）
+  // 稼働率計算（配車画面と同じロジック: 日付Setで重複排除 + メンテナンス込み + 月内限定）
   const daysInMo=daysInMonth(selYM);
   const activeVehicles=vehicles.length||8;
-  const totalVehDays=activeVehicles*daysInMo; // 全車両×月日数
-  const usedDays=useMemo(()=>{
-    let total=0;
-    // 各予約の配車車両の稼働日数を集計（重複は車両別にSetで管理）
+  const totalVehDays=activeVehicles*daysInMo;
+  // 月別稼働日計算の共通関数
+  const calcUsedDays=React.useCallback((targetYM)=>{
+    const dim=daysInMonth(targetYM);
+    const[y,mo]=[parseInt(targetYM.split("-")[0]),parseInt(targetYM.split("-")[1])-1];
+    const ms=new Date(y,mo,1),me=new Date(y,mo,dim);
     const vehDayMap={};
+    // 予約による稼働日
     data.forEach(r=>{
       if(!r.lendDate||!r.returnDate)return;
       const vc=fleet[r.id];if(!vc)return;
-      const ld=new Date(r.lendDate+"T00:00:00"),rd=new Date(r.returnDate+"T00:00:00");
       if(!vehDayMap[vc])vehDayMap[vc]=new Set();
-      for(let d=new Date(ld);d<=rd;d.setDate(d.getDate()+1)){
-        const ds=toLD(d);
-        if(toYM(ds)===selYM)vehDayMap[vc].add(ds);
-      }
+      const ld=new Date(norm(r.lendDate)+"T00:00:00"),rd=new Date(norm(r.returnDate)+"T00:00:00");
+      const s=ld>ms?ld:ms;const e=rd<me?rd:me;
+      for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1)){vehDayMap[vc].add(toLD(d));}
     });
-    Object.values(vehDayMap).forEach(s=>total+=s.size);
-    return total;
-  },[data,fleet,selYM]);
+    // メンテナンスによる稼働日
+    (maintenance||[]).forEach(mt=>{
+      if(!mt.vehicleCode)return;
+      if(!vehDayMap[mt.vehicleCode])vehDayMap[mt.vehicleCode]=new Set();
+      const ld=new Date(norm(mt.startDate)+"T00:00:00"),rd=new Date(norm(mt.endDate)+"T00:00:00");
+      const s=ld>ms?ld:ms;const e=rd<me?rd:me;
+      for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1)){vehDayMap[mt.vehicleCode].add(toLD(d));}
+    });
+    let total=0;Object.values(vehDayMap).forEach(s=>total+=s.size);
+    return{total,vehDayMap};
+  },[data,fleet,maintenance]);
+  const{total:usedDays,vehDayMap:curVehDayMap}=useMemo(()=>calcUsedDays(selYM),[calcUsedDays,selYM]);
   const utilRate=totalVehDays>0?Math.round(usedDays/totalVehDays*100):0;
   // 前月稼働率
   const prevDaysInMo=daysInMonth(prevYM);
   const prevTotalVehDays=activeVehicles*prevDaysInMo;
-  const prevUsedDays=useMemo(()=>{
-    let total=0;const vehDayMap={};
-    data.forEach(r=>{
-      if(!r.lendDate||!r.returnDate)return;
-      const vc=fleet[r.id];if(!vc)return;
-      const ld=new Date(r.lendDate+"T00:00:00"),rd=new Date(r.returnDate+"T00:00:00");
-      if(!vehDayMap[vc])vehDayMap[vc]=new Set();
-      for(let d=new Date(ld);d<=rd;d.setDate(d.getDate()+1)){
-        const ds=toLD(d);
-        if(toYM(ds)===prevYM)vehDayMap[vc].add(ds);
-      }
-    });
-    Object.values(vehDayMap).forEach(s=>total+=s.size);
-    return total;
-  },[data,fleet,prevYM]);
+  const{total:prevUsedDays}=useMemo(()=>calcUsedDays(prevYM),[calcUsedDays,prevYM]);
   const prevUtilRate=prevTotalVehDays>0?Math.round(prevUsedDays/prevTotalVehDays*100):0;
 
   // 日別売上（棒グラフ用）
@@ -2409,23 +2403,13 @@ function Dashboard({data,fleet,vehicles}){
   },[data,curYM]);
   const maxMonthlyRev=Math.max(1,...monthlyTrend.map(m=>m.revenue));
 
-  // 車種別稼働率
+  // 車種別稼働率（稼働率計算と同じデータソースを使用）
   const vehUtilDetail=useMemo(()=>{
-    const vehDayMap={};
-    data.forEach(r=>{
-      if(!r.lendDate||!r.returnDate)return;
-      const vc=fleet[r.id];if(!vc)return;
-      if(!vehDayMap[vc])vehDayMap[vc]=new Set();
-      const ld=new Date(r.lendDate+"T00:00:00"),rd=new Date(r.returnDate+"T00:00:00");
-      for(let d=new Date(ld);d<=rd;d.setDate(d.getDate()+1)){
-        const ds=toLD(d);if(toYM(ds)===selYM)vehDayMap[vc].add(ds);
-      }
-    });
     return vehicles.map(v=>{
-      const days=(vehDayMap[v.code]||new Set()).size;
+      const days=(curVehDayMap[v.code]||new Set()).size;
       return{code:v.code,name:v.name,no:v.no,days,rate:Math.round(days/daysInMo*100)};
     }).sort((a,b)=>b.rate-a.rate);
-  },[data,fleet,vehicles,selYM,daysInMo]);
+  },[vehicles,curVehDayMap,daysInMo]);
 
   // フォーマットヘルパー
   const fmtY=n=>{if(n>=10000)return(n/10000).toFixed(n>=100000?0:1)+"万";return n.toLocaleString();};
@@ -2655,19 +2639,12 @@ function Dashboard({data,fleet,vehicles}){
       const classVehCount={};
       INIT_CLASSES.forEach(cl=>{classVehCount[cl.type]=0;});
       vehicles.forEach(v=>{if(classVehCount[v.type]!==undefined)classVehCount[v.type]++;});
-      // クラスごとの稼働日（車両別のSetをクラス別に集約）
+      // クラスごとの稼働日（curVehDayMapから集約 — 稼働率計算と完全一致）
       const classUsedDays={};
       INIT_CLASSES.forEach(cl=>{classUsedDays[cl.type]={};});
-      data.forEach(r=>{
-        if(!r.lendDate||!r.returnDate)return;
-        const vc=fleet[r.id];if(!vc)return;
-        const tp=codeToType[vc];if(!tp||!classUsedDays[tp])return;
-        if(!classUsedDays[tp][vc])classUsedDays[tp][vc]=new Set();
-        const ld=new Date(r.lendDate+"T00:00:00"),rd=new Date(r.returnDate+"T00:00:00");
-        for(let d=new Date(ld);d<=rd;d.setDate(d.getDate()+1)){
-          const ds=toLD(d);
-          if(toYM(ds)===selYM)classUsedDays[tp][vc].add(ds);
-        }
+      vehicles.forEach(v=>{
+        const tp=codeToType[v.code];if(!tp||!classUsedDays[tp])return;
+        if(curVehDayMap[v.code]){classUsedDays[tp][v.code]=curVehDayMap[v.code];}
       });
       const classUtilEntries=INIT_CLASSES.map(cl=>{
         const vehCount=classVehCount[cl.type]||0;
@@ -3928,7 +3905,7 @@ function App(){
                 <button onClick={()=>setImportDiag(null)} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#94a3b8"}}>✕</button>
               </div>
             </div>;})()}
-            <Dashboard data={data} fleet={fleet} vehicles={vehicles}/>
+            <Dashboard data={data} fleet={fleet} vehicles={vehicles} maintenance={maintenance}/>
           </>}
           {tab==="data"&&data.length>0&&<DataTable data={data} sheetPlaces={sheetPlaces} onUpdatePlaces={saveSheetPlaces}/>}
           {tab==="history"&&<PastTasksTable today={today}/>}
