@@ -1959,18 +1959,8 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
     if(dow===6)return "#E3F2FD"; // 土曜=薄青
     return "#FFFFFF"; // 平日=白
   };
-  const getCellBg=(shift,dow,ds)=>{
-    const baseBg=getBaseBg(dow,ds);
-    if(!shift)return baseBg;
-    // シフトが入っている場合はシンボル色を優先
-    if(shift.symbol==="●")return "#D4EBFA";
-    if(shift.symbol==="希")return "#FFF3CD";
-    if(shift.symbol==="公")return "#E8E8E8";
-    if(shift.symbol==="有")return "#D1FAE5";
-    if(shift.symbol==="出")return "#D4EDDA";
-    if(shift.start&&shift.end)return "#FFF9E6";
-    return baseBg;
-  };
+  // 背景色は常に曜日ベース（平日=白、土曜=青、日曜=赤、祝日=薄黄色）
+  const getCellBg=(shift,dow,ds)=>getBaseBg(dow,ds);
 
   return <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
     <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between flex-wrap gap-2" style={{background:"#D2B48C"}}>
@@ -3831,13 +3821,28 @@ function ParkingManager({masterVehicles}){
   const[syncStatus,setSyncStatus]=useState("loading");
   const isRemoteUpdate=useRef(false);
 
-  // Supabase初回読み込み＋Realtime
+  // Supabase初回読み込み＋Realtime（LS優先復旧つき）
   useEffect(()=>{
     let mounted=true;
     if(!sbParking){setSyncStatus("offline");return;}
     DB.parking.fetch().then(remote=>{
       if(!mounted)return;
-      if(remote&&remote.spots){
+      // LSバックアップとDB比較: carsが多い方を優先（データ消失防止）
+      const ls=DB.parking.lsLoad();
+      const useRemote=remote&&remote.spots;
+      const remoteCarsLen=useRemote&&remote.cars?remote.cars.length:0;
+      const lsCarsLen=ls&&ls.cars?ls.cars.length:0;
+      // DB側のcarsが少ない場合、またはDB carsが0でLSにデータがある場合はLSバックアップを復元
+      if(lsCarsLen>0&&(remoteCarsLen===0||remoteCarsLen<lsCarsLen*0.5)){
+        console.warn("[Parking] DB cars("+remoteCarsLen+") < LS cars("+lsCarsLen+"). Restoring from LS backup.");
+        if(ls.spots)setSpots(ls.spots);if(ls.cars)setCars(ls.cars);
+        if(ls.washMap)setWashMap(ls.washMap);if(ls.washTimeMap)setWashTimeMap(ls.washTimeMap);
+        if(ls.maintMap)setMaintMap(ls.maintMap);if(ls.history)setHistory(ls.history);
+        if(ls.staffCarMap)setStaffCarMap(ls.staffCarMap);if(ls.warehouseMap)setWarehouseMap(ls.warehouseMap);
+        // DBに復元データを書き戻し
+        DB.parking.save({...ls,savedAt:new Date().toISOString()});
+        setTimeout(()=>alert("🔄 駐車場データをローカルバックアップから復元しました（"+lsCarsLen+"台）"),500);
+      }else if(useRemote){
         setSpots(remote.spots);if(remote.cars)setCars(remote.cars);
         if(remote.washMap)setWashMap(remote.washMap);if(remote.washTimeMap)setWashTimeMap(remote.washTimeMap);
         if(remote.maintMap)setMaintMap(remote.maintMap);if(remote.history)setHistory(remote.history);
@@ -5116,7 +5121,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.0.0";
+const APP_VERSION="v3.1.0";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
