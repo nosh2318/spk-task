@@ -210,6 +210,7 @@ const DB = {
   async saveShift(date,staffName,shift){if(!sb)return;await sb.from("shifts").upsert({date,staff_name:staffName,symbol:shift.symbol||"",start_time:shift.start||"",end_time:shift.end||"",memo:shift.memo||""},{onConflict:"date,staff_name"});},
   async saveShiftsForDate(date,shifts){if(!sb)return;const rows=shifts.map(s=>({date,staff_name:s.name,symbol:s.symbol||"",start_time:s.start||"",end_time:s.end||"",memo:s.memo||""}));await sb.from("shifts").upsert(rows,{onConflict:"date,staff_name"});},
   async deleteShift(date,staffName){if(!sb)return;const{error}=await sb.from("shifts").delete().eq("date",date).eq("staff_name",staffName);if(error)dbLog("deleteShift",false,error.message);else dbLog("deleteShift",true,date+"/"+staffName);},
+  async deleteShiftsMonth(ym){if(!sb)return;const{error}=await sb.from("shifts").delete().like("date",ym+"-%");if(error)dbLog("deleteShiftsMonth",false,error.message);else dbLog("deleteShiftsMonth",true,ym);},
   // --- 勤怠 ---
   async fetchAttendance(){if(!sb)return{};try{const{data,error}=await sb.from("attendance").select("*");if(error){console.warn("[attendance] fetch error (テーブル未作成?):",error.message);return{};}const a={};(data||[]).forEach(r=>{const k=r.date+"_"+r.staff_name;a[k]={date:r.date,name:r.staff_name,start:r.start_time||"",end:r.end_time||"",approved:!!r.approved,memo:r.memo||"",absent:!!r.absent};});return a;}catch(e){console.warn("[attendance]",e);return{};}},
   async saveAttendance(rec){if(!sb)return;try{await sb.from("attendance").upsert({date:rec.date,staff_name:rec.name,start_time:rec.start||"",end_time:rec.end||"",approved:rec.approved||false,memo:rec.memo||"",absent:!!rec.absent},{onConflict:"date,staff_name"});}catch(e){console.warn("[att save]",e);}},
@@ -1858,12 +1859,13 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
     _onSC(next);setBulkMode(false);
     alert(`✅ 一括登録完了\n登録: ${registered}件${skipped>0?`\nスキップ（既存）: ${skipped}件`:""}`);
   };
-  const applyBulkDelete=()=>{
+  const applyBulkDelete=async()=>{
     if(bulkNames.length===0){alert("スタッフを選択してください");return;}
     const dowLabels=bulkDows.map(d=>WK[d]).join("・");
     if(!window.confirm(`${bulkNames.join("・")} の ${dowLabels} のシフトを削除します。よろしいですか？`))return;
     const next={...shifts};
     let delCount=0;
+    const delPromises=[];
     bulkNames.forEach(bulkName=>{
       for(let d=1;d<=dim;d++){
         const ds=`${viewYM}-${String(d).padStart(2,"0")}`;
@@ -1872,27 +1874,33 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
           const cur=next[ds]||[];
           const had=cur.some(s=>s.name===bulkName);
           next[ds]=cur.filter(s=>s.name!==bulkName);
-          if(had){DB.deleteShift(ds,bulkName);delCount++;}
+          if(had){delPromises.push(DB.deleteShift(ds,bulkName));delCount++;}
         }
       }
     });
-    _onSC(next);setBulkMode(false);
+    onShiftsChange(next);setBulkMode(false);
+    try{await Promise.all(delPromises);}catch(e){console.error("bulkDelete error",e);}
     alert(`✅ 一括削除完了（${delCount}件削除）`);
   };
 
   // ③ 全スタッフ全シフト一括削除（月単位）
-  const clearAllShifts=()=>{
+  const clearAllShifts=async()=>{
     if(!window.confirm(`⚠️ ${ymLabel(viewYM)}の全スタッフのシフトを全て削除します。\nこの操作は取り消せません。よろしいですか？`))return;
     if(!window.confirm(`本当に削除しますか？（2回目の確認）`))return;
+    // まずローカル状態を即座にクリア
     const next={...shifts};
     let delCount=0;
     for(let d=1;d<=dim;d++){
       const ds=`${viewYM}-${String(d).padStart(2,"0")}`;
       const cur=next[ds]||[];
-      cur.forEach(s=>{DB.deleteShift(ds,s.name);delCount++;});
+      delCount+=cur.length;
       next[ds]=[];
     }
-    _onSC(next);
+    onShiftsChange(next);
+    // DBから一括削除（完了を待つ）
+    try{
+      await DB.deleteShiftsMonth(viewYM);
+    }catch(e){console.error("deleteShiftsMonth error",e);}
     alert(`✅ ${ymLabel(viewYM)}の全シフトを削除しました（${delCount}件）`);
   };
 
@@ -3827,21 +3835,29 @@ function ParkingManager({masterVehicles}){
     if(!sbParking){setSyncStatus("offline");return;}
     DB.parking.fetch().then(remote=>{
       if(!mounted)return;
-      // LSバックアップとDB比較: carsが多い方を優先（データ消失防止）
+      // LSバックアップとDB比較: データ消失を検知して復元
       const ls=DB.parking.lsLoad();
       const useRemote=remote&&remote.spots;
       const remoteCarsLen=useRemote&&remote.cars?remote.cars.length:0;
       const lsCarsLen=ls&&ls.cars?ls.cars.length:0;
-      // DB側のcarsが少ない場合、またはDB carsが0でLSにデータがある場合はLSバックアップを復元
-      if(lsCarsLen>0&&(remoteCarsLen===0||remoteCarsLen<lsCarsLen*0.5)){
-        console.warn("[Parking] DB cars("+remoteCarsLen+") < LS cars("+lsCarsLen+"). Restoring from LS backup.");
+      // DBの駐車中台数とLSの駐車中台数を比較
+      const remoteParked=useRemote?remote.spots.filter(s=>s.carId).length:0;
+      const lsParked=ls&&ls.spots?ls.spots.filter(s=>s.carId).length:0;
+      // 復元条件: (1)車両数が大幅減 (2)駐車中が0でLSに駐車データあり
+      const shouldRestore=lsCarsLen>0&&(
+        remoteCarsLen===0||
+        remoteCarsLen<lsCarsLen*0.5||
+        (remoteParked===0&&lsParked>0)
+      );
+      if(shouldRestore){
+        console.warn("[Parking] Data loss detected. DB cars:"+remoteCarsLen+" parked:"+remoteParked+" / LS cars:"+lsCarsLen+" parked:"+lsParked+". Restoring from LS.");
         if(ls.spots)setSpots(ls.spots);if(ls.cars)setCars(ls.cars);
         if(ls.washMap)setWashMap(ls.washMap);if(ls.washTimeMap)setWashTimeMap(ls.washTimeMap);
         if(ls.maintMap)setMaintMap(ls.maintMap);if(ls.history)setHistory(ls.history);
         if(ls.staffCarMap)setStaffCarMap(ls.staffCarMap);if(ls.warehouseMap)setWarehouseMap(ls.warehouseMap);
         // DBに復元データを書き戻し
         DB.parking.save({...ls,savedAt:new Date().toISOString()});
-        setTimeout(()=>alert("🔄 駐車場データをローカルバックアップから復元しました（"+lsCarsLen+"台）"),500);
+        setTimeout(()=>alert("🔄 駐車場データをローカルバックアップから復元しました（車両"+lsCarsLen+"台・駐車中"+lsParked+"台）"),500);
       }else if(useRemote){
         setSpots(remote.spots);if(remote.cars)setCars(remote.cars);
         if(remote.washMap)setWashMap(remote.washMap);if(remote.washTimeMap)setWashTimeMap(remote.washTimeMap);
@@ -4207,6 +4223,18 @@ function ParkingManager({masterVehicles}){
       <div style={subHdr}>📤 データ管理</div>
       <button onClick={exportData} className="btn-primary" style={{width:"100%",marginBottom:6,padding:10,fontSize:12}}>📋 データコピー</button>
       <button onClick={importData} className="btn-ghost" style={{width:"100%",marginBottom:6,padding:10,fontSize:12}}>📥 インポート</button>
+      <button onClick={()=>{
+        const ls=DB.parking.lsLoad();
+        if(!ls||!ls.cars||ls.cars.length===0){alert("❌ このブラウザにバックアップデータがありません。\n以前駐車場を使っていた別のブラウザ(スマホ/PC)で試してください。");return;}
+        const lsParked=ls.spots?ls.spots.filter(s=>s.carId).length:0;
+        if(!window.confirm(`🔄 ローカルバックアップから復元しますか？\n車両: ${ls.cars.length}台\n駐車中: ${lsParked}台\nスポット: ${ls.spots?ls.spots.length:0}枠`))return;
+        if(ls.spots)setSpots(ls.spots);if(ls.cars)setCars(ls.cars);
+        if(ls.washMap)setWashMap(ls.washMap);if(ls.washTimeMap)setWashTimeMap(ls.washTimeMap);
+        if(ls.maintMap)setMaintMap(ls.maintMap);if(ls.history)setHistory(ls.history);
+        if(ls.staffCarMap)setStaffCarMap(ls.staffCarMap);if(ls.warehouseMap)setWarehouseMap(ls.warehouseMap);
+        DB.parking.save({...ls,savedAt:new Date().toISOString()});
+        alert("✅ バックアップから復元しました");
+      }} className="btn-ghost" style={{width:"100%",marginBottom:6,padding:10,fontSize:12,border:"2px solid #f59e0b",color:"#b45309"}}>🔄 ローカルバックアップから復元</button>
       <button onClick={resetData} className="btn-danger" style={{width:"100%",padding:10,fontSize:12}}>🗑️ 全リセット</button>
     </div>
   </>;
