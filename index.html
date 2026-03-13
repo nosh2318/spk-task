@@ -619,6 +619,43 @@ async function fetchPlaceData(targetResIds){
   return result;
 }
 
+/* ===== じゃらん決済スプレッドシートから支払データ取得 ===== */
+const JALAN_PAY_SHEET_CSV="https://docs.google.com/spreadsheets/d/e/2PACX-1vSsixHeH7WvPEhA0BqOhFcun6DgBAeB9z11ikzRgXQcB_OxKKwWT8uCvl6Fb551nYlRmBGLj0e7OcGi/pub?gid=744077151&single=true&output=csv";
+async function fetchJalanPaySheetData(targetResIds){
+  if(!JALAN_PAY_SHEET_CSV)throw new Error("スプレッドシートURLが未設定です。\nJALAN_PAY_SHEET_CSV を設定してください。");
+  const resp=await fetch(JALAN_PAY_SHEET_CSV);
+  if(!resp.ok)throw new Error("CSV取得失敗: "+resp.status);
+  const text=await resp.text();
+  const rows=parsePlaceCSV(text);
+  if(rows.length<2)throw new Error("データが空です");
+  // 予約番号列を自動検出
+  const header=rows[0];
+  let resCol=-1;
+  header.forEach((h,i)=>{if(h.includes("予約番号")||h.includes("予約ID")||h.includes("Reservation"))resCol=i;});
+  if(resCol<0){
+    for(let ci=0;ci<header.length;ci++){
+      const sample=rows.slice(1,Math.min(6,rows.length)).map(r=>r[ci]||"");
+      if(sample.some(s=>/^[A-Z0-9]{8,}$/.test(s.trim()))){resCol=ci;break;}
+    }
+  }
+  if(resCol<0)throw new Error("予約番号の列が見つかりません");
+  const payDateCol=3; // D列(index3) = 支払日
+  const amountCol=5;  // F列(index5) = 金額
+  const targetSet=new Set(targetResIds);
+  const result={};
+  rows.slice(1).forEach(r=>{
+    const rid=(r[resCol]||"").trim();
+    if(!rid||!targetSet.has(rid))return;
+    const payDate=(r[payDateCol]||"").trim();
+    const amount=(r[amountCol]||"").trim().replace(/[,¥￥\s]/g,"");
+    // D列に日付が入っていれば支払済み
+    if(payDate){
+      result[rid]={adjustedPrice:amount||"0",payStatus:"完了",payDate:payDate};
+    }
+  });
+  return result;
+}
+
 /* ===== タスク生成 ===== */
 function generateTasks(reservations,date,fleet,vehicles){
   const tasks=[];
@@ -1379,17 +1416,38 @@ function PASGuard({children,label}){
 function JalanPayment({data,jalanPay,onJalanPayChange}){
   const[editId,setEditId]=useState(null);
   const[form,setForm]=useState({});
+  const[sheetLoading,setSheetLoading]=useState(false);
   const jData=useMemo(()=>data.filter(r=>r.ota==="J").sort((a,b)=>(b.lendDate||"").localeCompare(a.lendDate||"")),[data]);
   const startEdit=(id)=>{setEditId(id);setForm(jalanPay[id]||{category:"売上",payStatus:"未完了",sendDate:"",refundDate:"",content:"",linkUrl:"",adjustedPrice:""});};
   const saveEdit=()=>{if(!editId)return;onJalanPayChange(editId,form);setEditId(null);};
   const cancelEdit=()=>{setEditId(null);setForm({});};
   const summary=useMemo(()=>{const done=jData.filter(r=>(jalanPay[r.id]?.payStatus)==="完了").length;return{total:jData.length,done,undone:jData.length-done};},[jData,jalanPay]);
   const cardS={background:"#fff",borderRadius:14,border:"1px solid #e2e8f0",boxShadow:"0 1px 3px rgba(0,0,0,.05)"};
+  // ★ スプレッドシートから支払データを一括取得
+  const fetchFromSheet=async()=>{
+    const resIds=jData.map(r=>r.id);
+    if(!resIds.length){alert("じゃらん予約がありません");return;}
+    setSheetLoading(true);
+    try{
+      const payMap=await fetchJalanPaySheetData(resIds);
+      const matched=Object.keys(payMap).length;
+      if(!matched){setSheetLoading(false);alert("該当する予約番号がスプレッドシートに見つかりませんでした");return;}
+      let updated=0;
+      Object.entries(payMap).forEach(([rid,pd])=>{
+        const existing=jalanPay[rid]||{};
+        onJalanPayChange(rid,{...existing,adjustedPrice:pd.adjustedPrice,payStatus:pd.payStatus});
+        updated++;
+      });
+      alert(`${matched}件中 ${updated}件の支払データを反映しました`);
+    }catch(e){alert("取得エラー: "+e.message);}
+    setSheetLoading(false);
+  };
 
   return <div style={{maxWidth:800,margin:"0 auto"}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
       <h3 style={{fontSize:16,fontWeight:800,margin:0}}>じゃらん決済確認</h3>
-      <div style={{display:"flex",gap:8,fontSize:11,fontWeight:700}}>
+      <div style={{display:"flex",gap:8,fontSize:11,fontWeight:700,alignItems:"center"}}>
+        <button onClick={fetchFromSheet} disabled={sheetLoading} style={{padding:"4px 12px",borderRadius:8,background:sheetLoading?"#94a3b8":"#7c3aed",color:"#fff",border:"none",fontSize:11,fontWeight:700,cursor:sheetLoading?"not-allowed":"pointer"}}>{sheetLoading?"取得中...":"📊 スプレッドシート取得"}</button>
         <span style={{padding:"2px 10px",borderRadius:10,background:"#f0fdf4",color:"#059669"}}>完了 {summary.done}</span>
         <span style={{padding:"2px 10px",borderRadius:10,background:"#fef2f2",color:"#dc2626"}}>未完了 {summary.undone}</span>
       </div>
@@ -5323,7 +5381,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.7.5";
+const APP_VERSION="v3.7.6";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
