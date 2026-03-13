@@ -3876,6 +3876,17 @@ const PARKING_INIT_SPOTS = [
   {id:6,no:"200",key:175,carId:null,memo:"",restricted:null},
   {id:7,no:"282",key:176,carId:null,memo:"",restricted:null},
 ];
+// restricted IDの自動修正（旧略称→正式車両ID）
+const RESTRICTED_FIX={"CX3-4576":"CX-3-4576","SLO-8529":"ソリオ-8529","RKY-299":"ロッキー-299"};
+function fixSpotRestricted(spots){
+  if(!spots)return spots;
+  return spots.map(sp=>{
+    if(!sp.restricted)return sp;
+    const fixed=sp.restricted.map(id=>RESTRICTED_FIX[id]||id);
+    const changed=fixed.some((f,i)=>f!==sp.restricted[i]);
+    return changed?{...sp,restricted:fixed,memo:"CX-3/ソリオ/ロッキー 専用"}:sp;
+  });
+}
 function canParkInSpot(spot,carId){return !spot.restricted||spot.restricted.includes(carId);}
 function pCarLabel(c){return c.name+" ("+c.plate+")";}
 const PARKING_VENDORS=["オートバックス","イエローハット","ディーラー","板金工場","タイヤ館","車検場","その他"];
@@ -3889,17 +3900,7 @@ function ParkingManager({masterVehicles}){
   const getCar=id=>cars.find(c=>c.id===id)||null;
   const initWash={};cars.forEach(c=>{initWash[c.id]="未洗車";});
   const initWashTime={};cars.forEach(c=>{initWashTime[c.id]=null;});
-  const[spots,setSpots]=useState(()=>{
-    // restricted配列の旧ID→新IDマッピング（一度だけ実行）
-    const FIX_MAP={"CX3-4576":"CX-3-4576","SLO-8529":"ソリオ-8529","RKY-299":"ロッキー-299"};
-    const raw=init?init.spots:PARKING_INIT_SPOTS;
-    return raw.map(sp=>{
-      if(!sp.restricted)return sp;
-      const fixed=sp.restricted.map(id=>FIX_MAP[id]||id);
-      const changed=fixed.some((f,i)=>f!==sp.restricted[i]);
-      return changed?{...sp,restricted:fixed,memo:"CX-3/ソリオ/ロッキー 専用"}:sp;
-    });
-  });
+  const[spots,setSpots]=useState(()=>fixSpotRestricted(init?init.spots:PARKING_INIT_SPOTS));
   const[pTab,setPTab]=useState("home");
   const[selectedCar,setSelectedCar]=useState(null);
   const[parkStep,setParkStep]=useState("select");
@@ -3946,14 +3947,14 @@ function ParkingManager({masterVehicles}){
       );
       if(shouldRestore){
         console.warn("[Parking] Data loss detected. DB cars:"+remoteCarsLen+" parked:"+remoteParked+" / LS cars:"+lsCarsLen+" parked:"+lsParked+". Restoring.");
-        if(ls.spots)setSpots(ls.spots);if(ls.cars)setCars(ls.cars);
+        if(ls.spots)setSpots(fixSpotRestricted(ls.spots));if(ls.cars)setCars(ls.cars);
         if(ls.washMap)setWashMap(ls.washMap);if(ls.washTimeMap)setWashTimeMap(ls.washTimeMap);
         if(ls.maintMap)setMaintMap(ls.maintMap);if(ls.history)setHistory(ls.history);
         if(ls.staffCarMap)setStaffCarMap(ls.staffCarMap);if(ls.warehouseMap)setWarehouseMap(ls.warehouseMap);
         DB.parking.save({...ls,savedAt:new Date().toISOString()});
         setTimeout(()=>alert("🔄 駐車場データをバックアップから復元しました（車両"+lsCarsLen+"台・駐車中"+lsParked+"台）"),500);
       }else if(useRemote){
-        setSpots(remote.spots);if(remote.cars)setCars(remote.cars);
+        setSpots(fixSpotRestricted(remote.spots));if(remote.cars)setCars(remote.cars);
         if(remote.washMap)setWashMap(remote.washMap);if(remote.washTimeMap)setWashTimeMap(remote.washTimeMap);
         if(remote.maintMap)setMaintMap(remote.maintMap);if(remote.history)setHistory(remote.history);
         if(remote.staffCarMap)setStaffCarMap(remote.staffCarMap);if(remote.warehouseMap)setWarehouseMap(remote.warehouseMap);
@@ -3963,7 +3964,7 @@ function ParkingManager({masterVehicles}){
     const ch=sbParking.channel("parking-rt").on("postgres_changes",{event:"UPDATE",schema:"public",table:"parking_state",filter:"id=eq.1"},payload=>{
       const d=payload.new&&payload.new.data;if(!d||!d.spots)return;
       isRemoteUpdate.current=true;
-      if(d.spots)setSpots(d.spots);if(d.cars)setCars(d.cars);if(d.washMap)setWashMap(d.washMap);
+      if(d.spots)setSpots(fixSpotRestricted(d.spots));if(d.cars)setCars(d.cars);if(d.washMap)setWashMap(d.washMap);
       if(d.washTimeMap)setWashTimeMap(d.washTimeMap);if(d.maintMap)setMaintMap(d.maintMap);if(d.history)setHistory(d.history);
       if(d.staffCarMap)setStaffCarMap(d.staffCarMap);if(d.warehouseMap)setWarehouseMap(d.warehouseMap);
       setSyncStatus("online");setTimeout(()=>{isRemoteUpdate.current=false;},100);
@@ -3978,7 +3979,7 @@ function ParkingManager({masterVehicles}){
         const remote=await DB.parking.fetch();
         if(!remote||!remote.spots)return;
         isRemoteUpdate.current=true;
-        setSpots(remote.spots);if(remote.cars)setCars(remote.cars);
+        setSpots(fixSpotRestricted(remote.spots));if(remote.cars)setCars(remote.cars);
         if(remote.washMap)setWashMap(remote.washMap);if(remote.washTimeMap)setWashTimeMap(remote.washTimeMap);
         if(remote.maintMap)setMaintMap(remote.maintMap);if(remote.history)setHistory(remote.history);
         if(remote.staffCarMap)setStaffCarMap(remote.staffCarMap);if(remote.warehouseMap)setWarehouseMap(remote.warehouseMap);
@@ -4325,7 +4326,7 @@ function ParkingManager({masterVehicles}){
         if(!ls||!ls.cars||ls.cars.length===0){alert("❌ このブラウザにバックアップデータがありません。\n以前駐車場を使っていた別のブラウザ(スマホ/PC)で試してください。");return;}
         const lsParked=ls.spots?ls.spots.filter(s=>s.carId).length:0;
         if(!window.confirm(`🔄 バックアップから復元しますか？\n車両: ${ls.cars.length}台\n駐車中: ${lsParked}台\nスポット: ${ls.spots?ls.spots.length:0}枠`))return;
-        if(ls.spots)setSpots(ls.spots);if(ls.cars)setCars(ls.cars);
+        if(ls.spots)setSpots(fixSpotRestricted(ls.spots));if(ls.cars)setCars(ls.cars);
         if(ls.washMap)setWashMap(ls.washMap);if(ls.washTimeMap)setWashTimeMap(ls.washTimeMap);
         if(ls.maintMap)setMaintMap(ls.maintMap);if(ls.history)setHistory(ls.history);
         if(ls.staffCarMap)setStaffCarMap(ls.staffCarMap);if(ls.warehouseMap)setWarehouseMap(ls.warehouseMap);
@@ -4353,10 +4354,11 @@ function ParkingManager({masterVehicles}){
         {sp.restricted&&<div style={{padding:"4px 8px",borderRadius:8,background:"#f5f3ff",border:"1px solid #c4b5fd",marginBottom:12,fontSize:10,color:"#7c3aed"}}>📌 {sp.restricted.map(id=>{const c=getCar(id);return c?c.name:"";}).join(" / ")} 専用</div>}
         {available.length>0?<>
           <div style={{fontSize:11,color:"#64748b",marginBottom:8}}>入庫する車両を選択:</div>
-          {available.map(c=><button key={c.id} onClick={()=>parkCar(sp.id,c.id)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",padding:"10px 12px",borderRadius:10,border:"1px solid #e2e8f0",background:"#f8fafc",cursor:"pointer",fontSize:13,fontWeight:600,marginBottom:6}}>
-            <div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:18}}>🚗</span><div style={{textAlign:"left"}}><div>{c.name}</div><div style={{fontSize:10,color:"#64748b"}}>{c.plate}</div></div></div>
-            <span style={{fontSize:11,color:"#059669",fontWeight:700}}>入庫 →</span>
-          </button>)}
+          <select id="park-select" defaultValue="" style={{width:"100%",padding:"10px 12px",borderRadius:10,border:"2px solid #e2e8f0",fontSize:14,fontWeight:600,marginBottom:12,background:"#f8fafc"}}>
+            <option value="" disabled>-- 車両を選択 --</option>
+            {available.map(c=><option key={c.id} value={c.id}>{c.name} ({c.plate})</option>)}
+          </select>
+          <button onClick={()=>{const sel=document.getElementById("park-select").value;if(!sel){alert("車両を選択してください");return;}parkCar(sp.id,sel);}} style={{width:"100%",padding:"12px 0",borderRadius:10,background:"#059669",color:"#fff",border:"none",fontSize:14,fontWeight:800,cursor:"pointer"}}>🚗 入庫する</button>
         </>:<div style={{textAlign:"center",padding:20,color:"#94a3b8"}}>入庫可能な車両なし</div>}
       </div></div>;
     }
@@ -5261,7 +5263,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.5.0";
+const APP_VERSION="v3.5.1";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
