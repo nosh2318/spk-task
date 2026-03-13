@@ -251,8 +251,8 @@ const DB = {
   _jalanPayLS:"spk_jalan_payment",
   jalanPayLsSave(d){try{localStorage.setItem(DB._jalanPayLS,JSON.stringify(d));}catch(e){}},
   jalanPayLsLoad(){try{const s=localStorage.getItem(DB._jalanPayLS);return s?JSON.parse(s):{};}catch(e){return{};}},
-  async fetchJalanPayment(){if(!sb){return DB.jalanPayLsLoad();}const{data,error}=await sb.from("jalan_payment").select("*");if(error){dbLog("fetchJalanPay",false,error.message);return DB.jalanPayLsLoad();}dbLog("fetchJalanPay",true,(data||[]).length+"件");const m={};(data||[]).forEach(r=>{m[r.reservation_id]={category:r.category||"売上",payStatus:r.pay_status||"未完了",sendDate:r.send_date||"",refundDate:r.refund_date||"",content:r.content||"",linkUrl:r.link_url||""};});DB.jalanPayLsSave(m);return m;},
-  async saveJalanPayment(resId,d){DB.jalanPayLsSave({...DB.jalanPayLsLoad(),[resId]:d});if(!sb)return;const row={reservation_id:resId,category:d.category||"売上",pay_status:d.payStatus||"未完了",send_date:d.sendDate||"",refund_date:d.refundDate||"",content:d.content||"",link_url:d.linkUrl||""};const{error}=await sb.from("jalan_payment").upsert(row,{onConflict:"reservation_id"});if(error)dbLog("saveJalanPay",false,error.message);else dbLog("saveJalanPay",true,resId);},
+  async fetchJalanPayment(){if(!sb){return DB.jalanPayLsLoad();}const{data,error}=await sb.from("jalan_payment").select("*");if(error){dbLog("fetchJalanPay",false,error.message);return DB.jalanPayLsLoad();}dbLog("fetchJalanPay",true,(data||[]).length+"件");const m={};(data||[]).forEach(r=>{m[r.reservation_id]={category:r.category||"売上",payStatus:r.pay_status||"未完了",sendDate:r.send_date||"",refundDate:r.refund_date||"",content:r.content||"",linkUrl:r.link_url||"",adjustedPrice:r.adjusted_price||""};});DB.jalanPayLsSave(m);return m;},
+  async saveJalanPayment(resId,d){DB.jalanPayLsSave({...DB.jalanPayLsLoad(),[resId]:d});if(!sb)return;const row={reservation_id:resId,category:d.category||"売上",pay_status:d.payStatus||"未完了",send_date:d.sendDate||"",refund_date:d.refundDate||"",content:d.content||"",link_url:d.linkUrl||"",adjusted_price:d.adjustedPrice||""};const{error}=await sb.from("jalan_payment").upsert(row,{onConflict:"reservation_id"});if(error)dbLog("saveJalanPay",false,error.message);else dbLog("saveJalanPay",true,resId);},
   // --- 認証 ---
   async checkPassword(pw){if(!sb)return true;const{data}=await sb.from("app_settings").select("value").eq("key","team_password").single();return data&&data.value===pw;},
   // --- 駐車場 (別Supabase) ---
@@ -1348,14 +1348,12 @@ function FleetManager(p){
    ========================================== */
 function PASGuard({children,label}){
   const PAS_CODE="2318";
-  const LS_KEY="spk_pas_auth";
-  const SESSION_TTL=30*60*1000; // 30分
-  const[unlocked,setUnlocked]=useState(()=>{try{const s=JSON.parse(localStorage.getItem(LS_KEY)||"{}");return s.t&&Date.now()-s.t<SESSION_TTL;}catch(e){return false;}});
+  // 毎回入力必須（セッション保持なし）
+  const[unlocked,setUnlocked]=useState(false);
   const[input,setInput]=useState("");
   const[err,setErr]=useState("");
   const unlock=()=>{
     if(input===PAS_CODE){
-      localStorage.setItem(LS_KEY,JSON.stringify({t:Date.now()}));
       setUnlocked(true);setErr("");
     }else{setErr("パスコードが違います");setInput("");}
   };
@@ -1379,7 +1377,7 @@ function JalanPayment({data,jalanPay,onJalanPayChange}){
   const[editId,setEditId]=useState(null);
   const[form,setForm]=useState({});
   const jData=useMemo(()=>data.filter(r=>r.ota==="J").sort((a,b)=>(b.lendDate||"").localeCompare(a.lendDate||"")),[data]);
-  const startEdit=(id)=>{setEditId(id);setForm(jalanPay[id]||{category:"売上",payStatus:"未完了",sendDate:"",refundDate:"",content:"",linkUrl:""});};
+  const startEdit=(id)=>{setEditId(id);setForm(jalanPay[id]||{category:"売上",payStatus:"未完了",sendDate:"",refundDate:"",content:"",linkUrl:"",adjustedPrice:""});};
   const saveEdit=()=>{if(!editId)return;onJalanPayChange(editId,form);setEditId(null);};
   const cancelEdit=()=>{setEditId(null);setForm({});};
   const summary=useMemo(()=>{const done=jData.filter(r=>(jalanPay[r.id]?.payStatus)==="完了").length;return{total:jData.length,done,undone:jData.length-done};},[jData,jalanPay]);
@@ -1397,7 +1395,7 @@ function JalanPayment({data,jalanPay,onJalanPayChange}){
     {jData.length>0&&<div style={{...cardS,overflow:"hidden"}}>
       <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
         <thead><tr style={{background:"#fdf2f8"}}>
-          {["予約番号","予約者","請求金額","分類","支払確認","送付日","返金日","予約内容","リンク","操作"].map(h=><th key={h} style={{padding:"6px 8px",textAlign:"left",fontWeight:700,fontSize:10,color:"#9d174d",borderBottom:"2px solid #fbcfe8",whiteSpace:"nowrap"}}>{h}</th>)}
+          {["予約番号","予約者","請求金額","差引請求金額","分類","支払確認","送付日","返金日","予約内容","リンク","操作"].map(h=><th key={h} style={{padding:"6px 8px",textAlign:"left",fontWeight:700,fontSize:10,color:"#9d174d",borderBottom:"2px solid #fbcfe8",whiteSpace:"nowrap"}}>{h}</th>)}
         </tr></thead>
         <tbody>{jData.map((r,ri)=>{
           const p=jalanPay[r.id]||{};
@@ -1408,6 +1406,7 @@ function JalanPayment({data,jalanPay,onJalanPayChange}){
             <td style={{padding:"4px 8px",fontWeight:600}}>{r.name}</td>
             <td style={{padding:"4px 8px",fontWeight:700,color:"#1e40af"}}>¥{(r.price||0).toLocaleString()}</td>
             {isEdit?<>
+              <td style={{padding:"2px 4px"}}><input type="number" value={form.adjustedPrice||""} onChange={e=>setForm(f=>({...f,adjustedPrice:e.target.value}))} placeholder="金額" style={{fontSize:10,padding:"2px 4px",borderRadius:4,border:"1px solid #d1d5db",width:80}}/></td>
               <td style={{padding:"2px 4px"}}><select value={form.category||"売上"} onChange={e=>setForm(f=>({...f,category:e.target.value}))} style={{fontSize:10,padding:"2px 4px",borderRadius:4,border:"1px solid #d1d5db"}}><option>売上</option><option>立替</option></select></td>
               <td style={{padding:"2px 4px"}}><select value={form.payStatus||"未完了"} onChange={e=>setForm(f=>({...f,payStatus:e.target.value}))} style={{fontSize:10,padding:"2px 4px",borderRadius:4,border:"1px solid #d1d5db"}}><option>完了</option><option>未完了</option></select></td>
               <td style={{padding:"2px 4px"}}><input type="date" value={form.sendDate||""} onChange={e=>setForm(f=>({...f,sendDate:e.target.value}))} style={{fontSize:10,padding:"2px 4px",borderRadius:4,border:"1px solid #d1d5db",width:110}}/></td>
@@ -1416,6 +1415,7 @@ function JalanPayment({data,jalanPay,onJalanPayChange}){
               <td style={{padding:"2px 4px"}}><input value={form.linkUrl||""} onChange={e=>setForm(f=>({...f,linkUrl:e.target.value}))} placeholder="URL" style={{fontSize:10,padding:"2px 4px",borderRadius:4,border:"1px solid #d1d5db",width:80}}/></td>
               <td style={{padding:"2px 4px",whiteSpace:"nowrap"}}><button onClick={saveEdit} style={{fontSize:10,padding:"2px 8px",borderRadius:4,border:"none",background:"#2563eb",color:"#fff",fontWeight:700,cursor:"pointer",marginRight:4}}>保存</button><button onClick={cancelEdit} style={{fontSize:10,padding:"2px 8px",borderRadius:4,border:"1px solid #d1d5db",background:"#fff",cursor:"pointer"}}>取消</button></td>
             </>:<>
+              <td style={{padding:"4px 8px",fontWeight:700,color:p.adjustedPrice?"#7c3aed":"#94a3b8"}}>{p.adjustedPrice?("¥"+Number(p.adjustedPrice).toLocaleString()):"-"}</td>
               <td style={{padding:"4px 8px"}}><span style={{fontSize:10,fontWeight:600,padding:"1px 6px",borderRadius:4,background:p.category==="立替"?"#fef3c7":"#dbeafe",color:p.category==="立替"?"#92400e":"#1d4ed8"}}>{p.category||"売上"}</span></td>
               <td style={{padding:"4px 8px"}}><span style={{fontSize:10,fontWeight:700,padding:"1px 6px",borderRadius:4,background:isDone?"#dcfce7":"#fef2f2",color:isDone?"#166534":"#dc2626"}}>{isDone?"完了":"未完了"}</span></td>
               <td style={{padding:"4px 8px",fontSize:10,color:"#64748b"}}>{p.sendDate||"-"}</td>
@@ -5302,7 +5302,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.7.0";
+const APP_VERSION="v3.7.2";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
