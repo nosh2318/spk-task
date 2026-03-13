@@ -1740,6 +1740,22 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
   const getShift=(date)=>shifts[date]||[];
   const regularStaff=staff.filter(s=>s.type==="正社員");const partTimeStaff=staff.filter(s=>s.type==="アルバイト");
   const[cellEdit,setCellEdit]=useState(null); // {dateStr,name,type,symbol,start,end,isNew}
+
+  // 日本の祝日判定（簡易版）
+  const jpHolidays=useMemo(()=>{
+    const hSet=new Set();
+    const addH=(m,d)=>hSet.add(`${viewYM.split("-")[0]}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`);
+    const yr=Number(viewYM.split("-")[0]);
+    addH(1,1);addH(1,13);addH(2,11);addH(2,23);addH(3,20);addH(4,29);addH(5,3);addH(5,4);addH(5,5);addH(5,6);
+    addH(7,21);addH(8,11);addH(9,15);addH(9,23);addH(10,13);addH(11,3);addH(11,23);
+    // 振替休日: 祝日が日曜なら翌月曜
+    const all=[...hSet];all.forEach(ds=>{if(new Date(ds).getDay()===0){
+      const nd=new Date(ds);nd.setDate(nd.getDate()+1);hSet.add(nd.toISOString().slice(0,10));
+    }});
+    return hSet;
+  },[viewYM]);
+  const isHoliday=(ds)=>jpHolidays.has(ds);
+
   // Supabase同期付きシフト更新
   const updateShifts=(next)=>{onShiftsChange(next);if(sbSaveShift){Object.entries(next).forEach(([date,arr])=>{if(arr!==shifts[date]){
     const newNames=new Set(arr.map(s=>s.name));
@@ -1839,6 +1855,19 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
     _onSC(next);setBulkMode(false);
   };
 
+  // ③ 全スタッフ全シフト一括削除（月単位）
+  const clearAllShifts=()=>{
+    if(!window.confirm(`${ymLabel(viewYM)}の全スタッフのシフトを全て削除します。\nこの操作は取り消せません。よろしいですか？`))return;
+    const next={...shifts};
+    for(let d=1;d<=dim;d++){
+      const ds=`${viewYM}-${String(d).padStart(2,"0")}`;
+      const cur=next[ds]||[];
+      cur.forEach(s=>DB.deleteShift(ds,s.name));
+      next[ds]=[];
+    }
+    _onSC(next);
+  };
+
   const canPrev=viewYM>todayYM;const canNext=viewYM<maxYM;
 
   // CSV取込
@@ -1895,10 +1924,17 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
     return "";
   };
 
-  // セル背景色
-  const getCellBg=(shift,dow)=>{
-    const baseBg=dow===0?"#E0E0FF":dow===6?"#FFE0E0":"#FFF";
+  // セル背景色 — 平日:白 土曜:青 日曜:赤 祝日:薄黄
+  const getBaseBg=(dow,ds)=>{
+    if(isHoliday(ds))return "#FFFDE7"; // 祝日=薄黄
+    if(dow===0)return "#FFEBEE"; // 日曜=薄赤
+    if(dow===6)return "#E3F2FD"; // 土曜=薄青
+    return "#FFFFFF"; // 平日=白
+  };
+  const getCellBg=(shift,dow,ds)=>{
+    const baseBg=getBaseBg(dow,ds);
     if(!shift)return baseBg;
+    // シフトが入っている場合はシンボル色を優先
     if(shift.symbol==="●")return "#D4EBFA";
     if(shift.symbol==="希")return "#FFF3CD";
     if(shift.symbol==="公")return "#E8E8E8";
@@ -1917,6 +1953,7 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
         {viewYM!==todayYM&&<button onClick={()=>setViewYM(todayYM)} className="px-2 py-1 bg-blue-50 border border-blue-200 rounded text-xs font-semibold text-blue-700">今月</button>}
       </div>
       <div className="flex items-center gap-2">
+        <button onClick={clearAllShifts} className="px-3 py-1 rounded-lg text-xs font-semibold border" style={{background:"#991b1b",color:"#fff"}}>全削除</button>
         <button onClick={()=>{setBulkNames([]);setBulkDows([1,2,3,4,5]);setBulkMode("delete");}} className="px-3 py-1 rounded-lg text-xs font-semibold border" style={{background:"#dc2626",color:"#fff"}}>一括削除</button>
         <button onClick={()=>{setBulkNames([]);setBulkDows([1,2,3,4,5]);setBulkSymbol("●");setBulkStart("09:00");setBulkEnd("18:00");setBulkOverwrite(false);setBulkMode("set");}} className="px-3 py-1 rounded-lg text-xs font-semibold border" style={{background:"#2563eb",color:"#fff"}}>一括設定</button>
         <label className="px-3 py-1 rounded-lg text-xs font-semibold border border-blue-300 bg-blue-50 text-blue-700 cursor-pointer hover:bg-blue-100"><span>CSV</span><input type="file" accept=".csv,.txt" className="hidden" onChange={handleCSVUpload}/></label>
@@ -1929,11 +1966,21 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
         <button onClick={()=>setBulkMode(false)} style={{background:"none",border:"none",fontSize:18,color:"#94a3b8",cursor:"pointer"}}>✕</button>
       </div>
       <div style={{marginBottom:14}}>
-        <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:6}}>スタッフ</label>
-        <select value={bulkNames[0]||""} onChange={e=>{const v=e.target.value;setBulkNames(v?[v]:[]);}} style={{width:"100%",padding:"10px 12px",borderRadius:8,border:"1px solid #e2e8f0",fontSize:14,background:"#fff"}}>
-          <option value="">選択してください</option>
-          {staff.map(s=><option key={s.name} value={s.name}>{s.name} ({s.type})</option>)}
-        </select>
+        <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:6}}>スタッフ（複数選択可）</label>
+        <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:6}}>
+          <button onClick={()=>setBulkNames(staff.map(s=>s.name))} style={{padding:"4px 10px",borderRadius:6,fontSize:11,fontWeight:700,border:"1px solid #e2e8f0",background:bulkNames.length===staff.length?"#2563eb":"#f8fafc",color:bulkNames.length===staff.length?"#fff":"#64748b",cursor:"pointer"}}>全員</button>
+          <button onClick={()=>setBulkNames(regularStaff.map(s=>s.name))} style={{padding:"4px 10px",borderRadius:6,fontSize:11,fontWeight:600,border:"1px solid #e2e8f0",background:"#f8fafc",color:"#1d4ed8",cursor:"pointer"}}>正社員</button>
+          <button onClick={()=>setBulkNames(partTimeStaff.map(s=>s.name))} style={{padding:"4px 10px",borderRadius:6,fontSize:11,fontWeight:600,border:"1px solid #e2e8f0",background:"#f8fafc",color:"#92400e",cursor:"pointer"}}>アルバイト</button>
+          <button onClick={()=>setBulkNames([])} style={{padding:"4px 10px",borderRadius:6,fontSize:11,fontWeight:600,border:"1px solid #e2e8f0",background:"#f8fafc",color:"#94a3b8",cursor:"pointer"}}>解除</button>
+        </div>
+        <div style={{maxHeight:120,overflowY:"auto",border:"1px solid #e2e8f0",borderRadius:8,padding:4}}>
+          {staff.map(s=>{const sel=bulkNames.includes(s.name);return <label key={s.name} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 6px",cursor:"pointer",borderRadius:4,background:sel?"#eff6ff":"transparent"}}>
+            <input type="checkbox" checked={sel} onChange={()=>setBulkNames(p=>p.includes(s.name)?p.filter(n=>n!==s.name):[...p,s.name])} style={{width:14,height:14}}/>
+            <span style={{fontSize:12,fontWeight:sel?700:400}}>{s.name}</span>
+            <span style={{fontSize:9,color:s.type==="正社員"?"#1d4ed8":"#92400e",fontWeight:600}}>({s.type})</span>
+          </label>;})}
+        </div>
+        {bulkNames.length>0&&<div style={{fontSize:11,color:"#2563eb",fontWeight:600,marginTop:4}}>{bulkNames.length}名選択中</div>}
       </div>
       <div style={{marginBottom:14}}>
         <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:6}}>曜日</label>
@@ -1945,8 +1992,8 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
         </div>
       </div>
       {bulkMode==="set"&&<>
-        {bulkNames.length>0&&staff.find(s=>s.name===bulkNames[0])?.type==="正社員"&&<div style={{marginBottom:14}}>
-          <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:6}}>シフト種別</label>
+        {bulkNames.length>0&&bulkNames.some(bn=>staff.find(s=>s.name===bn)?.type==="正社員")&&<div style={{marginBottom:14}}>
+          <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:6}}>シフト種別（正社員）</label>
           <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
             {SHIFT_OPTIONS.map(o=><button key={o.s} onClick={()=>setBulkSymbol(o.s)} style={{
               padding:"6px 10px",borderRadius:8,fontSize:11,fontWeight:700,border:"2px solid",cursor:"pointer",
@@ -1970,7 +2017,7 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
         </label>
       </>}
       <div style={{textAlign:"center",padding:"8px 0",background:bulkMode==="delete"?"#fef2f2":"#f8fafc",borderRadius:8,marginBottom:14,fontSize:13,color:"#64748b"}}>
-        対象: <span style={{fontWeight:900,color:bulkMode==="delete"?"#dc2626":"#1e293b",fontSize:16}}>{bulkTargetDays}</span> 日分
+        対象: <span style={{fontWeight:900,color:bulkMode==="delete"?"#dc2626":"#1e293b",fontSize:16}}>{bulkNames.length}</span> 名 × <span style={{fontWeight:900,color:bulkMode==="delete"?"#dc2626":"#1e293b",fontSize:16}}>{bulkTargetDays}</span> 日 = <span style={{fontWeight:900,color:bulkMode==="delete"?"#dc2626":"#1e293b",fontSize:16}}>{bulkNames.length*bulkTargetDays}</span> 件
       </div>
       <div style={{display:"flex",gap:8}}>
         <button onClick={()=>setBulkMode(false)} style={{flex:"0 0 auto",padding:"10px 16px",borderRadius:10,border:"1px solid #e2e8f0",background:"#fff",fontSize:13,fontWeight:600,color:"#64748b",cursor:"pointer"}}>キャンセル</button>
@@ -1987,11 +2034,12 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
         <thead>
           <tr style={{background:"#D2B48C",position:"sticky",top:0,zIndex:3}}>
             <th style={{position:"sticky",left:0,zIndex:5,width:72,minWidth:72,padding:"6px 4px",textAlign:"center",fontWeight:700,borderRight:"2px solid #b8976a",background:"#D2B48C",fontSize:10}}>名前</th>
-            {dates.map(ds=>{const dt=new Date(ds);const dow=dt.getDay();const day=dt.getDate();const isToday=ds===today;
-            const bgc=isToday?"#FFFF99":dow===0?"#fecaca":dow===6?"#bfdbfe":"#D2B48C";
+            {dates.map(ds=>{const dt=new Date(ds);const dow=dt.getDay();const day=dt.getDate();const isToday=ds===today;const hol=isHoliday(ds);
+            const bgc=isToday?"#FFFF99":hol?"#FFFDE7":dow===0?"#FFCDD2":dow===6?"#BBDEFB":"#D2B48C";
+            const txtC=hol?"#e65100":dow===0?"#c62828":dow===6?"#1565c0":"#78716c";
             return <th key={ds} style={{minWidth:42,width:42,padding:"4px 1px",textAlign:"center",fontWeight:700,fontSize:9,background:bgc,borderRight:"1px solid #b8976a",borderBottom:"1px solid #b8976a",boxShadow:isToday?"inset 0 0 0 2px #f59e0b":"none"}}>
               <div style={{lineHeight:1.2}}>{day}</div>
-              <div style={{fontSize:8,color:dow===0?"#dc2626":dow===6?"#2563eb":"#78716c"}}>{WK[dow]}</div>
+              <div style={{fontSize:8,color:txtC}}>{WK[dow]}{hol?"*":""}</div>
             </th>;})}
           </tr>
         </thead>
@@ -2004,7 +2052,7 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
             </td>
             {dates.map(ds=>{
               const shift=getShift(ds).find(s=>s.name===st.name);const dow=new Date(ds).getDay();
-              const bg=getCellBg(shift,dow);const isToday=ds===today;
+              const bg=getCellBg(shift,dow,ds);const isToday=ds===today;
               return <td key={ds} onClick={()=>handleCellClick(ds,st.name,"正社員")} style={{
                 minWidth:42,width:42,padding:"2px",textAlign:"center",fontSize:11,fontWeight:700,background:bg,
                 borderRight:"1px solid #e5e7eb",borderBottom:"1px solid #e5e7eb",cursor:"pointer",
@@ -2023,7 +2071,7 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
             </td>
             {dates.map(ds=>{
               const shift=getShift(ds).find(s=>s.name===st.name);const dow=new Date(ds).getDay();
-              const bg=getCellBg(shift,dow);const isToday=ds===today;
+              const bg=getCellBg(shift,dow,ds);const isToday=ds===today;
               return <td key={ds} onClick={()=>handleCellClick(ds,st.name,"アルバイト")} style={{
                 minWidth:42,width:42,padding:"1px",textAlign:"center",background:bg,
                 borderRight:"1px solid #e5e7eb",borderBottom:"1px solid #e5e7eb",cursor:"pointer",
@@ -4849,7 +4897,7 @@ function App(){
     {showOP&&<OPScreen reservations={data} today={today} shifts={shifts} fleet={fleet} onFleetChange={setFleetSync} onClose={()=>setShowOP(false)} vehicles={vehicles} staff={staff} resOpts={resOpts} sheetPlaces={sheetPlaces} onUpdateSheetPlaces={saveSheetPlaces} repeaterMap={repeaterInfo.isRepeater}/>}
     <div style={{display:showOP?"none":"flex",flex:1,overflow:"hidden",flexDirection:"column"}}>
       <div className={"top-nav"+(tab==="top"?" hide-on-top":"")}>
-        {navItems.filter(n=>n.id==="top"||n.id==="import"||n.id==="vehicle"||n.id==="staff"||n.id==="shift"||n.id==="attendance"||n.id==="parking"||n.id==="fleet"||n.id==="history"||n.id==="customer"||data.length>0).map(n=><button key={n.id} onClick={()=>setTab(n.id)} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
+        {navItems.filter(n=>{const always=["top","import","vehicle","staff","shift","attendance","parking","fleet","history","customer"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>setTab(n.id)} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
         {data.length>0&&<button onClick={()=>setShowOP(true)} style={{color:"#60a5fa"}}><span className="ico">📋</span>OP</button>}
         {SB_ENABLED&&<button onClick={reloadAll} disabled={reloading===1} style={{background:reloading===2?"#d1fae5":"none",border:"none",cursor:reloading===1?"wait":"pointer",fontSize:14,padding:"2px 4px",borderRadius:6,opacity:reloading===1?0.5:1,transition:"background .3s"}}>{reloading===1?"⏳":reloading===2?"✅":"🔄"}</button>}
         {SB_ENABLED&&<SyncBadge connected={sbConnected} inline={true}/>}
@@ -4857,7 +4905,7 @@ function App(){
       <div style={{display:"flex",flex:1,overflow:"hidden"}}>
       <div className={"sidebar"+(tab==="top"?" hide-on-top":"")}>
         <div style={{width:36,height:36,borderRadius:8,background:"linear-gradient(135deg,#3b82f6,#1d4ed8)",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:800,fontSize:14,marginBottom:8}}>S</div>
-        {navItems.filter(n=>n.id==="top"||n.id==="import"||n.id==="vehicle"||n.id==="staff"||n.id==="shift"||n.id==="attendance"||n.id==="parking"||n.id==="fleet"||n.id==="history"||n.id==="customer"||data.length>0).map(n=><button key={n.id} onClick={()=>setTab(n.id)} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
+        {navItems.filter(n=>{const always=["top","import","vehicle","staff","shift","attendance","parking","fleet","history","customer"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>setTab(n.id)} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
         {data.length>0&&<button onClick={()=>setShowOP(true)} style={{marginTop:4,background:"linear-gradient(135deg,#1e40af,#2563eb)",color:"#fff",borderRadius:10}}><span className="ico">📋</span><span style={{fontSize:8}}>OP</span></button>}
       </div>
       <div className="main-area" style={{flex:1,overflow:tab==="fleet"||tab==="parking"?"hidden":"auto",padding:tab==="fleet"||tab==="parking"?0:12,display:"flex",flexDirection:"column"}}>
@@ -4953,7 +5001,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v2026.03.13b";
+const APP_VERSION="v2026.03.13d";
 function Root(){
   const[auth,setAuth]=useState(!SB_ENABLED||localStorage.getItem("spk_auth")==="1");
   if(!auth)return <LoginScreen onLogin={()=>setAuth(true)}/>;
