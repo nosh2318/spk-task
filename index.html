@@ -211,9 +211,9 @@ const DB = {
   async saveShiftsForDate(date,shifts){if(!sb)return;const rows=shifts.map(s=>({date,staff_name:s.name,symbol:s.symbol||"",start_time:s.start||"",end_time:s.end||"",memo:s.memo||""}));await sb.from("shifts").upsert(rows,{onConflict:"date,staff_name"});},
   async deleteShift(date,staffName){if(!sb)return;const{error}=await sb.from("shifts").delete().eq("date",date).eq("staff_name",staffName);if(error)dbLog("deleteShift",false,error.message);else dbLog("deleteShift",true,date+"/"+staffName);},
   // --- 勤怠 ---
-  async fetchAttendance(){if(!sb)return{};try{const{data,error}=await sb.from("attendance").select("*");if(error){console.warn("[attendance] fetch error (テーブル未作成?):",error.message);return{};}const a={};(data||[]).forEach(r=>{const k=r.date+"_"+r.staff_name;a[k]={date:r.date,name:r.staff_name,start:r.start_time||"",end:r.end_time||"",approved:!!r.approved,memo:r.memo||""};});return a;}catch(e){console.warn("[attendance]",e);return{};}},
-  async saveAttendance(rec){if(!sb)return;try{await sb.from("attendance").upsert({date:rec.date,staff_name:rec.name,start_time:rec.start||"",end_time:rec.end||"",approved:rec.approved||false,memo:rec.memo||""},{onConflict:"date,staff_name"});}catch(e){console.warn("[att save]",e);}},
-  async saveAttendanceBatch(recs){if(!sb)return;try{const rows=recs.map(r=>({date:r.date,staff_name:r.name,start_time:r.start||"",end_time:r.end||"",approved:r.approved||false,memo:r.memo||""}));await sb.from("attendance").upsert(rows,{onConflict:"date,staff_name"});}catch(e){console.warn("[att batch]",e);}},
+  async fetchAttendance(){if(!sb)return{};try{const{data,error}=await sb.from("attendance").select("*");if(error){console.warn("[attendance] fetch error (テーブル未作成?):",error.message);return{};}const a={};(data||[]).forEach(r=>{const k=r.date+"_"+r.staff_name;a[k]={date:r.date,name:r.staff_name,start:r.start_time||"",end:r.end_time||"",approved:!!r.approved,memo:r.memo||"",absent:!!r.absent};});return a;}catch(e){console.warn("[attendance]",e);return{};}},
+  async saveAttendance(rec){if(!sb)return;try{await sb.from("attendance").upsert({date:rec.date,staff_name:rec.name,start_time:rec.start||"",end_time:rec.end||"",approved:rec.approved||false,memo:rec.memo||"",absent:!!rec.absent},{onConflict:"date,staff_name"});}catch(e){console.warn("[att save]",e);}},
+  async saveAttendanceBatch(recs){if(!sb)return;try{const rows=recs.map(r=>({date:r.date,staff_name:r.name,start_time:r.start||"",end_time:r.end||"",approved:r.approved||false,memo:r.memo||"",absent:!!r.absent}));await sb.from("attendance").upsert(rows,{onConflict:"date,staff_name"});}catch(e){console.warn("[att batch]",e);}},
   // --- メンテナンス ---
   async fetchMaintenance(){if(!sb)return[];const{data,error}=await sb.from("maintenance").select("*");if(error){dbLog("fetchMaint",false,error.message);return[];}dbLog("fetchMaint",true,(data||[]).length+"件");return(data||[]).map(m=>({id:m.id,vehicleCode:m.vehicle_code,startDate:m.start_date,endDate:m.end_date,label:m.label||""}));},
   async saveMaintenance(arr){if(!sb)return;const rows=arr.map(m=>({id:m.id,vehicle_code:m.vehicleCode,start_date:m.startDate,end_date:m.endDate,label:m.label||""}));if(rows.length){const{error}=await sb.from("maintenance").upsert(rows,{onConflict:"id"});if(error)dbLog("saveMaint",false,error.message);else dbLog("saveMaint",true,rows.length+"件");}},
@@ -1476,17 +1476,18 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
       const isP=s.type==="アルバイト";
       const budgetWage=isP?(s.hourlyWage||0)*budgetHours:(s.monthlySalary||0);
       const budgetTransport=(s.transportCost||0)*budgetDays;
-      // 実績（勤怠承認ベース）
-      let actualDays=0,actualHours=0;
+      // 実績（勤怠承認ベース）— 欠勤は出勤0扱い
+      let actualDays=0,actualHours=0,absentDays=0;
       days.forEach(d=>{
         if(d.att&&d.att.approved){
+          if(d.att.absent){absentDays++;return;} // 欠勤はカウントしない
           actualDays++;actualHours+=calcHours(d.att.start,d.att.end);
         }
       });
       const actualWage=isP?(s.hourlyWage||0)*actualHours:(s.monthlySalary||0);
       const actualTransport=(s.transportCost||0)*actualDays;
       result[s.name]={days,budgetDays,budgetHours,budgetWage:Math.round(budgetWage),budgetTransport,budgetTotal:Math.round(budgetWage)+budgetTransport,
-        actualDays,actualHours,actualWage:Math.round(actualWage),actualTransport,actualTotal:Math.round(actualWage)+actualTransport,isP};
+        actualDays,actualHours,actualWage:Math.round(actualWage),actualTransport,actualTotal:Math.round(actualWage)+actualTransport,isP,absentDays};
     });
     return result;
   },[staff,shifts,attendance,viewYM,dim,vy,vmo]);
@@ -1534,7 +1535,7 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
     if(!editDay)return;
     if(!window.confirm("保存を実行しますか？"))return;
     const key=editDay.date+"_"+editDay.name;
-    const updated={date:editDay.date,name:editDay.name,start:editDay.start,end:editDay.end,approved:attendance[key]?.approved||false,memo:editDay.memo||""};
+    const updated={date:editDay.date,name:editDay.name,start:editDay.start,end:editDay.end,approved:attendance[key]?.approved||false,memo:editDay.memo||"",absent:!!editDay.absent};
     onAttendanceChange({...attendance,[key]:updated});
     DB.saveAttendance(updated);setEditDay(null);
   };
@@ -1643,20 +1644,21 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
             const isHoliday=d.dow===0;const isSat=d.dow===6;
             const rowBg=isHoliday?"#fef2f2":isSat?"#eff6ff":"#fff";
             const dayColor=isHoliday?"#dc2626":isSat?"#2563eb":"#374151";
-            const hasShift=!!d.shift;const att=d.att;const isApproved=att&&att.approved;
-            const timeStr=att?(att.start+"〜"+att.end):(hasShift?(d.shift.start+"〜"+d.shift.end):"ー");
-            return <div key={d.date} style={{display:"flex",alignItems:"center",padding:"8px 12px",borderBottom:"1px solid #f1f5f9",background:rowBg,gap:8}}>
+            const hasShift=!!d.shift;const att=d.att;const isApproved=att&&att.approved;const isAbsent=att&&att.absent;
+            const timeStr=isAbsent?"欠勤":att?(att.start+"〜"+att.end):(hasShift?(d.shift.start+"〜"+d.shift.end):"ー");
+            return <div key={d.date} style={{display:"flex",alignItems:"center",padding:"8px 12px",borderBottom:"1px solid #f1f5f9",background:isAbsent?"#fef2f2":rowBg,gap:8}}>
               <div style={{width:30,textAlign:"center"}}>
                 <div style={{fontSize:14,fontWeight:800,color:dayColor}}>{d.day}</div>
                 <div style={{fontSize:9,color:dayColor,fontWeight:600}}>{WK[d.dow]}</div>
               </div>
-              <div style={{flex:1,fontSize:13,color:hasShift?"#374151":"#d1d5db",fontWeight:hasShift?600:400}}>{timeStr}</div>
+              <div style={{flex:1,fontSize:13,color:isAbsent?"#dc2626":hasShift?"#374151":"#d1d5db",fontWeight:hasShift?600:400}}>{timeStr}</div>
               {hasShift&&<div style={{display:"flex",gap:6}}>
-                {isApproved?
+                {isAbsent&&<span style={{padding:"4px 8px",borderRadius:6,background:"#dc2626",color:"#fff",fontSize:10,fontWeight:700}}>欠勤</span>}
+                {!isAbsent&&(isApproved?
                   <span style={{padding:"4px 10px",borderRadius:6,background:"#059669",color:"#fff",fontSize:10,fontWeight:700}}>承認</span>:
                   <button onClick={()=>approve(d.date,selStaff)} style={{padding:"4px 10px",borderRadius:6,background:"#dcfce7",color:"#059669",border:"1px solid #bbf7d0",fontSize:10,fontWeight:700,cursor:"pointer"}}>承認</button>
-                }
-                <button onClick={()=>setEditDay({date:d.date,name:selStaff,start:att?.start||d.shift.start||"09:00",end:att?.end||d.shift.end||"18:00",memo:att?.memo||""})} style={{padding:"4px 10px",borderRadius:6,background:"#f1f5f9",color:"#64748b",border:"1px solid #e2e8f0",fontSize:10,fontWeight:700,cursor:"pointer"}}>編集</button>
+                )}
+                <button onClick={()=>setEditDay({date:d.date,name:selStaff,start:att?.start||d.shift.start||"09:00",end:att?.end||d.shift.end||"18:00",memo:att?.memo||"",absent:att?.absent||false})} style={{padding:"4px 10px",borderRadius:6,background:"#f1f5f9",color:"#64748b",border:"1px solid #e2e8f0",fontSize:10,fontWeight:700,cursor:"pointer"}}>編集</button>
               </div>}
             </div>;
           })}
@@ -1675,7 +1677,7 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
               <span style={{fontSize:14,fontWeight:800}}>{s.name}</span>
               <span style={{fontSize:10,fontWeight:700,padding:"2px 10px",borderRadius:12,background:isP?"#fef3c7":"#dbeafe",color:isP?"#92400e":"#1d4ed8"}}>{s.type}</span>
             </div>
-            <span style={{fontSize:11,color:"#64748b"}}>{d.actualDays}日 / {d.actualHours.toFixed(1)}h</span>
+            <span style={{fontSize:11,color:"#64748b"}}>{d.actualDays}日 / {d.actualHours.toFixed(1)}h{d.absentDays>0?<span style={{color:"#dc2626",fontWeight:700}}> (欠勤{d.absentDays})</span>:""}</span>
           </div>
           <div style={{fontSize:13}}>
             {isP?<>
@@ -1706,14 +1708,27 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
     {/* 編集モーダル */}
     {editDay&&<div className="modal-overlay" onClick={()=>setEditDay(null)}><div className="modal-box" style={{maxWidth:320,padding:20}} onClick={e=>e.stopPropagation()}>
       <h4 style={{fontSize:14,fontWeight:800,margin:"0 0 14px"}}>{editDay.name} — {fmtD(editDay.date)}</h4>
-      <div style={{marginBottom:10}}>
-        <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:4}}>開始時間</label>
-        <input type="time" value={editDay.start} onChange={e=>setEditDay(p=>({...p,start:e.target.value}))} style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"1px solid #e2e8f0",fontSize:14,boxSizing:"border-box"}}/>
+      {/* 欠勤チェック */}
+      <div style={{marginBottom:14}}>
+        <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",padding:"10px 12px",borderRadius:10,border:editDay.absent?"2px solid #dc2626":"1px solid #e2e8f0",background:editDay.absent?"#fef2f2":"#fff"}}>
+          <input type="checkbox" checked={!!editDay.absent} onChange={e=>setEditDay(p=>({...p,absent:e.target.checked}))} style={{width:18,height:18,accentColor:"#dc2626"}}/>
+          <div>
+            <div style={{fontSize:13,fontWeight:700,color:editDay.absent?"#dc2626":"#374151"}}>欠勤</div>
+            <div style={{fontSize:10,color:"#94a3b8"}}>出勤カウント0・時間0扱い</div>
+          </div>
+        </label>
       </div>
-      <div style={{marginBottom:10}}>
-        <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:4}}>終了時間</label>
-        <input type="time" value={editDay.end} onChange={e=>setEditDay(p=>({...p,end:e.target.value}))} style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"1px solid #e2e8f0",fontSize:14,boxSizing:"border-box"}}/>
-      </div>
+      {/* 時間入力（欠勤でない場合のみ） */}
+      {!editDay.absent&&<>
+        <div style={{marginBottom:10}}>
+          <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:4}}>開始時間</label>
+          <input type="time" value={editDay.start} onChange={e=>setEditDay(p=>({...p,start:e.target.value}))} style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"1px solid #e2e8f0",fontSize:14,boxSizing:"border-box"}}/>
+        </div>
+        <div style={{marginBottom:10}}>
+          <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:4}}>終了時間</label>
+          <input type="time" value={editDay.end} onChange={e=>setEditDay(p=>({...p,end:e.target.value}))} style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"1px solid #e2e8f0",fontSize:14,boxSizing:"border-box"}}/>
+        </div>
+      </>}
       <div style={{marginBottom:14}}>
         <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:4}}>メモ</label>
         <input value={editDay.memo||""} onChange={e=>setEditDay(p=>({...p,memo:e.target.value}))} placeholder="備考" style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"1px solid #e2e8f0",fontSize:13,boxSizing:"border-box"}}/>
@@ -3862,14 +3877,14 @@ function ParkingManager({masterVehicles}){
     return()=>{document.removeEventListener("visibilitychange",onVis);clearInterval(timer);};
   },[]);
 
-  // 車両マスター同期: 車両タブで追加/削除された車両を駐車場にも反映
+  // 車両マスター同期: 車両タブで追加された車両を駐車場にも追加（削除は手動のみ）
+  const masterSyncedRef=useRef(false);
   useEffect(()=>{
     if(!masterVehicles||masterVehicles.length===0)return;
+    // 初回ロード時のみ追加同期（削除は行わない＝駐車場データを保護）
     setCars(prev=>{
       const existingIds=new Set(prev.map(c=>c.id));
-      const masterIds=new Set(masterVehicles.map(v=>v.name+"-"+v.no));
       let changed=false;let next=[...prev];
-      // 車両マスターに追加された車両を駐車場にも追加
       masterVehicles.forEach(v=>{
         const id=v.name+"-"+v.no;
         if(!existingIds.has(id)){
@@ -3878,14 +3893,6 @@ function ParkingManager({masterVehicles}){
           setWashTimeMap(p=>({...p,[id]:null}));
           changed=true;
         }
-      });
-      // 車両マスターから削除された車両を駐車場からも削除
-      next=next.filter(c=>{
-        if(masterIds.has(c.id))return true;
-        // マスターにない車両は削除（スポットからも解除）
-        setSpots(sp=>sp.map(s=>s.carId===c.id?{...s,carId:null}:s));
-        changed=true;
-        return false;
       });
       return changed?next:prev;
     });
@@ -5109,11 +5116,22 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v2026.03.13f";
+const APP_VERSION="v3.0.0";
+// バージョンチェック: 古いキャッシュを検出したら強制リロード
+(function(){
+  const stored=localStorage.getItem("spk_app_version");
+  if(stored&&stored!==APP_VERSION){
+    localStorage.setItem("spk_app_version",APP_VERSION);
+    console.log("[SPK] Version changed: "+stored+" → "+APP_VERSION+", reloading...");
+    location.reload(true);
+  }else{
+    localStorage.setItem("spk_app_version",APP_VERSION);
+  }
+})();
 function Root(){
   const[auth,setAuth]=useState(!SB_ENABLED||localStorage.getItem("spk_auth")==="1");
   if(!auth)return <LoginScreen onLogin={()=>setAuth(true)}/>;
-  return <><App/><div style={{position:"fixed",bottom:2,right:8,fontSize:9,color:"#94a3b8",zIndex:9999,pointerEvents:"none"}}>{APP_VERSION}</div></>;
+  return <><App/><div style={{position:"fixed",bottom:2,right:8,fontSize:11,color:"#64748b",fontWeight:700,zIndex:9999,pointerEvents:"none",background:"rgba(255,255,255,.8)",padding:"1px 6px",borderRadius:4}}>{APP_VERSION}</div></>;
 }
 ReactDOM.render(<Root/>,document.getElementById("root"));
 </script>
