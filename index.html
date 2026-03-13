@@ -187,6 +187,10 @@ const DB = {
   _staffLsSave(arr){try{localStorage.setItem(DB._staffLsKey,JSON.stringify(arr));}catch(e){}},
   _staffLsLoad(){try{const s=localStorage.getItem(DB._staffLsKey);return s?JSON.parse(s):null;}catch(e){return null;}},
   async fetchStaff(){if(!sb)return DB._staffLsLoad();const{data,error}=await sb.from("staff").select("*").order("sort_order");if(error){dbLog("fetchStaff",false,error.message);return DB._staffLsLoad();}dbLog("fetchStaff",true,data.length+"件");
+    // カラム存在チェック
+    const hasWageCols=data.length>0&&data[0].hasOwnProperty("hourly_wage");
+    DB._staffHasWageCols=hasWageCols;
+    if(!hasWageCols&&data.length>0)console.warn("[fetchStaff] ⚠️ staffテーブルにhourly_wageカラムなし");
     const dbStaff=(data||[]).map(s=>({name:s.name,type:s.type,memo:s.memo||"",hourlyWage:s.hourly_wage||0,transportCost:s.transport_cost||0,monthlySalary:s.monthly_salary||0}));
     // DB側にhourly_wage等カラムがない場合、localStorageの値をマージ→差異あればDBに自動プッシュ
     const lsStaff=DB._staffLsLoad();
@@ -201,9 +205,25 @@ const DB = {
     }
     DB._staffLsSave(dbStaff);
     // LSから補完したデータがあればDBに自動保存（他デバイスにも反映）
-    if(needPush){console.log("[staffSync] LS→DB push: wage data merged");DB.saveStaff(dbStaff).catch(e=>console.error("[staffSync]",e));}
+    if(needPush&&hasWageCols){console.log("[staffSync] LS→DB push: wage data merged");DB.saveStaff(dbStaff).catch(e=>console.error("[staffSync]",e));}
     return dbStaff;},
-  async saveStaff(arr){DB._staffLsSave(arr);if(!sb)return;const rows=arr.map((s,i)=>({name:s.name,type:s.type,memo:s.memo||"",sort_order:i,active:true,hourly_wage:s.hourlyWage||0,transport_cost:s.transportCost||0,monthly_salary:s.monthlySalary||0}));const{error}=await sb.from("staff").upsert(rows,{onConflict:"name"});if(error)dbLog("saveStaff",false,error.message);else dbLog("saveStaff",true,arr.length+"件保存");},
+  _staffHasWageCols:null, // null=未確認, true=あり, false=なし
+  async saveStaff(arr){DB._staffLsSave(arr);if(!sb)return;
+    const rows=arr.map((s,i)=>({name:s.name,type:s.type,memo:s.memo||"",sort_order:i,active:true,hourly_wage:s.hourlyWage||0,transport_cost:s.transportCost||0,monthly_salary:s.monthlySalary||0}));
+    const{error}=await sb.from("staff").upsert(rows,{onConflict:"name"});
+    if(error){
+      dbLog("saveStaff",false,error.message);
+      // カラム不在エラーの場合、給与カラムなしでリトライ
+      if(error.message&&(error.message.includes("hourly_wage")||error.message.includes("transport_cost")||error.message.includes("monthly_salary")||error.message.includes("column"))){
+        DB._staffHasWageCols=false;
+        console.warn("[saveStaff] 給与カラムなし→カラムなしで再保存");
+        const rows2=arr.map((s,i)=>({name:s.name,type:s.type,memo:s.memo||"",sort_order:i,active:true}));
+        const{error:e2}=await sb.from("staff").upsert(rows2,{onConflict:"name"});
+        if(e2)dbLog("saveStaff(retry)",false,e2.message);
+        else dbLog("saveStaff(retry)",true,arr.length+"件(給与カラムなし)");
+      }
+    }else{DB._staffHasWageCols=true;dbLog("saveStaff",true,arr.length+"件保存");}
+  },
   async deleteStaff(name){if(!sb)return;const{error}=await sb.from("staff").delete().eq("name",name);if(error)dbLog("deleteStaff",false,error.message);else dbLog("deleteStaff",true,name);},
   // --- 車両 ---
   async fetchVehicles(){if(!sb)return null;const{data,error}=await sb.from("vehicles").select("*");if(error){dbLog("fetchVehicles",false,error.message);return null;}dbLog("fetchVehicles",true,data.length+"件");return(data||[]).map(v=>({id:"v"+v.id,code:v.code,name:v.name,no:v.plate_no,type:v.type,seats:v.seats}));},
@@ -1590,7 +1610,24 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
   const cardS={background:"#fff",borderRadius:14,padding:16,border:"1px solid #e2e8f0",marginBottom:12,boxShadow:"0 1px 3px rgba(0,0,0,.05)"};
   const boxS=(bg)=>({background:bg||"#f0f9ff",borderRadius:10,padding:"10px 14px",textAlign:"center",flex:1});
 
+  // 給与カラム不在チェック
+  const wageColsMissing=DB._staffHasWageCols===false;
+
   return <div style={{maxWidth:640,margin:"0 auto"}}>
+    {/* 給与カラム不在の警告 */}
+    {wageColsMissing&&<div style={{background:"#fef2f2",border:"2px solid #dc2626",borderRadius:10,padding:12,marginBottom:12}}>
+      <div style={{fontSize:13,fontWeight:800,color:"#dc2626",marginBottom:4}}>⚠️ 給与データがDBに未設定</div>
+      <div style={{fontSize:11,color:"#991b1b",lineHeight:1.6}}>
+        Supabase staffテーブルに給与カラムがありません。<br/>
+        Supabase &gt; SQL Editor で以下を実行してください：
+      </div>
+      <div style={{background:"#1e293b",color:"#22d3ee",padding:8,borderRadius:6,fontSize:10,fontFamily:"monospace",marginTop:6,lineHeight:1.8,overflowX:"auto",whiteSpace:"pre"}}>
+{`ALTER TABLE staff ADD COLUMN IF NOT EXISTS hourly_wage INTEGER DEFAULT 0;
+ALTER TABLE staff ADD COLUMN IF NOT EXISTS transport_cost INTEGER DEFAULT 0;
+ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
+      </div>
+      <div style={{fontSize:10,color:"#991b1b",marginTop:6}}>実行後にアプリをリロードすると給与データが自動同期されます。</div>
+    </div>}
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
       <h3 style={{fontSize:16,fontWeight:800,margin:0}}>給与計算</h3>
       <button onClick={forceSync} disabled={syncing} style={{padding:"4px 12px",borderRadius:8,fontSize:11,fontWeight:700,border:"1px solid #e2e8f0",background:syncing?"#f1f5f9":"#fff",color:syncing?"#94a3b8":"#2563eb",cursor:syncing?"wait":"pointer"}}>
@@ -5154,7 +5191,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.6.0";
+const APP_VERSION="v3.6.1";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
