@@ -4774,10 +4774,12 @@ function App(){
     // タブ復帰時に即時リフレッシュ
     const onVis=()=>{if(document.visibilityState==="visible")silentRefresh();};
     document.addEventListener("visibilitychange",onVis);
-    // 30秒ポーリング（Realtime切断時のフォールバック）
-    const timer=setInterval(()=>{if(document.visibilityState==="visible")silentRefresh();},15000);
-    return()=>{document.removeEventListener("visibilitychange",onVis);clearInterval(timer);};
-  },[silentRefresh]);
+    // Realtime接続時は60秒、切断時は10秒でポーリング
+    let timer=null;
+    const startPoll=()=>{if(timer)clearInterval(timer);const iv=sbConnected?60000:10000;timer=setInterval(()=>{if(document.visibilityState==="visible")silentRefresh();},iv);};
+    startPoll();
+    return()=>{document.removeEventListener("visibilitychange",onVis);if(timer)clearInterval(timer);};
+  },[silentRefresh,sbConnected]);
 
   // --- Supabase Realtime ---
   useEffect(()=>{
@@ -4835,7 +4837,14 @@ function App(){
       .on("postgres_changes",{event:"*",schema:"public",table:"attendance"},async()=>{
         try{const attDB=await DB.fetchAttendance();if(attDB&&Object.keys(attDB).length)setAttendance(attDB);}catch(e){}
       })
-      .subscribe((status)=>{setSbConnected(status==="SUBSCRIBED");});
+      .subscribe((status,err)=>{
+        console.log("[Realtime]",status,err||"");
+        setSbConnected(status==="SUBSCRIBED");
+        if(status==="CHANNEL_ERROR"||status==="TIMED_OUT"){
+          console.warn("[Realtime] 接続エラー→3秒後に再接続");
+          setTimeout(()=>{try{ch.subscribe();}catch(e){}},3000);
+        }
+      });
     return()=>{sb.removeChannel(ch);};
   },[]);
 
@@ -5191,7 +5200,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.6.1";
+const APP_VERSION="v3.6.2";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
