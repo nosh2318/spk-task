@@ -183,8 +183,8 @@ const DB = {
   },
   async deleteTasks(date){try{localStorage.removeItem(DB._lsKey(date));}catch(e){} if(!sb)return;const{error}=await sb.from("tasks").delete().eq("date",date);if(error)dbLog("deleteTasks",false,error.message);},
   async fetchTasksRange(fromDate,toDate){if(!sb)return[];const{data,error}=await sb.from("tasks").select("*").gte("date",fromDate).lte("date",toDate).order("date",{ascending:false}).order("sort_order");if(error){dbLog("fetchTasksRange",false,error.message);return[];}return(data||[]).map(r=>({...DB._fromDbTask(r),_date:r.date}));},
-  _toDbTask(t,date,i){return{_id:t._id,date:date,type:t.type||"",time:t.time||"",name:t.name||"",assignee:t.assignee||"",done:!!t.done,memo:t.memo||"",reservation_id:t.reservationId||"",ota:t.ota||"",tel:t.tel||"",mail:t.mail||"",assigned_vehicle:t.assignedVehicle||"",plate_no:t.plateNo||"",people:t.people||0,place:t.place||"",vehicle:t.vehicle||"",insurance:t.insurance||"",insurance_change:t.insuranceChange||"",flight:t.flight||"",return_date:t.returnDate||"",return_time:t.returnTime||"",return_type:t.returnType||"",col_place:t.colPlace||"",opt_b:!!t.opts?.b,opt_c:!!t.opts?.c,opt_j:!!t.opts?.j,opt_usb:!!t.opts?.usb,opt_parasol:!!t.opts?.parasol,yakkan:!!t.yakkan,line:!!t.line,payment:!!t.payment,sort_order:i,assignee_custom:!!t._assigneeCustom,time_changed:!!t._timeChanged,changed_json:JSON.stringify(t._changed||{})};},
-  _fromDbTask(d){const ch=(()=>{try{const p=JSON.parse(d.changed_json||"{}");return Object.keys(p).length?p:undefined;}catch(e){return undefined;}})();return{_id:d._id,type:d.type,time:d.time,name:d.name,assignee:d.assignee,done:d.done,memo:d.memo,reservationId:d.reservation_id,ota:d.ota,tel:d.tel,mail:d.mail,assignedVehicle:d.assigned_vehicle,plateNo:d.plate_no,people:d.people,place:d.place,vehicle:d.vehicle,insurance:d.insurance,insuranceChange:d.insurance_change,flight:d.flight,returnDate:norm(d.return_date),returnTime:d.return_time,returnType:d.return_type,colPlace:d.col_place,opts:{b:d.opt_b,c:d.opt_c,j:d.opt_j,usb:d.opt_usb,parasol:d.opt_parasol},yakkan:d.yakkan,line:d.line,payment:d.payment,_sortOrder:d.sort_order,_assigneeCustom:d.assignee_custom,_timeChanged:d.time_changed,_changed:ch};},
+  _toDbTask(t,date,i){return{_id:t._id,date:date,type:t.type||"",time:t.time||"",name:t.name||"",assignee:t.assignee||"",done:!!t.done,memo:t.memo||"",reservation_id:t.reservationId||"",ota:t.ota||"",tel:t.tel||"",mail:t.mail||"",assigned_vehicle:t.assignedVehicle||"",plate_no:t.plateNo||"",people:t.people||0,place:t.place||"",vehicle:t.vehicle||"",insurance:t.insurance||"",insurance_change:t.insuranceChange||"",flight:t.flight||"",return_date:t.returnDate||"",return_time:t.returnTime||"",return_type:t.returnType||"",col_place:t.colPlace||"",opt_b:!!t.opts?.b,opt_c:!!t.opts?.c,opt_j:!!t.opts?.j,opt_usb:!!t.opts?.usb,opt_parasol:!!t.opts?.parasol,yakkan:!!t.yakkan,line:!!t.line,payment:!!t.payment,sort_order:i,assignee_custom:!!t._assigneeCustom,time_changed:!!t._timeChanged,changed_json:JSON.stringify({...(t._changed||{}),_timeFromSheet:!!t._timeFromSheet})};},
+  _fromDbTask(d){const ch=(()=>{try{const p=JSON.parse(d.changed_json||"{}");return Object.keys(p).length?p:undefined;}catch(e){return undefined;}})();const tfs=ch&&ch._timeFromSheet;if(ch)delete ch._timeFromSheet;return{_id:d._id,type:d.type,time:d.time,name:d.name,assignee:d.assignee,done:d.done,memo:d.memo,reservationId:d.reservation_id,ota:d.ota,tel:d.tel,mail:d.mail,assignedVehicle:d.assigned_vehicle,plateNo:d.plate_no,people:d.people,place:d.place,vehicle:d.vehicle,insurance:d.insurance,insuranceChange:d.insurance_change,flight:d.flight,returnDate:norm(d.return_date),returnTime:d.return_time,returnType:d.return_type,colPlace:d.col_place,opts:{b:d.opt_b,c:d.opt_c,j:d.opt_j,usb:d.opt_usb,parasol:d.opt_parasol},yakkan:d.yakkan,line:d.line,payment:d.payment,_sortOrder:d.sort_order,_assigneeCustom:d.assignee_custom,_timeChanged:d.time_changed,_changed:ch,_timeFromSheet:!!tfs};},
   // --- スタッフ ---
   _staffLsKey:"spk_staff_backup",
   _staffLsSave(arr){try{localStorage.setItem(DB._staffLsKey,JSON.stringify(arr));}catch(e){}},
@@ -614,6 +614,42 @@ async function fetchPlaceData(targetResIds){
       if(col&&!result[rid].colPlace)result[rid].colPlace=col;
     }else{
       result[rid]={delPlace:del,colPlace:col};
+    }
+  });
+  return result;
+}
+
+/* ===== スプレッドシートからDEL/COL時間データ取得 ===== */
+async function fetchTimeData(targetResIds){
+  const resp=await fetch(PLACE_SHEET_CSV);
+  if(!resp.ok)throw new Error("CSV取得失敗: "+resp.status);
+  const text=await resp.text();
+  const rows=parsePlaceCSV(text);
+  if(rows.length<2)throw new Error("データが空です");
+  const header=rows[0];
+  let resCol=-1;
+  header.forEach((h,i)=>{if(h.includes("予約番号")||h.includes("予約ID")||h.includes("Reservation"))resCol=i;});
+  if(resCol<0){
+    for(let ci=0;ci<header.length;ci++){
+      const sample=rows.slice(1,Math.min(6,rows.length)).map(r=>r[ci]||"");
+      if(sample.some(s=>/^[A-Z0-9]{8,}$/.test(s.trim()))){resCol=ci;break;}
+    }
+  }
+  if(resCol<0)throw new Error("予約番号の列が見つかりません");
+  const delTimeCol=7;  // H列(index7) = DEL時間
+  const colTimeCol=10; // K列(index10) = COL時間
+  const targetSet=new Set(targetResIds);
+  const result={};
+  rows.slice(1).forEach(r=>{
+    const rid=(r[resCol]||"").trim();
+    if(!rid||!targetSet.has(rid))return;
+    const delT=(r[delTimeCol]||"").trim();
+    const colT=(r[colTimeCol]||"").trim();
+    if(result[rid]){
+      if(delT&&!result[rid].delTime)result[rid].delTime=delT;
+      if(colT&&!result[rid].colTime)result[rid].colTime=colT;
+    }else{
+      result[rid]={delTime:delT,colTime:colT};
     }
   });
   return result;
@@ -2986,6 +3022,43 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
   const WK=["日","月","火","水","木","金","土"];
   const dayButtons=useMemo(()=>{const arr=[];for(let i=0;i<=14;i++){const d=dOff(today,i);const ds=shifts[d]||[];const tc=reservations.filter(t=>sD(t.lendDate,d)||sD(t.returnDate,d)).length;if(ds.length>0||tc>0||i<=2)arr.push({i,d,staff:ds.length,tc});}return arr;},[today,shifts,reservations]);
   const CONTENT_OPTIONS=["DEL","COL","洗車","送り","鍵入れ","回収","事前駐車","持ち帰り","MTG","その他"];
+  const[timeLoading,setTimeLoading]=useState(false);
+  const updateTimes=async()=>{
+    const resIds=[...new Set(tasks.filter(t=>t.reservationId).map(t=>t.reservationId))];
+    if(!resIds.length){alert("予約がありません");return;}
+    setTimeLoading(true);
+    try{
+      const timeMap=await fetchTimeData(resIds);
+      const matched=Object.keys(timeMap).length;
+      if(!matched){setTimeLoading(false);alert("該当する予約番号がスプレッドシートに見つかりませんでした");return;}
+      selfUpdateRef.current=Date.now();
+      let updatedTasks;let updCount=0;
+      setTasks(prev=>{
+        updatedTasks=prev.map(t=>{
+          if(!t.reservationId||!timeMap[t.reservationId])return t;
+          const tm=timeMap[t.reservationId];
+          let newTime=null;
+          if(t.type==="DEL"&&tm.delTime)newTime=tm.delTime;
+          if(t.type==="COL"&&tm.colTime)newTime=tm.colTime;
+          if(!newTime)return t;
+          // 時間フォーマット正規化（"9:00"→"09:00"等）
+          const normalized=newTime.replace(/^(\d):/, "0$1:").replace(/：/g,":").slice(0,5);
+          if(normalized===t.time)return t;
+          updCount++;
+          const cf={...(t._changed||{}),time:true};
+          return{...t,time:normalized,_changed:cf,_timeFromSheet:true};
+        });
+        DB._lsSave(updatedTasks,selDate);
+        return updatedTasks;
+      });
+      pendingSaves.current++;setSaveStatus("saving");
+      await DB.upsertTasks(updatedTasks,selDate);
+      pendingSaves.current--;
+      setSaveStatus(DB._dbSaveOk?(pendingSaves.current>0?"saving":"ok"):"error");
+      alert(`${matched}件中 ${updCount}件の時間を更新しました`);
+    }catch(e){alert("時間データ取得エラー: "+e.message);}
+    setTimeLoading(false);
+  };
   const[placeLoading,setPlaceLoading]=useState(false);
   const updatePlaces=async()=>{
     const resIds=[...new Set(tasks.filter(t=>t.reservationId).map(t=>t.reservationId))];
@@ -3059,6 +3132,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
         <span className="text-blue-200" style={{fontSize:10}}>{done}/{tasks.length}</span>
         <div style={{width:40,height:5,background:"#1e3a8a",borderRadius:4,overflow:"hidden"}}><div style={{height:"100%",background:"#4ade80",borderRadius:4,width:`${tasks.length?done/tasks.length*100:0}%`}}/></div>
         <button onClick={()=>{const newTask={_id:uid(),type:"その他",time:"",name:"",people:0,place:"",vehicle:"",insurance:"",flight:"",reservationId:"",ota:"",tel:"",mail:"",done:false,assignee:"",memo:"",assignedVehicle:"",plateNo:"",insuranceChange:"",opts:{b:false,c:false,j:false,usb:false,parasol:false},yakkan:false,line:false,payment:false,returnDate:"",returnTime:"",returnType:"",colPlace:"",manual:true};setTasks(ts=>[...ts,newTask]);}} className="px-2 py-1 bg-white text-blue-700 rounded text-xs font-bold shadow-sm">＋</button>
+        <button onClick={updateTimes} disabled={timeLoading} className="px-2 py-1 rounded text-xs font-bold shadow-sm" style={{background:timeLoading?"#94a3b8":"#f0abfc",color:"#701a75",whiteSpace:"nowrap",fontSize:10}}>{timeLoading?"...":"⏰時間"}</button>
         <button onClick={updatePlaces} disabled={placeLoading} className="px-2 py-1 rounded text-xs font-bold shadow-sm" style={{background:placeLoading?"#94a3b8":"#fbbf24",color:"#78350f",whiteSpace:"nowrap",fontSize:10}}>{placeLoading?"...":"📍場所"}</button>
         <button id="op-reload-btn" onClick={async e=>{const btn=e.currentTarget;btn.disabled=true;btn.textContent="⏳";selfUpdateRef.current=0;try{localStorage.removeItem(DB._lsKey(selDate));await loadTasks(selDate,true);}catch(ex){}btn.textContent="✅";btn.style.background="#d1fae5";setTimeout(()=>{btn.textContent="🔄";btn.style.background="#e0f2fe";btn.disabled=false;},1200);}} className="px-2 py-1 rounded text-xs font-bold shadow-sm" style={{background:"#e0f2fe",color:"#0369a1",whiteSpace:"nowrap",fontSize:10}}>🔄</button>
       </div>
@@ -3089,7 +3163,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
             const delTask=async()=>{if(!window.confirm("この行を削除しますか？"))return;setTasks(ts=>{const next=ts.filter(x=>x._id!==t._id);DB._lsSave(next,selDate);return next;});if(sb){sb.from("tasks").delete().eq("_id",t._id).then(()=>dbLog("delRow",true,t._id)).catch(e=>dbLog("delRow",false,e.message));}};
             return <tr key={t._id}><td style={{...cellS(0),textAlign:"center",padding:0}}><div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:0}}><button onClick={()=>moveRow(t._id,-1)} style={{background:"none",border:"none",cursor:"pointer",fontSize:8,color:"#94a3b8",lineHeight:1,padding:0}}>▲</button><button onClick={delTask} style={{background:"none",border:"none",cursor:"pointer",fontSize:9,color:"#ef4444",lineHeight:1,padding:0,fontWeight:700}}>×</button><button onClick={()=>moveRow(t._id,1)} style={{background:"none",border:"none",cursor:"pointer",fontSize:8,color:"#94a3b8",lineHeight:1,padding:0}}>▼</button></div></td><td style={cellS(1)}><input type="checkbox" checked={t.done} onChange={e=>upd(t._id,mark({...t,done:e.target.checked},"done"))} style={{width:12,height:12,accentColor:tm.c}}/></td>
               <td style={cellS(2,"assignee")}>{t._assigneeCustom?<input defaultValue={t.assignee||""} onBlur={e=>{const v=e.target.value.trim();if(!v){upd(t._id,mark({...t,_assigneeCustom:false,assignee:""},"assignee"));}else{upd(t._id,mark({...t,assignee:v,_assigneeCustom:false},"assignee"));}}} onKeyDown={e=>{if(e.key==="Enter"){e.target.blur();}}} autoFocus style={{border:"1px solid #3b82f6",background:"#eff6ff",fontSize:9,width:"100%",padding:"1px 3px",fontWeight:600,borderRadius:3,outline:"none"}} placeholder="名前を入力"/>:<select value={activeMembers.includes(t.assignee)?t.assignee:["乗り捨て","無人"].includes(t.assignee)?t.assignee:t.assignee?"__custom":""}  onChange={e=>{const v=e.target.value;if(v==="__other"){upd(t._id,mark({...t,_assigneeCustom:true,assignee:""},"assignee"));return;}if(v==="乗り捨て"||v==="無人"){upd(t._id,mark({...t,assignee:v,_assigneeCustom:false},"assignee"));return;}if(!window.confirm("担当を「"+(v||"未割当")+"」に変更\n本当に変更しますか？"))return;upd(t._id,mark({...t,assignee:v,_assigneeCustom:false},"assignee"));}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,color:t.assignee?"#111":"#ccc",fontWeight:600}}><option value="">-</option>{activeMembers.map(m=><option key={m}>{m}</option>)}<option value="乗り捨て">乗り捨て</option><option value="無人">無人</option><option value="__other">その他...</option>{t.assignee&&!activeMembers.includes(t.assignee)&&!["乗り捨て","無人"].includes(t.assignee)&&<option value="__custom">{t.assignee}</option>}</select>}</td>
-              <td style={cellS(3,"time")}><select value={t.time||""} onChange={e=>{const v=e.target.value;confirmUpd(t._id,mark({...t,time:v},"time"),`時間を「${v||"未設定"}」に変更`);}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,fontWeight:700,color:ch.time?"#92400e":"#1e293b"}}>{TIME_OPTS.map(o=><option key={o} value={o}>{o||"-"}</option>)}{t.time&&!TIME_OPTS.includes(t.time)&&<option value={t.time}>{t.time}</option>}</select></td>
+              <td style={cellS(3,"time")}><select value={t.time||""} onChange={e=>{const v=e.target.value;confirmUpd(t._id,mark({...t,time:v,_timeFromSheet:false},"time"),`時間を「${v||"未設定"}」に変更`);}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,fontWeight:700,color:t._timeFromSheet?"#dc2626":ch.time?"#92400e":"#1e293b"}}>{TIME_OPTS.map(o=><option key={o} value={o}>{o||"-"}</option>)}{t.time&&!TIME_OPTS.includes(t.time)&&<option value={t.time}>{t.time}</option>}</select></td>
               <td style={{...cellS(4,"type"),fontWeight:700,color:tm.c,fontSize:10,padding:"1px"}}><select value={t.type||"DEL"} onChange={e=>{const v=e.target.value;confirmUpd(t._id,mark({...t,type:v},"type"),`内容を「${v}」に変更`);}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,fontWeight:700,color:tm.c}}>{CONTENT_OPTIONS.map(opt=><option key={opt} value={opt}>{opt}</option>)}</select></td>
               <td style={{...cellS(5),fontWeight:600,color:"#0f172a"}}>{t.manual?<input value={t.name||""} onChange={e=>upd(t._id,{...t,name:e.target.value})} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0}} placeholder="-"/>:t.name}</td>
               <td style={{...cellS(6),textAlign:"center"}}>{isRep?<span style={{fontSize:10,color:"#7c3aed"}} title="リピーター顧客">✔</span>:""}</td>
@@ -5382,7 +5456,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.7.6";
+const APP_VERSION="v3.7.7";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
