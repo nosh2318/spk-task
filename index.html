@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>SPK タスク管理</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -1815,8 +1818,10 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
   },[dim,y,mo,bulkDows]);
   const applyBulk=()=>{
     if(bulkNames.length===0){alert("スタッフを選択してください");return;}
-    if(!window.confirm("一括登録を実行しますか？"))return;
+    const dowLabels=bulkDows.map(d=>WK[d]).join("・");
+    if(!window.confirm(`${bulkNames.join("・")} の ${dowLabels} に一括登録します。\n時間: ${bulkStart}〜${bulkEnd}\nよろしいですか？`))return;
     const next={...shifts};
+    let registered=0,skipped=0;
     bulkNames.forEach(bulkName=>{
       for(let d=1;d<=dim;d++){
         const ds=`${viewYM}-${String(d).padStart(2,"0")}`;
@@ -1824,48 +1829,56 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
         if(bulkDows.includes(dow)){
           const cur=next[ds]||[];
           const existing=cur.find(s=>s.name===bulkName);
-          if(existing&&!bulkOverwrite)continue;
+          if(existing&&!bulkOverwrite){skipped++;continue;}
           const type=staff.find(s=>s.name===bulkName)?.type||"正社員";
           const entry={name:bulkName,type,symbol:type==="正社員"?bulkSymbol:"",start:bulkStart,end:bulkEnd};
           if(existing&&bulkOverwrite){
-            next[ds]=cur.map(s=>s.name===bulkName?entry:s);
+            next[ds]=cur.map(s=>s.name===bulkName?entry:s);registered++;
           }else if(!existing){
-            next[ds]=[...cur,entry];
+            next[ds]=[...cur,entry];registered++;
           }
         }
       }
     });
     _onSC(next);setBulkMode(false);
+    alert(`✅ 一括登録完了\n登録: ${registered}件${skipped>0?`\nスキップ（既存）: ${skipped}件`:""}`);
   };
   const applyBulkDelete=()=>{
     if(bulkNames.length===0){alert("スタッフを選択してください");return;}
-    if(!window.confirm(`${bulkNames.join("・")}の${ymLabel(viewYM)}シフトを削除します。よろしいですか？`))return;
+    const dowLabels=bulkDows.map(d=>WK[d]).join("・");
+    if(!window.confirm(`${bulkNames.join("・")} の ${dowLabels} のシフトを削除します。よろしいですか？`))return;
     const next={...shifts};
+    let delCount=0;
     bulkNames.forEach(bulkName=>{
       for(let d=1;d<=dim;d++){
         const ds=`${viewYM}-${String(d).padStart(2,"0")}`;
         const dow=new Date(y,mo-1,d).getDay();
         if(bulkDows.includes(dow)){
           const cur=next[ds]||[];
+          const had=cur.some(s=>s.name===bulkName);
           next[ds]=cur.filter(s=>s.name!==bulkName);
-          DB.deleteShift(ds,bulkName);
+          if(had){DB.deleteShift(ds,bulkName);delCount++;}
         }
       }
     });
     _onSC(next);setBulkMode(false);
+    alert(`✅ 一括削除完了（${delCount}件削除）`);
   };
 
   // ③ 全スタッフ全シフト一括削除（月単位）
   const clearAllShifts=()=>{
-    if(!window.confirm(`${ymLabel(viewYM)}の全スタッフのシフトを全て削除します。\nこの操作は取り消せません。よろしいですか？`))return;
+    if(!window.confirm(`⚠️ ${ymLabel(viewYM)}の全スタッフのシフトを全て削除します。\nこの操作は取り消せません。よろしいですか？`))return;
+    if(!window.confirm(`本当に削除しますか？（2回目の確認）`))return;
     const next={...shifts};
+    let delCount=0;
     for(let d=1;d<=dim;d++){
       const ds=`${viewYM}-${String(d).padStart(2,"0")}`;
       const cur=next[ds]||[];
-      cur.forEach(s=>DB.deleteShift(ds,s.name));
+      cur.forEach(s=>{DB.deleteShift(ds,s.name);delCount++;});
       next[ds]=[];
     }
     _onSC(next);
+    alert(`✅ ${ymLabel(viewYM)}の全シフトを削除しました（${delCount}件）`);
   };
 
   const canPrev=viewYM>todayYM;const canNext=viewYM<maxYM;
@@ -4543,6 +4556,18 @@ function App(){
   const[sbConnected,setSbConnected]=useState(false);
   const[dbLoaded,setDbLoaded]=useState(!SB_ENABLED);
 
+  // 同期状態トラッキング: 各カテゴリの最終DB同期時刻 + ローカル最終変更時刻
+  const[syncStatus,setSyncStatus]=useState({
+    reservations:{dbTime:null,localTime:null,count:0,dbCount:0},
+    fleet:{dbTime:null,localTime:null},
+    staff:{dbTime:null,localTime:null,count:0,dbCount:0},
+    vehicles:{dbTime:null,localTime:null,count:0,dbCount:0},
+    shifts:{dbTime:null,localTime:null},
+    maintenance:{dbTime:null,localTime:null},
+  });
+  const markLocalChange=(cat)=>setSyncStatus(p=>({...p,[cat]:{...p[cat],localTime:Date.now()}}));
+  const markDbSync=(cat,extra={})=>setSyncStatus(p=>({...p,[cat]:{...p[cat],dbTime:Date.now(),...extra}}));
+
   // --- Supabase 初期ロード ---
   useEffect(()=>{
     if(!SB_ENABLED)return;
@@ -4601,6 +4626,16 @@ function App(){
         if(chk.error)console.error("[HM] car_dataテーブルが存在しないか、RLSでブロックされています:",chk.error.message);
       }catch(e){console.error("[HM] table check error:",e);}
       setDbLoaded(true);
+      // 初期ロード完了 → 全カテゴリ同期済み
+      const now=Date.now();
+      setSyncStatus({
+        reservations:{dbTime:now,localTime:null,count:0,dbCount:0},
+        fleet:{dbTime:now,localTime:null},
+        staff:{dbTime:now,localTime:null,count:0,dbCount:0},
+        vehicles:{dbTime:now,localTime:null,count:0,dbCount:0},
+        shifts:{dbTime:now,localTime:null},
+        maintenance:{dbTime:now,localTime:null},
+      });
     })();
   },[]);
 
@@ -4623,6 +4658,16 @@ function App(){
       if(shDB)setShifts(shDB);
       if(mtDB)setMaintenance(mtDB);
       try{await hmReload();}catch(e){}
+      // 全カテゴリ同期完了
+      const now=Date.now();
+      setSyncStatus({
+        reservations:{dbTime:now,localTime:null,count:useRes.length,dbCount:useRes.length},
+        fleet:{dbTime:now,localTime:null},
+        staff:{dbTime:now,localTime:null,count:stDB?stDB.length:0,dbCount:stDB?stDB.length:0},
+        vehicles:{dbTime:now,localTime:null,count:vhDB?vhDB.length:0,dbCount:vhDB?vhDB.length:0},
+        shifts:{dbTime:now,localTime:null},
+        maintenance:{dbTime:now,localTime:null},
+      });
     }catch(e){console.error("reload error:",e);}
     setReloading(2);
     setTimeout(()=>setReloading(0),1200);
@@ -4645,6 +4690,16 @@ function App(){
       if(mtDB&&mtDB.length)setMaintenance(mtDB);
       try{const attDB=await DB.fetchAttendance();if(attDB&&Object.keys(attDB).length)setAttendance(attDB);}catch(e){}
       try{await hmReload();}catch(e){}
+      // 同期ステータス更新
+      const now=Date.now();
+      setSyncStatus(p=>({...p,
+        reservations:{dbTime:now,localTime:p.reservations.localTime,count:data.length,dbCount:useRes.length},
+        fleet:{dbTime:now,localTime:p.fleet.localTime},
+        staff:{dbTime:now,localTime:p.staff.localTime,count:staff.length,dbCount:stDB?stDB.length:0},
+        vehicles:{dbTime:now,localTime:p.vehicles.localTime,count:vehicles.length,dbCount:vhDB?vhDB.length:0},
+        shifts:{dbTime:now,localTime:p.shifts.localTime},
+        maintenance:{dbTime:now,localTime:p.maintenance.localTime},
+      }));
     }catch(e){console.error("[silentRefresh]",e);}
   },[reloading]);
   useEffect(()=>{
@@ -4662,14 +4717,13 @@ function App(){
     if(!sb)return;
     const ch=sb.channel("spk-realtime")
       .on("postgres_changes",{event:"*",schema:"public",table:"reservations"},payload=>{
-        if(importingRef.current)return; // インポート中はRT更新をスキップ
+        if(importingRef.current)return;
         if(payload.eventType==="INSERT"||payload.eventType==="UPDATE"){
           const r=DB._fromDbRes(payload.new);
           setData(prev=>{
             const idx=prev.findIndex(x=>x.id===r.id);
             if(idx>=0){
               const n=[...prev];
-              // ★ DBからprice=0/nullが来ても、既存にpriceがあれば保持（DB型問題の防御）
               if(!r.price&&prev[idx].price){console.warn(`[RT] price保護: ${r.id} DB=0 → メモリ=${prev[idx].price}`);r.price=prev[idx].price;}
               n[idx]=r;return n;
             }
@@ -4678,25 +4732,28 @@ function App(){
         }else if(payload.eventType==="DELETE"){
           setData(prev=>prev.filter(x=>x.id!==payload.old.id));
         }
+        markDbSync("reservations");
       })
       .on("postgres_changes",{event:"*",schema:"public",table:"fleet"},payload=>{
-        if(importingRef.current)return; // インポート中はRT更新をスキップ
+        if(importingRef.current)return;
         if(payload.eventType==="DELETE"){
           setFleet(prev=>{const n={...prev};delete n[payload.old.reservation_id];return n;});
         }else{
           setFleet(prev=>({...prev,[payload.new.reservation_id]:payload.new.vehicle_code}));
         }
+        markDbSync("fleet");
       })
-      .on("postgres_changes",{event:"*",schema:"public",table:"tasks"},()=>{/* OPScreen handles its own refresh */})
+      .on("postgres_changes",{event:"*",schema:"public",table:"tasks"},()=>{})
       .on("postgres_changes",{event:"*",schema:"public",table:"shifts"},payload=>{
         const s=payload.new;if(!s)return;
         setShifts(prev=>{const n={...prev};if(!n[s.date])n[s.date]=[];const arr=n[s.date].filter(x=>x.name!==s.staff_name);arr.push({name:s.staff_name,symbol:s.symbol,start:s.start_time,end:s.end_time,memo:s.memo});n[s.date]=arr;return{...n};});
+        markDbSync("shifts");
       })
       .on("postgres_changes",{event:"*",schema:"public",table:"staff"},async()=>{
-        const st=await DB.fetchStaff();if(st&&st.length)setStaff(st);
+        const st=await DB.fetchStaff();if(st&&st.length)setStaff(st);markDbSync("staff");
       })
       .on("postgres_changes",{event:"*",schema:"public",table:"vehicles"},async()=>{
-        const vh=await DB.fetchVehicles();if(vh&&vh.length)setVehicles(vh);
+        const vh=await DB.fetchVehicles();if(vh&&vh.length)setVehicles(vh);markDbSync("vehicles");
       })
       .subscribe((status)=>{setSbConnected(status==="SUBSCRIBED");});
     return()=>{sb.removeChannel(ch);};
@@ -4705,23 +4762,23 @@ function App(){
   // --- Supabase連携ラッパー（DB呼び出しをsetState外で実行）---
   const setStaffSync=useCallback((fn)=>{
     const next=typeof fn==="function"?fn(staff):fn;
-    setStaff(next);
-    DB.saveStaff(next).catch(e=>console.error("saveStaff error:",e));
+    setStaff(next);markLocalChange("staff");
+    DB.saveStaff(next).then(()=>markDbSync("staff")).catch(e=>console.error("saveStaff error:",e));
   },[staff]);
   const setVehiclesSync=useCallback((fn)=>{
     const next=typeof fn==="function"?fn(vehicles):fn;
-    setVehicles(next);
-    DB.saveVehicles(next).catch(e=>console.error("saveVehicles error:",e));
+    setVehicles(next);markLocalChange("vehicles");
+    DB.saveVehicles(next).then(()=>markDbSync("vehicles")).catch(e=>console.error("saveVehicles error:",e));
   },[vehicles]);
   const setShiftsSync=useCallback((fn)=>{
     const next=typeof fn==="function"?fn(shifts):fn;
-    setShifts(next);
+    setShifts(next);markLocalChange("shifts");
   },[shifts]);
   const fleetRefApp=React.useRef(fleet);fleetRefApp.current=fleet;
   const setFleetSync=useCallback((nextFleet)=>{
     const resolved=typeof nextFleet==="function"?nextFleet(fleetRefApp.current):nextFleet;
-    setFleet(resolved);
-    DB.upsertFleet(resolved).catch(e=>console.error("upsertFleet error:",e));
+    setFleet(resolved);markLocalChange("fleet");
+    DB.upsertFleet(resolved).then(()=>markDbSync("fleet")).catch(e=>console.error("upsertFleet error:",e));
   },[fleet]);
 
   // 配車変更 + OPシートタスク同時更新
@@ -4951,8 +5008,59 @@ function App(){
                   <span style={{color:"#fff",fontWeight:900,fontSize:24}}>S</span>
                 </div>
                 <div style={{fontSize:20,fontWeight:900,color:"#1e293b"}}>SPK タスク管理</div>
-                <div style={{fontSize:12,color:"#94a3b8",marginTop:2}}>{data.length>0?data.length+"件の予約データ":"データ未読込"}{SB_ENABLED&&sbConnected?" ・ 🟢 同期中":""}</div>
+                <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>{APP_VERSION} ・ {data.length>0?data.length+"件の予約データ":"データ未読込"}{SB_ENABLED&&sbConnected?" ・ 🟢 同期中":SB_ENABLED?" ・ 🔴 未接続":""}</div>
               </div>
+              {/* 同期ステータスパネル */}
+              {SB_ENABLED&&(()=>{
+                const now=Date.now();
+                const cats=[
+                  {key:"reservations",label:"予約",ico:"📁",localCount:data.length},
+                  {key:"fleet",label:"配車",ico:"🚗"},
+                  {key:"staff",label:"スタッフ",ico:"👥",localCount:staff.length},
+                  {key:"vehicles",label:"車両",ico:"🔧",localCount:vehicles.length},
+                  {key:"shifts",label:"出勤簿",ico:"📅"},
+                  {key:"maintenance",label:"整備",ico:"🔩"},
+                ];
+                const getStatus=(cat)=>{
+                  const s=syncStatus[cat.key];
+                  if(!s||!s.dbTime)return{status:"unknown",label:"未同期",color:"#94a3b8",bg:"#f1f5f9"};
+                  const age=now-s.dbTime;
+                  const hasUnsaved=s.localTime&&s.localTime>s.dbTime;
+                  if(hasUnsaved)return{status:"unsaved",label:"未保存あり",color:"#dc2626",bg:"#fef2f2"};
+                  if(!sbConnected&&age>60000)return{status:"stale",label:Math.floor(age/60000)+"分前",color:"#f59e0b",bg:"#fffbeb"};
+                  if(age<5000)return{status:"fresh",label:"同期済",color:"#059669",bg:"#f0fdf4"};
+                  if(age<60000)return{status:"ok",label:Math.floor(age/1000)+"秒前",color:"#059669",bg:"#f0fdf4"};
+                  if(age<300000)return{status:"ok",label:Math.floor(age/60000)+"分前",color:"#64748b",bg:"#f8fafc"};
+                  return{status:"old",label:Math.floor(age/60000)+"分前",color:"#f59e0b",bg:"#fffbeb"};
+                };
+                const hasIssue=cats.some(c=>{const st=getStatus(c);return st.status==="unsaved"||st.status==="stale"||st.status==="unknown";});
+                return <div style={{marginBottom:16,padding:"10px 14px",borderRadius:12,border:"1px solid "+(hasIssue?"#fde68a":"#d1fae5"),background:hasIssue?"#fffbeb":"#f0fdf4"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                    <div style={{fontSize:11,fontWeight:700,color:hasIssue?"#92400e":"#166534"}}>
+                      {hasIssue?"⚠️ 同期状態に注意":"✅ 全カテゴリ同期済み"}
+                    </div>
+                    <button onClick={reloadAll} disabled={reloading===1} style={{padding:"4px 12px",borderRadius:8,border:"1px solid #d1d5db",background:"#fff",fontSize:11,fontWeight:600,color:"#374151",cursor:reloading===1?"wait":"pointer"}}>
+                      {reloading===1?"同期中...":"🔄 今すぐ同期"}
+                    </button>
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6}}>
+                    {cats.map(cat=>{
+                      const st=getStatus(cat);
+                      return <div key={cat.key} style={{display:"flex",alignItems:"center",gap:6,padding:"6px 8px",borderRadius:8,background:st.bg,border:"1px solid "+st.color+"30"}}>
+                        <span style={{fontSize:14}}>{cat.ico}</span>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:10,fontWeight:700,color:"#374151"}}>{cat.label}</div>
+                          <div style={{fontSize:9,color:st.color,fontWeight:600}}>{st.label}</div>
+                        </div>
+                        <div style={{width:8,height:8,borderRadius:4,background:st.status==="fresh"||st.status==="ok"?"#22c55e":st.status==="unsaved"?"#ef4444":st.status==="stale"?"#f59e0b":"#94a3b8",flexShrink:0}}></div>
+                      </div>;
+                    })}
+                  </div>
+                  {!sbConnected&&<div style={{marginTop:8,padding:"6px 10px",borderRadius:8,background:"#fef2f2",border:"1px solid #fecaca",fontSize:10,color:"#dc2626",fontWeight:600}}>
+                    🔴 リアルタイム接続が切断されています。他端末の変更がすぐに反映されない可能性があります。「今すぐ同期」で最新データを取得してください。
+                  </div>}
+                </div>;
+              })()}
               {data.length>0&&<div style={{display:"flex",gap:8,marginBottom:16,justifyContent:"center",flexWrap:"wrap"}}>
                 <button onClick={()=>setShowOP(true)} style={{padding:"10px 20px",borderRadius:12,border:"none",cursor:"pointer",background:"linear-gradient(135deg,#1e40af,#2563eb)",color:"#fff",fontSize:13,fontWeight:700,boxShadow:"0 2px 8px rgba(37,99,235,.3)"}}>📋 OPシートを開く</button>
               </div>}
@@ -5001,7 +5109,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v2026.03.13d";
+const APP_VERSION="v2026.03.13f";
 function Root(){
   const[auth,setAuth]=useState(!SB_ENABLED||localStorage.getItem("spk_auth")==="1");
   if(!auth)return <LoginScreen onLogin={()=>setAuth(true)}/>;
