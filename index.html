@@ -1729,117 +1729,74 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
 function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
   const todayYM=toYM(today);const[viewYM,setViewYM]=useState(todayYM);const WK=["日","月","火","水","木","金","土"];
   const SYMBOLS=["●","希","公","有","出",""];
+  const SHIFT_OPTIONS=[
+    {s:"●",label:"出勤",color:"#2563eb",bg:"#D4EBFA"},
+    {s:"公",label:"公休",color:"#64748b",bg:"#E8E8E8"},
+    {s:"希",label:"希望休",color:"#f59e0b",bg:"#FFF3CD"},
+    {s:"有",label:"有給",color:"#059669",bg:"#D1FAE5"},
+    {s:"出",label:"出張",color:"#7c3aed",bg:"#D4EDDA"},
+  ];
   const maxYM=ymOff(todayYM,3);const dim=daysInMonth(viewYM);const[y,mo]=viewYM.split("-").map(Number);
   const getShift=(date)=>shifts[date]||[];
   const regularStaff=staff.filter(s=>s.type==="正社員");const partTimeStaff=staff.filter(s=>s.type==="アルバイト");
-  const[editTime,setEditTime]=useState(null);
-  const[selCells,setSelCells]=useState([]); // [{dateStr,name},...] 選択中セル群
-  const[clipData,setClipData]=useState(null); // コピーしたシンボル配列 ["●","希",...]
+  const[cellEdit,setCellEdit]=useState(null); // {dateStr,name,type,symbol,start,end,isNew}
   // Supabase同期付きシフト更新
   const updateShifts=(next)=>{onShiftsChange(next);if(sbSaveShift){Object.entries(next).forEach(([date,arr])=>{if(arr!==shifts[date]){
-    // 新しい配列のスタッフ名セット
     const newNames=new Set(arr.map(s=>s.name));
-    // 古い配列から消えたスタッフをDBから削除
     const prev=shifts[date]||[];
     prev.forEach(s=>{if(!newNames.has(s.name))DB.deleteShift(date,s.name);});
-    // 残りを保存
     arr.forEach(s=>sbSaveShift(date,s.name,s));
   }});}};
   const _onSC=updateShifts;
 
-  // Cmd+C / Cmd+V キーボードハンドラ
-  React.useEffect(()=>{
-    const handler=(e)=>{
-      const isMeta=e.metaKey||e.ctrlKey;
-      if(isMeta&&e.key==="c"&&selCells.length>0){
-        e.preventDefault();
-        // 選択セルのシンボルを日付順にコピー
-        const sorted=[...selCells].sort((a,b)=>a.dateStr.localeCompare(b.dateStr));
-        const syms=sorted.map(c=>{const sh=getShift(c.dateStr).find(s=>s.name===c.name);return sh?sh.symbol||"":"";});
-        setClipData({symbols:syms,name:sorted[0].name});
-      }
-      if(isMeta&&e.key==="v"&&clipData&&selCells.length>0){
-        e.preventDefault();
-        // 選択位置から右方向へペースト
-        const anchor=selCells[0];const startIdx=dates.indexOf(anchor.dateStr);
-        if(startIdx<0)return;
-        const next={...shifts};
-        clipData.symbols.forEach((sym,i)=>{
-          const ds=dates[startIdx+i];if(!ds)return;
-          const cur=next[ds]||[];const idx=cur.findIndex(s=>s.name===anchor.name);
-          if(idx>=0){const updated=[...cur];updated[idx]={...cur[idx],symbol:sym};next[ds]=updated;}
-          else{next[ds]=[...cur,{name:anchor.name,type:"正社員",symbol:sym,start:"09:00",end:"18:00"}];}
-        });
-        _onSC(next);
-      }
-      if(e.key==="Escape"){setSelCells([]);}
-    };
-    window.addEventListener("keydown",handler);
-    return()=>window.removeEventListener("keydown",handler);
-  },[selCells,clipData,shifts,dates]);
-
-  const handleCellClick=(e,dateStr,name,type)=>{
-    if(type==="正社員"){
-      if(e.shiftKey&&selCells.length>0&&selCells[0].name===name){
-        // Shift+クリック: 同じスタッフ行で範囲選択
-        const anchor=selCells[0].dateStr;
-        const i1=dates.indexOf(anchor),i2=dates.indexOf(dateStr);
-        const lo=Math.min(i1,i2),hi=Math.max(i1,i2);
-        setSelCells(dates.slice(lo,hi+1).map(ds=>({dateStr:ds,name})));
-        return;
-      }
-      if(e.ctrlKey||e.metaKey){
-        // Ctrl/Cmd+クリック: セル選択のみ（コピペ用）
-        setSelCells([{dateStr,name}]);
-        return;
-      }
-      // 通常クリック: シンボル切替（従来動作）
-      const cur=getShift(dateStr);const idx=cur.findIndex(s=>s.name===name);
-      if(idx>=0){
-        const shift=cur[idx];const symIdx=SYMBOLS.indexOf(shift.symbol||"");const nextSym=symIdx>=0?SYMBOLS[(symIdx+1)%SYMBOLS.length]:"●";
-        if(nextSym===""){
-          // 空シンボル = シフト削除（レコードをDBからも消す）
-          _onSC({...shifts,[dateStr]:cur.filter(s=>s.name!==name)});
-        }else{
-          const updated=[...cur];updated[idx]={...shift,symbol:nextSym};_onSC({...shifts,[dateStr]:updated});
-        }
-      }else{
-        const newShift={name,type,symbol:"●",start:"09:00",end:"18:00"};_onSC({...shifts,[dateStr]:[...cur,newShift]});
-      }
-      // クリックしたセルも選択状態に（コピペ用）
-      setSelCells([{dateStr,name}]);
-      return;
-    }
-    // アルバイト
-    const cur=getShift(dateStr);const idx=cur.findIndex(s=>s.name===name);
-    if(idx>=0){
-      _onSC({...shifts,[dateStr]:cur.filter(s=>s.name!==name)});
+  // セルタップ → 編集モーダル表示
+  const handleCellClick=(dateStr,name,type)=>{
+    const cur=getShift(dateStr);const existing=cur.find(s=>s.name===name);
+    if(existing){
+      setCellEdit({dateStr,name,type,symbol:existing.symbol||"●",start:existing.start||"09:00",end:existing.end||"18:00",isNew:false});
     }else{
-      const newShift={name,type,symbol:"",start:"09:00",end:"18:00"};_onSC({...shifts,[dateStr]:[...cur,newShift]});
+      setCellEdit({dateStr,name,type,symbol:type==="正社員"?"●":"",start:"09:00",end:"18:00",isNew:true});
     }
   };
-  const isCellSelected=(ds,name)=>selCells.some(c=>c.dateStr===ds&&c.name===name);
 
-  const handleTimeChange=(dateStr,name,startTime,endTime)=>{
-    const cur=getShift(dateStr);const idx=cur.findIndex(s=>s.name===name);
-    if(idx>=0){const updated=[...cur];updated[idx]={...cur[idx],start:startTime,end:endTime};_onSC({...shifts,[dateStr]:updated});}
+  // セル編集保存
+  const saveCellEdit=()=>{
+    if(!cellEdit)return;
+    if(!window.confirm("保存を実行しますか？"))return;
+    const{dateStr,name,type,symbol,start,end,isNew}=cellEdit;
+    const cur=getShift(dateStr);
+    const entry={name,type,symbol:type==="正社員"?symbol:"",start,end};
+    if(isNew){
+      _onSC({...shifts,[dateStr]:[...cur,entry]});
+    }else{
+      _onSC({...shifts,[dateStr]:cur.map(s=>s.name===name?entry:s)});
+    }
+    setCellEdit(null);
   };
 
-  const[bulkMode,setBulkMode]=useState(false); // "set"|"delete"|false
+  // セル削除
+  const deleteCellEdit=()=>{
+    if(!cellEdit)return;
+    if(!window.confirm("削除を実行しますか？"))return;
+    const{dateStr,name}=cellEdit;
+    const cur=getShift(dateStr);
+    _onSC({...shifts,[dateStr]:cur.filter(s=>s.name!==name)});
+    DB.deleteShift(dateStr,name);
+    setCellEdit(null);
+  };
+
+  const[bulkMode,setBulkMode]=useState(false);
   const[bulkNames,setBulkNames]=useState([]);
   const[bulkDows,setBulkDows]=useState([1,2,3,4,5]);
   const[bulkStart,setBulkStart]=useState("09:00");
   const[bulkEnd,setBulkEnd]=useState("18:00");
   const[bulkOverwrite,setBulkOverwrite]=useState(false);
   const[bulkSymbol,setBulkSymbol]=useState("●");
-  // 対象日数計算
   const bulkTargetDays=useMemo(()=>{
     let count=0;
     for(let d=1;d<=dim;d++){const dow=new Date(y,mo-1,d).getDay();if(bulkDows.includes(dow))count++;}
     return count;
   },[dim,y,mo,bulkDows]);
-  const bulkTotalEntries=bulkTargetDays*bulkNames.length;
-  const toggleBulkName=(name)=>{setBulkNames(p=>p.includes(name)?p.filter(n=>n!==name):[...p,name]);};
   const applyBulk=()=>{
     if(bulkNames.length===0){alert("スタッフを選択してください");return;}
     if(!window.confirm("一括登録を実行しますか？"))return;
@@ -1924,6 +1881,33 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
 
   const dates=[];for(let d=1;d<=dim;d++)dates.push(`${viewYM}-${String(d).padStart(2,"0")}`);
 
+  // セル表示内容を取得
+  const getCellDisplay=(shift,type)=>{
+    if(!shift)return null;
+    if(type==="正社員"){
+      return shift.symbol||"";
+    }
+    // アルバイト: 時間を短縮表示
+    if(shift.start&&shift.end){
+      const s=shift.start.replace(/^0/,"");const e=shift.end.replace(/^0/,"");
+      return <span style={{fontSize:7,lineHeight:"1.1"}}>{s}<br/>{e}</span>;
+    }
+    return "";
+  };
+
+  // セル背景色
+  const getCellBg=(shift,dow)=>{
+    const baseBg=dow===0?"#E0E0FF":dow===6?"#FFE0E0":"#FFF";
+    if(!shift)return baseBg;
+    if(shift.symbol==="●")return "#D4EBFA";
+    if(shift.symbol==="希")return "#FFF3CD";
+    if(shift.symbol==="公")return "#E8E8E8";
+    if(shift.symbol==="有")return "#D1FAE5";
+    if(shift.symbol==="出")return "#D4EDDA";
+    if(shift.start&&shift.end)return "#FFF9E6";
+    return baseBg;
+  };
+
   return <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
     <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between flex-wrap gap-2" style={{background:"#D2B48C"}}>
       <div className="flex items-center gap-2">
@@ -1935,18 +1919,15 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
       <div className="flex items-center gap-2">
         <button onClick={()=>{setBulkNames([]);setBulkDows([1,2,3,4,5]);setBulkMode("delete");}} className="px-3 py-1 rounded-lg text-xs font-semibold border" style={{background:"#dc2626",color:"#fff"}}>一括削除</button>
         <button onClick={()=>{setBulkNames([]);setBulkDows([1,2,3,4,5]);setBulkSymbol("●");setBulkStart("09:00");setBulkEnd("18:00");setBulkOverwrite(false);setBulkMode("set");}} className="px-3 py-1 rounded-lg text-xs font-semibold border" style={{background:"#2563eb",color:"#fff"}}>一括設定</button>
-        <label className="px-3 py-1 rounded-lg text-xs font-semibold border border-blue-300 bg-blue-50 text-blue-700 cursor-pointer hover:bg-blue-100"><span>+ 追加</span><input type="file" accept=".csv,.txt" className="hidden" onChange={handleCSVUpload}/></label>
+        <label className="px-3 py-1 rounded-lg text-xs font-semibold border border-blue-300 bg-blue-50 text-blue-700 cursor-pointer hover:bg-blue-100"><span>CSV</span><input type="file" accept=".csv,.txt" className="hidden" onChange={handleCSVUpload}/></label>
       </div>
     </div>
-    {clipData&&<div className="px-4 py-1 border-b border-green-300 bg-green-50 flex items-center gap-2" style={{fontSize:10}}>
-      <span style={{color:"#166534"}}>📋 コピー中: <b>{clipData.symbols.map(s=>s||"空").join(" | ")}</b>（{clipData.symbols.length}日分） — セル選択して ⌘V</span>
-    </div>}
-    {bulkMode&&<div className="modal-overlay" onClick={()=>setBulkMode(false)}><div className="modal-box" style={{maxWidth:360,padding:24}} onClick={e=>e.stopPropagation()}>
+    {/* 一括モーダル */}
+    {bulkMode&&<div className="modal-overlay" onClick={()=>setBulkMode(false)}><div className="modal-box" style={{maxWidth:380,padding:24}} onClick={e=>e.stopPropagation()}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-        <h4 style={{fontSize:16,fontWeight:800,margin:0}}>{bulkMode==="delete"?"一括削除":"一括登録"}</h4>
+        <h4 style={{fontSize:16,fontWeight:800,margin:0}}>{bulkMode==="delete"?"一括削除":"一括設定"}</h4>
         <button onClick={()=>setBulkMode(false)} style={{background:"none",border:"none",fontSize:18,color:"#94a3b8",cursor:"pointer"}}>✕</button>
       </div>
-      {/* スタッフ選択（ドロップダウン） */}
       <div style={{marginBottom:14}}>
         <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:6}}>スタッフ</label>
         <select value={bulkNames[0]||""} onChange={e=>{const v=e.target.value;setBulkNames(v?[v]:[]);}} style={{width:"100%",padding:"10px 12px",borderRadius:8,border:"1px solid #e2e8f0",fontSize:14,background:"#fff"}}>
@@ -1954,9 +1935,8 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
           {staff.map(s=><option key={s.name} value={s.name}>{s.name} ({s.type})</option>)}
         </select>
       </div>
-      {/* 曜日選択 */}
       <div style={{marginBottom:14}}>
-        <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:6}}>曜日を選択</label>
+        <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:6}}>曜日</label>
         <div style={{display:"flex",gap:6}}>
           {WK.map((w,i)=>{const isSun=i===0;const isSat=i===6;return <button key={i} onClick={()=>setBulkDows(p=>p.includes(i)?p.filter(x=>x!==i):[...p,i])} style={{
             width:38,height:38,borderRadius:8,fontSize:13,fontWeight:700,border:"none",cursor:"pointer",transition:"all .15s",
@@ -1965,88 +1945,126 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
         </div>
       </div>
       {bulkMode==="set"&&<>
-        {/* シンボル選択（正社員のみ） */}
         {bulkNames.length>0&&staff.find(s=>s.name===bulkNames[0])?.type==="正社員"&&<div style={{marginBottom:14}}>
           <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:6}}>シフト種別</label>
-          <div style={{display:"flex",gap:6}}>
-            {[{s:"●",l:"出勤",c:"#2563eb"},{s:"希",l:"希望休",c:"#f59e0b"},{s:"公",l:"公休",c:"#64748b"},{s:"有",l:"有給",c:"#059669"},{s:"出",l:"出張",c:"#7c3aed"}].map(o=><button key={o.s} onClick={()=>setBulkSymbol(o.s)} style={{
-              padding:"6px 12px",borderRadius:8,fontSize:11,fontWeight:700,border:"2px solid",cursor:"pointer",
-              background:bulkSymbol===o.s?o.c:"#fff",color:bulkSymbol===o.s?"#fff":o.c,borderColor:bulkSymbol===o.s?o.c:"#e2e8f0"
-            }}>{o.s} {o.l}</button>)}
+          <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+            {SHIFT_OPTIONS.map(o=><button key={o.s} onClick={()=>setBulkSymbol(o.s)} style={{
+              padding:"6px 10px",borderRadius:8,fontSize:11,fontWeight:700,border:"2px solid",cursor:"pointer",
+              background:bulkSymbol===o.s?o.color:"#fff",color:bulkSymbol===o.s?"#fff":o.color,borderColor:bulkSymbol===o.s?o.color:"#e2e8f0"
+            }}>{o.s} {o.label}</button>)}
           </div>
         </div>}
-        {/* 開始・終了時間 */}
         <div style={{display:"flex",gap:12,marginBottom:14}}>
           <div style={{flex:1}}>
-            <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:4}}>開始時間</label>
+            <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:4}}>開始</label>
             <input type="time" value={bulkStart} onChange={e=>setBulkStart(e.target.value)} style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"1px solid #e2e8f0",fontSize:14}}/>
           </div>
           <div style={{flex:1}}>
-            <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:4}}>終了時間</label>
+            <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:4}}>終了</label>
             <input type="time" value={bulkEnd} onChange={e=>setBulkEnd(e.target.value)} style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"1px solid #e2e8f0",fontSize:14}}/>
           </div>
         </div>
-        {/* 上書きオプション */}
         <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:"#374151",marginBottom:16,cursor:"pointer"}}>
           <input type="checkbox" checked={bulkOverwrite} onChange={e=>setBulkOverwrite(e.target.checked)} style={{width:16,height:16}}/>
           既存シフトを上書き
         </label>
       </>}
-      {/* 対象日数 */}
       <div style={{textAlign:"center",padding:"8px 0",background:bulkMode==="delete"?"#fef2f2":"#f8fafc",borderRadius:8,marginBottom:14,fontSize:13,color:"#64748b"}}>
         対象: <span style={{fontWeight:900,color:bulkMode==="delete"?"#dc2626":"#1e293b",fontSize:16}}>{bulkTargetDays}</span> 日分
       </div>
-      {/* ボタン */}
       <div style={{display:"flex",gap:8}}>
         <button onClick={()=>setBulkMode(false)} style={{flex:"0 0 auto",padding:"10px 16px",borderRadius:10,border:"1px solid #e2e8f0",background:"#fff",fontSize:13,fontWeight:600,color:"#64748b",cursor:"pointer"}}>キャンセル</button>
         {bulkMode==="delete"?
           <button onClick={applyBulkDelete} disabled={bulkNames.length===0} style={{flex:1,padding:"10px 16px",borderRadius:10,border:"none",background:bulkNames.length>0?"#dc2626":"#94a3b8",fontSize:13,fontWeight:700,color:"#fff",cursor:bulkNames.length>0?"pointer":"not-allowed"}}>一括削除 ({bulkTargetDays}日)</button>:
-          <button onClick={applyBulk} disabled={bulkNames.length===0} style={{flex:1,padding:"10px 16px",borderRadius:10,border:"none",background:bulkNames.length>0?"#2563eb":"#94a3b8",fontSize:13,fontWeight:700,color:"#fff",cursor:bulkNames.length>0?"pointer":"not-allowed"}}>一括登録 ({bulkTargetDays}件)</button>
+          <button onClick={applyBulk} disabled={bulkNames.length===0} style={{flex:1,padding:"10px 16px",borderRadius:10,border:"none",background:bulkNames.length>0?"#2563eb":"#94a3b8",fontSize:13,fontWeight:700,color:"#fff",cursor:bulkNames.length>0?"pointer":"not-allowed"}}>一括設定 ({bulkTargetDays}件)</button>
         }
       </div>
     </div></div>}
-    <div className="shift-grid" style={{maxHeight:600,overflowX:"auto",overflowY:"auto",position:"relative"}}>
-      <table style={{borderCollapse:"collapse",fontSize:9,minWidth:"100%"}}>
+
+    {/* シフト表（改良版） */}
+    <div style={{maxHeight:600,overflowX:"auto",overflowY:"auto",position:"relative",WebkitOverflowScrolling:"touch"}}>
+      <table style={{borderCollapse:"collapse",fontSize:10,minWidth:"100%"}}>
         <thead>
-          <tr style={{background:"#D2B48C",position:"sticky",top:0,zIndex:2}}>
-            <th className="shift-col-header" style={{position:"sticky",left:0,zIndex:4,width:60,minWidth:60,padding:"4px 2px",textAlign:"center",fontWeight:700,borderRight:"1px solid #999"}}>Staff</th>
-            {dates.map(ds=>{const dt=new Date(ds);const dow=dt.getDay();const day=dt.getDate();const isToday=ds===today;const bgc=isToday?"#FFFF99":dow===0?"#E0E0FF":dow===6?"#FFE0E0":"#F5F5F5";return <th key={ds} style={{width:44,minWidth:44,padding:"2px 1px",textAlign:"center",fontWeight:600,fontSize:8,borderRight:"1px solid #999",borderBottom:"1px solid #999",background:bgc,border:isToday?"3px solid #FFD700":"1px solid #999"}}><div>{day}</div><div style={{fontSize:7}}>{WK[dow]}</div></th>;})}
+          <tr style={{background:"#D2B48C",position:"sticky",top:0,zIndex:3}}>
+            <th style={{position:"sticky",left:0,zIndex:5,width:72,minWidth:72,padding:"6px 4px",textAlign:"center",fontWeight:700,borderRight:"2px solid #b8976a",background:"#D2B48C",fontSize:10}}>名前</th>
+            {dates.map(ds=>{const dt=new Date(ds);const dow=dt.getDay();const day=dt.getDate();const isToday=ds===today;
+            const bgc=isToday?"#FFFF99":dow===0?"#fecaca":dow===6?"#bfdbfe":"#D2B48C";
+            return <th key={ds} style={{minWidth:42,width:42,padding:"4px 1px",textAlign:"center",fontWeight:700,fontSize:9,background:bgc,borderRight:"1px solid #b8976a",borderBottom:"1px solid #b8976a",boxShadow:isToday?"inset 0 0 0 2px #f59e0b":"none"}}>
+              <div style={{lineHeight:1.2}}>{day}</div>
+              <div style={{fontSize:8,color:dow===0?"#dc2626":dow===6?"#2563eb":"#78716c"}}>{WK[dow]}</div>
+            </th>;})}
           </tr>
         </thead>
         <tbody>
-          {regularStaff.map(staff=><tr key={staff.name}><td className="shift-col" style={{position:"sticky",left:0,zIndex:2,width:60,minWidth:60,padding:"2px 4px",fontWeight:600,fontSize:9,background:"#fff",borderRight:"1px solid #999",borderBottom:"1px solid #d1d5db"}}>{staff.name}<br/><span style={{fontSize:7,fontWeight:700,padding:"0 3px",borderRadius:3,background:"#dbeafe",color:"#1d4ed8"}}>社</span></td>{dates.map(ds=>{const shift=getShift(ds).find(s=>s.name===staff.name);const down=new Date(ds).getDay();const bgc=down===0?"#E0E0FF":down===6?"#FFE0E0":"#FFF";let cellBg=bgc;if(shift){if(shift.symbol==="●")cellBg="#D4EBFA";else if(shift.symbol==="希")cellBg="#FFF3CD";else if(shift.symbol==="公")cellBg="#E8E8E8";else if(shift.symbol==="有")cellBg="#D1FAE5";else if(shift.symbol==="出")cellBg="#D4EDDA";}const isSel=isCellSelected(ds,staff.name);return <td key={ds} onClick={e=>handleCellClick(e,ds,staff.name,"正社員")} style={{width:44,minWidth:44,padding:"1px",textAlign:"center",fontSize:9,fontWeight:600,background:isSel?"#bfdbfe":cellBg,borderRight:"1px solid #d1d5db",borderBottom:"1px solid #d1d5db",cursor:"pointer",outline:isSel?"2px solid #2563eb":"none",outlineOffset:isSel?"-2px":0}}>{shift?shift.symbol:""}</td>;})}</tr>)}
-          {partTimeStaff.map(staff=><tr key={staff.name}><td className="shift-col" style={{position:"sticky",left:0,zIndex:2,width:60,minWidth:60,padding:"2px 4px",fontWeight:600,fontSize:9,background:"#fff",borderRight:"1px solid #999",borderBottom:"1px solid #d1d5db"}}>{staff.name}<br/><span style={{fontSize:7,fontWeight:700,padding:"0 3px",borderRadius:3,background:"#fef3c7",color:"#92400e"}}>ア</span></td>{dates.map(ds=>{const shift=getShift(ds).find(s=>s.name===staff.name);const down=new Date(ds).getDay();const bgc=down===0?"#E0E0FF":down===6?"#FFE0E0":"#FFF";return <td key={ds} style={{width:44,minWidth:44,padding:"1px",textAlign:"center",fontSize:9,background:shift?"#FFF9E6":bgc,borderRight:"1px solid #d1d5db",borderBottom:"1px solid #d1d5db",cursor:"pointer",position:"relative"}}>
-            {shift?<div style={{display:"inline-block",cursor:"pointer"}} onClick={()=>setEditTime({dateStr:ds,name:staff.name,start:shift.start,end:shift.end})}>{shift.start}-{shift.end}</div>:<button onClick={e=>handleCellClick(e,ds,staff.name,"アルバイト")} style={{background:"none",border:"none",cursor:"pointer",fontSize:10,color:"#ccc"}}>+</button>}</td>;})}</tr>)}
+          {/* 正社員 */}
+          {regularStaff.length>0&&<tr><td colSpan={dates.length+1} style={{background:"#eff6ff",padding:"3px 8px",fontSize:9,fontWeight:700,color:"#1d4ed8",borderBottom:"1px solid #bfdbfe"}}>正社員</td></tr>}
+          {regularStaff.map(st=><tr key={st.name}>
+            <td style={{position:"sticky",left:0,zIndex:2,width:72,minWidth:72,padding:"4px 6px",fontWeight:600,fontSize:10,background:"#fff",borderRight:"2px solid #e5e7eb",borderBottom:"1px solid #e5e7eb",whiteSpace:"nowrap"}}>
+              <span style={{fontSize:8,fontWeight:700,padding:"1px 4px",borderRadius:3,background:"#dbeafe",color:"#1d4ed8",marginRight:2}}>社</span>{st.name}
+            </td>
+            {dates.map(ds=>{
+              const shift=getShift(ds).find(s=>s.name===st.name);const dow=new Date(ds).getDay();
+              const bg=getCellBg(shift,dow);const isToday=ds===today;
+              return <td key={ds} onClick={()=>handleCellClick(ds,st.name,"正社員")} style={{
+                minWidth:42,width:42,padding:"2px",textAlign:"center",fontSize:11,fontWeight:700,background:bg,
+                borderRight:"1px solid #e5e7eb",borderBottom:"1px solid #e5e7eb",cursor:"pointer",
+                boxShadow:isToday?"inset 0 0 0 2px #f59e0b":"none",
+                color:shift?.symbol==="●"?"#1d4ed8":shift?.symbol==="公"?"#64748b":shift?.symbol==="希"?"#d97706":shift?.symbol==="有"?"#059669":shift?.symbol==="出"?"#7c3aed":"#d1d5db",
+                height:36,verticalAlign:"middle"
+              }}>{shift?shift.symbol:<span style={{color:"#e5e7eb",fontSize:14}}>+</span>}</td>;
+            })}
+          </tr>)}
+
+          {/* アルバイト */}
+          {partTimeStaff.length>0&&<tr><td colSpan={dates.length+1} style={{background:"#fffbeb",padding:"3px 8px",fontSize:9,fontWeight:700,color:"#92400e",borderBottom:"1px solid #fde68a"}}>アルバイト</td></tr>}
+          {partTimeStaff.map(st=><tr key={st.name}>
+            <td style={{position:"sticky",left:0,zIndex:2,width:72,minWidth:72,padding:"4px 6px",fontWeight:600,fontSize:10,background:"#fff",borderRight:"2px solid #e5e7eb",borderBottom:"1px solid #e5e7eb",whiteSpace:"nowrap"}}>
+              <span style={{fontSize:8,fontWeight:700,padding:"1px 4px",borderRadius:3,background:"#fef3c7",color:"#92400e",marginRight:2}}>ア</span>{st.name}
+            </td>
+            {dates.map(ds=>{
+              const shift=getShift(ds).find(s=>s.name===st.name);const dow=new Date(ds).getDay();
+              const bg=getCellBg(shift,dow);const isToday=ds===today;
+              return <td key={ds} onClick={()=>handleCellClick(ds,st.name,"アルバイト")} style={{
+                minWidth:42,width:42,padding:"1px",textAlign:"center",background:bg,
+                borderRight:"1px solid #e5e7eb",borderBottom:"1px solid #e5e7eb",cursor:"pointer",
+                boxShadow:isToday?"inset 0 0 0 2px #f59e0b":"none",
+                height:36,verticalAlign:"middle"
+              }}>{shift?getCellDisplay(shift,"アルバイト"):<span style={{color:"#e5e7eb",fontSize:14}}>+</span>}</td>;
+            })}
+          </tr>)}
+
+          {/* 人員合計行 */}
           <tr style={{fontWeight:700,background:"#D2B48C"}}>
-            <td className="shift-col" style={{position:"sticky",left:0,zIndex:2,width:60,minWidth:60,padding:"2px 4px",fontSize:9,fontWeight:700,background:"#D2B48C",borderRight:"1px solid #999",borderBottom:"1px solid #999"}}>人員</td>
-            {dates.map(ds=>{return <td key={ds} style={{width:44,minWidth:44,padding:"2px 1px",textAlign:"center",fontSize:9,fontWeight:700,background:"#D2B48C",borderRight:"1px solid #999",borderBottom:"1px solid #999"}}>{calcHeadcount(ds)}</td>;})}
+            <td style={{position:"sticky",left:0,zIndex:2,width:72,minWidth:72,padding:"4px 6px",fontSize:10,fontWeight:700,background:"#D2B48C",borderRight:"2px solid #b8976a",borderBottom:"1px solid #b8976a"}}>人員</td>
+            {dates.map(ds=>{const hc=calcHeadcount(ds);return <td key={ds} style={{minWidth:42,width:42,padding:"3px 1px",textAlign:"center",fontSize:11,fontWeight:800,background:"#D2B48C",borderRight:"1px solid #b8976a",borderBottom:"1px solid #b8976a",color:hc===0?"#b8976a":"#1e293b"}}>{hc}</td>;})}
           </tr>
         </tbody>
       </table>
     </div>
-    <div className="px-4 py-2 border-t border-gray-200 bg-gray-50 overflow-x-auto">
-      <table style={{fontSize:9,borderCollapse:"collapse",minWidth:"100%"}}>
+
+    {/* サマリーテーブル */}
+    <div className="px-4 py-3 border-t border-gray-200 bg-gray-50 overflow-x-auto">
+      <div style={{fontSize:11,fontWeight:700,color:"#374151",marginBottom:6}}>月間サマリー</div>
+      <table style={{fontSize:10,borderCollapse:"collapse",width:"100%"}}>
         <thead><tr style={{background:"#e5e7eb"}}>
-          <th style={{padding:"2px 6px",textAlign:"left",fontWeight:700,border:"1px solid #d1d5db"}}>名前</th>
-          <th style={{padding:"2px 6px",textAlign:"center",fontWeight:700,border:"1px solid #d1d5db",minWidth:30}}>●出勤</th>
-          <th style={{padding:"2px 6px",textAlign:"center",fontWeight:700,border:"1px solid #d1d5db",minWidth:30}}>公休</th>
-          <th style={{padding:"2px 6px",textAlign:"center",fontWeight:700,border:"1px solid #d1d5db",minWidth:30}}>希望休</th>
-          <th style={{padding:"2px 6px",textAlign:"center",fontWeight:700,border:"1px solid #d1d5db",minWidth:30}}>有給</th>
-          <th style={{padding:"2px 6px",textAlign:"center",fontWeight:700,border:"1px solid #d1d5db",minWidth:30}}>出張</th>
-          <th style={{padding:"2px 6px",textAlign:"center",fontWeight:700,border:"1px solid #d1d5db",minWidth:30}}>合計</th>
+          <th style={{padding:"5px 8px",textAlign:"left",fontWeight:700,border:"1px solid #d1d5db",minWidth:80}}>名前</th>
+          <th style={{padding:"5px 6px",textAlign:"center",fontWeight:700,border:"1px solid #d1d5db",minWidth:40,color:"#2563eb"}}>出勤</th>
+          <th style={{padding:"5px 6px",textAlign:"center",fontWeight:700,border:"1px solid #d1d5db",minWidth:40,color:"#64748b"}}>公休</th>
+          <th style={{padding:"5px 6px",textAlign:"center",fontWeight:700,border:"1px solid #d1d5db",minWidth:40,color:"#d97706"}}>希望休</th>
+          <th style={{padding:"5px 6px",textAlign:"center",fontWeight:700,border:"1px solid #d1d5db",minWidth:40,color:"#059669"}}>有給</th>
+          <th style={{padding:"5px 6px",textAlign:"center",fontWeight:700,border:"1px solid #d1d5db",minWidth:40,color:"#7c3aed"}}>出張</th>
+          <th style={{padding:"5px 6px",textAlign:"center",fontWeight:700,border:"1px solid #d1d5db",minWidth:40}}>合計</th>
         </tr></thead>
         <tbody>
           {staff.map(s=>{
             const staffSymCounts={};let workDays=0;
             const isP=s.type==="アルバイト";
             dates.forEach(ds=>{
-              const dayShifts=getShift(ds);
-              const sShift=dayShifts.find(sh=>sh.name===s.name);
+              const sShift=getShift(ds).find(sh=>sh.name===s.name);
               if(!sShift)return;
               if(sShift.symbol){
                 staffSymCounts[sShift.symbol]=(staffSymCounts[sShift.symbol]||0)+1;
               }else if(isP&&sShift.start&&sShift.end){
-                // アルバイトのみ: シンボルなしでも時間があれば出勤カウント
                 workDays++;
               }
             });
@@ -2054,34 +2072,62 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
             const totalWork=symWork+workDays;
             const total=totalWork+(staffSymCounts["公"]||0)+(staffSymCounts["希"]||0)+(staffSymCounts["有"]||0)+(staffSymCounts["出"]||0);
             return <tr key={s.name} style={{background:isP?"#fffbeb":"#fff",borderBottom:"1px solid #d1d5db"}}>
-              <td style={{padding:"2px 6px",border:"1px solid #d1d5db",fontWeight:600}}><span style={{fontSize:8,fontWeight:700,padding:"1px 4px",borderRadius:3,background:isP?"#fef3c7":"#dbeafe",color:isP?"#92400e":"#1d4ed8",marginRight:3}}>{isP?"ア":"社"}</span>{s.name}</td>
-              <td style={{padding:"2px 6px",border:"1px solid #d1d5db",textAlign:"center",fontWeight:totalWork>0?700:400,color:totalWork>0?"#1d4ed8":"#94a3b8"}}>{totalWork}</td>
-              <td style={{padding:"2px 6px",border:"1px solid #d1d5db",textAlign:"center",color:(staffSymCounts["公"]||0)>0?"#64748b":"#d1d5db"}}>{staffSymCounts["公"]||0}</td>
-              <td style={{padding:"2px 6px",border:"1px solid #d1d5db",textAlign:"center",color:(staffSymCounts["希"]||0)>0?"#f59e0b":"#d1d5db"}}>{staffSymCounts["希"]||0}</td>
-              <td style={{padding:"2px 6px",border:"1px solid #d1d5db",textAlign:"center",color:(staffSymCounts["有"]||0)>0?"#059669":"#d1d5db"}}>{staffSymCounts["有"]||0}</td>
-              <td style={{padding:"2px 6px",border:"1px solid #d1d5db",textAlign:"center",color:(staffSymCounts["出"]||0)>0?"#7c3aed":"#d1d5db"}}>{staffSymCounts["出"]||0}</td>
-              <td style={{padding:"2px 6px",border:"1px solid #d1d5db",textAlign:"center",fontWeight:700}}>{total}</td>
+              <td style={{padding:"4px 8px",border:"1px solid #d1d5db",fontWeight:600,fontSize:10}}>
+                <span style={{fontSize:8,fontWeight:700,padding:"1px 4px",borderRadius:3,background:isP?"#fef3c7":"#dbeafe",color:isP?"#92400e":"#1d4ed8",marginRight:4}}>{isP?"ア":"社"}</span>{s.name}
+              </td>
+              <td style={{padding:"4px 6px",border:"1px solid #d1d5db",textAlign:"center",fontWeight:totalWork>0?700:400,color:totalWork>0?"#1d4ed8":"#d1d5db"}}>{totalWork}</td>
+              <td style={{padding:"4px 6px",border:"1px solid #d1d5db",textAlign:"center",color:(staffSymCounts["公"]||0)>0?"#64748b":"#d1d5db"}}>{staffSymCounts["公"]||0}</td>
+              <td style={{padding:"4px 6px",border:"1px solid #d1d5db",textAlign:"center",color:(staffSymCounts["希"]||0)>0?"#d97706":"#d1d5db"}}>{staffSymCounts["希"]||0}</td>
+              <td style={{padding:"4px 6px",border:"1px solid #d1d5db",textAlign:"center",color:(staffSymCounts["有"]||0)>0?"#059669":"#d1d5db"}}>{staffSymCounts["有"]||0}</td>
+              <td style={{padding:"4px 6px",border:"1px solid #d1d5db",textAlign:"center",color:(staffSymCounts["出"]||0)>0?"#7c3aed":"#d1d5db"}}>{staffSymCounts["出"]||0}</td>
+              <td style={{padding:"4px 6px",border:"1px solid #d1d5db",textAlign:"center",fontWeight:700}}>{total}</td>
             </tr>;
           })}
         </tbody>
       </table>
     </div>
 
-    {editTime&&<div className="modal-overlay" onClick={()=>setEditTime(null)}><div className="modal-box" style={{maxWidth:280,padding:20}} onClick={e=>e.stopPropagation()}>
-      <h4 className="font-bold text-sm mb-3">{editTime.name} — {fmtD(editTime.dateStr)}</h4>
-      <div className="space-y-3">
+    {/* セル編集モーダル（日毎のシフト内容設定） */}
+    {cellEdit&&<div className="modal-overlay" onClick={()=>setCellEdit(null)}><div className="modal-box" style={{maxWidth:340,padding:0,borderRadius:16,overflow:"hidden"}} onClick={e=>e.stopPropagation()}>
+      {/* ヘッダー */}
+      <div style={{background:"#D2B48C",padding:"14px 20px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <div>
-          <label className="text-xs text-gray-600 block mb-1">開始時間</label>
-          <input type="time" value={editTime.start} onChange={e=>setEditTime({...editTime,start:e.target.value})} className="input-s"/>
+          <div style={{fontSize:14,fontWeight:800,color:"#1e293b"}}>{cellEdit.name}</div>
+          <div style={{fontSize:12,color:"#78716c"}}>{fmtD(cellEdit.dateStr)} ({WK[new Date(cellEdit.dateStr).getDay()]})</div>
         </div>
-        <div>
-          <label className="text-xs text-gray-600 block mb-1">終了時間</label>
-          <input type="time" value={editTime.end} onChange={e=>setEditTime({...editTime,end:e.target.value})} className="input-s"/>
-        </div>
-        <div className="flex gap-2 pt-2">
-          <button onClick={()=>{if(!window.confirm("保存を実行しますか？"))return;handleTimeChange(editTime.dateStr,editTime.name,editTime.start,editTime.end);setEditTime(null);}} className="flex-1 py-2 bg-blue-600 text-white rounded text-xs font-bold hover:bg-blue-700">保存</button>
-          <button onClick={()=>{if(!window.confirm("削除を実行しますか？"))return;const cur=getShift(editTime.dateStr);_onSC({...shifts,[editTime.dateStr]:cur.filter(s=>s.name!==editTime.name)});setEditTime(null);}} className="flex-1 py-2 bg-red-50 text-red-600 rounded text-xs font-bold hover:bg-red-100 border border-red-200">削除</button>
-          <button onClick={()=>setEditTime(null)} className="px-3 py-2 bg-gray-100 text-gray-600 rounded text-xs hover:bg-gray-200">キャンセル</button>
+        <button onClick={()=>setCellEdit(null)} style={{background:"none",border:"none",fontSize:18,color:"#78716c",cursor:"pointer",padding:4}}>✕</button>
+      </div>
+      <div style={{padding:"16px 20px"}}>
+        {/* シフト種別選択（正社員のみ） */}
+        {cellEdit.type==="正社員"&&<div style={{marginBottom:16}}>
+          <label style={{fontSize:11,color:"#64748b",fontWeight:700,display:"block",marginBottom:8}}>出勤内容</label>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+            {SHIFT_OPTIONS.map(o=>{
+              const sel=cellEdit.symbol===o.s;
+              return <button key={o.s} onClick={()=>setCellEdit({...cellEdit,symbol:o.s})} style={{
+                padding:"10px 8px",borderRadius:10,fontSize:12,fontWeight:700,border:"2px solid",cursor:"pointer",transition:"all .15s",
+                background:sel?o.color:"#fff",color:sel?"#fff":o.color,borderColor:sel?o.color:"#e2e8f0",
+                display:"flex",alignItems:"center",justifyContent:"center",gap:6
+              }}><span style={{fontSize:16}}>{o.s}</span> {o.label}</button>;
+            })}
+          </div>
+        </div>}
+        {/* 時間設定（出勤・出張の場合、またはアルバイト） */}
+        {(cellEdit.type==="アルバイト"||cellEdit.symbol==="●"||cellEdit.symbol==="出")&&<div style={{marginBottom:16}}>
+          <label style={{fontSize:11,color:"#64748b",fontWeight:700,display:"block",marginBottom:8}}>勤務時間</label>
+          <div style={{display:"flex",gap:10,alignItems:"center"}}>
+            <input type="time" value={cellEdit.start} onChange={e=>setCellEdit({...cellEdit,start:e.target.value})} style={{flex:1,padding:"10px 10px",borderRadius:10,border:"1px solid #e2e8f0",fontSize:15,textAlign:"center"}}/>
+            <span style={{color:"#94a3b8",fontWeight:700,fontSize:14}}>〜</span>
+            <input type="time" value={cellEdit.end} onChange={e=>setCellEdit({...cellEdit,end:e.target.value})} style={{flex:1,padding:"10px 10px",borderRadius:10,border:"1px solid #e2e8f0",fontSize:15,textAlign:"center"}}/>
+          </div>
+        </div>}
+        {/* ボタン */}
+        <div style={{display:"flex",gap:8,marginTop:8}}>
+          <button onClick={saveCellEdit} style={{flex:1,padding:"12px 16px",borderRadius:12,border:"none",background:"#2563eb",fontSize:13,fontWeight:700,color:"#fff",cursor:"pointer"}}>
+            {cellEdit.isNew?"登録":"保存"}
+          </button>
+          {!cellEdit.isNew&&<button onClick={deleteCellEdit} style={{padding:"12px 16px",borderRadius:12,border:"1px solid #fecaca",background:"#fef2f2",fontSize:13,fontWeight:700,color:"#dc2626",cursor:"pointer"}}>削除</button>}
+          <button onClick={()=>setCellEdit(null)} style={{padding:"12px 16px",borderRadius:12,border:"1px solid #e2e8f0",background:"#fff",fontSize:13,fontWeight:600,color:"#64748b",cursor:"pointer"}}>戻る</button>
         </div>
       </div>
     </div></div>}
@@ -3686,7 +3732,7 @@ const PARKING_VENDORS=["オートバックス","イエローハット","ディ�
 const WASH_STATUSES=["未洗車","内洗済","洗車済"];
 const washStyleLight=s=>({"未洗車":{bg:"#fef2f2",c:"#dc2626",icon:"❌"},"内洗済":{bg:"#fffbeb",c:"#d97706",icon:"🧹"},"洗車済":{bg:"#ecfdf5",c:"#059669",icon:"✨"}}[s]||{bg:"#f1f5f9",c:"#64748b",icon:"?"});
 
-function ParkingManager(){
+function ParkingManager({masterVehicles}){
   const s0=useRef(DB.parking.lsLoad());
   const init=s0.current;
   const[cars,setCars]=useState(init&&init.cars?init.cars:PARKING_DEFAULT_CARS);
@@ -3754,6 +3800,35 @@ function ParkingManager(){
     const timer=setInterval(()=>{if(document.visibilityState==="visible")refresh();},15000);
     return()=>{document.removeEventListener("visibilitychange",onVis);clearInterval(timer);};
   },[]);
+
+  // 車両マスター同期: 車両タブで追加/削除された車両を駐車場にも反映
+  useEffect(()=>{
+    if(!masterVehicles||masterVehicles.length===0)return;
+    setCars(prev=>{
+      const existingIds=new Set(prev.map(c=>c.id));
+      const masterIds=new Set(masterVehicles.map(v=>v.name+"-"+v.no));
+      let changed=false;let next=[...prev];
+      // 車両マスターに追加された車両を駐車場にも追加
+      masterVehicles.forEach(v=>{
+        const id=v.name+"-"+v.no;
+        if(!existingIds.has(id)){
+          next.push({id,name:v.name,plate:v.no});
+          setWashMap(p=>({...p,[id]:"未洗車"}));
+          setWashTimeMap(p=>({...p,[id]:null}));
+          changed=true;
+        }
+      });
+      // 車両マスターから削除された車両を駐車場からも削除
+      next=next.filter(c=>{
+        if(masterIds.has(c.id))return true;
+        // マスターにない車両は削除（スポットからも解除）
+        setSpots(sp=>sp.map(s=>s.carId===c.id?{...s,carId:null}:s));
+        changed=true;
+        return false;
+      });
+      return changed?next:prev;
+    });
+  },[masterVehicles]);
 
   // 自動保存
   useEffect(()=>{
@@ -4859,7 +4934,7 @@ function App(){
           {tab==="attendance"&&<AttendanceManager shifts={shifts} staff={staff} today={today} attendance={attendance} onAttendanceChange={setAttendance}/>}
           {tab==="fleet"&&<FleetTimeline data={data} fleet={fleet} onFleetChange={setFleetSync} today={today} maintenance={maintenance} onMaintenanceChange={setMaintenance} vehicles={vehicles} vehicleClasses={vehicleClasses} onAddReservation={addReservation} onBulkAddReservation={bulkAddReservation} onCancelReservation={cancelReservation} onReassignVehicle={reassignVehicle} unassignedReasons={unassignedReasons}/>}
           {tab==="vehicle"&&<VehicleTab vehicles={vehicles} onVehiclesChange={setVehiclesSync} vehicleClasses={vehicleClasses} onDeleteVehicle={(code)=>DB.deleteVehicle(code)} hmCars={hmCars} hmCarData={hmCarData} hmLogs={hmLogs} hmClasses={hmClasses} hmReload={hmReload}/>}
-          {tab==="parking"&&<ParkingManager/>}
+          {tab==="parking"&&<ParkingManager masterVehicles={vehicles}/>}
           {tab==="dashboard"&&data.length>0&&<>
             {importDiag&&(()=>{const hz=importDiag.zeroAll.length>0;return <div style={{background:hz?"#fef3c7":"#f0fdf4",border:`1px solid ${hz?"#f59e0b":"#86efac"}`,borderRadius:10,padding:"8px 12px",marginBottom:10,fontSize:11}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -4878,7 +4953,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v2026.03.13a";
+const APP_VERSION="v2026.03.13b";
 function Root(){
   const[auth,setAuth]=useState(!SB_ENABLED||localStorage.getItem("spk_auth")==="1");
   if(!auth)return <LoginScreen onLogin={()=>setAuth(true)}/>;
