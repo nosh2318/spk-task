@@ -188,17 +188,21 @@ const DB = {
   _staffLsLoad(){try{const s=localStorage.getItem(DB._staffLsKey);return s?JSON.parse(s):null;}catch(e){return null;}},
   async fetchStaff(){if(!sb)return DB._staffLsLoad();const{data,error}=await sb.from("staff").select("*").order("sort_order");if(error){dbLog("fetchStaff",false,error.message);return DB._staffLsLoad();}dbLog("fetchStaff",true,data.length+"件");
     const dbStaff=(data||[]).map(s=>({name:s.name,type:s.type,memo:s.memo||"",hourlyWage:s.hourly_wage||0,transportCost:s.transport_cost||0,monthlySalary:s.monthly_salary||0}));
-    // DB側にhourly_wage等カラムがない場合、localStorageの値をマージ
+    // DB側にhourly_wage等カラムがない場合、localStorageの値をマージ→差異あればDBに自動プッシュ
     const lsStaff=DB._staffLsLoad();
+    let needPush=false;
     if(lsStaff&&lsStaff.length>0){
       const lsMap={};lsStaff.forEach(s=>{lsMap[s.name]=s;});
       dbStaff.forEach(s=>{const ls=lsMap[s.name];if(ls){
-        if(!s.hourlyWage&&ls.hourlyWage)s.hourlyWage=ls.hourlyWage;
-        if(!s.transportCost&&ls.transportCost)s.transportCost=ls.transportCost;
-        if(!s.monthlySalary&&ls.monthlySalary)s.monthlySalary=ls.monthlySalary;
+        if(!s.hourlyWage&&ls.hourlyWage){s.hourlyWage=ls.hourlyWage;needPush=true;}
+        if(!s.transportCost&&ls.transportCost){s.transportCost=ls.transportCost;needPush=true;}
+        if(!s.monthlySalary&&ls.monthlySalary){s.monthlySalary=ls.monthlySalary;needPush=true;}
       }});
     }
-    DB._staffLsSave(dbStaff);return dbStaff;},
+    DB._staffLsSave(dbStaff);
+    // LSから補完したデータがあればDBに自動保存（他デバイスにも反映）
+    if(needPush){console.log("[staffSync] LS→DB push: wage data merged");DB.saveStaff(dbStaff).catch(e=>console.error("[staffSync]",e));}
+    return dbStaff;},
   async saveStaff(arr){DB._staffLsSave(arr);if(!sb)return;const rows=arr.map((s,i)=>({name:s.name,type:s.type,memo:s.memo||"",sort_order:i,active:true,hourly_wage:s.hourlyWage||0,transport_cost:s.transportCost||0,monthly_salary:s.monthlySalary||0}));const{error}=await sb.from("staff").upsert(rows,{onConflict:"name"});if(error)dbLog("saveStaff",false,error.message);else dbLog("saveStaff",true,arr.length+"件保存");},
   async deleteStaff(name){if(!sb)return;const{error}=await sb.from("staff").delete().eq("name",name);if(error)dbLog("deleteStaff",false,error.message);else dbLog("deleteStaff",true,name);},
   // --- 車両 ---
@@ -969,14 +973,6 @@ function FleetManager(p){
         }),
         cars.length===0&&E("div",{style:{textAlign:"center",color:"#94a3b8",padding:40,fontSize:13}},"HANDYMANのcarsテーブルに車両を登録してください")
       ),
-      // デバッグ情報（問題特定用・後で削除）
-      E("div",{style:{marginTop:16,background:"#fef3c7",border:"1px solid #fcd34d",borderRadius:8,padding:10,fontSize:11,color:"#92400e"}},
-        E("div",{style:{fontWeight:700,marginBottom:4}},"[デバッグ情報]"),
-        E("div",null,"cars: "+cars.length+"件"),
-        E("div",null,"carData: "+carData.length+"件"),
-        E("div",null,"logs: "+logs.length+"件"),
-        E("div",null,"hmReload関数: "+(p.hmReload?"あり":"なし"))
-      )
     );
   }
 
@@ -1602,28 +1598,6 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
       </button>
     </div>
     {lastSync&&<div style={{fontSize:9,color:"#94a3b8",textAlign:"right",marginTop:-10,marginBottom:6}}>最終同期: {lastSync.toLocaleTimeString()}</div>}
-    {/* デバッグ: シフトデータの状態 */}
-    {(()=>{
-      const monthShiftCount=Object.entries(shifts).filter(([k])=>k.startsWith(viewYM)).reduce((sum,[,arr])=>sum+arr.length,0);
-      const staffShiftCounts=staff.map(s=>{
-        let cnt=0;
-        for(let d=1;d<=dim;d++){
-          const ds=viewYM+"-"+String(d).padStart(2,"0");
-          if((shifts[ds]||[]).find(x=>x.name===s.name))cnt++;
-        }
-        return s.name+":"+cnt+"日";
-      });
-      const staffWageInfo=staff.map(s=>{
-        const d=allStaffData[s.name];
-        const isP=s.type==="アルバイト";
-        return s.name+"("+s.type.slice(0,2)+"):"+(isP?"¥"+s.hourlyWage+"/h":"月¥"+s.monthlySalary)+"|交¥"+s.transportCost+"|予"+d?.budgetDays+"日"+d?.budgetHours?.toFixed(1)+"h=¥"+d?.budgetTotal;
-      });
-      return <div style={{background:"#fffbeb",border:"1px solid #fbbf24",borderRadius:8,padding:"6px 10px",marginBottom:8,fontSize:9,color:"#92400e",lineHeight:1.6}}>
-        <b>📊 {viewYM} シフト:{monthShiftCount}件 スタッフ:{staff.length}名 勤怠:{Object.keys(attendance).filter(k=>k.startsWith(viewYM)).length}件</b>
-        <div style={{marginTop:2}}>{staffShiftCounts.join(" / ")}</div>
-        <div style={{marginTop:3,borderTop:"1px solid #fbbf24",paddingTop:3}}>{staffWageInfo.map((w,i)=><div key={i}>{w}</div>)}</div>
-      </div>;
-    })()}
     {/* 月選択 */}
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
       <button onClick={()=>setViewYM(ymOff(viewYM,-1))} style={{padding:"4px 10px",fontSize:16,background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:6,cursor:"pointer",fontWeight:700,color:"#2563eb"}}>&lt;</button>
@@ -2971,7 +2945,6 @@ function Dashboard({data,fleet,vehicles,maintenance}){
   // ビュー切替（月別 vs 年間推移）
   const[dashView,setDashView]=useState("monthly"); // "monthly" | "annual"
   const[annTab,setAnnTab]=useState("revenue"); // 年間推移サブタブ
-  const[dbg,setDbg]=useState({open:false,dbData:null,loading:false}); // デバッグ用
   // 月選択
   const allMonths=useMemo(()=>{
     const ms=new Set();
@@ -3553,88 +3526,6 @@ function Dashboard({data,fleet,vehicles,maintenance}){
     })()}
 
 
-    {/* デバッグ: 売上検証（確認後に削除） */}
-    {(()=>{
-      const fetchDB=async()=>{
-        setDbg(p=>({...p,loading:true}));
-        try{
-          const res=await DB.fetchReservations();
-          setDbg(p=>({...p,dbData:res,loading:false}));
-        }catch(e){setDbg(p=>({...p,loading:false}));}
-      };
-      const dbMonth=dbg.dbData?dbg.dbData.filter(r=>r.returnDate&&toYM(r.returnDate)===selYM):[];
-      const dbTotal=dbMonth.reduce((s,r)=>s+(Number(r.price)||0),0);
-      // LS backup check
-      let lsData=[];try{lsData=JSON.parse(localStorage.getItem("spk_reservations_backup")||"[]");}catch(e){}
-      const lsMonth=lsData.filter(r=>r.returnDate&&(r.returnDate.substring(0,7)===selYM||toYM(r.returnDate)===selYM));
-      const lsTotal=lsMonth.reduce((s,r)=>s+(Number(r.price)||0),0);
-      // 全月サマリー
-      const allMBreak={};data.forEach(r=>{const ym=r.returnDate?toYM(r.returnDate):"?";if(!allMBreak[ym])allMBreak[ym]={cnt:0,sum:0,z:0};allMBreak[ym].cnt++;allMBreak[ym].sum+=(Number(r.price)||0);if(!r.price)allMBreak[ym].z++;});
-      return <div style={{...cardS,background:"#fffbeb",border:"1px solid #fbbf24"}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}} onClick={()=>setDbg(p=>({...p,open:!p.open}))}>
-          <div style={{fontSize:12,fontWeight:800,color:"#92400e"}}>🔍 売上検証（デバッグ）{!dbg.open?" ▼":" ▲"}</div>
-          <div style={{fontSize:10,color:"#b45309"}}>メモリ:¥{totalRevenue.toLocaleString()} / LS:¥{lsTotal.toLocaleString()}</div>
-        </div>
-        {dbg.open&&<div style={{fontSize:10,color:"#78350f",lineHeight:1.8,marginTop:8}}>
-          {/* 全月サマリー */}
-          <div style={{fontWeight:700,marginBottom:4}}>📊 全月売上サマリー（メモリ内データ）</div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:4,marginBottom:8}}>
-            {Object.entries(allMBreak).sort(([a],[b])=>a.localeCompare(b)).map(([ym,d])=>
-              <div key={ym} style={{padding:"3px 6px",background:d.z>0?"#fef2f2":"#ecfdf5",borderRadius:4,fontSize:9}}>
-                <b>{ym}</b>: {d.cnt}件 ¥{d.sum.toLocaleString()}{d.z>0&&<span style={{color:"#dc2626"}}> ⚠️{d.z}件price=0</span>}
-              </div>
-            )}
-          </div>
-
-          <div style={{fontWeight:700}}>--- {ymLabel(selYM)} 詳細 ---</div>
-          <div>メモリ: {monthData.length}件 / ¥{totalRevenue.toLocaleString()}</div>
-          <div>LS: {lsMonth.length}件 / ¥{lsTotal.toLocaleString()}{lsTotal!==totalRevenue&&<span style={{color:"#dc2626",fontWeight:700}}> ← 差額¥{Math.abs(lsTotal-totalRevenue).toLocaleString()}</span>}</div>
-
-          <button onClick={fetchDB} style={{margin:"6px 0",padding:"4px 12px",background:"#92400e",color:"#fff",border:"none",borderRadius:6,fontSize:10,cursor:"pointer"}}>
-            {dbg.loading?"読込中...":"🔄 DBから直接読込して比較"}
-          </button>
-          {dbg.dbData&&<div>
-            <div style={{color:dbTotal===totalRevenue?"#059669":"#dc2626",fontWeight:700}}>
-              DB: {dbMonth.length}件 / ¥{dbTotal.toLocaleString()}
-              {dbTotal!==totalRevenue&&` ← メモリと¥${Math.abs(dbTotal-totalRevenue).toLocaleString()}差額！`}
-              {dbTotal===totalRevenue&&" ✅ 一致"}
-            </div>
-            {dbTotal!==totalRevenue&&<div style={{marginTop:4,fontWeight:700}}>--- DB vs メモリ 差分 ---</div>}
-            {dbTotal!==totalRevenue&&dbMonth.map((dr,i)=>{
-              const mr=monthData.find(r=>r.id===dr.id);
-              const dp=Number(dr.price)||0,mp=mr?(Number(mr.price)||0):0;
-              if(dp===mp)return null;
-              return <div key={i} style={{color:"#dc2626",fontSize:9}}>
-                {dr.ota}/{dr.id}: DB=¥{dp.toLocaleString()} vs メモリ=¥{mp.toLocaleString()} (差=¥{(mp-dp).toLocaleString()}) [DBtype:{typeof dr.price}]
-              </div>;
-            })}
-          </div>}
-
-          <div style={{marginTop:8,fontWeight:700}}>--- OTA別 内訳（{ymLabel(selYM)}）---</div>
-          {(()=>{
-            const otaMap={};
-            monthData.forEach(r=>{const k=r.ota||"?";if(!otaMap[k])otaMap[k]={count:0,revenue:0,zero:0};otaMap[k].count++;otaMap[k].revenue+=(Number(r.price)||0);if(!r.price)otaMap[k].zero++;});
-            return Object.entries(otaMap).sort((a,b)=>b[1].revenue-a[1].revenue).map(([k,v])=>
-              <div key={k} style={{fontWeight:600}}>{k}: {v.count}件 / ¥{v.revenue.toLocaleString()}{v.zero>0?` (⚠️ price=0が${v.zero}件)`:""}</div>
-            );
-          })()}
-
-          <div style={{marginTop:8,fontWeight:700}}>--- price型チェック ---</div>
-          {(()=>{const types={};monthData.forEach(r=>{const t=typeof r.price;types[t]=(types[t]||0)+1;});return <div>{Object.entries(types).map(([t,c])=><span key={t} style={{marginRight:8,color:t==="number"?"#059669":"#dc2626",fontWeight:700}}>{t}:{c}件</span>)}</div>;})()}
-
-          <div style={{marginTop:8,fontWeight:700}}>--- price=0 の予約 ---</div>
-          {monthData.filter(r=>!r.price).length===0?<div style={{color:"#059669"}}>なし ✅</div>
-            :<div>{monthData.filter(r=>!r.price).map((r,i)=><div key={i} style={{color:"#dc2626",fontSize:10}}>ID:{r.id} / {r.name} / OTA:{r.ota} / 返却:{r.returnDate} / price:{JSON.stringify(r.price)}</div>)}</div>}
-
-          <div style={{marginTop:8,fontWeight:700}}>--- 全予約一覧（{ymLabel(selYM)}返却分）---</div>
-          <div style={{maxHeight:300,overflow:"auto",fontSize:9}}>
-            {monthData.sort((a,b)=>{const oa=(a.ota||"").localeCompare(b.ota||"");if(oa!==0)return oa;return(Number(b.price)||0)-(Number(a.price)||0);}).map((r,i)=>
-              <div key={i} style={{color:!r.price?"#dc2626":"inherit"}}>{r.ota}/{r.id}/{r.name}: ¥{(Number(r.price)||0).toLocaleString()} (返却:{r.returnDate}){!r.price&&" ⚠️ZERO"}</div>
-            )}
-          </div>
-        </div>}
-      </div>;
-    })()}
     </>}
 
     {/* ========== 年間推移ビュー ========== */}
@@ -5263,7 +5154,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.5.1";
+const APP_VERSION="v3.6.0";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
