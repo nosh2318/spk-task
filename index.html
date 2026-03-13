@@ -1446,11 +1446,19 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
   const WK=["日","月","火","水","木","金","土"];
   const todayYM=toYM(today);
   const[viewYM,setViewYM]=useState(todayYM);
-  const[selStaff,setSelStaff]=useState((staff.find(s=>s.type==="アルバイト")||staff[0])?.name||"");
+  const[selStaff,setSelStaff]=useState(staff[0]?.name||"");
   const[subTab,setSubTab]=useState("budget"); // "budget" | "actual" | "detail"
   const[editDay,setEditDay]=useState(null);
+  const[staffFilter,setStaffFilter]=useState("all"); // "all"|"part"|"full"
   const dim=daysInMonth(viewYM);
   const[vy,vmo]=viewYM.split("-").map(Number);
+
+  // マウント時にDBから最新の勤怠データを取得
+  React.useEffect(()=>{
+    (async()=>{
+      try{const attDB=await DB.fetchAttendance();if(attDB&&Object.keys(attDB).length)onAttendanceChange(attDB);}catch(e){}
+    })();
+  },[]);
 
   // 実働時間計算ヘルパー
   const calcHours=(start,end)=>{
@@ -1562,12 +1570,13 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
     DB.saveAttendance(updated);setEditDay(null);
   };
 
-  // 予算総額
+  // 予算総額（フィルター連動）
+  const filteredStaff=useMemo(()=>staff.filter(s=>staffFilter==="all"?true:staffFilter==="part"?s.type==="アルバイト":s.type==="正社員"),[staff,staffFilter]);
   const budgetGrandTotal=useMemo(()=>{
     let payTotal=0,transTotal=0,actualRef=0;
-    staff.filter(s=>s.type==="アルバイト").forEach(s=>{const d=allStaffData[s.name];if(d){payTotal+=d.budgetWage;transTotal+=d.budgetTransport;actualRef+=d.actualTotal;}});
+    filteredStaff.forEach(s=>{const d=allStaffData[s.name];if(d){payTotal+=d.budgetWage;transTotal+=d.budgetTransport;actualRef+=d.actualTotal;}});
     return{payTotal,transTotal,grandTotal:payTotal+transTotal,actualRef};
-  },[allStaffData,staff]);
+  },[allStaffData,filteredStaff]);
 
   const cardS={background:"#fff",borderRadius:14,padding:16,border:"1px solid #e2e8f0",marginBottom:12,boxShadow:"0 1px 3px rgba(0,0,0,.05)"};
   const boxS=(bg)=>({background:bg||"#f0f9ff",borderRadius:10,padding:"10px 14px",textAlign:"center",flex:1});
@@ -1591,9 +1600,16 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
       )}
     </div>
 
+    {/* スタッフ種別フィルター */}
+    <div style={{display:"flex",gap:4,marginBottom:10}}>
+      {[{id:"all",l:"全員"},{id:"part",l:"アルバイト"},{id:"full",l:"正社員"}].map(f=>
+        <button key={f.id} onClick={()=>setStaffFilter(f.id)} style={{padding:"4px 12px",borderRadius:16,fontSize:11,fontWeight:700,border:"none",cursor:"pointer",
+          background:staffFilter===f.id?"#1e293b":"#f1f5f9",color:staffFilter===f.id?"#fff":"#64748b"}}>{f.l}</button>)}
+    </div>
+
     {/* ====== 予算（シフト）タブ ====== */}
     {subTab==="budget"&&<div>
-      {staff.filter(s=>s.type==="アルバイト").map(s=>{
+      {staff.filter(s=>staffFilter==="all"?true:staffFilter==="part"?s.type==="アルバイト":s.type==="正社員").map(s=>{
         const d=allStaffData[s.name];if(!d)return null;
         const isP=d.isP;
         return <div key={s.name} style={cardS}>
@@ -1646,7 +1662,7 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
     {subTab==="actual"&&<div>
       {/* スタッフ選択 */}
       <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>
-        {staff.filter(s=>s.type==="アルバイト").map(s=><button key={s.name} onClick={()=>setSelStaff(s.name)} style={{
+        {staff.filter(s=>staffFilter==="all"?true:staffFilter==="part"?s.type==="アルバイト":s.type==="正社員").map(s=><button key={s.name} onClick={()=>setSelStaff(s.name)} style={{
           padding:"6px 14px",borderRadius:20,fontSize:12,fontWeight:700,border:"none",cursor:"pointer",transition:"all .15s",
           background:selStaff===s.name?"#1e293b":"#f1f5f9",color:selStaff===s.name?"#fff":"#64748b"
         }}>{s.name}</button>)}
@@ -1690,7 +1706,7 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
 
     {/* ====== 給与明細タブ ====== */}
     {subTab==="detail"&&<div>
-      {staff.filter(s=>s.type==="アルバイト").map(s=>{
+      {staff.filter(s=>staffFilter==="all"?true:staffFilter==="part"?s.type==="アルバイト":s.type==="正社員").map(s=>{
         const d=allStaffData[s.name];if(!d)return null;
         const si=s;const isP=d.isP;
         return <div key={s.name} style={cardS}>
@@ -4780,7 +4796,7 @@ function App(){
     const onVis=()=>{if(document.visibilityState==="visible")silentRefresh();};
     document.addEventListener("visibilitychange",onVis);
     // 30秒ポーリング（Realtime切断時のフォールバック）
-    const timer=setInterval(()=>{if(document.visibilityState==="visible")silentRefresh();},30000);
+    const timer=setInterval(()=>{if(document.visibilityState==="visible")silentRefresh();},15000);
     return()=>{document.removeEventListener("visibilitychange",onVis);clearInterval(timer);};
   },[silentRefresh]);
 
@@ -4816,9 +4832,19 @@ function App(){
         markDbSync("fleet");
       })
       .on("postgres_changes",{event:"*",schema:"public",table:"tasks"},()=>{})
-      .on("postgres_changes",{event:"*",schema:"public",table:"shifts"},payload=>{
-        const s=payload.new;if(!s)return;
+      .on("postgres_changes",{event:"INSERT",schema:"public",table:"shifts"},payload=>{
+        const s=payload.new;if(!s||!s.date)return;
         setShifts(prev=>{const n={...prev};if(!n[s.date])n[s.date]=[];const arr=n[s.date].filter(x=>x.name!==s.staff_name);arr.push({name:s.staff_name,symbol:s.symbol,start:s.start_time,end:s.end_time,memo:s.memo});n[s.date]=arr;return{...n};});
+        markDbSync("shifts");
+      })
+      .on("postgres_changes",{event:"UPDATE",schema:"public",table:"shifts"},payload=>{
+        const s=payload.new;if(!s||!s.date)return;
+        setShifts(prev=>{const n={...prev};if(!n[s.date])n[s.date]=[];const arr=n[s.date].filter(x=>x.name!==s.staff_name);arr.push({name:s.staff_name,symbol:s.symbol,start:s.start_time,end:s.end_time,memo:s.memo});n[s.date]=arr;return{...n};});
+        markDbSync("shifts");
+      })
+      .on("postgres_changes",{event:"DELETE",schema:"public",table:"shifts"},payload=>{
+        const s=payload.old;if(!s||!s.date)return;
+        setShifts(prev=>{const n={...prev};if(n[s.date]){n[s.date]=n[s.date].filter(x=>x.name!==s.staff_name);}return{...n};});
         markDbSync("shifts");
       })
       .on("postgres_changes",{event:"*",schema:"public",table:"staff"},async()=>{
@@ -5184,7 +5210,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.2.0";
+const APP_VERSION="v3.3.0";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
