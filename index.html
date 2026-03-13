@@ -1500,24 +1500,38 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
     return result;
   },[staff,shifts,attendance,viewYM,dim,vy,vmo]);
 
-  // シフトから勤怠レコード自動生成
+  // シフトから勤怠レコード自動生成（シフト変更時にも反映）
+  const attRef=React.useRef(attendance);attRef.current=attendance;
+  const onAttRef=React.useRef(onAttendanceChange);onAttRef.current=onAttendanceChange;
   React.useEffect(()=>{
+    const curAtt=attRef.current;
     const toCreate=[];
+    const toUpdate=[];
     staff.forEach(s=>{
-      const d=allStaffData[s.name];if(!d)return;
-      d.days.forEach(day=>{
-        if(day.shift&&!day.att){
-          toCreate.push({date:day.date,name:s.name,start:day.shift.start||"09:00",end:day.shift.end||"18:00",approved:false,memo:""});
+      for(let d=1;d<=dim;d++){
+        const ds=viewYM+"-"+String(d).padStart(2,"0");
+        const sh=(shifts[ds]||[]).find(x=>x.name===s.name);
+        const attKey=ds+"_"+s.name;
+        const att=curAtt[attKey]||null;
+        if(sh&&!att){
+          toCreate.push({date:ds,name:s.name,start:sh.start||"09:00",end:sh.end||"18:00",approved:false,memo:""});
+        }else if(sh&&att&&!att.approved){
+          const newStart=sh.start||"09:00";const newEnd=sh.end||"18:00";
+          if(att.start!==newStart||att.end!==newEnd){
+            toUpdate.push({...att,start:newStart,end:newEnd});
+          }
         }
-      });
+      }
     });
-    if(toCreate.length>0){
-      const next={...attendance};
+    if(toCreate.length>0||toUpdate.length>0){
+      const next={...curAtt};
       toCreate.forEach(r=>{next[r.date+"_"+r.name]=r;});
-      onAttendanceChange(next);
-      DB.saveAttendanceBatch(toCreate);
+      toUpdate.forEach(r=>{next[r.date+"_"+r.name]=r;});
+      onAttRef.current(next);
+      if(toCreate.length>0)DB.saveAttendanceBatch(toCreate);
+      if(toUpdate.length>0)DB.saveAttendanceBatch(toUpdate);
     }
-  },[viewYM]);
+  },[viewYM,shifts,staff,dim]);
 
   const approve=(date,name)=>{
     if(!window.confirm("承認を実行しますか？"))return;
@@ -4813,6 +4827,9 @@ function App(){
       .on("postgres_changes",{event:"*",schema:"public",table:"vehicles"},async()=>{
         const vh=await DB.fetchVehicles();if(vh&&vh.length)setVehicles(vh);markDbSync("vehicles");
       })
+      .on("postgres_changes",{event:"*",schema:"public",table:"attendance"},async()=>{
+        try{const attDB=await DB.fetchAttendance();if(attDB&&Object.keys(attDB).length)setAttendance(attDB);}catch(e){}
+      })
       .subscribe((status)=>{setSbConnected(status==="SUBSCRIBED");});
     return()=>{sb.removeChannel(ch);};
   },[]);
@@ -5167,7 +5184,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.1.0";
+const APP_VERSION="v3.2.0";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
