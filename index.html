@@ -231,8 +231,15 @@ const DB = {
     _saveTimer:null,
     save(stateData){if(!sbParking)return;clearTimeout(DB.parking._saveTimer);DB.parking._saveTimer=setTimeout(async()=>{try{await sbParking.from("parking_state").update({data:stateData,updated_at:new Date().toISOString()}).eq("id",1);}catch(e){console.log("Parking save error",e);}},500);},
     LS_KEY:"parking-mgr-v1",
+    LS_BK:"parking-mgr-bk",
     lsLoad(){try{const r=localStorage.getItem(DB.parking.LS_KEY);return r?JSON.parse(r):null;}catch(e){return null;}},
-    lsSave(d){try{localStorage.setItem(DB.parking.LS_KEY,JSON.stringify(d));}catch(e){}},
+    lsLoadBackup(){try{const r=localStorage.getItem(DB.parking.LS_BK);return r?JSON.parse(r):null;}catch(e){return null;}},
+    lsSave(d){try{
+      // 駐車中が1台以上ある場合のみバックアップを更新（空データで上書き防止）
+      const parked=d&&d.spots?d.spots.filter(s=>s.carId).length:0;
+      if(parked>0){localStorage.setItem(DB.parking.LS_BK,JSON.stringify(d));}
+      localStorage.setItem(DB.parking.LS_KEY,JSON.stringify(d));
+    }catch(e){}},
   },
   // --- HANDYMAN Fleet (store_id=sapporo) ---
   hm:{
@@ -3836,11 +3843,20 @@ function ParkingManager({masterVehicles}){
     DB.parking.fetch().then(remote=>{
       if(!mounted)return;
       // LSバックアップとDB比較: データ消失を検知して復元
-      const ls=DB.parking.lsLoad();
+      let ls=DB.parking.lsLoad();
+      // メインLSが空なら二重バックアップを試す
+      const lsParkedMain=ls&&ls.spots?ls.spots.filter(s=>s.carId).length:0;
+      if((!ls||!ls.cars||ls.cars.length===0||lsParkedMain===0)){
+        const bk=DB.parking.lsLoadBackup();
+        const bkParked=bk&&bk.spots?bk.spots.filter(s=>s.carId).length:0;
+        if(bk&&bk.cars&&bk.cars.length>0&&bkParked>0){
+          console.log("[Parking] Main LS empty/no parked. Using backup LS (parked:"+bkParked+")");
+          ls=bk;
+        }
+      }
       const useRemote=remote&&remote.spots;
       const remoteCarsLen=useRemote&&remote.cars?remote.cars.length:0;
       const lsCarsLen=ls&&ls.cars?ls.cars.length:0;
-      // DBの駐車中台数とLSの駐車中台数を比較
       const remoteParked=useRemote?remote.spots.filter(s=>s.carId).length:0;
       const lsParked=ls&&ls.spots?ls.spots.filter(s=>s.carId).length:0;
       // 復元条件: (1)車両数が大幅減 (2)駐車中が0でLSに駐車データあり
@@ -3850,14 +3866,13 @@ function ParkingManager({masterVehicles}){
         (remoteParked===0&&lsParked>0)
       );
       if(shouldRestore){
-        console.warn("[Parking] Data loss detected. DB cars:"+remoteCarsLen+" parked:"+remoteParked+" / LS cars:"+lsCarsLen+" parked:"+lsParked+". Restoring from LS.");
+        console.warn("[Parking] Data loss detected. DB cars:"+remoteCarsLen+" parked:"+remoteParked+" / LS cars:"+lsCarsLen+" parked:"+lsParked+". Restoring.");
         if(ls.spots)setSpots(ls.spots);if(ls.cars)setCars(ls.cars);
         if(ls.washMap)setWashMap(ls.washMap);if(ls.washTimeMap)setWashTimeMap(ls.washTimeMap);
         if(ls.maintMap)setMaintMap(ls.maintMap);if(ls.history)setHistory(ls.history);
         if(ls.staffCarMap)setStaffCarMap(ls.staffCarMap);if(ls.warehouseMap)setWarehouseMap(ls.warehouseMap);
-        // DBに復元データを書き戻し
         DB.parking.save({...ls,savedAt:new Date().toISOString()});
-        setTimeout(()=>alert("🔄 駐車場データをローカルバックアップから復元しました（車両"+lsCarsLen+"台・駐車中"+lsParked+"台）"),500);
+        setTimeout(()=>alert("🔄 駐車場データをバックアップから復元しました（車両"+lsCarsLen+"台・駐車中"+lsParked+"台）"),500);
       }else if(useRemote){
         setSpots(remote.spots);if(remote.cars)setCars(remote.cars);
         if(remote.washMap)setWashMap(remote.washMap);if(remote.washTimeMap)setWashTimeMap(remote.washTimeMap);
@@ -4224,16 +4239,19 @@ function ParkingManager({masterVehicles}){
       <button onClick={exportData} className="btn-primary" style={{width:"100%",marginBottom:6,padding:10,fontSize:12}}>📋 データコピー</button>
       <button onClick={importData} className="btn-ghost" style={{width:"100%",marginBottom:6,padding:10,fontSize:12}}>📥 インポート</button>
       <button onClick={()=>{
-        const ls=DB.parking.lsLoad();
+        let ls=DB.parking.lsLoad();
+        const lsP1=ls&&ls.spots?ls.spots.filter(s=>s.carId).length:0;
+        // メインが駐車0ならBKを試す
+        if(lsP1===0){const bk=DB.parking.lsLoadBackup();const bkP=bk&&bk.spots?bk.spots.filter(s=>s.carId).length:0;if(bkP>0){ls=bk;}}
         if(!ls||!ls.cars||ls.cars.length===0){alert("❌ このブラウザにバックアップデータがありません。\n以前駐車場を使っていた別のブラウザ(スマホ/PC)で試してください。");return;}
         const lsParked=ls.spots?ls.spots.filter(s=>s.carId).length:0;
-        if(!window.confirm(`🔄 ローカルバックアップから復元しますか？\n車両: ${ls.cars.length}台\n駐車中: ${lsParked}台\nスポット: ${ls.spots?ls.spots.length:0}枠`))return;
+        if(!window.confirm(`🔄 バックアップから復元しますか？\n車両: ${ls.cars.length}台\n駐車中: ${lsParked}台\nスポット: ${ls.spots?ls.spots.length:0}枠`))return;
         if(ls.spots)setSpots(ls.spots);if(ls.cars)setCars(ls.cars);
         if(ls.washMap)setWashMap(ls.washMap);if(ls.washTimeMap)setWashTimeMap(ls.washTimeMap);
         if(ls.maintMap)setMaintMap(ls.maintMap);if(ls.history)setHistory(ls.history);
         if(ls.staffCarMap)setStaffCarMap(ls.staffCarMap);if(ls.warehouseMap)setWarehouseMap(ls.warehouseMap);
         DB.parking.save({...ls,savedAt:new Date().toISOString()});
-        alert("✅ バックアップから復元しました");
+        alert("✅ バックアップから復元しました（駐車中"+lsParked+"台）");
       }} className="btn-ghost" style={{width:"100%",marginBottom:6,padding:10,fontSize:12,border:"2px solid #f59e0b",color:"#b45309"}}>🔄 ローカルバックアップから復元</button>
       <button onClick={resetData} className="btn-danger" style={{width:"100%",padding:10,fontSize:12}}>🗑️ 全リセット</button>
     </div>
