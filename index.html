@@ -2833,11 +2833,11 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
   const[dayOff,setDayOff]=useState(0);const selDate=dOff(today,dayOff);const[tasks,setTasks]=useState([]);
   const activeMembers=useMemo(()=>(shifts[selDate]||[]).filter(s=>s.type==="アルバイト"||s.symbol==="●").map(s=>s.name),[shifts,selDate]);
   const fleetRef=React.useRef(fleet);fleetRef.current=fleet;
-  // fleet変更時にタスクの車種情報を同期 + LS/DB永続化
+  // fleet変更時にタスクの車種情報を同期 + 洗車タスク再生成 + LS/DB永続化
   useEffect(()=>{
     setTasks(prev=>{
       let changed=false;
-      const next=prev.map(t=>{
+      let next=prev.map(t=>{
         if(!t.reservationId)return t;
         const vc=fleet[t.reservationId];
         if(!vc&&!t.assignedVehicle)return t;
@@ -2847,6 +2847,23 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
         const vn=vehicles.find(v=>v.code===vc);
         return{...t,assignedVehicle:vc,plateNo:vn?vn.no:"",vehicle:vn?vn.type:t.vehicle};
       });
+      // ★ 洗車タスクの追加/削除を再チェック（fleet変更で前日洗車が変わる可能性）
+      const gen=generateTasks(reservations,selDate,fleet,vehicles);
+      const genWash=gen.filter(g=>g.type==="洗車");
+      const existWashVc=new Set(next.filter(t=>t.type==="洗車").map(t=>t.assignedVehicle));
+      const genWashVc=new Set(genWash.map(g=>g.assignedVehicle));
+      // 不要な洗車タスクを除去（キャンセル等で翌日DELがなくなった車両）
+      const beforeLen=next.length;
+      next=next.filter(t=>t.type!=="洗車"||genWashVc.has(t.assignedVehicle));
+      if(next.length!==beforeLen)changed=true;
+      // 不足の洗車タスクを追加
+      genWash.forEach(g=>{
+        if(!existWashVc.has(g.assignedVehicle)){
+          next.push(g);changed=true;
+          console.log("[fleet→wash] 洗車タスク追加:",g.assignedVehicle,g.name);
+        }
+      });
+      if(changed)next=next.sort((a,b)=>{if(a.type==="洗車"&&b.type!=="洗車")return 1;if(a.type!=="洗車"&&b.type==="洗車")return -1;return(a.time||"").localeCompare(b.time||"");});
       // ★ 変更があればLS/DBに即時保存（タブ移動で元に戻る問題を防止）
       if(changed&&next.length){
         DB._lsSave(next,selDate);
@@ -2855,7 +2872,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
       }
       return changed?next:prev;
     });
-  },[fleet,vehicles]);
+  },[fleet,vehicles,reservations,selDate]);
   // タスクロード
   const selfUpdateRef=React.useRef(0);
   const loadTasks=React.useCallback(async(date,force)=>{
@@ -2875,7 +2892,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
       const fixed=saved.filter(t=>{
         if(!t.reservationId||t.manual)return true;
         const r=reservations.find(x=>x.id===t.reservationId);
-        if(!r)return true;
+        // ★ 予約が存在しない場合（キャンセル等でCSVから消えた）→ タスクを除去
+        if(!r){if(reservations.length>0){removed.push(t._id);console.log("[loadTasks] orphan task removed (reservation gone):",t._id,t.name,t.reservationId);return false;}return true;}
         if(t.type==="DEL"&&!sD(r.lendDate,date)){removed.push(t._id);return false;}
         if(t.type==="COL"&&!sD(r.returnDate,date)){removed.push(t._id);return false;}
         return true;
@@ -5188,10 +5206,19 @@ function App(){
         if(JSON.stringify(updated)!==JSON.stringify(tasks))DB.upsertTasks(updated,ld);
       }
       if(rd!==ld){const tasks2=await DB.fetchTasks(rd);if(tasks2&&tasks2.length){const updated2=tasks2.map(t=>t.reservationId===resId?{...t,assignedVehicle:newVc,plateNo:vn.no||"",vehicle:vn.type||t.vehicle}:t);if(JSON.stringify(updated2)!==JSON.stringify(tasks2))DB.upsertTasks(updated2,rd);}}
-      // 前日の洗車タスクも更新
+      // 前日の洗車タスクも更新 + 不足していれば新規生成
       const prevDay=dOff(ld,-1);
       const tasks3=await DB.fetchTasks(prevDay);
-      if(tasks3&&tasks3.length){const updated3=tasks3.map(t=>t.reservationId===resId?{...t,assignedVehicle:newVc,plateNo:vn.no||"",vehicle:vn.type||t.vehicle}:t);if(JSON.stringify(updated3)!==JSON.stringify(tasks3))DB.upsertTasks(updated3,prevDay);}
+      if(tasks3&&tasks3.length){
+        let updated3=tasks3.map(t=>t.reservationId===resId?{...t,assignedVehicle:newVc,plateNo:vn.no||"",vehicle:vn.type||t.vehicle}:t);
+        // ★ 洗車タスクが存在しなければ追加
+        const hasWash=updated3.find(t=>t.type==="洗車"&&t.assignedVehicle===newVc);
+        if(!hasWash){
+          updated3.push({_id:uid(),type:"洗車",time:"",name:`翌日出発: ${res.name}`,people:0,place:"",vehicle:vn.type,insurance:"",flight:"",reservationId:resId,ota:res.ota||"",tel:"",mail:"",done:false,assignee:"",memo:`${fmtD(ld)} DEL ${res.lendTime||""} ${res.name}`,assignedVehicle:newVc,plateNo:vn.no,insuranceChange:"",opts:{},yakkan:false,line:false,payment:false,returnDate:"",returnTime:"",returnType:"",colPlace:""});
+          console.log("[reassign] 前日洗車タスク追加:",newVc,res.name,prevDay);
+        }
+        if(JSON.stringify(updated3)!==JSON.stringify(tasks3))DB.upsertTasks(updated3,prevDay);
+      }
     }catch(e){console.error("task vehicle update error:",e);}
   },[fleet,vehicles,data]);
 
@@ -5231,7 +5258,20 @@ function App(){
     const removedIds=data.filter(r=>importedOTAs.has(r.ota)&&!importedIds.has(r.id)).map(r=>r.id);
     (async()=>{
       try{
-        if(removedIds.length){await DB.deleteReservations(removedIds);removedIds.forEach(id=>DB.deleteFleetOne(id));}
+        if(removedIds.length){
+          await DB.deleteReservations(removedIds);removedIds.forEach(id=>DB.deleteFleetOne(id));
+          // ★ キャンセル予約に紐づくタスクもDBから削除
+          if(sb){
+            for(const rid of removedIds){
+              const{data:orphanTasks}=await sb.from("tasks").select("_id").eq("reservation_id",rid);
+              if(orphanTasks&&orphanTasks.length){
+                const ids=orphanTasks.map(t=>t._id);
+                await sb.from("tasks").delete().in("_id",ids);
+                dbLog("deleteOrphanTasks",true,rid+": "+ids.length+"件");
+              }
+            }
+          }
+        }
         // 30件ずつバッチupsert
         for(let i=0;i<imported.length;i+=30){
           const chunk=imported.slice(i,i+30);
@@ -5500,7 +5540,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.9.0";
+const APP_VERSION="v3.9.2";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
