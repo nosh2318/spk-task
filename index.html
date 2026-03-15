@@ -5271,8 +5271,29 @@ function App(){
       // ★ DB保存完了後もしばらくガードを維持（RTイベントの遅延対策）
       setTimeout(()=>{importingRef.current=false;},15000);
     })();
-    // ★ インポート結果をalertで通知（件数＋売上）
-    // --- 今回インポート分だけのOTA別サマリー ---
+    // ★ インポート結果をalertで通知（件数＋売上＋差分詳細）
+    // --- 前回との差分を検出 ---
+    const prevIds=new Set(data.map(r=>r.id));
+    const newIds=new Set(allData.map(r=>r.id));
+    const addedRes=allData.filter(r=>!prevIds.has(r.id));
+    const removedRes=data.filter(r=>importedOTAs.has(r.ota)&&!newIds.has(r.id));
+    // 既存予約で内容が変わったもの（price/日付/車種など）
+    const changedRes=[];
+    allData.forEach(r=>{
+      if(!prevIds.has(r.id))return;
+      const old=data.find(o=>o.id===r.id);if(!old)return;
+      const diffs=[];
+      if(old.lendDate!==r.lendDate)diffs.push(`貸出日:${old.lendDate}→${r.lendDate}`);
+      if(old.returnDate!==r.returnDate)diffs.push(`返却日:${old.returnDate}→${r.returnDate}`);
+      if(old.lendTime!==r.lendTime)diffs.push(`貸出時間:${old.lendTime}→${r.lendTime}`);
+      if(old.returnTime!==r.returnTime)diffs.push(`返却時間:${old.returnTime}→${r.returnTime}`);
+      if((Number(old.price)||0)!==(Number(r.price)||0))diffs.push(`金額:¥${(Number(old.price)||0).toLocaleString()}→¥${(Number(r.price)||0).toLocaleString()}`);
+      if(old.vehicle!==r.vehicle)diffs.push(`車種:${old.vehicle}→${r.vehicle}`);
+      if(old.name!==r.name)diffs.push(`名前:${old.name}→${r.name}`);
+      if(old.insurance!==r.insurance)diffs.push(`補償:${old.insurance}→${r.insurance}`);
+      if(diffs.length)changedRes.push({r,diffs});
+    });
+    // --- OTA別サマリー ---
     const impOtaSum={};imported.forEach(r=>{const k=r.ota||"?";if(!impOtaSum[k])impOtaSum[k]={cnt:0,sum:0,z:0};impOtaSum[k].cnt++;impOtaSum[k].sum+=(Number(r.price)||0);if(!r.price)impOtaSum[k].z++;});
     const impOtaStr=Object.entries(impOtaSum).map(([k,v])=>`  ${k}: ${v.cnt}件 ¥${v.sum.toLocaleString()}${v.z?` (${v.z}件=0)`:""}`).join("\n");
     // --- 全体の月別サマリー ---
@@ -5281,10 +5302,28 @@ function App(){
     const totalSum=allData.reduce((s,r)=>s+(Number(r.price)||0),0);
     const zeroAll=allData.filter(r=>!r.price);
     const zeroDetail=zeroAll.length>0?`\n\n⚠️ price=0: ${zeroAll.length}件\n`+zeroAll.slice(0,10).map(r=>`  ${r.ota}/${r.id}/${r.name}`).join("\n")+(zeroAll.length>10?`\n  ...他${zeroAll.length-10}件`:""):"";
-    // ★ 画面上に売上診断バナーを表示（alertの代わり）
+    // --- 差分詳細テキスト ---
+    let diffStr="";
+    if(addedRes.length){
+      diffStr+=`\n\n🆕 新規追加 ${addedRes.length}件:\n`;
+      diffStr+=addedRes.slice(0,15).map(r=>`  [${r.ota}] ${r.id} ${r.name} ${fmtD(r.lendDate)}~${fmtD(r.returnDate)} ¥${(Number(r.price)||0).toLocaleString()}`).join("\n");
+      if(addedRes.length>15)diffStr+=`\n  ...他${addedRes.length-15}件`;
+    }
+    if(removedRes.length){
+      diffStr+=`\n\n❌ キャンセル/削除 ${removedRes.length}件:\n`;
+      diffStr+=removedRes.slice(0,15).map(r=>`  [${r.ota}] ${r.id} ${r.name} ${fmtD(r.lendDate)}~${fmtD(r.returnDate)}`).join("\n");
+      if(removedRes.length>15)diffStr+=`\n  ...他${removedRes.length-15}件`;
+    }
+    if(changedRes.length){
+      diffStr+=`\n\n📝 変更 ${changedRes.length}件:\n`;
+      diffStr+=changedRes.slice(0,10).map(({r,diffs})=>`  [${r.ota}] ${r.id} ${r.name}: ${diffs.join(", ")}`).join("\n");
+      if(changedRes.length>10)diffStr+=`\n  ...他${changedRes.length-10}件`;
+    }
+    if(!addedRes.length&&!removedRes.length&&!changedRes.length)diffStr="\n\n✅ 前回からの変更なし";
+    // ★ 画面上に売上診断バナーを表示
     const diagOta={};allData.forEach(r=>{const k=r.ota||"?";if(!diagOta[k])diagOta[k]={cnt:0,sum:0,z:0};diagOta[k].cnt++;diagOta[k].sum+=(Number(r.price)||0);if(!r.price)diagOta[k].z++;});
-    setImportDiag({ts:new Date().toLocaleTimeString(),total:allData.length,totalSum,mBreak,diagOta,zeroAll:zeroAll.slice(0,20)});
-    alert(`✅ ${allData.length}件取込完了 / 総売上¥${totalSum.toLocaleString()}\n\n【今回インポート分 OTA別】\n${impOtaStr}\n\n【全体 月別内訳】\n${mStr}${zeroDetail}\n\n※ 画面右上「v${APP_VERSION}」表示を確認\n※DB保存中です。15秒間お待ちください。`);
+    setImportDiag({ts:new Date().toLocaleTimeString(),total:allData.length,totalSum,mBreak,diagOta,zeroAll:zeroAll.slice(0,20),added:addedRes,removed:removedRes,changed:changedRes});
+    alert(`✅ ${allData.length}件取込完了 / 総売上¥${totalSum.toLocaleString()}\n\n【今回インポート分 OTA別】\n${impOtaStr}${diffStr}\n\n【全体 月別内訳】\n${mStr}${zeroDetail}\n\n※ 画面右上「v${APP_VERSION}」表示を確認\n※DB保存中です。15秒間お待ちください。`);
     // インポート後、既存タスクのオプション情報を強制更新
     (async()=>{
       const rOptsMap={};imported.forEach(r=>{rOptsMap[r.id]={b:!!r.optB,c:!!r.optC,j:!!r.optJ,usb:!!r.optUSB,parasol:!!r.optParasol};});
@@ -5526,7 +5565,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.9.7";
+const APP_VERSION="v3.9.8";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
