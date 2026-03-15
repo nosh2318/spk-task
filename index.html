@@ -2833,11 +2833,11 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
   const[dayOff,setDayOff]=useState(0);const selDate=dOff(today,dayOff);const[tasks,setTasks]=useState([]);
   const activeMembers=useMemo(()=>(shifts[selDate]||[]).filter(s=>s.type==="アルバイト"||s.symbol==="●").map(s=>s.name),[shifts,selDate]);
   const fleetRef=React.useRef(fleet);fleetRef.current=fleet;
-  // fleet変更時にタスクの車種情報を同期 + 洗車タスク再生成 + LS/DB永続化
+  // fleet変更時にタスクの車種情報を同期 + LS/DB永続化
   useEffect(()=>{
     setTasks(prev=>{
       let changed=false;
-      let next=prev.map(t=>{
+      const next=prev.map(t=>{
         if(!t.reservationId)return t;
         const vc=fleet[t.reservationId];
         if(!vc&&!t.assignedVehicle)return t;
@@ -2847,23 +2847,6 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
         const vn=vehicles.find(v=>v.code===vc);
         return{...t,assignedVehicle:vc,plateNo:vn?vn.no:"",vehicle:vn?vn.type:t.vehicle};
       });
-      // ★ 洗車タスクの追加/削除を再チェック（fleet変更で前日洗車が変わる可能性）
-      const gen=generateTasks(reservations,selDate,fleet,vehicles);
-      const genWash=gen.filter(g=>g.type==="洗車");
-      const existWashVc=new Set(next.filter(t=>t.type==="洗車").map(t=>t.assignedVehicle));
-      const genWashVc=new Set(genWash.map(g=>g.assignedVehicle));
-      // 不要な洗車タスクを除去（キャンセル等で翌日DELがなくなった車両）
-      const beforeLen=next.length;
-      next=next.filter(t=>t.type!=="洗車"||genWashVc.has(t.assignedVehicle));
-      if(next.length!==beforeLen)changed=true;
-      // 不足の洗車タスクを追加
-      genWash.forEach(g=>{
-        if(!existWashVc.has(g.assignedVehicle)){
-          next.push(g);changed=true;
-          console.log("[fleet→wash] 洗車タスク追加:",g.assignedVehicle,g.name);
-        }
-      });
-      if(changed)next=next.sort((a,b)=>{if(a.type==="洗車"&&b.type!=="洗車")return 1;if(a.type!=="洗車"&&b.type==="洗車")return -1;return(a.time||"").localeCompare(b.time||"");});
       // ★ 変更があればLS/DBに即時保存（タブ移動で元に戻る問題を防止）
       if(changed&&next.length){
         DB._lsSave(next,selDate);
@@ -2872,7 +2855,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
       }
       return changed?next:prev;
     });
-  },[fleet,vehicles,reservations,selDate]);
+  },[fleet,vehicles]);
   // タスクロード
   const selfUpdateRef=React.useRef(0);
   const loadTasks=React.useCallback(async(date,force)=>{
@@ -2905,8 +2888,18 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
       // 不足予約を追加
       const gen=generateTasks(reservations,date,fleetRef.current,vehicles);
       const existIds=new Set(fixed.filter(t=>t.reservationId).map(t=>t.reservationId+":"+t.type));
+      // ★ 洗車タスクは車両コード単位で重複排除
+      const existWashVc=new Set(fixed.filter(t=>t.type==="洗車").map(t=>t.assignedVehicle));
       // ★ 新規生成タスクにsheetPlacesの場所情報を補完
       gen.forEach(g=>{
+        if(g.type==="洗車"){
+          // 洗車は車両コード単位で1つだけ
+          if(!existWashVc.has(g.assignedVehicle)){
+            existWashVc.add(g.assignedVehicle);
+            fixed.push(g);
+          }
+          return;
+        }
         if(g.reservationId&&!existIds.has(g.reservationId+":"+g.type)){
           const sp=sheetPlaces[g.reservationId];
           if(sp&&!g.place){if(g.type==="DEL"&&sp.delPlace)g.place=sp.delPlace;if(g.type==="COL"&&sp.colPlace)g.place=sp.colPlace;}
@@ -2914,6 +2907,30 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
           fixed.push(g);
         }
       });
+      // ★ 保存済み洗車タスクの重複排除（同じ車両コードの洗車は1つだけ残す）
+      const seenWashVc=new Set();
+      const washRemoved=[];
+      for(let i=fixed.length-1;i>=0;i--){
+        if(fixed[i].type==="洗車"){
+          const vc=fixed[i].assignedVehicle;
+          if(seenWashVc.has(vc)){washRemoved.push(fixed[i]._id);fixed.splice(i,1);}
+          else seenWashVc.add(vc);
+        }
+      }
+      if(washRemoved.length&&sb){
+        sb.from("tasks").delete().in("_id",washRemoved).then(()=>dbLog("dedup wash",true,washRemoved.length+"件")).catch(e=>dbLog("dedup wash",false,e.message));
+      }
+      // ★ 翌日DELがない車両の孤児洗車タスクも除去
+      const genWashVc=new Set(gen.filter(g=>g.type==="洗車").map(g=>g.assignedVehicle));
+      const orphanWash=[];
+      for(let i=fixed.length-1;i>=0;i--){
+        if(fixed[i].type==="洗車"&&!genWashVc.has(fixed[i].assignedVehicle)){
+          orphanWash.push(fixed[i]._id);fixed.splice(i,1);
+        }
+      }
+      if(orphanWash.length&&sb){
+        sb.from("tasks").delete().in("_id",orphanWash).then(()=>dbLog("orphan wash",true,orphanWash.length+"件")).catch(e=>dbLog("orphan wash",false,e.message));
+      }
       // ★ LSにあるmanualタスクがDB結果に欠けていれば復元
       const fixedIds=new Set(fixed.map(t=>t._id));
       Object.values(lsMap).forEach(lst=>{
@@ -5540,7 +5557,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.9.2";
+const APP_VERSION="v3.9.3";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
