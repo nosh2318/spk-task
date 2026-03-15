@@ -563,8 +563,8 @@ function ymLabel(ym){const[y,m]=ym.split("-").map(Number);return`${y}年${m}月`
 function ymOff(ym,n){const[y,m]=ym.split("-").map(Number);const d=new Date(y,m-1+n,1);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;}
 let _id=0;function uid(){return"t"+(++_id);}
 let _vid=100;function vuid(){return"v"+(++_vid);}
-// ★ 手動タスク判定: DB往復でmanualフラグが消えるため_idプレフィックスで判定
-function isManual(t){if(t.manual)return true;const id=String(t._id);return!id.startsWith("d-")&&!id.startsWith("c-")&&!id.startsWith("w-");}
+// ★ 手動タスク判定: 自動生成タスクは必ずreservationIdを持つ。手動追加は常に空。
+function isManual(t){return!!t.manual||!t.reservationId;}
 
 /* ===== Googleスプレッドシートから場所データ取得 ===== */
 const PLACE_SHEET_CSV="https://docs.google.com/spreadsheets/d/e/2PACX-1vSsixHeH7WvPEhA0BqOhFcun6DgBAeB9z11ikzRgXQcB_OxKKwWT8uCvl6Fb551nYlRmBGLj0e7OcGi/pub?gid=854005754&single=true&output=csv";
@@ -2881,31 +2881,33 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
       }
       // 不足予約を追加
       const gen=generateTasks(reservations,date,fleetRef.current,vehicles);
-      // ★ 洗車タスクを安定的に再構築: 自動生成(_id="w-xxx")のみ対象、手動追加は保持
-      const savedAutoWash={};// _id→task (自動生成の洗車のみ)
+      // ★ 洗車タスク再構築: reservationIdありの洗車=自動生成(再構築対象), なし=手動(保持)
+      const savedAutoWash={};// _id→task
       const staleWashIds=[];
       for(let i=fixed.length-1;i>=0;i--){
         if(fixed[i].type==="洗車"){
-          if(String(fixed[i]._id).startsWith("w-")){
-            // 自動生成の洗車タスク → 再構築対象
+          if(fixed[i].reservationId){
+            // reservationIdあり = 自動生成の洗車タスク → 再構築対象（旧"t..."形式も含む）
             savedAutoWash[fixed[i]._id]=fixed[i];
             fixed.splice(i,1);
           }
-          // ★ "w-"で始まらない洗車 = 手動追加 → fixedに残す（spliceしない）
+          // reservationIdなし = 手動追加 → fixedに残す
         }
       }
       const genWash=gen.filter(g=>g.type==="洗車");
       const newWashIds=new Set(genWash.map(g=>g._id));
+      // 旧形式の保存済み洗車からdone/assignee等を引き継ぐためreservationIdでもマッチ
+      const savedByResId={};
+      Object.values(savedAutoWash).forEach(w=>{if(w.reservationId)savedByResId[w.reservationId]=w;});
       genWash.forEach(g=>{
-        const saved=savedAutoWash[g._id];
+        const saved=savedAutoWash[g._id]||savedByResId[g.reservationId];
         if(saved){
-          // 保存済み: done/assignee等のユーザ変更を保持、車両情報等は最新に更新
           fixed.push({...g,done:saved.done,assignee:saved.assignee,memo:saved.memo||g.memo,_changed:saved._changed});
         } else {
           fixed.push(g);
         }
       });
-      // 不要になった旧自動洗車タスクをDBから削除
+      // 旧形式(_idが"w-"でない)と不要になった洗車をDBから削除
       Object.keys(savedAutoWash).forEach(id=>{if(!newWashIds.has(id))staleWashIds.push(id);});
       if(staleWashIds.length&&sb){
         sb.from("tasks").delete().in("_id",staleWashIds).then(()=>dbLog("wash cleanup",true,staleWashIds.length+"件削除")).catch(e=>dbLog("wash cleanup",false,e.message));
@@ -2920,16 +2922,12 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
           fixed.push(g);
         }
       });
-      // ★ LSにある手動タスクがDB結果に欠けていれば復元
-      // 手動タスク = _idが自動生成プレフィックス("d-","c-","w-")でないもの
+      // ★ LSにある手動タスク(reservationIdなし)がDB結果に欠けていれば復元
       const fixedIds=new Set(fixed.map(t=>t._id));
       Object.values(lsMap).forEach(lst=>{
-        if(!fixedIds.has(lst._id)){
-          const isAuto=String(lst._id).startsWith("d-")||String(lst._id).startsWith("c-")||String(lst._id).startsWith("w-");
-          if(!isAuto){
-            console.log("[loadTasks] manual task restored from LS:",lst._id,lst.name);
-            fixed.push(lst);
-          }
+        if(!fixedIds.has(lst._id)&&!lst.reservationId){
+          console.log("[loadTasks] manual task restored from LS:",lst._id,lst.name);
+          fixed.push(lst);
         }
       });
       // fleet情報をタスクに反映（DBが古い場合の対策）
@@ -3022,7 +3020,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
             // ★ 手動追加の洗車タスクがDB結果に欠けていれば現在のstateから復元
             const dedupedIds=new Set(deduped.map(t=>t._id));
             setTasks(prev=>{
-              const manualWash=prev.filter(t=>t.type==="洗車"&&!String(t._id).startsWith("w-")&&!dedupedIds.has(t._id));
+              const manualWash=prev.filter(t=>t.type==="洗車"&&!t.reservationId&&!dedupedIds.has(t._id));
               const result=manualWash.length?[...deduped,...manualWash]:deduped;
               DB._lsSave(result,selDate);
               return result;
@@ -5598,7 +5596,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.9.12";
+const APP_VERSION="v3.9.13";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
