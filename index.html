@@ -2879,25 +2879,23 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
       }
       // 不足予約を追加
       const gen=generateTasks(reservations,date,fleetRef.current,vehicles);
-      // ★ 洗車タスクを安定的に再構築: 決定的_id("w-"+reservationId)を使用
-      // 自動生成洗車のみ対象。手動追加(manual:true)の洗車は保持する
-      const savedWashMap={};
+      // ★ 洗車タスクを安定的に再構築: 自動生成(_id="w-xxx")のみ対象、手動追加は保持
+      const savedAutoWash={};// _id→task (自動生成の洗車のみ)
       const staleWashIds=[];
-      const manualWash=[];
       for(let i=fixed.length-1;i>=0;i--){
         if(fixed[i].type==="洗車"){
-          if(fixed[i].manual){
-            manualWash.push(fixed[i]); // 手動追加は別途保持
-          } else {
-            savedWashMap[fixed[i]._id]=fixed[i];
+          if(String(fixed[i]._id).startsWith("w-")){
+            // 自動生成の洗車タスク → 再構築対象
+            savedAutoWash[fixed[i]._id]=fixed[i];
+            fixed.splice(i,1);
           }
-          fixed.splice(i,1);
+          // ★ "w-"で始まらない洗車 = 手動追加 → fixedに残す（spliceしない）
         }
       }
       const genWash=gen.filter(g=>g.type==="洗車");
       const newWashIds=new Set(genWash.map(g=>g._id));
       genWash.forEach(g=>{
-        const saved=savedWashMap[g._id];
+        const saved=savedAutoWash[g._id];
         if(saved){
           // 保存済み: done/assignee等のユーザ変更を保持、車両情報等は最新に更新
           fixed.push({...g,done:saved.done,assignee:saved.assignee,memo:saved.memo||g.memo,_changed:saved._changed});
@@ -2905,12 +2903,10 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
           fixed.push(g);
         }
       });
-      // 手動追加の洗車タスクを復元
-      manualWash.forEach(w=>fixed.push(w));
-      // 不要になった旧自動洗車タスク(旧_id形式"t..."等)をDBから削除（手動は除外済み）
-      Object.keys(savedWashMap).forEach(id=>{if(!newWashIds.has(id))staleWashIds.push(id);});
+      // 不要になった旧自動洗車タスクをDBから削除
+      Object.keys(savedAutoWash).forEach(id=>{if(!newWashIds.has(id))staleWashIds.push(id);});
       if(staleWashIds.length&&sb){
-        sb.from("tasks").delete().in("_id",staleWashIds).then(()=>dbLog("wash cleanup",true,staleWashIds.length+"件の旧形式洗車タスク削除")).catch(e=>dbLog("wash cleanup",false,e.message));
+        sb.from("tasks").delete().in("_id",staleWashIds).then(()=>dbLog("wash cleanup",true,staleWashIds.length+"件削除")).catch(e=>dbLog("wash cleanup",false,e.message));
       }
       // ★ 不足DEL/COLタスクを追加
       const existIds2=new Set(fixed.filter(t=>t.reservationId&&t.type!=="洗車").map(t=>t.reservationId+":"+t.type));
@@ -2922,12 +2918,16 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
           fixed.push(g);
         }
       });
-      // ★ LSにあるmanualタスクがDB結果に欠けていれば復元
+      // ★ LSにある手動タスクがDB結果に欠けていれば復元
+      // 手動タスク = _idが自動生成プレフィックス("d-","c-","w-")でないもの
       const fixedIds=new Set(fixed.map(t=>t._id));
       Object.values(lsMap).forEach(lst=>{
-        if(lst.manual&&!fixedIds.has(lst._id)){
-          console.log("[loadTasks] manual task restored from LS:",lst._id,lst.name);
-          fixed.push(lst);
+        if(!fixedIds.has(lst._id)){
+          const isAuto=String(lst._id).startsWith("d-")||String(lst._id).startsWith("c-")||String(lst._id).startsWith("w-");
+          if(!isAuto){
+            console.log("[loadTasks] manual task restored from LS:",lst._id,lst.name);
+            fixed.push(lst);
+          }
         }
       });
       // fleet情報をタスクに反映（DBが古い場合の対策）
@@ -3017,8 +3017,14 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
                 if(ls.colPlace&&!t.colPlace)t.colPlace=ls.colPlace;
               }
             });
-            setTasks(deduped);
-            DB._lsSave(deduped,selDate);
+            // ★ 手動追加の洗車タスクがDB結果に欠けていれば現在のstateから復元
+            const dedupedIds=new Set(deduped.map(t=>t._id));
+            setTasks(prev=>{
+              const manualWash=prev.filter(t=>t.type==="洗車"&&!String(t._id).startsWith("w-")&&!dedupedIds.has(t._id));
+              const result=manualWash.length?[...deduped,...manualWash]:deduped;
+              DB._lsSave(result,selDate);
+              return result;
+            });
           }
         },500);
       }).subscribe();
@@ -5590,7 +5596,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.9.10";
+const APP_VERSION="v3.9.11";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
