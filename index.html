@@ -2879,49 +2879,56 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
       if(removed.length&&sb){
         sb.from("tasks").delete().in("_id",removed).then(()=>dbLog("cleanStale",true,removed.length+"件削除")).catch(e=>dbLog("cleanStale",false,e.message));
       }
-      // 不足予約を追加
+      // ★★★ 全自動タスクを完全再構築（DEL/COL/洗車すべて）★★★
+      // 方針: reservationIdありの自動タスクを全て除去→generateTasksで再生成→保存済み状態をマージ
       const gen=generateTasks(reservations,date,fleetRef.current,vehicles);
-      // ★ 洗車タスク再構築: reservationIdありの洗車=自動生成(再構築対象), なし=手動(保持)
-      const savedAutoWash={};// _id→task
-      const staleWashIds=[];
+      // 1) 保存済み自動タスクを_idとreservationId+typeの両方でマップ化
+      const savedMap={};// _id→task
+      const savedByKey={};// "reservationId:type"→task (done/assignee等の引き継ぎ用)
+      const staleIds=[];// DB削除対象
       for(let i=fixed.length-1;i>=0;i--){
-        if(fixed[i].type==="洗車"){
-          if(fixed[i].reservationId){
-            // reservationIdあり = 自動生成の洗車タスク → 再構築対象（旧"t..."形式も含む）
-            savedAutoWash[fixed[i]._id]=fixed[i];
-            fixed.splice(i,1);
-          }
-          // reservationIdなし = 手動追加 → fixedに残す
+        const t=fixed[i];
+        if(t.reservationId){
+          // 自動生成タスク → 除去してマップに保存
+          savedMap[t._id]=t;
+          const key=t.reservationId+":"+t.type;
+          if(!savedByKey[key])savedByKey[key]=t;// 最初に見つかったものを優先
+          fixed.splice(i,1);
         }
+        // reservationIdなし = 手動追加 → fixedに残す
       }
-      const genWash=gen.filter(g=>g.type==="洗車");
-      const newWashIds=new Set(genWash.map(g=>g._id));
-      // 旧形式の保存済み洗車からdone/assignee等を引き継ぐためreservationIdでもマッチ
-      const savedByResId={};
-      Object.values(savedAutoWash).forEach(w=>{if(w.reservationId)savedByResId[w.reservationId]=w;});
-      genWash.forEach(g=>{
-        const saved=savedAutoWash[g._id]||savedByResId[g.reservationId];
+      // 2) generateTasksの結果を追加（保存済み状態をマージ）
+      gen.forEach(g=>{
+        const key=g.reservationId+":"+g.type;
+        const saved=savedMap[g._id]||savedByKey[key];
         if(saved){
-          fixed.push({...g,done:saved.done,assignee:saved.assignee,memo:saved.memo||g.memo,_changed:saved._changed});
+          // 保存済みのユーザ変更(done/assignee/time/place/memo等)を引き継ぎ
+          const merged={...g,done:saved.done,assignee:saved.assignee};
+          if(saved._changed){
+            merged._changed=saved._changed;
+            if(saved._changed.time)merged.time=saved.time;
+            if(saved._changed.place)merged.place=saved.place;
+            if(saved._changed.colPlace)merged.colPlace=saved.colPlace;
+          }
+          if(saved.memo&&saved.memo!==g.memo)merged.memo=saved.memo;
+          // sheetPlaces補完
+          const sp=sheetPlaces[g.reservationId];
+          if(sp&&!merged.place){if(g.type==="DEL"&&sp.delPlace)merged.place=sp.delPlace;if(g.type==="COL"&&sp.colPlace)merged.place=sp.colPlace;}
+          if(sp&&g.type==="DEL"&&!merged.colPlace&&sp.colPlace)merged.colPlace=sp.colPlace;
+          fixed.push(merged);
         } else {
-          fixed.push(g);
-        }
-      });
-      // 旧形式(_idが"w-"でない)と不要になった洗車をDBから削除
-      Object.keys(savedAutoWash).forEach(id=>{if(!newWashIds.has(id))staleWashIds.push(id);});
-      if(staleWashIds.length&&sb){
-        sb.from("tasks").delete().in("_id",staleWashIds).then(()=>dbLog("wash cleanup",true,staleWashIds.length+"件削除")).catch(e=>dbLog("wash cleanup",false,e.message));
-      }
-      // ★ 不足DEL/COLタスクを追加
-      const existIds2=new Set(fixed.filter(t=>t.reservationId&&t.type!=="洗車").map(t=>t.reservationId+":"+t.type));
-      gen.filter(g=>g.type!=="洗車").forEach(g=>{
-        if(g.reservationId&&!existIds2.has(g.reservationId+":"+g.type)){
           const sp=sheetPlaces[g.reservationId];
           if(sp&&!g.place){if(g.type==="DEL"&&sp.delPlace)g.place=sp.delPlace;if(g.type==="COL"&&sp.colPlace)g.place=sp.colPlace;}
           if(sp&&g.type==="DEL"&&!g.colPlace&&sp.colPlace)g.colPlace=sp.colPlace;
           fixed.push(g);
         }
       });
+      // 3) 旧形式タスク(generateTasksに対応するものがない)をDBから削除
+      const genIds=new Set(gen.map(g=>g._id));
+      Object.keys(savedMap).forEach(id=>{if(!genIds.has(id))staleIds.push(id);});
+      if(staleIds.length&&sb){
+        sb.from("tasks").delete().in("_id",staleIds).then(()=>dbLog("task cleanup",true,staleIds.length+"件の旧タスク削除")).catch(e=>dbLog("task cleanup",false,e.message));
+      }
       // ★ LSにある手動タスク(reservationIdなし)がDB結果に欠けていれば復元
       const fixedIds=new Set(fixed.map(t=>t._id));
       Object.values(lsMap).forEach(lst=>{
@@ -5596,7 +5603,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.9.13";
+const APP_VERSION="v3.9.14";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
