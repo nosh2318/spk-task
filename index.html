@@ -2885,7 +2885,7 @@ function MaintForm({vehicleCode,startDate,onAdd,onClose,vehicles}){
 /* ==========================================
    OPシート（独立フルスクリーン）
    ========================================== */
-function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicles,staff,resOpts,sheetPlaces,onUpdateSheetPlaces,repeaterMap,jalanPay}){
+function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicles,staff,resOpts,sheetPlaces,onUpdateSheetPlaces,repeaterMap,jalanPay,cancelledIdsRef}){
   const[dayOff,setDayOff]=useState(0);const selDate=dOff(today,dayOff);const[tasks,setTasks]=useState([]);
   const activeMembers=useMemo(()=>(shifts[selDate]||[]).filter(s=>s.type==="アルバイト"||s.symbol==="●").map(s=>s.name),[shifts,selDate]);
   const fleetRef=React.useRef(fleet);fleetRef.current=fleet;
@@ -3086,11 +3086,20 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
                 if(ls.colPlace&&!t.colPlace)t.colPlace=ls.colPlace;
               }
             });
+            // ★ キャンセル済み予約+orphanタスクを除外（復活防止）
+            const cIds=cancelledIdsRef?cancelledIdsRef.current:new Set();
+            const resIds=new Set(reservations.map(r=>r.id));
+            const cleaned=deduped.filter(t=>{
+              if(!t.reservationId)return true;// 手動タスクは常に保持
+              if(cIds.has(t.reservationId))return false;// キャンセル済み
+              if(reservations.length>0&&!resIds.has(t.reservationId))return false;// orphan
+              return true;
+            });
             // ★ 手動追加の洗車タスクがDB結果に欠けていれば現在のstateから復元
-            const dedupedIds=new Set(deduped.map(t=>t._id));
+            const cleanedIds=new Set(cleaned.map(t=>t._id));
             setTasks(prev=>{
-              const manualWash=prev.filter(t=>t.type==="洗車"&&!t.reservationId&&!dedupedIds.has(t._id));
-              const result=manualWash.length?[...deduped,...manualWash]:deduped;
+              const manualWash=prev.filter(t=>t.type==="洗車"&&!t.reservationId&&!cleanedIds.has(t._id));
+              const result=manualWash.length?[...cleaned,...manualWash]:cleaned;
               DB._lsSave(result,selDate);
               return result;
             });
@@ -5142,27 +5151,32 @@ function App(){
         DB.fetchReservations(),DB.fetchFleet(),DB.fetchStaff(),DB.fetchVehicles(),DB.fetchShifts(),DB.fetchMaintenance()
       ]);
       if(importingRef.current)return;
-      // ★ reservations: DB + LSバックアップ + 現在のstateをマージ
-      let useRes=resDB||[];
-      try{const bk=JSON.parse(localStorage.getItem("spk_reservations_backup")||"[]");if(bk.length>useRes.length)useRes=bk;}catch(e){}
-      // ★ キャンセル済み予約をフィルタ（ローカルで消した予約がDBから復活するのを防止）
-      const cancelled=cancelledIdsRef.current;
-      if(cancelled.size){
-        useRes=useRes.filter(r=>!cancelled.has(r.id));
-        console.log("[silentRefresh] cancelled filter: "+cancelled.size+"件除外");
-      }
-      // 現在のdata stateにあってDB/LSに無い予約（手動追加直後など）を保護
-      setData(prev=>{
-        if(!useRes.length)return prev;
-        const dbIds=new Set(useRes.map(r=>r.id));
-        // キャンセル済みはlocalOnlyに入れない
-        const localOnly=prev.filter(r=>!dbIds.has(r.id)&&!cancelled.has(r.id));
-        if(localOnly.length){
-          console.log("[silentRefresh] "+localOnly.length+"件のローカル専用予約を保護:",localOnly.map(r=>r.id).join(","));
-          return[...useRes,...localOnly];
+      // ★ reservations: ローカル変更が未同期なら上書きしない（新規予約/キャンセル保護）
+      const resSS=syncStatusRef.current.reservations;
+      const resHasPendingLocal=resSS.localTime&&(!resSS.dbTime||resSS.localTime>resSS.dbTime);
+      if(resHasPendingLocal){
+        console.log("[silentRefresh] reservations skip: pending local change (local="+resSS.localTime+" db="+resSS.dbTime+")");
+      } else {
+        let useRes=resDB||[];
+        try{const bk=JSON.parse(localStorage.getItem("spk_reservations_backup")||"[]");if(bk.length>useRes.length)useRes=bk;}catch(e){}
+        // ★ キャンセル済み予約をフィルタ（ローカルで消した予約がDBから復活するのを防止）
+        const cancelled=cancelledIdsRef.current;
+        if(cancelled.size){
+          useRes=useRes.filter(r=>!cancelled.has(r.id));
+          console.log("[silentRefresh] cancelled filter: "+cancelled.size+"件除外");
         }
-        return useRes;
-      });
+        // 現在のdata stateにあってDB/LSに無い予約（手動追加直後など）を保護
+        setData(prev=>{
+          if(!useRes.length)return prev;
+          const dbIds=new Set(useRes.map(r=>r.id));
+          const localOnly=prev.filter(r=>!dbIds.has(r.id)&&!cancelled.has(r.id));
+          if(localOnly.length){
+            console.log("[silentRefresh] "+localOnly.length+"件のローカル専用予約を保護:",localOnly.map(r=>r.id).join(","));
+            return[...useRes,...localOnly];
+          }
+          return useRes;
+        });
+      }
       // ★ fleet: ローカル変更がDB同期より新しい場合は上書きしない（車両変更保護）
       if(flDB&&Object.keys(flDB).length){
         const ss=syncStatusRef.current.fleet;
@@ -5179,7 +5193,7 @@ function App(){
       // 同期ステータス更新
       const now=Date.now();
       setSyncStatus(p=>({...p,
-        reservations:{dbTime:now,localTime:p.reservations.localTime,count:data.length,dbCount:useRes.length},
+        reservations:resHasPendingLocal?p.reservations:{dbTime:now,localTime:p.reservations.localTime,count:data.length,dbCount:resDB?resDB.length:0},
         fleet:{dbTime:now,localTime:p.fleet.localTime},
         staff:{dbTime:now,localTime:p.staff.localTime,count:staff.length,dbCount:stDB?stDB.length:0},
         vehicles:{dbTime:now,localTime:p.vehicles.localTime,count:vehicles.length,dbCount:vhDB?vhDB.length:0},
@@ -5560,7 +5574,7 @@ function App(){
 
   return <div style={{height:"100vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
     {SB_ENABLED&&<div className="sync-desktop"><SyncBadge connected={sbConnected}/></div>}
-    {showOP&&<OPScreen reservations={data} today={today} shifts={shifts} fleet={fleet} onFleetChange={setFleetSync} onClose={()=>setShowOP(false)} vehicles={vehicles} staff={staff} resOpts={resOpts} sheetPlaces={sheetPlaces} onUpdateSheetPlaces={saveSheetPlaces} repeaterMap={repeaterInfo.isRepeater} jalanPay={jalanPay}/>}
+    {showOP&&<OPScreen reservations={data} today={today} shifts={shifts} fleet={fleet} onFleetChange={setFleetSync} onClose={()=>setShowOP(false)} vehicles={vehicles} staff={staff} resOpts={resOpts} sheetPlaces={sheetPlaces} onUpdateSheetPlaces={saveSheetPlaces} repeaterMap={repeaterInfo.isRepeater} jalanPay={jalanPay} cancelledIdsRef={cancelledIdsRef}/>}
     <div style={{display:showOP?"none":"flex",flex:1,overflow:"hidden",flexDirection:"column"}}>
       <div className={"top-nav"+(tab==="top"?" hide-on-top":"")}>
         {navItems.filter(n=>{const always=["top","import","vehicle","staff","shift","attendance","parking","fleet","jalanpay","history","customer"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>setTab(n.id)} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
@@ -5720,7 +5734,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.9.20";
+const APP_VERSION="v3.9.21";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
