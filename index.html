@@ -5139,9 +5139,15 @@ function App(){
         DB.fetchReservations(),DB.fetchFleet(),DB.fetchStaff(),DB.fetchVehicles(),DB.fetchShifts(),DB.fetchMaintenance()
       ]);
       if(importingRef.current)return;
-      let useRes=resDB;
-      try{const bk=JSON.parse(localStorage.getItem("spk_reservations_backup")||"[]");if(bk.length>=resDB.length&&bk.length>0)useRes=bk;}catch(e){}
-      if(useRes.length)setData(useRes);
+      // ★ reservations: ローカル変更がDB同期より新しい場合は上書きしない（新規追加/キャンセル保護）
+      const ssRes=syncStatusRef.current.reservations;
+      const hasResPending=ssRes.localTime&&(!ssRes.dbTime||ssRes.localTime>ssRes.dbTime);
+      if(hasResPending){console.log("[silentRefresh] reservations skip: pending local change");}
+      else{
+        let useRes=resDB;
+        try{const bk=JSON.parse(localStorage.getItem("spk_reservations_backup")||"[]");if(bk.length>=resDB.length&&bk.length>0)useRes=bk;}catch(e){}
+        if(useRes.length)setData(useRes);
+      }
       // ★ fleet: ローカル変更がDB同期より新しい場合は上書きしない（車両変更保護）
       if(flDB&&Object.keys(flDB).length){
         const ss=syncStatusRef.current.fleet;
@@ -5452,6 +5458,8 @@ function App(){
   const addReservation=useCallback((r,vehicleCode)=>{
     const newData=[...data,r];
     setData(newData);
+    try{localStorage.setItem("spk_reservations_backup",JSON.stringify(newData));}catch(e){}
+    markLocalChange("reservations");
     DB.upsertReservations([r]);
     if(vehicleCode){
       setFleet(prev=>({...prev,[r.id]:vehicleCode}));
@@ -5476,7 +5484,10 @@ function App(){
   const cancelReservation=useCallback((id)=>{
     // 予約の日付を取得（タスクLS除去に必要）
     const res=data.find(r=>r.id===id);
-    setData(prev=>prev.filter(r=>r.id!==id));
+    const newData=data.filter(r=>r.id!==id);
+    setData(newData);
+    try{localStorage.setItem("spk_reservations_backup",JSON.stringify(newData));}catch(e){}
+    markLocalChange("reservations");
     const nf={...fleet};delete nf[id];
     setFleet(nf);
     // DB: 予約・fleet・タスクを全て削除
@@ -5499,6 +5510,8 @@ function App(){
       const next=prev.map(r=>r.id===id?{...r,...changes}:r);
       const updated=next.find(r=>r.id===id);
       if(updated)DB.upsertReservations([updated]);
+      try{localStorage.setItem("spk_reservations_backup",JSON.stringify(next));}catch(e){}
+      markLocalChange("reservations");
       return next;
     });
   },[]);
@@ -5688,7 +5701,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.9.16";
+const APP_VERSION="v3.9.17";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
