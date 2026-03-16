@@ -2617,7 +2617,7 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
 
   const vehicleBars=useMemo(()=>{
     const bars={};vehicles.forEach(v=>{bars[v.code]=[];});
-    data.forEach(r=>{const vc=fleet[r.id];if(!vc||!bars[vc])return;const ld=norm(r.lendDate),rd=norm(r.returnDate);const si=dates.indexOf(ld),ei=dates.indexOf(rd);if(si<0&&ei<0)return;const s=Math.max(si,0),e=Math.min(ei>=0?ei:dates.length-1,dates.length-1);bars[vc].push({type:"reservation",r,startI:s,endI:e,left:s*COL_W,width:(e-s+1)*COL_W-2});});
+    data.forEach(r=>{const vc=fleet[r.id];if(!vc||!bars[vc])return;if(!r.lendDate||!r.returnDate)return;const ld=norm(r.lendDate),rd=norm(r.returnDate);if(!ld||!rd)return;const si=dates.indexOf(ld),ei=dates.indexOf(rd);if(si<0&&ei<0)return;const s=Math.max(si,0),e=Math.min(ei>=0?ei:dates.length-1,dates.length-1);bars[vc].push({type:"reservation",r,startI:s,endI:e,left:s*COL_W,width:(e-s+1)*COL_W-2});});
     (maintenance||[]).forEach(m=>{if(!bars[m.vehicleCode])return;const si=dates.indexOf(m.startDate),ei=dates.indexOf(m.endDate);if(si<0&&ei<0)return;const s=Math.max(si,0),e=Math.min(ei>=0?ei:dates.length-1,dates.length-1);bars[m.vehicleCode].push({type:"maintenance",m,startI:s,endI:e,left:s*COL_W,width:(e-s+1)*COL_W-2});});
     return bars;
   },[data,fleet,dates,maintenance,vehicles]);
@@ -5502,21 +5502,29 @@ function App(){
   },[data,vehicles,fleet,pendingPlaces,maintenance]);
 
   const addReservation=useCallback((r,vehicleCode)=>{
-    const newData=[...data,r];
-    setData(newData);
-    try{localStorage.setItem("spk_reservations_backup",JSON.stringify(newData));}catch(e){}
+    // ★ setData(prev=>...)で最新stateを使う（stale closure防止）
+    let latestData;
+    setData(prev=>{
+      latestData=[...prev,r];
+      try{localStorage.setItem("spk_reservations_backup",JSON.stringify(latestData));}catch(e){}
+      return latestData;
+    });
     markLocalChange("reservations");
     DB.upsertReservations([r]);
     if(vehicleCode){
       setFleet(prev=>({...prev,[r.id]:vehicleCode}));
+      markLocalChange("fleet");
       DB.updateFleetOne(r.id,vehicleCode);
     }else{
-      // 自動配車
-      const newFleet=autoAssign(newData,vehicles,fleet,maintenance);
-      setFleet(newFleet);
-      DB.upsertFleet(newFleet);
+      // 自動配車（最新のdata+fleetを使用）
+      setFleet(prev=>{
+        const newFleet=autoAssign(latestData||[r],vehicles,prev,maintenance);
+        DB.upsertFleet(newFleet);
+        return newFleet;
+      });
+      markLocalChange("fleet");
     }
-  },[data,vehicles,fleet,maintenance]);
+  },[vehicles,maintenance]);
 
   const bulkAddReservation=useCallback((rArr,fl)=>{
     const ids=new Set(data.map(r=>r.id));
@@ -5530,27 +5538,33 @@ function App(){
   const cancelReservation=useCallback((id)=>{
     // ★ キャンセルIDを追跡（silentRefresh/Realtimeで復活しないように）
     markCancelled(id);
-    // 予約の日付を取得（タスクLS除去に必要）
-    const res=data.find(r=>r.id===id);
-    const newData=data.filter(r=>r.id!==id);
-    setData(newData);
-    try{localStorage.setItem("spk_reservations_backup",JSON.stringify(newData));}catch(e){}
+    // ★ setData(prev=>...)で最新stateを使う（stale closure防止）
+    let cancelledRes=null;
+    setData(prev=>{
+      cancelledRes=prev.find(r=>r.id===id);
+      const newData=prev.filter(r=>r.id!==id);
+      try{localStorage.setItem("spk_reservations_backup",JSON.stringify(newData));}catch(e){}
+      return newData;
+    });
     markLocalChange("reservations");
-    const nf={...fleet};delete nf[id];
-    setFleet(nf);
+    setFleet(prev=>{const nf={...prev};delete nf[id];return nf;});
+    markLocalChange("fleet");
     // DB: 予約・fleet・タスクを全て削除
     DB.deleteReservations([id]);
     DB.deleteFleetOne(id);
     DB.deleteTasksByReservation(id);
     // LS内のタスクからも該当予約のタスクを除去
-    if(res){
-      const dates=[norm(res.lendDate),norm(res.returnDate),dOff(norm(res.lendDate),-1)].filter(Boolean);
-      [...new Set(dates)].forEach(d=>{
-        const ls=DB._lsLoad(d);
-        if(ls){const filtered=ls.filter(t=>t.reservationId!==id);if(filtered.length!==ls.length)DB._lsSave(filtered,d);}
-      });
-    }
-  },[fleet,data]);
+    setTimeout(()=>{
+      const res=cancelledRes;
+      if(res){
+        const dates=[norm(res.lendDate),norm(res.returnDate),dOff(norm(res.lendDate),-1)].filter(Boolean);
+        [...new Set(dates)].forEach(d=>{
+          const ls=DB._lsLoad(d);
+          if(ls){const filtered=ls.filter(t=>t.reservationId!==id);if(filtered.length!==ls.length)DB._lsSave(filtered,d);}
+        });
+      }
+    },0);
+  },[]);
 
   // 予約情報を部分更新（配車表モーダルから）
   const updateReservation=useCallback((id,changes)=>{
@@ -5749,7 +5763,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.9.22";
+const APP_VERSION="v3.9.23";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
