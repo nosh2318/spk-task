@@ -2885,7 +2885,7 @@ function MaintForm({vehicleCode,startDate,onAdd,onClose,vehicles}){
 /* ==========================================
    OPシート（独立フルスクリーン）
    ========================================== */
-function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicles,staff,resOpts,sheetPlaces,onUpdateSheetPlaces,repeaterMap,jalanPay,cancelledIdsRef}){
+function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicles,staff,resOpts,sheetPlaces,onUpdateSheetPlaces,repeaterMap,jalanPay,cancelledIdsRef,onCancelReservation}){
   const[dayOff,setDayOff]=useState(0);const selDate=dOff(today,dayOff);const[tasks,setTasks]=useState([]);
   const activeMembers=useMemo(()=>(shifts[selDate]||[]).filter(s=>s.type==="アルバイト"||s.symbol==="●").map(s=>s.name),[shifts,selDate]);
   const fleetRef=React.useRef(fleet);fleetRef.current=fleet;
@@ -3282,7 +3282,22 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
             const ch=t._changed||{};
             const isRep=repeaterMap&&t.reservationId&&repeaterMap[t.reservationId];
             const cellS=(i,field)=>({position:i<4?"sticky":"static",left:i===0?0:i===1?28:i===2?58:i===3?106:undefined,zIndex:i<4?2:0,background:field&&ch[field]?"#fefce8":rowBg,padding:"2px 2px",borderBottom:"1px solid #f1f5f9",borderRight:i===3?"2px solid #cbd5e1":"1px solid #f1f5f9",textAlign:i>=13&&i<=15?"center":i===6?"center":i===7?"center":i===8?"center":"left",opacity:t.done?0.4:1,verticalAlign:"middle"});
-            const delTask=async()=>{if(!window.confirm("この行を削除しますか？"))return;setTasks(ts=>{const next=ts.filter(x=>x._id!==t._id);DB._lsSave(next,selDate);return next;});if(sb){sb.from("tasks").delete().eq("_id",t._id).then(()=>dbLog("delRow",true,t._id)).catch(e=>dbLog("delRow",false,e.message));}};
+            const delTask=async()=>{
+              const hasRes=!!t.reservationId;
+              const msg=hasRes?"この予約("+t.name+")の全タスクを削除しますか？":"この行を削除しますか？";
+              if(!window.confirm(msg))return;
+              if(hasRes){
+                // ★ 予約ごと全タスク削除（DB+LS+state）
+                const rid=t.reservationId;
+                setTasks(ts=>{const next=ts.filter(x=>x.reservationId!==rid);DB._lsSave(next,selDate);return next;});
+                if(sb){sb.from("tasks").delete().eq("reservation_id",rid).then(()=>dbLog("delResTasks",true,rid)).catch(e=>dbLog("delResTasks",false,e.message));}
+                // 予約自体もDBから削除+App側にも通知
+                if(onCancelReservation)onCancelReservation(rid);
+              } else {
+                setTasks(ts=>{const next=ts.filter(x=>x._id!==t._id);DB._lsSave(next,selDate);return next;});
+                if(sb){sb.from("tasks").delete().eq("_id",t._id).then(()=>dbLog("delRow",true,t._id)).catch(e=>dbLog("delRow",false,e.message));}
+              }
+            };
             return <tr key={t._id}><td style={{...cellS(0),textAlign:"center",padding:0}}><div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:0}}><button onClick={()=>moveRow(t._id,-1)} style={{background:"none",border:"none",cursor:"pointer",fontSize:8,color:"#94a3b8",lineHeight:1,padding:0}}>▲</button><button onClick={delTask} style={{background:"none",border:"none",cursor:"pointer",fontSize:9,color:"#ef4444",lineHeight:1,padding:0,fontWeight:700}}>×</button><button onClick={()=>moveRow(t._id,1)} style={{background:"none",border:"none",cursor:"pointer",fontSize:8,color:"#94a3b8",lineHeight:1,padding:0}}>▼</button></div></td><td style={cellS(1)}><input type="checkbox" checked={t.done} onChange={e=>upd(t._id,mark({...t,done:e.target.checked},"done"))} style={{width:12,height:12,accentColor:tm.c}}/></td>
               <td style={cellS(2,"assignee")}>{t._assigneeCustom?<input defaultValue={t.assignee||""} onBlur={e=>{const v=e.target.value.trim();if(!v){upd(t._id,mark({...t,_assigneeCustom:false,assignee:""},"assignee"));}else{upd(t._id,mark({...t,assignee:v,_assigneeCustom:false},"assignee"));}}} onKeyDown={e=>{if(e.key==="Enter"){e.target.blur();}}} autoFocus style={{border:"1px solid #3b82f6",background:"#eff6ff",fontSize:9,width:"100%",padding:"1px 3px",fontWeight:600,borderRadius:3,outline:"none"}} placeholder="名前を入力"/>:<select value={activeMembers.includes(t.assignee)?t.assignee:["乗り捨て","無人"].includes(t.assignee)?t.assignee:t.assignee?"__custom":""}  onChange={e=>{const v=e.target.value;if(v==="__other"){upd(t._id,mark({...t,_assigneeCustom:true,assignee:""},"assignee"));return;}if(v==="乗り捨て"||v==="無人"){upd(t._id,mark({...t,assignee:v,_assigneeCustom:false},"assignee"));return;}if(!window.confirm("担当を「"+(v||"未割当")+"」に変更\n本当に変更しますか？"))return;upd(t._id,mark({...t,assignee:v,_assigneeCustom:false},"assignee"));}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,color:t.assignee?"#111":"#ccc",fontWeight:600}}><option value="">-</option>{activeMembers.map(m=><option key={m}>{m}</option>)}<option value="乗り捨て">乗り捨て</option><option value="無人">無人</option><option value="__other">その他...</option>{t.assignee&&!activeMembers.includes(t.assignee)&&!["乗り捨て","無人"].includes(t.assignee)&&<option value="__custom">{t.assignee}</option>}</select>}</td>
               <td style={cellS(3,"time")}><select value={t.time||""} onChange={e=>{const v=e.target.value;confirmUpd(t._id,mark({...t,time:v,_timeFromSheet:false},"time"),`時間を「${v||"未設定"}」に変更`);}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,fontWeight:700,color:t._timeFromSheet?"#dc2626":ch.time?"#92400e":"#1e293b"}}>{TIME_OPTS.map(o=><option key={o} value={o}>{o||"-"}</option>)}{t.time&&!TIME_OPTS.includes(t.time)&&<option value={t.time}>{t.time}</option>}</select></td>
@@ -5574,7 +5589,7 @@ function App(){
 
   return <div style={{height:"100vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
     {SB_ENABLED&&<div className="sync-desktop"><SyncBadge connected={sbConnected}/></div>}
-    {showOP&&<OPScreen reservations={data} today={today} shifts={shifts} fleet={fleet} onFleetChange={setFleetSync} onClose={()=>setShowOP(false)} vehicles={vehicles} staff={staff} resOpts={resOpts} sheetPlaces={sheetPlaces} onUpdateSheetPlaces={saveSheetPlaces} repeaterMap={repeaterInfo.isRepeater} jalanPay={jalanPay} cancelledIdsRef={cancelledIdsRef}/>}
+    {showOP&&<OPScreen reservations={data} today={today} shifts={shifts} fleet={fleet} onFleetChange={setFleetSync} onClose={()=>setShowOP(false)} vehicles={vehicles} staff={staff} resOpts={resOpts} sheetPlaces={sheetPlaces} onUpdateSheetPlaces={saveSheetPlaces} repeaterMap={repeaterInfo.isRepeater} jalanPay={jalanPay} cancelledIdsRef={cancelledIdsRef} onCancelReservation={cancelReservation}/>}
     <div style={{display:showOP?"none":"flex",flex:1,overflow:"hidden",flexDirection:"column"}}>
       <div className={"top-nav"+(tab==="top"?" hide-on-top":"")}>
         {navItems.filter(n=>{const always=["top","import","vehicle","staff","shift","attendance","parking","fleet","jalanpay","history","customer"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>setTab(n.id)} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
@@ -5734,7 +5749,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.9.21";
+const APP_VERSION="v3.9.22";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
