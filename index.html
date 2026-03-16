@@ -182,6 +182,7 @@ const DB = {
     }finally{DB._pendingSave--;}
   },
   async deleteTasks(date){try{localStorage.removeItem(DB._lsKey(date));}catch(e){} if(!sb)return;const{error}=await sb.from("tasks").delete().eq("date",date);if(error)dbLog("deleteTasks",false,error.message);},
+  async deleteTasksByReservation(resId){if(!sb||!resId)return;const{error}=await sb.from("tasks").delete().eq("reservation_id",resId);if(error)dbLog("deleteTasksByRes",false,error.message);else dbLog("deleteTasksByRes",true,resId);},
   async fetchTasksRange(fromDate,toDate){if(!sb)return[];const{data,error}=await sb.from("tasks").select("*").gte("date",fromDate).lte("date",toDate).order("date",{ascending:false}).order("sort_order");if(error){dbLog("fetchTasksRange",false,error.message);return[];}return(data||[]).map(r=>({...DB._fromDbTask(r),_date:r.date}));},
   _toDbTask(t,date,i){return{_id:t._id,date:date,type:t.type||"",time:t.time||"",name:t.name||"",assignee:t.assignee||"",done:!!t.done,memo:t.memo||"",reservation_id:t.reservationId||"",ota:t.ota||"",tel:t.tel||"",mail:t.mail||"",assigned_vehicle:t.assignedVehicle||"",plate_no:t.plateNo||"",people:t.people||0,place:t.place||"",vehicle:t.vehicle||"",insurance:t.insurance||"",insurance_change:t.insuranceChange||"",flight:t.flight||"",return_date:t.returnDate||"",return_time:t.returnTime||"",return_type:t.returnType||"",col_place:t.colPlace||"",opt_b:!!t.opts?.b,opt_c:!!t.opts?.c,opt_j:!!t.opts?.j,opt_usb:!!t.opts?.usb,opt_parasol:!!t.opts?.parasol,yakkan:!!t.yakkan,line:!!t.line,payment:!!t.payment,sort_order:i,assignee_custom:!!t._assigneeCustom,time_changed:!!t._timeChanged,changed_json:JSON.stringify({...(t._changed||{}),_timeFromSheet:!!t._timeFromSheet})};},
   _fromDbTask(d){const ch=(()=>{try{const p=JSON.parse(d.changed_json||"{}");return Object.keys(p).length?p:undefined;}catch(e){return undefined;}})();const tfs=ch&&ch._timeFromSheet;if(ch)delete ch._timeFromSheet;return{_id:d._id,type:d.type,time:d.time,name:d.name,assignee:d.assignee,done:d.done,memo:d.memo,reservationId:d.reservation_id,ota:d.ota,tel:d.tel,mail:d.mail,assignedVehicle:d.assigned_vehicle,plateNo:d.plate_no,people:d.people,place:d.place,vehicle:d.vehicle,insurance:d.insurance,insuranceChange:d.insurance_change,flight:d.flight,returnDate:norm(d.return_date),returnTime:d.return_time,returnType:d.return_type,colPlace:d.col_place,opts:{b:d.opt_b,c:d.opt_c,j:d.opt_j,usb:d.opt_usb,parasol:d.opt_parasol},yakkan:d.yakkan,line:d.line,payment:d.payment,_sortOrder:d.sort_order,_assigneeCustom:d.assignee_custom,_timeChanged:d.time_changed,_changed:ch,_timeFromSheet:!!tfs};},
@@ -5473,11 +5474,24 @@ function App(){
   },[data]);
 
   const cancelReservation=useCallback((id)=>{
+    // 予約の日付を取得（タスクLS除去に必要）
+    const res=data.find(r=>r.id===id);
     setData(prev=>prev.filter(r=>r.id!==id));
     const nf={...fleet};delete nf[id];
     setFleet(nf);
+    // DB: 予約・fleet・タスクを全て削除
+    DB.deleteReservations([id]);
     DB.deleteFleetOne(id);
-  },[fleet]);
+    DB.deleteTasksByReservation(id);
+    // LS内のタスクからも該当予約のタスクを除去
+    if(res){
+      const dates=[norm(res.lendDate),norm(res.returnDate),dOff(norm(res.lendDate),-1)].filter(Boolean);
+      [...new Set(dates)].forEach(d=>{
+        const ls=DB._lsLoad(d);
+        if(ls){const filtered=ls.filter(t=>t.reservationId!==id);if(filtered.length!==ls.length)DB._lsSave(filtered,d);}
+      });
+    }
+  },[fleet,data]);
 
   // 予約情報を部分更新（配車表モーダルから）
   const updateReservation=useCallback((id,changes)=>{
@@ -5674,7 +5688,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.9.15";
+const APP_VERSION="v3.9.16";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
