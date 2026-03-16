@@ -2596,7 +2596,7 @@ function TimeTable({tasks,staffCount}){
 /* ==========================================
    配車管理タイムライン（ガントチャート）
    ========================================== */
-function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenanceChange,vehicles,vehicleClasses,onAddReservation,onBulkAddReservation,onCancelReservation,onReassignVehicle,unassignedReasons}){
+function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenanceChange,vehicles,vehicleClasses,onAddReservation,onBulkAddReservation,onCancelReservation,onReassignVehicle,onUpdateReservation,unassignedReasons}){
   const scrollRef=useRef(null);const[tooltip,setTooltip]=useState(null);const[viewMode,setViewMode]=useState("month");const[baseDate,setBaseDate]=useState(today);const[collapsed,setCollapsed]=useState(()=>window.innerWidth<=768?{unassignedAlert:true}:{});const[showMaintForm,setShowMaintForm]=useState(null);const[showResForm,setShowResForm]=useState(null);
   const[dragInfo,setDragInfo]=useState(null);const[dropTarget,setDropTarget]=useState(null);
   const WK=["日","月","火","水","木","金","土"];
@@ -2779,32 +2779,93 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
       </div>
     </div></div>}
 
-    {tooltip&&<div className="modal-overlay" style={{background:"rgba(0,0,0,.15)"}} onClick={()=>setTooltip(null)}><div className="modal-box" style={{maxWidth:340,padding:20}} onClick={e=>e.stopPropagation()}>
-      <div className="flex items-center justify-between mb-2"><span className="font-bold text-sm">{tooltip.type==="reservation"?tooltip.name:tooltip.label}</span><button onClick={()=>setTooltip(null)} className="text-gray-400 hover:text-gray-600">✕</button></div>
-      {tooltip.type==="reservation"?<div className="text-xs space-y-1 text-gray-600">
-        <div><OBadge ota={tooltip.ota}/> <span className="font-mono">{tooltip.id}</span></div>
-        <div>貸出: {fmtD(tooltip.lendDate)} {tooltip.lendTime} / 返却: {fmtD(tooltip.returnDate)} {tooltip.returnTime}</div>
-        <div>クラス: {tooltip.vehicle} / 補償: {tooltip.insurance}</div>
-        <div style={{display:"flex",alignItems:"center",gap:6,marginTop:4}}>
-          <span style={{fontWeight:700,color:"#1e293b"}}>配車:</span>
-          <select value={tooltip.vc||""} onChange={e=>{const newVc=e.target.value;if(!newVc){if(!window.confirm("配車を解除しますか？"))return;const nf={...fleet};delete nf[tooltip.id];onFleetChange(nf);setTooltip({...tooltip,vc:""});return;}const conflict=checkVehicleConflict(newVc,tooltip.id,data,fleet);if(conflict){const cv=vehicles.find(x=>x.code===newVc);alert((cv?cv.name:newVc)+" は "+fmtD(conflict.lendDate)+"〜"+fmtD(conflict.returnDate)+" に「"+conflict.name+"」様の予約が入っているため変更できません。");return;}const targetV=vehicles.find(x=>x.code===newVc);if(!window.confirm("配車を「"+(targetV?targetV.name:newVc)+"」に変更しますか？"))return;if(onReassignVehicle){onReassignVehicle(tooltip.id,newVc);}else{onFleetChange({...fleet,[tooltip.id]:newVc});}setTooltip({...tooltip,vc:newVc});}} style={{border:"1px solid #d1d5db",borderRadius:6,padding:"3px 6px",fontSize:11,fontWeight:600,color:"#1d4ed8",flex:1}}>
-            <option value="">— 未割当 —</option>
-            {vehicleClasses.map(cls=><optgroup key={cls.type} label={cls.type+"クラス"}>{vehicles.filter(v=>v.type===cls.type).map(v=><option key={v.code} value={v.code}>{v.name} ({v.no})</option>)}</optgroup>)}
-          </select>
-        </div>
-        <div className="flex gap-2 mt-3">
-          <button onClick={()=>{if(window.confirm(`${tooltip.name} 様の予約をキャンセルしますか？\n\n予約番号: ${tooltip.id}\n貸出: ${fmtD(tooltip.lendDate)} ${tooltip.lendTime}\n返却: ${fmtD(tooltip.returnDate)} ${tooltip.returnTime}\n\nこの操作は取り消せません。`)){onCancelReservation(tooltip.id);setTooltip(null);}}} className="flex-1 py-1.5 bg-red-50 text-red-600 rounded-lg text-xs font-bold hover:bg-red-100 border border-red-200">予約キャンセル</button>
-        </div>
-      </div>:<div className="text-xs space-y-1 text-gray-600">
+    {tooltip&&tooltip.type==="reservation"&&<ReservationEditModal t={tooltip} fleet={fleet} vehicles={vehicles} vehicleClasses={vehicleClasses} data={data} onFleetChange={onFleetChange} onReassignVehicle={onReassignVehicle} onCancelReservation={onCancelReservation} onUpdateReservation={onUpdateReservation} onClose={()=>setTooltip(null)}/>}
+    {tooltip&&tooltip.type!=="reservation"&&<div className="modal-overlay" style={{background:"rgba(0,0,0,.15)"}} onClick={()=>setTooltip(null)}><div className="modal-box" style={{maxWidth:340,padding:20}} onClick={e=>e.stopPropagation()}>
+      <div className="flex items-center justify-between mb-2"><span className="font-bold text-sm">{tooltip.label}</span><button onClick={()=>setTooltip(null)} className="text-gray-400 hover:text-gray-600">✕</button></div>
+      <div className="text-xs space-y-1 text-gray-600">
         <div>車両: {tooltip.vehicleCode}</div><div>期間: {fmtD(tooltip.startDate)} 〜 {fmtD(tooltip.endDate)}</div>
         <button onClick={()=>removeMaint(tooltip.id)} className="mt-2 w-full py-1.5 bg-red-50 text-red-600 rounded-lg text-xs font-bold hover:bg-red-100">メンテナンスを削除</button>
-      </div>}
+      </div>
     </div></div>}
 
     {showMaintForm&&<div className="modal-overlay" onClick={()=>setShowMaintForm(null)}><div className="modal-box" style={{maxWidth:320,padding:20}} onClick={e=>e.stopPropagation()}><h4 className="font-bold text-sm mb-3">メンテナンス登録</h4><MaintForm vehicleCode={showMaintForm.vehicleCode} startDate={showMaintForm.date} onAdd={addMaint} onClose={()=>setShowMaintForm(null)} vehicles={vehicles}/></div></div>}
 
     {showResForm&&<ReservationForm prefill={showResForm} onAdd={(r,vc)=>{onAddReservation(r,vc);setShowResForm(null);}} onBulkAdd={(rArr,fl)=>{onBulkAddReservation(rArr,fl);setShowResForm(null);}} vehicles={vehicles} vehicleClasses={vehicleClasses} onClose={()=>setShowResForm(null)}/>}
   </div>;
+}
+
+function ReservationEditModal({t,fleet,vehicles,vehicleClasses,data,onFleetChange,onReassignVehicle,onCancelReservation,onUpdateReservation,onClose}){
+  const[f,setF]=useState({
+    lendTime:t.lendTime||"",delTime:t.delTime||"",delPlace:t.delPlace||"",
+    returnTime:t.returnTime||"",colTime:t.colTime||"",colPlace:t.colPlace||"",
+    insurance:t.insurance||"",people:t.people||0,flight:t.flight||"",
+    name:t.name||"",vehicle:t.vehicle||""
+  });
+  const[vc,setVc]=useState(t.vc||"");
+  const[dirty,setDirty]=useState(false);
+  const upF=(k,v)=>{setF(p=>({...p,[k]:v}));setDirty(true);};
+  const TIME_OPTS=React.useMemo(()=>{const o=[""];for(let h=6;h<=22;h++)for(let m=0;m<60;m+=30){if(h===22&&m>0)break;o.push(`${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`);}return o;},[]);
+  const save=()=>{
+    if(!dirty)return onClose();
+    const changes={};
+    if(f.lendTime!==t.lendTime)changes.lendTime=f.lendTime;
+    if(f.delTime!==(t.delTime||""))changes.delTime=f.delTime;
+    if(f.delPlace!==(t.delPlace||""))changes.delPlace=f.delPlace;
+    if(f.returnTime!==t.returnTime)changes.returnTime=f.returnTime;
+    if(f.colTime!==(t.colTime||""))changes.colTime=f.colTime;
+    if(f.colPlace!==(t.colPlace||""))changes.colPlace=f.colPlace;
+    if(f.insurance!==(t.insurance||""))changes.insurance=f.insurance;
+    if(f.people!==(t.people||0))changes.people=f.people;
+    if(f.flight!==(t.flight||""))changes.flight=f.flight;
+    if(f.name!==t.name)changes.name=f.name;
+    if(f.vehicle!==t.vehicle)changes.vehicle=f.vehicle;
+    if(Object.keys(changes).length){onUpdateReservation(t.id,changes);alert("✅ 予約情報を更新しました");}
+    onClose();
+  };
+  const handleVcChange=(e)=>{
+    const newVc=e.target.value;
+    if(!newVc){if(!window.confirm("配車を解除しますか？"))return;const nf={...fleet};delete nf[t.id];onFleetChange(nf);setVc("");return;}
+    const conflict=checkVehicleConflict(newVc,t.id,data,fleet);
+    if(conflict){const cv=vehicles.find(x=>x.code===newVc);alert((cv?cv.name:newVc)+" は期間重複のため変更できません。");return;}
+    const targetV=vehicles.find(x=>x.code===newVc);
+    if(!window.confirm("配車を「"+(targetV?targetV.name:newVc)+"」に変更しますか？"))return;
+    if(onReassignVehicle)onReassignVehicle(t.id,newVc);else onFleetChange({...fleet,[t.id]:newVc});
+    setVc(newVc);
+  };
+  const lbl={fontSize:10,color:"#64748b",fontWeight:600,marginBottom:1};
+  const inpS={border:"1px solid #e2e8f0",borderRadius:5,padding:"4px 6px",fontSize:11,width:"100%"};
+  return <div className="modal-overlay" style={{background:"rgba(0,0,0,.2)"}} onClick={onClose}><div className="modal-box" style={{maxWidth:400,padding:20,maxHeight:"80vh",overflowY:"auto"}} onClick={e=>e.stopPropagation()}>
+    <div className="flex items-center justify-between mb-3"><span className="font-bold text-sm">{t.name}</span><button onClick={onClose} className="text-gray-400 hover:text-gray-600">✕</button></div>
+    <div style={{fontSize:11,color:"#64748b",marginBottom:8}}><OBadge ota={t.ota}/> <span className="font-mono">{t.id}</span></div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+      <div><div style={lbl}>貸出日</div><div style={{...inpS,background:"#f8fafc",color:"#334155"}}>{fmtD(t.lendDate)}</div></div>
+      <div><div style={lbl}>返却日</div><div style={{...inpS,background:"#f8fafc",color:"#334155"}}>{fmtD(t.returnDate)}</div></div>
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+      <div><div style={lbl}>DEL時間</div><select value={f.delTime||f.lendTime} onChange={e=>upF("delTime",e.target.value)} style={inpS}>{TIME_OPTS.map(o=><option key={o} value={o}>{o||"-"}</option>)}{f.delTime&&!TIME_OPTS.includes(f.delTime)&&<option value={f.delTime}>{f.delTime}</option>}{f.lendTime&&!TIME_OPTS.includes(f.lendTime)&&!f.delTime&&<option value={f.lendTime}>{f.lendTime}</option>}</select></div>
+      <div><div style={lbl}>COL時間</div><select value={f.colTime||f.returnTime} onChange={e=>upF("colTime",e.target.value)} style={inpS}>{TIME_OPTS.map(o=><option key={o} value={o}>{o||"-"}</option>)}{f.colTime&&!TIME_OPTS.includes(f.colTime)&&<option value={f.colTime}>{f.colTime}</option>}{f.returnTime&&!TIME_OPTS.includes(f.returnTime)&&!f.colTime&&<option value={f.returnTime}>{f.returnTime}</option>}</select></div>
+    </div>
+    <div style={{marginBottom:8}}><div style={lbl}>DEL場所</div><input value={f.delPlace} onChange={e=>upF("delPlace",e.target.value)} style={inpS} placeholder="配達場所を入力"/></div>
+    <div style={{marginBottom:8}}><div style={lbl}>COL場所</div><input value={f.colPlace} onChange={e=>upF("colPlace",e.target.value)} style={inpS} placeholder="返却場所を入力"/></div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+      <div><div style={lbl}>クラス</div><select value={f.vehicle} onChange={e=>upF("vehicle",e.target.value)} style={inpS}>{vehicleClasses.map(c=><option key={c.type} value={c.type}>{c.type}</option>)}</select></div>
+      <div><div style={lbl}>補償</div><select value={f.insurance} onChange={e=>upF("insurance",e.target.value)} style={inpS}><option value="">なし</option><option value="免責">免責</option><option value="NOC">NOC</option></select></div>
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+      <div><div style={lbl}>人数</div><input type="number" value={f.people} onChange={e=>upF("people",parseInt(e.target.value)||0)} style={inpS} min={0}/></div>
+      <div><div style={lbl}>フライト</div><input value={f.flight} onChange={e=>upF("flight",e.target.value)} style={inpS} placeholder="ANA059等"/></div>
+    </div>
+    <div style={{marginBottom:8}}><div style={lbl}>配車</div>
+      <select value={vc} onChange={handleVcChange} style={{...inpS,fontWeight:600,color:vc?"#1d4ed8":"#94a3b8"}}>
+        <option value="">— 未割当 —</option>
+        {vehicleClasses.map(cls=><optgroup key={cls.type} label={cls.type+"クラス"}>{vehicles.filter(v=>v.type===cls.type).map(v=><option key={v.code} value={v.code}>{v.name} ({v.no})</option>)}</optgroup>)}
+      </select>
+    </div>
+    <div style={{display:"flex",gap:8,marginTop:12}}>
+      <button onClick={save} style={{flex:1,padding:"8px 0",background:dirty?"#2563eb":"#e2e8f0",color:dirty?"#fff":"#64748b",border:"none",borderRadius:8,fontSize:12,fontWeight:700,cursor:"pointer"}}>{dirty?"💾 保存":"閉じる"}</button>
+      <button onClick={()=>{if(window.confirm(`${t.name} 様の予約をキャンセルしますか？\n\n予約番号: ${t.id}\n\nこの操作は取り消せません。`)){onCancelReservation(t.id);onClose();}}} style={{padding:"8px 12px",background:"#fef2f2",color:"#dc2626",border:"1px solid #fecaca",borderRadius:8,fontSize:11,fontWeight:700,cursor:"pointer"}}>キャンセル</button>
+    </div>
+  </div></div>;
 }
 
 function MaintForm({vehicleCode,startDate,onAdd,onClose,vehicles}){
@@ -5418,6 +5479,16 @@ function App(){
     DB.deleteFleetOne(id);
   },[fleet]);
 
+  // 予約情報を部分更新（配車表モーダルから）
+  const updateReservation=useCallback((id,changes)=>{
+    setData(prev=>{
+      const next=prev.map(r=>r.id===id?{...r,...changes}:r);
+      const updated=next.find(r=>r.id===id);
+      if(updated)DB.upsertReservations([updated]);
+      return next;
+    });
+  },[]);
+
   const updatePlaces=useCallback((places)=>{
     let matched=0;
     const updated=data.map(r=>{
@@ -5581,7 +5652,7 @@ function App(){
           {tab==="staff"&&<PASGuard label="スタッフ情報"><StaffManager staff={staff} onStaffChange={setStaffSync} onDeleteStaff={(name)=>DB.deleteStaff(name)}/></PASGuard>}
           {tab==="shift"&&<ShiftCalendar shifts={shifts} onShiftsChange={setShiftsSync} today={today} staff={staff} sbSaveShift={DB.saveShift}/>}
           {tab==="attendance"&&<PASGuard label="給与計算"><AttendanceManager shifts={shifts} staff={staff} today={today} attendance={attendance} onAttendanceChange={setAttendance}/></PASGuard>}
-          {tab==="fleet"&&<FleetTimeline data={data} fleet={fleet} onFleetChange={setFleetSync} today={today} maintenance={maintenance} onMaintenanceChange={setMaintenance} vehicles={vehicles} vehicleClasses={vehicleClasses} onAddReservation={addReservation} onBulkAddReservation={bulkAddReservation} onCancelReservation={cancelReservation} onReassignVehicle={reassignVehicle} unassignedReasons={unassignedReasons}/>}
+          {tab==="fleet"&&<FleetTimeline data={data} fleet={fleet} onFleetChange={setFleetSync} today={today} maintenance={maintenance} onMaintenanceChange={setMaintenance} vehicles={vehicles} vehicleClasses={vehicleClasses} onAddReservation={addReservation} onBulkAddReservation={bulkAddReservation} onCancelReservation={cancelReservation} onReassignVehicle={reassignVehicle} onUpdateReservation={updateReservation} unassignedReasons={unassignedReasons}/>}
           {tab==="vehicle"&&<VehicleTab vehicles={vehicles} onVehiclesChange={setVehiclesSync} vehicleClasses={vehicleClasses} onDeleteVehicle={(code)=>DB.deleteVehicle(code)} hmCars={hmCars} hmCarData={hmCarData} hmLogs={hmLogs} hmClasses={hmClasses} hmReload={hmReload}/>}
           {tab==="parking"&&<ParkingManager masterVehicles={vehicles}/>}
           {tab==="jalanpay"&&<JalanPayment data={data} jalanPay={jalanPay} onJalanPayChange={(id,d)=>{setJalanPay(p=>({...p,[id]:d}));DB.saveJalanPayment(id,d);}}/>}
@@ -5603,7 +5674,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.9.14";
+const APP_VERSION="v3.9.15";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
