@@ -2992,13 +2992,16 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
         sb.from("tasks").delete().in("_id",staleIds).then(()=>dbLog("task cleanup",true,staleIds.length+"件の旧タスク削除")).catch(e=>dbLog("task cleanup",false,e.message));
       }
       // ★ LSにある手動タスク(reservationIdなし)がDB結果に欠けていれば復元
-      const fixedIds=new Set(fixed.map(t=>t._id));
-      Object.values(lsMap).forEach(lst=>{
-        if(!fixedIds.has(lst._id)&&!lst.reservationId){
-          console.log("[loadTasks] manual task restored from LS:",lst._id,lst.name);
-          fixed.push(lst);
-        }
-      });
+      // ただしforce=trueの場合はDBを信頼しLS復元をスキップ（他端末での削除を反映するため）
+      if(!force){
+        const fixedIds=new Set(fixed.map(t=>t._id));
+        Object.values(lsMap).forEach(lst=>{
+          if(!fixedIds.has(lst._id)&&!lst.reservationId){
+            console.log("[loadTasks] manual task restored from LS:",lst._id,lst.name);
+            fixed.push(lst);
+          }
+        });
+      }
       // fleet情報をタスクに反映（DBが古い場合の対策）
       const fl=fleetRef.current;let fleetApplied=false;
       const fixedWithFleet=fixed.map(t=>{
@@ -3095,13 +3098,10 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
               if(reservations.length>0&&!resIds.has(t.reservationId))return false;// orphan
               return true;
             });
-            // ★ 手動追加の洗車タスクがDB結果に欠けていれば現在のstateから復元
-            const cleanedIds=new Set(cleaned.map(t=>t._id));
-            setTasks(prev=>{
-              const manualWash=prev.filter(t=>t.type==="洗車"&&!t.reservationId&&!cleanedIds.has(t._id));
-              const result=manualWash.length?[...cleaned,...manualWash]:cleaned;
-              DB._lsSave(result,selDate);
-              return result;
+            // ★ DBの結果を信頼し、stateからの復元は行わない（削除同期のため）
+            setTasks(()=>{
+              DB._lsSave(cleaned,selDate);
+              return cleaned;
             });
           }
         },500);
@@ -3286,6 +3286,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
               const hasRes=!!t.reservationId;
               const msg=hasRes?"この予約("+t.name+")の全タスクを削除しますか？":"この行を削除しますか？";
               if(!window.confirm(msg))return;
+              selfUpdateRef.current=Date.now();
               if(hasRes){
                 // ★ 予約ごと全タスク削除（DB+LS+state）
                 const rid=t.reservationId;
@@ -5763,7 +5764,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.9.23";
+const APP_VERSION="v3.9.24";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
