@@ -2915,8 +2915,9 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
   // タスクロード
   const selfUpdateRef=React.useRef(0);
   const loadTasks=React.useCallback(async(date,force)=>{
-    // 自分の変更直後（5秒以内）はDBリロードをスキップ（自分の変更を上書きしない）
-    if(!force&&selfUpdateRef.current&&Date.now()-selfUpdateRef.current<5000){
+    // 自分の変更直後（30秒以内）はDBリロードをスキップ（自分の変更を上書きしない）
+    // ★ 5秒→30秒に延長: ポーリング間隔と合わせ、変更直後の上書きを確実に防止
+    if(!force&&selfUpdateRef.current&&Date.now()-selfUpdateRef.current<30000){
       console.log("[loadTasks] 自分の変更直後のためスキップ");return;
     }
     // ★ DB取得前にlocalStorageを読む（fetchTasksがLSを上書きする前に保持）
@@ -2959,24 +2960,39 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
         }
         // reservationIdなし = 手動追加 → fixedに残す
       }
-      // 2) generateTasksの結果を追加（保存済み状態をマージ）
+      // 2) generateTasksの結果を追加（DB保存済みデータを優先、なければ新規生成を使用）
       gen.forEach(g=>{
         const key=g.reservationId+":"+g.type;
         const saved=savedMap[g._id]||savedByKey[key];
         if(saved){
-          // 保存済みのユーザ変更(done/assignee/time/place/memo等)を引き継ぎ
-          const merged={...g,done:saved.done,assignee:saved.assignee};
-          if(saved._changed){
-            merged._changed=saved._changed;
-            if(saved._changed.time)merged.time=saved.time;
-            if(saved._changed.place)merged.place=saved.place;
-            if(saved._changed.colPlace)merged.colPlace=saved.colPlace;
-          }
-          if(saved.memo&&saved.memo!==g.memo)merged.memo=saved.memo;
-          // sheetPlaces補完
+          // ★ DB保存済みタスクをベースにし、generateTasksからは予約変更のみ反映
+          // done/assignee/time/place/memo/colPlace等のユーザ編集値はDB値を保持
+          const merged={...saved};
+          // generateTasksから更新すべきフィールド（予約データ由来で変わりうるもの）のみ反映
+          // ただし_changedで手動変更済みのフィールドは上書きしない
+          const ch=saved._changed||{};
+          if(!ch.type)merged.type=g.type;
+          if(!ch.time&&!saved.time)merged.time=g.time;// 時間が空の場合のみ補完
+          merged.name=g.name;// 予約者名は常に予約データから
+          merged.people=g.people;
+          merged.vehicle=g.vehicle;
+          merged.insurance=g.insurance;
+          merged.flight=g.flight;
+          merged.returnDate=g.returnDate;
+          merged.returnTime=g.returnTime;
+          merged.returnType=g.returnType;
+          merged.ota=g.ota;
+          merged.tel=g.tel;
+          merged.mail=g.mail;
+          merged.reservationId=g.reservationId;
+          // 場所: 手動変更なし＆DB値なしの場合のみsheetPlacesから補完
           const sp=sheetPlaces[g.reservationId];
-          if(sp&&!merged.place){if(g.type==="DEL"&&sp.delPlace)merged.place=sp.delPlace;if(g.type==="COL"&&sp.colPlace)merged.place=sp.colPlace;}
-          if(sp&&g.type==="DEL"&&!merged.colPlace&&sp.colPlace)merged.colPlace=sp.colPlace;
+          if(!ch.place&&!merged.place){
+            if(sp){if(g.type==="DEL"&&sp.delPlace)merged.place=sp.delPlace;if(g.type==="COL"&&sp.colPlace)merged.place=sp.colPlace;}
+          }
+          if(!ch.colPlace&&!merged.colPlace){
+            if(sp&&g.type==="DEL"&&sp.colPlace)merged.colPlace=sp.colPlace;
+          }
           fixed.push(merged);
         } else {
           const sp=sheetPlaces[g.reservationId];
@@ -3046,7 +3062,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
     let debounce=null;
     const ch=sb.channel("tasks-"+selDate)
       .on("postgres_changes",{event:"*",schema:"public",table:"tasks",filter:"date=eq."+selDate},()=>{
-        if(Date.now()-selfUpdateRef.current<3000){return;}
+        if(Date.now()-selfUpdateRef.current<10000){return;}
         clearTimeout(debounce);
         debounce=setTimeout(async()=>{
           // ★ DB取得前にLS読み取り（fetchTasksがLSを上書きする前に保持）
@@ -5732,7 +5748,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.9.26";
+const APP_VERSION="v3.9.27";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
