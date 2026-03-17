@@ -3014,24 +3014,10 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
         const vn=vehicles.find(v=>v.code===vc);
         return{...t,assignedVehicle:vc,plateNo:vn?vn.no:"",vehicle:vn?vn.type:t.vehicle};
       });
-      // ★ 手動変更を保護: DB _changed + LS _changed をマージ（LSがなくてもDB _changedで保護）
+      // ★ DB _changedを保持（DBが正の値を持っている前提）
+      // LS値での上書きは行わない（他端末の変更を確実に反映するため）
       fixedWithFleet.forEach(t=>{
-        const ls=lsMap[t._id];
-        // DB側に_changedがあれば、その値を保護（DBが正の値を持っている前提）
-        const dbChanged=t._changed||{};
-        const lsChanged=(ls&&ls._changed)||{};
-        const merged={...dbChanged,...lsChanged};
-        if(Object.keys(merged).length){
-          t._changed=merged;
-          // LSに_changedがあればLS値を優先（より新しい変更の可能性）
-          Object.keys(lsChanged).forEach(f=>{
-            if(lsChanged[f]&&ls[f]!==undefined&&ls[f]!==null&&f!=='_changed'&&f!=='opts'&&typeof ls[f]!=='object'){t[f]=ls[f];}
-          });
-        }
-        if(ls){
-          if(ls.place&&!t.place)t.place=ls.place;
-          if(ls.colPlace&&!t.colPlace)t.colPlace=ls.colPlace;
-        }
+        t._changed=t._changed||{};
       });
       if(fixedWithFleet.length!==saved.length||fixedWithFleet.some((t,i)=>t._id!==saved[i]?._id)||fleetApplied||removed.length){
         DB.upsertTasks(fixedWithFleet,date);
@@ -3071,23 +3057,10 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
             // ★ 洗車タスク重複防止: _idベースで重複排除
             const seen=new Set();
             const deduped=fresh.filter(t=>{if(seen.has(t._id))return false;seen.add(t._id);return true;});
-            // ★ 手動変更保護: DB _changed + LS _changed のマージ（LSなしでもDB _changedで保護）
+            // ★ Realtime受信時はDBを信頼（他端末の変更を反映するため、LS上書きしない）
             deduped.forEach(t=>{
-              const ls=lm[t._id];
-              const dbChanged=t._changed||{};
-              const lsChanged=(ls&&ls._changed)||{};
-              const merged={...dbChanged,...lsChanged};
-              if(Object.keys(merged).length){
-                t._changed=merged;
-                // LSの_changedフィールドはLS値を優先（より新しい変更の可能性）
-                Object.keys(lsChanged).forEach(f=>{
-                  if(lsChanged[f]&&ls[f]!==undefined&&ls[f]!==null&&f!=='_changed'&&f!=='opts'&&typeof ls[f]!=='object'){t[f]=ls[f];}
-                });
-              }
-              if(ls){
-                if(ls.place&&!t.place)t.place=ls.place;
-                if(ls.colPlace&&!t.colPlace)t.colPlace=ls.colPlace;
-              }
+              // DB側の_changedをそのまま使用（他端末の編集情報を保持）
+              t._changed=t._changed||{};
             });
             // ★ キャンセル済み予約+orphanタスクを除外（復活防止）
             const cIds=cancelledIdsRef?cancelledIdsRef.current:new Set();
@@ -5764,7 +5737,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.9.24";
+const APP_VERSION="v3.9.25";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
