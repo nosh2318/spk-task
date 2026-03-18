@@ -136,27 +136,26 @@ const DB = {
   _toDbTaskBare(t,date,i){return{_id:t._id,date:date,type:t.type||"",time:t.time||"",name:t.name||"",assignee:t.assignee||"",done:!!t.done,memo:t.memo||"",reservation_id:t.reservationId||"",ota:t.ota||"",tel:t.tel||"",mail:t.mail||"",assigned_vehicle:t.assignedVehicle||"",plate_no:t.plateNo||"",people:t.people||0,place:t.place||"",vehicle:t.vehicle||"",insurance:t.insurance||"",insurance_change:t.insuranceChange||"",flight:t.flight||"",return_date:t.returnDate||"",return_time:t.returnTime||"",return_type:t.returnType||"",col_place:t.colPlace||"",sort_order:i};},
   _toDbTaskMin(t,date,i){const b=DB._toDbTaskBare(t,date,i);b.changed_json=JSON.stringify(t._changed||{});b.assignee_custom=!!t._assigneeCustom;b.time_changed=!!t._timeChanged;return b;},
   _dbSaveOk:true,
-  // ★ 3段階フォールバック保存関数
+  // ★ 多段フォールバック保存関数（changed_jsonを最優先で保持）
+  _extraCols:null, // null=未チェック, true=全カラムあり, false=一部カラムなし
   async _upsertWithFallback(rows,label){
     if(!sb||!rows.length)return;
-    // 1) フル保存
-    const{error}=await sb.from("tasks").upsert(rows,{onConflict:"_id"});
-    if(!error){DB._dbSaveOk=true;DB._hasChangedCol=true;return;}
-    dbLog(label,false,error.message);
-    // 2) changed_jsonカラムが使えない場合を考慮してbare保存
-    if(DB._hasChangedCol===false){
-      const bareRows=rows.map(r=>{const b={...r};delete b.changed_json;delete b.assignee_custom;delete b.time_changed;delete b.opt_b;delete b.opt_c;delete b.opt_j;delete b.opt_usb;delete b.opt_parasol;delete b.yakkan;delete b.line;delete b.payment;return b;});
-      const{error:e2}=await sb.from("tasks").upsert(bareRows,{onConflict:"_id"});
-      if(!e2){dbLog(label+"-bare",true,"ベア保存成功");DB._dbSaveOk=true;return;}
-      dbLog(label+"-bare",false,e2.message);DB._dbSaveOk=false;return;
+    // 1) フル保存（全カラム）
+    if(DB._extraCols!==false){
+      const{error}=await sb.from("tasks").upsert(rows,{onConflict:"_id"});
+      if(!error){DB._dbSaveOk=true;DB._hasChangedCol=true;DB._extraCols=true;return;}
+      dbLog(label,false,error.message);
+      DB._extraCols=false;
     }
-    // 3) mid保存（changed_json付き、opt系なし）
-    const midRows=rows.map(r=>{const b={...r};delete b.opt_b;delete b.opt_c;delete b.opt_j;delete b.opt_usb;delete b.opt_parasol;delete b.yakkan;delete b.line;delete b.payment;return b;});
-    const{error:e2}=await sb.from("tasks").upsert(midRows,{onConflict:"_id"});
-    if(!e2){dbLog(label+"-mid",true,"ミッド保存成功");DB._dbSaveOk=true;return;}
-    dbLog(label+"-mid",false,e2.message);
-    // 4) bare保存（changed_jsonもなし）
-    const bareRows=rows.map(r=>{const b={...r};delete b.changed_json;delete b.assignee_custom;delete b.time_changed;delete b.opt_b;delete b.opt_c;delete b.opt_j;delete b.opt_usb;delete b.opt_parasol;delete b.yakkan;delete b.line;delete b.payment;return b;});
+    // 2) changed_json + 基本カラムのみ（opt/yakkan/line/payment/assignee_custom/time_changed除外）
+    const cjRows=rows.map(r=>{const b={...r};delete b.opt_b;delete b.opt_c;delete b.opt_j;delete b.opt_usb;delete b.opt_parasol;delete b.yakkan;delete b.line;delete b.payment;delete b.assignee_custom;delete b.time_changed;return b;});
+    if(DB._hasChangedCol!==false){
+      const{error:e2}=await sb.from("tasks").upsert(cjRows,{onConflict:"_id"});
+      if(!e2){dbLog(label+"-cj",true,"changed_json保存成功");DB._dbSaveOk=true;DB._hasChangedCol=true;return;}
+      dbLog(label+"-cj",false,e2.message);
+    }
+    // 3) bare保存（changed_jsonもなし）
+    const bareRows=cjRows.map(r=>{const b={...r};delete b.changed_json;return b;});
     const{error:e3}=await sb.from("tasks").upsert(bareRows,{onConflict:"_id"});
     if(!e3){dbLog(label+"-bare",true,"ベア保存成功");DB._dbSaveOk=true;DB._hasChangedCol=false;}
     else{dbLog(label+"-bare",false,e3.message);DB._dbSaveOk=false;}
@@ -5629,7 +5628,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.9.42";
+const APP_VERSION="v3.9.43";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
