@@ -2922,14 +2922,25 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
     if(!force&&selfUpdateRef.current&&Date.now()-selfUpdateRef.current<10000){
       console.log("[loadTasks] 自分の変更直後のためスキップ");return;
     }
+    // ★ DB取得前にLSを読む（fetchTasksがLSを上書きする前にsheetTime等を保持）
+    const lsData=DB._lsLoad(date);
+    const lsMap={};if(lsData)lsData.forEach(x=>{lsMap[x._id]=x;});
     // 1. DB(+localStorage)から取得
     const saved=await DB.fetchTasks(date);
     if(saved&&saved.length>0){
-      // ★★★ シンプル化: DBの値をそのまま信頼して表示 ★★★
-      // generateTasksによる再構築は行わない（編集値の上書きを完全に防止）
-      // fleet情報のみ最新を反映
       const fl=fleetRef.current;
       const result=saved.map(t=>{
+        // ★ DBにsheetTime/opts数量がない場合、LSから復元（changed_json保存失敗対策）
+        const ls=lsMap[t._id];
+        if(ls){
+          if(!t.sheetTime&&ls.sheetTime)t.sheetTime=ls.sheetTime;
+          if(ls.opts){
+            if(!t.opts)t.opts={};
+            if(typeof ls.opts.b==="number"&&ls.opts.b>0&&!t.opts.b)t.opts.b=ls.opts.b;
+            if(typeof ls.opts.c==="number"&&ls.opts.c>0&&!t.opts.c)t.opts.c=ls.opts.c;
+            if(typeof ls.opts.j==="number"&&ls.opts.j>0&&!t.opts.j)t.opts.j=ls.opts.j;
+          }
+        }
         if(!t.reservationId)return t;
         const vc=fl[t.reservationId];
         if(!vc&&!t.assignedVehicle)return t;
@@ -2962,9 +2973,15 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
         if(Date.now()-selfUpdateRef.current<10000){return;}
         clearTimeout(debounce);
         debounce=setTimeout(async()=>{
-          // ★ シンプル化: DBから取得してそのまま反映
+          // ★ DB取得前にLSを保持（sheetTime等の復元用）
+          const lsD=DB._lsLoad(selDate);
+          const lm={};if(lsD)lsD.forEach(x=>{lm[x._id]=x;});
           const fresh=await DB.fetchTasks(selDate);
           if(fresh){
+            fresh.forEach(t=>{
+              const ls=lm[t._id];
+              if(ls&&!t.sheetTime&&ls.sheetTime)t.sheetTime=ls.sheetTime;
+            });
             DB._lsSave(fresh,selDate);
             setTasks(fresh);
           }
@@ -5628,7 +5645,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.9.34";
+const APP_VERSION="v3.9.35";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
