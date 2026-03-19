@@ -756,6 +756,25 @@ function autoAssign(reservations,vehicles,existingFleet,maintenance){
   const maints=maintenance||[];
   const sorted=[...reservations].sort((a,b)=>norm(a.lendDate).localeCompare(norm(b.lendDate)));
   const _reasons={}; // 未配車理由のログ
+  // ★ 既存配車の重複検出（日程変更で重複が発生したケース）
+  const existingConflicts=new Set();
+  sorted.forEach(r=>{
+    if(!fleet[r.id])return;
+    const vc=fleet[r.id];
+    const rL=norm(r.lendDate),rR=norm(r.returnDate);
+    const conflict=sorted.find(o=>o.id!==r.id&&fleet[o.id]===vc&&norm(o.lendDate)<=rR&&norm(o.returnDate)>=rL);
+    if(conflict&&!existingConflicts.has(r.id)){
+      // 後の予約の配車を解除（先の予約を優先）
+      const laterRes=norm(r.lendDate)>norm(conflict.lendDate)?r:conflict;
+      if(!existingConflicts.has(laterRes.id)){
+        existingConflicts.add(laterRes.id);
+        const vn=vehicles.find(v=>v.code===vc);
+        _reasons[laterRes.id]=`重複: ${vn?vn.name:vc}は${laterRes.id===r.id?conflict.name:r.name}と期間重複`;
+        delete fleet[laterRes.id];
+        console.warn("[autoAssign] 既存重複検出→配車解除:",laterRes.name,vc);
+      }
+    }
+  });
   sorted.forEach(r=>{
     if(fleet[r.id])return; // 既に割当済み
     const cls=r.vehicle; // 予約のクラス
@@ -6019,6 +6038,38 @@ function App(){
     const allIds=new Set(allData.map(r=>r.id));
     const cleanFleet={};Object.entries(fleet).forEach(([rid,vc])=>{if(allIds.has(rid))cleanFleet[rid]=vc;});
     const newFleet=autoAssign(allData,vehicles,cleanFleet,maintenance);
+    // ★ 配車重複チェック（既存配車の日程変更による重複も検出）
+    const fleetConflicts=[];
+    const assignedEntries=Object.entries(newFleet).filter(([k])=>k!=="_unassignedReasons");
+    assignedEntries.forEach(([rid,vc])=>{
+      const res=allData.find(r=>r.id===rid);if(!res)return;
+      const ld=norm(res.lendDate),rd=norm(res.returnDate);
+      assignedEntries.forEach(([rid2,vc2])=>{
+        if(rid>=rid2||vc!==vc2)return;// 同車両のみ、重複カウント防止
+        const res2=allData.find(r=>r.id===rid2);if(!res2)return;
+        const ld2=norm(res2.lendDate),rd2=norm(res2.returnDate);
+        if(ld<=rd2&&rd>=ld2){
+          const vn=vehicles.find(v=>v.code===vc);
+          fleetConflicts.push({vc,vName:vn?vn.name+" ("+vn.no+")":vc,res1:res,res2:res2,
+            period1:fmtD(ld)+"~"+fmtD(rd),period2:fmtD(ld2)+"~"+fmtD(rd2)});
+        }
+      });
+    });
+    // 重複があればalert + 2台目の配車を解除
+    if(fleetConflicts.length>0){
+      const lines=fleetConflicts.map((c,i)=>
+        `${i+1}. ${c.vName}\n   ${c.res1.name} (${c.period1})\n   ${c.res2.name} (${c.period2})`
+      ).join("\n\n");
+      alert(`⚠️ 配車重複が ${fleetConflicts.length}件 見つかりました！\n配車表で確認・修正してください。\n\n${lines}`);
+      // 後の予約の配車を解除（先の予約を優先）
+      fleetConflicts.forEach(c=>{
+        const r1Start=norm(c.res1.lendDate),r2Start=norm(c.res2.lendDate);
+        const removeId=r1Start<=r2Start?c.res2.id:c.res1.id;
+        delete newFleet[removeId];
+        if(!newFleet._unassignedReasons)newFleet._unassignedReasons={};
+        newFleet._unassignedReasons[removeId]=`重複検出: ${c.vName}は既に使用中`;
+      });
+    }
     setFleet(newFleet);
     setTab("fleet");
     // オプション情報をlocalStorageに保存
@@ -6542,7 +6593,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.0";
+const APP_VERSION="v4.2.1";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
