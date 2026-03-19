@@ -136,14 +136,19 @@ const DB = {
   _toDbTaskBare(t,date,i){return{_id:t._id,date:date,type:t.type||"",time:t.time||"",name:t.name||"",assignee:t.assignee||"",done:!!t.done,memo:DB._encodeMemo(t),reservation_id:t.reservationId||"",ota:t.ota||"",tel:t.tel||"",mail:t.mail||"",assigned_vehicle:t.assignedVehicle||"",plate_no:t.plateNo||"",people:t.people||0,place:t.place||"",vehicle:t.vehicle||"",insurance:t.insurance||"",insurance_change:t.insuranceChange||"",flight:t.flight||"",return_date:t.returnDate||"",return_time:t.returnTime||"",return_type:t.returnType||"",col_place:t.colPlace||"",sort_order:i};},
   _toDbTaskMin(t,date,i){const b=DB._toDbTaskBare(t,date,i);b.changed_json=JSON.stringify(t._changed||{});b.assignee_custom=!!t._assigneeCustom;b.time_changed=!!t._timeChanged;return b;},
   _dbSaveOk:true,
-  // ★ DB保存（bare形式 = 確実に存在するカラムのみ）
+  // ★ DB保存（changed_json含むフル保存→bareフォールバック）
   async _upsertWithFallback(rows,label){
     if(!sb||!rows.length)return;
-    // bareカラムのみでupsert（changed_json/assignee_custom/time_changed/opt_*/yakkan/line/payment除外）
-    const bareRows=rows.map(r=>{const b={...r};delete b.changed_json;delete b.assignee_custom;delete b.time_changed;delete b.opt_b;delete b.opt_c;delete b.opt_j;delete b.opt_usb;delete b.opt_parasol;delete b.yakkan;delete b.line;delete b.payment;return b;});
-    const{error}=await sb.from("tasks").upsert(bareRows,{onConflict:"_id"});
-    if(error){dbLog(label,false,error.message);DB._dbSaveOk=false;return;}
-    DB._dbSaveOk=true;
+    // 1) changed_json含む保存（opt_*等の追加カラムは除外）
+    const cjRows=rows.map(r=>{const b={...r};delete b.opt_b;delete b.opt_c;delete b.opt_j;delete b.opt_usb;delete b.opt_parasol;delete b.yakkan;delete b.line;delete b.payment;delete b.assignee_custom;delete b.time_changed;return b;});
+    const{error}=await sb.from("tasks").upsert(cjRows,{onConflict:"_id"});
+    if(!error){DB._dbSaveOk=true;return;}
+    dbLog(label+"-cj",false,error.message);
+    // 2) bare保存（changed_jsonも除外）
+    const bareRows=cjRows.map(r=>{const b={...r};delete b.changed_json;return b;});
+    const{error:e2}=await sb.from("tasks").upsert(bareRows,{onConflict:"_id"});
+    if(!e2){DB._dbSaveOk=true;return;}
+    dbLog(label+"-bare",false,e2.message);DB._dbSaveOk=false;
   },
   async upsertTasks(tasks,date){
     DB._lsSave(tasks,date);
@@ -172,8 +177,8 @@ const DB = {
   _BCJ_TAG:"\n##BCJ:",
   _encodeMemo(t){const base=(t.memo||"").split("\n##BCJ:")[0];const b=+(t.opts?.b||0),c=+(t.opts?.c||0),j=+(t.opts?.j||0);if(b||c||j)return base+"\n##BCJ:"+b+","+c+","+j;return base;},
   _decodeMemo(memo){if(!memo||!memo.includes("\n##BCJ:"))return{memo:memo||"",b:0,c:0,j:0};const parts=memo.split("\n##BCJ:");const counts=(parts[1]||"0,0,0").split(",").map(Number);return{memo:parts[0],b:counts[0]||0,c:counts[1]||0,j:counts[2]||0};},
-  _toDbTask(t,date,i){return DB._toDbTaskBare(t,date,i);},
-  _fromDbTask(d){const md=DB._decodeMemo(d.memo);const oB=md.b||(d.opt_b?1:0);const oC=md.c||(d.opt_c?1:0);const oJ=md.j||(d.opt_j?1:0);return{_id:d._id,type:d.type,time:d.time,name:d.name,assignee:d.assignee,done:d.done,memo:md.memo,reservationId:d.reservation_id,ota:d.ota,tel:d.tel,mail:d.mail,assignedVehicle:d.assigned_vehicle,plateNo:d.plate_no,people:d.people,place:d.place,vehicle:d.vehicle,insurance:d.insurance,insuranceChange:d.insurance_change,flight:d.flight,returnDate:norm(d.return_date),returnTime:d.return_time,returnType:d.return_type,colPlace:d.col_place,opts:{b:oB,c:oC,j:oJ,usb:d.opt_usb,parasol:d.opt_parasol},yakkan:d.yakkan,line:d.line,payment:d.payment,_sortOrder:d.sort_order,_changed:{}};},
+  _toDbTask(t,date,i){const b=DB._toDbTaskBare(t,date,i);b.changed_json=JSON.stringify({...(t._changed||{}),_optB:+(t.opts?.b||0),_optC:+(t.opts?.c||0),_optJ:+(t.opts?.j||0)});return b;},
+  _fromDbTask(d){const md=DB._decodeMemo(d.memo);const cj=(()=>{try{const p=JSON.parse(d.changed_json||"{}");return Object.keys(p).length?p:null;}catch(e){return null;}})();const oB=(cj&&cj._optB!==undefined?cj._optB:0)||md.b||(d.opt_b?1:0);const oC=(cj&&cj._optC!==undefined?cj._optC:0)||md.c||(d.opt_c?1:0);const oJ=(cj&&cj._optJ!==undefined?cj._optJ:0)||md.j||(d.opt_j?1:0);const ch=cj||{};delete ch._optB;delete ch._optC;delete ch._optJ;return{_id:d._id,type:d.type,time:d.time,name:d.name,assignee:d.assignee,done:d.done,memo:md.memo,reservationId:d.reservation_id,ota:d.ota,tel:d.tel,mail:d.mail,assignedVehicle:d.assigned_vehicle,plateNo:d.plate_no,people:d.people,place:d.place,vehicle:d.vehicle,insurance:d.insurance,insuranceChange:d.insurance_change,flight:d.flight,returnDate:norm(d.return_date),returnTime:d.return_time,returnType:d.return_type,colPlace:d.col_place,opts:{b:oB,c:oC,j:oJ,usb:d.opt_usb,parasol:d.opt_parasol},yakkan:d.yakkan,line:d.line,payment:d.payment,_sortOrder:d.sort_order,_changed:ch};},
   // --- スタッフ ---
   _staffLsKey:"spk_staff_backup",
   _staffLsSave(arr){try{localStorage.setItem(DB._staffLsKey,JSON.stringify(arr));}catch(e){}},
@@ -6348,7 +6353,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.0.3";
+const APP_VERSION="v4.0.4";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
