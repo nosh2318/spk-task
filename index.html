@@ -6501,26 +6501,24 @@ function App(){
                   </div>}
                   {/* ⑦ 個人別タスクサマリー */}
                   {(()=>{
-                    // 予約データから担当車両→スタッフ対応を構築
                     const personTasks={};
-                    // DBタスクから担当者別に集計
+                    // DBタスクから担当者別に集計（車両・場所情報含む）
                     tomorrowTasks.forEach(t=>{
                       const who=t.assignee||"未割当";
                       if(!personTasks[who])personTasks[who]=[];
-                      personTasks[who].push({time:t.time||"-",type:t.type||"",name:t.name||"",vehicle:t.vehicle||"",done:!!t.done,memo:t.memo||""});
+                      const vn=t.assigned_vehicle?vehicles.find(v=>v.code===t.assigned_vehicle):null;
+                      personTasks[who].push({time:t.time||"-",type:t.type||"",name:t.name||"",vehicle:t.vehicle||"",plateNo:t.plate_no||"",vehName:vn?vn.name:"",place:t.place||"",done:!!t.done});
                     });
                     // タスクがない場合は予約データからも生成
                     if(!tomorrowTasks.length){
-                      dels.forEach(r=>{
-                        const who="未割当";
-                        if(!personTasks[who])personTasks[who]=[];
-                        personTasks[who].push({time:r.delTime||r.lendTime||"-",type:"DEL",name:r.name,vehicle:r.vehicle+"クラス",done:false});
-                      });
-                      cols.forEach(r=>{
-                        const who="未割当";
-                        if(!personTasks[who])personTasks[who]=[];
-                        personTasks[who].push({time:r.colTime||r.returnTime||"-",type:"COL",name:r.name,vehicle:r.vehicle+"クラス",done:false});
-                      });
+                      const _addRes=(list,type,timeFn)=>{list.forEach(r=>{
+                        const who="未割当";if(!personTasks[who])personTasks[who]=[];
+                        const vc=fleet[r.id];const vn=vc?vehicles.find(v=>v.code===vc):null;
+                        const pl=type==="DEL"?(r.delPlace||""):(r.colPlace||"");
+                        personTasks[who].push({time:timeFn(r),type,name:r.name,vehicle:r.vehicle+"クラス",plateNo:vn?vn.no:"",vehName:vn?vn.name:"",place:pl,done:false});
+                      });};
+                      _addRes(dels,"DEL",r=>r.delTime||r.lendTime||"-");
+                      _addRes(cols,"COL",r=>r.colTime||r.returnTime||"-");
                     }
                     const persons=Object.keys(personTasks).sort((a,b)=>a==="未割当"?1:b==="未割当"?-1:a.localeCompare(b));
                     if(!persons.length)return null;
@@ -6529,18 +6527,29 @@ function App(){
                       {persons.map(p=>{
                         const tasks=personTasks[p].sort((a,b)=>(a.time||"").localeCompare(b.time||""));
                         const isUnassigned=p==="未割当";
-                        return <div key={p} style={{marginBottom:6,padding:"6px 8px",borderRadius:8,background:isUnassigned?"#fef2f2":"#f8fafc",border:"1px solid "+(isUnassigned?"#fecaca":"#e2e8f0")}}>
-                          <div style={{fontSize:10,fontWeight:700,color:isUnassigned?"#dc2626":"#1e40af",marginBottom:3}}>
-                            {p} <span style={{fontWeight:400,color:"#64748b"}}>({tasks.length}件)</span>
-                          </div>
-                          {tasks.map((t,i)=><div key={i} style={{fontSize:9,padding:"2px 6px",display:"flex",gap:4,alignItems:"center",background:t.done?"#f0fdf4":"#fff",borderRadius:4,marginBottom:1,border:"1px solid #f1f5f9"}}>
-                            <span style={{fontWeight:700,color:"#2563eb",minWidth:30}}>{t.time}</span>
-                            <span style={{fontSize:8,fontWeight:700,padding:"1px 4px",borderRadius:3,background:t.type==="DEL"?"#dbeafe":t.type==="COL"?"#fee2e2":"#f3e8ff",color:t.type==="DEL"?"#1d4ed8":t.type==="COL"?"#dc2626":"#7c3aed",minWidth:24,textAlign:"center"}}>{t.type}</span>
-                            <span style={{fontWeight:600,flex:1}}>{t.name}</span>
-                            {t.vehicle&&<span style={{fontSize:8,color:"#64748b"}}>{t.vehicle}</span>}
-                            {t.done&&<span style={{fontSize:8,color:"#16a34a",fontWeight:700}}>完了</span>}
-                          </div>)}
-                        </div>;
+                        const FOLD_LIMIT=6;
+                        const needFold=tasks.length>=FOLD_LIMIT;
+                        const PersonCard=()=>{
+                          const[expanded,setExpanded]=useState(!needFold);
+                          const shown=expanded?tasks:tasks.slice(0,5);
+                          return <div style={{marginBottom:6,padding:"6px 8px",borderRadius:8,background:isUnassigned?"#fef2f2":"#f8fafc",border:"1px solid "+(isUnassigned?"#fecaca":"#e2e8f0")}}>
+                            <div style={{fontSize:10,fontWeight:700,color:isUnassigned?"#dc2626":"#1e40af",marginBottom:3,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                              <span>{p} <span style={{fontWeight:400,color:"#64748b"}}>({tasks.length}件)</span></span>
+                              {needFold&&<button onClick={()=>setExpanded(!expanded)} style={{background:"none",border:"1px solid #d1d5db",borderRadius:4,fontSize:8,color:"#6b7280",cursor:"pointer",padding:"1px 6px"}}>{expanded?"折りたたむ":"全て表示"}</button>}
+                            </div>
+                            {shown.map((t,i)=><div key={i} style={{fontSize:9,padding:"2px 6px",display:"flex",gap:3,alignItems:"center",background:t.done?"#f0fdf4":"#fff",borderRadius:4,marginBottom:1,border:"1px solid #f1f5f9",flexWrap:"wrap"}}>
+                              <span style={{fontWeight:700,color:"#2563eb",minWidth:30}}>{t.time}</span>
+                              <span style={{fontSize:8,fontWeight:700,padding:"1px 4px",borderRadius:3,background:t.type==="DEL"?"#dbeafe":t.type==="COL"?"#fee2e2":"#f3e8ff",color:t.type==="DEL"?"#1d4ed8":t.type==="COL"?"#dc2626":"#7c3aed",minWidth:24,textAlign:"center"}}>{t.type}</span>
+                              <span style={{fontWeight:600}}>{t.name}</span>
+                              {(t.vehName||t.plateNo)&&<span style={{fontSize:8,color:"#1e40af",background:"#eff6ff",padding:"0 4px",borderRadius:3,fontWeight:600}}>{t.vehName||t.vehicle}{t.plateNo?" "+t.plateNo:""}</span>}
+                              {!t.vehName&&!t.plateNo&&t.vehicle&&<span style={{fontSize:8,color:"#64748b"}}>{t.vehicle}</span>}
+                              {t.place&&<span style={{fontSize:8,color:"#059669",background:"#ecfdf5",padding:"0 4px",borderRadius:3}}>📍{t.place}</span>}
+                              {t.done&&<span style={{fontSize:8,color:"#16a34a",fontWeight:700}}>完了</span>}
+                            </div>)}
+                            {needFold&&!expanded&&<div style={{fontSize:8,color:"#9ca3af",textAlign:"center",padding:2}}>...他{tasks.length-5}件</div>}
+                          </div>;
+                        };
+                        return <PersonCard key={p}/>;
                       })}
                     </div>;
                   })()}
@@ -6593,7 +6602,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.1";
+const APP_VERSION="v4.2.2";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
