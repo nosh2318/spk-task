@@ -5671,16 +5671,21 @@ function App(){
   const[importDiag,setImportDiag]=useState(null); // インポート売上診断
   const[sbConnected,setSbConnected]=useState(false);
   const[dbLoaded,setDbLoaded]=useState(!SB_ENABLED);
-  // ★ 翌日タスク（個人別サマリー用）
+  // ★ 当日タスク（個人別サマリー用）+ 翌日タスク
+  const[todayTasks,setTodayTasks]=useState([]);
   const[tomorrowTasks,setTomorrowTasks]=useState([]);
   useEffect(()=>{
     if(!SB_ENABLED||!dbLoaded)return;
     const tmr=dOff(today,1);
     (async()=>{
       try{
-        const{data:rows}=await sb.from("tasks").select("*").eq("date",tmr);
-        if(rows&&rows.length)setTomorrowTasks(rows);else setTomorrowTasks([]);
-      }catch(e){console.log("[tomorrowTasks] fetch error",e);}
+        const[todayRes,tmrRes]=await Promise.all([
+          sb.from("tasks").select("*").eq("date",today),
+          sb.from("tasks").select("*").eq("date",tmr)
+        ]);
+        if(todayRes.data&&todayRes.data.length)setTodayTasks(todayRes.data);else setTodayTasks([]);
+        if(tmrRes.data&&tmrRes.data.length)setTomorrowTasks(tmrRes.data);else setTomorrowTasks([]);
+      }catch(e){console.log("[todayTasks/tomorrowTasks] fetch error",e);}
     })();
   },[today,dbLoaded]);
 
@@ -6351,6 +6356,46 @@ function App(){
               {data.length>0&&<div style={{display:"flex",gap:8,marginBottom:16,justifyContent:"center",flexWrap:"wrap"}}>
                 <button onClick={()=>setShowOP(true)} style={{padding:"10px 20px",borderRadius:12,border:"none",cursor:"pointer",background:"linear-gradient(135deg,#1e40af,#2563eb)",color:"#fff",fontSize:13,fontWeight:700,boxShadow:"0 2px 8px rgba(37,99,235,.3)"}}>📋 OPシートを開く</button>
               </div>}
+              {/* ★ 本日の個人別タスクサマリー */}
+              {todayTasks.length>0&&(()=>{
+                const byPerson={};
+                todayTasks.forEach(t=>{
+                  const who=t.assignee||"未割当";
+                  if(!byPerson[who])byPerson[who]=[];
+                  byPerson[who].push(t);
+                });
+                const persons=Object.keys(byPerson).sort((a,b)=>a==="未割当"?1:b==="未割当"?-1:a.localeCompare(b));
+                if(!persons.length)return null;
+                const todayDt=new Date(today);const WK=["日","月","火","水","木","金","土"];
+                const todayLabel=(todayDt.getMonth()+1)+"/"+todayDt.getDate()+"("+WK[todayDt.getDay()]+")";
+                const PersonFold=()=>{
+                  const FL=6;const need=persons.length>=FL;const[open,setOpen]=useState(!need);const shown=open?persons:persons.slice(0,5);
+                  return <div style={{marginBottom:16,padding:"12px 14px",borderRadius:14,border:"1px solid #a5b4fc",background:"linear-gradient(135deg,#eef2ff,#e0e7ff)"}}>
+                    <div style={{fontSize:13,fontWeight:800,color:"#3730a3",marginBottom:10,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <span>👤 本日 {todayLabel} の個人別タスクサマリー ({todayTasks.length}件)</span>
+                      {need&&<button onClick={()=>setOpen(!open)} style={{background:"none",border:"1px solid #c7d2fe",borderRadius:4,fontSize:9,color:"#4338ca",cursor:"pointer",padding:"2px 8px",fontWeight:600}}>{open?"折りたたむ":"全て表示"}</button>}
+                    </div>
+                    {shown.map(person=>{
+                      const tasks=byPerson[person];
+                      const isUnassigned=person==="未割当";
+                      return <div key={person} style={{marginBottom:6,padding:"6px 10px",borderRadius:8,background:"#fff",border:"1px solid #e2e8f0"}}>
+                        <div style={{fontSize:11,fontWeight:700,color:isUnassigned?"#94a3b8":"#1e293b",marginBottom:3}}>
+                          {person} <span style={{fontSize:9,color:"#64748b",fontWeight:500}}>({tasks.length}件)</span>
+                        </div>
+                        {tasks.map(t=><div key={t._id} style={{fontSize:10,padding:"2px 0",display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+                          <span style={{fontWeight:600,color:t.type==="COL"?"#dc2626":"#2563eb",minWidth:28}}>{t.type||"-"}</span>
+                          <span style={{fontWeight:600,color:"#374151",minWidth:32}}>{t.time||"-"}</span>
+                          <span style={{color:"#1e293b"}}>{t.name}</span>
+                          {t.assigned_vehicle&&<span style={{fontSize:9,background:"#dbeafe",color:"#1d4ed8",padding:"1px 5px",borderRadius:4,fontWeight:600}}>{t.assigned_vehicle}{t.plate_no?" "+t.plate_no:""}</span>}
+                          {t.place&&<span style={{fontSize:9,background:"#f0fdf4",color:"#166534",padding:"1px 5px",borderRadius:4}}>📍{t.place}</span>}
+                        </div>)}
+                      </div>;
+                    })}
+                    {need&&!open&&<div style={{fontSize:8,color:"#9ca3af",textAlign:"center",padding:2}}>...他{persons.length-5}名</div>}
+                  </div>;
+                };
+                return <PersonFold/>;
+              })()}
               {/* ★ 翌日業務サマリー */}
               {data.length>0&&(()=>{
                 const tmr=dOff(today,1);
@@ -6469,60 +6514,6 @@ function App(){
                       <div>{shown.map(r=>r.name+"("+r.insurance+")").join(", ")}{need&&!open?"...他"+(nocAlerts.length-5)+"件":""}</div>
                     </div>;};return <FoldNoc/>;})()}
                   </div>}
-                  {/* ⑦ 個人別タスクサマリー */}
-                  {(()=>{
-                    const personTasks={};
-                    // DBタスクから担当者別に集計（車両・場所情報含む）
-                    tomorrowTasks.forEach(t=>{
-                      const who=t.assignee||"未割当";
-                      if(!personTasks[who])personTasks[who]=[];
-                      const vn=t.assigned_vehicle?vehicles.find(v=>v.code===t.assigned_vehicle):null;
-                      personTasks[who].push({time:t.time||"-",type:t.type||"",name:t.name||"",vehicle:t.vehicle||"",plateNo:t.plate_no||"",vehName:vn?vn.name:"",place:t.place||"",done:!!t.done});
-                    });
-                    // タスクがない場合は予約データからも生成
-                    if(!tomorrowTasks.length){
-                      const _addRes=(list,type,timeFn)=>{list.forEach(r=>{
-                        const who="未割当";if(!personTasks[who])personTasks[who]=[];
-                        const vc=fleet[r.id];const vn=vc?vehicles.find(v=>v.code===vc):null;
-                        const pl=type==="DEL"?(r.delPlace||""):(r.colPlace||"");
-                        personTasks[who].push({time:timeFn(r),type,name:r.name,vehicle:r.vehicle+"クラス",plateNo:vn?vn.no:"",vehName:vn?vn.name:"",place:pl,done:false});
-                      });};
-                      _addRes(dels,"DEL",r=>r.delTime||r.lendTime||"-");
-                      _addRes(cols,"COL",r=>r.colTime||r.returnTime||"-");
-                    }
-                    const persons=Object.keys(personTasks).sort((a,b)=>a==="未割当"?1:b==="未割当"?-1:a.localeCompare(b));
-                    if(!persons.length)return null;
-                    return <div style={{borderTop:"1px solid #e5e7eb",paddingTop:8,marginTop:8}}>
-                      <div style={{fontSize:10,fontWeight:700,color:"#7c3aed",marginBottom:6}}>👤 個人別タスクサマリー</div>
-                      {persons.map(p=>{
-                        const tasks=personTasks[p].sort((a,b)=>(a.time||"").localeCompare(b.time||""));
-                        const isUnassigned=p==="未割当";
-                        const FOLD_LIMIT=6;
-                        const needFold=tasks.length>=FOLD_LIMIT;
-                        const PersonCard=()=>{
-                          const[expanded,setExpanded]=useState(!needFold);
-                          const shown=expanded?tasks:tasks.slice(0,5);
-                          return <div style={{marginBottom:6,padding:"6px 8px",borderRadius:8,background:isUnassigned?"#fef2f2":"#f8fafc",border:"1px solid "+(isUnassigned?"#fecaca":"#e2e8f0")}}>
-                            <div style={{fontSize:10,fontWeight:700,color:isUnassigned?"#dc2626":"#1e40af",marginBottom:3,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                              <span>{p} <span style={{fontWeight:400,color:"#64748b"}}>({tasks.length}件)</span></span>
-                              {needFold&&<button onClick={()=>setExpanded(!expanded)} style={{background:"none",border:"1px solid #d1d5db",borderRadius:4,fontSize:8,color:"#6b7280",cursor:"pointer",padding:"1px 6px"}}>{expanded?"折りたたむ":"全て表示"}</button>}
-                            </div>
-                            {shown.map((t,i)=><div key={i} style={{fontSize:9,padding:"2px 6px",display:"flex",gap:3,alignItems:"center",background:t.done?"#f0fdf4":"#fff",borderRadius:4,marginBottom:1,border:"1px solid #f1f5f9",flexWrap:"wrap"}}>
-                              <span style={{fontWeight:700,color:"#2563eb",minWidth:30}}>{t.time}</span>
-                              <span style={{fontSize:8,fontWeight:700,padding:"1px 4px",borderRadius:3,background:t.type==="DEL"?"#dbeafe":t.type==="COL"?"#fee2e2":"#f3e8ff",color:t.type==="DEL"?"#1d4ed8":t.type==="COL"?"#dc2626":"#7c3aed",minWidth:24,textAlign:"center"}}>{t.type}</span>
-                              <span style={{fontWeight:600}}>{t.name}</span>
-                              {(t.vehName||t.plateNo)&&<span style={{fontSize:8,color:"#1e40af",background:"#eff6ff",padding:"0 4px",borderRadius:3,fontWeight:600}}>{t.vehName||t.vehicle}{t.plateNo?" "+t.plateNo:""}</span>}
-                              {!t.vehName&&!t.plateNo&&t.vehicle&&<span style={{fontSize:8,color:"#64748b"}}>{t.vehicle}</span>}
-                              {t.place&&<span style={{fontSize:8,color:"#059669",background:"#ecfdf5",padding:"0 4px",borderRadius:3}}>📍{t.place}</span>}
-                              {t.done&&<span style={{fontSize:8,color:"#16a34a",fontWeight:700}}>完了</span>}
-                            </div>)}
-                            {needFold&&!expanded&&<div style={{fontSize:8,color:"#9ca3af",textAlign:"center",padding:2}}>...他{tasks.length-5}件</div>}
-                          </div>;
-                        };
-                        return <PersonCard key={p}/>;
-                      })}
-                    </div>;
-                  })()}
                 </div>;
               })()}
               {sections.map(function(sec){return <div key={sec.title} style={{marginBottom:16}}>
@@ -6623,7 +6614,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.4";
+const APP_VERSION="v4.2.5";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
