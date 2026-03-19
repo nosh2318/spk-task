@@ -6308,6 +6308,96 @@ function App(){
               {data.length>0&&<div style={{display:"flex",gap:8,marginBottom:16,justifyContent:"center",flexWrap:"wrap"}}>
                 <button onClick={()=>setShowOP(true)} style={{padding:"10px 20px",borderRadius:12,border:"none",cursor:"pointer",background:"linear-gradient(135deg,#1e40af,#2563eb)",color:"#fff",fontSize:13,fontWeight:700,boxShadow:"0 2px 8px rgba(37,99,235,.3)"}}>📋 OPシートを開く</button>
               </div>}
+              {/* ★ 翌日業務サマリー */}
+              {data.length>0&&(()=>{
+                const tmr=dOff(today,1);
+                const tmrRes=data.filter(r=>sD(r.lendDate,tmr)||sD(r.returnDate,tmr));
+                if(!tmrRes.length)return null;
+                const dels=tmrRes.filter(r=>sD(r.lendDate,tmr));
+                const cols=tmrRes.filter(r=>sD(r.returnDate,tmr)&&!sD(r.lendDate,tmr));
+                const washRes=data.filter(r=>sD(r.lendDate,dOff(tmr,1)));
+                // ② じゃらん未決済
+                const jalanUnpaid=dels.filter(r=>r.ota==="J"&&(!jalanPay[r.id]||jalanPay[r.id].payStatus!=="完了"));
+                // ③ オプションアラート
+                const optAlerts=dels.filter(r=>(r.optB||r.optC||r.optJ||r.optUSB||r.optParasol));
+                // ④ 時間詰まり（DEL+COL合わせて1時間以内に複数タスク）
+                const allTimes=[];
+                dels.forEach(r=>{const t=r.delTime||r.lendTime;if(t)allTimes.push({time:t,name:r.name,type:"DEL"});});
+                cols.forEach(r=>{const t=r.colTime||r.returnTime;if(t)allTimes.push({time:t,name:r.name,type:"COL"});});
+                allTimes.sort((a,b)=>(a.time||"").localeCompare(b.time||""));
+                const tightTasks=[];
+                for(let i=1;i<allTimes.length;i++){
+                  const prev=allTimes[i-1],cur=allTimes[i];
+                  if(!prev.time||!cur.time)continue;
+                  const pM=parseInt(prev.time.split(":")[0])*60+parseInt(prev.time.split(":")[1]||0);
+                  const cM=parseInt(cur.time.split(":")[0])*60+parseInt(cur.time.split(":")[1]||0);
+                  if(cM-pM<60&&cM-pM>=0)tightTasks.push({a:prev,b:cur,gap:cM-pM});
+                }
+                // ⑤ NOC以外の補償（COL限定）
+                const nocAlerts=cols.filter(r=>r.insurance&&r.insurance!=="NOC"&&r.insurance!=="免責");
+                const alerts=jalanUnpaid.length+optAlerts.length+tightTasks.length+nocAlerts.length;
+                const dt=new Date(tmr);const WK=["日","月","火","水","木","金","土"];
+                const dateLabel=(dt.getMonth()+1)+"/"+dt.getDate()+"("+WK[dt.getDay()]+")";
+                return <div style={{marginBottom:16,padding:"12px 14px",borderRadius:14,border:"1px solid "+(alerts?"#fde68a":"#bfdbfe"),background:alerts?"linear-gradient(135deg,#fffbeb,#fef3c7)":"linear-gradient(135deg,#eff6ff,#dbeafe)"}}>
+                  <div style={{fontSize:13,fontWeight:800,color:alerts?"#92400e":"#1e40af",marginBottom:10}}>
+                    📋 明日 {dateLabel} の業務サマリー {alerts>0&&<span style={{fontSize:10,background:"#ef4444",color:"#fff",padding:"2px 8px",borderRadius:10,marginLeft:6}}>{alerts}件注意</span>}
+                  </div>
+                  {/* ① タスク概要 */}
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginBottom:10}}>
+                    <div style={{padding:"8px 10px",borderRadius:10,background:"#fff",textAlign:"center",border:"1px solid #e2e8f0"}}>
+                      <div style={{fontSize:9,color:"#64748b",fontWeight:600}}>DEL（貸出）</div>
+                      <div style={{fontSize:20,fontWeight:900,color:"#2563eb"}}>{dels.length}</div>
+                    </div>
+                    <div style={{padding:"8px 10px",borderRadius:10,background:"#fff",textAlign:"center",border:"1px solid #e2e8f0"}}>
+                      <div style={{fontSize:9,color:"#64748b",fontWeight:600}}>COL（返却）</div>
+                      <div style={{fontSize:20,fontWeight:900,color:"#dc2626"}}>{cols.length}</div>
+                    </div>
+                    <div style={{padding:"8px 10px",borderRadius:10,background:"#fff",textAlign:"center",border:"1px solid #e2e8f0"}}>
+                      <div style={{fontSize:9,color:"#64748b",fontWeight:600}}>洗車</div>
+                      <div style={{fontSize:20,fontWeight:900,color:"#f59e0b"}}>{washRes.length}</div>
+                    </div>
+                  </div>
+                  {/* DEL詳細 */}
+                  {dels.length>0&&<div style={{marginBottom:8}}>
+                    <div style={{fontSize:10,fontWeight:700,color:"#1e40af",marginBottom:4}}>🚗 DEL詳細</div>
+                    {dels.map(r=><div key={r.id} style={{fontSize:10,padding:"3px 8px",background:"#fff",borderRadius:6,marginBottom:2,display:"flex",gap:6,alignItems:"center",border:"1px solid #e2e8f0"}}>
+                      <span style={{fontWeight:700,color:"#2563eb",minWidth:36}}>{r.delTime||r.lendTime||"-"}</span>
+                      <span style={{fontWeight:600}}>{r.name}</span>
+                      <span style={{color:"#64748b",fontSize:9}}>{r.vehicle}クラス</span>
+                      {r.insurance&&r.insurance!=="NOC"&&<span style={{fontSize:8,background:"#fef2f2",color:"#dc2626",padding:"1px 4px",borderRadius:4,fontWeight:700}}>⚠️{r.insurance}</span>}
+                    </div>)}
+                  </div>}
+                  {/* COL詳細 */}
+                  {cols.length>0&&<div style={{marginBottom:8}}>
+                    <div style={{fontSize:10,fontWeight:700,color:"#dc2626",marginBottom:4}}>📥 COL詳細</div>
+                    {cols.map(r=><div key={r.id} style={{fontSize:10,padding:"3px 8px",background:"#fff",borderRadius:6,marginBottom:2,display:"flex",gap:6,alignItems:"center",border:"1px solid #e2e8f0"}}>
+                      <span style={{fontWeight:700,color:"#dc2626",minWidth:36}}>{r.colTime||r.returnTime||"-"}</span>
+                      <span style={{fontWeight:600}}>{r.name}</span>
+                      <span style={{color:"#64748b",fontSize:9}}>{r.vehicle}クラス</span>
+                      {r.insurance&&r.insurance!=="NOC"&&r.insurance!=="免責"&&<span style={{fontSize:8,background:"#fef2f2",color:"#dc2626",padding:"1px 4px",borderRadius:4,fontWeight:700}}>要チェック</span>}
+                    </div>)}
+                  </div>}
+                  {/* アラート */}
+                  {alerts>0&&<div style={{borderTop:"1px solid #e5e7eb",paddingTop:8}}>
+                    <div style={{fontSize:10,fontWeight:700,color:"#dc2626",marginBottom:4}}>⚠️ 注意事項</div>
+                    {jalanUnpaid.length>0&&<div style={{fontSize:10,padding:"4px 8px",background:"#fef2f2",borderRadius:6,marginBottom:3,border:"1px solid #fecaca"}}>
+                      💳 <b>じゃらん未決済 {jalanUnpaid.length}件:</b> {jalanUnpaid.map(r=>r.name).join(", ")}
+                    </div>}
+                    {optAlerts.length>0&&<div style={{fontSize:10,padding:"4px 8px",background:"#fffbeb",borderRadius:6,marginBottom:3,border:"1px solid #fde68a"}}>
+                      🪑 <b>オプション準備 {optAlerts.length}件:</b> {optAlerts.map(r=>{
+                        const parts=[];if(r.optB)parts.push("B"+r.optB);if(r.optC)parts.push("C"+r.optC);if(r.optJ)parts.push("J"+r.optJ);if(r.optUSB)parts.push("USB");if(r.optParasol)parts.push("パラソル");
+                        return r.name+"("+parts.join("/")+")";
+                      }).join(", ")}
+                    </div>}
+                    {tightTasks.length>0&&<div style={{fontSize:10,padding:"4px 8px",background:"#fef2f2",borderRadius:6,marginBottom:3,border:"1px solid #fecaca"}}>
+                      ⏰ <b>時間詰まり {tightTasks.length}件:</b> {tightTasks.map(t=>t.a.time+" "+t.a.type+"→"+t.b.time+" "+t.b.type+"("+t.gap+"分)").join(", ")}
+                    </div>}
+                    {nocAlerts.length>0&&<div style={{fontSize:10,padding:"4px 8px",background:"#fef2f2",borderRadius:6,marginBottom:3,border:"1px solid #fecaca"}}>
+                      🔍 <b>返却時チェック必要 {nocAlerts.length}件:</b> {nocAlerts.map(r=>r.name+"("+r.insurance+")").join(", ")}
+                    </div>}
+                  </div>}
+                </div>;
+              })()}
               {sections.map(function(sec){return <div key={sec.title} style={{marginBottom:16}}>
                 <div style={{fontSize:11,fontWeight:800,color:sec.color,textTransform:"uppercase",letterSpacing:1,marginBottom:8,paddingLeft:4}}>{sec.title}</div>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:8}}>
@@ -6355,7 +6445,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.0.5";
+const APP_VERSION="v4.0.6";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
