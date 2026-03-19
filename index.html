@@ -2991,27 +2991,28 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
   };
   const TIME_OPTS=useMemo(()=>{const opts=[""];for(let h=6;h<=22;h++)for(let m=0;m<60;m+=5){if(h===22&&m>0)break;opts.push(`${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`);}return opts;},[]);
   const assignVehicle=(taskId,vehicleCode)=>{selfUpdateRef.current[selDate]=Date.now();const task=tasks.find(t=>t._id===taskId);if(!task)return;const v=vehicles.find(x=>x.code===vehicleCode);const updated={...task,assignedVehicle:vehicleCode,plateNo:v?v.no:""};setTasks(ts=>ts.map(x=>x._id===taskId?updated:x));DB.updateTask(updated,selDate);if(task.reservationId){onFleetChange(prev=>{const nf={...(typeof prev==="object"?prev:fleetRef.current)};if(vehicleCode)nf[task.reservationId]=vehicleCode;else delete nf[task.reservationId];return nf;});}};
-  // ★ 同期チェック: 画面データとDBデータを定期比較
+  // ★ 同期チェック: DBに直接クエリ（fetchTasksはLS副作用があるため使わない）
   const[syncInfo,setSyncInfo]=useState({status:"checking",detail:""});
   useEffect(()=>{
     if(!sb)return;
     const check=async()=>{
       try{
-        const dbTasks=await DB.fetchTasks(selDate);
+        const{data,error}=await sb.from("tasks").select("_id,memo").eq("date",selDate).order("sort_order");
+        if(error){setSyncInfo({status:"error",detail:error.message});return;}
+        const dbIds=(data||[]).map(t=>t._id).sort().join(",");
         const localIds=tasks.map(t=>t._id).sort().join(",");
-        const dbIds=(dbTasks||[]).map(t=>t._id).sort().join(",");
-        const localMemos=tasks.map(t=>t._id+":"+(t.memo||"")).sort().join("|");
-        const dbMemos=(dbTasks||[]).map(t=>t._id+":"+(t.memo||"")).sort().join("|");
-        if(localIds===dbIds&&localMemos===dbMemos){
+        const dbMemos=(data||[]).map(t=>t._id+":"+(t.memo||"")).sort().join("|");
+        const localMemos=tasks.map(t=>t._id+":"+DB._encodeMemo(t)).sort().join("|");
+        if(dbIds===localIds&&dbMemos===localMemos){
           setSyncInfo({status:"synced",detail:"同期OK "+new Date().toLocaleTimeString("ja")});
         }else{
-          setSyncInfo({status:"out_of_sync",detail:"DB差異: 画面"+tasks.length+"件/DB"+(dbTasks?.length||0)+"件"});
+          setSyncInfo({status:"out_of_sync",detail:"DB差異: 画面"+tasks.length+"件/DB"+(data?.length||0)+"件"});
         }
       }catch(e){setSyncInfo({status:"error",detail:e.message});}
     };
     const timer=setInterval(check,15000);
-    check();
-    return()=>clearInterval(timer);
+    const t0=setTimeout(check,3000);
+    return()=>{clearInterval(timer);clearTimeout(t0);};
   },[selDate,tasks]);
   const done=tasks.filter(t=>t.done).length;const staffCount=activeMembers.length;
   const WK=["日","月","火","水","木","金","土"];
@@ -5640,7 +5641,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v3.9.53";
+const APP_VERSION="v3.9.54";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
