@@ -6141,6 +6141,7 @@ function App(){
       setTimeout(()=>{importingRef.current=false;},15000);
     })();
     // ★ インポート結果をalertで通知（件数＋売上＋差分詳細）
+    try{
     // --- 前回との差分を検出 ---
     const prevIds=new Set(data.map(r=>r.id));
     const newIds=new Set(allData.map(r=>r.id));
@@ -6165,10 +6166,31 @@ function App(){
     // --- OTA別サマリー ---
     const impOtaSum={};imported.forEach(r=>{const k=r.ota||"?";if(!impOtaSum[k])impOtaSum[k]={cnt:0,sum:0,z:0};impOtaSum[k].cnt++;impOtaSum[k].sum+=(Number(r.price)||0);if(!r.price)impOtaSum[k].z++;});
     const impOtaStr=Object.entries(impOtaSum).map(([k,v])=>`  ${k}: ${v.cnt}件 ¥${v.sum.toLocaleString()}${v.z?` (${v.z}件=0)`:""}`).join("\n");
+    // --- OTA別 新規/キャンセル/変更 集計 ---
+    const otaAdd={};addedRes.forEach(r=>{const k=r.ota||"?";if(!otaAdd[k])otaAdd[k]={cnt:0,sum:0};otaAdd[k].cnt++;otaAdd[k].sum+=(Number(r.price)||0);});
+    const otaRem={};removedRes.forEach(r=>{const k=r.ota||"?";if(!otaRem[k])otaRem[k]={cnt:0,sum:0};otaRem[k].cnt++;otaRem[k].sum+=(Number(r.price)||0);});
+    const otaChg={};changedRes.forEach(({r})=>{const k=r.ota||"?";otaChg[k]=(otaChg[k]||0)+1;});
+    const allOtaKeys=new Set([...Object.keys(impOtaSum),...Object.keys(otaAdd),...Object.keys(otaRem),...Object.keys(otaChg)]);
+    const otaDiffLines=[];
+    allOtaKeys.forEach(k=>{
+      const cur=impOtaSum[k]||{cnt:0,sum:0};
+      const a=otaAdd[k];const r=otaRem[k];const c=otaChg[k]||0;
+      const parts=[`${cur.cnt}件 ¥${cur.sum.toLocaleString()}`];
+      const diffParts=[];
+      if(a)diffParts.push(`新規${a.cnt}件(+¥${a.sum.toLocaleString()})`);
+      if(r)diffParts.push(`キャンセル${r.cnt}件(-¥${r.sum.toLocaleString()})`);
+      if(c)diffParts.push(`変更${c}件`);
+      if(diffParts.length)parts.push(diffParts.join(" / "));
+      else parts.push("変更なし");
+      otaDiffLines.push(`  ${k}: ${parts.join(" → ")}`);
+    });
+    const otaDiffStr=otaDiffLines.join("\n");
     // --- 全体の月別サマリー ---
     const mBreak={};allData.forEach(r=>{const ym=r.returnDate?r.returnDate.substring(0,7):"?";if(!mBreak[ym])mBreak[ym]={cnt:0,sum:0,zeros:[]};mBreak[ym].cnt++;mBreak[ym].sum+=(Number(r.price)||0);if(!r.price)mBreak[ym].zeros.push(r);});
     const mStr=Object.entries(mBreak).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>`${k}: ${v.cnt}件 ¥${v.sum.toLocaleString()}${v.zeros.length?` ⚠️${v.zeros.length}件price=0`:""}`).join("\n");
     const totalSum=allData.reduce((s,r)=>s+(Number(r.price)||0),0);
+    const prevTotalSum=data.filter(r=>importedOTAs.has(r.ota)).reduce((s,r)=>s+(Number(r.price)||0),0);
+    const totalDiff=totalSum-prevTotalSum;
     const zeroAll=allData.filter(r=>!r.price);
     const zeroDetail=zeroAll.length>0?`\n\n⚠️ price=0: ${zeroAll.length}件\n`+zeroAll.slice(0,10).map(r=>`  ${r.ota}/${r.id}/${r.name}`).join("\n")+(zeroAll.length>10?`\n  ...他${zeroAll.length-10}件`:""):"";
     // --- 差分詳細テキスト ---
@@ -6191,8 +6213,9 @@ function App(){
     if(!addedRes.length&&!removedRes.length&&!changedRes.length)diffStr="\n\n✅ 前回からの変更なし";
     // ★ 画面上に売上診断バナーを表示
     const diagOta={};allData.forEach(r=>{const k=r.ota||"?";if(!diagOta[k])diagOta[k]={cnt:0,sum:0,z:0};diagOta[k].cnt++;diagOta[k].sum+=(Number(r.price)||0);if(!r.price)diagOta[k].z++;});
-    setImportDiag({ts:new Date().toLocaleTimeString(),total:allData.length,totalSum,mBreak,diagOta,zeroAll:zeroAll.slice(0,20),added:addedRes,removed:removedRes,changed:changedRes});
-    alert(`✅ ${allData.length}件取込完了 / 総売上¥${totalSum.toLocaleString()}\n\n【今回インポート分 OTA別】\n${impOtaStr}${diffStr}\n\n【全体 月別内訳】\n${mStr}${zeroDetail}\n\n※ 画面右上「v${APP_VERSION}」表示を確認\n※DB保存中です。15秒間お待ちください。`);
+    setImportDiag({ts:new Date().toLocaleTimeString(),total:allData.length,totalSum,mBreak,diagOta,zeroAll:zeroAll.slice(0,20),added:addedRes,removed:removedRes,changed:changedRes,otaDiffLines});
+    alert(`✅ ${allData.length}件取込完了 / 総売上¥${totalSum.toLocaleString()}\n\n【OTA別 増減サマリー】\n${otaDiffStr}\n${diffStr}\n\n【全体 月別内訳】\n${mStr}${zeroDetail}\n\n※ 画面右上「v${APP_VERSION}」表示を確認\n※DB保存中です。15秒間お待ちください。`);
+    }catch(alertErr){console.error("[imp] alert構築エラー:",alertErr);alert("✅ 取込完了（詳細表示でエラー: "+alertErr.message+"）");}
     // インポート後、既存タスクのオプション情報を強制更新
     (async()=>{
       const rOptsMap={};imported.forEach(r=>{rOptsMap[r.id]={b:+(r.optB||0),c:+(r.optC||0),j:+(r.optJ||0),usb:!!r.optUSB,parasol:!!r.optParasol};});
@@ -6694,11 +6717,19 @@ function App(){
           {tab==="accounting"&&<PASGuard label="会計管理"><AccountingPanel staff={staff}/></PASGuard>}
           {tab==="jalanpay"&&<JalanPayment data={data} jalanPay={jalanPay} onJalanPayChange={(id,d)=>{setJalanPay(p=>({...p,[id]:d}));DB.saveJalanPayment(id,d);}}/>}
           {tab==="dashboard"&&data.length>0&&<>
-            {importDiag&&(()=>{const hz=importDiag.zeroAll.length>0;return <div style={{background:hz?"#fef3c7":"#f0fdf4",border:`1px solid ${hz?"#f59e0b":"#86efac"}`,borderRadius:10,padding:"8px 12px",marginBottom:10,fontSize:11}}>
+            {importDiag&&(()=>{const hz=importDiag.zeroAll.length>0;const ha=importDiag.added?.length||0;const hr=importDiag.removed?.length||0;const hc=importDiag.changed?.length||0;return <div style={{background:hz?"#fef3c7":"#f0fdf4",border:`1px solid ${hz?"#f59e0b":"#86efac"}`,borderRadius:10,padding:"8px 12px",marginBottom:10,fontSize:11}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                 <span style={{fontWeight:700,color:hz?"#92400e":"#15803d"}}>✅ {importDiag.total}件 ¥{importDiag.totalSum.toLocaleString()}{hz?` (⚠️${importDiag.zeroAll.length}件price=0)`:""}</span>
                 <button onClick={()=>setImportDiag(null)} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#94a3b8"}}>✕</button>
               </div>
+              {(ha>0||hr>0||hc>0)&&<div style={{marginTop:4}}>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:2}}>
+                  {ha>0&&<span style={{color:"#059669",fontWeight:600}}>🆕 新規{ha}件</span>}
+                  {hr>0&&<span style={{color:"#dc2626",fontWeight:600}}>❌ キャンセル{hr}件</span>}
+                  {hc>0&&<span style={{color:"#2563eb",fontWeight:600}}>📝 変更{hc}件</span>}
+                </div>
+              </div>}
+              {importDiag.otaDiffLines&&importDiag.otaDiffLines.length>0&&<div style={{marginTop:4,fontSize:10,color:"#475569"}}>{importDiag.otaDiffLines.map((l,i)=><div key={i}>{l}</div>)}</div>}
             </div>;})()}
             <Dashboard data={data} fleet={fleet} vehicles={vehicles} maintenance={maintenance}/>
           </>}
@@ -6711,7 +6742,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.15";
+const APP_VERSION="v4.2.16";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
