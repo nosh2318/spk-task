@@ -2933,7 +2933,7 @@ function MaintForm({vehicleCode,startDate,onAdd,onClose,vehicles}){
 /* ==========================================
    OPシート（独立フルスクリーン）
    ========================================== */
-function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicles,staff,resOpts,sheetPlaces,onUpdateSheetPlaces,repeaterMap,jalanPay,cancelledIdsRef,onCancelReservation}){
+function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicles,staff,resOpts,sheetPlaces,onUpdateSheetPlaces,repeaterMap,jalanPay,cancelledIdsRef,onCancelReservation,onTaskChange}){
   const[dayOff,setDayOff]=useState(0);const selDate=dOff(today,dayOff);const[tasks,setTasks]=useState([]);
   const activeMembers=useMemo(()=>(shifts[selDate]||[]).filter(s=>s.type==="アルバイト"||s.symbol==="●").map(s=>s.name),[shifts,selDate]);
   const fleetRef=React.useRef(fleet);fleetRef.current=fleet;
@@ -3044,17 +3044,22 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
   },[selDate,loadTasks]);
   const[saveStatus,setSaveStatus]=useState("ok"); // "ok"|"saving"|"error"
   const pendingSaves=React.useRef(0);
+  const _topRefreshTimer=React.useRef(null);
+  const _notifyTopChange=()=>{
+    // デバウンス: 連続変更時は最後の変更から2秒後にTOP更新
+    clearTimeout(_topRefreshTimer.current);
+    _topRefreshTimer.current=setTimeout(()=>{if(onTaskChange)onTaskChange();},2000);
+  };
   const _save=async(id,t)=>{
     selfUpdateRef.current[selDate]=Date.now();
-    // ★ React state + LS を即時更新
     setTasks(ts=>{const next=ts.map(x=>x._id===id?t:x);DB._lsSave(next,selDate);return next;});
-    // ★ DBには変更タスク1件だけ保存（全件UPSERTを廃止→競合・undefined回避）
     pendingSaves.current++;setSaveStatus("saving");
     try{
       await DB.updateTask(t,selDate);
     }catch(e){console.error("[_save] DB error",e);}
     pendingSaves.current--;
     setSaveStatus(DB._dbSaveOk?(pendingSaves.current>0?"saving":"ok"):"error");
+    _notifyTopChange();
   };
   const upd=(id,t,label)=>{if(!window.confirm(`${label||"変更"}\nよろしいですか？`))return false;_save(id,t);return true;};
   const mark=(t,field)=>({...t,_changed:{...t._changed,[field]:true}});
@@ -3069,6 +3074,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
     }catch(e){console.error("[add] DB error",e);}
     pendingSaves.current--;
     setSaveStatus(DB._dbSaveOk?(pendingSaves.current>0?"saving":"ok"):"error");
+    _notifyTopChange();
   };
   const TIME_OPTS=useMemo(()=>{const opts=[""];for(let h=6;h<=22;h++)for(let m=0;m<60;m+=5){if(h===22&&m>0)break;opts.push(`${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`);}return opts;},[]);
   const assignVehicle=(taskId,vehicleCode)=>{selfUpdateRef.current[selDate]=Date.now();const task=tasks.find(t=>t._id===taskId);if(!task)return;const v=vehicles.find(x=>x.code===vehicleCode);const updated={...task,assignedVehicle:vehicleCode,plateNo:v?v.no:""};setTasks(ts=>ts.map(x=>x._id===taskId?updated:x));DB.updateTask(updated,selDate);if(task.reservationId){onFleetChange(prev=>{const nf={...(typeof prev==="object"?prev:fleetRef.current)};if(vehicleCode)nf[task.reservationId]=vehicleCode;else delete nf[task.reservationId];return nf;});}};
@@ -3259,6 +3265,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
                 setTasks(ts=>{const next=ts.filter(x=>x._id!==t._id);DB._lsSave(next,selDate);return next;});
                 if(sb){sb.from("tasks").delete().eq("_id",t._id).then(()=>dbLog("delRow",true,t._id)).catch(e=>dbLog("delRow",false,e.message));}
               }
+              _notifyTopChange();
             };
             return <tr key={t._id}><td style={{...cellS(0),textAlign:"center",padding:0}}><div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:0}}><button onClick={()=>moveRow(t._id,-1)} style={{background:"none",border:"none",cursor:"pointer",fontSize:8,color:"#94a3b8",lineHeight:1,padding:0}}>▲</button><button onClick={delTask} style={{background:"none",border:"none",cursor:"pointer",fontSize:9,color:"#ef4444",lineHeight:1,padding:0,fontWeight:700}}>×</button><button onClick={()=>moveRow(t._id,1)} style={{background:"none",border:"none",cursor:"pointer",fontSize:8,color:"#94a3b8",lineHeight:1,padding:0}}>▼</button></div></td><td style={cellS(1)}><input type="checkbox" checked={t.done} onChange={e=>{const v=e.target.checked;upd(t._id,mark({...t,done:v},"done"),v?"完了にする":"未完了に戻す");}} style={{width:12,height:12,accentColor:tm.c}}/></td>
               <td style={cellS(2,"assignee")}>{t._assigneeCustom?<input defaultValue={t.assignee||""} onBlur={e=>{const v=e.target.value.trim();if(!v){upd(t._id,mark({...t,_assigneeCustom:false,assignee:""},"assignee"),"担当をクリア");}else{upd(t._id,mark({...t,assignee:v,_assigneeCustom:false},"assignee"),"担当を「"+v+"」に変更");}}} onKeyDown={e=>{if(e.key==="Enter"){e.target.blur();}}} autoFocus style={{border:"1px solid #3b82f6",background:"#eff6ff",fontSize:9,width:"100%",padding:"1px 3px",fontWeight:600,borderRadius:3,outline:"none"}} placeholder="名前を入力"/>:<select value={activeMembers.includes(t.assignee)?t.assignee:["乗り捨て","無人"].includes(t.assignee)?t.assignee:t.assignee?"__custom":""}  onChange={e=>{const v=e.target.value;if(v==="__other"){_save(t._id,mark({...t,_assigneeCustom:true,assignee:""},"assignee"));return;}upd(t._id,mark({...t,assignee:v,_assigneeCustom:false},"assignee"),"担当を「"+(v||"未割当")+"」に変更");}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,color:t.assignee?"#111":"#ccc",fontWeight:600}}><option value="">-</option>{activeMembers.map(m=><option key={m}>{m}</option>)}<option value="乗り捨て">乗り捨て</option><option value="無人">無人</option><option value="__other">その他...</option>{t.assignee&&!activeMembers.includes(t.assignee)&&!["乗り捨て","無人"].includes(t.assignee)&&<option value="__custom">{t.assignee}</option>}</select>}</td>
@@ -5672,20 +5679,25 @@ function App(){
   // ★ 個人別サマリーのアコーディオン開閉状態（再レンダーで消えないようrefで管理）
   const[personAccOpen,setPersonAccOpen]=useState({"本日":{},"翌日":{}});
   const[tomorrowTasks,setTomorrowTasks]=useState([]);
+  const refreshTopTasks=useCallback(async()=>{
+    if(!SB_ENABLED||!sb)return;
+    const tmr=dOff(today,1);
+    try{
+      const[todayRes,tmrRes]=await Promise.all([
+        sb.from("tasks").select("*").eq("date",today),
+        sb.from("tasks").select("*").eq("date",tmr)
+      ]);
+      if(todayRes.data)setTodayTasks(todayRes.data);
+      if(tmrRes.data)setTomorrowTasks(tmrRes.data);
+    }catch(e){console.log("[refreshTopTasks] error",e);}
+  },[today]);
   useEffect(()=>{
     if(!SB_ENABLED||!dbLoaded)return;
-    const tmr=dOff(today,1);
-    (async()=>{
-      try{
-        const[todayRes,tmrRes]=await Promise.all([
-          sb.from("tasks").select("*").eq("date",today),
-          sb.from("tasks").select("*").eq("date",tmr)
-        ]);
-        if(todayRes.data&&todayRes.data.length)setTodayTasks(todayRes.data);else setTodayTasks([]);
-        if(tmrRes.data&&tmrRes.data.length)setTomorrowTasks(tmrRes.data);else setTomorrowTasks([]);
-      }catch(e){console.log("[todayTasks/tomorrowTasks] fetch error",e);}
-    })();
-  },[today,dbLoaded]);
+    refreshTopTasks();
+    // 30秒ごとにTOPタスクも自動更新
+    const timer=setInterval(()=>{if(document.visibilityState==="visible")refreshTopTasks();},30000);
+    return()=>clearInterval(timer);
+  },[today,dbLoaded,refreshTopTasks]);
 
   // 同期状態トラッキング: 各カテゴリの最終DB同期時刻 + ローカル最終変更時刻
   const[syncStatus,setSyncStatus]=useState({
@@ -6308,7 +6320,7 @@ function App(){
 
   return <div style={{height:"100vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
     {SB_ENABLED&&<div className="sync-desktop"><SyncBadge connected={sbConnected}/></div>}
-    {showOP&&<OPScreen reservations={data} today={today} shifts={shifts} fleet={fleet} onFleetChange={setFleetSync} onClose={()=>setShowOP(false)} vehicles={vehicles} staff={staff} resOpts={resOpts} sheetPlaces={sheetPlaces} onUpdateSheetPlaces={saveSheetPlaces} repeaterMap={repeaterInfo.isRepeater} jalanPay={jalanPay} cancelledIdsRef={cancelledIdsRef} onCancelReservation={cancelReservation}/>}
+    {showOP&&<OPScreen reservations={data} today={today} shifts={shifts} fleet={fleet} onFleetChange={setFleetSync} onClose={()=>{setShowOP(false);refreshTopTasks();}} vehicles={vehicles} staff={staff} resOpts={resOpts} sheetPlaces={sheetPlaces} onUpdateSheetPlaces={saveSheetPlaces} repeaterMap={repeaterInfo.isRepeater} jalanPay={jalanPay} cancelledIdsRef={cancelledIdsRef} onCancelReservation={cancelReservation} onTaskChange={refreshTopTasks}/>}
     <div style={{display:showOP?"none":"flex",flex:1,overflow:"hidden",flexDirection:"column"}}>
       <div className={"top-nav"+(tab==="top"?" hide-on-top":"")}>
         {navItems.filter(n=>{const always=["top","import","vehicle","staff","shift","attendance","parking","accounting","fleet","jalanpay","history","customer"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>setTab(n.id)} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
@@ -6699,7 +6711,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.14";
+const APP_VERSION="v4.2.15";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
