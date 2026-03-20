@@ -5744,7 +5744,25 @@ function App(){
         if(shDB)setShifts(shDB);
         if(mtDB&&mtDB.length)setMaintenance(mtDB);
         try{const attDB=await DB.fetchAttendance();if(attDB&&Object.keys(attDB).length)setAttendance(attDB);}catch(e){console.warn("[att]",e);}
-        try{const jpDB=await DB.fetchJalanPayment();if(jpDB)setJalanPay(jpDB);}catch(e){console.warn("[jalanPay]",e);}
+        try{
+          const jpDB=await DB.fetchJalanPayment()||{};
+          // GAS Web Appからリアルタイム取得してマージ（スプレッドシートの最新データを自動反映）
+          try{
+            const jRes=useRes.filter(r=>r.ota==="J").map(r=>r.id);
+            if(jRes.length){
+              const gasData=await fetchJalanPaySheetData(jRes);
+              const merged={...jpDB,...gasData};
+              // GASで取得した完了データをDBにも保存
+              Object.entries(gasData).forEach(([rid,pd])=>{
+                if(!jpDB[rid]||jpDB[rid].payStatus!==pd.payStatus){
+                  DB.saveJalanPayment(rid,{...(jpDB[rid]||{}),...pd});
+                }
+              });
+              setJalanPay(merged);
+              console.log("[jalanPay] GAS自動取得:",Object.keys(gasData).length+"件反映");
+            }else{if(Object.keys(jpDB).length)setJalanPay(jpDB);}
+          }catch(ge){console.warn("[jalanPay GAS]",ge);if(Object.keys(jpDB).length)setJalanPay(jpDB);}
+        }catch(e){console.warn("[jalanPay]",e);}
         // ★ DBのplacesテーブルとlocalStorageをマージ（場所情報の消失防止）
         if(plDB&&Object.keys(plDB).length){
           setSheetPlaces(prev=>{const merged={...prev,...plDB};try{localStorage.setItem("spk_sheet_places",JSON.stringify(merged));}catch(e){}return merged;});
@@ -6659,7 +6677,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.12";
+const APP_VERSION="v4.2.13";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
