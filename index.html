@@ -688,36 +688,21 @@ async function fetchTimeData(targetResIds){
   return result;
 }
 
-/* ===== じゃらん決済スプレッドシートから支払データ取得 ===== */
-const JALAN_PAY_SHEET_CSV="https://docs.google.com/spreadsheets/d/e/2PACX-1vSsixHeH7WvPEhA0BqOhFcun6DgBAeB9z11ikzRgXQcB_OxKKwWT8uCvl6Fb551nYlRmBGLj0e7OcGi/pub?gid=744077151&single=true&output=csv";
+/* ===== じゃらん決済スプレッドシートから支払データ取得（GAS Web App版） ===== */
+const JALAN_PAY_GAS_URL="https://script.google.com/macros/s/AKfycbxvMj4o9meskzVpKdnfdIylzsvfr1z_NLElyA17tedIYlAYKnevf5G568vO2ijFo2yLug/exec";
 async function fetchJalanPaySheetData(targetResIds){
-  if(!JALAN_PAY_SHEET_CSV)throw new Error("スプレッドシートURLが未設定です。\nJALAN_PAY_SHEET_CSV を設定してください。");
-  const resp=await fetch(JALAN_PAY_SHEET_CSV);
-  if(!resp.ok)throw new Error("CSV取得失敗: "+resp.status);
-  const text=await resp.text();
-  const rows=parsePlaceCSV(text);
-  if(rows.length<2)throw new Error("データが空です");
-  // 予約番号列を自動検出
-  const header=rows[0];
-  let resCol=-1;
-  header.forEach((h,i)=>{if(h.includes("予約番号")||h.includes("予約ID")||h.includes("Reservation"))resCol=i;});
-  if(resCol<0){
-    for(let ci=0;ci<header.length;ci++){
-      const sample=rows.slice(1,Math.min(6,rows.length)).map(r=>r[ci]||"");
-      if(sample.some(s=>/^[A-Z0-9]{8,}$/.test(s.trim()))){resCol=ci;break;}
-    }
-  }
-  if(resCol<0)throw new Error("予約番号の列が見つかりません");
-  const payDateCol=3; // D列(index3) = 支払日
-  const amountCol=5;  // F列(index5) = 金額
+  const resp=await fetch(JALAN_PAY_GAS_URL);
+  if(!resp.ok)throw new Error("GAS取得失敗: "+resp.status);
+  const rows=await resp.json();
+  if(!rows||!rows.length)throw new Error("データが空です");
   const targetSet=new Set(targetResIds);
   const result={};
-  rows.slice(1).forEach(r=>{
-    const rid=(r[resCol]||"").trim();
+  rows.forEach(r=>{
+    const rid=(r.rid||"").trim();
     if(!rid||!targetSet.has(rid))return;
-    const payDate=(r[payDateCol]||"").trim();
-    const amount=(r[amountCol]||"").trim().replace(/[,¥￥\s]/g,"");
-    // D列に日付が入っていれば支払済み
+    const payDate=(r.payDate||"").trim();
+    const amount=(r.amount||"").trim();
+    // 支払日が入っていれば完了（CXLも完了扱い）
     if(payDate){
       result[rid]={adjustedPrice:amount||"0",payStatus:"完了",payDate:payDate};
     }
@@ -6674,7 +6659,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.11";
+const APP_VERSION="v4.2.12";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
