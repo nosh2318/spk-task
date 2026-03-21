@@ -234,6 +234,14 @@ function extractVehicleClass_(rawClass) {
   var m2 = rawClass.match(/^([ABCSFH])[_]/i);
   if (m2) return m2[1].toUpperCase();
 
+  // Pattern: space + A_SPK, space + F_SPK etc. (skyticket format: "コンパクト  F_SPK")
+  var m3 = rawClass.match(/\s([ABCSFH])[_]/i);
+  if (m3) return m3[1].toUpperCase();
+
+  // Pattern: standalone letter at end (e.g. "プラン_F")
+  var m4 = rawClass.match(/[_]([ABCSFH])$/i);
+  if (m4) return m4[1].toUpperCase();
+
   return '';
 }
 
