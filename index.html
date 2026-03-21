@@ -226,8 +226,8 @@ const DB = {
   },
   async deleteStaff(name){if(!sb)return;const{error}=await sb.from("staff").delete().eq("name",name);if(error)dbLog("deleteStaff",false,error.message);else dbLog("deleteStaff",true,name);},
   // --- 車両 ---
-  async fetchVehicles(){if(!sb)return null;const{data,error}=await sb.from("vehicles").select("*");if(error){dbLog("fetchVehicles",false,error.message);return null;}dbLog("fetchVehicles",true,data.length+"件");return(data||[]).map(v=>({id:"v"+v.id,code:v.code,name:v.name,no:v.plate_no,type:v.type,seats:v.seats}));},
-  async saveVehicles(arr){if(!sb)return;const rows=arr.map(v=>({code:v.code,name:v.name,plate_no:v.no,type:v.type,seats:v.seats}));const{error}=await sb.from("vehicles").upsert(rows,{onConflict:"code"});if(error)dbLog("saveVehicles",false,error.message);else dbLog("saveVehicles",true,arr.length+"件保存");},
+  async fetchVehicles(){if(!sb)return null;const{data,error}=await sb.from("vehicles").select("*");if(error){dbLog("fetchVehicles",false,error.message);return null;}dbLog("fetchVehicles",true,data.length+"件");return(data||[]).map(v=>({id:"v"+v.id,code:v.code,name:v.name,no:v.plate_no,type:v.type,seats:v.seats,insuranceVeh:!!v.insurance_veh}));},
+  async saveVehicles(arr){if(!sb)return;const rows=arr.map(v=>({code:v.code,name:v.name,plate_no:v.no,type:v.type,seats:v.seats,insurance_veh:!!v.insuranceVeh}));const{error}=await sb.from("vehicles").upsert(rows,{onConflict:"code"});if(error)dbLog("saveVehicles",false,error.message);else dbLog("saveVehicles",true,arr.length+"件保存");},
   async deleteVehicle(code){if(!sb)return;const{error}=await sb.from("vehicles").delete().eq("code",code);if(error)dbLog("deleteVehicle",false,error.message);else dbLog("deleteVehicle",true,code);},
   // --- シフト ---
   async fetchShifts(){if(!sb)return null;const{data}=await sb.from("shifts").select("*");const s={};(data||[]).forEach(r=>{if(!s[r.date])s[r.date]=[];s[r.date].push({name:r.staff_name,symbol:r.symbol,start:r.start_time,end:r.end_time,memo:r.memo});});return s;},
@@ -764,7 +764,7 @@ function autoAssign(reservations,vehicles,existingFleet,maintenance){
     if(fleet[r.id])return; // 既に割当済み
     const cls=r.vehicle; // 予約のクラス
     const rL=norm(r.lendDate),rR=norm(r.returnDate);
-    const candidates=vehicles.filter(v=>v.type===cls);
+    const candidates=vehicles.filter(v=>v.type===cls&&!v.insuranceVeh);
     if(candidates.length===0){
       _reasons[r.id]=`クラス"${cls}"の車両が登録されていません`;
       return;
@@ -909,20 +909,20 @@ function CSVPanel({onImport,onUpdatePlaces,dataCount,pendingPlaces,onSetPendingP
    ========================================== */
 function VehicleManager({vehicles,onVehiclesChange,vehicleClasses,onDeleteVehicle}){
   const[editId,setEditId]=useState(null);
-  const[form,setForm]=useState({name:"",no:"",type:"A",seats:5});
+  const[form,setForm]=useState({name:"",no:"",type:"A",seats:5,insuranceVeh:false});
   const[addMode,setAddMode]=useState(false);
 
-  const startEdit=(v)=>{setEditId(v.id);setForm({name:v.name,no:v.no,type:v.type,seats:v.seats});};
+  const startEdit=(v)=>{setEditId(v.id);setForm({name:v.name,no:v.no,type:v.type,seats:v.seats,insuranceVeh:!!v.insuranceVeh});};
   const save=()=>{
     if(editId){
-      onVehiclesChange(vehicles.map(v=>v.id===editId?{...v,name:form.name,no:form.no,type:form.type,seats:+form.seats,code:form.name.replace(/[\s-]/g,"").substring(0,3).toUpperCase()||v.code}:v));
+      onVehiclesChange(vehicles.map(v=>v.id===editId?{...v,name:form.name,no:form.no,type:form.type,seats:+form.seats,insuranceVeh:!!form.insuranceVeh,code:form.name.replace(/[\s-]/g,"").substring(0,3).toUpperCase()||v.code}:v));
       setEditId(null);
     }
   };
   const addNew=()=>{
     const code=form.name.replace(/[\s-]/g,"").substring(0,3).toUpperCase()||"NEW";
-    onVehiclesChange([...vehicles,{id:vuid(),code,name:form.name,no:form.no,type:form.type,seats:+form.seats}]);
-    setForm({name:"",no:"",type:"A",seats:5});setAddMode(false);
+    onVehiclesChange([...vehicles,{id:vuid(),code,name:form.name,no:form.no,type:form.type,seats:+form.seats,insuranceVeh:!!form.insuranceVeh}]);
+    setForm({name:"",no:"",type:"A",seats:5,insuranceVeh:false});setAddMode(false);
   };
   const remove=(id)=>{const v=vehicles.find(x=>x.id===id);onVehiclesChange(vehicles.filter(x=>x.id!==id));if(v&&onDeleteVehicle)onDeleteVehicle(v.code);};
 
@@ -933,7 +933,7 @@ function VehicleManager({vehicles,onVehiclesChange,vehicleClasses,onDeleteVehicl
   return <div style={{maxWidth:800,margin:"0 auto"}}>
     <div className="flex items-center justify-between mb-3">
       <h3 className="text-base font-bold text-gray-800">車両登録管理</h3>
-      <button onClick={()=>{setAddMode(true);setEditId(null);setForm({name:"",no:"",type:"A",seats:5});}} className="btn-primary">＋ 車両追加</button>
+      <button onClick={()=>{setAddMode(true);setEditId(null);setForm({name:"",no:"",type:"A",seats:5,insuranceVeh:false});}} className="btn-primary">＋ 車両追加</button>
     </div>
 
     {(addMode||editId)&&<div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-4">
@@ -943,6 +943,13 @@ function VehicleManager({vehicles,onVehiclesChange,vehicleClasses,onDeleteVehicl
         <div><label className="text-xs text-gray-600">車種</label><input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} className="input-s" placeholder="ヴェルファイア"/></div>
         <div><label className="text-xs text-gray-600">ナンバー</label><input value={form.no} onChange={e=>setForm({...form,no:e.target.value})} className="input-s" placeholder="7673"/></div>
         <div><label className="text-xs text-gray-600">定員</label><input type="number" value={form.seats} onChange={e=>setForm({...form,seats:e.target.value})} className="input-s"/></div>
+      </div>
+      <div style={{marginTop:6}}>
+        <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",fontSize:12}}>
+          <input type="checkbox" checked={form.insuranceVeh} onChange={e=>setForm({...form,insuranceVeh:e.target.checked})}/>
+          <span style={{fontWeight:700,color:form.insuranceVeh?"#7c3aed":"#64748b"}}>🛡️ 保険事業車両</span>
+          <span style={{fontSize:10,color:"#94a3b8"}}>（CSV自動配車の対象外）</span>
+        </label>
       </div>
       <div className="flex gap-2 mt-3">
         {editId?<button onClick={save} className="btn-primary">保存</button>:<button onClick={addNew} className="btn-primary">登録</button>}
@@ -961,7 +968,7 @@ function VehicleManager({vehicles,onVehiclesChange,vehicleClasses,onDeleteVehicl
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
           <thead><tr style={{background:"#f8fafc"}}><th className="px-3 py-1.5 text-left text-xs font-semibold text-gray-500 border-b">車種</th><th className="px-3 py-1.5 text-left text-xs font-semibold text-gray-500 border-b">ナンバー</th><th className="px-3 py-1.5 text-center text-xs font-semibold text-gray-500 border-b">定員</th><th className="px-3 py-1.5 text-right text-xs font-semibold text-gray-500 border-b">操作</th></tr></thead>
           <tbody>{g.items.map(v=><tr key={v.id} className="border-b border-gray-100 hover:bg-blue-50">
-            <td className="px-3 py-1.5 font-semibold">{v.name}</td>
+            <td className="px-3 py-1.5 font-semibold">{v.name}{v.insuranceVeh&&<span style={{fontSize:8,fontWeight:700,marginLeft:4,padding:"1px 4px",borderRadius:3,background:"#ede9fe",color:"#7c3aed"}}>🛡️保険</span>}</td>
             <td className="px-3 py-1.5 font-mono font-bold" style={{color:"#2563eb"}}>{v.no}</td>
             <td className="px-3 py-1.5 text-center">{v.seats}名</td>
             <td className="px-3 py-1.5 text-right">
@@ -6870,7 +6877,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.22";
+const APP_VERSION="v4.2.23";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
