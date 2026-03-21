@@ -9,6 +9,7 @@
 var SUPABASE_URL = 'https://ckrxttbnawkclshczsia.supabase.co';
 var SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8';
 var LABEL_NAME = '処理済み';
+var SLACK_EMAIL = 'x-aaaatppttzyrldnhjt5el4jj3i@gl-oke5175.slack.com';
 
 // --- OTA sender definitions ---
 var OTA_SENDERS = {
@@ -74,20 +75,43 @@ function processNewEmails() {
 
   Logger.log('Found ' + threads.length + ' thread(s) to process.');
 
-  // Process oldest first (reverse chronological → oldest first)
+  // Track results for Slack notification
+  var successes = []; // [{id, ota, name, dates, vehicle, assignedTo}]
+  var failures = [];  // [{id, ota, name, reason}]
+  var cancellations = []; // [{id, ota}]
+  var skipped = [];   // [{id, reason}]
+
+  // Process oldest first
   threads.reverse();
 
   for (var i = 0; i < threads.length; i++) {
     var messages = threads[i].getMessages();
     for (var j = 0; j < messages.length; j++) {
       try {
-        processMessage_(messages[j], false);
+        var result = processMessage_(messages[j], false);
+        if (result) {
+          if (result.type === 'success') successes.push(result);
+          else if (result.type === 'failure') failures.push(result);
+          else if (result.type === 'cancel') cancellations.push(result);
+          else if (result.type === 'skip') skipped.push(result);
+        }
       } catch (e) {
         Logger.log('ERROR processing message ID ' + messages[j].getId() + ': ' + e.message + '\n' + e.stack);
+        failures.push({id: '不明', ota: '?', name: '', reason: 'エラー: ' + e.message});
       }
     }
-    // Mark thread as processed
     threads[i].addLabel(label);
+  }
+
+  // Send Slack notifications
+  if (successes.length > 0) {
+    sendSlackSuccess_(successes);
+  }
+  if (failures.length > 0) {
+    sendSlackFailure_(failures);
+  }
+  if (cancellations.length > 0) {
+    sendSlackCancel_(cancellations);
   }
 }
 
@@ -140,19 +164,21 @@ function processMessage_(message, dryRun) {
       break;
     }
   }
-  if (!ota) return;
+  if (!ota) return null;
+
+  var otaCode = {jalan:'J',rakuten:'R',skyticket:'S',airtrip:'O'}[ota] || ota;
 
   // Check for cancellation
   var isCancellation = CANCEL_KEYWORDS.some(function(kw) { return subject.indexOf(kw) !== -1; });
   if (isCancellation) {
-    handleCancellation_(ota, body, dryRun);
-    return;
+    var cancelId = handleCancellation_(ota, body, dryRun);
+    return cancelId ? {type:'cancel', id:cancelId, ota:otaCode} : null;
   }
 
   // Check subject matches reservation notification
   if (subject.indexOf(OTA_RESERVE_SUBJECTS[ota]) === -1) {
     Logger.log('Skipping non-reservation email (' + ota + '): ' + subject);
-    return;
+    return null;
   }
 
   // Parse reservation
@@ -166,14 +192,14 @@ function processMessage_(message, dryRun) {
 
   if (!reservation) {
     Logger.log('Failed to parse reservation from ' + ota);
-    return;
+    return {type:'failure', id:'不明', ota:otaCode, name:'', reason:'パース失敗'};
   }
 
   // Filter: 札幌 only
   if (!isSapporoReservation_(reservation)) {
     Logger.log('Skipping non-Sapporo: ' + reservation.id +
       ' (store=' + (reservation._store || '') + ', rawClass=' + (reservation._rawClass || '') + ')');
-    return;
+    return {type:'skip', id:reservation.id, reason:'沖縄店'};
   }
 
   Logger.log('Parsed: ' + reservation.id + ' (' + reservation.ota + ') ' +
@@ -181,20 +207,33 @@ function processMessage_(message, dryRun) {
 
   if (dryRun) {
     Logger.log('[DRY RUN] Would insert: ' + JSON.stringify(reservation));
-    return;
+    return null;
   }
 
   // Duplicate check
   if (reservationExists_(reservation.id)) {
     Logger.log('Reservation already exists: ' + reservation.id);
-    return;
+    return {type:'skip', id:reservation.id, reason:'登録済み'};
   }
 
   // Insert
-  insertReservation_(reservation);
+  var insertResult = insertReservation_(reservation);
+  if (!insertResult) {
+    return {type:'failure', id:reservation.id, ota:otaCode, name:reservation.name, reason:'DB登録失敗'};
+  }
 
   // Auto-assign vehicle
-  autoAssignVehicle_(reservation);
+  var assigned = autoAssignVehicle_(reservation);
+
+  if (assigned) {
+    return {type:'success', id:reservation.id, ota:otaCode, name:reservation.name,
+            dates:reservation.lend_date+'~'+reservation.return_date,
+            vehicle:reservation.vehicle, assignedTo:assigned.name+' ('+assigned.plate_no+')'};
+  } else {
+    return {type:'failure', id:reservation.id, ota:otaCode, name:reservation.name,
+            reason:'配車不可（'+reservation.vehicle+'クラス空車なし）',
+            dates:reservation.lend_date+'~'+reservation.return_date};
+  }
 }
 
 // ============================================================
@@ -525,6 +564,7 @@ function handleCancellation_(ota, body, dryRun) {
   deleteFromFleet_(reservationId);
   deleteReservation_(reservationId);
   Logger.log('Cancelled reservation: ' + reservationId);
+  return reservationId;
 }
 
 // ============================================================
@@ -668,7 +708,7 @@ function autoAssignVehicle_(reservation) {
   if (!assignedVehicle) {
     Logger.log('No available vehicle for class ' + vehicleClass +
       ' (' + lendDate + '~' + returnDate + '). ' + reservation.id + ' will be 未配車.');
-    return;
+    return null;
   }
 
   // 5. Insert fleet assignment
@@ -680,7 +720,9 @@ function autoAssignVehicle_(reservation) {
   var result = supabasePost_('fleet', fleetRow);
   if (result) {
     Logger.log('Assigned ' + assignedVehicle.code + ' (' + assignedVehicle.name + ') to ' + reservation.id);
+    return assignedVehicle;
   }
+  return null;
 }
 
 /**
@@ -713,6 +755,47 @@ function getOverlappingMaintenance_(lendDate, returnDate) {
               '&end_date=gte.' + encodeURIComponent(lendDate) +
               '&select=vehicle_code';
   return supabaseGet_('maintenance', query);
+}
+
+// ============================================================
+// Slack Notifications
+// ============================================================
+
+function sendSlackSuccess_(items) {
+  var lines = ['✅ 札幌店新規予約取込完了通知', ''];
+  items.forEach(function(r) {
+    lines.push('【' + r.ota + '】' + r.id);
+    lines.push('  ' + r.name + ' / ' + r.dates + ' / ' + r.vehicle + 'クラス');
+    lines.push('  → 配車: ' + r.assignedTo);
+    lines.push('');
+  });
+  lines.push('合計: ' + items.length + '件');
+  MailApp.sendEmail(SLACK_EMAIL, '✅ 札幌店新規予約取込完了通知 ' + items.length + '件', lines.join('\n'));
+  Logger.log('Slack success notification sent: ' + items.length + '件');
+}
+
+function sendSlackFailure_(items) {
+  var lines = ['❌ 札幌店新規予約取込失敗通知', ''];
+  items.forEach(function(r) {
+    lines.push('【' + r.ota + '】' + (r.id || '不明'));
+    if (r.name) lines.push('  ' + r.name + (r.dates ? ' / ' + r.dates : ''));
+    lines.push('  理由: ' + r.reason);
+    lines.push('');
+  });
+  lines.push('合計: ' + items.length + '件 ※手動対応が必要です');
+  MailApp.sendEmail(SLACK_EMAIL, '❌ 札幌店新規予約取込失敗通知 ' + items.length + '件', lines.join('\n'));
+  Logger.log('Slack failure notification sent: ' + items.length + '件');
+}
+
+function sendSlackCancel_(items) {
+  var lines = ['🔄 札幌店予約キャンセル処理通知', ''];
+  items.forEach(function(r) {
+    lines.push('【' + r.ota + '】' + r.id + ' → キャンセル削除完了');
+  });
+  lines.push('');
+  lines.push('合計: ' + items.length + '件');
+  MailApp.sendEmail(SLACK_EMAIL, '🔄 札幌店予約キャンセル処理 ' + items.length + '件', lines.join('\n'));
+  Logger.log('Slack cancel notification sent: ' + items.length + '件');
 }
 
 // ============================================================
