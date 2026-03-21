@@ -5862,41 +5862,54 @@ function App(){
         if(vhDB&&vhDB.length)setVehicles(vhDB);
         if(shDB)setShifts(shDB);
         if(mtDB&&mtDB.length)setMaintenance(mtDB);
-        try{const attDB=await DB.fetchAttendance();if(attDB&&Object.keys(attDB).length)setAttendance(attDB);}catch(e){console.warn("[att]",e);}
-        try{
-          const jpDB=await DB.fetchJalanPayment()||{};
-          // GAS Web Appからリアルタイム取得してマージ（スプレッドシートの最新データを自動反映）
-          try{
-            const jRes=useRes.filter(r=>r.ota==="J").map(r=>r.id);
-            if(jRes.length){
-              const gasData=await fetchJalanPaySheetData(jRes);
-              const merged={...jpDB,...gasData};
-              // GASで取得した完了データをDBにも保存
-              Object.entries(gasData).forEach(([rid,pd])=>{
-                if(!jpDB[rid]||jpDB[rid].payStatus!==pd.payStatus){
-                  DB.saveJalanPayment(rid,{...(jpDB[rid]||{}),...pd});
-                }
-              });
-              setJalanPay(merged);
-              console.log("[jalanPay] GAS自動取得:",Object.keys(gasData).length+"件反映");
-            }else{if(Object.keys(jpDB).length)setJalanPay(jpDB);}
-          }catch(ge){console.warn("[jalanPay GAS]",ge);if(Object.keys(jpDB).length)setJalanPay(jpDB);}
-        }catch(e){console.warn("[jalanPay]",e);}
         // ★ DBのplacesテーブルとlocalStorageをマージ（場所情報の消失防止）
         if(plDB&&Object.keys(plDB).length){
           setSheetPlaces(prev=>{const merged={...prev,...plDB};try{localStorage.setItem("spk_sheet_places",JSON.stringify(merged));}catch(e){}return merged;});
         }
         setSbConnected(true);
       }catch(e){console.error("DB load error:",e);}
-      // HANDYMAN Fleet data (init後に非同期で読込)
-      try{await hmReload();console.log("[HM] cars:",hmCars.length,"carData:",hmCarData.length,"logs:",hmLogs.length);}catch(e){console.error("[HM] reload error:",e);}
-      // テーブル存在チェック
-      try{
-        var chk=await sb.from("car_data").select("id",{count:"exact",head:true});
-        console.log("[HM] car_data table check:",chk.error?("ERROR: "+chk.error.message):("OK, count="+chk.count));
-        if(chk.error)console.error("[HM] car_dataテーブルが存在しないか、RLSでブロックされています:",chk.error.message);
-      }catch(e){console.error("[HM] table check error:",e);}
+      // ★★ メインデータ読込完了 → 即UI表示 ★★
       setDbLoaded(true);
+      console.log("[init] メインデータ読込完了 → UI表示");
+      // --- 以下はバックグラウンドで非同期読込（UIをブロックしない） ---
+      (async()=>{
+        try{const attDB=await DB.fetchAttendance();if(attDB&&Object.keys(attDB).length)setAttendance(attDB);}catch(e){console.warn("[att]",e);}
+      })();
+      (async()=>{
+        try{
+          const jpDB=await DB.fetchJalanPayment()||{};
+          try{
+            const jRes=(data||[]).filter(r=>r.ota==="J").map(r=>r.id);
+            if(jRes.length){
+              const controller=new AbortController();
+              const timeoutId=setTimeout(()=>controller.abort(),8000);
+              try{
+                const gasData=await fetchJalanPaySheetData(jRes);
+                clearTimeout(timeoutId);
+                const merged={...jpDB,...gasData};
+                Object.entries(gasData).forEach(([rid,pd])=>{
+                  if(!jpDB[rid]||jpDB[rid].payStatus!==pd.payStatus){
+                    DB.saveJalanPayment(rid,{...(jpDB[rid]||{}),...pd});
+                  }
+                });
+                setJalanPay(merged);
+                console.log("[jalanPay] GAS自動取得:",Object.keys(gasData).length+"件反映");
+              }catch(ge){
+                clearTimeout(timeoutId);
+                console.warn("[jalanPay GAS] タイムアウトまたはエラー:",ge);
+                if(Object.keys(jpDB).length)setJalanPay(jpDB);
+              }
+            }else{if(Object.keys(jpDB).length)setJalanPay(jpDB);}
+          }catch(ge){console.warn("[jalanPay GAS]",ge);if(Object.keys(jpDB).length)setJalanPay(jpDB);}
+        }catch(e){console.warn("[jalanPay]",e);}
+      })();
+      (async()=>{
+        try{await hmReload();console.log("[HM] reload完了");}catch(e){console.error("[HM] reload error:",e);}
+        try{
+          var chk=await sb.from("car_data").select("id",{count:"exact",head:true});
+          if(chk.error)console.warn("[HM] car_data:",chk.error.message);
+        }catch(e){}
+      })();
       // 初期ロード完了 → 全カテゴリ同期済み
       const now=Date.now();
       setSyncStatus({
@@ -6900,7 +6913,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.35";
+const APP_VERSION="v4.2.36";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");

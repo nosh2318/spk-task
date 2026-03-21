@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>免許証アップロード</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f0f2f5;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.container{background:#fff;border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,.1);padding:32px;width:90%;max-width:440px}
+h1{font-size:20px;text-align:center;margin-bottom:24px;color:#1a1a2e}
+.lock-icon{text-align:center;font-size:48px;margin-bottom:16px}
+label{display:block;font-size:14px;font-weight:600;color:#444;margin-bottom:6px}
+input[type="text"],input[type="password"]{width:100%;padding:12px;border:2px solid #e0e0e0;border-radius:10px;font-size:16px;outline:none;transition:border .2s}
+input:focus{border-color:#3b82f6}
+.field{margin-bottom:20px}
+.upload-area{border:2px dashed #cbd5e1;border-radius:12px;padding:32px 16px;text-align:center;cursor:pointer;transition:all .2s;position:relative;overflow:hidden}
+.upload-area:hover,.upload-area.dragover{border-color:#3b82f6;background:#eff6ff}
+.upload-area.has-file{border-color:#22c55e;background:#f0fdf4}
+.upload-icon{font-size:40px;margin-bottom:8px}
+.upload-text{color:#64748b;font-size:14px}
+.upload-text.filename{color:#22c55e;font-weight:600}
+input[type="file"]{display:none}
+.preview{margin-top:12px;max-width:100%;border-radius:8px;display:none}
+.preview.show{display:block}
+.btn{width:100%;padding:14px;border:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;transition:all .2s}
+.btn-primary{background:#3b82f6;color:#fff}
+.btn-primary:hover{background:#2563eb}
+.btn-primary:disabled{background:#94a3b8;cursor:not-allowed}
+.btn-unlock{background:#1a1a2e;color:#fff}
+.btn-unlock:hover{background:#2d2d4e}
+.status{margin-top:16px;padding:12px;border-radius:8px;text-align:center;font-size:14px;display:none}
+.status.success{display:block;background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0}
+.status.error{display:block;background:#fef2f2;color:#dc2626;border:1px solid #fecaca}
+.status.uploading{display:block;background:#eff6ff;color:#3b82f6;border:1px solid #bfdbfe}
+.back-link{text-align:center;margin-top:16px}
+.back-link a{color:#64748b;font-size:13px;text-decoration:none}
+.logo{text-align:center;margin-bottom:8px;font-size:12px;color:#94a3b8;letter-spacing:2px}
+.progress{width:100%;height:4px;background:#e2e8f0;border-radius:2px;margin-top:8px;overflow:hidden;display:none}
+.progress.show{display:block}
+.progress-bar{height:100%;background:#3b82f6;border-radius:2px;transition:width .3s;width:0}
+.uploaded-list{margin-top:16px}
+.uploaded-item{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#f8fafc;border-radius:8px;margin-bottom:6px;font-size:13px}
+.uploaded-item .check{color:#22c55e;font-size:18px}
+.uploaded-item .name{flex:1;color:#334155}
+</style>
+</head>
+<body>
+
+<!-- パスワード画面 -->
+<div class="container" id="authScreen">
+  <div class="lock-icon">🔒</div>
+  <h1>認証</h1>
+  <div class="field">
+    <label>パスワード</label>
+    <input type="password" id="passInput" placeholder="パスワードを入力" autocomplete="off">
+  </div>
+  <button class="btn btn-unlock" onclick="unlock()">ロック解除</button>
+  <div class="status" id="authStatus"></div>
+</div>
+
+<!-- アップロード画面 -->
+<div class="container" id="uploadScreen" style="display:none">
+  <div class="logo">HANDYMAN</div>
+  <h1>免許証アップロード</h1>
+
+  <div class="field">
+    <label>予約番号</label>
+    <input type="text" id="resId" placeholder="例: RC72461120002685404">
+  </div>
+
+  <div class="field">
+    <label>免許証画像（表面）</label>
+    <div class="upload-area" id="dropFront" onclick="document.getElementById('fileFront').click()">
+      <div class="upload-icon">📄</div>
+      <div class="upload-text" id="textFront">タップして画像を選択<br>またはドラッグ&ドロップ</div>
+      <input type="file" id="fileFront" accept="image/*" capture="environment">
+      <img class="preview" id="prevFront">
+    </div>
+  </div>
+
+  <div class="field">
+    <label>免許証画像（裏面）※任意</label>
+    <div class="upload-area" id="dropBack" onclick="document.getElementById('fileBack').click()">
+      <div class="upload-icon">📄</div>
+      <div class="upload-text" id="textBack">タップして画像を選択<br>またはドラッグ&ドロップ</div>
+      <input type="file" id="fileBack" accept="image/*" capture="environment">
+      <img class="preview" id="prevBack">
+    </div>
+  </div>
+
+  <button class="btn btn-primary" id="uploadBtn" onclick="uploadFiles()" disabled>アップロード</button>
+  <div class="progress" id="progressBar"><div class="progress-bar" id="progressInner"></div></div>
+  <div class="status" id="uploadStatus"></div>
+
+  <div class="uploaded-list" id="uploadedList"></div>
+</div>
+
+<script>
+// ========== 設定 ==========
+var PASS_HASH = null; // 後でセット
+var ACCESS_PASS = 'handyman2026'; // デフォルトパスワード（変更してください）
+var SUPABASE_URL = 'https://ckrxttbnawkclshczsia.supabase.co';
+var SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8';
+var BUCKET = 'licenses';
+
+// ========== 認証 ==========
+function unlock() {
+  var pass = document.getElementById('passInput').value;
+  var st = document.getElementById('authStatus');
+  if (pass === ACCESS_PASS) {
+    document.getElementById('authScreen').style.display = 'none';
+    document.getElementById('uploadScreen').style.display = 'block';
+    sessionStorage.setItem('license_auth', '1');
+  } else {
+    st.className = 'status error';
+    st.textContent = 'パスワードが違います';
+  }
+}
+// セッション内は再認証不要
+if (sessionStorage.getItem('license_auth') === '1') {
+  document.getElementById('authScreen').style.display = 'none';
+  document.getElementById('uploadScreen').style.display = 'block';
+}
+// Enter キー
+document.getElementById('passInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') unlock();
+});
+
+// ========== ファイル選択 ==========
+var fileFront = null, fileBack = null;
+
+function setupDrop(dropId, fileInputId, previewId, textId, side) {
+  var drop = document.getElementById(dropId);
+  var input = document.getElementById(fileInputId);
+  var prev = document.getElementById(previewId);
+  var txt = document.getElementById(textId);
+
+  input.addEventListener('change', function() {
+    if (this.files[0]) handleFile(this.files[0], drop, prev, txt, side);
+  });
+
+  drop.addEventListener('dragover', function(e) { e.preventDefault(); drop.classList.add('dragover'); });
+  drop.addEventListener('dragleave', function() { drop.classList.remove('dragover'); });
+  drop.addEventListener('drop', function(e) {
+    e.preventDefault();
+    drop.classList.remove('dragover');
+    if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0], drop, prev, txt, side);
+  });
+}
+
+function handleFile(file, drop, prev, txt, side) {
+  if (side === 'front') fileFront = file; else fileBack = file;
+  drop.classList.add('has-file');
+  txt.className = 'upload-text filename';
+  txt.textContent = file.name + ' (' + (file.size / 1024).toFixed(0) + 'KB)';
+
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    prev.src = e.target.result;
+    prev.className = 'preview show';
+  };
+  reader.readAsDataURL(file);
+
+  checkReady();
+}
+
+function checkReady() {
+  var resId = document.getElementById('resId').value.trim();
+  document.getElementById('uploadBtn').disabled = !(resId && fileFront);
+}
+
+setupDrop('dropFront', 'fileFront', 'prevFront', 'textFront', 'front');
+setupDrop('dropBack', 'fileBack', 'prevBack', 'textBack', 'back');
+document.getElementById('resId').addEventListener('input', checkReady);
+
+// ========== アップロード ==========
+async function uploadFiles() {
+  var resId = document.getElementById('resId').value.trim();
+  if (!resId || !fileFront) return;
+
+  var btn = document.getElementById('uploadBtn');
+  var st = document.getElementById('uploadStatus');
+  var prog = document.getElementById('progressBar');
+  var progInner = document.getElementById('progressInner');
+
+  btn.disabled = true;
+  btn.textContent = 'アップロード中...';
+  st.className = 'status uploading';
+  st.textContent = 'アップロード中...';
+  prog.className = 'progress show';
+  progInner.style.width = '20%';
+
+  var files = [{ file: fileFront, label: 'front' }];
+  if (fileBack) files.push({ file: fileBack, label: 'back' });
+
+  var uploaded = [];
+  var errors = [];
+
+  for (var i = 0; i < files.length; i++) {
+    var f = files[i];
+    var ext = f.file.name.split('.').pop().toLowerCase();
+    var ts = Date.now();
+    var path = resId + '/' + f.label + '_' + ts + '.' + ext;
+
+    progInner.style.width = (20 + (i + 1) * 35) + '%';
+
+    try {
+      var resp = await fetch(SUPABASE_URL + '/storage/v1/object/' + BUCKET + '/' + path, {
+        method: 'POST',
+        headers: {
+          'apikey': SUPABASE_KEY,
+          'Authorization': 'Bearer ' + SUPABASE_KEY,
+          'Content-Type': f.file.type,
+          'x-upsert': 'true'
+        },
+        body: f.file
+      });
+
+      if (resp.ok) {
+        uploaded.push(f.label === 'front' ? '表面' : '裏面');
+      } else {
+        var errText = await resp.text();
+        errors.push(f.label + ': ' + resp.status + ' ' + errText);
+      }
+    } catch (e) {
+      errors.push(f.label + ': ' + e.message);
+    }
+  }
+
+  progInner.style.width = '100%';
+
+  if (errors.length > 0) {
+    st.className = 'status error';
+    st.textContent = 'エラー: ' + errors.join(' / ');
+    console.error('Upload errors:', errors);
+  } else {
+    st.className = 'status success';
+    st.textContent = '完了！ ' + uploaded.join('・') + ' をアップロードしました';
+
+    // アップロード済みリストに追加
+    var list = document.getElementById('uploadedList');
+    var item = document.createElement('div');
+    item.className = 'uploaded-item';
+    item.innerHTML = '<span class="check">✓</span><span class="name">' + resId + ' - ' + uploaded.join('・') + '</span><span style="color:#94a3b8;font-size:11px">' + new Date().toLocaleTimeString('ja-JP') + '</span>';
+    list.prepend(item);
+
+    // リセット
+    fileFront = null;
+    fileBack = null;
+    document.getElementById('resId').value = '';
+    document.getElementById('fileFront').value = '';
+    document.getElementById('fileBack').value = '';
+    document.getElementById('prevFront').className = 'preview';
+    document.getElementById('prevBack').className = 'preview';
+    document.getElementById('dropFront').classList.remove('has-file');
+    document.getElementById('dropBack').classList.remove('has-file');
+    document.getElementById('textFront').className = 'upload-text';
+    document.getElementById('textFront').innerHTML = 'タップして画像を選択<br>またはドラッグ&ドロップ';
+    document.getElementById('textBack').className = 'upload-text';
+    document.getElementById('textBack').innerHTML = 'タップして画像を選択<br>またはドラッグ&ドロップ';
+  }
+
+  btn.textContent = 'アップロード';
+  setTimeout(function() { prog.className = 'progress'; progInner.style.width = '0'; }, 1500);
+  checkReady();
+}
+</script>
+</body>
+</html>
