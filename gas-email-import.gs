@@ -16,7 +16,8 @@ var OTA_SENDERS = {
   jalan:     'info@jalan-rentacar.jalan.net',
   rakuten:   'travel@mail.travel.rakuten.co.jp',
   skyticket: 'rentacar@skyticket.com',
-  airtrip:   'info@rentacar-mail.airtrip.jp'
+  airtrip:   'info@rentacar-mail.airtrip.jp',
+  official:  'noreply@rent-handyman.jp'
 };
 
 // --- OTA reservation subject patterns ---
@@ -24,7 +25,8 @@ var OTA_RESERVE_SUBJECTS = {
   jalan:     'じゃらんnetレンタカー 予約通知',
   rakuten:   '【楽天トラベル】予約受付のお知らせ',
   skyticket: '【skyticket】 新規予約',
-  airtrip:   '【予約確定】エアトリレンタカー'
+  airtrip:   '【予約確定】エアトリレンタカー',
+  official:  'ご予約完了のお知らせ'
 };
 
 // --- Cancellation keywords in subject ---
@@ -166,7 +168,7 @@ function processMessage_(message, dryRun) {
   }
   if (!ota) return null;
 
-  var otaCode = {jalan:'J',rakuten:'R',skyticket:'S',airtrip:'O'}[ota] || ota;
+  var otaCode = {jalan:'J',rakuten:'R',skyticket:'S',airtrip:'O',official:'HP'}[ota] || ota;
 
   // Check for cancellation
   var isCancellation = CANCEL_KEYWORDS.some(function(kw) { return subject.indexOf(kw) !== -1; });
@@ -188,6 +190,7 @@ function processMessage_(message, dryRun) {
     case 'rakuten':   reservation = parseRakuten_(body); break;
     case 'skyticket': reservation = parseSkyticket_(body); break;
     case 'airtrip':   reservation = parseAirtrip_(body); break;
+    case 'official':  reservation = parseOfficial_(body); break;
   }
 
   if (!reservation) {
@@ -246,15 +249,25 @@ function processMessage_(message, dryRun) {
 function isSapporoReservation_(res) {
   var store = res._store || '';
   var rawClass = res._rawClass || '';
+  var address = res._address || '';
 
-  // Reject Okinawa
+  // ★ 優先①: 住所で判定（オフィシャル予約用）
+  if (/沖縄県|那覇市/.test(address)) return false;
+  if (/北海道|札幌市/.test(address)) return true;
+
+  // ★ 優先②: 営業所名・便名で判定
   if (store.indexOf('那覇') !== -1) return false;
-  if (/_OKA/i.test(rawClass) || /_OKI/i.test(rawClass)) return false;
-
-  // Accept Sapporo
   if (store.indexOf('札幌') !== -1) return true;
+
+  // クラスコードで判定
+  if (/_OKA/i.test(rawClass) || /_OKI/i.test(rawClass)) return false;
   if (/_SPK/i.test(rawClass)) return true;
 
+  // ★ 優先③: 車両クラスで判定（札幌専用クラス）
+  var spkClasses = ['A', 'B', 'C', 'S', 'F', 'H'];
+  if (res.vehicle && spkClasses.indexOf(res.vehicle) !== -1) return true;
+
+  // デフォルト: 沖縄（安全側）
   return false;
 }
 
@@ -538,6 +551,88 @@ function parseAirtrip_(body) {
     price: price, status: '確定', tel: tel, mail: mail,
     flight: flight, visit_type: '', del_place: '', col_place: '',
     _store: store, _rawClass: rawClass
+  };
+}
+
+// ---- オフィシャル (HP) ----
+function parseOfficial_(body) {
+  // 予約番号
+  var idMatch = body.match(/【予約番号】\s*\n\s*(\S+)/);
+  if (!idMatch) return null;
+  var id = idMatch[1].trim();
+
+  // 氏名（メール冒頭の「○○様」）
+  var nameMatch = body.match(/^(.+?)様/m);
+  var name = nameMatch ? nameMatch[1].trim() : '';
+
+  // 利用開始・終了日時
+  var lendMatch = body.match(/ご利用開始日時\s*\n\s*(\d{4}\/\d{1,2}\/\d{1,2})\s+(\d{1,2}:\d{2})/);
+  var lend = { date: '', time: '' };
+  if (lendMatch) {
+    lend.date = lendMatch[1].replace(/\//g, '-');
+    lend.time = lendMatch[2];
+  }
+  var retMatch = body.match(/ご利用終了日時\s*\n\s*(\d{4}\/\d{1,2}\/\d{1,2})\s+(\d{1,2}:\d{2})/);
+  var ret = { date: '', time: '' };
+  if (retMatch) {
+    ret.date = retMatch[1].replace(/\//g, '-');
+    ret.time = retMatch[2];
+  }
+
+  // 人数
+  var people = 0;
+  var adultMatch = body.match(/大人:\s*(\d+)/);
+  if (adultMatch) people += parseInt(adultMatch[1], 10);
+  var childMatch = body.match(/子ども:\s*(\d+)/);
+  if (childMatch) people += parseInt(childMatch[1], 10);
+
+  // 車両クラス: "Fクラス（ トヨタ ルーミー/スズキ ソリオ）"
+  var classMatch = body.match(/ご予約車両クラス\s*\n\s*([ABCSFH])クラス/i);
+  var vehicleClass = classMatch ? classMatch[1].toUpperCase() : '';
+
+  // 補償
+  var insurance = 'なし';
+  if (/免責補償制度\(CDW\):\s*あり/.test(body)) insurance = '免責';
+  if (/レンタカー安心パック:\s*あり/.test(body)) insurance = 'NOC';
+
+  // オプション（数量対応）
+  var optB = 0, optC = 0, optJ = 0;
+  var cbMatch = body.match(/チャイルドシート\(チャイルド\):\s*(\d+)\s*台/);
+  if (cbMatch) optC = parseInt(cbMatch[1], 10);
+  if (!cbMatch) { var cbAlt = body.match(/チャイルドシート\(チャイルド\):\s*あり\s*(\d*)/); if (cbAlt) optC = parseInt(cbAlt[1], 10) || 1; }
+  var jbMatch = body.match(/チャイルドシート\(ジュニア\):\s*(\d+)\s*台/);
+  if (jbMatch) optJ = parseInt(jbMatch[1], 10);
+  if (!jbMatch) { var jbAlt = body.match(/チャイルドシート\(ジュニア\):\s*あり\s*(\d*)/); if (jbAlt) optJ = parseInt(jbAlt[1], 10) || 1; }
+
+  // 料金
+  var priceMatch = body.match(/料金\s*\n\s*(\d[\d,]*)\s*円/);
+  var price = priceMatch ? parsePrice_(priceMatch[1]) : 0;
+
+  // TEL, メール
+  var telMatch = body.match(/【電話番号】\s*\n\s*(\S+)/);
+  var tel = telMatch ? cleanPhone_(telMatch[1]) : '';
+  var mailMatch = body.match(/【メールアドレス】\s*\n\s*(\S+)/);
+  var mail = mailMatch ? mailMatch[1].trim() : '';
+
+  // DEL/COL場所
+  var delPlaceMatch = body.match(/【お届け場所名】\s*\n\s*(.+)/);
+  var delPlace = delPlaceMatch ? delPlaceMatch[1].trim() : '';
+  var colPlaceMatch = body.match(/【回収場所名】\s*\n\s*(.+)/);
+  var colPlace = colPlaceMatch ? colPlaceMatch[1].trim() : '';
+
+  // 住所（3段階判定用）
+  var addressMatch = body.match(/【お届け場所住所】\s*\n\s*(.+)/);
+  var address = addressMatch ? addressMatch[1].trim() : '';
+
+  return {
+    id: id, ota: 'HP', name: name,
+    lend_date: lend.date, lend_time: lend.time,
+    return_date: ret.date, return_time: ret.time,
+    vehicle: vehicleClass, people: people, insurance: insurance,
+    price: price, status: '確定', tel: tel, mail: mail,
+    flight: '', visit_type: '', del_place: delPlace, col_place: colPlace,
+    opt_b: optB, opt_c: optC, opt_j: optJ,
+    _store: '', _rawClass: vehicleClass, _address: address
   };
 }
 
