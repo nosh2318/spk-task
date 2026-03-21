@@ -441,9 +441,14 @@ function parseRakuten_(body) {
 
   var price = parsePrice_(extractField_(body, '（合計）'));
 
-  // Check for child seat options
-  var optB = optionsStr.indexOf('チャイルドシート') !== -1;
-  var optC = optionsStr.indexOf('ジュニアシート') !== -1;
+  // Extract seat options with counts
+  var optB = 0, optC = 0, optJ = 0;
+  var bMatch = optionsStr.match(/ベビーシート\s*(\d*)/);
+  if (bMatch) optB = parseInt(bMatch[1], 10) || 1;
+  var cMatch = optionsStr.match(/チャイルドシート\s*(\d*)/);
+  if (cMatch) optC = parseInt(cMatch[1], 10) || 1;
+  var jMatch = optionsStr.match(/ジュニアシート\s*(\d*)/);
+  if (jMatch) optJ = parseInt(jMatch[1], 10) || 1;
 
   return {
     id: id, ota: 'R', name: nameKana,
@@ -452,7 +457,7 @@ function parseRakuten_(body) {
     vehicle: vehicleClass, people: 0, insurance: insurance,
     price: price, status: '確定', tel: '', mail: '',
     flight: '', visit_type: '', del_place: '', col_place: '',
-    opt_b: optB, opt_c: optC,
+    opt_b: optB, opt_c: optC, opt_j: optJ,
     _store: store, _rawClass: rawClass
   };
 }
