@@ -6054,6 +6054,9 @@ function App(){
         const st=await DB.fetchStaff();if(st&&st.length)setStaff(st);markDbSync("staff");
       })
       .on("postgres_changes",{event:"*",schema:"public",table:"vehicles"},async()=>{
+        // ローカル変更直後(2秒以内)は無視（自分のupsertで発火したイベント）
+        const ss=syncStatusRef.current.vehicles;
+        if(ss&&ss.localTime&&Date.now()-ss.localTime<2000){markDbSync("vehicles");return;}
         const vh=await DB.fetchVehicles();if(vh&&vh.length)setVehicles(vh);markDbSync("vehicles");
       })
       .on("postgres_changes",{event:"*",schema:"public",table:"attendance"},async()=>{
@@ -6078,6 +6081,9 @@ function App(){
   },[staff]);
   const setVehiclesSync=useCallback((fn)=>{
     const next=typeof fn==="function"?fn(vehicles):fn;
+    // 保険事業車両フラグを先にlocalStorageに保存（RTイベントより先に確定させる）
+    const insMap={};next.forEach(v=>{if(v.insuranceVeh)insMap[v.code]=true;});
+    try{localStorage.setItem("spk_insurance_vehicles",JSON.stringify(insMap));}catch(e){}
     setVehicles(next);markLocalChange("vehicles");
     DB.saveVehicles(next).then(()=>markDbSync("vehicles")).catch(e=>console.error("saveVehicles error:",e));
   },[vehicles]);
@@ -6880,7 +6886,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.24";
+const APP_VERSION="v4.2.25";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
