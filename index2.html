@@ -226,7 +226,11 @@ const DB = {
   },
   async deleteStaff(name){if(!sb)return;const{error}=await sb.from("staff").delete().eq("name",name);if(error)dbLog("deleteStaff",false,error.message);else dbLog("deleteStaff",true,name);},
   // --- 車両 ---
-  async fetchVehicles(){if(!sb)return null;const{data,error}=await sb.from("vehicles").select("*");if(error){dbLog("fetchVehicles",false,error.message);return null;}dbLog("fetchVehicles",true,data.length+"件");return(data||[]).map(v=>({id:"v"+v.id,code:v.code,name:v.name,no:v.plate_no,type:v.type,seats:v.seats,insuranceVeh:!!v.insurance_veh,year:v.year||"",equip:v.equip||"",insPrice:v.ins_price||""}));},
+  async fetchVehicles(){if(!sb)return null;const{data,error}=await sb.from("vehicles").select("*");if(error){dbLog("fetchVehicles",false,error.message);return null;}dbLog("fetchVehicles",true,data.length+"件");
+    // code重複修正: 同じcodeがあればナンバーを付加してユニーク化
+    const seen={};let needFix=false;const mapped=(data||[]).map(v=>{let c=v.code;if(seen[c]){const no=(v.plate_no||"").replace(/[^0-9a-zA-Z]/g,"");c=c+(no||v.id);needFix=true;}seen[c]=true;return{id:"v"+v.id,code:c,name:v.name,no:v.plate_no,type:v.type,seats:v.seats,insuranceVeh:!!v.insurance_veh,year:v.year||"",equip:v.equip||"",insPrice:v.ins_price||""};});
+    if(needFix){DB.saveVehicles(mapped);dbLog("fetchVehicles","fix","重複code修正");}
+    return mapped;},
   async saveVehicles(arr){if(!sb)return;const rows=arr.map(v=>({code:v.code,name:v.name,plate_no:v.no,type:v.type,seats:v.seats,insurance_veh:!!v.insuranceVeh,year:v.year||"",equip:v.equip||"",ins_price:v.insPrice||""}));const{error}=await sb.from("vehicles").upsert(rows,{onConflict:"code"});if(error)dbLog("saveVehicles",false,error.message);else dbLog("saveVehicles",true,arr.length+"件保存");
   },
   async deleteVehicle(code){if(!sb)return;const{error}=await sb.from("vehicles").delete().eq("code",code);if(error)dbLog("deleteVehicle",false,error.message);else dbLog("deleteVehicle",true,code);},
@@ -923,7 +927,10 @@ function VehicleManager({vehicles,onVehiclesChange,vehicleClasses,onDeleteVehicl
   };
   const addNew=()=>{
     if(!window.confirm("新規車両を登録しますか？"))return;
-    const code=form.name.replace(/[\s-]/g,"").substring(0,3).toUpperCase()||"NEW";
+    const prefix=form.name.replace(/[\s-]/g,"").substring(0,3).toUpperCase()||"NEW";
+    const noStr=(form.no||"").replace(/[^0-9a-zA-Z]/g,"");
+    const code=prefix+(noStr||Date.now().toString(36).slice(-4));
+    if(vehicles.some(v=>v.code===code)){alert("同じ車種・ナンバーの車両が既に登録されています");return;}
     onVehiclesChange([...vehicles,{id:vuid(),code,name:form.name,no:form.no,type:form.type,seats:+form.seats,insuranceVeh:!!form.insuranceVeh,year:form.year,equip:form.equip,insPrice:form.insPrice}]);
     setForm({name:"",no:"",type:"A",seats:5,insuranceVeh:false,year:"",equip:"",insPrice:""});setAddMode(false);
   };
@@ -6893,7 +6900,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.32";
+const APP_VERSION="v4.2.33";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
