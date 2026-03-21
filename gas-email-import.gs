@@ -361,12 +361,12 @@ function parseJalan_(body) {
   var flight = [arrFlight, depFlight].filter(Boolean).join(' / ');
 
   return {
-    id: id, ota: 'J', name: name, name_kana: nameKana,
+    id: id, ota: 'J', name: nameKana || name,
     lend_date: lend.date, lend_time: lend.time,
     return_date: ret.date, return_time: ret.time,
     vehicle: vehicleClass, people: people, insurance: insurance,
     price: price, status: '確定', tel: tel, mail: mail,
-    flight: flight, visit_type: '', del_place: '', col_place: '', options: '',
+    flight: flight, visit_type: '', del_place: '', col_place: '',
     _store: store, _rawClass: rawClass
   };
 }
@@ -402,13 +402,18 @@ function parseRakuten_(body) {
 
   var price = parsePrice_(extractField_(body, '（合計）'));
 
+  // Check for child seat options
+  var optB = optionsStr.indexOf('チャイルドシート') !== -1;
+  var optC = optionsStr.indexOf('ジュニアシート') !== -1;
+
   return {
-    id: id, ota: 'R', name: '', name_kana: nameKana,
+    id: id, ota: 'R', name: nameKana,
     lend_date: lend.date, lend_time: lend.time,
     return_date: ret.date, return_time: ret.time,
     vehicle: vehicleClass, people: 0, insurance: insurance,
     price: price, status: '確定', tel: '', mail: '',
-    flight: '', visit_type: '', del_place: '', col_place: '', options: optionsStr,
+    flight: '', visit_type: '', del_place: '', col_place: '',
+    opt_b: optB, opt_c: optC,
     _store: store, _rawClass: rawClass
   };
 }
@@ -444,12 +449,12 @@ function parseSkyticket_(body) {
   var insurance = insurancePrice > 0 ? '免責' : 'なし';
 
   return {
-    id: id, ota: 'S', name: '', name_kana: nameKana,
+    id: id, ota: 'S', name: nameKana,
     lend_date: lend.date, lend_time: lend.time,
     return_date: ret.date, return_time: ret.time,
     vehicle: vehicleClass, people: people, insurance: insurance,
     price: totalPrice, status: '確定', tel: tel, mail: mail,
-    flight: '', visit_type: '', del_place: '', col_place: '', options: '',
+    flight: '', visit_type: '', del_place: '', col_place: '',
     _store: store, _rawClass: rawClass
   };
 }
@@ -482,12 +487,12 @@ function parseAirtrip_(body) {
   var flight = [arrFlight, depFlight].filter(Boolean).join(' / ');
 
   return {
-    id: id, ota: 'O', name: '', name_kana: nameKana,
+    id: id, ota: 'O', name: nameKana,
     lend_date: lend.date, lend_time: lend.time,
     return_date: ret.date, return_time: ret.time,
     vehicle: vehicleClass, people: 0, insurance: insurance,
     price: price, status: '確定', tel: tel, mail: mail,
-    flight: flight, visit_type: '', del_place: '', col_place: '', options: '',
+    flight: flight, visit_type: '', del_place: '', col_place: '',
     _store: store, _rawClass: rawClass
   };
 }
