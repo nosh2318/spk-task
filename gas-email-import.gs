@@ -560,8 +560,9 @@ function handleCancellation_(ota, body, dryRun) {
     return;
   }
 
-  // Delete fleet first (FK dependency), then reservation
+  // Delete fleet, tasks, then reservation
   deleteFromFleet_(reservationId);
+  deleteFromTasks_(reservationId);
   deleteReservation_(reservationId);
   Logger.log('Cancelled reservation: ' + reservationId);
   return reservationId;
@@ -655,6 +656,10 @@ function deleteReservation_(reservationId) {
 
 function deleteFromFleet_(reservationId) {
   return supabaseDelete_('fleet', 'reservation_id=eq.' + encodeURIComponent(reservationId));
+}
+
+function deleteFromTasks_(reservationId) {
+  return supabaseDelete_('tasks', 'reservation_id=eq.' + encodeURIComponent(reservationId));
 }
 
 // ============================================================
