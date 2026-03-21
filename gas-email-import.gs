@@ -619,9 +619,9 @@ function autoAssignVehicle_(reservation) {
     return;
   }
 
-  // 1. Get all vehicles of the same class
+  // 1. Get all vehicles of the same class (exclude insurance vehicles)
   var vehicles = supabaseGet_('vehicles',
-    'type=eq.' + encodeURIComponent(vehicleClass) + '&select=code,name,plate_no,seats');
+    'type=eq.' + encodeURIComponent(vehicleClass) + '&insurance_veh=eq.false&select=code,name,plate_no,seats');
   if (vehicles.length === 0) {
     Logger.log('No vehicles of class ' + vehicleClass + '. ' + reservation.id + ' will be 未配車.');
     return;
@@ -648,8 +648,6 @@ function autoAssignVehicle_(reservation) {
   for (var i = 0; i < vehicles.length; i++) {
     var v = vehicles[i];
     if (busyVehicleCodes[v.code]) continue;
-    // Skip insurance vehicles (code containing -INS)
-    if (v.code && v.code.indexOf('-INS') !== -1) continue;
     assignedVehicle = v;
     break;
   }
