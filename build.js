@@ -1,42 +1,38 @@
 const fs = require('fs');
 const babel = require('@babel/core');
 
-const html = fs.readFileSync('index.html', 'utf8');
-
-// バックアップ
-fs.writeFileSync('index.html.bak', html);
-console.log('Backup saved to index.html.bak');
-
-// <script type="text/babel"> の中身を抽出
-const match = html.match(/<script type="text\/babel">([\s\S]*?)<\/script>/);
-if (!match) {
-  console.error('text/babel block not found');
-  process.exit(1);
-}
+// ★ index.html.bak（JSXソース）から <script type="text/babel"> を抽出
+const src = fs.readFileSync('index.html.bak', 'utf8');
+const match = src.match(/<script type="text\/babel">([\s\S]*?)<\/script>/);
+if (!match) { console.error('text/babel block not found in index.html.bak'); process.exit(1); }
 
 const jsx = match[1];
-console.log(`JSX code: ${jsx.length} chars`);
+console.log(`JSX source: ${(jsx.length/1024).toFixed(0)}KB`);
 
-// Babel compile
+// ★ Babel compile (JSX → JS)
 const result = babel.transformSync(jsx, {
   presets: ['@babel/preset-react'],
-  plugins: [],
 });
-console.log(`Compiled JS: ${result.code.length} chars`);
+console.log(`Compiled JS: ${(result.code.length/1024).toFixed(0)}KB`);
 
-let output = html;
+// ★ app.js に書き出し
+fs.writeFileSync('app.js', result.code);
+console.log('app.js written');
 
-// Replace text/babel with compiled JS
-output = output.replace(
-  `<script type="text/babel">${match[1]}</script>`,
-  `<script>${result.code}</script>`
-);
+// ★ terser圧縮（利用可能なら）
+try {
+  const { execSync } = require('child_process');
+  execSync('npx terser app.js --compress passes=3,pure_getters=true --mangle toplevel=true --output app.js', { stdio: 'inherit' });
+  const sz = fs.statSync('app.js').size;
+  console.log(`Minified app.js: ${(sz/1024).toFixed(0)}KB`);
+} catch(e) {
+  console.warn('terser not available, using unminified app.js');
+}
 
-// Remove Babel preload
-output = output.replace(/<link rel="preload"[^>]*babel[^>]*>\n?/g, '');
+// ★ index2.htmlにindex.htmlをコピー
+try {
+  fs.copyFileSync('index.html', 'index2.html');
+  console.log('index2.html updated');
+} catch(e) {}
 
-// Remove Babel script tag
-output = output.replace(/<script src="[^"]*babel[^"]*"><\/script>\n?/g, '');
-
-fs.writeFileSync('index.html', output);
-console.log('Build complete - Babel removed, JSX pre-compiled');
+console.log('✅ Build complete');
