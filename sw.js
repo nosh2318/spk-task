@@ -1,5 +1,5 @@
-var CACHE_NAME = 'spk-v4264';
-var URLS = ['/', '/index.html', '/index2.html'];
+var CACHE_NAME = 'spk-v4265';
+var URLS = ['/', '/index.html', '/index2.html', '/app.js'];
 var CDN_CACHE = 'spk-cdn-v1';
 var CDN_HOSTS = ['cdnjs.cloudflare.com', 'cdn.jsdelivr.net'];
 
@@ -38,8 +38,8 @@ self.addEventListener('fetch', function(e) {
     return;
   }
 
-  // Same-origin HTML: cache-first with background update
-  if (url.origin === self.location.origin && (url.pathname === '/' || url.pathname.endsWith('.html'))) {
+  // Same-origin assets: cache-first with background update
+  if (url.origin === self.location.origin && (url.pathname === '/' || url.pathname.endsWith('.html') || url.pathname === '/app.js')) {
     e.respondWith(
       caches.match(e.request).then(function(cached) {
         var fetchPromise = fetch(e.request).then(function(resp) {
