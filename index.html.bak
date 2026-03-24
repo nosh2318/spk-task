@@ -6372,51 +6372,51 @@ function App(){
   // ★ ローカル変更が未同期かどうかをrefで参照（silentRefresh内で使用）
   const syncStatusRef=React.useRef(syncStatus);syncStatusRef.current=syncStatus;
 
-  // --- Supabase 初期ロード ---
+  // --- Supabase 初期ロード（那覇店方式: キャッシュ即表示 + 2.5秒タイムアウト + Phase分離） ---
+  const[bgLoading,setBgLoading]=useState(false);
   useEffect(()=>{
     if(!SB_ENABLED)return;
-    // ★ LocalStorage-first: キャッシュがあれば即UI表示
-    try {
-      const cachedRes = JSON.parse(localStorage.getItem("spk_reservations_backup") || "[]");
-      const cachedFleet = JSON.parse(localStorage.getItem("spk_fleet") || "{}");
-      const cachedVehicles = JSON.parse(localStorage.getItem("spk_vehicles_cache") || "null");
-      const cachedStaff = JSON.parse(localStorage.getItem("spk_staff_cache") || "null");
-      const cachedShifts = JSON.parse(localStorage.getItem("spk_shifts_cache") || "null");
-      if (cachedRes.length > 0) {
-        setData(cachedRes);
-        if (Object.keys(cachedFleet).length) setFleet(cachedFleet);
-        if (cachedVehicles && cachedVehicles.length) setVehicles(cachedVehicles);
-        if (cachedStaff && cachedStaff.length) setStaff(cachedStaff);
-        if (cachedShifts) setShifts(cachedShifts);
+    // ★ キャッシュ即時表示: 前回の成功データがあれば即UI表示
+    try{
+      const cached=JSON.parse(localStorage.getItem("spk_cached_init")||"null");
+      if(cached&&cached.res&&cached.res.length>0){
+        console.log("[init] キャッシュ即時表示: "+cached.res.length+"件");
+        setData(cached.res);
+        if(cached.staff&&cached.staff.length)setStaff(cached.staff);
+        if(cached.vehicles&&cached.vehicles.length)setVehicles(cached.vehicles);
+        if(cached.shifts)setShifts(cached.shifts);
+        if(cached.fleet&&Object.keys(cached.fleet).length)setFleet(cached.fleet);
+        if(cached.maintenance&&cached.maintenance.length)setMaintenance(cached.maintenance);
         setDbLoaded(true);
-        console.log("[init] LSキャッシュで即表示: " + cachedRes.length + "件");
+        setBgLoading(true);
       }
-    } catch(e) { console.warn("[LS-first]", e); }
-    // ★ DB読込（バックグラウンド）
+    }catch(e){}
+    // ★ 2.5秒タイムアウト: キャッシュなし時の通信遅延フォールバック
+    const loadTimeout=setTimeout(()=>{
+      setDbLoaded(prev=>{
+        if(!prev){console.warn("[init] 2.5秒タイムアウト → 強制UI表示");setSbConnected(false);}
+        return true;
+      });
+    },2500);
+    // ★ changed_jsonカラムチェックはバックグラウンド（UIロードをブロックしない）
+    if(sb&&!window._changedColChecked){
+      window._changedColChecked=true;
+      (async()=>{try{
+        const{data:test,error:testErr}=await sb.from("tasks").select("changed_json").limit(1);
+        if(testErr||test===null){
+          DB._hasChangedCol=false;
+          try{await sb.rpc("exec_sql",{sql:"ALTER TABLE tasks ADD COLUMN IF NOT EXISTS changed_json text DEFAULT '{}'"});DB._hasChangedCol=true;}catch(e2){}
+        }else{DB._hasChangedCol=true;}
+      }catch(e){DB._hasChangedCol=false;}})();
+    }
     (async()=>{
-      // ★ changed_jsonカラム存在チェック＋自動追加試行
-      if(sb&&!window._changedColChecked){
-        window._changedColChecked=true;
-        try{
-          const{data:test,error:testErr}=await sb.from("tasks").select("changed_json").limit(1);
-          if(testErr||test===null){
-            DB._hasChangedCol=false;
-            // カラムが存在しない→RPC経由で追加試行
-            try{
-              await sb.rpc("exec_sql",{sql:"ALTER TABLE tasks ADD COLUMN IF NOT EXISTS changed_json text DEFAULT '{}'"});
-              DB._hasChangedCol=true;
-              dbLog("add_changed_col",true,"changed_jsonカラム追加成功");
-            }catch(e2){dbLog("add_changed_col",false,"RPC未対応:"+e2.message);}
-          }else{
-            DB._hasChangedCol=true;
-          }
-        }catch(e){DB._hasChangedCol=false;}
-      }
       try{
-        const[resDB,flDB,stDB,vhDB,shDB,mtDB,plDB]=await Promise.all([
-          DB.fetchReservations(),DB.fetchFleet(),DB.fetchStaff(),DB.fetchVehicles(),DB.fetchShifts(),DB.fetchMaintenance(),DB.fetchPlaces()
+        console.log("[init] DB読込開始...");
+        // ★ Phase1: 必須3テーブルを先行取得 → 即UI表示
+        const[resDB,flDB,stDB]=await Promise.all([
+          DB.fetchReservations(),DB.fetchFleet(),DB.fetchStaff()
         ]);
-        // ★ DB優先（LSバックアップはDBが空の場合のみフォールバック）
+        console.log("[init] Phase1完了: 予約="+resDB.length+"件");
         let useRes=resDB;
         if(!useRes||!useRes.length){
           try{
@@ -6424,7 +6424,7 @@ function App(){
             if(backup.length>0){console.log(`[init] DB空 → LSバックアップ(${backup.length}件)を使用`);useRes=backup;}
           }catch(e){}
         }
-        // ★ 破損データ除去（全角コロン付きID/名前を除外+重複排除）
+        // ★ 破損データ除去
         if(useRes.length){
           const seen=new Set();
           useRes=useRes.filter(r=>{
@@ -6434,30 +6434,35 @@ function App(){
             seen.add(r.id);
             return true;
           });
-          console.log("[init] クリーンデータ:"+useRes.length+"件");
         }
         if(useRes.length)setData(useRes);
         if(Object.keys(flDB).length)setFleet(flDB);
         if(stDB&&stDB.length)setStaff(stDB);
+        // ★ Phase1完了 → 即UIを表示
+        clearTimeout(loadTimeout);
+        setSbConnected(true);
+        setDbLoaded(true);
+        console.log("[init] Phase1完了 → UI表示");
+        // ★ Phase2: 残りテーブルをバックグラウンド取得
+        setBgLoading(true);
+        const[vhDB,shDB,mtDB,plDB]=await Promise.all([
+          DB.fetchVehicles(),DB.fetchShifts(),DB.fetchMaintenance(),DB.fetchPlaces()
+        ]);
+        console.log("[init] Phase2完了");
         if(vhDB&&vhDB.length)setVehicles(vhDB);
         if(shDB)setShifts(shDB);
         if(mtDB&&mtDB.length)setMaintenance(mtDB);
-        // ★ DBのplacesテーブルとlocalStorageをマージ（場所情報の消失防止）
         if(plDB&&Object.keys(plDB).length){
           setSheetPlaces(prev=>{const merged={...prev,...plDB};try{localStorage.setItem("spk_sheet_places",JSON.stringify(merged));}catch(e){}return merged;});
         }
-        setSbConnected(true);
-        // ★ LSキャッシュ更新
-        try {
-          if(useRes.length) localStorage.setItem("spk_reservations_backup", JSON.stringify(useRes));
-          if(vhDB && vhDB.length) localStorage.setItem("spk_vehicles_cache", JSON.stringify(vhDB));
-          if(stDB && stDB.length) localStorage.setItem("spk_staff_cache", JSON.stringify(stDB));
-          if(shDB) localStorage.setItem("spk_shifts_cache", JSON.stringify(shDB));
-        } catch(e) {}
-      }catch(e){console.error("DB load error:",e);}
-      // ★★ メインデータ読込完了 → 即UI表示 ★★
-      setDbLoaded(true);
-      console.log("[init] メインデータ読込完了 → UI表示");
+        // ★ キャッシュ保存（次回即時表示用）
+        try{localStorage.setItem("spk_cached_init",JSON.stringify({
+          res:useRes.slice(0,500),staff:stDB,vehicles:vhDB,
+          shifts:shDB,fleet:flDB,maintenance:mtDB,ts:Date.now()
+        }));}catch(e){}
+        setBgLoading(false);
+      }catch(e){console.error("DB load error:",e);clearTimeout(loadTimeout);setDbLoaded(true);setBgLoading(false);}
+      console.log("[init] 全データ読込完了");
       // --- 以下はバックグラウンドで非同期読込（UIをブロックしない） ---
       (async()=>{
         try{const attDB=await DB.fetchAttendance();if(attDB&&Object.keys(attDB).length)setAttendance(attDB);}catch(e){console.warn("[att]",e);}
@@ -7052,7 +7057,7 @@ function App(){
 
   const repeaterInfo=useMemo(()=>buildRepeaterMap(data),[data]);
 
-  if(!dbLoaded)return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#f3f4f6"}}><div style={{textAlign:"center"}}><div style={{width:48,height:48,border:"4px solid #e5e7eb",borderTopColor:"#2563eb",borderRadius:"50%",animation:"spin 1s linear infinite",margin:"0 auto 12px"}}></div><p style={{color:"#64748b",fontSize:13}}>データ読込中...</p></div></div>;
+  if(!dbLoaded)return <div onClick={()=>setDbLoaded(true)} style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#f3f4f6",cursor:"pointer"}}><div style={{textAlign:"center"}}><div style={{width:48,height:48,border:"4px solid #e5e7eb",borderTopColor:"#2563eb",borderRadius:"50%",animation:"spin 1s linear infinite",margin:"0 auto 12px"}}></div><p style={{color:"#64748b",fontSize:13}}>データ読込中...</p><p style={{color:"#94a3b8",fontSize:11,marginTop:8}}>タップでスキップ</p></div></div>;
 
   return <div style={{height:"100vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
     {SB_ENABLED&&<div className="sync-desktop"><SyncBadge connected={sbConnected}/></div>}
@@ -7512,7 +7517,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.66";
+const APP_VERSION="v4.2.67";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
