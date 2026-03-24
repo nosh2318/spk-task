@@ -3071,6 +3071,53 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
     if(gen.length)DB.upsertTasks(gen,date);
   },[reservations,vehicles]);
   useEffect(()=>{loadTasks(selDate);},[selDate,loadTasks]);
+  // ★ 時間・場所を日付切替時＋5分間隔で自動取得
+  useEffect(()=>{
+    const doAutoFetch=async()=>{
+      const resIds=[...new Set(tasks.filter(t=>t.reservationId).map(t=>t.reservationId))];
+      if(!resIds.length)return;
+      try{
+        const[timeMap,placeMap]=await Promise.all([fetchTimeData(resIds),fetchPlaceData(resIds)]);
+        if(Object.keys(timeMap).length||Object.keys(placeMap).length){
+          selfUpdateRef.current[selDate]=Date.now();
+          setTasks(prev=>{
+            const upd=prev.map(t=>{
+              if(!t.reservationId)return t;
+              let changed=false;const next={...t};
+              // 時間更新
+              const tm=timeMap[t.reservationId];
+              if(tm&&!t._manualTime){
+                let nw=null;
+                if(t.type==="DEL"&&tm.delTime)nw=tm.delTime;
+                if(t.type==="COL"&&tm.colTime)nw=tm.colTime;
+                if(nw){
+                  const norm=nw.replace(/^(\d):/,"0$1:").replace(/：/g,":").slice(0,5);
+                  if(norm!==t.time){next.csvTime=t.csvTime||t.time||"";next.time=norm;changed=true;}
+                }
+              }
+              // 場所更新
+              const p=placeMap[t.reservationId];
+              if(p&&!t._manualPlace){
+                if(t.type==="DEL"&&p.delPlace&&p.delPlace!==t.place){next.place=p.delPlace;changed=true;}
+                if(t.type==="COL"&&p.colPlace&&p.colPlace!==t.place){next.place=p.colPlace;changed=true;}
+                if(t.type==="DEL"&&p.colPlace&&!t._manualColPlace){next.colPlace=p.colPlace;}
+              }
+              return changed?next:t;
+            });
+            DB._lsSave(upd,selDate);return upd;
+          });
+          // 場所をplacesテーブルにも保存
+          if(Object.keys(placeMap).length){
+            if(onUpdateSheetPlaces)onUpdateSheetPlaces({...sheetPlaces,...placeMap});
+            DB.upsertPlaces(placeMap);
+          }
+        }
+      }catch(e){console.log("[autoFetch]",e.message);}
+    };
+    const t0=setTimeout(doAutoFetch,3000);
+    const iv=setInterval(doAutoFetch,5*60*1000);
+    return()=>{clearTimeout(t0);clearInterval(iv);};
+  },[selDate,tasks.length]);
   // Realtimeでタスク更新を受信（他端末の変更を反映）
   useEffect(()=>{
     if(!sb)return;
@@ -7346,7 +7393,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.58";
+const APP_VERSION="v4.2.59";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
