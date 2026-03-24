@@ -815,7 +815,7 @@ function EditablePlace({value,field,mark:markFn,task,updFn}){
   React.useEffect(()=>{setDraft(value||"");},[value]);
   const hasLink=value&&value.trim()&&value.trim().length>=2&&!/^(なし|無し|無|ー+|-+|FALSE|false|0|—)$/.test(value.trim());
   const labels={place:"場所",colPlace:"返却場所"};
-  const save=()=>{setEditing(false);if(draft!==(value||""))updFn(task._id,markFn({...task,[field]:draft},field),(labels[field]||"場所")+"を変更");};
+  const save=()=>{setEditing(false);if(draft!==(value||"")){const flagKey=field==="colPlace"?"_manualColPlace":"_manualPlace";updFn(task._id,markFn({...task,[field]:draft,[flagKey]:true},field),(labels[field]||"場所")+"を変更");}};
   if(editing)return <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,.4)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={e=>{if(e.target===e.currentTarget)save();}}>
     <div style={{background:"#fff",borderRadius:12,padding:16,width:"100%",maxWidth:400,boxShadow:"0 8px 30px rgba(0,0,0,.2)"}}>
       <div style={{fontSize:12,fontWeight:700,color:"#1e293b",marginBottom:8}}>{labels[field]||"場所"}を編集</div>
@@ -3195,6 +3195,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
           // 時間フォーマット正規化（"9:00"→"09:00"等）
           const normalized=newTime.replace(/^(\d):/, "0$1:").replace(/：/g,":").slice(0,5);
           if(normalized===t.time)return t;
+          // ★ マスターで手動変更されたものは上書きしない
+          if(t._manualTime)return t;
           updCount++;
           // ★ timeカラム（実DB列）を更新。CSV元時間をcsvTimeに退避。
           return{...t,csvTime:t.csvTime||t.time||"",time:normalized};
@@ -3230,9 +3232,10 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
           if(!t.reservationId||!placeMap[t.reservationId])return t;
           const p=placeMap[t.reservationId];
           const updates={};const cf={...(t._changed||{})};
-          if(t.type==="DEL"&&p.delPlace){updates.place=p.delPlace;cf.place=true;}
-          if(t.type==="COL"&&p.colPlace){updates.place=p.colPlace;cf.place=true;}
-          if(t.type==="DEL"&&p.colPlace){updates.colPlace=p.colPlace;cf.colPlace=true;}
+          // ★ マスターで手動変更されたものは上書きしない
+          if(t.type==="DEL"&&p.delPlace&&!t._manualPlace){updates.place=p.delPlace;cf.place=true;}
+          if(t.type==="COL"&&p.colPlace&&!t._manualPlace){updates.place=p.colPlace;cf.place=true;}
+          if(t.type==="DEL"&&p.colPlace&&!t._manualColPlace){updates.colPlace=p.colPlace;cf.colPlace=true;}
           if(Object.keys(updates).length===0)return t;
           return{...t,...updates,_changed:cf};
         });
@@ -3275,7 +3278,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
   const sortedTasks=useMemo(()=>{if(!sortKey)return tasks;return doSort(tasks,sortKey,sortAsc);},[tasks,sortKey,sortAsc]);
   const sortIcon=(key)=>sortKey===key?(sortAsc?"▲":"▼"):"";
   // ★ フィルター適用
-  const filteredTasks=useMemo(()=>{const src=sortKey?doSort(tasks,sortKey,sortAsc):tasks;if(sheetFilter==="del")return src.filter(t=>t.type==="DEL");if(sheetFilter==="col")return src.filter(t=>t.type==="COL");if(sheetFilter==="wash")return src.filter(t=>t.type==="洗車");if(sheetFilter==="other"){const ot=["乗り捨て","迎え","回収","送り","鍵入れ","事前駐車","持ち帰り","MTG","その他"];return src.filter(t=>ot.includes(t.type));}if(sheetFilter==="master"||sheetFilter==="all")return src;return src;},[tasks,sortKey,sortAsc,sheetFilter]);
+  const filteredTasks=useMemo(()=>{const src=sortKey?doSort(tasks,sortKey,sortAsc):tasks;if(sheetFilter==="del")return src.filter(t=>t.type==="DEL");if(sheetFilter==="col")return src.filter(t=>t.type==="COL");if(sheetFilter==="wash")return src.filter(t=>t.type==="洗車");if(sheetFilter==="master"||sheetFilter==="all")return src;return src;},[tasks,sortKey,sortAsc,sheetFilter]);
   // 行移動
   const moveRow=(id,dir)=>{if(sortKey){alert("ソート中は手動並び替えできません。\nヘッダーを3回タップしてソート解除してください。");return;}selfUpdateRef.current[selDate]=Date.now();const idx=tasks.findIndex(t=>t._id===id);const ni=idx+dir;if(ni<0||ni>=tasks.length)return;const arr=[...tasks];[arr[idx],arr[ni]]=[arr[ni],arr[idx]];setTasks(arr);DB._lsSave(arr,selDate);if(sb){sb.from("tasks").update({sort_order:idx}).eq("_id",arr[idx]._id).then(()=>{}).catch(e=>{});sb.from("tasks").update({sort_order:ni}).eq("_id",arr[ni]._id).then(()=>{}).catch(e=>{});}};
 
@@ -3305,16 +3308,16 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
     {activeMembers.length>0&&<div style={{padding:"3px 6px",background:"#f8fafc",borderBottom:"1px solid #e5e7eb",display:"flex",gap:3,flexWrap:"wrap",flexShrink:0}}><span style={{fontSize:9,color:"#64748b",fontWeight:600}}>出勤:</span>{activeMembers.map(name=>{const isReg=staff.find(x=>x.name===name)?.type==="正社員";return <span key={name} style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:3,background:isReg?"#dbeafe":"#fef3c7",color:isReg?"#1d4ed8":"#92400e"}}>{name}</span>;})}</div>}
     {/* ★ フィルタータブ: サマリー/バス/ハイエース/DEL・COL/洗車/マスター */}
     <div style={{padding:"4px 6px",background:"#fff",borderBottom:"1px solid #e5e7eb",display:"flex",gap:4,flexShrink:0,overflowX:"auto"}}>
-      {(()=>{const delCnt=tasks.filter(t=>t.type==="DEL").length;const colCnt=tasks.filter(t=>t.type==="COL").length;const washCnt=tasks.filter(t=>t.type==="洗車").length;const otherTypes=["乗り捨て","迎え","回収","送り","鍵入れ","事前駐車","持ち帰り","MTG","その他"];const otherCnt=tasks.filter(t=>otherTypes.includes(t.type)).length;const tabs=[{id:"all",label:"📊 サマリー",cnt:tasks.length},{id:"del",label:"🚗DEL",cnt:delCnt},{id:"col",label:"📦COL",cnt:colCnt},{id:"wash",label:"🧹洗車",cnt:washCnt},{id:"other",label:"📋その他",cnt:otherCnt},{id:"master",label:"📋マスター",cnt:null}];return tabs.map(tb=>{const sel=sheetFilter===tb.id;return <button key={tb.id} onClick={()=>setSheetFilter(tb.id)} style={{flexShrink:0,padding:"4px 10px",borderRadius:8,fontSize:11,fontWeight:sel?700:500,background:sel?"#1e40af":"#f1f5f9",color:sel?"#fff":"#374151",border:"none",cursor:"pointer",display:"flex",alignItems:"center",gap:4}}>{tb.label}{tb.cnt!==null&&<span style={{fontSize:9,background:sel?"rgba(255,255,255,.25)":"#dbeafe",color:sel?"#fff":"#1d4ed8",borderRadius:8,padding:"0 5px",fontWeight:700}}>{tb.cnt}</span>}</button>;});})()}
+      {(()=>{const delCnt=tasks.filter(t=>t.type==="DEL").length;const colCnt=tasks.filter(t=>t.type==="COL").length;const washCnt=tasks.filter(t=>t.type==="洗車").length;const tabs=[{id:"all",label:"📊 サマリー",cnt:tasks.length},{id:"del",label:"🚗DEL",cnt:delCnt},{id:"col",label:"📦COL",cnt:colCnt},{id:"wash",label:"🧹洗車",cnt:washCnt},{id:"master",label:"📋マスター",cnt:null}];return tabs.map(tb=>{const sel=sheetFilter===tb.id;return <button key={tb.id} onClick={()=>setSheetFilter(tb.id)} style={{flexShrink:0,padding:"4px 10px",borderRadius:8,fontSize:11,fontWeight:sel?700:500,background:sel?"#1e40af":"#f1f5f9",color:sel?"#fff":"#374151",border:"none",cursor:"pointer",display:"flex",alignItems:"center",gap:4}}>{tb.label}{tb.cnt!==null&&<span style={{fontSize:9,background:sel?"rgba(255,255,255,.25)":"#dbeafe",color:sel?"#fff":"#1d4ed8",borderRadius:8,padding:"0 5px",fontWeight:700}}>{tb.cnt}</span>}</button>;});})()}
     </div>
     <div className="op-body">
       {/* ★ DEL/COL/洗車 カード表示（那覇店仕様） */}
-      {(sheetFilter==="del"||sheetFilter==="col"||sheetFilter==="wash"||sheetFilter==="other")&&(()=>{
-        const isWashTab=sheetFilter==="wash";const isOtherTab=sheetFilter==="other";
+      {(sheetFilter==="del"||sheetFilter==="col"||sheetFilter==="wash")&&(()=>{
+        const isWashTab=sheetFilter==="wash";
         const cardTasks=filteredTasks;
         const doneCount=cardTasks.filter(t=>t.done).length;
-        const headerLabel=sheetFilter==="del"?"🚗 DEL 配送":sheetFilter==="col"?"📦 COL 回収":sheetFilter==="other"?"📋 その他タスク":"🧹 洗車タスク";
-        const headerColor=sheetFilter==="del"?"#1e40af":sheetFilter==="col"?"#dc2626":sheetFilter==="other"?"#6366f1":"#92400e";
+        const headerLabel=sheetFilter==="del"?"🚗 DEL 配送":sheetFilter==="col"?"📦 COL 回収":"🧹 洗車タスク";
+        const headerColor=sheetFilter==="del"?"#1e40af":sheetFilter==="col"?"#dc2626":"#92400e";
         return <div style={{padding:12}}>
           <div style={{background:"linear-gradient(135deg,"+headerColor+","+headerColor+"cc)",color:"#fff",borderRadius:12,padding:"14px 18px",marginBottom:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
             <span style={{fontSize:16,fontWeight:800}}>{headerLabel} ({cardTasks.length}件)</span>
@@ -3324,13 +3327,13 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
           {cardTasks.map((t,i)=>{
             const tm=TASK_META[t.type]||TASK_META["その他"];
             const tOpts=t.opts||{};
-            const place=t.type==="DEL"?(t.delPlace||t.place):t.type==="COL"?(t.colPlace||t.place):(t.place||t.delPlace||t.colPlace||"");
+            const place=t.type==="DEL"?t.delPlace:t.colPlace;
             const mapsUrl=place?"https://www.google.com/maps/search/"+encodeURIComponent(place):"";
             return <div key={t._id} style={{background:t.done?"#f1f5f9":"#fff",border:"1px solid "+(t.done?"#e2e8f0":"#d1d5db"),borderRadius:10,padding:"12px 14px",marginBottom:8,opacity:t.done?.6:1}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
                   <input type="checkbox" checked={t.done||false} onChange={e=>{const v=e.target.checked;upd(t._id,{...t,done:v});}} style={{width:16,height:16,accentColor:headerColor}}/>
-                  {(!isWashTab||isOtherTab)&&<span style={{background:tm.bg||"#f1f5f9",color:tm.c||"#6b7280",padding:"2px 8px",borderRadius:4,fontSize:11,fontWeight:700}}>{t.type}</span>}
+                  {!isWashTab&&<span style={{background:tm.bg,color:tm.fg,padding:"2px 8px",borderRadius:4,fontSize:11,fontWeight:700}}>{t.type}</span>}
                   <span style={{fontSize:15,fontWeight:700,color:"#1e293b"}}>{t.time||"-"}</span>
                   <span style={{fontSize:15,fontWeight:600,color:"#334155"}}>{t.name||""}</span>
                 </div>
@@ -3348,7 +3351,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
                 {place&&<a href={mapsUrl} target="_blank" style={{color:"#dc2626",textDecoration:"none"}}>📍{place}</a>}
               </div>
               {(tOpts.b>0||tOpts.c>0||tOpts.j>0)&&<div style={{display:"flex",gap:4,marginTop:4}}>{tOpts.b>0&&<span style={{fontSize:9,background:"#fef3c7",color:"#92400e",padding:"1px 5px",borderRadius:4}}>B:{tOpts.b}</span>}{tOpts.c>0&&<span style={{fontSize:9,background:"#dbeafe",color:"#1d4ed8",padding:"1px 5px",borderRadius:4}}>C:{tOpts.c}</span>}{tOpts.j>0&&<span style={{fontSize:9,background:"#f0fdf4",color:"#059669",padding:"1px 5px",borderRadius:4}}>J:{tOpts.j}</span>}</div>}
-              {(isWashTab||isOtherTab)&&<div style={{display:"flex",gap:8,marginTop:4,fontSize:11,color:"#64748b"}}>
+              {isWashTab&&<div style={{display:"flex",gap:8,marginTop:4,fontSize:11,color:"#64748b"}}>
                 {t.returnDate&&<span>{fmtD(t.returnDate)}</span>}
                 {t.returnTime&&<span>{t.returnTime}</span>}
                 {t.returnType&&<span style={{fontWeight:600}}>{t.returnType}</span>}
@@ -3358,67 +3361,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
           })}
         </div>;
       })()}
-      {/* ★ サマリー: セクション分割カード表示（那覇店仕様） */}
-      {sheetFilter==="all"&&(()=>{
-        const otherTypes=["乗り捨て","迎え","回収","送り","鍵入れ","事前駐車","持ち帰り","MTG","その他"];
-        const sections=[
-          {key:"del",label:"🚗 DEL 配送",color:"#1e40af",tasks:tasks.filter(t=>t.type==="DEL")},
-          {key:"col",label:"📦 COL 回収",color:"#dc2626",tasks:tasks.filter(t=>t.type==="COL")},
-          {key:"other",label:"📋 その他",color:"#6366f1",tasks:tasks.filter(t=>otherTypes.includes(t.type))},
-          {key:"wash",label:"🧹 洗車",color:"#92400e",tasks:tasks.filter(t=>t.type==="洗車")}
-        ].filter(s=>s.tasks.length>0);
-        const totalDone=tasks.filter(t=>t.done).length;
-        return <div style={{padding:12}}>
-          <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap",justifyContent:"center"}}>
-            {sections.map(s=><span key={s.key} style={{fontSize:12,fontWeight:700,color:s.color}}>{s.label.split(" ").pop()} {s.tasks.length}</span>)}
-            <span style={{fontSize:12,fontWeight:700,color:"#059669"}}>✓ {totalDone}/{tasks.length}</span>
-          </div>
-          {sections.map(sec=>{
-            const secDone=sec.tasks.filter(t=>t.done).length;
-            const isWash=sec.key==="wash";
-            return <div key={sec.key} style={{marginBottom:16}}>
-              <div style={{background:sec.color,color:"#fff",borderRadius:"10px 10px 0 0",padding:"10px 16px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <span style={{fontSize:14,fontWeight:800}}>{sec.label} ({sec.tasks.length}件)</span>
-                <span style={{fontSize:12}}>完了 {secDone}/{sec.tasks.length}</span>
-              </div>
-              <div style={{border:"1px solid #e2e8f0",borderTop:"none",borderRadius:"0 0 10px 10px",background:"#fff"}}>
-                {sec.tasks.map((t,i)=>{
-                  const tm=TASK_META[t.type]||TASK_META["その他"];
-                  const tOpts=t.opts||{};
-                  const place=t.type==="DEL"?(t.delPlace||t.place):t.type==="COL"?(t.colPlace||t.place):(t.place||t.delPlace||t.colPlace||"");
-                  const mapsUrl=place?"https://www.google.com/maps/search/"+encodeURIComponent(place):"";
-                  return <div key={t._id} style={{padding:"10px 14px",borderBottom:i<sec.tasks.length-1?"1px solid #f1f5f9":"none",opacity:t.done?.5:1,background:t.done?"#f9fafb":"#fff"}}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-                      <div style={{display:"flex",alignItems:"center",gap:6}}>
-                        <span style={{background:tm.bg||"#f1f5f9",color:tm.c||"#6b7280",padding:"2px 7px",borderRadius:4,fontSize:10,fontWeight:700}}>{t.type}</span>
-                        <span style={{fontSize:14,fontWeight:700}}>{t.time||"-"}</span>
-                        <span style={{fontSize:14,fontWeight:600,color:"#334155"}}>{t.name}</span>
-                      </div>
-                      <div style={{textAlign:"right",flexShrink:0}}>
-                        {t.people>0&&<span style={{fontSize:12,fontWeight:700,color:"#3b82f6"}}>{t.people}名</span>}
-                        <span style={{fontSize:10,color:t.assignee?"#059669":"#94a3b8",marginLeft:4,fontWeight:600}}>{t.assignee||"未割当"}</span>
-                      </div>
-                    </div>
-                    <div style={{display:"flex",flexWrap:"wrap",gap:5,marginTop:4,fontSize:10,color:"#64748b",alignItems:"center"}}>
-                      <span style={{fontFamily:"monospace",fontSize:9}}>{t.reservationId}</span>
-                      {t.vehicleName&&<span style={{fontWeight:700,color:"#1e293b"}}>{t.vehicleName}</span>}
-                      {t.vehicleNo&&<span style={{fontWeight:700,color:"#2563eb"}}>{t.vehicleNo}</span>}
-                      {t.vehicle&&<span>{t.vehicle}</span>}
-                      {t.insurance&&<span style={{color:t.insurance==="NOC"?"#dc2626":"#059669",fontWeight:600}}>{t.insurance}</span>}
-                      {place&&<a href={mapsUrl} target="_blank" rel="noopener" style={{color:"#dc2626",textDecoration:"none",fontWeight:600}}>📍{place}</a>}
-                    </div>
-                    {(tOpts.b>0||tOpts.c>0||tOpts.j>0)&&<div style={{display:"flex",gap:3,marginTop:3}}>{tOpts.b>0&&<span style={{fontSize:8,background:"#fef3c7",color:"#92400e",padding:"1px 4px",borderRadius:3}}>B:{tOpts.b}</span>}{tOpts.c>0&&<span style={{fontSize:8,background:"#dbeafe",color:"#1d4ed8",padding:"1px 4px",borderRadius:3}}>C:{tOpts.c}</span>}{tOpts.j>0&&<span style={{fontSize:8,background:"#f0fdf4",color:"#059669",padding:"1px 4px",borderRadius:3}}>J:{tOpts.j}</span>}</div>}
-                    {isWash&&<div style={{display:"flex",gap:6,marginTop:3,fontSize:10,color:"#64748b"}}>{t.returnDate&&<span>{fmtD(t.returnDate)}</span>}{t.returnTime&&<span>{t.returnTime}</span>}{t.returnType&&<span style={{fontWeight:600}}>{t.returnType}</span>}</div>}
-                  </div>;
-                })}
-              </div>
-            </div>;
-          })}
-          {tasks.length===0&&<div style={{textAlign:"center",padding:32,color:"#94a3b8"}}>この日のタスクはありません</div>}
-        </div>;
-      })()}
-      {/* ★ テーブル表示（マスター） */}
-      {sheetFilter==="master"&&<div className="bg-white rounded-lg border border-gray-200 overflow-hidden mb-2"><div style={{overflowX:"auto"}}>
+      {/* ★ テーブル表示（サマリー/マスター） */}
+      {(sheetFilter==="all"||sheetFilter==="master")&&<div className="bg-white rounded-lg border border-gray-200 overflow-hidden mb-2"><div style={{overflowX:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:10,whiteSpace:"nowrap"}}><thead><tr style={{background:"#f1f5f9"}}>
           {[{h:"↕",k:null},{h:"✓",k:"done"},{h:"担当",k:"assignee"},{h:"CSV",k:"csvTime"},{h:"時間",k:"time"},{h:"内容",k:"type"},{h:"予約者",k:"name"},{h:"顧客",k:null},{h:"人数",k:null},{h:"📱",k:null},{h:"場所",k:null},{h:"クラス",k:"vehicle"},{h:"車種",k:null},{h:"No.",k:null},{h:"B",k:null},{h:"C",k:null},{h:"J",k:null},{h:"補償",k:null},{h:"補変",k:null},{h:"メモ",k:null},{h:"約款",k:null},{h:"LINE",k:null},{h:"決済",k:null},{h:"返却日",k:null},{h:"返時",k:null},{h:"返種",k:null},{h:"返却場所",k:null},{h:"便名",k:null},{h:"OTA",k:null},{h:"予約番号",k:null},{h:"TEL",k:null},{h:"MAIL",k:null},{h:"🪪",k:null}].map((col,i)=>{
             const w=i<=0?28:i<=1?30:i<=2?48:i<=3?50:i<=4?50:i<=5?44:i<=6?100:i<=7?28:i<=8?28:i<=9?36:i<=10?140:i<=11?30:i<=12?56:i<=13?48:i<=16?20:i<=17?32:i<=18?32:i<=19?100:i<=22?26:i<=23?64:i<=24?40:i<=25?40:i<=26?120:i<=27?56:i<=28?28:i<=29?120:i<=30?84:120;
@@ -3455,7 +3399,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
             return <tr key={t._id}><td style={{...cellS(0),textAlign:"center",padding:0}}><div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:0}}><button onClick={()=>moveRow(t._id,-1)} style={{background:"none",border:"none",cursor:"pointer",fontSize:8,color:"#94a3b8",lineHeight:1,padding:0}}>▲</button><button onClick={delTask} style={{background:"none",border:"none",cursor:"pointer",fontSize:9,color:"#ef4444",lineHeight:1,padding:0,fontWeight:700}}>×</button><button onClick={()=>moveRow(t._id,1)} style={{background:"none",border:"none",cursor:"pointer",fontSize:8,color:"#94a3b8",lineHeight:1,padding:0}}>▼</button></div></td><td style={cellS(1)}><input type="checkbox" checked={t.done} onChange={e=>{const v=e.target.checked;upd(t._id,mark({...t,done:v},"done"),v?"完了にする":"未完了に戻す");}} style={{width:12,height:12,accentColor:tm.c}}/></td>
               <td style={cellS(2,"assignee")}>{t._assigneeCustom?<input defaultValue={t.assignee||""} onBlur={e=>{const v=e.target.value.trim();if(!v){upd(t._id,mark({...t,_assigneeCustom:false,assignee:""},"assignee"),"担当をクリア");}else{upd(t._id,mark({...t,assignee:v,_assigneeCustom:false},"assignee"),"担当を「"+v+"」に変更");}}} onKeyDown={e=>{if(e.key==="Enter"){e.target.blur();}}} autoFocus style={{border:"1px solid #3b82f6",background:"#eff6ff",fontSize:9,width:"100%",padding:"1px 3px",fontWeight:600,borderRadius:3,outline:"none"}} placeholder="名前を入力"/>:<select value={activeMembers.includes(t.assignee)?t.assignee:["乗り捨て","無人"].includes(t.assignee)?t.assignee:t.assignee?"__custom":""}  onChange={e=>{const v=e.target.value;if(v==="__other"){_save(t._id,mark({...t,_assigneeCustom:true,assignee:""},"assignee"));return;}upd(t._id,mark({...t,assignee:v,_assigneeCustom:false},"assignee"),"担当を「"+(v||"未割当")+"」に変更");}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,color:t.assignee?"#111":"#ccc",fontWeight:600}}><option value="">-</option>{activeMembers.map(m=><option key={m}>{m}</option>)}<option value="乗り捨て">乗り捨て</option><option value="無人">無人</option><option value="__other">その他...</option>{t.assignee&&!activeMembers.includes(t.assignee)&&!["乗り捨て","無人"].includes(t.assignee)&&<option value="__custom">{t.assignee}</option>}</select>}</td>
               <td style={cellS(3)}><span style={{fontSize:9,fontWeight:600,color:"#94a3b8"}}>{t.csvTime||t.time||"-"}</span></td>
-              <td style={cellS(4)}><select value={t.time||""} onChange={e=>{const v=e.target.value;upd(t._id,{...t,csvTime:t.csvTime||t.time||"",time:v},"時間を「"+(v||"未設定")+"」に変更");}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,fontWeight:700,color:t.time?"#1d4ed8":"#ccc"}}>{TIME_OPTS.map(o=><option key={o} value={o}>{o||"-"}</option>)}{t.time&&!TIME_OPTS.includes(t.time)&&<option value={t.time}>{t.time}</option>}</select></td>
+              <td style={cellS(4)}><select value={t.time||""} onChange={e=>{const v=e.target.value;upd(t._id,{...t,csvTime:t.csvTime||t.time||"",time:v,_manualTime:true},"時間を「"+(v||"未設定")+"」に変更");}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,fontWeight:700,color:t.time?"#1d4ed8":"#ccc"}}>{TIME_OPTS.map(o=><option key={o} value={o}>{o||"-"}</option>)}{t.time&&!TIME_OPTS.includes(t.time)&&<option value={t.time}>{t.time}</option>}</select></td>
               <td style={{...cellS(5,"type"),fontWeight:700,color:tm.c,fontSize:10,padding:"1px"}}><select value={t.type||"DEL"} onChange={e=>{const v=e.target.value;confirmUpd(t._id,mark({...t,type:v},"type"),`内容を「${v}」に変更`);}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,fontWeight:700,color:tm.c}}>{CONTENT_OPTIONS.map(opt=><option key={opt} value={opt}>{opt}</option>)}</select></td>
               <td style={{...cellS(6),fontWeight:600,color:"#0f172a"}}>{_m?<input defaultValue={t.name||""} onBlur={e=>{const v=e.target.value;if(v!==t.name)upd(t._id,{...t,name:v},"予約者名を変更");}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0}} placeholder="-"/>:t.name}</td>
               <td style={{...cellS(7),textAlign:"center"}}>{isRep?<span style={{fontSize:10,color:"#7c3aed"}} title="リピーター顧客">✔</span>:""}</td>
@@ -3488,7 +3432,7 @@ pendingSaves.current--;setSaveStatus(pendingSaves.current>0?"saving":"ok");}} st
               <td style={{...cellS(32),textAlign:"center"}}>{t.reservationId?(licenseStatus[t.reservationId]?<span style={{fontSize:10,color:"#22c55e"}} title="免許証アップ済">✅</span>:<a href={"license.html?id="+encodeURIComponent(t.reservationId)+"&name="+encodeURIComponent(t.name||"")} target="_blank" style={{fontSize:10,textDecoration:"none"}} title="免許証未アップ">⬜</a>):""}</td>
             </tr>;
           })}
-          {filteredTasks.length===0&&<tr><td colSpan={32} style={{textAlign:"center",padding:16,color:"#94a3b8",fontSize:11}}>{sheetFilter==="all"?"この日のタスクはありません":sheetFilter==="del"?"DELタスクなし":sheetFilter==="col"?"COLタスクなし":sheetFilter==="other"?"その他タスクなし":"洗車タスクなし"}</td></tr>}
+          {filteredTasks.length===0&&<tr><td colSpan={32} style={{textAlign:"center",padding:16,color:"#94a3b8",fontSize:11}}>{sheetFilter==="all"?"この日のタスクはありません":sheetFilter==="del"?"DELタスクなし":sheetFilter==="col"?"COLタスクなし":"洗車タスクなし"}</td></tr>}
         </tbody></table>
       </div></div>}
       <TimeTable tasks={tasks} staffCount={staffCount}/>
@@ -7398,7 +7342,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.59";
+const APP_VERSION="v4.2.57";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
