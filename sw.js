@@ -1,5 +1,7 @@
-var CACHE_NAME = 'spk-v4256';
+var CACHE_NAME = 'spk-v4259';
 var URLS = ['/', '/index.html', '/index2.html'];
+var CDN_CACHE = 'spk-cdn-v1';
+var CDN_HOSTS = ['cdnjs.cloudflare.com', 'cdn.jsdelivr.net'];
 
 self.addEventListener('install', function(e) {
   e.waitUntil(
@@ -12,18 +14,34 @@ self.addEventListener('install', function(e) {
 self.addEventListener('activate', function(e) {
   e.waitUntil(
     caches.keys().then(function(keys) {
-      return Promise.all(keys.filter(function(k) { return k !== CACHE_NAME; }).map(function(k) { return caches.delete(k); }));
+      return Promise.all(keys.filter(function(k) { return k !== CACHE_NAME && k !== CDN_CACHE; }).map(function(k) { return caches.delete(k); }));
     }).then(function() { self.clients.claim(); })
   );
 });
 
 self.addEventListener('fetch', function(e) {
   var url = new URL(e.request.url);
-  // Only cache same-origin HTML files
+
+  // CDN scripts: cache-first (stale-while-revalidate)
+  if (CDN_HOSTS.some(function(h) { return url.hostname === h; })) {
+    e.respondWith(
+      caches.open(CDN_CACHE).then(function(cache) {
+        return cache.match(e.request).then(function(cached) {
+          var fetchPromise = fetch(e.request).then(function(resp) {
+            if (resp.ok) { cache.put(e.request, resp.clone()); }
+            return resp;
+          }).catch(function() { return cached; });
+          return cached || fetchPromise;
+        });
+      })
+    );
+    return;
+  }
+
+  // Same-origin HTML: cache-first with background update
   if (url.origin === self.location.origin && (url.pathname === '/' || url.pathname.endsWith('.html'))) {
     e.respondWith(
       caches.match(e.request).then(function(cached) {
-        // Serve cache first, update in background
         var fetchPromise = fetch(e.request).then(function(resp) {
           if (resp.ok) {
             var clone = resp.clone();
