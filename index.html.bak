@@ -251,9 +251,13 @@ const DB = {
   async deleteShift(date,staffName){if(!sb)return;const{error}=await sb.from("shifts").delete().eq("date",date).eq("staff_name",staffName);if(error)dbLog("deleteShift",false,error.message);else dbLog("deleteShift",true,date+"/"+staffName);},
   async deleteShiftsMonth(ym){if(!sb)return;const{error}=await sb.from("shifts").delete().like("date",ym+"-%");if(error)dbLog("deleteShiftsMonth",false,error.message);else dbLog("deleteShiftsMonth",true,ym);},
   // --- 勤怠 ---
-  async fetchAttendance(){if(!sb)return{};try{const{data,error}=await sb.from("attendance").select("*");if(error){console.warn("[attendance] fetch error (テーブル未作成?):",error.message);return{};}const a={};(data||[]).forEach(r=>{const k=r.date+"_"+r.staff_name;a[k]={date:r.date,name:r.staff_name,start:r.start_time||"",end:r.end_time||"",approved:!!r.approved,memo:r.memo||"",absent:!!r.absent};});return a;}catch(e){console.warn("[attendance]",e);return{};}},
-  async saveAttendance(rec){if(!sb)return;try{await sb.from("attendance").upsert({date:rec.date,staff_name:rec.name,start_time:rec.start||"",end_time:rec.end||"",approved:rec.approved||false,memo:rec.memo||"",absent:!!rec.absent},{onConflict:"date,staff_name"});}catch(e){console.warn("[att save]",e);}},
-  async saveAttendanceBatch(recs){if(!sb)return;try{const rows=recs.map(r=>({date:r.date,staff_name:r.name,start_time:r.start||"",end_time:r.end||"",approved:r.approved||false,memo:r.memo||"",absent:!!r.absent}));await sb.from("attendance").upsert(rows,{onConflict:"date,staff_name"});}catch(e){console.warn("[att batch]",e);}},
+  async fetchAttendance(){if(!sb)return{};try{const{data,error}=await sb.from("spk_attendance").select("*");if(error){console.warn("[attendance] fetch error (テーブル未作成?):",error.message);return{};}const a={};(data||[]).forEach(r=>{const k=r.date+"_"+r.staff_name;a[k]={date:r.date,name:r.staff_name,start:r.start_time||"",end:r.end_time||"",approved:!!r.approved,memo:r.memo||"",absent:!!r.absent};});return a;}catch(e){console.warn("[attendance]",e);return{};}},
+  async saveAttendance(rec){if(!sb)return;try{await sb.from("spk_attendance").upsert({date:rec.date,staff_name:rec.name,start_time:rec.start||"",end_time:rec.end||"",approved:rec.approved||false,memo:rec.memo||"",absent:!!rec.absent},{onConflict:"date,staff_name"});}catch(e){console.warn("[att save]",e);}},
+  async saveAttendanceBatch(recs){if(!sb)return;try{const rows=recs.map(r=>({date:r.date,staff_name:r.name,start_time:r.start||"",end_time:r.end||"",approved:r.approved||false,memo:r.memo||"",absent:!!r.absent}));await sb.from("spk_attendance").upsert(rows,{onConflict:"date,staff_name"});}catch(e){console.warn("[att batch]",e);}},
+  // --- 打刻 ---
+  async punchIn(staffName){if(!sb)return;try{const today=new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});const now=new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Tokyo"});const{data}=await sb.from("spk_attendance").select("*").eq("date",today).eq("staff_name",staffName).maybeSingle();if(data&&data.start_time){throw new Error("既に出勤打刻済みです");}await sb.from("spk_attendance").upsert({date:today,staff_name:staffName,start_time:now,end_time:data?.end_time||"",approved:true,memo:"打刻",absent:false},{onConflict:"date,staff_name"});}catch(e){throw e;}},
+  async punchOut(staffName){if(!sb)return;try{const today=new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});const now=new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Tokyo"});const{data}=await sb.from("spk_attendance").select("*").eq("date",today).eq("staff_name",staffName).maybeSingle();if(data?.end_time){throw new Error("既に退勤打刻済みです");}await sb.from("spk_attendance").upsert({date:today,staff_name:staffName,start_time:data?.start_time||"",end_time:now,approved:true,memo:"打刻",absent:false},{onConflict:"date,staff_name"});}catch(e){throw e;}},
+  async getTodayPunch(staffName){if(!sb)return null;try{const today=new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});const{data}=await sb.from("spk_attendance").select("*").eq("date",today).eq("staff_name",staffName).maybeSingle();return data?{start:data.start_time||"",end:data.end_time||"",approved:!!data.approved}:null;}catch(e){return null;}},
   // --- メンテナンス ---
   async fetchMaintenance(){if(!sb)return[];const{data,error}=await sb.from("maintenance").select("*");if(error){dbLog("fetchMaint",false,error.message);return[];}dbLog("fetchMaint",true,(data||[]).length+"件");return(data||[]).map(m=>({id:m.id,vehicleCode:m.vehicle_code,startDate:m.start_date,endDate:m.end_date,label:m.label||""}));},
   async saveMaintenance(arr){if(!sb)return;const rows=arr.map(m=>({id:m.id,vehicle_code:m.vehicleCode,start_date:m.startDate,end_date:m.endDate,label:m.label||""}));if(rows.length){const{error}=await sb.from("maintenance").upsert(rows,{onConflict:"id"});if(error)dbLog("saveMaint",false,error.message);else dbLog("saveMaint",true,rows.length+"件");}},
@@ -268,6 +272,9 @@ const DB = {
   jalanPayLsLoad(){try{const s=localStorage.getItem(DB._jalanPayLS);return s?JSON.parse(s):{};}catch(e){return{};}},
   async fetchJalanPayment(){if(!sb){return DB.jalanPayLsLoad();}const{data,error}=await sb.from("jalan_payment").select("*");if(error){dbLog("fetchJalanPay",false,error.message);return DB.jalanPayLsLoad();}dbLog("fetchJalanPay",true,(data||[]).length+"件");const m={};(data||[]).forEach(r=>{m[r.reservation_id]={category:r.category||"売上",payStatus:r.pay_status||"未完了",sendDate:r.send_date||"",refundDate:r.refund_date||"",content:r.content||"",linkUrl:r.link_url||"",adjustedPrice:r.adjusted_price||""};});DB.jalanPayLsSave(m);return m;},
   async saveJalanPayment(resId,d){DB.jalanPayLsSave({...DB.jalanPayLsLoad(),[resId]:d});if(!sb)return;const row={reservation_id:resId,category:d.category||"売上",pay_status:d.payStatus||"未完了",send_date:d.sendDate||"",refund_date:d.refundDate||"",content:d.content||"",link_url:d.linkUrl||"",adjusted_price:d.adjustedPrice||""};const{error}=await sb.from("jalan_payment").upsert(row,{onConflict:"reservation_id"});if(error)dbLog("saveJalanPay",false,error.message);else dbLog("saveJalanPay",true,resId);},
+  // --- resOpts (B/C/Jオプション) DB保存 ---
+  async fetchResOpts(){if(!sb)return null;try{const{data}=await sb.from("app_settings").select("value").eq("key","res_opts").single();return data?JSON.parse(data.value):null;}catch(e){return null;}},
+  async saveResOpts(opts){if(!sb)return;try{await sb.from("app_settings").upsert({key:"res_opts",value:JSON.stringify(opts)},{onConflict:"key"});}catch(e){console.warn("[saveResOpts]",e);}},
   // --- 認証 ---
   async checkPassword(pw){if(!sb)return true;const{data}=await sb.from("app_settings").select("value").eq("key","team_password").single();return data&&data.value===pw;},
   // --- 駐車場 (別Supabase) ---
@@ -1546,6 +1553,14 @@ function JalanPayment({data,jalanPay,onJalanPayChange}){
   const[form,setForm]=useState({});
   const[sheetLoading,setSheetLoading]=useState(false);
   const jData=useMemo(()=>data.filter(r=>r.ota==="J").sort((a,b)=>(b.lendDate||"").localeCompare(a.lendDate||"")),[data]);
+  // FIX-4: 他端末のじゃらん決済変更を反映（タブ復帰+30秒ポーリング）
+  useEffect(()=>{
+    const refresh=async()=>{try{const jp=await DB.fetchJalanPayment();if(jp&&Object.keys(jp).length){Object.entries(jp).forEach(([id,d])=>{if(JSON.stringify(jalanPay[id])!==JSON.stringify(d))onJalanPayChange(id,d);});}}catch(e){}};
+    const onVis=()=>{if(document.visibilityState==="visible")refresh();};
+    document.addEventListener("visibilitychange",onVis);
+    const timer=setInterval(()=>{if(document.visibilityState==="visible")refresh();},30000);
+    return()=>{document.removeEventListener("visibilitychange",onVis);clearInterval(timer);};
+  },[]);
   const startEdit=(id)=>{setEditId(id);setForm(jalanPay[id]||{category:"売上",payStatus:"未完了",sendDate:"",refundDate:"",content:"",linkUrl:"",adjustedPrice:""});};
   const saveEdit=()=>{if(!editId)return;onJalanPayChange(editId,form);setEditId(null);};
   const cancelEdit=()=>{setEditId(null);setForm({});};
@@ -1740,6 +1755,95 @@ function StaffManager({staff,onStaffChange,onDeleteStaff}){
 }
 
 /* ==========================================
+   打刻（ワンタップ出退勤）
+   ========================================== */
+function PunchClock({staff}){
+  const partTime=staff.filter(s=>s.type==="アルバイト");
+  const [selName,setSelName]=React.useState("");
+  const [punch,setPunch]=React.useState(null);
+  const [loading,setLoading]=React.useState(false);
+  const [msg,setMsg]=React.useState(null);
+  const nowStr=()=>new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Tokyo"});
+
+  React.useEffect(()=>{
+    if(!selName)return;
+    setPunch(null);setMsg(null);
+    DB.getTodayPunch(selName).then(p=>setPunch(p||{start:"",end:"",approved:false}));
+  },[selName]);
+
+  const doAction=async(type)=>{
+    if(!selName)return;
+    setLoading(true);setMsg(null);
+    try{
+      if(type==="in") await DB.punchIn(selName);
+      else await DB.punchOut(selName);
+      const p=await DB.getTodayPunch(selName);
+      setPunch(p||{start:"",end:"",approved:false});
+      setMsg({text:type==="in"?`出勤打刻しました（${nowStr()}）`:`退勤打刻しました（${nowStr()}）`,ok:true});
+    }catch(e){
+      setMsg({text:e.message||"エラーが発生しました",ok:false});
+    }finally{setLoading(false);}
+  };
+
+  const today=new Date().toLocaleDateString("ja-JP",{month:"long",day:"numeric",weekday:"short",timeZone:"Asia/Tokyo"});
+  const hasPunchIn=punch&&punch.start;
+  const hasPunchOut=punch&&punch.end;
+
+  return <div style={{maxWidth:400,margin:"0 auto",padding:"24px 16px"}}>
+    <div style={{textAlign:"center",marginBottom:24}}>
+      <div style={{fontSize:13,color:"#94a3b8",fontWeight:600}}>{today}</div>
+      <div style={{fontSize:28,fontWeight:900,color:"#1e293b",marginTop:4}}>出退勤 打刻</div>
+      <div style={{fontSize:11,color:"#94a3b8",marginTop:4}}>自己申告制・自動受領</div>
+    </div>
+    <div style={{marginBottom:20}}>
+      <div style={{fontSize:12,fontWeight:700,color:"#64748b",marginBottom:8}}>名前を選択</div>
+      <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+        {partTime.map(s=><button key={s.name} onClick={()=>setSelName(s.name)} style={{
+          padding:"10px 18px",borderRadius:24,fontSize:13,fontWeight:700,border:"2px solid",cursor:"pointer",transition:"all .15s",
+          borderColor:selName===s.name?"#2563eb":"#e2e8f0",
+          background:selName===s.name?"#2563eb":"#fff",
+          color:selName===s.name?"#fff":"#374151"
+        }}>{s.name}</button>)}
+      </div>
+    </div>
+    {selName&&punch&&<div style={{background:"#f8fafc",borderRadius:14,padding:16,marginBottom:20,border:"1px solid #e2e8f0"}}>
+      <div style={{fontSize:12,fontWeight:700,color:"#64748b",marginBottom:10}}>{selName} さんの本日の打刻</div>
+      <div style={{display:"flex",gap:12}}>
+        <div style={{flex:1,textAlign:"center",background:hasPunchIn?"#dcfce7":"#f1f5f9",borderRadius:10,padding:"10px 8px"}}>
+          <div style={{fontSize:10,color:"#64748b",fontWeight:600,marginBottom:4}}>出勤</div>
+          <div style={{fontSize:hasPunchIn?20:14,fontWeight:800,color:hasPunchIn?"#059669":"#cbd5e1"}}>{hasPunchIn?punch.start:"--:--"}</div>
+        </div>
+        <div style={{flex:1,textAlign:"center",background:hasPunchOut?"#fee2e2":"#f1f5f9",borderRadius:10,padding:"10px 8px"}}>
+          <div style={{fontSize:10,color:"#64748b",fontWeight:600,marginBottom:4}}>退勤</div>
+          <div style={{fontSize:hasPunchOut?20:14,fontWeight:800,color:hasPunchOut?"#dc2626":"#cbd5e1"}}>{hasPunchOut?punch.end:"--:--"}</div>
+        </div>
+      </div>
+      {punch.approved&&<div style={{textAlign:"center",marginTop:10,fontSize:11,color:"#059669",fontWeight:700}}>✅ 受領済（自己申告）</div>}
+    </div>}
+    {selName&&punch&&<div style={{display:"flex",gap:12,flexDirection:"column"}}>
+      {!hasPunchIn&&<button onClick={()=>doAction("in")} disabled={loading} style={{
+        padding:"20px",borderRadius:16,fontSize:18,fontWeight:900,border:"none",cursor:loading?"wait":"pointer",
+        background:"linear-gradient(135deg,#059669,#10b981)",color:"#fff",
+        boxShadow:"0 4px 14px rgba(5,150,105,.3)",opacity:loading?.6:1
+      }}>🟢 出勤打刻</button>}
+      {hasPunchIn&&!hasPunchOut&&<button onClick={()=>doAction("out")} disabled={loading} style={{
+        padding:"20px",borderRadius:16,fontSize:18,fontWeight:900,border:"none",cursor:loading?"wait":"pointer",
+        background:"linear-gradient(135deg,#dc2626,#ef4444)",color:"#fff",
+        boxShadow:"0 4px 14px rgba(220,38,38,.3)",opacity:loading?.6:1
+      }}>🔴 退勤打刻</button>}
+      {hasPunchIn&&hasPunchOut&&<div style={{textAlign:"center",padding:16,background:"#f0fdf4",borderRadius:14,border:"2px solid #bbf7d0"}}>
+        <div style={{fontSize:16,fontWeight:800,color:"#059669"}}>✅ 本日の打刻完了</div>
+        <div style={{fontSize:12,color:"#64748b",marginTop:4}}>{punch.start} 〜 {punch.end}</div>
+      </div>}
+    </div>}
+    {msg&&<div style={{marginTop:16,padding:"12px 16px",borderRadius:10,fontSize:13,fontWeight:700,
+      background:msg.ok?"#f0fdf4":"#fef2f2",color:msg.ok?"#059669":"#dc2626",
+      border:`1px solid ${msg.ok?"#bbf7d0":"#fecaca"}`}}>{msg.text}</div>}
+    {!selName&&<div style={{textAlign:"center",color:"#94a3b8",fontSize:13,marginTop:24}}>名前を選択してください</div>}
+  </div>;
+}
+
+/* ==========================================
    勤怠管理
    ========================================== */
 function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
@@ -1855,14 +1959,14 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
   React.useEffect(()=>{genAttFromShifts(attendance);},[shifts,viewYM]);
 
   const approve=(date,name)=>{
-    if(!window.confirm("承認を実行しますか？"))return;
+    if(!window.confirm("受領を実行しますか？"))return;
     const key=date+"_"+name;const cur=attendance[key];if(!cur)return;
     const updated={...cur,approved:true};
     onAttendanceChange({...attendance,[key]:updated});
     DB.saveAttendance(updated);
   };
   const approveAll=(name)=>{
-    if(!window.confirm("全承認を実行しますか？"))return;
+    if(!window.confirm("全受領を実行しますか？"))return;
     const d=allStaffData[name];if(!d)return;
     const next={...attendance};const batch=[];
     d.days.forEach(day=>{
@@ -2008,8 +2112,8 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
             <div style={{fontSize:13,fontWeight:700}}>{selStaff} ー {ymLabel(viewYM)}</div>
             {unapproved>0?
-              <button onClick={()=>approveAll(selStaff)} style={{padding:"5px 14px",borderRadius:8,background:"#059669",color:"#fff",border:"none",fontSize:11,fontWeight:700,cursor:"pointer"}}>全承認 ({sd.days.filter(d=>d.shift).length}件)</button>:
-              <span style={{padding:"5px 14px",borderRadius:8,background:"#f0fdf4",color:"#059669",fontSize:11,fontWeight:700}}>全承認済 ✅</span>
+              <button onClick={()=>approveAll(selStaff)} style={{padding:"5px 14px",borderRadius:8,background:"#059669",color:"#fff",border:"none",fontSize:11,fontWeight:700,cursor:"pointer"}}>全受領 ({sd.days.filter(d=>d.shift).length}件)</button>:
+              <span style={{padding:"5px 14px",borderRadius:8,background:"#f0fdf4",color:"#059669",fontSize:11,fontWeight:700}}>全受領済 ✅</span>
             }
           </div>
           {sd.days.map(d=>{
@@ -2027,8 +2131,8 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
               {hasShift&&<div style={{display:"flex",gap:6}}>
                 {isAbsent&&<span style={{padding:"4px 8px",borderRadius:6,background:"#dc2626",color:"#fff",fontSize:10,fontWeight:700}}>欠勤</span>}
                 {!isAbsent&&(isApproved?
-                  <span style={{padding:"4px 10px",borderRadius:6,background:"#059669",color:"#fff",fontSize:10,fontWeight:700}}>承認</span>:
-                  <button onClick={()=>approve(d.date,selStaff)} style={{padding:"4px 10px",borderRadius:6,background:"#dcfce7",color:"#059669",border:"1px solid #bbf7d0",fontSize:10,fontWeight:700,cursor:"pointer"}}>承認</button>
+                  <span style={{padding:"4px 10px",borderRadius:6,background:"#059669",color:"#fff",fontSize:10,fontWeight:700}}>{att&&att.memo==="打刻"?"🕐打刻":"受領済"}</span>:
+                  <button onClick={()=>approve(d.date,selStaff)} style={{padding:"4px 10px",borderRadius:6,background:"#dcfce7",color:"#059669",border:"1px solid #bbf7d0",fontSize:10,fontWeight:700,cursor:"pointer"}}>受領</button>
                 )}
                 <button onClick={()=>setEditDay({date:d.date,name:selStaff,start:att?.start||d.shift.start||"09:00",end:att?.end||d.shift.end||"18:00",memo:att?.memo||"",absent:att?.absent||false})} style={{padding:"4px 10px",borderRadius:6,background:"#f1f5f9",color:"#64748b",border:"1px solid #e2e8f0",fontSize:10,fontWeight:700,cursor:"pointer"}}>編集</button>
               </div>}
@@ -3144,7 +3248,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
     let debounce=null;
     const ch=sb.channel("tasks-"+selDate)
       .on("postgres_changes",{event:"*",schema:"public",table:"tasks",filter:"date=eq."+selDate},()=>{
-        if(pendingSaves.current>0||Date.now()-(selfUpdateRef.current[selDate]||0)<30000){return;}
+        if(pendingSaves.current>0||Date.now()-(selfUpdateRef.current[selDate]||0)<5000){return;}
         clearTimeout(debounce);
         debounce=setTimeout(async()=>{
           const fresh=await DB.fetchTasks(selDate);
@@ -5348,13 +5452,21 @@ function AccountingPanel({staff}){
   const[editRec,setEditRec]=useState(null);
   const[loading,setLoading]=useState(true);
   // 期首残高（localStorage永続化）
-  const _OB_KEY="nha_opening_balance";
+  const _OB_KEY="spk_opening_balance";
   const[openingBalances,setOpeningBalances]=useState(()=>{try{return JSON.parse(localStorage.getItem(_OB_KEY)||"{}");}catch(e){return{};}});
   const saveOB=(ob)=>{setOpeningBalances(ob);try{localStorage.setItem(_OB_KEY,JSON.stringify(ob));}catch(e){}};
   const currentOBKey=viewPeriod==="monthly"?selectedYM:selectedYear;
   const currentOB=openingBalances[currentOBKey]||0;
 
   useEffect(()=>{(async()=>{setLoading(true);const d=await DB.fetchAccounting();setRecords(d||[]);setLoading(false);})();},[]);
+  // FIX-3: 他端末の会計変更を反映（タブ復帰+30秒ポーリング）
+  useEffect(()=>{
+    const refresh=async()=>{try{const d=await DB.fetchAccounting();if(d&&d.length)setRecords(d);}catch(e){}};
+    const onVis=()=>{if(document.visibilityState==="visible")refresh();};
+    document.addEventListener("visibilitychange",onVis);
+    const timer=setInterval(()=>{if(document.visibilityState==="visible")refresh();},30000);
+    return()=>{document.removeEventListener("visibilitychange",onVis);clearInterval(timer);};
+  },[]);
 
   const staffNames=useMemo(()=>(staff||[]).map(s=>s.name),[staff]);
 
@@ -6368,7 +6480,9 @@ function App(){
   const saveSheetPlaces=(p)=>{setSheetPlaces(p);try{localStorage.setItem("spk_sheet_places",JSON.stringify(p));}catch(e){}};
   // オプション情報をlocalStorageで管理（DB非依存）
   const[resOpts,setResOpts]=useState(()=>{try{return JSON.parse(localStorage.getItem("spk_res_opts")||"{}}");}catch(e){return{};}});
-  const saveResOpts=(newOpts)=>{setResOpts(newOpts);try{localStorage.setItem("spk_res_opts",JSON.stringify(newOpts));}catch(e){}};
+  const saveResOpts=(newOpts)=>{setResOpts(newOpts);try{localStorage.setItem("spk_res_opts",JSON.stringify(newOpts));}catch(e){} DB.saveResOpts(newOpts);};
+  // FIX-5: resOpts初回DB読み込み（端末間同期）
+  useEffect(()=>{DB.fetchResOpts().then(dbOpts=>{if(dbOpts&&Object.keys(dbOpts).length){setResOpts(prev=>{const merged={...dbOpts,...prev};try{localStorage.setItem("spk_res_opts",JSON.stringify(merged));}catch(e){} return merged;});}});},[]);
   const[csvFiles,setCsvFiles]=useState({});const[csvLogs,setCsvLogs]=useState([]);const[csvPlaceLogs,setCsvPlaceLogs]=useState([]);
   const[importDiag,setImportDiag]=useState(null); // インポート売上診断
   const[sbConnected,setSbConnected]=useState(false);
@@ -6636,6 +6750,8 @@ function App(){
       if(shDB)setShifts(shDB);
       if(mtDB&&mtDB.length)setMaintenance(mtDB);
       try{const attDB=await DB.fetchAttendance();if(attDB&&Object.keys(attDB).length)setAttendance(attDB);}catch(e){}
+      // FIX-6: 場所データを他端末から同期
+      try{const plDB=await DB.fetchPlaces();if(plDB&&Object.keys(plDB).length){setSheetPlaces(prev=>{const merged={...prev,...plDB};try{localStorage.setItem("spk_sheet_places",JSON.stringify(merged));}catch(e){}return merged;});}}catch(e){}
       try{await hmReload();}catch(e){}
       // 同期ステータス更新
       const now=Date.now();
@@ -6697,7 +6813,7 @@ function App(){
         }
         markDbSync("fleet");
       })
-      .on("postgres_changes",{event:"*",schema:"public",table:"tasks"},()=>{})
+      .on("postgres_changes",{event:"*",schema:"public",table:"tasks"},()=>{clearTimeout(window._taskRtDebounce);window._taskRtDebounce=setTimeout(()=>{refreshTopTasks();},1000);})
       .on("postgres_changes",{event:"INSERT",schema:"public",table:"shifts"},payload=>{
         const s=payload.new;if(!s||!s.date)return;
         setShifts(prev=>{const n={...prev};if(!n[s.date])n[s.date]=[];const arr=n[s.date].filter(x=>x.name!==s.staff_name);arr.push({name:s.staff_name,symbol:s.symbol,start:s.start_time,end:s.end_time,memo:s.memo});n[s.date]=arr;return{...n};});
@@ -7093,7 +7209,7 @@ function App(){
   },[data]);
 
   const oc=useMemo(()=>{const c={};data.forEach(t=>{c[t.ota]=(c[t.ota]||0)+1;});return c;},[data]);
-  const navItems=[{id:"top",ico:"🏠",l:"TOP"},{id:"notices",ico:"📢",l:"お知らせ"},{id:"import",ico:"📁",l:"CSV"},{id:"staff",ico:"👥",l:"スタッフ"},{id:"shift",ico:"📅",l:"出勤簿"},{id:"attendance",ico:"⏰",l:"給与"},{id:"fleet",ico:"🚗",l:"配車"},{id:"jalanpay",ico:"💳",l:"決済"},{id:"vehicle",ico:"🔧",l:"車両"},{id:"parking",ico:"🅿️",l:"駐車場"},{id:"accounting",ico:"💰",l:"会計"},{id:"customer",ico:"👑",l:"顧客"},{id:"dashboard",ico:"📊",l:"売上"},{id:"data",ico:"📋",l:"データ"},{id:"history",ico:"📜",l:"過去"},{id:"license",ico:"🪪",l:"免許証",external:true}];
+  const navItems=[{id:"top",ico:"🏠",l:"TOP"},{id:"punch",ico:"👊",l:"打刻"},{id:"notices",ico:"📢",l:"お知らせ"},{id:"import",ico:"📁",l:"CSV"},{id:"staff",ico:"👥",l:"スタッフ"},{id:"shift",ico:"📅",l:"出勤簿"},{id:"attendance",ico:"⏰",l:"給与"},{id:"fleet",ico:"🚗",l:"配車"},{id:"jalanpay",ico:"💳",l:"決済"},{id:"vehicle",ico:"🔧",l:"車両"},{id:"parking",ico:"🅿️",l:"駐車場"},{id:"accounting",ico:"💰",l:"会計"},{id:"customer",ico:"👑",l:"顧客"},{id:"dashboard",ico:"📊",l:"売上"},{id:"data",ico:"📋",l:"データ"},{id:"history",ico:"📜",l:"過去"},{id:"license",ico:"🪪",l:"免許証",external:true}];
 
   const repeaterInfo=useMemo(()=>buildRepeaterMap(data),[data]);
 
@@ -7104,7 +7220,7 @@ function App(){
     {showOP&&<OPScreen reservations={data} today={today} shifts={shifts} fleet={fleet} onFleetChange={setFleetSync} onClose={()=>{setShowOP(false);refreshTopTasks();}} vehicles={vehicles} staff={staff} resOpts={resOpts} sheetPlaces={sheetPlaces} onUpdateSheetPlaces={saveSheetPlaces} repeaterMap={repeaterInfo.isRepeater} jalanPay={jalanPay} cancelledIdsRef={cancelledIdsRef} onCancelReservation={cancelReservation} onTaskChange={refreshTopTasks}/>}
     <div style={{display:showOP?"none":"flex",flex:1,overflow:"hidden",flexDirection:"column"}}>
       <div className={"top-nav"+(tab==="top"?" hide-on-top":"")}>
-        {navItems.filter(n=>{const always=["top","notices","import","vehicle","staff","shift","attendance","parking","accounting","fleet","jalanpay","history","customer","license"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open("license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
+        {navItems.filter(n=>{const always=["top","punch","notices","import","vehicle","staff","shift","attendance","parking","accounting","fleet","jalanpay","history","customer","license"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open("license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
         {data.length>0&&<button onClick={()=>setShowOP(true)} style={{color:"#60a5fa"}}><span className="ico">📋</span>OP</button>}
         {SB_ENABLED&&<button onClick={reloadAll} disabled={reloading===1} style={{background:reloading===2?"#d1fae5":"none",border:"none",cursor:reloading===1?"wait":"pointer",fontSize:14,padding:"2px 4px",borderRadius:6,opacity:reloading===1?0.5:1,transition:"background .3s"}}>{reloading===1?"⏳":reloading===2?"✅":"🔄"}</button>}
         {SB_ENABLED&&<SyncBadge connected={sbConnected} inline={true}/>}
@@ -7112,7 +7228,7 @@ function App(){
       <div style={{display:"flex",flex:1,overflow:"hidden"}}>
       <div className={"sidebar"+(tab==="top"?" hide-on-top":"")}>
         <div style={{width:36,height:36,borderRadius:8,background:"linear-gradient(135deg,#3b82f6,#1d4ed8)",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:800,fontSize:14,marginBottom:8}}>S</div>
-        {navItems.filter(n=>{const always=["top","notices","import","vehicle","staff","shift","attendance","parking","accounting","fleet","jalanpay","history","customer","license"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open("license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
+        {navItems.filter(n=>{const always=["top","punch","notices","import","vehicle","staff","shift","attendance","parking","accounting","fleet","jalanpay","history","customer","license"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open("license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
         {data.length>0&&<button onClick={()=>setShowOP(true)} style={{marginTop:4,background:"linear-gradient(135deg,#1e40af,#2563eb)",color:"#fff",borderRadius:10}}><span className="ico">📋</span><span style={{fontSize:8}}>OP</span></button>}
       </div>
       <div className="main-area" style={{flex:1,overflow:tab==="fleet"||tab==="parking"?"hidden":"auto",padding:tab==="fleet"||tab==="parking"?0:12,display:"flex",flexDirection:"column"}}>
@@ -7524,6 +7640,7 @@ function App(){
           {tab==="import"&&<CSVPanel onImport={imp} onUpdatePlaces={updatePlaces} dataCount={data.length} pendingPlaces={pendingPlaces} onSetPendingPlaces={setPendingPlaces} files={csvFiles} setFiles={setCsvFiles} logs={csvLogs} setLogs={setCsvLogs} placeLogs={csvPlaceLogs} setPlaceLogs={setCsvPlaceLogs}/>}
           {tab==="staff"&&<PASGuard label="スタッフ情報"><StaffManager staff={staff} onStaffChange={setStaffSync} onDeleteStaff={(name)=>DB.deleteStaff(name)}/></PASGuard>}
           {tab==="shift"&&<ShiftCalendar shifts={shifts} onShiftsChange={setShiftsSync} today={today} staff={staff} sbSaveShift={DB.saveShift}/>}
+          {tab==="punch"&&<PunchClock staff={staff}/>}
           {tab==="attendance"&&<PASGuard label="給与計算"><AttendanceManager shifts={shifts} staff={staff} today={today} attendance={attendance} onAttendanceChange={setAttendance}/></PASGuard>}
           {tab==="fleet"&&<FleetTimeline data={data} fleet={fleet} onFleetChange={setFleetSync} today={today} maintenance={maintenance} onMaintenanceChange={setMaintenance} vehicles={vehicles} vehicleClasses={vehicleClasses} onAddReservation={addReservation} onBulkAddReservation={bulkAddReservation} onCancelReservation={cancelReservation} onReassignVehicle={reassignVehicle} onUpdateReservation={updateReservation} unassignedReasons={unassignedReasons} onVehicleDetail={(code)=>{setHighlightVehicle(code);setTab("vehicle");setTimeout(()=>setHighlightVehicle(null),3000);}}/>}
           {tab==="vehicle"&&<VehicleTab vehicles={vehicles} onVehiclesChange={setVehiclesSync} vehicleClasses={vehicleClasses} onDeleteVehicle={(code)=>DB.deleteVehicle(code)} hmCars={hmCars} hmCarData={hmCarData} hmLogs={hmLogs} hmClasses={hmClasses} hmReload={hmReload} highlightVehicle={highlightVehicle}/>}
@@ -7558,7 +7675,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.68";
+const APP_VERSION="v4.2.69";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
