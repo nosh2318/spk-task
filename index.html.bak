@@ -255,8 +255,10 @@ const DB = {
   async saveAttendance(rec){if(!sb)return;try{await sb.from("spk_attendance").upsert({date:rec.date,staff_name:rec.name,start_time:rec.start||"",end_time:rec.end||"",approved:rec.approved||false,memo:rec.memo||"",absent:!!rec.absent},{onConflict:"date,staff_name"});}catch(e){console.warn("[att save]",e);}},
   async saveAttendanceBatch(recs){if(!sb)return;try{const rows=recs.map(r=>({date:r.date,staff_name:r.name,start_time:r.start||"",end_time:r.end||"",approved:r.approved||false,memo:r.memo||"",absent:!!r.absent}));await sb.from("spk_attendance").upsert(rows,{onConflict:"date,staff_name"});}catch(e){console.warn("[att batch]",e);}},
   // --- 打刻 ---
-  async punchIn(staffName){if(!sb)return;try{const today=new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});const now=new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Tokyo"});const{data}=await sb.from("spk_attendance").select("*").eq("date",today).eq("staff_name",staffName).maybeSingle();if(data&&data.start_time){throw new Error("既に出勤打刻済みです");}await sb.from("spk_attendance").upsert({date:today,staff_name:staffName,start_time:now,end_time:data?.end_time||"",approved:true,memo:"打刻",absent:false},{onConflict:"date,staff_name"});}catch(e){throw e;}},
-  async punchOut(staffName){if(!sb)return;try{const today=new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});const now=new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Tokyo"});const{data}=await sb.from("spk_attendance").select("*").eq("date",today).eq("staff_name",staffName).maybeSingle();if(data?.end_time){throw new Error("既に退勤打刻済みです");}await sb.from("spk_attendance").upsert({date:today,staff_name:staffName,start_time:data?.start_time||"",end_time:now,approved:true,memo:"打刻",absent:false},{onConflict:"date,staff_name"});}catch(e){throw e;}},
+  SLACK_PUNCH_WEBHOOK:"",// ← Slack Incoming Webhook URL を設定
+  async sendPunchSlack(storeName,staffName,type,reqTime,nowTime){try{if(!DB.SLACK_PUNCH_WEBHOOK)return;await fetch(DB.SLACK_PUNCH_WEBHOOK,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:`⚠️ *打刻仮申請あり*\n店舗: ${storeName}　スタッフ: ${staffName}\n種別: ${type==="in"?"出勤":"退勤"}　申請時刻: *${reqTime}*（打刻時点: ${nowTime}）\n給与計算タブで確認・承認してください`})});}catch(e){}},
+  async punchIn(staffName,timeStr,isProvisional){if(!sb)return;try{const today=new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});const now=timeStr||new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Tokyo"});const{data}=await sb.from("spk_attendance").select("*").eq("date",today).eq("staff_name",staffName).maybeSingle();if(data&&data.start_time){throw new Error("既に出勤打刻済みです");}await sb.from("spk_attendance").upsert({date:today,staff_name:staffName,start_time:now,end_time:data?.end_time||"",approved:!isProvisional,memo:isProvisional?"仮申請":"打刻",absent:false},{onConflict:"date,staff_name"});}catch(e){throw e;}},
+  async punchOut(staffName,timeStr,isProvisional){if(!sb)return;try{const today=new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});const now=timeStr||new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Tokyo"});const{data}=await sb.from("spk_attendance").select("*").eq("date",today).eq("staff_name",staffName).maybeSingle();if(data?.end_time){throw new Error("既に退勤打刻済みです");}await sb.from("spk_attendance").upsert({date:today,staff_name:staffName,start_time:data?.start_time||"",end_time:now,approved:!isProvisional,memo:isProvisional?"仮申請":"打刻",absent:false},{onConflict:"date,staff_name"});}catch(e){throw e;}},
   async getTodayPunch(staffName){if(!sb)return null;try{const today=new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});const{data}=await sb.from("spk_attendance").select("*").eq("date",today).eq("staff_name",staffName).maybeSingle();return data?{start:data.start_time||"",end:data.end_time||"",approved:!!data.approved}:null;}catch(e){return null;}},
   // --- メンテナンス ---
   async fetchMaintenance(){if(!sb)return[];const{data,error}=await sb.from("maintenance").select("*");if(error){dbLog("fetchMaint",false,error.message);return[];}dbLog("fetchMaint",true,(data||[]).length+"件");return(data||[]).map(m=>({id:m.id,vehicleCode:m.vehicle_code,startDate:m.start_date,endDate:m.end_date,label:m.label||""}));},
@@ -1763,23 +1765,29 @@ function PunchClock({staff}){
   const [punch,setPunch]=React.useState(null);
   const [loading,setLoading]=React.useState(false);
   const [msg,setMsg]=React.useState(null);
-  const nowStr=()=>new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Tokyo"});
+  const getNowHHMM=()=>new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Tokyo"});
+  const origTimeRef=React.useRef("");
+  const [inputTime,setInputTime]=React.useState(getNowHHMM);
+  const isModified=inputTime!==origTimeRef.current&&origTimeRef.current!=="";
 
   React.useEffect(()=>{
     if(!selName)return;
     setPunch(null);setMsg(null);
+    const t=getNowHHMM();origTimeRef.current=t;setInputTime(t);
     DB.getTodayPunch(selName).then(p=>setPunch(p||{start:"",end:"",approved:false}));
   },[selName]);
 
   const doAction=async(type)=>{
     if(!selName)return;
     setLoading(true);setMsg(null);
+    const nowActual=getNowHHMM();
     try{
-      if(type==="in") await DB.punchIn(selName);
-      else await DB.punchOut(selName);
+      if(type==="in") await DB.punchIn(selName,inputTime,isModified);
+      else await DB.punchOut(selName,inputTime,isModified);
+      if(isModified) await DB.sendPunchSlack("札幌",selName,type,inputTime,nowActual);
       const p=await DB.getTodayPunch(selName);
       setPunch(p||{start:"",end:"",approved:false});
-      setMsg({text:type==="in"?`出勤打刻しました（${nowStr()}）`:`退勤打刻しました（${nowStr()}）`,ok:true});
+      setMsg({text:isModified?`仮申請しました（${inputTime}）管理者が確認後に受領されます`:(type==="in"?`出勤打刻しました（${inputTime}）`:`退勤打刻しました（${inputTime}）`),ok:true});
     }catch(e){
       setMsg({text:e.message||"エラーが発生しました",ok:false});
     }finally{setLoading(false);}
@@ -1819,18 +1827,28 @@ function PunchClock({staff}){
         </div>
       </div>
       {punch.approved&&<div style={{textAlign:"center",marginTop:10,fontSize:11,color:"#059669",fontWeight:700}}>✅ 受領済（自己申告）</div>}
+      {!punch.approved&&(punch.start||punch.end)&&<div style={{textAlign:"center",marginTop:10,fontSize:11,color:"#d97706",fontWeight:700}}>🕐 申請中（管理者確認待ち）</div>}
+    </div>}
+    {selName&&punch&&!(hasPunchIn&&hasPunchOut)&&<div style={{marginBottom:16,background:isModified?"#fffbeb":"#f8fafc",borderRadius:12,padding:"12px 14px",border:`1px solid ${isModified?"#fcd34d":"#e2e8f0"}`,transition:"all .2s"}}>
+      <div style={{fontSize:11,fontWeight:700,color:isModified?"#92400e":"#64748b",marginBottom:6}}>{isModified?"⚠️ 時刻を変更中 → 仮申請になります":"⏰ 打刻時刻"}</div>
+      <input type="time" value={inputTime} onChange={e=>setInputTime(e.target.value)} style={{
+        width:"100%",padding:"10px 12px",fontSize:20,fontWeight:800,
+        border:`2px solid ${isModified?"#f59e0b":"#cbd5e1"}`,borderRadius:10,
+        color:isModified?"#92400e":"#1e293b",background:"#fff",textAlign:"center",cursor:"pointer"
+      }}/>
+      {isModified&&<div style={{fontSize:10,color:"#d97706",textAlign:"center",marginTop:4,fontWeight:700}}>管理者の承認後に受領済になります</div>}
     </div>}
     {selName&&punch&&<div style={{display:"flex",gap:12,flexDirection:"column"}}>
       {!hasPunchIn&&<button onClick={()=>doAction("in")} disabled={loading} style={{
         padding:"20px",borderRadius:16,fontSize:18,fontWeight:900,border:"none",cursor:loading?"wait":"pointer",
-        background:"linear-gradient(135deg,#059669,#10b981)",color:"#fff",
-        boxShadow:"0 4px 14px rgba(5,150,105,.3)",opacity:loading?.6:1
-      }}>🟢 出勤打刻</button>}
+        background:isModified?"linear-gradient(135deg,#d97706,#f59e0b)":"linear-gradient(135deg,#059669,#10b981)",color:"#fff",
+        boxShadow:isModified?"0 4px 14px rgba(217,119,6,.3)":"0 4px 14px rgba(5,150,105,.3)",opacity:loading?.6:1,transition:"all .2s"
+      }}>{isModified?"🟡 出勤申請（仮）":"🟢 出勤打刻"}</button>}
       {hasPunchIn&&!hasPunchOut&&<button onClick={()=>doAction("out")} disabled={loading} style={{
         padding:"20px",borderRadius:16,fontSize:18,fontWeight:900,border:"none",cursor:loading?"wait":"pointer",
-        background:"linear-gradient(135deg,#dc2626,#ef4444)",color:"#fff",
-        boxShadow:"0 4px 14px rgba(220,38,38,.3)",opacity:loading?.6:1
-      }}>🔴 退勤打刻</button>}
+        background:isModified?"linear-gradient(135deg,#d97706,#f59e0b)":"linear-gradient(135deg,#dc2626,#ef4444)",color:"#fff",
+        boxShadow:isModified?"0 4px 14px rgba(217,119,6,.3)":"0 4px 14px rgba(220,38,38,.3)",opacity:loading?.6:1,transition:"all .2s"
+      }}>{isModified?"🟡 退勤申請（仮）":"🔴 退勤打刻"}</button>}
       {hasPunchIn&&hasPunchOut&&<div style={{textAlign:"center",padding:16,background:"#f0fdf4",borderRadius:14,border:"2px solid #bbf7d0"}}>
         <div style={{fontSize:16,fontWeight:800,color:"#059669"}}>✅ 本日の打刻完了</div>
         <div style={{fontSize:12,color:"#64748b",marginTop:4}}>{punch.start} 〜 {punch.end}</div>
@@ -4747,7 +4765,7 @@ const PARKING_VENDORS=["オートバックス","イエローハット","ディ�
 const WASH_STATUSES=["未洗車","内洗済","洗車済"];
 const washStyleLight=s=>({"未洗車":{bg:"#fef2f2",c:"#dc2626",icon:"❌"},"内洗済":{bg:"#fffbeb",c:"#d97706",icon:"🧹"},"洗車済":{bg:"#ecfdf5",c:"#059669",icon:"✨"}}[s]||{bg:"#f1f5f9",c:"#64748b",icon:"?"});
 
-function ParkingManager({masterVehicles}){
+function ParkingManager({masterVehicles,todayTasks,tomorrowTasks,fleet:appFleet}){
   const s0=useRef(DB.parking.lsLoad());
   const init=s0.current;
   const[cars,setCars]=useState(init&&init.cars?init.cars:PARKING_DEFAULT_CARS);
@@ -4937,6 +4955,113 @@ function ParkingManager({masterVehicles}){
         {empty>0?<><span style={{fontWeight:700}}>✅ 入庫OK</span> ・空き{empty}枠{empty===1&&<span style={{color:"#fde68a"}}> ・次の返却前に出庫を！</span>}</>:<><span style={{fontWeight:700}}>🚨 満車</span> 入庫するには先に1台出庫してください</>}
       </div>
     </div>
+
+    {/* タスク連動セクション */}
+    {(()=>{
+      // 車両IDマッチング: タスクのassignedVehicle(車両コード)→駐車場carId(コード-ナンバー)
+      const findParkingCarId=(taskVehicle,taskPlate)=>{
+        if(!taskVehicle)return null;
+        if(taskPlate){const exact=cars.find(c=>c.id===taskVehicle+"-"+taskPlate);if(exact)return exact.id;}
+        const match=cars.find(c=>c.name===taskVehicle||c.id.startsWith(taskVehicle+"-"));
+        return match?match.id:null;
+      };
+      const tTasks=(todayTasks||[]).filter(t=>t.assignedVehicle);
+      const tmrTasks=(tomorrowTasks||[]).filter(t=>t.assignedVehicle);
+      const delTasks=tTasks.filter(t=>t.type==="DEL"&&!t.done);
+      const colTasks=tTasks.filter(t=>t.type==="COL"&&!t.done);
+      const washTasks=tmrTasks.filter(t=>t.type==="洗車");
+      // 早朝DEL判定（翌日09:00以前）
+      const earlyDels=tmrTasks.filter(t=>t.type==="DEL"&&t.time&&t.time<="09:00");
+      const hasAnyTask=delTasks.length>0||colTasks.length>0||washTasks.length>0||earlyDels.length>0;
+      if(!hasAnyTask)return null;
+      // 入庫先推奨ロジック
+      const recommendSpot=(carId)=>{
+        const avail=spots.filter(s=>!s.carId&&canParkInSpot(s,carId));
+        if(!avail.length)return null;
+        return avail.find(s=>s.restricted)||avail[0];
+      };
+      const btnS={padding:"6px 12px",borderRadius:8,border:"none",cursor:"pointer",fontSize:10,fontWeight:700};
+      return <div style={{...cardStyle,borderColor:"#3b82f6",borderLeft:"5px solid #3b82f6",background:"#f8fafc"}}>
+        <div style={subHdr}>📋 タスク連動</div>
+
+        {/* DEL 出庫予定 */}
+        {delTasks.length>0&&<div style={{marginBottom:10}}>
+          <div style={{fontSize:11,fontWeight:700,color:"#1e40af",marginBottom:4}}>🚗 DEL 出庫予定 ({delTasks.length})</div>
+          {delTasks.map(t=>{
+            const pCarId=findParkingCarId(t.assignedVehicle,t.plateNo);
+            const spot=pCarId?spots.find(s=>s.carId===pCarId):null;
+            const isParked=!!spot;
+            return <div key={t.id||t._id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 8px",borderRadius:8,marginBottom:3,background:"#fff",border:"1px solid #e2e8f0"}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:12,fontWeight:700,color:"#1e293b"}}>{t.time||"--:--"} {t.assignedVehicle}({t.plateNo||""})</div>
+                <div style={{fontSize:10,color:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name} {t.ota?`[${t.ota}]`:""}</div>
+              </div>
+              {isParked?<button onClick={()=>{releaseCar(spot.id);addLog("【DEL出庫】"+t.assignedVehicle+" "+t.name);}} style={{...btnS,background:"#dc2626",color:"#fff"}}>出庫</button>
+                :<span style={{fontSize:9,color:"#94a3b8",padding:"4px 8px"}}>出庫済</span>}
+            </div>;
+          })}
+        </div>}
+
+        {/* COL 入庫予定 */}
+        {colTasks.length>0&&<div style={{marginBottom:10}}>
+          <div style={{fontSize:11,fontWeight:700,color:"#dc2626",marginBottom:4}}>📦 COL 入庫予定 ({colTasks.length})</div>
+          {colTasks.map(t=>{
+            const pCarId=findParkingCarId(t.assignedVehicle,t.plateNo);
+            const isParked=pCarId?spots.some(s=>s.carId===pCarId):false;
+            const rec=pCarId?recommendSpot(pCarId):null;
+            return <div key={t.id||t._id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 8px",borderRadius:8,marginBottom:3,background:"#fff",border:"1px solid #e2e8f0"}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:12,fontWeight:700,color:"#1e293b"}}>{t.time||"--:--"} {t.assignedVehicle}({t.plateNo||""})</div>
+                <div style={{fontSize:10,color:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name} {rec?`→ No.${rec.no}推奨`:""}</div>
+              </div>
+              {isParked?<span style={{fontSize:9,color:"#059669",padding:"4px 8px"}}>入庫済</span>
+                :pCarId&&rec?<button onClick={()=>{parkCar(rec.id,pCarId);addLog("【COL入庫】"+t.assignedVehicle+" "+t.name+" → No."+rec.no);}} style={{...btnS,background:"#059669",color:"#fff"}}>No.{rec.no}入庫</button>
+                :pCarId&&empty>0?<button onClick={()=>{setSelectedCar(pCarId);setParkStep("confirm");}} style={{...btnS,background:"#2563eb",color:"#fff"}}>枠選択</button>
+                :pCarId?<div style={{display:"flex",gap:3}}><span style={{fontSize:9,color:"#dc2626",padding:"4px 4px"}}>満車</span><button onClick={()=>{const staff=prompt("移動車スタッフ名:");if(staff)setStaffCar(pCarId,staff);}} style={{...btnS,background:"#7c3aed",color:"#fff",fontSize:9}}>移動車</button></div>
+                :<span style={{fontSize:9,color:"#94a3b8"}}>車両不明</span>}
+            </div>;
+          })}
+        </div>}
+
+        {/* 洗車対象（明日DEL分） */}
+        {washTasks.length>0&&<div style={{marginBottom:10}}>
+          <div style={{fontSize:11,fontWeight:700,color:"#92400e",marginBottom:4}}>🧹 洗車対象 - 明日DEL ({washTasks.length})</div>
+          {washTasks.map(t=>{
+            const pCarId=findParkingCarId(t.assignedVehicle,t.plateNo);
+            const ws=pCarId?washMap[pCarId]:"未洗車";
+            const wst=washStyleLight(ws);
+            return <div key={t.id||t._id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 8px",borderRadius:8,marginBottom:3,background:"#fff",border:"1px solid #e2e8f0"}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:12,fontWeight:700,color:"#1e293b"}}>{t.assignedVehicle}({t.plateNo||""})</div>
+                <div style={{fontSize:10,color:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.memo||t.name}</div>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:4}}>
+                <span style={{fontSize:9,padding:"2px 6px",borderRadius:6,background:wst.bg,color:wst.c,fontWeight:600}}>{wst.icon}{ws}</span>
+                {ws!=="洗車済"&&pCarId&&<>
+                  <button onClick={()=>setWashStatus(pCarId,"内洗済")} style={{...btnS,background:"#fbbf24",color:"#78350f",fontSize:9,padding:"4px 8px"}}>内洗</button>
+                  <button onClick={()=>setWashStatus(pCarId,"洗車済")} style={{...btnS,background:"#059669",color:"#fff",fontSize:9,padding:"4px 8px"}}>完了</button>
+                </>}
+              </div>
+            </div>;
+          })}
+        </div>}
+
+        {/* 明日早朝DEL → 持帰り推奨 */}
+        {earlyDels.length>0&&<div style={{background:"#fffbeb",borderRadius:8,padding:"6px 10px",border:"1px solid #fcd34d"}}>
+          <div style={{fontSize:11,fontWeight:700,color:"#92400e",marginBottom:2}}>💡 明日早朝DEL - 持帰り検討</div>
+          {earlyDels.map(t=>{
+            const pCarId=findParkingCarId(t.assignedVehicle,t.plateNo);
+            const isStaffCar=pCarId&&staffCarMap[pCarId];
+            return <div key={t.id||t._id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"4px 0"}}>
+              <span style={{fontSize:11,color:"#92400e"}}>{t.time} {t.assignedVehicle}({t.plateNo||""}) {t.name}</span>
+              {isStaffCar?<span style={{fontSize:9,color:"#7c3aed"}}>移動車設定済</span>
+                :pCarId?<button onClick={()=>{const staff=prompt("持帰りスタッフ名:");if(staff){setStaffCar(pCarId,staff);const spot=spots.find(s=>s.carId===pCarId);if(spot)releaseCar(spot.id);}}} style={{...btnS,background:"#7c3aed",color:"#fff",fontSize:9,padding:"4px 8px"}}>持帰り</button>
+                :null}
+            </div>;
+          })}
+        </div>}
+      </div>;
+    })()}
 
     {/* 倉庫車（TOP表示） */}
     {warehouseCars.length>0&&<div style={{...cardStyle,borderColor:"#06b6d4",background:"#ecfeff",borderLeft:"5px solid #06b6d4"}}>
@@ -7280,6 +7405,25 @@ function App(){
                 <div style={{fontSize:20,fontWeight:900,color:"#1e293b"}}>札幌店 タスク管理</div>
                 <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>{APP_VERSION} ・ {data.length>0?data.length+"件の予約データ":"データ未読込"}{SB_ENABLED&&sbConnected?" ・ 🟢 同期中":SB_ENABLED?" ・ 🔴 未接続":""}</div>
               </div>
+              {/* 打刻ショートカット */}
+              <div style={{marginBottom:16}}>
+                <a href="/punch.html" style={{
+                  display:"flex",alignItems:"center",justifyContent:"space-between",
+                  padding:"18px 20px",borderRadius:16,
+                  background:"linear-gradient(135deg,#059669,#10b981)",
+                  color:"#fff",textDecoration:"none",
+                  boxShadow:"0 4px 14px rgba(5,150,105,.35)"
+                }}>
+                  <div style={{display:"flex",alignItems:"center",gap:14}}>
+                    <span style={{fontSize:32}}>👊</span>
+                    <div>
+                      <div style={{fontSize:16,fontWeight:900,letterSpacing:.5}}>出退勤 打刻</div>
+                      <div style={{fontSize:11,opacity:.85,marginTop:2}}>アルバイトはここをタップ・ブックマーク推奨</div>
+                    </div>
+                  </div>
+                  <span style={{fontSize:22,opacity:.7}}>→</span>
+                </a>
+              </div>
               {data.length>0&&<div style={{display:"flex",gap:8,marginBottom:16,justifyContent:"center",flexWrap:"wrap"}}>
                 <button onClick={()=>setShowOP(true)} style={{padding:"10px 20px",borderRadius:12,border:"none",cursor:"pointer",background:"linear-gradient(135deg,#1e40af,#2563eb)",color:"#fff",fontSize:13,fontWeight:700,boxShadow:"0 2px 8px rgba(37,99,235,.3)"}}>📋 OPシートを開く</button>
               </div>}
@@ -7644,7 +7788,7 @@ function App(){
           {tab==="attendance"&&<PASGuard label="給与計算"><AttendanceManager shifts={shifts} staff={staff} today={today} attendance={attendance} onAttendanceChange={setAttendance}/></PASGuard>}
           {tab==="fleet"&&<FleetTimeline data={data} fleet={fleet} onFleetChange={setFleetSync} today={today} maintenance={maintenance} onMaintenanceChange={setMaintenance} vehicles={vehicles} vehicleClasses={vehicleClasses} onAddReservation={addReservation} onBulkAddReservation={bulkAddReservation} onCancelReservation={cancelReservation} onReassignVehicle={reassignVehicle} onUpdateReservation={updateReservation} unassignedReasons={unassignedReasons} onVehicleDetail={(code)=>{setHighlightVehicle(code);setTab("vehicle");setTimeout(()=>setHighlightVehicle(null),3000);}}/>}
           {tab==="vehicle"&&<VehicleTab vehicles={vehicles} onVehiclesChange={setVehiclesSync} vehicleClasses={vehicleClasses} onDeleteVehicle={(code)=>DB.deleteVehicle(code)} hmCars={hmCars} hmCarData={hmCarData} hmLogs={hmLogs} hmClasses={hmClasses} hmReload={hmReload} highlightVehicle={highlightVehicle}/>}
-          {tab==="parking"&&<ParkingManager masterVehicles={vehicles}/>}
+          {tab==="parking"&&<ParkingManager masterVehicles={vehicles} todayTasks={todayTasks} tomorrowTasks={tomorrowTasks} fleet={fleet}/>}
           {tab==="accounting"&&<PASGuard label="会計管理"><AccountingPanel staff={staff}/></PASGuard>}
           {tab==="jalanpay"&&<JalanPayment data={data} jalanPay={jalanPay} onJalanPayChange={(id,d)=>{setJalanPay(p=>({...p,[id]:d}));DB.saveJalanPayment(id,d);}}/>}
           {tab==="dashboard"&&data.length>0&&<>
