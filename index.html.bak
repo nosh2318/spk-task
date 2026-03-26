@@ -260,6 +260,35 @@ const DB = {
   async punchIn(staffName,timeStr,isProvisional){if(!sb)return;try{const today=new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});const now=timeStr||new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Tokyo"});const{data}=await sb.from("spk_attendance").select("*").eq("date",today).eq("staff_name",staffName).maybeSingle();if(data&&data.start_time){throw new Error("既に出勤打刻済みです");}await sb.from("spk_attendance").upsert({date:today,staff_name:staffName,start_time:now,end_time:data?.end_time||"",approved:!isProvisional,memo:isProvisional?"仮申請":"打刻",absent:false},{onConflict:"date,staff_name"});}catch(e){throw e;}},
   async punchOut(staffName,timeStr,isProvisional){if(!sb)return;try{const today=new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});const now=timeStr||new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Tokyo"});const{data}=await sb.from("spk_attendance").select("*").eq("date",today).eq("staff_name",staffName).maybeSingle();if(data?.end_time){throw new Error("既に退勤打刻済みです");}await sb.from("spk_attendance").upsert({date:today,staff_name:staffName,start_time:data?.start_time||"",end_time:now,approved:!isProvisional,memo:isProvisional?"仮申請":"打刻",absent:false},{onConflict:"date,staff_name"});}catch(e){throw e;}},
   async getTodayPunch(staffName){if(!sb)return null;try{const today=new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});const{data}=await sb.from("spk_attendance").select("*").eq("date",today).eq("staff_name",staffName).maybeSingle();return data?{start:data.start_time||"",end:data.end_time||"",approved:!!data.approved}:null;}catch(e){return null;}},
+  // --- 申し送りBOX ---
+  async fetchMemos(fromDate){if(!sb)return[];try{const{data}=await sb.from("spk_memos").select("*").gte("target_date",fromDate).order("created_at",{ascending:true});return data||[];}catch(e){return[];}},
+  async postMemo(content,targetDate,imageUrl){if(!sb||(!(content||"").trim()&&!imageUrl))return;const row={content:(content||"").trim(),target_date:targetDate,done:false};if(imageUrl)row.image_url=imageUrl;await sb.from("spk_memos").insert(row);},
+  async toggleMemoDone(id,done){if(!sb)return;await sb.from("spk_memos").update({done:!done}).eq("id",id);},
+  async deleteMemo(id){if(!sb)return;await sb.from("spk_memos").delete().eq("id",id);},
+  async uploadMemoImage(file){
+    if(!sb)throw new Error("no sb");
+    const compressed=await new Promise((resolve)=>{
+      const reader=new FileReader();
+      reader.onload=(e)=>{
+        const img=new Image();
+        img.onload=()=>{
+          const canvas=document.createElement("canvas");
+          let w=img.width,h=img.height,max=1200;
+          if(w>max){h=Math.round(h*max/w);w=max;}
+          canvas.width=w;canvas.height=h;
+          canvas.getContext("2d").drawImage(img,0,0,w,h);
+          canvas.toBlob(resolve,"image/jpeg",0.75);
+        };
+        img.src=e.target.result;
+      };
+      reader.readAsDataURL(file);
+    });
+    const fname="spk/"+Date.now()+".jpg";
+    const{error}=await sb.storage.from("memo-images").upload(fname,compressed,{contentType:"image/jpeg",upsert:false});
+    if(error)throw error;
+    const{data:{publicUrl}}=sb.storage.from("memo-images").getPublicUrl(fname);
+    return publicUrl;
+  },
   // --- メンテナンス ---
   async fetchMaintenance(){if(!sb)return[];const{data,error}=await sb.from("maintenance").select("*");if(error){dbLog("fetchMaint",false,error.message);return[];}dbLog("fetchMaint",true,(data||[]).length+"件");return(data||[]).map(m=>({id:m.id,vehicleCode:m.vehicle_code,startDate:m.start_date,endDate:m.end_date,label:m.label||""}));},
   async saveMaintenance(arr){if(!sb)return;const rows=arr.map(m=>({id:m.id,vehicle_code:m.vehicleCode,start_date:m.startDate,end_date:m.endDate,label:m.label||""}));if(rows.length){const{error}=await sb.from("maintenance").upsert(rows,{onConflict:"id"});if(error)dbLog("saveMaint",false,error.message);else dbLog("saveMaint",true,rows.length+"件");}},
@@ -1757,8 +1786,156 @@ function StaffManager({staff,onStaffChange,onDeleteStaff}){
 }
 
 /* ==========================================
-   打刻（ワンタップ出退勤）
+   申し送りBOX
    ========================================== */
+function MemoBox({today}){
+  const tomorrow=dOff(today,1);
+  const[memos,setMemos]=React.useState([]);
+  const[text,setText]=React.useState("");
+  const[posting,setPosting]=React.useState(false);
+  const[open,setOpen]=React.useState(false);
+  const[listOpen,setListOpen]=React.useState(false);
+  const[editId,setEditId]=React.useState(null);
+  const[editText,setEditText]=React.useState("");
+  const[imgPreview,setImgPreview]=React.useState("");
+  const[imgFile,setImgFile]=React.useState(null);
+  const[imgUploading,setImgUploading]=React.useState(false);
+  const[lightbox,setLightbox]=React.useState("");
+  const fileRef=React.useRef(null);
+  const chRef=React.useRef(null);
+  const load=()=>DB.fetchMemos(today).then(d=>setMemos(d||[])).catch(()=>{});
+  React.useEffect(()=>{
+    load();
+    if(sb){chRef.current=sb.channel("spk-memos-top").on("postgres_changes",{event:"*",schema:"public",table:"spk_memos"},load).subscribe();}
+    const iv=setInterval(load,30000);
+    return()=>{clearInterval(iv);if(chRef.current)sb.removeChannel(chRef.current);};
+  },[today]);
+  const selectImg=(e)=>{
+    const f=e.target.files[0];if(!f)return;
+    setImgFile(f);
+    const r=new FileReader();r.onload=(ev)=>setImgPreview(ev.target.result);r.readAsDataURL(f);
+    e.target.value="";
+  };
+  const clearImg=()=>{setImgFile(null);setImgPreview("");};
+  const post=async()=>{
+    if(!text.trim()&&!imgFile)return;
+    setPosting(true);
+    let uploadedUrl="";
+    if(imgFile){
+      setImgUploading(true);
+      try{uploadedUrl=await DB.uploadMemoImage(imgFile);}
+      catch(e){alert("画像アップロード失敗: "+e.message);setImgUploading(false);setPosting(false);return;}
+      setImgUploading(false);
+    }
+    await DB.postMemo(text.trim(),tomorrow,uploadedUrl).catch(()=>{});
+    setText("");clearImg();setPosting(false);load();
+  };
+  const toggle=(id,done)=>DB.toggleMemoDone(id,done).then(load).catch(()=>{});
+  const del=(id)=>{if(!window.confirm("削除しますか？"))return;DB.deleteMemo(id).then(load).catch(()=>{});};
+  const startEdit=(m)=>{setEditId(m.id);setEditText(m.content);};
+  const saveEdit=async(id)=>{if(!editText.trim())return;await sb.from("spk_memos").update({content:editText.trim()}).eq("id",id).catch(()=>{});setEditId(null);setEditText("");load();};
+  const cancelEdit=()=>{setEditId(null);setEditText("");};
+  const todayList=memos.filter(m=>m.target_date===today);
+  const tomList=memos.filter(m=>m.target_date===tomorrow);
+  const todayUndone=todayList.filter(m=>!m.done);
+  const tomUndone=tomList.filter(m=>!m.done);
+  const MemoRow=({m,redStyle})=>{
+    const isEditing=editId===m.id;
+    if(isEditing)return(
+      <div style={{marginBottom:4,padding:"7px 10px",borderRadius:8,background:"#fffbeb",border:"2px solid #f59e0b"}}>
+        <textarea value={editText} onChange={e=>setEditText(e.target.value)} rows={3}
+          style={{width:"100%",border:"1px solid #fde68a",borderRadius:6,padding:"6px 8px",fontSize:12,background:"#fff",outline:"none",resize:"vertical",boxSizing:"border-box"}}/>
+        <div style={{display:"flex",gap:6,marginTop:5,justifyContent:"flex-end"}}>
+          <button onClick={cancelEdit} style={{fontSize:10,padding:"3px 10px",borderRadius:6,border:"1px solid #d1d5db",background:"#fff",cursor:"pointer",color:"#6b7280"}}>キャンセル</button>
+          <button onClick={()=>saveEdit(m.id)} disabled={!editText.trim()} style={{fontSize:10,padding:"3px 10px",borderRadius:6,border:"none",background:"#f59e0b",color:"#fff",fontWeight:700,cursor:"pointer"}}>保存</button>
+        </div>
+      </div>
+    );
+    return(
+      <div style={{display:"flex",gap:6,alignItems:"flex-start",padding:"6px 10px",borderRadius:8,
+        background:m.done?"#f9fafb":redStyle?"#fef2f2":"#fffbeb",
+        border:"1px solid "+(m.done?"#e5e7eb":redStyle?"#fecaca":"#fde68a"),
+        marginBottom:4,opacity:m.done?0.5:1}}>
+        <span style={{fontSize:12,flexShrink:0,marginTop:1}}>{m.done?"✅":redStyle?"🔴":"📌"}</span>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:12,fontWeight:m.done?400:600,color:m.done?"#9ca3af":redStyle?"#7f1d1d":"#1c1917",
+            lineHeight:1.4,wordBreak:"break-all",textDecoration:m.done?"line-through":"none",whiteSpace:"pre-wrap"}}>{m.content}</div>
+          {m.image_url&&<img src={m.image_url} onClick={()=>setLightbox(m.image_url)}
+            style={{marginTop:5,maxWidth:"100%",maxHeight:120,borderRadius:6,cursor:"pointer",objectFit:"cover",opacity:m.done?0.5:1}}
+            alt="添付画像"/>}
+        </div>
+        <div style={{display:"flex",gap:3,flexShrink:0,alignSelf:"flex-start"}}>
+          {!m.done&&<button onClick={()=>startEdit(m)} style={{fontSize:9,padding:"2px 6px",borderRadius:6,border:"1px solid #d1d5db",background:"#fff",cursor:"pointer",color:"#6b7280"}}>✏️</button>}
+          <button onClick={()=>toggle(m.id,m.done)} style={{fontSize:9,padding:"2px 7px",borderRadius:6,
+            border:"1px solid "+(m.done?"#d1d5db":redStyle?"#fecaca":"#fde68a"),
+            background:"#fff",cursor:"pointer",color:m.done?"#6b7280":redStyle?"#dc2626":"#92400e",whiteSpace:"nowrap"}}>
+            {m.done?"戻す":"済み"}
+          </button>
+          <button onClick={()=>del(m.id)} style={{fontSize:9,padding:"2px 5px",borderRadius:6,border:"1px solid #e5e7eb",background:"#f9fafb",cursor:"pointer",color:"#9ca3af"}}>✕</button>
+        </div>
+      </div>
+    );
+  };
+  return(
+    <div style={{marginBottom:16}}>
+      {/* ライトボックス */}
+      {lightbox&&<div onClick={()=>setLightbox("")} style={{position:"fixed",inset:0,background:"rgba(0,0,0,.85)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+        <img src={lightbox} style={{maxWidth:"100%",maxHeight:"90vh",borderRadius:8,objectFit:"contain"}} alt="拡大"/>
+        <button onClick={()=>setLightbox("")} style={{position:"absolute",top:16,right:16,background:"rgba(255,255,255,.2)",border:"none",color:"#fff",borderRadius:99,width:32,height:32,fontSize:16,cursor:"pointer"}}>✕</button>
+      </div>}
+      {todayUndone.length>0&&(
+        <div style={{marginBottom:8,padding:"10px 12px",borderRadius:12,background:"#fef2f2",border:"2px solid #fecaca"}}>
+          <div style={{fontSize:10,fontWeight:800,color:"#dc2626",marginBottom:6}}>🔴 本日の Handover（未対応）</div>
+          {todayUndone.map(m=><MemoRow key={m.id} m={m} redStyle={true}/>)}
+        </div>
+      )}
+      <div style={{marginBottom:8,borderRadius:12,border:"1px solid #e2e8f0",background:"#fff",overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
+        <div onClick={()=>setOpen(o=>!o)} style={{background:"#f8fafc",padding:"10px 14px",display:"flex",alignItems:"center",gap:8,cursor:"pointer",userSelect:"none"}}>
+          <span style={{fontSize:16}}>✏️</span>
+          <span style={{fontSize:13,fontWeight:700,color:"#1e293b"}}>Handover を書く</span>
+          <span style={{marginLeft:"auto",fontSize:11,color:"#94a3b8",fontWeight:700}}>{open?"▲":"▼"}</span>
+        </div>
+        {open&&<div style={{padding:"10px 12px",borderTop:"1px solid #e2e8f0"}}>
+          <textarea value={text} onChange={e=>setText(e.target.value)} rows={3}
+            placeholder={"例：216決済必要\n明日コーナン買い出し\n山田さん10時出勤変更"}
+            style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 10px",fontSize:12,background:"#fff",outline:"none",resize:"vertical",boxSizing:"border-box",marginBottom:6}}/>
+          {/* 画像プレビュー */}
+          {imgPreview&&<div style={{position:"relative",display:"inline-block",marginBottom:8}}>
+            <img src={imgPreview} style={{maxHeight:100,maxWidth:"100%",borderRadius:6,objectFit:"cover"}} alt="preview"/>
+            <button onClick={clearImg} style={{position:"absolute",top:-6,right:-6,width:18,height:18,borderRadius:99,background:"#ef4444",border:"none",color:"#fff",fontSize:10,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>✕</button>
+          </div>}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div>
+              <input ref={fileRef} type="file" accept="image/*" onChange={selectImg} style={{display:"none"}}/>
+              <button onClick={()=>fileRef.current.click()} style={{fontSize:11,padding:"5px 10px",borderRadius:8,border:"1px solid #d1d5db",background:"#fff",cursor:"pointer",color:"#6b7280",display:"flex",alignItems:"center",gap:4}}>
+                📷 {imgFile?"変更":"写真を添付"}
+              </button>
+            </div>
+            <button onClick={post} disabled={(!text.trim()&&!imgFile)||posting}
+              style={{padding:"7px 18px",borderRadius:8,border:"none",
+                background:(text.trim()||imgFile)?"#f59e0b":"#d1d5db",
+                color:"#fff",fontWeight:700,fontSize:12,cursor:(text.trim()||imgFile)?"pointer":"default"}}>
+              {imgUploading?"アップロード中...":posting?"投稿中...":"投稿"}
+            </button>
+          </div>
+        </div>}
+      </div>
+      {tomList.length>0&&<div style={{marginBottom:8,borderRadius:12,border:"1px solid #e2e8f0",background:"#fff",overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
+        <div onClick={()=>setListOpen(o=>!o)} style={{background:"#f8fafc",padding:"10px 14px",display:"flex",alignItems:"center",gap:8,cursor:"pointer",userSelect:"none"}}>
+          <span style={{fontSize:14}}>📌</span>
+          <span style={{fontSize:13,fontWeight:700,color:"#1e293b"}}>明日の Handover</span>
+          <span style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:6}}>
+            <span style={{background:"#f59e0b",color:"#fff",borderRadius:99,fontSize:9,fontWeight:700,padding:"2px 8px"}}>{tomList.length}件</span>
+            <span style={{fontSize:11,color:"#94a3b8",fontWeight:700}}>{listOpen?"▲":"▼"}</span>
+          </span>
+        </div>
+        {listOpen&&<div style={{padding:"8px 12px",borderTop:"1px solid #e2e8f0"}}>
+          {tomList.map(m=><MemoRow key={m.id} m={m} redStyle={false}/>)}
+        </div>}
+      </div>}
+    </div>
+  );
+}
 function PunchClock({staff}){
   const partTime=staff.filter(s=>s.type==="アルバイト");
   const [selName,setSelName]=React.useState("");
@@ -1931,7 +2108,8 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
       let actualDays=0,actualHours=0,absentDays=0;
       days.forEach(d=>{
         if(d.att&&d.att.approved){
-          if(d.att.absent){absentDays++;return;} // 欠勤はカウントしない
+          if(d.att.absent){absentDays++;return;}
+          if(d.att.memo&&d.att.memo.startsWith("協議中"))return; // 協議中はカウントしない
           actualDays++;actualHours+=calcHours(d.att.start,d.att.end);
         }
       });
@@ -2000,7 +2178,11 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
     if(!editDay)return;
     if(!window.confirm("保存を実行しますか？"))return;
     const key=editDay.date+"_"+editDay.name;
-    const updated={date:editDay.date,name:editDay.name,start:editDay.start,end:editDay.end,approved:attendance[key]?.approved||false,memo:editDay.memo||"",absent:!!editDay.absent};
+    const origMemo=attendance[key]?.memo||"";
+    const isKyogi=origMemo.startsWith("協議中");
+    const memo=isKyogi?"打刻":(editDay.memo||"");
+    const approved=isKyogi?true:(attendance[key]?.approved||false);
+    const updated={date:editDay.date,name:editDay.name,start:editDay.start,end:editDay.end,approved,memo,absent:!!editDay.absent};
     onAttendanceChange({...attendance,[key]:updated});
     DB.saveAttendance(updated);setEditDay(null);
   };
@@ -2139,21 +2321,27 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
             const rowBg=isHoliday?"#fef2f2":isSat?"#eff6ff":"#fff";
             const dayColor=isHoliday?"#dc2626":isSat?"#2563eb":"#374151";
             const hasShift=!!d.shift;const att=d.att;const isApproved=att&&att.approved;const isAbsent=att&&att.absent;
+            const isKyogi=att&&att.memo&&att.memo.startsWith("協議中");
+            const kyogiDetail=isKyogi?att.memo.replace(/^協議中:/,""):"";
             const timeStr=isAbsent?"欠勤":att?(att.start+"〜"+att.end):(hasShift?(d.shift.start+"〜"+d.shift.end):"ー");
-            return <div key={d.date} style={{display:"flex",alignItems:"center",padding:"8px 12px",borderBottom:"1px solid #f1f5f9",background:isAbsent?"#fef2f2":rowBg,gap:8}}>
-              <div style={{width:30,textAlign:"center"}}>
-                <div style={{fontSize:14,fontWeight:800,color:dayColor}}>{d.day}</div>
-                <div style={{fontSize:9,color:dayColor,fontWeight:600}}>{WK[d.dow]}</div>
+            return <div key={d.date} style={{borderBottom:"1px solid #f1f5f9",background:isKyogi?"#fffbeb":isAbsent?"#fef2f2":rowBg}}>
+              <div style={{display:"flex",alignItems:"center",padding:"8px 12px",gap:8}}>
+                <div style={{width:30,textAlign:"center"}}>
+                  <div style={{fontSize:14,fontWeight:800,color:dayColor}}>{d.day}</div>
+                  <div style={{fontSize:9,color:dayColor,fontWeight:600}}>{WK[d.dow]}</div>
+                </div>
+                <div style={{flex:1,fontSize:13,color:isKyogi?"#92400e":isAbsent?"#dc2626":hasShift?"#374151":"#d1d5db",fontWeight:hasShift?600:400}}>{timeStr}</div>
+                {hasShift&&<div style={{display:"flex",gap:6}}>
+                  {isKyogi&&<span style={{padding:"4px 8px",borderRadius:6,background:"#f59e0b",color:"#fff",fontSize:10,fontWeight:700}}>協議中</span>}
+                  {!isKyogi&&isAbsent&&<span style={{padding:"4px 8px",borderRadius:6,background:"#dc2626",color:"#fff",fontSize:10,fontWeight:700}}>欠勤</span>}
+                  {!isKyogi&&!isAbsent&&(isApproved?
+                    <span style={{padding:"4px 10px",borderRadius:6,background:"#059669",color:"#fff",fontSize:10,fontWeight:700}}>{att&&att.memo==="打刻"?"🕐打刻":"受領済"}</span>:
+                    <button onClick={()=>approve(d.date,selStaff)} style={{padding:"4px 10px",borderRadius:6,background:"#dcfce7",color:"#059669",border:"1px solid #bbf7d0",fontSize:10,fontWeight:700,cursor:"pointer"}}>受領</button>
+                  )}
+                  <button onClick={()=>setEditDay({date:d.date,name:selStaff,start:att?.start||d.shift.start||"09:00",end:att?.end||d.shift.end||"18:00",memo:att?.memo||"",absent:att?.absent||false})} style={{padding:"4px 10px",borderRadius:6,background:isKyogi?"#f59e0b":"#f1f5f9",color:isKyogi?"#fff":"#64748b",border:isKyogi?"none":"1px solid #e2e8f0",fontSize:10,fontWeight:700,cursor:"pointer"}}>{isKyogi?"解決":"編集"}</button>
+                </div>}
               </div>
-              <div style={{flex:1,fontSize:13,color:isAbsent?"#dc2626":hasShift?"#374151":"#d1d5db",fontWeight:hasShift?600:400}}>{timeStr}</div>
-              {hasShift&&<div style={{display:"flex",gap:6}}>
-                {isAbsent&&<span style={{padding:"4px 8px",borderRadius:6,background:"#dc2626",color:"#fff",fontSize:10,fontWeight:700}}>欠勤</span>}
-                {!isAbsent&&(isApproved?
-                  <span style={{padding:"4px 10px",borderRadius:6,background:"#059669",color:"#fff",fontSize:10,fontWeight:700}}>{att&&att.memo==="打刻"?"🕐打刻":"受領済"}</span>:
-                  <button onClick={()=>approve(d.date,selStaff)} style={{padding:"4px 10px",borderRadius:6,background:"#dcfce7",color:"#059669",border:"1px solid #bbf7d0",fontSize:10,fontWeight:700,cursor:"pointer"}}>受領</button>
-                )}
-                <button onClick={()=>setEditDay({date:d.date,name:selStaff,start:att?.start||d.shift.start||"09:00",end:att?.end||d.shift.end||"18:00",memo:att?.memo||"",absent:att?.absent||false})} style={{padding:"4px 10px",borderRadius:6,background:"#f1f5f9",color:"#64748b",border:"1px solid #e2e8f0",fontSize:10,fontWeight:700,cursor:"pointer"}}>編集</button>
-              </div>}
+              {isKyogi&&<div style={{padding:"4px 12px 8px 52px",fontSize:11,color:"#92400e",fontWeight:600}}>📝 {kyogiDetail}</div>}
             </div>;
           })}
         </>;
@@ -2202,6 +2390,11 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
     {/* 編集モーダル */}
     {editDay&&<div className="modal-overlay" onClick={()=>setEditDay(null)}><div className="modal-box" style={{maxWidth:320,padding:20}} onClick={e=>e.stopPropagation()}>
       <h4 style={{fontSize:14,fontWeight:800,margin:"0 0 14px"}}>{editDay.name} — {fmtD(editDay.date)}</h4>
+      {editDay.memo&&editDay.memo.startsWith("協議中")&&<div style={{background:"#fffbeb",border:"1px solid #f59e0b",borderRadius:10,padding:"10px 12px",marginBottom:14}}>
+        <div style={{fontSize:11,fontWeight:700,color:"#b45309",marginBottom:4}}>📝 スタッフからの修正リクエスト</div>
+        <div style={{fontSize:12,color:"#92400e"}}>{editDay.memo.replace(/^協議中:/,"")}</div>
+        <div style={{fontSize:10,color:"#b45309",marginTop:6}}>↓ 時間を修正して「解決・保存」すると承認済みになります</div>
+      </div>}
       {/* 欠勤チェック */}
       <div style={{marginBottom:14}}>
         <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",padding:"10px 12px",borderRadius:10,border:editDay.absent?"2px solid #dc2626":"1px solid #e2e8f0",background:editDay.absent?"#fef2f2":"#fff"}}>
@@ -2229,7 +2422,7 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
       </div>
       <div style={{display:"flex",gap:8}}>
         <button onClick={()=>setEditDay(null)} style={{flex:"0 0 auto",padding:"8px 14px",borderRadius:8,border:"1px solid #e2e8f0",background:"#fff",fontSize:12,fontWeight:600,color:"#64748b",cursor:"pointer"}}>キャンセル</button>
-        <button onClick={saveEdit} style={{flex:1,padding:"8px 14px",borderRadius:8,border:"none",background:"#2563eb",fontSize:12,fontWeight:700,color:"#fff",cursor:"pointer"}}>保存</button>
+        <button onClick={saveEdit} style={{flex:1,padding:"8px 14px",borderRadius:8,border:"none",background:editDay.memo&&editDay.memo.startsWith("協議中")?"#f59e0b":"#2563eb",fontSize:12,fontWeight:700,color:"#fff",cursor:"pointer"}}>{editDay.memo&&editDay.memo.startsWith("協議中")?"✅ 解決・保存":"保存"}</button>
       </div>
     </div></div>}
   </div>;
@@ -4765,7 +4958,7 @@ const PARKING_VENDORS=["オートバックス","イエローハット","ディ�
 const WASH_STATUSES=["未洗車","内洗済","洗車済"];
 const washStyleLight=s=>({"未洗車":{bg:"#fef2f2",c:"#dc2626",icon:"❌"},"内洗済":{bg:"#fffbeb",c:"#d97706",icon:"🧹"},"洗車済":{bg:"#ecfdf5",c:"#059669",icon:"✨"}}[s]||{bg:"#f1f5f9",c:"#64748b",icon:"?"});
 
-function ParkingManager({masterVehicles,todayTasks,tomorrowTasks,fleet:appFleet}){
+function ParkingManager({masterVehicles}){
   const s0=useRef(DB.parking.lsLoad());
   const init=s0.current;
   const[cars,setCars]=useState(init&&init.cars?init.cars:PARKING_DEFAULT_CARS);
@@ -4955,116 +5148,6 @@ function ParkingManager({masterVehicles,todayTasks,tomorrowTasks,fleet:appFleet}
         {empty>0?<><span style={{fontWeight:700}}>✅ 入庫OK</span> ・空き{empty}枠{empty===1&&<span style={{color:"#fde68a"}}> ・次の返却前に出庫を！</span>}</>:<><span style={{fontWeight:700}}>🚨 満車</span> 入庫するには先に1台出庫してください</>}
       </div>
     </div>
-
-    {/* タスク連動セクション */}
-    {(()=>{
-      // 車両IDマッチング: タスクのassignedVehicle(車両コード)→駐車場carId(コード-ナンバー)
-      const findParkingCarId=(taskVehicle,taskPlate)=>{
-        if(!taskVehicle)return null;
-        if(taskPlate){const exact=cars.find(c=>c.id===taskVehicle+"-"+taskPlate);if(exact)return exact.id;}
-        const match=cars.find(c=>c.name===taskVehicle||c.id.startsWith(taskVehicle+"-"));
-        return match?match.id:null;
-      };
-      // DB直取得のタスクはスネークケース(assigned_vehicle, plate_no)
-      const av=t=>t.assigned_vehicle||t.assignedVehicle||"";
-      const pn=t=>t.plate_no||t.plateNo||"";
-      const tTasks=(todayTasks||[]).filter(t=>av(t));
-      const tmrTasks=(tomorrowTasks||[]).filter(t=>av(t));
-      const delTasks=tTasks.filter(t=>t.type==="DEL"&&!t.done);
-      const colTasks=tTasks.filter(t=>t.type==="COL"&&!t.done);
-      const washTasks=tmrTasks.filter(t=>t.type==="洗車");
-      // 早朝DEL判定（翌日09:00以前）
-      const earlyDels=tmrTasks.filter(t=>t.type==="DEL"&&t.time&&t.time<="09:00");
-      const hasAnyTask=delTasks.length>0||colTasks.length>0||washTasks.length>0||earlyDels.length>0;
-      if(!hasAnyTask)return null;
-      // 入庫先推奨ロジック
-      const recommendSpot=(carId)=>{
-        const avail=spots.filter(s=>!s.carId&&canParkInSpot(s,carId));
-        if(!avail.length)return null;
-        return avail.find(s=>s.restricted)||avail[0];
-      };
-      const btnS={padding:"6px 12px",borderRadius:8,border:"none",cursor:"pointer",fontSize:10,fontWeight:700};
-      return <div style={{...cardStyle,borderColor:"#3b82f6",borderLeft:"5px solid #3b82f6",background:"#f8fafc"}}>
-        <div style={subHdr}>📋 タスク連動</div>
-
-        {/* DEL 出庫予定 */}
-        {delTasks.length>0&&<div style={{marginBottom:10}}>
-          <div style={{fontSize:11,fontWeight:700,color:"#1e40af",marginBottom:4}}>🚗 DEL 出庫予定 ({delTasks.length})</div>
-          {delTasks.map(t=>{
-            const pCarId=findParkingCarId(av(t),pn(t));
-            const spot=pCarId?spots.find(s=>s.carId===pCarId):null;
-            const isParked=!!spot;
-            return <div key={t.id||t._id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 8px",borderRadius:8,marginBottom:3,background:"#fff",border:"1px solid #e2e8f0"}}>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:12,fontWeight:700,color:"#1e293b"}}>{t.time||"--:--"} {av(t)}({pn(t)})</div>
-                <div style={{fontSize:10,color:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name} {t.ota?`[${t.ota}]`:""}</div>
-              </div>
-              {isParked?<button onClick={()=>{releaseCar(spot.id);addLog("【DEL出庫】"+av(t)+" "+t.name);}} style={{...btnS,background:"#dc2626",color:"#fff"}}>出庫</button>
-                :<span style={{fontSize:9,color:"#94a3b8",padding:"4px 8px"}}>出庫済</span>}
-            </div>;
-          })}
-        </div>}
-
-        {/* COL 入庫予定 */}
-        {colTasks.length>0&&<div style={{marginBottom:10}}>
-          <div style={{fontSize:11,fontWeight:700,color:"#dc2626",marginBottom:4}}>📦 COL 入庫予定 ({colTasks.length})</div>
-          {colTasks.map(t=>{
-            const pCarId=findParkingCarId(av(t),pn(t));
-            const isParked=pCarId?spots.some(s=>s.carId===pCarId):false;
-            const rec=pCarId?recommendSpot(pCarId):null;
-            return <div key={t.id||t._id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 8px",borderRadius:8,marginBottom:3,background:"#fff",border:"1px solid #e2e8f0"}}>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:12,fontWeight:700,color:"#1e293b"}}>{t.time||"--:--"} {av(t)}({pn(t)})</div>
-                <div style={{fontSize:10,color:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name} {rec?`→ No.${rec.no}推奨`:""}</div>
-              </div>
-              {isParked?<span style={{fontSize:9,color:"#059669",padding:"4px 8px"}}>入庫済</span>
-                :pCarId&&rec?<button onClick={()=>{parkCar(rec.id,pCarId);addLog("【COL入庫】"+av(t)+" "+t.name+" → No."+rec.no);}} style={{...btnS,background:"#059669",color:"#fff"}}>No.{rec.no}入庫</button>
-                :pCarId&&empty>0?<button onClick={()=>{setSelectedCar(pCarId);setParkStep("confirm");}} style={{...btnS,background:"#2563eb",color:"#fff"}}>枠選択</button>
-                :pCarId?<div style={{display:"flex",gap:3}}><span style={{fontSize:9,color:"#dc2626",padding:"4px 4px"}}>満車</span><button onClick={()=>{const staff=prompt("移動車スタッフ名:");if(staff)setStaffCar(pCarId,staff);}} style={{...btnS,background:"#7c3aed",color:"#fff",fontSize:9}}>移動車</button></div>
-                :<span style={{fontSize:9,color:"#94a3b8"}}>車両不明</span>}
-            </div>;
-          })}
-        </div>}
-
-        {/* 洗車対象（明日DEL分） */}
-        {washTasks.length>0&&<div style={{marginBottom:10}}>
-          <div style={{fontSize:11,fontWeight:700,color:"#92400e",marginBottom:4}}>🧹 洗車対象 - 明日DEL ({washTasks.length})</div>
-          {washTasks.map(t=>{
-            const pCarId=findParkingCarId(av(t),pn(t));
-            const ws=pCarId?washMap[pCarId]:"未洗車";
-            const wst=washStyleLight(ws);
-            return <div key={t.id||t._id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 8px",borderRadius:8,marginBottom:3,background:"#fff",border:"1px solid #e2e8f0"}}>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:12,fontWeight:700,color:"#1e293b"}}>{av(t)}({pn(t)})</div>
-                <div style={{fontSize:10,color:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.memo||t.name}</div>
-              </div>
-              <div style={{display:"flex",alignItems:"center",gap:4}}>
-                <span style={{fontSize:9,padding:"2px 6px",borderRadius:6,background:wst.bg,color:wst.c,fontWeight:600}}>{wst.icon}{ws}</span>
-                {ws!=="洗車済"&&pCarId&&<>
-                  <button onClick={()=>setWashStatus(pCarId,"内洗済")} style={{...btnS,background:"#fbbf24",color:"#78350f",fontSize:9,padding:"4px 8px"}}>内洗</button>
-                  <button onClick={()=>setWashStatus(pCarId,"洗車済")} style={{...btnS,background:"#059669",color:"#fff",fontSize:9,padding:"4px 8px"}}>完了</button>
-                </>}
-              </div>
-            </div>;
-          })}
-        </div>}
-
-        {/* 明日早朝DEL → 持帰り推奨 */}
-        {earlyDels.length>0&&<div style={{background:"#fffbeb",borderRadius:8,padding:"6px 10px",border:"1px solid #fcd34d"}}>
-          <div style={{fontSize:11,fontWeight:700,color:"#92400e",marginBottom:2}}>💡 明日早朝DEL - 持帰り検討</div>
-          {earlyDels.map(t=>{
-            const pCarId=findParkingCarId(av(t),pn(t));
-            const isStaffCar=pCarId&&staffCarMap[pCarId];
-            return <div key={t.id||t._id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"4px 0"}}>
-              <span style={{fontSize:11,color:"#92400e"}}>{t.time} {av(t)}({pn(t)}) {t.name}</span>
-              {isStaffCar?<span style={{fontSize:9,color:"#7c3aed"}}>移動車設定済</span>
-                :pCarId?<button onClick={()=>{const staff=prompt("持帰りスタッフ名:");if(staff){setStaffCar(pCarId,staff);const spot=spots.find(s=>s.carId===pCarId);if(spot)releaseCar(spot.id);}}} style={{...btnS,background:"#7c3aed",color:"#fff",fontSize:9,padding:"4px 8px"}}>持帰り</button>
-                :null}
-            </div>;
-          })}
-        </div>}
-      </div>;
-    })()}
 
     {/* 倉庫車（TOP表示） */}
     {warehouseCars.length>0&&<div style={{...cardStyle,borderColor:"#06b6d4",background:"#ecfeff",borderLeft:"5px solid #06b6d4"}}>
@@ -6580,7 +6663,7 @@ function NoticesPage({store}){
    App
    ========================================== */
 function App(){
-  const[data,setData]=useState([]);const[tab,setTab_]=useState("top");const[tabHistory,setTabHistory]=useState([]);const[highlightVehicle,setHighlightVehicle]=useState(null);
+  const[data,setData]=useState([]);const[tab,setTab_]=useState("top");const[tabHistory,setTabHistory]=useState([]);const[highlightVehicle,setHighlightVehicle]=useState(null);const[taskSumOpen,setTaskSumOpen]=useState(false);const[tomSumOpen,setTomSumOpen]=useState(false);
   const setTab=useCallback((newTab)=>{setTab_(prev=>{if(prev&&prev!==newTab){setTabHistory(h=>[...h,prev].slice(-20));}return newTab;});},[]);
   const goBack=useCallback(()=>{setTabHistory(h=>{if(h.length===0)return h;const prev=h[h.length-1];setTab_(prev);return h.slice(0,-1);});},[]);
   const today=toLD(new Date());const importingRef=useRef(false);
@@ -7337,7 +7420,7 @@ function App(){
   },[data]);
 
   const oc=useMemo(()=>{const c={};data.forEach(t=>{c[t.ota]=(c[t.ota]||0)+1;});return c;},[data]);
-  const navItems=[{id:"top",ico:"🏠",l:"TOP"},{id:"punch",ico:"👊",l:"打刻"},{id:"notices",ico:"📢",l:"お知らせ"},{id:"import",ico:"📁",l:"CSV"},{id:"staff",ico:"👥",l:"スタッフ"},{id:"shift",ico:"📅",l:"出勤簿"},{id:"attendance",ico:"⏰",l:"給与"},{id:"fleet",ico:"🚗",l:"配車"},{id:"jalanpay",ico:"💳",l:"決済"},{id:"vehicle",ico:"🔧",l:"車両"},{id:"parking",ico:"🅿️",l:"駐車場"},{id:"accounting",ico:"💰",l:"会計"},{id:"customer",ico:"👑",l:"顧客"},{id:"dashboard",ico:"📊",l:"売上"},{id:"data",ico:"📋",l:"データ"},{id:"history",ico:"📜",l:"過去"},{id:"license",ico:"🪪",l:"免許証",external:true}];
+  const navItems=[{id:"top",ico:"🏠",l:"TOP"},{id:"notices",ico:"📢",l:"お知らせ"},{id:"import",ico:"📁",l:"CSV"},{id:"staff",ico:"👥",l:"スタッフ"},{id:"shift",ico:"📅",l:"出勤簿"},{id:"attendance",ico:"⏰",l:"給与"},{id:"fleet",ico:"🚗",l:"配車"},{id:"jalanpay",ico:"💳",l:"決済"},{id:"vehicle",ico:"🔧",l:"車両"},{id:"parking",ico:"🅿️",l:"駐車場"},{id:"accounting",ico:"💰",l:"会計"},{id:"customer",ico:"👑",l:"顧客"},{id:"dashboard",ico:"📊",l:"売上"},{id:"data",ico:"📋",l:"データ"},{id:"history",ico:"📜",l:"過去"},{id:"license",ico:"🪪",l:"免許証",external:true}];
 
   const repeaterInfo=useMemo(()=>buildRepeaterMap(data),[data]);
 
@@ -7348,7 +7431,7 @@ function App(){
     {showOP&&<OPScreen reservations={data} today={today} shifts={shifts} fleet={fleet} onFleetChange={setFleetSync} onClose={()=>{setShowOP(false);refreshTopTasks();}} vehicles={vehicles} staff={staff} resOpts={resOpts} sheetPlaces={sheetPlaces} onUpdateSheetPlaces={saveSheetPlaces} repeaterMap={repeaterInfo.isRepeater} jalanPay={jalanPay} cancelledIdsRef={cancelledIdsRef} onCancelReservation={cancelReservation} onTaskChange={refreshTopTasks}/>}
     <div style={{display:showOP?"none":"flex",flex:1,overflow:"hidden",flexDirection:"column"}}>
       <div className={"top-nav"+(tab==="top"?" hide-on-top":"")}>
-        {navItems.filter(n=>{const always=["top","punch","notices","import","vehicle","staff","shift","attendance","parking","accounting","fleet","jalanpay","history","customer","license"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open("license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
+        {navItems.filter(n=>{const always=["top","notices","import","vehicle","staff","shift","attendance","parking","accounting","fleet","jalanpay","history","customer","license"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open("license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
         {data.length>0&&<button onClick={()=>setShowOP(true)} style={{color:"#60a5fa"}}><span className="ico">📋</span>OP</button>}
         {SB_ENABLED&&<button onClick={reloadAll} disabled={reloading===1} style={{background:reloading===2?"#d1fae5":"none",border:"none",cursor:reloading===1?"wait":"pointer",fontSize:14,padding:"2px 4px",borderRadius:6,opacity:reloading===1?0.5:1,transition:"background .3s"}}>{reloading===1?"⏳":reloading===2?"✅":"🔄"}</button>}
         {SB_ENABLED&&<SyncBadge connected={sbConnected} inline={true}/>}
@@ -7356,7 +7439,7 @@ function App(){
       <div style={{display:"flex",flex:1,overflow:"hidden"}}>
       <div className={"sidebar"+(tab==="top"?" hide-on-top":"")}>
         <div style={{width:36,height:36,borderRadius:8,background:"linear-gradient(135deg,#3b82f6,#1d4ed8)",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:800,fontSize:14,marginBottom:8}}>S</div>
-        {navItems.filter(n=>{const always=["top","punch","notices","import","vehicle","staff","shift","attendance","parking","accounting","fleet","jalanpay","history","customer","license"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open("license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
+        {navItems.filter(n=>{const always=["top","notices","import","vehicle","staff","shift","attendance","parking","accounting","fleet","jalanpay","history","customer","license"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open("license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
         {data.length>0&&<button onClick={()=>setShowOP(true)} style={{marginTop:4,background:"linear-gradient(135deg,#1e40af,#2563eb)",color:"#fff",borderRadius:10}}><span className="ico">📋</span><span style={{fontSize:8}}>OP</span></button>}
       </div>
       <div className="main-area" style={{flex:1,overflow:tab==="fleet"||tab==="parking"?"hidden":"auto",padding:tab==="fleet"||tab==="parking"?0:12,display:"flex",flexDirection:"column"}}>
@@ -7407,31 +7490,35 @@ function App(){
                 </div>
                 <div style={{fontSize:20,fontWeight:900,color:"#1e293b"}}>札幌店 タスク管理</div>
                 <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>{APP_VERSION} ・ {data.length>0?data.length+"件の予約データ":"データ未読込"}{SB_ENABLED&&sbConnected?" ・ 🟢 同期中":SB_ENABLED?" ・ 🔴 未接続":""}</div>
+                {data.length>0&&<button onClick={()=>setShowOP(true)} style={{marginTop:10,padding:"8px 20px",borderRadius:12,border:"none",cursor:"pointer",background:"linear-gradient(135deg,#1e40af,#2563eb)",color:"#fff",fontSize:13,fontWeight:700,boxShadow:"0 2px 8px rgba(37,99,235,.3)"}}>📋 OPシートを開く</button>}
               </div>
-              {/* 打刻ショートカット */}
-              <div style={{marginBottom:16}}>
-                <a href="/punch.html" style={{
-                  display:"flex",alignItems:"center",justifyContent:"space-between",
-                  padding:"18px 20px",borderRadius:16,
-                  background:"linear-gradient(135deg,#059669,#10b981)",
-                  color:"#fff",textDecoration:"none",
-                  boxShadow:"0 4px 14px rgba(5,150,105,.35)"
-                }}>
-                  <div style={{display:"flex",alignItems:"center",gap:14}}>
-                    <span style={{fontSize:32}}>👊</span>
-                    <div>
-                      <div style={{fontSize:16,fontWeight:900,letterSpacing:.5}}>出退勤 打刻</div>
-                      <div style={{fontSize:11,opacity:.85,marginTop:2}}>アルバイトはここをタップ・ブックマーク推奨</div>
-                    </div>
-                  </div>
-                  <span style={{fontSize:22,opacity:.7}}>→</span>
-                </a>
+              {/* 協議中アラート */}
+              {(()=>{
+                const kyogiList=Object.values(attendance).filter(r=>r.memo&&r.memo.startsWith("協議中"));
+                if(!kyogiList.length)return null;
+                return <div style={{marginBottom:16}}>
+                  {kyogiList.map((r,i)=>{
+                    const detail=r.memo.replace(/^協議中:/,"");
+                    return <div key={i} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"12px 14px",borderRadius:12,background:"rgba(251,191,36,.12)",border:"1px solid rgba(251,191,36,.3)",marginBottom:8}}>
+                      <span style={{fontSize:20,flexShrink:0}}>⚠️</span>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:13,fontWeight:900,color:"#b45309"}}>{r.name}さんより修正リクエストを受けています</div>
+                        <div style={{fontSize:11,color:"#92400e",marginTop:2}}>{r.date}　{detail}</div>
+                      </div>
+                    </div>;
+                  })}
+                </div>;
+              })()}
+              <MemoBox today={today}/>
+              {/* ★ 個人別タスクサマリー（折りたたみ） */}
+              <div style={{marginBottom:8}}>
+                <div onClick={()=>setTaskSumOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px",borderRadius:12,background:"#f8fafc",border:"1px solid #e2e8f0",cursor:"pointer",userSelect:"none",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
+                  <span style={{fontSize:16}}>👤</span>
+                  <span style={{fontSize:12,fontWeight:800,color:"#1e293b"}}>個人別タスクサマリー</span>
+                  <span style={{marginLeft:"auto",fontSize:11,color:"#94a3b8",fontWeight:700}}>{taskSumOpen?"▲":"▼"}</span>
+                </div>
               </div>
-              {data.length>0&&<div style={{display:"flex",gap:8,marginBottom:16,justifyContent:"center",flexWrap:"wrap"}}>
-                <button onClick={()=>setShowOP(true)} style={{padding:"10px 20px",borderRadius:12,border:"none",cursor:"pointer",background:"linear-gradient(135deg,#1e40af,#2563eb)",color:"#fff",fontSize:13,fontWeight:700,boxShadow:"0 2px 8px rgba(37,99,235,.3)"}}>📋 OPシートを開く</button>
-              </div>}
-              {/* ★ 個人別タスクサマリー（本日＋翌日） */}
-              {[{label:"本日",date:today,tasks:todayTasks,border:"#3b82f6"},{label:"翌日",date:dOff(today,1),tasks:tomorrowTasks,border:"#f59e0b"}].map(sec=>{
+              {taskSumOpen&&[{label:"本日",date:today,tasks:todayTasks,border:"#3b82f6"},{label:"翌日",date:dOff(today,1),tasks:tomorrowTasks,border:"#f59e0b"}].map(sec=>{
                 if(!sec.tasks.length)return null;
                 const byPerson={};
                 sec.tasks.forEach(t=>{const who=t.assignee||"未割当";if(!byPerson[who])byPerson[who]=[];byPerson[who].push(t);});
@@ -7622,10 +7709,17 @@ function App(){
                 const totalTasks=dels.length+cols.length+washCount;
                 const dt=new Date(tmr);const WK=["日","月","火","水","木","金","土"];
                 const dateLabel=(dt.getMonth()+1)+"/"+dt.getDate()+"("+WK[dt.getDay()]+")";
-                return <div style={{marginBottom:16,padding:"12px 14px",borderRadius:14,border:"1px solid "+(alerts?"#fde68a":"#bfdbfe"),background:alerts?"linear-gradient(135deg,#fffbeb,#fef3c7)":"linear-gradient(135deg,#eff6ff,#dbeafe)"}}>
-                  <div style={{fontSize:13,fontWeight:800,color:alerts?"#92400e":"#1e40af",marginBottom:10}}>
-                    📋 明日 {dateLabel} の業務サマリー（{totalTasks}件） {alerts>0&&<span style={{fontSize:10,background:"#ef4444",color:"#fff",padding:"2px 8px",borderRadius:10,marginLeft:6}}>{alerts}件注意</span>}
+                return <div style={{marginBottom:16}}>
+                  <div onClick={()=>setTomSumOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px",borderRadius:12,background:"#f8fafc",border:"1px solid #e2e8f0",cursor:"pointer",userSelect:"none",boxShadow:"0 1px 3px rgba(0,0,0,.05)",marginBottom:tomSumOpen?6:0}}>
+                    <span style={{fontSize:16}}>📋</span>
+                    <span style={{fontSize:13,fontWeight:900,color:"#1e293b"}}>翌日業務サマリー（{dateLabel}）</span>
+                    <span style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:6}}>
+                      {alerts>0&&<span style={{fontSize:10,background:"#ef4444",color:"#fff",padding:"2px 8px",borderRadius:10}}>{alerts}件注意</span>}
+                      <span style={{fontSize:11,fontWeight:700,color:"#94a3b8"}}>{totalTasks}件　{tomSumOpen?"▲":"▼"}</span>
+                    </span>
                   </div>
+                  {tomSumOpen&&<div style={{padding:"12px 14px",borderRadius:14,border:"1px solid "+(alerts?"#fde68a":"#bfdbfe"),background:alerts?"linear-gradient(135deg,#fffbeb,#fef3c7)":"linear-gradient(135deg,#eff6ff,#dbeafe)"}}>
+
                   {/* ⑥ 出勤予定者 */}
                   <div style={{marginBottom:10,padding:"6px 10px",borderRadius:8,background:"#fff",border:"1px solid #e2e8f0"}}>
                     <div style={{fontSize:10,fontWeight:700,color:"#059669",marginBottom:4}}>👥 出勤予定 {tmrShifts.length}名</div>
@@ -7708,7 +7802,7 @@ function App(){
                       <div>{shown.map(r=>r.name+"("+r.insurance+")").join(", ")}{need&&!open?"...他"+(nocAlerts.length-5)+"件":""}</div>
                     </div>;};return <FoldNoc/>;})()}
                   </div>}
-                </div>;
+                </div>}</div>;
               })()}
               {sections.map(function(sec){return <div key={sec.title} style={{marginBottom:16}}>
                 <div style={{fontSize:11,fontWeight:800,color:sec.color,textTransform:"uppercase",letterSpacing:1,marginBottom:8,paddingLeft:4}}>{sec.title}</div>
@@ -7787,11 +7881,10 @@ function App(){
           {tab==="import"&&<CSVPanel onImport={imp} onUpdatePlaces={updatePlaces} dataCount={data.length} pendingPlaces={pendingPlaces} onSetPendingPlaces={setPendingPlaces} files={csvFiles} setFiles={setCsvFiles} logs={csvLogs} setLogs={setCsvLogs} placeLogs={csvPlaceLogs} setPlaceLogs={setCsvPlaceLogs}/>}
           {tab==="staff"&&<PASGuard label="スタッフ情報"><StaffManager staff={staff} onStaffChange={setStaffSync} onDeleteStaff={(name)=>DB.deleteStaff(name)}/></PASGuard>}
           {tab==="shift"&&<ShiftCalendar shifts={shifts} onShiftsChange={setShiftsSync} today={today} staff={staff} sbSaveShift={DB.saveShift}/>}
-          {tab==="punch"&&<PunchClock staff={staff}/>}
           {tab==="attendance"&&<PASGuard label="給与計算"><AttendanceManager shifts={shifts} staff={staff} today={today} attendance={attendance} onAttendanceChange={setAttendance}/></PASGuard>}
           {tab==="fleet"&&<FleetTimeline data={data} fleet={fleet} onFleetChange={setFleetSync} today={today} maintenance={maintenance} onMaintenanceChange={setMaintenance} vehicles={vehicles} vehicleClasses={vehicleClasses} onAddReservation={addReservation} onBulkAddReservation={bulkAddReservation} onCancelReservation={cancelReservation} onReassignVehicle={reassignVehicle} onUpdateReservation={updateReservation} unassignedReasons={unassignedReasons} onVehicleDetail={(code)=>{setHighlightVehicle(code);setTab("vehicle");setTimeout(()=>setHighlightVehicle(null),3000);}}/>}
           {tab==="vehicle"&&<VehicleTab vehicles={vehicles} onVehiclesChange={setVehiclesSync} vehicleClasses={vehicleClasses} onDeleteVehicle={(code)=>DB.deleteVehicle(code)} hmCars={hmCars} hmCarData={hmCarData} hmLogs={hmLogs} hmClasses={hmClasses} hmReload={hmReload} highlightVehicle={highlightVehicle}/>}
-          {tab==="parking"&&<ParkingManager masterVehicles={vehicles} todayTasks={todayTasks} tomorrowTasks={tomorrowTasks} fleet={fleet}/>}
+          {tab==="parking"&&<ParkingManager masterVehicles={vehicles}/>}
           {tab==="accounting"&&<PASGuard label="会計管理"><AccountingPanel staff={staff}/></PASGuard>}
           {tab==="jalanpay"&&<JalanPayment data={data} jalanPay={jalanPay} onJalanPayChange={(id,d)=>{setJalanPay(p=>({...p,[id]:d}));DB.saveJalanPayment(id,d);}}/>}
           {tab==="dashboard"&&data.length>0&&<>
@@ -7822,7 +7915,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.71";
+const APP_VERSION="v4.2.72";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
