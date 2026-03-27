@@ -2164,21 +2164,21 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
       toCreate.forEach(r=>{next[r.date+"_"+r.name]=r;});
       toUpdate.forEach(r=>{next[r.date+"_"+r.name]=r;});
       onAttendanceChange(next);
-      if(toCreate.length>0)DB.saveAttendanceBatch(toCreate);
-      if(toUpdate.length>0)DB.saveAttendanceBatch(toUpdate);
+      if(toCreate.length>0)DB.saveAttendanceBatch(toCreate).catch(e=>console.error("[genAtt] create error:",e));
+      if(toUpdate.length>0)DB.saveAttendanceBatch(toUpdate).catch(e=>console.error("[genAtt] update error:",e));
     }
   },[shifts,staff,viewYM,dim,onAttendanceChange]);
   // shiftsが変わったら最新のattendanceで自動生成を実行
   React.useEffect(()=>{genAttFromShifts(attendance);},[shifts,viewYM]);
 
-  const approve=(date,name)=>{
+  const approve=async(date,name)=>{
     if(!window.confirm("受領を実行しますか？"))return;
     const key=date+"_"+name;const cur=attendance[key];if(!cur)return;
     const updated={...cur,approved:true};
     onAttendanceChange({...attendance,[key]:updated});
-    DB.saveAttendance(updated);
+    try{await DB.saveAttendance(updated);}catch(e){console.error("[approve] save error:",e);}
   };
-  const approveAll=(name)=>{
+  const approveAll=async(name)=>{
     if(!window.confirm("全受領を実行しますか？"))return;
     const d=allStaffData[name];if(!d)return;
     const next={...attendance};const batch=[];
@@ -2189,9 +2189,9 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
         next[key]=updated;batch.push(updated);
       }
     });
-    onAttendanceChange(next);if(batch.length)DB.saveAttendanceBatch(batch);
+    onAttendanceChange(next);if(batch.length)try{await DB.saveAttendanceBatch(batch);}catch(e){console.error("[approveAll] save error:",e);}
   };
-  const saveEdit=()=>{
+  const saveEdit=async()=>{
     if(!editDay)return;
     if(!window.confirm("保存を実行しますか？"))return;
     const key=editDay.date+"_"+editDay.name;
@@ -2201,7 +2201,8 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
     const approved=isKyogi?true:(attendance[key]?.approved||false);
     const updated={date:editDay.date,name:editDay.name,start:editDay.start,end:editDay.end,approved,memo,absent:!!editDay.absent};
     onAttendanceChange({...attendance,[key]:updated});
-    DB.saveAttendance(updated);setEditDay(null);
+    try{await DB.saveAttendance(updated);}catch(e){console.error("[saveEdit] save error:",e);}
+    setEditDay(null);
   };
 
   // 予算総額（フィルター連動）
@@ -7984,7 +7985,7 @@ function App(){
           })()}
           {tab==="customer"&&<CustomerList data={data}/>}
           {tab==="import"&&<CSVPanel onImport={imp} onUpdatePlaces={updatePlaces} dataCount={data.length} pendingPlaces={pendingPlaces} onSetPendingPlaces={setPendingPlaces} files={csvFiles} setFiles={setCsvFiles} logs={csvLogs} setLogs={setCsvLogs} placeLogs={csvPlaceLogs} setPlaceLogs={setCsvPlaceLogs}/>}
-          {tab==="staff"&&<PASGuard label="スタッフ情報"><StaffManager staff={staff} onStaffChange={setStaffSync} onDeleteStaff={(name)=>DB.deleteStaff(name)}/></PASGuard>}
+          {tab==="staff"&&<PASGuard label="スタッフ情報"><StaffManager staff={staff} onStaffChange={setStaffSync} onDeleteStaff={async(name)=>{try{await DB.deleteStaff(name);/* 旧名シフト・勤怠を清掃 */if(sb){sb.from("shifts").delete().eq("staff_name",name).then(()=>console.log("[staff] shifts清掃:",name));sb.from("spk_attendance").delete().eq("staff_name",name).then(()=>console.log("[staff] attendance清掃:",name));}}catch(e){console.error("deleteStaff error:",e);}}}/></PASGuard>}
           {tab==="shift"&&<ShiftCalendar shifts={shifts} onShiftsChange={setShiftsSync} today={today} staff={staff} sbSaveShift={DB.saveShift}/>}
           {tab==="attendance"&&<PASGuard label="給与計算"><AttendanceManager shifts={shifts} staff={staff} today={today} attendance={attendance} onAttendanceChange={setAttendance}/></PASGuard>}
           {tab==="fleet"&&<FleetTimeline data={data} fleet={fleet} onFleetChange={setFleetSync} today={today} maintenance={maintenance} onMaintenanceChange={setMaintenance} vehicles={vehicles} vehicleClasses={vehicleClasses} onAddReservation={addReservation} onBulkAddReservation={bulkAddReservation} onCancelReservation={cancelReservation} onReassignVehicle={reassignVehicle} onUpdateReservation={updateReservation} unassignedReasons={unassignedReasons} onVehicleDetail={(code)=>{setHighlightVehicle(code);setTab("vehicle");setTimeout(()=>setHighlightVehicle(null),3000);}}/>}
@@ -8020,7 +8021,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.78";
+const APP_VERSION="v4.2.79";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
