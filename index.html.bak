@@ -8269,144 +8269,70 @@ function App(){
                     })()}
                   </div>;
               })}
-              {/* ★ 翌日業務サマリー */}
-              {(tomorrowTasks.length>0||data.length>0)&&(()=>{
-                const tmr=dOff(today,1);
-                // DBタスクベースでカウント（正確）
-                const dbDels=tomorrowTasks.filter(t=>t.type==="DEL");
-                const dbCols=tomorrowTasks.filter(t=>t.type==="COL");
-                const dbWash=tomorrowTasks.filter(t=>t.type==="洗車");
-                // CSV予約データ（アラート判定用のフォールバック）
-                const tmrRes=data.filter(r=>sD(r.lendDate,tmr)||sD(r.returnDate,tmr));
-                const csvDels=tmrRes.filter(r=>sD(r.lendDate,tmr));
-                const csvCols=tmrRes.filter(r=>sD(r.returnDate,tmr)&&!sD(r.lendDate,tmr));
-                // 表示用: DBタスクがあればDB優先、なければCSV
-                const dels=tomorrowTasks.length>0?dbDels:csvDels;
-                const cols=tomorrowTasks.length>0?dbCols:csvCols;
-                const washCount=tomorrowTasks.length>0?dbWash.length:data.filter(r=>sD(r.lendDate,dOff(tmr,1))).length;
-                if(!dels.length&&!cols.length&&!dbWash.length&&!tmrRes.length)return null;
-                // アラート判定はCSV予約データも参照（オプション等はCSVにしかない）
-                const alertDels=csvDels.length?csvDels:dels;
-                // ② じゃらん未決済
-                const jalanUnpaid=alertDels.filter(r=>(r.ota||r.ota_code)==="J"&&(!jalanPay[r.id||r.reservation_id]||jalanPay[r.id||r.reservation_id].payStatus!=="完了"));
-                // ③ オプションアラート
-                const optAlerts=alertDels.filter(r=>(r.optB||r.optC||r.optJ||r.optUSB||r.optParasol));
-                // ④ 時間詰まり（DEL+COL合わせて1時間以内に複数タスク）
-                const allTimes=[];
-                dels.forEach(r=>{const t=r.time||r.delTime||r.lendTime;if(t)allTimes.push({time:t,name:r.name,type:r.type||"DEL"});});
-                cols.forEach(r=>{const t=r.time||r.colTime||r.returnTime;if(t)allTimes.push({time:t,name:r.name,type:r.type||"COL"});});
-                allTimes.sort((a,b)=>(a.time||"").localeCompare(b.time||""));
-                const tightTasks=[];
-                for(let i=1;i<allTimes.length;i++){
-                  const prev=allTimes[i-1],cur=allTimes[i];
-                  if(!prev.time||!cur.time)continue;
-                  const pM=parseInt(prev.time.split(":")[0])*60+parseInt(prev.time.split(":")[1]||0);
-                  const cM=parseInt(cur.time.split(":")[0])*60+parseInt(cur.time.split(":")[1]||0);
-                  if(cM-pM<60&&cM-pM>=0)tightTasks.push({a:prev,b:cur,gap:cM-pM});
-                }
-                // ⑤ NOC以外の補償（COL限定）
-                const alertCols=csvCols.length?csvCols:cols;
-                const nocAlerts=alertCols.filter(r=>r.insurance&&r.insurance!=="NOC"&&r.insurance!=="免責");
-                // ⑥ 出勤予定者
-                const tmrShifts=(shifts[tmr]||[]).filter(s=>s.type==="アルバイト"||s.symbol==="●");
-                const alerts=jalanUnpaid.length+optAlerts.length+tightTasks.length+nocAlerts.length;
-                const totalTasks=dels.length+cols.length+washCount;
-                const dt=new Date(tmr);const WK=["日","月","火","水","木","金","土"];
-                const dateLabel=(dt.getMonth()+1)+"/"+dt.getDate()+"("+WK[dt.getDay()]+")";
+              {/* ★ 本日スケジュール（時系列フラット表示） */}
+              {todayTasks.length>0&&(()=>{
+                const isMob=window.innerWidth<=768;
+                const timedWash=todayTasks.filter(t=>t.type==="洗車"&&t.time);
+                const untimedWash=todayTasks.filter(t=>t.type==="洗車"&&!t.time);
+                const allSchedule=[...todayTasks.filter(t=>t.type!=="洗車"&&t.type!=="CXL"),...timedWash].sort((a,b)=>{const ta=a.timeChange||a._ssTime||a.time||"99:99";const tb=b.timeChange||b._ssTime||b.time||"99:99";return ta.localeCompare(tb);});
+                const typeStyle=(tp)=>({DEL:{bg:"#dbeafe",c:"#1d4ed8",border:"#60a5fa"},COL:{bg:"#ffedd5",c:"#9a3412",border:"#fdba74"},"洗車":{bg:"#FFFDE7",c:"#795548",border:"#FFD54F"},"その他":{bg:"#f1f5f9",c:"#475569",border:"#cbd5e1"},CXL:{bg:"#f1f5f9",c:"#9ca3af",border:"#d1d5db"}})[tp]||{bg:"#f1f5f9",c:"#475569",border:"#cbd5e1"};
                 return <div style={{marginBottom:16}}>
-                  <div onClick={()=>setTomSumOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px",borderRadius:12,background:"#f8fafc",border:"1px solid #e2e8f0",cursor:"pointer",userSelect:"none",boxShadow:"0 1px 3px rgba(0,0,0,.05)",marginBottom:tomSumOpen?6:0}}>
-                    <span style={{fontSize:16}}>📋</span>
-                    <span style={{fontSize:13,fontWeight:900,color:"#1e293b"}}>翌日業務サマリー（{dateLabel}）</span>
-                    <span style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:6}}>
-                      {alerts>0&&<span style={{fontSize:10,background:"#ef4444",color:"#fff",padding:"2px 8px",borderRadius:10}}>{alerts}件注意</span>}
-                      <span style={{fontSize:11,fontWeight:700,color:"#94a3b8"}}>{totalTasks}件　{tomSumOpen?"▲":"▼"}</span>
-                    </span>
+                  <div style={{background:"#fff",borderRadius:12,border:"1px solid #e2e8f0",overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,.06)"}}>
+                    <div style={{background:"linear-gradient(135deg,#0f172a,#1e293b)",padding:"8px 12px",color:"#e2e8f0",fontWeight:800,fontSize:isMob?13:12,display:"flex",alignItems:"center",gap:8}}>
+                      <span>🗓 スケジュール</span>
+                      <span style={{fontSize:10,fontWeight:600,opacity:.7}}>{allSchedule.length}件{untimedWash.length>0?" + 時間未定洗車"+untimedWash.length+"件":""}</span>
+                    </div>
+                    {allSchedule.map(t=>{
+                      const ppl=parseInt(t.people)||0;
+                      const resolvedT=t.timeChange||t._ssTime||t.time||"--:--";
+                      const resolvedP=(t._placeSource==="manual"?t.place:(t._ssPlace||t.place))||"";
+                      const ts=typeStyle(t.type);
+                      const vn=t.assignedVehicle?vehicles.find(v=>v.code===t.assignedVehicle):null;
+                      const fleetVc=!vn&&t.reservationId?fleet[t.reservationId]:null;
+                      const fleetVeh=fleetVc?vehicles.find(v=>v.code===fleetVc):null;
+                      const dispVn=vn||fleetVeh;
+                      return <div key={t._id} onClick={()=>{if(t.reservationId){setShowOP(true);}}} style={{display:"flex",alignItems:"stretch",gap:0,borderBottom:"1px solid #e2e8f0",cursor:t.reservationId?"pointer":"default",opacity:t.done?.5:1,background:t.done?"#fafafa":"#fff"}}>
+                        <div style={{width:isMob?56:52,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:isMob?13:12,color:"#334155",fontFamily:"monospace",background:"#f8fafc",borderRight:"1px solid #e2e8f0"}}>{resolvedT}</div>
+                        <div style={{width:isMob?48:44,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",background:ts.bg,borderRight:"2px solid "+ts.border}}>
+                          <span style={{fontSize:isMob?11:10,fontWeight:800,color:ts.c}}>{t.type}</span>
+                        </div>
+                        <div style={{flex:1,padding:isMob?"6px 10px":"5px 10px",minWidth:0}}>
+                          <div style={{display:"flex",alignItems:"center",gap:6}}>
+                            <span style={{fontWeight:700,fontSize:isMob?13:12,color:"#0f172a",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.type==="洗車"?(t.name||"洗車"):(t.name||"名前なし")}</span>
+                            {t.type==="洗車"&&t.memo&&<span style={{fontSize:isMob?10:9,color:"#795548",fontWeight:600,flexShrink:0}}>{t.memo}</span>}
+                            {t.type!=="洗車"&&ppl>0&&<span style={{fontSize:isMob?11:10,fontWeight:700,color:"#7c3aed",flexShrink:0}}>{ppl}名</span>}
+                            {t.done&&<span style={{flexShrink:0}}>✅</span>}
+                          </div>
+                          <div style={{display:"flex",alignItems:"center",gap:6,marginTop:2,flexWrap:"wrap"}}>
+                            {resolvedP&&<span style={{fontSize:isMob?10:9,color:"#475569",fontWeight:600}}>📍{resolvedP}</span>}
+                            {t.flight&&<span style={{fontSize:isMob?10:9,color:"#1565c0",fontWeight:600}}>✈{t.flight}</span>}
+                            {dispVn&&<span style={{fontSize:isMob?10:9,color:"#059669",fontWeight:600}}>🚗{dispVn.name}({dispVn.no})</span>}
+                            {!dispVn&&t.type!=="洗車"&&t.type!=="その他"&&<span style={{fontSize:isMob?9:8,color:"#dc2626",fontWeight:700}}>未配車</span>}
+                            {t.assignee&&<span style={{fontSize:isMob?10:9,background:"#ede9fe",color:"#6d28d9",fontWeight:700,padding:"1px 6px",borderRadius:4}}>👤{t.assignee}</span>}
+                            {!t.assignee&&t.type!=="洗車"&&<span style={{fontSize:isMob?9:8,color:"#f59e0b",fontWeight:700}}>担当未定</span>}
+                          </div>
+                        </div>
+                      </div>;
+                    })}
+                    {untimedWash.length>0&&<div>
+                      <div style={{background:"#f8fafc",padding:"4px 12px",borderBottom:"1px solid #e2e8f0",display:"flex",alignItems:"center",gap:6}}>
+                        <span style={{fontSize:isMob?14:13,fontWeight:900,color:"#64748b"}}>🧽 洗車（時間未定）</span>
+                        <span style={{fontSize:9,color:"#94a3b8",fontWeight:600}}>{untimedWash.length}件</span>
+                        <div style={{flex:1,height:1,background:"#e2e8f0"}}/>
+                      </div>
+                      {untimedWash.map(t=>{
+                        const vn=t.assignedVehicle?vehicles.find(v=>v.code===t.assignedVehicle):null;
+                        return <div key={t._id} style={{display:"flex",alignItems:"center",gap:8,padding:isMob?"6px 12px":"4px 12px",borderBottom:"1px solid #f5f5f5",opacity:t.done?.5:1,fontSize:isMob?11:10}}>
+                          <span style={{fontWeight:600,color:"#64748b",flex:1}}>{t.memo||t.name||""}</span>
+                          {vn&&<span style={{color:"#059669",fontWeight:600,fontSize:isMob?10:9}}>🚗{vn.name}({vn.no})</span>}
+                          {t.assignee&&<span style={{color:"#6d28d9",fontWeight:600,fontSize:isMob?10:9}}>👤{t.assignee}</span>}
+                          {t.done&&<span>✅</span>}
+                        </div>;
+                      })}
+                    </div>}
+                    {allSchedule.length===0&&untimedWash.length===0&&<div style={{padding:20,textAlign:"center",color:"#94a3b8",fontSize:12}}>タスクなし</div>}
                   </div>
-                  {tomSumOpen&&<div style={{padding:"12px 14px",borderRadius:14,border:"1px solid "+(alerts?"#fde68a":"#bfdbfe"),background:alerts?"linear-gradient(135deg,#fffbeb,#fef3c7)":"linear-gradient(135deg,#eff6ff,#dbeafe)"}}>
-
-                  {/* ⑥ 出勤予定者 */}
-                  <div style={{marginBottom:10,padding:"6px 10px",borderRadius:8,background:"#fff",border:"1px solid #e2e8f0"}}>
-                    <div style={{fontSize:10,fontWeight:700,color:"#059669",marginBottom:4}}>👥 出勤予定 {tmrShifts.length}名</div>
-                    {tmrShifts.length>0?<div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
-                      {tmrShifts.map(s=>{const isReg=s.type==="正社員";return <span key={s.name} style={{fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:6,background:isReg?"#dbeafe":"#fef3c7",color:isReg?"#1d4ed8":"#92400e"}}>{s.name}</span>;})}
-                    </div>:<div style={{fontSize:10,color:"#94a3b8"}}>シフト未登録</div>}
-                  </div>
-                  {/* ① タスク概要 */}
-                  <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginBottom:10}}>
-                    <div style={{padding:"8px 10px",borderRadius:10,background:"#fff",textAlign:"center",border:"1px solid #e2e8f0"}}>
-                      <div style={{fontSize:9,color:"#64748b",fontWeight:600}}>DEL（貸出）</div>
-                      <div style={{fontSize:20,fontWeight:900,color:"#2563eb"}}>{dels.length}</div>
-                    </div>
-                    <div style={{padding:"8px 10px",borderRadius:10,background:"#fff",textAlign:"center",border:"1px solid #e2e8f0"}}>
-                      <div style={{fontSize:9,color:"#64748b",fontWeight:600}}>COL（返却）</div>
-                      <div style={{fontSize:20,fontWeight:900,color:"#dc2626"}}>{cols.length}</div>
-                    </div>
-                    <div style={{padding:"8px 10px",borderRadius:10,background:"#fff",textAlign:"center",border:"1px solid #e2e8f0"}}>
-                      <div style={{fontSize:9,color:"#64748b",fontWeight:600}}>洗車</div>
-                      <div style={{fontSize:20,fontWeight:900,color:"#f59e0b"}}>{washCount}</div>
-                    </div>
-                  </div>
-                  {/* DEL詳細（折りたたみ対応） */}
-                  {dels.length>0&&(()=>{const FoldDel=()=>{const FL=6;const need=dels.length>=FL;const[open,setOpen]=useState(!need);const shown=open?dels:dels.slice(0,5);return <div style={{marginBottom:8}}>
-                    <div style={{fontSize:10,fontWeight:700,color:"#1e40af",marginBottom:4,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                      <span>🚗 DEL詳細 ({dels.length}件)</span>
-                      {need&&<button onClick={()=>setOpen(!open)} style={{background:"none",border:"1px solid #d1d5db",borderRadius:4,fontSize:8,color:"#6b7280",cursor:"pointer",padding:"1px 6px"}}>{open?"折りたたむ":"全て表示"}</button>}
-                    </div>
-                    {shown.map(r=><div key={r._id||r.id} style={{fontSize:10,padding:"3px 8px",background:"#fff",borderRadius:6,marginBottom:2,display:"flex",gap:6,alignItems:"center",border:"1px solid #e2e8f0"}}>
-                      <span style={{fontWeight:700,color:"#2563eb",minWidth:36}}>{r.time||r.delTime||r.lendTime||"-"}</span>
-                      <span style={{fontWeight:600}}>{r.name}</span>
-                      <span style={{color:"#64748b",fontSize:9}}>{(r.vehicle||"")}クラス</span>
-                      {r.insurance&&r.insurance!=="NOC"&&<span style={{fontSize:8,background:"#fef2f2",color:"#dc2626",padding:"1px 4px",borderRadius:4,fontWeight:700}}>⚠️{r.insurance}</span>}
-                    </div>)}
-                    {need&&!open&&<div style={{fontSize:8,color:"#9ca3af",textAlign:"center",padding:2}}>...他{dels.length-5}件</div>}
-                  </div>;};return <FoldDel/>;})()}
-                  {/* COL詳細（折りたたみ対応） */}
-                  {cols.length>0&&(()=>{const FoldCol=()=>{const FL=6;const need=cols.length>=FL;const[open,setOpen]=useState(!need);const shown=open?cols:cols.slice(0,5);return <div style={{marginBottom:8}}>
-                    <div style={{fontSize:10,fontWeight:700,color:"#dc2626",marginBottom:4,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                      <span>📥 COL詳細 ({cols.length}件)</span>
-                      {need&&<button onClick={()=>setOpen(!open)} style={{background:"none",border:"1px solid #d1d5db",borderRadius:4,fontSize:8,color:"#6b7280",cursor:"pointer",padding:"1px 6px"}}>{open?"折りたたむ":"全て表示"}</button>}
-                    </div>
-                    {shown.map(r=><div key={r._id||r.id} style={{fontSize:10,padding:"3px 8px",background:"#fff",borderRadius:6,marginBottom:2,display:"flex",gap:6,alignItems:"center",border:"1px solid #e2e8f0"}}>
-                      <span style={{fontWeight:700,color:"#dc2626",minWidth:36}}>{r.time||r.colTime||r.returnTime||"-"}</span>
-                      <span style={{fontWeight:600}}>{r.name}</span>
-                      <span style={{color:"#64748b",fontSize:9}}>{(r.vehicle||"")}クラス</span>
-                      {r.insurance&&r.insurance!=="NOC"&&r.insurance!=="免責"&&<span style={{fontSize:8,background:"#fef2f2",color:"#dc2626",padding:"1px 4px",borderRadius:4,fontWeight:700}}>要チェック</span>}
-                    </div>)}
-                    {need&&!open&&<div style={{fontSize:8,color:"#9ca3af",textAlign:"center",padding:2}}>...他{cols.length-5}件</div>}
-                  </div>;};return <FoldCol/>;})()}
-                  {/* アラート（各項目折りたたみ対応） */}
-                  {alerts>0&&<div style={{borderTop:"1px solid #e5e7eb",paddingTop:8}}>
-                    <div style={{fontSize:10,fontWeight:700,color:"#dc2626",marginBottom:4}}>⚠️ 注意事項</div>
-                    {jalanUnpaid.length>0&&(()=>{const FoldJP=()=>{const FL=6;const need=jalanUnpaid.length>=FL;const[open,setOpen]=useState(!need);const shown=open?jalanUnpaid:jalanUnpaid.slice(0,5);return <div style={{fontSize:10,padding:"4px 8px",background:"#fef2f2",borderRadius:6,marginBottom:3,border:"1px solid #fecaca"}}>
-                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                        <span>💳 <b>じゃらん未決済 {jalanUnpaid.length}件:</b></span>
-                        {need&&<button onClick={()=>setOpen(!open)} style={{background:"none",border:"1px solid #fecaca",borderRadius:4,fontSize:8,color:"#dc2626",cursor:"pointer",padding:"1px 6px"}}>{open?"折りたたむ":"全て表示"}</button>}
-                      </div>
-                      <div>{shown.map(r=>r.name).join(", ")}{need&&!open?"...他"+(jalanUnpaid.length-5)+"件":""}</div>
-                    </div>;};return <FoldJP/>;})()}
-                    {optAlerts.length>0&&(()=>{const FoldOpt=()=>{const FL=6;const need=optAlerts.length>=FL;const[open,setOpen]=useState(!need);const shown=open?optAlerts:optAlerts.slice(0,5);return <div style={{fontSize:10,padding:"4px 8px",background:"#fffbeb",borderRadius:6,marginBottom:3,border:"1px solid #fde68a"}}>
-                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                        <span>🪑 <b>オプション準備 {optAlerts.length}件:</b></span>
-                        {need&&<button onClick={()=>setOpen(!open)} style={{background:"none",border:"1px solid #fde68a",borderRadius:4,fontSize:8,color:"#92400e",cursor:"pointer",padding:"1px 6px"}}>{open?"折りたたむ":"全て表示"}</button>}
-                      </div>
-                      <div>{shown.map(r=>{const parts=[];if(r.optB)parts.push("B"+r.optB);if(r.optC)parts.push("C"+r.optC);if(r.optJ)parts.push("J"+r.optJ);if(r.optUSB)parts.push("USB");if(r.optParasol)parts.push("パラソル");return r.name+"("+parts.join("/")+")";}).join(", ")}{need&&!open?"...他"+(optAlerts.length-5)+"件":""}</div>
-                    </div>;};return <FoldOpt/>;})()}
-                    {tightTasks.length>0&&(()=>{const FoldTT=()=>{const FL=6;const need=tightTasks.length>=FL;const[open,setOpen]=useState(!need);const shown=open?tightTasks:tightTasks.slice(0,5);return <div style={{fontSize:10,padding:"4px 8px",background:"#fef2f2",borderRadius:6,marginBottom:3,border:"1px solid #fecaca"}}>
-                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                        <span>⏰ <b>時間詰まり {tightTasks.length}件:</b></span>
-                        {need&&<button onClick={()=>setOpen(!open)} style={{background:"none",border:"1px solid #fecaca",borderRadius:4,fontSize:8,color:"#dc2626",cursor:"pointer",padding:"1px 6px"}}>{open?"折りたたむ":"全て表示"}</button>}
-                      </div>
-                      <div>{shown.map(t=>t.a.time+" "+t.a.type+"→"+t.b.time+" "+t.b.type+"("+t.gap+"分)").join(", ")}{need&&!open?"...他"+(tightTasks.length-5)+"件":""}</div>
-                    </div>;};return <FoldTT/>;})()}
-                    {nocAlerts.length>0&&(()=>{const FoldNoc=()=>{const FL=6;const need=nocAlerts.length>=FL;const[open,setOpen]=useState(!need);const shown=open?nocAlerts:nocAlerts.slice(0,5);return <div style={{fontSize:10,padding:"4px 8px",background:"#fef2f2",borderRadius:6,marginBottom:3,border:"1px solid #fecaca"}}>
-                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                        <span>🔍 <b>返却時チェック必要 {nocAlerts.length}件:</b></span>
-                        {need&&<button onClick={()=>setOpen(!open)} style={{background:"none",border:"1px solid #fecaca",borderRadius:4,fontSize:8,color:"#dc2626",cursor:"pointer",padding:"1px 6px"}}>{open?"折りたたむ":"全て表示"}</button>}
-                      </div>
-                      <div>{shown.map(r=>r.name+"("+r.insurance+")").join(", ")}{need&&!open?"...他"+(nocAlerts.length-5)+"件":""}</div>
-                    </div>;};return <FoldNoc/>;})()}
-                  </div>}
-                </div>}</div>;
+                </div>;
               })()}
               {sections.map(function(sec){return <div key={sec.title} style={{marginBottom:16}}>
                 <div style={{fontSize:11,fontWeight:800,color:sec.color,textTransform:"uppercase",letterSpacing:1,marginBottom:8,paddingLeft:4}}>{sec.title}</div>
