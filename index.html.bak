@@ -2449,7 +2449,7 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
 /* ==========================================
    出勤簿（月次カレンダー+ CSV取込）
    ========================================== */
-function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
+function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift,reservations}){
   const todayYM=toYM(today);const[viewYM,setViewYM]=useState(todayYM);const WK=["日","月","火","水","木","金","土"];
   const SYMBOLS=["●","希","公","有","出",""];
   const SHIFT_OPTIONS=[
@@ -2650,6 +2650,37 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
 
   const dates=[];for(let d=1;d<=dim;d++)dates.push(`${viewYM}-${String(d).padStart(2,"0")}`);
 
+  // タスク数取得（予約データから算出）
+  const monthTasks=useMemo(()=>{
+    if(!reservations||!reservations.length)return{};
+    const byDate={};
+    const ensure=(d)=>{if(!byDate[d])byDate[d]={洗車:0,DEL:0,COL:0,total:0};};
+    reservations.forEach(r=>{
+      if(r.status==="cancelled")return;
+      // 出発日のタスク
+      if(r.lendDate){
+        ensure(r.lendDate);
+        const vt=(r.visitType||"").toUpperCase();
+        if(vt==="DEL"){byDate[r.lendDate].DEL++;}
+        byDate[r.lendDate].total++;
+      }
+      // 返却日のタスク
+      if(r.returnDate){
+        ensure(r.returnDate);
+        const rt=(r.returnType||"").toUpperCase();
+        if(rt==="COL"){byDate[r.returnDate].COL++;}
+        byDate[r.returnDate].total++;
+      }
+      // 洗車（出発前日）
+      if(r.lendDate){
+        const prev=new Date(r.lendDate);prev.setDate(prev.getDate()-1);
+        const prevDs=prev.toISOString().slice(0,10);
+        ensure(prevDs);byDate[prevDs].洗車++;byDate[prevDs].total++;
+      }
+    });
+    return byDate;
+  },[reservations]);
+
   // セル表示内容を取得
   const getCellDisplay=(shift,type)=>{
     if(!shift)return null;
@@ -2816,6 +2847,20 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift}){
             <td style={{position:"sticky",left:0,zIndex:2,width:72,minWidth:72,padding:"4px 6px",fontSize:10,fontWeight:700,background:"#D2B48C",borderRight:"2px solid #b8976a",borderBottom:"1px solid #b8976a"}}>人員</td>
             {dates.map(ds=>{const hc=calcHeadcount(ds);return <td key={ds} style={{minWidth:42,width:42,padding:"3px 1px",textAlign:"center",fontSize:11,fontWeight:800,background:"#D2B48C",borderRight:"1px solid #b8976a",borderBottom:"1px solid #b8976a",color:hc===0?"#b8976a":"#1e293b"}}>{hc}</td>;})}
           </tr>
+          {/* タスク数合計行 */}
+          <tr style={{fontWeight:700,background:"#f0fdf4"}}>
+            <td style={{position:"sticky",left:0,zIndex:2,width:72,minWidth:72,padding:"4px 6px",fontSize:10,fontWeight:700,background:"#f0fdf4",borderRight:"2px solid #d1d5db",borderBottom:"1px solid #d1d5db"}}>タスク</td>
+            {dates.map(ds=>{const tc=monthTasks[ds];const total=tc?tc.total:0;const hc=calcHeadcount(ds);
+              const ratio=hc>0?total/hc:0;const rBg=total===0?"#f0fdf4":ratio>3?"#fecaca":ratio>2?"#fed7aa":"#f0fdf4";
+              return <td key={ds} style={{minWidth:42,width:42,padding:"2px 1px",textAlign:"center",fontSize:10,fontWeight:800,background:rBg,borderRight:"1px solid #d1d5db",borderBottom:"1px solid #d1d5db",color:total===0?"#d1d5db":"#1e293b"}}>{total||""}</td>;})}
+          </tr>
+          {/* タスク内訳行（SPK: DEL/COL/洗車のみ） */}
+          {[{key:"洗車",label:"洗車",color:"#795548",bg:"#FFFDE7"},{key:"DEL",label:"DEL",color:"#0891b2",bg:"#ecfeff"},{key:"COL",label:"COL",color:"#0d9488",bg:"#f0fdfa"}].map(cat=>
+          <tr key={cat.key} style={{background:cat.bg}}>
+            <td style={{position:"sticky",left:0,zIndex:2,width:72,minWidth:72,padding:"3px 6px",fontSize:8,fontWeight:700,background:cat.bg,borderRight:"2px solid #d1d5db",borderBottom:"1px solid #e5e7eb",color:cat.color}}>{cat.label}</td>
+            {dates.map(ds=>{const tc=monthTasks[ds];const cnt=tc?tc[cat.key]:0;
+              return <td key={ds} style={{minWidth:42,width:42,padding:"1px",textAlign:"center",fontSize:9,fontWeight:700,background:cat.bg,borderRight:"1px solid #e5e7eb",borderBottom:"1px solid #e5e7eb",color:cnt?cat.color:"#e5e7eb"}}>{cnt||""}</td>;})}
+          </tr>)}
         </tbody>
       </table>
     </div>
@@ -3519,15 +3564,17 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
   const _syncReservation=async(t)=>{
     if(!t.reservationId)return;
     const fields={};
+    // ★ CSV元値保護: opts/insurance/vehicleのみ同期。手動の時間・場所変更はreservationsマスターに書き戻さない
     if(t.opts){fields.opt_b=+(t.opts.b||0);fields.opt_c=+(t.opts.c||0);fields.opt_j=+(t.opts.j||0);}
     if(t.insurance!==undefined)fields.insurance=t.insurance||"";
-    if(t._manualTime&&t.time){if(t.type==="DEL")fields.del_time=t.time;if(t.type==="COL")fields.col_time=t.time;}
-    if(t._manualPlace&&t.place){if(t.type==="DEL")fields.del_place=t.place;if(t.type==="COL")fields.col_place=t.place;}
-    if(t._manualColPlace&&t.colPlace){fields.col_place=t.colPlace;}
-    // Phase2: vehicle(クラス)同期
+    // ★ 時間・場所はtasksテーブルのみに保持（reservationsのCSV元値を保護）
+    // if(t._manualTime&&t.time){...} → 廃止: マスター書き戻し禁止
+    // if(t._manualPlace&&t.place){...} → 廃止: マスター書き戻し禁止
+    // Phase2: vehicle(クラス)同期（配車変更は反映が必要）
     if(t._vehicleChanged&&t.vehicle)fields.vehicle=t.vehicle;
     // Phase2: type変更→visit_type/return_type同期
     if(t._changed?.type&&t.type){if(["DEL","PU"].includes(t.type))fields.visit_type=t.type;if(t.type==="COL")fields.return_type=t.type;}
+    if(Object.keys(fields).length===0)return;
     await DB.syncToReservation(t.reservationId,fields);
   };
   const savingIdsRef=React.useRef(new Set());
@@ -3547,7 +3594,15 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
     setSaveStatus(DB._dbSaveOk?(pendingSaves.current>0?"saving":"ok"):"error");
     _notifyTopChange();
   };
-  const upd=(id,t,label)=>{if(!window.confirm(`${label||"変更"}\nよろしいですか？`))return false;_save(id,t);return true;};
+  const upd=(id,t,label)=>{
+    // ★ Mobile Safari対応: confirmダイアログの表示遅延を防止
+    return new Promise(resolve=>{
+      setTimeout(()=>{
+        if(!window.confirm(`${label||"変更"}\nよろしいですか？`)){resolve(false);return;}
+        _save(id,t);resolve(true);
+      },50);
+    });
+  };
   const mark=(t,field)=>({...t,_changed:{...t._changed,[field]:true}});
   // 免許証アップロード状態チェック
   const[licenseStatus,setLicenseStatus]=useState({});// {reservationId: true/false}
@@ -3692,7 +3747,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
     setPlaceLoading(false);
   };
   // ソート
-  const[sheetFilter,setSheetFilter]=useState("all"); // "all"|"delcol"|"wash"
+  const[sheetFilter,setSheetFilter]=useState("all"); // "all"|"del"|"col"|"wash"|"master"|"edit"
   const[sortKey,setSortKey]=useState(null);const[sortAsc,setSortAsc]=useState(true);
   const _sortVal=(t,key)=>{switch(key){case"time":return t.time||"99:99";case"csvTime":return t.csvTime||t.time||"99:99";case"type":return t.type||"";case"assignee":return t.assignee||"zzz";case"name":return t.name||"";case"vehicle":return t.assignedVehicle||"";case"done":return t.done?1:0;default:return"";}};
   const doSort=(arr,key,asc)=>{const dir=asc?1:-1;return[...arr].sort((a,b)=>{const va=_sortVal(a,key),vb=_sortVal(b,key);let r=typeof va==="number"?(va-vb)*dir:va.localeCompare(vb,"ja")*dir;if(r!==0)return r;/* 二次ソート: 時間順（同一値内の並び） */if(key!=="time"){const ta=a.time||"99:99",tb=b.time||"99:99";r=ta.localeCompare(tb);if(r!==0)return r;}/* 三次ソート: 内容順（DEL→COL→洗車→その他） */const typeOrder={"DEL":0,"COL":1,"洗車":2};const oa=typeOrder[a.type]??9,ob=typeOrder[b.type]??9;return oa-ob;});};
@@ -3714,7 +3769,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
   const sortedTasks=useMemo(()=>{if(!sortKey)return tasks;return doSort(tasks,sortKey,sortAsc);},[tasks,sortKey,sortAsc]);
   const sortIcon=(key)=>sortKey===key?(sortAsc?"▲":"▼"):"";
   // ★ フィルター適用
-  const filteredTasks=useMemo(()=>{const src=sortKey?doSort(tasks,sortKey,sortAsc):tasks;if(sheetFilter==="del")return src.filter(t=>t.type==="DEL");if(sheetFilter==="col")return src.filter(t=>t.type==="COL");if(sheetFilter==="wash")return src.filter(t=>t.type==="洗車");if(sheetFilter==="master"||sheetFilter==="all")return src;return src;},[tasks,sortKey,sortAsc,sheetFilter]);
+  const filteredTasks=useMemo(()=>{const src=sortKey?doSort(tasks,sortKey,sortAsc):tasks;if(sheetFilter==="del")return src.filter(t=>t.type==="DEL");if(sheetFilter==="col")return src.filter(t=>t.type==="COL");if(sheetFilter==="wash")return src.filter(t=>t.type==="洗車");if(sheetFilter==="master"||sheetFilter==="edit"||sheetFilter==="all")return src;return src;},[tasks,sortKey,sortAsc,sheetFilter]);
   // 行移動
   const moveRow=(id,dir)=>{if(sortKey){alert("ソート中は手動並び替えできません。\nヘッダーを3回タップしてソート解除してください。");return;}selfUpdateRef.current[selDate]=Date.now();const idx=tasks.findIndex(t=>t._id===id);const ni=idx+dir;if(ni<0||ni>=tasks.length)return;const arr=[...tasks];[arr[idx],arr[ni]]=[arr[ni],arr[idx]];setTasks(arr);DB._lsSave(arr,selDate);if(sb){sb.from("tasks").update({sort_order:idx}).eq("_id",arr[idx]._id).then(()=>{}).catch(e=>{});sb.from("tasks").update({sort_order:ni}).eq("_id",arr[ni]._id).then(()=>{}).catch(e=>{});}};
 
@@ -3744,7 +3799,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
     {activeMembers.length>0&&<div style={{padding:"3px 6px",background:"#f8fafc",borderBottom:"1px solid #e5e7eb",display:"flex",gap:3,flexWrap:"wrap",flexShrink:0}}><span style={{fontSize:9,color:"#64748b",fontWeight:600}}>出勤:</span>{activeMembers.map(name=>{const isReg=staff.find(x=>x.name===name)?.type==="正社員";return <span key={name} style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:3,background:isReg?"#dbeafe":"#fef3c7",color:isReg?"#1d4ed8":"#92400e"}}>{name}</span>;})}</div>}
     {/* ★ フィルタータブ: サマリー/バス/ハイエース/DEL・COL/洗車/マスター */}
     <div style={{padding:"4px 6px",background:"#fff",borderBottom:"1px solid #e5e7eb",display:"flex",gap:4,flexShrink:0,overflowX:"auto"}}>
-      {(()=>{const delCnt=tasks.filter(t=>t.type==="DEL").length;const colCnt=tasks.filter(t=>t.type==="COL").length;const washCnt=tasks.filter(t=>t.type==="洗車").length;const tabs=[{id:"all",label:"📊 サマリー",cnt:tasks.length},{id:"del",label:"🚗DEL",cnt:delCnt},{id:"col",label:"📦COL",cnt:colCnt},{id:"wash",label:"🧹洗車",cnt:washCnt},{id:"master",label:"📋マスター",cnt:null}];return tabs.map(tb=>{const sel=sheetFilter===tb.id;return <button key={tb.id} onClick={()=>setSheetFilter(tb.id)} style={{flexShrink:0,padding:"4px 10px",borderRadius:8,fontSize:11,fontWeight:sel?700:500,background:sel?"#1e40af":"#f1f5f9",color:sel?"#fff":"#374151",border:"none",cursor:"pointer",display:"flex",alignItems:"center",gap:4}}>{tb.label}{tb.cnt!==null&&<span style={{fontSize:9,background:sel?"rgba(255,255,255,.25)":"#dbeafe",color:sel?"#fff":"#1d4ed8",borderRadius:8,padding:"0 5px",fontWeight:700}}>{tb.cnt}</span>}</button>;});})()}
+      {(()=>{const delCnt=tasks.filter(t=>t.type==="DEL").length;const colCnt=tasks.filter(t=>t.type==="COL").length;const washCnt=tasks.filter(t=>t.type==="洗車").length;const tabs=[{id:"all",label:"📊 サマリー",cnt:tasks.length},{id:"del",label:"🚗DEL",cnt:delCnt},{id:"col",label:"📦COL",cnt:colCnt},{id:"wash",label:"🧹洗車",cnt:washCnt},{id:"master",label:"📋マスター",cnt:null},{id:"edit",label:"✏️ 編集",cnt:null}];return tabs.map(tb=>{const sel=sheetFilter===tb.id;const editStyle=tb.id==="edit"?{background:sel?"#dc2626":"#fef2f2",color:sel?"#fff":"#dc2626",border:sel?"none":"1px solid #fca5a5"}:{};return <button key={tb.id} onClick={()=>setSheetFilter(tb.id)} style={{flexShrink:0,padding:"4px 10px",borderRadius:8,fontSize:11,fontWeight:sel?700:500,background:sel?"#1e40af":"#f1f5f9",color:sel?"#fff":"#374151",border:"none",cursor:"pointer",display:"flex",alignItems:"center",gap:4,...editStyle}}>{tb.label}{tb.cnt!==null&&<span style={{fontSize:9,background:sel?"rgba(255,255,255,.25)":"#dbeafe",color:sel?"#fff":"#1d4ed8",borderRadius:8,padding:"0 5px",fontWeight:700}}>{tb.cnt}</span>}</button>;});})()}
     </div>
     <div className="op-body">
       {/* ★ DEL/COL/洗車 カード表示（那覇店仕様） */}
@@ -3871,8 +3926,21 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
           {tasks.length===0&&<div style={{textAlign:"center",padding:32,color:"#94a3b8",fontSize:13}}>この日のタスクはありません</div>}
         </div>;
       })()}
-      {/* ★ テーブル表示（マスターのみ） */}
-      {sheetFilter==="master"&&<div className="bg-white rounded-lg border border-gray-200 overflow-hidden mb-2"><div style={{overflowX:"auto"}}>
+      {/* ★ テーブル表示（マスター=読取専用 / 編集=フル編集） */}
+      {(sheetFilter==="master"||sheetFilter==="edit")&&(()=>{
+        const isReadOnly=sheetFilter==="master";
+        return <div>
+        {isReadOnly&&<div style={{padding:"6px 12px",background:"#eff6ff",borderBottom:"1px solid #bfdbfe",display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:11,color:"#1d4ed8",fontWeight:700}}>🔒 参照モード</span>
+          <span style={{fontSize:10,color:"#64748b"}}>編集は「✏️ 編集」タブから行えます</span>
+          <button onClick={()=>setSheetFilter("edit")} style={{marginLeft:"auto",padding:"3px 10px",background:"#dc2626",color:"#fff",border:"none",borderRadius:6,fontSize:10,fontWeight:700,cursor:"pointer"}}>✏️ 編集モードへ</button>
+        </div>}
+        {!isReadOnly&&<div style={{padding:"6px 12px",background:"#fef2f2",borderBottom:"1px solid #fca5a5",display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:11,color:"#dc2626",fontWeight:700}}>✏️ 編集モード</span>
+          <span style={{fontSize:10,color:"#64748b"}}>変更は即座にDBに保存されます</span>
+          <button onClick={()=>setSheetFilter("master")} style={{marginLeft:"auto",padding:"3px 10px",background:"#2563eb",color:"#fff",border:"none",borderRadius:6,fontSize:10,fontWeight:700,cursor:"pointer"}}>🔒 参照モードへ</button>
+        </div>}
+        <div className="bg-white rounded-lg border border-gray-200 overflow-hidden mb-2"><div style={{overflowX:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:10,whiteSpace:"nowrap"}}><thead><tr style={{background:"#f1f5f9"}}>
           {[{h:"↕",k:null},{h:"✓",k:"done"},{h:"担当",k:"assignee"},{h:"CSV",k:"csvTime"},{h:"時間",k:"time"},{h:"内容",k:"type"},{h:"予約者",k:"name"},{h:"顧客",k:null},{h:"人数",k:null},{h:"📱",k:null},{h:"場所",k:null},{h:"クラス",k:"vehicle"},{h:"車種",k:null},{h:"No.",k:null},{h:"B",k:null},{h:"C",k:null},{h:"J",k:null},{h:"補償",k:null},{h:"補変",k:null},{h:"メモ",k:null},{h:"約款",k:null},{h:"LINE",k:null},{h:"決済",k:null},{h:"返却日",k:null},{h:"返時",k:null},{h:"返種",k:null},{h:"返却場所",k:null},{h:"便名",k:null},{h:"OTA",k:null},{h:"予約番号",k:null},{h:"TEL",k:null},{h:"MAIL",k:null},{h:"🪪",k:null}].map((col,i)=>{
             const w=i<=0?28:i<=1?30:i<=2?48:i<=3?50:i<=4?50:i<=5?44:i<=6?100:i<=7?28:i<=8?28:i<=9?36:i<=10?140:i<=11?30:i<=12?56:i<=13?48:i<=16?20:i<=17?32:i<=18?32:i<=19?100:i<=22?26:i<=23?64:i<=24?40:i<=25?40:i<=26?120:i<=27?56:i<=28?28:i<=29?120:i<=30?84:120;
@@ -3906,16 +3974,17 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
               }
               _notifyTopChange();
             };
-            return <tr key={t._id}><td style={{...cellS(0),textAlign:"center",padding:0}}><div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:0}}><button onClick={()=>moveRow(t._id,-1)} style={{background:"none",border:"none",cursor:"pointer",fontSize:8,color:"#94a3b8",lineHeight:1,padding:0}}>▲</button><button onClick={delTask} style={{background:"none",border:"none",cursor:"pointer",fontSize:9,color:"#ef4444",lineHeight:1,padding:0,fontWeight:700}}>×</button><button onClick={()=>moveRow(t._id,1)} style={{background:"none",border:"none",cursor:"pointer",fontSize:8,color:"#94a3b8",lineHeight:1,padding:0}}>▼</button></div></td><td style={cellS(1)}><input type="checkbox" checked={t.done} onChange={e=>{const v=e.target.checked;upd(t._id,mark({...t,done:v},"done"),v?"完了にする":"未完了に戻す");}} style={{width:12,height:12,accentColor:tm.c}}/></td>
-              <td style={cellS(2,"assignee")}>{t._assigneeCustom?<input defaultValue={t.assignee||""} onBlur={e=>{const v=e.target.value.trim();if(!v){upd(t._id,mark({...t,_assigneeCustom:false,assignee:""},"assignee"),"担当をクリア");}else{upd(t._id,mark({...t,assignee:v,_assigneeCustom:false},"assignee"),"担当を「"+v+"」に変更");}}} onKeyDown={e=>{if(e.key==="Enter"){e.target.blur();}}} autoFocus style={{border:"1px solid #3b82f6",background:"#eff6ff",fontSize:9,width:"100%",padding:"1px 3px",fontWeight:600,borderRadius:3,outline:"none"}} placeholder="名前を入力"/>:<select value={activeMembers.includes(t.assignee)?t.assignee:["乗り捨て","無人"].includes(t.assignee)?t.assignee:t.assignee?"__custom":""}  onChange={e=>{const v=e.target.value;if(v==="__other"){_save(t._id,mark({...t,_assigneeCustom:true,assignee:""},"assignee"));return;}upd(t._id,mark({...t,assignee:v,_assigneeCustom:false},"assignee"),"担当を「"+(v||"未割当")+"」に変更");}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,color:t.assignee?"#111":"#ccc",fontWeight:600}}><option value="">-</option>{activeMembers.map(m=><option key={m}>{m}</option>)}<option value="乗り捨て">乗り捨て</option><option value="無人">無人</option><option value="__other">その他...</option>{t.assignee&&!activeMembers.includes(t.assignee)&&!["乗り捨て","無人"].includes(t.assignee)&&<option value="__custom">{t.assignee}</option>}</select>}</td>
+            return <tr key={t._id}>{isReadOnly?<td style={{...cellS(0),textAlign:"center",padding:0,fontSize:8,color:"#94a3b8"}}>{ri+1}</td>:<td style={{...cellS(0),textAlign:"center",padding:0}}><div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:0}}><button onClick={()=>moveRow(t._id,-1)} style={{background:"none",border:"none",cursor:"pointer",fontSize:8,color:"#94a3b8",lineHeight:1,padding:0}}>▲</button><button onClick={delTask} style={{background:"none",border:"none",cursor:"pointer",fontSize:9,color:"#ef4444",lineHeight:1,padding:0,fontWeight:700}}>×</button><button onClick={()=>moveRow(t._id,1)} style={{background:"none",border:"none",cursor:"pointer",fontSize:8,color:"#94a3b8",lineHeight:1,padding:0}}>▼</button></div></td>}{isReadOnly?<td style={cellS(1)}><span style={{fontSize:10}}>{t.done?"✅":""}</span></td>:<td style={cellS(1)}><input type="checkbox" checked={t.done} onChange={e=>{const v=e.target.checked;upd(t._id,mark({...t,done:v},"done"),v?"完了にする":"未完了に戻す");}} style={{width:12,height:12,accentColor:tm.c}}/></td>}
+              {isReadOnly?<td style={cellS(2,"assignee")}><span style={{fontSize:9,fontWeight:600,color:t.assignee?"#111":"#ccc"}}>{t.assignee||"-"}</span></td>:<td style={cellS(2,"assignee")}>{t._assigneeCustom?<input defaultValue={t.assignee||""} onBlur={e=>{const v=e.target.value.trim();if(!v){upd(t._id,mark({...t,_assigneeCustom:false,assignee:""},"assignee"),"担当をクリア");}else{upd(t._id,mark({...t,assignee:v,_assigneeCustom:false},"assignee"),"担当を「"+v+"」に変更");}}} onKeyDown={e=>{if(e.key==="Enter"){e.target.blur();}}} autoFocus style={{border:"1px solid #3b82f6",background:"#eff6ff",fontSize:9,width:"100%",padding:"1px 3px",fontWeight:600,borderRadius:3,outline:"none"}} placeholder="名前を入力"/>:<select value={activeMembers.includes(t.assignee)?t.assignee:["乗り捨て","無人"].includes(t.assignee)?t.assignee:t.assignee?"__custom":""}  onChange={e=>{const v=e.target.value;if(v==="__other"){_save(t._id,mark({...t,_assigneeCustom:true,assignee:""},"assignee"));return;}upd(t._id,mark({...t,assignee:v,_assigneeCustom:false},"assignee"),"担当を「"+(v||"未割当")+"」に変更");}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,color:t.assignee?"#111":"#ccc",fontWeight:600}}><option value="">-</option>{activeMembers.map(m=><option key={m}>{m}</option>)}<option value="乗り捨て">乗り捨て</option><option value="無人">無人</option><option value="__other">その他...</option>{t.assignee&&!activeMembers.includes(t.assignee)&&!["乗り捨て","無人"].includes(t.assignee)&&<option value="__custom">{t.assignee}</option>}</select>}</td>}
               <td style={cellS(3)}><span style={{fontSize:9,fontWeight:600,color:"#94a3b8"}}>{t.csvTime||t.time||"-"}</span></td>
-              <td style={cellS(4)}><select value={t.time||""} onChange={e=>{const v=e.target.value;upd(t._id,{...t,csvTime:t.csvTime||t.time||"",time:v,_manualTime:true},"時間を「"+(v||"未設定")+"」に変更");}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,fontWeight:700,color:t.time?"#1d4ed8":"#ccc"}}>{TIME_OPTS.map(o=><option key={o} value={o}>{o||"-"}</option>)}{t.time&&!TIME_OPTS.includes(t.time)&&<option value={t.time}>{t.time}</option>}</select></td>
-              <td style={{...cellS(5,"type"),fontWeight:700,color:tm.c,fontSize:10,padding:"1px"}}><select value={t.type||"DEL"} onChange={e=>{const v=e.target.value;confirmUpd(t._id,mark({...t,type:v},"type"),`内容を「${v}」に変更`);}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,fontWeight:700,color:tm.c}}>{CONTENT_OPTIONS.map(opt=><option key={opt} value={opt}>{opt}</option>)}</select></td>
-              <td style={{...cellS(6),fontWeight:600,color:"#0f172a"}}>{_m?<input defaultValue={t.name||""} onBlur={e=>{const v=e.target.value;if(v!==t.name)upd(t._id,{...t,name:v},"予約者名を変更");}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0}} placeholder="-"/>:t.name}</td>
+              {isReadOnly?<td style={cellS(4)}><span style={{fontSize:9,fontWeight:700,color:t.time?"#1d4ed8":"#ccc"}}>{t.time||"-"}</span></td>:<td style={cellS(4)}><select value={t.time||""} onChange={e=>{const v=e.target.value;upd(t._id,{...t,csvTime:t.csvTime||t.time||"",time:v,_manualTime:true},"時間を「"+(v||"未設定")+"」に変更");}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,fontWeight:700,color:t.time?"#1d4ed8":"#ccc"}}>{TIME_OPTS.map(o=><option key={o} value={o}>{o||"-"}</option>)}{t.time&&!TIME_OPTS.includes(t.time)&&<option value={t.time}>{t.time}</option>}</select></td>}
+              {isReadOnly?<td style={{...cellS(5,"type"),fontWeight:700,color:tm.c,fontSize:10,padding:"1px"}}>{t.type||""}</td>:<td style={{...cellS(5,"type"),fontWeight:700,color:tm.c,fontSize:10,padding:"1px"}}><select value={t.type||"DEL"} onChange={e=>{const v=e.target.value;confirmUpd(t._id,mark({...t,type:v},"type"),`内容を「${v}」に変更`);}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,fontWeight:700,color:tm.c}}>{CONTENT_OPTIONS.map(opt=><option key={opt} value={opt}>{opt}</option>)}</select></td>}
+              <td style={{...cellS(6),fontWeight:600,color:"#0f172a"}}>{isReadOnly?t.name||"":_m?<input defaultValue={t.name||""} onBlur={e=>{const v=e.target.value;if(v!==t.name)upd(t._id,{...t,name:v},"予約者名を変更");}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0}} placeholder="-"/>:t.name}</td>
               <td style={{...cellS(7),textAlign:"center"}}>{isRep?<span style={{fontSize:10,color:"#7c3aed"}} title="リピーター顧客">✔</span>:""}</td>
-              <td style={cellS(8)}>{_m?<input defaultValue={t.people||""} onBlur={e=>{const v=parseInt(e.target.value)||0;if(v!==t.people)upd(t._id,{...t,people:v},"人数を変更");}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,textAlign:"center"}} placeholder="0"/>:(t.people||"")}</td><td style={{...cellS(9),textAlign:"center"}}>{(isLend||t.type==="COL")?<button onClick={()=>{const vn=vehicles.find(v=>v.code===t.assignedVehicle);setLineModal({id:t._id,name:t.name||"",type:t.type,vehName:vn?vn.name:(t.vehicle||""),plateNo:t.plateNo||"",place:t.place||"",isDel:isLend});}} style={{background:"#06c755",color:"#fff",border:"none",borderRadius:4,fontSize:9,fontWeight:700,padding:"2px 6px",cursor:"pointer",whiteSpace:"nowrap"}}>📱</button>:""}</td><td style={cellS(10,"place")}><EditablePlace value={t.place} field="place" task={t} mark={mark} updFn={upd}/></td>
-              <td style={{...cellS(11),fontSize:9,fontWeight:700,color:"#64748b",textAlign:"center"}}>{_m?<select value={t.vehicle||""} onChange={e=>upd(t._id,{...t,vehicle:e.target.value},"クラスを「"+(e.target.value||"未設定")+"」に変更")} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,fontWeight:700,color:"#64748b",textAlign:"center"}}><option value="">-</option>{INIT_CLASSES.map(c=><option key={c.type} value={c.type}>{c.type}</option>)}</select>:(t.vehicle||"-")}</td>
+              <td style={cellS(8)}>{isReadOnly?(t.people||""):_m?<input defaultValue={t.people||""} onBlur={e=>{const v=parseInt(e.target.value)||0;if(v!==t.people)upd(t._id,{...t,people:v},"人数を変更");}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,textAlign:"center"}} placeholder="0"/>:(t.people||"")}</td><td style={{...cellS(9),textAlign:"center"}}>{(isLend||t.type==="COL")?<button onClick={()=>{const vn=vehicles.find(v=>v.code===t.assignedVehicle);setLineModal({id:t._id,name:t.name||"",type:t.type,vehName:vn?vn.name:(t.vehicle||""),plateNo:t.plateNo||"",place:t.place||"",isDel:isLend});}} style={{background:"#06c755",color:"#fff",border:"none",borderRadius:4,fontSize:9,fontWeight:700,padding:"2px 6px",cursor:"pointer",whiteSpace:"nowrap"}}>📱</button>:""}</td>{isReadOnly?<td style={cellS(10,"place")}><span style={{fontSize:9,color:t.place?"#111":"#ccc"}}>{t.place||"-"}</span></td>:<td style={cellS(10,"place")}><EditablePlace value={t.place} field="place" task={t} mark={mark} updFn={upd}/></td>}
+              <td style={{...cellS(11),fontSize:9,fontWeight:700,color:"#64748b",textAlign:"center"}}>{isReadOnly?(t.vehicle||"-"):_m?<select value={t.vehicle||""} onChange={e=>upd(t._id,{...t,vehicle:e.target.value},"クラスを「"+(e.target.value||"未設定")+"」に変更")} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,fontWeight:700,color:"#64748b",textAlign:"center"}}><option value="">-</option>{INIT_CLASSES.map(c=><option key={c.type} value={c.type}>{c.type}</option>)}</select>:(t.vehicle||"-")}</td>
               <td style={{...cellS(12),padding:"1px"}}>{(()=>{
+                if(isReadOnly){const vn=t.assignedVehicle?vehicles.find(x=>x.code===t.assignedVehicle):null;return <span style={{fontSize:9,fontWeight:700,color:vn?"#1e40af":"#ccc"}}>{vn?vn.name:"-"}</span>;}
                 if(_m){const mClasses=[...new Set(vehicles.map(v=>v.type))];return <select value={t.assignedVehicle||""} onChange={e=>{const vc=e.target.value;const vn=vehicles.find(x=>x.code===vc);upd(t._id,{...t,assignedVehicle:vc,plateNo:vn?vn.no:"",vehicle:vn?vn.type:""},"車両を「"+(vn?vn.name:"未設定")+"」に変更");}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,fontWeight:700,color:t.assignedVehicle?"#1e40af":"#ccc"}}><option value="">-</option>{mClasses.map(cls=><optgroup key={cls} label={cls+"クラス"}>{vehicles.filter(v=>v.type===cls).map(v=><option key={v.code} value={v.code}>{v.name} ({v.no})</option>)}</optgroup>)}</select>;}
                 if(!t.reservationId)return <span style={{fontSize:9,color:"#ccc"}}>-</span>;
                 const classes=[...new Set(vehicles.map(v=>v.type))];
@@ -3926,25 +3995,27 @@ try{if(sb){const updates=updatedIds.map(uid=>sb.from("tasks").update({assigned_v
 pendingSaves.current--;setSaveStatus(pendingSaves.current>0?"saving":"ok");}} style={{border:t.assignedVehicle?"none":"2px solid #dc2626",background:t.assignedVehicle?"transparent":"#fef2f2",fontSize:9,width:"100%",padding:0,fontWeight:700,color:t.assignedVehicle?"#1e40af":"#dc2626",borderRadius:3}}><option value="">未配車</option>{classes.map(cls=><optgroup key={cls} label={cls+"クラス"}>{vehicles.filter(v=>v.type===cls).map(v=>{const conflict=v.code!==t.assignedVehicle&&checkVehicleConflict(v.code,t.reservationId,reservations,fleet);return <option key={v.code} value={v.code} disabled={conflict} style={{color:conflict?"#ccc":"#111"}}>{v.name} ({v.no}){conflict?" ×":""}</option>;})}</optgroup>)}</select>;
               })()}</td>
               <td style={{...cellS(13),fontFamily:"monospace",fontSize:9,fontWeight:700,color:t.plateNo?"#2563eb":"#ccc"}}>{t.plateNo||"-"}</td>
-              {["b","c","j"].map((k,ki)=><td key={k} style={{...cellS(14+ki),textAlign:"center"}}>{(isLend||isWash)?<select value={+(liveOpts[k]||0)} onChange={e=>{const v=+e.target.value;const newOpts={...liveOpts,[k]:v};_save(t._id,{...t,opts:newOpts});}} style={{border:"none",background:"transparent",fontSize:9,fontWeight:700,color:+(liveOpts[k]||0)>0?"#dc2626":"#ccc",width:28,padding:0,textAlign:"center"}}><option value={0}>-</option><option value={1}>1</option><option value={2}>2</option><option value={3}>3</option></select>:""}</td>)}
+              {["b","c","j"].map((k,ki)=><td key={k} style={{...cellS(14+ki),textAlign:"center"}}>{isReadOnly?<span style={{fontSize:9,fontWeight:700,color:+(liveOpts[k]||0)>0?"#dc2626":"#ccc"}}>{+(liveOpts[k]||0)||"-"}</span>:(isLend||isWash)?<select value={+(liveOpts[k]||0)} onChange={e=>{const v=+e.target.value;const newOpts={...liveOpts,[k]:v};_save(t._id,{...t,opts:newOpts});}} style={{border:"none",background:"transparent",fontSize:9,fontWeight:700,color:+(liveOpts[k]||0)>0?"#dc2626":"#ccc",width:28,padding:0,textAlign:"center"}}><option value={0}>-</option><option value={1}>1</option><option value={2}>2</option><option value={3}>3</option></select>:""}</td>)}
 
-              <td style={{...cellS(17),fontWeight:600,color:t.insurance==="NOC"?"#b45309":"#64748b",fontSize:9}}><input defaultValue={t.insurance||""} onBlur={e=>{const v=e.target.value;if(v!==(t.insurance||""))upd(t._id,mark({...t,insurance:v},"insurance"),"補償を変更");}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0}} placeholder="-"/></td>
+              <td style={{...cellS(17),fontWeight:600,color:t.insurance==="NOC"?"#b45309":"#64748b",fontSize:9}}>{isReadOnly?<span>{t.insurance||"-"}</span>:<input defaultValue={t.insurance||""} onBlur={e=>{const v=e.target.value;if(v!==(t.insurance||""))upd(t._id,mark({...t,insurance:v},"insurance"),"補償を変更");}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0}} placeholder="-"/>}</td>
               <td style={cellS(18)}>{t.insuranceChange||""}</td>
-              <td style={cellS(19,"memo")}><input defaultValue={t.memo||""} onBlur={e=>{const v=e.target.value;if(v!==(t.memo||""))upd(t._id,mark({...t,memo:v},"memo"),"メモを変更");}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0}} placeholder="-"/></td>
-              {["yakkan","line"].map((k,ki)=>{const lb={yakkan:"約款",line:"LINE"};return <td key={k} style={cellS(20+ki,k)}>{isLend?<input type="checkbox" checked={t[k]||false} onChange={e=>{const v=e.target.checked;upd(t._id,mark({...t,[k]:v},k),lb[k]+"を"+(v?"✓":"解除"));}} style={{width:11,height:11}}/>:""}</td>;})}
+              <td style={cellS(19,"memo")}>{isReadOnly?<span style={{fontSize:9}}>{t.memo||"-"}</span>:<input defaultValue={t.memo||""} onBlur={e=>{const v=e.target.value;if(v!==(t.memo||""))upd(t._id,mark({...t,memo:v},"memo"),"メモを変更");}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0}} placeholder="-"/>}</td>
+              {["yakkan","line"].map((k,ki)=>{const lb={yakkan:"約款",line:"LINE"};return <td key={k} style={cellS(20+ki,k)}>{isReadOnly?(isLend?(t[k]?"✓":""):""): isLend?<input type="checkbox" checked={t[k]||false} onChange={e=>{const v=e.target.checked;upd(t._id,mark({...t,[k]:v},k),lb[k]+"を"+(v?"✓":"解除"));}} style={{width:11,height:11}}/>:""}</td>;})}
               <td style={cellS(22,"payment")}>{isLend?(()=>{
                 const jp=t.ota==="J"&&t.reservationId&&jalanPay?jalanPay[t.reservationId]:null;
                 if(jp){const done=jp.payStatus==="完了";return <span style={{fontSize:8,fontWeight:700,color:done?"#059669":"#dc2626"}}>{done?"済":"未"}</span>;}
+                if(isReadOnly)return <span style={{fontSize:9}}>{t.payment?"済":"-"}</span>;
                 return <input type="checkbox" checked={t.payment||false} onChange={e=>{const v=e.target.checked;upd(t._id,mark({...t,payment:v},"payment"),v?"決済済みにする":"決済未済に戻す");}} style={{width:11,height:11}}/>;
               })():""}</td>
-              <td style={cellS(23)}>{_m?<input defaultValue={t.returnDate||""} onBlur={e=>{const v=e.target.value;if(v!==t.returnDate)upd(t._id,{...t,returnDate:v},"返却日を変更");}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0}} placeholder="-"/>:(isLend?fmtD(t.returnDate):"")}</td><td style={cellS(24)}>{_m?<input defaultValue={t.returnTime||""} onBlur={e=>{const v=e.target.value;if(v!==t.returnTime)upd(t._id,{...t,returnTime:v},"返時を変更");}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0}} placeholder="-"/>:(isLend?t.returnTime||"":"")}</td><td style={cellS(25)}>{isLend?t.returnType||"":""}</td><td style={cellS(26,"colPlace")}><EditablePlace value={t.colPlace} field="colPlace" task={t} mark={mark} updFn={upd}/></td><td style={cellS(27)}>{t.flight||""}</td>
-              <td style={cellS(28)}>{t.ota?<OBadge ota={t.ota}/>:""}</td><td style={{...cellS(29),fontFamily:"monospace",fontSize:8}}>{t.reservationId?<span style={{display:"flex",alignItems:"center",gap:2}}><a href={"license.html?id="+encodeURIComponent(t.reservationId)+"&name="+encodeURIComponent(t.name||"")} target="_blank" style={{color:"#3b82f6",textDecoration:"underline",cursor:"pointer"}} title="免許証アップロード">{t.reservationId}</a><button onClick={e=>{e.stopPropagation();navigator.clipboard.writeText(t.reservationId);const b=e.currentTarget;b.textContent="✓";setTimeout(()=>b.textContent="📋",1000);}} style={{background:"none",border:"none",cursor:"pointer",fontSize:10,padding:0}} title="予約番号をコピー">📋</button></span>:""}</td><td style={cellS(30)}>{_m?<input defaultValue={t.tel||""} onBlur={e=>{const v=e.target.value;if(v!==t.tel)upd(t._id,{...t,tel:v},"TELを変更");}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0}} placeholder="-"/>:(t.tel||"")}</td><td style={{...cellS(31),fontSize:8}}>{_m?<input defaultValue={t.mail||""} onBlur={e=>{const v=e.target.value;if(v!==t.mail)upd(t._id,{...t,mail:v},"MAILを変更");}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0}} placeholder="-"/>:(t.mail||"")}</td>
+              <td style={cellS(23)}>{isReadOnly?(isLend?fmtD(t.returnDate):""):_m?<input defaultValue={t.returnDate||""} onBlur={e=>{const v=e.target.value;if(v!==t.returnDate)upd(t._id,{...t,returnDate:v},"返却日を変更");}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0}} placeholder="-"/>:(isLend?fmtD(t.returnDate):"")}</td><td style={cellS(24)}>{isReadOnly?(isLend?t.returnTime||"":""):_m?<input defaultValue={t.returnTime||""} onBlur={e=>{const v=e.target.value;if(v!==t.returnTime)upd(t._id,{...t,returnTime:v},"返時を変更");}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0}} placeholder="-"/>:(isLend?t.returnTime||"":"")}</td><td style={cellS(25)}>{isLend?t.returnType||"":""}</td>{isReadOnly?<td style={cellS(26,"colPlace")}><span style={{fontSize:9}}>{t.colPlace||"-"}</span></td>:<td style={cellS(26,"colPlace")}><EditablePlace value={t.colPlace} field="colPlace" task={t} mark={mark} updFn={upd}/></td>}<td style={cellS(27)}>{t.flight||""}</td>
+              <td style={cellS(28)}>{t.ota?<OBadge ota={t.ota}/>:""}</td><td style={{...cellS(29),fontFamily:"monospace",fontSize:8}}>{t.reservationId?<span style={{display:"flex",alignItems:"center",gap:2}}><a href={"license.html?id="+encodeURIComponent(t.reservationId)+"&name="+encodeURIComponent(t.name||"")} target="_blank" style={{color:"#3b82f6",textDecoration:"underline",cursor:"pointer"}} title="免許証アップロード">{t.reservationId}</a><button onClick={e=>{e.stopPropagation();navigator.clipboard.writeText(t.reservationId);const b=e.currentTarget;b.textContent="✓";setTimeout(()=>b.textContent="📋",1000);}} style={{background:"none",border:"none",cursor:"pointer",fontSize:10,padding:0}} title="予約番号をコピー">📋</button></span>:""}</td><td style={cellS(30)}>{isReadOnly?(t.tel||""):_m?<input defaultValue={t.tel||""} onBlur={e=>{const v=e.target.value;if(v!==t.tel)upd(t._id,{...t,tel:v},"TELを変更");}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0}} placeholder="-"/>:(t.tel||"")}</td><td style={{...cellS(31),fontSize:8}}>{isReadOnly?(t.mail||""):_m?<input defaultValue={t.mail||""} onBlur={e=>{const v=e.target.value;if(v!==t.mail)upd(t._id,{...t,mail:v},"MAILを変更");}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0}} placeholder="-"/>:(t.mail||"")}</td>
               <td style={{...cellS(32),textAlign:"center"}}>{t.reservationId?(licenseStatus[t.reservationId]?<span style={{fontSize:10,color:"#22c55e"}} title="免許証アップ済">✅</span>:<a href={"license.html?id="+encodeURIComponent(t.reservationId)+"&name="+encodeURIComponent(t.name||"")} target="_blank" style={{fontSize:10,textDecoration:"none"}} title="免許証未アップ">⬜</a>):""}</td>
             </tr>;
           })}
-          {filteredTasks.length===0&&<tr><td colSpan={32} style={{textAlign:"center",padding:16,color:"#94a3b8",fontSize:11}}>{sheetFilter==="all"?"この日のタスクはありません":sheetFilter==="del"?"DELタスクなし":sheetFilter==="col"?"COLタスクなし":"洗車タスクなし"}</td></tr>}
+          {filteredTasks.length===0&&<tr><td colSpan={32} style={{textAlign:"center",padding:16,color:"#94a3b8",fontSize:11}}>{sheetFilter==="edit"?"この日のタスクはありません":"タスクなし"}</td></tr>}
         </tbody></table>
-      </div></div>}
+      </div></div>
+      </div>;})()}
       <TimeTable tasks={tasks} staffCount={staffCount}/>
       {/* LINE送信モーダル */}
       {lineModal&&(()=>{
@@ -7989,7 +8060,7 @@ function App(){
           {tab==="customer"&&<CustomerList data={data}/>}
           {tab==="import"&&<CSVPanel onImport={imp} onUpdatePlaces={updatePlaces} dataCount={data.length} pendingPlaces={pendingPlaces} onSetPendingPlaces={setPendingPlaces} files={csvFiles} setFiles={setCsvFiles} logs={csvLogs} setLogs={setCsvLogs} placeLogs={csvPlaceLogs} setPlaceLogs={setCsvPlaceLogs}/>}
           {tab==="staff"&&<PASGuard label="スタッフ情報"><StaffManager staff={staff} onStaffChange={setStaffSync} onDeleteStaff={async(name)=>{try{await DB.deleteStaff(name);/* 旧名シフト・勤怠を清掃 */if(sb){sb.from("shifts").delete().eq("staff_name",name).then(()=>console.log("[staff] shifts清掃:",name));sb.from("spk_attendance").delete().eq("staff_name",name).then(()=>console.log("[staff] attendance清掃:",name));}}catch(e){console.error("deleteStaff error:",e);}}}/></PASGuard>}
-          {tab==="shift"&&<ShiftCalendar shifts={shifts} onShiftsChange={setShiftsSync} today={today} staff={staff} sbSaveShift={DB.saveShift}/>}
+          {tab==="shift"&&<ShiftCalendar shifts={shifts} onShiftsChange={setShiftsSync} today={today} staff={staff} sbSaveShift={DB.saveShift} reservations={reservations}/>}
           {tab==="attendance"&&<PASGuard label="給与計算"><AttendanceManager shifts={shifts} staff={staff} today={today} attendance={attendance} onAttendanceChange={setAttendance}/></PASGuard>}
           {tab==="fleet"&&<FleetTimeline data={data} fleet={fleet} onFleetChange={setFleetSync} today={today} maintenance={maintenance} onMaintenanceChange={setMaintenance} vehicles={vehicles} vehicleClasses={vehicleClasses} onAddReservation={addReservation} onBulkAddReservation={bulkAddReservation} onCancelReservation={cancelReservation} onReassignVehicle={reassignVehicle} onUpdateReservation={updateReservation} unassignedReasons={unassignedReasons} onVehicleDetail={(code)=>{setHighlightVehicle(code);setTab("vehicle");setTimeout(()=>setHighlightVehicle(null),3000);}}/>}
           {tab==="vehicle"&&<VehicleTab vehicles={vehicles} onVehiclesChange={setVehiclesSync} vehicleClasses={vehicleClasses} onDeleteVehicle={(code)=>{DB.deleteVehicle(code);/* 車両削除→fleet残留エントリ除去 */const nf={...fleetRefApp.current};let cleaned=false;Object.entries(nf).forEach(([rid,vc])=>{if(vc===code){delete nf[rid];cleaned=true;}});if(cleaned){setFleet(nf);fleetRefApp.current=nf;markLocalChange("fleet");DB.upsertFleet(nf).catch(e=>console.error("fleet cleanup error:",e));}}} hmCars={hmCars} hmCarData={hmCarData} hmLogs={hmLogs} hmClasses={hmClasses} hmReload={hmReload} highlightVehicle={highlightVehicle}/>}
@@ -8024,7 +8095,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.80";
+const APP_VERSION="v4.3.1";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
