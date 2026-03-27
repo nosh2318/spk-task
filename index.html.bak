@@ -7058,6 +7058,9 @@ function App(){
     const ch=sb.channel("spk-realtime")
       .on("postgres_changes",{event:"*",schema:"public",table:"reservations"},payload=>{
         if(importingRef.current)return;
+        // ★ ローカル変更が未同期の場合、RTからの上書きをスキップ（編集値が戻る問題の防止）
+        const resSS=syncStatusRef.current.reservations;
+        if(resSS.localTime&&Date.now()-resSS.localTime<3000){console.log("[RT reservations] skip: local change within 3s");return;}
         // ★ キャンセル済み予約のINSERT/UPDATEを無視（DB反映遅延で復活するのを防止）
         if(cancelledIdsRef.current.has(payload.new?.id||payload.old?.id)){console.log("[RT reservations] cancelled ID ignored:",payload.new?.id||payload.old?.id);return;}
         if(payload.eventType==="INSERT"||payload.eventType==="UPDATE"){
@@ -8010,7 +8013,7 @@ function App(){
             </div>;})()}
             <Dashboard data={data} fleet={fleet} vehicles={vehicles} maintenance={maintenance}/>
           </>}
-          {tab==="data"&&data.length>0&&<DataTable data={data} sheetPlaces={sheetPlaces} onUpdatePlaces={saveSheetPlaces} jalanPay={jalanPay} onUpdateReservation={async(id,updates)=>{if(!sb)return;const dbUp={};if("name"in updates)dbUp.name=updates.name;if("lendDate"in updates)dbUp.lend_date=updates.lendDate;if("lendTime"in updates)dbUp.lend_time=updates.lendTime;if("returnDate"in updates)dbUp.return_date=updates.returnDate;if("returnTime"in updates)dbUp.return_time=updates.returnTime;if("vehicle"in updates)dbUp.vehicle=updates.vehicle;if("insurance"in updates)dbUp.insurance=updates.insurance;if("people"in updates)dbUp.people=Number(updates.people)||0;if("price"in updates)dbUp.price=Number(updates.price)||0;if("tel"in updates)dbUp.tel=updates.tel;if("mail"in updates)dbUp.mail=updates.mail;if("flight"in updates)dbUp.flight=updates.flight;if("delPlace"in updates)dbUp.del_place=updates.delPlace;if("colPlace"in updates)dbUp.col_place=updates.colPlace;if("delTime"in updates)dbUp.del_time=updates.delTime;if("colTime"in updates)dbUp.col_time=updates.colTime;if("visitType"in updates)dbUp.visit_type=updates.visitType;if("returnType"in updates)dbUp.return_type=updates.returnType;if("optB"in updates)dbUp.opt_b=Number(updates.optB)||0;if("optC"in updates)dbUp.opt_c=Number(updates.optC)||0;if("optJ"in updates)dbUp.opt_j=Number(updates.optJ)||0;if("prefecture"in updates)dbUp.prefecture=updates.prefecture;const{error}=await sb.from("reservations").update(dbUp).eq("id",id);if(error){alert("更新エラー: "+error.message);return false;}setData(prev=>prev.map(r=>r.id===id?{...r,...updates}:r));return true;}}/>}
+          {tab==="data"&&data.length>0&&<DataTable data={data} sheetPlaces={sheetPlaces} onUpdatePlaces={saveSheetPlaces} jalanPay={jalanPay} onUpdateReservation={async(id,updates)=>{return await updateReservation(id,updates);}}/>}
           {tab==="analytics"&&<AnalyticsTab data={data} sheetPlaces={sheetPlaces}/>}
           {tab==="history"&&<PastTasksTable today={today}/>}
           {tab==="notices"&&<NoticesPage store="SPK"/>}
@@ -8021,7 +8024,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.79";
+const APP_VERSION="v4.2.80";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
