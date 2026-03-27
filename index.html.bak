@@ -51,6 +51,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 .shift-col{position:sticky;left:0;z-index:3;background:#fff}
 .shift-col-header{position:sticky;left:0;z-index:4;background:#D2B48C}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
 </style>
 <link rel="manifest" href="data:application/json;base64,eyJuYW1lIjoiU1BLIOOCv+OCueOCr+euoeeQhiIsInNob3J0X25hbWUiOiJTUEsiLCJzdGFydF91cmwiOiIuIiwiZGlzcGxheSI6InN0YW5kYWxvbmUiLCJiYWNrZ3JvdW5kX2NvbG9yIjoiI2YzZjRmNiIsInRoZW1lX2NvbG9yIjoiIzI1NjNlYiIsImljb25zIjpbXX0=">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -110,7 +111,7 @@ function dbLog(op,ok,detail){console.log(`[DB ${ok?"✓":"✗"}] ${op}`,detail||
 const DB = {
   // --- 予約 ---
   async fetchReservations(){if(!sb)return[];const{data,error}=await sb.from("reservations").select("*");if(error){dbLog("fetchRes",false,error.message);return[];}dbLog("fetchRes",true,data.length+"件");return(data||[]).map(DB._fromDbRes);},
-  async upsertReservations(arr){if(!sb||!arr.length)return;const rows=arr.map(DB._toDbRes);const{error}=await sb.from("reservations").upsert(rows,{onConflict:"id"});if(error)dbLog("upsertRes",false,error.message);else dbLog("upsertRes",true,arr.length+"件保存");},
+  async upsertReservations(arr){if(!sb||!arr.length)return;const rows=arr.map(DB._toDbRes);await DB._retryOp(async()=>{const{error}=await sb.from("reservations").upsert(rows,{onConflict:"id"});if(error)throw new Error(error.message);dbLog("upsertRes",true,arr.length+"件保存");},"upsertRes");},
   async deleteReservations(ids){if(!sb||!ids.length)return;const{error}=await sb.from("reservations").delete().in("id",ids);if(error)dbLog("deleteRes",false,error.message);else dbLog("deleteRes",true,ids.length+"件削除");},
   async syncToReservation(resId,fields){if(!sb||!resId||!Object.keys(fields).length)return;try{const{error}=await sb.from("reservations").update(fields).eq("id",resId);if(error)dbLog("syncToRes",false,resId+": "+error.message);else dbLog("syncToRes",true,resId+" "+Object.keys(fields).join(","));}catch(e){dbLog("syncToRes",false,e.message);}},
   _toDbRes(r){return{id:r.id,ota:r.ota,name:r.name,lend_date:r.lendDate,lend_time:r.lendTime,return_date:r.returnDate,return_time:r.returnTime,people:r.people,vehicle:r.vehicle,insurance:r.insurance,tel:r.tel,mail:r.mail,price:r.price,status:r.status,visit_type:r.visitType,return_type:r.returnType,del_time:r.delTime||"",del_place:r.delPlace||"",col_time:r.colTime||"",col_place:r.colPlace||"",flight:r.flight||"",opt_b:+(r.optB||0),opt_c:+(r.optC||0),opt_j:+(r.optJ||0),opt_usb:!!r.optUSB,opt_parasol:!!r.optParasol};},
@@ -120,7 +121,7 @@ const DB = {
   _fleetLsSave(f){try{localStorage.setItem(DB._fleetLsKey,JSON.stringify(f));}catch(e){}},
   _fleetLsLoad(){try{const s=localStorage.getItem(DB._fleetLsKey);return s?JSON.parse(s):{};}catch(e){return{};}},
   async fetchFleet(){if(!sb){return DB._fleetLsLoad();}const{data,error}=await sb.from("fleet").select("*");if(error){dbLog("fetchFleet",false,error.message);return DB._fleetLsLoad();}const f={};(data||[]).forEach(r=>f[r.reservation_id]=r.vehicle_code);dbLog("fetchFleet",true,Object.keys(f).length+"件");DB._fleetLsSave(f);return f;},
-  async upsertFleet(fleet){DB._fleetLsSave(fleet);if(!sb)return;const rows=Object.entries(fleet).map(([k,v])=>({reservation_id:k,vehicle_code:v}));if(rows.length){const{error}=await sb.from("fleet").upsert(rows,{onConflict:"reservation_id"});if(error)dbLog("upsertFleet",false,error.message);else dbLog("upsertFleet",true,rows.length+"件");}},
+  async upsertFleet(fleet){DB._fleetLsSave(fleet);if(!sb)return;const rows=Object.entries(fleet).map(([k,v])=>({reservation_id:k,vehicle_code:v}));if(rows.length){await DB._retryOp(async()=>{const{error}=await sb.from("fleet").upsert(rows,{onConflict:"reservation_id"});if(error)throw new Error(error.message);dbLog("upsertFleet",true,rows.length+"件");},"upsertFleet");}},
   async updateFleetOne(resId,code){if(!sb)return;const{error}=await sb.from("fleet").upsert({reservation_id:resId,vehicle_code:code},{onConflict:"reservation_id"});if(error)dbLog("updateFleet1",false,error.message);},
   async deleteFleetOne(resId){if(!sb)return;const{error}=await sb.from("fleet").delete().eq("reservation_id",resId);if(error)dbLog("deleteFleet1",false,error.message);},
   // --- タスク（localStorage併用で確実に保存） ---
@@ -129,6 +130,16 @@ const DB = {
   _lsLoad(date){try{const s=localStorage.getItem(DB._lsKey(date));return s?JSON.parse(s):null;}catch(e){return null;}},
   _pendingSave:0,
   _hasChangedCol:null, // null=未チェック, true=あり, false=なし
+  // --- 保存失敗リトライ（最大3回、指数バックオフ） ---
+  async _retryOp(fn,label,maxRetry=3){
+    for(let i=0;i<maxRetry;i++){
+      try{const r=await fn();return r;}
+      catch(e){
+        if(i<maxRetry-1){const d=1000*Math.pow(2,i);console.warn(`[DB] ${label} retry ${i+1}/${maxRetry} in ${d}ms`,e.message);await new Promise(r=>setTimeout(r,d));}
+        else{console.error(`[DB] ${label} 最終失敗`,e.message);throw e;}
+      }
+    }
+  },
   async fetchTasks(date){
     if(!sb){return DB._lsLoad(date)||[];}
     const{data,error}=await sb.from("tasks").select("*").eq("date",date).order("sort_order");
@@ -417,10 +428,15 @@ function LoginScreen({onLogin}){
 }
 
 /* ===== オフラインインジケータ ===== */
-function SyncBadge({connected,inline}){
-  return <div style={{position:inline?"static":"fixed",top:inline?undefined:8,right:inline?undefined:8,zIndex:inline?undefined:999,padding:"3px 8px",borderRadius:20,fontSize:9,fontWeight:700,background:connected?(inline?"rgba(34,197,94,.15)":"#dcfce7"):(inline?"rgba(245,158,11,.15)":"#fef3c7"),color:connected?"#15803d":"#92400e",boxShadow:inline?"none":"0 1px 4px rgba(0,0,0,.1)",display:"flex",alignItems:"center",gap:3,flexShrink:0,marginLeft:inline?"auto":undefined}}>
-    <span style={{width:5,height:5,borderRadius:"50%",background:connected?"#22c55e":"#f59e0b"}}></span>
-    {connected?"接続中":"OFF"}
+function SyncBadge({connected,inline,online=true}){
+  const offline=!online;
+  const bg=offline?(inline?"rgba(239,68,68,.15)":"#fef2f2"):connected?(inline?"rgba(34,197,94,.15)":"#dcfce7"):(inline?"rgba(245,158,11,.15)":"#fef3c7");
+  const color=offline?"#dc2626":connected?"#15803d":"#92400e";
+  const dot=offline?"#ef4444":connected?"#22c55e":"#f59e0b";
+  const label=offline?"圏外":connected?"同期中":"再接続中...";
+  return <div style={{position:inline?"static":"fixed",top:inline?undefined:8,right:inline?undefined:8,zIndex:inline?undefined:999,padding:"3px 8px",borderRadius:20,fontSize:9,fontWeight:700,background:bg,color:color,boxShadow:inline?"none":"0 1px 4px rgba(0,0,0,.1)",display:"flex",alignItems:"center",gap:3,flexShrink:0,marginLeft:inline?"auto":undefined,animation:offline?"pulse 1.5s infinite":"none"}}>
+    <span style={{width:5,height:5,borderRadius:"50%",background:dot}}></span>
+    {label}
   </div>;
 }
 
@@ -3477,7 +3493,11 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
             setTasks(fresh);
           }
         },500);
-      }).subscribe();
+      }).subscribe((status)=>{
+        if(status==="CHANNEL_ERROR"||status==="TIMED_OUT"){
+          setTimeout(()=>{try{ch.subscribe();}catch(e){}},3000);
+        }
+      });
     return()=>{clearTimeout(debounce);sb.removeChannel(ch);};
   },[selDate]);
   // タブ復帰・画面復帰時+30秒ポーリングでDBから最新データ再取得
@@ -3509,7 +3529,11 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
     if(t._changed?.type&&t.type){if(["DEL","PU"].includes(t.type))fields.visit_type=t.type;if(t.type==="COL")fields.return_type=t.type;}
     DB.syncToReservation(t.reservationId,fields);
   };
+  const savingIdsRef=React.useRef(new Set());
   const _save=async(id,t)=>{
+    // 同一タスクの二重保存防止
+    if(savingIdsRef.current.has(id)){console.warn("[_save] skip: already saving "+id);return;}
+    savingIdsRef.current.add(id);
     selfUpdateRef.current[selDate]=Date.now();
     setTasks(ts=>{const next=ts.map(x=>x._id===id?t:x);DB._lsSave(next,selDate);return next;});
     pendingSaves.current++;setSaveStatus("saving");
@@ -3517,6 +3541,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
       await DB.updateTask(t,selDate);
       _syncReservation(t);
     }catch(e){console.error("[_save] DB error",e);}
+    finally{savingIdsRef.current.delete(id);}
     pendingSaves.current--;
     setSaveStatus(DB._dbSaveOk?(pendingSaves.current>0?"saving":"ok"):"error");
     _notifyTopChange();
@@ -6694,6 +6719,20 @@ function App(){
   // ★ キャンセル済み予約ID追跡（silentRefresh/Realtimeでの復活を防止）
   const cancelledIdsRef=useRef(new Set());
   const markCancelled=(id)=>{cancelledIdsRef.current.add(id);setTimeout(()=>cancelledIdsRef.current.delete(id),120000);};
+  const rtRetryRef=useRef(0);
+  const[isOnline,setIsOnline]=useState(navigator.onLine);
+  // --- オフライン検知+保存キュー ---
+  const offlineQueueRef=useRef([]);
+  useEffect(()=>{
+    const on=()=>{setIsOnline(true);console.log("[Network] online復帰");
+      // オフライン中の保留保存をフラッシュ
+      const q=[...offlineQueueRef.current];offlineQueueRef.current=[];
+      if(q.length){console.log("[Network] "+q.length+"件の保留保存を実行");q.forEach(fn=>fn());silentRefresh();}
+    };
+    const off=()=>{setIsOnline(false);console.warn("[Network] offline検知");};
+    window.addEventListener("online",on);window.addEventListener("offline",off);
+    return()=>{window.removeEventListener("online",on);window.removeEventListener("offline",off);};
+  },[]);
   const[fleet,setFleet_]=useState({});const[unassignedReasons,setUnassignedReasons]=useState({});
   const setFleet=React.useCallback((v)=>{
     const val=typeof v==="function"?v:()=>v;
@@ -7007,7 +7046,7 @@ function App(){
     document.addEventListener("visibilitychange",onVis);
     // Realtime接続時は60秒、切断時は10秒でポーリング
     let timer=null;
-    const startPoll=()=>{if(timer)clearInterval(timer);const iv=sbConnected?60000:10000;timer=setInterval(()=>{if(document.visibilityState==="visible")silentRefresh();},iv);};
+    const startPoll=()=>{if(timer)clearInterval(timer);const iv=sbConnected?60000:5000;timer=setInterval(()=>{if(document.visibilityState==="visible")silentRefresh();},iv);};
     startPoll();
     return()=>{document.removeEventListener("visibilitychange",onVis);if(timer)clearInterval(timer);};
   },[silentRefresh,sbConnected]);
@@ -7079,9 +7118,12 @@ function App(){
       .subscribe((status,err)=>{
         console.log("[Realtime]",status,err||"");
         setSbConnected(status==="SUBSCRIBED");
+        if(status==="SUBSCRIBED"){rtRetryRef.current=0;}
         if(status==="CHANNEL_ERROR"||status==="TIMED_OUT"){
-          console.warn("[Realtime] 接続エラー→3秒後に再接続");
-          setTimeout(()=>{try{ch.subscribe();}catch(e){}},3000);
+          const attempt=rtRetryRef.current++;
+          const delay=Math.min(3000*Math.pow(2,attempt),60000);
+          console.warn(`[Realtime] 接続エラー→${delay/1000}秒後に再接続(試行${attempt+1})`);
+          setTimeout(()=>{try{sb.removeChannel(ch);const nch=sb.channel("spk-realtime");nch.subscribe();}catch(e){console.error("[Realtime] reconnect fail",e);}},delay);
         }
       });
     return()=>{sb.removeChannel(ch);};
@@ -7484,14 +7526,15 @@ function App(){
   if(!dbLoaded)return <div onClick={()=>setDbLoaded(true)} style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#f3f4f6",cursor:"pointer"}}><div style={{textAlign:"center"}}><div style={{width:48,height:48,border:"4px solid #e5e7eb",borderTopColor:"#2563eb",borderRadius:"50%",animation:"spin 1s linear infinite",margin:"0 auto 12px"}}></div><p style={{color:"#64748b",fontSize:13}}>データ読込中...</p><p style={{color:"#94a3b8",fontSize:11,marginTop:8}}>タップでスキップ</p></div></div>;
 
   return <div style={{height:"100vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
-    {SB_ENABLED&&<div className="sync-desktop"><SyncBadge connected={sbConnected}/></div>}
+    {SB_ENABLED&&<div className="sync-desktop"><SyncBadge connected={sbConnected} online={isOnline}/></div>}
+    {!isOnline&&<div style={{background:"#dc2626",color:"#fff",padding:"6px 12px",fontSize:12,fontWeight:700,textAlign:"center",zIndex:9999}}>⚠️ オフライン — 変更は復帰後に自動保存されます</div>}
     {showOP&&<OPScreen reservations={data} today={today} shifts={shifts} fleet={fleet} onFleetChange={setFleetSync} onClose={()=>{setShowOP(false);refreshTopTasks();}} vehicles={vehicles} staff={staff} resOpts={resOpts} sheetPlaces={sheetPlaces} onUpdateSheetPlaces={saveSheetPlaces} repeaterMap={repeaterInfo.isRepeater} jalanPay={jalanPay} cancelledIdsRef={cancelledIdsRef} onCancelReservation={cancelReservation} onTaskChange={refreshTopTasks}/>}
     <div style={{display:showOP?"none":"flex",flex:1,overflow:"hidden",flexDirection:"column"}}>
       <div className={"top-nav"+(tab==="top"?" hide-on-top":"")}>
         {navItems.filter(n=>{const always=["top","notices","import","vehicle","staff","shift","attendance","parking","accounting","fleet","jalanpay","history","customer","license"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open("license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
         {data.length>0&&<button onClick={()=>setShowOP(true)} style={{color:"#60a5fa"}}><span className="ico">📋</span>OP</button>}
         {SB_ENABLED&&<button onClick={reloadAll} disabled={reloading===1} style={{background:reloading===2?"#d1fae5":"none",border:"none",cursor:reloading===1?"wait":"pointer",fontSize:14,padding:"2px 4px",borderRadius:6,opacity:reloading===1?0.5:1,transition:"background .3s"}}>{reloading===1?"⏳":reloading===2?"✅":"🔄"}</button>}
-        {SB_ENABLED&&<SyncBadge connected={sbConnected} inline={true}/>}
+        {SB_ENABLED&&<SyncBadge connected={sbConnected} inline={true} online={isOnline}/>}
       </div>
       <div style={{display:"flex",flex:1,overflow:"hidden"}}>
       <div className={"sidebar"+(tab==="top"?" hide-on-top":"")}>
@@ -7972,7 +8015,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.75";
+const APP_VERSION="v4.2.77";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
