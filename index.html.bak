@@ -3527,7 +3527,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
     if(t._vehicleChanged&&t.vehicle)fields.vehicle=t.vehicle;
     // Phase2: type変更→visit_type/return_type同期
     if(t._changed?.type&&t.type){if(["DEL","PU"].includes(t.type))fields.visit_type=t.type;if(t.type==="COL")fields.return_type=t.type;}
-    DB.syncToReservation(t.reservationId,fields);
+    await DB.syncToReservation(t.reservationId,fields);
   };
   const savingIdsRef=React.useRef(new Set());
   const _save=async(id,t)=>{
@@ -3539,8 +3539,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
     pendingSaves.current++;setSaveStatus("saving");
     try{
       await DB.updateTask(t,selDate);
-      _syncReservation(t);
-    }catch(e){console.error("[_save] DB error",e);}
+      await _syncReservation(t);
+    }catch(e){console.error("[_save] DB error",e);setSaveStatus("error");}
     finally{savingIdsRef.current.delete(id);}
     pendingSaves.current--;
     setSaveStatus(DB._dbSaveOk?(pendingSaves.current>0?"saving":"ok"):"error");
@@ -3579,7 +3579,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
     _notifyTopChange();
   };
   const TIME_OPTS=useMemo(()=>{const opts=[""];for(let h=6;h<=22;h++)for(let m=0;m<60;m+=5){if(h===22&&m>0)break;opts.push(`${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`);}return opts;},[]);
-  const assignVehicle=(taskId,vehicleCode)=>{selfUpdateRef.current[selDate]=Date.now();const task=tasks.find(t=>t._id===taskId);if(!task)return;const v=vehicles.find(x=>x.code===vehicleCode);const updated={...task,assignedVehicle:vehicleCode,plateNo:v?v.no:""};setTasks(ts=>ts.map(x=>x._id===taskId?updated:x));DB.updateTask(updated,selDate);if(task.reservationId){onFleetChange(prev=>{const nf={...(typeof prev==="object"?prev:fleetRef.current)};if(vehicleCode)nf[task.reservationId]=vehicleCode;else delete nf[task.reservationId];return nf;});}};
+  const assignVehicle=async(taskId,vehicleCode)=>{selfUpdateRef.current[selDate]=Date.now();const task=tasks.find(t=>t._id===taskId);if(!task)return;const v=vehicles.find(x=>x.code===vehicleCode);const updated={...task,assignedVehicle:vehicleCode,plateNo:v?v.no:""};setTasks(ts=>ts.map(x=>x._id===taskId?updated:x));await DB.updateTask(updated,selDate);if(task.reservationId){onFleetChange(prev=>{const nf={...(typeof prev==="object"?prev:fleetRef.current)};if(vehicleCode)nf[task.reservationId]=vehicleCode;else delete nf[task.reservationId];return nf;});}};
   // ★ 同期チェック: DBに直接クエリ（fetchTasksはLS副作用があるため使わない）
   const[syncInfo,setSyncInfo]=useState({status:"checking",detail:""});
   useEffect(()=>{
@@ -7159,10 +7159,10 @@ function App(){
     const nextFleet={...fleetRefApp.current,[resId]:newVc};
     fleetRefApp.current=nextFleet;
     setFleet(nextFleet);markLocalChange("fleet");
-    DB.upsertFleet(nextFleet).then(()=>markDbSync("fleet")).catch(e=>console.error("upsertFleet error:",e));
+    try{await DB.upsertFleet(nextFleet);markDbSync("fleet");}catch(e){console.error("upsertFleet error:",e);}
     const vn=vehicles.find(x=>x.code===newVc);
     // ★ reservations.vehicleも同期（クラス変更を反映）
-    if(vn)DB.syncToReservation(resId,{vehicle:vn.type});
+    if(vn)try{await DB.syncToReservation(resId,{vehicle:vn.type});}catch(e){console.error("syncToRes error:",e);}
     if(!SB_ENABLED||!vn)return;
     // OPシートの該当タスクも更新（全日分チェック）
     const res=data.find(r=>r.id===resId);if(!res)return;
@@ -7172,10 +7172,11 @@ function App(){
       const _updateResTask=async(date)=>{
         const tasks=await DB.fetchTasks(date);
         if(!tasks||!tasks.length)return;
-        tasks.filter(t=>t.reservationId===resId).forEach(t=>{
+        const promises=tasks.filter(t=>t.reservationId===resId).map(t=>{
           const up={...t,assignedVehicle:newVc,plateNo:vn.no||"",vehicle:vn.type||t.vehicle};
-          DB.updateTask(up,date);
+          return DB.updateTask(up,date);
         });
+        await Promise.all(promises);
       };
       await _updateResTask(ld);
       if(rd!==ld)await _updateResTask(rd);
@@ -7183,15 +7184,16 @@ function App(){
       const prevDay=dOff(ld,-1);
       const tasks3=await DB.fetchTasks(prevDay);
       if(tasks3&&tasks3.length){
-        tasks3.filter(t=>t.reservationId===resId).forEach(t=>{
+        const prevPromises=tasks3.filter(t=>t.reservationId===resId).map(t=>{
           const up={...t,assignedVehicle:newVc,plateNo:vn.no||"",vehicle:vn.type||t.vehicle};
-          DB.updateTask(up,prevDay);
+          return DB.updateTask(up,prevDay);
         });
+        await Promise.all(prevPromises);
         // ★ 洗車タスクが存在しなければ追加
         const hasWash=tasks3.find(t=>t.type==="洗車"&&t.reservationId===resId);
         if(!hasWash){
           const washTask={_id:"w-"+resId,type:"洗車",time:"",name:`翌日出発: ${res.name}`,people:0,place:"",vehicle:vn.type,insurance:"",flight:"",reservationId:resId,ota:res.ota||"",tel:"",mail:"",done:false,assignee:"",memo:`${fmtD(ld)} DEL ${res.lendTime||""} ${res.name}`,assignedVehicle:newVc,plateNo:vn.no,insuranceChange:"",opts:{},yakkan:false,line:false,payment:false,returnDate:"",returnTime:"",returnType:"",colPlace:""};
-          DB.updateTask(washTask,prevDay);
+          await DB.updateTask(washTask,prevDay);
           console.log("[reassign] 前日洗車タスク追加:",newVc,res.name,prevDay);
         }
       }
@@ -7412,20 +7414,19 @@ function App(){
       // 自動配車（最新のdata+fleetを使用）
       setFleet(prev=>{
         const newFleet=autoAssign(latestData||[r],vehicles,prev,maintenance);
-        DB.upsertFleet(newFleet);
+        DB.upsertFleet(newFleet).catch(e=>console.error("upsertFleet error:",e));
         return newFleet;
       });
       markLocalChange("fleet");
     }
   },[vehicles,maintenance]);
 
-  const bulkAddReservation=useCallback((rArr,fl)=>{
+  const bulkAddReservation=useCallback(async(rArr,fl)=>{
     const ids=new Set(data.map(r=>r.id));
     const newOnes=rArr.filter(r=>!ids.has(r.id));
     setData(prev=>[...prev,...newOnes]);
     setFleet(prev=>({...prev,...fl}));
-    DB.upsertReservations(newOnes);
-    DB.upsertFleet(fl);
+    try{await DB.upsertReservations(newOnes);await DB.upsertFleet(fl);}catch(e){console.error("bulkAdd error:",e);}
   },[data]);
 
   const cancelReservation=useCallback((id)=>{
@@ -7460,47 +7461,51 @@ function App(){
   },[]);
 
   // 予約情報を部分更新（配車表モーダル/データタブから）
-  const updateReservation=useCallback((id,changes)=>{
-    setData(prev=>{
-      const next=prev.map(r=>r.id===id?{...r,...changes}:r);
-      const updated=next.find(r=>r.id===id);
-      if(updated)DB.upsertReservations([updated]);
-      try{localStorage.setItem("spk_reservations_backup",JSON.stringify(next));}catch(e){}
-      markLocalChange("reservations");
-      // ★ OPシートタスクにも連動（time/place/insurance/opts/vehicle）
-      if(updated){
-        const syncFields={};
-        if(changes.delTime!==undefined)syncFields.delTime=changes.delTime;
-        if(changes.delPlace!==undefined)syncFields.delPlace=changes.delPlace;
-        if(changes.colTime!==undefined)syncFields.colTime=changes.colTime;
-        if(changes.colPlace!==undefined)syncFields.colPlace=changes.colPlace;
-        if(changes.insurance!==undefined)syncFields.insurance=changes.insurance;
-        if(changes.vehicle!==undefined)syncFields.vehicle=changes.vehicle;
-        if(changes.name!==undefined)syncFields.name=changes.name;
-        if(changes.people!==undefined)syncFields.people=changes.people;
-        if(changes.optB!==undefined||changes.optC!==undefined||changes.optJ!==undefined)syncFields.opts={b:+(changes.optB??updated.optB??0),c:+(changes.optC??updated.optC??0),j:+(changes.optJ??updated.optJ??0)};
-        if(Object.keys(syncFields).length){
-          const _syncTasksForRes=async(date)=>{
-            const tks=await DB.fetchTasks(date);if(!tks||!tks.length)return;
-            tks.filter(tk=>tk.reservationId===id).forEach(tk=>{
-              const upd={...tk};
-              if(syncFields.name!==undefined)upd.name=syncFields.name;
-              if(syncFields.people!==undefined)upd.people=syncFields.people;
-              if(syncFields.insurance!==undefined)upd.insurance=syncFields.insurance;
-              if(syncFields.vehicle!==undefined)upd.vehicle=syncFields.vehicle;
-              if(syncFields.opts)upd.opts=syncFields.opts;
-              if(tk.type==="DEL"||tk.type==="PU"){if(syncFields.delTime!==undefined&&!tk._manualTime)upd.time=syncFields.delTime;if(syncFields.delPlace!==undefined&&!tk._manualPlace)upd.place=syncFields.delPlace;}
-              if(tk.type==="COL"){if(syncFields.colTime!==undefined&&!tk._manualTime)upd.time=syncFields.colTime;if(syncFields.colPlace!==undefined&&!tk._manualPlace)upd.place=syncFields.colPlace;}
-              DB.updateTask(upd,date);
-            });
-          };
-          const ld=norm(updated.lendDate),rd=norm(updated.returnDate);
-          try{_syncTasksForRes(ld);if(rd!==ld)_syncTasksForRes(rd);}catch(e){console.error("[updateRes→tasks sync]",e);}
-        }
+  const updateReservation=useCallback(async(id,changes)=>{
+    const prev=data;
+    const next=prev.map(r=>r.id===id?{...r,...changes}:r);
+    const updated=next.find(r=>r.id===id);
+    setData(next);
+    try{localStorage.setItem("spk_reservations_backup",JSON.stringify(next));}catch(e){}
+    markLocalChange("reservations");
+    // ★ DB保存（awaitで確実に完了確認）
+    try{
+      if(updated)await DB.upsertReservations([updated]);
+    }catch(e){console.error("[updateRes] DB save error",e);return false;}
+    // ★ OPシートタスクにも連動（time/place/insurance/opts/vehicle）
+    if(updated){
+      const syncFields={};
+      if(changes.delTime!==undefined)syncFields.delTime=changes.delTime;
+      if(changes.delPlace!==undefined)syncFields.delPlace=changes.delPlace;
+      if(changes.colTime!==undefined)syncFields.colTime=changes.colTime;
+      if(changes.colPlace!==undefined)syncFields.colPlace=changes.colPlace;
+      if(changes.insurance!==undefined)syncFields.insurance=changes.insurance;
+      if(changes.vehicle!==undefined)syncFields.vehicle=changes.vehicle;
+      if(changes.name!==undefined)syncFields.name=changes.name;
+      if(changes.people!==undefined)syncFields.people=changes.people;
+      if(changes.optB!==undefined||changes.optC!==undefined||changes.optJ!==undefined)syncFields.opts={b:+(changes.optB??updated.optB??0),c:+(changes.optC??updated.optC??0),j:+(changes.optJ??updated.optJ??0)};
+      if(Object.keys(syncFields).length){
+        const _syncTasksForRes=async(date)=>{
+          const tks=await DB.fetchTasks(date);if(!tks||!tks.length)return;
+          const promises=tks.filter(tk=>tk.reservationId===id).map(tk=>{
+            const upd={...tk};
+            if(syncFields.name!==undefined)upd.name=syncFields.name;
+            if(syncFields.people!==undefined)upd.people=syncFields.people;
+            if(syncFields.insurance!==undefined)upd.insurance=syncFields.insurance;
+            if(syncFields.vehicle!==undefined)upd.vehicle=syncFields.vehicle;
+            if(syncFields.opts)upd.opts=syncFields.opts;
+            if(tk.type==="DEL"||tk.type==="PU"){if(syncFields.delTime!==undefined&&!tk._manualTime)upd.time=syncFields.delTime;if(syncFields.delPlace!==undefined&&!tk._manualPlace)upd.place=syncFields.delPlace;}
+            if(tk.type==="COL"){if(syncFields.colTime!==undefined&&!tk._manualTime)upd.time=syncFields.colTime;if(syncFields.colPlace!==undefined&&!tk._manualPlace)upd.place=syncFields.colPlace;}
+            return DB.updateTask(upd,date);
+          });
+          await Promise.all(promises);
+        };
+        const ld=norm(updated.lendDate),rd=norm(updated.returnDate);
+        try{await _syncTasksForRes(ld);if(rd!==ld)await _syncTasksForRes(rd);}catch(e){console.error("[updateRes→tasks sync]",e);}
       }
-      return next;
-    });
-  },[]);
+    }
+    return true;
+  },[data]);
 
   const updatePlaces=useCallback((places)=>{
     let matched=0;
@@ -8015,7 +8020,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.2.77";
+const APP_VERSION="v4.2.78";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
