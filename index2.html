@@ -60,19 +60,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 </head>
 <body>
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
-<script>
-(function(){
-  var CV='spk-v452';
-  if(localStorage.getItem('sw_cache_ver')!==CV){
-    if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
-    if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
-    localStorage.setItem('sw_cache_ver',CV);
-    setTimeout(function(){location.reload(true);},500);
-  }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js?v=451').then(function(r){r.update();}).catch(function(){});}
-  }
-})();
-</script>
+<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(function(){});}</script>
 <script>
 var ss=document.getElementById('splash-status');
 function splashMsg(t){if(ss)ss.textContent=t;}
@@ -4277,6 +4265,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,vehicle
                 <select value={t.type||"COL"} onChange={e=>{const v=e.target.value;setTimeout(()=>{if(!window.confirm("返却方法を「"+v+"」に変更しますか？"))return;const chain=t.typeChange?(t.typeChange+"→"+v):(t.type+"→"+v);_save(t._id,mark({...t,type:v,typeChange:chain},"type"));},50);}} style={{width:"100%",padding:"8px 12px",borderRadius:8,border:"1px solid #cbd5e1",fontSize:13,fontWeight:700,color:headerColor}}>
                   <option value="COL">COL（回収）</option>
                   <option value="返却">返却（来店）</option>
+                  <option value="乗り捨て">乗り捨て</option>
                 </select>
               </div>
               {/* 送迎時間 3階層 */}
@@ -7047,23 +7036,29 @@ function DataTable({data,fleet,vehicles,sheetPlaces,onUpdatePlaces,jalanPay,onUp
   };
   const getPlace=(resId)=>sheetPlaces[resId]||{};
   const getVehicle=(resId)=>{const code=fleet&&fleet[resId];if(!code)return null;return(vehicles||[]).find(v=>v.code===code);};
-  // 免許証ステータス一括チェック
+  // 免許証ステータス一括チェック（並列バッチ）
   useEffect(()=>{
     const ids=[...new Set(data.map(r=>r.id))];
     if(!ids.length)return;
+    let cancelled=false;
     const check=async()=>{
-      const res={};
       const SUPABASE_URL_L="https://ckrxttbnawkclshczsia.supabase.co";
       const SUPABASE_KEY_L="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
-      for(const rid of ids){
-        try{
-          const r=await fetch(SUPABASE_URL_L+"/storage/v1/object/list/licenses",{method:"POST",headers:{"apikey":SUPABASE_KEY_L,"Authorization":"Bearer "+SUPABASE_KEY_L,"Content-Type":"application/json"},body:JSON.stringify({prefix:rid,limit:1})});
-          if(r.ok){const files=await r.json();res[rid]=files.length>0;}
-        }catch(e){}
+      const BATCH=10;
+      const res={};
+      for(let i=0;i<ids.length;i+=BATCH){
+        if(cancelled)return;
+        const batch=ids.slice(i,i+BATCH);
+        const results=await Promise.all(batch.map(rid=>
+          fetch(SUPABASE_URL_L+"/storage/v1/object/list/licenses",{method:"POST",headers:{"apikey":SUPABASE_KEY_L,"Authorization":"Bearer "+SUPABASE_KEY_L,"Content-Type":"application/json"},body:JSON.stringify({prefix:rid,limit:1})})
+          .then(r=>r.ok?r.json():null).then(files=>({rid,has:files&&files.length>0})).catch(()=>({rid,has:false}))
+        ));
+        results.forEach(({rid,has})=>{res[rid]=has;});
       }
-      setLicStatus(res);
+      if(!cancelled)setLicStatus(res);
     };
     check();
+    return()=>{cancelled=true;};
   },[data.length]);
   return <div style={{background:"#fff",borderRadius:12,border:"1px solid #e2e8f0",overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,.06)"}}>
     {/* ★ ヘッダー: 期間切替 + 検索 + OTAフィルタ + ステータスフィルタ */}
@@ -8281,19 +8276,21 @@ function App(){
                     })()}
                   </div>;
               })}
-              {/* ★ 本日スケジュール（時系列フラット表示） */}
+              {/* ★ 本日スケジュール（折りたたみ式） */}
               {todayTasks.length>0&&(()=>{
                 const isMob=window.innerWidth<=768;
                 const timedWash=todayTasks.filter(t=>t.type==="洗車"&&t.time);
                 const untimedWash=todayTasks.filter(t=>t.type==="洗車"&&!t.time);
                 const allSchedule=[...todayTasks.filter(t=>t.type!=="洗車"&&t.type!=="CXL"),...timedWash].sort((a,b)=>{const ta=a.timeChange||a._ssTime||a.time||"99:99";const tb=b.timeChange||b._ssTime||b.time||"99:99";return ta.localeCompare(tb);});
                 const typeStyle=(tp)=>({DEL:{bg:"#dbeafe",c:"#1d4ed8",border:"#60a5fa"},COL:{bg:"#ffedd5",c:"#9a3412",border:"#fdba74"},"洗車":{bg:"#FFFDE7",c:"#795548",border:"#FFD54F"},"その他":{bg:"#f1f5f9",c:"#475569",border:"#cbd5e1"},CXL:{bg:"#f1f5f9",c:"#9ca3af",border:"#d1d5db"}})[tp]||{bg:"#f1f5f9",c:"#475569",border:"#cbd5e1"};
-                return <div style={{marginBottom:16}}>
-                  <div style={{background:"#fff",borderRadius:12,border:"1px solid #e2e8f0",overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,.06)"}}>
-                    <div style={{background:"linear-gradient(135deg,#0f172a,#1e293b)",padding:"8px 12px",color:"#e2e8f0",fontWeight:800,fontSize:isMob?13:12,display:"flex",alignItems:"center",gap:8}}>
-                      <span>🗓 スケジュール</span>
-                      <span style={{fontSize:10,fontWeight:600,opacity:.7}}>{allSchedule.length}件{untimedWash.length>0?" + 時間未定洗車"+untimedWash.length+"件":""}</span>
-                    </div>
+                const totalCnt=allSchedule.length+(untimedWash.length>0?" + 時間未定洗車"+untimedWash.length+"件":"");
+                return <div style={{marginBottom:8}}>
+                  <div onClick={()=>setTomSumOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px",borderRadius:12,background:"#f8fafc",border:"1px solid #e2e8f0",cursor:"pointer",userSelect:"none",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
+                    <span style={{fontSize:16}}>🗓</span>
+                    <span style={{fontSize:13,fontWeight:900,color:"#1e293b"}}>本日スケジュール</span>
+                    <span style={{marginLeft:"auto",fontSize:11,fontWeight:700,color:"#94a3b8"}}>{allSchedule.length}件　{tomSumOpen?"▲":"▼"}</span>
+                  </div>
+                  {tomSumOpen&&<div style={{marginTop:6,background:"#fff",borderRadius:12,border:"1px solid #e2e8f0",overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,.06)"}}>
                     {allSchedule.map(t=>{
                       const ppl=parseInt(t.people)||0;
                       const resolvedT=t.timeChange||t._ssTime||t.time||"--:--";
@@ -8342,8 +8339,7 @@ function App(){
                         </div>;
                       })}
                     </div>}
-                    {allSchedule.length===0&&untimedWash.length===0&&<div style={{padding:20,textAlign:"center",color:"#94a3b8",fontSize:12}}>タスクなし</div>}
-                  </div>
+                  </div>}
                 </div>;
               })()}
               {sections.map(function(sec){return <div key={sec.title} style={{marginBottom:16}}>
@@ -8457,7 +8453,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.5.0";
+const APP_VERSION="v4.5.1";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
