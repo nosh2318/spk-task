@@ -96,6 +96,14 @@ function processNewEmails() {
   if (successes.length > 0) sendSlackSuccess_(successes);
   if (failures.length > 0) sendSlackFailure_(failures);
   if (cancellations.length > 0) sendSlackCancel_(cancellations);
+
+  // ハートビート: 実行完了をDBに記録
+  updateHeartbeat_('spk_gas_email', {
+    success: successes.length,
+    failure: failures.length,
+    cancel: cancellations.length,
+    skip: skipped.length
+  });
 }
 
 function testProcessLatest() {
@@ -144,10 +152,17 @@ function processMessage_(message, dryRun) {
 
   if (isCancellation) {
     // ★ キャンセル: DB存在チェック（沖縄の予約はDBにないのでスキップ）
-    var tmpId = (ota === 'rakuten') ? extractField_(body, '・予約番号') : extractField_(body, '予約番号');
+    var tmpId = (ota === 'rakuten')
+      ? (extractField_(body, '・予約番号') || extractField_(body, '予約番号'))
+      : (extractField_(body, '予約番号') || extractField_(body, '予約ID'));
     if (tmpId && !reservationExists_(tmpId)) {
       Logger.log('Skipping cancel (not in SPK DB): ' + tmpId);
       return {type:'skip', id:tmpId, reason:'DB未登録(沖縄)'};
+    }
+    // ★ 既にキャンセル済みならスキップ（重複キャンセルメール対応）
+    if (tmpId && reservationIsCancelled_(tmpId)) {
+      Logger.log('Already cancelled: ' + tmpId);
+      return {type:'skip', id:tmpId, reason:'キャンセル済み'};
     }
     var cancelId = handleCancellation_(ota, body, dryRun);
     return cancelId ? {type:'cancel', id:cancelId, ota:otaCode} : null;
@@ -191,14 +206,34 @@ function processMessage_(message, dryRun) {
 
   // Duplicate check
   if (reservationExists_(reservation.id)) {
-    Logger.log('Reservation already exists: ' + reservation.id);
-    return {type:'skip', id:reservation.id, reason:'登録済み'};
-  }
-
-  // Insert
-  var insertResult = insertReservation_(reservation);
-  if (!insertResult) {
-    return {type:'failure', id:reservation.id, ota:otaCode, name:reservation.name, reason:'DB登録失敗'};
+    // ★ キャンセル済み予約の再予約（取り直し）対応
+    if (reservationIsCancelled_(reservation.id)) {
+      Logger.log('Re-booking cancelled reservation: ' + reservation.id);
+      // 古いデータをクリーンアップ
+      deleteFromFleet_(reservation.id);
+      deleteFromTasks_(reservation.id);
+      // 予約データを上書き更新
+      var updateData = {};
+      var keys = Object.keys(reservation);
+      for (var ki = 0; ki < keys.length; ki++) {
+        if (keys[ki].charAt(0) !== '_') updateData[keys[ki]] = reservation[keys[ki]];
+      }
+      updateData.status = 'confirmed';
+      var updated = supabaseUpdate_('reservations', 'id=eq.' + encodeURIComponent(reservation.id), updateData);
+      if (!updated) {
+        return {type:'failure', id:reservation.id, ota:otaCode, name:reservation.name, reason:'再予約DB更新失敗'};
+      }
+      Logger.log('Re-booked (updated existing cancelled record): ' + reservation.id);
+    } else {
+      Logger.log('Reservation already exists (active): ' + reservation.id);
+      return {type:'skip', id:reservation.id, reason:'登録済み'};
+    }
+  } else {
+    // Insert new
+    var insertResult = insertReservation_(reservation);
+    if (!insertResult) {
+      return {type:'failure', id:reservation.id, ota:otaCode, name:reservation.name, reason:'DB登録失敗'};
+    }
   }
 
   // Auto-assign vehicle
@@ -490,30 +525,58 @@ function parseOfficial_(body) {
 // ============================================================
 function handleCancellation_(ota, body, dryRun) {
   var reservationId = '';
+
+  // ★ 複数パターンで予約番号抽出（OTAフォーマット変更に対応）
   if (ota === 'rakuten') {
-    reservationId = extractField_(body, '・予約番号');
+    reservationId = extractField_(body, '・予約番号') || extractField_(body, '予約番号');
   } else {
-    reservationId = extractField_(body, '予約番号');
+    reservationId = extractField_(body, '予約番号') || extractField_(body, '予約ID');
+  }
+
+  // 正規表現フォールバック
+  if (!reservationId) {
+    var patterns = [/予約番号[：:]\s*(\S+)/m, /予約番号\s+(\S+)/m, /予約ID[：:]\s*(\S+)/m];
+    for (var p = 0; p < patterns.length; p++) {
+      var m = body.match(patterns[p]);
+      if (m && m[1]) { reservationId = m[1].trim(); break; }
+    }
   }
 
   if (!reservationId) {
-    Logger.log('Cancellation: could not extract reservation ID (' + ota + ')');
-    return;
+    Logger.log('ERROR: Cancellation ID extraction failed (' + ota + ')');
+    return null;
   }
 
   Logger.log('Cancellation detected: ' + reservationId + ' (' + ota + ')');
 
   if (dryRun) {
     Logger.log('[DRY RUN] Would cancel: ' + reservationId);
-    return;
+    return reservationId;
   }
 
-  // Delete fleet + tasks, update reservation status to キャンセル
-  deleteFromFleet_(reservationId);
-  deleteFromTasks_(reservationId);
-  supabaseUpdate_('reservations', 'id=eq.' + encodeURIComponent(reservationId), {status: 'キャンセル'});
+  // ★ fleet削除（リトライ付き）
+  var fleetOk = deleteFromFleet_(reservationId);
+  if (!fleetOk) {
+    Logger.log('WARNING: fleet delete failed for ' + reservationId + ', retrying...');
+    Utilities.sleep(1000);
+    fleetOk = deleteFromFleet_(reservationId);
+    if (!fleetOk) Logger.log('ERROR: fleet delete retry failed for ' + reservationId);
+  }
 
-  Logger.log('Cancelled reservation: ' + reservationId);
+  // ★ tasks削除
+  var tasksOk = deleteFromTasks_(reservationId);
+  if (!tasksOk) {
+    Logger.log('WARNING: tasks delete failed for ' + reservationId);
+  }
+
+  // ★ ステータスを "cancelled" に統一（APP側と同じ値）
+  var statusOk = supabaseUpdate_('reservations', 'id=eq.' + encodeURIComponent(reservationId), {status: 'cancelled'});
+  if (!statusOk) {
+    Logger.log('ERROR: reservation status update failed for ' + reservationId);
+    return null;
+  }
+
+  Logger.log('Cancelled reservation: ' + reservationId + ' (fleet=' + fleetOk + ', tasks=' + tasksOk + ')');
   return reservationId;
 }
 
@@ -587,8 +650,16 @@ function supabaseDelete_(table, queryParams) {
 // Reservation DB Operations
 // ============================================================
 function reservationExists_(reservationId) {
-  var rows = supabaseGet_('reservations', 'id=eq.' + encodeURIComponent(reservationId) + '&select=id');
+  var rows = supabaseGet_('reservations', 'id=eq.' + encodeURIComponent(reservationId) + '&select=id,status');
   return rows.length > 0;
+}
+
+// ★ キャンセル済みかどうか（再予約判定用）
+function reservationIsCancelled_(reservationId) {
+  var rows = supabaseGet_('reservations', 'id=eq.' + encodeURIComponent(reservationId) + '&select=id,status');
+  if (rows.length === 0) return false;
+  var st = rows[0].status || '';
+  return st === 'cancelled' || st === 'キャンセル';
 }
 
 function insertReservation_(reservation) {
@@ -671,13 +742,20 @@ function autoAssignVehicle_(reservation) {
 }
 
 function getOverlappingFleetVehicles_(lendDate, returnDate) {
-  var query = 'select=vehicle_code,reservation_id,reservations(lend_date,return_date)';
+  // ★ statusを取得してキャンセル予約を除外
+  var query = 'select=vehicle_code,reservation_id,reservations(lend_date,return_date,status)';
   var allFleet = supabaseGet_('fleet', query);
   var busyCodes = [];
   for (var i = 0; i < allFleet.length; i++) {
     var f = allFleet[i];
     if (!f.reservations) continue;
     var r = f.reservations;
+    // ★ キャンセル済み予約はスキップ（ゴミfleetが残っていても安全）
+    var st = r.status || '';
+    if (st === 'cancelled' || st === 'キャンセル') {
+      Logger.log('Skipping cancelled fleet: ' + f.reservation_id + ' → ' + f.vehicle_code);
+      continue;
+    }
     if (r.lend_date <= returnDate && r.return_date >= lendDate) {
       busyCodes.push(f.vehicle_code);
     }
@@ -730,6 +808,126 @@ function sendSlackCancel_(items) {
   lines.push('合計: ' + items.length + '件');
   MailApp.sendEmail(SLACK_EMAIL, '🔄 札幌店予約キャンセル処理 ' + items.length + '件', lines.join('\n'));
   Logger.log('Slack cancel notification sent: ' + items.length + '件');
+}
+
+// ============================================================
+// Heartbeat & Monitoring
+// ============================================================
+
+// ハートビート書込み: 実行のたびにapp_settingsに記録
+function updateHeartbeat_(key, stats) {
+  try {
+    var payload = {
+      key: 'heartbeat_' + key,
+      value: JSON.stringify({
+        last_run: new Date().toISOString(),
+        status: (stats.failure || 0) > 0 ? 'warning' : 'ok',
+        processed: (stats.success || 0) + (stats.cancel || 0) + (stats.skip || 0),
+        errors: stats.failure || 0,
+        details: stats
+      })
+    };
+    var options = {
+      method: 'post',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_KEY,
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates'
+      },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+    UrlFetchApp.fetch(SUPABASE_URL + '/rest/v1/app_settings', options);
+    Logger.log('[Heartbeat] Updated: ' + key);
+  } catch (e) {
+    Logger.log('[Heartbeat] Error: ' + e.message);
+  }
+}
+
+// 監視チェック: 30分間隔で実行。ハートビートが途絶えていたらSlack通知
+function checkHeartbeats() {
+  var checks = [
+    { key: 'spk_gas_email', label: '札幌GAS予約取込', thresholdMin: 30 }
+  ];
+
+  checks.forEach(function(check) {
+    try {
+      var url = SUPABASE_URL + '/rest/v1/app_settings?key=eq.heartbeat_' + check.key + '&select=value';
+      var options = {
+        method: 'get',
+        headers: {
+          'apikey': SUPABASE_KEY,
+          'Authorization': 'Bearer ' + SUPABASE_KEY
+        },
+        muteHttpExceptions: true
+      };
+      var res = UrlFetchApp.fetch(url, options);
+      var data = JSON.parse(res.getContentText());
+      var props = PropertiesService.getScriptProperties();
+
+      if (!data || data.length === 0) {
+        var initKey = 'alert_init_' + check.key;
+        if (!props.getProperty(initKey)) {
+          sendSlackAlert_('⚠️ ' + check.label + ': ハートビート未登録（初回実行待ち）');
+          props.setProperty(initKey, 'true');
+        }
+        return;
+      }
+
+      var hb = JSON.parse(data[0].value);
+      var lastRun = new Date(hb.last_run);
+      var now = new Date();
+      var diffMin = Math.round((now - lastRun) / 60000);
+
+      // ScriptProperties で通知済みフラグ管理（同じ障害で連続通知しない）
+      var props = PropertiesService.getScriptProperties();
+      var alertKey = 'alert_sent_' + check.key;
+      var alertSent = props.getProperty(alertKey);
+
+      if (diffMin > check.thresholdMin) {
+        if (!alertSent) {
+          var timeStr = Utilities.formatDate(lastRun, 'Asia/Tokyo', 'MM/dd HH:mm');
+          sendSlackAlert_('🚨 ' + check.label + ' が' + diffMin + '分間停止中\n最終実行: ' + timeStr + '\n処理数: ' + (hb.processed || 0) + '件 / エラー: ' + (hb.errors || 0) + '件');
+          props.setProperty(alertKey, 'true');
+        }
+      } else {
+        // 復旧検知
+        if (alertSent) {
+          sendSlackAlert_('✅ ' + check.label + ' 復旧しました（停止' + diffMin + '分）');
+          props.deleteProperty(alertKey);
+        }
+      }
+    } catch (e) {
+      Logger.log('[checkHeartbeats] Error for ' + check.key + ': ' + e.message);
+    }
+  });
+}
+
+function sendSlackAlert_(message) {
+  try {
+    MailApp.sendEmail(SLACK_EMAIL, message.split('\n')[0], message);
+    Logger.log('[Alert] Sent: ' + message.split('\n')[0]);
+  } catch (e) {
+    Logger.log('[Alert] Send error: ' + e.message);
+  }
+}
+
+// セットアップ: 監視トリガー追加（30分間隔）
+function setupMonitoring() {
+  // 既存の監視トリガーを削除
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'checkHeartbeats') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+
+  ScriptApp.newTrigger('checkHeartbeats')
+    .timeBased()
+    .everyMinutes(30)
+    .create();
+
+  Logger.log('Monitoring setup complete: 30-minute heartbeat check trigger created.');
 }
 
 // ============================================================
