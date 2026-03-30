@@ -290,6 +290,11 @@ function isSapporoReservation_(res) {
 
 function extractVehicleClass_(rawClass) {
   if (!rawClass) return '';
+  // ★ 先にB2/A2/Dなど複数文字クラスをチェック（那覇専用クラス）
+  if (/[_](B2)(?:[_]|$)/i.test(rawClass)) return 'B2';
+  if (/[_](A2)(?:[_]|$)/i.test(rawClass)) return 'A2';
+  if (/[_](D)(?:[_]|$)/i.test(rawClass)) return 'D';
+  // 単一文字クラス
   var m = rawClass.match(/[_]([ABCSFH])(?:[_]|$)/i);
   if (m) return m[1].toUpperCase();
   var m2 = rawClass.match(/^([ABCSFH])[_]/i);
@@ -298,6 +303,9 @@ function extractVehicleClass_(rawClass) {
   if (m3) return m3[1].toUpperCase();
   var m4 = rawClass.match(/[_]([ABCSFH])$/i);
   if (m4) return m4[1].toUpperCase();
+  // 複数文字クラス（位置違いパターン）
+  if (/B2/i.test(rawClass)) return 'B2';
+  if (/A2/i.test(rawClass)) return 'A2';
   return '';
 }
 
