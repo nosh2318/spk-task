@@ -3502,9 +3502,18 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
     }
     // 1. DB(+localStorage)から取得
     const saved=await DB.fetchTasks(date);
+    // ★ 有効な予約IDセット（削除済み予約の孤立タスクを除去するため）
+    const validResIds=new Set(reservations.map(r=>r.id));
     if(saved&&saved.length>0){
       const fl=fleetRef.current;
-      const result=saved.map(t=>{
+      // ★ 孤立タスク除去（予約が存在しないタスクをDBからも削除）
+      const orphanTasks=saved.filter(t=>t.reservationId&&!validResIds.has(t.reservationId));
+      if(orphanTasks.length){
+        console.warn("[loadTasks] 孤立タスク除去:",orphanTasks.map(t=>t._id));
+        orphanTasks.forEach(t=>DB.deleteTask(t._id,date));
+      }
+      const validSaved=saved.filter(t=>!t.reservationId||validResIds.has(t.reservationId));
+      const result=validSaved.map(t=>{
         if(!t.reservationId)return t;
         const vc=fl[t.reservationId];
         if(!vc&&!t.assignedVehicle)return t;
@@ -7416,6 +7425,10 @@ function App(){
           });
         }
         if(useRes.length)setData(useRes);
+        // ★ DB取得成功時はlocalStorageバックアップを更新（古い削除済み予約を除去）
+        if(resDB&&resDB.length){
+          try{localStorage.setItem("spk_reservations_backup",JSON.stringify(useRes));}catch(e){}
+        }
         // ★ fleet整合性チェック: キャンセル済み予約のfleetをクリーンアップ
         if(Object.keys(flDB).length&&useRes.length){
           const cancelledIds=new Set(useRes.filter(r=>r.status==="cancelled").map(r=>r.id));
