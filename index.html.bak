@@ -7624,6 +7624,10 @@ function App(){
           const localOnly=prev.filter(r=>!dbIds.has(r.id)&&!cancelled.has(r.id));
           if(localOnly.length){
             console.log("[silentRefresh] "+localOnly.length+"件のローカル専用予約を保護:",localOnly.map(r=>r.id).join(","));
+            // ★ ローカル専用予約のDB再保存を試行
+            localOnly.forEach(lr=>{
+              DB.upsertReservations([lr]).then(()=>console.log("[silentRefresh] ローカル予約DB再保存成功:",lr.id)).catch(e=>console.error("[silentRefresh] ローカル予約DB再保存失敗:",lr.id,e));
+            });
             return[...useRes,...localOnly];
           }
           return useRes;
@@ -8016,7 +8020,7 @@ function App(){
     })();
   },[data,vehicles,fleet,pendingPlaces,maintenance]);
 
-  const addReservation=useCallback((r,vehicleCode)=>{
+  const addReservation=useCallback(async(r,vehicleCode)=>{
     // ★ setData(prev=>...)で最新stateを使う（stale closure防止）
     let latestData;
     setData(prev=>{
@@ -8025,19 +8029,35 @@ function App(){
       return latestData;
     });
     markLocalChange("reservations");
-    DB.upsertReservations([r]).then(()=>markDbSync("reservations"));
+    // ★ DB保存（リトライ付き・失敗時もローカルに保持）
+    const saveRes=async(attempt)=>{
+      try{
+        await DB.upsertReservations([r]);
+        markDbSync("reservations");
+        console.log("[addRes] DB保存成功:",r.id);
+      }catch(e){
+        console.error("[addRes] DB保存失敗("+attempt+"):",r.id,e);
+        if(attempt<3)setTimeout(()=>saveRes(attempt+1),2000*attempt);
+      }
+    };
+    saveRes(1);
     if(vehicleCode){
       setFleet(prev=>({...prev,[r.id]:vehicleCode}));
       markLocalChange("fleet");
-      DB.updateFleetOne(r.id,vehicleCode).then(()=>markDbSync("fleet"));
+      try{await DB.updateFleetOne(r.id,vehicleCode);markDbSync("fleet");}catch(e){console.error("[addRes] fleet保存失敗:",e);}
     }else{
       // 自動配車（最新のdata+fleetを使用）
+      let newFleetCopy;
       setFleet(prev=>{
         const newFleet=autoAssign(latestData||[r],vehicles,prev,maintenance);
-        DB.upsertFleet(newFleet).catch(e=>console.error("upsertFleet error:",e));
+        newFleetCopy=newFleet;
         return newFleet;
       });
       markLocalChange("fleet");
+      // ★ fleet DB保存を確実に完了→markDbSync
+      if(newFleetCopy){
+        try{await DB.upsertFleet(newFleetCopy);markDbSync("fleet");}catch(e){console.error("upsertFleet error:",e);}
+      }
     }
   },[vehicles,maintenance]);
 
