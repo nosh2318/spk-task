@@ -8021,7 +8021,7 @@ function App(){
   },[data,vehicles,fleet,pendingPlaces,maintenance]);
 
   const addReservation=useCallback(async(r,vehicleCode)=>{
-    // ★ setData(prev=>...)で最新stateを使う（stale closure防止）
+    // ★ 最新dataを同期的に取得（stale closure防止）
     let latestData;
     setData(prev=>{
       latestData=[...prev,r];
@@ -8029,7 +8029,7 @@ function App(){
       return latestData;
     });
     markLocalChange("reservations");
-    // ★ DB保存（リトライ付き・失敗時もローカルに保持）
+    // ★ DB保存（await で確実に完了を待つ・リトライ付き）
     const saveRes=async(attempt)=>{
       try{
         await DB.upsertReservations([r]);
@@ -8037,29 +8037,27 @@ function App(){
         console.log("[addRes] DB保存成功:",r.id);
       }catch(e){
         console.error("[addRes] DB保存失敗("+attempt+"):",r.id,e);
-        if(attempt<3)setTimeout(()=>saveRes(attempt+1),2000*attempt);
+        if(attempt<3){await new Promise(ok=>setTimeout(ok,2000*attempt));return saveRes(attempt+1);}
       }
     };
-    saveRes(1);
+    await saveRes(1);
     if(vehicleCode){
       setFleet(prev=>({...prev,[r.id]:vehicleCode}));
       markLocalChange("fleet");
       try{await DB.updateFleetOne(r.id,vehicleCode);markDbSync("fleet");}catch(e){console.error("[addRes] fleet保存失敗:",e);}
     }else{
-      // 自動配車（最新のdata+fleetを使用）
-      let newFleetCopy;
-      setFleet(prev=>{
-        const newFleet=autoAssign(latestData||[r],vehicles,prev,maintenance);
-        newFleetCopy=newFleet;
-        return newFleet;
-      });
+      // ★ autoAssignをsetFleetの外で計算（React非同期バッチング問題回避）
+      let currentFleet;
+      setFleet(prev=>{currentFleet={...prev};return prev;}); // 現在値を取得のみ
+      // currentFleetがsetFleetバッチングで未設定の場合のフォールバック
+      if(!currentFleet)currentFleet={...fleet};
+      const newFleet=autoAssign(latestData,vehicles,currentFleet,maintenance);
+      setFleet(newFleet);
       markLocalChange("fleet");
-      // ★ fleet DB保存を確実に完了→markDbSync
-      if(newFleetCopy){
-        try{await DB.upsertFleet(newFleetCopy);markDbSync("fleet");}catch(e){console.error("upsertFleet error:",e);}
-      }
+      // ★ fleet DB保存（newFleetは確実に存在）
+      try{await DB.upsertFleet(newFleet);markDbSync("fleet");console.log("[addRes] fleet DB保存成功, 配車:",newFleet[r.id]||"未配車");}catch(e){console.error("[addRes] fleet DB保存失敗:",e);}
     }
-  },[vehicles,maintenance]);
+  },[vehicles,maintenance,fleet]);
 
   const bulkAddReservation=useCallback(async(rArr,fl)=>{
     const ids=new Set(data.map(r=>r.id));
@@ -8540,7 +8538,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.5.3";
+const APP_VERSION="v4.6.3";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
