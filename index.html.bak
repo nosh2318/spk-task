@@ -3466,6 +3466,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
   useEffect(()=>{setEditResId(null);setEditBlock(null);},[dayOff]);
   const activeMembers=useMemo(()=>(shifts[selDate]||[]).filter(s=>s.type==="アルバイト"||s.symbol==="●").map(s=>s.name),[shifts,selDate]);
   const fleetRef=React.useRef(fleet);fleetRef.current=fleet;
+  const reservationsRef=React.useRef(reservations);reservationsRef.current=reservations;
   // fleet変更時にタスクの車種情報を同期 + LS/DB永続化
   useEffect(()=>{
     setTasks(prev=>{
@@ -3505,6 +3506,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
   },[fleet,vehicles]);
   // タスクロード
   const selfUpdateRef=React.useRef({});// date→timestamp（日付ごとに管理）
+  const loadTasksRef=React.useRef(null);
   const loadTasks=React.useCallback(async(date,force)=>{
     // ★ 保存中は一切DB取得しない（上書き防止）
     if(pendingSaves.current>0){console.log("[loadTasks] 保存中スキップ");return;}
@@ -3514,10 +3516,13 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       const lsData=DB._lsLoad(date);
       if(lsData&&lsData.length){setTasks(lsData);console.log("[loadTasks] LS復元",date,lsData.length+"件");return;}
     }
+    const curRes=reservationsRef.current;
     // 1. DB(+localStorage)から取得
     const saved=await DB.fetchTasks(date);
+    // ★ 保存中になった場合は中断（DB取得中に_saveが走った場合）
+    if(pendingSaves.current>0){console.log("[loadTasks] fetch後に保存検出→中断");return;}
     // ★ 有効な予約IDセット（削除済み予約の孤立タスクを除去するため）
-    const validResIds=new Set(reservations.map(r=>r.id));
+    const validResIds=new Set(curRes.map(r=>r.id));
     if(saved&&saved.length>0){
       const fl=fleetRef.current;
       // ★ 孤立タスク除去（予約が存在しないタスクをDBからも削除）
@@ -3537,22 +3542,20 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
         return{...t,assignedVehicle:vc,plateNo:vn?vn.no:"",vehicle:vn?vn.type:t.vehicle};
       });
       // ★ 新規予約のタスクを追加（DBにない予約IDのタスクを生成）
-      // ただし表示のみ。DBへの自動保存はしない（不要な全件UPSERTを防止）
       const existingResIds=new Set(result.filter(t=>t.reservationId).map(t=>t.reservationId));
-      const gen=generateTasks(reservations,date,fl,vehicles);
+      const gen=generateTasks(curRes,date,fl,vehicles);
       const newTasks=gen.filter(g=>g.reservationId&&!existingResIds.has(g.reservationId));
       if(newTasks.length){
         newTasks.forEach(g=>{const sp=sheetPlaces[g.reservationId];if(sp&&!g.place){if(g.type==="DEL"&&sp.delPlace)g.place=sp.delPlace;if(g.type==="COL"&&sp.colPlace)g.place=sp.colPlace;}});
         const merged=[...result,...newTasks];
         DB._lsSave(merged,date);
-        // ★ 新規タスクのみ個別にDB保存（既存タスクは上書きしない）
         newTasks.forEach((nt,i)=>DB.updateTask(nt,date));
         setTasks(merged);return;
       }
       setTasks(result);return;
     }
     // 2. DBにタスクなし→初回のみ自動生成
-    const gen=generateTasks(reservations,date,fleetRef.current,vehicles);
+    const gen=generateTasks(curRes,date,fleetRef.current,vehicles);
     gen.forEach(g=>{
       if(!g.reservationId)return;
       const sp=sheetPlaces[g.reservationId];
@@ -3561,7 +3564,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
     });
     setTasks(gen);
     if(gen.length)DB.upsertTasks(gen,date);
-  },[reservations,vehicles]);
+  },[vehicles]);// ★ reservationsをdepsから除外（refで参照）→不要な再実行を防止
+  loadTasksRef.current=loadTasks;
   useEffect(()=>{loadTasks(selDate);},[selDate,loadTasks]);
   // ★ 時間・場所を日付切替時＋5分間隔で自動取得
   useEffect(()=>{
@@ -3681,6 +3685,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       await _syncReservation(t);
     }catch(e){console.error("[_save] DB error",e);setSaveStatus("error");}
     finally{savingIdsRef.current.delete(id);}
+    // ★ DB保存完了後にselfUpdateRefを再設定（loadTasks再トリガーによる古いデータ上書き防止）
+    selfUpdateRef.current[selDate]=Date.now();
     pendingSaves.current--;
     setSaveStatus(DB._dbSaveOk?(pendingSaves.current>0?"saving":"ok"):"error");
     _notifyTopChange();
