@@ -238,6 +238,16 @@ function processMessage_(message, dryRun) {
 
   // Auto-assign vehicle
   var assigned = autoAssignVehicle_(reservation);
+
+  // ★ じゃらん新規予約: Square請求書作成 → テンプレメール自動返信
+  if (reservation.ota === 'J') {
+    try {
+      handleJalanAutoReply_(reservation);
+    } catch (e) {
+      Logger.log('[JalanReply] Error in handleJalanAutoReply_: ' + e.message);
+    }
+  }
+
   if (assigned) {
     return {type:'success', id:reservation.id, ota:otaCode, name:reservation.name,
       dates:reservation.lend_date+'~'+reservation.return_date,
@@ -378,6 +388,9 @@ function parseJalan_(body) {
   var cM = peopleStr.match(/子供.*?(\d+)/);
   if (cM) people += parseInt(cM[1], 10);
   var price = parsePrice_(extractField_(body, '合計金額'));
+  // 利用者への請求額（＝Square決済リンクの金額）
+  var billingAmount = parsePrice_(extractField_(body, '利用者への請求額'));
+  if (!billingAmount) billingAmount = price; // フォールバック
   var arrFlight = extractField_(body, '到着便');
   var depFlight = extractField_(body, '出発便');
   var flight = [arrFlight, depFlight].filter(Boolean).join(' / ');
@@ -386,9 +399,10 @@ function parseJalan_(body) {
     lend_date: lend.date, lend_time: lend.time,
     return_date: ret.date, return_time: ret.time,
     vehicle: vehicleClass, people: people, insurance: insurance,
-    price: price, status: '確定', tel: tel, mail: mail,
+    price: price, billingAmount: billingAmount,
+    status: '確定', tel: tel, mail: mail,
     flight: flight, visit_type: '', del_place: '', col_place: '',
-    _store: store, _rawClass: rawClass
+    _store: store, _rawClass: rawClass, _nameKanji: name
   };
 }
 
@@ -792,6 +806,345 @@ function getOverlappingMaintenance_(lendDate, returnDate) {
     '&end_date=gte.' + encodeURIComponent(lendDate) +
     '&select=vehicle_code';
   return supabaseGet_('maintenance', query);
+}
+
+// ============================================================
+// Jalan Auto-Reply: Square Invoice + Template Email
+// ============================================================
+
+/**
+ * じゃらん新規予約に対して Square 請求書作成 → テンプレメール返信 → スプレッドシート記録
+ * processMessage_() の成功時に呼び出される
+ */
+function handleJalanAutoReply_(reservation) {
+  if (reservation.ota !== 'J') return;
+  if (!reservation.mail) {
+    Logger.log('[JalanReply] No email for ' + reservation.id + ', skipping auto-reply.');
+    return;
+  }
+
+  var billingAmount = reservation.billingAmount || reservation.price;
+  if (!billingAmount || billingAmount <= 0) {
+    Logger.log('[JalanReply] No billing amount for ' + reservation.id + ', skipping.');
+    return;
+  }
+
+  // ★ Square 請求書作成
+  var invoiceResult = null;
+  try {
+    invoiceResult = createSquareInvoice_(
+      reservation._nameKanji || reservation.name,
+      billingAmount,
+      reservation.id,
+      reservation.mail
+    );
+  } catch (e) {
+    Logger.log('[JalanReply] Square invoice creation failed for ' + reservation.id + ': ' + e.message);
+    sendSlackAlert_('⚠️ じゃらん決済リンク作成失敗: ' + reservation.id + ' / ' + reservation.name + '\nエラー: ' + e.message);
+    return;
+  }
+
+  if (!invoiceResult || !invoiceResult.paymentLink) {
+    Logger.log('[JalanReply] No payment link returned for ' + reservation.id);
+    sendSlackAlert_('⚠️ じゃらん決済リンク取得失敗: ' + reservation.id + ' / ' + reservation.name);
+    return;
+  }
+
+  // ★ テンプレメール送信
+  try {
+    sendJalanReplyEmail_(reservation, invoiceResult.paymentLink);
+  } catch (e) {
+    Logger.log('[JalanReply] Email send failed for ' + reservation.id + ': ' + e.message);
+    sendSlackAlert_('⚠️ じゃらん自動返信メール送信失敗: ' + reservation.id + '\nエラー: ' + e.message);
+    // メール失敗してもスプレッドシートには記録する（決済リンクは作成済み）
+  }
+
+  // ★ スプレッドシートに記録
+  try {
+    logJalanPayment_(reservation, invoiceResult);
+  } catch (e) {
+    Logger.log('[JalanReply] Spreadsheet log failed: ' + e.message);
+  }
+
+  // ★ Slack通知（成功）
+  var msg = '💳 じゃらん決済リンク送信完了\n'
+    + '予約番号: ' + reservation.id + '\n'
+    + '予約者: ' + (reservation._nameKanji || reservation.name) + '\n'
+    + '金額: ¥' + billingAmount.toLocaleString() + '\n'
+    + '貸出日: ' + reservation.lend_date + '\n'
+    + '決済リンク: ' + invoiceResult.paymentLink;
+  MailApp.sendEmail(SLACK_EMAIL, '💳 じゃらん決済リンク送信: ' + reservation.id, msg);
+}
+
+/**
+ * Square API で請求書を作成し、決済リンクを返す
+ * スクリプトプロパティ: SQUARE_ACCESS_TOKEN, SQUARE_LOCATION_ID
+ */
+function createSquareInvoice_(customerName, amount, reservationId, email) {
+  var props = PropertiesService.getScriptProperties();
+  var accessToken = props.getProperty('SQUARE_ACCESS_TOKEN');
+  var locationId = props.getProperty('SQUARE_LOCATION_ID');
+
+  if (!accessToken || !locationId) {
+    throw new Error('Square API credentials not configured (SQUARE_ACCESS_TOKEN / SQUARE_LOCATION_ID)');
+  }
+
+  var baseUrl = 'https://connect.squareup.com/v2';
+  var headers = {
+    'Authorization': 'Bearer ' + accessToken,
+    'Content-Type': 'application/json',
+    'Square-Version': '2024-12-18'
+  };
+
+  // 1. 顧客を検索 or 作成
+  var customerId = findOrCreateSquareCustomer_(headers, baseUrl, customerName, email);
+
+  // 2. 注文を作成（請求書の明細）
+  var orderPayload = {
+    order: {
+      location_id: locationId,
+      line_items: [{
+        name: 'レンタカー代金',
+        quantity: '1',
+        note: '予約番号: ' + reservationId,
+        base_price_money: {
+          amount: amount,  // Square APIは最小通貨単位（日本円はそのまま）
+          currency: 'JPY'
+        }
+      }]
+    },
+    idempotency_key: 'order-' + reservationId + '-' + Date.now()
+  };
+
+  var orderRes = UrlFetchApp.fetch(baseUrl + '/orders', {
+    method: 'post',
+    headers: headers,
+    payload: JSON.stringify(orderPayload),
+    muteHttpExceptions: true
+  });
+  var orderData = JSON.parse(orderRes.getContentText());
+  if (orderRes.getResponseCode() !== 200 || !orderData.order) {
+    throw new Error('Order creation failed: ' + orderRes.getContentText());
+  }
+  var orderId = orderData.order.id;
+
+  // 3. 請求書を作成
+  var invoicePayload = {
+    invoice: {
+      location_id: locationId,
+      order_id: orderId,
+      primary_recipient: {
+        customer_id: customerId
+      },
+      payment_requests: [{
+        request_type: 'BALANCE',
+        due_date: formatDateForSquare_(new Date()),
+        automatic_payment_source: 'NONE'
+      }],
+      delivery_method: 'SHARE_MANUALLY',
+      title: 'レンタカー代金',
+      description: '予約番号: ' + reservationId,
+      accepted_payment_methods: {
+        card: true,
+        square_gift_card: false,
+        bank_account: false,
+        buy_now_pay_later: false,
+        cash_app_pay: false
+      }
+    },
+    idempotency_key: 'inv-' + reservationId + '-' + Date.now()
+  };
+
+  var invRes = UrlFetchApp.fetch(baseUrl + '/invoices', {
+    method: 'post',
+    headers: headers,
+    payload: JSON.stringify(invoicePayload),
+    muteHttpExceptions: true
+  });
+  var invData = JSON.parse(invRes.getContentText());
+  if (invRes.getResponseCode() !== 200 || !invData.invoice) {
+    throw new Error('Invoice creation failed: ' + invRes.getContentText());
+  }
+
+  var invoiceId = invData.invoice.id;
+  var invoiceVersion = invData.invoice.version;
+
+  // 4. 請求書を公開（これで決済可能になる）
+  var publishRes = UrlFetchApp.fetch(baseUrl + '/invoices/' + invoiceId + '/publish', {
+    method: 'post',
+    headers: headers,
+    payload: JSON.stringify({
+      version: invoiceVersion,
+      idempotency_key: 'pub-' + reservationId + '-' + Date.now()
+    }),
+    muteHttpExceptions: true
+  });
+  var publishData = JSON.parse(publishRes.getContentText());
+  if (publishRes.getResponseCode() !== 200 || !publishData.invoice) {
+    throw new Error('Invoice publish failed: ' + publishRes.getContentText());
+  }
+
+  var publicUrl = publishData.invoice.public_url || '';
+
+  Logger.log('[Square] Invoice created & published: ' + invoiceId + ' → ' + publicUrl);
+
+  return {
+    invoiceId: invoiceId,
+    paymentLink: publicUrl
+  };
+}
+
+/**
+ * Square 顧客を検索、なければ作成
+ */
+function findOrCreateSquareCustomer_(headers, baseUrl, name, email) {
+  // メールで検索
+  var searchRes = UrlFetchApp.fetch(baseUrl + '/customers/search', {
+    method: 'post',
+    headers: headers,
+    payload: JSON.stringify({
+      query: {
+        filter: {
+          email_address: { exact: email }
+        }
+      }
+    }),
+    muteHttpExceptions: true
+  });
+  var searchData = JSON.parse(searchRes.getContentText());
+  if (searchData.customers && searchData.customers.length > 0) {
+    return searchData.customers[0].id;
+  }
+
+  // 新規作成
+  var nameParts = name.split(/\s+/);
+  var createRes = UrlFetchApp.fetch(baseUrl + '/customers', {
+    method: 'post',
+    headers: headers,
+    payload: JSON.stringify({
+      given_name: nameParts.length > 1 ? nameParts[1] : name,
+      family_name: nameParts[0] || '',
+      email_address: email,
+      idempotency_key: 'cust-' + email + '-' + Date.now()
+    }),
+    muteHttpExceptions: true
+  });
+  var createData = JSON.parse(createRes.getContentText());
+  if (!createData.customer) {
+    throw new Error('Customer creation failed: ' + createRes.getContentText());
+  }
+  return createData.customer.id;
+}
+
+function formatDateForSquare_(date) {
+  var y = date.getFullYear();
+  var m = ('0' + (date.getMonth() + 1)).slice(-2);
+  var d = ('0' + date.getDate()).slice(-2);
+  return y + '-' + m + '-' + d;
+}
+
+/**
+ * じゃらん予約者にテンプレメールを返信
+ */
+function sendJalanReplyEmail_(reservation, paymentLink) {
+  var name = reservation._nameKanji || reservation.name;
+  var resId = reservation.id;
+
+  var subject = '【HANDYMAN】事前決済・LINE登録のお願い（予約番号: ' + resId + '）';
+
+  var body = name + '様\n'
+    + '予約番号：' + resId + '\n'
+    + '\n'
+    + 'レンタカーショップHANDYMANカスタマーサポートです。\n'
+    + '事前決済限定プランへのご予約ありがとうございます。\n'
+    + '\n'
+    + '札幌店は便利なデリバリー専門店となっております。\n'
+    + 'スムーズにお貸し出しできますよう事前のお手続きをお願いしております。\n'
+    + '\n'
+    + '—\n'
+    + '\n'
+    + 'ステップ 1　\\ LINE公式の友達登録 /\n'
+    + 'ご登録後流れに沿ってデリバリーに必要な情報を入力ください。\n'
+    + '当日の時間・場所の詳細連絡にもLINEを利用いたします。\n'
+    + 'LINE ID：@730kyhwl\n'
+    + 'https://lin.ee/g6iDNYz\n'
+    + '\n'
+    + '\n'
+    + 'ステップ 2　\\ 事前決済 /\n'
+    + 'じゃらん事前決済限定プランとなっております。\n'
+    + '下記より事前決済のお手続きをお願いいたします。\n'
+    + '領収書はお支払い後の画面よりダウンロードいただけます。\n'
+    + paymentLink + '\n'
+    + '—\n'
+    + '\n'
+    + 'お忙しいところ恐れ入りますが、上記2点を必ずお貸し出し3日前19:00までにご対応お願いいたします。\n'
+    + '\n'
+    + '\n'
+    + '\n'
+    + '【注意点】\n'
+    + '・無店舗型のデリバリー専門になります\n'
+    + '・予約状況により内容のご調整をいただくことがございます。\n'
+    + '・貸出日 3日前19:00時点で情報が不明確な場合はご希望に添えないことがございます。\n'
+    + '・貸出時間からご連絡のないまま30分経過しますと貸出不可となることがございます。\n'
+    + '・事前決済のみの取り扱いとなります（現金不可）。\n'
+    + '\n'
+    + '\n'
+    + '\n'
+    + '【お問合せ】\n'
+    + 'お問い合わせは公式LINEお願いいたします。\n'
+    + 'HANDYMANカスタマーサポート\n'
+    + 'LINE公式：https://lin.ee/g6iDNYz\n'
+    + 'LINE ID：@730kyhwl\n'
+    + '緊急連絡先： 050-1724-6197\n'
+    + '営業時間： 9:00〜19:00\n';
+
+  GmailApp.sendEmail(reservation.mail, subject, body, {
+    name: 'HANDYMAN カスタマーサポート'
+  });
+
+  Logger.log('[JalanReply] Email sent to ' + reservation.mail + ' for ' + resId);
+}
+
+/**
+ * スプレッドシートにじゃらん決済ログを記録
+ * スクリプトプロパティ: JALAN_SHEET_ID
+ */
+function logJalanPayment_(reservation, invoiceResult) {
+  var props = PropertiesService.getScriptProperties();
+  var sheetId = props.getProperty('JALAN_SHEET_ID');
+  if (!sheetId) {
+    Logger.log('[JalanReply] JALAN_SHEET_ID not set, skipping spreadsheet log.');
+    return;
+  }
+
+  var ss = SpreadsheetApp.openById(sheetId);
+  var sheet = ss.getSheetByName('じゃらん決済管理');
+  if (!sheet) {
+    sheet = ss.insertSheet('じゃらん決済管理');
+    sheet.appendRow([
+      '予約番号', '予約者名', 'メールアドレス', '貸出日', '返却日',
+      '車両クラス', '請求金額', '決済リンク', 'Square請求書ID',
+      'メール送信日時', '入金ステータス', '入金日'
+    ]);
+    sheet.getRange(1, 1, 1, 12).setFontWeight('bold');
+  }
+
+  sheet.appendRow([
+    reservation.id,
+    reservation._nameKanji || reservation.name,
+    reservation.mail,
+    reservation.lend_date,
+    reservation.return_date,
+    reservation.vehicle,
+    reservation.billingAmount || reservation.price,
+    invoiceResult.paymentLink,
+    invoiceResult.invoiceId,
+    new Date(),
+    '未入金',
+    ''
+  ]);
+
+  Logger.log('[JalanReply] Spreadsheet logged: ' + reservation.id);
 }
 
 // ============================================================

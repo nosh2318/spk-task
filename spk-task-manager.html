@@ -1515,18 +1515,44 @@ function PASGuard({children,label}){
 }
 
 /* ==========================================
-   じゃらん決済確認
+   じゃらん決済管理
    ========================================== */
 function JalanPayment({data,jalanPay,onJalanPayChange}){
   const[editId,setEditId]=useState(null);
   const[form,setForm]=useState({});
   const[sheetLoading,setSheetLoading]=useState(false);
+  const[filter,setFilter]=useState("all");
   const jData=useMemo(()=>data.filter(r=>r.ota==="J").sort((a,b)=>(b.lendDate||"").localeCompare(a.lendDate||"")),[data]);
   const startEdit=(id)=>{setEditId(id);setForm(jalanPay[id]||{category:"売上",payStatus:"未完了",sendDate:"",refundDate:"",content:"",linkUrl:"",adjustedPrice:""});};
   const saveEdit=()=>{if(!editId)return;onJalanPayChange(editId,form);setEditId(null);};
   const cancelEdit=()=>{setEditId(null);setForm({});};
-  const summary=useMemo(()=>{const done=jData.filter(r=>(jalanPay[r.id]?.payStatus)==="完了").length;return{total:jData.length,done,undone:jData.length-done};},[jData,jalanPay]);
-  const cardS={background:"#fff",borderRadius:14,border:"1px solid #e2e8f0",boxShadow:"0 1px 3px rgba(0,0,0,.05)"};
+
+  // ステータス判定
+  const getStatus=(r)=>{
+    const p=jalanPay[r.id]||{};
+    if(p.payStatus==="完了") return "paid";
+    if(p.sendDate||p.linkUrl) return "sent";
+    return "unsent";
+  };
+
+  const summary=useMemo(()=>{
+    let paid=0,sent=0,unsent=0,totalAmount=0,paidAmount=0;
+    jData.forEach(r=>{
+      const s=getStatus(r);
+      const amt=Number(jalanPay[r.id]?.adjustedPrice)||r.price||0;
+      totalAmount+=amt;
+      if(s==="paid"){paid++;paidAmount+=amt;}
+      else if(s==="sent") sent++;
+      else unsent++;
+    });
+    return{total:jData.length,paid,sent,unsent,totalAmount,paidAmount,unpaidAmount:totalAmount-paidAmount};
+  },[jData,jalanPay]);
+
+  const filtered=useMemo(()=>{
+    if(filter==="all") return jData;
+    return jData.filter(r=>getStatus(r)===filter);
+  },[jData,jalanPay,filter]);
+
   // ★ スプレッドシートから支払データを一括取得
   const fetchFromSheet=async()=>{
     const resIds=jData.map(r=>r.id);
@@ -1539,7 +1565,7 @@ function JalanPayment({data,jalanPay,onJalanPayChange}){
       let updated=0;
       Object.entries(payMap).forEach(([rid,pd])=>{
         const existing=jalanPay[rid]||{};
-        onJalanPayChange(rid,{...existing,adjustedPrice:pd.adjustedPrice,payStatus:pd.payStatus});
+        onJalanPayChange(rid,{...existing,adjustedPrice:pd.adjustedPrice,payStatus:pd.payStatus,payDate:pd.payDate||""});
         updated++;
       });
       alert(`${matched}件中 ${updated}件の支払データを反映しました`);
@@ -1547,52 +1573,77 @@ function JalanPayment({data,jalanPay,onJalanPayChange}){
     setSheetLoading(false);
   };
 
-  return <div style={{maxWidth:800,margin:"0 auto"}}>
+  const cardS={background:"#fff",borderRadius:14,border:"1px solid #e2e8f0",boxShadow:"0 1px 3px rgba(0,0,0,.05)"};
+  const filterBtn=(id,label)=><button key={id} onClick={()=>setFilter(id)} style={{padding:"4px 12px",borderRadius:8,border:"none",cursor:"pointer",fontSize:11,fontWeight:700,background:filter===id?"#2563eb":"#f1f5f9",color:filter===id?"#fff":"#64748b"}}>{label}</button>;
+
+  return <div style={{maxWidth:900,margin:"0 auto"}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-      <h3 style={{fontSize:16,fontWeight:800,margin:0}}>じゃらん決済確認</h3>
-      <div style={{display:"flex",gap:8,fontSize:11,fontWeight:700,alignItems:"center"}}>
-        <button onClick={fetchFromSheet} disabled={sheetLoading} style={{padding:"4px 12px",borderRadius:8,background:sheetLoading?"#94a3b8":"#7c3aed",color:"#fff",border:"none",fontSize:11,fontWeight:700,cursor:sheetLoading?"not-allowed":"pointer"}}>{sheetLoading?"取得中...":"📊 スプレッドシート取得"}</button>
-        <span style={{padding:"2px 10px",borderRadius:10,background:"#f0fdf4",color:"#059669"}}>完了 {summary.done}</span>
-        <span style={{padding:"2px 10px",borderRadius:10,background:"#fef2f2",color:"#dc2626"}}>未完了 {summary.undone}</span>
+      <h3 style={{fontSize:16,fontWeight:800,margin:0}}>じゃらん決済管理</h3>
+      <button onClick={fetchFromSheet} disabled={sheetLoading} style={{padding:"4px 12px",borderRadius:8,background:sheetLoading?"#94a3b8":"#7c3aed",color:"#fff",border:"none",fontSize:11,fontWeight:700,cursor:sheetLoading?"not-allowed":"pointer"}}>{sheetLoading?"取得中...":"🔄 入金状況を更新"}</button>
+    </div>
+
+    {/* サマリーカード */}
+    <div style={{display:"flex",gap:10,marginBottom:12,flexWrap:"wrap"}}>
+      <div style={{flex:1,minWidth:130,background:"#fef2f2",border:"1px solid #fecaca",borderRadius:10,padding:"10px 14px"}}>
+        <div style={{fontSize:9,color:"#991b1b",fontWeight:600}}>未送信</div>
+        <div style={{fontSize:22,fontWeight:800,color:"#dc2626"}}>{summary.unsent}<span style={{fontSize:11}}>件</span></div>
+      </div>
+      <div style={{flex:1,minWidth:130,background:"#fff7ed",border:"1px solid #fed7aa",borderRadius:10,padding:"10px 14px"}}>
+        <div style={{fontSize:9,color:"#9a3412",fontWeight:600}}>送信済み・未入金</div>
+        <div style={{fontSize:22,fontWeight:800,color:"#ea580c"}}>{summary.sent}<span style={{fontSize:11}}>件</span></div>
+      </div>
+      <div style={{flex:1,minWidth:130,background:"#f0fdf4",border:"1px solid #86efac",borderRadius:10,padding:"10px 14px"}}>
+        <div style={{fontSize:9,color:"#14532d",fontWeight:600}}>入金済み</div>
+        <div style={{fontSize:22,fontWeight:800,color:"#16a34a"}}>{summary.paid}<span style={{fontSize:11}}>件</span></div>
+      </div>
+      <div style={{flex:1,minWidth:130,background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:10,padding:"10px 14px"}}>
+        <div style={{fontSize:9,color:"#475569",fontWeight:600}}>未回収残高</div>
+        <div style={{fontSize:18,fontWeight:800,color:"#1e293b"}}>¥{summary.unpaidAmount.toLocaleString()}</div>
       </div>
     </div>
-    {jData.length===0&&<div style={{...cardS,padding:24,textAlign:"center",color:"#94a3b8",fontSize:13}}>じゃらんの予約データがありません</div>}
-    {jData.length>0&&<div style={{...cardS,overflow:"hidden"}}>
+
+    {/* フィルタ */}
+    <div style={{display:"flex",gap:6,marginBottom:10}}>
+      {filterBtn("all","全件 ("+summary.total+")")}
+      {filterBtn("unsent","未送信 ("+summary.unsent+")")}
+      {filterBtn("sent","送信済み未入金 ("+summary.sent+")")}
+      {filterBtn("paid","入金済み ("+summary.paid+")")}
+    </div>
+
+    {filtered.length===0&&<div style={{...cardS,padding:24,textAlign:"center",color:"#94a3b8",fontSize:13}}>該当するデータがありません</div>}
+    {filtered.length>0&&<div style={{...cardS,overflow:"hidden"}}>
       <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
         <thead><tr style={{background:"#fdf2f8"}}>
-          {["予約番号","予約者","貸出日","請求金額","差引請求金額","分類","支払確認","送付日","返金日","予約内容","リンク","操作"].map(h=><th key={h} style={{padding:"6px 8px",textAlign:"left",fontWeight:700,fontSize:10,color:"#9d174d",borderBottom:"2px solid #fbcfe8",whiteSpace:"nowrap"}}>{h}</th>)}
+          {["予約番号","予約者","貸出日","請求金額","決済リンク","メール送信","入金","入金日","操作"].map(h=><th key={h} style={{padding:"6px 8px",textAlign:"left",fontWeight:700,fontSize:10,color:"#9d174d",borderBottom:"2px solid #fbcfe8",whiteSpace:"nowrap"}}>{h}</th>)}
         </tr></thead>
-        <tbody>{jData.map((r,ri)=>{
+        <tbody>{filtered.map((r,ri)=>{
           const p=jalanPay[r.id]||{};
-          const isDone=p.payStatus==="完了";
+          const status=getStatus(r);
           const isEdit=editId===r.id;
-          return <tr key={r.id} style={{background:isDone?"#f0fdf4":ri%2===0?"#fff":"#fafbfc",borderBottom:"1px solid #f1f5f9"}}>
+          const amt=Number(p.adjustedPrice)||r.price||0;
+          const rowBg=status==="paid"?"#f0fdf4":status==="sent"?"#fffbeb":ri%2===0?"#fff":"#fafbfc";
+          return <tr key={r.id} style={{background:rowBg,borderBottom:"1px solid #f1f5f9"}}>
             <td style={{padding:"4px 8px",fontFamily:"monospace",fontSize:9,fontWeight:600}}>{r.id}</td>
             <td style={{padding:"4px 8px",fontWeight:600}}>{r.name}</td>
             <td style={{padding:"4px 8px",fontSize:10,color:"#475569"}}>{r.lendDate||"-"}</td>
-            <td style={{padding:"4px 8px",fontWeight:700,color:"#1e40af"}}>¥{(r.price||0).toLocaleString()}</td>
+            <td style={{padding:"4px 8px",fontWeight:700,color:"#1e40af"}}>¥{amt.toLocaleString()}</td>
             {isEdit?<>
-              <td style={{padding:"2px 4px"}}><input type="number" value={form.adjustedPrice||""} onChange={e=>setForm(f=>({...f,adjustedPrice:e.target.value}))} placeholder="金額" style={{fontSize:10,padding:"2px 4px",borderRadius:4,border:"1px solid #d1d5db",width:80}}/></td>
-              <td style={{padding:"2px 4px"}}><select value={form.category||"売上"} onChange={e=>setForm(f=>({...f,category:e.target.value}))} style={{fontSize:10,padding:"2px 4px",borderRadius:4,border:"1px solid #d1d5db"}}><option>売上</option><option>立替</option></select></td>
+              <td style={{padding:"2px 4px"}}><input value={form.linkUrl||""} onChange={e=>setForm(f=>({...f,linkUrl:e.target.value}))} placeholder="決済リンクURL" style={{fontSize:10,padding:"2px 4px",borderRadius:4,border:"1px solid #d1d5db",width:140}}/></td>
+              <td style={{padding:"2px 4px"}}><input type="date" value={form.sendDate||""} onChange={e=>setForm(f=>({...f,sendDate:e.target.value}))} style={{fontSize:10,padding:"2px 4px",borderRadius:4,border:"1px solid #d1d5db",width:120}}/></td>
               <td style={{padding:"2px 4px"}}><select value={form.payStatus||"未完了"} onChange={e=>setForm(f=>({...f,payStatus:e.target.value}))} style={{fontSize:10,padding:"2px 4px",borderRadius:4,border:"1px solid #d1d5db"}}><option>完了</option><option>未完了</option></select></td>
-              <td style={{padding:"2px 4px"}}><input type="date" value={form.sendDate||""} onChange={e=>setForm(f=>({...f,sendDate:e.target.value}))} style={{fontSize:10,padding:"2px 4px",borderRadius:4,border:"1px solid #d1d5db",width:110}}/></td>
-              <td style={{padding:"2px 4px"}}><input type="date" value={form.refundDate||""} onChange={e=>setForm(f=>({...f,refundDate:e.target.value}))} style={{fontSize:10,padding:"2px 4px",borderRadius:4,border:"1px solid #d1d5db",width:110}}/></td>
-              <td style={{padding:"2px 4px"}}><input value={form.content||""} onChange={e=>setForm(f=>({...f,content:e.target.value}))} placeholder="予約内容" style={{fontSize:10,padding:"2px 4px",borderRadius:4,border:"1px solid #d1d5db",width:100}}/></td>
-              <td style={{padding:"2px 4px"}}><input value={form.linkUrl||""} onChange={e=>setForm(f=>({...f,linkUrl:e.target.value}))} placeholder="URL" style={{fontSize:10,padding:"2px 4px",borderRadius:4,border:"1px solid #d1d5db",width:80}}/></td>
+              <td style={{padding:"2px 4px"}}><input type="date" value={form.refundDate||""} onChange={e=>setForm(f=>({...f,refundDate:e.target.value}))} style={{fontSize:10,padding:"2px 4px",borderRadius:4,border:"1px solid #d1d5db",width:120}}/></td>
               <td style={{padding:"2px 4px",whiteSpace:"nowrap"}}><button onClick={saveEdit} style={{fontSize:10,padding:"2px 8px",borderRadius:4,border:"none",background:"#2563eb",color:"#fff",fontWeight:700,cursor:"pointer",marginRight:4}}>保存</button><button onClick={cancelEdit} style={{fontSize:10,padding:"2px 8px",borderRadius:4,border:"1px solid #d1d5db",background:"#fff",cursor:"pointer"}}>取消</button></td>
             </>:<>
-              <td style={{padding:"4px 8px",fontWeight:700,color:p.adjustedPrice?"#7c3aed":"#94a3b8"}}>{p.adjustedPrice?("¥"+Number(p.adjustedPrice).toLocaleString()):"-"}</td>
-              <td style={{padding:"4px 8px"}}><span style={{fontSize:10,fontWeight:600,padding:"1px 6px",borderRadius:4,background:p.category==="立替"?"#fef3c7":"#dbeafe",color:p.category==="立替"?"#92400e":"#1d4ed8"}}>{p.category||"売上"}</span></td>
-              <td style={{padding:"4px 8px"}}><span style={{fontSize:10,fontWeight:700,padding:"1px 6px",borderRadius:4,background:isDone?"#dcfce7":"#fef2f2",color:isDone?"#166534":"#dc2626"}}>{isDone?"完了":"未完了"}</span></td>
-              <td style={{padding:"4px 8px",fontSize:10,color:"#64748b"}}>{p.sendDate||"-"}</td>
-              <td style={{padding:"4px 8px",fontSize:10,color:"#64748b"}}>{p.refundDate||"-"}</td>
-              <td style={{padding:"4px 8px",fontSize:10,color:"#64748b",maxWidth:100,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.content||"-"}</td>
-              <td style={{padding:"4px 8px",fontSize:10}}>{p.linkUrl?<a href={p.linkUrl} target="_blank" rel="noreferrer" style={{color:"#2563eb"}}>🔗</a>:"-"}</td>
+              <td style={{padding:"4px 8px",fontSize:10}}>{p.linkUrl?<a href={p.linkUrl} target="_blank" rel="noreferrer" style={{color:"#2563eb",fontWeight:600}}>🔗 決済リンク</a>:<span style={{color:"#94a3b8"}}>未作成</span>}</td>
+              <td style={{padding:"4px 8px",fontSize:10,color:"#64748b"}}>{p.sendDate||<span style={{color:"#dc2626",fontWeight:600}}>未送信</span>}</td>
+              <td style={{padding:"4px 8px"}}><span style={{fontSize:10,fontWeight:700,padding:"1px 8px",borderRadius:10,background:status==="paid"?"#dcfce7":status==="sent"?"#fef3c7":"#fef2f2",color:status==="paid"?"#166534":status==="sent"?"#92400e":"#dc2626"}}>{status==="paid"?"入金済み":status==="sent"?"未入金":"未処理"}</span></td>
+              <td style={{padding:"4px 8px",fontSize:10,color:"#64748b"}}>{p.payDate||p.refundDate||"-"}</td>
               <td style={{padding:"4px 8px"}}><button onClick={()=>startEdit(r.id)} style={{fontSize:10,padding:"2px 8px",borderRadius:4,border:"1px solid #d1d5db",background:"#fff",cursor:"pointer",fontWeight:600}}>編集</button></td>
             </>}
           </tr>;
         })}</tbody>
       </table></div>
+      <div style={{fontSize:10,color:"#9ca3af",padding:"6px 12px",textAlign:"right"}}>{filtered.length}件表示 / 全{jData.length}件（じゃらんのみ）</div>
     </div>}
   </div>;
 }
