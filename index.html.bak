@@ -240,7 +240,7 @@ const DB = {
     const hasWageCols=data.length>0&&data[0].hasOwnProperty("hourly_wage");
     DB._staffHasWageCols=hasWageCols;
     if(!hasWageCols&&data.length>0)console.warn("[fetchStaff] ⚠️ staffテーブルにhourly_wageカラムなし");
-    const dbStaff=(data||[]).map(s=>({name:s.name,type:s.type,memo:s.memo||"",hourlyWage:s.hourly_wage||0,transportCost:s.transport_cost||0,monthlySalary:s.monthly_salary||0}));
+    const dbStaff=(data||[]).map(s=>({name:s.name,type:s.type,memo:s.memo||"",hourlyWage:s.hourly_wage||0,transportCost:s.transport_cost||0,monthlySalary:s.monthly_salary||0,dailyWage:s.daily_wage||0,breakMinutes:s.break_minutes||0,fixedDays:s.fixed_days||""}));
     // DB側にhourly_wage等カラムがない場合、localStorageの値をマージ→差異あればDBに自動プッシュ
     const lsStaff=DB._staffLsLoad();
     let needPush=false;
@@ -258,7 +258,7 @@ const DB = {
     return dbStaff;},
   _staffHasWageCols:null, // null=未確認, true=あり, false=なし
   async saveStaff(arr){DB._staffLsSave(arr);if(!sb)return;
-    const rows=arr.map((s,i)=>({name:s.name,type:s.type,memo:s.memo||"",sort_order:i,active:true,hourly_wage:s.hourlyWage||0,transport_cost:s.transportCost||0,monthly_salary:s.monthlySalary||0}));
+    const rows=arr.map((s,i)=>({name:s.name,type:s.type,memo:s.memo||"",sort_order:i,active:true,hourly_wage:s.hourlyWage||0,transport_cost:s.transportCost||0,monthly_salary:s.monthlySalary||0,daily_wage:s.dailyWage||0,break_minutes:s.breakMinutes||0,fixed_days:s.fixedDays||""}));
     const{error}=await sb.from("staff").upsert(rows,{onConflict:"name"});
     if(error){
       dbLog("saveStaff",false,error.message);
@@ -1731,14 +1731,14 @@ function JalanPayment({data,jalanPay,onJalanPayChange}){
    ========================================== */
 function StaffManager({staff,onStaffChange,onDeleteStaff}){
   const[editId,setEditId]=useState(null);
-  const[form,setForm]=useState({name:"",type:"アルバイト",memo:"",hourlyWage:1100,transportCost:500,monthlySalary:0});
+  const[form,setForm]=useState({name:"",type:"アルバイト",memo:"",hourlyWage:1100,transportCost:500,monthlySalary:0,dailyWage:0,breakMinutes:0,fixedDays:""});
   const[adding,setAdding]=useState(false);
   const[editOrigName,setEditOrigName]=useState("");
 
   const save=()=>{
     if(!form.name.trim())return;
     if(!window.confirm(adding?"新規登録を実行しますか？":"変更を保存しますか？"))return;
-    const entry={name:form.name.trim(),type:form.type,memo:form.memo,hourlyWage:Number(form.hourlyWage)||0,transportCost:Number(form.transportCost)||0,monthlySalary:Number(form.monthlySalary)||0};
+    const entry={name:form.name.trim(),type:form.type,memo:form.memo,hourlyWage:Number(form.hourlyWage)||0,transportCost:Number(form.transportCost)||0,monthlySalary:Number(form.monthlySalary)||0,dailyWage:Number(form.dailyWage)||0,breakMinutes:Number(form.breakMinutes)||0,fixedDays:form.fixedDays||""};
     if(adding){
       onStaffChange([...staff,entry]);setAdding(false);
     }else if(editId!==null){
@@ -1748,13 +1748,13 @@ function StaffManager({staff,onStaffChange,onDeleteStaff}){
       if(oldName&&oldName!==entry.name&&onDeleteStaff)onDeleteStaff(oldName);
       setEditId(null);setEditOrigName("");
     }
-    setForm({name:"",type:"アルバイト",memo:"",hourlyWage:1100,transportCost:500,monthlySalary:0});
+    setForm({name:"",type:"アルバイト",memo:"",hourlyWage:1100,transportCost:500,monthlySalary:0,dailyWage:0,breakMinutes:0,fixedDays:""});
   };
 
   const startEdit=(i)=>{setEditId(i);setEditOrigName(staff[i].name);setForm({...staff[i]});setAdding(false);};
-  const startAdd=()=>{setForm({name:"",type:"アルバイト",memo:"",hourlyWage:1100,transportCost:500,monthlySalary:0});setAdding(true);setEditId(null);};
+  const startAdd=()=>{setForm({name:"",type:"アルバイト",memo:"",hourlyWage:1100,transportCost:500,monthlySalary:0,dailyWage:0,breakMinutes:0,fixedDays:""});setAdding(true);setEditId(null);};
   const remove=(i)=>{if(window.confirm(`${staff[i].name} を削除しますか？`)){const name=staff[i].name;onStaffChange(staff.filter((_,j)=>j!==i));if(onDeleteStaff)onDeleteStaff(name);}};
-  const cancel=()=>{setAdding(false);setEditId(null);setForm({name:"",type:"アルバイト",memo:"",hourlyWage:1100,transportCost:500,monthlySalary:0});};
+  const cancel=()=>{setAdding(false);setEditId(null);setForm({name:"",type:"アルバイト",memo:"",hourlyWage:1100,transportCost:500,monthlySalary:0,dailyWage:0,breakMinutes:0,fixedDays:""});};
 
   const showModal=adding||editId!==null;
   const cardS={background:"#fff",borderRadius:14,padding:16,border:"1px solid #e2e8f0",marginBottom:10,boxShadow:"0 1px 3px rgba(0,0,0,.05)"};
@@ -1781,8 +1781,17 @@ function StaffManager({staff,onStaffChange,onDeleteStaff}){
         </div>
         {isP&&<div style={{fontSize:13,color:"#374151"}}>
           <div style={{display:"flex",justifyContent:"space-between",padding:"4px 0",borderBottom:"1px solid #f1f5f9"}}>
-            <span style={{color:"#64748b"}}>時給</span><span style={{fontWeight:700}}>{fmtCur(s.hourlyWage)}</span>
+            <span style={{color:"#64748b"}}>時給（変動日）</span><span style={{fontWeight:700}}>{fmtCur(s.hourlyWage)}</span>
           </div>
+          {s.dailyWage>0&&<div style={{display:"flex",justifyContent:"space-between",padding:"4px 0",borderBottom:"1px solid #f1f5f9"}}>
+            <span style={{color:"#64748b"}}>日給（固定日）</span><span style={{fontWeight:700}}>{fmtCur(s.dailyWage)}</span>
+          </div>}
+          {s.fixedDays&&<div style={{display:"flex",justifyContent:"space-between",padding:"4px 0",borderBottom:"1px solid #f1f5f9"}}>
+            <span style={{color:"#64748b"}}>固定曜日</span><span style={{fontWeight:700}}>{s.fixedDays}</span>
+          </div>}
+          {s.breakMinutes>0&&<div style={{display:"flex",justifyContent:"space-between",padding:"4px 0",borderBottom:"1px solid #f1f5f9"}}>
+            <span style={{color:"#64748b"}}>休憩</span><span style={{fontWeight:700}}>{s.breakMinutes}分</span>
+          </div>}
           <div style={{display:"flex",justifyContent:"space-between",padding:"4px 0"}}>
             <span style={{color:"#64748b"}}>交通費 / 回</span><span style={{fontWeight:700}}>{fmtCur(s.transportCost)}</span>
           </div>
@@ -1816,12 +1825,24 @@ function StaffManager({staff,onStaffChange,onDeleteStaff}){
       </div>
       {form.type==="アルバイト"&&<>
         <div style={{marginBottom:12}}>
-          <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:4}}>時給(¥)</label>
-          <input type="number" value={form.hourlyWage||""} onChange={e=>setForm(p=>({...p,hourlyWage:e.target.value}))} placeholder="1100" style={{width:"100%",padding:"10px 12px",borderRadius:8,border:"1px solid #e2e8f0",fontSize:14,boxSizing:"border-box"}}/>
+          <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:4}}>時給 - 変動日(¥)</label>
+          <input type="number" value={form.hourlyWage||""} onChange={e=>setForm(p=>({...p,hourlyWage:e.target.value}))} placeholder="1200" style={{width:"100%",padding:"10px 12px",borderRadius:8,border:"1px solid #e2e8f0",fontSize:14,boxSizing:"border-box"}}/>
+        </div>
+        <div style={{marginBottom:12}}>
+          <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:4}}>日給 - 固定日(¥)　※不要なら0</label>
+          <input type="number" value={form.dailyWage||""} onChange={e=>setForm(p=>({...p,dailyWage:e.target.value}))} placeholder="9000" style={{width:"100%",padding:"10px 12px",borderRadius:8,border:"1px solid #e2e8f0",fontSize:14,boxSizing:"border-box"}}/>
+        </div>
+        <div style={{marginBottom:12}}>
+          <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:4}}>固定曜日（日給適用）　例: 木金土</label>
+          <input value={form.fixedDays||""} onChange={e=>setForm(p=>({...p,fixedDays:e.target.value}))} placeholder="木金土" style={{width:"100%",padding:"10px 12px",borderRadius:8,border:"1px solid #e2e8f0",fontSize:14,boxSizing:"border-box"}}/>
+        </div>
+        <div style={{marginBottom:12}}>
+          <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:4}}>休憩時間(分)　※給与から控除</label>
+          <input type="number" value={form.breakMinutes||""} onChange={e=>setForm(p=>({...p,breakMinutes:e.target.value}))} placeholder="60" style={{width:"100%",padding:"10px 12px",borderRadius:8,border:"1px solid #e2e8f0",fontSize:14,boxSizing:"border-box"}}/>
         </div>
         <div style={{marginBottom:12}}>
           <label style={{fontSize:12,color:"#64748b",fontWeight:600,display:"block",marginBottom:4}}>交通費/回(¥)</label>
-          <input type="number" value={form.transportCost||""} onChange={e=>setForm(p=>({...p,transportCost:e.target.value}))} placeholder="500" style={{width:"100%",padding:"10px 12px",borderRadius:8,border:"1px solid #e2e8f0",fontSize:14,boxSizing:"border-box"}}/>
+          <input type="number" value={form.transportCost||""} onChange={e=>setForm(p=>({...p,transportCost:e.target.value}))} placeholder="680" style={{width:"100%",padding:"10px 12px",borderRadius:8,border:"1px solid #e2e8f0",fontSize:14,boxSizing:"border-box"}}/>
         </div>
       </>}
       {form.type==="正社員"&&<>
@@ -2247,13 +2268,20 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
 
   React.useEffect(()=>{forceSync();},[]);
 
-  // 実働時間計算ヘルパー
-  const calcHours=(start,end)=>{
+  // 実働時間計算ヘルパー（休憩控除対応）
+  const calcHours=(start,end,breakMin)=>{
     if(!start||!end)return 0;
     const[sh,sm]=start.split(":").map(Number);
     const[eh,em]=end.split(":").map(Number);
-    const diff=(eh*60+em)-(sh*60+sm);
+    let diff=(eh*60+em)-(sh*60+sm);
+    if(breakMin>0)diff-=breakMin;
     return diff>0?Math.round(diff/60*10)/10:0;
+  };
+  // 曜日名→曜日インデックス
+  const DOW_NAMES=["日","月","火","水","木","金","土"];
+  const isFixedDay=(dow,fixedDays)=>{
+    if(!fixedDays)return false;
+    return fixedDays.includes(DOW_NAMES[dow]);
   };
 
   // 全スタッフの月間データ生成
@@ -2261,37 +2289,60 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
     const result={};
     staff.forEach(s=>{
       const days=[];
+      const hasDailyWage=s.dailyWage>0&&s.fixedDays;
+      const breakMin=s.breakMinutes||0;
       for(let d=1;d<=dim;d++){
         const ds=viewYM+"-"+String(d).padStart(2,"0");
         const dow=new Date(vy,vmo-1,d).getDay();
         const sh=(shifts[ds]||[]).find(x=>x.name===s.name);
         const attKey=ds+"_"+s.name;
         const att=attendance[attKey]||null;
-        days.push({date:ds,day:d,dow,shift:sh,att});
+        const fixed=hasDailyWage&&isFixedDay(dow,s.fixedDays);
+        days.push({date:ds,day:d,dow,shift:sh,att,fixed});
       }
       // 予算（シフトベース）
-      let budgetDays=0,budgetHours=0;
+      let budgetDays=0,budgetHours=0,budgetFixedDays=0,budgetVarHours=0;
       days.forEach(d=>{
         if(d.shift&&d.shift.symbol!=="公"&&d.shift.symbol!=="希"&&d.shift.symbol!=="有"){
-          budgetDays++;budgetHours+=calcHours(d.shift.start||"09:00",d.shift.end||"18:00");
+          budgetDays++;
+          const h=calcHours(d.shift.start||"09:00",d.shift.end||"18:00",breakMin);
+          budgetHours+=h;
+          if(d.fixed)budgetFixedDays++;
+          else budgetVarHours+=h;
         }
       });
       const isP=s.type==="アルバイト";
-      const budgetWage=isP?(s.hourlyWage||0)*budgetHours:(s.monthlySalary||0);
+      let budgetWage;
+      if(isP&&hasDailyWage){
+        budgetWage=(s.dailyWage||0)*budgetFixedDays+(s.hourlyWage||0)*budgetVarHours;
+      }else{
+        budgetWage=isP?(s.hourlyWage||0)*budgetHours:(s.monthlySalary||0);
+      }
       const budgetTransport=(s.transportCost||0)*budgetDays;
       // 実績（勤怠承認ベース）— 欠勤は出勤0扱い
-      let actualDays=0,actualHours=0,absentDays=0;
+      let actualDays=0,actualHours=0,absentDays=0,actualFixedDays=0,actualVarHours=0;
       days.forEach(d=>{
         if(d.att&&d.att.approved){
           if(d.att.absent){absentDays++;return;}
-          if(d.att.memo&&d.att.memo.startsWith("協議中"))return; // 協議中はカウントしない
-          actualDays++;actualHours+=calcHours(d.att.start,d.att.end);
+          if(d.att.memo&&d.att.memo.startsWith("協議中"))return;
+          actualDays++;
+          const h=calcHours(d.att.start,d.att.end,breakMin);
+          actualHours+=h;
+          if(d.fixed)actualFixedDays++;
+          else actualVarHours+=h;
         }
       });
-      const actualWage=isP?(s.hourlyWage||0)*actualHours:(s.monthlySalary||0);
+      let actualWage;
+      if(isP&&hasDailyWage){
+        actualWage=(s.dailyWage||0)*actualFixedDays+(s.hourlyWage||0)*actualVarHours;
+      }else{
+        actualWage=isP?(s.hourlyWage||0)*actualHours:(s.monthlySalary||0);
+      }
       const actualTransport=(s.transportCost||0)*actualDays;
       result[s.name]={days,budgetDays,budgetHours,budgetWage:Math.round(budgetWage),budgetTransport,budgetTotal:Math.round(budgetWage)+budgetTransport,
-        actualDays,actualHours,actualWage:Math.round(actualWage),actualTransport,actualTotal:Math.round(actualWage)+actualTransport,isP,absentDays};
+        actualDays,actualHours,actualWage:Math.round(actualWage),actualTransport,actualTotal:Math.round(actualWage)+actualTransport,isP,absentDays,
+        hasDailyWage,budgetFixedDays,budgetVarHours:Math.round(budgetVarHours*10)/10,actualFixedDays,actualVarHours:Math.round(actualVarHours*10)/10,
+        dailyWage:s.dailyWage||0,hourlyWage:s.hourlyWage||0,breakMin};
     });
     return result;
   },[staff,shifts,attendance,viewYM,dim,vy,vmo]);
@@ -2506,7 +2557,7 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
                   <div style={{fontSize:14,fontWeight:800,color:dayColor}}>{d.day}</div>
                   <div style={{fontSize:9,color:dayColor,fontWeight:600}}>{WK[d.dow]}</div>
                 </div>
-                <div style={{flex:1,fontSize:13,color:isKyogi?"#92400e":isAbsent?"#dc2626":hasShift?"#374151":"#d1d5db",fontWeight:hasShift?600:400}}>{timeStr}</div>
+                <div style={{flex:1,fontSize:13,color:isKyogi?"#92400e":isAbsent?"#dc2626":hasShift?"#374151":"#d1d5db",fontWeight:hasShift?600:400}}>{timeStr}{hasShift&&sd.hasDailyWage&&<span style={{fontSize:8,fontWeight:700,marginLeft:4,padding:"1px 4px",borderRadius:3,background:d.fixed?"#dbeafe":"#fef3c7",color:d.fixed?"#1d4ed8":"#92400e"}}>{d.fixed?"日給":"時給"}</span>}</div>
                 {hasShift&&<div style={{display:"flex",gap:6}}>
                   {isKyogi&&<span style={{padding:"4px 8px",borderRadius:6,background:"#f59e0b",color:"#fff",fontSize:10,fontWeight:700}}>協議中</span>}
                   {!isKyogi&&isAbsent&&<span style={{padding:"4px 8px",borderRadius:6,background:"#dc2626",color:"#fff",fontSize:10,fontWeight:700}}>欠勤</span>}
@@ -2539,9 +2590,21 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
           </div>
           <div style={{fontSize:13}}>
             {isP?<>
-              <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #f1f5f9"}}>
-                <span style={{color:"#64748b"}}>時給</span><span style={{fontWeight:600}}>¥{(si.hourlyWage||0).toLocaleString()} × {d.actualHours.toFixed(1)}h</span>
-              </div>
+              {d.hasDailyWage?<>
+                <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #f1f5f9"}}>
+                  <span style={{color:"#1d4ed8",fontWeight:600}}>固定日（日給）</span><span style={{fontWeight:600}}>¥{d.dailyWage.toLocaleString()} × {d.actualFixedDays}日 = ¥{(d.dailyWage*d.actualFixedDays).toLocaleString()}</span>
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #f1f5f9"}}>
+                  <span style={{color:"#92400e",fontWeight:600}}>変動日（時給）</span><span style={{fontWeight:600}}>¥{d.hourlyWage.toLocaleString()} × {d.actualVarHours}h = ¥{Math.round(d.hourlyWage*d.actualVarHours).toLocaleString()}</span>
+                </div>
+                {d.breakMin>0&&<div style={{display:"flex",justifyContent:"space-between",padding:"4px 0",borderBottom:"1px solid #f1f5f9"}}>
+                  <span style={{color:"#94a3b8",fontSize:11}}>休憩控除</span><span style={{fontSize:11,color:"#94a3b8"}}>{d.breakMin}分/日</span>
+                </div>}
+              </>:<>
+                <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #f1f5f9"}}>
+                  <span style={{color:"#64748b"}}>時給</span><span style={{fontWeight:600}}>¥{(si.hourlyWage||0).toLocaleString()} × {d.actualHours.toFixed(1)}h</span>
+                </div>
+              </>}
               <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #f1f5f9"}}>
                 <span style={{color:"#64748b"}}>基本給</span><span style={{fontWeight:700}}>¥{d.actualWage.toLocaleString()}</span>
               </div>
