@@ -250,8 +250,7 @@ function processMessage_(message, dryRun) {
   var assigned = autoAssignVehicle_(reservation);
 
   // ★ じゃらん事前決済: 自動レコード作成 + Slack投稿
-  // ※リリース時に false && を外す
-  if (false && reservation.ota === 'J' && reservation.price > 0) {
+  if (reservation.ota === 'J' && reservation.price > 0) {
     try {
       handleJalanPayment_(reservation);
     } catch (e) {
@@ -398,7 +397,9 @@ function parseJalan_(body) {
   if (pM) people += parseInt(pM[1], 10);
   var cM = peopleStr.match(/子供.*?(\d+)/);
   if (cM) people += parseInt(cM[1], 10);
-  var price = parsePrice_(extractField_(body, '合計金額'));
+  // ★ 利用者への請求額（クーポン・ポイント差引後）を優先。なければ合計金額
+  var billingPrice = parsePrice_(extractField_(body, '利用者への請求額'));
+  var price = billingPrice > 0 ? billingPrice : parsePrice_(extractField_(body, '合計金額'));
   var arrFlight = extractField_(body, '到着便');
   var depFlight = extractField_(body, '出発便');
   var flight = [arrFlight, depFlight].filter(Boolean).join(' / ');
@@ -622,9 +623,8 @@ function handleCancellation_(ota, body, dryRun) {
   }
 
   // ★ じゃらん決済キャンセル連動
-  // ※リリース時に false && を外す
   try {
-    if (false) handleJalanPaymentCancel_(reservationId);
+    handleJalanPaymentCancel_(reservationId);
   } catch (e) {
     Logger.log('[JalanPaymentCancel] Error: ' + e.message);
   }
@@ -1161,8 +1161,7 @@ function checkSquareLinks() {
     }
 
     // リンク取得済み + メール未送信 → テンプレメール送信
-    // ★ 本番開始時にこのif文のfalseを削除してメール送信を有効化する
-    if (false && pay.status === 'link_created' && pay.square_payment_url && pay.customer_email) {
+    if (pay.status === 'link_created' && pay.square_payment_url && pay.customer_email) {
       var sent = sendJalanPaymentEmail_(pay);
       if (sent) {
         supabaseUpdate_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(pay.reservation_id),
@@ -1188,7 +1187,7 @@ function sendJalanPaymentEmail_(pay) {
     return;
   }
   try {
-    var subject = '【HANDYMAN】事前決済・LINE登録のお願い（予約番号: ' + pay.reservation_id + '）';
+    var subject = '【レンタカー HANDYMAN】事前決済・LINE登録のお願い（予約番号: ' + pay.reservation_id + '）';
     var body = pay.customer_name + ' 様\n\n' +
       'この度はHANDYMAN札幌デリバリー専門店をご予約いただき、誠にありがとうございます。\n' +
       '予約番号: ' + pay.reservation_id + '\n' +
@@ -1222,6 +1221,7 @@ function sendJalanPaymentEmail_(pay) {
 
     GmailApp.sendEmail(pay.customer_email, subject, body, {
       name: 'HANDYMAN 札幌デリバリー専門店',
+      from: 'reserve@rent-handyman.jp',
       replyTo: 'reserve@rent-handyman.jp'
     });
     return true;
@@ -1357,4 +1357,20 @@ function getOrCreateLabel_(labelName) {
     Logger.log('Created Gmail label: ' + labelName);
   }
   return label;
+}
+
+// ★ R0JQ20US手動テスト（実行後に削除すること）
+function testJalanPaymentR0JQ20US() {
+  var rows = supabaseGet_('reservations', 'id=eq.R0JQ20US&select=*');
+  if (!rows || rows.length === 0) { Logger.log('R0JQ20US not found'); return; }
+  var r = rows[0];
+  var reservation = {
+    id: r.id, ota: r.ota, name: r.name,
+    price: r.price, mail: r.mail || '',
+    lend_date: r.lend_date, return_date: r.return_date,
+    vehicle: r.vehicle || '', _store: '札幌デリバリー専門店'
+  };
+  Logger.log('Testing with: ' + JSON.stringify(reservation));
+  handleJalanPayment_(reservation);
+  Logger.log('Done. Check #jalan_payment and jalan_payments table.');
 }
