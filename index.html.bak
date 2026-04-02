@@ -105,11 +105,28 @@ const {useState,useMemo,useCallback,useEffect,useRef}=React;
 
 /* ===== Supabase 設定 ===== */
 const SUPABASE_URL = "https://ckrxttbnawkclshczsia.supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8"; // anon key（RLSで保護）
 const SB_ENABLED = !!(SUPABASE_URL && SUPABASE_KEY);
 let sb = null;
-if(SB_ENABLED){
+let sbAuthReady = false;
+const sbAuthPromise = (async () => {
+  if (!SB_ENABLED) { sbAuthReady = true; return; }
   sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+  try {
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) {
+      await sb.auth.signInAnonymously();
+    }
+  } catch (e) {
+    console.warn("[Auth] Anonymous sign-in failed:", e.message);
+  }
+  sbAuthReady = true;
+})();
+
+/* ===== SHA-256ハッシュユーティリティ ===== */
+async function sha256(str){
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
 }
 
 /* ===== 駐車場用 Supabase (別プロジェクト) ===== */
@@ -346,7 +363,15 @@ const DB = {
   async fetchResOpts(){if(!sb)return null;try{const{data}=await sb.from("app_settings").select("value").eq("key","res_opts").single();return data?JSON.parse(data.value):null;}catch(e){return null;}},
   async saveResOpts(opts){if(!sb)return;try{await sb.from("app_settings").upsert({key:"res_opts",value:JSON.stringify(opts)},{onConflict:"key"});}catch(e){console.warn("[saveResOpts]",e);}},
   // --- 認証 ---
-  async checkPassword(pw){if(!sb)return true;const{data}=await sb.from("app_settings").select("value").eq("key","team_password").single();return data&&data.value===pw;},
+  async checkPassword(pw){
+    if(!sb)return true;
+    const{data}=await sb.from("app_settings").select("value").eq("key","team_password").single();
+    if(!data||!data.value)return false;
+    const hash=await sha256(pw);
+    // 移行期間: 64文字(SHA-256 hex)ならハッシュ比較、それ以外は平文比較(後方互換)
+    if(data.value.length===64)return data.value===hash;
+    return data.value===pw;
+  },
   // --- 駐車場 (別Supabase) ---
   parking:{
     async fetch(){if(!sbParking)return null;try{const{data,error}=await sbParking.from("parking_state").select("data").eq("id",1).single();if(error||!data||!data.data||Object.keys(data.data).length===0)return null;return data.data;}catch(e){return null;}},
@@ -1612,13 +1637,19 @@ function FleetManager(p){
    PASガード（パスコード認証）
    ========================================== */
 function PASGuard({children,label}){
-  const PAS_CODE="2318";
-  // 毎回入力必須（セッション保持なし）
+  // パスコードをDBから取得（ハードコード廃止）
   const[unlocked,setUnlocked]=useState(false);
   const[input,setInput]=useState("");
   const[err,setErr]=useState("");
+  const[code,setCode]=useState(null);
+  useEffect(()=>{
+    if(!sb){setCode("0000");return;}
+    sb.from("app_settings").select("value").eq("key","pas_code").single()
+      .then(({data})=>setCode(data&&data.value?data.value:"0000"));
+  },[]);
   const unlock=()=>{
-    if(input===PAS_CODE){
+    if(!code)return;
+    if(input===code){
       setUnlocked(true);setErr("");
     }else{setErr("パスコードが違います");setInput("");}
   };
@@ -8752,7 +8783,12 @@ const APP_VERSION="v4.6.3";
   }
 })();
 function Root(){
+  const[ready,setReady]=useState(sbAuthReady);
   const[auth,setAuth]=useState(!SB_ENABLED||localStorage.getItem("spk_auth")==="1");
+  useEffect(()=>{
+    if(!ready) sbAuthPromise.then(()=>setReady(true));
+  },[]);
+  if(!ready) return null; // スプラッシュ画面が表示中
   if(!auth)return <LoginScreen onLogin={()=>setAuth(true)}/>;
   return <><App/><div style={{position:"fixed",bottom:2,right:8,fontSize:11,color:"#64748b",fontWeight:700,zIndex:9999,pointerEvents:"none",background:"rgba(255,255,255,.8)",padding:"1px 6px",borderRadius:4}}>{APP_VERSION}</div></>;
 }

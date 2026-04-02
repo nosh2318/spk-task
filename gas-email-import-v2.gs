@@ -5,11 +5,21 @@
 // OTA: 楽天(R), じゃらん(J), skyticket(S), エアトリ(O), オフィシャル(HP)
 // ============================================================
 
-// --- Supabase Config ---
-var SUPABASE_URL = 'https://ckrxttbnawkclshczsia.supabase.co';
-var SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8';
+// --- Supabase Config (PropertiesServiceから取得) ---
 var LABEL_NAME = 'processed';
-var SLACK_EMAIL = 'x-aaaatppttzyrldnhjt5el4jj3i@gl-oke5175.slack.com';
+function getSupabaseUrl_() { return PropertiesService.getScriptProperties().getProperty('SUPABASE_URL'); }
+function getSupabaseKey_() { return PropertiesService.getScriptProperties().getProperty('SUPABASE_KEY'); }
+function getSlackEmail_() { return PropertiesService.getScriptProperties().getProperty('SLACK_EMAIL'); }
+
+// 初回セットアップ用（1回実行後、このコメントごと削除推奨）
+function setupProperties() {
+  PropertiesService.getScriptProperties().setProperties({
+    'SUPABASE_URL': 'https://ckrxttbnawkclshczsia.supabase.co',
+    'SUPABASE_KEY': '<SERVICE_ROLE_KEYをSupabase Dashboardから取得して入力>',
+    'SLACK_EMAIL': 'x-aaaatppttzyrldnhjt5el4jj3i@gl-oke5175.slack.com'
+  });
+  Logger.log('Properties set successfully.');
+}
 
 // --- OTA sender definitions ---
 var OTA_SENDERS = {
@@ -609,15 +619,15 @@ function handleCancellation_(ota, body, dryRun) {
 // ============================================================
 function supabaseHeaders_() {
   return {
-    'apikey': SUPABASE_KEY,
-    'Authorization': 'Bearer ' + SUPABASE_KEY,
+    'apikey': getSupabaseKey_(),
+    'Authorization': 'Bearer ' + getSupabaseKey_(),
     'Content-Type': 'application/json',
     'Prefer': 'return=representation'
   };
 }
 
 function supabaseGet_(table, queryParams) {
-  var url = SUPABASE_URL + '/rest/v1/' + table + '?' + queryParams;
+  var url = getSupabaseUrl_() + '/rest/v1/' + table + '?' + queryParams;
   var resp = UrlFetchApp.fetch(url, {
     method: 'GET',
     headers: supabaseHeaders_(),
@@ -631,7 +641,7 @@ function supabaseGet_(table, queryParams) {
 }
 
 function supabasePost_(table, data) {
-  var url = SUPABASE_URL + '/rest/v1/' + table;
+  var url = getSupabaseUrl_() + '/rest/v1/' + table;
   var resp = UrlFetchApp.fetch(url, {
     method: 'POST',
     headers: supabaseHeaders_(),
@@ -646,7 +656,7 @@ function supabasePost_(table, data) {
 }
 
 function supabaseUpdate_(table, queryParams, data) {
-  var url = SUPABASE_URL + '/rest/v1/' + table + '?' + queryParams;
+  var url = getSupabaseUrl_() + '/rest/v1/' + table + '?' + queryParams;
   var resp = UrlFetchApp.fetch(url, {
     method: 'PATCH',
     headers: supabaseHeaders_(),
@@ -657,7 +667,7 @@ function supabaseUpdate_(table, queryParams, data) {
 }
 
 function supabaseDelete_(table, queryParams) {
-  var url = SUPABASE_URL + '/rest/v1/' + table + '?' + queryParams;
+  var url = getSupabaseUrl_() + '/rest/v1/' + table + '?' + queryParams;
   var resp = UrlFetchApp.fetch(url, {
     method: 'DELETE',
     headers: supabaseHeaders_(),
@@ -806,7 +816,7 @@ function sendSlackSuccess_(items) {
     lines.push('');
   });
   lines.push('合計: ' + items.length + '件');
-  MailApp.sendEmail(SLACK_EMAIL, '✅ 札幌店新規予約取込完了通知 ' + items.length + '件', lines.join('\n'));
+  MailApp.sendEmail(getSlackEmail_(), '✅ 札幌店新規予約取込完了通知 ' + items.length + '件', lines.join('\n'));
   Logger.log('Slack success notification sent: ' + items.length + '件');
 }
 
@@ -819,7 +829,7 @@ function sendSlackFailure_(items) {
     lines.push('');
   });
   lines.push('合計: ' + items.length + '件 ※手動対応が必要です');
-  MailApp.sendEmail(SLACK_EMAIL, '❌ 札幌店新規予約取込失敗通知 ' + items.length + '件', lines.join('\n'));
+  MailApp.sendEmail(getSlackEmail_(), '❌ 札幌店新規予約取込失敗通知 ' + items.length + '件', lines.join('\n'));
   Logger.log('Slack failure notification sent: ' + items.length + '件');
 }
 
@@ -830,7 +840,7 @@ function sendSlackCancel_(items) {
   });
   lines.push('');
   lines.push('合計: ' + items.length + '件');
-  MailApp.sendEmail(SLACK_EMAIL, '🔄 札幌店予約キャンセル処理 ' + items.length + '件', lines.join('\n'));
+  MailApp.sendEmail(getSlackEmail_(), '🔄 札幌店予約キャンセル処理 ' + items.length + '件', lines.join('\n'));
   Logger.log('Slack cancel notification sent: ' + items.length + '件');
 }
 
@@ -854,15 +864,15 @@ function updateHeartbeat_(key, stats) {
     var options = {
       method: 'post',
       headers: {
-        'apikey': SUPABASE_KEY,
-        'Authorization': 'Bearer ' + SUPABASE_KEY,
+        'apikey': getSupabaseKey_(),
+        'Authorization': 'Bearer ' + getSupabaseKey_(),
         'Content-Type': 'application/json',
         'Prefer': 'resolution=merge-duplicates'
       },
       payload: JSON.stringify(payload),
       muteHttpExceptions: true
     };
-    UrlFetchApp.fetch(SUPABASE_URL + '/rest/v1/app_settings', options);
+    UrlFetchApp.fetch(getSupabaseUrl_() + '/rest/v1/app_settings', options);
     Logger.log('[Heartbeat] Updated: ' + key);
   } catch (e) {
     Logger.log('[Heartbeat] Error: ' + e.message);
@@ -877,12 +887,12 @@ function checkHeartbeats() {
 
   checks.forEach(function(check) {
     try {
-      var url = SUPABASE_URL + '/rest/v1/app_settings?key=eq.heartbeat_' + check.key + '&select=value';
+      var url = getSupabaseUrl_() + '/rest/v1/app_settings?key=eq.heartbeat_' + check.key + '&select=value';
       var options = {
         method: 'get',
         headers: {
-          'apikey': SUPABASE_KEY,
-          'Authorization': 'Bearer ' + SUPABASE_KEY
+          'apikey': getSupabaseKey_(),
+          'Authorization': 'Bearer ' + getSupabaseKey_()
         },
         muteHttpExceptions: true
       };
@@ -930,7 +940,7 @@ function checkHeartbeats() {
 
 function sendSlackAlert_(message) {
   try {
-    MailApp.sendEmail(SLACK_EMAIL, message.split('\n')[0], message);
+    MailApp.sendEmail(getSlackEmail_(), message.split('\n')[0], message);
     Logger.log('[Alert] Sent: ' + message.split('\n')[0]);
   } catch (e) {
     Logger.log('[Alert] Send error: ' + e.message);
