@@ -248,6 +248,17 @@ function processMessage_(message, dryRun) {
 
   // Auto-assign vehicle
   var assigned = autoAssignVehicle_(reservation);
+
+  // ★ じゃらん事前決済: 自動レコード作成 + Slack投稿
+  // ※リリース時に false && を外す
+  if (false && reservation.ota === 'J' && reservation.price > 0) {
+    try {
+      handleJalanPayment_(reservation);
+    } catch (e) {
+      Logger.log('[JalanPayment] Error: ' + e.message);
+    }
+  }
+
   if (assigned) {
     return {type:'success', id:reservation.id, ota:otaCode, name:reservation.name,
       dates:reservation.lend_date+'~'+reservation.return_date,
@@ -610,6 +621,14 @@ function handleCancellation_(ota, body, dryRun) {
     return null;
   }
 
+  // ★ じゃらん決済キャンセル連動
+  // ※リリース時に false && を外す
+  try {
+    if (false) handleJalanPaymentCancel_(reservationId);
+  } catch (e) {
+    Logger.log('[JalanPaymentCancel] Error: ' + e.message);
+  }
+
   Logger.log('Cancelled reservation: ' + reservationId + ' (fleet=' + fleetOk + ', tasks=' + tasksOk + ')');
   return reservationId;
 }
@@ -962,6 +981,370 @@ function setupMonitoring() {
     .create();
 
   Logger.log('Monitoring setup complete: 30-minute heartbeat check trigger created.');
+}
+
+// ============================================================
+// じゃらん事前決済 自動化
+// ============================================================
+var JALAN_PAY_CHANNEL = 'C0AQL6HGG3E';  // #jalan_payment
+function getSlackBotToken_() { return PropertiesService.getScriptProperties().getProperty('SLACK_BOT_TOKEN'); }
+
+// ★ 新規じゃらん予約 → jalan_payments作成 + Slack投稿
+// ※ このGAS自体が札幌専用だが、万一のため那覇ガードを入れる
+function handleJalanPayment_(reservation) {
+  var resId = reservation.id;
+  var store = reservation._store || '';
+  if (/那覇|沖縄|OKA|naha/.test(store)) {
+    Logger.log('[JalanPayment] BLOCKED: 那覇店予約 ' + resId + ' store=' + store);
+    return;
+  }
+
+  // 重複チェック
+  var existing = supabaseGet_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(resId) + '&select=id');
+  if (existing && existing.length > 0) {
+    Logger.log('[JalanPayment] Already exists: ' + resId);
+    return;
+  }
+
+  // ① jalan_payments にレコード作成
+  var payData = {
+    reservation_id: resId,
+    customer_name: reservation.name,
+    customer_email: reservation.mail || '',
+    amount: reservation.price || 0,
+    status: 'new',
+    lend_date: reservation.lend_date,
+    return_date: reservation.return_date,
+    vehicle_class: reservation.vehicle || ''
+  };
+  var inserted = supabasePost_('jalan_payments', payData);
+  if (!inserted) {
+    Logger.log('[JalanPayment] DB insert failed: ' + resId);
+    return;
+  }
+  Logger.log('[JalanPayment] Created: ' + resId + ' ¥' + reservation.price);
+
+  // ② #jalan_payment にSlack投稿（AIスタッフ_Gが決済リンクを作成）
+  var lendShort = (reservation.lend_date || '').replace(/^\d{4}-/, '').replace(/-/g, '/');
+  var retShort = (reservation.return_date || '').replace(/^\d{4}-/, '').replace(/-/g, '/');
+  var slackText = '利用店舗： 札幌店\n' +
+    '予約番号： ' + resId + '\n' +
+    '宛名： ' + reservation.name + '\n' +
+    '品目： じゃらん事前決済(' + lendShort + '-' + retShort + ')\n' +
+    '金額： ' + (reservation.price || 0);
+
+  var slackTs = postToSlackChannel_(JALAN_PAY_CHANNEL, slackText);
+  if (slackTs) {
+    // slack_tsを保存（スレッド監視用）
+    supabaseUpdate_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(resId), {slack_ts: slackTs});
+    Logger.log('[JalanPayment] Slack posted: ' + resId + ' ts=' + slackTs);
+  }
+}
+
+// ★ キャンセル時のじゃらん決済連動
+function handleJalanPaymentCancel_(reservationId) {
+  var rows = supabaseGet_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(reservationId) + '&select=id,status,amount,customer_name');
+  if (!rows || rows.length === 0) return;  // じゃらん以外 or 決済レコードなし
+
+  var pay = rows[0];
+  var prevStatus = pay.status;
+
+  if (prevStatus === 'cancelled' || prevStatus === 'refund' || prevStatus === 'refunded') {
+    Logger.log('[JalanPaymentCancel] Already cancelled/refunded: ' + reservationId);
+    return;
+  }
+
+  var now = new Date().toISOString();
+
+  if (prevStatus === 'paid') {
+    // 入金後キャンセル → 返金対応必要
+    supabaseUpdate_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(reservationId),
+      {status: 'refund', cancelled_at: now});
+    postToSlackChannel_(JALAN_PAY_CHANNEL,
+      '⚠️ *返金対応必要*\n' +
+      '予約番号： ' + reservationId + '\n' +
+      '宛名： ' + (pay.customer_name || '') + '\n' +
+      '金額： ¥' + (pay.amount || 0) + '\n' +
+      '状態： 入金済みキャンセル → *要Square返金*');
+    Logger.log('[JalanPaymentCancel] Refund needed: ' + reservationId);
+  } else {
+    // 決済前キャンセル（new/link_created/email_sent）
+    supabaseUpdate_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(reservationId),
+      {status: 'cancelled', cancelled_at: now});
+    postToSlackChannel_(JALAN_PAY_CHANNEL,
+      '🔄 *キャンセル（決済前）*\n' +
+      '予約番号： ' + reservationId + '\n' +
+      '宛名： ' + (pay.customer_name || '') + '\n' +
+      '金額： ¥' + (pay.amount || 0) + '\n' +
+      '状態： 未入金キャンセル・対応不要');
+    Logger.log('[JalanPaymentCancel] Cancelled (pre-payment): ' + reservationId);
+  }
+}
+
+// ★ Slack API投稿（Bot Token使用 → スレッド返信をAIスタッフ_Gが検知）
+function postToSlackChannel_(channel, text) {
+  var token = getSlackBotToken_();
+  if (!token) {
+    Logger.log('[Slack] No SLACK_BOT_TOKEN configured');
+    return null;
+  }
+  try {
+    var resp = UrlFetchApp.fetch('https://slack.com/api/chat.postMessage', {
+      method: 'post',
+      headers: {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'},
+      payload: JSON.stringify({channel: channel, text: text}),
+      muteHttpExceptions: true
+    });
+    var data = JSON.parse(resp.getContentText());
+    if (data.ok) {
+      return data.ts;  // メッセージのts（スレッド追跡に使用）
+    } else {
+      Logger.log('[Slack] Post error: ' + data.error);
+      return null;
+    }
+  } catch (e) {
+    Logger.log('[Slack] Exception: ' + e.message);
+    return null;
+  }
+}
+
+// ★ Slackスレッド返信を取得（決済リンク検出用）
+function getSlackThreadReplies_(channel, ts) {
+  var token = getSlackBotToken_();
+  if (!token) return [];
+  try {
+    var url = 'https://slack.com/api/conversations.replies?channel=' + channel + '&ts=' + ts;
+    var resp = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: {'Authorization': 'Bearer ' + token},
+      muteHttpExceptions: true
+    });
+    var data = JSON.parse(resp.getContentText());
+    return data.ok ? (data.messages || []) : [];
+  } catch (e) {
+    Logger.log('[Slack] Thread read error: ' + e.message);
+    return [];
+  }
+}
+
+// ★ 定期実行: スレッド監視→決済リンク取得→メール送信
+function checkSquareLinks() {
+  // status=new でslack_tsがある（投稿済みだがリンク未取得）
+  var rows = supabaseGet_('jalan_payments',
+    'status=in.(new,link_created)&slack_ts=neq.&select=reservation_id,customer_name,customer_email,amount,status,slack_ts,lend_date,return_date,square_payment_url');
+
+  if (!rows || rows.length === 0) return;
+
+  for (var i = 0; i < rows.length; i++) {
+    var pay = rows[i];
+
+    // リンク未取得 → スレッドからURL抽出
+    if (pay.status === 'new' && pay.slack_ts) {
+      var replies = getSlackThreadReplies_(JALAN_PAY_CHANNEL, pay.slack_ts);
+      var payUrl = null;
+      for (var j = 0; j < replies.length; j++) {
+        var txt = replies[j].text || '';
+        var urlMatch = txt.match(/https:\/\/square\.link\/u\/\S+/);
+        if (urlMatch) { payUrl = urlMatch[0]; break; }
+      }
+      if (payUrl) {
+        supabaseUpdate_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(pay.reservation_id),
+          {square_payment_url: payUrl, status: 'link_created', link_created_at: new Date().toISOString()});
+        Logger.log('[JalanPayment] Link found: ' + pay.reservation_id + ' → ' + payUrl);
+        // 更新して次のループでメール送信
+        pay.square_payment_url = payUrl;
+        pay.status = 'link_created';
+      } else {
+        Logger.log('[JalanPayment] Waiting for link: ' + pay.reservation_id);
+        continue;
+      }
+    }
+
+    // リンク取得済み + メール未送信 → テンプレメール送信
+    // ★ 本番開始時にこのif文のfalseを削除してメール送信を有効化する
+    if (false && pay.status === 'link_created' && pay.square_payment_url && pay.customer_email) {
+      var sent = sendJalanPaymentEmail_(pay);
+      if (sent) {
+        supabaseUpdate_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(pay.reservation_id),
+          {status: 'email_sent', email_sent_at: new Date().toISOString()});
+        // Slack通知
+        postToSlackChannel_(JALAN_PAY_CHANNEL,
+          '📧 *メール送信完了*\n' +
+          '予約番号： ' + pay.reservation_id + '\n' +
+          '宛名： ' + pay.customer_name + '\n' +
+          '金額： ¥' + pay.amount);
+        Logger.log('[JalanPayment] Email sent: ' + pay.reservation_id);
+      }
+    }
+  }
+}
+
+// ★ テンプレメール送信（札幌店専用 — 那覇店に絶対送信しない）
+function sendJalanPaymentEmail_(pay) {
+  // ★ 那覇店ガード: reservation_idの先頭やDBから店舗判定できない場合でも
+  //    このGAS自体が札幌専用なので到達しないが、安全装置として残す
+  if (!pay || !pay.customer_email || !pay.square_payment_url) {
+    Logger.log('[JalanPayment] Email BLOCKED: missing data for ' + (pay && pay.reservation_id || '?'));
+    return;
+  }
+  try {
+    var subject = '【HANDYMAN】事前決済・LINE登録のお願い（予約番号: ' + pay.reservation_id + '）';
+    var body = pay.customer_name + ' 様\n\n' +
+      'この度はHANDYMAN札幌デリバリー専門店をご予約いただき、誠にありがとうございます。\n' +
+      '予約番号: ' + pay.reservation_id + '\n' +
+      '貸出日: ' + pay.lend_date + '\n' +
+      '返却日: ' + pay.return_date + '\n\n' +
+      '━━━━━━━━━━━━━━━━━━━━\n' +
+      '■ STEP1: LINE登録（必須）\n' +
+      '━━━━━━━━━━━━━━━━━━━━\n' +
+      'デリバリー当日のご連絡はLINEで行います。\n' +
+      '下記リンクから友だち追加をお願いいたします。\n' +
+      'https://lin.ee/g6iDNYz\n' +
+      'LINE ID: @730kyhwl\n\n' +
+      '━━━━━━━━━━━━━━━━━━━━\n' +
+      '■ STEP2: 事前決済（必須）\n' +
+      '━━━━━━━━━━━━━━━━━━━━\n' +
+      'お支払い金額: ¥' + (pay.amount || 0).toLocaleString() + '\n' +
+      '下記リンクよりお支払いをお願いいたします。\n' +
+      pay.square_payment_url + '\n\n' +
+      '※ ご出発3日前の19:00までにお支払いください。\n' +
+      '※ 期限を過ぎた場合、ご予約をキャンセルさせていただく場合がございます。\n\n' +
+      '━━━━━━━━━━━━━━━━━━━━\n' +
+      '■ ご注意事項\n' +
+      '━━━━━━━━━━━━━━━━━━━━\n' +
+      '・当店は実店舗を持たないデリバリー専門店です。\n' +
+      '・ご指定の場所へお車をお届けいたします。\n' +
+      '・詳細はLINEにてご案内いたします。\n\n' +
+      '━━━━━━━━━━━━━━━━━━━━\n' +
+      'HANDYMAN 札幌デリバリー専門店\n' +
+      'TEL: 050-1724-6197（9:00〜19:00）\n' +
+      'LINE: @730kyhwl\n';
+
+    GmailApp.sendEmail(pay.customer_email, subject, body, {
+      name: 'HANDYMAN 札幌デリバリー専門店',
+      replyTo: 'reserve@rent-handyman.jp'
+    });
+    return true;
+  } catch (e) {
+    Logger.log('[JalanPaymentEmail] Error: ' + e.message);
+    return false;
+  }
+}
+
+// ★ 定期実行: 入金確認（Slackスレッドの入金メッセージ検知）
+function checkPaymentStatus() {
+  var rows = supabaseGet_('jalan_payments',
+    'status=eq.email_sent&slack_ts=neq.&select=reservation_id,customer_name,amount,slack_ts');
+
+  if (!rows || rows.length === 0) return;
+
+  for (var i = 0; i < rows.length; i++) {
+    var pay = rows[i];
+    var replies = getSlackThreadReplies_(JALAN_PAY_CHANNEL, pay.slack_ts);
+
+    for (var j = 0; j < replies.length; j++) {
+      var txt = replies[j].text || '';
+      if (txt.indexOf('入金確認') !== -1 || txt.indexOf('入金済み') !== -1) {
+        supabaseUpdate_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(pay.reservation_id),
+          {status: 'paid', paid_at: new Date().toISOString()});
+        postToSlackChannel_(JALAN_PAY_CHANNEL,
+          '✅ *入金確認完了*\n' +
+          '予約番号： ' + pay.reservation_id + '\n' +
+          '宛名： ' + pay.customer_name + '\n' +
+          '金額： ¥' + pay.amount);
+        Logger.log('[JalanPayment] Paid: ' + pay.reservation_id);
+        break;
+      }
+    }
+  }
+}
+
+// ★ 日次実行: 未入金アラート（出発3日前で未入金）
+function checkUnpaidAlert() {
+  var rows = supabaseGet_('jalan_payments',
+    'status=eq.email_sent&select=reservation_id,customer_name,amount,lend_date');
+
+  if (!rows || rows.length === 0) return;
+
+  var now = new Date();
+  var alerts = [];
+  for (var i = 0; i < rows.length; i++) {
+    var pay = rows[i];
+    if (!pay.lend_date) continue;
+    var lend = new Date(pay.lend_date + 'T00:00:00+09:00');
+    var diffDays = Math.floor((lend - now) / 86400000);
+    if (diffDays <= 3) {
+      alerts.push(pay);
+    }
+  }
+
+  if (alerts.length === 0) return;
+
+  var lines = ['🚨 *未入金アラート* ' + alerts.length + '件\n'];
+  for (var i = 0; i < alerts.length; i++) {
+    var a = alerts[i];
+    lines.push('• ' + a.reservation_id + ' ' + a.customer_name + ' ¥' + a.amount + '（出発: ' + a.lend_date + '）');
+  }
+  lines.push('\n期限超過・要電話確認');
+  postToSlackChannel_(JALAN_PAY_CHANNEL, lines.join('\n'));
+  Logger.log('[JalanPayment] Unpaid alert: ' + alerts.length + '件');
+}
+
+// ★ スプシ媒体列自動入力（支払い管理シートの予約番号→Supabase→OTA判定）
+function updateSheetOtaColumn() {
+  var sheetId = '1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc';
+  var ss = SpreadsheetApp.openById(sheetId);
+  var sheet = ss.getSheetByName('支払い管理');
+  if (!sheet) { Logger.log('[OTA] Sheet not found'); return; }
+
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+
+  // N列（14列目）がなければヘッダー追加
+  var headerN = sheet.getRange(1, 14).getValue();
+  if (headerN !== '媒体') {
+    sheet.getRange(1, 14).setValue('媒体');
+  }
+
+  var resIds = sheet.getRange(2, 4, lastRow - 1, 1).getValues();  // D列=予約番号
+  var otaCol = sheet.getRange(2, 14, lastRow - 1, 1).getValues(); // N列=媒体
+
+  var otaMap = {J:'じゃらん', R:'楽天', S:'skyticket', O:'エアトリ', HP:'HP直'};
+
+  for (var i = 0; i < resIds.length; i++) {
+    if (otaCol[i][0]) continue;  // 既に入力済みならスキップ
+    var rid = String(resIds[i][0]).trim();
+    if (!rid) continue;
+
+    var rows = supabaseGet_('reservations', 'id=eq.' + encodeURIComponent(rid) + '&select=ota');
+    if (rows && rows.length > 0 && rows[0].ota) {
+      var otaName = otaMap[rows[0].ota] || rows[0].ota;
+      sheet.getRange(i + 2, 14).setValue(otaName);
+      Logger.log('[OTA] ' + rid + ' → ' + otaName);
+    }
+  }
+}
+
+// ★ トリガーセットアップ（じゃらん決済用）
+function setupJalanPaymentTriggers() {
+  // 既存トリガー削除
+  var funcs = ['checkSquareLinks', 'checkPaymentStatus', 'checkUnpaidAlert', 'updateSheetOtaColumn'];
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (funcs.indexOf(t.getHandlerFunction()) !== -1) {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+
+  // スレッド監視（5分間隔）
+  ScriptApp.newTrigger('checkSquareLinks').timeBased().everyMinutes(5).create();
+  // 入金確認（15分間隔）
+  ScriptApp.newTrigger('checkPaymentStatus').timeBased().everyMinutes(15).create();
+  // 未入金アラート（毎朝9時）
+  ScriptApp.newTrigger('checkUnpaidAlert').timeBased().atHour(9).nearMinute(0).everyDays(1).create();
+  // スプシ媒体列更新（毎朝9:30）
+  ScriptApp.newTrigger('updateSheetOtaColumn').timeBased().atHour(9).nearMinute(30).everyDays(1).create();
+
+  Logger.log('Jalan payment triggers setup complete.');
 }
 
 // ============================================================
