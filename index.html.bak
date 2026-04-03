@@ -851,25 +851,35 @@ async function fetchTimeData(targetResIds){
   return result;
 }
 
-/* ===== じゃらん決済スプレッドシートから支払データ取得（GAS Web App版） ===== */
-const JALAN_PAY_GAS_URL="https://script.google.com/macros/s/AKfycbxvMj4o9meskzVpKdnfdIylzsvfr1z_NLElyA17tedIYlAYKnevf5G568vO2ijFo2yLug/exec";
+/* ===== じゃらん決済スプレッドシートから支払データ取得（公開CSV直接取得版） ===== */
+const JALAN_PAY_CSV_URL="https://docs.google.com/spreadsheets/d/e/2PACX-1vSsixHeH7WvPEhA0BqOhFcun6DgBAeB9z11ikzRgXQcB_OxKKwWT8uCvl6Fb551nYlRmBGLj0e7OcGi/pub?gid=744077151&single=true&output=csv";
 async function fetchJalanPaySheetData(targetResIds){
-  const resp=await fetch(JALAN_PAY_GAS_URL);
-  if(!resp.ok)throw new Error("GAS取得失敗: "+resp.status);
-  const rows=await resp.json();
-  if(!rows||!rows.length)throw new Error("データが空です");
+  const resp=await fetch(JALAN_PAY_CSV_URL);
+  if(!resp.ok)throw new Error("スプシ取得失敗: "+resp.status);
+  const text=await resp.text();
+  const lines=text.split("\n").map(l=>l.split(",").map(c=>c.replace(/^"|"$/g,"").trim()));
+  if(lines.length<2)throw new Error("データが空です");
+  // ヘッダー: 予約番号（ID）,予約名,送付日,支払日,返金日,金額,内容,URL,分類
   const targetSet=new Set(targetResIds);
   const result={};
-  rows.forEach(r=>{
-    const rid=(r.rid||"").trim();
-    if(!rid||!targetSet.has(rid))return;
-    const payDate=(r.payDate||"").trim();
-    const amount=(r.amount||"").trim();
+  for(let i=1;i<lines.length;i++){
+    const row=lines[i];
+    const rid=(row[0]||"").trim();
+    if(!rid||!targetSet.has(rid))continue;
+    const payDate=(row[3]||"").trim();
+    const amount=(row[5]||"").replace(/[,，]/g,"").trim();
+    const sendDate=(row[2]||"").trim();
+    const refundDate=(row[4]||"").trim();
+    const content=(row[6]||"").trim();
+    const linkUrl=(row[7]||"").trim();
+    const category=(row[8]||"").trim()||"売上";
     // 支払日が入っていれば完了（CXLも完了扱い）
     if(payDate){
-      result[rid]={adjustedPrice:amount||"0",payStatus:"完了",payDate:payDate};
+      result[rid]={adjustedPrice:amount||"0",payStatus:"完了",payDate,sendDate,refundDate,content,linkUrl,category};
+    } else if(amount){
+      result[rid]={adjustedPrice:amount||"0",payStatus:"未完了",payDate:"",sendDate,refundDate,content,linkUrl,category};
     }
-  });
+  }
   return result;
 }
 
