@@ -1196,9 +1196,9 @@ function sendJalanPaymentEmail_(pay) {
       '━━━━━━━━━━━━━━━━━━━━\n' +
       '■ STEP1: LINE登録（必須）\n' +
       '━━━━━━━━━━━━━━━━━━━━\n' +
-      'デリバリー当日のご連絡はLINEで行います。\n' +
+      'デリバリー情報の入力・当日のご連絡はLINEで行います。\n' +
       '下記リンクから友だち追加をお願いいたします。\n' +
-      'https://lin.ee/g6iDNYz\n' +
+      'https://lin.ee/g6iDNYz\n\n' +
       'LINE ID: @730kyhwl\n\n' +
       '━━━━━━━━━━━━━━━━━━━━\n' +
       '■ STEP2: 事前決済（必須）\n' +
