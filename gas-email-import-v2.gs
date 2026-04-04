@@ -215,9 +215,11 @@ function processMessage_(message, dryRun) {
   }
 
   // Duplicate check
-  if (reservationExists_(reservation.id)) {
-    // ★ キャンセル済み予約の再予約（取り直し）対応
-    if (reservationIsCancelled_(reservation.id)) {
+  var existingRow = reservationExists_(reservation.id);
+  if (existingRow) {
+    var existSt = existingRow.status || '';
+    var isCancelled = existSt === 'cancelled' || existSt === 'キャンセル';
+    if (isCancelled) {
       Logger.log('Re-booking cancelled reservation: ' + reservation.id);
       // 古いデータをクリーンアップ
       deleteFromFleet_(reservation.id);
@@ -235,7 +237,22 @@ function processMessage_(message, dryRun) {
       }
       Logger.log('Re-booked (updated existing cancelled record): ' + reservation.id);
     } else {
-      Logger.log('Reservation already exists (active): ' + reservation.id);
+      // ★ 既存レコードに欠落している情報をメールから補完
+      var patch = {};
+      if (!existingRow.opt_b && +(reservation.opt_b||0) > 0) patch.opt_b = reservation.opt_b;
+      if (!existingRow.opt_c && +(reservation.opt_c||0) > 0) patch.opt_c = reservation.opt_c;
+      if (!existingRow.opt_j && +(reservation.opt_j||0) > 0) patch.opt_j = reservation.opt_j;
+      if (!existingRow.tel && reservation.tel) patch.tel = reservation.tel;
+      if (!existingRow.mail && reservation.mail) patch.mail = reservation.mail;
+      if (!existingRow.flight && reservation.flight) patch.flight = reservation.flight;
+      if (!existingRow.people && +(reservation.people||0) > 0) patch.people = reservation.people;
+      if (!existingRow.price && +(reservation.price||0) > 0) patch.price = reservation.price;
+      if (Object.keys(patch).length > 0) {
+        supabaseUpdate_('reservations', 'id=eq.' + encodeURIComponent(reservation.id), patch);
+        Logger.log('Patched existing reservation: ' + reservation.id + ' fields=' + Object.keys(patch).join(','));
+      } else {
+        Logger.log('Reservation already exists (active, no patch needed): ' + reservation.id);
+      }
       return {type:'skip', id:reservation.id, reason:'登録済み'};
     }
   } else {
@@ -715,8 +732,8 @@ function supabaseDelete_(table, queryParams) {
 // Reservation DB Operations
 // ============================================================
 function reservationExists_(reservationId) {
-  var rows = supabaseGet_('reservations', 'id=eq.' + encodeURIComponent(reservationId) + '&select=id,status');
-  return rows.length > 0;
+  var rows = supabaseGet_('reservations', 'id=eq.' + encodeURIComponent(reservationId) + '&select=id,status,opt_b,opt_c,opt_j,tel,mail,flight,people,price');
+  return rows.length > 0 ? rows[0] : null;
 }
 
 // ★ キャンセル済みかどうか（再予約判定用）
