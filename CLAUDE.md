@@ -63,14 +63,46 @@
 | F | ルーミー/ソリオ | ピンク `#db2777` |
 | H | カローラ/アクセラ | グレー `#64748b` |
 
+### オフィシャル（HP）クラスマッピング
+札幌は6クラス（A2/B2/Dなし＝那覇専用）
+メール本文: `ご予約車両クラス\n  Xクラス` → 1文字抽出
+
+| メールの記載例 | → クラス | 配車対象車両 |
+|---|:---:|---|
+| アルファード / ヴェルファイア（Aクラス） | A | ヴェルファイア（7673） |
+| ノア / デリカD5（Bクラス） | B | ノア（5398）/ デリカD5（6057） |
+| ロッキー / CX-3（Cクラス） | C | ロッキー（299）/ CX-3（4576） |
+| ハリアー / CX-5（Sクラス） | S | ハリアー（5512）/ CX-5（8065） |
+| ルーミー / ソリオ（Fクラス） | F | ソリオ（8529） |
+| カローラFD / アクセラ（Hクラス） | H | DB登録車両による |
+
 ## タブ構成
 TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 / 駐車場 / 会計 / 顧客 / 売上 / データ / 過去 / 免許証
 
 ## 現在のバージョン
-- **APP_VERSION**: v466
-- **sw.js CACHE_NAME**: `spk-v466`
-- **index.html CV**: `spk-v466`
+- **APP_VERSION**: v4.6.5
+- **sw.js CACHE_NAME**: `spk-v468`
+- **index.html CV**: `spk-v468`
 - **SRI/CSP**: 未適用（下記インシデント参照）
+
+## 2026-04-04 修正履歴
+
+### オフライン誤検知修正（v4.6.4）
+- navigator.onLineだけでなくSupabase実接続確認を追加
+- offlineイベント時にHEADリクエストで実接続チェック→OKならバナー非表示
+
+### チャイルドシート未反映の根本修正
+- **原因**: OTA自動登録GAS(30分)が先に予約作成(opt_c=0)→メール取込GAS(15分)が「登録済み」スキップ→永遠に反映されない
+- **修正3層**:
+  1. GAS: 重複時にスキップせず欠落フィールド(opt_b/c/j,tel,mail,flight,people,price)を自動パッチ
+  2. GAS: スカイチケット・エアトリパーサーにシート検出追加
+  3. APP: TOPタスク表示時にreservationsからopts値をフォールバック補完
+- **GAS本体**: 2026-04-04反映済み
+
+### OPシート「その他」タブ追加（v4.6.5）
+- 新タスク種類: 車検🔍 / 整備🔧 / 送迎🚐 / 小タスク📝 / その他📌
+- その他タブから追加・インライン編集・削除・完了チェック
+- スケジュール/マスター/TOP担当者別セクションに自動表示
 
 ## インシデント履歴
 
@@ -94,10 +126,10 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 既存じゃらんタブはリリース日に新規停止、過去データ消し込み専用に移行。
 
 ### 現在の状態
-- **GAS側**: コード完成済。全処理を `false` で無効化中（リリースまで動かさない）
-- **DB**: `jalan_payments` テーブル作成済（jalan_payments_setup.sql）
-- **Slack**: `#jalan_payment`（C0AQL6HGG3E）チャンネル作成済、SNS Autoボット参加済
-- **AIスタッフ_G**: #jalan_payment でSquareリンク自動作成する設定済
+- **GAS側**: リリース済・稼働中（false解除済み）
+- **DB**: `jalan_payments` テーブル稼働中
+- **Slack**: `#jalan_payment`（C0AQL6HGG3E）チャンネル稼働中
+- **AIスタッフ_G**: 不安定（2026-04-04にリンク作成未応答のインシデント発生。下記参照）
 
 ### 店舗制限（絶対ルール）
 - **札幌店のみ対象。那覇店には絶対に送らない**
@@ -138,10 +170,28 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - AIスタッフ_Gが同一予約番号の重複投稿を無視する（2回目のSlack投稿にはリンクを作らない）
 - メール送信元: `from: 'reserve@rent-handyman.jp'` をGASに設定済み（Gmailエイリアス登録済み）
 
+### 2026-04-04: AIスタッフ_G未応答 → Square手動作成で対応（R0R8QVZR）
+- **症状**: GASがSlack投稿→AIスタッフ_Gがスレッド返信せず→Squareリンク未作成→メール未送信
+- **原因**: AIスタッフ_Gの停止（原因不明）
+- **対応**: Square APIを直接呼び出してリンク作成→DB更新→GASトリガーでメール自動送信
+- **手動Squareリンク作成手順**（AIスタッフ_G障害時のフォールバック）:
+  ```bash
+  curl -X POST "https://connect.squareup.com/v2/online-checkout/payment-links" \
+    -H "Authorization: Bearer <SQUARE_API_TOKEN>" \
+    -H "Content-Type: application/json" \
+    -H "Square-Version: 2024-01-18" \
+    -d '{"idempotency_key":"<UUID>","quick_pay":{"name":"<品目（名前様）>","price_money":{"amount":<金額>,"currency":"JPY"},"location_id":"L8N7J9RKPN3WH"}}'
+  ```
+- **Square API情報**:
+  - Token: `~/outputs/handyman-receipt-bot/Code.gs` のsetupProperties_参照
+  - Location ID: `L8N7J9RKPN3WH`
+  - レスポンスの `payment_link.url` がSquareリンク
+- **DB更新後**: status=`link_created` にすれば次のcheckSquareLinks(5分)でメール自動送信される
+
 ## GASプロジェクト一覧
 | プロジェクト名 | 用途 | 最終更新 |
 |---|---|---|
-| 札幌予約メール自動配車 | reserve@のメール取込・自動配車・じゃらん決済（gas-email-import-v2.gs） | 2026/04/02 |
+| 札幌予約メール自動配車 | reserve@のメール取込・自動配車・じゃらん決済（gas-email-import-v2.gs） | 2026/04/04 |
 | HANDYMAN OTA自動登録 | 5OTA予約自動登録（30分間隔） | 2026/03/19 |
 | Instagram自動投稿 v5 | SNS自動投稿パイプライン | 2026/04/02 |
 | 那覇店 予約取込 | 那覇店のメール取込・自動配車 | 2026/04/02 |
