@@ -473,6 +473,11 @@ function parseSkyticket_(body) {
   var insurancePriceStr = extractField_(body, '免責補償料金');
   var insurancePrice = parsePrice_(insurancePriceStr);
   var insurance = insurancePrice > 0 ? '免責' : 'なし';
+  // シート検出（オプション+本文全体から）
+  var optB = 0, optC = 0, optJ = 0;
+  var bMatch = body.match(/ベビーシート[^\d]*(\d*)/); if (bMatch) optB = parseInt(bMatch[1], 10) || 1;
+  var cMatch = body.match(/チャイルドシート[^\d]*(\d*)/); if (cMatch) optC = parseInt(cMatch[1], 10) || 1;
+  var jMatch = body.match(/ジュニアシート[^\d]*(\d*)/); if (jMatch) optJ = parseInt(jMatch[1], 10) || 1;
   return {
     id: id, ota: 'S', name: nameKana,
     lend_date: lend.date, lend_time: lend.time,
@@ -480,6 +485,7 @@ function parseSkyticket_(body) {
     vehicle: vehicleClass, people: people, insurance: insurance,
     price: totalPrice, status: '確定', tel: tel, mail: mail,
     flight: '', visit_type: '', del_place: '', col_place: '',
+    opt_b: optB, opt_c: optC, opt_j: optJ,
     _store: store, _rawClass: rawClass
   };
 }
@@ -502,6 +508,11 @@ function parseAirtrip_(body) {
   var arrFlight = extractField_(body, '到着便');
   var depFlight = extractField_(body, '出発便');
   var flight = [arrFlight, depFlight].filter(Boolean).join(' / ');
+  // シート検出（本文全体から）
+  var optB = 0, optC = 0, optJ = 0;
+  var bMatch = body.match(/ベビーシート[^\d]*(\d*)/); if (bMatch) optB = parseInt(bMatch[1], 10) || 1;
+  var cMatch = body.match(/チャイルドシート[^\d]*(\d*)/); if (cMatch) optC = parseInt(cMatch[1], 10) || 1;
+  var jMatch = body.match(/ジュニアシート[^\d]*(\d*)/); if (jMatch) optJ = parseInt(jMatch[1], 10) || 1;
   return {
     id: id, ota: 'O', name: nameKana,
     lend_date: lend.date, lend_time: lend.time,
@@ -509,6 +520,7 @@ function parseAirtrip_(body) {
     vehicle: vehicleClass, people: 0, insurance: insurance,
     price: price, status: '確定', tel: tel, mail: mail,
     flight: flight, visit_type: '', del_place: '', col_place: '',
+    opt_b: optB, opt_c: optC, opt_j: optJ,
     _store: store, _rawClass: rawClass
   };
 }
