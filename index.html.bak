@@ -7730,8 +7730,21 @@ function App(){
         sb.from("tasks").select("*").eq("date",today),
         sb.from("tasks").select("*").eq("date",tmr)
       ]);
-      if(todayRes.data)setTodayTasks(todayRes.data.map(DB._fromDbTask));
-      if(tmrRes.data)setTomorrowTasks(tmrRes.data.map(DB._fromDbTask));
+      const enrichOpts=async(tasks)=>{
+        const parsed=tasks.map(DB._fromDbTask);
+        // タスクのopts(b,c,j)が全て0の場合、reservationsから補完
+        const needPatch=parsed.filter(t=>t.reservationId&&!(+(t.opts?.b||0))&&!(+(t.opts?.c||0))&&!(+(t.opts?.j||0)));
+        if(needPatch.length){
+          const rids=[...new Set(needPatch.map(t=>t.reservationId))];
+          const{data:resvs}=await sb.from("reservations").select("id,opt_b,opt_c,opt_j").in("id",rids);
+          if(resvs){const rm={};resvs.forEach(r=>rm[r.id]=r);
+            parsed.forEach(t=>{const r=rm[t.reservationId];if(r&&(+(r.opt_b||0)||+(r.opt_c||0)||+(r.opt_j||0))){t.opts={...t.opts,b:+(r.opt_b||0),c:+(r.opt_c||0),j:+(r.opt_j||0)};}});
+          }
+        }
+        return parsed;
+      };
+      if(todayRes.data)setTodayTasks(await enrichOpts(todayRes.data));
+      if(tmrRes.data)setTomorrowTasks(await enrichOpts(tmrRes.data));
     }catch(e){console.log("[refreshTopTasks] error",e);}
   },[today]);
   useEffect(()=>{
