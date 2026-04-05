@@ -92,12 +92,15 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - offlineイベント時にHEADリクエストで実接続チェック→OKならバナー非表示
 
 ### チャイルドシート未反映の根本修正
-- **原因**: OTA自動登録GAS(30分)が先に予約作成(opt_c=0)→メール取込GAS(15分)が「登録済み」スキップ→永遠に反映されない
-- **修正3層**:
+- **原因1**: OTA自動登録GAS(30分)が先に予約作成(opt_c=0)→メール取込GAS(15分)が「登録済み」スキップ→永遠に反映されない
+- **原因2**: `parseJalan_()` にチャイルドシート検出が完全に欠落していた（楽天/スカイチケット/エアトリは実装済みだったがじゃらんだけ未実装）
+- **修正4層**:
   1. GAS: 重複時にスキップせず欠落フィールド(opt_b/c/j,tel,mail,flight,people,price)を自動パッチ
   2. GAS: スカイチケット・エアトリパーサーにシート検出追加
-  3. APP: TOPタスク表示時にreservationsからopts値をフォールバック補完
+  3. GAS: **`parseJalan_()` にチャイルドシート/ベビーシート/ジュニアシート検出を追加**（`オプション：`行からパース）
+  4. APP: TOPタスク表示時にreservationsからopts値をフォールバック補完
 - **GAS本体**: 2026-04-04反映済み
+- **R0R8QVZR**: DB直接更新で opt_c=3 に修正済み
 
 ### OPシート「その他」タブ追加（v4.6.5）
 - 新タスク種類: 車検🔍 / 整備🔧 / 送迎🚐 / 小タスク📝 / その他📌
@@ -170,6 +173,13 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - AIスタッフ_Gが同一予約番号の重複投稿を無視する（2回目のSlack投稿にはリンクを作らない）
 - メール送信元: `from: 'reserve@rent-handyman.jp'` をGASに設定済み（Gmailエイリアス登録済み）
 
+### 2026-04-05: 入金確認をSquare API直接確認に変更
+- **旧**: Slackスレッドの「入金確認」「入金済み」文言を検知（AIスタッフ_G依存→不安定）
+- **新**: Square Orders Search APIで顧客名+金額照合→tenders有無で入金判定
+- `checkSquarePayment_(token, paymentUrl, customerName, amount)` 新規関数
+- `getSquareToken_()` + `setupProperties`にSQUARE_API_TOKEN追加（実行済み）
+- R0R8QVZR: DB手動で`paid`に更新済み（入金日: 2026-04-04T11:23:48Z、Mastercard末尾8920）
+
 ### 2026-04-04: AIスタッフ_G未応答 → Square手動作成で対応（R0R8QVZR）
 - **症状**: GASがSlack投稿→AIスタッフ_Gがスレッド返信せず→Squareリンク未作成→メール未送信
 - **原因**: AIスタッフ_Gの停止（原因不明）
@@ -187,6 +197,18 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   - Location ID: `L8N7J9RKPN3WH`
   - レスポンスの `payment_link.url` がSquareリンク
 - **DB更新後**: status=`link_created` にすれば次のcheckSquareLinks(5分)でメール自動送信される
+
+### 2026-04-04: Square請求書ウィジェットにデータが出ない問題
+- **症状**: じゃらん決済のSquareリンクが作成・メール送信されたが、APPのSquare請求書ウィジェットに表示されない
+- **原因**: ウィジェットはGoogleスプレッドシート（支払い管理シート）からCSV取得して表示するが、GASがスプレッドシートに行を書き込んでいなかった
+- **修正**:
+  1. `appendToPaymentSheet_(pay, payUrl)` — Squareリンク取得時にスプレッドシートへ自動追加（重複チェック付き）
+  2. `updatePaymentSheetStatus_(reservationId, newStatus, paidDate)` — 入金確認/キャンセル時にスプレッドシートのステータスも自動更新
+  3. `checkSquareLinks()` にスプレッドシート書き込み呼び出しを追加
+  4. `checkPaymentStatus()` に入金時のステータス更新を追加
+  5. `handleJalanPaymentCancel_()` にキャンセル時のステータス更新を追加
+- **スプレッドシート**: ID=`1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc` シート名=`支払い管理`
+- **注意**: AIスタッフ_G障害で手動Square作成した場合は`checkSquareLinks()`を経由しないため、スプレッドシートには手動追加が必要（`addR0R8QVZRtoSheet`のような一時関数を作って実行）
 
 ## GASプロジェクト一覧
 | プロジェクト名 | 用途 | 最終更新 |
