@@ -10,13 +10,15 @@ var LABEL_NAME = 'processed';
 function getSupabaseUrl_() { return PropertiesService.getScriptProperties().getProperty('SUPABASE_URL'); }
 function getSupabaseKey_() { return PropertiesService.getScriptProperties().getProperty('SUPABASE_KEY'); }
 function getSlackEmail_() { return PropertiesService.getScriptProperties().getProperty('SLACK_EMAIL'); }
+function getSquareToken_() { return PropertiesService.getScriptProperties().getProperty('SQUARE_API_TOKEN'); }
 
 // 初回セットアップ用（1回実行後、このコメントごと削除推奨）
 function setupProperties() {
   PropertiesService.getScriptProperties().setProperties({
     'SUPABASE_URL': 'https://ckrxttbnawkclshczsia.supabase.co',
     'SUPABASE_KEY': '<SERVICE_ROLE_KEYをSupabase Dashboardから取得して入力>',
-    'SLACK_EMAIL': 'x-aaaatppttzyrldnhjt5el4jj3i@gl-oke5175.slack.com'
+    'SLACK_EMAIL': 'x-aaaatppttzyrldnhjt5el4jj3i@gl-oke5175.slack.com',
+    'SQUARE_API_TOKEN': 'EAAAl0tQ2Ok8BDEwQw9LrZox4F2Q8I0GkRLiZAngMCjEQ3mfFv87X5Jxhut-nfS8'
   });
   Logger.log('Properties set successfully.');
 }
@@ -66,8 +68,10 @@ function setup() {
 // ============================================================
 function processNewEmails() {
   var label = getOrCreateLabel_(LABEL_NAME);
+  // ★ -label: 禁止（スレッド単位検索のため後続メールが見えなくなる）
+  // 処理済み管理はメッセージID単位で行う
   var fromClause = Object.values(OTA_SENDERS).map(function(s) { return 'from:' + s; }).join(' OR ');
-  var query = '(' + fromClause + ') -label:' + LABEL_NAME + ' -label:処理済み newer_than:2d';
+  var query = '(' + fromClause + ') newer_than:2d';
 
   var threads = GmailApp.search(query, 0, 50);
   if (threads.length === 0) {
@@ -75,7 +79,11 @@ function processNewEmails() {
     return;
   }
 
-  Logger.log('Found ' + threads.length + ' thread(s) to process.');
+  // メッセージID単位の処理済み管理
+  var processedIds = getProcessedMsgIds_();
+  var newProcessedIds = [];
+
+  Logger.log('Found ' + threads.length + ' thread(s) to check.');
 
   var successes = [];
   var failures = [];
@@ -87,8 +95,13 @@ function processNewEmails() {
   for (var i = 0; i < threads.length; i++) {
     var messages = threads[i].getMessages();
     for (var j = 0; j < messages.length; j++) {
+      var msgId = messages[j].getId();
+      if (processedIds[msgId]) {
+        continue;  // 処理済みメッセージはスキップ
+      }
       try {
         var result = processMessage_(messages[j], false);
+        newProcessedIds.push(msgId);
         if (result) {
           if (result.type === 'success') successes.push(result);
           else if (result.type === 'failure') failures.push(result);
@@ -96,11 +109,17 @@ function processNewEmails() {
           else if (result.type === 'skip') skipped.push(result);
         }
       } catch (e) {
-        Logger.log('ERROR processing message ID ' + messages[j].getId() + ': ' + e.message + '\n' + e.stack);
+        Logger.log('ERROR processing message ID ' + msgId + ': ' + e.message + '\n' + e.stack);
+        newProcessedIds.push(msgId);  // エラーでも処理済みにする（無限リトライ防止）
         failures.push({id: '不明', ota: '?', name: '', reason: 'エラー: ' + e.message});
       }
     }
-    threads[i].addLabel(label);
+    threads[i].addLabel(label);  // ラベルは視覚目印としてのみ使用
+  }
+
+  // 処理済みIDを保存
+  if (newProcessedIds.length > 0) {
+    saveProcessedMsgIds_(processedIds, newProcessedIds);
   }
 
   if (successes.length > 0) sendSlackSuccess_(successes);
@@ -259,6 +278,12 @@ function processMessage_(message, dryRun) {
     // Insert new
     var insertResult = insertReservation_(reservation);
     if (!insertResult) {
+      // ★ unique制約違反（既にOTA自動登録で存在）の場合はスキップ扱い
+      var recheck = reservationExists_(reservation.id);
+      if (recheck) {
+        Logger.log('INSERT failed but reservation exists (race condition): ' + reservation.id);
+        return {type:'skip', id:reservation.id, reason:'登録済み（競合）'};
+      }
       return {type:'failure', id:reservation.id, ota:otaCode, name:reservation.name, reason:'DB登録失敗'};
     }
   }
@@ -420,6 +445,17 @@ function parseJalan_(body) {
   var arrFlight = extractField_(body, '到着便');
   var depFlight = extractField_(body, '出発便');
   var flight = [arrFlight, depFlight].filter(Boolean).join(' / ');
+  // ★ チャイルドシート等パース（オプション行から検出）
+  var optionsStr = extractField_(body, 'オプション');
+  var optB = 0, optC = 0, optJ = 0;
+  if (optionsStr) {
+    var bMatch = optionsStr.match(/ベビーシート\D*(\d+)/);
+    if (bMatch) optB = parseInt(bMatch[1], 10) || 1;
+    var cMatch = optionsStr.match(/チャイルドシート\D*(\d+)/);
+    if (cMatch) optC = parseInt(cMatch[1], 10) || 1;
+    var jMatch = optionsStr.match(/ジュニアシート\D*(\d+)/);
+    if (jMatch) optJ = parseInt(jMatch[1], 10) || 1;
+  }
   return {
     id: id, ota: 'J', name: nameKana || name,
     lend_date: lend.date, lend_time: lend.time,
@@ -427,6 +463,7 @@ function parseJalan_(body) {
     vehicle: vehicleClass, people: people, insurance: insurance,
     price: price, status: '確定', tel: tel, mail: mail,
     flight: flight, visit_type: '', del_place: '', col_place: '',
+    opt_b: optB, opt_c: optC, opt_j: optJ,
     _store: store, _rawClass: rawClass
   };
 }
@@ -1089,6 +1126,7 @@ function handleJalanPaymentCancel_(reservationId) {
     // 入金後キャンセル → 返金対応必要
     supabaseUpdate_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(reservationId),
       {status: 'refund', cancelled_at: now});
+    updatePaymentSheetStatus_(reservationId, '⚠️ 要返金', '');
     postToSlackChannel_(JALAN_PAY_CHANNEL,
       '⚠️ *返金対応必要*\n' +
       '予約番号： ' + reservationId + '\n' +
@@ -1100,6 +1138,7 @@ function handleJalanPaymentCancel_(reservationId) {
     // 決済前キャンセル（new/link_created/email_sent）
     supabaseUpdate_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(reservationId),
       {status: 'cancelled', cancelled_at: now});
+    updatePaymentSheetStatus_(reservationId, '❌ キャンセル', '');
     postToSlackChannel_(JALAN_PAY_CHANNEL,
       '🔄 *キャンセル（決済前）*\n' +
       '予約番号： ' + reservationId + '\n' +
@@ -1180,6 +1219,8 @@ function checkSquareLinks() {
         supabaseUpdate_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(pay.reservation_id),
           {square_payment_url: payUrl, status: 'link_created', link_created_at: new Date().toISOString()});
         Logger.log('[JalanPayment] Link found: ' + pay.reservation_id + ' → ' + payUrl);
+        // ★ スプレッドシートに行追加（Square請求書ウィジェット用）
+        appendToPaymentSheet_(pay, payUrl);
         // 更新して次のループでメール送信
         pay.square_payment_url = payUrl;
         pay.status = 'link_created';
@@ -1260,32 +1301,101 @@ function sendJalanPaymentEmail_(pay) {
   }
 }
 
-// ★ 定期実行: 入金確認（Slackスレッドの入金メッセージ検知）
+// ★ 定期実行: 入金確認（Square Orders API で直接確認）
 function checkPaymentStatus() {
+  // email_sent または link_created のレコードを取得
   var rows = supabaseGet_('jalan_payments',
-    'status=eq.email_sent&slack_ts=neq.&select=reservation_id,customer_name,amount,slack_ts');
+    'status=in.(email_sent,link_created)&square_payment_url=neq.&select=reservation_id,customer_name,amount,square_payment_url,slack_ts');
 
   if (!rows || rows.length === 0) return;
 
+  var token = getSquareToken_();
+  if (!token) { Logger.log('[PaymentStatus] No SQUARE_API_TOKEN'); return; }
+
   for (var i = 0; i < rows.length; i++) {
     var pay = rows[i];
-    var replies = getSlackThreadReplies_(JALAN_PAY_CHANNEL, pay.slack_ts);
-
-    for (var j = 0; j < replies.length; j++) {
-      var txt = replies[j].text || '';
-      if (txt.indexOf('入金確認') !== -1 || txt.indexOf('入金済み') !== -1) {
+    try {
+      // Square Payment Links一覧からorder_idを検索（URLのIDで特定）
+      var paid = checkSquarePayment_(token, pay.square_payment_url, pay.customer_name, pay.amount);
+      if (paid) {
+        var paidAt = paid.paid_at || new Date().toISOString();
         supabaseUpdate_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(pay.reservation_id),
-          {status: 'paid', paid_at: new Date().toISOString()});
+          {status: 'paid', paid_at: paidAt});
+        // ★ スプレッドシートのステータスも更新
+        updatePaymentSheetStatus_(pay.reservation_id, '✅ 入金済み', paidAt);
         postToSlackChannel_(JALAN_PAY_CHANNEL,
           '✅ *入金確認完了*\n' +
           '予約番号： ' + pay.reservation_id + '\n' +
           '宛名： ' + pay.customer_name + '\n' +
           '金額： ¥' + pay.amount);
-        Logger.log('[JalanPayment] Paid: ' + pay.reservation_id);
-        break;
+        Logger.log('[PaymentStatus] Paid: ' + pay.reservation_id);
+      }
+    } catch (e) {
+      Logger.log('[PaymentStatus] Error checking ' + pay.reservation_id + ': ' + e.message);
+    }
+  }
+}
+
+// ★ Square APIで入金確認（Orders検索→顧客名+金額で照合→tenders確認）
+function checkSquarePayment_(token, paymentUrl, customerName, amount) {
+  if (!paymentUrl) return null;
+
+  // Square Search Orders API: 最近のOrdersを検索
+  var searchBody = {
+    location_ids: ['L8N7J9RKPN3WH'],
+    query: {
+      filter: {
+        state_filter: { states: ['OPEN', 'COMPLETED'] },
+        date_time_filter: {
+          created_at: {
+            start_at: new Date(Date.now() - 90 * 86400000).toISOString()
+          }
+        }
+      },
+      sort: { sort_field: 'CREATED_AT', sort_order: 'DESC' }
+    },
+    limit: 50
+  };
+
+  var resp = UrlFetchApp.fetch('https://connect.squareup.com/v2/orders/search', {
+    method: 'post',
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'Content-Type': 'application/json',
+      'Square-Version': '2024-01-18'
+    },
+    payload: JSON.stringify(searchBody),
+    muteHttpExceptions: true
+  });
+
+  var data = JSON.parse(resp.getContentText());
+  var orders = data.orders || [];
+
+  for (var i = 0; i < orders.length; i++) {
+    var order = orders[i];
+    // tenders存在 = 決済完了、net_amount_due = 0 = 全額入金
+    if (!order.tenders || order.tenders.length === 0) continue;
+    var netDue = order.net_amount_due_money;
+    if (!netDue || netDue.amount !== 0) continue;
+
+    // 照合: line_items.name に顧客名が含まれる AND 金額一致
+    var orderAmount = order.total_money ? order.total_money.amount : 0;
+    var lineItems = order.line_items || [];
+    for (var j = 0; j < lineItems.length; j++) {
+      var itemName = lineItems[j].name || '';
+      var nameMatch = customerName && itemName.indexOf(customerName) !== -1;
+      var amountMatch = amount && orderAmount === amount;
+      if (nameMatch && amountMatch) {
+        Logger.log('[SquareCheck] Matched order ' + order.id + ' for ' + customerName);
+        return {
+          paid_at: order.tenders[0].created_at,
+          order_id: order.id
+        };
       }
     }
   }
+
+  return null;
 }
 
 // ★ 日次実行: 未入金アラート（出発3日前で未入金）
@@ -1317,6 +1427,92 @@ function checkUnpaidAlert() {
   lines.push('\n期限超過・要電話確認');
   postToSlackChannel_(JALAN_PAY_CHANNEL, lines.join('\n'));
   Logger.log('[JalanPayment] Unpaid alert: ' + alerts.length + '件');
+}
+
+// ★ スプレッドシートに決済行を追加（Square請求書ウィジェット用）
+// 列: A=# B=発行日 C=利用店舗 D=予約番号 E=宛名 F=品目 G=金額 H=支払いURL I=ステータス J=入金日 K=OrderID L=Slack TS M=Channel N=媒体
+function appendToPaymentSheet_(pay, payUrl) {
+  try {
+    var sheetId = '1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc';
+    var ss = SpreadsheetApp.openById(sheetId);
+    var sheet = ss.getSheetByName('支払い管理');
+    if (!sheet) { Logger.log('[Sheet] 支払い管理 not found'); return; }
+
+    // 重複チェック（D列=予約番号）
+    var lastRow = sheet.getLastRow();
+    if (lastRow >= 2) {
+      var existingIds = sheet.getRange(2, 4, lastRow - 1, 1).getValues();
+      for (var i = 0; i < existingIds.length; i++) {
+        if (String(existingIds[i][0]).trim() === pay.reservation_id) {
+          Logger.log('[Sheet] Already exists: ' + pay.reservation_id);
+          return;
+        }
+      }
+    }
+
+    var rowNum = lastRow;  // 連番（ヘッダー除く）
+    var today = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy/MM/dd');
+    var lendShort = (pay.lend_date || '').replace(/^\d{4}-/, '').replace(/-/g, '/');
+    var retShort = (pay.return_date || '').replace(/^\d{4}-/, '').replace(/-/g, '/');
+
+    var row = [
+      rowNum,                                          // A: #
+      today,                                           // B: 発行日
+      '札幌店',                                        // C: 利用店舗
+      pay.reservation_id,                              // D: 予約番号
+      (pay.customer_name || '') + '様',                // E: 宛名
+      'じゃらん事前決済(' + lendShort + '-' + retShort + ')', // F: 品目
+      pay.amount || 0,                                 // G: 金額
+      payUrl || pay.square_payment_url || '',           // H: 支払いURL
+      '⏳ 未払い',                                     // I: ステータス
+      '',                                              // J: 入金日
+      '',                                              // K: OrderID
+      pay.slack_ts || '',                               // L: Slack TS
+      JALAN_PAY_CHANNEL || '',                          // M: Channel
+      'じゃらん'                                       // N: 媒体
+    ];
+
+    sheet.appendRow(row);
+    Logger.log('[Sheet] Appended: ' + pay.reservation_id);
+  } catch (e) {
+    Logger.log('[Sheet] Append error: ' + e.message);
+  }
+}
+
+// ★ スプレッドシートのステータス列を更新
+function updatePaymentSheetStatus_(reservationId, newStatus, paidDate) {
+  try {
+    var sheetId = '1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc';
+    var ss = SpreadsheetApp.openById(sheetId);
+    var sheet = ss.getSheetByName('支払い管理');
+    if (!sheet) return;
+
+    var lastRow = sheet.getLastRow();
+    if (lastRow < 2) return;
+
+    var resIds = sheet.getRange(2, 4, lastRow - 1, 1).getValues(); // D列=予約番号
+    for (var i = 0; i < resIds.length; i++) {
+      if (String(resIds[i][0]).trim() === reservationId) {
+        sheet.getRange(i + 2, 9).setValue(newStatus);  // I列=ステータス
+        if (paidDate) {
+          var d = new Date(paidDate);
+          sheet.getRange(i + 2, 10).setValue(Utilities.formatDate(d, 'Asia/Tokyo', 'yyyy/MM/dd')); // J列=入金日
+        }
+        Logger.log('[Sheet] Status updated: ' + reservationId + ' → ' + newStatus);
+        return;
+      }
+    }
+    Logger.log('[Sheet] Row not found for status update: ' + reservationId);
+  } catch (e) {
+    Logger.log('[Sheet] Status update error: ' + e.message);
+  }
+}
+
+// ★ R0R8QVZR手動追加（実行後に削除すること）
+// ★ R0R8QVZR スプシステータス更新（実行後に削除すること）
+function fixR0R8QVZR() {
+  updatePaymentSheetStatus_('R0R8QVZR', '✅ 入金済み', '2026-04-04T11:23:48Z');
+  Logger.log('R0R8QVZR → 入金済みに更新。この関数は削除してOK。');
 }
 
 // ★ スプシ媒体列自動入力（支払い管理シートの予約番号→Supabase→OTA判定）
@@ -1374,6 +1570,36 @@ function setupJalanPaymentTriggers() {
   ScriptApp.newTrigger('updateSheetOtaColumn').timeBased().atHour(9).nearMinute(30).everyDays(1).create();
 
   Logger.log('Jalan payment triggers setup complete.');
+}
+
+// ============================================================
+// Processed Message ID Management（メッセージID単位の処理済み管理）
+// ============================================================
+var PROCESSED_IDS_KEY = 'PROCESSED_MSG_IDS';
+var MAX_PROCESSED_IDS = 500;  // 保持する最大ID数（古いものから削除）
+
+function getProcessedMsgIds_() {
+  var raw = PropertiesService.getScriptProperties().getProperty(PROCESSED_IDS_KEY) || '';
+  var map = {};
+  if (raw) {
+    var ids = raw.split(',');
+    for (var i = 0; i < ids.length; i++) {
+      if (ids[i]) map[ids[i]] = true;
+    }
+  }
+  return map;
+}
+
+function saveProcessedMsgIds_(existingMap, newIds) {
+  for (var i = 0; i < newIds.length; i++) {
+    existingMap[newIds[i]] = true;
+  }
+  var allIds = Object.keys(existingMap);
+  // 古いIDを削除（MAX超過時）
+  if (allIds.length > MAX_PROCESSED_IDS) {
+    allIds = allIds.slice(allIds.length - MAX_PROCESSED_IDS);
+  }
+  PropertiesService.getScriptProperties().setProperty(PROCESSED_IDS_KEY, allIds.join(','));
 }
 
 // ============================================================
