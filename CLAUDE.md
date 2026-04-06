@@ -80,10 +80,74 @@
 TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 / 駐車場 / 会計 / 顧客 / 売上 / データ / 過去 / 免許証
 
 ## 現在のバージョン
-- **APP_VERSION**: v4.6.5
-- **sw.js CACHE_NAME**: `spk-v468`
-- **index.html CV**: `spk-v468`
+- **APP_VERSION**: v4.6.6
+- **sw.js CACHE_NAME**: `spk-v469`
+- **index.html CV**: `spk-v469`
 - **SRI/CSP**: 未適用（下記インシデント参照）
+
+## 2026-04-06 修正履歴
+
+### DY00000000927 手動登録・配車
+- skyticket予約（カメダ マリコ、Aクラス、2026-08-01 10:00-17:00、¥19,100）
+- GAS自動取込が動かなかったため手動登録 → ヴェルファイア(7673)に配車済み
+
+### skyticket予約取込失敗の根本修正（GAS 2件）
+- **問題**: DY00000000927がOTA自動登録GAS・札幌メール取込GASの両方で取り込まれなかった
+- **原因1（OTA自動登録GAS）**: skyticket送信元が旧アドレス(`skyticket-rentalcar@adventure-inc.co.jp`)のまま。現行は`rentacar@skyticket.com`
+- **原因2（OTA自動登録GAS）**: subject検索に「新規予約」が含まれていない（skyticket件名=「【skyticket】 新規予約」）
+- **原因3（OTA自動登録GAS）**: `-label:`フィルタ使用（絶対ルール違反）
+- **原因4（札幌メール取込GAS）**: subject完全一致チェックがスペース揺れに弱い
+- **修正（OTA自動登録GAS `main.gs`）**:
+  1. skyticket送信元: `rentacar@skyticket.com` 追加（旧アドレスも`skyticket2`として併存）
+  2. `-label:`フィルタ除去 → `newer_than:2d` + メッセージID管理(`getProcessedMsgIds_`/`saveProcessedMsgIds_`)
+  3. subject検索: `新規予約` 追加
+  4. スレッド先頭のみ処理 → 全メッセージループ処理
+  5. `detectOta()`: `skyticket2` → `skyticket` にマッピング
+- **修正（札幌メール取込GAS `gas-email-import-v2.gs`）**:
+  1. subject判定を全角/半角スペース正規化 + スペース完全除去での二重チェックに変更
+- **GASエディタ**: 2026-04-06 両方貼り付け済み
+
+## 2026-04-05 修正履歴
+
+### 月初残高クロスデバイス同期（v4.6.6）
+- **問題**: 会計タブの月初残高を入力したスタッフ以外の端末に反映されない
+- **原因**: `localStorage` に保存していた（端末固有）
+- **修正**: `app_settings` テーブル（Supabase DB）に保存→全端末で同期
+- 初回起動時、localStorageにデータがあればDBに自動移行
+- DBエラー時はlocalStorageフォールバック
+
+### 洗車タスク時間指定
+- **要望**: 翌日出発車両の洗車タスクにも時間を設定したい（アルバイトスケジュール管理目的）
+- **修正**:
+  - マスター表: 洗車行の時間列にドロップダウン（6:00〜22:00、5分刻み）を追加
+  - 洗車タブ: 各洗車タスクにも時間ドロップダウンを追加
+  - 選択→確認→DB保存（tasksテーブルのtimeカラム）
+- **自動反映**: スケジュールタブ（時系列ソート）、タイムライン（TT行）、TOPスケジュール
+
+### GAS: メール取込「DB登録失敗」誤通知の修正
+- **問題**: 全て配車済みの予約に対して「❌ DB登録失敗」通知が出る
+- **原因**: `-label:processed` をGmail検索から除外した際、メッセージID管理がなく全メール再処理→既存予約のINSERT失敗
+- **修正**:
+  1. メッセージID管理追加（`PROCESSED_MSG_IDS` in ScriptProperties、最大500件保持）
+  2. INSERT失敗時にDB再確認→存在すればスキップ扱い（failure→skipに変更）
+  3. `-label:` フィルタ完全除去（ラベルは視覚目印のみ）
+
+### GAS: じゃらん入金確認をSquare API直接確認に変更
+- **問題**: R0R8QVZR入金済みだが自動消し込みが動かない
+- **原因**: `checkPaymentStatus()` がSlackスレッドの文言依存（AIスタッフ_G経由）→AIスタッフ_G不安定で検知不能
+- **修正**: Square Orders Search APIで顧客名+金額照合→tenders有無で入金判定
+- `checkSquarePayment_(token, paymentUrl, customerName, amount)` 新規関数
+- `getSquareToken_()` + SQUARE_API_TOKEN追加（setupProperties実行済み）
+- R0R8QVZR: DB手動で`paid`に更新済み（入金日: 2026-04-04T11:23:48Z、Mastercard末尾8920）
+
+### GAS: スプレッドシート自動連動
+- **問題**: Square請求書ウィジェットにR0R8QVZRが表示されない
+- **原因**: ウィジェットはGoogleスプレッドシート（支払い管理シート）をCSV取得して表示するが、GASがスプレッドシートに書き込んでいなかった
+- **修正**:
+  - `appendToPaymentSheet_(pay, payUrl)` — Squareリンク取得時にスプレッドシートへ自動追加
+  - `updatePaymentSheetStatus_(reservationId, newStatus, paidDate)` — 入金/キャンセル時にステータス自動更新
+  - `checkSquareLinks()` / `checkPaymentStatus()` / `handleJalanPaymentCancel_()` にそれぞれ連動追加
+- **スプレッドシート**: ID=`1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc` シート名=`支払い管理`
 
 ## 2026-04-04 修正履歴
 

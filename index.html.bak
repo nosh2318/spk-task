@@ -2071,7 +2071,19 @@ function SquareInvoiceWidget(){
     try{
       const res=await fetch(SQUARE_SHEET_URL);
       if(!res.ok)throw new Error("HTTP "+res.status);
-      setInvoices(parseCSV(await res.text()));setError(null);
+      const parsed=parseCSV(await res.text());
+      // 未払い予約のlend_dateをSupabaseから取得
+      const unpaidIds=parsed.filter(r=>r.status.includes("未払")&&r.resId).map(r=>r.resId);
+      if(unpaidIds.length>0&&sb){
+        try{
+          const{data:resData}=await sb.from("reservations").select("id,lend_date").in("id",unpaidIds);
+          if(resData){
+            const ldMap={};resData.forEach(r=>{ldMap[r.id]=r.lend_date;});
+            parsed.forEach(r=>{if(ldMap[r.resId])r._lendDate=ldMap[r.resId];});
+          }
+        }catch(e2){console.warn("[Square] lend_date fetch:",e2.message);}
+      }
+      setInvoices(parsed);setError(null);
     }catch(e){console.error("[Square]",e);setError(e.message);}
     finally{setLoading(false);}
   },[parseCSV]);
@@ -2144,13 +2156,10 @@ function SquareInvoiceWidget(){
                   daysLeft=Math.ceil((dep-new Date(now.getFullYear(),now.getMonth(),now.getDate()))/(86400000));
                 }
                 // resIdからreservationsのlend_dateも試す（品目に日付がない場合用）
-                if(daysLeft===null&&r.resId){
-                  const rv=data.find(d=>d.id===r.resId);
-                  if(rv&&rv.lend_date){
-                    const ld=new Date(rv.lend_date+"T00:00:00");
-                    const now2=new Date();
-                    daysLeft=Math.ceil((ld-new Date(now2.getFullYear(),now2.getMonth(),now2.getDate()))/(86400000));
-                  }
+                if(daysLeft===null&&r.resId&&r._lendDate){
+                  const ld=new Date(r._lendDate+"T00:00:00");
+                  const now2=new Date();
+                  daysLeft=Math.ceil((ld-new Date(now2.getFullYear(),now2.getMonth(),now2.getDate()))/(86400000));
                 }
                 const urgColor=daysLeft!==null&&daysLeft<=3?"#dc2626":daysLeft!==null&&daysLeft<=7?"#d97706":"#64748b";
                 const urgBg=daysLeft!==null&&daysLeft<=3?"#fee2e2":daysLeft!==null&&daysLeft<=7?"#fef3c7":"#f1f5f9";

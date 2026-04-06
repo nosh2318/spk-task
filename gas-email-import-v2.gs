@@ -198,9 +198,17 @@ function processMessage_(message, dryRun) {
   }
 
   // Check subject matches reservation notification
-  if (subject.indexOf(OTA_RESERVE_SUBJECTS[ota]) === -1) {
-    Logger.log('Skipping non-reservation email (' + ota + '): ' + subject);
-    return null;
+  // ★ 全角/半角スペース・前後の揺れに対応するため正規化して比較
+  var normalizedSubject = subject.replace(/[\s\u3000]+/g, ' ').trim();
+  var normalizedExpected = OTA_RESERVE_SUBJECTS[ota].replace(/[\s\u3000]+/g, ' ').trim();
+  if (normalizedSubject.indexOf(normalizedExpected) === -1) {
+    // さらにスペース完全除去でも試行（skyticket等のスペース揺れ対策）
+    var noSpaceSubject = subject.replace(/[\s\u3000]+/g, '');
+    var noSpaceExpected = OTA_RESERVE_SUBJECTS[ota].replace(/[\s\u3000]+/g, '');
+    if (noSpaceSubject.indexOf(noSpaceExpected) === -1) {
+      Logger.log('Skipping non-reservation email (' + ota + '): ' + subject);
+      return null;
+    }
   }
 
   // Parse reservation
