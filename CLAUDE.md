@@ -80,16 +80,38 @@
 TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 / 駐車場 / 会計 / 顧客 / 売上 / データ / 過去 / 免許証
 
 ## 現在のバージョン
-- **APP_VERSION**: v4.6.6
-- **sw.js CACHE_NAME**: `spk-v469`
-- **index.html CV**: `spk-v469`
+- **APP_VERSION**: v4.6.9
+- **sw.js CACHE_NAME**: `spk-v472`
+- **index.html CV**: `spk-v472`
 - **SRI/CSP**: 未適用（下記インシデント参照）
+
+## 2026-04-09 修正履歴
+
+### Square未決済Handoverアラート（v4.6.9）
+- **要望**: 発行済みSquare決済リンクが出発4日前でも未決済の場合、TOP Handoverに自動表示
+- **実装**: `MemoBox` に Square請求書CSV（支払い管理シート）から未払い行を取得する useEffect を追加
+- **フィルタ**: 店舗=札幌 & ステータス=⏳未払い & `reservations.lend_date` 優先（品目M/Dフォールバック）& daysLeft ≤ 4（当日・超過含む）
+- **表示位置**: 「本日のHandover」赤ブロックの直前に「💳 Square未決済 Handover（出発4日前アラート）」専用ブロック
+- **優先度色分け**: ≤1日=🚨赤 / それ以外=⏳オレンジ。各行にSquare支払いリンクボタン付き
+- **自動更新**: 2分間隔
+- **検証**: R0C04G1Z（シマダトシユキ、lend_date 2026-04-12、daysLeft=3）で対象化を確認
+- ビルド: `node build.js` → index.html / index2.html 再生成
 
 ## 2026-04-06 修正履歴
 
+### GAS SUPABASE_KEY 修正（根本原因）
+- **問題**: GASからのDB登録が全て失敗（DY00000000927, DY00000000928）
+- **原因**: GASスクリプトプロパティの`SUPABASE_KEY`がプレースホルダー文字列のまま（`<SERVICE_ROLE_KEYをSupabase Dashboardから取得して入力>`）
+- **修正**: Supabase Dashboard → Settings → API → service_roleキーをGASスクリプトプロパティに設定
+- **教訓**: `setupProperties()`のコード内プレースホルダーも正しいキーに書き換えておくこと（誤実行でキー上書き防止）
+
 ### DY00000000927 手動登録・配車
 - skyticket予約（カメダ マリコ、Aクラス、2026-08-01 10:00-17:00、¥19,100）
-- GAS自動取込が動かなかったため手動登録 → ヴェルファイア(7673)に配車済み
+- GAS自動取込が動かなかったため手動登録 → ヴェルファイア(VEL/7673)に配車済み
+
+### DY00000000928 手動登録・配車
+- skyticket予約（タカマツ ココネ、Sクラス、2026-04-18 11:00〜04-19 19:00、¥13,200、WEB事前決済・入金済み）
+- GAS SUPABASE_KEY不正により自動取込失敗 → 手動登録 → CX-5(CX5/8065)に配車済み
 
 ### skyticket予約取込失敗の根本修正（GAS 2件）
 - **問題**: DY00000000927がOTA自動登録GAS・札幌メール取込GASの両方で取り込まれなかった
