@@ -447,6 +447,8 @@ function parseJalan_(body) {
   if (pM) people += parseInt(pM[1], 10);
   var cM = peopleStr.match(/子供.*?(\d+)/);
   if (cM) people += parseInt(cM[1], 10);
+  // ★ 人数バリデーション: レンタカーで10名超はありえない（パースミス防止）
+  if (people > 10) { Logger.log('WARNING: people=' + people + ' は異常値。raw=' + peopleStr); people = 0; }
   // ★ 利用者への請求額（クーポン・ポイント差引後）を優先。なければ合計金額
   var billingPrice = parsePrice_(extractField_(body, '利用者への請求額'));
   var price = billingPrice > 0 ? billingPrice : parsePrice_(extractField_(body, '合計金額'));
@@ -531,6 +533,7 @@ function parseSkyticket_(body) {
   var people = 0;
   var pM = peopleStr.match(/大人\s*(\d+)/);
   if (pM) people += parseInt(pM[1], 10);
+  if (people > 10) { Logger.log('WARNING: people=' + people + ' は異常値。raw=' + peopleStr); people = 0; }
   var totalPrice = parsePrice_(extractField_(body, '合計料金'));
   var insurancePriceStr = extractField_(body, '免責補償料金');
   var insurancePrice = parsePrice_(insurancePriceStr);
@@ -604,6 +607,7 @@ function parseOfficial_(body) {
   if (adultMatch) people += parseInt(adultMatch[1], 10);
   var childMatch = body.match(/子ども:\s*(\d+)/);
   if (childMatch) people += parseInt(childMatch[1], 10);
+  if (people > 10) { Logger.log('WARNING: people=' + people + ' は異常値'); people = 0; }
   var classMatch = body.match(/ご予約車両クラス\s*\n\s*([ABCSFH])クラス/i);
   var vehicleClass = classMatch ? classMatch[1].toUpperCase() : '';
   var insurance = 'なし';
