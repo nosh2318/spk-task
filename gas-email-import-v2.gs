@@ -608,8 +608,39 @@ function parseOfficial_(body) {
   var childMatch = body.match(/子ども:\s*(\d+)/);
   if (childMatch) people += parseInt(childMatch[1], 10);
   if (people > 10) { Logger.log('WARNING: people=' + people + ' は異常値'); people = 0; }
-  var classMatch = body.match(/ご予約車両クラス\s*\n\s*([ABCSFH])クラス/i);
-  var vehicleClass = classMatch ? classMatch[1].toUpperCase() : '';
+  // ★ Tier1: 車種名→クラス判定（HP予約は車種指定が多い）
+  var rawClassLine = '';
+  var rawClassMatch = body.match(/ご予約車両クラス\s*\n\s*(.+)/);
+  if (rawClassMatch) rawClassLine = rawClassMatch[1].trim();
+  var vehicleClass = '';
+  // Tier1: 車種名マッチ（車種指定を先にチェック）
+  var MODEL_CLASS_MAP = [
+    // Aクラス
+    {re:/アルファード/,cls:'A'},{re:/ヴェルファイア|ベルファイア/,cls:'A'},
+    // Bクラス
+    {re:/ノア/,cls:'B'},{re:/デリカ/,cls:'B'},{re:/ステップワゴン/,cls:'B'},
+    // Cクラス
+    {re:/ロッキー/,cls:'C'},{re:/CX-?3/i,cls:'C'},
+    // Sクラス
+    {re:/ハリアー/,cls:'S'},{re:/CX-?5/i,cls:'S'},
+    // Fクラス
+    {re:/ルーミー/,cls:'F'},{re:/ソリオ/,cls:'F'},{re:/ヴィッツ/,cls:'F'},{re:/パッソ/,cls:'F'},{re:/マーチ/,cls:'F'},
+    // Hクラス
+    {re:/カローラ/,cls:'H'},{re:/アクセラ/,cls:'H'},{re:/プリウス(?!α)/,cls:'H'},{re:/インプレッサ/,cls:'H'}
+  ];
+  for (var mi = 0; mi < MODEL_CLASS_MAP.length; mi++) {
+    if (MODEL_CLASS_MAP[mi].re.test(rawClassLine)) {
+      vehicleClass = MODEL_CLASS_MAP[mi].cls;
+      Logger.log('[Official] Tier1 model match: "' + rawClassLine + '" → ' + vehicleClass);
+      break;
+    }
+  }
+  // Tier2: Xクラス パターン（Tier1不一致時のみ）
+  if (!vehicleClass) {
+    var classMatch = body.match(/ご予約車両クラス\s*\n\s*([ABCSFH])クラス/i);
+    if (classMatch) vehicleClass = classMatch[1].toUpperCase();
+  }
+  if (!vehicleClass) Logger.log('[Official] WARNING: クラス判定不能。raw=' + rawClassLine);
   var insurance = 'なし';
   if (/免責補償制度\(CDW\):\s*あり/.test(body)) insurance = '免責';
   if (/レンタカー安心パック:\s*あり/.test(body)) insurance = 'NOC';
