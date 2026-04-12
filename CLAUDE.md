@@ -80,12 +80,33 @@
 TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 / 駐車場 / 会計 / 顧客 / 売上 / データ / 過去 / 免許証
 
 ## 現在のバージョン
-- **APP_VERSION**: v4.6.9
-- **sw.js CACHE_NAME**: `spk-v472`
-- **index.html CV**: `spk-v472`
+- **APP_VERSION**: v4.6.11
+- **sw.js CACHE_NAME**: `spk-v473`
+- **index.html CV**: `spk-v473`
 - **SRI/CSP**: 未適用（下記インシデント参照）
 
+## 未使用テーブル
+- **vehicle_twins**: テーブルは存在するがデータ空。APP・GASのどちらでも未使用。配車は`fleet`テーブルで管理。手を入れる必要なし。
+
+## 2026-04-12 修正履歴
+
+### 場所CSV再取込時のタスク同期バグ修正
+- **問題**: スプレッドシートで場所を変更→場所CSV再取込しても、OPシートのタスクに反映されない
+- **原因**: `updatePlaces`がplacesテーブルのみ更新し、tasksテーブルのplaceは「既に値があればスキップ」していた
+- **修正**: 場所CSV取込時にtasksテーブルのDEL/COLのplaceも自動上書きするよう修正
+- **DB手動修正**: 8件の不一致タスクをスプレッドシートの値に修正済み（C260300013, R0C04G1Z, R0YNZ8NG, RC42461096461430490, R04OWZ6U, RC52461055442120662, R02XF89Q）
+- **場所データの3テーブル構成**:
+  - `reservations`: del_place/col_place（GAS取込時に書き込み）
+  - `places`: del_place/col_place（APP場所CSV取込用）
+  - `tasks`: place（OPシート表示用、タスク生成時にコピー）
+- **教訓**: placesテーブル更新時はtasksテーブルも必ず同期すること
+
 ## 2026-04-09 修正履歴
+
+### アルバイト月給対応（v4.6.10）
+- StaffManagerに月給モード追加（時給/日給/月給の3択）
+- `wageMode` 独立state管理（derived stateバグ修正済み）
+- 給与計算: アルバイト＋月給設定時は `monthlySalary` を使用
 
 ### Square未決済Handoverアラート（v4.6.9）
 - **要望**: 発行済みSquare決済リンクが出発4日前でも未決済の場合、TOP Handoverに自動表示
