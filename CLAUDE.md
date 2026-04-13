@@ -330,6 +330,17 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 | HANDYMAN交通情報 | 交通情報通知 | 2026/03/25 |
 | HANDYMAN自動返信メール | 自動返信（スプシ連携） | 2026/03/24 |
 
+## 関連プロジェクト
+
+### 車両損傷チェックAPP
+- **URL**: https://nosh2318.github.io/handyman-damage/
+- **リポジトリ**: `~/handyman-damage/` (nosh2318/handyman-damage)
+- **デプロイ**: GitHub Pages（mainプッシュ）
+- **DB**: 同一Supabase — `vehicle_twins` + `check_events` テーブル
+- **車両データ**: 札幌=`vehicles`テーブル（本APPと共有）→ `vehicle_twins`とJOINしてダメージ状態を統合
+- **バージョン**: v2.5.0
+- **構成**: Single HTML（3573行）+ sw.js + manifest.json + schema.sql
+
 ## 絶対ルール（CLAUDE.mdより）
 - **PU = 空港出発（緑）/ BD = ヤード出発（赤）** — 逆にしない
 - メンテナンス・別予約があるラインに配車しない
