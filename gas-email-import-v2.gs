@@ -395,6 +395,31 @@ function extractField_(body, label) {
   return '';
 }
 
+// --- 補償種類の統一判定 ---
+// 優先度: フル > NOC > 免責 > なし
+// 全OTA共通で使う。メール本文または補償フィールドの文字列を渡す
+function detectInsurance_(text) {
+  if (!text) return 'なし';
+  // フルカバー（最上位）
+  if (/フルカバー|フル補償|安心フル|あんしんフル/i.test(text)) return 'フル';
+  // NOC（免責+NOC補償）— 安心パック/NOC補償/ノンオペ
+  if (/安心パック|NOC|ノンオペレーション|ノンオペ/i.test(text)) {
+    // 「NOC補償: なし」「NOC: 未加入」のパターンを除外
+    if (/NOC[補償]*[：:\s]*(なし|未加入|無し|加入しない)/i.test(text)) {
+      // NOC未加入 — 免責のみかどうかを再チェック
+    } else {
+      return 'NOC';
+    }
+  }
+  // HP固有: レンタカー安心パック: あり
+  if (/レンタカー安心パック[：:\s]*あり/i.test(text)) return 'NOC';
+  // 免責補償
+  if (/免責補償制度\(CDW\)[：:\s]*あり/i.test(text)) return '免責';
+  if (/免責補償[：:\s]*あり|免責補償制度[：:\s]*あり|免責[：:\s]*加入|免責補償料/i.test(text)) return '免責';
+  if (/免責/.test(text) && !/免責[：:\s]*(なし|未加入|無し|加入しない|0円)/i.test(text)) return '免責';
+  return 'なし';
+}
+
 function parseDateTime_(str) {
   if (!str) return { date: '', time: '' };
   var m = str.match(/(\d{4})年(\d{1,2})月(\d{1,2})日.*?(\d{1,2})[時:](\d{2})/);
@@ -440,7 +465,7 @@ function parseJalan_(body) {
     if (!rawClass) rawClass = plan;
   }
   var insuranceStr = extractField_(body, '補償（任意加入）');
-  var insurance = insuranceStr.indexOf('免責') !== -1 ? '免責' : 'なし';
+  var insurance = detectInsurance_(insuranceStr);
   var peopleStr = extractField_(body, '乗車人数');
   var people = 0;
   var pM = peopleStr.match(/大人\s*(\d+)/);
@@ -496,7 +521,7 @@ function parseRakuten_(body) {
     }
   }
   var optionsStr = extractField_(body, '・オプション/車両の特徴');
-  var insurance = optionsStr.indexOf('免責') !== -1 ? '免責' : 'なし';
+  var insurance = detectInsurance_(optionsStr);
   var price = parsePrice_(extractField_(body, '（合計）'));
   var optB = 0, optC = 0, optJ = 0;
   var bMatch = optionsStr.match(/ベビーシート\s*(\d*)/);
@@ -537,7 +562,8 @@ function parseSkyticket_(body) {
   var totalPrice = parsePrice_(extractField_(body, '合計料金'));
   var insurancePriceStr = extractField_(body, '免責補償料金');
   var insurancePrice = parsePrice_(insurancePriceStr);
-  var insurance = insurancePrice > 0 ? '免責' : 'なし';
+  var insurance = detectInsurance_(body);
+  if (insurance === 'なし' && insurancePrice > 0) insurance = '免責';
   // シート検出（オプション+本文全体から）
   var optB = 0, optC = 0, optJ = 0;
   var bMatch = body.match(/ベビーシート[^\d]*(\d*)/); if (bMatch) optB = parseInt(bMatch[1], 10) || 1;
@@ -569,7 +595,7 @@ function parseAirtrip_(body) {
   var vehicleClass = extractVehicleClass_(rawClass);
   var price = parsePrice_(extractField_(body, '合計金額'));
   var insuranceStr = extractField_(body, '補償オプション');
-  var insurance = (insuranceStr && insuranceStr.indexOf('免責') !== -1) ? '免責' : 'なし';
+  var insurance = detectInsurance_(insuranceStr || body);
   var arrFlight = extractField_(body, '到着便');
   var depFlight = extractField_(body, '出発便');
   var flight = [arrFlight, depFlight].filter(Boolean).join(' / ');
@@ -641,9 +667,7 @@ function parseOfficial_(body) {
     if (classMatch) vehicleClass = classMatch[1].toUpperCase();
   }
   if (!vehicleClass) Logger.log('[Official] WARNING: クラス判定不能。raw=' + rawClassLine);
-  var insurance = 'なし';
-  if (/免責補償制度\(CDW\):\s*あり/.test(body)) insurance = '免責';
-  if (/レンタカー安心パック:\s*あり/.test(body)) insurance = 'NOC';
+  var insurance = detectInsurance_(body);
   var optB = 0, optC = 0, optJ = 0;
   var cbMatch = body.match(/チャイルドシート\(チャイルド\):\s*(\d+)\s*台/);
   if (cbMatch) optC = parseInt(cbMatch[1], 10);
