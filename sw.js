@@ -1,4 +1,4 @@
-var CACHE_NAME = 'spk-v473';
+var CACHE_NAME = 'spk-v474';
 var URLS = ['/', '/index.html', '/index2.html', '/app.js'];
 var CDN_CACHE = 'spk-cdn-v1';
 var CDN_HOSTS = ['cdnjs.cloudflare.com', 'cdn.jsdelivr.net'];
