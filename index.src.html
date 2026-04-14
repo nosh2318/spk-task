@@ -158,7 +158,7 @@ const DB = {
     }catch(e){console.error("[updateResField]",e);}
   },
   _toDbRes(r){return{id:r.id,ota:r.ota,name:r.name,lend_date:r.lendDate,lend_time:r.lendTime,return_date:r.returnDate,return_time:r.returnTime,people:r.people,vehicle:r.vehicle,insurance:r.insurance,tel:r.tel,mail:r.mail,price:r.price,status:r.status,visit_type:r.visitType,return_type:r.returnType,del_time:r.delTime||"",del_place:r.delPlace||"",col_time:r.colTime||"",col_place:r.colPlace||"",flight:r.flight||"",opt_b:+(r.optB||0),opt_c:+(r.optC||0),opt_j:+(r.optJ||0),opt_usb:!!r.optUSB,opt_parasol:!!r.optParasol};},
-  _fromDbRes(d){const st=d.status;const normSt=(st==="キャンセル"||st==="cancel")?"cancelled":(st==="確定"||!st)?"confirmed":st;const otaNorm=d.ota==="A"?"O":d.ota;return{id:d.id,ota:otaNorm,name:d.name,lendDate:norm(d.lend_date),lendTime:d.lend_time,returnDate:norm(d.return_date),returnTime:d.return_time,people:d.people,vehicle:d.vehicle,insurance:d.insurance,tel:d.tel,mail:d.mail,price:Number(d.price)||0,status:normSt,visitType:d.visit_type,returnType:d.return_type,delTime:d.del_time,delPlace:d.del_place,colTime:d.col_time,colPlace:d.col_place,flight:d.flight,optB:+(d.opt_b||0),optC:+(d.opt_c||0),optJ:+(d.opt_j||0),optUSB:d.opt_usb,optParasol:d.opt_parasol,prefecture:d.prefecture||""};},
+  _fromDbRes(d){const st=d.status;const normSt=(st==="キャンセル"||st==="cancel")?"cancelled":(st==="確定"||!st)?"confirmed":st;const otaNorm=d.ota==="A"?"O":d.ota;return{id:d.id,ota:otaNorm,name:d.name,lendDate:norm(d.lend_date),lendTime:d.lend_time,returnDate:norm(d.return_date),returnTime:d.return_time,people:d.people,vehicle:d.vehicle,insurance:d.insurance,tel:d.tel,mail:d.mail,price:Number(d.price)||0,status:normSt,visitType:d.visit_type,returnType:d.return_type,delTime:d.del_time,delPlace:d.del_place,colTime:d.col_time,colPlace:d.col_place,flight:d.flight,optB:+(d.opt_b||0),optC:+(d.opt_c||0),optJ:+(d.opt_j||0),optUSB:d.opt_usb,optParasol:d.opt_parasol,prefecture:d.prefecture||"",createdAt:d.created_at||""};},
   // --- 配車（LS併用で車両変更保護） ---
   _fleetLsKey:"spk_fleet",
   _fleetLsSave(f){try{localStorage.setItem(DB._fleetLsKey,JSON.stringify(f));}catch(e){}},
@@ -2205,6 +2205,127 @@ function SquareInvoiceWidget(){
           <button onClick={e=>{e.stopPropagation();fetchData();}} style={{fontSize:9,fontWeight:600,padding:"3px 8px",borderRadius:6,background:"#f1f5f9",color:"#475569",border:"1px solid #e2e8f0",cursor:"pointer"}}>🔄 更新</button>
           <a href="https://docs.google.com/spreadsheets/d/1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc/edit?gid=1214317414#gid=1214317414" target="_blank" rel="noopener" style={{fontSize:9,color:"#3b82f6",textDecoration:"underline"}}>📊 スプレッドシート</a>
         </div>
+      </div>
+    </div>}
+  </div>;
+}
+
+/* ==========================================
+   リードタイム パイプライン
+   ========================================== */
+function LeadTimePipeline({data,today}){
+  const[open,setOpen]=React.useState(false);
+  // 季節別目標稼働率(%)
+  const SEASONAL_TARGET={1:35,2:45,3:60,4:55,5:65,6:30,7:75,8:80,9:50,10:40,11:20,12:30};
+  const CARS=9;
+  const AVG_STAY=2.2;
+
+  const pipe=React.useMemo(()=>{
+    const now=new Date(today);
+    const confirmed=data.filter(r=>r.status==="confirmed"&&r.lendDate);
+    // 直近7日の予約ペース
+    const d7=new Date(now);d7.setDate(d7.getDate()-7);
+    const recent7=confirmed.filter(r=>{
+      if(!r.createdAt)return false;
+      const c=new Date(r.createdAt);
+      return c>=d7&&c<=now;
+    });
+    const pace7=recent7.length/7;
+    // 月別パイプライン (今月〜+5ヶ月)
+    const months=[];
+    for(let i=0;i<6;i++){
+      const md=new Date(now.getFullYear(),now.getMonth()+i,1);
+      const y=md.getFullYear(),m=md.getMonth()+1;
+      const mKey=y+"-"+String(m).padStart(2,"0");
+      const target=SEASONAL_TARGET[m]||50;
+      const daysInMonth=new Date(y,m,0).getDate();
+      const required=Math.ceil((CARS*daysInMonth*(target/100))/AVG_STAY);
+      const booked=confirmed.filter(r=>{
+        const ld=r.lendDate;
+        return ld&&ld.startsWith(mKey);
+      }).length;
+      const fill=required>0?Math.min(Math.round((booked/required)*100),100):0;
+      // リードタイム計算
+      const monthBookings=confirmed.filter(r=>{
+        const ld=r.lendDate;
+        return ld&&ld.startsWith(mKey)&&r.createdAt;
+      });
+      const lts=monthBookings.map(r=>{
+        const cr=new Date(r.createdAt);
+        const ld=new Date(r.lendDate);
+        return Math.round((ld-cr)/(1000*60*60*24));
+      }).filter(v=>v>=0);
+      const avgLt=lts.length?Math.round(lts.reduce((a,b)=>a+b,0)/lts.length):null;
+      // 残日数
+      const firstOfMonth=new Date(y,m-1,1);
+      const daysUntil=Math.round((firstOfMonth-now)/(1000*60*60*24));
+      // ベンチマーク
+      let bench=0;
+      if(daysUntil>60)bench=30;
+      else if(daysUntil>30)bench=70;
+      else if(daysUntil>14)bench=85;
+      else bench=100;
+      const mLabel=m+"月";
+      const status=fill>=bench?"ok":fill>=bench*0.6?"warn":"alert";
+      months.push({mKey,mLabel,m,target,required,booked,fill,avgLt,daysUntil,bench,status});
+    }
+    return{pace7,months};
+  },[data,today]);
+
+  const stColor={ok:"#059669",warn:"#d97706",alert:"#dc2626"};
+  const stBg={ok:"rgba(5,150,105,.08)",warn:"rgba(217,119,6,.08)",alert:"rgba(220,38,38,.08)"};
+  const stBorder={ok:"rgba(5,150,105,.25)",warn:"rgba(217,119,6,.25)",alert:"rgba(220,38,38,.25)"};
+
+  // ヘッダー: 今月と来月のステータス
+  const cur=pipe.months[0];
+  const nxt=pipe.months[1];
+
+  return <div style={{marginBottom:8}}>
+    <div onClick={()=>setOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px",borderRadius:12,background:"#f0fdf4",border:"1px solid #bbf7d0",cursor:"pointer",userSelect:"none",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
+      <span style={{fontSize:16}}>📊</span>
+      <span style={{fontSize:12,fontWeight:800,color:"#1e293b"}}>リードタイム パイプライン</span>
+      <span style={{fontSize:10,color:"#64748b",marginLeft:4}}>予約ペース {pipe.pace7.toFixed(1)}件/日</span>
+      {cur&&<span style={{marginLeft:"auto",display:"inline-flex",gap:4,alignItems:"center"}}>
+        <span style={{fontSize:10,fontWeight:700,color:stColor[cur.status]}}>{cur.mLabel} {cur.fill}%</span>
+        {nxt&&<span style={{fontSize:10,fontWeight:700,color:stColor[nxt.status]}}> | {nxt.mLabel} {nxt.fill}%</span>}
+      </span>}
+      <span style={{fontSize:11,color:"#94a3b8",fontWeight:700,marginLeft:cur?4:"auto"}}>{open?"▲":"▼"}</span>
+    </div>
+    {open&&<div style={{padding:"10px 14px",background:"#fff",border:"1px solid #e2e8f0",borderTop:"none",borderRadius:"0 0 12px 12px"}}>
+      {/* 予約ペース */}
+      <div style={{display:"flex",gap:12,marginBottom:10,flexWrap:"wrap"}}>
+        <div style={{padding:"6px 10px",borderRadius:8,background:"#f8fafc",border:"1px solid #e2e8f0",flex:1,minWidth:120}}>
+          <div style={{fontSize:9,color:"#94a3b8",fontWeight:700}}>過去7日ペース</div>
+          <div style={{fontSize:18,fontWeight:900,color:"#1e293b"}}>{pipe.pace7.toFixed(1)}<span style={{fontSize:10,color:"#94a3b8"}}> 件/日</span></div>
+        </div>
+        <div style={{padding:"6px 10px",borderRadius:8,background:"#f8fafc",border:"1px solid #e2e8f0",flex:1,minWidth:120}}>
+          <div style={{fontSize:9,color:"#94a3b8",fontWeight:700}}>確定予約数</div>
+          <div style={{fontSize:18,fontWeight:900,color:"#1e293b"}}>{data.filter(r=>r.status==="confirmed").length}<span style={{fontSize:10,color:"#94a3b8"}}> 件</span></div>
+        </div>
+      </div>
+      {/* 月別パイプライン */}
+      <div style={{fontSize:10,fontWeight:800,color:"#64748b",marginBottom:6}}>月別パイプライン充足率</div>
+      {pipe.months.map(mo=>{
+        const barW=Math.max(mo.fill,2);
+        return <div key={mo.mKey} style={{display:"flex",alignItems:"center",gap:6,marginBottom:5,padding:"6px 8px",borderRadius:8,background:stBg[mo.status],border:"1px solid "+stBorder[mo.status]}}>
+          <div style={{width:32,fontSize:11,fontWeight:900,color:stColor[mo.status]}}>{mo.mLabel}</div>
+          <div style={{flex:1,position:"relative"}}>
+            <div style={{height:14,borderRadius:4,background:"rgba(0,0,0,.06)",position:"relative",overflow:"hidden"}}>
+              <div style={{height:"100%",width:barW+"%",borderRadius:4,background:stColor[mo.status],transition:"width .3s"}}/>
+              {/* ベンチマークライン */}
+              <div style={{position:"absolute",top:0,left:mo.bench+"%",width:1,height:"100%",background:"rgba(0,0,0,.3)"}}/>
+            </div>
+          </div>
+          <div style={{width:55,textAlign:"right"}}>
+            <span style={{fontSize:11,fontWeight:900,color:stColor[mo.status]}}>{mo.fill}%</span>
+            <span style={{fontSize:8,color:"#94a3b8"}}>/{mo.bench}%</span>
+          </div>
+          <div style={{width:50,textAlign:"right",fontSize:9,color:"#64748b"}}>{mo.booked}/{mo.required}件</div>
+          <div style={{width:36,textAlign:"right",fontSize:9,color:"#94a3b8"}}>{mo.avgLt!==null?"LT"+mo.avgLt+"d":"—"}</div>
+        </div>;
+      })}
+      <div style={{fontSize:8,color:"#94a3b8",marginTop:6}}>
+        目標稼働率: 季節別設定 | ベンチ: 2M前=30% / 1M前=70% / 2W前=85% | 黒線=ベンチマーク
       </div>
     </div>}
   </div>;
@@ -8967,6 +9088,7 @@ function App(){
                 </div>;
               })()}
               <MemoBox today={today}/>
+              <LeadTimePipeline data={data} today={today}/>
               <SquareInvoiceWidget/>
               <JalanPaymentWidget data={data} jalanPay={jalanPay} onGoJalan={()=>setTab("jalanpay")}/>
               {/* ===== メール問い合わせ ===== */}
