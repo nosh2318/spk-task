@@ -2212,65 +2212,84 @@ function SquareInvoiceWidget(){
    リードタイム Widget（当月予約率 = 当月予約/当月返却）
    ========================================== */
 function LeadTimeWidget({data}){
+  // 信頼できるデータ起点月（CSV一括取込以前のデータは除外）
+  const RELIABLE_FROM="2026-04";
+  const[selYM,setSelYM]=useState(()=>{const n=new Date();return n.getFullYear()+"-"+String(n.getMonth()+1).padStart(2,"0");});
+  const[open,setOpen]=useState(false);
+  // 利用可能な月リストを生成（RELIABLE_FROM〜当月）
+  const months=useMemo(()=>{
+    const now=new Date();const curYM=now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0");
+    const list=[];
+    let[y,m]=RELIABLE_FROM.split("-").map(Number);
+    const[cy,cm]=[now.getFullYear(),now.getMonth()+1];
+    while(y<cy||(y===cy&&m<=cm)){
+      list.push(y+"-"+String(m).padStart(2,"0"));
+      m++;if(m>12){m=1;y++;}
+    }
+    return list;
+  },[]);
   const stats=useMemo(()=>{
-    if(!data||data.length===0)return null;
-    const now=new Date();
-    const nowYM=now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0");
+    if(!data||data.length===0||!selYM)return null;
     const active=data.filter(r=>r.status!=="cancelled");
-    // ★ 起点 = 当月返却の全予約（returnDate基準 = 会計基準）
-    const tmRet=active.filter(r=>r.returnDate&&r.returnDate.slice(0,7)===nowYM);
-    const tmTotal=tmRet.length;
-    if(tmTotal===0)return null;
-    // 当月返却のうち、当月に予約発生
-    const tmSame=tmRet.filter(r=>r.createdAt&&r.createdAt.slice(0,7)===nowYM);
-    const tmSameCount=tmSame.length;
-    const tmSamePct=Math.round(tmSameCount/tmTotal*100);
-    // OTA別 当月予約率（当月返却ベース）
+    const ret=active.filter(r=>r.returnDate&&r.returnDate.slice(0,7)===selYM);
+    const total=ret.length;
+    if(total===0)return null;
+    const same=ret.filter(r=>r.createdAt&&r.createdAt.slice(0,7)===selYM);
+    const sameCount=same.length;
+    const samePct=Math.round(sameCount/total*100);
     const otaMap={};
-    tmRet.forEach(r=>{const k=r.ota||"?";if(!otaMap[k])otaMap[k]=[];otaMap[k].push(r);});
+    ret.forEach(r=>{const k=r.ota||"?";if(!otaMap[k])otaMap[k]=[];otaMap[k].push(r);});
     const byOta=Object.entries(otaMap).map(([k,arr])=>{
-      const same=arr.filter(r=>r.createdAt&&r.createdAt.slice(0,7)===nowYM);
-      return{ota:k,total:arr.length,same:same.length,pct:arr.length>0?Math.round(same.length/arr.length*100):0};
+      const s=arr.filter(r=>r.createdAt&&r.createdAt.slice(0,7)===selYM);
+      return{ota:k,total:arr.length,same:s.length,pct:arr.length>0?Math.round(s.length/arr.length*100):0};
     }).sort((a,b)=>b.total-a.total);
-    // 直近の新規予約（当月返却 & 当月created、created_at降順）
-    const last10=[...tmSame].sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||"")).slice(0,10).map(r=>({
+    const last10=[...same].sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||"")).slice(0,10).map(r=>({
       id:r.id,ota:r.ota,name:r.name,lendDate:r.lendDate,returnDate:r.returnDate,createdAt:(r.createdAt||"").slice(0,10)
     }));
-    return{tmTotal,tmSameCount,tmSamePct,byOta,last10,nowYM};
-  },[data]);
-  const[open,setOpen]=useState(false);
+    return{total,sameCount,samePct,byOta,last10};
+  },[data,selYM]);
   if(!stats)return null;
-  const moLabel=stats.nowYM.split("-")[1].replace(/^0/,"")+"月";
+  const moLabel=parseInt(selYM.split("-")[1])+"月";
+  const now=new Date();const curYM=now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0");
+  const isCur=selYM===curYM;
+  const prevYM=months[months.indexOf(selYM)-1];
+  const nextYM=months[months.indexOf(selYM)+1];
   return <div style={{marginBottom:8}}>
-    <div onClick={()=>setOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px",borderRadius:12,background:"linear-gradient(135deg,#fffbeb,#fef3c7)",border:"1px solid #fde68a",cursor:"pointer",userSelect:"none",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
+    <div onClick={()=>setOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px",borderRadius:12,background:isCur?"linear-gradient(135deg,#fffbeb,#fef3c7)":"#f8fafc",border:"1px solid "+(isCur?"#fde68a":"#e2e8f0"),cursor:"pointer",userSelect:"none",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
       <span style={{fontSize:16}}>📊</span>
       <div style={{flex:1}}>
-        <div style={{fontSize:11,color:"#92400e",fontWeight:600}}>{moLabel} 返却 {stats.tmTotal}件</div>
+        <div style={{fontSize:11,color:isCur?"#92400e":"#64748b",fontWeight:600}}>{moLabel} 返却 {stats.total}件</div>
         <div style={{display:"flex",alignItems:"baseline",gap:6,flexWrap:"wrap"}}>
           <span style={{fontSize:11,color:"#64748b"}}>当月予約率</span>
-          <span style={{fontSize:24,fontWeight:900,color:"#d97706"}}>{stats.tmSamePct}<span style={{fontSize:12,fontWeight:600}}>%</span></span>
-          <span style={{fontSize:10,color:"#94a3b8"}}>({stats.tmSameCount}/{stats.tmTotal}件)</span>
+          <span style={{fontSize:24,fontWeight:900,color:isCur?"#d97706":"#475569"}}>{stats.samePct}<span style={{fontSize:12,fontWeight:600}}>%</span></span>
+          <span style={{fontSize:10,color:"#94a3b8"}}>({stats.sameCount}/{stats.total}件)</span>
         </div>
       </div>
       <span style={{fontSize:10,color:"#94a3b8",fontWeight:700}}>{open?"▲":"▼"}</span>
     </div>
     {open&&<div style={{marginTop:4,padding:"12px 14px",borderRadius:12,background:"#fff",border:"1px solid #e2e8f0",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
+      {/* 月切替 */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:12,marginBottom:12}}>
+        <button onClick={e=>{e.stopPropagation();if(prevYM)setSelYM(prevYM);}} disabled={!prevYM} style={{padding:"4px 10px",borderRadius:6,border:"1px solid #d1d5db",background:prevYM?"#fff":"#f1f5f9",color:prevYM?"#374151":"#d1d5db",fontSize:11,fontWeight:700,cursor:prevYM?"pointer":"default"}}>◀</button>
+        {months.map(ym=><button key={ym} onClick={e=>{e.stopPropagation();setSelYM(ym);}} style={{padding:"4px 8px",borderRadius:6,border:selYM===ym?"2px solid #d97706":"1px solid #e2e8f0",background:selYM===ym?"#fffbeb":"#fff",color:selYM===ym?"#92400e":"#64748b",fontSize:10,fontWeight:700,cursor:"pointer"}}>{parseInt(ym.split("-")[1])}月</button>)}
+        <button onClick={e=>{e.stopPropagation();if(nextYM)setSelYM(nextYM);}} disabled={!nextYM} style={{padding:"4px 10px",borderRadius:6,border:"1px solid #d1d5db",background:nextYM?"#fff":"#f1f5f9",color:nextYM?"#374151":"#d1d5db",fontSize:11,fontWeight:700,cursor:nextYM?"pointer":"default"}}>▶</button>
+      </div>
       <div style={{fontSize:11,fontWeight:700,color:"#64748b",marginBottom:6}}>OTA別（{moLabel}返却）</div>
       <div style={{display:"flex",flexDirection:"column",gap:4,marginBottom:12}}>
         {stats.byOta.map(o=>{
           const ota=OTA[o.ota];
-          const barW=stats.tmTotal>0?Math.round(o.total/stats.tmTotal*100):0;
+          const barW=stats.total>0?Math.round(o.total/stats.total*100):0;
           return <div key={o.ota} style={{display:"flex",alignItems:"center",gap:6}}>
             <div style={{width:28,textAlign:"center"}}>{ota?<span style={{background:ota.bg,color:ota.c,padding:"1px 5px",borderRadius:4,fontSize:9,fontWeight:700,border:"1px solid "+ota.c+"33"}}>{ota.key}</span>:<span style={{fontSize:9,color:"#94a3b8"}}>{o.ota}</span>}</div>
             <div style={{flex:1,height:14,background:"#f1f5f9",borderRadius:4,overflow:"hidden"}}>
-              <div style={{height:"100%",width:barW+"%",background:"#f59e0b",borderRadius:4,transition:"width .3s"}}/>
+              <div style={{height:"100%",width:barW+"%",background:isCur?"#f59e0b":"#94a3b8",borderRadius:4,transition:"width .3s"}}/>
             </div>
-            <div style={{width:100,textAlign:"right",fontSize:10}}><span style={{fontWeight:700,color:"#d97706"}}>{o.pct}%</span> <span style={{color:"#94a3b8"}}>({o.same}/{o.total}件)</span></div>
+            <div style={{width:100,textAlign:"right",fontSize:10}}><span style={{fontWeight:700,color:isCur?"#d97706":"#475569"}}>{o.pct}%</span> <span style={{color:"#94a3b8"}}>({o.same}/{o.total}件)</span></div>
           </div>;
         })}
       </div>
       {stats.last10.length>0&&<>
-        <div style={{fontSize:11,fontWeight:700,color:"#64748b",marginBottom:4}}>直近の当月予約（{moLabel}返却）</div>
+        <div style={{fontSize:11,fontWeight:700,color:"#64748b",marginBottom:4}}>当月予約（{moLabel}返却）</div>
         <div style={{display:"flex",flexDirection:"column",gap:2}}>
           {stats.last10.map((r,i)=>{
             const ota=OTA[r.ota];
