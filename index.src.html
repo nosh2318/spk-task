@@ -2219,11 +2219,43 @@ function SquareInvoiceWidget(){
 /* ==========================================
    リードタイム Widget（当月予約率 = 当月予約/当月返却）
    ========================================== */
-function LeadTimeWidget({data}){
+function LeadTimeWidget({data,vehicles,fleet,maintenance}){
   // 信頼できるデータ起点月（CSV一括取込以前のデータは除外）
   const RELIABLE_FROM="2026-04";
   const[selYM,setSelYM]=useState(()=>{const n=new Date();return n.getFullYear()+"-"+String(n.getMonth()+1).padStart(2,"0");});
   const[open,setOpen]=useState(false);
+  // ★ 月別稼働率（配車表と同じロジック）
+  const[kpiFlags,setKpiFlags]=useState({});
+  useEffect(()=>{
+    if(!sb||!selYM)return;
+    (async()=>{
+      const{data:rows}=await sb.from("vehicle_monthly_kpi").select("*").eq("year_month",selYM);
+      const f={};(rows||[]).forEach(r=>f[r.vehicle_code]=r.active);
+      setKpiFlags(f);
+    })();
+  },[selYM]);
+  const utilStats=useMemo(()=>{
+    if(!vehicles||!vehicles.length||!data||!selYM)return null;
+    const isKpiActive=(code)=>kpiFlags[code]!==undefined?kpiFlags[code]:(vehicles.find(v=>v.code===code)?.active!==false);
+    const[y,mo]=selYM.split("-").map(Number);
+    const dim=new Date(y,mo,0).getDate();
+    const ms=new Date(y,mo-1,1),me=new Date(y,mo-1,dim);
+    let totalDays=0,activeCount=0;
+    const active=data.filter(r=>r.status!=="cancelled");
+    vehicles.forEach(v=>{
+      if(!isKpiActive(v.code))return;
+      activeCount++;
+      const rentalDays=new Set();
+      active.forEach(r=>{if(fleet[r.id]!==v.code)return;
+        const ld=new Date(norm(r.lendDate)+"T00:00:00"),rd=new Date(norm(r.returnDate)+"T00:00:00");
+        const s=ld>ms?ld:ms;const e=rd<me?rd:me;
+        for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1)){rentalDays.add(toLD(d));}
+      });
+      totalDays+=rentalDays.size;
+    });
+    const maxDays=activeCount*dim;
+    return{totalDays,activeCount,maxDays,pct:maxDays>0?Math.round(totalDays/maxDays*100):0,dim};
+  },[data,vehicles,fleet,kpiFlags,selYM]);
   // 利用可能な月リストを生成（RELIABLE_FROM〜当月）
   const months=useMemo(()=>{
     const now=new Date();const curYM=now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0");
@@ -2271,6 +2303,11 @@ function LeadTimeWidget({data}){
           <span style={{fontSize:11,color:"#64748b"}}>当月予約率</span>
           <span style={{fontSize:24,fontWeight:900,color:isCur?"#d97706":"#475569"}}>{stats.samePct}<span style={{fontSize:12,fontWeight:600}}>%</span></span>
           <span style={{fontSize:10,color:"#94a3b8"}}>({stats.sameCount}/{stats.total}件)</span>
+          {utilStats&&<>
+            <span style={{fontSize:11,color:"#64748b",marginLeft:8}}>稼働率</span>
+            <span style={{fontSize:24,fontWeight:900,color:isCur?"#059669":"#475569"}}>{utilStats.pct}<span style={{fontSize:12,fontWeight:600}}>%</span></span>
+            <span style={{fontSize:10,color:"#94a3b8"}}>({utilStats.totalDays}/{utilStats.maxDays}日・{utilStats.activeCount}台)</span>
+          </>}
         </div>
       </div>
       <span style={{fontSize:10,color:"#94a3b8",fontWeight:700}}>{open?"▲":"▼"}</span>
@@ -9104,7 +9141,7 @@ function App(){
                 </div>;
               })()}
               <MemoBox today={today}/>
-              <LeadTimeWidget data={data}/>
+              <LeadTimeWidget data={data} vehicles={vehicles} fleet={fleet} maintenance={maintenance}/>
               {/* ===== 決済（縦並び）+ 外部リンク（2列） ===== */}
               <SquareInvoiceWidget/>
               <JalanPaymentWidget data={data} jalanPay={jalanPay} onGoJalan={()=>setTab("jalanpay")}/>
