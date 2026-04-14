@@ -274,6 +274,8 @@ function processMessage_(message, dryRun) {
       if (!existingRow.flight && reservation.flight) patch.flight = reservation.flight;
       if (!existingRow.people && +(reservation.people||0) > 0) patch.people = reservation.people;
       if (!existingRow.price && +(reservation.price||0) > 0) patch.price = reservation.price;
+      // ★ 補償種類: 空・なしの場合はメールの判定結果で補完
+      if ((!existingRow.insurance || existingRow.insurance === 'なし') && reservation.insurance && reservation.insurance !== 'なし') patch.insurance = reservation.insurance;
       if (Object.keys(patch).length > 0) {
         supabaseUpdate_('reservations', 'id=eq.' + encodeURIComponent(reservation.id), patch);
         Logger.log('Patched existing reservation: ' + reservation.id + ' fields=' + Object.keys(patch).join(','));
