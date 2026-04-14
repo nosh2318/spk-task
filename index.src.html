@@ -3731,6 +3731,25 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
   const scrollRef=useRef(null);const[tooltip,setTooltip]=useState(null);const[viewMode,setViewMode]=useState("month");const[baseDate,setBaseDate]=useState(today);const[collapsed,setCollapsed]=useState(()=>window.innerWidth<=768?{unassignedAlert:true}:{});const[showMaintForm,setShowMaintForm]=useState(null);const[showResForm,setShowResForm]=useState(null);
   const[searchQuery,setSearchQuery]=useState("");const[searchResult,setSearchResult]=useState(null);const searchInputRef=useRef(null);const vehicleRowRefs=useRef({});
   const[dragInfo,setDragInfo]=useState(null);const[dropTarget,setDropTarget]=useState(null);
+  // ★ 月別稼働フラグ
+  const[kpiFlags,setKpiFlags]=useState({});// {vehicleCode: true/false}
+  const kpiYM=useMemo(()=>{const d=new Date(baseDate+"T00:00:00");return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");},[baseDate]);
+  useEffect(()=>{
+    if(!sb)return;
+    (async()=>{
+      const{data:rows}=await sb.from("vehicle_monthly_kpi").select("*").eq("year_month",kpiYM);
+      const f={};(rows||[]).forEach(r=>f[r.vehicle_code]=r.active);
+      setKpiFlags(f);
+    })();
+  },[kpiYM]);
+  const toggleKpi=(code)=>{
+    const cur=kpiFlags[code]!==undefined?kpiFlags[code]:(vehicles.find(v=>v.code===code)?.active!==false);
+    const next=!cur;
+    setKpiFlags(prev=>({...prev,[code]:next}));
+    if(sb)sb.from("vehicle_monthly_kpi").upsert({vehicle_code:code,year_month:kpiYM,active:next},{onConflict:"vehicle_code,year_month"}).then(({error})=>{if(error)console.error("[KPI]",error.message);});
+  };
+  const isKpiActive=(code)=>kpiFlags[code]!==undefined?kpiFlags[code]:(vehicles.find(v=>v.code===code)?.active!==false);
+  const kpiCount=vehicles.filter(v=>isKpiActive(v.code)).length;
   const WK=["日","月","火","水","木","金","土"];
 
   const dates=useMemo(()=>{const dt=new Date(baseDate+"T00:00:00");if(viewMode==="month"){const y=dt.getFullYear(),m=dt.getMonth();const days=new Date(y,m+1,0).getDate();return Array.from({length:days},(_,i)=>toLD(new Date(y,m,i+1)));}else if(viewMode==="week"){const d=new Date(baseDate+"T00:00:00");d.setDate(d.getDate()-d.getDay());return Array.from({length:7},(_,i)=>dOff(toLD(d),i));}else return[baseDate];},[baseDate,viewMode]);
@@ -3863,6 +3882,7 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
           <span style={{background:"#dbeafe",color:"#1e40af",padding:"1px 6px",borderRadius:10,whiteSpace:"nowrap"}}>🚗出発 {monthSummary.dep}</span>
           <span style={{background:"#fef3c7",color:"#92400e",padding:"1px 6px",borderRadius:10,whiteSpace:"nowrap"}}>🔙返却 {monthSummary.ret}</span>
           <span style={{background:"#d1fae5",color:"#065f46",padding:"1px 6px",borderRadius:10,whiteSpace:"nowrap"}}>🧽洗車 {monthSummary.wash}</span>
+          <span style={{background:"#f0fdf4",color:"#059669",padding:"1px 6px",borderRadius:10,whiteSpace:"nowrap",border:"1px solid #86efac"}}>📊稼働 {kpiCount}/{vehicles.length}台</span>
         </span>
       </div>
       <div style={{display:"flex",alignItems:"center",gap:isMobile?2:8}}>
@@ -3928,7 +3948,7 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
         <tbody>
           {groups.map(g=><React.Fragment key={g.type}>
             <tr onClick={()=>toggleClass(g.type)} style={{cursor:"pointer",userSelect:"none"}}>
-              <td style={{position:"sticky",left:0,zIndex:5,height:CLASS_H,background:"#f8fafc",borderBottom:"1px solid #e2e8f0",borderRight:"2px solid #94a3b8",padding:"0 6px"}}><span style={{fontSize:10,color:"#64748b",marginRight:3}}>{collapsed[g.type]?"▶":"▼"}</span><span style={{fontSize:isMobile?9:10,fontWeight:700,color:"#334155"}}>{isMobile?g.type:g.type+"クラス（"+g.label+"）"}</span></td>
+              <td style={{position:"sticky",left:0,zIndex:5,height:CLASS_H,background:"#f8fafc",borderBottom:"1px solid #e2e8f0",borderRight:"2px solid #94a3b8",padding:"0 6px"}}><span style={{fontSize:10,color:"#64748b",marginRight:3}}>{collapsed[g.type]?"▶":"▼"}</span><span style={{fontSize:isMobile?9:10,fontWeight:700,color:"#334155"}}>{isMobile?g.type:g.type+"クラス（"+g.label+"）"}</span>{!isMobile&&<span style={{fontSize:8,color:"#64748b",marginLeft:4}}>稼働{g.items.filter(v=>isKpiActive(v.code)).length}/{g.items.length}台</span>}</td>
               {dates.map(d=><td key={d} style={{height:CLASS_H,borderBottom:"1px solid #e2e8f0",background:"#f8fafc",borderRight:"1px solid #e2e8f0"}}/>)}
             </tr>
             {!collapsed[g.type]&&g.items.map(v=>{const bars=vehicleBars[v.code]||[];const isDT=dropTarget&&dropTarget.vc===v.code;const rowHL=isDT?(dropTarget.ok?"rgba(34,197,94,.15)":"rgba(239,68,68,.1)"):"transparent";const hasSearchHit=searchResult&&searchResult.found&&bars.some(b=>b.type==="reservation"&&searchResult.hitSet.has(b.r.id));return <tr key={v.id} ref={el=>{vehicleRowRefs.current[v.code]=el;}} onDragOver={e=>handleDragOver(e,v.code)} onDragLeave={()=>setDropTarget(null)} onDrop={e=>handleDrop(e,v.code)} style={{outline:isDT?(dropTarget.ok?"2px solid #22c55e":"2px dashed #ef4444"):"none",background:hasSearchHit?"#fefce8":"transparent"}}>
@@ -3937,6 +3957,7 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
                 <span onClick={e=>{e.stopPropagation();if(onVehicleDetail)onVehicleDetail(v.code);}} style={{fontSize:isMobile?9:10,fontWeight:700,color:v.insuranceVeh?"#7c3aed":"#2563eb",cursor:"pointer",textDecoration:"underline",textDecorationStyle:"dotted",textUnderlineOffset:2}}>{v.no}{v.insuranceVeh&&isMobile?" 🛡️":""}</span>
                 {!isMobile&&<span style={{fontSize:9,color:v.insuranceVeh?"#7c3aed":"#64748b",marginLeft:4}}>{v.name}</span>}
                 {v.insuranceVeh&&!isMobile&&<span style={{fontSize:7,fontWeight:700,marginLeft:3,padding:"0 3px",borderRadius:3,background:"#ede9fe",color:"#7c3aed"}}>保険</span>}
+                <span onClick={e=>{e.stopPropagation();toggleKpi(v.code);}} style={{fontSize:8,fontWeight:700,marginLeft:3,padding:"0 3px",borderRadius:3,cursor:"pointer",background:isKpiActive(v.code)?"#dcfce7":"#fee2e2",color:isKpiActive(v.code)?"#059669":"#dc2626",border:"1px solid "+(isKpiActive(v.code)?"#86efac":"#fca5a5")}} title={isKpiActive(v.code)?"稼働中（クリックで除外）":"除外中（クリックで稼働に変更）"}>{isKpiActive(v.code)?"稼働":"除外"}</span>
                 {(()=>{const u=utilRates[v.code];if(!u)return null;const pc=u.pct;const cl=pc>=80?"#dc2626":pc>=50?"#f59e0b":"#22c55e";return <span style={{fontSize:8,fontWeight:700,color:cl,marginLeft:4,background:pc>=80?"#fef2f2":pc>=50?"#fffbeb":"#f0fdf4",padding:"0 3px",borderRadius:3}}>{u.days}日{!isMobile&&" "+pc+"%"}</span>;})()}
               </td>
               {dates.map((d,di)=>{const isToday=d===today;return <td key={d} style={{position:"relative",height:ROW_H,borderBottom:"1px solid #f1f5f9",borderRight:"1px solid #e2e8f0",cursor:dragInfo?"copy":"pointer",background:isDT?rowHL:(isToday?"#eff6ff":"transparent"),padding:0,transition:"background .15s"}} onClick={()=>{if(!dragInfo)handleCellClick(v.code,d);}}>
