@@ -2216,6 +2216,201 @@ function SquareInvoiceWidget(){
   </div>;
 }
 
+/* ==========================================
+   月次スナップショット自動記録
+   月が変わったら前月の確定値を自動保存
+   ========================================== */
+async function saveMonthlySnapshot(store,ym,data,vehicles,fleet,kpiFlags,kpiTable){
+  if(!sb)return;
+  // 既に保存済みか確認
+  const{data:existing}=await sb.from("monthly_snapshots").select("id").eq("store",store).eq("year_month",ym).maybeSingle();
+  if(existing)return;// 既存あり→スキップ
+  const[y,mo]=ym.split("-").map(Number);
+  const dim=new Date(y,mo,0).getDate();
+  const ms=new Date(y,mo-1,1),me=new Date(y,mo-1,dim);
+  const isKpiActive=(code)=>kpiFlags[code]!==undefined?kpiFlags[code]:(vehicles.find(v=>v.code===code)?.active!==false);
+  const allRes=data.filter(r=>r.status!=="cancelled");
+  const cancelled=data.filter(r=>r.status==="cancelled"&&r.returnDate&&r.returnDate.slice(0,7)===ym);
+  // 当月返却ベース
+  const retRes=allRes.filter(r=>r.returnDate&&r.returnDate.slice(0,7)===ym);
+  const sameMonth=retRes.filter(r=>r.createdAt&&r.createdAt.slice(0,7)===ym);
+  // クラス別集計
+  let totalDays=0,activeCount=0,totalRevenue=0;
+  const clsMap={};
+  vehicles.forEach(v=>{
+    if(!isKpiActive(v.code))return;
+    activeCount++;
+    const rentalDays=new Set();let vRev=0;
+    allRes.forEach(r=>{if(fleet[r.id]!==v.code)return;
+      const ld=new Date(norm(r.lendDate)+"T00:00:00"),rd=new Date(norm(r.returnDate)+"T00:00:00");
+      const s=ld>ms?ld:ms;const e=rd<me?rd:me;
+      for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1)){rentalDays.add(toLD(d));}
+      if(r.returnDate&&r.returnDate.slice(0,7)===ym)vRev+=(Number(r.price)||0);
+    });
+    const vDays=rentalDays.size;
+    totalDays+=vDays;totalRevenue+=vRev;
+    const tp=v.type||"?";
+    if(!clsMap[tp])clsMap[tp]={type:tp,count:0,rental_days:0,revenue:0};
+    clsMap[tp].count++;clsMap[tp].rental_days+=vDays;clsMap[tp].revenue+=vRev;
+  });
+  const classDetail=Object.values(clsMap).map(c=>{
+    const avail=c.count*dim;
+    return{...c,avail_days:avail,util_pct:avail>0?Math.round(c.rental_days/avail*100):0,
+      adr:c.rental_days>0?Math.round(c.revenue/c.rental_days):0,
+      revpacd:avail>0?Math.round(c.revenue/avail):0};
+  });
+  // OTA別
+  const otaMap={};
+  retRes.forEach(r=>{const k=r.ota||"?";if(!otaMap[k])otaMap[k]={ota:k,count:0,revenue:0};otaMap[k].count++;otaMap[k].revenue+=(Number(r.price)||0);});
+  const otaDetail=Object.values(otaMap).sort((a,b)=>b.count-a.count).map(o=>({...o,pct:retRes.length>0?Math.round(o.count/retRes.length*100):0}));
+  const totalAvail=activeCount*dim;
+  const row={store,year_month:ym,active_vehicles:activeCount,
+    total_rental_days:totalDays,total_available_days:totalAvail,
+    utilization_pct:totalAvail>0?Math.round(totalDays/totalAvail*100):0,
+    total_revenue:totalRevenue,
+    revpacd:totalAvail>0?Math.round(totalRevenue/totalAvail):0,
+    avg_daily_rate:totalDays>0?Math.round(totalRevenue/totalDays):0,
+    total_returns:retRes.length,same_month_bookings:sameMonth.length,
+    booking_rate_pct:retRes.length>0?Math.round(sameMonth.length/retRes.length*100):0,
+    cancel_count:cancelled.length,total_bookings:retRes.length+cancelled.length,
+    cancel_rate_pct:(retRes.length+cancelled.length)>0?Math.round(cancelled.length/(retRes.length+cancelled.length)*100):0,
+    class_detail:classDetail,ota_detail:otaDetail,updated_at:new Date().toISOString()};
+  const{error}=await sb.from("monthly_snapshots").upsert(row,{onConflict:"store,year_month"});
+  if(error)console.error("[Snapshot]",error.message);
+  else console.log("[Snapshot] saved",store,ym);
+}
+
+/* ==========================================
+   経営KPIタブ — 月次スナップショット表示・手動保存
+   ========================================== */
+function KpiTab({store,data,vehicles,fleet}){
+  const RELIABLE_FROM="2026-04";
+  const kpiTable=store==="spk"?"vehicle_monthly_kpi":"nha_vehicle_monthly_kpi";
+  const[snapshots,setSnapshots]=useState([]);
+  const[saving,setSaving]=useState(false);
+  const[msg,setMsg]=useState("");
+  const load=async()=>{
+    if(!sb)return;
+    const{data:rows}=await sb.from("monthly_snapshots").select("*").eq("store",store).order("year_month",{ascending:false});
+    if(rows)setSnapshots(rows);
+  };
+  useEffect(()=>{load();},[]);
+  // 保存可能な月リスト（RELIABLE_FROM〜前月）
+  const saveableMonths=useMemo(()=>{
+    const now=new Date();
+    let py=now.getFullYear(),pm=now.getMonth();if(pm===0){pm=12;py--;}
+    const list=[];
+    let[y,m]=RELIABLE_FROM.split("-").map(Number);
+    while(y<py||(y===py&&m<=pm)){
+      list.push(y+"-"+String(m).padStart(2,"0"));
+      m++;if(m>12){m=1;y++;}
+    }
+    return list;
+  },[]);
+  const savedYMs=new Set(snapshots.map(s=>s.year_month));
+  const unsaved=saveableMonths.filter(ym=>!savedYMs.has(ym));
+  const doSave=async(ym)=>{
+    if(!sb||!data||!vehicles)return;
+    setSaving(true);setMsg("");
+    try{
+      const{data:rows}=await sb.from(kpiTable).select("*").eq("year_month",ym);
+      const pf={};(rows||[]).forEach(r=>pf[r.vehicle_code]=r.active);
+      await saveMonthlySnapshot(store,ym,data,vehicles,fleet,pf,kpiTable);
+      await load();
+      setMsg(ym+" を保存しました");
+    }catch(e){setMsg("エラー: "+e.message);}
+    setSaving(false);
+  };
+  const doSaveAll=async()=>{
+    for(const ym of unsaved)await doSave(ym);
+  };
+  const fmtY=(n)=>n?n.toLocaleString():"0";
+  return <div>
+    <h2 style={{fontSize:18,fontWeight:900,marginBottom:12}}>📈 経営KPI — 月次スナップショット</h2>
+    <p style={{fontSize:11,color:"#64748b",marginBottom:12}}>毎月の稼働率・売上・RevPACDを自動記録。蓄積データで季節パターンや経営トレンドを可視化します。</p>
+    {/* 未保存月の保存ボタン */}
+    {unsaved.length>0&&<div style={{padding:12,borderRadius:10,background:"#fffbeb",border:"1px solid #fde68a",marginBottom:16}}>
+      <div style={{fontSize:12,fontWeight:700,color:"#92400e",marginBottom:8}}>未記録の月があります</div>
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
+        {unsaved.map(ym=><button key={ym} onClick={()=>doSave(ym)} disabled={saving} style={{padding:"6px 12px",borderRadius:8,border:"1px solid #d97706",background:"#fff",color:"#92400e",fontSize:11,fontWeight:700,cursor:"pointer"}}>{ym.split("-")[1].replace(/^0/,"")}月を記録</button>)}
+      </div>
+      {unsaved.length>1&&<button onClick={doSaveAll} disabled={saving} style={{padding:"6px 16px",borderRadius:8,border:"none",background:"#d97706",color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>全て一括記録</button>}
+      {msg&&<div style={{fontSize:11,color:"#059669",marginTop:6}}>{msg}</div>}
+    </div>}
+    {/* スナップショット一覧 */}
+    {snapshots.length===0?<div style={{padding:40,textAlign:"center",color:"#94a3b8",fontSize:13}}>まだ記録がありません。上のボタンで月次データを記録してください。</div>
+    :<div style={{display:"flex",flexDirection:"column",gap:12}}>
+      {snapshots.map(s=>{
+        const moLabel=s.year_month.split("-")[1].replace(/^0/,"")+"月";
+        const clsArr=s.class_detail||[];
+        const otaArr=s.ota_detail||[];
+        const uC=s.utilization_pct>=70?"#059669":s.utilization_pct>=40?"#d97706":"#dc2626";
+        return <div key={s.year_month} style={{borderRadius:12,border:"1px solid #e2e8f0",overflow:"hidden"}}>
+          <div style={{padding:"12px 14px",background:"linear-gradient(135deg,#f0fdf4,#ecfdf5)",borderBottom:"1px solid #e2e8f0"}}>
+            <div style={{display:"flex",alignItems:"baseline",gap:8,flexWrap:"wrap"}}>
+              <span style={{fontSize:16,fontWeight:900,color:"#1e293b"}}>{s.year_month.split("-")[0]}年{moLabel}</span>
+              <span style={{fontSize:20,fontWeight:900,color:uC}}>{s.utilization_pct}%</span>
+              <span style={{fontSize:10,color:"#64748b"}}>稼働率（{s.total_rental_days}/{s.total_available_days}日・{s.active_vehicles}台）</span>
+              <span style={{fontSize:13,fontWeight:800,color:"#0284c7",marginLeft:8}}>RevPACD ¥{fmtY(s.revpacd)}</span>
+              <span style={{fontSize:10,color:"#64748b",marginLeft:4}}>ADR ¥{fmtY(s.avg_daily_rate)}</span>
+            </div>
+            <div style={{display:"flex",gap:12,marginTop:4,fontSize:10,color:"#64748b"}}>
+              <span>売上 ¥{fmtY(s.total_revenue)}</span>
+              <span>返却 {s.total_returns}件</span>
+              <span>当月予約率 {s.booking_rate_pct}%（{s.same_month_bookings}/{s.total_returns}件）</span>
+              <span>キャンセル率 {s.cancel_rate_pct}%（{s.cancel_count}件）</span>
+            </div>
+          </div>
+          <div style={{padding:"10px 14px",display:"flex",gap:16,flexWrap:"wrap"}}>
+            {/* クラス別 */}
+            <div style={{flex:1,minWidth:200}}>
+              <div style={{fontSize:10,fontWeight:700,color:"#64748b",marginBottom:4}}>クラス別</div>
+              <table style={{width:"100%",fontSize:10,borderCollapse:"collapse"}}>
+                <thead><tr style={{borderBottom:"1px solid #e2e8f0"}}>
+                  <th style={{textAlign:"left",padding:"2px 4px",fontWeight:700}}>クラス</th>
+                  <th style={{textAlign:"right",padding:"2px 4px"}}>台数</th>
+                  <th style={{textAlign:"right",padding:"2px 4px"}}>稼働率</th>
+                  <th style={{textAlign:"right",padding:"2px 4px"}}>RevPACD</th>
+                  <th style={{textAlign:"right",padding:"2px 4px"}}>売上</th>
+                </tr></thead>
+                <tbody>{clsArr.map(c=>{const cc=c.util_pct>=70?"#059669":c.util_pct>=40?"#d97706":"#dc2626";
+                  return <tr key={c.type} style={{borderBottom:"1px solid #f1f5f9"}}>
+                    <td style={{padding:"2px 4px",fontWeight:700}}>{c.type}</td>
+                    <td style={{textAlign:"right",padding:"2px 4px"}}>{c.count}台</td>
+                    <td style={{textAlign:"right",padding:"2px 4px",fontWeight:700,color:cc}}>{c.util_pct}%</td>
+                    <td style={{textAlign:"right",padding:"2px 4px",color:"#0284c7"}}>¥{fmtY(c.revpacd)}</td>
+                    <td style={{textAlign:"right",padding:"2px 4px"}}>¥{fmtY(c.revenue)}</td>
+                  </tr>;})}
+                </tbody>
+              </table>
+            </div>
+            {/* OTA別 */}
+            <div style={{flex:1,minWidth:150}}>
+              <div style={{fontSize:10,fontWeight:700,color:"#64748b",marginBottom:4}}>OTA別</div>
+              <table style={{width:"100%",fontSize:10,borderCollapse:"collapse"}}>
+                <thead><tr style={{borderBottom:"1px solid #e2e8f0"}}>
+                  <th style={{textAlign:"left",padding:"2px 4px",fontWeight:700}}>OTA</th>
+                  <th style={{textAlign:"right",padding:"2px 4px"}}>件数</th>
+                  <th style={{textAlign:"right",padding:"2px 4px"}}>構成比</th>
+                  <th style={{textAlign:"right",padding:"2px 4px"}}>売上</th>
+                </tr></thead>
+                <tbody>{otaArr.map(o=>{const ota=OTA[o.ota];
+                  return <tr key={o.ota} style={{borderBottom:"1px solid #f1f5f9"}}>
+                    <td style={{padding:"2px 4px"}}>{ota?<span style={{background:ota.bg,color:ota.c,padding:"0 4px",borderRadius:3,fontSize:8,fontWeight:700}}>{ota.key}</span>:<span>{o.ota}</span>}</td>
+                    <td style={{textAlign:"right",padding:"2px 4px"}}>{o.count}件</td>
+                    <td style={{textAlign:"right",padding:"2px 4px"}}>{o.pct}%</td>
+                    <td style={{textAlign:"right",padding:"2px 4px"}}>¥{fmtY(o.revenue)}</td>
+                  </tr>;})}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>;
+      })}
+    </div>}
+  </div>;
+}
+
 function UtilClassDetail({utilStats,moLabel}){
   const[openCls,setOpenCls]=useState({});
   const toggle=(tp)=>setOpenCls(p=>({...p,[tp]:!p[tp]}));
@@ -2259,6 +2454,8 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
   const[open,setOpen]=useState(false);
   // ★ 月別稼働率（配車表と同じロジック）
   const[kpiFlags,setKpiFlags]=useState({});
+  const[perVehTarget,setPerVehTarget]=useState(140000);
+  const[editingTarget,setEditingTarget]=useState(false);
   useEffect(()=>{
     if(!sb||!selYM)return;
     (async()=>{
@@ -2267,37 +2464,48 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
       setKpiFlags(f);
     })();
   },[selYM]);
+  useEffect(()=>{
+    if(!sb)return;
+    (async()=>{
+      const{data:row}=await sb.from("app_settings").select("*").eq("key","monthly_target_per_vehicle").single();
+      if(row&&row.value)setPerVehTarget(Number(row.value));
+    })();
+  },[]);
   const utilStats=useMemo(()=>{
     if(!vehicles||!vehicles.length||!data||!selYM)return null;
     const isKpiActive=(code)=>kpiFlags[code]!==undefined?kpiFlags[code]:(vehicles.find(v=>v.code===code)?.active!==false);
     const[y,mo]=selYM.split("-").map(Number);
     const dim=new Date(y,mo,0).getDate();
     const ms=new Date(y,mo-1,1),me=new Date(y,mo-1,dim);
-    let totalDays=0,activeCount=0;
+    let totalDays=0,activeCount=0,totalRevenue=0;
     const active=data.filter(r=>r.status!=="cancelled");
     const CLASS_C={"A":"#7c3aed","B":"#0284c7","C":"#059669","S":"#d97706","F":"#db2777","H":"#64748b"};
-    const byClass={};// {type:{label,count,days,maxDays,pct,vehicles:[{code,name,days,pct}]}}
+    const byClass={};
     vehicles.forEach(v=>{
       if(!isKpiActive(v.code))return;
       activeCount++;
-      const rentalDays=new Set();
+      const rentalDays=new Set();let vRev=0;
       active.forEach(r=>{if(fleet[r.id]!==v.code)return;
         const ld=new Date(norm(r.lendDate)+"T00:00:00"),rd=new Date(norm(r.returnDate)+"T00:00:00");
         const s=ld>ms?ld:ms;const e=rd<me?rd:me;
         for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1)){rentalDays.add(toLD(d));}
+        if(r.returnDate&&r.returnDate.slice(0,7)===selYM)vRev+=(Number(r.price)||0);
       });
       const vDays=rentalDays.size;
-      totalDays+=vDays;
+      totalDays+=vDays;totalRevenue+=vRev;
       const tp=v.type||"?";
-      if(!byClass[tp]){const cl=INIT_CLASSES.find(c=>c.type===tp);byClass[tp]={label:cl?cl.label:tp,color:CLASS_C[tp]||"#64748b",count:0,days:0,vehicles:[]};}
+      if(!byClass[tp]){const cl=INIT_CLASSES.find(c=>c.type===tp);byClass[tp]={label:cl?cl.label:tp,color:CLASS_C[tp]||"#64748b",count:0,days:0,revenue:0,vehicles:[]};}
       byClass[tp].count++;
       byClass[tp].days+=vDays;
-      byClass[tp].vehicles.push({code:v.code,name:v.name,days:vDays,pct:dim>0?Math.round(vDays/dim*100):0});
+      byClass[tp].revenue+=vRev;
+      byClass[tp].vehicles.push({code:v.code,name:v.name,days:vDays,pct:dim>0?Math.round(vDays/dim*100):0,revenue:vRev});
     });
-    Object.values(byClass).forEach(c=>{c.maxDays=c.count*dim;c.pct=c.maxDays>0?Math.round(c.days/c.maxDays*100):0;c.vehicles.sort((a,b)=>b.pct-a.pct);});
+    Object.values(byClass).forEach(c=>{c.maxDays=c.count*dim;c.pct=c.maxDays>0?Math.round(c.days/c.maxDays*100):0;c.revpacd=c.maxDays>0?Math.round(c.revenue/c.maxDays):0;c.vehicles.sort((a,b)=>b.pct-a.pct);});
     const classOrder=INIT_CLASSES.map(c=>c.type).filter(t=>byClass[t]);
     const maxDays=activeCount*dim;
-    return{totalDays,activeCount,maxDays,pct:maxDays>0?Math.round(totalDays/maxDays*100):0,dim,byClass,classOrder};
+    const revpacd=maxDays>0?Math.round(totalRevenue/maxDays):0;
+    const perVehicleRevenue=activeCount>0?Math.round(totalRevenue/activeCount):0;
+    return{totalDays,activeCount,maxDays,pct:maxDays>0?Math.round(totalDays/maxDays*100):0,dim,byClass,classOrder,totalRevenue,revpacd,perVehicleRevenue};
   },[data,vehicles,fleet,kpiFlags,selYM]);
   // 利用可能な月リストを生成（RELIABLE_FROM〜当月）
   const months=useMemo(()=>{
@@ -2331,6 +2539,22 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
     }));
     return{total,sameCount,samePct,byOta,last10};
   },[data,selYM]);
+  // ★ 月次スナップショット自動保存（前月分を自動記録）
+  useEffect(()=>{
+    if(!sb||!data||!data.length||!vehicles||!vehicles.length)return;
+    const now=new Date();const curYM=now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0");
+    // 前月を計算
+    let py=now.getFullYear(),pm=now.getMonth();// getMonth()=0-11, pm=前月(0-11)
+    if(pm===0){pm=12;py--;}
+    const prevYM=py+"-"+String(pm).padStart(2,"0");
+    if(prevYM<RELIABLE_FROM)return;
+    // 前月のKPIフラグを取得してスナップショット保存
+    (async()=>{
+      const{data:rows}=await sb.from("vehicle_monthly_kpi").select("*").eq("year_month",prevYM);
+      const pf={};(rows||[]).forEach(r=>pf[r.vehicle_code]=r.active);
+      await saveMonthlySnapshot("spk",prevYM,data,vehicles,fleet,pf,"vehicle_monthly_kpi");
+    })();
+  },[data,vehicles,fleet]);
   if(!stats)return null;
   const moLabel=parseInt(selYM.split("-")[1])+"月";
   const now=new Date();const curYM=now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0");
@@ -2350,7 +2574,18 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
             <span style={{fontSize:11,color:"#64748b",marginLeft:8}}>稼働率</span>
             <span style={{fontSize:24,fontWeight:900,color:isCur?"#059669":"#475569"}}>{utilStats.pct}<span style={{fontSize:12,fontWeight:600}}>%</span></span>
             <span style={{fontSize:10,color:"#94a3b8"}}>({utilStats.totalDays}/{utilStats.maxDays}日・{utilStats.activeCount}台)</span>
+            <span style={{fontSize:10,color:"#0284c7",marginLeft:4,fontWeight:700}}>RevPACD ¥{utilStats.revpacd.toLocaleString()}</span>
           </>}
+          {utilStats&&utilStats.perVehicleRevenue!==undefined&&<div style={{display:"flex",alignItems:"center",gap:6,width:"100%",marginTop:4}}>
+            <span style={{fontSize:10,color:"#64748b"}}>台あたり</span>
+            <span style={{fontSize:16,fontWeight:900,color:utilStats.perVehicleRevenue>=perVehTarget?"#059669":"#dc2626"}}>¥{(utilStats.perVehicleRevenue/10000).toFixed(1)}<span style={{fontSize:10,fontWeight:600}}>万</span></span>
+            <span style={{fontSize:10,color:"#94a3b8"}}>/</span>
+            <span style={{fontSize:10,color:"#64748b"}}>目標¥{(perVehTarget/10000).toFixed(0)}万</span>
+            <div style={{flex:1,height:6,background:"#e2e8f0",borderRadius:3,overflow:"hidden",maxWidth:120}}>
+              <div style={{height:"100%",width:Math.min(100,Math.round(utilStats.perVehicleRevenue/perVehTarget*100))+"%",background:utilStats.perVehicleRevenue>=perVehTarget?"#059669":utilStats.perVehicleRevenue>=perVehTarget*0.7?"#f59e0b":"#dc2626",borderRadius:3,transition:"width .3s"}}/>
+            </div>
+            <span style={{fontSize:12,fontWeight:900,color:utilStats.perVehicleRevenue>=perVehTarget?"#059669":utilStats.perVehicleRevenue>=perVehTarget*0.7?"#d97706":"#dc2626"}}>{Math.round(utilStats.perVehicleRevenue/perVehTarget*100)}%</span>
+          </div>}
         </div>
       </div>
       <span style={{fontSize:10,color:"#94a3b8",fontWeight:700}}>{open?"▲":"▼"}</span>
@@ -2362,6 +2597,42 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
         {months.map(ym=><button key={ym} onClick={e=>{e.stopPropagation();setSelYM(ym);}} style={{padding:"4px 8px",borderRadius:6,border:selYM===ym?"2px solid #d97706":"1px solid #e2e8f0",background:selYM===ym?"#fffbeb":"#fff",color:selYM===ym?"#92400e":"#64748b",fontSize:10,fontWeight:700,cursor:"pointer"}}>{parseInt(ym.split("-")[1])}月</button>)}
         <button onClick={e=>{e.stopPropagation();if(nextYM)setSelYM(nextYM);}} disabled={!nextYM} style={{padding:"4px 10px",borderRadius:6,border:"1px solid #d1d5db",background:nextYM?"#fff":"#f1f5f9",color:nextYM?"#374151":"#d1d5db",fontSize:11,fontWeight:700,cursor:nextYM?"pointer":"default"}}>▶</button>
       </div>
+      {/* 台あたり目標 vs 実績 */}
+      {utilStats&&<div style={{marginBottom:12,padding:"8px 10px",borderRadius:8,background:"linear-gradient(135deg,#f0fdf4,#ecfdf5)",border:"1px solid #bbf7d0"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+          <span style={{fontSize:11,fontWeight:700,color:"#166534"}}>台あたり売上</span>
+          {editingTarget?<div style={{display:"flex",alignItems:"center",gap:4}} onClick={e=>e.stopPropagation()}>
+            <span style={{fontSize:10,color:"#64748b"}}>目標</span>
+            <input type="number" value={perVehTarget} onChange={e=>setPerVehTarget(Number(e.target.value))} style={{width:70,fontSize:11,padding:"2px 4px",borderRadius:4,border:"1px solid #d1d5db",textAlign:"right"}} onClick={e=>e.stopPropagation()}/>
+            <span style={{fontSize:10,color:"#64748b"}}>円/台</span>
+            <button onClick={async(e)=>{e.stopPropagation();if(sb){await sb.from("app_settings").upsert({key:"monthly_target_per_vehicle",value:String(perVehTarget)},{onConflict:"key"});}setEditingTarget(false);}} style={{fontSize:9,padding:"2px 6px",borderRadius:4,background:"#059669",color:"#fff",border:"none",cursor:"pointer",fontWeight:700}}>保存</button>
+            <button onClick={e=>{e.stopPropagation();setEditingTarget(false);}} style={{fontSize:9,padding:"2px 6px",borderRadius:4,background:"#e2e8f0",color:"#64748b",border:"none",cursor:"pointer"}}>戻</button>
+          </div>:<button onClick={e=>{e.stopPropagation();setEditingTarget(true);}} style={{fontSize:9,padding:"2px 6px",borderRadius:4,background:"#e2e8f0",color:"#64748b",border:"none",cursor:"pointer"}}>目標変更</button>}
+        </div>
+        <div style={{display:"flex",alignItems:"baseline",gap:8}}>
+          <div>
+            <div style={{fontSize:9,color:"#64748b"}}>実績</div>
+            <div style={{fontSize:22,fontWeight:900,color:utilStats.perVehicleRevenue>=perVehTarget?"#059669":"#dc2626"}}>¥{utilStats.perVehicleRevenue.toLocaleString()}</div>
+          </div>
+          <div style={{fontSize:16,color:"#94a3b8"}}>/</div>
+          <div>
+            <div style={{fontSize:9,color:"#64748b"}}>目標</div>
+            <div style={{fontSize:22,fontWeight:900,color:"#166534"}}>¥{perVehTarget.toLocaleString()}</div>
+          </div>
+          <div style={{flex:1}}>
+            <div style={{fontSize:9,color:"#64748b",textAlign:"right"}}>達成率</div>
+            <div style={{fontSize:22,fontWeight:900,color:utilStats.perVehicleRevenue>=perVehTarget?"#059669":utilStats.perVehicleRevenue>=perVehTarget*0.7?"#d97706":"#dc2626",textAlign:"right"}}>{Math.round(utilStats.perVehicleRevenue/perVehTarget*100)}%</div>
+          </div>
+        </div>
+        <div style={{height:8,background:"#e2e8f0",borderRadius:4,overflow:"hidden",marginTop:6}}>
+          <div style={{height:"100%",width:Math.min(100,Math.round(utilStats.perVehicleRevenue/perVehTarget*100))+"%",background:utilStats.perVehicleRevenue>=perVehTarget?"#059669":utilStats.perVehicleRevenue>=perVehTarget*0.7?"#f59e0b":"#dc2626",borderRadius:4,transition:"width .5s"}}/>
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",marginTop:2}}>
+          <span style={{fontSize:9,color:"#94a3b8"}}>¥0</span>
+          <span style={{fontSize:9,color:"#94a3b8"}}>¥{perVehTarget.toLocaleString()}</span>
+        </div>
+        <div style={{fontSize:9,color:"#64748b",marginTop:4}}>総売上 ¥{utilStats.totalRevenue.toLocaleString()} / {utilStats.activeCount}台</div>
+      </div>}
       <div style={{fontSize:11,fontWeight:700,color:"#64748b",marginBottom:6}}>OTA別（{moLabel}返却）</div>
       <div style={{display:"flex",flexDirection:"column",gap:4,marginBottom:12}}>
         {stats.byOta.map(o=>{
@@ -9147,6 +9418,7 @@ function App(){
                 {id:"staff",ico:"👥",l:"スタッフ",desc:"スタッフ情報・時給設定"},
               ]},
               {title:"データ・分析",color:"#7c3aed",items:[
+                {id:"kpi",ico:"📈",l:"経営KPI",desc:"月次スナップショット・RevPACD推移"},
                 {id:"dashboard",ico:"📊",l:"売上",desc:"売上・稼働率ダッシュボード",badge:data.length>0?"データあり":null},
                 {id:"analytics",ico:"🔬",l:"解析",desc:"エリア分析・場所分布ランキング"},
                 {id:"customer",ico:"👑",l:"顧客",desc:"リピーター分析"},
@@ -9466,6 +9738,7 @@ function App(){
             <Dashboard data={data} fleet={fleet} vehicles={vehicles} maintenance={maintenance}/>
           </>}
           {tab==="data"&&data.length>0&&<DataTable data={data} fleet={fleet} vehicles={vehicles} sheetPlaces={sheetPlaces} onUpdatePlaces={saveSheetPlaces} jalanPay={jalanPay} onUpdateReservation={async(id,updates)=>{return await updateReservation(id,updates);}} onCancelReservation={cancelReservation} onRestoreReservation={restoreReservation}/>}
+          {tab==="kpi"&&<KpiTab store="spk" data={data} vehicles={vehicles} fleet={fleet}/>}
           {tab==="analytics"&&<AnalyticsTab data={data} sheetPlaces={sheetPlaces}/>}
           {tab==="history"&&<PastTasksTable today={today}/>}
           {tab==="notices"&&<NoticesPage store="SPK"/>}
