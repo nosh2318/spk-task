@@ -88,6 +88,27 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 ## 未使用テーブル
 - **vehicle_twins**: テーブルは存在するがデータ空。APP・GASのどちらでも未使用。配車は`fleet`テーブルで管理。手を入れる必要なし。
 
+## 2026-04-17 修正履歴
+
+### Slack通知を Bot API 直接投稿に変更（札幌GAS）
+- **問題**: 札幌店の予約（QAA71034 太田美佐子、HP札幌、Cクラス、4/25、クインテッサホテル札幌）が正しく札幌DBに登録されたが、Slack通知だけ那覇チャネルに届く事象が再発
+- **原因**: email-to-Slack エイリアス（`x-aaaatppttzyrldnhjt5el4jj3i@gl-oke5175.slack.com`）経由だとルーティングが不透明で、宛先が那覇側に向くケースがあった
+- **修正（`gas-email-import-v2.gs`）**:
+  1. 定数追加: `var SPK_RESV_CHANNEL = 'C08TDTPEB36';`（#sapporo_reservation）
+  2. ヘルパー新設: `sendSlackToSpk_(subject, body)` — `postToSlackChannel_` (`chat.postMessage`) で Bot API 直接投稿、失敗時のみ `MailApp.sendEmail` フォールバック
+  3. 3関数を差替え: `sendSlackSuccess_` / `sendSlackFailure_` / `sendSlackCancel_`
+- **認証**: `SLACK_BOT_TOKEN` スクリプトプロパティ設定済み（既存じゃらん決済`JALAN_PAY_CHANNEL`流用）
+- **動作確認**: `testSlackSpk()` 手動実行で #sapporo_reservation に投稿成功
+- コミット: `c37d9bb`
+- **注意**: Bot が対象チャネルに参加している必要あり。`not_in_channel` エラー時は Slack で `/invite @<Bot名>` を実行
+
+### BQG34364 那覇予約の札幌誤取込 対応（復習）
+- **問題**: HP那覇予約（棚澤光洋、Aクラス、8/15-18）が札幌店GASに取り込まれた
+- **修正（`gas-email-import-v2.gs`）**:
+  1. `isSapporoReservation_` step 6: 全A/B/C/S許可 → **F/H のみ許可**（A/B/C/Sは両店舗に存在）
+  2. `parseOfficial_` に HP本文からの店舗抽出追加（【店舗】/「那覇店」「札幌店」キーワード/住所フォールバック）
+- DB手動削除: `reservations` + `fleet` から削除済み
+
 ## 2026-04-15 修正履歴
 
 ### GAS場所抽出の根本修正（全OTAパーサー）
