@@ -276,9 +276,18 @@ function processMessage_(message, dryRun) {
       if (!existingRow.price && +(reservation.price||0) > 0) patch.price = reservation.price;
       // ★ 補償種類: 空・なしの場合はメールの判定結果で補完
       if ((!existingRow.insurance || existingRow.insurance === 'なし') && reservation.insurance && reservation.insurance !== 'なし') patch.insurance = reservation.insurance;
+      // ★ 場所・タイプ: 空の場合はメールの値で補完（2026-04-15追加）
+      if (!existingRow.del_place && reservation.del_place) patch.del_place = reservation.del_place;
+      if (!existingRow.col_place && reservation.col_place) patch.col_place = reservation.col_place;
+      if (!existingRow.visit_type && reservation.visit_type) patch.visit_type = reservation.visit_type;
+      if (!existingRow.return_type && reservation.return_type) patch.return_type = reservation.return_type;
       if (Object.keys(patch).length > 0) {
         supabaseUpdate_('reservations', 'id=eq.' + encodeURIComponent(reservation.id), patch);
         Logger.log('Patched existing reservation: ' + reservation.id + ' fields=' + Object.keys(patch).join(','));
+        // ★ 場所パッチ時はtasks・placesテーブルも同期（2026-04-15追加）
+        if (patch.del_place || patch.col_place) {
+          patchTaskPlaces_(reservation.id, patch.del_place, patch.col_place);
+        }
       } else {
         Logger.log('Reservation already exists (active, no patch needed): ' + reservation.id);
       }
@@ -351,11 +360,11 @@ function isSapporoReservation_(res) {
   // 5. 那覇専用クラス（D, A2, B2）は除外
   if (res.vehicle === 'D' || res.vehicle === 'A2' || res.vehicle === 'B2') return false;
 
-  // 6. 札幌クラスならtrue
-  var spkClasses = ['A', 'B', 'C', 'S', 'F', 'H'];
-  if (res.vehicle && spkClasses.indexOf(res.vehicle) !== -1) return true;
+  // 6. 札幌専用クラス（F, H）のみtrue。A/B/C/Sは両店舗共通なので判定不可
+  var spkOnlyClasses = ['F', 'H'];
+  if (res.vehicle && spkOnlyClasses.indexOf(res.vehicle) !== -1) return true;
 
-  // 7. 判定不能 → 安全のためスキップ（手動確認）
+  // 7. 判定不能 → 安全のためスキップ（手動確認）。両店舗共通クラス(A/B/C/S)で場所情報なしの場合もここに来る
   Logger.log('WARNING: Store undetermined for ' + (res.id || '?') + ' vehicle=' + (res.vehicle || '') + ' store=' + store + ' address=' + address + ' places=' + places);
   return false;
 }
@@ -394,6 +403,29 @@ function extractField_(body, label) {
     var m = body.match(patterns[i]);
     if (m) { var val = m[1].trim(); val = val.replace(/^[：:]+\s*/, ''); return val; }
   }
+  return '';
+}
+
+// --- 場所抽出の統一関数 ---
+// 全OTAパーサーで使う。HP形式メール（【お届け場所名】等）から場所を抽出
+// OTAメールにはホテル名が含まれないことが多いので、HP形式フォールバック用
+function extractDeliveryPlace_(body) {
+  // HP形式: 【お届け場所名】\n  ベッセルイン札幌中島公園
+  var m = body.match(/【お届け場所名】\s*\n\s*(.+)/);
+  if (m) return m[1].trim();
+  // OTA共通: 配達先/受取場所
+  var m2 = body.match(/(?:配達先|お届け先|受取場所|ピックアップ場所)[：:\s]*\n?\s*(.+)/);
+  if (m2) return m2[1].trim();
+  return '';
+}
+
+function extractCollectionPlace_(body) {
+  // HP形式: 【回収場所名】\n  札幌駅
+  var m = body.match(/【回収場所名】\s*\n\s*(.+)/);
+  if (m) return m[1].trim();
+  // OTA共通: 返却先/回収場所
+  var m2 = body.match(/(?:返却先|回収場所|ドロップオフ場所)[：:\s]*\n?\s*(.+)/);
+  if (m2) return m2[1].trim();
   return '';
 }
 
@@ -493,13 +525,19 @@ function parseJalan_(body) {
     var jMatch = optionsStr.match(/ジュニアシート\D*(\d+)/);
     if (jMatch) optJ = parseInt(jMatch[1], 10) || 1;
   }
+  // ★ 場所抽出（じゃらん: 貸出/返却営業所、HP形式にもフォールバック）
+  var retStore = extractField_(body, '返却営業所');
+  var delPlace = extractDeliveryPlace_(body) || store || '';
+  var colPlace = extractCollectionPlace_(body) || retStore || '';
+  var visitType = delPlace ? 'DEL' : '';
+  var returnType = colPlace ? 'COL' : '';
   return {
     id: id, ota: 'J', name: nameKana || name,
     lend_date: lend.date, lend_time: lend.time,
     return_date: ret.date, return_time: ret.time,
     vehicle: vehicleClass, people: people, insurance: insurance,
     price: price, status: '確定', tel: tel, mail: mail,
-    flight: flight, visit_type: '', del_place: '', col_place: '',
+    flight: flight, visit_type: visitType, del_place: delPlace, col_place: colPlace,
     opt_b: optB, opt_c: optC, opt_j: optJ,
     _store: store, _rawClass: rawClass
   };
@@ -532,13 +570,19 @@ function parseRakuten_(body) {
   if (cMatch) optC = parseInt(cMatch[1], 10) || 1;
   var jMatch = optionsStr.match(/ジュニアシート\s*(\d*)/);
   if (jMatch) optJ = parseInt(jMatch[1], 10) || 1;
+  // ★ 場所抽出（楽天: 貸渡/返却営業所名、HP形式にもフォールバック）
+  var retStore = extractField_(body, '・返却営業所名') || extractField_(body, '□返却営業所名');
+  var delPlace = extractDeliveryPlace_(body) || store || '';
+  var colPlace = extractCollectionPlace_(body) || retStore || '';
+  var visitType = delPlace ? 'DEL' : '';
+  var returnType = colPlace ? 'COL' : '';
   return {
     id: id, ota: 'R', name: nameKana,
     lend_date: lend.date, lend_time: lend.time,
     return_date: ret.date, return_time: ret.time,
     vehicle: vehicleClass, people: 0, insurance: insurance,
     price: price, status: '確定', tel: '', mail: '',
-    flight: '', visit_type: '', del_place: '', col_place: '',
+    flight: '', visit_type: visitType, del_place: delPlace, col_place: colPlace,
     opt_b: optB, opt_c: optC, opt_j: optJ,
     _store: store, _rawClass: rawClass
   };
@@ -571,13 +615,19 @@ function parseSkyticket_(body) {
   var bMatch = body.match(/ベビーシート[^\d]*(\d*)/); if (bMatch) optB = parseInt(bMatch[1], 10) || 1;
   var cMatch = body.match(/チャイルドシート[^\d]*(\d*)/); if (cMatch) optC = parseInt(cMatch[1], 10) || 1;
   var jMatch = body.match(/ジュニアシート[^\d]*(\d*)/); if (jMatch) optJ = parseInt(jMatch[1], 10) || 1;
+  // ★ 場所抽出（skyticket: 受取/返却店舗、HP形式にもフォールバック）
+  var retStore = extractField_(body, '返却店舗');
+  var delPlace = extractDeliveryPlace_(body) || store || '';
+  var colPlace = extractCollectionPlace_(body) || retStore || '';
+  var visitType = delPlace ? 'DEL' : '';
+  var returnType = colPlace ? 'COL' : '';
   return {
     id: id, ota: 'S', name: nameKana,
     lend_date: lend.date, lend_time: lend.time,
     return_date: ret.date, return_time: ret.time,
     vehicle: vehicleClass, people: people, insurance: insurance,
     price: totalPrice, status: '確定', tel: tel, mail: mail,
-    flight: '', visit_type: '', del_place: '', col_place: '',
+    flight: '', visit_type: visitType, del_place: delPlace, col_place: colPlace,
     opt_b: optB, opt_c: optC, opt_j: optJ,
     _store: store, _rawClass: rawClass
   };
@@ -606,13 +656,19 @@ function parseAirtrip_(body) {
   var bMatch = body.match(/ベビーシート[^\d]*(\d*)/); if (bMatch) optB = parseInt(bMatch[1], 10) || 1;
   var cMatch = body.match(/チャイルドシート[^\d]*(\d*)/); if (cMatch) optC = parseInt(cMatch[1], 10) || 1;
   var jMatch = body.match(/ジュニアシート[^\d]*(\d*)/); if (jMatch) optJ = parseInt(jMatch[1], 10) || 1;
+  // ★ 場所抽出（エアトリ: 出発/返却営業所、HP形式の場所名にもフォールバック）
+  var retStore = extractField_(body, '返却営業所');
+  var delPlace = extractDeliveryPlace_(body) || store || '';
+  var colPlace = extractCollectionPlace_(body) || retStore || '';
+  var visitType = delPlace ? 'DEL' : '';
+  var returnType = colPlace ? 'COL' : '';
   return {
     id: id, ota: 'O', name: nameKana,
     lend_date: lend.date, lend_time: lend.time,
     return_date: ret.date, return_time: ret.time,
     vehicle: vehicleClass, people: 0, insurance: insurance,
     price: price, status: '確定', tel: tel, mail: mail,
-    flight: flight, visit_type: '', del_place: '', col_place: '',
+    flight: flight, visit_type: visitType, del_place: delPlace, col_place: colPlace,
     opt_b: optB, opt_c: optC, opt_j: optJ,
     _store: store, _rawClass: rawClass
   };
@@ -689,6 +745,22 @@ function parseOfficial_(body) {
   var colPlace = colPlaceMatch ? colPlaceMatch[1].trim() : '';
   var addressMatch = body.match(/【お届け場所住所】\s*\n\s*(.+)/);
   var address = addressMatch ? addressMatch[1].trim() : '';
+
+  // ★ 店舗判定: メール本文から店舗名を抽出
+  var hpStore = '';
+  var storeMatch = body.match(/【(?:ご利用|利用)?店舗[名]?】\s*\n?\s*(.+)/);
+  if (storeMatch) {
+    hpStore = storeMatch[1].trim();
+  } else {
+    // フォールバック: 本文全体から店舗キーワードを検索
+    if (/那覇店|沖縄店|那覇空港/.test(body)) hpStore = '那覇';
+    else if (/札幌店|札幌デリバリー/.test(body)) hpStore = '札幌';
+    // 住所・場所からも推定
+    if (!hpStore && /沖縄県|那覇市/.test(address + delPlace + colPlace)) hpStore = '那覇';
+    if (!hpStore && /北海道|札幌市/.test(address + delPlace + colPlace)) hpStore = '札幌';
+  }
+  if (hpStore) Logger.log('[Official] Store detected: ' + hpStore);
+
   return {
     id: id, ota: 'HP', name: name,
     lend_date: lend.date, lend_time: lend.time,
@@ -697,7 +769,7 @@ function parseOfficial_(body) {
     price: price, status: '確定', tel: tel, mail: mail,
     flight: '', visit_type: '', del_place: delPlace, col_place: colPlace,
     opt_b: optB, opt_c: optC, opt_j: optJ,
-    _store: '', _rawClass: vehicleClass, _address: address
+    _store: hpStore, _rawClass: vehicleClass, _address: address
   };
 }
 
@@ -838,8 +910,31 @@ function supabaseDelete_(table, queryParams) {
 // Reservation DB Operations
 // ============================================================
 function reservationExists_(reservationId) {
-  var rows = supabaseGet_('reservations', 'id=eq.' + encodeURIComponent(reservationId) + '&select=id,status,opt_b,opt_c,opt_j,tel,mail,flight,people,price');
+  var rows = supabaseGet_('reservations', 'id=eq.' + encodeURIComponent(reservationId) + '&select=id,status,opt_b,opt_c,opt_j,tel,mail,flight,people,price,del_place,col_place,visit_type,return_type,insurance');
   return rows.length > 0 ? rows[0] : null;
+}
+
+// ★ 場所パッチ時にtasks・placesテーブルも同期（2026-04-15追加）
+function patchTaskPlaces_(reservationId, delPlace, colPlace) {
+  var encId = encodeURIComponent(reservationId);
+  if (delPlace) {
+    supabaseUpdate_('tasks', '_id=eq.d-' + encId, {place: delPlace});
+    Logger.log('Patched DEL task place: ' + reservationId + ' → ' + delPlace);
+  }
+  if (colPlace) {
+    supabaseUpdate_('tasks', '_id=eq.c-' + encId, {place: colPlace});
+    Logger.log('Patched COL task place: ' + reservationId + ' → ' + colPlace);
+    // DELタスクのcol_placeも更新（OPシート表示用）
+    supabaseUpdate_('tasks', '_id=eq.d-' + encId, {col_place: colPlace});
+  }
+  // placesテーブルも更新
+  var placePatch = {};
+  if (delPlace) placePatch.del_place = delPlace;
+  if (colPlace) placePatch.col_place = colPlace;
+  if (Object.keys(placePatch).length > 0) {
+    supabaseUpdate_('places', 'reservation_id=eq.' + encId, placePatch);
+    Logger.log('Patched places table: ' + reservationId);
+  }
 }
 
 // ★ キャンセル済みかどうか（再予約判定用）

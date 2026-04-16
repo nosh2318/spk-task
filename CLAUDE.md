@@ -88,6 +88,62 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 ## 未使用テーブル
 - **vehicle_twins**: テーブルは存在するがデータ空。APP・GASのどちらでも未使用。配車は`fleet`テーブルで管理。手を入れる必要なし。
 
+## 2026-04-15 修正履歴
+
+### GAS場所抽出の根本修正（全OTAパーサー）
+- **問題**: KUI82098（原田奈津子、エアトリ、5/3-5/5）のDEL場所が「ジャスマックプラザホテル札幌」（誤）→正しくは「ベッセルイン札幌中島公園」、COL場所が空→正しくは「札幌駅」
+- **根本原因（3層）**:
+  1. **GASパーサー**: `parseAirtrip_`含む全4 OTAパーサー（J/R/S/O）が `del_place:'', col_place:''` をハードコード。HP以外で場所を一切抽出していなかった
+  2. **重複パッチ**: OTA自動登録GAS(30分)が先に予約作成→メール取込GASの重複パッチに `del_place`/`col_place`/`visit_type`/`return_type` が含まれていない→補完されない
+  3. **CSV手入力**: 場所が空のまま→スプシで手入力→別予約のホテル名を誤入力→APP場所CSV取込で上書き
+- **修正内容（gas-email-import-v2.gs）**:
+  1. `extractDeliveryPlace_(body)` / `extractCollectionPlace_(body)` 共通関数追加（HP形式【お届け場所名】等 + OTA共通パターン）
+  2. 全4 OTAパーサー（J/R/S/O）に場所抽出を追加（HP形式フォールバック + OTA営業所名）
+  3. 重複パッチに `del_place`/`col_place`/`visit_type`/`return_type` を追加
+  4. `patchTaskPlaces_(reservationId, delPlace, colPlace)` 関数追加（場所パッチ時にtasks+placesテーブルも自動同期）
+  5. `reservationExists_` のselect句に場所関連フィールドを追加
+  - **GASエディタにも貼り付け済み**
+- **DB手動修正**: KUI82098の3テーブル（reservations/places/tasks）を正しい値に修正済み
+  - reservations: del_place=ベッセルイン札幌中島公園, col_place=札幌駅, visit_type=DEL, return_type=COL
+  - places: 同上
+  - tasks(DEL): place=ベッセルイン札幌中島公園, col_place=札幌駅
+  - tasks(COL): place=札幌駅
+- **教訓**: 
+  - 全OTAパーサーで場所抽出を実装すること（HP形式フォールバックで取れるケースがある）
+  - 重複パッチは全フィールド網羅すること（新フィールド追加時はパッチ対象にも追加）
+  - CSV手入力は元メールと照合してから入力すること
+
+## 2026-04-14 修正履歴
+
+### 補償種類（insurance）検出の根本修正（札幌・那覇両方）
+- **問題**: エアトリ予約 C260300013 の補償が「免責」なのに「NOC」と誤登録されていた
+- **根本原因**:
+  1. 全OTAパーサーが免責/なしの2値しか検出せず、フル・NOCを正しく判定できなかった
+  2. OTA自動登録GAS(30分)が先に予約作成(insurance空)→メール取込GAS(15分)が重複パッチする際にinsuranceフィールドが含まれていなかった
+- **修正内容（札幌 gas-email-import-v2.gs）**:
+  1. `detectInsurance_(text)` 統一関数を追加（優先順: フル > NOC > 免責 > なし、否定パターン除外付き）
+  2. 全5パーサー（じゃらん/楽天/skyticket/エアトリ/HP）を `detectInsurance_()` に統一
+  3. 重複予約パッチに insurance フィールドを追加（既存値が空or'なし'の場合のみ上書き）
+  - コミット: `e9bec1f`, `07fa7fe`
+  - **GASエディタにも貼り付け済み**
+- **修正内容（那覇 gas/Code.gs）**:
+  1. 同じ `detectInsurance_()` 関数を追加
+  2. 全7パーサー（じゃらん/楽天/skyticket/エアトリ/HP/GoGoOut/レンタカードットコム）を統一
+  - **GASエディタにも貼り付け済み**
+- **DB修正**: 誤った補償値の予約4件を修正済み
+  - C260300013: NOC→免責（tasks.insuranceも修正）
+  - DY00000000924: NOC→免責
+  - RC42461096461430490: NOC→免責
+  - DY00000000928: NOC→免責
+- **教訓**: 新OTA追加時は `detectInsurance_()` を必ず使用すること
+
+### 車両損傷チェックAPP: 本日のみ予約表示修正
+- **問題**: 貸出チェック画面に未来の予約（5/17, 9/17等）が表示されていた
+- **修正**: `loadVehicles` クエリを `lte('lend_date',today).gte('return_date',today)` に変更（本日貸出中の車両のみ表示）
+- **追加**: 「🚗 本日貸出」「📹 本日返却」ラベルをカードに表示
+- **sw.js**: v6→v7（キャッシュクリア）
+- コミット: `3f96a34`, `e1cdd2d`, `8aa1dfb`
+
 ## 2026-04-12 修正履歴
 
 ### 場所CSV再取込時のタスク同期バグ修正
