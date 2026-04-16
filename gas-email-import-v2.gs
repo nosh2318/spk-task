@@ -1056,6 +1056,23 @@ function getOverlappingMaintenance_(lendDate, returnDate) {
 // ============================================================
 // Slack Notifications
 // ============================================================
+// ★ 札幌店の予約通知チャネル（Slack Bot APIでダイレクト投稿）
+var SPK_RESV_CHANNEL = 'C08TDTPEB36';  // #sapporo_reservation
+
+// Slack Bot APIで投稿、失敗時はemail fallback（2026-04-17変更: 那覇チャネルへの誤配信防止）
+function sendSlackToSpk_(subject, body) {
+  var posted = postToSlackChannel_(SPK_RESV_CHANNEL, body);
+  if (!posted) {
+    // Bot Token未設定 or 投稿失敗時はemailでフォールバック
+    try {
+      MailApp.sendEmail(getSlackEmail_(), subject, body);
+      Logger.log('[Slack] Fallback email sent: ' + subject);
+    } catch (e) {
+      Logger.log('[Slack] Both bot API and email failed: ' + e.message);
+    }
+  }
+}
+
 function sendSlackSuccess_(items) {
   var lines = ['✅ 札幌店新規予約取込完了通知', ''];
   items.forEach(function(r) {
@@ -1065,7 +1082,7 @@ function sendSlackSuccess_(items) {
     lines.push('');
   });
   lines.push('合計: ' + items.length + '件');
-  MailApp.sendEmail(getSlackEmail_(), '✅ 札幌店新規予約取込完了通知 ' + items.length + '件', lines.join('\n'));
+  sendSlackToSpk_('✅ 札幌店新規予約取込完了通知 ' + items.length + '件', lines.join('\n'));
   Logger.log('Slack success notification sent: ' + items.length + '件');
 }
 
@@ -1078,7 +1095,7 @@ function sendSlackFailure_(items) {
     lines.push('');
   });
   lines.push('合計: ' + items.length + '件 ※手動対応が必要です');
-  MailApp.sendEmail(getSlackEmail_(), '❌ 札幌店新規予約取込失敗通知 ' + items.length + '件', lines.join('\n'));
+  sendSlackToSpk_('❌ 札幌店新規予約取込失敗通知 ' + items.length + '件', lines.join('\n'));
   Logger.log('Slack failure notification sent: ' + items.length + '件');
 }
 
@@ -1089,7 +1106,7 @@ function sendSlackCancel_(items) {
   });
   lines.push('');
   lines.push('合計: ' + items.length + '件');
-  MailApp.sendEmail(getSlackEmail_(), '🔄 札幌店予約キャンセル処理 ' + items.length + '件', lines.join('\n'));
+  sendSlackToSpk_('🔄 札幌店予約キャンセル処理 ' + items.length + '件', lines.join('\n'));
   Logger.log('Slack cancel notification sent: ' + items.length + '件');
 }
 
