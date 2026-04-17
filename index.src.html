@@ -62,7 +62,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v479';
+  var CV='spk-v480';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
@@ -2284,7 +2284,7 @@ async function saveMonthlySnapshot(store,ym,data,vehicles,fleet,kpiFlags,kpiTabl
    経営管理タブ (2026-04-17 追加)
    売上入力 / PL / CF / ダッシュボード / コスト入力
    - sales_entries を Excel「売上入力」の代わりに直接編集
-   - PL/CF は v_monthly_pl / v_monthly_cf ビューから取得
+   - PL/CF は reservations から直接計算（入金サイクルは設定タブ参照）
    ========================================== */
 function ManagementTab({store}){
   const[sub,setSub]=useState("dashboard");
@@ -2296,11 +2296,8 @@ function ManagementTab({store}){
   const[salesFilter,setSalesFilter]=useState({ym:"",channel:"",vt:""});
   const[editing,setEditing]=useState(null); // {id,...}
   const[newEntry,setNewEntry]=useState(null);
-  // PL/CF
-  const[plData,setPlData]=useState([]);
-  const[cfData,setCfData]=useState([]);
+  // PL/CF (computed from dbResvs in plPivot/cfPivot useMemos)
   // コスト入力
-  const[costAccounts,setCostAccounts]=useState([]);
   const[costRows,setCostRows]=useState([]);
   const[costYm,setCostYm]=useState("");
   // 当月ダッシュボード
@@ -2333,17 +2330,7 @@ function ManagementTab({store}){
 
   const storeLabel=store==="spk"?"札幌店":(store==="nha"?"那覇店":store);
 
-  // チャネルマスタロード
-  useEffect(()=>{if(!sb)return;(async()=>{
-    const{data,error}=await sb.from("channels_master").select("*").eq("is_active",true).order("display_order");
-    if(!error&&data)setChannels(data);
-  })();},[]);
-
-  // コスト科目ロード
-  useEffect(()=>{if(!sb)return;(async()=>{
-    const{data}=await sb.from("cost_accounts_tree").select("*").eq("store",store).eq("is_active",true).order("category").order("display_order");
-    if(data)setCostAccounts(data);
-  })();},[store]);
+  // チャネル一覧（固定定義 — DB不使用）
 
   // 売上ロード
   const loadSales=useCallback(async(opts={})=>{
@@ -2359,45 +2346,22 @@ function ManagementTab({store}){
     setLoading(false);
   },[store]);
 
-  // PLロード (v_monthly_pl + 泊数集計を sales_entries から合成)
-  const[plDaysByYm,setPlDaysByYm]=useState({}); // {ym: {sum, cnt}}
-  const loadPL=useCallback(async()=>{
-    if(!sb)return;
-    setLoading(true);
-    const[{data:pl,error:e1},{data:se,error:e2}]=await Promise.all([
-      sb.from("v_monthly_pl").select("*").eq("store",store).order("year_month",{ascending:false}),
-      sb.from("sales_entries").select("fiscal_month,rental_days").eq("store",store),
-    ]);
-    if(e1)setMsg("PL読込失敗: "+e1.message);
-    else setPlData(pl||[]);
-    // 月別泊数集計
-    const agg={};
-    (se||[]).forEach(r=>{
-      const ym=r.fiscal_month;if(!ym)return;
-      if(!agg[ym])agg[ym]={sum:0,cnt:0};
-      const d=Number(r.rental_days);
-      if(d>0){agg[ym].sum+=d;agg[ym].cnt++;}
-    });
-    setPlDaysByYm(agg);
-    setLoading(false);
-  },[store]);
-
-  // CFロード
-  const loadCF=useCallback(async()=>{
-    if(!sb)return;
-    setLoading(true);
-    const{data,error}=await sb.from("v_monthly_cf").select("*").eq("store",store).order("year_month",{ascending:false});
-    if(error)setMsg("CF読込失敗: "+error.message);
-    else setCfData(data||[]);
-    setLoading(false);
-  },[store]);
-
-  // コストロード
+  // コストロード（app_settingsベース）
   const loadCost=useCallback(async(ym)=>{
     if(!sb||!ym)return;
-    const{data}=await sb.from("cost_entries").select("*").eq("store",store).eq("year_month",ym);
-    setCostRows(data||[]);
+    const key="cost_"+store+"_"+ym;
+    const{data}=await sb.from("app_settings").select("*").eq("key",key).single();
+    if(data&&data.value)try{setCostRows(JSON.parse(data.value));}catch(e){setCostRows([]);}
+    else setCostRows([]);
   },[store]);
+  // コスト保存
+  const saveCostEntry=useCallback(async(ym,acctCode,amount,note)=>{
+    const updated=[...costRows.filter(r=>r.account_code!==acctCode),{account_code:acctCode,amount:parseInt(amount)||0,note:note||""}].filter(r=>r.amount>0||r.note);
+    setCostRows(updated);
+    if(!sb)return;
+    const key="cost_"+store+"_"+ym;
+    await sb.from("app_settings").upsert({key,value:JSON.stringify(updated)},{onConflict:"key"});
+  },[store,costRows]);
 
   // 経営DB: データロード（ページネーション付き）
   const loadDbAll=useCallback(async(table)=>{
@@ -2414,7 +2378,7 @@ function ManagementTab({store}){
   },[]);
 
   useEffect(()=>{
-    if(sub!=="exceldash"||!sb)return;
+    if(!["exceldash","pl","cf","dashboard"].includes(sub)||!sb)return;
     setDbLoading2(true);
     const isSpk=dbStore==="spk";
     Promise.all([
@@ -2621,11 +2585,7 @@ function ManagementTab({store}){
 
   // サブタブ切替時にロード
   useEffect(()=>{
-    if(sub==="sales")loadSales(salesFilter);
-    else if(sub==="pl")loadPL();
-    else if(sub==="cf")loadCF();
-    else if(sub==="dashboard"){loadPL();loadCF();}
-    else if(sub==="cost"){loadCost(costYm||dashYm);if(!costYm)setCostYm(dashYm);}
+    if(sub==="cost"){loadCost(costYm||dashYm);if(!costYm)setCostYm(dashYm);}
   },[sub]);
 
   // 売上追加
@@ -2689,75 +2649,104 @@ function ManagementTab({store}){
   };
 
   // コスト保存
-  const saveCost=async(account_code,amount,note)=>{
-    if(!costYm)return;
-    const payload={store,year_month:costYm,account_code,amount:parseInt(amount||0)||0,note:note||null};
-    const{error}=await sb.from("cost_entries").upsert(payload,{onConflict:"store,year_month,account_code"});
-    if(error)setMsg("コスト保存失敗: "+error.message);
-    else{setMsg("保存OK");loadCost(costYm);}
-  };
-
   const fmt=(n)=>n==null?"-":Number(n).toLocaleString();
   const fmtM=(n)=>n==null?"-":"¥"+Math.round(n/10000).toLocaleString()+"万";
 
   // PLをピボット化（year_month × channel）
+  // PLピボット（reservationsから直接計算）
   const plPivot=useMemo(()=>{
+    const isSpk=dbStore==="spk";
+    const rdKey=isSpk?"return_date":"end_date";
+    const ldKey=isSpk?"lend_date":"start_date";
     const ymSet=new Set(),chSet=new Set();
     const map={};
-    (plData||[]).forEach(r=>{
-      ymSet.add(r.year_month);chSet.add(r.channel);
-      map[r.year_month+"|"+r.channel]={revenue:r.revenue||0,count:r.booking_count||0};
+    const daysByYm={};
+    const active=dbResvs.filter(r=>r.status!=="cancelled"&&r.status!=="キャンセル"&&r.status!=="cancel");
+    active.forEach(r=>{
+      const rd=r[rdKey];if(!rd)return;
+      const ym=rd.slice(0,7);
+      const ch=DB_OTA_MAP[r.ota]||"その他売上";
+      const bp=Number(r.base_price)||0,op=Number(r.option_price)||0,dc=Number(r.discount)||0;
+      const revenue=(bp>0||op>0)?(bp+op-dc):(Number(r.price)||0);
+      ymSet.add(ym);chSet.add(ch);
+      const key=ym+"|"+ch;
+      if(!map[key])map[key]={revenue:0,count:0};
+      map[key].revenue+=revenue;
+      map[key].count+=1;
+      // 泊数
+      const ld=r[ldKey];
+      if(ld&&rd){
+        const d0=new Date(ld.slice(0,10)),d1=new Date(rd.slice(0,10));
+        const nights=Math.max(1,Math.round((d1-d0)/(86400000)));
+        if(!daysByYm[ym])daysByYm[ym]={sum:0,cnt:0};
+        daysByYm[ym].sum+=nights;daysByYm[ym].cnt+=1;
+      }
     });
     const yms=Array.from(ymSet).sort().reverse();
-    const chs=(channels.map(c=>c.name)).filter(c=>chSet.has(c)).concat(
-      Array.from(chSet).filter(c=>!channels.find(ch=>ch.name===c))
-    );
-    return{yms,chs,map};
-  },[plData,channels]);
+    const chOrder=["オフィシャル","じゃらん","楽天","エアトリ","スカイチケット","レンタカードットコム","その他売上"];
+    const chs=chOrder.filter(c=>chSet.has(c)).concat(Array.from(chSet).filter(c=>!chOrder.includes(c)));
+    return{yms,chs,map,daysByYm};
+  },[dbResvs,dbStore]);
 
-  // CFピボット
+  // CFピボット（reservations + 入金サイクルから計算）
   const cfPivot=useMemo(()=>{
+    const isSpk=dbStore==="spk";
+    const rdKey=isSpk?"return_date":"end_date";
+    // チャネル入金サイクルマップ
+    const cycleMap={};
+    (mgSettings.channels||[]).forEach(c=>{cycleMap[c.name]=c.cycle||0;});
     const ymSet=new Set(),chSet=new Set();
     const map={};
-    (cfData||[]).forEach(r=>{
-      ymSet.add(r.year_month);chSet.add(r.channel);
-      map[r.year_month+"|"+r.channel]={cash_in:r.cash_in||0,count:r.booking_count||0};
+    const active=dbResvs.filter(r=>r.status!=="cancelled"&&r.status!=="キャンセル"&&r.status!=="cancel");
+    active.forEach(r=>{
+      const rd=r[rdKey];if(!rd)return;
+      const ch=DB_OTA_MAP[r.ota]||"その他売上";
+      const bp=Number(r.base_price)||0,op=Number(r.option_price)||0,dc=Number(r.discount)||0;
+      const revenue=(bp>0||op>0)?(bp+op-dc):(Number(r.price)||0);
+      // 入金月 = 売上月 + cycle月
+      const cycle=cycleMap[ch]||0;
+      const [sy,sm]=rd.slice(0,7).split("-").map(Number);
+      let ny=sy,nm=sm+cycle;
+      while(nm>12){nm-=12;ny++;}
+      const cashYm=ny+"-"+String(nm).padStart(2,"0");
+      ymSet.add(cashYm);chSet.add(ch);
+      const key=cashYm+"|"+ch;
+      if(!map[key])map[key]={cash_in:0,count:0};
+      map[key].cash_in+=revenue;
+      map[key].count+=1;
     });
     const yms=Array.from(ymSet).sort().reverse();
-    const chs=(channels.map(c=>c.name)).filter(c=>chSet.has(c)).concat(
-      Array.from(chSet).filter(c=>!channels.find(ch=>ch.name===c))
-    );
+    const chOrder=["オフィシャル","じゃらん","楽天","エアトリ","スカイチケット","レンタカードットコム","その他売上"];
+    const chs=chOrder.filter(c=>chSet.has(c)).concat(Array.from(chSet).filter(c=>!chOrder.includes(c)));
     return{yms,chs,map};
-  },[cfData,channels]);
+  },[dbResvs,dbStore,mgSettings]);
 
-  // 当月ダッシュボード用: sales_entries から直接取得（rental_days 取得のため）
-  const[dashRows,setDashRows]=useState([]);
-  useEffect(()=>{
-    if(!sb||sub!=="dashboard")return;
-    (async()=>{
-      const{data}=await sb.from("sales_entries").select("base_amount,option_amount,discount,rental_days,channel,vehicle_type").eq("store",store).eq("fiscal_month",dashYm);
-      setDashRows(data||[]);
-    })();
-  },[sub,store,dashYm]);
-
-  // 当月ダッシュボード集計
+  // 当月ダッシュボード集計（reservationsベース / PLピボットから取得）
   const dashSummary=useMemo(()=>{
-    const cfNow=cfData.filter(r=>r.year_month===dashYm);
-    const cfIn=cfNow.reduce((a,b)=>a+(b.cash_in||0),0);
-    const plRev=dashRows.reduce((a,b)=>a+((b.base_amount||0)+(b.option_amount||0)-(b.discount||0)),0);
-    const plCnt=dashRows.length;
-    const daysSum=dashRows.reduce((a,b)=>a+(Number(b.rental_days)||0),0);
-    const daysCnt=dashRows.filter(r=>r.rental_days!=null&&Number(r.rental_days)>0).length;
-    const avgNights=daysCnt>0?(daysSum/daysCnt):0;
-    const unitPrice=plCnt>0?(plRev/plCnt):0; // 1予約あたり単価
-    const dailyRate=daysSum>0?(plRev/daysSum):0; // 1日あたり単価
+    const isSpk=dbStore==="spk";
+    const rdKey=isSpk?"return_date":"end_date";
+    const ldKey=isSpk?"lend_date":"start_date";
+    const active=dbResvs.filter(r=>r.status!=="cancelled"&&r.status!=="キャンセル"&&r.status!=="cancel");
+    const ym=dashYm;
+    let plRev=0,plCnt=0,daysSum=0,daysCnt=0;
     const byCh={};
-    dashRows.forEach(r=>{
-      const rev=(r.base_amount||0)+(r.option_amount||0)-(r.discount||0);
-      byCh[r.channel]=(byCh[r.channel]||0)+rev;
+    active.forEach(r=>{
+      const rd=r[rdKey];if(!rd||rd.slice(0,7)!==ym)return;
+      const ch=DB_OTA_MAP[r.ota]||"その他売上";
+      const bp=Number(r.base_price)||0,op=Number(r.option_price)||0,dc=Number(r.discount)||0;
+      const rev=(bp>0||op>0)?(bp+op-dc):(Number(r.price)||0);
+      plRev+=rev;plCnt+=1;
+      byCh[ch]=(byCh[ch]||0)+rev;
+      const ld=r[ldKey];
+      if(ld&&rd){const d0=new Date(ld.slice(0,10)),d1=new Date(rd.slice(0,10));const n=Math.max(1,Math.round((d1-d0)/86400000));daysSum+=n;daysCnt++;}
     });
+    const avgNights=daysCnt>0?(daysSum/daysCnt):0;
+    const unitPrice=plCnt>0?(plRev/plCnt):0;
+    const dailyRate=daysSum>0?(plRev/daysSum):0;
+    // CF入金（当月入金分）
+    const cfIn=cfPivot.chs.reduce((a,ch)=>a+((cfPivot.map[ym+"|"+ch]||{}).cash_in||0),0);
     return{plRev,plCnt,cfIn,byCh,avgNights,daysSum,unitPrice,dailyRate};
-  },[dashRows,cfData,dashYm]);
+  },[dbResvs,dbStore,dashYm,cfPivot]);
 
   const subTabs=[
     {id:"exceldash",l:"📊 経営DB"},
@@ -3346,7 +3335,7 @@ function ManagementTab({store}){
       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
         <span style={{fontSize:12,color:"#64748b"}}>対象月:</span>
         <input type="month" value={dashYm} onChange={e=>setDashYm(e.target.value)} style={{padding:"4px 8px",fontSize:12,border:"1px solid #cbd5e1",borderRadius:6}}/>
-        <button onClick={()=>{loadPL();loadCF();}} style={btn("#0891b2")}>↻ 再読込</button>
+        <button onClick={()=>setSub("dashboard")} style={btn("#0891b2")}>↻ 再読込</button>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:10,marginBottom:16}}>
         <div style={card}><div style={lbl}>当月売上 (計上)</div><div style={val}>{fmtM(dashSummary.plRev)}</div><div style={{fontSize:10,color:"#64748b"}}>{dashSummary.plCnt}件</div></div>
@@ -3464,25 +3453,31 @@ function ManagementTab({store}){
 
     {/* --- PL --- */}
     {sub==="pl"&&<div>
-      <div style={{marginBottom:10,fontSize:11,color:"#64748b"}}>📘 月次PL = 計上月（返却日ベース）の売上集計 + 平均泊数</div>
-      <button onClick={loadPL} style={btn("#0891b2")}>↻ 再読込</button>
-      <div style={{overflow:"auto",maxHeight:"70vh",marginTop:10,border:"1px solid #e2e8f0",borderRadius:8}}>
+      <div style={{marginBottom:10,fontSize:11,color:"#64748b"}}>📘 月次PL = 計上月（返却日ベース）のチャネル別売上集計 + 平均泊数 + 客単価</div>
+      <div style={{display:"flex",gap:6,marginBottom:10}}>
+        {["nha","spk"].map(s=><button key={s} onClick={()=>setDbStore(s)} style={{padding:"4px 12px",fontSize:11,fontWeight:700,borderRadius:6,border:"none",cursor:"pointer",background:dbStore===s?"#1e40af":"#e2e8f0",color:dbStore===s?"#fff":"#334155"}}>{s==="nha"?"那覇":"札幌"}</button>)}
+      </div>
+      {dbLoading2?<div style={{padding:24,textAlign:"center",color:"#94a3b8"}}>読込中...</div>:
+      <div style={{overflow:"auto",maxHeight:"70vh",border:"1px solid #e2e8f0",borderRadius:8}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
           <thead><tr>
             <th style={th}>年月</th>
             {plPivot.chs.map(ch=><th key={ch} style={{...th,textAlign:"right"}}>{ch}</th>)}
-            <th style={{...th,textAlign:"right",background:"#dbeafe"}}>合計</th>
+            <th style={{...th,textAlign:"right",background:"#dbeafe"}}>売上合計</th>
             <th style={{...th,textAlign:"right"}}>件数</th>
             <th style={{...th,textAlign:"right",background:"#eef2ff"}}>平均泊数</th>
             <th style={{...th,textAlign:"right"}}>客単価</th>
+            <th style={{...th,textAlign:"right"}}>日単価</th>
           </tr></thead>
           <tbody>
             {plPivot.yms.map(ym=>{
               const total=plPivot.chs.reduce((a,ch)=>a+((plPivot.map[ym+"|"+ch]||{}).revenue||0),0);
               const cnt=plPivot.chs.reduce((a,ch)=>a+((plPivot.map[ym+"|"+ch]||{}).count||0),0);
-              const d=plDaysByYm[ym]||{sum:0,cnt:0};
+              const d=(plPivot.daysByYm||{})[ym]||{sum:0,cnt:0};
               const avgN=d.cnt>0?(d.sum/d.cnt):0;
               const unit=cnt>0?(total/cnt):0;
+              const daily=d.sum>0?(total/d.sum):0;
+              const otaTotal=plPivot.chs.filter(c=>c!=="オフィシャル"&&c!=="その他売上").reduce((a,ch)=>a+((plPivot.map[ym+"|"+ch]||{}).revenue||0),0);
               return <tr key={ym}>
                 <td style={{...td,fontWeight:700}}>{ym}</td>
                 {plPivot.chs.map(ch=>{
@@ -3491,30 +3486,53 @@ function ManagementTab({store}){
                 })}
                 <td style={{...td,textAlign:"right",fontWeight:800,background:"#eff6ff"}}>¥{fmt(total)}</td>
                 <td style={{...td,textAlign:"right"}}>{cnt}</td>
-                <td style={{...td,textAlign:"right",background:"#eef2ff",fontWeight:700,color:"#4338ca"}}>{avgN>0?avgN.toFixed(2):"-"}</td>
+                <td style={{...td,textAlign:"right",background:"#eef2ff",fontWeight:700,color:"#4338ca"}}>{avgN>0?avgN.toFixed(1):"-"}</td>
                 <td style={{...td,textAlign:"right"}}>{unit>0?"¥"+fmt(Math.round(unit)):"-"}</td>
+                <td style={{...td,textAlign:"right",color:"#059669"}}>{daily>0?"¥"+fmt(Math.round(daily)):"-"}</td>
               </tr>;
             })}
-            {plPivot.yms.length===0&&<tr><td colSpan={plPivot.chs.length+5} style={{padding:24,textAlign:"center",color:"#94a3b8",fontSize:12}}>データなし</td></tr>}
+            {plPivot.yms.length>0&&(()=>{
+              const grandTotal=plPivot.yms.reduce((a,ym)=>a+plPivot.chs.reduce((b,ch)=>b+((plPivot.map[ym+"|"+ch]||{}).revenue||0),0),0);
+              const grandCnt=plPivot.yms.reduce((a,ym)=>a+plPivot.chs.reduce((b,ch)=>b+((plPivot.map[ym+"|"+ch]||{}).count||0),0),0);
+              return <tr style={{background:"#f0f9ff",fontWeight:800}}>
+                <td style={{...td,fontWeight:900}}>累計</td>
+                {plPivot.chs.map(ch=>{
+                  const v=plPivot.yms.reduce((a,ym)=>a+((plPivot.map[ym+"|"+ch]||{}).revenue||0),0);
+                  return <td key={ch} style={{...td,textAlign:"right"}}>{v>0?"¥"+fmt(v):"-"}</td>;
+                })}
+                <td style={{...td,textAlign:"right",background:"#dbeafe"}}>¥{fmt(grandTotal)}</td>
+                <td style={{...td,textAlign:"right"}}>{grandCnt}</td>
+                <td style={td}>-</td>
+                <td style={{...td,textAlign:"right"}}>{grandCnt>0?"¥"+fmt(Math.round(grandTotal/grandCnt)):"-"}</td>
+                <td style={td}>-</td>
+              </tr>;
+            })()}
+            {plPivot.yms.length===0&&<tr><td colSpan={plPivot.chs.length+6} style={{padding:24,textAlign:"center",color:"#94a3b8",fontSize:12}}>データなし — 上の店舗ボタンで切り替えてください</td></tr>}
           </tbody>
         </table>
-      </div>
+      </div>}
     </div>}
 
     {/* --- CF --- */}
     {sub==="cf"&&<div>
-      <div style={{marginBottom:10,fontSize:11,color:"#64748b"}}>💰 月次CF = 入金月（チャネル別入金サイクル自動計算）の集計</div>
-      <button onClick={loadCF} style={btn("#0891b2")}>↻ 再読込</button>
-      <div style={{overflow:"auto",maxHeight:"70vh",marginTop:10,border:"1px solid #e2e8f0",borderRadius:8}}>
+      <div style={{marginBottom:10,fontSize:11,color:"#64748b"}}>💰 月次CF = 入金月（チャネル別入金サイクル自動計算）の集計。設定タブの入金サイクルに基づいて売上月→入金月をシフト。</div>
+      <div style={{display:"flex",gap:6,marginBottom:10}}>
+        {["nha","spk"].map(s=><button key={s} onClick={()=>setDbStore(s)} style={{padding:"4px 12px",fontSize:11,fontWeight:700,borderRadius:6,border:"none",cursor:"pointer",background:dbStore===s?"#059669":"#e2e8f0",color:dbStore===s?"#fff":"#334155"}}>{s==="nha"?"那覇":"札幌"}</button>)}
+      </div>
+      <div style={{marginBottom:8,fontSize:10,color:"#94a3b8"}}>入金サイクル: {(mgSettings.channels||[]).map(c=>c.name+"="+c.cycle+"ヶ月").join(" / ")}</div>
+      {dbLoading2?<div style={{padding:24,textAlign:"center",color:"#94a3b8"}}>読込中...</div>:
+      <div style={{overflow:"auto",maxHeight:"70vh",border:"1px solid #e2e8f0",borderRadius:8}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
           <thead><tr>
             <th style={th}>入金月</th>
             {cfPivot.chs.map(ch=><th key={ch} style={{...th,textAlign:"right"}}>{ch}</th>)}
-            <th style={{...th,textAlign:"right",background:"#dcfce7"}}>合計</th>
+            <th style={{...th,textAlign:"right",background:"#dcfce7"}}>入金合計</th>
+            <th style={{...th,textAlign:"right"}}>件数</th>
           </tr></thead>
           <tbody>
             {cfPivot.yms.map(ym=>{
               const total=cfPivot.chs.reduce((a,ch)=>a+((cfPivot.map[ym+"|"+ch]||{}).cash_in||0),0);
+              const cnt=cfPivot.chs.reduce((a,ch)=>a+((cfPivot.map[ym+"|"+ch]||{}).count||0),0);
               return <tr key={ym}>
                 <td style={{...td,fontWeight:700}}>{ym}</td>
                 {cfPivot.chs.map(ch=>{
@@ -3522,58 +3540,91 @@ function ManagementTab({store}){
                   return <td key={ch} style={{...td,textAlign:"right",color:v>0?"#0f172a":"#cbd5e1"}}>{v>0?"¥"+fmt(v):"-"}</td>;
                 })}
                 <td style={{...td,textAlign:"right",fontWeight:800,background:"#f0fdf4"}}>¥{fmt(total)}</td>
+                <td style={{...td,textAlign:"right"}}>{cnt}</td>
               </tr>;
             })}
-            {cfPivot.yms.length===0&&<tr><td colSpan={cfPivot.chs.length+2} style={{padding:24,textAlign:"center",color:"#94a3b8",fontSize:12}}>データなし</td></tr>}
+            {cfPivot.yms.length>0&&(()=>{
+              const grandTotal=cfPivot.yms.reduce((a,ym)=>a+cfPivot.chs.reduce((b,ch)=>b+((cfPivot.map[ym+"|"+ch]||{}).cash_in||0),0),0);
+              return <tr style={{background:"#f0fdf4",fontWeight:800}}>
+                <td style={{...td,fontWeight:900}}>累計</td>
+                {cfPivot.chs.map(ch=>{
+                  const v=cfPivot.yms.reduce((a,ym)=>a+((cfPivot.map[ym+"|"+ch]||{}).cash_in||0),0);
+                  return <td key={ch} style={{...td,textAlign:"right"}}>{v>0?"¥"+fmt(v):"-"}</td>;
+                })}
+                <td style={{...td,textAlign:"right",background:"#dcfce7"}}>¥{fmt(grandTotal)}</td>
+                <td style={td}>-</td>
+              </tr>;
+            })()}
+            {cfPivot.yms.length===0&&<tr><td colSpan={cfPivot.chs.length+3} style={{padding:24,textAlign:"center",color:"#94a3b8",fontSize:12}}>データなし — 上の店舗ボタンで切り替えてください</td></tr>}
           </tbody>
         </table>
-      </div>
+      </div>}
     </div>}
 
     {/* --- コスト入力 --- */}
-    {sub==="cost"&&<div>
-      <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10}}>
-        <span style={{fontSize:12,color:"#64748b"}}>対象月:</span>
-        <input type="month" value={costYm} onChange={e=>{setCostYm(e.target.value);loadCost(e.target.value);}} style={{padding:"4px 8px",fontSize:12,border:"1px solid #cbd5e1",borderRadius:6}}/>
-      </div>
-      {["売上原価","販管費"].map(cat=>{
-        const accts=costAccounts.filter(a=>a.category===cat);
-        if(!accts.length)return null;
-        const catTotal=accts.filter(a=>!a.is_group).reduce((s,a)=>s+((costRows.find(r=>r.account_code===a.account_code)||{}).amount||0),0);
-        return <div key={cat} style={{...card,marginBottom:12}}>
-          <div style={{...h,fontSize:14,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-            <span>{cat}</span>
-            <span style={{fontSize:12,color:"#1e40af"}}>合計 ¥{fmt(catTotal)}</span>
-          </div>
-          <table style={{width:"100%",borderCollapse:"collapse"}}>
-            <tbody>
-              {accts.map(a=>{
-                const cur=costRows.find(r=>r.account_code===a.account_code)||{amount:0,note:""};
-                if(a.is_group){
-                  const childAmt=accts.filter(x=>x.parent_code===a.account_code).reduce((s,x)=>s+((costRows.find(r=>r.account_code===x.account_code)||{}).amount||0),0);
-                  return <tr key={a.account_code} style={{background:"#f8fafc"}}>
-                    <td style={{...td,fontWeight:700,paddingLeft:8}}>{a.account_name}</td>
-                    <td style={{...td,textAlign:"right",fontWeight:700,color:"#1e40af"}}>¥{fmt(childAmt)}</td>
-                    <td style={td}>-</td>
+    {sub==="cost"&&(()=>{
+      const COST_ACCOUNTS=[
+        {cat:"売上原価",items:[
+          {code:"cogs_vehicle_lease",name:"車両リース料"},
+          {code:"cogs_insurance",name:"車両保険料"},
+          {code:"cogs_fuel",name:"燃料費"},
+          {code:"cogs_wash",name:"洗車費"},
+          {code:"cogs_repair",name:"修繕費"},
+          {code:"cogs_toll",name:"有料道路代"},
+          {code:"cogs_parking_rent",name:"駐車場賃料"},
+          {code:"cogs_delivery",name:"配送費"},
+          {code:"cogs_other",name:"その他原価"},
+        ]},
+        {cat:"販管費",items:[
+          {code:"sga_rent",name:"事務所家賃"},
+          {code:"sga_salary",name:"人件費（給与）"},
+          {code:"sga_parttime",name:"人件費（アルバイト）"},
+          {code:"sga_social_ins",name:"社会保険料"},
+          {code:"sga_ota_fee",name:"OTA手数料"},
+          {code:"sga_ad",name:"広告宣伝費"},
+          {code:"sga_telecom",name:"通信費"},
+          {code:"sga_utility",name:"水道光熱費"},
+          {code:"sga_office",name:"事務用品費"},
+          {code:"sga_travel",name:"旅費交通費"},
+          {code:"sga_depreciation",name:"減価償却費"},
+          {code:"sga_professional",name:"業務委託費・士業"},
+          {code:"sga_subscription",name:"サブスクリプション"},
+          {code:"sga_other",name:"その他販管費"},
+        ]},
+      ];
+      return <div>
+        <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10}}>
+          <span style={{fontSize:12,color:"#64748b"}}>対象月:</span>
+          <input type="month" value={costYm} onChange={e=>{setCostYm(e.target.value);loadCost(e.target.value);}} style={{padding:"4px 8px",fontSize:12,border:"1px solid #cbd5e1",borderRadius:6}}/>
+        </div>
+        {COST_ACCOUNTS.map(({cat,items})=>{
+          const catTotal=items.reduce((s,a)=>s+((costRows.find(r=>r.account_code===a.code)||{}).amount||0),0);
+          return <div key={cat} style={{...card,marginBottom:12}}>
+            <div style={{...h,fontSize:14,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span>{cat}</span>
+              <span style={{fontSize:12,color:"#1e40af"}}>合計 ¥{fmt(catTotal)}</span>
+            </div>
+            <table style={{width:"100%",borderCollapse:"collapse"}}>
+              <tbody>
+                {items.map(a=>{
+                  const cur=costRows.find(r=>r.account_code===a.code)||{amount:0,note:""};
+                  return <tr key={a.code}>
+                    <td style={{...td,paddingLeft:8,width:"40%"}}>{a.name}</td>
+                    <td style={{...td,textAlign:"right",width:140}}>
+                      <input type="number" style={{...inp,textAlign:"right"}} defaultValue={cur.amount||0} onBlur={e=>{const v=parseInt(e.target.value||0)||0;if(v!==(cur.amount||0))saveCostEntry(costYm,a.code,v,cur.note);}}/>
+                    </td>
+                    <td style={{...td,width:200}}>
+                      <input style={inp} defaultValue={cur.note||""} placeholder="メモ" onBlur={e=>{if(e.target.value!==(cur.note||""))saveCostEntry(costYm,a.code,cur.amount||0,e.target.value);}}/>
+                    </td>
                   </tr>;
-                }
-                const indent=a.parent_code?20:8;
-                return <tr key={a.account_code}>
-                  <td style={{...td,paddingLeft:indent}}>{a.account_name}</td>
-                  <td style={{...td,textAlign:"right",width:140}}>
-                    <input type="number" style={{...inp,textAlign:"right"}} defaultValue={cur.amount||0} onBlur={e=>{const v=parseInt(e.target.value||0)||0;if(v!==cur.amount)saveCost(a.account_code,v,cur.note);}}/>
-                  </td>
-                  <td style={{...td,width:200}}>
-                    <input style={inp} defaultValue={cur.note||""} placeholder="メモ" onBlur={e=>{if(e.target.value!==(cur.note||""))saveCost(a.account_code,cur.amount||0,e.target.value);}}/>
-                  </td>
-                </tr>;
-              })}
-            </tbody>
-          </table>
-        </div>;
-      })}
-      {costAccounts.length===0&&<div style={{padding:24,textAlign:"center",color:"#94a3b8",fontSize:12}}>コスト科目マスタが空です。mgmt_full_schema.sql を先に Supabase で実行してください。</div>}
-    </div>}
+                })}
+              </tbody>
+            </table>
+          </div>;
+        })}
+        {!costYm&&<div style={{padding:24,textAlign:"center",color:"#94a3b8",fontSize:12}}>対象月を選択してください</div>}
+      </div>;
+    })()}
   </div>;
 }
 
@@ -11086,7 +11137,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.6.16";
+const APP_VERSION="v4.6.17";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
