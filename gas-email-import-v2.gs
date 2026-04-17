@@ -1527,35 +1527,75 @@ function checkPaymentStatus() {
   Logger.log('[PaymentStatus] Checking ' + unpaidRows.length + ' unpaid rows');
 
   var token = getSquareToken_();
-  if (!token) { Logger.log('[PaymentStatus] No SQUARE_API_TOKEN'); return; }
+  if (!token) {
+    Logger.log('[PaymentStatus] No SQUARE_API_TOKEN');
+    postToSlackChannel_(JALAN_PAY_CHANNEL, '🔴 *入金確認システム障害*\nSQUARE_API_TOKENが未設定です。GASスクリプトプロパティを確認してください。');
+    return;
+  }
 
   // Phase 1: Payment Links API でURL→order_idマップ構築
   var linkMap = fetchPaymentLinkMap_(token);
-  if (!linkMap || Object.keys(linkMap).length === 0) {
-    Logger.log('[PaymentStatus] WARNING: Payment Links map is empty');
+  var linkMapSize = linkMap ? Object.keys(linkMap).length : 0;
+
+  // ★ 再発防止: Payment Links APIが0件 = API障害 → Slack通知
+  if (linkMapSize === 0) {
+    Logger.log('[PaymentStatus] CRITICAL: Payment Links map is empty');
+    postToSlackChannel_(JALAN_PAY_CHANNEL,
+      '🔴 *入金確認システム障害*\n' +
+      'Square Payment Links APIが0件を返しました。\n' +
+      '未払い' + unpaidRows.length + '件の入金チェックが実行できません。\n' +
+      '原因候補: APIトークン期限切れ / Square障害 / API仕様変更\n' +
+      '`debugPaymentV3` を手動実行して診断してください。');
+    return;
   }
 
   // Phase 2: 各未払い行のURLからorder_idを解決
   var orderIdsToCheck = [];
+  var unmatchedCount = 0;
+  var unmatchedRows = [];
   for (var i = 0; i < unpaidRows.length; i++) {
     var normalizedUrl = normalizeSquareUrl_(unpaidRows[i].url);
     var orderId = linkMap[normalizedUrl];
     if (orderId) {
       unpaidRows[i].orderId = orderId;
       orderIdsToCheck.push(orderId);
-      Logger.log('[PaymentStatus] URL match: ' + unpaidRows[i].reservationId + ' → order=' + orderId);
     } else {
+      unmatchedCount++;
+      unmatchedRows.push(unpaidRows[i].reservationId);
       Logger.log('[PaymentStatus] No URL match for ' + unpaidRows[i].reservationId + ' url=' + normalizedUrl);
     }
   }
 
+  // ★ 再発防止: 全行URLマッチ失敗 = URL形式変更の可能性 → Slack通知
   if (orderIdsToCheck.length === 0) {
-    Logger.log('[PaymentStatus] No order IDs resolved. Done.');
+    Logger.log('[PaymentStatus] CRITICAL: 0 URL matches out of ' + unpaidRows.length + ' unpaid rows');
+    postToSlackChannel_(JALAN_PAY_CHANNEL,
+      '🔴 *入金確認システム障害*\n' +
+      'Payment Linksは' + linkMapSize + '件取得できましたが、\n' +
+      'スプシ未払い' + unpaidRows.length + '件のURLが1件もマッチしません。\n' +
+      'Square URL形式が変更された可能性があります。\n' +
+      '対象: ' + unmatchedRows.join(', ') + '\n' +
+      '`debugPaymentV3` を手動実行して診断してください。');
     return;
+  }
+
+  // 一部マッチ失敗は警告ログのみ（全体障害ではないので通知は出さない）
+  if (unmatchedCount > 0) {
+    Logger.log('[PaymentStatus] WARNING: ' + unmatchedCount + '/' + unpaidRows.length + ' rows had no URL match: ' + unmatchedRows.join(', '));
   }
 
   // Phase 3: order_idからorderを一括取得
   var orderMap = batchRetrieveOrders_(token, orderIdsToCheck);
+
+  // ★ 再発防止: BatchRetrieveが0件返却 = API障害
+  if (!orderMap || Object.keys(orderMap).length === 0) {
+    Logger.log('[PaymentStatus] CRITICAL: BatchRetrieveOrders returned 0');
+    postToSlackChannel_(JALAN_PAY_CHANNEL,
+      '🔴 *入金確認システム障害*\n' +
+      'Square Orders取得が0件です（' + orderIdsToCheck.length + '件リクエスト）。\n' +
+      'Square API障害の可能性があります。');
+    return;
+  }
 
   // Phase 4: tenders有無で入金判定
   var paidCount = 0;
@@ -1593,14 +1633,12 @@ function checkPaymentStatus() {
 
         Logger.log('[PaymentStatus] ✅ Paid: ' + pay.reservationId + ' ¥' + pay.amount + ' order=' + matched.order_id);
         paidCount++;
-      } else {
-        Logger.log('[PaymentStatus] Not yet paid: ' + pay.reservationId + ' (order exists but no tenders)');
       }
     } catch (e) {
       Logger.log('[PaymentStatus] Error checking ' + pay.reservationId + ': ' + e.message);
     }
   }
-  Logger.log('[PaymentStatus] Done. ' + paidCount + '/' + unpaidRows.length + ' confirmed paid');
+  Logger.log('[PaymentStatus] Done. ' + paidCount + '/' + unpaidRows.length + ' confirmed paid (links=' + linkMapSize + ', matched=' + orderIdsToCheck.length + ', orders=' + Object.keys(orderMap).length + ')');
 }
 
 // ============================================================
