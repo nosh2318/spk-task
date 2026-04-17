@@ -62,7 +62,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v475';
+  var CV='spk-v477';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
@@ -2278,6 +2278,526 @@ async function saveMonthlySnapshot(store,ym,data,vehicles,fleet,kpiFlags,kpiTabl
   const{error}=await sb.from("monthly_snapshots").upsert(row,{onConflict:"store,year_month"});
   if(error)console.error("[Snapshot]",error.message);
   else console.log("[Snapshot] saved",store,ym);
+}
+
+/* ==========================================
+   経営管理タブ (2026-04-17 追加)
+   売上入力 / PL / CF / ダッシュボード / コスト入力
+   - sales_entries を Excel「売上入力」の代わりに直接編集
+   - PL/CF は v_monthly_pl / v_monthly_cf ビューから取得
+   ========================================== */
+function ManagementTab({store}){
+  const[sub,setSub]=useState("dashboard");
+  const[loading,setLoading]=useState(false);
+  const[msg,setMsg]=useState("");
+  const[channels,setChannels]=useState([]);
+  // 売上入力用
+  const[salesRows,setSalesRows]=useState([]);
+  const[salesFilter,setSalesFilter]=useState({ym:"",channel:"",vt:""});
+  const[editing,setEditing]=useState(null); // {id,...}
+  const[newEntry,setNewEntry]=useState(null);
+  // PL/CF
+  const[plData,setPlData]=useState([]);
+  const[cfData,setCfData]=useState([]);
+  // コスト入力
+  const[costAccounts,setCostAccounts]=useState([]);
+  const[costRows,setCostRows]=useState([]);
+  const[costYm,setCostYm]=useState("");
+  // 当月ダッシュボード
+  const[dashYm,setDashYm]=useState(()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");});
+
+  const storeLabel=store==="spk"?"札幌店":(store==="nha"?"那覇店":store);
+
+  // チャネルマスタロード
+  useEffect(()=>{if(!sb)return;(async()=>{
+    const{data,error}=await sb.from("channels_master").select("*").eq("is_active",true).order("display_order");
+    if(!error&&data)setChannels(data);
+  })();},[]);
+
+  // コスト科目ロード
+  useEffect(()=>{if(!sb)return;(async()=>{
+    const{data}=await sb.from("cost_accounts_tree").select("*").eq("store",store).eq("is_active",true).order("category").order("display_order");
+    if(data)setCostAccounts(data);
+  })();},[store]);
+
+  // 売上ロード
+  const loadSales=useCallback(async(opts={})=>{
+    if(!sb)return;
+    setLoading(true);
+    let q=sb.from("sales_entries").select("*").eq("store",store).order("return_date",{ascending:false}).limit(2000);
+    if(opts.ym)q=q.eq("fiscal_month",opts.ym);
+    if(opts.channel)q=q.eq("channel",opts.channel);
+    if(opts.vt)q=q.eq("vehicle_type",opts.vt);
+    const{data,error}=await q;
+    if(error){setMsg("ERROR: "+error.message);}
+    else{setSalesRows(data||[]);setMsg("");}
+    setLoading(false);
+  },[store]);
+
+  // PLロード (v_monthly_pl + 泊数集計を sales_entries から合成)
+  const[plDaysByYm,setPlDaysByYm]=useState({}); // {ym: {sum, cnt}}
+  const loadPL=useCallback(async()=>{
+    if(!sb)return;
+    setLoading(true);
+    const[{data:pl,error:e1},{data:se,error:e2}]=await Promise.all([
+      sb.from("v_monthly_pl").select("*").eq("store",store).order("year_month",{ascending:false}),
+      sb.from("sales_entries").select("fiscal_month,rental_days").eq("store",store),
+    ]);
+    if(e1)setMsg("PL読込失敗: "+e1.message);
+    else setPlData(pl||[]);
+    // 月別泊数集計
+    const agg={};
+    (se||[]).forEach(r=>{
+      const ym=r.fiscal_month;if(!ym)return;
+      if(!agg[ym])agg[ym]={sum:0,cnt:0};
+      const d=Number(r.rental_days);
+      if(d>0){agg[ym].sum+=d;agg[ym].cnt++;}
+    });
+    setPlDaysByYm(agg);
+    setLoading(false);
+  },[store]);
+
+  // CFロード
+  const loadCF=useCallback(async()=>{
+    if(!sb)return;
+    setLoading(true);
+    const{data,error}=await sb.from("v_monthly_cf").select("*").eq("store",store).order("year_month",{ascending:false});
+    if(error)setMsg("CF読込失敗: "+error.message);
+    else setCfData(data||[]);
+    setLoading(false);
+  },[store]);
+
+  // コストロード
+  const loadCost=useCallback(async(ym)=>{
+    if(!sb||!ym)return;
+    const{data}=await sb.from("cost_entries").select("*").eq("store",store).eq("year_month",ym);
+    setCostRows(data||[]);
+  },[store]);
+
+  // サブタブ切替時にロード
+  useEffect(()=>{
+    if(sub==="sales")loadSales(salesFilter);
+    else if(sub==="pl")loadPL();
+    else if(sub==="cf")loadCF();
+    else if(sub==="dashboard"){loadPL();loadCF();}
+    else if(sub==="cost"){loadCost(costYm||dashYm);if(!costYm)setCostYm(dashYm);}
+  },[sub]);
+
+  // 売上追加
+  const addSalesRow=async()=>{
+    if(!newEntry||!newEntry.channel||!newEntry.return_date){setMsg("チャネルと返却日は必須");return;}
+    setLoading(true);
+    const payload={
+      channel:newEntry.channel,
+      return_date:newEntry.return_date,
+      booking_date:newEntry.booking_date||null,
+      base_amount:parseInt(newEntry.base_amount||0)||0,
+      option_amount:parseInt(newEntry.option_amount||0)||0,
+      discount:parseInt(newEntry.discount||0)||0,
+      store:store,
+      rental_days:newEntry.rental_days?parseFloat(newEntry.rental_days):null,
+      vehicle_type:newEntry.vehicle_type||null,
+      delivery:newEntry.delivery||null,
+      resv_no:newEntry.resv_no||null,
+      payment_date:newEntry.payment_date||null,
+      note:newEntry.note||null,
+      source:"app",
+    };
+    const{error}=await sb.from("sales_entries").insert(payload);
+    if(error){setMsg("追加失敗: "+error.message);}
+    else{setMsg("追加OK");setNewEntry(null);loadSales(salesFilter);}
+    setLoading(false);
+  };
+
+  // 売上更新
+  const updateSalesRow=async(row)=>{
+    if(!row||!row.id)return;
+    setLoading(true);
+    const payload={
+      channel:row.channel,
+      return_date:row.return_date,
+      booking_date:row.booking_date||null,
+      base_amount:parseInt(row.base_amount||0)||0,
+      option_amount:parseInt(row.option_amount||0)||0,
+      discount:parseInt(row.discount||0)||0,
+      rental_days:row.rental_days?parseFloat(row.rental_days):null,
+      vehicle_type:row.vehicle_type||null,
+      delivery:row.delivery||null,
+      resv_no:row.resv_no||null,
+      payment_date:row.payment_date||null,
+      note:row.note||null,
+    };
+    const{error}=await sb.from("sales_entries").update(payload).eq("id",row.id);
+    if(error){setMsg("更新失敗: "+error.message);}
+    else{setMsg("更新OK");setEditing(null);loadSales(salesFilter);}
+    setLoading(false);
+  };
+
+  // 売上削除
+  const deleteSalesRow=async(id)=>{
+    if(!confirm("この売上行を削除しますか？ PL/CFから自動的に消えます。"))return;
+    setLoading(true);
+    const{error}=await sb.from("sales_entries").delete().eq("id",id);
+    if(error){setMsg("削除失敗: "+error.message);}
+    else{setMsg("削除OK");loadSales(salesFilter);}
+    setLoading(false);
+  };
+
+  // コスト保存
+  const saveCost=async(account_code,amount,note)=>{
+    if(!costYm)return;
+    const payload={store,year_month:costYm,account_code,amount:parseInt(amount||0)||0,note:note||null};
+    const{error}=await sb.from("cost_entries").upsert(payload,{onConflict:"store,year_month,account_code"});
+    if(error)setMsg("コスト保存失敗: "+error.message);
+    else{setMsg("保存OK");loadCost(costYm);}
+  };
+
+  const fmt=(n)=>n==null?"-":Number(n).toLocaleString();
+  const fmtM=(n)=>n==null?"-":"¥"+Math.round(n/10000).toLocaleString()+"万";
+
+  // PLをピボット化（year_month × channel）
+  const plPivot=useMemo(()=>{
+    const ymSet=new Set(),chSet=new Set();
+    const map={};
+    (plData||[]).forEach(r=>{
+      ymSet.add(r.year_month);chSet.add(r.channel);
+      map[r.year_month+"|"+r.channel]={revenue:r.revenue||0,count:r.booking_count||0};
+    });
+    const yms=Array.from(ymSet).sort().reverse();
+    const chs=(channels.map(c=>c.name)).filter(c=>chSet.has(c)).concat(
+      Array.from(chSet).filter(c=>!channels.find(ch=>ch.name===c))
+    );
+    return{yms,chs,map};
+  },[plData,channels]);
+
+  // CFピボット
+  const cfPivot=useMemo(()=>{
+    const ymSet=new Set(),chSet=new Set();
+    const map={};
+    (cfData||[]).forEach(r=>{
+      ymSet.add(r.year_month);chSet.add(r.channel);
+      map[r.year_month+"|"+r.channel]={cash_in:r.cash_in||0,count:r.booking_count||0};
+    });
+    const yms=Array.from(ymSet).sort().reverse();
+    const chs=(channels.map(c=>c.name)).filter(c=>chSet.has(c)).concat(
+      Array.from(chSet).filter(c=>!channels.find(ch=>ch.name===c))
+    );
+    return{yms,chs,map};
+  },[cfData,channels]);
+
+  // 当月ダッシュボード用: sales_entries から直接取得（rental_days 取得のため）
+  const[dashRows,setDashRows]=useState([]);
+  useEffect(()=>{
+    if(!sb||sub!=="dashboard")return;
+    (async()=>{
+      const{data}=await sb.from("sales_entries").select("base_amount,option_amount,discount,rental_days,channel,vehicle_type").eq("store",store).eq("fiscal_month",dashYm);
+      setDashRows(data||[]);
+    })();
+  },[sub,store,dashYm]);
+
+  // 当月ダッシュボード集計
+  const dashSummary=useMemo(()=>{
+    const cfNow=cfData.filter(r=>r.year_month===dashYm);
+    const cfIn=cfNow.reduce((a,b)=>a+(b.cash_in||0),0);
+    const plRev=dashRows.reduce((a,b)=>a+((b.base_amount||0)+(b.option_amount||0)-(b.discount||0)),0);
+    const plCnt=dashRows.length;
+    const daysSum=dashRows.reduce((a,b)=>a+(Number(b.rental_days)||0),0);
+    const daysCnt=dashRows.filter(r=>r.rental_days!=null&&Number(r.rental_days)>0).length;
+    const avgNights=daysCnt>0?(daysSum/daysCnt):0;
+    const unitPrice=plCnt>0?(plRev/plCnt):0; // 1予約あたり単価
+    const dailyRate=daysSum>0?(plRev/daysSum):0; // 1日あたり単価
+    const byCh={};
+    dashRows.forEach(r=>{
+      const rev=(r.base_amount||0)+(r.option_amount||0)-(r.discount||0);
+      byCh[r.channel]=(byCh[r.channel]||0)+rev;
+    });
+    return{plRev,plCnt,cfIn,byCh,avgNights,daysSum,unitPrice,dailyRate};
+  },[dashRows,cfData,dashYm]);
+
+  const subTabs=[
+    {id:"dashboard",l:"📊 ダッシュボード"},
+    {id:"sales",l:"📝 売上入力"},
+    {id:"pl",l:"📘 PL(月次)"},
+    {id:"cf",l:"💰 CF(月次)"},
+    {id:"cost",l:"🧾 コスト入力"},
+  ];
+
+  const card={padding:12,borderRadius:10,background:"#fff",border:"1px solid #e2e8f0"};
+  const h={fontSize:16,fontWeight:900,marginBottom:10};
+  const lbl={fontSize:10,color:"#64748b",marginBottom:2};
+  const val={fontSize:18,fontWeight:800,color:"#0f172a"};
+  const inp={width:"100%",padding:"4px 6px",fontSize:11,border:"1px solid #cbd5e1",borderRadius:4};
+  const th={padding:"6px 8px",fontSize:10,color:"#64748b",textAlign:"left",borderBottom:"1px solid #e2e8f0",fontWeight:700,background:"#f8fafc"};
+  const td={padding:"4px 8px",fontSize:11,borderBottom:"1px solid #f1f5f9"};
+  const btn=(c)=>({padding:"4px 10px",fontSize:11,fontWeight:700,borderRadius:6,border:"none",cursor:"pointer",background:c||"#1e40af",color:"#fff"});
+
+  return <div>
+    <h2 style={{fontSize:18,fontWeight:900,marginBottom:6}}>💼 {storeLabel} 経営管理</h2>
+    <p style={{fontSize:11,color:"#64748b",marginBottom:12}}>Excel「売上入力」タブの代替。売上入力→PL/CF/ダッシュボードが自動連動。</p>
+
+    {/* サブタブ */}
+    <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12,borderBottom:"1px solid #e2e8f0",paddingBottom:8}}>
+      {subTabs.map(t=>{
+        const sel=sub===t.id;
+        return <button key={t.id} onClick={()=>setSub(t.id)} style={{padding:"6px 12px",fontSize:12,fontWeight:700,borderRadius:8,border:"none",cursor:"pointer",background:sel?"#1e40af":"#f1f5f9",color:sel?"#fff":"#334155"}}>{t.l}</button>;
+      })}
+      <div style={{flex:1}}/>
+      {loading&&<span style={{fontSize:11,color:"#64748b"}}>読込中...</span>}
+      {msg&&<span style={{fontSize:11,color:msg.startsWith("ERROR")||msg.includes("失敗")?"#dc2626":"#059669",fontWeight:700}}>{msg}</span>}
+    </div>
+
+    {/* --- ダッシュボード --- */}
+    {sub==="dashboard"&&<div>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+        <span style={{fontSize:12,color:"#64748b"}}>対象月:</span>
+        <input type="month" value={dashYm} onChange={e=>setDashYm(e.target.value)} style={{padding:"4px 8px",fontSize:12,border:"1px solid #cbd5e1",borderRadius:6}}/>
+        <button onClick={()=>{loadPL();loadCF();}} style={btn("#0891b2")}>↻ 再読込</button>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:10,marginBottom:16}}>
+        <div style={card}><div style={lbl}>当月売上 (計上)</div><div style={val}>{fmtM(dashSummary.plRev)}</div><div style={{fontSize:10,color:"#64748b"}}>{dashSummary.plCnt}件</div></div>
+        <div style={card}><div style={lbl}>当月入金 (CF)</div><div style={val}>{fmtM(dashSummary.cfIn)}</div></div>
+        <div style={card}><div style={lbl}>売上件数</div><div style={val}>{dashSummary.plCnt}件</div></div>
+        <div style={card}><div style={lbl}>客単価 (1予約)</div><div style={val}>{dashSummary.plCnt>0?"¥"+Math.round(dashSummary.unitPrice).toLocaleString():"-"}</div></div>
+        <div style={{...card,background:"#eef2ff",border:"1px solid #c7d2fe"}}><div style={lbl}>★ 平均泊数 (1予約あたり)</div><div style={{...val,color:"#4338ca"}}>{dashSummary.avgNights>0?dashSummary.avgNights.toFixed(2)+"泊":"-"}</div><div style={{fontSize:10,color:"#64748b"}}>総稼働 {dashSummary.daysSum.toFixed(1)}日</div></div>
+        <div style={card}><div style={lbl}>1日あたり単価</div><div style={val}>{dashSummary.dailyRate>0?"¥"+Math.round(dashSummary.dailyRate).toLocaleString():"-"}</div></div>
+      </div>
+      <div style={{...card,marginBottom:12}}>
+        <div style={{...h,fontSize:14}}>チャネル別構成 ({dashYm})</div>
+        {Object.keys(dashSummary.byCh).length===0?<div style={{fontSize:11,color:"#94a3b8"}}>データなし</div>:
+          <table style={{width:"100%",borderCollapse:"collapse"}}><tbody>
+            {Object.entries(dashSummary.byCh).sort((a,b)=>b[1]-a[1]).map(([ch,rev])=>{
+              const pct=dashSummary.plRev>0?(rev/dashSummary.plRev*100):0;
+              return <tr key={ch}><td style={{...td,width:120}}>{ch}</td><td style={td}><div style={{width:"100%",height:14,background:"#f1f5f9",borderRadius:4,overflow:"hidden"}}><div style={{width:pct+"%",height:"100%",background:"#3b82f6"}}/></div></td><td style={{...td,textAlign:"right",width:100}}>{fmtM(rev)}</td><td style={{...td,textAlign:"right",width:60,fontWeight:700}}>{pct.toFixed(1)}%</td></tr>;
+            })}
+          </tbody></table>
+        }
+      </div>
+    </div>}
+
+    {/* --- 売上入力 --- */}
+    {sub==="sales"&&<div>
+      {/* フィルタ */}
+      <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap",alignItems:"center"}}>
+        <span style={{fontSize:11,color:"#64748b"}}>フィルタ:</span>
+        <input type="month" value={salesFilter.ym} onChange={e=>setSalesFilter({...salesFilter,ym:e.target.value})} style={{padding:"4px 8px",fontSize:11,border:"1px solid #cbd5e1",borderRadius:6}}/>
+        <select value={salesFilter.channel} onChange={e=>setSalesFilter({...salesFilter,channel:e.target.value})} style={{padding:"4px 8px",fontSize:11,border:"1px solid #cbd5e1",borderRadius:6}}>
+          <option value="">全チャネル</option>
+          {channels.map(c=><option key={c.code} value={c.name}>{c.name}</option>)}
+        </select>
+        <input type="text" placeholder="車種" value={salesFilter.vt} onChange={e=>setSalesFilter({...salesFilter,vt:e.target.value})} style={{padding:"4px 8px",fontSize:11,border:"1px solid #cbd5e1",borderRadius:6,width:80}}/>
+        <button onClick={()=>loadSales(salesFilter)} style={btn("#0891b2")}>検索</button>
+        <button onClick={()=>{setSalesFilter({ym:"",channel:"",vt:""});loadSales({});}} style={{...btn("#f1f5f9"),color:"#334155"}}>クリア</button>
+        <div style={{flex:1}}/>
+        <button onClick={()=>setNewEntry({channel:"オフィシャル",return_date:new Date().toISOString().slice(0,10),base_amount:0,option_amount:0,discount:0})} style={btn("#059669")}>+ 新規追加</button>
+      </div>
+
+      {/* 集計 */}
+      {salesRows.length>0&&<div style={{display:"flex",gap:10,marginBottom:10,fontSize:11,color:"#475569"}}>
+        <span>{salesRows.length}件</span>
+        <span>売上合計: ¥{salesRows.reduce((a,b)=>a+(b.base_amount||0)+(b.option_amount||0)-(b.discount||0),0).toLocaleString()}</span>
+      </div>}
+
+      {/* 新規追加フォーム */}
+      {newEntry&&<div style={{...card,marginBottom:10,border:"2px solid #059669"}}>
+        <div style={{fontSize:12,fontWeight:700,marginBottom:8,color:"#059669"}}>新規売上入力</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))",gap:8}}>
+          <div><div style={lbl}>予約番号</div><input style={inp} value={newEntry.resv_no||""} onChange={e=>setNewEntry({...newEntry,resv_no:e.target.value})}/></div>
+          <div><div style={lbl}>チャネル*</div><select style={inp} value={newEntry.channel||""} onChange={e=>setNewEntry({...newEntry,channel:e.target.value})}>{channels.map(c=><option key={c.code} value={c.name}>{c.name}</option>)}</select></div>
+          <div><div style={lbl}>返却日*</div><input type="date" style={inp} value={newEntry.return_date||""} onChange={e=>setNewEntry({...newEntry,return_date:e.target.value})}/></div>
+          <div><div style={lbl}>予約日(オフィシャル用)</div><input type="date" style={inp} value={newEntry.booking_date||""} onChange={e=>setNewEntry({...newEntry,booking_date:e.target.value})}/></div>
+          <div><div style={lbl}>基本料金</div><input type="number" style={inp} value={newEntry.base_amount||0} onChange={e=>setNewEntry({...newEntry,base_amount:e.target.value})}/></div>
+          <div><div style={lbl}>付帯</div><input type="number" style={inp} value={newEntry.option_amount||0} onChange={e=>setNewEntry({...newEntry,option_amount:e.target.value})}/></div>
+          <div><div style={lbl}>割引</div><input type="number" style={inp} value={newEntry.discount||0} onChange={e=>setNewEntry({...newEntry,discount:e.target.value})}/></div>
+          <div><div style={lbl}>稼働日数</div><input type="number" step="0.5" style={inp} value={newEntry.rental_days||""} onChange={e=>setNewEntry({...newEntry,rental_days:e.target.value})}/></div>
+          <div><div style={lbl}>車種</div><input style={inp} value={newEntry.vehicle_type||""} onChange={e=>setNewEntry({...newEntry,vehicle_type:e.target.value})}/></div>
+          <div><div style={lbl}>デリバリー</div><input style={inp} value={newEntry.delivery||""} onChange={e=>setNewEntry({...newEntry,delivery:e.target.value})}/></div>
+          <div><div style={lbl}>入金日(任意)</div><input type="date" style={inp} value={newEntry.payment_date||""} onChange={e=>setNewEntry({...newEntry,payment_date:e.target.value})}/></div>
+        </div>
+        <div style={{marginTop:8,display:"flex",gap:6}}>
+          <button onClick={addSalesRow} style={btn("#059669")} disabled={loading}>保存</button>
+          <button onClick={()=>setNewEntry(null)} style={{...btn("#f1f5f9"),color:"#334155"}}>キャンセル</button>
+        </div>
+      </div>}
+
+      {/* 一覧テーブル */}
+      <div style={{overflow:"auto",maxHeight:"60vh",border:"1px solid #e2e8f0",borderRadius:8}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+          <thead style={{position:"sticky",top:0,zIndex:1}}>
+            <tr>
+              <th style={th}>予約番号</th>
+              <th style={th}>チャネル</th>
+              <th style={th}>計上(返却)</th>
+              <th style={{...th,textAlign:"right"}}>基本料金</th>
+              <th style={{...th,textAlign:"right"}}>付帯</th>
+              <th style={{...th,textAlign:"right"}}>割引</th>
+              <th style={{...th,textAlign:"right"}}>合計</th>
+              <th style={th}>車種</th>
+              <th style={th}>日数</th>
+              <th style={th}>計上月</th>
+              <th style={th}>入金月</th>
+              <th style={th}>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {salesRows.map(r=>{
+              const total=(r.base_amount||0)+(r.option_amount||0)-(r.discount||0);
+              const isEdit=editing&&editing.id===r.id;
+              if(isEdit){
+                return <tr key={r.id} style={{background:"#fef3c7"}}>
+                  <td style={td}><input style={inp} value={editing.resv_no||""} onChange={e=>setEditing({...editing,resv_no:e.target.value})}/></td>
+                  <td style={td}><select style={inp} value={editing.channel||""} onChange={e=>setEditing({...editing,channel:e.target.value})}>{channels.map(c=><option key={c.code} value={c.name}>{c.name}</option>)}</select></td>
+                  <td style={td}><input type="date" style={inp} value={editing.return_date||""} onChange={e=>setEditing({...editing,return_date:e.target.value})}/></td>
+                  <td style={td}><input type="number" style={inp} value={editing.base_amount||0} onChange={e=>setEditing({...editing,base_amount:e.target.value})}/></td>
+                  <td style={td}><input type="number" style={inp} value={editing.option_amount||0} onChange={e=>setEditing({...editing,option_amount:e.target.value})}/></td>
+                  <td style={td}><input type="number" style={inp} value={editing.discount||0} onChange={e=>setEditing({...editing,discount:e.target.value})}/></td>
+                  <td style={{...td,textAlign:"right",fontWeight:700}}>¥{total.toLocaleString()}</td>
+                  <td style={td}><input style={inp} value={editing.vehicle_type||""} onChange={e=>setEditing({...editing,vehicle_type:e.target.value})}/></td>
+                  <td style={td}><input type="number" step="0.5" style={inp} value={editing.rental_days||""} onChange={e=>setEditing({...editing,rental_days:e.target.value})}/></td>
+                  <td style={td}>{editing.fiscal_month||"-"}</td>
+                  <td style={td}>{editing.payment_month||"-"}</td>
+                  <td style={td}>
+                    <button onClick={()=>updateSalesRow(editing)} style={{...btn("#059669"),padding:"2px 6px",fontSize:10}}>保存</button>
+                    <button onClick={()=>setEditing(null)} style={{...btn("#f1f5f9"),color:"#334155",padding:"2px 6px",fontSize:10,marginLeft:4}}>×</button>
+                  </td>
+                </tr>;
+              }
+              return <tr key={r.id}>
+                <td style={{...td,fontFamily:"monospace",fontSize:10}}>{r.resv_no||"-"}</td>
+                <td style={td}>{r.channel}</td>
+                <td style={td}>{r.return_date}</td>
+                <td style={{...td,textAlign:"right"}}>¥{fmt(r.base_amount)}</td>
+                <td style={{...td,textAlign:"right"}}>¥{fmt(r.option_amount)}</td>
+                <td style={{...td,textAlign:"right",color:r.discount?"#dc2626":"#94a3b8"}}>{r.discount?"-¥"+fmt(r.discount):"0"}</td>
+                <td style={{...td,textAlign:"right",fontWeight:700}}>¥{total.toLocaleString()}</td>
+                <td style={td}>{r.vehicle_type||"-"}</td>
+                <td style={td}>{r.rental_days||"-"}</td>
+                <td style={{...td,fontSize:10,color:"#64748b"}}>{r.fiscal_month||"-"}</td>
+                <td style={{...td,fontSize:10,color:"#64748b"}}>{r.payment_month||"-"}</td>
+                <td style={td}>
+                  <button onClick={()=>setEditing({...r})} style={{...btn("#f1f5f9"),color:"#334155",padding:"2px 6px",fontSize:10}}>編集</button>
+                  <button onClick={()=>deleteSalesRow(r.id)} style={{...btn("#fef2f2"),color:"#dc2626",padding:"2px 6px",fontSize:10,marginLeft:4}}>削除</button>
+                </td>
+              </tr>;
+            })}
+            {salesRows.length===0&&<tr><td colSpan={12} style={{padding:24,textAlign:"center",color:"#94a3b8",fontSize:12}}>データなし</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>}
+
+    {/* --- PL --- */}
+    {sub==="pl"&&<div>
+      <div style={{marginBottom:10,fontSize:11,color:"#64748b"}}>📘 月次PL = 計上月（返却日ベース）の売上集計 + 平均泊数</div>
+      <button onClick={loadPL} style={btn("#0891b2")}>↻ 再読込</button>
+      <div style={{overflow:"auto",maxHeight:"70vh",marginTop:10,border:"1px solid #e2e8f0",borderRadius:8}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+          <thead><tr>
+            <th style={th}>年月</th>
+            {plPivot.chs.map(ch=><th key={ch} style={{...th,textAlign:"right"}}>{ch}</th>)}
+            <th style={{...th,textAlign:"right",background:"#dbeafe"}}>合計</th>
+            <th style={{...th,textAlign:"right"}}>件数</th>
+            <th style={{...th,textAlign:"right",background:"#eef2ff"}}>平均泊数</th>
+            <th style={{...th,textAlign:"right"}}>客単価</th>
+          </tr></thead>
+          <tbody>
+            {plPivot.yms.map(ym=>{
+              const total=plPivot.chs.reduce((a,ch)=>a+((plPivot.map[ym+"|"+ch]||{}).revenue||0),0);
+              const cnt=plPivot.chs.reduce((a,ch)=>a+((plPivot.map[ym+"|"+ch]||{}).count||0),0);
+              const d=plDaysByYm[ym]||{sum:0,cnt:0};
+              const avgN=d.cnt>0?(d.sum/d.cnt):0;
+              const unit=cnt>0?(total/cnt):0;
+              return <tr key={ym}>
+                <td style={{...td,fontWeight:700}}>{ym}</td>
+                {plPivot.chs.map(ch=>{
+                  const v=(plPivot.map[ym+"|"+ch]||{}).revenue||0;
+                  return <td key={ch} style={{...td,textAlign:"right",color:v>0?"#0f172a":"#cbd5e1"}}>{v>0?"¥"+fmt(v):"-"}</td>;
+                })}
+                <td style={{...td,textAlign:"right",fontWeight:800,background:"#eff6ff"}}>¥{fmt(total)}</td>
+                <td style={{...td,textAlign:"right"}}>{cnt}</td>
+                <td style={{...td,textAlign:"right",background:"#eef2ff",fontWeight:700,color:"#4338ca"}}>{avgN>0?avgN.toFixed(2):"-"}</td>
+                <td style={{...td,textAlign:"right"}}>{unit>0?"¥"+fmt(Math.round(unit)):"-"}</td>
+              </tr>;
+            })}
+            {plPivot.yms.length===0&&<tr><td colSpan={plPivot.chs.length+5} style={{padding:24,textAlign:"center",color:"#94a3b8",fontSize:12}}>データなし</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>}
+
+    {/* --- CF --- */}
+    {sub==="cf"&&<div>
+      <div style={{marginBottom:10,fontSize:11,color:"#64748b"}}>💰 月次CF = 入金月（チャネル別入金サイクル自動計算）の集計</div>
+      <button onClick={loadCF} style={btn("#0891b2")}>↻ 再読込</button>
+      <div style={{overflow:"auto",maxHeight:"70vh",marginTop:10,border:"1px solid #e2e8f0",borderRadius:8}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+          <thead><tr>
+            <th style={th}>入金月</th>
+            {cfPivot.chs.map(ch=><th key={ch} style={{...th,textAlign:"right"}}>{ch}</th>)}
+            <th style={{...th,textAlign:"right",background:"#dcfce7"}}>合計</th>
+          </tr></thead>
+          <tbody>
+            {cfPivot.yms.map(ym=>{
+              const total=cfPivot.chs.reduce((a,ch)=>a+((cfPivot.map[ym+"|"+ch]||{}).cash_in||0),0);
+              return <tr key={ym}>
+                <td style={{...td,fontWeight:700}}>{ym}</td>
+                {cfPivot.chs.map(ch=>{
+                  const v=(cfPivot.map[ym+"|"+ch]||{}).cash_in||0;
+                  return <td key={ch} style={{...td,textAlign:"right",color:v>0?"#0f172a":"#cbd5e1"}}>{v>0?"¥"+fmt(v):"-"}</td>;
+                })}
+                <td style={{...td,textAlign:"right",fontWeight:800,background:"#f0fdf4"}}>¥{fmt(total)}</td>
+              </tr>;
+            })}
+            {cfPivot.yms.length===0&&<tr><td colSpan={cfPivot.chs.length+2} style={{padding:24,textAlign:"center",color:"#94a3b8",fontSize:12}}>データなし</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>}
+
+    {/* --- コスト入力 --- */}
+    {sub==="cost"&&<div>
+      <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10}}>
+        <span style={{fontSize:12,color:"#64748b"}}>対象月:</span>
+        <input type="month" value={costYm} onChange={e=>{setCostYm(e.target.value);loadCost(e.target.value);}} style={{padding:"4px 8px",fontSize:12,border:"1px solid #cbd5e1",borderRadius:6}}/>
+      </div>
+      {["売上原価","販管費"].map(cat=>{
+        const accts=costAccounts.filter(a=>a.category===cat);
+        if(!accts.length)return null;
+        const catTotal=accts.filter(a=>!a.is_group).reduce((s,a)=>s+((costRows.find(r=>r.account_code===a.account_code)||{}).amount||0),0);
+        return <div key={cat} style={{...card,marginBottom:12}}>
+          <div style={{...h,fontSize:14,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span>{cat}</span>
+            <span style={{fontSize:12,color:"#1e40af"}}>合計 ¥{fmt(catTotal)}</span>
+          </div>
+          <table style={{width:"100%",borderCollapse:"collapse"}}>
+            <tbody>
+              {accts.map(a=>{
+                const cur=costRows.find(r=>r.account_code===a.account_code)||{amount:0,note:""};
+                if(a.is_group){
+                  const childAmt=accts.filter(x=>x.parent_code===a.account_code).reduce((s,x)=>s+((costRows.find(r=>r.account_code===x.account_code)||{}).amount||0),0);
+                  return <tr key={a.account_code} style={{background:"#f8fafc"}}>
+                    <td style={{...td,fontWeight:700,paddingLeft:8}}>{a.account_name}</td>
+                    <td style={{...td,textAlign:"right",fontWeight:700,color:"#1e40af"}}>¥{fmt(childAmt)}</td>
+                    <td style={td}>-</td>
+                  </tr>;
+                }
+                const indent=a.parent_code?20:8;
+                return <tr key={a.account_code}>
+                  <td style={{...td,paddingLeft:indent}}>{a.account_name}</td>
+                  <td style={{...td,textAlign:"right",width:140}}>
+                    <input type="number" style={{...inp,textAlign:"right"}} defaultValue={cur.amount||0} onBlur={e=>{const v=parseInt(e.target.value||0)||0;if(v!==cur.amount)saveCost(a.account_code,v,cur.note);}}/>
+                  </td>
+                  <td style={{...td,width:200}}>
+                    <input style={inp} defaultValue={cur.note||""} placeholder="メモ" onBlur={e=>{if(e.target.value!==(cur.note||""))saveCost(a.account_code,cur.amount||0,e.target.value);}}/>
+                  </td>
+                </tr>;
+              })}
+            </tbody>
+          </table>
+        </div>;
+      })}
+      {costAccounts.length===0&&<div style={{padding:24,textAlign:"center",color:"#94a3b8",fontSize:12}}>コスト科目マスタが空です。mgmt_full_schema.sql を先に Supabase で実行してください。</div>}
+    </div>}
+  </div>;
 }
 
 /* ==========================================
@@ -5686,28 +6206,54 @@ function Dashboard({data,fleet,vehicles,maintenance}){
   },[monthData]);
 
   // 稼働率計算（配車画面と同じロジック: 日付Setで重複排除 + メンテナンス込み + 月内限定）
+  // ★ 2026-04 以降は APP が正 = 配車表で「除外」にした車両は稼働率計算から除外する
+  //    vehicle_monthly_kpi を全件取得し、月別に isKpiActive を判定
   const daysInMo=daysInMonth(selYM);
-  const activeVehicles=vehicles.length||8;
+  const[dashKpiAll,setDashKpiAll]=useState({});// { "YYYY-MM": { code: active } }
+  useEffect(()=>{
+    if(!sb)return;
+    (async()=>{
+      const{data:rows}=await sb.from("vehicle_monthly_kpi").select("*");
+      const map={};(rows||[]).forEach(r=>{
+        if(!map[r.year_month])map[r.year_month]={};
+        map[r.year_month][r.vehicle_code]=r.active;
+      });
+      setDashKpiAll(map);
+    })();
+  },[]);
+  const isKpiActiveYM=(code,ym)=>{
+    const f=dashKpiAll[ym];
+    if(f&&f[code]!==undefined)return f[code];
+    return vehicles.find(v=>v.code===code)?.active!==false;
+  };
+  const isKpiActiveCur=(code)=>isKpiActiveYM(code,selYM);
+  const isKpiActivePrev=(code)=>isKpiActiveYM(code,prevYM);
+  const activeVehicles=vehicles.filter(v=>isKpiActiveCur(v.code)).length||1;
+  const activeCodesCur=new Set(vehicles.filter(v=>isKpiActiveCur(v.code)).map(v=>v.code));
+  const activeCodesPrev=new Set(vehicles.filter(v=>isKpiActivePrev(v.code)).map(v=>v.code));
   const totalVehDays=activeVehicles*daysInMo;
   const maint=maintenance||[];
   const curUtil=useMemo(function(){
     var dim=daysInMo;
     var parts=selYM.split("-");var yy=Number(parts[0]);var mm=Number(parts[1])-1;
     var ms=new Date(yy,mm,1);var me=new Date(yy,mm,dim);
-    // 予約による稼働日（車両別Set）
+    // 予約による稼働日（車両別Set, 除外車両は無視）
     var vdm={};
     data.forEach(function(r){
       if(!r.lendDate||!r.returnDate)return;
+      if(r.status==="cancelled")return;
       var vc=fleet[r.id];if(!vc)return;
+      if(!activeCodesCur.has(vc))return;// 除外フラグ適用
       if(!vdm[vc])vdm[vc]=new Set();
       var ld=new Date(norm(r.lendDate)+"T00:00:00");var rd=new Date(norm(r.returnDate)+"T00:00:00");
       var s=ld>ms?new Date(ld):new Date(ms);var e=rd<me?new Date(rd):new Date(me);
       for(var d=new Date(s);d<=e;d.setDate(d.getDate()+1)){vdm[vc].add(toLD(d));}
     });
-    // メンテナンス日（車両別Set）→ 最大稼働日数から減算用
+    // メンテナンス日（車両別Set）→ 最大稼働日数から減算用（除外車両は無視）
     var maintMap={};
     maint.forEach(function(mt){
       if(!mt.vehicleCode||!mt.startDate||!mt.endDate)return;
+      if(!activeCodesCur.has(mt.vehicleCode))return;
       if(!maintMap[mt.vehicleCode])maintMap[mt.vehicleCode]=new Set();
       var ld=new Date(norm(mt.startDate)+"T00:00:00");var rd=new Date(norm(mt.endDate)+"T00:00:00");
       var s=ld>ms?new Date(ld):new Date(ms);var e=rd<me?new Date(rd):new Date(me);
@@ -5716,7 +6262,7 @@ function Dashboard({data,fleet,vehicles,maintenance}){
     var totalRental=0;Object.values(vdm).forEach(function(s){totalRental+=s.size;});
     var totalMaint=0;Object.values(maintMap).forEach(function(s){totalMaint+=s.size;});
     return{totalRental:totalRental,totalMaint:totalMaint,vehDayMap:vdm,maintMap:maintMap};
-  },[selYM,data,fleet,maint,daysInMo]);
+  },[selYM,data,fleet,maint,daysInMo,dashKpiAll,vehicles]);
   const usedDays=curUtil.totalRental;
   const curVehDayMap=curUtil.vehDayMap;
   const curMaintMap=curUtil.maintMap;
@@ -5725,16 +6271,19 @@ function Dashboard({data,fleet,vehicles,maintenance}){
   const utilRate=availVehDays>0?Math.round(usedDays/availVehDays*100):0;
   // 前月稼働率
   const prevDaysInMo=daysInMonth(prevYM);
-  const prevTotalVehDays=activeVehicles*prevDaysInMo;
+  const prevActiveVehicles=vehicles.filter(v=>isKpiActivePrev(v.code)).length||1;
+  const prevTotalVehDays=prevActiveVehicles*prevDaysInMo;
   const prevUtil=useMemo(function(){
     var dim=prevDaysInMo;
     var parts=prevYM.split("-");var yy=Number(parts[0]);var mm=Number(parts[1])-1;
     var ms=new Date(yy,mm,1);var me=new Date(yy,mm,dim);
-    // 予約稼働日
+    // 予約稼働日（前月の除外フラグを適用）
     var vdm={};
     data.forEach(function(r){
       if(!r.lendDate||!r.returnDate)return;
+      if(r.status==="cancelled")return;
       var vc=fleet[r.id];if(!vc)return;
+      if(!activeCodesPrev.has(vc))return;// 前月の除外フラグ適用
       if(!vdm[vc])vdm[vc]=new Set();
       var ld=new Date(norm(r.lendDate)+"T00:00:00");var rd=new Date(norm(r.returnDate)+"T00:00:00");
       var s=ld>ms?new Date(ld):new Date(ms);var e=rd<me?new Date(rd):new Date(me);
@@ -5744,6 +6293,7 @@ function Dashboard({data,fleet,vehicles,maintenance}){
     var maintTotal=0;
     maint.forEach(function(mt){
       if(!mt.vehicleCode||!mt.startDate||!mt.endDate)return;
+      if(!activeCodesPrev.has(mt.vehicleCode))return;
       var mSet=new Set();
       var ld=new Date(norm(mt.startDate)+"T00:00:00");var rd=new Date(norm(mt.endDate)+"T00:00:00");
       var s=ld>ms?new Date(ld):new Date(ms);var e=rd<me?new Date(rd):new Date(me);
@@ -5752,7 +6302,7 @@ function Dashboard({data,fleet,vehicles,maintenance}){
     });
     var rental=0;Object.values(vdm).forEach(function(s){rental+=s.size;});
     return{rental:rental,maintTotal:maintTotal};
-  },[prevYM,data,fleet,maint,prevDaysInMo]);
+  },[prevYM,data,fleet,maint,prevDaysInMo,dashKpiAll,vehicles]);
   const prevUsedDays=prevUtil.rental;
   const prevAvailVehDays=prevTotalVehDays-prevUtil.maintTotal;
   const prevUtilRate=prevAvailVehDays>0?Math.round(prevUsedDays/prevAvailVehDays*100):0;
@@ -5845,20 +6395,25 @@ function Dashboard({data,fleet,vehicles,maintenance}){
       var grossRev=md.reduce(function(s,r){return s+(Number(r.price)||0);},0);
       var count=md.length;
 
-      // 2. 稼働率計算（メンテ日数を最大稼働日数から減算）
+      // 2. 稼働率計算（★ 月別 kpiFlag 適用: 除外車両は計算から除く）
+      var ymActive=new Set(vehicles.filter(function(v){return isKpiActiveYM(v.code,ym);}).map(function(v){return v.code;}));
+      var activeCntYM=ymActive.size||1;
       var vdm={};
       data.forEach(function(r){
         if(!r.lendDate||!r.returnDate)return;
+        if(r.status==="cancelled")return;
         var vc=fleet[r.id];if(!vc)return;
+        if(!ymActive.has(vc))return;
         if(!vdm[vc])vdm[vc]=new Set();
         var ld=new Date(norm(r.lendDate)+"T00:00:00");var rd=new Date(norm(r.returnDate)+"T00:00:00");
         var s=ld>moStart?new Date(ld):new Date(moStart);var e=rd<moEnd?new Date(rd):new Date(moEnd);
         for(var d=new Date(s);d<=e;d.setDate(d.getDate()+1)){vdm[vc].add(toLD(d));}
       });
-      // メンテ日数（車両別）
+      // メンテ日数（車両別、除外車両はスキップ）
       var maintMapA={};
       maint.forEach(function(mt){
         if(!mt.vehicleCode||!mt.startDate||!mt.endDate)return;
+        if(!ymActive.has(mt.vehicleCode))return;
         if(!maintMapA[mt.vehicleCode])maintMapA[mt.vehicleCode]=new Set();
         var ld=new Date(norm(mt.startDate)+"T00:00:00");var rd=new Date(norm(mt.endDate)+"T00:00:00");
         var s=ld>moStart?new Date(ld):new Date(moStart);var e=rd<moEnd?new Date(rd):new Date(moEnd);
@@ -5866,7 +6421,7 @@ function Dashboard({data,fleet,vehicles,maintenance}){
       });
       var totalUsed=0;Object.values(vdm).forEach(function(s){totalUsed+=s.size;});
       var totalMaintA=0;Object.values(maintMapA).forEach(function(s){totalMaintA+=s.size;});
-      var totalPossible=vehicles.length*dim;
+      var totalPossible=activeCntYM*dim;
       var availPossible=totalPossible-totalMaintA;
       var grossRate=availPossible>0?Math.round(totalUsed/availPossible*100):0;
 
@@ -5917,10 +6472,11 @@ function Dashboard({data,fleet,vehicles,maintenance}){
       });
 
       return{ym:ym,label:(parseInt(parts[1]))+"月",grossRev:grossRev,count:count,grossRate:grossRate,
-             classRev:classRev,vehRev:vehRev,classUtil:classUtil,vehUtil:vehUtil,dim:dim,totalUsed:totalUsed};
+             classRev:classRev,vehRev:vehRev,classUtil:classUtil,vehUtil:vehUtil,dim:dim,totalUsed:totalUsed,
+             activeCount:activeCntYM,totalPossible:totalPossible};
     });
     return{months:months,data:result};
-  },[dashView,data,fleet,vehicles,maintenance,curYM]);
+  },[dashView,data,fleet,vehicles,maintenance,curYM,dashKpiAll]);
 
   // 年間推移の集計値
   const annSummary=useMemo(function(){
@@ -6483,7 +7039,7 @@ function Dashboard({data,fleet,vehicles,maintenance}){
                 <th style={{textAlign:"right",padding:"3px 4px",color:"#64748b",fontWeight:600}}>日数</th>
               </tr></thead>
               <tbody>{annualData.data.map(function(m,i){
-                var totalP=vehicles.length*m.dim;
+                var totalP=m.totalPossible||(m.activeCount||vehicles.length)*m.dim;
                 return <tr key={i} style={{borderBottom:"1px solid #f1f5f9"}}>
                   <td style={{padding:"4px",fontWeight:600}}>{ymLabel(m.ym)}</td>
                   <td style={{textAlign:"right",padding:"4px",fontWeight:700,color:m.grossRate>=70?"#059669":m.grossRate>=40?"#d97706":"#dc2626"}}>{m.grossRate}%</td>
@@ -9379,7 +9935,7 @@ function App(){
     </div>}
     <div style={{display:showOP?"none":"flex",flex:1,overflow:"hidden",flexDirection:"column"}}>
       <div className={"top-nav"+(tab==="top"?" hide-on-top":"")}>
-        {navItems.filter(n=>{const always=["top","notices","import","vehicle","staff","shift","attendance","parking","accounting","fleet","jalanpay","history","customer","license"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open("license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
+        {navItems.filter(n=>{const always=["top","notices","import","vehicle","staff","shift","attendance","parking","accounting","fleet","jalanpay","history","customer","license","biz"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open("license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
         {data.length>0&&<button onClick={()=>setShowOP(true)} style={{color:"#60a5fa"}}><span className="ico">📋</span>OP</button>}
         {SB_ENABLED&&<button onClick={reloadAll} disabled={reloading===1} style={{background:reloading===2?"#d1fae5":"none",border:"none",cursor:reloading===1?"wait":"pointer",fontSize:14,padding:"2px 4px",borderRadius:6,opacity:reloading===1?0.5:1,transition:"background .3s"}}>{reloading===1?"⏳":reloading===2?"✅":"🔄"}</button>}
         {SB_ENABLED&&<SyncBadge connected={sbConnected} inline={true} online={isOnline}/>}
@@ -9387,7 +9943,7 @@ function App(){
       <div style={{display:"flex",flex:1,overflow:"hidden"}}>
       <div className={"sidebar"+(tab==="top"?" hide-on-top":"")}>
         <div style={{width:36,height:36,borderRadius:8,background:"linear-gradient(135deg,#3b82f6,#1d4ed8)",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:800,fontSize:14,marginBottom:8}}>S</div>
-        {navItems.filter(n=>{const always=["top","notices","import","vehicle","staff","shift","attendance","parking","accounting","fleet","jalanpay","history","customer","license"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open("license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
+        {navItems.filter(n=>{const always=["top","notices","import","vehicle","staff","shift","attendance","parking","accounting","fleet","jalanpay","history","customer","license","biz"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open("license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
         {data.length>0&&<button onClick={()=>setShowOP(true)} style={{marginTop:4,background:"linear-gradient(135deg,#1e40af,#2563eb)",color:"#fff",borderRadius:10}}><span className="ico">📋</span><span style={{fontSize:8}}>OP</span></button>}
       </div>
       <div className="main-area" style={{flex:1,overflow:tab==="fleet"||tab==="parking"?"hidden":"auto",padding:tab==="fleet"||tab==="parking"?0:12,display:"flex",flexDirection:"column"}}>
@@ -9420,6 +9976,7 @@ function App(){
                 {id:"staff",ico:"👥",l:"スタッフ",desc:"スタッフ情報・時給設定"},
               ]},
               {title:"データ・分析",color:"#7c3aed",items:[
+                {id:"biz",ico:"💼",l:"経営",desc:"売上入力・PL・CF・ダッシュボード"},
                 {id:"kpi",ico:"📈",l:"経営KPI",desc:"月次スナップショット・RevPACD推移"},
                 {id:"dashboard",ico:"📊",l:"売上",desc:"売上・稼働率ダッシュボード",badge:data.length>0?"データあり":null},
                 {id:"analytics",ico:"🔬",l:"解析",desc:"エリア分析・場所分布ランキング"},
@@ -9740,6 +10297,7 @@ function App(){
             <Dashboard data={data} fleet={fleet} vehicles={vehicles} maintenance={maintenance}/>
           </>}
           {tab==="data"&&data.length>0&&<DataTable data={data} fleet={fleet} vehicles={vehicles} sheetPlaces={sheetPlaces} onUpdatePlaces={saveSheetPlaces} jalanPay={jalanPay} onUpdateReservation={async(id,updates)=>{return await updateReservation(id,updates);}} onCancelReservation={cancelReservation} onRestoreReservation={restoreReservation}/>}
+          {tab==="biz"&&<ManagementTab store="spk"/>}
           {tab==="kpi"&&<KpiTab store="spk" data={data} vehicles={vehicles} fleet={fleet}/>}
           {tab==="analytics"&&<AnalyticsTab data={data} sheetPlaces={sheetPlaces}/>}
           {tab==="history"&&<PastTasksTable today={today}/>}
@@ -9751,7 +10309,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.6.12";
+const APP_VERSION="v4.6.14";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
