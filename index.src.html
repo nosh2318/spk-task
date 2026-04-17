@@ -2378,7 +2378,7 @@ function ManagementTab({store}){
   },[]);
 
   useEffect(()=>{
-    if(!["exceldash","pl","cf","dashboard"].includes(sub)||!sb)return;
+    if(!["exceldash","pl","cf","dashboard","hpcv","budgetcf","roi","cfsim","costsum"].includes(sub)||!sb)return;
     setDbLoading2(true);
     const isSpk=dbStore==="spk";
     Promise.all([
@@ -2756,7 +2756,12 @@ function ManagementTab({store}){
     {id:"sales",l:"📝 売上入力"},
     {id:"pl",l:"📘 PL(月次)"},
     {id:"cf",l:"💰 CF(月次)"},
-    {id:"cost",l:"🧾 コ��ト入力"},
+    {id:"cost",l:"🧾 コスト入力"},
+    {id:"costsum",l:"📋 コスト一覧"},
+    {id:"hpcv",l:"🔵 HP-CV"},
+    {id:"budgetcf",l:"📊 予算CF"},
+    {id:"roi",l:"📈 投資回転率"},
+    {id:"cfsim",l:"🔮 CFシミュ"},
   ];
 
   const card={padding:12,borderRadius:10,background:"#fff",border:"1px solid #e2e8f0"};
@@ -3625,6 +3630,360 @@ function ManagementTab({store}){
         {!costYm&&<div style={{padding:24,textAlign:"center",color:"#94a3b8",fontSize:12}}>対象月を選択してください</div>}
       </div>;
     })()}
+
+    {/* --- コスト一覧（月次サマリー） --- */}
+    {sub==="costsum"&&(()=>{
+      const COST_ITEMS=[
+        {cat:"売上原価",items:["車両リース料","車両保険料","燃料費","洗車費","修繕費","有料道路代","駐車場賃料","配送費","その他原価"]},
+        {cat:"販管費",items:["事務所家賃","人件費（給与）","人件費（アルバイト）","社会保険料","OTA手数料","広告宣伝費","通信費","水道光熱費","事務用品費","旅費交通費","減価償却費","業務委託費・士業","サブスクリプション","その他販管費"]},
+      ];
+      const COST_CODES={
+        "車両リース料":"cogs_vehicle_lease","車両保険料":"cogs_insurance","燃料費":"cogs_fuel","洗車費":"cogs_wash","修繕費":"cogs_repair","有料道路代":"cogs_toll","駐車場賃料":"cogs_parking_rent","配送費":"cogs_delivery","その他原価":"cogs_other",
+        "事務所家賃":"sga_rent","人件費（給与）":"sga_salary","人件費（アルバイト）":"sga_parttime","社会保険料":"sga_social_ins","OTA手数料":"sga_ota_fee","広告宣伝費":"sga_ad","通信費":"sga_telecom","水道光熱費":"sga_utility","事務用品費":"sga_office","旅費交通費":"sga_travel","減価償却費":"sga_depreciation","業務委託費・士業":"sga_professional","サブスクリプション":"sga_subscription","その他販管費":"sga_other",
+      };
+      // 月別コストをapp_settingsから一括ロード
+      const[costMonthly,setCostMonthly]=useState({});
+      const[csLoading,setCsLoading]=useState(false);
+      useEffect(()=>{
+        if(!sb)return;
+        setCsLoading(true);
+        (async()=>{
+          const{data}=await sb.from("app_settings").select("*").like("key","cost_"+store+"_%");
+          const mp={};
+          (data||[]).forEach(d=>{
+            const ym=d.key.replace("cost_"+store+"_","");
+            try{mp[ym]=JSON.parse(d.value);}catch(e){}
+          });
+          setCostMonthly(mp);setCsLoading(false);
+        })();
+      },[sub]);
+      const yms=Object.keys(costMonthly).sort().reverse();
+      return <div>
+        <div style={{...h,fontSize:14}}>📋 月次コスト一覧（{store==="spk"?"札幌":"那覇"}）</div>
+        {csLoading?<div style={{padding:24,textAlign:"center",color:"#94a3b8"}}>読込中...</div>:
+        yms.length===0?<div style={{padding:24,textAlign:"center",color:"#94a3b8",fontSize:12}}>コストデータなし。「コスト入力」タブから月別に入力してください。</div>:
+        <div style={{overflow:"auto",maxHeight:"70vh",border:"1px solid #e2e8f0",borderRadius:8}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:10}}>
+            <thead><tr>
+              <th style={th}>科目</th>
+              {yms.map(ym=><th key={ym} style={{...th,textAlign:"right"}}>{ym}</th>)}
+            </tr></thead>
+            <tbody>
+              {COST_ITEMS.map(({cat,items})=><React.Fragment key={cat}>
+                <tr style={{background:"#f0f9ff"}}><td colSpan={yms.length+1} style={{...td,fontWeight:900,fontSize:11}}>{cat}</td></tr>
+                {items.map(name=>{
+                  const code=COST_CODES[name];
+                  return <tr key={code}>
+                    <td style={{...td,paddingLeft:16}}>{name}</td>
+                    {yms.map(ym=>{
+                      const rows=costMonthly[ym]||[];
+                      const v=(rows.find(r=>r.account_code===code)||{}).amount||0;
+                      return <td key={ym} style={{...td,textAlign:"right",color:v>0?"#0f172a":"#cbd5e1"}}>{v>0?"¥"+fmt(v):"-"}</td>;
+                    })}
+                  </tr>;
+                })}
+                <tr style={{background:"#f8fafc",fontWeight:700}}>
+                  <td style={td}>{cat}計</td>
+                  {yms.map(ym=>{
+                    const rows=costMonthly[ym]||[];
+                    const total=items.reduce((s,name)=>s+((rows.find(r=>r.account_code===COST_CODES[name])||{}).amount||0),0);
+                    return <td key={ym} style={{...td,textAlign:"right",color:"#1e40af"}}>¥{fmt(total)}</td>;
+                  })}
+                </tr>
+              </React.Fragment>)}
+            </tbody>
+          </table>
+        </div>}
+      </div>;
+    })()}
+
+    {/* --- HP-CV（オフィシャル予約件数） --- */}
+    {sub==="hpcv"&&(()=>{
+      const isSpk=dbStore==="spk";
+      const rdKey=isSpk?"return_date":"end_date";
+      const hpResvs=dbResvs.filter(r=>r.ota==="HP"&&r.status!=="cancelled"&&r.status!=="キャンセル"&&r.status!=="cancel").sort((a,b)=>(a[rdKey]||"").localeCompare(b[rdKey]||""));
+      const byMonth={};
+      hpResvs.forEach(r=>{
+        const ym=(r[rdKey]||"").slice(0,7);if(!ym)return;
+        if(!byMonth[ym])byMonth[ym]=[];
+        byMonth[ym].push(r);
+      });
+      const months=Object.keys(byMonth).sort().reverse();
+      return <div>
+        <div style={{display:"flex",gap:6,marginBottom:10}}>
+          {["nha","spk"].map(s=><button key={s} onClick={()=>setDbStore(s)} style={{padding:"4px 12px",fontSize:11,fontWeight:700,borderRadius:6,border:"none",cursor:"pointer",background:dbStore===s?"#2563eb":"#e2e8f0",color:dbStore===s?"#fff":"#334155"}}>{s==="nha"?"那覇":"札幌"}</button>)}
+        </div>
+        {dbLoading2?<div style={{padding:24,textAlign:"center",color:"#94a3b8"}}>読込中...</div>:
+        months.length===0?<div style={{padding:24,textAlign:"center",color:"#94a3b8",fontSize:12}}>HP予約なし</div>:
+        months.map(ym=>{
+          const rows=byMonth[ym];
+          const total=rows.reduce((s,r)=>{const bp=Number(r.base_price)||0,op=Number(r.option_price)||0,dc=Number(r.discount)||0;return s+((bp>0||op>0)?(bp+op-dc):(Number(r.price)||0));},0);
+          return <div key={ym} style={{...card,marginBottom:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <span style={{fontSize:14,fontWeight:900}}>{ym}</span>
+              <span style={{fontSize:12,fontWeight:700,color:"#1e40af"}}>{rows.length}件 / ¥{fmt(total)}</span>
+            </div>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:10}}>
+              <thead><tr>
+                <th style={th}>#</th><th style={th}>予約番号</th><th style={{...th,textAlign:"right"}}>金額</th><th style={th}>店舗</th><th style={th}>返却日</th>
+              </tr></thead>
+              <tbody>
+                {rows.map((r,i)=>{
+                  const bp=Number(r.base_price)||0,op=Number(r.option_price)||0,dc=Number(r.discount)||0;
+                  const rev=(bp>0||op>0)?(bp+op-dc):(Number(r.price)||0);
+                  return <tr key={r.id}><td style={td}>{i+1}</td><td style={td}>{r.reservation_id||r.id}</td><td style={{...td,textAlign:"right"}}>¥{fmt(rev)}</td><td style={td}>{isSpk?"札幌":"那覇"}</td><td style={td}>{(r[rdKey]||"").slice(0,10)}</td></tr>;
+                })}
+              </tbody>
+            </table>
+          </div>;
+        })}
+      </div>;
+    })()}
+
+    {/* --- 予算CF --- */}
+    {sub==="budgetcf"&&(()=>{
+      const[bcfStore,setBcfStore]=useState("nha");
+      const[bcfData,setBcfData]=useState({nha:{},spk:{}});
+      useEffect(()=>{
+        if(!sb)return;
+        Promise.all([
+          sb.from("app_settings").select("*").eq("key","budgetcf_nha").single(),
+          sb.from("app_settings").select("*").eq("key","budgetcf_spk").single(),
+        ]).then(([{data:d1},{data:d2}])=>{
+          const nha=d1?.value?JSON.parse(d1.value):{};
+          const spk=d2?.value?JSON.parse(d2.value):{};
+          setBcfData({nha,spk});
+        });
+      },[sub]);
+      const saveBcf=async(st,ym,field,val)=>{
+        const nv=parseFloat(val)||0;
+        const next={...bcfData,[st]:{...(bcfData[st]||{}),[ym]:{...((bcfData[st]||{})[ym]||{}),[field]:nv}}};
+        setBcfData(next);
+        const key="budgetcf_"+st;
+        await sb.from("app_settings").upsert({key,value:JSON.stringify(next[st])},{onConflict:"key"});
+      };
+      const chNames=["オフィシャル","じゃらん","楽天","エアトリ","レンタカードットコム","スカイチケット","その他売上"];
+      const cycles={};(mgSettings.channels||[]).forEach(c=>{cycles[c.name]=c.cycle||0;});
+      // Generate 24 months
+      const yms24=[];
+      for(let i=0;i<24;i++){const d=new Date(2026,i,1);yms24.push(d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"));}
+      const stData=bcfData[bcfStore]||{};
+      // 予算売上→OTA構成比→入金月計算
+      const cashByYm={};
+      yms24.forEach(ym=>{
+        const d=stData[ym]||{};
+        const budgetRev=d.budgetRev||0;
+        chNames.forEach(ch=>{
+          const ratio=d["r_"+ch]||(ch==="オフィシャル"?0.3:ch==="じゃらん"?0.15:ch==="楽天"?0.35:ch==="エアトリ"?0.1:ch==="スカイチケット"?0.1:0);
+          const rev=budgetRev*ratio;
+          const cycle=cycles[ch]||0;
+          const[sy,sm]=ym.split("-").map(Number);
+          let ny=sy,nm=sm+cycle;while(nm>12){nm-=12;ny++;}
+          const cashYm=ny+"-"+String(nm).padStart(2,"0");
+          if(!cashByYm[cashYm])cashByYm[cashYm]={};
+          cashByYm[cashYm][ch]=(cashByYm[cashYm][ch]||0)+rev;
+        });
+      });
+      return <div>
+        <div style={{display:"flex",gap:6,marginBottom:10}}>
+          {["nha","spk","all"].map(s=><button key={s} onClick={()=>setBcfStore(s)} style={{padding:"4px 12px",fontSize:11,fontWeight:700,borderRadius:6,border:"none",cursor:"pointer",background:bcfStore===s?"#7c3aed":"#e2e8f0",color:bcfStore===s?"#fff":"#334155"}}>{s==="nha"?"那覇":s==="spk"?"札幌":"全体"}</button>)}
+        </div>
+        <div style={{fontSize:11,color:"#64748b",marginBottom:8}}>月別予算売上とOTA構成比を入力 → 入金月を自動シミュレーション</div>
+        <div style={{overflow:"auto",maxHeight:"70vh",border:"1px solid #e2e8f0",borderRadius:8}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:10}}>
+            <thead><tr>
+              <th style={th}>年月</th>
+              <th style={{...th,textAlign:"right",background:"#fffbeb"}}>予算売上</th>
+              {chNames.map(ch=><th key={ch} style={{...th,textAlign:"right",fontSize:9}}>{ch.slice(0,4)}</th>)}
+              <th style={{...th,textAlign:"right",background:"#dcfce7"}}>入金合計</th>
+            </tr></thead>
+            <tbody>
+              {yms24.map(ym=>{
+                const d=stData[ym]||{};
+                const cashRow=cashByYm[ym]||{};
+                const cashTotal=Object.values(cashRow).reduce((a,b)=>a+b,0);
+                return <tr key={ym}>
+                  <td style={{...td,fontWeight:700}}>{ym}</td>
+                  <td style={{...td,textAlign:"right",background:"#fffbeb"}}>
+                    {bcfStore!=="all"?<input type="number" style={{...inp,textAlign:"right",width:100}} defaultValue={d.budgetRev||0} onBlur={e=>saveBcf(bcfStore,ym,"budgetRev",e.target.value)}/>:
+                    <span>¥{fmt((((bcfData.nha||{})[ym]||{}).budgetRev||0)+(((bcfData.spk||{})[ym]||{}).budgetRev||0))}</span>}
+                  </td>
+                  {chNames.map(ch=>{
+                    const ratio=d["r_"+ch];
+                    return <td key={ch} style={{...td,textAlign:"right",fontSize:9}}>
+                      {bcfStore!=="all"?<input type="number" step="0.01" style={{...inp,textAlign:"right",width:50,fontSize:9}} defaultValue={ratio!=null?ratio:(ch==="オフィシャル"?0.3:ch==="じゃらん"?0.15:ch==="楽天"?0.35:ch==="エアトリ"?0.1:ch==="スカイチケット"?0.1:0)} onBlur={e=>saveBcf(bcfStore,ym,"r_"+ch,e.target.value)}/>:
+                      <span>{((ratio||0)*100).toFixed(0)}%</span>}
+                    </td>;
+                  })}
+                  <td style={{...td,textAlign:"right",fontWeight:800,background:"#f0fdf4",color:"#059669"}}>¥{fmt(Math.round(cashTotal))}</td>
+                </tr>;
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>;
+    })()}
+
+    {/* --- 投資回転率 --- */}
+    {sub==="roi"&&(()=>{
+      const isSpk=dbStore==="spk";
+      const rdKey=isSpk?"return_date":"end_date";
+      const fMap={};dbFleet.forEach(f=>{fMap[f.reservation_id]=f.vehicle_code;});
+      const vMap={};dbVehs.forEach(v=>{vMap[v.code]=v;});
+      const active=dbResvs.filter(r=>r.status!=="cancelled"&&r.status!=="キャンセル"&&r.status!=="cancel");
+      // クラス別集計
+      const types=isSpk?["A","B","C","S","F","H"]:["A","A2","B","B2","C","D","S","F","H"];
+      const typeStat={};
+      types.forEach(t=>{typeStat[t]={rev:0,cnt:0,vehs:dbVehs.filter(v=>(v.type||"")==t&&v.active!==false).length};});
+      active.forEach(r=>{
+        const rd=r[rdKey];if(!rd)return;
+        const vc=fMap[r.id];const vObj=vc?vMap[vc]:null;
+        let vType="?";
+        if(vObj)vType=vObj.type||"?";
+        else if(isSpk&&r.vehicle)vType=r.vehicle;
+        else if(!isSpk&&r.vehicle_class)vType=r.vehicle_class;
+        if(!typeStat[vType])return;
+        const bp=Number(r.base_price)||0,op=Number(r.option_price)||0,dc=Number(r.discount)||0;
+        const rev=(bp>0||op>0)?(bp+op-dc):(Number(r.price)||0);
+        typeStat[vType].rev+=rev;typeStat[vType].cnt+=1;
+      });
+      // 月数（データ期間）
+      const ymSet=new Set();
+      active.forEach(r=>{const rd=r[rdKey];if(rd)ymSet.add(rd.slice(0,7));});
+      const monthCount=ymSet.size||1;
+      // コスト仮定（手入力可能にしたいが、まず固定値）
+      const[roiCost,setRoiCost]=useState({insurance:12000,parking:17600,inspection:5000,maintenance:5000});
+      return <div>
+        <div style={{display:"flex",gap:6,marginBottom:10}}>
+          {["nha","spk"].map(s=><button key={s} onClick={()=>setDbStore(s)} style={{padding:"4px 12px",fontSize:11,fontWeight:700,borderRadius:6,border:"none",cursor:"pointer",background:dbStore===s?"#d97706":"#e2e8f0",color:dbStore===s?"#fff":"#334155"}}>{s==="nha"?"那覇":"札幌"}</button>)}
+        </div>
+        <div style={{fontSize:11,color:"#64748b",marginBottom:8}}>クラス別 1台あたり月間収益分析（データ期間: {monthCount}ヶ月）</div>
+        {dbLoading2?<div style={{padding:24,textAlign:"center",color:"#94a3b8"}}>読込中...</div>:
+        <div style={{overflow:"auto",border:"1px solid #e2e8f0",borderRadius:8}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+            <thead><tr>
+              <th style={th}>項目</th>
+              {types.filter(t=>typeStat[t].vehs>0).map(t=><th key={t} style={{...th,textAlign:"right"}}>クラス {t}</th>)}
+              <th style={{...th,textAlign:"right",background:"#dbeafe"}}>合計</th>
+            </tr></thead>
+            <tbody>
+              <tr><td style={{...td,fontWeight:700}}>保有台数</td>
+                {types.filter(t=>typeStat[t].vehs>0).map(t=><td key={t} style={{...td,textAlign:"right"}}>{typeStat[t].vehs}台</td>)}
+                <td style={{...td,textAlign:"right",background:"#eff6ff",fontWeight:700}}>{types.reduce((s,t)=>s+typeStat[t].vehs,0)}台</td>
+              </tr>
+              <tr><td style={{...td,fontWeight:700}}>売上合計</td>
+                {types.filter(t=>typeStat[t].vehs>0).map(t=><td key={t} style={{...td,textAlign:"right"}}>¥{fmt(typeStat[t].rev)}</td>)}
+                <td style={{...td,textAlign:"right",background:"#eff6ff",fontWeight:700}}>¥{fmt(types.reduce((s,t)=>s+typeStat[t].rev,0))}</td>
+              </tr>
+              <tr><td style={{...td,fontWeight:700}}>月平均売上/台</td>
+                {types.filter(t=>typeStat[t].vehs>0).map(t=>{
+                  const perV=typeStat[t].vehs>0?Math.round(typeStat[t].rev/typeStat[t].vehs/monthCount):0;
+                  return <td key={t} style={{...td,textAlign:"right",fontWeight:700,color:"#059669"}}>¥{fmt(perV)}</td>;
+                })}
+                <td style={{...td,textAlign:"right",background:"#eff6ff"}}>-</td>
+              </tr>
+              <tr style={{background:"#fefce8"}}><td style={{...td,fontWeight:700}}>原価/台/月</td>
+                {types.filter(t=>typeStat[t].vehs>0).map(t=>{
+                  const cost=roiCost.insurance+roiCost.parking+roiCost.inspection+roiCost.maintenance;
+                  return <td key={t} style={{...td,textAlign:"right"}}>¥{fmt(cost)}</td>;
+                })}
+                <td style={{...td,textAlign:"right",background:"#eff6ff"}}>-</td>
+              </tr>
+              <tr style={{fontWeight:800}}><td style={{...td,fontWeight:900,color:"#dc2626"}}>粗利/台/月</td>
+                {types.filter(t=>typeStat[t].vehs>0).map(t=>{
+                  const perV=typeStat[t].vehs>0?Math.round(typeStat[t].rev/typeStat[t].vehs/monthCount):0;
+                  const cost=roiCost.insurance+roiCost.parking+roiCost.inspection+roiCost.maintenance;
+                  const profit=perV-cost;
+                  return <td key={t} style={{...td,textAlign:"right",fontWeight:800,color:profit>0?"#059669":"#dc2626"}}>¥{fmt(profit)}</td>;
+                })}
+                <td style={{...td,textAlign:"right",background:"#eff6ff"}}>-</td>
+              </tr>
+              <tr><td style={{...td,fontWeight:700}}>件数合計</td>
+                {types.filter(t=>typeStat[t].vehs>0).map(t=><td key={t} style={{...td,textAlign:"right"}}>{typeStat[t].cnt}件</td>)}
+                <td style={{...td,textAlign:"right",background:"#eff6ff",fontWeight:700}}>{types.reduce((s,t)=>s+typeStat[t].cnt,0)}件</td>
+              </tr>
+            </tbody>
+          </table>
+          <div style={{padding:8,fontSize:10,color:"#94a3b8"}}>
+            原価仮定（1台/月）: 保険¥{fmt(roiCost.insurance)} + 駐車場¥{fmt(roiCost.parking)} + 車検月割¥{fmt(roiCost.inspection)} + 点検月割¥{fmt(roiCost.maintenance)} = ¥{fmt(roiCost.insurance+roiCost.parking+roiCost.inspection+roiCost.maintenance)}
+          </div>
+        </div>}
+      </div>;
+    })()}
+
+    {/* --- CFシミュレーター --- */}
+    {sub==="cfsim"&&(()=>{
+      const isSpk=dbStore==="spk";
+      const rdKey=isSpk?"return_date":"end_date";
+      const chOrder=["オフィシャル","じゃらん","楽天","エアトリ","スカイチケット","レンタカードットコム","その他売上"];
+      const cycles={};(mgSettings.channels||[]).forEach(c=>{cycles[c.name]=c.cycle||0;});
+      // 実績売上からチャネル構成比を算出
+      const active=dbResvs.filter(r=>r.status!=="cancelled"&&r.status!=="キャンセル"&&r.status!=="cancel");
+      const ymRevByCh={};
+      active.forEach(r=>{
+        const rd=r[rdKey];if(!rd)return;
+        const ym=rd.slice(0,7);
+        const ch=DB_OTA_MAP[r.ota]||"その他売上";
+        const bp=Number(r.base_price)||0,op=Number(r.option_price)||0,dc=Number(r.discount)||0;
+        const rev=(bp>0||op>0)?(bp+op-dc):(Number(r.price)||0);
+        if(!ymRevByCh[ym])ymRevByCh[ym]={total:0};
+        ymRevByCh[ym][ch]=(ymRevByCh[ym][ch]||0)+rev;
+        ymRevByCh[ym].total+=rev;
+      });
+      // 各月の入金を計算
+      const cashByYm={};
+      Object.entries(ymRevByCh).forEach(([ym,data])=>{
+        chOrder.forEach(ch=>{
+          const rev=data[ch]||0;if(rev===0)return;
+          const cycle=cycles[ch]||0;
+          const[sy,sm]=ym.split("-").map(Number);
+          let ny=sy,nm=sm+cycle;while(nm>12){nm-=12;ny++;}
+          const cashYm=ny+"-"+String(nm).padStart(2,"0");
+          if(!cashByYm[cashYm])cashByYm[cashYm]={};
+          cashByYm[cashYm][ch]=(cashByYm[cashYm][ch]||0)+rev;
+        });
+      });
+      const allYms=[...new Set([...Object.keys(ymRevByCh),...Object.keys(cashByYm)])].sort();
+      // 累積CF
+      let cumCash=mgSettings.initCash||0;
+      return <div>
+        <div style={{display:"flex",gap:6,marginBottom:10}}>
+          {["nha","spk"].map(s=><button key={s} onClick={()=>setDbStore(s)} style={{padding:"4px 12px",fontSize:11,fontWeight:700,borderRadius:6,border:"none",cursor:"pointer",background:dbStore===s?"#9333ea":"#e2e8f0",color:dbStore===s?"#fff":"#334155"}}>{s==="nha"?"那覇":"札幌"}</button>)}
+        </div>
+        <div style={{fontSize:11,color:"#64748b",marginBottom:4}}>実績売上 × 入金サイクル → 月別入金シミュレーション（期初現金: ¥{fmt(mgSettings.initCash||0)}）</div>
+        {dbLoading2?<div style={{padding:24,textAlign:"center",color:"#94a3b8"}}>読込中...</div>:
+        <div style={{overflow:"auto",maxHeight:"70vh",border:"1px solid #e2e8f0",borderRadius:8}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:10}}>
+            <thead><tr>
+              <th style={th}>月</th>
+              <th style={{...th,textAlign:"right"}}>売上(計上)</th>
+              {chOrder.map(ch=><th key={ch} style={{...th,textAlign:"right",fontSize:9}}>{ch.slice(0,3)}</th>)}
+              <th style={{...th,textAlign:"right",background:"#dcfce7"}}>入金計</th>
+              <th style={{...th,textAlign:"right",background:"#fef3c7"}}>累積CF</th>
+            </tr></thead>
+            <tbody>
+              {allYms.map(ym=>{
+                const revData=ymRevByCh[ym]||{};
+                const cashData=cashByYm[ym]||{};
+                const cashTotal=Object.values(cashData).reduce((a,b)=>a+b,0);
+                cumCash+=cashTotal;
+                return <tr key={ym}>
+                  <td style={{...td,fontWeight:700}}>{ym}</td>
+                  <td style={{...td,textAlign:"right"}}>¥{fmt(revData.total||0)}</td>
+                  {chOrder.map(ch=>{
+                    const v=cashData[ch]||0;
+                    return <td key={ch} style={{...td,textAlign:"right",color:v>0?"#0f172a":"#cbd5e1",fontSize:9}}>{v>0?"¥"+fmt(v):"-"}</td>;
+                  })}
+                  <td style={{...td,textAlign:"right",fontWeight:800,background:"#f0fdf4",color:"#059669"}}>¥{fmt(Math.round(cashTotal))}</td>
+                  <td style={{...td,textAlign:"right",fontWeight:800,background:cumCash<(mgSettings.minCash||0)?"#fecaca":"#fef9c3",color:cumCash>=0?"#92400e":"#dc2626"}}>¥{fmt(Math.round(cumCash))}</td>
+                </tr>;
+              })}
+            </tbody>
+          </table>
+        </div>}
+      </div>;
+    })()}
+
   </div>;
 }
 
