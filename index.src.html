@@ -2296,10 +2296,12 @@ function ManagementTab({store}){
   const[salesFilter,setSalesFilter]=useState({ym:"",channel:"",vt:""});
   const[editing,setEditing]=useState(null); // {id,...}
   const[newEntry,setNewEntry]=useState(null);
-  // PL/CF (computed from dbResvs in plPivot/cfPivot useMemos)
+  // PL/CF (computed from dbResvs + costAllMonths in plPivot/cfPivot)
   // コスト入力
   const[costRows,setCostRows]=useState([]);
   const[costYm,setCostYm]=useState("");
+  // 全月コスト（PL/CF連動用）: {ym: [{account_code, amount, note}]}
+  const[costAllMonths,setCostAllMonths]=useState({});
   // 当月ダッシュボード
   const[dashYm,setDashYm]=useState(()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");});
 
@@ -2349,19 +2351,32 @@ function ManagementTab({store}){
   // コストロード（app_settingsベース）
   const loadCost=useCallback(async(ym)=>{
     if(!sb||!ym)return;
-    const key="cost_"+store+"_"+ym;
+    const key="cost_"+dbStore+"_"+ym;
     const{data}=await sb.from("app_settings").select("*").eq("key",key).single();
     if(data&&data.value)try{setCostRows(JSON.parse(data.value));}catch(e){setCostRows([]);}
     else setCostRows([]);
-  },[store]);
+  },[dbStore]);
+  // 全月コストロード（PL/CF連動用）
+  const loadCostAll=useCallback(async(st)=>{
+    if(!sb)return;
+    const{data}=await sb.from("app_settings").select("*").like("key","cost_"+st+"_%");
+    const mp={};
+    (data||[]).forEach(d=>{
+      const ym=d.key.replace("cost_"+st+"_","");
+      try{mp[ym]=JSON.parse(d.value);}catch(e){}
+    });
+    setCostAllMonths(mp);
+  },[]);
   // コスト保存
   const saveCostEntry=useCallback(async(ym,acctCode,amount,note)=>{
     const updated=[...costRows.filter(r=>r.account_code!==acctCode),{account_code:acctCode,amount:parseInt(amount)||0,note:note||""}].filter(r=>r.amount>0||r.note);
     setCostRows(updated);
     if(!sb)return;
-    const key="cost_"+store+"_"+ym;
+    const key="cost_"+dbStore+"_"+ym;
     await sb.from("app_settings").upsert({key,value:JSON.stringify(updated)},{onConflict:"key"});
-  },[store,costRows]);
+    // 全月キャッシュも更新
+    setCostAllMonths(prev=>({...prev,[ym]:updated}));
+  },[dbStore,costRows]);
 
   // 経営DB: データロード（ページネーション付き）
   const loadDbAll=useCallback(async(table)=>{
@@ -2393,6 +2408,8 @@ function ManagementTab({store}){
     // 目標値をロード
     sb.from("app_settings").select("*").eq("key","budget_targets_"+(isSpk?"spk":"nha")).single()
       .then(({data})=>{if(data&&data.value)try{setDbTargets(JSON.parse(data.value));}catch(e){}});
+    // 全月コストをロード（PL/CF連動用）
+    loadCostAll(isSpk?"spk":"nha");
   },[sub,dbStore]);
 
   const saveDbTarget=useCallback(async(ym,field,val)=>{
@@ -2718,8 +2735,24 @@ function ManagementTab({store}){
     const yms=Array.from(ymSet).sort().reverse();
     const chOrder=["オフィシャル","じゃらん","楽天","エアトリ","スカイチケット","レンタカードットコム","その他売上"];
     const chs=chOrder.filter(c=>chSet.has(c)).concat(Array.from(chSet).filter(c=>!chOrder.includes(c)));
-    return{yms,chs,map};
-  },[dbResvs,dbStore,mgSettings]);
+    // 支出予算（costAllMonthsから取得）
+    const expByYm={};
+    Object.entries(costAllMonths).forEach(([ym,rows])=>{
+      if(!rows)return;
+      let repay=0,sga=0,cogs=0,vehicle=0;
+      rows.forEach(r=>{
+        const c=r.account_code||"";const a=r.amount||0;
+        if(c.startsWith("repay_"))repay+=a;
+        else if(c.startsWith("sga_"))sga+=a;
+        else if(c.startsWith("cogs_"))cogs+=a;
+        else if(c==="vehicle_purchase")vehicle+=a;
+      });
+      expByYm[ym]={repay,sga,cogs,vehicle,total:repay+sga+cogs+vehicle};
+      ymSet.add(ym);
+    });
+    const allYms=Array.from(ymSet).sort().reverse();
+    return{yms:allYms,chs,map,expByYm};
+  },[dbResvs,dbStore,mgSettings,costAllMonths]);
 
   // 当月ダッシュボード集計（reservationsベース / PLピボットから取得）
   const dashSummary=useMemo(()=>{
@@ -3519,86 +3552,100 @@ function ManagementTab({store}){
     </div>}
 
     {/* --- CF --- */}
-    {sub==="cf"&&<div>
-      <div style={{marginBottom:10,fontSize:11,color:"#64748b"}}>💰 月次CF = 入金月（チャネル別入金サイクル自動計算）の集計。設定タブの入金サイクルに基づいて売上月→入金月をシフト。</div>
+    {sub==="cf"&&(()=>{
+      const expByYm=cfPivot.expByYm||{};
+      let cumBal=mgSettings.initCash||0;
+      return <div>
+      <div style={{marginBottom:10,fontSize:11,color:"#64748b"}}>💰 月次CF = 入金（チャネル別入金サイクル自動計算）− 支出予算（コスト入力から自動取得）→ 純収支・残高推移</div>
       <div style={{display:"flex",gap:6,marginBottom:10}}>
         {["nha","spk"].map(s=><button key={s} onClick={()=>setDbStore(s)} style={{padding:"4px 12px",fontSize:11,fontWeight:700,borderRadius:6,border:"none",cursor:"pointer",background:dbStore===s?"#059669":"#e2e8f0",color:dbStore===s?"#fff":"#334155"}}>{s==="nha"?"那覇":"札幌"}</button>)}
       </div>
-      <div style={{marginBottom:8,fontSize:10,color:"#94a3b8"}}>入金サイクル: {(mgSettings.channels||[]).map(c=>c.name+"="+c.cycle+"ヶ月").join(" / ")}</div>
+      <div style={{marginBottom:8,fontSize:10,color:"#94a3b8"}}>入金サイクル: {(mgSettings.channels||[]).map(c=>c.name+"="+c.cycle+"ヶ月").join(" / ")} | 期初残高: ¥{fmt(mgSettings.initCash||0)}</div>
       {dbLoading2?<div style={{padding:24,textAlign:"center",color:"#94a3b8"}}>読込中...</div>:
       <div style={{overflow:"auto",maxHeight:"70vh",border:"1px solid #e2e8f0",borderRadius:8}}>
-        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:10}}>
           <thead><tr>
-            <th style={th}>入金月</th>
-            {cfPivot.chs.map(ch=><th key={ch} style={{...th,textAlign:"right"}}>{ch}</th>)}
-            <th style={{...th,textAlign:"right",background:"#dcfce7"}}>入金合計</th>
-            <th style={{...th,textAlign:"right"}}>件数</th>
+            <th style={th}>月</th>
+            {cfPivot.chs.map(ch=><th key={ch} style={{...th,textAlign:"right",fontSize:9}}>{ch.slice(0,4)}</th>)}
+            <th style={{...th,textAlign:"right",background:"#dcfce7"}}>入金計</th>
+            <th style={{...th,textAlign:"right",background:"#fef2f2"}}>返済</th>
+            <th style={{...th,textAlign:"right",background:"#fef2f2"}}>販管費</th>
+            <th style={{...th,textAlign:"right",background:"#fef2f2"}}>売上原価</th>
+            <th style={{...th,textAlign:"right",background:"#fee2e2"}}>支出計</th>
+            <th style={{...th,textAlign:"right",background:"#fef9c3"}}>純収支</th>
+            <th style={{...th,textAlign:"right",background:"#fef9c3"}}>残高</th>
           </tr></thead>
           <tbody>
             {cfPivot.yms.map(ym=>{
-              const total=cfPivot.chs.reduce((a,ch)=>a+((cfPivot.map[ym+"|"+ch]||{}).cash_in||0),0);
-              const cnt=cfPivot.chs.reduce((a,ch)=>a+((cfPivot.map[ym+"|"+ch]||{}).count||0),0);
+              const cashIn=cfPivot.chs.reduce((a,ch)=>a+((cfPivot.map[ym+"|"+ch]||{}).cash_in||0),0);
+              const exp=expByYm[ym]||{repay:0,sga:0,cogs:0,total:0};
+              const net=cashIn-exp.total;
+              cumBal+=net;
               return <tr key={ym}>
                 <td style={{...td,fontWeight:700}}>{ym}</td>
                 {cfPivot.chs.map(ch=>{
                   const v=(cfPivot.map[ym+"|"+ch]||{}).cash_in||0;
-                  return <td key={ch} style={{...td,textAlign:"right",color:v>0?"#0f172a":"#cbd5e1"}}>{v>0?"¥"+fmt(v):"-"}</td>;
+                  return <td key={ch} style={{...td,textAlign:"right",color:v>0?"#0f172a":"#cbd5e1",fontSize:9}}>{v>0?"¥"+fmt(v):"-"}</td>;
                 })}
-                <td style={{...td,textAlign:"right",fontWeight:800,background:"#f0fdf4"}}>¥{fmt(total)}</td>
-                <td style={{...td,textAlign:"right"}}>{cnt}</td>
+                <td style={{...td,textAlign:"right",fontWeight:800,background:"#f0fdf4",color:"#059669"}}>¥{fmt(cashIn)}</td>
+                <td style={{...td,textAlign:"right",background:"#fef2f2",color:exp.repay>0?"#dc2626":"#cbd5e1"}}>{exp.repay>0?"¥"+fmt(exp.repay):"-"}</td>
+                <td style={{...td,textAlign:"right",background:"#fef2f2",color:exp.sga>0?"#dc2626":"#cbd5e1"}}>{exp.sga>0?"¥"+fmt(exp.sga):"-"}</td>
+                <td style={{...td,textAlign:"right",background:"#fef2f2",color:exp.cogs>0?"#dc2626":"#cbd5e1"}}>{exp.cogs>0?"¥"+fmt(exp.cogs):"-"}</td>
+                <td style={{...td,textAlign:"right",fontWeight:800,background:"#fee2e2",color:"#dc2626"}}>{exp.total>0?"¥"+fmt(exp.total):"-"}</td>
+                <td style={{...td,textAlign:"right",fontWeight:800,color:net>=0?"#059669":"#dc2626"}}>¥{fmt(net)}</td>
+                <td style={{...td,textAlign:"right",fontWeight:800,background:cumBal<0?"#fecaca":"#fef9c3",color:cumBal>=0?"#92400e":"#dc2626"}}>¥{fmt(Math.round(cumBal))}</td>
               </tr>;
             })}
-            {cfPivot.yms.length>0&&(()=>{
-              const grandTotal=cfPivot.yms.reduce((a,ym)=>a+cfPivot.chs.reduce((b,ch)=>b+((cfPivot.map[ym+"|"+ch]||{}).cash_in||0),0),0);
-              return <tr style={{background:"#f0fdf4",fontWeight:800}}>
-                <td style={{...td,fontWeight:900}}>累計</td>
-                {cfPivot.chs.map(ch=>{
-                  const v=cfPivot.yms.reduce((a,ym)=>a+((cfPivot.map[ym+"|"+ch]||{}).cash_in||0),0);
-                  return <td key={ch} style={{...td,textAlign:"right"}}>{v>0?"¥"+fmt(v):"-"}</td>;
-                })}
-                <td style={{...td,textAlign:"right",background:"#dcfce7"}}>¥{fmt(grandTotal)}</td>
-                <td style={td}>-</td>
-              </tr>;
-            })()}
-            {cfPivot.yms.length===0&&<tr><td colSpan={cfPivot.chs.length+3} style={{padding:24,textAlign:"center",color:"#94a3b8",fontSize:12}}>データなし — 上の店舗ボタンで切り替えてください</td></tr>}
+            {cfPivot.yms.length===0&&<tr><td colSpan={cfPivot.chs.length+8} style={{padding:24,textAlign:"center",color:"#94a3b8",fontSize:12}}>データなし</td></tr>}
           </tbody>
         </table>
       </div>}
-    </div>}
+      {Object.keys(expByYm).length===0&&<div style={{marginTop:8,padding:8,background:"#fffbeb",borderRadius:6,fontSize:11,color:"#92400e"}}>⚠️ 支出予算が未入力です。「コスト入力」タブから月別に返済・販管費・売上原価を入力すると、CFに自動反映されます。</div>}
+    </div>;
+    })()}
 
     {/* --- コスト入力 --- */}
     {sub==="cost"&&(()=>{
       const COST_ACCOUNTS=[
-        {cat:"売上原価",items:[
-          {code:"cogs_vehicle_lease",name:"車両リース料"},
-          {code:"cogs_insurance",name:"車両保険料"},
-          {code:"cogs_fuel",name:"燃料費"},
-          {code:"cogs_wash",name:"洗車費"},
-          {code:"cogs_repair",name:"修繕費"},
-          {code:"cogs_toll",name:"有料道路代"},
-          {code:"cogs_parking_rent",name:"駐車場賃料"},
-          {code:"cogs_delivery",name:"配送費"},
-          {code:"cogs_other",name:"その他原価"},
+        {cat:"返済（CFのみ反映）",items:[
+          {code:"repay_1",name:"返済①（道銀/北洋）"},
+          {code:"repay_2",name:"返済②（沖銀）"},
+          {code:"repay_3",name:"返済③（IUR）"},
+          {code:"repay_4",name:"返済④"},
+          {code:"repay_5",name:"返済⑤（LAB）"},
         ]},
         {cat:"販管費",items:[
-          {code:"sga_rent",name:"事務所家賃"},
-          {code:"sga_salary",name:"人件費（給与）"},
-          {code:"sga_parttime",name:"人件費（アルバイト）"},
-          {code:"sga_social_ins",name:"社会保険料"},
-          {code:"sga_ota_fee",name:"OTA手数料"},
-          {code:"sga_ad",name:"広告宣伝費"},
+          {code:"sga_social_ins",name:"社会保険"},
+          {code:"sga_salary",name:"給与���計"},
+          {code:"sga_ota_fee",name:"手数料合計（OTA等）"},
           {code:"sga_telecom",name:"通信費"},
-          {code:"sga_utility",name:"水道光熱費"},
-          {code:"sga_office",name:"事務用品費"},
-          {code:"sga_travel",name:"旅費交通費"},
-          {code:"sga_depreciation",name:"減価償却費"},
-          {code:"sga_professional",name:"業務委託費・士業"},
-          {code:"sga_subscription",name:"サブスクリプション"},
+          {code:"sga_fuel",name:"ガソリン代"},
+          {code:"sga_travel",name:"出張費"},
+          {code:"sga_office",name:"消耗品"},
+          {code:"sga_ad",name:"広告費"},
+          {code:"sga_transport",name:"移動費"},
+          {code:"sga_utility",name:"光熱費"},
+          {code:"sga_tax",name:"税金"},
+          {code:"sga_repair",name:"車両修理"},
+          {code:"sga_construction",name:"工事"},
           {code:"sga_other",name:"その他販管費"},
+        ]},
+        {cat:"売上原価",items:[
+          {code:"cogs_lease",name:"リース/ローン合計"},
+          {code:"cogs_insurance",name:"保険"},
+          {code:"cogs_inspection",name:"車���費（車検）"},
+          {code:"cogs_maintenance",name:"車両費（点検/整備）"},
+          {code:"cogs_repair",name:"修理"},
+          {code:"cogs_rent",name:"賃料合計（ヤード等）"},
+          {code:"cogs_other",name:"その他原価"},
         ]},
       ];
       return <div>
-        <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10}}>
+        <div style={{marginBottom:8,fontSize:11,color:"#64748b"}}>🧾 支出予算の入力（コスト内訳）。ここに入力した内容は CF(月次) の支出欄に自動反映されます。</div>
+        <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10,flexWrap:"wrap"}}>
+          <div style={{display:"flex",gap:6}}>
+            {["nha","spk"].map(s=><button key={s} onClick={()=>{setDbStore(s);if(costYm)setTimeout(()=>loadCost(costYm),100);}} style={{padding:"4px 12px",fontSize:11,fontWeight:700,borderRadius:6,border:"none",cursor:"pointer",background:dbStore===s?"#dc2626":"#e2e8f0",color:dbStore===s?"#fff":"#334155"}}>{s==="nha"?"那覇":"札幌"}</button>)}
+          </div>
           <span style={{fontSize:12,color:"#64748b"}}>対象月:</span>
           <input type="month" value={costYm} onChange={e=>{setCostYm(e.target.value);loadCost(e.target.value);}} style={{padding:"4px 8px",fontSize:12,border:"1px solid #cbd5e1",borderRadius:6}}/>
         </div>
@@ -3634,34 +3681,34 @@ function ManagementTab({store}){
     {/* --- コスト一覧（月次サマリー） --- */}
     {sub==="costsum"&&(()=>{
       const COST_ITEMS=[
-        {cat:"売上原価",items:["車両リース料","車両保険料","燃料費","洗車費","修繕費","有料道路代","駐車場賃料","配送費","その他原価"]},
-        {cat:"販管費",items:["事務所家賃","人件費（給与）","人件費（アルバイト）","社会保険料","OTA手数料","広告宣伝費","通信費","水道光熱費","事務用品費","旅費交通費","減価償却費","業務委託費・士業","サブスクリプション","その他販管費"]},
+        {cat:"返済",items:[{name:"返済①",code:"repay_1"},{name:"返済②",code:"repay_2"},{name:"返済③",code:"repay_3"},{name:"返済④",code:"repay_4"},{name:"返済⑤",code:"repay_5"}]},
+        {cat:"販管費",items:[{name:"社会保険",code:"sga_social_ins"},{name:"給与合計",code:"sga_salary"},{name:"手数料合計",code:"sga_ota_fee"},{name:"通信費",code:"sga_telecom"},{name:"ガソリン代",code:"sga_fuel"},{name:"出張費",code:"sga_travel"},{name:"消耗品",code:"sga_office"},{name:"広告費",code:"sga_ad"},{name:"移動費",code:"sga_transport"},{name:"光熱費",code:"sga_utility"},{name:"税金",code:"sga_tax"},{name:"車両修理",code:"sga_repair"},{name:"工事",code:"sga_construction"},{name:"その他",code:"sga_other"}]},
+        {cat:"売上原価",items:[{name:"リース/ローン",code:"cogs_lease"},{name:"保険",code:"cogs_insurance"},{name:"車検",code:"cogs_inspection"},{name:"点検/整備",code:"cogs_maintenance"},{name:"修理",code:"cogs_repair"},{name:"賃料合計",code:"cogs_rent"},{name:"その他",code:"cogs_other"}]},
       ];
-      const COST_CODES={
-        "車両リース料":"cogs_vehicle_lease","車両保険料":"cogs_insurance","燃料費":"cogs_fuel","洗車費":"cogs_wash","修繕費":"cogs_repair","有料道路代":"cogs_toll","駐車場賃料":"cogs_parking_rent","配送費":"cogs_delivery","その他原価":"cogs_other",
-        "事務所家賃":"sga_rent","人件費（給与）":"sga_salary","人件費（アルバイト）":"sga_parttime","社会保険料":"sga_social_ins","OTA手数料":"sga_ota_fee","広告宣伝費":"sga_ad","通信費":"sga_telecom","水道光熱費":"sga_utility","事務用品費":"sga_office","旅費交通費":"sga_travel","減価償却費":"sga_depreciation","業務委託費・士業":"sga_professional","サブスクリプション":"sga_subscription","その他販管費":"sga_other",
-      };
-      // 月別コストをapp_settingsから一括ロード
-      const[costMonthly,setCostMonthly]=useState({});
-      const[csLoading,setCsLoading]=useState(false);
+      // 月別コストは costAllMonths を使用
+      const costMonthly=costAllMonths;
+      const csLoading=false;
+      const dummy=costAllMonths; // ensure reactivity
       useEffect(()=>{
         if(!sb)return;
-        setCsLoading(true);
-        (async()=>{
-          const{data}=await sb.from("app_settings").select("*").like("key","cost_"+store+"_%");
-          const mp={};
-          (data||[]).forEach(d=>{
-            const ym=d.key.replace("cost_"+store+"_","");
-            try{mp[ym]=JSON.parse(d.value);}catch(e){}
-          });
-          setCostMonthly(mp);setCsLoading(false);
-        })();
-      },[sub]);
-      const yms=Object.keys(costMonthly).sort().reverse();
+        loadCostAll(dbStore);
+      },[sub,dbStore]);
+      const _stLabel=dbStore==="spk"?"札幌":"那覇";
+      // yms from costMonthly
+      const ym_unused_ref=dummy; // keep
+      const yms_inner=Object.keys(costMonthly).sort().reverse();
+      // Compatibility block
+      const setCostMonthly_=()=>{};
+      const setCsLoading_=()=>{};
+      const yms=yms_inner;
+      const store_=dbStore;
+      // render below uses old var names, map COST_ITEMS
       return <div>
-        <div style={{...h,fontSize:14}}>📋 月次コスト一覧（{store==="spk"?"札幌":"那覇"}）</div>
-        {csLoading?<div style={{padding:24,textAlign:"center",color:"#94a3b8"}}>読込中...</div>:
-        yms.length===0?<div style={{padding:24,textAlign:"center",color:"#94a3b8",fontSize:12}}>コストデータなし。「コスト入力」タブから月別に入力してください。</div>:
+        <div style={{display:"flex",gap:6,marginBottom:10}}>
+          {["nha","spk"].map(s=><button key={s} onClick={()=>setDbStore(s)} style={{padding:"4px 12px",fontSize:11,fontWeight:700,borderRadius:6,border:"none",cursor:"pointer",background:dbStore===s?"#7c3aed":"#e2e8f0",color:dbStore===s?"#fff":"#334155"}}>{s==="nha"?"那覇":"札幌"}</button>)}
+        </div>
+        <div style={{...h,fontSize:14}}>📋 月次コスト一覧（{_stLabel}）</div>
+        {yms.length===0?<div style={{padding:24,textAlign:"center",color:"#94a3b8",fontSize:12}}>コストデータなし。「コスト入力」タブから月別に入力してください。</div>:
         <div style={{overflow:"auto",maxHeight:"70vh",border:"1px solid #e2e8f0",borderRadius:8}}>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:10}}>
             <thead><tr>
@@ -3671,8 +3718,7 @@ function ManagementTab({store}){
             <tbody>
               {COST_ITEMS.map(({cat,items})=><React.Fragment key={cat}>
                 <tr style={{background:"#f0f9ff"}}><td colSpan={yms.length+1} style={{...td,fontWeight:900,fontSize:11}}>{cat}</td></tr>
-                {items.map(name=>{
-                  const code=COST_CODES[name];
+                {items.map(({name,code})=>{
                   return <tr key={code}>
                     <td style={{...td,paddingLeft:16}}>{name}</td>
                     {yms.map(ym=>{
@@ -3686,7 +3732,7 @@ function ManagementTab({store}){
                   <td style={td}>{cat}計</td>
                   {yms.map(ym=>{
                     const rows=costMonthly[ym]||[];
-                    const total=items.reduce((s,name)=>s+((rows.find(r=>r.account_code===COST_CODES[name])||{}).amount||0),0);
+                    const total=items.reduce((s,{code})=>s+((rows.find(r=>r.account_code===code)||{}).amount||0),0);
                     return <td key={ym} style={{...td,textAlign:"right",color:"#1e40af"}}>¥{fmt(total)}</td>;
                   })}
                 </tr>
