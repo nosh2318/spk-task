@@ -1483,50 +1483,98 @@ function sendJalanPaymentEmail_(pay) {
 }
 
 // ★ 定期実行: 入金確認（Square Orders API で直接確認）
+// ★★★ 入金確認マシン v2（2026-04-17 全面書き直し）★★★
+// 旧: jalan_payments テーブルのみチェック → じゃらん自動フロー以外のSquare決済を検知不可
+// 新: スプレッドシート「HANDYMAN 支払い管理」の全未払い行をSquare APIでチェック
+//     OTA種別に関係なく、Squareリンクがあれば入金確認対象
 function checkPaymentStatus() {
-  // email_sent または link_created のレコードを取得
-  var rows = supabaseGet_('jalan_payments',
-    'status=in.(email_sent,link_created)&square_payment_url=neq.&select=reservation_id,customer_name,amount,square_payment_url,slack_ts');
+  var sheetId = '1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc';
+  var ss = SpreadsheetApp.openById(sheetId);
+  var sheet = ss.getSheetByName('支払い管理');
+  if (!sheet) { Logger.log('[PaymentStatus] Sheet not found'); return; }
 
-  if (!rows || rows.length === 0) return;
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+
+  // 全行取得: D=予約番号(4) E=宛名(5) G=金額(7) H=URL(8) I=ステータス(9) J=入金日(10) K=OrderID(11)
+  var data = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
+
+  // 未払い行を抽出（ステータスに「済」が含まれない＆URLが存在する行）
+  var unpaidRows = [];
+  for (var i = 0; i < data.length; i++) {
+    var status = String(data[i][8] || '');  // I列(index 8)
+    var url = String(data[i][7] || '');     // H列(index 7)
+    if (status.indexOf('済') === -1 && status.indexOf('キャンセル') === -1 && url) {
+      unpaidRows.push({
+        rowIndex: i + 2,  // シート上の行番号（1-based + ヘッダー）
+        reservationId: String(data[i][3] || '').trim(),  // D列
+        customerName: String(data[i][4] || '').replace(/様$/,'').trim(),  // E列（「様」除去）
+        amount: Number(data[i][6]) || 0,  // G列
+        url: url.trim(),  // H列
+        media: String(data[i][13] || '').trim()  // N列=媒体
+      });
+    }
+  }
+
+  if (unpaidRows.length === 0) {
+    Logger.log('[PaymentStatus] No unpaid rows found');
+    return;
+  }
+  Logger.log('[PaymentStatus] Checking ' + unpaidRows.length + ' unpaid rows');
 
   var token = getSquareToken_();
   if (!token) { Logger.log('[PaymentStatus] No SQUARE_API_TOKEN'); return; }
 
-  for (var i = 0; i < rows.length; i++) {
-    var pay = rows[i];
+  // Square Orders を一括取得（1回のAPI呼び出しで全件照合）
+  var orders = fetchRecentSquareOrders_(token);
+  if (!orders) { Logger.log('[PaymentStatus] Failed to fetch Square orders'); return; }
+
+  var paidCount = 0;
+  for (var i = 0; i < unpaidRows.length; i++) {
+    var pay = unpaidRows[i];
     try {
-      // Square Payment Links一覧からorder_idを検索（URLのIDで特定）
-      var paid = checkSquarePayment_(token, pay.square_payment_url, pay.customer_name, pay.amount);
-      if (paid) {
-        var paidAt = paid.paid_at || new Date().toISOString();
-        supabaseUpdate_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(pay.reservation_id),
-          {status: 'paid', paid_at: paidAt});
-        // ★ スプレッドシートのステータスも更新
-        updatePaymentSheetStatus_(pay.reservation_id, '✅ 入金済み', paidAt);
+      var matched = matchSquareOrder_(orders, pay.customerName, pay.amount);
+      if (matched) {
+        var paidAt = matched.paid_at || new Date().toISOString();
+        var paidDate = new Date(paidAt);
+        var paidDateStr = Utilities.formatDate(paidDate, 'Asia/Tokyo', 'yyyy/MM/dd');
+
+        // 1. スプレッドシート更新
+        sheet.getRange(pay.rowIndex, 9).setValue('✅ 入金済み');   // I列
+        sheet.getRange(pay.rowIndex, 10).setValue(paidDateStr);     // J列
+        sheet.getRange(pay.rowIndex, 11).setValue(matched.order_id); // K列
+
+        // 2. jalan_paymentsにもレコードがあれば更新（じゃらん決済フロー分）
+        try {
+          supabaseUpdate_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(pay.reservationId) + '&status=neq.paid',
+            {status: 'paid', paid_at: paidAt});
+        } catch (e) { /* jalan_paymentsに無い場合は無視 */ }
+
+        // 3. Slack通知
         postToSlackChannel_(JALAN_PAY_CHANNEL,
           '✅ *入金確認完了*\n' +
-          '予約番号： ' + pay.reservation_id + '\n' +
-          '宛名： ' + pay.customer_name + '\n' +
-          '金額： ¥' + pay.amount);
-        Logger.log('[PaymentStatus] Paid: ' + pay.reservation_id);
+          '予約番号： ' + pay.reservationId + '\n' +
+          '宛名： ' + pay.customerName + '\n' +
+          '金額： ¥' + pay.amount +
+          (pay.media ? '\n媒体： ' + pay.media : ''));
+
+        Logger.log('[PaymentStatus] Paid: ' + pay.reservationId + ' ¥' + pay.amount + ' order=' + matched.order_id);
+        paidCount++;
       }
     } catch (e) {
-      Logger.log('[PaymentStatus] Error checking ' + pay.reservation_id + ': ' + e.message);
+      Logger.log('[PaymentStatus] Error checking ' + pay.reservationId + ': ' + e.message);
     }
   }
+  Logger.log('[PaymentStatus] Done. ' + paidCount + '/' + unpaidRows.length + ' confirmed paid');
 }
 
-// ★ Square APIで入金確認（Orders検索→顧客名+金額で照合→tenders確認）
-function checkSquarePayment_(token, paymentUrl, customerName, amount) {
-  if (!paymentUrl) return null;
-
-  // Square Search Orders API: 最近のOrdersを検索
+// Square Orders API: 直近90日の決済済みOrdersを一括取得
+function fetchRecentSquareOrders_(token) {
   var searchBody = {
     location_ids: ['L8N7J9RKPN3WH'],
     query: {
       filter: {
-        state_filter: { states: ['OPEN', 'COMPLETED'] },
+        state_filter: { states: ['COMPLETED'] },
         date_time_filter: {
           created_at: {
             start_at: new Date(Date.now() - 90 * 86400000).toISOString()
@@ -1537,37 +1585,44 @@ function checkSquarePayment_(token, paymentUrl, customerName, amount) {
     },
     limit: 50
   };
+  try {
+    var resp = UrlFetchApp.fetch('https://connect.squareup.com/v2/orders/search', {
+      method: 'post',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json',
+        'Square-Version': '2024-01-18'
+      },
+      payload: JSON.stringify(searchBody),
+      muteHttpExceptions: true
+    });
+    var data = JSON.parse(resp.getContentText());
+    return data.orders || [];
+  } catch (e) {
+    Logger.log('[SquareOrders] Fetch error: ' + e.message);
+    return null;
+  }
+}
 
-  var resp = UrlFetchApp.fetch('https://connect.squareup.com/v2/orders/search', {
-    method: 'post',
-    headers: {
-      'Authorization': 'Bearer ' + token,
-      'Content-Type': 'application/json',
-      'Square-Version': '2024-01-18'
-    },
-    payload: JSON.stringify(searchBody),
-    muteHttpExceptions: true
-  });
-
-  var data = JSON.parse(resp.getContentText());
-  var orders = data.orders || [];
-
+// Orders配列から顧客名+金額で照合（tenders存在=決済完了）
+function matchSquareOrder_(orders, customerName, amount) {
   for (var i = 0; i < orders.length; i++) {
     var order = orders[i];
-    // tenders存在 = 決済完了、net_amount_due = 0 = 全額入金
     if (!order.tenders || order.tenders.length === 0) continue;
     var netDue = order.net_amount_due_money;
     if (!netDue || netDue.amount !== 0) continue;
 
-    // 照合: line_items.name に顧客名が含まれる AND 金額一致
     var orderAmount = order.total_money ? order.total_money.amount : 0;
     var lineItems = order.line_items || [];
     for (var j = 0; j < lineItems.length; j++) {
       var itemName = lineItems[j].name || '';
-      var nameMatch = customerName && itemName.indexOf(customerName) !== -1;
+      // 顧客名の全角スペースを正規化して照合
+      var normName = customerName.replace(/\s+/g, ' ').trim();
+      var normItem = itemName.replace(/\s+/g, ' ').trim();
+      var nameMatch = normName && normItem.indexOf(normName) !== -1;
       var amountMatch = amount && orderAmount === amount;
       if (nameMatch && amountMatch) {
-        Logger.log('[SquareCheck] Matched order ' + order.id + ' for ' + customerName);
+        Logger.log('[SquareMatch] Matched order ' + order.id + ' for ' + customerName + ' ¥' + amount);
         return {
           paid_at: order.tenders[0].created_at,
           order_id: order.id
@@ -1575,39 +1630,81 @@ function checkSquarePayment_(token, paymentUrl, customerName, amount) {
       }
     }
   }
-
   return null;
 }
 
-// ★ 日次実行: 未入金アラート（出発3日前で未入金）
+// checkSquarePayment_ は廃止 → fetchRecentSquareOrders_ + matchSquareOrder_ に統合（2026-04-17）
+
+// ★★★ 未入金アラート v2（2026-04-17 スプレッドシートベースに書き直し）★★★
+// 旧: jalan_payments テーブルのみ → 直予約等を検知不可
+// 新: スプレッドシートの未払い行 + reservationsの出発日で判定
 function checkUnpaidAlert() {
-  var rows = supabaseGet_('jalan_payments',
-    'status=eq.email_sent&select=reservation_id,customer_name,amount,lend_date');
+  var sheetId = '1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc';
+  var ss = SpreadsheetApp.openById(sheetId);
+  var sheet = ss.getSheetByName('支払い管理');
+  if (!sheet) { Logger.log('[UnpaidAlert] Sheet not found'); return; }
 
-  if (!rows || rows.length === 0) return;
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
 
+  var data = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
   var now = new Date();
   var alerts = [];
-  for (var i = 0; i < rows.length; i++) {
-    var pay = rows[i];
-    if (!pay.lend_date) continue;
-    var lend = new Date(pay.lend_date + 'T00:00:00+09:00');
+
+  for (var i = 0; i < data.length; i++) {
+    var status = String(data[i][8] || '');  // I列
+    if (status.indexOf('済') !== -1 || status.indexOf('キャンセル') !== -1) continue;
+
+    var resvId = String(data[i][3] || '').trim();  // D列=予約番号
+    var name = String(data[i][4] || '').trim();     // E列=宛名
+    var amount = Number(data[i][6]) || 0;           // G列=金額
+    var url = String(data[i][7] || '').trim();      // H列=URL
+
+    if (!resvId || !url) continue;
+
+    // reservationsから出発日を取得
+    var resv = supabaseGet_('reservations', 'id=eq.' + encodeURIComponent(resvId) + '&select=lend_date');
+    var lendDate = null;
+    if (resv && resv.length > 0 && resv[0].lend_date) {
+      lendDate = resv[0].lend_date;
+    } else {
+      // スプシの品目列(F)から日付抽出を試みる（"レンタカー代金（04/17-..." → 04/17）
+      var itemStr = String(data[i][5] || '');
+      var dateMatch = itemStr.match(/(\d{2})\/(\d{2})/);
+      if (dateMatch) {
+        var y = now.getFullYear();
+        lendDate = y + '-' + dateMatch[1] + '-' + dateMatch[2];
+      }
+    }
+
+    if (!lendDate) continue;
+    var lend = new Date(lendDate + 'T00:00:00+09:00');
     var diffDays = Math.floor((lend - now) / 86400000);
     if (diffDays <= 3) {
-      alerts.push(pay);
+      alerts.push({
+        reservationId: resvId,
+        customerName: name,
+        amount: amount,
+        lendDate: lendDate,
+        daysLeft: diffDays
+      });
     }
   }
 
-  if (alerts.length === 0) return;
+  if (alerts.length === 0) {
+    Logger.log('[UnpaidAlert] No unpaid alerts');
+    return;
+  }
 
   var lines = ['🚨 *未入金アラート* ' + alerts.length + '件\n'];
   for (var i = 0; i < alerts.length; i++) {
     var a = alerts[i];
-    lines.push('• ' + a.reservation_id + ' ' + a.customer_name + ' ¥' + a.amount + '（出発: ' + a.lend_date + '）');
+    var urgency = a.daysLeft <= 0 ? '🔴期限超過' : a.daysLeft <= 1 ? '🟠明日出発' : '🟡' + a.daysLeft + '日後';
+    lines.push('• ' + a.reservationId + ' ' + a.customerName + ' ¥' + a.amount + '（出発: ' + a.lendDate + ' ' + urgency + '）');
   }
   lines.push('\n期限超過・要電話確認');
   postToSlackChannel_(JALAN_PAY_CHANNEL, lines.join('\n'));
-  Logger.log('[JalanPayment] Unpaid alert: ' + alerts.length + '件');
+  Logger.log('[UnpaidAlert] ' + alerts.length + '件通知');
 }
 
 // ★ スプレッドシートに決済行を追加（Square請求書ウィジェット用）
