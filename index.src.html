@@ -2314,6 +2314,9 @@ function ManagementTab({store}){
   const[dbKpi,setDbKpi]=useState([]);
   const[dbLoading2,setDbLoading2]=useState(false);
   const[dbTargets,setDbTargets]=useState({});  // {ym: {rev:目標売上, cnt:目標件数, perV:台/売上目標}}
+  // 予実比較
+  const[yjData,setYjData]=useState({nha:{},spk:{}});  // {store: {ym: {budget, adj1..adj5, adj1t..adj5t}}}
+  const[yjCf,setYjCf]=useState({nha:{},spk:{}});  // 入金実績（CF）: {store: {ym: amount}}
 
   const storeLabel=store==="spk"?"札幌店":(store==="nha"?"那覇店":store);
 
@@ -2425,6 +2428,47 @@ function ManagementTab({store}){
     const{error}=await sb.from("app_settings").upsert({key,value:json},{onConflict:"key"});
     if(error)console.error("target save error",error);
   },[dbTargets,dbStore]);
+
+  // 予実比較: データロード
+  useEffect(()=>{
+    if(sub!=="yojitsu"||!sb)return;
+    Promise.all([
+      sb.from("app_settings").select("*").eq("key","yojitsu_nha").single(),
+      sb.from("app_settings").select("*").eq("key","yojitsu_spk").single(),
+    ]).then(([{data:d1},{data:d2}])=>{
+      const nha=d1?.value?JSON.parse(d1.value):{};
+      const spk=d2?.value?JSON.parse(d2.value):{};
+      setYjData({nha,spk});
+    });
+    // 入金実績: nha_accountingとaccountingから月別入金額を集計
+    Promise.all([
+      loadDbAll("nha_reservations"),
+      loadDbAll("reservations"),
+    ]).then(([nhaR,spkR])=>{
+      // CF入金=売上計上ベースで代用（入金タイミングずれは将来対応）
+      const calc=(rows,rdKey)=>{
+        const byYm={};
+        rows.filter(r=>r.status!=="cancelled"&&r.status!=="キャンセル"&&r.status!=="cancel").forEach(r=>{
+          const rd=r[rdKey];if(!rd)return;
+          const ym=rd.slice(0,7);
+          const bp=Number(r.base_price)||0,op=Number(r.option_price)||0,dc=Number(r.discount)||0;
+          const rev=(bp>0||op>0)?(bp+op-dc):(Number(r.price)||0);
+          byYm[ym]=(byYm[ym]||0)+rev;
+        });
+        return byYm;
+      };
+      setYjCf({nha:calc(nhaR,"end_date"),spk:calc(spkR,"return_date")});
+    });
+  },[sub]);
+
+  const saveYjField=useCallback(async(st,ym,field,val)=>{
+    const nv=parseInt(val)||0;
+    const next={...yjData,[st]:{...(yjData[st]||{}),[ym]:{...((yjData[st]||{})[ym]||{}),[field]:nv}}};
+    setYjData(next);
+    if(!sb)return;
+    const{error}=await sb.from("app_settings").upsert({key:"yojitsu_"+st,value:JSON.stringify(next[st])},{onConflict:"key"});
+    if(error)console.error("yojitsu save error",error);
+  },[yjData]);
 
   // 経営DB: メトリクス計算
   const DB_CHANNELS=["オフィシャル","じゃらん","楽天","エアトリ","レンタカードットコム","スカイチケット","その他売上"];
@@ -2691,6 +2735,7 @@ function ManagementTab({store}){
 
   const subTabs=[
     {id:"exceldash",l:"📊 経営DB"},
+    {id:"yojitsu",l:"📈 予実比較"},
     {id:"dashboard",l:"📊 ダッシュボード"},
     {id:"sales",l:"📝 売上入力"},
     {id:"pl",l:"📘 PL(月次)"},
@@ -3102,6 +3147,111 @@ function ManagementTab({store}){
         </div>;
       })()}
     </div>}
+
+    {/* --- 予実比較 --- */}
+    {sub==="yojitsu"&&(()=>{
+      // 月列生成（2026-01 ~ 2027-12）
+      const yjMonths=[];
+      for(let y=2026;y<=2027;y++)for(let m=1;m<=12;m++)yjMonths.push(y+"-"+String(m).padStart(2,"0"));
+      const thS2={padding:"4px 6px",fontSize:9,color:"#64748b",textAlign:"right",borderBottom:"2px solid #e2e8f0",fontWeight:700,background:"#f8fafc",whiteSpace:"nowrap",position:"sticky",top:0,zIndex:1};
+      const tdS2={padding:"3px 6px",fontSize:10,textAlign:"right",borderBottom:"1px solid #f1f5f9",whiteSpace:"nowrap"};
+      const tdL2={padding:"3px 6px",fontSize:10,textAlign:"left",borderBottom:"1px solid #f1f5f9",whiteSpace:"nowrap",position:"sticky",left:0,background:"#fff",zIndex:1};
+      const secH2=(text)=><tr><td colSpan={yjMonths.length+1} style={{padding:"8px 6px 4px",fontSize:12,fontWeight:900,background:"#f0f9ff",color:"#0369a1",borderBottom:"2px solid #0ea5e9"}}>{text}</td></tr>;
+      const fmtK2=(n)=>n==null||n===0?"-":"¥"+(Math.abs(n)>=10000?((n<0?"-":"")+(Math.round(Math.abs(n)/10000).toLocaleString()+"万")):(n<0?"-¥"+Math.abs(n).toLocaleString():"¥"+n.toLocaleString()));
+      const inpS={width:"100%",border:"none",background:"#fffbeb",textAlign:"right",fontSize:10,padding:"3px 4px"};
+
+      const renderStore=(st,label)=>{
+        const d=yjData[st]||{};
+        const cf=yjCf[st]||{};
+        return <React.Fragment key={st}>
+          {secH2("▼ "+label+" — 入金合計")}
+          <tr><td style={{...tdL2,paddingLeft:16}}>実績（入金/計上）</td>
+            {yjMonths.map(ym=>{
+              const v=cf[ym]||0;
+              return <td key={ym} style={{...tdS2,fontWeight:v>0?700:400}}>{fmtK2(v)}</td>;
+            })}</tr>
+          <tr style={{background:"#fffbeb"}}><td style={{...tdL2,paddingLeft:16,fontWeight:700}}>予算（入力可）</td>
+            {yjMonths.map(ym=><td key={ym} style={{...tdS2,padding:0}}><input type="number" value={d[ym]?.budget||""} onChange={e=>saveYjField(st,ym,"budget",e.target.value)} style={inpS} placeholder="0"/></td>)}</tr>
+          <tr><td style={{...tdL2,paddingLeft:16}}>差額（実績−予算）</td>
+            {yjMonths.map(ym=>{
+              const act=cf[ym]||0,bgt=d[ym]?.budget||0;
+              const diff=act-bgt;
+              const color=bgt===0?"#64748b":diff>=0?"#059669":"#dc2626";
+              return <td key={ym} style={{...tdS2,color,fontWeight:bgt?700:400}}>{bgt?fmtK2(diff):"-"}</td>;
+            })}</tr>
+          <tr><td style={{...tdL2,paddingLeft:16}}>達成率</td>
+            {yjMonths.map(ym=>{
+              const act=cf[ym]||0,bgt=d[ym]?.budget||0;
+              const pct=bgt>0?act/bgt:0;
+              const bg=bgt===0?"transparent":pct>=1?"#dcfce7":pct>=0.7?"#fef9c3":"#fef2f2";
+              return <td key={ym} style={{...tdS2,background:bg,fontWeight:700}}>{bgt>0?(pct*100).toFixed(1)+"%":"-"}</td>;
+            })}</tr>
+          <tr><td style={{...tdL2,paddingLeft:16,fontSize:9,color:"#94a3b8"}} colSpan={yjMonths.length+1}>↳ 調整欄（予算内訳メモ）</td></tr>
+          {[1,2,3,4,5].map(n=>{const ak="_adj"+n+"t",fk="adj"+n;return <tr key={fk} style={{background:"#fffbeb"}}>
+            <td style={{...tdL2,paddingLeft:24,padding:0}}><input type="text" value={d[ak]||""} onChange={e=>{const sd={...(yjData[st]||{})};sd[ak]=e.target.value;setYjData({...yjData,[st]:sd});}} onBlur={()=>{if(sb)sb.from("app_settings").upsert({key:"yojitsu_"+st,value:JSON.stringify(yjData[st]||{})},{onConflict:"key"});}} style={{...inpS,textAlign:"left",fontSize:9}} placeholder={"調整"+n+"（タイトル入力）"}/></td>
+            {yjMonths.map(ym=><td key={ym} style={{...tdS2,padding:0}}><input type="number" value={(d[ym]||{})[fk]||""} onChange={e=>saveYjField(st,ym,fk,e.target.value)} style={inpS} placeholder="0"/></td>)}
+          </tr>;})}
+          <tr style={{fontWeight:700}}><td style={{...tdL2,paddingLeft:24,fontWeight:700}}>調整合計</td>
+            {yjMonths.map(ym=>{
+              const dd=d[ym]||{};
+              const total=(dd.adj1||0)+(dd.adj2||0)+(dd.adj3||0)+(dd.adj4||0)+(dd.adj5||0);
+              return <td key={ym} style={{...tdS2,fontWeight:700}}>{total?fmtK2(total):"-"}</td>;
+            })}</tr>
+        </React.Fragment>;
+      };
+
+      // 全体計算
+      const renderTotal=()=>{
+        const nD=yjData.nha||{},sD=yjData.spk||{},nCf=yjCf.nha||{},sCf=yjCf.spk||{};
+        return <React.Fragment>
+          {secH2("▼ 全体 — 入金合計")}
+          <tr><td style={{...tdL2,paddingLeft:16}}>実績（入金/計上）</td>
+            {yjMonths.map(ym=>{
+              const v=(nCf[ym]||0)+(sCf[ym]||0);
+              return <td key={ym} style={{...tdS2,fontWeight:v>0?700:400}}>{fmtK2(v)}</td>;
+            })}</tr>
+          <tr><td style={{...tdL2,paddingLeft:16}}>予算</td>
+            {yjMonths.map(ym=>{
+              const v=(nD[ym]?.budget||0)+(sD[ym]?.budget||0);
+              return <td key={ym} style={tdS2}>{v?fmtK2(v):"-"}</td>;
+            })}</tr>
+          <tr><td style={{...tdL2,paddingLeft:16}}>差額</td>
+            {yjMonths.map(ym=>{
+              const act=(nCf[ym]||0)+(sCf[ym]||0);
+              const bgt=(nD[ym]?.budget||0)+(sD[ym]?.budget||0);
+              const diff=act-bgt;
+              const color=bgt===0?"#64748b":diff>=0?"#059669":"#dc2626";
+              return <td key={ym} style={{...tdS2,color,fontWeight:bgt?700:400}}>{bgt?fmtK2(diff):"-"}</td>;
+            })}</tr>
+          <tr><td style={{...tdL2,paddingLeft:16}}>達成率</td>
+            {yjMonths.map(ym=>{
+              const act=(nCf[ym]||0)+(sCf[ym]||0);
+              const bgt=(nD[ym]?.budget||0)+(sD[ym]?.budget||0);
+              const pct=bgt>0?act/bgt:0;
+              const bg=bgt===0?"transparent":pct>=1?"#dcfce7":pct>=0.7?"#fef9c3":"#fef2f2";
+              return <td key={ym} style={{...tdS2,background:bg,fontWeight:700}}>{bgt>0?(pct*100).toFixed(1)+"%":"-"}</td>;
+            })}</tr>
+        </React.Fragment>;
+      };
+
+      return <div>
+        <div style={{fontSize:14,fontWeight:900,marginBottom:4}}>予実比較ダッシュボード — 入金予算 vs 実績</div>
+        <div style={{fontSize:10,color:"#64748b",marginBottom:12}}>差額＝実績−予算　■ <span style={{color:"#059669"}}>緑＝実績が予算超過（有利）</span>　■ <span style={{color:"#dc2626"}}>赤＝実績が予算未達（不利）</span>　※実績は現在 売上計上ベース（入金タイミング反映は将来対応）</div>
+        <div style={{overflow:"auto",maxHeight:"75vh",border:"1px solid #e2e8f0",borderRadius:8}}>
+          <table style={{width:"100%",borderCollapse:"collapse",minWidth:yjMonths.length*80}}>
+            <thead><tr>
+              <th style={{...thS2,textAlign:"left",position:"sticky",left:0,zIndex:2,minWidth:180}}>店舗 / 指標</th>
+              {yjMonths.map(ym=><th key={ym} style={thS2}>{ym.replace("20","").replace("-","/")}</th>)}
+            </tr></thead>
+            <tbody>
+              {renderStore("nha","那覇")}
+              {renderStore("spk","札幌")}
+              {renderTotal()}
+            </tbody>
+          </table>
+        </div>
+      </div>;
+    })()}
 
     {/* --- ダッシュボード --- */}
     {sub==="dashboard"&&<div>
