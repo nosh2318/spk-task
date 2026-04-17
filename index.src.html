@@ -2445,16 +2445,25 @@ function ManagementTab({store}){
         chRev:{},chCnt:{},vtRev:{},vtCnt:{},
         delOta:0,delHp:0,
         totalRev:0,totalCnt:0,
+        totalBase:0,totalOpt:0,totalDisc:0,
       };
       const m=months[ym];
       const ch=DB_OTA_MAP[r.ota]||"その他売上";
-      // ★ 売上計上 = price（最終金額: 割引・クーポン差引後）
-      const price=Number(r.price)||0;
+      // ★ 売上計上 = base_price + option_price - discount（割引差引後の最終金額）
+      // base_price/option_price が未設定(0)の場合は price をフォールバック
+      const bp=Number(r.base_price)||0;
+      const op=Number(r.option_price)||0;
+      const dc=Number(r.discount)||0;
+      const hasBreakdown=bp>0||op>0;
+      const revenue=hasBreakdown?(bp+op-dc):(Number(r.price)||0);
 
-      m.chRev[ch]=(m.chRev[ch]||0)+price;
+      m.chRev[ch]=(m.chRev[ch]||0)+revenue;
       m.chCnt[ch]=(m.chCnt[ch]||0)+1;
-      m.totalRev+=price;
+      m.totalRev+=revenue;
       m.totalCnt+=1;
+      m.totalBase+=bp;
+      m.totalOpt+=op;
+      m.totalDisc+=dc;
 
       // デリバリー
       const vt_raw=(r.visit_type||"").toUpperCase();
@@ -2469,7 +2478,7 @@ function ManagementTab({store}){
       else if(isSpk&&r.vehicle){vType=r.vehicle;}
       else if(!isSpk&&r.vehicle_class){vType=r.vehicle_class;}
       if(vType&&vType!=="?"){
-        m.vtRev[vType]=(m.vtRev[vType]||0)+price;
+        m.vtRev[vType]=(m.vtRev[vType]||0)+revenue;
         m.vtCnt[vType]=(m.vtCnt[vType]||0)+1;
       }
     });
@@ -2709,7 +2718,7 @@ function ManagementTab({store}){
           return <button key={s} onClick={()=>setDbStore(s)} style={{padding:"6px 16px",fontSize:13,fontWeight:800,borderRadius:8,border:sel2?"2px solid #1e40af":"2px solid #e2e8f0",cursor:"pointer",background:sel2?"#1e40af":"#fff",color:sel2?"#fff":"#334155"}}>{lb}</button>;
         })}
         {dbLoading2&&<span style={{fontSize:11,color:"#64748b",marginLeft:8}}>読込中...</span>}
-        <span style={{fontSize:10,color:"#94a3b8",marginLeft:8}}>※ reservationsテーブルから全自動集計（price = 最終金額: 割引・クーポン差引後）</span>
+        <span style={{fontSize:10,color:"#94a3b8",marginLeft:8}}>※ reservationsから自動集計 | 売上計上 = 基本料金 + 付帯売上 - 割引（最終金額）</span>
       </div>
 
       {(()=>{
@@ -2775,7 +2784,7 @@ function ManagementTab({store}){
               })}
 
               {/* ▼ セクション2: 売上件数 */}
-              {secH("▼ 売上件数（チャネル別）��� "+sLabel)}
+              {secH("▼ 売上件数（チャネル別）— "+sLabel)}
               {DB_CHANNELS.map(ch=>{
                 return <tr key={"cnt_"+ch}>
                   <td style={{...tdL,paddingLeft:16}}>{ch}</td>
@@ -2819,7 +2828,7 @@ function ManagementTab({store}){
                 })}</tr>
               <tr><td style={{...tdL,paddingLeft:16}}>オフィシャル DEL利用数</td>
                 {ymList.map(ym=><td key={ym} style={tdS}>{fmtN(months[ym]?.delHp||0)}</td>)}</tr>
-              <tr><td style={{...tdL,paddingLeft:16}}>↳ HP DEL���成比</td>
+              <tr><td style={{...tdL,paddingLeft:16}}>↳ HP DEL構成比</td>
                 {ymList.map(ym=>{
                   const m=months[ym];
                   const hpCnt=m?.chCnt["オフィシャル"]||0;
@@ -2837,8 +2846,54 @@ function ManagementTab({store}){
                   return <td key={ym} style={{...tdS,fontSize:9,color:"#64748b"}}>{total>0?fmtP(((m?.delOta||0)+(m?.delHp||0))/total):"-"}</td>;
                 })}</tr>
 
-              {/* ▼ ���クション7: 運用・稼働・単価分析 */}
-              {secH("▼ 運用・稼働・単価��析 — "+sLabel)}
+              {/* ▼ セクション5: 売上区分（基本料金 / 付帯売上 / 割引） */}
+              {secH("▼ 売上区分（基本料金 / 付帯売上 / 割引）— "+sLabel)}
+              <tr><td style={{...tdL,paddingLeft:16}}>基本料金</td>
+                {ymList.map((ym,i)=>{
+                  const v=months[ym]?.totalBase||0;
+                  const prev=i>0?(months[ymList[i-1]]?.totalBase||0):0;
+                  return <td key={ym} style={tdS}>{fmtK(v)} {i>0&&chg(v,prev)}</td>;
+                })}</tr>
+              <tr><td style={{...tdL,paddingLeft:24,fontSize:9,color:"#64748b"}}>↳ 基本料金 構成比</td>
+                {ymList.map(ym=>{
+                  const bp=months[ym]?.totalBase||0;
+                  const gross=(months[ym]?.totalBase||0)+(months[ym]?.totalOpt||0);
+                  return <td key={ym} style={{...tdS,fontSize:9,color:"#64748b"}}>{gross>0?fmtP(bp/gross):"-"}</td>;
+                })}</tr>
+              <tr><td style={{...tdL,paddingLeft:16}}>付帯売上</td>
+                {ymList.map((ym,i)=>{
+                  const v=months[ym]?.totalOpt||0;
+                  const prev=i>0?(months[ymList[i-1]]?.totalOpt||0):0;
+                  return <td key={ym} style={tdS}>{fmtK(v)} {i>0&&chg(v,prev)}</td>;
+                })}</tr>
+              <tr><td style={{...tdL,paddingLeft:24,fontSize:9,color:"#64748b"}}>↳ 付帯売上 構成比</td>
+                {ymList.map(ym=>{
+                  const op=months[ym]?.totalOpt||0;
+                  const gross=(months[ym]?.totalBase||0)+(months[ym]?.totalOpt||0);
+                  return <td key={ym} style={{...tdS,fontSize:9,color:"#64748b"}}>{gross>0?fmtP(op/gross):"-"}</td>;
+                })}</tr>
+              <tr style={{color:"#dc2626"}}><td style={{...tdL,paddingLeft:16,color:"#dc2626"}}>割引・クーポン</td>
+                {ymList.map((ym,i)=>{
+                  const v=months[ym]?.totalDisc||0;
+                  const prev=i>0?(months[ymList[i-1]]?.totalDisc||0):0;
+                  return <td key={ym} style={{...tdS,color:"#dc2626"}}>{v>0?"-"+fmtK(v):"-"} {i>0&&v>0&&prev>0?chg(v,prev):null}</td>;
+                })}</tr>
+              <tr><td style={{...tdL,paddingLeft:24,fontSize:9,color:"#64748b"}}>↳ 割引率（グロス対比）</td>
+                {ymList.map(ym=>{
+                  const dc=months[ym]?.totalDisc||0;
+                  const gross=(months[ym]?.totalBase||0)+(months[ym]?.totalOpt||0);
+                  return <td key={ym} style={{...tdS,fontSize:9,color:dc>0?"#dc2626":"#64748b"}}>{gross>0?fmtP(dc/gross):"-"}</td>;
+                })}</tr>
+              <tr style={{fontWeight:800,background:"#f0fdf4"}}>
+                <td style={{...tdL,fontWeight:800}}>売上計上額（= 基本+付帯-割引）</td>
+                {ymList.map((ym,i)=>{
+                  const v=months[ym]?.totalRev||0;
+                  const prev=i>0?(months[ymList[i-1]]?.totalRev||0):0;
+                  return <td key={ym} style={{...tdS,fontWeight:800}}>{fmtK(v)} {i>0&&chg(v,prev)}</td>;
+                })}</tr>
+
+              {/* ▼ セクション7: 運用・稼働・単価分析 */}
+              {secH("▼ 運用・稼働・単価分析 — "+sLabel)}
               <tr><td style={{...tdL,paddingLeft:16}}>稼働台数(KPI active)</td>
                 {ymList.map(ym=><td key={ym} style={tdS}>{months[ym]?.activeCount||0}台</td>)}</tr>
               <tr><td style={{...tdL,paddingLeft:16}}>稼働率</td>
@@ -2861,14 +2916,14 @@ function ManagementTab({store}){
               <tr><td style={{...tdL,paddingLeft:16}}>OTA 予約単価</td>
                 {ymList.map(ym=>{
                   const m=months[ym];
-                  const otaRev=DB_CHANNELS.filter(c=>c!=="オフィ��ャル").reduce((s,c)=>(s+(m?.chRev[c]||0)),0);
+                  const otaRev=DB_CHANNELS.filter(c=>c!=="オフィシャル").reduce((s,c)=>(s+(m?.chRev[c]||0)),0);
                   const otaCnt=DB_CHANNELS.filter(c=>c!=="オフィシャル").reduce((s,c)=>(s+(m?.chCnt[c]||0)),0);
                   return <td key={ym} style={tdS}>{otaCnt>0?fmtK(Math.round(otaRev/otaCnt)):"-"}</td>;
                 })}</tr>
-              <tr><td style={{...tdL,paddingLeft:16}}>HP ��約単価</td>
+              <tr><td style={{...tdL,paddingLeft:16}}>HP 予約単価</td>
                 {ymList.map(ym=>{
                   const m=months[ym];
-                  const hpR=m?.chRev["���フィシャル"]||0;
+                  const hpR=m?.chRev["オフィシャル"]||0;
                   const hpC=m?.chCnt["オフィシャル"]||0;
                   return <td key={ym} style={tdS}>{hpC>0?fmtK(Math.round(hpR/hpC)):"-"}</td>;
                 })}</tr>
@@ -2893,7 +2948,7 @@ function ManagementTab({store}){
               })}
 
               {/* ▼ セクション9: 車両タイプ別売上 */}
-              {secH("▼ 車両タイプ別 売上金額（計上ベ���ス）— "+sLabel)}
+              {secH("▼ 車両タイプ別 売上金額（計上ベース）— "+sLabel)}
               {DB_VEH_TYPES.map(t=>{
                 const hasData=ymList.some(ym=>(months[ym]?.vtRev[t]||0)>0);
                 if(!hasData)return null;
@@ -2927,7 +2982,7 @@ function ManagementTab({store}){
       })()}
     </div>}
 
-    {/* --- ダッシュボー�� --- */}
+    {/* --- ダッシュボード --- */}
     {sub==="dashboard"&&<div>
       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
         <span style={{fontSize:12,color:"#64748b"}}>対象月:</span>

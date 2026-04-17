@@ -80,15 +80,49 @@
 TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 / 駐車場 / 会計 / 顧客 / 売上 / データ / 過去 / 免許証
 
 ## 現在のバージョン
-- **APP_VERSION**: v4.6.11
-- **sw.js CACHE_NAME**: `spk-v473`
-- **index.html CV**: `spk-v473`
+- **APP_VERSION**: v4.6.14
+- **sw.js CACHE_NAME**: `spk-v477`
+- **index.html CV**: `spk-v477`
 - **SRI/CSP**: 未適用（下記インシデント参照）
 
 ## 未使用テーブル
 - **vehicle_twins**: テーブルは存在するがデータ空。APP・GASのどちらでも未使用。配車は`fleet`テーブルで管理。手を入れる必要なし。
 
 ## 2026-04-17 修正履歴
+
+### Dashboard 稼働率に「配車表の除外フラグ」を反映（v4.6.14）
+- **問題**: 配車表（FleetTimeline）で `vehicle_monthly_kpi.active=false` にした車両が、Dashboard の稼働率計算では依然「稼働台数」にカウントされ、稼働に戻ってしまっていた
+- **原因**: Dashboard の `curUtil` / `prevUtil` / `annualData` が `vehicles.length` を直接「稼働台数」にしており、`vehicle_monthly_kpi` の除外フラグを見ていなかった（LeadTimeWidget だけが kpi を参照していた）
+- **オーナー原則**: 「4月以降は APPのデータが正義」→ APP 内でも kpi フラグが全画面に一貫して効いている状態でなければならない
+- **修正内容（`index.src.html`）**:
+  1. Dashboard で `vehicle_monthly_kpi` 全件を初回にロード → `dashKpiAll = {ym: {code: active}}` にキャッシュ
+  2. `isKpiActiveYM(code, ym)` ヘルパーを追加（kpi にその月の行があればそれを採用、なければ `vehicles.active !== false` で判定 — APP 既存ロジックと完全一致）
+  3. `curUtil` / `prevUtil` / `annualData` を以下に修正:
+     - 稼働台数 = `vehicles.filter(v => isKpiActiveYM(v.code, ym)).length`
+     - 最大稼働日数 = 稼働台数 × 月日数
+     - 予約ループで `!activeCodesYM.has(vc)` の予約はスキップ（除外車両の予約は計算から外す）
+     - メンテナンスループも同様に除外車両をスキップ
+     - キャンセル予約は `r.status==="cancelled"` もスキップ（元々スキップされていたが明示化）
+  4. 年間ビュー月別行の `totalP` 表示も `m.totalPossible||(m.activeCount||vehicles.length)*m.dim` に差替え
+- **バージョン**: `APP_VERSION=v4.6.14` / `sw.js CACHE_NAME=spk-v477` / `index.html CV=spk-v477` 同時更新
+- **検証**: `node build.js` 成功、`node --check app.js` OK、本番 https://spk-task.vercel.app に反映済
+- **コミット**: `36bfb6f` (fix(dashboard): 稼働率に配車表の除外フラグ(vehicle_monthly_kpi)を適用)
+
+### PDF (HANDYMAN_MTG統合) を Supabase 再集計に変更
+- **問題**: 2026-04以降の稼働率が Excel由来 と APP表示値で乖離（Excel行158 は 4月以降も Excel基準）
+- **原則**: 4月以降は APP のデータ資産が正 → Excel ではなく Supabase (= APP が書き込む DB) を参照して再集計
+- **実装**:
+  - 新規 `~/Desktop/HANDYMAN/analytics/supabase_util_2026_04.py` — APP と完全一致する稼働率算定ロジック
+    - 稼働台数 = `vehicles.filter(isKpiActive)` （`vehicle_monthly_kpi` 優先、なければ vehicles.active）
+    - 稼働日数 = 予約×fleet で車両別稼働日 Set（重複カウント防止）
+    - 稼働率(%) = round(Σ稼働日数 / (稼働台数 × 月日数) × 100)
+    - SPK: `reservations`/`fleet`/`vehicles`/`vehicle_monthly_kpi` + `lend_date`/`return_date`
+    - NHA: `nha_reservations`/`nha_fleet`/`nha_vehicles`/`nha_vehicle_monthly_kpi` + `start_date`/`end_date`
+  - `structure_metrics_portrait.py` に APP_OVERRIDES を追加 — 2026-04以降は Supabase 再集計値を採用
+    - NHA 2026-04: 50台 / 906日 / 60%
+    - SPK 2026-04: 10台 / 96日 / 32%
+  - PDF 脚注修正: 「2025〜2026-03 稼働率: 事業解析Excel 行158 | ★2026-04 以降 稼働率・台数: Supabase (= APP データ資産) 再集計」
+- **出力**: `~/Desktop/HANDYMAN/analytics/charts/HANDYMAN_MTG統合_20260417.pdf` 更新済
 
 ### Slack通知を Bot API 直接投稿に変更（札幌GAS）
 - **問題**: 札幌店の予約（QAA71034 太田美佐子、HP札幌、Cクラス、4/25、クインテッサホテル札幌）が正しく札幌DBに登録されたが、Slack通知だけ那覇チャネルに届く事象が再発
