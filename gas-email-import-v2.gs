@@ -1487,6 +1487,10 @@ function sendJalanPaymentEmail_(pay) {
 // 旧: jalan_payments テーブルのみチェック → じゃらん自動フロー以外のSquare決済を検知不可
 // 新: スプレッドシート「HANDYMAN 支払い管理」の全未払い行をSquare APIでチェック
 //     OTA種別に関係なく、Squareリンクがあれば入金確認対象
+// ★★★ 入金確認 v3（2026-04-17）★★★
+// v2の致命的バグ: Payment Link orderの line_items.name = "undefined" → 顧客名マッチ不可 → 0件ヒット
+// v3: Square Payment Links API で URL → order_id を直接解決。名前マッチング完全廃止。
+// フロー: スプシURL → Payment Links API → order_id → BatchRetrieveOrders → tenders有無
 function checkPaymentStatus() {
   var sheetId = '1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc';
   var ss = SpreadsheetApp.openById(sheetId);
@@ -1496,22 +1500,22 @@ function checkPaymentStatus() {
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
 
-  // 全行取得: D=予約番号(4) E=宛名(5) G=金額(7) H=URL(8) I=ステータス(9) J=入金日(10) K=OrderID(11)
   var data = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
 
-  // 未払い行を抽出（ステータスに「済」が含まれない＆URLが存在する行）
+  // 未払い行を抽出
   var unpaidRows = [];
   for (var i = 0; i < data.length; i++) {
-    var status = String(data[i][8] || '');  // I列(index 8)
-    var url = String(data[i][7] || '');     // H列(index 7)
+    var status = String(data[i][8] || '');  // I列
+    var url = String(data[i][7] || '');     // H列
     if (status.indexOf('済') === -1 && status.indexOf('キャンセル') === -1 && url) {
       unpaidRows.push({
-        rowIndex: i + 2,  // シート上の行番号（1-based + ヘッダー）
-        reservationId: String(data[i][3] || '').trim(),  // D列
-        customerName: String(data[i][4] || '').replace(/様$/,'').trim(),  // E列（「様」除去）
-        amount: Number(data[i][6]) || 0,  // G列
-        url: url.trim(),  // H列
-        media: String(data[i][13] || '').trim()  // N列=媒体
+        rowIndex: i + 2,
+        reservationId: String(data[i][3] || '').trim(),
+        customerName: String(data[i][4] || '').replace(/様$/,'').trim(),
+        amount: Number(data[i][6]) || 0,
+        url: url.trim(),
+        media: String(data[i][13] || '').trim(),
+        orderId: null  // Payment Links APIから解決
       });
     }
   }
@@ -1525,15 +1529,44 @@ function checkPaymentStatus() {
   var token = getSquareToken_();
   if (!token) { Logger.log('[PaymentStatus] No SQUARE_API_TOKEN'); return; }
 
-  // Square Orders を一括取得（1回のAPI呼び出しで全件照合）
-  var orders = fetchRecentSquareOrders_(token);
-  if (!orders) { Logger.log('[PaymentStatus] Failed to fetch Square orders'); return; }
+  // Phase 1: Payment Links API でURL→order_idマップ構築
+  var linkMap = fetchPaymentLinkMap_(token);
+  if (!linkMap || Object.keys(linkMap).length === 0) {
+    Logger.log('[PaymentStatus] WARNING: Payment Links map is empty');
+  }
 
+  // Phase 2: 各未払い行のURLからorder_idを解決
+  var orderIdsToCheck = [];
+  for (var i = 0; i < unpaidRows.length; i++) {
+    var normalizedUrl = normalizeSquareUrl_(unpaidRows[i].url);
+    var orderId = linkMap[normalizedUrl];
+    if (orderId) {
+      unpaidRows[i].orderId = orderId;
+      orderIdsToCheck.push(orderId);
+      Logger.log('[PaymentStatus] URL match: ' + unpaidRows[i].reservationId + ' → order=' + orderId);
+    } else {
+      Logger.log('[PaymentStatus] No URL match for ' + unpaidRows[i].reservationId + ' url=' + normalizedUrl);
+    }
+  }
+
+  if (orderIdsToCheck.length === 0) {
+    Logger.log('[PaymentStatus] No order IDs resolved. Done.');
+    return;
+  }
+
+  // Phase 3: order_idからorderを一括取得
+  var orderMap = batchRetrieveOrders_(token, orderIdsToCheck);
+
+  // Phase 4: tenders有無で入金判定
   var paidCount = 0;
   for (var i = 0; i < unpaidRows.length; i++) {
     var pay = unpaidRows[i];
+    if (!pay.orderId) continue;
+
     try {
-      var matched = matchSquareOrder_(orders, pay.customerName, pay.amount);
+      var order = orderMap[pay.orderId];
+      var matched = isOrderPaid_(order);
+
       if (matched) {
         var paidAt = matched.paid_at || new Date().toISOString();
         var paidDate = new Date(paidAt);
@@ -1544,7 +1577,7 @@ function checkPaymentStatus() {
         sheet.getRange(pay.rowIndex, 10).setValue(paidDateStr);     // J列
         sheet.getRange(pay.rowIndex, 11).setValue(matched.order_id); // K列
 
-        // 2. jalan_paymentsにもレコードがあれば更新（じゃらん決済フロー分）
+        // 2. jalan_paymentsにもレコードがあれば更新
         try {
           supabaseUpdate_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(pay.reservationId) + '&status=neq.paid',
             {status: 'paid', paid_at: paidAt});
@@ -1555,11 +1588,13 @@ function checkPaymentStatus() {
           '✅ *入金確認完了*\n' +
           '予約番号： ' + pay.reservationId + '\n' +
           '宛名： ' + pay.customerName + '\n' +
-          '金額： ¥' + pay.amount +
+          '金額： ¥' + pay.amount.toLocaleString() +
           (pay.media ? '\n媒体： ' + pay.media : ''));
 
-        Logger.log('[PaymentStatus] Paid: ' + pay.reservationId + ' ¥' + pay.amount + ' order=' + matched.order_id);
+        Logger.log('[PaymentStatus] ✅ Paid: ' + pay.reservationId + ' ¥' + pay.amount + ' order=' + matched.order_id);
         paidCount++;
+      } else {
+        Logger.log('[PaymentStatus] Not yet paid: ' + pay.reservationId + ' (order exists but no tenders)');
       }
     } catch (e) {
       Logger.log('[PaymentStatus] Error checking ' + pay.reservationId + ': ' + e.message);
@@ -1568,72 +1603,129 @@ function checkPaymentStatus() {
   Logger.log('[PaymentStatus] Done. ' + paidCount + '/' + unpaidRows.length + ' confirmed paid');
 }
 
-// Square Orders API: 直近90日の決済済みOrdersを一括取得
-function fetchRecentSquareOrders_(token) {
-  var searchBody = {
-    location_ids: ['L8N7J9RKPN3WH'],
-    query: {
-      filter: {
-        state_filter: { states: ['COMPLETED'] },
-        date_time_filter: {
-          created_at: {
-            start_at: new Date(Date.now() - 90 * 86400000).toISOString()
+// ============================================================
+// Square Payment Links API ベースの入金確認 v3（2026-04-17）
+// 旧v2の問題: Payment Link orderのline_items.nameが"undefined"になり
+// 顧客名マッチが不可能 → 0件ヒットのバグ
+// v3: URL→order_id直接解決。名前マッチング完全廃止
+// ============================================================
+
+// Square Payment Links一覧を取得し、URL → order_id のマップを構築
+// Payment Links APIは最新順で返す。最大200件取得（十分な範囲）
+function fetchPaymentLinkMap_(token) {
+  var map = {};
+  var cursor = null;
+  var fetched = 0;
+  var MAX_LINKS = 200;
+
+  do {
+    var apiUrl = 'https://connect.squareup.com/v2/online-checkout/payment-links?limit=100';
+    if (cursor) apiUrl += '&cursor=' + encodeURIComponent(cursor);
+
+    try {
+      var resp = UrlFetchApp.fetch(apiUrl, {
+        method: 'get',
+        headers: {
+          'Authorization': 'Bearer ' + token,
+          'Content-Type': 'application/json',
+          'Square-Version': '2024-01-18'
+        },
+        muteHttpExceptions: true
+      });
+      var code = resp.getResponseCode();
+      if (code !== 200) {
+        Logger.log('[PaymentLinks] API error ' + code + ': ' + resp.getContentText().substring(0, 200));
+        break;
+      }
+      var data = JSON.parse(resp.getContentText());
+      var links = data.payment_links || [];
+      for (var i = 0; i < links.length; i++) {
+        var link = links[i];
+        if (link.order_id) {
+          // 短縮URL（square.link/u/...）をマップ
+          if (link.url) {
+            map[normalizeSquareUrl_(link.url)] = link.order_id;
+          }
+          // フルURL（checkout.square.site/...）もマップ
+          if (link.long_url) {
+            map[normalizeSquareUrl_(link.long_url)] = link.order_id;
           }
         }
-      },
-      sort: { sort_field: 'CREATED_AT', sort_order: 'DESC' }
-    },
-    limit: 50
-  };
-  try {
-    var resp = UrlFetchApp.fetch('https://connect.squareup.com/v2/orders/search', {
-      method: 'post',
-      headers: {
-        'Authorization': 'Bearer ' + token,
-        'Content-Type': 'application/json',
-        'Square-Version': '2024-01-18'
-      },
-      payload: JSON.stringify(searchBody),
-      muteHttpExceptions: true
-    });
-    var data = JSON.parse(resp.getContentText());
-    return data.orders || [];
-  } catch (e) {
-    Logger.log('[SquareOrders] Fetch error: ' + e.message);
-    return null;
-  }
+      }
+      fetched += links.length;
+      cursor = data.cursor;
+      Logger.log('[PaymentLinks] Fetched ' + fetched + ' links so far');
+    } catch (e) {
+      Logger.log('[PaymentLinks] Fetch error: ' + e.message);
+      break;
+    }
+  } while (cursor && fetched < MAX_LINKS);
+
+  Logger.log('[PaymentLinks] Total map entries: ' + Object.keys(map).length);
+  return map;
 }
 
-// Orders配列から顧客名+金額で照合（tenders存在=決済完了）
-function matchSquareOrder_(orders, customerName, amount) {
-  for (var i = 0; i < orders.length; i++) {
-    var order = orders[i];
-    if (!order.tenders || order.tenders.length === 0) continue;
-    var netDue = order.net_amount_due_money;
-    if (!netDue || netDue.amount !== 0) continue;
+// Square URL正規化（末尾スラッシュ除去、小文字化）
+function normalizeSquareUrl_(url) {
+  return String(url || '').trim().replace(/\/+$/, '').toLowerCase();
+}
 
-    var orderAmount = order.total_money ? order.total_money.amount : 0;
-    var lineItems = order.line_items || [];
-    for (var j = 0; j < lineItems.length; j++) {
-      var itemName = lineItems[j].name || '';
-      // 顧客名の全角スペースを正規化して照合
-      var normName = customerName.replace(/\s+/g, ' ').trim();
-      var normItem = itemName.replace(/\s+/g, ' ').trim();
-      var nameMatch = normName && normItem.indexOf(normName) !== -1;
-      var amountMatch = amount && orderAmount === amount;
-      if (nameMatch && amountMatch) {
-        Logger.log('[SquareMatch] Matched order ' + order.id + ' for ' + customerName + ' ¥' + amount);
-        return {
-          paid_at: order.tenders[0].created_at,
-          order_id: order.id
-        };
-      }
+// 複数のorder_idを一括取得（BatchRetrieveOrders）
+function batchRetrieveOrders_(token, orderIds) {
+  var map = {};
+  if (!orderIds || orderIds.length === 0) return map;
+
+  // 重複除去
+  var unique = [];
+  var seen = {};
+  for (var i = 0; i < orderIds.length; i++) {
+    if (!seen[orderIds[i]]) {
+      unique.push(orderIds[i]);
+      seen[orderIds[i]] = true;
     }
   }
-  return null;
+
+  // 100件ずつバッチ処理
+  for (var i = 0; i < unique.length; i += 100) {
+    var batch = unique.slice(i, i + 100);
+    try {
+      var resp = UrlFetchApp.fetch('https://connect.squareup.com/v2/orders/batch-retrieve', {
+        method: 'post',
+        headers: {
+          'Authorization': 'Bearer ' + token,
+          'Content-Type': 'application/json',
+          'Square-Version': '2024-01-18'
+        },
+        payload: JSON.stringify({
+          location_id: 'L8N7J9RKPN3WH',
+          order_ids: batch
+        }),
+        muteHttpExceptions: true
+      });
+      var data = JSON.parse(resp.getContentText());
+      var orders = data.orders || [];
+      for (var j = 0; j < orders.length; j++) {
+        map[orders[j].id] = orders[j];
+      }
+    } catch (e) {
+      Logger.log('[BatchOrders] Error: ' + e.message);
+    }
+  }
+  Logger.log('[BatchOrders] Retrieved ' + Object.keys(map).length + '/' + unique.length + ' orders');
+  return map;
 }
 
-// checkSquarePayment_ は廃止 → fetchRecentSquareOrders_ + matchSquareOrder_ に統合（2026-04-17）
+// orderが入金済みかチェック（tenders存在 + net_due=0）
+function isOrderPaid_(order) {
+  if (!order) return null;
+  if (!order.tenders || order.tenders.length === 0) return null;
+  var netDue = order.net_amount_due_money;
+  if (netDue && netDue.amount !== 0) return null;
+  return {
+    paid_at: order.tenders[0].created_at,
+    order_id: order.id
+  };
+}
 
 // ★★★ 未入金アラート v2（2026-04-17 スプレッドシートベースに書き直し）★★★
 // 旧: jalan_payments テーブルのみ → 直予約等を検知不可
@@ -1892,18 +1984,64 @@ function getOrCreateLabel_(labelName) {
   return label;
 }
 
-// ★ R0JQ20US手動テスト（実行後に削除すること）
-function testJalanPaymentR0JQ20US() {
-  var rows = supabaseGet_('reservations', 'id=eq.R0JQ20US&select=*');
-  if (!rows || rows.length === 0) { Logger.log('R0JQ20US not found'); return; }
-  var r = rows[0];
-  var reservation = {
-    id: r.id, ota: r.ota, name: r.name,
-    price: r.price, mail: r.mail || '',
-    lend_date: r.lend_date, return_date: r.return_date,
-    vehicle: r.vehicle || '', _store: '札幌デリバリー専門店'
-  };
-  Logger.log('Testing with: ' + JSON.stringify(reservation));
-  handleJalanPayment_(reservation);
-  Logger.log('Done. Check #jalan_payment and jalan_payments table.');
+// ★ デバッグ: Payment Links APIの接続テスト（手動実行して結果を確認）
+function debugPaymentV3() {
+  var token = getSquareToken_();
+  if (!token) { Logger.log('No SQUARE_API_TOKEN'); return; }
+
+  // 1. Payment Links取得テスト
+  Logger.log('=== Phase 1: Payment Links API ===');
+  var linkMap = fetchPaymentLinkMap_(token);
+  var linkUrls = Object.keys(linkMap);
+  Logger.log('Payment Links取得数: ' + linkUrls.length);
+  // 最新5件を表示
+  for (var i = 0; i < Math.min(5, linkUrls.length); i++) {
+    Logger.log('  [' + i + '] url=' + linkUrls[i] + ' → order_id=' + linkMap[linkUrls[i]]);
+  }
+
+  // 2. スプシ未払い行のURL照合テスト
+  Logger.log('=== Phase 2: スプシURL照合 ===');
+  var sheetId = '1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc';
+  var ss = SpreadsheetApp.openById(sheetId);
+  var sheet = ss.getSheetByName('支払い管理');
+  var lastRow = sheet.getLastRow();
+  var data = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
+
+  var matchedIds = [];
+  for (var i = 0; i < data.length; i++) {
+    var status = String(data[i][8] || '');
+    var url = String(data[i][7] || '').trim();
+    if (status.indexOf('済') !== -1 || status.indexOf('キャンセル') !== -1 || !url) continue;
+
+    var resvId = String(data[i][3] || '').trim();
+    var name = String(data[i][4] || '').trim();
+    var amount = Number(data[i][6]) || 0;
+    var normalizedUrl = normalizeSquareUrl_(url);
+    var orderId = linkMap[normalizedUrl];
+
+    Logger.log('  スプシ未払い: ' + resvId + ' ' + name + ' ¥' + amount);
+    Logger.log('    URL: ' + url);
+    Logger.log('    正規化URL: ' + normalizedUrl);
+    Logger.log('    → order_id: ' + (orderId || '❌ NOT FOUND'));
+
+    if (orderId) matchedIds.push(orderId);
+  }
+
+  // 3. order取得＆tenders確認
+  if (matchedIds.length > 0) {
+    Logger.log('=== Phase 3: Orders tenders確認 ===');
+    var orderMap = batchRetrieveOrders_(token, matchedIds);
+    for (var oid in orderMap) {
+      var order = orderMap[oid];
+      var hasTenders = order.tenders && order.tenders.length > 0;
+      var total = order.total_money ? order.total_money.amount : 0;
+      var netDue = order.net_amount_due_money ? order.net_amount_due_money.amount : '?';
+      Logger.log('  order=' + oid + ' total=¥' + total + ' tenders=' + (hasTenders ? '✅' + order.tenders.length + '件' : '❌なし') + ' net_due=' + netDue);
+      if (hasTenders) {
+        Logger.log('    paid_at=' + order.tenders[0].created_at);
+      }
+    }
+  }
+
+  Logger.log('=== debugPaymentV3 完了 ===');
 }
