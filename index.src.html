@@ -62,7 +62,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v480';
+  var CV='spk-v481';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
@@ -2302,6 +2302,9 @@ function ManagementTab({store}){
   const[costYm,setCostYm]=useState("");
   // 全月コスト（PL/CF連動用）: {ym: [{account_code, amount, note}]}
   const[costAllMonths,setCostAllMonths]=useState({});
+  // パトロール（SS↔APP比較）
+  const[patrolResult,setPatrolResult]=useState(null);
+  const[patrolLoading,setPatrolLoading]=useState(false);
   // 当月ダッシュボード
   const[dashYm,setDashYm]=useState(()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");});
 
@@ -2795,6 +2798,7 @@ function ManagementTab({store}){
     {id:"budgetcf",l:"📊 予算CF"},
     {id:"roi",l:"📈 投資回転率"},
     {id:"cfsim",l:"🔮 CFシミュ"},
+    {id:"patrol",l:"🔍 パトロール"},
   ];
 
   const card={padding:12,borderRadius:10,background:"#fff",border:"1px solid #e2e8f0"};
@@ -3958,6 +3962,317 @@ function ManagementTab({store}){
     })()}
 
     {/* --- CFシミュレーター --- */}
+    {sub==="patrol"&&(()=>{
+      // === パトロール: SS(Google Sheets) ↔ APP(Supabase) 自動比較 ===
+      const SS_PUB_BASE="https://docs.google.com/spreadsheets/d/e/2PACX-1vQVK2mRkYMKG3cPtr5HSi9TWSS1JevKOvTmOusvXjoOZOEtW_KTX9oYXQld3FeK3Q/pub";
+      const SS_GIDS={
+        pl_nha:"1117507661",pl_spk:"609433931",
+        cf_nha:"1575364807",cf_spk:"1260007687",
+        cost_nha:"1740899330",cost_spk:"658706807",
+      };
+      const parseSSNum=(s)=>{if(!s||s==="-"||s==="")return 0;return parseInt(String(s).replace(/[",¥\s]/g,""))||0;};
+      const parseSSYm=(s)=>{if(!s)return null;const m=String(s).match(/(\d{4})\D+(\d{1,2})/);return m?(m[1]+"-"+m[2].padStart(2,"0")):null;};
+      const fetchSSCsv=async(gid)=>{
+        const url=SS_PUB_BASE+"?gid="+gid+"&single=true&output=csv";
+        const resp=await fetch(url);
+        const text=await resp.text();
+        // CSV parse (handle quoted fields with commas)
+        return text.split("\n").map(line=>{
+          const row=[];let inQ=false,cur="";
+          for(let i=0;i<line.length;i++){
+            const c=line[i];
+            if(c==='"'){inQ=!inQ;}
+            else if(c===","&&!inQ){row.push(cur);cur="";}
+            else{cur+=c;}
+          }
+          row.push(cur);
+          return row;
+        });
+      };
+
+      const runPatrol=async()=>{
+        setPatrolLoading(true);setPatrolResult(null);
+        try{
+          // 1) PL比較
+          const plNhaCsv=await fetchSSCsv(SS_GIDS.pl_nha);
+          const plSpkCsv=await fetchSSCsv(SS_GIDS.pl_spk);
+          // 2) CF比較
+          const cfNhaCsv=await fetchSSCsv(SS_GIDS.cf_nha);
+          const cfSpkCsv=await fetchSSCsv(SS_GIDS.cf_spk);
+          // 3) コスト比較
+          const costNhaCsv=await fetchSSCsv(SS_GIDS.cost_nha);
+          const costSpkCsv=await fetchSSCsv(SS_GIDS.cost_spk);
+
+          const results=[];
+          const chMap={"オフィシャル":"オフィシャル","じゃらん":"じゃらん","楽天":"楽天","エアトリ":"エアトリ","レンタカードットコム":"レンタカードットコム","スカイチケット":"スカイチケット","その他売上":"その他売上"};
+
+          // --- PL比較 ---
+          const comparePL=(csv,storeKey,storeName)=>{
+            const hdr=csv[1]||[];
+            const ymCols=[];
+            for(let c=1;c<hdr.length;c++){const ym=parseSSYm(hdr[c]);if(ym)ymCols.push({c,ym});}
+            // SS channels
+            for(let r=2;r<csv.length;r++){
+              const label=(csv[r][0]||"").trim();
+              if(label==="売上合計"||label===""||label.startsWith("▼")||label==="OTA")continue;
+              const ch=Object.keys(chMap).find(k=>label.includes(k));
+              if(!ch)continue;
+              ymCols.forEach(({c,ym})=>{
+                const ssVal=parseSSNum(csv[r][c]);
+                // APP value from plPivot
+                const appKey=ym+"|"+ch;
+                const pivot=storeKey==="nha"?plPivotNha:plPivotSpk;
+                const appVal=Math.round((pivot.map[appKey]||{}).rev||0);
+                if(ssVal===0&&appVal===0)return;
+                const diff=appVal-ssVal;
+                if(Math.abs(diff)>1){
+                  results.push({section:"PL",store:storeName,month:ym,item:ch,ss:ssVal,app:appVal,diff});
+                }
+              });
+            }
+          };
+
+          // --- CF入金比較 ---
+          const compareCF=(csv,storeKey,storeName)=>{
+            const hdr=csv[1]||[];
+            const ymCols=[];
+            for(let c=1;c<hdr.length;c++){const ym=parseSSYm(hdr[c]);if(ym)ymCols.push({c,ym});}
+            let section="入金";
+            for(let r=2;r<csv.length;r++){
+              const label=(csv[r][0]||"").trim();
+              if(label.includes("▼ 入金"))section="入金";
+              if(label.includes("▼ 支出"))section="支出";
+              if(label==="入金合計"){
+                ymCols.forEach(({c,ym})=>{
+                  const ssVal=parseSSNum(csv[r][c]);
+                  const pivot=storeKey==="nha"?cfPivotNha:cfPivotSpk;
+                  const appVal=Math.round(pivot.chs.reduce((a,ch)=>a+((pivot.map[ym+"|"+ch]||{}).cash_in||0),0));
+                  if(ssVal===0&&appVal===0)return;
+                  const diff=appVal-ssVal;
+                  if(Math.abs(diff)>1)results.push({section:"CF入金",store:storeName,month:ym,item:"入金合計",ss:ssVal,app:appVal,diff});
+                });
+                continue;
+              }
+              if(label==="支出合計"){
+                ymCols.forEach(({c,ym})=>{
+                  const ssVal=parseSSNum(csv[r][c]);
+                  const pivot=storeKey==="nha"?cfPivotNha:cfPivotSpk;
+                  const exp=(pivot.expByYm[ym]||{}).total||0;
+                  const appVal=Math.round(exp);
+                  if(ssVal===0&&appVal===0)return;
+                  const diff=appVal-ssVal;
+                  if(Math.abs(diff)>1)results.push({section:"CF支出",store:storeName,month:ym,item:"支出合計",ss:ssVal,app:appVal,diff});
+                });
+                continue;
+              }
+              // CF入金チャネル別
+              if(section==="入金"){
+                const ch=Object.keys(chMap).find(k=>label.includes(k));
+                if(!ch)continue;
+                ymCols.forEach(({c,ym})=>{
+                  const ssVal=parseSSNum(csv[r][c]);
+                  const pivot=storeKey==="nha"?cfPivotNha:cfPivotSpk;
+                  const appVal=Math.round((pivot.map[ym+"|"+ch]||{}).cash_in||0);
+                  if(ssVal===0&&appVal===0)return;
+                  const diff=appVal-ssVal;
+                  if(Math.abs(diff)>1)results.push({section:"CF入金",store:storeName,month:ym,item:ch,ss:ssVal,app:appVal,diff});
+                });
+              }
+              // CF支出内訳
+              if(section==="支出"){
+                const costItem=label.replace(/\s+/g,"");
+                const costMap={"返済①":"repay","返済②":"repay","返済③":"repay","返済④":"repay","返済⑤":"repay","販管費":"sga","売上原価":"cogs","車両仕入":"vehicle"};
+                const cat=Object.keys(costMap).find(k=>costItem.includes(k));
+                if(!cat)continue;
+                ymCols.forEach(({c,ym})=>{
+                  const ssVal=parseSSNum(csv[r][c]);
+                  if(ssVal===0)return;
+                  results.push({section:"CF支出明細",store:storeName,month:ym,item:costItem,ss:ssVal,app:null,diff:null,note:"SSのみ（APPコスト入力で入力要）"});
+                });
+              }
+            }
+          };
+
+          // --- コスト比較 ---
+          const compareCost=(csv,storeKey,storeName)=>{
+            const hdr=csv[1]||[];
+            const ymCols=[];
+            for(let c=1;c<hdr.length;c++){const ym=parseSSYm(hdr[c]);if(ym)ymCols.push({c,ym});}
+            // row 2+ = data
+            for(let r=2;r<csv.length;r++){
+              const label=(csv[r][0]||"").trim();
+              if(!label||label.startsWith("月次"))continue;
+              const costKey={"道銀/北洋":"repay_1","沖銀":"repay_2","IUR":"repay_3","返済④":"repay_4","LAB":"repay_5","販管費":"sga","売上原価":"cogs","車両仕入":"vehicle_purchase","支出合計（自動）":"total"};
+              const k=costKey[label];
+              if(!k)continue;
+              ymCols.forEach(({c,ym})=>{
+                const ssVal=parseSSNum(csv[r][c]);
+                // APP value
+                const pivot=storeKey==="nha"?cfPivotNha:cfPivotSpk;
+                const exp=pivot.expByYm[ym]||{};
+                let appVal=0;
+                if(k==="total")appVal=Math.round(exp.total||0);
+                else if(k==="sga")appVal=Math.round(exp.sga||0);
+                else if(k==="cogs")appVal=Math.round(exp.cogs||0);
+                else if(k==="vehicle_purchase")appVal=Math.round(exp.vehicle||0);
+                else if(k.startsWith("repay_")){
+                  // 個別返済は合算でしか持っていないのでスキップ（合計で比較）
+                  return;
+                }
+                if(ssVal===0&&appVal===0)return;
+                const diff=appVal-ssVal;
+                if(Math.abs(diff)>1)results.push({section:"コスト",store:storeName,month:ym,item:label,ss:ssVal,app:appVal,diff});
+              });
+            }
+          };
+
+          // Both storesのPL/CFピボットを計算
+          // 那覇用ピボット
+          const buildPivots=(resvs,isSpk,costAll)=>{
+            const rdKey=isSpk?"return_date":"end_date";
+            const cycleMap={};
+            (mgSettings.channels||[]).forEach(c=>{cycleMap[c.name]=c.cycle||0;});
+            // PL pivot
+            const plMap={};
+            const active=resvs.filter(r=>r.status!=="cancelled"&&r.status!=="キャンセル"&&r.status!=="cancel");
+            active.forEach(r=>{
+              const rd=r[rdKey];if(!rd)return;
+              const ym=rd.slice(0,7);
+              const ch=DB_OTA_MAP[r.ota]||"その他売上";
+              const bp=Number(r.base_price)||0,op=Number(r.option_price)||0,dc=Number(r.discount)||0;
+              const rev=(bp>0||op>0)?(bp+op-dc):(Number(r.price)||0);
+              const key=ym+"|"+ch;
+              if(!plMap[key])plMap[key]={rev:0};
+              plMap[key].rev+=rev;
+            });
+            // CF pivot
+            const cfMap={};const cfChSet=new Set();const cfYmSet=new Set();
+            active.forEach(r=>{
+              const rd=r[rdKey];if(!rd)return;
+              const ch=DB_OTA_MAP[r.ota]||"その他売上";
+              const bp=Number(r.base_price)||0,op=Number(r.option_price)||0,dc=Number(r.discount)||0;
+              const rev=(bp>0||op>0)?(bp+op-dc):(Number(r.price)||0);
+              const cycle=cycleMap[ch]||0;
+              const[sy,sm]=rd.slice(0,7).split("-").map(Number);
+              let ny=sy,nm=sm+cycle;while(nm>12){nm-=12;ny++;}
+              const cashYm=ny+"-"+String(nm).padStart(2,"0");
+              cfYmSet.add(cashYm);cfChSet.add(ch);
+              const key=cashYm+"|"+ch;
+              if(!cfMap[key])cfMap[key]={cash_in:0};
+              cfMap[key].cash_in+=rev;
+            });
+            const expByYm={};
+            Object.entries(costAll).forEach(([ym,rows])=>{
+              if(!rows)return;
+              let repay=0,sga=0,cogs=0,vehicle=0;
+              rows.forEach(r=>{
+                const c=r.account_code||"";const a=r.amount||0;
+                if(c.startsWith("repay_"))repay+=a;
+                else if(c.startsWith("sga_"))sga+=a;
+                else if(c.startsWith("cogs_"))cogs+=a;
+                else if(c==="vehicle_purchase")vehicle+=a;
+              });
+              expByYm[ym]={repay,sga,cogs,vehicle,total:repay+sga+cogs+vehicle};
+            });
+            const chs=["オフィシャル","じゃらん","楽天","エアトリ","スカイチケット","レンタカードットコム","その他売上"];
+            return{plPivot:{map:plMap},cfPivot:{map:cfMap,chs,expByYm}};
+          };
+
+          // Load NHA data
+          const nhaResvs=await loadDbAll("nha_reservations");
+          // Load NHA costs
+          const{data:nhaCostData}=await sb.from("app_settings").select("*").like("key","cost_nha_%");
+          const nhaCosts={};(nhaCostData||[]).forEach(d=>{const ym=d.key.replace("cost_nha_","");try{nhaCosts[ym]=JSON.parse(d.value);}catch(e){}});
+          // Load SPK data
+          const spkResvs=await loadDbAll("reservations");
+          const{data:spkCostData}=await sb.from("app_settings").select("*").like("key","cost_spk_%");
+          const spkCosts={};(spkCostData||[]).forEach(d=>{const ym=d.key.replace("cost_spk_","");try{spkCosts[ym]=JSON.parse(d.value);}catch(e){}});
+
+          const nhaPivots=buildPivots(nhaResvs,false,nhaCosts);
+          const spkPivots=buildPivots(spkResvs,true,spkCosts);
+          const plPivotNha=nhaPivots.plPivot;
+          const plPivotSpk=spkPivots.plPivot;
+          const cfPivotNha=nhaPivots.cfPivot;
+          const cfPivotSpk=spkPivots.cfPivot;
+
+          comparePL(plNhaCsv,"nha","那覇");
+          comparePL(plSpkCsv,"spk","札幌");
+          compareCF(cfNhaCsv,"nha","那覇");
+          compareCF(cfSpkCsv,"spk","札幌");
+          compareCost(costNhaCsv,"nha","那覇");
+          compareCost(costSpkCsv,"spk","札幌");
+
+          // Summary
+          const matchCount=results.length===0;
+          const totalChecks=results.length;
+          setPatrolResult({results,ts:new Date().toLocaleString("ja-JP"),nhaCnt:nhaResvs.length,spkCnt:spkResvs.length,nhaCostMonths:Object.keys(nhaCosts).length,spkCostMonths:Object.keys(spkCosts).length});
+        }catch(e){
+          setPatrolResult({error:e.message,ts:new Date().toLocaleString("ja-JP")});
+        }
+        setPatrolLoading(false);
+      };
+
+      const pr=patrolResult;
+      return <div>
+        <div style={{fontSize:14,fontWeight:900,marginBottom:8}}>🔍 SS↔APP パトロール</div>
+        <div style={{fontSize:10,color:"#64748b",marginBottom:12}}>Google Sheets（手動更新）とAPP計算値を自動比較。差異があればセル単位で表示。</div>
+        <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:12}}>
+          <button onClick={runPatrol} disabled={patrolLoading} style={{...btn("#059669"),padding:"8px 20px",fontSize:12,opacity:patrolLoading?0.5:1}}>
+            {patrolLoading?"🔄 チェック中...":"▶ パトロール実行"}
+          </button>
+          {pr&&!pr.error&&<span style={{fontSize:11,color:"#64748b"}}>最終実行: {pr.ts} | 那覇{pr.nhaCnt}件・札幌{pr.spkCnt}件 | コスト: 那覇{pr.nhaCostMonths}ヶ月・札幌{pr.spkCostMonths}ヶ月</span>}
+        </div>
+        {pr&&pr.error&&<div style={{padding:12,background:"#fef2f2",borderRadius:8,color:"#dc2626",fontSize:11}}>❌ エラー: {pr.error}</div>}
+        {pr&&!pr.error&&(()=>{
+          const r=pr.results;
+          if(r.length===0)return <div style={{padding:24,textAlign:"center",background:"#f0fdf4",borderRadius:12,border:"2px solid #86efac"}}>
+            <div style={{fontSize:48,marginBottom:8}}>✅</div>
+            <div style={{fontSize:16,fontWeight:900,color:"#059669"}}>完全一致</div>
+            <div style={{fontSize:11,color:"#64748b",marginTop:4}}>SS(スプレッドシート)とAPP(Supabase)の全数値が一致しています</div>
+          </div>;
+          // Group by section
+          const sections=["PL","CF入金","CF支出","CF支出明細","コスト"];
+          const grouped={};r.forEach(x=>{if(!grouped[x.section])grouped[x.section]=[];grouped[x.section].push(x);});
+          const sectionColors={"PL":"#1e40af","CF入金":"#059669","CF支出":"#dc2626","CF支出明細":"#d97706","コスト":"#7c3aed"};
+          return <div>
+            <div style={{padding:12,background:"#fef3c7",borderRadius:8,marginBottom:12,border:"1px solid #fbbf24"}}>
+              <span style={{fontSize:14,fontWeight:900,color:"#92400e"}}>⚠️ {r.length}件の差異を検出</span>
+              <span style={{fontSize:10,color:"#92400e",marginLeft:8}}>— SSを正としてAPPを修正するか、SSの入力ミスか確認してください</span>
+            </div>
+            {sections.map(sec=>{
+              const items=grouped[sec];if(!items||items.length===0)return null;
+              return <div key={sec} style={{marginBottom:16}}>
+                <div style={{fontSize:12,fontWeight:900,color:sectionColors[sec]||"#334155",marginBottom:6,padding:"4px 8px",background:"#f8fafc",borderRadius:4,borderLeft:"3px solid "+(sectionColors[sec]||"#334155")}}>{sec}（{items.length}件）</div>
+                <div style={{overflow:"auto",border:"1px solid #e2e8f0",borderRadius:8}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:10}}>
+                    <thead><tr>
+                      <th style={th}>店舗</th><th style={th}>月</th><th style={th}>項目</th>
+                      <th style={{...th,textAlign:"right",background:"#dbeafe"}}>SS値</th>
+                      <th style={{...th,textAlign:"right",background:"#dcfce7"}}>APP値</th>
+                      <th style={{...th,textAlign:"right",background:"#fef3c7"}}>差額</th>
+                      <th style={th}>備考</th>
+                    </tr></thead>
+                    <tbody>{items.sort((a,b)=>(a.month||"").localeCompare(b.month||"")||a.item.localeCompare(b.item)).map((x,i)=>{
+                      const diffPct=x.ss>0?Math.round(Math.abs(x.diff||0)/x.ss*100):0;
+                      return <tr key={i} style={{background:i%2===0?"#fff":"#f8fafc"}}>
+                        <td style={{...td,fontWeight:700}}>{x.store}</td>
+                        <td style={td}>{x.month}</td>
+                        <td style={td}>{x.item}</td>
+                        <td style={{...td,textAlign:"right",color:"#1e40af"}}>¥{fmt(x.ss)}</td>
+                        <td style={{...td,textAlign:"right",color:x.app!==null?"#059669":"#94a3b8"}}>{x.app!==null?"¥"+fmt(x.app):"-"}</td>
+                        <td style={{...td,textAlign:"right",fontWeight:700,color:(x.diff||0)>0?"#059669":"#dc2626"}}>{x.diff!==null?(x.diff>0?"+":"")+fmt(x.diff):"-"}{diffPct>0?" ("+diffPct+"%)":""}</td>
+                        <td style={{...td,fontSize:9,color:"#64748b"}}>{x.note||""}</td>
+                      </tr>;
+                    })}</tbody>
+                  </table>
+                </div>
+              </div>;
+            })}
+          </div>;
+        })()}
+      </div>;
+    })()}
+
     {sub==="cfsim"&&(()=>{
       const isSpk=dbStore==="spk";
       const rdKey=isSpk?"return_date":"end_date";
@@ -11542,7 +11857,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.6.17";
+const APP_VERSION="v4.6.18";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
