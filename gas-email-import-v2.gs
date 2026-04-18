@@ -274,6 +274,9 @@ function processMessage_(message, dryRun) {
       if (!existingRow.flight && reservation.flight) patch.flight = reservation.flight;
       if (!existingRow.people && +(reservation.people||0) > 0) patch.people = reservation.people;
       if (!existingRow.price && +(reservation.price||0) > 0) patch.price = reservation.price;
+      if (!existingRow.base_price && +(reservation.base_price||0) > 0) patch.base_price = reservation.base_price;
+      if (!existingRow.option_price && +(reservation.option_price||0) > 0) patch.option_price = reservation.option_price;
+      if (!existingRow.discount && +(reservation.discount||0) > 0) patch.discount = reservation.discount;
       // ★ 補償種類: 空・なしの場合はメールの判定結果で補完
       if ((!existingRow.insurance || existingRow.insurance === 'なし') && reservation.insurance && reservation.insurance !== 'なし') patch.insurance = reservation.insurance;
       // ★ 場所・タイプ: 空の場合はメールの値で補完（2026-04-15追加）
@@ -508,6 +511,20 @@ function parseJalan_(body) {
   if (cM) people += parseInt(cM[1], 10);
   // ★ 人数バリデーション: レンタカーで10名超はありえない（パースミス防止）
   if (people > 10) { Logger.log('WARNING: people=' + people + ' は異常値。raw=' + peopleStr); people = 0; }
+  // ★ 料金内訳パース（基本料金/オプション/補償/割引）
+  var basePriceJ = parsePrice_(extractField_(body, '基本料金合計'));
+  var optionPriceJ = parsePrice_(extractField_(body, 'オプション料金'));
+  var insurancePriceJ = parsePrice_(extractField_(body, '補償（任意加入）料金'));
+  var dropOffFeeJ = parsePrice_(extractField_(body, '乗捨料金'));
+  var nightFeeJ = parsePrice_(extractField_(body, '深夜手数料'));
+  var couponJ = parsePrice_(extractField_(body, '利用クーポン'));
+  var pointStrJ = extractField_(body, '利用ポイント');
+  var pointJ = 0;
+  var pointMatchJ = (pointStrJ || '').match(/(\d[\d,]*)/);
+  if (pointMatchJ) pointJ = parsePrice_(pointMatchJ[1]);
+  var discountJ = couponJ + pointJ;
+  var base_price_j = basePriceJ;
+  var option_price_j = optionPriceJ + insurancePriceJ + dropOffFeeJ + nightFeeJ;
   // ★ 利用者への請求額（クーポン・ポイント差引後）を優先。なければ合計金額
   var billingPrice = parsePrice_(extractField_(body, '利用者への請求額'));
   var price = billingPrice > 0 ? billingPrice : parsePrice_(extractField_(body, '合計金額'));
@@ -536,7 +553,8 @@ function parseJalan_(body) {
     lend_date: lend.date, lend_time: lend.time,
     return_date: ret.date, return_time: ret.time,
     vehicle: vehicleClass, people: people, insurance: insurance,
-    price: price, status: '確定', tel: tel, mail: mail,
+    price: price, base_price: base_price_j, option_price: option_price_j, discount: discountJ,
+    status: '確定', tel: tel, mail: mail,
     flight: flight, visit_type: visitType, del_place: delPlace, col_place: colPlace,
     opt_b: optB, opt_c: optC, opt_j: optJ,
     _store: store, _rawClass: rawClass
@@ -563,6 +581,15 @@ function parseRakuten_(body) {
   var optionsStr = extractField_(body, '・オプション/車両の特徴');
   var insurance = detectInsurance_(optionsStr);
   var price = parsePrice_(extractField_(body, '（合計）'));
+  // ★ 料金内訳パース（楽天: 基本料金/免責補償料金/オプション料金）
+  var basePriceR = parsePrice_(extractField_(body, '・基本料金'));
+  if (!basePriceR) basePriceR = parsePrice_(extractField_(body, '基本料金'));
+  var insurancePriceR = parsePrice_(extractField_(body, '・免責補償料金'));
+  if (!insurancePriceR) insurancePriceR = parsePrice_(extractField_(body, '免責補償料金'));
+  var optionPriceR = parsePrice_(extractField_(body, '・オプション料金'));
+  if (!optionPriceR) optionPriceR = parsePrice_(extractField_(body, 'オプション料金'));
+  var base_price_r = basePriceR;
+  var option_price_r = insurancePriceR + optionPriceR;
   var optB = 0, optC = 0, optJ = 0;
   var bMatch = optionsStr.match(/ベビーシート\s*(\d*)/);
   if (bMatch) optB = parseInt(bMatch[1], 10) || 1;
@@ -581,7 +608,8 @@ function parseRakuten_(body) {
     lend_date: lend.date, lend_time: lend.time,
     return_date: ret.date, return_time: ret.time,
     vehicle: vehicleClass, people: 0, insurance: insurance,
-    price: price, status: '確定', tel: '', mail: '',
+    price: price, base_price: base_price_r, option_price: option_price_r, discount: 0,
+    status: '確定', tel: '', mail: '',
     flight: '', visit_type: visitType, del_place: delPlace, col_place: colPlace,
     opt_b: optB, opt_c: optC, opt_j: optJ,
     _store: store, _rawClass: rawClass
@@ -610,6 +638,11 @@ function parseSkyticket_(body) {
   var insurancePrice = parsePrice_(insurancePriceStr);
   var insurance = detectInsurance_(body);
   if (insurance === 'なし' && insurancePrice > 0) insurance = '免責';
+  // ★ 料金内訳パース（skyticket: 基本料金/免責補償料金/オプション料金）
+  var basePriceS = parsePrice_(extractField_(body, '基本料金'));
+  var optionPriceS = parsePrice_(extractField_(body, 'オプション料金'));
+  var base_price_s = basePriceS;
+  var option_price_s = insurancePrice + optionPriceS;
   // シート検出（オプション+本文全体から）
   var optB = 0, optC = 0, optJ = 0;
   var bMatch = body.match(/ベビーシート[^\d]*(\d*)/); if (bMatch) optB = parseInt(bMatch[1], 10) || 1;
@@ -626,7 +659,8 @@ function parseSkyticket_(body) {
     lend_date: lend.date, lend_time: lend.time,
     return_date: ret.date, return_time: ret.time,
     vehicle: vehicleClass, people: people, insurance: insurance,
-    price: totalPrice, status: '確定', tel: tel, mail: mail,
+    price: totalPrice, base_price: base_price_s, option_price: option_price_s, discount: 0,
+    status: '確定', tel: tel, mail: mail,
     flight: '', visit_type: visitType, del_place: delPlace, col_place: colPlace,
     opt_b: optB, opt_c: optC, opt_j: optJ,
     _store: store, _rawClass: rawClass
@@ -646,6 +680,14 @@ function parseAirtrip_(body) {
   if (!rawClass) rawClass = extractField_(body, 'プラン名');
   var vehicleClass = extractVehicleClass_(rawClass);
   var price = parsePrice_(extractField_(body, '合計金額'));
+  // ★ 料金内訳パース（エアトリ: 基本料金/オプション料金）
+  var basePriceA = parsePrice_(extractField_(body, '基本料金'));
+  if (!basePriceA) basePriceA = parsePrice_(extractField_(body, 'レンタカー料金'));
+  var optionPriceA = parsePrice_(extractField_(body, 'オプション料金'));
+  var insurancePriceA = parsePrice_(extractField_(body, '補償料金'));
+  if (!insurancePriceA) insurancePriceA = parsePrice_(extractField_(body, '免責補償料金'));
+  var base_price_a = basePriceA;
+  var option_price_a = optionPriceA + insurancePriceA;
   var insuranceStr = extractField_(body, '補償オプション');
   var insurance = detectInsurance_(insuranceStr || body);
   var arrFlight = extractField_(body, '到着便');
@@ -667,7 +709,8 @@ function parseAirtrip_(body) {
     lend_date: lend.date, lend_time: lend.time,
     return_date: ret.date, return_time: ret.time,
     vehicle: vehicleClass, people: 0, insurance: insurance,
-    price: price, status: '確定', tel: tel, mail: mail,
+    price: price, base_price: base_price_a, option_price: option_price_a, discount: 0,
+    status: '確定', tel: tel, mail: mail,
     flight: flight, visit_type: visitType, del_place: delPlace, col_place: colPlace,
     opt_b: optB, opt_c: optC, opt_j: optJ,
     _store: store, _rawClass: rawClass
@@ -766,7 +809,8 @@ function parseOfficial_(body) {
     lend_date: lend.date, lend_time: lend.time,
     return_date: ret.date, return_time: ret.time,
     vehicle: vehicleClass, people: people, insurance: insurance,
-    price: price, status: '確定', tel: tel, mail: mail,
+    price: price, base_price: price, option_price: 0, discount: 0,
+    status: '確定', tel: tel, mail: mail,
     flight: '', visit_type: '', del_place: delPlace, col_place: colPlace,
     opt_b: optB, opt_c: optC, opt_j: optJ,
     _store: hpStore, _rawClass: vehicleClass, _address: address
