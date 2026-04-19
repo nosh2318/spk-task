@@ -266,9 +266,10 @@ function processMessage_(message, dryRun) {
     } else {
       // ★ 既存レコードに欠落している情報をメールから補完
       var patch = {};
-      if (!existingRow.opt_b && +(reservation.opt_b||0) > 0) patch.opt_b = reservation.opt_b;
-      if (!existingRow.opt_c && +(reservation.opt_c||0) > 0) patch.opt_c = reservation.opt_c;
-      if (!existingRow.opt_j && +(reservation.opt_j||0) > 0) patch.opt_j = reservation.opt_j;
+      // ★ オプション台数: メールの値が既存値より大きい場合は上書き（OTA自動登録GASが誤った小さい値で先行登録するケースに対応）
+      if (+(reservation.opt_b||0) > +(existingRow.opt_b||0)) patch.opt_b = reservation.opt_b;
+      if (+(reservation.opt_c||0) > +(existingRow.opt_c||0)) patch.opt_c = reservation.opt_c;
+      if (+(reservation.opt_j||0) > +(existingRow.opt_j||0)) patch.opt_j = reservation.opt_j;
       if (!existingRow.tel && reservation.tel) patch.tel = reservation.tel;
       if (!existingRow.mail && reservation.mail) patch.mail = reservation.mail;
       if (!existingRow.flight && reservation.flight) patch.flight = reservation.flight;
@@ -531,9 +532,10 @@ function parseJalan_(body) {
   var arrFlight = extractField_(body, '到着便');
   var depFlight = extractField_(body, '出発便');
   var flight = [arrFlight, depFlight].filter(Boolean).join(' / ');
-  // ★ チャイルドシート等パース（オプション行から検出）
+  // ★ チャイルドシート等パース（オプション行 + body全体フォールバック）
   var optionsStr = extractField_(body, 'オプション');
   var optB = 0, optC = 0, optJ = 0;
+  // まずオプション行から検出
   if (optionsStr) {
     var bMatch = optionsStr.match(/ベビーシート\D*(\d+)/);
     if (bMatch) optB = parseInt(bMatch[1], 10) || 1;
@@ -542,6 +544,13 @@ function parseJalan_(body) {
     var jMatch = optionsStr.match(/ジュニアシート\D*(\d+)/);
     if (jMatch) optJ = parseInt(jMatch[1], 10) || 1;
   }
+  // body全体からもフォールバック検出（オプション行で取れなかった場合 or より大きい値がある場合）
+  var bAll = body.match(/ベビーシート[^\d\n]*(\d+)/g);
+  var cAll = body.match(/チャイルドシート[^\d\n]*(\d+)/g);
+  var jAll = body.match(/ジュニアシート[^\d\n]*(\d+)/g);
+  if (bAll) { for (var bi=0;bi<bAll.length;bi++) { var bn=bAll[bi].match(/(\d+)/); if(bn) optB=Math.max(optB,parseInt(bn[1],10));} }
+  if (cAll) { for (var ci=0;ci<cAll.length;ci++) { var cn=cAll[ci].match(/(\d+)/); if(cn) optC=Math.max(optC,parseInt(cn[1],10));} }
+  if (jAll) { for (var ji=0;ji<jAll.length;ji++) { var jn=jAll[ji].match(/(\d+)/); if(jn) optJ=Math.max(optJ,parseInt(jn[1],10));} }
   // ★ 場所抽出（じゃらん: 貸出/返却営業所、HP形式にもフォールバック）
   var retStore = extractField_(body, '返却営業所');
   var delPlace = extractDeliveryPlace_(body) || store || '';
