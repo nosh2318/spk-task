@@ -1242,8 +1242,44 @@ function sendJalanPaymentEmail_(pay) {
   if (!pay || !pay.customer_email || !pay.square_payment_url) { Logger.log('[JalanPayment] Email BLOCKED: missing data'); return; }
   try {
     var subject = '【レンタカー HANDYMAN】事前決済・LINE登録のお願い（予約番号: ' + pay.reservation_id + '）';
-    var body = pay.customer_name + ' 様\n\nこの度はHANDYMAN札幌デリバリー専門店をご予約いただき、誠にありがとうございます。\n予約番号: ' + pay.reservation_id + '\n貸出日: ' + pay.lend_date + '\n返却日: ' + pay.return_date + '\n\n━━━━━━━━━━━━━━━━━━━━\n■ STEP1: LINE登録（必須）\n━━━━━━━━━━━━━━━━━━━━\nデリバリー情報の入力・当日のご連絡はLINEで行います。\n下記リンクから友だち追加をお願いいたします。\nhttps://lin.ee/g6iDNYz\n\nLINE ID: @730kyhwl\n\n━━━━━━━━━━━━━━━━━━━━\n■ STEP2: 事前決済（必須）\n━━━━━━━━━━━━━━━━━━━━\nお支払い金額: ¥' + (pay.amount||0).toLocaleString() + '\n下記リンクよりお支払いをお願いいたします。\n' + pay.square_payment_url + '\n\n※ ご出発3日前の19:00までにお支払いください。\n※ 期限を過ぎた場合、ご予約をキャンセルさせていただく場合がございます。\n\n━━━━━━━━━━━━━━━━━━━━\n■ ご注意事項\n━━━━━━━━━━━━━━━━━━━━\n・当店は実店舗を持たないデリバリー専門店です。\n・ご指定の場所へお車をお届けいたします。\n・詳細はLINEにてご案内いたします。\n\n━━━━━━━━━━━━━━━━━━━━\nHANDYMAN 札幌デリバリー専門店\nTEL: 050-1724-6197（9:00〜19:00）\nLINE: @730kyhwl\n';
-    GmailApp.sendEmail(pay.customer_email, subject, body, {name:'HANDYMAN 札幌デリバリー専門店', from:'reserve@rent-handyman.jp', replyTo:'reserve@rent-handyman.jp'});
+    var body = pay.customer_name + ' 様\n\n'
+      + 'この度はHANDYMAN 那覇空港店 をご予約いただき、誠にありがとうございます。\n'
+      + '予約番号: ' + pay.reservation_id + '\n'
+      + '貸出日: ' + pay.lend_date + '\n'
+      + '返却日: ' + pay.return_date + '\n\n'
+      + '━━━━━━━━━━━━━━━━━━━━\n'
+      + '■ STEP1: LINE登録（必須）\n'
+      + '━━━━━━━━━━━━━━━━━━━━\n'
+      + '送迎/デリバリー共に当日のご連絡はLINEで行います。\n'
+      + '下記リンクから友だち追加をお願いいたします。\n\n'
+      + 'LINE公式👉 https://lin.ee/jMU6xdJ\n'
+      + 'LINE ID👉 @466dbckq\n\n'
+      + '━━━━━━━━━━━━━━━━━━━━\n'
+      + '■ STEP2: 事前決済（HANDYMANではご出発までの「待ち時間」「待機時間」を解消するため事前決済をお願いしております。）\n'
+      + '・現金決済をご希望の場合は大変お手数ですが事前にお問い合わせをお願い申しあげます。\n'
+      + '・詳細はLINEにてご案内いたします。\n'
+      + '━━━━━━━━━━━━━━━━━━━━\n'
+      + 'お支払い金額: ¥' + (pay.amount||0).toLocaleString() + '\n'
+      + '下記リンクよりお支払いをお願いいたします。\n'
+      + pay.square_payment_url + '\n\n'
+      + '※ ご出発3日前の19:00までにお支払いください。\n'
+      + '※ 期限を過ぎた場合、ご予約をキャンセルさせていただく場合がございます。\n\n'
+      + '━━━━━━━━━━━━━━━━━━━━\n'
+      + '■ ご利用当日の流れ\n'
+      + '━━━━━━━━━━━━━━━━━━━━\n'
+      + '那覇空港到着後、レンタカー送迎バス乗り場【11番】にお越しください。\n'
+      + 'HANDYMANのシャトルバスで営業所までお送りいたします。\n'
+      + 'デリバリーサービスをご利用の場合はご指定場所に「お届け」「回収」させていただきます。\n\n'
+      + '━━━━━━━━━━━━━━━━━━━━\n'
+      + '■ ご注意事項\n'
+      + '━━━━━━━━━━━━━━━━━━━━\n'
+      + '・現金決済をご希望の場合は大変お手数ですが事前にお問い合わせをお願い申しあげます。\n'
+      + '・詳細はLINEにてご案内いたします。\n'
+      + '━━━━━━━━━━━━━━━━━━━━\n'
+      + 'HANDYMAN 那覇空港店\n'
+      + 'TEL: 050-1724-6197（9:00〜19:00）\n'
+      + 'LINE ID👉 @466dbckq\n';
+    GmailApp.sendEmail(pay.customer_email, subject, body, {name:'HANDYMAN 那覇空港店', from:'reserve@rent-handyman.jp', replyTo:'reserve@rent-handyman.jp'});
     return true;
   } catch (e) { Logger.log('[JalanPaymentEmail] Error: ' + e.message); return false; }
 }
