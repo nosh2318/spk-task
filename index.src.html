@@ -5027,6 +5027,8 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
   const[kpiFlags,setKpiFlags]=useState({});
   const[perVehTarget,setPerVehTarget]=useState(140000);
   const[editingTarget,setEditingTarget]=useState(false);
+  // ★ 売上計算専用: 当月返却予約をDBから直接取得（data state staleness対策）
+  const[dbRevRows,setDbRevRows]=useState([]);
   useEffect(()=>{
     if(!sb||!selYM)return;
     (async()=>{
@@ -5042,6 +5044,28 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
       if(row&&row.value)setPerVehTarget(Number(row.value));
     })();
   },[]);
+  // ★ 当月返却予約の最新base_price/option_price/discountをDBから直接取得（経営DBと完全一致させる）
+  useEffect(()=>{
+    if(!sb||!selYM)return;
+    const[y,mo]=selYM.split("-").map(Number);
+    const dim=new Date(y,mo,0).getDate();
+    const ymStart=selYM+"-01";
+    const ymEnd=selYM+"-"+String(dim).padStart(2,"0");
+    (async()=>{
+      const{data:rows}=await sb.from("reservations")
+        .select("id,status,return_date,price,base_price,option_price,discount")
+        .gte("return_date",ymStart).lte("return_date",ymEnd);
+      setDbRevRows(rows||[]);
+    })();
+    // 60秒ごとに最新化（GAS patch追従）
+    const tm=setInterval(async()=>{
+      const{data:rows}=await sb.from("reservations")
+        .select("id,status,return_date,price,base_price,option_price,discount")
+        .gte("return_date",ymStart).lte("return_date",ymEnd);
+      setDbRevRows(rows||[]);
+    },60000);
+    return()=>clearInterval(tm);
+  },[selYM]);
   const utilStats=useMemo(()=>{
     if(!vehicles||!vehicles.length||!data||!selYM)return null;
     const isKpiActive=(code)=>kpiFlags[code]!==undefined?kpiFlags[code]:(vehicles.find(v=>v.code===code)?.active!==false);
@@ -5050,9 +5074,15 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
     const ms=new Date(y,mo-1,1),me=new Date(y,mo-1,dim);
     let totalDays=0,activeCount=0;
     const active=data.filter(r=>r.status!=="cancelled");
-    // ★ 当月売上（経営DBと完全一致）= 返却月一致の全予約を車両配車に関係なく集計
+    // ★ 当月売上（経営DBと完全一致）= DB直接取得値で計算、data staleness対策
+    // dbRevRows（DB直取得・raw column名）から、statusがcancelled系でないものだけ使う
+    const dbActive=dbRevRows.filter(r=>r.status!=="cancelled"&&r.status!=="キャンセル"&&r.status!=="cancel");
+    const revOfDb=(r)=>{const bp=Number(r.base_price)||0,op=Number(r.option_price)||0,dc=Number(r.discount)||0;return(bp>0||op>0)?(bp+op-dc):(Number(r.price)||0);};
+    const totalRevenue=dbActive.reduce((a,r)=>a+revOfDb(r),0);
+    // data stateベース（class別breakdown用、基底値としてのフォールバック）
     const revOf=(r)=>{const bp=Number(r.basePrice)||0,op=Number(r.optionPrice)||0,dc=Number(r.discount)||0;return(bp>0||op>0)?(bp+op-dc):(Number(r.price)||0);};
-    const totalRevenue=active.filter(r=>r.returnDate&&r.returnDate.slice(0,7)===selYM).reduce((a,r)=>a+revOf(r),0);
+    // dbRevRows の id→rev マップ（class別でも最新値を使う）
+    const dbRevMap={};dbActive.forEach(r=>{dbRevMap[r.id]=revOfDb(r);});
     const CLASS_C={"A":"#7c3aed","B":"#0284c7","C":"#059669","S":"#d97706","F":"#db2777","H":"#64748b"};
     const byClass={};
     vehicles.forEach(v=>{
@@ -5064,7 +5094,8 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
         const s=ld>ms?ld:ms;const e=rd<me?rd:me;
         for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1)){rentalDays.add(toLD(d));}
         if(r.returnDate&&r.returnDate.slice(0,7)===selYM){
-          vRev+=revOf(r);
+          // DB最新値を優先、無ければ data state 値
+          vRev+=(dbRevMap[r.id]!==undefined?dbRevMap[r.id]:revOf(r));
         }
       });
       const vDays=rentalDays.size;
@@ -5082,7 +5113,7 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
     const revpacd=maxDays>0?Math.round(totalRevenue/maxDays):0;
     const perVehicleRevenue=activeCount>0?Math.round(totalRevenue/activeCount):0;
     return{totalDays,activeCount,maxDays,pct:maxDays>0?Math.round(totalDays/maxDays*100):0,dim,byClass,classOrder,totalRevenue,revpacd,perVehicleRevenue};
-  },[data,vehicles,fleet,kpiFlags,selYM]);
+  },[data,vehicles,fleet,kpiFlags,selYM,dbRevRows]);
   // 利用可能な月リストを生成（RELIABLE_FROM〜当月）
   const months=useMemo(()=>{
     const now=new Date();const curYM=now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0");
