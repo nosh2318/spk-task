@@ -80,13 +80,42 @@
 TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 / 駐車場 / 会計 / 顧客 / 売上 / データ / 過去 / 免許証
 
 ## 現在のバージョン
-- **APP_VERSION**: v4.6.30
-- **sw.js CACHE_NAME**: `spk-v493`
-- **index.html CV**: `spk-v493`
+- **APP_VERSION**: v4.6.34
+- **sw.js CACHE_NAME**: `spk-v497`
+- **index.html CV**: `spk-v497`
 - **SRI/CSP**: 未適用（下記インシデント参照）
 
 ## 未使用テーブル
 - **vehicle_twins**: テーブルは存在するがデータ空。APP・GASのどちらでも未使用。配車は`fleet`テーブルで管理。手を入れる必要なし。
+
+## 2026-04-21 修正履歴
+
+### じゃらん決済確認（旧）: 新システム入金済み予約を自動消し込み（v4.6.34）
+- **要望**: 「じゃらん入金確認時に同じ予約データがあればここのステータスも変えてほしい」「予約番号は同じなのでできると思う」
+- **背景**: じゃらん決済は新旧2系統のテーブルで管理されており、GAS自動管理の新システム（`jalan_payments.status='paid'`）で入金済みになっても、手動運用の旧タブ（`jalan_payment.pay_status='完了'`）は別データとして残る
+- **修正 (`index.src.html` JalanPaymentLegacy)**:
+  1. `autoSyncFromNewSystem(ids)` 新規関数: `jalan_payments` から `status='paid'` を取得 → 現在表示中のじゃらん予約IDと照合 → 旧`jalanPay[rid].payStatus='完了'`に自動更新
+  2. 既に`完了`の予約はスキップ（冪等性担保）
+  3. 30秒ポーリング時/画面可視化時/jData更新時/「スプレッドシート取得」ボタン押下時 の4タイミングで自動実行
+  4. `adjustedPrice`が空なら新システムの`amount`で補完、`category`が空なら「売上」で補完
+- **バージョン**: `APP_VERSION=v4.6.34` / `sw.js CACHE_NAME=spk-v497` / `index.html CV=spk-v497` 同時更新
+- **コミット**: `1f1c81a` (feat(じゃらん旧): 新システム入金済み予約を旧データに自動消し込み)
+
+### 売上乖離再発の根本修正（v4.6.33）
+- **問題**: 経営DBダッシュボードとTOPウィジェットの売上が再び乖離（96万 vs 92万）。v4.6.30の `_fromDbRes` 修正では解決しなかった
+- **根本原因**: APPの `data` state に保持された `basePrice/optionPrice/discount` が古い状態になる。OTA自動登録GAS(30分)が先に予約作成（`price`のみ）→ メール取込GAS(15分)が後から `bp/op/dc` をパッチするが、Realtimeイベントを取りこぼすと stale のまま → `basePrice=0` にフォールバックして旧`price`ベースで集計される
+- **具体的に検出した stale record**:
+  - POPOPOPO 損保ジャパン: price=0, bp=200,000（200k乖離）
+  - RC12461121645759659 ニッコウ: price=0, bp+op-dc=20,540
+  - RC62461119691059583 シモムラ: discount=9,750無視（-9,750乖離）
+- **修正 (`index.src.html` LeadTimeWidget)**:
+  1. `dbRevRows` state 追加: 選択月の予約を `reservations` から直接fetch（`id,status,return_date,price,base_price,option_price,discount`）
+  2. 60秒間隔で自動リフレッシュ（常に最新DB値を参照）
+  3. `utilStats.totalRevenue`: `data` state ではなく `dbRevRows` ベースで集計
+  4. クラス別売上も `dbRevMap[r.id]` を優先、フォールバックのみ旧`revOf(r)`使用
+- **バージョン**: `APP_VERSION=v4.6.33` / `sw.js CACHE_NAME=spk-v496` / `index.html CV=spk-v496` 同時更新
+- **コミット**: `b89c653` (fix(TOP売上): 直接DBから base_price/option_price/discount を取得)
+- **教訓**: GAS auto-patch されるフィールド（bp/op/dc）は Realtime 取りこぼしリスクがあるため、厳密に正しい値を出す必要があるコンポーネントは「必要時にDB直接fetch」が確実
 
 ## 2026-04-20 修正履歴
 
