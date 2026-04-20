@@ -80,15 +80,154 @@
 TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 / 駐車場 / 会計 / 顧客 / 売上 / データ / 過去 / 免許証
 
 ## 現在のバージョン
-- **APP_VERSION**: v4.6.14
-- **sw.js CACHE_NAME**: `spk-v477`
-- **index.html CV**: `spk-v477`
+- **APP_VERSION**: v4.6.30
+- **sw.js CACHE_NAME**: `spk-v493`
+- **index.html CV**: `spk-v493`
 - **SRI/CSP**: 未適用（下記インシデント参照）
 
 ## 未使用テーブル
 - **vehicle_twins**: テーブルは存在するがデータ空。APP・GASのどちらでも未使用。配車は`fleet`テーブルで管理。手を入れる必要なし。
 
+## 2026-04-20 修正履歴
+
+### Slack予約登録の改善（車種名自動判定・タイポ許容・1分ポーリング）
+- **問題**: `#sapporo_reservation` へ予約投稿しても Bot が反応しないケース頻発
+  - 例: クラス欄に「CX5」(車種名) → パーサーが無効クラスとして弾く
+  - 例: 「屋先」(典型的タイポ) → ラベル認識失敗で届先が取れない
+- **原因の構造**: `parseSlackReservation_` が validClasses=[A,B,C,S,F,H] 固定判定・ラベル厳密一致
+- **修正 (`gas-email-import-v2.gs`, commit `df7e211`)**:
+  1. **SPK_MODEL_TO_CLASS テーブル**追加: アルファード/ヴェルファイア→A、ノア/デリカ→B、ロッキー/CX-3→C、ハリアー/CX-5→S、ルーミー/ソリオ→F、カローラ/アクセラ→H
+  2. **modelToClass_()** 正規化比較 (大文字化+ハイフン/空白除去): `CX5` ≡ `CX-5`
+  3. **クラス欄自動判定**: クラス欄に車種名が入力された場合、自動的にクラス変換+車種指定として扱う
+  4. **getVal()** 複数ラベル受付: 「届先/屋先/配達先/お届け先/受取場所/デリバリー」全部OK
+  5. **エラーメッセージ具体化**: 「クラス「CX5」は無効です」→「A/B/C/S/F/H から選ぶか、車種名（アルファード/CX-5/ノア等）を指定してください」
+  6. **isModelMatch_()**: 配車時の車両名マッチもハイフン表記ゆれに寛容に
+  7. **doPost + processSingleSlackMessage_** 追加: Slack Events APIからの即時処理対応（※結果的に未採用）
+  8. **setupSlackImport**: 5分→**1分間隔トリガー**に変更
+- **Slack Events API不採用の経緯**: GAS Web App に POST すると HTTP 302 リダイレクト → リダイレクト先が GET のみ許可で 405。Slack側で Verify 失敗の可能性あり → 「1分ポーリングで十分」と判断。Events API 用コードは残置（将来必要なら再利用可）
+- **動作確認**: 2026-04-20 20:17 `#sapporo_reservation` にテスト投稿 → 1分以内にスレッド返信「✅ 予約登録 + 配車完了」確認 (`SP-20260420-0002`→ロッキー(299)配車、DB削除済)
+- **診断・手動実行**:
+  - `diagnoseSlackReservation()`: トークン/スコープ/チャンネル参加状態/トリガー有無を一括診断
+  - `runSlackReservationsNow()`: 手動実行（トリガー待たずに即処理）
+  - 失敗tsは `processed[ts]='error'` で記録 → 再処理されない。手動で ScriptProperties `spk_processed_slack_ts` をクリアする必要あり
+- **コミット**: `df7e211` (feat(gas-slack): Slack予約登録の即時処理対応と車種名自動判定)
+
+### 経営DBダッシュボード 数字乖離修正（v4.6.29→v4.6.30）
+- **問題**: 経営DB ダッシュボード (売上¥92万 / 稼働85日) が TOP ウィジェット (売上¥69.7万 / 稼働113日) と乖離。件数38件だけ一致
+- **原因の構造**:
+  1. **売上乖離**: `_fromDbRes` が `base_price`/`option_price`/`discount` を React state にマッピングしていなかった → TOPウィジェットは `r.price` しか見えない。OTA自動登録GAS(30分)が先に予約作成 (`price`のみ) → メール取込GAS(15分)が後から `bp/op/dc` をパッチするので、`price` が古い値のまま乖離
+  2. **稼働日数乖離**: 85日は「延べ泊数(Σ return-lend)」、113日は「ユニーク車両×稼働日」。**メトリクスが違う**のに同じ「総稼働」ラベルで比較されていた
+- **修正 (`index.src.html`)**:
+  1. `_fromDbRes` に `basePrice/optionPrice/discount` マッピング追加
+  2. `utilStats.totalRevenue`: `(bp>0||op>0)?(bp+op-dc):price` 計算式に統一
+  3. `dashSummary` に `utilDays/utilActiveCount/utilMaxDays/utilPct` 追加 (TOPと同一ロジック: `dbFleet/dbVehs/dbKpi` 使用)
+  4. 経営DBダッシュボードカード行: 「総稼働」→「延べ泊数」にラベル変更 + 稼働率(%)カード追加
+- **バージョン**: `APP_VERSION=v4.6.30` / `sw.js CACHE_NAME=spk-v493` / `index.html CV=spk-v493` 同時更新
+- **コミット**: `30909ce` (fix(経営DB): 売上・稼働率をTOPウィジェットと同一ロジックに統一)
+
+### じゃらん決済: AIスタッフ_G依存を排除（GAS）
+- **問題**: R02AD7IX（ヤマモト ミヨコ、¥42,600）のSquareリンクがAIスタッフ_G未応答で作成されず、決済メールが送信されなかった（2回目の障害。前回はR0R8QVZR 4/4）
+- **根本原因**: `handleJalanPayment_` がSlackに投稿 → AIスタッフ_Gがスレッド返信でSquareリンク作成 → `checkSquareLinks`がリンク検出、という間接的なフロー。AIスタッフ_Gが止まると全体が止まる
+- **修正**:
+  1. `createSquarePaymentLink_(itemName, amount)` 新規関数 — Square Payment Links API直接呼び出し
+  2. `handleJalanPayment_` — Square API直接でリンク作成 → DB(link_created) → Slackにリンク付き投稿 → スプシ記録まで1関数で完結
+  3. `checkSquareLinks` — AIスタッフ_Gポーリング廃止。status=newのリトライ + link_created→メール送信のみ
+  4. Square API失敗時はstatus='new'で保存 + Slack障害通知 → checkSquareLinks(5分)でリトライ
+- **新フロー**: GAS → Square API直接 → DB → Slack(リンク付き) → スプシ → [5分後] メール送信 → Slack(📧完了)
+- **定数**: `SQUARE_LOCATION_ID = 'L8N7J9RKPN3WH'`
+- **R02AD7IX即時復旧**: 手動でSquareリンク作成(`https://square.link/u/vB8i8hPN`) → DB更新 → トリガーでメール送信完了確認済み
+- コミット: `df7e211`（gas-email-import-v2.gs、Slack予約登録改善とまとめて）
+
+### 料金内訳パッチ条件修正（GAS・那覇障害再発防止）
+- **問題**: 那覇店で `toDbRow_` に `base_price`/`option_price`/`discount` が無く全予約が内訳0でDB保存される障害が発生（2026-04-20）
+- **札幌の現状**: パーサー・insertReservation_は正常だが、既存予約パッチの条件 `!existingRow.base_price` がnullと0を区別しない
+- **修正**: `+(existingRow.base_price||0) === 0 && +(reservation.base_price||0) > 0` に変更（明示的に0判定）
+- **HP予約DB修正**: NFJ19443(¥26,300), QAA71034(¥5,150) → `base_price = price` に更新（仕様書 2-5準拠）
+- **残存**: OTA予約7件のbase_price=0は放置（今後の新規予約は修正済みコードで正しく入る）
+- **仕様書**: `/private/tmp/price_breakdown_spec.md` — 全OTAの料金内訳パース仕様（7社）+ 高松店展開チェックリスト
+
 ## 2026-04-17 修正履歴
+
+### 入金確認v3: Payment Links APIベースに全面書き直し（GAS）
+- **問題**: `checkPaymentStatus` v2 が 0/8 ヒット → IEI40399（¥13,800 入金済み）を検知できなかった
+- **根本原因**: Square Payment Linkで作成されたorderの `line_items[].name` は `"undefined"`（顧客名ではない）。v2の `matchSquareOrder_` は `nameMatch && amountMatch` の両方を要求 → nameMatchが絶対にtrue にならない
+- **v3の方式**: 名前マッチング完全廃止。スプシURL → Payment Links API → order_id直接解決 → BatchRetrieveOrders → tenders有無で入金判定
+- **新関数**: `fetchPaymentLinkMap_(token)` / `batchRetrieveOrders_(token, orderIds)` / `isOrderPaid_(order)` / `normalizeSquareUrl_(url)` / `debugPaymentV3()`
+- **再発防止（自己診断4箇所）**: APIトークン未設定 / Payment Links 0件 / 全URLマッチ失敗 / Orders取得0件 → いずれも即座にSlack #jalan_payment に障害通知
+- コミット: `4dfcca2`(v3本体), `70f62e3`(再発防止)
+
+### Slack通知をBot API直接投稿に変更（GAS）
+- **問題**: 札幌予約の通知が那覇チャネルに届く
+- **原因**: email-to-Slackエイリアス経由のルーティングが不透明
+- **修正**: `sendSlackToSpk_()` で `chat.postMessage` Bot API直接投稿（`SPK_RESV_CHANNEL = 'C08TDTPEB36'`）
+- コミット: `c37d9bb`
+
+### 車両損傷チェックAPP: loadVehiclesスコープエラー修正（v2.6.0→v2.6.1）
+- **問題**: 札幌・那覇の両店舗で車両チェックAPPが「読み込みエラー」で使用不能
+- **原因**: cleanup コードが `if/else` ブロック外で `const twMap` / `const vcResvMap` を参照（ブロックスコープ外 → ReferenceError）。前回セッションで追加した `b50d89d` コミットのバグ
+- **修正**: cleanup処理を札幌elseブロック内に移動
+- **再発防止3策**:
+  1. **グローバルエラーハンドラ**: `window.onerror` でJSエラー時に赤バナー表示+再読み込みボタン（白画面防止）
+  2. **try-catch隔離**: cleanup等の副次処理が失敗しても車両一覧表示を止めない
+  3. **pre-pushフック**: `git push` 前に `node --check` でJS構文チェック（handyman-damage + spk-task 両リポジトリ）
+- sw.js: v9→v10、バージョン: v2.6.1
+- コミット: `2d06b05`(修正), `42b708b`(再発防止)
+
+### 車両損傷チェックAPP: 返却済み車両のステータスクリア（v2.5.0→v2.6.0）
+- **問題**: 返却済み車両9047がまだ「貸出中」+旧顧客名表示
+- **修正**: `loadVehicles` に `effectiveStatus` ロジック追加。`vehicle_twins.status='out'` でも予約がなければ自動的に `'ready'` にリセット。DBも非同期クリーンアップ
+- コミット: `b50d89d`
+
+### 経営管理タブ: Excel 22シート完全移植 + パトロール機能（v4.6.15〜v4.6.18）
+
+**背景**: `KPI_PL_CL_2026本番_予算CF.xlsx`（22シート）の全機能をAPPに移植し、Excelを不要にする。ただし移行期はSSを手動更新し続けてパトロールで追跡する。
+
+**実装済み14サブタブ**:
+| サブタブ | 内容 | Excelシート対応 |
+|----------|------|----------------|
+| 📊 経営DB | 10セクション統合ダッシュボード | ダッシュボード_那覇/札幌 |
+| 📈 予実比較 | 入金予算vs実績 | 予実比較 |
+| ⚙️ 設定 | チャネルマスター/入金サイクル/車両台数 | 設定 |
+| 📊 ダッシュボード | 当月KPI | ダッシュボード |
+| 📝 売上入力 | reservations自動表示 | 売上入力 |
+| 📘 PL(月次) | チャネル別売上（計上ベース、収入のみ） | PL_那覇/PL_札幌/PL_全体 |
+| 💰 CF(月次) | 入金-支出=純収支 | CF_那覇/CF_札幌/CF_全体 |
+| 🧾 コスト入力 | 返済/販管費/売上原価（予算入力） | コスト内訳入力 |
+| 📋 コスト一覧 | 全月コスト横串 | 月次コスト/コスト月次入力 |
+| 🔵 HP-CV | オフィシャルCV件数 | オフィシャルCV件数 |
+| 📊 予算CF | OTA構成比×予算売上→入金月 | 予算CF_那覇/札幌/全体 |
+| 📈 投資回転率 | クラス別収益性 | 投資回転率 |
+| 🔮 CFシミュ | 実績×入金サイクルシミュレーション | CF入金シュミレーター |
+| 🔍 パトロール | SS↔APP自動比較（差異検出） | — |
+
+**技術的ポイント**:
+- **DB不使用**: `v_monthly_pl`, `v_monthly_cf`, `cost_entries` 等のビュー/テーブルは存在しない。全て `reservations` + `app_settings` から直接計算
+- **PLピボット** (`plPivot`): `dbResvs` → チャネル×月の売上集計。収入のみ（支出なし）
+- **CFピボット** (`cfPivot`): `dbResvs` + 入金サイクル(`mgSettings.channels`) → 入金月計算 + `costAllMonths` → 支出集計
+- **コスト保存**: `app_settings` テーブル、key=`cost_{store}_{ym}`、value=JSON配列 `[{account_code, amount, note}]`
+- **科目コード体系**: `repay_1`〜`repay_5`(返済→CFのみ)、`sga_*`(販管費14科目)、`cogs_*`(売上原価7科目)、`vehicle_purchase`(車両仕入)
+- **オーナー確認済みルール**: 返済→CF only（PLに影響なし）、販管費/売上原価→CF only、PL=収入のみ
+
+**パトロール機能**:
+- **目的**: Excel→APP移行期の安全網。SSを正としてAPP計算値を追跡
+- **SSソース**: Google Sheets ウェブ公開CSV
+  - URL: `https://docs.google.com/spreadsheets/d/e/2PACX-1vQVK2mRkYMKG3cPtr5HSi9TWSS1JevKOvTmOusvXjoOZOEtW_KTX9oYXQld3FeK3Q/pub`
+  - GID: PL_那覇=1117507661, PL_札幌=609433931, CF_那覇=1575364807, CF_札幌=1260007687, 月次コスト_那覇=1740899330, 月次コスト_札幌=658706807
+- **比較対象**: PL売上(チャネル×月), CF入金(チャネル×月), CF支出(販管費/売上原価/合計), コスト(月次合計)
+- **出力**: ✅完全一致 or ⚠️差異N件（セル単位でSS値/APP値/差額を表示）
+- SSは当面手動更新 → パトロールで差異追跡 → 一定期間後APP単独運用に移行
+
+**コミット履歴**:
+- `4b30aba` feat(経営管理): 予実比較タブ (v4.6.16)
+- `f480d80` feat(経営管理): 設定+売上入力
+- `7e1521c` feat(経営管理): PL/CF/コスト入力 reservations直接計算 (v4.6.17)
+- `51d1b19` feat(経営管理): 5新subtab (コスト一覧/HP-CV/予算CF/投資回転率/CFシミュ)
+- `48f3f5c` feat(経営管理): コスト→CF連動、Excel準拠科目構成
+- `64d3287` feat(経営管理): SS↔APPパトロール (v4.6.18)
+
+**次のステップ**:
+- Excelコストデータ → app_settingsに一括投入（バックフィル）
+- パトロール実行 → 差異確認 → 修正
 
 ### Dashboard 稼働率に「配車表の除外フラグ」を反映（v4.6.14）
 - **問題**: 配車表（FleetTimeline）で `vehicle_monthly_kpi.active=false` にした車両が、Dashboard の稼働率計算では依然「稼働台数」にカウントされ、稼働に戻ってしまっていた
