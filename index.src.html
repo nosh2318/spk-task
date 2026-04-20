@@ -62,7 +62,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v491';
+  var CV='spk-v493';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
@@ -158,7 +158,7 @@ const DB = {
     }catch(e){console.error("[updateResField]",e);}
   },
   _toDbRes(r){return{id:r.id,ota:r.ota,name:r.name,lend_date:r.lendDate,lend_time:r.lendTime,return_date:r.returnDate,return_time:r.returnTime,people:r.people,vehicle:r.vehicle,insurance:r.insurance,tel:r.tel,mail:r.mail,price:r.price,status:r.status,visit_type:r.visitType,return_type:r.returnType,del_time:r.delTime||"",del_place:r.delPlace||"",col_time:r.colTime||"",col_place:r.colPlace||"",flight:r.flight||"",opt_b:+(r.optB||0),opt_c:+(r.optC||0),opt_j:+(r.optJ||0),opt_usb:!!r.optUSB,opt_parasol:!!r.optParasol};},
-  _fromDbRes(d){const st=d.status;const normSt=(st==="キャンセル"||st==="cancel")?"cancelled":(st==="確定"||!st)?"confirmed":st;const otaNorm=d.ota==="A"?"O":d.ota;return{id:d.id,ota:otaNorm,name:d.name,lendDate:norm(d.lend_date),lendTime:d.lend_time,returnDate:norm(d.return_date),returnTime:d.return_time,people:d.people,vehicle:d.vehicle,insurance:d.insurance,tel:d.tel,mail:d.mail,price:Number(d.price)||0,status:normSt,visitType:d.visit_type,returnType:d.return_type,delTime:d.del_time,delPlace:d.del_place,colTime:d.col_time,colPlace:d.col_place,flight:d.flight,optB:+(d.opt_b||0),optC:+(d.opt_c||0),optJ:+(d.opt_j||0),optUSB:d.opt_usb,optParasol:d.opt_parasol,prefecture:d.prefecture||"",createdAt:d.created_at||""};},
+  _fromDbRes(d){const st=d.status;const normSt=(st==="キャンセル"||st==="cancel")?"cancelled":(st==="確定"||!st)?"confirmed":st;const otaNorm=d.ota==="A"?"O":d.ota;return{id:d.id,ota:otaNorm,name:d.name,lendDate:norm(d.lend_date),lendTime:d.lend_time,returnDate:norm(d.return_date),returnTime:d.return_time,people:d.people,vehicle:d.vehicle,insurance:d.insurance,tel:d.tel,mail:d.mail,price:Number(d.price)||0,basePrice:Number(d.base_price)||0,optionPrice:Number(d.option_price)||0,discount:Number(d.discount)||0,status:normSt,visitType:d.visit_type,returnType:d.return_type,delTime:d.del_time,delPlace:d.del_place,colTime:d.col_time,colPlace:d.col_place,flight:d.flight,optB:+(d.opt_b||0),optC:+(d.opt_c||0),optJ:+(d.opt_j||0),optUSB:d.opt_usb,optParasol:d.opt_parasol,prefecture:d.prefecture||"",createdAt:d.created_at||""};},
   // --- 配車（LS併用で車両変更保護） ---
   _fleetLsKey:"spk_fleet",
   _fleetLsSave(f){try{localStorage.setItem(DB._fleetLsKey,JSON.stringify(f));}catch(e){}},
@@ -2894,10 +2894,35 @@ function ManagementTab({store}){
     const avgNights=daysCnt>0?(daysSum/daysCnt):0;
     const unitPrice=plCnt>0?(plRev/plCnt):0;
     const dailyRate=daysSum>0?(plRev/daysSum):0;
+    // ★ 稼働率（TOPウィジェットと統一）: 車両×日ユニーク数 / (稼働車両×月日数)
+    let utilDays=0,utilActiveCount=0,utilMaxDays=0,utilPct=0;
+    {
+      const[yr,mo]=ym.split("-").map(Number);
+      const dim=new Date(yr,mo,0).getDate();
+      const ms=new Date(yr,mo-1,1),me=new Date(yr,mo-1,dim);
+      const fMap={};dbFleet.forEach(f=>{fMap[f.reservation_id]=f.vehicle_code;});
+      const kpiYm={};dbKpi.filter(k=>k.year_month===ym).forEach(k=>{kpiYm[k.vehicle_code]=k.active;});
+      const isKpiActive=(code)=>kpiYm[code]!==undefined?kpiYm[code]:(dbVehs.find(v=>v.code===code)?.active!==false);
+      dbVehs.forEach(v=>{
+        if(!isKpiActive(v.code))return;
+        utilActiveCount++;
+        const days=new Set();
+        active.forEach(r=>{
+          if(fMap[r.id]!==v.code)return;
+          const ld=r[ldKey],rd=r[rdKey];if(!ld||!rd)return;
+          const lDate=new Date(ld.slice(0,10)+"T00:00:00"),rDate=new Date(rd.slice(0,10)+"T00:00:00");
+          const s=lDate>ms?lDate:ms;const e=rDate<me?rDate:me;
+          for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1)){days.add(d.toISOString().slice(0,10));}
+        });
+        utilDays+=days.size;
+      });
+      utilMaxDays=utilActiveCount*dim;
+      utilPct=utilMaxDays>0?Math.round(utilDays/utilMaxDays*100):0;
+    }
     // CF入金（当月入金分）
     const cfIn=cfPivot.chs.reduce((a,ch)=>a+((cfPivot.map[ym+"|"+ch]||{}).cash_in||0),0);
-    return{plRev,plCnt,cfIn,byCh,avgNights,daysSum,unitPrice,dailyRate};
-  },[dbResvs,dbStore,dashYm,cfPivot]);
+    return{plRev,plCnt,cfIn,byCh,avgNights,daysSum,unitPrice,dailyRate,utilDays,utilActiveCount,utilMaxDays,utilPct};
+  },[dbResvs,dbFleet,dbVehs,dbKpi,dbStore,dashYm,cfPivot]);
 
   const subTabs=[
     {id:"exceldash",l:"📊 経営DB"},
@@ -3499,7 +3524,8 @@ function ManagementTab({store}){
         <div style={card}><div style={lbl}>当月入金 (CF)</div><div style={val}>{fmtM(dashSummary.cfIn)}</div></div>
         <div style={card}><div style={lbl}>売上件数</div><div style={val}>{dashSummary.plCnt}件</div></div>
         <div style={card}><div style={lbl}>客単価 (1予約)</div><div style={val}>{dashSummary.plCnt>0?"¥"+Math.round(dashSummary.unitPrice).toLocaleString():"-"}</div></div>
-        <div style={{...card,background:"#eef2ff",border:"1px solid #c7d2fe"}}><div style={lbl}>★ 平均泊数 (1予約あたり)</div><div style={{...val,color:"#4338ca"}}>{dashSummary.avgNights>0?dashSummary.avgNights.toFixed(2)+"泊":"-"}</div><div style={{fontSize:10,color:"#64748b"}}>総稼働 {dashSummary.daysSum.toFixed(1)}日</div></div>
+        <div style={{...card,background:"#f0fdf4",border:"1px solid #bbf7d0"}}><div style={lbl}>稼働率</div><div style={{...val,color:"#059669"}}>{dashSummary.utilPct}%</div><div style={{fontSize:10,color:"#64748b"}}>{dashSummary.utilDays}/{dashSummary.utilMaxDays}日・{dashSummary.utilActiveCount}台</div></div>
+        <div style={{...card,background:"#eef2ff",border:"1px solid #c7d2fe"}}><div style={lbl}>★ 平均泊数 (1予約あたり)</div><div style={{...val,color:"#4338ca"}}>{dashSummary.avgNights>0?dashSummary.avgNights.toFixed(2)+"泊":"-"}</div><div style={{fontSize:10,color:"#64748b"}}>延べ泊数 {dashSummary.daysSum.toFixed(1)}泊</div></div>
         <div style={card}><div style={lbl}>1日あたり単価</div><div style={val}>{dashSummary.dailyRate>0?"¥"+Math.round(dashSummary.dailyRate).toLocaleString():"-"}</div></div>
       </div>
       <div style={{...card,marginBottom:12}}>
@@ -5030,7 +5056,11 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
         const ld=new Date(norm(r.lendDate)+"T00:00:00"),rd=new Date(norm(r.returnDate)+"T00:00:00");
         const s=ld>ms?ld:ms;const e=rd<me?rd:me;
         for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1)){rentalDays.add(toLD(d));}
-        if(r.returnDate&&r.returnDate.slice(0,7)===selYM)vRev+=(Number(r.price)||0);
+        if(r.returnDate&&r.returnDate.slice(0,7)===selYM){
+          // ★ 売上計上 = base_price + option_price - discount（経営DBと統一）
+          const bp=Number(r.basePrice)||0,op=Number(r.optionPrice)||0,dc=Number(r.discount)||0;
+          vRev+=(bp>0||op>0)?(bp+op-dc):(Number(r.price)||0);
+        }
       });
       const vDays=rentalDays.size;
       totalDays+=vDays;totalRevenue+=vRev;
@@ -12428,7 +12458,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.6.28";
+const APP_VERSION="v4.6.30";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
