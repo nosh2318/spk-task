@@ -62,7 +62,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v493';
+  var CV='spk-v494';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
@@ -2169,7 +2169,7 @@ function SquareInvoiceWidget(){
   const fetchData=React.useCallback(async()=>{
     try{
       if(!sb)throw new Error("Supabase未初期化");
-      const{data,error:err}=await sb.from("spk_accounting").select("id,date,type,category,resv_no,user_name,amount,paid,url,created_at").not("url","is",null).neq("url","").order("date",{ascending:false}).limit(300);
+      const{data,error:err}=await sb.from("spk_accounting").select("id,date,type,category,resv_no,user_name,amount,paid,url,created_at").not("url","is",null).neq("url","").neq("type","jalan_payment").order("date",{ascending:false}).limit(300);
       if(err)throw new Error(err.message);
       const rows=data||[];
       // 未払い予約のlend_dateをSupabaseから取得（残り日数計算用）
@@ -2199,7 +2199,7 @@ function SquareInvoiceWidget(){
   return <div style={{marginBottom:8}}>
     <div onClick={()=>setOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px",borderRadius:12,background:unpaid.length>0?"#fffbeb":"#f0fdf4",border:"1px solid "+(unpaid.length>0?"#fde68a":"#bbf7d0"),cursor:"pointer",userSelect:"none",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
       <span style={{fontSize:16}}>💳</span>
-      <span style={{fontSize:12,fontWeight:800,color:"#1e293b"}}>Square請求書（札幌店）</span>
+      <span style={{fontSize:12,fontWeight:800,color:"#1e293b"}}>Square請求書（立替・予約外売上）</span>
       {unpaid.length>0&&<span style={{fontSize:10,fontWeight:700,color:"#dc2626",background:"#fee2e2",padding:"2px 8px",borderRadius:8}}>{unpaid.length}件未払い</span>}
       {unpaid.length===0&&<span style={{fontSize:10,fontWeight:600,color:"#059669"}}>全件入金済み</span>}
       <span style={{marginLeft:"auto",fontSize:10,color:"#94a3b8"}}>{open?"▲":"▼"}</span>
@@ -5044,8 +5044,11 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
     const[y,mo]=selYM.split("-").map(Number);
     const dim=new Date(y,mo,0).getDate();
     const ms=new Date(y,mo-1,1),me=new Date(y,mo-1,dim);
-    let totalDays=0,activeCount=0,totalRevenue=0;
+    let totalDays=0,activeCount=0;
     const active=data.filter(r=>r.status!=="cancelled");
+    // ★ 当月売上（経営DBと完全一致）= 返却月一致の全予約を車両配車に関係なく集計
+    const revOf=(r)=>{const bp=Number(r.basePrice)||0,op=Number(r.optionPrice)||0,dc=Number(r.discount)||0;return(bp>0||op>0)?(bp+op-dc):(Number(r.price)||0);};
+    const totalRevenue=active.filter(r=>r.returnDate&&r.returnDate.slice(0,7)===selYM).reduce((a,r)=>a+revOf(r),0);
     const CLASS_C={"A":"#7c3aed","B":"#0284c7","C":"#059669","S":"#d97706","F":"#db2777","H":"#64748b"};
     const byClass={};
     vehicles.forEach(v=>{
@@ -5057,13 +5060,11 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
         const s=ld>ms?ld:ms;const e=rd<me?rd:me;
         for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1)){rentalDays.add(toLD(d));}
         if(r.returnDate&&r.returnDate.slice(0,7)===selYM){
-          // ★ 売上計上 = base_price + option_price - discount（経営DBと統一）
-          const bp=Number(r.basePrice)||0,op=Number(r.optionPrice)||0,dc=Number(r.discount)||0;
-          vRev+=(bp>0||op>0)?(bp+op-dc):(Number(r.price)||0);
+          vRev+=revOf(r);
         }
       });
       const vDays=rentalDays.size;
-      totalDays+=vDays;totalRevenue+=vRev;
+      totalDays+=vDays;
       const tp=v.type||"?";
       if(!byClass[tp]){const cl=INIT_CLASSES.find(c=>c.type===tp);byClass[tp]={label:cl?cl.label:tp,color:CLASS_C[tp]||"#64748b",count:0,days:0,revenue:0,vehicles:[]};}
       byClass[tp].count++;
@@ -12458,7 +12459,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.6.30";
+const APP_VERSION="v4.6.31";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
