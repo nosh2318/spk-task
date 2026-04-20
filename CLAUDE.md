@@ -80,10 +80,27 @@
 TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 / 駐車場 / 会計 / 顧客 / 売上 / データ / 過去 / 免許証
 
 ## 現在のバージョン
-- **APP_VERSION**: v4.6.34
-- **sw.js CACHE_NAME**: `spk-v497`
-- **index.html CV**: `spk-v497`
+- **APP_VERSION**: v4.6.38
+- **sw.js CACHE_NAME**: `spk-v501`
+- **index.html CV**: `spk-v501`
 - **SRI/CSP**: 未適用（下記インシデント参照）
+
+## 2026-04-21 修正履歴（続き）
+
+### 決済ステータスバッジ拡張（v4.6.38）
+- **要望**: 「じゃらん決済機能と連動した箇所を設けて。入金済/未入金どちらかの表示をさせる。このステータスはタスクサマリーやスケジュールにも表示させる」
+- **実装**:
+  1. App level に `jpNewPaidSet` state 追加 — `jalan_payments.status='paid'` を Set 化、60秒間隔で自動更新
+  2. `isJPaidFn(resvId)` 統一ヘルパー追加 — 新システム優先 + 旧 `jalanPay[id].payStatus==='完了'` フォールバック
+  3. OPScreen / DataTable 両方にpropを流す
+- **バッジ追加箇所（新規）**:
+  - OP画面 DEL/COL カード（メタデータ行）
+  - OP画面 スケジュールタブ（メタデータ行）
+  - TOP タスクサマリー（個人別タスク行）
+  - TOP 本日スケジュール（メタデータ行）
+- **既存バッジ更新**: OPマスター表（列19）/ データタブ（列18）も `isJPaidFn` に統一
+- **表示**: `💳決済`（緑）/ `💳未決済`（赤）
+- **バージョン**: `APP_VERSION=v4.6.38` / `sw.js CACHE_NAME=spk-v501` / `index.html CV=spk-v501` 同時更新
 
 ## 未使用テーブル
 - **vehicle_twins**: テーブルは存在するがデータ空。APP・GASのどちらでも未使用。配車は`fleet`テーブルで管理。手を入れる必要なし。
