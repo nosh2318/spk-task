@@ -369,7 +369,9 @@ function parseJalan_(body) {
   if (pM) people += parseInt(pM[1], 10);
   var cM = peopleStr.match(/子供.*?(\d+)/);
   if (cM) people += parseInt(cM[1], 10);
-  var price = parsePrice_(extractField_(body, '合計金額'));
+  // ★ 利用者への請求額（クーポン・ポイント差引後）を優先。なければ合計金額
+  var billingPrice = parsePrice_(extractField_(body, '利用者への請求額'));
+  var price = billingPrice > 0 ? billingPrice : parsePrice_(extractField_(body, '合計金額'));
   var arrFlight = extractField_(body, '到着便');
   var depFlight = extractField_(body, '出発便');
   var flight = [arrFlight, depFlight].filter(Boolean).join(' / ');

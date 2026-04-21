@@ -62,7 +62,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v504';
+  var CV='spk-v505';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
@@ -2493,6 +2493,8 @@ function ManagementTab({store}){
   // 解析セクション開閉
   const[secOpen,setSecOpen]=useState({A:true,B:true,C:true,D:true});
   const toggleSec=(k)=>setSecOpen(p=>({...p,[k]:!p[k]}));
+  // D. 構成分析 年別/月別フィルタ
+  const[dFilter,setDFilter]=useState({mode:"all",year:"",ym:""});
   // 投資回転率コスト仮定
   const[roiCost,setRoiCost]=useState({insurance:12000,parking:17600,inspection:5000,maintenance:5000});
   // 売上入力フィルタ
@@ -4312,9 +4314,32 @@ function ManagementTab({store}){
       });
       const yrList=Object.keys(yearAgg).sort();
 
-      // current month tasks for time analysis
+      // ===== D. 構成分析 フィルタ適用 =====
+      // 年・月の選択候補（reliable データがある期間）
+      const dYearList=[...new Set(ymList.map(ym=>ym.slice(0,4)))].sort();
+      const dYmList=ymList;
+      // dFilter に従って reliable を絞り込み
+      const relForD=reliable.filter(r=>{
+        const rd=r[rdKey];if(!rd)return false;
+        const ym=rd.slice(0,7),yr=rd.slice(0,4);
+        if(dFilter.mode==="year")return dFilter.year?yr===dFilter.year:true;
+        if(dFilter.mode==="month")return dFilter.ym?ym===dFilter.ym:true;
+        return true;
+      });
+      // dbTasks も date で絞り込み
+      const tasksForD=dbTasks.filter(tk=>{
+        if(!tk.date)return dFilter.mode==="all";
+        const ym=tk.date.slice(0,7),yr=tk.date.slice(0,4);
+        if(dFilter.mode==="year")return dFilter.year?yr===dFilter.year:true;
+        if(dFilter.mode==="month")return dFilter.ym?ym===dFilter.ym:true;
+        return true;
+      });
+      // 期間ラベル
+      const dPeriodLabel=dFilter.mode==="year"&&dFilter.year?(dFilter.year+"年"):dFilter.mode==="month"&&dFilter.ym?dFilter.ym:"全期間";
+
+      // 時間帯分布（D用、フィルタ反映）
       const taskTimeBuckets={DEL:{},COL:{}};
-      dbTasks.forEach(tk=>{
+      tasksForD.forEach(tk=>{
         if(!tk.time||!tk.type)return;
         const hh=tk.time.slice(0,2);
         const bucket=hh+":00";
@@ -4322,18 +4347,18 @@ function ManagementTab({store}){
         if(tk.type==="COL"){taskTimeBuckets.COL[bucket]=(taskTimeBuckets.COL[bucket]||0)+1;}
       });
 
-      // delivery place ranking
+      // delivery place ranking（D用、フィルタ反映）
       const delPlaces={},colPlaces={};
-      reliable.forEach(r=>{
+      relForD.forEach(r=>{
         if(r.del_place){const p=r.del_place.trim();if(p)delPlaces[p]=(delPlaces[p]||0)+1;}
         if(r.col_place){const p=r.col_place.trim();if(p)colPlaces[p]=(colPlaces[p]||0)+1;}
       });
       const delRank=Object.entries(delPlaces).sort((a,b)=>b[1]-a[1]).slice(0,20);
       const colRank=Object.entries(colPlaces).sort((a,b)=>b[1]-a[1]).slice(0,20);
 
-      // prefecture ranking
+      // prefecture ranking（D用、フィルタ反映）
       const allPrefCnt={};
-      reliable.forEach(r=>{if(r.prefecture){const p=r.prefecture;allPrefCnt[p]=(allPrefCnt[p]||0)+1;}});
+      relForD.forEach(r=>{if(r.prefecture){const p=r.prefecture;allPrefCnt[p]=(allPrefCnt[p]||0)+1;}});
       const prefRank=Object.entries(allPrefCnt).sort((a,b)=>b[1]-a[1]).slice(0,20);
 
       // current month
@@ -4625,14 +4650,28 @@ function ManagementTab({store}){
         ),
 
         // ===== D. 構成分析 =====
-        secHeader("D","D. 構成分析"),
+        secHeader("D","D. 構成分析 ("+dPeriodLabel+")"),
         secOpen.D&&React.createElement("div",null,
+          // 年別/月別フィルタUI
+          React.createElement("div",{style:{display:"flex",gap:8,alignItems:"center",marginBottom:10,flexWrap:"wrap",padding:"10px 14px",background:"#faf5ff",borderRadius:10,border:"1px solid #e9d5ff"}},
+            React.createElement("span",{style:{fontSize:11,fontWeight:800,color:"#6b21a8"}},"期間:"),
+            React.createElement("button",{onClick:()=>setDFilter({mode:"all",year:"",ym:""}),style:{padding:"6px 14px",borderRadius:8,border:"1px solid "+(dFilter.mode==="all"?"#8b5cf6":"#e9d5ff"),background:dFilter.mode==="all"?"#8b5cf6":"#fff",color:dFilter.mode==="all"?"#fff":"#6b21a8",fontSize:11,fontWeight:700,cursor:"pointer"}},"全期間"),
+            React.createElement("button",{onClick:()=>setDFilter({mode:"year",year:dFilter.year||(dYearList[dYearList.length-1]||""),ym:""}),style:{padding:"6px 14px",borderRadius:8,border:"1px solid "+(dFilter.mode==="year"?"#8b5cf6":"#e9d5ff"),background:dFilter.mode==="year"?"#8b5cf6":"#fff",color:dFilter.mode==="year"?"#fff":"#6b21a8",fontSize:11,fontWeight:700,cursor:"pointer"}},"年別"),
+            React.createElement("button",{onClick:()=>setDFilter({mode:"month",year:"",ym:dFilter.ym||(dYmList[dYmList.length-1]||"")}),style:{padding:"6px 14px",borderRadius:8,border:"1px solid "+(dFilter.mode==="month"?"#8b5cf6":"#e9d5ff"),background:dFilter.mode==="month"?"#8b5cf6":"#fff",color:dFilter.mode==="month"?"#fff":"#6b21a8",fontSize:11,fontWeight:700,cursor:"pointer"}},"月別"),
+            dFilter.mode==="year"&&React.createElement("select",{value:dFilter.year,onChange:e=>setDFilter({...dFilter,year:e.target.value}),style:{padding:"6px 10px",borderRadius:8,border:"1px solid #c4b5fd",fontSize:11,fontWeight:700,color:"#6b21a8",background:"#fff"}},
+              dYearList.length===0?React.createElement("option",{value:""},"データなし"):dYearList.map(y=>React.createElement("option",{key:y,value:y},y+"年"))
+            ),
+            dFilter.mode==="month"&&React.createElement("select",{value:dFilter.ym,onChange:e=>setDFilter({...dFilter,ym:e.target.value}),style:{padding:"6px 10px",borderRadius:8,border:"1px solid #c4b5fd",fontSize:11,fontWeight:700,color:"#6b21a8",background:"#fff"}},
+              dYmList.length===0?React.createElement("option",{value:""},"データなし"):dYmList.map(ym=>React.createElement("option",{key:ym,value:ym},ym))
+            ),
+            React.createElement("span",{style:{marginLeft:"auto",fontSize:10,color:"#6b21a8",fontWeight:600}},"対象: "+relForD.length+"件 / 全"+reliable.length+"件")
+          ),
           // OTA別売上構成比
           sectionCard(React.createElement("div",null,
-            React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:10,color:"#1e3a5f"}},"OTA別売上構成比（全期間）"),
+            React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:10,color:"#1e3a5f"}},"OTA別売上構成比（"+dPeriodLabel+"）"),
             (()=>{
               const otaTotRev={},otaTotCnt={};let grandRev=0;
-              reliable.forEach(r=>{
+              relForD.forEach(r=>{
                 const ch=DB_OTA_MAP[r.ota]||"その他売上";const rev=revCalc(r);
                 otaTotRev[ch]=(otaTotRev[ch]||0)+rev;otaTotCnt[ch]=(otaTotCnt[ch]||0)+1;grandRev+=rev;
               });
@@ -4670,7 +4709,7 @@ function ManagementTab({store}){
           React.createElement("div",{style:{display:"flex",gap:12,flexWrap:"wrap",marginBottom:12}},
             // DEL
             React.createElement("div",{style:{flex:"1 1 320px",...card,padding:16}},
-              React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:10,color:"#059669"}},"DEL場所 Top20"),
+              React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:10,color:"#059669"}},"DEL場所 Top20（"+dPeriodLabel+"）"),
               tableWrap(React.createElement("table",{style:{width:"100%",borderCollapse:"collapse"}},
                 React.createElement("thead",null,React.createElement("tr",null,
                   React.createElement("th",{style:{...th2,width:28}},"#"),React.createElement("th",{style:th2},"場所"),React.createElement("th",{style:{...th2,textAlign:"right"}},"件数"),React.createElement("th",{style:{...th2,minWidth:100}},"")
@@ -4685,7 +4724,7 @@ function ManagementTab({store}){
             ),
             // COL
             React.createElement("div",{style:{flex:"1 1 320px",...card,padding:16}},
-              React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:10,color:"#dc2626"}},"COL場所 Top20"),
+              React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:10,color:"#dc2626"}},"COL場所 Top20（"+dPeriodLabel+"）"),
               tableWrap(React.createElement("table",{style:{width:"100%",borderCollapse:"collapse"}},
                 React.createElement("thead",null,React.createElement("tr",null,
                   React.createElement("th",{style:{...th2,width:28}},"#"),React.createElement("th",{style:th2},"場所"),React.createElement("th",{style:{...th2,textAlign:"right"}},"件数"),React.createElement("th",{style:{...th2,minWidth:100}},"")
@@ -4701,7 +4740,7 @@ function ManagementTab({store}){
           ),
           // 利用者エリア
           sectionCard(React.createElement("div",null,
-            React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:10,color:"#1e3a5f"}},"利用者エリア Top20（都道府県）"),
+            React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:10,color:"#1e3a5f"}},"利用者エリア Top20（都道府県・"+dPeriodLabel+"）"),
             prefRank.length>0?tableWrap(React.createElement("table",{style:{width:"100%",borderCollapse:"collapse"}},
               React.createElement("thead",null,React.createElement("tr",null,
                 React.createElement("th",{style:{...th2,width:28}},"#"),React.createElement("th",{style:th2},"都道府県"),React.createElement("th",{style:{...th2,textAlign:"right"}},"件数"),React.createElement("th",{style:{...th2,minWidth:120}},"")
@@ -4716,7 +4755,7 @@ function ManagementTab({store}){
           )),
           // タスク時間帯
           sectionCard(React.createElement("div",null,
-            React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:10,color:"#1e3a5f"}},"DEL/COL 時間帯分布"),
+            React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:10,color:"#1e3a5f"}},"DEL/COL 時間帯分布（"+dPeriodLabel+"）"),
             React.createElement("div",{style:{display:"flex",gap:16,flexWrap:"wrap"}},
               ["DEL","COL"].map(type=>{
                 const buckets=taskTimeBuckets[type];
@@ -12658,7 +12697,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.6.41";
+const APP_VERSION="v4.6.42";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");

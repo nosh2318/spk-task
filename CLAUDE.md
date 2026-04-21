@@ -80,10 +80,26 @@
 TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 / 駐車場 / 会計 / 顧客 / 売上 / データ / 過去 / 免許証
 
 ## 現在のバージョン
-- **APP_VERSION**: v4.6.38
-- **sw.js CACHE_NAME**: `spk-v501`
-- **index.html CV**: `spk-v501`
+- **APP_VERSION**: v4.6.42
+- **sw.js CACHE_NAME**: `spk-v505`
+- **index.html CV**: `spk-v505`
 - **SRI/CSP**: 未適用（下記インシデント参照）
+
+## 2026-04-21 修正履歴（続き3）
+
+### D. 構成分析タブに年別/月別フィルタ追加（v4.6.42）
+- **要望**: 「Dは　年別　月別　で確認できるように」
+- **背景**: 経営管理>解析タブのD. 構成分析（OTA別売上構成比/DEL・COL場所Top20/利用者エリア/時間帯分布）が「全期間」固定で、年別・月別比較ができなかった
+- **実装**:
+  1. `dFilter` state 追加（`{mode:"all"|"year"|"month", year, ym}`）
+  2. 解析IIFE内で `ymList` から `dYearList`（年候補）`dYmList`（年月候補）を生成
+  3. `relForD`: reliable を dFilter で絞込（`rdKey`=札幌 return_date / 那覇 end_date）
+  4. `tasksForD`: dbTasks を date で絞込（時間帯分布用）
+  5. D セクション先頭にフィルタUI追加（全期間/年別/月別の3ボタン+年/年月セレクタ+対象件数表示）
+  6. 各サブセクションの見出しに選択期間を表示（「OTA別売上構成比（2026-04）」等）
+  7. D セクションヘッダーにも選択期間を表示（「D. 構成分析 (2026年)」等）
+- **影響範囲**: D内の4サブセクション全て（OTA別/DEL/COL/エリア/時間帯分布）が連動
+- **バージョン**: `APP_VERSION=v4.6.42` / `sw.js CACHE_NAME=spk-v505` / `index.html CV=spk-v505` 同時更新
 
 ## 2026-04-21 修正履歴（続き）
 
