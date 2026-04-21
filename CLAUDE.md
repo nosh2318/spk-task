@@ -85,6 +85,34 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **index.html CV**: `spk-v505`
 - **SRI/CSP**: 未適用（下記インシデント参照）
 
+## 2026-04-21 修正履歴（続き4）
+
+### R0XHDPI1 じゃらん事前決済が自動発行されなかった問題（GAS根本修正）
+- **症状**: R0XHDPI1（タカス トモコ、2026-05-04、¥12,850、メール m525tomo@gmail.com）のじゃらん予約メールから2時間経過しても Square請求書・メールが発行されなかった
+- **診断**:
+  - `reservations` テーブルには予約が存在（OTA=J, price=12850, 通常通り）
+  - `jalan_payments` テーブルには行が存在しない → 決済処理が一切走っていない
+- **根本原因**: `processMessage_`（`gas-email-import-v2.gs`）の既存予約分岐が `handleJalanPayment_` を呼んでいなかった
+  - **OTA自動登録GAS（30分間隔）が先に予約作成**（price のみ、他フィールド不完全）
+  - **札幌メール取込GAS（15分間隔）が後から同じメールを処理**
+  - `reservationExists_()` が true → 「既存予約」分岐に入り、料金内訳や場所などをパッチして `return {type:'skip'}`
+  - この分岐内では `handleJalanPayment_` が呼ばれない ← バグ
+  - 新規INSERT分岐（line 280以降）でしか `handleJalanPayment_` が呼ばれないため、じゃらん決済が起票されない
+- **即時復旧（R0XHDPI1）**:
+  1. Square Payment Links API 直接呼び出しでリンク作成: `https://square.link/u/ZBEAoEek`
+  2. `jalan_payments` に `status=link_created` で INSERT
+  3. `#jalan_payment` Slack通知（slack_ts=1776755285.056639、DBに保存済み）
+  4. `checkSquareLinks`（5分間隔）トリガーで自動メール送信されることを確認
+- **恒久修正（`gas-email-import-v2.gs`）**:
+  1. 既存予約分岐（line 278〜）に `handleJalanPayment_` 呼び出しを追加
+  2. 競合分岐（line 293〜）にも同じ呼び出しを追加
+  3. `handleJalanPayment_` 内部の重複チェック（`jalan_payments` 存在確認）で冪等性担保
+  - **GASエディタ貼り付け必須**: ローカル `gas-email-import-v2.gs` 修正済み、GASエディタにクリップボード経由で貼付
+- **教訓**:
+  - OTA自動登録GASと札幌メール取込GASが競合するパターンは `price` / `base_price` / `discount` / `insurance` / 場所 に続き 4件目
+  - 以降の新機能追加時は「既存予約でも走らせる必要があるか」を必ず検討する
+  - じゃらん事前決済は OTA=J の全予約で必須機能
+
 ## 2026-04-21 修正履歴（続き3）
 
 ### D. 構成分析タブに年別/月別フィルタ追加（v4.6.42）

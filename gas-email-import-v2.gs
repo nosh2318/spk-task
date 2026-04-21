@@ -275,6 +275,15 @@ function processMessage_(message, dryRun) {
       } else {
         Logger.log('Reservation already exists (active, no patch needed): ' + reservation.id);
       }
+      // ★ 2026-04-21 修正: 既存予約でもじゃらん決済起票を試みる（OTA自動登録GASで先に予約作成された場合の対策）
+      // handleJalanPayment_ 内で jalan_payments の存在チェック済みなので重複起票の心配なし
+      if (reservation.ota === 'J' && reservation.price > 0) {
+        try {
+          handleJalanPayment_(reservation);
+        } catch (e) {
+          Logger.log('[JalanPayment] Error (existing path): ' + e.message);
+        }
+      }
       return {type:'skip', id:reservation.id, reason:'登録済み'};
     }
   } else {
@@ -283,6 +292,10 @@ function processMessage_(message, dryRun) {
       var recheck = reservationExists_(reservation.id);
       if (recheck) {
         Logger.log('INSERT failed but reservation exists (race condition): ' + reservation.id);
+        // ★ 2026-04-21 修正: 競合時もじゃらん決済起票を試みる
+        if (reservation.ota === 'J' && reservation.price > 0) {
+          try { handleJalanPayment_(reservation); } catch (e) { Logger.log('[JalanPayment] Error (race path): ' + e.message); }
+        }
         return {type:'skip', id:reservation.id, reason:'登録済み（競合）'};
       }
       return {type:'failure', id:reservation.id, ota:otaCode, name:reservation.name, reason:'DB登録失敗'};
