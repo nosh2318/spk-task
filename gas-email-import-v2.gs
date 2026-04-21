@@ -392,6 +392,17 @@ function extractCollectionPlace_(body) {
   return '';
 }
 
+// OTA側に登録された「店舗名」が HANDYMAN自社のOTA掲載名・PR文・★マーク等を含む場合は場所として使わない
+// 例: "札幌デリバリー専門店 ★ホテルや自宅・駅へお届け！LINE完結の手続きで即出発★"
+function sanitizeOtaStoreName_(storeName) {
+  if (!storeName) return '';
+  var s = String(storeName);
+  // HANDYMAN自社のOTA掲載名マーカー
+  if (/デリバリー専門店|HANDYMAN|ハンディマン|ホテルや自宅|LINE完結|即出発|★/i.test(s)) return '';
+  // 汎用的な「店舗名」っぽいが住所情報を含まない短い文字列も除外
+  return s.trim();
+}
+
 function detectInsurance_(text) {
   if (!text) return 'なし';
   if (/フルカバー|フル補償|安心フル|あんしんフル/i.test(text)) return 'フル';
@@ -497,8 +508,8 @@ function parseJalan_(body) {
   if (cAll) { for (var ci=0;ci<cAll.length;ci++) { var cn=cAll[ci].match(/(\d+)/); if(cn) optC=Math.max(optC,parseInt(cn[1],10));} }
   if (jAll) { for (var ji=0;ji<jAll.length;ji++) { var jn=jAll[ji].match(/(\d+)/); if(jn) optJ=Math.max(optJ,parseInt(jn[1],10));} }
   var retStore = extractField_(body, '返却営業所');
-  var delPlace = extractDeliveryPlace_(body) || store || '';
-  var colPlace = extractCollectionPlace_(body) || retStore || '';
+  var delPlace = extractDeliveryPlace_(body) || sanitizeOtaStoreName_(store);
+  var colPlace = extractCollectionPlace_(body) || sanitizeOtaStoreName_(retStore);
   var visitType = delPlace ? 'DEL' : '';
   var returnType = colPlace ? 'COL' : '';
   return {
@@ -555,8 +566,8 @@ function parseRakuten_(body) {
   var jMatch = optionsStr.match(/ジュニアシート\s*(\d*)/);
   if (jMatch) optJ = parseInt(jMatch[1], 10) || 1;
   var retStore = extractField_(body, '・返却営業所名') || extractField_(body, '□返却営業所名');
-  var delPlace = extractDeliveryPlace_(body) || store || '';
-  var colPlace = extractCollectionPlace_(body) || retStore || '';
+  var delPlace = extractDeliveryPlace_(body) || sanitizeOtaStoreName_(store);
+  var colPlace = extractCollectionPlace_(body) || sanitizeOtaStoreName_(retStore);
   var visitType = delPlace ? 'DEL' : '';
   var returnType = colPlace ? 'COL' : '';
   return {
@@ -603,8 +614,8 @@ function parseSkyticket_(body) {
   var cMatch = body.match(/チャイルドシート[^\d]*(\d*)/); if (cMatch) optC = parseInt(cMatch[1], 10) || 1;
   var jMatch = body.match(/ジュニアシート[^\d]*(\d*)/); if (jMatch) optJ = parseInt(jMatch[1], 10) || 1;
   var retStore = extractField_(body, '返却店舗');
-  var delPlace = extractDeliveryPlace_(body) || store || '';
-  var colPlace = extractCollectionPlace_(body) || retStore || '';
+  var delPlace = extractDeliveryPlace_(body) || sanitizeOtaStoreName_(store);
+  var colPlace = extractCollectionPlace_(body) || sanitizeOtaStoreName_(retStore);
   var visitType = delPlace ? 'DEL' : '';
   var returnType = colPlace ? 'COL' : '';
   return {
@@ -650,8 +661,8 @@ function parseAirtrip_(body) {
   var cMatch = body.match(/チャイルドシート[^\d]*(\d*)/); if (cMatch) optC = parseInt(cMatch[1], 10) || 1;
   var jMatch = body.match(/ジュニアシート[^\d]*(\d*)/); if (jMatch) optJ = parseInt(jMatch[1], 10) || 1;
   var retStore = extractField_(body, '返却営業所');
-  var delPlace = extractDeliveryPlace_(body) || store || '';
-  var colPlace = extractCollectionPlace_(body) || retStore || '';
+  var delPlace = extractDeliveryPlace_(body) || sanitizeOtaStoreName_(store);
+  var colPlace = extractCollectionPlace_(body) || sanitizeOtaStoreName_(retStore);
   var visitType = delPlace ? 'DEL' : '';
   var returnType = colPlace ? 'COL' : '';
   return {
@@ -679,6 +690,20 @@ function parseOfficial_(body) {
   var retMatch = body.match(/ご利用終了日時\s*\n\s*(\d{4}\/\d{1,2}\/\d{1,2})\s+(\d{1,2}:\d{2})/);
   var ret = { date: '', time: '' };
   if (retMatch) { ret.date = retMatch[1].replace(/\//g, '-'); ret.time = retMatch[2]; }
+  // ★ HPはタスク時間として「お届け希望時間・回収希望時間」を優先
+  // ご利用開始日時 = 利用期間開始、お届け希望時間 = DEL配送時刻 （別物）
+  var delHopeMatch = body.match(/【(?:お届け希望時間|お届け希望日時)】\s*\n\s*(\d{4}\/\d{1,2}\/\d{1,2})\s+(\d{1,2}:\d{2})/);
+  if (delHopeMatch) {
+    lend.date = delHopeMatch[1].replace(/\//g, '-');
+    lend.time = delHopeMatch[2];
+    Logger.log('[Official] お届け希望時間 を lend に採用: ' + lend.date + ' ' + lend.time);
+  }
+  var colHopeMatch = body.match(/【(?:回収希望時間|回収希望日時)】\s*\n\s*(\d{4}\/\d{1,2}\/\d{1,2})\s+(\d{1,2}:\d{2})/);
+  if (colHopeMatch) {
+    ret.date = colHopeMatch[1].replace(/\//g, '-');
+    ret.time = colHopeMatch[2];
+    Logger.log('[Official] 回収希望時間 を return に採用: ' + ret.date + ' ' + ret.time);
+  }
   var people = 0;
   var adultMatch = body.match(/大人:\s*(\d+)/);
   if (adultMatch) people += parseInt(adultMatch[1], 10);
