@@ -85,6 +85,60 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **index.html CV**: `spk-v505`
 - **SRI/CSP**: 未適用（下記インシデント参照）
 
+## 2026-04-21 修正履歴（続き5）
+
+### じゃらん那覇テンプレ誤送信 + 過大請求 対応（11名クローズ）
+- **背景**: `sendJalanPaymentEmail_` が那覇テンプレで札幌顧客に送信され、かつ一部で過大請求されていた障害
+- **対象者分類（計11名）**:
+  - **A群 6名（店舗名誤りのみ）**: 前セッションで謝罪メール送信完了
+  - **B群 5名（店舗名誤り＋価格誤り）**: 本セッションで対応完了
+    | 予約番号 | 旧金額 | 新金額 | 差額 | 宛先 |
+    |---|---:|---:|---:|---|
+    | R0Q7UEF3 | ¥19,300 | ¥16,300 | -¥3,000 | smhi4381@docomo.ne.jp |
+    | R0742RTL | ¥55,950 | ¥52,050 | -¥3,900 | itarian_barbar@yahoo.co.jp |
+    | R02XF89Q | ¥30,000 | ¥27,000 | -¥3,000 | zamasu44@icloud.com |
+    | R0CYV6NR | ¥21,300 | ¥17,000 | -¥4,300 | ryota.223@icloud.com |
+    | R0GRD083 | ¥78,600 | ¥78,200 | -¥400  | t.y.network29@docomo.ne.jp |
+- **B群 対応ステップ（gas-email-import-v2.gs に追加した関数）**:
+  1. `diagnoseFiveAmountDiscrepancies()` — Gmail元メール＋DB状態＋parseJalan_再実行で正しい請求額を特定
+  2. `reissueFivePaymentLinks()` — 旧Squareリンク DELETE → 新リンク CREATE → DB更新（amount/square_payment_url/status='link_created'/email_sent_at=null）→ 支払い管理シート更新。`checkSquareLinks` トリガーを自動停止（再送完了までメール誤送信防止）
+  3. `resendApologyToFiveCustomers()` — 件名「【お詫び・再送】...予約番号: <id>」で謝罪＋金額訂正理由＋旧リンク無効化通知＋新リンクを送信。送信後 DB を `status='email_sent', email_sent_at=now` に更新
+  4. `verifyFiveApologySent()` — 事後検証（DB状態 + Gmail送信済みトレイ両面チェック）
+- **18:43 送信完了**: 5通全送信成功、Gmail 送信済みトレイで実データ確認済
+- **トリガー再設定**: 18:44 に `setupJalanPaymentTriggers` 実行で `checkSquareLinks`(5分) / `checkPaymentStatus`(15分) / `checkUnpaidAlert`(毎朝9:00) / `updateSheetOtaColumn`(毎朝9:30) 再開
+- **那覇/札幌範囲**: じゃらん事前決済機能は **札幌店のみ**。那覇店は機能自体が無いため同型障害は起こりえない（3段階の那覇ガード: `isSapporoReservation_` / `handleJalanPayment_`冒頭BLOCK / `watchdogJalanPayment` 札幌絞込）
+
+### 根本原因判明（未修正・保留中）
+- **症状**: 5名全員 `reservations.discount=¥0` で登録されていた → Square請求書は `price`（合計金額＝クーポン・ポイント前）で発行される一方、APP画面は `base+option-discount` で表示されるため値が一致しない不整合
+- **原因**: `gas-email-import-v2.gs` 既存予約パッチロジック **line 259**
+  ```javascript
+  if (!existingRow.price && +(reservation.price||0) > 0) patch.price = reservation.price;
+  ```
+  - `existingRow.price` が 0 の時しか上書きしない
+  - OTA自動登録GAS（30分）が先に `price=合計金額(¥19,300)` で予約作成
+  - 札幌メール取込GAS（15分）が後追いで `parseJalan_` 正しく `price=利用者への請求額(¥16,300)` + `discount=¥3,000` を算出するが、`existingRow.price=¥19,300` は truthy → price 上書きされない
+  - line 263 で discount だけは上書きされる → 結果 DB は `price=¥19,300, discount=¥3,000` の矛盾状態
+  - `handleJalanPayment_(reservation)` はパーサー出力の `reservation` 直接を使うので… と思いきや Square発行額には price=¥19,300 が使われる経路がある（5名全員がこのパターンで発行された実績）
+- **保留中の修正案**:
+  ```javascript
+  var parserHasDiscount = +(reservation.discount||0) > 0;
+  var existingHasDiscount = +(existingRow.discount||0) > 0;
+  if (reservation.ota === 'J' && parserHasDiscount && !existingHasDiscount) {
+    // discount を新規検出 = existingRow.price は 合計金額（クーポン前）の可能性高
+    if (+(reservation.price||0) > 0) patch.price = reservation.price;
+    if (+(reservation.base_price||0) > 0) patch.base_price = reservation.base_price;
+    if (+(reservation.option_price||0) > 0) patch.option_price = reservation.option_price;
+    patch.discount = reservation.discount;
+  } else {
+    // 既存の欠落補完ロジック
+  }
+  ```
+
+### 未実行タスク（次セッションで判断）
+1. 上記 line 259 根本原因修正の適用
+2. `auditAllJalanOverbilling()` 全件監査実行（他のじゃらん過去予約に同バグ被害者がいないか確認。本セッションで関数は追加済）
+3. `watchdogJalanPayment` トリガー再開（現在停止中）
+
 ## 2026-04-21 修正履歴（続き4）
 
 ### R0XHDPI1 じゃらん事前決済が自動発行されなかった問題（GAS根本修正）
@@ -112,6 +166,24 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   - OTA自動登録GASと札幌メール取込GASが競合するパターンは `price` / `base_price` / `discount` / `insurance` / 場所 に続き 4件目
   - 以降の新機能追加時は「既存予約でも走らせる必要があるか」を必ず検討する
   - じゃらん事前決済は OTA=J の全予約で必須機能
+
+### 🛡️ じゃらん決済起票漏れ監視 Watchdog（再発防止・第2層 2026-04-21追加）
+- **追加関数** (`gas-email-import-v2.gs`):
+  - `watchdogJalanPayment()` — 監視本体
+  - `setupWatchdogTrigger()` — トリガー設定（1回だけ手動実行）
+- **目的**: コード修正（第1層）が将来再度外れても、1時間以内に自動検知＋Slack通知＋自動リトライする
+- **動作**:
+  1. `reservations.ota='J' & price>0 & lend_date≥今日 & status≠cancelled` を取得
+  2. `isSapporoReservation_` で札幌予約に絞込（那覇は対象外）
+  3. `jalan_payments` に対応行がない予約を検出
+  4. `handleJalanPayment_(r)` を呼んで自動復旧を試みる（内部の冪等チェックで重複起票なし）
+  5. 結果をSlack `#jalan_payment` に投稿（✅復旧成功 / ❌復旧失敗 を区別）
+- **トリガー**: 毎時実行。GASエディタで `setupWatchdogTrigger` を1回手動実行すれば設定完了
+- **新機能追加時のチェックリスト（第3層・運用ルール）**:
+  1. 新規予約パス（INSERT分岐）✅
+  2. 既存予約パス（`type:'skip'` 分岐）✅ ← R0XHDPI1で漏れた箇所
+  3. 競合パス（race分岐）✅ ← 同じく漏れた箇所
+  4. キャンセルパス ✅
 
 ## 2026-04-21 修正履歴（続き3）
 

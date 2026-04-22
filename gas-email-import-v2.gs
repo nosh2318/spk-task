@@ -1279,19 +1279,19 @@ function checkSquareLinks() {
 function sendJalanPaymentEmail_(pay) {
   if (!pay || !pay.customer_email || !pay.square_payment_url) { Logger.log('[JalanPayment] Email BLOCKED: missing data'); return; }
   try {
-    var subject = '【レンタカー HANDYMAN】事前決済・LINE登録のお願い（予約番号: ' + pay.reservation_id + '）';
+    var subject = '【レンタカー HANDYMAN 札幌デリバリー専門店】事前決済・LINE登録のお願い（予約番号: ' + pay.reservation_id + '）';
     var body = pay.customer_name + ' 様\n\n'
-      + 'この度はHANDYMAN 那覇空港店 をご予約いただき、誠にありがとうございます。\n'
+      + 'この度はHANDYMAN札幌デリバリー専門店をご予約いただき、誠にありがとうございます。\n'
       + '予約番号: ' + pay.reservation_id + '\n'
       + '貸出日: ' + pay.lend_date + '\n'
       + '返却日: ' + pay.return_date + '\n\n'
       + '━━━━━━━━━━━━━━━━━━━━\n'
       + '■ STEP1: LINE登録（必須）\n'
       + '━━━━━━━━━━━━━━━━━━━━\n'
-      + '送迎/デリバリー共に当日のご連絡はLINEで行います。\n'
+      + 'デリバリー情報の入力・当日のご連絡はLINEで行います。\n'
       + '下記リンクから友だち追加をお願いいたします。\n\n'
-      + 'LINE公式👉 https://lin.ee/jMU6xdJ\n'
-      + 'LINE ID👉 @466dbckq\n\n'
+      + 'LINE公式👉 https://lin.ee/g6iDNYz\n'
+      + 'LINE ID👉 @730kyhwl\n\n'
       + '━━━━━━━━━━━━━━━━━━━━\n'
       + '■ STEP2: 事前決済（HANDYMANではご出発までの「待ち時間」「待機時間」を解消するため事前決済をお願いしております。）\n'
       + '・現金決済をご希望の場合は大変お手数ですが事前にお問い合わせをお願い申しあげます。\n'
@@ -1303,23 +1303,122 @@ function sendJalanPaymentEmail_(pay) {
       + '※ ご出発3日前の19:00までにお支払いください。\n'
       + '※ 期限を過ぎた場合、ご予約をキャンセルさせていただく場合がございます。\n\n'
       + '━━━━━━━━━━━━━━━━━━━━\n'
-      + '■ ご利用当日の流れ\n'
-      + '━━━━━━━━━━━━━━━━━━━━\n'
-      + '那覇空港到着後、レンタカー送迎バス乗り場【11番】にお越しください。\n'
-      + 'HANDYMANのシャトルバスで営業所までお送りいたします。\n'
-      + 'デリバリーサービスをご利用の場合はご指定場所に「お届け」「回収」させていただきます。\n\n'
-      + '━━━━━━━━━━━━━━━━━━━━\n'
       + '■ ご注意事項\n'
       + '━━━━━━━━━━━━━━━━━━━━\n'
-      + '・現金決済をご希望の場合は大変お手数ですが事前にお問い合わせをお願い申しあげます。\n'
+      + '・当店は実店舗を持たないデリバリー専門店です。\n'
+      + '・ご指定の場所へお車をお届け・ご回収いたします。\n'
       + '・詳細はLINEにてご案内いたします。\n'
       + '━━━━━━━━━━━━━━━━━━━━\n'
-      + 'HANDYMAN 那覇空港店\n'
+      + 'HANDYMAN 札幌デリバリー専門店\n'
       + 'TEL: 050-1724-6197（9:00〜19:00）\n'
-      + 'LINE ID👉 @466dbckq\n';
-    GmailApp.sendEmail(pay.customer_email, subject, body, {name:'HANDYMAN 那覇空港店', from:'reserve@rent-handyman.jp', replyTo:'reserve@rent-handyman.jp'});
+      + 'LINE ID👉 @730kyhwl\n';
+    GmailApp.sendEmail(pay.customer_email, subject, body, {name:'HANDYMAN 札幌デリバリー専門店', from:'reserve@rent-handyman.jp', replyTo:'reserve@rent-handyman.jp'});
     return true;
   } catch (e) { Logger.log('[JalanPaymentEmail] Error: ' + e.message); return false; }
+}
+
+/**
+ * 🙇 お詫び+再送: 店名誤記の6件に札幌テンプレで再送信（2026-04-21）
+ * - 那覇テンプレが札幌顧客11名に送信された障害の店名訂正
+ * - 対象は金額相違なしの6件のみ（金額違う5件は別対応）
+ * - R0A2UYY5（山口様）はご指摘メールへの返信として追加文言あり
+ */
+function resendApologyToSixCustomers() {
+  var TARGETS = ['R02ZLN4R', 'R04A4WFY', 'R0PAFDNV', 'R04WYI54', 'R0FP9A0K', 'R0A2UYY5'];
+  var YAMAGUCHI_ID = 'R0A2UYY5';
+  var sent = [], failed = [];
+
+  for (var i = 0; i < TARGETS.length; i++) {
+    var resId = TARGETS[i];
+    try {
+      var rows = supabaseGet_('jalan_payments',
+        'reservation_id=eq.' + encodeURIComponent(resId) +
+        '&select=reservation_id,customer_name,customer_email,amount,lend_date,return_date,square_payment_url');
+      if (!rows || rows.length === 0) {
+        failed.push({id:resId, reason:'jalan_payments行なし'});
+        continue;
+      }
+      var pay = rows[0];
+      if (!pay.customer_email || !pay.square_payment_url) {
+        failed.push({id:resId, reason:'email/url欠落'});
+        continue;
+      }
+
+      var extraLine = (resId === YAMAGUCHI_ID)
+        ? 'ご指摘をいただきありがとうございました。重ねてお詫び申し上げます。\n'
+        : '';
+
+      var subject = '【お詫び・再送】HANDYMAN 札幌デリバリー専門店 事前決済・LINE登録のお願い（予約番号: ' + pay.reservation_id + '）';
+
+      var body = pay.customer_name + ' 様\n\n'
+        + '━━━━━━━━━━━━━━━━━━━━\n'
+        + '【お詫び】\n'
+        + '━━━━━━━━━━━━━━━━━━━━\n'
+        + '先ほどお送りしたメールにつきまして、当店の店舗名を誤って\n'
+        + '「HANDYMAN 那覇空港店」と記載してお送りしてしまいました。\n'
+        + '正しくは「HANDYMAN 札幌デリバリー専門店」でございます。\n\n'
+        + 'ご予約内容（予約番号・金額・Square決済リンク）に変更はございません。\n'
+        + 'お手数ですが、下記の正しいご案内にて改めてお願い申し上げます。\n'
+        + 'この度は大変ご迷惑・ご混乱をおかけし、誠に申し訳ございません。\n'
+        + extraLine
+        + '\n━━━━━━━━━━━━━━━━━━━━\n\n'
+        + 'この度はHANDYMAN札幌デリバリー専門店をご予約いただき、誠にありがとうございます。\n'
+        + '予約番号: ' + pay.reservation_id + '\n'
+        + '貸出日: ' + pay.lend_date + '\n'
+        + '返却日: ' + pay.return_date + '\n\n'
+        + '━━━━━━━━━━━━━━━━━━━━\n'
+        + '■ STEP1: LINE登録（必須）\n'
+        + '━━━━━━━━━━━━━━━━━━━━\n'
+        + 'デリバリー情報の入力・当日のご連絡はLINEで行います。\n'
+        + '下記リンクから友だち追加をお願いいたします。\n\n'
+        + 'LINE公式👉 https://lin.ee/g6iDNYz\n'
+        + 'LINE ID👉 @730kyhwl\n\n'
+        + '━━━━━━━━━━━━━━━━━━━━\n'
+        + '■ STEP2: 事前決済（HANDYMANではご出発までの「待ち時間」「待機時間」を解消するため事前決済をお願いしております。）\n'
+        + '・現金決済をご希望の場合は大変お手数ですが事前にお問い合わせをお願い申しあげます。\n'
+        + '・詳細はLINEにてご案内いたします。\n'
+        + '━━━━━━━━━━━━━━━━━━━━\n'
+        + 'お支払い金額: ¥' + (pay.amount||0).toLocaleString() + '\n'
+        + '下記リンクよりお支払いをお願いいたします。\n'
+        + pay.square_payment_url + '\n\n'
+        + '※ ご出発3日前の19:00までにお支払いください。\n'
+        + '※ 期限を過ぎた場合、ご予約をキャンセルさせていただく場合がございます。\n\n'
+        + '━━━━━━━━━━━━━━━━━━━━\n'
+        + '■ ご注意事項\n'
+        + '━━━━━━━━━━━━━━━━━━━━\n'
+        + '・当店は実店舗を持たないデリバリー専門店です。\n'
+        + '・ご指定の場所へお車をお届け・ご回収いたします。\n'
+        + '・詳細はLINEにてご案内いたします。\n'
+        + '━━━━━━━━━━━━━━━━━━━━\n'
+        + 'HANDYMAN 札幌デリバリー専門店\n'
+        + 'TEL: 050-1724-6197（9:00〜19:00）\n'
+        + 'LINE ID👉 @730kyhwl\n';
+
+      GmailApp.sendEmail(pay.customer_email, subject, body, {
+        name: 'HANDYMAN 札幌デリバリー専門店',
+        from: 'reserve@rent-handyman.jp',
+        replyTo: 'reserve@rent-handyman.jp'
+      });
+      sent.push({id:resId, name:pay.customer_name, email:pay.customer_email, amount:pay.amount});
+      Logger.log('[ApologyResend] ✅ Sent: ' + resId + ' → ' + pay.customer_email);
+      Utilities.sleep(500);
+    } catch (e) {
+      failed.push({id:resId, reason:e.message});
+      Logger.log('[ApologyResend] ❌ Error: ' + resId + ' ' + e.message);
+    }
+  }
+
+  // Slack通知
+  var lines = ['🙇 *お詫び+再送メール 実行結果*', ''];
+  lines.push('✅ 送信成功: ' + sent.length + '件');
+  sent.forEach(function(x) { lines.push('  • ' + x.id + ' ' + x.name + ' ¥' + (x.amount||0).toLocaleString() + ' → ' + x.email); });
+  if (failed.length > 0) {
+    lines.push('');
+    lines.push('❌ 送信失敗: ' + failed.length + '件');
+    failed.forEach(function(x) { lines.push('  • ' + x.id + ' : ' + x.reason); });
+  }
+  postToSlackChannel_(JALAN_PAY_CHANNEL, lines.join('\n'));
+  Logger.log('[ApologyResend] Summary: sent=' + sent.length + ' failed=' + failed.length);
 }
 
 // ★★★ 入金確認 v3（2026-04-17）★★★
@@ -1456,6 +1555,199 @@ function checkUnpaidAlert() {
   lines.push('\n期限超過・要電話確認');
   postToSlackChannel_(JALAN_PAY_CHANNEL, lines.join('\n'));
   Logger.log('[UnpaidAlert] ' + alerts.length + '件通知');
+}
+
+/**
+ * 🚨 じゃらん決済起票漏れ監視（watchdog） — 2026-04-21 追加
+ * 背景: R0XHDPI1でOTA自動登録GASが先に予約作成→メール取込GASの重複スキップで handleJalanPayment_ が呼ばれず、じゃらん決済が2時間起票されなかった。
+ * 対策3層のうち第2層。コード修正(第1層)が再度外れても、1時間以内にSlack通知＋自動リトライする。
+ *
+ * 動作:
+ *   1. reservations.ota='J' & price>0 & lend_date≥今日 & status≠cancelled を取得
+ *   2. isSapporoReservation_で札幌予約に絞込（那覇は対象外）
+ *   3. jalan_payments に対応行がない予約を検出
+ *   4. handleJalanPayment_(r) を呼んで自動復旧を試みる（冪等）
+ *   5. 結果をSlack #jalan_payment に投稿（復旧成功/失敗を区別）
+ * トリガー: 毎時実行（setupWatchdogTrigger で設定）
+ */
+function watchdogJalanPayment() {
+  try {
+    var today = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd');
+    var resvs = supabaseGet_('reservations',
+      'ota=eq.J&price=gt.0&lend_date=gte.' + today +
+      '&status=neq.cancelled' +
+      '&select=id,name,mail,price,lend_date,return_date,vehicle,del_place,col_place,status,ota' +
+      '&order=lend_date.asc&limit=200'
+    );
+    if (!resvs || resvs.length === 0) { Logger.log('[Watchdog] No active じゃらん reservations'); return; }
+
+    var missing = [], recovered = [], failed = [], uncertain = [];
+    for (var i = 0; i < resvs.length; i++) {
+      var r = resvs[i];
+      // ★ 先に jalan_payments の有無を確認（起票済みなら店舗判定コスト不要＋ログも静かに）
+      var pays = supabaseGet_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(r.id) + '&select=id,status');
+      if (pays && pays.length > 0) continue;   // 既に起票済み → OK
+
+      // ★ 起票漏れ候補のみ札幌判定に入る（3段階フォールバック）
+      var isSapporo = isSapporoReservation_(r);
+      if (!isSapporo) {
+        // 2段目: fleet テーブルに行があれば札幌（那覇は nha_fleet を使うため）
+        var fleetRows = supabaseGet_('fleet', 'reservation_id=eq.' + encodeURIComponent(r.id) + '&select=vehicle_code');
+        if (fleetRows && fleetRows.length > 0) {
+          isSapporo = true;
+          Logger.log('[Watchdog] ' + r.id + ' → Sapporo (fleet lookup fallback)');
+        }
+      }
+
+      if (!isSapporo) {
+        // 札幌か那覇か判定できない → 自動起票せず要人手確認リストへ
+        uncertain.push({id:r.id, name:r.name, amount:r.price, lend:r.lend_date});
+        continue;
+      }
+
+      missing.push(r);
+      try {
+        handleJalanPayment_(r);
+        Utilities.sleep(1500);  // Square API + DB書込みの完了待ち
+        var verify = supabaseGet_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(r.id) + '&select=id,status');
+        if (verify && verify.length > 0) {
+          recovered.push({id:r.id, name:r.name, amount:r.price, status:verify[0].status});
+        } else {
+          failed.push({id:r.id, name:r.name, amount:r.price, reason:'handleJalanPayment_ called but no row'});
+        }
+      } catch (e) {
+        failed.push({id:r.id, name:r.name, amount:r.price, reason:e.message});
+      }
+    }
+
+    if (missing.length === 0 && uncertain.length === 0) {
+      Logger.log('[Watchdog] OK - all じゃらん reservations have jalan_payments rows');
+      return;
+    }
+
+    var lines = [];
+    if (missing.length > 0) {
+      lines.push('🚨 *じゃらん決済起票漏れ検知* ' + missing.length + '件');
+      lines.push('');
+      if (recovered.length > 0) {
+        lines.push('✅ *自動復旧成功 ' + recovered.length + '件*');
+        recovered.forEach(function(x) { lines.push('  • ' + x.id + ' ' + (x.name||'') + ' ¥' + (x.amount||0) + ' → ' + x.status); });
+        lines.push('');
+      }
+      if (failed.length > 0) {
+        lines.push('❌ *自動復旧失敗 ' + failed.length + '件（要手動対応）*');
+        failed.forEach(function(x) { lines.push('  • ' + x.id + ' ' + (x.name||'') + ' ¥' + (x.amount||0) + ' : ' + x.reason); });
+        lines.push('');
+      }
+    }
+    if (uncertain.length > 0) {
+      lines.push('⚠️ *店舗判定不能 ' + uncertain.length + '件（要人手確認）*');
+      lines.push('jalan_payments に行なし・札幌/那覇の判別不能 → 自動起票していません');
+      uncertain.forEach(function(x) { lines.push('  • ' + x.id + ' ' + (x.name||'') + ' ¥' + (x.amount||0) + ' 貸出:' + (x.lend||'?')); });
+    }
+    postToSlackChannel_(JALAN_PAY_CHANNEL, lines.join('\n'));
+    Logger.log('[Watchdog] missing=' + missing.length + ' recovered=' + recovered.length + ' failed=' + failed.length + ' uncertain=' + uncertain.length);
+  } catch (e) {
+    Logger.log('[Watchdog] Exception: ' + e.message);
+    try { postToSlackChannel_(JALAN_PAY_CHANNEL, '⚠️ *Watchdog例外*\n' + e.message); } catch(_){}
+  }
+}
+
+/**
+ * 🔍 Watchdogで復旧した10件の安全性診断（2026-04-21 緊急追加）
+ * - 各予約の booked_at / lend_date / 旧Square URL / メール送信履歴を一覧化
+ * - 「新Squareリンクでメール送信してOK」か「人手確認必要」かを判定
+ */
+function diagnoseRecoveredPayments() {
+  var ids = ['R0Q7UEF3','R0742RTL','R02XF89Q','R02ZLN4R','R04A4WFY','R0PAFDNV','R0CYV6NR','R0A2UYY5','R0GRD083','R04WYI54','R0FP9A0K'];
+  var sheetId = '1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc';
+  var sheet = SpreadsheetApp.openById(sheetId).getSheetByName('支払い管理');
+  var lastRow = sheet.getLastRow();
+  var data = sheet.getRange(2, 1, lastRow-1, 14).getValues();
+  var byResv = {};
+  data.forEach(function(row, idx) {
+    var rid = String(row[3]||'').trim();
+    if (!rid) return;
+    if (!byResv[rid]) byResv[rid] = [];
+    byResv[rid].push({sheetRow:idx+2, issueDate:row[1], url:String(row[7]||''), status:String(row[8]||''), paidDate:row[9]||'', orderId:row[10]||''});
+  });
+
+  Logger.log('===== Watchdog復旧予約 安全性診断 =====');
+  var sendOK = [], needReview = [];
+  ids.forEach(function(id) {
+    var resv = supabaseGet_('reservations', 'id=eq.' + encodeURIComponent(id) + '&select=id,name,mail,price,lend_date,status,ota,booked_at,created_at');
+    var pay = supabaseGet_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(id) + '&select=id,status,amount,square_payment_url,email_sent_at,created_at,paid_at');
+    var sheetRows = byResv[id] || [];
+    var r = (resv && resv[0]) || {}, p = (pay && pay[0]) || {};
+    var flag = '';
+    var reasons = [];
+    // 複数シート行 = 過去に別URLで決済試行あり
+    if (sheetRows.length > 1) { reasons.push('スプシに'+sheetRows.length+'行（過去URL複数）'); flag='REVIEW'; }
+    // スプシ行が入金済み = 既に支払い済み
+    var anyPaid = sheetRows.some(function(s){return s.status.indexOf('済')>=0;});
+    if (anyPaid) { reasons.push('スプシに入金済み行あり'); flag='REVIEW'; }
+    // 貸出日が近い
+    var today = new Date(); today.setHours(0,0,0,0);
+    if (r.lend_date) {
+      var ld = new Date(r.lend_date+'T00:00:00+09:00');
+      var days = Math.floor((ld - today)/86400000);
+      if (days < 0) { reasons.push('貸出日超過'); flag='REVIEW'; }
+      else if (days <= 3) reasons.push('貸出'+days+'日後・急ぎ');
+    }
+    // 予約日（古い予約 = 他チャネルで決済済みリスク）
+    if (r.booked_at || r.created_at) {
+      var bd = new Date(r.booked_at || r.created_at);
+      var ageDays = Math.floor((today - bd)/86400000);
+      if (ageDays > 14) { reasons.push('予約作成から'+ageDays+'日経過（要確認）'); if(flag!=='REVIEW') flag='REVIEW'; }
+    }
+    if (!flag) flag = 'SAFE';
+    var line = '[' + flag + '] ' + id + ' ' + (r.name||'?') + ' ¥' + (r.price||0) + ' 貸出=' + (r.lend_date||'?') + ' 予約日=' + (r.booked_at||r.created_at||'?').slice(0,10) + ' メール=' + (r.mail||'?');
+    if (reasons.length > 0) line += ' ← ' + reasons.join(' / ');
+    if (sheetRows.length > 0) line += ' [スプシ行数=' + sheetRows.length + ' 最新状態=' + (sheetRows[sheetRows.length-1].status||'?') + ']';
+    Logger.log(line);
+    if (flag === 'SAFE') sendOK.push(id); else needReview.push({id:id, reasons:reasons, mail:r.mail, amount:r.price});
+  });
+
+  Logger.log('');
+  Logger.log('===== 集計 =====');
+  Logger.log('✅ メール送信OK ' + sendOK.length + '件: ' + sendOK.join(', '));
+  Logger.log('⚠️ 要人手確認 ' + needReview.length + '件: ' + needReview.map(function(x){return x.id;}).join(', '));
+
+  // Slack通知
+  var lines = ['🔍 *Watchdog復旧11件の安全性診断*', ''];
+  lines.push('✅ 新リンクでメール送信OK: ' + sendOK.length + '件');
+  sendOK.forEach(function(id) { lines.push('  • ' + id); });
+  if (needReview.length > 0) {
+    lines.push('');
+    lines.push('⚠️ 要人手確認: ' + needReview.length + '件（checkSquareLinksトリガー停止推奨）');
+    needReview.forEach(function(x) { lines.push('  • ' + x.id + ' ¥' + (x.amount||0) + ' : ' + x.reasons.join(', ')); });
+    lines.push('');
+    lines.push('→ 各予約でお客様への確認電話 → 入金済みならDB `jalan_payments.status=paid` 手動更新 → 新リンクは無効化');
+  }
+  postToSlackChannel_(JALAN_PAY_CHANNEL, lines.join('\n'));
+}
+
+/**
+ * 🛑 Watchdog復旧予約のメール送信を一時停止（checkSquareLinksトリガー削除）
+ */
+function pauseCheckSquareLinks() {
+  var removed = 0;
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'checkSquareLinks') { ScriptApp.deleteTrigger(t); removed++; }
+  });
+  Logger.log('checkSquareLinks トリガー削除: ' + removed + '件');
+  postToSlackChannel_(JALAN_PAY_CHANNEL, '🛑 *checkSquareLinks トリガー一時停止*\n削除数: ' + removed + '件\n→ メール自動送信が止まりました。安全確認後 setupJalanPaymentTriggers で再設定してください。');
+}
+
+/**
+ * Watchdog用トリガー設定（1回だけ手動実行）
+ */
+function setupWatchdogTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'watchdogJalanPayment') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('watchdogJalanPayment').timeBased().everyHours(1).create();
+  Logger.log('[Watchdog] Trigger set: every 1 hour');
 }
 
 function appendToPaymentSheet_(pay, payUrl) {
@@ -2116,4 +2408,676 @@ function runSlackReservationsNow() {
   Logger.log('手動実行開始...');
   processSlackReservations();
   Logger.log('手動実行完了');
+}
+
+// ============================================================
+// 金額相違5件診断（2026-04-21）
+// 対象: R0Q7UEF3 / R0742RTL / R02XF89Q / R0CYV6NR / R0GRD083
+// 目的: 元じゃらんメールから「利用者への請求額」を抽出し、
+//       現在のDB金額との差分を確認する（送信・変更なし）
+// ============================================================
+function diagnoseFiveAmountDiscrepancies() {
+  var TARGETS = ['R0Q7UEF3', 'R0742RTL', 'R02XF89Q', 'R0CYV6NR', 'R0GRD083'];
+  var results = [];
+
+  for (var i = 0; i < TARGETS.length; i++) {
+    var resId = TARGETS[i];
+    var result = { id: resId };
+    try {
+      // 1. jalan_payments 現在状態（square_order_id カラムは存在しないので除外）
+      var dbRows = supabaseGet_('jalan_payments',
+        'reservation_id=eq.' + encodeURIComponent(resId) +
+        '&select=reservation_id,customer_name,customer_email,amount,square_payment_url,lend_date,return_date,status,slack_ts,created_at,email_sent_at,paid_at');
+      result.db = (dbRows && dbRows[0]) ? dbRows[0] : null;
+
+      // 2. reservations 状態
+      var resvRows = supabaseGet_('reservations',
+        'id=eq.' + encodeURIComponent(resId) +
+        '&select=id,price,base_price,option_price,discount');
+      result.resv = (resvRows && resvRows[0]) ? resvRows[0] : null;
+
+      // 3. 元じゃらんメール検索（OTA_SENDERS.jalan と一致させる）
+      var threads = GmailApp.search('from:' + OTA_SENDERS.jalan + ' ' + resId, 0, 10);
+      var found = null;
+      for (var t = 0; t < threads.length && !found; t++) {
+        var msgs = threads[t].getMessages();
+        for (var m = 0; m < msgs.length && !found; m++) {
+          var body = msgs[m].getPlainBody();
+          if (body.indexOf(resId) < 0) continue;
+          if (body.indexOf('利用者への請求額') < 0 && body.indexOf('合計金額') < 0) continue;
+          found = { subject: msgs[m].getSubject(), date: msgs[m].getDate(), body: body };
+        }
+      }
+
+      if (found) {
+        // 利用者への請求額を抽出
+        var mRequest = found.body.match(/利用者への請求額[\s\S]{0,100}?([\d,]+)\s*円/);
+        var mTotal   = found.body.match(/合計金額[\s\S]{0,100}?([\d,]+)\s*円/);
+        var mCoupon  = found.body.match(/クーポン[\s\S]{0,100}?([\d,]+)\s*円/);
+        var mPoint   = found.body.match(/ポイント[\s\S]{0,100}?([\d,]+)\s*円/);
+
+        result.email = {
+          date: Utilities.formatDate(found.date, 'Asia/Tokyo', 'yyyy-MM-dd HH:mm'),
+          subject: found.subject,
+          requestAmount: mRequest ? parseInt(mRequest[1].replace(/,/g,''), 10) : null,
+          totalAmount: mTotal ? parseInt(mTotal[1].replace(/,/g,''), 10) : null,
+          couponAmount: mCoupon ? parseInt(mCoupon[1].replace(/,/g,''), 10) : null,
+          pointAmount: mPoint ? parseInt(mPoint[1].replace(/,/g,''), 10) : null
+        };
+
+        // parseJalan_ で再パースした値も参考に
+        try {
+          var parsed = parseJalan_(found.body);
+          if (parsed) {
+            result.parsed = {
+              price: parsed.price,
+              base_price: parsed.base_price,
+              option_price: parsed.option_price,
+              discount: parsed.discount
+            };
+          }
+        } catch(e) { result.parseError = e.message; }
+      } else {
+        result.emailMissing = true;
+      }
+    } catch (e) {
+      result.error = e.message;
+    }
+    results.push(result);
+  }
+
+  // Slack出力
+  var lines = ['🔍 *金額相違5件 診断結果*', ''];
+  results.forEach(function(r) {
+    lines.push('━━━━━━━━━━━━━━━━━━');
+    var name = (r.db && r.db.customer_name) ? r.db.customer_name : '(DB行なし)';
+    lines.push('*' + r.id + '* ' + name);
+
+    if (r.error) {
+      lines.push('  ❌ エラー: ' + r.error);
+      return;
+    }
+    if (r.db) {
+      lines.push('  DB amount      : ¥' + (r.db.amount||0).toLocaleString());
+      lines.push('  DB status      : ' + (r.db.status||''));
+      lines.push('  DB email       : ' + (r.db.customer_email||'(なし)'));
+      lines.push('  現Square URL   : ' + (r.db.square_payment_url||'(なし)'));
+      lines.push('  email_sent_at  : ' + (r.db.email_sent_at||'(未送信)'));
+      lines.push('  paid_at        : ' + (r.db.paid_at||'(未入金)'));
+      lines.push('  created_at     : ' + (r.db.created_at||''));
+    }
+    if (r.resv) {
+      lines.push('  resv price     : ¥' + (r.resv.price||0).toLocaleString() +
+                 ' (bp:¥' + (r.resv.base_price||0).toLocaleString() +
+                 ' + op:¥' + (r.resv.option_price||0).toLocaleString() +
+                 ' - dc:¥' + (r.resv.discount||0).toLocaleString() + ')');
+    }
+    if (r.email) {
+      lines.push('  📧 元メール (' + r.email.date + ')');
+      if (r.email.requestAmount != null) lines.push('  ★ 利用者への請求額: ¥' + r.email.requestAmount.toLocaleString());
+      if (r.email.totalAmount   != null) lines.push('     合計金額        : ¥' + r.email.totalAmount.toLocaleString());
+      if (r.email.couponAmount  != null) lines.push('     クーポン        : -¥' + r.email.couponAmount.toLocaleString());
+      if (r.email.pointAmount   != null) lines.push('     ポイント        : -¥' + r.email.pointAmount.toLocaleString());
+      if (r.db && r.email.requestAmount != null && r.db.amount !== r.email.requestAmount) {
+        var diff = r.email.requestAmount - (r.db.amount||0);
+        lines.push('  ⚠️ 差額        : ' + (diff > 0 ? '+' : '') + '¥' + diff.toLocaleString());
+      }
+      if (r.parsed) {
+        lines.push('  (参考) parseJalan_: price=¥' + (r.parsed.price||0).toLocaleString() +
+                   ' dc=¥' + (r.parsed.discount||0).toLocaleString());
+      }
+    } else if (r.emailMissing) {
+      lines.push('  ❌ 元メール未検出');
+    }
+  });
+
+  var msg = lines.join('\n');
+  Logger.log(msg);
+  try { postToSlackChannel_(JALAN_PAY_CHANNEL, msg); } catch(e) { Logger.log('Slack post失敗: ' + e.message); }
+  return results;
+}
+
+// ============================================================
+// 金額相違5件 新請求書発行（2026-04-21）
+// 対象: R0Q7UEF3 / R0742RTL / R02XF89Q / R0CYV6NR / R0GRD083
+// 動作:
+//   1. checkSquareLinks トリガー自動停止（安全策）
+//   2. 旧Squareリンクを DELETE API で無効化
+//   3. 新Squareリンクを正しい金額で発行
+//   4. jalan_payments 更新（amount/url/status→link_created/email_sent_at→null）
+//   5. スプシ更新（金額・URL・ステータス戻し）
+// 送信は一切しない（メール再送は STEP 4 の別関数で承認後）
+// ============================================================
+function reissueFivePaymentLinks() {
+  var CORRECTIONS = {
+    'R0Q7UEF3': 16300,   // クロキ ミヨコ ¥19,300 → ¥16,300
+    'R0742RTL': 52050,   // ニシモト ケイゴ ¥55,950 → ¥52,050
+    'R02XF89Q': 27000,   // コンノ ヒロキ ¥30,000 → ¥27,000
+    'R0CYV6NR': 17000,   // サカモト リョウタ ¥21,300 → ¥17,000
+    'R0GRD083': 78200    // ヨシダ タカシ ¥78,600 → ¥78,200
+  };
+
+  // 1. checkSquareLinks トリガーを自動停止（冪等）
+  var trgRemoved = 0;
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'checkSquareLinks') { ScriptApp.deleteTrigger(t); trgRemoved++; }
+  });
+  Logger.log('[Reissue] checkSquareLinks トリガー停止: ' + trgRemoved + '件');
+
+  var token = getSquareToken_();
+  if (!token) { Logger.log('[Reissue] SQUARE_API_TOKEN not set'); return; }
+
+  // 2. 全 Payment Links を取得して URL → payment_link_id マップを作る
+  var linkIdMap = {};
+  var cursor = null, fetched = 0;
+  do {
+    var apiUrl = 'https://connect.squareup.com/v2/online-checkout/payment-links?limit=100';
+    if (cursor) apiUrl += '&cursor=' + encodeURIComponent(cursor);
+    try {
+      var resp = UrlFetchApp.fetch(apiUrl, {method:'get', headers:{'Authorization':'Bearer '+token,'Square-Version':'2024-01-18'}, muteHttpExceptions:true});
+      if (resp.getResponseCode() !== 200) { Logger.log('[Reissue] Payment Links API error ' + resp.getResponseCode()); break; }
+      var data = JSON.parse(resp.getContentText());
+      (data.payment_links||[]).forEach(function(link) {
+        if (link.id) {
+          if (link.url) linkIdMap[normalizeSquareUrl_(link.url)] = link.id;
+          if (link.long_url) linkIdMap[normalizeSquareUrl_(link.long_url)] = link.id;
+        }
+      });
+      fetched += (data.payment_links||[]).length;
+      cursor = data.cursor;
+    } catch (e) { Logger.log('[Reissue] Payment Links fetch error: ' + e.message); break; }
+  } while (cursor && fetched < 500);
+  Logger.log('[Reissue] Payment Links取得: ' + Object.keys(linkIdMap).length + '件');
+
+  var succeeded = [], failed = [];
+  var targets = Object.keys(CORRECTIONS);
+  for (var i = 0; i < targets.length; i++) {
+    var resId = targets[i];
+    var correctAmount = CORRECTIONS[resId];
+    try {
+      // A. 現在のjalan_payments状態
+      var rows = supabaseGet_('jalan_payments',
+        'reservation_id=eq.' + encodeURIComponent(resId) +
+        '&select=reservation_id,customer_name,customer_email,amount,lend_date,return_date,square_payment_url,slack_ts,status');
+      if (!rows || rows.length === 0) { failed.push({id:resId, reason:'jalan_payments行なし'}); continue; }
+      var pay = rows[0];
+      var oldAmount = pay.amount || 0;
+      var oldUrl = pay.square_payment_url || '';
+
+      // B. 旧リンク無効化（Square DELETE）
+      var oldLinkId = linkIdMap[normalizeSquareUrl_(oldUrl)];
+      var oldDeactivated = false;
+      var oldDeactReason = '';
+      if (!oldLinkId) {
+        oldDeactReason = '旧URLからID特定不可';
+        Logger.log('[Reissue] ' + resId + ' 旧リンクID未検出: ' + oldUrl);
+      } else {
+        try {
+          var delResp = UrlFetchApp.fetch('https://connect.squareup.com/v2/online-checkout/payment-links/' + oldLinkId, {
+            method: 'delete',
+            headers: {'Authorization':'Bearer '+token,'Square-Version':'2024-01-18'},
+            muteHttpExceptions: true
+          });
+          var dCode = delResp.getResponseCode();
+          oldDeactivated = (dCode >= 200 && dCode < 300);
+          if (!oldDeactivated) {
+            oldDeactReason = 'DELETE ' + dCode + ': ' + delResp.getContentText().slice(0,200);
+            Logger.log('[Reissue] ' + resId + ' 旧リンク無効化失敗: ' + oldDeactReason);
+          } else {
+            Logger.log('[Reissue] ' + resId + ' 旧リンク無効化成功: ' + oldLinkId);
+          }
+        } catch (e) { oldDeactReason = 'DELETE例外: ' + e.message; }
+      }
+
+      // C. 新リンク発行（正しい金額）
+      var lendShort = (pay.lend_date||'').replace(/^\d{4}-/,'').replace(/-/g,'/');
+      var retShort = (pay.return_date||'').replace(/^\d{4}-/,'').replace(/-/g,'/');
+      var itemName = (pay.customer_name||'') + '様 じゃらん事前決済(' + lendShort + '-' + retShort + ')';
+      var newUrl = createSquarePaymentLink_(itemName, correctAmount);
+      if (!newUrl) {
+        failed.push({id:resId, reason:'Square API 失敗 (新リンク発行)', oldAmount:oldAmount, newAmount:correctAmount});
+        continue;
+      }
+
+      // D. DB更新
+      var patched = supabaseUpdate_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(resId), {
+        amount: correctAmount,
+        square_payment_url: newUrl,
+        status: 'link_created',
+        email_sent_at: null,
+        link_created_at: new Date().toISOString()
+      });
+      if (!patched) Logger.log('[Reissue] ' + resId + ' DB patch 失敗');
+
+      // E. スプシ更新（支払い管理シート）
+      var sheetUpdated = false;
+      try {
+        var sheetId = '1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc';
+        var sheet = SpreadsheetApp.openById(sheetId).getSheetByName('支払い管理');
+        if (sheet) {
+          var lastRow = sheet.getLastRow();
+          if (lastRow >= 2) {
+            var resIdCol = sheet.getRange(2, 4, lastRow-1, 1).getValues();
+            for (var si = 0; si < resIdCol.length; si++) {
+              if (String(resIdCol[si][0]).trim() === resId) {
+                sheet.getRange(si+2, 7).setValue(correctAmount);      // 金額(G)
+                sheet.getRange(si+2, 8).setValue(newUrl);             // URL(H)
+                sheet.getRange(si+2, 9).setValue('⏳ 未払い');         // ステータス(I)
+                sheet.getRange(si+2, 10).setValue('');                // 入金日(J)クリア
+                sheet.getRange(si+2, 11).setValue('');                // OrderID(K)クリア
+                sheetUpdated = true;
+                Logger.log('[Reissue] ' + resId + ' スプシ更新: 行' + (si+2));
+                break;
+              }
+            }
+          }
+        }
+      } catch (e) { Logger.log('[Reissue] スプシ更新エラー ' + resId + ': ' + e.message); }
+
+      succeeded.push({
+        id:resId, name:pay.customer_name||'',
+        oldAmount:oldAmount, newAmount:correctAmount, diff:(oldAmount-correctAmount),
+        oldUrl:oldUrl, newUrl:newUrl,
+        oldDeactivated:oldDeactivated, oldDeactReason:oldDeactReason,
+        dbPatched: !!patched, sheetUpdated:sheetUpdated
+      });
+      Utilities.sleep(800);
+    } catch (e) {
+      failed.push({id:resId, reason:'例外: ' + e.message});
+      Logger.log('[Reissue] ' + resId + ' 例外: ' + e.message);
+    }
+  }
+
+  // F. Slack通知
+  var lines = ['💰 *金額相違5件 新請求書発行 実行結果*', ''];
+  lines.push('⚠️ checkSquareLinks トリガー停止: ' + trgRemoved + '件（安全のため再送完了後に setupJalanPaymentTriggers で再設定）');
+  lines.push('');
+  lines.push('✅ 成功: ' + succeeded.length + '件');
+  succeeded.forEach(function(s) {
+    lines.push('━━━━━━━━━━━━━━━━━━');
+    lines.push('• *' + s.id + '* ' + s.name);
+    lines.push('  金額: ¥' + s.oldAmount.toLocaleString() + ' → ¥' + s.newAmount.toLocaleString() + '（差額 -¥' + s.diff.toLocaleString() + '）');
+    lines.push('  旧リンク無効化: ' + (s.oldDeactivated ? '✅' : '❌ ' + s.oldDeactReason));
+    lines.push('  旧URL: ' + s.oldUrl);
+    lines.push('  新URL: ' + s.newUrl);
+    lines.push('  DB更新: ' + (s.dbPatched?'✅':'❌') + ' / スプシ更新: ' + (s.sheetUpdated?'✅':'❌'));
+  });
+  if (failed.length > 0) {
+    lines.push('');
+    lines.push('❌ 失敗: ' + failed.length + '件');
+    failed.forEach(function(x) { lines.push('  • ' + x.id + ' : ' + x.reason); });
+  }
+  lines.push('');
+  lines.push('📧 次のSTEP: お客様への「お詫び+新金額+新リンク」再送は `resendApologyToFiveCustomers` を手動実行');
+  var msg = lines.join('\n');
+  Logger.log(msg);
+  try { postToSlackChannel_(JALAN_PAY_CHANNEL, msg); } catch(e) { Logger.log('Slack post失敗: ' + e.message); }
+  return {succeeded:succeeded, failed:failed};
+}
+
+// ============================================================
+// 金額相違5件 お詫び+新リンクでメール再送（2026-04-21）
+// 前提: reissueFivePaymentLinks 実行済み（新URL・新金額がDBに反映されている）
+// 動作: jalan_payments から最新URL・金額を取得し、お詫び文頭+札幌テンプレでメール送信
+// ============================================================
+function resendApologyToFiveCustomers() {
+  // 旧金額（差額表示用） - reissueFivePaymentLinks と同一
+  var OLD_AMOUNTS = {
+    'R0Q7UEF3': 19300,
+    'R0742RTL': 55950,
+    'R02XF89Q': 30000,
+    'R0CYV6NR': 21300,
+    'R0GRD083': 78600
+  };
+  var TARGETS = Object.keys(OLD_AMOUNTS);
+  var sent = [], failed = [];
+
+  for (var i = 0; i < TARGETS.length; i++) {
+    var resId = TARGETS[i];
+    try {
+      var rows = supabaseGet_('jalan_payments',
+        'reservation_id=eq.' + encodeURIComponent(resId) +
+        '&select=reservation_id,customer_name,customer_email,amount,lend_date,return_date,square_payment_url,status');
+      if (!rows || rows.length === 0) { failed.push({id:resId, reason:'jalan_payments行なし'}); continue; }
+      var pay = rows[0];
+      if (!pay.customer_email || !pay.square_payment_url) { failed.push({id:resId, reason:'email/url欠落'}); continue; }
+
+      var oldAmount = OLD_AMOUNTS[resId];
+      var newAmount = pay.amount || 0;
+      var diff = oldAmount - newAmount;
+      if (newAmount === oldAmount) { failed.push({id:resId, reason:'DB金額が旧金額のまま(reissue未実行の可能性)'}); continue; }
+
+      var subject = '【お詫び・再送】HANDYMAN 札幌デリバリー専門店 事前決済金額訂正のお願い（予約番号: ' + pay.reservation_id + '）';
+
+      var body = pay.customer_name + ' 様\n\n'
+        + '━━━━━━━━━━━━━━━━━━━━\n'
+        + '【重要なお詫び】\n'
+        + '━━━━━━━━━━━━━━━━━━━━\n'
+        + '先ほどお送りしたメールにつきまして、下記2点に誤りがございました。\n\n'
+        + '① 店舗名の誤り\n'
+        + '  誤: HANDYMAN 那覇空港店\n'
+        + '  正: HANDYMAN 札幌デリバリー専門店\n\n'
+        + '② 請求金額の誤り\n'
+        + '  誤: ¥' + oldAmount.toLocaleString() + '\n'
+        + '  正: ¥' + newAmount.toLocaleString() + '（差額 -¥' + diff.toLocaleString() + '）\n\n'
+        + 'じゃらん決済におけるクーポン・ポイントを差し引く前の金額で\n'
+        + '請求してしまっておりました。心よりお詫び申し上げます。\n\n'
+        + '【ご重要】\n'
+        + '先ほどお送りしたSquare決済リンクは既に無効化済みです。\n'
+        + 'お支払いは必ず下記の新しい決済リンクよりお願いいたします。\n'
+        + '旧リンクからはお支払いいただけませんのでご注意ください。\n\n'
+        + 'この度は大変ご迷惑・ご混乱をおかけし、誠に申し訳ございません。\n'
+        + '━━━━━━━━━━━━━━━━━━━━\n\n'
+        + 'この度はHANDYMAN札幌デリバリー専門店をご予約いただき、誠にありがとうございます。\n'
+        + '予約番号: ' + pay.reservation_id + '\n'
+        + '貸出日: ' + pay.lend_date + '\n'
+        + '返却日: ' + pay.return_date + '\n\n'
+        + '━━━━━━━━━━━━━━━━━━━━\n'
+        + '■ STEP1: LINE登録（必須）\n'
+        + '━━━━━━━━━━━━━━━━━━━━\n'
+        + 'デリバリー情報の入力・当日のご連絡はLINEで行います。\n'
+        + '下記リンクから友だち追加をお願いいたします。\n\n'
+        + 'LINE公式👉 https://lin.ee/g6iDNYz\n'
+        + 'LINE ID👉 @730kyhwl\n\n'
+        + '━━━━━━━━━━━━━━━━━━━━\n'
+        + '■ STEP2: 事前決済（HANDYMANではご出発までの「待ち時間」「待機時間」を解消するため事前決済をお願いしております。）\n'
+        + '・現金決済をご希望の場合は大変お手数ですが事前にお問い合わせをお願い申しあげます。\n'
+        + '・詳細はLINEにてご案内いたします。\n'
+        + '━━━━━━━━━━━━━━━━━━━━\n'
+        + 'お支払い金額: ¥' + newAmount.toLocaleString() + '\n'
+        + '下記リンクよりお支払いをお願いいたします。\n'
+        + pay.square_payment_url + '\n\n'
+        + '※ ご出発3日前の19:00までにお支払いください。\n'
+        + '※ 期限を過ぎた場合、ご予約をキャンセルさせていただく場合がございます。\n\n'
+        + '━━━━━━━━━━━━━━━━━━━━\n'
+        + '■ ご注意事項\n'
+        + '━━━━━━━━━━━━━━━━━━━━\n'
+        + '・当店は実店舗を持たないデリバリー専門店です。\n'
+        + '・ご指定の場所へお車をお届け・ご回収いたします。\n'
+        + '・詳細はLINEにてご案内いたします。\n'
+        + '━━━━━━━━━━━━━━━━━━━━\n'
+        + 'HANDYMAN 札幌デリバリー専門店\n'
+        + 'TEL: 050-1724-6197（9:00〜19:00）\n'
+        + 'LINE ID👉 @730kyhwl\n';
+
+      GmailApp.sendEmail(pay.customer_email, subject, body, {
+        name: 'HANDYMAN 札幌デリバリー専門店',
+        from: 'reserve@rent-handyman.jp',
+        replyTo: 'reserve@rent-handyman.jp'
+      });
+
+      // DB: email_sent_at を更新（再送したことを記録、status は link_created のまま）
+      supabaseUpdate_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(resId), {
+        status: 'email_sent',
+        email_sent_at: new Date().toISOString()
+      });
+
+      sent.push({id:resId, name:pay.customer_name, email:pay.customer_email, oldAmount:oldAmount, newAmount:newAmount, diff:diff, newUrl:pay.square_payment_url});
+      Logger.log('[ApologyResendFive] ✅ Sent: ' + resId + ' → ' + pay.customer_email + ' ¥' + oldAmount + ' → ¥' + newAmount);
+      Utilities.sleep(800);
+    } catch (e) {
+      failed.push({id:resId, reason:e.message});
+      Logger.log('[ApologyResendFive] ❌ Error: ' + resId + ' ' + e.message);
+    }
+  }
+
+  // Slack通知
+  var lines = ['🙇 *お詫び+金額訂正+新リンクで再送 実行結果*', ''];
+  lines.push('✅ 送信成功: ' + sent.length + '件');
+  sent.forEach(function(x) {
+    lines.push('  • ' + x.id + ' ' + x.name + ' → ' + x.email);
+    lines.push('    ¥' + x.oldAmount.toLocaleString() + ' → ¥' + x.newAmount.toLocaleString() + '（-¥' + x.diff.toLocaleString() + '）');
+    lines.push('    新URL: ' + x.newUrl);
+  });
+  if (failed.length > 0) {
+    lines.push('');
+    lines.push('❌ 送信失敗: ' + failed.length + '件');
+    failed.forEach(function(x) { lines.push('  • ' + x.id + ' : ' + x.reason); });
+  }
+  postToSlackChannel_(JALAN_PAY_CHANNEL, lines.join('\n'));
+  Logger.log('[ApologyResendFive] Summary: sent=' + sent.length + ' failed=' + failed.length);
+}
+
+/**
+ * 全じゃらん予約から「過大請求の疑いがあるレコード」を炙り出す診断
+ *
+ * 判定ロジック:
+ *   reservations.ota='J' かつ
+ *   price > base_price + option_price - discount （不整合＝discount未反映の疑い）
+ *   OR
+ *   price > 0 かつ base_price = 0 かつ option_price = 0 かつ discount = 0
+ *     （内訳未登録＝合計金額だけ入った状態）
+ *
+ * さらに jalan_payments と照合し、既に発行済み/送信済み/入金済みの金額が
+ * reservations.price と一致しているか確認。
+ *
+ * 既に手動訂正済みの5名（R0Q7UEF3/R0742RTL/R02XF89Q/R0CYV6NR/R0GRD083）は除外。
+ *
+ * 結果を Slack #jalan_payment に報告。実際の訂正はまだ行わない（診断のみ）。
+ */
+function auditAllJalanOverbilling() {
+  var ALREADY_FIXED = {
+    'R0Q7UEF3': true, 'R0742RTL': true, 'R02XF89Q': true,
+    'R0CYV6NR': true, 'R0GRD083': true
+  };
+
+  Logger.log('[AuditOverbilling] Start');
+
+  // 1. 全じゃらん予約を取得（過去分・キャンセル除く）
+  var resvs = supabaseGet_('reservations',
+    'ota=eq.J&status=neq.cancelled' +
+    '&select=id,name,mail,lend_date,return_date,price,base_price,option_price,discount,status' +
+    '&order=lend_date.desc&limit=2000');
+  if (!resvs) { Logger.log('[AuditOverbilling] reservations fetch failed'); return; }
+  Logger.log('[AuditOverbilling] じゃらん予約 総数: ' + resvs.length);
+
+  // 2. 不整合レコードを抽出
+  var suspects = [];
+  for (var i = 0; i < resvs.length; i++) {
+    var r = resvs[i];
+    if (ALREADY_FIXED[r.id]) continue;
+
+    var price = +(r.price || 0);
+    var base = +(r.base_price || 0);
+    var opt = +(r.option_price || 0);
+    var disc = +(r.discount || 0);
+
+    if (price <= 0) continue;
+
+    var expected = base + opt - disc;
+    var reason = null;
+
+    if (base === 0 && opt === 0 && disc === 0 && price > 0) {
+      reason = '内訳未登録(合計のみ)';
+    } else if (base > 0 && price > expected + 10) {
+      // 差10円以内はfloat誤差として許容
+      reason = '不整合: price>base+opt-disc (差¥' + (price - expected).toLocaleString() + ')';
+    } else if (base > 0 && price < expected - 10) {
+      reason = '逆不整合: price<base+opt-disc';
+    }
+
+    if (reason) {
+      suspects.push({
+        id: r.id, name: r.name, mail: r.mail,
+        lend_date: r.lend_date, return_date: r.return_date,
+        price: price, base: base, opt: opt, disc: disc, expected: expected,
+        reason: reason
+      });
+    }
+  }
+  Logger.log('[AuditOverbilling] 不整合候補: ' + suspects.length + '件');
+
+  // 3. jalan_payments と照合
+  var confirmed = []; // 実害あり（決済発行済み）
+  var noPayment = []; // 決済未発行（DB不整合のみ）
+  for (var j = 0; j < suspects.length; j++) {
+    var s = suspects[j];
+    var payRows = supabaseGet_('jalan_payments',
+      'reservation_id=eq.' + encodeURIComponent(s.id) +
+      '&select=reservation_id,customer_name,customer_email,amount,status,square_payment_url,email_sent_at,paid_at');
+    var pay = (payRows && payRows[0]) ? payRows[0] : null;
+    s.pay = pay;
+    if (pay && (pay.status === 'link_created' || pay.status === 'email_sent' || pay.status === 'paid')) {
+      // Square発行済み。実際の請求額 (pay.amount) と正しい金額 (s.expected) を比較
+      s.actualBilled = +(pay.amount || 0);
+      s.correctAmount = s.expected > 0 ? s.expected : s.price;
+      s.diff = s.actualBilled - s.correctAmount;
+      if (Math.abs(s.diff) > 10) {
+        confirmed.push(s);
+      } else {
+        // 金額は正しく発行されていた
+        noPayment.push(s);
+      }
+    } else {
+      noPayment.push(s);
+    }
+  }
+
+  // 4. Slack報告
+  var lines = ['🔍 *じゃらん過大請求 監査結果*', ''];
+  lines.push('調査対象: じゃらん予約 ' + resvs.length + '件（キャンセル除く、手動訂正5名除外）');
+  lines.push('DB不整合検出: ' + suspects.length + '件');
+  lines.push('');
+  lines.push('🚨 *実害あり（決済発行額が誤り）: ' + confirmed.length + '件*');
+  if (confirmed.length === 0) {
+    lines.push('  (なし)');
+  } else {
+    confirmed.forEach(function(x) {
+      var pay = x.pay || {};
+      lines.push('• `' + x.id + '` ' + (x.name || '-') + ' / ' + (x.mail || '-'));
+      lines.push('  貸出: ' + x.lend_date + ' / 決済状態: ' + (pay.status || '-'));
+      lines.push('  発行額: ¥' + x.actualBilled.toLocaleString() +
+                 ' / 正: ¥' + x.correctAmount.toLocaleString() +
+                 ' / 差: ¥' + x.diff.toLocaleString());
+      lines.push('  DB内訳: base¥' + x.base.toLocaleString() +
+                 ' + opt¥' + x.opt.toLocaleString() +
+                 ' - disc¥' + x.disc.toLocaleString() +
+                 ' / price¥' + x.price.toLocaleString());
+      lines.push('  理由: ' + x.reason);
+      lines.push('');
+    });
+  }
+  lines.push('');
+  lines.push('⚠️ *DB不整合のみ（決済未発行/発行額は正）: ' + noPayment.length + '件*');
+  if (noPayment.length > 0 && noPayment.length <= 20) {
+    noPayment.forEach(function(x) {
+      var payStatus = (x.pay && x.pay.status) || '未発行';
+      lines.push('• `' + x.id + '` ' + (x.name || '-') + ' (' + payStatus + ') ' + x.reason);
+    });
+  } else if (noPayment.length > 20) {
+    lines.push('  (' + noPayment.length + '件のため詳細は省略。Loggerを確認)');
+  }
+
+  // Logger用の詳細ログ
+  Logger.log('');
+  Logger.log('=== 🚨 実害あり（再送要検討）===');
+  confirmed.forEach(function(x) {
+    Logger.log(x.id + ' | ' + x.name + ' | ' + x.mail +
+               ' | 発行¥' + x.actualBilled + ' 正¥' + x.correctAmount + ' 差¥' + x.diff);
+  });
+  Logger.log('');
+  Logger.log('=== ⚠️ DB不整合のみ ===');
+  noPayment.forEach(function(x) {
+    var payStatus = (x.pay && x.pay.status) || '未発行';
+    Logger.log(x.id + ' | ' + x.name + ' | ' + (x.pay ? 'pay:' + payStatus : '未発行') + ' | ' + x.reason);
+  });
+
+  postToSlackChannel_(JALAN_PAY_CHANNEL, lines.join('\n'));
+  Logger.log('[AuditOverbilling] Done: confirmed=' + confirmed.length + ' noPayment=' + noPayment.length);
+}
+
+/**
+ * 5名への謝罪メール送信を事後検証する
+ * - jalan_payments の status/amount/email_sent_at/square_payment_url
+ * - Gmail 送信済みトレイに該当メール有無
+ */
+function verifyFiveApologySent() {
+  var TARGETS = [
+    { id: 'R0Q7UEF3', email: 'smhi4381@docomo.ne.jp', newAmount: 16300 },
+    { id: 'R0742RTL', email: 'itarian_barbar@yahoo.co.jp', newAmount: 52050 },
+    { id: 'R02XF89Q', email: 'zamasu44@icloud.com', newAmount: 27000 },
+    { id: 'R0CYV6NR', email: 'ryota.223@icloud.com', newAmount: 17000 },
+    { id: 'R0GRD083', email: 't.y.network29@docomo.ne.jp', newAmount: 78200 }
+  ];
+
+  Logger.log('=== 5名謝罪メール送信 事後検証 ===');
+  var lines = ['🔍 *5名謝罪メール送信 事後検証結果*', ''];
+
+  var allOk = true;
+  for (var i = 0; i < TARGETS.length; i++) {
+    var t = TARGETS[i];
+    var block = ['---', '▼ ' + t.id + ' (' + t.email + ')'];
+
+    // 1. DB状態
+    var rows = supabaseGet_('jalan_payments',
+      'reservation_id=eq.' + encodeURIComponent(t.id) +
+      '&select=reservation_id,customer_name,customer_email,amount,status,email_sent_at,square_payment_url,link_created_at');
+    if (!rows || rows.length === 0) {
+      block.push('  ❌ DB行なし');
+      allOk = false;
+    } else {
+      var r = rows[0];
+      var amountOk = +(r.amount || 0) === t.newAmount;
+      var statusOk = r.status === 'email_sent' || r.status === 'paid';
+      var sentAtOk = !!r.email_sent_at;
+      block.push('  DB金額: ¥' + (+r.amount).toLocaleString() + (amountOk ? ' ✅' : ' ❌ 期待¥' + t.newAmount.toLocaleString()));
+      block.push('  status: ' + r.status + (statusOk ? ' ✅' : ' ❌'));
+      block.push('  email_sent_at: ' + (r.email_sent_at || '未記録') + (sentAtOk ? ' ✅' : ' ❌'));
+      block.push('  新URL: ' + (r.square_payment_url || '(なし)'));
+      if (!amountOk || !statusOk || !sentAtOk) allOk = false;
+    }
+
+    // 2. Gmail送信済みトレイ検索（reserve@rent-handyman.jp の送信済みから）
+    // 件名パターン: 【お詫び・再送】... 予約番号: R0Q7UEF3
+    try {
+      var q = 'from:reserve@rent-handyman.jp to:' + t.email + ' ' + t.id + ' お詫び・再送';
+      var threads = GmailApp.search(q, 0, 5);
+      if (threads.length === 0) {
+        // 絞り込み条件が厳しすぎる可能性 → to+id のみで再検索
+        var q2 = 'to:' + t.email + ' ' + t.id;
+        var threads2 = GmailApp.search(q2, 0, 10);
+        if (threads2.length === 0) {
+          block.push('  📧 Gmail: 送信痕跡なし ❌');
+          allOk = false;
+        } else {
+          block.push('  📧 Gmail(緩): ' + threads2.length + '件ヒット');
+          var latest = null;
+          threads2.forEach(function(th) {
+            th.getMessages().forEach(function(m) {
+              if (m.getSubject().indexOf('お詫び・再送') >= 0 && m.getSubject().indexOf(t.id) >= 0) {
+                if (!latest || m.getDate().getTime() > latest.getDate().getTime()) latest = m;
+              }
+            });
+          });
+          if (latest) {
+            block.push('  📧 お詫び・再送メール: ' + Utilities.formatDate(latest.getDate(), 'Asia/Tokyo', 'MM/dd HH:mm:ss') + ' ✅');
+          } else {
+            block.push('  📧 お詫び・再送メール: 見つからず ❌');
+            allOk = false;
+          }
+        }
+      } else {
+        var latestS = null;
+        threads.forEach(function(th) {
+          th.getMessages().forEach(function(m) {
+            if (!latestS || m.getDate().getTime() > latestS.getDate().getTime()) latestS = m;
+          });
+        });
+        if (latestS) {
+          block.push('  📧 Gmail送信済み: ' + Utilities.formatDate(latestS.getDate(), 'Asia/Tokyo', 'MM/dd HH:mm:ss') + ' ✅');
+          block.push('    件名: ' + latestS.getSubject());
+        }
+      }
+    } catch (e) {
+      block.push('  📧 Gmail検索エラー: ' + e.message);
+    }
+
+    lines = lines.concat(block);
+    Logger.log(block.join('\n'));
+  }
+
+  lines.push('');
+  lines.push(allOk ? '🎉 全5名 送信確認OK' : '⚠️ 一部確認NG — 詳細は上記');
+  postToSlackChannel_(JALAN_PAY_CHANNEL, lines.join('\n'));
+  Logger.log('[Verify5] done. allOk=' + allOk);
 }
