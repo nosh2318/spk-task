@@ -80,12 +80,41 @@
 TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 / 駐車場 / 会計 / 顧客 / 売上 / データ / 過去 / 免許証
 
 ## 現在のバージョン
-- **APP_VERSION**: v4.6.54
-- **sw.js CACHE_NAME**: `spk-v515`
-- **index.html CV**: `spk-v515`
+- **APP_VERSION**: v4.6.55
+- **sw.js CACHE_NAME**: `spk-v516`
+- **index.html CV**: `spk-v516`
 - **SRI/CSP**: 未適用（下記インシデント参照）
 
 ## 2026-04-22 修正履歴
+
+### 🚨 駐車場の車両シャッフル問題を根本修正（v4.6.55、最優先対応）
+- **症状**: 札幌店 駐車場タブで車両が勝手にシャッフルされ、どこが空いていてどこに車両があるのか分からなくなる。ユーザーが車両を移動しても、数秒後に前の状態に戻ってしまう
+- **ユーザー評価**: 「最悪の出来事」
+- **根本原因（4つのバグの合わせ技）**:
+  - **Bug A (直接原因)**: `isRemoteUpdate` フラグの猶予が **100ms** しかないが、`DB.parking.save` の debounce は **500ms**
+    - T=0: ユーザー車両移動 → `setSpots` → auto-save 予約 (T=500)
+    - T=200: Realtime エコーや polling 到着 → `isRemoteUpdate=true` → `setSpots(古い値)` → UI が前の状態に戻る (シャッフル)
+    - T=300: フラグ解除
+    - T=500: auto-save fire → 古い値で DB 上書き → 変更が消失
+  - **Bug B**: `masterSyncedRef` が定義されているのに**一度も使われていない**。`masterVehicles` の変更毎に useEffect 発火。初期 fetch 完了前に走ると LS データ + 新規車両で auto-save → DB 上書き
+  - **Bug C**: 初期 fetch で `isRemoteUpdate=true` を立てていない → 起動直後に `setSpots/setCars` が auto-save を誘発 → LS 由来の古い data を DB に書き戻す
+  - **Bug D**: Polling/Realtime がローカル dirty 状態を無視 → debounce 中 (500ms) のローカル変更が古い DB 値で上書きされる
+- **修正内容 (`index.src.html`)**:
+  1. `REMOTE_ECHO_MS = 3000` (100ms → 3秒、SYSTEM_SPEC 準拠)
+  2. `LOCAL_DIRTY_MS = 5000`: 直近 5 秒にローカル変更があれば Realtime/Polling の上書きを拒否
+  3. `lastLocalChangeAt` ref: auto-save useEffect で `!isRemoteUpdate` のときだけ時刻記録（ローカル起因の証拠）
+  4. `initialLoaded` state: 初期 fetch 完了を state で伝搬
+  5. `masterSyncedRef`: 初期ロード後 & 初回のみ実行するように guard（`if(masterSyncedRef.current)return; masterSyncedRef.current=true;`）
+  6. 初期 fetch 中は `isRemoteUpdate=true` を維持 → 完了後 3 秒でリセット
+  7. Polling の async fetch 完了後に再チェック（fetch 中に起きたローカル変更を見逃さない）
+- **バージョン**: `APP_VERSION=v4.6.55` / `sw.js CACHE_NAME=spk-v516` / `index.html CV=spk-v516` 同時更新
+- **コミット**: `a44e25c` (fix(駐車場): 車両シャッフル問題を根本修正)
+- **教訓**:
+  - Realtime エコーウィンドウは 3秒以上必要（SYSTEM_SPEC のルールを駐車場モジュールでは 100ms に縮めていた）
+  - Debounce save と Realtime/Polling のタイミング差は最大ウィンドウ（debounce + echo）を重ねてカバーする
+  - `useRef` で定義したフラグを `useEffect` で確認し忘れていないか必ずレビュー
+
+
 
 ### オプション（チャイルド/ベビー/ジュニア/USB/日傘）表記を洗車・DEL・COLに拡張 + 数量常時表示（v4.6.54）
 - **要望**: 「洗車タスクにはオプションの種類だけ表記されているが、貸出(DEL)・返却(COL)にも表記してほしい。また数量も明示してほしい。マキノリナ様の予約はチャイルドシート2つなので、このままだと積み込みミスが起きる」
