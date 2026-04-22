@@ -62,7 +62,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v509';
+  var CV='spk-v510';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
@@ -2458,6 +2458,58 @@ async function saveMonthlySnapshot(store,ym,data,vehicles,fleet,kpiFlags,kpiTabl
    - sales_entries を Excel「売上入力」の代わりに直接編集
    - PL/CF は reservations から直接計算（入金サイクルは設定タブ参照）
    ========================================== */
+
+function ClsUtilCard({utilByM,ymList,nowYm,yrList,DB_VEH_TYPES}){
+  const TC={A:"#7c3aed",B:"#0284c7",C:"#059669",S:"#d97706",F:"#db2777",H:"#64748b",D:"#374151",E:"#94a3b8",LUX:"#7c3aed",MPV:"#0284c7",SUV:"#d97706",CSUV:"#059669",SDN:"#64748b",CPT:"#db2777"};
+  const bgTC={A:"#f5f3ff",B:"#eff6ff",C:"#f0fdf4",S:"#fffbeb",F:"#fdf2f8",H:"#f8fafc",D:"#f8fafc",E:"#f8fafc",LUX:"#f5f3ff",MPV:"#eff6ff",SUV:"#fffbeb",CSUV:"#f0fdf4",SDN:"#f8fafc",CPT:"#fdf2f8"};
+  const [clsMode,setClsMode]=useState("month");
+  const validMs=ymList.filter(ym=>utilByM[ym]);
+  const [selYm,setSelYm]=useState(()=>validMs.includes(nowYm)?nowYm:(validMs[validMs.length-1]||""));
+  const nowYr=String(new Date().getFullYear());
+  const [selYr,setSelYr]=useState(()=>yrList.includes(nowYr)?nowYr:(yrList[yrList.length-1]||""));
+  const rankIcon=i=>i===0?"🥇":i===1?"🥈":i===2?"🥉":null;
+  const monthEntries=(()=>{
+    const u=utilByM[selYm];if(!u)return [];
+    return DB_VEH_TYPES.filter(t=>u.vtUtil[t]!=null).map(t=>({t,pct:u.vtUtil[t]})).sort((a,b)=>b.pct-a.pct);
+  })();
+  const yearEntries=(()=>{
+    const yms=validMs.filter(ym=>ym.startsWith(selYr));if(!yms.length)return [];
+    const sumW={},sumD={};
+    yms.forEach(ym=>{const u=utilByM[ym];if(!u)return;DB_VEH_TYPES.forEach(t=>{if(u.vtUtil[t]==null)return;sumW[t]=(sumW[t]||0)+u.dim;sumD[t]=(sumD[t]||0)+u.vtUtil[t]*u.dim;});});
+    return DB_VEH_TYPES.filter(t=>sumW[t]>0).map(t=>({t,pct:Math.round(sumD[t]/sumW[t]*10)/10})).sort((a,b)=>b.pct-a.pct);
+  })();
+  const entries=clsMode==="month"?monthEntries:yearEntries;
+  return <div>
+    <div style={{display:"flex",gap:6,marginBottom:14,alignItems:"center",flexWrap:"wrap"}}>
+      {["month","year"].map(m=><button key={m} onClick={()=>setClsMode(m)} style={{padding:"4px 14px",borderRadius:8,border:"none",cursor:"pointer",fontSize:11,fontWeight:700,background:clsMode===m?"#2563eb":"#f1f5f9",color:clsMode===m?"#fff":"#64748b"}}>{m==="month"?"月別":"年別"}</button>)}
+      {clsMode==="month"
+        ?<select value={selYm} onChange={e=>setSelYm(e.target.value)} style={{fontSize:11,padding:"3px 8px",borderRadius:6,border:"1px solid #d1d5db",color:"#374151",marginLeft:6}}>
+            {[...validMs].reverse().map(ym=><option key={ym} value={ym}>{ym}{ym===nowYm?" (今月)":""}</option>)}
+          </select>
+        :<select value={selYr} onChange={e=>setSelYr(e.target.value)} style={{fontSize:11,padding:"3px 8px",borderRadius:6,border:"1px solid #d1d5db",color:"#374151",marginLeft:6}}>
+            {[...yrList].reverse().map(yr=><option key={yr} value={yr}>{yr}年{yr===nowYr?" (今年)":""}</option>)}
+          </select>
+      }
+    </div>
+    {entries.length===0?<div style={{color:"#94a3b8",fontSize:12,padding:16,textAlign:"center"}}>データなし</div>
+    :<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:10}}>
+      {entries.map(({t,pct},i)=>{
+        const col=TC[t]||"#64748b";const bg=bgTC[t]||"#f8fafc";
+        const barCol=pct>=60?"#059669":pct>=40?"#d97706":"#dc2626";
+        return <div key={t} style={{background:bg,border:`2px solid ${col}22`,borderRadius:12,padding:"12px 12px 10px",position:"relative"}}>
+          {rankIcon(i)&&<div style={{position:"absolute",top:8,right:10,fontSize:18,lineHeight:1}}>{rankIcon(i)}</div>}
+          <div style={{fontSize:10,fontWeight:700,color:"#64748b",marginBottom:2}}>#{i+1}</div>
+          <div style={{fontSize:22,fontWeight:900,color:col,lineHeight:1,marginBottom:4}}>{t}<span style={{fontSize:11,fontWeight:600,color:"#94a3b8",marginLeft:3}}>クラス</span></div>
+          <div style={{fontSize:28,fontWeight:900,color:barCol,lineHeight:1,marginBottom:6}}>{pct}<span style={{fontSize:12,fontWeight:700}}>%</span></div>
+          <div style={{height:6,background:"#e2e8f0",borderRadius:3,overflow:"hidden"}}>
+            <div style={{height:"100%",width:Math.min(pct,100)+"%",background:barCol,borderRadius:3}}/>
+          </div>
+        </div>;
+      })}
+    </div>}
+  </div>;
+}
+
 function ManagementTab({store}){
   const[sub,setSub]=useState("dashboard");
   const[loading,setLoading]=useState(false);
@@ -4548,77 +4600,7 @@ function ManagementTab({store}){
           // クラス別稼働率
           sectionCard(React.createElement("div",null,
             React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:12,color:"#1e3a5f"}},"クラス別稼働率"),
-            (()=>{
-              const TC={A:"#7c3aed",B:"#0284c7",C:"#059669",S:"#d97706",F:"#db2777",H:"#64748b",D:"#374151",E:"#94a3b8",LUX:"#7c3aed",MPV:"#0284c7",SUV:"#d97706",CSUV:"#059669",SDN:"#64748b",CPT:"#db2777"};
-              const bgTC={A:"#f5f3ff",B:"#eff6ff",C:"#f0fdf4",S:"#fffbeb",F:"#fdf2f8",H:"#f8fafc",D:"#f8fafc",E:"#f8fafc",LUX:"#f5f3ff",MPV:"#eff6ff",SUV:"#fffbeb",CSUV:"#f0fdf4",SDN:"#f8fafc",CPT:"#fdf2f8"};
-              // 月別・年別切替 state
-              const [clsMode,setClsMode]=React.useState("month");
-              // 月別: 選択月（デフォルト今月）
-              const validMs=ymList.filter(ym=>utilByM[ym]);
-              const [selYm,setSelYm]=React.useState(validMs.includes(nowYm)?nowYm:(validMs[validMs.length-1]||""));
-              // 年別: 選択年（デフォルト今年 or 最新年）
-              const nowYr=String(new Date().getFullYear());
-              const [selYr,setSelYr]=React.useState(yrList.includes(nowYr)?nowYr:(yrList[yrList.length-1]||""));
-              // ---- 月別クラス稼働率 ----
-              const monthEntries=(()=>{
-                const u=utilByM[selYm];if(!u)return [];
-                return DB_VEH_TYPES
-                  .filter(t=>u.vtUtil[t]!=null)
-                  .map(t=>({t,pct:u.vtUtil[t]}))
-                  .sort((a,b)=>b.pct-a.pct);
-              })();
-              // ---- 年別クラス稼働率（月平均の加重平均: Σ dim*pct / Σ dim）----
-              const yearEntries=(()=>{
-                const yms=validMs.filter(ym=>ym.startsWith(selYr));
-                if(!yms.length)return [];
-                const sumW={},sumD={};
-                yms.forEach(ym=>{
-                  const u=utilByM[ym];if(!u)return;
-                  DB_VEH_TYPES.forEach(t=>{
-                    if(u.vtUtil[t]==null)return;
-                    sumW[t]=(sumW[t]||0)+u.dim;
-                    sumD[t]=(sumD[t]||0)+u.vtUtil[t]*u.dim;
-                  });
-                });
-                return DB_VEH_TYPES
-                  .filter(t=>sumW[t]>0)
-                  .map(t=>({t,pct:Math.round(sumD[t]/sumW[t]*10)/10}))
-                  .sort((a,b)=>b.pct-a.pct);
-              })();
-              const entries=clsMode==="month"?monthEntries:yearEntries;
-              const rankIcon=i=>i===0?"🥇":i===1?"🥈":i===2?"🥉":null;
-              return <div>
-                {/* 切替タブ */}
-                <div style={{display:"flex",gap:6,marginBottom:14,alignItems:"center",flexWrap:"wrap"}}>
-                  {["month","year"].map(m=><button key={m} onClick={()=>setClsMode(m)} style={{padding:"4px 14px",borderRadius:8,border:"none",cursor:"pointer",fontSize:11,fontWeight:700,background:clsMode===m?"#2563eb":"#f1f5f9",color:clsMode===m?"#fff":"#64748b"}}>{m==="month"?"月別":"年別"}</button>)}
-                  {clsMode==="month"
-                    ?<select value={selYm} onChange={e=>setSelYm(e.target.value)} style={{fontSize:11,padding:"3px 8px",borderRadius:6,border:"1px solid #d1d5db",color:"#374151",marginLeft:6}}>
-                        {[...validMs].reverse().map(ym=><option key={ym} value={ym}>{ym}{ym===nowYm?" (今月)":""}</option>)}
-                      </select>
-                    :<select value={selYr} onChange={e=>setSelYr(e.target.value)} style={{fontSize:11,padding:"3px 8px",borderRadius:6,border:"1px solid #d1d5db",color:"#374151",marginLeft:6}}>
-                        {[...yrList].reverse().map(yr=><option key={yr} value={yr}>{yr}年{yr===nowYr?" (今年)":""}</option>)}
-                      </select>
-                  }
-                </div>
-                {/* クラスカード（稼働率順） */}
-                {entries.length===0?<div style={{color:"#94a3b8",fontSize:12,padding:16,textAlign:"center"}}>データなし</div>
-                :<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:10}}>
-                  {entries.map(({t,pct},i)=>{
-                    const col=TC[t]||"#64748b";const bg=bgTC[t]||"#f8fafc";
-                    const barCol=pct>=60?"#059669":pct>=40?"#d97706":"#dc2626";
-                    return <div key={t} style={{background:bg,border:`2px solid ${col}22`,borderRadius:12,padding:"12px 12px 10px",position:"relative"}}>
-                      {rankIcon(i)&&<div style={{position:"absolute",top:8,right:10,fontSize:18,lineHeight:1}}>{rankIcon(i)}</div>}
-                      <div style={{fontSize:10,fontWeight:700,color:"#64748b",marginBottom:2}}>#{i+1}</div>
-                      <div style={{fontSize:22,fontWeight:900,color:col,lineHeight:1,marginBottom:4}}>{t}<span style={{fontSize:11,fontWeight:600,color:"#94a3b8",marginLeft:3}}>クラス</span></div>
-                      <div style={{fontSize:28,fontWeight:900,color:barCol,lineHeight:1,marginBottom:6}}>{pct}<span style={{fontSize:12,fontWeight:700}}>%</span></div>
-                      <div style={{height:6,background:"#e2e8f0",borderRadius:3,overflow:"hidden"}}>
-                        <div style={{height:"100%",width:Math.min(pct,100)+"%",background:barCol,borderRadius:3}}/>
-                      </div>
-                    </div>;
-                  })}
-                </div>}
-              </div>;
-            })()
+            React.createElement(ClsUtilCard,{utilByM,ymList,nowYm,yrList,DB_VEH_TYPES})
           ))
         ),
 
@@ -12821,7 +12803,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.6.48";
+const APP_VERSION="v4.6.49";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
