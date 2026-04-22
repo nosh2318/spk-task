@@ -1192,10 +1192,12 @@ function VehicleTab(props){
   return React.createElement("div",null,
     React.createElement("div",{style:{display:"flex",gap:8,marginBottom:12,borderBottom:"1px solid #e2e8f0",paddingBottom:8}},
       React.createElement("button",{onClick:function(){setSubTab("master");},style:{padding:"8px 12px",fontSize:13,fontWeight:subTab==="master"?700:500,color:subTab==="master"?"#2563eb":"#64748b",background:"none",border:"none",cursor:"pointer",borderBottom:subTab==="master"?"2px solid #2563eb":"none"}},"マスター"),
-      React.createElement("button",{onClick:function(){setSubTab("fleet");},style:{padding:"8px 12px",fontSize:13,fontWeight:subTab==="fleet"?700:500,color:subTab==="fleet"?"#2563eb":"#64748b",background:"none",border:"none",cursor:"pointer",borderBottom:subTab==="fleet"?"2px solid #2563eb":"none"}},"整備管理")
+      React.createElement("button",{onClick:function(){setSubTab("fleet");},style:{padding:"8px 12px",fontSize:13,fontWeight:subTab==="fleet"?700:500,color:subTab==="fleet"?"#2563eb":"#64748b",background:"none",border:"none",cursor:"pointer",borderBottom:subTab==="fleet"?"2px solid #2563eb":"none"}},"整備管理"),
+      React.createElement("button",{onClick:function(){setSubTab("cost");},style:{padding:"8px 12px",fontSize:13,fontWeight:subTab==="cost"?700:500,color:subTab==="cost"?"#2563eb":"#64748b",background:"none",border:"none",cursor:"pointer",borderBottom:subTab==="cost"?"2px solid #2563eb":"none"}},"原価")
     ),
     subTab==="master"&&React.createElement(VehicleManager,{vehicles:props.vehicles||[],onVehiclesChange:props.onVehiclesChange,vehicleClasses:props.vehicleClasses||[],onDeleteVehicle:props.onDeleteVehicle,highlightVehicle:props.highlightVehicle}),
-    subTab==="fleet"&&React.createElement(FleetManager,{cars:props.hmCars||[],carData:props.hmCarData||[],logs:props.hmLogs||[],classes:props.hmClasses||[],hmReload:props.hmReload})
+    subTab==="fleet"&&React.createElement(FleetManager,{cars:props.hmCars||[],carData:props.hmCarData||[],logs:props.hmLogs||[],classes:props.hmClasses||[],hmReload:props.hmReload}),
+    subTab==="cost"&&React.createElement(VehicleCostManager,{vehicles:props.vehicles||[],store:"spk"})
   );
 }
 
@@ -2459,8 +2461,140 @@ async function saveMonthlySnapshot(store,ym,data,vehicles,fleet,kpiFlags,kpiTabl
    - PL/CF は reservations から直接計算（入金サイクルは設定タブ参照）
    ========================================== */
 
+function VehicleProfitTable({u,nowYm,vehicleCosts,dbVehs}){
+  const[sortKey,setSortKey]=useState("profit");
+  if(!u)return React.createElement("div",{style:{fontSize:12,color:"#94a3b8",padding:8}},"データなし");
+  const CLS_C={A:"#7c3aed",B:"#0284c7",C:"#059669",D:"#374151",F:"#db2877",H:"#64748b",S:"#d97706"};
+  const calcMC=(c)=>{if(!c)return 0;return(c.monthlyFee||0)+Math.round((c.insuranceAnnual||0)/12)+Math.round((c.shakenAnnual||0)/12)+Math.round((c.inspection6m||0)*2/12);};
+  const classOrder=["A","B","C","D","F","H","S"];
+  const grouped={};
+  Object.entries(u.perVeh).forEach(([code,d])=>{
+    const tp=d.type||"?";if(!grouped[tp])grouped[tp]=[];
+    const cost=calcMC(vehicleCosts[code]);const profit=d.rev-cost;const profitRate=d.rev>0?Math.round(profit/d.rev*100):0;
+    grouped[tp].push({code,name:d.name,type:tp,days:d.days,pct:d.pct,rev:d.rev,cost,profit,profitRate});
+  });
+  const sortFn=(a,b)=>sortKey==="util"?b.pct-a.pct:sortKey==="rev"?b.rev-a.rev:b.profit-a.profit;
+  const hasCost=Object.values(vehicleCosts).length>0;
+  const fmtY=(v)=>{if(v===0)return"¥0";const a=Math.abs(v);const s=a>=10000?(Math.round(a/1000)/10).toFixed(1)+"万":a.toLocaleString();return(v<0?"▲":"")+s;};
+  const sortBtn=(k,l)=>React.createElement("button",{onClick:()=>setSortKey(k),style:{padding:"3px 8px",fontSize:10,fontWeight:700,border:"none",borderRadius:4,cursor:"pointer",background:sortKey===k?"#2563eb":"#f1f5f9",color:sortKey===k?"#fff":"#64748b"}},l);
+  const thS={fontSize:10,fontWeight:700,padding:"5px 8px",background:"#f8fafc",color:"#64748b",borderBottom:"2px solid #e2e8f0",whiteSpace:"nowrap"};
+  const tdS=(align="left")=>({fontSize:11,padding:"5px 8px",borderBottom:"1px solid #f1f5f9",textAlign:align,whiteSpace:"nowrap"});
+  return React.createElement("div",null,
+    React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12,flexWrap:"wrap",gap:8}},
+      React.createElement("div",{style:{fontSize:13,fontWeight:900,color:"#1e3a5f"}},"車両別 稼働率・売上・粗利（"+nowYm+"）"),
+      React.createElement("div",{style:{display:"flex",gap:4,alignItems:"center"}},
+        React.createElement("span",{style:{fontSize:10,color:"#94a3b8",marginRight:4}},"並び替え:"),
+        sortBtn("profit","粗利"),sortBtn("rev","売上"),sortBtn("util","稼働率")
+      )
+    ),
+    !hasCost&&React.createElement("div",{style:{padding:"8px 12px",background:"#fffbeb",border:"1px solid #fde68a",borderRadius:8,fontSize:11,color:"#92400e",marginBottom:12}},"⚠️ 車両原価が未設定です。車両タブ → 「原価」から設定してください。"),
+    classOrder.filter(tp=>grouped[tp]?.length).map(tp=>{
+      const items=[...grouped[tp]].sort(sortFn);
+      const totalRev=items.reduce((s,v)=>s+v.rev,0);const totalCost=items.reduce((s,v)=>s+v.cost,0);const totalProfit=totalRev-totalCost;
+      const avgUtil=items.length?Math.round(items.reduce((s,v)=>s+v.pct,0)/items.length):0;
+      const cc=CLS_C[tp]||"#64748b";
+      return React.createElement("div",{key:tp,style:{marginBottom:16}},
+        React.createElement("div",{style:{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",background:cc+"18",borderRadius:"8px 8px 0 0",borderTop:`3px solid ${cc}`,flexWrap:"wrap"}},
+          React.createElement("span",{style:{fontWeight:900,fontSize:12,color:cc}},"["+tp+"] "+items.length+"台"),
+          React.createElement("span",{style:{fontSize:11,color:"#64748b"}},`平均稼働 ${avgUtil}%`),
+          hasCost&&React.createElement("span",{style:{fontSize:11,color:"#0f172a",fontWeight:700}},`売上 ${fmtY(totalRev)} / 粗利 `,React.createElement("span",{style:{color:totalProfit>=0?"#059669":"#dc2626",fontWeight:900}},fmtY(totalProfit)))
+        ),
+        React.createElement("div",{style:{overflowX:"auto",border:"1px solid #e2e8f0",borderTop:"none",borderRadius:"0 0 8px 8px"}},
+          React.createElement("table",{style:{width:"100%",borderCollapse:"collapse"}},
+            React.createElement("thead",null,React.createElement("tr",null,
+              React.createElement("th",{style:thS},"車両"),React.createElement("th",{style:{...thS,textAlign:"right"}},"稼働日"),
+              React.createElement("th",{style:{...thS,textAlign:"right",minWidth:100}},"稼働率"),React.createElement("th",{style:{...thS,textAlign:"right"}},"売上"),
+              hasCost&&React.createElement("th",{style:{...thS,textAlign:"right"}},"月次原価"),
+              hasCost&&React.createElement("th",{style:{...thS,textAlign:"right",background:"#fef3c7"}},"粗利"),
+              hasCost&&React.createElement("th",{style:{...thS,textAlign:"right"}},"粗利率")
+            )),
+            React.createElement("tbody",null,items.map((v,i)=>{
+              const rc=v.pct>=60?"#059669":v.pct>=40?"#d97706":"#dc2626";const pc=v.profit>=0?"#059669":"#dc2626";
+              return React.createElement("tr",{key:v.code,style:{background:i%2===0?"#fff":"#f8fafc"}},
+                React.createElement("td",{style:{...tdS(),fontWeight:700}},React.createElement("span",{style:{width:8,height:8,borderRadius:"50%",background:cc,display:"inline-block",marginRight:5}}),v.name),
+                React.createElement("td",{style:tdS("right")},v.days+"日"),
+                React.createElement("td",{style:tdS("right")},
+                  React.createElement("div",{style:{display:"flex",alignItems:"center",gap:4,justifyContent:"flex-end"}},
+                    React.createElement("div",{style:{width:40,height:6,background:"#e2e8f0",borderRadius:3,overflow:"hidden"}},React.createElement("div",{style:{height:"100%",width:v.pct+"%",background:rc,borderRadius:3}})),
+                    React.createElement("span",{style:{fontWeight:700,color:rc,fontSize:11}},(v.pct||0).toFixed(1)+"%")
+                  )
+                ),
+                React.createElement("td",{style:{...tdS("right"),fontWeight:600}},v.rev>0?"¥"+v.rev.toLocaleString():"-"),
+                hasCost&&React.createElement("td",{style:{...tdS("right"),color:"#64748b"}},v.cost>0?"¥"+v.cost.toLocaleString():"未設定"),
+                hasCost&&React.createElement("td",{style:{...tdS("right"),fontWeight:800,color:pc,background:"#fffbeb"}},v.cost>0?fmtY(v.profit):"-"),
+                hasCost&&React.createElement("td",{style:{...tdS("right"),color:v.profitRate>=50?"#059669":v.profitRate>=0?"#d97706":"#dc2626",fontWeight:700}},v.cost>0&&v.rev>0?v.profitRate+"%":"-")
+              );
+            }))
+          )
+        )
+      );
+    })
+  );
+}
+
+function VehicleCostManager({vehicles,store}){
+  const[costs,setCosts]=useState({});const[saving,setSaving]=useState(false);const[savedMsg,setSavedMsg]=useState("");
+  const tbl=(store==="spk")?"app_settings":"nha_app_settings";
+  useEffect(()=>{if(!sb)return;sb.from(tbl).select("value").eq("key","vehicle_costs").single().then(({data})=>{if(data?.value)try{setCosts(typeof data.value==="string"?JSON.parse(data.value):data.value);}catch(e){}});},[tbl]);
+  const calcMC=(c)=>{if(!c)return 0;return(c.monthlyFee||0)+Math.round((c.insuranceAnnual||0)/12)+Math.round((c.shakenAnnual||0)/12)+Math.round((c.inspection6m||0)*2/12);};
+  const upd=(code,field,val)=>setCosts(prev=>({...prev,[code]:{...(prev[code]||{}),[field]:val}}));
+  const save=async()=>{setSaving(true);await sb.from(tbl).upsert({key:"vehicle_costs",value:JSON.stringify(costs)},{onConflict:"key"});setSaving(false);setSavedMsg("✅ 保存しました");setTimeout(()=>setSavedMsg(""),2500);};
+  const CLS_C={A:"#7c3aed",B:"#0284c7",C:"#059669",D:"#374151",F:"#db2877",H:"#64748b",S:"#d97706"};
+  const CLS_ORDER=["A","B","C","D","F","H","S"];
+  const grouped={};vehicles.forEach(v=>{const t=v.type||"?";if(!grouped[t])grouped[t]=[];grouped[t].push(v);});
+  const inpS={width:"100%",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px 6px",fontSize:11,textAlign:"right",background:"#fffbeb"};
+  const thS={fontSize:9,fontWeight:700,padding:"5px 8px",background:"#f1f5f9",borderBottom:"2px solid #e2e8f0",whiteSpace:"nowrap",textAlign:"right"};
+  const tdS={fontSize:11,padding:"5px 6px",borderBottom:"1px solid #f1f5f9"};
+  const totalMC=vehicles.reduce((s,v)=>s+calcMC(costs[v.code]),0);
+  const setVehs=vehicles.filter(v=>calcMC(costs[v.code])>0).length;
+  return React.createElement("div",null,
+    React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8,flexWrap:"wrap",gap:8}},
+      React.createElement("div",null,
+        React.createElement("div",{style:{fontSize:13,fontWeight:800,marginBottom:2}},"🚗 車両原価マスタ"),
+        React.createElement("div",{style:{fontSize:10,color:"#64748b"}},"月次原価 ＝ リース/ローン(月) ＋ 保険(年)÷12 ＋ 車検(年)÷12 ＋ 半年点検×2÷12")
+      ),
+      React.createElement("div",{style:{display:"flex",gap:8,alignItems:"center"}},
+        savedMsg&&React.createElement("span",{style:{fontSize:11,color:"#059669",fontWeight:700}},savedMsg),
+        React.createElement("button",{onClick:save,disabled:saving,style:{padding:"6px 16px",borderRadius:8,border:"none",background:"#2563eb",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}},saving?"保存中...":"💾 保存")
+      )
+    ),
+    setVehs>0&&React.createElement("div",{style:{padding:"6px 12px",background:"#f0fdf4",borderRadius:8,marginBottom:12,fontSize:11,display:"flex",gap:16}},
+      React.createElement("span",null,"設定済み: ",React.createElement("strong",null,setVehs+"/"+vehicles.length+"台")),
+      React.createElement("span",null,"月次原価 合計: ",React.createElement("strong",{style:{color:"#dc2626"}},"¥"+totalMC.toLocaleString()))
+    ),
+    CLS_ORDER.filter(tp=>grouped[tp]?.length).map(tp=>{
+      const cc=CLS_C[tp]||"#64748b";
+      return React.createElement("div",{key:tp,style:{marginBottom:16}},
+        React.createElement("div",{style:{fontWeight:800,fontSize:11,color:cc,padding:"4px 10px",background:cc+"18",borderRadius:"8px 8px 0 0",borderLeft:`4px solid ${cc}`}},"["+tp+"] "+grouped[tp].length+"台"),
+        React.createElement("div",{style:{overflowX:"auto",border:"1px solid #e2e8f0",borderTop:"none",borderRadius:"0 0 8px 8px"}},
+          React.createElement("table",{style:{width:"100%",borderCollapse:"collapse"}},
+            React.createElement("thead",null,React.createElement("tr",null,
+              React.createElement("th",{style:{...thS,textAlign:"left"}},"車両"),React.createElement("th",{style:{...thS,width:80}},"費用種別"),
+              React.createElement("th",{style:thS},"リース/ローン(月)"),React.createElement("th",{style:thS},"保険料(年)"),
+              React.createElement("th",{style:thS},"車検見積(年)"),React.createElement("th",{style:thS},"半年点検(1回)"),
+              React.createElement("th",{style:{...thS,background:"#fef3c7"}},"月次原価")
+            )),
+            React.createElement("tbody",null,grouped[tp].map((v,i)=>{
+              const c=costs[v.code]||{};const mc=calcMC(c);
+              return React.createElement("tr",{key:v.code,style:{background:i%2===0?"#fff":"#f8fafc"}},
+                React.createElement("td",{style:{...tdS,fontWeight:700}},v.code," ",React.createElement("span",{style:{fontWeight:400,color:"#64748b",fontSize:10}},v.name)),
+                React.createElement("td",{style:tdS},React.createElement("select",{value:c.costType||"lease",onChange:e=>upd(v.code,"costType",e.target.value),style:{...inpS,textAlign:"left",width:72}},React.createElement("option",{value:"lease"},"リース"),React.createElement("option",{value:"loan"},"ローン"))),
+                React.createElement("td",{style:tdS},React.createElement("input",{type:"number",value:c.monthlyFee||"",onChange:e=>upd(v.code,"monthlyFee",+e.target.value),style:inpS,placeholder:"0"})),
+                React.createElement("td",{style:tdS},React.createElement("input",{type:"number",value:c.insuranceAnnual||"",onChange:e=>upd(v.code,"insuranceAnnual",+e.target.value),style:inpS,placeholder:"0"})),
+                React.createElement("td",{style:tdS},React.createElement("input",{type:"number",value:c.shakenAnnual||"",onChange:e=>upd(v.code,"shakenAnnual",+e.target.value),style:inpS,placeholder:"0"})),
+                React.createElement("td",{style:tdS},React.createElement("input",{type:"number",value:c.inspection6m||"",onChange:e=>upd(v.code,"inspection6m",+e.target.value),style:inpS,placeholder:"0"})),
+                React.createElement("td",{style:{...tdS,fontWeight:800,textAlign:"right",background:"#fef3c7",color:mc>0?"#dc2626":"#94a3b8"}},mc>0?"¥"+mc.toLocaleString():"未設定")
+              );
+            }))
+          )
+        )
+      );
+    })
+  );
+}
+
 function ClsUtilCard({utilByM,ymList,nowYm,yrList,DB_VEH_TYPES}){
-  const TC={A:"#7c3aed",B:"#0284c7",C:"#059669",S:"#d97706",F:"#db2777",H:"#64748b",D:"#374151",E:"#94a3b8",LUX:"#7c3aed",MPV:"#0284c7",SUV:"#d97706",CSUV:"#059669",SDN:"#64748b",CPT:"#db2777"};
+  const TC={A:"#7c3aed",B:"#0284c7",C:"#059669",S:"#d97706",F:"#db2877",H:"#64748b",D:"#374151",E:"#94a3b8",LUX:"#7c3aed",MPV:"#0284c7",SUV:"#d97706",CSUV:"#059669",SDN:"#64748b",CPT:"#db2777"};
   const bgTC={A:"#f5f3ff",B:"#eff6ff",C:"#f0fdf4",S:"#fffbeb",F:"#fdf2f8",H:"#f8fafc",D:"#f8fafc",E:"#f8fafc",LUX:"#f5f3ff",MPV:"#eff6ff",SUV:"#fffbeb",CSUV:"#f0fdf4",SDN:"#f8fafc",CPT:"#fdf2f8"};
   const [clsMode,setClsMode]=useState("month");
   const validMs=ymList.filter(ym=>utilByM[ym]);
@@ -2549,6 +2683,7 @@ function ManagementTab({store}){
   const[dFilter,setDFilter]=useState({mode:"all",year:"",ym:""});
   // 投資回転率コスト仮定
   const[roiCost,setRoiCost]=useState({insurance:12000,parking:17600,inspection:5000,maintenance:5000});
+  const[vehicleCosts,setVehicleCosts]=useState({});
   // 売上入力フィルタ
   const[salesYmF,setSalesYmF]=useState("");
   const[salesChF,setSalesChF]=useState("");
@@ -2656,6 +2791,10 @@ function ManagementTab({store}){
       .then(({data})=>{if(data&&data.value)try{setDbTargets(JSON.parse(data.value));}catch(e){}});
     // 全月コストをロード（PL/CF連動用）
     loadCostAll(isSpk?"spk":"nha");
+    // 車両原価マスタをロード
+    const vcTable=isSpk?"app_settings":"nha_app_settings";
+    sb.from(vcTable).select("value").eq("key","vehicle_costs").single()
+      .then(({data})=>{if(data?.value)try{setVehicleCosts(typeof data.value==="string"?JSON.parse(data.value):data.value);}catch(e){}});
   },[sub,dbStore]);
 
   // 予算CFデータロード
@@ -4358,11 +4497,16 @@ function ManagementTab({store}){
           let tD=0;tv.forEach(v=>{if(vehDays[v.code])tD+=vehDays[v.code].size;});
           vtUtil[t]=tv.length*dim>0?Math.round(tD/(tv.length*dim)*1000)/10:0;
         });
-        // per-vehicle util
+        // per-vehicle util + revenue
+        const vehRevM={};
+        reliable.filter(r=>{const rd=r[rdKey];return rd&&rd.slice(0,7)===ym;}).forEach(r=>{
+          const vc=fMap[r.id];if(!vc)return;
+          vehRevM[vc]=(vehRevM[vc]||0)+revCalc(r);
+        });
         const perVeh={};
         activeVehs.forEach(v=>{
           const ds=vehDays[v.code]?vehDays[v.code].size:0;
-          perVeh[v.code]={days:ds,pct:dim>0?Math.round(ds/dim*1000)/10:0,name:v.name||v.code,type:v.type||"?"};
+          perVeh[v.code]={days:ds,pct:dim>0?Math.round(ds/dim*1000)/10:0,name:v.name||v.code,type:v.type||"?",rev:vehRevM[v.code]||0};
         });
         utilByM[ym]={activeCount:activeVehs.length,dim,totalDays,maxDays:activeVehs.length*dim,pct:activeVehs.length*dim>0?Math.round(totalDays/(activeVehs.length*dim)*100):0,vtUtil,perVeh,vehDays};
       });
@@ -4503,33 +4647,8 @@ function ManagementTab({store}){
         // ===== A. 稼働率セクション =====
         secHeader("A","A. 稼働率"),
         secOpen.A&&React.createElement("div",null,
-          // 当月 車両別稼働率
-          sectionCard(React.createElement("div",null,
-            React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:10,color:"#1e3a5f"}},"車両別稼働率（"+nowYm+"）"),
-            (()=>{
-              const u=utilByM[nowYm];
-              if(!u)return React.createElement("div",{style:{fontSize:12,color:"#94a3b8",padding:8}},"データなし");
-              return React.createElement("div",null,
-                // class util chips
-                React.createElement("div",{style:{display:"flex",gap:8,flexWrap:"wrap",marginBottom:12}},
-                  Object.entries(u.vtUtil).map(([t,p])=>React.createElement("div",{key:t,style:{background:p>=60?"#dcfce7":p>=40?"#fef9c3":"#fee2e2",padding:"4px 12px",borderRadius:8,fontSize:11,fontWeight:700,color:p>=60?"#166534":p>=40?"#854d0e":"#991b1b"}},t+" "+p+"%"))
-                ),
-                // vehicle table
-                tableWrap(React.createElement("table",{style:{width:"100%",borderCollapse:"collapse"}},
-                  React.createElement("thead",null,React.createElement("tr",null,
-                    React.createElement("th",{style:th2},"車両"),React.createElement("th",{style:th2},"クラス"),React.createElement("th",{style:{...th2,textAlign:"right"}},"稼働日"),React.createElement("th",{style:{...th2,textAlign:"right",minWidth:140}},"稼働率")
-                  )),
-                  React.createElement("tbody",null,
-                    Object.entries(u.perVeh).sort((a,b)=>b[1].pct-a[1].pct).map(([c,d],i)=>React.createElement("tr",{key:c,style:zRow(i,false)},
-                      React.createElement("td",{style:{...td2,fontWeight:700}},d.name),React.createElement("td",{style:td2},d.type),
-                      React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:600}},d.days+"日"),
-                      React.createElement("td",{style:{...td2,textAlign:"right"}},bar(d.pct,d.pct>=60?"#059669":d.pct>=40?"#d97706":"#dc2626"))
-                    ))
-                  )
-                ),"40vh")
-              );
-            })()
-          )),
+          // 当月 車両別稼働率・売上・粗利
+          sectionCard(React.createElement(VehicleProfitTable,{u:utilByM[nowYm],nowYm,vehicleCosts,dbVehs})),
           // 月別推移
           sectionCard(React.createElement("div",null,
             React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:12,color:"#1e3a5f"}},"月別稼働率推移"),
@@ -12803,7 +12922,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.6.49";
+const APP_VERSION="v4.6.50";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
