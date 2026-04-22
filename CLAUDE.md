@@ -80,12 +80,21 @@
 TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 / 駐車場 / 会計 / 顧客 / 売上 / データ / 過去 / 免許証
 
 ## 現在のバージョン
-- **APP_VERSION**: v4.6.55
-- **sw.js CACHE_NAME**: `spk-v516`
-- **index.html CV**: `spk-v516`
+- **APP_VERSION**: v4.6.56
+- **sw.js CACHE_NAME**: `spk-v517`
+- **index.html CV**: `spk-v517`
 - **SRI/CSP**: 未適用（下記インシデント参照）
 
 ## 2026-04-22 修正履歴
+
+### TOP じゃらん事前決済ウィジェットに金額合計を表示 (v4.6.56)
+- **要望**: 「じゃらん 未決済分 の合計を TOP の枠に表示」
+- **実装 (`index.src.html` JalanPaymentWidget)**:
+  - `unpaidAmount`: `status in [new/link_created/email_sent]` の amount 合計
+  - `paidAmount`: `status=paid` の amount 合計
+  - 2つのバッジを追加: 「未決済合計 ¥X,XXX」（赤）「入金済合計 ¥Y,YYY」（緑）
+- **バージョン**: `APP_VERSION=v4.6.56` / `sw.js CACHE_NAME=spk-v517` / `index.html CV=spk-v517` 同時更新
+- **コミット**: `d16ef96`
 
 ### 🚨 駐車場の車両シャッフル問題を根本修正（v4.6.55、最優先対応）
 - **症状**: 札幌店 駐車場タブで車両が勝手にシャッフルされ、どこが空いていてどこに車両があるのか分からなくなる。ユーザーが車両を移動しても、数秒後に前の状態に戻ってしまう
