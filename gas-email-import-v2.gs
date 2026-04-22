@@ -3081,3 +3081,112 @@ function verifyFiveApologySent() {
   postToSlackChannel_(JALAN_PAY_CHANNEL, lines.join('\n'));
   Logger.log('[Verify5] done. allOk=' + allOk);
 }
+
+// ===============================================================
+// 🔍 チャイルドシート数量不一致 診断ツール（2026-04-22追加）
+// ===============================================================
+/**
+ * 指定予約IDについて、Gmail全メール×parseJalan_再解析×DB現状値を比較する診断関数
+ * 使い方: GASエディタで関数名を「diagnoseOptSeatMismatch」に設定し「実行」
+ * 対象予約IDは下記 TARGET_ID を書き換えて再実行
+ */
+function diagnoseOptSeatMismatch() {
+  var TARGET_ID = 'R04OWZ6U';  // ← 調査したい予約IDに書き換え
+
+  Logger.log('=== チャイルドシート数量 診断開始: ' + TARGET_ID + ' ===');
+
+  // 1) DB現状値
+  var rows = supabaseGet_('reservations', 'id=eq.' + encodeURIComponent(TARGET_ID) + '&select=id,name,ota,opt_b,opt_c,opt_j,price,lend_date,status,created_at,updated_at');
+  Logger.log('--- [1] DB現状値 ---');
+  if (rows && rows.length > 0) {
+    var r = rows[0];
+    Logger.log('id=' + r.id + ' name=' + r.name + ' ota=' + r.ota);
+    Logger.log('opt_b=' + r.opt_b + ' opt_c=' + r.opt_c + ' opt_j=' + r.opt_j);
+    Logger.log('price=' + r.price + ' lend_date=' + r.lend_date + ' status=' + r.status);
+    Logger.log('created_at=' + r.created_at + ' updated_at=' + r.updated_at);
+  } else {
+    Logger.log('⚠️ DBに予約が見つかりません');
+  }
+
+  // 2) Gmail全メール取得
+  Logger.log('--- [2] Gmail 検索 ---');
+  var threads = GmailApp.search(TARGET_ID, 0, 20);
+  Logger.log('threads found: ' + threads.length);
+
+  var allMessages = [];
+  for (var t = 0; t < threads.length; t++) {
+    var msgs = threads[t].getMessages();
+    for (var m = 0; m < msgs.length; m++) {
+      var subject = msgs[m].getSubject();
+      var body = msgs[m].getPlainBody();
+      if (body.indexOf(TARGET_ID) < 0) continue;
+      allMessages.push({
+        date: msgs[m].getDate(),
+        from: msgs[m].getFrom(),
+        subject: subject,
+        body: body,
+        msgId: msgs[m].getId()
+      });
+    }
+  }
+
+  // 日付順ソート
+  allMessages.sort(function(a, b) { return a.date.getTime() - b.date.getTime(); });
+  Logger.log('合計メール: ' + allMessages.length + '通');
+
+  // 3) 各メールを parseJalan_ で解析
+  Logger.log('--- [3] 各メール解析 ---');
+  for (var i = 0; i < allMessages.length; i++) {
+    var msg = allMessages[i];
+    Logger.log('\n[メール' + (i+1) + '/' + allMessages.length + '] ' + msg.date + ' / ' + msg.from);
+    Logger.log('  件名: ' + msg.subject);
+    Logger.log('  msgId: ' + msg.msgId);
+
+    // チャイルドシート行を抜き出し
+    var csLine = '';
+    var lines = msg.body.split('\n');
+    for (var li = 0; li < lines.length; li++) {
+      if (lines[li].indexOf('チャイルドシート') >= 0 || lines[li].indexOf('ベビーシート') >= 0 || lines[li].indexOf('ジュニアシート') >= 0) {
+        csLine += '    > ' + lines[li].trim() + '\n';
+      }
+    }
+    if (csLine) Logger.log('  シート関連行:\n' + csLine);
+    else Logger.log('  シート関連行: (なし)');
+
+    // parseJalan_ で再解析
+    try {
+      var parsed = parseJalan_(msg.body);
+      Logger.log('  parseJalan_: opt_b=' + parsed.opt_b + ' opt_c=' + parsed.opt_c + ' opt_j=' + parsed.opt_j);
+    } catch (e) {
+      Logger.log('  parseJalan_ エラー: ' + e.toString());
+    }
+
+    // 処理済みID管理状況
+    var processedIds = getProcessedMsgIds_();
+    var processed = processedIds.indexOf(msg.msgId) >= 0;
+    Logger.log('  処理済みID管理: ' + (processed ? '✅処理済み' : '⚠️未処理'));
+  }
+
+  // 4) 既存予約パッチロジックシミュレーション（最新メール値を使用）
+  Logger.log('--- [4] パッチロジックシミュレーション ---');
+  if (rows && rows.length > 0 && allMessages.length > 0) {
+    var existing = rows[0];
+    var latest = allMessages[allMessages.length - 1];
+    try {
+      var latestParsed = parseJalan_(latest.body);
+      Logger.log('existing.opt_c = ' + existing.opt_c + ', latestParsed.opt_c = ' + latestParsed.opt_c);
+      var shouldPatch = +(latestParsed.opt_c||0) > +(existing.opt_c||0);
+      Logger.log('現行パッチ条件 (latestParsed > existing): ' + shouldPatch);
+      if (shouldPatch) {
+        Logger.log('→ パッチされるはず。なぜされていないか別原因調査必要');
+      } else {
+        Logger.log('→ パッチされない条件。existingが既にlatestParsed以上のため');
+      }
+    } catch (e) {
+      Logger.log('シミュレーションエラー: ' + e.toString());
+    }
+  }
+
+  Logger.log('=== 診断完了 ===');
+}
+
