@@ -62,7 +62,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v522';
+  var CV='spk-v524';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
@@ -2177,6 +2177,126 @@ function StaffManager({staff,onStaffChange,onDeleteStaff}){
         <button onClick={save} disabled={!form.name.trim()} style={{flex:1,padding:"10px 16px",borderRadius:10,border:"none",background:form.name.trim()?"#2563eb":"#94a3b8",fontSize:13,fontWeight:700,color:"#fff",cursor:form.name.trim()?"pointer":"not-allowed"}}>保存</button>
       </div>
     </div></div>}
+  </div>;
+}
+
+/* ==========================================
+   TOP画面 共通アイコン部品（那覇店と統一 v4.6.62）
+   ========================================== */
+function TopSectionTitle({icon,title,sub}){
+  return <div style={{display:"flex",alignItems:"center",gap:6,padding:"8px 4px 6px",marginTop:4}}>
+    <span style={{fontSize:14}}>{icon}</span>
+    <span style={{fontSize:11,fontWeight:800,color:"#475569",letterSpacing:0.3}}>{title}</span>
+    {sub&&<span style={{fontSize:9,color:"#94a3b8",fontWeight:600}}>{sub}</span>}
+    <div style={{flex:1,height:1,background:"linear-gradient(to right,#e2e8f0,transparent)",marginLeft:6}}/>
+  </div>;
+}
+function TopIcon({icon,label,badge,amount,subText,color,alert,active,onClick}){
+  const bg=alert?"linear-gradient(135deg,#fef2f2,#fee2e2)":(active?"linear-gradient(135deg,#eff6ff,#dbeafe)":"#fff");
+  const border=alert?"1.5px solid #fca5a5":(active?"1.5px solid #93c5fd":"1px solid #e5e7eb");
+  return <div onClick={onClick} style={{
+    background:bg,border:border,borderRadius:18,padding:"10px 4px",cursor:"pointer",
+    boxShadow:active?"0 4px 12px rgba(59,130,246,.15)":"0 2px 5px rgba(0,0,0,.05)",
+    textAlign:"center",position:"relative",minHeight:88,
+    transition:"all .15s",userSelect:"none"
+  }}>
+    <div style={{fontSize:26,lineHeight:1.1}}>{icon}</div>
+    <div style={{fontSize:10,fontWeight:700,marginTop:5,color:"#374151",lineHeight:1.2,padding:"0 2px"}}>{label}</div>
+    {amount>0&&<div style={{fontSize:9,color:alert?"#991b1b":"#6b7280",marginTop:2,fontWeight:700}}>¥{amount.toLocaleString()}</div>}
+    {subText&&!amount&&<div style={{fontSize:9,color:"#9ca3af",marginTop:2}}>{subText}</div>}
+    {badge>0&&<div style={{
+      position:"absolute",top:3,right:3,background:color||"#dc2626",color:"#fff",borderRadius:999,
+      minWidth:18,height:18,padding:"0 5px",fontSize:9,fontWeight:800,
+      display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 1px 3px rgba(0,0,0,.25)"
+    }}>{badge>99?"99+":badge}</div>}
+  </div>;
+}
+function SpkPaymentSection({sqfRefreshKey,onOpenSqFailed,setTab,data,jalanPay}){
+  const[counts,setCounts]=React.useState({sqfCount:0,sqfTotal:0,extCount:0,extTotal:0,jalCount:0,jalUnpaid:0,sqiUnpaid:0,sqiUnpaidAmt:0});
+  const[expanded,setExpanded]=React.useState(null);// 'sqfail'|'extra'|'square'|'jalan'|null
+  const load=async()=>{
+    if(!sb)return;
+    try{
+      const[sqf,ext,jp]=await Promise.all([
+        sb.from("sq_terminal_failed").select("amount,note,item_name,reason,raw_data").eq("resolved",false),
+        sb.from("spk_accounting").select("amount").eq("type","extra_sales").eq("paid",false),
+        sb.from("jalan_payments").select("amount,status,reservation_id")
+      ]);
+      // SPK APP は札幌店 + 不明 のみ（那覇店レコードは除外）
+      const sqfData=(sqf.data||[]).filter(it=>_guessStore(it)!=="NHA");
+      const extData=ext.data||[];
+      const jpData=(jp.data||[]).filter(p=>["new","link_created","email_sent"].includes(p.status));
+      setCounts({
+        sqfCount:sqfData.length,
+        sqfTotal:sqfData.reduce((s,r)=>s+(+r.amount||0),0),
+        extCount:extData.length,
+        extTotal:extData.reduce((s,r)=>s+(+r.amount||0),0),
+        jalCount:jpData.length,
+        jalUnpaid:jpData.reduce((s,p)=>s+(+p.amount||0),0),
+        sqiUnpaid:0,
+        sqiUnpaidAmt:0
+      });
+    }catch(e){}
+  };
+  React.useEffect(()=>{load();},[sqfRefreshKey]);
+  React.useEffect(()=>{const t=setInterval(load,60000);const onVis=()=>{if(document.visibilityState==="visible")load();};document.addEventListener("visibilitychange",onVis);return()=>{clearInterval(t);document.removeEventListener("visibilitychange",onVis);};},[]);
+  const toggle=(k)=>setExpanded(e=>e===k?null:k);
+  return <div style={{marginBottom:8}}>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6}}>
+      <TopIcon icon="⚠️" label="Square失敗" badge={counts.sqfCount} amount={counts.sqfTotal} color="#dc2626" alert={counts.sqfCount>0} subText={counts.sqfCount===0?"OK":""} onClick={onOpenSqFailed}/>
+      <TopIcon icon="📝" label="予約外未収" badge={counts.extCount} amount={counts.extTotal} color="#f97316" alert={counts.extCount>0} subText={counts.extCount===0?"OK":""} active={expanded==="extra"} onClick={()=>toggle("extra")}/>
+      <TopIcon icon="💳" label="Square請求" subText="一覧を見る" color="#3b82f6" active={expanded==="square"} onClick={()=>toggle("square")}/>
+      <TopIcon icon="🟡" label="じゃらん事前" badge={counts.jalCount} amount={counts.jalUnpaid} color="#8b5cf6" alert={counts.jalCount>0} subText={counts.jalCount===0?"OK":""} active={expanded==="jalan"} onClick={()=>toggle("jalan")}/>
+    </div>
+    {expanded==="extra"&&<div style={{marginTop:6,padding:"10px 14px",borderRadius:12,background:"#fff7ed",border:"1px solid #fed7aa",fontSize:11,color:"#9a3412"}}>予約外未収 {counts.extCount}件 — 会計タブで確認してください</div>}
+    {expanded==="square"&&<div style={{marginTop:6}}><SquareInvoiceWidget/></div>}
+    {expanded==="jalan"&&<div style={{marginTop:6}}><JalanPaymentWidget data={data} jalanPay={jalanPay} onGoJalan={()=>setTab&&setTab("jalanpay")}/></div>}
+  </div>;
+}
+function SpkBusinessSection({data,vehicles,fleet,maintenance}){
+  const[expanded,setExpanded]=React.useState(null);
+  const[ltCount,setLtCount]=React.useState(0);
+  const[recCount,setRecCount]=React.useState({n:0,c:0});
+  React.useEffect(()=>{
+    if(!data)return;
+    const today=new Date();today.setHours(0,0,0,0);
+    let waiting=0;
+    (data||[]).forEach(r=>{
+      if(r.status==="cancelled")return;
+      const ld=new Date((r.lendDate||"")+"T00:00:00");
+      if(isNaN(ld.getTime()))return;
+      if(ld<today)return;
+      if(!fleet||!fleet[r.id])waiting++;
+    });
+    setLtCount(waiting);
+  },[data,fleet]);
+  React.useEffect(()=>{
+    if(!sb)return;
+    (async()=>{
+      try{
+        const cutoff=new Date(Date.now()-24*3600000).toISOString();
+        const[{data:n},{data:c}]=await Promise.all([
+          sb.from("reservations").select("id").gte("created_at",cutoff).neq("status","cancelled"),
+          sb.from("reservations").select("id").gte("created_at",cutoff).in("status",["cancelled","キャンセル","cancel"])
+        ]);
+        setRecCount({n:(n||[]).length,c:(c||[]).length});
+      }catch(e){}
+    })();
+  },[]);
+  const toggle=(k)=>setExpanded(e=>e===k?null:k);
+  return <div style={{marginBottom:8}}>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6}}>
+      <TopIcon icon="⏱" label="配車待ち" badge={ltCount} subText={ltCount===0?"完了":"未配車"} color="#f59e0b" alert={ltCount>3} active={expanded==="lead"} onClick={()=>toggle("lead")}/>
+      <TopIcon icon="📡" label="直近24h" badge={recCount.n} subText={"CXL "+recCount.c} color="#0891b2" active={expanded==="rec"} onClick={()=>toggle("rec")}/>
+      <a href="https://handyman-inquiry.vercel.app/" target="_blank" rel="noopener" style={{textDecoration:"none"}}>
+        <TopIcon icon="📬" label="問い合わせ" subText="↗ 開く" color="#0ea5e9" onClick={()=>{}}/>
+      </a>
+      <a href="https://nosh2318.github.io/handyman-damage/" target="_blank" rel="noopener" style={{textDecoration:"none"}}>
+        <TopIcon icon="🚗" label="車両チェック" subText="↗ 開く" color="#dc2626" onClick={()=>{}}/>
+      </a>
+    </div>
+    {expanded==="lead"&&<div style={{marginTop:6,padding:"10px 14px",borderRadius:12,background:"#fffbeb",border:"1px solid #fde68a",fontSize:11,color:"#92400e"}}>未配車予約 {ltCount}件 — 配車表で配車してください</div>}
+    {expanded==="rec"&&<div style={{marginTop:6}}><TopRecentWidget/></div>}
   </div>;
 }
 
@@ -5808,8 +5928,10 @@ function SqFailedWidget({onOpen,refreshKey}){
   const load=async()=>{
     if(!sb)return;
     try{
-      const{data}=await sb.from("sq_terminal_failed").select("id,amount,payment_at").eq("resolved",false);
-      setItems(data||[]);
+      const{data}=await sb.from("sq_terminal_failed").select("id,amount,payment_at,note,item_name,reason,raw_data").eq("resolved",false);
+      // SPK APP は札幌店 + 不明 のみ（那覇店レコードは除外）
+      const filtered=(data||[]).filter(it=>_guessStore(it)!=="NHA");
+      setItems(filtered);
     }catch(e){}
   };
   useEffect(()=>{load();},[refreshKey]);
@@ -5828,33 +5950,129 @@ function SqFailedWidget({onOpen,refreshKey}){
   </div>;
 }
 
+// ★ 店舗推定: note / item_name / raw_data から札幌・沖縄キーワードで判定
+function _guessStore(it){
+  const txt=[it.note||"",it.item_name||"",it.reason||"",it.raw_data?(typeof it.raw_data==="string"?it.raw_data:JSON.stringify(it.raw_data)):""].join(" ");
+  if(/^(SPK|spk)\s|札幌|さっぽろ|サッポロ/.test(txt))return"SPK";
+  if(/^(NHA|nha)\s|沖縄|那覇|なは|ナハ/.test(txt))return"NHA";
+  return"UNKNOWN";
+}
 function SqFailedModal({onClose,onResolved}){
   const[items,setItems]=useState([]);
   const[loading,setLoading]=useState(true);
   const[sel,setSel]=useState(null);
-  const[form,setForm]=useState({store:"SPK",category:"",type:"income",resvNo:"",description:"",staffName:"",memo:""});
+  const[mode,setMode]=useState("list");// list / edit / manual
+  const[form,setForm]=useState({store:"SPK",category:"",type:"income",resvNo:"",description:"",staffName:"",memo:"",amount:"",date:"",payMethod:"カード"});
   const[busy,setBusy]=useState(false);
   const load=async()=>{
     setLoading(true);
     try{
       const{data}=await sb.from("sq_terminal_failed").select("*").eq("resolved",false).order("payment_at",{ascending:false});
-      setItems(data||[]);
+      // ★ SPK APP は那覇店レコードを完全除外（SPK + 不明 のみ表示）
+      const filtered=(data||[]).filter(it=>_guessStore(it)!=="NHA");
+      setItems(filtered);
     }catch(e){alert("読込エラー: "+e.message);}
     setLoading(false);
   };
   useEffect(()=>{load();},[]);
+  const startManual=()=>{
+    const today=new Date();const y=today.getFullYear();const m=String(today.getMonth()+1).padStart(2,"0");const d=String(today.getDate()).padStart(2,"0");
+    setSel(null);
+    setMode("manual");
+    setForm({store:"SPK",category:"",type:"income",resvNo:"",description:"",staffName:"",memo:"",amount:"",date:y+"-"+m+"-"+d,payMethod:"カード"});
+  };
+  const exclude=async(it)=>{
+    // 除外（会計起票せず、失敗リストから外す）
+    // 用途: テスト決済 / じゃらん現地決済（既に予約に紐付いてる） / その他「立替でも予約外でもない」決済
+    const reasons=[
+      "テスト決済（捨て打ち）",
+      "じゃらん現地決済（予約に既に紐付き済）",
+      "通常レンタカー料金（予約と紐付き済）",
+      "重複決済（既に他で起票済）",
+      "その他（理由を記載）"
+    ];
+    const choice=window.prompt(
+      "¥"+(it.amount||0).toLocaleString()+" を会計起票せずに「除外」しますか？\n\n"
+      +"除外理由を選んでください（番号を入力）:\n"
+      +reasons.map((r,i)=>(i+1)+". "+r).join("\n")
+      +"\n\n（キャンセルで中止）"
+    );
+    if(!choice)return;
+    let reasonText="";
+    const num=parseInt(choice,10);
+    if(num>=1&&num<=reasons.length){
+      reasonText=reasons[num-1];
+      if(num===reasons.length){
+        const extra=window.prompt("詳細理由を入力してください:");
+        if(!extra)return;
+        reasonText="その他: "+extra;
+      }
+    }else{
+      reasonText="その他: "+choice;
+    }
+    const staffName=window.prompt("担当スタッフ名を入力してください（任意）:")||"";
+    if(!window.confirm("¥"+(it.amount||0).toLocaleString()+" を「"+reasonText+"」で除外します。\n\n会計には起票されません。よろしいですか？"))return;
+    try{
+      const{error}=await sb.from("sq_terminal_failed").update({
+        resolved:true,
+        resolved_at:new Date().toISOString(),
+        resolved_by:staffName,
+        resolved_store:"EXCLUDED",
+        resolved_accounting_id:null,
+        resolved_memo:"除外: "+reasonText
+      }).eq("id",it.id);
+      if(error){alert("除外失敗: "+error.message);return;}
+      await load();
+      if(onResolved)onResolved();
+    }catch(e){alert("エラー: "+e.message);}
+  };
+  const submitManual=async()=>{
+    if(busy)return;
+    if(!form.category){alert("科目（立替 / 予約外売上）を選択してください");return;}
+    if(!form.description||!form.description.trim()){alert("摘要を入力してください");return;}
+    const amt=Number(form.amount)||0;
+    if(amt<=0){alert("金額を入力してください");return;}
+    if(!form.date){alert("日付を入力してください");return;}
+    if(!window.confirm("¥"+amt.toLocaleString()+" を「"+form.store+" / "+form.category+"」で会計に起票しますか？\n\n（手動入力）")){return;}
+    setBusy(true);
+    try{
+      const tbl=form.store==="NHA"?"nha_accounting":"spk_accounting";
+      const acctId="sq-manual-"+Date.now().toString(36)+"-"+Math.random().toString(36).slice(2,8);
+      const row={
+        id:acctId,
+        date:form.date,
+        type:form.type,
+        category:form.category,
+        sub_category:"",
+        description:form.description,
+        amount:amt,
+        input_by:"Square(手動入力)",
+        memo:form.memo||"手動Square端末決済",
+        pay_method:form.payMethod||"カード",
+        resv_no:form.resvNo||"",
+        paid:true,
+        staff_name:form.staffName||""
+      };
+      const{error:e1}=await sb.from(tbl).insert(row);
+      if(e1){alert("会計への起票失敗: "+e1.message);setBusy(false);return;}
+      alert("✅ 起票完了: ¥"+amt.toLocaleString()+" "+form.store+" / "+form.category);
+      setMode("list");
+      await load();
+      if(onResolved)onResolved();
+      setBusy(false);
+    }catch(e){alert("エラー: "+e.message);setBusy(false);}
+  };
   const pick=(it)=>{
     setSel(it);
     const n=(it.note||"").trim();
     const m=n.match(/^(NHA|SPK|nha|spk)[\s　]+(\S+)[\s　]+([\s\S]+)$/);
-    let store="SPK",resvNo="",desc=n;
+    let resvNo="",desc=n;
     if(m){
-      store=m[1].toUpperCase();
       resvNo=(m[2]==="なし"||m[2]==="無し"||m[2]==="-")?"":m[2];
       desc=m[3].replace(/[\s　]+/g," ").trim();
     }
-    // ★ 科目は商品名から自動判定しない（スタッフに明示選択させる）
-    setForm({store,category:"",type:"income",resvNo,description:desc,staffName:"",memo:""});
+    // ★ SPK APP は店舗を SPK 固定（那覇店は NHA APP で起票）
+    setForm({store:"SPK",category:"",type:"income",resvNo,description:desc,staffName:"",memo:"",amount:"",date:"",payMethod:"カード"});
   };
   const submit=async()=>{
     if(!sel||busy)return;
@@ -5900,16 +6118,56 @@ function SqFailedModal({onClose,onResolved}){
   return <div className="modal-overlay" onClick={onClose}>
     <div className="modal-box" onClick={e=>e.stopPropagation()} style={{maxWidth:820,maxHeight:"90vh",display:"flex",flexDirection:"column"}}>
       <div style={{padding:"14px 20px",borderBottom:"1px solid #e5e7eb",display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
-        <span style={{fontSize:20}}>⚠️</span>
+        <span style={{fontSize:20}}>{mode==="manual"?"📝":"⚠️"}</span>
         <div style={{flex:1}}>
-          <div style={{fontWeight:800,fontSize:15,color:"#991b1b"}}>Square自動取込失敗 — 手動起票</div>
-          <div style={{fontSize:10,color:"#6b7280",marginTop:2}}>お客様の決済は完了済み。会計未起票のリストです。1件ずつ店舗・科目を指定して起票してください。</div>
+          <div style={{fontWeight:800,fontSize:15,color:mode==="manual"?"#1e40af":"#991b1b"}}>{mode==="manual"?"Square端末決済 — 手動入力":"Square自動取込失敗 — 手動起票"}</div>
+          <div style={{fontSize:10,color:"#6b7280",marginTop:2}}>{mode==="manual"?"GASが拾えなかった/拾い忘れたSquare端末決済を手動で会計起票します。":"お客様の決済は完了済み。会計未起票のリストです。1件ずつ店舗・科目を指定して起票してください。"}</div>
         </div>
+        {mode==="list"&&<button onClick={startManual} className="btn-primary" style={{fontSize:11}}>+ 手動入力</button>}
+        {mode==="manual"&&<button onClick={()=>setMode("list")} className="btn-ghost" style={{fontSize:11}}>← リスト</button>}
         <button onClick={onClose} className="btn-ghost">閉じる</button>
       </div>
+      {/* 店舗切り分け: SPK APP は札幌店 + 不明レコードのみ表示。那覇店レコードは完全に非表示。 */}
       <div style={{flex:1,overflow:"auto",padding:"14px 18px"}}>
-        {loading?<div style={{textAlign:"center",padding:40,color:"#94a3b8"}}>読込中...</div>:
-         items.length===0?<div style={{textAlign:"center",padding:40,color:"#059669",fontWeight:700,fontSize:14}}>✅ 失敗レコードはありません</div>:
+        {mode==="manual"?<div>
+          <div style={{background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:8,padding:"10px 12px",marginBottom:14,fontSize:11,color:"#1e3a8a"}}>
+            ℹ️ Square端末で決済したが自動起票されていない場合に使用。<br/>
+            金額・日付・店舗・科目を入力 → 会計に直接起票します。Square自動取込との重複に注意してください。
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:10}}>
+            <label style={{fontSize:11,fontWeight:700,color:"#374151"}}>店舗<input type="text" value="SPK（札幌店）" disabled className="input-s" style={{marginTop:3,background:"#f3f4f6",color:"#6b7280"}}/></label>
+            <label style={{fontSize:11,fontWeight:700,color:"#374151"}}>科目 <span style={{color:"#dc2626"}}>*</span><select value={form.category} onChange={e=>setForm({...form,category:e.target.value})} className="input-s" style={{marginTop:3,border:form.category?"1px solid #d1d5db":"2px solid #dc2626",background:form.category?"#fff":"#fef2f2"}}>
+              <option value="">-- 選択してください --</option>
+              <option value="立替">立替</option>
+              <option value="予約外売上">予約外売上</option>
+            </select></label>
+            <label style={{fontSize:11,fontWeight:700,color:"#374151"}}>金額 <span style={{color:"#dc2626"}}>*</span><input type="number" value={form.amount} onChange={e=>setForm({...form,amount:e.target.value})} placeholder="例: 3500" className="input-s" style={{marginTop:3,border:form.amount?"1px solid #d1d5db":"2px solid #dc2626",background:form.amount?"#fff":"#fef2f2"}}/></label>
+            <label style={{fontSize:11,fontWeight:700,color:"#374151"}}>日付 <span style={{color:"#dc2626"}}>*</span><input type="date" value={form.date} onChange={e=>setForm({...form,date:e.target.value})} className="input-s" style={{marginTop:3}}/></label>
+            <label style={{fontSize:11,fontWeight:700,color:"#374151"}}>区分<select value={form.type} onChange={e=>setForm({...form,type:e.target.value})} className="input-s" style={{marginTop:3}}>
+              <option value="income">収入</option>
+              <option value="expense">支出</option>
+            </select></label>
+            <label style={{fontSize:11,fontWeight:700,color:"#374151"}}>支払方法<select value={form.payMethod} onChange={e=>setForm({...form,payMethod:e.target.value})} className="input-s" style={{marginTop:3}}>
+              <option value="カード">カード</option>
+              <option value="現金">現金</option>
+              <option value="その他">その他</option>
+            </select></label>
+            <label style={{fontSize:11,fontWeight:700,color:"#374151"}}>予約番号（任意）<input value={form.resvNo} onChange={e=>setForm({...form,resvNo:e.target.value})} placeholder="例: R0IPN7SD" className="input-s" style={{marginTop:3}}/></label>
+            <label style={{fontSize:11,fontWeight:700,color:"#374151"}}>担当スタッフ<input value={form.staffName} onChange={e=>setForm({...form,staffName:e.target.value})} placeholder="例: 大下" className="input-s" style={{marginTop:3}}/></label>
+            <label style={{fontSize:11,fontWeight:700,color:"#374151",gridColumn:"span 2"}}>摘要 <span style={{color:"#dc2626"}}>*</span><input value={form.description} onChange={e=>setForm({...form,description:e.target.value})} placeholder="例: ガソリン代 / 延長料金1日分 / オプション追加" className="input-s" style={{marginTop:3,border:form.description?"1px solid #d1d5db":"2px solid #dc2626",background:form.description?"#fff":"#fef2f2"}}/></label>
+            <label style={{fontSize:11,fontWeight:700,color:"#374151",gridColumn:"span 2"}}>補足メモ<input value={form.memo} onChange={e=>setForm({...form,memo:e.target.value})} placeholder="（任意）" className="input-s" style={{marginTop:3}}/></label>
+          </div>
+          <div style={{display:"flex",gap:10,marginTop:16,justifyContent:"flex-end"}}>
+            <button onClick={()=>setMode("list")} className="btn-ghost" disabled={busy}>キャンセル</button>
+            <button onClick={submitManual} disabled={busy||!form.category||!form.amount||!form.description||!form.date} className="btn-primary" style={{opacity:(busy||!form.category||!form.amount||!form.description||!form.date)?0.5:1}}>{busy?"起票中...":"📝 "+form.store+" / "+(form.category||"科目未選択")+" で起票"}</button>
+          </div>
+        </div>:
+        loading?<div style={{textAlign:"center",padding:40,color:"#94a3b8"}}>読込中...</div>:
+         items.length===0?<div style={{textAlign:"center",padding:40}}>
+           <div style={{color:"#059669",fontWeight:700,fontSize:14,marginBottom:8}}>✅ 失敗レコードはありません</div>
+           <div style={{color:"#64748b",fontSize:11,marginBottom:16}}>Square自動取込は正常に動作しています。<br/>もし自動で拾えなかった決済があれば、上の「+ 手動入力」から登録してください。</div>
+           <button onClick={startManual} className="btn-primary" style={{fontSize:12}}>+ 手動入力で起票</button>
+         </div>:
          !sel?<div>
            <div style={{fontSize:11,color:"#64748b",marginBottom:8}}>起票する行を選んでください（{items.length}件）</div>
            <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:680}}>
@@ -5928,7 +6186,12 @@ function SqFailedModal({onClose,onResolved}){
                  <td style={{padding:"6px 8px",fontSize:11}}>{it.item_name||"-"}</td>
                  <td style={{padding:"6px 8px",fontSize:10,maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{it.note||<span style={{color:"#dc2626",fontWeight:700}}>空</span>}</td>
                  <td style={{padding:"6px 8px",fontSize:10,color:"#b91c1c",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{it.reason||"-"}</td>
-                 <td style={{padding:"6px 8px",whiteSpace:"nowrap"}}><button className="btn-primary" style={{padding:"4px 10px",fontSize:11}} onClick={()=>pick(it)}>起票へ</button></td>
+                 <td style={{padding:"6px 8px",whiteSpace:"nowrap"}}>
+                   <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
+                     <button className="btn-primary" style={{padding:"4px 10px",fontSize:11}} onClick={()=>pick(it)}>起票へ</button>
+                     <button style={{padding:"4px 10px",fontSize:11,background:"#fff",border:"1px solid #cbd5e1",borderRadius:8,color:"#64748b",cursor:"pointer",fontWeight:600}} onClick={()=>exclude(it)} title="会計起票せず除外（テスト決済・じゃらん現地決済等）">除外</button>
+                   </div>
+                 </td>
                </tr>)}
              </tbody>
            </table></div>
@@ -5947,10 +6210,7 @@ function SqFailedModal({onClose,onResolved}){
              <div style={{fontSize:10,color:"#b91c1c",marginTop:2}}>失敗理由: {sel.reason||"-"}</div>
            </div>
            <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:10}}>
-             <label style={{fontSize:11,fontWeight:700,color:"#374151"}}>店舗<select value={form.store} onChange={e=>setForm({...form,store:e.target.value})} className="input-s" style={{marginTop:3}}>
-               <option value="SPK">SPK（札幌店）</option>
-               <option value="NHA">NHA（那覇空港店）</option>
-             </select></label>
+             <label style={{fontSize:11,fontWeight:700,color:"#374151"}}>店舗<input type="text" value="SPK（札幌店）" disabled className="input-s" style={{marginTop:3,background:"#f3f4f6",color:"#6b7280"}}/></label>
              <label style={{fontSize:11,fontWeight:700,color:"#374151"}}>科目 <span style={{color:"#dc2626"}}>*</span><select value={form.category} onChange={e=>setForm({...form,category:e.target.value})} className="input-s" style={{marginTop:3,border:form.category?"1px solid #d1d5db":"2px solid #dc2626",background:form.category?"#fff":"#fef2f2"}}>
                <option value="">-- 選択してください --</option>
                <option value="立替">立替</option>
@@ -5965,9 +6225,12 @@ function SqFailedModal({onClose,onResolved}){
              <label style={{fontSize:11,fontWeight:700,color:"#374151"}}>担当スタッフ<input value={form.staffName} onChange={e=>setForm({...form,staffName:e.target.value})} placeholder="例: 大下" className="input-s" style={{marginTop:3}}/></label>
              <label style={{fontSize:11,fontWeight:700,color:"#374151"}}>補足メモ<input value={form.memo} onChange={e=>setForm({...form,memo:e.target.value})} placeholder="（任意）" className="input-s" style={{marginTop:3}}/></label>
            </div>
-           <div style={{display:"flex",gap:10,marginTop:16,justifyContent:"flex-end"}}>
-             <button onClick={()=>setSel(null)} className="btn-ghost" disabled={busy}>キャンセル</button>
-             <button onClick={submit} disabled={busy||!form.category} className="btn-primary" style={{opacity:busy||!form.category?0.5:1}}>{busy?"起票中...":form.category?"📝 "+form.store+" / "+form.category+" で起票":"科目を選択してください"}</button>
+           <div style={{display:"flex",gap:10,marginTop:16,justifyContent:"space-between",alignItems:"center"}}>
+             <button onClick={()=>{exclude(sel);setSel(null);}} disabled={busy} style={{padding:"6px 14px",fontSize:12,background:"#fff",border:"1px solid #cbd5e1",borderRadius:8,color:"#64748b",cursor:"pointer",fontWeight:600}} title="会計起票せず除外（テスト決済・じゃらん現地決済等）">🚫 除外</button>
+             <div style={{display:"flex",gap:10}}>
+               <button onClick={()=>setSel(null)} className="btn-ghost" disabled={busy}>キャンセル</button>
+               <button onClick={submit} disabled={busy||!form.category} className="btn-primary" style={{opacity:busy||!form.category?0.5:1}}>{busy?"起票中...":form.category?"📝 "+form.store+" / "+form.category+" で起票":"科目を選択してください"}</button>
+             </div>
            </div>
          </div>}
       </div>
@@ -12928,22 +13191,24 @@ function App(){
                 {id:"parking",ico:"🅿️",l:"駐車場",desc:"入出庫・洗車・メンテ管理"},
                 {id:"jalanpay",ico:"💳",l:"じゃらん決済",desc:"じゃらん予約の決済確認",badge:(()=>{const j=data.filter(r=>r.ota==="J");const undone=j.filter(r=>!jalanPay[r.id]||jalanPay[r.id].payStatus!=="完了").length;return undone>0?undone+"件未完了":null;})()},
                 {id:"import",ico:"📁",l:"CSV取込",desc:"OTA予約CSVインポート"},
-                {id:"accounting",ico:"💰",l:"会計",desc:"現金出納帳・予約外売上・立替金"},
               ]},
               {title:"スタッフ管理",color:"#059669",items:[
                 {id:"shift",ico:"📅",l:"出勤簿",desc:"シフト表の作成・編集"},
                 {id:"attendance",ico:"⏰",l:"給与",desc:"予算・実績・給与明細"},
                 {id:"staff",ico:"👥",l:"スタッフ",desc:"スタッフ情報・時給設定"},
               ]},
+              {title:"会計",color:"#d97706",items:[
+                {id:"accounting",ico:"🧾",l:"会計管理",desc:"現金出納帳・予約外売上・立替金"},
+              ]},
               {title:"データ・分析",color:"#7c3aed",items:[
                 {id:"biz",ico:"🔒",l:"経営",desc:"PL・CF・ダッシュボード（オーナー専用）"},
                 {id:"customer",ico:"👑",l:"顧客",desc:"リピーター分析"},
+                {id:"license",ico:"🪪",l:"免許証",desc:"免許証画像アップロード",external:true},
                 {id:"data",ico:"📋",l:"データ",desc:"予約データ一覧・検索"},
                 {id:"history",ico:"📜",l:"過去タスク",desc:"過去のタスク履歴"},
               ]},
               {title:"設定",color:"#64748b",items:[
                 {id:"vehicle",ico:"🔧",l:"車両",desc:"車両マスタ・クラス管理"},
-                {id:"license",ico:"🪪",l:"免許証",desc:"免許証画像アップロード",external:true},
               ]},
             ];
             return <div style={{maxWidth:700,margin:"0 auto",paddingBottom:20}}>
@@ -12973,28 +13238,13 @@ function App(){
                 </div>;
               })()}
               <MemoBox today={today}/>
-              <SqFailedWidget refreshKey={sqFailedRefreshKey} onOpen={()=>setShowSqFailed(true)}/>
               <LeadTimeWidget data={data} vehicles={vehicles} fleet={fleet} maintenance={maintenance}/>
-              {/* ===== 決済（縦並び）+ 外部リンク（2列） ===== */}
-              <TopRecentWidget/>
-              <SquareInvoiceWidget/>
-              <JalanPaymentWidget data={data} jalanPay={jalanPay} onGoJalan={()=>setTab("jalanpay")}/>
-              <div style={{display:"flex",gap:6,marginBottom:8}}>
-                <a href="https://handyman-inquiry.vercel.app/" target="_blank" rel="noopener" style={{textDecoration:"none",flex:1}}>
-                  <div style={{display:"flex",alignItems:"center",gap:6,padding:"8px 10px",borderRadius:10,background:"#f0f9ff",border:"1px solid #bae6fd",cursor:"pointer"}}>
-                    <span style={{fontSize:14}}>📬</span>
-                    <span style={{fontSize:11,fontWeight:700,color:"#1e293b"}}>問い合わせ</span>
-                    <span style={{marginLeft:"auto",fontSize:10,color:"#94a3b8"}}>→</span>
-                  </div>
-                </a>
-                <a href="https://nosh2318.github.io/handyman-damage/" target="_blank" rel="noopener" style={{textDecoration:"none",flex:1}}>
-                  <div style={{display:"flex",alignItems:"center",gap:6,padding:"8px 10px",borderRadius:10,background:"#fefce8",border:"1px solid #fde68a",cursor:"pointer"}}>
-                    <span style={{fontSize:14}}>🚗</span>
-                    <span style={{fontSize:11,fontWeight:700,color:"#1e293b"}}>車両チェック</span>
-                    <span style={{marginLeft:"auto",fontSize:10,color:"#94a3b8"}}>→</span>
-                  </div>
-                </a>
-              </div>
+              {/* ===== 💳 決済（4アイコン） ===== */}
+              <TopSectionTitle icon="💳" title="決済" sub="タップで詳細"/>
+              <SpkPaymentSection sqfRefreshKey={sqFailedRefreshKey} onOpenSqFailed={()=>setShowSqFailed(true)} setTab={setTab} data={data} jalanPay={jalanPay}/>
+              {/* ===== 📊 業務 / 関連APP（4アイコン） ===== */}
+              <TopSectionTitle icon="📊" title="業務 / 関連APP"/>
+              <SpkBusinessSection data={data} vehicles={vehicles} fleet={fleet} maintenance={maintenance}/>
               {/* ★ タスクサマリー + 本日スケジュール ヘッダー2列 */}
               <div style={{display:"flex",gap:6,marginBottom:6}}>
                 <div onClick={()=>setTaskSumOpen(o=>!o)} style={{flex:1,display:"flex",alignItems:"center",gap:6,padding:"8px 10px",borderRadius:10,background:"#f8fafc",border:"1px solid #e2e8f0",cursor:"pointer",userSelect:"none",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
@@ -13159,23 +13409,29 @@ function App(){
                   </div>}
                 </div>:null;
               })()}
-              {sections.map(function(sec){return <div key={sec.title} style={{marginBottom:16}}>
-                <div style={{fontSize:11,fontWeight:800,color:sec.color,textTransform:"uppercase",letterSpacing:1,marginBottom:8,paddingLeft:4}}>{sec.title}</div>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:8}}>
-                  {sec.items.map(function(item){return <button key={item.id} onClick={function(){if(item.external){window.open("license.html","_blank");}else{setTab(item.id);}}} style={{
-                    display:"flex",alignItems:"center",gap:12,padding:"14px 16px",borderRadius:14,border:"1px solid #e2e8f0",
-                    background:"#fff",cursor:"pointer",textAlign:"left",transition:"all .15s",boxShadow:"0 1px 3px rgba(0,0,0,.04)"
-                  }} onMouseOver={function(e){e.currentTarget.style.borderColor=sec.color;e.currentTarget.style.boxShadow="0 2px 8px rgba(0,0,0,.08)";}}
-                     onMouseOut={function(e){e.currentTarget.style.borderColor="#e2e8f0";e.currentTarget.style.boxShadow="0 1px 3px rgba(0,0,0,.04)";}}>
-                    <div style={{width:42,height:42,borderRadius:12,background:sec.color+"12",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>{item.ico}</div>
-                    <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontSize:14,fontWeight:700,color:"#1e293b"}}>{item.l}</div>
-                      <div style={{fontSize:10,color:"#94a3b8",marginTop:1,lineHeight:1.3}}>{item.desc}</div>
-                    </div>
-                    {item.badge&&<span style={{padding:"2px 8px",borderRadius:10,fontSize:9,fontWeight:700,background:sec.color+"18",color:sec.color,flexShrink:0}}>{item.badge}</span>}
-                  </button>;})}
-                </div>
-              </div>;})}
+              {/* ===== 🛠 日常業務以下 アイコングリッド統一（v4.6.62 那覇準拠） ===== */}
+              {sections.map(function(sec){
+                const sectionIco={"日常業務":"🛠","スタッフ管理":"👥","会計":"💰","データ・分析":"📈","設定":"⚙️"}[sec.title]||"📌";
+                return <div key={sec.title}>
+                  <TopSectionTitle icon={sectionIco} title={sec.title}/>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:14}}>
+                    {sec.items.map(function(item){
+                      const m=item.badge?String(item.badge).match(/(\d+)/):null;
+                      const badgeN=m?parseInt(m[1]):0;
+                      const isAlert=item.badge&&/未|残|エラー|要/.test(item.badge);
+                      return <TopIcon
+                        key={item.id}
+                        icon={item.ico}
+                        label={item.l}
+                        badge={badgeN}
+                        color={isAlert?"#dc2626":sec.color}
+                        alert={isAlert&&badgeN>0}
+                        onClick={function(){if(item.external){window.open("license.html","_blank");}else{setTab(item.id);}}}
+                      />;
+                    })}
+                  </div>
+                </div>;
+              })}
               {/* 同期ステータスパネル（最下部） */}
               {SB_ENABLED&&(()=>{
                 const now=Date.now();
@@ -13272,7 +13528,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.6.61";
+const APP_VERSION="v4.6.63";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");

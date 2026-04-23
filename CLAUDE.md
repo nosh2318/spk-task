@@ -80,12 +80,44 @@
 TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 / 駐車場 / 会計 / 顧客 / 売上 / データ / 過去 / 免許証
 
 ## 現在のバージョン
-- **APP_VERSION**: v4.6.56
-- **sw.js CACHE_NAME**: `spk-v517`
-- **index.html CV**: `spk-v517`
+- **APP_VERSION**: v4.6.63
+- **sw.js CACHE_NAME**: `spk-v524`
+- **index.html CV**: `spk-v524`
 - **SRI/CSP**: 未適用（下記インシデント参照）
 
 ## 2026-04-23 修正履歴
+
+### Square失敗モーダルを那覇店と同機能に統一（v4.6.63）
+- **要望**: 「スクショの機能がSPKに無いので新しく実装してください。まずは配置・デザインを統一してから」（画像: `スクリーンショット 2026-04-23 14.35.51.png` — 那覇店のSqFailedModalで「+ 手動入力」ボタンと行別「除外」ボタンが存在）
+- **SPK側に欠けていた機能**:
+  1. 「+ 手動入力」ヘッダーボタン（sq_terminal_failedを介さず、Square端末決済の取りこぼしを直接会計起票）
+  2. 各行の「除外」ボタン（テスト決済 / じゃらん現地決済 / 重複決済 等を会計起票せずに sq_terminal_failed から外す）
+  3. 3モードstate machine（list / edit / manual）
+- **実装 (`index.src.html`)**:
+  1. `_guessStore(it)` ヘルパー追加（note/item_name/reason/raw_data を見て SPK/NHA/UNKNOWN を判定）
+  2. `SqFailedModal` 全面書き換え: NHA版をSPK向けに移植
+     - `mode` state追加、`startManual()` / `exclude()` / `submitManual()` 関数を実装
+     - ヘッダーに「+ 手動入力」ボタン（list mode時のみ）
+     - 行末に「起票へ」「除外」の2ボタン
+     - 詳細フォーム下部に「🚫 除外」ボタン追加
+     - 店舗入力は "SPK（札幌店）" に固定（那覇店は NHA APP で起票）
+     - フィルタ: `_guessStore(it)!=="NHA"` で札幌 + 不明のみ表示（那覇レコード完全除外）
+  3. `SqFailedWidget` / `SpkPaymentSection` の件数・合計も同フィルタに統一（TOP表示と詳細モーダルのズレ防止）
+  4. 除外レコードは `resolved_store:"EXCLUDED"` で sq_terminal_failed から外す（監査ログ保持）
+- **バージョン**: `APP_VERSION=v4.6.63` / `sw.js CACHE_NAME=spk-v524` / `index.html CV=spk-v524` 同時更新
+- **店舗分離ルール**: sq_terminal_failed は NHA/SPK 共有テーブルだが、NHA APP と SPK APP でフィルタを反転（NHA APP は `!=="SPK"` / SPK APP は `!=="NHA"`）。UNKNOWN は両方に表示される
+
+### TOP画面を那覇店と同一仕様に統一（v4.6.62）
+- **要望**: 「TOPの配列を全て 那覇店 と同じ仕様にしてください」
+- **実装 (`index.src.html`)**:
+  1. 新規共通部品を追加: `TopSectionTitle` / `TopIcon`（那覇店と完全一致の見た目・パラメータ）
+  2. `SpkPaymentSection` 新規: 4アイコン（Square失敗 / 予約外未収 / Square請求 / じゃらん事前）。タップで対応ウィジェットを展開
+  3. `SpkBusinessSection` 新規: 4アイコン（配車待ち / 直近24h / 問い合わせ / 車両チェック）
+  4. TOP配列を那覇店準拠に再編:
+     - 協議中 → MemoBox → LeadTimeWidget → 💳決済(4アイコン) → 📊業務/関連APP(4アイコン) → タスクサマリー / 本日スケジュール(2列ヘッダ) → 個人別タスクサマリー → 本日スケジュール → セクション別4列アイコングリッド → 同期ステータス
+  5. `sections` を那覇店準拠に再編（「会計」を独立セクションに昇格、免許証を「データ・分析」配下に）
+  6. 旧コンポーネント（SqFailedWidget単独表示 / TopRecentWidget単独 / SquareInvoiceWidget単独 / JalanPaymentWidget単独 / 問い合わせ&車両チェック横並び）は削除（決済/業務セクション配下に統合）
+- **バージョン**: `APP_VERSION=v4.6.62` / `sw.js CACHE_NAME=spk-v523` / `index.html CV=spk-v523` 同時更新
 
 ### 🛡️ tasks opts (B/C/J) 同期の根本修正（GAS gas-email-import-v2.gs）
 - **背景**: マキノリナ(R04OWZ6U)でじゃらん予約のチャイルドシート数量が OP画面/TOP で「×1」表示されるが実際は2個。DB確認すると `reservations.opt_c=1` / `tasks.opt_c=false`(boolean) / `tasks.changed_json._optC=1` / `tasks.memo` 末尾 `##BCJ:0,1,0` で全て 1 が保存されていた
