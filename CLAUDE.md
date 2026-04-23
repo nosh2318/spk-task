@@ -80,12 +80,31 @@
 TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 / 駐車場 / 会計 / 顧客 / 売上 / データ / 過去 / 免許証
 
 ## 現在のバージョン
-- **APP_VERSION**: v4.6.63
-- **sw.js CACHE_NAME**: `spk-v524`
-- **index.html CV**: `spk-v524`
+- **APP_VERSION**: v4.6.64
+- **sw.js CACHE_NAME**: `spk-v525`
+- **index.html CV**: `spk-v525`
 - **SRI/CSP**: 未適用（下記インシデント参照）
 
 ## 2026-04-23 修正履歴
+
+### TOP決済セクションのアイコンタップを那覇店と同仕様に統一（v4.6.64）
+- **症状**: 「札幌はこれらを押しても出てこない / 全て同じ仕様に / 特にsquare請求は動かない」
+  - 予約外未収アイコンをタップしても、ただの「会計タブで確認してください」テキストのみ表示（詳細リストなし）
+  - Square請求アイコンをタップすると `SquareInvoiceWidget` のヘッダーバーだけ表示され、中身が開かない（2回タップ必要）
+  - Square請求アイコンに件数バッジが無い（NHAには有り）
+- **修正 (`index.src.html`)**:
+  1. `SpkExtraUnpaidWidget` 新規: NHA `ExtraUnpaidWidget` を `spk_accounting` 版に移植。日付/カテゴリ/予約番号/宛名/金額/URL の詳細リスト表示。Realtime購読で自動更新
+  2. `SquareInvoiceWidget` に `defaultOpen` prop 追加: `useState(!!defaultOpen)` で初期状態を制御
+  3. `SpkPaymentSection` 更新:
+     - Square請求のバッジ・金額を `spk_accounting` の `url IS NOT NULL AND paid=false` から計算（jalan_payments の予約番号は除外、NHA と同ロジック）
+     - 予約外未収タップ → `<SpkExtraUnpaidWidget defaultOpen={true}/>` を展開
+     - Square請求タップ → `<SquareInvoiceWidget defaultOpen={true}/>` を展開（1タップで中身が見える）
+- **バージョン**: `APP_VERSION=v4.6.64` / `sw.js CACHE_NAME=spk-v525` / `index.html CV=spk-v525` 同時更新
+
+### DY00000000938 入金ステータス更新漏れ対応
+- **症状**: Slack通知「✅入金確認完了 DY00000000938 ワダタイキ ¥8,100 予約外売上 札幌店」が届いたが、APP上で `paid=false` のまま残っていた
+- **即時対応**: DB直接UPDATEで `paid=true` に修正（id=9a60be43-9cf7-4b94-b3dc-3b2af81a2de0）
+- **残課題**: `syncPaidToAccounting` GASトリガー（HANDYMAN Payment）がこのレコードを更新しなかった原因調査。Slack通知は飛んでいるので検知はしているが、DB更新失敗（列名ズレ等）の可能性あり
 
 ### Square失敗モーダルを那覇店と同機能に統一（v4.6.63）
 - **要望**: 「スクショの機能がSPKに無いので新しく実装してください。まずは配置・デザインを統一してから」（画像: `スクリーンショット 2026-04-23 14.35.51.png` — 那覇店のSqFailedModalで「+ 手動入力」ボタンと行別「除外」ボタンが存在）

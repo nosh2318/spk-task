@@ -62,7 +62,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v524';
+  var CV='spk-v525';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
@@ -2211,21 +2211,73 @@ function TopIcon({icon,label,badge,amount,subText,color,alert,active,onClick}){
     }}>{badge>99?"99+":badge}</div>}
   </div>;
 }
+/* SPK 予約外未収ウィジェット（那覇店 ExtraUnpaidWidget を spk_accounting 版に移植） */
+function SpkExtraUnpaidWidget({defaultOpen}){
+  const[items,setItems]=React.useState([]);
+  const[open,setOpen]=React.useState(!!defaultOpen);
+  React.useEffect(()=>{
+    (async()=>{
+      await sbAuthPromise;if(!sb)return;
+      try{
+        const{data}=await sb.from("spk_accounting").select("*")
+          .eq("type","extra_sales").eq("paid",false)
+          .order("date",{ascending:false});
+        if(data)setItems(data);
+      }catch(e){console.warn("[SpkExtraUnpaid]",e);}
+    })();
+    if(!sb)return;
+    const ch=sb.channel("spk-extra-unpaid-rt").on("postgres_changes",{event:"*",schema:"public",table:"spk_accounting"},async()=>{
+      try{
+        const{data}=await sb.from("spk_accounting").select("*")
+          .eq("type","extra_sales").eq("paid",false)
+          .order("date",{ascending:false});
+        if(data)setItems(data);
+      }catch(e){}
+    }).subscribe();
+    return()=>{sb.removeChannel(ch);};
+  },[]);
+  if(!items.length)return <div style={{padding:"10px 14px",borderRadius:12,background:"#f0fdf4",border:"1px solid #bbf7d0",fontSize:11,color:"#059669"}}>✅ 予約外未収はありません</div>;
+  const total=items.reduce((s,r)=>s+(Number(r.amount)||0),0);
+  return <div>
+    <div onClick={()=>setOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px",borderRadius:open?"12px 12px 0 0":"12px",background:"#fef2f2",border:"1px solid #fecaca",cursor:"pointer",userSelect:"none",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
+      <span style={{fontSize:16}}>📝</span>
+      <span style={{fontSize:12,fontWeight:800,color:"#1e293b"}}>予約外売上 未回収</span>
+      <span style={{fontSize:10,fontWeight:700,color:"#dc2626",background:"#fee2e2",padding:"2px 8px",borderRadius:8}}>{items.length}件 ¥{total.toLocaleString()}</span>
+      <span style={{marginLeft:"auto",fontSize:11,color:"#94a3b8",fontWeight:700}}>{open?"▲":"▼"}</span>
+    </div>
+    {open&&<div style={{padding:"8px 12px",background:"#fff",border:"1px solid #fecaca",borderTop:"none",borderRadius:"0 0 12px 12px"}}>
+      {items.map((r,i)=><div key={r.id||i} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:i<items.length-1?"1px solid #f1f5f9":"none",fontSize:11,flexWrap:"wrap"}}>
+        <span style={{color:"#64748b",minWidth:70}}>{r.date||""}</span>
+        <span style={{fontWeight:700,color:"#1e293b",minWidth:80}}>{r.category||""}</span>
+        <span style={{color:"#64748b",minWidth:100,fontFamily:"monospace",fontSize:10}}>{r.resv_no||""}</span>
+        <span style={{color:"#374151",flex:1,minWidth:140}}>{r.user_name||r.description||""}</span>
+        <span style={{fontWeight:800,color:"#dc2626",minWidth:70,textAlign:"right"}}>¥{(Number(r.amount)||0).toLocaleString()}</span>
+        {r.url?<a href={r.url} target="_blank" rel="noopener" style={{fontSize:9,color:"#2563eb"}} onClick={e=>e.stopPropagation()}>URL</a>:null}
+      </div>)}
+    </div>}
+  </div>;
+}
+
 function SpkPaymentSection({sqfRefreshKey,onOpenSqFailed,setTab,data,jalanPay}){
   const[counts,setCounts]=React.useState({sqfCount:0,sqfTotal:0,extCount:0,extTotal:0,jalCount:0,jalUnpaid:0,sqiUnpaid:0,sqiUnpaidAmt:0});
   const[expanded,setExpanded]=React.useState(null);// 'sqfail'|'extra'|'square'|'jalan'|null
   const load=async()=>{
     if(!sb)return;
     try{
-      const[sqf,ext,jp]=await Promise.all([
+      const[sqf,ext,sqi,jp]=await Promise.all([
         sb.from("sq_terminal_failed").select("amount,note,item_name,reason,raw_data").eq("resolved",false),
         sb.from("spk_accounting").select("amount").eq("type","extra_sales").eq("paid",false),
+        sb.from("spk_accounting").select("amount,resv_no,paid").not("url","is",null).neq("url",""),
         sb.from("jalan_payments").select("amount,status,reservation_id")
       ]);
       // SPK APP は札幌店 + 不明 のみ（那覇店レコードは除外）
       const sqfData=(sqf.data||[]).filter(it=>_guessStore(it)!=="NHA");
       const extData=ext.data||[];
       const jpData=(jp.data||[]).filter(p=>["new","link_created","email_sent"].includes(p.status));
+      // Square請求（立替・予約外売上）の未払い件数・金額：jalan_payments と重複するものは除外
+      const jalanResIds=new Set((jp.data||[]).map(p=>p.reservation_id));
+      const sqiData=(sqi.data||[]).filter(r=>!jalanResIds.has(r.resv_no));
+      const sqiUnpaidArr=sqiData.filter(r=>!r.paid);
       setCounts({
         sqfCount:sqfData.length,
         sqfTotal:sqfData.reduce((s,r)=>s+(+r.amount||0),0),
@@ -2233,8 +2285,8 @@ function SpkPaymentSection({sqfRefreshKey,onOpenSqFailed,setTab,data,jalanPay}){
         extTotal:extData.reduce((s,r)=>s+(+r.amount||0),0),
         jalCount:jpData.length,
         jalUnpaid:jpData.reduce((s,p)=>s+(+p.amount||0),0),
-        sqiUnpaid:0,
-        sqiUnpaidAmt:0
+        sqiUnpaid:sqiUnpaidArr.length,
+        sqiUnpaidAmt:sqiUnpaidArr.reduce((s,r)=>s+(+r.amount||0),0)
       });
     }catch(e){}
   };
@@ -2245,11 +2297,11 @@ function SpkPaymentSection({sqfRefreshKey,onOpenSqFailed,setTab,data,jalanPay}){
     <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6}}>
       <TopIcon icon="⚠️" label="Square失敗" badge={counts.sqfCount} amount={counts.sqfTotal} color="#dc2626" alert={counts.sqfCount>0} subText={counts.sqfCount===0?"OK":""} onClick={onOpenSqFailed}/>
       <TopIcon icon="📝" label="予約外未収" badge={counts.extCount} amount={counts.extTotal} color="#f97316" alert={counts.extCount>0} subText={counts.extCount===0?"OK":""} active={expanded==="extra"} onClick={()=>toggle("extra")}/>
-      <TopIcon icon="💳" label="Square請求" subText="一覧を見る" color="#3b82f6" active={expanded==="square"} onClick={()=>toggle("square")}/>
+      <TopIcon icon="💳" label="Square請求" badge={counts.sqiUnpaid} amount={counts.sqiUnpaidAmt} color="#3b82f6" alert={counts.sqiUnpaid>0} subText={counts.sqiUnpaid===0?"全入金":""} active={expanded==="square"} onClick={()=>toggle("square")}/>
       <TopIcon icon="🟡" label="じゃらん事前" badge={counts.jalCount} amount={counts.jalUnpaid} color="#8b5cf6" alert={counts.jalCount>0} subText={counts.jalCount===0?"OK":""} active={expanded==="jalan"} onClick={()=>toggle("jalan")}/>
     </div>
-    {expanded==="extra"&&<div style={{marginTop:6,padding:"10px 14px",borderRadius:12,background:"#fff7ed",border:"1px solid #fed7aa",fontSize:11,color:"#9a3412"}}>予約外未収 {counts.extCount}件 — 会計タブで確認してください</div>}
-    {expanded==="square"&&<div style={{marginTop:6}}><SquareInvoiceWidget/></div>}
+    {expanded==="extra"&&<div style={{marginTop:6}}><SpkExtraUnpaidWidget defaultOpen={true}/></div>}
+    {expanded==="square"&&<div style={{marginTop:6}}><SquareInvoiceWidget defaultOpen={true}/></div>}
     {expanded==="jalan"&&<div style={{marginTop:6}}><JalanPaymentWidget data={data} jalanPay={jalanPay} onGoJalan={()=>setTab&&setTab("jalanpay")}/></div>}
   </div>;
 }
@@ -2395,10 +2447,10 @@ function TopRecentWidget(){
 /* ==========================================
    Square請求書ウィジェット（TOP画面用）
    ========================================== */
-function SquareInvoiceWidget(){
+function SquareInvoiceWidget({defaultOpen}){
   const[invoices,setInvoices]=React.useState([]);
   const[loading,setLoading]=React.useState(true);
-  const[open,setOpen]=React.useState(false);
+  const[open,setOpen]=React.useState(!!defaultOpen);
   const[filter,setFilter]=React.useState("all");// all|unpaid|paid
   const[error,setError]=React.useState(null);
   const fetchData=React.useCallback(async()=>{
@@ -13528,7 +13580,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.6.63";
+const APP_VERSION="v4.6.64";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
