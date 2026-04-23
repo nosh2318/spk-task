@@ -62,7 +62,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v527';
+  var CV='spk-v528';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
@@ -2213,8 +2213,8 @@ function TopIcon({icon,label,badge,amount,subText,color,alert,active,onClick}){
 }
 /* SPK 予約外未収ウィジェット（那覇店 ExtraUnpaidWidget と定義を完全統一 2026-04-23 v4.6.65） */
 /* ★ jalan_payments に存在する予約番号はじゃらん事前決済側で管理されるため除外 */
-function SpkExtraUnpaidWidget(){
-  const[items,setItems]=React.useState([]);
+function SpkExtraUnpaidWidget({preloadedItems}){
+  const[items,setItems]=React.useState(preloadedItems||[]);
   const[open,setOpen]=React.useState(false);
   const loadData=React.useCallback(async()=>{
     if(!sb)return;
@@ -2228,12 +2228,19 @@ function SpkExtraUnpaidWidget(){
       setItems(filtered);
     }catch(e){console.warn("[SpkExtraUnpaid]",e);}
   },[]);
+  // 親から preloadedItems が来た場合は即時反映（再fetch不要で表示即応答）
   React.useEffect(()=>{
-    (async()=>{await sbAuthPromise;loadData();})();
+    if(Array.isArray(preloadedItems)) setItems(preloadedItems);
+  },[preloadedItems]);
+  React.useEffect(()=>{
+    // preloadedItems があれば初回fetchをスキップ（親が既にfetch済み）
+    if(!preloadedItems){
+      (async()=>{await sbAuthPromise;loadData();})();
+    }
     if(!sb)return;
     const ch=sb.channel("spk-extra-unpaid-rt").on("postgres_changes",{event:"*",schema:"public",table:"spk_accounting"},loadData).subscribe();
     return()=>{sb.removeChannel(ch);};
-  },[loadData]);
+  },[loadData,preloadedItems]);
   if(!items.length)return null;
   const total=items.reduce((s,r)=>s+(Number(r.amount)||0),0);
   return <div style={{marginBottom:8}}>
@@ -2256,16 +2263,19 @@ function SpkExtraUnpaidWidget(){
   </div>;
 }
 
-function SpkPaymentSection({sqfRefreshKey,onOpenSqFailed,setTab,data,jalanPay}){
+function SpkPaymentSection({sqfRefreshKey,onOpenSqFailed,setTab,data,jalanPay,onSqfPreload}){
   const[counts,setCounts]=React.useState({sqfCount:0,sqfTotal:0,extCount:0,extTotal:0,jalCount:0,jalUnpaid:0,sqiUnpaid:0,sqiUnpaidAmt:0});
+  // ★ 2026-04-23: 子ウィジェットのダブルfetchを排除するためフルデータを親でキャッシュ
+  const[fullData,setFullData]=React.useState({ext:null,sqi:null,sqf:null});
   const[expanded,setExpanded]=React.useState(null);// 'sqfail'|'extra'|'square'|'jalan'|null
   const load=async()=>{
     if(!sb)return;
     try{
+      // 子ウィジェットで必要な全カラムを取得（select を拡張）
       const[sqf,ext,sqi,jp]=await Promise.all([
-        sb.from("sq_terminal_failed").select("amount,note,item_name,reason,raw_data").eq("resolved",false),
-        sb.from("spk_accounting").select("amount,resv_no").eq("type","extra_sales").eq("paid",false),
-        sb.from("spk_accounting").select("amount,resv_no,paid").not("url","is",null).neq("url",""),
+        sb.from("sq_terminal_failed").select("*").eq("resolved",false).order("payment_at",{ascending:false}),
+        sb.from("spk_accounting").select("*").eq("type","extra_sales").eq("paid",false).order("date",{ascending:false}),
+        sb.from("spk_accounting").select("id,date,type,category,resv_no,user_name,amount,paid,url,created_at").not("url","is",null).neq("url","").order("date",{ascending:false}).limit(200),
         sb.from("jalan_payments").select("amount,status,reservation_id")
       ]);
       // SPK APP は札幌店 + 不明 のみ（那覇店レコードは除外）
@@ -2286,6 +2296,10 @@ function SpkPaymentSection({sqfRefreshKey,onOpenSqFailed,setTab,data,jalanPay}){
         sqiUnpaid:sqiUnpaidArr.length,
         sqiUnpaidAmt:sqiUnpaidArr.reduce((s,r)=>s+(+r.amount||0),0)
       });
+      // 子ウィジェット用のフルデータをキャッシュ
+      setFullData({ext:extData,sqi:sqiData,sqf:sqfData});
+      // SqFailedModal用にもpropagate（親App側から渡される場合）
+      if(typeof onSqfPreload==="function") onSqfPreload(sqfData);
     }catch(e){}
   };
   React.useEffect(()=>{load();},[sqfRefreshKey]);
@@ -2298,8 +2312,8 @@ function SpkPaymentSection({sqfRefreshKey,onOpenSqFailed,setTab,data,jalanPay}){
       <TopIcon icon="💳" label="Square請求" badge={counts.sqiUnpaid} amount={counts.sqiUnpaidAmt} color="#3b82f6" alert={counts.sqiUnpaid>0} subText={counts.sqiUnpaid===0?"全入金":""} active={expanded==="square"} onClick={()=>toggle("square")}/>
       <TopIcon icon="🟡" label="じゃらん事前" badge={counts.jalCount} amount={counts.jalUnpaid} color="#8b5cf6" alert={counts.jalCount>0} subText={counts.jalCount===0?"OK":""} active={expanded==="jalan"} onClick={()=>toggle("jalan")}/>
     </div>
-    {expanded==="extra"&&<div style={{marginTop:6}}><SpkExtraUnpaidWidget/></div>}
-    {expanded==="square"&&<div style={{marginTop:6}}><SquareInvoiceWidget/></div>}
+    {expanded==="extra"&&<div style={{marginTop:6}}><SpkExtraUnpaidWidget preloadedItems={fullData.ext}/></div>}
+    {expanded==="square"&&<div style={{marginTop:6}}><SquareInvoiceWidget preloadedInvoices={fullData.sqi}/></div>}
     {expanded==="jalan"&&<div style={{marginTop:6}}><JalanPaymentWidget data={data} jalanPay={jalanPay} onGoJalan={()=>setTab&&setTab("jalanpay")}/></div>}
   </div>;
 }
@@ -2446,9 +2460,9 @@ function TopRecentWidget(){
    Square請求書ウィジェット（TOP画面用）
    ★ 那覇店 SquareInvoiceWidget と定義を完全統一（2026-04-23 v4.6.65）
    ========================================== */
-function SquareInvoiceWidget(){
-  const[invoices,setInvoices]=React.useState([]);
-  const[loading,setLoading]=React.useState(true);
+function SquareInvoiceWidget({preloadedInvoices}){
+  const[invoices,setInvoices]=React.useState(preloadedInvoices||[]);
+  const[loading,setLoading]=React.useState(!preloadedInvoices);
   const[open,setOpen]=React.useState(false);
   const[filter,setFilter]=React.useState("all");
   const[error,setError]=React.useState(null);
@@ -2466,7 +2480,16 @@ function SquareInvoiceWidget(){
     }catch(e){console.error("[Square]",e);setError(e.message);}
     finally{setLoading(false);}
   },[]);
-  React.useEffect(()=>{fetchData();const iv=setInterval(fetchData,120000);return()=>clearInterval(iv);},[]);
+  // 親から preloadedInvoices が来た場合は即時反映（再fetch不要で表示即応答）
+  React.useEffect(()=>{
+    if(Array.isArray(preloadedInvoices)){setInvoices(preloadedInvoices);setLoading(false);}
+  },[preloadedInvoices]);
+  React.useEffect(()=>{
+    // preloadedInvoices があれば初回fetchをスキップ（親が既にfetch済み）
+    if(!preloadedInvoices) fetchData();
+    const iv=setInterval(fetchData,120000);
+    return()=>clearInterval(iv);
+  },[]);
   const unpaid=(invoices||[]).filter(r=>!r.paid);
   const paid=(invoices||[]).filter(r=>r.paid);
   const unpaidTotal=unpaid.reduce((s,r)=>s+(Number(r.amount)||0),0);
@@ -5971,9 +5994,9 @@ function _guessStore(it){
   if(/^(NHA|nha)\s|沖縄|那覇|なは|ナハ/.test(txt))return"NHA";
   return"UNKNOWN";
 }
-function SqFailedModal({onClose,onResolved}){
-  const[items,setItems]=useState([]);
-  const[loading,setLoading]=useState(true);
+function SqFailedModal({onClose,onResolved,preloadedItems}){
+  const[items,setItems]=useState(preloadedItems||[]);
+  const[loading,setLoading]=useState(!preloadedItems);
   const[sel,setSel]=useState(null);
   const[mode,setMode]=useState("list");// list / edit / manual
   const[form,setForm]=useState({store:"SPK",category:"",type:"income",resvNo:"",description:"",staffName:"",memo:"",amount:"",date:"",payMethod:"カード"});
@@ -5988,7 +6011,11 @@ function SqFailedModal({onClose,onResolved}){
     }catch(e){alert("読込エラー: "+e.message);}
     setLoading(false);
   };
-  useEffect(()=>{load();},[]);
+  // 親から preloadedItems が来た場合は初回fetch不要（モーダル即表示）
+  useEffect(()=>{
+    if(preloadedItems){setItems(preloadedItems);setLoading(false);}
+    else load();
+  },[]);
   const startManual=()=>{
     const today=new Date();const y=today.getFullYear();const m=String(today.getMonth()+1).padStart(2,"0");const d=String(today.getDate()).padStart(2,"0");
     setSel(null);
@@ -12257,6 +12284,8 @@ function App(){
   const[maintenance,setMaintenance]=useState([]);const[shifts,setShifts]=useState({});const[showOP,setShowOP]=useState(false);const[showFloatFleet,setShowFloatFleet]=useState(false);const[floatFleetSize,setFloatFleetSize]=useState("half");
   const[showSqFailed,setShowSqFailed]=useState(false);
   const[sqFailedRefreshKey,setSqFailedRefreshKey]=useState(0);
+  // ★ 2026-04-23: SpkPaymentSection 側で既に fetch 済みの sq_terminal_failed をモーダルに渡してダブルfetchを排除
+  const[sqfPreload,setSqfPreload]=useState(null);
   // ★ legacy jalanPay は localStorage から即時初期化（非同期ロード前の未決済誤表示を防ぐ）
   const[jalanPay,setJalanPay]=useState(()=>{try{const s=localStorage.getItem("spk_jalan_payment");return s?JSON.parse(s):{};}catch(e){return{};}});
   // ★ じゃらん新システム(jalan_payments)の入金済みSet — localStorage キャッシュで即時復元
@@ -13158,7 +13187,7 @@ function App(){
     {SB_ENABLED&&<div className="sync-desktop"><SyncBadge connected={sbConnected} online={isOnline}/></div>}
     {!isOnline&&<div style={{background:"#dc2626",color:"#fff",padding:"6px 12px",fontSize:12,fontWeight:700,textAlign:"center",zIndex:9999}}>⚠️ オフライン — 変更は復帰後に自動保存されます</div>}
     {showOP&&<OPScreen reservations={data} today={today} shifts={shifts} fleet={fleet} onFleetChange={setFleetSync} onClose={()=>{setShowOP(false);refreshTopTasks();}} onGoFleet={()=>setShowFloatFleet(f=>!f)} vehicles={vehicles} staff={staff} resOpts={resOpts} sheetPlaces={sheetPlaces} onUpdateSheetPlaces={saveSheetPlaces} repeaterMap={repeaterInfo.isRepeater} jalanPay={jalanPay} isJPaidFn={isJPaidFn} cancelledIdsRef={cancelledIdsRef} onCancelReservation={cancelReservation} onTaskChange={refreshTopTasks}/>}
-    {showSqFailed&&<SqFailedModal onClose={()=>setShowSqFailed(false)} onResolved={()=>setSqFailedRefreshKey(k=>k+1)}/>}
+    {showSqFailed&&<SqFailedModal onClose={()=>setShowSqFailed(false)} onResolved={()=>setSqFailedRefreshKey(k=>k+1)} preloadedItems={sqfPreload}/>}
     {/* ★ フローティング配車表パネル */}
     {showFloatFleet&&<div style={{position:"fixed",bottom:0,right:0,width:floatFleetSize==="full"?"100%":"50%",height:floatFleetSize==="full"?"70vh":"45vh",zIndex:250,background:"#fff",borderTop:"3px solid #059669",borderLeft:floatFleetSize!=="full"?"3px solid #059669":"none",boxShadow:"0 -4px 20px rgba(0,0,0,.2)",display:"flex",flexDirection:"column",borderRadius:floatFleetSize==="full"?"12px 12px 0 0":"12px 0 0 0"}}>
       <div style={{display:"flex",alignItems:"center",padding:"6px 12px",background:"#059669",gap:6,flexShrink:0,borderRadius:floatFleetSize==="full"?"9px 9px 0 0":"9px 0 0 0"}}>
@@ -13255,7 +13284,7 @@ function App(){
               <LeadTimeWidget data={data} vehicles={vehicles} fleet={fleet} maintenance={maintenance}/>
               {/* ===== 💳 決済（4アイコン） ===== */}
               <TopSectionTitle icon="💳" title="決済" sub="タップで詳細"/>
-              <SpkPaymentSection sqfRefreshKey={sqFailedRefreshKey} onOpenSqFailed={()=>setShowSqFailed(true)} setTab={setTab} data={data} jalanPay={jalanPay}/>
+              <SpkPaymentSection sqfRefreshKey={sqFailedRefreshKey} onOpenSqFailed={()=>setShowSqFailed(true)} setTab={setTab} data={data} jalanPay={jalanPay} onSqfPreload={setSqfPreload}/>
               {/* ===== 📊 業務 / 関連APP（4アイコン） ===== */}
               <TopSectionTitle icon="📊" title="業務 / 関連APP"/>
               <SpkBusinessSection data={data} vehicles={vehicles} fleet={fleet} maintenance={maintenance}/>
@@ -13542,7 +13571,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.6.66";
+const APP_VERSION="v4.6.67";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");

@@ -80,12 +80,110 @@
 TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 / 駐車場 / 会計 / 顧客 / 売上 / データ / 過去 / 免許証
 
 ## 現在のバージョン
-- **APP_VERSION**: v4.6.66
-- **sw.js CACHE_NAME**: `spk-v527`
-- **index.html CV**: `spk-v527`
+- **APP_VERSION**: v4.6.67
+- **sw.js CACHE_NAME**: `spk-v528`
+- **index.html CV**: `spk-v528`
 - **SRI/CSP**: 未適用（下記インシデント参照）
 
 ## 2026-04-23 修正履歴
+
+### TOP決済3アイコン「押しても遅い」問題をダブルfetch排除で根本修正（v4.6.67）
+- **症状**: TOP画面の「Square失敗 / 予約外未収 / Square請求」3アイコンをタップしても反応がかなり遅い（スクショ `スクリーンショット 2026-04-23 15.36.30.png`）
+- **根本原因**: **ダブルfetch構造**
+  1. 親 `SpkPaymentSection` が件数計算用に DB fetch（amount/resv_no など軽量カラムのみ）
+  2. タップ時に子ウィジェットが遅延マウント → **同じテーブルを再度フルカラムで fetch**
+  3. `SpkExtraUnpaidWidget` は `items.length===0` の間 `return null` → **データ到着まで画面に何も表示されない**（=反応が遅く見える最大要因）
+  4. `SquareInvoiceWidget` は `loading===true` の間 `return null`、`SqFailedModal` は「読み込み中...」表示
+- **修正 (`index.src.html`)**:
+  1. 親 `SpkPaymentSection.load()` の select 句を**子ウィジェットが必要とする全カラムに拡張**:
+     - `sq_terminal_failed`: `amount,note,item_name,reason,raw_data` → `*` + `order(payment_at)`
+     - `spk_accounting` (extra_sales): `amount,resv_no` → `*` + `order(date)`
+     - `spk_accounting` (url): `amount,resv_no,paid` → `id,date,type,category,resv_no,user_name,amount,paid,url,created_at` + `order(date).limit(200)`
+  2. 親で **`fullData` state** に filtered 済み配列をキャッシュ（ext/sqi/sqf）
+  3. 3子コンポーネント（`SpkExtraUnpaidWidget` / `SquareInvoiceWidget` / `SqFailedModal`）に **`preloadedItems` / `preloadedInvoices`** prop を追加:
+     - 初期 state に prop 値を採用 → **マウント直後に表示完了**
+     - useEffect で `preloaded` があれば初回fetchをスキップ
+     - preloaded が後から更新されても追従するよう watcher を追加
+     - 既存の Realtime subscribe / 120s polling は維持（継続更新担保）
+  4. App 側に `sqfPreload` state を追加 → `SpkPaymentSection` の `onSqfPreload` コールバック経由で `SqFailedModal` に渡す
+- **効果**:
+  - タップ→表示のラウンドトリップが **1回 → 0回**（親が既に fetch 済みデータを即座に表示）
+  - 60秒ポーリングは維持（データ鮮度担保）
+  - 展開時の体感は「タップ = 即時描画」に改善
+- **バージョン**: `APP_VERSION=v4.6.67` / `sw.js CACHE_NAME=spk-v528` / `index.html CV=spk-v528` 同時更新
+
+### 🛡️ AIスタッフ_G（HANDYMAN Payment GAS）二重登録 根本修正
+- **対象ファイル**: `/Users/noritakaoshita/Desktop/HANDYMAN/payment_bot_unified_v1.gs`
+- **背景**: v4.6.66 のUIフィルタは対症療法。根本原因は AIスタッフ_G が `jalan_payment` タイプのSquareリンク発行時も `postToSupabase_` を無条件で呼んでいたこと
+- **バグ箇所**: `handleSlackMessage_` line 138（修正前）
+  ```javascript
+  // Supabase 起票
+  const sbOk = postToSupabase_(cfg, parsed, linkData, channel);
+  ```
+  - `parseRequest_` で `type='jalan_payment'` と判定されても `postToSupabase_` が呼ばれ、`spk_accounting` に `type='extra_sales'` 相当として登録される（※実際には parsed.type がそのまま渡されるが、TOP UIでは `extra_sales AND paid=false` を「予約外未収」として拾うため見かけは extra_sales と同じ）
+- **修正内容**:
+  ```javascript
+  // ★ じゃらん事前決済は jalan_payments テーブル側で管理する（spk_accounting への二重登録を防止）
+  const sbOk = (parsed.type === 'jalan_payment')
+    ? true  // jalan_payments 側で管理済み、会計テーブルへの登録はスキップ
+    : postToSupabase_(cfg, parsed, linkData, channel);
+  ```
+  - Slack返信の「会計起票」行も `➖ スキップ（jalan_payments 側で管理）` に差し替え
+- **ルーティングの整理（確認事項）**:
+  - じゃらん事前決済: `jalan_payments` テーブルで一元管理（入金状態は `gas-email-import-v2.gs` の `checkPaymentStatus` v4 が Square Orders API 直叩きで反映）
+  - 立替金 / 予約外売上: `spk_accounting` / `nha_accounting` / `tka_accounting` に `postToSupabase_` で起票（従来通り）
+- **適用手順**:
+  1. GASエディタで「HANDYMAN Payment」プロジェクトを開く
+  2. Cmd+A → Cmd+V でクリップボードから上書き貼付
+  3. Cmd+S で保存
+  4. 「デプロイの管理」→ 既存Web Appデプロイを編集 → 「新バージョン」で再デプロイ（**Cmd+S だけでは Webhook に反映されない**）
+- **効果**: 今後のじゃらん予約について `spk_accounting` への二重登録が完全に止まる。v4.6.66 のUIフィルタは保険として残す（過去データ対策・他経路からの誤登録対策）
+
+### 🛡️ じゃらん過大請求 根本修正（gas-email-import-v2.gs line 259）
+- **対象ファイル**: `/Users/noritakaoshita/spk-task/gas-email-import-v2.gs`
+- **背景**: 2026-04-21 のじゃらん過大請求障害（B群5名 計¥14,600過大請求）の根本原因が未修正だった
+- **バグの構造**:
+  1. OTA自動登録GAS(30分間隔) が先にメール取込 → `price=合計金額(クーポン前)` のみ登録（`base_price/option_price/discount=0`）
+  2. 札幌メール取込GAS(15分間隔) が後追いで `parseJalan_` 実行 → 正しい `price=利用者への請求額, discount=クーポン額` を算出
+  3. 旧コード line 259: `if (!existingRow.price && ...)` → `existingRow.price=¥19,300` は truthy なので **price は上書きされない**
+  4. 旧コード line 263: `existingRow.discount===0` なので **discount だけ上書きされる**
+  5. 結果: DB が `price=¥19,300(クーポン前) + discount=¥3,000` の矛盾状態に → Square で過大請求発行
+- **修正内容（line 259-282付近）**:
+  ```javascript
+  var jalanOverbillFix = (reservation.ota === 'J')
+    && +(reservation.discount||0) > 0         // パーサーが割引検出
+    && +(existingRow.discount||0) === 0       // DB の discount は未設定
+    && +(existingRow.price||0) > 0
+    && +(reservation.price||0) > 0
+    && +(existingRow.price||0) > +(reservation.price||0);  // 既存 price > パーサー price = クーポン前の証拠
+
+  if (jalanOverbillFix) {
+    patch.price = reservation.price;
+    if (+(reservation.base_price||0) > 0) patch.base_price = reservation.base_price;
+    if (+(reservation.option_price||0) > 0) patch.option_price = reservation.option_price;
+    patch.discount = reservation.discount;
+    Logger.log('[JalanOverbillFix] ' + reservation.id + ' price ' + existingRow.price + '→' + reservation.price);
+  } else {
+    // 従来の欠落補完ロジック（冪等）
+    if (!existingRow.price && +(reservation.price||0) > 0) patch.price = reservation.price;
+    if (+(existingRow.base_price||0) === 0 && +(reservation.base_price||0) > 0) patch.base_price = reservation.base_price;
+    if (+(existingRow.option_price||0) === 0 && +(reservation.option_price||0) > 0) patch.option_price = reservation.option_price;
+    if (+(existingRow.discount||0) === 0 && +(reservation.discount||0) > 0) patch.discount = reservation.discount;
+  }
+  ```
+- **4条件目（`existingRow.price > reservation.price`）の意図**:
+  - 「既存priceがクーポン前の高い金額」を厳密に判定することで誤爆を防止
+  - パーサーが正しく price=合計額を返しているケース（discountなし）では絶対に発火しない
+  - 既に正しい price が入っているケース（再処理時）では発火しない → 冪等性担保
+- **適用手順**:
+  1. GASエディタで「札幌予約メール自動配車」プロジェクトを開く
+  2. `gas-email-import-v2.gs` を Cmd+A → Cmd+V でクリップボードから上書き貼付
+  3. Cmd+S で保存（※トリガー管理型なのでWeb Appデプロイ不要、次回トリガー時に新コード実行）
+- **実行ログでの追跡**: GAS実行ログに `[JalanOverbillFix]` が出現すれば発火した証拠
+
+### Priority 4 / 5 ユーザー実行タスク（コード実装済み・手動実行待ち）
+- **`auditAllJalanOverbilling()`** (gas-email-import-v2.gs line 2928): 全じゃらん予約をスキャンして `price ≠ base+opt-disc` の不整合レコードを抽出、jalan_payments と照合して「実害あり（発行額誤り）」と「DB不整合のみ」に分類して Slack `#jalan_payment` に報告。**GASエディタで手動実行するだけ**
+- **`setupWatchdogTrigger()`** (gas-email-import-v2.gs line 1815): `watchdogJalanPayment` を毎時トリガーで設定（じゃらん予約で jalan_payments 行が無いものを自動復旧）。**GASエディタで1回手動実行するだけでトリガー設定完了**
 
 ### じゃらん事前決済の二重登録を修正 + UIフィルタ追加（v4.6.66）
 - **症状**: 予約外未収に R0 プレフィックスのじゃらん予約（6件 ¥202,200）が表示される。ユーザー指摘「ここの予約外は じゃらんに入るのでは？」
@@ -146,6 +244,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **症状**: Slack通知「✅入金確認完了 DY00000000938 ワダタイキ ¥8,100 予約外売上 札幌店」が届いたが、APP上で `paid=false` のまま残っていた
 - **即時対応**: DB直接UPDATEで `paid=true` に修正（id=9a60be43-9cf7-4b94-b3dc-3b2af81a2de0）
 - **残課題**: `syncPaidToAccounting` GASトリガー（HANDYMAN Payment）がこのレコードを更新しなかった原因調査。Slack通知は飛んでいるので検知はしているが、DB更新失敗（列名ズレ等）の可能性あり
+- **2026-04-23 追記**: ローカルの `payment_bot_unified_v1.gs` には `syncPaidToAccounting` 関数が存在しない → 別GASプロジェクト or 旧バージョンに格納されている可能性。次回インシデント発生時に GAS実行ログを目視し、必要なら `forceSyncAllPaidRecords()` を手動実行（過去分一括同期）
 
 ### Square失敗モーダルを那覇店と同機能に統一（v4.6.63）
 - **要望**: 「スクショの機能がSPKに無いので新しく実装してください。まずは配置・デザインを統一してから」（画像: `スクリーンショット 2026-04-23 14.35.51.png` — 那覇店のSqFailedModalで「+ 手動入力」ボタンと行別「除外」ボタンが存在）

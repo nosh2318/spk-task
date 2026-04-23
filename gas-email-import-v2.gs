@@ -256,11 +256,36 @@ function processMessage_(message, dryRun) {
       if (!existingRow.mail && reservation.mail) patch.mail = reservation.mail;
       if (!existingRow.flight && reservation.flight) patch.flight = reservation.flight;
       if (!existingRow.people && +(reservation.people||0) > 0) patch.people = reservation.people;
-      if (!existingRow.price && +(reservation.price||0) > 0) patch.price = reservation.price;
-      // 料金内訳: 既存が0でパーサーに値があれば常に上書き（那覇店障害 2026-04-20 再発防止）
-      if (+(existingRow.base_price||0) === 0 && +(reservation.base_price||0) > 0) patch.base_price = reservation.base_price;
-      if (+(existingRow.option_price||0) === 0 && +(reservation.option_price||0) > 0) patch.option_price = reservation.option_price;
-      if (+(existingRow.discount||0) === 0 && +(reservation.discount||0) > 0) patch.discount = reservation.discount;
+
+      // ★ 2026-04-23: じゃらん過大請求 根本修正
+      // OTA自動登録GAS(30分先行) が price=合計金額(クーポン前) で作成 →
+      // 札幌メール取込GAS(15分後追) が parseJalan_ で discount>0 を検出した場合、
+      // 既存 price は「合計金額(クーポン前)」の可能性が極めて高い。
+      // この場合は price / base_price / option_price / discount を一括で上書きする
+      // （そうしないと price=¥19,300 + discount=¥3,000 の矛盾状態になり Square で過大請求される）
+      var jalanOverbillFix = (reservation.ota === 'J')
+        && +(reservation.discount||0) > 0
+        && +(existingRow.discount||0) === 0
+        && +(existingRow.price||0) > 0
+        && +(reservation.price||0) > 0
+        && +(existingRow.price||0) > +(reservation.price||0);  // 既存 price > パーサー price ≒ クーポン前で登録された証拠
+
+      if (jalanOverbillFix) {
+        patch.price = reservation.price;
+        if (+(reservation.base_price||0) > 0) patch.base_price = reservation.base_price;
+        if (+(reservation.option_price||0) > 0) patch.option_price = reservation.option_price;
+        patch.discount = reservation.discount;
+        Logger.log('[JalanOverbillFix] ' + reservation.id
+          + ' price ' + existingRow.price + '→' + reservation.price
+          + ' discount 0→' + reservation.discount);
+      } else {
+        // 従来の欠落補完ロジック
+        if (!existingRow.price && +(reservation.price||0) > 0) patch.price = reservation.price;
+        // 料金内訳: 既存が0でパーサーに値があれば常に上書き（那覇店障害 2026-04-20 再発防止）
+        if (+(existingRow.base_price||0) === 0 && +(reservation.base_price||0) > 0) patch.base_price = reservation.base_price;
+        if (+(existingRow.option_price||0) === 0 && +(reservation.option_price||0) > 0) patch.option_price = reservation.option_price;
+        if (+(existingRow.discount||0) === 0 && +(reservation.discount||0) > 0) patch.discount = reservation.discount;
+      }
       if ((!existingRow.insurance || existingRow.insurance === 'なし') && reservation.insurance && reservation.insurance !== 'なし') patch.insurance = reservation.insurance;
       if (!existingRow.del_place && reservation.del_place) patch.del_place = reservation.del_place;
       if (!existingRow.col_place && reservation.col_place) patch.col_place = reservation.col_place;
