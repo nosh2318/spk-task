@@ -80,12 +80,27 @@
 TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 / 駐車場 / 会計 / 顧客 / 売上 / データ / 過去 / 免許証
 
 ## 現在のバージョン
-- **APP_VERSION**: v4.6.64
-- **sw.js CACHE_NAME**: `spk-v525`
-- **index.html CV**: `spk-v525`
+- **APP_VERSION**: v4.6.65
+- **sw.js CACHE_NAME**: `spk-v526`
+- **index.html CV**: `spk-v526`
 - **SRI/CSP**: 未適用（下記インシデント参照）
 
 ## 2026-04-23 修正履歴
+
+### SquareInvoiceWidget と SpkExtraUnpaidWidget を那覇店と完全定義統一（v4.6.65）
+- **症状**: v4.6.64 以降も「Square請求 が押しても動かない / 反応がかなり遅い / 那覇と定義が違う気がする」
+- **差異の特定（SPK vs NHA）**:
+  1. SPK `SquareInvoiceWidget` には `defaultOpen` prop 付き → NHAは無し
+  2. SPK は `limit(300)` → NHAは `limit(200)`
+  3. SPK は未払い行ごとに `reservations.lend_date` をN+1クエリで取得（最大300件の `IN` クエリ）→ NHAは無し（遅さの根本原因）
+  4. SPK のステータス列に `daysLeft` 計算ロジックあり（カテゴリから日付抽出+年跨ぎ考慮）→ NHAは単純な「未払い/入金済み」バッジのみ
+  5. SPK `SpkExtraUnpaidWidget` も `defaultOpen` prop 付き + 「予約外未収はありません」の案内表示あり → NHAは `defaultOpen` 無し、空時は `return null`
+- **修正 (`index.src.html`)**:
+  1. `SquareInvoiceWidget` を NHA と**1対1で完全統一**: `defaultOpen` prop 削除、`useState(false)` 固定、`limit(200)`、N+1クエリ削除、ステータス列もNHAと同じシンプルな三項演算子バッジ、フッター「札幌店のみ」のみ変更
+  2. `SpkExtraUnpaidWidget` を NHA `ExtraUnpaidWidget` と完全統一: `defaultOpen` prop 削除、`useState(false)` 固定、`!items.length` 時は `return null`、行レイアウトも NHA の `flex:1` 均等割り付けに揃える
+  3. `SpkPaymentSection` の呼び出しから `defaultOpen={true}` を削除（NHAと同じ呼び方）
+- **バージョン**: `APP_VERSION=v4.6.65` / `sw.js CACHE_NAME=spk-v526` / `index.html CV=spk-v526` 同時更新
+- **UX統一結果**: NHA店員とSPK店員で操作体験が完全に同じ（タップ→ヘッダーバー表示→再タップで展開、の2タップ）。N+1クエリ削除により初期表示の遅延も解消
 
 ### TOP決済セクションのアイコンタップを那覇店と同仕様に統一（v4.6.64）
 - **症状**: 「札幌はこれらを押しても出てこない / 全て同じ仕様に / 特にsquare請求は動かない」
