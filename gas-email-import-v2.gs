@@ -272,6 +272,14 @@ function processMessage_(message, dryRun) {
         if (patch.del_place || patch.col_place) {
           patchTaskPlaces_(reservation.id, patch.del_place, patch.col_place);
         }
+        // ★ 2026-04-23: opts (B/C/J) が増えた場合は tasks 側 (memo/changed_json/opt_c) も同期
+        // マキノリナ(R04OWZ6U)で tasks.opt_c=1 のまま reservations.opt_c=2 になっていた問題の再発防止
+        if (patch.opt_b !== undefined || patch.opt_c !== undefined || patch.opt_j !== undefined) {
+          var finalB = (patch.opt_b !== undefined) ? patch.opt_b : (+(existingRow.opt_b) || 0);
+          var finalC = (patch.opt_c !== undefined) ? patch.opt_c : (+(existingRow.opt_c) || 0);
+          var finalJ = (patch.opt_j !== undefined) ? patch.opt_j : (+(existingRow.opt_j) || 0);
+          patchTaskOpts_(reservation.id, finalB, finalC, finalJ);
+        }
       } else {
         Logger.log('Reservation already exists (active, no patch needed): ' + reservation.id);
       }
@@ -913,6 +921,43 @@ function patchTaskPlaces_(reservationId, delPlace, colPlace) {
   if (Object.keys(placePatch).length > 0) {
     supabaseUpdate_('places', 'reservation_id=eq.' + encId, placePatch);
     Logger.log('Patched places table: ' + reservationId);
+  }
+}
+
+// ============================================================
+// 2026-04-23: tasks 側の opts (B/C/J) も reservations と同期する
+// OTA自動登録GAS(30分)が先に予約作成 → tasks 生成 → メール取込GAS(15分)が
+// reservations.opt_c をパッチ、という順序でタスク側が取り残されていた問題の修正
+// APP _fromDbTask の優先順位: changed_json._optC > memo ##BCJ: > opt_c(bool)
+// 3箇所すべて更新する
+// ============================================================
+function patchTaskOpts_(reservationId, optB, optC, optJ) {
+  var encId = encodeURIComponent(reservationId);
+  var tasks = supabaseGet_('tasks', 'reservation_id=eq.' + encId + '&select=_id,memo,changed_json,opt_c');
+  if (!tasks || tasks.length === 0) {
+    Logger.log('[patchTaskOpts_] No tasks found for ' + reservationId);
+    return;
+  }
+  var nb = +(optB || 0), nc = +(optC || 0), nj = +(optJ || 0);
+  for (var i = 0; i < tasks.length; i++) {
+    var t = tasks[i];
+    // memo: 既存 ##BCJ: マーカーを剥がして再付与（本文保持）
+    var base = String(t.memo || '').split('\n##BCJ:')[0];
+    var hasBCJ = (nb || nc || nj);
+    var newMemo = hasBCJ ? (base + '\n##BCJ:' + nb + ',' + nc + ',' + nj) : base;
+    // changed_json: 既存フィールド(_ssTime/_ssPlace等)保持のままマージ
+    var cj = {};
+    try { cj = t.changed_json ? JSON.parse(t.changed_json) : {}; } catch (e) { cj = {}; }
+    cj._optB = nb;
+    cj._optC = nc;
+    cj._optJ = nj;
+    var update = {
+      memo: newMemo,
+      opt_c: nc > 0,
+      changed_json: JSON.stringify(cj)
+    };
+    supabaseUpdate_('tasks', '_id=eq.' + encodeURIComponent(t._id), update);
+    Logger.log('[patchTaskOpts_] ' + t._id + ' → B=' + nb + ' C=' + nc + ' J=' + nj);
   }
 }
 
@@ -3188,5 +3233,59 @@ function diagnoseOptSeatMismatch() {
   }
 
   Logger.log('=== 診断完了 ===');
+}
+
+// ============================================================
+// 2026-04-23: tasks opts 同期 テスト & 遡及バッチ
+// ============================================================
+
+/**
+ * 単体テスト: 指定予約ID のタスクopts を reservations から再同期
+ * GASエディタで手動実行して動作確認用
+ */
+function testPatchTaskOpts() {
+  var TARGET_ID = 'R04OWZ6U'; // マキノリナ
+  var rows = supabaseGet_('reservations', 'id=eq.' + encodeURIComponent(TARGET_ID) + '&select=id,name,opt_b,opt_c,opt_j');
+  if (!rows.length) { Logger.log('予約が見つかりません: ' + TARGET_ID); return; }
+  var r = rows[0];
+  Logger.log('reservations: name=' + r.name + ' opt_b=' + r.opt_b + ' opt_c=' + r.opt_c + ' opt_j=' + r.opt_j);
+  patchTaskOpts_(TARGET_ID, r.opt_b, r.opt_c, r.opt_j);
+  // 結果確認
+  var tasks = supabaseGet_('tasks', 'reservation_id=eq.' + encodeURIComponent(TARGET_ID) + '&select=_id,type,memo,opt_c,changed_json');
+  tasks.forEach(function(t) {
+    Logger.log(t._id + ' (' + t.type + '): opt_c=' + t.opt_c + ' memo末尾=' + String(t.memo||'').slice(-20) + ' changed_json=' + (t.changed_json||''));
+  });
+}
+
+/**
+ * 遡及バッチ: 過去に tasks.opts が反映されずズレている予約を全件洗い替え
+ * 対象: 今日以降に lend_date がある reservations で opt_b+opt_c+opt_j > 0 のもの
+ * 手動実行専用（トリガー不要）
+ */
+function resyncAllTaskOpts() {
+  var today = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd');
+  var rows = supabaseGet_('reservations', 'lend_date=gte.' + today + '&or=(opt_b.gt.0,opt_c.gt.0,opt_j.gt.0)&status=not.eq.cancelled&select=id,name,opt_b,opt_c,opt_j,lend_date');
+  if (!rows.length) { Logger.log('対象予約なし'); return; }
+  Logger.log('対象: ' + rows.length + '件');
+  var patched = 0, skipped = 0;
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    var tasks = supabaseGet_('tasks', 'reservation_id=eq.' + encodeURIComponent(r.id) + '&select=_id,changed_json,opt_c');
+    if (!tasks.length) { skipped++; continue; }
+    // 差分検知: 3タスクの changed_json._optC/_optB/_optJ が reservations と一致していればスキップ
+    var needSync = false;
+    for (var ti = 0; ti < tasks.length; ti++) {
+      var cj = {};
+      try { cj = tasks[ti].changed_json ? JSON.parse(tasks[ti].changed_json) : {}; } catch(e){}
+      if ((cj._optB||0) !== (r.opt_b||0) || (cj._optC||0) !== (r.opt_c||0) || (cj._optJ||0) !== (r.opt_j||0)) {
+        needSync = true; break;
+      }
+    }
+    if (!needSync) { skipped++; continue; }
+    patchTaskOpts_(r.id, r.opt_b, r.opt_c, r.opt_j);
+    patched++;
+    Logger.log('[resync] ' + r.id + ' (' + r.name + ' ' + r.lend_date + ') B=' + r.opt_b + ' C=' + r.opt_c + ' J=' + r.opt_j);
+  }
+  Logger.log('=== 完了: 同期=' + patched + '件 / スキップ=' + skipped + '件 / 合計=' + rows.length + '件 ===');
 }
 

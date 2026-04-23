@@ -85,6 +85,33 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **index.html CV**: `spk-v517`
 - **SRI/CSP**: 未適用（下記インシデント参照）
 
+## 2026-04-23 修正履歴
+
+### 🛡️ tasks opts (B/C/J) 同期の根本修正（GAS gas-email-import-v2.gs）
+- **背景**: マキノリナ(R04OWZ6U)でじゃらん予約のチャイルドシート数量が OP画面/TOP で「×1」表示されるが実際は2個。DB確認すると `reservations.opt_c=1` / `tasks.opt_c=false`(boolean) / `tasks.changed_json._optC=1` / `tasks.memo` 末尾 `##BCJ:0,1,0` で全て 1 が保存されていた
+- **根本原因（構造上の欠陥）**:
+  1. OTA自動登録GAS(30分)が先に `reservations` を作成（opt_c=0）→ APP側で `tasks` 生成（opt_c=false, memo ##BCJ:0,0,0）
+  2. 札幌メール取込GAS(15分)が後追いで `parseJalan_` 実行 → `reservations.opt_c` パッチ
+  3. **tasks 側は一切同期されず取り残される** ← 構造欠陥
+  4. APP `_fromDbTask` の読み取り優先順位が `changed_json._optC > memo ##BCJ: > opt_c(bool)` なので、tasks 側の古い値が UI に表示される
+- **修正内容（`gas-email-import-v2.gs`）**:
+  1. `patchTaskOpts_(reservationId, optB, optC, optJ)` 関数新規追加（`patchTaskPlaces_` と同型）
+     - 3タスク（d-/c-/w-）全部に対して `memo ##BCJ:` マーカー書き換え + `changed_json._optB/_optC/_optJ` マージ + `opt_c` boolean 更新を実行
+     - `memo` 本文と `changed_json` の既存フィールド(_ssTime/_ssPlace等)を保持したまま opts だけ差し替え
+  2. 既存予約パッチパス（line 269-287付近）に `patch.opt_b/opt_c/opt_j` のいずれかが含まれる場合 `patchTaskOpts_` を呼び出すロジックを追加
+  3. 診断・遡及関数追加:
+     - `testPatchTaskOpts()` — R04OWZ6U で単体テスト（GASエディタ手動実行）
+     - `resyncAllTaskOpts()` — 今日以降の予約で tasks.opts ≠ reservations.opts のものを全件再同期（遡及バッチ）
+- **即時修正**: R04OWZ6U の 3タスク（w-/c-/d-）を DB 直接更新で `##BCJ:0,2,0` / `opt_c=true` / `_optC:2` に修正済
+- **再発防止レベル**: じゃらん/楽天/skyticket/エアトリ 全OTAで有効（`processMessage_` の共通パッチパスに入れたため）
+- **運用手順**:
+  1. GAS エディタに `gas-email-import-v2.gs` を貼付（既に pbcopy 済み）
+  2. GAS エディタで `resyncAllTaskOpts` を1回手動実行 → 過去に取り残された予約も一括で同期
+  3. 以降の新規予約は `processMessage_` が自動で tasks 側も同期するので手動作業不要
+- **教訓**:
+  - 「reservations はパッチされるが tasks は取り残される」パターンは del_place/col_place で既に修正済み（patchTaskPlaces_）だったが opts/insurance は未対応だった
+  - **次に同パターンの取りこぼしを起こさないためのルール**: `reservations` の新しいカラムが tasks の表示に影響する場合、必ず `patchTask*_` 型のヘルパーを同時に実装すること
+
 ## 2026-04-22 修正履歴
 
 ### TOP じゃらん事前決済ウィジェットに金額合計を表示 (v4.6.56)
