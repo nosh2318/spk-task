@@ -80,12 +80,38 @@
 TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 / 駐車場 / 会計 / 顧客 / 売上 / データ / 過去 / 免許証
 
 ## 現在のバージョン
-- **APP_VERSION**: v4.6.65
-- **sw.js CACHE_NAME**: `spk-v526`
-- **index.html CV**: `spk-v526`
+- **APP_VERSION**: v4.6.66
+- **sw.js CACHE_NAME**: `spk-v527`
+- **index.html CV**: `spk-v527`
 - **SRI/CSP**: 未適用（下記インシデント参照）
 
 ## 2026-04-23 修正履歴
+
+### じゃらん事前決済の二重登録を修正 + UIフィルタ追加（v4.6.66）
+- **症状**: 予約外未収に R0 プレフィックスのじゃらん予約（6件 ¥202,200）が表示される。ユーザー指摘「ここの予約外は じゃらんに入るのでは？」
+- **調査結果**: 全6件が `reservations.ota='J'` かつ `jalan_payments` にも存在する**二重登録**状態
+  | resv_no | 名前 | jalan_payments status | spk_accounting |
+  |---|---|---|---|
+  | R05I6TMD | タカタ シュンスケ | email_sent | extra_sales/paid=false |
+  | R0MQCKQD | シミズ ヨシヒロ | cancelled | extra_sales/paid=false |
+  | R0C0PPHO | イズミサワ ショウタ | **paid** | extra_sales/paid=false ← 入金済みなのに未収表示 |
+  | R0OB6RQD | 北上 将大 | email_sent | extra_sales/paid=false |
+  | R0GKNRZZ | ダイ チヨコ | email_sent | extra_sales/paid=false |
+  | R0SFCDMG | ヤナギダ ナオヤ | email_sent | extra_sales/paid=false |
+- **原因**: **AIスタッフ_G**（Slackボット）がじゃらん決済のSquareリンクを `spk_accounting` に `type='extra_sales'` として誤登録。`description` は実際に `じゃらん事前決済(XX/XX-XX/XX)` となっていた。`memo='square_order=XXXXX'` もjalan_paymentsのorder_idと一致
+- **影響**:
+  1. 予約外未収に表示されて UI ノイズ
+  2. 売上分析で二重計上（reservations.price + spk_accounting.extra_sales の両方に計上される）
+  3. 入金済みレコードも `spk_accounting` 側は `paid=false` のまま残り、未収と誤認される
+- **修正 (`index.src.html`)**:
+  1. `SpkPaymentSection`: 予約外未収カウントから `jalan_payments.reservation_id` に存在する予約を除外（Square請求と同じ扱い）
+  2. `SpkExtraUnpaidWidget`: 同じフィルタを適用。`jalan_payments` の `reservation_id` セットを並列フェッチして表示リストから除外
+  3. select句に `resv_no` を追加（フィルタ用）
+- **DB クリーンアップ**: AIスタッフ_G が誤登録した **9件** を `spk_accounting` から削除
+  - 未収6件（¥202,200）: R05I6TMD / R0MQCKQD / R0C0PPHO / R0OB6RQD / R0GKNRZZ / R0SFCDMG
+  - 入金済3件（¥50,250）: R0IPN7SD / R0YNZ8NG / R06CBHRK ← 過去に二重計上されていた
+- **未解決の根本原因**: AIスタッフ_G の spk_accounting 誤登録挙動。おそらく Square Webhook 受信時の処理で、じゃらん事前決済のSquareリンクも拾って「予約外売上」として起票している。AIスタッフ_G 側で `jalan_payments` への存在チェックが必要
+- **バージョン**: `APP_VERSION=v4.6.66` / `sw.js CACHE_NAME=spk-v527` / `index.html CV=spk-v527` 同時更新
 
 ### SquareInvoiceWidget と SpkExtraUnpaidWidget を那覇店と完全定義統一（v4.6.65）
 - **症状**: v4.6.64 以降も「Square請求 が押しても動かない / 反応がかなり遅い / 那覇と定義が違う気がする」
