@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v562';
+  var CV='spk-v563';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js?v=483').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js?v=484').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -2910,6 +2910,7 @@ function ManagementTab({store}){
   const[dbFleet,setDbFleet]=useState([]);
   const[dbVehs,setDbVehs]=useState([]);
   const[dbKpi,setDbKpi]=useState([]);
+  const[dbPlaces,setDbPlaces]=useState([]);
   const[dbTasks,setDbTasks]=useState([]);
   const[dbLoading2,setDbLoading2]=useState(false);
   const[dbTargets,setDbTargets]=useState({});  // {ym: {rev:目標売上, cnt:目標件数, perV:台/売上目標}}
@@ -3036,7 +3037,12 @@ function ManagementTab({store}){
       sub==="analytics"?loadDbAll(tasksTable):Promise.resolve([]),
     ]).then(([r,f,v,k,t])=>{
       setDbResvs(r);setDbFleet(f);setDbVehs(v);setDbKpi(k);
-      if(sub==="analytics")setDbTasks(t.filter(tk=>tk.type==="DEL"||tk.type==="COL"));
+      if(sub==="analytics"){
+        setDbTasks(t.filter(tk=>tk.type==="DEL"||tk.type==="COL"));
+        // places テーブルをロード（OPシートCSV場所データの正本）
+        if(sb)sb.from(isSpk?"places":"places").select("reservation_id,del_place,col_place")
+          .then(({data})=>setDbPlaces(data||[]));
+      }
       setDbLoading2(false);
     }).catch(()=>setDbLoading2(false));
     // 目標値をロード
@@ -5202,6 +5208,15 @@ function ManagementTab({store}){
         }
         return tk["送迎場所"]||'';
       };
+      // places テーブルから場所マップ（OPシートCSV正本 = 最優先）
+      const placesDelMap={},placesColMap={};
+      dbPlaces.forEach(p=>{
+        if(!p.reservation_id)return;
+        const dp=(p.del_place||'').trim();const cp=(p.col_place||'').trim();
+        if(dp&&!EXCL_PLACE.test(dp))placesDelMap[p.reservation_id]=dp;
+        if(cp&&!EXCL_PLACE.test(cp))placesColMap[p.reservation_id]=cp;
+      });
+      // tasks からも補完（次点）
       const taskDelMap={},taskColMap={};
       dbTasks.forEach(tk=>{
         const rid=isSpk?(tk.reservation_id||''):tk.reservationId;
@@ -5213,8 +5228,8 @@ function ManagementTab({store}){
       });
       const delPlaces={},colPlaces={};
       relForPeriod.forEach(r=>{
-        const dp=((r.del_place||'').trim())||taskDelMap[r.id]||'';
-        const cp=((r.col_place||'').trim())||taskColMap[r.id]||'';
+        const dp=((r.del_place||'').trim())||placesDelMap[r.id]||taskDelMap[r.id]||'';
+        const cp=((r.col_place||'').trim())||placesColMap[r.id]||taskColMap[r.id]||'';
         if(dp&&!EXCL_PLACE.test(dp))delPlaces[dp]=(delPlaces[dp]||0)+1;
         if(cp&&!EXCL_PLACE.test(cp))colPlaces[cp]=(colPlaces[cp]||0)+1;
       });
@@ -14304,7 +14319,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.7.1";
+const APP_VERSION="v4.7.2";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
