@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v532';
+  var CV='spk-v543';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js?v=460').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js?v=464').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -2902,6 +2902,7 @@ function ManagementTab({store}){
   // 当月ダッシュボード
   const[dashYm,setDashYm]=useState(()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");});
   const[dashChView,setDashChView]=useState("month"); // "month" | "year"
+  const[dashPeriod,setDashPeriod]=useState("month"); // "month" | "year" ★ ヘッダー月/年トグル
 
   // ===== 経営DB (Excel再現ダッシュボード) =====
   const[dbStore,setDbStore]=useState(store||"nha");
@@ -3524,10 +3525,10 @@ function ManagementTab({store}){
         const dcAdj=hasSplit?dc:0;
         plRev+=rev;plCnt+=1;plBase+=bpAdj;plOpt+=opAdj;plDisc+=dcAdj;
         byCh[ch]=(byCh[ch]||0)+rev;
-        if(!yearByCh[ch])yearByCh[ch]={total:0,base:0,opt:0,disc:0};
+        if(!yearByCh[ch])yearByCh[ch]={total:0,base:0,opt:0,disc:0,cnt:0};
         yearByCh[ch][m]=(yearByCh[ch][m]||0)+rev;
         yearByCh[ch].total+=rev;
-        yearByCh[ch].base+=bpAdj;yearByCh[ch].opt+=opAdj;yearByCh[ch].disc+=dcAdj;
+        yearByCh[ch].base+=bpAdj;yearByCh[ch].opt+=opAdj;yearByCh[ch].disc+=dcAdj;yearByCh[ch].cnt+=1;
         const ld=r[ldKey];
         if(ld&&rd){const d0=new Date(ld.slice(0,10)),d1=new Date(rd.slice(0,10));const n=Math.max(1,Math.round((d1-d0)/86400000));daysSum+=n;daysCnt++;}
       });
@@ -3562,6 +3563,40 @@ function ManagementTab({store}){
     const total=months.reduce((a,m)=>({plRev:a.plRev+m.plRev,plCnt:a.plCnt+m.plCnt,extraRev:a.extraRev+m.extraRev,totalRev:a.totalRev+m.totalRev,cfIn:a.cfIn+m.cfIn,daysSum:a.daysSum+m.daysSum,plBase:a.plBase+m.plBase,plOpt:a.plOpt+m.plOpt,plDisc:a.plDisc+m.plDisc}),{plRev:0,plCnt:0,extraRev:0,totalRev:0,cfIn:0,daysSum:0,plBase:0,plOpt:0,plDisc:0});
     return{year,months,total,yearByCh};
   },[dbResvs,dbFleet,dbVehs,dbKpi,dbStore,dashYm,cfPivot,dashYearlyExtra]);
+
+  // ★ 月/年切替対応の派生KPI: dashPeriod="month" → dashSummary相当 / "year" → dashYearly.total から加重平均で再計算
+  const dashKpi=useMemo(()=>{
+    if(dashPeriod==="month"){
+      // 月モード: 既存の dashSummary をそのまま返す（extraRev は別 state）
+      return{...dashSummary,extraRev:dashExtraRev,totalRev:dashSummary.plRev+dashExtraRev,periodLabel:dashYm};
+    }
+    // 年モード: dashYearly.total + 加重平均 + 稼働率合算
+    const y=dashYearly;const t=y.total;
+    const utilDays=y.months.reduce((a,m)=>a+m.utilDays,0);
+    const utilMaxDays=y.months.reduce((a,m)=>a+m.utilMaxDays,0);
+    const activeCounts=y.months.filter(m=>m.utilActiveCount>0).map(m=>m.utilActiveCount);
+    const utilActiveCount=activeCounts.length?Math.round(activeCounts.reduce((a,b)=>a+b,0)/activeCounts.length):0;
+    const utilPct=utilMaxDays>0?Math.round(utilDays/utilMaxDays*100):0;
+    // byCh / byChBreak を年集計から組み立て
+    const byCh={},byChBreak={};
+    Object.keys(y.yearByCh||{}).forEach(ch=>{
+      const v=y.yearByCh[ch];
+      byCh[ch]=v.total;
+      byChBreak[ch]={rev:v.total,base:v.base,opt:v.opt,disc:v.disc,cnt:v.cnt||0};
+    });
+    return{
+      plRev:t.plRev,plCnt:t.plCnt,
+      plBase:t.plBase,plOpt:t.plOpt,plDisc:t.plDisc,
+      daysSum:t.daysSum,cfIn:t.cfIn,
+      extraRev:t.extraRev,totalRev:t.totalRev,
+      unitPrice:t.plCnt>0?(t.plRev/t.plCnt):0,
+      dailyRate:t.daysSum>0?(t.plRev/t.daysSum):0,
+      avgNights:t.plCnt>0?(t.daysSum/t.plCnt):0,
+      utilDays,utilMaxDays,utilActiveCount,utilPct,
+      byCh,byChBreak,
+      periodLabel:y.year+"年"
+    };
+  },[dashPeriod,dashSummary,dashYearly,dashExtraRev,dashYm]);
 
   const subTabs=[
     {id:"exceldash",l:"📊 経営DB"},
@@ -4153,50 +4188,65 @@ function ManagementTab({store}){
 
     {/* --- ダッシュボード --- */}
     {sub==="dashboard"&&<div>
-      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
-        <span style={{fontSize:12,color:"#64748b"}}>対象月:</span>
-        <input type="month" value={dashYm} onChange={e=>setDashYm(e.target.value)} style={{padding:"4px 8px",fontSize:12,border:"1px solid #cbd5e1",borderRadius:6}}/>
+      {/* ★ ヘッダー: 月/年トグル + 期間選択 */}
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,flexWrap:"wrap"}}>
+        <div style={{display:"inline-flex",borderRadius:8,overflow:"hidden",border:"1px solid #cbd5e1"}}>
+          {[["month","📊 月別","#2563eb"],["year","📈 年別","#d97706"]].map(([k,l,col])=>{
+            const sel=dashPeriod===k;
+            return <button key={k} onClick={()=>setDashPeriod(k)} style={{padding:"6px 14px",fontSize:12,fontWeight:800,border:"none",cursor:"pointer",background:sel?col:"#fff",color:sel?"#fff":"#475569",transition:"all 0.15s"}}>{l}</button>;
+          })}
+        </div>
+        {dashPeriod==="month"?<>
+          <span style={{fontSize:12,color:"#64748b"}}>対象月:</span>
+          <input type="month" value={dashYm} onChange={e=>setDashYm(e.target.value)} style={{padding:"4px 8px",fontSize:12,border:"1px solid #cbd5e1",borderRadius:6}}/>
+        </>:<>
+          <span style={{fontSize:12,color:"#64748b"}}>対象年:</span>
+          <select value={dashYm.slice(0,4)} onChange={e=>setDashYm(e.target.value+"-"+dashYm.slice(5))} style={{padding:"5px 10px",fontSize:12,border:"1px solid #cbd5e1",borderRadius:6,fontWeight:700}}>
+            {[...Array(5)].map((_,i)=>{const y=new Date().getFullYear()-i;return <option key={y} value={y}>{y}年</option>;})}
+          </select>
+        </>}
         <button onClick={()=>setSub("dashboard")} style={btn("#0891b2")}>↻ 再読込</button>
+        <span style={{marginLeft:"auto",fontSize:10,color:"#94a3b8",fontWeight:600}}>{dashPeriod==="year"?"※ 年モードは加重平均（Σ値/Σ母数）で算出":"※ 月単位の計上ベース"}</span>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:10,marginBottom:16}}>
-        <div style={{...card,minWidth:180}}><div style={lbl}>当月売上 (計上)</div><div style={{display:"flex",flexDirection:"column",gap:2,marginTop:4}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{fontSize:10,color:"#64748b"}}>予約売上</span><span style={{fontSize:14,fontWeight:700,color:"#1e40af"}}>{fmtM(dashSummary.plRev)}</span></div>{dashExtraRev>0&&<div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{fontSize:10,color:"#64748b"}}>予約外</span><span style={{fontSize:14,fontWeight:700,color:"#7c3aed"}}>+{fmtM(dashExtraRev)}</span></div>}<div style={{borderTop:"1px solid #e2e8f0",marginTop:3,paddingTop:3,display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{fontSize:10,fontWeight:700,color:"#374151"}}>合計</span><span style={{fontSize:16,fontWeight:900,color:"#059669"}}>{fmtM(dashSummary.plRev+dashExtraRev)}</span></div></div><div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>{dashSummary.plCnt}件</div></div>
-        <div style={card}><div style={lbl}>当月入金 (CF)</div><div style={val}>{fmtM(dashSummary.cfIn)}</div></div>
-        <div style={card}><div style={lbl}>売上件数</div><div style={val}>{dashSummary.plCnt}件</div></div>
-        <div style={card}><div style={lbl}>客単価 (1予約)</div><div style={val}>{dashSummary.plCnt>0?"¥"+Math.round(dashSummary.unitPrice).toLocaleString():"-"}</div></div>
-        <div style={{...card,background:"#f0fdf4",border:"1px solid #bbf7d0"}}><div style={lbl}>稼働率</div><div style={{...val,color:"#059669"}}>{dashSummary.utilPct}%</div><div style={{fontSize:10,color:"#64748b"}}>{dashSummary.utilDays}/{dashSummary.utilMaxDays}日・{dashSummary.utilActiveCount}台</div></div>
-        <div style={{...card,background:"#eef2ff",border:"1px solid #c7d2fe"}}><div style={lbl}>★ 平均泊数 (1予約あたり)</div><div style={{...val,color:"#4338ca"}}>{dashSummary.avgNights>0?dashSummary.avgNights.toFixed(2)+"泊":"-"}</div><div style={{fontSize:10,color:"#64748b"}}>延べ泊数 {dashSummary.daysSum.toFixed(1)}泊</div></div>
-        <div style={card}><div style={lbl}>1日あたり単価</div><div style={val}>{dashSummary.dailyRate>0?"¥"+Math.round(dashSummary.dailyRate).toLocaleString():"-"}</div></div>
+        <div style={{...card,minWidth:180}}><div style={lbl}>{dashPeriod==="year"?"年間売上 (計上)":"当月売上 (計上)"}</div><div style={{display:"flex",flexDirection:"column",gap:2,marginTop:4}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{fontSize:10,color:"#64748b"}}>予約売上</span><span style={{fontSize:14,fontWeight:700,color:"#1e40af"}}>{fmtM(dashKpi.plRev)}</span></div>{dashKpi.extraRev>0&&<div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{fontSize:10,color:"#64748b"}}>予約外</span><span style={{fontSize:14,fontWeight:700,color:"#7c3aed"}}>+{fmtM(dashKpi.extraRev)}</span></div>}<div style={{borderTop:"1px solid #e2e8f0",marginTop:3,paddingTop:3,display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{fontSize:10,fontWeight:700,color:"#374151"}}>合計</span><span style={{fontSize:16,fontWeight:900,color:"#059669"}}>{fmtM(dashKpi.plRev+dashKpi.extraRev)}</span></div></div><div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>{dashKpi.plCnt}件 · {dashKpi.periodLabel}</div></div>
+        <div style={card}><div style={lbl}>{dashPeriod==="year"?"年間入金 (CF)":"当月入金 (CF)"}</div><div style={val}>{fmtM(dashKpi.cfIn)}</div><div style={{fontSize:10,color:"#64748b"}}>{dashKpi.plRev>0?"入金率 "+Math.round(dashKpi.cfIn/dashKpi.plRev*100)+"%":"-"}</div></div>
+        <div style={card}><div style={lbl}>売上件数</div><div style={val}>{dashKpi.plCnt}件</div></div>
+        <div style={card}><div style={lbl}>客単価 (1予約)</div><div style={val}>{dashKpi.plCnt>0?"¥"+Math.round(dashKpi.unitPrice).toLocaleString():"-"}</div></div>
+        <div style={{...card,background:"#f0fdf4",border:"1px solid #bbf7d0"}}><div style={lbl}>稼働率</div><div style={{...val,color:"#059669"}}>{dashKpi.utilPct}%</div><div style={{fontSize:10,color:"#64748b"}}>{dashKpi.utilDays}/{dashKpi.utilMaxDays}日・{dashKpi.utilActiveCount}台{dashPeriod==="year"?"(平均)":""}</div></div>
+        <div style={{...card,background:"#eef2ff",border:"1px solid #c7d2fe"}}><div style={lbl}>★ 平均泊数 (1予約あたり)</div><div style={{...val,color:"#4338ca"}}>{dashKpi.avgNights>0?dashKpi.avgNights.toFixed(2)+"泊":"-"}</div><div style={{fontSize:10,color:"#64748b"}}>延べ泊数 {dashKpi.daysSum.toFixed(1)}泊</div></div>
+        <div style={card}><div style={lbl}>1日あたり単価</div><div style={val}>{dashKpi.dailyRate>0?"¥"+Math.round(dashKpi.dailyRate).toLocaleString():"-"}</div></div>
       </div>
-      {/* ★ 売上3分解（基本料金 / 付帯売上 / 割引） */}
+      {/* ★ 売上3分解（基本料金 / 付帯売上 / 割引）月/年自動切替 */}
       <div style={{...card,marginBottom:12}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-          <div style={{fontSize:14,fontWeight:900}}>💰 売上3分解 ({dashYm})</div>
+          <div style={{fontSize:14,fontWeight:900}}>💰 売上3分解 ({dashKpi.periodLabel})</div>
           <div style={{fontSize:10,color:"#94a3b8"}}>売上 = 基本料金 + 付帯売上 - 割引</div>
         </div>
         {(()=>{
-          const gross=dashSummary.plBase+dashSummary.plOpt;
-          const bPct=gross>0?(dashSummary.plBase/gross*100):0;
-          const oPct=gross>0?(dashSummary.plOpt/gross*100):0;
-          const dRate=gross>0?(dashSummary.plDisc/gross*100):0;
+          const gross=dashKpi.plBase+dashKpi.plOpt;
+          const bPct=gross>0?(dashKpi.plBase/gross*100):0;
+          const oPct=gross>0?(dashKpi.plOpt/gross*100):0;
+          const dRate=gross>0?(dashKpi.plDisc/gross*100):0;
           return <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:10}}>
             <div style={{padding:10,borderRadius:8,background:"#eff6ff",border:"1px solid #bfdbfe"}}>
               <div style={{fontSize:10,color:"#64748b",fontWeight:700}}>基本料金</div>
-              <div style={{fontSize:18,fontWeight:900,color:"#1e40af",marginTop:2}}>{fmtM(dashSummary.plBase)}</div>
+              <div style={{fontSize:18,fontWeight:900,color:"#1e40af",marginTop:2}}>{fmtM(dashKpi.plBase)}</div>
               <div style={{fontSize:10,color:"#64748b"}}>構成比 {bPct.toFixed(1)}%</div>
             </div>
             <div style={{padding:10,borderRadius:8,background:"#f0fdf4",border:"1px solid #bbf7d0"}}>
               <div style={{fontSize:10,color:"#64748b",fontWeight:700}}>付帯売上</div>
-              <div style={{fontSize:18,fontWeight:900,color:"#059669",marginTop:2}}>{fmtM(dashSummary.plOpt)}</div>
+              <div style={{fontSize:18,fontWeight:900,color:"#059669",marginTop:2}}>{fmtM(dashKpi.plOpt)}</div>
               <div style={{fontSize:10,color:"#64748b"}}>構成比 {oPct.toFixed(1)}%</div>
             </div>
             <div style={{padding:10,borderRadius:8,background:"#fef2f2",border:"1px solid #fecaca"}}>
               <div style={{fontSize:10,color:"#64748b",fontWeight:700}}>割引</div>
-              <div style={{fontSize:18,fontWeight:900,color:"#dc2626",marginTop:2}}>-{fmtM(dashSummary.plDisc)}</div>
+              <div style={{fontSize:18,fontWeight:900,color:"#dc2626",marginTop:2}}>-{fmtM(dashKpi.plDisc)}</div>
               <div style={{fontSize:10,color:"#64748b"}}>グロス比 {dRate.toFixed(1)}%</div>
             </div>
             <div style={{padding:10,borderRadius:8,background:"#1e293b",color:"#fff"}}>
               <div style={{fontSize:10,color:"#cbd5e1",fontWeight:700}}>売上計上額</div>
-              <div style={{fontSize:18,fontWeight:900,color:"#4ade80",marginTop:2}}>{fmtM(dashSummary.plRev)}</div>
+              <div style={{fontSize:18,fontWeight:900,color:"#4ade80",marginTop:2}}>{fmtM(dashKpi.plRev)}</div>
               <div style={{fontSize:10,color:"#cbd5e1"}}>基本+付帯-割引</div>
             </div>
           </div>;
@@ -4283,19 +4333,14 @@ function ManagementTab({store}){
         })()}
       </div>
 
-      {/* ★ チャネル別構成（下段・月/年トグル） */}
+      {/* ★ チャネル別構成（ヘッダー月/年トグルに連動） */}
       <div style={{...card,marginBottom:12}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,flexWrap:"wrap",gap:8}}>
-          <div style={{fontSize:14,fontWeight:900}}>チャネル別構成 ({dashChView==="month"?dashYm:dashYearly.year+"年"})</div>
-          <div style={{display:"inline-flex",borderRadius:6,overflow:"hidden",border:"1px solid #cbd5e1"}}>
-            {[["month","月"],["year","年"]].map(([k,l])=>{
-              const sel=dashChView===k;
-              return <button key={k} onClick={()=>setDashChView(k)} style={{padding:"5px 14px",fontSize:11,fontWeight:700,border:"none",cursor:"pointer",background:sel?"#1e40af":"#fff",color:sel?"#fff":"#475569"}}>{l}</button>;
-            })}
-          </div>
+          <div style={{fontSize:14,fontWeight:900}}>チャネル別構成 ({dashKpi.periodLabel})</div>
+          <div style={{fontSize:10,color:"#94a3b8"}}>※ ヘッダーの月/年トグルに連動</div>
         </div>
         {/* 月ビュー: 3分解対応 */}
-        {dashChView==="month"&&(Object.keys(dashSummary.byChBreak).length===0?<div style={{fontSize:11,color:"#94a3b8"}}>データなし</div>:
+        {dashPeriod==="month"&&(Object.keys(dashKpi.byChBreak).length===0?<div style={{fontSize:11,color:"#94a3b8"}}>データなし</div>:
           <div style={{overflowX:"auto"}}>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:720}}>
             <thead><tr style={{background:"#f8fafc"}}>
@@ -4308,8 +4353,8 @@ function ManagementTab({store}){
               <th style={{...th,textAlign:"left",minWidth:160}}>構成比</th>
             </tr></thead>
             <tbody>
-            {Object.entries(dashSummary.byChBreak).sort((a,b)=>b[1].rev-a[1].rev).map(([ch,d])=>{
-              const pct=dashSummary.plRev>0?(d.rev/dashSummary.plRev*100):0;
+            {Object.entries(dashKpi.byChBreak).sort((a,b)=>b[1].rev-a[1].rev).map(([ch,d])=>{
+              const pct=dashKpi.plRev>0?(d.rev/dashKpi.plRev*100):0;
               return <tr key={ch} style={{borderBottom:"1px solid #f1f5f9"}}>
                 <td style={{...td,fontWeight:700}}>{ch}</td>
                 <td style={{...td,textAlign:"right",color:"#1e40af"}}>{d.base>0?fmtM(d.base):"-"}</td>
@@ -4329,11 +4374,11 @@ function ManagementTab({store}){
             })}
             <tr style={{background:"#1e293b",color:"#fff",fontWeight:800}}>
               <td style={{padding:"8px",fontSize:11}}>合計</td>
-              <td style={{padding:"8px",fontSize:11,textAlign:"right",color:"#93c5fd"}}>{fmtM(dashSummary.plBase)}</td>
-              <td style={{padding:"8px",fontSize:11,textAlign:"right",color:"#6ee7b7"}}>{fmtM(dashSummary.plOpt)}</td>
-              <td style={{padding:"8px",fontSize:11,textAlign:"right",color:"#fca5a5"}}>{dashSummary.plDisc>0?"-"+fmtM(dashSummary.plDisc):"-"}</td>
-              <td style={{padding:"8px",fontSize:12,textAlign:"right",color:"#4ade80"}}>{fmtM(dashSummary.plRev)}</td>
-              <td style={{padding:"8px",fontSize:11,textAlign:"right"}}>{dashSummary.plCnt}</td>
+              <td style={{padding:"8px",fontSize:11,textAlign:"right",color:"#93c5fd"}}>{fmtM(dashKpi.plBase)}</td>
+              <td style={{padding:"8px",fontSize:11,textAlign:"right",color:"#6ee7b7"}}>{fmtM(dashKpi.plOpt)}</td>
+              <td style={{padding:"8px",fontSize:11,textAlign:"right",color:"#fca5a5"}}>{dashKpi.plDisc>0?"-"+fmtM(dashKpi.plDisc):"-"}</td>
+              <td style={{padding:"8px",fontSize:12,textAlign:"right",color:"#4ade80"}}>{fmtM(dashKpi.plRev)}</td>
+              <td style={{padding:"8px",fontSize:11,textAlign:"right"}}>{dashKpi.plCnt}</td>
               <td style={{padding:"8px",fontSize:11,textAlign:"right"}}>100%</td>
             </tr>
             </tbody>
@@ -4341,7 +4386,7 @@ function ManagementTab({store}){
           </div>
         )}
         {/* 年ビュー: チャネル × 月 マトリクス */}
-        {dashChView==="year"&&(()=>{
+        {dashPeriod==="year"&&(()=>{
           const chEntries=Object.entries(dashYearly.yearByCh).sort((a,b)=>b[1].total-a[1].total);
           const yearTotal=chEntries.reduce((s,[,d])=>s+d.total,0);
           const monthTotals=Array.from({length:12},(_,i)=>chEntries.reduce((s,[,d])=>s+(d[i+1]||0),0));
@@ -4971,10 +5016,17 @@ function ManagementTab({store}){
       reliable.forEach(r=>{
         const rd=r[rdKey];if(!rd)return;
         const ym=rd.slice(0,7);
-        if(!mAgg[ym])mAgg[ym]={resvs:[],rev:0,cnt:0,daySum:0,otaRev:{},otaCnt:{},vtRev:{},vtCnt:{},createdInMonth:0,createdBeforeMonth:0,oneDay:0,prefCnt:{}};
+        if(!mAgg[ym])mAgg[ym]={resvs:[],rev:0,cnt:0,daySum:0,otaRev:{},otaCnt:{},otaBase:{},otaOpt:{},otaDisc:{},vtRev:{},vtCnt:{},createdInMonth:0,createdBeforeMonth:0,oneDay:0,prefCnt:{},base:0,opt:0,disc:0};
         const m=mAgg[ym];
         const rev=revCalc(r);
+        // 3分解
+        const bp=Number(r.base_price)||0,op=Number(r.option_price)||0,dc=Number(r.discount)||0;
+        const hasSplit=(bp>0||op>0);
+        const bpAdj=hasSplit?bp:(Number(r.price)||0);
+        const opAdj=hasSplit?op:0;
+        const dcAdj=hasSplit?dc:0;
         m.resvs.push(r);m.rev+=rev;m.cnt+=1;
+        m.base+=bpAdj;m.opt+=opAdj;m.disc+=dcAdj;
         // days
         const ld=r[ldKey],rd2=r[rdKey];
         if(ld&&rd2){const days=Math.max(1,Math.round((new Date(rd2.slice(0,10))-new Date(ld.slice(0,10)))/(86400000)));m.daySum+=days;
@@ -4983,6 +5035,9 @@ function ManagementTab({store}){
         // ota
         const ch=DB_OTA_MAP[r.ota]||"その他売上";
         m.otaRev[ch]=(m.otaRev[ch]||0)+rev;m.otaCnt[ch]=(m.otaCnt[ch]||0)+1;
+        m.otaBase[ch]=(m.otaBase[ch]||0)+bpAdj;
+        m.otaOpt[ch]=(m.otaOpt[ch]||0)+opAdj;
+        m.otaDisc[ch]=(m.otaDisc[ch]||0)+dcAdj;
         // veh type
         const vc=fMap[r.id];const vObj=vc?vMap[vc]:null;
         let vType="?";
@@ -5060,12 +5115,21 @@ function ManagementTab({store}){
       const yearAgg={};
       ymList.forEach(ym=>{
         const yr=ym.slice(0,4);
-        if(!yearAgg[yr])yearAgg[yr]={rev:0,cnt:0,daySum:0,leadTimes:[],createdInMonth:0,createdBeforeMonth:0,oneDay:0,totalDays:0,maxDays:0};
+        if(!yearAgg[yr])yearAgg[yr]={rev:0,cnt:0,daySum:0,leadTimes:[],createdInMonth:0,createdBeforeMonth:0,oneDay:0,totalDays:0,maxDays:0,base:0,opt:0,disc:0,otaRev:{},otaCnt:{},otaBase:{},otaOpt:{},otaDisc:{}};
         const ya=yearAgg[yr],m=mAgg[ym],u=utilByM[ym]||{};
         ya.rev+=m.rev;ya.cnt+=m.cnt;ya.daySum+=m.daySum;ya.oneDay+=m.oneDay;
+        ya.base+=m.base;ya.opt+=m.opt;ya.disc+=m.disc;
         ya.createdInMonth+=m.createdInMonth;ya.createdBeforeMonth+=m.createdBeforeMonth;
         ya.totalDays+=(u.totalDays||0);ya.maxDays+=(u.maxDays||0);
         if(leadByM[ym])ya.leadTimes=ya.leadTimes.concat(leadByM[ym]);
+        // OTA別3分解を年で集約
+        Object.keys(m.otaRev||{}).forEach(ch=>{
+          ya.otaRev[ch]=(ya.otaRev[ch]||0)+(m.otaRev[ch]||0);
+          ya.otaCnt[ch]=(ya.otaCnt[ch]||0)+(m.otaCnt[ch]||0);
+          ya.otaBase[ch]=(ya.otaBase[ch]||0)+(m.otaBase[ch]||0);
+          ya.otaOpt[ch]=(ya.otaOpt[ch]||0)+(m.otaOpt[ch]||0);
+          ya.otaDisc[ch]=(ya.otaDisc[ch]||0)+(m.otaDisc[ch]||0);
+        });
       });
       const yrList=Object.keys(yearAgg).sort();
 
@@ -5197,6 +5261,24 @@ function ManagementTab({store}){
         secHeader("A","A. 稼働率 ("+periodLabel+")"),
         secOpen.A&&React.createElement("div",null,
           selMode==="month"?React.createElement("div",null,
+            // ★ 月サマリーカード（年モードの年間サマリーと対称）
+            (()=>{
+              const m=mAgg[selYm],u=utilByM[selYm];
+              const pct=u?u.pct:0;
+              const col=pct>=60?"#059669":pct>=30?"#d97706":"#dc2626";
+              const unitP=m&&m.cnt>0?Math.round(m.rev/m.cnt):0;
+              const lt=leadByM[selYm]?median(leadByM[selYm]):null;
+              return React.createElement("div",{style:{display:"flex",gap:10,flexWrap:"wrap",marginBottom:12}},
+                React.createElement("div",{style:{background:"#eff6ff",border:"2px solid #bfdbfe",borderRadius:12,padding:"14px 18px",minWidth:130,textAlign:"center"}},
+                  React.createElement("div",{style:{fontSize:11,fontWeight:700,color:"#64748b",marginBottom:4}},"月次稼働率"),
+                  React.createElement("div",{style:{fontSize:40,fontWeight:900,color:col,lineHeight:1}},pct,React.createElement("span",{style:{fontSize:16,fontWeight:700}},"%")),
+                  React.createElement("div",{style:{fontSize:10,color:"#94a3b8",marginTop:4}},u?(u.totalDays+"/"+u.maxDays+"日 · "+u.activeCount+"台"):"-")
+                ),
+                metricCard("月次売上","¥"+fmt(m?m.rev:0),(m?m.cnt:0)+"件","#eff6ff","#1e3a5f"),
+                metricCard("平均単価","¥"+fmt(unitP),"1予約あたり","#f0fdf4"),
+                metricCard("LT中央値",lt!=null?lt+"日":"-","中央値","#fef3c7")
+              );
+            })(),
             sectionCard(React.createElement(VehicleProfitTable,{u:utilByM[selYm],nowYm:selYm,vehicleCosts,dbVehs})),
             sectionCard(React.createElement(ClsRevCard,{u:utilByM[selYm],nowYm:selYm}))
           ):React.createElement("div",null,
@@ -5264,6 +5346,81 @@ function ManagementTab({store}){
           sectionCard(React.createElement("div",null,
             React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:12,color:"#1e3a5f"}},"クラス別稼働率"),
             React.createElement(ClsUtilCard,{utilByM,ymList:selYrMonths.length?selYrMonths:ymList,nowYm,yrList:[selYr],DB_VEH_TYPES})
+          )),
+          // ★ 年車両別稼働率・売上（月モードの車両別テーブルと対称）
+          sectionCard(React.createElement("div",null,
+            React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:10,color:"#1e3a5f"}},selYr+"年 車両別 年間稼働率・売上"),
+            (()=>{
+              // 年の全車両について、年間稼働日数 / 売上 を集計
+              const yearVehDays={},yearVehRev={};
+              const kfAll={};
+              selYrMonths.forEach(ym=>{
+                const u=utilByM[ym];if(!u||!u.perVeh)return;
+                Object.keys(u.perVeh).forEach(code=>{
+                  const pv=u.perVeh[code];
+                  yearVehDays[code]=(yearVehDays[code]||0)+(pv.days||0);
+                  yearVehRev[code]=(yearVehRev[code]||0)+(pv.rev||0);
+                });
+              });
+              // 年の総日数（各月dim合算）
+              const yrNum=Number(selYr);
+              let yearDim=0;
+              for(let mm=1;mm<=12;mm++){yearDim+=new Date(yrNum,mm,0).getDate();}
+              // アクティブ車両（選択年のいずれかの月でアクティブだった車両）
+              const activeCodes=new Set();
+              selYrMonths.forEach(ym=>{
+                const u=utilByM[ym];if(!u||!u.perVeh)return;
+                Object.keys(u.perVeh).forEach(code=>activeCodes.add(code));
+              });
+              const rows=Array.from(activeCodes).map(code=>{
+                const v=dbVehs.find(v=>v.code===code)||{};
+                const days=yearVehDays[code]||0;
+                const rev=yearVehRev[code]||0;
+                const pct=yearDim>0?Math.round(days/yearDim*1000)/10:0;
+                return{code,name:v.name||code,type:v.type||"?",days,rev,pct};
+              }).sort((a,b)=>b.rev-a.rev);
+              if(rows.length===0)return React.createElement("div",{style:{color:"#94a3b8",fontSize:12}},"データなし");
+              return tableWrap(React.createElement("table",{style:{width:"100%",borderCollapse:"collapse"}},
+                React.createElement("thead",null,React.createElement("tr",null,
+                  React.createElement("th",{style:{...th2,position:"sticky",top:0,zIndex:1}},"車両"),
+                  React.createElement("th",{style:{...th2,position:"sticky",top:0,zIndex:1,textAlign:"center"}},"タイプ"),
+                  React.createElement("th",{style:{...th2,textAlign:"right",position:"sticky",top:0,zIndex:1}},"稼働日数"),
+                  React.createElement("th",{style:{...th2,textAlign:"right",position:"sticky",top:0,zIndex:1}},"稼働率"),
+                  React.createElement("th",{style:{...th2,textAlign:"right",position:"sticky",top:0,zIndex:1}},"売上"),
+                  React.createElement("th",{style:{...th2,textAlign:"right",position:"sticky",top:0,zIndex:1}},"日当売上")
+                )),
+                React.createElement("tbody",null,
+                  rows.map((r,i)=>{
+                    const col=r.pct>=60?"#059669":r.pct>=30?"#d97706":"#dc2626";
+                    const perDay=r.days>0?Math.round(r.rev/r.days):0;
+                    return React.createElement("tr",{key:r.code,style:zRow(i,false)},
+                      React.createElement("td",{style:{...td2,fontWeight:700}},r.name),
+                      React.createElement("td",{style:{...td2,textAlign:"center",fontSize:10}},r.type),
+                      React.createElement("td",{style:{...td2,textAlign:"right"}},r.days+"/"+yearDim+"日"),
+                      React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:800,color:col}},r.pct+"%"),
+                      React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:700,color:"#059669"}},"¥"+fmt(r.rev)),
+                      React.createElement("td",{style:{...td2,textAlign:"right"}},"¥"+fmt(perDay))
+                    );
+                  }).concat([
+                    (()=>{
+                      const tDays=rows.reduce((a,r)=>a+r.days,0);
+                      const tRev=rows.reduce((a,r)=>a+r.rev,0);
+                      const tMax=rows.length*yearDim;
+                      const tPct=tMax>0?Math.round(tDays/tMax*100):0;
+                      const tPerDay=tDays>0?Math.round(tRev/tDays):0;
+                      return React.createElement("tr",{key:"_total",style:{background:"#1e293b",color:"#fff",fontWeight:800}},
+                        React.createElement("td",{style:{padding:"8px",fontSize:11,fontWeight:900,color:"#fff"}},"合計"),
+                        React.createElement("td",{style:{padding:"8px",fontSize:10,textAlign:"center",color:"#fff"}},rows.length+"台"),
+                        React.createElement("td",{style:{padding:"8px",fontSize:11,textAlign:"right",color:"#fff"}},tDays+"/"+tMax+"日"),
+                        React.createElement("td",{style:{padding:"8px",fontSize:11,textAlign:"right",color:"#fff",fontWeight:900}},tPct+"%"),
+                        React.createElement("td",{style:{padding:"8px",fontSize:12,textAlign:"right",color:"#4ade80",fontWeight:900}},"¥"+fmt(tRev)),
+                        React.createElement("td",{style:{padding:"8px",fontSize:11,textAlign:"right",color:"#fff"}},"¥"+fmt(tPerDay))
+                      );
+                    })()
+                  ])
+                )
+              ),"50vh");
+            })()
           ))
           ) // end selMode==="year" A
         )),
@@ -5272,7 +5429,7 @@ function ManagementTab({store}){
         secHeader("B","B. 予約・売上 ("+periodLabel+")"),
         secOpen.B&&React.createElement("div",null,
           selMode==="month"?React.createElement("div",null,
-            // 月別: サマリーカード + OTA内訳
+            // 月別: サマリーカード + 3分解 + OTA内訳
             (()=>{
               const m=mAgg[selYm],u=utilByM[selYm];
               const rev=m?m.rev:0;const cnt=m?m.cnt:0;
@@ -5289,6 +5446,42 @@ function ManagementTab({store}){
                 metricCard("稼働率",pct+"%",u?(u.totalDays+"/"+u.maxDays+"日"):"-",pct>=60?"#f0fdf4":pct>=30?"#fffbeb":"#fff5f5")
               );
             })(),
+            // ★ 売上3分解カード（月モード）
+            sectionCard((()=>{
+              const m=mAgg[selYm];if(!m)return React.createElement("div",{style:{color:"#94a3b8",fontSize:12}},"データなし");
+              const gross=m.base+m.opt;
+              const bPct=gross>0?(m.base/gross*100):0;
+              const oPct=gross>0?(m.opt/gross*100):0;
+              const dRate=gross>0?(m.disc/gross*100):0;
+              return React.createElement("div",null,
+                React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}},
+                  React.createElement("div",{style:{fontSize:13,fontWeight:900,color:"#1e3a5f"}},"💰 売上3分解（"+selYm+"）"),
+                  React.createElement("div",{style:{fontSize:10,color:"#94a3b8"}},"売上 = 基本料金 + 付帯売上 - 割引")
+                ),
+                React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:10}},
+                  React.createElement("div",{style:{padding:10,borderRadius:8,background:"#eff6ff",border:"1px solid #bfdbfe"}},
+                    React.createElement("div",{style:{fontSize:10,color:"#64748b",fontWeight:700}},"基本料金"),
+                    React.createElement("div",{style:{fontSize:18,fontWeight:900,color:"#1e40af",marginTop:2}},"¥"+fmt(m.base)),
+                    React.createElement("div",{style:{fontSize:10,color:"#64748b"}},"構成比 "+bPct.toFixed(1)+"%")
+                  ),
+                  React.createElement("div",{style:{padding:10,borderRadius:8,background:"#f0fdf4",border:"1px solid #bbf7d0"}},
+                    React.createElement("div",{style:{fontSize:10,color:"#64748b",fontWeight:700}},"付帯売上"),
+                    React.createElement("div",{style:{fontSize:18,fontWeight:900,color:"#059669",marginTop:2}},"¥"+fmt(m.opt)),
+                    React.createElement("div",{style:{fontSize:10,color:"#64748b"}},"構成比 "+oPct.toFixed(1)+"%")
+                  ),
+                  React.createElement("div",{style:{padding:10,borderRadius:8,background:"#fef2f2",border:"1px solid #fecaca"}},
+                    React.createElement("div",{style:{fontSize:10,color:"#64748b",fontWeight:700}},"割引"),
+                    React.createElement("div",{style:{fontSize:18,fontWeight:900,color:"#dc2626",marginTop:2}},"-¥"+fmt(m.disc)),
+                    React.createElement("div",{style:{fontSize:10,color:"#64748b"}},"グロス比 "+dRate.toFixed(1)+"%")
+                  ),
+                  React.createElement("div",{style:{padding:10,borderRadius:8,background:"#1e293b",color:"#fff"}},
+                    React.createElement("div",{style:{fontSize:10,color:"#cbd5e1",fontWeight:700}},"売上計上額"),
+                    React.createElement("div",{style:{fontSize:18,fontWeight:900,color:"#4ade80",marginTop:2}},"¥"+fmt(m.rev)),
+                    React.createElement("div",{style:{fontSize:10,color:"#cbd5e1"}},"基本+付帯-割引")
+                  )
+                )
+              );
+            })()),
             sectionCard(React.createElement("div",null,
               React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:10,color:"#1e3a5f"}},"OTA別内訳（"+selYm+"）"),
               (()=>{
@@ -5321,13 +5514,65 @@ function ManagementTab({store}){
               })()
             ))
           ):React.createElement("div",null,
-            // 年別: 月ごとの予約・売上テーブル + 車種別台あたり
+            // 年別: 年間サマリー + 月ごとの予約・売上テーブル + OTA年間内訳
+            (()=>{
+              const ya=yearAgg[selYr]||{rev:0,cnt:0,daySum:0,base:0,opt:0,disc:0};
+              const unitP=ya.cnt>0?Math.round(ya.rev/ya.cnt):0;
+              const avgD=ya.cnt>0?Math.round(ya.daySum/ya.cnt*10)/10:0;
+              return React.createElement("div",{style:{display:"flex",gap:10,flexWrap:"wrap",marginBottom:12}},
+                metricCard("年間件数",ya.cnt+"件",selYr+"年","#eff6ff","#1e3a5f"),
+                metricCard("年間売上","¥"+fmt(ya.rev),selYr+"年","#f0fdf4"),
+                metricCard("単価","¥"+fmt(unitP),"1予約あたり","#fef3c7"),
+                metricCard("平均日数",avgD+"日","1予約あたり","#f5f3ff"),
+                metricCard("年間稼働率",ya.maxDays>0?Math.round(ya.totalDays/ya.maxDays*100)+"%":"-",ya.totalDays+"/"+ya.maxDays+"日","#fff1f2"),
+                metricCard("延べ泊数",ya.daySum.toFixed(0)+"泊","","#fdf4ff")
+              );
+            })(),
+            // ★ 年間 売上3分解
+            sectionCard((()=>{
+              const ya=yearAgg[selYr];if(!ya)return React.createElement("div",{style:{color:"#94a3b8",fontSize:12}},"データなし");
+              const gross=ya.base+ya.opt;
+              const bPct=gross>0?(ya.base/gross*100):0;
+              const oPct=gross>0?(ya.opt/gross*100):0;
+              const dRate=gross>0?(ya.disc/gross*100):0;
+              return React.createElement("div",null,
+                React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}},
+                  React.createElement("div",{style:{fontSize:13,fontWeight:900,color:"#1e3a5f"}},"💰 売上3分解（"+selYr+"年）"),
+                  React.createElement("div",{style:{fontSize:10,color:"#94a3b8"}},"売上 = 基本料金 + 付帯売上 - 割引")
+                ),
+                React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:10}},
+                  React.createElement("div",{style:{padding:10,borderRadius:8,background:"#eff6ff",border:"1px solid #bfdbfe"}},
+                    React.createElement("div",{style:{fontSize:10,color:"#64748b",fontWeight:700}},"基本料金"),
+                    React.createElement("div",{style:{fontSize:18,fontWeight:900,color:"#1e40af",marginTop:2}},"¥"+fmt(ya.base)),
+                    React.createElement("div",{style:{fontSize:10,color:"#64748b"}},"構成比 "+bPct.toFixed(1)+"%")
+                  ),
+                  React.createElement("div",{style:{padding:10,borderRadius:8,background:"#f0fdf4",border:"1px solid #bbf7d0"}},
+                    React.createElement("div",{style:{fontSize:10,color:"#64748b",fontWeight:700}},"付帯売上"),
+                    React.createElement("div",{style:{fontSize:18,fontWeight:900,color:"#059669",marginTop:2}},"¥"+fmt(ya.opt)),
+                    React.createElement("div",{style:{fontSize:10,color:"#64748b"}},"構成比 "+oPct.toFixed(1)+"%")
+                  ),
+                  React.createElement("div",{style:{padding:10,borderRadius:8,background:"#fef2f2",border:"1px solid #fecaca"}},
+                    React.createElement("div",{style:{fontSize:10,color:"#64748b",fontWeight:700}},"割引"),
+                    React.createElement("div",{style:{fontSize:18,fontWeight:900,color:"#dc2626",marginTop:2}},"-¥"+fmt(ya.disc)),
+                    React.createElement("div",{style:{fontSize:10,color:"#64748b"}},"グロス比 "+dRate.toFixed(1)+"%")
+                  ),
+                  React.createElement("div",{style:{padding:10,borderRadius:8,background:"#1e293b",color:"#fff"}},
+                    React.createElement("div",{style:{fontSize:10,color:"#cbd5e1",fontWeight:700}},"売上計上額"),
+                    React.createElement("div",{style:{fontSize:18,fontWeight:900,color:"#4ade80",marginTop:2}},"¥"+fmt(ya.rev)),
+                    React.createElement("div",{style:{fontSize:10,color:"#cbd5e1"}},"基本+付帯-割引")
+                  )
+                )
+              );
+            })()),
             sectionCard(React.createElement("div",null,
-              React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:10,color:"#1e3a5f"}},selYr+"年 月別予約・売上"),
+              React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:10,color:"#1e3a5f"}},selYr+"年 月別予約・売上（3分解）"),
               tableWrap(React.createElement("table",{style:{width:"100%",borderCollapse:"collapse"}},
                 React.createElement("thead",null,React.createElement("tr",null,
                   React.createElement("th",{style:{...th2,position:"sticky",top:0,zIndex:1}},"月"),
                   React.createElement("th",{style:{...th2,textAlign:"right",position:"sticky",top:0,zIndex:1}},"件数"),
+                  React.createElement("th",{style:{...th2,textAlign:"right",position:"sticky",top:0,zIndex:1,color:"#1e40af"}},"基本"),
+                  React.createElement("th",{style:{...th2,textAlign:"right",position:"sticky",top:0,zIndex:1,color:"#047857"}},"付帯"),
+                  React.createElement("th",{style:{...th2,textAlign:"right",position:"sticky",top:0,zIndex:1,color:"#dc2626"}},"割引"),
                   React.createElement("th",{style:{...th2,textAlign:"right",position:"sticky",top:0,zIndex:1}},"売上"),
                   React.createElement("th",{style:{...th2,textAlign:"right",position:"sticky",top:0,zIndex:1}},"単価"),
                   React.createElement("th",{style:{...th2,textAlign:"right",position:"sticky",top:0,zIndex:1}},"平均日数"),
@@ -5335,37 +5580,92 @@ function ManagementTab({store}){
                   React.createElement("th",{style:{...th2,textAlign:"right",position:"sticky",top:0,zIndex:1}},"台/売上")
                 )),
                 React.createElement("tbody",null,
-                  selYrMonths.map((ym,idx)=>{
-                    const m=mAgg[ym],u=utilByM[ym];if(!m)return null;
-                    const isNow=ym===nowYm;
-                    const unitP=m.cnt>0?Math.round(m.rev/m.cnt):0;
-                    const avgD=m.cnt>0?Math.round(m.daySum/m.cnt*10)/10:0;
-                    const perV=u&&u.activeCount>0?Math.round(m.rev/u.activeCount):0;
-                    return React.createElement("tr",{key:ym,style:{...zRow(idx,isNow),fontWeight:isNow?800:400}},
-                      React.createElement("td",{style:{...td2,fontWeight:800}},ym),
-                      React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:600}},m.cnt),
-                      React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:700,color:"#059669"}},"¥"+fmt(m.rev)),
-                      React.createElement("td",{style:{...td2,textAlign:"right"}},"¥"+fmt(unitP)),
-                      React.createElement("td",{style:{...td2,textAlign:"right"}},avgD+"日"),
-                      React.createElement("td",{style:{...td2,textAlign:"right"}},u?u.activeCount:"-"),
-                      React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:600}},"¥"+fmt(perV))
-                    );
-                  }),
-                  (()=>{const ya=yearAgg[selYr];if(!ya)return null;
-                    const unitP=ya.cnt>0?Math.round(ya.rev/ya.cnt):0;
-                    const avgD=ya.cnt>0?Math.round(ya.daySum/ya.cnt*10)/10:0;
-                    return React.createElement("tr",{key:"yr-total",style:{background:"#fef3c7",fontWeight:800}},
-                      React.createElement("td",{style:{...td2,fontWeight:900,fontSize:13}},selYr+"年 合計"),
-                      React.createElement("td",{style:{...td2,textAlign:"right"}},ya.cnt),
-                      React.createElement("td",{style:{...td2,textAlign:"right",color:"#059669"}},"¥"+fmt(ya.rev)),
-                      React.createElement("td",{style:{...td2,textAlign:"right"}},"¥"+fmt(unitP)),
-                      React.createElement("td",{style:{...td2,textAlign:"right"}},avgD+"日"),
-                      React.createElement("td",{style:{...td2,textAlign:"right"}},"-"),
-                      React.createElement("td",{style:{...td2,textAlign:"right"}},"-")
-                    );
+                  (()=>{
+                    const rows=[];
+                    let tCnt=0,tRev=0,tBase=0,tOpt=0,tDisc=0,tDaySum=0,tActiveSum=0,tActiveN=0;
+                    selYrMonths.forEach((ym,idx)=>{
+                      const m=mAgg[ym],u=utilByM[ym];if(!m)return;
+                      const isNow=ym===nowYm;
+                      const unitP=m.cnt>0?Math.round(m.rev/m.cnt):0;
+                      const avgD=m.cnt>0?Math.round(m.daySum/m.cnt*10)/10:0;
+                      const perV=u&&u.activeCount>0?Math.round(m.rev/u.activeCount):0;
+                      tCnt+=m.cnt;tRev+=m.rev;tBase+=m.base;tOpt+=m.opt;tDisc+=m.disc;tDaySum+=m.daySum;
+                      if(u&&u.activeCount>0){tActiveSum+=u.activeCount;tActiveN+=1;}
+                      rows.push(React.createElement("tr",{key:ym,style:{...zRow(idx,isNow),fontWeight:isNow?800:400}},
+                        React.createElement("td",{style:{...td2,fontWeight:800}},ym),
+                        React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:600}},m.cnt),
+                        React.createElement("td",{style:{...td2,textAlign:"right",color:"#1e40af"}},m.base>0?"¥"+fmt(m.base):"-"),
+                        React.createElement("td",{style:{...td2,textAlign:"right",color:"#047857"}},m.opt>0?"¥"+fmt(m.opt):"-"),
+                        React.createElement("td",{style:{...td2,textAlign:"right",color:"#dc2626"}},m.disc>0?"-¥"+fmt(m.disc):"-"),
+                        React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:700,color:"#059669"}},"¥"+fmt(m.rev)),
+                        React.createElement("td",{style:{...td2,textAlign:"right"}},"¥"+fmt(unitP)),
+                        React.createElement("td",{style:{...td2,textAlign:"right"}},avgD+"日"),
+                        React.createElement("td",{style:{...td2,textAlign:"right"}},u?u.activeCount:"-"),
+                        React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:600}},"¥"+fmt(perV))
+                      ));
+                    });
+                    const avgActive=tActiveN>0?Math.round(tActiveSum/tActiveN):0;
+                    const tUnit=tCnt>0?Math.round(tRev/tCnt):0;
+                    const tAvgD=tCnt>0?Math.round(tDaySum/tCnt*10)/10:0;
+                    const tPerV=avgActive>0?Math.round(tRev/avgActive):0;
+                    rows.push(React.createElement("tr",{key:"_total",style:{background:"#1e293b",color:"#fff",fontWeight:800}},
+                      React.createElement("td",{style:{padding:"8px",fontSize:11,fontWeight:900,color:"#fff"}},"合計"),
+                      React.createElement("td",{style:{padding:"8px",fontSize:11,textAlign:"right",fontWeight:900,color:"#fff"}},tCnt),
+                      React.createElement("td",{style:{padding:"8px",fontSize:11,textAlign:"right",color:"#93c5fd"}},"¥"+fmt(tBase)),
+                      React.createElement("td",{style:{padding:"8px",fontSize:11,textAlign:"right",color:"#6ee7b7"}},"¥"+fmt(tOpt)),
+                      React.createElement("td",{style:{padding:"8px",fontSize:11,textAlign:"right",color:"#fca5a5"}},tDisc>0?"-¥"+fmt(tDisc):"-"),
+                      React.createElement("td",{style:{padding:"8px",fontSize:12,textAlign:"right",color:"#4ade80",fontWeight:900}},"¥"+fmt(tRev)),
+                      React.createElement("td",{style:{padding:"8px",fontSize:11,textAlign:"right",color:"#fff"}},"¥"+fmt(tUnit)),
+                      React.createElement("td",{style:{padding:"8px",fontSize:11,textAlign:"right",color:"#fff"}},tAvgD+"日"),
+                      React.createElement("td",{style:{padding:"8px",fontSize:11,textAlign:"right",color:"#fff"}},avgActive+"(平均)"),
+                      React.createElement("td",{style:{padding:"8px",fontSize:11,textAlign:"right",color:"#fff"}},"¥"+fmt(tPerV))
+                    ));
+                    return rows;
                   })()
                 )
               ),"50vh")
+            )),
+            // ★ 年間OTA別内訳
+            sectionCard(React.createElement("div",null,
+              React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:10,color:"#1e3a5f"}},selYr+"年 OTA別年間内訳"),
+              tableWrap(React.createElement("table",{style:{width:"100%",borderCollapse:"collapse"}},
+                React.createElement("thead",null,React.createElement("tr",null,
+                  React.createElement("th",{style:{...th2,position:"sticky",top:0,zIndex:1}},"OTA"),
+                  React.createElement("th",{style:{...th2,textAlign:"right",position:"sticky",top:0,zIndex:1}},"件数"),
+                  React.createElement("th",{style:{...th2,textAlign:"right",position:"sticky",top:0,zIndex:1,color:"#1e40af"}},"基本"),
+                  React.createElement("th",{style:{...th2,textAlign:"right",position:"sticky",top:0,zIndex:1,color:"#047857"}},"付帯"),
+                  React.createElement("th",{style:{...th2,textAlign:"right",position:"sticky",top:0,zIndex:1,color:"#dc2626"}},"割引"),
+                  React.createElement("th",{style:{...th2,textAlign:"right",position:"sticky",top:0,zIndex:1}},"売上"),
+                  React.createElement("th",{style:{...th2,textAlign:"right",position:"sticky",top:0,zIndex:1}},"構成比")
+                )),
+                React.createElement("tbody",null,(()=>{
+                  const ya=yearAgg[selYr];if(!ya)return[];
+                  const totalRev=ya.rev||0;
+                  return DB_CHANNELS.filter(ch=>(ya.otaCnt[ch]||0)>0).map((ch,i)=>{
+                    const cnt=ya.otaCnt[ch]||0,rev=ya.otaRev[ch]||0;
+                    const bs=ya.otaBase[ch]||0,op=ya.otaOpt[ch]||0,dc=ya.otaDisc[ch]||0;
+                    return React.createElement("tr",{key:ch,style:zRow(i,false)},
+                      React.createElement("td",{style:{...td2,fontWeight:700}},ch),
+                      React.createElement("td",{style:{...td2,textAlign:"right"}},cnt),
+                      React.createElement("td",{style:{...td2,textAlign:"right",color:"#1e40af"}},bs>0?"¥"+fmt(bs):"-"),
+                      React.createElement("td",{style:{...td2,textAlign:"right",color:"#047857"}},op>0?"¥"+fmt(op):"-"),
+                      React.createElement("td",{style:{...td2,textAlign:"right",color:"#dc2626"}},dc>0?"-¥"+fmt(dc):"-"),
+                      React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:700,color:"#059669"}},"¥"+fmt(rev)),
+                      React.createElement("td",{style:{...td2,textAlign:"right"}},totalRev>0?Math.round(rev/totalRev*1000)/10+"%":"-")
+                    );
+                  }).concat([
+                    React.createElement("tr",{key:"_total",style:{background:"#1e293b",color:"#fff",fontWeight:800}},
+                      React.createElement("td",{style:{padding:"8px",fontSize:11,fontWeight:900,color:"#fff"}},"合計"),
+                      React.createElement("td",{style:{padding:"8px",fontSize:11,textAlign:"right",fontWeight:900,color:"#fff"}},ya.cnt),
+                      React.createElement("td",{style:{padding:"8px",fontSize:11,textAlign:"right",color:"#93c5fd"}},"¥"+fmt(ya.base)),
+                      React.createElement("td",{style:{padding:"8px",fontSize:11,textAlign:"right",color:"#6ee7b7"}},"¥"+fmt(ya.opt)),
+                      React.createElement("td",{style:{padding:"8px",fontSize:11,textAlign:"right",color:"#fca5a5"}},ya.disc>0?"-¥"+fmt(ya.disc):"-"),
+                      React.createElement("td",{style:{padding:"8px",fontSize:12,textAlign:"right",color:"#4ade80",fontWeight:900}},"¥"+fmt(ya.rev)),
+                      React.createElement("td",{style:{padding:"8px",fontSize:11,textAlign:"right",color:"#fff"}},"100%")
+                    )
+                  ]);
+                })())
+              ),"40vh")
             )),
             sectionCard(React.createElement("div",null,
               React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:10,color:"#1e3a5f"}},selYr+"年 車種別台あたり売上"),
@@ -5432,6 +5732,21 @@ function ManagementTab({store}){
               })()
             ))
           ):React.createElement("div",null,
+            // ★ 年サマリーカード
+            (()=>{
+              const ya=yearAgg[selYr];
+              if(!ya)return React.createElement("div",{style:{color:"#94a3b8",fontSize:12,marginBottom:12}},"データなし");
+              const yLt=ya.leadTimes.length?median(ya.leadTimes):null;
+              const yCurBook=ya.cnt>0?Math.round(ya.createdInMonth/ya.cnt*100):0;
+              const yMonthFirst=ya.cnt>0?Math.round(ya.createdBeforeMonth/ya.cnt*100):0;
+              const yOneDay=ya.cnt>0?Math.round(ya.oneDay/ya.cnt*100):0;
+              return React.createElement("div",{style:{display:"flex",gap:12,flexWrap:"wrap",marginBottom:12}},
+                metricCard("LT中央値",yLt!=null?yLt+"日":"--","年全体（加重）","#eff6ff"),
+                metricCard("当月予約率",yCurBook+"%","Σ当月予約/Σ件数","#f0fdf4"),
+                metricCard("月初確定率",yMonthFirst+"%","Σ月初前予約/Σ件数","#fef3c7"),
+                metricCard("1日利用率",yOneDay+"%","Σ1日利用/Σ件数","#fdf4ff")
+              );
+            })(),
             // 年別: 月ごとのLTテーブル + 年合計
             sectionCard(React.createElement("div",null,
               React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:10,color:"#1e3a5f"}},selYr+"年 月別リードタイム・予約パターン"),
@@ -6132,6 +6447,11 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
     const dbActive=dbRevRows.filter(r=>r.status!=="cancelled"&&r.status!=="キャンセル"&&r.status!=="cancel");
     const revOfDb=(r)=>{const bp=Number(r.base_price)||0,op=Number(r.option_price)||0,dc=Number(r.discount)||0;return(bp>0||op>0)?(bp+op-dc):(Number(r.price)||0);};
     const totalRevenue=dbActive.reduce((a,r)=>a+revOfDb(r),0);
+    // ★ 売上内訳（基本料金 + 付帯 = 合計、discountは基本料金から引く）
+    const totalDiscount=dbActive.reduce((a,r)=>a+(Number(r.discount)||0),0);
+    const totalBaseRaw=dbActive.reduce((a,r)=>{const bp=Number(r.base_price)||0,op=Number(r.option_price)||0;return a+((bp>0||op>0)?bp:(Number(r.price)||0));},0);
+    const totalOption=dbActive.reduce((a,r)=>a+(Number(r.option_price)||0),0);
+    const totalBase=totalBaseRaw-totalDiscount;
     // data stateベース（class別breakdown用、基底値としてのフォールバック）
     const revOf=(r)=>{const bp=Number(r.basePrice)||0,op=Number(r.optionPrice)||0,dc=Number(r.discount)||0;return(bp>0||op>0)?(bp+op-dc):(Number(r.price)||0);};
     // dbRevRows の id→rev マップ（class別でも最新値を使う）
@@ -6165,7 +6485,7 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
     const maxDays=activeCount*dim;
     const revpacd=maxDays>0?Math.round(totalRevenue/maxDays):0;
     const perVehicleRevenue=activeCount>0?Math.round(totalRevenue/activeCount):0;
-    return{totalDays,activeCount,maxDays,pct:maxDays>0?Math.round(totalDays/maxDays*100):0,dim,byClass,classOrder,totalRevenue,revpacd,perVehicleRevenue};
+    return{totalDays,activeCount,maxDays,pct:maxDays>0?Math.round(totalDays/maxDays*100):0,dim,byClass,classOrder,totalRevenue,totalBase,totalOption,revpacd,perVehicleRevenue};
   },[data,vehicles,fleet,kpiFlags,selYM,dbRevRows]);
   // 利用可能な月リストを生成（RELIABLE_FROM〜当月）
   const months=useMemo(()=>{
@@ -6237,15 +6557,11 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
             <span style={{fontSize:10,color:"#0284c7",marginLeft:4,fontWeight:700}}>RevPACD ¥{utilStats.revpacd.toLocaleString()}</span>
           </>}
           {utilStats&&utilStats.totalRevenue!==undefined&&<div style={{width:"100%",marginTop:4}}>
-            <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
-              <span style={{fontSize:10,color:"#64748b",fontWeight:700}}>予約売上</span>
-              <span style={{fontSize:17,fontWeight:900,color:"#1e40af"}}>¥{(utilStats.totalRevenue/10000).toFixed(1)}<span style={{fontSize:9,fontWeight:600}}>万</span></span>
-              <span style={{fontSize:11,color:"#94a3b8",fontWeight:700}}>+</span>
-              <span style={{fontSize:10,color:"#64748b",fontWeight:700}}>予約外</span>
-              <span style={{fontSize:17,fontWeight:900,color:"#7c3aed"}}>¥{(extraSalesRev/10000).toFixed(1)}<span style={{fontSize:9,fontWeight:600}}>万</span></span>
-              <span style={{fontSize:11,color:"#94a3b8",fontWeight:700}}>=</span>
-              <span style={{fontSize:10,color:"#059669",fontWeight:700}}>合計</span>
-              <span style={{fontSize:21,fontWeight:900,color:"#059669"}}>¥{((utilStats.totalRevenue+extraSalesRev)/10000).toFixed(1)}<span style={{fontSize:10,fontWeight:600}}>万</span></span>
+            <div style={{display:"flex",alignItems:"baseline",gap:6,flexWrap:"wrap"}}>
+              <span style={{fontSize:11,color:"#64748b"}}>💰 売上</span>
+              <span style={{fontSize:24,fontWeight:900,color:isCur?"#059669":"#475569"}}>¥{((utilStats.totalRevenue+extraSalesRev)/10000).toFixed(1)}<span style={{fontSize:12,fontWeight:600}}>万</span></span>
+              <span style={{fontSize:10,color:"#94a3b8"}}>基本¥{(utilStats.totalBase/10000).toFixed(1)}万＋付帯¥{(utilStats.totalOption/10000).toFixed(1)}万＝合計¥{(utilStats.totalRevenue/10000).toFixed(1)}万</span>
+              <span style={{fontSize:10,color:"#94a3b8"}}>＋予約外¥{(extraSalesRev/10000).toFixed(1)}万</span>
             </div>
           </div>}
           {utilStats&&utilStats.perVehicleRevenue!==undefined&&<div style={{display:"flex",alignItems:"center",gap:6,width:"100%",marginTop:4}}>
@@ -6305,34 +6621,7 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
         </div>
         <div style={{fontSize:9,color:"#64748b",marginTop:4}}>総売上 ¥{utilStats.totalRevenue.toLocaleString()} / {utilStats.activeCount}台</div>
       </div>}
-      <div style={{fontSize:11,fontWeight:700,color:"#64748b",marginBottom:6}}>OTA別（{moLabel}返却）</div>
-      <div style={{display:"flex",flexDirection:"column",gap:4,marginBottom:12}}>
-        {stats.byOta.map(o=>{
-          const ota=OTA[o.ota];
-          const barW=stats.total>0?Math.round(o.total/stats.total*100):0;
-          return <div key={o.ota} style={{display:"flex",alignItems:"center",gap:6}}>
-            <div style={{width:28,textAlign:"center"}}>{ota?<span style={{background:ota.bg,color:ota.c,padding:"1px 5px",borderRadius:4,fontSize:9,fontWeight:700,border:"1px solid "+ota.c+"33"}}>{ota.key}</span>:<span style={{fontSize:9,color:"#94a3b8"}}>{o.ota}</span>}</div>
-            <div style={{flex:1,height:14,background:"#f1f5f9",borderRadius:4,overflow:"hidden"}}>
-              <div style={{height:"100%",width:barW+"%",background:isCur?"#f59e0b":"#94a3b8",borderRadius:4,transition:"width .3s"}}/>
-            </div>
-            <div style={{width:100,textAlign:"right",fontSize:10}}><span style={{fontWeight:700,color:isCur?"#d97706":"#475569"}}>{o.pct}%</span> <span style={{color:"#94a3b8"}}>({o.same}/{o.total}件)</span></div>
-          </div>;
-        })}
-      </div>
       {utilStats&&utilStats.classOrder.length>0&&<UtilClassDetail utilStats={utilStats} moLabel={moLabel}/>}
-      {stats.last10.length>0&&<>
-        <div style={{fontSize:11,fontWeight:700,color:"#64748b",marginBottom:4}}>当月予約（{moLabel}返却）</div>
-        <div style={{display:"flex",flexDirection:"column",gap:2}}>
-          {stats.last10.map((r,i)=>{
-            const ota=OTA[r.ota];
-            return <div key={r.id} style={{display:"flex",alignItems:"center",gap:6,padding:"3px 0",borderBottom:i<stats.last10.length-1?"1px solid #f1f5f9":"none",fontSize:10}}>
-              <div style={{width:24}}>{ota?<span style={{background:ota.bg,color:ota.c,padding:"0 4px",borderRadius:3,fontSize:8,fontWeight:700}}>{ota.key}</span>:<span style={{color:"#94a3b8",fontSize:8}}>{r.ota}</span>}</div>
-              <div style={{flex:1,color:"#475569",fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name}</div>
-              <div style={{color:"#94a3b8",fontSize:9}}>{r.createdAt.slice(5)} 予約→{(r.returnDate||"").slice(5)} 返却</div>
-            </div>;
-          })}
-        </div>
-      </>}
     </div>}
   </div>;
 }
@@ -14016,7 +14305,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.6.78";
+const APP_VERSION="v4.6.82";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
