@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v547';
+  var CV='spk-v548';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js?v=468').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js?v=469').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -2913,6 +2913,22 @@ function ManagementTab({store}){
   const[dbTasks,setDbTasks]=useState([]);
   const[dbLoading2,setDbLoading2]=useState(false);
   const[dbTargets,setDbTargets]=useState({});  // {ym: {rev:目標売上, cnt:目標件数, perV:台/売上目標}}
+  // ★ 解析タブ用: 予約外売上（type='extra_sales'、じゃらん事前決済除外）月別マップ
+  const[extraByM,setExtraByM]=useState({}); // {YYYY-MM: amount}
+  useEffect(()=>{
+    if(!sb)return;
+    const tbl=dbStore==="spk"?"spk_accounting":"nha_accounting";
+    (async()=>{
+      const{data:rows}=await sb.from(tbl).select("date,amount,description").eq("type","extra_sales");
+      const m={};
+      (rows||[]).forEach(r=>{
+        if((r.description||"").startsWith("じゃらん事前決済"))return;
+        const k=(r.date||"").slice(0,7);if(!k)return;
+        m[k]=(m[k]||0)+(Number(r.amount)||0);
+      });
+      setExtraByM(m);
+    })();
+  },[dbStore]);
   // 解析セクション開閉（デフォルトは折り畳み。見たい項目だけタップで展開）
   const[secOpen,setSecOpen]=useState({A:false,B:false,C:false,D:false});
   const toggleSec=(k)=>setSecOpen(p=>({...p,[k]:!p[k]}));
@@ -5024,7 +5040,7 @@ function ManagementTab({store}){
       reliable.forEach(r=>{
         const rd=r[rdKey];if(!rd)return;
         const ym=rd.slice(0,7);
-        if(!mAgg[ym])mAgg[ym]={resvs:[],rev:0,cnt:0,daySum:0,otaRev:{},otaCnt:{},otaBase:{},otaOpt:{},otaDisc:{},vtRev:{},vtCnt:{},createdInMonth:0,createdBeforeMonth:0,oneDay:0,prefCnt:{},base:0,opt:0,disc:0};
+        if(!mAgg[ym])mAgg[ym]={resvs:[],rev:0,cnt:0,daySum:0,otaRev:{},otaCnt:{},otaBase:{},otaOpt:{},otaDisc:{},vtRev:{},vtCnt:{},createdInMonth:0,createdBeforeMonth:0,oneDay:0,prefCnt:{},base:0,opt:0,disc:0,extra:0};
         const m=mAgg[ym];
         const rev=revCalc(r);
         // 3分解
@@ -5063,6 +5079,14 @@ function ManagementTab({store}){
         }}
         // prefecture
         if(r.prefecture){const p=r.prefecture;m.prefCnt[p]=(m.prefCnt[p]||0)+1;}
+      });
+
+      // ★ 予約外売上を mAgg にマージ（reliable 期間内のみ）
+      Object.keys(mAgg).forEach(ym=>{mAgg[ym].extra=extraByM[ym]||0;});
+      // RELIABLE_FROM 以降で予約データが無い月でも extra があれば mAgg に追加
+      Object.keys(extraByM).forEach(ym=>{
+        if(ym<RELIABLE_FROM)return;
+        if(!mAgg[ym])mAgg[ym]={resvs:[],rev:0,cnt:0,daySum:0,otaRev:{},otaCnt:{},otaBase:{},otaOpt:{},otaDisc:{},vtRev:{},vtCnt:{},createdInMonth:0,createdBeforeMonth:0,oneDay:0,prefCnt:{},base:0,opt:0,disc:0,extra:extraByM[ym]||0};
       });
 
       // lead time by month
@@ -5123,10 +5147,10 @@ function ManagementTab({store}){
       const yearAgg={};
       ymList.forEach(ym=>{
         const yr=ym.slice(0,4);
-        if(!yearAgg[yr])yearAgg[yr]={rev:0,cnt:0,daySum:0,leadTimes:[],createdInMonth:0,createdBeforeMonth:0,oneDay:0,totalDays:0,maxDays:0,base:0,opt:0,disc:0,otaRev:{},otaCnt:{},otaBase:{},otaOpt:{},otaDisc:{}};
+        if(!yearAgg[yr])yearAgg[yr]={rev:0,cnt:0,daySum:0,leadTimes:[],createdInMonth:0,createdBeforeMonth:0,oneDay:0,totalDays:0,maxDays:0,base:0,opt:0,disc:0,extra:0,otaRev:{},otaCnt:{},otaBase:{},otaOpt:{},otaDisc:{}};
         const ya=yearAgg[yr],m=mAgg[ym],u=utilByM[ym]||{};
         ya.rev+=m.rev;ya.cnt+=m.cnt;ya.daySum+=m.daySum;ya.oneDay+=m.oneDay;
-        ya.base+=m.base;ya.opt+=m.opt;ya.disc+=m.disc;
+        ya.base+=m.base;ya.opt+=m.opt;ya.disc+=m.disc;ya.extra+=(m.extra||0);
         ya.createdInMonth+=m.createdInMonth;ya.createdBeforeMonth+=m.createdBeforeMonth;
         ya.totalDays+=(u.totalDays||0);ya.maxDays+=(u.maxDays||0);
         if(leadByM[ym])ya.leadTimes=ya.leadTimes.concat(leadByM[ym]);
@@ -5454,19 +5478,22 @@ function ManagementTab({store}){
                 metricCard("稼働率",pct+"%",u?(u.totalDays+"/"+u.maxDays+"日"):"-",pct>=60?"#f0fdf4":pct>=30?"#fffbeb":"#fff5f5")
               );
             })(),
-            // ★ 売上3分解カード（月モード）
+            // ★ 売上4分解カード（月モード）
             sectionCard((()=>{
               const m=mAgg[selYm];if(!m)return React.createElement("div",{style:{color:"#94a3b8",fontSize:12}},"データなし");
-              const gross=m.base+m.opt;
+              const extra=m.extra||0;
+              const gross=m.base+m.opt+extra;
               const bPct=gross>0?(m.base/gross*100):0;
               const oPct=gross>0?(m.opt/gross*100):0;
+              const ePct=gross>0?(extra/gross*100):0;
               const dRate=gross>0?(m.disc/gross*100):0;
+              const total=m.rev+extra;
               return React.createElement("div",null,
                 React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}},
-                  React.createElement("div",{style:{fontSize:13,fontWeight:900,color:"#1e3a5f"}},"💰 売上3分解（"+selYm+"）"),
-                  React.createElement("div",{style:{fontSize:10,color:"#94a3b8"}},"売上 = 基本料金 + 付帯売上 - 割引")
+                  React.createElement("div",{style:{fontSize:13,fontWeight:900,color:"#1e3a5f"}},"💰 売上4分解（"+selYm+"）"),
+                  React.createElement("div",{style:{fontSize:10,color:"#94a3b8"}},"売上 = 基本料金 + 付帯売上 + 予約外 - 割引")
                 ),
-                React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:10}},
+                React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:10}},
                   React.createElement("div",{style:{padding:10,borderRadius:8,background:"#eff6ff",border:"1px solid #bfdbfe"}},
                     React.createElement("div",{style:{fontSize:10,color:"#64748b",fontWeight:700}},"基本料金"),
                     React.createElement("div",{style:{fontSize:18,fontWeight:900,color:"#1e40af",marginTop:2}},"¥"+fmt(m.base)),
@@ -5477,15 +5504,20 @@ function ManagementTab({store}){
                     React.createElement("div",{style:{fontSize:18,fontWeight:900,color:"#059669",marginTop:2}},"¥"+fmt(m.opt)),
                     React.createElement("div",{style:{fontSize:10,color:"#64748b"}},"構成比 "+oPct.toFixed(1)+"%")
                   ),
+                  React.createElement("div",{style:{padding:10,borderRadius:8,background:"#faf5ff",border:"1px solid #e9d5ff"}},
+                    React.createElement("div",{style:{fontSize:10,color:"#64748b",fontWeight:700}},"予約外"),
+                    React.createElement("div",{style:{fontSize:18,fontWeight:900,color:"#7c3aed",marginTop:2}},"¥"+fmt(extra)),
+                    React.createElement("div",{style:{fontSize:10,color:"#64748b"}},"構成比 "+ePct.toFixed(1)+"%")
+                  ),
                   React.createElement("div",{style:{padding:10,borderRadius:8,background:"#fef2f2",border:"1px solid #fecaca"}},
                     React.createElement("div",{style:{fontSize:10,color:"#64748b",fontWeight:700}},"割引"),
                     React.createElement("div",{style:{fontSize:18,fontWeight:900,color:"#dc2626",marginTop:2}},"-¥"+fmt(m.disc)),
                     React.createElement("div",{style:{fontSize:10,color:"#64748b"}},"グロス比 "+dRate.toFixed(1)+"%")
                   ),
                   React.createElement("div",{style:{padding:10,borderRadius:8,background:"#1e293b",color:"#fff"}},
-                    React.createElement("div",{style:{fontSize:10,color:"#cbd5e1",fontWeight:700}},"売上計上額"),
-                    React.createElement("div",{style:{fontSize:18,fontWeight:900,color:"#4ade80",marginTop:2}},"¥"+fmt(m.rev)),
-                    React.createElement("div",{style:{fontSize:10,color:"#cbd5e1"}},"基本+付帯-割引")
+                    React.createElement("div",{style:{fontSize:10,color:"#cbd5e1",fontWeight:700}},"合計売上"),
+                    React.createElement("div",{style:{fontSize:18,fontWeight:900,color:"#4ade80",marginTop:2}},"¥"+fmt(total)),
+                    React.createElement("div",{style:{fontSize:10,color:"#cbd5e1"}},"基本+付帯+予約外-割引")
                   )
                 )
               );
@@ -5536,19 +5568,22 @@ function ManagementTab({store}){
                 metricCard("延べ泊数",ya.daySum.toFixed(0)+"泊","","#fdf4ff")
               );
             })(),
-            // ★ 年間 売上3分解
+            // ★ 年間 売上4分解
             sectionCard((()=>{
               const ya=yearAgg[selYr];if(!ya)return React.createElement("div",{style:{color:"#94a3b8",fontSize:12}},"データなし");
-              const gross=ya.base+ya.opt;
+              const extra=ya.extra||0;
+              const gross=ya.base+ya.opt+extra;
               const bPct=gross>0?(ya.base/gross*100):0;
               const oPct=gross>0?(ya.opt/gross*100):0;
+              const ePct=gross>0?(extra/gross*100):0;
               const dRate=gross>0?(ya.disc/gross*100):0;
+              const total=ya.rev+extra;
               return React.createElement("div",null,
                 React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}},
-                  React.createElement("div",{style:{fontSize:13,fontWeight:900,color:"#1e3a5f"}},"💰 売上3分解（"+selYr+"年）"),
-                  React.createElement("div",{style:{fontSize:10,color:"#94a3b8"}},"売上 = 基本料金 + 付帯売上 - 割引")
+                  React.createElement("div",{style:{fontSize:13,fontWeight:900,color:"#1e3a5f"}},"💰 売上4分解（"+selYr+"年）"),
+                  React.createElement("div",{style:{fontSize:10,color:"#94a3b8"}},"売上 = 基本料金 + 付帯売上 + 予約外 - 割引")
                 ),
-                React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:10}},
+                React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:10}},
                   React.createElement("div",{style:{padding:10,borderRadius:8,background:"#eff6ff",border:"1px solid #bfdbfe"}},
                     React.createElement("div",{style:{fontSize:10,color:"#64748b",fontWeight:700}},"基本料金"),
                     React.createElement("div",{style:{fontSize:18,fontWeight:900,color:"#1e40af",marginTop:2}},"¥"+fmt(ya.base)),
@@ -5559,15 +5594,20 @@ function ManagementTab({store}){
                     React.createElement("div",{style:{fontSize:18,fontWeight:900,color:"#059669",marginTop:2}},"¥"+fmt(ya.opt)),
                     React.createElement("div",{style:{fontSize:10,color:"#64748b"}},"構成比 "+oPct.toFixed(1)+"%")
                   ),
+                  React.createElement("div",{style:{padding:10,borderRadius:8,background:"#faf5ff",border:"1px solid #e9d5ff"}},
+                    React.createElement("div",{style:{fontSize:10,color:"#64748b",fontWeight:700}},"予約外"),
+                    React.createElement("div",{style:{fontSize:18,fontWeight:900,color:"#7c3aed",marginTop:2}},"¥"+fmt(extra)),
+                    React.createElement("div",{style:{fontSize:10,color:"#64748b"}},"構成比 "+ePct.toFixed(1)+"%")
+                  ),
                   React.createElement("div",{style:{padding:10,borderRadius:8,background:"#fef2f2",border:"1px solid #fecaca"}},
                     React.createElement("div",{style:{fontSize:10,color:"#64748b",fontWeight:700}},"割引"),
                     React.createElement("div",{style:{fontSize:18,fontWeight:900,color:"#dc2626",marginTop:2}},"-¥"+fmt(ya.disc)),
                     React.createElement("div",{style:{fontSize:10,color:"#64748b"}},"グロス比 "+dRate.toFixed(1)+"%")
                   ),
                   React.createElement("div",{style:{padding:10,borderRadius:8,background:"#1e293b",color:"#fff"}},
-                    React.createElement("div",{style:{fontSize:10,color:"#cbd5e1",fontWeight:700}},"売上計上額"),
-                    React.createElement("div",{style:{fontSize:18,fontWeight:900,color:"#4ade80",marginTop:2}},"¥"+fmt(ya.rev)),
-                    React.createElement("div",{style:{fontSize:10,color:"#cbd5e1"}},"基本+付帯-割引")
+                    React.createElement("div",{style:{fontSize:10,color:"#cbd5e1",fontWeight:700}},"合計売上"),
+                    React.createElement("div",{style:{fontSize:18,fontWeight:900,color:"#4ade80",marginTop:2}},"¥"+fmt(total)),
+                    React.createElement("div",{style:{fontSize:10,color:"#cbd5e1"}},"基本+付帯+予約外-割引")
                   )
                 )
               );
@@ -14364,7 +14404,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.6.86";
+const APP_VERSION="v4.6.87";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
