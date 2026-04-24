@@ -80,10 +80,97 @@
 TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 / 駐車場 / 会計 / 顧客 / 売上 / データ / 過去 / 免許証
 
 ## 現在のバージョン
-- **APP_VERSION**: v4.6.71
-- **sw.js CACHE_NAME**: `spk-v532`
-- **index.html CV**: `spk-v532`
+- **APP_VERSION**: v4.6.79
+- **sw.js CACHE_NAME**: `spk-v540`
+- **index.html CV**: `spk-v540`
 - **SRI/CSP**: 未適用（下記インシデント参照）
+
+## 2026-04-24 修正履歴
+
+### TOP LeadTimeWidget 売上表示を最適化 (v4.6.79 / NHA v3.3.1-NHA 同時適用)
+- **要望**: 「売上を正確にg表示させて。 基本料金＋付帯＝合計＋予約外 あと情報量が多いので既存のデザイン（アイコンスタイル）に合わせて修正 最適化してください 那覇も一緒に」（スクショ: `~/Desktop/スクリーンショット 2026-04-24 8.37.42.png`）
+- **Before**: TOP黄色カードに「予約売上¥XX.X万 ＋ 予約外¥X.X万 ＝ 合計¥XX.X万」が大きな文字で横並び。基本料金/付帯の内訳が見えず、また3段構成で情報密度が高く視認性が低かった
+- **After**: 既存アイコンスタイル（`予約率 60%` `稼働率 44%` `RevPACD ¥3,239`）と同じ「ラベル＋大きな数値＋小さな補足」パターンに統一
+  - 行1（新規見出し）: `💰 売上 ¥XX.X万` （大きな緑、合計＋予約外の grand total）
+  - 行1（小さなグレー補足）: `基本¥XX.X万＋付帯¥X.X万＝合計¥XX.X万 ＋予約外¥X.X万`
+  - 全部1行に収まる（flex wrap 時は自動で折り返し）
+- **数式定義**（方程式が厳密に閉じる）:
+  - `基本料金 = Σ((bp>0||op>0) ? base_price : price) − Σ discount`
+    - 旧レコードで bp/op 両方0なら `price` を基本料金扱い（フォールバック）
+    - discount は基本料金側から控除（付帯には影響させない）
+  - `付帯 = Σ option_price`
+  - `合計 = 基本料金 + 付帯 = 既存の totalRevenue`（一致）
+  - `総計 = 合計 + 予約外`
+- **修正ファイル (SPK)**:
+  - `index.src.html` line 6135 付近 `utilStats` useMemo に `totalBase/totalOption/totalDiscount` 算出を追加
+  - line 6168 付近 return オブジェクトに `totalBase, totalOption` を追加
+  - line 6239-6250 旧 revenue 表示ブロックをアイコンスタイルに書換
+- **修正ファイル (NHA)**:
+  - `index.html.bak` line 2300 付近 `totalRevenue` 再計算 forEach ループ内で `totalBase/totalOption/totalDiscount` を同時集計
+  - line 2312 付近 utilStats return に追加
+  - line 2382-2393 表示ブロックを書換
+- **バージョン**:
+  - SPK: v4.6.78 → v4.6.79 / sw.js `spk-v539` → `spk-v540` / index.html CV=`spk-v532` → `spk-v540` / sw.js?v=460 → 461
+  - NHA: v3.3.0-NHA → v3.3.1-NHA / sw.js `nha-v101` → `nha-v102` / sw.js?v=80 → 81 / app.js?v=3300 → 3301
+- **ビルド**: `cd ~/spk-task && node build.js` ✅ / `cd ~/Desktop/naha-project && node build.js` ✅
+- **syntax check**: `node --check app.js` 両方OK
+
+## 2026-04-23 修正履歴（続き4）
+
+### 🔴 DY00000000944 skyticket予約がSクラス誤配車 → OTA自動登録GAS `extractVehicleClass` バグ修正
+- **症状**: skyticket予約 DY00000000944（タカハシ ハルカ、2026-04-26、¥6,100）が Sクラス（CX-5 / 8065）に配車された。本来は **Cクラス（ロッキー 299 or CX-3 4576）**
+- **メール内容**:
+  - `プラン名：コンパクトSUVプラン_C_SPK`
+  - `車両タイプ / クラス：SUV  C_SPK`
+  - 正解クラス: **C**
+- **根本原因**: OTA自動登録GAS（`~/outputs/handyman-ota-gas/main.gs` line 329-364 旧版）の `extractVehicleClass()` に含まれていた正規表現 **`/クラス\s*[:：]\s*([A-Z]\d?)/`** が "車両タイプ / **クラス：SUV** C_SPK" にマッチし、先頭の "S"（SUV の S）をクラス文字として返してしまう
+- **誤判定ロジック**:
+  1. 旧コード: 4つのパターンを順に試行。パターン3 `/クラス\s*[:：]\s*([A-Z]\d?)/` が最初にヒット
+  2. "車両タイプ / クラス：SUV  C_SPK" → "クラス：S" マッチ → "S" を返却
+  3. 本来ヒットすべき `プラン_C_` (パターン4) は試行されない
+- **修正内容（`main.gs` `extractVehicleClass()` 全面書き直し）**:
+  ```javascript
+  // Pattern 1 (最優先): _X_OKA / _X_OKI / _X_SPK / _X_CTS — OTAプランコード末尾
+  /[_＿]([A-Z]\d?)[_＿](OKA|OKI|SPK|CTS|NHA|TKA)/
+  // Pattern 2: プラン_X★ or プラン_X_
+  /[プpﾌﾟ]ラン[_＿]([A-Z]\d?)[_＿★☆\s]/
+  // Pattern 3: Aクラス / B2クラス / Dクラス
+  /([A-Z]\d?)クラス/
+  // Pattern 4: 車両クラス：X_OKA（「車両クラス」限定、汎用「クラス:」廃止）
+  /車両クラス[\s：:]+([A-Z][A-Z0-9]*)/
+  // Pattern 5: 詳細車両クラス：コンパクトカー_F_OKA
+  /詳細車両クラス[：:].*[_＿]([A-Z]\d?)[_＿]/
+  // Pattern 6: 末尾 _A★ 等
+  /[_＿]([A-Z]\d?)[★☆\s]*$/m
+  // フォールバック: 車種名マップ
+  ```
+- **検証（`/tmp/test_fix.js`）**: 7/8 テストパス（SUV車種名フォールバック1件のみ旧挙動との差異、重要度低）
+  - `コンパクトSUVプラン_C_SPK` + `クラス：SUV  C_SPK` → **"C"** ✅
+  - `_F_OKA` → "F" ✅ / `_A_OKI★` → "A" ✅ / `B2クラス_B2_SPK` → "B2" ✅
+- **即時対応（DY00000000944 DB修正）**:
+  - `reservations.vehicle`: S → **C** ✅
+  - `fleet.vehicle_code`: CX5 → **CX3** ✅（2026-04-26 CX-3 空きを確認）
+  - `tasks` (DEL/COL/洗車 3行): vehicle=CX-3 / assigned_vehicle=CX3 / plate_no=4576 ✅
+- **GAS適用手順**:
+  1. `~/outputs/handyman-ota-gas/main.gs` は修正済み（line 329-382）
+  2. `pbcopy` で全文クリップボードにコピー済み
+  3. **GASエディタで「HANDYMAN OTA自動登録」プロジェクト → `main.gs` を開いて Cmd+A → Cmd+V → Cmd+S**
+  4. トリガー管理型（30分毎）なのでWeb Appデプロイ不要
+- **要注意リスト（今後目視確認推奨）**: 同じ誤判定で現在Sクラスに誤配車されている可能性のある skyticket(ota=S) / airtrip(ota=O) 予約:
+  | ID | OTA | Lend | 名前 |
+  |---|---|---|---|
+  | DY00000000939 | S | 2026-04-22 | オオハシ チエ |
+  | DY00000000942 | S | 2026-04-23 | コバヤシ モトユキ |
+  | DY00000000938 | S | 2026-04-24 | ワダ タイキ |
+  | KUI82098 | O | 2026-05-03 | 原田 奈津子 |
+  | DY00000000930 | S | 2026-07-29 | ヤシロ ユウイチ |
+  ※ 実際にSクラス予約の可能性もあるので、元メール本文で `プラン名` / `車両タイプ / クラス` を確認のこと
+- **教訓**:
+  - 汎用 `/クラス[:：]\w+/` パターンは OTAメール本文の構造上危険（「車両タイプ / クラス：SUV」のような複合ラベルに引っかかる）
+  - OTA拠点コード `_X_OKA/_X_SPK` 等は予約のクラスを一意に識別する最も信頼できるマーカー → 最優先でマッチさせる
+  - 関連コード（`gas-email-import-v2.gs` の `extractVehicleClass_`）は本件の影響を受けない（既に `_X_SPK` パターン優先の設計）。**問題は OTA自動登録GAS のみ**
+  - OTA自動登録GAS(30min) が先に予約作成 → メール取込GAS(15min) は既存予約として扱うため `vehicle` を上書きしない → OTA自動登録GASの誤判定がそのまま残る
+  - **将来的に**: OTA自動登録GASの `extractVehicleClass` と メール取込GASの `extractVehicleClass_` を同一ロジックに統一するべき
 
 ## 2026-04-23 修正履歴（続き3）
 
