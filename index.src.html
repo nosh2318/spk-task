@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v568';
+  var CV='spk-v570';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js?v=489').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js?v=491').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -5161,6 +5161,9 @@ function ManagementTab({store}){
       // lead time by month
       // グループ化は lend_date 月（貸出月）。booked_at（メール受信日）優先で実際の予約日を使用
       const leadByM={};
+      // 直前予約 (リードタイム ≤ 3日) by month
+      const RECENT_THRESHOLD=3;
+      const lastMinByM={};
       reliable.forEach(r=>{
         const rd=r[rdKey],ld=r[ldKey];
         const bookedAt=r.booked_at||r.created_at;
@@ -5169,6 +5172,16 @@ function ManagementTab({store}){
         const lt=Math.max(0,Math.round((new Date(ld.slice(0,10))-new Date(bookedAt.slice(0,10)))/(86400000)));
         if(!leadByM[ym])leadByM[ym]=[];
         leadByM[ym].push(lt);
+        if(!lastMinByM[ym])lastMinByM[ym]={cnt:0,total:0,items:[],dayCnt:{0:0,1:0,2:0,3:0},otaCnt:{},rev:0};
+        lastMinByM[ym].total+=1;
+        if(lt>=0&&lt<=RECENT_THRESHOLD){
+          lastMinByM[ym].cnt+=1;
+          lastMinByM[ym].dayCnt[lt]=(lastMinByM[ym].dayCnt[lt]||0)+1;
+          const ota=r.ota||"?";
+          lastMinByM[ym].otaCnt[ota]=(lastMinByM[ym].otaCnt[ota]||0)+1;
+          lastMinByM[ym].rev+=revCalc(r);
+          lastMinByM[ym].items.push({id:r.id,ota:r.ota,name:r.name,vehicle:r.vehicle,lend_date:ld,booked_at:bookedAt.slice(0,10),lead:lt,rev:revCalc(r)});
+        }
       });
       const median=(arr)=>{if(!arr||arr.length===0)return 0;const s=[...arr].sort((a,b)=>a-b);const mid=Math.floor(s.length/2);return s.length%2?s[mid]:Math.round((s[mid-1]+s[mid])/2);};
 
@@ -5866,6 +5879,152 @@ function ManagementTab({store}){
         // ===== D. 構成分析 =====
         secHeader("D","D. 構成分析 ("+periodLabel+")"),
         secOpen.D&&React.createElement("div",null,
+          // ⚡ 直前予約 (リードタイム≤3日) — 月別/年別 統一
+          sectionCard(React.createElement("div",null,
+            React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:10,color:"#dc2626"}},"⚡ 直前予約（リードタイム≤3日 ・"+periodLabel+"・出発日基準）"),
+            (()=>{
+              // 集計データ取得（月モード/年モードで切替）
+              let rec={cnt:0,total:0,items:[],dayCnt:{0:0,1:0,2:0,3:0},otaCnt:{},rev:0};
+              if(selMode==="month"){
+                const m=lastMinByM[selYm];
+                if(m){rec.cnt=m.cnt;rec.total=m.total;rec.items=[...m.items];rec.dayCnt={...m.dayCnt};rec.otaCnt={...m.otaCnt};rec.rev=m.rev;}
+              }else{
+                // 年モード: selYr 年の全月を集約
+                Object.keys(lastMinByM).filter(ym=>ym.startsWith(selYr)).forEach(ym=>{
+                  const m=lastMinByM[ym];
+                  rec.cnt+=m.cnt;rec.total+=m.total;rec.rev+=m.rev;
+                  rec.items=rec.items.concat(m.items);
+                  Object.keys(m.dayCnt).forEach(d=>rec.dayCnt[d]=(rec.dayCnt[d]||0)+m.dayCnt[d]);
+                  Object.keys(m.otaCnt).forEach(o=>rec.otaCnt[o]=(rec.otaCnt[o]||0)+m.otaCnt[o]);
+                });
+              }
+              const pct=rec.total>0?Math.round(rec.cnt/rec.total*1000)/10:0;
+              const nrm=rec.total-rec.cnt;
+              const nrmPct=rec.total>0?Math.round(nrm/rec.total*1000)/10:0;
+              // 並び替え（出発日 降順）
+              rec.items.sort((a,b)=>b.lend_date.localeCompare(a.lend_date));
+              return React.createElement("div",null,
+                React.createElement("div",{style:{display:"flex",gap:10,flexWrap:"wrap",marginBottom:12}},
+                  metricCard("直前予約率",pct+"%",rec.cnt+"件 / 全"+rec.total+"件","#fef2f2","#991b1b"),
+                  metricCard("直前予約 売上","¥"+fmt(rec.rev),"リードタイム≤3日合計","#fef3c7","#78350f"),
+                  metricCard("当日予約",(rec.dayCnt[0]||0)+"件","リードタイム=0日","#fee2e2","#991b1b"),
+                  metricCard("3日前予約",(rec.dayCnt[3]||0)+"件","リードタイム=3日","#fef9c3","#78350f")
+                ),
+                // 差分日数別 + OTA別 (chips)
+                React.createElement("div",{style:{display:"flex",gap:12,marginBottom:12,flexWrap:"wrap"}},
+                  React.createElement("div",{style:{flex:"1 1 240px",background:"#f8fafc",borderRadius:8,padding:10,border:"1px solid #e2e8f0"}},
+                    React.createElement("div",{style:{fontSize:11,fontWeight:800,marginBottom:6,color:"#475569"}},"差分日数別"),
+                    React.createElement("div",{style:{display:"flex",gap:6,flexWrap:"wrap"}},
+                      [0,1,2,3].map(d=>{
+                        const c=rec.dayCnt[d]||0;
+                        const colors=["#dc2626","#ea580c","#d97706","#ca8a04"];
+                        return React.createElement("div",{key:d,style:{flex:"1 1 80px",padding:"6px 8px",background:"#fff",borderRadius:6,border:"1px solid "+colors[d],textAlign:"center"}},
+                          React.createElement("div",{style:{fontSize:10,color:colors[d],fontWeight:700}},d===0?"当日":d+"日前"),
+                          React.createElement("div",{style:{fontSize:18,fontWeight:900,color:colors[d]}},c),
+                          React.createElement("div",{style:{fontSize:9,color:"#94a3b8"}},"件")
+                        );
+                      })
+                    )
+                  ),
+                  React.createElement("div",{style:{flex:"1 1 240px",background:"#f8fafc",borderRadius:8,padding:10,border:"1px solid #e2e8f0"}},
+                    React.createElement("div",{style:{fontSize:11,fontWeight:800,marginBottom:6,color:"#475569"}},"OTA別"),
+                    React.createElement("div",{style:{display:"flex",gap:6,flexWrap:"wrap"}},
+                      Object.entries(rec.otaCnt).sort((a,b)=>b[1]-a[1]).map(([o,c])=>React.createElement("div",{key:o,style:{padding:"6px 10px",background:"#fff",borderRadius:6,border:"1px solid #cbd5e1",fontSize:11}},
+                        React.createElement("span",{style:{fontWeight:800,color:"#1e293b"}},o),
+                        React.createElement("span",{style:{marginLeft:6,color:"#dc2626",fontWeight:900}},c+"件")
+                      ))
+                    )
+                  )
+                ),
+                // 月別推移 (年モードのみ)
+                selMode==="year"?React.createElement("div",{style:{marginBottom:12}},
+                  React.createElement("div",{style:{fontSize:12,fontWeight:800,marginBottom:6,color:"#475569"}},selYr+"年 月別 直前予約 推移"),
+                  tableWrap(React.createElement("table",{style:{width:"100%",borderCollapse:"collapse"}},
+                    React.createElement("thead",null,React.createElement("tr",null,
+                      React.createElement("th",{style:th2},"月"),
+                      React.createElement("th",{style:{...th2,textAlign:"right"}},"全予約"),
+                      React.createElement("th",{style:{...th2,textAlign:"right"}},"直前予約"),
+                      React.createElement("th",{style:{...th2,textAlign:"right"}},"率"),
+                      React.createElement("th",{style:{...th2,textAlign:"right"}},"当日"),
+                      React.createElement("th",{style:{...th2,textAlign:"right"}},"1日前"),
+                      React.createElement("th",{style:{...th2,textAlign:"right"}},"2日前"),
+                      React.createElement("th",{style:{...th2,textAlign:"right"}},"3日前"),
+                      React.createElement("th",{style:{...th2,textAlign:"right"}},"売上"),
+                      React.createElement("th",{style:{...th2,minWidth:120}},"")
+                    )),
+                    React.createElement("tbody",null,
+                      Array.from({length:12}).map((_,i)=>{
+                        const ym=selYr+"-"+String(i+1).padStart(2,"0");
+                        const m=lastMinByM[ym]||{cnt:0,total:0,dayCnt:{0:0,1:0,2:0,3:0},rev:0};
+                        const p=m.total>0?Math.round(m.cnt/m.total*1000)/10:0;
+                        const pcol=p>=30?"#dc2626":p>=15?"#d97706":"#059669";
+                        return React.createElement("tr",{key:ym,style:zRow(i,ym===nowYm)},
+                          React.createElement("td",{style:{...td2,fontWeight:700}},(i+1)+"月"),
+                          React.createElement("td",{style:{...td2,textAlign:"right"}},m.total),
+                          React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:800,color:"#dc2626"}},m.cnt),
+                          React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:900,color:pcol}},p+"%"),
+                          React.createElement("td",{style:{...td2,textAlign:"right",color:"#dc2626"}},m.dayCnt[0]||0),
+                          React.createElement("td",{style:{...td2,textAlign:"right",color:"#ea580c"}},m.dayCnt[1]||0),
+                          React.createElement("td",{style:{...td2,textAlign:"right",color:"#d97706"}},m.dayCnt[2]||0),
+                          React.createElement("td",{style:{...td2,textAlign:"right",color:"#ca8a04"}},m.dayCnt[3]||0),
+                          React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:600}},"¥"+fmt(m.rev)),
+                          React.createElement("td",{style:td2},bar(Math.round(p),pcol))
+                        );
+                      }).concat([
+                        React.createElement("tr",{key:"yr-total",style:{background:"#1e293b",color:"#fff"}},
+                          React.createElement("td",{style:{...td2,fontWeight:900,color:"#fff"}},"年計"),
+                          React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:900,color:"#fff"}},rec.total),
+                          React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:900,color:"#fff"}},rec.cnt),
+                          React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:900,color:"#fff"}},pct+"%"),
+                          React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:900,color:"#fff"}},rec.dayCnt[0]||0),
+                          React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:900,color:"#fff"}},rec.dayCnt[1]||0),
+                          React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:900,color:"#fff"}},rec.dayCnt[2]||0),
+                          React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:900,color:"#fff"}},rec.dayCnt[3]||0),
+                          React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:900,color:"#fff"}},"¥"+fmt(rec.rev)),
+                          React.createElement("td",{style:td2},"")
+                        )
+                      ])
+                    )
+                  ),"50vh")
+                ):null,
+                // 直前予約 リスト (詳細)
+                React.createElement("div",{style:{fontSize:12,fontWeight:800,marginBottom:6,color:"#475569"}},
+                  "📋 直前予約 リスト ("+rec.items.length+"件)"
+                ),
+                rec.items.length>0?tableWrap(React.createElement("table",{style:{width:"100%",borderCollapse:"collapse"}},
+                  React.createElement("thead",null,React.createElement("tr",null,
+                    React.createElement("th",{style:th2},"予約日"),
+                    React.createElement("th",{style:th2},"出発日"),
+                    React.createElement("th",{style:{...th2,textAlign:"right",width:50}},"差"),
+                    React.createElement("th",{style:{...th2,width:40}},"OTA"),
+                    React.createElement("th",{style:th2},"予約番号"),
+                    React.createElement("th",{style:{...th2,width:36,textAlign:"center"}},"C"),
+                    React.createElement("th",{style:{...th2,textAlign:"right"}},"料金"),
+                    React.createElement("th",{style:th2},"顧客名")
+                  )),
+                  React.createElement("tbody",null,
+                    rec.items.map((r,i)=>{
+                      const dColors=["#dc2626","#ea580c","#d97706","#ca8a04"];
+                      const dColor=dColors[r.lead]||"#64748b";
+                      return React.createElement("tr",{key:r.id+"_"+i,style:zRow(i,false)},
+                        React.createElement("td",{style:{...td2,fontSize:11}},r.booked_at),
+                        React.createElement("td",{style:{...td2,fontSize:11,fontWeight:700}},r.lend_date),
+                        React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:900,color:dColor}},r.lead+"日"),
+                        React.createElement("td",{style:{...td2,fontWeight:700}},r.ota||"-"),
+                        React.createElement("td",{style:{...td2,fontFamily:"monospace",fontSize:11}},r.id),
+                        React.createElement("td",{style:{...td2,textAlign:"center",fontWeight:800}},r.vehicle||"-"),
+                        React.createElement("td",{style:{...td2,textAlign:"right",fontWeight:600}},"¥"+fmt(r.rev)),
+                        React.createElement("td",{style:td2},r.name||"-")
+                      );
+                    })
+                  )
+                ),"60vh"):React.createElement("div",{style:{fontSize:12,color:"#94a3b8",padding:12,textAlign:"center",background:"#f8fafc",borderRadius:6}},"直前予約なし"),
+                React.createElement("div",{style:{fontSize:10,color:"#94a3b8",marginTop:8,lineHeight:1.5}},
+                  "※ 直前予約 = 予約日（メール受信日）から出発日までのリードタイムが 0〜3日。グループ化は出発月（lend_date / start_date）"
+                )
+              );
+            })()
+          )),
           // デリバリ利用率（NHA限定：札幌は100%固定のため非表示）
           !isSpk&&sectionCard(React.createElement("div",null,
             React.createElement("div",{style:{fontSize:13,fontWeight:900,marginBottom:10,color:"#1e3a5f"}},"デリバリ利用率（"+periodLabel+"）"),
@@ -6561,18 +6720,32 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
       await saveMonthlySnapshot("spk",prevYM,data,vehicles,fleet,pf,"vehicle_monthly_kpi");
     })();
   },[data,vehicles,fleet]);
-  if(!stats)return null;
   const moLabel=parseInt(selYM.split("-")[1])+"月";
   const now=new Date();const curYM=now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0");
   const isCur=selYM===curYM;
-  const prevYM=months[months.indexOf(selYM)-1];
-  const nextYM=months[months.indexOf(selYM)+1];
+  const prevMonthFn=()=>{const[y,m]=selYM.split("-").map(Number);let ny=y,nm=m-1;if(nm<1){nm=12;ny--;}setSelYM(ny+"-"+String(nm).padStart(2,"0"));};
+  const nextMonthFn=()=>{const[y,m]=selYM.split("-").map(Number);let ny=y,nm=m+1;if(nm>12){nm=1;ny++;}setSelYM(ny+"-"+String(nm).padStart(2,"0"));};
+  const navBtnS={fontSize:14,lineHeight:1,padding:"2px 8px",borderRadius:6,border:"1px solid "+(isCur?"#fde68a":"#e2e8f0"),background:isCur?"#fffbeb":"#f8fafc",color:isCur?"#92400e":"#475569",cursor:"pointer",fontWeight:700,flexShrink:0};
+  if(!stats)return <div style={{marginBottom:8}}>
+    <div style={{padding:"10px 14px",borderRadius:12,background:isCur?"linear-gradient(135deg,#fffbeb,#fef3c7)":"#f8fafc",border:"1px solid "+(isCur?"#fde68a":"#e2e8f0"),boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8}}>
+        <span style={{fontSize:16}}>📊</span>
+        <button onClick={prevMonthFn} style={navBtnS}>◀</button>
+        <span style={{fontSize:12,color:isCur?"#92400e":"#64748b",fontWeight:700,flex:1,textAlign:"center"}}>{moLabel} データなし</span>
+        <button onClick={nextMonthFn} style={navBtnS}>▶</button>
+        {!isCur&&<button onClick={()=>setSelYM(curYM)} style={{...navBtnS,fontSize:10,color:"#2563eb",borderColor:"#bfdbfe",background:"#eff6ff"}}>今月</button>}
+      </div>
+    </div>
+  </div>;
   return <div style={{marginBottom:8}}>
     <div onClick={()=>setOpen(o=>!o)} style={{padding:"12px 14px",borderRadius:12,background:isCur?"linear-gradient(135deg,#fffbeb,#fef3c7)":"#f8fafc",border:"1px solid "+(isCur?"#fde68a":"#e2e8f0"),cursor:"pointer",userSelect:"none",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
       {/* ヘッダー */}
-      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}>
         <span style={{fontSize:16}}>📊</span>
-        <span style={{fontSize:12,color:isCur?"#92400e":"#64748b",fontWeight:700,flex:1}}>{moLabel} 返却 {stats.total}件</span>
+        <button onClick={e=>{e.stopPropagation();prevMonthFn();}} style={navBtnS}>◀</button>
+        <span style={{fontSize:12,color:isCur?"#92400e":"#64748b",fontWeight:700,flex:1,textAlign:"center"}}>{moLabel} 返却 {stats.total}件</span>
+        <button onClick={e=>{e.stopPropagation();nextMonthFn();}} style={navBtnS}>▶</button>
+        {!isCur&&<button onClick={e=>{e.stopPropagation();setSelYM(curYM);}} style={{...navBtnS,fontSize:10,color:"#2563eb",borderColor:"#bfdbfe",background:"#eff6ff"}}>今月</button>}
         <span style={{fontSize:10,color:"#94a3b8",fontWeight:700}}>{open?"▲":"▼"}</span>
       </div>
       {/* 2カラム: 左=売上ヒーロー+内訳 / 右=KPIリスト */}
@@ -14382,7 +14555,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.7.7";
+const APP_VERSION="v4.7.9";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
