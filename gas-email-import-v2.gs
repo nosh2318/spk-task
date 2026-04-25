@@ -3453,6 +3453,9 @@ function watchdogMissedReservations() {
       if (!m) continue;
       var resvNo = m[1];
 
+      // ★ 札幌予約でなければスキップ（那覇HP予約等の誤検知を防止）
+      if (!isSapporoReservation_(body, subject, '')) continue;
+
       // 既に Supabase に存在 → 取りこぼしではない
       if (existIds[resvNo]) continue;
 
@@ -3474,8 +3477,11 @@ function watchdogMissedReservations() {
       // PROCESSED から除去
       if (processedIds[item.msg.getId()]) delete processedIds[item.msg.getId()];
       var result = processMessage_(item.msg, false);
-      if (result && (result.type === 'success' || result.type === 'skip')) {
+      if (result && result.type === 'success') {
         reprocessedOk.push(item.resvNo);
+      } else if (result && result.type === 'skip') {
+        // skip = 札幌以外の予約など → カウントしない（通知に出さない）
+        Logger.log('[watchdog] skip: ' + item.resvNo + ' (' + (result.reason || '') + ')');
       } else {
         reprocessedFail.push({id: item.resvNo, reason: result ? result.reason : 'unknown'});
       }
@@ -3487,7 +3493,11 @@ function watchdogMissedReservations() {
   // PROCESSED_MSG_IDS 更新
   PropertiesService.getScriptProperties().setProperty(PROCESSED_IDS_KEY, Object.keys(processedIds).join(','));
 
-  // Slack通知
+  // Slack通知（実際に復旧成功・失敗があった場合のみ）
+  if (!reprocessedOk.length && !reprocessedFail.length) {
+    Logger.log('[watchdog] 実際の復旧なし（全てskip or 那覇予約）');
+    return;
+  }
   var lines = ['🔄 *取りこぼし予約 自動復旧* (' + missed.length + '件検知)', ''];
   if (reprocessedOk.length)   lines.push('✅ 復旧成功: ' + reprocessedOk.join(', '));
   if (reprocessedFail.length) lines.push('❌ 復旧失敗: ' + reprocessedFail.map(function(f) { return f.id + '(' + f.reason + ')'; }).join(', '));
