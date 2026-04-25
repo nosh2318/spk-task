@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v565';
+  var CV='spk-v566';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js?v=486').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js?v=487').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -1799,6 +1799,11 @@ function JalanPaymentNew(){
   const[filter,setFilter]=useState("all");
   const[editMemoId,setEditMemoId]=useState(null);
   const[memoText,setMemoText]=useState("");
+  const[sortKey,setSortKey]=useState("lend_date");
+  const[sortAsc,setSortAsc]=useState(true);
+  const toggleSort=(k)=>{if(sortKey===k)setSortAsc(a=>!a);else{setSortKey(k);setSortAsc(true);}};
+  const sIcon=(k)=>sortKey===k?(sortAsc?"▲":"▼"):"↕";
+  const STATUS_ORD={new:0,link_created:1,email_sent:2,paid:3,cancelled:4,refund:5,refunded:6};
   const load=async()=>{const d=await DB.fetchJalanPayments();setPayments(d);setLoading(false);};
   useEffect(()=>{load();},[]);
   useEffect(()=>{
@@ -1816,10 +1821,22 @@ function JalanPaymentNew(){
     refund:{label:"返金待ち",bg:"#ffedd5",c:"#c2410c"},
     refunded:{label:"返金済",bg:"#f3e8ff",c:"#7c3aed"}
   };
-  const filtered=filter==="all"?payments:payments.filter(p=>p.status===filter);
+  const filtered=useMemo(()=>{
+    const base=filter==="all"?payments:payments.filter(p=>p.status===filter);
+    return [...base].sort((a,b)=>{
+      let va,vb;
+      if(sortKey==="amount"){va=a.amount||0;vb=b.amount||0;}
+      else if(sortKey==="status"){va=STATUS_ORD[a.status]??99;vb=STATUS_ORD[b.status]??99;}
+      else if(sortKey==="lend_date"){va=a.lend_date||"";vb=b.lend_date||"";}
+      else if(sortKey==="created_at"){va=a.created_at||"";vb=b.created_at||"";}
+      else return 0;
+      if(va<vb)return sortAsc?-1:1;if(va>vb)return sortAsc?1:-1;return 0;
+    });
+  },[payments,filter,sortKey,sortAsc]);
   const counts={};payments.forEach(p=>{counts[p.status]=(counts[p.status]||0)+1;});
   const saveMemo=async(id)=>{await DB.updateJalanPaymentMemo(id,memoText);setEditMemoId(null);load();};
   const cardS={background:"#fff",borderRadius:14,border:"1px solid #e2e8f0",boxShadow:"0 1px 3px rgba(0,0,0,.05)"};
+  const thS=(k,sortable)=>({padding:"6px 8px",textAlign:"left",fontWeight:700,fontSize:10,color:sortable?"#1e40af":"#475569",borderBottom:"2px solid #e2e8f0",whiteSpace:"nowrap",cursor:sortable?"pointer":"default",userSelect:"none",background:sortKey===k?"#eff6ff":"transparent"});
   if(loading)return <div style={{textAlign:"center",padding:40,color:"#94a3b8"}}>読込中...</div>;
   return <div>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
@@ -1838,7 +1855,14 @@ function JalanPaymentNew(){
     {filtered.length===0?<div style={{...cardS,padding:24,textAlign:"center",color:"#94a3b8",fontSize:13}}>該当データなし</div>:
     <div style={{...cardS,overflow:"hidden"}}><div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
       <thead><tr style={{background:"#f8fafc"}}>
-        {["予約番号","顧客名","金額","ステータス","Squareリンク","利用期間","作成日","メモ"].map(h=><th key={h} style={{padding:"6px 8px",textAlign:"left",fontWeight:700,fontSize:10,color:"#475569",borderBottom:"2px solid #e2e8f0",whiteSpace:"nowrap"}}>{h}</th>)}
+        <th style={thS(null,false)}>予約番号</th>
+        <th style={thS(null,false)}>顧客名</th>
+        <th style={thS("amount",true)} onClick={()=>toggleSort("amount")}>金額 {sIcon("amount")}</th>
+        <th style={thS("status",true)} onClick={()=>toggleSort("status")}>ステータス {sIcon("status")}</th>
+        <th style={thS(null,false)}>Squareリンク</th>
+        <th style={thS("lend_date",true)} onClick={()=>toggleSort("lend_date")}>利用期間 {sIcon("lend_date")}</th>
+        <th style={thS("created_at",true)} onClick={()=>toggleSort("created_at")}>作成日 {sIcon("created_at")}</th>
+        <th style={thS(null,false)}>メモ</th>
       </tr></thead>
       <tbody>{filtered.map(p=>{
         const sm=statusMeta[p.status]||statusMeta.new;
@@ -14319,7 +14343,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.7.4";
+const APP_VERSION="v4.7.5";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
