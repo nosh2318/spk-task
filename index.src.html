@@ -1849,9 +1849,9 @@ function FleetManager(p){
     allLogsYear2.forEach(function(l){var ym=(l.date||"").slice(0,7);if(!ym)return;if(!monthCatData2[ym]){monthCatData2[ym]={total:0};COST_CATS.forEach(function(c){monthCatData2[ym][c.v]=0});}monthCatData2[ym].total+=Number(l.cost||0);monthCatData2[ym][l.type||"other"]=(monthCatData2[ym][l.type||"other"]||0)+Number(l.cost||0);});
     var allMonthKeys2=Object.keys(monthCatData2).sort();
     var grpMap2={};var grpOrder2=[];
-    // vehicles.code === cars.id なのでvehicles.typeでクラス分類
-    var vTypeMap={};(p.vehicles||[]).forEach(function(v){vTypeMap[v.code]=v.type||"?";});
-    cars.forEach(function(c){if(!c||!c.id)return;var tp=vTypeMap[c.id]||c.class_id||"?";if(!grpMap2[tp]){grpMap2[tp]=[];grpOrder2.push(tp);}grpMap2[tp].push(c);});
+    // ナンバープレートでvehiclesのtypeを引く（IDマッチに依存しない確実な方法）
+    var plateTypeMap={};(p.vehicles||[]).forEach(function(v){if(v.no)plateTypeMap[v.no]=v.type||"?";});
+    cars.forEach(function(c){if(!c||!c.id)return;var tp=plateTypeMap[c.plate]||"?";if(!grpMap2[tp]){grpMap2[tp]=[];grpOrder2.push(tp);}grpMap2[tp].push(c);});
 
     return E("div",{style:{maxWidth:1100,margin:"0 auto"}},msgPopup,
 
@@ -9283,7 +9283,7 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
   };
   const handleBarClick=(e,b)=>{e.stopPropagation();if(b.type==="reservation")setTooltip({type:"reservation",...b.r,vc:fleet[b.r.id]});else setTooltip({type:"maintenance",...b.m});};
 
-  const addMaint=(vc,start,end,label)=>{const m={id:"m"+Date.now(),vehicleCode:vc,startDate:start,endDate:end,label};const next=[...(maintenance||[]),m];onMaintenanceChange(next);DB.saveMaintenance([m]);setShowMaintForm(null);};
+  const addMaint=(vc,start,end,label,cost,workshop,invoiceNo,maintNotes)=>{const m={id:"m"+Date.now(),vehicleCode:vc,startDate:start,endDate:end,label,cost:Number(cost)||0,workshop:workshop||"",invoiceNo:invoiceNo||"",maintNotes:maintNotes||""};const next=[...(maintenance||[]),m];onMaintenanceChange(next);DB.saveMaintenance([m]);const n=Number(cost)||0;if(n>0&&sb){const col=label==="車検"?"shaken_cost":label==="半年点検"?"tenken_cost":null;if(col)sb.from("vehicles").update({[col]:n}).eq("code",vc).then(({error})=>{if(!error){const upd=(p.vehicles||vehicles).map(v=>v.code===vc?{...v,[label==="車検"?"shakenCost":"tenkenCost"]:n}:v);}});}setShowMaintForm(null);};
   const removeMaint=(id)=>{onMaintenanceChange((maintenance||[]).filter(m=>m.id!==id));DB.deleteMaintenance(id);setTooltip(null);};
 
   // ドラッグ&ドロップで車両変更
@@ -9533,15 +9533,40 @@ function ReservationEditModal({t,fleet,vehicles,vehicleClasses,data,onFleetChang
 }
 
 function MaintForm({vehicleCode,startDate,onAdd,onClose,vehicles}){
-  const[start,setStart]=useState(startDate);const[end,setEnd]=useState(startDate);const[label,setLabel]=useState("メンテナンス");const v=vehicles.find(x=>x.code===vehicleCode);
+  const[start,setStart]=useState(startDate);
+  const[end,setEnd]=useState(startDate);
+  const[label,setLabel]=useState("メンテナンス");
+  const[cost,setCost]=useState("");
+  const[workshop,setWorkshop]=useState("");
+  const[invoiceNo,setInvoiceNo]=useState("");
+  const[maintNotes,setMaintNotes]=useState("");
+  const v=vehicles.find(x=>x.code===vehicleCode);
+  const isInspection=label==="車検"||label==="半年点検";
+  const iS={border:"1px solid #d1d5db",borderRadius:6,padding:"5px 8px",fontSize:12,width:"100%"};
+  const lS={fontSize:11,fontWeight:600,color:"#64748b",marginBottom:3,display:"block"};
   return <div className="space-y-3">
-    <div className="text-xs text-gray-500">車両: <strong>{v?v.name:vehicleCode}</strong> ({v?v.no:""})</div>
-    <div><label className="text-xs text-gray-500">ラベル</label><select value={label} onChange={e=>setLabel(e.target.value)} className="input-s"><option>メンテナンス</option><option>車検</option><option>修理</option><option>清掃</option><option>その他</option></select></div>
+    <div className="text-xs text-gray-500">車両: <strong>{v?v.name:vehicleCode}</strong> {v?`(${v.no})`:""}　{v?`${v.seats}名`:""}</div>
+    <div><label style={lS}>ラベル</label><select value={label} onChange={e=>setLabel(e.target.value)} className="input-s">
+      <option>メンテナンス</option><option>車検</option><option>半年点検</option><option>修理</option><option>清掃</option><option>その他</option>
+    </select></div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-      <div><label className="text-xs text-gray-500">開始日</label><input type="date" value={start} onChange={e=>setStart(e.target.value)} className="input-s"/></div>
-      <div><label className="text-xs text-gray-500">終了日</label><input type="date" value={end} onChange={e=>setEnd(e.target.value)} className="input-s"/></div>
+      <div><label style={lS}>入庫日（開始）</label><input type="date" value={start} onChange={e=>setStart(e.target.value)} style={iS}/></div>
+      <div><label style={lS}>出庫日（終了）</label><input type="date" value={end} onChange={e=>setEnd(e.target.value)} style={iS}/></div>
     </div>
-    <div className="flex justify-end gap-2"><button onClick={onClose} className="btn-ghost">キャンセル</button><button onClick={()=>onAdd(vehicleCode,start,end,label)} className="btn-primary">登録</button></div>
+    {isInspection&&<div style={{background:"#f0f9ff",border:"1px solid #bae6fd",borderRadius:8,padding:"10px 12px"}}>
+      <div style={{fontSize:11,fontWeight:700,color:"#0369a1",marginBottom:8}}>{label} 詳細情報</div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+        <div><label style={lS}>概算予算（円）</label><input type="number" value={cost} onChange={e=>setCost(e.target.value)} style={iS} placeholder="0"/></div>
+        <div><label style={lS}>請求書番号</label><input value={invoiceNo} onChange={e=>setInvoiceNo(e.target.value)} style={iS} placeholder="INV-001"/></div>
+      </div>
+      {cost&&Number(cost)>0&&<div style={{fontSize:10,color:"#0369a1",marginBottom:6}}>→ 車両のランニングコストに自動登録</div>}
+      <div style={{marginBottom:8}}><label style={lS}>業者名</label><input value={workshop} onChange={e=>setWorkshop(e.target.value)} style={iS} placeholder="〇〇自動車"/></div>
+      <div><label style={lS}>メモ</label><input value={maintNotes} onChange={e=>setMaintNotes(e.target.value)} style={iS} placeholder="任意"/></div>
+    </div>}
+    <div className="flex justify-end gap-2">
+      <button onClick={onClose} className="btn-ghost">キャンセル</button>
+      <button onClick={()=>onAdd(vehicleCode,start,end,label,cost,workshop,invoiceNo,maintNotes)} className="btn-primary">登録</button>
+    </div>
   </div>;
 }
 
