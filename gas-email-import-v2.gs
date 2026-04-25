@@ -3493,15 +3493,10 @@ function watchdogMissedReservations() {
   // PROCESSED_MSG_IDS 更新
   PropertiesService.getScriptProperties().setProperty(PROCESSED_IDS_KEY, Object.keys(processedIds).join(','));
 
-  // Slack通知（実際に復旧成功・失敗があった場合のみ）
-  if (!reprocessedOk.length && !reprocessedFail.length) {
-    Logger.log('[watchdog] 実際の復旧なし（全てskip or 那覇予約）');
-    return;
-  }
-  var lines = ['🔄 *取りこぼし予約 自動復旧* (' + missed.length + '件検知)', ''];
-  if (reprocessedOk.length)   lines.push('✅ 復旧成功: ' + reprocessedOk.join(', '));
-  if (reprocessedFail.length) lines.push('❌ 復旧失敗: ' + reprocessedFail.map(function(f) { return f.id + '(' + f.reason + ')'; }).join(', '));
-  sendSlackToSpk_('取りこぼし予約 自動復旧', lines.join('\n'));
+  // Slack通知なし（GASログのみ）
+  Logger.log('[watchdog] 結果: ok=' + reprocessedOk.length + ' / fail=' + reprocessedFail.length);
+  if (reprocessedOk.length)   Logger.log('[watchdog] 復旧成功: ' + reprocessedOk.join(', '));
+  if (reprocessedFail.length) Logger.log('[watchdog] 復旧失敗: ' + reprocessedFail.map(function(f) { return f.id + '(' + f.reason + ')'; }).join(', '));
 
   Logger.log('[watchdog] 結果: ok=' + reprocessedOk.length + ' / fail=' + reprocessedFail.length);
 }
