@@ -1096,6 +1096,7 @@ function VehicleManager({vehicles,onVehiclesChange,vehicleClasses,onDeleteVehicl
   const[modal,setModal]=useState(null);
   const[form,setForm]=useState(EMPTY);
   const[mTab,setMTab]=useState("basic");
+  const[maintRecs,setMaintRecs]=useState([]);
   const[kpiFlags,setKpiFlags]=useState({});
   const[openCls,setOpenCls]=useState({});
   const toggleCls=(tp)=>setOpenCls(p=>({...p,[tp]:!p[tp]}));
@@ -1118,8 +1119,9 @@ function VehicleManager({vehicles,onVehiclesChange,vehicleClasses,onDeleteVehicl
   const lS={fontSize:11,fontWeight:700,color:"#64748b",marginBottom:4,display:"block"};
   const secH=(t)=><div style={{fontSize:11,fontWeight:800,color:"#2563eb",marginBottom:10,paddingBottom:4,borderBottom:"1px solid #e2e8f0",marginTop:4}}>{t}</div>;
   const tabBtn=(id,label)=><button key={id} onClick={()=>setMTab(id)} style={{padding:"8px 14px",fontSize:12,fontWeight:mTab===id?700:500,color:mTab===id?"#2563eb":"#64748b",background:"none",border:"none",borderBottom:mTab===id?"2px solid #2563eb":"2px solid transparent",cursor:"pointer",whiteSpace:"nowrap"}}>{label}</button>;
-  const openAdd=()=>{setForm(EMPTY);setModal({mode:"add"});setMTab("basic");};
-  const openEdit=(v)=>{setForm({name:v.name||"",no:v.no||"",type:v.type||"A",grade:v.grade||"",seats:v.seats||5,insuranceVeh:!!v.insuranceVeh,year:v.year||"",color:v.color||"",equip:v.equip||"",insPrice:v.insPrice||"",memo:v.memo||"",insuranceAnnual:Number(v.insuranceAnnual)||0,leaseMonthly:Number(v.leaseMonthly)||0,shakenCost:Number(v.shakenCost)||0,tenkenCost:Number(v.tenkenCost)||0,carTax:Number(v.carTax)||0,oilIntervalKm:Number(v.oilIntervalKm)||5000,active:v.active!==false});setModal({mode:"edit",v});setMTab("basic");};
+  const loadMaintRecs=async(code)=>{if(!sb||!code)return;const{data}=await sb.from("maintenance").select("*").eq("vehicle_code",code).order("start_date",{ascending:false});setMaintRecs(data||[]);};
+  const openAdd=()=>{setForm(EMPTY);setModal({mode:"add"});setMTab("basic");setMaintRecs([]);};
+  const openEdit=(v)=>{setForm({name:v.name||"",no:v.no||"",type:v.type||"A",grade:v.grade||"",seats:v.seats||5,insuranceVeh:!!v.insuranceVeh,year:v.year||"",color:v.color||"",equip:v.equip||"",insPrice:v.insPrice||"",memo:v.memo||"",insuranceAnnual:Number(v.insuranceAnnual)||0,leaseMonthly:Number(v.leaseMonthly)||0,shakenCost:Number(v.shakenCost)||0,tenkenCost:Number(v.tenkenCost)||0,carTax:Number(v.carTax)||0,oilIntervalKm:Number(v.oilIntervalKm)||5000,active:v.active!==false});setModal({mode:"edit",v});setMTab("basic");loadMaintRecs(v.code);};
   const closeModal=()=>setModal(null);
   const saveVehicle=()=>{
     if(!window.confirm(modal.mode==="add"?"新規車両を登録しますか？":"車両情報を保存しますか？"))return;
@@ -1211,7 +1213,7 @@ function VehicleManager({vehicles,onVehiclesChange,vehicleClasses,onDeleteVehicl
           <button onClick={closeModal} style={{fontSize:20,background:"none",border:"none",cursor:"pointer",color:"#94a3b8"}}>✕</button>
         </div>
         <div style={{display:"flex",gap:0,borderBottom:"1px solid #e2e8f0",padding:"0 16px",overflowX:"auto"}}>
-          {[["basic","基本情報"],["cost","ランニングコスト"]].map(([id,label])=>tabBtn(id,label))}
+          {[["basic","基本情報"],["insurance","保険事業"],["cost","ランニングコスト"],["maint","メンテナンス"],["service","整備管理"]].map(([id,label])=>tabBtn(id,label))}
         </div>
         <div style={{padding:"16px 20px",maxHeight:"70vh",overflowY:"auto"}}>
           {mTab==="basic"&&<div>
@@ -1292,6 +1294,54 @@ function VehicleManager({vehicles,onVehiclesChange,vehicleClasses,onDeleteVehicl
               </div>}
             </div>;
           })()}
+          {mTab==="insurance"&&<div>
+            {secH("保険事業")}
+            <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer",padding:"14px 16px",background:form.insuranceVeh?"#faf5ff":"#f8fafc",border:"1px solid "+(form.insuranceVeh?"#d8b4fe":"#e2e8f0"),borderRadius:10}}>
+              <input type="checkbox" checked={form.insuranceVeh} onChange={e=>upF("insuranceVeh",e.target.checked)} style={{width:18,height:18}}/>
+              <div>
+                <div style={{fontWeight:700,color:form.insuranceVeh?"#7c3aed":"#374151",fontSize:13}}>🛡️ 保険事業車両</div>
+                <div style={{fontSize:11,color:"#94a3b8",marginTop:2}}>ONにすると自動配車の対象外になります</div>
+              </div>
+            </label>
+            <div style={{marginTop:12}}><label style={lS}>保険事業価格</label><input value={form.insPrice} onChange={e=>upF("insPrice",e.target.value)} style={fS} placeholder="¥15,000"/></div>
+          </div>}
+          {mTab==="maint"&&<div>
+            {modal.mode==="add"?<div style={{textAlign:"center",padding:32,color:"#94a3b8"}}>車両登録後に記録できます</div>:<div>
+              {["車検","半年点検","オイル交換"].map(cat=>{
+                const isFleet=cat==="車検"||cat==="半年点検";
+                const isOil=cat==="オイル交換";
+                const recs=isFleet
+                  ?(maintenance||[]).filter(m=>m.vehicleCode===modal?.v?.code&&m.label===cat).map(m=>({completed_date:m.endDate,scheduled_date:m.startDate,cost:m.cost||0,actualCost:m.actualCost||0,workshop:m.workshop||""})).sort((a,b)=>(b.completed_date||"").localeCompare(a.completed_date||""))
+                  :[];
+                const latest=recs[0];
+                return <div key={cat} style={{border:"1px solid #e2e8f0",borderRadius:12,marginBottom:14,overflow:"hidden"}}>
+                  <div style={{background:"#f8fafc",padding:"10px 14px",display:"flex",alignItems:"center",gap:10}}>
+                    <span style={{fontSize:12,fontWeight:800,color:"#1e293b",flex:1}}>{cat}</span>
+                    <span style={{fontSize:10,color:"#64748b",padding:"3px 10px",background:"#f1f5f9",borderRadius:6,border:"1px solid #e2e8f0"}}>{isOil?"距離管理から入力":"配車表から登録"}</span>
+                  </div>
+                  <div style={{padding:"10px 14px",background:"#fff"}}>
+                    {isFleet&&(latest
+                      ?<div style={{display:"flex",gap:20,flexWrap:"wrap"}}>
+                        <div><div style={{fontSize:10,color:"#94a3b8",fontWeight:700}}>最新</div><div style={{fontSize:13,fontWeight:700,color:"#059669"}}>{latest.completed_date||"-"}</div></div>
+                        {latest.actualCost>0&&<div><div style={{fontSize:10,color:"#94a3b8",fontWeight:700}}>確定金額</div><div style={{fontSize:13,fontWeight:700,color:"#059669"}}>¥{latest.actualCost.toLocaleString()}</div></div>}
+                        {latest.cost>0&&<div><div style={{fontSize:10,color:"#94a3b8",fontWeight:700}}>概算予算</div><div style={{fontSize:12,color:"#64748b"}}>¥{latest.cost.toLocaleString()}</div></div>}
+                        {latest.workshop&&<div><div style={{fontSize:10,color:"#94a3b8",fontWeight:700}}>業者</div><div style={{fontSize:12,color:"#64748b"}}>{latest.workshop}</div></div>}
+                      </div>
+                      :<div style={{fontSize:11,color:"#94a3b8"}}>記録なし</div>)}
+                    {isOil&&<div style={{fontSize:11,color:"#94a3b8"}}>距離管理タブで記録・確認できます</div>}
+                  </div>
+                </div>;
+              })}
+            </div>}
+          </div>}
+          {mTab==="service"&&<div>
+            {modal.mode==="add"?<div style={{textAlign:"center",padding:32,color:"#94a3b8"}}>車両登録後に記録できます</div>
+            :<div style={{textAlign:"center",padding:24,color:"#94a3b8",fontSize:12}}>
+              <div style={{fontSize:14,marginBottom:8}}>🔧</div>
+              整備記録は「整備管理」タブから入力してください<br/>
+              <span style={{fontSize:11}}>（車両を選択 → タップで詳細 → 整備記録を追加）</span>
+            </div>}
+          </div>}
         </div>
         <div style={{padding:"12px 20px",borderTop:"1px solid #e2e8f0",display:"flex",gap:8,justifyContent:"flex-end"}}>
           <button onClick={saveVehicle} style={{padding:"8px 24px",background:"#2563eb",color:"#fff",border:"none",borderRadius:8,fontSize:13,fontWeight:700,cursor:"pointer"}}>{modal.mode==="add"?"登録":"保存"}</button>
