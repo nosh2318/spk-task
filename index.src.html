@@ -1099,6 +1099,8 @@ function VehicleManager({vehicles,onVehiclesChange,vehicleClasses,onDeleteVehicl
   const[maintRecs,setMaintRecs]=useState([]);
   const[kpiFlags,setKpiFlags]=useState({});
   const[openCls,setOpenCls]=useState({});
+  const[vehSaving,setVehSaving]=useState(false);
+  const[vehSaveMsg,setVehSaveMsg]=useState(null);
   const toggleCls=(tp)=>setOpenCls(p=>({...p,[tp]:!p[tp]}));
   const isMob=useMobile();
   const upF=(k,v)=>setForm(p=>({...p,[k]:v}));
@@ -1122,19 +1124,38 @@ function VehicleManager({vehicles,onVehiclesChange,vehicleClasses,onDeleteVehicl
   const loadMaintRecs=async(code)=>{if(!sb||!code)return;const{data}=await sb.from("maintenance").select("*").eq("vehicle_code",code).order("start_date",{ascending:false});setMaintRecs(data||[]);};
   const openAdd=()=>{setForm(EMPTY);setModal({mode:"add"});setMTab("basic");setMaintRecs([]);};
   const openEdit=(v)=>{setForm({name:v.name||"",no:v.no||"",type:v.type||"A",grade:v.grade||"",seats:v.seats||5,insuranceVeh:!!v.insuranceVeh,year:v.year||"",color:v.color||"",equip:v.equip||"",insPrice:v.insPrice||"",memo:v.memo||"",insuranceAnnual:Number(v.insuranceAnnual)||0,leaseMonthly:Number(v.leaseMonthly)||0,shakenCost:Number(v.shakenCost)||0,tenkenCost:Number(v.tenkenCost)||0,carTax:Number(v.carTax)||0,oilIntervalKm:Number(v.oilIntervalKm)||5000,active:v.active!==false});setModal({mode:"edit",v});setMTab("basic");loadMaintRecs(v.code);};
-  const closeModal=()=>setModal(null);
-  const saveVehicle=()=>{
+  const closeModal=()=>{setModal(null);setVehSaveMsg(null);};
+  const saveVehicle=async()=>{
     if(!window.confirm(modal.mode==="add"?"新規車両を登録しますか？":"車両情報を保存しますか？"))return;
-    if(modal.mode==="edit"){
-      onVehiclesChange(vehicles.map(v=>v.id===modal.v.id?{...v,...form,seats:+form.seats}:v));
-    }else{
-      const prefix=form.name.replace(/[\s-]/g,"").substring(0,3).toUpperCase()||"NEW";
-      const noStr=(form.no||"").replace(/[^0-9a-zA-Z]/g,"");
-      const code=prefix+(noStr||Date.now().toString(36).slice(-4));
-      if(vehicles.some(v=>v.code===code)){alert("同じ車種・ナンバーが既に登録されています");return;}
-      onVehiclesChange([...vehicles,{id:code,code,...form,seats:+form.seats}]);
+    setVehSaving(true);setVehSaveMsg(null);
+    try{
+      let vToSave=null;
+      if(modal.mode==="edit"){
+        const next=vehicles.map(v=>v.id===modal.v.id?{...v,...form,seats:+form.seats}:v);
+        vToSave=next.find(v=>v.id===modal.v.id);
+        onVehiclesChange(next);
+      }else{
+        const prefix=form.name.replace(/[\s-]/g,"").substring(0,3).toUpperCase()||"NEW";
+        const noStr=(form.no||"").replace(/[^0-9a-zA-Z]/g,"");
+        const code=prefix+(noStr||Date.now().toString(36).slice(-4));
+        if(vehicles.some(v=>v.code===code)){alert("同じ車種・ナンバーが既に登録されています");setVehSaving(false);return;}
+        vToSave={id:code,code,...form,seats:+form.seats};
+        onVehiclesChange([...vehicles,vToSave]);
+      }
+      // 直接DBに保存して成否を確認
+      if(sb&&vToSave){
+        const row={code:vToSave.code,name:vToSave.name,plate_no:vToSave.no,type:vToSave.type,grade:vToSave.grade||"",seats:vToSave.seats,insurance_veh:!!vToSave.insuranceVeh,year:vToSave.year||"",color:vToSave.color||"",equip:vToSave.equip||"",ins_price:vToSave.insPrice||"",memo:vToSave.memo||"",insurance_annual:Number(vToSave.insuranceAnnual)||0,lease_monthly:Number(vToSave.leaseMonthly)||0,shaken_cost:Number(vToSave.shakenCost)||0,tenken_cost:Number(vToSave.tenkenCost)||0,car_tax:Number(vToSave.carTax)||0,oil_interval_km:Number(vToSave.oilIntervalKm)||5000,active:vToSave.active!==false};
+        const{error}=await sb.from("vehicles").upsert(row,{onConflict:"code"});
+        if(error)throw new Error(error.message);
+      }
+      setVehSaveMsg("ok");
+      setTimeout(()=>{setVehSaveMsg(null);closeModal();setVehSaving(false);},600);
+    }catch(e){
+      console.error("Vehicle save error:",e);
+      setVehSaveMsg("err");
+      setVehSaving(false);
+      alert("保存に失敗しました: "+(e.message||"不明なエラー")+"\nもう一度お試しください。");
     }
-    closeModal();
   };
   const remove=(id)=>{if(!window.confirm("この車両を削除しますか？"))return;const v=vehicles.find(x=>x.id===id);onVehiclesChange(vehicles.filter(x=>x.id!==id));if(v&&onDeleteVehicle)onDeleteVehicle(v.code);};
 
@@ -1344,7 +1365,9 @@ function VehicleManager({vehicles,onVehiclesChange,vehicleClasses,onDeleteVehicl
           </div>}
         </div>
         <div style={{padding:"12px 20px",borderTop:"1px solid #e2e8f0",display:"flex",gap:8,justifyContent:"flex-end"}}>
-          <button onClick={saveVehicle} style={{padding:"8px 24px",background:"#2563eb",color:"#fff",border:"none",borderRadius:8,fontSize:13,fontWeight:700,cursor:"pointer"}}>{modal.mode==="add"?"登録":"保存"}</button>
+          <button onClick={saveVehicle} disabled={vehSaving} style={{padding:"8px 24px",background:vehSaveMsg==="ok"?"#059669":vehSaveMsg==="err"?"#dc2626":"#2563eb",color:"#fff",border:"none",borderRadius:8,fontSize:13,fontWeight:700,cursor:vehSaving?"not-allowed":"pointer",display:"flex",alignItems:"center",gap:6}}>
+            {vehSaving?"保存中...":vehSaveMsg==="ok"?"✅ 保存完了":vehSaveMsg==="err"?"❌ 失敗":(modal.mode==="add"?"登録":"保存")}
+          </button>
           <button onClick={closeModal} style={{padding:"8px 16px",background:"none",border:"1px solid #e2e8f0",borderRadius:8,cursor:"pointer",color:"#64748b",fontSize:12}}>キャンセル</button>
         </div>
       </div>
