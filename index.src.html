@@ -1305,18 +1305,150 @@ function VehicleManager({vehicles,onVehiclesChange,vehicleClasses,onDeleteVehicl
 /* ==========================================
    車両タブ（マスター＋整備管理）
    ========================================== */
+function SpkVehicleFleetStatus({vehicles,vehicleClasses,maintenance,data,fleet}){
+  var E=React.createElement;
+  var isMob=useMobile();
+  var today=new Date().toISOString().slice(0,10);
+  var _dt=useState(today);var viewDate=_dt[0];var setViewDate=_dt[1];
+  var _sf=useState("all");var statusFilter=_sf[0];var setStatusFilter=_sf[1];
+  var _ec=useState({});var expandedClasses=_ec[0];var setExpandedClasses=_ec[1];
+  var _kpi=useState({});var kpiFlags=_kpi[0];var setKpiFlags=_kpi[1];
+
+  React.useEffect(function(){
+    if(!sb)return;
+    var ym=viewDate.slice(0,7);
+    sb.from("vehicle_monthly_kpi").select("vehicle_code,active").eq("year_month",ym)
+      .then(function(res){var m={};(res.data||[]).forEach(function(k){m[k.vehicle_code]=k.active;});setKpiFlags(m);});
+  },[viewDate]);
+
+  var isKpiActive=function(code){return kpiFlags[code]!==false;};
+  var rows=React.useMemo(function(){
+    var vd=viewDate;
+    return (vehicles||[]).map(function(v){
+      var am=null;
+      (maintenance||[]).forEach(function(m){if(m.vehicleCode===v.code&&norm(m.endDate)>=vd&&norm(m.startDate)<=vd)am=m;});
+      var tr=[];
+      (data||[]).forEach(function(r){if(r.status==="cancelled")return;if(fleet[r.id]===v.code&&norm(r.lendDate)<=vd&&norm(r.returnDate)>=vd)tr.push(r);});
+      var st="ready",sl="空車",sc="#059669",sb3="#f0fdf4";
+      if(am){st="maint";sl=am.label||"整備中";sc="#7c3aed";sb3="#faf5ff";}
+      else if(tr.length>0){st="out";sl="貸出中";sc="#d97706";sb3="#fef9c3";}
+      else if(v.active===false){st="inactive";sl="未稼働";sc="#64748b";sb3="#f1f5f9";}
+      return{v:v,st:st,sl:sl,sc:sc,sbg:sb3,am:am,resv:tr[0]||null};
+    });
+  },[vehicles,maintenance,data,fleet,viewDate]);
+
+  var total=(vehicles||[]).length;
+  var activeN=(vehicles||[]).filter(function(v){return isKpiActive(v.code);}).length;
+  var inactiveN=(vehicles||[]).filter(function(v){return !isKpiActive(v.code);}).length;
+  var outN=rows.filter(function(r){return r.st==="out";}).length;
+  var readyN=activeN-outN;
+  var today2=new Date().toISOString().slice(0,10);
+  var nextShaken={};var nextTenken={};
+  (maintenance||[]).forEach(function(m){
+    if(!m.startDate||m.startDate<today2)return;
+    if(m.label==="車検"){if(!nextShaken[m.vehicleCode]||m.startDate<nextShaken[m.vehicleCode])nextShaken[m.vehicleCode]=m.startDate;}
+    if(m.label==="半年点検"){if(!nextTenken[m.vehicleCode]||m.startDate<nextTenken[m.vehicleCode])nextTenken[m.vehicleCode]=m.startDate;}
+  });
+  var filtered=statusFilter==="all"?rows:statusFilter==="active"?rows.filter(function(r){return isKpiActive(r.v.code);}):rows.filter(function(r){return !isKpiActive(r.v.code);});
+
+  return E("div",{style:{maxWidth:1000,margin:"0 auto"}},
+    E("div",{style:{display:"flex",alignItems:"center",gap:12,marginBottom:16,flexWrap:"wrap"}},
+      E("h3",{style:{fontSize:15,fontWeight:800,margin:0}},"運用サマリー"),
+      E("input",{type:"date",value:viewDate,onChange:function(e){setViewDate(e.target.value);},style:{padding:"5px 10px",border:"1px solid #d1d5db",borderRadius:8,fontSize:12}}),
+      today!==viewDate&&E("button",{onClick:function(){setViewDate(today);},style:{fontSize:11,padding:"4px 10px",border:"1px solid #e2e8f0",borderRadius:6,background:"#f8fafc",cursor:"pointer"}},"今日に戻る"),
+      E("a",{href:"https://nosh2318.github.io/handyman-damage/",target:"_blank",rel:"noopener noreferrer",style:{marginLeft:"auto",fontSize:11,padding:"6px 14px",background:"#1e293b",color:"#fff",borderRadius:8,textDecoration:"none",fontWeight:700}},"🔍 傷管理APP →")
+    ),
+    E("div",{style:{display:"flex",gap:10,marginBottom:16,flexWrap:"wrap"}},
+      E("div",{style:{background:"#1e293b",border:"2px solid #1e293b",borderRadius:12,padding:"12px 20px",textAlign:"center",minWidth:90}},E("div",{style:{fontSize:11,color:"#94a3b8",fontWeight:700}},"運用台数"),E("div",{style:{fontSize:30,fontWeight:900,color:"#fff"}},total)),
+      E("div",{style:{background:"#f0fdf4",border:"2px solid #86efac",borderRadius:12,padding:"12px 20px",textAlign:"center",minWidth:90}},E("div",{style:{fontSize:11,color:"#166534",fontWeight:700}},"稼働"),E("div",{style:{fontSize:30,fontWeight:900,color:"#059669"}},activeN),E("div",{style:{fontSize:9,color:"#94a3b8",marginTop:2}},"★マスター")),
+      E("div",{style:{background:"#f1f5f9",border:"2px solid #cbd5e1",borderRadius:12,padding:"12px 20px",textAlign:"center",minWidth:90}},E("div",{style:{fontSize:11,color:"#64748b",fontWeight:700}},"未稼働"),E("div",{style:{fontSize:30,fontWeight:900,color:"#64748b"}},inactiveN),E("div",{style:{fontSize:9,color:"#94a3b8",marginTop:2}},"★マスター")),
+      E("div",{style:{background:"#fef9c3",border:"2px solid #fde68a",borderRadius:12,padding:"12px 20px",textAlign:"center",minWidth:90}},E("div",{style:{fontSize:11,color:"#92400e",fontWeight:700}},"貸出中"),E("div",{style:{fontSize:30,fontWeight:900,color:"#d97706"}},outN),E("div",{style:{fontSize:9,color:"#64748b",marginTop:1}},viewDate)),
+      E("div",{style:{background:"#eff6ff",border:"2px solid #bfdbfe",borderRadius:12,padding:"12px 20px",textAlign:"center",minWidth:90}},E("div",{style:{fontSize:11,color:"#1e40af",fontWeight:700}},"待機中"),E("div",{style:{fontSize:30,fontWeight:900,color:"#2563eb"}},readyN),E("div",{style:{fontSize:9,color:"#64748b",marginTop:1}},viewDate))
+    ),
+    E("div",{style:{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}},
+      [["all","全て"],["active","稼働"],["inactive","未稼働"]].map(function(f){
+        var cnt=f[0]==="all"?total:f[0]==="active"?activeN:inactiveN;
+        return E("button",{key:f[0],onClick:function(){setStatusFilter(f[0]);},style:{padding:"3px 12px",borderRadius:6,border:statusFilter===f[0]?"2px solid #2563eb":"1px solid #e2e8f0",background:statusFilter===f[0]?"#eff6ff":"#fff",color:statusFilter===f[0]?"#1d4ed8":"#64748b",fontSize:11,fontWeight:600,cursor:"pointer"}},f[1]+"("+cnt+")");
+      })
+    ),
+    E("div",null,
+      (vehicleClasses||[]).map(function(vc){
+        var clsRows=filtered.filter(function(r){return r.v.type===vc.type;});
+        if(clsRows.length===0)return null;
+        var isOpen=expandedClasses[vc.type];
+        var outCnt=clsRows.filter(function(r){return r.st==="out";}).length;
+        return E("div",{key:vc.type,style:{marginBottom:8}},
+          E("div",{onClick:function(){setExpandedClasses(function(prev){var n=Object.assign({},prev);n[vc.type]=!n[vc.type];return n;});},
+            style:{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:isOpen?"8px 8px 0 0":"8px",cursor:"pointer",userSelect:"none"}},
+            E("span",{style:{fontSize:12,fontWeight:900,padding:"2px 10px",borderRadius:6,background:"#2563eb",color:"#fff"}},vc.type),
+            E("span",{style:{fontSize:12,fontWeight:700,flex:1}},vc.label),
+            E("span",{style:{fontSize:11,color:"#64748b"}},clsRows.length+"台"),
+            outCnt>0?E("span",{style:{fontSize:10,fontWeight:700,padding:"1px 8px",borderRadius:4,background:"#fef9c3",color:"#92400e"}},outCnt+"台貸出中"):null,
+            E("span",{style:{fontSize:12,color:"#94a3b8"}},isOpen?"▲":"▼")
+          ),
+          isOpen&&E("div",{style:{border:"1px solid #e2e8f0",borderTop:"none",borderRadius:"0 0 8px 8px",overflow:"hidden"}},
+            isMob
+            ?E("div",null,clsRows.map(function(row,i){
+                var v=row.v;
+                return E("div",{key:v.id,style:{display:"flex",alignItems:"center",gap:8,padding:"10px 12px",borderBottom:"1px solid #f1f5f9",background:i%2===0?"#fff":"#fafafa"}},
+                  E("div",{style:{flex:1}},
+                    E("div",{style:{fontSize:13,fontWeight:700,color:"#1e293b"}},v.name),
+                    E("div",{style:{fontSize:11,color:"#2563eb",fontWeight:600,marginTop:1}},v.no)
+                  ),
+                  E("div",{style:{textAlign:"center"}},
+                    E("span",{style:{fontSize:10,fontWeight:700,padding:"3px 8px",borderRadius:6,background:isKpiActive(v.code)?"#f0fdf4":"#f1f5f9",color:isKpiActive(v.code)?"#059669":"#64748b"}},isKpiActive(v.code)?"稼働":"未稼働")
+                  ),
+                  E("div",{style:{fontSize:9,color:"#64748b",textAlign:"right",lineHeight:1.6}},
+                    nextShaken[v.code]?E("div",null,"🔵",E("span",{style:{color:"#2563eb",fontWeight:600,marginLeft:2}},nextShaken[v.code].slice(5))):null,
+                    nextTenken[v.code]?E("div",null,"🟢",E("span",{style:{color:"#059669",fontWeight:600,marginLeft:2}},nextTenken[v.code].slice(5))):null
+                  )
+                );
+              }))
+            :E("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:12}},
+              E("thead",null,E("tr",{style:{background:"#f1f5f9"}},
+                E("th",{style:{padding:"6px 10px",fontSize:9,fontWeight:700,color:"#64748b",borderBottom:"1px solid #e2e8f0"}},"車種名"),
+                E("th",{style:{padding:"6px 10px",fontSize:9,fontWeight:700,color:"#64748b",borderBottom:"1px solid #e2e8f0",textAlign:"center"}},"ナンバー"),
+                E("th",{style:{padding:"6px 10px",fontSize:9,fontWeight:700,color:"#64748b",borderBottom:"1px solid #e2e8f0",textAlign:"center"}},"状態"),
+                E("th",{style:{padding:"6px 10px",fontSize:9,fontWeight:700,color:"#64748b",borderBottom:"1px solid #e2e8f0",textAlign:"center"}},"次回車検"),
+                E("th",{style:{padding:"6px 10px",fontSize:9,fontWeight:700,color:"#64748b",borderBottom:"1px solid #e2e8f0",textAlign:"center"}},"次回点検")
+              )),
+              E("tbody",null,clsRows.map(function(row,i){
+                var v=row.v;
+                return E("tr",{key:v.id,style:{background:i%2===0?"#fff":"#fafafa",borderBottom:"1px solid #f1f5f9"}},
+                  E("td",{style:{padding:"7px 10px",fontWeight:600}},v.name),
+                  E("td",{style:{padding:"7px 10px",fontFamily:"monospace",color:"#2563eb",fontWeight:700,textAlign:"center"}},v.no),
+                  E("td",{style:{padding:"7px 10px",textAlign:"center"}},
+                    E("span",{style:{fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:4,background:isKpiActive(v.code)?"#f0fdf4":"#f1f5f9",color:isKpiActive(v.code)?"#059669":"#64748b"}},isKpiActive(v.code)?"稼働":"未稼働")),
+                  E("td",{style:{padding:"7px 10px",textAlign:"center",fontSize:10}},
+                    nextShaken[v.code]?E("span",{style:{color:"#2563eb",fontWeight:600}},nextShaken[v.code]):E("span",{style:{color:"#cbd5e1"}},"-")),
+                  E("td",{style:{padding:"7px 10px",textAlign:"center",fontSize:10}},
+                    nextTenken[v.code]?E("span",{style:{color:"#059669",fontWeight:600}},nextTenken[v.code]):E("span",{style:{color:"#cbd5e1"}},"-"))
+                );
+              }))
+            )
+          )
+        );
+      })
+    ),
+    E("div",{style:{fontSize:11,color:"#94a3b8",marginTop:6,textAlign:"right"}},"表示: "+filtered.length+"台")
+  );
+}
+
 function VehicleTab(props){
-  var _subTab=useState("master");
+  var _subTab=useState("status");
   var subTab=_subTab[0];
   var setSubTab=_subTab[1];
   var tabBtn=function(id,label,badge){return React.createElement("button",{onClick:function(){setSubTab(id);},style:{padding:"8px 12px",fontSize:13,fontWeight:subTab===id?700:500,color:subTab===id?"#2563eb":"#64748b",background:"none",border:"none",cursor:"pointer",borderBottom:subTab===id?"2px solid #2563eb":"none",position:"relative",whiteSpace:"nowrap"}},label,badge?React.createElement("span",{style:{fontSize:9,marginLeft:4,padding:"1px 5px",borderRadius:8,background:"#dc2626",color:"#fff",fontWeight:700}},badge):null)};
+  var maintCount=(props.maintenance||[]).length;
   return React.createElement("div",null,
     React.createElement("div",{style:{display:"flex",gap:8,marginBottom:12,borderBottom:"1px solid #e2e8f0",paddingBottom:8,overflowX:"auto"}},
+      tabBtn("status","運用サマリー",maintCount>0?maintCount:null),
       tabBtn("master","マスター"),
       tabBtn("inspection","車検/点検"),
       tabBtn("odometer","距離管理"),
       tabBtn("fleet","整備管理")
     ),
+    subTab==="status"&&React.createElement(SpkVehicleFleetStatus,{vehicles:props.vehicles||[],vehicleClasses:props.vehicleClasses||[],maintenance:props.maintenance||[],data:props.data||[],fleet:props.fleet||{}}),
     subTab==="master"&&React.createElement(VehicleManager,{vehicles:props.vehicles||[],onVehiclesChange:props.onVehiclesChange,vehicleClasses:props.vehicleClasses||[],onDeleteVehicle:props.onDeleteVehicle,highlightVehicle:props.highlightVehicle,maintenance:props.maintenance||[]}),
     subTab==="inspection"&&React.createElement(SpkInspectionCalendar,{vehicles:props.vehicles||[],maintenance:props.maintenance||[],onMaintenanceChange:props.onMaintenanceChange}),
     subTab==="odometer"&&React.createElement(SpkOdometerManager,{vehicles:props.vehicles||[],carData:props.hmCarData||[],hmReload:props.hmReload}),
@@ -14930,7 +15062,7 @@ function App(){
           {tab==="shift"&&<ShiftCalendar shifts={shifts} onShiftsChange={setShiftsSync} today={today} staff={staff} sbSaveShift={DB.saveShift} reservations={data}/>}
           {tab==="attendance"&&<PASGuard label="給与計算"><AttendanceManager shifts={shifts} staff={staff} today={today} attendance={attendance} onAttendanceChange={setAttendance}/></PASGuard>}
           {tab==="fleet"&&<FleetTimeline data={data} fleet={fleet} onFleetChange={setFleetSync} today={today} maintenance={maintenance} onMaintenanceChange={setMaintenance} vehicles={vehicles} vehicleClasses={vehicleClasses} onAddReservation={addReservation} onBulkAddReservation={bulkAddReservation} onCancelReservation={cancelReservation} onReassignVehicle={reassignVehicle} onUpdateReservation={updateReservation} unassignedReasons={unassignedReasons} onVehicleDetail={(code)=>{setHighlightVehicle(code);setTab("vehicle");setTimeout(()=>setHighlightVehicle(null),3000);}}/>}
-          {tab==="vehicle"&&<VehicleTab vehicles={vehicles} onVehiclesChange={setVehiclesSync} vehicleClasses={vehicleClasses} onDeleteVehicle={(code)=>{DB.deleteVehicle(code);const nf={...fleetRefApp.current};let cleaned=false;Object.entries(nf).forEach(([rid,vc])=>{if(vc===code){delete nf[rid];cleaned=true;}});if(cleaned){setFleet(nf);fleetRefApp.current=nf;markLocalChange("fleet");DB.upsertFleet(nf).catch(e=>console.error("fleet cleanup error:",e));}}} hmCars={hmCars} hmCarData={hmCarData} hmLogs={hmLogs} hmClasses={hmClasses} hmReload={hmReload} highlightVehicle={highlightVehicle} maintenance={maintenance} onMaintenanceChange={setMaintenance}/>}
+          {tab==="vehicle"&&<VehicleTab vehicles={vehicles} onVehiclesChange={setVehiclesSync} vehicleClasses={vehicleClasses} onDeleteVehicle={(code)=>{DB.deleteVehicle(code);const nf={...fleetRefApp.current};let cleaned=false;Object.entries(nf).forEach(([rid,vc])=>{if(vc===code){delete nf[rid];cleaned=true;}});if(cleaned){setFleet(nf);fleetRefApp.current=nf;markLocalChange("fleet");DB.upsertFleet(nf).catch(e=>console.error("fleet cleanup error:",e));}}} hmCars={hmCars} hmCarData={hmCarData} hmLogs={hmLogs} hmClasses={hmClasses} hmReload={hmReload} highlightVehicle={highlightVehicle} maintenance={maintenance} onMaintenanceChange={setMaintenance} data={data} fleet={fleet}/>}
           {tab==="parking"&&<ParkingManager masterVehicles={vehicles}/>}
           {tab==="accounting"&&<PASGuard label="会計管理"><AccountingPanel staff={staff}/></PASGuard>}
           {tab==="jalanpay"&&<JalanPayment data={data} jalanPay={jalanPay} onJalanPayChange={(id,d)=>{setJalanPay(p=>({...p,[id]:d}));DB.saveJalanPayment(id,d);}}/>}
