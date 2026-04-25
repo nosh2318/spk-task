@@ -80,12 +80,51 @@
 TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 / 駐車場 / 会計 / 顧客 / 売上 / データ / 過去 / 免許証
 
 ## 現在のバージョン
-- **APP_VERSION**: v4.6.79
-- **sw.js CACHE_NAME**: `spk-v540`
-- **index.html CV**: `spk-v540`
+- **APP_VERSION**: v4.6.87
+- **sw.js CACHE_NAME**: `spk-v548`
+- **index.html CV**: `spk-v548`
 - **SRI/CSP**: 未適用（下記インシデント参照）
 
+## 2026-04-25 修正履歴
+
+### 毎朝9時の Slack アラート2通を停止（オーナー指示）
+- **要望**: スクショ2枚（09:26「🚨 回収漏れアラート（札幌）」/ 09:32「🚨 未払いアラート 17件 合計¥511,950（札幌店）」）のアラート不要 → 削除
+- **調査**: 2通はそれぞれ別GASプロジェクトから発射されていた
+  | アラート | GASプロジェクト | ローカルファイル | 関数 |
+  |---|---|---|---|
+  | 🚨 回収漏れアラート（札幌） | **HANDYMAN 領収書Bot**（別プロジェクト） | `~/outputs/handyman-receipt-bot/Code.gs` | `checkOverduePayments()` |
+  | 🚨 未払いアラート N件 | **HANDYMAN Payment Bot v1** (Script ID: `1bZcVSWRvxC1U4MDkIztcsFV8CWv9paFYoxU0oRStgAmZ57Y87lKC6sCU`) | `~/Desktop/HANDYMAN/payment_bot_unified_v1.gs` | `checkOverdue()` |
+- **注意**: GASエディタ上では「HANDYMAN Payment」と「HANDYMAN Payment Bot v1」の2プロジェクトが並んでおり紛らわしい。正解は **v1サフィックス付きの方**。判別方法:
+  - プロジェクト設定の Script ID が `1bZcVSWRvxC1U4MDkIztcsFV8CWv9paFYoxU0oRStgAmZ57Y87lKC6sCU` で始まる
+  - `function checkOverdue()` / `function syncPayments()` / `function handleJalanPaymentLink_` がある
+- **修正方針**: 関数冒頭に `return;` + `Logger.log('[xxx] 停止中（オーナー指示）');` を追加。**関数本体は残したまま**（復活させる時は `return;` 行をコメントアウトするだけ）
+- **修正箇所**:
+  - `~/outputs/handyman-receipt-bot/Code.gs` L354 `checkOverduePayments()`
+  - `~/Desktop/HANDYMAN/payment_bot_unified_v1.gs` L733 `checkOverdue()` (今日既にローカル編集済)
+- **デプロイ**: 両ファイルとも `pbcopy` → GASエディタに `Cmd+A → Cmd+V → Cmd+S`。**Web App再デプロイ不要**（時間ベーストリガーなのでコード保存だけで次回実行時に反映される）
+- **Slack への影響なし（継続稼働）**:
+  - 領収書発行（「領収書」投稿→PDF）
+  - Square支払いリンク発行（「品目：」投稿→URL）
+  - 入金確認ポーリング（`syncPayments` 5分 / `checkSquareLinks` 5分）
+  - じゃらん支払い期限アラート（`checkUnpaidAlert`、`gas-email-import-v2.gs` L1598、**別GAS**なので影響なし）
+- **再発防止ルール（運用）**:
+  - GAS関数を停止する際は **関数先頭に `return;`** + **日付付きコメント** が原則。トリガーだけ削除するとコードが古くなって後で混乱する
+  - 複数プロジェクトで同じような名前の関数があるケースでは、まず grep で該当関数の所在を特定してから触る（今回は `grep -rn "回収漏れ\|未払いアラート"` で2つのファイルを特定）
+- **教訓（コード提示ルール違反）**: このセッションの途中で1度 Edit の old_string/new_string をチャットに出してしまい、ユーザーから「またですね」と指摘された。CLAUDE.md 冒頭の絶対ルール「コードを渡すときはチャットに貼り付け禁止。必ず `pbcopy` でクリップボードに送るか、ファイルに書き出してパスを伝える」を徹底する
+
+---
+
 ## 2026-04-24 修正履歴
+
+### 直近予約変動 CXL検出漏れ修正 + クリハラケイシOTA誤表示修正 (v4.6.83)
+- **症状①**: `直近予約変動` の CXL が常に 0件（実際にはキャンセルがある）
+- **症状②**: クリハラ ケイシ（DY00000000945）が `HP` バッジで表示されるが、スカイチケット予約
+- **根本原因①**: CXLクエリが `created_at >= cutoff` で検索 → 以前から登録されていた予約を後からキャンセルした場合を取りこぼし（created_at は登録時刻のため）
+- **根本原因②**: OTA自動登録GASが DY00000000945 を `ota="HP"` と誤登録（DYプレフィックス = スカイチケット = `ota="S"` が正しい）
+- **修正①（APP）**: `TopRecentWidget` のCXLクエリを `gte("created_at",cutoff)` → `gte("updated_at",cutoff)` に変更。select句に `updated_at` 追加。ソートも `updated_at` 優先に
+- **修正②（DB）**: Supabase REST API で `DY00000000945` の `ota` を `HP` → `S` に直接PATCH
+- **バージョン**: v4.6.83 / spk-v544（その後他修正でv4.6.87 / spk-v548に到達）
+- **教訓**: CXLクエリは必ず `updated_at` ベース。`created_at` ベースでは後日キャンセルが拾えない
 
 ### TOP LeadTimeWidget 売上表示を最適化 (v4.6.79 / NHA v3.3.1-NHA 同時適用)
 - **要望**: 「売上を正確にg表示させて。 基本料金＋付帯＝合計＋予約外 あと情報量が多いので既存のデザイン（アイコンスタイル）に合わせて修正 最適化してください 那覇も一緒に」（スクショ: `~/Desktop/スクリーンショット 2026-04-24 8.37.42.png`）
