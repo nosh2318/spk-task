@@ -80,10 +80,49 @@
 TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 / 駐車場 / 会計 / 顧客 / 売上 / データ / 過去 / 免許証
 
 ## 現在のバージョン
-- **APP_VERSION**: v4.6.87
-- **sw.js CACHE_NAME**: `spk-v548`
-- **index.html CV**: `spk-v548`
+- **APP_VERSION**: v4.7.22
+- **sw.js CACHE_NAME**: `spk-v580`
+- **index.html CV**: `spk-v583`
+- **sw.js?v=**: 502
 - **SRI/CSP**: 未適用（下記インシデント参照）
+
+## 2026-04-26 修正履歴
+
+### 場所カラム OTA 店舗紹介文を非表示化 (v4.7.22 / spk-v580)
+- **症状**: OPシート/データタブ/TOP に「札幌デリバリー専門店　★ホテルや自宅・駅へお届け！LINE完結の手続きで即出発★」が場所として表示されていた。これは OTA メール本文に含まれる HANDYMAN 自社の店舗紹介文で「実際の場所」ではない
+- **真因**: 2026-04-21 (commit `3e777a2`) の `sanitizeOtaStoreName_` 追加以前に取込まれた予約 18件 で `del_place`/`col_place` がこの紹介文のまま残存していた。GAS は修正済みなので新規予約は再発しない
+- **対応 A: DB クリーンアップ (本コミット前に実施)**:
+  - `reservations` 18件: `del_place`/`col_place` を `★OTAデリバリー希望（場所未確定）` に置換 (GAS既存プレースホルダーと統一)
+  - `tasks` 25件 (DEL/COL): `place`/`col_place` を同様に置換
+  - `places` テーブルは汚染なし
+  - 対象: C260400997, DY00000000934-942(9件), R02AD7IX, R05I6TMD, R0C0PPHO, R0IPN7SD, R0MQCKQD, R0SDV841, RC22461150540961762, RC52461146677338304
+- **対応 B: APP UIフィルタ (保険)**:
+  - `cleanPlace(p)` ユーティリティ追加 (`index.src.html` L752付近、`sD` の直後)
+  - 正規表現: `/(札幌デリバリー専門店|デリバリー専門店|★ホテルや自宅|LINE完結|即出発)/`
+  - `★OTAデリバリー希望（場所未確定）` はマッチしないので残る (=場所未確定として表示される)
+  - 適用箇所:
+    1. データタブ場所列 (L13707)
+    2. OPシート スケジュールタブ (L10380 rP)
+    3. OPシート その他タブ (L10570 t.place)
+    4. OPシート マスター表 (L10668 resolvedP関数)
+    5. OPシート 編集タブ (L10723 resolvedP関数)
+    6. OPシート 編集モード (L10613 resolvedP)
+    7. TOP本日スケジュール (L15223 rP / L15255 resolvedP / L15219 表示条件)
+- **対応 C: GAS確認**: 修正済み (`sanitizeOtaStoreName_` 既存)。OTA自動登録GAS は HANDYMAN API 経由で `del_place` 直接書き込みはしない構造のため追加修正不要
+- **コミット**: `56e20b5`
+
+### 日付タブのタスク件数を NHA と同じロジックに統一 (v4.7.21 / spk-v579)
+- **症状**: OPシート上部の日付タブのバッジ件数(N件) が「サブタブ合計(=スケジュール/DEL/COL/洗車合計)」と一致しなかった。例: 5/2 はサブタブ DEL 4 + COL 0 + 洗車 3 = 7件だが、日付タブは 9件 (キャンセル予約2件分の誤計上)
+- **旧ロジック (`index.src.html` L10167)**:
+  - reservations 全件対象 (キャンセル含む)
+  - `tc=lendDate==d || returnDate==d` (同日DEL+COLが1件にしかカウントされない)
+  - 洗車も配車済み車両でユニーク化していない
+- **新ロジック (NHA `index.html.bak` L13356 と同型)**:
+  - `active=reservations.filter(r=>r.status!=="cancelled")` でキャンセル除外
+  - `tc=lendList.length+retList.length` (同日DEL+COLは2件扱い、generateTasksと一致)
+  - 洗車は `fleet[r.id]` で車両コード単位ユニーク化、未配車のみ予約ID単位
+  - 依存配列に `fleet` を追加
+- **コミット**: `2c0c5f8`
 
 ## 2026-04-25 修正履歴
 
