@@ -3365,3 +3365,111 @@ function resyncAllTaskOpts() {
   Logger.log('=== 完了: 同期=' + patched + '件 / スキップ=' + skipped + '件 / 合計=' + rows.length + '件 ===');
 }
 
+/**
+ * ★ 2026-04-26追加: 楽天パーサーのチャイルドシート検出を実メールで動作確認
+ * 使い方: GASエディタで関数名を「diagnoseRakutenChildSeat」に設定し「実行」
+ * 対象予約IDは TARGET_ID を書き換えて再実行
+ *
+ * 修正前(L605-613のみ)はメール本文1行目しか見ないため、複数行に渡る
+ * オプション欄でチャイルドシート2が拾えなかった。
+ * 修正後はbody全体検索のフォールバック(L611-619)で拾う想定。
+ * 本関数はその挙動を実メールで証明するためのもの。
+ */
+function diagnoseRakutenChildSeat() {
+  var TARGET_ID = 'RC22461157100261654';  // ← 確認したい予約IDに書き換え
+
+  Logger.log('=== 楽天 チャイルドシート検出 診断開始: ' + TARGET_ID + ' ===');
+
+  // 1) DB現状値
+  var rows = supabaseGet_('reservations', 'id=eq.' + encodeURIComponent(TARGET_ID) + '&select=id,name,ota,opt_b,opt_c,opt_j,price,lend_date');
+  Logger.log('--- [1] DB現状値 ---');
+  if (rows && rows.length > 0) {
+    var r = rows[0];
+    Logger.log('id=' + r.id + ' name=' + r.name + ' ota=' + r.ota);
+    Logger.log('opt_b=' + r.opt_b + ' opt_c=' + r.opt_c + ' opt_j=' + r.opt_j);
+    Logger.log('price=' + r.price + ' lend_date=' + r.lend_date);
+  } else {
+    Logger.log('⚠️ DBに予約が見つかりません');
+  }
+
+  // 2) Gmail検索（楽天メール）
+  Logger.log('--- [2] Gmail 検索 ---');
+  var threads = GmailApp.search('from:' + OTA_SENDERS.rakuten + ' ' + TARGET_ID, 0, 10);
+  Logger.log('threads found: ' + threads.length);
+  var allMessages = [];
+  for (var t = 0; t < threads.length; t++) {
+    var msgs = threads[t].getMessages();
+    for (var m = 0; m < msgs.length; m++) {
+      var body = msgs[m].getPlainBody();
+      if (body.indexOf(TARGET_ID) < 0) continue;
+      allMessages.push({
+        date: msgs[m].getDate(),
+        subject: msgs[m].getSubject(),
+        body: body
+      });
+    }
+  }
+  allMessages.sort(function(a, b) { return a.date.getTime() - b.date.getTime(); });
+  Logger.log('合計メール: ' + allMessages.length + '通');
+
+  if (allMessages.length === 0) {
+    Logger.log('⚠️ メール未検出。テストできません');
+    return;
+  }
+
+  // 3) 最新メールでチャイルドシート関連行抽出 + parseRakuten_ 再解析
+  var msg = allMessages[allMessages.length - 1];
+  Logger.log('--- [3] 最新メール解析 (' + msg.date + ') ---');
+  Logger.log('  件名: ' + msg.subject);
+
+  // チャイルドシート行を抜き出し
+  Logger.log('  --- シート関連行 (body 全体から) ---');
+  var lines = msg.body.split('\n');
+  for (var li = 0; li < lines.length; li++) {
+    if (lines[li].indexOf('チャイルドシート') >= 0 || lines[li].indexOf('ベビーシート') >= 0 || lines[li].indexOf('ジュニアシート') >= 0) {
+      Logger.log('    > ' + lines[li].trim());
+    }
+  }
+
+  // optionsStr (1行目のみ取れる方) と body全体の比較
+  var optionsStr = extractField_(msg.body, '・オプション/車両の特徴');
+  Logger.log('  --- extractField_ で取れるoptionsStr (1行目のみ) ---');
+  Logger.log('    "' + optionsStr + '"');
+  Logger.log('  → optionsStr内に「チャイルドシート」: ' + (optionsStr.indexOf('チャイルドシート') >= 0 ? '✅' : '❌(これが旧バグ)'));
+
+  // body全体fallback の動作確認
+  var cAll = msg.body.match(/チャイルドシート[^\d\n]*(\d+)/g);
+  Logger.log('  --- body全体fallback ---');
+  Logger.log('    body.match(/チャイルドシート[^\\d\\n]*(\\d+)/g) = ' + JSON.stringify(cAll));
+  if (cAll && cAll.length > 0) {
+    var maxC = 0;
+    cAll.forEach(function(s) { var n = s.match(/(\d+)/); if (n) maxC = Math.max(maxC, parseInt(n[1], 10)); });
+    Logger.log('    → 抽出される最大値: ' + maxC + ' (これが新コードの opt_c になる想定)');
+  }
+
+  // parseRakuten_ で再解析
+  Logger.log('  --- parseRakuten_ 再解析結果 ---');
+  try {
+    var parsed = parseRakuten_(msg.body);
+    if (parsed) {
+      Logger.log('    opt_b=' + parsed.opt_b + ' opt_c=' + parsed.opt_c + ' opt_j=' + parsed.opt_j);
+      Logger.log('    price=' + parsed.price + ' base_price=' + parsed.base_price + ' option_price=' + parsed.option_price + ' discount=' + parsed.discount);
+      Logger.log('    vehicle=' + parsed.vehicle + ' name=' + parsed.name);
+      Logger.log('  ★ 結論:');
+      if (parsed.opt_c >= 1) {
+        Logger.log('    ✅ チャイルドシート検出 OK (opt_c=' + parsed.opt_c + ')');
+        if (rows && rows.length > 0 && +(rows[0].opt_c||0) < parsed.opt_c) {
+          Logger.log('    → 新規メール取込でこの予約に取り込まれていれば opt_c が ' + (rows[0].opt_c||0) + ' から ' + parsed.opt_c + ' にパッチされる');
+        }
+      } else {
+        Logger.log('    ❌ チャイルドシート検出失敗。コード未反映の可能性。GASエディタで最新版が保存されているか確認');
+      }
+    } else {
+      Logger.log('    parseRakuten_ が null を返した。メール形式を確認');
+    }
+  } catch (e) {
+    Logger.log('    parseRakuten_ エラー: ' + e.toString());
+  }
+
+  Logger.log('=== 診断完了 ===');
+}
