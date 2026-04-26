@@ -611,6 +611,14 @@ function parseRakuten_(body) {
   if (cMatch) optC = parseInt(cMatch[1], 10) || 1;
   var jMatch = optionsStr.match(/ジュニアシート\s*(\d*)/);
   if (jMatch) optJ = parseInt(jMatch[1], 10) || 1;
+  // ★ 2026-04-26追加: extractField_は1行のみ取得するため、body全体からもフォールバック検索
+  //   楽天メールの「・オプション/車両の特徴」は複数行: 1行目=カーナビ, 2行目=ETC, 3行目=チャイルドシート2 等
+  var bAll = body.match(/ベビーシート[^\d\n]*(\d+)/g);
+  var cAll = body.match(/チャイルドシート[^\d\n]*(\d+)/g);
+  var jAll = body.match(/ジュニアシート[^\d\n]*(\d+)/g);
+  if (bAll) { for (var bi=0;bi<bAll.length;bi++) { var bn=bAll[bi].match(/(\d+)/); if(bn) optB=Math.max(optB,parseInt(bn[1],10));} }
+  if (cAll) { for (var ci=0;ci<cAll.length;ci++) { var cn=cAll[ci].match(/(\d+)/); if(cn) optC=Math.max(optC,parseInt(cn[1],10));} }
+  if (jAll) { for (var ji=0;ji<jAll.length;ji++) { var jn=jAll[ji].match(/(\d+)/); if(jn) optJ=Math.max(optJ,parseInt(jn[1],10));} }
   var retStore = extractField_(body, '・返却営業所名') || extractField_(body, '□返却営業所名');
   var delPlace = extractDeliveryPlace_(body) || sanitizeOtaStoreName_(store);
   var colPlace = extractCollectionPlace_(body) || sanitizeOtaStoreName_(retStore);
@@ -1014,8 +1022,9 @@ function deleteFromTasks_(reservationId) { return supabaseDelete_('tasks', 'rese
 function autoAssignVehicle_(reservation) {
   var vehicleClass = reservation.vehicle;
   if (!vehicleClass) { Logger.log('No vehicle class for ' + reservation.id + '. Will be 未配車.'); return; }
-  var vehicles = supabaseGet_('vehicles', 'type=eq.' + encodeURIComponent(vehicleClass) + '&insurance_veh=eq.false&select=code,name,plate_no,seats');
-  if (vehicles.length === 0) { Logger.log('No vehicles of class ' + vehicleClass + '. ' + reservation.id + ' will be 未配車.'); return; }
+  // ★ 2026-04-26: active=true のみ取得（vehicles.active=false の永続除外車両は候補外）
+  var vehicles = supabaseGet_('vehicles', 'type=eq.' + encodeURIComponent(vehicleClass) + '&insurance_veh=eq.false&active=eq.true&select=code,name,plate_no,seats');
+  if (vehicles.length === 0) { Logger.log('No active vehicles of class ' + vehicleClass + '. ' + reservation.id + ' will be 未配車.'); return; }
 
   // HP車種指定: _vehicleModel が設定されている場合、車種名でフィルタ
   var preferredModel = reservation._vehicleModel || '';
@@ -1034,6 +1043,28 @@ function autoAssignVehicle_(reservation) {
 
   var lendDate = reservation.lend_date;
   var returnDate = reservation.return_date;
+
+  // ★ 2026-04-26: vehicle_monthly_kpi.active=false の月別除外チェック
+  //   配車表で「除外」フラグが立っている車両に配車してはいけない（絶対ルール）
+  //   レンタル期間に該当する全月のうち、いずれかで active=false なら候補から除外
+  var relevantYms = listYearMonths_(lendDate, returnDate);
+  if (relevantYms.length > 0) {
+    var inactiveCodes = {};
+    for (var ki = 0; ki < relevantYms.length; ki++) {
+      var rows = supabaseGet_('vehicle_monthly_kpi', 'year_month=eq.' + encodeURIComponent(relevantYms[ki]) + '&active=eq.false&select=vehicle_code');
+      for (var rj = 0; rj < rows.length; rj++) inactiveCodes[rows[rj].vehicle_code] = true;
+    }
+    var preFilter = vehicles.length;
+    vehicles = vehicles.filter(function(v) { return !inactiveCodes[v.code]; });
+    if (preFilter !== vehicles.length) {
+      Logger.log('[KPI除外] ' + reservation.id + ': ' + (preFilter - vehicles.length) + '件の除外車両 (' + relevantYms.join(',') + ') を候補から除去');
+    }
+    if (vehicles.length === 0) {
+      Logger.log('All ' + vehicleClass + 'クラス車両が ' + relevantYms.join(',') + ' で inactive。' + reservation.id + ' will be 未配車.');
+      return null;
+    }
+  }
+
   var busyVehicleCodes = {};
   var overlappingFleet = getOverlappingFleetVehicles_(lendDate, returnDate);
   for (var i = 0; i < overlappingFleet.length; i++) busyVehicleCodes[overlappingFleet[i]] = true;
@@ -1069,6 +1100,26 @@ function isModelMatch_(vehicleName, preferredModel) {
   // 例: "CX5" ↔ "CX-5", "マツダ3" ↔ "MAZDA3"（大文字化後）
   var norm = function(s) { return String(s).toUpperCase().replace(/[\s\-ー－・]/g, ''); };
   return norm(vName) === norm(preferredModel);
+}
+
+// ★ 2026-04-26追加: 期間内の年月リスト (YYYY-MM)
+//   レンタル期間が複数月にまたがる場合に vehicle_monthly_kpi の各月をチェックするため
+function listYearMonths_(lendDate, returnDate) {
+  if (!lendDate || !returnDate) return [];
+  var s = new Date(lendDate + 'T00:00:00Z');
+  var e = new Date(returnDate + 'T00:00:00Z');
+  if (isNaN(s) || isNaN(e)) return [];
+  var result = [];
+  var cur = new Date(Date.UTC(s.getUTCFullYear(), s.getUTCMonth(), 1));
+  var maxIter = 24; // 安全装置: 最大24ヶ月
+  while (cur <= e && maxIter-- > 0) {
+    var y = cur.getUTCFullYear();
+    var m = String(cur.getUTCMonth() + 1);
+    if (m.length === 1) m = '0' + m;
+    result.push(y + '-' + m);
+    cur.setUTCMonth(cur.getUTCMonth() + 1);
+  }
+  return result;
 }
 
 function getOverlappingFleetVehicles_(lendDate, returnDate) {

@@ -102,6 +102,52 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 
 ## 2026-04-26 修正履歴
 
+### 🔴 自動配車が「除外フラグ」を見ていなかった致命バグ修正 (GAS gas-email-import-v2.gs)
+- **症状**: RC22461157100261654 (ミヤケ マコト、楽天Bクラス、5/26-5/27) が **配車表で除外フラグ立った車両「デリカ」(プレート未定、ID=27、H24年式)** に自動配車された
+- **影響**: 「絶対してはいけないミス」(オーナー指摘)。除外フラグ車両は事故・故障・廃車予定など何らかの理由で配車不可なのに、過去の予約が混入していた可能性
+- **真因**: `autoAssignVehicle_` (gas-email-import-v2.gs L1014) の vehicles 取得クエリ:
+  - **`active=eq.true` フィルタが無い** (vehicles.active=false 永続除外も候補に入っていた)
+  - **`vehicle_monthly_kpi.active=false` の月別除外チェックが無い** (配車表の除外フラグを完全無視)
+- **DB状態**:
+  - vehicles: `code=デリカ`, `active=true` (永続除外ではない)
+  - vehicle_monthly_kpi: `code=デリカ`, **2026-02〜10 全月で `active=false`** ← 配車表で除外設定されている
+  - 一方 `code=DLC` (デリカD5、6057) と `code=NRH` (ノア、5398) は記録なし → 稼働可能
+- **緊急DB修正 (実施済)**:
+  - `fleet.vehicle_code`: `デリカ` → `DLC` (プレート 6057)
+  - `tasks` (d-RC22461157100261654): assigned_vehicle/plate_no/opt_c/memo/changed_json を一括更新
+  - `reservations.opt_c`: 0 → 2 (チャイルドシート2、楽天メール本文との一致)
+- **GAS恒久修正 (実施済・要GASエディタ貼付)**:
+  - `autoAssignVehicle_`:
+    - vehicles 取得に `active=eq.true` フィルタ追加
+    - `vehicle_monthly_kpi.year_month=eq.YYYY-MM&active=eq.false` で除外コードを取得し、候補から除去
+    - 除外時は「未配車」扱い (誤配車より安全側)
+  - `listYearMonths_(lendDate, returnDate)` 新規ヘルパー: レンタル期間の年月リストを返す（月跨ぎ予約対応、最大24ヶ月安全装置付き）
+- **テーブル構造メモ**: vehicle_monthly_kpi のカラムは **`vehicle_code` / `year_month` / `active`** (CLAUDE.md記載の `code` / `ym` は誤り、修正済)
+- **再発防止**: 今後 OTA予約が来た時に `[KPI除外]` ログで除外候補数を確認可能
+- **適用手順**:
+  1. GASエディタで「札幌予約メール自動配車」プロジェクトを開く
+  2. `gas-email-import-v2.gs` を Cmd+A → Cmd+V → Cmd+S
+  3. ※トリガー管理型のためWeb Appデプロイ不要
+
+### 🔴 楽天パーサーのチャイルドシート検出が1行目のみだったバグ修正 (GAS gas-email-import-v2.gs)
+- **症状**: RC22461157100261654 (上記同予約) で楽天メール本文に「チャイルドシート 2」と書かれていたのに DB は `opt_c=0`
+- **真因**: `parseRakuten_` (L607-613) が `optionsStr.match(...)` で検出していたが、`optionsStr` は `extractField_(body, '・オプション/車両の特徴')` が返す**1行目のみ** (`(.+)` は改行非マッチ)。楽天メールのオプション欄は複数行構造:
+  ```
+  ・オプション/車両の特徴　　　：カーナビ ※一部ミラーリングモニター   ← 1行目 (取得される)
+  　　　　　　　　　　　　　　　ETC車載器 1                              ← 2行目
+  　　　　　　　　　　　　　　　チャイルドシート 2                       ← 3行目 (取得されない！)
+  　　　　　　　　　　　　　　　免責補償別 1
+  ```
+- **同型バグ**: NHA で 2026-04-23 に同じ問題を `detectOtaDelivery_` で修正済 (CLAUDE.md記載)。じゃらん/skyticket パーサーは既にbody全体検索のフォールバック実装済。**楽天だけ取り残されていた**
+- **修正**: `parseRakuten_` の B/C/J 検出にbody全体検索のフォールバック追加 (じゃらんパーサーと同形):
+  ```js
+  var bAll = body.match(/ベビーシート[^\d\n]*(\d+)/g);
+  var cAll = body.match(/チャイルドシート[^\d\n]*(\d+)/g);
+  var jAll = body.match(/ジュニアシート[^\d\n]*(\d+)/g);
+  if (cAll) { for (...) { optC=Math.max(optC, parseInt(...)); } }
+  ```
+- **教訓**: 新OTAパーサー追加時・既存修正時は必ず body全体検索のフォールバックを実装する。`extractField_` の1行のみ返却仕様を踏まえる
+
 ### 場所カラム ルール統一: 未確定は空欄 (v4.7.23 / spk-v581)
 - **背景**: v4.7.22 で18件の reservations + 25件の tasks を `★OTAデリバリー希望（場所未確定）` に置換したが、他のレコードは「空欄」だったため**ルールがあやふや**になった
 - **方針確定**: 場所未確定は **常に空欄 (`""`)** に統一
