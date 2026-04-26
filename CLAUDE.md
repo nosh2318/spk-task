@@ -102,6 +102,37 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 
 ## 2026-04-26 修正履歴
 
+### 🔴 extractField_ 1行限定バグ - 全パーサー横断調査・統一修正 (GAS gas-email-import-v2.gs)
+- **背景**: RC22461157100261654 (ミヤケ マコト、楽天) の `opt_c=2` 修正で**チャイルドシートだけ直して `insurance="なし"` を見落とした** → ユーザー指摘 (補償なしになってる/なんで1つやると1つダメになるのか)
+- **真因 (横断問題)**: `extractField_(body, label)` が `(.+)` で **現在行の続き1行のみ**しか返さない仕様。OTAメールの「オプション」「補償」欄は複数行に渡るため、`optionsStr` を引数にする検出系関数 (B/C/J/insurance) **すべてが**取りこぼしを起こす
+- **被害例 (RC22461157100261654 / 楽天メール本文)**:
+  ```
+  ・オプション/車両の特徴　：カーナビ ※一部ミラーリングモニター   ← extractField_ で取れる1行目
+  　　　　　　　　　　　　　ETC車載器 1                              ← 2行目以降は取れない
+  　　　　　　　　　　　　　チャイルドシート 2                       ← 取れない
+  　　　　　　　　　　　　　免責補償別 1                             ← 取れない
+  　　　　　　　　　　　　　NOC補償 1                                ← 取れない
+  ```
+  → opt_c=0 / insurance=なし で登録された (正は opt_c=2 / insurance=NOC)
+- **根本修正 (今回)**:
+  - `parseRakuten_` の B/C/J 検出に body 全体fallback追加 (前回修正)
+  - `parseRakuten_` の insurance を `optionsStr` → **`body`** に変更 (今回追加)
+  - `parseJalan_` の insurance を `insuranceStr || body` に変更 (今回追加)
+  - `parseAirtrip_` の insurance を `body` 優先 + `insuranceStr` フォールバックに変更 (今回追加)
+- **DB修正 (今回)**: RC22461157100261654 の `reservations.insurance` を「なし」→「NOC」、tasks.insurance も同期更新
+- **🔴 今後の鉄則 (再発防止ルール)**:
+  - `extractField_` で取得した文字列を**検出系関数 (detectInsurance_, detectOtaDelivery_, シート検出 etc.) に渡してはいけない**
+  - 必ず **body全体** か、`extractField_` 結果 → fallback で **body全体** を検出する
+  - パーサー新規追加時は CLAUDE.md のこのルール記載を確認してから実装
+  - 1OTAパーサーで「optionsStrを使う検出箇所」を見つけたら、**横断的に他OTAパーサーも同じ問題がないか必ず確認** (今回はチャイルドシート修正時に insurance を見落とした)
+- **横断完了確認**:
+  - parseJalan_ : insurance修正 ✅、B/C/J は元から body全体fallback有り ✅
+  - parseRakuten_ : insurance修正 ✅、B/C/J修正 ✅
+  - parseSkyticket_ : 元から body 直接検出 ✅
+  - parseAirtrip_ : insurance修正 ✅、B/C/J は元から body 直接検出 ✅
+  - parseOfficial_ : 全部 body 直接検出 ✅
+- **コミット**: 本コミット
+
 ### 🔴 自動配車が「除外フラグ」を見ていなかった致命バグ修正 (GAS gas-email-import-v2.gs)
 - **症状**: RC22461157100261654 (ミヤケ マコト、楽天Bクラス、5/26-5/27) が **配車表で除外フラグ立った車両「デリカ」(プレート未定、ID=27、H24年式)** に自動配車された
 - **影響**: 「絶対してはいけないミス」(オーナー指摘)。除外フラグ車両は事故・故障・廃車予定など何らかの理由で配車不可なのに、過去の予約が混入していた可能性

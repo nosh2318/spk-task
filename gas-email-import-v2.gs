@@ -511,7 +511,9 @@ function parseJalan_(body) {
     if (!rawClass) rawClass = plan;
   }
   var insuranceStr = extractField_(body, '補償（任意加入）');
-  var insurance = detectInsurance_(insuranceStr);
+  // ★ 2026-04-26: body全体から検出 (extractField_は1行のみ仕様のため取りこぼし防止)
+  var insurance = detectInsurance_(insuranceStr) || detectInsurance_(body);
+  if (insurance === 'なし') insurance = detectInsurance_(body);
   var peopleStr = extractField_(body, '乗車人数');
   var people = 0;
   var pM = peopleStr.match(/大人\s*(\d+)/);
@@ -589,7 +591,9 @@ function parseRakuten_(body) {
     }
   }
   var optionsStr = extractField_(body, '・オプション/車両の特徴');
-  var insurance = detectInsurance_(optionsStr);
+  // ★ 2026-04-26追加: optionsStr は extractField_ の仕様で1行目しか取れない (例: "カーナビ ※..." のみ)
+  //   楽天オプション欄は複数行で「NOC補償 1」「免責補償別 1」が2行目以降にあるため、body全体から検出する
+  var insurance = detectInsurance_(body);
   var basePriceR = parsePrice_(extractField_(body, '・基本料金'));
   if (!basePriceR) basePriceR = parsePrice_(extractField_(body, '基本料金'));
   var insurancePriceR = parsePrice_(extractField_(body, '・免責補償料金'));
@@ -706,7 +710,10 @@ function parseAirtrip_(body) {
   var base_price_a = basePriceA;
   var option_price_a = optionPriceA + insurancePriceA;
   var insuranceStr = extractField_(body, '補償オプション');
-  var insurance = detectInsurance_(insuranceStr || body);
+  // ★ 2026-04-26: insuranceStr が空でない時もbody全体で検出して取りこぼし防止
+  //   (extractField_ は1行目のみ仕様、補償系オプションが2行目以降にあると拾えない)
+  var insurance = detectInsurance_(body);
+  if (insurance === 'なし' && insuranceStr) insurance = detectInsurance_(insuranceStr);
   var arrFlight = extractField_(body, '到着便');
   var depFlight = extractField_(body, '出発便');
   var flight = [arrFlight, depFlight].filter(Boolean).join(' / ');
