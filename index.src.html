@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v596';
+  var CV='spk-v597';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js?v=515').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js?v=516').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -1394,7 +1394,7 @@ function VehicleManager({vehicles,onVehiclesChange,vehicleClasses,onDeleteVehicl
 /* ==========================================
    車両タブ（マスター＋整備管理）
    ========================================== */
-function SpkVehicleFleetStatus({vehicles,vehicleClasses,maintenance,data,fleet,hmLogs}){
+function SpkVehicleFleetStatus({vehicles,vehicleClasses,maintenance,data,fleet,hmLogs,hmCars}){
   var E=React.createElement;
   var isMob=useMobile();
   var today=new Date().toISOString().slice(0,10);
@@ -1402,6 +1402,8 @@ function SpkVehicleFleetStatus({vehicles,vehicleClasses,maintenance,data,fleet,h
   var _sf=useState("all");var statusFilter=_sf[0];var setStatusFilter=_sf[1];
   var _ec=useState({});var expandedClasses=_ec[0];var setExpandedClasses=_ec[1];
   var _kpi=useState({});var kpiFlags=_kpi[0];var setKpiFlags=_kpi[1];
+  // ★ コスト内訳ドリルダウン用
+  var _dr=useState(null);var drill=_dr[0];var setDrill=_dr[1];
 
   React.useEffect(function(){
     if(!sb)return;
@@ -1577,7 +1579,20 @@ function SpkVehicleFleetStatus({vehicles,vehicleClasses,maintenance,data,fleet,h
       var cur=monthCat3[curYmVS]||{kensaB:0,kensaA:0,tenkenB:0,tenkenA:0,repair:0,total:0};
       var y3={kensaB:0,kensaA:0,tenkenB:0,tenkenA:0,repair:0,total:0};
       allM3Keys.forEach(function(ym){["kensaB","kensaA","tenkenB","tenkenA","repair","total"].forEach(function(k){y3[k]+=monthCat3[ym][k];});});
-      var cellA=function(v,col){return v>0?E("span",{style:{fontWeight:700,color:col}},"¥"+v.toLocaleString()):E("span",{style:{color:"#e2e8f0"}},"-");};
+      var openDrill=function(period,types,labelTxt,col){
+        var items=(hmLogs||[]).filter(function(l){
+          if(types.indexOf(l.type||"")<0)return false;
+          var ld=(l.date||"");
+          if(period.length===7)return ld.slice(0,7)===period;
+          if(period.length===4)return ld.slice(0,4)===period;
+          return false;
+        }).sort(function(a,b){return(a.date||"").localeCompare(b.date||"");});
+        setDrill({period:period,labelTxt:labelTxt,col:col,items:items});
+      };
+      var cellA=function(v,col,onClick){
+        if(v<=0)return E("span",{style:{color:"#e2e8f0"}},"-");
+        return E("span",{onClick:onClick||null,style:{fontWeight:700,color:col,cursor:onClick?"pointer":"default",textDecoration:onClick?"underline":"none",textDecorationStyle:"dotted",textDecorationColor:col+"55",textUnderlineOffset:2}},"¥"+v.toLocaleString());
+      };
       var cellB=function(v){return v>0?E("span",{style:{fontWeight:500,color:"#94a3b8",fontSize:10}},"¥"+v.toLocaleString()):E("span",{style:{color:"#e2e8f0"}},"-");};
       return E("div",{style:{marginBottom:12}},
         E("div",{style:{background:"#fef3c7",border:"2px solid #f59e0b",borderRadius:10,padding:"12px 16px",marginBottom:8,boxShadow:"0 2px 6px rgba(245,158,11,0.2)",display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}},
@@ -1622,24 +1637,25 @@ function SpkVehicleFleetStatus({vehicles,vehicleClasses,maintenance,data,fleet,h
                 allM3Keys.map(function(ym){
                   var d=monthCat3[ym];
                   var isCur=(ym===curYmVS);
+                  var totalClickable=d.total>0;
                   return E("tr",{key:ym,style:{borderBottom:"1px solid #f1f5f9",background:isCur?"#fef9c3":"transparent"}},
                     E("td",{style:{padding:"7px 10px",fontWeight:isCur?900:700,fontSize:12,color:isCur?"#92400e":"#0f172a",borderRight:"1px solid #f1f5f9"}},ym,isCur?E("span",{style:{marginLeft:6,fontSize:9,padding:"1px 6px",background:"#f59e0b",color:"#fff",borderRadius:4,fontWeight:800}},"当月"):null),
                     E("td",{style:{padding:"7px 6px",textAlign:"right"}},cellB(d.kensaB)),
-                    E("td",{style:{padding:"7px 6px",textAlign:"right",borderRight:"1px solid #f1f5f9"}},cellA(d.kensaA,"#1e40af")),
+                    E("td",{style:{padding:"7px 6px",textAlign:"right",borderRight:"1px solid #f1f5f9"}},cellA(d.kensaA,"#1e40af",d.kensaA>0?function(){openDrill(ym,["inspection"],"🛡️ 車検 実績","#1e40af");}:null)),
                     E("td",{style:{padding:"7px 6px",textAlign:"right"}},cellB(d.tenkenB)),
-                    E("td",{style:{padding:"7px 6px",textAlign:"right",borderRight:"1px solid #f1f5f9"}},cellA(d.tenkenA,"#92400e")),
-                    E("td",{style:{padding:"7px 8px",textAlign:"right",borderRight:"1px solid #f1f5f9"}},cellA(d.repair,"#991b1b")),
-                    E("td",{style:{padding:"7px 10px",textAlign:"right",fontWeight:isCur?900:800,color:isCur?"#92400e":d.total>0?"#991b1b":"#e2e8f0",fontSize:isCur?13:11}},d.total>0?"¥"+d.total.toLocaleString():"-")
+                    E("td",{style:{padding:"7px 6px",textAlign:"right",borderRight:"1px solid #f1f5f9"}},cellA(d.tenkenA,"#92400e",d.tenkenA>0?function(){openDrill(ym,["semi_annual"],"🔧 半年点検 実績","#92400e");}:null)),
+                    E("td",{style:{padding:"7px 8px",textAlign:"right",borderRight:"1px solid #f1f5f9"}},cellA(d.repair,"#991b1b",d.repair>0?function(){openDrill(ym,["repair"],"🔩 修理 実績","#991b1b");}:null)),
+                    E("td",{onClick:totalClickable?function(){openDrill(ym,["inspection","semi_annual","repair"],"💰 月合計 (車検+点検+修理)","#92400e");}:null,style:{padding:"7px 10px",textAlign:"right",fontWeight:isCur?900:800,color:isCur?"#92400e":d.total>0?"#991b1b":"#e2e8f0",fontSize:isCur?13:11,cursor:totalClickable?"pointer":"default",textDecoration:totalClickable?"underline":"none",textDecorationStyle:"dotted",textDecorationColor:"#dc262655",textUnderlineOffset:2}},d.total>0?"¥"+d.total.toLocaleString():"-")
                   );
                 }),
                 E("tr",{style:{borderTop:"2px solid #93c5fd",background:"#1e293b",fontWeight:800}},
                   E("td",{style:{padding:"9px 10px",fontSize:11,color:"#fff",borderRight:"1px solid #334155"}},"年間合計"),
                   E("td",{style:{padding:"9px 6px",textAlign:"right",color:"#94a3b8",fontSize:9}},y3.kensaB>0?"¥"+y3.kensaB.toLocaleString():"-"),
-                  E("td",{style:{padding:"9px 6px",textAlign:"right",color:"#93c5fd",fontWeight:700,borderRight:"1px solid #334155"}},y3.kensaA>0?"¥"+y3.kensaA.toLocaleString():"-"),
+                  E("td",{onClick:y3.kensaA>0?function(){openDrill(String(filterYearVS),["inspection"],"🛡️ 車検 年間実績","#1e40af");}:null,style:{padding:"9px 6px",textAlign:"right",color:"#93c5fd",fontWeight:700,borderRight:"1px solid #334155",cursor:y3.kensaA>0?"pointer":"default",textDecoration:y3.kensaA>0?"underline":"none",textDecorationStyle:"dotted",textUnderlineOffset:2}},y3.kensaA>0?"¥"+y3.kensaA.toLocaleString():"-"),
                   E("td",{style:{padding:"9px 6px",textAlign:"right",color:"#94a3b8",fontSize:9}},y3.tenkenB>0?"¥"+y3.tenkenB.toLocaleString():"-"),
-                  E("td",{style:{padding:"9px 6px",textAlign:"right",color:"#fcd34d",fontWeight:700,borderRight:"1px solid #334155"}},y3.tenkenA>0?"¥"+y3.tenkenA.toLocaleString():"-"),
-                  E("td",{style:{padding:"9px 8px",textAlign:"right",color:"#fca5a5",fontWeight:700,borderRight:"1px solid #334155"}},y3.repair>0?"¥"+y3.repair.toLocaleString():"-"),
-                  E("td",{style:{padding:"9px 10px",textAlign:"right",fontSize:13,fontWeight:900,color:"#4ade80"}},"¥"+y3.total.toLocaleString())
+                  E("td",{onClick:y3.tenkenA>0?function(){openDrill(String(filterYearVS),["semi_annual"],"🔧 半年点検 年間実績","#92400e");}:null,style:{padding:"9px 6px",textAlign:"right",color:"#fcd34d",fontWeight:700,borderRight:"1px solid #334155",cursor:y3.tenkenA>0?"pointer":"default",textDecoration:y3.tenkenA>0?"underline":"none",textDecorationStyle:"dotted",textUnderlineOffset:2}},y3.tenkenA>0?"¥"+y3.tenkenA.toLocaleString():"-"),
+                  E("td",{onClick:y3.repair>0?function(){openDrill(String(filterYearVS),["repair"],"🔩 修理 年間実績","#991b1b");}:null,style:{padding:"9px 8px",textAlign:"right",color:"#fca5a5",fontWeight:700,borderRight:"1px solid #334155",cursor:y3.repair>0?"pointer":"default",textDecoration:y3.repair>0?"underline":"none",textDecorationStyle:"dotted",textUnderlineOffset:2}},y3.repair>0?"¥"+y3.repair.toLocaleString():"-"),
+                  E("td",{onClick:y3.total>0?function(){openDrill(String(filterYearVS),["inspection","semi_annual","repair"],"💰 年間合計 (車検+点検+修理)","#4ade80");}:null,style:{padding:"9px 10px",textAlign:"right",fontSize:13,fontWeight:900,color:"#4ade80",cursor:y3.total>0?"pointer":"default",textDecoration:y3.total>0?"underline":"none",textDecorationStyle:"dotted",textUnderlineOffset:2}},"¥"+y3.total.toLocaleString())
                 )
               )
             )
@@ -1728,6 +1744,52 @@ function SpkVehicleFleetStatus({vehicles,vehicleClasses,maintenance,data,fleet,h
         );
       })
     ),
+    // ===== ドリルダウン モーダル =====
+    drill&&E("div",{onClick:function(){setDrill(null);},style:{position:"fixed",inset:0,background:"rgba(15,23,42,0.55)",zIndex:9000,display:"flex",alignItems:"center",justifyContent:"center",padding:20}},
+      E("div",{onClick:function(e){e.stopPropagation();},style:{background:"#fff",borderRadius:12,maxWidth:760,width:"100%",maxHeight:"82vh",overflow:"auto",boxShadow:"0 12px 48px rgba(0,0,0,0.3)"}},
+        E("div",{style:{padding:"14px 20px",borderBottom:"3px solid "+drill.col,background:"#f8fafc",display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:1}},
+          E("div",null,
+            E("div",{style:{fontSize:14,fontWeight:900,color:drill.col}},drill.labelTxt),
+            E("div",{style:{fontSize:11,color:"#64748b",marginTop:2}},drill.period+" ・ "+drill.items.length+"件 ・ ¥"+drill.items.reduce(function(s,l){return s+Number(l.cost||0);},0).toLocaleString())
+          ),
+          E("button",{onClick:function(){setDrill(null);},style:{padding:"6px 14px",fontSize:12,fontWeight:700,background:"#fff",border:"1px solid #e2e8f0",borderRadius:8,cursor:"pointer"}},"× 閉じる")
+        ),
+        drill.items.length===0
+          ?E("div",{style:{padding:30,textAlign:"center",color:"#94a3b8",fontSize:12}},"記録なし")
+          :E("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:11}},
+            E("thead",null,E("tr",{style:{background:"#f8fafc",borderBottom:"2px solid #e2e8f0"}},
+              E("th",{style:{padding:"8px 10px",textAlign:"left",fontSize:10,fontWeight:700,color:"#64748b"}},"日付"),
+              E("th",{style:{padding:"8px 10px",textAlign:"left",fontSize:10,fontWeight:700,color:"#64748b"}},"車両"),
+              E("th",{style:{padding:"8px 10px",textAlign:"left",fontSize:10,fontWeight:700,color:"#64748b"}},"種別"),
+              E("th",{style:{padding:"8px 10px",textAlign:"right",fontSize:10,fontWeight:700,color:"#991b1b"}},"金額"),
+              E("th",{style:{padding:"8px 10px",textAlign:"left",fontSize:10,fontWeight:700,color:"#64748b"}},"詳細")
+            )),
+            E("tbody",null,drill.items.map(function(l,i){
+              var t=l.type||"";
+              var typeLbl=t==="inspection"?"🛡️ 車検":t==="semi_annual"?"🔧 半年点検":t==="repair"?"🔩 修理":t;
+              var typeCol=t==="inspection"?"#1e40af":t==="semi_annual"?"#92400e":t==="repair"?"#991b1b":"#64748b";
+              var typeBg=t==="inspection"?"#dbeafe":t==="semi_annual"?"#fef3c7":t==="repair"?"#fee2e2":"#f1f5f9";
+              var car=(hmCars||[]).find(function(c){return c.id===l.car_id;});
+              return E("tr",{key:l.id||i,style:{borderBottom:"1px solid #f1f5f9"}},
+                E("td",{style:{padding:"8px 10px",fontWeight:600,color:"#0f172a",fontSize:11}},l.date||"-"),
+                E("td",{style:{padding:"8px 10px"}},
+                  E("div",{style:{fontWeight:700,fontSize:11}},car?car.name:l.car_id||"-"),
+                  car?E("div",{style:{fontSize:10,color:"#94a3b8"}},car.plate||""):null
+                ),
+                E("td",{style:{padding:"8px 10px"}},E("span",{style:{fontSize:10,fontWeight:800,padding:"2px 8px",borderRadius:4,background:typeBg,color:typeCol}},typeLbl)),
+                E("td",{style:{padding:"8px 10px",textAlign:"right",fontSize:12,fontWeight:800,color:typeCol}},"¥"+Number(l.cost||0).toLocaleString()),
+                E("td",{style:{padding:"8px 10px",fontSize:10,color:"#475569"}},l.detail||l.description||"-")
+              );
+            }),
+            E("tr",{style:{background:"#1e293b"}},
+              E("td",{colSpan:3,style:{padding:"10px",color:"#fff",fontWeight:800,fontSize:12}},"合計"),
+              E("td",{style:{padding:"10px",textAlign:"right",color:"#4ade80",fontWeight:900,fontSize:14}},"¥"+drill.items.reduce(function(s,l){return s+Number(l.cost||0);},0).toLocaleString()),
+              E("td",{style:{padding:"10px"}})
+            )
+          )
+        )
+      )
+    )
   );
 }
 
@@ -1745,7 +1807,7 @@ function VehicleTab(props){
       tabBtn("odometer","距離管理"),
       tabBtn("fleet","整備管理")
     ),
-    subTab==="status"&&React.createElement(SpkVehicleFleetStatus,{vehicles:props.vehicles||[],vehicleClasses:props.vehicleClasses||[],maintenance:props.maintenance||[],data:props.data||[],fleet:props.fleet||{},hmLogs:props.hmLogs||[]}),
+    subTab==="status"&&React.createElement(SpkVehicleFleetStatus,{vehicles:props.vehicles||[],vehicleClasses:props.vehicleClasses||[],maintenance:props.maintenance||[],data:props.data||[],fleet:props.fleet||{},hmLogs:props.hmLogs||[],hmCars:props.hmCars||[]}),
     subTab==="master"&&React.createElement(VehicleManager,{vehicles:props.vehicles||[],onVehiclesChange:props.onVehiclesChange,vehicleClasses:props.vehicleClasses||[],onDeleteVehicle:props.onDeleteVehicle,highlightVehicle:props.highlightVehicle,maintenance:props.maintenance||[]}),
     subTab==="inspection"&&React.createElement(SpkInspectionCalendar,{vehicles:props.vehicles||[],maintenance:props.maintenance||[],onMaintenanceChange:props.onMaintenanceChange,hmLogs:props.hmLogs||[]}),
     subTab==="odometer"&&React.createElement(SpkOdometerManager,{vehicles:props.vehicles||[],carData:props.hmCarData||[],hmReload:props.hmReload}),
@@ -15618,7 +15680,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.7.35";
+const APP_VERSION="v4.7.36";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
