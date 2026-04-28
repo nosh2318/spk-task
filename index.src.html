@@ -291,6 +291,27 @@ const DB = {
     }else{DB._staffHasWageCols=true;dbLog("saveStaff",true,arr.length+"件保存");}
   },
   async deleteStaff(name){if(!sb)return;const{error}=await sb.from("staff").delete().eq("name",name);if(error)dbLog("deleteStaff",false,error.message);else dbLog("deleteStaff",true,name);},
+  // スタッフ名変更時に shifts / spk_attendance も一括カスケード更新
+  async renameStaffCascade(oldName,newName){
+    if(!sb||!oldName||!newName||oldName===newName)return;
+    // shifts テーブル更新（Supabase は UPDATE を直接サポート）
+    const{data:shiftRows}=await sb.from("shifts").select("id,date,staff_name,symbol,start_time,end_time,memo").eq("staff_name",oldName);
+    if(shiftRows&&shiftRows.length>0){
+      // 旧レコードを削除して新名前で再INSERT（onConflict upsert）
+      await sb.from("shifts").delete().eq("staff_name",oldName);
+      const newShifts=shiftRows.map(r=>({...r,staff_name:newName}));
+      await sb.from("shifts").upsert(newShifts,{onConflict:"date,staff_name"});
+      dbLog("renameStaff.shifts",true,oldName+"→"+newName+" ("+shiftRows.length+"件)");
+    }
+    // spk_attendance テーブル更新
+    const{data:attRows}=await sb.from("spk_attendance").select("*").eq("staff_name",oldName);
+    if(attRows&&attRows.length>0){
+      await sb.from("spk_attendance").delete().eq("staff_name",oldName);
+      const newAtts=attRows.map(r=>({...r,staff_name:newName}));
+      await sb.from("spk_attendance").upsert(newAtts,{onConflict:"date,staff_name"});
+      dbLog("renameStaff.attendance",true,oldName+"→"+newName+" ("+attRows.length+"件)");
+    }
+  },
   // --- 車両 ---
   async fetchVehicles(){if(!sb)return null;const{data,error}=await sb.from("vehicles").select("*");if(error){dbLog("fetchVehicles",false,error.message);return null;}dbLog("fetchVehicles",true,data.length+"件");
     // code重複修正: 同じcodeがあればナンバーを付加してユニーク化
@@ -2051,6 +2072,7 @@ function SpkOdometerManager({vehicles,carData,hmReload}){
   const[intervals,setIntervals]=useState({});
   const[slackStatus,setSlackStatus]=useState(null);
   const[saving,setSaving]=useState(false);
+  const[histVc,setHistVc]=useState(null);
   const today=new Date().toISOString().slice(0,10);
 
   useEffect(()=>{const iv={};(vehicles||[]).forEach(v=>{iv[v.code]=v.oilIntervalKm||5000;});setIntervals(iv);},[vehicles]);
@@ -2148,7 +2170,7 @@ function SpkOdometerManager({vehicles,carData,hmReload}){
                   <td style={{...tdS,background:"#fff7ed"}}>{latestOil?<div><div style={{fontSize:11,fontWeight:700}}>{latestOil.date}</div><div style={{fontSize:11,color:"#92400e",fontWeight:700}}>@ {Number(latestOil.value).toLocaleString()}km</div></div>:<span style={{fontSize:10,color:"#fed7aa"}}>未記録</span>}</td>
                   <td style={{...tdS,background:"#fff7ed",textAlign:"right"}}>{isEditInterval?<div style={{display:"flex",gap:3,alignItems:"center",justifyContent:"flex-end"}}><input type="number" value={intervalEdit[v.code]} onChange={e=>setIntervalEdit(p=>({...p,[v.code]:e.target.value}))} style={{width:70,border:"1px solid #fed7aa",borderRadius:5,padding:"3px 6px",fontSize:11}} autoFocus/><button onClick={()=>saveInterval(v.code)} style={{fontSize:10,padding:"2px 7px",background:"#ea580c",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontWeight:700}}>保存</button></div>:<div style={{display:"flex",alignItems:"center",gap:4,justifyContent:"flex-end"}}><span style={{fontSize:12,fontWeight:700,color:"#92400e"}}>{(intervals[v.code]||5000).toLocaleString()}</span><button onClick={()=>setIntervalEdit(p=>({...p,[v.code]:String(intervals[v.code]||5000)}))} style={{fontSize:9,padding:"1px 6px",background:"none",border:"1px solid #fed7aa",borderRadius:4,cursor:"pointer",color:"#d97706"}}>編集</button></div>}</td>
                   <td style={{...tdS,background:"#fff7ed"}}><span style={{fontSize:10,fontWeight:800,padding:"3px 10px",borderRadius:8,background:oilSt.bg,color:oilSt.color}}>{oilSt.level==="danger"?"🔴":oilSt.level==="warn"?"🟡":oilSt.level==="ok"?"🟢":"⚪"} {oilSt.label}</span>{oilSt.daysSince>0&&<div style={{fontSize:9,color:"#94a3b8",marginTop:2}}>{oilSt.daysSince}日経過</div>}</td>
-                  <td style={{...tdS,textAlign:"center"}}><div style={{display:"flex",gap:3,justifyContent:"center"}}><button onClick={()=>{setInputVc(isOdoOpen?null:v.code);setOilInputVc(null);setInputKm(latest?String(latest.value):"");setInputDate(today);}} style={{fontSize:9,padding:"3px 8px",background:isOdoOpen?"#eff6ff":"#2563eb",color:isOdoOpen?"#2563eb":"#fff",border:isOdoOpen?"1px solid #93c5fd":"none",borderRadius:5,cursor:"pointer",fontWeight:700}}>🚗 走行</button><button onClick={()=>{setOilInputVc(isOilOpen?null:v.code);setInputVc(null);setOilKm(latest?String(latest.value):"");setOilDate(today);}} style={{fontSize:9,padding:"3px 8px",background:isOilOpen?"#fff7ed":"#ea580c",color:isOilOpen?"#ea580c":"#fff",border:isOilOpen?"1px solid #fed7aa":"none",borderRadius:5,cursor:"pointer",fontWeight:700}}>🔧 OIL</button></div></td>
+                  <td style={{...tdS,textAlign:"center"}}><div style={{display:"flex",gap:3,justifyContent:"center"}}><button onClick={()=>{setInputVc(isOdoOpen?null:v.code);setOilInputVc(null);setInputKm(latest?String(latest.value):"");setInputDate(today);}} style={{fontSize:9,padding:"3px 8px",background:isOdoOpen?"#eff6ff":"#2563eb",color:isOdoOpen?"#2563eb":"#fff",border:isOdoOpen?"1px solid #93c5fd":"none",borderRadius:5,cursor:"pointer",fontWeight:700}}>🚗 走行</button><button onClick={()=>{setOilInputVc(isOilOpen?null:v.code);setInputVc(null);setOilKm(latest?String(latest.value):"");setOilDate(today);}} style={{fontSize:9,padding:"3px 8px",background:isOilOpen?"#fff7ed":"#ea580c",color:isOilOpen?"#ea580c":"#fff",border:isOilOpen?"1px solid #fed7aa":"none",borderRadius:5,cursor:"pointer",fontWeight:700}}>🔧 OIL</button><button onClick={()=>{setHistVc(histVc===v.code?null:v.code);setInputVc(null);setOilInputVc(null);}} style={{fontSize:9,padding:"3px 8px",background:histVc===v.code?"#f1f5f9":"none",color:"#64748b",border:"1px solid #e2e8f0",borderRadius:5,cursor:"pointer",fontWeight:700}}>📋 履歴</button></div></td>
                 </tr>
                 {isOdoOpen&&<tr style={{background:"#eff6ff"}}><td colSpan={7} style={{padding:"10px 14px"}}>
                   <div style={{display:"flex",gap:8,alignItems:"flex-end",flexWrap:"wrap"}}>
@@ -2169,6 +2191,18 @@ function SpkOdometerManager({vehicles,carData,hmReload}){
                     <button onClick={()=>setOilInputVc(null)} style={{padding:"5px 10px",background:"none",border:"1px solid #fed7aa",borderRadius:7,cursor:"pointer",fontSize:11,color:"#d97706"}}>✕</button>
                   </div>
                   {latestOil&&<div style={{marginTop:6,fontSize:9,color:"#64748b"}}>前回: {latestOil.date} @ {Number(latestOil.value).toLocaleString()}km</div>}
+                </td></tr>}
+                {histVc===v.code&&<tr style={{background:"#f8fafc"}}><td colSpan={7} style={{padding:"10px 14px"}}>
+                  <div style={{fontSize:11,fontWeight:800,color:"#374151",marginBottom:8}}>📋 記録履歴（走行・OIL）<span style={{fontSize:9,fontWeight:400,color:"#94a3b8",marginLeft:8}}>※削除は取り消せません</span></div>
+                  {[...(mileageMap[v.code]||[]).map(r=>({...r,_type:"走行"})),...(oilMap[v.code]||[]).map(r=>({...r,_type:"OIL"}))].sort((a,b)=>b.date.localeCompare(a.date)).map(r=>(
+                    <div key={r.id} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 8px",borderRadius:6,background:"#fff",border:"1px solid #e2e8f0",marginBottom:4}}>
+                      <span style={{fontSize:10,fontWeight:700,padding:"1px 6px",borderRadius:4,background:r._type==="OIL"?"#fff7ed":"#eff6ff",color:r._type==="OIL"?"#ea580c":"#2563eb"}}>{r._type==="OIL"?"🔧 OIL":"🚗 走行"}</span>
+                      <span style={{fontSize:11,fontWeight:700,color:"#1e293b",flex:1}}>{Number(r.value).toLocaleString()} km</span>
+                      <span style={{fontSize:10,color:"#94a3b8"}}>{r.date}</span>
+                      <button onClick={async()=>{if(!window.confirm(`${r.date} / ${Number(r.value).toLocaleString()}km の記録を削除しますか？`))return;setSaving(true);try{await sb.from("car_data").delete().eq("id",r.id);if(hmReload)await hmReload();}catch(e){alert("削除失敗: "+e.message);}finally{setSaving(false);}}} style={{fontSize:9,padding:"2px 8px",background:"#fee2e2",color:"#dc2626",border:"1px solid #fecaca",borderRadius:5,cursor:"pointer",fontWeight:700}}>削除</button>
+                    </div>
+                  ))}
+                  {(mileageMap[v.code]||[]).length===0&&(oilMap[v.code]||[]).length===0&&<div style={{fontSize:11,color:"#94a3b8",textAlign:"center",padding:8}}>記録なし</div>}
                 </td></tr>}
               </React.Fragment>;
             })}</tbody>
@@ -3025,7 +3059,12 @@ function StaffManager({staff,onStaffChange,onDeleteStaff}){
       const oldName=editOrigName;
       const updated=[...staff];updated[editId]=entry;
       onStaffChange(updated);
-      if(oldName&&oldName!==entry.name&&onDeleteStaff)onDeleteStaff(oldName);
+      if(oldName&&oldName!==entry.name){
+        // 名前変更: shifts/attendance をカスケード更新してから旧staff削除
+        DB.renameStaffCascade(oldName,entry.name).then(()=>{
+          if(onDeleteStaff)onDeleteStaff(oldName);
+        }).catch(e=>console.error("[renameStaff]",e));
+      }
       setEditId(null);setEditOrigName("");
     }
     setForm({name:"",type:"アルバイト",memo:"",hourlyWage:1100,transportCost:500,monthlySalary:0,dailyWage:0,breakMinutes:0,fixedDays:""});
@@ -15678,7 +15717,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.7.38";
+const APP_VERSION="v4.7.39";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
