@@ -1,5 +1,30 @@
 # SPK業務管理APP（札幌店）
 
+## 2026-04-30 修正履歴
+
+### 🔴 opts (B/C/J) 同期漏れ パトロール体制確立
+- **発端**: カンノショウキ様 (RC52461132684014347, 楽天5/2) のチャイルドシート1個が APP に表示されなかった
+- **真因**: 過去（GASパーサー修正前）に取り込まれた予約で、reservations.opt_c は手動修正されていたが tasks.opt_c (boolean) と changed_json._optC が未同期。Pattern A 13予約 / 36 tasks で同種ズレ確認
+- **即時対応**:
+  1. カンノ様 reservations.opt_c=1 + tasks 3件を直接DB修正
+  2. `~/spk-task/tools/spk_opts_patrol.py --fix` で全件パトロール → Pattern A 13予約 / 36 tasks 自動修正
+- **再発防止 4層**:
+  1. **APP側**: `updateReservation` で opt_b/c/j 編集時に tasks も同期（既実装、index.src.html L15330）
+  2. **GAS側**: `processMessage_` 既存予約パッチ時に `patchTaskOpts_` 自動呼び出し（既実装、L302-306）
+  3. **GAS側 NEW**: `nightlyOptsPatrol()` 毎晩2:00自動パトロール — Pattern A検出+修正+Slack通知 + Pattern B検出
+  4. **GAS側 NEW**: `bulkReprocessByResvNos(resvNos)` / `bulkReprocessPatternB()` — Pattern B (option_price>0/opt全0) を Gmail から再パース
+- **Pattern定義**:
+  - **Pattern A**: reservations.opt_x と tasks.opt_x (boolean) または changed_json._optX のズレ → 自動修正可能
+  - **Pattern B**: option_price>0 だが opt_b=opt_c=opt_j=0 / 補償なし or 日割¥1200超 → メール再パース必要
+  - **Pattern C**: シート数 > 8 の異常値
+- **トリガー設定手順** (1回のみ手動):
+  1. GASエディタで `setupNightlyOptsPatrolTrigger()` を実行 → 毎晩2:00自動実行
+  2. 必要に応じて `bulkReprocessPatternB()` を手動実行（Pattern B 未来日を一括再パース）
+- **手動パトロール**: `python3 ~/spk-task/tools/spk_opts_patrol.py [--fix]` （ローカルからSupabase直接照会）
+- **新OTAパーサー追加時の鉄則**:
+  - reservations のオプション系カラム (opt_b/c/j/usb/parasol/insurance) を更新する処理は、必ず `patchTaskOpts_` または同等の tasks 同期を呼ぶこと
+  - `extractField_` で取得した文字列を検出系関数に渡してはいけない（1行のみ返却仕様）。必ず body 全体検索のフォールバックを実装
+
 ## プロジェクト概要
 レンタカーショップ HANDYMAN 札幌デリバリー専門店の業務管理アプリ。
 予約・配車・タスク・シフト・給与・車両・駐車場・会計・売上を一元管理。
@@ -85,6 +110,75 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **index.html CV**: `spk-v584`
 - **sw.js?v=**: 503
 - **SRI/CSP**: 未適用（下記インシデント参照）
+
+## 2026-04-28 修正履歴
+
+### 🆕 じゃらん予約キャンセル処理 自動化機能（payment_bot_unified_v1.gs に追加）
+- **要望**: 「すでに支払い済みのじゃらんユーザーがキャンセルし払い戻した場合、会計としてAPP側で行うステップは？」「返金率と予約詳細をスラックに投げると会計やその他全てのデータに反映される、Squareからも自動返金」がベスト
+- **実装場所**: `~/Desktop/HANDYMAN/payment_bot_unified_v1.gs`（HANDYMAN Payment Bot v1）に追加（+約470行、合計1,450行）
+- **doPost ルーティング**: 既存 `handleSlackMessage_` 冒頭に「キャンセル」キーワード分岐を追加 → `handleCancellationMessage_` を呼ぶ
+- **Slack投稿フォーマット**:
+  ```
+  キャンセル
+  予約番号：R0XXXXXX
+  キャンセル料率：50
+  理由：（任意）
+  ```
+- **対象チャンネル**:
+  - 札幌: `#payment_sapporo` (C0AQL6HGG3E)
+  - 那覇: `#payment_naha` (C0AP2S5B147)
+  - **`#jalan_payment` は実在しない（旧名・統合済）**。CLAUDE.md グローバル側にも `#jalan_payment` 表記が残るが次回掃除予定
+- **処理マトリクス**:
+  | 予約タイプ | Square返金 | 売上計上 | 支出計上 | reservations | jalan_payments | スプシ |
+  |---|---|---|---|---|---|---|
+  | 札幌じゃらん paid + 1〜99% | ✅自動 | ✅(paid) | ✅ | cancelled | refunded | 🚫(返金済) |
+  | 札幌じゃらん paid + 0% | ✅全額 | — | ✅(全額) | cancelled | refunded | 🚫(返金済) |
+  | 札幌じゃらん paid + 100% | — | ✅(paid) | — | cancelled | refunded | 🚫(料100%) |
+  | 札幌その他 + 1〜100% | — | ✅(unpaid) | — | cancelled | — | 🚫 |
+  | 那覇 + 1〜100% | — | ✅(unpaid) | — | cancelled | — | — |
+- **新規関数**:
+  - `parseCancellation_(text)` — メッセージパース（resvNo / rate / reason）
+  - `handleCancellationMessage_(ev, channel)` — メイン処理（11ステップ）
+  - `lookupReservationForCancel_(cfg, resvNo)` — SPK→NHAの順で予約検索＋jalan_payments状態取得
+  - `squareRefund_(cfg, resvNo, refundAmt, reason)` — Square Refund API直接実行（order_id→tenders[0].payment_id→/v2/refunds）
+  - `getOrderIdFromSheet_(resvNo)` — 支払い管理スプシから order_id 逆引き
+  - `updateCancellationSheet_(resvNo, isJalanPaid, rate)` — スプシステータス更新
+  - `sbInsertAccounting_(cfg, table, body)` — 会計テーブル INSERT ヘルパー
+  - 定数: `CANCEL_REFUND_CATEGORY = 'じゃらん返金'` / `CANCEL_FEE_CATEGORY = 'キャンセル料'`
+- **テスト関数**:
+  - `testParseCancellation()` — 6パターン（正常4 / 異常2）パース確認 ✅ 動作確認済
+  - `testLookupReservation()` — R0DCXBRD で札幌じゃらん lookup 確認 ✅ 動作確認済
+- **エラーハンドリング**: Square Refund 失敗時は以降のDB更新を中断（部分書き込み防止）→ Slack に明示通知 → 手動対応へエスカレーション
+- **冪等性**: jalan_payments.status='refunded' なら 2回目投稿は ⚠️ 警告で停止
+- **マニュアル**: `~/spk-task/cancellation-manual.html`（A4・全8章・スタッフ配布用）→ ブラウザでCmd+P→PDF保存
+- **適用手順**:
+  1. GASエディタ「HANDYMAN Payment Bot v1」(Script ID: `1bZcVSWRvxC1U4MDkIztcsFV8CWv9paFYoxU0oRStgAmZ57Y87lKC6sCU`) に貼付（**完了**）
+  2. **デプロイの管理 → 新バージョン再デプロイ（必須・Cmd+Sだけでは Webhook に反映されない）**
+  3. checkConfig で SLACK_BOT_TOKEN / SQUARE_API_TOKEN / SUPABASE_KEY 確認 ✅ 完了
+  4. testParseCancellation / testLookupReservation 実行 ✅ 完了
+  5. 新規キャンセル発生時にスタッフが #payment_sapporo / #payment_naha に投稿
+- **残課題（R0DCXBRD整合性）**: エノモト ハヤト様 (¥6,650・じゃらん事前決済) 「手動対応済み」と申告されたが DB状態は:
+  - reservations.status: cancelled ✅
+  - jalan_payments.status: **paid のまま** ❌
+  - jalan_payments.refunded_at: **null** ❌
+  - spk_accounting: **行なし**（売上・支出ともに未起票）❌
+  - Square Dashboard: 確認待ち
+  → 会計上の整合性が崩れている。次回オーナー判断（A: DB直接修正 / B: 本機能で処理 / C: 放置）で対処
+- **Square Refund API 権限要件**: `PAYMENTS_WRITE` スコープが必要。既存 `SQUARE_API_TOKEN` で動かなければトークン再発行
+- **重要**: `getOrderIdFromSheet_` は支払い管理スプシ COL.ORDER_ID (列11) に order_id がある前提。古い行で空欄なら Square返金は失敗する → スプシ手動補完が必要
+
+### Slackチャンネル名 整理（2026-04-28 確認）
+| 用途 | チャンネル名 | チャンネルID |
+|------|-------------|-------------|
+| 札幌決済（領収書/Squareリンク発行/入金通知/キャンセル処理） | `#payment_sapporo` | C0AQL6HGG3E |
+| 那覇決済（同上） | `#payment_naha` | C0AP2S5B147 |
+| 札幌Slack予約登録 | `#sapporo_reservation` | C08TDTPEB36 |
+| 領収書 | `#領収書` | C0ANTF5EE73 |
+- **`#jalan_payment` は実在しない**（旧名・C0AQL6HGG3E にリネーム統合済）
+- payment_bot_unified_v1.gs のヘッダコメント `// #payment_sapporo = #jalan_payment と同一チャンネル` も誤解を招くので次回編集時に削除
+- グローバル `~/.claude/CLAUDE.md` の `JALAN_PAY_CHANNEL` `#jalan_payment` 表記も次回掃除予定
+
+---
 
 ## 🔴 場所カラムの公式ルール (2026-04-26 確定)
 

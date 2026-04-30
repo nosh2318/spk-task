@@ -69,7 +69,9 @@ function setup() {
 function processNewEmails() {
   var label = getOrCreateLabel_(LABEL_NAME);
   var fromClause = Object.values(OTA_SENDERS).map(function(s) { return 'from:' + s; }).join(' OR ');
-  var query = '(' + fromClause + ') newer_than:2d';
+  // ★ 2026-04-30: 2d → 7d に拡張（HGU20355 / NUI44639 取り込み失敗障害対策）
+  // GASダウン・ScriptProperties初期化等で2日以上空いた場合、newer_than:2d だと永久スキップになる
+  var query = '(' + fromClause + ') newer_than:7d';
 
   var threads = GmailApp.search(query, 0, 50);
   if (threads.length === 0) {
@@ -149,6 +151,95 @@ function testProcessLatest() {
       }
     }
   }
+}
+
+// ============================================================
+// 取り込み漏れ救済（2026-04-30 緊急対応）
+// HGU20355 / NUI44639 等、newer_than:2d を超過した予約メールを
+// 個別に検索して本番取込する。dryRun=false で実DB登録される。
+// 関数を実行する前に TARGET_IDS を編集すること。
+// ============================================================
+function backfillSpecificReservations() {
+  var TARGET_IDS = ['HGU20355', 'NUI44639'];
+  var SEARCH_DAYS = 30;  // 30日まで遡る
+
+  var processedIds = getProcessedMsgIds_();
+  var newProcessedIds = [];
+  var successes = [];
+  var failures = [];
+  var skipped = [];
+
+  Logger.log('[Backfill] Target IDs: ' + TARGET_IDS.join(', '));
+
+  for (var ti = 0; ti < TARGET_IDS.length; ti++) {
+    var rid = TARGET_IDS[ti];
+    Logger.log('[Backfill] === Searching: ' + rid + ' ===');
+
+    // 全送信元 OR 全件名 で予約番号文字列を Gmail全文検索
+    var query = '"' + rid + '" newer_than:' + SEARCH_DAYS + 'd';
+    var threads = GmailApp.search(query, 0, 20);
+    Logger.log('[Backfill] ' + rid + ': ' + threads.length + ' thread(s) hit');
+
+    if (threads.length === 0) {
+      Logger.log('[Backfill] ' + rid + ': NOT FOUND in Gmail (newer_than:' + SEARCH_DAYS + 'd)');
+      failures.push({id:rid, ota:'?', name:'', reason:'Gmail未検出'});
+      continue;
+    }
+
+    var processedThisId = false;
+    for (var i = 0; i < threads.length; i++) {
+      var messages = threads[i].getMessages();
+      for (var j = 0; j < messages.length; j++) {
+        var msg = messages[j];
+        var msgId = msg.getId();
+        var subject = msg.getSubject();
+        var from = msg.getFrom();
+        var body = msg.getPlainBody();
+
+        // 該当予約IDを含むメールのみ
+        if (body.indexOf(rid) === -1 && subject.indexOf(rid) === -1) continue;
+
+        Logger.log('[Backfill] ' + rid + ' processing msg: from=' + from + ', subject=' + subject);
+
+        try {
+          var result = processMessage_(msg, false);  // dryRun=false → 本番登録
+          newProcessedIds.push(msgId);
+
+          if (result) {
+            Logger.log('[Backfill] ' + rid + ' result: ' + JSON.stringify(result));
+            if (result.type === 'success') successes.push(result);
+            else if (result.type === 'failure') failures.push(result);
+            else if (result.type === 'skip') skipped.push(result);
+          } else {
+            Logger.log('[Backfill] ' + rid + ' result: null (skipped by router)');
+          }
+          processedThisId = true;
+        } catch (e) {
+          Logger.log('[Backfill] ' + rid + ' ERROR: ' + e.message + '\n' + e.stack);
+          failures.push({id:rid, ota:'?', name:'', reason:'処理エラー: ' + e.message});
+        }
+      }
+    }
+
+    if (!processedThisId) {
+      Logger.log('[Backfill] ' + rid + ': hit Gmail but no parseable message');
+      failures.push({id:rid, ota:'?', name:'', reason:'メールあるがparseable無し'});
+    }
+  }
+
+  if (newProcessedIds.length > 0) {
+    saveProcessedMsgIds_(processedIds, newProcessedIds);
+  }
+
+  Logger.log('');
+  Logger.log('[Backfill] === SUMMARY ===');
+  Logger.log('  Success:  ' + successes.length + ' / Skip: ' + skipped.length + ' / Failure: ' + failures.length);
+  if (successes.length > 0) Logger.log('  ✅ ' + successes.map(function(x){return x.id;}).join(', '));
+  if (skipped.length > 0)   Logger.log('  ⏭️ ' + skipped.map(function(x){return x.id+'('+x.reason+')';}).join(', '));
+  if (failures.length > 0)  Logger.log('  ❌ ' + failures.map(function(x){return x.id+'('+x.reason+')';}).join(', '));
+
+  if (successes.length > 0) sendSlackSuccess_(successes);
+  if (failures.length > 0) sendSlackFailure_(failures);
 }
 
 // ============================================================
@@ -1297,7 +1388,7 @@ function handleJalanPayment_(reservation) {
   // 1. Square決済リンクを直接作成
   var lendShort = (reservation.lend_date||'').replace(/^\d{4}-/,'').replace(/-/g,'/');
   var retShort = (reservation.return_date||'').replace(/^\d{4}-/,'').replace(/-/g,'/');
-  var itemName = (reservation.name||'') + '様 じゃらん事前決済(' + lendShort + '-' + retShort + ')';
+  var itemName = '札幌店 ' + (reservation.name||'') + '様（' + resId + '） じゃらん事前決済 ' + lendShort + '-' + retShort;
   var payUrl = createSquarePaymentLink_(itemName, reservation.price||0);
 
   if (!payUrl) {
@@ -1378,7 +1469,7 @@ function checkSquareLinks() {
     if (pay.status === 'new') {
       var lendShort = (pay.lend_date||'').replace(/^\d{4}-/,'').replace(/-/g,'/');
       var retShort = (pay.return_date||'').replace(/^\d{4}-/,'').replace(/-/g,'/');
-      var itemName = (pay.customer_name||'') + '様 じゃらん事前決済(' + lendShort + '-' + retShort + ')';
+      var itemName = '札幌店 ' + (pay.customer_name||'') + '様（' + pay.reservation_id + '） じゃらん事前決済 ' + lendShort + '-' + retShort;
       var payUrl = createSquarePaymentLink_(itemName, pay.amount||0);
       if (!payUrl) { Logger.log('[checkSquareLinks] Retry failed: ' + pay.reservation_id); continue; }
       var now = new Date().toISOString();
@@ -2760,7 +2851,7 @@ function reissueFivePaymentLinks() {
       // C. 新リンク発行（正しい金額）
       var lendShort = (pay.lend_date||'').replace(/^\d{4}-/,'').replace(/-/g,'/');
       var retShort = (pay.return_date||'').replace(/^\d{4}-/,'').replace(/-/g,'/');
-      var itemName = (pay.customer_name||'') + '様 じゃらん事前決済(' + lendShort + '-' + retShort + ')';
+      var itemName = '札幌店 ' + (pay.customer_name||'') + '様（' + resId + '） じゃらん事前決済 ' + lendShort + '-' + retShort;
       var newUrl = createSquarePaymentLink_(itemName, correctAmount);
       if (!newUrl) {
         failed.push({id:resId, reason:'Square API 失敗 (新リンク発行)', oldAmount:oldAmount, newAmount:correctAmount});
@@ -3479,4 +3570,241 @@ function diagnoseRakutenChildSeat() {
   }
 
   Logger.log('=== 診断完了 ===');
+}
+
+/* ========================================================================
+ * 再発防止: opts自動パトロール (2026-04-30 追加)
+ * ========================================================================
+ * 背景: reservations.opt_b/c/j と tasks.opt_b/c/j (boolean) /
+ *       changed_json._optB/_optC/_optJ のズレが時々発生。
+ *       既に patchTaskOpts_ は実装済みだが、過去取込分や
+ *       Realtime取りこぼし等で同期漏れが起こる。
+ *
+ * 対策3層:
+ *  1) nightlyOptsPatrol — 毎晩2:00 に自動でPattern A検出+修正+Slack通知
+ *  2) bulkReprocessByResvNos(resvNos) — 引数の予約番号を Gmail から再パース
+ *  3) bulkReprocessPatternB — Pattern B 未来日を全件再パース
+ * ======================================================================== */
+
+/**
+ * 毎晩自動パトロール: tasks.opts 同期漏れの自動修正 + Pattern B 検出
+ * トリガー: setupNightlyOptsPatrolTrigger() で毎晩2時設定
+ */
+function nightlyOptsPatrol() {
+  var startTime = new Date();
+  Logger.log('[nightlyOptsPatrol] 開始: ' + startTime.toISOString());
+
+  var rows = supabaseGet_(
+    'reservations',
+    'status=not.eq.cancelled&select=id,name,ota,lend_date,return_date,opt_b,opt_c,opt_j,option_price,base_price,price,discount,insurance'
+  );
+  if (!rows.length) { Logger.log('[nightlyOptsPatrol] 対象予約なし'); return; }
+
+  var today = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd');
+
+  // Step 1: Pattern A 自動修正
+  var patternA_fixed = 0;
+  var patternA_examples = [];
+
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    var rb = +(r.opt_b||0), rc = +(r.opt_c||0), rj = +(r.opt_j||0);
+    var tasks = supabaseGet_(
+      'tasks',
+      'reservation_id=eq.' + encodeURIComponent(r.id) + '&select=_id,changed_json,opt_b,opt_c,opt_j'
+    );
+    if (!tasks.length) continue;
+
+    var needSync = false;
+    for (var ti = 0; ti < tasks.length; ti++) {
+      var t = tasks[ti];
+      var tb = !!t.opt_b, tc = !!t.opt_c, tj = !!t.opt_j;
+      if (tb !== (rb > 0) || tc !== (rc > 0) || tj !== (rj > 0)) { needSync = true; break; }
+      var cj = {};
+      try { cj = t.changed_json ? JSON.parse(t.changed_json) : {}; } catch(e){}
+      if (+(cj._optB||0) !== rb || +(cj._optC||0) !== rc || +(cj._optJ||0) !== rj) {
+        needSync = true; break;
+      }
+    }
+
+    if (needSync) {
+      try {
+        patchTaskOpts_(r.id, rb, rc, rj);
+        patternA_fixed++;
+        if (patternA_examples.length < 5) {
+          patternA_examples.push(r.id + ' (' + r.name + ' ' + r.lend_date + ')');
+        }
+      } catch (e) {
+        Logger.log('[nightlyOptsPatrol] Pattern A修正エラー ' + r.id + ': ' + e.toString());
+      }
+    }
+  }
+
+  // Step 2: Pattern B 検出 (未来日のみ)
+  var patternB_list = [];
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    if (r.lend_date < today) continue;
+    var rb = +(r.opt_b||0), rc = +(r.opt_c||0), rj = +(r.opt_j||0);
+    if (rb > 0 || rc > 0 || rj > 0) continue;
+    var optPrice = +(r.option_price||0);
+    if (optPrice <= 0) continue;
+
+    var insurance = (r.insurance||'').trim();
+    var days = 1;
+    try {
+      if (r.return_date && r.lend_date) {
+        var d1 = new Date(r.lend_date + 'T00:00:00');
+        var d2 = new Date(r.return_date + 'T00:00:00');
+        days = Math.max(1, Math.round((d2 - d1) / 86400000));
+      }
+    } catch(e){}
+    var perDay = optPrice / days;
+
+    if (insurance === '' || insurance === 'なし' || perDay > 1200) {
+      patternB_list.push({
+        id: r.id, name: r.name, ota: r.ota, lend: r.lend_date,
+        opt_price: optPrice, per_day: Math.round(perDay), insurance: insurance
+      });
+    }
+  }
+
+  // Step 3: Slack 通知
+  var endTime = new Date();
+  var duration = ((endTime - startTime) / 1000).toFixed(1);
+  var slackMsg = ':robot_face: *opts パトロール結果* (' + duration + '秒)\n';
+  slackMsg += '対象: ' + rows.length + '件 / 日付: ' + today + '\n';
+  slackMsg += ':white_check_mark: Pattern A 自動修正: *' + patternA_fixed + '件*\n';
+  if (patternA_examples.length > 0) {
+    slackMsg += '  例: ' + patternA_examples.join(', ') + '\n';
+  }
+  slackMsg += ':warning: Pattern B (要目視・未来日): *' + patternB_list.length + '件*';
+  if (patternB_list.length > 0) {
+    var first10 = patternB_list.slice(0, 10).map(function(x){
+      return x.id + ' ' + x.name + ' ' + x.ota + ' ' + x.lend +
+             ' ¥' + x.opt_price + '=¥' + x.per_day + '/日 "' + x.insurance + '"';
+    }).join('\n');
+    slackMsg += '\n```\n' + first10;
+    if (patternB_list.length > 10) slackMsg += '\n... 他 ' + (patternB_list.length - 10) + '件';
+    slackMsg += '\n```';
+    slackMsg += '\n→ GASエディタで `bulkReprocessPatternB()` 実行で一括再パース';
+  }
+
+  Logger.log(slackMsg);
+
+  try {
+    if (typeof sendSlackToSpk_ === 'function') {
+      sendSlackToSpk_('opts パトロール結果', slackMsg);
+    }
+  } catch (e) {
+    Logger.log('[nightlyOptsPatrol] Slack送信エラー: ' + e.toString());
+  }
+}
+
+/**
+ * setupNightlyOptsPatrolTrigger: 毎晩2時のトリガーを作成
+ * 1回だけ手動実行
+ */
+function setupNightlyOptsPatrolTrigger() {
+  var triggers = ScriptApp.getProjectTriggers();
+  var deleted = 0;
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'nightlyOptsPatrol') {
+      ScriptApp.deleteTrigger(triggers[i]);
+      deleted++;
+    }
+  }
+  ScriptApp.newTrigger('nightlyOptsPatrol').timeBased().atHour(2).nearMinute(0).everyDays(1).create();
+  Logger.log('[setupNightlyOptsPatrolTrigger] 旧トリガー削除=' + deleted + ' / 新トリガー設定: 毎晩2:00');
+}
+
+/**
+ * bulkReprocessByResvNos: 引数で渡された予約番号を Gmail から再パースして DB+tasks 同期
+ * processMessage_ の既存予約パッチ経路を使う (patch.opt_b/c/j → patchTaskOpts_ 自動呼び出し)
+ *
+ * 例: bulkReprocessByResvNos(['R0742RTL', 'RC52461055442120662'])
+ */
+function bulkReprocessByResvNos(resvNos) {
+  if (!resvNos || !resvNos.length) {
+    Logger.log('[bulkReprocessByResvNos] 引数 resvNos が空'); return;
+  }
+  Logger.log('[bulkReprocessByResvNos] 開始: ' + resvNos.length + '件');
+
+  var ok = 0, fail = 0, notFound = 0;
+  var query = 'after:' + Utilities.formatDate(new Date(Date.now() - 60*86400000), 'Asia/Tokyo', 'yyyy/MM/dd');
+
+  for (var i = 0; i < resvNos.length; i++) {
+    var resvNo = resvNos[i];
+    Logger.log('[' + (i+1) + '/' + resvNos.length + '] ' + resvNo);
+
+    try {
+      var threads = GmailApp.search(query, 0, 500);
+      var found = false;
+      for (var t = 0; t < threads.length && !found; t++) {
+        var msgs = threads[t].getMessages();
+        for (var m = 0; m < msgs.length && !found; m++) {
+          var msg = msgs[m];
+          if (msg.getPlainBody().indexOf(resvNo) === -1) continue;
+          Logger.log('  メール発見: ' + msg.getSubject());
+          try {
+            var result = processMessage_(msg, false);
+            if (result) {
+              Logger.log('  ' + (result.type || 'ok') + ' ' + (result.id || ''));
+              ok++;
+            } else {
+              Logger.log('  processMessage_ が null');
+              fail++;
+            }
+            found = true;
+          } catch (e) {
+            Logger.log('  処理エラー: ' + e.toString());
+            fail++;
+            found = true;
+          }
+        }
+      }
+      if (!found) {
+        Logger.log('  メール未発見 (60日以内に存在しない)');
+        notFound++;
+      }
+    } catch (e) {
+      Logger.log('  例外: ' + e.toString());
+      fail++;
+    }
+    Utilities.sleep(200);
+  }
+
+  Logger.log('=== bulkReprocessByResvNos 完了 ===');
+  Logger.log('成功=' + ok + ' / 失敗=' + fail + ' / メール未発見=' + notFound + ' / 合計=' + resvNos.length);
+}
+
+/**
+ * bulkReprocessPatternB: Pattern B 未来日 (option_price>0 / opt全0 / 補償なし or 日割>1200) を全件再パース
+ * 1回だけ手動実行
+ */
+function bulkReprocessPatternB() {
+  var today = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd');
+  var rows = supabaseGet_(
+    'reservations',
+    'status=not.eq.cancelled&lend_date=gte.' + today +
+    '&option_price=gt.0&opt_b=eq.0&opt_c=eq.0&opt_j=eq.0' +
+    '&select=id,name,lend_date,return_date,option_price,insurance'
+  );
+  if (!rows.length) { Logger.log('[bulkReprocessPatternB] 対象予約なし'); return; }
+
+  var targets = rows.filter(function(r){
+    var insurance = (r.insurance||'').trim();
+    var optPrice = +(r.option_price||0);
+    var days = 1;
+    try {
+      if (r.return_date && r.lend_date) {
+        var d1 = new Date(r.lend_date + 'T00:00:00');
+        var d2 = new Date(r.return_date + 'T00:00:00');
+        days = Math.max(1, Math.round((d2 - d1) / 86400000));
+      }
+    } catch(e){}
+    return insurance === '' || insurance === 'なし' || (optPrice / days) > 1200;
+  });
+  Logger.log('[bulkReprocessPatternB] 候補: ' + targets.length + '件 (全' + rows.length + '件中)');
+  bulkReprocessByResvNos(targets.map(function(r){ return r.id; }));
 }
