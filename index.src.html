@@ -4731,6 +4731,20 @@ function ManagementTab({store}){
     };
   },[dashPeriod,dashSummary,dashYearly,dashExtraRev,dashYm]);
 
+  // ★ 国内/海外比率: HP予約のみ、選択期間でフィルタ（札幌）
+  const dashRegion=useMemo(()=>{
+    const year=dashYm.split('-')[0];
+    const hp=(dbResvs||[]).filter(r=>{
+      if(r.ota!=='HP'||r.status==='cancelled')return false;
+      const d=r.lendDate||r.startDate||r.start_date||'';
+      return dashPeriod==='month'?d.startsWith(dashYm):d.startsWith(year);
+    });
+    const revOf=r=>{const bp=r.basePrice||0,op=r.optionPrice||0,dc=r.discount||0;return(bp>0||op>0)?(bp+op-dc):(r.price||0);};
+    const dom=hp.filter(r=>!isOverseasUser(r.name,r.mail));
+    const ovs=hp.filter(r=>isOverseasUser(r.name,r.mail));
+    return{total:hp.length,domCnt:dom.length,domRev:dom.reduce((s,r)=>s+revOf(r),0),ovsCnt:ovs.length,ovsRev:ovs.reduce((s,r)=>s+revOf(r),0)};
+  },[dbResvs,dashPeriod,dashYm]);
+
   const subTabs=[
     {id:"exceldash",l:"📊 経営DB"},
     {id:"yojitsu",l:"📈 予実比較"},
@@ -5350,6 +5364,36 @@ function ManagementTab({store}){
         <div style={{...card,background:"#eef2ff",border:"1px solid #c7d2fe"}}><div style={lbl}>★ 平均泊数 (1予約あたり)</div><div style={{...val,color:"#4338ca"}}>{dashKpi.avgNights>0?dashKpi.avgNights.toFixed(2)+"泊":"-"}</div><div style={{fontSize:10,color:"#64748b"}}>延べ泊数 {dashKpi.daysSum.toFixed(1)}泊</div></div>
         <div style={card}><div style={lbl}>1日あたり単価</div><div style={val}>{dashKpi.dailyRate>0?"¥"+Math.round(dashKpi.dailyRate).toLocaleString():"-"}</div></div>
       </div>
+      {/* ★ 国内/海外 比率カード（HP予約のみ・札幌） */}
+      {dashRegion.total>0&&<div style={{...card,marginBottom:12}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+          <div style={{fontSize:14,fontWeight:900}}>🌍 国内 / 海外 比率 — HP予約（札幌）</div>
+          <div style={{fontSize:10,color:"#94a3b8"}}>{dashKpi.periodLabel} · {dashRegion.total}件</div>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+          <div style={{background:"#eff6ff",borderRadius:10,padding:"12px 14px",border:"1px solid #bfdbfe"}}>
+            <div style={{fontSize:11,color:"#1d4ed8",fontWeight:700,marginBottom:6}}>🇯🇵 国内</div>
+            <div style={{fontSize:28,fontWeight:900,color:"#1d4ed8",lineHeight:1}}>{dashRegion.domCnt}<span style={{fontSize:12,fontWeight:600,marginLeft:2}}>件</span></div>
+            <div style={{fontSize:13,fontWeight:700,color:"#2563eb",marginTop:4}}>¥{dashRegion.domRev.toLocaleString()}</div>
+            <div style={{fontSize:11,color:"#64748b",marginTop:4}}>{dashRegion.total>0?Math.round(dashRegion.domCnt/dashRegion.total*100):0}% · 客単価 ¥{dashRegion.domCnt>0?Math.round(dashRegion.domRev/dashRegion.domCnt).toLocaleString():"-"}</div>
+          </div>
+          <div style={{background:"#fdf4ff",borderRadius:10,padding:"12px 14px",border:"1px solid #e9d5ff"}}>
+            <div style={{fontSize:11,color:"#7c3aed",fontWeight:700,marginBottom:6}}>🌏 海外</div>
+            <div style={{fontSize:28,fontWeight:900,color:"#7c3aed",lineHeight:1}}>{dashRegion.ovsCnt}<span style={{fontSize:12,fontWeight:600,marginLeft:2}}>件</span></div>
+            <div style={{fontSize:13,fontWeight:700,color:"#7c3aed",marginTop:4}}>¥{dashRegion.ovsRev.toLocaleString()}</div>
+            <div style={{fontSize:11,color:"#64748b",marginTop:4}}>{dashRegion.total>0?Math.round(dashRegion.ovsCnt/dashRegion.total*100):0}% · 客単価 ¥{dashRegion.ovsCnt>0?Math.round(dashRegion.ovsRev/dashRegion.ovsCnt).toLocaleString():"-"}</div>
+          </div>
+        </div>
+        <div style={{height:8,borderRadius:4,overflow:"hidden",display:"flex"}}>
+          <div style={{background:"#3b82f6",width:(dashRegion.total>0?dashRegion.domCnt/dashRegion.total*100:50)+"%",transition:"width .4s"}}/>
+          <div style={{background:"#a855f7",flex:1}}/>
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#94a3b8",marginTop:4}}>
+          <span>🇯🇵 国内 {dashRegion.total>0?Math.round(dashRegion.domCnt/dashRegion.total*100):0}%</span>
+          <span>※漢字のみ名前は国内判定（手動確認推奨）</span>
+          <span>🌏 海外 {dashRegion.total>0?Math.round(dashRegion.ovsCnt/dashRegion.total*100):0}%</span>
+        </div>
+      </div>}
       {/* ★ 売上4分解（基本料金 / 付帯売上 / 予約外 / 割引）月/年自動切替 */}
       <div style={{...card,marginBottom:12}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
@@ -13157,6 +13201,14 @@ const ACCT_CASH_CATEGORIES={
 const ACCT_EXTRA_CATEGORIES=["延長料金","追加オプション","免責補償","サイト外紹介","現地飛込み","法人直接","電話予約","その他"];
 const ACCT_CARD_CATEGORIES=["燃料費","車両整備費","保険料","駐車場代","消耗品費","広告宣伝費","通信費","水道光熱費","旅費交通費","外注費","支払手数料","租税公課","雑費","その他"];
 const ACCT_PAYMENT_METHODS=["現金","クレジットカード","電子マネー","QRコード決済","銀行振込","決済リンク","その他"];
+const JP_CARRIER_DOMAINS=['docomo.ne.jp','ezweb.ne.jp','au.com','softbank.ne.jp','i.softbank.jp','willcom.com','emobile.ne.jp','ymobile.ne.jp'];
+function isOverseasUser(name,mail){
+  if(!name)return false;
+  if(/[a-zA-Zａ-ｚＡ-Ｚ]/.test(name))return true;
+  if(/[가-힯ᄀ-ᇿ㄰-㆏]/.test(name))return true;
+  if(JP_CARRIER_DOMAINS.some(d=>(mail||'').toLowerCase().includes(d)))return false;
+  return false;
+}
 
 function AccountingPanel({staff}){
   const[records,setRecords]=useState([]);
@@ -15770,7 +15822,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.7.47";
+const APP_VERSION="v4.7.48";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
