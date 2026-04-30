@@ -3272,12 +3272,24 @@ function MonitorWidget({isSpk}){
       const fleetTbl=isSpk?'fleet':'nha_fleet';
       const dateCol=isSpk?'lend_date':'start_date';
       const storeFilter=isSpk?'SPK':'NHA';
-      const [inqR,sqR,jaR]=await Promise.all([
+      const hbTbl=isSpk?'app_settings':'nha_app_settings';
+      const gasKeys=isSpk
+        ?['heartbeat_spk_gas_email','heartbeat_spk_jalan_links','heartbeat_spk_jalan_payment']
+        :['heartbeat_nha_gas_email','heartbeat_nha_jalan_links','heartbeat_nha_jalan_payment'];
+      const GAS_ERR_MIN=60;
+      const [inqR,sqR,jaR,hbR]=await Promise.all([
         sb.from('inquiries').select('id',{count:'exact',head:true}).is('replied_at',null).is('blocked_sender_id',null),
         sb.from('sq_terminal_failed').select('id',{count:'exact',head:true}).eq('resolved',false).in('resolved_store',[storeFilter,'UNKNOWN']).neq('resolved_store','EXCLUDED'),
         sb.from(jalanTbl).select('id',{count:'exact',head:true}).in('status',['new','link_created','email_sent']),
+        sb.from(hbTbl).select('key,value').like('key','heartbeat_%'),
       ]);
-      // 未配車: 明日以降の予約でfleet未登録（limit拡張）
+      const hbMap={};
+      (hbR.data||[]).forEach(row=>{try{hbMap[row.key]=JSON.parse(row.value);}catch(e){}});
+      const gasDown=gasKeys.filter(k=>{
+        const hb=hbMap[k];
+        if(!hb||!hb.last_run)return false;
+        return Math.round((Date.now()-new Date(hb.last_run))/60000)>GAS_ERR_MIN;
+      });
       const [rvR,flR]=await Promise.all([
         sb.from(resvTbl).select('id').neq('status','cancelled').gte(dateCol,tomorrow).neq('ota','direct').limit(1000),
         sb.from(fleetTbl).select('reservation_id').limit(1000),
@@ -3289,14 +3301,15 @@ function MonitorWidget({isSpk}){
         sq:sqR.count||0,
         jalan:jaR.count||0,
         unassigned,
-        total:(inqR.count||0)+(sqR.count||0)+(jaR.count||0)+unassigned,
+        gasDown:gasDown.length,
+        total:(inqR.count||0)+(sqR.count||0)+(jaR.count||0)+unassigned+gasDown.length,
         updatedAt:new Date(),
       });
     }catch(e){}
   };
   useEffect(()=>{load();const t=setInterval(load,60000);return()=>clearInterval(t);},[]);
   if(!st)return null;
-  const{total,inquiry,sq,jalan,unassigned}=st;
+  const{total,inquiry,sq,jalan,unassigned,gasDown=0}=st;
   const ok=total===0;
   const warn=total>0&&total<=5;
   const clr=ok?'#059669':warn?'#d97706':'#dc2626';
@@ -3304,6 +3317,7 @@ function MonitorWidget({isSpk}){
   const bdr=ok?'#bbf7d0':warn?'#fde68a':'#fecaca';
   const timeStr=st.updatedAt?st.updatedAt.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'}):'';
   const items=[];
+  if(gasDown>0)items.push(`🤖 GAS停止 ${gasDown}件`);
   if(inquiry>0)items.push(`問い合わせ未対応 ${inquiry}件`);
   if(sq>0)     items.push(`Square失敗 ${sq}件`);
   if(jalan>0)  items.push(`じゃらん未決済 ${jalan}件`);
@@ -15916,7 +15930,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.7.54";
+const APP_VERSION="v4.7.55";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
