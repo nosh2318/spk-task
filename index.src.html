@@ -3259,6 +3259,69 @@ function SummarySection({data,vehicles,fleet,maintenance}){
   </>;
 }
 
+// ── システム監視ウィジェット（TOPサマリー下） ──
+function MonitorWidget({isSpk}){
+  const[st,setSt]=useState(null);
+  const load=async()=>{
+    if(!sb)return;
+    try{
+      const today=new Date().toISOString().slice(0,10);
+      const jalanTbl=isSpk?'jalan_payments':'nha_jalan_payments';
+      const resvTbl=isSpk?'reservations':'nha_reservations';
+      const fleetTbl=isSpk?'fleet':'nha_fleet';
+      const dateCol=isSpk?'lend_date':'start_date';
+      const storeFilter=isSpk?'SPK':'NHA';
+      const [inqR,sqR,jaR]=await Promise.all([
+        sb.from('inquiries').select('id',{count:'exact',head:true}).is('replied_at',null).is('blocked_sender_id',null),
+        sb.from('sq_terminal_failed').select('id',{count:'exact',head:true}).eq('resolved',false).in('resolved_store',[storeFilter,'UNKNOWN']).neq('resolved_store','EXCLUDED'),
+        sb.from(jalanTbl).select('id',{count:'exact',head:true}).in('status',['new','link_created','email_sent']),
+      ]);
+      const [rvR,flR]=await Promise.all([
+        sb.from(resvTbl).select('id').neq('status','cancelled').gte(dateCol,today).neq('ota','direct').limit(300),
+        sb.from(fleetTbl).select('reservation_id').limit(300),
+      ]);
+      const fSet=new Set((flR.data||[]).map(r=>r.reservation_id));
+      const unassigned=(rvR.data||[]).filter(r=>!fSet.has(r.id)).length;
+      setSt({
+        inquiry:inqR.count||0,
+        sq:sqR.count||0,
+        jalan:jaR.count||0,
+        unassigned,
+        total:(inqR.count||0)+(sqR.count||0)+(jaR.count||0)+unassigned,
+        updatedAt:new Date(),
+      });
+    }catch(e){}
+  };
+  useEffect(()=>{load();const t=setInterval(load,60000);return()=>clearInterval(t);},[]);
+  if(!st)return null;
+  const{total,inquiry,sq,jalan,unassigned}=st;
+  const ok=total===0;
+  const warn=total>0&&total<=5;
+  const clr=ok?'#059669':warn?'#d97706':'#dc2626';
+  const bg=ok?'#f0fdf4':warn?'#fffbeb':'#fef2f2';
+  const bdr=ok?'#bbf7d0':warn?'#fde68a':'#fecaca';
+  const timeStr=st.updatedAt?st.updatedAt.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'}):'';
+  const items=[];
+  if(inquiry>0)items.push(`問い合わせ未対応 ${inquiry}件`);
+  if(sq>0)     items.push(`Square失敗 ${sq}件`);
+  if(jalan>0)  items.push(`じゃらん未決済 ${jalan}件`);
+  if(unassigned>0)items.push(`未配車予約 ${unassigned}件`);
+  const monitorUrl='https://handyman-fleet.vercel.app/monitor';
+  return <a href={monitorUrl} target="_blank" rel="noreferrer" style={{display:'block',textDecoration:'none',marginBottom:10}}>
+    <div style={{background:bg,border:`1px solid ${bdr}`,borderRadius:10,padding:'10px 14px',display:'flex',alignItems:'center',gap:10}}>
+      <span style={{fontSize:18}}>{ok?'✅':'⚠️'}</span>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:ok?0:3}}>
+          <span style={{fontSize:11,fontWeight:800,color:clr}}>{ok?'システム正常':'未処理 '+total+'件'}</span>
+          <span style={{fontSize:9,color:'#94a3b8'}}>{timeStr}</span>
+        </div>
+        {items.length>0&&<div style={{fontSize:10,color:'#64748b',lineHeight:1.5,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{items.join(' · ')}</div>}
+      </div>
+      <span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap',flexShrink:0}}>🔍 詳細</span>
+    </div>
+  </a>;
+}
+
 function TopSectionTitle({icon,title,sub}){
   return <div style={{display:"flex",alignItems:"center",gap:6,padding:"8px 4px 6px",marginTop:4}}>
     <span style={{fontSize:14}}>{icon}</span>
@@ -15558,6 +15621,8 @@ function App(){
               <MemoBox today={today}/>
               {/* ===== 📊 Summary（デフォルト折りたたみ） ===== */}
               <SummarySection data={data} vehicles={vehicles} fleet={fleet} maintenance={maintenance}/>
+              {/* ===== 🔍 システム監視ウィジェット ===== */}
+              <MonitorWidget isSpk={true}/>
               {/* ★ タスクサマリー + 本日スケジュール ヘッダー2列 */}
               <div style={{display:"flex",gap:6,marginBottom:6}}>
                 <div onClick={()=>setTaskSumOpen(o=>!o)} style={{flex:1,display:"flex",alignItems:"center",gap:6,padding:"8px 10px",borderRadius:10,background:"#f8fafc",border:"1px solid #e2e8f0",cursor:"pointer",userSelect:"none",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
@@ -15847,7 +15912,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.7.51";
+const APP_VERSION="v4.7.52";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
