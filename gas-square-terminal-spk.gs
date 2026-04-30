@@ -165,6 +165,7 @@ function importSquareTerminalPaymentsSpk() {
     alertMsg += '\n\nAPPの「Square起票仕訳」から店舗・科目を確認して起票してください。';
     try { postToSlackChannel_(SQ_SPK_SLACK_CHANNEL, alertMsg); } catch(ex) {}
   }
+  updateHeartbeat_('spk_square_terminal', {success: 1});
 }
 
 // ============================================================

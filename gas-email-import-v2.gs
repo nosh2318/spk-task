@@ -1493,6 +1493,7 @@ function checkSquareLinks() {
       }
     }
   }
+  updateHeartbeat_('spk_jalan_links', {success: 1});
 }
 
 function sendJalanPaymentEmail_(pay) {
@@ -1697,6 +1698,7 @@ function checkPaymentStatus() {
     } catch (e) { Logger.log('[PaymentStatus] Error checking ' + pay.reservationId + ': ' + e.message); }
   }
   Logger.log('[PaymentStatus] Done. ' + paidCount + '/' + unpaidRows.length + ' confirmed paid');
+  updateHeartbeat_('spk_jalan_payment', {success: paidCount, processed: unpaidRows.length});
 }
 
 function fetchPaymentLinkMap_(token) {
@@ -2461,6 +2463,7 @@ function processSlackReservations() {
 
   saveProcessedSlackTs_(processed);
   Logger.log('[SlackResv] Summary: success=' + success + ' failed=' + failed + ' skipped=' + skipped);
+  updateHeartbeat_('spk_slack_resv', {success: success, failure: failed, processed: success + failed + skipped});
 }
 
 // --- 単一メッセージを即時処理（Events API / 手動呼び出し用） ---
