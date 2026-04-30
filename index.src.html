@@ -3290,12 +3290,19 @@ function MonitorWidget({isSpk}){
         if(!hb||!hb.last_run)return false;
         return Math.round((Date.now()-new Date(hb.last_run))/60000)>GAS_ERR_MIN;
       });
-      const [rvR,flR]=await Promise.all([
-        sb.from(resvTbl).select('id').neq('status','cancelled').gte(dateCol,tomorrow).neq('ota','direct').limit(1000),
-        sb.from(fleetTbl).select('reservation_id').limit(1000),
-      ]);
-      const fSet=new Set((flR.data||[]).map(r=>r.reservation_id));
-      const unassigned=(rvR.data||[]).filter(r=>!fSet.has(r.id)).length;
+      // 未配車: 明日〜7日以内の予約でfleet未登録（直近のみ・要対応分）
+      const d7=new Date();d7.setDate(d7.getDate()+7);
+      const week=d7.toISOString().slice(0,10);
+      let unassigned=0;
+      try{
+        const rvR=await sb.from(resvTbl).select('id').neq('status','cancelled').gte(dateCol,tomorrow).lte(dateCol,week).neq('ota','direct').limit(300);
+        const ids=(rvR.data||[]).map(r=>r.id);
+        if(ids.length>0){
+          const flR=await sb.from(fleetTbl).select('reservation_id').in('reservation_id',ids);
+          const fSet=new Set((flR.data||[]).map(r=>r.reservation_id));
+          unassigned=ids.filter(id=>!fSet.has(id)).length;
+        }
+      }catch(e){}
       setSt({
         inquiry:inqR.count||0,
         sq:sqR.count||0,
@@ -3321,7 +3328,7 @@ function MonitorWidget({isSpk}){
   if(inquiry>0)items.push(`問い合わせ未対応 ${inquiry}件`);
   if(sq>0)     items.push(`Square失敗 ${sq}件`);
   if(jalan>0)  items.push(`じゃらん未決済 ${jalan}件`);
-  if(unassigned>0)items.push(`未配車予約 ${unassigned}件`);
+  if(unassigned>0)items.push(`未配車予約 ${unassigned}件（7日以内）`);
   const monitorUrl='https://handyman-fleet.vercel.app/monitor';
   return <a href={monitorUrl} target="_blank" rel="noreferrer" style={{display:'block',textDecoration:'none',marginBottom:10}}>
     <div style={{background:bg,border:`1px solid ${bdr}`,borderRadius:10,padding:'10px 14px'}}>
@@ -15930,7 +15937,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.7.55";
+const APP_VERSION="v4.7.56";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
