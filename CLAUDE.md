@@ -2,6 +2,26 @@
 
 ## 2026-04-30 修正履歴
 
+### 🔐 会計タブ専用パスコード分離 (v4.7.51 / spk-v608)
+- **要望**: 経理担当 三國様に出納帳作業を委託するため、会計タブの権限だけ三國様に付与し、給与・スタッフ・経営管理は閲覧不可にしたい
+- **方針**: 二重ロック方式。共通起動パスコード `2318` は据え置き、`PASGuard` を通すタブごとに独立パスコードを設定
+- **実装** (`index.src.html`):
+  - `PASGuard({children,label})` → `PASGuard({children,label,code:codeProp})` に拡張。`const code = codeProp || "1823"` でデフォルトは従来通り
+  - 会計タブ呼び出しのみ `<PASGuard label="会計管理" code="1121">` に変更
+  - スタッフ / 給与（attendance）/ 経営管理（biz）は引き続き **`1823`**（変更なし）
+- **三國様への伝達情報**:
+  | 項目 | 値 |
+  |---|---|
+  | 起動パスコード | `2318` |
+  | 会計タブ パスコード | `1121` |
+- **解錠スコープ**: ブラウザ画面リロードまで（コンポーネント state、`unlocked=true`）。共用端末は作業終了時にタブを閉じる運用
+- **コミット**: `23c642c`
+- **バージョン**: APP_VERSION v4.7.50 → **v4.7.51** / sw.js spk-v607 → **spk-v608** / index.html CV spk-v605 → **spk-v608** / sw.js?v=525 → **526**
+- **将来パスコード変更時の手順**:
+  1. `index.src.html` line 2713 付近の `code=codeProp||"1823"` または line 15818 付近 `code="1121"` を書き換え
+  2. APP_VERSION バンプ + sw.js CACHE_NAME バンプ + index.html CV / sw.js?v= 同期
+  3. `node build.js` で再生成 → commit & push
+
 ### 🔴 opts (B/C/J) 同期漏れ パトロール体制確立
 - **発端**: カンノショウキ様 (RC52461132684014347, 楽天5/2) のチャイルドシート1個が APP に表示されなかった
 - **真因**: 過去（GASパーサー修正前）に取り込まれた予約で、reservations.opt_c は手動修正されていたが tasks.opt_c (boolean) と changed_json._optC が未同期。Pattern A 13予約 / 36 tasks で同種ズレ確認
