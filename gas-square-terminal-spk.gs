@@ -12,15 +12,16 @@ var SQ_SPK_SLACK_CHANNEL = 'C0AQL6HGG3E'; // #jalan_payment（SPK決済通知）
 // メイン: Square端末決済(SPK分)を取得→会計自動起票
 // ============================================================
 function importSquareTerminalPaymentsSpk() {
+  // ★ 2026-05-02: 早期return時もheartbeat更新するよう構造変更
   var token = getSquareToken_();
-  if (!token) { Logger.log('[SqSpk] SQUARE_API_TOKEN未設定'); return; }
+  if (!token) { Logger.log('[SqSpk] SQUARE_API_TOKEN未設定'); updateHeartbeat_('spk_square_terminal', {success:0, error:'no_token'}); return; }
 
   var since = new Date(Date.now() - 2 * 60 * 60 * 1000);
   var sinceISO = since.toISOString();
 
   var processed = getProcessedTerminalIdsSpk_();
   var payments = fetchSquarePaymentsSpk_(token, sinceISO);
-  if (!payments || payments.length === 0) { Logger.log('[SqSpk] 新規端末決済なし'); return; }
+  if (!payments || payments.length === 0) { Logger.log('[SqSpk] 新規端末決済なし'); updateHeartbeat_('spk_square_terminal', {success:0, processed:0}); return; }
 
   Logger.log('[SqSpk] 取得: ' + payments.length + '件');
 

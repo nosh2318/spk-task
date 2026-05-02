@@ -21,10 +21,12 @@
 
 - リポジトリ: `nosh2318/spk-task`
 
-### Vercel
+### GitHub Pages（2026-05-02 移行）
 
-- URL: `https://spk-task.vercel.app`
+- URL: `https://nosh2318.github.io/spk-task/`
 - デプロイ: `main` ブランチへの push で自動デプロイ
+- 注意: サブパス `/spk-task/` 配下なので相対パス必須。`sw.js` の `URLS` も `./` プレフィックスで定義
+- 旧: `https://spk-task.vercel.app`（廃止）
 
 ### Supabase（メイン）
 
@@ -605,8 +607,8 @@ git add index.html index2.html
 git commit -m "更新内容の説明"
 git push origin main
 
-# 4. Vercel が自動デプロイ（main ブランチ連動）
-# → https://spk-task.vercel.app に反映
+# 4. GitHub Pages が自動デプロイ（main ブランチ連動）
+# → https://nosh2318.github.io/spk-task/ に反映
 ```
 
 **注意事項**:

@@ -49,7 +49,7 @@
 レンタカーショップ HANDYMAN 札幌デリバリー専門店の業務管理アプリ。
 予約・配車・タスク・シフト・給与・車両・駐車場・会計・売上を一元管理。
 
-- **本番URL**: https://spk-task.vercel.app
+- **本番URL**: https://nosh2318.github.io/spk-task/ （旧 https://spk-task.vercel.app は廃止）
 - **パスコード**: 2318
 - **リポジトリ**: nosh2318/spk-task
 - **デプロイ**: mainブランチpushでVercel自動デプロイ
