@@ -1,5 +1,80 @@
 # SPK業務管理APP（札幌店）
 
+## 2026-05-02 修正履歴
+
+### 🌐 GitHub Pages 移行 最終仕上げ (v4.7.59 / spk-v616)
+- **背景**: NHA で確立した Vercel→GitHub Pages 移行手順を SPK にも適用する3段構え。前セッションで `ba9ca3e` (sw.js register 相対化 + .nojekyll 追加) → `51029af` (monitor URL更新 + GAS heartbeat 一部修正) と進んでいた最終ピース
+- **本番URL変更**: `https://spk-task.vercel.app` （廃止） → **`https://nosh2318.github.io/spk-task/`**
+- **修正 (`sw.js`)**:
+  - **URLS 相対化**: `['/', '/index.html', '/index2.html', '/app.js']` → `['./', './index.html', './index2.html', './app.js']`
+    - GH Pages サブパス `/spk-task/` 配下では絶対パス `/index.html` は404になる。SW scope (= sw.js所在ディレクトリ) 基準で resolve させる
+  - **fetch handler の pathname 判定変更**: `pathname === '/' || pathname === '/app.js'` → `pathname.endsWith('/') || pathname.endsWith('.html') || pathname.endsWith('/app.js')`
+    - これでルート (`/`) でもサブパス (`/spk-task/`) でも動作
+  - CACHE_NAME `spk-v615` → `spk-v616`
+- **バージョン3点同時バンプ** (`index.src.html`):
+  - `CV='spk-v615'` → `'spk-v616'`
+  - `register('./sw.js?v=527')` → `?v=528`
+  - `APP_VERSION="v4.7.58"` → `"v4.7.59"`
+- **vercel.json 削除**: GH Pages 完全移行のためリポジトリから除去（`.vercel/` は既に .gitignore 管理）
+- **CLAUDE.md / SYSTEM_SPEC.md** 本番URL表記更新
+- **コミット**: `9b33fab` fix(GH Pages): sw.js URLS 相対化 + Vercel削除 (v4.7.59)
+- **本番反映確認**: ✅ https://nosh2318.github.io/spk-task/ で APP_VERSION v4.7.59 / spk-v616 / sw.js?v=528 を curl 確認済
+- **残タスク（ユーザー作業）**:
+  - Vercel ダッシュボードで `spk-task` プロジェクトを Delete（リポジトリ連携停止）
+  - 連携を切らないと main push 毎に Vercel 側でも 404 デプロイが走り続ける
+- **🔴 教訓 / 横展開ルール**:
+  - **sw.js の URLS は必ず相対パス（`./` プレフィックス）**。GH Pages サブパス配下で動かすならこれが必須
+  - **fetch handler の同一オリジン判定は `pathname.endsWith('...')` で書く**。`pathname === '/...'` はサブパスで合致しない
+  - **NHAは既に同方式で稼働中**（monitorUrl も `https://nosh2318.github.io/naha-project/monitor`）。今回の SPK 修正で構造完全統一
+
+### 🤖 GAS Heartbeat 早期return アンチパターン 全関数修正
+- **症状**: monitor 画面 (https://nosh2318.github.io/naha-project/monitor) で「⚠️ 要対応」赤バナー → 「予約取込・自動配車（札幌）」「SNS 投稿パトロール（共通）」が停止表示
+- **真因**: 全 GAS の `update関数` / `patrol関数` が **「対象0件で早期return → heartbeat 未更新」** という構造的バグ
+  - 平日昼にメールが少ない時間帯が60分続くだけで「停止」誤判定される
+  - 特に SNS パトロールは「Slack新規メッセージなし」でreturn → 数時間 heartbeat 未更新が日常
+- **修正対象（5関数 / 14箇所）**:
+  | GAS | 関数 | 早期return箇所数 |
+  |---|---|---|
+  | `gas-email-import-v2.gs` | `processNewEmails` | try-finally で全ラップ |
+  | `gas-email-import-v2.gs` | `checkSquareLinks` | 1箇所 |
+  | `gas-email-import-v2.gs` | `checkPaymentStatus` | 5箇所 |
+  | `gas-email-import-v2.gs` | `processSlackReservations` | 2箇所 |
+  | `gas-square-terminal-spk.gs` | `importSquareTerminalPaymentsSpk` | 2箇所 |
+  | `instagram_auto_post_v5.gs` (別repo) | `patrolSlackImages` | 4箇所 |
+- **修正パターン1: try-finally**（最も堅牢、`processNewEmails` のみ採用）:
+  ```js
+  function processNewEmails() {
+    var successes=[], failures=[], cancellations=[], skipped=[];
+    try {
+      // ... 元の本体処理 ...
+    } catch (e) {
+      Logger.log('[FATAL] '+e.message);
+      failures.push({reason:'fatal: '+e.message});
+    } finally {
+      updateHeartbeat_('spk_gas_email', {success:successes.length, failure:failures.length, cancel:cancellations.length, skip:skipped.length});
+    }
+  }
+  ```
+- **修正パターン2: 早期return直前に更新追加**（その他全関数で採用）:
+  ```js
+  if (!rows || rows.length === 0) {
+    updateHeartbeat_('spk_jalan_links', {success:0, processed:0});
+    return;
+  }
+  ```
+- **コミット履歴**:
+  - `51029af` (前セッション): processNewEmails の try-finally
+  - `9b33fab` (本セッション): gas-square-terminal-spk.gs の早期return修正（その他は既に51029afに統合済）
+- **🔴 今後の鉄則（再発防止ルール）**:
+  - **新規GAS関数追加時は必ず関数の冒頭または早期return直前に heartbeat 更新を入れる**
+  - 早期returnを書く前に「ここで heartbeat 更新済か？」を必ずチェック
+  - **コードレビュー観点**: 関数末尾にだけ heartbeat 更新がある場合は早期return パターンを疑う
+  - heartbeat 書き込み忘れは「monitor が嘘をつく」状態。**虚偽の停止アラートを発するシステムは虚偽の正常アラートも発するリスクあり**
+- **未適用（オーナー作業）**:
+  - `gas-square-terminal-spk.gs` を GAS エディタ「札幌予約メール自動配車」プロジェクトに貼付
+  - `instagram_auto_post_v5.gs` を GAS エディタ「Instagram自動投稿 v5」プロジェクトに貼付
+  - 即時復旧したい場合は GAS エディタで `processNewEmails` / `patrolSlackImages` を ▶️ 手動実行（heartbeat 即時書込で停止解消）
+
 ## 2026-04-30 修正履歴
 
 ### 🔐 会計タブ専用パスコード分離 (v4.7.51 / spk-v608)
