@@ -67,69 +67,76 @@ function setup() {
 // Main Entry Points
 // ============================================================
 function processNewEmails() {
-  var label = getOrCreateLabel_(LABEL_NAME);
-  var fromClause = Object.values(OTA_SENDERS).map(function(s) { return 'from:' + s; }).join(' OR ');
-  // ★ 2026-04-30: 2d → 7d に拡張（HGU20355 / NUI44639 取り込み失敗障害対策）
-  // GASダウン・ScriptProperties初期化等で2日以上空いた場合、newer_than:2d だと永久スキップになる
-  var query = '(' + fromClause + ') newer_than:7d';
-
-  var threads = GmailApp.search(query, 0, 50);
-  if (threads.length === 0) {
-    Logger.log('No new reservation emails found.');
-    return;
-  }
-
-  var processedIds = getProcessedMsgIds_();
-  var newProcessedIds = [];
-
-  Logger.log('Found ' + threads.length + ' thread(s) to check.');
-
+  // ★ 2026-05-02: 早期return時もheartbeat更新するよう構造変更（メール0件で「停止」誤判定される問題対策）
+  // try-finally で必ず最後にheartbeatを書く。Slack通知やDB更新でエラーが出ても "動いた" 記録は残す
   var successes = [];
   var failures = [];
   var cancellations = [];
   var skipped = [];
 
-  threads.reverse();
+  try {
+    var label = getOrCreateLabel_(LABEL_NAME);
+    var fromClause = Object.values(OTA_SENDERS).map(function(s) { return 'from:' + s; }).join(' OR ');
+    // ★ 2026-04-30: 2d → 7d に拡張（HGU20355 / NUI44639 取り込み失敗障害対策）
+    // GASダウン・ScriptProperties初期化等で2日以上空いた場合、newer_than:2d だと永久スキップになる
+    var query = '(' + fromClause + ') newer_than:7d';
 
-  for (var i = 0; i < threads.length; i++) {
-    var messages = threads[i].getMessages();
-    for (var j = 0; j < messages.length; j++) {
-      var msgId = messages[j].getId();
-      if (processedIds[msgId]) {
-        continue;
-      }
-      try {
-        var result = processMessage_(messages[j], false);
-        newProcessedIds.push(msgId);
-        if (result) {
-          if (result.type === 'success') successes.push(result);
-          else if (result.type === 'failure') failures.push(result);
-          else if (result.type === 'cancel') cancellations.push(result);
-          else if (result.type === 'skip') skipped.push(result);
-        }
-      } catch (e) {
-        Logger.log('ERROR processing message ID ' + msgId + ': ' + e.message + '\n' + e.stack);
-        newProcessedIds.push(msgId);
-        failures.push({id: '不明', ota: '?', name: '', reason: 'エラー: ' + e.message});
-      }
+    var threads = GmailApp.search(query, 0, 50);
+    if (threads.length === 0) {
+      Logger.log('No new reservation emails found.');
+      return;  // finally で heartbeat 更新される
     }
-    threads[i].addLabel(label);
+
+    var processedIds = getProcessedMsgIds_();
+    var newProcessedIds = [];
+
+    Logger.log('Found ' + threads.length + ' thread(s) to check.');
+
+    threads.reverse();
+
+    for (var i = 0; i < threads.length; i++) {
+      var messages = threads[i].getMessages();
+      for (var j = 0; j < messages.length; j++) {
+        var msgId = messages[j].getId();
+        if (processedIds[msgId]) {
+          continue;
+        }
+        try {
+          var result = processMessage_(messages[j], false);
+          newProcessedIds.push(msgId);
+          if (result) {
+            if (result.type === 'success') successes.push(result);
+            else if (result.type === 'failure') failures.push(result);
+            else if (result.type === 'cancel') cancellations.push(result);
+            else if (result.type === 'skip') skipped.push(result);
+          }
+        } catch (e) {
+          Logger.log('ERROR processing message ID ' + msgId + ': ' + e.message + '\n' + e.stack);
+          newProcessedIds.push(msgId);
+          failures.push({id: '不明', ota: '?', name: '', reason: 'エラー: ' + e.message});
+        }
+      }
+      threads[i].addLabel(label);
+    }
+
+    if (newProcessedIds.length > 0) {
+      saveProcessedMsgIds_(processedIds, newProcessedIds);
+    }
+
+    if (successes.length > 0) sendSlackSuccess_(successes);
+    if (failures.length > 0) sendSlackFailure_(failures);
+    if (cancellations.length > 0) sendSlackCancel_(cancellations);
+  } catch (e) {
+    Logger.log('[processNewEmails] FATAL: ' + e.message + '\n' + e.stack);
+    failures.push({id:'-', ota:'?', name:'', reason:'processNewEmails fatal: '+e.message});
+  } finally {
+    updateHeartbeat_('spk_gas_email', {
+      success: successes.length,
+      failure: failures.length,
+      cancel: cancellations.length,
+      skip: skipped.length
+    });
   }
-
-  if (newProcessedIds.length > 0) {
-    saveProcessedMsgIds_(processedIds, newProcessedIds);
-  }
-
-  if (successes.length > 0) sendSlackSuccess_(successes);
-  if (failures.length > 0) sendSlackFailure_(failures);
-  if (cancellations.length > 0) sendSlackCancel_(cancellations);
-
-  updateHeartbeat_('spk_gas_email', {
-    success: successes.length,
-    failure: failures.length,
-    cancel: cancellations.length,
-    skip: skipped.length
-  });
 }
 
 function testProcessLatest() {
@@ -1460,8 +1467,12 @@ function getSlackThreadReplies_(channel, ts) {
 }
 
 function checkSquareLinks() {
+  // ★ 2026-05-02: 早期return時もheartbeat更新するよう構造変更
   var rows = supabaseGet_('jalan_payments', 'status=in.(new,link_created)&select=reservation_id,customer_name,customer_email,amount,status,slack_ts,lend_date,return_date,square_payment_url');
-  if (!rows || rows.length === 0) return;
+  if (!rows || rows.length === 0) {
+    updateHeartbeat_('spk_jalan_links', {success: 0, processed: 0});
+    return;
+  }
   for (var i = 0; i < rows.length; i++) {
     var pay = rows[i];
 
@@ -1646,9 +1657,9 @@ function checkPaymentStatus() {
   var sheetId = '1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc';
   var ss = SpreadsheetApp.openById(sheetId);
   var sheet = ss.getSheetByName('支払い管理');
-  if (!sheet) { Logger.log('[PaymentStatus] Sheet not found'); return; }
+  if (!sheet) { Logger.log('[PaymentStatus] Sheet not found'); updateHeartbeat_('spk_jalan_payment', {success:0, processed:0, error:'sheet_not_found'}); return; }
   var lastRow = sheet.getLastRow();
-  if (lastRow < 2) return;
+  if (lastRow < 2) { updateHeartbeat_('spk_jalan_payment', {success:0, processed:0}); return; }
   var data = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
   // 店舗別Slack通知先（那覇の入金通知を札幌チャンネルに出さない）
   var NAHA_PAY_CHANNEL = 'C0AP2S5B147'; // #payment_naha
@@ -1661,13 +1672,13 @@ function checkPaymentStatus() {
       unpaidRows.push({rowIndex:i+2, reservationId:String(data[i][3]||'').trim(), customerName:String(data[i][4]||'').replace(/様$/,'').trim(), amount:Number(data[i][6])||0, url:url.trim(), media:String(data[i][13]||'').trim(), store:store.trim(), orderId:null});
     }
   }
-  if (unpaidRows.length === 0) { Logger.log('[PaymentStatus] No unpaid rows found'); return; }
+  if (unpaidRows.length === 0) { Logger.log('[PaymentStatus] No unpaid rows found'); updateHeartbeat_('spk_jalan_payment', {success:0, processed:0}); return; }
   Logger.log('[PaymentStatus] Checking ' + unpaidRows.length + ' unpaid rows');
   var token = getSquareToken_();
-  if (!token) { Logger.log('[PaymentStatus] No SQUARE_API_TOKEN'); postToSlackChannel_(JALAN_PAY_CHANNEL, '🔴 *入金確認システム障害*\nSQUARE_API_TOKENが未設定です。'); return; }
+  if (!token) { Logger.log('[PaymentStatus] No SQUARE_API_TOKEN'); postToSlackChannel_(JALAN_PAY_CHANNEL, '🔴 *入金確認システム障害*\nSQUARE_API_TOKENが未設定です。'); updateHeartbeat_('spk_jalan_payment', {success:0, processed:0, error:'no_token'}); return; }
   var linkMap = fetchPaymentLinkMap_(token);
   var linkMapSize = linkMap ? Object.keys(linkMap).length : 0;
-  if (linkMapSize === 0) { Logger.log('[PaymentStatus] CRITICAL: Payment Links map is empty'); postToSlackChannel_(JALAN_PAY_CHANNEL, '🔴 *入金確認システム障害*\nSquare Payment Links APIが0件を返しました。\n`debugPaymentV3` を手動実行して診断してください。'); return; }
+  if (linkMapSize === 0) { Logger.log('[PaymentStatus] CRITICAL: Payment Links map is empty'); postToSlackChannel_(JALAN_PAY_CHANNEL, '🔴 *入金確認システム障害*\nSquare Payment Links APIが0件を返しました。\n`debugPaymentV3` を手動実行して診断してください。'); updateHeartbeat_('spk_jalan_payment', {success:0, processed:0, error:'link_map_empty'}); return; }
   var orderIdsToCheck = [], unmatchedRows = [];
   for (var i = 0; i < unpaidRows.length; i++) {
     var normalizedUrl = normalizeSquareUrl_(unpaidRows[i].url);
@@ -1675,9 +1686,9 @@ function checkPaymentStatus() {
     if (orderId) { unpaidRows[i].orderId = orderId; orderIdsToCheck.push(orderId); }
     else { unmatchedRows.push(unpaidRows[i].reservationId); Logger.log('[PaymentStatus] No URL match for ' + unpaidRows[i].reservationId); }
   }
-  if (orderIdsToCheck.length === 0) { postToSlackChannel_(JALAN_PAY_CHANNEL, '🔴 *入金確認システム障害*\nPayment Linksは'+linkMapSize+'件取得できましたが、スプシURLが1件もマッチしません。\n対象: ' + unmatchedRows.join(', ')); return; }
+  if (orderIdsToCheck.length === 0) { postToSlackChannel_(JALAN_PAY_CHANNEL, '🔴 *入金確認システム障害*\nPayment Linksは'+linkMapSize+'件取得できましたが、スプシURLが1件もマッチしません。\n対象: ' + unmatchedRows.join(', ')); updateHeartbeat_('spk_jalan_payment', {success:0, processed:unpaidRows.length, error:'no_url_match'}); return; }
   var orderMap = batchRetrieveOrders_(token, orderIdsToCheck);
-  if (!orderMap || Object.keys(orderMap).length === 0) { postToSlackChannel_(JALAN_PAY_CHANNEL, '🔴 *入金確認システム障害*\nSquare Orders取得が0件です。'); return; }
+  if (!orderMap || Object.keys(orderMap).length === 0) { postToSlackChannel_(JALAN_PAY_CHANNEL, '🔴 *入金確認システム障害*\nSquare Orders取得が0件です。'); updateHeartbeat_('spk_jalan_payment', {success:0, processed:unpaidRows.length, error:'orders_empty'}); return; }
   var paidCount = 0;
   for (var i = 0; i < unpaidRows.length; i++) {
     var pay = unpaidRows[i];
@@ -2361,9 +2372,11 @@ function parseSlackReservation_(text) {
 
 // --- メインエントリーポイント（5分間隔トリガー） ---
 function processSlackReservations() {
+  // ★ 2026-05-02: 早期return時もheartbeat更新するよう構造変更
   var token = getSlackBotToken_();
   if (!token) {
     Logger.log('[SlackResv] SLACK_BOT_TOKEN not set. Skipping.');
+    updateHeartbeat_('spk_slack_resv', {success:0, failure:0, processed:0, error:'no_token'});
     return;
   }
 
@@ -2385,6 +2398,7 @@ function processSlackReservations() {
 
   if (!result || !result.ok) {
     Logger.log('[SlackResv] Slack API error: ' + JSON.stringify(result));
+    updateHeartbeat_('spk_slack_resv', {success:0, failure:0, processed:0, error:'slack_api_error'});
     return;
   }
 
