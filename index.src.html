@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v617';
+  var CV='spk-v618';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=529').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=530').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -3260,13 +3260,13 @@ function SummarySection({data,vehicles,fleet,maintenance}){
 }
 
 /* ==========================================
-   🚗 空車ウィジェット（TOP・今日/明日 クラス別）
-   仕様: 配車表(fleet)で予約が入っていない稼働車両をカウント。
+   🚗 空車ウィジェット（TOP・今日明日 連続空車 / クラス別）
+   仕様: 「今日と明日 どちらの日にも、貸出・返却・継続のない車両」をカウント
          ・vehicles[active=true] が母数
-         ・data から「target日にまたがる予約 (status!=cancelled)」を抽出
-         ・fleet[reservation_id] で vehicle_code を取得 → 占有
-         ・maintenance も target日にまたがれば占有として除外
-         ・空車 = 母数 − 占有 − メンテ
+         ・data の予約 [lendDate, returnDate] が「今日 or 明日」に重なれば占有
+         ・fleet[reservation_id] で実車を特定（未配車は配車表に乗らないため除外）
+         ・maintenance が 今日 or 明日に重なれば占有として除外
+         ・空車 = 母数 − 占有 − メンテ = 2日間まるごと予定なし
    SPK クラス順: A/B/C/S/F/H
    ========================================== */
 function VacancyWidget({data,vehicles,fleet,maintenance}){
@@ -3277,15 +3277,16 @@ function VacancyWidget({data,vehicles,fleet,maintenance}){
   const tomDate=new Date(today);tomDate.setDate(tomDate.getDate()+1);
   const tomStr=ymd(tomDate);
 
-  const calc=(target)=>{
+  const calc=useMemo(()=>{
     const activeVeh=(vehicles||[]).filter(v=>v.active!==false);
+    const overlap=(sd,ed)=>(sd<=todayStr&&todayStr<=ed)||(sd<=tomStr&&tomStr<=ed);
     const occupied=new Set();
     (data||[]).forEach(r=>{
       if(!r||r.status==="cancelled")return;
       const sd=r.lendDate||r.startDate||r.start_date;
       const ed=r.returnDate||r.endDate||r.end_date;
       if(!sd||!ed)return;
-      if(sd<=target&&target<=ed){
+      if(overlap(sd,ed)){
         const code=fleet&&fleet[r.id];
         if(code)occupied.add(code);
       }
@@ -3295,7 +3296,7 @@ function VacancyWidget({data,vehicles,fleet,maintenance}){
       const sd=m.startDate||m.start_date,ed=m.endDate||m.end_date;
       const vc=m.vehicleCode||m.vehicle_code;
       if(!sd||!ed||!vc)return;
-      if(sd<=target&&target<=ed)mntCodes.add(vc);
+      if(overlap(sd,ed))mntCodes.add(vc);
     });
     const byClass={};
     activeVeh.forEach(v=>{
@@ -3315,10 +3316,7 @@ function VacancyWidget({data,vehicles,fleet,maintenance}){
     });
     const sum=rows.reduce((a,r)=>({total:a.total+r.total,occ:a.occ+r.occ,mnt:a.mnt+r.mnt,avail:a.avail+r.avail}),{total:0,occ:0,mnt:0,avail:0});
     return {rows,sum};
-  };
-
-  const todayCalc=useMemo(()=>calc(todayStr),[data,vehicles,fleet,maintenance,todayStr]);
-  const tomCalc=useMemo(()=>calc(tomStr),[data,vehicles,fleet,maintenance,tomStr]);
+  },[data,vehicles,fleet,maintenance,todayStr,tomStr]);
 
   const Cell=({r})=>{
     const danger=r.avail<=0;const warn=r.avail<=1&&!danger;
@@ -3326,39 +3324,25 @@ function VacancyWidget({data,vehicles,fleet,maintenance}){
     const bd=danger?"#fecaca":warn?"#fde68a":"#bbf7d0";
     const fg=danger?"#dc2626":warn?"#d97706":"#16a34a";
     const tip=r.vacantCodes.length?("空車: "+r.vacantCodes.join(", ")):"空車なし";
-    return <div title={tip} style={{background:bg,border:"1px solid "+bd,borderRadius:8,padding:"8px 4px",textAlign:"center",minWidth:0}}>
-      <div style={{fontSize:11,color:"#64748b",fontWeight:800,letterSpacing:".5px"}}>{r.cls}</div>
-      <div style={{fontSize:22,fontWeight:900,color:fg,lineHeight:1.1}}>{r.avail}{danger?"⚠️":""}</div>
-      <div style={{fontSize:9,color:"#94a3b8",marginTop:2}}>占{r.occ}/整{r.mnt}/全{r.total}</div>
+    return <div title={tip} style={{background:bg,border:"1px solid "+bd,borderRadius:8,padding:"10px 4px",textAlign:"center",minWidth:0}}>
+      <div style={{fontSize:12,color:"#64748b",fontWeight:800,letterSpacing:".5px"}}>{r.cls}</div>
+      <div style={{fontSize:26,fontWeight:900,color:fg,lineHeight:1.1}}>{r.avail}{danger?"⚠️":""}</div>
+      <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>占{r.occ}/整{r.mnt}/全{r.total}</div>
     </div>;
   };
-
-  const DayCard=({label,date,c})=>(
-    <div style={{flex:1,minWidth:280,background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:10}}>
-      <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:8}}>
-        <span style={{fontSize:13,fontWeight:800,color:"#0f172a"}}>{label}</span>
-        <span style={{fontSize:11,color:"#64748b"}}>{date}</span>
-        <span style={{marginLeft:"auto",fontSize:11,color:"#64748b",fontWeight:700}}>
-          空車<span style={{fontSize:18,fontWeight:900,color:"#10b981",margin:"0 4px"}}>{c.sum.avail}</span>
-          <span style={{color:"#94a3b8"}}>/ 全{c.sum.total}台</span>
-        </span>
-      </div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(56px,1fr))",gap:6}}>
-        {c.rows.map(r=><Cell key={r.cls} r={r}/>)}
-      </div>
-    </div>
-  );
 
   return <div style={{marginBottom:12}}>
     <div onClick={()=>setOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:"#ecfdf5",border:"1px solid #bbf7d0",borderRadius:open?"12px 12px 0 0":"12px",cursor:"pointer",userSelect:"none",boxShadow:"0 1px 3px rgba(0,0,0,.06)"}}>
       <span style={{fontSize:20}}>🚗</span>
-      <span style={{fontSize:14,fontWeight:800,color:"#1e293b",flex:1}}>空車状況（クラス別）</span>
-      <span style={{fontSize:11,color:"#64748b",fontWeight:700}}>本日 <b style={{color:"#10b981",fontSize:14}}>{todayCalc.sum.avail}</b> / 明日 <b style={{color:"#10b981",fontSize:14}}>{tomCalc.sum.avail}</b></span>
+      <span style={{fontSize:14,fontWeight:800,color:"#1e293b",flex:1}}>2日連続 完全空車（今日 {todayStr.slice(5)} ・ 明日 {tomStr.slice(5)}）</span>
+      <span style={{fontSize:11,color:"#64748b",fontWeight:700}}>計 <b style={{color:"#10b981",fontSize:18}}>{calc.sum.avail}</b> 台 / 全{calc.sum.total}</span>
       <span style={{fontSize:14,color:"#94a3b8"}}>{open?"▲":"▼"}</span>
     </div>
-    {open&&<div style={{display:"flex",gap:8,padding:10,border:"1px solid #bbf7d0",borderTop:"none",borderRadius:"0 0 12px 12px",background:"#f7fefb",flexWrap:"wrap"}}>
-      <DayCard label="今日" date={todayStr} c={todayCalc}/>
-      <DayCard label="明日" date={tomStr} c={tomCalc}/>
+    {open&&<div style={{padding:10,border:"1px solid #bbf7d0",borderTop:"none",borderRadius:"0 0 12px 12px",background:"#f7fefb"}}>
+      <div style={{fontSize:10,color:"#64748b",marginBottom:8,fontWeight:600}}>※ 今日・明日のどちらにも 貸出/返却/継続予定のない車両（配車表ベース）</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(72px,1fr))",gap:6}}>
+        {calc.rows.map(r=><Cell key={r.cls} r={r}/>)}
+      </div>
     </div>}
   </div>;
 }
@@ -16040,7 +16024,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.7.60";
+const APP_VERSION="v4.7.61";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
