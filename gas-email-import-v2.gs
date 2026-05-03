@@ -1296,6 +1296,9 @@ function sendSlackCancel_(items) {
 // Heartbeat & Monitoring
 // ============================================================
 function updateHeartbeat_(key, stats) {
+  // ★ 2026-05-03: URL Fetchクォータ節約のため無効化
+  Logger.log('[heartbeat] ' + key + ' ' + JSON.stringify(stats));
+  return;
   try {
     var payload = {
       key: 'heartbeat_' + key,
