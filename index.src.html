@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v626';
+  var CV='spk-v627';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=538').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=539').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -3269,7 +3269,7 @@ function SummarySection({data,vehicles,fleet,maintenance}){
    SPK クラス順: A/B/C/S/F/H
    ========================================== */
 function VacancyWidget({data,vehicles,fleet,maintenance}){
-  const[open,setOpen]=useState(true);
+  const[open,setOpen]=useState(false);
   const[kpiCur,setKpiCur]=useState({}); // ★ 当月 vehicle_monthly_kpi 除外フラグ
   const[washDb,setWashDb]=useState(new Set()); // ★ 当日 tasks の洗車対象車両
   const today=new Date();today.setHours(0,0,0,0);
@@ -3401,6 +3401,7 @@ function TeamCalendar({data,maintenance,isSpk}){
   const DOW=['月','火','水','木','金','土','日'];
   const today=new Date(todayStr+'T00:00:00');
 
+  const[calOpen,setCalOpen]=useState(false);
   const[view,setView]=useState('day');
   const[curDate,setCurDate]=useState(new Date(today));
   const[events,setEvents]=useState([]);
@@ -3446,26 +3447,24 @@ function TeamCalendar({data,maintenance,isSpk}){
   const loadTaskCounts=useCallback(async()=>{
     if(!sb)return;
     const tbl=isSpk?'tasks':'nha_tasks';
-    // SPKは'type'列、NHAは'内容'列
     const typeCol=isSpk?'type':'内容';
-    const LEND_TYPES=['DEL','PUB','PU'];
-    const RET_TYPES=['COL','BDB','BD'];
+    const LEND=['DEL','PUB','PU','来店'];const RET=['COL','BDB','BD','返却'];
     try{
-      const sel='date,'+typeCol;
-      const{data:rows}=await sb.from(tbl).select(sel)
-        .gte('date',rangeStart).lte('date',rangeEnd)
-        .in(typeCol,[...LEND_TYPES,...RET_TYPES,'洗車']);
+      // 全件取得してクライアント側でカウント（.in()の日本語フィルタ回避）
+      const{data:rows}=await sb.from(tbl).select('date,'+typeCol)
+        .gte('date',rangeStart).lte('date',rangeEnd);
       const dbMap={};
       (rows||[]).forEach(r=>{
         if(!r.date)return;
+        const t=String(r[typeCol]||'');
+        if(!LEND.includes(t)&&!RET.includes(t)&&t!=='洗車')return;
         if(!dbMap[r.date])dbMap[r.date]={lend:0,ret:0,wash:0,fromDb:true};
-        const t=r[typeCol];
-        if(LEND_TYPES.includes(t))dbMap[r.date].lend++;
-        else if(RET_TYPES.includes(t))dbMap[r.date].ret++;
-        else if(t==='洗車')dbMap[r.date].wash++;
+        if(LEND.includes(t))dbMap[r.date].lend++;
+        else if(RET.includes(t))dbMap[r.date].ret++;
+        else dbMap[r.date].wash++;
       });
       setTaskCountsByDate(dbMap);
-    }catch(e){}
+    }catch(e){console.error('[TeamCal loadTaskCounts]',e);}
   },[rangeStart,rangeEnd,isSpk]);
 
   useEffect(()=>{loadEvents();loadTaskCounts();},[loadEvents,loadTaskCounts]);
@@ -3650,16 +3649,18 @@ function TeamCalendar({data,maintenance,isSpk}){
     </div></div>;
 
   return <div style={{marginBottom:12,background:'#fff',borderRadius:12,border:'1px solid #e2e8f0',overflow:'hidden',boxShadow:'0 1px 3px rgba(0,0,0,.06)'}}>
-    <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',background:'#f8fafc',borderBottom:'1px solid #e2e8f0'}}>
+    <div onClick={()=>setCalOpen(o=>!o)} style={{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',background:'#f0f9ff',borderBottom:calOpen?'1px solid #e2e8f0':'none',cursor:'pointer',userSelect:'none',borderRadius:calOpen?'12px 12px 0 0':'12px'}}>
       <span style={{fontSize:18}}>📅</span>
       <span style={{fontSize:14,fontWeight:800,color:'#1e293b',flex:1}}>チームカレンダー</span>
-      <div style={{display:'flex',border:'1px solid #e2e8f0',borderRadius:6,overflow:'hidden'}}>
+      {calOpen&&<div onClick={e=>e.stopPropagation()} style={{display:'flex',border:'1px solid #e2e8f0',borderRadius:6,overflow:'hidden'}}>
         {[['month','月'],['week','週'],['day','日']].map(([v,l])=><button key={v} onClick={()=>setView(v)}
           style={{padding:'4px 9px',border:'none',fontSize:11,cursor:'pointer',fontWeight:view===v?700:400,
             background:view===v?'#3b82f6':'#fff',color:view===v?'#fff':'#475569'}}>{l}</button>)}
-      </div>
-      <button onClick={()=>openNew(todayStr)} style={{padding:'4px 12px',borderRadius:6,background:'#3b82f6',color:'#fff',border:'none',cursor:'pointer',fontSize:12,fontWeight:700}}>＋ 追加</button>
+      </div>}
+      {calOpen&&<button onClick={e=>{e.stopPropagation();openNew(todayStr);}} style={{padding:'4px 12px',borderRadius:6,background:'#3b82f6',color:'#fff',border:'none',cursor:'pointer',fontSize:12,fontWeight:700}}>＋</button>}
+      <span style={{fontSize:12,color:'#94a3b8',fontWeight:700}}>{calOpen?'▲':'▼'}</span>
     </div>
+    {calOpen&&<>
     <div style={{display:'flex',alignItems:'center',gap:6,padding:'6px 14px',borderBottom:'1px solid #e2e8f0',background:'#fff'}}>
       <button onClick={()=>nav(-1)} style={{padding:'3px 9px',borderRadius:5,border:'1px solid #e2e8f0',background:'#fff',cursor:'pointer',fontSize:13}}>◀</button>
       <button onClick={goToday} style={{padding:'3px 9px',borderRadius:5,border:'1px solid #e2e8f0',background:'#fff',cursor:'pointer',fontSize:11}}>今日</button>
@@ -3721,6 +3722,7 @@ function TeamCalendar({data,maintenance,isSpk}){
         {modal.mode==='day'?DayDetail():EventForm()}
       </div>
     </div>}
+    </>}
   </div>;
 }
 
@@ -16405,7 +16407,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.7.69";
+const APP_VERSION="v4.7.70";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
