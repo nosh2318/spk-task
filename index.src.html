@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v620';
+  var CV='spk-v621';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=532').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=533').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -3380,6 +3380,326 @@ function VacancyWidget({data,vehicles,fleet,maintenance}){
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(72px,1fr))",gap:6}}>
         {calc.rows.map(r=><Cell key={r.cls} r={r}/>)}
+      </div>
+    </div>}
+  </div>;
+}
+
+// ── チームカレンダー ──
+function TeamCalendar({data,maintenance,isSpk}){
+  const store=isSpk?'spk':'nha';
+  const toYMD=d=>{const dt=typeof d==='string'?new Date(d+'T00:00:00'):d;return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');};
+  const todayStr=toYMD(new Date());
+  const CAT=[
+    {key:'deadline',label:'締切',icon:'🔴',color:'#ef4444'},
+    {key:'task',label:'タスク',icon:'🟡',color:'#f59e0b'},
+    {key:'hq',label:'本社依頼',icon:'🔵',color:'#3b82f6'},
+    {key:'store',label:'店舗予定',icon:'🟢',color:'#10b981'},
+    {key:'other',label:'その他',icon:'⚪',color:'#8b5cf6'},
+  ];
+  const getCat=k=>CAT.find(c=>c.key===k)||CAT[4];
+  const DOW=['月','火','水','木','金','土','日'];
+  const today=new Date(todayStr+'T00:00:00');
+
+  const[view,setView]=useState('month');
+  const[curDate,setCurDate]=useState(new Date(today.getFullYear(),today.getMonth(),1));
+  const[events,setEvents]=useState([]);
+  const[washByDate,setWashByDate]=useState({});
+  const[staffList,setStaffList]=useState([]);
+  const[modal,setModal]=useState(null);
+  const[form,setForm]=useState({});
+  const[saving,setSaving]=useState(false);
+  const[loading,setLoading]=useState(false);
+
+  useEffect(()=>{
+    if(!sb)return;
+    const tbl=isSpk?'staff':'nha_staff';
+    let q=sb.from(tbl).select('name').eq('active',true).order('sort_order',{ascending:true});
+    if(isSpk)q=q.eq('store','SPK');
+    q.then(({data:rows})=>setStaffList((rows||[]).map(r=>r.name)));
+  },[isSpk]);
+
+  const{rangeStart,rangeEnd}=useMemo(()=>{
+    const y=curDate.getFullYear(),mo=curDate.getMonth();
+    if(view==='month'){
+      const first=new Date(y,mo,1);let dow=first.getDay();if(dow===0)dow=7;
+      const s=new Date(y,mo,2-dow);const last=new Date(y,mo+1,0);
+      let ldow=last.getDay();if(ldow===0)ldow=7;const e=new Date(y,mo+1,7-ldow);
+      return{rangeStart:toYMD(s),rangeEnd:toYMD(e)};
+    }else if(view==='week'){
+      const d=new Date(curDate);let dow=d.getDay();if(dow===0)dow=7;
+      d.setDate(d.getDate()-(dow-1));const e=new Date(d);e.setDate(d.getDate()+6);
+      return{rangeStart:toYMD(d),rangeEnd:toYMD(e)};
+    }else{const s=toYMD(curDate);return{rangeStart:s,rangeEnd:s};}
+  },[curDate,view]);
+
+  const loadEvents=useCallback(async()=>{
+    if(!sb)return;setLoading(true);
+    try{const{data:rows}=await sb.from('store_events').select('*').eq('store',store)
+        .lte('event_date',rangeEnd).gte('event_date',rangeStart)
+        .order('event_date',{ascending:true}).order('created_at',{ascending:true});
+      setEvents(rows||[]);}catch(e){}
+    setLoading(false);
+  },[rangeStart,rangeEnd,store]);
+
+  const loadWash=useCallback(async()=>{
+    if(!sb)return;
+    const tbl=isSpk?'tasks':'nha_tasks';
+    try{const{data:rows}=await sb.from(tbl).select('date,内容').eq('内容','洗車')
+        .gte('date',rangeStart).lte('date',rangeEnd);
+      const map={};(rows||[]).forEach(r=>{if(r.date)map[r.date]=(map[r.date]||0)+1;});
+      setWashByDate(map);}catch(e){}
+  },[rangeStart,rangeEnd,isSpk]);
+
+  useEffect(()=>{loadEvents();loadWash();},[loadEvents,loadWash]);
+
+  const resvByDate=useMemo(()=>{
+    const map={};
+    (data||[]).forEach(r=>{
+      if(r.status==='cancelled')return;
+      const lend=r.lendDate||r.start_date||r.lend_date;
+      const ret=r.returnDate||r.end_date||r.return_date;
+      if(lend){if(!map[lend])map[lend]={lend:0,ret:0};map[lend].lend++;}
+      if(ret&&ret!==lend){if(!map[ret])map[ret]={lend:0,ret:0};map[ret].ret++;}
+    });return map;
+  },[data]);
+
+  const eventsByDate=useMemo(()=>{
+    const map={};
+    events.forEach(ev=>{
+      const s=ev.event_date,e=ev.end_date||ev.event_date;
+      let d=new Date(s+'T00:00:00');const ed=new Date(e+'T00:00:00');
+      while(d<=ed){const k=toYMD(d);
+        if(k>=rangeStart&&k<=rangeEnd){if(!map[k])map[k]=[];map[k].push(ev);}
+        d.setDate(d.getDate()+1);}
+    });return map;
+  },[events,rangeStart,rangeEnd]);
+
+  const monthGrid=useMemo(()=>{
+    const y=curDate.getFullYear(),mo=curDate.getMonth();
+    const first=new Date(y,mo,1);let dow=first.getDay();if(dow===0)dow=7;
+    const days=[];let d=new Date(y,mo,2-dow);
+    while(true){days.push(new Date(d));d.setDate(d.getDate()+1);
+      if(days.length>=35&&(d.getMonth()>mo||(mo===11&&d.getMonth()===0))){
+        let ldow=days[days.length-1].getDay();if(ldow===0)ldow=7;if(ldow===7)break;}}
+    while(days.length%7!==0){days.push(new Date(d));d.setDate(d.getDate()+1);}
+    const weeks=[];for(let i=0;i<days.length;i+=7)weeks.push(days.slice(i,i+7));return weeks;
+  },[curDate]);
+
+  const weekDays=useMemo(()=>{
+    const d=new Date(curDate);let dow=d.getDay();if(dow===0)dow=7;d.setDate(d.getDate()-(dow-1));
+    return Array.from({length:7},(_,i)=>{const dd=new Date(d);dd.setDate(d.getDate()+i);return dd;});
+  },[curDate,view]);
+
+  const nav=dir=>setCurDate(d=>{const nd=new Date(d);
+    if(view==='month')nd.setMonth(nd.getMonth()+dir);
+    else if(view==='week')nd.setDate(nd.getDate()+dir*7);
+    else nd.setDate(nd.getDate()+dir);return nd;});
+  const goToday=()=>{setView('month');setCurDate(new Date(today.getFullYear(),today.getMonth(),1));};
+  const headerLabel=()=>{const y=curDate.getFullYear(),m=curDate.getMonth()+1;
+    if(view==='month')return`${y}年 ${m}月`;
+    if(view==='week'){const ds=weekDays;return`${ds[0].getMonth()+1}/${ds[0].getDate()} 〜 ${ds[6].getMonth()+1}/${ds[6].getDate()}`;}
+    return`${y}年${m}月${curDate.getDate()}日`;};
+
+  const openDay=ds=>setModal({mode:'day',date:ds});
+  const openNew=ds=>{setForm({event_date:ds,end_date:ds,category:'task',assignees:[],is_all_day:true});setModal({mode:'form'});};
+  const openEdit=ev=>{setForm({...ev,assignees:ev.assignees||[]});setModal({mode:'form'});};
+
+  const saveEvent=async()=>{
+    if(!sb||!form.title?.trim()||!form.event_date)return alert('タイトルと開始日は必須です');
+    setSaving(true);
+    try{const row={store,title:form.title.trim(),description:form.description||'',category:form.category||'task',
+        color:getCat(form.category||'task').color,event_date:form.event_date,end_date:form.end_date||form.event_date,
+        is_all_day:form.is_all_day!==false,start_time:form.is_all_day!==false?null:(form.start_time||null),
+        end_time:form.is_all_day!==false?null:(form.end_time||null),
+        assignees:form.assignees||[],created_by:form.created_by||'',is_done:!!form.is_done};
+      if(form.id){await sb.from('store_events').update({...row,updated_at:new Date().toISOString()}).eq('id',form.id);}
+      else{await sb.from('store_events').insert(row);}
+      await loadEvents();setModal(null);setForm({});}catch(e){alert('保存失敗: '+e.message);}
+    setSaving(false);};
+  const deleteEvent=async()=>{
+    if(!sb||!form.id||!window.confirm('このイベントを削除しますか？'))return;
+    await sb.from('store_events').delete().eq('id',form.id);
+    await loadEvents();setModal(null);setForm({});};
+  const toggleDone=async ev=>{if(!sb)return;const nd=!ev.is_done;
+    await sb.from('store_events').update({is_done:nd,updated_at:new Date().toISOString()}).eq('id',ev.id);
+    setEvents(es=>es.map(e=>e.id===ev.id?{...e,is_done:nd}:e));};
+
+  const DayCell=({date,inMonth=true})=>{
+    const ds=toYMD(date);const isToday=ds===todayStr;
+    const dowi=(date.getDay()+6)%7;
+    const rs=resvByDate[ds]||{};const wc=washByDate[ds]||0;
+    const evs=eventsByDate[ds]||[];const vis=evs.slice(0,3);const more=evs.length-vis.length;
+    return <div onClick={()=>openDay(ds)} style={{minHeight:view==='week'?110:68,padding:'2px 3px',
+      background:inMonth?'#fff':'#f8fafc',borderRight:'1px solid #e2e8f0',borderBottom:'1px solid #e2e8f0',
+      cursor:'pointer',overflow:'hidden'}}>
+      <div style={{textAlign:'right',marginBottom:1}}>
+        <span style={{display:'inline-flex',alignItems:'center',justifyContent:'center',width:20,height:20,borderRadius:'50%',fontSize:11,
+          background:isToday?'#3b82f6':'transparent',
+          color:isToday?'#fff':dowi===5?'#dc2626':dowi===6?'#2563eb':inMonth?'#1e293b':'#94a3b8',
+          fontWeight:isToday?800:400}}>{date.getDate()}</span>
+      </div>
+      {(rs.lend||rs.ret||wc)?<div style={{display:'flex',gap:2,flexWrap:'wrap',marginBottom:1}}>
+        {rs.lend?<span style={{fontSize:9,background:'#dbeafe',color:'#1d4ed8',borderRadius:3,padding:'0 3px',lineHeight:'14px'}}>🚗{rs.lend}</span>:null}
+        {rs.ret?<span style={{fontSize:9,background:'#dcfce7',color:'#15803d',borderRadius:3,padding:'0 3px',lineHeight:'14px'}}>🏠{rs.ret}</span>:null}
+        {wc?<span style={{fontSize:9,background:'#f0fdf4',color:'#16a34a',borderRadius:3,padding:'0 3px',lineHeight:'14px'}}>🚿{wc}</span>:null}
+      </div>:null}
+      {vis.map(ev=>{const cat=getCat(ev.category);return <div key={ev.id} style={{fontSize:9,color:'#fff',
+        background:ev.color||cat.color,borderRadius:3,padding:'1px 4px',marginBottom:1,
+        overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis',
+        opacity:ev.is_done?0.6:1,textDecoration:ev.is_done?'line-through':'none'}}>
+        {ev.is_done?'✓ ':''}{ev.title}</div>;})}
+      {more>0&&<div style={{fontSize:9,color:'#64748b'}}>+{more}件</div>}
+    </div>;};
+
+  const DayDetail=()=>{
+    const ds=modal?.date;if(!ds)return null;
+    const dt=new Date(ds+'T00:00:00');const JDOW=['日','月','火','水','木','金','土'];
+    const rs=resvByDate[ds]||{};const wc=washByDate[ds]||0;const evs=eventsByDate[ds]||[];
+    return <div>
+      <div style={{fontWeight:800,fontSize:15,marginBottom:10,color:'#1e293b'}}>{dt.getMonth()+1}月{dt.getDate()}日（{JDOW[dt.getDay()]}）</div>
+      <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
+        {rs.lend?<span style={{fontSize:12,background:'#dbeafe',color:'#1d4ed8',borderRadius:6,padding:'4px 8px'}}>🚗 出発 {rs.lend}件</span>:null}
+        {rs.ret?<span style={{fontSize:12,background:'#dcfce7',color:'#15803d',borderRadius:6,padding:'4px 8px'}}>🏠 返却 {rs.ret}件</span>:null}
+        {wc?<span style={{fontSize:12,background:'#f0fdf4',color:'#16a34a',borderRadius:6,padding:'4px 8px'}}>🚿 洗車 {wc}件</span>:null}
+        {!rs.lend&&!rs.ret&&!wc&&<span style={{fontSize:12,color:'#94a3b8'}}>予約なし</span>}
+      </div>
+      {evs.length>0&&<div style={{marginBottom:12}}>
+        <div style={{fontSize:11,color:'#64748b',fontWeight:600,marginBottom:6}}>📌 イベント</div>
+        {evs.map(ev=>{const cat=getCat(ev.category);return <div key={ev.id}
+          style={{padding:'8px 10px',borderRadius:8,border:'1px solid '+(ev.color||cat.color)+'66',
+            background:(ev.color||cat.color)+'11',marginBottom:6,display:'flex',alignItems:'flex-start',gap:6}}>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:2,flexWrap:'wrap'}}>
+              <span style={{fontSize:10,padding:'1px 6px',borderRadius:10,background:ev.color||cat.color,color:'#fff',flexShrink:0}}>{cat.icon} {cat.label}</span>
+              <span style={{fontSize:13,fontWeight:700,color:'#1e293b',textDecoration:ev.is_done?'line-through':'none'}}>{ev.title}</span>
+            </div>
+            {ev.assignees?.length>0&&<div style={{fontSize:11,color:'#64748b'}}>👤 {ev.assignees.join('・')}</div>}
+            {ev.description&&<div style={{fontSize:11,color:'#64748b',marginTop:2}}>{ev.description}</div>}
+            {ev.end_date&&ev.end_date!==ev.event_date&&<div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>{ev.event_date}〜{ev.end_date}</div>}
+          </div>
+          <div style={{display:'flex',gap:3,flexShrink:0}}>
+            <button onClick={e=>{e.stopPropagation();toggleDone(ev);}}
+              style={{padding:'3px 6px',borderRadius:4,border:'1px solid #e2e8f0',background:ev.is_done?'#dcfce7':'#f1f5f9',fontSize:11,cursor:'pointer',color:ev.is_done?'#15803d':'#64748b'}}>
+              {ev.is_done?'✓':'○'}</button>
+            <button onClick={e=>{e.stopPropagation();openEdit(ev);}}
+              style={{padding:'3px 6px',borderRadius:4,border:'1px solid #e2e8f0',background:'#f1f5f9',fontSize:11,cursor:'pointer',color:'#475569'}}>✏️</button>
+          </div>
+        </div>;})}
+      </div>}
+      {evs.length===0&&<div style={{fontSize:12,color:'#94a3b8',marginBottom:12}}>イベントなし</div>}
+      <button onClick={()=>openNew(ds)} style={{width:'100%',padding:'9px',borderRadius:8,background:'#3b82f6',color:'#fff',border:'none',cursor:'pointer',fontSize:13,fontWeight:700}}>＋ イベントを追加</button>
+    </div>;};
+
+  const EventForm=()=><div style={{display:'flex',flexDirection:'column',gap:10}}>
+    <input placeholder="タイトル *" value={form.title||''} onChange={e=>setForm(f=>({...f,title:e.target.value}))}
+      style={{padding:'9px 12px',borderRadius:8,border:'1px solid #e2e8f0',fontSize:14,fontWeight:600,outline:'none'}}/>
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+      <div><label style={{fontSize:11,color:'#64748b',fontWeight:600}}>開始日 *</label>
+        <input type="date" value={form.event_date||''} onChange={e=>setForm(f=>({...f,event_date:e.target.value}))}
+          style={{display:'block',width:'100%',marginTop:3,padding:'6px 8px',borderRadius:6,border:'1px solid #e2e8f0',fontSize:13,boxSizing:'border-box'}}/></div>
+      <div><label style={{fontSize:11,color:'#64748b',fontWeight:600}}>終了日</label>
+        <input type="date" value={form.end_date||''} onChange={e=>setForm(f=>({...f,end_date:e.target.value}))}
+          style={{display:'block',width:'100%',marginTop:3,padding:'6px 8px',borderRadius:6,border:'1px solid #e2e8f0',fontSize:13,boxSizing:'border-box'}}/></div>
+    </div>
+    <div><label style={{fontSize:11,color:'#64748b',fontWeight:600}}>カテゴリ</label>
+      <div style={{display:'flex',gap:5,flexWrap:'wrap',marginTop:4}}>
+        {CAT.map(c=>{const sel=form.category===c.key;return <button key={c.key} onClick={()=>setForm(f=>({...f,category:c.key}))}
+          style={{padding:'4px 10px',borderRadius:16,border:'2px solid '+(sel?c.color:'#e2e8f0'),
+            background:sel?c.color+'22':'#fff',fontSize:12,cursor:'pointer',color:sel?c.color:'#64748b',fontWeight:sel?700:400}}>
+          {c.icon} {c.label}</button>;})}
+      </div></div>
+    <div><label style={{fontSize:11,color:'#64748b',fontWeight:600}}>担当者</label>
+      <div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:4}}>
+        {staffList.map(name=>{const sel=(form.assignees||[]).includes(name);return <button key={name}
+          onClick={()=>setForm(f=>({...f,assignees:sel?(f.assignees||[]).filter(n=>n!==name):[...(f.assignees||[]),name]}))}
+          style={{padding:'3px 10px',borderRadius:16,border:'1px solid '+(sel?'#3b82f6':'#e2e8f0'),
+            background:sel?'#dbeafe':'#f8fafc',fontSize:12,cursor:'pointer',color:sel?'#1d4ed8':'#475569',fontWeight:sel?600:400}}>
+          {name}</button>;})}
+        {staffList.length===0&&<span style={{fontSize:11,color:'#94a3b8'}}>読み込み中...</span>}
+      </div></div>
+    <textarea placeholder="詳細メモ" value={form.description||''} onChange={e=>setForm(f=>({...f,description:e.target.value}))}
+      style={{padding:'8px 12px',borderRadius:8,border:'1px solid #e2e8f0',fontSize:13,minHeight:56,resize:'vertical'}}/>
+    {form.id&&<label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer',userSelect:'none'}}>
+      <input type="checkbox" checked={!!form.is_done} onChange={e=>setForm(f=>({...f,is_done:e.target.checked}))}/> 完了済みにする</label>}
+    <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:4}}>
+      {form.id&&<button onClick={deleteEvent} style={{padding:'8px 14px',borderRadius:8,background:'#fee2e2',color:'#dc2626',border:'none',cursor:'pointer',fontSize:13}}>🗑 削除</button>}
+      <button onClick={()=>{setModal(null);setForm({});}} style={{padding:'8px 14px',borderRadius:8,background:'#f1f5f9',color:'#475569',border:'none',cursor:'pointer',fontSize:13}}>キャンセル</button>
+      <button onClick={saveEvent} disabled={saving||!form.title?.trim()||!form.event_date}
+        style={{padding:'8px 16px',borderRadius:8,background:'#3b82f6',color:'#fff',border:'none',cursor:'pointer',fontSize:13,fontWeight:700,opacity:saving||!form.title?.trim()||!form.event_date?0.5:1}}>
+        {saving?'保存中...':'保存'}</button>
+    </div></div>;
+
+  return <div style={{marginBottom:12,background:'#fff',borderRadius:12,border:'1px solid #e2e8f0',overflow:'hidden',boxShadow:'0 1px 3px rgba(0,0,0,.06)'}}>
+    <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',background:'#f8fafc',borderBottom:'1px solid #e2e8f0'}}>
+      <span style={{fontSize:18}}>📅</span>
+      <span style={{fontSize:14,fontWeight:800,color:'#1e293b',flex:1}}>チームカレンダー</span>
+      <div style={{display:'flex',border:'1px solid #e2e8f0',borderRadius:6,overflow:'hidden'}}>
+        {[['month','月'],['week','週'],['day','日']].map(([v,l])=><button key={v} onClick={()=>setView(v)}
+          style={{padding:'4px 9px',border:'none',fontSize:11,cursor:'pointer',fontWeight:view===v?700:400,
+            background:view===v?'#3b82f6':'#fff',color:view===v?'#fff':'#475569'}}>{l}</button>)}
+      </div>
+      <button onClick={()=>openNew(todayStr)} style={{padding:'4px 12px',borderRadius:6,background:'#3b82f6',color:'#fff',border:'none',cursor:'pointer',fontSize:12,fontWeight:700}}>＋ 追加</button>
+    </div>
+    <div style={{display:'flex',alignItems:'center',gap:6,padding:'6px 14px',borderBottom:'1px solid #e2e8f0',background:'#fff'}}>
+      <button onClick={()=>nav(-1)} style={{padding:'3px 9px',borderRadius:5,border:'1px solid #e2e8f0',background:'#fff',cursor:'pointer',fontSize:13}}>◀</button>
+      <button onClick={goToday} style={{padding:'3px 9px',borderRadius:5,border:'1px solid #e2e8f0',background:'#fff',cursor:'pointer',fontSize:11}}>今日</button>
+      <button onClick={()=>nav(1)} style={{padding:'3px 9px',borderRadius:5,border:'1px solid #e2e8f0',background:'#fff',cursor:'pointer',fontSize:13}}>▶</button>
+      <span style={{fontSize:13,fontWeight:700,color:'#1e293b',marginLeft:4}}>{headerLabel()}</span>
+      {loading&&<span style={{fontSize:11,color:'#94a3b8',marginLeft:'auto'}}>読込中...</span>}
+    </div>
+    {view!=='day'&&<div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',background:'#f8fafc',borderBottom:'1px solid #e2e8f0'}}>
+      {DOW.map((d,i)=><div key={d} style={{textAlign:'center',padding:'4px 0',fontSize:10,fontWeight:700,
+        color:i===5?'#dc2626':i===6?'#2563eb':'#64748b',borderRight:i<6?'1px solid #e2e8f0':'none'}}>{d}</div>)}
+    </div>}
+    {view==='month'&&monthGrid.map((week,wi)=><div key={wi} style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)'}}>
+      {week.map((date,di)=><DayCell key={di} date={date} inMonth={date.getMonth()===curDate.getMonth()}/>)}
+    </div>)}
+    {view==='week'&&<div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',borderBottom:'1px solid #e2e8f0'}}>
+        {weekDays.map((d,i)=>{const isT=toYMD(d)===todayStr;return <div key={i} style={{textAlign:'center',padding:'4px 0',borderRight:i<6?'1px solid #e2e8f0':'none',background:'#f8fafc'}}>
+          <div style={{fontSize:10,fontWeight:700,color:i===5?'#dc2626':i===6?'#2563eb':'#64748b'}}>{DOW[i]}</div>
+          <div style={{width:24,height:24,borderRadius:'50%',background:isT?'#3b82f6':'transparent',
+            color:isT?'#fff':undefined,display:'inline-flex',alignItems:'center',justifyContent:'center',
+            fontSize:13,fontWeight:isT?800:400,margin:'2px auto'}}>{d.getDate()}</div>
+        </div>;})}
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)'}}>
+        {weekDays.map((d,i)=><DayCell key={i} date={d} inMonth={true}/>)}
+      </div>
+    </div>}
+    {view==='day'&&(()=>{
+      const ds=toYMD(curDate);const rs=resvByDate[ds]||{};const wc=washByDate[ds]||0;const evs=eventsByDate[ds]||[];
+      return <div style={{padding:14}}>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
+          {rs.lend?<span style={{fontSize:12,background:'#dbeafe',color:'#1d4ed8',borderRadius:6,padding:'4px 8px'}}>🚗 出発 {rs.lend}件</span>:null}
+          {rs.ret?<span style={{fontSize:12,background:'#dcfce7',color:'#15803d',borderRadius:6,padding:'4px 8px'}}>🏠 返却 {rs.ret}件</span>:null}
+          {wc?<span style={{fontSize:12,background:'#f0fdf4',color:'#16a34a',borderRadius:6,padding:'4px 8px'}}>🚿 洗車 {wc}件</span>:null}
+          {!rs.lend&&!rs.ret&&!wc&&<span style={{fontSize:12,color:'#94a3b8'}}>予約なし</span>}
+        </div>
+        {evs.map(ev=>{const cat=getCat(ev.category);return <div key={ev.id} onClick={()=>openEdit(ev)}
+          style={{padding:'12px',borderRadius:10,border:'2px solid '+(ev.color||cat.color),
+            background:(ev.color||cat.color)+'11',marginBottom:8,cursor:'pointer'}}>
+          <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
+            <span style={{fontSize:10,padding:'1px 6px',borderRadius:10,background:ev.color||cat.color,color:'#fff'}}>{cat.icon} {cat.label}</span>
+            <span style={{fontSize:14,fontWeight:700,color:'#1e293b',textDecoration:ev.is_done?'line-through':'none'}}>{ev.title}</span>
+          </div>
+          {ev.assignees?.length>0&&<div style={{fontSize:12,color:'#64748b'}}>👤 {ev.assignees.join('・')}</div>}
+          {ev.description&&<div style={{fontSize:12,color:'#64748b',marginTop:4}}>{ev.description}</div>}
+        </div>;})}
+        {evs.length===0&&<div style={{fontSize:12,color:'#94a3b8',marginBottom:10}}>この日のイベントはありません</div>}
+        <button onClick={()=>openNew(ds)} style={{width:'100%',padding:'9px',borderRadius:8,background:'#3b82f6',color:'#fff',border:'none',cursor:'pointer',fontSize:13,fontWeight:700}}>＋ イベントを追加</button>
+      </div>;})}
+    {modal&&<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,.65)',zIndex:9200,display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'60px 12px 12px'}}
+      onClick={e=>{if(e.target===e.currentTarget){setModal(null);setForm({});}}}>
+      <div style={{background:'#fff',borderRadius:16,padding:20,width:'100%',maxWidth:480,maxHeight:'90vh',overflowY:'auto',boxShadow:'0 20px 60px rgba(0,0,0,.3)'}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
+          <span style={{fontSize:15,fontWeight:800,color:'#1e293b'}}>
+            {modal.mode==='day'?`📅 ${modal.date}`:modal.mode==='form'&&form.id?'✏️ イベント編集':'＋ イベント追加'}
+          </span>
+          <button onClick={()=>{setModal(null);setForm({});}} style={{background:'none',border:'none',fontSize:20,cursor:'pointer',color:'#94a3b8',lineHeight:1}}>×</button>
+        </div>
+        {modal.mode==='day'?<DayDetail/>:<EventForm/>}
       </div>
     </div>}
   </div>;
@@ -15775,6 +16095,8 @@ function App(){
               <SummarySection data={data} vehicles={vehicles} fleet={fleet} maintenance={maintenance}/>
               {/* ===== 🔍 システム監視ウィジェット ===== */}
               <MonitorWidget isSpk={true}/>
+              {/* ===== 📅 チームカレンダー ===== */}
+              <TeamCalendar data={data} maintenance={maintenance} isSpk={true}/>
               {/* ★ タスクサマリー + 本日スケジュール ヘッダー2列 */}
               <div style={{display:"flex",gap:6,marginBottom:6}}>
                 <div onClick={()=>setTaskSumOpen(o=>!o)} style={{flex:1,display:"flex",alignItems:"center",gap:6,padding:"8px 10px",borderRadius:10,background:"#f8fafc",border:"1px solid #e2e8f0",cursor:"pointer",userSelect:"none",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
@@ -16064,7 +16386,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.7.63";
+const APP_VERSION="v4.7.64";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
