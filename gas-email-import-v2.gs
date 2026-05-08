@@ -361,12 +361,16 @@ function processMessage_(message, dryRun) {
       // 既存 price は「合計金額(クーポン前)」の可能性が極めて高い。
       // この場合は price / base_price / option_price / discount を一括で上書きする
       // （そうしないと price=¥19,300 + discount=¥3,000 の矛盾状態になり Square で過大請求される）
+      // ★ 2026-05-06: ポイント全額充当(parser price=0)ケースを取りこぼしていた → 条件緩和
+      // 旧条件: parser price > 0 を要求 → 0円ケースで発火せず existing price=合計金額 が残存 → 過大請求
+      // 新条件: parser discount > 0 かつ existing discount=0 かつ existing price > parser price なら発火
+      //         （parser price=0 かつ existing price>0 も含めるため = 等号付き）
       var jalanOverbillFix = (reservation.ota === 'J')
         && +(reservation.discount||0) > 0
         && +(existingRow.discount||0) === 0
         && +(existingRow.price||0) > 0
-        && +(reservation.price||0) > 0
-        && +(existingRow.price||0) > +(reservation.price||0);  // 既存 price > パーサー price ≒ クーポン前で登録された証拠
+        && +(existingRow.price||0) >= +(reservation.price||0)
+        && (+(reservation.price||0) === 0 || +(existingRow.price||0) > +(reservation.price||0));
 
       if (jalanOverbillFix) {
         patch.price = reservation.price;
@@ -632,8 +636,12 @@ function parseJalan_(body) {
   var discountJ = couponJ + pointJ;
   var base_price_j = basePriceJ;
   var option_price_j = optionPriceJ + insurancePriceJ + dropOffFeeJ + nightFeeJ;
-  var billingPrice = parsePrice_(extractField_(body, '利用者への請求額'));
-  var price = billingPrice > 0 ? billingPrice : parsePrice_(extractField_(body, '合計金額'));
+  // ★ 2026-05-06: 「利用者への請求額: 0円」(ポイント全額充当)を正しく0として扱う
+  // 旧: billingPrice > 0 で判定 → 0円のとき合計金額(クーポン前)にフォールバック → 過大請求
+  // 新: extractField_ の戻り値（空文字 or 値あり）で判定。空文字ならフィールド自体が無いので合計金額
+  var billingRaw = extractField_(body, '利用者への請求額');
+  var billingPrice = parsePrice_(billingRaw);
+  var price = (billingRaw !== '') ? billingPrice : parsePrice_(extractField_(body, '合計金額'));
   var arrFlight = extractField_(body, '到着便');
   var depFlight = extractField_(body, '出発便');
   var flight = [arrFlight, depFlight].filter(Boolean).join(' / ');
@@ -698,14 +706,24 @@ function parseRakuten_(body) {
   if (!insurancePriceR) insurancePriceR = parsePrice_(extractField_(body, '免責補償料金'));
   var optionPriceR = parsePrice_(extractField_(body, '・オプション料金'));
   if (!optionPriceR) optionPriceR = parsePrice_(extractField_(body, 'オプション料金'));
-  // ★ クーポン割引（レンタカー事業者クーポン）
+  // ★ クーポン割引
+  //   事業者クーポン = 弊社負担 → 売上から差し引く（discount + price両方に反映）
+  //   楽天クーポン / 楽天ポイント = 楽天負担 → 売上から引かない（後精算で弊社収入になる）
+  //   オーナー方針確定 2026-05-07（NHA L1112-1114 と同期）:
+  //     計上売上 = 合計 − 事業者クーポン（弊社負担分のみ差引）
+  //     楽天クーポン・楽天ポイントは楽天が後精算するため売上に含める
+  //   検算例:
+  //     RC52461167634443526: 合計 53,800 − 事業者クーポン 10,000 = 43,800（楽天ポイント 8,800 は楽天負担→計上に含める）
+  //   旧バグ (2026-05-08 修正): price = totalR をそのまま採用していたため、事業者クーポン分を売上から差し引けていなかった
   var couponR = parsePrice_(extractField_(body, '（レンタカー事業者クーポン利用）'));
-  var discountR = couponR;
-  // ★ 差引支払金額（クーポン差引後）を優先。なければ合計金額
+  var discountR = couponR; // 事業者クーポンのみ
+  var totalR = parsePrice_(extractField_(body, '（合計）'));
   var billingR = parsePrice_(extractField_(body, '（差引支払金額）'));
-  var price = billingR > 0 ? billingR : parsePrice_(extractField_(body, '（合計）'));
-  var base_price_r = basePriceR;
+  // 計上売上 = 合計 − 事業者クーポン（楽天クーポン・楽天ポイントは売上に含める）
+  var price = totalR > 0 ? (totalR - couponR) : billingR;
   var option_price_r = insurancePriceR + optionPriceR;
+  // base_price が取れない場合のフォールバック（合計-事業者クーポン-オプション）
+  var base_price_r = basePriceR > 0 ? basePriceR : Math.max(0, totalR - couponR - option_price_r);
   var optB = 0, optC = 0, optJ = 0;
   var bMatch = optionsStr.match(/ベビーシート\s*(\d*)/);
   if (bMatch) optB = parseInt(bMatch[1], 10) || 1;
@@ -1392,6 +1410,12 @@ function handleJalanPayment_(reservation) {
   var resId = reservation.id;
   var store = reservation._store || '';
   if (/那覇|沖縄|OKA|naha/.test(store)) { Logger.log('[JalanPayment] BLOCKED: 那覇店予約 ' + resId); return; }
+  // ★ 2026-05-06: ポイント全額充当等で利用者請求額0円のケースは決済リンク不要
+  // (R0EQE3JK 田草川様で誤って¥7,000リンク発行→お客様にメール送信される事故が発生)
+  if (+(reservation.price||0) <= 0) {
+    Logger.log('[JalanPayment] SKIP price<=0 (ポイント全額充当等): ' + resId + ' price=' + reservation.price);
+    return;
+  }
   var existing = supabaseGet_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(resId) + '&select=id');
   if (existing && existing.length > 0) { Logger.log('[JalanPayment] Already exists: ' + resId); return; }
 
@@ -3094,6 +3118,60 @@ function resendApologyToFiveCustomers() {
  *
  * 結果を Slack #jalan_payment に報告。実際の訂正はまだ行わない（診断のみ）。
  */
+/**
+ * ★ 2026-05-06 追加: ポイント全額充当（請求額0円）ケースの監査
+ * 既存じゃらん予約のうち、reservations.price=0 にすべきだったのに
+ * jalan_payments で >0 で発行されているレコードを検出。
+ * R0EQE3JK 田草川様事故と同型のバグ被害者がいないかチェック。
+ *
+ * 結果を Slack #jalan_payment に報告。実際の訂正はせず一覧のみ。
+ */
+function auditAllJalanZeroBilling() {
+  Logger.log('[AuditZeroBilling] Start');
+
+  // jalan_payments で amount > 0 かつ status != cancelled/refunded を取得
+  var pays = supabaseGet_('jalan_payments', 'amount=gt.0&status=not.in.(cancelled,refunded,refund)&select=reservation_id,amount,status,customer_name,square_payment_url,email_sent_at,paid_at&order=created_at.desc&limit=500');
+  if (!pays || pays.length === 0) { Logger.log('[AuditZeroBilling] no targets'); return; }
+
+  var suspects = [];
+  for (var i = 0; i < pays.length; i++) {
+    var pay = pays[i];
+    var resv = supabaseGet_('reservations', 'id=eq.' + encodeURIComponent(pay.reservation_id) + '&select=id,name,lend_date,return_date,price,base_price,discount,status,ota');
+    if (!resv || resv.length === 0) continue;
+    var r = resv[0];
+    if (r.ota !== 'J') continue;
+    if (r.status === 'cancelled' || r.status === 'キャンセル') continue;
+    // 疑わしい条件: discount >= base_price - 1 (=ほぼ全額割引) or price < amount
+    var fullDiscount = +(r.discount||0) > 0 && +(r.base_price||0) > 0 && +(r.discount||0) >= +(r.base_price||0);
+    var amountMismatch = +(pay.amount||0) > +(r.price||0);
+    if (fullDiscount || amountMismatch) {
+      suspects.push({
+        id: r.id, name: r.name, lend: r.lend_date, ret: r.return_date,
+        resv_price: r.price, base: r.base_price, discount: r.discount,
+        pay_amount: pay.amount, pay_status: pay.status,
+        url: pay.square_payment_url, email_sent: pay.email_sent_at, paid: pay.paid_at,
+        reason: fullDiscount ? '全額割引(ポイント等)' : (amountMismatch ? 'amount > resv.price' : '')
+      });
+    }
+  }
+
+  Logger.log('[AuditZeroBilling] suspects=' + suspects.length);
+  if (suspects.length === 0) {
+    postToSlackChannel_(JALAN_PAY_CHANNEL, '✅ *じゃらん0円請求監査*\n疑わしいレコードはありませんでした（全' + pays.length + '件チェック）');
+    return;
+  }
+
+  var lines = ['🔍 *じゃらん0円請求監査 — ' + suspects.length + '件 要確認*'];
+  for (var s = 0; s < suspects.length; s++) {
+    var x = suspects[s];
+    lines.push('— ' + x.id + ' / ' + x.name + ' / ' + x.lend);
+    lines.push('  resv.price=¥' + (x.resv_price||0) + ' base=¥' + (x.base||0) + ' discount=¥' + (x.discount||0));
+    lines.push('  pay.amount=¥' + (x.pay_amount||0) + ' status=' + x.pay_status + (x.email_sent ? ' (メール送信済)' : '') + (x.paid ? ' (入金済)' : ''));
+    lines.push('  ' + x.url + ' | reason=' + x.reason);
+  }
+  postToSlackChannel_(JALAN_PAY_CHANNEL, lines.join('\n'));
+}
+
 function auditAllJalanOverbilling() {
   var ALREADY_FIXED = {
     'R0Q7UEF3': true, 'R0742RTL': true, 'R02XF89Q': true,
@@ -3827,4 +3905,75 @@ function bulkReprocessPatternB() {
   });
   Logger.log('[bulkReprocessPatternB] 候補: ' + targets.length + '件 (全' + rows.length + '件中)');
   bulkReprocessByResvNos(targets.map(function(r){ return r.id; }));
+}
+
+/**
+ * ★ 2026-05-06 追加: R0EQE3JK 田草川様 お詫びメール送信 (1回のみ実行)
+ * GASエディタで関数名 `sendApologyToTakusagawa` を選択 → ▶️実行
+ * 二重送信防止: ScriptProperty 'apology_R0EQE3JK_sent' で一度送信したら以後 abort
+ */
+function sendApologyToTakusagawa() {
+  var SENT_KEY = 'apology_R0EQE3JK_sent';
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty(SENT_KEY)) {
+    Logger.log('[Apology] Already sent at ' + props.getProperty(SENT_KEY) + '. Aborting to prevent double-send.');
+    return;
+  }
+
+  var to = 'chagie.1218@gmail.com';
+  var subject = '【重要・お詫び】Square決済リンク誤送信のお詫びとお取消しのご連絡（じゃらん予約 R0EQE3JK）';
+  var body = '田草川 豊 様\n\n'
+    + '平素より「レンタカーショップHANDYMAN」をご利用いただき、誠にありがとうございます。\n\n'
+    + 'このたびは、本日（5月6日）17時31分頃、お客様のじゃらんご予約\n'
+    + '「予約番号 R0EQE3JK／2026年5月25日ご利用」につきまして、\n'
+    + '弊社システムの不具合により、本来お送りすべきでないSquare決済リンクを\n'
+    + 'ご案内するメールを誤送信してしまいましたこと、心よりお詫び申し上げます。\n\n'
+    + '【正しい請求金額】\n'
+    + '　合計金額　　　　：7,000円\n'
+    + '　ご利用ポイント　：7,000ポイント\n'
+    + '　お客様ご請求額　：　　0円（税込）\n\n'
+    + 'ポイントの全額ご利用により、お客様には追加でのお支払いは一切発生いたしません。\n\n'
+    + '【誤って送信したSquare決済リンクについて】\n'
+    + '　既に弊社にて該当リンクを無効化（取消）処理しておりますため、\n'
+    + '　万一リンクを開かれましてもお支払いは完了いたしません。\n'
+    + '　また、再度の請求も発生いたしません。\n'
+    + '　もし既に決済画面を開かれた場合でも、ご請求は0円のままですのでご安心ください。\n\n'
+    + '【ご予約自体について】\n'
+    + '　ご予約（5月25日 09:00〜19:00／コンパクトSUV／札幌デリバリー専門店）は\n'
+    + '　通常通り承っております。当日のご利用に支障はございません。\n\n'
+    + 'このたびは弊社の不手際により、ご不安とご不便をおかけしましたこと\n'
+    + '重ねて深くお詫び申し上げます。\n'
+    + 'ご不明な点がございましたら、本メールに直接ご返信いただくか、\n'
+    + '下記までお気軽にお問い合わせくださいませ。\n\n'
+    + '──────────────────────\n'
+    + 'レンタカーショップHANDYMAN 札幌デリバリー専門店\n'
+    + '予約担当\n'
+    + 'Mail: reserve@rent-handyman.jp\n'
+    + '──────────────────────\n';
+
+  try {
+    GmailApp.sendEmail(to, subject, body, {
+      name: 'HANDYMAN 札幌デリバリー専門店',
+      from: 'reserve@rent-handyman.jp',
+      replyTo: 'reserve@rent-handyman.jp'
+    });
+    var nowIso = new Date().toISOString();
+    props.setProperty(SENT_KEY, nowIso);
+    Logger.log('[Apology] Sent to ' + to + ' at ' + nowIso);
+
+    // Slack 通知
+    try {
+      postToSlackChannel_('C0AQL6HGG3E',
+        '📧 *田草川様 お詫びメール送信完了*\n'
+        + '予約番号: R0EQE3JK\n'
+        + '宛先: ' + to + '\n'
+        + '件名: ' + subject + '\n'
+        + '送信時刻: ' + nowIso);
+    } catch(e) { Logger.log('[Apology] Slack post error: ' + e.message); }
+  } catch (e) {
+    Logger.log('[Apology] Send error: ' + e.message);
+    try {
+      postToSlackChannel_('C0AQL6HGG3E', '🔴 *お詫びメール送信失敗*\n予約: R0EQE3JK / 田草川様\nエラー: ' + e.message);
+    } catch(_) {}
+  }
 }

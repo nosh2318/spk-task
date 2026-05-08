@@ -1,70 +1,5 @@
 # SPK業務管理APP（札幌店）
 
-## 2026-05-08 修正履歴
-
-### 🔧 楽天 price 計上ロジックを NHA と同期 — 過去18件一括補正
-- **症状**: SPK `parseRakuten_` の price 計算式が NHA と不一致。SPK は `price = 合計金額(totalR)` をそのまま採用しており、事業者クーポン(弊社負担)を売上から差引いていなかった
-- **発端**: 楽天予約 RC52461167634443526（中崎 律様 / 2026-08-27〜30 / Bクラス）取込時、オーナー指摘「料金計上が間違っている / 那覇店と同じ仕様に修正」
-  - 合計 ¥53,800 / 事業者クーポン ¥10,000 / 楽天ポイント ¥8,800 → 正しい計上 ¥43,800
-  - DB登録は ¥53,800 で誤り（事業者クーポン分が引かれていない）
-- **NHA 仕様（正解・L1112-1114 コメント）**:
-  > 計上売上 = 合計 − 事業者クーポン（弊社負担分のみ差引）  
-  > 楽天クーポン・楽天ポイントは楽天が後精算するため売上に含める
-- **修正内容（`gas-email-import-v2.gs` `parseRakuten_`）**:
-  - 旧: `var price = totalR > 0 ? totalR : billingR;`
-  - 新: `var price = totalR > 0 ? (totalR - couponR) : billingR;`
-  - NHA L1125 と完全一致させた
-- **過去レコード一括補正（DB直接 PATCH / Gmail不使用＝クォータ消費ゼロ）**:
-  - SPK 楽天予約で `discount > 0 & status≠cancelled` を全件抽出 → 29件
-  - 監査: `price ≠ base + option - discount` で **18件** 検出
-  - 全18件を `price = base + option - discount` で訂正
-  - 過大計上12件（売上水増し）/ 過小計上6件（売上過小）混在
-  - 純差額 +¥38,937 → 経営DB売上の補正幅
-- **🔴 教訓 / 横展開ルール**:
-  - **GAS は両店パーサーを必ず同期する**: NHA / SPK で同じパース処理を持つ場合、片方だけ修正して片方を放置すると数値が乖離する。修正時は両店並行レビュー必須
-  - **楽天事業者クーポン vs 楽天クーポン/ポイントの会計区別**: 弊社負担(=売上控除) vs 楽天負担(=後精算で弊社収入) は経営判断に直結するため、コメントで明示しておく
-  - **Gmail 不要のバックフィル**: `price = base + option - discount` の論理式があれば、過去レコードはメール再パースなしで一括補正できる。Gmailクォータを温存できる
-  - **被害規模**: 楽天は事前カード決済済みのため Square過大発行等の金銭被害なし。リスクは経営DB売上計上額のズレのみ
-- **コミット予定**: `gas-email-import-v2.gs` の `parseRakuten_` 1箇所修正
-- **Slack報告**: `#payment_sapporo` ts=1778191173.256109
-
----
-
-## 2026-05-06 修正履歴
-
-### 🚨 R0EQE3JK 田草川様 じゃらんポイント全額充当 過大請求障害 — 全層修正
-- **症状**: じゃらん予約 R0EQE3JK（田草川 豊様 / 5/25 / Cクラス）が **利用者請求額 ¥0（合計¥7,000 - ポイント¥7,000充当）** にもかかわらず、Square決済リンク ¥7,000 が発行され、お客様にメール送信(5/6 17:31)された
-- **根本原因（3層）**:
-  1. **`parseJalan_` L635-636**: `var price = billingPrice > 0 ? billingPrice : ...` で 0円の `billingPrice` を「未取得」と誤判定し、合計金額(クーポン前)¥7,000 にフォールバック
-  2. **`jalanOverbillFix` L364-369（2026-04-23 修正）**: 発火条件に `+(reservation.price||0) > 0` を含んでおり、parser が price=0 を返すケースを取りこぼしていた → existing.price=¥7,000 がそのまま残存
-  3. **`handleJalanPayment_` L1396**: 親側の `if (reservation.price > 0)` ガードに頼っていたが、price=¥7,000（誤った値）が渡るため発火 → Square発行→メール送信
-- **緊急対応（オーナー直作業時系列）**:
-  | # | 内容 | 結果 |
-  |---|---|---|
-  | 1 | Square Payment Link DELETE (id: `6PJY4WZG3DCUCKX6`) | ✅ `cancelled_order_id` 返却 |
-  | 2 | reservations.price 7000 → 0 (Supabase直接 PATCH) | ✅ |
-  | 3 | jalan_payments.status email_sent → cancelled / amount → 0 | ✅ |
-  | 4 | Slack `#payment_sapporo` インシデント報告 (ts=1778058157.166719) | ✅ |
-  | 5 | 支払い管理スプシ 行削除 | ✅ オーナー対応 |
-  | 6 | GAS恒久修正コード貼付 + 保存 | ✅ |
-  | 7 | `auditAllJalanZeroBilling()` 実行 → suspects=0（同型被害ゼロ） | ✅ |
-  | 8 | `sendApologyToTakusagawa()` で chagie.1218@gmail.com にお詫びメール送信 | ✅ 2026-05-06 11:39:19Z (JST 20:39) |
-- **GAS恒久修正4箇所 (`gas-email-import-v2.gs`)**:
-  - **L635-637 `parseJalan_`**: `extractField_(body, '利用者への請求額')` の戻り値が空文字 or 値あり で判定 → "0円" を正しく0として採用
-  - **L364-372 `jalanOverbillFix`**: 条件緩和 → `+(reservation.price||0) === 0 || +(existingRow.price||0) > +(reservation.price||0)` で 0円ケースも発火
-  - **L1399-1404 `handleJalanPayment_`**: 冒頭に `if (+(reservation.price||0) <= 0) { return; }` 早期return ガード追加（二重防御）
-  - **新規 `auditAllJalanZeroBilling()`**: jalan_payments.amount>0 かつ resv.discount≥base_price のレコードを抽出 → Slack報告（過去の同型バグ被害者検知）
-- **新規 `sendApologyToTakusagawa()`**: ScriptProperty `apology_R0EQE3JK_sent` で二重送信防止する1回きりのメール送信関数。実行後 Slack #payment_sapporo に 📧 完了通知
-- **🔴 教訓（再発防止ルール）**:
-  - **「フィールド値 > 0」と「フィールドが存在する」を区別する**: parsePrice_ は未取得・"0"・""すべて 0 を返す。`price === 0` を `price 未取得` と誤判定する条件分岐は要警戒
-  - **OTA過大請求対策の発火条件は両端を考慮**: 前回 4/21 の B群5名対応では `> 0` で十分だったが、ポイント全額充当（=0円）ケースは想定外だった
-  - **多層防御**: parseJalan_ ＋ jalanOverbillFix ＋ handleJalanPayment_ ガード の3箇所で 0円ケースを止める設計に変更
-  - **`extractField_` の戻り値判定**: 空文字 vs "0" を区別したい場合は `result !== ''` で判定する。`> 0` だと "0" を見逃す
-- **被害確認**: `auditAllJalanZeroBilling` 結果 = suspects 0件 → R0EQE3JK が唯一の被害者
-- **コミット予定**: `gas-email-import-v2.gs`（3箇所修正＋2新規関数）GASエディタ側は保存済み
-
----
-
 ## 2026-05-02 修正履歴
 
 ### 🌐 GitHub Pages 移行 最終仕上げ (v4.7.59 / spk-v616)
@@ -81,7 +16,7 @@
   - `register('./sw.js?v=527')` → `?v=528`
   - `APP_VERSION="v4.7.58"` → `"v4.7.59"`
 - **vercel.json 削除**: GH Pages 完全移行のためリポジトリから除去（`.vercel/` は既に .gitignore 管理）
-- **CLAUDE.md / SYSTEM_SPEC.md** 本番URL表記更新
+- **AGENTS.md / SYSTEM_SPEC.md** 本番URL表記更新
 - **コミット**: `9b33fab` fix(GH Pages): sw.js URLS 相対化 + Vercel削除 (v4.7.59)
 - **本番反映確認**: ✅ https://nosh2318.github.io/spk-task/ で APP_VERSION v4.7.59 / spk-v616 / sw.js?v=528 を curl 確認済
 - **残タスク（ユーザー作業）**:
@@ -287,7 +222,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **対象チャンネル**:
   - 札幌: `#payment_sapporo` (C0AQL6HGG3E)
   - 那覇: `#payment_naha` (C0AP2S5B147)
-  - **`#jalan_payment` は実在しない（旧名・統合済）**。CLAUDE.md グローバル側にも `#jalan_payment` 表記が残るが次回掃除予定
+  - **`#jalan_payment` は実在しない（旧名・統合済）**。AGENTS.md グローバル側にも `#jalan_payment` 表記が残るが次回掃除予定
 - **処理マトリクス**:
   | 予約タイプ | Square返金 | 売上計上 | 支出計上 | reservations | jalan_payments | スプシ |
   |---|---|---|---|---|---|---|
@@ -336,7 +271,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 | 領収書 | `#領収書` | C0ANTF5EE73 |
 - **`#jalan_payment` は実在しない**（旧名・C0AQL6HGG3E にリネーム統合済）
 - payment_bot_unified_v1.gs のヘッダコメント `// #payment_sapporo = #jalan_payment と同一チャンネル` も誤解を招くので次回編集時に削除
-- グローバル `~/.claude/CLAUDE.md` の `JALAN_PAY_CHANNEL` `#jalan_payment` 表記も次回掃除予定
+- グローバル `~/.Codex/AGENTS.md` の `JALAN_PAY_CHANNEL` `#jalan_payment` 表記も次回掃除予定
 
 ---
 
@@ -377,7 +312,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **🔴 今後の鉄則 (再発防止ルール)**:
   - `extractField_` で取得した文字列を**検出系関数 (detectInsurance_, detectOtaDelivery_, シート検出 etc.) に渡してはいけない**
   - 必ず **body全体** か、`extractField_` 結果 → fallback で **body全体** を検出する
-  - パーサー新規追加時は CLAUDE.md のこのルール記載を確認してから実装
+  - パーサー新規追加時は AGENTS.md のこのルール記載を確認してから実装
   - 1OTAパーサーで「optionsStrを使う検出箇所」を見つけたら、**横断的に他OTAパーサーも同じ問題がないか必ず確認** (今回はチャイルドシート修正時に insurance を見落とした)
 - **横断完了確認**:
   - parseJalan_ : insurance修正 ✅、B/C/J は元から body全体fallback有り ✅
@@ -407,7 +342,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
     - `vehicle_monthly_kpi.year_month=eq.YYYY-MM&active=eq.false` で除外コードを取得し、候補から除去
     - 除外時は「未配車」扱い (誤配車より安全側)
   - `listYearMonths_(lendDate, returnDate)` 新規ヘルパー: レンタル期間の年月リストを返す（月跨ぎ予約対応、最大24ヶ月安全装置付き）
-- **テーブル構造メモ**: vehicle_monthly_kpi のカラムは **`vehicle_code` / `year_month` / `active`** (CLAUDE.md記載の `code` / `ym` は誤り、修正済)
+- **テーブル構造メモ**: vehicle_monthly_kpi のカラムは **`vehicle_code` / `year_month` / `active`** (AGENTS.md記載の `code` / `ym` は誤り、修正済)
 - **再発防止**: 今後 OTA予約が来た時に `[KPI除外]` ログで除外候補数を確認可能
 - **適用手順**:
   1. GASエディタで「札幌予約メール自動配車」プロジェクトを開く
@@ -423,7 +358,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   　　　　　　　　　　　　　　　チャイルドシート 2                       ← 3行目 (取得されない！)
   　　　　　　　　　　　　　　　免責補償別 1
   ```
-- **同型バグ**: NHA で 2026-04-23 に同じ問題を `detectOtaDelivery_` で修正済 (CLAUDE.md記載)。じゃらん/skyticket パーサーは既にbody全体検索のフォールバック実装済。**楽天だけ取り残されていた**
+- **同型バグ**: NHA で 2026-04-23 に同じ問題を `detectOtaDelivery_` で修正済 (AGENTS.md記載)。じゃらん/skyticket パーサーは既にbody全体検索のフォールバック実装済。**楽天だけ取り残されていた**
 - **修正**: `parseRakuten_` の B/C/J 検出にbody全体検索のフォールバック追加 (じゃらんパーサーと同形):
   ```js
   var bAll = body.match(/ベビーシート[^\d\n]*(\d+)/g);
@@ -574,7 +509,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **再発防止ルール（運用）**:
   - GAS関数を停止する際は **関数先頭に `return;`** + **日付付きコメント** が原則。トリガーだけ削除するとコードが古くなって後で混乱する
   - 複数プロジェクトで同じような名前の関数があるケースでは、まず grep で該当関数の所在を特定してから触る（今回は `grep -rn "回収漏れ\|未払いアラート"` で2つのファイルを特定）
-- **教訓（コード提示ルール違反）**: このセッションの途中で1度 Edit の old_string/new_string をチャットに出してしまい、ユーザーから「またですね」と指摘された。CLAUDE.md 冒頭の絶対ルール「コードを渡すときはチャットに貼り付け禁止。必ず `pbcopy` でクリップボードに送るか、ファイルに書き出してパスを伝える」を徹底する
+- **教訓（コード提示ルール違反）**: このセッションの途中で1度 Edit の old_string/new_string をチャットに出してしまい、ユーザーから「またですね」と指摘された。AGENTS.md 冒頭の絶対ルール「コードを渡すときはチャットに貼り付け禁止。必ず `pbcopy` でクリップボードに送るか、ファイルに書き出してパスを伝える」を徹底する
 
 ---
 
@@ -1724,7 +1659,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **バージョン**: v2.5.0
 - **構成**: Single HTML（3573行）+ sw.js + manifest.json + schema.sql
 
-## 絶対ルール（CLAUDE.mdより）
+## 絶対ルール（AGENTS.mdより）
 - **PU = 空港出発（緑）/ BD = ヤード出発（赤）** — 逆にしない
 - メンテナンス・別予約があるラインに配車しない
 - OTA A/A2 → HANDYMAN H（アルファード）に変換
