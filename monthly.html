@@ -123,10 +123,15 @@ function computeBudgetD(){
     const manualExtra=items.reduce((s,it)=>s+(it.values&&it.values[m]||0),0);
     const base=g('base'),opt=g('opt'),disc=g('disc'),extra=g('extra'),cashin=g('cashin');
     const sga=g('sga'),cogs=g('cogs'),repay=g('repay');
-    const totalIn=base+opt-disc+extra+manualExtra+cashin;
+    // PL: 計上ベース（現金入金は含まない）
+    const plRev=base+opt-disc+extra+manualExtra;
     const totalCost=sga+cogs;
+    const operatingProfit=plRev-totalCost; // PL営業利益
+    // CF: 現金ベース
+    const cfNet=operatingProfit+cashin-repay; // CF残高
+    const totalIn=plRev+cashin; // 後方互換用
     BD[m]={base,opt,disc,extra,cashin,sga,cogs,repay,manualExtra,
-           totalIn,totalCost,operatingProfit:totalIn-totalCost,cfNet:totalIn-totalCost-repay};
+           plRev,totalIn,totalCost,operatingProfit,cfNet};
   });
   return BD;
 }
@@ -175,34 +180,40 @@ function renderBudget(){
   const BD=computeBudgetD();
   const ro=store==='total';
   const ann={};
-  ['base','opt','disc','extra','cashin','sga','cogs','repay','totalIn','totalCost','operatingProfit','cfNet'].forEach(k=>{
+  ['base','opt','disc','extra','cashin','sga','cogs','repay','plRev','totalCost','operatingProfit','cfNet'].forEach(k=>{
     ann[k]=MS.reduce((s,m)=>s+(BD[m][k]||0),0);
   });
   ann.manualExtra=MS.reduce((s,m)=>s+(BD[m].manualExtra||0),0);
   const rows=[
-    {t:'sh',label:'◆ 収入（予算）',bg:'#eff6ff',color:'#1d4ed8'},
+    // ===== PL 大テーマ =====
+    {t:'theme',label:'📊 PL（損益計算）'},
+    {t:'sh',label:'◆ 売上（PL）',bg:'#eff6ff',color:'#1d4ed8'},
     {t:'inp',label:'基本料金',key:'base'},
     {t:'inp',label:'付帯売上',key:'opt'},
     {t:'inp',label:'割引（▲）',key:'disc',neg:true},
     {t:'inp',label:'予約外売上',key:'extra'},
     {t:'manual_b'},
+    {t:'calc',label:'PL売上合計',key:'plRev',cls:'row-subtotal'},
+    {t:'sh',label:'◆ コスト（PL）',bg:'#fef2f2',color:'#b91c1c'},
+    {t:'inp',label:'📋 販管費',key:'sga',bg:'#fff5f5',tc:'#991b1b'},
+    {t:'inp',label:'📦 売上原価',key:'cogs',bg:'#fffbeb',tc:'#92400e'},
+    {t:'calcBal',label:'🔴 PL支出合計',key:'totalCost',cls:'row-balance'},
+    {t:'calcProfit',label:'💹 PL営業利益',key:'operatingProfit'},
+    // ===== CF 大テーマ =====
+    {t:'theme',label:'💰 CF（キャッシュフロー）'},
+    {t:'sh',label:'◆ CF収支',bg:'#f0fdf4',color:'#15803d'},
     {t:'inp',label:'現金入金',key:'cashin'},
-    {t:'calc',label:'収入合計',key:'totalIn',cls:'row-subtotal'},
-    {t:'sh',label:'◆ コスト（予算）',bg:'#fef2f2',color:'#b91c1c'},
-    {t:'inp',label:'📋 販管費（予算）',key:'sga',bg:'#fff5f5',tc:'#991b1b'},
-    {t:'inp',label:'📦 売上原価（予算）',key:'cogs',bg:'#fffbeb',tc:'#92400e'},
-    {t:'calcBal',label:'🔴 PL支出（販管費＋売上原価）',key:'totalCost',cls:'row-balance'},
-    {t:'calcProfit',label:'💹 PL営業利益（収入合計－PL支出）',key:'operatingProfit'},
-    {t:'sh',label:'◆ CF（返済）',bg:'#f5f3ff',color:'#6d28d9'},
-    {t:'inp',label:'🏦 返済（予算）',key:'repay',bg:'#f5f3ff',tc:'#6d28d9'},
-    {t:'sh',label:'◆ 収入合計 − （PL＋CF） = 純残高',bg:'#0f172a',color:'#94a3b8'},
-    {t:'calcProfit',label:'💰 CF後純残高（収入 − PL支出 − 返済）',key:'cfNet'},
+    {t:'inp',label:'🏦 返済（▲）',key:'repay',bg:'#f5f3ff',tc:'#6d28d9',neg:true},
+    {t:'calcProfit',label:'💰 CF残高（営業利益＋入金－返済）',key:'cfNet'},
   ];
   let h=`<div class="tbl-wrap"><table>`;
   h+=`<thead><tr><th class="ic">項目</th>`;
   MS.forEach(m=>h+=`<th>${parseInt(m)}月</th>`);
   h+=`<th style="background:#1e293b;color:#fff;border-right:none;position:sticky;top:0;z-index:10">年計</th></tr></thead><tbody>`;
   rows.forEach(row=>{
+    if(row.t==='theme'){
+      h+=`<tr><td colspan="${MS.length+2}" style="padding:12px 10px 6px;font-size:14px;font-weight:900;color:#0f172a;background:#f8fafc;border-top:3px solid #1e293b;border-bottom:1px solid #e2e8f0;letter-spacing:.05em">${row.label}</td></tr>`;return;
+    }
     if(row.t==='sh'){
       h+=`<tr class="sec-hdr"><td colspan="${MS.length+2}" style="background:${row.bg};color:${row.color}">${row.label}</td></tr>`;return;
     }
@@ -526,10 +537,11 @@ async function load(){
   MS.forEach(m=>{D[m].manualExtra=(manualData.items||[]).reduce((s,it)=>s+(it.values&&it.values[m]||0),0);});
   // 各月の合計
   MS.forEach(m=>{
-    D[m].totalIn=D[m].base+D[m].opt-D[m].disc+D[m].extra+D[m].manualExtra+D[m].cashin;
-    D[m].totalCost=D[m].sga+D[m].acctActual+D[m].cogs;  // PL支出
-    D[m].operatingProfit=D[m].totalIn-D[m].totalCost;    // PL営業利益
-    D[m].cfNet=D[m].totalIn-D[m].totalCost-D[m].repay;  // ★ CF後純残高
+    D[m].plRev=D[m].base+D[m].opt-D[m].disc+D[m].extra+D[m].manualExtra;  // PL売上
+    D[m].totalIn=D[m].plRev+D[m].cashin;                                   // 後方互換
+    D[m].totalCost=D[m].sga+D[m].acctActual+D[m].cogs;                    // PL支出
+    D[m].operatingProfit=D[m].plRev-D[m].totalCost;                        // PL営業利益
+    D[m].cfNet=D[m].operatingProfit+D[m].cashin-D[m].repay;                // CF残高
   });
   window._monthlyD=D; // 手動入力の即時反映用
 
@@ -580,7 +592,7 @@ async function loadTotal(y){
     if(stRaw){try{const st=JSON.parse(stRaw);const rg=st.find(function(sec){return sec.id==='rg';});if(rg){REPAY_IDS.clear();(rg.items||[]).forEach(function(i){REPAY_IDS.add(i.id);});}}catch(e){}}
     cmRaws.forEach(function(raw,i){if(!raw)return;try{const d=JSON.parse(raw);let sal=0;Object.entries(d).forEach(function([id,amt]){const a=Number(amt)||0;if(a<=0)return;if(SGA_IDS.has(id))D[MS[i]].sga+=a;if(SALARY_IDS.has(id))sal+=a;if(COGS_IDS.has(id))D[MS[i]].cogs+=a;if(REPAY_IDS.has(id))D[MS[i]].repay+=a;});D[MS[i]].sga+=Math.round(sal*0.15);}catch(e){}});
   });
-  MS.forEach(m=>{D[m].manualExtra=(manualData.items||[]).reduce((s,it)=>s+(it.values&&it.values[m]||0),0);D[m].totalIn=D[m].base+D[m].opt-D[m].disc+D[m].extra+D[m].manualExtra+D[m].cashin;D[m].totalCost=D[m].sga+D[m].acctActual+D[m].cogs;D[m].operatingProfit=D[m].totalIn-D[m].totalCost;D[m].cfNet=D[m].totalIn-D[m].totalCost-D[m].repay;});
+  MS.forEach(m=>{D[m].manualExtra=(manualData.items||[]).reduce((s,it)=>s+(it.values&&it.values[m]||0),0);D[m].plRev=D[m].base+D[m].opt-D[m].disc+D[m].extra+D[m].manualExtra;D[m].totalIn=D[m].plRev+D[m].cashin;D[m].totalCost=D[m].sga+D[m].acctActual+D[m].cogs;D[m].operatingProfit=D[m].plRev-D[m].totalCost;D[m].cfNet=D[m].operatingProfit+D[m].cashin-D[m].repay;});
   window._monthlyD=D;
   if(mode==='hikaku'){renderHikaku(D);}else{render(D);}
   document.getElementById('status').textContent=`${y}年 那覇＋札幌 合算`;
@@ -588,29 +600,30 @@ async function loadTotal(y){
 
 function render(D){
   const rows=[
-    {type:'sh',label:'◆ 収入',bg:'#eff6ff',color:'#1d4ed8'},
+    {type:'theme',label:'📊 PL（損益計算）'},
+    {type:'sh',label:'◆ 売上（PL）',bg:'#eff6ff',color:'#1d4ed8'},
     {type:'in',label:'基本料金',key:'base'},
     {type:'in',label:'付帯売上',key:'opt'},
     {type:'in',label:'割引',key:'disc',neg:true},
     {type:'in',label:'予約外売上',key:'extra'},
     {type:'manual',label:'✍️ その他売上（手動）'},
-    {type:'in',label:'現金入金',key:'cashin'},
-    {type:'sub',label:'収入合計',key:'totalIn',cls:'row-subtotal'},
-    {type:'sh',label:'◆ コスト内訳（costmatrix連携）',bg:'#fef2f2',color:'#b91c1c'},
+    {type:'sub',label:'PL売上合計',key:'plRev',cls:'row-subtotal'},
+    {type:'sh',label:'◆ コスト（PL）',bg:'#fef2f2',color:'#b91c1c'},
     {type:'cm',label:'📋 販管費①（手動入力）',key:'sga',bg:'#fff5f5',tc:'#991b1b'},
     {type:'cm',label:'📊 販管費②（会計実績）',key:'acctActual',bg:'#eff6ff',tc:'#1e40af'},
     {type:'cm',label:'📦 売上原価（リース/保険/修理等）',key:'cogs',bg:'#fffbeb',tc:'#92400e'},
     {type:'total',label:'🔴 PL支出（販管費①②＋売上原価）',key:'totalCost',cls:'row-balance'},
-    {type:'profit',label:'💹 PL営業利益（収入合計－PL支出）',key:'operatingProfit'},
-    {type:'sh',label:'◆ CF（返済）',bg:'#f5f3ff',color:'#6d28d9'},
+    {type:'profit',label:'💹 PL営業利益',key:'operatingProfit'},
+    {type:'theme',label:'💰 CF（キャッシュフロー）'},
+    {type:'sh',label:'◆ CF収支',bg:'#f0fdf4',color:'#15803d'},
+    {type:'in',label:'現金入金',key:'cashin'},
     {type:'cm',label:'🏦 返済合計',key:'repay',bg:'#f5f3ff',tc:'#6d28d9'},
-    {type:'sh',label:'◆ 収入合計 − （PL＋CF） = 純残高',bg:'#0f172a',color:'#94a3b8'},
-    {type:'profit',label:'💰 CF後純残高（収入 − PL支出 − 返済）',key:'cfNet'},
+    {type:'profit',label:'💰 CF残高（営業利益＋入金－返済）',key:'cfNet'},
   ];
 
   // 年計
   const ann={};
-  ['base','opt','disc','extra','cashin','sga','cogs','acctActual','totalIn','totalCost','operatingProfit','repay','cfNet'].forEach(k=>{
+  ['base','opt','disc','extra','cashin','sga','cogs','acctActual','plRev','totalIn','totalCost','operatingProfit','repay','cfNet'].forEach(k=>{
     ann[k]=MS.reduce((s,m)=>s+(D[m][k]||0),0);
   });
 
@@ -620,6 +633,9 @@ function render(D){
   h+=`<th style="background:#1e293b;color:#fff;border-right:none;position:sticky;top:96px;z-index:10">年計</th></tr></thead><tbody>`;
 
   rows.forEach(row=>{
+    if(row.type==='theme'){
+      h+=`<tr><td colspan="${MS.length+2}" style="padding:12px 10px 6px;font-size:14px;font-weight:900;color:#0f172a;background:#f8fafc;border-top:3px solid #1e293b;border-bottom:1px solid #e2e8f0;letter-spacing:.05em">${row.label}</td></tr>`;return;
+    }
     if(row.type==='sh'){
       h+=`<tr class="sec-hdr"><td colspan="${MS.length+2}" style="background:${row.bg};color:${row.color}">${row.label}</td></tr>`;
       return;
@@ -733,7 +749,7 @@ async function loadAndRenderForHikaku(y){
   const REPAY_IDS=new Set(['r1','r2','r3','r4','r5','r6','r7','r8']);
   if(stRaw){try{const st=JSON.parse(stRaw);const rg=st.find(s=>s.id==='rg');if(rg){REPAY_IDS.clear();(rg.items||[]).forEach(i=>REPAY_IDS.add(i.id));}}catch(e){}}
   cmRaws.forEach((raw,i)=>{if(!raw)return;try{const d=JSON.parse(raw);let sal=0;Object.entries(d).forEach(([id,amt])=>{const a=Number(amt)||0;if(a<=0)return;if(SGA_IDS.has(id))D[MS[i]].sga+=a;if(SALARY_IDS.has(id))sal+=a;if(COGS_IDS.has(id))D[MS[i]].cogs+=a;if(REPAY_IDS.has(id))D[MS[i]].repay+=a;});D[MS[i]].sga+=Math.round(sal*0.15);}catch(e){}});
-  MS.forEach(m=>{D[m].manualExtra=(manualData.items||[]).reduce((s,it)=>s+(it.values&&it.values[m]||0),0);D[m].totalIn=D[m].base+D[m].opt-D[m].disc+D[m].extra+D[m].manualExtra+D[m].cashin;D[m].totalCost=D[m].sga+D[m].acctActual+D[m].cogs;D[m].operatingProfit=D[m].totalIn-D[m].totalCost;D[m].cfNet=D[m].totalIn-D[m].totalCost-D[m].repay;});
+  MS.forEach(m=>{D[m].manualExtra=(manualData.items||[]).reduce((s,it)=>s+(it.values&&it.values[m]||0),0);D[m].plRev=D[m].base+D[m].opt-D[m].disc+D[m].extra+D[m].manualExtra;D[m].totalIn=D[m].plRev+D[m].cashin;D[m].totalCost=D[m].sga+D[m].acctActual+D[m].cogs;D[m].operatingProfit=D[m].plRev-D[m].totalCost;D[m].cfNet=D[m].operatingProfit+D[m].cashin-D[m].repay;});
   window._monthlyD=D;
   renderHikaku(D);
 }
@@ -741,16 +757,19 @@ async function loadAndRenderForHikaku(y){
 function renderHikaku(JD){
   const BD=computeBudgetD();
   const KEYS=[
-    {key:'totalIn',label:'収入合計',profit:false},
+    {theme:'📊 PL（損益計算）'},
+    {key:'plRev',label:'PL売上合計',profit:false},
     {key:'base',label:'　基本料金',profit:false},
     {key:'opt',label:'　付帯売上',profit:false},
     {key:'extra',label:'　予約外売上',profit:false},
     {key:'totalCost',label:'PL支出合計',profit:false,neg:true},
     {key:'sga',label:'　販管費',profit:false,neg:true},
     {key:'cogs',label:'　売上原価',profit:false,neg:true},
-    {key:'operatingProfit',label:'PL営業利益',profit:true},
-    {key:'repay',label:'　返済',profit:false,neg:true},
-    {key:'cfNet',label:'CF後純残高',profit:true},
+    {key:'operatingProfit',label:'💹 PL営業利益',profit:true,bold:true},
+    {theme:'💰 CF（キャッシュフロー）'},
+    {key:'cashin',label:'　現金入金',profit:false},
+    {key:'repay',label:'　返済（▲）',profit:false,neg:true},
+    {key:'cfNet',label:'💰 CF残高',profit:true,bold:true},
   ];
   const f=v=>v!==0?'¥'+Math.abs(v).toLocaleString():'';
   const pctStyle=v=>v===0?'color:#94a3b8':v>=1?'color:#15803d;font-weight:700':'color:#dc2626';
@@ -768,8 +787,11 @@ function renderHikaku(JD){
   });
   h+=`</tr></thead><tbody>`;
   KEYS.forEach(row=>{
+    if(row.theme){
+      h+=`<tr><td colspan="${MS.length*3+4}" style="padding:10px 8px 5px;font-size:13px;font-weight:900;color:#0f172a;background:#f1f5f9;border-top:3px solid #1e293b;border-bottom:1px solid #cbd5e1;letter-spacing:.05em">${row.theme}</td></tr>`;return;
+    }
     const isP=row.profit;
-    h+=`<tr><td class="ic" style="font-weight:${row.key==='totalIn'||row.key==='operatingProfit'||row.key==='cfNet'?800:400}">${row.label}</td>`;
+    h+=`<tr><td class="ic" style="font-weight:${row.bold?800:400}">${row.label}</td>`;
     let annB=0,annJ=0;
     MS.forEach(m=>{
       const b=BD[m][row.key]||0,j=JD[m][row.key]||0;
