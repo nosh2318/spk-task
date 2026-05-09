@@ -504,38 +504,19 @@ async function load(){
   const D={};
   MS.forEach(m=>{D[m]={base:0,opt:0,disc:0,extra:0,manualExtra:0,cashin:0,sga:0,cogs:0,acctActual:0,repay:0};});
 
-  // 売上: Supabaseから直接取得（APPキャッシュ優先、なければSupabase）
+  // 売上: 常にSupabaseから直接取得（キャッシュは使用しない）
   const rTbl=store==='nha'?'nha_reservations':'reservations';
   const dCol=store==='nha'?'end_date':'return_date';
-  const cacheKey='monthly_resv_'+(store==='nha'?'nha':'spk');
-  let revenueLoaded=false;
   try{
-    const raw=localStorage.getItem(cacheKey);
-    if(raw){
-      const cache=JSON.parse(raw);
-      if(cache.year===parseInt(y)){
-        Object.entries(cache.data).forEach(([ym,v])=>{
-          const m=ym.slice(5,7);
-          if(D[m]){D[m].base=v.base||0;D[m].opt=v.opt||0;D[m].disc=v.disc||0;}
-        });
-        document.getElementById('status').textContent='✅ キャッシュデータ';
-        revenueLoaded=true;
-      }
-    }
-  }catch(e){}
-  // ★ キャッシュがなければSupabaseから直接取得
-  if(!revenueLoaded){
-    try{
-      const resvs=await sbq(rTbl,`select=base_price,option_price,discount,price,status,${dCol}&${dCol}=gte.${y}-01-01&${dCol}=lte.${y}-12-31&status=neq.cancelled`);
-      (resvs||[]).forEach(r=>{
-        const m=(r[dCol]||'').slice(5,7);if(!D[m])return;
-        const bp=r.base_price||0,op=r.option_price||0,dc=r.discount||0;
-        if(bp>0||op>0){D[m].base+=bp;D[m].opt+=op;D[m].disc+=dc;}
-        else D[m].base+=r.price||0;
-      });
-      document.getElementById('status').textContent='✅ Supabase直接取得';
-    }catch(e){document.getElementById('status').textContent='収入データ取得エラー';}
-  }
+    const resvs=await sbq(rTbl,`select=base_price,option_price,discount,price,status,${dCol}&${dCol}=gte.${y}-01-01&${dCol}=lte.${y}-12-31&status=neq.cancelled`);
+    (resvs||[]).forEach(r=>{
+      const m=(r[dCol]||'').slice(5,7);if(!D[m])return;
+      const bp=r.base_price||0,op=r.option_price||0,dc=r.discount||0;
+      if(bp>0||op>0){D[m].base+=bp;D[m].opt+=op;D[m].disc+=dc;}
+      else D[m].base+=r.price||0;
+    });
+    document.getElementById('status').textContent='✅ Supabase直接取得';
+  }catch(e){document.getElementById('status').textContent='収入データ取得エラー';}
   // ── 会計実績: 修理/車検/点検は nha_logs から取得するため除外 ──
   (accts||[]).forEach(r=>{
     const m=(r.date||'').slice(5,7);if(!D[m])return;
@@ -652,20 +633,12 @@ async function loadTotal(y){
   ]);
   const D={};
   MS.forEach(m=>{D[m]={base:0,opt:0,disc:0,extra:0,manualExtra:0,cashin:0,sga:0,cogs:0,acctActual:0,repay:0};});
-  // ★ 収入: 単店舗と同じlocalStorageキャッシュを優先（那覇+札幌を合算）
-  function applyResvCache(cacheKey,resvs,dCol){
-    try{
-      const raw=localStorage.getItem(cacheKey);
-      if(raw){const c=JSON.parse(raw);if(c.year===parseInt(y)){
-        Object.entries(c.data).forEach(([ym,v])=>{const m=ym.slice(5,7);if(D[m]){D[m].base+=(v.base||0);D[m].opt+=(v.opt||0);D[m].disc+=(v.disc||0);}});
-        return;// キャッシュ使用
-      }}
-    }catch(e){}
-    // キャッシュなし→Supabase
+  // 収入: 常にSupabaseから直接取得（キャッシュ廃止）
+  const applyResvs=function(resvs,dCol){
     (resvs||[]).forEach(function(r){const m=(r[dCol]||'').slice(5,7);if(!D[m])return;const bp=r.base_price||0,op=r.option_price||0,dc=r.discount||0;if(bp>0||op>0){D[m].base+=bp;D[m].opt+=op;D[m].disc+=dc;}else D[m].base+=r.price||0;});
-  }
-  applyResvCache('monthly_resv_nha',nhResvs,'end_date');
-  applyResvCache('monthly_resv_spk',spkResvs,'return_date');
+  };
+  applyResvs(nhResvs,'end_date');
+  applyResvs(spkResvs,'return_date');
   // 会計実績: 両店合算（修理/車検/点検は整備記録から取得するため除外）
   [...(nhAccts||[]),...(spkAccts||[])].forEach(r=>{
     const m=(r.date||'').slice(5,7);if(!D[m])return;
