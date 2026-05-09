@@ -106,7 +106,12 @@ tr.add-row td{background:transparent!important;border-bottom:none;border-right:n
   </div>
 </div>
 <div id="mc">
-  <div class="ctrl">
+  <div class="ctrl" style="flex-wrap:wrap;gap:6px">
+    <div style="display:flex;gap:4px;align-items:center">
+      <button class="sbtn" id="cm_mode_yosan" onclick="setMode('yosan')" style="font-size:11px;padding:4px 10px">📋 予算</button>
+      <button class="sbtn" id="cm_mode_jisseki" onclick="setMode('jisseki')" style="font-size:11px;padding:4px 10px">📊 実績</button>
+      <button class="sbtn" id="cm_mode_hikaku" onclick="setMode('hikaku')" style="font-size:11px;padding:4px 10px">📊 比較</button>
+    </div>
     <button class="sbtn on" id="bn" onclick="sw('nha')">那覇</button>
     <button class="sbtn" id="bs" onclick="sw('spk')">札幌</button>
     <div class="yr-ctrl">
@@ -177,7 +182,9 @@ spk:[
 const _urlStore=new URLSearchParams(location.search).get('store');
 let store=_urlStore||(localStorage.getItem('cm_last_store')||'nha');
 let year=parseInt(localStorage.getItem('cm_last_year'))||new Date().getFullYear();
-let vals={};
+let mode=localStorage.getItem('cm_last_mode')||'jisseki'; // 'yosan'|'jisseki'|'hikaku'
+let vals={};        // 実績データ（cm_${store}_YYYY-MM）
+let budgetVals={};  // 予算データ（cm_budget_${store}_YYYY-MM）
 var _acctM_global=[];
 let ST=[]; // current structure
 // 折りたたみ状態: {secId: bool, 'acct': bool}  true=折りたたみ中
@@ -260,8 +267,10 @@ window.addEventListener('DOMContentLoaded',function(){
   document.getElementById('bs').className='sbtn'+(store==='spk'?' on':'');
   updateStickyTop();init();
 });
-function sw(s){collectInputs();store=s;localStorage.setItem('cm_last_store',s);document.getElementById('bn').className='sbtn'+(s==='nha'?' on':'');document.getElementById('bs').className='sbtn'+(s==='spk'?' on':'');vals={};init();}
-function cy(d){collectInputs();year+=d;localStorage.setItem('cm_last_year',String(year));document.getElementById('yl').textContent=year;vals={};init();}
+function sw(s){collectInputs();store=s;localStorage.setItem('cm_last_store',s);document.getElementById('bn').className='sbtn'+(s==='nha'?' on':'');document.getElementById('bs').className='sbtn'+(s==='spk'?' on':'');vals={};budgetVals={};init();}
+function cy(d){collectInputs();year+=d;localStorage.setItem('cm_last_year',String(year));document.getElementById('yl').textContent=year;vals={};budgetVals={};init();}
+function setMode(m){collectInputs();mode=m;localStorage.setItem('cm_last_mode',m);['yosan','jisseki','hikaku'].forEach(id=>{var el=document.getElementById('cm_mode_'+id);if(el)el.className='sbtn'+(mode===id?' on':'');});render();}
+function _modeLabel(){return mode==='yosan'?'📋 予算':mode==='jisseki'?'📊 実績':'📊 比較';}
 
 async function sbqA(t,qs){try{const r=await fetch(`${SU}/rest/v1/${t}?${qs}&limit=5000`,{headers:{apikey:SK,'Authorization':'Bearer '+SK}});return await r.json();}catch(e){return[];}}
 async function sbg(t,k){try{const r=await fetch(`${SU}/rest/v1/${t}?key=eq.${encodeURIComponent(k)}&select=key,value`,{headers:{apikey:SK,'Authorization':'Bearer '+SK}});const d=await r.json();return d&&d[0]?d[0].value:null;}catch(e){return null;}}
@@ -282,8 +291,9 @@ async function init(){
   const logsTable=store==='nha'?'nha_logs':'logs';
   const logsStoreFilter=store==='nha'?'':'&store_id=eq.sapporo';
   // 会計実績・車両保険・整備記録を並列取得
-  const [ps2,acctRaw,vehRaw,logsRaw]=await Promise.all([
-    Promise.all(MS.map(m=>sbg(tbl,`cm_${store}_${year}-${m}`))),
+  const [ps2,budgetPs2,acctRaw,vehRaw,logsRaw]=await Promise.all([
+    Promise.all(MS.map(m=>sbg(tbl,`cm_${store}_${year}-${m}`))),           // 実績
+    Promise.all(MS.map(m=>sbg(tbl,`cm_budget_${store}_${year}-${m}`))),    // 予算
     sbqA(acctKey,`type=in.(card_pay,cash_out)&date=gte.${year}-01-01&date=lte.${year}-12-31&select=type,category,amount,date`),
     sbqA(vTbl,`select=insurance_annual`),
     sbqA(logsTable,`select=type,cost,date${logsStoreFilter}&date=gte.${year}-01-01&date=lte.${year}-12-31&type=in.(inspection,semi_annual,repair,other,oil)`)
@@ -315,12 +325,14 @@ async function init(){
   var acctInd=document.getElementById('acct_indicator');
   if(acctInd)acctInd.textContent=acctCnt>0?'📊 会計実績 '+acctCnt+'ヶ月':'📊 会計実績なし';
   vals={};
-  ps.forEach((raw,i)=>{if(!raw)return;try{const d=JSON.parse(raw);Object.entries(d).forEach(([id,a])=>{if(!vals[id])vals[id]={};vals[id][`${year}-${MS[i]}`]=a;});}catch(e){}});
+  ps2.forEach((raw,i)=>{if(!raw)return;try{const d=JSON.parse(raw);Object.entries(d).forEach(([id,a])=>{if(!vals[id])vals[id]={};vals[id][`${year}-${MS[i]}`]=a;});}catch(e){}});
+  budgetVals={};
+  budgetPs2.forEach((raw,i)=>{if(!raw)return;try{const d=JSON.parse(raw);Object.entries(d).forEach(([id,a])=>{if(!budgetVals[id])budgetVals[id]={};budgetVals[id][`${year}-${MS[i]}`]=a;});}catch(e){}});
   // ★ localStorageキャッシュをマージ（画面遷移前のオートセーブ未完分を救済）
   try{
     var _lsVals=localStorage.getItem('cm_vals_'+store+'_'+year);
     var _lsTs=parseInt(localStorage.getItem('cm_vals_ts_'+store+'_'+year)||'0');
-    var _sbMaxTs=0;ps.forEach(function(raw){if(raw){var d=JSON.parse(raw||'{}');if(d._ts&&d._ts>_sbMaxTs)_sbMaxTs=d._ts;}});
+    var _sbMaxTs=0;ps2.forEach(function(raw){if(raw){var d=JSON.parse(raw||'{}');if(d._ts&&d._ts>_sbMaxTs)_sbMaxTs=d._ts;}});
     if(_lsVals&&_lsTs>_sbMaxTs){var _lv=JSON.parse(_lsVals);Object.entries(_lv).forEach(function([id,months]){if(!vals[id])vals[id]={};Object.assign(vals[id],months);});}
   }catch(e){}
   // ★ 旧スタンドアロン値 → 新サブItemへ自動移行（グループ化対応）
@@ -402,19 +414,37 @@ function getSocialInsurance_(ym){
   if(!salaryItem)return 0;
   return Math.round(gv(salaryItem,ym)*0.15);
 }
+function _getV(id,ym){return mode==='yosan'?((budgetVals[id]&&budgetVals[id][ym])||0):((vals[id]&&vals[id][ym])||0);}
 function gv(item,ym){
-  if(item.g)return(item.subs||[]).reduce((s,b)=>s+((vals[b.id]&&vals[b.id][ym])||0),0);
+  if(item.g)return(item.subs||[]).reduce((s,b)=>s+_getV(b.id,ym),0);
   if(item.code==='sga_social_ins')return getSocialInsurance_(ym);
   if(item.code==='cogs_insurance')return window._vehicleIns||0;
-  if(_isMaintCode(item.code))return _maintVal(item.code,ym);
-  return((vals[item.id]&&vals[item.id][ym])||0);
+  if(_isMaintCode(item.code))return mode==='yosan'?_getV(item.id,ym):_maintVal(item.code,ym);
+  return _getV(item.id,ym);
 }
 function ga(item){
   if(item.g)return MS.reduce((s,m)=>s+gv(item,year+'-'+m),0);
   if(item.code==='sga_social_ins')return MS.reduce((s,m)=>s+getSocialInsurance_(year+'-'+m),0);
   if(item.code==='cogs_insurance')return (window._vehicleIns||0)*12;
-  if(_isMaintCode(item.code))return MS.reduce((s,m)=>s+_maintVal(item.code,year+'-'+m),0);
+  if(_isMaintCode(item.code))return mode==='yosan'?MS.reduce((s,m)=>s+_getV(item.id,year+'-'+m),0):MS.reduce((s,m)=>s+_maintVal(item.code,year+'-'+m),0);
   return MS.reduce((s,m)=>s+gv(item,`${year}-${m}`),0);
+}
+// 予算保存
+async function autoSaveBudget(){
+  const tbl='nha_app_settings';const yrS=String(year);const ps=[];
+  MS.forEach(m=>{const ym=yrS+'-'+m;const mv={};
+    ST.forEach(sec=>sec.items.forEach(item=>{if(item.g)(item.subs||[]).forEach(sub=>{if(budgetVals[sub.id]&&budgetVals[sub.id][ym])mv[sub.id]=budgetVals[sub.id][ym];});else if(budgetVals[item.id]&&budgetVals[item.id][ym])mv[item.id]=budgetVals[item.id][ym];}));
+    if(Object.keys(mv).length>0)ps.push(sbu(tbl,`cm_budget_${store}_${ym}`,JSON.stringify(mv)));
+  });
+  await Promise.all(ps);
+}
+function onchBudget(id,ym,v){
+  const n=parseInt(v.replace(/,/g,''))||0;
+  if(!budgetVals[id])budgetVals[id]={};
+  if(n>0)budgetVals[id][ym]=n;else delete budgetVals[id][ym];
+  updCalc();
+  clearTimeout(window._autoSaveT2);
+  window._autoSaveT2=setTimeout(autoSaveBudget,2000);
 }
 function fmt(n){return n>0?'¥'+n.toLocaleString():'';}
 function fmtI(el){const n=parseInt(el.value.replace(/,/g,''))||0;el.value=n>0?n.toLocaleString():'';}
@@ -597,7 +627,100 @@ function addItem(secId,afterItemId,isSubOf){
 
 function fmtT(n){return n>0?'¥'+n.toLocaleString():'—';}
 
+
+// ===== 比較モード: 予算 vs 実績 =====
+function renderHikaku(){
+  if(!ST||ST.length===0){ST=JSON.parse(JSON.stringify(DEFAULT[store]));}
+  const yrS=String(year);
+  const f=function(n){return n>0?'¥'+n.toLocaleString():'';};
+  const pct=function(b,j){return b>0?Math.round(j/b*100)+'%':'-';};
+  const pctC=function(b,j){if(!b)return'color:#94a3b8';var r=j/b;return r>=1?'color:#15803d;font-weight:700':'color:#dc2626';};
+  // ヘッダー
+  var h='<div class="tbl-wrap" style="overflow:auto"><table style="border-collapse:collapse;font-size:10px;min-width:900px">';
+  h+='<thead><tr><th style="min-width:160px;text-align:left;padding:6px 8px;position:sticky;left:0;background:#1e293b;color:#fff;z-index:3" rowspan="2">項目</th>';
+  MS.forEach(function(m){h+='<th colspan="3" style="text-align:center;background:#f8fafc;border-left:2px solid #e2e8f0;padding:4px;font-size:9px">'+parseInt(m)+'月</th>';});
+  h+='<th colspan="3" style="text-align:center;background:#1e293b;color:#fff;border-left:2px solid #475569;font-size:9px">年計</th></tr>';
+  h+='<tr>';
+  [].concat(MS.map(function(){return 1;}),[[1]]).forEach(function(){
+    h+='<th style="font-size:9px;background:#fef9c3;color:#d97706;min-width:52px;padding:2px">予算</th>';
+    h+='<th style="font-size:9px;background:#f0fdf4;color:#15803d;min-width:52px;padding:2px">実績</th>';
+    h+='<th style="font-size:9px;background:#eff6ff;color:#2563eb;min-width:40px;padding:2px">達成</th>';
+  });
+  h+='</tr></thead><tbody>';
+  // セクション別に表示
+  ST.forEach(function(sec){
+    h+='<tr><td colspan="'+(MS.length*3+4)+'" style="padding:8px 8px 4px;font-weight:900;font-size:12px;background:'+sec.c+'20;color:'+sec.c+'">'+sec.t+'</td></tr>';
+    (sec.items||[]).forEach(function(item){
+      var rows=item.g?(item.subs||[]):[item];
+      if(item.g){
+        // グループ行
+        var annB=0,annJ=0;
+        h+='<tr style="background:#f8fafc"><td style="padding:4px 8px;font-weight:700;font-size:11px;position:sticky;left:0;background:#f8fafc;z-index:1">'+item.n+'</td>';
+        MS.forEach(function(m){
+          var ym=yrS+'-'+m;
+          var b=(item.subs||[]).reduce(function(s,sub){return s+((budgetVals[sub.id]&&budgetVals[sub.id][ym])||0);},0);
+          var j=gv(item,ym); // 実績はgv（mode=jisseki想定だがここではvalsを直接参照）
+          // 実績はvalsを使う
+          var j2=(item.subs||[]).reduce(function(s,sub){return s+((vals[sub.id]&&vals[sub.id][ym])||0);},0);
+          if(_isMaintCode(item.code))j2=0; // auto items
+          annB+=b;annJ+=j2;
+          h+='<td style="text-align:right;padding:3px 4px;background:#fef9c3;border-left:2px solid #fef3c7;color:#d97706">'+f(b)+'</td>';
+          h+='<td style="text-align:right;padding:3px 4px;background:#f0fdf4;color:#059669;font-weight:'+(j2?600:400)+'">'+f(j2)+'</td>';
+          h+='<td style="text-align:right;padding:3px 4px;background:#eff6ff;font-size:9px;'+pctC(b,j2)+'">'+pct(b,j2)+'</td>';
+        });
+        h+='<td style="text-align:right;padding:3px 6px;background:#fffde7;font-weight:700;border-left:2px solid #475569;color:#d97706">'+f(annB)+'</td>';
+        h+='<td style="text-align:right;padding:3px 6px;background:#dcfce7;font-weight:700;color:#059669">'+f(annJ)+'</td>';
+        h+='<td style="text-align:right;padding:3px 6px;background:#dbeafe;font-weight:700;'+pctC(annB,annJ)+'">'+pct(annB,annJ)+'</td>';
+        h+='</tr>';
+        (item.subs||[]).forEach(function(sub){
+          var annBs=0,annJs=0;
+          h+='<tr><td style="padding:3px 8px 3px 24px;font-size:10px;position:sticky;left:0;background:#fff;z-index:1;color:#475569">└ '+sub.n+'</td>';
+          MS.forEach(function(m){
+            var ym=yrS+'-'+m;
+            var b=(budgetVals[sub.id]&&budgetVals[sub.id][ym])||0;
+            var j=(vals[sub.id]&&vals[sub.id][ym])||0;
+            annBs+=b;annJs+=j;
+            h+='<td style="text-align:right;padding:3px 4px;background:#fffde7;border-left:2px solid #fef3c7;color:#d97706;font-size:9px">'+f(b)+'</td>';
+            h+='<td style="text-align:right;padding:3px 4px;background:#f0fdf4;color:#059669;font-size:9px;font-weight:'+(j?600:400)+'">'+f(j)+'</td>';
+            h+='<td style="text-align:right;padding:3px 4px;background:#eff6ff;font-size:9px;'+pctC(b,j)+'">'+pct(b,j)+'</td>';
+          });
+          h+='<td style="text-align:right;padding:3px 6px;background:#fffde7;border-left:2px solid #475569;color:#d97706;font-size:10px">'+f(annBs)+'</td>';
+          h+='<td style="text-align:right;padding:3px 6px;background:#f0fdf4;color:#059669;font-size:10px">'+f(annJs)+'</td>';
+          h+='<td style="text-align:right;padding:3px 6px;background:#eff6ff;font-size:10px;'+pctC(annBs,annJs)+'">'+pct(annBs,annJs)+'</td>';
+          h+='</tr>';
+        });
+      } else {
+        // 単独行（自動計算含む）
+        var annB=0,annJ=0;
+        var isAuto=item.code==='cogs_insurance'||item.code==='sga_social_ins'||_isMaintCode(item.code);
+        h+='<tr><td style="padding:4px 8px;font-size:11px;position:sticky;left:0;background:#fff;z-index:1">'+item.n+(isAuto?' <span style="font-size:9px;color:#94a3b8">自動</span>':'')+'</td>';
+        MS.forEach(function(m){
+          var ym=yrS+'-'+m;
+          var b=isAuto?gv(item,ym):(budgetVals[item.id]&&budgetVals[item.id][ym])||0;
+          var j=gv(item,ym); // gvはmode=jissekiなのでvalsを参照
+          // 実績はvalsベース
+          var j2=item.code==='cogs_insurance'?window._vehicleIns||0:item.code==='sga_social_ins'?getSocialInsurance_(ym):_isMaintCode(item.code)?_maintVal(item.code,ym):((vals[item.id]&&vals[item.id][ym])||0);
+          annB+=b;annJ+=j2;
+          h+='<td style="text-align:right;padding:3px 4px;background:#fef9c3;border-left:2px solid #fef3c7;color:#d97706">'+f(b)+'</td>';
+          h+='<td style="text-align:right;padding:3px 4px;background:#f0fdf4;color:#059669;font-weight:'+(j2?600:400)+'">'+f(j2)+'</td>';
+          h+='<td style="text-align:right;padding:3px 4px;background:#eff6ff;font-size:9px;'+pctC(b,j2)+'">'+pct(b,j2)+'</td>';
+        });
+        h+='<td style="text-align:right;padding:3px 6px;background:#fffde7;font-weight:700;border-left:2px solid #475569;color:#d97706">'+f(annB)+'</td>';
+        h+='<td style="text-align:right;padding:3px 6px;background:#dcfce7;font-weight:700;color:#059669">'+f(annJ)+'</td>';
+        h+='<td style="text-align:right;padding:3px 6px;background:#dbeafe;font-weight:700;'+pctC(annB,annJ)+'">'+pct(annB,annJ)+'</td>';
+        h+='</tr>';
+      }
+    });
+  });
+  h+='</tbody></table></div>';
+  document.getElementById('ct').innerHTML=h;
+}
+
 function render(){
+  // モードボタンのON状態更新
+  ['yosan','jisseki','hikaku'].forEach(function(id){var el=document.getElementById('cm_mode_'+id);if(el)el.className='sbtn'+(mode===id?' on':'');});
+  // 比較モード: 別関数で処理
+  if(mode==='hikaku'){renderHikaku();return;}
   // ST が空なら DEFAULT にフォールバック
   if(!ST||ST.length===0){ST=JSON.parse(JSON.stringify(DEFAULT[store]));}
   const ncols=MS.length+1;
@@ -727,7 +850,7 @@ function render(){
             </div>
           </div></td>`;
           MS.forEach(m=>{const ym=`${year}-${m}`;const v=(vals[sub.id]&&vals[sub.id][ym])||0;const dv=v>0?v.toLocaleString():'';
-            h+=`<td><input type="text" inputmode="numeric" class="ci" id="inp_${sub.id}_${m}" data-id="${sub.id}" data-ym="${ym}" value="${dv}" oninput="onch('${sub.id}','${ym}',this.value)"></td>`;});
+            h+=`<td><input type="text" inputmode="numeric" class="ci" id="inp_${sub.id}_${m}" data-id="${sub.id}" data-ym="${ym}" value="${dv}" oninput="(mode==='yosan'?onchBudget:onch)('${sub.id}','${ym}',this.value)"></td>`;});
           h+=`<td style="color:#64748b"><span id="an_${sub.id}">${fmt(ga({id:sub.id,g:false}))}</span></td></tr>`;
         });
       }else if(item.code==='sga_social_ins'){
@@ -779,7 +902,7 @@ function render(){
           </div>
         </div></td>`;
         MS.forEach(m=>{const ym=`${year}-${m}`;const v=(vals[item.id]&&vals[item.id][ym])||0;const dv=v>0?v.toLocaleString():'';
-          h+=`<td><input type="text" inputmode="numeric" class="ci" id="inp_${item.id}_${m}" data-id="${item.id}" data-ym="${ym}" value="${dv}" oninput="onch('${item.id}','${ym}',this.value)"></td>`;});
+          h+=`<td><input type="text" inputmode="numeric" class="ci" id="inp_${item.id}_${m}" data-id="${item.id}" data-ym="${ym}" value="${dv}" oninput="(mode==='yosan'?onchBudget:onch)('${item.id}','${ym}',this.value)"></td>`;});
         h+=`<td style="color:#64748b"><span id="an_${item.id}">${fmt(ga(item))}</span></td></tr>`;
       }
     });
@@ -891,7 +1014,7 @@ function render(){
       _rgSec.items.forEach(function(item){
         h+='<tr><td class="ic"><div class="nm-cell"><span style="width:14px;flex-shrink:0"></span><span class="nm-txt" ondblclick="editNm(\'rg\',\''+item.id+'\',null,this)">'+item.n+'</span><div class="nm-ops"><button class="op del" onclick="delItem(\'rg\',\''+item.id+'\',null)">✕</button></div></div></td>';
         MS.forEach(function(m){var ym=year+'-'+m;var v=(vals[item.id]&&vals[item.id][ym])||0;var dv=v>0?v.toLocaleString():'';
-          h+='<td><input type="text" inputmode="numeric" class="ci" id="inp_'+item.id+'_'+m+'" data-id="'+item.id+'" data-ym="'+ym+'" value="'+dv+'" oninput="onch(\''+item.id+'\',\''+ym+'\',this.value)"></td>';});
+          h+='<td><input type="text" inputmode="numeric" class="ci" id="inp_'+item.id+'_'+m+'" data-id="'+item.id+'" data-ym="'+ym+'" value="'+dv+'" oninput="(mode==='yosan'?onchBudget:onch)(\''+item.id+'\',\''+ym+'\',this.value)"></td>';});
         h+='<td style="color:#64748b"><span id="an_'+item.id+'">'+fmt(ga(item))+'</span></td></tr>';
       });
       h+='<tr class="add-row"><td class="ic" style="padding:4px 8px"><button class="add-btn" onclick="openAddModal(\'rg\',null,null)">＋ 行を追加</button></td><td colspan="'+ncols+'" style="border:none"></td></tr>';
