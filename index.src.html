@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v663';
+  var CV='spk-v664';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=568').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=569').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -5103,6 +5103,9 @@ function ManagementTab({store}){
   // 予実比較
   const[yjData,setYjData]=useState({nha:{},spk:{}});
   const[yjCf,setYjCf]=useState({nha:{},spk:{}});
+  // KPI管理表 広告費効率: 経営管理シート + カスタム項目定義
+  const[cmMap,setCmMap]=useState({nha:{},spk:{}});
+  const[cmStMap,setCmStMap]=useState({nha:[],spk:[]});
   // 設定（マスターデータ）
   const[mgSettings,setMgSettings]=useState({
     channels:[
@@ -5287,6 +5290,29 @@ function ManagementTab({store}){
       };
       setYjCf({nha:calc(nhaR,"end_date"),spk:calc(spkR,"return_date")});
     });
+    // KPI管理表 広告費効率: cm_nha_* / cm_spk_* + cm_st_* を一括ロード
+    Promise.all([
+      sb.from("app_settings").select("key,value").like("key","cm_nha_%").limit(200),
+      sb.from("app_settings").select("key,value").like("key","cm_spk_%").limit(200),
+      sb.from("app_settings").select("value").eq("key","cm_st_nha").maybeSingle(),
+      sb.from("app_settings").select("value").eq("key","cm_st_spk").maybeSingle(),
+    ]).then(([{data:cn},{data:cs},{data:st1},{data:st2}])=>{
+      const parse=(rows,prefix)=>{
+        const m={};
+        (rows||[]).forEach(r=>{
+          const ym=(r.key||"").replace(prefix,"");
+          if(!ym)return;
+          try{ m[ym]=typeof r.value==="string"?JSON.parse(r.value):r.value; }catch(e){ m[ym]={}; }
+        });
+        return m;
+      };
+      const parseSt=(row)=>{
+        if(!row||!row.value)return [];
+        try{ return typeof row.value==="string"?JSON.parse(row.value):row.value; }catch(e){ return []; }
+      };
+      setCmMap({nha:parse(cn,"cm_nha_"),spk:parse(cs,"cm_spk_")});
+      setCmStMap({nha:parseSt(st1),spk:parseSt(st2)});
+    }).catch(()=>{});
   },[sub]);
 
   const saveYjField=useCallback(async(st,ym,field,val)=>{
@@ -6309,6 +6335,145 @@ function ManagementTab({store}){
             </tbody>
           </table>
         </div>
+
+        {/* === 📊 チャネル別 広告費効率 === */}
+        {(()=>{
+          const detectAdCodes=(cmSt)=>{
+            const codes=[];
+            (cmSt||[]).forEach(grp=>{
+              (grp.items||[]).forEach(it=>{
+                const isAd=(it.n||'').includes('広告');
+                if(isAd){
+                  if(it.subs && it.subs.length){it.subs.forEach(s=>codes.push(s.id));}
+                  else{codes.push(it.id);}
+                }
+              });
+            });
+            return codes;
+          };
+          const AD_CODES=detectAdCodes(cmStMap[dbStore]);
+          const getAd=(ym)=>{
+            const cm=(cmMap[dbStore]||{})[ym]||{};
+            let t=0;AD_CODES.forEach(c=>{t+=Number(cm[c]||0);});return t;
+          };
+          const isSpk=dbStore==="spk";
+          const rdKey=isSpk?"return_date":"end_date";
+          const active=(dbResvs||[]).filter(r=>r.status!=="cancelled"&&r.status!=="キャンセル"&&r.status!=="cancel");
+          const calcAd=(ym)=>{
+            let hpSalesB=0,hpNB=0,hpSalesR=0,hpNR=0,otaSales=0,otaN=0,rakutenDisc=0;
+            active.forEach(r=>{
+              const bp=Number(r.base_price)||0,op=Number(r.option_price)||0,dc=Number(r.discount)||0;
+              const rev=(bp>0||op>0)?(bp+op-dc):(Number(r.price)||0);
+              if(r.ota==="HP"){
+                let bm=null;
+                if(r.booked_at){bm=r.booked_at.slice(0,7);}
+                else if(r.created_at && r.created_at.slice(0,10)!=="2026-03-29"){bm=r.created_at.slice(0,7);}
+                if(bm===ym){hpSalesB+=rev;hpNB+=1;}
+                const rd=r[rdKey];
+                if(rd && rd.slice(0,7)===ym){hpSalesR+=rev;hpNR+=1;}
+              }else if(["J","R","S","O","RC","G"].includes(r.ota)){
+                const rd=r[rdKey];if(rd&&rd.slice(0,7)===ym){
+                  otaSales+=rev;otaN+=1;
+                  if(r.ota==="R" && dc>0) rakutenDisc+=dc;
+                }
+              }
+            });
+            const ad=getAd(ym);
+            const otaFee=Math.round(otaSales*0.18);
+            const otaCostTotal=otaFee+rakutenDisc;
+            return {
+              hpSalesB,hpNB,hpRateB:hpSalesB>0?ad/hpSalesB*100:(ad>0?Infinity:0),
+              hpSalesR,hpNR,hpRateR:hpSalesR>0?ad/hpSalesR*100:(ad>0?Infinity:0),
+              ad,otaSales,otaN,otaFee,rakutenDisc,otaCostTotal,
+              otaRate:18,otaRateActual:otaSales>0?otaCostTotal/otaSales*100:0,
+              totalSales:hpSalesR+otaSales,totalN:hpNR+otaN,
+              totalCost:ad+otaFee+rakutenDisc,
+              totalRate:(hpSalesR+otaSales)>0?(ad+otaFee+rakutenDisc)/(hpSalesR+otaSales)*100:0,
+            };
+          };
+          const adRows={};yjMonths.forEach(ym=>{adRows[ym]=calcAd(ym);});
+          const sumRange=(filterFn)=>{
+            const r={hpSalesB:0,hpNB:0,hpSalesR:0,hpNR:0,ad:0,otaSales:0,otaN:0,otaFee:0,rakutenDisc:0,otaCostTotal:0,totalSales:0,totalN:0,totalCost:0};
+            yjMonths.filter(filterFn).forEach(ym=>{
+              const a=adRows[ym];
+              r.hpSalesB+=a.hpSalesB;r.hpNB+=a.hpNB;r.hpSalesR+=a.hpSalesR;r.hpNR+=a.hpNR;
+              r.ad+=a.ad;r.otaSales+=a.otaSales;r.otaN+=a.otaN;r.otaFee+=a.otaFee;
+              r.rakutenDisc+=a.rakutenDisc;r.otaCostTotal+=a.otaCostTotal;
+              r.totalSales+=a.totalSales;r.totalN+=a.totalN;r.totalCost+=a.totalCost;
+            });
+            return r;
+          };
+          const curYm=today.getFullYear()+"-"+String(today.getMonth()+1).padStart(2,"0");
+          const ytd=sumRange(ym=>ym.startsWith(today.getFullYear()+"-")&&ym<=curYm);
+          const yen=(v)=>v?"¥"+Math.round(v).toLocaleString():"-";
+          const cnt=(v)=>v?v+"件":"-";
+          const pctF=(v)=>{if(!v||v===Infinity)return v===Infinity?"∞":"-";return v.toFixed(1)+"%";};
+          const sigClr=(v)=>{if(!v||v===Infinity)return v===Infinity?"#b91c1c":"#94a3b8";if(v<10)return"#15803d";if(v<20)return"#854d0e";return"#b91c1c";};
+          const sigBg=(v)=>{if(!v||v===Infinity)return v===Infinity?"#fef2f2":"transparent";if(v<10)return"#dcfce7";if(v<20)return"#fef9c3";return"#fef2f2";};
+          const sectHeadStyle={padding:"10px 8px 4px",fontSize:13,fontWeight:900,borderBottom:"2px solid #0ea5e9"};
+          return <div style={{marginTop:20}}>
+            <div style={{fontSize:14,fontWeight:900,marginBottom:4}}>📊 チャネル別 広告費効率 — {storeLabel}</div>
+            <div style={{fontSize:11,color:"#64748b",marginBottom:8}}>
+              <span style={{color:"#1e40af",fontWeight:700}}>HP</span>: 純広告費 / <span style={{color:"#7c3aed",fontWeight:700}}>OTA</span>: 手数料18%固定 + 楽天事業者クーポン（弊社実負担）
+            </div>
+            {AD_CODES.length===0&&<div style={{padding:8,marginBottom:8,background:"#fef2f2",border:"1px solid #fecaca",borderRadius:6,fontSize:11,color:"#991b1b"}}>⚠️ 広告費の項目が経営管理シート（cm_st_{dbStore}）に未登録のため、純広告費は0で表示されます。</div>}
+            <div style={{overflow:"auto",maxHeight:"70vh",border:"1px solid #e2e8f0",borderRadius:8}}>
+              <table style={{width:"100%",borderCollapse:"collapse",minWidth:yjMonths.length*92+220}}>
+                <thead>
+                  <tr>
+                    <th style={{...thS2,textAlign:"left",position:"sticky",left:0,zIndex:2,minWidth:200}}>項目 / 月</th>
+                    {yjMonths.map(ym=>{
+                      const isCurrent=ym===curYm;
+                      const isPast=new Date(ym+"-01")<new Date(today.getFullYear(),today.getMonth(),1);
+                      return <th key={ym} style={{...thS2,background:isCurrent?"#fef3c7":isPast?"#f8fafc":"#eff6ff",color:isCurrent?"#92400e":"#64748b"}}>{ym.replace("-","/")}</th>;
+                    })}
+                    <th style={{...thS2,background:"#1e293b",color:"#fff",position:"sticky",right:0,zIndex:2}}>YTD累計</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {/* HP発生月 */}
+                  <tr><td colSpan={yjMonths.length+2} style={{...sectHeadStyle,background:"#dbeafe",color:"#1e3a8a"}}>🏠 HPチャネル × 純広告費（予約発生月ベース）— 投資対効果</td></tr>
+                  <tr><td style={{...tdL2,paddingLeft:24,fontSize:11}}>💰 HP売上（発生月）</td>{yjMonths.map(ym=><td key={ym} style={{...tdS2,fontWeight:adRows[ym].hpSalesB>0?700:400}}>{yen(adRows[ym].hpSalesB)}</td>)}<td style={{...tdS2,fontWeight:900,background:"#1e293b",color:"#fff",position:"sticky",right:0}}>{yen(ytd.hpSalesB)}</td></tr>
+                  <tr><td style={{...tdL2,paddingLeft:24,fontSize:11}}>📥 HP件数（新規発生）</td>{yjMonths.map(ym=><td key={ym} style={{...tdS2,fontWeight:adRows[ym].hpNB>0?700:400}}>{cnt(adRows[ym].hpNB)}</td>)}<td style={{...tdS2,fontWeight:900,background:"#1e293b",color:"#fff",position:"sticky",right:0}}>{cnt(ytd.hpNB)}</td></tr>
+                  <tr><td style={{...tdL2,paddingLeft:24,fontSize:11}}>💸 純広告費（実支出）</td>{yjMonths.map(ym=><td key={ym} style={{...tdS2,fontWeight:adRows[ym].ad>0?700:400,color:adRows[ym].ad>0?"#1e40af":"#94a3b8"}}>{yen(adRows[ym].ad)}</td>)}<td style={{...tdS2,fontWeight:900,background:"#1e293b",color:"#fff",position:"sticky",right:0}}>{yen(ytd.ad)}</td></tr>
+                  <tr><td style={{...tdL2,paddingLeft:24,fontSize:11,fontWeight:700}}>📊 HP広告比率（発生月）</td>{yjMonths.map(ym=>{const r=adRows[ym].hpRateB;return <td key={ym} style={{...tdS2,background:sigBg(r),color:sigClr(r),fontWeight:700}}>{pctF(r)}</td>;})}{(()=>{const r=ytd.hpSalesB>0?ytd.ad/ytd.hpSalesB*100:0;return <td style={{...tdS2,fontWeight:900,background:sigBg(r),color:sigClr(r),position:"sticky",right:0,boxShadow:"-2px 0 4px rgba(0,0,0,0.1)"}}>{pctF(r)}</td>;})()}</tr>
+                  {/* HP返却月 */}
+                  <tr><td colSpan={yjMonths.length+2} style={{...sectHeadStyle,background:"#bfdbfe",color:"#1e3a8a"}}>🏠 HPチャネル × 純広告費（返却月ベース）— PL基準</td></tr>
+                  <tr><td style={{...tdL2,paddingLeft:24,fontSize:11}}>💰 HP売上（返却月）</td>{yjMonths.map(ym=><td key={ym} style={{...tdS2,fontWeight:adRows[ym].hpSalesR>0?700:400}}>{yen(adRows[ym].hpSalesR)}</td>)}<td style={{...tdS2,fontWeight:900,background:"#1e293b",color:"#fff",position:"sticky",right:0}}>{yen(ytd.hpSalesR)}</td></tr>
+                  <tr><td style={{...tdL2,paddingLeft:24,fontSize:11}}>📥 HP件数（返却月）</td>{yjMonths.map(ym=><td key={ym} style={{...tdS2,fontWeight:adRows[ym].hpNR>0?700:400}}>{cnt(adRows[ym].hpNR)}</td>)}<td style={{...tdS2,fontWeight:900,background:"#1e293b",color:"#fff",position:"sticky",right:0}}>{cnt(ytd.hpNR)}</td></tr>
+                  <tr><td style={{...tdL2,paddingLeft:24,fontSize:11}}>💸 純広告費（実支出）</td>{yjMonths.map(ym=><td key={ym} style={{...tdS2,fontWeight:adRows[ym].ad>0?700:400,color:adRows[ym].ad>0?"#1e40af":"#94a3b8"}}>{yen(adRows[ym].ad)}</td>)}<td style={{...tdS2,fontWeight:900,background:"#1e293b",color:"#fff",position:"sticky",right:0}}>{yen(ytd.ad)}</td></tr>
+                  <tr><td style={{...tdL2,paddingLeft:24,fontSize:11,fontWeight:700}}>📊 HP広告比率（返却月）</td>{yjMonths.map(ym=>{const r=adRows[ym].hpRateR;return <td key={ym} style={{...tdS2,background:sigBg(r),color:sigClr(r),fontWeight:700}}>{pctF(r)}</td>;})}{(()=>{const r=ytd.hpSalesR>0?ytd.ad/ytd.hpSalesR*100:0;return <td style={{...tdS2,fontWeight:900,background:sigBg(r),color:sigClr(r),position:"sticky",right:0,boxShadow:"-2px 0 4px rgba(0,0,0,0.1)"}}>{pctF(r)}</td>;})()}</tr>
+                  {/* OTA */}
+                  <tr><td colSpan={yjMonths.length+2} style={{...sectHeadStyle,background:"#ede9fe",color:"#5b21b6"}}>🌐 OTAチャネル × 手数料18%（返却月ベース）+ 楽天事業者クーポン</td></tr>
+                  <tr><td style={{...tdL2,paddingLeft:24,fontSize:11}}>💰 OTA売上（返却月）</td>{yjMonths.map(ym=><td key={ym} style={{...tdS2,fontWeight:adRows[ym].otaSales>0?700:400}}>{yen(adRows[ym].otaSales)}</td>)}<td style={{...tdS2,fontWeight:900,background:"#1e293b",color:"#fff",position:"sticky",right:0}}>{yen(ytd.otaSales)}</td></tr>
+                  <tr><td style={{...tdL2,paddingLeft:24,fontSize:11}}>📥 OTA件数</td>{yjMonths.map(ym=><td key={ym} style={{...tdS2,fontWeight:adRows[ym].otaN>0?700:400}}>{cnt(adRows[ym].otaN)}</td>)}<td style={{...tdS2,fontWeight:900,background:"#1e293b",color:"#fff",position:"sticky",right:0}}>{cnt(ytd.otaN)}</td></tr>
+                  <tr><td style={{...tdL2,paddingLeft:24,fontSize:11}}>💸 OTA手数料(18%固定)</td>{yjMonths.map(ym=><td key={ym} style={{...tdS2,fontWeight:adRows[ym].otaFee>0?700:400,color:adRows[ym].otaFee>0?"#7c3aed":"#94a3b8"}}>{yen(adRows[ym].otaFee)}</td>)}<td style={{...tdS2,fontWeight:900,background:"#1e293b",color:"#fff",position:"sticky",right:0}}>{yen(ytd.otaFee)}</td></tr>
+                  <tr><td style={{...tdL2,paddingLeft:24,fontSize:11}}>🎫 楽天事業者クーポン（実負担）</td>{yjMonths.map(ym=><td key={ym} style={{...tdS2,fontWeight:adRows[ym].rakutenDisc>0?700:400,color:adRows[ym].rakutenDisc>0?"#dc2626":"#94a3b8"}}>{yen(adRows[ym].rakutenDisc)}</td>)}<td style={{...tdS2,fontWeight:900,background:"#1e293b",color:"#fff",position:"sticky",right:0}}>{yen(ytd.rakutenDisc)}</td></tr>
+                  <tr><td style={{...tdL2,paddingLeft:24,fontSize:11,fontWeight:700}}>💰 OTAコスト合計（手数料+楽天C）</td>{yjMonths.map(ym=><td key={ym} style={{...tdS2,fontWeight:adRows[ym].otaCostTotal>0?700:400,color:adRows[ym].otaCostTotal>0?"#7c3aed":"#94a3b8"}}>{yen(adRows[ym].otaCostTotal)}</td>)}<td style={{...tdS2,fontWeight:900,background:"#1e293b",color:"#fff",position:"sticky",right:0}}>{yen(ytd.otaCostTotal)}</td></tr>
+                  <tr><td style={{...tdL2,paddingLeft:24,fontSize:11,fontWeight:700}}>📊 OTA実質広告比率</td>{yjMonths.map(ym=>{const r=adRows[ym].otaRateActual;return <td key={ym} style={{...tdS2,background:sigBg(r),color:sigClr(r),fontWeight:700}}>{pctF(r)}</td>;})}{(()=>{const r=ytd.otaSales>0?ytd.otaCostTotal/ytd.otaSales*100:0;return <td style={{...tdS2,fontWeight:900,background:sigBg(r),color:sigClr(r),position:"sticky",right:0,boxShadow:"-2px 0 4px rgba(0,0,0,0.1)"}}>{pctF(r)}</td>;})()}</tr>
+                  {/* 合算 */}
+                  <tr><td colSpan={yjMonths.length+2} style={{...sectHeadStyle,background:"#fef3c7",color:"#92400e"}}>📊 合算（HP+OTA / 返却月ベース統一）— PL基準</td></tr>
+                  {(()=>{
+                    const isBoth=(ym)=>(adRows[ym].hpSalesR>0 && adRows[ym].otaSales>0);
+                    const isBothYtd=(ytd.hpSalesR>0 && ytd.otaSales>0);
+                    return <React.Fragment>
+                      <tr><td style={{...tdL2,paddingLeft:24,fontSize:11}}>💰 合算売上</td>{yjMonths.map(ym=><td key={ym} style={{...tdS2,fontWeight:isBoth(ym)?700:400}}>{isBoth(ym)?yen(adRows[ym].totalSales):"-"}</td>)}<td style={{...tdS2,fontWeight:900,background:"#1e293b",color:"#fff",position:"sticky",right:0}}>{isBothYtd?yen(ytd.totalSales):"-"}</td></tr>
+                      <tr><td style={{...tdL2,paddingLeft:24,fontSize:11}}>📥 合算件数</td>{yjMonths.map(ym=><td key={ym} style={{...tdS2,fontWeight:isBoth(ym)?700:400}}>{isBoth(ym)?cnt(adRows[ym].totalN):"-"}</td>)}<td style={{...tdS2,fontWeight:900,background:"#1e293b",color:"#fff",position:"sticky",right:0}}>{isBothYtd?cnt(ytd.totalN):"-"}</td></tr>
+                      <tr><td style={{...tdL2,paddingLeft:24,fontSize:11}}>💸 広告費合計（純広告+OTA手数料+楽天C）</td>{yjMonths.map(ym=><td key={ym} style={{...tdS2,fontWeight:isBoth(ym)?700:400,color:isBoth(ym)?"#92400e":"#94a3b8"}}>{isBoth(ym)?yen(adRows[ym].totalCost):"-"}</td>)}<td style={{...tdS2,fontWeight:900,background:"#1e293b",color:"#fff",position:"sticky",right:0}}>{isBothYtd?yen(ytd.totalCost):"-"}</td></tr>
+                      <tr><td style={{...tdL2,paddingLeft:24,fontSize:11,fontWeight:700}}>📊 合算広告比率</td>{yjMonths.map(ym=>{if(!isBoth(ym))return <td key={ym} style={{...tdS2,color:"#94a3b8"}}>-</td>;const r=adRows[ym].totalRate;return <td key={ym} style={{...tdS2,background:sigBg(r),color:sigClr(r),fontWeight:700}}>{pctF(r)}</td>;})}{(()=>{if(!isBothYtd)return <td style={{...tdS2,color:"#94a3b8",position:"sticky",right:0,boxShadow:"-2px 0 4px rgba(0,0,0,0.1)"}}>-</td>;const r=ytd.totalSales>0?ytd.totalCost/ytd.totalSales*100:0;return <td style={{...tdS2,fontWeight:900,background:sigBg(r),color:sigClr(r),position:"sticky",right:0,boxShadow:"-2px 0 4px rgba(0,0,0,0.1)"}}>{pctF(r)}</td>;})()}</tr>
+                    </React.Fragment>;
+                  })()}
+                </tbody>
+              </table>
+            </div>
+            <div style={{marginTop:8,padding:10,background:"#f0f9ff",borderRadius:8,fontSize:11,color:"#0369a1"}}>
+              <div style={{fontWeight:700,marginBottom:4}}>💡 評価軸</div>
+              <div>・<b>HP発生月</b>=投資対効果視点 / <b>HP返却月</b>=PL基準 / <b>OTA</b>=手数料18%＋楽天事業者クーポン（弊社実負担）</div>
+              <div>・<b>OTA実質広告比率</b>=（手数料18%＋楽天C）÷OTA売上（楽天C分があるため18%超）</div>
+              <div>・広告比率信号: 🟢{"<10%"} / 🟡10-20% / 🔴{">20%"}</div>
+            </div>
+          </div>;
+        })()}
       </div>;
     })()}
 
@@ -16989,7 +17154,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.7.107";
+const APP_VERSION="v4.7.108";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
