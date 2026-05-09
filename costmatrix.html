@@ -258,7 +258,6 @@ async function sbu(t,k,v){
 
 async function init(){
   const tbl='nha_app_settings';
-  // ★ LocalStorageが空の場合のみSupabaseから読む（レース条件防止）
   if(!localStorage.getItem(stKey())){
     const sbSt=await sbg(tbl,'cm_st_'+store);
     if(sbSt){try{const parsed=JSON.parse(sbSt);if(Array.isArray(parsed)&&parsed.length>0){localStorage.setItem(stKey(),sbSt);}}catch(e){}}
@@ -266,11 +265,13 @@ async function init(){
   ST=loadST();
   const acctKey=store==='nha'?'nha_accounting':'spk_accounting';
   const vTbl=store==='nha'?'nha_vehicles':'vehicles';
-  // 会計実績・車両保険を並列取得
-  const [ps2,acctRaw,vehRaw]=await Promise.all([
+  const logsTable=store==='nha'?'nha_logs':'hm_logs';
+  // 会計実績・車両保険・整備記録を並列取得
+  const [ps2,acctRaw,vehRaw,logsRaw]=await Promise.all([
     Promise.all(MS.map(m=>sbg(tbl,`cm_${store}_${year}-${m}`))),
     sbqA(acctKey,`type=in.(card_pay,cash_out)&date=gte.${year}-01-01&date=lte.${year}-12-31&select=type,category,amount,date`),
-    sbqA(vTbl,`select=insurance_annual`)
+    sbqA(vTbl,`select=insurance_annual`),
+    sbqA(logsTable,`select=type,cost,date&date=gte.${year}-01-01&date=lte.${year}-12-31&type=in.(inspection,semi_annual,repair)`)
   ]);
   const ps=ps2;
   // 会計実績: {ym: {card: {cat: amt}, cash: {cat: amt}}}
@@ -284,15 +285,14 @@ async function init(){
   });
   // 車両タブ保険総額（月額合計）
   window._vehicleIns=(vehRaw||[]).reduce((s,v)=>s+(v.insurance_annual||0),0);
-  // 会計実績から車検・点検・修理を月別集計
+  // ★ 整備記録（nha_logs/hm_logs）から車検・点検・修理を月別集計（車両タブ 月別推移と同じ値）
   window._maintData={inspection:{},maintenance:{},repair:{}};
-  (acctRaw||[]).forEach(function(r){
+  (logsRaw||[]).forEach(function(r){
     var m=(r.date||'').slice(0,7);
-    var cat=r.category||'';
-    var amt=r.amount||0;
-    if(cat.includes('車検'))window._maintData.inspection[m]=(window._maintData.inspection[m]||0)+amt;
-    if(cat.includes('点検'))window._maintData.maintenance[m]=(window._maintData.maintenance[m]||0)+amt;
-    if(cat.includes('修理'))window._maintData.repair[m]=(window._maintData.repair[m]||0)+amt;
+    var cost=Number(r.cost||0);
+    if(r.type==='inspection') window._maintData.inspection[m]=(window._maintData.inspection[m]||0)+cost;
+    if(r.type==='semi_annual') window._maintData.maintenance[m]=(window._maintData.maintenance[m]||0)+cost;
+    if(r.type==='repair') window._maintData.repair[m]=(window._maintData.repair[m]||0)+cost;
   });
   // 会計実績インジケータ更新
   var acctCnt=Object.keys(window._acctData||{}).length;
@@ -729,7 +729,7 @@ function render(){
         h+=`<tr style="background:#f0fdf4"><td class="ic" style="background:#f0fdf4!important"><div class="nm-cell">
           <span style="width:14px;flex-shrink:0"></span>
           <span class="nm-txt">${item.n}</span>
-          <span style="font-size:9px;background:#dcfce7;color:#15803d;border-radius:3px;padding:1px 5px;margin-left:5px;white-space:nowrap">🔧 会計実績</span>
+          <span style="font-size:9px;background:#dcfce7;color:#15803d;border-radius:3px;padding:1px 5px;margin-left:5px;white-space:nowrap">🚗 車両記録</span>
         </div></td>`;
         MS.forEach(m=>{const v=_maintVal(item.code,yrS+'-'+m);h+=`<td style="color:#15803d;font-weight:600;background:#f0fdf4;text-align:right;padding:4px 5px">${v>0?'¥'+v.toLocaleString():'—'}</td>`;});
         const ann=MS.reduce((s,m)=>s+_maintVal(item.code,yrS+'-'+m),0);
