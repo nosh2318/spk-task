@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v671';
+  var CV='spk-v672';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=576').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=577').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -220,6 +220,27 @@ const DB = {
     if(!sb||!tasks.length)return;
     DB._pendingSave++;
     try{
+      // ★ 2026-05-09 根本対応: 同一予約・同日・同カテゴリ既存行の_idを継承
+      //   DB UNIQUE INDEX (date,reservation_id,task_category) と整合する
+      try{
+        const _LEND_T=["PUB","DEL","PU","来店"];
+        const _RET_T=["BDB","COL","BD","返却"];
+        const _getCatU=function(typ){return _LEND_T.indexOf(typ)>=0?"L":_RET_T.indexOf(typ)>=0?"R":null;};
+        const _resp=await sb.from("tasks").select("_id,type,reservation_id").eq("date",date);
+        const _existRows=_resp&&_resp.data?_resp.data:[];
+        const _exMap=new Map();
+        _existRows.forEach(function(_er){
+          const _ec=_getCatU(_er&&_er.type);
+          const _erid=_er&&_er.reservation_id;
+          if(_ec&&_erid)_exMap.set(_erid+"|"+_ec,_er._id);
+        });
+        tasks.forEach(function(_tt){
+          const _tc=_getCatU(_tt&&_tt.type);
+          if(!_tc||!_tt.reservationId)return;
+          const _oldId=_exMap.get(_tt.reservationId+"|"+_tc);
+          if(_oldId&&_oldId!==_tt._id)_tt._id=_oldId;
+        });
+      }catch(_eUp){console.warn("[upsertTasks] _id継承スキップ:",_eUp&&_eUp.message);}
       const rows=tasks.map((t,i)=>DB._toDbTask(t,date,i));
       await DB._upsertWithFallback(rows,"upsertTasks");
     }finally{DB._pendingSave--;}
@@ -17196,7 +17217,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.7.116";
+const APP_VERSION="v4.7.117";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
