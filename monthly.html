@@ -77,33 +77,92 @@ const SU='https://ckrxttbnawkclshczsia.supabase.co';
 const SK='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8';
 const MS=['01','02','03','04','05','06','07','08','09','10','11','12'];
 let store='nha', year=new Date().getFullYear();
-let manualData={}; // その他売上 手動入力 {mm: amount}
+// その他売上（手動）: {items:[{id,name,values:{mm:amount}}]}
+let manualData={items:[]};
 
-async function loadManualExtra(y){
-  const key='extra_manual_'+store+'_'+y;
+function parseManualRaw(v){
+  if(!v)return{items:[]};
   try{
-    if(store==='total'){
-      const [nv,sv]=await Promise.all([sbgkey('nha_app_settings','extra_manual_nha_'+y),sbgkey('nha_app_settings','extra_manual_spk_'+y)]);
-      const nd=nv?JSON.parse(nv):{},sd=sv?JSON.parse(sv):{};
-      manualData={};MS.forEach(m=>{manualData[m]=(nd[m]||0)+(sd[m]||0);});
-    }else{
-      const v=await sbgkey('nha_app_settings',key);
-      manualData=v?JSON.parse(v):{};
+    const d=JSON.parse(v);
+    if(d&&Array.isArray(d.items))return d; // 新形式
+    // 旧形式 {mm:amount} → items配列に変換
+    if(typeof d==='object'){
+      const vals={};MS.forEach(m=>{if(d[m])vals[m]=d[m];});
+      if(Object.keys(vals).length>0)return{items:[{id:'legacy',name:'その他売上',values:vals}]};
     }
-  }catch(e){manualData={};}
+  }catch(e){}
+  return{items:[]};
 }
 
-async function saveManualExtra(m,val){
-  const v=parseInt(val)||0;
-  manualData[m]=v;
-  if(window._monthlyD){
-    window._monthlyD[m].manualExtra=v;
-    window._monthlyD[m].totalIn=window._monthlyD[m].base+window._monthlyD[m].opt-window._monthlyD[m].disc+window._monthlyD[m].extra+v+window._monthlyD[m].cashin;
-    render(window._monthlyD);
-  }
-  if(store==='total')return; // 合算モードは編集不可
+async function loadManualExtra(y){
+  try{
+    if(store==='total'){
+      const[nv,sv]=await Promise.all([sbgkey('nha_app_settings','extra_manual_nha_'+y),sbgkey('nha_app_settings','extra_manual_spk_'+y)]);
+      const nd=parseManualRaw(nv),sd=parseManualRaw(sv);
+      manualData={items:[
+        ...(nd.items||[]).map(it=>({...it,_s:'那覇'})),
+        ...(sd.items||[]).map(it=>({...it,_s:'札幌'})),
+      ]};
+    }else{
+      const v=await sbgkey('nha_app_settings','extra_manual_'+store+'_'+y);
+      manualData=parseManualRaw(v);
+    }
+  }catch(e){manualData={items:[]};}
+}
+
+async function _saveManualData(){
+  if(store==='total')return;
   const key='extra_manual_'+store+'_'+year;
   await fetch(SU+'/rest/v1/nha_app_settings',{method:'POST',headers:{apikey:SK,'Authorization':'Bearer '+SK,'Content-Type':'application/json','Prefer':'resolution=merge-duplicates'},body:JSON.stringify({key,value:JSON.stringify(manualData)})});
+}
+
+function _recalcManual(){
+  if(!window._monthlyD)return;
+  MS.forEach(m=>{
+    const tot=(manualData.items||[]).reduce((s,it)=>s+(it.values&&it.values[m]||0),0);
+    window._monthlyD[m].manualExtra=tot;
+    window._monthlyD[m].totalIn=window._monthlyD[m].base+window._monthlyD[m].opt-window._monthlyD[m].disc+window._monthlyD[m].extra+tot+window._monthlyD[m].cashin;
+    window._monthlyD[m].operatingProfit=window._monthlyD[m].totalIn-window._monthlyD[m].totalCost;
+    window._monthlyD[m].cfNet=window._monthlyD[m].totalIn-window._monthlyD[m].totalCost-window._monthlyD[m].repay;
+  });
+}
+
+async function saveManualExtra(m,val,itemId){
+  const it=(manualData.items||[]).find(i=>i.id===itemId);
+  if(!it)return;
+  if(!it.values)it.values={};
+  it.values[m]=parseInt(val)||0;
+  _recalcManual();
+  render(window._monthlyD);
+  await _saveManualData();
+}
+
+async function addManualItem(){
+  const name=prompt('小項目名を入力してください（例: 駐車場代、その他収入）');
+  if(!name||!name.trim())return;
+  if(!manualData.items)manualData.items=[];
+  manualData.items.push({id:'me_'+Date.now(),name:name.trim(),values:{}});
+  _recalcManual();
+  render(window._monthlyD);
+  await _saveManualData();
+}
+
+async function deleteManualItem(itemId){
+  if(!confirm('この小項目を削除しますか？'))return;
+  manualData.items=(manualData.items||[]).filter(i=>i.id!==itemId);
+  _recalcManual();
+  render(window._monthlyD);
+  await _saveManualData();
+}
+
+async function renameManualItem(itemId){
+  const it=(manualData.items||[]).find(i=>i.id===itemId);
+  if(!it)return;
+  const name=prompt('新しい名前',it.name);
+  if(!name||!name.trim())return;
+  it.name=name.trim();
+  render(window._monthlyD);
+  await _saveManualData();
 }
 
 function updateTblHeight(){
@@ -273,7 +332,7 @@ async function load(){
   });
 
   // その他売上 手動データをDに適用
-  MS.forEach(m=>{D[m].manualExtra=manualData[m]||0;});
+  MS.forEach(m=>{D[m].manualExtra=(manualData.items||[]).reduce((s,it)=>s+(it.values&&it.values[m]||0),0);});
   // 各月の合計
   MS.forEach(m=>{
     D[m].totalIn=D[m].base+D[m].opt-D[m].disc+D[m].extra+D[m].manualExtra+D[m].cashin;
@@ -375,14 +434,41 @@ function render(D){
       return;
     }
     if(row.type==='manual'){
-      let annMan=0;
-      h+=`<tr class="row-manual"><td class="ic">${row.label}</td>`;
-      MS.forEach(m=>{
-        const v=manualData[m]||0; annMan+=v;
-        const ro=store==='total'?'readonly':''
-        h+=`<td style="padding:2px 4px;background:#faf5ff"><input class="mi" type="number" value="${v||''}" placeholder="0" ${ro} onchange="saveManualExtra('${m}',this.value)"/></td>`;
+      const items=manualData.items||[];
+      const ro=store==='total';
+      // ▼ セクションヘッダー
+      h+=`<tr style="background:#f5f3ff"><td class="ic" colspan="${MS.length+2}" style="background:#f5f3ff;color:#6d28d9;font-weight:800;font-size:11px;letter-spacing:.05em;padding:6px 10px">✍️ その他売上（手動）${!ro?`<button onclick="addManualItem()" style="margin-left:10px;padding:2px 8px;font-size:10px;background:#7c3aed;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:700">＋ 小項目追加</button>`:''}</td></tr>`;
+      // ▼ 小項目なし
+      if(items.length===0){
+        h+=`<tr class="row-manual"><td class="ic" colspan="${MS.length+2}" style="text-align:center;color:#a78bfa;font-size:11px;padding:10px">${ro?'小項目が登録されていません':'↑「＋ 小項目追加」で追加してください'}</td></tr>`;
+      }
+      // ▼ 各小項目
+      items.forEach(it=>{
+        let rowTot=0;
+        h+=`<tr class="row-manual"><td class="ic" style="padding-left:18px">`;
+        if(!ro){
+          h+=`<span ondblclick="renameManualItem('${it.id}')" title="ダブルクリックで名前変更" style="color:#7c3aed;font-weight:600;cursor:pointer">${it.name}</span>`;
+          h+=`<button onclick="deleteManualItem('${it.id}')" style="margin-left:5px;padding:1px 4px;font-size:9px;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;border-radius:3px;cursor:pointer">✕</button>`;
+        }else{
+          h+=`<span style="color:#7c3aed;font-weight:600">${it.name}${it._s?' ('+it._s+')':''}</span>`;
+        }
+        h+=`</td>`;
+        MS.forEach(m=>{
+          const v=(it.values&&it.values[m])||0; rowTot+=v;
+          h+=`<td style="padding:2px 4px;background:#faf5ff"><input class="mi" type="number" value="${v||''}" placeholder="0" ${ro?'readonly':''} onchange="saveManualExtra('${m}',this.value,'${it.id}')"/></td>`;
+        });
+        h+=`<td style="background:#faf5ff;color:#7c3aed;font-weight:700;text-align:right">${rowTot>0?'¥'+rowTot.toLocaleString():''}</td></tr>`;
       });
-      h+=`<td style="background:#faf5ff;color:#7c3aed;font-weight:700;text-align:right">${annMan>0?'¥'+annMan.toLocaleString():''}</td></tr>`;
+      // ▼ 小計行
+      if(items.length>0){
+        let grandTot=0;
+        h+=`<tr style="background:#ede9fe"><td class="ic" style="background:#ede9fe;color:#6d28d9;font-weight:800;font-size:11px;padding-left:10px">小計</td>`;
+        MS.forEach(m=>{
+          const t=items.reduce((s,it)=>s+(it.values&&it.values[m]||0),0); grandTot+=t;
+          h+=`<td style="background:#ede9fe;color:#7c3aed;font-weight:700;text-align:right">${t>0?'¥'+t.toLocaleString():''}</td>`;
+        });
+        h+=`<td style="background:#ede9fe;color:#6d28d9;font-weight:900;text-align:right">${grandTot>0?'¥'+grandTot.toLocaleString():''}</td></tr>`;
+      }
       return;
     }
     const cls=row.cls||'';
