@@ -618,11 +618,17 @@ function parseJalan_(body) {
   if (insurance === 'なし') insurance = detectInsurance_(body);
   var peopleStr = extractField_(body, '乗車人数');
   var people = 0;
-  var pM = peopleStr.match(/大人\s*(\d+)/);
+  // ★ 2026-05-09: じゃらん「子供（12歳未満）3人」の (12) を子供数と誤マッチするバグ修正
+  //   旧: /子供.*?(\d+)/ → 「子供（12」マッチで 12 を拾う → 大人5+12=17 → >10で0クランプ
+  //   新: 括弧書きを除去してからパース → 「子供 3」で正しく 3 を取得
+  //   被害: R0MWIFG8 冨名腰様 8人(大人5+子供3) が DB people=0 になっていた、他12件
+  var cleanStr = (peopleStr || '').replace(/[（(][^）)]*[）)]/g, '');
+  var pM = cleanStr.match(/大人\s*(\d+)/);
   if (pM) people += parseInt(pM[1], 10);
-  var cM = peopleStr.match(/子供.*?(\d+)/);
+  var cM = cleanStr.match(/子供\s*(\d+)/);
   if (cM) people += parseInt(cM[1], 10);
-  if (people > 10) { Logger.log('WARNING: people=' + people + ' は異常値。raw=' + peopleStr); people = 0; }
+  // ★ CLAUDE.md ルール: people > 8 は 8 にクランプ（記録ロスト防止）
+  if (people > 8) { Logger.log('WARNING: people=' + people + ' > 8 → 8にクランプ。raw=' + peopleStr); people = 8; }
   var basePriceJ = parsePrice_(extractField_(body, '基本料金合計'));
   var optionPriceJ = parsePrice_(extractField_(body, 'オプション料金'));
   var insurancePriceJ = parsePrice_(extractField_(body, '補償（任意加入）料金'));
@@ -771,9 +777,11 @@ function parseSkyticket_(body) {
   var vehicleClass = extractVehicleClass_(rawClass);
   var peopleStr = extractField_(body, 'ご利用人数');
   var people = 0;
-  var pM = peopleStr.match(/大人\s*(\d+)/);
+  // ★ 2026-05-09: 括弧書き除去 + 8クランプに統一（CLAUDE.md ルール準拠）
+  var cleanStrS = (peopleStr || '').replace(/[（(][^）)]*[）)]/g, '');
+  var pM = cleanStrS.match(/大人\s*(\d+)/);
   if (pM) people += parseInt(pM[1], 10);
-  if (people > 10) { Logger.log('WARNING: people=' + people + ' は異常値。raw=' + peopleStr); people = 0; }
+  if (people > 8) { Logger.log('WARNING: people=' + people + ' > 8 → 8にクランプ。raw=' + peopleStr); people = 8; }
   var totalPrice = parsePrice_(extractField_(body, '合計料金'));
   var insurancePriceStr = extractField_(body, '免責補償料金');
   var insurancePrice = parsePrice_(insurancePriceStr);
@@ -886,7 +894,8 @@ function parseOfficial_(body) {
   if (adultMatch) people += parseInt(adultMatch[1], 10);
   var childMatch = body.match(/子ども:\s*(\d+)/);
   if (childMatch) people += parseInt(childMatch[1], 10);
-  if (people > 10) { Logger.log('WARNING: people=' + people + ' は異常値'); people = 0; }
+  // ★ 2026-05-09: CLAUDE.md ルール準拠 → 8クランプ
+  if (people > 8) { Logger.log('WARNING: people=' + people + ' > 8 → 8にクランプ'); people = 8; }
   var rawClassLine = '';
   var rawClassMatch = body.match(/ご予約車両クラス\s*\n\s*(.+)/);
   if (rawClassMatch) rawClassLine = rawClassMatch[1].trim();
@@ -1695,7 +1704,9 @@ function checkPaymentStatus() {
     var status = String(data[i][8] || '');
     var url = String(data[i][7] || '');
     var store = String(data[i][2] || '');
-    if (status.indexOf('済') === -1 && status.indexOf('キャンセル') === -1 && url) {
+    // ★ 2026-05-08: '済' は「メール送信済」も誤マッチして未払い行から除外していた → '入金済' に厳密化
+    // (R0SFCDMG ヤナギダ様の入金検知漏れ事故を契機に修正)
+    if (status.indexOf('入金済') === -1 && status.indexOf('キャンセル') === -1 && status.indexOf('発行取消') === -1 && url) {
       unpaidRows.push({rowIndex:i+2, reservationId:String(data[i][3]||'').trim(), customerName:String(data[i][4]||'').replace(/様$/,'').trim(), amount:Number(data[i][6])||0, url:url.trim(), media:String(data[i][13]||'').trim(), store:store.trim(), orderId:null});
     }
   }
@@ -1795,7 +1806,8 @@ function checkUnpaidAlert() {
   var now = new Date(), alerts = [];
   for (var i = 0; i < data.length; i++) {
     var status = String(data[i][8]||'');
-    if (status.indexOf('済')!==-1 || status.indexOf('キャンセル')!==-1) continue;
+    // ★ 2026-05-08: '済' → '入金済' に厳密化（メール送信済の誤マッチ防止）
+    if (status.indexOf('入金済')!==-1 || status.indexOf('キャンセル')!==-1 || status.indexOf('発行取消')!==-1) continue;
     var resvId = String(data[i][3]||'').trim(), name = String(data[i][4]||'').trim(), amount = Number(data[i][6])||0, url = String(data[i][7]||'').trim();
     if (!resvId || !url) continue;
     var resv = supabaseGet_('reservations', 'id=eq.' + encodeURIComponent(resvId) + '&select=lend_date');
@@ -1943,7 +1955,8 @@ function diagnoseRecoveredPayments() {
     // 複数シート行 = 過去に別URLで決済試行あり
     if (sheetRows.length > 1) { reasons.push('スプシに'+sheetRows.length+'行（過去URL複数）'); flag='REVIEW'; }
     // スプシ行が入金済み = 既に支払い済み
-    var anyPaid = sheetRows.some(function(s){return s.status.indexOf('済')>=0;});
+    // ★ 2026-05-08: '済' → '入金済' に厳密化（メール送信済の誤マッチ防止）
+    var anyPaid = sheetRows.some(function(s){return s.status.indexOf('入金済')>=0;});
     if (anyPaid) { reasons.push('スプシに入金済み行あり'); flag='REVIEW'; }
     // 貸出日が近い
     var today = new Date(); today.setHours(0,0,0,0);
@@ -2127,7 +2140,8 @@ function debugPaymentV3() {
   var matchedIds = [];
   data.forEach(function(row) {
     var status = String(row[8]||''), url = String(row[7]||'').trim();
-    if (status.indexOf('済')!==-1 || status.indexOf('キャンセル')!==-1 || !url) return;
+    // ★ 2026-05-08: '済' → '入金済' に厳密化（メール送信済の誤マッチ防止）
+    if (status.indexOf('入金済')!==-1 || status.indexOf('キャンセル')!==-1 || status.indexOf('発行取消')!==-1 || !url) return;
     var resvId = String(row[3]||'').trim(), name = String(row[4]||'').trim(), amount = Number(row[6])||0;
     var normalizedUrl = normalizeSquareUrl_(url), orderId = linkMap[normalizedUrl];
     Logger.log('  スプシ未払い: '+resvId+' '+name+' ¥'+amount);
@@ -3905,6 +3919,132 @@ function bulkReprocessPatternB() {
   });
   Logger.log('[bulkReprocessPatternB] 候補: ' + targets.length + '件 (全' + rows.length + '件中)');
   bulkReprocessByResvNos(targets.map(function(r){ return r.id; }));
+}
+
+/**
+ * ★ 2026-05-09 追加: じゃらん people=0 取りこぼし バックフィル
+ * 「子供（12歳未満）N人」の (12) を子供数と誤マッチして >10クランプ→0 にしていたバグ被害者を復旧。
+ * Gmail検索を伴うため CLAUDE.md ルール「1日1関数 / 100件以下」を遵守。今回対象は最大13件。
+ * GASエディタで関数選択 → ▶️実行（1回のみ）
+ */
+function backfillJalanPeople() {
+  var resvs = supabaseGet_('reservations', 'ota=eq.J&people=eq.0&status=neq.cancelled&select=id,name,lend_date&order=lend_date.desc&limit=200');
+  if (!resvs || !resvs.length) { Logger.log('[BackfillPeople] 対象0件'); return; }
+  Logger.log('[BackfillPeople] 対象: ' + resvs.length + '件');
+
+  var fixed = 0, notFound = 0, alreadyZero = 0;
+  var details = [];
+  for (var i = 0; i < resvs.length; i++) {
+    var r = resvs[i];
+    // Gmail検索（直近120日制限）
+    var threads = GmailApp.search('from:' + OTA_SENDERS.jalan + ' ' + r.id + ' newer_than:120d', 0, 5);
+    var msg = null;
+    for (var t = 0; t < threads.length && !msg; t++) {
+      var ms = threads[t].getMessages();
+      for (var m = 0; m < ms.length; m++) {
+        if (ms[m].getPlainBody().indexOf(r.id) !== -1) { msg = ms[m]; break; }
+      }
+    }
+    if (!msg) {
+      Logger.log('  ❌ ' + r.id + ' (' + r.name + '): Gmail未検出');
+      notFound++;
+      continue;
+    }
+    try {
+      var parsed = parseJalan_(msg.getPlainBody());
+      if (!parsed) { Logger.log('  ⚠️ ' + r.id + ': parseJalan_ null'); continue; }
+      if (parsed.people === 0) {
+        Logger.log('  ⏭️ ' + r.id + ' (' + r.name + '): メール上も大人0 子供0 → 正常0件');
+        alreadyZero++;
+        continue;
+      }
+      var ok = supabaseUpdate_('reservations', 'id=eq.' + encodeURIComponent(r.id), {people: parsed.people});
+      if (ok) {
+        Logger.log('  ✅ ' + r.id + ' (' + r.name + ' ' + r.lend_date + ') → people=' + parsed.people);
+        details.push(r.id + ' ' + r.name + ' →' + parsed.people + '人');
+        fixed++;
+      } else {
+        Logger.log('  ❌ ' + r.id + ': DB更新失敗');
+      }
+    } catch (e) {
+      Logger.log('  ❌ ' + r.id + ': 例外 ' + e.message);
+    }
+    Utilities.sleep(200);
+  }
+
+  Logger.log('=== 完了: 修正=' + fixed + ' / メール上0=' + alreadyZero + ' / Gmail未検出=' + notFound + ' / 合計=' + resvs.length + '件 ===');
+
+  // Slack 通知
+  try {
+    var lines = ['🔧 *じゃらん people=0 バックフィル完了*'];
+    lines.push('対象: ' + resvs.length + '件');
+    lines.push('✅ 修正: ' + fixed + '件');
+    lines.push('⏭️ メール上も0で正常: ' + alreadyZero + '件');
+    if (notFound > 0) lines.push('❌ Gmail未検出: ' + notFound + '件（要手動）');
+    if (details.length > 0) {
+      lines.push('');
+      lines.push('修正内訳:');
+      details.slice(0, 20).forEach(function(d){ lines.push('  • ' + d); });
+    }
+    postToSlackChannel_(JALAN_PAY_CHANNEL, lines.join('\n'));
+  } catch (e) { Logger.log('[BackfillPeople] Slack post error: ' + e.message); }
+}
+
+/**
+ * ★ 2026-05-08 追加: R0SFCDMG ヤナギダ様 入金確認漏れ復旧 (1回のみ実行)
+ * - DB は既に paid に更新済み（外部から PATCH 済み）
+ * - スプシ I列「メール送信済」→「✅ 入金済み」、J列入金日、K列OrderID を更新
+ * - Slack #payment_sapporo に入金確認完了通知を投稿
+ * - 二重実行防止: ScriptProperty 'recover_R0SFCDMG_done'
+ */
+function recoverR0SFCDMGPayment() {
+  var DONE_KEY = 'recover_R0SFCDMG_done';
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty(DONE_KEY)) {
+    Logger.log('[Recover] Already done at ' + props.getProperty(DONE_KEY));
+    return;
+  }
+
+  var resvId = 'R0SFCDMG';
+  var paidAt = '2026-05-04T07:07:29Z';
+  var paidDateStr = '2026/05/04';
+  var orderId = 'Jeixiny0i9Ce7WY9hIo9JPJPqeNZY';
+
+  // スプシ更新
+  try {
+    var sheetId = '1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc';
+    var sheet = SpreadsheetApp.openById(sheetId).getSheetByName('支払い管理');
+    var lastRow = sheet.getLastRow();
+    var resIds = sheet.getRange(2, 4, lastRow-1, 1).getValues();
+    var rowIdx = -1;
+    for (var i = 0; i < resIds.length; i++) {
+      if (String(resIds[i][0]).trim() === resvId) { rowIdx = i + 2; break; }
+    }
+    if (rowIdx < 0) { Logger.log('[Recover] スプシ行未検出'); return; }
+    sheet.getRange(rowIdx, 9).setValue('✅ 入金済み');
+    sheet.getRange(rowIdx, 10).setValue(paidDateStr);
+    sheet.getRange(rowIdx, 11).setValue(orderId);
+    Logger.log('[Recover] スプシ行' + rowIdx + ' 更新完了');
+  } catch (e) {
+    Logger.log('[Recover] スプシ更新エラー: ' + e.message);
+    return;
+  }
+
+  // Slack 通知
+  try {
+    postToSlackChannel_(JALAN_PAY_CHANNEL,
+      '✅ *入金確認完了 (取りこぼし復旧)*\n' +
+      '予約番号: ' + resvId + '\n' +
+      '宛名: ヤナギダ ナオヤ\n' +
+      '金額: ¥41,750\n' +
+      '入金日時: ' + paidAt + ' (Mastercard末尾7530)\n' +
+      '店舗: 札幌店\n\n' +
+      '原因: スプシ「メール送信済」を `status.indexOf("済")` で誤マッチ → 未払い行から除外 → checkPaymentStatus 未実行\n' +
+      '対策: フィルタを `indexOf("入金済")` に厳密化（4箇所修正済）');
+  } catch (e) { Logger.log('[Recover] Slack post error: ' + e.message); }
+
+  props.setProperty(DONE_KEY, new Date().toISOString());
+  Logger.log('[Recover] Done');
 }
 
 /**

@@ -1,6 +1,92 @@
 # SPK業務管理APP（札幌店）
 
+## 2026-05-10 修正履歴
+
+### 💸 返金待ち Handover を TOP に追加 (v4.7.119 / spk-v674)
+- **背景**: R0R8QVZR モギ ユウヘイ様 ¥40,950（5/17-19キャンセル）が「⚠️ 返金対応必要」とSlack通知されたが、`handleJalanPaymentCancel_` 内で `status='refund'` 書込が失敗していて DB上は status='paid' のまま放置。じゃらん決済タブの「返金待ち」フィルタにも入らず、TOPでもアラートが出ず、見逃される構造
+- **オーナー要望**: 「返金待ちに案件がある場合はTOPにアラート出す」「Handoverに出す」
+- **実装内容**:
+  1. **R0R8QVZR DB訂正**: `jalan_payments.status paid → refund` PATCH
+  2. **MemoBox に「💸 返金待ち Handover」セクション追加** (`index.src.html` L9663付近)
+     - state: `refundPending`
+     - DB条件: `paid_at IS NOT NULL AND cancelled_at IS NOT NULL AND refunded_at IS NULL AND status != 'refunded'`
+     - 60秒間隔ポーリング更新
+     - 表示位置: 既存「💳 Square未決済 Handover」の直下、「🔴 本日のHandover」の直前
+     - 紫系デザイン（背景 #faf5ff / 枠 #d8b4fe / アクセント #7c3aed）
+     - 件数バッジ + 各件: 名前/予約番号/金額/利用予定日/キャンセル経過日数
+     - Squareリンク直接遷移ボタン
+     - フッターに自動返金手順: `#payment_sapporo` に「キャンセル / 予約番号:XXXXX / キャンセル料率:N」を投稿でBot自動返金
+- **同型バグ調査**: 入金済み + キャンセル済み + 未返金 = 2件
+  - R0UIIOPU ミズシマ タカミ ¥6,750 (5/8キャンセル)
+  - R0R8QVZR モギ ユウヘイ ¥40,950 (5/9キャンセル) ← 今回修正
+- **既存「返金待ち」分類との関係**: APP のじゃらん決済タブ (`index.src.html` L3045) は既に `status='refund'` ラベル定義済み。R0R8QVZR を refund に直したことで自動的にタブにも表示されるようになった
+- **🔴 教訓**:
+  - **`handleJalanPaymentCancel_` の `status='refund'` 書込が失敗するバグ**が潜在している可能性。今回 R0R8QVZR は cancelled_at だけ書かれて status は paid のままだった。原因不明だが、`'refund'` enum値がjalan_payments.status の許容値に入っていない or PostgREST の部分成功などが疑われる。次回同症状が出たら詳細ログを見る
+  - **「DBに無い状態を Slack 通知だけで案内する」は見逃しの温床**: 今回も4日間気づかれなかった。**TOPに常時表示するアラート Handover**が最も確実な見逃し防止
+- **コミット予定**: `index.src.html` / `index.html` / `index2.html` / `sw.js` / `CLAUDE.md`
+- **バージョン**: APP_VERSION v4.7.118 → **v4.7.119** / sw.js spk-v673 → **spk-v674** / index.html CV=spk-v674 / sw.js?v=578 → **579**
+
+---
+
+## 2026-05-09 修正履歴
+
+### 🐛 じゃらん people パース致命バグ — 「子供（12歳未満）」の `12` を子供数と誤認
+- **発覚契機**: 5/8 取込の R0MWIFG8（冨名腰 槙吾様 / 6/23-25 / Aクラス）が **大人5+子供3=8人** なのに DB `people=0` 登録。オーナー指摘「人数の情報が取れてない」
+- **真因**: `parseJalan_` L619 の正規表現 `/子供.*?(\d+)/` が `子供（12歳未満）3人` の **(12)** を子供数として誤マッチ
+  - 計算経路: 大人5 + 子供12（誤）= **17** → L621 `if (people > 10) people = 0` で **0クランプ → 記録ロスト**
+- **同型バグ被害**: じゃらん予約で `people=0 & status≠cancelled` が **13件**検出
+  - 例: ヤマモト ミヨコ / ダイ チヨコ / マスナガ ジュンイチ / ベンバチャ エミナ / 他9件
+- **修正内容（`gas-email-import-v2.gs` 3パーサー）**:
+  - **`parseJalan_` L619**: 「`（12歳未満）`」等の括弧書きを除去してからパース
+    ```
+    var cleanStr = (peopleStr || '').replace(/[（(][^）)]*[）)]/g, '');
+    var pM = cleanStr.match(/大人\s*(\d+)/);
+    var cM = cleanStr.match(/子供\s*(\d+)/);
+    ```
+  - **`parseSkyticket_`**: 同型対策で括弧除去を予防的に追加
+  - **`parseOfficial_`**: クランプロジック統一
+  - **クランプ厳密化**: 旧 `>10 → 0`（記録ロスト） → 新 `>8 → 8`（CLAUDE.md グローバル「OTA予約 people 最大8人ルール」準拠）
+- **被害復旧**:
+  - R0MWIFG8: DB people=8 に PATCH 完了
+  - 残12件: 新規関数 `backfillJalanPeople()` で Gmail から再パース → DB更新（要GAS手動実行）
+- **🔴 教訓**:
+  - **`.*?` 最短マッチは括弧内の数字を拾う**: 「子供（12歳未満）」のような括弧書きが含まれるフィールドは、**括弧除去前処理が必須**
+  - **`>10 → 0` クランプは記録ロスト**: 「異常値は0にする」より「8でキャップする」方が実害最小（CLAUDE.md グローバルルール準拠）
+  - **乗車人数バグは1件で気付きにくい**: 13件溜まってからオーナーが気づいた = 集計画面（解析タブ等）で「人数0件」が常時表示されていた可能性。people=0 を検知するアラートを将来的に追加検討
+- **コミット予定**: `gas-email-import-v2.gs` 3パーサー修正 + `backfillJalanPeople` 関数追加
+
+---
+
 ## 2026-05-08 修正履歴
+
+### 🔴 入金確認 取りこぼしバグ — `'済'` 部分一致を `'入金済'` に厳密化 (4箇所)
+- **症状**: R0SFCDMG ヤナギダ ナオヤ様 (¥41,750 / 5/8-5/10) が **2026-05-04 16:07 JST に Square で入金済み**だったにもかかわらず、`jalan_payments.status='email_sent'` のまま 4日間放置。スプシ「支払い管理」のステータス列も「メール送信済」のまま、Slack入金通知も出ず、APP側は未払い表示のまま
+- **発覚経路**: オーナーがスプシで R0SFCDMG 行を見て「ステータスが変わってない」と指摘 → Square Orders API で tenders 確認 → Mastercard末尾7530 で ¥41,750 入金確認
+- **🔴 根本原因**: `checkPaymentStatus` (15分間隔トリガー) のフィルタ条件:
+  ```js
+  if (status.indexOf('済') === -1 && status.indexOf('キャンセル') === -1 && url) {
+    unpaidRows.push(...);  // 未払い行扱い
+  }
+  ```
+  - スプシ I列に **「メール送信済」**と書かれた行 → `indexOf('済')` で **+1 (false)** 返却 → **未払い行から除外** → checkPaymentStatus が走らない → 入金検知漏れ
+  - 「⏳ 未払い」が正規ステータスのはずだが、過去のどこかでスタッフが手動で「メール送信済」に書き換えた、または旧仕様で書き込まれた行が混在していた
+  - 同じバグが **4関数** にあった: `checkPaymentStatus` / `checkUnpaidAlert` / `diagnoseRecoveredPayments` / `debugPaymentV3`
+- **同型バグ被害者調査**: DB `status='email_sent'` の14件全件を Square Orders API で照合 → R0SFCDMG 1件のみ実際は入金済み、残り13件は本当に未入金
+- **修正内容（`gas-email-import-v2.gs` 4箇所）**:
+  - 旧: `status.indexOf('済') === -1`（部分一致 → 「メール送信済」も誤マッチ）
+  - 新: `status.indexOf('入金済') === -1` ＋ 「発行取消」も除外条件に追加
+  - 安全側設計: スタッフが自由文を書いても「入金済」「キャンセル」「発行取消」のいずれかが明示されていない限り未払い行扱い
+- **R0SFCDMG 復旧対応**:
+  - DB: `jalan_payments.status email_sent → paid` / `paid_at = 2026-05-04T07:07:29Z` PATCH 済
+  - スプシ: 新規関数 `recoverR0SFCDMGPayment()` 実装（GASで手動実行 → I/J/K列自動更新 + Slack通知）
+- **🔴 教訓**:
+  - **`indexOf` の部分一致は危険**: 短い文字列(`'済'`)で `indexOf` するとスーパーセット文字列(`'メール送信済'`)も誤マッチする
+  - **判定キーワードは具体的にする**: `'済'` ではなく `'入金済'` のように、「意図する状態」を明示する
+  - **ステータス値を厳密管理する**: スプシのステータス列に書ける値は「⏳ 未払い」「✅ 入金済み」「❌ キャンセル」「⚠️ 発行取消」「⚠️ 要返金」の5種類のみ。スタッフ向けマニュアルで自由文記入を禁止
+  - **GASフィルタは複数関数に同居している**: 4関数同じバグだったので、1箇所修正したらgrepで横展開を確認するルール
+- **コミット予定**: `gas-email-import-v2.gs` 4箇所修正 + `recoverR0SFCDMGPayment` 関数追加
+
+---
 
 ### 🔧 楽天 price 計上ロジックを NHA と同期 — 過去18件一括補正
 - **症状**: SPK `parseRakuten_` の price 計算式が NHA と不一致。SPK は `price = 合計金額(totalR)` をそのまま採用しており、事業者クーポン(弊社負担)を売上から差引いていなかった
