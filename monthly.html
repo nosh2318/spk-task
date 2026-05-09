@@ -48,6 +48,13 @@ tbody tr:nth-child(even) td.ic{background:#fafafa}
 input.mi{width:72px;border:none;background:transparent;text-align:right;font-size:11px;color:#7c3aed;font-weight:700;padding:1px 2px;font-family:inherit}
 input.mi:focus{outline:2px solid #7c3aed;border-radius:3px;background:#faf5ff}
 input.mi::placeholder{color:#d4b8ff}
+/* 予算入力 */
+input.bi{width:72px;border:none;background:transparent;text-align:right;font-size:11px;color:#d97706;font-weight:700;padding:1px 2px;font-family:inherit}
+input.bi:focus{outline:2px solid #f59e0b;border-radius:3px;background:#fffbeb}
+input.bi::placeholder{color:#fde68a}
+.row-budget-in td{background:#fffbeb!important}
+.row-budget-in td.ic{background:#fffbeb!important;color:#92400e;font-weight:600;position:sticky;left:0;z-index:5}
+.mode-sep{color:#cbd5e1;padding:0 2px;font-size:16px;font-weight:300}
 </style>
 </head>
 <body>
@@ -58,6 +65,10 @@ input.mi::placeholder{color:#d4b8ff}
 <!-- ★ 2026-05-08: パスコード認証撤廃（APP内 iframe からの利用前提） -->
 <div id="mc">
   <div class="ctrl">
+    <button class="sbtn" id="bmy" onclick="setMode('yosan')" style="background:#f59e0b;color:#fff;font-weight:800">📋 予算</button>
+    <button class="sbtn on" id="bmj" onclick="setMode('jisseki')" style="font-weight:800">📊 実績</button>
+    <button class="sbtn" id="bmh" onclick="setMode('hikaku')" style="background:#e2e8f0;color:#334155;font-weight:800">📊 予実比較</button>
+    <span class="mode-sep">｜</span>
     <button class="sbtn on" id="bn" onclick="sw('nha')">那覇</button>
     <button class="sbtn" id="bs" onclick="sw('spk')">札幌</button>
     <button class="sbtn" id="bt" onclick="sw('total')" style="background:#7c3aed;color:#fff">合計</button>
@@ -65,10 +76,9 @@ input.mi::placeholder{color:#d4b8ff}
       <button class="yr-btn" onclick="cy(-1)">◀</button>
       <span class="yr-label" id="yl">2026</span>
       <button class="yr-btn" onclick="cy(1)">▶</button>
-    
-    <button class="sbtn" onclick="exportCSV()" style="background:#dcfce7;color:#15803d;font-weight:700;margin-left:auto" title="月次収支をCSVで出力">📥 CSV出力</button>
-  </div>
-    <span id="status" style="font-size:11px;color:#94a3b8;margin-left:8px"></span>
+    </div>
+    <button class="sbtn" onclick="exportCSV()" style="background:#dcfce7;color:#15803d;font-weight:700;margin-left:auto">📥 CSV</button>
+    <span id="status" style="font-size:11px;color:#94a3b8;margin-left:4px"></span>
   </div>
   <div id="ct"><div class="loading">読み込み中...</div></div>
 </div>
@@ -77,6 +87,184 @@ const SU='https://ckrxttbnawkclshczsia.supabase.co';
 const SK='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8';
 const MS=['01','02','03','04','05','06','07','08','09','10','11','12'];
 let store='nha', year=new Date().getFullYear();
+let mode='jisseki'; // 'yosan' | 'jisseki'
+
+// ===== 予算データ {base:{mm:v}, opt:{mm:v}, ..., manual:{items:[...]}} =====
+let budgetData={};
+function parseBudgetRaw(v){if(!v)return{};try{return JSON.parse(v);}catch(e){return{};}}
+async function loadBudget(y){
+  try{
+    if(store==='total'){
+      const[nv,sv]=await Promise.all([sbgkey('nha_app_settings','budget_nha_'+y),sbgkey('nha_app_settings','budget_spk_'+y)]);
+      const nd=parseBudgetRaw(nv),sd=parseBudgetRaw(sv);
+      budgetData={};
+      ['base','opt','disc','extra','cashin','sga','cogs','repay'].forEach(k=>{
+        budgetData[k]={};MS.forEach(m=>{budgetData[k][m]=(nd[k]&&nd[k][m]||0)+(sd[k]&&sd[k][m]||0);});
+      });
+      const ni=nd.manual&&nd.manual.items||[],si=sd.manual&&sd.manual.items||[];
+      budgetData.manual={items:[...ni.map(it=>({...it,_s:'那覇'})),...si.map(it=>({...it,_s:'札幌'}))]};
+    }else{
+      const v=await sbgkey('nha_app_settings','budget_'+store+'_'+y);
+      budgetData=parseBudgetRaw(v);
+      if(!budgetData.manual)budgetData.manual={items:[]};
+    }
+  }catch(e){budgetData={manual:{items:[]}};}
+}
+async function _saveBudgetData(){
+  if(store==='total')return;
+  const key='budget_'+store+'_'+year;
+  await fetch(SU+'/rest/v1/nha_app_settings',{method:'POST',headers:{apikey:SK,'Authorization':'Bearer '+SK,'Content-Type':'application/json','Prefer':'resolution=merge-duplicates'},body:JSON.stringify({key,value:JSON.stringify(budgetData)})});
+}
+function computeBudgetD(){
+  const BD={};
+  MS.forEach(m=>{
+    const g=k=>budgetData[k]&&budgetData[k][m]||0;
+    const items=budgetData.manual&&budgetData.manual.items||[];
+    const manualExtra=items.reduce((s,it)=>s+(it.values&&it.values[m]||0),0);
+    const base=g('base'),opt=g('opt'),disc=g('disc'),extra=g('extra'),cashin=g('cashin');
+    const sga=g('sga'),cogs=g('cogs'),repay=g('repay');
+    const totalIn=base+opt-disc+extra+manualExtra+cashin;
+    const totalCost=sga+cogs;
+    BD[m]={base,opt,disc,extra,cashin,sga,cogs,repay,manualExtra,
+           totalIn,totalCost,operatingProfit:totalIn-totalCost,cfNet:totalIn-totalCost-repay};
+  });
+  return BD;
+}
+async function saveBudgetCell(key,m,val){
+  if(!budgetData[key])budgetData[key]={};
+  budgetData[key][m]=parseInt(val)||0;
+  renderBudget();
+  await _saveBudgetData();
+}
+async function addBudgetItem(){
+  const name=prompt('小項目名を入力（例: 臨時収入）');
+  if(!name||!name.trim())return;
+  if(!budgetData.manual)budgetData.manual={items:[]};
+  budgetData.manual.items.push({id:'mb_'+Date.now(),name:name.trim(),values:{}});
+  renderBudget();await _saveBudgetData();
+}
+async function deleteBudgetItem(id){
+  if(!confirm('削除しますか？'))return;
+  budgetData.manual.items=(budgetData.manual.items||[]).filter(i=>i.id!==id);
+  renderBudget();await _saveBudgetData();
+}
+async function renameBudgetItem(id){
+  const it=(budgetData.manual.items||[]).find(i=>i.id===id);if(!it)return;
+  const n=prompt('新しい名前',it.name);if(!n||!n.trim())return;
+  it.name=n.trim();renderBudget();await _saveBudgetData();
+}
+async function saveBudgetManual(m,val,id){
+  const it=(budgetData.manual.items||[]).find(i=>i.id===id);if(!it)return;
+  if(!it.values)it.values={};
+  it.values[m]=parseInt(val)||0;
+  renderBudget();await _saveBudgetData();
+}
+function setMode(m){
+  mode=m;
+  const modes={bmy:'yosan',bmj:'jisseki',bmh:'hikaku'};
+  Object.entries(modes).forEach(([id,v])=>{
+    const el=document.getElementById(id);if(!el)return;
+    el.className='sbtn'+(m===v?' on':'');
+    if(id==='bmy'){el.style.background=m==='yosan'?'#f59e0b':'#e2e8f0';el.style.color=m==='yosan'?'#fff':'#334155';}
+    else if(id==='bmh'){el.style.background=m==='hikaku'?'#0284c7':'#e2e8f0';el.style.color=m==='hikaku'?'#fff':'#334155';}
+    else{el.style.background='';el.style.color='';}
+  });
+  load();
+}
+function renderBudget(){
+  const BD=computeBudgetD();
+  const ro=store==='total';
+  const ann={};
+  ['base','opt','disc','extra','cashin','sga','cogs','repay','totalIn','totalCost','operatingProfit','cfNet'].forEach(k=>{
+    ann[k]=MS.reduce((s,m)=>s+(BD[m][k]||0),0);
+  });
+  ann.manualExtra=MS.reduce((s,m)=>s+(BD[m].manualExtra||0),0);
+  const rows=[
+    {t:'sh',label:'◆ 収入（予算）',bg:'#eff6ff',color:'#1d4ed8'},
+    {t:'inp',label:'基本料金',key:'base'},
+    {t:'inp',label:'付帯売上',key:'opt'},
+    {t:'inp',label:'割引（▲）',key:'disc',neg:true},
+    {t:'inp',label:'予約外売上',key:'extra'},
+    {t:'manual_b'},
+    {t:'inp',label:'現金入金',key:'cashin'},
+    {t:'calc',label:'収入合計',key:'totalIn',cls:'row-subtotal'},
+    {t:'sh',label:'◆ コスト（予算）',bg:'#fef2f2',color:'#b91c1c'},
+    {t:'inp',label:'📋 販管費（予算）',key:'sga',bg:'#fff5f5',tc:'#991b1b'},
+    {t:'inp',label:'📦 売上原価（予算）',key:'cogs',bg:'#fffbeb',tc:'#92400e'},
+    {t:'calcBal',label:'🔴 PL支出（販管費＋売上原価）',key:'totalCost',cls:'row-balance'},
+    {t:'calcProfit',label:'💹 PL営業利益（収入合計－PL支出）',key:'operatingProfit'},
+    {t:'sh',label:'◆ CF（返済）',bg:'#f5f3ff',color:'#6d28d9'},
+    {t:'inp',label:'🏦 返済（予算）',key:'repay',bg:'#f5f3ff',tc:'#6d28d9'},
+    {t:'sh',label:'◆ 収入合計 − （PL＋CF） = 純残高',bg:'#0f172a',color:'#94a3b8'},
+    {t:'calcProfit',label:'💰 CF後純残高（収入 − PL支出 − 返済）',key:'cfNet'},
+  ];
+  let h=`<div class="tbl-wrap"><table>`;
+  h+=`<thead><tr><th class="ic">項目</th>`;
+  MS.forEach(m=>h+=`<th>${parseInt(m)}月</th>`);
+  h+=`<th style="background:#1e293b;color:#fff;border-right:none;position:sticky;top:0;z-index:10">年計</th></tr></thead><tbody>`;
+  rows.forEach(row=>{
+    if(row.t==='sh'){
+      h+=`<tr class="sec-hdr"><td colspan="${MS.length+2}" style="background:${row.bg};color:${row.color}">${row.label}</td></tr>`;return;
+    }
+    if(row.t==='manual_b'){
+      const items=budgetData.manual&&budgetData.manual.items||[];
+      h+=`<tr style="background:#fef9c3"><td class="ic" colspan="${MS.length+2}" style="background:#fef9c3;color:#92400e;font-weight:800;font-size:11px;padding:6px 10px">✍️ その他売上（手動）${!ro?`<button onclick="addBudgetItem()" style="margin-left:10px;padding:2px 8px;font-size:10px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:700">＋ 小項目追加</button>`:''}</td></tr>`;
+      if(items.length===0){h+=`<tr class="row-budget-in"><td class="ic" colspan="${MS.length+2}" style="text-align:center;color:#d97706;font-size:11px;padding:10px">${ro?'小項目が登録されていません':'↑「＋ 小項目追加」で追加してください'}</td></tr>`;}
+      items.forEach(it=>{
+        let rowTot=0;
+        h+=`<tr class="row-budget-in"><td class="ic" style="padding-left:18px">`;
+        if(!ro){h+=`<span ondblclick="renameBudgetItem('${it.id}')" title="ダブルクリックで名前変更" style="color:#d97706;font-weight:600;cursor:pointer">${it.name}</span><button onclick="deleteBudgetItem('${it.id}')" style="margin-left:5px;padding:1px 4px;font-size:9px;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;border-radius:3px;cursor:pointer">✕</button>`;}
+        else{h+=`<span style="color:#d97706;font-weight:600">${it.name}${it._s?' ('+it._s+')':''}</span>`;}
+        h+=`</td>`;
+        MS.forEach(m=>{const v=(it.values&&it.values[m])||0;rowTot+=v;h+=`<td style="padding:2px 4px;background:#fffbeb"><input class="bi" type="number" value="${v||''}" placeholder="0" ${ro?'readonly':''} onchange="saveBudgetManual('${m}',this.value,'${it.id}')"/></td>`;});
+        h+=`<td style="background:#fffbeb;color:#d97706;font-weight:700;text-align:right">${rowTot>0?'¥'+rowTot.toLocaleString():''}</td></tr>`;
+      });
+      if(items.length>0){
+        let gt=0;h+=`<tr style="background:#fef3c7"><td class="ic" style="background:#fef3c7;color:#92400e;font-weight:800;font-size:11px;padding-left:10px">小計</td>`;
+        MS.forEach(m=>{const t=items.reduce((s,it)=>s+(it.values&&it.values[m]||0),0);gt+=t;h+=`<td style="background:#fef3c7;color:#d97706;font-weight:700;text-align:right">${t>0?'¥'+t.toLocaleString():''}</td>`;});
+        h+=`<td style="background:#fef3c7;color:#92400e;font-weight:900;text-align:right">${gt>0?'¥'+gt.toLocaleString():''}</td></tr>`;
+      }
+      return;
+    }
+    if(row.t==='inp'){
+      const isCm=row.bg;
+      h+=`<tr class="row-budget-in"${isCm?` style="background:${row.bg}"`:''}><td class="ic"${isCm?` style="color:${row.tc};font-weight:700"`:''}>` +row.label+`</td>`;
+      let rowAnn=0;
+      MS.forEach(m=>{const v=BD[m][row.key]||0;rowAnn+=v;h+=`<td style="padding:2px 4px;background:${row.bg||'#fffbeb'}"><input class="bi" type="number" value="${v||''}" placeholder="0" ${ro?'readonly':''} onchange="saveBudgetCell('${row.key}','${m}',this.value)"/></td>`;});
+      h+=`<td style="background:${row.bg||'#fffbeb'};color:${row.tc||'#d97706'};font-weight:700;text-align:right">${rowAnn>0?(row.neg?'-':'')+`¥${rowAnn.toLocaleString()}`:''}</td></tr>`;
+      return;
+    }
+    // calc rows
+    const v2c=(v,neg)=>v>0?(neg?'-¥':v>0?'¥':'')+v.toLocaleString():'';
+    const calcRow=(key,cls,isBal,isProfit)=>{
+      h+=`<tr class="${cls||''}">`;
+      h+=`<td class="ic">${row.label}</td>`;
+      MS.forEach(m=>{
+        const v=BD[m][key]||0;
+        let disp='',style='';
+        if(isBal){disp=v>0?'¥'+v.toLocaleString():'';style=`style="color:#fff;font-weight:900"`;}
+        else if(isProfit){disp=(v>0?'+¥':v<0?'-¥':'¥')+Math.abs(v).toLocaleString();style=`style="background:${v>0?'#dcfce7':v<0?'#fee2e2':'#f8fafc'};color:${v>0?'#15803d':v<0?'#b91c1c':'#94a3b8'};font-weight:800;text-align:right"`;}
+        else{disp=v>0?'¥'+v.toLocaleString():'';}
+        if(v===0)disp='';
+        h+=`<td ${style}>${disp}</td>`;
+      });
+      const av=ann[key]||0;
+      let adisp='',astyle='';
+      if(isBal){adisp=av>0?'¥'+av.toLocaleString():'';astyle=`style="color:#fff;font-weight:900"`;}
+      else if(isProfit){adisp=(av>0?'+¥':av<0?'-¥':'¥')+Math.abs(av).toLocaleString();astyle=`style="background:${av>0?'#dcfce7':av<0?'#fee2e2':'#f8fafc'};color:${av>0?'#15803d':av<0?'#b91c1c':'#94a3b8'};font-weight:900;text-align:right"`;}
+      else{adisp=av>0?'¥'+av.toLocaleString():'';}
+      if(av===0)adisp='';
+      h+=`<td ${astyle}>${adisp}</td></tr>`;
+    };
+    if(row.t==='calc')calcRow(row.key,row.cls,false,false);
+    else if(row.t==='calcBal')calcRow(row.key,row.cls,true,false);
+    else if(row.t==='calcProfit')calcRow(row.key,row.cls,false,true);
+  });
+  h+=`</tbody></table></div>`;
+  document.getElementById('ct').innerHTML=h;
+  document.getElementById('status').textContent=`${year}年 予算 (${store==='nha'?'那覇':store==='spk'?'札幌':'合計'})`;
+}
+
 // その他売上（手動）: {items:[{id,name,values:{mm:amount}}]}
 let manualData={items:[]};
 
@@ -200,8 +388,11 @@ async function load(){
   document.getElementById('ct').innerHTML='<div class="loading">読み込み中...</div>';
   document.getElementById('status').textContent='';
   const y=String(year);
-
-  // ★ 合算モード: NHA+SPK両方を取得して合算
+  // 予算モード
+  if(mode==='yosan'){await loadBudget(y);renderBudget();return;}
+  // 比較モード
+  if(mode==='hikaku'){await Promise.all([loadBudget(y),loadManualExtra(y)]);if(store==='total'){await loadTotal(y);return;}await loadAndRenderForHikaku(y);return;}
+  // 実績モード
   if(store==='total'){
     await loadManualExtra(y);await loadTotal(y);return;
   }
@@ -389,9 +580,9 @@ async function loadTotal(y){
     if(stRaw){try{const st=JSON.parse(stRaw);const rg=st.find(function(sec){return sec.id==='rg';});if(rg){REPAY_IDS.clear();(rg.items||[]).forEach(function(i){REPAY_IDS.add(i.id);});}}catch(e){}}
     cmRaws.forEach(function(raw,i){if(!raw)return;try{const d=JSON.parse(raw);let sal=0;Object.entries(d).forEach(function([id,amt]){const a=Number(amt)||0;if(a<=0)return;if(SGA_IDS.has(id))D[MS[i]].sga+=a;if(SALARY_IDS.has(id))sal+=a;if(COGS_IDS.has(id))D[MS[i]].cogs+=a;if(REPAY_IDS.has(id))D[MS[i]].repay+=a;});D[MS[i]].sga+=Math.round(sal*0.15);}catch(e){}});
   });
-  MS.forEach(m=>{D[m].manualExtra=manualData[m]||0;D[m].totalIn=D[m].base+D[m].opt-D[m].disc+D[m].extra+D[m].manualExtra+D[m].cashin;D[m].totalCost=D[m].sga+D[m].acctActual+D[m].cogs;D[m].operatingProfit=D[m].totalIn-D[m].totalCost;D[m].cfNet=D[m].totalIn-D[m].totalCost-D[m].repay;});
+  MS.forEach(m=>{D[m].manualExtra=(manualData.items||[]).reduce((s,it)=>s+(it.values&&it.values[m]||0),0);D[m].totalIn=D[m].base+D[m].opt-D[m].disc+D[m].extra+D[m].manualExtra+D[m].cashin;D[m].totalCost=D[m].sga+D[m].acctActual+D[m].cogs;D[m].operatingProfit=D[m].totalIn-D[m].totalCost;D[m].cfNet=D[m].totalIn-D[m].totalCost-D[m].repay;});
   window._monthlyD=D;
-  render(D);
+  if(mode==='hikaku'){renderHikaku(D);}else{render(D);}
   document.getElementById('status').textContent=`${y}年 那覇＋札幌 合算`;
 }
 
@@ -513,6 +704,93 @@ function render(D){
   });
   h+=`</tbody></table></div>`;
   document.getElementById('ct').innerHTML=h;
+}
+
+// ===== 予実比較 =====
+async function loadAndRenderForHikaku(y){
+  // 実績を load() の単店舗パスで取得してから比較レンダー
+  const aTbl=store==='nha'?'nha_accounting':'spk_accounting';
+  const sTbl='nha_app_settings';
+  const vTbl=store==='nha'?'nha_vehicles':'vehicles';
+  const rTbl=store==='nha'?'nha_reservations':'reservations';
+  const dCol=store==='nha'?'end_date':'return_date';
+  const[accts,cmRaws,vehRaw,stRaw,resvs]=await Promise.all([
+    sbq(aTbl,`select=type,category,amount,date&date=gte.${y}-01-01&date=lte.${y}-12-31`),
+    Promise.all(MS.map(m=>sbgkey(sTbl,`cm_${store}_${y}-${m}`))),
+    sbq(vTbl,`select=insurance_annual`),
+    sbgkey(sTbl,'cm_st_'+store),
+    sbq(rTbl,`select=base_price,option_price,discount,price,status,${dCol}&${dCol}=gte.${y}-01-01&${dCol}=lte.${y}-12-31&status=neq.cancelled`),
+  ]);
+  const D={};MS.forEach(m=>{D[m]={base:0,opt:0,disc:0,extra:0,manualExtra:0,cashin:0,sga:0,cogs:0,acctActual:0,repay:0};});
+  (resvs||[]).forEach(r=>{const m=(r[dCol]||'').slice(5,7);if(!D[m])return;const bp=r.base_price||0,op=r.option_price||0,dc=r.discount||0;if(bp>0||op>0){D[m].base+=bp;D[m].opt+=op;D[m].disc+=dc;}else D[m].base+=r.price||0;});
+  const IS_MAINT=c=>c.includes('修理')||c.includes('車検')||c.includes('点検');
+  (accts||[]).forEach(r=>{const m=(r.date||'').slice(5,7);if(!D[m])return;const a=r.amount||0,cat=r.category||'';if(r.type==='extra_sales')D[m].extra+=a;else if(r.type==='cash_in')D[m].cashin+=a;else if(r.type==='cash_out'||r.type==='card_pay'){if(IS_MAINT(cat))D[m].cogs+=a;else D[m].acctActual+=a;}});
+  const vIns=(vehRaw||[]).reduce((s,v)=>s+(v.insurance_annual||0),0);
+  MS.forEach(m=>{D[m].cogs+=vIns;});
+  const SGA_IDS=new Set(['s2a','s2b','s2c','s2d','s2e','s2f','s2g','s2h','s3a','s3b','s3c','s3d','s4','s4a','s11','s11a','s12','s12a','s13','s13a','s14','s14a']);
+  const COGS_IDS=new Set(['c1a','c1b','c1c','c1d','c1e','c6a','c6b','c6c','c6d','c6e','c6f','c7']);
+  const SALARY_IDS=new Set(['s2a','s2b','s2c','s2d','s2e','s2f','s2g','s2h']);
+  const REPAY_IDS=new Set(['r1','r2','r3','r4','r5','r6','r7','r8']);
+  if(stRaw){try{const st=JSON.parse(stRaw);const rg=st.find(s=>s.id==='rg');if(rg){REPAY_IDS.clear();(rg.items||[]).forEach(i=>REPAY_IDS.add(i.id));}}catch(e){}}
+  cmRaws.forEach((raw,i)=>{if(!raw)return;try{const d=JSON.parse(raw);let sal=0;Object.entries(d).forEach(([id,amt])=>{const a=Number(amt)||0;if(a<=0)return;if(SGA_IDS.has(id))D[MS[i]].sga+=a;if(SALARY_IDS.has(id))sal+=a;if(COGS_IDS.has(id))D[MS[i]].cogs+=a;if(REPAY_IDS.has(id))D[MS[i]].repay+=a;});D[MS[i]].sga+=Math.round(sal*0.15);}catch(e){}});
+  MS.forEach(m=>{D[m].manualExtra=(manualData.items||[]).reduce((s,it)=>s+(it.values&&it.values[m]||0),0);D[m].totalIn=D[m].base+D[m].opt-D[m].disc+D[m].extra+D[m].manualExtra+D[m].cashin;D[m].totalCost=D[m].sga+D[m].acctActual+D[m].cogs;D[m].operatingProfit=D[m].totalIn-D[m].totalCost;D[m].cfNet=D[m].totalIn-D[m].totalCost-D[m].repay;});
+  window._monthlyD=D;
+  renderHikaku(D);
+}
+
+function renderHikaku(JD){
+  const BD=computeBudgetD();
+  const KEYS=[
+    {key:'totalIn',label:'収入合計',profit:false},
+    {key:'base',label:'　基本料金',profit:false},
+    {key:'opt',label:'　付帯売上',profit:false},
+    {key:'extra',label:'　予約外売上',profit:false},
+    {key:'totalCost',label:'PL支出合計',profit:false,neg:true},
+    {key:'sga',label:'　販管費',profit:false,neg:true},
+    {key:'cogs',label:'　売上原価',profit:false,neg:true},
+    {key:'operatingProfit',label:'PL営業利益',profit:true},
+    {key:'repay',label:'　返済',profit:false,neg:true},
+    {key:'cfNet',label:'CF後純残高',profit:true},
+  ];
+  const f=v=>v!==0?'¥'+Math.abs(v).toLocaleString():'';
+  const pctStyle=v=>v===0?'color:#94a3b8':v>=1?'color:#15803d;font-weight:700':'color:#dc2626';
+  const pct=(b,j)=>b>0?Math.round(j/b*100)+'%':'-';
+  // 比較ヘッダー: 月ごとに 予算|実績|達成率 の3列
+  let h=`<div class="tbl-wrap" style="overflow:auto"><table style="font-size:10px">`;
+  h+=`<thead><tr><th class="ic" rowspan="2" style="min-width:140px">項目</th>`;
+  MS.forEach(m=>h+=`<th colspan="3" style="text-align:center;background:#f8fafc;border-left:2px solid #e2e8f0">${parseInt(m)}月</th>`);
+  h+=`<th colspan="3" style="text-align:center;background:#1e293b;color:#fff;border-left:2px solid #475569">年計</th></tr>`;
+  h+=`<tr>`;
+  [...MS,null].forEach(()=>{
+    h+=`<th style="font-size:9px;background:#fffbeb;color:#d97706;min-width:60px">予算</th>`;
+    h+=`<th style="font-size:9px;background:#f0fdf4;color:#15803d;min-width:60px">実績</th>`;
+    h+=`<th style="font-size:9px;background:#eff6ff;color:#2563eb;min-width:50px">達成率</th>`;
+  });
+  h+=`</tr></thead><tbody>`;
+  KEYS.forEach(row=>{
+    const isP=row.profit;
+    h+=`<tr><td class="ic" style="font-weight:${row.key==='totalIn'||row.key==='operatingProfit'||row.key==='cfNet'?800:400}">${row.label}</td>`;
+    let annB=0,annJ=0;
+    MS.forEach(m=>{
+      const b=BD[m][row.key]||0,j=JD[m][row.key]||0;
+      annB+=b;annJ+=j;
+      const p=isP?(b===0?'-':(b>0&&j>0?pct(b,j):j>b?'超過':'未達')):(b>0?pct(b,j):'-');
+      const pv=b>0?j/b:0;
+      const ps=b>0?pctStyle(pv):'color:#94a3b8';
+      h+=`<td style="background:#fffbeb;text-align:right;border-left:2px solid #fef3c7;color:#d97706">${f(b)}</td>`;
+      h+=`<td style="background:#f0fdf4;text-align:right;color:${isP?(j>0?'#15803d':j<0?'#dc2626':'#94a3b8'):'#059669'};font-weight:${j!==0?600:400}">${f(j)}</td>`;
+      h+=`<td style="background:#eff6ff;text-align:right;font-size:10px;${ps}">${b>0?pct(b,j):'-'}</td>`;
+    });
+    const ap=annB>0?pct(annB,annJ):'-';
+    const aps=annB>0?pctStyle(annB>0?annJ/annB:0):'color:#94a3b8';
+    h+=`<td style="background:#fffde7;text-align:right;font-weight:700;border-left:2px solid #475569;color:#d97706">${f(annB)}</td>`;
+    h+=`<td style="background:#dcfce7;text-align:right;font-weight:700;color:${isP?(annJ>0?'#15803d':annJ<0?'#dc2626':'#94a3b8'):'#059669'}">${f(annJ)}</td>`;
+    h+=`<td style="background:#dbeafe;text-align:right;font-weight:700;${aps}">${ap}</td>`;
+    h+=`</tr>`;
+  });
+  h+=`</tbody></table></div>`;
+  document.getElementById('ct').innerHTML=h;
+  document.getElementById('status').textContent=`${year}年 予実比較 (${store==='nha'?'那覇':store==='spk'?'札幌':'合計'})`;
 }
 
 const STORE_LABEL='HANDYMAN_那覇店';
