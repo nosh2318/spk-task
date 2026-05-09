@@ -484,13 +484,15 @@ async function load(){
   const aTbl=store==='nha'?'nha_accounting':'spk_accounting';
   const sTbl='nha_app_settings'; // 両店舗とも nha_app_settings に保存
   const vTbl=store==='nha'?'nha_vehicles':'vehicles';
+  const logsT=store==='nha'?'nha_logs':'hm_logs'; // ★ 整備記録（costmatrixと同じソース）
 
-  // 全データ並列取得: ST構造 + cm_キー + 会計 + 車両保険
-  const [accts,cmRaws,vehRaw,stRaw]=await Promise.all([
+  // 全データ並列取得: ST構造 + cm_キー + 会計 + 車両保険 + 整備記録
+  const [accts,cmRaws,vehRaw,stRaw,logsData]=await Promise.all([
     sbq(aTbl,`select=type,category,amount,date&date=gte.${y}-01-01&date=lte.${y}-12-31`),
     Promise.all(MS.map(m=>sbgkey(sTbl,`cm_${store}_${y}-${m}`))),
     sbq(vTbl,`select=insurance_annual`),
-    sbgkey(sTbl,`cm_st_${store}`) // costmatrixのST構造
+    sbgkey(sTbl,`cm_st_${store}`), // costmatrixのST構造
+    sbq(logsT,`select=type,cost,date&date=gte.${y}-01-01&date=lte.${y}-12-31&type=in.(inspection,semi_annual,repair)`)
   ]);
 
   // 月別集計
@@ -529,17 +531,20 @@ async function load(){
       document.getElementById('status').textContent='✅ Supabase直接取得';
     }catch(e){document.getElementById('status').textContent='収入データ取得エラー';}
   }
-  // ── 販管費②（会計実績）: 修理/車検/点検カテゴリを除外 ──
-  const IS_MAINT=function(cat){return cat.includes('修理')||cat.includes('車検')||cat.includes('点検');};
+  // ── 会計実績: 修理/車検/点検は nha_logs から取得するため除外 ──
   (accts||[]).forEach(r=>{
     const m=(r.date||'').slice(5,7);if(!D[m])return;
     const a=r.amount||0,cat=r.category||'';
     if(r.type==='extra_sales')D[m].extra+=a;
     else if(r.type==='cash_in')D[m].cashin+=a;
     else if(r.type==='cash_out'||r.type==='card_pay'){
-      if(IS_MAINT(cat))D[m].cogs+=a;   // 修理/車検/点検 → 売上原価（costmatrixと同じ）
-      else D[m].acctActual+=a;          // その他 → 販管費②
+      D[m].acctActual+=a; // ★ 全額を販管費②へ（修理/車検/点検は整備記録から別途加算）
     }
+  });
+  // ★ 整備記録（costmatrixと同じソース）から車検/点検/修理を売上原価に加算
+  (logsData||[]).forEach(r=>{
+    const m=(r.date||'').slice(5,7);if(!D[m])return;
+    D[m].cogs+=(Number(r.cost)||0);
   });
   // ── 車両保険（月額）→ 売上原価 ──
   const vIns=(vehRaw||[]).reduce(function(s,v){return s+(v.insurance_annual||0);},0);
@@ -623,7 +628,7 @@ async function load(){
 // ★ 合算モード: NHA + SPK を合算して表示
 async function loadTotal(y){
   const sTbl='nha_app_settings';
-  const [nhAccts,spkAccts,nhCmRaws,spkCmRaws,nhVeh,spkVeh,nhSt,spkSt,nhResvs,spkResvs]=await Promise.all([
+  const [nhAccts,spkAccts,nhCmRaws,spkCmRaws,nhVeh,spkVeh,nhSt,spkSt,nhResvs,spkResvs,nhLogs,spkLogs]=await Promise.all([
     sbq('nha_accounting',`select=type,category,amount,date&date=gte.${y}-01-01&date=lte.${y}-12-31`),
     sbq('spk_accounting',`select=type,category,amount,date&date=gte.${y}-01-01&date=lte.${y}-12-31`),
     Promise.all(MS.map(m=>sbgkey(sTbl,`cm_nha_${y}-${m}`))),
@@ -632,6 +637,8 @@ async function loadTotal(y){
     sbq('vehicles',`select=insurance_annual`),
     sbgkey(sTbl,'cm_st_nha'),
     sbgkey(sTbl,'cm_st_spk'),
+    sbq('nha_logs',`select=type,cost,date&date=gte.${y}-01-01&date=lte.${y}-12-31&type=in.(inspection,semi_annual,repair)`),
+    sbq('hm_logs',`select=type,cost,date&date=gte.${y}-01-01&date=lte.${y}-12-31&type=in.(inspection,semi_annual,repair)`),
     sbq('nha_reservations',`select=base_price,option_price,discount,price,status,end_date&end_date=gte.${y}-01-01&end_date=lte.${y}-12-31&status=neq.cancelled`),
     sbq('reservations',`select=base_price,option_price,discount,price,status,return_date&return_date=gte.${y}-01-01&return_date=lte.${y}-12-31&status=neq.cancelled`),
   ]);
@@ -651,14 +658,18 @@ async function loadTotal(y){
   }
   applyResvCache('monthly_resv_nha',nhResvs,'end_date');
   applyResvCache('monthly_resv_spk',spkResvs,'return_date');
-  // 会計実績: 両店合算
-  const IS_MAINT=function(cat){return cat.includes('修理')||cat.includes('車検')||cat.includes('点検');};
+  // 会計実績: 両店合算（修理/車検/点検は整備記録から取得するため除外）
   [...(nhAccts||[]),...(spkAccts||[])].forEach(r=>{
     const m=(r.date||'').slice(5,7);if(!D[m])return;
     const a=r.amount||0,cat=r.category||'';
     if(r.type==='extra_sales')D[m].extra+=a;
     else if(r.type==='cash_in')D[m].cashin+=a;
-    else if(r.type==='cash_out'||r.type==='card_pay'){if(IS_MAINT(cat))D[m].cogs+=a;else D[m].acctActual+=a;}
+    else if(r.type==='cash_out'||r.type==='card_pay'){D[m].acctActual+=a;}
+  });
+  // ★ 整備記録（costmatrixと同じソース）から車検/点検/修理を売上原価に加算
+  [...(nhLogs||[]),...(spkLogs||[])].forEach(r=>{
+    const m=(r.date||'').slice(5,7);if(!D[m])return;
+    D[m].cogs+=(Number(r.cost)||0);
   });
   // 車両保険: 両店合算
   const nhIns=(nhVeh||[]).reduce((s,v)=>s+(v.insurance_annual||0),0);
@@ -811,17 +822,19 @@ async function loadAndRenderForHikaku(y){
   const vTbl=store==='nha'?'nha_vehicles':'vehicles';
   const rTbl=store==='nha'?'nha_reservations':'reservations';
   const dCol=store==='nha'?'end_date':'return_date';
-  const[accts,cmRaws,vehRaw,stRaw,resvs]=await Promise.all([
+  const logsT2=store==='nha'?'nha_logs':'hm_logs';
+  const[accts,cmRaws,vehRaw,stRaw,resvs,logsD]=await Promise.all([
     sbq(aTbl,`select=type,category,amount,date&date=gte.${y}-01-01&date=lte.${y}-12-31`),
     Promise.all(MS.map(m=>sbgkey(sTbl,`cm_${store}_${y}-${m}`))),
     sbq(vTbl,`select=insurance_annual`),
     sbgkey(sTbl,'cm_st_'+store),
     sbq(rTbl,`select=base_price,option_price,discount,price,status,${dCol}&${dCol}=gte.${y}-01-01&${dCol}=lte.${y}-12-31&status=neq.cancelled`),
+    sbq(logsT2,`select=type,cost,date&date=gte.${y}-01-01&date=lte.${y}-12-31&type=in.(inspection,semi_annual,repair)`),
   ]);
   const D={};MS.forEach(m=>{D[m]={base:0,opt:0,disc:0,extra:0,manualExtra:0,cashin:0,sga:0,cogs:0,acctActual:0,repay:0};});
   (resvs||[]).forEach(r=>{const m=(r[dCol]||'').slice(5,7);if(!D[m])return;const bp=r.base_price||0,op=r.option_price||0,dc=r.discount||0;if(bp>0||op>0){D[m].base+=bp;D[m].opt+=op;D[m].disc+=dc;}else D[m].base+=r.price||0;});
-  const IS_MAINT=c=>c.includes('修理')||c.includes('車検')||c.includes('点検');
-  (accts||[]).forEach(r=>{const m=(r.date||'').slice(5,7);if(!D[m])return;const a=r.amount||0,cat=r.category||'';if(r.type==='extra_sales')D[m].extra+=a;else if(r.type==='cash_in')D[m].cashin+=a;else if(r.type==='cash_out'||r.type==='card_pay'){if(IS_MAINT(cat))D[m].cogs+=a;else D[m].acctActual+=a;}});
+  (accts||[]).forEach(r=>{const m=(r.date||'').slice(5,7);if(!D[m])return;const a=r.amount||0,cat=r.category||'';if(r.type==='extra_sales')D[m].extra+=a;else if(r.type==='cash_in')D[m].cashin+=a;else if(r.type==='cash_out'||r.type==='card_pay'){D[m].acctActual+=a;}});
+  (logsD||[]).forEach(r=>{const m=(r.date||'').slice(5,7);if(!D[m])return;D[m].cogs+=(Number(r.cost)||0);});
   const vIns=(vehRaw||[]).reduce((s,v)=>s+(v.insurance_annual||0),0);
   MS.forEach(m=>{D[m].cogs+=vIns;});
   const SGA_IDS=new Set(['s2a','s2b','s2c','s2d','s2e','s2f','s2g','s2h','s3a','s3b','s3c','s3d','s4','s4a','s11','s11a','s12','s12a','s13','s13a','s14','s14a']);
