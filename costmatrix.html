@@ -265,13 +265,14 @@ async function init(){
   ST=loadST();
   const acctKey=store==='nha'?'nha_accounting':'spk_accounting';
   const vTbl=store==='nha'?'nha_vehicles':'vehicles';
-  const logsTable=store==='nha'?'nha_logs':'hm_logs';
+  const logsTable=store==='nha'?'nha_logs':'logs';
+  const logsStoreFilter=store==='nha'?'':'&store_id=eq.sapporo';
   // 会計実績・車両保険・整備記録を並列取得
   const [ps2,acctRaw,vehRaw,logsRaw]=await Promise.all([
     Promise.all(MS.map(m=>sbg(tbl,`cm_${store}_${year}-${m}`))),
     sbqA(acctKey,`type=in.(card_pay,cash_out)&date=gte.${year}-01-01&date=lte.${year}-12-31&select=type,category,amount,date`),
     sbqA(vTbl,`select=insurance_annual`),
-    sbqA(logsTable,`select=type,cost,date&date=gte.${year}-01-01&date=lte.${year}-12-31&type=in.(inspection,semi_annual,repair)`)
+    sbqA(logsTable,`select=type,cost,date${logsStoreFilter}&date=gte.${year}-01-01&date=lte.${year}-12-31&type=in.(inspection,semi_annual,repair,other,oil)`)
   ]);
   const ps=ps2;
   // 会計実績: {ym: {card: {cat: amt}, cash: {cat: amt}}}
@@ -286,13 +287,14 @@ async function init(){
   // 車両タブ保険総額（月額合計）
   window._vehicleIns=(vehRaw||[]).reduce((s,v)=>s+(v.insurance_annual||0),0);
   // ★ 整備記録（nha_logs/hm_logs）から車検・点検・修理を月別集計（車両タブ 月別推移と同じ値）
-  window._maintData={inspection:{},maintenance:{},repair:{}};
+  window._maintData={inspection:{},maintenance:{},repair:{},other:{}};
   (logsRaw||[]).forEach(function(r){
     var m=(r.date||'').slice(0,7);
     var cost=Number(r.cost||0);
     if(r.type==='inspection') window._maintData.inspection[m]=(window._maintData.inspection[m]||0)+cost;
     if(r.type==='semi_annual') window._maintData.maintenance[m]=(window._maintData.maintenance[m]||0)+cost;
     if(r.type==='repair') window._maintData.repair[m]=(window._maintData.repair[m]||0)+cost;
+    if(r.type==='other'||r.type==='oil') window._maintData.other[m]=(window._maintData.other[m]||0)+cost;
   });
   // 会計実績インジケータ更新
   var acctCnt=Object.keys(window._acctData||{}).length;
@@ -373,10 +375,10 @@ async function saveAll(){
 }
 
 function _maintVal(code,ym){
-  var mk=code==='cogs_inspection'?'inspection':code==='cogs_maintenance'?'maintenance':'repair';
+  var mk=code==='cogs_inspection'?'inspection':code==='cogs_maintenance'?'maintenance':code==='cogs_other'?'other':'repair';
   return((window._maintData||{})[mk]||{})[ym]||0;
 }
-function _isMaintCode(c){return c==='cogs_inspection'||c==='cogs_maintenance'||c==='cogs_repair';}
+function _isMaintCode(c){return c==='cogs_inspection'||c==='cogs_maintenance'||c==='cogs_repair'||c==='cogs_other';}
 // 社会保険 = 給与合計（s2）× 15% 自動計算
 function getSocialInsurance_(ym){
   var sgaSec=ST.find(function(s){return s.id==='sg';});
@@ -728,9 +730,9 @@ function render(){
         const yrS=String(year);
         // ★ 車両費合計ヘッダー（cogs_inspectionの前にのみ挿入）
         if(item.code==='cogs_inspection'){
-          const totM=MS.map(m=>['cogs_inspection','cogs_maintenance','cogs_repair'].reduce((s,c)=>s+_maintVal(c,yrS+'-'+m),0));
+          const totM=MS.map(m=>['cogs_inspection','cogs_maintenance','cogs_repair','cogs_other'].reduce((s,c)=>s+_maintVal(c,yrS+'-'+m),0));
           const totAnn=totM.reduce((s,v)=>s+v,0);
-          h+=`<tr style="background:#166534"><td class="ic" style="background:#166534!important;color:#fff;font-weight:900;padding:7px 10px;font-size:11px;letter-spacing:.04em">🚗 車両費合計（車検・点検・修理）</td>`;
+          h+=`<tr style="background:#166534"><td class="ic" style="background:#166534!important;color:#fff;font-weight:900;padding:7px 10px;font-size:11px;letter-spacing:.04em">🚗 車両費合計（車検・点検・修理・その他）</td>`;
           totM.forEach(v=>h+=`<td style="background:#166534;color:${v>0?'#86efac':'#4ade80'};font-weight:${v>0?800:400};text-align:right;padding:5px">${v>0?'¥'+v.toLocaleString():'—'}</td>`);
           h+=`<td style="background:#14532d;color:${totAnn>0?'#86efac':'#94a3b8'};font-weight:900;text-align:right;padding:5px">${totAnn>0?'¥'+totAnn.toLocaleString():'—'}</td></tr>`;
         }
