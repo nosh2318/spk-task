@@ -502,7 +502,7 @@ async function load(){
 
   // 月別集計
   const D={};
-  MS.forEach(m=>{D[m]={base:0,opt:0,disc:0,extra:0,manualExtra:0,cashin:0,sga:0,cogs:0,cogsOther:0,acctActual:0,repay:0};});
+  MS.forEach(m=>{D[m]={base:0,opt:0,disc:0,extra:0,manualExtra:0,cashin:0,sga:0,cogs:0,acctActual:0,repay:0};});
 
   // 売上: Supabaseから直接取得（APPキャッシュ優先、なければSupabase）
   const rTbl=store==='nha'?'nha_reservations':'reservations';
@@ -550,8 +550,7 @@ async function load(){
   (logsData||[]).forEach(r=>{
     const m=(r.date||'').slice(5,7);if(!D[m])return;
     const cost=Number(r.cost)||0;
-    if(r.type==='other'||r.type==='oil') D[m].cogsOther+=cost;
-    else D[m].cogs+=cost;
+    D[m].cogs+=cost;
   });
   // ── 車両保険（月額）→ 売上原価 ──
   const vIns=(vehRaw||[]).reduce(function(s,v){return s+(v.insurance_annual||0);},0);
@@ -622,7 +621,7 @@ async function load(){
   MS.forEach(m=>{
     D[m].plRev=D[m].base+D[m].opt-D[m].disc+D[m].extra+D[m].manualExtra;  // PL売上
     D[m].totalIn=D[m].plRev+D[m].cashin;                                   // 後方互換
-    D[m].totalCost=D[m].sga+D[m].acctActual+D[m].cogs+D[m].cogsOther;    // PL支出
+    D[m].totalCost=D[m].sga+D[m].acctActual+D[m].cogs;    // PL支出
     D[m].operatingProfit=D[m].plRev-D[m].totalCost;                        // PL営業利益
     D[m].cfNet=D[m].operatingProfit+D[m].cashin-D[m].repay;                // CF残高
   });
@@ -650,7 +649,7 @@ async function loadTotal(y){
     sbq('reservations',`select=base_price,option_price,discount,price,status,return_date&return_date=gte.${y}-01-01&return_date=lte.${y}-12-31&status=neq.cancelled`),
   ]);
   const D={};
-  MS.forEach(m=>{D[m]={base:0,opt:0,disc:0,extra:0,manualExtra:0,cashin:0,sga:0,cogs:0,cogsOther:0,acctActual:0,repay:0};});
+  MS.forEach(m=>{D[m]={base:0,opt:0,disc:0,extra:0,manualExtra:0,cashin:0,sga:0,cogs:0,acctActual:0,repay:0};});
   // ★ 収入: 単店舗と同じlocalStorageキャッシュを優先（那覇+札幌を合算）
   function applyResvCache(cacheKey,resvs,dCol){
     try{
@@ -677,8 +676,7 @@ async function loadTotal(y){
   [...(nhLogs||[]),...(spkLogs||[])].forEach(r=>{
     const m=(r.date||'').slice(5,7);if(!D[m])return;
     const cost=Number(r.cost)||0;
-    if(r.type==='other'||r.type==='oil') D[m].cogsOther+=cost;
-    else D[m].cogs+=cost;
+    D[m].cogs+=cost;
   });
   // 車両保険: 両店合算
   const nhIns=(nhVeh||[]).reduce((s,v)=>s+(v.insurance_annual||0),0);
@@ -693,7 +691,7 @@ async function loadTotal(y){
     if(stRaw){try{const st=JSON.parse(stRaw);const rg=st.find(function(sec){return sec.id==='rg';});if(rg){REPAY_IDS.clear();(rg.items||[]).forEach(function(i){REPAY_IDS.add(i.id);});}}catch(e){}}
     cmRaws.forEach(function(raw,i){if(!raw)return;try{const d=JSON.parse(raw);let sal=0;Object.entries(d).forEach(function([id,amt]){const a=Number(amt)||0;if(a<=0)return;if(SGA_IDS.has(id))D[MS[i]].sga+=a;if(SALARY_IDS.has(id))sal+=a;if(COGS_IDS.has(id))D[MS[i]].cogs+=a;if(REPAY_IDS.has(id))D[MS[i]].repay+=a;});D[MS[i]].sga+=Math.round(sal*0.15);}catch(e){}});
   });
-  MS.forEach(m=>{D[m].manualExtra=(manualData.items||[]).reduce((s,it)=>s+(it.values&&it.values[m]||0),0);D[m].plRev=D[m].base+D[m].opt-D[m].disc+D[m].extra+D[m].manualExtra;D[m].totalIn=D[m].plRev+D[m].cashin;D[m].totalCost=D[m].sga+D[m].acctActual+D[m].cogs+D[m].cogsOther;D[m].operatingProfit=D[m].plRev-D[m].totalCost;D[m].cfNet=D[m].operatingProfit+D[m].cashin-D[m].repay;});
+  MS.forEach(m=>{D[m].manualExtra=(manualData.items||[]).reduce((s,it)=>s+(it.values&&it.values[m]||0),0);D[m].plRev=D[m].base+D[m].opt-D[m].disc+D[m].extra+D[m].manualExtra;D[m].totalIn=D[m].plRev+D[m].cashin;D[m].totalCost=D[m].sga+D[m].acctActual+D[m].cogs;D[m].operatingProfit=D[m].plRev-D[m].totalCost;D[m].cfNet=D[m].operatingProfit+D[m].cashin-D[m].repay;});
   window._monthlyD=D;
   if(mode==='hikaku'){renderHikaku(D);}else{render(D);}
   document.getElementById('status').textContent=`✅ ${y}年 那覇＋札幌 合算`;
@@ -719,14 +717,13 @@ function render(D){
     {type:'cm',label:'📋 販管費①（手動入力）',key:'sga',bg:'#fff5f5',tc:'#991b1b'},
     {type:'cm',label:'📊 販管費②（会計実績）',key:'acctActual',bg:'#eff6ff',tc:'#1e40af'},
     {type:'cm',label:'📦 売上原価（リース/保険/修理等）',key:'cogs',bg:'#fffbeb',tc:'#92400e'},
-    {type:'cm',label:'🔧 その他整備費（整備記録）',key:'cogsOther',bg:'#f0fdf4',tc:'#166534'},
     {type:'total',label:'🔴 PL支出',key:'totalCost',cls:'row-balance'},
     {type:'profit',label:'💹 PL営業利益',key:'operatingProfit'},
   ];
 
   // 年計
   const ann={};
-  ['base','opt','disc','extra','cashin','sga','cogs','cogsOther','acctActual','plRev','totalIn','totalCost','operatingProfit','repay','cfNet'].forEach(k=>{
+  ['base','opt','disc','extra','cashin','sga','cogs','acctActual','plRev','totalIn','totalCost','operatingProfit','repay','cfNet'].forEach(k=>{
     ann[k]=MS.reduce((s,m)=>s+(D[m][k]||0),0);
   });
 
@@ -853,10 +850,10 @@ async function loadAndRenderForHikaku(y){
     sbq(rTbl,`select=base_price,option_price,discount,price,status,${dCol}&${dCol}=gte.${y}-01-01&${dCol}=lte.${y}-12-31&status=neq.cancelled`),
     sbq(logsT2, logsQs2),
   ]);
-  const D={};MS.forEach(m=>{D[m]={base:0,opt:0,disc:0,extra:0,manualExtra:0,cashin:0,sga:0,cogs:0,cogsOther:0,acctActual:0,repay:0};});
+  const D={};MS.forEach(m=>{D[m]={base:0,opt:0,disc:0,extra:0,manualExtra:0,cashin:0,sga:0,cogs:0,acctActual:0,repay:0};});
   (resvs||[]).forEach(r=>{const m=(r[dCol]||'').slice(5,7);if(!D[m])return;const bp=r.base_price||0,op=r.option_price||0,dc=r.discount||0;if(bp>0||op>0){D[m].base+=bp;D[m].opt+=op;D[m].disc+=dc;}else D[m].base+=r.price||0;});
   (accts||[]).forEach(r=>{const m=(r.date||'').slice(5,7);if(!D[m])return;const a=r.amount||0,cat=r.category||'';if(r.type==='extra_sales')D[m].extra+=a;else if(r.type==='cash_in')D[m].cashin+=a;else if(r.type==='cash_out'||r.type==='card_pay'){D[m].acctActual+=a;}});
-  (logsD||[]).forEach(r=>{const m=(r.date||'').slice(5,7);if(!D[m])return;const cost=Number(r.cost)||0;if(r.type==='other'||r.type==='oil')D[m].cogsOther+=cost;else D[m].cogs+=cost;});
+  (logsD||[]).forEach(r=>{const m=(r.date||'').slice(5,7);if(!D[m])return;D[m].cogs+=(Number(r.cost)||0);});
   const vIns=(vehRaw||[]).reduce((s,v)=>s+(v.insurance_annual||0),0);
   MS.forEach(m=>{D[m].cogs+=vIns;});
   const SGA_IDS=new Set(['s2a','s2b','s2c','s2d','s2e','s2f','s2g','s2h','s3a','s3b','s3c','s3d','s4','s4a','s11','s11a','s12','s12a','s13','s13a','s14','s14a']);
@@ -865,7 +862,7 @@ async function loadAndRenderForHikaku(y){
   const REPAY_IDS=new Set(['r1','r2','r3','r4','r5','r6','r7','r8']);
   if(stRaw){try{const st=JSON.parse(stRaw);const rg=st.find(s=>s.id==='rg');if(rg){REPAY_IDS.clear();(rg.items||[]).forEach(i=>REPAY_IDS.add(i.id));}}catch(e){}}
   cmRaws.forEach((raw,i)=>{if(!raw)return;try{const d=JSON.parse(raw);let sal=0;Object.entries(d).forEach(([id,amt])=>{const a=Number(amt)||0;if(a<=0)return;if(SGA_IDS.has(id))D[MS[i]].sga+=a;if(SALARY_IDS.has(id))sal+=a;if(COGS_IDS.has(id))D[MS[i]].cogs+=a;if(REPAY_IDS.has(id))D[MS[i]].repay+=a;});D[MS[i]].sga+=Math.round(sal*0.15);}catch(e){}});
-  MS.forEach(m=>{D[m].manualExtra=(manualData.items||[]).reduce((s,it)=>s+(it.values&&it.values[m]||0),0);D[m].plRev=D[m].base+D[m].opt-D[m].disc+D[m].extra+D[m].manualExtra;D[m].totalIn=D[m].plRev+D[m].cashin;D[m].totalCost=D[m].sga+D[m].acctActual+D[m].cogs+D[m].cogsOther;D[m].operatingProfit=D[m].plRev-D[m].totalCost;D[m].cfNet=D[m].operatingProfit+D[m].cashin-D[m].repay;});
+  MS.forEach(m=>{D[m].manualExtra=(manualData.items||[]).reduce((s,it)=>s+(it.values&&it.values[m]||0),0);D[m].plRev=D[m].base+D[m].opt-D[m].disc+D[m].extra+D[m].manualExtra;D[m].totalIn=D[m].plRev+D[m].cashin;D[m].totalCost=D[m].sga+D[m].acctActual+D[m].cogs;D[m].operatingProfit=D[m].plRev-D[m].totalCost;D[m].cfNet=D[m].operatingProfit+D[m].cashin-D[m].repay;});
   window._monthlyD=D;
   renderHikaku(D);
 }
@@ -884,7 +881,6 @@ function renderHikaku(JD){
     {key:'totalCost',label:'PL支出合計',profit:false,neg:true,bold:true},
     {key:'sga',label:'　販管費',profit:false,neg:true},
     {key:'cogs',label:'　売上原価',profit:false,neg:true},
-    {key:'cogsOther',label:'　その他整備費',profit:false,neg:true},
     {key:'operatingProfit',label:'💹 PL営業利益',profit:true,bold:true},
   ];
   const f=v=>v!==0?'¥'+Math.abs(v).toLocaleString():'';
