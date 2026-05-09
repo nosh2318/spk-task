@@ -372,8 +372,9 @@ async function saveAll(){
     // 会計実績（カード・現金）を自動追記
     const acctM=(window._acctData||{})[ym];
     if(acctM){
-      const cardTotal=Object.values(acctM.card||{}).reduce((s,v)=>s+v,0);
-      const cashTotal=Object.values(acctM.cash||{}).reduce((s,v)=>s+v,0);
+      const MAINT_CAT=function(c){return c.includes('修理')||c.includes('車検')||c.includes('点検')||c.includes('整備');};
+      const cardTotal=Object.entries(acctM.card||{}).filter(([c])=>!MAINT_CAT(c)).reduce((s,[,v])=>s+v,0);
+      const cashTotal=Object.entries(acctM.cash||{}).filter(([c])=>!MAINT_CAT(c)).reduce((s,[,v])=>s+v,0);
       if(cardTotal>0)en.push({account_code:'actual_card',amount:cardTotal,note:'カード支払（会計実績）'});
       if(cashTotal>0)en.push({account_code:'actual_cash',amount:cashTotal,note:'現金出金（会計実績）'});
       // 科目別も追記
@@ -804,8 +805,9 @@ function render(){
         Object.keys(a.card||{}).forEach(function(c){cardCats[c]=1;});
         Object.keys(a.cash||{}).forEach(function(c){cashCats[c]=1;});
       });
-      // 売上原価行に個別反映済みのカテゴリは会計実績枠から除外
-      var ACCT_EXCLUDE=function(c){return c.includes('修理')||c.includes('車検')||c.includes('点検');};
+      // 売上原価行に個別反映済みのカテゴリは会計実績枠から除外（整備記録で計上済）
+      var ACCT_EXCLUDE=function(c){return c.includes('修理')||c.includes('車検')||c.includes('点検')||c.includes('整備');};
+      var _acctSum=function(obj){return Object.entries(obj||{}).filter(function(e){return !ACCT_EXCLUDE(e[0]);}).reduce(function(s,e){return s+e[1];},0);};
       var cKeys=Object.keys(cardCats).filter(function(c){return !ACCT_EXCLUDE(c);}).sort();
       var hKeys=Object.keys(cashCats).filter(function(c){return !ACCT_EXCLUDE(c);}).sort();
       if(cKeys.length>0||hKeys.length>0){
@@ -813,10 +815,10 @@ function render(){
         var acctArr=acctCol?'▶':'▼';
         h+='<tr style="cursor:pointer" onclick="toggleCollapse(\'acct\')"><td colspan="'+(ncols+1)+'" style="padding:7px 10px;font-weight:800;font-size:11px;background:#eff6ff;color:#1d4ed8;border-top:2px solid #bfdbfe;border-bottom:2px solid #bfdbfe;letter-spacing:.05em;user-select:none">'+acctArr+' 📊 会計実績（自動取得）</td></tr>';
         if(acctCol){
-          // 折りたたみ：合計行だけ
+          // 折りたたみ：合計行だけ（整備カテゴリ除外）
           var tot2c=MS.map(function(m){
-            var cc=Object.values((aData[yr+'-'+m]||{}).card||{}).reduce(function(s,v){return s+v;},0);
-            var hh=Object.values((aData[yr+'-'+m]||{}).cash||{}).reduce(function(s,v){return s+v;},0);
+            var cc=_acctSum((aData[yr+'-'+m]||{}).card);
+            var hh=_acctSum((aData[yr+'-'+m]||{}).cash);
             return cc+hh;
           });
           var ann2c=tot2c.reduce(function(s,v){return s+v;},0);
@@ -826,7 +828,7 @@ function render(){
           h+='<tr><td colspan="'+(ncols+1)+'" style="height:4px;background:transparent;border:none"></td></tr>';
         } else {
         if(cKeys.length>0){
-          var cTots=MS.map(function(m){return Object.values((aData[yr+'-'+m]||{}).card||{}).reduce(function(s,v){return s+v;},0);});
+          var cTots=MS.map(function(m){return _acctSum((aData[yr+'-'+m]||{}).card);});
           var cAnn=cTots.reduce(function(s,v){return s+v;},0);
           h+='<tr class="gr"><td class="ic" style="background:#eff6ff!important"><div class="nm-cell"><span style="color:#1d4ed8;margin-right:4px">💳</span><span class="nm-txt" style="color:#1d4ed8;font-weight:700">カード支払</span><span style="font-size:9px;color:#94a3b8;margin-left:3px">合計</span></div></td>';
           cTots.forEach(function(v){h+='<td style="color:#1d4ed8;font-weight:700;background:#eff6ff;text-align:right;padding:4px 5px;border-right:1px solid #dbeafe">'+(v>0?'¥'+v.toLocaleString():'—')+'</td>';});
@@ -840,7 +842,7 @@ function render(){
           });
         }
         if(hKeys.length>0){
-          var hTots=MS.map(function(m){return Object.values((aData[yr+'-'+m]||{}).cash||{}).reduce(function(s,v){return s+v;},0);});
+          var hTots=MS.map(function(m){return _acctSum((aData[yr+'-'+m]||{}).cash);});
           var hAnn=hTots.reduce(function(s,v){return s+v;},0);
           h+='<tr class="gr"><td class="ic" style="background:#fff7ed!important"><div class="nm-cell"><span style="color:#c2410c;margin-right:4px">💰</span><span class="nm-txt" style="color:#c2410c;font-weight:700">現金出金</span><span style="font-size:9px;color:#94a3b8;margin-left:3px">合計</span></div></td>';
           hTots.forEach(function(v){h+='<td style="color:#c2410c;font-weight:700;background:#fff7ed;text-align:right;padding:4px 5px;border-right:1px solid #fed7aa">'+(v>0?'¥'+v.toLocaleString():'—')+'</td>';});
@@ -853,11 +855,9 @@ function render(){
             h+='<td style="background:#fff7ed;text-align:right;color:#64748b;padding:4px 5px">'+(cT>0?'¥'+cT.toLocaleString():'')+'</td></tr>';
           });
         }
-        // ★ 販管費② 合計（カード＋現金）
+        // ★ 販管費② 合計（カード＋現金・整備カテゴリ除外）
         var tot2=MS.map(function(m){
-          var c=Object.values((aData[yr+'-'+m]||{}).card||{}).reduce(function(s,v){return s+v;},0);
-          var h2=Object.values((aData[yr+'-'+m]||{}).cash||{}).reduce(function(s,v){return s+v;},0);
-          return c+h2;
+          return _acctSum((aData[yr+'-'+m]||{}).card)+_acctSum((aData[yr+'-'+m]||{}).cash);
         });
         var ann2=tot2.reduce(function(s,v){return s+v;},0);
         h+='<tr class="tr-row" style="background:#1e40af"><td class="ic" style="background:#1e40af;font-size:11px">📊 販管費②（会計実績）合計</td>';
