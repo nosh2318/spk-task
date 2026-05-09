@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v664';
+  var CV='spk-v665';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=569').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=570').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -5103,9 +5103,10 @@ function ManagementTab({store}){
   // 予実比較
   const[yjData,setYjData]=useState({nha:{},spk:{}});
   const[yjCf,setYjCf]=useState({nha:{},spk:{}});
-  // KPI管理表 広告費効率: 経営管理シート + カスタム項目定義
+  // KPI管理表 広告費効率: 経営管理シート + カスタム項目定義 + コスト内訳
   const[cmMap,setCmMap]=useState({nha:{},spk:{}});
   const[cmStMap,setCmStMap]=useState({nha:[],spk:[]});
+  const[costMap,setCostMap]=useState({nha:{},spk:{}});
   // 設定（マスターデータ）
   const[mgSettings,setMgSettings]=useState({
     channels:[
@@ -5290,13 +5291,15 @@ function ManagementTab({store}){
       };
       setYjCf({nha:calc(nhaR,"end_date"),spk:calc(spkR,"return_date")});
     });
-    // KPI管理表 広告費効率: cm_nha_* / cm_spk_* + cm_st_* を一括ロード
+    // KPI管理表 広告費効率: cm_xxx / cost_xxx / cm_st_xxx を一括ロード
     Promise.all([
       sb.from("app_settings").select("key,value").like("key","cm_nha_%").limit(200),
       sb.from("app_settings").select("key,value").like("key","cm_spk_%").limit(200),
       sb.from("app_settings").select("value").eq("key","cm_st_nha").maybeSingle(),
       sb.from("app_settings").select("value").eq("key","cm_st_spk").maybeSingle(),
-    ]).then(([{data:cn},{data:cs},{data:st1},{data:st2}])=>{
+      sb.from("app_settings").select("key,value").like("key","cost_nha_%").limit(200),
+      sb.from("app_settings").select("key,value").like("key","cost_spk_%").limit(200),
+    ]).then(([{data:cn},{data:cs},{data:st1},{data:st2},{data:cnc},{data:csc}])=>{
       const parse=(rows,prefix)=>{
         const m={};
         (rows||[]).forEach(r=>{
@@ -5310,8 +5313,19 @@ function ManagementTab({store}){
         if(!row||!row.value)return [];
         try{ return typeof row.value==="string"?JSON.parse(row.value):row.value; }catch(e){ return []; }
       };
+      // cost_xxx は配列なので {ym: [{account_code,amount,...}]} 形式
+      const parseCost=(rows,prefix)=>{
+        const m={};
+        (rows||[]).forEach(r=>{
+          const ym=(r.key||"").replace(prefix,"");
+          if(!ym)return;
+          try{ m[ym]=typeof r.value==="string"?JSON.parse(r.value):r.value; }catch(e){ m[ym]=[]; }
+        });
+        return m;
+      };
       setCmMap({nha:parse(cn,"cm_nha_"),spk:parse(cs,"cm_spk_")});
       setCmStMap({nha:parseSt(st1),spk:parseSt(st2)});
+      setCostMap({nha:parseCost(cnc,"cost_nha_"),spk:parseCost(csc,"cost_spk_")});
     }).catch(()=>{});
   },[sub]);
 
@@ -6353,8 +6367,15 @@ function ManagementTab({store}){
           };
           const AD_CODES=detectAdCodes(cmStMap[dbStore]);
           const getAd=(ym)=>{
+            // ① 経営管理シート (cm_xxx) のカスタム広告費項目
             const cm=(cmMap[dbStore]||{})[ym]||{};
-            let t=0;AD_CODES.forEach(c=>{t+=Number(cm[c]||0);});return t;
+            let t=0;AD_CODES.forEach(c=>{t+=Number(cm[c]||0);});
+            // ② コスト内訳 (cost_xxx) の sga_ad（標準科目）
+            const costArr=(costMap[dbStore]||{})[ym]||[];
+            (Array.isArray(costArr)?costArr:[]).forEach(it=>{
+              if((it.account_code||"")==="sga_ad") t+=Number(it.amount||0);
+            });
+            return t;
           };
           const isSpk=dbStore==="spk";
           const rdKey=isSpk?"return_date":"end_date";
@@ -6416,7 +6437,15 @@ function ManagementTab({store}){
             <div style={{fontSize:11,color:"#64748b",marginBottom:8}}>
               <span style={{color:"#1e40af",fontWeight:700}}>HP</span>: 純広告費 / <span style={{color:"#7c3aed",fontWeight:700}}>OTA</span>: 手数料18%固定 + 楽天事業者クーポン（弊社実負担）
             </div>
-            {AD_CODES.length===0&&<div style={{padding:8,marginBottom:8,background:"#fef2f2",border:"1px solid #fecaca",borderRadius:6,fontSize:11,color:"#991b1b"}}>⚠️ 広告費の項目が経営管理シート（cm_st_{dbStore}）に未登録のため、純広告費は0で表示されます。</div>}
+            {(()=>{
+              // 広告費が両ソースとも0かチェック（警告バー用）
+              const hasCmAd=AD_CODES.length>0;
+              const hasCostAd=Object.values(costMap[dbStore]||{}).some(arr=>Array.isArray(arr)&&arr.some(it=>(it.account_code||"")==="sga_ad"&&Number(it.amount||0)>0));
+              if(!hasCmAd&&!hasCostAd){
+                return <div style={{padding:8,marginBottom:8,background:"#fef2f2",border:"1px solid #fecaca",borderRadius:6,fontSize:11,color:"#991b1b"}}>⚠️ 広告費の項目が経営管理シート（cm_st_{dbStore}）にもコスト内訳（sga_ad）にも未登録のため、純広告費は0で表示されます。</div>;
+              }
+              return null;
+            })()}
             <div style={{overflow:"auto",maxHeight:"70vh",border:"1px solid #e2e8f0",borderRadius:8}}>
               <table style={{width:"100%",borderCollapse:"collapse",minWidth:yjMonths.length*92+220}}>
                 <thead>
@@ -17154,7 +17183,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.7.108";
+const APP_VERSION="v4.7.109";
 // バージョンチェック: 古いキャッシュを検出したら強制リロード
 (function(){
   const stored=localStorage.getItem("spk_app_version");
