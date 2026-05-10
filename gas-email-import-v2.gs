@@ -1796,6 +1796,10 @@ function isOrderPaid_(order) {
 }
 
 function checkUnpaidAlert() {
+  // ★ 2026-05-10: 店舗振分け対応（checkPaymentStatus と同型）
+  //   旧: 全件 JALAN_PAY_CHANNEL(札幌) に通知 → 那覇予約が札幌アラートに混入
+  //   新: スプシC列「店舗」で札幌/那覇に振り分けて別チャンネルに通知
+  var NAHA_PAY_CHANNEL = 'C0AP2S5B147'; // #payment_naha
   var sheetId = '1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc';
   var ss = SpreadsheetApp.openById(sheetId);
   var sheet = ss.getSheetByName('支払い管理');
@@ -1803,29 +1807,46 @@ function checkUnpaidAlert() {
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
   var data = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
-  var now = new Date(), alerts = [];
+  var now = new Date();
+  var alertsByCh = {}; alertsByCh[JALAN_PAY_CHANNEL] = []; alertsByCh[NAHA_PAY_CHANNEL] = [];
   for (var i = 0; i < data.length; i++) {
     var status = String(data[i][8]||'');
     // ★ 2026-05-08: '済' → '入金済' に厳密化（メール送信済の誤マッチ防止）
     if (status.indexOf('入金済')!==-1 || status.indexOf('キャンセル')!==-1 || status.indexOf('発行取消')!==-1) continue;
+    var store = String(data[i][2]||'').trim();
     var resvId = String(data[i][3]||'').trim(), name = String(data[i][4]||'').trim(), amount = Number(data[i][6])||0, url = String(data[i][7]||'').trim();
     if (!resvId || !url) continue;
-    var resv = supabaseGet_('reservations', 'id=eq.' + encodeURIComponent(resvId) + '&select=lend_date');
-    var lendDate = (resv && resv.length > 0 && resv[0].lend_date) ? resv[0].lend_date : null;
+    // 店舗別に reservations / nha_reservations から lend_date 取得
+    var isNaha = (store.indexOf('那覇') >= 0 || store.indexOf('沖縄') >= 0);
+    var lendDate = null;
+    if (isNaha) {
+      var nhaR = supabaseGet_('nha_reservations', 'id=eq.' + encodeURIComponent(resvId) + '&select=start_date');
+      if (nhaR && nhaR.length > 0 && nhaR[0].start_date) lendDate = nhaR[0].start_date;
+    } else {
+      var spkR = supabaseGet_('reservations', 'id=eq.' + encodeURIComponent(resvId) + '&select=lend_date');
+      if (spkR && spkR.length > 0 && spkR[0].lend_date) lendDate = spkR[0].lend_date;
+    }
     if (!lendDate) { var dm = String(data[i][5]||'').match(/(\d{2})\/(\d{2})/); if (dm) lendDate = now.getFullYear() + '-' + dm[1] + '-' + dm[2]; }
     if (!lendDate) continue;
     var diffDays = Math.floor((new Date(lendDate+'T00:00:00+09:00') - now) / 86400000);
-    if (diffDays <= 3) alerts.push({reservationId:resvId, customerName:name, amount:amount, lendDate:lendDate, daysLeft:diffDays});
+    if (diffDays <= 3) {
+      var ch = isNaha ? NAHA_PAY_CHANNEL : JALAN_PAY_CHANNEL;
+      alertsByCh[ch].push({reservationId:resvId, customerName:name, amount:amount, lendDate:lendDate, daysLeft:diffDays, store:store});
+    }
   }
-  if (alerts.length === 0) return;
-  var lines = ['🚨 *未入金アラート* ' + alerts.length + '件\n'];
-  alerts.forEach(function(a) {
-    var urgency = a.daysLeft<=0 ? '🔴期限超過' : a.daysLeft<=1 ? '🟠明日出発' : '🟡'+a.daysLeft+'日後';
-    lines.push('• ' + a.reservationId + ' ' + a.customerName + ' ¥' + a.amount + '（出発: ' + a.lendDate + ' ' + urgency + '）');
+  // チャンネル別に投稿
+  Object.keys(alertsByCh).forEach(function(ch) {
+    var alerts = alertsByCh[ch];
+    if (!alerts || alerts.length === 0) return;
+    var lines = ['🚨 *未入金アラート* ' + alerts.length + '件\n'];
+    alerts.forEach(function(a) {
+      var urgency = a.daysLeft<=0 ? '🔴期限超過' : a.daysLeft<=1 ? '🟠明日出発' : '🟡'+a.daysLeft+'日後';
+      lines.push('• ' + a.reservationId + ' ' + a.customerName + ' ¥' + a.amount + '（出発: ' + a.lendDate + ' ' + urgency + '）');
+    });
+    lines.push('\n期限超過・要電話確認');
+    postToSlackChannel_(ch, lines.join('\n'));
+    Logger.log('[UnpaidAlert] ' + alerts.length + '件通知 → ' + ch);
   });
-  lines.push('\n期限超過・要電話確認');
-  postToSlackChannel_(JALAN_PAY_CHANNEL, lines.join('\n'));
-  Logger.log('[UnpaidAlert] ' + alerts.length + '件通知');
 }
 
 /**

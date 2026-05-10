@@ -2,6 +2,41 @@
 
 ## 2026-05-10 修正履歴
 
+### 🔁 自動返金 Bot を NHA に拡張（payment_bot_unified_v1.gs）
+- **背景**: 「返金待ち Handover を3店舗（SPK/NHA/BUDDICA）に実装」と並行して、自動返金Bot（`payment_bot_unified_v1.gs`）も NHA 対応が必要だった
+  - 旧: `lookupReservationForCancel_` の那覇分岐は `isJalanPaid: false` 固定 = 自動返金されず会計起票（unpaid）のみ
+  - 新: 那覇も `nha_jalan_payments` 参照 → paid なら Square Refund API 実行 → status='refunded'
+- **修正内容（`payment_bot_unified_v1.gs`）**:
+  1. **`lookupReservationForCancel_` L1280-1300**: 那覇分岐に `nha_jalan_payments` 参照追加
+     - `isJalanPaid` を実態判定
+     - 戻り値に `jalanTable: 'nha_jalan_payments'` 追加
+  2. **`handleCancellationMessage_` L1162-1185 (旧)**: 'jalan_payments' 固定リテラル → `lookup.jalanTable || 'jalan_payments'` 動的切替
+  3. **refunded_at フォールバック**: NHA テーブルに refunded_at カラムが無い場合の二段階リトライ実装
+- **動作**: スタッフが `#payment_naha` (C0AP2S5B147) に投稿:
+  ```
+  キャンセル
+  予約番号：R0XXXXXX
+  キャンセル料率：N (0/30/50/100)
+  ```
+  → Bot が `nha_jalan_payments` で paid 確認 → Square Refund API → DB更新 → Slack完了報告
+- **店舗別対応マトリクス**:
+  | 店舗 | チャンネル | 返金待ちアラート | Slack自動返金Bot |
+  |---|---|:---:|:---:|
+  | SPK | #payment_sapporo | ✅ v4.7.119 | ✅ 既存 |
+  | NHA | #payment_naha | ✅ v3.5.17-NHA | ✅ **本修正で対応** |
+  | BUDDICA | （未開設） | ✅ v1.0.20-BT | — チャンネル無し |
+- **BUDDICA 対応保留**: オーナー判断「BUDDICAはまだチャンネルないのでいいです」→ Handover表示のみ実装済
+- **🔮 BUDDICA 将来対応 TODO（2026-05-10時点・要設定後着手）**:
+  1. Slack チャンネル `#payment_buddica`（仮）作成 → channel ID取得
+  2. BUDDICA独立 Square アカウント作成 → API トークン発行
+  3. `payment_bot_unified_v1.gs` 改修:
+     - 新定数 `CH_BUDDICA = 'CXXXXXXXXXX'`
+     - 新ScriptProperty `SQUARE_TOKEN_BUDDICA`
+     - `lookupReservationForCancel_` に BUDDICA 分岐追加（btr_reservations + bt_jalan_payments）
+     - `handleCancellationMessage_` の channel ルーティングに BUDDICA 追加
+     - `squareRefund_` で cfg.squareToken をチャンネル別切替（SPK/NHA は HANDYMAN本体, BUDDICA は独立トークン）
+  4. `getOrderIdFromSheet_` の支払い管理スプシで「BUDDICA店」行も検索対象に
+
 ### 💸 返金待ち Handover を TOP に追加 (v4.7.119 / spk-v674)
 - **背景**: R0R8QVZR モギ ユウヘイ様 ¥40,950（5/17-19キャンセル）が「⚠️ 返金対応必要」とSlack通知されたが、`handleJalanPaymentCancel_` 内で `status='refund'` 書込が失敗していて DB上は status='paid' のまま放置。じゃらん決済タブの「返金待ち」フィルタにも入らず、TOPでもアラートが出ず、見逃される構造
 - **オーナー要望**: 「返金待ちに案件がある場合はTOPにアラート出す」「Handoverに出す」
