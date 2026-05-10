@@ -1,8 +1,65 @@
 # SPK業務管理APP（札幌店）
 
-## 2026-05-10 修正履歴
+## 2026-05-10 修正履歴 — 大規模追記
 
-### 🔁 自動返金 Bot を NHA に拡張（payment_bot_unified_v1.gs）
+### 🚨 緊急: SPK reservations から重複5件物理削除
+- **症状**: 札幌APP配車表に那覇予約 RC12461128273853518 ヤマダ テッペイ様（5/13 Aクラス）が表示される
+- **真因**: 楽天メール取込GAS の `isSapporoReservation_` 判定が誤動作 → SPK と NHA 両方に同一予約番号で登録 → 那覇所属判明後 SPK は cancelled にしただけで物理削除しなかった
+- **削除実施**:
+  | 予約番号 | 名前 | 状態 |
+  |---|---|---|
+  | RC12461128273853518 | ヤマダ テッペイ | 楽天 / Aクラス / 5/13-15 |
+  | AEU53482 | 小村 拓翔 | HP / Fクラス / 5/16 |
+  | R0LE1AKA | キム ヒョンミ | じゃらん / D_OKI / 2026-02 |
+  | SP-20260420-0001 | テスト太郎 / 塗田さちえ | SP-ID 衝突 |
+  | ZMG04202 | 細谷 直子 | HP / 赤嶺駅 |
+- **削除対象**: SPK の reservations / fleet / tasks 物理削除（NHA は正所属のため残す）
+- **検証**: ページネーション全件で SPK=247 / NHA=1877 / 重複=0件 確認
+
+### 🔄 checkUnpaidAlert 店舗振分け修正 (gas-email-import-v2.gs)
+- **症状**: 札幌 #payment_sapporo の未入金アラートに 那覇予約 R0J20ZUY コボリ セイヤ様 ¥4,000（5/13） が混入
+- **真因**: `checkUnpaidAlert` がスプシ「支払い管理」全件をチェック → 全て JALAN_PAY_CHANNEL（札幌）に通知（店舗振分けなし）
+  - `checkPaymentStatus` は 2026-04-20 に店舗振分け対応済みだったが `checkUnpaidAlert` だけ未対応で残っていた
+- **修正**:
+  - スプシC列「店舗」を読取
+  - 「那覇」or「沖縄」 → `nha_reservations` から start_date 取得 → `#payment_naha (C0AP2S5B147)`
+  - それ以外 → `reservations` から lend_date 取得 → `#payment_sapporo (JALAN_PAY_CHANNEL)`
+  - チャンネル別 alerts を集計してそれぞれに通知
+
+### 🛑 自動返金 Bot 完全廃止 (payment_bot_unified_v1.gs)
+- **発端**: R0UIIOPU ミズシマ タカミ様（札幌じゃらん）に Slack「キャンセル / 料率0%」投稿 → Bot が以下の致命的誤動作:
+  1. **金額誤り**: 返金額 ¥9,150（実際の決済額は ¥6,750）
+  2. **Square Refund API 完全スキップ**（Bot ログ「Square返金スキップ（事前決済なし）」）
+  3. **DB だけ `status='refunded'` に書換** → 「返金済み」虚偽記録
+  4. お客様カードへの実返金は未実行（Square取引履歴 5/10 0件で確証）
+- **真因**:
+  - `lookupReservationForCancel_` の `isJalanPaid` 判定が `jp.status === 'paid'` のみ
+  - メール受信時の `handleJalanPaymentCancel_` で先に `'paid' → 'refund'` に書換済 → Bot 実行時には `paid !== 'refund'` で `isJalanPaid=false`
+  - → fallback で `r.price=¥9,150` 採用（実際は jp.amount=¥6,750）
+  - → Square Refund もスキップ
+- **対応決定（オーナー指示）**: 「この機能動かないと危ないのでやめます。自動返金機能 バラしてください。アラートだけ残して」
+- **修正内容**:
+  - `handleSlackMessage_` の「キャンセル」キーワード分岐を `handleCancellationMessage_` 呼出 → **廃止メッセージ Slack返信のみ** に変更
+  - `handleCancellationMessage_` / `lookupReservationForCancel_` / `squareRefund_` は将来再有効化のため残置
+  - 廃止メッセージで手動返金手順案内: ① Square Dashboard 払い戻し ② APP データタブ status=cancelled ③ APP 会計タブ起票
+- **影響**: SPK / NHA 共に Slack「キャンセル」投稿は廃止メッセージのみ返却。BUDDICA は元々 Bot 未実装
+
+### 💸 自動返金廃止 → Handover 案内文を3店舗 一括変更
+- SPK v4.7.125 / spk-v677 / NHA v3.5.18-NHA / BUDDICA v1.0.21-BT
+- 旧: 「💡 自動返金: #payment_sapporo に「キャンセル / 予約番号:XXXXX / キャンセル料率:N」を投稿」
+- 新: 「⚠️ 自動返金は廃止（2026-05-10）。手動で対応してください: ① Square Dashboard で「払い戻し」 ② APP 会計タブで起票 ③ APP データタブで status=cancelled」
+- BUDDICA: terser 不在で unminified、Babelが日本語を `自動返金` 形式に Unicode エスケープ出力するため grep では hit しないが、ブラウザ実行時には正常デコード表示
+
+### R0UIIOPU 残留問題（要オーナー手動対応）
+- お客様への実返金: Square Dashboard で **¥6,750（レシートZ02j / 3/19 / AmEx末尾5964）** を手動返金
+- DB訂正:
+  - `jalan_payments.memo`: 「返金¥9,150」→「Square手動返金¥6,750」
+  - `spk_accounting` 起票額の差¥2,400 補正
+  - `refunded_at` を実返金時刻に更新
+
+---
+
+### 🔁 自動返金 Bot を NHA に拡張（payment_bot_unified_v1.gs）— 上記廃止により無効化済
 - **背景**: 「返金待ち Handover を3店舗（SPK/NHA/BUDDICA）に実装」と並行して、自動返金Bot（`payment_bot_unified_v1.gs`）も NHA 対応が必要だった
   - 旧: `lookupReservationForCancel_` の那覇分岐は `isJalanPaid: false` 固定 = 自動返金されず会計起票（unpaid）のみ
   - 新: 那覇も `nha_jalan_payments` 参照 → paid なら Square Refund API 実行 → status='refunded'
