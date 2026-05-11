@@ -551,19 +551,29 @@ function sanitizeOtaStoreName_(storeName) {
   return s.trim();
 }
 
+// ★ 2026-05-11: NHA 5/3 修正版と同形に統一
+//   旧バグ: 「安心パック」が text に含まれるだけで NOC を返す → 「: なし」も「: あり」も
+//          区別せず誤判定（OWX13785 織田様 / GUS75934 星様 事故で発覚）
+//   修正: 各オプションの「: あり」を明示的に確認する形に書き換え
 function detectInsurance_(text) {
   if (!text) return 'なし';
+  // フル補償（明示キーワード）
   if (/フルカバー|フル補償|安心フル|あんしんフル/i.test(text)) return 'フル';
-  if (/安心パック|NOC|ノンオペレーション|ノンオペ/i.test(text)) {
-    if (/NOC[補償]*[：:\s]*(なし|未加入|無し|加入しない)/i.test(text)) {
-      // NOC未加入 — 免責のみかどうかを再チェック
-    } else {
-      return 'NOC';
-    }
-  }
+  // ★ 楽天形式: 「免責補償別 N」「NOC補償 N」両方検出して組み合わせ判定
+  // 「N」は1以上の数字（「免責補償別 0」=未加入は除外）
+  var hasNocRakuten = /NOC補償\s*[1-9]/i.test(text);
+  var hasCdwRakuten = /免責補償別\s*[1-9]/i.test(text);
+  if (hasNocRakuten && hasCdwRakuten) return 'フル';  // 両方加入 = フル相当
+  if (hasNocRakuten) return 'NOC';                    // NOCのみ
+  // NOC/安心パック「あり」を明示的に確認
   if (/レンタカー安心パック[：:\s]*あり/i.test(text)) return 'NOC';
+  if (/安心パック[：:\s]*あり/i.test(text)) return 'NOC';
+  if (/NOC[補償]*[：:\s]*あり/i.test(text)) return 'NOC';
+  if (/ノンオペレーション[補償料金]*[：:\s]*あり|ノンオペ[：:\s]*あり/i.test(text)) return 'NOC';
+  // 免責「あり」を明示的に確認
   if (/免責補償制度\(CDW\)[：:\s]*あり/i.test(text)) return '免責';
   if (/免責補償[：:\s]*あり|免責補償制度[：:\s]*あり|免責[：:\s]*加入|免責補償料/i.test(text)) return '免責';
+  if (hasCdwRakuten) return '免責';  // 楽天 CDW のみ
   if (/免責/.test(text) && !/免責[：:\s]*(なし|未加入|無し|加入しない|0円)/i.test(text)) return '免責';
   return 'なし';
 }
