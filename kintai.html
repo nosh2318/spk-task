@@ -167,12 +167,19 @@ async function loadAll(){
   if(!sb){ document.getElementById('cards').innerHTML = '<div class="empty">Supabase接続失敗</div>'; return; }
 
   try{
-    // 1. スタッフ一覧（storeフィルタなし → nameで管理。NHA/SPKでstaffテーブル共有）
-    //    シフトに登場するスタッフを動的に集計する
+    // テーブル定義（店舗別）
+    const staffTbl = store==='nha' ? 'nha_staff' : 'staff';
     const shiftTbl = store==='nha' ? 'nha_shifts' : 'shifts';
     const attTbl   = store==='nha' ? 'nha_attendance' : 'spk_attendance';
     const yStart   = year+'-01-01';
     const yEnd     = year+'-12-31';
+
+    // 正社員スタッフ一覧（店舗別テーブル・sort_order順）
+    const {data: staffMaster} = await sb.from(staffTbl)
+      .select('name,sort_order')
+      .eq('type','正社員')
+      .order('sort_order');
+    const allowedNames = new Set((staffMaster||[]).map(s=>s.name));
 
     // シフトデータ取得（ページネーション対応）
     let allShifts = [];
@@ -205,21 +212,13 @@ async function loadAll(){
       offset += 1000;
     }
 
-    // スタッフ名リスト（シフトに登場する人）
-    const nameSet = new Set();
-    allShifts.forEach(r => nameSet.add(r.staff_name));
-    // staffテーブルから sort_order で並べる
-    const {data: staffData} = await sb.from('staff').select('name,sort_order').order('sort_order');
-    staffList = [];
+    // スタッフリスト = 正社員マスター順（シフトに登場しない人も含む）
+    staffList = (staffMaster||[]).map(s=>s.name);
     if(staffData){
-      staffData.forEach(s => { if(nameSet.has(s.name)) staffList.push(s.name); });
-    }
-    // シフトには居るがstaffテーブルにない人も追加
-    nameSet.forEach(n => { if(!staffList.includes(n)) staffList.push(n); });
-
-    // 月別カウント集計
+    // 月別カウント集計（正社員のみ）
     shiftCounts = {};
     allShifts.forEach(r => {
+      if(!allowedNames.has(r.staff_name)) return; // 正社員以外をスキップ
       const m = r.date.slice(5,7); // "MM"
       if(!shiftCounts[r.staff_name]) shiftCounts[r.staff_name] = {};
       if(!shiftCounts[r.staff_name][m]) shiftCounts[r.staff_name][m] = {有:0,公:0,希:0,出:0,欠:0,出勤:0};
@@ -231,6 +230,7 @@ async function loadAll(){
       else if(sym==='●') shiftCounts[r.staff_name][m]['出勤']++;
     });
     allAbsent.forEach(r => {
+      if(!allowedNames.has(r.staff_name)) return;
       const m = r.date.slice(5,7);
       if(!shiftCounts[r.staff_name]) shiftCounts[r.staff_name] = {};
       if(!shiftCounts[r.staff_name][m]) shiftCounts[r.staff_name][m] = {有:0,公:0,希:0,出:0,欠:0,出勤:0};
