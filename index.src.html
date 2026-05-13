@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v678';
+  var CV='spk-v680';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=581').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=583').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -107,21 +107,88 @@ const {useState,useMemo,useCallback,useEffect,useRef}=React;
 const SUPABASE_URL = "https://ckrxttbnawkclshczsia.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8"; // anon key（RLSで保護）
 const SB_ENABLED = !!(SUPABASE_URL && SUPABASE_KEY);
-let sb = null;
+// ★ sb は同期的に作成（APP本体の useEffect が早期に sb を参照しても null にならないように）
+let sb = SB_ENABLED ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false }
+}) : null;
 let sbAuthReady = false;
+let sbCurrentUser = null;
 const sbAuthPromise = (async () => {
-  if (!SB_ENABLED) { sbAuthReady = true; return; }
-  sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+  if (!sb) { sbAuthReady = true; return; }
   try {
     const { data: { session } } = await sb.auth.getSession();
-    if (!session) {
-      await sb.auth.signInAnonymously();
-    }
-  } catch (e) {
-    console.warn("[Auth] Anonymous sign-in failed:", e.message);
-  }
+    if (session) sbCurrentUser = session.user;
+  } catch (e) { console.warn("[Auth] Session check failed:", e.message); }
   sbAuthReady = true;
 })();
+
+/* ===== Auth UI ===== */
+async function ensureAuthenticated() {
+  await sbAuthPromise;
+  if (sbCurrentUser) return true;
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.id = 'spk-auth-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:linear-gradient(135deg,#1e40af,#0891b2);z-index:99999;display:flex;align-items:center;justify-content:center;font-family:"Hiragino Sans","Yu Gothic","Meiryo",sans-serif;';
+    overlay.innerHTML = `
+      <div style="background:white;padding:40px;border-radius:12px;box-shadow:0 20px 50px rgba(0,0,0,.3);width:90%;max-width:400px">
+        <div style="text-align:center;margin-bottom:24px">
+          <div style="font-size:10pt;color:#6b7280;letter-spacing:.3em;margin-bottom:4px">H A N D Y M A N</div>
+          <div style="font-size:18pt;font-weight:700;color:#1e40af">札幌店 管理APP</div>
+          <div style="font-size:9pt;color:#6b7280;margin-top:8px">スタッフログイン</div>
+        </div>
+        <div id="spk-auth-msg" style="display:none;padding:8px 12px;background:#fef2f2;color:#991b1b;border-radius:4px;margin-bottom:12px;font-size:10pt"></div>
+        <div style="margin-bottom:12px">
+          <label style="display:block;font-size:9pt;font-weight:600;color:#374151;margin-bottom:4px">メールアドレス</label>
+          <input id="spk-auth-email" type="email" autocomplete="username" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:5px;font-size:11pt">
+        </div>
+        <div style="margin-bottom:18px">
+          <label style="display:block;font-size:9pt;font-weight:600;color:#374151;margin-bottom:4px">パスワード</label>
+          <input id="spk-auth-pass" type="password" autocomplete="current-password" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:5px;font-size:11pt">
+        </div>
+        <button id="spk-auth-submit" style="width:100%;padding:10px;background:#1e40af;color:white;border:none;border-radius:5px;font-size:11pt;font-weight:600;cursor:pointer">ログイン</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const e = document.getElementById('spk-auth-email');
+    const p = document.getElementById('spk-auth-pass');
+    const s = document.getElementById('spk-auth-submit');
+    const m = document.getElementById('spk-auth-msg');
+    setTimeout(() => e.focus(), 100);
+    async function doLogin() {
+      if (!e.value.trim() || !p.value) {
+        m.textContent = 'メールアドレスとパスワードを入力してください';
+        m.style.display = 'block'; return;
+      }
+      s.disabled = true; s.textContent = 'ログイン中...'; m.style.display = 'none';
+      try {
+        const { data, error } = await sb.auth.signInWithPassword({ email: e.value.trim(), password: p.value });
+        if (error) throw error;
+        sbCurrentUser = data.user;
+        // ★ ログイン後は必ずリロード（APP本体が認証済みセッションで再起動）
+        s.textContent = 'ログイン成功 ✓ 再読込中...';
+        setTimeout(() => location.reload(), 300);
+        return;
+      } catch (err) {
+        m.textContent = 'ログイン失敗: ' + (err.message || '認証エラー');
+        m.style.display = 'block';
+        s.disabled = false; s.textContent = 'ログイン';
+      }
+    }
+    s.onclick = doLogin;
+    p.onkeydown = (ev) => { if (ev.key === 'Enter') doLogin(); };
+    e.onkeydown = (ev) => { if (ev.key === 'Enter') p.focus(); };
+  });
+}
+
+async function signOut() {
+  if (!sb) return;
+  await sb.auth.signOut();
+  sbCurrentUser = null;
+  location.reload();
+}
+
+ensureAuthenticated();
 
 /* ===== SHA-256ハッシュユーティリティ ===== */
 async function sha256(str){
@@ -17310,7 +17377,7 @@ function App(){
   </div>;
 }
 
-const APP_VERSION="v4.7.129";
+const APP_VERSION="v4.7.131";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
