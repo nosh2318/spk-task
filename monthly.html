@@ -122,6 +122,59 @@ input.bi::placeholder{color:#fde68a}
 <script>
 const SU='https://ckrxttbnawkclshczsia.supabase.co';
 const SK='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8';
+// ★ 2026-05-13: 親APP の Supabase Auth トークンを共有（RLS authenticated 経路でデータ取得）
+function _extractAccessToken(d){
+  if(!d)return null;
+  if(typeof d==='string')return d;
+  if(d.access_token)return d.access_token;
+  if(d.currentSession&&d.currentSession.access_token)return d.currentSession.access_token;
+  if(d.session&&d.session.access_token)return d.session.access_token;
+  if(Array.isArray(d)&&typeof d[0]==='string')return d[0];
+  return null;
+}
+function getAuthToken(){
+  try{
+    const v=localStorage.getItem('sb-ckrxttbnawkclshczsia-auth-token');
+    if(v){
+      try{const tok=_extractAccessToken(JSON.parse(v));if(tok)return tok;}catch(e){}
+    }
+    for(let i=0;i<localStorage.length;i++){
+      const k=localStorage.key(i);
+      if(k&&k.startsWith('sb-')&&k.indexOf('auth-token')>=0){
+        const val=localStorage.getItem(k);
+        if(!val)continue;
+        try{const tok=_extractAccessToken(JSON.parse(val));if(tok)return tok;}catch(e){}
+      }
+    }
+    return null;
+  }catch(e){return null;}
+}
+let _authWarned=false;
+function authHeader(){
+  const t=getAuthToken();
+  if(!t&&!_authWarned){_authWarned=true;console.warn('[monthly] No auth token - data may be empty under RLS');}
+  return 'Bearer '+(t||SK);
+}
+// ★ 2026-05-13: PIN 1215 認証（予算実績タブ専用ロック・毎回要求）
+const _PIN_REQUIRED='1215';
+function _showPinThen(onPass){
+  const ov=document.createElement('div');
+  ov.id='pin-overlay-monthly';
+  ov.style.cssText='position:fixed;inset:0;background:linear-gradient(135deg,#1e3a8a,#1e40af);z-index:10000;display:flex;align-items:center;justify-content:center;font-family:-apple-system,sans-serif';
+  ov.innerHTML='<div style="background:#fff;padding:36px 28px;border-radius:16px;width:90%;max-width:380px;text-align:center;box-shadow:0 20px 50px rgba(0,0,0,.3)"><div style="font-size:11px;color:#6b7280;letter-spacing:.3em;margin-bottom:6px">📊 MONTHLY</div><div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:6px">予算実績タブ</div><div style="font-size:11px;color:#64748b;margin-bottom:20px">表示するには PIN を入力してください</div><input id="pin-inp" type="password" inputmode="numeric" maxlength="4" placeholder="• • • •" style="width:100%;padding:12px;border:1.5px solid #d1d5db;border-radius:10px;font-size:22px;text-align:center;letter-spacing:10px;margin-bottom:8px"><div id="pin-err" style="color:#dc2626;font-size:12px;font-weight:600;margin-bottom:8px;display:none">PIN が一致しません</div><button id="pin-btn" style="width:100%;padding:12px;background:linear-gradient(135deg,#1e3a8a,#1e40af);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer">確認</button></div>';
+  document.body.appendChild(ov);
+  document.body.style.overflow='hidden';
+  const inp=document.getElementById('pin-inp'),btn=document.getElementById('pin-btn'),err=document.getElementById('pin-err');
+  setTimeout(()=>inp.focus(),100);
+  function check(){
+    if(inp.value===_PIN_REQUIRED){
+      ov.remove();document.body.style.overflow='';
+      if(onPass)onPass();
+    }else{err.style.display='block';inp.value='';}
+  }
+  btn.onclick=check;
+  inp.onkeydown=e=>{if(e.key==='Enter')check();};
+}
 const MS=['01','02','03','04','05','06','07','08','09','10','11','12'];
 const _urlStore=new URLSearchParams(location.search).get('store');
 const _fixedStore=(_urlStore==='nha'||_urlStore==='spk')?_urlStore:null; // 固定store(URLパラメータ)
@@ -174,7 +227,7 @@ async function loadBudget(y){
 async function _saveBudgetData(){
   if(store==='total')return;
   const key='budget_'+store+'_'+year;
-  await fetch(SU+'/rest/v1/nha_app_settings',{method:'POST',headers:{apikey:SK,'Authorization':'Bearer '+SK,'Content-Type':'application/json','Prefer':'resolution=merge-duplicates'},body:JSON.stringify({key,value:JSON.stringify(budgetData)})});
+  await fetch(SU+'/rest/v1/nha_app_settings',{method:'POST',headers:{apikey:SK,'Authorization':authHeader(),'Content-Type':'application/json','Prefer':'resolution=merge-duplicates'},body:JSON.stringify({key,value:JSON.stringify(budgetData)})});
 }
 function computeBudgetD(){
   const BD={};
@@ -372,7 +425,7 @@ async function loadManualExtra(y){
 async function _saveManualData(){
   if(store==='total')return;
   const key='extra_manual_'+store+'_'+year;
-  await fetch(SU+'/rest/v1/nha_app_settings',{method:'POST',headers:{apikey:SK,'Authorization':'Bearer '+SK,'Content-Type':'application/json','Prefer':'resolution=merge-duplicates'},body:JSON.stringify({key,value:JSON.stringify(manualData)})});
+  await fetch(SU+'/rest/v1/nha_app_settings',{method:'POST',headers:{apikey:SK,'Authorization':authHeader(),'Content-Type':'application/json','Prefer':'resolution=merge-duplicates'},body:JSON.stringify({key,value:JSON.stringify(manualData)})});
 }
 
 function _recalcManual(){
@@ -460,7 +513,7 @@ window.addEventListener('DOMContentLoaded',function(){
   }
   updateTblHeight();
   _updateStateBar();
-  load();
+  _showPinThen(load);  // ★ PIN認証通過後に load() （未通過なら overlay 表示）
 });
 function sw(s){
   store=s;
@@ -481,7 +534,7 @@ async function sbq(tbl,qs){
   // Supabase max=1000行/クエリのためページネーションで全件取得
   const all=[];let offset=0;
   while(true){
-    const r=await fetch(`${SU}/rest/v1/${tbl}?${qs}&limit=1000&offset=${offset}`,{headers:{apikey:SK,'Authorization':'Bearer '+SK,'Range-Unit':'items','Prefer':'count=none'}});
+    const r=await fetch(`${SU}/rest/v1/${tbl}?${qs}&limit=1000&offset=${offset}`,{headers:{apikey:SK,'Authorization':authHeader(),'Range-Unit':'items','Prefer':'count=none'}});
     const batch=await r.json();
     if(!Array.isArray(batch)||batch.length===0)break;
     all.push(...batch);
@@ -491,7 +544,7 @@ async function sbq(tbl,qs){
   return all;
 }
 async function sbgkey(tbl,key){
-  const r=await fetch(`${SU}/rest/v1/${tbl}?key=eq.${encodeURIComponent(key)}&select=key,value`,{headers:{apikey:SK,'Authorization':'Bearer '+SK}});
+  const r=await fetch(`${SU}/rest/v1/${tbl}?key=eq.${encodeURIComponent(key)}&select=key,value`,{headers:{apikey:SK,'Authorization':authHeader()}});
   const d=await r.json();return d&&d[0]?d[0].value:null;
 }
 
