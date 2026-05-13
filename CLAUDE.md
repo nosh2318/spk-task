@@ -1,5 +1,70 @@
 # SPK業務管理APP（札幌店）
 
+## 🔴 2026-05-13 修正履歴 — ログイン画面の致命バグ + 予算実績タブ Auth対応
+
+### バージョン推移
+- v4.7.131 → v4.7.137 まで6連続デプロイ（同日中の連続修正）
+- 最終: v4.7.137 / spk-v686
+
+### 🚨 ensureAuthenticated() 二重起動バグ（最重要）
+- **症状**: 札幌店スマホ（iOS Safari）でログイン画面のログインボタンを押しても完全に無反応。タップ検知バナーも診断情報も出ない
+- **真因**: `ensureAuthenticated()` が **2箇所から呼ばれて overlay が DOM に2個生成** されていた
+  - L280: モジュール起動時 → 1つ目の overlay
+  - L17498: React Root useEffect → 2つ目の overlay（上に重なる）
+- **発生メカニズム**:
+  1. body 直下に同じ ID の overlay が2個積まれる
+  2. `document.getElementById('spk-auth-tap')` は ID衝突時 **最初の要素（=1つ目の overlay）** を返す（DOM仕様）
+  3. ユーザーがタップするのは **2つ目（上）の overlay のボタン**
+  4. JS が更新するのは **1つ目（下に隠れた）の overlay の要素**
+  5. → ユーザーの目には何も変わらない
+- **修正 (v4.7.137)**: `_spkAuthPromise` でシングルトン化
+  ```js
+  let _spkAuthPromise = null;
+  async function ensureAuthenticated() {
+    if (_spkAuthPromise) return _spkAuthPromise;  // 2回目以降は同じPromise
+    _spkAuthPromise = (async () => {
+      await sbAuthPromise;
+      if (sbCurrentUser) return true;
+      if (document.getElementById('spk-auth-overlay')) return new Promise(()=>{}); // フェールセーフ
+      return new Promise((resolve) => { /* overlay 生成は1回だけ */ });
+    })();
+    return _spkAuthPromise;
+  }
+  ```
+
+### 🔴 Lesson: 「ID 衝突 + DOM appendChild」の罠
+- `getElementById` は ID 重複時に常に最初の要素を返す → ユーザーが見ている上層 DOM とは別の DOM が更新される
+- React の useEffect で非同期処理を呼ぶ箇所は **必ずシングルトン化** する
+- overlay 系・modal 系は「既存 DOM チェック → 再利用 or 中止」のガードを必ず入れる
+- これを設計時に意識していないと、本症状（押しても無反応・診断情報空白）が再発する
+
+### 予算実績タブ Auth Token 対応 (v4.7.134)
+- **症状**: 「予算実績タブの数字が全て消えた」「コスト内訳も消えた」
+- **真因**: `monthly.html` / `costmatrix.html` が `Bearer + SK`（anon キー）固定で fetch していた。2026-05-13 朝の anon ポリシー削除で全テーブル `[]` 返却
+- **修正**:
+  - `authHeader()` ヘルパー追加: localStorage の Supabase auth-token を取得して `Bearer <auth_token>`
+  - `_extractAccessToken()` で **Supabase JS V2 の5形式に対応**（`{access_token:""}` / `{currentSession:{...}}` / `{session:{...}}` / `[token,refresh]` / 文字列）
+  - 取れない時は `sb-*-auth-token` 全キーを fallback 走査
+- **PIN 1215 追加 (monthly.html のみ)**: 予算実績タブ専用ロック（毎回要求）
+
+### スマホ向けログインボタン強化 (v4.7.134-136)
+- input フォントを **16px** に拡大 → iOS の自動ズームを防ぐ
+- input に `autocapitalize=off` `autocorrect=off` `inputmode=email`
+- button を **inline onclick** に変更（addEventListener 不安定対策）
+  - `<button onclick="window._spkLoginTap()">` で確実発火
+  - `window._spkLoginTap` / `window._spkFullReset` をグローバル登録
+- **タップ検知バナー**追加: 押下瞬間に「🎯 ボタン検知 HH:MM:SS」表示 → 押せているかを目視確認可能
+- **キャッシュクリアボタン**追加: SW unregister + caches.delete + localStorage(sb-/spk-/nha-) 削除 → reload
+- **診断情報**追加: 画面下に UA / SB-JS / sb / SW / LS / auth 状態を常時表示
+- 12秒タイムアウト保護で hang 回避
+
+### 2026-05-13 オペレーションメモ
+- iOS Safari は SW キャッシュが頑固に居座る → **重要修正後は「設定→Safari→履歴とWebサイトデータを消去」をスタッフ全員に周知必須**
+- ホーム画面アイコン化された PWA は SW 更新がさらに遅れる → 「アイコン削除 → URLから再追加」が確実
+- セキュリティ強化後にデータ取得失敗が起きたら、まず anon キー直叩きで `[]` 返るか curl 検証する
+
+---
+
 ## 2026-05-10 修正履歴 — 大規模追記
 
 ### 🚨 緊急: SPK reservations から重複5件物理削除
