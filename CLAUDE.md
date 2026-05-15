@@ -1,5 +1,109 @@
 # SPK業務管理APP（札幌店）
 
+## 🔴 2026-05-14 入金通知の店舗判定 fail-safe化（那覇通知が札幌に漏れる障害対策）
+
+### 症状
+`#payment_sapporo` に那覇予約 SP-20260507-0001/0002/0003（株式会社谷川電気工事 各¥7,650・予約外売上）の
+「✅ 入金確認完了」通知が3件流れた。通知文の「店舗：」が**空欄**になっていた。
+
+### 真因
+SPK GAS `gas-email-import-v2.gs` L1752 (旧) の店舗判定:
+```js
+var notifyChannel = (pay.store.indexOf('那覇') >= 0 || pay.store.indexOf('沖縄') >= 0)
+  ? NAHA_PAY_CHANNEL : JALAN_PAY_CHANNEL;
+```
+- 店舗判定は**スプシC列「利用店舗」の文字列に「那覇」or「沖縄」が含まれるか**だけ
+- C列が空欄 → `indexOf('那覇')===-1` → **デフォルトで札幌(JALAN_PAY_CHANNEL)に流れる**設計
+- CLAUDE.md グローバルルール「**那覇の入金通知が札幌に飛ぶのは絶対禁止**」違反
+
+`checkUnpaidAlert` (L1862) にも同型バグあり。C列空欄なら札幌の `reservations` を見に行く。
+
+### 修正（3段階 fail-safe ヘルパー）
+新規 `resolvePaymentStore_(resvNo, sheetStore)` を gas-email-import-v2.gs に追加（入金確認 v3 の手前）:
+
+| Step | 条件 | 振り分け先 | source |
+|------|------|----------|--------|
+| 1 | C列に「那覇/沖縄」明記 | NAHA のみ | `sheet` |
+| 1 | C列に「札幌」明記 | SPK のみ | `sheet` |
+| 2 | C列空欄 + nha_accounting にヒット | NAHA のみ + 警告（スプシ要補修） | `db` |
+| 2 | C列空欄 + spk_accounting にヒット | SPK のみ + 警告 | `db` |
+| 2 | C列空欄 + 両テーブルにヒット | **両店通知** + 警告（整合性要確認） | `ambiguous` |
+| 3 | C列空欄 + DB照合失敗 | **両店通知** + 警告（手動確認＋スプシ補修） | `fallback` |
+
+**ポイント**: 判定不能時は札幌に勝手に流さず、両店通知で「警告マーク + 判定根拠」を明示する設計。
+通知文には `判定根拠: sheet|db|ambiguous|fallback` を必ず付与。
+
+### 適用箇所
+1. `checkPaymentStatus` L1752付近のチャンネル振り分けロジック差し替え
+2. `checkUnpaidAlert` L1884付近のチャンネル振り分けロジック差し替え（同型バグ修正）
+3. 新規 `testResolvePaymentStore` — 動作確認用（GASエディタ▶️実行）
+4. 新規 `backfillPaymentSheetStore(dryRun)` — スプシC列空欄行をDB照合で補修
+   - `backfillPaymentSheetStoreDryRun()`: ログのみ（推奨：先にこれで件数確認）
+   - `backfillPaymentSheetStoreApply()`: スプシ更新実行
+
+### 適用手順
+1. GASエディタ「札幌予約メール自動配車」プロジェクトを開く
+2. `gas-email-import-v2.gs` を Cmd+A → Cmd+V → Cmd+S（クリップボードに pbcopy 済）
+3. （任意）`testResolvePaymentStore` を実行 → スクショ3件が source=db / channels=NAHA と判定されるか確認
+4. `backfillPaymentSheetStoreDryRun` を実行 → ログで補修対象を確認
+5. 問題なければ `backfillPaymentSheetStoreApply` を実行 → スプシC列を埋める
+6. **トリガー再デプロイ不要**（コード保存だけで次回トリガー時に新コード実行）
+
+### Lesson（再発防止ルール）
+1. **「単一データソースのデフォルト振り分け」は危険**: スプシC列のような単一フィールドに依存した条件分岐で「該当しなければ別店舗」のフォールバックは、データ欠損で誤通知を生む
+2. **店舗判定は必ず複数経路で検証**: スプシ／DB／予約番号プレフィックスのいずれか2つ以上で一致させる
+3. **判定不能時は「両店通知 + 警告」がデフォルト挙動**: 「とりあえず札幌に流す」のような選択は店舗分離原則を破壊する
+4. **通知文に判定根拠を必ず明示**: 通知を受けたスタッフが「これは確定情報か推定情報か」を即座に判断できる
+5. **既存の checkPaymentStatus / checkUnpaidAlert の同型バグを横展開チェック**: 「店舗振り分け」をする関数を新規追加時は、必ず resolvePaymentStore_ を経由する
+
+### 実施結果（2026-05-14 13:38〜13:44 JST 完了）
+
+#### Step 1: 動作確認 `testResolvePaymentStore` (13:38)
+全6パターン期待通り判定:
+| ケース | 期待 | 実結果 |
+|---|---|---|
+| SP-20260507-0001/0002/0003 (C列空) | NHA (db判定) | ✅ source=db channels=NAHA |
+| 予約番号空 + C列空 | fallback | ✅ source=fallback channels=NAHA,SPK |
+| C列=札幌店 | SPK (sheet) | ✅ source=sheet channels=SPK |
+| C列=那覇空港店 | NHA (sheet) | ✅ source=sheet channels=NAHA |
+
+#### Step 2: DryRun `backfillPaymentSheetStoreDryRun` (13:43)
+スプシ走査結果: **fixed=11 ambiguous=0 unknown=0** （クリーンな結果）
+
+#### Step 3: Apply `backfillPaymentSheetStoreApply` (13:44)
+11件全部「那覇空港店」で補修成功:
+| Row | 予約番号 | 補修後 |
+|---:|---|---|
+| 68 | `*RC72461092715277535*` | 那覇空港店 |
+| 74 | TIS74969 | 那覇空港店 |
+| 80-82 | SP-20260507-0001/0002/0003 | 那覇空港店（スクショの当該3件） |
+| 84-85 | SP-20260507-0004/0005 | 那覇空港店（5/11 重複障害本体） |
+| **86-87** | **SP-20260507-0004/0005**（重複） | 那覇空港店 |
+| 89 | 2604001235 | 那覇空港店 |
+| 98 | SP-20260511-0002 | 那覇空港店 |
+
+### 残課題（緊急度低）
+
+| # | 内容 | 緊急度 |
+|---|---|---|
+| 1 | Row 86/87 重複行 (SP-20260507-0004/0005 が Row 84/85 と完全重複) → CLAUDE.md (NHA) 「2026-05-11 重複障害」の残骸がスプシ側に残存 | 中（集計に影響の可能性） |
+| 2 | Row 68 予約番号にアスタリスク `*RC72461092715277535*` → Slack 太字装飾 `*xxx*` が予約番号として入った可能性。どこかのパース処理にバグ | 中 |
+| 3 | Layer 2 真因（C列が空欄になった経路の特定）→ HANDYMAN Payment Bot `recordToSheet_` の `parsed.store` 取得失敗 or 那覇GAS `appendToPaymentSheet_` の店舗書き込み漏れ | 低（fail-safe で再発影響なし） |
+
+### コミット予定
+- `gas-email-import-v2.gs` 修正済（4401行）→ GASエディタへ貼付＋保存済（2026-05-14 13:38）
+- スプシ補修済（11件 Apply 完了 2026-05-14 13:44）
+- CLAUDE.md（SPK）に本記録追加
+
+### 関連ファイル
+- SPK GAS: `~/spk-task/gas-email-import-v2.gs` L1701-1764（`resolvePaymentStore_` ヘルパー + `testResolvePaymentStore`）
+- SPK GAS: L1808付近（`checkPaymentStatus` ロジック差し替え）
+- SPK GAS: L1922付近（`checkUnpaidAlert` ロジック差し替え）
+- SPK GAS: L4156-4221（`backfillPaymentSheetStore` + DryRun/Apply ラッパー）
+- 支払い管理スプシ: `1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc` シート「支払い管理」C列
+
+---
+
 ## 🔴 2026-05-13 修正履歴 — ログイン画面の致命バグ + 予算実績タブ Auth対応
 
 ### バージョン推移

@@ -1698,6 +1698,73 @@ function resendApologyToSixCustomers() {
   Logger.log('[ApologyResend] Summary: sent=' + sent.length + ' failed=' + failed.length);
 }
 
+// ★★★ 店舗判定ヘルパー（2026-05-14 追加・那覇通知が札幌に漏れる障害対策）★★★
+//
+// 旧仕様: checkPaymentStatus の振り分けは「スプシC列に『那覇』or『沖縄』含むか」だけ。
+//         C列が空欄なら無条件で札幌(JALAN_PAY_CHANNEL)にデフォルトで流れていた。
+//         → 那覇予約のC列が空欄で記録された3件が札幌チャンネルに通知され障害発生。
+//
+// 新仕様（3段階判定）:
+//   Step 1. スプシC列が明示している場合はそれを信頼
+//   Step 2. C列が空欄/不明 → 予約番号で Supabase 両テーブル(nha_accounting/spk_accounting)を照会
+//   Step 3. それでも判定不能 → 両店チャンネルに警告付きで通知（札幌に勝手に流さない）
+//
+// 戻り値: { channels: [chan...], label: 表示用店舗名, warning: 警告文 or null, source: 'sheet'|'db'|'ambiguous'|'fallback' }
+function resolvePaymentStore_(resvNo, sheetStore) {
+  var NAHA_CH = 'C0AP2S5B147'; // #payment_naha
+  var SPK_CH = JALAN_PAY_CHANNEL; // #payment_sapporo
+  var s = String(sheetStore || '').trim();
+
+  // Step 1: スプシC列が明示
+  if (s.indexOf('那覇') >= 0 || s.indexOf('沖縄') >= 0) {
+    return { channels: [NAHA_CH], label: s || '那覇空港店', warning: null, source: 'sheet' };
+  }
+  if (s.indexOf('札幌') >= 0) {
+    return { channels: [SPK_CH], label: s || '札幌店', warning: null, source: 'sheet' };
+  }
+
+  // Step 2: C列が空欄/不明 → Supabase 両テーブル照合
+  if (resvNo) {
+    try {
+      var enc = encodeURIComponent(resvNo);
+      var nha = supabaseGet_('nha_accounting', 'resv_no=eq.' + enc + '&select=resv_no&limit=1');
+      var spk = supabaseGet_('spk_accounting', 'resv_no=eq.' + enc + '&select=resv_no&limit=1');
+      var nhaHit = !!(nha && nha.length > 0);
+      var spkHit = !!(spk && spk.length > 0);
+      if (nhaHit && !spkHit) {
+        return { channels: [NAHA_CH], label: '那覇空港店（DB判定）', warning: 'スプシC列が空欄でした。予約番号でDB照合し那覇と判定。スプシC列の補修を推奨します。', source: 'db' };
+      }
+      if (spkHit && !nhaHit) {
+        return { channels: [SPK_CH], label: '札幌店（DB判定）', warning: 'スプシC列が空欄でした。予約番号でDB照合し札幌と判定。スプシC列の補修を推奨します。', source: 'db' };
+      }
+      if (nhaHit && spkHit) {
+        return { channels: [NAHA_CH, SPK_CH], label: '(両店該当)', warning: '予約番号が両店DBに存在しています。データ整合性を要確認。両店チャンネルに通知しました。', source: 'ambiguous' };
+      }
+    } catch (e) {
+      Logger.log('[resolvePaymentStore_] DB query error: ' + e.message);
+    }
+  }
+
+  // Step 3: 判定不能 → 両チャンネル通知（札幌だけに流さない）
+  return { channels: [NAHA_CH, SPK_CH], label: '(判定不明)', warning: 'スプシC列空欄かつDB照合失敗。店舗判定不能のため両店チャンネルに通知。要手動確認＋スプシ補修。', source: 'fallback' };
+}
+
+// 動作確認用：手動実行で resolvePaymentStore_ の判定結果をログ出力
+function testResolvePaymentStore() {
+  var cases = [
+    {resvNo:'SP-20260507-0001', store:'',           expect:'NHA (db判定)'},
+    {resvNo:'SP-20260507-0002', store:'',           expect:'NHA (db判定)'},
+    {resvNo:'SP-20260507-0003', store:'',           expect:'NHA (db判定)'},
+    {resvNo:'',                 store:'',           expect:'fallback'},
+    {resvNo:'TEST',             store:'札幌店',     expect:'SPK (sheet)'},
+    {resvNo:'TEST',             store:'那覇空港店', expect:'NHA (sheet)'},
+  ];
+  cases.forEach(function(c) {
+    var r = resolvePaymentStore_(c.resvNo, c.store);
+    Logger.log('[Test] resvNo="' + c.resvNo + '" store="' + c.store + '" → source=' + r.source + ' channels=' + r.channels.join(',') + ' label=' + r.label + ' / expect=' + c.expect);
+  });
+}
+
 // ★★★ 入金確認 v3（2026-04-17）★★★
 function checkPaymentStatus() {
   var sheetId = '1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc';
@@ -1749,8 +1816,11 @@ function checkPaymentStatus() {
         sheet.getRange(pay.rowIndex, 10).setValue(paidDateStr);
         sheet.getRange(pay.rowIndex, 11).setValue(matched.order_id);
         try { supabaseUpdate_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(pay.reservationId) + '&status=neq.paid', {status:'paid', paid_at:matched.paid_at}); } catch(e) {}
-        var notifyChannel = (pay.store.indexOf('那覇') >= 0 || pay.store.indexOf('沖縄') >= 0) ? NAHA_PAY_CHANNEL : JALAN_PAY_CHANNEL;
-        postToSlackChannel_(notifyChannel, '✅ *入金確認完了*\n予約番号： ' + pay.reservationId + '\n宛名： ' + pay.customerName + '\n金額： ¥' + pay.amount.toLocaleString() + (pay.media ? '\n媒体： ' + pay.media : '') + '\n店舗： ' + pay.store);
+        // ★ 2026-05-14: 店舗判定を fail-safe 化（C列空欄→DB照合→不明時は両店通知）
+        var resolved = resolvePaymentStore_(pay.reservationId, pay.store);
+        var notifyText = '✅ *入金確認完了*\n予約番号： ' + pay.reservationId + '\n宛名： ' + pay.customerName + '\n金額： ¥' + pay.amount.toLocaleString() + (pay.media ? '\n媒体： ' + pay.media : '') + '\n店舗： ' + resolved.label + '\n判定根拠： ' + resolved.source + (resolved.warning ? '\n\n⚠️ ' + resolved.warning : '');
+        resolved.channels.forEach(function(ch){ postToSlackChannel_(ch, notifyText); });
+        Logger.log('[PaymentStatus] notified ' + pay.reservationId + ' → ' + resolved.channels.join(',') + ' (source=' + resolved.source + ')');
         Logger.log('[PaymentStatus] ✅ Paid: ' + pay.reservationId);
         paidCount++;
       }
@@ -1826,13 +1896,16 @@ function checkUnpaidAlert() {
     var store = String(data[i][2]||'').trim();
     var resvId = String(data[i][3]||'').trim(), name = String(data[i][4]||'').trim(), amount = Number(data[i][6])||0, url = String(data[i][7]||'').trim();
     if (!resvId || !url) continue;
-    // 店舗別に reservations / nha_reservations から lend_date 取得
-    var isNaha = (store.indexOf('那覇') >= 0 || store.indexOf('沖縄') >= 0);
+    // ★ 2026-05-14: 店舗判定を fail-safe 化（C列空欄→DB照合→不明時は両店通知）
+    var resolved = resolvePaymentStore_(resvId, store);
+    var hasNaha = resolved.channels.indexOf(NAHA_PAY_CHANNEL) >= 0;
+    var hasSpk = resolved.channels.indexOf(JALAN_PAY_CHANNEL) >= 0;
     var lendDate = null;
-    if (isNaha) {
+    if (hasNaha) {
       var nhaR = supabaseGet_('nha_reservations', 'id=eq.' + encodeURIComponent(resvId) + '&select=start_date');
       if (nhaR && nhaR.length > 0 && nhaR[0].start_date) lendDate = nhaR[0].start_date;
-    } else {
+    }
+    if (!lendDate && hasSpk) {
       var spkR = supabaseGet_('reservations', 'id=eq.' + encodeURIComponent(resvId) + '&select=lend_date');
       if (spkR && spkR.length > 0 && spkR[0].lend_date) lendDate = spkR[0].lend_date;
     }
@@ -1840,8 +1913,11 @@ function checkUnpaidAlert() {
     if (!lendDate) continue;
     var diffDays = Math.floor((new Date(lendDate+'T00:00:00+09:00') - now) / 86400000);
     if (diffDays <= 3) {
-      var ch = isNaha ? NAHA_PAY_CHANNEL : JALAN_PAY_CHANNEL;
-      alertsByCh[ch].push({reservationId:resvId, customerName:name, amount:amount, lendDate:lendDate, daysLeft:diffDays, store:store});
+      // 判定不能/両店該当時は両チャンネルにアラート（札幌に勝手に流さない）
+      resolved.channels.forEach(function(ch) {
+        alertsByCh[ch] = alertsByCh[ch] || [];
+        alertsByCh[ch].push({reservationId:resvId, customerName:name, amount:amount, lendDate:lendDate, daysLeft:diffDays, store:resolved.label, warning:resolved.warning});
+      });
     }
   }
   // チャンネル別に投稿
@@ -4079,6 +4155,73 @@ function recoverR0SFCDMGPayment() {
 }
 
 /**
+ * ★ 2026-05-14 追加: スプシC列「利用店舗」空欄の行をDB照合で補修
+ *
+ * 背景:
+ *   2026-05-14 #payment_sapporo に那覇予約 SP-20260507-0001〜0003 の入金通知が誤って流れた。
+ *   真因: スプシC列が空欄で記録された行があり、checkPaymentStatus がデフォルト=札幌で振り分け。
+ *
+ * 動作:
+ *   支払い管理シートの全行を走査し、C列が空欄なら予約番号でDB照合 (nha_accounting/spk_accounting)
+ *   → ヒットした店舗名で C列を埋める。
+ *   ヒットしないか両店該当の行はログ出力のみ（手動確認）。
+ *
+ * 使い方:
+ *   1. dryRun=true で実行 → ログで件数確認
+ *   2. dryRun=false で実行 → スプシ更新
+ */
+function backfillPaymentSheetStore(dryRun) {
+  if (dryRun === undefined) dryRun = true;
+  var sheetId = '1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc';
+  var sheet = SpreadsheetApp.openById(sheetId).getSheetByName('支払い管理');
+  if (!sheet) { Logger.log('[Backfill] Sheet not found'); return; }
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  var data = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
+  var fixed = [], ambiguous = [], unknown = [];
+  for (var i = 0; i < data.length; i++) {
+    var store = String(data[i][2]||'').trim();
+    var resvId = String(data[i][3]||'').trim();
+    if (store) continue;     // C列が既に埋まっている行はスキップ
+    if (!resvId) continue;   // 予約番号も無ければスキップ
+    var r = resolvePaymentStore_(resvId, '');
+    if (r.source === 'db') {
+      // 一意に判定された
+      var label = r.channels[0] === 'C0AP2S5B147' ? '那覇空港店' : '札幌店';
+      fixed.push({row:i+2, resv:resvId, label:label});
+      if (!dryRun) sheet.getRange(i+2, 3).setValue(label);
+    } else if (r.source === 'ambiguous') {
+      ambiguous.push({row:i+2, resv:resvId});
+    } else {
+      unknown.push({row:i+2, resv:resvId});
+    }
+  }
+  Logger.log('[Backfill] mode=' + (dryRun?'DRY_RUN':'APPLY') + ' fixed=' + fixed.length + ' ambiguous=' + ambiguous.length + ' unknown=' + unknown.length);
+  fixed.forEach(function(x){ Logger.log('  ✅ row=' + x.row + ' resv=' + x.resv + ' → ' + x.label); });
+  ambiguous.forEach(function(x){ Logger.log('  ⚠️ row=' + x.row + ' resv=' + x.resv + ' (両店該当)'); });
+  unknown.forEach(function(x){ Logger.log('  ❓ row=' + x.row + ' resv=' + x.resv + ' (DB未検出)'); });
+  // Slack 報告
+  var lines = ['📋 *スプシC列補修* (mode=' + (dryRun?'DRY_RUN':'APPLY') + ')', ''];
+  lines.push('✅ 補修対象: ' + fixed.length + '件');
+  fixed.slice(0, 10).forEach(function(x){ lines.push('  • ' + x.resv + ' → ' + x.label); });
+  if (fixed.length > 10) lines.push('  ... 他' + (fixed.length - 10) + '件');
+  if (ambiguous.length > 0) {
+    lines.push('');
+    lines.push('⚠️ 両店該当: ' + ambiguous.length + '件 (要手動確認)');
+    ambiguous.forEach(function(x){ lines.push('  • ' + x.resv); });
+  }
+  if (unknown.length > 0) {
+    lines.push('');
+    lines.push('❓ DB未検出: ' + unknown.length + '件 (要手動確認)');
+    unknown.slice(0, 20).forEach(function(x){ lines.push('  • ' + x.resv); });
+    if (unknown.length > 20) lines.push('  ... 他' + (unknown.length - 20) + '件');
+  }
+  try { postToSlackChannel_(JALAN_PAY_CHANNEL, lines.join('\n')); } catch(e) {}
+}
+function backfillPaymentSheetStoreDryRun() { backfillPaymentSheetStore(true); }
+function backfillPaymentSheetStoreApply()  { backfillPaymentSheetStore(false); }
+
+/**
  * ★ 2026-05-06 追加: R0EQE3JK 田草川様 お詫びメール送信 (1回のみ実行)
  * GASエディタで関数名 `sendApologyToTakusagawa` を選択 → ▶️実行
  * 二重送信防止: ScriptProperty 'apology_R0EQE3JK_sent' で一度送信したら以後 abort
@@ -4148,3 +4291,112 @@ function sendApologyToTakusagawa() {
     } catch(_) {}
   }
 }
+
+// ============================================================
+// ★ じゃらん未決済 リマインダーメール再送（札幌）
+//    トリガー: 毎日 9:30（setupSpkJalanReminderTrigger で設定）
+// ============================================================
+
+/**
+ * 札幌: じゃらん未決済リマインダー再送
+ * 対象: status=email_sent かつ 出発3日以内
+ */
+function resendSpkJalanUnpaidReminder() {
+  var now = new Date();
+  var today = Utilities.formatDate(now, 'Asia/Tokyo', 'yyyy-MM-dd');
+  var in3days = Utilities.formatDate(new Date(now.getTime() + 3 * 86400000), 'Asia/Tokyo', 'yyyy-MM-dd');
+
+  var rows = supabaseGet_('jalan_payments',
+    'status=in.(email_sent,link_created)' +
+    '&lend_date=gte.' + today +
+    '&lend_date=lte.' + in3days +
+    '&select=reservation_id,customer_name,customer_email,amount,square_payment_url,lend_date,return_date,vehicle_class');
+
+  if (!rows || rows.length === 0) {
+    Logger.log('[SpkJalanReminder] 対象なし');
+    return;
+  }
+
+  var sent = [], failed = [];
+  rows.forEach(function(pay) {
+    if (!pay.customer_email || !pay.square_payment_url) {
+      failed.push(pay.reservation_id + '(email/url欠落)');
+      return;
+    }
+    var ok = sendSpkJalanReminderEmail_(pay);
+    if (ok) {
+      // ★ 送信成功 → status='reminded' に更新（翌日以降の重複送信を防止）
+      supabaseUpdate_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(pay.reservation_id), {status: 'reminded'});
+      sent.push(pay.reservation_id + ' ' + pay.customer_name + '様（' + pay.lend_date + '出発）');
+      Logger.log('[SpkJalanReminder] 送信+status=reminded: ' + pay.reservation_id);
+    } else {
+      failed.push(pay.reservation_id + '(送信失敗)');
+    }
+  });
+
+  // Slack通知
+  var msg = '📧 *じゃらん未決済リマインダー再送（札幌）*\n'
+    + '対象: ' + rows.length + '件 → 送信: ' + sent.length + '件\n'
+    + (sent.length > 0 ? sent.map(function(s){return '✅ ' + s;}).join('\n') + '\n' : '')
+    + (failed.length > 0 ? failed.map(function(f){return '❌ ' + f;}).join('\n') : '');
+  postToSlackChannel_(JALAN_PAY_CHANNEL, msg);
+  Logger.log('[SpkJalanReminder] 完了 送信:' + sent.length + ' 失敗:' + failed.length);
+}
+
+/**
+ * 札幌: リマインダーメール本文（件名に【リマインド】追記）
+ */
+function sendSpkJalanReminderEmail_(pay) {
+  if (!pay || !pay.customer_email || !pay.square_payment_url) return false;
+  try {
+    var subject = '【リマインド】【レンタカー HANDYMAN 札幌デリバリー専門店】事前決済のお願い（予約番号: ' + pay.reservation_id + '）';
+    var body = pay.customer_name + ' 様\n\n'
+      + 'レンタカー HANDYMAN 札幌デリバリー専門店です。\n'
+      + 'この度はご予約いただきありがとうございます。\n\n'
+      + '当店では貸渡時の待ち時間をゼロにし、スムーズにご出発いただくため、\n'
+      + '事前決済のご協力をお願いしております。\n'
+      + 'お手数ですが、ご出発前にお手続きいただけますと幸いです。\n\n'
+      + '予約番号: ' + pay.reservation_id + '\n'
+      + '貸出日: ' + (pay.lend_date || '') + '\n'
+      + '返却日: ' + (pay.return_date || '') + '\n\n'
+      + '━━━━━━━━━━━━━━━━━━━━\n'
+      + '■ 事前決済\n'
+      + '━━━━━━━━━━━━━━━━━━━━\n'
+      + 'お支払い金額: ¥' + (pay.amount || 0).toLocaleString() + '\n'
+      + '下記リンクよりお支払いをお願いいたします。\n'
+      + pay.square_payment_url + '\n\n'
+      + '※ ご出発3日前の19:00までにお支払いください。\n'
+      + '※ 期限を過ぎた場合、ご予約をキャンセルさせていただく場合がございます。\n\n'
+      + '━━━━━━━━━━━━━━━━━━━━\n'
+      + '■ LINE登録（未登録の方）\n'
+      + '━━━━━━━━━━━━━━━━━━━━\n'
+      + 'お届け情報・当日のご連絡はLINEで行います。\n'
+      + 'LINE公式👉 https://lin.ee/g6iDNYz\n'
+      + 'LINE ID👉 @730kyhwl\n\n'
+      + 'HANDYMAN 札幌デリバリー専門店\n'
+      + 'TEL: 050-1724-6197（9:00〜19:00）\n';
+    GmailApp.sendEmail(pay.customer_email, subject, body, {
+      name: 'HANDYMAN 札幌デリバリー専門店',
+      from: 'reserve@rent-handyman.jp',
+      replyTo: 'reserve@rent-handyman.jp'
+    });
+    return true;
+  } catch (e) {
+    Logger.log('[SpkJalanReminderEmail] Error: ' + e.message);
+    return false;
+  }
+}
+
+/**
+ * リマインダートリガー設定（1回実行で完了）
+ * 札幌: 毎日 9:30
+ */
+function setupSpkJalanReminderTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'resendSpkJalanUnpaidReminder') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('resendSpkJalanUnpaidReminder')
+    .timeBased().everyDays(1).atHour(9).nearMinute(30).create();
+  Logger.log('[Trigger] resendSpkJalanUnpaidReminder 毎日9:30 設定完了');
+}
+
