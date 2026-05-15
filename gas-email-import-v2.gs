@@ -938,8 +938,23 @@ function parseOfficial_(body) {
   var jbMatch = body.match(/チャイルドシート\(ジュニア\):\s*(\d+)\s*台/);
   if (jbMatch) optJ = parseInt(jbMatch[1], 10);
   if (!jbMatch) { var jbAlt = body.match(/チャイルドシート\(ジュニア\):\s*あり\s*(\d*)/); if (jbAlt) optJ = parseInt(jbAlt[1], 10) || 1; }
-  var priceMatch = body.match(/料金\s*\n\s*(\d[\d,]*)\s*円/);
-  var price = priceMatch ? parsePrice_(priceMatch[1]) : 0;
+  // ★ 2026-05-15: 料金パース堅牢化（AEU53482 小村様の¥0障害対応）
+  // 複数パターンで料金を抽出（メール表記揺れに対応）
+  var price = 0;
+  var pricePatterns = [
+    /[【\-・\s]*料金[】]?\s*[\n\r]+\s*([\d,]+)\s*円/,   // 改行後に金額（標準）
+    /[【\-・\s]*料金[】]?[：:\s]+([\d,]+)\s*円/,         // 同行に金額
+    /(?:合計|請求|総額)[料金額]*[：:\s]*([\d,]+)\s*円/,  // 合計料金パターン
+    /料金[：:\s]*[\n\r]*\s*([\d,]+)/,                  // 緩い数字キャッチ
+  ];
+  for (var pi = 0; pi < pricePatterns.length; pi++) {
+    var m = body.match(pricePatterns[pi]);
+    if (m && m[1]) {
+      var p = parsePrice_(m[1]);
+      if (p > 0) { price = p; break; }
+    }
+  }
+  if (!price) Logger.log('[parseOfficial_] WARNING: 料金パース失敗 id=' + id);
   var telMatch = body.match(/【電話番号】\s*\n\s*(\S+)/);
   var tel = telMatch ? cleanPhone_(telMatch[1]) : '';
   var mailMatch = body.match(/【メールアドレス】\s*\n\s*(\S+)/);
