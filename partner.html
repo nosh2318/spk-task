@@ -147,6 +147,45 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
 .toast.ok{background:#059669}
 
 .loading{text-align:center;padding:40px;color:#94a3b8;font-size:13px}
+
+/* 請求書ビュー */
+.inv-month{margin-bottom:16px;background:#fff;border-radius:10px;border:1px solid #e2e8f0;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+.inv-hdr{padding:12px 14px;background:linear-gradient(135deg,#1e40af,#2563eb);color:#fff;display:flex;align-items:center;gap:10px;flex-wrap:wrap;cursor:pointer}
+.inv-hdr .ym{font-size:14px;font-weight:900}
+.inv-hdr .pay{font-size:10px;background:rgba(255,255,255,.2);padding:2px 8px;border-radius:4px;font-weight:700}
+.inv-hdr .toggle{margin-left:auto;font-size:13px}
+.inv-hdr .badge-status{font-size:10px;font-weight:800;padding:3px 8px;border-radius:4px}
+.inv-hdr .badge-status.pending{background:#fef3c7;color:#92400e}
+.inv-hdr .badge-status.sent{background:#dbeafe;color:#1e40af}
+.inv-hdr .badge-status.paid{background:#dcfce7;color:#15803d}
+.inv-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:#e2e8f0}
+.inv-summary>div{background:#fff;padding:10px 12px;text-align:center}
+.inv-summary .lbl{font-size:9px;font-weight:700;color:#64748b;letter-spacing:.05em;margin-bottom:3px}
+.inv-summary .val{font-size:15px;font-weight:900;color:#1e293b}
+.inv-summary .val.rev{color:#059669}
+.inv-summary .val.share{color:#7c3aed}
+.inv-summary .rate-input{display:flex;align-items:center;justify-content:center;gap:3px;font-size:15px;font-weight:900}
+.inv-summary .rate-input input{width:50px;padding:5px 4px;border:1.5px solid #7c3aed;border-radius:6px;font-size:14px;font-weight:900;text-align:center;font-family:inherit;color:#7c3aed;background:#faf5ff;-webkit-appearance:none}
+.inv-summary .rate-input input:focus{outline:2px solid #7c3aed;background:#fff}
+.inv-actions{padding:8px 12px;background:#f8fafc;border-top:1px solid #e2e8f0;display:flex;gap:6px;flex-wrap:wrap}
+.inv-actions button{flex:1;padding:9px 12px;font-size:12px;font-weight:700;border:none;border-radius:6px;cursor:pointer;min-height:40px;min-width:100px}
+.inv-actions .btn-csv{background:#f1f5f9;color:#475569;border:1px solid #cbd5e1}
+.inv-actions .btn-issue{background:#7c3aed;color:#fff}
+.inv-actions .btn-sent{background:#1e40af;color:#fff}
+.inv-actions .btn-paid{background:#059669;color:#fff}
+.inv-vehgrp{padding:0}
+.inv-veh-row{padding:8px 14px;background:#f8fafc;border-top:1px solid #e2e8f0;font-size:12px;font-weight:800;color:#1e293b;display:flex;align-items:center;gap:8px}
+.inv-veh-row .vc{color:#2563eb}
+.inv-veh-row .vc-sum{margin-left:auto;color:#059669}
+.inv-resv{padding:7px 14px 7px 28px;border-top:1px solid #f1f5f9;font-size:11px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.inv-resv .nm{font-weight:700;color:#1e293b;flex:1;min-width:100px}
+.inv-resv .pd{font-size:10px;color:#64748b}
+.inv-resv .amt{font-weight:700;color:#059669;min-width:70px;text-align:right}
+.inv-resv .ota-bdg{font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px}
+@media (max-width:768px){
+  .inv-summary{grid-template-columns:repeat(2,1fr)}
+  .inv-summary .val{font-size:13px}
+}
 </style>
 </head>
 <body>
@@ -196,20 +235,14 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
     </div>
   </div>
 
-  <!-- 予約データタブ -->
+  <!-- 予約データタブ (返却月締め × 車両別 × レベニュー率 × 請求書発行) -->
   <div id="view-data" style="display:none">
     <div class="data-ctrl">
-      <span class="cnt" id="data-count">—</span>
-      <span class="total" id="data-total">—</span>
+      <span class="cnt" id="data-count" style="font-size:11px;font-weight:700;color:#64748b">—</span>
+      <span style="font-size:10px;color:#94a3b8;margin-left:8px">📌 返却月で締め・翌月支払い</span>
     </div>
-    <div class="data-tbl-wrap" style="max-height:calc(100vh - 200px)">
-      <table class="data-tbl" id="data-tbl">
-        <thead><tr>
-          <th>車両</th><th>予約番号</th><th>顧客名</th><th>OTA</th>
-          <th>貸出</th><th>返却</th><th>場所</th><th>金額</th><th>状態</th>
-        </tr></thead>
-        <tbody id="data-body"><tr><td colspan="9" class="loading">読み込み中...</td></tr></tbody>
-      </table>
+    <div id="invoice-view" style="padding:8px 12px;overflow:auto;max-height:calc(100vh - 200px);-webkit-overflow-scrolling:touch">
+      <div class="loading">読み込み中...</div>
     </div>
   </div>
 </div>
@@ -317,6 +350,13 @@ async function loadData(){
     }
     const{data:mt}=await sb.from('maintenance').select('*').in('vehicle_code',vehCodes);
     MAINTENANCE=mt||[];
+    // ★ 2026-05-16: 請求書 + デフォルトレベニュー率も取得
+    try{
+      const{data:pc}=await sb.from('partner_companies').select('revenue_rate').eq('id',OWNER_COMPANY).maybeSingle();
+      if(pc&&pc.revenue_rate!=null)PARTNER_DEFAULT_RATE=Number(pc.revenue_rate);
+      const{data:invs}=await sb.from('partner_invoices').select('*').eq('owner_company',OWNER_COMPANY).order('year_month',{ascending:false});
+      PARTNER_INVOICES=invs||[];
+    }catch(e){console.warn('[loadInvoices]',e);}
     updateSummary();
     if(CURRENT_TAB==='tl')renderTimeline();else renderData();
   }catch(e){console.error('[loadData]',e);showToast('データ取得エラー: '+e.message,'err');}
@@ -469,50 +509,196 @@ function drawBars(dates){
 
 // 予約データタブ
 function renderData(){
-  const body=document.getElementById('data-body');
-  if(VEHICLES.length===0){body.innerHTML='<tr><td colspan="9" class="loading">所有車両なし</td></tr>';return;}
-  if(RESERVATIONS.length===0){body.innerHTML='<tr><td colspan="9" class="loading">予約データなし</td></tr>';return;}
-  const today=new Date().toISOString().substring(0,10);
-  const sorted=[...RESERVATIONS].sort((a,b)=>(b.lend_date||'').localeCompare(a.lend_date||''));
-  let html='',total=0;
-  sorted.forEach(r=>{
+  const view=document.getElementById('invoice-view');
+  if(VEHICLES.length===0){view.innerHTML='<div class="loading">所有車両なし</div>';return;}
+  if(RESERVATIONS.length===0){view.innerHTML='<div class="loading">予約データなし</div>';return;}
+
+  // 返却月でグループ化 (キャンセル除外)
+  const valid=RESERVATIONS.filter(r=>r.status!=='cancelled'&&r.return_date);
+  const byMonth={}; // {'2026-05': { vehs: {vc: [{r,amt}...]}, total: N, count: N }}
+  valid.forEach(r=>{
+    const ym=r.return_date.substring(0,7);
     const f=FLEET.find(x=>x.reservation_id===r.id);
-    const vc=f?f.vehicle_code:'—';
-    const veh=VEHICLES.find(v=>v.code===vc);
-    let status,statusCls;
-    if(r.status==='cancelled'){status='ｷｬﾝｾﾙ';statusCls='cxl';}
-    else if(r.return_date<today){status='完了';statusCls='done';}
-    else if(r.lend_date<=today&&r.return_date>=today){status='貸出中';statusCls='active';}
-    else{status='予約済';statusCls='future';}
-    const otaLabel={J:'じゃらん',R:'楽天',S:'スカイ',O:'エアトリ',HP:'HP',RC:'レンカ',G:'GoGo'}[r.ota]||r.ota||'—';
-    const place=r.del_place||r.col_place||'—';
-    const amt=r.price||0;
-    if(r.status!=='cancelled')total+=amt;
-    if(isMobile){
-      // モバイル: カード形式
-      html+=`<tr>`+
-        `<td class="r1"><span class="veh-c">${vc}</span> ${veh?veh.plate_no||'':''} <span class="ota-bdg ota-${r.ota}">${otaLabel}</span> <span class="status ${statusCls}" style="margin-left:auto">${status}</span></td>`+
-        `<td class="r2">${r.name||'—'}様</td>`+
-        `<td class="r3">📅 ${r.lend_date||'—'} ${(r.lend_time||'').substring(0,5)} → ${r.return_date||'—'} ${(r.return_time||'').substring(0,5)}</td>`+
-        `<td class="r4"><span style="font-size:10px;color:#64748b">${place}</span><span class="amt">¥${amt.toLocaleString()}</span></td>`+
-        `</tr>`;
-    }else{
-      // PC: テーブル形式
-      html+=`<tr>`+
-        `<td><span class="veh-c">${vc}</span> ${veh?veh.plate_no||'':''}</td>`+
-        `<td><code style="font-size:10px;color:#2563eb">${r.id}</code></td>`+
-        `<td>${r.name||'—'}様</td>`+
-        `<td><span class="ota-bdg ota-${r.ota}">${otaLabel}</span></td>`+
-        `<td>${r.lend_date||'—'} ${(r.lend_time||'').substring(0,5)}</td>`+
-        `<td>${r.return_date||'—'} ${(r.return_time||'').substring(0,5)}</td>`+
-        `<td style="font-size:10px;color:#64748b">${place}</td>`+
-        `<td>¥${amt.toLocaleString()}</td>`+
-        `<td><span class="status ${statusCls}">${status}</span></td></tr>`;
-    }
+    const vc=f?f.vehicle_code:'?';
+    if(!byMonth[ym])byMonth[ym]={vehs:{},total:0,count:0};
+    if(!byMonth[ym].vehs[vc])byMonth[ym].vehs[vc]={list:[],sum:0};
+    const amt=Number(r.price)||0;
+    byMonth[ym].vehs[vc].list.push({r,amt});
+    byMonth[ym].vehs[vc].sum+=amt;
+    byMonth[ym].total+=amt;
+    byMonth[ym].count++;
   });
-  body.innerHTML=html;
-  document.getElementById('data-count').textContent=`${sorted.length}件`;
-  document.getElementById('data-total').textContent=`合計 ¥${total.toLocaleString()}`;
+
+  const months=Object.keys(byMonth).sort((a,b)=>b.localeCompare(a));
+  document.getElementById('data-count').textContent=`${valid.length}件 ／ ${months.length}ヶ月`;
+
+  if(months.length===0){view.innerHTML='<div class="loading">予約データなし</div>';return;}
+
+  let html='';
+  months.forEach(ym=>{
+    const m=byMonth[ym];
+    const vcKeys=Object.keys(m.vehs).sort();
+    // 支払い予定日 = 翌月末（簡易: 翌月15日）
+    const [y,mm]=ym.split('-').map(Number);
+    const payY=mm===12?y+1:y;
+    const payM=mm===12?1:mm+1;
+    const payDate=`${payY}年${payM}月支払い`;
+    // 既存請求書情報
+    const inv=PARTNER_INVOICES.find(i=>i.year_month===ym);
+    const rate=inv?Number(inv.revenue_rate):(PARTNER_DEFAULT_RATE||70);
+    const share=Math.round(m.total*rate/100);
+    const status=inv?inv.status:'pending';
+    const statusLabel={pending:'未請求',sent:'請求済',paid:'入金済'}[status]||status;
+    const isOpen=INVOICE_OPEN_YM[ym]!==false; // デフォルト展開
+    html+=`<div class="inv-month">`+
+      `<div class="inv-hdr" onclick="toggleInvoice('${ym}')">`+
+        `<span class="ym">📅 ${ym} 分</span>`+
+        `<span class="pay">${payDate}</span>`+
+        `<span class="badge-status ${status}">${statusLabel}</span>`+
+        `<span class="toggle">${isOpen?'▲':'▼'}</span>`+
+      `</div>`+
+      `<div class="inv-summary">`+
+        `<div><div class="lbl">予約件数</div><div class="val">${m.count}件</div></div>`+
+        `<div><div class="lbl">総売上</div><div class="val rev">¥${m.total.toLocaleString()}</div></div>`+
+        `<div><div class="lbl">レベニュー率</div><div class="rate-input"><input type="number" min="0" max="100" step="0.1" value="${rate}" onchange="updateRate('${ym}',this.value)" onclick="event.stopPropagation()"/><span>%</span></div></div>`+
+        `<div><div class="lbl">御社売上</div><div class="val share">¥${share.toLocaleString()}</div></div>`+
+      `</div>`+
+      `<div class="inv-actions">`+
+        `<button class="btn-csv" onclick="downloadInvoiceCsv('${ym}')">📄 CSV ダウンロード</button>`+
+        (status==='pending'?`<button class="btn-issue" onclick="issueInvoice('${ym}')">📤 請求書発行</button>`:'')+
+        (status==='sent'?`<button class="btn-paid" onclick="markPaid('${ym}')">✅ 入金確認</button>`:'')+
+        (status==='paid'?`<button class="btn-csv" disabled style="opacity:0.5">✓ 完了済み</button>`:'')+
+      `</div>`;
+    if(isOpen){
+      html+=`<div class="inv-vehgrp">`;
+      vcKeys.forEach(vc=>{
+        const grp=m.vehs[vc];
+        const veh=VEHICLES.find(v=>v.code===vc);
+        html+=`<div class="inv-veh-row">`+
+          `<span class="vc">${vc}</span> ${veh?veh.name||'':''} ${veh?veh.plate_no||'':''}`+
+          `<span class="vc-sum">${grp.list.length}件 / ¥${grp.sum.toLocaleString()}</span>`+
+        `</div>`;
+        grp.list.sort((a,b)=>(a.r.return_date||'').localeCompare(b.r.return_date||''));
+        grp.list.forEach(({r,amt})=>{
+          const otaLabel={J:'じゃらん',R:'楽天',S:'スカイ',O:'エアトリ',HP:'HP',RC:'レンカ',G:'GoGo'}[r.ota]||r.ota||'—';
+          html+=`<div class="inv-resv">`+
+            `<span class="ota-bdg ota-${r.ota}">${otaLabel}</span>`+
+            `<span class="nm">${r.name||'—'}様</span>`+
+            `<span class="pd">${r.lend_date||'—'} → ${r.return_date||'—'}</span>`+
+            `<span class="amt">¥${amt.toLocaleString()}</span>`+
+          `</div>`;
+        });
+      });
+      html+=`</div>`;
+    }
+    html+=`</div>`;
+  });
+  view.innerHTML=html;
+}
+
+// 請求書UI関連の状態
+let PARTNER_INVOICES=[]; // partner_invoices テーブル
+let PARTNER_DEFAULT_RATE=70; // partner_companies.revenue_rate
+let INVOICE_OPEN_YM={}; // 月ごとの開閉状態
+let RATE_DEBOUNCE={}; // レート入力デバウンス用
+
+function toggleInvoice(ym){
+  INVOICE_OPEN_YM[ym]=INVOICE_OPEN_YM[ym]===false;
+  renderData();
+}
+
+async function updateRate(ym,val){
+  const rate=Number(val);
+  if(isNaN(rate)||rate<0||rate>100){showToast('0〜100の数値を入力','err');return;}
+  // 既存請求書があれば更新、なければ仮レコード作成
+  let inv=PARTNER_INVOICES.find(i=>i.year_month===ym);
+  // 売上再計算
+  const valid=RESERVATIONS.filter(r=>r.status!=='cancelled'&&r.return_date&&r.return_date.substring(0,7)===ym);
+  const total=valid.reduce((s,r)=>s+(Number(r.price)||0),0);
+  const share=Math.round(total*rate/100);
+  clearTimeout(RATE_DEBOUNCE[ym]);
+  RATE_DEBOUNCE[ym]=setTimeout(async()=>{
+    try{
+      if(inv){
+        await sb.from('partner_invoices').update({revenue_rate:rate,total_revenue:total,partner_share:share}).eq('id',inv.id);
+        inv.revenue_rate=rate;inv.total_revenue=total;inv.partner_share=share;
+      }else{
+        const{data,error}=await sb.from('partner_invoices').insert({owner_company:OWNER_COMPANY,year_month:ym,revenue_rate:rate,total_revenue:total,partner_share:share,reservation_count:valid.length,status:'pending'}).select().single();
+        if(error)throw error;
+        PARTNER_INVOICES.push(data);
+      }
+      showToast(`✅ レート保存 ${ym} → ${rate}%`,'ok');
+      renderData();
+    }catch(e){showToast('レート保存失敗: '+e.message,'err');}
+  },500);
+}
+
+async function issueInvoice(ym){
+  if(!confirm(`${ym} 分を請求書発行（請求済みステータスに変更）しますか？`))return;
+  const valid=RESERVATIONS.filter(r=>r.status!=='cancelled'&&r.return_date&&r.return_date.substring(0,7)===ym);
+  const total=valid.reduce((s,r)=>s+(Number(r.price)||0),0);
+  let inv=PARTNER_INVOICES.find(i=>i.year_month===ym);
+  const rate=inv?Number(inv.revenue_rate):PARTNER_DEFAULT_RATE;
+  const share=Math.round(total*rate/100);
+  try{
+    if(inv){
+      await sb.from('partner_invoices').update({status:'sent',sent_at:new Date().toISOString(),total_revenue:total,partner_share:share,reservation_count:valid.length}).eq('id',inv.id);
+      inv.status='sent';inv.sent_at=new Date().toISOString();inv.total_revenue=total;inv.partner_share=share;
+    }else{
+      const{data,error}=await sb.from('partner_invoices').insert({owner_company:OWNER_COMPANY,year_month:ym,revenue_rate:rate,total_revenue:total,partner_share:share,reservation_count:valid.length,status:'sent',sent_at:new Date().toISOString()}).select().single();
+      if(error)throw error;
+      PARTNER_INVOICES.push(data);
+    }
+    await logAction('partner_reserved_add',ym,null,null,{action:'invoice_issued',revenue:total,share:share,rate:rate});
+    showToast(`📤 ${ym} 請求書発行完了`,'ok');
+    renderData();
+  }catch(e){showToast('請求書発行失敗: '+e.message,'err');}
+}
+
+async function markPaid(ym){
+  if(!confirm(`${ym} 分の入金を確認しましたか？`))return;
+  const inv=PARTNER_INVOICES.find(i=>i.year_month===ym);
+  if(!inv){showToast('請求書が見つかりません','err');return;}
+  try{
+    await sb.from('partner_invoices').update({status:'paid',paid_at:new Date().toISOString()}).eq('id',inv.id);
+    inv.status='paid';inv.paid_at=new Date().toISOString();
+    showToast(`✅ ${ym} 入金確認完了`,'ok');
+    renderData();
+  }catch(e){showToast('更新失敗: '+e.message,'err');}
+}
+
+function downloadInvoiceCsv(ym){
+  const valid=RESERVATIONS.filter(r=>r.status!=='cancelled'&&r.return_date&&r.return_date.substring(0,7)===ym);
+  if(valid.length===0){showToast('対象データなし','err');return;}
+  const inv=PARTNER_INVOICES.find(i=>i.year_month===ym);
+  const rate=inv?Number(inv.revenue_rate):PARTNER_DEFAULT_RATE;
+  const total=valid.reduce((s,r)=>s+(Number(r.price)||0),0);
+  const share=Math.round(total*rate/100);
+  const rows=[
+    [`協力会社請求書 ${ym} 分`],
+    [`協力会社: ${OWNER_LABEL||OWNER_COMPANY}`],
+    [`総売上: ¥${total.toLocaleString()}`],
+    [`レベニュー率: ${rate}%`],
+    [`御社売上: ¥${share.toLocaleString()}`],
+    [`予約件数: ${valid.length}件`],
+    [''],
+    ['車両コード','車両名','プレート','予約番号','顧客名','OTA','貸出日','返却日','売上']
+  ];
+  valid.sort((a,b)=>(a.return_date||'').localeCompare(b.return_date||''));
+  valid.forEach(r=>{
+    const f=FLEET.find(x=>x.reservation_id===r.id);
+    const vc=f?f.vehicle_code:'';
+    const v=VEHICLES.find(x=>x.code===vc);
+    rows.push([vc,v?v.name||'':'',v?v.plate_no||'':'',r.id||'',r.name||'',r.ota||'',r.lend_date||'',r.return_date||'',r.price||0]);
+  });
+  const csv='﻿'+rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;a.download=`請求書_${OWNER_COMPANY}_${ym}.csv`;
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast(`📄 ${ym} CSV ダウンロード`,'ok');
 }
 
 // モーダル
