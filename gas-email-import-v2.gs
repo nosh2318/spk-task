@@ -4423,8 +4423,11 @@ function setupSpkJalanReminderTrigger() {
 //       Slack #partner_handyman に通知する。partner_actions テーブルを 5分polling。
 // 通知先: PARTNER_NOTIFY_CHANNEL（既存 JALAN_PAY_CHANNEL を流用 or 新規チャンネル）
 //
-var PARTNER_NOTIFY_CHANNEL = JALAN_PAY_CHANNEL; // 暫定: #payment_sapporo に通知
+var PARTNER_NOTIFY_CHANNEL = 'C0B451BSK1B'; // #partner予約管理 (2026-05-16 設定)
                                                   // 専用チャンネル作成後に差し替え
+
+// ★ 通知対象: 自社予約 作成/削除 + メンテ削除 のみ（オーナー指示 2026-05-16）
+var PARTNER_NOTIFY_ACTIONS = ['partner_reserved_add', 'partner_reserved_delete', 'maintenance_delete'];
 
 function notifyPartnerActions() {
   try {
@@ -4434,23 +4437,34 @@ function notifyPartnerActions() {
       return;
     }
     Logger.log('[PartnerNotify] ' + rows.length + ' new actions');
-    var notified = 0;
+    var notified = 0, skipped = 0;
     rows.forEach(function(r) {
       try {
+        // ★ 通知対象外は notified_slack=true に更新してスキップ（ログは残る）
+        if (PARTNER_NOTIFY_ACTIONS.indexOf(r.action_type) === -1) {
+          supabaseUpdate_('partner_actions', 'id=eq.' + r.id, {
+            notified_slack: true,
+            notified_at: new Date().toISOString()
+          });
+          skipped++;
+          return;
+        }
         var label = '', emoji = '';
         switch (r.action_type) {
-          case 'partner_reserved_add': emoji = '🟣'; label = '自社予約 登録'; break;
+          case 'partner_reserved_add': emoji = '🟣'; label = '自社予約 作成'; break;
           case 'partner_reserved_delete': emoji = '🗑️'; label = '自社予約 削除'; break;
-          case 'maintenance_add': emoji = '🔧'; label = 'メンテナンス 登録'; break;
           case 'maintenance_delete': emoji = '🗑️'; label = 'メンテナンス 削除'; break;
           default: emoji = '📝'; label = r.action_type;
         }
+        // 協力会社名
         var pcRows = supabaseGet_('partner_companies', 'id=eq.' + encodeURIComponent(r.owner_company || '') + '&select=label&limit=1');
         var companyLabel = (pcRows && pcRows.length > 0) ? pcRows[0].label : (r.owner_company || '不明');
-        var vRows = supabaseGet_('vehicles', 'code=eq.' + encodeURIComponent(r.vehicle_code || '') + '&select=name,plate_no,type&limit=1');
+        // 車種（車両名+ナンバー）
+        var vRows = supabaseGet_('vehicles', 'code=eq.' + encodeURIComponent(r.vehicle_code || '') + '&select=name,plate_no&limit=1');
         var vehicleInfo = (vRows && vRows.length > 0)
-          ? (vRows[0].type + ' ' + (vRows[0].name || '') + ' (' + (vRows[0].plate_no || '') + ')')
+          ? ((vRows[0].name || '') + ' (' + (vRows[0].plate_no || '') + ')')
           : (r.vehicle_code || '?');
+        // 日程
         var period = '';
         if (r.target_date_from) {
           period = r.target_date_from;
@@ -4458,13 +4472,11 @@ function notifyPartnerActions() {
             period += ' 〜 ' + r.target_date_to;
           }
         }
-        var memo = (r.payload && r.payload.memo) ? '\n💬 メモ: ' + r.payload.memo : '';
-        var msg = emoji + ' *協力会社 操作通知 - ' + label + '*\n' +
+        // シンプル通知: 車種・日程・協力会社名
+        var msg = emoji + ' *' + label + '*\n' +
                   '🏢 ' + companyLabel + '\n' +
-                  '👤 ' + (r.user_email || '不明') + '\n' +
                   '🚗 ' + vehicleInfo + '\n' +
-                  '📅 ' + period + memo + '\n' +
-                  '⏰ ' + new Date(r.ts).toLocaleString('ja-JP', {timeZone: 'Asia/Tokyo'});
+                  '📅 ' + period;
         postToSlackChannel_(PARTNER_NOTIFY_CHANNEL, msg);
         supabaseUpdate_('partner_actions', 'id=eq.' + r.id, {
           notified_slack: true,
@@ -4475,8 +4487,8 @@ function notifyPartnerActions() {
         Logger.log('[PartnerNotify] Error id=' + r.id + ': ' + e.message);
       }
     });
-    Logger.log('[PartnerNotify] Done. notified=' + notified + '/' + rows.length);
-    updateHeartbeat_('spk_partner_notify', {success: notified, processed: rows.length});
+    Logger.log('[PartnerNotify] Done. notified=' + notified + ' skipped=' + skipped + '/' + rows.length);
+    updateHeartbeat_('spk_partner_notify', {success: notified, processed: rows.length, skipped: skipped});
   } catch (e) {
     Logger.log('[PartnerNotify] FATAL: ' + e.message);
     updateHeartbeat_('spk_partner_notify', {success:0, processed:0, error: e.message});
