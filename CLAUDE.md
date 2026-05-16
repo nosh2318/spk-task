@@ -1,5 +1,155 @@
 # SPK業務管理APP（札幌店）
 
+## 🆕 2026-05-16 協力会社車両運用機能（Phase 1〜4 実装完了 / Phase 5 受入テスト未）
+
+### 背景・要件（オーナー確定）
+協力会社の車両を弊社配車システムに登録し、協力会社側からは自社所有車両のみの配車表+在庫調整ができる仕組みを構築。
+
+**確定仕様**:
+1. 車両マスターに「所有者」情報を登録（自社=HANDYMAN / 協力会社=PARTNER_XXX）
+2. 既存配車表をベースに運用（FleetTimeline + データタブ）
+3. 協力会社が自社所有車両の在庫調整（自社予約・メンテ登録）可能
+4. 専用画面 `partner.html` で「自社所有車両のみ」を表示
+5. 同一 `maintenance` テーブルなので弊社マスター配車表に自動連動
+6. 協力会社の操作は Slack 通知（GAS 5分polling）
+7. **マスター予約タイムラインはそのまま見せてOK**（顧客名・売上金額もマスク無し）
+8. 認証: 1社1共有アカウント方式（Supabase Auth）
+9. 弊社配車表で自社予約は **🟣紫色** で表示（メンテは🔵青のまま）
+
+**URL**: https://nosh2318.github.io/spk-task/partner.html
+
+### DB変更（適用済 2026-05-16）
+
+| テーブル | 変更内容 |
+|---|---|
+| `vehicles` | `owner_company TEXT DEFAULT 'HANDYMAN'` + `owner_label TEXT` 追加 |
+| `maintenance` | `block_type TEXT DEFAULT 'maintenance'` + `owner_company TEXT` 追加 |
+| `partner_actions` | 新規テーブル（操作ログ・Slack通知キュー） |
+| `partner_companies` | 新規テーブル（協力会社マスター） |
+
+SQLファイル:
+- `~/spk-task/partner_db_migration.sql`（vehicles / maintenance / partner_actions）
+- `~/spk-task/partner_companies_table.sql`（partner_companies）
+
+### Phase別実装内容
+
+| Phase | 内容 | バージョン | コミット |
+|---|---|---|---|
+| 1 | DB変更（DDL実行） | — | — |
+| 1残 | partner_companies テーブル | — | — |
+| **1.5** | 本体APP車両マスター + 配車表サイドバー🏢 | v4.7.151 / spk-v700 | `6ecd10f` |
+| **2** | partner.html 新規作成 | v0.1.0 | `fa17c87` |
+| **3** | 本体APP配車表で `partner_reserved` を紫表示 | v4.7.152 / spk-v701 | `6cc028c` |
+| **4** | partner.html スマホ最適化 + 既存APP風UI | v0.2.0 | `d6cb037` |
+| 4-GAS | Slack通知GAS (`notifyPartnerActions`) | — | `6cc028c` |
+
+### 本体APP (`index.src.html`) の主要変更点
+
+| 場所 | 変更 |
+|---|---|
+| L485 / L488 | `DB.fetchVehicles` / `saveVehicles` に `ownerCompany`/`ownerLabel` マッピング追加 |
+| L490 | `DB.fetchPartnerCompanies` ヘルパー新規 |
+| L538 | `DB.fetchMaintenance` / `saveMaintenance` に `blockType`/`ownerCompany` 追加 |
+| L1322 | EMPTY に `ownerCompany:'HANDYMAN'` / `ownerLabel:''` |
+| L1331 | `partnerCompanies` state + `DB.fetchPartnerCompanies()` 自動取得 |
+| L1355 | `openEdit` に owner 引き継ぎ |
+| L1500-1525 | 車両編集モーダル「基本情報」タブ末尾に🏢所有者情報セクション追加 |
+| L11734 | 配車表サイドバーに🏢協力会社ラベル表示（自社車両は何も表示せず） |
+| L11738 | FleetTimeline バー描画で `block_type='partner_reserved'` を 🟣紫斜線 表示 |
+
+### partner.html 構成（v0.2.0）
+
+- **シングルファイル** （659行・素のJS+DOM・React不使用）
+- **2タブ**: 📅 配車表 / 📋 予約データ
+- **既存APP風UI**: クラスグループヘッダ + 車両セル + タイムライン
+- **スマホ最適化**: viewport-fit=cover, input fontsize 16px, タップ領域44px, モーダル下部スライドイン
+- **OTA別カラー**: じゃらん赤 / 楽天赤 / スカイ紫 / エアトリ水色 / HP青 / RC緑 / G黄
+- **在庫調整モーダル**: 空セルクリック → 自社予約/メンテ選択 → DB登録 + partner_actions ログ
+- **既存ブロック編集**: 自社が登録したブロックのみ編集可（他社管理データは編集不可ガード）
+
+### Slack通知GAS (`gas-email-import-v2.gs` L4417-)
+
+```js
+var PARTNER_NOTIFY_CHANNEL = JALAN_PAY_CHANNEL; // 暫定: #payment_sapporo
+function notifyPartnerActions() { ... }  // 5分polling
+function setupPartnerNotifyTrigger() { ... }  // トリガー設定（1回手動実行）
+function testNotifyPartnerActions() { ... }  // 動作確認用
+```
+
+通知例:
+```
+🟣 協力会社 操作通知 - 自社予約 登録
+🏢 〇〇モータース
+👤 partner001@g-lines.jp
+🚗 A ヴェルファイア (7673)
+📅 2026-05-20 〜 2026-05-22
+💬 メモ: 整備のため貸出不可
+⏰ 2026/5/16 17:45:00
+```
+
+### 残作業（次回セッション）
+
+1. **partner.html 受入テスト**:
+   - テスト車両を PARTNER_TEST 所有に変更（推奨: 既存予約多数の 7673 ヴェルファイア や 8529 ソリオ）
+   - https://nosh2318.github.io/spk-task/partner.html?owner=PARTNER_TEST
+   - スマホ + PC で表示確認
+   - 自社予約モーダルで在庫ブロック → 弊社配車表で紫色表示確認
+
+2. **Slack通知GAS有効化**:
+   - GASエディタ「札幌予約メール自動配車」に `gas-email-import-v2.gs` 貼付け（4505行）
+   - `setupPartnerNotifyTrigger` を1回 ▶️実行（5分トリガー設定）
+   - `testNotifyPartnerActions` で動作確認
+
+3. **協力会社マスター編集UI追加**（本体APP）:
+   - 現状: SQL でしか追加・編集できない
+   - 改善: 設定タブから協力会社追加・編集可能に
+
+4. **Supabase Auth Custom Claims 設定**:
+   - 暫定: URLパラメータ `?owner=PARTNER_TEST` で動作
+   - 本番: user_metadata or app_metadata に `owner_company` 埋め込み
+
+5. **専用Slackチャンネル作成**（任意）:
+   - 現状: `#payment_sapporo` に通知（暫定）
+   - 改善: `#partner_handyman` 新規作成 → `PARTNER_NOTIFY_CHANNEL` 変更
+
+### 動作テスト手順（記録用）
+
+```
+1. テスト用協力会社登録（完了 2026-05-16）:
+   INSERT INTO partner_companies (id, label) VALUES ('PARTNER_TEST', 'テスト協力会社');
+
+2. テスト車両を協力会社所有に変更:
+   本体APP > 車両マスター > 7673 ヴェルファイア 編集
+   > 基本情報タブ末尾「🏢所有者情報」
+   > 所有者種別: 協力会社 / 協力会社: テスト協力会社 / 保存
+
+3. partner.html を別ブラウザ or スマホで開く:
+   https://nosh2318.github.io/spk-task/partner.html?owner=PARTNER_TEST
+   > ログイン: oshita@g-lines.jp / nosh2318
+   > 配車表に車両のタイムラインが表示される
+
+4. 在庫調整テスト:
+   > 空セルをタップ → 「🟣自社予約」を選択 → 期間指定 → 登録
+   > 本体APP配車表で同じ車両に紫色ブロックが表示される
+
+5. Slack通知確認（GAS設定後）:
+   > 5分後 #payment_sapporo に通知投稿される
+
+6. テスト後の戻し方:
+   本体APP > 車両マスター > 該当車両 > 所有者種別「自社」に戻す
+```
+
+### 教訓 / 設計判断記録
+
+1. **「マスター予約はそのまま見せてOK」というオーナー判断**で大幅にシンプル化（顧客名マスク・売上隠匿等の複雑なRLS不要）
+2. **「在庫調整=同一maintenanceテーブル」設計**で弊社マスター連動が自動成立（自動配車GASも既にメンテ車両を除外しているため改修不要）
+3. **partner.html は React 不使用・素のJS**で実装（既存APPのReact + Tailwind と異なる設計）。理由: 単一目的・軽量・スマホ表示優先・本体APPからの独立性
+4. **URLパラメータ `?owner=PARTNER_TEST`** によるテスト方式が便利（Custom Claims設定なしで即テスト可能）
+5. **partner_actions テーブル**で操作ログを残すことで Slack通知 + 監査ログを兼ねる設計
+6. **🟣紫色 / 🔵青色** のバー色分けで弊社配車表に協力会社操作が一目で見える
+
+---
+
 ## 🔴 2026-05-14 入金通知の店舗判定 fail-safe化（那覇通知が札幌に漏れる障害対策）
 
 ### 症状
