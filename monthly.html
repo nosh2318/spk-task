@@ -1115,11 +1115,14 @@ function _ciGetCashYM(r,storeKey){const ota=r.ota||'HP';const cyc=OTA_CI[ota]||O
 async function _ciFetchResv(storeKey,y){
   const tbl=storeKey==='nha'?'nha_reservations':'reservations';
   const retCol=storeKey==='nha'?'end_date':'return_date';
+  const selCols=storeKey==='nha'?'id,ota,price,created_at,start_date,end_date,status':'id,ota,price,created_at,lend_date,return_date,status';
   const yS=(parseInt(y)-1)+'-10-01',yE=(parseInt(y)+1)+'-03-31';
-  return await sbq(tbl,`select=id,ota,price,created_at,lend_date,return_date,end_date,status&${retCol}=gte.${yS}&${retCol}=lte.${yE}&status=neq.cancelled`);
+  try{return await sbq(tbl,`select=${selCols}&${retCol}=gte.${yS}&${retCol}=lte.${yE}&status=neq.cancelled`);}
+  catch(e){console.error('[CF]',storeKey,e);return[];}
 }
 function _ciCalc(resv,storeKey,y){const cf={};for(let m=1;m<=12;m++){const ym=y+'-'+String(m).padStart(2,'0');cf[ym]={};CI_ORDER.forEach(ota=>{cf[ym][ota]=0;});}resv.forEach(r=>{const cashYM=_ciGetCashYM(r,storeKey);if(!cashYM||!cashYM.startsWith(y+'-'))return;if(!cf[cashYM])return;const ota=r.ota||'HP';const key=CI_ORDER.includes(ota)?ota:'HP';cf[cashYM][key]+=(+(r.price)||0);});return cf;}
 async function loadAndRenderCashIn(y){
+  try{
   const stores=store==='total'?['nha','spk']:[store];
   let merged={};for(let m=1;m<=12;m++){const ym=y+'-'+String(m).padStart(2,'0');merged[ym]={};CI_ORDER.forEach(o=>{merged[ym][o]=0;});}
   for(const s of stores){const resv=await _ciFetchResv(s,y);const cf=_ciCalc(resv,s,y);Object.keys(cf).forEach(ym=>{CI_ORDER.forEach(o=>{if(merged[ym])merged[ym][o]+=(cf[ym][o]||0);});});}
@@ -1135,6 +1138,10 @@ async function loadAndRenderCashIn(y){
   html+=`<tr style="background:#f0f9ff"><td style="padding:7px 10px;font-weight:900;color:#1e40af;border-left:3px solid #1e40af">月合計</td>`;for(let m=1;m<=12;m++){const ym=y+'-'+String(m).padStart(2,'0');const isCur=ym===nowYM;html+=`<td style="padding:7px 5px;text-align:right;font-weight:900;${isCur?'background:#dbeafe;color:#1e40af;':'color:#1e293b;'}">${mTot[ym]?'¥'+Math.round(mTot[ym]).toLocaleString():'—'}</td>`;}
   html+=`<td style="padding:7px 8px;text-align:right;font-weight:900;color:#fff;background:#1e40af">¥${Math.round(grand).toLocaleString()}</td></tr></tbody></table></div><div style="margin-top:8px;font-size:9pt;color:#94a3b8;padding:4px">※ HP=予約当月 / じゃらん=返却月 / 楽天=返却月+3ヶ月 / スカイ・エアトリ・RC・GoGoOut=返却月翌月</div>`;
   document.getElementById('ct').innerHTML=html;
+  }catch(e){
+    document.getElementById('ct').innerHTML=`<div style="padding:40px;text-align:center;color:#dc2626">⚠️ エラー: ${e.message}</div>`;
+    console.error('[CF]',e);
+  }
 }
 
 </script>
