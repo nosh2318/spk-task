@@ -1505,11 +1505,13 @@ function handleJalanPaymentCancel_(reservationId) {
   Logger.log('[JalanPaymentCancel] Done: ' + reservationId + ' → ' + (prevStatus === 'paid' ? 'refund' : 'cancelled'));
 }
 
-function postToSlackChannel_(channel, text) {
+function postToSlackChannel_(channel, text, blocks) {
   var token = getSlackBotToken_();
   if (!token) { Logger.log('[Slack] No SLACK_BOT_TOKEN configured'); return null; }
   try {
-    var resp = UrlFetchApp.fetch('https://slack.com/api/chat.postMessage', {method:'post', headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'}, payload:JSON.stringify({channel:channel, text:text}), muteHttpExceptions:true});
+    var payload = {channel: channel, text: text || '通知'};
+    if (blocks) payload.blocks = blocks;
+    var resp = UrlFetchApp.fetch('https://slack.com/api/chat.postMessage', {method:'post', headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'}, payload:JSON.stringify(payload), muteHttpExceptions:true});
     var data = JSON.parse(resp.getContentText());
     if (data.ok) return data.ts;
     Logger.log('[Slack] Post error: ' + data.error);
@@ -4460,24 +4462,60 @@ function notifyPartnerActions() {
         var pcRows = supabaseGet_('partner_companies', 'id=eq.' + encodeURIComponent(r.owner_company || '') + '&select=label&limit=1');
         var companyLabel = (pcRows && pcRows.length > 0) ? pcRows[0].label : (r.owner_company || '不明');
         // 車種（車両名+ナンバー）
-        var vRows = supabaseGet_('vehicles', 'code=eq.' + encodeURIComponent(r.vehicle_code || '') + '&select=name,plate_no&limit=1');
+        var vRows = supabaseGet_('vehicles', 'code=eq.' + encodeURIComponent(r.vehicle_code || '') + '&select=name,plate_no,type&limit=1');
         var vehicleInfo = (vRows && vRows.length > 0)
           ? ((vRows[0].name || '') + ' (' + (vRows[0].plate_no || '') + ')')
           : (r.vehicle_code || '?');
+        var vehicleClass = (vRows && vRows.length > 0) ? (vRows[0].type || '') : '';
         // 日程
         var period = '';
         if (r.target_date_from) {
           period = r.target_date_from;
           if (r.target_date_to && r.target_date_to !== r.target_date_from) {
             period += ' 〜 ' + r.target_date_to;
+            // 日数計算
+            try {
+              var d1 = new Date(r.target_date_from);
+              var d2 = new Date(r.target_date_to);
+              var days = Math.floor((d2 - d1) / 86400000) + 1;
+              period += '  (' + days + '日間)';
+            } catch(e) {}
+          } else {
+            period += '  (1日)';
           }
         }
-        // シンプル通知: 車種・日程・協力会社名
-        var msg = emoji + ' *' + label + '*\n' +
-                  '🏢 ' + companyLabel + '\n' +
-                  '🚗 ' + vehicleInfo + '\n' +
-                  '📅 ' + period;
-        postToSlackChannel_(PARTNER_NOTIFY_CHANNEL, msg);
+        // タイムスタンプ
+        var tsStr = '';
+        try { tsStr = new Date(r.ts).toLocaleString('ja-JP', {timeZone:'Asia/Tokyo', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}); } catch(e) { tsStr = String(r.ts).substring(0,16); }
+
+        // ★ 2026-05-16: Block Kit リッチデザイン
+        var blocks = [
+          {
+            type: 'header',
+            text: { type: 'plain_text', text: emoji + ' ' + label, emoji: true }
+          },
+          {
+            type: 'section',
+            fields: [
+              { type: 'mrkdwn', text: '*🏢 協力会社*\n' + companyLabel },
+              { type: 'mrkdwn', text: '*🚗 車両*\n' + vehicleInfo + (vehicleClass ? ' / ' + vehicleClass + 'クラス' : '') }
+            ]
+          },
+          {
+            type: 'section',
+            text: { type: 'mrkdwn', text: '*📅 期間*\n`' + period + '`' }
+          },
+          {
+            type: 'context',
+            elements: [
+              { type: 'mrkdwn', text: '⏰ ' + tsStr + ' ／ 操作者: ' + (r.user_email || '不明') }
+            ]
+          },
+          { type: 'divider' }
+        ];
+        // フォールバックtext（通知バー・モバイル通知センター用）
+        var fallback = emoji + ' ' + label + ' / ' + companyLabel + ' / ' + vehicleInfo + ' / ' + period;
+        postToSlackChannel_(PARTNER_NOTIFY_CHANNEL, fallback, blocks);
         supabaseUpdate_('partner_actions', 'id=eq.' + r.id, {
           notified_slack: true,
           notified_at: new Date().toISOString()
