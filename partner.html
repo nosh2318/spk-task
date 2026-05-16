@@ -337,12 +337,16 @@ async function doLogin(){
 }
 async function logout(){if(!confirm('ログアウトしますか？'))return;await sb.auth.signOut();location.reload();}
 
-// データ取得
+// データ取得 (★ プロテクト: owner_company 厳密検証)
 async function loadData(){
   if(!OWNER_COMPANY)return;
   try{
     const{data:vehs}=await sb.from('vehicles').select('*').eq('owner_company',OWNER_COMPANY).order('type').order('code');
-    VEHICLES=vehs||[];
+    // ★ プロテクト: 取得データの owner_company を再検証（DBレベル+クライアントレベル二重チェック）
+    VEHICLES=(vehs||[]).filter(v=>v.owner_company===OWNER_COMPANY);
+    if((vehs||[]).length!==VEHICLES.length){
+      console.warn('[Security] owner_company不整合データを除外:',(vehs||[]).length-VEHICLES.length+'件');
+    }
     if(VEHICLES.length===0){
       document.getElementById('tl-wrap').innerHTML='<div class="loading">所有車両が登録されていません。<br>管理者に確認してください。</div>';
       return;
@@ -651,37 +655,51 @@ async function updateRate(ym,val){
 }
 
 async function issueInvoice(ym){
-  if(!confirm(`${ym} 分を請求書発行（請求済みステータスに変更）しますか？`))return;
   const valid=RESERVATIONS.filter(r=>r.status!=='cancelled'&&r.return_date&&r.return_date.substring(0,7)===ym);
   const total=valid.reduce((s,r)=>s+(Number(r.price)||0),0);
   let inv=PARTNER_INVOICES.find(i=>i.year_month===ym);
   const rate=inv?Number(inv.revenue_rate):PARTNER_DEFAULT_RATE;
   const share=Math.round(total*rate/100);
+  // ★ プロテクト: 詳細確認（金額明示・誤発行防止）
+  if(!confirm(`📤 請求書発行確認\n\n対象月: ${ym}\n予約件数: ${valid.length}件\n総売上: ¥${total.toLocaleString()}\nレベニュー率: ${rate}%\n御社売上: ¥${share.toLocaleString()}\n\n発行しますか？`))return;
+  // ★ プロテクト: 既に発行済みの場合は再確認
+  if(inv&&inv.status!=='pending'&&!confirm(`⚠️ この月は既に「${inv.status}」状態です。\n上書きしますか？`))return;
   try{
     if(inv){
+      const before={status:inv.status,total:inv.total_revenue,share:inv.partner_share};
       await sb.from('partner_invoices').update({status:'sent',sent_at:new Date().toISOString(),total_revenue:total,partner_share:share,reservation_count:valid.length}).eq('id',inv.id);
       inv.status='sent';inv.sent_at=new Date().toISOString();inv.total_revenue=total;inv.partner_share=share;
+      await logAction('partner_reserved_add',ym,null,null,{action:'invoice_reissued',before:before,revenue:total,share:share,rate:rate,count:valid.length});
     }else{
       const{data,error}=await sb.from('partner_invoices').insert({owner_company:OWNER_COMPANY,year_month:ym,revenue_rate:rate,total_revenue:total,partner_share:share,reservation_count:valid.length,status:'sent',sent_at:new Date().toISOString()}).select().single();
       if(error)throw error;
       PARTNER_INVOICES.push(data);
+      await logAction('partner_reserved_add',ym,null,null,{action:'invoice_issued',revenue:total,share:share,rate:rate,count:valid.length});
     }
-    await logAction('partner_reserved_add',ym,null,null,{action:'invoice_issued',revenue:total,share:share,rate:rate});
-    showToast(`📤 ${ym} 請求書発行完了`,'ok');
+    showToast(`📤 ${ym} 請求書発行完了 ¥${share.toLocaleString()}`,'ok');
     renderData();
-  }catch(e){showToast('請求書発行失敗: '+e.message,'err');}
+  }catch(e){
+    showToast('請求書発行失敗: '+e.message,'err');
+    try{await logAction('save_failed',ym,null,null,{action:'invoice_issue_failed',error:e.message});}catch(_){}
+  }
 }
 
 async function markPaid(ym){
-  if(!confirm(`${ym} 分の入金を確認しましたか？`))return;
   const inv=PARTNER_INVOICES.find(i=>i.year_month===ym);
   if(!inv){showToast('請求書が見つかりません','err');return;}
+  // ★ プロテクト: 金額明示確認
+  if(!confirm(`✅ 入金確認\n\n対象月: ${ym}\n御社売上: ¥${(inv.partner_share||0).toLocaleString()}\n\n入金確認済みとして記録しますか？\n（一度確定すると変更不可）`))return;
   try{
+    const before={status:inv.status};
     await sb.from('partner_invoices').update({status:'paid',paid_at:new Date().toISOString()}).eq('id',inv.id);
     inv.status='paid';inv.paid_at=new Date().toISOString();
+    await logAction('partner_reserved_add',ym,null,null,{action:'invoice_paid',before:before,paid_amount:inv.partner_share});
     showToast(`✅ ${ym} 入金確認完了`,'ok');
     renderData();
-  }catch(e){showToast('更新失敗: '+e.message,'err');}
+  }catch(e){
+    showToast('更新失敗: '+e.message,'err');
+    try{await logAction('save_failed',ym,null,null,{action:'mark_paid_failed',error:e.message});}catch(_){}
+  }
 }
 
 function downloadInvoiceCsv(ym){
@@ -772,9 +790,25 @@ async function doSave(){
   const blockType=document.getElementById('modal-blocktype').value;
   const fromDate=document.getElementById('modal-from').value;
   const toDate=document.getElementById('modal-to').value;
-  const memo=document.getElementById('modal-memo').value;
+  const memo=(document.getElementById('modal-memo').value||'').substring(0,500); // 入力上限
+  // ★ プロテクト1: 必須項目検証
   if(!fromDate||!toDate){showToast('日付を入力してください','err');return;}
   if(fromDate>toDate){showToast('開始日が終了日より後になっています','err');return;}
+  // ★ プロテクト2: 期間上限90日（操作ミス防止）
+  const days=Math.floor((new Date(toDate)-new Date(fromDate))/86400000)+1;
+  if(days>90){showToast('期間は最大90日までです（'+days+'日指定）','err');return;}
+  // ★ プロテクト3: 車両所有者検証（取得した車両が自社所有か再確認）
+  const targetVeh=VEHICLES.find(v=>v.code===MODAL_CONTEXT.vehicleCode);
+  if(!targetVeh){showToast('車両が見つかりません','err');return;}
+  if(targetVeh.owner_company!==OWNER_COMPANY){
+    showToast('セキュリティエラー: 他社所有の車両は操作できません','err');
+    await logAction('security_violation',MODAL_CONTEXT.vehicleCode,fromDate,toDate,{error:'owner_mismatch',expected:OWNER_COMPANY,actual:targetVeh.owner_company});
+    return;
+  }
+  // ★ プロテクト4: 過去日の確認
+  const today=new Date().toISOString().substring(0,10);
+  if(fromDate<today&&!confirm('開始日が過去日付になっています。\n'+fromDate+'\n本当に登録しますか？'))return;
+
   const row={
     vehicle_code:MODAL_CONTEXT.vehicleCode,
     start_date:fromDate,end_date:toDate,
@@ -783,33 +817,58 @@ async function doSave(){
   };
   try{
     if(MODAL_CONTEXT.isEdit&&MODAL_CONTEXT.maintRow){
-      const{error}=await sb.from('maintenance').update(row).eq('id',MODAL_CONTEXT.maintRow.id);
+      // ★ プロテクト5: 編集対象の所有者検証（自社作成データのみ編集可）
+      const orig=MODAL_CONTEXT.maintRow;
+      if(orig.owner_company&&orig.owner_company!==OWNER_COMPANY&&orig.owner_company!=='HANDYMAN'){
+        showToast('他社のデータは編集できません','err');return;
+      }
+      const{error}=await sb.from('maintenance').update(row).eq('id',orig.id);
       if(error)throw error;
-      await logAction(blockType==='partner_reserved'?'partner_reserved_add':'maintenance_add',MODAL_CONTEXT.vehicleCode,fromDate,toDate,row);
+      await logAction(blockType==='partner_reserved'?'partner_reserved_add':'maintenance_add',MODAL_CONTEXT.vehicleCode,fromDate,toDate,{action:'update',before:orig,after:row});
       showToast('✅ 更新しました','ok');
     }else{
-      // ★ maintenance.id は TEXT 型・手動生成（本体APP addMaint と同形式）
       row.id='pm'+Date.now()+Math.floor(Math.random()*1000);
       const{error}=await sb.from('maintenance').insert(row);
       if(error)throw error;
-      await logAction(blockType==='partner_reserved'?'partner_reserved_add':'maintenance_add',MODAL_CONTEXT.vehicleCode,fromDate,toDate,row);
+      await logAction(blockType==='partner_reserved'?'partner_reserved_add':'maintenance_add',MODAL_CONTEXT.vehicleCode,fromDate,toDate,{action:'insert',row:row});
       showToast('✅ 登録しました','ok');
     }
     closeModal();await loadData();
-  }catch(e){console.error(e);showToast('保存失敗: '+e.message,'err');}
+  }catch(e){
+    console.error(e);
+    showToast('保存失敗: '+e.message,'err');
+    // ★ プロテクト6: 失敗もログに残す（事後対応用）
+    try{await logAction('save_failed',MODAL_CONTEXT.vehicleCode,fromDate,toDate,{error:e.message,attempted:row});}catch(_){}
+  }
 }
 
 async function doDelete(){
   if(!MODAL_CONTEXT||!MODAL_CONTEXT.maintRow)return;
-  if(!confirm('このブロックを削除しますか？'))return;
+  const m=MODAL_CONTEXT.maintRow;
+  // ★ プロテクト1: 所有者検証
+  if(m.owner_company&&m.owner_company!==OWNER_COMPANY&&m.owner_company!=='HANDYMAN'){
+    showToast('他社のデータは削除できません','err');return;
+  }
+  // ★ プロテクト2: 二段階確認（誤削除防止）
+  const labelText=m.block_type==='partner_reserved'?'自社予約':'メンテナンス';
+  const dateRange=(m.start_date||'').substring(0,10)+' 〜 '+(m.end_date||'').substring(0,10);
+  if(!confirm('⚠️ 削除確認\n\n種別: '+labelText+'\n車両: '+m.vehicle_code+'\n期間: '+dateRange+'\n\n本当に削除しますか？'))return;
+  // ★ プロテクト3: 確定入力（誤タップ完全防止）
+  const confirmText=prompt('削除を最終確認します。\n下に「削除」と入力してください:');
+  if(confirmText!=='削除'){showToast('削除をキャンセルしました','ok');return;}
   try{
-    const m=MODAL_CONTEXT.maintRow;
+    // ★ プロテクト4: 削除前にスナップショット保存（事後復元可能に）
+    const snapshot={action:'delete',deleted_row:m,deleted_at:new Date().toISOString(),deleted_by:CURRENT_USER?.email||null};
     const{error}=await sb.from('maintenance').delete().eq('id',m.id);
     if(error)throw error;
-    await logAction(m.block_type==='partner_reserved'?'partner_reserved_delete':'maintenance_delete',m.vehicle_code,m.start_date||m.from_date,m.end_date||m.to_date,m);
-    showToast('🗑️ 削除しました','ok');
+    await logAction(m.block_type==='partner_reserved'?'partner_reserved_delete':'maintenance_delete',m.vehicle_code,m.start_date||m.from_date,m.end_date||m.to_date,snapshot);
+    showToast('🗑️ 削除しました（復元用にスナップショット保存済み）','ok');
     closeModal();await loadData();
-  }catch(e){showToast('削除失敗: '+e.message,'err');}
+  }catch(e){
+    console.error(e);
+    showToast('削除失敗: '+e.message,'err');
+    try{await logAction('delete_failed',m.vehicle_code,m.start_date,m.end_date,{error:e.message,attempted_id:m.id});}catch(_){}
+  }
 }
 
 async function logAction(actionType,vehicleCode,dateFrom,dateTo,payload){
