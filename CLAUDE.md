@@ -150,6 +150,112 @@ function testNotifyPartnerActions() { ... }  // 動作確認用
 
 ---
 
+## 🆕 2026-05-16 続編: 協力会社運用 Phase 5-7 拡張
+
+### Phase 5: 協力会社マスター管理UI（本体APP v4.7.153）
+- 車両マスタータブに「🏢 協力会社マスター」サブタブ新規追加 (`PartnerCompanyMgr` コンポーネント)
+- 一覧 / 新規追加 / 編集 / 論理削除（active=false）
+- ID は半角英数+アンダースコア自動正規化（partner.html のURLパラメータと連動するため変更不可）
+- DB.savePartnerCompany / DB.deletePartnerCompany 追加
+- コミット: `c0c8e66`
+
+### Phase 6: 車両マスターから協力会社情報を直接編集（v4.7.155）
+- 車両編集モーダル「🏢 所有者情報」セクション拡張
+- 協力会社名・担当者名・連絡先・メールを車両編集モーダルで直接編集可
+- ドロップダウンに「＋ 新規追加」項目（その場で新規協力会社 ID 自動採番）
+- 車両保存時に `partner_companies` に自動 UPSERT + 紐づく全車両の `owner_label` も同期
+- コミット: `5b19574`
+
+### Phase 7: 請求書機能 + レベニュー率（v0.3.3）
+**DB追加** (`partner_invoice_schema.sql`):
+- `partner_companies.revenue_rate NUMERIC(5,2) DEFAULT 70.00` — 協力会社のデフォルト取り分%
+- `partner_invoices` 新規テーブル: id / owner_company / year_month / total_revenue / revenue_rate / partner_share / status (pending|sent|paid) / sent_at / paid_at / memo / payload
+
+**partner.html 改修** (予約データタブ全面リライト):
+- 返却月締め × 車両別 グループ化（`r.return_date.substring(0,7)` でグルーピング）
+- 翌月支払い 自動算出表示
+- 1行サマリー方式（クリックで展開 → 車両別明細）
+- レベニュー率インライン編集（500ms debounce で自動 DB 保存）
+- 御社売上 = 売上 × レート / 100 即時計算
+- CSV ダウンロード（BOM付き Excel 互換）
+- 請求書発行ボタン（status pending → sent）
+- 入金確認ボタン（status sent → paid）
+- コミット: `3c72f3d`
+
+### バグ修正履歴
+| バージョン | バグ | 修正 |
+|---|---|---|
+| v0.3.0 → v0.3.1 | `maintenance` テーブルに `memo` カラム無く保存エラー | `memo` → `maint_notes` に変更 (`4104e3c`) |
+| v0.3.1 → v0.3.2 | `maintenance.id` TEXT型 NOT NULL でid生成漏れ | `id='pm'+Date.now()+random` で本体APP互換生成 (`e45012d`) |
+| v0.3.2 → v0.3.3 | 1月分が画面を占有・複数月見えない | 1行サマリー方式 + クリック展開に再設計 (`3c72f3d`) |
+
+### 認証外し検討中（未決）
+オーナーから「ログイン外せますか」要望。3案検討:
+
+| 案 | 内容 | リスク |
+|---|---|---|
+| 1 | anon ポリシー全許可 | ❌弊社全データ漏れ |
+| 2 | 協力会社のみ anon SELECT | △URLパラメータで他社も見える |
+| 3 | Supabase Edge Function 経由 | ◎安全（要実装・半日工数）|
+
+→ 採用方法は **未決**。決定後に SQL/実装着手。
+※ 現状は **認証維持** で運用継続（複数協力会社運用に向けてプロテクト実装済）
+
+### Phase 8: 複数協力会社運用 プロテクト実装（v0.4.0 / 2026-05-16）
+オーナー要望「複数使うことになります。最低限のセキュリティやバグ・データ保持・消えないデータ プロテクト実装」を受けて5層プロテクト追加。
+
+**5層プロテクト**:
+| # | 層 | 実装内容 |
+|---|---|---|
+| 1 | データ整合性検証 | `loadData()` で `owner_company !== OWNER_COMPANY` の車両を強制除外（DB+クライアント二重） |
+| 2 | 削除保護 | `confirm`（詳細表示）→ `prompt('削除')`（文字列入力）の二段階 + 削除前スナップショット保存 |
+| 3 | 入力検証 | 期間最大90日 / メモ最大500字 / 過去日警告 / 必須項目 |
+| 4 | 所有者検証 | 編集・削除時に他社データへのアクセスを物理拒否 + security_violation ログ |
+| 5 | 監査ログ | 全操作で `partner_actions.payload` に before/after/error 記録（事後復元可能） |
+
+**請求書系プロテクト**:
+- 発行時: 件数・総売上・レート・御社売上を明示確認
+- 再発行: status=sent/paid からの戻しに追加確認
+- 入金確認: 御社売上金額を明示・確定後は変更不可警告
+- 失敗もログ記録（事後対応用）
+
+**ログ用 partner_actions.action_type 追加**:
+- `security_violation` - 他社データへの不正アクセス試行
+- `save_failed` / `delete_failed` - 保存・削除失敗（事後対応用）
+
+コミット: `6a9a1bc`
+
+### 関連ファイル一覧
+- `~/spk-task/partner.html` (v0.3.3 / 845行)
+- `~/spk-task/partner_db_migration.sql` (vehicles + maintenance + partner_actions)
+- `~/spk-task/partner_companies_table.sql` (partner_companies)
+- `~/spk-task/partner_invoice_schema.sql` (revenue_rate + partner_invoices)
+- `~/spk-task/index.src.html` L483-491 (DB CRUD関数群)
+- `~/spk-task/index.src.html` L1322-1332 (state)
+- `~/spk-task/index.src.html` L1359-1410 (saveVehicle で partner_companies 自動UPSERT)
+- `~/spk-task/index.src.html` L1502-1540 (車両編集モーダル 🏢所有者情報セクション)
+- `~/spk-task/index.src.html` L11734 (配車表サイドバー 🏢ラベル)
+- `~/spk-task/index.src.html` L11738 (FleetTimeline 紫バー描画)
+- `~/spk-task/index.src.html` L2487-2613 (PartnerCompanyMgr 協力会社管理UI)
+- `~/spk-task/gas-email-import-v2.gs` L4417- (notifyPartnerActions GAS)
+
+### 確定済み運用ルール
+- 返却月締め・翌月支払い (例: 5月返却分 → 6月支払い請求書発行)
+- レベニュー率デフォルト 70%（partner_companies.revenue_rate）
+- 月単位で個別レート設定可能（partner_invoices.revenue_rate）
+- 車両編集モーダルから新規協力会社作成可能（ID自動採番: `PARTNER_<timestamp下6桁>`）
+- maintenance.id プレフィックス: `m`=本体APP / `pm`=partner.html（識別可能）
+
+### 次回再開時の TODO（未着手）
+
+1. **認証外し方針決定** → 採用案で実装
+2. **partner.html 受入テスト**（テスト車両 → 動作確認）
+3. **Slack通知GAS 有効化**（GASエディタで `setupPartnerNotifyTrigger` 実行）
+4. **Supabase Auth Custom Claims**（本番運用前に user_metadata 設定）
+5. **専用Slackチャンネル作成**（任意）
+
+---
+
 ## 🔴 2026-05-14 入金通知の店舗判定 fail-safe化（那覇通知が札幌に漏れる障害対策）
 
 ### 症状
