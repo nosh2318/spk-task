@@ -4415,3 +4415,91 @@ function setupSpkJalanReminderTrigger() {
   Logger.log('[Trigger] resendSpkJalanUnpaidReminder 毎日9:30 設定完了');
 }
 
+// ============================================================================
+// 協力会社操作 Slack通知 (2026-05-16 追加・Phase 4)
+// ============================================================================
+//
+// 用途: partner.html で協力会社が在庫調整 (自社予約/メンテ登録・削除) した時に
+//       Slack #partner_handyman に通知する。partner_actions テーブルを 5分polling。
+// 通知先: PARTNER_NOTIFY_CHANNEL（既存 JALAN_PAY_CHANNEL を流用 or 新規チャンネル）
+//
+var PARTNER_NOTIFY_CHANNEL = JALAN_PAY_CHANNEL; // 暫定: #payment_sapporo に通知
+                                                  // 専用チャンネル作成後に差し替え
+
+function notifyPartnerActions() {
+  try {
+    var rows = supabaseGet_('partner_actions', 'notified_slack=eq.false&order=ts.asc&limit=50');
+    if (!rows || rows.length === 0) {
+      updateHeartbeat_('spk_partner_notify', {success:0, processed:0});
+      return;
+    }
+    Logger.log('[PartnerNotify] ' + rows.length + ' new actions');
+    var notified = 0;
+    rows.forEach(function(r) {
+      try {
+        var label = '', emoji = '';
+        switch (r.action_type) {
+          case 'partner_reserved_add': emoji = '🟣'; label = '自社予約 登録'; break;
+          case 'partner_reserved_delete': emoji = '🗑️'; label = '自社予約 削除'; break;
+          case 'maintenance_add': emoji = '🔧'; label = 'メンテナンス 登録'; break;
+          case 'maintenance_delete': emoji = '🗑️'; label = 'メンテナンス 削除'; break;
+          default: emoji = '📝'; label = r.action_type;
+        }
+        var pcRows = supabaseGet_('partner_companies', 'id=eq.' + encodeURIComponent(r.owner_company || '') + '&select=label&limit=1');
+        var companyLabel = (pcRows && pcRows.length > 0) ? pcRows[0].label : (r.owner_company || '不明');
+        var vRows = supabaseGet_('vehicles', 'code=eq.' + encodeURIComponent(r.vehicle_code || '') + '&select=name,plate_no,type&limit=1');
+        var vehicleInfo = (vRows && vRows.length > 0)
+          ? (vRows[0].type + ' ' + (vRows[0].name || '') + ' (' + (vRows[0].plate_no || '') + ')')
+          : (r.vehicle_code || '?');
+        var period = '';
+        if (r.target_date_from) {
+          period = r.target_date_from;
+          if (r.target_date_to && r.target_date_to !== r.target_date_from) {
+            period += ' 〜 ' + r.target_date_to;
+          }
+        }
+        var memo = (r.payload && r.payload.memo) ? '\n💬 メモ: ' + r.payload.memo : '';
+        var msg = emoji + ' *協力会社 操作通知 - ' + label + '*\n' +
+                  '🏢 ' + companyLabel + '\n' +
+                  '👤 ' + (r.user_email || '不明') + '\n' +
+                  '🚗 ' + vehicleInfo + '\n' +
+                  '📅 ' + period + memo + '\n' +
+                  '⏰ ' + new Date(r.ts).toLocaleString('ja-JP', {timeZone: 'Asia/Tokyo'});
+        postToSlackChannel_(PARTNER_NOTIFY_CHANNEL, msg);
+        supabaseUpdate_('partner_actions', 'id=eq.' + r.id, {
+          notified_slack: true,
+          notified_at: new Date().toISOString()
+        });
+        notified++;
+      } catch (e) {
+        Logger.log('[PartnerNotify] Error id=' + r.id + ': ' + e.message);
+      }
+    });
+    Logger.log('[PartnerNotify] Done. notified=' + notified + '/' + rows.length);
+    updateHeartbeat_('spk_partner_notify', {success: notified, processed: rows.length});
+  } catch (e) {
+    Logger.log('[PartnerNotify] FATAL: ' + e.message);
+    updateHeartbeat_('spk_partner_notify', {success:0, processed:0, error: e.message});
+  }
+}
+
+/**
+ * 協力会社操作通知トリガー設定（1回実行で完了）
+ * 5分間隔
+ */
+function setupPartnerNotifyTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'notifyPartnerActions') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('notifyPartnerActions')
+    .timeBased().everyMinutes(5).create();
+  Logger.log('[Trigger] notifyPartnerActions 5分間隔 設定完了');
+}
+
+/**
+ * 動作確認用 - 手動実行
+ */
+function testNotifyPartnerActions() {
+  notifyPartnerActions();
+}
+
