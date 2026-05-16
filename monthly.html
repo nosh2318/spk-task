@@ -86,6 +86,7 @@ input.bi::placeholder{color:#fde68a}
     <span class="grp-lbl">テーマ</span>
     <button id="bpl" onclick="setTheme('pl')" class="nb nb-theme" style="background:#2563eb;color:#fff">📊 PL</button>
     <button id="bcf" onclick="setTheme('cf')" class="nb nb-theme" style="background:#334155;color:#64748b">💰 CF</button>
+    <button id="bci" onclick="setTheme('cashin')" class="nb nb-theme" style="background:#334155;color:#64748b">💵 実入金CF</button>
     <div class="state-bar">
       <span id="sc-theme" class="state-chip">PL</span>
       <span class="state-sep">›</span>
@@ -180,12 +181,13 @@ const _urlStore=new URLSearchParams(location.search).get('store');
 const _fixedStore=(_urlStore==='nha'||_urlStore==='spk')?_urlStore:null; // 固定store(URLパラメータ)
 let store=_fixedStore||'nha', year=new Date().getFullYear();
 let mode='jisseki'; // 'yosan' | 'jisseki'
-let theme='pl'; // 'pl' | 'cf'
+let theme='pl'; // 'pl' | 'cf' | 'cashin'
 function _updateStateBar(){
   const storeL={'nha':'那覇','spk':'札幌','total':'両店合計'};
   const modeL={'yosan':'予算','jisseki':'実績','hikaku':'予実比較'};
   const el=id=>document.getElementById(id);
-  if(el('sc-theme'))el('sc-theme').textContent=theme==='pl'?'PL':'CF';
+  const themeL={'pl':'PL','cf':'CF','cashin':'実入金CF'};
+  if(el('sc-theme'))el('sc-theme').textContent=themeL[theme]||theme;
   if(el('sc-mode'))el('sc-mode').textContent=modeL[mode]||mode;
   if(el('sc-store'))el('sc-store').textContent=storeL[store]||store;
   if(el('sc-year'))el('sc-year').textContent=year+'年';
@@ -194,11 +196,11 @@ function _updateStateBar(){
 }
 function setTheme(t){
   theme=t;
-  // テーマボタン
-  document.getElementById('bpl').style.background=t==='pl'?'#2563eb':'#334155';
-  document.getElementById('bpl').style.color=t==='pl'?'#fff':'#64748b';
-  document.getElementById('bcf').style.background=t==='cf'?'#059669':'#334155';
-  document.getElementById('bcf').style.color=t==='cf'?'#fff':'#64748b';
+  [['bpl','pl','#2563eb'],['bcf','cf','#059669'],['bci','cashin','#d97706']].forEach(([id,key,col])=>{
+    const b=document.getElementById(id); if(!b)return;
+    b.style.background=t===key?col:'#334155';
+    b.style.color=t===key?'#fff':'#64748b';
+  });
   _updateStateBar();
   load();
 }
@@ -552,6 +554,8 @@ async function load(){
   document.getElementById('ct').innerHTML='<div class="loading">読み込み中...</div>';
   document.getElementById('status').textContent='';
   const y=String(year);
+  // 実入金CFモード
+  if(theme==='cashin'){await loadAndRenderCashIn(y);return;}
   // 予算モード
   if(mode==='yosan'){await loadBudget(y);renderBudget();return;}
   // 比較モード
@@ -1101,6 +1105,38 @@ function exportCSV() {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+// ===== 実入金CF =====
+const OTA_CI={HP:{label:'HP/SP',color:'#d97706',months:0,base:'booking'},SP:{label:'HP/SP',color:'#d97706',months:0,base:'booking'},J:{label:'じゃらん',color:'#059669',months:0,base:'return'},RC:{label:'RCドットコム',color:'#0891b2',months:1,base:'return'},G:{label:'GoGoOut',color:'#db2777',months:1,base:'return'},O:{label:'エアトリ',color:'#7c3aed',months:1,base:'return'},S:{label:'スカイ',color:'#2563eb',months:1,base:'return'},R:{label:'楽天',color:'#dc2626',months:3,base:'return'}};
+const CI_ORDER=['HP','J','S','O','R','RC','G'];
+function _ciYmAdd(ym,n){let[y,m]=ym.split('-').map(Number);m+=n;while(m>12){m-=12;y++;}while(m<1){m+=12;y--;}return y+'-'+String(m).padStart(2,'0');}
+function _ciGetCashYM(r,storeKey){const ota=r.ota||'HP';const cyc=OTA_CI[ota]||OTA_CI.J;const retF=storeKey==='nha'?(r.end_date||r.return_date):r.return_date;const bkF=r.created_at;const base=cyc.base==='booking'?(bkF||'').slice(0,7):(retF||'').slice(0,7);if(!base)return null;return _ciYmAdd(base,cyc.months);}
+async function _ciFetchResv(storeKey,y){
+  const tbl=storeKey==='nha'?'nha_reservations':'reservations';
+  const retCol=storeKey==='nha'?'end_date':'return_date';
+  const yS=(parseInt(y)-1)+'-10-01',yE=(parseInt(y)+1)+'-03-31';
+  let all=[],off=0;
+  while(true){const{data,error}=await sb.from(tbl).select('id,ota,price,created_at,lend_date,return_date,end_date,status').gte(retCol,yS).lte(retCol,yE).neq('status','cancelled').order('id').range(off,off+999);if(error||!data)break;all=all.concat(data);if(data.length<1000)break;off+=1000;}
+  return all;
+}
+function _ciCalc(resv,storeKey,y){const cf={};for(let m=1;m<=12;m++){const ym=y+'-'+String(m).padStart(2,'0');cf[ym]={};CI_ORDER.forEach(ota=>{cf[ym][ota]=0;});}resv.forEach(r=>{const cashYM=_ciGetCashYM(r,storeKey);if(!cashYM||!cashYM.startsWith(y+'-'))return;if(!cf[cashYM])return;const ota=r.ota||'HP';const key=CI_ORDER.includes(ota)?ota:'HP';cf[cashYM][key]+=(+(r.price)||0);});return cf;}
+async function loadAndRenderCashIn(y){
+  const stores=store==='total'?['nha','spk']:[store];
+  let merged={};for(let m=1;m<=12;m++){const ym=y+'-'+String(m).padStart(2,'0');merged[ym]={};CI_ORDER.forEach(o=>{merged[ym][o]=0;});}
+  for(const s of stores){const resv=await _ciFetchResv(s,y);const cf=_ciCalc(resv,s,y);Object.keys(cf).forEach(ym=>{CI_ORDER.forEach(o=>{if(merged[ym])merged[ym][o]+=(cf[ym][o]||0);});});}
+  const now=new Date();const nowYM=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+  const ML=['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+  let grand=0;const otaY={};CI_ORDER.forEach(o=>{otaY[o]=0;});const mTot={};
+  for(let m=1;m<=12;m++){const ym=y+'-'+String(m).padStart(2,'0');mTot[ym]=0;CI_ORDER.forEach(o=>{mTot[ym]+=(merged[ym][o]||0);otaY[o]+=(merged[ym][o]||0);});grand+=mTot[ym];}
+  const q=[1,2,3,4].map(q=>{const ms=[(q-1)*3+1,(q-1)*3+2,(q-1)*3+3];return ms.reduce((s,m)=>s+(mTot[y+'-'+String(m).padStart(2,'0')]||0),0);});
+  let html=`<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:14px">${q.map((v,i)=>`<div style="background:#fff;border-radius:8px;padding:10px 12px;border:1px solid #e2e8f0"><div style="font-size:8.5pt;color:#64748b;font-weight:700">Q${i+1}（${i*3+1}-${i*3+3}月）</div><div style="font-size:13pt;font-weight:900;color:#1e293b">¥${Math.round(v).toLocaleString()}</div></div>`).join('')}<div style="background:#eff6ff;border-radius:8px;padding:10px 12px;border:1px solid #bfdbfe"><div style="font-size:8.5pt;color:#1e40af;font-weight:700">年間合計</div><div style="font-size:13pt;font-weight:900;color:#1e40af">¥${Math.round(grand).toLocaleString()}</div></div></div>
+  <div style="overflow-x:auto;background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.07)"><div style="background:#1e293b;color:#fff;padding:8px 14px;font-size:10.5pt;font-weight:700">💵 月別実入金予測 — ${y}年</div>
+  <table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr><th style="background:#334155;color:#e2e8f0;padding:7px 10px;text-align:left;width:100px">OTA</th>${ML.map((l,i)=>{const ym=y+'-'+String(i+1).padStart(2,'0');return`<th style="background:${ym===nowYM?'#1e40af':'#334155'};color:#e2e8f0;padding:7px 5px;text-align:right;white-space:nowrap">${l}</th>`;}).join('')}<th style="background:#1e3a8a;color:#fff;padding:7px 8px;text-align:right">年計</th></tr></thead><tbody>`;
+  CI_ORDER.forEach(ota=>{if(ota==='SP')return;const c=OTA_CI[ota];const lbl=ota==='HP'?'HP/SP':c.label;html+=`<tr><td style="border-bottom:1px solid #f1f5f9;padding:6px 10px;font-weight:700;color:#374151;border-left:3px solid ${c.color}">${lbl}</td>`;for(let m=1;m<=12;m++){const ym=y+'-'+String(m).padStart(2,'0');const v=merged[ym][ota]||0;const isCur=ym===nowYM;html+=`<td style="border-bottom:1px solid #f1f5f9;padding:6px 5px;text-align:right;${isCur?'background:#eff6ff;':''}color:${v?'#1e293b':'#d1d5db'}">${v?'¥'+Math.round(v).toLocaleString():'—'}</td>`;}html+=`<td style="border-bottom:1px solid #f1f5f9;padding:6px 8px;text-align:right;font-weight:900;color:#1e40af;background:#f0f9ff">${otaY[ota]?'¥'+Math.round(otaY[ota]).toLocaleString():'—'}</td></tr>`;});
+  html+=`<tr style="background:#f0f9ff"><td style="padding:7px 10px;font-weight:900;color:#1e40af;border-left:3px solid #1e40af">月合計</td>`;for(let m=1;m<=12;m++){const ym=y+'-'+String(m).padStart(2,'0');const isCur=ym===nowYM;html+=`<td style="padding:7px 5px;text-align:right;font-weight:900;${isCur?'background:#dbeafe;color:#1e40af;':'color:#1e293b;'}">${mTot[ym]?'¥'+Math.round(mTot[ym]).toLocaleString():'—'}</td>`;}
+  html+=`<td style="padding:7px 8px;text-align:right;font-weight:900;color:#fff;background:#1e40af">¥${Math.round(grand).toLocaleString()}</td></tr></tbody></table></div><div style="margin-top:8px;font-size:9pt;color:#94a3b8;padding:4px">※ HP=予約当月 / じゃらん=返却月 / 楽天=返却月+3ヶ月 / スカイ・エアトリ・RC・GoGoOut=返却月翌月</div>`;
+  document.getElementById('ct').innerHTML=html;
 }
 
 </script>
