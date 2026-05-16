@@ -148,6 +148,27 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
 
 .loading{text-align:center;padding:40px;color:#94a3b8;font-size:13px}
 
+/* 車両情報タブ (2026-05-16 追加) */
+.veh-card{background:#fff;border:1px solid #e2e8f0;border-radius:10px;margin-bottom:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+.veh-card-hdr{padding:10px 14px;background:linear-gradient(135deg,#1e40af,#2563eb);color:#fff;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.veh-card-hdr .vname{font-size:14px;font-weight:900;flex:1}
+.veh-card-hdr .vcls{font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;background:rgba(255,255,255,.25)}
+.veh-card-body{padding:12px 14px;display:grid;grid-template-columns:1fr 1fr;gap:10px 14px}
+.veh-card-body .field{display:flex;flex-direction:column;gap:3px}
+.veh-card-body .field.wide{grid-column:1 / -1}
+.veh-card-body label{font-size:10px;font-weight:700;color:#64748b;letter-spacing:.03em}
+.veh-card-body input{padding:8px 10px;border:1.5px solid #d1d5db;border-radius:6px;font-size:13px;font-family:inherit;-webkit-appearance:none;background:#fff}
+.veh-card-body input:focus{outline:2px solid #1e40af;border-color:#1e40af}
+.veh-card-foot{padding:10px 14px;background:#f8fafc;border-top:1px solid #e2e8f0;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.veh-card-foot .meta{font-size:10px;color:#94a3b8;flex:1}
+.veh-card-foot button{padding:8px 18px;font-size:12px;font-weight:700;border:none;border-radius:6px;cursor:pointer;background:#2563eb;color:#fff;min-height:36px}
+.veh-card-foot button:disabled{background:#94a3b8;cursor:not-allowed}
+.veh-card-foot button.dirty{background:#dc2626;animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.7}}
+@media (max-width:768px){
+  .veh-card-body{grid-template-columns:1fr}
+}
+
 /* 請求書ビュー (コンパクト・1行サマリー方式) */
 .inv-table{width:100%;border-collapse:separate;border-spacing:0;background:#fff;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:10px}
 .inv-row{display:grid;grid-template-columns:90px 50px 1fr 78px 1fr 70px 60px;gap:0;align-items:center;padding:8px 10px;border-bottom:1px solid #f1f5f9;cursor:pointer;font-size:12px;transition:background .1s}
@@ -223,6 +244,7 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
   <div class="tabs">
     <button class="tab on" id="tab-tl" onclick="switchTab('tl')">📅 配車表</button>
     <button class="tab" id="tab-data" onclick="switchTab('data')">📋 予約データ</button>
+    <button class="tab" id="tab-veh" onclick="switchTab('veh')">⚙️ 車両情報</button>
   </div>
 
   <div class="summary">
@@ -248,9 +270,26 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
   <div id="view-data" style="display:none">
     <div class="data-ctrl">
       <span class="cnt" id="data-count" style="font-size:11px;font-weight:700;color:#64748b">—</span>
-      <span style="font-size:10px;color:#94a3b8;margin-left:8px">📌 返却月で締め・翌月支払い</span>
+      <span class="total" id="data-total" style="margin-left:auto;font-size:12px;font-weight:900;color:#059669">—</span>
     </div>
-    <div id="invoice-view" style="padding:8px 12px;overflow:auto;max-height:calc(100vh - 200px);-webkit-overflow-scrolling:touch">
+    <div class="data-tbl-wrap" style="max-height:calc(100vh - 200px)">
+      <table class="data-tbl" id="data-tbl">
+        <thead><tr>
+          <th>車両</th><th>予約番号</th><th>顧客名</th><th>OTA</th>
+          <th>貸出</th><th>返却</th><th>場所</th><th>金額</th><th>状態</th>
+        </tr></thead>
+        <tbody id="data-body"><tr><td colspan="9" class="loading">読み込み中...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 車両情報タブ (2026-05-16 追加 / 情報のみ・請求と独立) -->
+  <div id="view-veh" style="display:none">
+    <div class="data-ctrl">
+      <span style="font-size:11px;font-weight:700;color:#64748b" id="veh-count">—</span>
+      <span style="margin-left:auto;font-size:10px;color:#94a3b8">⚙️ 自社車両の情報を入力・更新できます</span>
+    </div>
+    <div id="veh-view" style="padding:8px 12px;overflow:auto;max-height:calc(100vh - 200px);-webkit-overflow-scrolling:touch">
       <div class="loading">読み込み中...</div>
     </div>
   </div>
@@ -363,15 +402,9 @@ async function loadData(){
     }
     const{data:mt}=await sb.from('maintenance').select('*').in('vehicle_code',vehCodes);
     MAINTENANCE=mt||[];
-    // ★ 2026-05-16: 請求書 + デフォルトレベニュー率も取得
-    try{
-      const{data:pc}=await sb.from('partner_companies').select('revenue_rate').eq('id',OWNER_COMPANY).maybeSingle();
-      if(pc&&pc.revenue_rate!=null)PARTNER_DEFAULT_RATE=Number(pc.revenue_rate);
-      const{data:invs}=await sb.from('partner_invoices').select('*').eq('owner_company',OWNER_COMPANY).order('year_month',{ascending:false});
-      PARTNER_INVOICES=invs||[];
-    }catch(e){console.warn('[loadInvoices]',e);}
+    // ★ 2026-05-16: 請求書機能は削除（情報のみのシンプル仕様にオーナー方針変更）
     updateSummary();
-    if(CURRENT_TAB==='tl')renderTimeline();else renderData();
+    if(CURRENT_TAB==='tl')renderTimeline();else if(CURRENT_TAB==='data')renderData();else renderVehInfo();
   }catch(e){console.error('[loadData]',e);showToast('データ取得エラー: '+e.message,'err');}
 }
 
@@ -505,218 +538,126 @@ function drawBars(dates){
   }
 }
 
-// 予約データタブ
+// 予約データタブ (v0.5.0 シンプル版・請求書機能は廃止し情報のみ)
 function renderData(){
-  const view=document.getElementById('invoice-view');
-  if(VEHICLES.length===0){view.innerHTML='<div class="loading">所有車両なし</div>';return;}
-  if(RESERVATIONS.length===0){view.innerHTML='<div class="loading">予約データなし</div>';return;}
-
-  // 返却月でグループ化 (キャンセル除外)
-  const valid=RESERVATIONS.filter(r=>r.status!=='cancelled'&&r.return_date);
-  const byMonth={}; // {'2026-05': { vehs: {vc: [{r,amt}...]}, total: N, count: N }}
-  valid.forEach(r=>{
-    const ym=r.return_date.substring(0,7);
+  const body=document.getElementById('data-body');
+  if(VEHICLES.length===0){body.innerHTML='<tr><td colspan="9" class="loading">所有車両なし</td></tr>';return;}
+  if(RESERVATIONS.length===0){body.innerHTML='<tr><td colspan="9" class="loading">予約データなし</td></tr>';return;}
+  const today=new Date().toISOString().substring(0,10);
+  const sorted=[...RESERVATIONS].sort((a,b)=>(b.lend_date||'').localeCompare(a.lend_date||''));
+  let html='',total=0;
+  sorted.forEach(r=>{
     const f=FLEET.find(x=>x.reservation_id===r.id);
-    const vc=f?f.vehicle_code:'?';
-    if(!byMonth[ym])byMonth[ym]={vehs:{},total:0,count:0};
-    if(!byMonth[ym].vehs[vc])byMonth[ym].vehs[vc]={list:[],sum:0};
-    const amt=Number(r.price)||0;
-    byMonth[ym].vehs[vc].list.push({r,amt});
-    byMonth[ym].vehs[vc].sum+=amt;
-    byMonth[ym].total+=amt;
-    byMonth[ym].count++;
-  });
-
-  const months=Object.keys(byMonth).sort((a,b)=>b.localeCompare(a));
-  document.getElementById('data-count').textContent=`${valid.length}件 ／ ${months.length}ヶ月`;
-
-  if(months.length===0){view.innerHTML='<div class="loading">予約データなし</div>';return;}
-
-  let html='<div class="inv-table"><div class="inv-table-header">'+
-    '<div class="l">返却月</div>'+
-    '<div class="r">件数</div>'+
-    '<div class="r">総売上</div>'+
-    '<div class="r">レート</div>'+
-    '<div class="r">御社売上</div>'+
-    '<div class="c">状態</div>'+
-    '<div class="c">▼</div>'+
-  '</div>';
-
-  months.forEach(ym=>{
-    const m=byMonth[ym];
-    const vcKeys=Object.keys(m.vehs).sort();
-    const [y,mm]=ym.split('-').map(Number);
-    const payY=mm===12?y+1:y;
-    const payM=mm===12?1:mm+1;
-    const payDate=`${payY}/${payM}支払`;
-    const inv=PARTNER_INVOICES.find(i=>i.year_month===ym);
-    const rate=inv?Number(inv.revenue_rate):(PARTNER_DEFAULT_RATE||70);
-    const share=Math.round(m.total*rate/100);
-    const status=inv?inv.status:'pending';
-    const statusLabel={pending:'未請求',sent:'請求済',paid:'入金済'}[status]||status;
-    const isOpen=INVOICE_OPEN_YM[ym]===true; // デフォルト折りたたみ
-
-    html+=`<div class="inv-row ${isOpen?'open':''}" onclick="toggleInvoice('${ym}')">`+
-      `<div class="ym">${ym}</div>`+
-      `<div class="cnt">${m.count}件</div>`+
-      `<div class="rev">¥${m.total.toLocaleString()}</div>`+
-      `<div class="rate"><input type="number" min="0" max="100" step="0.1" value="${rate}" onchange="updateRate('${ym}',this.value);event.stopPropagation()" onclick="event.stopPropagation()"/><span>%</span></div>`+
-      `<div class="share">¥${share.toLocaleString()}</div>`+
-      `<div><span class="st ${status}">${statusLabel}</span></div>`+
-      `<div class="toggle">${isOpen?'▲':'▼'}</div>`+
-    `</div>`;
-
-    if(isOpen){
-      html+=`<div class="inv-detail">`+
-        `<div class="pay-info">📅 ${ym} 分（${payDate}）${inv&&inv.sent_at?' / 請求日: '+inv.sent_at.substring(0,10):''}${inv&&inv.paid_at?' / 入金日: '+inv.paid_at.substring(0,10):''}</div>`+
-        `<div class="actions">`+
-          `<button class="btn-csv" onclick="downloadInvoiceCsv('${ym}')">📄 CSV</button>`+
-          (status==='pending'?`<button class="btn-issue" onclick="issueInvoice('${ym}')">📤 請求書発行</button>`:'')+
-          (status==='sent'?`<button class="btn-paid" onclick="markPaid('${ym}')">✅ 入金確認</button>`:'')+
-          (status==='paid'?`<span style="font-size:11px;color:#15803d;padding:6px 12px;font-weight:700">✓ 完了済み</span>`:'')+
-        `</div>`;
-      vcKeys.forEach(vc=>{
-        const grp=m.vehs[vc];
-        const veh=VEHICLES.find(v=>v.code===vc);
-        html+=`<div class="inv-veh-row">`+
-          `<span class="vc">${vc}</span> ${veh?veh.name||'':''} ${veh?veh.plate_no||'':''}`+
-          `<span class="vc-sum">${grp.list.length}件 / ¥${grp.sum.toLocaleString()}</span>`+
-        `</div>`;
-        grp.list.sort((a,b)=>(a.r.return_date||'').localeCompare(b.r.return_date||''));
-        grp.list.forEach(({r,amt})=>{
-          const otaLabel={J:'じゃらん',R:'楽天',S:'スカイ',O:'エアトリ',HP:'HP',RC:'レンカ',G:'GoGo'}[r.ota]||r.ota||'—';
-          html+=`<div class="inv-resv">`+
-            `<span class="ota-bdg ota-${r.ota}">${otaLabel}</span>`+
-            `<span class="nm">${r.name||'—'}様</span>`+
-            `<span class="pd">${r.lend_date||'—'}→${r.return_date||'—'}</span>`+
-            `<span class="amt">¥${amt.toLocaleString()}</span>`+
-          `</div>`;
-        });
-      });
-      html+=`</div>`;
-    }
-  });
-  html+='</div>';
-  view.innerHTML=html;
-}
-
-// 請求書UI関連の状態
-let PARTNER_INVOICES=[]; // partner_invoices テーブル
-let PARTNER_DEFAULT_RATE=70; // partner_companies.revenue_rate
-let INVOICE_OPEN_YM={}; // 月ごとの開閉状態
-let RATE_DEBOUNCE={}; // レート入力デバウンス用
-
-function toggleInvoice(ym){
-  INVOICE_OPEN_YM[ym]=!INVOICE_OPEN_YM[ym];
-  renderData();
-}
-
-async function updateRate(ym,val){
-  const rate=Number(val);
-  if(isNaN(rate)||rate<0||rate>100){showToast('0〜100の数値を入力','err');return;}
-  // 既存請求書があれば更新、なければ仮レコード作成
-  let inv=PARTNER_INVOICES.find(i=>i.year_month===ym);
-  // 売上再計算
-  const valid=RESERVATIONS.filter(r=>r.status!=='cancelled'&&r.return_date&&r.return_date.substring(0,7)===ym);
-  const total=valid.reduce((s,r)=>s+(Number(r.price)||0),0);
-  const share=Math.round(total*rate/100);
-  clearTimeout(RATE_DEBOUNCE[ym]);
-  RATE_DEBOUNCE[ym]=setTimeout(async()=>{
-    try{
-      if(inv){
-        await sb.from('partner_invoices').update({revenue_rate:rate,total_revenue:total,partner_share:share}).eq('id',inv.id);
-        inv.revenue_rate=rate;inv.total_revenue=total;inv.partner_share=share;
-      }else{
-        const{data,error}=await sb.from('partner_invoices').insert({owner_company:OWNER_COMPANY,year_month:ym,revenue_rate:rate,total_revenue:total,partner_share:share,reservation_count:valid.length,status:'pending'}).select().single();
-        if(error)throw error;
-        PARTNER_INVOICES.push(data);
-      }
-      showToast(`✅ レート保存 ${ym} → ${rate}%`,'ok');
-      renderData();
-    }catch(e){showToast('レート保存失敗: '+e.message,'err');}
-  },500);
-}
-
-async function issueInvoice(ym){
-  const valid=RESERVATIONS.filter(r=>r.status!=='cancelled'&&r.return_date&&r.return_date.substring(0,7)===ym);
-  const total=valid.reduce((s,r)=>s+(Number(r.price)||0),0);
-  let inv=PARTNER_INVOICES.find(i=>i.year_month===ym);
-  const rate=inv?Number(inv.revenue_rate):PARTNER_DEFAULT_RATE;
-  const share=Math.round(total*rate/100);
-  // ★ プロテクト: 詳細確認（金額明示・誤発行防止）
-  if(!confirm(`📤 請求書発行確認\n\n対象月: ${ym}\n予約件数: ${valid.length}件\n総売上: ¥${total.toLocaleString()}\nレベニュー率: ${rate}%\n御社売上: ¥${share.toLocaleString()}\n\n発行しますか？`))return;
-  // ★ プロテクト: 既に発行済みの場合は再確認
-  if(inv&&inv.status!=='pending'&&!confirm(`⚠️ この月は既に「${inv.status}」状態です。\n上書きしますか？`))return;
-  try{
-    if(inv){
-      const before={status:inv.status,total:inv.total_revenue,share:inv.partner_share};
-      await sb.from('partner_invoices').update({status:'sent',sent_at:new Date().toISOString(),total_revenue:total,partner_share:share,reservation_count:valid.length}).eq('id',inv.id);
-      inv.status='sent';inv.sent_at=new Date().toISOString();inv.total_revenue=total;inv.partner_share=share;
-      await logAction('partner_reserved_add',ym,null,null,{action:'invoice_reissued',before:before,revenue:total,share:share,rate:rate,count:valid.length});
+    const vc=f?f.vehicle_code:'—';
+    const veh=VEHICLES.find(v=>v.code===vc);
+    let status,statusCls;
+    if(r.status==='cancelled'){status='ｷｬﾝｾﾙ';statusCls='cxl';}
+    else if(r.return_date<today){status='完了';statusCls='done';}
+    else if(r.lend_date<=today&&r.return_date>=today){status='貸出中';statusCls='active';}
+    else{status='予約済';statusCls='future';}
+    const otaLabel={J:'じゃらん',R:'楽天',S:'スカイ',O:'エアトリ',HP:'HP',RC:'レンカ',G:'GoGo'}[r.ota]||r.ota||'—';
+    const place=r.del_place||r.col_place||'—';
+    const amt=r.price||0;
+    if(r.status!=='cancelled')total+=amt;
+    if(isMobile){
+      html+=`<tr>`+
+        `<td class="r1"><span class="veh-c">${vc}</span> ${veh?veh.plate_no||'':''} <span class="ota-bdg ota-${r.ota}">${otaLabel}</span> <span class="status ${statusCls}" style="margin-left:auto">${status}</span></td>`+
+        `<td class="r2">${r.name||'—'}様</td>`+
+        `<td class="r3">📅 ${r.lend_date||'—'} ${(r.lend_time||'').substring(0,5)} → ${r.return_date||'—'} ${(r.return_time||'').substring(0,5)}</td>`+
+        `<td class="r4"><span style="font-size:10px;color:#64748b">${place}</span><span class="amt">¥${amt.toLocaleString()}</span></td>`+
+      `</tr>`;
     }else{
-      const{data,error}=await sb.from('partner_invoices').insert({owner_company:OWNER_COMPANY,year_month:ym,revenue_rate:rate,total_revenue:total,partner_share:share,reservation_count:valid.length,status:'sent',sent_at:new Date().toISOString()}).select().single();
-      if(error)throw error;
-      PARTNER_INVOICES.push(data);
-      await logAction('partner_reserved_add',ym,null,null,{action:'invoice_issued',revenue:total,share:share,rate:rate,count:valid.length});
+      html+=`<tr>`+
+        `<td><span class="veh-c">${vc}</span> ${veh?veh.plate_no||'':''}</td>`+
+        `<td><code style="font-size:10px;color:#2563eb">${r.id}</code></td>`+
+        `<td>${r.name||'—'}様</td>`+
+        `<td><span class="ota-bdg ota-${r.ota}">${otaLabel}</span></td>`+
+        `<td>${r.lend_date||'—'} ${(r.lend_time||'').substring(0,5)}</td>`+
+        `<td>${r.return_date||'—'} ${(r.return_time||'').substring(0,5)}</td>`+
+        `<td style="font-size:10px;color:#64748b">${place}</td>`+
+        `<td>¥${amt.toLocaleString()}</td>`+
+        `<td><span class="status ${statusCls}">${status}</span></td>`+
+      `</tr>`;
     }
-    showToast(`📤 ${ym} 請求書発行完了 ¥${share.toLocaleString()}`,'ok');
-    renderData();
-  }catch(e){
-    showToast('請求書発行失敗: '+e.message,'err');
-    try{await logAction('save_failed',ym,null,null,{action:'invoice_issue_failed',error:e.message});}catch(_){}
-  }
-}
-
-async function markPaid(ym){
-  const inv=PARTNER_INVOICES.find(i=>i.year_month===ym);
-  if(!inv){showToast('請求書が見つかりません','err');return;}
-  // ★ プロテクト: 金額明示確認
-  if(!confirm(`✅ 入金確認\n\n対象月: ${ym}\n御社売上: ¥${(inv.partner_share||0).toLocaleString()}\n\n入金確認済みとして記録しますか？\n（一度確定すると変更不可）`))return;
-  try{
-    const before={status:inv.status};
-    await sb.from('partner_invoices').update({status:'paid',paid_at:new Date().toISOString()}).eq('id',inv.id);
-    inv.status='paid';inv.paid_at=new Date().toISOString();
-    await logAction('partner_reserved_add',ym,null,null,{action:'invoice_paid',before:before,paid_amount:inv.partner_share});
-    showToast(`✅ ${ym} 入金確認完了`,'ok');
-    renderData();
-  }catch(e){
-    showToast('更新失敗: '+e.message,'err');
-    try{await logAction('save_failed',ym,null,null,{action:'mark_paid_failed',error:e.message});}catch(_){}
-  }
-}
-
-function downloadInvoiceCsv(ym){
-  const valid=RESERVATIONS.filter(r=>r.status!=='cancelled'&&r.return_date&&r.return_date.substring(0,7)===ym);
-  if(valid.length===0){showToast('対象データなし','err');return;}
-  const inv=PARTNER_INVOICES.find(i=>i.year_month===ym);
-  const rate=inv?Number(inv.revenue_rate):PARTNER_DEFAULT_RATE;
-  const total=valid.reduce((s,r)=>s+(Number(r.price)||0),0);
-  const share=Math.round(total*rate/100);
-  const rows=[
-    [`協力会社請求書 ${ym} 分`],
-    [`協力会社: ${OWNER_LABEL||OWNER_COMPANY}`],
-    [`総売上: ¥${total.toLocaleString()}`],
-    [`レベニュー率: ${rate}%`],
-    [`御社売上: ¥${share.toLocaleString()}`],
-    [`予約件数: ${valid.length}件`],
-    [''],
-    ['車両コード','車両名','プレート','予約番号','顧客名','OTA','貸出日','返却日','売上']
-  ];
-  valid.sort((a,b)=>(a.return_date||'').localeCompare(b.return_date||''));
-  valid.forEach(r=>{
-    const f=FLEET.find(x=>x.reservation_id===r.id);
-    const vc=f?f.vehicle_code:'';
-    const v=VEHICLES.find(x=>x.code===vc);
-    rows.push([vc,v?v.name||'':'',v?v.plate_no||'':'',r.id||'',r.name||'',r.ota||'',r.lend_date||'',r.return_date||'',r.price||0]);
   });
-  const csv='﻿'+rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
-  const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');
-  a.href=url;a.download=`請求書_${OWNER_COMPANY}_${ym}.csv`;
-  document.body.appendChild(a);a.click();document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-  showToast(`📄 ${ym} CSV ダウンロード`,'ok');
+  body.innerHTML=html;
+  document.getElementById('data-count').textContent=`${sorted.length}件`;
+  document.getElementById('data-total').textContent=`合計 ¥${total.toLocaleString()}`;
+}
+
+// 車両情報タブ (2026-05-16 追加・情報のみ・請求と独立)
+function renderVehInfo(){
+  const view=document.getElementById('veh-view');
+  if(VEHICLES.length===0){view.innerHTML='<div class="loading">所有車両なし</div>';return;}
+  let html='';
+  VEHICLES.forEach(v=>{
+    const code=v.code||'';
+    html+=`<div class="veh-card" data-code="${code}">`+
+      `<div class="veh-card-hdr">`+
+        `<span class="vname">${v.name||''} (${v.plate_no||''})</span>`+
+        `<span class="vcls">${v.type||''} クラス</span>`+
+      `</div>`+
+      `<div class="veh-card-body">`+
+        `<div class="field"><label>定員</label><input data-f="seats" type="number" min="1" max="10" value="${v.seats||''}" placeholder="例: 8"/></div>`+
+        `<div class="field"><label>年式</label><input data-f="year" type="text" value="${v.year||''}" placeholder="例: 2024 / H27"/></div>`+
+        `<div class="field"><label>カラー</label><input data-f="color" type="text" value="${v.color||''}" placeholder="例: パールホワイト"/></div>`+
+        `<div class="field"><label>標準装備</label><input data-f="equip" type="text" value="${v.equip||''}" placeholder="例: ナビ, ETC, バックカメラ"/></div>`+
+        `<div class="field"><label>🚗 車検満了日</label><input data-f="inspection_due_date" type="date" value="${v.inspection_due_date||''}"/></div>`+
+        `<div class="field"><label>🚗 次回車検予定日</label><input data-f="inspection_next_date" type="date" value="${v.inspection_next_date||''}"/></div>`+
+      `</div>`+
+      `<div class="veh-card-foot">`+
+        `<span class="meta">最終更新: ${v.updated_at?new Date(v.updated_at).toLocaleDateString('ja-JP'):'-'}</span>`+
+        `<button onclick="saveVehInfo('${code}')">💾 保存</button>`+
+      `</div>`+
+    `</div>`;
+  });
+  view.innerHTML=html;
+  document.getElementById('veh-count').textContent=`${VEHICLES.length}台`;
+  // 入力検知でボタンを赤(dirty)化
+  view.querySelectorAll('.veh-card').forEach(card=>{
+    const btn=card.querySelector('button');
+    card.querySelectorAll('input').forEach(inp=>{
+      inp.addEventListener('input',()=>{btn.classList.add('dirty');btn.textContent='💾 保存（未保存）';});
+    });
+  });
+}
+
+async function saveVehInfo(code){
+  const card=document.querySelector(`.veh-card[data-code="${code}"]`);
+  if(!card)return;
+  const orig=VEHICLES.find(v=>v.code===code);
+  if(!orig){showToast('車両が見つかりません','err');return;}
+  // ★ プロテクト: 所有者検証
+  if(orig.owner_company!==OWNER_COMPANY){showToast('セキュリティエラー: 他社車両は編集不可','err');return;}
+  const payload={};
+  card.querySelectorAll('input[data-f]').forEach(inp=>{
+    const f=inp.dataset.f;
+    let v=inp.value;
+    if(f==='seats')v=v?(parseInt(v,10)||null):null;
+    if((f==='inspection_due_date'||f==='inspection_next_date')&&!v)v=null;
+    payload[f]=v;
+  });
+  // ★ プロテクト: 入力検証
+  if(payload.seats!=null&&(payload.seats<1||payload.seats>10)){showToast('定員は1〜10で入力','err');return;}
+  const btn=card.querySelector('button');
+  btn.disabled=true;btn.textContent='保存中...';
+  try{
+    const{error}=await sb.from('vehicles').update(payload).eq('code',code);
+    if(error)throw error;
+    // ローカル state も更新
+    Object.assign(orig,payload);
+    orig.updated_at=new Date().toISOString();
+    // パートナーアクションログ（通知対象外なのでSlackは飛ばない）
+    await logAction('vehicle_info_update',code,null,null,{updated:payload,timestamp:new Date().toISOString()});
+    btn.classList.remove('dirty');btn.textContent='✅ 保存完了';
+    showToast(`✅ ${orig.name||code} 保存しました`,'ok');
+    setTimeout(()=>{btn.textContent='💾 保存';btn.disabled=false;card.querySelector('.meta').textContent='最終更新: '+new Date().toLocaleDateString('ja-JP');},1500);
+  }catch(e){
+    console.error(e);
+    btn.textContent='❌ 失敗';
+    showToast('保存失敗: '+e.message,'err');
+    setTimeout(()=>{btn.textContent='💾 保存';btn.disabled=false;},2000);
+  }
 }
 
 // モーダル
@@ -871,9 +812,11 @@ function switchTab(t){
   CURRENT_TAB=t;
   document.getElementById('tab-tl').classList.toggle('on',t==='tl');
   document.getElementById('tab-data').classList.toggle('on',t==='data');
+  document.getElementById('tab-veh').classList.toggle('on',t==='veh');
   document.getElementById('view-tl').style.display=(t==='tl')?'':'none';
   document.getElementById('view-data').style.display=(t==='data')?'':'none';
-  if(t==='tl')renderTimeline();else renderData();
+  document.getElementById('view-veh').style.display=(t==='veh')?'':'none';
+  if(t==='tl')renderTimeline();else if(t==='data')renderData();else renderVehInfo();
 }
 
 function changeMonth(delta){
