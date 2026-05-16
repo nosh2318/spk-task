@@ -1,5 +1,98 @@
 # SPK業務管理APP（札幌店）
 
+## 🎉 2026-05-16 協力会社車両運用機能 全Phase完了 + 動作確認済
+
+### 最終ステータス
+| Phase | 内容 | 状態 |
+|---|---|---|
+| 1 | DB変更 (vehicles/maintenance/partner_actions/partner_companies) | ✅ |
+| 1.5 | 本体APP車両マスター + 配車表サイドバー🏢 | ✅ |
+| 2 | partner.html 新規作成 | ✅ |
+| 3 | 自社予約 紫色表示 | ✅ |
+| 4 | Slack通知GAS (5分polling) | ✅ |
+| 5 | スマホ最適化 + 既存APP風UI | ✅ |
+| 6 | 協力会社マスター編集UI | ✅ |
+| 7 | 請求書機能 + レベニュー率 | ✅ |
+| 8 | プロテクト実装 (5層) | ✅ |
+| **動作確認** | **partner.html → Slack 通知** | **✅完了** |
+
+### 確定設定
+| 項目 | 値 |
+|---|---|
+| URL | https://nosh2318.github.io/spk-task/partner.html?owner=&lt;ID&gt; |
+| Slack通知先 | `#partner予約管理` (`C0B451BSK1B`) |
+| 通知間隔 | 5分polling (notifyPartnerActions GAS) |
+| 通知対象アクション | `partner_reserved_add` / `partner_reserved_delete` / `maintenance_delete` のみ |
+| 通知メッセージ | 車種 + 日程 + 協力会社名（シンプル化） |
+| デフォルトレベニュー率 | 70% |
+| 締めスキーム | 返却月締め・翌月支払い |
+
+### Slack Bot 招待状況
+- ✅ `#partner予約管理` に `@SNS Auto` 参加済み（2026-05-16）
+
+### クォータ試算
+| 項目 | 値 |
+|---|---|
+| 既存GAS fetch合計 | ~1,600回/日 |
+| notifyPartnerActions 追加 | +288回/日（平常時1 fetch/実行） |
+| 新合計 | ~1,888回/日 |
+| GAS上限20,000に対する使用率 | 9.4%（安全圏） |
+
+### 残作業（本番運用時）
+1. 協力会社マスターに正式情報を登録（車両マスター→🏢協力会社マスタータブ）
+2. Supabase Auth で協力会社用ログインアカウント発行
+3. 協力会社にURL共有
+
+---
+
+## 2026-05-16 続編: Phase 9 通知絞り込み + 動作確認 (v0.4.1〜)
+
+### 通知設定の絞り込み（オーナー指示 2026-05-16）
+**通知対象を厳選**:
+- ✅ `partner_reserved_add` (自社予約 作成)
+- ✅ `partner_reserved_delete` (自社予約 削除)
+- ✅ `maintenance_delete` (メンテ削除)
+- ❌ `maintenance_add` (メンテ登録は通知しない)
+- ❌ `invoice_issued` / `invoice_paid` (請求書系は通知しない)
+- ❌ `security_violation` / `save_failed` / `delete_failed` (失敗系は通知しない、ログのみ)
+
+**通知メッセージのシンプル化**: 車種 + 日程 + 協力会社名 のみ（ユーザーメール・メモ・タイムスタンプ削除）
+
+### サマリーカード削減（v0.4.1）
+オーナー指示「稼働日 稼働率 削除」
+- 4カード（所有車両/今月予約/稼働日/稼働率）→ 2カード（所有車両/今月予約）に簡素化
+- updateSummary 関数の calcUtilByVehicle 等のロジックも削除して軽量化
+
+### バグ修正記録
+| バージョン | バグ | 修正 |
+|---|---|---|
+| v0.3.0→v0.3.1 | `maintenance` テーブルに `memo` カラム無く保存エラー | `memo` → `maint_notes` に変更 (`4104e3c`) |
+| v0.3.1→v0.3.2 | `maintenance.id` TEXT型 NOT NULL でid生成漏れ | `id='pm'+Date.now()+random` で本体APP互換生成 (`e45012d`) |
+| v0.3.2→v0.3.3 | 1月分が画面を占有 | 1行サマリー方式に再設計 (`3c72f3d`) |
+| v0.4.0→v0.4.1 | 稼働日/稼働率カード不要 | 2カードに簡素化 (`28814e1`) |
+
+### 動作確認結果（2026-05-16 19:37 JST）
+- ✅ partner.html で自社予約 1件 作成 → 削除 を実施
+- ✅ GAS testNotifyPartnerActions で 1 new actions 検出
+- ✅ `#partner予約管理` に通知投稿成功
+- ✅ Bot招待確認: `@SNS Auto さんはすでにこのチャンネルに参加しています。`
+
+### コミット履歴（2026-05-16 セッション）
+- `6ecd10f` Phase 1.5 本体APP車両マスター
+- `fa17c87` Phase 2 partner.html 新規作成
+- `6cc028c` Phase 3+4 紫表示 + Slack通知GAS
+- `d6cb037` partner.html v0.2.0 スマホ最適化
+- `c0c8e66` Phase 5 協力会社マスター管理UI v4.7.153
+- `5b19574` Phase 6 車両編集モーダルから協力会社名直接編集 v4.7.155
+- `3c72f3d` Phase 7 予約データタブ コンパクト1行表示 v0.3.3
+- `28814e1` Phase 9 サマリーカード簡素化 v0.4.1
+- `5fd8a3d` Phase 9 通知絞り込み + #partner予約管理 設定
+- `4104e3c` バグ修正 maintenance.memo → maint_notes
+- `e45012d` バグ修正 maintenance.id 手動生成
+- `6a9a1bc` Phase 8 5層プロテクト実装 v0.4.0
+
+---
+
 ## 🆕 2026-05-16 協力会社車両運用機能（Phase 1〜4 実装完了 / Phase 5 受入テスト未）
 
 ### 背景・要件（オーナー確定）
