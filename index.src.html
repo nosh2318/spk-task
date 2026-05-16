@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v701';
+  var CV='spk-v702';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=604').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=605').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -487,7 +487,9 @@ const DB = {
     return mapped;},
   async saveVehicles(arr){if(!sb)return;const rows=arr.map(v=>({code:v.code,name:v.name,plate_no:v.no,type:v.type,grade:v.grade||"",seats:v.seats,insurance_veh:!!v.insuranceVeh,year:v.year||"",color:v.color||"",equip:v.equip||"",ins_price:v.insPrice||"",memo:v.memo||"",insurance_annual:Number(v.insuranceAnnual)||0,lease_monthly:Number(v.leaseMonthly)||0,shaken_cost:Number(v.shakenCost)||0,tenken_cost:Number(v.tenkenCost)||0,car_tax:Number(v.carTax)||0,oil_interval_km:Number(v.oilIntervalKm)||5000,inspection_due_date:v.inspectionDueDate||null,inspection_next_date:v.inspectionNextDate||null,tenken_due_date:v.tenkenDueDate||null,tenken_next_date:v.tenkenNextDate||null,active:v.active!==false,owner_company:v.ownerCompany||"HANDYMAN",owner_label:v.ownerLabel||""}));const{error}=await sb.from("vehicles").upsert(rows,{onConflict:"code"});if(error)dbLog("saveVehicles",false,error.message);else dbLog("saveVehicles",true,arr.length+"件保存");
   },
-  async fetchPartnerCompanies(){if(!sb)return[];const{data,error}=await sb.from("partner_companies").select("*").eq("active",true).order("label");if(error){dbLog("fetchPartnerCompanies",false,error.message);return[];}return(data||[]);},
+  async fetchPartnerCompanies(activeOnly){if(!sb)return[];let q=sb.from("partner_companies").select("*").order("label");if(activeOnly!==false)q=q.eq("active",true);const{data,error}=await q;if(error){dbLog("fetchPartnerCompanies",false,error.message);return[];}return(data||[]);},
+  async savePartnerCompany(pc){if(!sb)return null;const row={id:pc.id,label:pc.label||"",contact_email:pc.contact_email||"",contact_name:pc.contact_name||"",contact_tel:pc.contact_tel||"",memo:pc.memo||"",active:pc.active!==false,updated_at:new Date().toISOString()};const{error}=await sb.from("partner_companies").upsert(row,{onConflict:"id"});if(error){dbLog("savePartnerCompany",false,error.message);return false;}dbLog("savePartnerCompany",true,row.id);return true;},
+  async deletePartnerCompany(id){if(!sb||!id)return false;const{error}=await sb.from("partner_companies").update({active:false}).eq("id",id);if(error){dbLog("deletePartnerCompany",false,error.message);return false;}dbLog("deletePartnerCompany",true,id);return true;},
   async deleteVehicle(code){if(!sb)return;const{error}=await sb.from("vehicles").delete().eq("code",code);if(error)dbLog("deleteVehicle",false,error.message);else dbLog("deleteVehicle",true,code);},
   // --- シフト ---
   async fetchShifts(){if(!sb)return null;const{data}=await sb.from("shifts").select("*");const s={};(data||[]).forEach(r=>{if(!s[r.date])s[r.date]=[];s[r.date].push({name:r.staff_name,symbol:r.symbol,start:r.start_time,end:r.end_time,memo:r.memo});});return s;},
@@ -2226,7 +2228,7 @@ function SpkInspectionCalendar({vehicles,maintenance,onMaintenanceChange,hmLogs}
 
   return <div style={{maxWidth:960,margin:"0 auto"}}>
     <div style={{display:"flex",gap:4,marginBottom:16,borderBottom:"1px solid #e2e8f0",paddingBottom:8}}>
-      {tabBtn2("master","📋","車両マスター")}{tabBtn2("budget","📅","予算スケジュール")}{tabBtn2("inspection","🚗","車検/点検/修理 スケジュール")}
+      {tabBtn2("master","📋","車両マスター")}{tabBtn2("budget","📅","予算スケジュール")}{tabBtn2("inspection","🚗","車検/点検/修理 スケジュール")}{tabBtn2("partners","🏢","協力会社マスター")}
     </div>
     {icTab==="master"&&<div>
       <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
@@ -2482,6 +2484,119 @@ function SpkInspectionCalendar({vehicles,maintenance,onMaintenanceChange,hmLogs}
         </div>;
       })()}
 
+    </div>}
+    {icTab==="partners"&&<PartnerCompanyMgr/>}
+  </div>;
+}
+
+/* ==========================================
+   協力会社マスター管理 (2026-05-16 追加)
+   ========================================== */
+function PartnerCompanyMgr(){
+  const[list,setList]=useState([]);
+  const[loading,setLoading]=useState(true);
+  const[modal,setModal]=useState(null); // {mode:'add'|'edit', pc}
+  const[saving,setSaving]=useState(false);
+  const EMPTY={id:"",label:"",contact_email:"",contact_name:"",contact_tel:"",memo:"",active:true};
+  const[form,setForm]=useState(EMPTY);
+
+  const reload=async()=>{setLoading(true);const data=await DB.fetchPartnerCompanies(false);setList(data||[]);setLoading(false);};
+  useEffect(()=>{reload();},[]);
+
+  const openAdd=()=>{setForm(EMPTY);setModal({mode:"add"});};
+  const openEdit=(pc)=>{setForm({id:pc.id,label:pc.label||"",contact_email:pc.contact_email||"",contact_name:pc.contact_name||"",contact_tel:pc.contact_tel||"",memo:pc.memo||"",active:pc.active!==false});setModal({mode:"edit",pc});};
+  const close=()=>{setModal(null);setForm(EMPTY);};
+
+  const save=async()=>{
+    if(!form.id||!form.id.trim()){alert("IDは必須です（例: PARTNER_001）");return;}
+    if(!form.label||!form.label.trim()){alert("会社名（表示ラベル）は必須です");return;}
+    if(modal.mode==="add"&&list.find(p=>p.id===form.id.trim())){alert("既に存在するIDです");return;}
+    setSaving(true);
+    const ok=await DB.savePartnerCompany({...form,id:form.id.trim()});
+    setSaving(false);
+    if(ok){await reload();close();}else alert("保存に失敗しました");
+  };
+
+  const remove=async(pc)=>{
+    if(!confirm(`「${pc.label}」を削除（非アクティブ化）しますか？\n\n※ 既に紐づいている車両があれば、その所有者表示にも影響します。`))return;
+    const ok=await DB.deletePartnerCompany(pc.id);
+    if(ok)await reload();else alert("削除に失敗しました");
+  };
+
+  const upF=(k,v)=>setForm(p=>({...p,[k]:v}));
+  const fS={padding:"7px 10px",fontSize:13,border:"1px solid #d1d5db",borderRadius:8,width:"100%"};
+  const lS={fontSize:11,fontWeight:700,color:"#64748b",marginBottom:4,display:"block"};
+
+  return <div>
+    <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
+      <h3 style={{fontSize:14,fontWeight:800,margin:0}}>🏢 協力会社マスター</h3>
+      <span style={{fontSize:11,color:"#64748b"}}>{list.length}社</span>
+      <button onClick={openAdd} style={{marginLeft:"auto",padding:"6px 14px",background:"#7c3aed",color:"#fff",border:"none",borderRadius:8,fontSize:12,fontWeight:700,cursor:"pointer"}}>+ 新規追加</button>
+    </div>
+    <div style={{fontSize:11,color:"#64748b",marginBottom:12,padding:"8px 12px",background:"#faf5ff",borderRadius:6,border:"1px solid #e9d5ff"}}>
+      💡 ここで登録した協力会社が、車両編集モーダルの「🏢所有者情報」セクションのドロップダウンに表示されます。<br/>
+      協力会社の詳細URL: <code style={{color:"#7c3aed",fontWeight:700}}>https://nosh2318.github.io/spk-task/partner.html?owner=&lt;ID&gt;</code>
+    </div>
+    {loading?<div style={{padding:40,textAlign:"center",color:"#94a3b8"}}>読み込み中...</div>:
+      list.length===0?<div style={{padding:40,textAlign:"center",color:"#94a3b8",fontSize:13,background:"#f8fafc",borderRadius:8,border:"1px dashed #cbd5e1"}}>協力会社が登録されていません<br/><span style={{fontSize:11}}>「+ 新規追加」から登録してください</span></div>:
+      <div style={{border:"1px solid #e2e8f0",borderRadius:8,overflow:"hidden"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+          <thead><tr style={{background:"#f8fafc"}}>
+            {["ID","会社名","担当者","メール","電話","状態",""].map((h,i)=><th key={i} style={{padding:"8px 10px",textAlign:"left",fontSize:10,fontWeight:700,color:"#64748b",borderBottom:"1px solid #e2e8f0",whiteSpace:"nowrap"}}>{h}</th>)}
+          </tr></thead>
+          <tbody>{list.map((pc,i)=><tr key={pc.id} style={{background:i%2===0?"#fff":"#fafafa",opacity:pc.active===false?0.5:1}}>
+            <td style={{padding:"8px 10px",fontFamily:"monospace",fontWeight:700,color:"#7c3aed",fontSize:11}}>{pc.id}</td>
+            <td style={{padding:"8px 10px",fontWeight:700}}>{pc.label}</td>
+            <td style={{padding:"8px 10px"}}>{pc.contact_name||<span style={{color:"#cbd5e1"}}>-</span>}</td>
+            <td style={{padding:"8px 10px",fontSize:11,color:"#64748b"}}>{pc.contact_email||<span style={{color:"#cbd5e1"}}>-</span>}</td>
+            <td style={{padding:"8px 10px",fontSize:11,color:"#64748b"}}>{pc.contact_tel||<span style={{color:"#cbd5e1"}}>-</span>}</td>
+            <td style={{padding:"8px 10px"}}>{pc.active===false?<span style={{fontSize:10,fontWeight:700,padding:"2px 6px",background:"#fee2e2",color:"#991b1b",borderRadius:4}}>停止</span>:<span style={{fontSize:10,fontWeight:700,padding:"2px 6px",background:"#dcfce7",color:"#15803d",borderRadius:4}}>有効</span>}</td>
+            <td style={{padding:"8px 10px",textAlign:"right",whiteSpace:"nowrap"}}>
+              <button onClick={()=>openEdit(pc)} style={{fontSize:11,padding:"4px 10px",background:"#eff6ff",color:"#2563eb",border:"1px solid #bfdbfe",borderRadius:6,cursor:"pointer",fontWeight:600,marginRight:6}}>編集</button>
+              {pc.active!==false&&<button onClick={()=>remove(pc)} style={{fontSize:11,padding:"4px 10px",background:"#fff",color:"#ef4444",border:"1px solid #fecaca",borderRadius:6,cursor:"pointer",fontWeight:600}}>停止</button>}
+            </td>
+          </tr>)}</tbody>
+        </table>
+      </div>}
+
+    {modal&&<div style={{position:"fixed",inset:0,background:"rgba(15,23,42,.55)",zIndex:9000,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"40px 16px",overflowY:"auto"}}>
+      <div style={{background:"#fff",borderRadius:14,width:"100%",maxWidth:480,boxShadow:"0 20px 60px rgba(0,0,0,.2)"}}>
+        <div style={{padding:"16px 20px",borderBottom:"1px solid #e2e8f0",display:"flex",alignItems:"center"}}>
+          <span style={{fontSize:16,fontWeight:800,flex:1}}>{modal.mode==="add"?"🏢 協力会社 新規登録":"✏️ 協力会社 編集"}</span>
+          <button onClick={close} style={{fontSize:20,background:"none",border:"none",cursor:"pointer",color:"#94a3b8"}}>✕</button>
+        </div>
+        <div style={{padding:"16px 20px",maxHeight:"70vh",overflowY:"auto"}}>
+          <div style={{marginBottom:12}}>
+            <label style={lS}>ID（半角英数+アンダースコア）<span style={{color:"#dc2626"}}>*</span></label>
+            <input value={form.id} onChange={e=>upF("id",e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g,""))} style={{...fS,fontFamily:"monospace",opacity:modal.mode==="edit"?0.5:1}} placeholder="PARTNER_001" disabled={modal.mode==="edit"}/>
+            <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>partner.html のURLパラメータに使用されます（変更不可）</div>
+          </div>
+          <div style={{marginBottom:12}}>
+            <label style={lS}>会社名（表示ラベル）<span style={{color:"#dc2626"}}>*</span></label>
+            <input value={form.label} onChange={e=>upF("label",e.target.value)} style={fS} placeholder="〇〇モータース"/>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+            <div><label style={lS}>担当者名</label><input value={form.contact_name} onChange={e=>upF("contact_name",e.target.value)} style={fS} placeholder="山田太郎"/></div>
+            <div><label style={lS}>電話番号</label><input value={form.contact_tel} onChange={e=>upF("contact_tel",e.target.value)} style={fS} placeholder="011-XXX-XXXX"/></div>
+          </div>
+          <div style={{marginBottom:12}}>
+            <label style={lS}>メールアドレス</label>
+            <input value={form.contact_email} onChange={e=>upF("contact_email",e.target.value)} style={fS} placeholder="xxx@partner.co.jp" inputMode="email"/>
+          </div>
+          <div style={{marginBottom:12}}>
+            <label style={lS}>メモ</label>
+            <input value={form.memo} onChange={e=>upF("memo",e.target.value)} style={fS} placeholder="任意の補足情報"/>
+          </div>
+          <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",fontSize:12,marginTop:14}}>
+            <input type="checkbox" checked={form.active!==false} onChange={e=>upF("active",e.target.checked)}/>
+            <span style={{fontWeight:700,color:form.active!==false?"#059669":"#dc2626"}}>有効</span>
+          </label>
+        </div>
+        <div style={{padding:"12px 20px",borderTop:"1px solid #e2e8f0",display:"flex",gap:8,justifyContent:"flex-end"}}>
+          <button onClick={close} style={{padding:"8px 20px",background:"#f1f5f9",color:"#475569",border:"none",borderRadius:8,fontSize:12,fontWeight:700,cursor:"pointer"}}>キャンセル</button>
+          <button onClick={save} disabled={saving} style={{padding:"8px 24px",background:"#7c3aed",color:"#fff",border:"none",borderRadius:8,fontSize:13,fontWeight:700,cursor:saving?"not-allowed":"pointer",opacity:saving?0.5:1}}>{saving?"保存中...":"保存"}</button>
+        </div>
+      </div>
     </div>}
   </div>;
 }
@@ -17638,7 +17753,14 @@ function App(){
             return null;
           })()}
           {tab==="seasonal"&&<div style={{padding:"0 0 16px"}}>
-            <iframe src={`./seasonal.html?area=spk&v=${APP_VERSION}`} style={{width:"100%",height:"calc(100vh - 120px)",minHeight:600,border:"none",borderRadius:8,background:"#f3f4f6",display:"block"}}/>
+            <div style={{background:"#dbeafe",border:"1px solid #93c5fd",borderRadius:8,padding:"8px 14px",marginBottom:8,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8,fontSize:"10.5pt",color:"#1e3a8a"}}>
+              <div>💹 <b>価格戦略マスター</b>（表示専用ミラー） — 編集は専用ページから</div>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                <a href="./import-prices.html?area=spk" target="_blank" style={{background:"#1e40af",color:"#fff",padding:"4px 12px",borderRadius:5,textDecoration:"none",fontWeight:700,fontSize:"9.5pt"}}>📝 価格入力</a>
+                <a href="./seasonal-config.html?area=spk" target="_blank" style={{background:"#16a34a",color:"#fff",padding:"4px 12px",borderRadius:5,textDecoration:"none",fontWeight:700,fontSize:"9.5pt"}}>📅 シーズナル設定</a>
+              </div>
+            </div>
+            <iframe src={`./pricing.html?area=spk&v=${APP_VERSION}`} style={{width:"100%",height:"calc(100vh - 180px)",minHeight:600,border:"none",borderRadius:8,background:"#f3f4f6",display:"block"}}/>
           </div>}
           {tab==="vehicle_rank"&&<VehicleRankingTab vehicles={vehicles} data={data} fleet={fleet} store="spk"/>}
         </div>
@@ -17963,7 +18085,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.152";
+const APP_VERSION="v4.7.153";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
