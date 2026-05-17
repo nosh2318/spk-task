@@ -1161,12 +1161,68 @@ async function loadAndRenderCashIn(y){
   });
   html+=`<tr style="background:#1e40af"><td style="padding:9px 10px;font-weight:900;color:#fff;font-size:11.5px;border-left:4px solid #60a5fa">💵 入金合計</td>`;
   YM12.forEach(ym=>{const v=mNet[ym]||0;const cur=ym===nowYM;html+=`<td style="padding:9px 5px;text-align:right;font-weight:900;color:#fff;${cur?'background:#1d4ed8;':''}">${v?'¥'+Math.round(v).toLocaleString():'—'}</td>`;});
-  html+=`<td style="padding:9px 8px;text-align:right;font-weight:900;color:#fff;background:#1e3a8a;font-size:12px">¥${Math.round(grandNet).toLocaleString()}</td></tr></tbody></table></div><div style="margin-top:8px;font-size:9pt;color:#94a3b8;padding:4px">※ HP=予約当月 / じゃらん=返却月 / 楽天=返却月+3ヶ月 / スカイ・エアトリ・RC・GoGoOut=返却月翌月</div>`;
+  html+=`<td style="padding:9px 8px;text-align:right;font-weight:900;color:#fff;background:#1e3a8a;font-size:12px">¥${Math.round(grandNet).toLocaleString()}</td></tr>`;
+  // コスト行プレースホルダー
+  html+=`<tr style="height:6px;background:#e2e8f0"><td colspan="14" style="padding:0"></td></tr>`;
+  html+=`<tr id="ci-cost-row" style="background:#fffbeb"><td style="padding:8px 10px;font-weight:700;color:#92400e;border-left:4px solid #f59e0b">💸 コスト取得中...</td>${YM12.map(()=>'<td style="text-align:right;color:#94a3b8">—</td>').join('')}<td style="color:#94a3b8;background:#fef3c7">—</td></tr>`;
+  html+=`<tr id="ci-bal-row" style="background:#0f172a"><td style="padding:10px 10px;font-weight:900;color:#fff;font-size:12px;border-left:4px solid #fbbf24">💰 残高（入金−支出）</td>${YM12.map(()=>'<td style="text-align:right;color:#64748b;font-weight:900">...</td>').join('')}<td style="color:#64748b;background:#111827;font-weight:900">...</td></tr>`;
+  html+=`</tbody></table></div><div style="margin-top:8px;font-size:9pt;color:#94a3b8;padding:4px">※ HP=予約当月 / じゃらん=返却月 / 楽天=返却月+3ヶ月 / スカイ・エアトリ・RC・GoGoOut=返却月翌月</div>`;
   document.getElementById('ct').innerHTML=html;
+  _ciLoadCostAndBalance(y,YM12,mNet,grandNet);
   }catch(e){
     document.getElementById('ct').innerHTML=`<div style="padding:40px;text-align:center;color:#dc2626">⚠️ エラー: ${e.message}</div>`;
     console.error('[CF]',e);
   }
+}
+
+async function _ciLoadCostAndBalance(y,YM12,mNet,yearGrandNet){
+  const nowYM_=new Date().getFullYear()+'-'+String(new Date().getMonth()+1).padStart(2,'0');
+  try{
+    const stores=store==='total'?['nha','spk']:[store];
+    const storeLabels={nha:'那覹',spk:'札幌'};
+    const MS=['01','02','03','04','05','06','07','08','09','10','11','12'];
+    const storeData={};
+    for(const s of stores){
+      const aTbl=s==='nha'?'nha_accounting':'spk_accounting';
+      const vTbl=s==='nha'?'nha_vehicles':'vehicles';
+      const logsT=s==='nha'?'nha_logs':'logs';
+      const logsQs=s==='nha'?`select=type,cost,date&date=gte.${y}-01-01&date=lte.${y}-12-31&type=in.(inspection,semi_annual,repair,other,oil)`:`select=type,cost,date&store_id=eq.sapporo&date=gte.${y}-01-01&date=lte.${y}-12-31&type=in.(inspection,semi_annual,repair,other,oil)`;
+      const [accts,vehs,logs,...cmRaws]=await Promise.all([sbq(aTbl,`select=type,category,amount,date&date=gte.${y}-01-01&date=lte.${y}-12-31`),sbq(vTbl,`select=insurance_annual,lease_monthly`),sbq(logsT,logsQs),...MS.map(mm=>sbgkey('nha_app_settings',`cm_${s}_${y}-${mm}`))]);
+      const d={sga:{},acct:{},cogs:{},repay:{}};YM12.forEach(ym=>{d.sga[ym]=0;d.acct[ym]=0;d.cogs[ym]=0;d.repay[ym]=0;});
+      cmRaws.forEach((raw,i)=>{const ym=y+'-'+MS[i];if(!raw)return;let v;try{v=typeof raw==='string'?JSON.parse(raw):raw;}catch(e){return;}Object.entries(v).forEach(([k,val])=>{if(!val||typeof val!=='number')return;if(k.startsWith('repay_'))d.repay[ym]+=(val||0);else if(k.startsWith('sga_'))d.sga[ym]+=(val||0);});});
+      const REVENUE=new Set(['sales','extra_sales','jalan_payment','advance_income']);
+      (accts||[]).forEach(a=>{const ym=(a.date||'').slice(0,7);if(d.acct[ym]===undefined||REVENUE.has(a.type)||a.type==='advance')return;if(+a.amount>0)d.acct[ym]+=(+a.amount||0);});
+      const fixedPerM=Math.round((vehs||[]).reduce((s,v)=>s+(+(v.insurance_annual||0)/12)+(+(v.lease_monthly||0)),0));
+      YM12.forEach(ym=>{d.cogs[ym]+=fixedPerM;});
+      (logs||[]).forEach(l=>{const ym=(l.date||'').slice(0,7);if(d.cogs[ym]!==undefined)d.cogs[ym]+=(+(l.cost||0));});
+      storeData[s]=d;
+    }
+    const sum={sga:{},acct:{},cogs:{},repay:{}};const perStoreRepay={};
+    YM12.forEach(ym=>{sum.sga[ym]=0;sum.acct[ym]=0;sum.cogs[ym]=0;sum.repay[ym]=0;});
+    stores.forEach(s=>{const d=storeData[s]||{};perStoreRepay[s]={};YM12.forEach(ym=>{sum.sga[ym]+=(d.sga?.[ym]||0);sum.acct[ym]+=(d.acct?.[ym]||0);sum.cogs[ym]+=(d.cogs?.[ym]||0);sum.repay[ym]+=(d.repay?.[ym]||0);perStoreRepay[s][ym]=(d.repay?.[ym]||0);});});
+    const incRow=document.getElementById('ci-cost-row');const balRow=document.getElementById('ci-bal-row');if(!incRow||!balRow)return;
+    const mkTd=(v,cur,bold,color)=>`<td style="padding:6px 5px;text-align:right;font-weight:${bold?700:400};${cur?'background:#fef3c7;':''}color:${v?(color||'#374151'):'#d1d5db'}">${v?'¥'+Math.round(v).toLocaleString():'—'}</td>`;
+    const mkYTd=(v,bg,fc)=>`<td style="padding:6px 8px;text-align:right;font-weight:700;background:${bg};color:${v?fc:'#94a3b8'}">¥${Math.round(v).toLocaleString()}</td>`;
+    const sep2=`<tr style="height:2px;background:#fef3c7"><td colspan="14" style="padding:0"></td></tr>`;
+    const hrv=`<tr style="height:3px;background:#f59e0b"><td colspan="14" style="padding:0"></td></tr>`;
+    const mkRow=(label,sub,dataMap,bold,color)=>{const yr=YM12.reduce((s,ym)=>s+(dataMap[ym]||0),0);let r=`<td style="padding:7px 10px;font-weight:${bold?900:700};color:${color||'#475569'};border-left:4px solid #f59e0b;font-size:10.5px">${label}<br><span style="font-size:8pt;color:#94a3b8;font-weight:400">${sub}</span></td>`;YM12.forEach(ym=>{r+=mkTd(dataMap[ym]||0,ym===nowYM_,bold,color);});r+=mkYTd(yr,'#fef9c3',color||'#92400e');return`<tr style="background:#fffbeb">${r}</tr>`;};
+    let rows=mkRow('📋 販管費①','手動入力（SGA）',sum.sga,false,'#475569');
+    rows+=sep2+mkRow('📊 販管費②','会計実績',sum.acct,false,'#475569');
+    rows+=sep2+mkRow('🚗 売上原価','車両固定費+整備',sum.cogs,false,'#475569');
+    if(stores.length>1){stores.forEach(s=>{rows+=sep2+mkRow(`💳 返済（${storeLabels[s]}）`,s+'店 コスト内訳',perStoreRepay[s],false,'#7c3aed');});}
+    else{rows+=sep2+mkRow('💳 返済','コスト内訳',sum.repay,false,'#7c3aed');}
+    rows+=hrv;
+    const totByYm={};YM12.forEach(ym=>{totByYm[ym]=(sum.sga[ym]||0)+(sum.acct[ym]||0)+(sum.cogs[ym]||0)+(sum.repay[ym]||0);});
+    const yrTot=YM12.reduce((s,ym)=>s+(totByYm[ym]||0),0);
+    let rTot=`<td style="padding:8px 10px;font-weight:900;color:#92400e;border-left:4px solid #f59e0b;font-size:11px">💸 総支出合計<br><span style="font-size:8pt;font-weight:400">①+②+原価+返済</span></td>`;
+    YM12.forEach(ym=>{rTot+=mkTd(totByYm[ym],ym===nowYM_,true,'#92400e');});rTot+=mkYTd(yrTot,'#f59e0b','#fff');
+    rows+=`<tr style="background:#fff7ed">${rTot}</tr>`;
+    const yrBal=yearGrandNet-yrTot;const ybc=yrBal>=0?'#34d399':'#f87171';
+    let rBal=`<td style="padding:10px 10px;font-weight:900;color:#fff;font-size:12px;border-left:4px solid #fbbf24">💰 残高（入金 − 総支出）</td>`;
+    YM12.forEach(ym=>{const bal=(mNet[ym]||0)-(totByYm[ym]||0);const bc=bal>=0?'#059669':'#dc2626';rBal+=`<td style="padding:10px 5px;text-align:right;font-weight:900;${ym===nowYM_?'background:#1f2937;':''}color:${bal?bc:'#64748b'}">¥${Math.round(bal).toLocaleString()}</td>`;});
+    rBal+=`<td style="padding:10px 8px;text-align:right;font-weight:900;color:${ybc};background:#111827;font-size:12px">¥${Math.round(yrBal).toLocaleString()}</td>`;
+    incRow.outerHTML=rows;balRow.innerHTML=rBal;
+  }catch(e){console.error('[CI cost]',e);const r=document.getElementById('ci-cost-row');if(r)r.innerHTML=`<td colspan="14" style="padding:8px;color:#dc2626">コスト取得エラー: ${e.message}</td>`;}
 }
 
 </script>
