@@ -1178,43 +1178,29 @@ async function loadAndRenderCashIn(y){
 async function _ciLoadCostAndBalance(y,YM12,mNet,yearGrandNet){
   const nowYM_=new Date().getFullYear()+'-'+String(new Date().getMonth()+1).padStart(2,'0');
   try{
-    const stores=store==='total'?['nha','spk']:[store];
-    const storeLabels={nha:'那覹',spk:'札幌'};
+    // 店舗ごと独立（合計モードなし）
+    const s=store==='total'?'spk':store;
     const MS=['01','02','03','04','05','06','07','08','09','10','11','12'];
-    const storeData={};
-    for(const s of stores){
-      const aTbl=s==='nha'?'nha_accounting':'spk_accounting';
-      const vTbl=s==='nha'?'nha_vehicles':'vehicles';
-      const logsT=s==='nha'?'nha_logs':'logs';
-      const logsQs=s==='nha'?`select=type,cost,date&date=gte.${y}-01-01&date=lte.${y}-12-31&type=in.(inspection,semi_annual,repair,other,oil)`:`select=type,cost,date&store_id=eq.sapporo&date=gte.${y}-01-01&date=lte.${y}-12-31&type=in.(inspection,semi_annual,repair,other,oil)`;
-      const [accts,vehs,logs,...cmRaws]=await Promise.all([sbq(aTbl,`select=type,category,amount,date&date=gte.${y}-01-01&date=lte.${y}-12-31`),sbq(vTbl,`select=insurance_annual,lease_monthly`),sbq(logsT,logsQs),...MS.map(mm=>sbgkey('nha_app_settings',`cm_${s}_${y}-${mm}`))]);
-      const d={sga:{},acct:{},cogs:{},repay:{}};YM12.forEach(ym=>{d.sga[ym]=0;d.acct[ym]=0;d.cogs[ym]=0;d.repay[ym]=0;});
-      cmRaws.forEach((raw,i)=>{const ym=y+'-'+MS[i];if(!raw)return;let v;try{v=typeof raw==='string'?JSON.parse(raw):raw;}catch(e){return;}Object.entries(v).forEach(([k,val])=>{if(!val||typeof val!=='number')return;if(k.startsWith('repay_'))d.repay[ym]+=(val||0);else if(k.startsWith('sga_'))d.sga[ym]+=(val||0);});});
-      const REVENUE=new Set(['sales','extra_sales','jalan_payment','advance_income']);
-      (accts||[]).forEach(a=>{const ym=(a.date||'').slice(0,7);if(d.acct[ym]===undefined||REVENUE.has(a.type)||a.type==='advance')return;if(+a.amount>0)d.acct[ym]+=(+a.amount||0);});
-      const fixedPerM=Math.round((vehs||[]).reduce((s,v)=>s+(+(v.insurance_annual||0)/12)+(+(v.lease_monthly||0)),0));
-      YM12.forEach(ym=>{d.cogs[ym]+=fixedPerM;});
-      (logs||[]).forEach(l=>{const ym=(l.date||'').slice(0,7);if(d.cogs[ym]!==undefined)d.cogs[ym]+=(+(l.cost||0));});
-      storeData[s]=d;
-    }
-    const sum={sga:{},acct:{},cogs:{},repay:{}};const perStoreRepay={};
-    YM12.forEach(ym=>{sum.sga[ym]=0;sum.acct[ym]=0;sum.cogs[ym]=0;sum.repay[ym]=0;});
-    stores.forEach(s=>{const d=storeData[s]||{};perStoreRepay[s]={};YM12.forEach(ym=>{sum.sga[ym]+=(d.sga?.[ym]||0);sum.acct[ym]+=(d.acct?.[ym]||0);sum.cogs[ym]+=(d.cogs?.[ym]||0);sum.repay[ym]+=(d.repay?.[ym]||0);perStoreRepay[s][ym]=(d.repay?.[ym]||0);});});
+    function _buildCmIdMapSpk(ST){const map={};(ST||[]).forEach(grp=>{const pfx=grp.code_prefix||'';(grp.items||[]).forEach(item=>{map[item.id]=pfx;(item.subs||[]).forEach(sub=>{map[sub.id]=pfx;});});});return map;}
+    const [stRaw,...cmRaws]=await Promise.all([sbgkey('nha_app_settings',`cm_st_${s}`),...MS.map(mm=>sbgkey('nha_app_settings',`cm_${s}_${y}-${mm}`))]);
+    let ST=[];try{ST=stRaw?JSON.parse(stRaw):[];}catch(e){}
+    const idMap=_buildCmIdMapSpk(ST);
+    const sum={sga:{},cogs:{},repay:{}};
+    YM12.forEach(ym=>{sum.sga[ym]=0;sum.cogs[ym]=0;sum.repay[ym]=0;});
+    cmRaws.forEach((raw,i)=>{const ym=y+'-'+MS[i];if(!raw)return;let v;try{v=typeof raw==='string'?JSON.parse(raw):raw;}catch(e){return;}Object.entries(v).forEach(([id,val])=>{if(!val||typeof val!=='number')return;const pfx=idMap[id]||'';if(pfx==='sga')sum.sga[ym]+=(val||0);else if(pfx==='cogs')sum.cogs[ym]+=(val||0);else if(pfx==='repay')sum.repay[ym]+=(val||0);});});
     const incRow=document.getElementById('ci-cost-row');const balRow=document.getElementById('ci-bal-row');if(!incRow||!balRow)return;
     const mkTd=(v,cur,bold,color)=>`<td style="padding:6px 5px;text-align:right;font-weight:${bold?700:400};${cur?'background:#fef3c7;':''}color:${v?(color||'#374151'):'#d1d5db'}">${v?'¥'+Math.round(v).toLocaleString():'—'}</td>`;
     const mkYTd=(v,bg,fc)=>`<td style="padding:6px 8px;text-align:right;font-weight:700;background:${bg};color:${v?fc:'#94a3b8'}">¥${Math.round(v).toLocaleString()}</td>`;
     const sep2=`<tr style="height:2px;background:#fef3c7"><td colspan="14" style="padding:0"></td></tr>`;
     const hrv=`<tr style="height:3px;background:#f59e0b"><td colspan="14" style="padding:0"></td></tr>`;
     const mkRow=(label,sub,dataMap,bold,color)=>{const yr=YM12.reduce((s,ym)=>s+(dataMap[ym]||0),0);let r=`<td style="padding:7px 10px;font-weight:${bold?900:700};color:${color||'#475569'};border-left:4px solid #f59e0b;font-size:10.5px">${label}<br><span style="font-size:8pt;color:#94a3b8;font-weight:400">${sub}</span></td>`;YM12.forEach(ym=>{r+=mkTd(dataMap[ym]||0,ym===nowYM_,bold,color);});r+=mkYTd(yr,'#fef9c3',color||'#92400e');return`<tr style="background:#fffbeb">${r}</tr>`;};
-    let rows=mkRow('📋 販管費①','手動入力（SGA）',sum.sga,false,'#475569');
-    rows+=sep2+mkRow('📊 販管費②','会計実績',sum.acct,false,'#475569');
-    rows+=sep2+mkRow('🚗 売上原価','車両固定費+整備',sum.cogs,false,'#475569');
-    if(stores.length>1){stores.forEach(s=>{rows+=sep2+mkRow(`💳 返済（${storeLabels[s]}）`,s+'店 コスト内訳',perStoreRepay[s],false,'#7c3aed');});}
-    else{rows+=sep2+mkRow('💳 返済','コスト内訳',sum.repay,false,'#7c3aed');}
+    let rows=mkRow('📋 販管費','販管費（SGA）',sum.sga,false,'#475569');
+    rows+=sep2+mkRow('🚗 売上原価','売上原価（COGS）',sum.cogs,false,'#d97706');
+    rows+=sep2+mkRow('💳 返済','返済（CFのみ）',sum.repay,false,'#7c3aed');
     rows+=hrv;
-    const totByYm={};YM12.forEach(ym=>{totByYm[ym]=(sum.sga[ym]||0)+(sum.acct[ym]||0)+(sum.cogs[ym]||0)+(sum.repay[ym]||0);});
+    const totByYm={};YM12.forEach(ym=>{totByYm[ym]=(sum.sga[ym]||0)+(sum.cogs[ym]||0)+(sum.repay[ym]||0);});
     const yrTot=YM12.reduce((s,ym)=>s+(totByYm[ym]||0),0);
-    let rTot=`<td style="padding:8px 10px;font-weight:900;color:#92400e;border-left:4px solid #f59e0b;font-size:11px">💸 総支出合計<br><span style="font-size:8pt;font-weight:400">①+②+原価+返済</span></td>`;
+    let rTot=`<td style="padding:8px 10px;font-weight:900;color:#92400e;border-left:4px solid #f59e0b;font-size:11px">💸 総支出合計<br><span style="font-size:8pt;font-weight:400">販管費+原価+返済</span></td>`;
     YM12.forEach(ym=>{rTot+=mkTd(totByYm[ym],ym===nowYM_,true,'#92400e');});rTot+=mkYTd(yrTot,'#f59e0b','#fff');
     rows+=`<tr style="background:#fff7ed">${rTot}</tr>`;
     const yrBal=yearGrandNet-yrTot;const ybc=yrBal>=0?'#34d399':'#f87171';
