@@ -1181,37 +1181,127 @@ async function _ciLoadCostAndBalance(y,YM12,mNet,yearGrandNet){
     // 店舗ごと独立（合計モードなし）
     const s=store==='total'?'spk':store;
     const MS=['01','02','03','04','05','06','07','08','09','10','11','12'];
-    function _buildCmIdMapSpk(ST){const map={};(ST||[]).forEach(grp=>{const pfx=grp.code_prefix||'';(grp.items||[]).forEach(item=>{map[item.id]=pfx;(item.subs||[]).forEach(sub=>{map[sub.id]=pfx;});});});return map;}
-    const [stRaw,...cmRaws]=await Promise.all([sbgkey('nha_app_settings',`cm_st_${s}`),...MS.map(mm=>sbgkey('nha_app_settings',`cm_${s}_${y}-${mm}`))]);
-    let ST=[];try{ST=stRaw?JSON.parse(stRaw):[];}catch(e){}
-    const idMap=_buildCmIdMapSpk(ST);
-    const sum={sga:{},cogs:{},repay:{}};
-    YM12.forEach(ym=>{sum.sga[ym]=0;sum.cogs[ym]=0;sum.repay[ym]=0;});
-    cmRaws.forEach((raw,i)=>{const ym=y+'-'+MS[i];if(!raw)return;let v;try{v=typeof raw==='string'?JSON.parse(raw):raw;}catch(e){return;}Object.entries(v).forEach(([id,val])=>{if(!val||typeof val!=='number')return;const pfx=idMap[id]||'';if(pfx==='sga')sum.sga[ym]+=(val||0);else if(pfx==='cogs')sum.cogs[ym]+=(val||0);else if(pfx==='repay')sum.repay[ym]+=(val||0);});});
-    const incRow=document.getElementById('ci-cost-row');const balRow=document.getElementById('ci-bal-row');if(!incRow||!balRow)return;
-    const mkTd=(v,cur,bold,color)=>`<td style="padding:6px 5px;text-align:right;font-weight:${bold?700:400};${cur?'background:#fef3c7;':''}color:${v?(color||'#374151'):'#d1d5db'}">${v?'¥'+Math.round(v).toLocaleString():'—'}</td>`;
-    const mkYTd=(v,bg,fc)=>`<td style="padding:6px 8px;text-align:right;font-weight:700;background:${bg};color:${v?fc:'#94a3b8'}">¥${Math.round(v).toLocaleString()}</td>`;
-    const sep2=`<tr style="height:2px;background:#fef3c7"><td colspan="14" style="padding:0"></td></tr>`;
-    const hrv=`<tr style="height:3px;background:#f59e0b"><td colspan="14" style="padding:0"></td></tr>`;
-    const mkRow=(label,sub,dataMap,bold,color)=>{const yr=YM12.reduce((s,ym)=>s+(dataMap[ym]||0),0);let r=`<td style="padding:7px 10px;font-weight:${bold?900:700};color:${color||'#475569'};border-left:4px solid #f59e0b;font-size:10.5px">${label}<br><span style="font-size:8pt;color:#94a3b8;font-weight:400">${sub}</span></td>`;YM12.forEach(ym=>{r+=mkTd(dataMap[ym]||0,ym===nowYM_,bold,color);});r+=mkYTd(yr,'#fef9c3',color||'#92400e');return`<tr style="background:#fffbeb">${r}</tr>`;};
-    let rows=mkRow('📋 販管費','販管費（SGA）',sum.sga,false,'#475569');
-    rows+=sep2+mkRow('🚗 売上原価','売上原価（COGS）',sum.cogs,false,'#d97706');
-    rows+=sep2+mkRow('💳 返済','返済（CFのみ）',sum.repay,false,'#7c3aed');
+    const aTbl=s==='nha'?'nha_accounting':'spk_accounting';
+    const vTbl=s==='nha'?'nha_vehicles':'vehicles';
+    const logsT=s==='nha'?'nha_logs':'logs';
+    const logsQs=s==='nha'
+      ?`select=type,cost,date&date=gte.${y}-01-01&date=lte.${y}-12-31&type=in.(inspection,semi_annual,repair,other)`
+      :`select=type,cost,date&store_id=eq.sapporo&date=gte.${y}-01-01&date=lte.${y}-12-31&type=in.(inspection,semi_annual,repair,other,oil)`;
+    // ST + cm_月別 + 会計実績 + 車両保険 + 整備記録 を並列取得（メイン集計と同一ソース）
+    const [stRaw,accts,vehRaw,logsData,...cmRaws]=await Promise.all([
+      sbgkey('nha_app_settings',`cm_st_${s}`),
+      sbq(aTbl,`select=type,category,amount,date&date=gte.${y}-01-01&date=lte.${y}-12-31`),
+      sbq(vTbl,`select=insurance_annual`),
+      sbq(logsT,logsQs),
+      ...MS.map(mm=>sbgkey('nha_app_settings',`cm_${s}_${y}-${mm}`))
+    ]);
+    // 集計初期化
+    const sum={sga:{},acctActual:{},cogs:{},repay:{}};
+    YM12.forEach(ym=>{sum.sga[ym]=0;sum.acctActual[ym]=0;sum.cogs[ym]=0;sum.repay[ym]=0;});
+    // ① 会計実績 → 販管費②（整備カテゴリは除外）
+    (accts||[]).forEach(r=>{
+      const ym=y+'-'+(r.date||'').slice(5,7);
+      if(!YM12.includes(ym))return;
+      const a=r.amount||0,cat=r.category||'';
+      if((r.type==='cash_out'||r.type==='card_pay')&&!/修理|車検|点検|整備/.test(cat))sum.acctActual[ym]+=a;
+    });
+    // ② 整備記録 → 売上原価
+    (logsData||[]).forEach(r=>{
+      const ym=y+'-'+(r.date||'').slice(5,7);
+      if(!YM12.includes(ym))return;
+      sum.cogs[ym]+=(Number(r.cost)||0);
+    });
+    // ③ 車両保険（月額）→ 売上原価
+    const vIns=(vehRaw||[]).reduce((acc,v)=>acc+(v.insurance_annual||0),0);
+    YM12.forEach(ym=>{sum.cogs[ym]+=vIns;});
+    // ④ STからID集合を動的構築（メイン集計と同一ロジック）
+    const AUTO_SGA=['sga_social_ins'],AUTO_COGS=['cogs_insurance'];
+    const SGA_IDS=new Set(['s2a','s2b','s2c','s2d','s2e','s2f','s2g','s2h','s3a','s3b','s3c','s3d','s4','s4a','s11','s11a','s12','s12a','s13','s13a','s14','s14a']);
+    const COGS_IDS=new Set(['c1a','c1b','c1c','c1d','c1e','c6a','c6b','c6c','c6d','c6e','c6f','c7']);
+    const SALARY_IDS=new Set(['s2a','s2b','s2c','s2d','s2e','s2f','s2g','s2h']);
+    const REPAY_IDS=new Set(['r1','r2','r3','r4','r5','r6','r7','r8']);
+    try{
+      if(stRaw){
+        const st=JSON.parse(stRaw);
+        const sgSec=st.find(x=>x.id==='sg'),cgSec=st.find(x=>x.id==='cg'),rg=st.find(x=>x.id==='rg');
+        if(sgSec){
+          SGA_IDS.clear();SALARY_IDS.clear();
+          (sgSec.items||[]).forEach(item=>{
+            if(AUTO_SGA.includes(item.code))return;
+            if(item.g){(item.subs||[]).forEach(sub=>{SGA_IDS.add(sub.id);if(item.code==='sga_salary')SALARY_IDS.add(sub.id);});}
+            else SGA_IDS.add(item.id);
+          });
+          ['s4','s11','s12','s13','s14'].forEach(id=>SGA_IDS.add(id));
+        }
+        if(cgSec){
+          COGS_IDS.clear();
+          (cgSec.items||[]).forEach(item=>{
+            if(AUTO_COGS.includes(item.code))return;
+            if(item.g){(item.subs||[]).forEach(sub=>COGS_IDS.add(sub.id));}
+            else COGS_IDS.add(item.id);
+          });
+          ['c7'].forEach(id=>COGS_IDS.add(id));
+        }
+        if(rg){REPAY_IDS.clear();(rg.items||[]).forEach(i=>REPAY_IDS.add(i.id));}
+      }
+    }catch(e){}
+    // ⑤ cm_月別データ → 販管費①（SGA）+ 売上原価（COGS）+ 返済（Repay）
+    cmRaws.forEach((raw,i)=>{
+      const ym=y+'-'+MS[i];if(!raw)return;
+      let v;try{v=typeof raw==='string'?JSON.parse(raw):raw;}catch(e){return;}
+      let salarySum=0;
+      Object.entries(v).forEach(([id,amt])=>{
+        const a=Number(amt)||0;if(a<=0)return;
+        if(SGA_IDS.has(id))sum.sga[ym]+=a;
+        if(SALARY_IDS.has(id))salarySum+=a;
+        if(COGS_IDS.has(id))sum.cogs[ym]+=a;
+        if(REPAY_IDS.has(id))sum.repay[ym]+=a;
+      });
+      sum.sga[ym]+=Math.round(salarySum*0.15); // 社会保険（給与×15%）
+    });
+    // HTML生成
+    const incRow=document.getElementById('ci-cost-row');
+    const balRow=document.getElementById('ci-bal-row');
+    if(!incRow||!balRow)return;
+    const sep2=`<tr style="height:2px;background:#f1f5f9"><td colspan="14" style="padding:0"></td></tr>`;
+    const hrv=`<tr style="height:3px;background:#e2e8f0"><td colspan="14" style="padding:0"></td></tr>`;
+    const mkCostTd=(v,cur,color)=>`<td style="padding:6px 5px;text-align:right;font-weight:${v?600:400};${cur?'background:#fef3c7;':''}color:${v?(color||'#374151'):'#d1d5db'}">${v?'¥'+Math.round(v).toLocaleString():'—'}</td>`;
+    const mkCostYr=(v,bg,fc)=>`<td style="padding:7px 8px;text-align:right;font-weight:700;background:${bg};color:${v?fc:'#94a3b8'}">¥${Math.round(v).toLocaleString()}</td>`;
+    const mkCostRow=(label,sub,dataMap,color,bg,bl)=>{
+      const yr=YM12.reduce((s,ym)=>s+(dataMap[ym]||0),0);
+      let r=`<td style="padding:7px 10px;font-weight:700;color:${color};background:${bg};border-left:4px solid ${bl};font-size:10.5px">${label}<br><span style="font-size:8pt;color:#94a3b8;font-weight:400">${sub}</span></td>`;
+      YM12.forEach(ym=>{r+=mkCostTd(dataMap[ym]||0,ym===nowYM_,color);});
+      r+=mkCostYr(yr,bg,color);
+      return`<tr style="background:${bg}">${r}</tr>`;
+    };
+    // 4行：コスト内訳ページと同じ数字をミラーリング
+    let rows='';
+    rows+=mkCostRow('📋 販管費①','手動入力',sum.sga,'#991b1b','#fff5f5','#f87171');
+    rows+=sep2;
+    rows+=mkCostRow('📊 販管費②','会計実績',sum.acctActual,'#1d4ed8','#eff6ff','#93c5fd');
+    rows+=sep2;
+    rows+=mkCostRow('🚗 売上原価','リース/保険/修理等',sum.cogs,'#92400e','#fffbeb','#f59e0b');
+    rows+=sep2;
+    rows+=mkCostRow('🏦 返済','',sum.repay,'#6d28d9','#f5f3ff','#a78bfa');
     rows+=hrv;
-    const totByYm={};YM12.forEach(ym=>{totByYm[ym]=(sum.sga[ym]||0)+(sum.cogs[ym]||0)+(sum.repay[ym]||0);});
-    const yrTot=YM12.reduce((s,ym)=>s+(totByYm[ym]||0),0);
+    // 入金合計（再掲）
+    const yearNet2=YM12.reduce((s,ym)=>s+(mNet[ym]||0),0);
     let rInc=`<td style="padding:9px 10px;font-weight:900;color:#fff;font-size:11.5px;border-left:4px solid #60a5fa;background:#1e40af">💵 入金合計</td>`;
-    YM12.forEach(ym=>{const v=mNet[ym]||0;const cur=ym===nowYM_;rInc+=`<td style="padding:9px 5px;text-align:right;font-weight:900;color:#fff;background:${cur?'#1d4ed8':'#1e40af'}">${v?'¥'+Math.round(v).toLocaleString():'—'}</td>`;});
-    rInc+=`<td style="padding:9px 8px;text-align:right;font-weight:900;color:#fff;background:#1e3a8a;font-size:12px">¥${Math.round(yearGrandNet).toLocaleString()}</td>`;
+    YM12.forEach(ym=>{const v=mNet[ym]||0;rInc+=`<td style="padding:9px 5px;text-align:right;font-weight:900;color:#fff;background:${ym===nowYM_?'#1d4ed8':'#1e40af'}">${v?'¥'+Math.round(v).toLocaleString():'—'}</td>`;});
+    rInc+=`<td style="padding:9px 8px;text-align:right;font-weight:900;color:#fff;background:#1e3a8a;font-size:12px">¥${Math.round(yearNet2).toLocaleString()}</td>`;
     rows+=`<tr>${rInc}</tr>`;
+    // 総支出（販管費①＋②＋売上原価＋返済）
+    const totByYm={};YM12.forEach(ym=>{totByYm[ym]=(sum.sga[ym]||0)+(sum.acctActual[ym]||0)+(sum.cogs[ym]||0)+(sum.repay[ym]||0);});
+    const yrTot=YM12.reduce((s,ym)=>s+(totByYm[ym]||0),0);
     let rTot=`<td style="padding:9px 10px;font-weight:900;color:#fff;font-size:11.5px;border-left:4px solid #f59e0b;background:#92400e">💸 総支出合計</td>`;
-    YM12.forEach(ym=>{const v=totByYm[ym]||0;const cur=ym===nowYM_;rTot+=`<td style="padding:9px 5px;text-align:right;font-weight:900;color:#fff;background:${cur?'#78350f':'#92400e'}">${v?'¥'+Math.round(v).toLocaleString():'—'}</td>`;});
+    YM12.forEach(ym=>{const v=totByYm[ym]||0;rTot+=`<td style="padding:9px 5px;text-align:right;font-weight:900;color:#fff;background:${ym===nowYM_?'#78350f':'#92400e'}">${v?'¥'+Math.round(v).toLocaleString():'—'}</td>`;});
     rTot+=`<td style="padding:9px 8px;text-align:right;font-weight:900;color:#fff;background:#78350f;font-size:12px">¥${Math.round(yrTot).toLocaleString()}</td>`;
     rows+=`<tr>${rTot}</tr>`;
     incRow.outerHTML=rows;
-    const yrBal=yearGrandNet-yrTot;const ybc=yrBal>=0?'#34d399':'#f87171';
+    // 残高
+    const yrBal=yearNet2-yrTot;const ybc=yrBal>=0?'#34d399':'#f87171';
     let rBal=`<td style="padding:11px 10px;font-weight:900;color:#fbbf24;font-size:13px;border-left:4px solid #fbbf24">💰 残高（入金 − 総支出）</td>`;
-    YM12.forEach(ym=>{const bal=(mNet[ym]||0)-(totByYm[ym]||0);const bc=bal>=0?'#34d399':'#f87171';const cur=ym===nowYM_;rBal+=`<td style="padding:11px 5px;text-align:right;font-weight:900;${cur?'background:#1f2937;':''}color:${bal?bc:'#64748b'};font-size:12px">¥${Math.round(bal).toLocaleString()}</td>`;});
+    YM12.forEach(ym=>{const bal=(mNet[ym]||0)-(totByYm[ym]||0);const bc=bal>=0?'#34d399':'#f87171';rBal+=`<td style="padding:11px 5px;text-align:right;font-weight:900;${ym===nowYM_?'background:#1f2937;':''}color:${bal?bc:'#64748b'};font-size:12px">¥${Math.round(bal).toLocaleString()}</td>`;});
     rBal+=`<td style="padding:11px 8px;text-align:right;font-weight:900;color:${ybc};background:#000;font-size:13px">¥${Math.round(yrBal).toLocaleString()}</td>`;
     balRow.innerHTML=rBal;
   }catch(e){console.error('[CI cost]',e);const r=document.getElementById('ci-cost-row');if(r)r.innerHTML=`<td colspan="14" style="padding:8px;color:#dc2626">コスト取得エラー: ${e.message}</td>`;}
