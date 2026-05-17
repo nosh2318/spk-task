@@ -1115,6 +1115,15 @@ function saveCIFee(f){try{localStorage.setItem(CI_FEE_KEY,JSON.stringify(f));}ca
 function applyFee(amount,ota){const fee=loadCIFee();const rate=(fee[ota]??CI_FEE_DEFAULT[ota]??0);return Math.round(amount*(1-rate/100));}
 function saveCIFeeAndReload(){const fee={};['HP','J','S','O','R','RC','G'].forEach(o=>{const el=document.getElementById('ci-fee-'+o);if(el)fee[o]=parseFloat(el.value)||0;});saveCIFee(fee);load();}
 function resetCIFee(){saveCIFee({...CI_FEE_DEFAULT});load();}
+// ===== 調整枠・残高 =====
+window._ciGS={};
+function _ciAdjLoad(s,y){try{return JSON.parse(localStorage.getItem('ci_adj_'+s+'_'+y))||{ls:['調整①','調整②','調整③'],d:[{},{},{}]};}catch(e){return{ls:['調整①','調整②','調整③'],d:[{},{},{}]};}}
+function _ciAdjSave(s,y,a){try{localStorage.setItem('ci_adj_'+s+'_'+y,JSON.stringify(a));}catch(e){}}
+function _ciObLoad(s,y){try{return parseInt(localStorage.getItem('ci_ob_'+s+'_'+y))||0;}catch(e){return 0;}}
+function _ciObSave(s,y,v){try{localStorage.setItem('ci_ob_'+s+'_'+y,String(v));}catch(e){}}
+function _ciAdjChange(idx,ym){const gs=window._ciGS;if(!gs.y)return;const el=document.getElementById('ci-adj-'+idx+'-'+ym);if(!el)return;const v=parseInt(el.value)||0;const a=_ciAdjLoad(gs.s,gs.y);if(v)a.d[idx][ym]=v;else delete a.d[idx][ym];_ciAdjSave(gs.s,gs.y,a);_ciLoadCostAndBalance(gs.y,gs.YM12,gs.mNet,gs.grandNet);}
+function _ciAdjLabel(idx){const gs=window._ciGS;if(!gs.y)return;const el=document.getElementById('ci-adj-l-'+idx);if(!el)return;const a=_ciAdjLoad(gs.s,gs.y);a.ls[idx]=el.value||'調整'+(idx+1);_ciAdjSave(gs.s,gs.y,a);}
+function _ciObChange(){const gs=window._ciGS;if(!gs.y)return;const el=document.getElementById('ci-ob-input');if(!el)return;const v=parseInt(el.value)||0;_ciObSave(gs.s,gs.y,v);_ciLoadCostAndBalance(gs.y,gs.YM12,gs.mNet,gs.grandNet);}
 const OTA_CI={HP:{label:'HP/SP',color:'#d97706',months:0,base:'booking'},SP:{label:'HP/SP',color:'#d97706',months:0,base:'booking'},J:{label:'じゃらん',color:'#059669',months:0,base:'return'},RC:{label:'RCドットコム',color:'#0891b2',months:1,base:'return'},G:{label:'GoGoOut',color:'#db2777',months:1,base:'return'},O:{label:'エアトリ',color:'#7c3aed',months:1,base:'return'},S:{label:'スカイ',color:'#2563eb',months:1,base:'return'},R:{label:'楽天',color:'#dc2626',months:3,base:'return'}};
 const CI_ORDER=['HP','J','S','O','R','RC','G'];
 function _ciYmAdd(ym,n){let[y,m]=ym.split('-').map(Number);m+=n;while(m>12){m-=12;y++;}while(m<1){m+=12;y--;}return y+'-'+String(m).padStart(2,'0');}
@@ -1146,9 +1155,15 @@ async function loadAndRenderCashIn(y){
   CI_ORDER.filter(o=>o!=='SP').forEach(ota=>{gross[ota]={};feeAmt[ota]={};net[ota]={};const fr=fee[ota]??CI_FEE_DEFAULT[ota]??0;YM12.forEach(ym=>{const g=merged[ym][ota]||0;const f=Math.round(g*fr/100);gross[ota][ym]=g;feeAmt[ota][ym]=f;net[ota][ym]=g-f;});});
   const mNet={};let grandNet=0;YM12.forEach(ym=>{mNet[ym]=CI_ORDER.filter(o=>o!=='SP').reduce((s,o)=>s+(net[o][ym]||0),0);grandNet+=mNet[ym];});
   const q=[1,2,3,4].map(qi=>{const ms=[(qi-1)*3+1,(qi-1)*3+2,(qi-1)*3+3];return ms.reduce((s,m)=>s+(mNet[y+'-'+String(m).padStart(2,'0')]||0),0);});
+  const ciS=store==='total'?'spk':store;
+  window._ciGS={y,YM12,mNet,grandNet,s:ciS};
+  const adjD=_ciAdjLoad(ciS,y);const obV=_ciObLoad(ciS,y);
   let html=feeHtml+`<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:14px">${q.map((v,i)=>`<div style="background:#fff;border-radius:8px;padding:10px 12px;border:1px solid #e2e8f0"><div style="font-size:8.5pt;color:#64748b;font-weight:700">Q${i+1}（${i*3+1}-${i*3+3}月）入金</div><div style="font-size:13pt;font-weight:900;color:#1e293b">¥${Math.round(v).toLocaleString()}</div></div>`).join('')}<div style="background:#eff6ff;border-radius:8px;padding:10px 12px;border:1px solid #bfdbfe"><div style="font-size:8.5pt;color:#1e40af;font-weight:700">年間 入金合計</div><div style="font-size:13pt;font-weight:900;color:#1e40af">¥${Math.round(grandNet).toLocaleString()}</div></div></div>
-  <div style="overflow-x:auto;background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.07)"><div style="background:#1e293b;color:#fff;padding:8px 14px;font-size:10.5pt;font-weight:700">💵 月別実入金予測 — ${y}年</div>
-  <table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr><th style="background:#334155;color:#e2e8f0;padding:7px 10px;text-align:left;min-width:130px">OTA / 区分</th>${YM12.map((ym,i)=>`<th style="background:${ym===nowYM?'#1e40af':'#334155'};color:#e2e8f0;padding:7px 5px;text-align:right;white-space:nowrap">${ML[i]}</th>`).join('')}<th style="background:#1e3a8a;color:#fff;padding:7px 8px;text-align:right;white-space:nowrap">年計</th></tr></thead><tbody>`;
+  <div style="background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.07)"><div style="background:#1e293b;color:#fff;padding:8px 14px;font-size:10.5pt;font-weight:700">💵 月別実入金予測 — ${y}年</div>
+  <div style="overflow-x:auto"><div style="overflow-y:auto;max-height:72vh">
+  <table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr style="position:sticky;top:0;z-index:20"><th style="position:sticky;top:0;background:#334155;color:#e2e8f0;padding:7px 10px;text-align:left;min-width:140px;z-index:21">OTA / 区分</th>${YM12.map((ym,i)=>`<th style="position:sticky;top:0;background:${ym===nowYM?'#1e40af':'#334155'};color:#e2e8f0;padding:7px 5px;text-align:right;white-space:nowrap">${ML[i]}</th>`).join('')}<th style="position:sticky;top:0;background:#1e3a8a;color:#fff;padding:7px 8px;text-align:right;white-space:nowrap">年計</th></tr></thead><tbody>
+  <tr style="background:#ecfdf5;border-bottom:2px solid #6ee7b7"><td style="padding:6px 10px;font-weight:700;color:#059669;white-space:nowrap">💰 月初残高<br><input id="ci-ob-input" type="number" value="${obV||''}" placeholder="0" onchange="_ciObChange()" style="width:90px;border:1px solid #a7f3d0;border-radius:4px;padding:2px 5px;font-size:9pt;color:#047857;margin-top:2px"></td>${YM12.map(ym=>`<td id="ci-ob-${ym}" style="padding:6px 5px;text-align:right;font-weight:700;color:#94a3b8">—</td>`).join('')}<td style="padding:6px 8px;text-align:right;color:#94a3b8">—</td></tr>
+  <tr style="height:3px;background:#d1fae5"><td colspan="14" style="padding:0"></td></tr>`;
   CI_ORDER.filter(o=>o!=='SP').forEach(ota=>{
     const c=OTA_CI[ota];const lbl=ota==='HP'?'HP/SP':c.label;const fr=fee[ota]??CI_FEE_DEFAULT[ota]??0;
     const yG=YM12.reduce((s,ym)=>s+(gross[ota][ym]||0),0);const yF=YM12.reduce((s,ym)=>s+(feeAmt[ota][ym]||0),0);const yN=YM12.reduce((s,ym)=>s+(net[ota][ym]||0),0);
@@ -1159,14 +1174,25 @@ async function loadAndRenderCashIn(y){
     html+=`<tr style="background:#f0fdf4"><td style="padding:5px 10px 8px;font-weight:900;color:#059669;border-left:3px solid ${c.color};border-bottom:2px solid #bbf7d0;font-size:10.5px">入金予定</td>`;YM12.forEach(ym=>{const v=net[ota][ym]||0;const cur=ym===nowYM;html+=`<td style="padding:5px 4px 8px;text-align:right;font-weight:700;${cur?'background:#dcfce7;':''}color:${v?'#059669':'#d1d5db'};border-bottom:2px solid #bbf7d0">${v?'¥'+Math.round(v).toLocaleString():'—'}</td>`;});html+=`<td style="padding:5px 8px 8px;text-align:right;font-weight:900;color:#fff;background:#059669;border-bottom:2px solid #bbf7d0">${yN?'¥'+Math.round(yN).toLocaleString():'—'}</td></tr>`;
     html+=`<tr style="height:4px;background:#f1f5f9"><td colspan="14" style="padding:0"></td></tr>`;
   });
+  // 調整枠 3行（入金合計の直上）
+  html+=`<tr style="height:4px;background:#fef3c7"><td colspan="14" style="padding:0"></td></tr>`;
+  for(let ai=0;ai<3;ai++){
+    const aLabel=adjD.ls[ai]||('調整'+(ai+1));
+    html+=`<tr style="background:#fffbeb"><td style="padding:5px 8px;font-size:10px"><input id="ci-adj-l-${ai}" type="text" value="${aLabel}" onblur="_ciAdjLabel(${ai})" style="width:70px;border:none;border-bottom:1px dashed #d97706;background:transparent;font-size:9.5px;color:#92400e;font-weight:700;outline:none"></td>`;
+    let adjYrTotal=0;
+    YM12.forEach(ym=>{const v=(adjD.d[ai]||{})[ym]||0;adjYrTotal+=v;html+=`<td style="padding:3px 4px"><input type="number" id="ci-adj-${ai}-${ym}" value="${v||''}" onchange="_ciAdjChange(${ai},'${ym}')" style="width:100%;border:1px solid #fed7aa;border-radius:3px;padding:2px 4px;font-size:9.5px;text-align:right;color:${v>=0?'#92400e':'#dc2626'};background:#fff7ed;outline:none"></td>`;});
+    html+=`<td id="ci-adj-yr-${ai}" style="padding:5px 6px;text-align:right;font-size:9.5px;font-weight:700;color:${adjYrTotal>=0?'#92400e':'#dc2626'};background:#fef3c7">${adjYrTotal?'¥'+Math.round(adjYrTotal).toLocaleString():'—'}</td></tr>`;
+  }
+  html+=`<tr style="height:3px;background:#f59e0b"><td colspan="14" style="padding:0"></td></tr>`;
   html+=`<tr style="background:#1e40af"><td style="padding:9px 10px;font-weight:900;color:#fff;font-size:11.5px;border-left:4px solid #60a5fa">💵 入金合計</td>`;
-  YM12.forEach(ym=>{const v=mNet[ym]||0;const cur=ym===nowYM;html+=`<td style="padding:9px 5px;text-align:right;font-weight:900;color:#fff;${cur?'background:#1d4ed8;':''}">${v?'¥'+Math.round(v).toLocaleString():'—'}</td>`;});
-  html+=`<td style="padding:9px 8px;text-align:right;font-weight:900;color:#fff;background:#1e3a8a;font-size:12px">¥${Math.round(grandNet).toLocaleString()}</td></tr>`;
+  YM12.forEach(ym=>{const v=mNet[ym]||0;const cur=ym===nowYM;html+=`<td id="ci-inc-${ym}" style="padding:9px 5px;text-align:right;font-weight:900;color:#fff;${cur?'background:#1d4ed8;':''}">${v?'¥'+Math.round(v).toLocaleString():'—'}</td>`;});
+  html+=`<td id="ci-inc-yr" style="padding:9px 8px;text-align:right;font-weight:900;color:#fff;background:#1e3a8a;font-size:12px">¥${Math.round(grandNet).toLocaleString()}</td></tr>`;
   // コスト行プレースホルダー
   html+=`<tr style="height:6px;background:#e2e8f0"><td colspan="14" style="padding:0"></td></tr>`;
   html+=`<tr id="ci-cost-row" style="background:#fffbeb"><td style="padding:8px 10px;font-weight:700;color:#92400e;border-left:4px solid #f59e0b">💸 コスト取得中...</td>${YM12.map(()=>'<td style="text-align:right;color:#94a3b8">—</td>').join('')}<td style="color:#94a3b8;background:#fef3c7">—</td></tr>`;
   html+=`<tr id="ci-bal-row" style="background:#0f172a"><td style="padding:10px 10px;font-weight:900;color:#fff;font-size:12px;border-left:4px solid #fbbf24">💰 残高（入金−支出）</td>${YM12.map(()=>'<td style="text-align:right;color:#64748b;font-weight:900">...</td>').join('')}<td style="color:#64748b;background:#111827;font-weight:900">...</td></tr>`;
-  html+=`</tbody></table></div><div style="margin-top:8px;font-size:9pt;color:#94a3b8;padding:4px">※ HP=予約当月 / じゃらん=返却月 / 楽天=返却月+3ヶ月 / スカイ・エアトリ・RC・GoGoOut=返却月翌月</div>`;
+  html+=`<tr style="background:#064e3b;border-top:3px solid #34d399"><td style="padding:9px 10px;font-weight:900;color:#6ee7b7;font-size:11.5px">💰 期末残高</td>${YM12.map(ym=>`<td id="ci-cb-${ym}" style="padding:9px 5px;text-align:right;font-weight:900;color:#94a3b8">—</td>`).join('')}<td id="ci-cb-yr" style="padding:9px 8px;text-align:right;font-weight:900;color:#94a3b8;background:#065f46">—</td></tr>`;
+  html+=`</tbody></table></div></div></div><div style="margin-top:8px;font-size:9pt;color:#94a3b8;padding:4px">※ HP=予約当月 / じゃらん=返却月 / 楽天=返却月+3ヶ月 / スカイ・エアトリ・RC・GoGoOut=返却月翌月</div>`;
   document.getElementById('ct').innerHTML=html;
   _ciLoadCostAndBalance(y,YM12,mNet,grandNet);
   }catch(e){
@@ -1228,6 +1254,25 @@ async function _ciLoadCostAndBalance(y,YM12,mNet,yearGrandNet){
     });
     rInc+=`<td style="padding:9px 8px;text-align:right;font-weight:900;color:#fff;background:#1e3a8a;font-size:12px">¥${Math.round(yearNet2).toLocaleString()}</td>`;
     rows+=`<tr>${rInc}</tr>`;
+    // 調整枠の合計を計算
+    const adjD2=_ciAdjLoad(s,y);
+    const adjByYm={};
+    YM12.forEach(ym=>{adjByYm[ym]=(adjD2.d[0][ym]||0)+(adjD2.d[1][ym]||0)+(adjD2.d[2][ym]||0);});
+    // 調整枠の年計セル更新
+    for(let ai=0;ai<3;ai++){
+      let yr=YM12.reduce((s,ym)=>s+((adjD2.d[ai]||{})[ym]||0),0);
+      const el=document.getElementById('ci-adj-yr-'+ai);
+      if(el){el.textContent=yr?'¥'+Math.round(yr).toLocaleString():'—';el.style.color=yr>=0?'#92400e':'#dc2626';}
+    }
+    // 入金合計（調整込み）を更新
+    const adjNet={};let adjGrand=0;
+    YM12.forEach(ym=>{adjNet[ym]=(mNet[ym]||0)+adjByYm[ym];adjGrand+=adjNet[ym];});
+    YM12.forEach(ym=>{
+      const el=document.getElementById('ci-inc-'+ym);
+      if(el){const v=adjNet[ym];const bg=ym===nowYM_?'background:#1d4ed8;':'';el.style.cssText+=bg;el.textContent=v?'¥'+Math.round(v).toLocaleString():'—';}
+    });
+    const yrEl=document.getElementById('ci-inc-yr');
+    if(yrEl)yrEl.textContent='¥'+Math.round(adjGrand).toLocaleString();
     // 総支出（販管費①＋②＋売上原価＋返済）
     const totByYm={};YM12.forEach(ym=>{totByYm[ym]=(sum.sga[ym]||0)+(sum.acctActual[ym]||0)+(sum.cogs[ym]||0)+(sum.repay[ym]||0);});
     const yrTot=YM12.reduce((s,ym)=>s+(totByYm[ym]||0),0);
@@ -1236,12 +1281,25 @@ async function _ciLoadCostAndBalance(y,YM12,mNet,yearGrandNet){
     rTot+=`<td style="padding:9px 8px;text-align:right;font-weight:900;color:#fff;background:#450a0a;font-size:12px">¥${Math.round(yrTot).toLocaleString()}</td>`;
     rows+=`<tr>${rTot}</tr>`;
     incRow.outerHTML=rows;
-    // 残高
-    const yrBal=yearNet2-yrTot;const ybc=yrBal>=0?'#34d399':'#f87171';
+    // 残高（調整込み入金 − 総支出）
+    const yrBal=adjGrand-yrTot;const ybc=yrBal>=0?'#34d399':'#f87171';
     let rBal=`<td style="padding:11px 10px;font-weight:900;color:#fbbf24;font-size:13px;border-left:4px solid #fbbf24">💰 残高（入金 − 総支出）</td>`;
-    YM12.forEach(ym=>{const bal=(mNet[ym]||0)-(totByYm[ym]||0);const bc=bal>=0?'#34d399':'#f87171';rBal+=`<td style="padding:11px 5px;text-align:right;font-weight:900;${ym===nowYM_?'background:#1f2937;':''}color:${bal?bc:'#64748b'};font-size:12px">¥${Math.round(bal).toLocaleString()}</td>`;});
+    YM12.forEach(ym=>{const bal=adjNet[ym]-(totByYm[ym]||0);const bc=bal>=0?'#34d399':'#f87171';rBal+=`<td style="padding:11px 5px;text-align:right;font-weight:900;${ym===nowYM_?'background:#1f2937;':''}color:${bal?bc:'#64748b'};font-size:12px">¥${Math.round(bal).toLocaleString()}</td>`;});
     rBal+=`<td style="padding:11px 8px;text-align:right;font-weight:900;color:${ybc};background:#000;font-size:13px">¥${Math.round(yrBal).toLocaleString()}</td>`;
     balRow.innerHTML=rBal;
+    // 月初残高・期末残高を計算（累積残高）
+    const ob=_ciObLoad(s,y);let prev=ob;
+    YM12.forEach(ym=>{
+      const opening=prev;
+      const closing=opening+adjNet[ym]-(totByYm[ym]||0);
+      prev=closing;
+      const obEl=document.getElementById('ci-ob-'+ym);
+      if(obEl){obEl.textContent=opening?'¥'+Math.round(opening).toLocaleString():'¥0';obEl.style.color=opening>=0?'#059669':'#dc2626';obEl.style.fontWeight='700';}
+      const cbEl=document.getElementById('ci-cb-'+ym);
+      if(cbEl){cbEl.textContent='¥'+Math.round(closing).toLocaleString();cbEl.style.color=closing>=0?'#6ee7b7':'#f87171';cbEl.style.fontWeight='900';}
+    });
+    const cbYrEl=document.getElementById('ci-cb-yr');
+    if(cbYrEl){cbYrEl.textContent='¥'+Math.round(prev).toLocaleString();cbYrEl.style.color=prev>=0?'#6ee7b7':'#f87171';}
   }catch(e){console.error('[CI cost]',e);const r=document.getElementById('ci-cost-row');if(r)r.innerHTML=`<td colspan="14" style="padding:8px;color:#dc2626">コスト取得エラー: ${e.message}</td>`;}
 }
 
