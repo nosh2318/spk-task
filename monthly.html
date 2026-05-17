@@ -1185,79 +1185,81 @@ async function _ciLoadCostAndBalance(y,YM12,mNet,yearGrandNet){
     const vTbl=s==='nha'?'nha_vehicles':'vehicles';
     const logsT=s==='nha'?'nha_logs':'logs';
     const logsQs=s==='nha'
-      ?`select=type,cost,date&date=gte.${y}-01-01&date=lte.${y}-12-31&type=in.(inspection,semi_annual,repair,other)`
+      ?`select=type,cost,date&date=gte.${y}-01-01&date=lte.${y}-12-31&type=in.(inspection,semi_annual,repair,other,oil)`
       :`select=type,cost,date&store_id=eq.sapporo&date=gte.${y}-01-01&date=lte.${y}-12-31&type=in.(inspection,semi_annual,repair,other,oil)`;
-    // ST + cm_月別 + 会計実績 + 車両保険 + 整備記録 を並列取得（メイン集計と同一ソース）
+    // コスト内訳と完全同一ソース（ST + cm_月別 + 会計実績card_pay/cash_outのみ + 車両保険 + 整備記録）
     const [stRaw,accts,vehRaw,logsData,...cmRaws]=await Promise.all([
       sbgkey('nha_app_settings',`cm_st_${s}`),
-      sbq(aTbl,`select=type,category,amount,date&date=gte.${y}-01-01&date=lte.${y}-12-31`),
+      sbq(aTbl,`select=type,category,amount,date&type=in.(card_pay,cash_out)&date=gte.${y}-01-01&date=lte.${y}-12-31`),
       sbq(vTbl,`select=insurance_annual`),
       sbq(logsT,logsQs),
       ...MS.map(mm=>sbgkey('nha_app_settings',`cm_${s}_${y}-${mm}`))
     ]);
-    // 集計初期化
-    const sum={sga:{},acctActual:{},cogs:{},repay:{}};
-    YM12.forEach(ym=>{sum.sga[ym]=0;sum.acctActual[ym]=0;sum.cogs[ym]=0;sum.repay[ym]=0;});
-    // ① 会計実績 → 販管費②（整備カテゴリは除外）
-    (accts||[]).forEach(r=>{
-      const ym=y+'-'+(r.date||'').slice(5,7);
-      if(!YM12.includes(ym))return;
-      const a=r.amount||0,cat=r.category||'';
-      if((r.type==='cash_out'||r.type==='card_pay')&&!/修理|車検|点検|整備/.test(cat))sum.acctActual[ym]+=a;
-    });
-    // ② 整備記録 → 売上原価
-    (logsData||[]).forEach(r=>{
-      const ym=y+'-'+(r.date||'').slice(5,7);
-      if(!YM12.includes(ym))return;
-      sum.cogs[ym]+=(Number(r.cost)||0);
-    });
-    // ③ 車両保険（月額）→ 売上原価
-    const vIns=(vehRaw||[]).reduce((acc,v)=>acc+(v.insurance_annual||0),0);
-    YM12.forEach(ym=>{sum.cogs[ym]+=vIns;});
-    // ④ STからID集合を動的構築（メイン集計と同一ロジック）
-    const AUTO_SGA=['sga_social_ins'],AUTO_COGS=['cogs_insurance'];
-    const SGA_IDS=new Set(['s2a','s2b','s2c','s2d','s2e','s2f','s2g','s2h','s3a','s3b','s3c','s3d','s4','s4a','s11','s11a','s12','s12a','s13','s13a','s14','s14a']);
-    const COGS_IDS=new Set(['c1a','c1b','c1c','c1d','c1e','c6a','c6b','c6c','c6d','c6e','c6f','c7']);
-    const SALARY_IDS=new Set(['s2a','s2b','s2c','s2d','s2e','s2f','s2g','s2h']);
-    const REPAY_IDS=new Set(['r1','r2','r3','r4','r5','r6','r7','r8']);
-    try{
-      if(stRaw){
-        const st=JSON.parse(stRaw);
-        const sgSec=st.find(x=>x.id==='sg'),cgSec=st.find(x=>x.id==='cg'),rg=st.find(x=>x.id==='rg');
-        if(sgSec){
-          SGA_IDS.clear();SALARY_IDS.clear();
-          (sgSec.items||[]).forEach(item=>{
-            if(AUTO_SGA.includes(item.code))return;
-            if(item.g){(item.subs||[]).forEach(sub=>{SGA_IDS.add(sub.id);if(item.code==='sga_salary')SALARY_IDS.add(sub.id);});}
-            else SGA_IDS.add(item.id);
-          });
-          ['s4','s11','s12','s13','s14'].forEach(id=>SGA_IDS.add(id));
-        }
-        if(cgSec){
-          COGS_IDS.clear();
-          (cgSec.items||[]).forEach(item=>{
-            if(AUTO_COGS.includes(item.code))return;
-            if(item.g){(item.subs||[]).forEach(sub=>COGS_IDS.add(sub.id));}
-            else COGS_IDS.add(item.id);
-          });
-          ['c7'].forEach(id=>COGS_IDS.add(id));
-        }
-        if(rg){REPAY_IDS.clear();(rg.items||[]).forEach(i=>REPAY_IDS.add(i.id));}
-      }
-    }catch(e){}
-    // ⑤ cm_月別データ → 販管費①（SGA）+ 売上原価（COGS）+ 返済（Repay）
+    // STパース
+    let ST=[];try{ST=stRaw?JSON.parse(stRaw):[];}catch(e){}
+    const sgaSec=ST.find(x=>x.id==='sg'),cgSec=ST.find(x=>x.id==='cg'),rgSec=ST.find(x=>x.id==='rg');
+    // vals: cm_データを {id: {ym: amount}} 形式に変換（costmatrix.htmlと同一）
+    const vals={};
     cmRaws.forEach((raw,i)=>{
-      const ym=y+'-'+MS[i];if(!raw)return;
-      let v;try{v=typeof raw==='string'?JSON.parse(raw):raw;}catch(e){return;}
-      let salarySum=0;
-      Object.entries(v).forEach(([id,amt])=>{
-        const a=Number(amt)||0;if(a<=0)return;
-        if(SGA_IDS.has(id))sum.sga[ym]+=a;
-        if(SALARY_IDS.has(id))salarySum+=a;
-        if(COGS_IDS.has(id))sum.cogs[ym]+=a;
-        if(REPAY_IDS.has(id))sum.repay[ym]+=a;
-      });
-      sum.sga[ym]+=Math.round(salarySum*0.15); // 社会保険（給与×15%）
+      if(!raw)return;
+      try{const d=typeof raw==='string'?JSON.parse(raw):raw;Object.entries(d).forEach(([id,a])=>{if(!vals[id])vals[id]={};vals[id][`${y}-${MS[i]}`]=a;});}catch(e){}
+    });
+    // 整備記録: コスト内訳と同一の _maintData 構造
+    const _mD={inspection:{},maintenance:{},repair:{},other:{}};
+    (logsData||[]).forEach(r=>{
+      const m=(r.date||'').slice(0,7);const cost=Number(r.cost||0);
+      if(r.type==='inspection')_mD.inspection[m]=(_mD.inspection[m]||0)+cost;
+      if(r.type==='semi_annual')_mD.maintenance[m]=(_mD.maintenance[m]||0)+cost;
+      if(r.type==='repair')_mD.repair[m]=(_mD.repair[m]||0)+cost;
+      if(r.type==='other'||r.type==='oil')_mD.other[m]=(_mD.other[m]||0)+cost;
+    });
+    // 車両保険月額合計
+    const _vIns=(vehRaw||[]).reduce((acc,v)=>acc+(v.insurance_annual||0),0);
+    // コスト内訳の _isMaintCode / _maintVal と同一
+    const _isMC=c=>c==='cogs_inspection'||c==='cogs_maintenance'||c==='cogs_repair'||c==='cogs_other';
+    const _mV=(code,ym)=>{const mk=code==='cogs_inspection'?'inspection':code==='cogs_maintenance'?'maintenance':code==='cogs_other'?'other':'repair';return(_mD[mk]||{})[ym]||0;};
+    // getSocialInsurance_: s2グループの給与合計×15%（コスト内訳と同一）
+    const _getV=(id,ym)=>((vals[id]&&vals[id][ym])||0);
+    const _getSocIns=(ym)=>{
+      if(!sgaSec)return 0;
+      const si=(sgaSec.items||[]).find(i=>i.id==='s2');
+      if(!si)return 0;
+      const sal=si.g?(si.subs||[]).reduce((s,b)=>s+_getV(b.id,ym),0):_getV(si.id,ym);
+      return Math.round(sal*0.15);
+    };
+    // gv: コスト内訳の gv() と完全同一
+    const gv=(item,ym)=>{
+      if(item.g)return(item.subs||[]).reduce((s,b)=>s+_getV(b.id,ym),0);
+      if(item.code==='sga_social_ins')return _getSocIns(ym);
+      if(item.code==='cogs_insurance')return _vIns;
+      if(_isMC(item.code))return _mV(item.code,ym);
+      return _getV(item.id,ym);
+    };
+    // 会計実績: コスト内訳の _acctData/_acctExclude と同一
+    const _aD={};
+    (accts||[]).forEach(r=>{
+      const m=(r.date||'').slice(0,7);
+      if(!_aD[m])_aD[m]={card:{},cash:{}};
+      const grp=r.type==='card_pay'?'card':'cash';
+      const cat=r.category||'その他';
+      _aD[m][grp][cat]=(_aD[m][grp][cat]||0)+(r.amount||0);
+    });
+    // _acctExclude: コスト内訳と完全同一（整備は除外しない）
+    const _acctEx=c=>c.includes('修理')||c.includes('車検')||c.includes('点検');
+    // 集計（コスト内訳の _sg0/_acctM/_cg0 と完全同一ロジック）
+    const sum={sga:{},acctActual:{},cogs:{},repay:{}};
+    YM12.forEach(ym=>{
+      // 販管費① = sg section の gv() 合計
+      sum.sga[ym]=sgaSec?(sgaSec.items||[]).reduce((s,i)=>s+gv(i,ym),0):0;
+      // 販管費② = card_pay+cash_out（修理/車検/点検除外）
+      const aM=_aD[ym]||{};
+      const card=Object.entries(aM.card||{}).filter(([c])=>!_acctEx(c)).reduce((s,[,v])=>s+v,0);
+      const cash=Object.entries(aM.cash||{}).filter(([c])=>!_acctEx(c)).reduce((s,[,v])=>s+v,0);
+      sum.acctActual[ym]=card+cash;
+      // 売上原価 = cg section の gv() 合計
+      sum.cogs[ym]=cgSec?(cgSec.items||[]).reduce((s,i)=>s+gv(i,ym),0):0;
+      // 返済 = rg section の gv() 合計
+      sum.repay[ym]=rgSec?(rgSec.items||[]).reduce((s,i)=>s+gv(i,ym),0):0;
     });
     // HTML生成
     const incRow=document.getElementById('ci-cost-row');
