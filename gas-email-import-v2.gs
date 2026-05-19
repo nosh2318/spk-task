@@ -2747,11 +2747,14 @@ function setupSlackImport() {
       ScriptApp.deleteTrigger(t);
     }
   });
+  // ★ 2026-05-18: UrlFetchApp クォータ節約のため 1分 → 5分間隔 に緩和
+  //    1分間隔 = 1日 1,440回実行 → 5分間隔 = 1日 288回 (80%削減)
+  //    業務影響: Slack予約登録の処理遅延が最大1分 → 最大5分（許容範囲）
   ScriptApp.newTrigger('processSlackReservations')
     .timeBased()
-    .everyMinutes(1)
+    .everyMinutes(5)
     .create();
-  Logger.log('Slack予約取込トリガー設定完了（1分間隔 / Events APIフォールバック）');
+  Logger.log('Slack予約取込トリガー設定完了（5分間隔 / Events APIフォールバック）');
 }
 
 // --- テスト ---
