@@ -550,6 +550,28 @@ async function sbgkey(tbl,key){
   const d=await r.json();return d&&d[0]?d[0].value:null;
 }
 
+// ★ コスト内訳ミラーリング: cm_ci_totals_${store}_${y} があれば PL/CF の sga/acctActual/cogs/repay を上書き
+// 戻り値: true=ミラー成功(全店分取得済) / false=未取得(現状計算をフォールバック)
+function applyCMTotals(stores, y, D){
+  const arr=Array.isArray(stores)?stores:[stores];
+  const sg=MS.map(()=>0),ac=MS.map(()=>0),cg=MS.map(()=>0),rg=MS.map(()=>0);
+  let allOk=true;
+  arr.forEach(function(s){
+    try{
+      const raw=localStorage.getItem('cm_ci_totals_'+s+'_'+y);
+      if(!raw){allOk=false;return;}
+      const t=JSON.parse(raw);
+      const _sg=t.sg||[],_ac=t.ac||[],_cg=t.cg||[],_rg=t.rg||[];
+      MS.forEach(function(m,i){
+        sg[i]+=+(_sg[i]||0);ac[i]+=+(_ac[i]||0);cg[i]+=+(_cg[i]||0);rg[i]+=+(_rg[i]||0);
+      });
+    }catch(e){allOk=false;}
+  });
+  if(!allOk)return false;
+  MS.forEach(function(m,i){D[m].sga=sg[i];D[m].acctActual=ac[i];D[m].cogs=cg[i];D[m].repay=rg[i];});
+  return true;
+}
+
 async function load(){
   document.getElementById('ct').innerHTML='<div class="loading">読み込み中...</div>';
   document.getElementById('status').textContent='';
@@ -684,6 +706,10 @@ async function load(){
 
   // その他売上 手動データをDに適用
   MS.forEach(m=>{D[m].manualExtra=(manualData.items||[]).reduce((s,it)=>s+(it.values&&it.values[m]||0),0);});
+  // ★ コスト内訳ミラーリング（sga/acctActual/cogs/repay を localStorage cm_ci_totals_${store}_${y} で上書き）
+  const _cmMirrored=applyCMTotals(store,y,D);
+  if(_cmMirrored){document.getElementById('status').textContent='✅ コスト内訳と一致（cm_ci_totals）';}
+  else{document.getElementById('status').textContent='⚠️ コスト内訳未開封 → 独自計算（costmatrixを先に開いてください）';}
   // 各月の合計
   MS.forEach(m=>{
     D[m].plRev=D[m].base+D[m].opt-D[m].disc+D[m].extra+D[m].manualExtra;  // PL売上
@@ -777,10 +803,12 @@ async function loadTotal(y){
     }catch(e){}}
     cmRaws.forEach(function(raw,i){if(!raw)return;try{const d=JSON.parse(raw);let sal=0;Object.entries(d).forEach(function([id,amt]){const a=Number(amt)||0;if(a<=0)return;if(SGA_IDS.has(id))D[MS[i]].sga+=a;if(SALARY_IDS.has(id))sal+=a;if(COGS_IDS.has(id))D[MS[i]].cogs+=a;if(REPAY_IDS.has(id))D[MS[i]].repay+=a;});D[MS[i]].sga+=Math.round(sal*0.15);}catch(e){}});
   });
+  // ★ コスト内訳ミラーリング（NHA+SPK両方の cm_ci_totals が揃っていれば上書き）
+  const _cmMirroredT=applyCMTotals(['nha','spk'],y,D);
   MS.forEach(m=>{D[m].manualExtra=(manualData.items||[]).reduce((s,it)=>s+(it.values&&it.values[m]||0),0);D[m].sub2=D[m].base+D[m].opt-D[m].disc+D[m].extra;D[m].plRev=D[m].sub2+D[m].manualExtra;D[m].totalIn=D[m].plRev+D[m].cashin;D[m].sgaTotal=D[m].sga+D[m].acctActual;D[m].totalCost=D[m].sgaTotal+D[m].cogs;D[m].operatingProfit=D[m].plRev-D[m].totalCost;D[m].cfNet=D[m].operatingProfit+D[m].cashin-D[m].repay;});
   window._monthlyD=D;
   if(mode==='hikaku'){renderHikaku(D);}else{render(D);}
-  document.getElementById('status').textContent=`✅ ${y}年 那覇＋札幌 合算`;
+  document.getElementById('status').textContent=_cmMirroredT?`✅ ${y}年 那覇＋札幌 合算（コスト内訳と一致）`:`⚠️ ${y}年 那覇＋札幌 合算（コスト内訳未開封→独自計算。両店のcostmatrixを先に開いてください）`;
 }
 
 function render(D){
