@@ -75,11 +75,66 @@ const SUPA_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 const sb=window.supabase.createClient(SUPA_URL,SUPA_KEY);
 
 const STORE_CFG={
-  nha:{name:'NHA 那覇',tables:{resv:'nha_reservations'},cols:{end:'end_date',start:'start_date'},reliableFrom:'2026-03-30'},
-  spk:{name:'SPK 札幌',tables:{resv:'reservations'},cols:{end:'return_date',start:'lend_date'},reliableFrom:'2026-03-30'}
+  nha:{name:'NHA 那覇',tables:{resv:'nha_reservations',acct:'nha_accounting'},cols:{end:'end_date',start:'start_date'},reliableFrom:'2026-03-30'},
+  spk:{name:'SPK 札幌',tables:{resv:'reservations',acct:'spk_accounting'},cols:{end:'return_date',start:'lend_date'},reliableFrom:'2026-03-30'}
 };
 
 const OTA_LABELS={J:'じゃらん',R:'楽天',S:'skyticket',O:'エアトリ',HP:'HP公式',G:'GoGoOut',RC:'RC',SP:'スタッフ',direct:'直販'};
+
+// 月別目標 + シーズナルランク
+const TARGETS={
+  nha:{1:5000000,2:6000000,3:6000000,4:5500000,5:5000000,6:5000000,7:7500000,8:11000000,9:7000000,10:7000000,11:5500000,12:5000000},
+  spk:{1:1300000,2:1300000,3:1300000,4:1300000,5:1300000,6:1300000,7:2000000,8:2000000,9:2000000,10:2000000,11:1300000,12:1300000}
+};
+const RANKS={
+  nha:{1:'C',2:'B',3:'B',4:'B',5:'C',6:'C',7:'A',8:'AA',9:'A',10:'A',11:'B',12:'C'},
+  spk:{1:'C',2:'B',3:'B',4:'B',5:'C',6:'C',7:'A',8:'AA',9:'A',10:'A',11:'C',12:'C'}
+};
+
+// 最終局面エスカレーション設計
+const ESCALATION_LEVELS={
+  normal:{icon:'🟢',label:'通常期',color:'#059669',bgColor:'#dcfce7',borderColor:'#22c55e',action:'通常価格 (競合5位×95%)',discount:''},
+  standard:{icon:'🟡',label:'標準値下げ',color:'#a16207',bgColor:'#fef3c7',borderColor:'#fbbf24',action:'競合5位×90% へ調整',discount:'-3〜5%'},
+  aggressive:{icon:'🟠',label:'直前値下げ',color:'#c2410c',bgColor:'#fed7aa',borderColor:'#fb923c',action:'競合5位×80% へ調整',discount:'-7〜10%'},
+  last:{icon:'🔴',label:'ラスト値下げ',color:'#b91c1c',bgColor:'#fee2e2',borderColor:'#ef4444',action:'競合3位水準へ・絶対取りに行く',discount:'-12〜15%'},
+  final_dash:{icon:'🚨',label:'最終ラッシュ',color:'#991b1b',bgColor:'#fef2f2',borderColor:'#dc2626',action:'競合1位水準・絶対取り切る',discount:'-15〜20%'}
+};
+
+// 残日数 × AI判定% から エスカレーションレベル判定
+function determineEscalation(daysLeft,aiProb){
+  if(daysLeft>=14)return ESCALATION_LEVELS.normal;
+  if(daysLeft>=7){
+    if(aiProb<80)return ESCALATION_LEVELS.standard;
+    return ESCALATION_LEVELS.normal;
+  }
+  if(daysLeft>=3){
+    if(aiProb<85)return ESCALATION_LEVELS.aggressive;
+    return ESCALATION_LEVELS.normal;
+  }
+  if(daysLeft>=1){
+    if(aiProb<90)return ESCALATION_LEVELS.last;
+    return ESCALATION_LEVELS.normal;
+  }
+  // 最終日 (残0日)
+  if(aiProb<95)return ESCALATION_LEVELS.final_dash;
+  return ESCALATION_LEVELS.normal;
+}
+
+// 簡易AI判定% 計算 (forecast.html ロジックの簡略版)
+function calcAIProb(monthData,target,daysLeft,monthDays,velocity){
+  if(target<=0)return 100;
+  const current=monthData.sub||0;
+  // 残期間予測 = 現在 + velocity × 残日数
+  const projected=current+velocity*daysLeft;
+  const baseProb=Math.min(100,projected/target*100);
+  // 信頼度補正 (残日数少ないほど確実度高い)
+  const elapsed=Math.max(0,monthDays-daysLeft);
+  const confidence=Math.min(1,elapsed/monthDays);
+  return Math.min(95,baseProb*(0.7+confidence*0.3));
+}
+
+function monthEnd(y,m){return new Date(y,m,0);}
+function monthDays(y,m){return monthEnd(y,m).getDate();}
 
 async function ensureAuth(){
   const{data:s}=await sb.auth.getSession();
@@ -178,6 +233,101 @@ async function run(){
     const lt=calcLeadTimes(resv,store,asOf);
     let html='';
 
+    // ==================== 🚨 最終局面アラート (Phase 2A) ====================
+    // 月別集計
+    const byM={};
+    resv.forEach(r=>{
+      if(normStatus(r.status)==='cancelled')return;
+      const ed=(r[cfg.cols.end]||'').slice(0,10);
+      if(!ed)return;
+      const ym=ed.slice(0,7);
+      if(!byM[ym])byM[ym]={cnt:0,sub:0};
+      byM[ym].cnt++;
+      const bp=+(r.base_price||0),op=+(r.option_price||0),dc=+(r.discount||0);
+      const sub=(bp===0&&op===0)?+(r.price||0):(bp+op-dc);
+      byM[ym].sub+=sub;
+    });
+    // 各月の直近30日 velocity (信頼できるcreated_atから)
+    const cutoff=new Date(asOf.getTime()-30*86400000);
+    const cutoffStr=cutoff.toISOString().slice(0,10);
+    const velByM={};
+    resv.forEach(r=>{
+      if(normStatus(r.status)==='cancelled')return;
+      const cr=(r.created_at||'').slice(0,10);
+      if(!cr||cr<cfg.reliableFrom||cr<cutoffStr)return;
+      const ed=(r[cfg.cols.end]||'').slice(0,10);
+      if(!ed)return;
+      const ym=ed.slice(0,7);
+      if(!velByM[ym])velByM[ym]={cnt:0,sub:0};
+      velByM[ym].cnt++;
+      const bp=+(r.base_price||0),op=+(r.option_price||0),dc=+(r.discount||0);
+      velByM[ym].sub+=(bp===0&&op===0)?+(r.price||0):(bp+op-dc);
+    });
+
+    // 当月+翌月 で判定
+    const alertMonths=[];
+    for(let off=0;off<2;off++){
+      let y=asOf.getFullYear(),mm=asOf.getMonth()+1+off;
+      while(mm>12){mm-=12;y++;}
+      const ym=`${y}-${String(mm).padStart(2,'0')}`;
+      const target=TARGETS[store]?.[mm]||0;
+      const rank=RANKS[store]?.[mm]||'B';
+      const mEnd=monthEnd(y,mm);
+      const mDays=monthDays(y,mm);
+      const daysLeft=Math.max(0,Math.round((mEnd-asOf)/86400000));
+      const monthData=byM[ym]||{cnt:0,sub:0};
+      const vel=(velByM[ym]?.sub||0)/30; // 直近30日の日次velocity
+      const aiProb=calcAIProb(monthData,target,daysLeft,mDays,vel);
+      const esc=determineEscalation(daysLeft,aiProb);
+      alertMonths.push({y,m:mm,ym,target,rank,daysLeft,monthData,vel,aiProb,esc});
+    }
+
+    // アラート描画
+    const activeAlerts=alertMonths.filter(a=>a.esc.label!=='通常期');
+    html+=`<div class="section" style="border-color:${activeAlerts.length>0?'#dc2626':'#22c55e'}">`;
+    html+=`<div class="section-head" style="background:${activeAlerts.length>0?'linear-gradient(135deg,#fef2f2,#fee2e2)':'linear-gradient(135deg,#ecfdf5,#d1fae5)'}">`;
+    html+=`<h2 style="color:${activeAlerts.length>0?'#991b1b':'#065f46'}">${activeAlerts.length>0?'🚨':'✅'} 最終局面アラート</h2>`;
+    html+=`<span class="sub">残日数 × AI判定% で自動エスカレーション判定 (4段階)</span>`;
+    html+=`</div><div class="section-body">`;
+
+    alertMonths.forEach(a=>{
+      const esc=a.esc;
+      const isActive=esc.label!=='通常期';
+      html+=`<div style="margin-bottom:14px;padding:14px 18px;background:${esc.bgColor};border:2px solid ${esc.borderColor};border-radius:10px">`;
+      html+=`<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">`;
+      html+=`<div style="font-size:24px">${esc.icon}</div>`;
+      html+=`<div style="font-size:17px;font-weight:800;color:${esc.color}">${a.m}月 ${esc.label}</div>`;
+      html+=`<span class="tag ${a.rank==='AA'||a.rank==='A'?'late':a.rank==='B'?'mid':'early'}">${a.rank}</span>`;
+      html+=`<span style="font-size:11px;color:#6b7280">残${a.daysLeft}日 / AI判定 ${a.aiProb.toFixed(0)}%</span>`;
+      html+=`</div>`;
+      if(isActive){
+        html+=`<div style="font-size:13px;line-height:1.8;color:${esc.color}">`;
+        html+=`<b>推奨アクション:</b> ${esc.action}<br>`;
+        if(esc.discount)html+=`<b>値下げ目安:</b> ${esc.discount}<br>`;
+        html+=`<b>現状:</b> ${fmtN(a.monthData.cnt)}件 ¥${fmtN(Math.round(a.monthData.sub/10000))}万 / 目標 ¥${fmtN(Math.round(a.target/10000))}万<br>`;
+        html+=`<b>直近30日ペース:</b> ¥${fmtN(Math.round(a.vel*30/10000))}万/月 → 残期間予測 +¥${fmtN(Math.round(a.vel*a.daysLeft/10000))}万`;
+        html+=`</div>`;
+      }else{
+        html+=`<div style="font-size:13px;color:${esc.color}">順調・通常価格で OK・特別アクション不要</div>`;
+      }
+      html+=`</div>`;
+    });
+
+    // エスカレーション設計表
+    html+=`<details style="margin-top:14px"><summary>📋 エスカレーション設計表 (どの状態で何を発動するか)</summary><div style="padding:12px">`;
+    html+=`<table class="t" style="margin:0"><thead><tr><th>残日数</th><th>AI判定%</th><th>レベル</th><th>推奨アクション</th><th>値下げ目安</th></tr></thead><tbody>`;
+    html+=`<tr><td>14日以上</td><td>-</td><td>🟢 通常期</td><td>通常価格 (競合5位×95%)</td><td>-</td></tr>`;
+    html+=`<tr><td>7-13日</td><td>&lt;80%</td><td>🟡 標準値下げ</td><td>競合5位×90%</td><td>-3〜5%</td></tr>`;
+    html+=`<tr><td>3-6日</td><td>&lt;85%</td><td>🟠 直前値下げ</td><td>競合5位×80%</td><td>-7〜10%</td></tr>`;
+    html+=`<tr><td>1-2日</td><td>&lt;90%</td><td>🔴 ラスト値下げ</td><td>競合3位水準</td><td>-12〜15%</td></tr>`;
+    html+=`<tr><td>最終日</td><td>&lt;95%</td><td>🚨 最終ラッシュ</td><td>競合1位水準 (絶対取り切る)</td><td>-15〜20%</td></tr>`;
+    html+=`</tbody></table>`;
+    html+=`<div style="margin-top:10px;font-size:11px;color:#6b7280;line-height:1.7">💡 <b>哲学:</b> 「最後まで営業活動をやめない」= 機会損失ゼロ・単価少々下げてでも件数で勝負・直前客 (価格弾力性高い層) の市場ニーズと一致</div>`;
+    html+=`</div></details>`;
+
+    html+=`</div></div>`;
+
+    // ==================== リードタイム分析 (既存) ====================
     // サマリー
     html+=`<div class="section"><div class="section-head"><h2>📊 リードタイム分析サマリー</h2><span class="sub">${cfg.name} / 信頼できる created_at のみ集計 (≥${cfg.reliableFrom})</span></div><div class="section-body">`;
     html+=`<div class="alert info">対象予約: <b>${lt.total}件</b> (信頼可能 ${lt.reliable}件) / 当月予約率 <b>${lt.total>0?(lt.sameMonth/lt.total*100).toFixed(1):0}%</b> (${lt.sameMonth}件)</div>`;
