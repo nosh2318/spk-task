@@ -1200,33 +1200,16 @@ function compute12MonthKpis(store,year,resv,acct,byM,veh,kpi,execDate){
     const _vals=validMethods.map(x=>x.value);
     const _minPred=_vals.length?Math.min(..._vals):0;
     const _maxPred=_vals.length?Math.max(..._vals):0;
-    // 予約外売上
+    // 予約外売上: 速報には実数表示・予測はしない (両店データばらつき大)
     const curExtra=extraByM[ym]||0;
-    const _pastKeys=Object.keys(byM).filter(yy=>yy<ym&&yy>='2026-01').sort().slice(-3);
-    let _extraRatio=0;
-    if(_pastKeys.length>0){
-      const _ratios=_pastKeys.map(pk=>{const _sub=byM[pk]?.sub||0;const _ex=extraByM[pk]||0;return _sub>0?_ex/_sub:0;}).filter(r=>r>0);
-      if(_ratios.length>0)_extraRatio=_ratios.reduce((s,v)=>s+v,0)/_ratios.length;
-    }
-    let projectedExtra=curExtra;
-    if(phase==='current'){
-      const elapsed=Math.max(1,Math.round((execDate-mStart)/86400000)+1);
-      if(curExtra>0){projectedExtra=Math.round(curExtra/elapsed*mDays);}
-      else{
-        const pastExtraAvg=_pastKeys.length>0?_pastKeys.reduce((s,pk)=>s+(extraByM[pk]||0),0)/_pastKeys.length:0;
-        const _tierMult={AA:2.0,A:1.5,B:1.0,C:0.7}[RANKS[store]?.[m]]||1.0;
-        projectedExtra=Math.round(pastExtraAvg*_tierMult);
-      }
-    }else if(phase==='future'){
-      projectedExtra=Math.round(revFcst*_extraRatio);
-    }
+    const projectedExtra=(phase==='past')?curExtra:0;
     const revActTotal=revAct+curExtra;
     const revFcstTotal=revFcst+projectedExtra;
     result.push({
-      month:m,ym,phase,nActive,mDays,remainDays:_remainDays,confidence:_conf,cv:_cv,nMethods:validMethods.length,methodDetails,daysToStart,isFarFuture:phase==='future'&&daysToStart>30,minPred:_minPred,maxPred:_maxPred,extraRatio:_extraRatio,
+      month:m,ym,phase,nActive,mDays,remainDays:_remainDays,confidence:_conf,cv:_cv,nMethods:validMethods.length,methodDetails,daysToStart,isFarFuture:phase==='future'&&daysToStart>30,minPred:_minPred,maxPred:_maxPred,
       target:{rev:revTar,cnt:cntTar,aov:aovTarget,util:utilTar,perVeh:perVehTar},
-      actual:{rev:revAct,cnt:cntAct,aov:aovAct,util:utilAct,perVeh:perVehAct,extra:curExtra,total:revActTotal},
-      forecast:{rev:revFcst,cnt:cntFcst,aov:aovFcst,util:utilFcst,perVeh:perVehFcst,extra:projectedExtra,total:revFcstTotal},
+      actual:{rev:revAct,cnt:cntAct,aov:aovAct,util:utilAct,perVeh:perVehAct,extra:curExtra,total:revAct+curExtra},
+      forecast:{rev:revFcst,cnt:cntFcst,aov:aovFcst,util:utilFcst,perVeh:perVehFcst,extra:projectedExtra,total:revFcst+projectedExtra},
       rank:RANKS[store]?.[m]||'?'
     });
   }
@@ -1544,16 +1527,14 @@ async function run(){
         const tgt=k.target.rev;
         const cur=k.actual.rev;
         const curExtra=k.actual.extra||0;
-        const curTotal=k.actual.total||cur;
         const curCnt=k.actual.cnt;
         const curAovV=curCnt>0?cur/curCnt:0;
-        const fcst=isPast?k.actual.rev:k.forecast.rev;
-        const fcstExtra=isPast?(k.actual.extra||0):(k.forecast.extra||0);
-        const fcstTotal=isPast?(k.actual.total||fcst):(k.forecast.total||fcst+fcstExtra);
+        // 予測は予約のみ (予約外は予測しない)
+        const fcst=isPast?(k.actual.rev+(k.actual.extra||0)):k.forecast.rev;
         const fcstCntV=isPast?k.actual.cnt:k.forecast.cnt;
         const fcstAovV=fcstCntV>0?fcst/fcstCntV:_pastAov;
         const targetCntV=_pastAov>0?Math.round(tgt/_pastAov):0;
-        const achV=tgt>0?fcstTotal/tgt*100:0;
+        const achV=tgt>0?fcst/tgt*100:0;
         const achCls=achV>=100?'achieve':achV>=90?'achieve warn':'achieve danger';
         const perVehTgt=k.nActive>0?Math.round(tgt/k.nActive):0;
         const perVehAct=k.nActive>0?Math.round(cur/k.nActive):0;
@@ -1572,8 +1553,9 @@ async function run(){
         html+=`</div>`;
         html+=`<div class="hero" style="margin-bottom:14px${!isCur?';cursor:pointer':''}"${!isCur?` onclick="document.getElementById('month').value=${mm.m};run();"`:''}>`;
         html+=`<div class="hero-card target"><div class="h-label">🎯 ${mm.m}月 目標</div><div class="h-value">${fmtY(tgt)}</div><div class="h-sub" style="font-size:11px;line-height:1.6;margin-top:8px;color:#92400e"><b>売上 = 件数 × 単価</b><br>= <b>${targetCntV}件</b> × <b>${fmtY(_pastAov)}</b><br><span style="color:#7c2d12">🚗 稼働 <b>${k.nActive}台</b> / 台 ${fmtY(perVehTgt)}</span></div></div>`;
-        html+=`<div class="hero-card" style="background:linear-gradient(135deg,#fff7ed,#ffedd5);border-color:#fb923c"><div class="h-label">💰 ${mm.m}月 速報 <span style="font-size:10px;color:#9a3412">(${ymdStr(d.execDate)})</span></div><div class="h-value" style="color:#c2410c">${fmtY(curTotal)}</div><div class="h-sub" style="font-size:11px;line-height:1.6;margin-top:8px;color:#9a3412"><b>予約 ${fmtY(cur)}</b> + 予約外 <b style="color:#7c2d12">${fmtY(curExtra)}</b><br>= <b>${curCnt}件</b> × <b>${fmtY(curAovV)}</b><br><span style="color:#7c2d12">🚗 稼働 <b>${k.nActive}台</b> / 台 ${fmtY(perVehAct)}</span></div></div>`;
-        html+=`<div class="hero-card forecast"><div class="h-label">🔮 ${mm.m}月 ${isPast?'実績':'予測'}</div><div class="h-value">${fmtY(fcstTotal)}</div><div class="h-sub" style="font-size:11px;line-height:1.6;margin-top:8px;color:#1e40af"><b>予約 ${fmtY(fcst)}</b> + 予約外 <b style="color:#1e3a8a">${fmtY(fcstExtra)}</b>${k.extraRatio>0&&!isPast?` <span style="font-size:9.5px;opacity:.7">(過去比${(k.extraRatio*100).toFixed(1)}%)</span>`:''}<br>= <b>${fcstCntV}件</b> × <b>${fmtY(fcstAovV)}</b><br><span style="color:#1e3a8a">🚗 稼働 <b>${k.nActive}台</b> / 台 ${fmtY(perVehFcst)}</span></div></div>`;
+        const _extraLine=curExtra>0?`<span style="color:#7c2d12;font-size:10.5px">+ 予約外 ${fmtY(curExtra)}（実数）</span><br>`:'';
+        html+=`<div class="hero-card" style="background:linear-gradient(135deg,#fff7ed,#ffedd5);border-color:#fb923c"><div class="h-label">💰 ${mm.m}月 速報 <span style="font-size:10px;color:#9a3412">(${ymdStr(d.execDate)})</span></div><div class="h-value" style="color:#c2410c">${fmtY(cur)}</div><div class="h-sub" style="font-size:11px;line-height:1.6;margin-top:8px;color:#9a3412"><b>売上 = 件数 × 単価</b><br>= <b>${curCnt}件</b> × <b>${fmtY(curAovV)}</b><br>${_extraLine}<span style="color:#7c2d12">🚗 稼働 <b>${k.nActive}台</b> / 台 ${fmtY(perVehAct)}</span></div></div>`;
+        html+=`<div class="hero-card forecast"><div class="h-label">🔮 ${mm.m}月 ${isPast?'実績':'予測'}</div><div class="h-value">${fmtY(fcst)}</div><div class="h-sub" style="font-size:11px;line-height:1.6;margin-top:8px;color:#1e40af"><b>売上 = 件数 × 単価</b><br>= <b>${fcstCntV}件</b> × <b>${fmtY(fcstAovV)}</b><br><span style="color:#1e3a8a">🚗 稼働 <b>${k.nActive}台</b> / 台 ${fmtY(perVehFcst)}</span></div></div>`;
         html+=`<div class="hero-card ${achCls}"><div class="h-label">📊 達成見込み</div><div class="h-value">${achV.toFixed(1)}%</div><div class="h-sub">${isPast?'実績':'予測'} ÷ 目標${isPast?'':` · 残${remainD}日`}</div></div>`;
         const _minP=k.minPred||0,_maxP=k.maxPred||0;
         const _range=_maxP-_minP;
