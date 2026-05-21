@@ -136,6 +136,102 @@ function calcAIProb(monthData,target,daysLeft,monthDays,velocity){
 function monthEnd(y,m){return new Date(y,m,0);}
 function monthDays(y,m){return monthEnd(y,m).getDate();}
 
+// ==================== 💰 価格 → 順位 → CV率 → 件数 予測モデル ====================
+
+// 順位 → CV率倍率 (基準=1位=1.0, 業界一般値ベース)
+const RANK_CV_CURVE={
+  1:1.00,2:0.92,3:0.85,4:0.78,5:0.72,
+  6:0.62,7:0.55,8:0.48,9:0.42,10:0.37,
+  11:0.32,12:0.28,13:0.25,14:0.22,15:0.19,
+  16:0.16,17:0.14,18:0.12,19:0.10,20:0.08
+};
+function rankToCV(rank){
+  if(rank>=1&&rank<=20)return RANK_CV_CURVE[rank];
+  return Math.max(0.03,0.08*Math.pow(0.9,rank-20));
+}
+
+// 価格 → 順位 (市場Top20価格分布から逆引き)
+function priceToRank(price,marketPrices){
+  if(!marketPrices||!marketPrices.length)return null;
+  let rank=1;
+  for(const mp of marketPrices){
+    if(price<mp)break;
+    rank++;
+  }
+  return Math.min(rank,21);
+}
+
+// 価格変更シミュレーション
+function simulatePriceChange(currentPrice,newPrice,currentVelocity,marketPrices,daysLeft){
+  const curRank=priceToRank(currentPrice,marketPrices)||10;
+  const newRank=priceToRank(newPrice,marketPrices)||10;
+  const curCV=rankToCV(curRank);
+  const newCV=rankToCV(newRank);
+  const cvMultiplier=curCV>0?newCV/curCV:1;
+  const newVelocity=currentVelocity*cvMultiplier;
+  const addCount=Math.round((newVelocity-currentVelocity)*daysLeft);
+  const curRev=currentVelocity*daysLeft*currentPrice;
+  const newRev=newVelocity*daysLeft*newPrice;
+  const revDiff=newRev-curRev;
+  return{
+    curRank,newRank,curCV,newCV,cvMultiplier,
+    curVelocity:currentVelocity,newVelocity,
+    addCount,curRev:Math.round(curRev),newRev:Math.round(newRev),
+    revDiff:Math.round(revDiff)
+  };
+}
+
+function runSimulation(){
+  const curPrice=parseInt(document.getElementById('sim-cur-price').value);
+  const velocity=parseFloat(document.getElementById('sim-velocity').value);
+  const daysLeft=parseInt(document.getElementById('sim-days').value);
+  const marketRaw=document.getElementById('sim-market').value;
+  const store=document.getElementById('store').value;
+  localStorage.setItem(`hdm_sim_market_${store}`,marketRaw);
+  const marketPrices=marketRaw.trim().split(/[\n,、\s]+/).map(s=>parseInt(s.replace(/[¥,]/g,''))).filter(n=>!isNaN(n)&&n>0).sort((a,b)=>a-b);
+  if(marketPrices.length===0){
+    document.getElementById('sim-result').innerHTML=`<div class="alert warn">市場価格データを入力してください</div>`;
+    return;
+  }
+  // 5つの価格パターンで比較: 現在 / -5% / -10% / -15% / 最適
+  const patterns=[
+    {label:'現在価格',price:curPrice},
+    {label:'-5%',price:Math.round(curPrice*0.95/100)*100},
+    {label:'-10%',price:Math.round(curPrice*0.90/100)*100},
+    {label:'-15%',price:Math.round(curPrice*0.85/100)*100},
+    {label:'-20%',price:Math.round(curPrice*0.80/100)*100}
+  ];
+  // 最適価格探索
+  let bestPrice=curPrice,bestRev=velocity*daysLeft*curPrice,bestSim=null;
+  for(let p=Math.round(curPrice*0.5/100)*100;p<=Math.round(curPrice*1.2/100)*100;p+=100){
+    const s=simulatePriceChange(curPrice,p,velocity,marketPrices,daysLeft);
+    if(s.newRev>bestRev){bestRev=s.newRev;bestPrice=p;bestSim=s;}
+  }
+  patterns.push({label:'🎯 最適',price:bestPrice});
+  let html=`<table class="t"><thead><tr><th>パターン</th><th class="num">価格</th><th class="num">推定順位</th><th class="num">CV率倍率</th><th class="num">予約ペース</th><th class="num">残${daysLeft}日 件数増</th><th class="num">売上影響</th><th>判定</th></tr></thead><tbody>`;
+  patterns.forEach(pt=>{
+    const sim=simulatePriceChange(curPrice,pt.price,velocity,marketPrices,daysLeft);
+    const verdict=sim.revDiff>0?'🟢 売上↑':sim.revDiff<0?'🔴 売上↓':'⚪ 同等';
+    const isOpt=pt.label.includes('最適');
+    html+=`<tr ${isOpt?'style="background:#dcfce7;font-weight:700"':''}>`;
+    html+=`<td>${pt.label}</td>`;
+    html+=`<td class="num">${fmtN(Math.round(pt.price))}</td>`;
+    html+=`<td class="num">${sim.newRank}位</td>`;
+    html+=`<td class="num" style="color:${sim.cvMultiplier>1?'#059669':sim.cvMultiplier<1?'#dc2626':'#6b7280'}">${(sim.cvMultiplier*100).toFixed(0)}%</td>`;
+    html+=`<td class="num">${sim.newVelocity.toFixed(2)}件/日</td>`;
+    html+=`<td class="num" style="color:${sim.addCount>0?'#059669':sim.addCount<0?'#dc2626':'#6b7280'}">${sim.addCount>0?'+':''}${sim.addCount}件</td>`;
+    html+=`<td class="num" style="color:${sim.revDiff>0?'#059669':sim.revDiff<0?'#dc2626':'#6b7280'}">${sim.revDiff>0?'+':''}¥${fmtN(Math.round(sim.revDiff/1000))}k</td>`;
+    html+=`<td>${verdict}</td></tr>`;
+  });
+  html+=`</tbody></table>`;
+  if(bestSim&&bestPrice<curPrice){
+    html+=`<div class="alert success" style="margin-top:14px">💡 <b>推奨</b>: 価格を <b>¥${fmtN(curPrice)} → ¥${fmtN(bestPrice)}</b> (${((curPrice-bestPrice)/curPrice*100).toFixed(1)}%↓) に変更すると<br>順位 ${bestSim.curRank} → ${bestSim.newRank}位想定 / 残${daysLeft}日で <b>+${bestSim.addCount}件</b> / 売上 <b>+¥${fmtN(Math.round(bestSim.revDiff/1000))}k</b> 期待</div>`;
+  }else if(bestPrice>=curPrice){
+    html+=`<div class="alert info" style="margin-top:14px">💡 現在価格が既に最適 (値下げで件数増えても単価減を埋められない)</div>`;
+  }
+  document.getElementById('sim-result').innerHTML=html;
+}
+
 async function ensureAuth(){
   const{data:s}=await sb.auth.getSession();
   if(!s||!s.session){
@@ -325,6 +421,25 @@ async function run(){
     html+=`<div style="margin-top:10px;font-size:11px;color:#6b7280;line-height:1.7">💡 <b>哲学:</b> 「最後まで営業活動をやめない」= 機会損失ゼロ・単価少々下げてでも件数で勝負・直前客 (価格弾力性高い層) の市場ニーズと一致</div>`;
     html+=`</div></details>`;
 
+    html+=`</div></div>`;
+
+    // ==================== 💰 価格戦略シミュレーション (Phase 2B) ====================
+    // 価格 → 順位 → CV率 → 件数増 → 売上影響 → AI判定 の予測
+    html+=`<div class="section"><div class="section-head"><h2>💰 価格戦略シミュレーション</h2><span class="sub">価格変更の効果を「順位 / CV率 / 件数 / 売上」で予測</span></div><div class="section-body">`;
+    html+=`<div class="alert info">価格を下げた時の効果を予測します:<br><b>価格 → 順位 → CV率(コンバージョン率) → 件数増 → 売上影響 → AI判定%</b></div>`;
+    html+=`<div id="sim-controls" style="background:#f9fafb;padding:14px;border-radius:8px;margin-top:10px">`;
+    html+=`<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:end">`;
+    html+=`<div><label style="font-size:11px;color:#6b7280;font-weight:600;display:block;margin-bottom:4px">自社現在価格</label><input type="number" id="sim-cur-price" step="100" value="11000" style="padding:6px 10px;font-size:13px;border:1px solid #d1d5db;border-radius:6px;width:120px"></div>`;
+    html+=`<div><label style="font-size:11px;color:#6b7280;font-weight:600;display:block;margin-bottom:4px">予約velocity (件/日)</label><input type="number" id="sim-velocity" step="0.1" value="0.5" style="padding:6px 10px;font-size:13px;border:1px solid #d1d5db;border-radius:6px;width:100px"></div>`;
+    html+=`<div><label style="font-size:11px;color:#6b7280;font-weight:600;display:block;margin-bottom:4px">残日数</label><input type="number" id="sim-days" step="1" value="10" style="padding:6px 10px;font-size:13px;border:1px solid #d1d5db;border-radius:6px;width:80px"></div>`;
+    html+=`<button onclick="runSimulation()" style="padding:7px 16px;background:#16a34a;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">▶ シミュレート</button>`;
+    html+=`</div>`;
+    html+=`<div style="margin-top:14px"><label style="font-size:11px;color:#6b7280;font-weight:600;display:block;margin-bottom:4px">市場 Top20 価格 (改行 or カンマ区切り)</label>`;
+    const savedMarket=localStorage.getItem(`hdm_sim_market_${store}`)||'';
+    html+=`<textarea id="sim-market" rows="3" style="width:100%;padding:8px;font-family:monospace;font-size:12px;border:1px solid #d1d5db;border-radius:6px" placeholder="例: 8500\\n9200\\n9800\\n10500\\n11000\\n11500\\n12200\\n...">${savedMarket}</textarea>`;
+    html+=`<div style="font-size:11px;color:#9ca3af;margin-top:4px">⚠️ 現在は手動入力 (Phase 2B.2 で OTA Price Fetcher 自動連動予定)</div></div>`;
+    html+=`</div>`;
+    html+=`<div id="sim-result" style="margin-top:14px"></div>`;
     html+=`</div></div>`;
 
     // ==================== リードタイム分析 (既存) ====================
