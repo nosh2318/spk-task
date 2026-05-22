@@ -156,6 +156,59 @@ function authHeader(){
   if(!t&&!_authWarned){_authWarned=true;console.warn('[monthly] No auth token - data may be empty under RLS');}
   return 'Bearer '+(t||SK);
 }
+// ★ 独立起動時のSupabase認証（APPにログインしていない場合でも動作）
+function _ensureAuth(callback){
+  if(getAuthToken()){callback();return;}
+  var ov=document.createElement('div');
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px';
+  ov.innerHTML='<div style="background:#fff;padding:32px 28px;border-radius:16px;width:90%;max-width:360px;text-align:center;box-shadow:0 20px 50px rgba(0,0,0,.3)">'
+    +'<div style="font-size:10px;color:#6b7280;letter-spacing:.3em;margin-bottom:4px;text-transform:uppercase">HANDYMAN</div>'
+    +'<div style="font-size:16px;font-weight:800;color:#1e3a8a;margin-bottom:4px" id="_au_title">認証が必要です</div>'
+    +'<div style="font-size:11px;color:#64748b;margin-bottom:20px">メールアドレスとパスワードを入力してください</div>'
+    +'<input id="_au_email" type="email" inputmode="email" autocapitalize="off" autocorrect="off" placeholder="メールアドレス" style="width:100%;padding:10px;border:1.5px solid #d1d5db;border-radius:8px;font-size:15px;margin-bottom:8px;outline:none">'
+    +'<input id="_au_pw" type="password" placeholder="パスワード" style="width:100%;padding:10px;border:1.5px solid #d1d5db;border-radius:8px;font-size:15px;margin-bottom:8px;outline:none">'
+    +'<div id="_au_err" style="color:#dc2626;font-size:11px;font-weight:600;margin-bottom:8px;display:none"></div>'
+    +'<button id="_au_btn" style="width:100%;padding:11px;background:linear-gradient(135deg,#1e3a8a,#1e40af);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer">ログイン</button>'
+    +'</div>';
+  document.body.appendChild(ov);
+  window._authCb=callback;window._authOv=ov;
+  ov.addEventListener('keydown',function(e){if(e.key==='Enter')_doAuthLogin();});
+  document.getElementById('_au_btn').addEventListener('click',_doAuthLogin);
+  setTimeout(function(){var el=document.getElementById('_au_email');if(el)el.focus();},100);
+}
+async function _doAuthLogin(){
+  var btn=document.getElementById('_au_btn');
+  var err=document.getElementById('_au_err');
+  var email=(document.getElementById('_au_email')||{}).value||'';
+  var pw=(document.getElementById('_au_pw')||{}).value||'';
+  if(!email||!pw){if(err){err.style.display='';err.textContent='メールアドレスとパスワードを入力してください';}return;}
+  if(btn){btn.disabled=true;btn.textContent='確認中...';}
+  if(err)err.style.display='none';
+  try{
+    var res=await fetch(SU+'/auth/v1/token?grant_type=password',{
+      method:'POST',headers:{apikey:SK,'Content-Type':'application/json'},
+      body:JSON.stringify({email:email,password:pw})
+    });
+    var d=await res.json();
+    if(d&&d.access_token){
+      localStorage.setItem('sb-ckrxttbnawkclshczsia-auth-token',JSON.stringify({
+        access_token:d.access_token,refresh_token:d.refresh_token||'',
+        expires_at:Math.floor(Date.now()/1000)+(d.expires_in||3600),
+        token_type:'bearer',user:d.user||{}
+      }));
+      if(window._authOv)window._authOv.remove();
+      if(window._authCb)window._authCb();
+    }else{
+      var msg=(d&&(d.error_description||d.msg||d.message))||'メールアドレスまたはパスワードが違います';
+      if(err){err.style.display='';err.textContent=msg;}
+      if(btn){btn.disabled=false;btn.textContent='ログイン';}
+    }
+  }catch(e){
+    if(err){err.style.display='';err.textContent='接続エラー: '+e.message;}
+    if(btn){btn.disabled=false;btn.textContent='ログイン';}
+  }
+}
+
 // ★ 2026-05-13: PIN 1215 認証（予算実績タブ専用ロック・毎回要求）
 const _PIN_REQUIRED='1215';
 function _showPinThen(onPass){
@@ -515,7 +568,7 @@ window.addEventListener('DOMContentLoaded',function(){
   }
   updateTblHeight();
   _updateStateBar();
-  _showPinThen(load);  // ★ PIN認証通過後に load() （未通過なら overlay 表示）
+  _ensureAuth(function(){_showPinThen(load);});  // ★ Auth後にPIN認証 → load()
 });
 function sw(s){
   store=s;
