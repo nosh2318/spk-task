@@ -120,7 +120,7 @@ const SUPA_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 const sb=window.supabase.createClient(SUPA_URL,SUPA_KEY);
 const OTA_L={'rakuten':'楽天','jalan':'じゃらん','sky':'skyticket','hp':'HP直販','airtrip':'エアトリ'};
 const OTA_C={'rakuten':'r','jalan':'j','sky':'s','hp':'h','airtrip':'a'};
-let _data=[],_live=[],_holdings={},_market=[];
+let _data=[],_live=[],_holdings={},_market=[],_vehicles=[];
 let _store='nha';
 // URLパラメータ ?store=spk で初期店舗指定可能
 (function(){
@@ -138,6 +138,8 @@ const STORE_CFG={
     market_filter:r=>r.store!=='spk',
     historical_filter:r=>r.store==='nha',
     start_col:'start_date',
+    end_col:'end_date',
+    vehicles:'nha_vehicles',
     label:'NHA（那覇）',
     badge_bg:'#7c2d12',
     accent:'#dc2626'
@@ -149,6 +151,8 @@ const STORE_CFG={
     market_filter:r=>r.store==='spk'||r.store==='sapporo',
     historical_filter:r=>r.store==='spk'||r.store==='sapporo',
     start_col:'lend_date',
+    end_col:'return_date',
+    vehicles:'vehicles',
     label:'SPK（札幌）',
     badge_bg:'#0c4a6e',
     accent:'#0284c7'
@@ -187,13 +191,18 @@ function onStoreChange(){
 async function loadStoreData(){
   try{
     const cfg=STORE_CFG[_store];
-    _data=[];_live=[];_holdings={};_market=[];
+    _data=[];_live=[];_holdings={};_market=[];_vehicles=[];
     // 過去データ (NHAのみ・SPKは未整備)
     if(cfg.historical){
       _data=(await fetchAll(cfg.historical)).filter(cfg.historical_filter);
     }
     // ライブ予約
     _live=await fetchAll(cfg.live);
+    // 車両マスター (active のみ・稼働率算定用)
+    try{
+      const vs=await fetchAll(cfg.vehicles);
+      _vehicles=vs.filter(v=>v.active!==false);
+    }catch(e){console.warn('vehicles',e);}
     // 市場価格データ
     try{_market=(await fetchAll('ota_market_prices')).filter(cfg.market_filter);}catch(e){console.warn('market data',e);}
     // 保有台数履歴
@@ -202,7 +211,8 @@ async function loadStoreData(){
       h.forEach(r=>{if(!_holdings[r.year_month])_holdings[r.year_month]={};_holdings[r.year_month][r.class]=r.count;});
     }
     const histInfo=cfg.historical?`過去${_data.length}件 + 現在${_live.length}件`:`現在予約${_live.length}件 (SPK過去履歴は未整備)`;
-    document.getElementById('content').innerHTML=`<div class="section"><div class="section-body" style="text-align:center;color:#6b7280;padding:30px"><h3 style="color:#7c2d12;font-size:16px;margin-bottom:12px">🎯 目標を入力して「逆算実行」をクリック</h3><div style="font-size:12px">${cfg.label}　／　${histInfo}</div></div></div>`;
+    const vehInfo=` / 稼働車両${_vehicles.length}台`;
+    document.getElementById('content').innerHTML=`<div class="section"><div class="section-body" style="text-align:center;color:#6b7280;padding:30px"><h3 style="color:#7c2d12;font-size:16px;margin-bottom:12px">🎯 目標を入力して「逆算実行」をクリック</h3><div style="font-size:12px">${cfg.label}　／　${histInfo}${vehInfo}</div></div></div>`;
   }catch(e){
     document.getElementById('content').innerHTML=`<div style="padding:20px;background:#fee2e2;color:#991b1b;border-radius:8px">⚠️ ${e.message}</div>`;
   }
@@ -282,6 +292,45 @@ function run(){
   // 4. 必要件数
   const avgPrice=pastMedPrice>0?pastMedPrice:30000;
   const neededCnt=gap>0?Math.ceil(gap/avgPrice):0;
+
+  // 4.5 稼働率算定
+  // 稼働可能台数: 保有台数履歴があればそれを使う、なければ現在の稼働車両数
+  const holdingTotal=(_holdings[targetYm]&&_holdings[targetYm].total)||_vehicles.length||0;
+  const maxCapacityDays=holdingTotal*totalDays;
+  const endColForUtil=STORE_CFG[_store].end_col;
+  // 当月内に重複する利用日数を計算するヘルパー (期間×月内に限定)
+  function calcOverlapDays(rec){
+    try{
+      const sd=new Date(rec[startCol]||rec.start_date||rec.lend_date);
+      const edRaw=rec[endColForUtil]||rec.end_date||rec.return_date;
+      if(!sd||!edRaw)return 0;
+      const ed=new Date(edRaw);
+      const mStart=new Date(y,m-1,1);
+      const mEnd=new Date(y,m,0,23,59,59);
+      const s=sd<mStart?mStart:sd;
+      const e=ed>mEnd?mEnd:ed;
+      if(e<s)return 0;
+      return Math.max(0,Math.round((e-s)/86400000))+1;
+    }catch(e){return 0;}
+  }
+  // 現在稼働日数 (確定予約のみ・当月内に限定)
+  const currentUtilDays=currentConf.reduce((sum,r)=>sum+calcOverlapDays(r),0);
+  const currentUtilPct=maxCapacityDays>0?(currentUtilDays/maxCapacityDays*100):0;
+  // 過去同月の平均泊数 (想定稼働率算出用・データなければ3泊と仮定)
+  const pastNights=pastSameMonth.map(r=>{
+    try{
+      const sd=new Date(r.start_date);
+      const ed=new Date(r.end_date||r.return_date);
+      const n=Math.max(0,Math.round((ed-sd)/86400000))+1;
+      return n;
+    }catch(e){return 0;}
+  }).filter(n=>n>0&&n<=30);
+  const avgNights=pastNights.length>0?(pastNights.reduce((s,n)=>s+n,0)/pastNights.length):3;
+  // 想定稼働率 = (現在稼働日数 + 必要追加件数 × 平均泊数) / 最大稼働日数
+  const projectedAddDays=Math.round(neededCnt*avgNights);
+  const projectedUtilDays=currentUtilDays+projectedAddDays;
+  const projectedUtilPct=maxCapacityDays>0?(projectedUtilDays/maxCapacityDays*100):0;
+  const utilGapPct=projectedUtilPct-currentUtilPct;
 
   // 5. OTA別配分 (過去同月のシェア)
   const otaShare={};
@@ -500,6 +549,11 @@ function run(){
   html+=`<div class="kpi p"><div class="l">必要追加件数</div><div class="v">${neededCnt}件</div><div class="s">単価¥${fmtK(avgPrice)}前提</div></div>`;
   html+=`<div class="kpi"><div class="l">計画可能日数</div><div class="v">${planDays}日</div><div class="s">今日→${y}/${m}/${totalDays}まで・月内${remaining-Math.max(0,(monthStart-today)/86400000)|0}日</div></div>`;
   html+=`<div class="kpi ${paceRatio>1.2?'r':paceRatio>1?'a':'g'}"><div class="l">必要日次売上</div><div class="v">¥${fmtK(dailyNeeded)}</div><div class="s">過去平均比 ${paceRatio.toFixed(1)}x</div></div>`;
+  // 稼働率カード (現状 / 想定)
+  const curUtilCls=currentUtilPct>=70?'g':currentUtilPct>=40?'a':'r';
+  const projUtilCls=projectedUtilPct>=100?'r':projectedUtilPct>=85?'a':'g';
+  html+=`<div class="kpi ${curUtilCls}"><div class="l">現状 稼働率</div><div class="v">${currentUtilPct.toFixed(1)}%</div><div class="s">${currentUtilDays}日 / ${maxCapacityDays}日 (${holdingTotal}台×${totalDays}日)</div></div>`;
+  html+=`<div class="kpi ${projUtilCls}"><div class="l">目標達成時 想定稼働率</div><div class="v">${projectedUtilPct.toFixed(1)}%</div><div class="s">${projectedUtilDays}日 / ${maxCapacityDays}日 (現状+${projectedAddDays}日・平均${avgNights.toFixed(1)}泊想定)${projectedUtilPct>100?' ⚠️ 物理的に困難':''}</div></div>`;
   html+='</div></div></div>';
 
   // 過去同月実績 (台数・LT・当月率付き)
