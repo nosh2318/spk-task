@@ -293,45 +293,6 @@ function run(){
   const avgPrice=pastMedPrice>0?pastMedPrice:30000;
   const neededCnt=gap>0?Math.ceil(gap/avgPrice):0;
 
-  // 4.5 稼働率算定
-  // 稼働可能台数: 保有台数履歴があればそれを使う、なければ現在の稼働車両数
-  const holdingTotal=(_holdings[targetYm]&&_holdings[targetYm].total)||_vehicles.length||0;
-  const maxCapacityDays=holdingTotal*totalDays;
-  const endColForUtil=STORE_CFG[_store].end_col;
-  // 当月内に重複する利用日数を計算するヘルパー (期間×月内に限定)
-  function calcOverlapDays(rec){
-    try{
-      const sd=new Date(rec[startCol]||rec.start_date||rec.lend_date);
-      const edRaw=rec[endColForUtil]||rec.end_date||rec.return_date;
-      if(!sd||!edRaw)return 0;
-      const ed=new Date(edRaw);
-      const mStart=new Date(y,m-1,1);
-      const mEnd=new Date(y,m,0,23,59,59);
-      const s=sd<mStart?mStart:sd;
-      const e=ed>mEnd?mEnd:ed;
-      if(e<s)return 0;
-      return Math.max(0,Math.round((e-s)/86400000))+1;
-    }catch(e){return 0;}
-  }
-  // 現在稼働日数 (確定予約のみ・当月内に限定)
-  const currentUtilDays=currentConf.reduce((sum,r)=>sum+calcOverlapDays(r),0);
-  const currentUtilPct=maxCapacityDays>0?(currentUtilDays/maxCapacityDays*100):0;
-  // 過去同月の平均泊数 (想定稼働率算出用・データなければ3泊と仮定)
-  const pastNights=pastSameMonth.map(r=>{
-    try{
-      const sd=new Date(r.start_date);
-      const ed=new Date(r.end_date||r.return_date);
-      const n=Math.max(0,Math.round((ed-sd)/86400000))+1;
-      return n;
-    }catch(e){return 0;}
-  }).filter(n=>n>0&&n<=30);
-  const avgNights=pastNights.length>0?(pastNights.reduce((s,n)=>s+n,0)/pastNights.length):3;
-  // 想定稼働率 = (現在稼働日数 + 必要追加件数 × 平均泊数) / 最大稼働日数
-  const projectedAddDays=Math.round(neededCnt*avgNights);
-  const projectedUtilDays=currentUtilDays+projectedAddDays;
-  const projectedUtilPct=maxCapacityDays>0?(projectedUtilDays/maxCapacityDays*100):0;
-  const utilGapPct=projectedUtilPct-currentUtilPct;
-
   // 5. OTA別配分 (過去同月のシェア)
   const otaShare={};
   pastSameMonth.forEach(r=>{
@@ -358,6 +319,40 @@ function run(){
   const dailyNeeded=remaining>0?gap/remaining:0;
   const dailyAvgPast=pastAvgRev/totalDays;
   const paceRatio=dailyAvgPast>0?dailyNeeded/dailyAvgPast:0;
+
+  // 6.5 稼働率算定 (totalDays定義後に実行する必要がある)
+  const holdingTotal=(_holdings[targetYm]&&_holdings[targetYm].total)||_vehicles.length||0;
+  const maxCapacityDays=holdingTotal*totalDays;
+  const endColForUtil=STORE_CFG[_store].end_col;
+  function calcOverlapDays(rec){
+    try{
+      const sdRaw=rec[startCol]||rec.start_date||rec.lend_date;
+      const edRaw=rec[endColForUtil]||rec.end_date||rec.return_date;
+      if(!sdRaw||!edRaw)return 0;
+      const sd=new Date(sdRaw);
+      const ed=new Date(edRaw);
+      const mS=new Date(y,m-1,1);
+      const mE=new Date(y,m,0,23,59,59);
+      const s=sd<mS?mS:sd;
+      const e=ed>mE?mE:ed;
+      if(e<s)return 0;
+      return Math.max(0,Math.round((e-s)/86400000))+1;
+    }catch(e){return 0;}
+  }
+  const currentUtilDays=currentConf.reduce((sum,r)=>sum+calcOverlapDays(r),0);
+  const currentUtilPct=maxCapacityDays>0?(currentUtilDays/maxCapacityDays*100):0;
+  const pastNights=pastSameMonth.map(r=>{
+    try{
+      const sd=new Date(r.start_date);
+      const ed=new Date(r.end_date||r.return_date);
+      const n=Math.max(0,Math.round((ed-sd)/86400000))+1;
+      return n;
+    }catch(e){return 0;}
+  }).filter(n=>n>0&&n<=30);
+  const avgNights=pastNights.length>0?(pastNights.reduce((s,n)=>s+n,0)/pastNights.length):3;
+  const projectedAddDays=Math.round(neededCnt*avgNights);
+  const projectedUtilDays=currentUtilDays+projectedAddDays;
+  const projectedUtilPct=maxCapacityDays>0?(projectedUtilDays/maxCapacityDays*100):0;
 
   // Probability
   let probability=50;
