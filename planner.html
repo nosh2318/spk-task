@@ -159,11 +159,20 @@ const STORE_CFG={
   }
 };
 
+// テーブルごとの主キー (order句の値) — id カラムを持たないテーブルがあるため切替必須
+const TABLE_PK={
+  'nha_vehicles':'code',
+  'vehicles':'code',
+  'nha_vehicle_holdings_history':'id',
+  'nha_vehicle_monthly_kpi':'vehicle_code',
+  'vehicle_monthly_kpi':'vehicle_code'
+};
 async function fetchAll(table){
   const rows=[];let off=0;const SZ=1000;
+  const orderCol=TABLE_PK[table]||'id';
   while(true){
-    const{data,error}=await sb.from(table).select('*').range(off,off+SZ-1).order('id',{ascending:true});
-    if(error){console.error(table,error);break;}
+    const{data,error}=await sb.from(table).select('*').range(off,off+SZ-1).order(orderCol,{ascending:true});
+    if(error){console.error('[fetchAll]',table,'order='+orderCol,error.message||error);break;}
     if(!data||!data.length)break;
     rows.push(...data);
     if(data.length<SZ)break;
@@ -321,7 +330,18 @@ function run(){
   const paceRatio=dailyAvgPast>0?dailyNeeded/dailyAvgPast:0;
 
   // 6.5 稼働率算定 (totalDays定義後に実行する必要がある)
-  const holdingTotal=(_holdings[targetYm]&&_holdings[targetYm].total)||_vehicles.length||0;
+  // 稼働可能台数: ①holdings.total ②holdingsクラス別合計 ③車両マスター件数 の優先順
+  let holdingTotal=0;
+  if(_holdings[targetYm]){
+    if(_holdings[targetYm].total){
+      holdingTotal=_holdings[targetYm].total;
+    }else{
+      holdingTotal=Object.entries(_holdings[targetYm])
+        .filter(([k,v])=>k!=='total'&&typeof v==='number')
+        .reduce((s,[k,v])=>s+v,0);
+    }
+  }
+  if(holdingTotal===0)holdingTotal=_vehicles.length||0;
   const maxCapacityDays=holdingTotal*totalDays;
   const endColForUtil=STORE_CFG[_store].end_col;
   function calcOverlapDays(rec){
