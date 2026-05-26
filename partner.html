@@ -301,9 +301,13 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
       <table class="data-tbl" id="data-tbl">
         <thead><tr>
           <th>車両</th><th>予約番号</th><th>顧客名</th><th>OTA</th>
-          <th>貸出</th><th>返却</th><th>場所</th><th>金額</th><th>状態</th>
+          <th>貸出</th><th>返却</th><th>泊</th><th>場所</th><th>💰金額</th>
+          <th style="background:#fef2f2;color:#991b1b">📉日額</th>
+          <th style="background:#fef2f2;color:#991b1b">📉コスト</th>
+          <th style="background:#fef3c7;color:#92400e">📈粗利</th>
+          <th>状態</th>
         </tr></thead>
-        <tbody id="data-body"><tr><td colspan="9" class="loading">読み込み中...</td></tr></tbody>
+        <tbody id="data-body"><tr><td colspan="13" class="loading">読み込み中...</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -598,7 +602,9 @@ function renderData(){
   if(RESERVATIONS.length===0){body.innerHTML='<tr><td colspan="9" class="loading">予約データなし</td></tr>';return;}
   const today=new Date().toISOString().substring(0,10);
   const sorted=[...RESERVATIONS].sort((a,b)=>(b.lend_date||'').localeCompare(a.lend_date||''));
-  let html='',total=0;
+  let html='',total=0,totalCost=0,totalProfit=0;
+  // ★ 予約日数計算ヘルパー
+  const _calcDays=(ld,rd)=>{if(!ld||!rd)return 0;const d1=new Date(ld+'T00:00:00'),d2=new Date(rd+'T00:00:00');return Math.max(1,Math.round((d2-d1)/86400000)+1);};
   sorted.forEach(r=>{
     const f=FLEET.find(x=>x.reservation_id===r.id);
     const vc=f?f.vehicle_code:'—';
@@ -611,13 +617,22 @@ function renderData(){
     const otaLabel={J:'じゃらん',R:'楽天',S:'スカイ',O:'エアトリ',HP:'HP',RC:'レンカ',G:'GoGo'}[r.ota]||r.ota||'—';
     const place=r.del_place||r.col_place||'—';
     const amt=r.price||0;
-    if(r.status!=='cancelled')total+=amt;
+    // ★ 日額コスト × 予約日数 = 予約コスト・粗利 (2026-05-26 オーナー新規仕様)
+    const dailyCost=+(veh?.partner_daily_cost||0);
+    const days=_calcDays(r.lend_date,r.return_date);
+    const resvCost=dailyCost*days;
+    const profit=amt-resvCost;
+    if(r.status!=='cancelled'){total+=amt;totalCost+=resvCost;totalProfit+=profit;}
+    const costStr=dailyCost>0?`-¥${resvCost.toLocaleString()}`:'—';
+    const profitStr=dailyCost>0?(profit>=0?'+':'')+'¥'+profit.toLocaleString():'—';
+    const profitColor=profit>=0?'#15803d':'#dc2626';
     if(isMobile){
+      const costInline=dailyCost>0?` <span style="color:#b91c1c;font-size:10px">/ ¥${dailyCost.toLocaleString()}×${days}日=-¥${resvCost.toLocaleString()}</span> <span style="color:${profitColor};font-size:10px;font-weight:700">${profitStr}</span>`:'';
       html+=`<tr>`+
         `<td class="r1"><span class="veh-c">${vc}</span> ${veh?veh.plate_no||'':''} <span class="ota-bdg ota-${r.ota}">${otaLabel}</span> <span class="status ${statusCls}" style="margin-left:auto">${status}</span></td>`+
         `<td class="r2">${r.name||'—'}様</td>`+
-        `<td class="r3">📅 ${r.lend_date||'—'} ${(r.lend_time||'').substring(0,5)} → ${r.return_date||'—'} ${(r.return_time||'').substring(0,5)}</td>`+
-        `<td class="r4"><span style="font-size:10px;color:#64748b">${place}</span><span class="amt">¥${amt.toLocaleString()}</span></td>`+
+        `<td class="r3">📅 ${r.lend_date||'—'} ${(r.lend_time||'').substring(0,5)} → ${r.return_date||'—'} ${(r.return_time||'').substring(0,5)} (${days}泊)</td>`+
+        `<td class="r4"><span style="font-size:10px;color:#64748b">${place}</span><span class="amt">¥${amt.toLocaleString()}${costInline}</span></td>`+
       `</tr>`;
     }else{
       html+=`<tr>`+
@@ -627,15 +642,22 @@ function renderData(){
         `<td><span class="ota-bdg ota-${r.ota}">${otaLabel}</span></td>`+
         `<td>${r.lend_date||'—'} ${(r.lend_time||'').substring(0,5)}</td>`+
         `<td>${r.return_date||'—'} ${(r.return_time||'').substring(0,5)}</td>`+
+        `<td style="font-weight:700">${days}</td>`+
         `<td style="font-size:10px;color:#64748b">${place}</td>`+
-        `<td>¥${amt.toLocaleString()}</td>`+
+        `<td style="color:#15803d;font-weight:700">¥${amt.toLocaleString()}</td>`+
+        `<td style="color:#b91c1c;font-size:11px">${dailyCost>0?'¥'+dailyCost.toLocaleString():'—'}</td>`+
+        `<td style="color:#b91c1c;font-weight:700">${costStr}</td>`+
+        `<td style="color:${profitColor};font-weight:800;background:#fffbeb">${profitStr}</td>`+
         `<td><span class="status ${statusCls}">${status}</span></td>`+
       `</tr>`;
     }
   });
   body.innerHTML=html;
   document.getElementById('data-count').textContent=`${sorted.length}件`;
-  document.getElementById('data-total').textContent=`合計 ¥${total.toLocaleString()}`;
+  const totalStr=totalCost>0
+    ? `売上 ¥${total.toLocaleString()} − コスト ¥${totalCost.toLocaleString()} = <span style="color:${totalProfit>=0?'#15803d':'#dc2626'}">${totalProfit>=0?'+':''}¥${totalProfit.toLocaleString()}</span>`
+    : `合計 ¥${total.toLocaleString()}`;
+  document.getElementById('data-total').innerHTML=totalStr;
 }
 
 // 車両情報タブ (2026-05-16 改修・本体APP「車両登録管理」と同じ仕様)
@@ -665,7 +687,7 @@ function renderVehInfo(){
       `</div>`;
     if(open){
       html+=`<div class="veh-grp-body"><table class="veh-tbl">`+
-        `<thead><tr><th>車種</th><th>ナンバー</th><th>定員</th><th>年式</th><th>カラー</th><th>🚗 車検残</th><th></th></tr></thead>`+
+        `<thead><tr><th>車種</th><th>ナンバー</th><th>定員</th><th>年式</th><th>カラー</th><th>🚗 車検残</th><th style="background:#fef2f2;color:#991b1b">📉 日額コスト</th><th></th></tr></thead>`+
         `<tbody>`;
       items.forEach(v=>{
         // 車検残日数計算
@@ -677,6 +699,9 @@ function renderVehInfo(){
           else if(days<30)checkBadge=`<span class="vcheck-warn">⚠️ あと${days}日</span>`;
           else checkBadge=`<span class="vcheck-ok">✅ ${days}日</span>`;
         }
+        // ★ 日額コスト編集UI (2026-05-26 オーナー新規仕様)
+        const _dailyCost=+(v.partner_daily_cost||0);
+        const _dailyHtml=`<input type="number" id="dailyCost_${v.code}" value="${_dailyCost}" min="0" style="width:90px;padding:3px 6px;border:1px solid #fca5a5;border-radius:4px;font-size:11px;text-align:right;background:#fef2f2;color:#991b1b;font-weight:700" oninput="this.dataset.dirty='1';document.getElementById('saveDC_${v.code}').style.display='inline-block'"><button id="saveDC_${v.code}" onclick="savePartnerDailyCost('${v.code}')" style="display:none;margin-left:3px;padding:3px 8px;background:#dc2626;color:#fff;border:0;border-radius:4px;font-size:10px;font-weight:700;cursor:pointer">💾</button>`;
         html+=`<tr>`+
           `<td class="vname">${v.name||'—'}</td>`+
           `<td class="vno">${v.plate_no||'—'}</td>`+
@@ -684,6 +709,7 @@ function renderVehInfo(){
           `<td>${v.year||'—'}</td>`+
           `<td>${v.color||'—'}</td>`+
           `<td>${checkBadge}</td>`+
+          `<td>${_dailyHtml}</td>`+
           `<td><button class="vedit-btn" onclick="openVehModal('${v.code}')">編集</button></td>`+
         `</tr>`;
       });
@@ -698,6 +724,35 @@ function renderVehInfo(){
 function toggleVehGrp(t){
   VEH_GRP_OPEN[t]=VEH_GRP_OPEN[t]===false; // デフォルトtrue → 反転
   renderVehInfo();
+}
+
+// ★ 日額コスト保存 (2026-05-26 オーナー新規仕様)
+async function savePartnerDailyCost(code){
+  const inp=document.getElementById('dailyCost_'+code);
+  if(!inp)return;
+  const val=parseInt(inp.value)||0;
+  const v=VEHICLES.find(x=>x.code===code);
+  if(!v){showToast('車両が見つかりません','err');return;}
+  if(v.owner_company!==OWNER_COMPANY){showToast('セキュリティエラー: 他社車両は編集不可','err');return;}
+  try{
+    const{error}=await sb.from('vehicles').update({partner_daily_cost:val}).eq('code',code);
+    if(error){
+      if(error.message&&error.message.includes('partner_daily_cost')){
+        showToast('⚠️ DBカラム未追加 — Supabase SQL Editor で ALTER TABLE 実行が必要','err');
+      }else{
+        showToast('保存失敗: '+error.message,'err');
+      }
+      return;
+    }
+    v.partner_daily_cost=val;
+    showToast('💾 日額コスト ¥'+val.toLocaleString()+' を保存しました','ok');
+    document.getElementById('saveDC_'+code).style.display='none';
+    inp.dataset.dirty='0';
+    // 予約データタブも再描画 (反映)
+    if(typeof renderData==='function')renderData();
+  }catch(e){
+    showToast('保存エラー: '+e.message,'err');
+  }
 }
 
 function openVehModal(code){
