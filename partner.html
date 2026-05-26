@@ -395,7 +395,7 @@ const sb=window.supabase.createClient(SB_URL,SB_KEY);
 let CURRENT_USER=null,OWNER_COMPANY=null,OWNER_LABEL=null;
 let CURRENT_TAB='tl';
 let CURRENT_YM=null;
-let VEHICLES=[],RESERVATIONS=[],FLEET=[],MAINTENANCE=[];
+let VEHICLES=[],RESERVATIONS=[],FLEET=[],MAINTENANCE=[],KPI_MAP={};
 let MODAL_CONTEXT=null;
 const isMobile=window.matchMedia('(max-width:768px)').matches;
 
@@ -459,6 +459,9 @@ async function loadData(){
     }
     const{data:mt}=await sb.from('maintenance').select('*').in('vehicle_code',vehCodes);
     MAINTENANCE=mt||[];
+    // ★ 2026-05-26: vehicle_monthly_kpi 取得 (active 判定用)
+    const{data:kp}=await sb.from('vehicle_monthly_kpi').select('year_month,vehicle_code,active').in('vehicle_code',vehCodes);
+    KPI_MAP={};(kp||[]).forEach(k=>{if(!KPI_MAP[k.vehicle_code])KPI_MAP[k.vehicle_code]={};KPI_MAP[k.vehicle_code][k.year_month]=k.active;});
     // ★ 2026-05-16: 請求書機能は削除（情報のみのシンプル仕様にオーナー方針変更）
     updateSummary();
     if(CURRENT_TAB==='tl')renderTimeline();else if(CURRENT_TAB==='data')renderData();else renderVehInfo();
@@ -530,16 +533,65 @@ function renderTimeline(){
   });
   html+='</tr></thead><tbody>';
 
+  // ★ 2026-05-26 SPK配車表と同じデザインに統一 (ナンバー大+保険+稼働日数+売上)
+  // 当月売上計算 (returnDate がカレンダー月内の予約のみ)
+  const monthStart=`${ym.y}-${String(ym.m).padStart(2,'0')}-01`;
+  const monthEnd=`${ym.y}-${String(ym.m).padStart(2,'0')}-${String(daysInMonth).padStart(2,'0')}`;
+  const monthYm=`${ym.y}-${String(ym.m).padStart(2,'0')}`;
+  const vehRev={};
+  VEHICLES.forEach(v=>{vehRev[v.code]=0;});
+  RESERVATIONS.forEach(r=>{
+    if(r.status==='cancelled')return;
+    const f=FLEET.find(x=>x.reservation_id===r.id);
+    if(!f||!vehRev.hasOwnProperty(f.vehicle_code))return;
+    const rd=(r.return_date||'').substring(0,10);
+    if(!rd||rd<monthStart||rd>monthEnd)return;
+    const bp=+(r.base_price||0),op=+(r.option_price||0),disc=+(r.discount||0);
+    const rev=(bp>0||op>0)?Math.max(0,bp+op-disc):+(r.price||0);
+    vehRev[f.vehicle_code]+=rev;
+  });
+  // フォーマット (K表記禁止)
+  const fmtRev=n=>{if(!n||n<=0)return null;return '¥'+Math.round(n).toLocaleString();};
+  // active 判定 (vehicle_monthly_kpi 優先・なければ v.active)
+  const isVehActive=(v)=>{const km=KPI_MAP[v.code];if(km&&km.hasOwnProperty(monthYm))return km[monthYm];return v.active!==false;};
+
   sortedTypes.forEach(t=>{
     const grpName=cls2name[t]||t;
-    html+=`<tr class="cls-row"><td class="vh-c" colspan="${dates.length+1}">${t}クラス （${grps[t].length}台）${isMobile?'':' '+grpName}</td></tr>`;
+    // クラス合計
+    const clsActive=grps[t].filter(v=>isVehActive(v)).length;
+    const clsRev=grps[t].reduce((s,v)=>s+(vehRev[v.code]||0),0);
+    const clsRevHtml=clsRev>0?` <span style="display:inline-block;font-size:11px;font-weight:800;padding:2px 8px;border-radius:4px;background:linear-gradient(135deg,#dcfce7,#bbf7d0);color:#15803d;border:1px solid #86efac;margin-left:6px">💰 ${fmtRev(clsRev)}</span>`:'';
+    html+=`<tr class="cls-row"><td class="vh-c" colspan="${dates.length+1}">${t}クラス （${grps[t].length}台）${isMobile?'':' '+grpName} <span style="font-size:10px;color:#64748b;margin-left:4px">稼働${clsActive}/${grps[t].length}台</span>${clsRevHtml}</td></tr>`;
     grps[t].forEach(v=>{
       const u=utils[v.code]||{days:0,pct:0};
-      html+=`<tr data-veh="${v.code}"><td class="vh-c vh-cell">`+
-        `<span class="code">${v.no||v.code}</span><span class="name">${v.name||''}</span>`+
-        `<div class="meta">`+
-        (v.owner_company&&v.owner_company!=='HANDYMAN'?`<span class="badge partner">🏢${v.owner_label||''}</span>`:'')+
-        (u.days>0?`<span class="badge util">${u.days}日 ${u.pct}%</span>`:'')+
+      const active=isVehActive(v);
+      const rev=vehRev[v.code]||0;
+      // ナンバー (青大太字) ・車種名 (グレー小)
+      const plate=(v.plate_no||'').trim();
+      const isValidPlate=plate&&!['未定','確認','-','—','TBD','tbd','none'].includes(plate);
+      // バッジ群 (SPK配車表と同じ色)
+      const badgeActive=active
+        ?`<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:#dcfce7;color:#059669;border:1px solid #86efac">稼働</span>`
+        :`<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:#fee2e2;color:#dc2626;border:1px solid #fca5a5">除外</span>`;
+      const badgeIns=v.insurance_veh
+        ?`<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:#ede9fe;color:#7c3aed;border:1px solid #ddd6fe">🛡 保険</span>`
+        :'';
+      const badgeRev=rev>0
+        ?`<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:#f0fdf4;color:#15803d;border:1px solid #86efac">💰 ${fmtRev(rev)}</span>`
+        :'';
+      const utilCl=u.pct>=80?'#dc2626':u.pct>=50?'#f59e0b':'#22c55e';
+      const utilBg=u.pct>=80?'#fef2f2':u.pct>=50?'#fffbeb':'#f0fdf4';
+      const badgeUtil=u.days>0
+        ?`<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:${utilBg};color:${utilCl};border:1px solid ${utilCl}40">${u.days}日 ${u.pct}%</span>`
+        :`<span style="font-size:9px;font-weight:600;padding:1px 5px;border-radius:3px;color:#94a3b8">0日 0%</span>`;
+      const badgePartner=(v.owner_company&&v.owner_company!=='HANDYMAN')
+        ?`<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:#faf5ff;color:#7c3aed;border:1px solid #e9d5ff">🏢${v.owner_label||''}</span>`
+        :'';
+      html+=`<tr data-veh="${v.code}"><td class="vh-c vh-cell" style="padding:5px 8px">`+
+        `<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;line-height:1.4">`+
+          (isValidPlate?`<span style="font-size:12px;font-weight:800;color:#2563eb;letter-spacing:.3px;font-variant-numeric:tabular-nums">${plate}</span>`:`<span style="font-size:10px;color:#dc2626;font-weight:700">⚠️未登録</span>`)+
+          `<span style="font-size:10px;color:#64748b;font-weight:500">${v.name||''}</span>`+
+          badgeActive+badgeIns+badgeUtil+badgeRev+badgePartner+
         `</div></td>`;
       dates.forEach(d=>{
         const cls=(d.ds===today?'today':(d.wknd?'wknd':''));
