@@ -419,6 +419,11 @@ function processMessage_(message, dryRun) {
           Logger.log('[JalanPayment] Error (existing path): ' + e.message);
         }
       }
+      // ★ 2026-05-25 追加: skyticket(S)/airtrip(O) に LINE誘導案内メール自動送信
+      // sendReservationWelcomeEmail_ 内部で ScriptProperty による冪等性チェック済み
+      if (reservation.ota === 'S' || reservation.ota === 'O') {
+        try { sendReservationWelcomeEmail_(reservation); } catch (e) { Logger.log('[WelcomeMail] Error (existing path): ' + e.message); }
+      }
       return {type:'skip', id:reservation.id, reason:'登録済み'};
     }
   } else {
@@ -430,6 +435,10 @@ function processMessage_(message, dryRun) {
         // ★ 2026-04-21 修正: 競合時もじゃらん決済起票を試みる
         if (reservation.ota === 'J' && reservation.price > 0) {
           try { handleJalanPayment_(reservation); } catch (e) { Logger.log('[JalanPayment] Error (race path): ' + e.message); }
+        }
+        // ★ 2026-05-25 追加: skyticket/airtrip 案内メール（冪等性は関数内で担保）
+        if (reservation.ota === 'S' || reservation.ota === 'O') {
+          try { sendReservationWelcomeEmail_(reservation); } catch (e) { Logger.log('[WelcomeMail] Error (race path): ' + e.message); }
         }
         return {type:'skip', id:reservation.id, reason:'登録済み（競合）'};
       }
@@ -445,6 +454,10 @@ function processMessage_(message, dryRun) {
     } catch (e) {
       Logger.log('[JalanPayment] Error: ' + e.message);
     }
+  }
+  // ★ 2026-05-25 追加: skyticket(S)/airtrip(O) に LINE誘導案内メール自動送信（新規INSERT経路）
+  if (reservation.ota === 'S' || reservation.ota === 'O') {
+    try { sendReservationWelcomeEmail_(reservation); } catch (e) { Logger.log('[WelcomeMail] Error: ' + e.message); }
   }
 
   if (assigned) {
@@ -910,7 +923,15 @@ function parseOfficial_(body) {
   var rawClassMatch = body.match(/ご予約車両クラス\s*\n\s*(.+)/);
   if (rawClassMatch) rawClassLine = rawClassMatch[1].trim();
   var vehicleClass = '';
+  // ★ 2026-05-26 A2/B2 対応 (オーナー商品構成PDF準拠):
+  //   優先順 (上から): B2クラス明示 > A2クラス明示 > ノア高年式 > 通常パターン
   var MODEL_CLASS_MAP = [
+    // A2/B2 明示パターン (Tier0・最優先)
+    {re:/B2[\s　]*クラス/i,cls:'B2'},
+    {re:/A2[\s　]*クラス/i,cls:'A2'},
+    {re:/ノア[\s　]*(高年式|新車|プレミアム)/,cls:'B2'},
+    {re:/アルファード[\s　]*(預か|預け|プレミアム)/,cls:'A2'},
+    // Tier1 (車種名)
     {re:/アルファード/,cls:'A'},{re:/ヴェルファイア|ベルファイア/,cls:'A'},
     {re:/ノア/,cls:'B'},{re:/デリカ/,cls:'B'},{re:/ステップワゴン/,cls:'B'},
     {re:/ロッキー/,cls:'C'},{re:/CX-?3/i,cls:'C'},
@@ -926,8 +947,13 @@ function parseOfficial_(body) {
     }
   }
   if (!vehicleClass) {
-    var classMatch = body.match(/ご予約車両クラス\s*\n\s*([ABCSFH])クラス/i);
-    if (classMatch) vehicleClass = classMatch[1].toUpperCase();
+    // ★ A2/B2 も match に対応
+    var classMatch2 = body.match(/ご予約車両クラス\s*\n\s*(A2|B2)クラス/i);
+    if (classMatch2) vehicleClass = classMatch2[1].toUpperCase();
+    else {
+      var classMatch = body.match(/ご予約車両クラス\s*\n\s*([ABCSFH])クラス/i);
+      if (classMatch) vehicleClass = classMatch[1].toUpperCase();
+    }
   }
   if (!vehicleClass) Logger.log('[Official] WARNING: クラス判定不能。raw=' + rawClassLine);
   var insurance = detectInsurance_(body);
@@ -1612,6 +1638,261 @@ function sendJalanPaymentEmail_(pay) {
 }
 
 /**
+ * 📧 予約後 LINE誘導案内メール（自動送信） — 2026-05-25 新規追加
+ * 対象OTA: skyticket(S) / airtrip(O)
+ *   - じゃらん(J)は sendJalanPaymentEmail_ が決済リンク付きメールを送るため対象外
+ *   - 楽天(R) / RC / G / HP(オフィシャル) は対象外
+ * 冪等性: ScriptProperty 'spk_welcome_sent_ids' で送信済予約IDを管理（最大500件）
+ * 送信元: reserve@rent-handyman.jp（既存Gmailエイリアス）
+ *
+ * @param {Object} reservation - パーサー出力の予約データ（id, name, customer_email, ota）
+ * @return {boolean} 送信成功true / 対象外・失敗false
+ */
+function sendReservationWelcomeEmail_(reservation) {
+  try {
+    // 1. 対象OTAチェック (skyticket / airtrip のみ)
+    var TARGET_OTAS = ['S', 'O'];
+    if (TARGET_OTAS.indexOf(reservation.ota) < 0) return false;
+
+    // 2. メールアドレス検証
+    var email = (reservation.customer_email || '').trim();
+    if (!email || !/@/.test(email)) {
+      Logger.log('[WelcomeMail] skip (no email): ' + reservation.id);
+      return false;
+    }
+
+    // 3. 重複送信防止 (ScriptProperty で送信済IDを管理)
+    var props = PropertiesService.getScriptProperties();
+    var SENT_KEY = 'spk_welcome_sent_ids';
+    var sentIds = (props.getProperty(SENT_KEY) || '').split(',').filter(function(x){return x;});
+    if (sentIds.indexOf(reservation.id) >= 0) {
+      Logger.log('[WelcomeMail] skip (already sent): ' + reservation.id);
+      return false;
+    }
+
+    // 4. 件名・本文を組み立て
+    var otaLabel = (reservation.ota === 'S' ? 'skyticket' : 'airtrip');
+    var subject = '【HANDYMAN 札幌デリバリー専門店】ご予約ありがとうございます(予約番号: ' + reservation.id + ')';
+    var name = (reservation.name || 'お客').toString().trim();
+    var body =
+      name + ' 様\n' +
+      '予約番号： ' + reservation.id + '\n\n' +
+      'レンタカーショップHANDYMANカスタマーサポートです。\n' +
+      'ご予約ありがとうございます。\n\n' +
+      '札幌店は便利なデリバリー専門店となっております。\n' +
+      'スムーズにお貸し出しできますよう事前のお手続きをお願いしております。\n\n' +
+      '━━━━━━━━━━━━━━━━━━━━\n' +
+      '\\ LINE公式の友達登録 /\n' +
+      'ご登録後流れに沿ってデリバリーに必要な情報を入力ください。\n' +
+      '当日の時間・場所の詳細連絡にもLINEを利用いたします。\n\n' +
+      'LINE ID：@730kyhwl\n' +
+      'https://lin.ee/g6iDNYz\n' +
+      '━━━━━━━━━━━━━━━━━━━━\n\n' +
+      'お忙しいところ恐れ入りますが、お貸し出し3日前19:00までにご対応お願いいたします。\n\n' +
+      '【注意点】\n' +
+      '・無店舗型のデリバリー専門になります\n' +
+      '・予約状況により内容のご調整をいただくことがございます。\n' +
+      '・貸出日 3日前19:00時点で情報が不明確な場合はご希望に添えないことがございます。\n' +
+      '・貸出時間からご連絡のないまま30分経過しますと貸出不可となることがございます。\n\n' +
+      '【お問合せ】\n' +
+      'お問い合わせは公式LINEお願いいたします。\n' +
+      'HANDYMANカスタマーサポート\n' +
+      'LINE公式：https://lin.ee/g6iDNYz\n' +
+      'LINE ID：@730kyhwl\n' +
+      '緊急連絡先： 050-1724-6197\n' +
+      '営業時間： 9:00〜19:00\n';
+
+    // 5. Gmail送信
+    GmailApp.sendEmail(email, subject, body, {
+      name: 'HANDYMAN 札幌デリバリー専門店',
+      from: 'reserve@rent-handyman.jp',
+      replyTo: 'reserve@rent-handyman.jp'
+    });
+
+    // 6. 送信済IDを記録（最大500件保持・冪等性確保）
+    sentIds.push(reservation.id);
+    if (sentIds.length > 500) sentIds = sentIds.slice(-500);
+    props.setProperty(SENT_KEY, sentIds.join(','));
+
+    Logger.log('[WelcomeMail] ✅ sent: ' + reservation.id + ' [' + otaLabel + '] → ' + email);
+
+    // 7. Slack通知（失敗しても致命的でない）
+    try {
+      postToSlackChannel_(JALAN_PAY_CHANNEL,
+        '📧 *予約案内メール送信完了*\n' +
+        '予約番号： ' + reservation.id + '\n' +
+        '宛名： ' + name + ' 様\n' +
+        'OTA： ' + otaLabel + '\n' +
+        '宛先： ' + email);
+    } catch (e) { /* Slack失敗は無視 */ }
+
+    return true;
+  } catch (err) {
+    Logger.log('[WelcomeMail] ❌ failed: ' + (reservation && reservation.id) + ' - ' + err.message);
+    return false;
+  }
+}
+
+/**
+ * 🧪 sendReservationWelcomeEmail_ 動作テスト（GASエディタで手動実行）
+ * テスト用ダミー予約で実際にメールを送信せず、対象判定とテンプレ出力のみ確認
+ */
+function testWelcomeMailDryRun() {
+  var samples = [
+    { id: 'TEST-S001', ota: 'S', name: '山田 太郎', customer_email: '' /* 空 → スキップ */ },
+    { id: 'TEST-O001', ota: 'O', name: '佐藤 花子', customer_email: 'invalid' /* @なし → スキップ */ },
+    { id: 'TEST-J001', ota: 'J', name: '田中 次郎', customer_email: 'tanaka@example.com' /* じゃらん → 対象外 */ },
+    { id: 'TEST-R001', ota: 'R', name: '鈴木 三郎', customer_email: 'suzuki@example.com' /* 楽天 → 対象外 */ }
+  ];
+  samples.forEach(function(r) {
+    var willSend = (['S','O'].indexOf(r.ota) >= 0) && r.customer_email && /@/.test(r.customer_email);
+    Logger.log('[DryRun] ' + r.id + ' ota=' + r.ota + ' email=' + (r.customer_email || '(空)') + ' → ' + (willSend ? '送信対象' : 'スキップ'));
+  });
+  Logger.log('[DryRun] 完了。実際の送信は行いません。');
+}
+
+/**
+ * 🧪 テスト送信: 指定アドレスに 案内メールを **実際に** 送信する
+ *   - GASエディタで手動実行
+ *   - 送信先 / 予約番号 / OTA を関数内で書き換えて使う
+ *   - ScriptProperty による冪等性チェックは **バイパス**（何度でも実行可能）
+ *   - 件名先頭に【テスト送信】を付与（誤受信時の判別用）
+ *   - Slack通知も省略（テスト送信が #payment_sapporo に流れないように）
+ */
+function testSendWelcomeMail() {
+  // ▼ 必要に応じて書き換え ▼
+  var TO_EMAIL = 'oshita@mileshare.jp';   // 送信先（オーナー受信用）
+  var TEST_NAME = '大下 典隆';              // 宛名（[名前] 様）
+  var TEST_RESV_ID = 'TEST-S-' + Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyyMMddHHmmss');
+  var TEST_OTA = 'S';                     // 'S' = skyticket / 'O' = airtrip
+  // ▲ ここまで ▲
+
+  var otaLabel = (TEST_OTA === 'S' ? 'skyticket' : 'airtrip');
+  var subject = '【テスト送信】【HANDYMAN 札幌デリバリー専門店】ご予約ありがとうございます(予約番号: ' + TEST_RESV_ID + ')';
+  var body =
+    TEST_NAME + ' 様\n' +
+    '予約番号： ' + TEST_RESV_ID + '\n\n' +
+    'レンタカーショップHANDYMANカスタマーサポートです。\n' +
+    'ご予約ありがとうございます。\n\n' +
+    '札幌店は便利なデリバリー専門店となっております。\n' +
+    'スムーズにお貸し出しできますよう事前のお手続きをお願いしております。\n\n' +
+    '━━━━━━━━━━━━━━━━━━━━\n' +
+    '\\ LINE公式の友達登録 /\n' +
+    'ご登録後流れに沿ってデリバリーに必要な情報を入力ください。\n' +
+    '当日の時間・場所の詳細連絡にもLINEを利用いたします。\n\n' +
+    'LINE ID：@730kyhwl\n' +
+    'https://lin.ee/g6iDNYz\n' +
+    '━━━━━━━━━━━━━━━━━━━━\n\n' +
+    'お忙しいところ恐れ入りますが、お貸し出し3日前19:00までにご対応お願いいたします。\n\n' +
+    '【注意点】\n' +
+    '・無店舗型のデリバリー専門になります\n' +
+    '・予約状況により内容のご調整をいただくことがございます。\n' +
+    '・貸出日 3日前19:00時点で情報が不明確な場合はご希望に添えないことがございます。\n' +
+    '・貸出時間からご連絡のないまま30分経過しますと貸出不可となることがございます。\n\n' +
+    '【お問合せ】\n' +
+    'お問い合わせは公式LINEお願いいたします。\n' +
+    'HANDYMANカスタマーサポート\n' +
+    'LINE公式：https://lin.ee/g6iDNYz\n' +
+    'LINE ID：@730kyhwl\n' +
+    '緊急連絡先： 050-1724-6197\n' +
+    '営業時間： 9:00〜19:00\n' +
+    '\n' +
+    '────────────────────\n' +
+    '※ これは送信テストです（OTA=' + otaLabel + '）\n' +
+    '※ 送信時刻: ' + Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd HH:mm:ss') + '\n';
+
+  try {
+    GmailApp.sendEmail(TO_EMAIL, subject, body, {
+      name: 'HANDYMAN 札幌デリバリー専門店',
+      from: 'reserve@rent-handyman.jp',
+      replyTo: 'reserve@rent-handyman.jp'
+    });
+    Logger.log('[TestSend] ✅ 送信成功');
+    Logger.log('  宛先  : ' + TO_EMAIL);
+    Logger.log('  宛名  : ' + TEST_NAME + ' 様');
+    Logger.log('  予約番号: ' + TEST_RESV_ID);
+    Logger.log('  OTA   : ' + otaLabel);
+    Logger.log('  件名  : ' + subject);
+    Logger.log('---');
+    Logger.log('受信箱を確認してください → ' + TO_EMAIL);
+  } catch (err) {
+    Logger.log('[TestSend] ❌ 送信失敗: ' + err.message);
+    Logger.log('原因候補:');
+    Logger.log('  1. reserve@rent-handyman.jp が Gmail エイリアスに登録されていない');
+    Logger.log('  2. 送信先メールアドレスが不正');
+    Logger.log('  3. Gmail APIスコープ未承認 → checkConfig 実行で再認可');
+  }
+}
+
+/**
+ * 🧪 テスト送信（実予約データ版）: DB から 指定予約IDを引いて実際にメール送信
+ *   - 送信先は DB の customer_email
+ *   - ScriptProperty 冪等性チェックは **バイパス**（テスト目的）
+ *   - 件名に【テスト送信】を付与
+ *   - 過去取込済の skyticket / airtrip 予約で動作確認したい場合に使用
+ */
+function testSendWelcomeMailByResvNo() {
+  // ▼ 確認したい予約番号を入れる ▼
+  var TARGET_RESV_NO = 'DY00000000XXX';   // skyticket例: DY00000000999 / エアトリ例: C260500XXX
+  // ▲ ここまで ▲
+
+  var cfg = getSupaCfg_();
+  var url = cfg.url + '/rest/v1/reservations?id=eq.' + encodeURIComponent(TARGET_RESV_NO) + '&select=*';
+  var res = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: { apikey: cfg.key, Authorization: 'Bearer ' + cfg.key },
+    muteHttpExceptions: true
+  });
+  if (res.getResponseCode() !== 200) {
+    Logger.log('[TestSendByResv] ❌ DB取得失敗: HTTP ' + res.getResponseCode());
+    return;
+  }
+  var rows = JSON.parse(res.getContentText() || '[]');
+  if (!rows.length) {
+    Logger.log('[TestSendByResv] ❌ 予約が見つかりません: ' + TARGET_RESV_NO);
+    return;
+  }
+  var r = rows[0];
+  Logger.log('[TestSendByResv] 予約取得:');
+  Logger.log('  id          : ' + r.id);
+  Logger.log('  name        : ' + r.name);
+  Logger.log('  ota         : ' + r.ota);
+  Logger.log('  customer_email: ' + r.customer_email);
+
+  if (['S','O'].indexOf(r.ota) < 0) {
+    Logger.log('[TestSendByResv] ⚠️ OTAが対象外 (S/O のみ): ' + r.ota);
+    Logger.log('  対象外でも強制送信したい場合は ota を一時的に S/O に書き換えてください');
+    return;
+  }
+  if (!r.customer_email || !/@/.test(r.customer_email)) {
+    Logger.log('[TestSendByResv] ⚠️ メールアドレスが不正: ' + r.customer_email);
+    return;
+  }
+
+  // 冪等性チェックをバイパスするため、送信済リストから一時的に除外
+  var props = PropertiesService.getScriptProperties();
+  var SENT_KEY = 'spk_welcome_sent_ids';
+  var sentIds = (props.getProperty(SENT_KEY) || '').split(',').filter(function(x){return x;});
+  var alreadySent = (sentIds.indexOf(r.id) >= 0);
+  if (alreadySent) {
+    Logger.log('[TestSendByResv] 既に送信済リストにあり → 一時的に除外して再送信');
+    sentIds = sentIds.filter(function(x){return x !== r.id;});
+    props.setProperty(SENT_KEY, sentIds.join(','));
+  }
+
+  // 件名に【テスト送信】プレフィックスを付けるため、ラッパー予約を作る
+  var testResv = {
+    id: '【TEST】' + r.id,
+    ota: r.ota,
+    name: r.name,
+    customer_email: r.customer_email
+  };
+  var ok = sendReservationWelcomeEmail_(testResv);
+  Logger.log('[TestSendByResv] 結果: ' + (ok ? '✅ 送信成功' : '❌ 送信失敗 or 対象外'));
+  Logger.log('受信箱を確認してください → ' + r.customer_email);
+}
+
+/**
  * 🙇 お詫び+再送: 店名誤記の6件に札幌テンプレで再送信（2026-04-21）
  * - 那覇テンプレが札幌顧客11名に送信された障害の店名訂正
  * - 対象は金額相違なしの6件のみ（金額違う5件は別対応）
@@ -1835,6 +2116,31 @@ function checkPaymentStatus() {
         try { supabaseUpdate_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(pay.reservationId) + '&status=neq.paid', {status:'paid', paid_at:matched.paid_at}); } catch(e) {}
         // ★ 2026-05-14: 店舗判定を fail-safe 化（C列空欄→DB照合→不明時は両店通知）
         var resolved = resolvePaymentStore_(pay.reservationId, pay.store);
+        // ★ 2026-05-25: spk_accounting / nha_accounting の paid 更新を統合
+        //   背景: HANDYMAN Payment Bot v1 の syncPaidToAccounting 経路が止まると、
+        //         スプシ+Slack は更新されるが DB の paid=false が残り続け、
+        //         APP TOP「予約外売上 未回収」に入金済レコードが残る障害が発生（2026-05-25 修正）
+        //   仕様: 店舗判定結果 (resolved.channels) から対象テーブルを決定し paid=true に更新
+        //         判定不明 (ambiguous/fallback) の場合は両店を試す（冪等：paid=eq.false 条件で多重更新なし）
+        //   注意: spk_accounting / nha_accounting は paid_at カラムなし → paid のみ更新
+        try {
+          var acctTables = [];
+          if (resolved.source === 'ambiguous' || resolved.source === 'fallback') {
+            acctTables = ['nha_accounting', 'spk_accounting'];
+          } else if (resolved.channels.indexOf('C0AP2S5B147') >= 0) {
+            acctTables = ['nha_accounting'];
+          } else {
+            acctTables = ['spk_accounting'];
+          }
+          acctTables.forEach(function(tbl) {
+            try {
+              var okAcc = supabaseUpdate_(tbl,
+                'resv_no=eq.' + encodeURIComponent(pay.reservationId) + '&paid=eq.false',
+                { paid: true });
+              if (okAcc) Logger.log('[PaymentStatus] ' + tbl + ' paid updated: ' + pay.reservationId);
+            } catch(eAcc) { Logger.log('[PaymentStatus] ' + tbl + ' update error: ' + eAcc.message); }
+          });
+        } catch(eAcct) { Logger.log('[PaymentStatus] accounting update error: ' + eAcct.message); }
         var notifyText = '✅ *入金確認完了*\n予約番号： ' + pay.reservationId + '\n宛名： ' + pay.customerName + '\n金額： ¥' + pay.amount.toLocaleString() + (pay.media ? '\n媒体： ' + pay.media : '') + '\n店舗： ' + resolved.label + '\n判定根拠： ' + resolved.source + (resolved.warning ? '\n\n⚠️ ' + resolved.warning : '');
         resolved.channels.forEach(function(ch){ postToSlackChannel_(ch, notifyText); });
         Logger.log('[PaymentStatus] notified ' + pay.reservationId + ' → ' + resolved.channels.join(',') + ' (source=' + resolved.source + ')');
@@ -4554,5 +4860,253 @@ function setupPartnerNotifyTrigger() {
  */
 function testNotifyPartnerActions() {
   notifyPartnerActions();
+}
+
+/**
+ * 🔧 2026-05-25: 予約外売上 手動 paid=true 更新（取りこぼし復旧用）
+ *
+ * 背景:
+ *   入金確認システム v3 (checkPaymentStatus) はスプシ更新+Slack通知まで完了するが、
+ *   DB spk_accounting.paid の更新は HANDYMAN Payment Bot v1 の syncPaidToAccounting に委譲されている。
+ *   syncPaidToAccounting が動いていない or 対象をスキップした場合、APP TOP「予約外売上 未回収」に
+ *   実際は入金済みのレコードが残り続ける。
+ *
+ * 動作:
+ *   1. TARGETS の予約番号で spk_accounting.type='extra_sales' AND paid=false を検索
+ *   2. ヒット行を paid=true, paid_at=now() に更新
+ *   3. Slack #payment_sapporo に結果通知
+ *
+ * 使い方:
+ *   1. TARGETS を編集（予約番号・宛名・金額を確認のため記載）
+ *   2. GASエディタで関数選択 → ▶️実行
+ *   3. ログ + Slack で結果確認
+ *   4. APP TOP リロードで「予約外売上 未回収」から外れることを確認
+ */
+function markExtraSalesPaidManual() {
+  // type省略時は 'extra_sales' をデフォルト（既存呼び出し互換）
+  // 'advance' = 立替金（ガソリン代・有料道路 等）
+  var TARGETS = [
+    { resvNo: 'DY00000000966', name: 'ワダ タイキ',     amount: 1833,  type: 'advance'     }  // 2026-05-25 19:17 ガソリン代立替
+  ];
+  var fixed = [], skipped = [], failed = [];
+
+  for (var i = 0; i < TARGETS.length; i++) {
+    var t = TARGETS[i];
+    var targetType = t.type || 'extra_sales';
+    try {
+      // 現在状態確認（指定 type のみを対象、type 違いを誤更新しないため）
+      // ★ 2026-05-25: spk_accounting には paid_at カラムが存在しないため除外
+      var rows = supabaseGet_('spk_accounting',
+        'resv_no=eq.' + encodeURIComponent(t.resvNo) +
+        '&type=eq.' + encodeURIComponent(targetType) +
+        '&select=id,resv_no,user_name,amount,paid,category,type,date');
+      if (!rows || rows.length === 0) {
+        skipped.push(t.resvNo + ' (' + targetType + ': DB行なし)');
+        Logger.log('[ManualPaid] skip: ' + t.resvNo + ' type=' + targetType + ' (no row)');
+        continue;
+      }
+
+      var unpaidRows = rows.filter(function(r){ return !r.paid; });
+      if (unpaidRows.length === 0) {
+        skipped.push(t.resvNo + ' (' + targetType + ': 既に paid=true)');
+        Logger.log('[ManualPaid] skip: ' + t.resvNo + ' type=' + targetType + ' (already paid)');
+        continue;
+      }
+
+      // 金額検証（誤更新防止）— 同 type 内の未払い行が複数ある場合 t.amount で絞り込み
+      var rowsToUpdate = unpaidRows;
+      if (unpaidRows.length > 1 && t.amount) {
+        var matched = unpaidRows.filter(function(r){ return Math.abs(+r.amount - t.amount) <= 1; });
+        if (matched.length === 0) {
+          skipped.push(t.resvNo + ' (' + targetType + ': 金額¥' + t.amount + 'と一致する行なし、' + unpaidRows.length + '行候補)');
+          Logger.log('[ManualPaid] skip: ' + t.resvNo + ' amount no match. candidates=' + unpaidRows.map(function(r){return r.amount;}).join(','));
+          continue;
+        }
+        rowsToUpdate = matched;
+      }
+
+      // 金額検証（誤更新防止）
+      var totalAmt = rowsToUpdate.reduce(function(s, r){ return s + (+r.amount||0); }, 0);
+      if (t.amount && Math.abs(totalAmt - t.amount) > 1) {
+        Logger.log('[ManualPaid] WARNING amount mismatch ' + t.resvNo + ': expect=¥' + t.amount + ' actual=¥' + totalAmt);
+      }
+
+      // 更新（id ベースで確実に対象行のみ更新）
+      var allOk = true;
+      rowsToUpdate.forEach(function(r) {
+        var ok = supabaseUpdate_('spk_accounting',
+          'id=eq.' + encodeURIComponent(r.id) + '&paid=eq.false',
+          { paid: true });
+        if (!ok) allOk = false;
+      });
+
+      if (allOk) {
+        fixed.push('[' + (targetType === 'advance' ? '立替' : '予約外') + '] ' + t.resvNo + ' ' + t.name + ' ¥' + totalAmt.toLocaleString() + ' (' + rowsToUpdate.length + '行)');
+        Logger.log('[ManualPaid] ✅ ' + t.resvNo + ' type=' + targetType + ' → paid=true (' + rowsToUpdate.length + ' rows)');
+      } else {
+        failed.push(t.resvNo + ' (一部更新失敗)');
+      }
+    } catch (e) {
+      failed.push(t.resvNo + ' (例外: ' + e.message + ')');
+      Logger.log('[ManualPaid] error: ' + t.resvNo + ' - ' + e.message);
+    }
+  }
+
+  // Slack通知
+  var lines = ['🔧 *予約外売上 手動 paid=true 更新*', ''];
+  lines.push('✅ 修正: ' + fixed.length + '件');
+  fixed.forEach(function(x){ lines.push('  • ' + x); });
+  if (skipped.length > 0) {
+    lines.push('');
+    lines.push('⏭️ スキップ: ' + skipped.length + '件');
+    skipped.forEach(function(x){ lines.push('  • ' + x); });
+  }
+  if (failed.length > 0) {
+    lines.push('');
+    lines.push('❌ 失敗: ' + failed.length + '件');
+    failed.forEach(function(x){ lines.push('  • ' + x); });
+  }
+  lines.push('');
+  lines.push('📌 根本対応: HANDYMAN Payment Bot v1 の `syncPaidToAccounting` トリガー稼働状況を要確認');
+
+  try { postToSlackChannel_(JALAN_PAY_CHANNEL, lines.join('\n')); } catch(e) {}
+  Logger.log('[ManualPaid] Done: fixed=' + fixed.length + ' skipped=' + skipped.length + ' failed=' + failed.length);
+}
+
+/**
+ * 🔍 2026-05-25: 未回収レコードの 一括 paid 同期診断
+ * spk_accounting.type IN ('extra_sales','advance') AND paid=false のうち、
+ * スプシ「✅ 入金済み」になっている行を一覧化
+ * （手動更新が必要なレコードを炙り出す診断・更新はしない）
+ * - extra_sales: 予約外売上
+ * - advance: 立替金（ガソリン代立替・有料道路立替 等）
+ */
+function diagnoseExtraSalesUnpaid() {
+  // 1. DB 未収一覧（extra_sales / advance 両方対象）
+  var dbRows = supabaseGet_('spk_accounting',
+    'type=in.(extra_sales,advance)&paid=eq.false&select=id,resv_no,user_name,amount,date,category,type&order=date.desc&limit=100');
+  if (!dbRows || dbRows.length === 0) {
+    Logger.log('[Diagnose] DB未収なし'); return;
+  }
+  Logger.log('[Diagnose] DB未収: ' + dbRows.length + '件');
+
+  // 2. スプシ「✅ 入金済み」読み込み
+  var sheetId = '1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc';
+  var sheet = SpreadsheetApp.openById(sheetId).getSheetByName('支払い管理');
+  var lastRow = sheet.getLastRow();
+  var sheetData = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
+  var paidSet = {};
+  sheetData.forEach(function(row) {
+    var status = String(row[8] || '');
+    var resvNo = String(row[3] || '').trim();
+    if (status.indexOf('入金済') >= 0 && resvNo) paidSet[resvNo] = true;
+  });
+
+  // 3. 突合
+  var mismatch = [];
+  dbRows.forEach(function(r) {
+    if (paidSet[r.resv_no]) {
+      mismatch.push({ resvNo:r.resv_no, name:r.user_name, amount:r.amount, date:r.date, type:r.type, category:r.category });
+    }
+  });
+
+  Logger.log('[Diagnose] スプシ入金済 & DB未収 = ' + mismatch.length + '件（要修正）');
+  mismatch.forEach(function(m) {
+    var label = (m.type === 'advance' ? '立替' : '予約外');
+    Logger.log('  • [' + label + '] ' + m.resvNo + ' ' + m.name + ' ¥' + (+m.amount||0).toLocaleString() + ' (' + m.category + ' / ' + m.date + ')');
+  });
+
+  // Slack通知
+  var lines = ['🔍 *未回収診断 (予約外売上+立替金)*', ''];
+  lines.push('DB `paid=false`: ' + dbRows.length + '件 (extra_sales/advance 合算)');
+  lines.push('うちスプシ✅入金済 (=要DB更新): ' + mismatch.length + '件');
+  if (mismatch.length > 0) {
+    lines.push('');
+    mismatch.forEach(function(m) {
+      var label = (m.type === 'advance' ? '立替' : '予約外');
+      lines.push('  • `[' + label + ']` ' + m.resvNo + ' ' + m.name + ' ¥' + (+m.amount||0).toLocaleString() + ' (' + (m.category||'') + ' / ' + m.date + ')');
+    });
+    lines.push('');
+    lines.push('→ `markExtraSalesPaidManual` の TARGETS に追加して手動更新してください');
+  }
+  try { postToSlackChannel_(JALAN_PAY_CHANNEL, lines.join('\n')); } catch(e) {}
+}
+
+/**
+ * 🌙 2026-05-25: 日次自動診断パトロール（再発防止 層3・検出+通知のみ）
+ *
+ * 目的:
+ *   層1 (checkPaymentStatus v3 の DB更新統合) が将来破損・コード書き換えで動かなくなった時、
+ *   翌朝には Slack 通知で気づける早期検知の保険。
+ *
+ * 動作:
+ *   - 毎朝 9:15 に自動実行
+ *   - spk_accounting (extra_sales/advance) で paid=false かつスプシ✅入金済の差分を検出
+ *   - 0件なら通知なし（情報過多防止）
+ *   - 1件以上なら Slack #payment_sapporo に通知（オーナーが手動修正）
+ *
+ * 自動修正はしない（CLAUDE.md 2026-05-11 ルール「自動修復系GASは原則作らない」遵守）
+ */
+function nightlyAccountingPatrol() {
+  try {
+    var dbRows = supabaseGet_('spk_accounting',
+      'type=in.(extra_sales,advance)&paid=eq.false&select=id,resv_no,user_name,amount,date,category,type&order=date.desc&limit=100');
+    if (!dbRows || dbRows.length === 0) {
+      Logger.log('[NightlyPatrol] DB未収なし → OK');
+      return;
+    }
+
+    var sheet = SpreadsheetApp.openById('1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc').getSheetByName('支払い管理');
+    var lastRow = sheet.getLastRow();
+    if (lastRow < 2) return;
+    var sheetData = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
+    var paidMap = {};
+    sheetData.forEach(function(row) {
+      var status = String(row[8] || '');
+      var resvNo = String(row[3] || '').trim();
+      if (status.indexOf('入金済') >= 0 && resvNo) paidMap[resvNo] = true;
+    });
+
+    var mismatch = dbRows.filter(function(r){ return paidMap[r.resv_no]; })
+      .map(function(r){ return { resvNo:r.resv_no, name:r.user_name, amount:r.amount, date:r.date, type:r.type, category:r.category }; });
+
+    if (mismatch.length === 0) {
+      Logger.log('[NightlyPatrol] 同期漏れなし → OK (DB未収 ' + dbRows.length + '件は全てスプシも未払い)');
+      return;
+    }
+
+    var lines = ['⚠️ *入金同期漏れ検出* (' + mismatch.length + '件・要手動修正)', ''];
+    lines.push('スプシ✅入金済 だが DB `paid=false` のレコード:');
+    lines.push('');
+    mismatch.forEach(function(m) {
+      var label = (m.type === 'advance' ? '立替' : '予約外');
+      lines.push('  • `[' + label + ']` ' + m.resvNo + ' ' + m.name + ' ¥' + (+m.amount||0).toLocaleString() + ' (' + (m.category||'') + ' / ' + m.date + ')');
+    });
+    lines.push('');
+    lines.push('対応: GASエディタで `markExtraSalesPaidManual` の TARGETS に追加して実行');
+    lines.push('```');
+    mismatch.forEach(function(m) {
+      lines.push('  { resvNo: \'' + m.resvNo + '\', name: \'' + m.name + '\', amount: ' + m.amount + ', type: \'' + m.type + '\' },');
+    });
+    lines.push('```');
+    postToSlackChannel_(JALAN_PAY_CHANNEL, lines.join('\n'));
+    Logger.log('[NightlyPatrol] ⚠️ 同期漏れ ' + mismatch.length + '件 検出 → Slack通知');
+  } catch (e) {
+    Logger.log('[NightlyPatrol] FATAL: ' + e.message);
+    try { postToSlackChannel_(JALAN_PAY_CHANNEL, '🔴 *入金同期パトロール例外*\n' + e.message); } catch(_) {}
+  }
+}
+
+/**
+ * nightlyAccountingPatrol のトリガー設定（1回だけ手動実行）
+ * 毎朝9:15に自動実行
+ */
+function setupAccountingPatrolTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'nightlyAccountingPatrol') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('nightlyAccountingPatrol')
+    .timeBased().everyDays(1).atHour(9).nearMinute(15).create();
+  Logger.log('[Trigger] nightlyAccountingPatrol 毎朝9:15 設定完了');
 }
 
