@@ -562,7 +562,8 @@ function renderTimeline(){
   const monthEnd=`${ym.y}-${String(ym.m).padStart(2,'0')}-${String(daysInMonth).padStart(2,'0')}`;
   const monthYm=`${ym.y}-${String(ym.m).padStart(2,'0')}`;
   const vehRev={};
-  VEHICLES.forEach(v=>{vehRev[v.code]=0;});
+  const vehUsedDays={}; // 当月返却予約の日数合計 (変動費計算用)
+  VEHICLES.forEach(v=>{vehRev[v.code]=0;vehUsedDays[v.code]=0;});
   RESERVATIONS.forEach(r=>{
     if(r.status==='cancelled')return;
     const f=FLEET.find(x=>x.reservation_id===r.id);
@@ -572,6 +573,8 @@ function renderTimeline(){
     const bp=+(r.base_price||0),op=+(r.option_price||0),disc=+(r.discount||0);
     const rev=(bp>0||op>0)?Math.max(0,bp+op-disc):+(r.price||0);
     vehRev[f.vehicle_code]+=rev;
+    const ld=(r.lend_date||'').substring(0,10);
+    if(ld){const d1=new Date(ld+'T00:00:00'),d2=new Date(rd+'T00:00:00');vehUsedDays[f.vehicle_code]+=Math.max(1,Math.round((d2-d1)/86400000)+1);}
   });
   // フォーマット (K表記禁止)
   const fmtRev=n=>{if(!n||n<=0)return null;return '¥'+Math.round(n).toLocaleString();};
@@ -587,15 +590,17 @@ function renderTimeline(){
     html+=`<tr class="cls-row"><td class="vh-c" colspan="${dates.length+1}">${t}クラス （${grps[t].length}台）${isMobile?'':' '+grpName} <span style="font-size:10px;color:#64748b;margin-left:4px">稼働${clsActive}/${grps[t].length}台</span>${clsRevHtml}</td></tr>`;
     grps[t].forEach(v=>{
       const u=utils[v.code]||{days:0,pct:0};
-      const active=isVehActive(v);
+      const kpiActive=isVehActive(v);
       const rev=vehRev[v.code]||0;
+      const usedDays=vehUsedDays[v.code]||0;
       // ナンバー (青大太字) ・車種名 (グレー小)
       const plate=(v.plate_no||'').trim();
       const isValidPlate=plate&&!['未定','確認','-','—','TBD','tbd','none'].includes(plate);
-      // バッジ群 (SPK配車表と同じ色)
-      const badgeActive=active
-        ?`<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:#dcfce7;color:#059669;border:1px solid #86efac">稼働</span>`
-        :`<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:#fee2e2;color:#dc2626;border:1px solid #fca5a5">除外</span>`;
+      // バッジ群: 稼働中(予約あり)/待機中(KPI active 予約なし)/除外(KPI inactive)
+      let badgeActive;
+      if(!kpiActive){badgeActive=`<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:#fee2e2;color:#dc2626;border:1px solid #fca5a5">除外</span>`;}
+      else if(usedDays>0){badgeActive=`<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:#dcfce7;color:#059669;border:1px solid #86efac">稼働中</span>`;}
+      else{badgeActive=`<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:#f1f5f9;color:#64748b;border:1px solid #cbd5e1">待機中</span>`;}
       const badgeIns=v.insurance_veh
         ?`<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:#ede9fe;color:#7c3aed;border:1px solid #ddd6fe">🛡 保険</span>`
         :'';
@@ -1104,20 +1109,39 @@ function renderCost(){
     if(ai!==bi)return (ai<0?99:ai)-(bi<0?99:bi);
     return (a.plate_no||'').localeCompare(b.plate_no||'');
   });
+  // ★ 2026-05-26 変動費化: 当月返却予約の日数合計を計算
+  const calcUsedDays=(vc)=>{
+    let total=0;
+    RESERVATIONS.forEach(r=>{
+      if(r.status==='cancelled')return;
+      const f=FLEET.find(x=>x.reservation_id===r.id);
+      if(!f||f.vehicle_code!==vc)return;
+      const rd=(r.return_date||'').substring(0,10);
+      if(!rd||rd<monthStart||rd>monthEnd)return;
+      const ld=(r.lend_date||'').substring(0,10);
+      if(!ld)return;
+      const d1=new Date(ld+'T00:00:00'),d2=new Date(rd+'T00:00:00');
+      total+=Math.max(1,Math.round((d2-d1)/86400000)+1);
+    });
+    return total;
+  };
   let html='',totCost=0,totRev=0;
   sorted.forEach(v=>{
     const daily=Number(v.partner_daily_cost)||0;
-    const active=isVehActive(v);
-    const days=active?daysInMonth:0;
+    const kpiActive=isVehActive(v);
+    const usedDays=calcUsedDays(v.code);
+    const days=usedDays;
     const cost=daily*days;
     const rev=calcRev(v.code);
     const profit=rev-cost;
     totCost+=cost;totRev+=rev;
     const plate=(v.plate_no||'').trim();
     const isValidPlate=plate&&!['未定','確認','-','—','TBD','tbd','none'].includes(plate);
-    const statusBadge=active
-      ?'<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:#dcfce7;color:#059669;border:1px solid #86efac">✅稼働</span>'
-      :'<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:#fee2e2;color:#dc2626;border:1px solid #fca5a5">❌除外</span>';
+    // 稼働ステータス: 予約数ベース (✅稼働中=予約あり / ⏸待機中=KPI active だが予約0 / ❌除外=KPI inactive)
+    let statusBadge;
+    if(!kpiActive){statusBadge='<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:#fee2e2;color:#dc2626;border:1px solid #fca5a5">❌除外</span>';}
+    else if(usedDays>0){statusBadge='<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:#dcfce7;color:#059669;border:1px solid #86efac">✅稼働中</span>';}
+    else{statusBadge='<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:#f1f5f9;color:#64748b;border:1px solid #cbd5e1">⏸待機中</span>';}
     const profitColor=profit>=0?'#15803d':'#dc2626';
     const profitStr=(profit>=0?'+':'')+'¥'+profit.toLocaleString();
     html+=`<tr>`+
