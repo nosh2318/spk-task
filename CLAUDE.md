@@ -1,5 +1,305 @@
 # SPK業務管理APP（札幌店）
 
+## 📤 2026-05-26 お客様向け 傷チェック共有URL機能 実装（handyman-damage + SPK/NHA管理APP）
+
+### 全体構成
+お客様にダメージ状態を共有するための公開URLを発行し、SPK/NHA管理APPの主要画面から1タップでLINE案内文付きコピーできる仕組みを構築。
+
+### 主要URL
+- **お客様向け公開ビュー**: `https://nosh2318.github.io/handyman-damage/v.html?t=<UUID>&v=v3`
+- **車両ごとに UUID トークン**（vehicle_twins.share_token）が発行され、推測困難
+- 共有停止すると即座にアクセス不可
+
+### DB変更
+```sql
+ALTER TABLE vehicle_twins ADD COLUMN IF NOT EXISTS share_token UUID UNIQUE DEFAULT gen_random_uuid();
+ALTER TABLE vehicle_twins ADD COLUMN IF NOT EXISTS share_enabled BOOLEAN DEFAULT false;
+ALTER TABLE vehicle_twins ADD COLUMN IF NOT EXISTS share_enabled_at TIMESTAMPTZ;
+ALTER TABLE vehicle_twins ADD COLUMN IF NOT EXISTS display_label TEXT;
+-- anon 用 RLS（share_enabled=true の車両のみ閲覧可）
+CREATE POLICY "public_share_read_vehicle_twins" ON vehicle_twins FOR SELECT TO anon USING (share_enabled = true);
+```
+
+### v.html（お客様向け公開ビュー）
+- 単独HTML / `~/handyman-damage/v.html`（約 510行）
+- anon キー + RLS で `vehicle_twins.share_token` ベース検索
+- 顧客名・予約番号・担当者名・利用期間 **すべてマスキング**
+- 表示内容: 「車種 / ナンバー」（display_label）+ 本日日付 + 車両図SVG + ダメージマーカー
+- マーカータップで写真ライトボックス展開
+- `no-cache` meta タグ + URLバージョンクエリ `&v=v3` でブラウザキャッシュ対策
+
+### handyman-damage 側の共有ボタン（index.html）
+- 車両詳細画面下部に「📤 お客様共有リンクを発行」セクション
+- 発行時: `share_enabled=true` + `display_label`生成 + URL自動コピー
+- display_label形式: `車種 / ナンバー`（例: `ノア / 5398`）
+- 停止/再発行ボタンも同セクション
+
+### SPK/NHA管理APP の共有アイコン
+- 既存コードに **完全独立** な `DmgShareIcon` コンポーネントを追加
+- グローバル `window._dmgShareMap` 経由で配信（5分polling）
+- 3画面に配置:
+  | 画面 | SPK | NHA |
+  |---|---|---|
+  | OPシートマスター | ✅ | ✅ |
+  | TOPタスクサマリ（個人別） | ✅ | ✅ |
+  | TOPスケジュール（本日） | ✅ | ✅ |
+- **発行済(青📤)** タップ → ポップアップメニュー:
+  1. 📝 **LINE案内文 + URL をコピー**（テンプレ全文+URLを一括コピー・最上段強調）
+  2. 🌐 開く（新タブ）
+  3. 📋 URLのみコピー
+  4. 🔒 共有停止
+- **未発行(グレー📤)** → トースト「📤 共有未発行です」
+
+### LINE案内文テンプレ（固定）
+```
+HANDYMANのご利用誠にありがとうございます。
+本日ご利用なられる車両データをお送りさせていただきます。
+下記URLより車両状態（傷・ヘコミ）の画像確認が可能でございますのでご確認後、気になる箇所がございましたら、画像送信またはご連絡をお願いいたします。 ※ご出発後の申告につきましては対応いたしかねる場合がございます。
+
+【車両傷チェック】
+🔗 こちらよりご確認ください
+<URL>
+
+よろしくお願いいたします。
+```
+
+### バージョン
+| プロジェクト | バージョン | コミット |
+|---|---|---|
+| `handyman-damage` | 共有URL機能シリーズ | `0c69c42` → `4ed6d98` → `5adbd15` → `d5fa3c8` |
+| `spk-task` | v4.7.164（3画面実装）→ v4.7.165（案内文テンプレ） | `a760b7c` → `7412621` |
+| `naha-project` | v3.5.74-NHA → v3.5.75-NHA | `faa0703` → `efd9ff0` |
+
+### BUDDICA 高松（実装スキップ）
+- `bt_vehicle_twins` テーブルが**存在しない**
+- `vehicle_twins`（BT Supabase）も**0件**（damage機能未運用）
+- 共有URLの元データがないため実装対象外。将来 BT で damage アプリ運用開始時に対応
+
+### display_label 形式の歴史（v.html 後方互換対応）
+- v1: `"プレート|車種 ／ ID"`（パイプ区切り）
+- v2: `"プレート / 車種 / 年式"`（スラッシュ区切り）
+- **v3 確定**: `"車種 / プレート"`（最終形）
+- v.html は全形式を自動判別して v3 形式で表示
+
+### Lesson / 教訓
+1. **schema.sql が古い場合がある**: `vehicle_twins.plate`/`model`/`year`/`color` は存在せず、本番DBは別テーブルJOIN構造 → 必ず curl で実カラム確認
+2. **PostgREST は select 句に存在しないカラムを含めると 全体 HTTP 400** → 0件と誤判定される
+3. **anon ロールから vehicles テーブルは見えない**（2026-05-13 セキュリティ強化済）→ vehicle_twins に display_label を冗長コピーするのが最も安全
+4. **GitHub Pages の cache-control: max-age=600** → ブラウザキャッシュ強い。`no-cache` meta + URL version-query 両方が安全
+5. **既存コードを触らない実装**: グローバル `window._dmgShareMap` 経由でデータ配信 → 独立コンポーネント `DmgShareIcon` だけで完結
+
+---
+
+## 🔴 2026-05-25 入金同期漏れ 修正 + 再発防止 3層防御確立（gas-email-import-v2.gs）
+
+### 症状
+- TOP「予約外売上 未回収」「Square請求書」に **実は入金済みのレコードが残る**
+- 入金確認 Slack 通知（`✅入金確認完了`）は届いている / スプシも「✅入金済」更新済 / でも APP は未収表示
+- 実害: 同日 3件取りこぼし発覚
+  | 予約番号 | 宛名 | 金額 | type | 復旧時刻 |
+  |---|---|---|:-:|---|
+  | C260400997 | イシカワ ハルキ | ¥50,000 | extra_sales | 14:17 |
+  | DY00000000966 | ワダ タイキ | ¥7,100 | extra_sales | 14:17 |
+  | DY00000000966 | ワダ タイキ | ¥1,833 | **advance** (ガソリン代立替) | 後刻 |
+
+### 真因（構造的バグ）
+**`checkPaymentStatus` v3 と `syncPaidToAccounting` の責務分業の片方が静かに止まっていた**
+
+| 経路 | 担当 | 動作 |
+|---|---|:-:|
+| スプシ I列「✅入金済」更新 | `checkPaymentStatus` (gas-email-import-v2.gs) | ✅ |
+| `jalan_payments.status='paid'` 更新 (じゃらん) | 同上 | ✅ |
+| **`spk_accounting.paid=true` 更新** | **HANDYMAN Payment Bot v1 の `syncPaidToAccounting`** (別GAS) | ❌ **停止 or 失敗** |
+| Slack `#payment_sapporo` 通知 | `checkPaymentStatus` | ✅ |
+
+→ 入金されてもスプシ・Slack は更新されるが DB の `spk_accounting.paid` は `false` のまま残る → APP TOP は永久に「未回収」表示
+
+### `spk_accounting` スキーマ注意（2026-05-25 障害で判明）
+- **`paid_at` カラムは存在しない** （初回実装時に `{paid:true, paid_at:...}` で更新したら `column does not exist` で GET も失敗）
+- UPDATE は **`{ paid: true }` のみ** にする
+- `nha_accounting` も同様（推測・要確認）
+- select句に `paid_at` を含めると **GET 全体が失敗** → 「DB行なし」と誤判定される
+
+### 修正: 再発防止 3層防御
+
+#### 層1 リアルタイム同期統合（`checkPaymentStatus` v3 / L2106付近）
+入金検知時に `spk_accounting` / `nha_accounting.paid=true` も同時更新するロジックを統合。
+- `resolvePaymentStore_` の `channels` から対象テーブル決定
+  - 札幌のみ → `spk_accounting`
+  - 那覇のみ → `nha_accounting`
+  - 両店該当 / 判定不明 → 両方トライ（冪等：`paid=eq.false` 条件で多重更新なし）
+- `type` 指定なし → `extra_sales` / `advance` 両方対応
+- 既存 `jalan_payments` 更新と Slack 通知ロジックには **一切手を加えていない**
+
+```js
+// L2106付近に追加
+try {
+  var acctTables = [];
+  if (resolved.source === 'ambiguous' || resolved.source === 'fallback') {
+    acctTables = ['nha_accounting', 'spk_accounting'];
+  } else if (resolved.channels.indexOf('C0AP2S5B147') >= 0) {
+    acctTables = ['nha_accounting'];
+  } else {
+    acctTables = ['spk_accounting'];
+  }
+  acctTables.forEach(function(tbl) {
+    try {
+      var okAcc = supabaseUpdate_(tbl,
+        'resv_no=eq.' + encodeURIComponent(pay.reservationId) + '&paid=eq.false',
+        { paid: true });
+    } catch(eAcc) { Logger.log('[PaymentStatus] ' + tbl + ' update error: ' + eAcc.message); }
+  });
+} catch(eAcct) { Logger.log('[PaymentStatus] accounting update error: ' + eAcct.message); }
+```
+
+#### 層2 手動診断（`diagnoseExtraSalesUnpaid` / L4945付近）
+`spk_accounting.type IN ('extra_sales','advance') AND paid=false` × スプシ「✅入金済」を突合し差分を Slack に出力。
+- 任意のタイミングで手動実行
+- 検出のみ・更新はしない
+
+#### 層3 日次自動パトロール（`nightlyAccountingPatrol` / L5037付近）
+毎朝 9:15 に層2と同等の差分検出を自動実行。
+- 0件 → 通知なし（情報過多防止）
+- 1件以上 → Slack `#payment_sapporo` に「⚠️ 入金同期漏れ検出 N件」+ `markExtraSalesPaidManual` の **コピペ用 TARGETS スニペット** を通知
+- 自動修正はしない（CLAUDE.md 2026-05-11 ルール「自動修復系GASは原則作らない」遵守）
+- トリガー設定: `setupAccountingPatrolTrigger()` を1回手動実行
+
+#### 即時復旧用ヘルパー（`markExtraSalesPaidManual` / L4845付近）
+取りこぼし発生時の手動修正関数。
+- TARGETS: `[{resvNo, name, amount, type}]` の配列
+- `type` 省略時 `'extra_sales'`（互換）、`'advance'` 指定で立替金対応
+- 同予約番号に複数未払い行ある場合は `amount` 一致で1行絞り込み
+- **id-base 更新**（`id=eq.{行ID}` で1件ずつ）→ 巻き込み事故防止
+
+### 関連関数 行番号一覧
+| 関数 | 行 | 役割 |
+|---|:-:|---|
+| `checkPaymentStatus` v3 | L2090付近 | 既存・15分トリガー |
+| 統合コード追加部分 | **L2106付近** | 「2026-05-25: spk_accounting / nha_accounting の paid 更新を統合」 |
+| `markExtraSalesPaidManual` | L4845付近 | 即時復旧用 |
+| `diagnoseExtraSalesUnpaid` | L4945付近 | 手動診断 |
+| `nightlyAccountingPatrol` | **L5037付近** | 日次自動パトロール |
+| `setupAccountingPatrolTrigger` | L5091付近 | トリガー設定（1回手動実行） |
+
+### 検証コマンド（GASに反映されているか確認）
+GASエディタの `gas-email-import-v2.gs` で `Cmd+F` 検索:
+```
+2026-05-25: spk_accounting / nha_accounting の paid 更新を統合
+```
+ヒットすれば層1反映済み。
+
+### Lesson
+1. **「2つのGASが分業する箇所」は片方が止まると静かに壊れる** → 責務統合が安全
+2. **スプシ・Slack・DB の3面同期は1関数内で完結させる**（分散させると同期漏れに気づきにくい）
+3. **テーブルスキーマは触る前に確認** — `paid_at` のような汎用カラム名は無いケースあり。select 句に存在しないカラムを含めると **GET 全体が失敗** する PostgREST の挙動も罠
+4. **「自動修復」は対症療法**（CLAUDE.md 2026-05-11 確立）。検出+通知+手動修正 が安全な落としどころ
+5. **再発防止は多層構造で組む**: 層1 (書き込み側修正) + 層2 (手動診断) + 層3 (日次自動検知) → 1層壊れても他層で気づける
+
+### 残課題（任意）
+- `HANDYMAN Payment Bot v1` の `syncPaidToAccounting` トリガー稼働状況確認
+  - 層1 統合により責務重複だが、二重更新は冪等（`paid=eq.false` フィルタ）なので実害なし
+  - クォータ節約したい場合は停止検討
+
+---
+
+## 📧 2026-05-25 予約後メール自動送信 を 3 OTA に拡張（gas-email-import-v2.gs）
+
+### 概要
+従来「じゃらん のみ」だった予約後メール自動送信を **じゃらん・skyticket・エアトリ** の3社に拡張。
+skyticket / airtrip は決済リンクなしの「LINE誘導案内メール」を送信。じゃらん は既存通り決済リンク付きメール。
+
+### 対象OTA マトリクス
+| OTA | コード | メール種別 | 関数 |
+|---|:-:|---|---|
+| じゃらん | J | 決済リンク付きメール（既存・変更なし） | `sendJalanPaymentEmail_` |
+| **skyticket** | **S** | LINE誘導案内メール（新規） | `sendReservationWelcomeEmail_` |
+| **エアトリ** | **O** | LINE誘導案内メール（新規） | `sendReservationWelcomeEmail_` |
+| 楽天 | R | 送信なし | — |
+| RC / GoGoOut / HP | RC/G/SP | 送信なし | — |
+
+### 新規関数 `sendReservationWelcomeEmail_(reservation)` (L1638)
+- **対象OTA**: `['S','O']` のみ。それ以外は即 return false
+- **メールアドレス検証**: 空 / `@` なし → スキップ + ログ
+- **冪等性**: ScriptProperty `spk_welcome_sent_ids` で送信済予約IDを管理（最大500件保持）
+- **送信元**: `reserve@rent-handyman.jp` (既存Gmailエイリアス) / 名義 `HANDYMAN 札幌デリバリー専門店`
+- **Slack通知**: `#payment_sapporo` (`JALAN_PAY_CHANNEL`) に「📧 *予約案内メール送信完了*」投稿（失敗は無視）
+
+### 呼び出し箇所（`processMessage_` 内 3点に統合）
+| 行 | コンテキスト | 既存じゃらん処理との関係 |
+|:-:|---|---|
+| L425 | 既存予約パッチ後（OTA自動登録GASが先に登録） | `handleJalanPayment_` の直後 |
+| L441 | race condition 時（INSERT 失敗だが他経路で存在） | 同上 |
+| L460 | 新規 INSERT 成功後（メイン経路） | 同上 |
+
+→ 冪等性は関数内で担保されるため、3経路すべてで呼んでも重複送信しない。
+
+### メール本文テンプレート（決定版）
+```
+[予約者名] 様
+予約番号： [予約ID]
+
+レンタカーショップHANDYMANカスタマーサポートです。
+ご予約ありがとうございます。
+
+札幌店は便利なデリバリー専門店となっております。
+スムーズにお貸し出しできますよう事前のお手続きをお願いしております。
+
+━━━━━━━━━━━━━━━━━━━━
+\ LINE公式の友達登録 /
+ご登録後流れに沿ってデリバリーに必要な情報を入力ください。
+当日の時間・場所の詳細連絡にもLINEを利用いたします。
+
+LINE ID：@730kyhwl
+https://lin.ee/g6iDNYz
+━━━━━━━━━━━━━━━━━━━━
+
+お忙しいところ恐れ入りますが、お貸し出し3日前19:00までにご対応お願いいたします。
+
+【注意点】
+・無店舗型のデリバリー専門になります
+・予約状況により内容のご調整をいただくことがございます。
+・貸出日 3日前19:00時点で情報が不明確な場合はご希望に添えないことがございます。
+・貸出時間からご連絡のないまま30分経過しますと貸出不可となることがございます。
+
+【お問合せ】
+お問い合わせは公式LINEお願いいたします。
+HANDYMANカスタマーサポート
+LINE公式：https://lin.ee/g6iDNYz
+LINE ID：@730kyhwl
+緊急連絡先： 050-1724-6197
+営業時間： 9:00〜19:00
+```
+
+### テスト関数（GASエディタ手動実行）
+| 関数 | 行 | 用途 |
+|---|:-:|---|
+| `testWelcomeMailDryRun` | L1727 | 4ケース（S空メール/O不正/J除外/R除外）の判定ロジック確認・送信なし |
+| `testSendWelcomeMail` | L1749 | 実メール送信。デフォルト宛先 `oshita@mileshare.jp` / `TEST_OTA = 'S'` |
+| `testSendWelcomeMailByResvNo` | L1821 | DB実予約データで送信。`TARGET_RESV_NO` を書き換え |
+
+### 動作確認済（2026-05-25 14:01）
+- `testSendWelcomeMail` 実行 → `oshita@mileshare.jp` に到着 → 内容確認OK
+- 送信元・送信者名・件名・本文・LINE URL・絵文字・改行すべて期待通り
+- 本番運用開始
+
+### 緊急停止方法
+3箇所の呼び出し（L425/L441/L460）のいずれかの `if (reservation.ota === 'S' || reservation.ota === 'O')` を `if (false &&` に変更すれば該当経路のみ停止。
+全停止したい場合は `sendReservationWelcomeEmail_` 関数冒頭に `return false;` を1行追加。
+
+### 関連定数 / ScriptProperty
+| 名前 | 用途 |
+|---|---|
+| `JALAN_PAY_CHANNEL` (`C0AQL6HGG3E`) | 送信完了通知の投稿先（#payment_sapporo） |
+| ScriptProperty `spk_welcome_sent_ids` | カンマ区切り送信済予約ID一覧（最大500件・FIFO） |
+
+### Lesson
+1. **テンプレート OTA別 共通化**: skyticket / airtrip で本文は完全同一（OTAラベルはログ・Slack通知のみで区別）→ 将来 OTA 追加時は `TARGET_OTAS` 配列に追加するだけ
+2. **冪等性は ScriptProperty で十分**: DB カラム追加よりシンプル＋低リスク。500件 FIFO で十分な保持期間
+3. **既存じゃらん処理を一切触らない**: `handleJalanPayment_` の隣に並行 `if` ブロックを追加するだけで実装。CLAUDE.md「動いているものを修正しない」遵守
+4. **3経路すべてで呼ぶ**: 新規 INSERT / 既存パッチ / race condition のいずれの経路でも一度は呼ばれる設計。冪等性が担保されているので重複なし
+
+---
+
 ## 🎉 2026-05-16 協力会社車両運用機能 全Phase完了 + 動作確認済
 
 ### 最終ステータス
