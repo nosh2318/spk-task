@@ -1,0 +1,171 @@
+name: Omni Realtime (本物 claude --agent omni)
+
+# このworkflowは "Slackから本物のomniを叩く" 経路の実体。
+# PCの ~/.claude を runner に展開し、claude --agent omni --model sonnet を直接起動する。
+#
+# 配置: 対象リポジトリの .github/workflows/omni-realtime.yml にコピー
+# 同時に .omni-runtime/ ディレクトリ（agents・CLAUDE.md・knowledge）もリポジトリ直下にコミット必須。
+#
+# 必要 GitHub Secrets:
+#   - ANTHROPIC_API_KEY   ← Anthropic API キー（クラウドからclaudeを叩くため）
+#   - SLACK_BOT_TOKEN     ← Slack回答投稿用
+#   - OMNI_ALLOWED_USERS  ← カンマ区切りのSlack User ID 許可リスト（6名）
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: 'Slackから来た依頼文'
+        required: true
+        type: string
+      slack_channel:
+        description: 'Slack channel ID'
+        required: true
+        type: string
+      slack_thread_ts:
+        description: 'Slack thread timestamp'
+        required: false
+        type: string
+        default: ''
+      slack_user_id:
+        description: 'Requester Slack User ID（認可チェック用）'
+        required: true
+        type: string
+
+permissions:
+  contents: read       # コードを書き換える経路ではないので read で十分（最小権限）
+  pull-requests: read
+
+jobs:
+  run-omni:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # ─────────────────────────────────────────────
+      # 🔐 ① 認可ゲート（最初に・未認可なら何もしない）
+      # ─────────────────────────────────────────────
+      - name: 🔐 Authorization gate
+        env:
+          REQUESTER: ${{ inputs.slack_user_id }}
+          ALLOWED: ${{ secrets.OMNI_ALLOWED_USERS }}
+          PROMPT: ${{ inputs.prompt }}
+        run: |
+          if [ -z "$ALLOWED" ]; then
+            echo "::error::OMNI_ALLOWED_USERS secret 未設定。安全のため停止します。"
+            exit 1
+          fi
+          case ",$ALLOWED," in
+            *",$REQUESTER,"*) echo "✅ 認可OK: $REQUESTER" ;;
+            *) echo "::error::未認可ユーザー ($REQUESTER) の実行をブロックしました。"; exit 1 ;;
+          esac
+          # プロンプト長ガード（GitHub Actions input は2000字上限なので実上限は約1900）
+          LEN=${#PROMPT}
+          echo "prompt length = $LEN chars"
+          if [ "$LEN" -gt 1900 ]; then
+            echo "::warning::プロンプトが1900字を超えています ($LEN字)。GitHub Actions側で切詰めされる可能性。"
+          fi
+
+      # ─────────────────────────────────────────────
+      # 📦 ② リポジトリchecout（.omni-runtime/ 込み）
+      # ─────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ─────────────────────────────────────────────
+      # 🛠 ③ Node + claude CLI install
+      # ─────────────────────────────────────────────
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install claude CLI
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+
+      # ─────────────────────────────────────────────
+      # 📥 ④ PC ~/.claude をrunnerに展開（搬入）
+      # ─────────────────────────────────────────────
+      - name: Provision ~/.claude (omni runtime)
+        run: |
+          if [ ! -d ".omni-runtime" ]; then
+            echo "::error::.omni-runtime/ がリポジトリに見つかりません。omni_bot/.omni-runtime をコミットしてください。"
+            exit 1
+          fi
+          mkdir -p ~/.claude
+          cp -R .omni-runtime/agents     ~/.claude/agents
+          cp    .omni-runtime/CLAUDE.md  ~/.claude/CLAUDE.md
+          cp -R .omni-runtime/knowledge  ~/.claude/knowledge
+          echo "✅ provisioned $(du -sh ~/.claude | cut -f1)"
+          echo "agents: $(ls ~/.claude/agents/*.md | wc -l)"
+          echo "knowledge: $(ls ~/.claude/knowledge/*.md | wc -l)"
+          [ -f .omni-runtime/SYNCED_AT ] && echo "搬入物 SYNCED_AT: $(cat .omni-runtime/SYNCED_AT)"
+
+      # ─────────────────────────────────────────────
+      # 🌍 ⑤ 本物 omni を起動（model: sonnet で安く）
+      # ─────────────────────────────────────────────
+      - name: Run claude --agent omni
+        id: omni
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OMNI_PROMPT: ${{ inputs.prompt }}
+        run: |
+          # 出力ファイルに書いて後段でSlack投稿に使う
+          set +e
+          claude --agent omni --model sonnet \
+            --print --dangerously-skip-permissions \
+            -p "$OMNI_PROMPT" \
+            > /tmp/omni_answer.txt 2> /tmp/omni_err.txt
+          EXIT=$?
+          set -e
+          echo "exit_code=$EXIT" >> "$GITHUB_OUTPUT"
+          echo "----- STDOUT (先頭2000字) -----"
+          head -c 2000 /tmp/omni_answer.txt
+          echo ""
+          echo "----- STDERR (先頭1000字) -----"
+          head -c 1000 /tmp/omni_err.txt
+          # Slack投稿は次stepで（成功失敗どちらでも投稿したいので continue-on-error 的に exit 0）
+          exit 0
+
+      # ─────────────────────────────────────────────
+      # 💬 ⑥ 回答を Slack スレッドに返す
+      # ─────────────────────────────────────────────
+      - name: Post answer to Slack
+        if: ${{ secrets.SLACK_BOT_TOKEN != '' }}
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          CHANNEL: ${{ inputs.slack_channel }}
+          THREAD_TS: ${{ inputs.slack_thread_ts }}
+          EXIT_CODE: ${{ steps.omni.outputs.exit_code }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # 回答テキストを取得（最大3500字でカット = Slackメッセージ上限対策）
+          if [ "$EXIT_CODE" = "0" ] && [ -s /tmp/omni_answer.txt ]; then
+            ANSWER=$(head -c 3500 /tmp/omni_answer.txt)
+            HEADER="🌍"
+          else
+            ANSWER="⚠️ omni が応答できませんでした（exit=$EXIT_CODE）。詳細: $RUN_URL"
+            ERRTXT=$(head -c 500 /tmp/omni_err.txt 2>/dev/null || echo '')
+            [ -n "$ERRTXT" ] && ANSWER="$ANSWER"$'\n'"\`\`\`$ERRTXT\`\`\`"
+            HEADER="❌"
+          fi
+          # jq でJSONエスケープ（改行・絵文字・コードブロックも安全）
+          BODY=$(jq -n \
+            --arg ch "$CHANNEL" \
+            --arg thread "$THREAD_TS" \
+            --arg text "$HEADER $ANSWER" \
+            '{channel:$ch, text:$text} + (if $thread != "" then {thread_ts:$thread} else {} end)')
+          curl -sS -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            -d "$BODY" | jq -r '.ok, .error // empty'
+
+      # ─────────────────────────────────────────────
+      # ⚠️ ⑦ omni が失敗していたらjob全体も失敗扱い（GH Actionsの統計のため）
+      # ─────────────────────────────────────────────
+      - name: Propagate omni exit
+        if: ${{ steps.omni.outputs.exit_code != '0' }}
+        run: |
+          echo "omni step failed (exit=${{ steps.omni.outputs.exit_code }})"
+          exit 1
