@@ -33,8 +33,11 @@ on:
         type: string
 
 permissions:
-  contents: read       # コードを書き換える経路ではないので read で十分（最小権限）
-  pull-requests: read
+  contents: write          # ★ コード修正 → git push を許可
+  pull-requests: write     # ★ PR作成を許可
+  issues: read
+  # ⚠️ omni には「main直push禁止・必ずブランチ作成→PR」を strict に指示する
+  #    （Run step 内の OPERATIONAL_RULES prefix 参照）
 
 jobs:
   run-omni:
@@ -103,19 +106,46 @@ jobs:
           [ -f .omni-runtime/SYNCED_AT ] && echo "搬入物 SYNCED_AT: $(cat .omni-runtime/SYNCED_AT)"
 
       # ─────────────────────────────────────────────
-      # 🌍 ⑤ 本物 omni を起動（model: sonnet で安く）
+      # 🛠 ⑤ git identity 設定（commit に必要）
+      # ─────────────────────────────────────────────
+      - name: Setup git identity
+        run: |
+          git config --global user.email "omni-bot@handyman.local"
+          git config --global user.name "HANDYMAN OMNI Bot"
+
+      # ─────────────────────────────────────────────
+      # 🌍 ⑥ 本物 omni を起動（model: sonnet・PR作成ルール強制）
       # ─────────────────────────────────────────────
       - name: Run claude --agent omni
         id: omni
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OMNI_PROMPT: ${{ inputs.prompt }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}    # gh CLI 用
         run: |
-          # 出力ファイルに書いて後段でSlack投稿に使う
+          # ★ omni に渡す前置ルール（PR作成フロー強制）を /tmp/rules.txt に書く
+          {
+            echo '[OPERATIONAL RULES — STRICTLY ENFORCE]'
+            echo 'You are in a GitHub Actions runner on the spk-task repo (already checked out).'
+            echo 'For ANY code modification request:'
+            echo '  1. git checkout -b omni/<short-slug>-<unix-ts>'
+            echo '  2. Edit/Write the requested changes'
+            echo '  3. git add <files>'
+            echo '  4. git commit -m "<type>: <summary>"'
+            echo '  5. git push origin <branch>'
+            echo '  6. gh pr create --title "..." --body "..." --base main --head <branch>'
+            echo '  7. End response with: "PR: <url>"'
+            echo 'NEVER push to main directly. ALWAYS branch + PR.'
+            echo 'Shell: git, gh (GH_TOKEN already set).'
+            echo 'If just a question (no code change), answer briefly.'
+            echo ''
+            echo '[USER REQUEST]'
+            echo "$OMNI_PROMPT"
+          } > /tmp/prompt.txt
           set +e
           claude --agent omni --model sonnet \
             --print --dangerously-skip-permissions \
-            -p "$OMNI_PROMPT" \
+            -p "$(cat /tmp/prompt.txt)" \
             > /tmp/omni_answer.txt 2> /tmp/omni_err.txt
           EXIT=$?
           set -e
@@ -125,7 +155,6 @@ jobs:
           echo ""
           echo "----- STDERR (先頭1000字) -----"
           head -c 1000 /tmp/omni_err.txt
-          # Slack投稿は次stepで（成功失敗どちらでも投稿したいので continue-on-error 的に exit 0）
           exit 0
 
       # ─────────────────────────────────────────────
