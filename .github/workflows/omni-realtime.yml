@@ -31,6 +31,11 @@ on:
         description: 'Requester Slack User ID（認可チェック用）'
         required: true
         type: string
+      image_urls:
+        description: 'Slack添付画像URL（カンマ区切り・任意）'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write          # ★ コード修正 → git push を許可
@@ -114,6 +119,28 @@ jobs:
           git config --global user.name "HANDYMAN OMNI Bot"
 
       # ─────────────────────────────────────────────
+      # 🖼 ⑤.5 Slack 添付画像をダウンロード（任意・カンマ区切りURL）
+      # ─────────────────────────────────────────────
+      - name: Download Slack images
+        if: ${{ inputs.image_urls != '' }}
+        env:
+          IMAGE_URLS: ${{ inputs.image_urls }}
+          SLACK_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: |
+          mkdir -p /tmp/imgs
+          IFS=',' read -ra URLS <<< "$IMAGE_URLS"
+          for i in "${!URLS[@]}"; do
+            URL="${URLS[$i]}"
+            EXT=$(echo "$URL" | sed -nE 's|.*\.([a-zA-Z]{3,4})(\?.*)?$|\1|p')
+            [ -z "$EXT" ] && EXT="png"
+            OUT="/tmp/imgs/img_${i}.${EXT}"
+            echo "Downloading: $URL → $OUT"
+            curl -sSL -H "Authorization: Bearer $SLACK_TOKEN" "$URL" -o "$OUT"
+            ls -la "$OUT"
+          done
+          ls -la /tmp/imgs/
+
+      # ─────────────────────────────────────────────
       # 🌍 ⑥ 本物 omni を起動（B案: /tmpから起動して project CLAUDE.md 自動loadを抑制）
       # ─────────────────────────────────────────────
       - name: Run claude --agent omni (from /tmp)
@@ -133,6 +160,15 @@ jobs:
             echo "- NEVER push to main. ALWAYS branch + PR."
             echo "- End response with single line: PR: <url>"
             echo "- For info-only requests, answer briefly without git ops."
+            # 添付画像があれば omni に Read tool で読むよう指示
+            if [ -d /tmp/imgs ] && [ -n "$(ls /tmp/imgs/ 2>/dev/null)" ]; then
+              echo ""
+              echo "[ATTACHED IMAGES]"
+              echo "User attached images. Use Read tool to view each:"
+              for img in /tmp/imgs/*; do
+                echo "- $img"
+              done
+            fi
             echo ""
             echo "[REQUEST]"
             echo "$OMNI_PROMPT"
