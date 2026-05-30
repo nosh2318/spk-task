@@ -1,5 +1,43 @@
 # SPK業務管理APP（札幌店）
 
+## 🔧 2026-05-30 配車表 A2/B2クラス重複表記バグ 修正（index.src.html / v4.7.183→v4.7.184）
+
+### 症状
+札幌店の配車表（FleetTimeline）で **A2クラス・B2クラスが2重に表示**される（同じ車両を持つクラスグループが2つ並ぶ）。
+
+### 真因（vehicleClasses の merge が type 重複を排除していなかった）
+- 2026-05-26 に A2/B2（預かり車両クラス）が `INIT_CLASSES`（L945-953）に**正式追加**された。
+  - A2 = アルファード/ヴェルファイア（預かり車両）、B2 = ノア高年式（預かり車両）
+- それ以前は A2/B2 を**カスタムクラス**として登録運用していた端末があり、localStorage `spk_custom_classes_v1` に A2/B2 が残存していた。
+- `vehicleClasses` useMemo（L17607付近）が `[...INIT_CLASSES(+overrides), ...customClasses]` で**単純結合**しており、type の重複を排除していなかった。
+- 配車表 `groups`（L12688）は `vehicleClasses.map(...)` をそのまま描画するため、INIT由来 A2/B2 ＋ localStorage残存 A2/B2 が**それぞれ同じ車両(`vehicles.filter(v=>v.type===vc.type)`)を2回描画** → 重複表記。
+- `addCustomClass` には `INIT_CLASSES.find(...)` の重複ガードがあるが、**新規追加時のみ**有効で、既に localStorage に入っていた旧データには効かなかった。
+
+### 修正（INIT_CLASSES 優先で type 重複排除）
+`vehicleClasses` useMemo（L17608付近）:
+```js
+const merged=INIT_CLASSES.map(c=>({...c,...(classOverrides[c.type]||{})}));
+const seen=new Set(merged.map(c=>c.type));
+const dedupCustom=customClasses.filter(c=>!seen.has(c.type));
+return [...merged,...dedupCustom];
+```
+- INIT_CLASSES（＋overrides）を優先し、同 type の customClass を捨てる。
+- **各端末で localStorage クリア不要**（描画時に dedup されるため自然解消）。
+- 配車表だけでなく vehicleClasses を使う全画面（車両マスター・予約フォーム・編集モーダル等）で重複解消。
+- 動いている処理には未介入（merge の1行を置換しただけ）。
+
+### バージョン
+| APP_VERSION | CV | CACHE_NAME | sw.js?v= | コミット |
+|---|---|---|---|---|
+| v4.7.184 | spk-v729 | spk-v729 | 616 | `9f60262` |
+
+### Lesson（再発防止）
+1. **マスター配列に新 type を「正式追加」する時は、旧運用（localStorage/DB のカスタム登録）に同 type が残っていないか必ず確認する**。INIT 側に取り込んだら、結合時に重複排除を入れること。
+2. **「結合（spread merge）」は重複を生む**。`[...A, ...B]` で A と B に同一キーが入りうるなら、必ず `Set` で dedup する。
+3. **追加時ガード（addCustomClass の重複チェック）は既存データには遡及しない**。表示側（useMemo）で dedup する方が堅牢（端末クリア不要）。
+
+---
+
 ## 🔴 2026-05-30 オフライン誤検知バナー固着バグ 根本修正（index.src.html / v4.7.182→v4.7.183）
 
 ### 症状
