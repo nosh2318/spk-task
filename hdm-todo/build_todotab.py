@@ -279,6 +279,11 @@ extra_css = """
 .hdmtodo .todo-tabbtn.on{background:var(--accent);color:#fff}
 .hdmtodo .todo-badge{background:#e8384f;color:#fff;font-size:10px;font-weight:800;min-width:16px;height:16px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;padding:0 4px}
 .hdmtodo .todo-bar-r{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+/* メンバー比較テーブル */
+.hdmtodo .cmp-tbl{width:100%;border-collapse:collapse;font-size:12px;min-width:520px}
+.hdmtodo .cmp-tbl th{background:#f4f5f7;color:var(--sub);font-weight:700;padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap;font-size:11px}
+.hdmtodo .cmp-tbl td{padding:8px;border-bottom:1px solid #f1f2f4;text-align:center;white-space:nowrap;color:var(--ink)}
+.hdmtodo .cmp-tbl tbody tr:hover{background:#fafbfc}
 /* 出勤日セル（タイムライン） */
 .hdmtodo .tl-cell.work{background:#e9f2ff;box-shadow:inset 0 0 0 1px #d3e6ff}
 .hdmtodo .tl-cell.work.we{background:#e0ecfb}
