@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v748';
+  var CV='spk-v749';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=635').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=636').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -10085,21 +10085,15 @@ function MarketingHpTab({data}){
   const _ym=(d)=>(d||"").slice(0,7);
   // HP予約のみ・キャンセル除外
   const hpRows=React.useMemo(()=>(data||[]).filter(r=>r.ota==="HP"&&r.status!=="cancelled"),[data]);
-  // 月別集計（返却月ベース）
+  // 月別集計（発生月 createdAt ベース＝広告費を使った月に対応／那覇ロジック）
   const months=React.useMemo(()=>{
     const m={};
     hpRows.forEach(r=>{
-      const ym=_ym(r.returnDate);
+      const ym=_ym(r.createdAt);
       if(!ym)return;
-      if(!m[ym])m[ym]={ym,cnt:0,rev:0,land:{}};
+      if(!m[ym])m[ym]={ym,cnt:0,rev:0};
       m[ym].cnt++;
       m[ym].rev+=_rev(r);
-      // 着地月分布：発生月(createdAt)→着地月(returnDate)
-      const cym=_ym(r.createdAt);
-      if(cym){
-        if(!m[cym])m[cym]={ym:cym,cnt:0,rev:0,land:{}};
-        // ※landは発生月側に積む（cym側）が、表は返却月行で持つので別管理
-      }
     });
     return Object.values(m).sort((a,b)=>a.ym<b.ym?-1:1);
   },[hpRows]);
@@ -10153,6 +10147,36 @@ function MarketingHpTab({data}){
       setTimeout(()=>setToast(""),3000);
     }
   };
+  // 稼働在庫数（monthly_snapshots store=spk）
+  const [snapInv,setSnapInv]=React.useState({}); // {ym:{active,rentalDays,availDays}}
+  React.useEffect(()=>{
+    let alive=true;
+    (async()=>{
+      if(!sb)return;
+      try{
+        const {data:rows}=await sb.from("monthly_snapshots").select("year_month,active_vehicles,total_rental_days,total_available_days").eq("store","spk");
+        if(!alive)return;
+        const o={};(rows||[]).forEach(s=>{o[s.year_month]={active:Number(s.active_vehicles)||0,rentalDays:Number(s.total_rental_days)||0,availDays:Number(s.total_available_days)||0};});
+        setSnapInv(o);
+      }catch(e){console.warn("[MarketingHp] snap",e);}
+    })();
+    return()=>{alive=false;};
+  },[]);
+  // HP予約の平均泊数
+  const avgNights=React.useMemo(()=>{
+    let tot=0,c=0;
+    hpRows.forEach(r=>{
+      const ld=new Date((r.lendDate||"")+"T00:00:00"),rd=new Date((r.returnDate||"")+"T00:00:00");
+      if(isNaN(ld.getTime())||isNaN(rd.getTime()))return;
+      const n=Math.max(1,Math.round((rd-ld)/86400000));tot+=n;c++;
+    });
+    return c>0?tot/c:1;
+  },[hpRows]);
+  // 直近 稼働在庫台数（最新スナップ）
+  const latestInv=React.useMemo(()=>{
+    const ks=Object.keys(snapInv).sort();
+    return ks.length?snapInv[ks[ks.length-1]].active:0;
+  },[snapInv]);
   const cpaOf=(b,cnt)=>(b>0&&cnt>0)?Math.round(b/cnt):null;
   // 直近CPA（バジェット>0の最新月）・予約単価（直近 or 全期間平均）
   const latestBudgetMonth=React.useMemo(()=>{
@@ -10164,12 +10188,22 @@ function MarketingHpTab({data}){
   const totalRev=hpRows.reduce((s,r)=>s+_rev(r),0);
   const avgAov=totalCnt>0?Math.round(totalRev/totalCnt):0; // 全期間平均予約単価
   const latestAov=latestBudgetMonth&&latestBudgetMonth.cnt>0?Math.round(latestBudgetMonth.rev/latestBudgetMonth.cnt):avgAov;
-  // 予測カード
+  // 予測カード（広告獲得見込 × 在庫限界）
   const [fcBudget,setFcBudget]=React.useState("");
+  const [fcMaxUtil,setFcMaxUtil]=React.useState(70); // 上限稼働率%
+  const [fcInv,setFcInv]=React.useState(""); // 想定 稼働在庫台数（空＝直近）
   const fcBudgetN=Math.max(0,Math.round(Number(fcBudget)||0));
-  const fcCnt=(latestCpa&&latestCpa>0)?(fcBudgetN/latestCpa):null;
+  const fcInvN=fcInv!==""?Math.max(0,Math.round(Number(fcInv)||0)):latestInv;
   const fcAov=latestAov||avgAov;
-  const fcRev=(fcCnt!==null)?Math.round(fcCnt*fcAov):null;
+  // 広告で取れる見込み（予算÷CPA）
+  const fcAdCnt=(latestCpa&&latestCpa>0)?(fcBudgetN/latestCpa):null;
+  // 在庫が捌ける上限（台数×30.4日×上限稼働率 ÷ 平均泊数）
+  const fcCapDays=fcInvN*30.4*(Math.max(0,fcMaxUtil)/100);
+  const fcLimitCnt=avgNights>0?Math.floor(fcCapDays/avgNights):0;
+  // 実現可能＝min(広告見込, 在庫限界)
+  const fcRealCnt=(fcAdCnt!==null)?Math.min(fcAdCnt,fcLimitCnt):null;
+  const fcCapped=(fcAdCnt!==null)&&(fcAdCnt>fcLimitCnt);
+  const fcRev=(fcRealCnt!==null)?Math.round(fcRealCnt*fcAov):null;
 
   const yen=(n)=>"¥"+(Number(n)||0).toLocaleString();
   const td={padding:"7px 8px",fontSize:12,borderBottom:"1px solid #f1f5f9"};
@@ -10178,8 +10212,8 @@ function MarketingHpTab({data}){
   return <div style={{maxWidth:900,margin:"0 auto",paddingBottom:24}}>
     {/* ヘッダ */}
     <div style={{background:"linear-gradient(135deg,#0ea5e9,#2563eb)",borderRadius:14,padding:"16px 18px",color:"#fff",marginBottom:14}}>
-      <div style={{fontSize:17,fontWeight:900}}>📈 HP運用戦略 — 札幌店</div>
-      <div style={{fontSize:11,opacity:.92,marginTop:3}}>store=spk・HP予約ベース・運用開始期</div>
+      <div style={{fontSize:17,fontWeight:900}}>📈 運用戦略 — 札幌店（HP）</div>
+      <div style={{fontSize:11,opacity:.92,marginTop:3}}>store=spk・HP予約ベース・発生月集計・在庫限界つき・運用開始期</div>
       <div style={{fontSize:11,marginTop:8,background:"rgba(255,255,255,.18)",borderRadius:8,padding:"7px 10px",lineHeight:1.6}}>
         🌱 <b>蓄積型</b>：過去データが無い運用開始期のため非常にシンプルな設計です。<br/>
         入力するのは<b>月のバジェット（広告費）のみ</b>。他のKPI（本数・売上・予約単価・CPA）はHP予約データから自動算出されます。データが貯まるほど予測精度が向上します。
@@ -10210,19 +10244,20 @@ function MarketingHpTab({data}){
 
     {/* 月別テーブル */}
     <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:12,padding:"6px 6px 10px",marginBottom:16,overflowX:"auto"}}>
-      <div style={{fontSize:13,fontWeight:800,color:"#0f172a",padding:"8px 8px 6px"}}>📅 月別 実績（返却月ベース・HP予約）</div>
-      <table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
+      <div style={{fontSize:13,fontWeight:800,color:"#0f172a",padding:"8px 8px 6px"}}>📅 月別 実績（発生月ベース・HP予約／広告費を使った月＝予約が発生した月）</div>
+      <table style={{width:"100%",borderCollapse:"collapse",minWidth:700}}>
         <thead><tr>
-          <th style={th}>月</th>
+          <th style={th}>発生月</th>
           <th style={{...th,textAlign:"right"}}>バジェット(広告費)</th>
           <th style={{...th,textAlign:"right"}}>本数</th>
           <th style={{...th,textAlign:"right"}}>予約単価</th>
           <th style={{...th,textAlign:"right"}}>売上(流通)</th>
           <th style={{...th,textAlign:"right"}}>CPA</th>
+          <th style={{...th,textAlign:"right"}}>稼働在庫</th>
           <th style={th}>着地メモ</th>
         </tr></thead>
         <tbody>
-          {months.length===0&&<tr><td style={{...td,textAlign:"center",color:"#94a3b8"}} colSpan={7}>HP予約データがありません</td></tr>}
+          {months.length===0&&<tr><td style={{...td,textAlign:"center",color:"#94a3b8"}} colSpan={8}>HP予約データがありません</td></tr>}
           {months.map(m=>{
             const b=budgets[m.ym]||0;
             const cpa=cpaOf(b,m.cnt);
@@ -10248,6 +10283,7 @@ function MarketingHpTab({data}){
               <td style={{...td,textAlign:"right"}}>{aov>0?yen(aov):"—"}</td>
               <td style={{...td,textAlign:"right",color:"#059669",fontWeight:700}}>{yen(m.rev)}</td>
               <td style={{...td,textAlign:"right",fontWeight:700,color:cpa?"#dc2626":"#94a3b8"}}>{cpa?yen(cpa):"—"}</td>
+              <td style={{...td,textAlign:"right",fontWeight:700,color:snapInv[m.ym]?"#0369a1":"#94a3b8"}}>{snapInv[m.ym]?snapInv[m.ym].active+"台":"—"}</td>
               <td style={{...td,fontSize:11,color:"#64748b"}}>{landStr}</td>
             </tr>;
           })}
@@ -10270,31 +10306,57 @@ function MarketingHpTab({data}){
             CPA未確定です。まず上の月別テーブルで<b>広告費を入力</b>してください（バジェット&gt;0かつ本数&gt;0の月があると予測できます）。
           </div>
         : <div>
-            <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end"}}>
+            <div style={{display:"flex",gap:14,flexWrap:"wrap",alignItems:"flex-end"}}>
               <div>
                 <div style={{fontSize:11,color:"#64748b",fontWeight:700,marginBottom:3}}>来月の予算（広告費）</div>
                 <div style={{display:"inline-flex",alignItems:"center",gap:4}}>
                   <span style={{color:"#94a3b8"}}>¥</span>
                   <input type="number" inputMode="numeric" value={fcBudget}
                     onChange={e=>setFcBudget(e.target.value)} placeholder="200000"
-                    style={{width:130,padding:"7px 9px",fontSize:14,border:"1px solid #cbd5e1",borderRadius:8,textAlign:"right"}}/>
+                    style={{width:120,padding:"7px 9px",fontSize:14,border:"1px solid #cbd5e1",borderRadius:8,textAlign:"right"}}/>
                 </div>
               </div>
-              <div style={{fontSize:11,color:"#64748b"}}>÷ 直近CPA {yen(latestCpa)} ＝</div>
+              <div>
+                <div style={{fontSize:11,color:"#64748b",fontWeight:700,marginBottom:3}}>稼働在庫(台)</div>
+                <input type="number" inputMode="numeric" value={fcInv}
+                  onChange={e=>setFcInv(e.target.value)} placeholder={String(latestInv||0)}
+                  style={{width:70,padding:"7px 9px",fontSize:14,border:"1px solid #cbd5e1",borderRadius:8,textAlign:"right"}}/>
+                <span style={{fontSize:10,color:"#94a3b8",marginLeft:4}}>直近{latestInv||0}台</span>
+              </div>
+              <div>
+                <div style={{fontSize:11,color:"#64748b",fontWeight:700,marginBottom:3}}>上限稼働率(%)</div>
+                <input type="number" inputMode="numeric" value={fcMaxUtil}
+                  onChange={e=>setFcMaxUtil(Number(e.target.value)||0)}
+                  style={{width:60,padding:"7px 9px",fontSize:14,border:"1px solid #cbd5e1",borderRadius:8,textAlign:"right"}}/>
+              </div>
             </div>
             <div style={{display:"flex",gap:10,flexWrap:"wrap",marginTop:14}}>
-              <div style={{flex:"1 1 160px",background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:10,padding:"10px 12px"}}>
-                <div style={{fontSize:10,color:"#1d4ed8",fontWeight:700}}>獲得見込 本数</div>
-                <div style={{fontSize:24,fontWeight:900,color:"#1d4ed8"}}>{fcCnt!==null?fcCnt.toFixed(1):"—"}<span style={{fontSize:12,fontWeight:600}}> 件</span></div>
+              <div style={{flex:"1 1 140px",background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:10,padding:"10px 12px"}}>
+                <div style={{fontSize:10,color:"#1d4ed8",fontWeight:700}}>広告 獲得見込</div>
+                <div style={{fontSize:22,fontWeight:900,color:"#1d4ed8"}}>{fcAdCnt!==null?fcAdCnt.toFixed(1):"—"}<span style={{fontSize:11,fontWeight:600}}> 件</span></div>
+                <div style={{fontSize:9.5,color:"#64748b",marginTop:2}}>予算÷CPA{yen(latestCpa)}</div>
               </div>
-              <div style={{flex:"1 1 160px",background:"#ecfdf5",border:"1px solid #a7f3d0",borderRadius:10,padding:"10px 12px"}}>
+              <div style={{flex:"1 1 140px",background:"#fff7ed",border:"1px solid #fed7aa",borderRadius:10,padding:"10px 12px"}}>
+                <div style={{fontSize:10,color:"#c2410c",fontWeight:700}}>在庫限界</div>
+                <div style={{fontSize:22,fontWeight:900,color:"#c2410c"}}>{fcLimitCnt}<span style={{fontSize:11,fontWeight:600}}> 件</span></div>
+                <div style={{fontSize:9.5,color:"#64748b",marginTop:2}}>{fcInvN}台×{fcMaxUtil}%÷{avgNights.toFixed(1)}泊</div>
+              </div>
+              <div style={{flex:"1 1 140px",background:fcCapped?"#fef2f2":"#ecfdf5",border:"1px solid "+(fcCapped?"#fecaca":"#a7f3d0"),borderRadius:10,padding:"10px 12px"}}>
+                <div style={{fontSize:10,color:fcCapped?"#b91c1c":"#047857",fontWeight:700}}>実現可能 本数</div>
+                <div style={{fontSize:22,fontWeight:900,color:fcCapped?"#b91c1c":"#047857"}}>{fcRealCnt!==null?fcRealCnt.toFixed(1):"—"}<span style={{fontSize:11,fontWeight:600}}> 件</span></div>
+                <div style={{fontSize:9.5,color:fcCapped?"#dc2626":"#059669",marginTop:2}}>{fcCapped?"⚠️在庫で頭打ち":"在庫余裕あり"}</div>
+              </div>
+              <div style={{flex:"1 1 140px",background:"#ecfdf5",border:"1px solid #a7f3d0",borderRadius:10,padding:"10px 12px"}}>
                 <div style={{fontSize:10,color:"#047857",fontWeight:700}}>売上見込</div>
-                <div style={{fontSize:24,fontWeight:900,color:"#047857"}}>{fcRev!==null?yen(fcRev):"—"}</div>
-                <div style={{fontSize:10,color:"#059669",marginTop:2}}>予約単価 {yen(fcAov)} 想定</div>
+                <div style={{fontSize:22,fontWeight:900,color:"#047857"}}>{fcRev!==null?yen(fcRev):"—"}</div>
+                <div style={{fontSize:9.5,color:"#059669",marginTop:2}}>単価{yen(fcAov)}想定</div>
               </div>
             </div>
+            {fcCapped&&<div style={{background:"#fef2f2",border:"1px solid #fecaca",color:"#991b1b",borderRadius:8,padding:"9px 12px",fontSize:11.5,marginTop:10,fontWeight:600}}>
+              🔴 <b>在庫限界</b>：予算を増やしても在庫（{fcInvN}台・上限稼働率{fcMaxUtil}%）では最大 <b>{fcLimitCnt}件＝{yen(fcRev)}</b> までしか取れません。これ以上伸ばすには<b>増車</b>が必要です（広告は{fcAdCnt.toFixed(1)}件取れる想定だが在庫が不足）。
+            </div>}
             <div style={{fontSize:10,color:"#94a3b8",marginTop:10}}>
-              獲得見込本数 = 来月予算 ÷ 直近CPA（{latestBudgetMonth?latestBudgetMonth.ym:""}）。売上見込 = 獲得見込本数 × 予約単価（{latestAov?"直近月":"全期間平均"}）。
+              広告獲得見込 = 来月予算 ÷ 直近CPA（{latestBudgetMonth?latestBudgetMonth.ym:""}）。在庫限界 = 稼働在庫×30.4日×上限稼働率 ÷ 平均泊数（{avgNights.toFixed(1)}泊）。実現可能 = min(広告,在庫)。売上見込 = 実現可能 × 予約単価。
             </div>
           </div>}
     </div>
@@ -19070,7 +19132,7 @@ function App(){
               {title:"データ・分析",color:"#7c3aed",items:[
                 {id:"biz",ico:"🔒",l:"経営",desc:"PL・CF・ダッシュボード（オーナー専用）"},
                 {id:"marketing_ota",ico:"📣",l:"OTA運用戦略",desc:"OTAマーケ分析・順位戦略・バイオリズム",external:true,url:"marketing-ota.html"},
-                {id:"marketing_hp",ico:"📈",l:"HP運用戦略",desc:"HP広告 予算→CPA→獲得→売上・予測（運用開始期・蓄積型）"},
+                {id:"marketing_hp",ico:"📈",l:"運用戦略",desc:"HP広告 予算→CPA→獲得→売上・在庫限界・予測（運用開始期）"},
                 {id:"foreign",ico:"🌍",l:"外国人利用率",desc:"外国人利用率の分析・推移"},
                 {id:"forecast",ico:"🔮",l:"売上予測",desc:"5KPI×12ヶ月・株価チャート風 アンサンブル予測 v3.0",external:true,url:"forecast.html?store=spk"},
                 {id:"seasonal",ico:"🗓️",l:"価格表",desc:"シーズナル&価格カレンダー（ミラー表示）"},
@@ -19774,7 +19836,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.203";
+const APP_VERSION="v4.7.204";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
