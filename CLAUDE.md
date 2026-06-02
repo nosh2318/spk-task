@@ -2916,3 +2916,10 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 1. **他HTMLアプリを本体に取り込む時は「CSSスコープ＋IIFE隔離（window公開）」が必須**。汎用クラス名・関数名は巨大ホストと必ず衝突する。
 2. **多人数同時編集は per-entity 行 + Realtime が基本**。1ドキュメントLWWは少人数でしか持たない。
 3. **DDL/移行INSERTはSQL Editorで（RLS非対象）**。CLIのanon/authenticatedからDDL不可。
+
+### 追補 2026-06-02: タスク管理「評価期間」機能 + 生成器の堅牢化
+- Dashboard の個人・チーム評価に **全期間／月別／年間(合算)** トグルを追加（due日基準でフィルタ→evalPerson再計算）。年間時は「月別内訳(チーム合算)」も表示。canonical `hdm-todo/index.html` を改修し再生成→3アプリ再注入。
+- バージョン: SPK v4.7.193/spk-v738 / NHA v3.5.93-NHA(BASE_V=3593) / BT v1.0.59-BT(BASE_V=1428)。全て本番200・機能反映確認済。
+- **生成器 build_todotab.py を「行番号→マーカー抽出」に変更**（hdm-todo改修で行ズレ→旧ハードコード範囲がコンポーネントを切断し構文エラーになった教訓）。再注入は各ホストの `/* ===== HDM ToDo タスク管理タブ` 〜 `ReactDOM.render` 間を置換するスクリプトで実施。
+- **検証の罠**: minified版(SPK/NHA)は識別子(evalP)がmangleされgrep不可。文字列リテラル(「全期間」)で確認する。BabelはJSX内日本語を\uエスケープする場合あり(BT)。
+- **並行作業の注意**: 本セッション中、Slack omni が NHA/BT を並行編集（経営KPIスナップショット展開・index.htmlタイトル変更等）。コミット前に必ず `git fetch`+`git log`+`git status` で omni の変更を確認し、その上に積む（clobber防止）。omniの未コミット .claude/CLAUDE.md は触らない。
