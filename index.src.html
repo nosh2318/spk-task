@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v733';
+  var CV='spk-v734';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=620').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=621').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -10227,6 +10227,34 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
       await saveMonthlySnapshot("spk",prevYM,data,vehicles,fleet,pf,"vehicle_monthly_kpi");
     })();
   },[data,vehicles,fleet]);
+  // ★ 全月スナップショット保存（バックフィル）2026-01〜当月。既存月は saveMonthlySnapshot 内の if(existing)return で自動スキップ
+  const[bfRunning,setBfRunning]=useState(false);
+  const[bfMsg,setBfMsg]=useState("");
+  const doBackfillAllSnapshots=async()=>{
+    if(!sb||!data||!data.length||!vehicles||!vehicles.length||bfRunning)return;
+    setBfRunning(true);setBfMsg("保存中…");
+    try{
+      const now=new Date();
+      const cy=now.getFullYear(),cm=now.getMonth()+1;
+      // 対象月リスト（RELIABLE_FROM=2026-01 〜 当月）
+      const ymList=[];let[y,m]=RELIABLE_FROM.split("-").map(Number);
+      while(y<cy||(y===cy&&m<=cm)){ymList.push(y+"-"+String(m).padStart(2,"0"));m++;if(m>12){m=1;y++;}}
+      // 既存スナップショットを事前取得（新規件数カウント用・本体ロジックは変更しない）
+      const{data:existRows}=await sb.from("monthly_snapshots").select("year_month").eq("store","spk");
+      const existSet=new Set((existRows||[]).map(r=>r.year_month));
+      let newCount=0;
+      // 古い月から1件ずつ直列実行
+      for(const ym of ymList){
+        const wasMissing=!existSet.has(ym);
+        const{data:rows}=await sb.from("vehicle_monthly_kpi").select("*").eq("year_month",ym);
+        const pf={};(rows||[]).forEach(r=>pf[r.vehicle_code]=r.active);
+        await saveMonthlySnapshot("spk",ym,data,vehicles,fleet,pf,"vehicle_monthly_kpi");
+        if(wasMissing)newCount++;
+      }
+      setBfMsg(ymList.length+"ヶ月分を保存しました（新規"+newCount+"件）");
+    }catch(e){setBfMsg("エラー: "+(e&&e.message?e.message:e));}
+    setBfRunning(false);
+  };
   const moLabel=parseInt(selYM.split("-")[1])+"月";
   const now=new Date();const curYM=now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0");
   const isCur=selYM===curYM;
@@ -10342,6 +10370,11 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
       </div>}
     </div>
     {open&&<div style={{marginTop:4,padding:"12px 14px",borderRadius:12,background:"#fff",border:"1px solid #e2e8f0",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
+      {/* 全月スナップショット保存（バックフィル） */}
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,flexWrap:"wrap"}}>
+        <button onClick={e=>{e.stopPropagation();doBackfillAllSnapshots();}} disabled={bfRunning} style={{padding:"5px 12px",borderRadius:8,border:"1px solid #0284c7",background:bfRunning?"#e0f2fe":"#fff",color:"#0369a1",fontSize:11,fontWeight:700,cursor:bfRunning?"default":"pointer"}}>{bfRunning?"保存中…":"📸 全月スナップショット保存"}</button>
+        {bfMsg&&<span style={{fontSize:10,color:"#059669",fontWeight:700}}>{bfMsg}</span>}
+      </div>
       {/* 月切替 */}
       <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:12,marginBottom:12}}>
         <button onClick={e=>{e.stopPropagation();if(prevYM)setSelYM(prevYM);}} disabled={!prevYM} style={{padding:"4px 10px",borderRadius:6,border:"1px solid #d1d5db",background:prevYM?"#fff":"#f1f5f9",color:prevYM?"#374151":"#d1d5db",fontSize:11,fontWeight:700,cursor:prevYM?"pointer":"default"}}>◀</button>
@@ -19304,7 +19337,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.188";
+const APP_VERSION="v4.7.189";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
