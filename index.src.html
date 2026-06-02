@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v747';
+  var CV='spk-v748';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=634').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=635').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -10078,6 +10078,229 @@ function ForeignVisitorAnalysis({data}){
   </div>;
 }
 
+// ===== HP運用戦略（札幌店・運用開始期・蓄積型） =====
+// バジェット(広告費)のみ手入力(app_settings spk_hp_ad_${ym})。他KPIはHP予約データから自動算出。
+function MarketingHpTab({data}){
+  const _rev=(r)=>{const bp=Number(r.basePrice)||0,op=Number(r.optionPrice)||0,dc=Number(r.discount)||0;return(bp>0||op>0)?(bp+op-dc):(Number(r.price)||0);};
+  const _ym=(d)=>(d||"").slice(0,7);
+  // HP予約のみ・キャンセル除外
+  const hpRows=React.useMemo(()=>(data||[]).filter(r=>r.ota==="HP"&&r.status!=="cancelled"),[data]);
+  // 月別集計（返却月ベース）
+  const months=React.useMemo(()=>{
+    const m={};
+    hpRows.forEach(r=>{
+      const ym=_ym(r.returnDate);
+      if(!ym)return;
+      if(!m[ym])m[ym]={ym,cnt:0,rev:0,land:{}};
+      m[ym].cnt++;
+      m[ym].rev+=_rev(r);
+      // 着地月分布：発生月(createdAt)→着地月(returnDate)
+      const cym=_ym(r.createdAt);
+      if(cym){
+        if(!m[cym])m[cym]={ym:cym,cnt:0,rev:0,land:{}};
+        // ※landは発生月側に積む（cym側）が、表は返却月行で持つので別管理
+      }
+    });
+    return Object.values(m).sort((a,b)=>a.ym<b.ym?-1:1);
+  },[hpRows]);
+  // 発生月→着地月の件数マップ（着地メモ用）
+  const landByGen=React.useMemo(()=>{
+    const g={};
+    hpRows.forEach(r=>{
+      const cym=_ym(r.createdAt),rym=_ym(r.returnDate);
+      if(!cym||!rym)return;
+      if(!g[cym])g[cym]={};
+      g[cym][rym]=(g[cym][rym]||0)+1;
+    });
+    return g;
+  },[hpRows]);
+  // バジェット state（app_settings spk_hp_ad_${ym} から読込）
+  const [budgets,setBudgets]=React.useState({}); // {ym:number}
+  const [inputs,setInputs]=React.useState({});   // {ym:string} 入力中の文字列
+  const [toast,setToast]=React.useState("");
+  const [loaded,setLoaded]=React.useState(false);
+  React.useEffect(()=>{
+    let alive=true;
+    (async()=>{
+      if(!sb){setLoaded(true);return;}
+      try{
+        const {data:rows}=await sb.from("app_settings").select("key,value").like("key","spk_hp_ad_%").limit(500);
+        if(!alive)return;
+        const b={};
+        (rows||[]).forEach(row=>{
+          const ym=(row.key||"").replace("spk_hp_ad_","");
+          let v=0;
+          try{const o=JSON.parse(row.value);v=Number(o.budget)||0;}catch(e){v=Number(row.value)||0;}
+          if(ym)b[ym]=v;
+        });
+        setBudgets(b);
+      }catch(e){console.warn("[MarketingHp] load",e);}
+      if(alive)setLoaded(true);
+    })();
+    return()=>{alive=false;};
+  },[]);
+  const saveBudget=async(ym,raw)=>{
+    const val=Math.max(0,Math.round(Number(raw)||0));
+    setBudgets(p=>({...p,[ym]:val}));
+    if(!sb)return;
+    try{
+      await sb.from("app_settings").upsert({key:"spk_hp_ad_"+ym,value:JSON.stringify({budget:val})},{onConflict:"key"});
+      setToast("✅ "+ym+" のバジェットを保存しました（¥"+val.toLocaleString()+"）");
+      setTimeout(()=>setToast(""),2500);
+    }catch(e){
+      console.warn("[MarketingHp] save",e);
+      setToast("⚠️ 保存に失敗しました");
+      setTimeout(()=>setToast(""),3000);
+    }
+  };
+  const cpaOf=(b,cnt)=>(b>0&&cnt>0)?Math.round(b/cnt):null;
+  // 直近CPA（バジェット>0の最新月）・予約単価（直近 or 全期間平均）
+  const latestBudgetMonth=React.useMemo(()=>{
+    const withB=months.filter(m=>(budgets[m.ym]||0)>0&&m.cnt>0);
+    return withB.length?withB[withB.length-1]:null;
+  },[months,budgets]);
+  const latestCpa=latestBudgetMonth?cpaOf(budgets[latestBudgetMonth.ym],latestBudgetMonth.cnt):null;
+  const totalCnt=hpRows.length;
+  const totalRev=hpRows.reduce((s,r)=>s+_rev(r),0);
+  const avgAov=totalCnt>0?Math.round(totalRev/totalCnt):0; // 全期間平均予約単価
+  const latestAov=latestBudgetMonth&&latestBudgetMonth.cnt>0?Math.round(latestBudgetMonth.rev/latestBudgetMonth.cnt):avgAov;
+  // 予測カード
+  const [fcBudget,setFcBudget]=React.useState("");
+  const fcBudgetN=Math.max(0,Math.round(Number(fcBudget)||0));
+  const fcCnt=(latestCpa&&latestCpa>0)?(fcBudgetN/latestCpa):null;
+  const fcAov=latestAov||avgAov;
+  const fcRev=(fcCnt!==null)?Math.round(fcCnt*fcAov):null;
+
+  const yen=(n)=>"¥"+(Number(n)||0).toLocaleString();
+  const td={padding:"7px 8px",fontSize:12,borderBottom:"1px solid #f1f5f9"};
+  const th={padding:"8px",fontSize:11,color:"#64748b",fontWeight:700,textAlign:"left",borderBottom:"2px solid #e2e8f0",background:"#f8fafc"};
+
+  return <div style={{maxWidth:900,margin:"0 auto",paddingBottom:24}}>
+    {/* ヘッダ */}
+    <div style={{background:"linear-gradient(135deg,#0ea5e9,#2563eb)",borderRadius:14,padding:"16px 18px",color:"#fff",marginBottom:14}}>
+      <div style={{fontSize:17,fontWeight:900}}>📈 HP運用戦略 — 札幌店</div>
+      <div style={{fontSize:11,opacity:.92,marginTop:3}}>store=spk・HP予約ベース・運用開始期</div>
+      <div style={{fontSize:11,marginTop:8,background:"rgba(255,255,255,.18)",borderRadius:8,padding:"7px 10px",lineHeight:1.6}}>
+        🌱 <b>蓄積型</b>：過去データが無い運用開始期のため非常にシンプルな設計です。<br/>
+        入力するのは<b>月のバジェット（広告費）のみ</b>。他のKPI（本数・売上・予約単価・CPA）はHP予約データから自動算出されます。データが貯まるほど予測精度が向上します。
+      </div>
+    </div>
+
+    {toast&&<div style={{background:"#ecfdf5",border:"1px solid #6ee7b7",color:"#065f46",borderRadius:8,padding:"8px 12px",fontSize:12,marginBottom:10}}>{toast}</div>}
+
+    {/* サマリーカード */}
+    <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:14}}>
+      <div style={{flex:"1 1 120px",background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"10px 12px"}}>
+        <div style={{fontSize:10,color:"#64748b",fontWeight:700}}>HP予約 累計本数</div>
+        <div style={{fontSize:22,fontWeight:900,color:"#0f172a"}}>{totalCnt}<span style={{fontSize:12,fontWeight:600,color:"#64748b"}}> 件</span></div>
+      </div>
+      <div style={{flex:"1 1 120px",background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"10px 12px"}}>
+        <div style={{fontSize:10,color:"#64748b",fontWeight:700}}>累計 売上(流通)</div>
+        <div style={{fontSize:22,fontWeight:900,color:"#059669"}}>{yen(totalRev)}</div>
+      </div>
+      <div style={{flex:"1 1 120px",background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"10px 12px"}}>
+        <div style={{fontSize:10,color:"#64748b",fontWeight:700}}>平均 予約単価(AOV)</div>
+        <div style={{fontSize:22,fontWeight:900,color:"#0f172a"}}>{avgAov>0?yen(avgAov):"—"}</div>
+      </div>
+      <div style={{flex:"1 1 120px",background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"10px 12px"}}>
+        <div style={{fontSize:10,color:"#64748b",fontWeight:700}}>直近CPA</div>
+        <div style={{fontSize:22,fontWeight:900,color:latestCpa?"#dc2626":"#94a3b8"}}>{latestCpa?yen(latestCpa):"—"}</div>
+      </div>
+    </div>
+
+    {/* 月別テーブル */}
+    <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:12,padding:"6px 6px 10px",marginBottom:16,overflowX:"auto"}}>
+      <div style={{fontSize:13,fontWeight:800,color:"#0f172a",padding:"8px 8px 6px"}}>📅 月別 実績（返却月ベース・HP予約）</div>
+      <table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
+        <thead><tr>
+          <th style={th}>月</th>
+          <th style={{...th,textAlign:"right"}}>バジェット(広告費)</th>
+          <th style={{...th,textAlign:"right"}}>本数</th>
+          <th style={{...th,textAlign:"right"}}>予約単価</th>
+          <th style={{...th,textAlign:"right"}}>売上(流通)</th>
+          <th style={{...th,textAlign:"right"}}>CPA</th>
+          <th style={th}>着地メモ</th>
+        </tr></thead>
+        <tbody>
+          {months.length===0&&<tr><td style={{...td,textAlign:"center",color:"#94a3b8"}} colSpan={7}>HP予約データがありません</td></tr>}
+          {months.map(m=>{
+            const b=budgets[m.ym]||0;
+            const cpa=cpaOf(b,m.cnt);
+            const aov=m.cnt>0?Math.round(m.rev/m.cnt):0;
+            const inputVal=inputs[m.ym]!==undefined?inputs[m.ym]:(b>0?String(b):"");
+            // 着地メモ：この月(m.ym)に発生した予約が、どの返却月に着地したか
+            const land=landByGen[m.ym]||{};
+            const landKeys=Object.keys(land).sort();
+            const landStr=landKeys.length?landKeys.map(k=>k.slice(5)+"月:"+land[k]+"件").join(" / "):"—";
+            return <tr key={m.ym}>
+              <td style={{...td,fontWeight:700}}>{m.ym}</td>
+              <td style={{...td,textAlign:"right"}}>
+                <div style={{display:"inline-flex",alignItems:"center",gap:4}}>
+                  <span style={{color:"#94a3b8",fontSize:11}}>¥</span>
+                  <input type="number" inputMode="numeric" value={inputVal}
+                    onChange={e=>setInputs(p=>({...p,[m.ym]:e.target.value}))}
+                    onBlur={e=>{saveBudget(m.ym,e.target.value);setInputs(p=>{const n={...p};delete n[m.ym];return n;});}}
+                    placeholder="0"
+                    style={{width:90,padding:"5px 7px",fontSize:13,border:"1px solid #cbd5e1",borderRadius:6,textAlign:"right"}}/>
+                </div>
+              </td>
+              <td style={{...td,textAlign:"right",fontWeight:700}}>{m.cnt}</td>
+              <td style={{...td,textAlign:"right"}}>{aov>0?yen(aov):"—"}</td>
+              <td style={{...td,textAlign:"right",color:"#059669",fontWeight:700}}>{yen(m.rev)}</td>
+              <td style={{...td,textAlign:"right",fontWeight:700,color:cpa?"#dc2626":"#94a3b8"}}>{cpa?yen(cpa):"—"}</td>
+              <td style={{...td,fontSize:11,color:"#64748b"}}>{landStr}</td>
+            </tr>;
+          })}
+        </tbody>
+      </table>
+      <div style={{fontSize:10,color:"#94a3b8",padding:"6px 8px 0"}}>
+        ※ バジェット欄に金額を入力して欄外をタップ（フォーカスを外す）と自動保存されます（クロスデバイス同期）。<br/>
+        ※ CPA = バジェット ÷ 本数（両方が0より大きい月のみ算出）。着地メモ = その月に発生した予約が実際に返却された月の内訳。
+      </div>
+    </div>
+
+    {/* 予測カード（那覇と同じロジック） */}
+    <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:12,padding:"14px 16px"}}>
+      <div style={{fontSize:14,fontWeight:800,color:"#0f172a",marginBottom:4}}>🔮 来月の予測（簡易シミュレーション）</div>
+      <div style={{fontSize:11,color:"#64748b",marginBottom:12}}>
+        データ蓄積中（n={totalCnt}件{latestBudgetMonth?" / 直近広告投下月 "+latestBudgetMonth.ym:""}）。精度は月を追うごとに向上します。
+      </div>
+      {!latestCpa
+        ? <div style={{background:"#fffbeb",border:"1px solid #fde68a",color:"#92400e",borderRadius:8,padding:"10px 12px",fontSize:12}}>
+            CPA未確定です。まず上の月別テーブルで<b>広告費を入力</b>してください（バジェット&gt;0かつ本数&gt;0の月があると予測できます）。
+          </div>
+        : <div>
+            <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end"}}>
+              <div>
+                <div style={{fontSize:11,color:"#64748b",fontWeight:700,marginBottom:3}}>来月の予算（広告費）</div>
+                <div style={{display:"inline-flex",alignItems:"center",gap:4}}>
+                  <span style={{color:"#94a3b8"}}>¥</span>
+                  <input type="number" inputMode="numeric" value={fcBudget}
+                    onChange={e=>setFcBudget(e.target.value)} placeholder="200000"
+                    style={{width:130,padding:"7px 9px",fontSize:14,border:"1px solid #cbd5e1",borderRadius:8,textAlign:"right"}}/>
+                </div>
+              </div>
+              <div style={{fontSize:11,color:"#64748b"}}>÷ 直近CPA {yen(latestCpa)} ＝</div>
+            </div>
+            <div style={{display:"flex",gap:10,flexWrap:"wrap",marginTop:14}}>
+              <div style={{flex:"1 1 160px",background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:10,padding:"10px 12px"}}>
+                <div style={{fontSize:10,color:"#1d4ed8",fontWeight:700}}>獲得見込 本数</div>
+                <div style={{fontSize:24,fontWeight:900,color:"#1d4ed8"}}>{fcCnt!==null?fcCnt.toFixed(1):"—"}<span style={{fontSize:12,fontWeight:600}}> 件</span></div>
+              </div>
+              <div style={{flex:"1 1 160px",background:"#ecfdf5",border:"1px solid #a7f3d0",borderRadius:10,padding:"10px 12px"}}>
+                <div style={{fontSize:10,color:"#047857",fontWeight:700}}>売上見込</div>
+                <div style={{fontSize:24,fontWeight:900,color:"#047857"}}>{fcRev!==null?yen(fcRev):"—"}</div>
+                <div style={{fontSize:10,color:"#059669",marginTop:2}}>予約単価 {yen(fcAov)} 想定</div>
+              </div>
+            </div>
+            <div style={{fontSize:10,color:"#94a3b8",marginTop:10}}>
+              獲得見込本数 = 来月予算 ÷ 直近CPA（{latestBudgetMonth?latestBudgetMonth.ym:""}）。売上見込 = 獲得見込本数 × 予約単価（{latestAov?"直近月":"全期間平均"}）。
+            </div>
+          </div>}
+    </div>
+  </div>;
+}
+
 function KpiTab({store,data,vehicles,fleet}){
   const RELIABLE_FROM="2026-01";
   const kpiTable=store==="spk"?"vehicle_monthly_kpi":"nha_vehicle_monthly_kpi";
@@ -18846,7 +19069,8 @@ function App(){
               ]},
               {title:"データ・分析",color:"#7c3aed",items:[
                 {id:"biz",ico:"🔒",l:"経営",desc:"PL・CF・ダッシュボード（オーナー専用）"},
-                {id:"marketing_ota",ico:"📣",l:"運用戦略",desc:"OTAマーケ分析・順位戦略・バイオリズム",external:true,url:"marketing-ota.html"},
+                {id:"marketing_ota",ico:"📣",l:"OTA運用戦略",desc:"OTAマーケ分析・順位戦略・バイオリズム",external:true,url:"marketing-ota.html"},
+                {id:"marketing_hp",ico:"📈",l:"HP運用戦略",desc:"HP広告 予算→CPA→獲得→売上・予測（運用開始期・蓄積型）"},
                 {id:"foreign",ico:"🌍",l:"外国人利用率",desc:"外国人利用率の分析・推移"},
                 {id:"forecast",ico:"🔮",l:"売上予測",desc:"5KPI×12ヶ月・株価チャート風 アンサンブル予測 v3.0",external:true,url:"forecast.html?store=spk"},
                 {id:"seasonal",ico:"🗓️",l:"価格表",desc:"シーズナル&価格カレンダー（ミラー表示）"},
@@ -19208,6 +19432,7 @@ function App(){
           {tab==="biz"&&<PASGuard label="経営管理（オーナー専用）"><ManagementTab store="spk" data={data} vehicles={vehicles} fleet={fleet}/></PASGuard>}
           {tab==="kpi"&&<KpiTab store="spk" data={data} vehicles={vehicles} fleet={fleet}/>}
           {tab==="foreign"&&<ForeignVisitorAnalysis data={data}/>}
+          {tab==="marketing_hp"&&<MarketingHpTab data={data}/>}
           {tab==="analytics"&&<AnalyticsTab data={data} sheetPlaces={sheetPlaces}/>}
           {tab==="history"&&<PastTasksTable today={today}/>}
           {tab==="notices"&&<NoticesPage store="SPK"/>}
@@ -19549,7 +19774,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.202";
+const APP_VERSION="v4.7.203";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
