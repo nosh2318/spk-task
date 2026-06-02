@@ -2936,3 +2936,14 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   2. ファイル破損チェックは **`wc -c`（バイト）** で。`wc -l` はminified1行ファイルで0と出て誤判定する。
   3. **push前に成果物の非空＆主要マーカーを検証**（index.htmlが5KB未満なら異常）。本番デプロイ系は特に。
   4. バージョン更新は Edit ツール（厳密置換）を優先。スクリプト一括置換するなら read→replace→write の3段で。
+
+### 追補 2026-06-02: タスク管理「スタッフをシフト登録から自動表示＋出勤日表示」+スマホ最適化
+- **メンバー自動表示**: TodoTab に `hostStaff`(本体 staff テーブル) / `hostShifts`(本体 shifts {date:[{name,symbol,start,end}]}) を渡し、担当者リストを**本体のスタッフ/シフト名簿から自動導出**（+タスク割当済の名前も補完）。タスク用の手動スタッフ登録は実質不要に。
+- **出勤日表示**:
+  - タイムライン: 各メンバー行で**出勤日セルを青く色付け**（`isWorkDay`／休系記号 休/有/公/欠/×等は除外）。
+  - スタッフ欄: 各メンバーに**「今月出勤N日」＋出勤日チップ**、月セレクタ付き。
+  - ヘルパー `REST_SYMBOLS`/`isWorkShift`/`workDaysOf`/`isWorkDay` を hdm-todo に追加。
+- **スマホ最適化**: タブバー横スクロール、kgrid 2列、eval/board/goal 1列、タイムライン min-width縮小、シート94vh 等を `.hdmtodo` スコープCSSに追加。
+- 各本体の render に `hostStaff:staff, hostShifts:shifts` を追加（NHA/BT/SPK とも `staff`/`shifts` state が App スコープに在席を確認済）。
+- バージョン: SPK v4.7.195/spk-v740 / NHA v3.5.98-NHA(BASE_V 3599) / BT v1.0.61-BT(BASE_V 1430)。全本番200。
+- **生成器運用**: hdm-todo/index.html（コンポーネント）+ build_todotab.py（TodoTabルート/CSS）を直し `python3 build_todotab.py`→3ホストへ「マーカー間置換」で再注入→各build→push。re-injectは `/* ===== HDM ToDo タスク管理タブ` 〜 `ReactDOM.render` を置換。
