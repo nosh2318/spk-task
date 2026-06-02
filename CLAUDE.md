@@ -2947,3 +2947,13 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - 各本体の render に `hostStaff:staff, hostShifts:shifts` を追加（NHA/BT/SPK とも `staff`/`shifts` state が App スコープに在席を確認済）。
 - バージョン: SPK v4.7.195/spk-v740 / NHA v3.5.98-NHA(BASE_V 3599) / BT v1.0.61-BT(BASE_V 1430)。全本番200。
 - **生成器運用**: hdm-todo/index.html（コンポーネント）+ build_todotab.py（TodoTabルート/CSS）を直し `python3 build_todotab.py`→3ホストへ「マーカー間置換」で再注入→各build→push。re-injectは `/* ===== HDM ToDo タスク管理タブ` 〜 `ReactDOM.render` を置換。
+
+### 🔴 2026-06-02 インシデント: 出勤日ヘルパーが生成器の抽出範囲外でバンドル未収録→白画面
+- **症状**: SPK/NHA/BT のタスク管理「タイムライン」「スタッフ」タブ押下で `Uncaught ReferenceError: isWorkDay is not defined` → 白画面。
+- **真因**: hdm-todo/index.html に追加した `REST_SYMBOLS`/`isWorkShift`/`workDaysOf`/`isWorkDay` を、生成器 build_todotab.py の抽出マーカー **「/* ===== small components」より前**に置いた。生成器の `components = between("/* ===== small components","function Landing(")` 範囲外＝バンドル未収録。シード末尾(multi-store)とsmall componentsの間は「どの抽出範囲にも入らない死角」。
+- **修正**: ヘルパーをマーカー**直後**へ移動。再生成後 `grep "function isWorkDay" todo-tab.gen.js` で**バンドル収録を必ず検証**してからデプロイ。
+- **再発防止ルール**:
+  1. **hdm-todo に関数/定数を足すときは、必ず抽出される3範囲のどれかに入れる**（constants:「/* ===== constants」〜「/* ===== persistence」 / seed:「/* ===== seed」〜「/* ===== multi-store」 / components:「/* ===== small components」〜「function Landing(」）。範囲の「隙間」に置かない。
+  2. **再生成後、新規シンボルが todo-tab.gen.js に含まれるか grep で検証**してから再注入・デプロイ。Babel構文OKだけでは「未定義参照」は検出できない（実行時エラー）。
+  3. minified版(SPK/NHA)は識別子がmangleされるので、検証は**文字列リテラル**（例:REST_SYMBOLSの「代休」）で行う。
+- 修正版: SPK v4.7.196/spk-v741 / NHA v3.5.100 / BT v1.0.62。全本番200・helper反映確認。
