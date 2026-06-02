@@ -62,7 +62,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v738';
+  var CV='spk-v739';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
@@ -5065,13 +5065,22 @@ async function saveMonthlySnapshot(store,ym,data,vehicles,fleet,kpiFlags,kpiTabl
   const otaMap={};
   retRes.forEach(r=>{const k=r.ota||"?";if(!otaMap[k])otaMap[k]={ota:k,count:0,revenue:0};otaMap[k].count++;otaMap[k].revenue+=(Number(r.price)||0);});
   const otaDetail=Object.values(otaMap).sort((a,b)=>b.count-a.count).map(o=>({...o,pct:retRes.length>0?Math.round(o.count/retRes.length*100):0}));
+  // ★ 売上はダッシュボードと同一式：全返却の(基本+付帯-割引)＝売上計上 ＋ 予約外(extra_sales)＝合計売上
+  let resRevenue=0;
+  retRes.forEach(r=>{const bp=Number(r.basePrice)||0,op=Number(r.optionPrice)||0,dc=Number(r.discount)||0;resRevenue+=(bp>0||op>0)?(bp+op-dc):(Number(r.price)||0);});
+  let extraRevenue=0;
+  try{const acctTbl=store==="spk"?"spk_accounting":"nha_accounting";
+    const{data:exRows}=await sb.from(acctTbl).select("date,amount,description").eq("type","extra_sales");
+    (exRows||[]).forEach(r=>{if((r.description||"").startsWith("じゃらん事前決済"))return;if((r.date||"").slice(0,7)===ym)extraRevenue+=(Number(r.amount)||0);});
+  }catch(e){console.warn("[Snapshot] extra_sales fetch failed",e&&e.message);}
+  const grandRevenue=resRevenue+extraRevenue;
   const totalAvail=activeCount*dim;
   const row={store,year_month:ym,active_vehicles:activeCount,
     total_rental_days:totalDays,total_available_days:totalAvail,
     utilization_pct:totalAvail>0?Math.round(totalDays/totalAvail*100):0,
-    total_revenue:totalRevenue,
-    revpacd:totalAvail>0?Math.round(totalRevenue/totalAvail):0,
-    avg_daily_rate:totalDays>0?Math.round(totalRevenue/totalDays):0,
+    total_revenue:grandRevenue,
+    revpacd:totalAvail>0?Math.round(resRevenue/totalAvail):0,
+    avg_daily_rate:totalDays>0?Math.round(resRevenue/totalDays):0,
     total_returns:retRes.length,same_month_bookings:sameMonth.length,
     booking_rate_pct:retRes.length>0?Math.round(sameMonth.length/retRes.length*100):0,
     cancel_count:cancelled.length,total_bookings:retRes.length+cancelled.length,
@@ -19361,7 +19370,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.193";
+const APP_VERSION="v4.7.194";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
