@@ -255,7 +255,9 @@ input,select,textarea{font-family:inherit;font-size:16px}
 .bcol{background:#f1f2f4;border-radius:14px;padding:10px;min-height:120px}
 .bcol-h{font-size:12.5px;font-weight:800;padding:4px 6px 9px;display:flex;align-items:center;gap:7px;color:var(--sub)}
 .bcol-h .cnt{margin-left:auto;background:#fff;border-radius:8px;padding:1px 8px;font-size:11px;color:var(--sub)}
-.bcard{background:#fff;border-radius:11px;padding:11px 12px;box-shadow:var(--shadow);margin-bottom:9px;display:flex;flex-direction:column;gap:7px}
+.bcard{background:#fff;border-radius:11px;padding:11px 12px;box-shadow:var(--shadow);margin-bottom:9px;display:flex;flex-direction:column;gap:7px;cursor:grab}
+.bcard:active{cursor:grabbing}
+.bcol.dragover{outline:2px dashed var(--accent);outline-offset:-2px;background:#e6eef9}
 .bcard .bt{font-weight:700;font-size:13.5px;line-height:1.3}
 
 /* landing (店舗選択TOP) */
@@ -310,7 +312,7 @@ input,select,textarea{font-family:inherit;font-size:16px}
 <div id="root"></div>
 <script type="text/babel" data-presets="react">
 const {useState,useMemo,useEffect,useRef} = React;
-const APP_VERSION = "v1.6.0";
+const APP_VERSION = "v1.7.0";
 
 /* ===== constants ===== */
 const DEFAULT_STAFF = [
@@ -447,13 +449,24 @@ function seed(){
 const STORES=[{k:"naha",name:"那覇店"},{k:"sapporo",name:"札幌店"}];
 function ensureStore(st){ const d=seed(); if(!st||!st.tasks) return d;
   return {me:st.me||d.me, staff:(st.staff&&st.staff.length)?st.staff:d.staff, goals:st.goals||d.goals, tasks:st.tasks}; }
+function defaultStore(){ // 空タスク＋デフォルト担当者＋空目標（クリーンな初期状態）
+  return {me:DEFAULT_STAFF[0].name, staff:DEFAULT_STAFF.map(p=>({...p})), goals:{annual:"",month:TODAY.slice(0,7),months:{}}, tasks:[]};
+}
+const SAPPORO_RESET="sapporoReset_v1";
 function normalizeState(s){
+  let base;
   if(s && s.stores && s.store && s.stores[s.store]){
-    return {store:s.store, stores:{naha:ensureStore(s.stores.naha), sapporo:ensureStore(s.stores.sapporo)}};
+    base={store:s.store, stores:{naha:ensureStore(s.stores.naha), sapporo:ensureStore(s.stores.sapporo)}, migrations:s.migrations||{}};
+  }else{
+    const valid = s && s.tasks && s.tasks[0] && s.tasks[0].area;
+    base={store:"naha", stores:{naha: valid?ensureStore(s):seed(), sapporo:seed()}, migrations:{}};
   }
-  const valid = s && s.tasks && s.tasks[0] && s.tasks[0].area;
-  const naha = valid ? ensureStore(s) : seed();
-  return {store:"naha", stores:{naha, sapporo:seed()}};
+  // 札幌店を一度だけデフォルトにリセット（以降の編集は保持）
+  if(!base.migrations[SAPPORO_RESET]){
+    base.stores.sapporo=defaultStore();
+    base.migrations={...base.migrations,[SAPPORO_RESET]:true};
+  }
+  return base;
 }
 
 /* ===== small components ===== */
@@ -740,8 +753,9 @@ function Timeline({tasks,goals,onOpen,onCreate}){
 }
 
 /* ===== TASK LIST ===== */
-function TaskList({tasks,onOpen,onProgress,onComplete,onLog,onAddChild}){
-  const [q,setQ]=useState(""),[asg,setAsg]=useState("全"),[st,setSt]=useState("全"),[ar,setAr]=useState("全"),[view,setView]=useState("list");
+function TaskList({tasks,onOpen,onProgress,onComplete,onLog,onAddChild,onSetStatus}){
+  const [q,setQ]=useState(""),[asg,setAsg]=useState("全"),[st,setSt]=useState("全"),[ar,setAr]=useState("全"),[view,setView]=useState("board");
+  const [overCol,setOverCol]=useState(null);
   const filtered = tasks.filter(t=>
     (q===""||t.title.includes(q)||(t.description||"").includes(q)) &&
     (asg==="全"||t.assignee===asg) && (st==="全"||t.status===st) && (ar==="全"||t.area===ar));
@@ -761,20 +775,29 @@ function TaskList({tasks,onOpen,onProgress,onComplete,onLog,onAddChild}){
           {filtered.map(t=><TaskCard key={t.id} t={t} tasks={tasks} onOpen={onOpen} onProgress={onProgress} onComplete={onComplete} onLog={onLog} onAddChild={onAddChild}/>)}
         </div>
       ) : (
+        <>
+        <div className="tl-hint">🟦 カードを<b style={{margin:"0 3px"}}>ドラッグ</b>して別の列に移すとステータスが変わります（タップで詳細）。</div>
         <div className="board">
           {STATUS.map(s=>{const list=filtered.filter(t=>t.status===s.k);return(
-            <div className="bcol" key={s.k}>
+            <div className={"bcol"+(overCol===s.k?" dragover":"")} key={s.k}
+              onDragOver={e=>{e.preventDefault();if(overCol!==s.k)setOverCol(s.k);}}
+              onDragLeave={()=>setOverCol(c=>c===s.k?null:c)}
+              onDrop={e=>{e.preventDefault();const id=e.dataTransfer.getData("text/plain");setOverCol(null);if(id&&onSetStatus)onSetStatus(id,s.k);}}>
               <div className="bcol-h"><span className="dot" style={{background:s.color}}/>{s.k}<span className="cnt">{list.length}</span></div>
               {list.map(t=>{const prog=hasChildren(tasks,t.id)?effProgress(t,tasks):t.progress;return(
-                <div className="bcard" key={t.id} onClick={()=>onOpen(t)} style={{cursor:"pointer",borderTop:`3px solid ${areaColor(t.area)}`}}>
+                <div className="bcard" key={t.id} draggable
+                  onDragStart={e=>{e.dataTransfer.setData("text/plain",t.id);e.dataTransfer.effectAllowed="move";}}
+                  onClick={()=>onOpen(t)} style={{borderTop:`3px solid ${areaColor(t.area)}`}}>
                   <div className="bt">{t.title}</div>
                   <div className="bar"><i style={{width:prog+"%",background:s.color}}/></div>
                   <div className="meta"><Chip cls="who">{t.assignee}</Chip><Chip cls={"due "+dueLabel(t.due).cls}>{dueLabel(t.due).t}</Chip></div>
                 </div>
               );})}
+              {list.length===0 && <div style={{fontSize:11,color:"var(--mut)",textAlign:"center",padding:"12px 0"}}>ここにドロップ</div>}
             </div>
           );})}
         </div>
+        </>
       )}
     </div>
   );
@@ -1351,6 +1374,7 @@ function App(){
     updTask(t.id,patch);
   };
   const onComplete=t=>updTask(t.id,{status:"完了",progress:100,completedAt:t.completedAt||TODAY});
+  const onSetStatus=(id,status)=>updTask(id, status==="完了"?{status,progress:100,completedAt:TODAY}:{status,completedAt:null});
   const onLog=t=>setEditor({task:t});
   const saveTask=f=>{
     const patch={...f};
@@ -1369,7 +1393,7 @@ function App(){
 
   const overdue = tasks.filter(t=>t.status!=="完了"&&t.due&&diffDays(TODAY,t.due)<0).length;
   const cur = TABS.find(t=>t.k===tab);
-  const h={onOpen,onProgress,onComplete,onLog,onAddChild};
+  const h={onOpen,onProgress,onComplete,onLog,onAddChild,onSetStatus};
 
   const body = (
     tab==="areas"   ? <AreaTree tasks={tasks} onOpen={onOpen} onAddChild={onAddChild} onAddTop={onAddTop} onComplete={onComplete}/> :
