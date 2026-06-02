@@ -1,7 +1,7 @@
 // ★ 2026-05-02: GitHub Pages サブパス (/spk-task/) 対応
 //   - URLS を相対パス化（SW scope 基準で resolve される）
 //   - fetch の同一オリジン判定をサブパス対応に緩和（pathname 末尾で判定）
-var CACHE_NAME = 'spk-v744';
+var CACHE_NAME = 'spk-v745';
 var URLS = ['./', './index.html', './index2.html', './app.js'];
 var CDN_CACHE = 'spk-cdn-v1';
 var CDN_HOSTS = ['cdnjs.cloudflare.com', 'cdn.jsdelivr.net'];
