@@ -111,7 +111,7 @@ root = r"""
 function _todoTaskToRow(t){return {id:t.id,area:t.area||null,title:t.title||"",assignee:t.assignee||"全員",parent_id:t.parentId||null,priority:t.priority||"中",status:t.status||"未着手",progress:t.progress||0,start_date:t.start||null,due_date:t.due||null,description:t.description||"",logs:t.logs||[],attachments:t.attachments||[],admin_confirmed:!!t.adminConfirmed,completed_at:t.completedAt||null,created_at:t.createdAt||TODAY,deleted:false,updated_at:new Date().toISOString()};}
 function _todoRowToTask(r){return {id:r.id,area:r.area,title:r.title,assignee:r.assignee,parentId:r.parent_id,priority:r.priority,status:r.status,progress:r.progress||0,start:r.start_date,due:r.due_date,description:r.description||"",logs:r.logs||[],attachments:r.attachments||[],adminConfirmed:!!r.admin_confirmed,completedAt:r.completed_at,createdAt:r.created_at};}
 
-function TodoTab({store, sb, label}){
+function TodoTab({store, sb, label, hostStaff, hostShifts}){
   const PFX=store; // 'nha' | 'spk' | 'bt'
   const T_TBL=PFX+"_todo_tasks", M_TBL=PFX+"_todo_meta";
   const ME_KEY="hdm_todo_me_"+PFX;
@@ -123,7 +123,14 @@ function TodoTab({store, sb, label}){
   const [editor,setEditor]=useState(null);
   const [menuOpen,setMenuOpen]=useState(false);
   const [sync,setSync]=useState("connecting");
-  PEOPLE = (staff&&staff.length)?staff:DEFAULT_STAFF;
+  // メンバーは本体APPのスタッフ/シフト名簿から自動表示（+タスク割当済の名前も補完）
+  const hostPeople = useMemo(()=>{
+    const m=new Map();
+    (hostStaff||[]).forEach((s,i)=>{ if(s&&s.name) m.set(s.name,{name:s.name,role:s.role||(s.admin?"管理者":"現場"),color:s.color||STAFF_COLORS[i%STAFF_COLORS.length],admin:!!s.admin}); });
+    tasks.forEach(t=>{ if(t.assignee&&t.assignee!=="全員"&&!m.has(t.assignee)) m.set(t.assignee,{name:t.assignee,role:"現場",color:STAFF_COLORS[m.size%STAFF_COLORS.length]}); });
+    return [...m.values()];
+  },[hostStaff,tasks]);
+  PEOPLE = hostPeople.length?hostPeople:((staff&&staff.length)?staff:DEFAULT_STAFF);
 
   // ---- DB helpers ----
   const reloadAll=async()=>{
@@ -213,12 +220,12 @@ function TodoTab({store, sb, label}){
 
   const body=(
     tab==="areas"   ? <AreaTree tasks={tasks} onOpen={onOpen} onAddChild={onAddChild} onAddTop={onAddTop} onComplete={onComplete}/> :
-    tab==="timeline"? <Timeline tasks={tasks} goals={goals} onOpen={onOpen} onCreate={onNew}/> :
+    tab==="timeline"? <Timeline tasks={tasks} goals={goals} onOpen={onOpen} onCreate={onNew} shifts={hostShifts}/> :
     tab==="list"    ? <TaskList tasks={tasks} {...h}/> :
     tab==="dash"    ? <Dashboard tasks={tasks} goals={goals} go={setTab}/> :
     tab==="ai"      ? <AIManager tasks={tasks} goals={goals}/> :
     tab==="logs"    ? <Logs tasks={tasks} onOpen={onOpen}/> :
-    tab==="staff"   ? <StaffManager staff={PEOPLE} tasks={tasks} onSave={saveStaffFn} onRemove={removeStaffFn}/> :
+    tab==="staff"   ? <StaffManager staff={PEOPLE} tasks={tasks} onSave={saveStaffFn} onRemove={removeStaffFn} shifts={hostShifts}/> :
                       <Goals goals={goals} setGoals={setGoals} tasks={tasks}/>
   );
 
@@ -264,7 +271,24 @@ extra_css = """
 .hdmtodo .todo-tabbtn.on{background:var(--accent);color:#fff}
 .hdmtodo .todo-badge{background:#e8384f;color:#fff;font-size:10px;font-weight:800;min-width:16px;height:16px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;padding:0 4px}
 .hdmtodo .todo-bar-r{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-@media(max-width:759px){.hdmtodo .todo-tabbtn{font-size:12px;padding:6px 9px}}
+/* 出勤日セル（タイムライン） */
+.hdmtodo .tl-cell.work{background:#e9f2ff;box-shadow:inset 0 0 0 1px #d3e6ff}
+.hdmtodo .tl-cell.work.we{background:#e0ecfb}
+.hdmtodo .tl-cell.work.sel{background:#cbe0fb}
+/* ===== スマホ最適化 ===== */
+@media(max-width:759px){
+  .hdmtodo .todo-bar{gap:8px;padding-bottom:10px}
+  .hdmtodo .todo-tabs{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:4px;scrollbar-width:none}
+  .hdmtodo .todo-tabs::-webkit-scrollbar{display:none}
+  .hdmtodo .todo-tabbtn{font-size:12px;padding:7px 11px;flex-shrink:0}
+  .hdmtodo .todo-bar-r{width:100%;justify-content:space-between}
+  .hdmtodo .todo-bar-r .btn.pri{flex:1;justify-content:center}
+  .hdmtodo .kgrid{grid-template-columns:repeat(2,1fr)}
+  .hdmtodo .eval-grid,.hdmtodo .board,.hdmtodo .goal-grid{grid-template-columns:1fr}
+  .hdmtodo .tl{min-width:560px}
+  .hdmtodo .sheet{max-height:94vh}
+  .hdmtodo .sec-h h2{font-size:13px}
+}
 """
 
 bundle = (
