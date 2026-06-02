@@ -273,15 +273,17 @@ input,select,textarea{font-family:inherit;font-size:16px}
 <div id="root"></div>
 <script type="text/babel" data-presets="react">
 const {useState,useMemo,useEffect,useRef} = React;
-const APP_VERSION = "v1.2.0";
+const APP_VERSION = "v1.2.1";
 
 /* ===== constants ===== */
-const PEOPLE = [
+const DEFAULT_STAFF = [
   {name:"齊藤",   role:"管理者", color:"#4573d2", admin:true},
-  {name:"伊江さん", role:"現場",  color:"#14a44d"},
-  {name:"廣瀬さん", role:"現場",  color:"#f59e0b"},
+  {name:"伊江さん", role:"現場",  color:"#14a44d", admin:false},
+  {name:"廣瀬さん", role:"現場",  color:"#f59e0b", admin:false},
 ];
-const ASSIGNEES = ["全員","齊藤","伊江さん","廣瀬さん"];
+let PEOPLE = DEFAULT_STAFF.map(p=>({...p})); // App が毎レンダー state.staff から同期
+const assigneeList = ()=>["全員",...PEOPLE.map(p=>p.name)];
+const STAFF_COLORS = ["#4573d2","#14a44d","#f59e0b","#e8638a","#8b5cf6","#06b6d4","#e8384f","#0ea5e9","#d97706","#64748b"];
 const AREAS = [
   {name:"カスタマー対応", color:"#e8638a", icon:"📞"},
   {name:"車両整備/管理",  color:"#4573d2", icon:"🚗"},
@@ -392,6 +394,7 @@ function seed(){
 
   return {
     me:"齊藤",
+    staff:DEFAULT_STAFF.map(p=>({...p})),
     goals:{
       annual:"車両管理・補修・美化の仕組みを整え、店舗の運用品質と安全性を上げる。",
       monthlyTarget:"7月以降に向けて、車両管理・環境整備・安全対策の土台を6月中に整える。",
@@ -564,8 +567,11 @@ function AreaTree({tasks,onOpen,onAddChild,onAddTop,onComplete}){
 }
 
 /* ===== MY TASKS ===== */
-function MyTasks({tasks,me,...h}){
-  const mine = tasks.filter(t=>(t.assignee===me||t.assignee==="全員") && !hasChildren(tasks,t.id));
+function MyTasks({tasks,me,people,...h}){
+  const [who,setWho]=useState(me);
+  useEffect(()=>setWho(me),[me]);
+  const target = who==="__all__" ? null : who;
+  const mine = tasks.filter(t=>(target===null || t.assignee===target || t.assignee==="全員") && !hasChildren(tasks,t.id));
   const todayT = mine.filter(t=>t.status!=="完了" && t.due && diffDays(TODAY,t.due)<=0);
   const soon   = mine.filter(t=>t.status!=="完了" && t.due && diffDays(TODAY,t.due)>0 && diffDays(TODAY,t.due)<=5);
   const later  = mine.filter(t=>t.status!=="完了" && (!t.due || diffDays(TODAY,t.due)>5));
@@ -578,7 +584,16 @@ function MyTasks({tasks,me,...h}){
   );
   return (
     <div>
-      <div className="tl-hint">👋 <b style={{margin:"0 4px"}}>{me}</b> さんの担当タスク（実作業のみ・全員タスク含む）。今日やったらログを残してください。</div>
+      <div className="filters" style={{marginBottom:10}}>
+        <label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,fontWeight:700,color:"var(--sub)",flex:1,minWidth:200}}>
+          👤 表示する担当者
+          <select value={who} onChange={e=>setWho(e.target.value)} style={{flex:1,border:"1px solid var(--line)",borderRadius:10,padding:"9px 11px",fontWeight:700}}>
+            {(people||PEOPLE).map(p=><option key={p.name} value={p.name}>{p.name}{p.name===me?"（自分）":""}</option>)}
+            <option value="__all__">― 全員のタスクを表示 ―</option>
+          </select>
+        </label>
+      </div>
+      <div className="tl-hint">👋 <b style={{margin:"0 4px"}}>{target===null?"全員":target}</b> の担当タスク（実作業のみ・全員タスク含む）。今日やったらログを残してください。</div>
       {mine.length===0 && <div className="empty">担当タスクはありません</div>}
       <Group title="今日・期限超過" list={todayT} color="#e8384f"/>
       <Group title="期限が近い（5日以内）" list={soon} color="#f59e0b"/>
@@ -593,7 +608,7 @@ function Timeline({tasks,goals,onOpen,onCreate}){
   const base = parse(goals.month+"-01");
   const dim = new Date(base.getFullYear(),base.getMonth()+1,0).getDate();
   const days = Array.from({length:dim},(_,i)=>addDays(base,i));
-  const rows = ASSIGNEES;
+  const rows = assigneeList();
   const [drag,setDrag] = useState(null);
   const dragging = useRef(false);
   const cellRange = (a,b)=>[Math.min(a,b),Math.max(a,b)];
@@ -684,7 +699,7 @@ function TaskList({tasks,onOpen,onProgress,onComplete,onLog,onAddChild}){
       <div className="filters">
         <input placeholder="🔍 検索" value={q} onChange={e=>setQ(e.target.value)}/>
         <select value={ar} onChange={e=>setAr(e.target.value)}><option value="全">全領域</option>{AREAS.map(a=><option key={a.name}>{a.name}</option>)}</select>
-        <select value={asg} onChange={e=>setAsg(e.target.value)}><option value="全">全担当</option>{ASSIGNEES.map(a=><option key={a}>{a}</option>)}</select>
+        <select value={asg} onChange={e=>setAsg(e.target.value)}><option value="全">全担当</option>{assigneeList().map(a=><option key={a}>{a}</option>)}</select>
         <select value={st} onChange={e=>setSt(e.target.value)}><option value="全">全ステータス</option>{STATUS.map(s=><option key={s.k}>{s.k}</option>)}</select>
         <div className="viewtog"><button className={view==="list"?"on":""} onClick={()=>setView("list")}>≣ リスト</button><button className={view==="board"?"on":""} onClick={()=>setView("board")}>▦ ボード</button></div>
       </div>
@@ -912,6 +927,50 @@ function Goals({goals,setGoals}){
   );
 }
 
+/* ===== STAFF MANAGER ===== */
+function StaffManager({staff,tasks,onSave,onRemove}){
+  const [form,setForm]=useState(null);
+  const startNew=()=>setForm({orig:null,name:"",role:"現場",color:STAFF_COLORS[staff.length%STAFF_COLORS.length]});
+  const startEdit=p=>setForm({orig:p.name,name:p.name,role:p.role,color:p.color});
+  const save=()=>{ if(!form.name.trim()){alert("名前を入力してください");return;}
+    onSave(form.orig,{name:form.name.trim(),role:form.role,color:form.color,admin:form.role==="管理者"}); setForm(null); };
+  const countOf=name=>tasks.filter(t=>t.assignee===name).length;
+  return (
+    <div>
+      <div className="tl-hint">👥 スタッフの追加・編集・削除。ここで管理した担当者は<b style={{margin:"0 3px"}}>全画面</b>（マイタスク・タイムライン・タスク割当・個人評価）に反映されます。</div>
+      <div className="sec-h"><h2>スタッフ一覧</h2><button className="btn sm pri more" onClick={startNew}>＋ スタッフ追加</button></div>
+      {staff.map(p=>(
+        <div className="card" style={{padding:"13px 15px",display:"flex",alignItems:"center",gap:12,marginBottom:10}} key={p.name}>
+          <span className="avatar" style={{background:p.color}}>{p.name[0]}</span>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontWeight:700}}>{p.name} {p.admin&&<span className="chip st-prog" style={{marginLeft:4}}>管理者</span>}</div>
+            <div style={{fontSize:12,color:"var(--sub)"}}>{p.role} ・ 担当 {countOf(p.name)}件</div>
+          </div>
+          <button className="btn sm" onClick={()=>startEdit(p)}>編集</button>
+          <button className="btn sm" disabled={staff.length<=1} style={staff.length<=1?{opacity:.4}:null}
+            onClick={()=>{ if(staff.length<=1){return;} if(confirm(p.name+" を削除しますか？\n担当タスク"+countOf(p.name)+"件は「全員」に付け替えられます。")) onRemove(p.name); }}>削除</button>
+        </div>
+      ))}
+      {form && (
+        <div className="scrim" onClick={()=>setForm(null)}>
+          <div className="sheet" onClick={e=>e.stopPropagation()}>
+            <div className="sheet-h"><b>{form.orig?"スタッフ編集":"スタッフ追加"}</b><button className="iconbtn" onClick={()=>setForm(null)}>✕</button></div>
+            <div className="sheet-b">
+              <div className="fld"><label>名前</label><input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder="例: 山田さん" autoFocus/></div>
+              <div className="fld"><label>役割</label><div className="seg">{["管理者","現場"].map(r=><button key={r} className={form.role===r?"on":""} onClick={()=>setForm({...form,role:r})}>{r}</button>)}</div></div>
+              <div className="fld"><label>カラー</label><div className="seg">{STAFF_COLORS.map(c=><button key={c} onClick={()=>setForm({...form,color:c})} style={{width:34,height:34,borderRadius:9,background:c,border:form.color===c?"3px solid #1b1c1d":"1px solid var(--line)"}}/>)}</div></div>
+              <div style={{display:"flex",gap:10,marginTop:4}}>
+                <button className="btn" style={{flex:1}} onClick={()=>setForm(null)}>キャンセル</button>
+                <button className="btn pri" style={{flex:2}} onClick={save}>{form.orig?"保存":"追加"}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ===== Task Editor ===== */
 function TaskEditor({task,initial,tasks,onSave,onClose,onDelete,me}){
   const ini=initial||{};
@@ -939,7 +998,7 @@ function TaskEditor({task,initial,tasks,onSave,onClose,onDelete,me}){
           <div className="fld"><label>タイトル</label><input value={f.title} placeholder="例: LINE対応" onChange={e=>set("title",e.target.value)} autoFocus={isNew}/></div>
           <div className="fld2">
             <div className="fld"><label>担当領域</label><select value={f.area} onChange={e=>set("area",e.target.value)}>{AREAS.map(a=><option key={a.name}>{a.name}</option>)}</select></div>
-            <div className="fld"><label>担当者</label><select value={f.assignee} onChange={e=>set("assignee",e.target.value)}>{ASSIGNEES.map(a=><option key={a}>{a}</option>)}</select></div>
+            <div className="fld"><label>担当者</label><select value={f.assignee} onChange={e=>set("assignee",e.target.value)}>{assigneeList().map(a=><option key={a}>{a}</option>)}</select></div>
           </div>
           <div className="fld"><label>親タスク（紐づけ先）</label>
             <select value={f.parentId||""} onChange={e=>{const v=e.target.value||null;set("parentId",v);if(v){const p=tasks.find(t=>t.id===v);if(p)set("area",p.area);}}}>
@@ -989,6 +1048,7 @@ const TABS=[
   {k:"dash",    ic:"📊", label:"ダッシュボード", bn:true},
   {k:"ai",      ic:"🤖", label:"AI管理"},
   {k:"logs",    ic:"📜", label:"成果ログ"},
+  {k:"staff",   ic:"👥", label:"スタッフ"},
   {k:"goals",   ic:"🎯", label:"目標設定"},
 ];
 
@@ -1046,8 +1106,30 @@ function App(){
   const syncColor = sync==="cloud"?"#14a44d":sync==="off"?"#9aa0a8":"#f59e0b";
 
   const {tasks,goals,me}=state;
+  const staff = (state.staff && state.staff.length)?state.staff:DEFAULT_STAFF;
+  PEOPLE = staff; // 全コンポーネントが参照する担当者リストを毎レンダー同期
   const setTasks=fn=>setState(s=>({...s,tasks:typeof fn==="function"?fn(s.tasks):fn}));
   const updTask=(id,patch)=>setTasks(ts=>ts.map(t=>t.id===id?{...t,...patch}:t));
+  // スタッフ追加・編集（リネーム時はタスクの担当も付け替え）
+  const saveStaff=(origName,next)=>setState(s=>{
+    const st0=(s.staff&&s.staff.length)?s.staff:DEFAULT_STAFF;
+    if(origName){
+      const st=st0.map(p=>p.name===origName?next:p);
+      const ts=next.name!==origName?s.tasks.map(t=>t.assignee===origName?{...t,assignee:next.name}:t):s.tasks;
+      const me2=s.me===origName?next.name:s.me;
+      return {...s,staff:st,tasks:ts,me:me2};
+    }
+    if(st0.some(p=>p.name===next.name)){ alert&&0; return s; } // 重複名は無視
+    return {...s,staff:[...st0,next]};
+  });
+  const removeStaff=name=>setState(s=>{
+    const st0=(s.staff&&s.staff.length)?s.staff:DEFAULT_STAFF;
+    if(st0.length<=1) return s;
+    const st=st0.filter(p=>p.name!==name);
+    const ts=s.tasks.map(t=>t.assignee===name?{...t,assignee:"全員"}:t);
+    const me2=s.me===name?st[0].name:s.me;
+    return {...s,staff:st,tasks:ts,me:me2};
+  });
 
   const onOpen=t=>setEditor({task:t});
   const onNew=initial=>setEditor({initial:initial||{}});
@@ -1081,13 +1163,14 @@ function App(){
   const h={onOpen,onProgress,onComplete,onLog,onAddChild};
 
   const body = (
-    tab==="mytasks" ? <MyTasks tasks={tasks} me={me} {...h}/> :
+    tab==="mytasks" ? <MyTasks tasks={tasks} me={me} people={staff} {...h}/> :
     tab==="areas"   ? <AreaTree tasks={tasks} onOpen={onOpen} onAddChild={onAddChild} onAddTop={onAddTop} onComplete={onComplete}/> :
     tab==="timeline"? <Timeline tasks={tasks} goals={goals} onOpen={onOpen} onCreate={onNew}/> :
     tab==="list"    ? <TaskList tasks={tasks} {...h}/> :
     tab==="dash"    ? <Dashboard tasks={tasks} goals={goals} go={setTab}/> :
     tab==="ai"      ? <AIManager tasks={tasks} goals={goals}/> :
     tab==="logs"    ? <Logs tasks={tasks} onOpen={onOpen}/> :
+    tab==="staff"   ? <StaffManager staff={staff} tasks={tasks} onSave={saveStaff} onRemove={removeStaff}/> :
                       <Goals goals={goals} setGoals={setGoals}/>
   );
 
@@ -1127,7 +1210,7 @@ function App(){
             {t.k==="mytasks"&&overdue>0&&<span className="nb">{overdue}</span>}
           </button>
         ))}
-        <button className={["list","ai","logs","goals"].includes(tab)?"on":""} onClick={()=>setMenuOpen(true)}><span className="ic">⋯</span>メニュー</button>
+        <button className={["list","ai","logs","staff","goals"].includes(tab)?"on":""} onClick={()=>setMenuOpen(true)}><span className="ic">⋯</span>メニュー</button>
       </nav>
 
       {menuOpen && (
