@@ -137,8 +137,8 @@ function TodoTab({store, sb, label, hostStaff, hostShifts}){
     return [...m.values()];
   },[_roster,tasks]);
   PEOPLE = hostPeople.length?hostPeople:((staff&&staff.length)?staff:DEFAULT_STAFF);
-  // 表示用タスク（担当名を名簿表記に正規化）
-  const viewTasks = useMemo(()=>tasks.map(t=>({...t,assignee:resolveName(t.assignee)})),[tasks,_rosterByNorm]);
+  // 表示用タスク（担当名を名簿表記に正規化 / 旧ステータス「相談必要」→「取り止め」移行）
+  const viewTasks = useMemo(()=>tasks.map(t=>({...t,assignee:resolveName(t.assignee),status:t.status==="相談必要"?"取り止め":t.status})),[tasks,_rosterByNorm]);
 
   // ---- DB helpers ----
   const reloadAll=async()=>{
