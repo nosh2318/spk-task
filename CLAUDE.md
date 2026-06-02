@@ -2860,3 +2860,59 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - 変数削除・リネーム前にGrep全体検索
 - 推測修正は最大1回、直らなければ実環境確認
 - 予約処理は古い順から1件ずつ（並列禁止）
+
+---
+
+## ✅ 2026-06-02 タスク管理タブ を NHA/SPK/BT 3本体APPにネイティブ統合（hdm-todo→各本体タブ）
+
+### 背景・方針転換
+当初 単独アプリ `nosh2318.github.io/spk-task/hdm-todo/`（omniが当日 v1.0→v1.8まで自律開発）として公開したが、オーナー判断で**「店舗ごとに仕様が異なる→各本体APPに1タブとしてネイティブ実装」**へ転換。さらに不特定多数の同時利用に耐えるためデータ構造を作り直し。
+
+### 旧アプリの致命的欠陥（監査で判明）→ A案で解消
+- 旧: 全状態を `hdm_todo(main)` の**1行JSONBに丸ごと保存・無条件upsert(LWW)**。12秒ポーリング。
+  - **同時編集でデータ消失**（HIGH-1: 別ユーザーの全体ドキュメント上書き）、編集モーダル中保存で全員の変更巻き戻し（HIGH-2）、anon開放で誰でも全消し可能（MED-5）、同期断で自動復旧なし(MED-3)、オフライン編集破棄(MED-4)。
+- A案（採用）: **1行=1タスク（per-entity）＋ Supabase Realtime ＋ authenticated RLS**。
+  - 別タスクの同時編集は衝突しない。anon廃止＝本体ログイン(authenticated)必須。即時反映。
+
+### データ構造（SQL: `hdm-todo/SUPABASE_v2_realtime.sql`）
+| DB | テーブル |
+|---|---|
+| ckrxttbnawkclshczsia | `nha_todo_tasks`/`nha_todo_meta` ・ `spk_todo_tasks`/`spk_todo_meta`（PART A）|
+| ggqugvyskyiblxiycpci（BT独立）| `bt_todo_tasks`/`bt_todo_meta`（PART B・**別プロジェクトで別途RUN必須**）|
+- tasks列: id,area,title,assignee,parent_id,priority,status,progress,start_date,due_date,description,logs(jsonb),attachments(jsonb),admin_confirmed,completed_at,created_at,**deleted**(論理削除),updated_at
+- meta: id（`{store}:goals` / `{store}:staff`）, data(jsonb)
+- RLS: `for all to authenticated using(true)`。grant select/insert/update（物理delete無し＝deleted=true運用）。`alter publication supabase_realtime add table ...` でRealtime配信。
+
+### 実装方式：共通バンドル `hdm-todo/todo-tab.gen.js`（生成器 `build_todotab.py`）
+- hdm-todo/index.html の**検証済み17コンポーネントをverbatim抽出**＋CSSを**全セレクタ `.hdmtodo` 配下にスコープ**（ホストTailwind/既存CSSと衝突回避。`.card .btn .bar .chip` 等の汎用名が本体と被るため必須）。
+- **IIFEで全内部名を隔離し `window.TodoTab` だけ公開**（`Donut/Timeline/Dashboard/parse/today/uid` 等が本体18000行と「Identifier already declared」衝突するのを防止）。
+- 永続化ルート `TodoTab({store,sb,label})` を新規：ホストの**認証済み `sb`** で per-entity CRUD（`{store}_todo_tasks` upsert / deleted=true / meta upsert）＋ `postgres_changes` Realtime購読。`me`(入力中の担当)は端末ローカル(localStorage)。
+- ページchrome（rail/landing/topbar/bnav）は除去し**タブ内パネル**として描画（横タブバー＋body＋編集モーダル）。
+- 再生成: `cd hdm-todo && python3 build_todotab.py`（omniがhdm-todoを更新したら再生成→各本体へ再注入）。
+
+### 各本体への注入（共通手順）
+1. `python3` で `todo-tab.gen.js` を **ReactDOM.render の直前**に注入（text/babelブロック内）。
+2. navItems に `{id:"todo",ico:"✅",l:"タスク管理"}` を顧客の隣に追加。
+3. 描画スイッチに `{tab==="todo"&&window.TodoTab&&React.createElement(window.TodoTab,{store:"<spk|nha|bt>",sb:sb,label:"..."})}`。
+4. バージョン更新→build→commit→push。
+
+| 店 | repo / source | store | バージョン | コミット |
+|---|---|---|---|---|
+| SPK | spk-task / index.src.html（build.js）| spk | v4.7.192 / spk-v737 / sw?v=624 | (push済) |
+| NHA | naha-project / index.html.bak（build.js）| nha | v3.5.91-NHA / BASE_V=3591 | (push済) |
+| BT | buddica-touring/app / index.html.bak（build.js）| bt | v1.0.58-BT / BASE_V=1427 | (push済) |
+
+### 移行・検証
+- **NHA既存14タスク移行**: `hdm-todo/MIGRATE_nha.sql`（旧hdm_todo(main).naha を json_to_recordset で nha_todo_* へ。SQL EditorはRLS非対象なのでINSERT可）。PART A実行後に1回RUN。
+- **同時編集テスト（2026-06-02 合格）**: authenticatedログイン→spk_todo_tasks に別タスクA/Bを並行 insert+update→両方独立保存(A=50%,B=80%)確認。旧LWWで起きた消失が解消されたことをデータ層で実証。
+
+### 残（オーナーRUN）
+1. **PART B** を `ggqugvyskyiblxiycpci`(BT) SQL Editor でRUN（未実行＝bt_todo_* 404）→ BTタブ稼働。
+2. **MIGRATE_nha.sql** を `ckrxttbnawkclshczsia` でRUN → NHAタブに14タスク表示。
+3. SPKは PART A済で即稼働（空スタート）。各本体リロードで反映。
+- 旧単独 `hdm-todo/` は当面残置（移行確認後に案内停止）。
+
+### Lesson
+1. **他HTMLアプリを本体に取り込む時は「CSSスコープ＋IIFE隔離（window公開）」が必須**。汎用クラス名・関数名は巨大ホストと必ず衝突する。
+2. **多人数同時編集は per-entity 行 + Realtime が基本**。1ドキュメントLWWは少人数でしか持たない。
+3. **DDL/移行INSERTはSQL Editorで（RLS非対象）**。CLIのanon/authenticatedからDDL不可。
