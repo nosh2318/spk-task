@@ -2923,3 +2923,16 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **生成器 build_todotab.py を「行番号→マーカー抽出」に変更**（hdm-todo改修で行ズレ→旧ハードコード範囲がコンポーネントを切断し構文エラーになった教訓）。再注入は各ホストの `/* ===== HDM ToDo タスク管理タブ` 〜 `ReactDOM.render` 間を置換するスクリプトで実施。
 - **検証の罠**: minified版(SPK/NHA)は識別子(evalP)がmangleされgrep不可。文字列リテラル(「全期間」)で確認する。BabelはJSX内日本語を\uエスケープする場合あり(BT)。
 - **並行作業の注意**: 本セッション中、Slack omni が NHA/BT を並行編集（経営KPIスナップショット展開・index.htmlタイトル変更等）。コミット前に必ず `git fetch`+`git log`+`git status` で omni の変更を確認し、その上に積む（clobber防止）。omniの未コミット .claude/CLAUDE.md は触らない。
+
+### 🔴🔴 2026-06-02 重大インシデント: NHA本番 白画面（バージョン更新スクリプトのファイル空化バグ）
+- **症状**: 那覇店APP `nosh2318.github.io/naha-project/` がアクセスすると真っ白（index.html が 0バイトで配信）。
+- **真因（自分のミス）**: バージョン更新で次の**危険なPythonワンライナー**を使った:
+  `io.open(f,"w").write(io.open(f).read().replace(...))`
+  → Pythonは `io.open(f,"w")`（=ファイルを即truncate＝空に）を**先に評価**し、その後で引数の `io.open(f).read()` が**空になったファイル**を読む。結果**空文字を書き込み**、index.html / index.html.bak / sw.js が **0バイト化**してcommit&pushされた。
+- **被害**: NHA index.html(本番ローダ)＝白画面 / NHA index.html.bak(ソース)＝ビルド不能(text/babel消失) / SPK sw.js＝空(無害だが破損)。app.jsは無事（`wc -l`が0行表示だったのはminified1行ファイルの誤読、`wc -c`で確認すべき）。
+- **復旧**: `git show <good_commit>:file > file` で直前正常コミット(NHA=8e8587d / SPK sw.js=22b5115)から復元 → 安全な手順で再ビルド → push。NHA v3.5.95 / SPK sw spk-v739 で復旧確認(本番200・11852bytes)。
+- **絶対ルール（再発防止）**:
+  1. **`open(f,"w").write(open(f).read()...)` を絶対に書かない**。必ず「先に読んでから書く」: `t=open(f).read(); t=t.replace(...); open(f,"w").write(t)`。
+  2. ファイル破損チェックは **`wc -c`（バイト）** で。`wc -l` はminified1行ファイルで0と出て誤判定する。
+  3. **push前に成果物の非空＆主要マーカーを検証**（index.htmlが5KB未満なら異常）。本番デプロイ系は特に。
+  4. バージョン更新は Edit ツール（厳密置換）を優先。スクリプト一括置換するなら read→replace→write の3段で。
