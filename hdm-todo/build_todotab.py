@@ -123,14 +123,22 @@ function TodoTab({store, sb, label, hostStaff, hostShifts}){
   const [editor,setEditor]=useState(null);
   const [menuOpen,setMenuOpen]=useState(false);
   const [sync,setSync]=useState("connecting");
-  // メンバーは本体APPのスタッフ/シフト名簿から自動表示（+タスク割当済の名前も補完）
+  // 担当名 正規化（「さん/君」除去 + 異体字エイリアス）→ タスク担当名を本体スタッフ名簿の表記に統一し重複解消
+  const _KANJI_ALIAS={"齊":"齋","邉":"辺","邊":"辺","髙":"高","﨑":"崎","桒":"桑","凉":"涼","檜":"桧"};
+  const _normNm=(s)=>{ s=String(s||"").trim().replace(/(さん|君|くん|ちゃん|様)$/,"").trim(); return s.split("").map(c=>_KANJI_ALIAS[c]||c).join(""); };
+  const _roster=useMemo(()=>(hostStaff||[]).filter(s=>s&&s.name),[hostStaff]);
+  const _rosterByNorm=useMemo(()=>{ const m={}; _roster.forEach(s=>{ m[_normNm(s.name)]=s.name; }); return m; },[_roster]);
+  const resolveName=(name)=>{ if(!name||name==="全員") return name||"全員"; const hit=_rosterByNorm[_normNm(name)]; return hit||name; };
+  // メンバー＝本体スタッフ名簿（実名）に統一。名簿に無い担当名のみ補完
   const hostPeople = useMemo(()=>{
     const m=new Map();
-    (hostStaff||[]).forEach((s,i)=>{ if(s&&s.name) m.set(s.name,{name:s.name,role:s.role||(s.admin?"管理者":"現場"),color:s.color||STAFF_COLORS[i%STAFF_COLORS.length],admin:!!s.admin}); });
-    tasks.forEach(t=>{ if(t.assignee&&t.assignee!=="全員"&&!m.has(t.assignee)) m.set(t.assignee,{name:t.assignee,role:"現場",color:STAFF_COLORS[m.size%STAFF_COLORS.length]}); });
+    _roster.forEach((s,i)=>{ m.set(s.name,{name:s.name,role:s.role||(s.admin?"管理者":"現場"),color:s.color||STAFF_COLORS[i%STAFF_COLORS.length],admin:!!s.admin}); });
+    tasks.forEach(t=>{ const a=resolveName(t.assignee); if(a&&a!=="全員"&&!m.has(a)) m.set(a,{name:a,role:"現場",color:STAFF_COLORS[m.size%STAFF_COLORS.length]}); });
     return [...m.values()];
-  },[hostStaff,tasks]);
+  },[_roster,tasks]);
   PEOPLE = hostPeople.length?hostPeople:((staff&&staff.length)?staff:DEFAULT_STAFF);
+  // 表示用タスク（担当名を名簿表記に正規化）
+  const viewTasks = useMemo(()=>tasks.map(t=>({...t,assignee:resolveName(t.assignee)})),[tasks,_rosterByNorm]);
 
   // ---- DB helpers ----
   const reloadAll=async()=>{
@@ -219,14 +227,14 @@ function TodoTab({store, sb, label, hostStaff, hostShifts}){
   const syncColor=sync==="cloud"?"#14a44d":sync==="off"?"#e8384f":"#f59e0b";
 
   const body=(
-    tab==="areas"   ? <AreaTree tasks={tasks} onOpen={onOpen} onAddChild={onAddChild} onAddTop={onAddTop} onComplete={onComplete}/> :
-    tab==="timeline"? <Timeline tasks={tasks} goals={goals} onOpen={onOpen} onCreate={onNew} shifts={hostShifts}/> :
-    tab==="list"    ? <TaskList tasks={tasks} {...h}/> :
-    tab==="dash"    ? <Dashboard tasks={tasks} goals={goals} go={setTab}/> :
-    tab==="ai"      ? <AIManager tasks={tasks} goals={goals}/> :
-    tab==="logs"    ? <Logs tasks={tasks} onOpen={onOpen}/> :
-    tab==="staff"   ? <StaffManager staff={PEOPLE} tasks={tasks} onSave={saveStaffFn} onRemove={removeStaffFn} shifts={hostShifts}/> :
-                      <Goals goals={goals} setGoals={setGoals} tasks={tasks}/>
+    tab==="areas"   ? <AreaTree tasks={viewTasks} onOpen={onOpen} onAddChild={onAddChild} onAddTop={onAddTop} onComplete={onComplete}/> :
+    tab==="timeline"? <Timeline tasks={viewTasks} goals={goals} onOpen={onOpen} onCreate={onNew} shifts={hostShifts}/> :
+    tab==="list"    ? <TaskList tasks={viewTasks} {...h}/> :
+    tab==="dash"    ? <Dashboard tasks={viewTasks} goals={goals} go={setTab}/> :
+    tab==="ai"      ? <AIManager tasks={viewTasks} goals={goals}/> :
+    tab==="logs"    ? <Logs tasks={viewTasks} onOpen={onOpen}/> :
+    tab==="staff"   ? <StaffManager staff={PEOPLE} tasks={viewTasks} onSave={saveStaffFn} onRemove={removeStaffFn}/> :
+                      <Goals goals={goals} setGoals={setGoals} tasks={viewTasks}/>
   );
 
   return (
