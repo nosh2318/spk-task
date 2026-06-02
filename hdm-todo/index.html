@@ -48,6 +48,12 @@ input,select,textarea{font-family:inherit;font-size:16px}
 
 /* ===== Main ===== */
 .main{flex:1;min-width:0;display:flex;flex-direction:column}
+.store-switch{display:inline-flex;background:#2f3032;border:1px solid #45464a;border-radius:9px;overflow:hidden}
+.store-switch button{padding:7px 13px;font-size:12.5px;font-weight:800;color:#b9bbbf;background:transparent}
+.store-switch button.on{background:var(--accent);color:#fff}
+.topbar .store-switch{background:#f1f2f4;border:1px solid var(--line)}
+.topbar .store-switch button{color:var(--sub)}
+.topbar .store-switch button.on{background:var(--accent);color:#fff}
 .topbar{position:sticky;top:0;z-index:30;background:#fffffff2;backdrop-filter:blur(8px);
   border-bottom:1px solid var(--line);padding:12px 20px;display:flex;align-items:center;gap:12px}
 .topbar h1{font-size:18px;margin:0;font-weight:800;letter-spacing:.2px}
@@ -283,7 +289,7 @@ input,select,textarea{font-family:inherit;font-size:16px}
 <div id="root"></div>
 <script type="text/babel" data-presets="react">
 const {useState,useMemo,useEffect,useRef} = React;
-const APP_VERSION = "v1.4.0";
+const APP_VERSION = "v1.5.0";
 
 /* ===== constants ===== */
 const DEFAULT_STAFF = [
@@ -414,6 +420,19 @@ function seed(){
     },
     tasks:T,
   };
+}
+
+/* ===== multi-store ===== */
+const STORES=[{k:"naha",name:"那覇店"},{k:"sapporo",name:"札幌店"}];
+function ensureStore(st){ const d=seed(); if(!st||!st.tasks) return d;
+  return {me:st.me||d.me, staff:(st.staff&&st.staff.length)?st.staff:d.staff, goals:st.goals||d.goals, tasks:st.tasks}; }
+function normalizeState(s){
+  if(s && s.stores && s.store && s.stores[s.store]){
+    return {store:s.store, stores:{naha:ensureStore(s.stores.naha), sapporo:ensureStore(s.stores.sapporo)}};
+  }
+  const valid = s && s.tasks && s.tasks[0] && s.tasks[0].area;
+  const naha = valid ? ensureStore(s) : seed();
+  return {store:"naha", stores:{naha, sapporo:seed()}};
 }
 
 /* ===== small components ===== */
@@ -766,6 +785,13 @@ function Dashboard({tasks,goals,go}){
   const week = Array.from({length:7},(_,i)=>{const d=addDays(today(),i);const di=iso(d);
     return {d,n:tasks.filter(t=>t.status!=="完了"&&t.due===di).length,today:i===0};});
   const areaProg = AREAS.map(a=>{const tops=tasks.filter(t=>t.area===a.name&&!t.parentId);const all=tasks.filter(t=>t.area===a.name);const v=tops.length?Math.round(tops.reduce((s,t)=>s+effProgress(t,tasks),0)/tops.length):0;return {...a,v,n:all.length};});
+  // 目標達成評価（月別目標に対するタスク達成）
+  const ymStat=ym=>{const due=tasks.filter(t=>!hasChildren(tasks,t.id)&&t.due&&t.due.slice(0,7)===ym);const n=due.length;const done=due.filter(t=>t.status==="完了").length;const prog=n?Math.round(due.reduce((s,t)=>s+(t.progress||0),0)/n):0;return{n,done,prog,rate:n?Math.round(done/n*100):0};};
+  const gMonths=goals.months||{};
+  const goalRows=Object.keys(gMonths).filter(ym=>(gMonths[ym].target||"").trim()).sort();
+  const activeYM=goals.month||TODAY.slice(0,7);
+  const activeTarget=(gMonths[activeYM]&&gMonths[activeYM].target)||goals.monthlyTarget||"";
+  const activeStat=ymStat(activeYM);
 
   return (
     <div>
@@ -785,6 +811,29 @@ function Dashboard({tasks,goals,go}){
         <div className="card kpi"><div className="lab">完了</div><div className="num mono" style={{color:"var(--s-done)"}}>{doneN}</div><div className="sub2">/{tasks.length}件</div></div>
         <div className="card kpi warn" style={{cursor:"pointer"}} onClick={()=>go("list")}><div className="lab">期限5日以内</div><div className="num mono">{soon}</div><div className="sub2">要対応</div></div>
         <div className="card kpi alert" style={{cursor:"pointer"}} onClick={()=>go("list")}><div className="lab">期限超過</div><div className="num mono">{over}</div><div className="sub2">すぐ判断が必要</div></div>
+      </div>
+
+      <div className="sec-h"><h2>🎯 目標達成評価</h2><span className="eval-note" style={{cursor:"pointer"}} onClick={()=>go("goals")}>目標設定へ →</span></div>
+      <div className="card" style={{padding:18}}>
+        <div style={{fontSize:11,color:"var(--sub)",fontWeight:700}}>対象月 {activeYM.replace("-","年")+"月"} の目標</div>
+        <div style={{fontSize:14,fontWeight:700,margin:"4px 0 13px"}}>{activeTarget||"（未設定）"}</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:"0 18px"}}>
+          <Metric label="達成率（完了/タスク）" v={activeStat.rate} color="#14a44d"/>
+          <Metric label="平均進捗" v={activeStat.prog} color="#4573d2"/>
+        </div>
+        <div style={{fontSize:11.5,color:"var(--mut)",marginTop:2}}>対象月のタスク {activeStat.n}件 ・ 完了 {activeStat.done}件</div>
+        <div style={{marginTop:12,borderTop:"1px solid var(--line)",paddingTop:12}}>
+          <div style={{fontSize:11.5,fontWeight:800,color:"var(--sub)",marginBottom:9}}>月別 目標と達成（タスクベース）</div>
+          {goalRows.length===0 && <div style={{fontSize:13,color:"var(--mut)"}}>目標が未設定です。目標設定タブで入力してください。</div>}
+          {goalRows.map(ym=>{const s=ymStat(ym);const isA=ym===activeYM;return (
+            <div key={ym} style={{display:"flex",alignItems:"center",gap:10,marginBottom:9}}>
+              <span style={{fontSize:12,fontWeight:800,width:50,color:isA?"var(--accent)":"var(--ink)"}}>{(+ym.slice(5))+"月"}</span>
+              <span style={{flex:1,minWidth:0,fontSize:12,color:"var(--sub)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{gMonths[ym].target}</span>
+              <div className="bar" style={{width:84,flexShrink:0}}><i style={{width:s.rate+"%",background:s.rate>=80?"#14a44d":s.rate>=40?"#f59e0b":"#e8384f"}}/></div>
+              <span className="mono" style={{fontSize:11.5,fontWeight:800,width:62,textAlign:"right",color:"var(--sub)",flexShrink:0}}>{s.done}/{s.n}·{s.rate}%</span>
+            </div>
+          );})}
+        </div>
       </div>
 
       <div className="sec-h"><h2>🗂 担当領域別 進捗</h2><span className="eval-note" style={{cursor:"pointer"}} onClick={()=>go("areas")}>領域ツリーを開く →</span></div>
@@ -1149,7 +1198,7 @@ const TABS=[
 ];
 
 function App(){
-  const [state,setState]=useState(()=>{const s=DB.load();return (s&&s.tasks&&s.tasks[0]&&s.tasks[0].area)?s:seed();}); // 旧データ(areaなし)はseedで作り直し
+  const [doc,setDoc]=useState(()=>normalizeState(DB.load())); // {store, stores:{naha,sapporo}}
   const [tab,setTab]=useState("list");
   const [editor,setEditor]=useState(null);
   const [menuOpen,setMenuOpen]=useState(false);
@@ -1163,35 +1212,35 @@ function App(){
       try{
         const row=await REMOTE.get();
         if(!alive)return;
-        if(row && row.data && row.data.tasks && row.data.tasks.length){
-          fromRemote.current=true; revRef.current=row.rev||0; cloudReady.current=true; setSync("cloud"); setState(row.data);
+        if(row && row.data && (row.data.stores || row.data.tasks)){
+          fromRemote.current=true; revRef.current=row.rev||0; cloudReady.current=true; setSync("cloud"); setDoc(normalizeState(row.data));
         }else{
-          await REMOTE.put(state,1); revRef.current=1; cloudReady.current=true; setSync("cloud");
+          await REMOTE.put(doc,1); revRef.current=1; cloudReady.current=true; setSync("cloud");
         }
       }catch(e){ cloudReady.current=false; setSync("off"); }
     })();
     return ()=>{alive=false;};
   },[]);
 
-  // 保存: ローカルは即時 / クラウドは変更をまとめて送信
+  // 保存: ローカルは即時 / クラウドは変更をまとめて送信（全店まとめて1ドキュメント）
   useEffect(()=>{
-    DB.save(state);
+    DB.save(doc);
     if(!cloudReady.current) return;
-    if(fromRemote.current){ fromRemote.current=false; return; } // 受信した内容はエコーバックしない
+    if(fromRemote.current){ fromRemote.current=false; return; }
     if(saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current=setTimeout(async()=>{
-      try{ const nr=revRef.current+1; await REMOTE.put(state,nr); revRef.current=nr; setSync("cloud"); }
+      try{ const nr=revRef.current+1; await REMOTE.put(doc,nr); revRef.current=nr; setSync("cloud"); }
       catch(e){ cloudReady.current=false; setSync("off"); }
     },900);
-  },[state]);
+  },[doc]);
 
   // 他端末の編集を反映（編集モーダル中は上書きしない）
   useEffect(()=>{
     const iv=setInterval(async()=>{
       if(!cloudReady.current||editor)return;
       try{ const row=await REMOTE.get();
-        if(row && (row.rev||0)>revRef.current && row.data && row.data.tasks){
-          fromRemote.current=true; revRef.current=row.rev; setState(row.data);
+        if(row && (row.rev||0)>revRef.current && row.data && (row.data.stores||row.data.tasks)){
+          fromRemote.current=true; revRef.current=row.rev; setDoc(normalizeState(row.data));
         }
       }catch(e){}
     },12000);
@@ -1200,6 +1249,12 @@ function App(){
 
   const syncTxt = sync==="cloud"?"☁ 全員と同期":sync==="off"?"📱 この端末のみ":"⏳ 接続中…";
   const syncColor = sync==="cloud"?"#14a44d":sync==="off"?"#9aa0a8":"#f59e0b";
+
+  const store=doc.store;
+  const storeName=(STORES.find(s=>s.k===store)||STORES[0]).name;
+  const state=doc.stores[store];                       // 選択中の店舗データ
+  const setState=fn=>setDoc(d=>{const cur=d.stores[d.store];const nx=typeof fn==="function"?fn(cur):fn;return {...d,stores:{...d.stores,[d.store]:nx}};});
+  const switchStore=k=>setDoc(d=>({...d,store:k}));
 
   const {tasks,goals,me}=state;
   const staff = (state.staff && state.staff.length)?state.staff:DEFAULT_STAFF;
@@ -1272,7 +1327,10 @@ function App(){
   return (
     <div className="app">
       <aside className="rail">
-        <div className="rail-brand"><div className="rail-logo">H</div><div><b>HDM ToDo</b><span>那覇空港店 業務管理</span></div></div>
+        <div className="rail-brand"><div className="rail-logo">H</div><div><b>HDM ToDo</b><span>{storeName} 業務管理</span></div></div>
+        <div className="store-switch" style={{margin:"10px 12px 2px"}}>
+          {STORES.map(s=><button key={s.k} className={store===s.k?"on":""} onClick={()=>switchStore(s.k)}>{s.name}</button>)}
+        </div>
         <nav className="rail-nav">
           {TABS.map(t=>(
             <button key={t.k} className={"rail-item"+(tab===t.k?" on":"")} onClick={()=>setTab(t.k)}>
@@ -1291,7 +1349,10 @@ function App(){
       <div className="main">
         <header className="topbar">
           <button className="iconbtn hide-desk" onClick={()=>setMenuOpen(true)}>☰</button>
-          <div><h1>{cur.label}</h1><div className="desc">{me} さんとして操作中 · <span style={{color:syncColor,fontWeight:700}}>{syncTxt}</span></div></div>
+          <div className="store-switch hide-desk">
+            {STORES.map(s=><button key={s.k} className={store===s.k?"on":""} onClick={()=>switchStore(s.k)}>{s.name}</button>)}
+          </div>
+          <div style={{minWidth:0}}><h1>{cur.label}</h1><div className="desc"><b style={{color:"var(--ink)"}}>{storeName}</b> · {me} · <span style={{color:syncColor,fontWeight:700}}>{syncTxt}</span></div></div>
           <div className="grow"/>
           <button className="btn pri" onClick={()=>onNew({})}>＋ タスク</button>
         </header>
