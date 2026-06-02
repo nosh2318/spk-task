@@ -275,19 +275,27 @@ extra_css = """
 .hdmtodo .tl-cell.work{background:#e9f2ff;box-shadow:inset 0 0 0 1px #d3e6ff}
 .hdmtodo .tl-cell.work.we{background:#e0ecfb}
 .hdmtodo .tl-cell.work.sel{background:#cbe0fb}
-/* ===== スマホ最適化 ===== */
+/* ===== スマホ最適化（タブ＝横スクロール1行 / 操作＝下の全幅行）===== */
 @media(max-width:759px){
-  .hdmtodo .todo-bar{gap:8px;padding-bottom:10px}
-  .hdmtodo .todo-tabs{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:4px;scrollbar-width:none}
+  .hdmtodo .todo-bar{flex-direction:column;align-items:stretch;gap:8px;padding-bottom:10px}
+  .hdmtodo .todo-tabs{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:4px;scrollbar-width:none;width:100%}
   .hdmtodo .todo-tabs::-webkit-scrollbar{display:none}
-  .hdmtodo .todo-tabbtn{font-size:12px;padding:7px 11px;flex-shrink:0}
-  .hdmtodo .todo-bar-r{width:100%;justify-content:space-between}
-  .hdmtodo .todo-bar-r .btn.pri{flex:1;justify-content:center}
-  .hdmtodo .kgrid{grid-template-columns:repeat(2,1fr)}
+  .hdmtodo .todo-tabbtn{font-size:12px;padding:8px 12px;flex-shrink:0}
+  .hdmtodo .todo-bar-r{width:100%;justify-content:space-between;flex-wrap:nowrap;gap:8px}
+  .hdmtodo .todo-bar-r select{flex:1;min-width:0}
+  .hdmtodo .todo-bar-r .btn.pri{flex-shrink:0;justify-content:center;white-space:nowrap}
+  .hdmtodo .todo-body{width:100%}
+  .hdmtodo .kgrid{grid-template-columns:repeat(2,1fr);gap:8px}
   .hdmtodo .eval-grid,.hdmtodo .board,.hdmtodo .goal-grid{grid-template-columns:1fr}
-  .hdmtodo .tl{min-width:560px}
+  .hdmtodo .card{border-radius:12px}
+  .hdmtodo .tl-wrap{margin:0 -2px}
+  .hdmtodo .tl{min-width:540px}
   .hdmtodo .sheet{max-height:94vh}
+  .hdmtodo .sec-h{margin:16px 2px 9px}
   .hdmtodo .sec-h h2{font-size:13px}
+  .hdmtodo .filters{gap:7px}
+  .hdmtodo .tcard .acts{gap:6px}
+  .hdmtodo .tcard .acts .btn{flex:1;justify-content:center}
 }
 """
 
