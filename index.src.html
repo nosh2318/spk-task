@@ -5022,11 +5022,11 @@ function SquareInvoiceWidget({preloadedInvoices}){
    月次スナップショット自動記録
    月が変わったら前月の確定値を自動保存
    ========================================== */
-async function saveMonthlySnapshot(store,ym,data,vehicles,fleet,kpiFlags,kpiTable){
+async function saveMonthlySnapshot(store,ym,data,vehicles,fleet,kpiFlags,kpiTable,force){
   if(!sb)return;
-  // 既に保存済みか確認
+  // 既に保存済みか確認（force=true のときは上書き＝解析タブA最新値で更新）
   const{data:existing}=await sb.from("monthly_snapshots").select("id").eq("store",store).eq("year_month",ym).maybeSingle();
-  if(existing)return;// 既存あり→スキップ
+  if(existing&&!force)return;// 既存あり&非強制→スキップ（auto-saveは従来通り）
   const[y,mo]=ym.split("-").map(Number);
   const dim=new Date(y,mo,0).getDate();
   const ms=new Date(y,mo-1,1),me=new Date(y,mo-1,dim);
@@ -9920,25 +9920,48 @@ function KpiTab({store,data,vehicles,fleet}){
   },[]);
   const savedYMs=new Set(snapshots.map(s=>s.year_month));
   const unsaved=saveableMonths.filter(ym=>!savedYMs.has(ym));
-  const doSave=async(ym)=>{
+  const doSave=async(ym,force)=>{
     if(!sb||!data||!vehicles)return;
     setSaving(true);setMsg("");
     try{
       const{data:rows}=await sb.from(kpiTable).select("*").eq("year_month",ym);
       const pf={};(rows||[]).forEach(r=>pf[r.vehicle_code]=r.active);
-      await saveMonthlySnapshot(store,ym,data,vehicles,fleet,pf,kpiTable);
+      await saveMonthlySnapshot(store,ym,data,vehicles,fleet,pf,kpiTable,force);
       await load();
-      setMsg(ym+" を保存しました");
+      setMsg(ym+(force?" を再記録（最新化）しました":" を保存しました"));
     }catch(e){setMsg("エラー: "+e.message);}
     setSaving(false);
   };
   const doSaveAll=async()=>{
-    for(const ym of unsaved)await doSave(ym);
+    for(const ym of unsaved)await doSave(ym,false);
+  };
+  // 全月を解析タブAの最新値で上書き再記録（凍結された古い値をリフレッシュ）
+  const doResyncAll=async()=>{
+    if(!confirm("全月（"+saveableMonths[0]+"〜"+saveableMonths[saveableMonths.length-1]+"）を解析タブAの最新値で再記録（上書き）します。よろしいですか？"))return;
+    setSaving(true);setMsg("");
+    for(const ym of saveableMonths){
+      try{
+        const{data:rows}=await sb.from(kpiTable).select("*").eq("year_month",ym);
+        const pf={};(rows||[]).forEach(r=>pf[r.vehicle_code]=r.active);
+        await saveMonthlySnapshot(store,ym,data,vehicles,fleet,pf,kpiTable,true);
+        setMsg(ym+" を再記録…");
+      }catch(e){setMsg("エラー("+ym+"): "+e.message);}
+    }
+    await load();
+    setMsg("全月を解析タブAの最新値で再記録しました（"+saveableMonths.length+"ヶ月）");
+    setSaving(false);
   };
   const fmtY=(n)=>n?n.toLocaleString():"0";
   return <div>
     <h2 style={{fontSize:18,fontWeight:900,marginBottom:12}}>📈 経営KPI — 月次スナップショット</h2>
     <p style={{fontSize:11,color:"#64748b",marginBottom:12}}>毎月の稼働率・売上・RevPACDを自動記録。蓄積データで季節パターンや経営トレンドを可視化します。</p>
+    {/* 全月リフレッシュ（解析タブAの最新値で上書き再記録） */}
+    <div style={{padding:12,borderRadius:10,background:"#eff6ff",border:"1px solid #bfdbfe",marginBottom:16}}>
+      <div style={{fontSize:12,fontWeight:700,color:"#1e3a8a",marginBottom:4}}>🔄 全月を最新化（解析タブAと一致させる）</div>
+      <div style={{fontSize:10.5,color:"#475569",marginBottom:8}}>過去に保存した月は当時の値で固定されています。増車・売上確定で数字が変わった場合、これを押すと全月を解析タブAのライブ値で上書き再記録します。</div>
+      <button onClick={doResyncAll} disabled={saving} style={{padding:"7px 16px",borderRadius:8,border:"none",background:saving?"#93c5fd":"#2563eb",color:"#fff",fontSize:11,fontWeight:700,cursor:saving?"default":"pointer"}}>{saving?"再記録中…":"📸 全月を再記録（最新化）"}</button>
+      {msg&&<span style={{fontSize:11,color:"#059669",fontWeight:700,marginLeft:10}}>{msg}</span>}
+    </div>
     {/* 未保存月の保存ボタン */}
     {unsaved.length>0&&<div style={{padding:12,borderRadius:10,background:"#fffbeb",border:"1px solid #fde68a",marginBottom:16}}>
       <div style={{fontSize:12,fontWeight:700,color:"#92400e",marginBottom:8}}>未記録の月があります</div>
