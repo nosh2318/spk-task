@@ -92,14 +92,18 @@ scoped_css = (".hdmtodo{font-family:-apple-system,BlinkMacSystemFont,'Hiragino S
               "color:var(--ink);font-size:15px;line-height:1.5;-webkit-text-size-adjust:100%}\n"
               ".hdmtodo *{box-sizing:border-box}\n" + scoped_css)
 
-# ---------- 2) JS verbatim 抽出（行範囲）----------
-def grab(a, b):  # inclusive 1-indexed
-    return "\n".join(lines[a-1:b])
+# ---------- 2) JS verbatim 抽出（マーカー基準・行ズレに強い）----------
+def between(start_marker, end_marker):
+    i = raw.index(start_marker)
+    j = raw.index(end_marker, i + len(start_marker))
+    return raw[i:j]
 
-constants = grab(319, 370)   # constants + hierarchy + date utils（APP_VERSION行も含む→後で除去）
+# constants + hierarchy + date utils（APP_VERSION行は除去）
+constants = between("/* ===== constants", "/* ===== persistence")
 constants = "\n".join(l for l in constants.split("\n") if "const APP_VERSION" not in l)
-seed      = grab(398, 449)   # seed()
-components = grab(476, 1234)  # Donut 〜 TaskEditor（Landing直前まで）
+seed       = between("/* ===== seed", "/* ===== multi-store")
+# Donut 〜 TaskEditor（Landing直前まで・全コンポーネント）
+components = between("/* ===== small components", "function Landing(")
 
 # ---------- 3) TodoTab ルート（新規）----------
 root = r"""
