@@ -90,6 +90,7 @@ function remWin(L){let s=0;for(let x=NOW;x<=L;x++)s+=feed(x,L);return s;}
 const Y=2026, NOW=new Date().getMonth()+1;
 let TGTM=NOW, BUD=(()=>{try{const v=localStorage.getItem('spk_act_budget');return (v!==null&&v!=='')?Number(v):null;}catch(e){return null;}})();
 let SNAP={}, AVGOTA=75, NVEH=17, FC={}, THISMO_HP={}; // FC[m]={confC,confS,fcstC,fcstS,nAct}
+let BR={};  // BR[m]={rate,num,den,rev} 当月予約率＝当月発生(同月booked)÷当月返却(return_date月)
 
 function dim(m){return new Date(Y,m,0).getDate();}
 function man(v){return '¥'+(Math.round(v/10000*10)/10)+'万';}
@@ -126,24 +127,31 @@ async function boot(){
     const mr=PRM.mr/100;
     const rsv=await sbGet('reservations?select=return_date,base_price,option_price,discount,price,status,ota,created_at,booked_at&return_date=gte.'+Y+'-01-01&return_date=lte.'+Y+'-12-31&limit=9000');
     const ms=Y+'-'+String(NOW).padStart(2,'0');
+    const den={},num={},brev={};
     (rsv||[]).forEach(r=>{
       const st=(r.status||'').trim();if(st&&/cancel|キャンセル/i.test(st))return;
-      const m=+((r.return_date||'').slice(5,7));if(!m)return;
+      const em=(r.return_date||'').slice(0,7), m=+em.slice(5,7);if(!m)return;
       const b=+r.base_price||0,o=+r.option_price||0,dc=+r.discount||0,p=+r.price||0;
       const rev=(b>0||o>0)?(b+o-dc):p;
       if(!FC[m])FC[m]={confC:0,confS:0};
       FC[m].confC++;FC[m].confS+=rev;
-      // 今月発生・HP/自社 → 着地月別
+      // 当月予約率: 当月返却(den) ／ 当月発生(num＝発生月==返却月、2026-03-29一括取込は除外)
       const cr=(r.booked_at||r.created_at||'').slice(0,7);
+      den[m]=(den[m]||0)+1;
+      if(cr===em && !(!r.booked_at && (r.created_at||'').slice(0,10)==='2026-03-29')){num[m]=(num[m]||0)+1;brev[m]=(brev[m]||0)+rev;}
+      // 今月発生・HP/自社 → 着地月別
       const ot=(r.ota||'').toUpperCase();
       if(cr===ms&&(ot==='HP'||ot==='SP'||ot==='オフィシャル'||ot===''))THISMO_HP[m]=(THISMO_HP[m]||0)+1;
     });
     for(let m=1;m<=12;m++){const f=FC[m]||(FC[m]={confC:0,confS:0});f.fcstC=mr<1?f.confC/(1-mr):f.confC;f.fcstS=mr<1?f.confS/(1-mr):f.confS;f.nAct=(SNAP[m]&&SNAP[m].active)||NVEH;}
+    for(let m=1;m<=12;m++){if(den[m])BR[m]={rate:Math.round((num[m]||0)/den[m]*100),num:num[m]||0,den:den[m],rev:brev[m]||0};}
   }catch(e){document.getElementById('stat').textContent='⚠️ reservations取得失敗: '+e.message;}
   render();
 }
 function step(d){let m=TGTM+d;if(m<1)m=1;if(m>12)m=12;TGTM=m;render();}
 function useRec(){BUD=null;try{localStorage.removeItem('spk_act_budget');}catch(e){}render();}
+function useLo(){const v=window._recLo||0;BUD=v;try{localStorage.setItem('spk_act_budget',v);}catch(e){}render();}
+function useHi(){const v=window._recHi||0;BUD=v;try{localStorage.setItem('spk_act_budget',v);}catch(e){}render();}
 function saveBud(){const bi=document.getElementById('budIn');if(bi){BUD=Math.max(0,+bi.value||0);try{localStorage.setItem('spk_act_budget',BUD);}catch(e){}}const m=document.getElementById('budMsg');if(m){m.textContent='✅ 保存しました';m.style.color='#16a34a';setTimeout(()=>{if(m)m.textContent='';},1800);}}
 function setPrm(k,v){PRM[k]=Number(v)||0;savePrm(PRM);for(let m=1;m<=12;m++){if(FC[m]){const mr=PRM.mr/100;FC[m].fcstC=mr<1?FC[m].confC/(1-mr):FC[m].confC;FC[m].fcstS=mr<1?FC[m].confS/(1-mr):FC[m].confS;}}render();}
 
@@ -201,15 +209,17 @@ function render(){
 
   // ===== 各月の目標への道のり ＋ 今月予算の広告着地 =====
   const months=[];for(let m=NOW;m<=Math.min(12,NOW+5);m++)months.push(m);
-  let recB=0,recHP=0; [NOW,NOW+1,NOW+2].filter(m=>m<=12).forEach(L=>{const mm=model(L);const sk=(FC[L]&&FC[L].confC)||0;const p=mm.tgtCnt>0?Math.min(1,sk/mm.tgtCnt):0;const zh=mm.empty*(1-p);if(mm.aov>CPA){recB+=zh*CPA;recHP+=zh;}}); recB=Math.round(recB);
-  const B=(BUD===null?recB:BUD), adCv=B/CPA;
+  let recHi=0,recHpHi=0,recLo=0,recHpLo=0; [NOW,NOW+1,NOW+2].filter(m=>m<=12).forEach(L=>{const mm=model(L);const sk=(FC[L]&&FC[L].confC)||0;const p=mm.tgtCnt>0?Math.min(1,sk/mm.tgtCnt):0;const zh=mm.empty*(1-p);if(mm.aov>CPA){recHi+=zh*CPA;recHpHi+=zh;const fed=feed(NOW,L)/100;recLo+=zh*fed*CPA;recHpLo+=zh*fed;}}); recHi=Math.round(recHi);recLo=Math.round(recLo);
+  const recMid=Math.round((recHi+recLo)/2), recHpMid=(recHpHi+recHpLo)/2;
+  window._recLo=recLo;window._recHi=recHi;window._recMid=recMid;
+  const B=(BUD===null?recMid:BUD), adCv=B/CPA;
   h+='<div class="card"><h2>📊 各月の目標への道のり（並び＝目標→速報→残り→内訳）</h2>';
   h+='<div class="binp"><span style="font-size:12px;font-weight:700;color:#64748b">今月予算 ¥</span>'
     +'<input id="budIn" type="number" value="'+B+'" step="50000">'
     +'<button onclick="saveBud()" style="padding:8px 14px;border:1px solid #2563eb;background:#2563eb;color:#fff;border-radius:8px;font-weight:800;cursor:pointer;font-size:13px">💾 保存</button>'
-    +'<button class="rec" onclick="useRec()">⚡推奨(キャッチアップ) '+man(recB)+'→'+Math.round(recHP)+'本</button>'
+    +'<button class="rec" onclick="useRec()">⚡推奨(中央) '+man(recMid)+'→'+Math.round(recHpMid)+'本</button>'
     +'<span style="font-size:17px;font-weight:900;color:#1d4ed8;background:#eff6ff;border:2px solid #bfdbfe;padding:6px 12px;border-radius:10px">今の予算 '+man(B)+' ＝ 広告 '+adCv.toFixed(0)+'本</span><span id="budMsg" style="font-size:12px;font-weight:700"></span></div>';
-  h+='<div class="note" style="margin:6px 0 0;background:#eff6ff;border:1px solid #bfdbfe;padding:8px 10px;border-radius:8px;color:#1e3a8a"><b>📈 広告は「積み立て(ランニング)」で成立する</b>：HP広告は出してから着地まで時間がかかる（FEED）。<b>1ヶ月の予算では1ヶ月分しか積み上がらない</b>。各月の💴広告で取る(残HP)を埋めるには、その月の手前から<b>毎月予算を積み立て続ける</b>必要がある。<br>・<b>必要HP投資＝残HP×限界CPA¥'+(CPA/10000)+'万</b>（その月を埋める総投資）。3ヶ月窓の合計＝<b>'+man(recHP*CPA)+'（'+Math.round(recHP)+'本）＝⚡推奨(キャッチアップ)</b>＝今まだ積み立てていない分を今から埋める額。<br>・継続できていれば毎月の積み立てで各月が埋まる。<b>直近になってから挽回はできない＝手前から走り続ける</b>。</div>';
+  h+='<div class="decomp" style="margin-top:6px"><span style="font-size:11px;color:#64748b;font-weight:800">推奨レンジ：</span><span class="chip g" style="cursor:pointer" onclick="useLo()" title="クリックで採用">下限(継続運用) '+man(recLo)+'→'+Math.round(recHpLo)+'本</span><span style="color:#94a3b8">〜</span><span class="chip e" style="cursor:pointer" onclick="useRec()" title="クリックで採用">中央(推奨) '+man(recMid)+'</span><span style="color:#94a3b8">〜</span><span class="chip b" style="cursor:pointer" onclick="useHi()" title="クリックで採用">上限(キャッチアップ) '+man(recHi)+'→'+Math.round(recHpHi)+'本</span><span style="font-size:10px;color:#94a3b8">（クリックで採用）</span></div>';
   let tAdR=0; months.forEach(L=>{tAdR+=adCv*feed(NOW,L)/100*model(L).aov;});
   const _mmN=model(NOW),_skN=(FC[NOW]&&FC[NOW].confC)||0,_pN=_mmN.tgtCnt>0?Math.min(1,_skN/_mmN.tgtCnt):0;
   const cmOrgC=ORGA*(1-_pN), cmOrgR=cmOrgC*_mmN.aov, cmTot=tAdR+cmOrgR;
@@ -217,13 +227,15 @@ function render(){
   h+='<div class="note" style="margin:4px 0 0;color:#92400e">💴広告＝今の予算'+man(B)+'の着地入金（FEEDで複数月へ分散）。🌱当月オーガ見込＝'+MN(NOW)+'にこれから入るオーガ（ORGA='+ORGA+'件/月の前提×残り、⚙で調整）。当月合計＝この2つ。先の月のオーガ・OTAは予算と無関係の別枠。</div>';
   h+='<div class="note" style="margin-top:0">対象＝'+months.map(MN).join('・')+'の'+months.length+'ヶ月。💴広告＝今月予算の1回効果／🌱オーガ＝毎月固定('+ORGA+'件/月)×'+months.length+'ヶ月。HPは事前決済＝着地月に入金。</div>';
   h+='<div style="overflow-x:auto"><table><thead><tr>'
-    +'<th>着地月</th><th>🎯目標</th><th>📋速報<br>(現合計)</th><th>残り</th><th>🌐OTA<br>見込</th><th>🌱オーガ<br>見込</th><th>💴広告で<br>取る(残HP)</th><th>必要HP投資<br>残HP×CPA</th><th>今月予算の<br>広告着地<br>件 ／ ¥</th><th>今月発生<br>【実績HP】</th>'
+    +'<th>着地月</th><th>🎯目標</th><th>📋速報<br>(現合計)</th><th>残り</th><th>🌐OTA<br>見込</th><th>🌱オーガ<br>見込</th><th>💴広告で<br>取る(残HP)</th><th>📅当月予約率<br>(直前で埋まる)</th><th>必要HP投資<br>残HP×CPA</th><th>今月予算の<br>広告着地<br>件 ／ ¥</th><th>今月発生<br>【実績HP】</th>'
     +'</tr></thead><tbody>';
   months.forEach(L=>{
     const mm=model(L);
     const sk=(FC[L]&&FC[L].confC)||0;
     const tg=mm.tgtCnt, p=tg>0?Math.min(1,sk/tg):0, zn=Math.max(0,tg-sk);
     const zo=mm.otaCnt*(1-p), zg=ORGA*(1-p), zh=mm.empty*(1-p);
+    const brOb=BR[L]||null, br=brOb?brOb.rate:null;
+    const lastMin=(br!=null)?zh*br/100:null;
     const land=adCv*feed(NOW,L)/100;
     const got=THISMO_HP[L]||0;
     const tag=L===NOW?' <span style="font-size:9px;color:#16a34a">当月も可</span>':'';
@@ -234,6 +246,7 @@ function render(){
       +'<td style="color:#0e7490">'+Math.round(zo)+'</td>'
       +'<td style="color:#166534">'+Math.round(zg)+'</td>'
       +'<td style="color:#b91c1c;font-weight:900">'+Math.round(zh)+'</td>'
+      +'<td style="color:#7c3aed;font-weight:800">'+(br!=null?br+'%<br><span style="font-size:9px;color:#94a3b8">発生'+brOb.num+'/返却'+brOb.den+'件<br>'+man(brOb.rev)+'・直前~'+Math.round(lastMin)+'本</span>':'<span style="color:#cbd5e1">–</span>')+'</td>'
       +'<td style="color:#1d4ed8;font-weight:800">'+man(zh*CPA)+'</td>'
       +'<td style="color:#0891b2;font-weight:800">+'+land.toFixed(1)+'件<br><span style="color:#047857;font-size:10px">'+man(land*mm.aov)+'</span></td>'
       +'<td style="color:#1e40af;font-weight:900">'+got+'件</td>'
@@ -241,6 +254,7 @@ function render(){
   });
   h+='</tbody></table></div>';
   h+='<div class="note">並び＝<b>目標→速報(現状)→残り→残りの内訳(🌐OTA/🌱オーガ/💴HP)</b>。<b>🌐OTA見込＋🌱オーガ見込＋💴広告で取る＝残り＝目標−速報</b>（辻褄一致）。<b>必要HP投資＝残HP×限界CPA</b>＝その月を埋めるのに積み立てるべき総額。<b>今月予算の広告着地(予測)</b>＝今月予算がその月にいくつ着地するか（1ヶ月分だけなので残HPより小さい＝だから毎月積み立てる）。<b>今月発生【実績HP】</b>＝'+MN(NOW)+'発生のHP予約が実際にその月へ入った件数（投資で実際に増えた分＝当月進捗）。<b>札幌は当月着地'+feed(NOW,NOW)+'%＝当月もまだ埋められる</b>。FEED・限界CPA・当月予約率は暫定値（⚙で編集）。</div>';
+  h+='<div class="note" style="margin:14px 0 0;background:#eff6ff;border:1px solid #bfdbfe;padding:8px 10px;border-radius:8px;color:#1e3a8a"><b>📖 解説｜広告は「積み立て(ランニング)」＝レンジで考える</b>：HP広告は着地まで時間がかかる（FEED）。今月の予算は当月＋翌月＋翌々月に効く。<br>・<b>下限(継続運用)＝'+man(recLo)+'</b>＝毎月積み立てている前提で<b>今月足すスライス</b>（FEEDの今月寄与）。<br>・<b>上限(キャッチアップ)＝'+man(recHi)+'（'+Math.round(recHpHi)+'本）</b>＝出遅れ前提で<b>3ヶ月窓の残HPを今から全部埋める</b>額（＝最大値・必須額ではない）。<br>・<b>⚡推奨＝中央 '+man(recMid)+'</b>。継続できていれば下限寄り／出遅れなら上限寄り。<b>当月予約率（直前予約）で各月の一部は当月に埋まる＝全額を前倒しする必要はない</b>（札幌は当月予約率が高い＝直前で埋まる割合が大きい）。</div>';
   h+='</div>';
 
   root.innerHTML=h;
