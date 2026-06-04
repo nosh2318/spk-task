@@ -28,9 +28,19 @@ var OTA_SENDERS = {
   jalan:     'info@jalan-rentacar.jalan.net',
   rakuten:   'travel@mail.travel.rakuten.co.jp',
   skyticket: 'rentacar@skyticket.com',
-  airtrip:   'info@rentacar-mail.airtrip.jp',
+  airtrip:   ['rentacar-mail.airtrip.jp', 'skygate.co.jp'],  // 標準エアトリ＋エアトリプラスDP(Skygate運営 info@skygate.co.jp)
   official:  'noreply@rent-handyman.jp'
 };
+
+// OTA_SENDERS は文字列 or 配列。全送信元を平坦化して返す（Gmail検索/送信元判定で共用）
+function otaSenderList_() {
+  var out = [];
+  Object.keys(OTA_SENDERS).forEach(function(k) {
+    var v = OTA_SENDERS[k];
+    if (Array.isArray(v)) { out = out.concat(v); } else { out.push(v); }
+  });
+  return out;
+}
 
 // --- OTA reservation subject patterns ---
 var OTA_RESERVE_SUBJECTS = {
@@ -43,6 +53,28 @@ var OTA_RESERVE_SUBJECTS = {
 
 // --- Cancellation keywords in subject ---
 var CANCEL_KEYWORDS = ['予約キャンセル受付', 'キャンセル'];
+
+// --- 予約メール判定（再発防止・2026-06-05）---
+// 件名が仕様変更されても取りこぼさない: 「件名一致」OR「本文が予約形式」なら予約として受理。
+// 全OTA共通。エアトリプラス(DP)等、件名が標準と違う派生フォーマットを常に拾うための堅牢化。
+// 本文に 予約番号 + 貸出 + 料金 の3点が揃ったときだけ受理（marketing/決済通知の誤受理を防ぐ）。
+// キャンセルは本関数より前に処理済みのためここには来ない。
+function isReservationEmail_(ota, subject, body) {
+  var expected = OTA_RESERVE_SUBJECTS[ota] || '';
+  var nsSub = (subject || '').replace(/[\s　]+/g, '');
+  var nsExp = expected.replace(/[\s　]+/g, '');
+  if (nsExp && nsSub.indexOf(nsExp) !== -1) return true;  // 件名一致＝従来通り
+  // 件名不一致 → 本文の予約3点で判定
+  var b = body || '';
+  var hasResvNo = /予約番号\s*[：:]/.test(b) || /予約ID\s*[：:]/.test(b);
+  var hasLend   = /(貸出日時|貸出|ピックアップ)\s*[：:]/.test(b);
+  var hasPrice  = /(基本料金|合計金額|料金|レンタカー料金)\s*[：:]/.test(b);
+  if (hasResvNo && hasLend && hasPrice) {
+    Logger.log('[ReserveFallback] ' + ota + ' 件名不一致だが本文が予約形式→受理: ' + subject);
+    return true;
+  }
+  return false;
+}
 
 // ============================================================
 // Setup & Trigger
@@ -76,7 +108,7 @@ function processNewEmails() {
 
   try {
     var label = getOrCreateLabel_(LABEL_NAME);
-    var fromClause = Object.values(OTA_SENDERS).map(function(s) { return 'from:' + s; }).join(' OR ');
+    var fromClause = otaSenderList_().map(function(s) { return 'from:' + s; }).join(' OR ');
     // ★ 2026-04-30: 2d → 7d に拡張（HGU20355 / NUI44639 取り込み失敗障害対策）
     // GASダウン・ScriptProperties初期化等で2日以上空いた場合、newer_than:2d だと永久スキップになる
     var query = '(' + fromClause + ') newer_than:7d';
@@ -140,7 +172,7 @@ function processNewEmails() {
 }
 
 function testProcessLatest() {
-  var fromClause = Object.values(OTA_SENDERS).map(function(s) { return 'from:' + s; }).join(' OR ');
+  var fromClause = otaSenderList_().map(function(s) { return 'from:' + s; }).join(' OR ');
   var query = '(' + fromClause + ') newer_than:7d';
   var threads = GmailApp.search(query, 0, 10);
   if (threads.length === 0) {
@@ -167,7 +199,7 @@ function testProcessLatest() {
 // 関数を実行する前に TARGET_IDS を編集すること。
 // ============================================================
 function backfillSpecificReservations() {
-  var TARGET_IDS = ['HGU20355', 'NUI44639'];
+  var TARGET_IDS = ['C260600231'];   // 2026-06-05 エアトリプラスDP取込漏れ復旧（処理済み記録を無視して再取込）
   var SEARCH_DAYS = 30;  // 30日まで遡る
 
   var processedIds = getProcessedMsgIds_();
@@ -260,10 +292,12 @@ function processMessage_(message, dryRun) {
   var ota = null;
   var otaKeys = Object.keys(OTA_SENDERS);
   for (var i = 0; i < otaKeys.length; i++) {
-    if (from.indexOf(OTA_SENDERS[otaKeys[i]]) !== -1) {
-      ota = otaKeys[i];
-      break;
+    var senders = OTA_SENDERS[otaKeys[i]];
+    if (!Array.isArray(senders)) senders = [senders];
+    for (var si = 0; si < senders.length; si++) {
+      if (from.indexOf(senders[si]) !== -1) { ota = otaKeys[i]; break; }
     }
+    if (ota) break;
   }
   if (!ota) return null;
 
@@ -287,15 +321,10 @@ function processMessage_(message, dryRun) {
     return cancelId ? {type:'cancel', id:cancelId, ota:otaCode} : null;
   }
 
-  var normalizedSubject = subject.replace(/[\s\u3000]+/g, ' ').trim();
-  var normalizedExpected = OTA_RESERVE_SUBJECTS[ota].replace(/[\s\u3000]+/g, ' ').trim();
-  if (normalizedSubject.indexOf(normalizedExpected) === -1) {
-    var noSpaceSubject = subject.replace(/[\s\u3000]+/g, '');
-    var noSpaceExpected = OTA_RESERVE_SUBJECTS[ota].replace(/[\s\u3000]+/g, '');
-    if (noSpaceSubject.indexOf(noSpaceExpected) === -1) {
-      Logger.log('Skipping non-reservation email (' + ota + '): ' + subject);
-      return null;
-    }
+  // \u4ef6\u540d\u4e00\u81f4 OR \u672c\u6587\u304c\u4e88\u7d04\u5f62\u5f0f\u306a\u3089\u53d7\u7406\uff08\u518d\u767a\u9632\u6b62: \u4ef6\u540d\u4ed5\u69d8\u5909\u66f4\u30fb\u30a8\u30a2\u30c8\u30ea\u30d7\u30e9\u30b9DP\u7b49\u3092\u53d6\u308a\u3053\u307c\u3055\u306a\u3044\uff09
+  if (!isReservationEmail_(ota, subject, body)) {
+    Logger.log('Skipping non-reservation email (' + ota + '): ' + subject);
+    return null;
   }
 
   var reservation = null;
@@ -516,8 +545,18 @@ function extractVehicleClass_(rawClass) {
   if (m3) return m3[1].toUpperCase();
   var m4 = rawClass.match(/[_]([ABCSFH])$/i);
   if (m4) return m4[1].toUpperCase();
+  // DP系: _C☆ / _C★ / _C+空白 等（クラス letter の後が _ でも末尾でもない区切り）
+  var m5 = rawClass.match(/[_]([ABCSFH])(?![A-Za-z0-9])/i);
+  if (m5) return m5[1].toUpperCase();
   if (/B2/i.test(rawClass)) return 'B2';
   if (/A2/i.test(rawClass)) return 'A2';
+  // プラン名キーワードからの最終フォールバック（_X マーカーが無い/取れない場合）。順序重要: コンパクトSUVを先に
+  if (/コンパクトSUV/i.test(rawClass)) return 'C';
+  if (/(アルファード|ヴェルファイア|高級ミニバン)/.test(rawClass)) return 'A';
+  if (/(ノア|デリカ|ミニバン)/.test(rawClass)) return 'B';
+  if (/(ハリアー|CX[-‐]?5|SUV)/i.test(rawClass)) return 'S';
+  if (/(ルーミー|ソリオ|コンパクト)/.test(rawClass)) return 'F';
+  if (/(カローラ|アクセラ)/.test(rawClass)) return 'H';
   return '';
 }
 
@@ -600,7 +639,8 @@ function parseDateTime_(str) {
       time: padZero_(m[4]) + ':' + m[5]
     };
   }
-  m = str.match(/(\d{4})-(\d{1,2})-(\d{1,2}).*?(\d{1,2}):(\d{2})/);
+  // ハイフン/スラッシュ両対応。曜日 (土) 等は .*? で飛ばす（エアトリプラスDP: 2026/06/27 (土) 15:40）
+  m = str.match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2}).*?(\d{1,2}):(\d{2})/);
   if (m) {
     return {
       date: m[1] + '-' + padZero_(m[2]) + '-' + padZero_(m[3]),

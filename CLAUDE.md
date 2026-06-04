@@ -1,5 +1,42 @@
 # SPK業務管理APP（札幌店）
 
+## 📧 2026-06-05 エアトリプラス(DP)予約 取込漏れ 修正＋再発防止（gas-email-import-v2.gs）
+
+### 症状
+札幌のエアトリ予約 C260600231（ワタナベ シゲヨシ・コンパクトSUVプラン_C・6/27-30）がメール自動取込されず。本文は「エアトリプラス（DP）予約システム」＝標準エアトリと別フォーマット。
+
+### 真因（送信元が別会社ドメイン＝Skygate）
+実ログで判明：**送信元 `info@skygate.co.jp`／件名 `【予約確定】エアトリプラス（DP）でレンタカー予約を受け付けました。`**。
+- 🔑 **エアトリプラス（DP）は Skygate社運営で、airtrip.jpドメインですら無い**（`info@skygate.co.jp`）。
+- `processMessage_` の2ゲートで弾かれていた：
+  1. **送信元ゲート**：`OTA_SENDERS.airtrip='info@rentacar-mail.airtrip.jp'` 完全一致 → skygate.co.jp は不一致 → ota=null → silent skip（"skipped by router"）。
+  2. **件名ゲート**：`'【予約確定】エアトリレンタカー'` 不含 → 「非予約」skip（DPは件名違い）。
+- ※`parseAirtrip_`は**DP本文を完璧に読める**（予約番号/予約者名/貸出/プラン名_C/基本料金/補償オプション/到着便 全ラベル一致）。問題はゲートだけ。
+
+### 修正（4段の詰まりを全部つぶす・「常に」取りこぼさない設計）
+DP予約は**4箇所**で連続して詰まっていた（1つ直すと次が露呈）：
+1. **送信元を配列化＋skygate追加**：`airtrip:['rentacar-mail.airtrip.jp','skygate.co.jp']`。新ヘルパー `otaSenderList_()` で平坦化し、Gmail検索 `from:` 句（2箇所）と送信元判定の両方で共用。送信元判定は `Array.isArray` 対応に。→ これで `info@skygate.co.jp` をエアトリ(O)と認識。
+2. **本文フォールバック判定 `isReservationEmail_(ota,subject,body)` 新設**（CANCEL_KEYWORDS直後）：件名一致 **OR** 本文に「予約番号＋貸出＋料金」3点が揃えば受理。**全OTA共通**。`[ReserveFallback]`ログで新件名を学習。3点必須でmarketing/決済通知は誤受理しない。キャンセルは前段で処理済み。件名ゲートを `if(!isReservationEmail_(...)) skip` に差し替え。
+3. **クラス抽出 `extractVehicleClass_` を `_C☆` 形式＋プラン名キーワード対応**：プラン名「コンパクトSUVプラン_C☆」の `_C` の後が `☆`（`_`でも末尾でもない）で既存パターンに当たらず空→未配車だった。`/[_]([ABCSFH])(?![A-Za-z0-9])/i` 追加＋キーワード（コンパクトSUV→C 等）フォールバック。
+4. **日付パース `parseDateTime_` をスラッシュ＋曜日対応**：DP日付「2026/06/27 (土) 15:40」を解釈できず lend_date/return_date が空→配車表に出ず「登録されてない」ように見えた（実はDBには入っていた）。2つ目のパターンの区切りを `-`→`[-\/]` に拡張（`.*?`で`(土)`を飛ばす）。これが「予約登録すらできてない」の正体。
+
+### 復旧手順（実施済・2026-06-05）
+1. 壊れた残骸（日付空でinsert済みの行）を Supabase REST(curl) で DELETE（fleet/tasks は無し＝クリーンだった。`reservations?id=eq.C260600231`）。**curlでの直DB確認・削除手順**：`/auth/v1/token?grant_type=password`(oshita@g-lines.jp/nosh2318)でtoken取得→`/rest/v1/...`をapikey+Bearerで叩く。⚠️SPK reservationsの予約番号カラムは`id`、氏名は`name`（`resv_no`/`user_name`は存在しない）。
+2. `backfillSpecificReservations()` TARGET_IDS=['C260600231'] で再取込（予約番号Gmail全文検索→processMessage_直通＝処理済み記録を無視）。→ `class=C / 2026-06-27~30 / Assigned RKY(ロッキー299)` で success。
+
+### Lesson（再発防止）追加
+4. **「予約登録できない」の切り分けは"DBを直接見る"**。今回 reservations には入っていた（id=C260600231/name有）が lend_date/return_date/vehicle が空＝**配車表に出ないだけ**だった。APP画面だけ見て「未登録」と判断しない。curlで `id=eq.XXX&select=*` を見れば一発。
+5. **OTA派生商品(DP)はパーサーの全段（送信元・件名・クラス・日付）が別仕様になりうる**。1段直すと次段が露呈する。日付/クラスの抽出は「区切り文字・曜日・装飾(☆★)」に強い正規表現にしておく。
+
+### デプロイ（オーナー作業）
+1. GASエディタ「札幌予約メール自動配車」→`gas-email-import-v2.gs`をCmd+A→Cmd+V→Cmd+S（トリガー型・Web App再デプロイ不要）。
+2. `processNewEmails`手動実行→C260600231ネイティブ取込（旧フィルタで未取得＝PROCESSED未登録→新規取込）。出なければresv_noで再処理。**Slack二重登録は避ける**。
+
+### Lesson（再発防止）
+1. **OTA取込は「送信元＝ドメイン一致」「件名一致 OR 本文判定」の二段構えにする**。特定アドレス・件名への完全一致依存は、OTAが派生商品(DP等)/送信元/件名を変えた瞬間にsilent skip（skyticket送信元変更2026-04-06と同型）。
+2. **silent skip（ota=null/非予約skip）は気づけない＝取りこぼしの温床**。本文フォールバックで「拾って警告ログ」に倒す。
+3. パーサーは本文ラベル依存＝同フォーマットなら別商品でも読める。**ゲートを緩める方向が安全**（パーサーは厳格でよい）。
+
 ## 💰 2026-06-01 アルバイト給与「月給/時給 複合」対応（index.src.html / v4.7.185→v4.7.186）
 
 ### 要望（オーナー）
