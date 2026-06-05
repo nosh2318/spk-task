@@ -72,6 +72,11 @@
   </div>
 
   <div class="card">
+    <div style="font-size:13px;font-weight:800;margin-bottom:4px">📊 月別／年間 広告サマリー（実数ベース）</div>
+    <div class="note" style="margin:0 0 8px">予約数・予約単価・オーガ・合計は<b>DB実数（自社HP予約・返却月）</b>。広告費はレポート実数（札幌分）。<b>CPA＝当月広告費÷合計HP件数</b>。<b>粗利/件＝予約単価−CPA</b>。</div>
+    <div style="overflow-x:auto"><table style="font-size:11px"><thead><tr><th>月</th><th>広告費</th><th>合計HP<br>(件数)</th><th>予約単価</th><th>CPA</th><th>粗利/件</th><th>広告由来</th><th>オーガ</th></tr></thead><tbody id="adSumTbl"></tbody></table></div>
+  </div>
+  <div class="card">
     <div style="font-size:13px;font-weight:800;margin-bottom:10px">📈 月別オーガニック（実HP − 広告由来）</div>
     <table><thead><tr><th>月</th><th>実HP</th><th>前月広告費</th><th>広告由来</th><th>オーガ</th><th>推移</th></tr></thead><tbody id="tbl"></tbody></table>
     <div class="note" id="adWarn"></div>
@@ -109,16 +114,43 @@ function prev(ym){let[y,m]=ym.split('-').map(Number);m--;if(m===0){y--;m=12;}ret
 const yen=n=>'¥'+Math.round(n).toLocaleString();
 const START='2026-01';
 
+// 月別/年間 広告サマリー（CPA・件数・予約単価・粗利・オーガ・合計）
+function renderAdSummary(hp,hpRev,ad){
+  const tb=document.getElementById('adSumTbl');if(!tb)return;
+  const months=Object.keys(hp).filter(k=>k>='2026-01').sort();
+  let tCnt=0,tRev=0,tAd=0,tAdc=0,h='';
+  const _y=n=>'¥'+Math.round(n).toLocaleString();
+  months.forEach(k=>{
+    const cnt=hp[k]||0, rev=hpRev[k]||0, sp=ad[k]||0;
+    const unit=cnt>0?Math.round(rev/cnt):0;
+    const cpa=cnt>0&&sp>0?Math.round(sp/cnt):0;
+    const adc=sp>0?Math.round(sp/MCPA):0;
+    const org=Math.max(0,cnt-adc);
+    const gp=unit-cpa;
+    tCnt+=cnt;tRev+=rev;tAd+=sp;tAdc+=adc;
+    h+='<tr><td><b>'+k.slice(2)+'</b></td><td style="text-align:right;color:#64748b">'+(sp>0?_y(sp):'—')+'</td>'
+      +'<td style="text-align:right;font-weight:800">'+cnt+'</td>'
+      +'<td style="text-align:right;color:#9a3412">'+(unit?_y(unit):'—')+'</td>'
+      +'<td style="text-align:right;color:#0891b2">'+(cpa?_y(cpa):'—')+'</td>'
+      +'<td style="text-align:right;font-weight:800;color:'+(gp>=0?'#16a34a':'#dc2626')+'">'+(cpa?_y(gp):'—')+'</td>'
+      +'<td style="text-align:right;color:#0891b2">'+(sp>0?adc:'—')+'</td>'
+      +'<td style="text-align:right;font-weight:900;color:#16a34a">'+org+'</td></tr>';
+  });
+  const yUnit=tCnt>0?Math.round(tRev/tCnt):0, yCpa=tCnt>0&&tAd>0?Math.round(tAd/tCnt):0, yOrg=Math.max(0,tCnt-tAdc);
+  h+='<tr style="background:#faf5ff;border-top:2px solid #7c3aed;font-weight:900"><td>年計</td><td style="text-align:right">'+_y(tAd)+'</td><td style="text-align:right">'+tCnt+'</td><td style="text-align:right;color:#9a3412">'+_y(yUnit)+'</td><td style="text-align:right;color:#0891b2">'+_y(yCpa)+'</td><td style="text-align:right;color:'+((yUnit-yCpa)>=0?'#16a34a':'#dc2626')+'">'+_y(yUnit-yCpa)+'</td><td style="text-align:right;color:#0891b2">'+tAdc+'</td><td style="text-align:right;color:#16a34a">'+yOrg+'</td></tr>';
+  tb.innerHTML=h;
+}
 async function run(){
   const st=document.getElementById('status');st.textContent='取得中…';
   document.getElementById('cpaLock').textContent=yen(MCPA);
-  let hp={};
+  let hp={}, hpRev={};
   try{
-    const rows=await sbGet('reservations?select=return_date,status&ota=eq.HP&limit=5000');
-    rows.forEach(r=>{if((r.status||'')==='cancelled')return;const k=(r.return_date||'').slice(0,7);if(k)hp[k]=(hp[k]||0)+1;});
+    const rows=await sbGet('reservations?select=return_date,status,base_price,option_price,discount,price&ota=eq.HP&limit=5000');
+    rows.forEach(r=>{if((r.status||'')==='cancelled')return;const k=(r.return_date||'').slice(0,7);if(!k)return;hp[k]=(hp[k]||0)+1;const b=+r.base_price||0,o=+r.option_price||0,dc=+r.discount||0,p=+r.price||0;hpRev[k]=(hpRev[k]||0)+((b>0||o>0)?(b+o-dc):p);});
     st.textContent='✅ 実HP LIVE取得OK '+(getTok()?'(認証)':'(anon)');
   }catch(e){st.textContent='⚠️ 取得失敗:'+e.message;}
   const ad=loadAd();
+  renderAdSummary(hp,hpRev,ad);
   // 対象月＝START以降の実HPがある月（広告費が無い月は広告由来0＝オーガ=実HP）
   const months=Object.keys(hp).filter(k=>k>=START).sort();
   const tb=document.getElementById('tbl');tb.innerHTML='';
