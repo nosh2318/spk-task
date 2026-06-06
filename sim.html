@@ -148,6 +148,7 @@ td.vcost{background:#fff7ed;font-weight:800;color:#9a3412}
 <div><label>OTA手数料 %</label><input id="g_ota" value="12" oninput="calc()"></div>
 <div><label>洗車 単価 円/予約</label><input id="g_wash" value="0" oninput="calc()"></div>
 <div><label>洗車 合計（自動＝単価×予約数）</label><input id="g_washtot" class="ro" readonly></div>
+<div><label>預かり取分%（販売手数料率）</label><input id="g_partnershare" value="70" oninput="calc()"></div>
 </div></div>
 
 <div class="grp"><div class="gh">🎯 設定</div>
@@ -179,6 +180,7 @@ td.vcost{background:#fff7ed;font-weight:800;color:#9a3412}
 <div class="row"><span class="lbl">🏢 賃料・広告・その他</span><span class="num" id="r_rentad">¥0</span></div>
 <div class="row"><span class="lbl">📈 OTA手数料</span><span class="num" id="r_ota">¥0</span></div>
 <div class="row"><span class="lbl">🧽 変動費(洗車)</span><span class="num" id="r_var">¥0</span></div>
+<div class="row"><span class="lbl">🤝 販売手数料(預かり)</span><span class="num" id="r_partnerfee">¥0</span></div>
 <div class="row"><span class="lbl"><b>支出計</b></span><span class="num" id="r_exp" style="color:#dc2626">¥0</span></div>
 </div>
 </div>
@@ -261,7 +263,7 @@ function addRow(){document.getElementById('rows').insertAdjacentHTML('beforeend'
 function loadDefault(){try{localStorage.removeItem('sim_state_v1');}catch(e){}render(DEF);
  const g={g_shakenpr:120000,g_tenkenpr:48000,g_inspr:7700,g_parkprice:8000,g_parkn:23,
   g_lease_F:0,g_lease_A:100000,g_lease_B:75000,g_lease_C:50000,g_lease_S:50000,g_lease_H:50000,
-  g_salary:492000,g_rent:0,g_other:180000,g_ota:12,g_wash:0,g_target:1000000,g_repay:377425};
+  g_salary:492000,g_rent:0,g_other:180000,g_ota:12,g_wash:0,g_partnershare:70,g_target:1000000,g_repay:377425};
  for(const k in g)document.getElementById(k).value=g[k];calc();}
 let LAST='';
 function calc(){
@@ -269,9 +271,9 @@ function calc(){
  const shakenM=num('g_shakenpr')/12, tenkenM=num('g_tenkenpr')/12, hokenM=num('g_inspr');
  document.getElementById('g_shakenm').value=Math.round(shakenM).toLocaleString();
  document.getElementById('g_tenkenm').value=Math.round(tenkenM).toLocaleString();
- const ota=num('g_ota')/100, wash=num('g_wash');
+ const ota=num('g_ota')/100, wash=num('g_wash'), pshare=num('g_partnershare')/100;
  const rows=[...document.querySelectorAll('#rows tr')];
- let gross=0,book=0,vfix=0,units=0,rdays=0,lt=0,st=0,tt=0,ht=0,ct=0;
+ let gross=0,book=0,vfix=0,units=0,rdays=0,lt=0,st=0,tt=0,ht=0,ct=0,pgross=0;
  rows.forEach(tr=>{
    const c=tr.querySelectorAll('input,select');
    const cls=c[0].value, n=parseFloat(c[1].value)||0, hold=c[2].value, u=(parseFloat(c[3].value)||0)/100,
@@ -281,11 +283,12 @@ function calc(){
    const ls=(hold==='lease')?leaseOf(cls):0;  // 共通のクラス別リース単価を反映（リース持ち方のみ）
    const vc=ls+sk+tk+hk;                 // 車両原価/台
    const revPer=adr*u*30, bookPer=u*30/nt;
-   const contribPer=revPer-vc; // 貢献/台＝台売上−車両原価/台（変動費・固定費・返済は純利益で控除）
+   const pfee=own?0:revPer*pshare; // 預かりは売上×取分%を協力会社に支払う
+   const contribPer=revPer-vc-pfee; // 貢献/台＝台売上−車両原価/台−販売手数料(預かり)（OTA等変動費・固定費・返済は純利益で控除）
    const au=ACTUAL_UTIL[cls];tr.querySelector('.actutil').textContent=(au!=null?au+'%':'—');
    tr.querySelector('.actbook').textContent=(au!=null?Math.round((au/100)*30/nt*n)+'件':'—');
    const arv=ACTUAL_REVPV[cls];tr.querySelector('.actrev').textContent=(arv!=null?yen(arv):'—');
-   const actc=(arv!=null)?arv-vc:null;const _ac=tr.querySelector('.actcontrib');if(actc!=null){_ac.textContent=yen(actc);_ac.style.color=actc>=0?'#047857':'#dc2626';}else{_ac.textContent='—';_ac.style.color='#cbd5e1';}
+   const actc=(arv!=null)?arv-vc-(own?0:arv*pshare):null;const _ac=tr.querySelector('.actcontrib');if(actc!=null){_ac.textContent=yen(actc);_ac.style.color=actc>=0?'#047857':'#dc2626';}else{_ac.textContent='—';_ac.style.color='#cbd5e1';}
    const _g=gradeOf(actc);const _ge=tr.querySelector('.grade');if(_g){_ge.textContent=_g[0];_ge.style.color=_g[1];}else{_ge.textContent='—';_ge.style.color='#cbd5e1';}
    tr.querySelector('.rbook').textContent=Math.round(bookPer*n)+'件';
    tr.querySelector('.rper').textContent=yen(revPer);
@@ -296,7 +299,7 @@ function calc(){
    tr.querySelector('.hoken').textContent=yen(hk);
    tr.querySelector('.vc').textContent=yen(vc);
    const cc=tr.querySelector('.contrib');cc.textContent=yen(contribPer);cc.style.color=contribPer>=0?'#047857':'#dc2626';
-   gross+=revPer*n; book+=bookPer*n; units+=n; rdays+=u*30*n; vfix+=vc*n;
+   gross+=revPer*n; book+=bookPer*n; units+=n; rdays+=u*30*n; vfix+=vc*n; if(hold==='partner')pgross+=revPer*n;
    lt+=ls*n; st+=sk*n; tt+=tk*n; ht+=hk*n; ct+=contribPer*n;
  });
  // 合計行（下段）
@@ -312,7 +315,8 @@ function calc(){
  document.getElementById('g_washtot').value=Math.round(washTot).toLocaleString();
  const ofix=num('g_salary')+num('g_rent')+num('g_other')+parkTot;
  const otaFee=gross*ota, varc=book*wash;
- const exp=vfix+ofix+otaFee+varc;
+ const partnerFee=pgross*(num('g_partnershare')/100);
+ const exp=vfix+ofix+otaFee+varc+partnerFee;
  const net=gross-exp;
  const target=num('g_target');
  const set=(id,v)=>document.getElementById(id).textContent=v;
@@ -320,7 +324,7 @@ function calc(){
  set('k_book',Math.round(book)); set('k_arpu',book?yen(gross/book):'¥0');
  set('r_gross',yen(gross)); set('r_book',Math.round(book)+'件');
  set('r_lease',yen(lt)); set('r_maint',yen(vfix-lt)); set('r_salary',yen(num('g_salary'))); set('r_park',yen(parkTot));
- set('r_rentad',yen(num('g_rent')+num('g_other'))); set('r_ota',yen(otaFee)); set('r_var',yen(varc)); set('r_exp',yen(exp));
+ set('r_rentad',yen(num('g_rent')+num('g_other'))); set('r_ota',yen(otaFee)); set('r_var',yen(varc)); set('r_partnerfee',yen(partnerFee)); set('r_exp',yen(exp));
  // 科目グループ小計（共通の見出しに表示）
  const ghv=document.getElementById('gh_veh'); if(ghv)ghv.textContent='1台/月 ¥'+Math.round(shakenM+tenkenM+hokenM).toLocaleString()+'（車検+点検+保険）';
  const ghf=document.getElementById('gh_fix'); if(ghf)ghf.textContent='小計 ¥'+Math.round(num('g_salary')+num('g_rent')+num('g_other')).toLocaleString();
@@ -333,10 +337,10 @@ function calc(){
    ? `🎯 目標 ${yen(target)} 達成（+${yen(net-target)}）`
    : `🎯 目標 ${yen(target)} まで あと ${yen(gp)}／月（必要グロス ≈ ${yen(needGross)}・現在 ${yen(gross)}）`;
  document.getElementById('r_year').textContent=`年間換算：グロス売上 ${yen(gross*12)} ／ 純利益 ${yen(net*12)}（返済 ${yen(num('g_repay')*12)} はPL外）`;
- LAST=`札幌収支シミュ(月)\n保有${units}台 稼働${units?Math.round(rdays/(units*30)*100):0}% 予約${Math.round(book)}件 客単価${book?yen(gross/book):0}\nグロス売上${yen(gross)}\n支出${yen(exp)}(車両原価${yen(vfix)}/共通${yen(ofix)}/手数料${yen(otaFee)}/変動${yen(varc)})\n純利益(月)${yen(net)} 年間${yen(net*12)}`;
+ LAST=`札幌収支シミュ(月)\n保有${units}台 稼働${units?Math.round(rdays/(units*30)*100):0}% 予約${Math.round(book)}件 客単価${book?yen(gross/book):0}\nグロス売上${yen(gross)}\n支出${yen(exp)}(車両原価${yen(vfix)}/共通${yen(ofix)}/手数料${yen(otaFee)}/変動${yen(varc)}/預かり手数料${yen(partnerFee)})\n純利益(月)${yen(net)} 年間${yen(net*12)}`;
  saveState();
 }
-const G_KEYS=['g_shakenpr','g_tenkenpr','g_inspr','g_parkprice','g_parkn','g_lease_F','g_lease_A','g_lease_B','g_lease_C','g_lease_S','g_lease_H','g_salary','g_rent','g_other','g_ota','g_wash','g_target','g_repay','cap'];
+const G_KEYS=['g_shakenpr','g_tenkenpr','g_inspr','g_parkprice','g_parkn','g_lease_F','g_lease_A','g_lease_B','g_lease_C','g_lease_S','g_lease_H','g_salary','g_rent','g_other','g_ota','g_wash','g_partnershare','g_target','g_repay','cap'];
 function saveState(){
  try{
   const rows=[...document.querySelectorAll('#rows tr')].map(tr=>{const c=tr.querySelectorAll('input,select');return [c[0].value,c[1].value,c[2].value,c[3].value,c[4].value,c[5].value];});
@@ -355,7 +359,7 @@ function startup(){
 function rebalance(){
  const cap=Math.max(0,parseInt(document.getElementById('cap').value)||0);
  const shakenM=num('g_shakenpr')/12, tenkenM=num('g_tenkenpr')/12, hokenM=num('g_inspr');
- const ota=num('g_ota')/100, wash=num('g_wash');
+ const ota=num('g_ota')/100, wash=num('g_wash'), pshare=num('g_partnershare')/100;
  const parkTot=num('g_parkprice')*num('g_parkn');
  const ofix=num('g_salary')+num('g_rent')+num('g_other')+parkTot;
  const need=num('g_target')+ofix;
@@ -367,7 +371,7 @@ function rebalance(){
    const own=(hold!=='partner');
    const vc=((hold==='lease')?leaseOf(cls):0)+(own?shakenM:0)+(own?tenkenM:0)+(own?hokenM:0);
    const revPer=adr*u*30,bookPer=u*30/nt;
-   const contrib=revPer-vc-(revPer*ota+bookPer*wash);
+   const contrib=revPer-vc-(revPer*ota+bookPer*wash)-(own?0:revPer*pshare);
    return {name:c[0].value,contrib,nInput:c[1]};
  }).filter(x=>x.contrib>0);
  arr.sort((a,b)=>b.contrib-a.contrib);
