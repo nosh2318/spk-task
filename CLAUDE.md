@@ -1,5 +1,21 @@
 # SPK業務管理APP（札幌店）
 
+## 📈 2026-06-06 運用戦略ハブ統合 + action-fill NHA新仕様移植（v4.7.213 / spk-v758）
+
+### strategy.html（運用戦略ハブ）新設＝入口1つに統一
+- TOPタイル「OTA運用戦略」「運用戦略(旧HP・in-APP)」「売上予測」3個 → **「📈 運用戦略」1個**（url:strategy.html）に集約。旧in-APP HP運用戦略（attribution仕様）はタイル撤去＝入口から廃止（コンポーネントは残置・未使用）。
+- 内部タブ×iframe: 🔮売上予測(forecast.html?store=spk) / 💴予算シナリオ(action-fill.html) / 📣OTA運用戦略(marketing-ota.html)。lazy生成→保持・最終タブ記憶(`spk_strategy_tab`)。直URL全部生存。
+
+### action-fill.html＝NHA新仕様を完全移植（total-response・本軸）
+- 本軸: T月予算 → 獲得（÷月別CPA仮説）→ 流通=入金（×ROAS）→ @予約単価 → FEED分散で月別売上計上＋充足率。📡オンタイム検証（8タイル・乖離3軸=CPA/売上/単価＝実測−仮説中央）。
+- **SPK固有データ**:
+  - FEED実測＝2026-04〜06発生（**当月着地53%＝直前型**。NHA6月12%と真逆）。**3月発生はCSV一括取込で汚染＝除外**。未観測月（7月〜）はクリーン146本のラグ分布 `DEF_LAG={0:54,1:16,2:8,3:12,4:5,5:4,6:1}` から合成（実測が貯まったらFEEDに追記）。
+  - GCPA＝**¥15,930の1点のみ**（2026-05: ¥175,235÷HP11本・ROAS 1.93x）。月別形状なし→全月フラット。広告費はorganic.html AD_BASEと同値＝**月次レポート到着時にaction-fillのAD2026にも追記**。
+  - 信頼点しきい値＝**8本**（新店基準。NHAは20本）。
+  - **reservationsにbooked_at列なし**＝created_atが発生日（GAS即時取込なので近似OK）。一括取込除外フィルタなし。
+  - ACT25(前年稼働率)なし＝新店表示。目標稼働率TGTUは暫定フラット50%。
+- forecast.html に `spk_fcst` localStorage書き出しを追加（renderForecastChartSection内・挙動無変更）。**年間進捗を1回開くと速報連携**。
+
 ## 💹 2026-06-06 札幌 収支シミュレータ（sim.html）＋ 事業計画・支出データの正本
 
 ### 収支シミュレータ `~/spk-task/sim.html`（GitHub Pages: https://nosh2318.github.io/spk-task/sim.html）
