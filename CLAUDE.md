@@ -13,10 +13,11 @@
 - **ADR/平均泊はシミュ群(青・入力)に移動、実績群(紫)に実績ADR/実績平均泊を表示**（旧「参考」群は廃止）。入力セルの物理位置を動かしてもinput順序(c[0..5])は不変＝calc/saveState/clsChange無改修。
 - **🟢 実績ライブ自動取得（2026-06-06・3店共通）**：開くたびに実績(稼働/ADR/台売上/平均泊)を自動更新。①正本箱`monthly_snapshots.class_detail`の**直近3確定月**(year_month<今月)をクラス別合算→稼働%=Σrental/Σavail・ADR=Σrev/Σrental・台売上/月=Σrev/Σavail×30 ②平均泊のみ予約テーブル(直近92日返却・cancel除外)から ③認証=**同オリジンの本体APPログイントークン(localStorage sb-*-auth-token)を再利用**・未ログイン時は埋込スナップショットにフォールバック(noteに状態表示`#live_status`) ④店舗差分はLIVECFG(SPK:reservations/vehicle/lend_date/return_date、NHA:nha_reservations/vehicle_class/start_date/end_date、BT:bt_+独立SB。**BTはsnapshot未整備→リリース後に自動稼働**)。検算済:ライブ集計が埋込稼働率と全クラス一致。3店とも全店統一・push済。
 - **⚠️ localStorage保存キーは店舗別**（`sim_state_v1`=SPK/`sim_state_nha_v1`/`sim_state_bt_v1`）。NHA/SPKは同一オリジン(nosh2318.github.io)なので共有キーだと上書き事故。
-- **🏆 達成率列（旧:成績◎○△×→変更）**：達成率＝実績稼働÷シミュ稼働設定×100。**A≥100% / B≥80% / C<80%**（例「A 108%」）。オーナー思想＝「稼働率がトリガーで売上/件数が連動→稼働率設定に対する達成率で評価」。
+- **🏆 達成見込み列（シミュ群・稼働%の隣）**：達成見込み＝実績稼働÷シミュ稼働設定×100。**A≥100% / B≥80% / C<80%**（例「B 86%」緑/橙/赤）。オーナー思想＝「**稼働率がトリガー**で売上/件数が連動→稼働率を設定した瞬間に"その設定は実績から見て現実的か"をA〜Cで先に提示」。変遷：成績◎○△×(実績貢献ベース)→達成率(実績側)→**達成見込み(シミュ側)が最終形**。実績はライブ取得なので予約増→実績稼働上昇→見込み評価も自動改善。セレクタ`.outlook`（旧`.grade`は廃止）。
 - **📸 snapshot月次更新も自動化（2026-06-06・3店）**：本体APPの「前月自動記録」useEffectを**force=true＋1日1回ガード(localStorage `snap_auto_force_{ym}`)**に変更→APPを開くだけで前月snapshotが毎日最新値に上書き（「全月を再記録」ボタンの月次手動運用が不要に）。SPK v4.7.212 / NHA v3.5.113 / BT v1.0.70。BTはsaveMonthlySnapshotにforce引数も追加（未対応だった）＋**store値は"tkm"**（sim LIVECFGも tkm に修正済）。
 - **⚠️ BT残作業（オーナーRUN）**：BT Supabase に monthly_snapshots テーブルが無い → `~/buddica-touring/app/bt_monthly_snapshots.sql` を BT SQL Editor で1回RUN（RUNするまでBTのsnapshot保存は失敗＝simはフォールバック表示）。
-- **⚠️ NHA/BT の sw.js は0バイト（SW無効・BASE_V方式）**。バージョン更新は APP_VERSION(index.html.bak)＋BASE_V(index.html) の2箇所。sim.htmlはこの構成で**一旦完成系**（オーナー確認 2026-06-06）。
+- **⚠️ NHA/BT の sw.js は0バイト（SW無効・BASE_V方式）**。バージョン更新は APP_VERSION(index.html.bak)＋BASE_V(index.html) の2箇所。
+- **現在の列構成（24列・3店共通）**：基本3（クラス/台数/持ち方）｜🔵シミュ14（稼働%・**達成見込み**・ADR・平均泊・予約/月・台/売上・台/リース・台/車検・台/点検・台/保険・台/手数料・台/車両原価・台/貢献・総売上）｜🟣実績6（実績稼働・実績ADR・実績平均泊・実績予約/月・実績台売上・実績貢献）｜削除1。sim.htmlはこの構成で**完成系**（オーナー確認 2026-06-06）。
 - 注意：車検=**1年(÷12)**、点検=年(÷12)。クラスselect化に伴い `querySelectorAll('input')` でなく `'input,select'` で台数indexを取る（リセット行のバグ源）。
 
 ### 🔴 支出データの正本＝予算実績タブ→コスト内訳（costmatrix.html）※生キー直読み禁止
