@@ -311,6 +311,20 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
         <tbody id="data-body"><tr><td colspan="13" class="loading">読み込み中...</td></tr></tbody>
       </table>
     </div>
+    <!-- ❌ キャンセル履歴 (2026-06-07) -->
+    <div style="margin-top:14px">
+      <div style="font-size:13px;font-weight:900;color:#991b1b;margin-bottom:6px">❌ キャンセル履歴（直近30件・自動検知）</div>
+      <div class="data-tbl-wrap" style="max-height:320px">
+        <table class="data-tbl">
+          <thead><tr>
+            <th>検知日</th><th>車両</th><th>予約番号</th><th>顧客名</th><th>OTA</th>
+            <th>貸出</th><th>返却</th><th>💰金額</th>
+          </tr></thead>
+          <tbody id="cxl-body"><tr><td colspan="8" class="loading">読み込み中...</td></tr></tbody>
+        </table>
+      </div>
+      <div style="font-size:10px;color:#94a3b8;margin-top:4px">※ 御社車両に配車されていた予約がキャンセルされると自動で記録されます（15分間隔の自動検知）。</div>
+    </div>
   </div>
 
   <!-- 💰 コスト一覧タブ (2026-05-26 オーナー新規仕様: 協力会社名+日額コスト入り車両リスト) -->
@@ -418,7 +432,7 @@ const sb=window.supabase.createClient(SB_URL,SB_KEY);
 let CURRENT_USER=null,OWNER_COMPANY=null,OWNER_LABEL=null;
 let CURRENT_TAB='tl';
 let CURRENT_YM=null;
-let VEHICLES=[],RESERVATIONS=[],FLEET=[],MAINTENANCE=[],KPI_MAP={};
+let VEHICLES=[],RESERVATIONS=[],FLEET=[],MAINTENANCE=[],KPI_MAP={},CXL_LOG=[];
 let MODAL_CONTEXT=null;
 const isMobile=window.matchMedia('(max-width:768px)').matches;
 
@@ -470,6 +484,7 @@ async function loadData(){
     }
     const vehCodes=VEHICLES.map(v=>v.code);
     const{data:fl}=await sb.from('fleet').select('*').in('vehicle_code',vehCodes);
+    try{const{data:cxl}=await sb.from('partner_actions').select('ts,payload').eq('owner_company',OWNER_COMPANY).eq('action_type','customer_resv_cancelled').order('ts',{ascending:false}).limit(30);CXL_LOG=cxl||[];}catch(e){CXL_LOG=[];}
     FLEET=fl||[];
     const resvIds=[...new Set(FLEET.map(f=>f.reservation_id))];
     RESERVATIONS=[];
@@ -487,7 +502,7 @@ async function loadData(){
     KPI_MAP={};(kp||[]).forEach(k=>{if(!KPI_MAP[k.vehicle_code])KPI_MAP[k.vehicle_code]={};KPI_MAP[k.vehicle_code][k.year_month]=k.active;});
     // ★ 2026-05-16: 請求書機能は削除（情報のみのシンプル仕様にオーナー方針変更）
     updateSummary();
-    if(CURRENT_TAB==='tl')renderTimeline();else if(CURRENT_TAB==='data')renderData();else renderVehInfo();
+    if(CURRENT_TAB==='tl')renderTimeline();else if(CURRENT_TAB==='data'){renderData();renderCxl();}else renderVehInfo();
   }catch(e){console.error('[loadData]',e);showToast('データ取得エラー: '+e.message,'err');}
 }
 
@@ -675,6 +690,26 @@ function drawBars(dates){
   }
 }
 
+// ❌ キャンセル履歴 (2026-06-07・partner_actions customer_resv_cancelled)
+function renderCxl(){
+  const body=document.getElementById('cxl-body');if(!body)return;
+  if(!CXL_LOG.length){body.innerHTML='<tr><td colspan="8" class="loading">キャンセル履歴なし</td></tr>';return;}
+  const OTA_L={J:'じゃらん',R:'楽天',S:'スカイ',O:'エアトリ',HP:'HP',RC:'RC',G:'GoGoOut'};
+  body.innerHTML=CXL_LOG.map(x=>{
+    const p=x.payload||{};
+    const d=(p.detected_at||x.ts||'').substring(0,10);
+    return '<tr>'+
+      '<td>'+d+'</td>'+
+      '<td><span class="veh-c">'+(p.vehicle_name||p.vehicle_code||'—')+'</span> '+(p.plate_no||'')+'</td>'+
+      '<td style="font-size:10px">'+(p.resv_no||'')+'</td>'+
+      '<td>'+(p.name||'')+' 様</td>'+
+      '<td><span class="ota-bdg ota-'+(p.ota||'')+'">'+(OTA_L[p.ota]||p.ota||'-')+'</span></td>'+
+      '<td>'+(p.lend_date||'')+'</td>'+
+      '<td>'+(p.return_date||'')+'</td>'+
+      '<td style="font-weight:700">¥'+Number(p.price||0).toLocaleString()+'</td>'+
+      '</tr>';
+  }).join('');
+}
 // 予約データタブ (v0.5.0 シンプル版・請求書機能は廃止し情報のみ)
 function renderData(){
   const body=document.getElementById('data-body');
@@ -829,7 +864,7 @@ async function savePartnerDailyCost(code){
     document.getElementById('saveDC_'+code).style.display='none';
     inp.dataset.dirty='0';
     // 予約データタブも再描画 (反映)
-    if(typeof renderData==='function')renderData();
+    if(typeof renderData==='function'){renderData();renderCxl();}
   }catch(e){
     showToast('保存エラー: '+e.message,'err');
   }
@@ -1066,7 +1101,7 @@ function switchTab(t){
   document.getElementById('view-data').style.display=(t==='data')?'':'none';
   document.getElementById('view-cost').style.display=(t==='cost')?'':'none';
   document.getElementById('view-veh').style.display=(t==='veh')?'':'none';
-  if(t==='tl')renderTimeline();else if(t==='data')renderData();else if(t==='cost')renderCost();else renderVehInfo();
+  if(t==='tl')renderTimeline();else if(t==='data'){renderData();renderCxl();}else if(t==='cost')renderCost();else renderVehInfo();
 }
 
 // ★ 💰 コスト一覧タブ (2026-05-26 オーナー新規仕様)

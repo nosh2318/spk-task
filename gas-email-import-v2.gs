@@ -626,6 +626,9 @@ function detectInsurance_(text) {
   if (/免責補償制度\(CDW\)[：:\s]*あり/i.test(text)) return '免責';
   if (/免責補償[：:\s]*あり|免責補償制度[：:\s]*あり|免責[：:\s]*加入|免責補償料/i.test(text)) return '免責';
   if (hasCdwRakuten) return '免責';  // 楽天 CDW のみ
+  // ★ HP形式「免責補償制度(CDW): なし」を明示的に除外（基本補償＝免責未加入）
+  //   ラベルと値の間に「補償制度(CDW)」等が挟まるケースに対応（LXT04768 太田様 誤判定で発覚 2026-06-07）
+  if (/免責[^：:\n]*[：:\s]*(なし|未加入|無し|加入しない|0円)/i.test(text)) return 'なし';
   if (/免責/.test(text) && !/免責[：:\s]*(なし|未加入|無し|加入しない|0円)/i.test(text)) return '免責';
   return 'なし';
 }
@@ -5150,3 +5153,99 @@ function setupAccountingPatrolTrigger() {
   Logger.log('[Trigger] nightlyAccountingPatrol 毎朝9:15 設定完了');
 }
 
+
+// ============================================================
+// 協力会社車両への顧客予約 増減ウォッチ (2026-06-07)
+// 新規配車 / キャンセルを #partner_在庫調整 (C0B451BSK1B) に通知し、
+// partner_actions に customer_resv_add / customer_resv_cancelled として記録
+// （partner.html の「キャンセル履歴」一覧のデータソースにもなる）
+// 設定: setupPartnerWatchTrigger() を1回手動実行（15分間隔）
+// ============================================================
+function watchPartnerCustomerReservations() {
+  var props = PropertiesService.getScriptProperties();
+  try {
+    var vehs = supabaseGet_('vehicles', 'owner_company=neq.HANDYMAN&select=code,name,plate_no,type,owner_company,owner_label');
+    if (!vehs || !vehs.length) return;
+    var vmap = {}, codes = [];
+    vehs.forEach(function(v){ vmap[v.code] = v; codes.push(v.code); });
+    var fl = supabaseGet_('fleet', 'vehicle_code=in.(' + codes.map(encodeURIComponent).join(',') + ')&select=reservation_id,vehicle_code');
+    var cur = {};
+    (fl || []).forEach(function(f){ cur[f.reservation_id] = f.vehicle_code; });
+    var raw = props.getProperty('PARTNER_RESV_STATE');
+    if (raw === null) {
+      // 初回はシードのみ（既存予約を全部通知するスパム防止）
+      props.setProperty('PARTNER_RESV_STATE', JSON.stringify(cur));
+      Logger.log('[PartnerWatch] state seeded: ' + Object.keys(cur).length + ' assignments');
+      return;
+    }
+    var prev = {};
+    try { prev = JSON.parse(raw) || {}; } catch(e) {}
+    var added = Object.keys(cur).filter(function(id){ return !(id in prev); });
+    var removed = Object.keys(prev).filter(function(id){ return !(id in cur); });
+    var otaName = function(o){ return ({J:'じゃらん',R:'楽天',S:'スカイチケット',O:'エアトリ',HP:'HP',RC:'レンタカー.com',G:'GoGoOut',SP:'Slack',direct:'直接'})[o] || o || '-'; };
+    var fetchResv = function(id){
+      var r = supabaseGet_('reservations', 'id=eq.' + encodeURIComponent(id) + '&select=id,name,ota,vehicle,lend_date,return_date,price,status');
+      return (r && r.length) ? r[0] : null;
+    };
+    var fmt = function(emoji, title, v, r, vcode) {
+      return emoji + ' *' + title + '*\n' +
+        '🏢 ' + (v.owner_label || v.owner_company || '') + '\n' +
+        '🚗 ' + (v.name || vcode) + ' (' + (v.plate_no || '') + ') / ' + (r.vehicle || '') + 'クラス\n' +
+        '👤 ' + (r.name || '') + ' 様 [' + otaName(r.ota) + ']\n' +
+        '📅 ' + (r.lend_date || '') + ' 〜 ' + (r.return_date || '') + '\n' +
+        '💴 ¥' + Number(r.price || 0).toLocaleString() + '\n' +
+        '予約番号: ' + r.id;
+    };
+    added.forEach(function(id){
+      var r = fetchResv(id);
+      if (!r) return;
+      if (((r.status || '') + '').toLowerCase().indexOf('cancel') >= 0 || (r.status || '').indexOf('キャンセル') >= 0) return;
+      var vcode = cur[id], v = vmap[vcode] || {};
+      postToSlackChannel_(PARTNER_NOTIFY_CHANNEL, fmt('🆕', '協力会社車両に新規予約', v, r, vcode));
+      logPartnerResvAction_('customer_resv_add', v, r, vcode);
+    });
+    removed.forEach(function(id){
+      var r = fetchResv(id);
+      var vcode = prev[id], v = vmap[vcode] || {};
+      if (r && (((r.status || '') + '').toLowerCase().indexOf('cancel') >= 0 || (r.status || '').indexOf('キャンセル') >= 0)) {
+        postToSlackChannel_(PARTNER_NOTIFY_CHANNEL, fmt('❌', '協力会社車両の予約キャンセル', v, r, vcode));
+        logPartnerResvAction_('customer_resv_cancelled', v, r, vcode);
+      }
+      // キャンセル以外（他車両への配車変更）は通知せず state から外すのみ
+    });
+    props.setProperty('PARTNER_RESV_STATE', JSON.stringify(cur));
+    if (added.length || removed.length) Logger.log('[PartnerWatch] added=' + added.length + ' removed=' + removed.length);
+  } catch(e) {
+    Logger.log('[PartnerWatch] error: ' + e.message);
+  }
+}
+
+function logPartnerResvAction_(type, v, r, vcode) {
+  try {
+    supabasePost_('partner_actions', {
+      action_type: type,
+      owner_company: v.owner_company || '',
+      vehicle_code: vcode || '',
+      user_email: 'GAS自動検知',
+      target_date_from: r.lend_date || null,
+      target_date_to: r.return_date || null,
+      notified_slack: true, // 本関数が直接Slack投稿済み（notifyPartnerActionsの二重通知防止）
+      notified_at: new Date().toISOString(),
+      payload: {
+        action: type,
+        resv_no: r.id, name: r.name, ota: r.ota, vehicle_class: r.vehicle,
+        lend_date: r.lend_date, return_date: r.return_date, price: r.price,
+        vehicle_code: vcode, vehicle_name: v.name || '', plate_no: v.plate_no || '',
+        detected_at: new Date().toISOString()
+      }
+    });
+  } catch(e) { Logger.log('[PartnerWatch] log error: ' + e.message); }
+}
+
+function setupPartnerWatchTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function(t){
+    if (t.getHandlerFunction() === 'watchPartnerCustomerReservations') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('watchPartnerCustomerReservations').timeBased().everyMinutes(15).create();
+  Logger.log('[PartnerWatch] trigger set (15min)');
+}
