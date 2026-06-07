@@ -271,7 +271,7 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
     <button class="tab" id="tab-data" onclick="switchTab('data')">📋 予約データ</button>
     <button class="tab" id="tab-cost" onclick="switchTab('cost')">💰 コスト一覧</button>
     <button class="tab" id="tab-veh" onclick="switchTab('veh')">⚙️ 車両情報</button>
-    <button class="tab" id="tab-intake" onclick="switchTab('intake')">🔧 車両管理</button>
+    <button class="tab" id="tab-intake" onclick="switchTab('intake')">🔧 入庫スケジュール</button>
   </div>
 
   <div class="summary">
@@ -351,14 +351,23 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
   </div>
 
   <!-- 車両情報タブ (2026-05-16 改修 / 本体APP「車両登録管理」と同じテーブル形式) -->
-  <!-- 🔧 車両管理タブ (2026-06-07 入庫管理: HANDYMAN車両の車検/点検/修理の日程調整・内容・費用を双方で管理) -->
+  <!-- 🔧 入庫スケジュールタブ (2026-06-07 v2: カレンダー形式・仮予定→承認→FIX) -->
   <div id="view-intake" style="display:none">
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-      <span style="font-size:13px;font-weight:900;color:#1e293b">🔧 入庫管理（HANDYMAN車両の車検・点検・修理）</span>
-      <button onclick="openIntakeQuick()" style="margin-left:auto;padding:7px 12px;border-radius:8px;border:none;background:#dc2626;color:#fff;font-size:11px;font-weight:800;cursor:pointer">🚨 突発修理を登録</button>
+      <span style="font-size:13px;font-weight:900;color:#1e293b">🔧 入庫スケジュール（HANDYMAN車両の車検・点検・修理）</span>
+      <span style="display:flex;gap:6px;margin-left:auto">
+        <span style="font-size:9px;font-weight:800;padding:3px 8px;border-radius:5px;background:#fef3c7;color:#92400e">🟡 仮予定（承認待ち）</span>
+        <span style="font-size:9px;font-weight:800;padding:3px 8px;border-radius:5px;background:#dcfce7;color:#166534">🟢 FIX（承認済み）</span>
+      </span>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <button onclick="ikNav(-1)" style="padding:5px 12px;border-radius:7px;border:1px solid #e2e8f0;background:#fff;cursor:pointer;font-weight:700">◀</button>
+      <span id="ik-month" style="font-size:14px;font-weight:900;color:#1e293b">—</span>
+      <button onclick="ikNav(1)" style="padding:5px 12px;border-radius:7px;border:1px solid #e2e8f0;background:#fff;cursor:pointer;font-weight:700">▶</button>
+      <button onclick="ikToday()" style="padding:5px 12px;border-radius:7px;border:none;background:#1e3a8a;color:#fff;cursor:pointer;font-size:11px;font-weight:700">今日</button>
     </div>
     <div id="intake-body" class="loading">読み込み中...</div>
-    <div style="font-size:10px;color:#94a3b8;margin-top:8px">📨調整中＝HANDYMAN配車表の仮埋め予定（入庫3ヶ月前から表示）。日程・内容・費用を入力し「日程確定」→「入庫」→「完了」と進めてください。完了時は車検満了+24ヶ月／点検期限+6ヶ月が自動更新されます。</div>
+    <div style="font-size:10px;color:#94a3b8;margin-top:8px">🟡仮予定をタップ→内容確認→「✅承認」でFIX（HANDYMAN配車表の表示もFIXに変わります）。日程変更が必要な場合は承認せず備考に記入してHANDYMANへ連絡してください。</div>
   </div>
   <div id="view-veh" style="display:none">
     <div class="data-ctrl">
@@ -1104,143 +1113,97 @@ async function logAction(actionType,vehicleCode,dateFrom,dateTo,payload){
   }catch(e){console.warn('[logAction]',e);}
 }
 
-/* ===== 🔧 車両管理タブ: 入庫管理 (2026-06-07) =====
-   正本=maintenanceテーブル(label=車検/半年点検/修理)。HANDYMAN配車表の仮埋めブロックがここに公開され、
-   協力会社が日程回答・作業内容・見積・実費を入力する（自社管理システムのスライス公開・二重入力なし） */
-let INTAKE=[],HVEH={};
+/* ===== 🔧 入庫スケジュール (2026-06-07 v2: カレンダー形式) =====
+   HANDYMAN配車表で「入庫(仮予定)」登録(maintenance.status='pending')→ここに🟡表示
+   →協力会社が「✅承認」→status='approved'→配車表の表示が〔FIX〕に変わる */
+let INTAKE=[],HVEH={},IK_CUR=new Date();
 const INTAKE_TYPES=['車検','半年点検','修理'];
-const INTAKE_ST={requested:['📨 調整中','#fef3c7','#92400e'],confirmed:['📅 日程確定','#dbeafe','#1e40af'],in_shop:['🏭 入庫中','#ede9fe','#6d28d9'],done:['✅ 完了','#dcfce7','#166534']};
-const intakeStOf=m=>m.status||'requested';
-function intakeAddM(ymd,mo){if(!ymd)return'';const d=new Date(ymd+'T00:00:00');d.setMonth(d.getMonth()+mo);return d.toISOString().slice(0,10);}
+function ikYMD(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+function ikNav(n){IK_CUR.setMonth(IK_CUR.getMonth()+n);renderIntake();}
+function ikToday(){IK_CUR=new Date();renderIntake();}
 async function loadIntake(){
   const body=document.getElementById('intake-body');
   try{
-    const today=new Date().toISOString().slice(0,10);
     const[{data:mt},{data:hv}]=await Promise.all([
-      sb.from('maintenance').select('*').in('label',INTAKE_TYPES),
-      sb.from('vehicles').select('code,name,plate_no,type,inspection_due_date,tenken_due_date,owner_company')
+      sb.from('maintenance').select('*').in('label',INTAKE_TYPES).in('status',['pending','approved']).eq('owner_company',OWNER_COMPANY),// 入庫先=自社宛のみ
+      sb.from('vehicles').select('code,name,plate_no,type')
     ]);
     HVEH={};(hv||[]).forEach(v=>HVEH[v.code]=v);
-    const adjLim=intakeAddM(today,3),doneLim=intakeAddM(today,-2);
-    INTAKE=(mt||[]).filter(m=>{
-      const st=intakeStOf(m);
-      if(st==='done')return(m.actual_out_date||m.end_date||'')>=doneLim;
-      if(st==='requested')return(m.start_date||'')<=adjLim&&(m.end_date||m.start_date||'')>=intakeAddM(today,-1);
-      return true;
-    }).sort((a,b)=>(a.start_date||'').localeCompare(b.start_date||''));
+    INTAKE=mt||[];
     renderIntake();
   }catch(e){body.innerHTML='<div class="loading">取得エラー: '+e.message+'</div>';}
 }
-function intakeVehName(code){const v=HVEH[code];return v?((v.name||code)+' '+(v.plate_no||'')):code;}
+function ikVehName(code){const v=HVEH[code];return v?((v.name||code)+' '+(v.plate_no||'')):code;}
 function renderIntake(){
-  const body=document.getElementById('intake-body');
-  const TC={'車検':['#dbeafe','#1e40af'],'半年点検':['#dcfce7','#166534'],'修理':['#fef2f2','#991b1b']};
-  const groups=[['requested','📨 調整中（日程・内容・費用を入力してください）'],['confirmed','📅 日程確定'],['in_shop','🏭 入庫中'],['done','✅ 完了（直近2ヶ月）']];
-  let html='';
-  groups.forEach(([st,title])=>{
-    const items=INTAKE.filter(m=>intakeStOf(m)===st);
-    html+='<div style="margin-bottom:14px"><div style="font-size:12px;font-weight:900;color:#334155;padding:6px 0;border-bottom:2px solid #e2e8f0">'+title+'（'+items.length+'件）</div>';
-    if(!items.length){html+='<div style="font-size:11px;color:#cbd5e1;padding:8px 4px">なし</div></div>';return;}
-    items.forEach(m=>{
-      const tc=TC[m.label]||['#f1f5f9','#475569'];const s=INTAKE_ST[intakeStOf(m)];
-      html+='<div style="display:flex;align-items:center;gap:8px;padding:9px 4px;border-bottom:1px solid #f1f5f9;flex-wrap:wrap">'+
-        '<span style="font-size:9px;font-weight:800;padding:2px 7px;border-radius:4px;background:'+tc[0]+';color:'+tc[1]+'">'+m.label+'</span>'+
-        '<span style="font-size:12px;font-weight:800;color:#1e293b">'+intakeVehName(m.vehicle_code)+'</span>'+
-        '<span style="font-size:11px;color:#475569">'+(m.start_date||'?')+'〜'+(m.end_date||'?')+'</span>'+
-        (m.work_detail?'<span style="font-size:10px;color:#64748b;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📝'+m.work_detail+'</span>':'')+
-        ((m.cost>0)?'<span style="font-size:10px;color:#0369a1;font-weight:700">見積¥'+Number(m.cost).toLocaleString()+'</span>':'')+
-        ((m.actual_cost>0)?'<span style="font-size:10px;color:#16a34a;font-weight:700">実費¥'+Number(m.actual_cost).toLocaleString()+'</span>':'')+
-        '<span style="margin-left:auto;display:flex;gap:4px">'+
-        (st!=='done'?'<button onclick="openIntakeEdit(\''+m.id+'\')" style="padding:4px 10px;border-radius:6px;border:1px solid #e2e8f0;background:#f8fafc;font-size:10px;font-weight:700;cursor:pointer">📝 編集</button>':'')+
-        (st==='requested'?'<button onclick="intakeAdvance(\''+m.id+'\',\'confirmed\')" style="padding:4px 10px;border-radius:6px;border:none;background:#2563eb;color:#fff;font-size:10px;font-weight:800;cursor:pointer">📅 日程確定</button>':'')+
-        (st==='confirmed'?'<button onclick="intakeAdvance(\''+m.id+'\',\'in_shop\')" style="padding:4px 10px;border-radius:6px;border:none;background:#7c3aed;color:#fff;font-size:10px;font-weight:800;cursor:pointer">🏭 入庫</button>':'')+
-        (st==='in_shop'?'<button onclick="openIntakeDone(\''+m.id+'\')" style="padding:4px 10px;border-radius:6px;border:none;background:#16a34a;color:#fff;font-size:10px;font-weight:800;cursor:pointer">✅ 完了</button>':'')+
-        '</span></div>';
-    });
-    html+='</div>';
-  });
-  body.innerHTML=html||'<div class="loading">対象なし</div>';
-}
-async function intakeLog(type,m){try{await sb.from('partner_actions').insert({action_type:type,owner_company:OWNER_COMPANY,vehicle_code:m.vehicle_code||'',user_email:(CURRENT_USER&&CURRENT_USER.email)||'',target_date_from:m.start_date||null,target_date_to:m.end_date||null,notified_slack:true,notified_at:new Date().toISOString(),payload:{action:type,id:m.id,label:m.label,vehicle:intakeVehName(m.vehicle_code),start:m.start_date,end:m.end_date,cost:m.cost,actual_cost:m.actual_cost,work_detail:m.work_detail||''}});}catch(e){}}
-async function intakeAdvance(id,st){
-  const m=INTAKE.find(x=>x.id===id);if(!m)return;
-  const{error}=await sb.from('maintenance').update({status:st}).eq('id',id);
-  if(error){showToast('更新失敗: '+error.message,'err');return;}
-  m.status=st;intakeLog('intake_'+st,m);renderIntake();showToast(INTAKE_ST[st][0]+' に更新しました','ok');
-}
-function openIntakeEdit(id){
-  const m=INTAKE.find(x=>x.id===id);if(!m)return;
-  const ov=document.createElement('div');ov.id='intake-ov';
-  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9000;display:flex;align-items:center;justify-content:center;padding:14px';
-  const inp='width:100%;border:1px solid #e2e8f0;border-radius:7px;padding:7px 8px;font-size:13px;font-family:inherit;box-sizing:border-box';
-  const lab='display:block;font-size:10px;color:#64748b;margin-bottom:2px;font-weight:700';
-  ov.innerHTML='<div style="background:#fff;border-radius:14px;padding:16px;width:100%;max-width:440px;max-height:86vh;overflow-y:auto" onclick="event.stopPropagation()">'+
-   '<div style="font-size:13px;font-weight:900;margin-bottom:10px">📝 '+m.label+' — '+intakeVehName(m.vehicle_code)+'</div>'+
-   '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">'+
-   '<div><label style="'+lab+'">入庫日</label><input type="date" id="ik-start" style="'+inp+'" value="'+(m.start_date||'')+'"></div>'+
-   '<div><label style="'+lab+'">出庫予定日</label><input type="date" id="ik-end" style="'+inp+'" value="'+(m.end_date||'')+'"></div>'+
-   '<div><label style="'+lab+'">見積額</label><input type="number" id="ik-cost" style="'+inp+'" value="'+(m.cost||0)+'"></div>'+
-   '<div><label style="'+lab+'">工場</label><input id="ik-ws" style="'+inp+'" value="'+(m.workshop||'')+'" placeholder="共立自動車"></div></div>'+
-   '<div style="margin-bottom:8px"><label style="'+lab+'">作業内容（双方で共有）</label><textarea id="ik-wd" style="'+inp+';min-height:64px">'+(m.work_detail||'')+'</textarea></div>'+
-   '<div style="margin-bottom:10px"><label style="'+lab+'">メモ（調整経緯）</label><textarea id="ik-memo" style="'+inp+';min-height:44px">'+(m.maint_notes||'')+'</textarea></div>'+
-   '<button id="ik-save" style="width:100%;padding:10px;border-radius:8px;border:none;background:#2563eb;color:#fff;font-size:12px;font-weight:800;cursor:pointer">💾 保存</button></div>';
-  ov.onclick=()=>ov.remove();
-  document.body.appendChild(ov);
-  document.getElementById('ik-save').onclick=async()=>{
-    const upd={start_date:document.getElementById('ik-start').value||m.start_date,end_date:document.getElementById('ik-end').value||m.end_date,cost:Number(document.getElementById('ik-cost').value)||0,workshop:document.getElementById('ik-ws').value||'',work_detail:document.getElementById('ik-wd').value||'',maint_notes:document.getElementById('ik-memo').value||''};
-    const{error}=await sb.from('maintenance').update(upd).eq('id',m.id);
-    if(error){showToast('保存失敗: '+error.message,'err');return;}
-    Object.assign(m,upd);intakeLog('intake_edit',m);ov.remove();renderIntake();showToast('保存しました','ok');
-  };
-}
-function openIntakeDone(id){
-  const m=INTAKE.find(x=>x.id===id);if(!m)return;
-  const today=new Date().toISOString().slice(0,10);
-  const out=window.prompt('実出庫日（YYYY-MM-DD）',m.actual_out_date||today);if(!out)return;
-  const ac=window.prompt('実績費用（円）',m.actual_cost||m.cost||0);if(ac===null)return;
-  const inv=window.prompt('請求書番号（任意・空欄OK）',m.invoice_no||'')||'';
-  (async()=>{
-    const{error}=await sb.from('maintenance').update({status:'done',actual_out_date:out,actual_cost:Number(ac)||0,invoice_no:inv}).eq('id',id);
-    if(error){showToast('更新失敗: '+error.message,'err');return;}
-    m.status='done';m.actual_out_date=out;m.actual_cost=Number(ac)||0;m.invoice_no=inv;
-    // 車両マスター期限 自動更新
-    const v=HVEH[m.vehicle_code];
-    if(v){
-      let upd=null,msg='';
-      if(m.label==='車検'){const nd=intakeAddM(v.inspection_due_date||out,24),nt=intakeAddM(out,6);upd={inspection_due_date:nd,tenken_due_date:nt};msg='車検満了→'+nd+' / 点検期限→'+nt;}
-      else if(m.label==='半年点検'){const nt=intakeAddM(out,6);upd={tenken_due_date:nt};msg='点検期限→'+nt;}
-      if(upd){const{error:e2}=await sb.from('vehicles').update(upd).eq('code',m.vehicle_code);if(!e2){Object.assign(v,upd);showToast('✅ 完了。期限を自動更新: '+msg,'ok');}else showToast('完了（期限更新は失敗: '+e2.message+'）','err');}
-      else showToast('✅ 完了として記録しました','ok');
+  const body=document.getElementById('intake-body');if(!body)return;
+  const y=IK_CUR.getFullYear(),mo=IK_CUR.getMonth();
+  document.getElementById('ik-month').textContent=y+'年 '+(mo+1)+'月';
+  const dim=new Date(y,mo+1,0).getDate();
+  const first=new Date(y,mo,1);
+  const lead=(first.getDay()+6)%7;// 月曜始まり
+  const todayS=ikYMD(new Date());
+  const TC={'車検':'🚗','半年点検':'🔧','修理':'🔩'};
+  // 日別イベント
+  const byDay={};
+  INTAKE.forEach(m=>{
+    if(!m.start_date)return;
+    const s=new Date(m.start_date+'T00:00:00'),e=new Date((m.end_date||m.start_date)+'T00:00:00');
+    for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1)){
+      const k=ikYMD(d);if(d.getFullYear()===y&&d.getMonth()===mo){(byDay[k]=byDay[k]||[]).push(m);}
     }
-    intakeLog('intake_done',m);renderIntake();
-  })();
+  });
+  let html='<table style="width:100%;border-collapse:collapse;table-layout:fixed;background:#fff;border-radius:10px;overflow:hidden">';
+  html+='<tr>'+['月','火','水','木','金','土','日'].map((d,i)=>'<th style="padding:6px;font-size:10px;font-weight:700;color:'+(i===5?'#dc2626':i===6?'#2563eb':'#64748b')+';background:#f8fafc;border-bottom:1px solid #e2e8f0">'+d+'</th>').join('')+'</tr>';
+  let day=1-lead;
+  while(day<=dim){
+    html+='<tr>';
+    for(let i=0;i<7;i++,day++){
+      if(day<1||day>dim){html+='<td style="border:1px solid #f1f5f9;background:#fafbfc"></td>';continue;}
+      const k=y+'-'+String(mo+1).padStart(2,'0')+'-'+String(day).padStart(2,'0');
+      const evs=byDay[k]||[];
+      const isToday=k===todayS;
+      html+='<td style="border:1px solid #f1f5f9;vertical-align:top;height:74px;padding:3px;'+(isToday?'background:#eff6ff;':'')+'">'+
+        '<div style="font-size:10px;font-weight:'+(isToday?'900':'600')+';color:'+(isToday?'#1d4ed8':'#64748b')+';margin-bottom:2px">'+day+'</div>'+
+        evs.slice(0,3).map(m=>{
+          const pend=(m.status||'pending')==='pending';
+          // 開始日のみラベル省略なし、連日チップ
+          return '<div onclick="openIntakeDetail(\''+m.id+'\')" style="font-size:8.5px;font-weight:800;padding:2px 4px;border-radius:4px;margin-bottom:2px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:'+(pend?'#fef3c7':'#dcfce7')+';color:'+(pend?'#92400e':'#166534')+';border:1px solid '+(pend?'#fde68a':'#bbf7d0')+'">'+(TC[m.label]||'')+(pend?'🟡':'🟢')+ikVehName(m.vehicle_code)+'</div>';
+        }).join('')+
+        (evs.length>3?'<div style="font-size:8px;color:#94a3b8">+'+(evs.length-3)+'件</div>':'')+
+        '</td>';
+    }
+    html+='</tr>';
+  }
+  html+='</table>';
+  body.innerHTML=html;
 }
-function openIntakeQuick(){
-  const codes=Object.keys(HVEH);
-  if(!codes.length){showToast('車両データ読込中です。少し待って再度押してください','err');loadIntake();return;}
-  const ov=document.createElement('div');ov.id='intake-qov';
+async function intakeLog(type,m){try{await sb.from('partner_actions').insert({action_type:type,owner_company:OWNER_COMPANY,vehicle_code:m.vehicle_code||'',user_email:(CURRENT_USER&&CURRENT_USER.email)||'',target_date_from:m.start_date||null,target_date_to:m.end_date||null,notified_slack:true,notified_at:new Date().toISOString(),payload:{action:type,id:m.id,label:m.label,vehicle:ikVehName(m.vehicle_code),start:m.start_date,end:m.end_date}});}catch(e){}}
+function openIntakeDetail(id){
+  const m=INTAKE.find(x=>x.id===id);if(!m)return;
+  const pend=(m.status||'pending')==='pending';
+  const ov=document.createElement('div');
   ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9000;display:flex;align-items:center;justify-content:center;padding:14px';
-  const inp='width:100%;border:1px solid #e2e8f0;border-radius:7px;padding:7px 8px;font-size:13px;font-family:inherit;box-sizing:border-box';
-  const lab='display:block;font-size:10px;color:#64748b;margin-bottom:2px;font-weight:700';
-  const today=new Date().toISOString().slice(0,10);
-  const opts=codes.sort((a,b)=>((HVEH[a].type||'')+a).localeCompare((HVEH[b].type||'')+b)).map(c=>'<option value="'+c+'">'+(HVEH[c].type||'')+' / '+(HVEH[c].name||c)+' '+(HVEH[c].plate_no||'')+'</option>').join('');
-  ov.innerHTML='<div style="background:#fff;border-radius:14px;padding:16px;width:100%;max-width:400px" onclick="event.stopPropagation()">'+
-   '<div style="font-size:13px;font-weight:900;margin-bottom:10px;color:#dc2626">🚨 突発修理 — 今すぐ入庫</div>'+
-   '<div style="margin-bottom:8px"><label style="'+lab+'">車両</label><select id="iq-vc" style="'+inp+'"><option value="">選択</option>'+opts+'</select></div>'+
-   '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">'+
-   '<div><label style="'+lab+'">入庫日</label><input type="date" id="iq-start" style="'+inp+'" value="'+today+'"></div>'+
-   '<div><label style="'+lab+'">出庫予定（仮）</label><input type="date" id="iq-end" style="'+inp+'" value="'+today+'"></div></div>'+
-   '<div style="margin-bottom:10px"><label style="'+lab+'">状況・作業内容</label><textarea id="iq-memo" style="'+inp+';min-height:54px" placeholder="何が起きたか・作業予定"></textarea></div>'+
-   '<div style="font-size:10px;color:#64748b;margin-bottom:8px">登録と同時にHANDYMAN配車表をブロックします（該当期間は配車不可）</div>'+
-   '<button id="iq-save" style="width:100%;padding:10px;border-radius:8px;border:none;background:#dc2626;color:#fff;font-size:12px;font-weight:800;cursor:pointer">🚨 入庫中として登録</button></div>';
+  ov.innerHTML='<div style="background:#fff;border-radius:14px;padding:18px;width:100%;max-width:400px" onclick="event.stopPropagation()">'+
+   '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">'+
+   '<span style="font-size:10px;font-weight:800;padding:3px 8px;border-radius:5px;background:'+(pend?'#fef3c7':'#dcfce7')+';color:'+(pend?'#92400e':'#166534')+'">'+(pend?'🟡 仮予定':'🟢 FIX')+'</span>'+
+   '<span style="font-size:14px;font-weight:900">'+m.label+'</span></div>'+
+   '<div style="font-size:13px;font-weight:800;margin-bottom:6px">🚗 '+ikVehName(m.vehicle_code)+'</div>'+
+   '<div style="font-size:12px;color:#475569;margin-bottom:6px">📅 '+(m.start_date||'?')+' 〜 '+(m.end_date||'?')+'</div>'+
+   (m.cost>0?'<div style="font-size:12px;color:#0369a1;margin-bottom:6px">💴 概算 ¥'+Number(m.cost).toLocaleString()+'</div>':'')+
+   (m.work_detail?'<div style="font-size:11px;color:#475569;margin-bottom:6px;white-space:pre-wrap">📝 '+m.work_detail+'</div>':'')+
+   (m.maint_notes?'<div style="font-size:11px;color:#64748b;margin-bottom:10px;white-space:pre-wrap">💬 '+m.maint_notes+'</div>':'')+
+   (pend?'<button id="ik-approve" style="width:100%;padding:11px;border-radius:8px;border:none;background:#16a34a;color:#fff;font-size:13px;font-weight:900;cursor:pointer;margin-top:6px">✅ この日程で承認する（FIX）</button>':'<div style="font-size:11px;color:#16a34a;font-weight:700;text-align:center;padding:8px">✅ 承認済み — HANDYMAN配車表にFIX表示中</div>')+
+   '<button id="ik-close" style="width:100%;padding:9px;border-radius:8px;border:1px solid #e2e8f0;background:#f8fafc;font-size:11px;font-weight:700;cursor:pointer;margin-top:8px">閉じる</button></div>';
   ov.onclick=()=>ov.remove();
   document.body.appendChild(ov);
-  document.getElementById('iq-save').onclick=async()=>{
-    const vc=document.getElementById('iq-vc').value;if(!vc){showToast('車両を選択してください','err');return;}
-    const rec={id:'m'+Date.now()+Math.floor(Math.random()*1000),vehicle_code:vc,start_date:document.getElementById('iq-start').value,end_date:document.getElementById('iq-end').value,label:'修理',cost:0,actual_cost:0,workshop:OWNER_LABEL||'',invoice_no:'',maint_notes:document.getElementById('iq-memo').value||'',block_type:'maintenance',owner_company:'',status:'in_shop',work_detail:document.getElementById('iq-memo').value||'',repair_cause:'breakdown'};
-    const{error}=await sb.from('maintenance').insert(rec);
-    if(error){showToast('登録失敗: '+error.message,'err');return;}
-    intakeLog('intake_repair_add',rec);ov.remove();loadIntake();showToast('🚨 修理入庫を登録しました（配車表ブロック反映）','ok');
+  document.getElementById('ik-close').onclick=()=>ov.remove();
+  const ap=document.getElementById('ik-approve');
+  if(ap)ap.onclick=async()=>{
+    if(!confirm(m.label+' '+ikVehName(m.vehicle_code)+'\n'+(m.start_date||'')+'〜'+(m.end_date||'')+'\nこの日程で承認しますか？'))return;
+    const{error}=await sb.from('maintenance').update({status:'approved'}).eq('id',m.id);
+    if(error){showToast('承認失敗: '+error.message,'err');return;}
+    m.status='approved';intakeLog('intake_approved',m);ov.remove();renderIntake();
+    showToast('✅ 承認しました（HANDYMAN配車表にFIX反映）','ok');
   };
 }
 
