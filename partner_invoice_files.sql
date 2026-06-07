@@ -11,6 +11,8 @@ create table if not exists partner_invoice_files (
   size_bytes bigint default 0,
   note text default '',
   uploaded_by text default '',
+  confirmed_at timestamptz,          -- 弊社(HANDYMAN)が閲覧確認した日時
+  confirmed_by text default '',      -- 確認者
   created_at timestamptz default now()
 );
 alter table partner_invoice_files enable row level security;
