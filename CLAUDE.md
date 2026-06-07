@@ -109,7 +109,14 @@ if (/免責[^：:\n]*[：:\s]*(なし|未加入|無し|加入しない|0円)/i.t
 - partner.html: 旧「車両管理」タブ→「入庫スケジュール」に改名・中身をカレンダー全面置換（月送り・🟡仮/🟢FIX・タップ→詳細→承認・partner_actionsに intake_approved 監査ログ）。
 - **要SQL**: `intake_db_migration.sql`（status等6列）をSQL EditorでRUN。
 - 旧IntakeBoard(v4.7.213)はTOP非表示で温存（コード残置）。
-- **残**: 承認/変更のSlack通知(#車両管理・ID待ち)、入庫中→完了(実費・期限自動更新)の運用接続、傷チェック連携、NHA/BT展開。
+- **追補（同日完成・v4.7.223）**:
+  - **日程変更リクエスト**: 協力会社が希望日+コメント送信→status='reschedule'+candidate_dates→配車表赤縞〔変更依頼〕＋整備カレンダー上部にパネル→[✅提案日で確定FIX][↩︎差戻し]。
+  - **TOP整備カレンダーからも入庫登録**（＋入庫登録ボタン・車両選択式MaintForm defaultLabel=車検）。TOPカレンダーは未来の全メンテブロック表示に修正（旧:車両ごと最早1件で新規が隠れるバグ）＋修理表示＋仮橙/FIX緑/変更依頼赤チップ。
+  - **全アクションSlack通知**（#partner_在庫調整・notifyPartnerActions経由5分）: intake_created/approved/reschedule/resch_accepted/resch_rejected/cancelled(配車表削除)/edited(予約)。本体側は`logIntakeAction()`ヘルパー、partner側はintakeLog(notified_slack=false)。GAS反映済み。
+  - **協力会社ビュー入庫スケジュール**: 月/週切替・スマホ/PC最適化(中央1340px・セル/チップ拡大)・要対応Handoverパネル(承認待ち/変更依頼中のテキスト一覧・タップ→詳細)・注記はヘッダー直下1行に。
+  - 配車表ヘッダーに凡例チップ（入庫仮橙縞/FIX緑縞/変更依頼赤縞/メンテ青縞）。
+  - 整備カレンダー改名は**全店適用済み**（NHA v3.5.115/BT v1.0.71・機能はSPK先行）。
+- **残**: 入庫中→完了(実費・期限自動更新)の運用接続（旧IntakeBoardのロジック温存済）、傷チェック連携、LINEグループ通知、NHA/BTへの入庫システム移植（DB層分岐ありフル移植は別作業）、#車両管理チャンネル分離(現状#partner_在庫調整)。
 
 - **設計**: 起点=配車表のメンテブロック(label=車検/半年点検/修理)＝**年間仮埋め(予算大枠)**。入庫3ヶ月前になるとTOP「🔧入庫管理」ボードに「📨調整中」として自動表示→車両別に日程/内容/費用を調整（オーナー運用と一致）。
 - **ステータス**: maintenance.status null/requested=調整中→confirmed=日程確定→in_shop=入庫中→done=完了。完了時に実費/請求書No/実出庫日を記録し**車検→満了+24ヶ月＆点検期限=出庫+6ヶ月／点検→+6ヶ月を車両マスター自動更新**。
