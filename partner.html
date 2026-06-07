@@ -272,6 +272,7 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
     <button class="tab" id="tab-cost" onclick="switchTab('cost')">💰 コスト一覧</button>
     <button class="tab" id="tab-veh" onclick="switchTab('veh')">⚙️ 車両情報</button>
     <button class="tab" id="tab-intake" onclick="switchTab('intake')">🔧 入庫スケジュール</button>
+    <button class="tab" id="tab-iklist" onclick="switchTab('iklist')">📜 入庫リスト</button>
   </div>
 
   <div class="summary">
@@ -373,6 +374,11 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
     </div>
     <div style="font-size:10px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:6px 10px;margin-bottom:8px">💡 🟡仮予定をタップ→「✅承認」でFIX確定／日程が合わない場合は「📅日程変更をリクエスト」</div>
     <div id="intake-body" class="loading">読み込み中...</div>
+  </div>
+  <!-- 📜 入庫リストタブ (2026-06-07: 時系列一覧) -->
+  <div id="view-iklist" style="display:none;max-width:1340px;margin:0 auto">
+    <div style="font-size:13px;font-weight:900;color:#1e293b;margin-bottom:10px">📜 入庫リスト（時系列）</div>
+    <div id="iklist-body" class="loading">読み込み中...</div>
   </div>
   <div id="view-veh" style="display:none">
     <div class="data-ctrl">
@@ -1282,6 +1288,51 @@ function openReschForm(m){
     showToast('📨 変更リクエストを送信しました（HANDYMAN側に表示されます）','ok');
   };
 }
+/* ===== 📜 入庫リスト (2026-06-07: 時系列一覧・完了含む全公開レコード) ===== */
+let IKLIST=[];
+async function loadIkList(){
+  const body=document.getElementById('iklist-body');
+  try{
+    const[{data:mt},{data:hv}]=await Promise.all([
+      sb.from('maintenance').select('*').eq('owner_company',OWNER_COMPANY).not('status','is',null).order('start_date',{ascending:true}),
+      sb.from('vehicles').select('code,name,plate_no,type')
+    ]);
+    HVEH={};(hv||[]).forEach(v=>HVEH[v.code]=v);
+    IKLIST=(mt||[]).filter(m=>m.status);
+    INTAKE=IKLIST.filter(m=>['pending','approved','reschedule'].includes(m.status));// 詳細モーダル共用
+    renderIkList();
+  }catch(e){body.innerHTML='<div class="loading">取得エラー: '+e.message+'</div>';}
+}
+function renderIkList(){
+  const body=document.getElementById('iklist-body');if(!body)return;
+  const mob=window.innerWidth<=768;
+  if(!IKLIST.length){body.innerHTML='<div class="loading">入庫レコードなし</div>';return;}
+  const todayS=ikYMD(new Date());
+  const TC={'車検':'🚗','半年点検':'🔧','修理':'🔩','メンテナンス':'🔧','清掃':'🧹','その他':'📌'};
+  const SL={pending:['🟡 承認待ち','#f59e0b'],approved:['🟢 FIX','#16a34a'],reschedule:['🔴 変更依頼中','#dc2626'],done:['✅ 完了','#64748b']};
+  // 月ごとにグループ化（時系列昇順）
+  const byMonth={};
+  IKLIST.forEach(m=>{const ym=(m.start_date||'').slice(0,7)||'不明';(byMonth[ym]=byMonth[ym]||[]).push(m);});
+  let html='';
+  Object.keys(byMonth).sort().forEach(ym=>{
+    html+='<div style="font-size:12px;font-weight:900;color:#475569;padding:8px 4px 4px;border-bottom:2px solid #e2e8f0;margin-top:6px">'+ym.replace('-','年 ')+'月</div>';
+    byMonth[ym].forEach(m=>{
+      const s=SL[m.status]||['📝 '+m.status,'#94a3b8'];
+      const isFuture=(m.start_date||'')>=todayS;
+      const clickable=['pending','approved','reschedule'].includes(m.status);
+      html+='<div '+(clickable?'onclick="openIntakeDetail(\''+m.id+'\')"':'')+' style="display:flex;align-items:center;gap:'+(mob?'6px':'10px')+';padding:'+(mob?'9px 4px':'10px 6px')+';border-bottom:1px solid #f1f5f9;'+(clickable?'cursor:pointer;':'')+(isFuture?'':'opacity:.75;')+'flex-wrap:wrap">'+
+        '<span style="font-size:'+(mob?'11px':'12px')+';font-weight:800;color:#1e293b;min-width:'+(mob?'auto':'170px')+'">📅 '+(m.start_date||'?')+' 〜 '+(m.end_date||'?')+'</span>'+
+        '<span style="font-size:10px;font-weight:800;padding:2px 8px;border-radius:4px;background:'+s[1]+';color:#fff">'+s[0]+'</span>'+
+        '<span style="font-size:'+(mob?'12px':'13px')+';font-weight:800;color:#1e293b">'+(TC[m.label]||'')+' '+m.label+' — '+ikVehName(m.vehicle_code)+'</span>'+
+        ((m.cost>0)?'<span style="font-size:11px;color:#0369a1;font-weight:700">見積¥'+Number(m.cost).toLocaleString()+'</span>':'')+
+        ((m.actual_cost>0)?'<span style="font-size:11px;color:#16a34a;font-weight:700">実費¥'+Number(m.actual_cost).toLocaleString()+'</span>':'')+
+        (m.work_detail?'<span style="font-size:10px;color:#64748b;max-width:'+(mob?'100%':'300px')+';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📝'+m.work_detail+'</span>':'')+
+        (clickable?'<span style="margin-left:auto;font-size:10px;font-weight:800;color:#2563eb">詳細 ›</span>':'')+
+        '</div>';
+    });
+  });
+  body.innerHTML=html;
+}
 function switchTab(t){
   CURRENT_TAB=t;
   document.getElementById('tab-tl').classList.toggle('on',t==='tl');
@@ -1289,12 +1340,14 @@ function switchTab(t){
   document.getElementById('tab-cost').classList.toggle('on',t==='cost');
   document.getElementById('tab-veh').classList.toggle('on',t==='veh');
   document.getElementById('tab-intake').classList.toggle('on',t==='intake');
+  document.getElementById('tab-iklist').classList.toggle('on',t==='iklist');
   document.getElementById('view-tl').style.display=(t==='tl')?'':'none';
   document.getElementById('view-data').style.display=(t==='data')?'':'none';
   document.getElementById('view-cost').style.display=(t==='cost')?'':'none';
   document.getElementById('view-veh').style.display=(t==='veh')?'':'none';
   document.getElementById('view-intake').style.display=(t==='intake')?'':'none';
-  if(t==='tl')renderTimeline();else if(t==='data'){renderData();renderCxl();}else if(t==='cost')renderCost();else if(t==='intake')loadIntake();else renderVehInfo();
+  document.getElementById('view-iklist').style.display=(t==='iklist')?'':'none';
+  if(t==='tl')renderTimeline();else if(t==='data'){renderData();renderCxl();}else if(t==='cost')renderCost();else if(t==='intake')loadIntake();else if(t==='iklist')loadIkList();else renderVehInfo();
 }
 
 // ★ 💰 コスト一覧タブ (2026-05-26 オーナー新規仕様)
