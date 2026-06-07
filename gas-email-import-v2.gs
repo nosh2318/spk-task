@@ -4781,7 +4781,7 @@ var PARTNER_NOTIFY_CHANNEL = 'C0B451BSK1B'; // #partner予約管理 (2026-05-16 
                                                   // 専用チャンネル作成後に差し替え
 
 // ★ 通知対象: 自社予約 作成/削除 + メンテ削除 のみ（オーナー指示 2026-05-16）
-var PARTNER_NOTIFY_ACTIONS = ['partner_reserved_add', 'partner_reserved_delete', 'maintenance_delete', 'intake_created', 'intake_approved', 'intake_reschedule', 'intake_resch_accepted', 'intake_resch_rejected', 'intake_resch_withdrawn', 'intake_edited', 'intake_cancel_request', 'intake_cancel_accepted', 'intake_cancel_rejected', 'intake_cancelled'];
+var PARTNER_NOTIFY_ACTIONS = ['partner_reserved_add', 'partner_reserved_delete', 'maintenance_delete', 'intake_created', 'intake_approved', 'intake_reschedule', 'intake_resch_accepted', 'intake_resch_rejected', 'intake_resch_withdrawn', 'intake_edited', 'intake_cancel_request', 'intake_cancel_accepted', 'intake_cancel_rejected', 'intake_cancelled', 'invoice_uploaded'];
 
 function notifyPartnerActions() {
   try {
@@ -4818,6 +4818,7 @@ function notifyPartnerActions() {
           case 'intake_cancel_request': emoji = '🟣'; label = '入庫キャンセル リクエスト'; break;
           case 'intake_cancel_accepted': emoji = '🗑️'; label = 'キャンセル承諾（入庫予定 削除）'; break;
           case 'intake_cancel_rejected': emoji = '↩️'; label = 'キャンセル拒否（FIX維持）'; break;
+          case 'invoice_uploaded': emoji = '🧾'; label = '請求書アップロード'; break;
           case 'intake_edited': emoji = '📝'; label = '入庫内容 編集'; break;
           default: emoji = '📝'; label = r.action_type;
         }
@@ -4878,6 +4879,11 @@ function notifyPartnerActions() {
                 x += '\n→ 本体APP「整備カレンダー」で承諾/差戻しできます';
               }
               if (r.action_type === 'intake_approved') x += '\n→ 配車表に〔FIX〕反映済み';
+              if (r.action_type === 'invoice_uploaded') {
+                x += '\n*📅 対象月*  ' + (p.year_month || '') + '\n*🚗 対象*  ' + (p.vehicle || '') + '\n*📄 件数*  ' + (p.count || 1) + '件';
+                if (p.note) x += '\n*💬 備考*  ' + p.note;
+                x += '\n→ 協力会社ビュー「🧾請求書」タブで確認できます';
+              }
               return x;
             })() }
           },

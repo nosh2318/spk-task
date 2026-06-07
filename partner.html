@@ -275,6 +275,7 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
     <button class="tab" id="tab-veh" onclick="switchTab('veh')">⚙️ 車両情報</button>
     <button class="tab" id="tab-intake" onclick="switchTab('intake')">🔧 入庫スケジュール</button>
     <button class="tab" id="tab-iklist" onclick="switchTab('iklist')">📜 入庫リスト</button>
+    <button class="tab" id="tab-inv" onclick="switchTab('inv')">🧾 請求書</button>
   </div>
 
   <div class="summary">
@@ -381,6 +382,15 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
   <div id="view-iklist" style="display:none;max-width:1340px;margin:0 auto">
     <div style="font-size:13px;font-weight:900;color:#1e293b;margin-bottom:10px">📜 入庫リスト（時系列）</div>
     <div id="iklist-body" class="loading">読み込み中...</div>
+  </div>
+  <!-- 🧾 請求書格納タブ (2026-06-07) -->
+  <div id="view-inv" style="display:none;max-width:1100px;margin:0 auto">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+      <span style="font-size:13px;font-weight:900;color:#1e293b">🧾 請求書格納（月別×車両別）</span>
+      <button onclick="openInvUpload()" style="margin-left:auto;padding:8px 16px;border-radius:8px;border:none;background:#1d4ed8;color:#fff;font-size:12px;font-weight:800;cursor:pointer">＋ 請求書をアップロード</button>
+    </div>
+    <div id="inv-body" class="loading">読み込み中...</div>
+    <div style="font-size:10px;color:#94a3b8;margin-top:8px">PDF・画像をアップロードできます。HANDYMAN側もこの画面でプレビュー/ダウンロードして確認します。</div>
   </div>
   <div id="view-veh" style="display:none">
     <div class="data-ctrl">
@@ -1411,6 +1421,103 @@ function renderIkList(){
   });
   body.innerHTML=html;
 }
+/* ===== 🧾 請求書格納 (2026-06-07) Supabase Storage: partner-invoices ===== */
+let INVFILES=[];
+async function loadInv(){
+  const body=document.getElementById('inv-body');
+  try{
+    const{data,error}=await sb.from('partner_invoice_files').select('*').eq('owner_company',OWNER_COMPANY).order('year_month',{ascending:false}).order('created_at',{ascending:false});
+    if(error)throw error;
+    INVFILES=data||[];
+    renderInv();
+  }catch(e){body.innerHTML='<div class="loading">取得エラー: '+e.message+'<br><span style="font-size:10px">※テーブル/バケット未作成の場合はHANDYMANにご連絡ください</span></div>';}
+}
+function renderInv(){
+  const body=document.getElementById('inv-body');if(!body)return;
+  if(!INVFILES.length){body.innerHTML='<div class="loading">請求書はまだありません。「＋ 請求書をアップロード」から追加してください。</div>';return;}
+  const byYm={};
+  INVFILES.forEach(x=>{(byYm[x.year_month]=byYm[x.year_month]||[]).push(x);});
+  let html='';
+  Object.keys(byYm).sort().reverse().forEach(ym=>{
+    html+='<div style="font-size:13px;font-weight:900;color:#1e293b;padding:8px 4px 4px;border-bottom:2px solid #1d4ed8;margin-top:10px">📅 '+ym.replace('-','年 ')+'月</div>';
+    // 車両別グループ
+    const byVc={};
+    byYm[ym].forEach(x=>{const k=x.vehicle_code||'_common';(byVc[k]=byVc[k]||[]).push(x);});
+    Object.keys(byVc).sort().forEach(vc=>{
+      const vlabel=vc==='_common'?'📦 共通・全体':('🚗 '+ikVehName(vc));
+      html+='<div style="font-size:11px;font-weight:800;color:#475569;padding:6px 4px 2px">'+vlabel+'（'+byVc[vc].length+'件）</div>';
+      byVc[vc].forEach(x=>{
+        const dt=(x.created_at||'').substring(0,10);
+        const sizeKb=x.size_bytes?Math.round(x.size_bytes/1024)+'KB':'';
+        html+='<div style="display:flex;align-items:center;gap:8px;padding:8px 6px;border-bottom:1px solid #f1f5f9;flex-wrap:wrap">'+
+          '<span style="font-size:14px">'+((x.mime||'').includes('pdf')?'📄':'🖼')+'</span>'+
+          '<span style="font-size:12px;font-weight:700;color:#1e293b;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+x.file_name+'</span>'+
+          (x.note?'<span style="font-size:10px;color:#64748b">💬'+x.note+'</span>':'')+
+          '<span style="font-size:10px;color:#94a3b8">'+dt+' '+sizeKb+'</span>'+
+          '<span style="margin-left:auto;display:flex;gap:4px">'+
+          '<button onclick="invOpen(\''+x.id+'\',false)" style="padding:4px 12px;border-radius:6px;border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;font-size:10px;font-weight:700;cursor:pointer">👁 プレビュー</button>'+
+          '<button onclick="invOpen(\''+x.id+'\',true)" style="padding:4px 12px;border-radius:6px;border:none;background:#1d4ed8;color:#fff;font-size:10px;font-weight:700;cursor:pointer">⬇️ DL</button>'+
+          '<button onclick="invDelete(\''+x.id+'\')" style="padding:4px 8px;border-radius:6px;border:none;background:#fee2e2;color:#b91c1c;font-size:10px;font-weight:700;cursor:pointer">🗑</button>'+
+          '</span></div>';
+      });
+    });
+  });
+  body.innerHTML=html;
+}
+async function invOpen(id,dl){
+  const x=INVFILES.find(f=>f.id===id);if(!x)return;
+  const{data,error}=await sb.storage.from('partner-invoices').createSignedUrl(x.file_path,3600,dl?{download:x.file_name}:undefined);
+  if(error||!data){showToast('URL発行失敗: '+(error&&error.message),'err');return;}
+  window.open(data.signedUrl,'_blank');
+}
+async function invDelete(id){
+  const x=INVFILES.find(f=>f.id===id);if(!x)return;
+  if(!confirm('「'+x.file_name+'」を削除しますか？'))return;
+  await sb.storage.from('partner-invoices').remove([x.file_path]);
+  const{error}=await sb.from('partner_invoice_files').delete().eq('id',id);
+  if(error){showToast('削除失敗: '+error.message,'err');return;}
+  INVFILES=INVFILES.filter(f=>f.id!==id);renderInv();showToast('削除しました','ok');
+}
+function openInvUpload(){
+  const ov=document.createElement('div');
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9000;display:flex;align-items:center;justify-content:center;padding:14px';
+  const inp='width:100%;border:1px solid #e2e8f0;border-radius:7px;padding:7px 8px;font-size:13px;font-family:inherit;box-sizing:border-box';
+  const lab='display:block;font-size:10px;color:#64748b;margin-bottom:2px;font-weight:700';
+  const ymNow=new Date().toISOString().substring(0,7);
+  const vehOpts=VEHICLES.map(v=>'<option value="'+v.code+'">'+(v.name||v.code)+' '+(v.plate_no||'')+'</option>').join('');
+  ov.innerHTML='<div style="background:#fff;border-radius:14px;padding:18px;width:100%;max-width:420px" onclick="event.stopPropagation()">'+
+   '<div style="font-size:13px;font-weight:900;margin-bottom:10px">🧾 請求書アップロード</div>'+
+   '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">'+
+   '<div><label style="'+lab+'">対象月</label><input type="month" id="iv-ym" style="'+inp+'" value="'+ymNow+'"></div>'+
+   '<div><label style="'+lab+'">車両</label><select id="iv-vc" style="'+inp+'"><option value="">共通・全体請求</option>'+vehOpts+'</select></div></div>'+
+   '<div style="margin-bottom:8px"><label style="'+lab+'">ファイル（PDF/画像・複数可）</label><input type="file" id="iv-file" style="'+inp+'" accept=".pdf,image/*" multiple></div>'+
+   '<div style="margin-bottom:10px"><label style="'+lab+'">備考（任意）</label><input id="iv-note" style="'+inp+'" placeholder="例: 6月分 車検費用"></div>'+
+   '<button id="iv-send" style="width:100%;padding:11px;border-radius:8px;border:none;background:#1d4ed8;color:#fff;font-size:13px;font-weight:900;cursor:pointer">📤 アップロード</button></div>';
+  ov.onclick=()=>ov.remove();
+  document.body.appendChild(ov);
+  document.getElementById('iv-send').onclick=async()=>{
+    const ym=document.getElementById('iv-ym').value;
+    const vc=document.getElementById('iv-vc').value;
+    const files=document.getElementById('iv-file').files;
+    const note=document.getElementById('iv-note').value||'';
+    if(!ym||!files.length){showToast('対象月とファイルを指定してください','err');return;}
+    const btn=document.getElementById('iv-send');btn.disabled=true;btn.textContent='アップロード中...';
+    let okCnt=0;
+    for(const file of files){
+      const safe=file.name.replace(/[^\w.\-ぁ-んァ-ヶ一-龠]/g,'_');
+      const path=OWNER_COMPANY+'/'+ym+'/'+(vc||'common')+'/'+Date.now()+'_'+safe;
+      const{error:upErr}=await sb.storage.from('partner-invoices').upload(path,file,{contentType:file.type||'application/octet-stream'});
+      if(upErr){showToast('アップロード失敗: '+upErr.message,'err');continue;}
+      const{error:dbErr}=await sb.from('partner_invoice_files').insert({owner_company:OWNER_COMPANY,year_month:ym,vehicle_code:vc||'',file_path:path,file_name:file.name,mime:file.type||'',size_bytes:file.size||0,note:note,uploaded_by:(CURRENT_USER&&CURRENT_USER.email)||''});
+      if(!dbErr)okCnt++;
+    }
+    if(okCnt){
+      try{await sb.from('partner_actions').insert({action_type:'invoice_uploaded',owner_company:OWNER_COMPANY,vehicle_code:vc||'',user_email:(CURRENT_USER&&CURRENT_USER.email)||'',notified_slack:false,payload:{action:'invoice_uploaded',year_month:ym,vehicle:vc?ikVehName(vc):'共通・全体',count:okCnt,note:note}});}catch(e){}
+      showToast('📤 '+okCnt+'件アップロードしました','ok');
+    }
+    ov.remove();loadInv();
+  };
+}
 function switchTab(t){
   CURRENT_TAB=t;
   document.getElementById('tab-tl').classList.toggle('on',t==='tl');
@@ -1419,13 +1526,15 @@ function switchTab(t){
   document.getElementById('tab-veh').classList.toggle('on',t==='veh');
   document.getElementById('tab-intake').classList.toggle('on',t==='intake');
   document.getElementById('tab-iklist').classList.toggle('on',t==='iklist');
+  document.getElementById('tab-inv').classList.toggle('on',t==='inv');
   document.getElementById('view-tl').style.display=(t==='tl')?'':'none';
   document.getElementById('view-data').style.display=(t==='data')?'':'none';
   document.getElementById('view-cost').style.display=(t==='cost')?'':'none';
   document.getElementById('view-veh').style.display=(t==='veh')?'':'none';
   document.getElementById('view-intake').style.display=(t==='intake')?'':'none';
   document.getElementById('view-iklist').style.display=(t==='iklist')?'':'none';
-  if(t==='tl')renderTimeline();else if(t==='data'){renderData();renderCxl();}else if(t==='cost')renderCost();else if(t==='intake')loadIntake();else if(t==='iklist')loadIkList();else renderVehInfo();
+  document.getElementById('view-inv').style.display=(t==='inv')?'':'none';
+  if(t==='tl')renderTimeline();else if(t==='data'){renderData();renderCxl();}else if(t==='cost')renderCost();else if(t==='intake')loadIntake();else if(t==='iklist')loadIkList();else if(t==='inv')loadInv();else renderVehInfo();
 }
 
 // ★ 💰 コスト一覧タブ (2026-05-26 オーナー新規仕様)
