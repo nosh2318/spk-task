@@ -537,8 +537,8 @@ const DB = {
     return publicUrl;
   },
   // --- メンテナンス ---
-  async fetchMaintenance(){if(!sb)return[];const{data,error}=await sb.from("maintenance").select("*");if(error){dbLog("fetchMaint",false,error.message);return[];}dbLog("fetchMaint",true,(data||[]).length+"件");return(data||[]).map(m=>({id:m.id,vehicleCode:m.vehicle_code,startDate:m.start_date,endDate:m.end_date,label:m.label||"",cost:Number(m.cost)||0,actualCost:Number(m.actual_cost)||0,workshop:m.workshop||"",invoiceNo:m.invoice_no||"",maintNotes:m.maint_notes||"",blockType:m.block_type||"maintenance",ownerCompany:m.owner_company||""}));},
-  async saveMaintenance(arr){if(!sb)return;const rows=arr.map(m=>({id:m.id,vehicle_code:m.vehicleCode,start_date:m.startDate,end_date:m.endDate,label:m.label||"",cost:Number(m.cost)||0,actual_cost:Number(m.actualCost)||0,workshop:m.workshop||"",invoice_no:m.invoiceNo||"",maint_notes:m.maintNotes||"",block_type:m.blockType||"maintenance",owner_company:m.ownerCompany||""}));if(rows.length){const{error}=await sb.from("maintenance").upsert(rows,{onConflict:"id"});if(error)dbLog("saveMaint",false,error.message);else dbLog("saveMaint",true,rows.length+"件");}},
+  async fetchMaintenance(){if(!sb)return[];const{data,error}=await sb.from("maintenance").select("*");if(error){dbLog("fetchMaint",false,error.message);return[];}dbLog("fetchMaint",true,(data||[]).length+"件");return(data||[]).map(m=>({id:m.id,vehicleCode:m.vehicle_code,startDate:m.start_date,endDate:m.end_date,label:m.label||"",cost:Number(m.cost)||0,actualCost:Number(m.actual_cost)||0,workshop:m.workshop||"",invoiceNo:m.invoice_no||"",maintNotes:m.maint_notes||"",blockType:m.block_type||"maintenance",ownerCompany:m.owner_company||"",status:m.status||"",workDetail:m.work_detail||"",repairCause:m.repair_cause||"",actualOutDate:m.actual_out_date||"",candidateDates:m.candidate_dates||null}));},
+  async saveMaintenance(arr){if(!sb)return;const rows=arr.map(m=>{const r={id:m.id,vehicle_code:m.vehicleCode,start_date:m.startDate,end_date:m.endDate,label:m.label||"",cost:Number(m.cost)||0,actual_cost:Number(m.actualCost)||0,workshop:m.workshop||"",invoice_no:m.invoiceNo||"",maint_notes:m.maintNotes||"",block_type:m.blockType||"maintenance",owner_company:m.ownerCompany||""};if(m.status!==undefined)r.status=m.status||null;if(m.workDetail!==undefined)r.work_detail=m.workDetail||null;if(m.repairCause!==undefined)r.repair_cause=m.repairCause||null;if(m.actualOutDate!==undefined)r.actual_out_date=m.actualOutDate||null;if(m.candidateDates!==undefined)r.candidate_dates=m.candidateDates||null;return r;});if(rows.length){const{error}=await sb.from("maintenance").upsert(rows,{onConflict:"id"});if(error)dbLog("saveMaint",false,error.message);else dbLog("saveMaint",true,rows.length+"件");}},
   async updateMaintenanceActualCost(id,actualCost){if(!sb)return;const{error}=await sb.from("maintenance").update({actual_cost:Number(actualCost)||0}).eq("id",id);if(error)dbLog("updateMaintActualCost",false,error.message);else dbLog("updateMaintActualCost",true,id);},
   async deleteMaintenance(id){if(!sb)return;const{error}=await sb.from("maintenance").delete().eq("id",id);if(error)dbLog("delMaint",false,error.message);else dbLog("delMaint",true,id);},
   async clearAllMaintenance(){if(!sb)return;await sb.from("maintenance").delete().neq("id","__never__");},
@@ -4369,6 +4369,173 @@ function TeamCalendar({data,maintenance,isSpk}){
       </div>
     </div>}
     </div>
+  </div>;
+}
+
+/* ==========================================
+   🔧 入庫管理ボード (2026-06-07 Phase1)
+   起点=配車表のメンテブロック(label=車検/半年点検/修理)
+   status: null/''=調整中 → confirmed=日程確定 → in_shop=入庫中 → done=完了
+   完了時: 車検→満了+24ヶ月/点検期限=出庫+6ヶ月、点検→点検期限=出庫+6ヶ月 を車両マスター自動更新
+   ========================================== */
+function IntakeBoard({vehicles,maintenance,setMaintenance,setVehicles}){
+  const today=new Date().toISOString().slice(0,10);
+  const[open,setOpen]=useState(false);
+  const[detail,setDetail]=useState(null);// 編集中レコード(コピー)
+  const[doneModal,setDoneModal]=useState(null);// 完了入力 {rec,actualCost,invoiceNo,outDate}
+  const[quick,setQuick]=useState(null);// 突発修理 {vc,start,end,cause,memo}
+  const TYPES=["車検","半年点検","修理"];
+  const TC={"車検":{bg:"#dbeafe",c:"#1e40af"},"半年点検":{bg:"#dcfce7",c:"#166534"},"修理":{bg:"#fef2f2",c:"#991b1b"}};
+  const SL={requested:{l:"📨 調整中",bg:"#fef3c7",c:"#92400e"},confirmed:{l:"📅 日程確定",bg:"#dbeafe",c:"#1e40af"},in_shop:{l:"🏭 入庫中",bg:"#ede9fe",c:"#6d28d9"},done:{l:"✅ 完了",bg:"#dcfce7",c:"#166534"}};
+  const stOf=m=>m.status||"requested";
+  const addM=(ymd,months)=>{if(!ymd)return"";const d=new Date(ymd+"T00:00:00");d.setMonth(d.getMonth()+months);return d.toISOString().slice(0,10);};
+  const vehName=vc=>{const v=vehicles.find(x=>x.code===vc);return v?(v.name+(v.no?" "+v.no:"")):vc;};
+  // 仮埋め運用: 配車表の年間仮埋め(予算大枠)のうち「直近3ヶ月以内に入庫開始」のものだけ調整対象として表示。
+  // それ以降は仮埋め予算として配車表/予算ビューに保持（月が近づいたら自動でここに現れる）
+  const recs=useMemo(()=>{
+    const adjLim=(()=>{const d=new Date(today+"T00:00:00");d.setMonth(d.getMonth()+3);return d.toISOString().slice(0,10);})();
+    return(maintenance||[]).filter(m=>TYPES.includes(m.label)&&stOf(m)!=="done"&&(m.endDate||m.startDate||"")>=today.slice(0,8)+"01"&&(stOf(m)!=="requested"||(m.startDate||"")<=adjLim)).sort((a,b)=>(a.startDate||"").localeCompare(b.startDate||""));
+  },[maintenance]);
+  const doneRecent=useMemo(()=>(maintenance||[]).filter(m=>TYPES.includes(m.label)&&stOf(m)==="done"&&(m.actualOutDate||m.endDate||"")>=addM(today,-1)),[maintenance]);
+  // 期限接近(60日以内)で未来予定が無い車両
+  const lim=addM(today,2);
+  const alerts=useMemo(()=>{
+    const out=[];
+    (vehicles||[]).filter(v=>v.active!==false).forEach(v=>{
+      const hasPlan=lbl=>(maintenance||[]).some(m=>m.vehicleCode===v.code&&m.label===lbl&&stOf(m)!=="done"&&(m.startDate||"")>=today);
+      if(v.inspectionDueDate&&v.inspectionDueDate<=lim&&!hasPlan("車検"))out.push({v,lbl:"車検",due:v.inspectionDueDate});
+      if(v.tenkenDueDate&&v.tenkenDueDate<=lim&&!hasPlan("半年点検")&&!hasPlan("車検"))out.push({v,lbl:"半年点検",due:v.tenkenDueDate});
+    });
+    return out.sort((a,b)=>a.due.localeCompare(b.due));
+  },[vehicles,maintenance]);
+  const save=async(rec,vehPatch)=>{
+    const next=(maintenance||[]).some(m=>m.id===rec.id)?(maintenance||[]).map(m=>m.id===rec.id?rec:m):[...(maintenance||[]),rec];
+    setMaintenance(next);await DB.saveMaintenance([rec]);
+    if(vehPatch&&sb){await sb.from("vehicles").update(vehPatch.db).eq("code",vehPatch.code);
+      setVehicles(vs=>vs.map(v=>v.code===vehPatch.code?{...v,...vehPatch.app}:v));}
+  };
+  const advance=async(m)=>{const order=["requested","confirmed","in_shop"];const cur=stOf(m);
+    if(cur==="in_shop"){setDoneModal({rec:m,actualCost:m.actualCost||m.cost||0,invoiceNo:m.invoiceNo||"",outDate:m.actualOutDate||today});return;}
+    const nxt=order[order.indexOf(cur)+1];await save({...m,status:nxt});};
+  const back=async(m)=>{const order=["requested","confirmed","in_shop"];const i=order.indexOf(stOf(m));if(i>0)await save({...m,status:order[i-1]});};
+  const finishDone=async()=>{
+    const{rec,actualCost,invoiceNo,outDate}=doneModal;
+    const v=vehicles.find(x=>x.code===rec.vehicleCode);
+    let vehPatch=null;
+    if(v){
+      if(rec.label==="車検"){const nd=addM(v.inspectionDueDate||outDate,24);const nt=addM(outDate,6);
+        vehPatch={code:v.code,db:{inspection_due_date:nd,tenken_due_date:nt},app:{inspectionDueDate:nd,tenkenDueDate:nt}};}
+      else if(rec.label==="半年点検"){const nt=addM(outDate,6);
+        vehPatch={code:v.code,db:{tenken_due_date:nt},app:{tenkenDueDate:nt}};}
+    }
+    await save({...rec,status:"done",actualCost:Number(actualCost)||0,invoiceNo:invoiceNo||"",actualOutDate:outDate},vehPatch);
+    setDoneModal(null);setDetail(null);
+    if(vehPatch)window.alert("✅ 完了。車両マスターの期限を自動更新しました\n"+(rec.label==="車検"?"車検満了: "+vehPatch.app.inspectionDueDate+" / 点検期限: "+vehPatch.app.tenkenDueDate:"点検期限: "+vehPatch.app.tenkenDueDate));
+  };
+  const quickPlan=async(v,lbl,due)=>{
+    const start=window.prompt(lbl+" 入庫開始日（"+vehName(v.code)+"・期限 "+due+"）",addM(due,0)<today?today:due);
+    if(!start)return;
+    const end=window.prompt("出庫予定日",start);if(!end)return;
+    const rec={id:"m"+Date.now(),vehicleCode:v.code,startDate:start,endDate:end,label:lbl,cost:lbl==="車検"?(v.shakenCost||0):lbl==="半年点検"?(v.tenkenCost||0):0,workshop:"",invoiceNo:"",maintNotes:"",blockType:"maintenance",ownerCompany:"",status:"requested",workDetail:"",repairCause:"",actualOutDate:"",candidateDates:null};
+    await save(rec);window.alert("📨 入庫依頼を作成しました（配車表にもブロック反映）");
+  };
+  const createQuickRepair=async()=>{
+    const{vc,start,end,cause,memo}=quick;
+    if(!vc){window.alert("車両を選択してください");return;}
+    const rec={id:"m"+Date.now(),vehicleCode:vc,startDate:start,endDate:end,label:"修理",cost:0,workshop:"",invoiceNo:"",maintNotes:memo||"",blockType:"maintenance",ownerCompany:"",status:"in_shop",workDetail:memo||"",repairCause:cause,actualOutDate:"",candidateDates:null};
+    await save(rec);setQuick(null);
+  };
+  const inp={width:"100%",border:"1px solid #e2e8f0",borderRadius:7,padding:"6px 8px",fontSize:13,fontFamily:"inherit"};
+  const lab={display:"block",fontSize:10,color:"#64748b",marginBottom:2,fontWeight:700};
+  const chip=(m)=>{const s=SL[stOf(m)];return <span style={{fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:4,background:s.bg,color:s.c}}>{s.l}</span>;};
+  const cnt={requested:recs.filter(m=>stOf(m)==="requested").length,confirmed:recs.filter(m=>stOf(m)==="confirmed").length,in_shop:recs.filter(m=>stOf(m)==="in_shop").length};
+  return <div style={{marginBottom:8}}>
+    <div onClick={()=>setOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 12px",borderRadius:open?"12px 12px 0 0":12,background:"linear-gradient(135deg,#ede9fe,#ddd6fe)",border:"1px solid #c4b5fd",cursor:"pointer",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
+      <span style={{fontSize:15}}>🔧</span><span style={{fontSize:12,fontWeight:900,color:"#4c1d95"}}>入庫管理（車検・点検・修理）</span>
+      {alerts.length>0&&<span style={{fontSize:9,fontWeight:800,padding:"2px 7px",borderRadius:10,background:"#fee2e2",color:"#b91c1c"}}>⚠️ 期限接近 {alerts.length}</span>}
+      <span style={{fontSize:9,fontWeight:700,color:"#6d28d9"}}>📨{cnt.requested} 📅{cnt.confirmed} 🏭{cnt.in_shop}</span>
+      <span style={{marginLeft:"auto",fontSize:10,color:"#7c3aed",fontWeight:700}}>{open?"▲":"▼"}</span>
+    </div>
+    {open&&<div style={{border:"1px solid #c4b5fd",borderTop:"none",borderRadius:"0 0 12px 12px",background:"#fff",padding:12}}>
+      <div style={{display:"flex",gap:6,marginBottom:10}}>
+        <button onClick={()=>setQuick({vc:"",start:today,end:addM(today,0),cause:"breakdown",memo:""})} style={{padding:"7px 12px",borderRadius:8,border:"none",background:"#dc2626",color:"#fff",fontSize:11,fontWeight:800,cursor:"pointer"}}>🚨 突発修理（今すぐ入庫）</button>
+        <span style={{fontSize:9,color:"#94a3b8",alignSelf:"center"}}>計画入庫＝配車表の仮埋めブロック（年間予算枠）。入庫3ヶ月前になるとここに現れる→車両別に日程・内容・費用を調整</span>
+      </div>
+      {alerts.length>0&&<div style={{marginBottom:12,padding:10,borderRadius:10,background:"#fef2f2",border:"1px solid #fecaca"}}>
+        <div style={{fontSize:11,fontWeight:900,color:"#991b1b",marginBottom:6}}>⚠️ 期限接近（60日以内・入庫予定なし）</div>
+        {alerts.map((a,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 0",borderBottom:i<alerts.length-1?"1px dashed #fecaca":"none"}}>
+          <span style={{fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:4,background:TC[a.lbl].bg,color:TC[a.lbl].c}}>{a.lbl}</span>
+          <span style={{fontSize:12,fontWeight:700,color:"#1e293b"}}>{a.v.name} {a.v.no}</span>
+          <span style={{fontSize:11,color:a.due<today?"#dc2626":"#b45309",fontWeight:800}}>期限 {a.due}{a.due<today?"（超過!）":""}</span>
+          <button onClick={()=>quickPlan(a.v,a.lbl,a.due)} style={{marginLeft:"auto",padding:"4px 10px",borderRadius:6,border:"none",background:"#2563eb",color:"#fff",fontSize:10,fontWeight:800,cursor:"pointer"}}>📨 入庫依頼を作成</button>
+        </div>)}
+      </div>}
+      {recs.length===0&&<div style={{fontSize:11,color:"#94a3b8",padding:8}}>進行中の入庫はありません</div>}
+      {recs.map(m=><div key={m.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 6px",borderBottom:"1px solid #f1f5f9",flexWrap:"wrap"}}>
+        {chip(m)}
+        <span style={{fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:4,background:TC[m.label].bg,color:TC[m.label].c}}>{m.label}</span>
+        <span style={{fontSize:12,fontWeight:800,color:"#1e293b"}}>{vehName(m.vehicleCode)}</span>
+        <span style={{fontSize:11,color:"#475569"}}>{m.startDate}〜{m.endDate}</span>
+        {m.workshop&&<span style={{fontSize:10,color:"#64748b"}}>🏭{m.workshop}</span>}
+        {(m.cost>0)&&<span style={{fontSize:10,color:"#0369a1",fontWeight:700}}>見積¥{Number(m.cost).toLocaleString()}</span>}
+        <span style={{marginLeft:"auto",display:"flex",gap:4}}>
+          <button onClick={()=>setDetail({...m})} style={{padding:"4px 9px",borderRadius:6,border:"1px solid #e2e8f0",background:"#f8fafc",fontSize:10,fontWeight:700,cursor:"pointer"}}>📝 詳細</button>
+          <button onClick={()=>advance(m)} style={{padding:"4px 9px",borderRadius:6,border:"none",background:stOf(m)==="in_shop"?"#16a34a":"#7c3aed",color:"#fff",fontSize:10,fontWeight:800,cursor:"pointer"}}>{stOf(m)==="requested"?"📅 日程確定":stOf(m)==="confirmed"?"🏭 入庫":"✅ 完了"}</button>
+        </span>
+      </div>)}
+      {doneRecent.length>0&&<div style={{marginTop:8,fontSize:10,color:"#16a34a",fontWeight:700}}>✅ 直近1ヶ月の完了 {doneRecent.length}件（{doneRecent.map(m=>vehName(m.vehicleCode)+"("+m.label+")").join("・")}）</div>}
+    </div>}
+    {detail&&<div onClick={()=>setDetail(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,.45)",zIndex:9000,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:14,padding:16,width:"100%",maxWidth:440,maxHeight:"86vh",overflowY:"auto"}}>
+        <div style={{fontSize:13,fontWeight:900,marginBottom:10}}>📝 {detail.label} — {vehName(detail.vehicleCode)} {chip(detail)}</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+          <div><label style={lab}>入庫日</label><input type="date" style={inp} value={detail.startDate||""} onChange={e=>setDetail(d=>({...d,startDate:e.target.value}))}/></div>
+          <div><label style={lab}>出庫予定日</label><input type="date" style={inp} value={detail.endDate||""} onChange={e=>setDetail(d=>({...d,endDate:e.target.value}))}/></div>
+          <div><label style={lab}>工場（協力会社）</label><input style={inp} value={detail.workshop||""} onChange={e=>setDetail(d=>({...d,workshop:e.target.value}))} placeholder="共立自動車 等"/></div>
+          <div><label style={lab}>見積額</label><input type="number" style={inp} value={detail.cost||0} onChange={e=>setDetail(d=>({...d,cost:e.target.value}))}/></div>
+        </div>
+        {detail.label==="修理"&&<div style={{marginBottom:8}}><label style={lab}>原因</label>
+          <select style={inp} value={detail.repairCause||""} onChange={e=>setDetail(d=>({...d,repairCause:e.target.value}))}>
+            <option value="">—</option><option value="accident">事故</option><option value="breakdown">故障</option><option value="damage">傷・ヘコミ</option></select></div>}
+        <div style={{marginBottom:8}}><label style={lab}>作業内容（協力会社と共有）</label><textarea style={{...inp,minHeight:60}} value={detail.workDetail||""} onChange={e=>setDetail(d=>({...d,workDetail:e.target.value}))} placeholder="作業内容・部品・依頼事項など"/></div>
+        <div style={{marginBottom:10}}><label style={lab}>メモ（調整経緯）</label><textarea style={{...inp,minHeight:44}} value={detail.maintNotes||""} onChange={e=>setDetail(d=>({...d,maintNotes:e.target.value}))}/></div>
+        <div style={{display:"flex",gap:6}}>
+          <button onClick={async()=>{await save(detail);setDetail(null);}} style={{flex:1,padding:9,borderRadius:8,border:"none",background:"#2563eb",color:"#fff",fontSize:12,fontWeight:800,cursor:"pointer"}}>💾 保存</button>
+          {stOf(detail)!=="requested"&&<button onClick={async()=>{await back(detail);setDetail(null);}} style={{padding:"9px 12px",borderRadius:8,border:"1px solid #e2e8f0",background:"#f8fafc",fontSize:11,fontWeight:700,cursor:"pointer"}}>↩︎ 状態を戻す</button>}
+          <button onClick={async()=>{if(!window.confirm("この入庫レコードを削除しますか？（配車表ブロックも消えます）"))return;if(window.prompt("確認のため「削除」と入力")!=="削除")return;setMaintenance(ms=>ms.filter(x=>x.id!==detail.id));if(sb)await sb.from("maintenance").delete().eq("id",detail.id);setDetail(null);}} style={{padding:"9px 12px",borderRadius:8,border:"none",background:"#fee2e2",color:"#b91c1c",fontSize:11,fontWeight:700,cursor:"pointer"}}>🗑</button>
+        </div>
+      </div>
+    </div>}
+    {doneModal&&<div onClick={()=>setDoneModal(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,.45)",zIndex:9001,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:14,padding:16,width:"100%",maxWidth:380}}>
+        <div style={{fontSize:13,fontWeight:900,marginBottom:10}}>✅ 完了処理 — {doneModal.rec.label} {vehName(doneModal.rec.vehicleCode)}</div>
+        <div style={{marginBottom:8}}><label style={lab}>実出庫日</label><input type="date" style={inp} value={doneModal.outDate} onChange={e=>setDoneModal(d=>({...d,outDate:e.target.value}))}/></div>
+        <div style={{marginBottom:8}}><label style={lab}>実績費用</label><input type="number" style={inp} value={doneModal.actualCost} onChange={e=>setDoneModal(d=>({...d,actualCost:e.target.value}))}/></div>
+        <div style={{marginBottom:10}}><label style={lab}>請求書番号（任意）</label><input style={inp} value={doneModal.invoiceNo} onChange={e=>setDoneModal(d=>({...d,invoiceNo:e.target.value}))}/></div>
+        <div style={{fontSize:10,color:"#64748b",marginBottom:10}}>{doneModal.rec.label==="車検"?"完了で 車検満了+24ヶ月・点検期限=出庫+6ヶ月 を自動更新します":doneModal.rec.label==="半年点検"?"完了で 点検期限=出庫+6ヶ月 を自動更新します":"修理は期限更新なし"}</div>
+        <button onClick={finishDone} style={{width:"100%",padding:10,borderRadius:8,border:"none",background:"#16a34a",color:"#fff",fontSize:12,fontWeight:800,cursor:"pointer"}}>✅ 完了を確定</button>
+      </div>
+    </div>}
+    {quick&&<div onClick={()=>setQuick(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,.45)",zIndex:9001,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:14,padding:16,width:"100%",maxWidth:380}}>
+        <div style={{fontSize:13,fontWeight:900,marginBottom:10,color:"#dc2626"}}>🚨 突発修理 — 今すぐ入庫</div>
+        <div style={{marginBottom:8}}><label style={lab}>車両</label>
+          <select style={inp} value={quick.vc} onChange={e=>setQuick(q=>({...q,vc:e.target.value}))}>
+            <option value="">選択してください</option>
+            {vehicles.filter(v=>v.active!==false).map(v=><option key={v.code} value={v.code}>{v.type} / {v.name} {v.no}</option>)}
+          </select></div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+          <div><label style={lab}>入庫日</label><input type="date" style={inp} value={quick.start} onChange={e=>setQuick(q=>({...q,start:e.target.value}))}/></div>
+          <div><label style={lab}>出庫予定（仮でOK）</label><input type="date" style={inp} value={quick.end} onChange={e=>setQuick(q=>({...q,end:e.target.value}))}/></div>
+        </div>
+        <div style={{marginBottom:8}}><label style={lab}>原因</label>
+          <select style={inp} value={quick.cause} onChange={e=>setQuick(q=>({...q,cause:e.target.value}))}>
+            <option value="accident">事故</option><option value="breakdown">故障</option><option value="damage">傷・ヘコミ</option></select></div>
+        <div style={{marginBottom:10}}><label style={lab}>状況メモ</label><textarea style={{...inp,minHeight:50}} value={quick.memo} onChange={e=>setQuick(q=>({...q,memo:e.target.value}))} placeholder="何が起きたか・予約への影響など"/></div>
+        <div style={{fontSize:10,color:"#64748b",marginBottom:8}}>登録と同時に配車表をブロックします（該当期間は配車不可）</div>
+        <button onClick={createQuickRepair} style={{width:"100%",padding:10,borderRadius:8,border:"none",background:"#dc2626",color:"#fff",fontSize:12,fontWeight:800,cursor:"pointer"}}>🚨 入庫中として登録</button>
+      </div>
+    </div>}
   </div>;
 }
 
@@ -19275,7 +19442,7 @@ function App(){
               {/* ===== 📅 チームカレンダー ===== */}
               <TeamCalendar data={data} maintenance={maintenance} isSpk={true}/>
               {/* ===== 🚗 車検/点検カレンダー (TOP表示用) ===== */}
-              <InspectionTopCalendar vehicles={vehicles} maintenance={maintenance} isSpk={true}/>
+              <IntakeBoard vehicles={vehicles} maintenance={maintenance} setMaintenance={setMaintenance} setVehicles={setVehicles}/>\n              <InspectionTopCalendar vehicles={vehicles} maintenance={maintenance} isSpk={true}/>
               {/* ★ タスクサマリー + 本日スケジュール ヘッダー2列 */}
               <div style={{display:"flex",gap:6,marginBottom:6}}>
                 <div onClick={()=>setTaskSumOpen(o=>!o)} style={{flex:1,display:"flex",alignItems:"center",gap:6,padding:"8px 10px",borderRadius:10,background:"#f8fafc",border:"1px solid #e2e8f0",cursor:"pointer",userSelect:"none",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
