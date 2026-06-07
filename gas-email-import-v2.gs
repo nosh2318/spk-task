@@ -4781,7 +4781,7 @@ var PARTNER_NOTIFY_CHANNEL = 'C0B451BSK1B'; // #partner予約管理 (2026-05-16 
                                                   // 専用チャンネル作成後に差し替え
 
 // ★ 通知対象: 自社予約 作成/削除 + メンテ削除 のみ（オーナー指示 2026-05-16）
-var PARTNER_NOTIFY_ACTIONS = ['partner_reserved_add', 'partner_reserved_delete', 'maintenance_delete'];
+var PARTNER_NOTIFY_ACTIONS = ['partner_reserved_add', 'partner_reserved_delete', 'maintenance_delete', 'intake_approved', 'intake_reschedule'];
 
 function notifyPartnerActions() {
   try {
@@ -4808,6 +4808,8 @@ function notifyPartnerActions() {
           case 'partner_reserved_add': emoji = '🟣'; label = '自社予約 作成'; break;
           case 'partner_reserved_delete': emoji = '🗑️'; label = '自社予約 削除'; break;
           case 'maintenance_delete': emoji = '🗑️'; label = 'メンテナンス 削除'; break;
+          case 'intake_approved': emoji = '✅'; label = '入庫日程 承認（FIX確定）'; break;
+          case 'intake_reschedule': emoji = '🔴'; label = '入庫 日程変更リクエスト'; break;
           default: emoji = '📝'; label = r.action_type;
         }
         // 協力会社名
@@ -4855,7 +4857,19 @@ function notifyPartnerActions() {
           },
           {
             type: 'section',
-            text: { type: 'mrkdwn', text: '*📅 期間*\n`' + period + '`' }
+            text: { type: 'mrkdwn', text: '*📅 期間*\n`' + period + '`' + (function(){
+              var p = r.payload || {};
+              var x = '';
+              if (p.label) x += '\n*🔧 種別*  ' + p.label;
+              if (r.action_type === 'intake_reschedule') {
+                var cd = p.candidate || {};
+                if (cd.start) x += '\n*🗓 希望日程*  `' + cd.start + ' 〜 ' + (cd.end || cd.start) + '`';
+                if (cd.comment) x += '\n*💬 コメント*  ' + cd.comment;
+                x += '\n→ 本体APP「整備カレンダー」で承諾/差戻しできます';
+              }
+              if (r.action_type === 'intake_approved') x += '\n→ 配車表に〔FIX〕反映済み';
+              return x;
+            })() }
           },
           {
             type: 'context',
