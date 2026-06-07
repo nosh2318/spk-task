@@ -1137,7 +1137,7 @@ async function loadIntake(){
   const body=document.getElementById('intake-body');
   try{
     const[{data:mt},{data:hv}]=await Promise.all([
-      sb.from('maintenance').select('*').in('status',['pending','approved','reschedule']).eq('owner_company',OWNER_COMPANY),// 入庫先=自社宛のみ(種別不問)
+      sb.from('maintenance').select('*').in('status',['pending','approved','reschedule','cancel_request']).eq('owner_company',OWNER_COMPANY),// 入庫先=自社宛のみ(種別不問)
       sb.from('vehicles').select('code,name,plate_no,type')
     ]);
     HVEH={};(hv||[]).forEach(v=>HVEH[v.code]=v);
@@ -1153,11 +1153,11 @@ function renderIntake(){
   if(vm&&vw){vm.style.background=IK_VIEW==='month'?'#1e293b':'#fff';vm.style.color=IK_VIEW==='month'?'#fff':'#1e293b';vw.style.background=IK_VIEW==='week'?'#1e293b':'#fff';vw.style.color=IK_VIEW==='week'?'#fff':'#1e293b';}
   const todayS=ikYMD(new Date());
   const TC={'車検':'🚗','半年点検':'🔧','修理':'🔩','メンテナンス':'🔧','清掃':'🧹','その他':'📌'};
-  const stChip=m2=>{const st=m2.status||'pending';return st==='pending'?['#f59e0b','仮']:st==='reschedule'?['#dc2626','変更依頼']:['#16a34a','FIX'];};
+  const stChip=m2=>{const st=m2.status||'pending';return st==='pending'?['#f59e0b','仮']:st==='reschedule'?['#dc2626','変更依頼']:st==='cancel_request'?['#7c3aed','取消依頼']:['#16a34a','FIX'];};
   // Handover（未FIX一覧）
   let html='';
   const pendList=INTAKE.filter(x=>(x.status||'pending')==='pending').sort((a,b)=>(a.start_date||'').localeCompare(b.start_date||''));
-  const reschList=INTAKE.filter(x=>x.status==='reschedule').sort((a,b)=>(a.start_date||'').localeCompare(b.start_date||''));
+  const reschList=INTAKE.filter(x=>x.status==='reschedule'||x.status==='cancel_request').sort((a,b)=>(a.start_date||'').localeCompare(b.start_date||''));
   if(pendList.length||reschList.length){
     html+='<div style="margin-bottom:10px;padding:'+(mob?'10px':'12px')+';border-radius:12px;background:#fffbeb;border:1px solid #fde68a">';
     html+='<div style="font-size:12px;font-weight:900;color:#92400e;margin-bottom:6px">📋 要対応 Handover（'+(pendList.length+reschList.length)+'件）</div>';
@@ -1171,7 +1171,7 @@ function renderIntake(){
     reschList.forEach(x=>{
       const cd=x.candidate_dates||{};
       html+='<div onclick="openIntakeDetail(\''+x.id+'\')" style="display:flex;align-items:center;gap:6px;padding:8px 4px;border-bottom:1px dashed #fde68a;cursor:pointer;flex-wrap:wrap">'+
-        '<span style="font-size:10px;font-weight:800;padding:2px 8px;border-radius:4px;background:#dc2626;color:#fff">🔴 変更依頼中</span>'+
+        '<span style="font-size:10px;font-weight:800;padding:2px 8px;border-radius:4px;background:'+(x.status==='cancel_request'?'#7c3aed':'#dc2626')+';color:#fff">'+(x.status==='cancel_request'?'🟣 取消依頼中':'🔴 変更依頼中')+'</span>'+
         '<span style="font-size:'+(mob?'12px':'14px')+';font-weight:800;color:#1e293b">'+x.label+' — '+ikVehName(x.vehicle_code)+'</span>'+
         '<span style="font-size:11px;color:#475569">希望 '+(cd.start||'?')+'〜'+(cd.end||'?')+'</span>'+
         '<span style="margin-left:auto;font-size:10px;font-weight:700;color:#94a3b8">回答待ち</span></div>';
@@ -1238,12 +1238,12 @@ function renderIntake(){
 async function intakeLog(type,m){try{const notify=(type==='intake_approved'||type==='intake_reschedule');await sb.from('partner_actions').insert({action_type:type,owner_company:OWNER_COMPANY,vehicle_code:m.vehicle_code||'',user_email:(CURRENT_USER&&CURRENT_USER.email)||'',target_date_from:m.start_date||null,target_date_to:m.end_date||null,notified_slack:!notify,notified_at:notify?null:new Date().toISOString(),payload:{action:type,id:m.id,label:m.label,vehicle:ikVehName(m.vehicle_code),start:m.start_date,end:m.end_date,candidate:m.candidate_dates||null}});}catch(e){}}
 function openIntakeDetail(id){
   const m=INTAKE.find(x=>x.id===id);if(!m)return;
-  const st=m.status||'pending';const pend=st==='pending';const resch=st==='reschedule';
+  const st=m.status||'pending';const pend=st==='pending';const resch=st==='reschedule';const cxlr=st==='cancel_request';
   const ov=document.createElement('div');
   ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9000;display:flex;align-items:center;justify-content:center;padding:14px';
   ov.innerHTML='<div style="background:#fff;border-radius:14px;padding:18px;width:100%;max-width:400px" onclick="event.stopPropagation()">'+
    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">'+
-   '<span style="font-size:10px;font-weight:800;padding:3px 8px;border-radius:5px;background:'+(pend?'#fef3c7':resch?'#fee2e2':'#dcfce7')+';color:'+(pend?'#92400e':resch?'#991b1b':'#166534')+'">'+(pend?'🟡 仮予定':resch?'🔴 変更依頼中':'🟢 FIX')+'</span>'+
+   '<span style="font-size:10px;font-weight:800;padding:3px 8px;border-radius:5px;background:'+(pend?'#fef3c7':resch?'#fee2e2':'#dcfce7')+';color:'+(pend?'#92400e':resch?'#991b1b':'#166534')+'">'+(pend?'🟡 仮予定':resch?'🔴 変更依頼中':cxlr?'🟣 取消依頼中':'🟢 FIX')+'</span>'+
    '<span style="font-size:14px;font-weight:900">'+m.label+'</span></div>'+
    '<div style="font-size:13px;font-weight:800;margin-bottom:6px">🚗 '+ikVehName(m.vehicle_code)+'</div>'+
    '<div style="font-size:12px;color:#475569;margin-bottom:6px">📅 '+(m.start_date||'?')+' 〜 '+(m.end_date||'?')+'</div>'+
@@ -1255,13 +1255,29 @@ function openIntakeDetail(id){
     :resch?'<div style="font-size:11px;color:#991b1b;font-weight:700;text-align:center;padding:8px;background:#fef2f2;border-radius:8px">🔴 日程変更リクエスト送信済み — HANDYMAN確認待ち<br>'+(m.candidate_dates?('希望: '+(m.candidate_dates.start||'')+'〜'+(m.candidate_dates.end||'')+(m.candidate_dates.comment?'<br>'+m.candidate_dates.comment:'')):'')+'</div>'+
         '<button id="ik-withdraw" style="width:100%;padding:11px;border-radius:8px;border:none;background:#16a34a;color:#fff;font-size:12px;font-weight:900;cursor:pointer;margin-top:8px">✅ リクエストを取り下げて元の日程で承認（FIX）</button>'+
         '<div style="font-size:9px;color:#94a3b8;text-align:center;margin-top:3px">※自社側で調整がつき、元の日程で受けられる場合</div>'
-    :'<div style="font-size:11px;color:#16a34a;font-weight:700;text-align:center;padding:8px">✅ 承認済み — HANDYMAN配車表にFIX表示中</div>')+
+    :cxlr?'<div style="font-size:11px;color:#6d28d9;font-weight:700;text-align:center;padding:8px;background:#f5f3ff;border-radius:8px">🟣 キャンセルリクエスト送信済み — HANDYMAN確認待ち'+((m.candidate_dates&&m.candidate_dates.comment)?'<br>'+m.candidate_dates.comment:'')+'</div>'
+    :'<div style="font-size:11px;color:#16a34a;font-weight:700;text-align:center;padding:8px">✅ 承認済み — HANDYMAN配車表にFIX表示中</div>'+
+     '<button id="ik-resch2" style="width:100%;padding:10px;border-radius:8px;border:2px solid #dc2626;background:#fff;color:#dc2626;font-size:12px;font-weight:800;cursor:pointer;margin-top:8px">📅 日程変更をリクエスト</button>'+
+     '<button id="ik-cxlreq" style="width:100%;padding:10px;border-radius:8px;border:2px solid #7c3aed;background:#fff;color:#7c3aed;font-size:12px;font-weight:800;cursor:pointer;margin-top:8px">🚫 キャンセルをリクエスト</button>')+
    '<button id="ik-close" style="width:100%;padding:9px;border-radius:8px;border:1px solid #e2e8f0;background:#f8fafc;font-size:11px;font-weight:700;cursor:pointer;margin-top:8px">閉じる</button></div>';
   ov.onclick=()=>ov.remove();
   document.body.appendChild(ov);
   document.getElementById('ik-close').onclick=()=>ov.remove();
   const rs=document.getElementById('ik-resch');
   if(rs)rs.onclick=()=>{ov.remove();openReschForm(m);};
+  const rs2=document.getElementById('ik-resch2');
+  if(rs2)rs2.onclick=()=>{ov.remove();openReschForm(m);};
+  const cq=document.getElementById('ik-cxlreq');
+  if(cq)cq.onclick=async()=>{
+    const com=window.prompt('キャンセル理由（HANDYMANに通知されます）','');
+    if(com===null)return;
+    if(!confirm('この入庫予定のキャンセルをリクエストしますか？\n'+m.label+' '+ikVehName(m.vehicle_code)+' '+(m.start_date||'')+'〜'+(m.end_date||''))) return;
+    const cd={comment:com||'',by:OWNER_LABEL||OWNER_COMPANY,at:new Date().toISOString(),prev_status:'approved'};
+    const{error}=await sb.from('maintenance').update({status:'cancel_request',candidate_dates:cd}).eq('id',m.id);
+    if(error){showToast('送信失敗: '+error.message,'err');return;}
+    m.status='cancel_request';m.candidate_dates=cd;intakeLog('intake_cancel_request',m);ov.remove();renderIntake();
+    showToast('🟣 キャンセルリクエストを送信しました','ok');
+  };
   const wd=document.getElementById('ik-withdraw');
   if(wd)wd.onclick=async()=>{
     if(!confirm('変更リクエストを取り下げ、元の日程（'+(m.start_date||'')+'〜'+(m.end_date||'')+'）で承認（FIX）しますか？'))return;
@@ -1296,7 +1312,7 @@ function openReschForm(m){
   ov.onclick=()=>ov.remove();
   document.body.appendChild(ov);
   document.getElementById('rs-send').onclick=async()=>{
-    const cd={start:document.getElementById('rs-start').value,end:document.getElementById('rs-end').value,comment:document.getElementById('rs-com').value||'',by:OWNER_LABEL||OWNER_COMPANY,at:new Date().toISOString()};
+    const cd={start:document.getElementById('rs-start').value,end:document.getElementById('rs-end').value,comment:document.getElementById('rs-com').value||'',by:OWNER_LABEL||OWNER_COMPANY,at:new Date().toISOString(),prev_status:m.status||'pending'};
     if(!cd.start||!cd.end){showToast('希望日を入力してください','err');return;}
     const{error}=await sb.from('maintenance').update({status:'reschedule',candidate_dates:cd}).eq('id',m.id);
     if(error){showToast('送信失敗: '+error.message,'err');return;}
@@ -1315,7 +1331,7 @@ async function loadIkList(){
     ]);
     HVEH={};(hv||[]).forEach(v=>HVEH[v.code]=v);
     IKLIST=(mt||[]).filter(m=>m.status);
-    INTAKE=IKLIST.filter(m=>['pending','approved','reschedule'].includes(m.status));// 詳細モーダル共用
+    INTAKE=IKLIST.filter(m=>['pending','approved','reschedule','cancel_request'].includes(m.status));// 詳細モーダル共用
     renderIkList();
   }catch(e){body.innerHTML='<div class="loading">取得エラー: '+e.message+'</div>';}
 }
@@ -1325,7 +1341,7 @@ function renderIkList(){
   if(!IKLIST.length){body.innerHTML='<div class="loading">入庫レコードなし</div>';return;}
   const todayS=ikYMD(new Date());
   const TC={'車検':'🚗','半年点検':'🔧','修理':'🔩','メンテナンス':'🔧','清掃':'🧹','その他':'📌'};
-  const SL={pending:['🟡 承認待ち','#f59e0b'],approved:['🟢 FIX','#16a34a'],reschedule:['🔴 変更依頼中','#dc2626'],done:['✅ 完了','#64748b']};
+  const SL={pending:['🟡 承認待ち','#f59e0b'],approved:['🟢 FIX','#16a34a'],reschedule:['🔴 変更依頼中','#dc2626'],cancel_request:['🟣 取消依頼中','#7c3aed'],done:['✅ 完了','#64748b']};
   // 月ごとにグループ化（時系列昇順）
   const byMonth={};
   IKLIST.forEach(m=>{const ym=(m.start_date||'').slice(0,7)||'不明';(byMonth[ym]=byMonth[ym]||[]).push(m);});

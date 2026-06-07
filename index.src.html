@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v770';
+  var CV='spk-v771';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=657').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=658').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -4552,6 +4552,20 @@ function IntakeBoard({vehicles,maintenance,setMaintenance,setVehicles}){
 function InspectionTopCalendar({vehicles,maintenance,isSpk,onMaintenanceChange}){
   const[maintForm,setMaintForm]=useState(null);// {date} TOPカレンダー発の入庫登録
   const reschList=(maintenance||[]).filter(m=>m.status==="reschedule");
+  const cxlReqList=(maintenance||[]).filter(m=>m.status==="cancel_request");
+  const acceptCancel=async(m)=>{
+    if(!window.confirm("キャンセルを承諾し、入庫予定を削除しますか？\n"+m.label+" "+(m.startDate||"")+"〜"+(m.endDate||"")))return;
+    if(onMaintenanceChange)onMaintenanceChange((maintenance||[]).filter(x=>x.id!==m.id));
+    if(sb)await sb.from("maintenance").delete().eq("id",m.id);
+    logIntakeAction("intake_cancel_accepted",m);
+  };
+  const rejectCancel=async(m)=>{
+    if(!window.confirm("キャンセル依頼を拒否し、FIX（"+m.startDate+"〜"+m.endDate+"）を維持しますか？"))return;
+    const rec={...m,status:"approved",maintNotes:((m.maintNotes||"")+"\n[取消依頼 拒否 "+new Date().toISOString().slice(0,10)+"] "+((m.candidateDates&&m.candidateDates.comment)||"")).trim()};
+    if(onMaintenanceChange)onMaintenanceChange((maintenance||[]).map(x=>x.id===m.id?rec:x));
+    await DB.saveMaintenance([rec]);
+    logIntakeAction("intake_cancel_rejected",rec);
+  };
   const acceptResch=async(m)=>{
     const cd=m.candidateDates||{};
     if(!cd.start||!cd.end){window.alert("提案日データがありません");return;}
@@ -4564,7 +4578,8 @@ function InspectionTopCalendar({vehicles,maintenance,isSpk,onMaintenanceChange})
   const rejectResch=async(m)=>{
     if(!window.confirm("変更依頼を差し戻し、元の日程（"+m.startDate+"〜"+m.endDate+"）の仮予定に戻しますか？"))return;
     const cd=m.candidateDates||{};
-    const rec={...m,status:"pending",maintNotes:((m.maintNotes||"")+"\n[変更依頼差戻し "+new Date().toISOString().slice(0,10)+"] 希望:"+(cd.start||"")+"〜"+(cd.end||"")+" "+(cd.comment||"")).trim()};
+    const prev=(m.candidateDates&&m.candidateDates.prev_status)==="approved"?"approved":"pending";
+    const rec={...m,status:prev,maintNotes:((m.maintNotes||"")+"\n[変更依頼差戻し "+new Date().toISOString().slice(0,10)+"] 希望:"+(cd.start||"")+"〜"+(cd.end||"")+" "+(cd.comment||"")).trim()};
     if(onMaintenanceChange)onMaintenanceChange((maintenance||[]).map(x=>x.id===m.id?rec:x));
     await DB.saveMaintenance([rec]);
     logIntakeAction("intake_resch_rejected",rec);
@@ -4610,14 +4625,14 @@ function InspectionTopCalendar({vehicles,maintenance,isSpk,onMaintenanceChange})
       if((m.blockType||m.block_type)==='partner_reserved')return;
       const v=(vehicles||[]).find(x=>x.code===vc);
       const vname=v?(v.name+(v.no?' '+v.no:'')):vc;
-      const badge=m.status==='pending'?'〔仮〕':m.status==='approved'?'〔FIX〕':m.status==='reschedule'?'〔変更依頼〕':'';
+      const badge=m.status==='pending'?'〔仮〕':m.status==='approved'?'〔FIX〕':m.status==='reschedule'?'〔変更依頼〕':m.status==='cancel_request'?'〔取消依頼〕':'';
       if(m.label==='車検'){
         list.push({id:'plan-'+m.id,date:sd,type:'shaken_plan',label:'🚗 車検予定'+badge,vehicle:vname,color:m.status==='pending'?'#d97706':m.status==='approved'?'#15803d':m.status==='reschedule'?'#dc2626':'#1e40af',bg:'#dbeafe'});
       }else if(m.label==='半年点検'){
         list.push({id:'plan-'+m.id,date:sd,type:'tenken_plan',label:'🔧 点検予定'+badge,vehicle:vname,color:m.status==='pending'?'#d97706':m.status==='approved'?'#15803d':m.status==='reschedule'?'#dc2626':'#92400e',bg:'#fef3c7'});
       }else if(m.label==='修理'){
         list.push({id:'plan-'+m.id,date:sd,type:'repair_plan',label:'🔩 修理'+badge,vehicle:vname,color:m.status==='pending'?'#d97706':m.status==='approved'?'#15803d':m.status==='reschedule'?'#dc2626':'#6d28d9',bg:'#ede9fe'});
-      }else if(m.status==='pending'||m.status==='approved'||m.status==='reschedule'){
+      }else if(['pending','approved','reschedule','cancel_request'].includes(m.status)){
         // メンテナンス/清掃/その他でも入庫公開されたものは表示
         const ic=m.label==='清掃'?'🧹':m.label==='その他'?'📌':'🔧';
         list.push({id:'plan-'+m.id,date:sd,type:'other_plan',label:ic+' '+(m.label||'メンテ')+badge,vehicle:vname,color:m.status==='pending'?'#d97706':m.status==='approved'?'#15803d':'#dc2626',bg:'#f1f5f9'});
@@ -4735,8 +4750,8 @@ function InspectionTopCalendar({vehicles,maintenance,isSpk,onMaintenanceChange})
       <span style={{fontSize:14,color:'#94a3b8'}}>{calOpen?'▲':'▼'}</span>
     </div>
     {calOpen&&<div style={{padding:10,border:'1px solid #fde68a',borderTop:'none',borderRadius:'0 0 12px 12px',background:'#fffbeb'}}>
-      {reschList.length>0&&<div style={{marginBottom:10,padding:10,borderRadius:10,background:'#fef2f2',border:'1px solid #fecaca'}}>
-        <div style={{fontSize:11,fontWeight:900,color:'#991b1b',marginBottom:6}}>🔴 協力会社からの日程変更リクエスト</div>
+      {(reschList.length>0||cxlReqList.length>0)&&<div style={{marginBottom:10,padding:10,borderRadius:10,background:'#fef2f2',border:'1px solid #fecaca'}}>
+        <div style={{fontSize:11,fontWeight:900,color:'#991b1b',marginBottom:6}}>🔴 協力会社からのリクエスト</div>
         {reschList.map(m=>{const cd=m.candidateDates||{};const v=(vehicles||[]).find(x=>x.code===m.vehicleCode);
           return <div key={m.id} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderBottom:'1px dashed #fecaca',flexWrap:'wrap'}}>
             <span style={{fontSize:11,fontWeight:800,color:'#1e293b'}}>{m.label} {v?v.name+' '+(v.no||''):m.vehicleCode}</span>
@@ -4748,6 +4763,17 @@ function InspectionTopCalendar({vehicles,maintenance,isSpk,onMaintenanceChange})
               <button onClick={()=>rejectResch(m)} style={{padding:'4px 10px',borderRadius:6,border:'1px solid #e2e8f0',background:'#fff',fontSize:10,fontWeight:700,cursor:'pointer'}}>↩︎ 差戻し</button>
             </span>
           </div>;})}
+        {cxlReqList.map(m=>{const cd=m.candidateDates||{};const v=(vehicles||[]).find(x=>x.code===m.vehicleCode);
+          return <div key={m.id} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderBottom:'1px dashed #fecaca',flexWrap:'wrap'}}>
+            <span style={{fontSize:9,fontWeight:800,padding:'2px 6px',borderRadius:4,background:'#7c3aed',color:'#fff'}}>🟣 取消依頼</span>
+            <span style={{fontSize:11,fontWeight:800,color:'#1e293b'}}>{m.label} {v?v.name+' '+(v.no||''):m.vehicleCode}</span>
+            <span style={{fontSize:10,color:'#64748b'}}>{m.startDate}〜{m.endDate}</span>
+            {cd.comment&&<span style={{fontSize:10,color:'#6d28d9'}}>💬{cd.comment}</span>}
+            <span style={{marginLeft:'auto',display:'flex',gap:4}}>
+              <button onClick={()=>acceptCancel(m)} style={{padding:'4px 10px',borderRadius:6,border:'none',background:'#7c3aed',color:'#fff',fontSize:10,fontWeight:800,cursor:'pointer'}}>🗑 承諾（予定削除）</button>
+              <button onClick={()=>rejectCancel(m)} style={{padding:'4px 10px',borderRadius:6,border:'1px solid #e2e8f0',background:'#fff',fontSize:10,fontWeight:700,cursor:'pointer'}}>↩︎ 拒否（FIX維持）</button>
+            </span>
+          </div>;})}
       </div>}
       <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}>
         <button onClick={()=>nav(-1)} style={{padding:'4px 10px',border:'1px solid #d1d5db',borderRadius:6,background:'#fff',cursor:'pointer',fontSize:12}}>‹</button>
@@ -4755,7 +4781,7 @@ function InspectionTopCalendar({vehicles,maintenance,isSpk,onMaintenanceChange})
         <button onClick={()=>nav(1)} style={{padding:'4px 10px',border:'1px solid #d1d5db',borderRadius:6,background:'#fff',cursor:'pointer',fontSize:12}}>›</button>
         <button onClick={goToday} style={{padding:'4px 10px',border:'1px solid #d1d5db',borderRadius:6,background:'#fff',cursor:'pointer',fontSize:11}}>今日</button>
         <button onClick={()=>setMaintForm({date:toYMD(curDate)})} style={{padding:'4px 12px',border:'none',borderRadius:6,background:'#1d4ed8',color:'#fff',cursor:'pointer',fontSize:11,fontWeight:700}}>＋ 入庫登録</button>
-        {reschList.length>0&&<span style={{fontSize:10,fontWeight:800,padding:'3px 9px',borderRadius:10,background:'#fee2e2',color:'#b91c1c'}}>🔴 日程変更依頼 {reschList.length}件</span>}
+        {(reschList.length+cxlReqList.length)>0&&<span style={{fontSize:10,fontWeight:800,padding:'3px 9px',borderRadius:10,background:'#fee2e2',color:'#b91c1c'}}>🔴 要対応リクエスト {reschList.length+cxlReqList.length}件</span>}
         <div style={{marginLeft:'auto',display:'flex',gap:0,border:'1px solid #d1d5db',borderRadius:6,overflow:'hidden'}}>
           {['month','week','day'].map(v=>{const lab=v==='month'?'月':v==='week'?'週':'日';return <button key={v} onClick={()=>setView(v)} style={{padding:'4px 12px',border:'none',background:view===v?'#1e293b':'#fff',color:view===v?'#fff':'#1e293b',cursor:'pointer',fontSize:11,fontWeight:600}}>{lab}</button>;})}
         </div>
@@ -13669,7 +13695,7 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
                 {(()=>{const u=utilRates[v.code];if(!u)return null;const pc=u.pct;const cl=pc>=80?"#dc2626":pc>=50?"#f59e0b":"#22c55e";return <span style={{fontSize:8,fontWeight:700,color:cl,marginLeft:4,background:pc>=80?"#fef2f2":pc>=50?"#fffbeb":"#f0fdf4",padding:"0 3px",borderRadius:3}}>{u.days}日{!isMobile&&" "+pc+"%"}</span>;})()}
               </td>
               {dates.map((d,di)=>{const isToday=d===today;return <td key={d} style={{position:"relative",height:ROW_H,borderBottom:"1px solid #f1f5f9",borderRight:"1px solid #e2e8f0",cursor:dragInfo?"copy":"pointer",background:isDT?rowHL:(isToday?"#eff6ff":"transparent"),padding:0,transition:"background .15s"}} onClick={()=>{if(!dragInfo)handleCellClick(v.code,d);}}>
-                {di===0&&bars.map((b,bi)=>{const isRes=b.type==="reservation";const isMaint=b.type==="maintenance";const isPartnerResv=isMaint&&b.m?.blockType==="partner_reserved";const isDragging=dragInfo===b.r?.id;const isSearchHit=isRes&&searchResult&&searchResult.found&&searchResult.hitSet.has(b.r.id);return <div key={bi} className="tl-bar" draggable={isRes} onDragStart={isRes?e=>handleDragStart(e,b.r.id):undefined} onDragEnd={handleDragEnd} onClick={e=>handleBarClick(e,b)} style={{left:b.left,width:Math.max(b.width,20),background:isPartnerResv?"repeating-linear-gradient(45deg,#7c3aed,#7c3aed 4px,#a855f7 4px,#a855f7 8px)":(isMaint?(b.m?.status==="pending"?"repeating-linear-gradient(45deg,#d97706,#d97706 4px,#f59e0b 4px,#f59e0b 8px)":b.m?.status==="approved"?"repeating-linear-gradient(45deg,#15803d,#15803d 4px,#16a34a 4px,#16a34a 8px)":b.m?.status==="reschedule"?"repeating-linear-gradient(45deg,#b91c1c,#b91c1c 4px,#ef4444 4px,#ef4444 8px)":"repeating-linear-gradient(45deg,#2563eb,#2563eb 4px,#3b82f6 4px,#3b82f6 8px)"):(isDragging?"#f87171":"#dc2626")),color:"#fff",fontSize:9,fontWeight:600,boxShadow:isSearchHit?"0 0 8px 3px rgba(250,204,21,.8),0 0 16px 6px rgba(250,204,21,.4)":(isDragging?"0 4px 12px rgba(0,0,0,.3)":"0 1px 3px rgba(0,0,0,.2)"),outline:isSearchHit?"3px solid #facc15":"none",position:"absolute",top:isMaint?1:3,bottom:isMaint?1:3,zIndex:isSearchHit?15:(isDragging?10:(isMaint?3:2)),opacity:isDragging?0.7:1,cursor:isRes?"grab":"pointer",transition:"opacity .15s, box-shadow .15s",border:isPartnerResv?"1px solid #6d28d9":(isMaint?"1px solid #1d4ed8":"none")}} title={isPartnerResv?("🟣 自社予約 ("+(b.m.ownerCompany||"協力会社")+")"):undefined}><span style={{overflow:"hidden",textOverflow:"ellipsis"}}>{isRes?`${b.r.lendTime}-${b.r.returnTime} ${b.r.name} 様`:(isPartnerResv?("🟣"+(b.m.label||"自社予約")):("🔧"+b.m.label+(b.m.status==="pending"?"〔仮〕":b.m.status==="approved"?"〔FIX〕":b.m.status==="reschedule"?"〔変更依頼〕":"")))}</span></div>;})}
+                {di===0&&bars.map((b,bi)=>{const isRes=b.type==="reservation";const isMaint=b.type==="maintenance";const isPartnerResv=isMaint&&b.m?.blockType==="partner_reserved";const isDragging=dragInfo===b.r?.id;const isSearchHit=isRes&&searchResult&&searchResult.found&&searchResult.hitSet.has(b.r.id);return <div key={bi} className="tl-bar" draggable={isRes} onDragStart={isRes?e=>handleDragStart(e,b.r.id):undefined} onDragEnd={handleDragEnd} onClick={e=>handleBarClick(e,b)} style={{left:b.left,width:Math.max(b.width,20),background:isPartnerResv?"repeating-linear-gradient(45deg,#7c3aed,#7c3aed 4px,#a855f7 4px,#a855f7 8px)":(isMaint?(b.m?.status==="pending"?"repeating-linear-gradient(45deg,#d97706,#d97706 4px,#f59e0b 4px,#f59e0b 8px)":b.m?.status==="approved"?"repeating-linear-gradient(45deg,#15803d,#15803d 4px,#16a34a 4px,#16a34a 8px)":b.m?.status==="reschedule"?"repeating-linear-gradient(45deg,#b91c1c,#b91c1c 4px,#ef4444 4px,#ef4444 8px)":b.m?.status==="cancel_request"?"repeating-linear-gradient(45deg,#6d28d9,#6d28d9 4px,#8b5cf6 4px,#8b5cf6 8px)":"repeating-linear-gradient(45deg,#2563eb,#2563eb 4px,#3b82f6 4px,#3b82f6 8px)"):(isDragging?"#f87171":"#dc2626")),color:"#fff",fontSize:9,fontWeight:600,boxShadow:isSearchHit?"0 0 8px 3px rgba(250,204,21,.8),0 0 16px 6px rgba(250,204,21,.4)":(isDragging?"0 4px 12px rgba(0,0,0,.3)":"0 1px 3px rgba(0,0,0,.2)"),outline:isSearchHit?"3px solid #facc15":"none",position:"absolute",top:isMaint?1:3,bottom:isMaint?1:3,zIndex:isSearchHit?15:(isDragging?10:(isMaint?3:2)),opacity:isDragging?0.7:1,cursor:isRes?"grab":"pointer",transition:"opacity .15s, box-shadow .15s",border:isPartnerResv?"1px solid #6d28d9":(isMaint?"1px solid #1d4ed8":"none")}} title={isPartnerResv?("🟣 自社予約 ("+(b.m.ownerCompany||"協力会社")+")"):undefined}><span style={{overflow:"hidden",textOverflow:"ellipsis"}}>{isRes?`${b.r.lendTime}-${b.r.returnTime} ${b.r.name} 様`:(isPartnerResv?("🟣"+(b.m.label||"自社予約")):("🔧"+b.m.label+(b.m.status==="pending"?"〔仮〕":b.m.status==="approved"?"〔FIX〕":b.m.status==="reschedule"?"〔変更依頼〕":b.m.status==="cancel_request"?"〔取消依頼〕":"")))}</span></div>;})}
               </td>;})}
             </tr>;})}
           </React.Fragment>)}
@@ -20163,7 +20189,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.225";
+const APP_VERSION="v4.7.226";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
