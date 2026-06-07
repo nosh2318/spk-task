@@ -4781,7 +4781,7 @@ var PARTNER_NOTIFY_CHANNEL = 'C0B451BSK1B'; // #partner予約管理 (2026-05-16 
                                                   // 専用チャンネル作成後に差し替え
 
 // ★ 通知対象: 自社予約 作成/削除 + メンテ削除 のみ（オーナー指示 2026-05-16）
-var PARTNER_NOTIFY_ACTIONS = ['partner_reserved_add', 'partner_reserved_delete', 'maintenance_delete', 'intake_approved', 'intake_reschedule'];
+var PARTNER_NOTIFY_ACTIONS = ['partner_reserved_add', 'partner_reserved_delete', 'maintenance_delete', 'intake_approved', 'intake_reschedule', 'intake_cancelled'];
 
 function notifyPartnerActions() {
   try {
@@ -4810,6 +4810,7 @@ function notifyPartnerActions() {
           case 'maintenance_delete': emoji = '🗑️'; label = 'メンテナンス 削除'; break;
           case 'intake_approved': emoji = '✅'; label = '入庫日程 承認（FIX確定）'; break;
           case 'intake_reschedule': emoji = '🔴'; label = '入庫 日程変更リクエスト'; break;
+          case 'intake_cancelled': emoji = '🗑️'; label = '入庫予定 取消（HANDYMAN側で削除）'; break;
           default: emoji = '📝'; label = r.action_type;
         }
         // 協力会社名
