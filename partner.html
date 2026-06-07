@@ -463,7 +463,7 @@ let CURRENT_USER=null,OWNER_COMPANY=null,OWNER_LABEL=null;
 let CURRENT_TAB='tl';
 let CURRENT_YM=null;
 const SERVICE_START='2026-06-01';// 協力会社運用スタート日（これ以前の返却分は非表示）
-let VEHICLES=[],RESERVATIONS=[],FLEET=[],MAINTENANCE=[],KPI_MAP={},CXL_LOG=[];
+let VEHICLES=[],RESERVATIONS=[],FLEET=[],MAINTENANCE=[],KPI_MAP={},CXL_LOG=[],TWINS={};
 let MODAL_CONTEXT=null;
 const isMobile=window.matchMedia('(max-width:768px)').matches;
 
@@ -529,6 +529,7 @@ async function loadData(){
     // ★ 2026-06-07: 運用開始 2026-06-01 より前の予約（返却日基準）は表示しない
     RESERVATIONS=RESERVATIONS.filter(r=>(r.return_date||'')>=SERVICE_START);
     const{data:mt}=await sb.from('maintenance').select('*').in('vehicle_code',vehCodes);
+    try{const{data:tw}=await sb.from('vehicle_twins').select('id,odometer,share_token,share_enabled,updated_at,last_check_at').in('id',vehCodes);TWINS={};(tw||[]).forEach(x=>TWINS[x.id]=x);}catch(e){TWINS={};}
     MAINTENANCE=mt||[];
     // ★ 2026-05-26: vehicle_monthly_kpi 取得 (active 判定用)
     const{data:kp}=await sb.from('vehicle_monthly_kpi').select('year_month,vehicle_code,active').in('vehicle_code',vehCodes);
@@ -835,7 +836,7 @@ function renderVehInfo(){
       `</div>`;
     if(open){
       html+=`<div class="veh-grp-body"><table class="veh-tbl">`+
-        `<thead><tr><th>車種</th><th>ナンバー</th><th>定員</th><th>年式</th><th>カラー</th><th>🚗 車検残</th><th style="background:#fef2f2;color:#991b1b">📉 日額コスト</th><th></th></tr></thead>`+
+        `<thead><tr><th>車種</th><th>ナンバー</th><th>🚗 次回車検日</th><th>車検残</th><th style="background:#fef2f2;color:#991b1b">📉 日額コスト</th><th>📷 傷チェック</th><th>🛣 走行距離</th><th></th></tr></thead>`+
         `<tbody>`;
       items.forEach(v=>{
         // 車検残日数計算
@@ -850,14 +851,23 @@ function renderVehInfo(){
         // ★ 日額コスト編集UI (2026-05-26 オーナー新規仕様)
         const _dailyCost=+(v.partner_daily_cost||0);
         const _dailyHtml=`<input type="number" id="dailyCost_${v.code}" value="${_dailyCost}" min="0" style="width:90px;padding:3px 6px;border:1px solid #fca5a5;border-radius:4px;font-size:11px;text-align:right;background:#fef2f2;color:#991b1b;font-weight:700" oninput="this.dataset.dirty='1';document.getElementById('saveDC_${v.code}').style.display='inline-block'"><button id="saveDC_${v.code}" onclick="savePartnerDailyCost('${v.code}')" style="display:none;margin-left:3px;padding:3px 8px;background:#dc2626;color:#fff;border:0;border-radius:4px;font-size:10px;font-weight:700;cursor:pointer">💾</button>`;
+        // 傷チェックURL / 走行距離 (vehicle_twins)
+        const tw=TWINS[v.code]||{};
+        const dmgHtml=(tw.share_enabled&&tw.share_token)
+          ?`<a href="https://nosh2318.github.io/handyman-damage/v.html?t=${tw.share_token}&v=v3" target="_blank" style="display:inline-block;padding:3px 10px;border-radius:6px;background:#eff6ff;color:#1d4ed8;font-size:11px;font-weight:700;text-decoration:none;border:1px solid #bfdbfe">🔗 傷を見る</a>`
+          :'<span style="font-size:10px;color:#94a3b8">未発行</span>';
+        const odoDate=(tw.last_check_at||tw.updated_at||'').substring(0,10);
+        const odoHtml=(tw.odometer!=null&&tw.odometer!=='')
+          ?`<b>${Number(tw.odometer).toLocaleString()}</b> km<br><span style="font-size:9px;color:#94a3b8">更新 ${odoDate||'—'}</span>`
+          :'<span style="font-size:10px;color:#94a3b8">記録なし</span>';
         html+=`<tr>`+
           `<td class="vname">${v.name||'—'}</td>`+
           `<td class="vno">${v.plate_no||'—'}</td>`+
-          `<td>${v.seats?v.seats+'名':'—'}</td>`+
-          `<td>${v.year||'—'}</td>`+
-          `<td>${v.color||'—'}</td>`+
+          `<td style="font-weight:700">${v.inspection_due_date||'—'}</td>`+
           `<td>${checkBadge}</td>`+
           `<td>${_dailyHtml}</td>`+
+          `<td>${dmgHtml}</td>`+
+          `<td>${odoHtml}</td>`+
           `<td><button class="vedit-btn" onclick="openVehModal('${v.code}')">編集</button></td>`+
         `</tr>`;
       });
