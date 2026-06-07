@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v772';
+  var CV='spk-v773';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=659').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=660').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -13534,6 +13534,35 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
   const handleBarClick=(e,b)=>{e.stopPropagation();if(b.type==="reservation")setTooltip({type:"reservation",...b.r,vc:fleet[b.r.id]});else setTooltip({type:"maintenance",...b.m});};
 
   const addMaint=(vc,start,end,label,cost,workshop,invoiceNo,maintNotes,intakeFlag,destId,destLabel,stime,etime)=>{const m={id:"m"+Date.now(),vehicleCode:vc,startDate:start,endDate:end,label,cost:Number(cost)||0,workshop:workshop||"",invoiceNo:invoiceNo||"",maintNotes:maintNotes||"",startTime:stime||"",endTime:etime||""};if(intakeFlag){m.status="pending";if(destId){m.ownerCompany=destId;if(!m.workshop)m.workshop=destLabel||"";}}const next=[...(maintenance||[]),m];onMaintenanceChange(next);DB.saveMaintenance([m]);if(intakeFlag)logIntakeAction("intake_created",m);const n=Number(cost)||0;if(n>0&&sb){const col=label==="車検"?"shaken_cost":label==="半年点検"?"tenken_cost":null;if(col)sb.from("vehicles").update({[col]:n}).eq("code",vc).then(({error})=>{if(!error){const upd=(p.vehicles||vehicles).map(v=>v.code===vc?{...v,[label==="車検"?"shakenCost":"tenkenCost"]:n}:v);}});}setShowMaintForm(null);};
+  // ★ 2026-06-07: 配車表ポップアップから変更/取消リクエストを直接処理
+  const tlAcceptResch=async(m)=>{
+    const cd=m.candidateDates||{};
+    if(!cd.start||!cd.end){window.alert("提案日データがありません");return;}
+    if(!window.confirm("提案日 "+cd.start+"〜"+cd.end+((cd.start_time||cd.end_time)?(" "+(cd.start_time||"")+"-"+(cd.end_time||"")):"")+" で確定（FIX）しますか？"))return;
+    const rec={...m,startDate:cd.start,endDate:cd.end,startTime:cd.start_time!==undefined?(cd.start_time||""):m.startTime,endTime:cd.end_time!==undefined?(cd.end_time||""):m.endTime,status:"approved",maintNotes:((m.maintNotes||"")+"\n[日程変更承諾 "+new Date().toISOString().slice(0,10)+"] "+(cd.comment||"")).trim()};
+    onMaintenanceChange((maintenance||[]).map(x=>x.id===m.id?rec:x));
+    await DB.saveMaintenance([rec]);logIntakeAction("intake_resch_accepted",rec);setTooltip(null);
+  };
+  const tlRejectResch=async(m)=>{
+    const cd=m.candidateDates||{};
+    if(!window.confirm("変更依頼を差し戻し、元の日程（"+m.startDate+"〜"+m.endDate+"）に戻しますか？"))return;
+    const prev=(cd.prev_status==="approved")?"approved":"pending";
+    const rec={...m,status:prev,maintNotes:((m.maintNotes||"")+"\n[変更依頼差戻し "+new Date().toISOString().slice(0,10)+"] 希望:"+(cd.start||"")+"〜"+(cd.end||"")+" "+(cd.comment||"")).trim()};
+    onMaintenanceChange((maintenance||[]).map(x=>x.id===m.id?rec:x));
+    await DB.saveMaintenance([rec]);logIntakeAction("intake_resch_rejected",rec);setTooltip(null);
+  };
+  const tlAcceptCancel=async(m)=>{
+    if(!window.confirm("キャンセルを承諾し、入庫予定を削除しますか？\n"+m.label+" "+(m.startDate||"")+"〜"+(m.endDate||"")))return;
+    onMaintenanceChange((maintenance||[]).filter(x=>x.id!==m.id));
+    if(sb)await sb.from("maintenance").delete().eq("id",m.id);
+    logIntakeAction("intake_cancel_accepted",m);setTooltip(null);
+  };
+  const tlRejectCancel=async(m)=>{
+    if(!window.confirm("キャンセル依頼を拒否し、FIX（"+m.startDate+"〜"+m.endDate+"）を維持しますか？"))return;
+    const rec={...m,status:"approved",maintNotes:((m.maintNotes||"")+"\n[取消依頼 拒否 "+new Date().toISOString().slice(0,10)+"] "+((m.candidateDates&&m.candidateDates.comment)||"")).trim()};
+    onMaintenanceChange((maintenance||[]).map(x=>x.id===m.id?rec:x));
+    await DB.saveMaintenance([rec]);logIntakeAction("intake_cancel_rejected",rec);setTooltip(null);
+  };
   const removeMaint=(id)=>{
     const m=(maintenance||[]).find(x=>x.id===id);
     onMaintenanceChange((maintenance||[]).filter(x=>x.id!==id));DB.deleteMaintenance(id);setTooltip(null);
@@ -13717,6 +13746,27 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
       <div className="flex items-center justify-between mb-2"><span className="font-bold text-sm">{tooltip.label}</span><button onClick={()=>setTooltip(null)} className="text-gray-400 hover:text-gray-600">✕</button></div>
       <div className="text-xs space-y-1 text-gray-600">
         <div>車両: {tooltip.vehicleCode}</div><div>期間: {fmtD(tooltip.startDate)} 〜 {fmtD(tooltip.endDate)}</div>
+        {(()=>{const mrec=(maintenance||[]).find(x=>x.id===tooltip.id);if(!mrec)return null;
+          const cd=mrec.candidateDates||{};
+          const stB=(txt,bg)=><span style={{fontSize:10,fontWeight:800,padding:"2px 8px",borderRadius:4,background:bg,color:"#fff"}}>{txt}</span>;
+          if(mrec.status==="reschedule")return <div style={{marginTop:6,padding:8,borderRadius:8,background:"#fef2f2",border:"1px solid #fecaca"}}>
+            <div style={{marginBottom:4}}>{stB("🔴 日程変更リクエスト","#dc2626")}</div>
+            <div style={{fontSize:11,fontWeight:800,color:"#991b1b"}}>希望: {cd.start||"?"}〜{cd.end||"?"}{(cd.start_time||cd.end_time)?(" "+(cd.start_time||"")+"-"+(cd.end_time||"")):""}</div>
+            {cd.comment&&<div style={{fontSize:10,color:"#92400e",marginTop:2}}>💬 {cd.comment}</div>}
+            <div style={{display:"flex",gap:4,marginTop:6}}>
+              <button onClick={()=>tlAcceptResch(mrec)} style={{flex:1,padding:"6px 4px",borderRadius:6,border:"none",background:"#16a34a",color:"#fff",fontSize:11,fontWeight:800,cursor:"pointer"}}>✅ 提案日で確定</button>
+              <button onClick={()=>tlRejectResch(mrec)} style={{flex:1,padding:"6px 4px",borderRadius:6,border:"1px solid #e2e8f0",background:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>↩︎ 差戻し</button>
+            </div></div>;
+          if(mrec.status==="cancel_request")return <div style={{marginTop:6,padding:8,borderRadius:8,background:"#f5f3ff",border:"1px solid #ddd6fe"}}>
+            <div style={{marginBottom:4}}>{stB("🟣 キャンセルリクエスト","#7c3aed")}</div>
+            {cd.comment&&<div style={{fontSize:10,color:"#6d28d9",marginTop:2}}>💬 {cd.comment}</div>}
+            <div style={{display:"flex",gap:4,marginTop:6}}>
+              <button onClick={()=>tlAcceptCancel(mrec)} style={{flex:1,padding:"6px 4px",borderRadius:6,border:"none",background:"#7c3aed",color:"#fff",fontSize:11,fontWeight:800,cursor:"pointer"}}>🗑 承諾（削除）</button>
+              <button onClick={()=>tlRejectCancel(mrec)} style={{flex:1,padding:"6px 4px",borderRadius:6,border:"1px solid #e2e8f0",background:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>↩︎ 拒否（FIX維持）</button>
+            </div></div>;
+          if(mrec.status==="pending")return <div style={{marginTop:4}}>{stB("🟠 仮予定（協力会社の承認待ち）","#d97706")}</div>;
+          if(mrec.status==="approved")return <div style={{marginTop:4}}>{stB("🟢 FIX（承認済み）","#15803d")}{(mrec.startTime||mrec.endTime)&&<span style={{fontSize:10,color:"#475569",marginLeft:6}}>🕐{mrec.startTime||"--:--"}〜{mrec.endTime||"--:--"}</span>}</div>;
+          return null;})()}
         <button onClick={()=>removeMaint(tooltip.id)} className="mt-2 w-full py-1.5 bg-red-50 text-red-600 rounded-lg text-xs font-bold hover:bg-red-100">メンテナンスを削除</button>
       </div>
     </div></div>}
@@ -20192,7 +20242,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.227";
+const APP_VERSION="v4.7.228";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
