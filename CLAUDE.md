@@ -134,6 +134,15 @@ if (/免責[^：:\n]*[：:\s]*(なし|未加入|無し|加入しない|0円)/i.t
 - **DB**: `intake_db_migration.sql`（status/work_detail/repair_cause/actual_out_date/candidate_dates/created_at 追加）**→オーナーがSQL EditorでRUN必須（RUNまでstatus保存が失敗）**。DB層は新フィールドを「プロパティ存在時のみ書く」方式で旧呼び出し元の上書き事故防止。
 - **今後**: Phase2=partner.html🔧入庫タブ（共立自動車が日程回答/内容/見積入力＝自社maintenanceの公開スライス・正本1箇所）＋GAS通知(#車両管理チャンネル・ID待ち)。Phase3=傷チェック(handyman-damage)連携＋NHA/BT展開。
 
+## 🧾 2026-06-07 協力会社 請求書格納タブ（partner.html）
+
+- **構成**: Supabase Storage非公開バケット`partner-invoices`＋メタテーブル`partner_invoice_files`（SQL: partner_invoice_files.sql・RUN済）。
+- **機能**: 先方がPDF/画像をアップ（対象月×車両=配車表全車両から選択 or 共通・複数可・備考）→ 月別/車両別/年別ソート切替＋グループ折りたたみ（先頭のみ展開・未確認バッジ）→ 👁プレビュー/⬇️DL（createSignedUrl 1h）→ 🗑削除。
+- **確認チェック**: HANDYMANアカウント(@g-lines.jp/@mileshare.jp)のみ「☐確認する」→✅確認済+日付+担当が先方にも表示（既読の証）。confirmed_at/confirmed_by列。
+- **Slack通知**: アップ成功時 partner_actions `invoice_uploaded`(notified_slack=false)→notifyPartnerActionsが🧾通知（対象月/車両/件数/備考）。
+- **⚠️ Storageキーは日本語不可**（Invalid key）→ パスはASCIIのみに変換、表示名はfile_name列で日本語維持。
+- 関連: 車両情報タブ刷新（次回車検日/車検残/日額/傷チェックURL=vehicle_twins/走行距離・colgroup固定幅で全クラス整列）。
+
 ## 🤝 2026-06-07 協力会社: キャンセル履歴一覧＋予約増減Slack通知（partner.html / gas-email-import-v2.gs）
 
 - **背景**: 協力会社車両(B2ノア)の予約 RC42461194472711541 が楽天キャンセル→fleet解除で協力会社ビューから消え「消えた？」と混乱。キャンセルは配車解除されるため partner.html から見えなくなる構造だった。
