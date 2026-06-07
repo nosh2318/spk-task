@@ -116,7 +116,17 @@ if (/免責[^：:\n]*[：:\s]*(なし|未加入|無し|加入しない|0円)/i.t
   - **協力会社ビュー入庫スケジュール**: 月/週切替・スマホ/PC最適化(中央1340px・セル/チップ拡大)・要対応Handoverパネル(承認待ち/変更依頼中のテキスト一覧・タップ→詳細)・注記はヘッダー直下1行に。
   - 配車表ヘッダーに凡例チップ（入庫仮橙縞/FIX緑縞/変更依頼赤縞/メンテ青縞）。
   - 整備カレンダー改名は**全店適用済み**（NHA v3.5.115/BT v1.0.71・機能はSPK先行）。
-- **残**: 入庫中→完了(実費・期限自動更新)の運用接続（旧IntakeBoardのロジック温存済）、傷チェック連携、LINEグループ通知、NHA/BTへの入庫システム移植（DB層分岐ありフル移植は別作業）、#車両管理チャンネル分離(現状#partner_在庫調整)。
+- **追補2（同日リリース・〜v4.7.231）**:
+  - **時刻対応**: maintenance.start_time/end_time追加(SQL実行済)。登録/編集/変更リクエスト/Slack通知すべて時刻対応。🕐時間変更専用ボタン（仮/FIX両方・日付据え置き）。
+  - **FIX後のリクエスト**: 📅変更・🚫キャンセル（理由付き・status=cancel_request紫）。差戻しはprev_statusでFIX復帰。取下げボタン（元日程で承認）。
+  - **配車表ポップアップで完結**: ステータス表示＋承諾/差戻し/拒否＋📝編集（日付時刻見積工場作業内容メモ・公開中は警告＋intake_edited通知）＋🗑キャンセル。
+  - **色最終**: 仮=橙縞/FIX=緑縞/**変更依頼=マゼンタ縞#db2777**(予約赤と区別)/取消依頼=紫縞/メンテ=青縞。凡例チップ付き。
+  - **全種別対応**: メンテナンス/清掃/その他も入庫公開可（ラベル不問・status基準）。
+  - **協力会社ビュー**: 入庫スケジュール(月/週・スマホ週デフォルト・チップ可読化・PC1340px)・📜入庫リストタブ(時系列月グループ)・要対応Handover・**車両情報タブ刷新**(次回車検日/車検残/日額/傷チェックURL=vehicle_twins.share_token/走行距離+更新日=odometer)。
+  - **通知全種**: created/approved/reschedule/resch_accepted/rejected/withdrawn/cancel_request/cancel_accepted/cancel_rejected/edited/cancelled。
+  - **マニュアル**: intake-manual-staff.html / intake-manual-partner.html（GitHub Pages・PDF化済）。リリース告知を#sapporo_reservation/#handyman_developmentに投稿済（那覇はこれから開発と明記）。
+  - ⚠️Slack Bot(SNS Auto)はfiles:write無し=PDF添付不可・channels:read無し=チャンネル一覧不可。投稿はchat.postMessageのみ可。
+- **残**: 入庫中→完了(実費・期限自動更新)の運用接続（旧IntakeBoardのロジック温存済）、傷チェック→修理入庫ワンタップ連携、LINEグループ通知、NHA/BTへの入庫システム移植（DB層分岐ありフル移植は別作業）。
 
 - **設計**: 起点=配車表のメンテブロック(label=車検/半年点検/修理)＝**年間仮埋め(予算大枠)**。入庫3ヶ月前になるとTOP「🔧入庫管理」ボードに「📨調整中」として自動表示→車両別に日程/内容/費用を調整（オーナー運用と一致）。
 - **ステータス**: maintenance.status null/requested=調整中→confirmed=日程確定→in_shop=入庫中→done=完了。完了時に実費/請求書No/実出庫日を記録し**車検→満了+24ヶ月＆点検期限=出庫+6ヶ月／点検→+6ヶ月を車両マスター自動更新**。
