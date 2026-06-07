@@ -199,7 +199,7 @@ function testProcessLatest() {
 // 関数を実行する前に TARGET_IDS を編集すること。
 // ============================================================
 function backfillSpecificReservations() {
-  var TARGET_IDS = ['C260600231'];   // 2026-06-05 エアトリプラスDP取込漏れ復旧（処理済み記録を無視して再取込）
+  var TARGET_IDS = ['RC12461198304067404'];   // 2026-06-07 Hクラス配車不可(アクセKPI除外フラグ)復旧。フラグは解除済み・行はDELETE済み→ネイティブ再取込
   var SEARCH_DAYS = 30;  // 30日まで遡る
 
   var processedIds = getProcessedMsgIds_();
