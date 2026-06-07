@@ -357,6 +357,7 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
       <span style="font-size:13px;font-weight:900;color:#1e293b">🔧 入庫スケジュール（HANDYMAN車両の車検・点検・修理）</span>
       <span style="display:flex;gap:6px;margin-left:auto">
         <span style="font-size:9px;font-weight:800;padding:3px 8px;border-radius:5px;background:#fef3c7;color:#92400e">🟡 仮予定（承認待ち）</span>
+        <span style="font-size:9px;font-weight:800;padding:3px 8px;border-radius:5px;background:#fee2e2;color:#991b1b">🔴 変更依頼中</span>
         <span style="font-size:9px;font-weight:800;padding:3px 8px;border-radius:5px;background:#dcfce7;color:#166534">🟢 FIX（承認済み）</span>
       </span>
     </div>
@@ -1125,7 +1126,7 @@ async function loadIntake(){
   const body=document.getElementById('intake-body');
   try{
     const[{data:mt},{data:hv}]=await Promise.all([
-      sb.from('maintenance').select('*').in('label',INTAKE_TYPES).in('status',['pending','approved']).eq('owner_company',OWNER_COMPANY),// 入庫先=自社宛のみ
+      sb.from('maintenance').select('*').in('label',INTAKE_TYPES).in('status',['pending','approved','reschedule']).eq('owner_company',OWNER_COMPANY),// 入庫先=自社宛のみ
       sb.from('vehicles').select('code,name,plate_no,type')
     ]);
     HVEH={};(hv||[]).forEach(v=>HVEH[v.code]=v);
@@ -1165,9 +1166,8 @@ function renderIntake(){
       html+='<td style="border:1px solid #f1f5f9;vertical-align:top;height:74px;padding:3px;'+(isToday?'background:#eff6ff;':'')+'">'+
         '<div style="font-size:10px;font-weight:'+(isToday?'900':'600')+';color:'+(isToday?'#1d4ed8':'#64748b')+';margin-bottom:2px">'+day+'</div>'+
         evs.slice(0,3).map(m=>{
-          const pend=(m.status||'pending')==='pending';
-          // 開始日のみラベル省略なし、連日チップ
-          return '<div onclick="openIntakeDetail(\''+m.id+'\')" style="font-size:9px;font-weight:700;padding:2.5px 5px;border-radius:4px;margin-bottom:2px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:'+(pend?'#f59e0b':'#16a34a')+';color:#fff">'+(TC[m.label]||'')+' '+ikVehName(m.vehicle_code)+'</div>';
+          const st=m.status||'pending';const bgc=st==='pending'?'#f59e0b':st==='reschedule'?'#dc2626':'#16a34a';
+          return '<div onclick="openIntakeDetail(\''+m.id+'\')" style="font-size:9px;font-weight:700;padding:2.5px 5px;border-radius:4px;margin-bottom:2px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:'+bgc+';color:#fff">'+(TC[m.label]||'')+' '+ikVehName(m.vehicle_code)+'</div>';
         }).join('')+
         (evs.length>3?'<div style="font-size:8px;color:#94a3b8">+'+(evs.length-3)+'件</div>':'')+
         '</td>';
@@ -1180,23 +1180,28 @@ function renderIntake(){
 async function intakeLog(type,m){try{await sb.from('partner_actions').insert({action_type:type,owner_company:OWNER_COMPANY,vehicle_code:m.vehicle_code||'',user_email:(CURRENT_USER&&CURRENT_USER.email)||'',target_date_from:m.start_date||null,target_date_to:m.end_date||null,notified_slack:true,notified_at:new Date().toISOString(),payload:{action:type,id:m.id,label:m.label,vehicle:ikVehName(m.vehicle_code),start:m.start_date,end:m.end_date}});}catch(e){}}
 function openIntakeDetail(id){
   const m=INTAKE.find(x=>x.id===id);if(!m)return;
-  const pend=(m.status||'pending')==='pending';
+  const st=m.status||'pending';const pend=st==='pending';const resch=st==='reschedule';
   const ov=document.createElement('div');
   ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9000;display:flex;align-items:center;justify-content:center;padding:14px';
   ov.innerHTML='<div style="background:#fff;border-radius:14px;padding:18px;width:100%;max-width:400px" onclick="event.stopPropagation()">'+
    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">'+
-   '<span style="font-size:10px;font-weight:800;padding:3px 8px;border-radius:5px;background:'+(pend?'#fef3c7':'#dcfce7')+';color:'+(pend?'#92400e':'#166534')+'">'+(pend?'🟡 仮予定':'🟢 FIX')+'</span>'+
+   '<span style="font-size:10px;font-weight:800;padding:3px 8px;border-radius:5px;background:'+(pend?'#fef3c7':resch?'#fee2e2':'#dcfce7')+';color:'+(pend?'#92400e':resch?'#991b1b':'#166534')+'">'+(pend?'🟡 仮予定':resch?'🔴 変更依頼中':'🟢 FIX')+'</span>'+
    '<span style="font-size:14px;font-weight:900">'+m.label+'</span></div>'+
    '<div style="font-size:13px;font-weight:800;margin-bottom:6px">🚗 '+ikVehName(m.vehicle_code)+'</div>'+
    '<div style="font-size:12px;color:#475569;margin-bottom:6px">📅 '+(m.start_date||'?')+' 〜 '+(m.end_date||'?')+'</div>'+
    (m.cost>0?'<div style="font-size:12px;color:#0369a1;margin-bottom:6px">💴 概算 ¥'+Number(m.cost).toLocaleString()+'</div>':'')+
    (m.work_detail?'<div style="font-size:11px;color:#475569;margin-bottom:6px;white-space:pre-wrap">📝 '+m.work_detail+'</div>':'')+
    (m.maint_notes?'<div style="font-size:11px;color:#64748b;margin-bottom:10px;white-space:pre-wrap">💬 '+m.maint_notes+'</div>':'')+
-   (pend?'<button id="ik-approve" style="width:100%;padding:11px;border-radius:8px;border:none;background:#16a34a;color:#fff;font-size:13px;font-weight:900;cursor:pointer;margin-top:6px">✅ この日程で承認する（FIX）</button>':'<div style="font-size:11px;color:#16a34a;font-weight:700;text-align:center;padding:8px">✅ 承認済み — HANDYMAN配車表にFIX表示中</div>')+
+   (pend?'<button id="ik-approve" style="width:100%;padding:11px;border-radius:8px;border:none;background:#16a34a;color:#fff;font-size:13px;font-weight:900;cursor:pointer;margin-top:6px">✅ この日程で承認する（FIX）</button>'+
+        '<button id="ik-resch" style="width:100%;padding:10px;border-radius:8px;border:2px solid #dc2626;background:#fff;color:#dc2626;font-size:12px;font-weight:800;cursor:pointer;margin-top:8px">📅 日程変更をリクエスト</button>'
+    :resch?'<div style="font-size:11px;color:#991b1b;font-weight:700;text-align:center;padding:8px;background:#fef2f2;border-radius:8px">🔴 日程変更リクエスト送信済み — HANDYMAN確認待ち<br>'+(m.candidate_dates?('希望: '+(m.candidate_dates.start||'')+'〜'+(m.candidate_dates.end||'')+(m.candidate_dates.comment?'<br>'+m.candidate_dates.comment:'')):'')+'</div>'
+    :'<div style="font-size:11px;color:#16a34a;font-weight:700;text-align:center;padding:8px">✅ 承認済み — HANDYMAN配車表にFIX表示中</div>')+
    '<button id="ik-close" style="width:100%;padding:9px;border-radius:8px;border:1px solid #e2e8f0;background:#f8fafc;font-size:11px;font-weight:700;cursor:pointer;margin-top:8px">閉じる</button></div>';
   ov.onclick=()=>ov.remove();
   document.body.appendChild(ov);
   document.getElementById('ik-close').onclick=()=>ov.remove();
+  const rs=document.getElementById('ik-resch');
+  if(rs)rs.onclick=()=>{ov.remove();openReschForm(m);};
   const ap=document.getElementById('ik-approve');
   if(ap)ap.onclick=async()=>{
     if(!confirm(m.label+' '+ikVehName(m.vehicle_code)+'\n'+(m.start_date||'')+'〜'+(m.end_date||'')+'\nこの日程で承認しますか？'))return;
@@ -1207,6 +1212,30 @@ function openIntakeDetail(id){
   };
 }
 
+function openReschForm(m){
+  const ov=document.createElement('div');
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9001;display:flex;align-items:center;justify-content:center;padding:14px';
+  const inp='width:100%;border:1px solid #e2e8f0;border-radius:7px;padding:7px 8px;font-size:13px;font-family:inherit;box-sizing:border-box';
+  const lab='display:block;font-size:10px;color:#64748b;margin-bottom:2px;font-weight:700';
+  ov.innerHTML='<div style="background:#fff;border-radius:14px;padding:18px;width:100%;max-width:400px" onclick="event.stopPropagation()">'+
+   '<div style="font-size:13px;font-weight:900;margin-bottom:4px;color:#dc2626">📅 日程変更リクエスト</div>'+
+   '<div style="font-size:11px;color:#64748b;margin-bottom:10px">'+m.label+' '+ikVehName(m.vehicle_code)+'（現在: '+(m.start_date||'')+'〜'+(m.end_date||'')+'）</div>'+
+   '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">'+
+   '<div><label style="'+lab+'">希望 入庫日</label><input type="date" id="rs-start" style="'+inp+'" value="'+(m.start_date||'')+'"></div>'+
+   '<div><label style="'+lab+'">希望 出庫日</label><input type="date" id="rs-end" style="'+inp+'" value="'+(m.end_date||'')+'"></div></div>'+
+   '<div style="margin-bottom:10px"><label style="'+lab+'">コメント（理由など）</label><textarea id="rs-com" style="'+inp+';min-height:54px" placeholder="例: この週は予約が埋まっているため翌週希望"></textarea></div>'+
+   '<button id="rs-send" style="width:100%;padding:11px;border-radius:8px;border:none;background:#dc2626;color:#fff;font-size:13px;font-weight:900;cursor:pointer">📨 変更リクエストを送信</button></div>';
+  ov.onclick=()=>ov.remove();
+  document.body.appendChild(ov);
+  document.getElementById('rs-send').onclick=async()=>{
+    const cd={start:document.getElementById('rs-start').value,end:document.getElementById('rs-end').value,comment:document.getElementById('rs-com').value||'',by:OWNER_LABEL||OWNER_COMPANY,at:new Date().toISOString()};
+    if(!cd.start||!cd.end){showToast('希望日を入力してください','err');return;}
+    const{error}=await sb.from('maintenance').update({status:'reschedule',candidate_dates:cd}).eq('id',m.id);
+    if(error){showToast('送信失敗: '+error.message,'err');return;}
+    m.status='reschedule';m.candidate_dates=cd;intakeLog('intake_reschedule',m);ov.remove();renderIntake();
+    showToast('📨 変更リクエストを送信しました（HANDYMAN側に表示されます）','ok');
+  };
+}
 function switchTab(t){
   CURRENT_TAB=t;
   document.getElementById('tab-tl').classList.toggle('on',t==='tl');
