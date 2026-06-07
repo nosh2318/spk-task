@@ -1,5 +1,36 @@
 # SPK業務管理APP（札幌店）
 
+## 🛡 2026-06-07 オフィシャル予約 補償(免責)誤判定バグ修正（GAS 札幌+那覇 両店）
+
+### 症状
+札幌HP(オフィシャル)予約 LXT04768（太田勇様・Aクラス・6/7）が、メール本文は `免責補償制度(CDW): なし`（＝免責**未加入**＝基本補償）なのに、タスク/OPシートに「免責」バッジが表示された。
+
+### 真因（`detectInsurance_` フォールバック判定の誤爆）
+- `gas-email-import-v2.gs`（SPK L629）/ 那覇 `gas/Code.gs`（L609）の **同一バグ**。3店GASの `detectInsurance_` は同一ロジック。
+- 該当行：`if (/免責/.test(text) && !/免責[：:\s]*(なし|未加入|無し|加入しない|0円)/i.test(text)) return '免責';`
+- 除外ガードが `免責` の**直後**に「なし」が来る場合しか除外しない。HP形式は `免責`**補償制度(CDW)**`: なし` と**ラベルと値の間に文字が挟まる**ため除外できず、「文中に"免責"がある」だけで誤って `免責` を返していた。
+- ※あり判定（`免責補償制度(CDW): あり`）は手前のL626/627で先にreturnされるので無影響。
+
+### 修正（SPK/NHA 両方に同一の除外行を追加）
+フォールバック行の手前に1行追加：
+```js
+// ★ HP形式「免責補償制度(CDW): なし」を明示的に除外（基本補償＝免責未加入）
+if (/免責[^：:\n]*[：:\s]*(なし|未加入|無し|加入しない|0円)/i.test(text)) return 'なし';
+```
+`[^：:\n]*` でラベル(補償制度(CDW))を吸収し、コロン直後の「なし」を拾う。`：:` は跨がないので「免責補償: あり…安心パック: なし」のような別オプションのなしには誤反応しない。
+
+### DB訂正（実施済）
+- `reservations.insurance` LXT04768 を `免責→なし`、DEL/COLタスク（`tasks.insurance`、PK列は `_id`）も `免責→なし` に修正。
+- 横展開チェック：**今日以降(active)のHP×免責は SPK=LXT04768のみ(修正済) / NHA=0件**。運用への実害は那覇は無し。
+
+### デプロイ（オーナー作業・トリガー型なので再デプロイ不要）
+1. 札幌：`~/spk-task/gas-email-import-v2.gs` を「札幌予約メール自動配車」に Cmd+A→Cmd+V→Cmd+S。
+2. 那覇：`~/Desktop/naha-project/gas/Code.gs` を「那覇店 予約取込」に同様に貼付。両方 `node --check` 構文OK済。
+
+### Lesson
+- **3店GASの `detectInsurance_` は同一ロジック → 片方直したら必ず横展開**（SPK/NHA/将来BT）。今回もSPKで発覚→NHAにも同バグ確認→同時修正。
+- ラベルと値の間に文字が挟まる `ラベル○○: 値` 形式は、`ラベル[直後]値` 前提の正規表現を擦り抜ける。除外ガードは `[^：:\n]*` でラベル部を吸収する設計にする。
+
 ## 📈 2026-06-06 運用戦略ハブ統合 + action-fill NHA新仕様移植（v4.7.213 / spk-v758）
 
 ### strategy.html（運用戦略ハブ）新設＝入口1つに統一
@@ -53,6 +84,14 @@
 ### Lesson
 1. **支出は生キーでなくコスト内訳タブの表示値**。タブは再計算するので生`cost_*`と一致しない。孤立保存値(修理¥550k)を混ぜない。
 2. **事業計画の数字は決め打ちせずシミュレータ化**。オーナーが実額を入れて動かす方が信頼される（「あてにならない」回避）。
+
+## 🤝 2026-06-07 協力会社: キャンセル履歴一覧＋予約増減Slack通知（partner.html / gas-email-import-v2.gs）
+
+- **背景**: 協力会社車両(B2ノア)の予約 RC42461194472711541 が楽天キャンセル→fleet解除で協力会社ビューから消え「消えた？」と混乱。キャンセルは配車解除されるため partner.html から見えなくなる構造だった。
+- **① partner.html 予約データタブに「❌キャンセル履歴」**: データソース＝`partner_actions`(action_type=customer_resv_cancelled・owner_company絞り・ts desc 30件)。payload に resv_no/name/ota/期間/price/vehicle_name。renderCxl()。
+- **② GAS `watchPartnerCustomerReservations()`（15分・要 `setupPartnerWatchTrigger()` 1回実行）**: vehicles(owner_company≠HANDYMAN)→fleet の配車状態を ScriptProperty `PARTNER_RESV_STATE` と差分比較。新規配車=🆕通知＋customer_resv_add記録／state在&fleet消&status=cancelled=❌通知＋customer_resv_cancelled記録。**初回実行はseedのみ（既存予約の通知スパム防止）**。配車変更（他車両へ移動）は通知しない。通知先=`PARTNER_NOTIFY_CHANNEL`(C0B451BSK1B=#partner_在庫調整)。`notified_slack:true`で旧notifyPartnerActionsの二重通知防止。
+- 昨日のキャンセル(ヒダカ サトシ様・B2・¥45,450)は手動で partner_actions に登録済（履歴に表示される）。
+- **デプロイ**: GASエディタ「札幌予約メール自動配車」に gas-email-import-v2.gs 全文貼付→`setupPartnerWatchTrigger`を1回▶️実行。
 
 ## 📧 2026-06-05 エアトリプラス(DP)予約 取込漏れ 修正＋再発防止（gas-email-import-v2.gs）
 
