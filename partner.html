@@ -386,7 +386,12 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
   <!-- 🧾 請求書格納タブ (2026-06-07) -->
   <div id="view-inv" style="display:none;max-width:1100px;margin:0 auto">
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-      <span style="font-size:13px;font-weight:900;color:#1e293b">🧾 請求書格納（月別×車両別）</span>
+      <span style="font-size:13px;font-weight:900;color:#1e293b">🧾 請求書格納</span>
+      <span style="display:inline-flex;border:1px solid #cbd5e1;border-radius:8px;overflow:hidden;margin-left:8px">
+        <button id="ivm-ym" onclick="invSetMode('ym')" style="padding:5px 14px;border:none;background:#1e293b;color:#fff;cursor:pointer;font-size:11px;font-weight:700">月別</button>
+        <button id="ivm-vc" onclick="invSetMode('vc')" style="padding:5px 14px;border:none;background:#fff;color:#1e293b;cursor:pointer;font-size:11px;font-weight:700">車両別</button>
+        <button id="ivm-yr" onclick="invSetMode('yr')" style="padding:5px 14px;border:none;background:#fff;color:#1e293b;cursor:pointer;font-size:11px;font-weight:700">年別</button>
+      </span>
       <button onclick="openInvUpload()" style="margin-left:auto;padding:8px 16px;border-radius:8px;border:none;background:#1d4ed8;color:#fff;font-size:12px;font-weight:800;cursor:pointer">＋ 請求書をアップロード</button>
     </div>
     <div id="inv-body" class="loading">読み込み中...</div>
@@ -1446,40 +1451,63 @@ async function loadInv(){
     renderInv();
   }catch(e){body.innerHTML='<div class="loading">取得エラー: '+e.message+'<br><span style="font-size:10px">※テーブル/バケット未作成の場合はHANDYMANにご連絡ください</span></div>';}
 }
+let INV_MODE='ym',INV_OPEN={};
+function invSetMode(mo){INV_MODE=mo;INV_OPEN={};renderInv();}
+function invToggle(k){INV_OPEN[k]=!invIsOpen(k);renderInv();}
+function invIsOpen(k){if(k in INV_OPEN)return INV_OPEN[k];return k===window._invFirstKey;}// 既定: 先頭グループのみ展開
 function renderInv(){
   const body=document.getElementById('inv-body');if(!body)return;
+  ['ym','vc','yr'].forEach(mo=>{const b=document.getElementById('ivm-'+mo);if(b){b.style.background=INV_MODE===mo?'#1e293b':'#fff';b.style.color=INV_MODE===mo?'#fff':'#1e293b';}});
   if(!INVFILES.length){body.innerHTML='<div class="loading">請求書はまだありません。「＋ 請求書をアップロード」から追加してください。</div>';return;}
-  const byYm={};
-  INVFILES.forEach(x=>{(byYm[x.year_month]=byYm[x.year_month]||[]).push(x);});
+  const keyOf=x=>INV_MODE==='vc'?(x.vehicle_code||'_common'):INV_MODE==='yr'?(x.year_month||'').substring(0,4):(x.year_month||'?');
+  const labelOf=k=>INV_MODE==='vc'?(k==='_common'?'📦 共通・全体':'🚗 '+ikVehName(k)):INV_MODE==='yr'?('📅 '+k+'年'):('📅 '+k.replace('-','年 ')+'月');
+  const groups={};
+  INVFILES.forEach(x=>{const k=keyOf(x);(groups[k]=groups[k]||[]).push(x);});
+  const keys=Object.keys(groups).sort();
+  if(INV_MODE!=='vc')keys.reverse();// 月別/年別は新しい順
+  window._invFirstKey=keys[0];
+  const fileRow=x=>{
+    const dt=(x.created_at||'').substring(0,10);
+    const sizeKb=x.size_bytes?Math.round(x.size_bytes/1024)+'KB':'';
+    return '<div style="display:flex;align-items:center;gap:8px;padding:8px 6px;border-bottom:1px solid #f1f5f9;flex-wrap:wrap">'+
+      '<span style="font-size:14px">'+((x.mime||'').includes('pdf')?'📄':'🖼')+'</span>'+
+      '<span style="font-size:12px;font-weight:700;color:#1e293b;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+x.file_name+'</span>'+
+      (x.note?'<span style="font-size:10px;color:#64748b">💬'+x.note+'</span>':'')+
+      '<span style="font-size:10px;color:#94a3b8">'+dt+' '+sizeKb+'</span>'+
+      (x.confirmed_at
+        ?'<span style="font-size:10px;font-weight:800;padding:2px 8px;border-radius:4px;background:#dcfce7;color:#166534">✅ 確認済 '+(x.confirmed_at||'').substring(5,10).replace('-','/')+(x.confirmed_by?(' '+x.confirmed_by.split('@')[0]):'')+'</span>'
+        :(IS_HANDYMAN()
+          ?'<button onclick="invConfirm(\''+x.id+'\')" style="font-size:10px;font-weight:800;padding:3px 10px;border-radius:4px;border:2px solid #16a34a;background:#fff;color:#16a34a;cursor:pointer">☐ 確認する</button>'
+          :'<span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;background:#f1f5f9;color:#94a3b8">未確認</span>'))+
+      '<span style="margin-left:auto;display:flex;gap:4px">'+
+      '<button onclick="invOpen(\''+x.id+'\',false)" style="padding:4px 12px;border-radius:6px;border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;font-size:10px;font-weight:700;cursor:pointer">👁 プレビュー</button>'+
+      '<button onclick="invOpen(\''+x.id+'\',true)" style="padding:4px 12px;border-radius:6px;border:none;background:#1d4ed8;color:#fff;font-size:10px;font-weight:700;cursor:pointer">⬇️ DL</button>'+
+      '<button onclick="invDelete(\''+x.id+'\')" style="padding:4px 8px;border-radius:6px;border:none;background:#fee2e2;color:#b91c1c;font-size:10px;font-weight:700;cursor:pointer">🗑</button>'+
+      '</span></div>';
+  };
   let html='';
-  Object.keys(byYm).sort().reverse().forEach(ym=>{
-    html+='<div style="font-size:13px;font-weight:900;color:#1e293b;padding:8px 4px 4px;border-bottom:2px solid #1d4ed8;margin-top:10px">📅 '+ym.replace('-','年 ')+'月</div>';
-    // 車両別グループ
-    const byVc={};
-    byYm[ym].forEach(x=>{const k=x.vehicle_code||'_common';(byVc[k]=byVc[k]||[]).push(x);});
-    Object.keys(byVc).sort().forEach(vc=>{
-      const vlabel=vc==='_common'?'📦 共通・全体':('🚗 '+ikVehName(vc));
-      html+='<div style="font-size:11px;font-weight:800;color:#475569;padding:6px 4px 2px">'+vlabel+'（'+byVc[vc].length+'件）</div>';
-      byVc[vc].forEach(x=>{
-        const dt=(x.created_at||'').substring(0,10);
-        const sizeKb=x.size_bytes?Math.round(x.size_bytes/1024)+'KB':'';
-        html+='<div style="display:flex;align-items:center;gap:8px;padding:8px 6px;border-bottom:1px solid #f1f5f9;flex-wrap:wrap">'+
-          '<span style="font-size:14px">'+((x.mime||'').includes('pdf')?'📄':'🖼')+'</span>'+
-          '<span style="font-size:12px;font-weight:700;color:#1e293b;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+x.file_name+'</span>'+
-          (x.note?'<span style="font-size:10px;color:#64748b">💬'+x.note+'</span>':'')+
-          '<span style="font-size:10px;color:#94a3b8">'+dt+' '+sizeKb+'</span>'+
-          (x.confirmed_at
-            ?'<span style="font-size:10px;font-weight:800;padding:2px 8px;border-radius:4px;background:#dcfce7;color:#166534">✅ 確認済 '+(x.confirmed_at||'').substring(5,10).replace('-','/')+(x.confirmed_by?(' '+x.confirmed_by.split('@')[0]):'')+'</span>'
-            :(IS_HANDYMAN()
-              ?'<button onclick="invConfirm(\''+x.id+'\')" style="font-size:10px;font-weight:800;padding:3px 10px;border-radius:4px;border:2px solid #16a34a;background:#fff;color:#16a34a;cursor:pointer">☐ 確認する</button>'
-              :'<span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;background:#f1f5f9;color:#94a3b8">未確認</span>'))+
-          '<span style="margin-left:auto;display:flex;gap:4px">'+
-          '<button onclick="invOpen(\''+x.id+'\',false)" style="padding:4px 12px;border-radius:6px;border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;font-size:10px;font-weight:700;cursor:pointer">👁 プレビュー</button>'+
-          '<button onclick="invOpen(\''+x.id+'\',true)" style="padding:4px 12px;border-radius:6px;border:none;background:#1d4ed8;color:#fff;font-size:10px;font-weight:700;cursor:pointer">⬇️ DL</button>'+
-          '<button onclick="invDelete(\''+x.id+'\')" style="padding:4px 8px;border-radius:6px;border:none;background:#fee2e2;color:#b91c1c;font-size:10px;font-weight:700;cursor:pointer">🗑</button>'+
-          '</span></div>';
+  keys.forEach(k=>{
+    const items=groups[k];
+    const open=invIsOpen(k);
+    const confirmed=items.filter(x=>x.confirmed_at).length;
+    html+='<div onclick="invToggle(\''+k+'\')" style="display:flex;align-items:center;gap:8px;padding:9px 8px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;margin-top:8px;cursor:pointer">'+
+      '<span style="font-size:13px;font-weight:900;color:#1e293b">'+labelOf(k)+'</span>'+
+      '<span style="font-size:10px;font-weight:700;color:#64748b">'+items.length+'件</span>'+
+      (confirmed<items.length?'<span style="font-size:9px;font-weight:800;padding:2px 7px;border-radius:8px;background:#fef3c7;color:#92400e">未確認 '+(items.length-confirmed)+'</span>':'<span style="font-size:9px;font-weight:800;padding:2px 7px;border-radius:8px;background:#dcfce7;color:#166534">全確認済</span>')+
+      '<span style="margin-left:auto;font-size:11px;color:#94a3b8">'+(open?'▲':'▼')+'</span></div>';
+    if(open){
+      // グループ内のサブグループ（月別→車両別 / 車両別→月別 / 年別→月別）
+      const subKey=x=>INV_MODE==='vc'?(x.year_month||'?'):INV_MODE==='yr'?(x.year_month||'?'):(x.vehicle_code||'_common');
+      const subLabel=s=>INV_MODE==='ym'?(s==='_common'?'📦 共通・全体':'🚗 '+ikVehName(s)):('📅 '+s.replace('-','年 ')+'月');
+      const subs={};items.forEach(x=>{const s=subKey(x);(subs[s]=subs[s]||[]).push(x);});
+      const sKeys=Object.keys(subs).sort();if(INV_MODE!=='ym')sKeys.reverse();
+      html+='<div style="padding:0 4px">';
+      sKeys.forEach(s=>{
+        html+='<div style="font-size:11px;font-weight:800;color:#475569;padding:8px 4px 2px">'+subLabel(s)+'（'+subs[s].length+'件）</div>';
+        subs[s].forEach(x=>{html+=fileRow(x);});
       });
-    });
+      html+='</div>';
+    }
   });
   body.innerHTML=html;
 }
