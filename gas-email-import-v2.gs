@@ -4870,9 +4870,10 @@ function notifyPartnerActions() {
               var p = r.payload || {};
               var x = '';
               if (p.label) x += '\n*🔧 種別*  ' + p.label;
+              if (p.start_time || p.end_time) x += '\n*🕐 時刻*  入庫 ' + (p.start_time || '--:--') + ' ／ 出庫 ' + (p.end_time || '--:--');
               if (r.action_type === 'intake_reschedule') {
                 var cd = p.candidate || {};
-                if (cd.start) x += '\n*🗓 希望日程*  `' + cd.start + ' 〜 ' + (cd.end || cd.start) + '`';
+                if (cd.start) x += '\n*🗓 希望日程*  `' + cd.start + ' 〜 ' + (cd.end || cd.start) + ((cd.start_time||cd.end_time)?('  '+(cd.start_time||'')+'-'+(cd.end_time||'')):'') + '`';
                 if (cd.comment) x += '\n*💬 コメント*  ' + cd.comment;
                 x += '\n→ 本体APP「整備カレンダー」で承諾/差戻しできます';
               }
