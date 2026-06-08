@@ -1,5 +1,39 @@
 # SPK業務管理APP（札幌店）
 
+## 🧾 2026-06-08 受領請求書 一元管理システム（DB作成→TOP導線→複数内容→告知→マニュアル）
+
+このセッションでの一連の作業まとめ（NHA/SPK 両店＋ローカルツール）。
+
+### ① received_invoices テーブル＆Storage作成（PGRST205修正）
+- 症状: 受領請求書登録で `PGRST205 Could not find table 'public.received_invoices'`＝**テーブル未作成**（受領請求書タブ v4.7.235 追加済だがSQL未実行）。
+- 対応: `~/Desktop/HANDYMAN/invoices/received_invoices_setup.sql` を作成→**Supabase `ckrxttbnawkclshczsia` SQL EditorでRUN済**。テーブル＋index＋updated_atトリガー＋RLS(anon/authenticated両許可)＋Storageバケット `received-invoices`(public)＋objectポリシー。
+- スキーマは2系統の和集合: ①APP内タブ(authenticated・`issue_date`使用) ②invoice_manager.html(ローカルfile://・anon・`tax_amount`使用)。列: id/store(nha,spk,hq)/received_date/issue_date/due_date/payee/description/amount/tax_rate/tax_amount/status/memo/file_url/file_name/file_type/created_at/updated_at。
+- ⚠️ invoice_manager.html はfile://でanon使用→RLSはanonにも全操作許可（社内専用と割り切り）。
+
+### ② TOP「会計」欄に📥受領請求書アイコン追加（NHA/SPK）
+- SPK index.src.html / NHA index.html.bak の TOP会計セクション items に `{id:"recv_invoice",ico:"📥",l:"受領請求書"}` を追加（タブは既存・ショートカット導線を新設）。
+- SPK v4.7.240 / NHA v3.5.131-NHA。
+
+### ③ 受領請求書「内容」を複数行対応（＋内容を追加）
+- 3つの入口すべてに実装: invoice_manager.html / SPKアプリ内タブ / NHAアプリ内タブ。
+- 仕様: 「＋内容を追加」で行追加・「−」で削除・保存時は改行区切りでdescriptionに結合（空行除外）・編集時は改行で分割展開・一覧は `white-space:pre-line` で改行表示。
+- ⚠️ スクショの登録フォームに＋が無い→**APP内タブ(ReceivedInvoicesTab・発行日フィールドが目印)とinvoice_manager.htmlは別物**。両方直す必要がある。
+- SPK v4.7.242 / NHA v3.5.132-NHA / invoice_manager.html(ローカル・git管理外＝保存のみで反映)。
+
+### ④ 一元管理の構造（覚える）
+- データ共有: 全入口が同一Supabase `received_invoices`＋Storage `received-invoices` を共有。store列(nha/spk/hq)で分離。
+- ビュー: **invoice_manager.html＝store横断の一元管理ビュー**（社長/会計事務所用）。各店アプリ内タブ＝その店のみ。
+- 運用ルール（#handyman_development(C07B5G3PV7C)に告知済 2026-06-08）: 「請求書が届いたら→まず登録→マスターへ自動提出(統合)」。紙のまま放置禁止。
+
+### ⑤ マニュアル
+- NHA/SPK manual.html の「決済・会計」章に「📥受領請求書管理」の使い方セクションを追加（登録→提出フロー・複数内容・場所）。
+
+## 🔧 2026-06-08 整備管理 クラス別内訳を車両マスター基準に統一（A2/B2欠落の修正）v4.7.241
+- 症状: 車両→整備管理タブのクラス別内訳が A/B/C/S/F/H のみで **A2/B2(預かり/協力会社)が欠落**（距離管理は全8クラス出るのに不一致）。
+- 真因: 整備管理(FleetManager統合ビュー)は**整備専用テーブル `cars`(DB.hm・9台)**で分類。`cars`はメイン`vehicles`(17台)と別管理で、PARTNER_TEST所有のA2/B2等が`cars`未登録＝表示されない。距離管理は`vehicles`直参照なので全クラス出ていた。
+- 修正(index.src.html FleetManager): grpMap2を**マスター`vehicles`基準**に変更。各車をtypeで分類し、整備`cars`をplate(`v.no`=plate_no)で突合→突合した車はコスト/詳細編集可、未突合の車は「＋整備登録」の黄色行(タップで`DB.hm.saveCar`登録→詳細へ)。マスターに無い孤立`cars`も該当クラスに保持(既存データ消失なし)。管理車両数=表示総数(totalShown2)。
+- ⚠️ in-app vehiclesは `.no`=plate_no・`.type`=クラス（DB raw列は plate_no、`no`列はNULL）。
+
 ## 💳 2026-06-08 じゃらん「支払い済みなのに未決済催促」恒久対策（gas-email-import-v2.gs・checkPaymentStatus）
 
 ### 症状
