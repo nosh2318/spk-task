@@ -1535,6 +1535,16 @@ async function invDelete(id){
   await sb.storage.from('partner-invoices').remove([x.file_path]);
   const{error}=await sb.from('partner_invoice_files').delete().eq('id',id);
   if(error){showToast('削除失敗: '+error.message,'err');return;}
+  // ★ 2026-06-08 札幌マスター(received_invoices)の自動反映行も連動削除（未払いのみ＝会計で支払済処理した行は残す）
+  try{
+    const{data:linked}=await sb.from('received_invoices').select('id,status,file_url').eq('store','spk').eq('memo','partner_src:'+x.file_path);
+    for(const r of (linked||[])){
+      if(r.status==='paid'){continue;} // 会計が支払済にした行は保全（消さない）
+      // 公開バケットの複製ファイルも削除（file_url から received-invoices のパスを復元）
+      try{const mk='/received-invoices/';const i=(r.file_url||'').indexOf(mk);if(i>=0){const rp=decodeURIComponent(r.file_url.slice(i+mk.length));await sb.storage.from('received-invoices').remove([rp]);}}catch(e){}
+      await sb.from('received_invoices').delete().eq('id',r.id);
+    }
+  }catch(e){console.warn('[received_invoices] 連動削除失敗',e);}
   INVFILES=INVFILES.filter(f=>f.id!==id);renderInv();showToast('削除しました','ok');
 }
 function openInvUpload(){
@@ -1581,7 +1591,7 @@ function openInvUpload(){
           const pub=sb.storage.from('received-invoices').getPublicUrl(rpath).data.publicUrl;
           const plabel=((VEHICLES.find(v=>v.owner_label)||{}).owner_label)||OWNER_COMPANY;
           const vname=vc?ikVehName(vc):'共通・全体';
-          await sb.from('received_invoices').insert({store:'spk',payee:plabel,description:'[協力会社 '+ym+'] '+vname+(note?(' / '+note):''),received_date:new Date().toISOString().slice(0,10),status:'unpaid',file_url:pub,file_name:file.name,file_type:file.type||''});
+          await sb.from('received_invoices').insert({store:'spk',payee:plabel,description:'[協力会社 '+ym+'] '+vname+(note?(' / '+note):''),received_date:new Date().toISOString().slice(0,10),status:'unpaid',file_url:pub,file_name:file.name,file_type:file.type||'',memo:'partner_src:'+path});
         }
       }catch(e){console.warn('[received_invoices] 札幌反映失敗',e);}
     }
