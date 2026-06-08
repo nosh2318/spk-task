@@ -74,6 +74,12 @@ table.h-cfg .g-cfg,table.h-sale .g-sale,table.h-cost .g-cost,table.h-out .g-out,
 <button data-g="cost" onclick="toggleCol('cost')">🔴 原価</button>
 <button data-g="out" onclick="toggleCol('out')">🟢 貢献</button>
 <button data-g="act" onclick="toggleCol('act')">🟣 実績</button>
+<span class="actwin" style="margin-left:12px;display:inline-flex;align-items:center;gap:4px;vertical-align:middle">
+<b style="font-size:11px;color:#7c3aed">実績期間:</b>
+<button data-w="3" onclick="setActWin(3)" style="padding:3px 9px;border:1px solid #c4b5fd;border-radius:6px;background:#7c3aed;color:#fff;font-size:11px;font-weight:700;cursor:pointer">直近3ヶ月</button>
+<button data-w="2" onclick="setActWin(2)" style="padding:3px 9px;border:1px solid #c4b5fd;border-radius:6px;background:#fff;color:#7c3aed;font-size:11px;font-weight:700;cursor:pointer">直近2ヶ月</button>
+<button data-w="1" onclick="setActWin(1)" style="padding:3px 9px;border:1px solid #c4b5fd;border-radius:6px;background:#fff;color:#7c3aed;font-size:11px;font-weight:700;cursor:pointer">直前月</button>
+</span>
 </div>
 <div class="tscroll">
 <table id="simtbl">
@@ -244,6 +250,29 @@ const CLASS_DATA={A:[14800,1.6],A2:[14800,1.6],B:[10200,2.6],B2:[10200,2.6],C:[5
 const ACTUAL_UTIL={F:65,A:43,B:47,S:32,C:32,H:21};
 // クラス別 台あたり月売上（直近3ヶ月・Σ売上÷Σ台数・編集不可）
 const ACTUAL_REVPV={A:176125,B:97203,C:58812,F:120018,H:47123,S:89192};
+// クラス別 実績ADR（windowed・ライブ取得時のみ充填／未充填時はCLASS_DATAにフォールバック）
+const ACTUAL_ADR={};
+// 🟣実績の集計期間トグル（3=直近3ヶ月 / 2=直近2ヶ月 / 1=直前月）2026-06-09
+let ACT_WIN=3;
+function actWinLabel(){return ACT_WIN===1?'直前月':ACT_WIN===2?'直近2ヶ月':'直近3ヶ月';}
+function recomputeActuals(){
+  // ライブ取得した monthly_snapshots(直近3ヶ月・新しい順) を選択期間ぶんスライスして実績を再集計
+  const snaps=window._SIM_SNAPS;
+  if(!Array.isArray(snaps)||!snaps.length)return; // ライブ未取得時は埋込既定値を保持
+  const use=snaps.slice(0,ACT_WIN);
+  const agg={};
+  use.forEach(s=>(s.class_detail||[]).forEach(c=>{const a=agg[c.type]||(agg[c.type]={rev:0,rd:0,ad:0});a.rev+=(+c.revenue||0);a.rd+=(+c.rental_days||0);a.ad+=(+c.avail_days||0);}));
+  for(const k in ACTUAL_UTIL)delete ACTUAL_UTIL[k];
+  for(const k in ACTUAL_REVPV)delete ACTUAL_REVPV[k];
+  for(const k in ACTUAL_ADR)delete ACTUAL_ADR[k];
+  Object.keys(agg).forEach(cl=>{const a=agg[cl];if(a.ad>0){ACTUAL_UTIL[cl]=Math.round(a.rd/a.ad*100);ACTUAL_REVPV[cl]=Math.round(a.rev/a.ad*30);}if(a.rd>0)ACTUAL_ADR[cl]=Math.round(a.rev/a.rd);});
+}
+function setActWin(n){
+  ACT_WIN=n;recomputeActuals();
+  document.querySelectorAll('.actwin button[data-w]').forEach(b=>{const on=(+b.dataset.w===n);b.style.background=on?'#7c3aed':'#fff';b.style.color=on?'#fff':'#7c3aed';});
+  const gha=document.getElementById('gh_act');if(gha)gha.textContent='🟣 実績（'+actWinLabel()+'）＋達成見込み';
+  if(typeof calc==='function')calc();
+}
 const CLS_LIST=['A','A2','B','B2','C','S','F','H'];
 const yen=n=>'¥'+Math.round(n).toLocaleString();
 const num=id=>parseFloat(document.getElementById(id).value)||0;
@@ -312,7 +341,7 @@ function calc(){
    const pfee=own?0:revPer*pshare; // 預かりは売上×取分%を協力会社に支払う
    const contribPer=revPer-vc-pfee; // 貢献/台＝台売上−車両原価/台−販売手数料(預かり)（OTA等変動費・固定費・返済は純利益で控除）
    const au=ACTUAL_UTIL[cls];tr.querySelector('.actutil').textContent=(au!=null?au+'%':'—');
-   const cd=CLASS_DATA[cls];tr.querySelector('.actadr').textContent=cd?'¥'+(+cd[0]).toLocaleString():'—';tr.querySelector('.actnt').textContent=cd?cd[1]+'泊':'—';
+   const cd=CLASS_DATA[cls];const aadr=(ACTUAL_ADR[cls]!=null?ACTUAL_ADR[cls]:(cd?+cd[0]:null));tr.querySelector('.actadr').textContent=(aadr!=null?'¥'+aadr.toLocaleString():'—');tr.querySelector('.actnt').textContent=cd?cd[1]+'泊':'—';
    tr.querySelector('.actbook').textContent=(au!=null?Math.round((au/100)*30/nt*n)+'件':'—');
    const arv=ACTUAL_REVPV[cls];tr.querySelector('.actrev').textContent=(arv!=null?yen(arv):'—');
    const actc=(arv!=null)?arv-vc-(own?0:arv*pshare):null;const _ac=tr.querySelector('.actcontrib');if(actc!=null){_ac.textContent=yen(actc);_ac.style.color=actc>=0?'#047857':'#dc2626';}else{_ac.textContent='—';_ac.style.color='#cbd5e1';}
@@ -447,7 +476,10 @@ async function loadActuals(){
    const adr=a.rd>0?Math.round(a.rev/a.rd):null;const m=nb[cl];const nt=(m&&m.cnt)?Math.round(m.ni/m.cnt*10)/10:null;
    if(CLASS_DATA[cl]){if(adr)CLASS_DATA[cl][0]=adr;if(nt)CLASS_DATA[cl][1]=nt;}
    else if(adr){CLASS_DATA[cl]=[adr,nt||1.5];}});
-  if(st)st.textContent='✅ 実績=ライブ自動取得（'+snaps.map(s=>s.year_month).reverse().join('・')+'／'+touched+'クラス。稼働/ADR/台売上=月次スナップショット、平均泊=直近92日返却予約）';
+  // 🟣実績の期間トグル用にスナップショット保持→選択期間で実績を再集計（既定=直近3ヶ月）
+  window._SIM_SNAPS=snaps; recomputeActuals();
+  const gha0=document.getElementById('gh_act');if(gha0)gha0.textContent='🟣 実績（'+actWinLabel()+'）＋達成見込み';
+  if(st)st.textContent='✅ 実績=ライブ自動取得（直近3ヶ月: '+snaps.map(s=>s.year_month).reverse().join('・')+' ／ 期間トグルで2ヶ月/直前月に切替可。稼働/ADR/台売上=月次スナップショット、平均泊=直近92日返却予約）';
   calc();
  }catch(e){if(st)st.textContent='⚠️ 実績の自動取得に失敗→埋込スナップショット表示（'+(e&&e.message||e)+'）';}
 }
