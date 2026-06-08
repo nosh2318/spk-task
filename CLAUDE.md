@@ -1,5 +1,30 @@
 # SPK業務管理APP（札幌店）
 
+## 💳 2026-06-08 じゃらん「支払い済みなのに未決済催促」恒久対策（gas-email-import-v2.gs・checkPaymentStatus）
+
+### 症状
+札幌じゃらん予約で、入金済みの顧客が未決済扱いのまま残り、催促が再送される（R02ZLN4R ヤマダ様¥30,300=6/5 Tap-to-Pay入金 / R0Q7UEF3 クロキ様¥16,300=5/27 card入金）。
+
+### 真因（コードで確定）
+- 顧客への催促メールは `checkSquareLinks`（`status in (new, link_created)` のみ）→ 一度 email_sent になれば顧客へ再送しない。**再送が起きる=リンクが再発行されて status が link_created に戻った**ケース。
+- 入金自動検知 `checkPaymentStatus` は**スプシURL→決済リンクの「単一 order_id」だけ**を見る（`fetchPaymentLinkMap_`→`batchRetrieveOrders_`→`isOrderPaid_`）。同一予約番号で**リンク再発行や手動Tap-to-Payで別注文IDに入金**されると、その注文に tender が付かず**永久に email_sent のまま**残る。
+- ※「GAS構築前の手動リンク」は jalan_payments に行が無く、顧客催促メール（jalan_payments駆動）の対象外＝**無害**（omni分析どおり）。ただし内部9時アラート `checkUnpaidAlert` はスプシ駆動なので、スプシに手動行があれば別途鳴り得る（今回の症状とは別経路）。
+
+### 恒久対策（実装済・コミット b18107e）
+`checkPaymentStatus` に**予約番号フォールバック**を追加（既存の単一order_id監視はPASS1として維持）:
+- 新ヘルパー `searchPaidOrdersByResvNo_(token, resvNos, sinceIso)`：Square **SearchOrders API**でCOMPLETED注文をページ取得（最大8ページ・直近180日）。各注文の `line_items[].name`／`reference_id`／`note` に予約番号（決済リンク品目名「`札幌店 ◯◯様（予約番号） じゃらん事前決済 …`」に必ず埋まる）が含まれ、かつ `isOrderPaid_` が入金済を返す注文を `resvNo→{paid_at,order_id}` で返す（DESCで最新入金優先・予約番号は5文字以上で誤マッチ防止）。
+- PASS1で未確認の予約番号だけを集めて突合 → ヒットしたら既存の副作用（スプシ列9=✅入金済/列10=入金日/列11=order_id・`jalan_payments.status=paid`・`spk/nha_accounting.paid=true`・店舗別Slack通知）を**そのまま発火**。Slack通知に「検知方法：予約番号突合」を付記。
+- これで**リンク再発行・手動課金でも検知漏れゼロ**＋スプシも自動で入金記録（タケヤマ氏の「Slack通知後に記入」フローを壊さない＝GASがスプシ✅を書く既存挙動）。
+
+### デプロイ（オーナー作業・トリガー型なので再デプロイ不要）
+1. GASエディタ「札幌予約メール自動配車」→ `gas-email-import-v2.gs` を Cmd+A→Cmd+V→Cmd+S（クリップボードにコピー済）。
+2. 次の15分トリガーで `checkPaymentStatus` が走り、R02ZLN4R/R0Q7UEF3 を含む email_sent 全件を全Square注文と再突合→隠れた入金も自動で✅化・スプシ更新・Slack通知。**スプシ手動更新は不要**。
+- 貼付前でもDBは omni が paid 化済（id=63/60）。貼付後はスプシも自動同期されるため明朝の未入金アラートも止まる。
+
+### Lesson
+- 入金監視は「記録した単一 order_id」に依存してはいけない。**予約番号など業務キーで全注文を突合**するのが堅牢（リンク再発行・端末手動課金は order が分岐する）。
+- 「催促が来る」報告は、顧客メール(jalan_payments駆動)・内部9時アラート(スプシ駆動)・入金自動検知(スプシ駆動)の**3経路を切り分ける**。
+
 ## 📍 2026-06-07 場所(DEL/COL)・時間 反映ルール確定：予約番号「完全一致」以外は空白で統一（オーナー指示）
 
 ### 決定
