@@ -2145,12 +2145,27 @@ function checkPaymentStatus() {
   if (orderIdsToCheck.length === 0) { postToSlackChannel_(JALAN_PAY_CHANNEL, '🔴 *入金確認システム障害*\nPayment Linksは'+linkMapSize+'件取得できましたが、スプシURLが1件もマッチしません。\n対象: ' + unmatchedRows.join(', ')); updateHeartbeat_('spk_jalan_payment', {success:0, processed:unpaidRows.length, error:'no_url_match'}); return; }
   var orderMap = batchRetrieveOrders_(token, orderIdsToCheck);
   if (!orderMap || Object.keys(orderMap).length === 0) { postToSlackChannel_(JALAN_PAY_CHANNEL, '🔴 *入金確認システム障害*\nSquare Orders取得が0件です。'); updateHeartbeat_('spk_jalan_payment', {success:0, processed:unpaidRows.length, error:'orders_empty'}); return; }
+  // ★ 2026-06-08 恒久対策フォールバック: 決済リンク注文で未確認の予約番号を集め、Square全注文を予約番号で突合
+  //   （リンク再発行/手動Tap-to-Payで別注文IDに入金 → 単一order_id監視では取りこぼす問題の救済）
+  var fallbackPaid = {};
+  try {
+    var pendingResv = [];
+    for (var pi = 0; pi < unpaidRows.length; pi++) {
+      var lp = unpaidRows[pi].orderId ? isOrderPaid_(orderMap[unpaidRows[pi].orderId]) : null;
+      if (!lp && unpaidRows[pi].reservationId) pendingResv.push(unpaidRows[pi].reservationId);
+    }
+    if (pendingResv.length > 0) {
+      var sinceIso = Utilities.formatDate(new Date(Date.now() - 180*86400000), 'GMT', "yyyy-MM-dd'T'HH:mm:ss'Z'");
+      fallbackPaid = searchPaidOrdersByResvNo_(token, pendingResv, sinceIso);
+    }
+  } catch (eFb) { Logger.log('[PaymentStatus] fallback build error: ' + eFb.message); }
   var paidCount = 0;
   for (var i = 0; i < unpaidRows.length; i++) {
     var pay = unpaidRows[i];
-    if (!pay.orderId) continue;
     try {
-      var matched = isOrderPaid_(orderMap[pay.orderId]);
+      var matched = pay.orderId ? isOrderPaid_(orderMap[pay.orderId]) : null;
+      var via = matched ? 'link' : null;
+      if (!matched && fallbackPaid[pay.reservationId]) { matched = fallbackPaid[pay.reservationId]; via = 'resvno'; }
       if (matched) {
         var paidDateStr = Utilities.formatDate(new Date(matched.paid_at), 'Asia/Tokyo', 'yyyy/MM/dd');
         sheet.getRange(pay.rowIndex, 9).setValue('✅ 入金済み');
@@ -2184,7 +2199,7 @@ function checkPaymentStatus() {
             } catch(eAcc) { Logger.log('[PaymentStatus] ' + tbl + ' update error: ' + eAcc.message); }
           });
         } catch(eAcct) { Logger.log('[PaymentStatus] accounting update error: ' + eAcct.message); }
-        var notifyText = '✅ *入金確認完了*\n予約番号： ' + pay.reservationId + '\n宛名： ' + pay.customerName + '\n金額： ¥' + pay.amount.toLocaleString() + (pay.media ? '\n媒体： ' + pay.media : '') + '\n店舗： ' + resolved.label + '\n判定根拠： ' + resolved.source + (resolved.warning ? '\n\n⚠️ ' + resolved.warning : '');
+        var notifyText = '✅ *入金確認完了*\n予約番号： ' + pay.reservationId + '\n宛名： ' + pay.customerName + '\n金額： ¥' + pay.amount.toLocaleString() + (pay.media ? '\n媒体： ' + pay.media : '') + '\n店舗： ' + resolved.label + '\n判定根拠： ' + resolved.source + (via === 'resvno' ? '\n検知方法： 予約番号突合（リンク再発行/手動課金の取りこぼし救済）' : '') + (resolved.warning ? '\n\n⚠️ ' + resolved.warning : '');
         resolved.channels.forEach(function(ch){ postToSlackChannel_(ch, notifyText); });
         Logger.log('[PaymentStatus] notified ' + pay.reservationId + ' → ' + resolved.channels.join(',') + ' (source=' + resolved.source + ')');
         Logger.log('[PaymentStatus] ✅ Paid: ' + pay.reservationId);
@@ -2239,6 +2254,62 @@ function isOrderPaid_(order) {
   var netDue = order.net_amount_due_money;
   if (netDue && netDue.amount !== 0) return null;
   return {paid_at: order.tenders[0].created_at, order_id: order.id};
+}
+
+// ★ 2026-06-08 恒久対策: 予約番号でSquare全注文を突合し、入金済(tender付き)注文を返す
+//   真因: 同一予約番号で複数のSquare注文（リンク再発行/手動Tap-to-Pay）が生成され、
+//         スプシ記録の単一 order_id 以外に入金が付くと checkPaymentStatus が検知漏れ
+//         → jalan_payments が email_sent のまま残り「支払い済みなのに未決済催促」が再発。
+//   仕様: SearchOrders で COMPLETED 注文をページ取得。各注文の line_items[].name / reference_id / note に
+//         予約番号（決済リンク品目名「…様（予約番号）…」に必ず埋まっている）が含まれ、かつ isOrderPaid_ が
+//         入金済を返す注文を resvNo→{paid_at, order_id} で返す。複数ヒット時は CREATED_AT DESC の先頭（最新入金）。
+function searchPaidOrdersByResvNo_(token, resvNos, sinceIso) {
+  var result = {};
+  // 予約番号を大文字化＋短すぎる値（誤マッチ防止）を除外
+  var targets = [];
+  (resvNos||[]).forEach(function(r){ var u=String(r||'').trim().toUpperCase(); if (u.length>=5 && targets.indexOf(u)<0) targets.push(u); });
+  if (targets.length === 0) return result;
+  var cursor = null, pages = 0, scanned = 0;
+  do {
+    var body = {
+      location_ids: [SQUARE_LOCATION_ID],
+      query: {
+        filter: { date_time_filter: { created_at: { start_at: sinceIso } }, state_filter: { states: ['COMPLETED'] } },
+        sort: { sort_field: 'CREATED_AT', sort_order: 'DESC' }
+      },
+      limit: 200,
+      return_entries: false
+    };
+    if (cursor) body.cursor = cursor;
+    try {
+      var resp = UrlFetchApp.fetch('https://connect.squareup.com/v2/orders/search', {
+        method: 'post',
+        headers: {'Authorization':'Bearer '+token, 'Content-Type':'application/json', 'Square-Version':'2024-01-18'},
+        payload: JSON.stringify(body), muteHttpExceptions: true
+      });
+      if (resp.getResponseCode() !== 200) { Logger.log('[SearchOrders] API error ' + resp.getResponseCode() + ' ' + resp.getContentText().slice(0,200)); break; }
+      var data = JSON.parse(resp.getContentText());
+      var orders = data.orders || [];
+      scanned += orders.length;
+      orders.forEach(function(o){
+        var paid = isOrderPaid_(o);
+        if (!paid) return;
+        var hay = '';
+        (o.line_items||[]).forEach(function(li){ hay += ' ' + (li.name||''); });
+        if (o.reference_id) hay += ' ' + o.reference_id;
+        if (o.note) hay += ' ' + o.note;
+        hay = hay.toUpperCase();
+        for (var t = 0; t < targets.length; t++) {
+          var rno = targets[t];
+          if (!result[rno] && hay.indexOf(rno) >= 0) result[rno] = paid; // DESCで来るので最初のヒット＝最新入金
+        }
+      });
+      cursor = data.cursor;
+    } catch (e) { Logger.log('[SearchOrders] Exception: ' + e.message); break; }
+    pages++;
+  } while (cursor && pages < 8);
+  Logger.log('[SearchOrders] scanned ' + scanned + ' orders over ' + pages + ' pages → matched ' + Object.keys(result).length + '/' + targets.length + ' resvNos');
+  return result;
 }
 
 function checkUnpaidAlert() {
