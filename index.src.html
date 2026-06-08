@@ -69,7 +69,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=666').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=667').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -18435,6 +18435,293 @@ function DmgShareIcon({code,size}){
 }
 
 /* ==========================================
+   ReceivedInvoicesTab
+   ========================================== */
+function ReceivedInvoicesTab({sb,store}){
+  const BUCKET="received-invoices";
+  const TABLE="received_invoices";
+  const [list,setList]=React.useState([]);
+  const [loading,setLoading]=React.useState(false);
+  const [showForm,setShowForm]=React.useState(false);
+  const [editRec,setEditRec]=React.useState(null);
+  const [filterYM,setFilterYM]=React.useState("");
+  const [filterSt,setFilterSt]=React.useState("");
+  const [uploading,setUploading]=React.useState(false);
+  const [pendingFile,setPendingFile]=React.useState(null);
+  const fileRef=React.useRef();
+  const [form,setForm]=React.useState({payee:"",amount:"",received_date:"",issue_date:"",due_date:"",description:"",tax_rate:"込",status:"unpaid",memo:""});
+  const todayYM=new Date().toISOString().slice(0,7);
+  const [openMonths,setOpenMonths]=React.useState({[todayYM]:true});
+
+  const reload=async()=>{
+    if(!sb)return;
+    setLoading(true);
+    try{
+      const {data,error}=await sb.from(TABLE).select("*").eq("store",store).order("received_date",{ascending:false});
+      if(!error)setList(data||[]);
+    }finally{setLoading(false);}
+  };
+
+  React.useEffect(()=>{reload();},[store]);
+
+  const resetForm=()=>{
+    setForm({payee:"",amount:"",received_date:new Date().toISOString().slice(0,10),issue_date:"",due_date:"",description:"",tax_rate:"込",status:"unpaid",memo:""});
+    setPendingFile(null);
+    setEditRec(null);
+  };
+
+  const openNew=()=>{resetForm();setShowForm(true);};
+  const openEdit=r=>{
+    setEditRec(r);
+    setForm({payee:r.payee||"",amount:r.amount||"",received_date:r.received_date||"",issue_date:r.issue_date||"",due_date:r.due_date||"",description:r.description||"",tax_rate:r.tax_rate||"込",status:r.status||"unpaid",memo:r.memo||""});
+    setPendingFile(r.file_url?{name:r.file_name,type:r.file_type,url:r.file_url}:null);
+    setShowForm(true);
+  };
+
+  const handleFile=async e=>{
+    const f=e.target.files[0];if(!f)return;
+    if(f.size>20*1024*1024){alert("20MB以下のファイルを選択してください");return;}
+    const b64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=e2=>res(e2.target.result);r.onerror=rej;r.readAsDataURL(f);});
+    setPendingFile({name:f.name,type:f.type,data:b64,url:null});
+  };
+
+  const save=async()=>{
+    if(!form.received_date){alert("受領日を入力してください");return;}
+    setUploading(true);
+    try{
+      let file_url=editRec?.file_url||null;
+      let file_name=editRec?.file_name||null;
+      let file_type=editRec?.file_type||null;
+      if(pendingFile&&pendingFile.data){
+        const base64=pendingFile.data.split(",")[1];
+        const byteStr=atob(base64);
+        const bytes=new Uint8Array(byteStr.length);
+        for(let i=0;i<byteStr.length;i++)bytes[i]=byteStr.charCodeAt(i);
+        const blob=new Blob([bytes],{type:pendingFile.type});
+        const path=`${store}/${Date.now()}_${pendingFile.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
+        const {error:upErr}=await sb.storage.from(BUCKET).upload(path,blob,{contentType:pendingFile.type,upsert:true});
+        if(upErr)throw upErr;
+        const{data:pub}=sb.storage.from(BUCKET).getPublicUrl(path);
+        file_url=pub.publicUrl;
+        file_name=pendingFile.name;
+        file_type=pendingFile.type;
+      }
+      const row={store,payee:form.payee,amount:form.amount?parseInt(form.amount):null,received_date:form.received_date||null,issue_date:form.issue_date||null,due_date:form.due_date||null,description:form.description,tax_rate:form.tax_rate,status:form.status,memo:form.memo,file_url,file_name,file_type};
+      if(editRec){
+        await sb.from(TABLE).update(row).eq("id",editRec.id);
+      }else{
+        await sb.from(TABLE).insert(row);
+      }
+      setShowForm(false);
+      await reload();
+    }catch(err){alert("保存失敗: "+err.message);}
+    finally{setUploading(false);}
+  };
+
+  const del=async id=>{
+    if(!window.confirm("この受領請求書を削除しますか？"))return;
+    await sb.from(TABLE).delete().eq("id",id);
+    await reload();
+  };
+
+  const toggleStatus=async r=>{
+    const ns=r.status==="paid"?"unpaid":"paid";
+    await sb.from(TABLE).update({status:ns}).eq("id",r.id);
+    setList(prev=>prev.map(x=>x.id===r.id?{...x,status:ns}:x));
+  };
+
+  const fmtAmt=v=>v!=null?`¥${Number(v).toLocaleString()}`:"¥0";
+  const fmtD=d=>{if(!d)return"-";const[y,m,dd]=d.split("-");return`${y}/${m}/${dd}`;};
+
+  let filtered=list;
+  if(filterYM)filtered=filtered.filter(r=>r.received_date&&r.received_date.slice(0,7)===filterYM);
+  if(filterSt)filtered=filtered.filter(r=>r.status===filterSt);
+
+  const total=filtered.reduce((s,r)=>s+(r.amount||0),0);
+  const unpaid=filtered.filter(r=>r.status!=="paid").reduce((s,r)=>s+(r.amount||0),0);
+  const paid=filtered.filter(r=>r.status==="paid").reduce((s,r)=>s+(r.amount||0),0);
+
+  const groups={};
+  filtered.forEach(r=>{const ym=r.received_date?r.received_date.slice(0,7):"不明";if(!groups[ym])groups[ym]=[];groups[ym].push(r);});
+  const sortedYMs=Object.keys(groups).sort().reverse();
+
+  const yearSums={};
+  sortedYMs.forEach(ym=>{const y=ym.slice(0,4);if(!yearSums[y])yearSums[y]={t:0,u:0,p:0,c:0};groups[ym].forEach(r=>{yearSums[y].c++;yearSums[y].t+=(r.amount||0);if(r.status==="paid")yearSums[y].p+=(r.amount||0);else yearSums[y].u+=(r.amount||0);});});
+  const years=Object.keys(yearSums).sort().reverse();
+
+  const toggleMonth=ym=>setOpenMonths(prev=>({...prev,[ym]:!prev[ym]}));
+
+  const inp={border:"1px solid #d1d5db",borderRadius:5,padding:"7px 10px",width:"100%",boxSizing:"border-box",fontSize:13};
+  const sel={...inp};
+
+  return <div style={{padding:"16px 16px 32px"}}>
+    <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14,flexWrap:"wrap"}}>
+      <h2 style={{fontSize:16,fontWeight:"bold",flex:1}}>📥 受領請求書管理</h2>
+      <select value={filterYM} onChange={e=>setFilterYM(e.target.value)} style={{border:"1px solid #d1d5db",borderRadius:5,padding:"5px 10px",fontSize:12}}>
+        <option value="">全月</option>
+        {[...new Set(list.map(r=>r.received_date?r.received_date.slice(0,7):null).filter(Boolean))].sort().reverse().map(ym=>{const[y,m]=ym.split("-");return<option key={ym} value={ym}>{y}年{parseInt(m)}月</option>;})}
+      </select>
+      <select value={filterSt} onChange={e=>setFilterSt(e.target.value)} style={{border:"1px solid #d1d5db",borderRadius:5,padding:"5px 10px",fontSize:12}}>
+        <option value="">全ステータス</option>
+        <option value="unpaid">未払い</option>
+        <option value="paid">支払済</option>
+      </select>
+      <button onClick={openNew} style={{background:"#16a34a",color:"white",border:"none",borderRadius:6,padding:"7px 14px",fontWeight:"bold",fontSize:12,cursor:"pointer"}}>＋ 登録</button>
+    </div>
+
+    <div style={{display:"flex",gap:10,marginBottom:14,flexWrap:"wrap"}}>
+      {[["件数",filtered.length+"件","#64748b"],["合計",fmtAmt(total),"#1a56db"],["未払い",fmtAmt(unpaid),"#dc2626"],["支払済",fmtAmt(paid),"#16a34a"]].map(([l,v,c])=><div key={l} style={{background:"white",borderRadius:8,padding:"10px 16px",boxShadow:"0 1px 6px rgba(0,0,0,0.07)",borderTop:`3px solid ${c}`,minWidth:110}}>
+        <div style={{fontSize:11,color:"#666"}}>{l}</div>
+        <div style={{fontSize:18,fontWeight:"bold",color:c==="#dc2626"?c:undefined}}>{v}</div>
+      </div>)}
+    </div>
+
+    {years.length>1&&<div style={{background:"white",borderRadius:8,padding:"12px 16px",marginBottom:12,boxShadow:"0 1px 6px rgba(0,0,0,0.07)"}}>
+      <div style={{fontSize:12,fontWeight:"bold",color:"#333",marginBottom:8}}>📅 年別サマリー</div>
+      <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+        {years.map(y=>{const ys=yearSums[y];return<div key={y} style={{background:"#f8fafc",borderRadius:8,padding:"8px 14px",border:"1px solid #e5e7eb"}}>
+          <div style={{fontSize:12,fontWeight:"bold",marginBottom:4}}>{y}年 <span style={{fontSize:10,color:"#888"}}>{ys.c}件</span></div>
+          <div style={{fontSize:11,color:"#1a56db"}}>¥{ys.t.toLocaleString()}</div>
+          {ys.u>0&&<div style={{fontSize:11,color:"#dc2626"}}>未払い ¥{ys.u.toLocaleString()}</div>}
+          {ys.p>0&&<div style={{fontSize:11,color:"#16a34a"}}>支払済 ¥{ys.p.toLocaleString()}</div>}
+        </div>;})}
+      </div>
+    </div>}
+
+    {loading?<div style={{textAlign:"center",padding:40,color:"#888"}}>読み込み中...</div>:
+     filtered.length===0?<div style={{textAlign:"center",padding:40,color:"#999"}}>受領請求書がありません</div>:
+     sortedYMs.map(ym=>{
+      const grp=groups[ym];
+      const gt=grp.reduce((s,r)=>s+(r.amount||0),0);
+      const gu=grp.filter(r=>r.status!=="paid").reduce((s,r)=>s+(r.amount||0),0);
+      const gp=grp.filter(r=>r.status==="paid").reduce((s,r)=>s+(r.amount||0),0);
+      const isOpen=!!openMonths[ym];
+      const isCur=(ym===todayYM);
+      const [y,m2]=ym.split("-");
+      const label=ym==="不明"?"日付不明":`${y}年${parseInt(m2)}月`;
+      return<div key={ym} style={{marginBottom:8}}>
+        <div onClick={()=>toggleMonth(ym)} style={{background:"white",borderRadius:isOpen?"8px 8px 0 0":"8px",padding:"11px 16px",boxShadow:"0 1px 6px rgba(0,0,0,0.07)",cursor:"pointer",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",borderLeft:`4px solid ${isCur?"#1a56db":"#e5e7eb"}`,userSelect:"none"}}>
+          <span style={{fontSize:11,color:"#888"}}>{isOpen?"▼":"▶"}</span>
+          <span style={{fontSize:14,fontWeight:"bold"}}>{label}</span>
+          {isCur&&<span style={{background:"#dbeafe",color:"#1a56db",borderRadius:10,padding:"1px 8px",fontSize:10,fontWeight:"bold"}}>今月</span>}
+          <span style={{fontSize:11,color:"#888",background:"#f1f5f9",borderRadius:10,padding:"1px 7px"}}>{grp.length}件</span>
+          <div style={{marginLeft:"auto",display:"flex",gap:10,flexWrap:"wrap",alignItems:"center"}}>
+            <span style={{fontSize:12,color:"#1a56db",fontWeight:"bold"}}>¥{gt.toLocaleString()}</span>
+            {gu>0&&<span style={{fontSize:11,color:"#dc2626",fontWeight:"bold",background:"#fee2e2",borderRadius:6,padding:"1px 7px"}}>未払い ¥{gu.toLocaleString()}</span>}
+            {gp>0&&<span style={{fontSize:11,color:"#16a34a",fontWeight:"bold",background:"#dcfce7",borderRadius:6,padding:"1px 7px"}}>支払済 ¥{gp.toLocaleString()}</span>}
+          </div>
+        </div>
+        {isOpen&&<div style={{overflowX:"auto",boxShadow:"0 2px 6px rgba(0,0,0,0.06)",borderRadius:"0 0 8px 8px",background:"white"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead><tr style={{background:"#1a56db",color:"white"}}>
+              <th style={{padding:"8px 10px",textAlign:"left",fontWeight:"bold",fontSize:11}}>受領日</th>
+              <th style={{padding:"8px 10px",textAlign:"left",fontWeight:"bold",fontSize:11}}>支払い先</th>
+              <th style={{padding:"8px 10px",textAlign:"left",fontWeight:"bold",fontSize:11}}>内容</th>
+              <th style={{padding:"8px 10px",textAlign:"right",fontWeight:"bold",fontSize:11}}>金額</th>
+              <th style={{padding:"8px 10px",textAlign:"center",fontWeight:"bold",fontSize:11}}>支払期日</th>
+              <th style={{padding:"8px 10px",textAlign:"center",fontWeight:"bold",fontSize:11}}>ステータス</th>
+              <th style={{padding:"8px 10px",textAlign:"center",fontWeight:"bold",fontSize:11}}>ファイル</th>
+              <th style={{padding:"8px 10px",textAlign:"center",fontWeight:"bold",fontSize:11}}>操作</th>
+            </tr></thead>
+            <tbody>{grp.map(r=>{
+              const days=r.due_date?Math.ceil((new Date(r.due_date)-new Date())/86400000):null;
+              const overdue=r.status!=="paid"&&days!==null&&days<0;
+              const neardue=r.status!=="paid"&&days!==null&&days>=0&&days<=7;
+              return<tr key={r.id} style={{borderBottom:"1px solid #f0f0f0"}}>
+                <td style={{padding:"8px 10px"}}>{fmtD(r.received_date)}</td>
+                <td style={{padding:"8px 10px",fontWeight:"bold"}}>{r.payee||"-"}</td>
+                <td style={{padding:"8px 10px",maxWidth:160,wordBreak:"break-word"}}>{r.description||"-"}</td>
+                <td style={{padding:"8px 10px",textAlign:"right",fontWeight:"bold"}}>{fmtAmt(r.amount)}</td>
+                <td style={{padding:"8px 10px",textAlign:"center",color:overdue?"#dc2626":neardue?"#d97706":"inherit",fontWeight:overdue||neardue?"bold":"normal"}}>
+                  {r.due_date?<>{fmtD(r.due_date)}{r.status!=="paid"&&days!==null&&<><br/><span style={{fontSize:10}}>{days<0?`⚠${-days}日超過`:`残${days}日`}</span></>}</>:"-"}
+                </td>
+                <td style={{padding:"8px 10px",textAlign:"center"}}>
+                  <span style={{padding:"2px 8px",borderRadius:10,fontSize:11,fontWeight:"bold",background:r.status==="paid"?"#dcfce7":"#fee2e2",color:r.status==="paid"?"#16a34a":"#dc2626"}}>{r.status==="paid"?"支払済":"未払い"}</span>
+                </td>
+                <td style={{padding:"8px 10px",textAlign:"center"}}>
+                  {r.file_url?<a href={r.file_url} target="_blank" rel="noreferrer" style={{background:"#eff6ff",border:"1px solid #93c5fd",borderRadius:5,padding:"3px 8px",fontSize:11,color:"#1a56db",textDecoration:"none",whiteSpace:"nowrap"}}>📄 表示</a>:"—"}
+                </td>
+                <td style={{padding:"8px 10px",textAlign:"center"}}>
+                  <div style={{display:"flex",gap:4,justifyContent:"center",flexWrap:"wrap"}}>
+                    <button onClick={()=>toggleStatus(r)} style={{background:r.status==="paid"?"#6b7280":"#16a34a",color:"white",border:"none",borderRadius:4,padding:"3px 8px",fontSize:10,cursor:"pointer",whiteSpace:"nowrap"}}>{r.status==="paid"?"未払いに戻す":"支払済にする"}</button>
+                    <button onClick={()=>openEdit(r)} style={{background:"none",border:"1px solid #d1d5db",borderRadius:4,padding:"3px 8px",fontSize:11,cursor:"pointer"}}>✏️</button>
+                    <button onClick={()=>del(r.id)} style={{background:"#fee2e2",border:"none",color:"#dc2626",borderRadius:4,padding:"3px 8px",fontSize:11,cursor:"pointer"}}>🗑</button>
+                  </div>
+                </td>
+              </tr>;
+            })}</tbody>
+          </table>
+        </div>}
+      </div>;
+    })}
+
+    {showForm&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:300,overflowY:"auto",padding:"20px 0"}} onClick={e=>{if(e.target===e.currentTarget){setShowForm(false);}}}>
+      <div style={{background:"white",borderRadius:14,maxWidth:600,margin:"0 auto",overflow:"hidden"}}>
+        <div style={{background:"#16a34a",color:"white",padding:"14px 20px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <span style={{fontSize:15,fontWeight:"bold"}}>{editRec?"📝 受領請求書を編集":"📨 受領請求書を登録"}</span>
+          <button onClick={()=>setShowForm(false)} style={{background:"rgba(255,255,255,0.2)",border:"none",color:"white",width:26,height:26,borderRadius:"50%",cursor:"pointer",fontSize:15}}>✕</button>
+        </div>
+        <div style={{padding:20}}>
+          <div style={{border:"2px dashed #16a34a",borderRadius:8,padding:16,textAlign:"center",cursor:"pointer",background:"#f0fdf4",marginBottom:14}} onClick={()=>fileRef.current.click()}>
+            <div style={{fontSize:28,marginBottom:4}}>📄</div>
+            <div style={{fontSize:13,color:"#166534",fontWeight:"bold"}}>PDF / JPEG / PNG をクリックして選択</div>
+            {pendingFile&&<div style={{marginTop:6,fontSize:11,color:"#888"}}>📎 {pendingFile.name}</div>}
+            <input type="file" ref={fileRef} accept=".pdf,.png,.jpg,.jpeg" style={{display:"none"}} onChange={handleFile}/>
+          </div>
+          <div style={{display:"flex",gap:10,marginBottom:10,flexWrap:"wrap"}}>
+            <div style={{flex:"0 0 auto",minWidth:140}}>
+              <label style={{fontSize:11,color:"#666",fontWeight:"bold",display:"block",marginBottom:3}}>支払い先</label>
+              <input style={inp} value={form.payee} onChange={e=>setForm(f=>({...f,payee:e.target.value}))} placeholder="会社名・個人名"/>
+            </div>
+            <div style={{flex:"0 0 auto",minWidth:120}}>
+              <label style={{fontSize:11,color:"#666",fontWeight:"bold",display:"block",marginBottom:3}}>金額（税込）</label>
+              <input style={inp} type="number" min="0" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} placeholder="0"/>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:10,marginBottom:10,flexWrap:"wrap"}}>
+            <div style={{flex:"0 0 auto",minWidth:140}}>
+              <label style={{fontSize:11,color:"#666",fontWeight:"bold",display:"block",marginBottom:3}}>受領日 *</label>
+              <input style={inp} type="date" value={form.received_date} onChange={e=>setForm(f=>({...f,received_date:e.target.value}))}/>
+            </div>
+            <div style={{flex:"0 0 auto",minWidth:140}}>
+              <label style={{fontSize:11,color:"#666",fontWeight:"bold",display:"block",marginBottom:3}}>発行日</label>
+              <input style={inp} type="date" value={form.issue_date} onChange={e=>setForm(f=>({...f,issue_date:e.target.value}))}/>
+            </div>
+            <div style={{flex:"0 0 auto",minWidth:140}}>
+              <label style={{fontSize:11,color:"#666",fontWeight:"bold",display:"block",marginBottom:3}}>支払期日</label>
+              <input style={inp} type="date" value={form.due_date} onChange={e=>setForm(f=>({...f,due_date:e.target.value}))}/>
+            </div>
+          </div>
+          <div style={{marginBottom:10}}>
+            <label style={{fontSize:11,color:"#666",fontWeight:"bold",display:"block",marginBottom:3}}>内容</label>
+            <input style={inp} value={form.description} onChange={e=>setForm(f=>({...f,description:e.target.value}))} placeholder="品目・サービス名"/>
+          </div>
+          <div style={{display:"flex",gap:10,marginBottom:10,flexWrap:"wrap"}}>
+            <div style={{flex:"0 0 auto",minWidth:100}}>
+              <label style={{fontSize:11,color:"#666",fontWeight:"bold",display:"block",marginBottom:3}}>ステータス</label>
+              <select style={sel} value={form.status} onChange={e=>setForm(f=>({...f,status:e.target.value}))}>
+                <option value="unpaid">未払い</option>
+                <option value="paid">支払済</option>
+              </select>
+            </div>
+            <div style={{flex:1,minWidth:160}}>
+              <label style={{fontSize:11,color:"#666",fontWeight:"bold",display:"block",marginBottom:3}}>メモ</label>
+              <input style={inp} value={form.memo} onChange={e=>setForm(f=>({...f,memo:e.target.value}))}/>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:8,justifyContent:"flex-end",paddingTop:12,borderTop:"1px solid #e5e7eb"}}>
+            <button onClick={()=>setShowForm(false)} style={{background:"white",border:"1px solid #d1d5db",borderRadius:5,padding:"7px 16px",cursor:"pointer",fontSize:12}}>キャンセル</button>
+            <button onClick={save} disabled={uploading} style={{background:uploading?"#86efac":"#16a34a",color:"white",border:"none",borderRadius:5,padding:"7px 16px",fontWeight:"bold",fontSize:12,cursor:uploading?"wait":"pointer"}}>
+              {uploading?"⏳ 保存中...":"📥 登録する"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>}
+  </div>;
+}
+
+/* ==========================================
    App
    ========================================== */
 function App(){
@@ -19484,7 +19771,7 @@ function App(){
   },[data]);
 
   const oc=useMemo(()=>{const c={};data.forEach(t=>{c[t.ota]=(c[t.ota]||0)+1;});return c;},[data]);
-  const navItems=[{id:"top",ico:"🏠",l:"TOP"},{id:"notices",ico:"📢",l:"お知らせ"},{id:"import",ico:"📁",l:"CSV"},{id:"budget_pl",ico:"📊",l:"予算実績"},{id:"cfcash",ico:"💵",l:"実入金CF",external:true,url:"cf-cash.html"},{id:"seasonal",ico:"🗓️",l:"価格表"},{id:"pricing_strategy",ico:"💰",l:"価格戦略",external:true,url:"price-hub.html"},{id:"staff",ico:"👥",l:"スタッフ"},{id:"shift",ico:"📅",l:"出勤簿"},{id:"attendance",ico:"⏰",l:"給与"},{id:"kintai",ico:"📋",l:"勤怠管理",external:true,url:"kintai.html"},{id:"fleet",ico:"🚗",l:"配車"},{id:"jalanpay",ico:"💳",l:"決済"},{id:"vehicle",ico:"🔧",l:"車両"},{id:"vehicle_rank",ico:"🏆",l:"車両ランキング"},{id:"vehicle_pl",ico:"📊",l:"車両P&L",external:true,url:"vehicle-pl.html"},{id:"partner_pl",ico:"🚗",l:"協力会社P&L",external:true,url:"partner.html?owner=PARTNER_TEST"},{id:"parking",ico:"🅿️",l:"駐車場"},{id:"accounting",ico:"💰",l:"会計"},{id:"customer",ico:"👑",l:"顧客"},{id:"todo",ico:"✅",l:"タスク管理"},{id:"data",ico:"📋",l:"データ"},{id:"history",ico:"📜",l:"過去"},{id:"license",ico:"🪪",l:"免許証",external:true}];
+  const navItems=[{id:"top",ico:"🏠",l:"TOP"},{id:"notices",ico:"📢",l:"お知らせ"},{id:"import",ico:"📁",l:"CSV"},{id:"budget_pl",ico:"📊",l:"予算実績"},{id:"cfcash",ico:"💵",l:"実入金CF",external:true,url:"cf-cash.html"},{id:"seasonal",ico:"🗓️",l:"価格表"},{id:"pricing_strategy",ico:"💰",l:"価格戦略",external:true,url:"price-hub.html"},{id:"staff",ico:"👥",l:"スタッフ"},{id:"shift",ico:"📅",l:"出勤簿"},{id:"attendance",ico:"⏰",l:"給与"},{id:"kintai",ico:"📋",l:"勤怠管理",external:true,url:"kintai.html"},{id:"fleet",ico:"🚗",l:"配車"},{id:"jalanpay",ico:"💳",l:"決済"},{id:"vehicle",ico:"🔧",l:"車両"},{id:"vehicle_rank",ico:"🏆",l:"車両ランキング"},{id:"vehicle_pl",ico:"📊",l:"車両P&L",external:true,url:"vehicle-pl.html"},{id:"partner_pl",ico:"🚗",l:"協力会社P&L",external:true,url:"partner.html?owner=PARTNER_TEST"},{id:"parking",ico:"🅿️",l:"駐車場"},{id:"accounting",ico:"💰",l:"会計"},{id:"customer",ico:"👑",l:"顧客"},{id:"todo",ico:"✅",l:"タスク管理"},{id:"data",ico:"📋",l:"データ"},{id:"history",ico:"📜",l:"過去"},{id:"license",ico:"🪪",l:"免許証",external:true},{id:"recv_invoice",ico:"📥",l:"受領請求書"}];
 
   const repeaterInfo=useMemo(()=>buildRepeaterMap(data),[data]);
 
@@ -19508,7 +19795,7 @@ function App(){
     </div>}
     <div style={{display:showOP?"none":"flex",flex:1,overflow:"hidden",flexDirection:"column"}}>
       <div className={"top-nav"+(tab==="top"?" hide-on-top":"")}>
-        {navItems.filter(n=>{const always=["top","notices","import","vehicle","staff","shift","attendance","kintai","parking","accounting","fleet","jalanpay","history","customer","license","budget_pl","seasonal","pricing_strategy","vehicle_rank"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open(n.url||"license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
+        {navItems.filter(n=>{const always=["top","notices","import","vehicle","staff","shift","attendance","kintai","parking","accounting","fleet","jalanpay","history","customer","license","budget_pl","seasonal","pricing_strategy","vehicle_rank","recv_invoice"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open(n.url||"license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
         {data.length>0&&<button onClick={()=>setShowOP(true)} style={{color:"#60a5fa"}}><span className="ico">📋</span>OP</button>}
         {SB_ENABLED&&<button onClick={reloadAll} disabled={reloading===1} style={{background:reloading===2?"#d1fae5":"none",border:"none",cursor:reloading===1?"wait":"pointer",fontSize:14,padding:"2px 4px",borderRadius:6,opacity:reloading===1?0.5:1,transition:"background .3s"}}>{reloading===1?"⏳":reloading===2?"✅":"🔄"}</button>}
         {SB_ENABLED&&<SyncBadge connected={sbConnected} inline={true} online={isOnline}/>}
@@ -19516,7 +19803,7 @@ function App(){
       <div style={{display:"flex",flex:1,overflow:"hidden"}}>
       <div className={"sidebar"+(tab==="top"?" hide-on-top":"")}>
         <div style={{width:36,height:36,borderRadius:8,background:"linear-gradient(135deg,#3b82f6,#1d4ed8)",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:800,fontSize:14,marginBottom:8}}>S</div>
-        {navItems.filter(n=>{const always=["top","notices","import","vehicle","staff","shift","attendance","kintai","parking","accounting","fleet","jalanpay","history","customer","license","budget_pl","seasonal","pricing_strategy","vehicle_rank"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open(n.url||"license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
+        {navItems.filter(n=>{const always=["top","notices","import","vehicle","staff","shift","attendance","kintai","parking","accounting","fleet","jalanpay","history","customer","license","budget_pl","seasonal","pricing_strategy","vehicle_rank","recv_invoice"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open(n.url||"license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
         {data.length>0&&<button onClick={()=>setShowOP(true)} style={{marginTop:4,background:"linear-gradient(135deg,#1e40af,#2563eb)",color:"#fff",borderRadius:10}}><span className="ico">📋</span><span style={{fontSize:8}}>OP</span></button>}
       </div>
       <div className="main-area" style={{flex:1,overflow:tab==="fleet"||tab==="parking"?"hidden":"auto",padding:tab==="fleet"||tab==="parking"?0:12,display:"flex",flexDirection:"column"}}>
@@ -19898,6 +20185,7 @@ function App(){
           {tab==="vehicle"&&<VehicleTab vehicles={vehicles} onVehiclesChange={setVehiclesSync} vehicleClasses={vehicleClasses} onDeleteVehicle={(code)=>{DB.deleteVehicle(code);const nf={...fleetRefApp.current};let cleaned=false;Object.entries(nf).forEach(([rid,vc])=>{if(vc===code){delete nf[rid];cleaned=true;}});if(cleaned){setFleet(nf);fleetRefApp.current=nf;markLocalChange("fleet");DB.upsertFleet(nf).catch(e=>console.error("fleet cleanup error:",e));}}} hmCars={hmCars} hmCarData={hmCarData} hmLogs={hmLogs} hmClasses={hmClasses} hmReload={hmReload} highlightVehicle={highlightVehicle} maintenance={maintenance} onMaintenanceChange={setMaintenance} data={data} fleet={fleet}/>}
           {tab==="parking"&&<ParkingManager masterVehicles={vehicles}/>}
           {tab==="accounting"&&<PASGuard label="会計管理" code="1121"><AccountingPanel staff={staff}/></PASGuard>}
+          {tab==="recv_invoice"&&<ReceivedInvoicesTab sb={sb} store="spk"/>}
           {tab==="jalanpay"&&<JalanPayment data={data} jalanPay={jalanPay} onJalanPayChange={(id,d)=>{setJalanPay(p=>({...p,[id]:d}));DB.saveJalanPayment(id,d);}}/>}
           {tab==="dashboard"&&data.length>0&&<>
             {importDiag&&(()=>{const hz=importDiag.zeroAll.length>0;const ha=importDiag.added?.length||0;const hr=importDiag.removed?.length||0;const hc=importDiag.changed?.length||0;return <div style={{background:hz?"#fef3c7":"#f0fdf4",border:`1px solid ${hz?"#f59e0b":"#86efac"}`,borderRadius:10,padding:"8px 12px",marginBottom:10,fontSize:11}}>
@@ -20262,7 +20550,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.234";
+const APP_VERSION="v4.7.235";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
