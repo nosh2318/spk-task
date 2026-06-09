@@ -526,14 +526,16 @@ async function loadVehiclePL(){
   body.innerHTML='<div style="padding:20px;color:#0f766e;font-weight:700">🚗 ライブ集計中…</div>';
   try{
     const H={apikey:LIVECFG.anon,Authorization:'Bearer '+tok},SB=LIVECFG.sb,START='2026-02-01';
+    const now=new Date(),cy=now.getFullYear(),cm=now.getMonth()+1;
+    const monthsElapsed=Math.max(1,(cy-2026)*12+(cm-2)+1);
+    // ★ 上限＝当月末まで（未来予約を除外）。返却日 < 翌月1日。経過月数とも整合（過去〜当月の確定/実績）
+    const END=(cm===12?(cy+1)+'-01-01':cy+'-'+String(cm+1).padStart(2,'0')+'-01');
     const q=async(p)=>{const r=await fetch(SB+'/rest/v1/'+p,{headers:H});if(!r.ok)throw new Error('HTTP '+r.status);return r.json();};
     const [resv,fleet,vehs]=await Promise.all([
-      q('reservations?select=id,price,base_price,option_price,discount,status,return_date&return_date=gte.'+START+'&status=neq.cancelled&limit=5000'),
+      q('reservations?select=id,price,base_price,option_price,discount,status,return_date&return_date=gte.'+START+'&return_date=lt.'+END+'&status=neq.cancelled&limit=5000'),
       q('fleet?select=reservation_id,vehicle_code&limit=10000'),
       q('vehicles?select=*&limit=1000')
     ]);
-    const now=new Date(),cy=now.getFullYear(),cm=now.getMonth()+1;
-    const monthsElapsed=Math.max(1,(cy-2026)*12+(cm-2)+1);
     const rev=(r)=>{const bp=+r.base_price||0,op=+r.option_price||0,d=+r.discount||0;return (bp>0||op>0)?Math.max(0,bp+op-d):(+r.price||0);};
     const mfix=(v)=>(+v.lease_monthly||0)+(+v.insurance_annual||0)+(+v.shaken_cost||0)/24+(+v.tenken_cost||0)/6;
     const fmap={};(fleet||[]).forEach(f=>{if(f.reservation_id)fmap[f.reservation_id]=f.vehicle_code;});
@@ -561,7 +563,7 @@ async function loadVehiclePL(){
       '<td style="text-align:right;padding:7px 8px;border-left:2px solid #c4b5fd">'+yen(tR/monthsElapsed)+'</td><td style="text-align:right;padding:7px 8px">'+yen(tC/monthsElapsed)+'</td><td style="text-align:right;padding:7px 8px;color:'+(tP>=0?'#86efac':'#fca5a5')+'">'+yen(tP/monthsElapsed)+'</td></tr>'+
       '</tbody></table>'+
       (unassigned>0?'<div style="padding:6px 10px;font-size:10px;color:#92400e;background:#fffbeb;margin-top:6px">※未配車（車両未割当）売上 '+yen(unassigned)+' は車両別に含めず</div>':'')+
-      '<div style="padding:8px 10px;font-size:10px;color:#155e75;background:#f0fdfa;margin-top:6px;line-height:1.6"><b>集計（実額/仮定の明示）</b>：売上＝<b>実額</b>（返却日2026/2以降・キャンセル除外の予約を配車fleetで車両に割当て累計）。コスト＝<b>仮定</b>（月固定費＝リース+保険+車検/24+点検/6 ×'+monthsElapsed+'ヶ月を各車一律。途中導入車は過大計上の可能性／整備実費・自動車税は未計上＝車両ランキング式準拠）。</div>';
+      '<div style="padding:8px 10px;font-size:10px;color:#155e75;background:#f0fdfa;margin-top:6px;line-height:1.6"><b>集計（実額/仮定の明示）</b>：売上＝<b>実額</b>（返却日 2026/2〜当月末・キャンセル除外の予約を配車fleetで車両に割当て累計。未来予約は除外）。コスト＝<b>仮定</b>（月固定費＝リース+保険+車検/24+点検/6 ×'+monthsElapsed+'ヶ月を各車一律。途中導入車は過大計上の可能性／整備実費・自動車税は未計上＝車両ランキング式準拠）。</div>';
   }catch(e){body.innerHTML='<div style="padding:18px;color:#dc2626">取得エラー: '+(e&&e.message||e)+'</div>';}
 }
 loadActuals();
