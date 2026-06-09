@@ -235,6 +235,12 @@ table.h-cfg .g-cfg,table.h-sale .g-sale,table.h-cost .g-cost,table.h-out .g-out,
 </div>
 </div>
 
+<div class="card" id="vpl-card">
+<h2>🚗 車両別 累積損益（2026/2〜・オンタイム）<button onclick="loadVehiclePL()" style="margin-left:10px;padding:3px 10px;border:1px solid #0891b2;background:#fff;color:#155e75;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">🔄 更新</button></h2>
+<div class="sub">配車実績(fleet)で予約売上を車両に割当てた、2026/2からの車両ごとの累積損益。開く/更新ごとにDBからライブ再集計。</div>
+<div id="vpl-body" class="tscroll"><div style="padding:20px;color:#0f766e;font-weight:700">読込中…</div></div>
+</div>
+
 <script>
 const DEF=[
  // cls, n, hold, util%, ADR(1泊), 平均泊  （リースは共通のクラス別単価から自動反映）
@@ -510,7 +516,45 @@ function initVisUI(){
   h.addEventListener('click',e=>{if(e.target.closest('button,input,select,a'))return;VIS.grps[i]=!VIS.grps[i];applyVis();});});
  applyVis();
 }
+// ═══ 🚗 車両別 累積損益（2026/2〜・オンタイム＝開く/更新ごとにDB再集計）2026-06-09 ═══
+//   売上=実額（返却日2026/2以降・キャンセル除外の予約を配車fleetで車両割当て累計）
+//   コスト=仮定（月固定費=リース+保険+車検/24+点検/6 ×経過月。整備実費/自動車税は未計上＝車両ランキング式）
+async function loadVehiclePL(){
+  const body=document.getElementById('vpl-body'); if(!body)return;
+  const tok=_sbToken();
+  if(!tok){body.innerHTML='<div style="padding:18px;color:#92400e;background:#fffbeb;border-radius:8px">同じブラウザで本体APP（nosh2318.github.io/spk-task/）にログインすると、車両別の累積損益をライブ表示します。</div>';return;}
+  body.innerHTML='<div style="padding:20px;color:#0f766e;font-weight:700">🚗 ライブ集計中…</div>';
+  try{
+    const H={apikey:LIVECFG.anon,Authorization:'Bearer '+tok},SB=LIVECFG.sb,START='2026-02-01';
+    const q=async(p)=>{const r=await fetch(SB+'/rest/v1/'+p,{headers:H});if(!r.ok)throw new Error('HTTP '+r.status);return r.json();};
+    const [resv,fleet,vehs]=await Promise.all([
+      q('reservations?select=id,price,base_price,option_price,discount,status,return_date&return_date=gte.'+START+'&status=neq.cancelled&limit=5000'),
+      q('fleet?select=reservation_id,vehicle_code&limit=10000'),
+      q('vehicles?select=*&limit=1000')
+    ]);
+    const now=new Date(),cy=now.getFullYear(),cm=now.getMonth()+1;
+    const monthsElapsed=Math.max(1,(cy-2026)*12+(cm-2)+1);
+    const rev=(r)=>{const bp=+r.base_price||0,op=+r.option_price||0,d=+r.discount||0;return (bp>0||op>0)?Math.max(0,bp+op-d):(+r.price||0);};
+    const mfix=(v)=>(+v.lease_monthly||0)+(+v.insurance_annual||0)+(+v.shaken_cost||0)/24+(+v.tenken_cost||0)/6;
+    const fmap={};(fleet||[]).forEach(f=>{if(f.reservation_id)fmap[f.reservation_id]=f.vehicle_code;});
+    const byCode={};let unassigned=0;
+    (resv||[]).forEach(r=>{const code=fmap[r.id],rv=rev(r);if(!code){unassigned+=rv;return;}byCode[code]=(byCode[code]||0)+rv;});
+    const rows=(vehs||[]).map(v=>{const r=byCode[v.code]||0,mf=mfix(v),cost=mf*monthsElapsed;return {code:v.code,type:v.type||'?',name:v.name||'',owner:v.owner_company||'HANDYMAN',rev:r,mfix:mf,cost:cost,pl:r-cost};});
+    Object.keys(byCode).forEach(code=>{if(!(vehs||[]).find(v=>v.code===code))rows.push({code,type:'?',name:'(マスター外)',owner:'',rev:byCode[code],mfix:0,cost:0,pl:byCode[code]});});
+    rows.sort((a,b)=>b.pl-a.pl);
+    const tR=rows.reduce((s,r)=>s+r.rev,0),tC=rows.reduce((s,r)=>s+r.cost,0),tP=tR-tC;
+    body.innerHTML=
+      '<div style="font-size:11px;color:#155e75;background:#ecfeff;padding:6px 10px;border-radius:6px;margin-bottom:8px">2026/2〜'+cy+'/'+cm+'（'+monthsElapsed+'ヶ月）｜取得 '+now.toLocaleTimeString('ja-JP')+'｜合計 売上'+yen(tR)+' − コスト'+yen(tC)+' = <b style="color:'+(tP>=0?'#047857':'#dc2626')+'">'+yen(tP)+'</b></div>'+
+      '<table style="width:100%;border-collapse:collapse;font-size:11.5px;min-width:640px"><thead><tr style="background:#f0fdfa">'+
+      '<th style="text-align:left;padding:6px 8px;color:#0f766e">車両</th><th style="text-align:right;padding:6px 8px;color:#0369a1">累積売上</th><th style="text-align:right;padding:6px 8px;color:#b91c1c">月固定費</th><th style="text-align:right;padding:6px 8px;color:#64748b">×月</th><th style="text-align:right;padding:6px 8px;color:#b91c1c">累積コスト</th><th style="text-align:right;padding:6px 8px;color:#0f766e">累積損益</th></tr></thead><tbody>'+
+      rows.map(r=>'<tr style="border-bottom:1px solid #f1f5f9"><td style="text-align:left;padding:6px 8px"><span style="font-size:9px;background:#ccfbf1;color:#0f766e;padding:1px 6px;border-radius:4px;font-weight:700">'+r.type+'</span> '+r.name+' <span style="font-size:9px;color:#94a3b8">'+r.code+'</span>'+(r.owner&&r.owner!=='HANDYMAN'?' <span style="font-size:9px;color:#7c3aed">🏢預</span>':'')+'</td><td style="text-align:right;padding:6px 8px;color:#0369a1">'+yen(r.rev)+'</td><td style="text-align:right;padding:6px 8px;color:#94a3b8">'+yen(r.mfix)+'</td><td style="text-align:right;padding:6px 8px;color:#94a3b8">'+monthsElapsed+'</td><td style="text-align:right;padding:6px 8px;color:#b91c1c">'+yen(r.cost)+'</td><td style="text-align:right;padding:6px 8px;font-weight:800;color:'+(r.pl>=0?'#047857':'#dc2626')+'">'+yen(r.pl)+'</td></tr>').join('')+
+      '</tbody></table>'+
+      (unassigned>0?'<div style="padding:6px 10px;font-size:10px;color:#92400e;background:#fffbeb;margin-top:6px">※未配車（車両未割当）売上 '+yen(unassigned)+' は車両別に含めず</div>':'')+
+      '<div style="padding:8px 10px;font-size:10px;color:#155e75;background:#f0fdfa;margin-top:6px;line-height:1.6"><b>集計（実額/仮定の明示）</b>：売上＝<b>実額</b>（返却日2026/2以降・キャンセル除外の予約を配車fleetで車両に割当て累計）。コスト＝<b>仮定</b>（月固定費＝リース+保険+車検/24+点検/6 ×'+monthsElapsed+'ヶ月を各車一律。途中導入車は過大計上の可能性／整備実費・自動車税は未計上＝車両ランキング式準拠）。</div>';
+  }catch(e){body.innerHTML='<div style="padding:18px;color:#dc2626">取得エラー: '+(e&&e.message||e)+'</div>';}
+}
 loadActuals();
+loadVehiclePL();
 startup();
 initVisUI();
 </script>
