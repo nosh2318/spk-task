@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v793';
+  var CV='spk-v794';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=680').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=681').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -11731,6 +11731,103 @@ function SqFailedModal({onClose,onResolved,preloadedItems}){
 /* ==========================================
    申し送りBOX
    ========================================== */
+// ★ 2026-06-10: KEYDROP キャンセル依頼リスト（顧客がマイページで依頼→ここで返金情報を見て手動返金→確定）
+//   返金は自動でやらない。スタッフがSquare Dashboardで手動返金→「キャンセル確定」で記録（keydrop-refund・記録のみ）。
+function KdCancelRequests(){
+  const[reqs,setReqs]=React.useState([]);
+  const[busy,setBusy]=React.useState("");
+  const load=React.useCallback(async()=>{
+    if(!sb)return;
+    try{
+      const{data:rs}=await sb.from("reservations")
+        .select("id,name,vehicle,lend_date,return_date,lend_time,del_time,return_time,col_time,price,del_place,col_place,status,changed_json")
+        .eq("ota","KEYDROP");
+      const pend=(rs||[]).filter(r=>{
+        const st=String(r.status||"");
+        if(st==="cancelled"||st==="キャンセル"||st==="cancel")return false;
+        let cj=r.changed_json; if(typeof cj==="string"){try{cj=JSON.parse(cj);}catch(e){cj={};}}
+        return cj&&cj.kd_cancel_requested_at;
+      });
+      let pays={};
+      if(pend.length){
+        const{data:ps}=await sb.from("keydrop_payments")
+          .select("reservation_id,amount,status,square_payment_id,square_order_id,refund_amount")
+          .in("reservation_id",pend.map(r=>r.id));
+        (ps||[]).forEach(p=>{pays[p.reservation_id]=p;});
+      }
+      const list=pend.map(r=>{
+        let cj=r.changed_json; if(typeof cj==="string"){try{cj=JSON.parse(cj);}catch(e){cj={};}}
+        const lend=new Date(r.lend_date+"T00:00:00+09:00").getTime();
+        const days=Math.ceil((lend-Date.now())/86400000);
+        const rate=days>=7?0:days>=3?20:days>=1?30:50;
+        const base=Number(r.price||0);
+        const pay=pays[r.id]||{};
+        const paid=Number(pay.amount!=null?pay.amount:base);
+        const fee=Math.ceil(base*rate/100);
+        let refund=paid-fee; if(refund<0)refund=0;
+        return{r,cj,days,rate,base,paid,fee,refund,pay};
+      }).sort((a,b)=>String(a.cj.kd_cancel_requested_at||"").localeCompare(String(b.cj.kd_cancel_requested_at||"")));
+      setReqs(list);
+    }catch(e){/* silent */}
+  },[]);
+  React.useEffect(()=>{load();const iv=setInterval(load,60000);return()=>clearInterval(iv);},[load]);
+
+  const confirmCancel=async(item)=>{
+    const{r,fee,rate,refund,paid}=item;
+    if(!window.confirm("【KEYDROPキャンセル確定】\n予約: "+r.id+" "+(r.name||"")+"様\n入金 ¥"+paid.toLocaleString()+"\nキャンセル料("+rate+"%): ¥"+fee.toLocaleString()+"\n返金額: ¥"+refund.toLocaleString()+"\n\n※先に Square Dashboard で ¥"+refund.toLocaleString()+" を返金してから「OK」を押してください。\nこの操作で予約をキャンセル確定し記録します（返金自体は実行しません）。"))return;
+    const typed=window.prompt("確定するには予約番号「"+r.id+"」を入力してください");
+    if(typed!==r.id){alert("予約番号が一致しません。中止しました。");return;}
+    setBusy(r.id);
+    try{
+      const{data:{session}}=await sb.auth.getSession();
+      const token=session&&session.access_token;
+      if(!token){alert("SPKにログインが必要です");setBusy("");return;}
+      const res=await fetch(SUPABASE_URL+"/functions/v1/keydrop-refund",{
+        method:"POST",
+        headers:{"apikey":SUPABASE_KEY,"Authorization":"Bearer "+token,"Content-Type":"application/json"},
+        body:JSON.stringify({reservationId:r.id,refundAmount:refund})
+      });
+      const d=await res.json().catch(()=>({}));
+      if(!res.ok||!d.ok){alert("確定に失敗: "+((d&&d.error)||("HTTP "+res.status)));setBusy("");return;}
+      alert("✅ キャンセル確定しました（記録返金額 ¥"+(d.refundRecorded!=null?d.refundRecorded:refund).toLocaleString()+"）");
+      setBusy("");load();
+    }catch(e){alert("エラー: "+e.message);setBusy("");}
+  };
+
+  if(!reqs.length)return null;
+  return (
+    <div style={{background:"#fff7ed",border:"1.5px solid #fdba74",borderRadius:12,padding:12,marginBottom:12}}>
+      <div style={{fontSize:13,fontWeight:800,color:"#9a3412",marginBottom:8}}>🚫 KEYDROP キャンセル依頼（{reqs.length}）— 返金して確定</div>
+      {reqs.map((it,i)=>(
+        <div key={it.r.id} style={{background:"#fff",border:"1px solid #fed7aa",borderRadius:10,padding:10,marginBottom:i<reqs.length-1?8:0}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8}}>
+            <div style={{fontWeight:800,fontSize:13,color:"#1e293b"}}>{it.r.name||"—"} 様 <span style={{fontSize:11,color:"#64748b",fontWeight:600}}>{it.r.id}</span></div>
+            <div style={{fontSize:11,color:"#64748b"}}>{it.r.vehicle}クラス</div>
+          </div>
+          <div style={{fontSize:11,color:"#475569",marginTop:3,lineHeight:1.6}}>
+            利用: {it.r.lend_date} {it.r.lend_time||it.r.del_time||""} 〜 {it.r.return_date} {it.r.return_time||it.r.col_time||""}（出発まで{it.days}日）<br/>
+            {it.cj.kd_cancel_reason?<span>理由: {it.cj.kd_cancel_reason}<br/></span>:null}
+            依頼: {String(it.cj.kd_cancel_requested_at||"").slice(0,16).replace("T"," ")}
+          </div>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",margin:"7px 0",fontSize:12}}>
+            <span style={{background:"#f1f5f9",borderRadius:6,padding:"3px 8px"}}>入金 ¥{it.paid.toLocaleString()}</span>
+            <span style={{background:"#fee2e2",color:"#b91c1c",borderRadius:6,padding:"3px 8px"}}>キャンセル料 {it.rate}% ¥{it.fee.toLocaleString()}</span>
+            <span style={{background:"#dcfce7",color:"#15803d",borderRadius:6,padding:"3px 8px",fontWeight:800}}>返金額 ¥{it.refund.toLocaleString()}</span>
+          </div>
+          <div style={{fontSize:10.5,color:"#64748b",marginBottom:7,wordBreak:"break-all"}}>
+            Square決済ID: {it.pay.square_payment_id||"（不明）"}　/ 台帳: {it.pay.status||"—"}
+            <br/>① Square Dashboardでこの決済を <b>¥{it.refund.toLocaleString()}</b> 返金 → ② 下のボタンで確定
+          </div>
+          <button disabled={busy===it.r.id} onClick={()=>confirmCancel(it)}
+            style={{width:"100%",padding:"9px",background:busy===it.r.id?"#cbd5e1":"#dc2626",color:"#fff",border:"none",borderRadius:8,fontSize:12.5,fontWeight:800,cursor:"pointer"}}>
+            {busy===it.r.id?"処理中…":"返金済み → キャンセル確定する"}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function MemoBox({today}){
   const tomorrow=dOff(today,1);
   const[memos,setMemos]=React.useState([]);
@@ -20070,6 +20167,7 @@ function App(){
                 </div>;
               })()}
               <MemoBox today={today}/>
+              <KdCancelRequests/>
               {/* ===== 🚗 空車ウィジェット（今日/明日 クラス別） ===== */}
               <VacancyWidget data={data} vehicles={vehicles} fleet={fleet} maintenance={maintenance}/>
               {/* ===== 📊 Summary（デフォルト折りたたみ） ===== */}
@@ -20720,7 +20818,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.248";
+const APP_VERSION="v4.7.249";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
