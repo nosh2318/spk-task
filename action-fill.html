@@ -71,7 +71,21 @@ const SU='https://ckrxttbnawkclshczsia.supabase.co';
 const SK='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8';
 function _ext(d){if(!d)return null;if(typeof d==='string')return d;if(d.access_token)return d.access_token;if(d.currentSession&&d.currentSession.access_token)return d.currentSession.access_token;if(d.session&&d.session.access_token)return d.session.access_token;if(Array.isArray(d)&&typeof d[0]==='string')return d[0];return null;}
 function getTok(){try{const v=localStorage.getItem('sb-ckrxttbnawkclshczsia-auth-token');if(v){try{const t=_ext(JSON.parse(v));if(t)return t;}catch(e){}}for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith('sb-')&&k.indexOf('auth-token')>=0){const val=localStorage.getItem(k);if(!val)continue;try{const t=_ext(JSON.parse(val));if(t)return t;}catch(e){}}}return null;}catch(e){return null;}}
-async function sbGet(p){const r=await fetch(SU+'/rest/v1/'+p,{headers:{apikey:SK,Authorization:'Bearer '+(getTok()||SK)}});if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}
+// PostgRESTは1リクエスト最大1000件 → Rangeヘッダで全件ページネーション取得（取りこぼし防止）
+async function sbGet(p){
+  let out=[],from=0;const page=1000;
+  while(true){
+    const r=await fetch(SU+'/rest/v1/'+p,{headers:{apikey:SK,Authorization:'Bearer '+(getTok()||SK),'Range-Unit':'items','Range':from+'-'+(from+page-1)}});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    const c=await r.json();
+    if(!Array.isArray(c))return c;
+    out=out.concat(c);
+    if(c.length<page)break;
+    from+=page;
+    if(from>200000)break;
+  }
+  return out;
+}
 
 // ===== 固定値 =====
 const TGTU={1:50,2:50,3:50,4:50,5:50,6:50,7:50,8:50,9:50,10:50,11:50,12:50};        // 目標稼働率%（札幌・暫定フラット50）
@@ -137,7 +151,7 @@ async function boot(){
   // 当月予約率(BR)：当月発生(発生月==返却月)÷当月返却。SPKはbooked_at無し＝created_at
   try{
     const ms=Y+'-'+String(NOW).padStart(2,'0');
-    const acts=await sbGet('reservations?select=return_date,created_at,status,ota,base_price,option_price,discount,price&return_date=gte.'+Y+'-01-01&return_date=lte.'+Y+'-12-31&limit=8000');
+    const acts=await sbGet('reservations?select=return_date,created_at,status,ota,base_price,option_price,discount,price&return_date=gte.'+Y+'-01-01&return_date=lte.'+Y+'-12-31&order=id.asc');
     const den={},num={},rev={};
     (acts||[]).forEach(a=>{const st=(a.status||'').trim();if(st&&/cancel|キャンセル/i.test(st))return;
       const em=(a.return_date||'').slice(0,7), lm=+em.slice(5,7);if(!lm)return;den[lm]=(den[lm]||0)+1;
@@ -154,7 +168,7 @@ async function boot(){
   }catch(e){}
   // HP実績点：2026 発生月の総HP件数・総HP売上（DB実数）。発生月＝created_at（SPKはbooked_at無し）
   try{
-    const hp=await sbGet('reservations?select=created_at,status,base_price,option_price,discount,price&ota=eq.HP&limit=3000');
+    const hp=await sbGet('reservations?select=id,created_at,status,base_price,option_price,discount,price&ota=eq.HP&order=id.asc');
     (hp||[]).forEach(r=>{const st=(r.status||'').trim();if(st&&/cancel|キャンセル/i.test(st))return;
       const bk=r.created_at||'';
       if(bk.slice(0,4)!==String(Y))return; const m=+bk.slice(5,7); if(!m)return;
