@@ -119,16 +119,19 @@ function buildPriceTable(prices){
   }).join('');
 }
 function buildPresets(presets){
+  presets=(presets||[]).slice().sort(function(a,b){return String(a.start||'~').localeCompare(String(b.start||'~'));});
   const list=document.getElementById('presetList');
   list.innerHTML=(presets||[]).map(function(p,i){return presetRow(p,i);}).join('');
   bindPresetRemove();
 }
+function mdSel(kind,md){var mm=(md&&md.length>=2)?parseInt(md.slice(0,2),10):0;var dd=(md&&md.length>=5)?parseInt(md.slice(3,5),10):0;var ss='style="padding:8px 6px;border:1.5px solid #ddd;border-radius:8px;font-size:14px;background:#fff"';var mo='<option value="">月</option>';for(var m=1;m<=12;m++)mo+='<option value="'+m+'"'+(m===mm?' selected':'')+'>'+m+'月</option>';var dn='<option value="">日</option>';for(var d=1;d<=31;d++)dn+='<option value="'+d+'"'+(d===dd?' selected':'')+'>'+d+'日</option>';return '<div style="display:flex;gap:6px"><select class="p-'+kind+'-m" '+ss+'>'+mo+'</select><select class="p-'+kind+'-d" '+ss+'>'+dn+'</select></div>';}
+function rowMD(row,kind){var m=row.querySelector('.p-'+kind+'-m').value;var d=row.querySelector('.p-'+kind+'-d').value;if(!m||!d)return '';return ('0'+m).slice(-2)+'-'+('0'+d).slice(-2);}
 function presetRow(p,i){
   const opts=TIERS.map(function(t,ti){return '<option value="'+ti+'"'+(p.tier===ti?' selected':'')+'>'+t+'</option>';}).join('');
   return '<div class="preset-row" data-i="'+i+'">'
     +'<div><div class="lbl">期間名</div><input class="p-name" type="text" value="'+(p.name||'')+'" placeholder="GW"></div>'
-    +'<div><div class="lbl">開始 MM-DD</div><input class="p-start" type="text" value="'+(p.start||'')+'" placeholder="04-27"></div>'
-    +'<div><div class="lbl">終了 MM-DD</div><input class="p-end" type="text" value="'+(p.end||'')+'" placeholder="05-06"></div>'
+    +'<div><div class="lbl">開始</div>'+mdSel('start',p.start||'')+'</div>'
+    +'<div><div class="lbl">終了</div>'+mdSel('end',p.end||'')+'</div>'
     +'<div><div class="lbl">tier</div><select class="p-tier">'+opts+'</select></div>'
     +'<button class="xbtn p-x">✕</button></div>';
 }
@@ -136,7 +139,7 @@ function bindPresetRemove(){document.querySelectorAll('.p-x').forEach(function(b
 document.getElementById('addPreset').onclick=function(){const d=document.createElement('div');d.innerHTML=presetRow({name:'',start:'',end:'',tier:2},Date.now());document.getElementById('presetList').appendChild(d.firstChild);bindPresetRemove();renderYearPreview();};
 
 // 年間プレビュー（いつ・どのシーズンか）
-function collectPresetsLive(){const ps=[];document.querySelectorAll('.preset-row').forEach(function(row){const s=(row.querySelector('.p-start').value||'').trim();const e=(row.querySelector('.p-end').value||'').trim();const t=parseInt(row.querySelector('.p-tier').value,10)||0;if(s&&e)ps.push({start:s,end:e,tier:t});});return ps;}
+function collectPresetsLive(){const ps=[];document.querySelectorAll('.preset-row').forEach(function(row){const s=rowMD(row,'start');const e=rowMD(row,'end');const t=parseInt(row.querySelector('.p-tier').value,10)||0;if(s&&e)ps.push({start:s,end:e,tier:t});});return ps;}
 function tierForMD(md,ps,def){for(var i=0;i<ps.length;i++){var p=ps[i];var inR=(p.start<=p.end)?(md>=p.start&&md<=p.end):(md>=p.start||md<=p.end);if(inR)return p.tier;}return def;}
 function renderYearPreview(){
   var ps=collectPresetsLive();var def=parseInt((document.getElementById('defTier')||{}).value,10);if(isNaN(def))def=1;
@@ -147,7 +150,7 @@ function renderYearPreview(){
   var el=document.getElementById('yearPreview');if(el)el.innerHTML=html;
 }
 document.addEventListener('input',function(e){if(e.target&&e.target.matches&&e.target.matches('.p-start,.p-end,#defTier'))renderYearPreview();});
-document.addEventListener('change',function(e){if(e.target&&e.target.matches&&e.target.matches('.p-tier,#defTier'))renderYearPreview();});
+document.addEventListener('change',function(e){if(e.target&&e.target.matches&&e.target.matches('.p-tier,#defTier,.p-start-m,.p-start-d,.p-end-m,.p-end-d'))renderYearPreview();});
 
 function collect(){
   const prices={};
@@ -155,19 +158,20 @@ function collect(){
   const presets=[];
   document.querySelectorAll('.preset-row').forEach(function(row){
     const name=(row.querySelector('.p-name').value||'').trim();
-    const start=(row.querySelector('.p-start').value||'').trim();
-    const end=(row.querySelector('.p-end').value||'').trim();
+    const start=rowMD(row,'start');
+    const end=rowMD(row,'end');
     const tier=parseInt(row.querySelector('.p-tier').value,10)||0;
     if(start&&end)presets.push({name:name,start:start,end:end,tier:tier});
   });
   var def=parseInt((document.getElementById('defTier')||{}).value,10);if(isNaN(def))def=1;
+  presets.sort(function(a,b){return String(a.start||'~').localeCompare(String(b.start||'~'));});
   return {prices:prices,presets:presets,default:def};
 }
 
 document.getElementById('saveBtn').onclick=async function(){
   const msg=document.getElementById('msg');msg.textContent='';msg.className='msg';
   this.disabled=true;this.textContent='保存中...';
-  try{await sbSet('hdm_keydrop_price',collect());msg.textContent='✅ 保存しました（顧客サイトKEYDROPに即反映）';msg.className='msg ok';}
+  try{var _d=collect();await sbSet('hdm_keydrop_price',_d);buildPresets(_d.presets);renderYearPreview();msg.textContent='✅ 保存しました（顧客サイトKEYDROPに即反映）';msg.className='msg ok';}
   catch(e){msg.textContent='保存失敗: '+e.message;msg.className='msg err';}
   this.disabled=false;this.textContent='💾 価格・シーズナルを保存（顧客サイトに即反映）';
 };
