@@ -103,6 +103,7 @@ let SNAP={};
 let BR={};      // BR[m]={rate,num,den,rev} 当月予約率＝当月発生÷当月返却(DB実数)
 let HPPT={};    // HPPT[m]={cnt,rev} 2026 発生月の総HP件数・総HP売上(DB実数)
 let THISMO_HP={};  // THISMO_HP[L]=今月(NOW)発生のHP予約でL着地の実績件数(DB実数)
+let CXL={};     // CXL[m]={cnt,rev} 発生月mのHPキャンセル件数・金額(DB実数)
 // 発生月→着地月(返却月)の実測分散%（2026-04〜06発生・暦月。3月はCSV一括取込で汚染＝除外）
 const FEED={4:{4:54,5:19,6:5,7:7,8:5,9:7,10:3},5:{2:2,5:47,6:14,7:11,8:19,9:5,10:3},6:{6:62,7:17,8:8,9:4,10:8}};
 // 未観測月（7月〜）はクリーン146本のラグ分布から合成（暫定・実測が貯まったらFEEDに追記）
@@ -169,10 +170,11 @@ async function boot(){
   // HP実績点：2026 発生月の総HP件数・総HP売上（DB実数）。発生月＝created_at（SPKはbooked_at無し）
   try{
     const hp=await sbGet('reservations?select=id,created_at,status,base_price,option_price,discount,price&ota=eq.HP&order=id.asc');
-    (hp||[]).forEach(r=>{const st=(r.status||'').trim();if(st&&/cancel|キャンセル/i.test(st))return;
+    (hp||[]).forEach(r=>{const st=(r.status||'').trim();
       const bk=r.created_at||'';
       if(bk.slice(0,4)!==String(Y))return; const m=+bk.slice(5,7); if(!m)return;
       const v=(+r.base_price>0||+r.option_price>0)?(+r.base_price+(+r.option_price||0)-(+r.discount||0)):(+r.price||0);
+      if(st&&/cancel|キャンセル/i.test(st)){ if(!CXL[m])CXL[m]={cnt:0,rev:0}; CXL[m].cnt++; CXL[m].rev+=v; return; }
       if(!HPPT[m])HPPT[m]={cnt:0,rev:0}; HPPT[m].cnt++; HPPT[m].rev+=v;});
   }catch(e){}
   render();
@@ -240,9 +242,11 @@ function render(){
     // ===== 📡 オンタイム検証（当月のみ）：実広告費(手入力) ÷ 当月発生HP実数(DB) ＝ 実測CPA を仮説レンジと突合 =====
     if(T===NOW){
       const ac=(HPPT[NOW]&&HPPT[NOW].cnt)||0, ar=(HPPT[NOW]&&HPPT[NOW].rev)||0;
+      const cx=(CXL[NOW]&&CXL[NOW].cnt)||0, cxr=(CXL[NOW]&&CXL[NOW].rev)||0;
       const today=new Date().getDate(), dd=dim(NOW);
       h+='<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:10px 12px;margin:10px 0">'
         +'<div style="font-size:12px;font-weight:900;color:#166534;margin-bottom:6px">📡 オンタイム検証（'+MN(NOW)+'実測 vs 仮説 ・ '+today+'/'+dd+'日経過）</div>'
+        +'<div style="display:inline-block;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:6px 12px;margin-bottom:8px;font-size:12.5px;font-weight:900;color:#b91c1c">🚫 '+MN(NOW)+'発生HP キャンセル：'+cx+'件 ・ '+man(cxr)+' <span style="font-weight:700;color:#9a6a6a;font-size:11px">（獲得本数・売上から除外済）</span></div>'
         +'<div class="binp" style="margin:0 0 6px"><span style="font-size:12px;font-weight:700;color:#64748b">今月ここまでの実広告費 ¥</span>'
         +'<input id="spentIn" type="number" value="'+(SPENT===null?'':SPENT)+'" step="10000" placeholder="広告管理画面の消化額">'
         +'<button onclick="saveSpent()" style="padding:8px 14px;border:1px solid #16a34a;background:#16a34a;color:#fff;border-radius:8px;font-weight:800;cursor:pointer;font-size:13px">💾 反映</button></div>';
