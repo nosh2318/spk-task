@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v807';
+  var CV='spk-v808';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=694').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=695').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -16860,6 +16860,8 @@ function ParkingManager({masterVehicles}){
   // 🔴 初期fetch完了前はmasterVehicles同期しない (LSでDB上書きバグ防止)
   const[initialLoaded,setInitialLoaded]=useState(false);
   const masterSyncedRef=useRef(false);
+  // 🔴 3wayマージ用: 最後にリモートと同期した時点のスナップショット (他端末の変更を保全)
+  const lastSyncedRef=useRef(null);
   // 🔴 ローカル変更の猶予時間: 5秒以内のRealtime/Polling上書きは拒否
   const LOCAL_DIRTY_MS=5000;
   // 🔴 Realtimeエコー猶予: SYSTEM_SPEC準拠で3秒 (100ms→3000ms)
@@ -16902,13 +16904,15 @@ function ParkingManager({masterVehicles}){
         if(ls.washMap)setWashMap(ls.washMap);if(ls.washTimeMap)setWashTimeMap(ls.washTimeMap);
         if(ls.maintMap)setMaintMap(ls.maintMap);if(ls.history)setHistory(ls.history);
         if(ls.staffCarMap)setStaffCarMap(ls.staffCarMap);if(ls.warehouseMap)setWarehouseMap(ls.warehouseMap);
-        DB.parking.save({...ls,savedAt:new Date().toISOString()});
+        // 🔴 復元はローカル表示のみ。DBへ丸ごと巻き戻さない (古いLSでの全上書き=戻りの一因を除去)。次のユーザー操作でマージ保存される
+        lastSyncedRef.current=remote&&remote.spots?remote:null;
         setTimeout(()=>alert("🔄 駐車場データをバックアップから復元しました（車両"+lsCarsLen+"台・駐車中"+lsParked+"台）"),500);
       }else if(useRemote){
         setSpots(fixSpotRestricted(remote.spots));if(remote.cars)setCars(remote.cars);
         if(remote.washMap)setWashMap(remote.washMap);if(remote.washTimeMap)setWashTimeMap(remote.washTimeMap);
         if(remote.maintMap)setMaintMap(remote.maintMap);if(remote.history)setHistory(remote.history);
         if(remote.staffCarMap)setStaffCarMap(remote.staffCarMap);if(remote.warehouseMap)setWarehouseMap(remote.warehouseMap);
+        lastSyncedRef.current=remote;
       }
       setSyncStatus("online");
       setInitialLoaded(true);
@@ -16926,6 +16930,7 @@ function ParkingManager({masterVehicles}){
       if(d.spots)setSpots(fixSpotRestricted(d.spots));if(d.cars)setCars(d.cars);if(d.washMap)setWashMap(d.washMap);
       if(d.washTimeMap)setWashTimeMap(d.washTimeMap);if(d.maintMap)setMaintMap(d.maintMap);if(d.history)setHistory(d.history);
       if(d.staffCarMap)setStaffCarMap(d.staffCarMap);if(d.warehouseMap)setWarehouseMap(d.warehouseMap);
+      lastSyncedRef.current=d;
       setSyncStatus("online");setTimeout(()=>{isRemoteUpdate.current=false;},REMOTE_ECHO_MS);
     }).subscribe();
     return()=>{mounted=false;sbParking.removeChannel(ch);};
@@ -16946,6 +16951,7 @@ function ParkingManager({masterVehicles}){
         if(remote.washMap)setWashMap(remote.washMap);if(remote.washTimeMap)setWashTimeMap(remote.washTimeMap);
         if(remote.maintMap)setMaintMap(remote.maintMap);if(remote.history)setHistory(remote.history);
         if(remote.staffCarMap)setStaffCarMap(remote.staffCarMap);if(remote.warehouseMap)setWarehouseMap(remote.warehouseMap);
+        lastSyncedRef.current=remote;
         setSyncStatus("online");
         setTimeout(()=>{isRemoteUpdate.current=false;},REMOTE_ECHO_MS);
       }catch(e){console.error("[parking poll]",e);}
@@ -16979,6 +16985,60 @@ function ParkingManager({masterVehicles}){
     });
   },[masterVehicles,initialLoaded]);
 
+  // 🔴 3wayマージ: 保存直前に最新リモートを読み、自分が触ったエンティティだけ反映 (他端末の変更を保全)
+  const mergeMaps=(base,sync,local)=>{
+    base=base||{};sync=sync||{};local=local||{};
+    const out={...base};
+    const keys=new Set([...Object.keys(sync),...Object.keys(local)]);
+    keys.forEach(k=>{
+      const lv=local[k],sv=sync[k];
+      const changed=JSON.stringify(lv)!==JSON.stringify(sv);
+      if(changed){ // この端末がkを変更/削除した
+        if(lv===undefined)delete out[k]; else out[k]=lv;
+      }
+    });
+    return out;
+  };
+  const mergeSpots=(base,sync,local)=>{
+    const bm={},sm={};(base||[]).forEach(s=>bm[s.id]=s);(sync||[]).forEach(s=>sm[s.id]=s);
+    const out=[];const seen=new Set();
+    (local||[]).forEach(ls=>{
+      seen.add(ls.id);
+      const ss=sm[ls.id],bs=bm[ls.id];
+      const changed=JSON.stringify(ls)!==JSON.stringify(ss);
+      out.push(changed?ls:(bs!==undefined?bs:ls)); // 自分が変えた枠はlocal、それ以外はリモート最新
+    });
+    // localに無いがリモートに増えた枠 (他端末が追加) は残す
+    (base||[]).forEach(bs=>{if(!seen.has(bs.id))out.push(bs);});
+    return out;
+  };
+  const merge3=(base,sync,local)=>{
+    if(!base||!base.spots)return local; // リモート無し=初回
+    return {
+      spots:mergeSpots(base.spots,sync&&sync.spots,local.spots),
+      cars:(JSON.stringify(local.cars)!==JSON.stringify(sync&&sync.cars))?local.cars:(base.cars||local.cars),
+      washMap:mergeMaps(base.washMap,sync&&sync.washMap,local.washMap),
+      washTimeMap:mergeMaps(base.washTimeMap,sync&&sync.washTimeMap,local.washTimeMap),
+      maintMap:mergeMaps(base.maintMap,sync&&sync.maintMap,local.maintMap),
+      staffCarMap:mergeMaps(base.staffCarMap,sync&&sync.staffCarMap,local.staffCarMap),
+      warehouseMap:mergeMaps(base.warehouseMap,sync&&sync.warehouseMap,local.warehouseMap),
+      history:(local.history||[]).slice(-300), // 履歴は自端末優先で直近300件
+      savedAt:new Date().toISOString()
+    };
+  };
+  const mergeSaveTimer=useRef(null);
+  const mergeSave=(localDoc)=>{
+    if(!sbParking)return;
+    clearTimeout(mergeSaveTimer.current);
+    mergeSaveTimer.current=setTimeout(async()=>{
+      try{
+        const remote=await DB.parking.fetch();
+        const merged=merge3(remote,lastSyncedRef.current,localDoc);
+        await sbParking.from("parking_state").update({data:merged,updated_at:new Date().toISOString()}).eq("id",1);
+        lastSyncedRef.current=merged; // 自分の書き込み結果を新しい同期点に
+      }catch(e){console.log("Parking mergeSave error",e);DB.parking.save(localDoc);/*失敗時は従来保存でフォールバック*/}
+    },600);
+  };
   // 自動保存
   useEffect(()=>{
     const d={spots,cars,washMap,washTimeMap,maintMap,staffCarMap,warehouseMap,history,savedAt:new Date().toISOString()};
@@ -16986,7 +17046,7 @@ function ParkingManager({masterVehicles}){
     if(!isRemoteUpdate.current){
       // 🔴 ローカル起因の変更 = 直近ローカル変更時刻を記録 (Realtime/Pollingを拒否する根拠)
       lastLocalChangeAt.current=Date.now();
-      DB.parking.save(d);
+      mergeSave(d); // 🔴 丸ごと上書き→3wayマージ保存 (同時編集の戻り防止)
     }
   },[spots,cars,washMap,washTimeMap,maintMap,staffCarMap,warehouseMap,history]);
 
@@ -21093,7 +21153,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.262";
+const APP_VERSION="v4.7.263";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
