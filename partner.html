@@ -276,7 +276,7 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
 <div id="main" style="display:none">
   <div class="tabs">
     <button class="tab on" id="tab-tl" onclick="switchTab('tl')">📅 配車表</button>
-    <button class="tab" id="tab-data" onclick="switchTab('data')">📋 予約データ</button>
+    <button class="tab" id="tab-data" onclick="switchTab('data')">📋 予約リスト</button>
     <button class="tab" id="tab-cost" onclick="switchTab('cost')">💰 コスト一覧</button>
     <button class="tab" id="tab-veh" onclick="switchTab('veh')">⚙️ 車両情報</button>
     <button class="tab" id="tab-intake" onclick="switchTab('intake')">🔧 入庫スケジュール</button>
@@ -305,6 +305,7 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
 
   <!-- 予約データタブ (返却月締め × 車両別 × レベニュー率 × 請求書発行) -->
   <div id="view-data" style="display:none">
+    <div style="font-size:13px;font-weight:900;color:#15803d;margin:0 0 6px">✅ 有効予約</div>
     <div class="data-ctrl">
       <span class="cnt" id="data-count" style="font-size:11px;font-weight:700;color:#64748b">—</span>
       <span class="total" id="data-total" style="margin-left:auto;font-size:12px;font-weight:900;color:#059669">—</span>
@@ -325,7 +326,7 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
     </div>
     <!-- ❌ キャンセル履歴 (2026-06-07) -->
     <div style="margin-top:14px">
-      <div style="font-size:13px;font-weight:900;color:#991b1b;margin-bottom:6px">❌ キャンセル履歴（直近30件・自動検知）</div>
+      <div style="font-size:13px;font-weight:900;color:#991b1b;margin-bottom:6px">❌ キャンセル <span id="cxl-count" style="font-size:11px;font-weight:700;color:#94a3b8;margin-left:6px"></span></div>
       <div class="data-tbl-wrap" style="max-height:320px">
         <table class="data-tbl fixedcols">
           <colgroup><col style="width:8%"><col style="width:12%"><col style="width:10%"><col style="width:5%"><col style="width:11%"><col style="width:11%"><col style="width:4%"><col style="width:7%"><col style="width:8%"><col style="width:6%"><col style="width:6%"><col style="width:6%"><col style="width:6%"></colgroup>
@@ -340,7 +341,7 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
           <tbody id="cxl-body"><tr><td colspan="13" class="loading">読み込み中...</td></tr></tbody>
         </table>
       </div>
-      <div style="font-size:10px;color:#94a3b8;margin-top:4px">※ 御社車両に配車されていた予約がキャンセルされると自動で記録されます（15分間隔の自動検知）。</div>
+      <div style="font-size:10px;color:#94a3b8;margin-top:4px">※ 御社車両のキャンセル済み予約を表示します（有効予約とは分けて表示）。</div>
     </div>
   </div>
 
@@ -496,7 +497,7 @@ let VEHICLES=[],RESERVATIONS=[],FLEET=[],MAINTENANCE=[],KPI_MAP={},CXL_LOG=[],TW
 let MODAL_CONTEXT=null;
 let isMobile=window.matchMedia('(max-width:768px)').matches;
 function _recalcMobile(){isMobile=window.matchMedia('(max-width:768px)').matches;return isMobile;}
-try{window.matchMedia('(max-width:768px)').addEventListener('change',function(){_recalcMobile();try{if(typeof CURRENT_TAB!=='undefined'&&CURRENT_TAB==='data'){renderData();renderCxl();}}catch(_){}});}catch(_){}
+try{window.matchMedia('(max-width:768px)').addEventListener('change',function(){_recalcMobile();try{if(typeof CURRENT_TAB!=='undefined'&&CURRENT_TAB==='data'){renderData();}}catch(_){}});}catch(_){}
 
 // 認証
 async function checkAuth(){
@@ -567,7 +568,7 @@ async function loadData(){
     KPI_MAP={};(kp||[]).forEach(k=>{if(!KPI_MAP[k.vehicle_code])KPI_MAP[k.vehicle_code]={};KPI_MAP[k.vehicle_code][k.year_month]=k.active;});
     // ★ 2026-05-16: 請求書機能は削除（情報のみのシンプル仕様にオーナー方針変更）
     updateSummary();
-    if(CURRENT_TAB==='tl')renderTimeline();else if(CURRENT_TAB==='data'){renderData();renderCxl();}else renderVehInfo();
+    if(CURRENT_TAB==='tl')renderTimeline();else if(CURRENT_TAB==='data'){renderData();}else renderVehInfo();
   }catch(e){console.error('[loadData]',e);showToast('データ取得エラー: '+e.message,'err');}
 }
 
@@ -808,7 +809,7 @@ function renderData(){
   if(RESERVATIONS.length===0){body.innerHTML='<tr><td colspan="9" class="loading">予約データなし</td></tr>';return;}
   const today=new Date().toISOString().substring(0,10);
   const sorted=[...RESERVATIONS].sort((a,b)=>(b.lend_date||'').localeCompare(a.lend_date||''));
-  let html='',total=0,totalCost=0,totalProfit=0;
+  let actHtml='',cxlHtml='',actN=0,cxlN=0,total=0,totalCost=0,totalProfit=0,row='';
   // ★ 予約日数計算ヘルパー
   const _calcDays=(ld,rd)=>{if(!ld||!rd)return 0;const d1=new Date(ld+'T00:00:00'),d2=new Date(rd+'T00:00:00');return Math.max(1,Math.round((d2-d1)/86400000)+1);};
   sorted.forEach(r=>{
@@ -834,14 +835,14 @@ function renderData(){
     const profitColor=profit>=0?'#15803d':'#dc2626';
     if(isMobile){
       const costInline=dailyCost>0?` <span style="color:#b91c1c;font-size:10px">/ ¥${dailyCost.toLocaleString()}×${days}日=-¥${resvCost.toLocaleString()}</span> <span style="color:${profitColor};font-size:10px;font-weight:700">${profitStr}</span>`:'';
-      html+=`<tr>`+
+      row=`<tr>`+
         `<td class="r1"><span class="veh-c">${vc}</span> ${veh?veh.plate_no||'':''} <span class="ota-bdg ota-${r.ota}">${otaLabel}</span> <span class="status ${statusCls}" style="margin-left:auto">${status}</span></td>`+
         `<td class="r2">${r.name||'—'}様</td>`+
         `<td class="r3">📅 ${r.lend_date||'—'} ${(r.lend_time||'').substring(0,5)} → ${r.return_date||'—'} ${(r.return_time||'').substring(0,5)} (${days}泊)</td>`+
         `<td class="r4"><span style="font-size:10px;color:#64748b">${place}</span><span class="amt">¥${amt.toLocaleString()}${costInline}</span></td>`+
       `</tr>`;
     }else{
-      html+=`<tr>`+
+      row=`<tr>`+
         `<td><span class="veh-c">${vc}</span> ${veh?veh.plate_no||'':''}</td>`+
         `<td><code style="font-size:10px;color:#2563eb">${r.id}</code></td>`+
         `<td>${r.name||'—'}様</td>`+
@@ -857,9 +858,13 @@ function renderData(){
         `<td><span class="status ${statusCls}">${status}</span></td>`+
       `</tr>`;
     }
+    if(r.status==='cancelled'){cxlHtml+=row;cxlN++;}else{actHtml+=row;actN++;}
   });
-  body.innerHTML=html;
-  document.getElementById('data-count').textContent=`${sorted.length}件`;
+  body.innerHTML=actHtml||`<tr><td colspan="13" class="loading">有効予約なし</td></tr>`;
+  const _cb=document.getElementById('cxl-body');
+  if(_cb)_cb.innerHTML=cxlHtml||`<tr><td colspan="13" class="loading">キャンセルなし</td></tr>`;
+  const _cc=document.getElementById('cxl-count');if(_cc)_cc.textContent=`${cxlN}件`;
+  document.getElementById('data-count').textContent=`${actN}件`;
   const totalStr=totalCost>0
     ? `売上 ¥${total.toLocaleString()} − コスト ¥${totalCost.toLocaleString()} = <span style="color:${totalProfit>=0?'#15803d':'#dc2626'}">${totalProfit>=0?'+':''}¥${totalProfit.toLocaleString()}</span>`
     : `合計 ¥${total.toLocaleString()}`;
@@ -965,7 +970,7 @@ async function savePartnerDailyCost(code){
     document.getElementById('saveDC_'+code).style.display='none';
     inp.dataset.dirty='0';
     // 予約データタブも再描画 (反映)
-    if(typeof renderData==='function'){renderData();renderCxl();}
+    if(typeof renderData==='function'){renderData();}
   }catch(e){
     showToast('保存エラー: '+e.message,'err');
   }
@@ -1657,7 +1662,7 @@ function switchTab(t){
   document.getElementById('view-intake').style.display=(t==='intake')?'':'none';
   document.getElementById('view-iklist').style.display=(t==='iklist')?'':'none';
   document.getElementById('view-inv').style.display=(t==='inv')?'':'none';
-  if(t==='tl')renderTimeline();else if(t==='data'){renderData();renderCxl();}else if(t==='cost')renderCost();else if(t==='intake')loadIntake();else if(t==='iklist')loadIkList();else if(t==='inv')loadInv();else renderVehInfo();
+  if(t==='tl')renderTimeline();else if(t==='data'){renderData();}else if(t==='cost')renderCost();else if(t==='intake')loadIntake();else if(t==='iklist')loadIkList();else if(t==='inv')loadInv();else renderVehInfo();
 }
 
 // ★ 💰 コスト一覧タブ (2026-05-26 オーナー新規仕様)
