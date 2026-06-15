@@ -275,7 +275,8 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
 <!-- メインビュー -->
 <div id="main" style="display:none">
   <div class="tabs">
-    <button class="tab on" id="tab-tl" onclick="switchTab('tl')">📅 配車表</button>
+    <button class="tab on" id="tab-dash" onclick="switchTab('dash')">📊 ダッシュボード</button>
+    <button class="tab" id="tab-tl" onclick="switchTab('tl')">📅 配車表</button>
     <button class="tab" id="tab-data" onclick="switchTab('data')">📋 有効予約</button>
     <button class="tab" id="tab-cxl" onclick="switchTab('cxl')">❌ キャンセル</button>
     <button class="tab" id="tab-cost" onclick="switchTab('cost')">💰 コスト一覧</button>
@@ -291,7 +292,8 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
   </div>
 
   <!-- 配車表タブ -->
-  <div id="view-tl">
+  <div id="view-dash"><div id="dash-body" style="padding:6px 2px"><div class="loading">読み込み中...</div></div></div>
+  <div id="view-tl" style="display:none">
     <div class="ctrl">
       <button onclick="changeMonth(-1)">◀</button>
       <span class="ym-label" id="ym-label">—</span>
@@ -492,7 +494,7 @@ const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZ
 const sb=window.supabase.createClient(SB_URL,SB_KEY);
 
 let CURRENT_USER=null,OWNER_COMPANY=null,OWNER_LABEL=null;
-let CURRENT_TAB='tl';
+let CURRENT_TAB='dash';
 let CURRENT_YM=null;
 const SERVICE_START='2026-06-01';// 協力会社運用スタート日（これ以前の返却分は非表示）
 let VEHICLES=[],RESERVATIONS=[],FLEET=[],MAINTENANCE=[],KPI_MAP={},CXL_LOG=[],TWINS={};
@@ -570,7 +572,7 @@ async function loadData(){
     KPI_MAP={};(kp||[]).forEach(k=>{if(!KPI_MAP[k.vehicle_code])KPI_MAP[k.vehicle_code]={};KPI_MAP[k.vehicle_code][k.year_month]=k.active;});
     // ★ 2026-05-16: 請求書機能は削除（情報のみのシンプル仕様にオーナー方針変更）
     updateSummary();
-    if(CURRENT_TAB==='tl')renderTimeline();else if(CURRENT_TAB==='data'){renderData();}else if(CURRENT_TAB==='cxl'){renderCxl();}else renderVehInfo();
+    if(CURRENT_TAB==='dash')renderDash();else if(CURRENT_TAB==='tl')renderTimeline();else if(CURRENT_TAB==='data'){renderData();}else if(CURRENT_TAB==='cxl'){renderCxl();}else renderVehInfo();
   }catch(e){console.error('[loadData]',e);showToast('データ取得エラー: '+e.message,'err');}
 }
 
@@ -607,6 +609,45 @@ function calcUtilByVehicle(){
   return result;
 }
 
+// 配車表 (既存APP風)
+// 📊 ダッシュボード（那覇経営スタイル：年間推移テーブル＋チャネル別構成）
+function renderDash(){
+  const wrap=document.getElementById('dash-body');if(!wrap)return;
+  if(!VEHICLES.length){wrap.innerHTML='<div class="loading">所有車両なし</div>';return;}
+  const year=CURRENT_YM.y;
+  const _cd=(ld,rd)=>{if(!ld||!rd)return 0;const a=new Date(ld+'T00:00:00'),b=new Date(rd+'T00:00:00');return Math.max(1,Math.round((b-a)/86400000)+1);};
+  const OTA_L={J:'じゃらん',R:'楽天',S:'スカイ',O:'エアトリ',HP:'HP',RC:'レンカ',G:'GoGo',direct:'直接',KEYDROP:'KEYDROP'};
+  const OTA_C={J:'#dc2626',R:'#b91c1c',S:'#7c3aed',O:'#0891b2',HP:'#1e40af',RC:'#059669',G:'#92400e',direct:'#64748b',KEYDROP:'#111827'};
+  const fY=n=>'¥'+Math.round(n).toLocaleString();
+  const months=[];let totRev=0,totCost=0,totCnt=0,totNights=0;
+  for(let m=1;m<=12;m++){
+    const ymStr=year+'-'+String(m).padStart(2,'0');
+    const dim=new Date(year,m,0).getDate();
+    const resvs=RESERVATIONS.filter(r=>r.status!=='cancelled'&&(r.return_date||'').substring(0,7)===ymStr);
+    let rev=0,cost=0,nights=0;
+    resvs.forEach(r=>{const f=FLEET.find(x=>x.reservation_id===r.id);const veh=f?VEHICLES.find(v=>v.code===f.vehicle_code):null;const days=_cd(r.lend_date,r.return_date);rev+=(r.price||0);cost+=(+(veh&&veh.partner_daily_cost||0))*days;nights+=days;});
+    const used={};VEHICLES.forEach(v=>used[v.code]=0);
+    RESERVATIONS.forEach(r=>{if(r.status==='cancelled')return;const f=FLEET.find(x=>x.reservation_id===r.id);if(!f||used[f.vehicle_code]===undefined)return;if(!r.lend_date||!r.return_date)return;const s=Math.max(new Date(r.lend_date+'T00:00:00').getTime(),new Date(ymStr+'-01T00:00:00').getTime());const e=Math.min(new Date(r.return_date+'T00:00:00').getTime(),new Date(year+'-'+String(m).padStart(2,'0')+'-'+String(dim).padStart(2,'0')+'T00:00:00').getTime());if(e>=s)used[f.vehicle_code]+=Math.round((e-s)/86400000)+1;});
+    let usedDays=0;Object.keys(used).forEach(c=>usedDays+=used[c]);
+    const denom=VEHICLES.length*dim;const util=denom>0?Math.round(usedDays/denom*100):0;
+    months.push({m,rev,cost,profit:rev-cost,cnt:resvs.length,nights,util});
+    totRev+=rev;totCost+=cost;totCnt+=resvs.length;totNights+=nights;
+  }
+  const maxRev=Math.max(1,...months.map(x=>x.rev));
+  const chMap={};
+  RESERVATIONS.forEach(r=>{if(r.status==='cancelled')return;if((r.return_date||'').substring(0,4)!==String(year))return;const k=r.ota||'direct';if(!chMap[k])chMap[k]={cnt:0,rev:0};chMap[k].cnt++;chMap[k].rev+=(r.price||0);});
+  const chArr=Object.keys(chMap).map(k=>({k,cnt:chMap[k].cnt,rev:chMap[k].rev})).sort((a,b)=>b.rev-a.rev);
+  const chTot=chArr.reduce((s,x)=>s+x.rev,0)||1;
+  let h='<div style="font-size:13px;font-weight:900;color:#0f172a;margin:4px 2px 8px">📈 年間推移（'+year+'年）</div>';
+  h+='<div style="overflow-x:auto"><table style="width:100%;min-width:620px;border-collapse:collapse;font-size:11px"><thead><tr style="background:#0f172a;color:#fff"><th style="padding:6px 8px;text-align:left;white-space:nowrap">月</th><th style="padding:6px 8px;text-align:right;color:#6ee7b7">売上</th><th style="padding:6px 8px;text-align:right;color:#fca5a5">コスト</th><th style="padding:6px 8px;text-align:right;color:#fde68a">粗利</th><th style="padding:6px 8px;text-align:right">件数</th><th style="padding:6px 8px;text-align:right">平均泊</th><th style="padding:6px 8px;text-align:center">稼働率</th><th style="padding:6px 8px;text-align:left;min-width:80px">売上</th></tr></thead><tbody>';
+  months.forEach(x=>{const bar=Math.round(x.rev/maxRev*100);h+='<tr style="border-bottom:1px solid #f1f5f9"><td style="padding:5px 8px;font-weight:700">'+x.m+'月</td><td style="padding:5px 8px;text-align:right;color:#059669;font-weight:700">'+(x.rev?fY(x.rev):'-')+'</td><td style="padding:5px 8px;text-align:right;color:#b91c1c">'+(x.cost?'-'+fY(x.cost):'-')+'</td><td style="padding:5px 8px;text-align:right;font-weight:800;color:'+(x.profit>=0?'#15803d':'#dc2626')+'">'+(x.cnt?((x.profit>=0?'+':'')+fY(x.profit)):'-')+'</td><td style="padding:5px 8px;text-align:right">'+(x.cnt||'-')+'</td><td style="padding:5px 8px;text-align:right">'+(x.cnt?(x.nights/x.cnt).toFixed(1):'-')+'</td><td style="padding:5px 8px;text-align:center;font-weight:700;color:'+(x.util>=70?'#059669':x.util>=40?'#d97706':'#94a3b8')+'">'+x.util+'%</td><td style="padding:5px 8px"><div style="height:8px;background:#e2e8f0;border-radius:4px;overflow:hidden"><div style="height:100%;width:'+bar+'%;background:#10b981"></div></div></td></tr>';});
+  h+='<tr style="background:#f8fafc;font-weight:800;border-top:2px solid #0f172a"><td style="padding:6px 8px">合計</td><td style="padding:6px 8px;text-align:right;color:#059669">'+fY(totRev)+'</td><td style="padding:6px 8px;text-align:right;color:#b91c1c">'+(totCost?'-'+fY(totCost):'-')+'</td><td style="padding:6px 8px;text-align:right;color:'+((totRev-totCost)>=0?'#15803d':'#dc2626')+'">'+(((totRev-totCost)>=0?'+':'')+fY(totRev-totCost))+'</td><td style="padding:6px 8px;text-align:right">'+totCnt+'</td><td style="padding:6px 8px;text-align:right">'+(totCnt?(totNights/totCnt).toFixed(1):'-')+'</td><td colspan="2" style="padding:6px 8px;text-align:center;color:#94a3b8">年計</td></tr>';
+  h+='</tbody></table></div>';
+  h+='<div style="font-size:13px;font-weight:900;color:#0f172a;margin:18px 2px 8px">📊 チャネル別構成（'+year+'年・売上）</div>';
+  if(!chArr.length){h+='<div class="loading">データなし</div>';}
+  else{h+='<div style="display:grid;gap:7px">';chArr.forEach(x=>{const pct=Math.round(x.rev/chTot*100);const c=OTA_C[x.k]||'#64748b';h+='<div><div style="display:flex;align-items:center;gap:6px;font-size:11px;margin-bottom:3px"><span style="font-weight:800;color:'+c+'">'+(OTA_L[x.k]||x.k)+'</span><span style="color:#94a3b8">'+x.cnt+'件</span><span style="margin-left:auto;font-weight:800">'+fY(x.rev)+'</span><span style="color:#64748b;width:34px;text-align:right">'+pct+'%</span></div><div style="height:9px;background:#eef2f7;border-radius:5px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:'+c+'"></div></div></div>';});h+='</div>';}
+  wrap.innerHTML=h;
+}
 // 配車表 (既存APP風)
 function renderTimeline(){
   const wrap=document.getElementById('tl-wrap');
@@ -1648,6 +1689,7 @@ function openInvUpload(){
 }
 function switchTab(t){
   CURRENT_TAB=t;
+  document.getElementById('tab-dash').classList.toggle('on',t==='dash');
   document.getElementById('tab-tl').classList.toggle('on',t==='tl');
   document.getElementById('tab-data').classList.toggle('on',t==='data');
   document.getElementById('tab-cxl').classList.toggle('on',t==='cxl');
@@ -1656,6 +1698,7 @@ function switchTab(t){
   document.getElementById('tab-intake').classList.toggle('on',t==='intake');
   document.getElementById('tab-iklist').classList.toggle('on',t==='iklist');
   document.getElementById('tab-inv').classList.toggle('on',t==='inv');
+  document.getElementById('view-dash').style.display=(t==='dash')?'':'none';
   document.getElementById('view-tl').style.display=(t==='tl')?'':'none';
   document.getElementById('view-data').style.display=(t==='data')?'':'none';
   document.getElementById('view-cxl').style.display=(t==='cxl')?'':'none';
@@ -1664,7 +1707,7 @@ function switchTab(t){
   document.getElementById('view-intake').style.display=(t==='intake')?'':'none';
   document.getElementById('view-iklist').style.display=(t==='iklist')?'':'none';
   document.getElementById('view-inv').style.display=(t==='inv')?'':'none';
-  if(t==='tl')renderTimeline();else if(t==='data'){renderData();}else if(t==='cxl'){renderCxl();}else if(t==='cost')renderCost();else if(t==='intake')loadIntake();else if(t==='iklist')loadIkList();else if(t==='inv')loadInv();else renderVehInfo();
+  if(t==='dash')renderDash();else if(t==='tl')renderTimeline();else if(t==='data'){renderData();}else if(t==='cxl'){renderCxl();}else if(t==='cost')renderCost();else if(t==='intake')loadIntake();else if(t==='iklist')loadIkList();else if(t==='inv')loadInv();else renderVehInfo();
 }
 
 // ★ 💰 コスト一覧タブ (2026-05-26 オーナー新規仕様)
