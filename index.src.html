@@ -19489,6 +19489,15 @@ function App(){
   const[sqfPreload,setSqfPreload]=useState(null);
   // ★ legacy jalanPay は localStorage から即時初期化（非同期ロード前の未決済誤表示を防ぐ）
   const[jalanPay,setJalanPay]=useState(()=>{try{const s=localStorage.getItem("spk_jalan_payment");return s?JSON.parse(s):{};}catch(e){return{};}});
+  // ★ 在庫管理：在庫調整済みの予約番号Set（バッジ＝未調整件数の算出用）
+  const[invStockSet,setInvStockSet]=useState(()=>new Set());
+  useEffect(()=>{if(!sb)return;let on=true;
+    const load=async()=>{try{const{data:rows}=await sb.from("spk_inventory_status").select("id,stock_adjusted");if(!on||!rows)return;setInvStockSet(new Set(rows.filter(r=>r.stock_adjusted).map(r=>r.id)));}catch(e){}};
+    load();
+    const ch=sb.channel("spk_inv_badge").on("postgres_changes",{event:"*",schema:"public",table:"spk_inventory_status"},p=>{const r=p.new;if(!r||!r.id)return;setInvStockSet(s=>{const n=new Set(s);if(r.stock_adjusted)n.add(r.id);else n.delete(r.id);return n;});}).subscribe();
+    return()=>{on=false;try{sb.removeChannel(ch);}catch(e){}};
+  },[sb]);
+  const invTodoCount=React.useMemo(()=>(data||[]).filter(r=>r.status!=="cancelled"&&r.lendDate&&r.lendDate>=today&&!invStockSet.has(r.id)).length,[data,today,invStockSet]);
   // ★ じゃらん新システム(jalan_payments)の入金済みSet — localStorage キャッシュで即時復元
   const[jpNewPaidSet,setJpNewPaidSet]=useState(()=>{try{const s=localStorage.getItem("spk_jp_paid_ids");const arr=s?JSON.parse(s):[];return new Set(arr);}catch(e){return new Set();}});
   useEffect(()=>{
@@ -20508,7 +20517,7 @@ function App(){
               {title:"日常業務",color:"#2563eb",items:[
                 {id:"todo",ico:"✅",l:"タスク管理",desc:"目標・担当タスク・進捗・個人/チーム評価"},
                 {id:"fleet",ico:"🚗",l:"配車",desc:"予約の車両配車・タイムライン",badge:data.length>0?data.length+"件":null},
-                {id:"inventory",ico:"📦",l:"在庫管理",desc:"予約の在庫調整・取込・送信を一元管理"},
+                {id:"inventory",ico:"📦",l:"在庫管理",desc:"予約の在庫調整・取込・送信を一元管理",badge:invTodoCount>0?invTodoCount+"件未調整":null},
                 {id:"parking",ico:"🅿️",l:"駐車場",desc:"入出庫・洗車・メンテ管理"},
                 {id:"jalanpay",ico:"💳",l:"じゃらん決済",desc:"じゃらん予約の決済確認",badge:(()=>{const j=data.filter(r=>r.ota==="J");const undone=j.filter(r=>!jalanPay[r.id]||jalanPay[r.id].payStatus!=="完了").length;return undone>0?undone+"件未完了":null;})()},
                 {id:"import",ico:"📁",l:"CSV取込",desc:"OTA予約CSVインポート"},
