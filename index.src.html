@@ -17040,14 +17040,18 @@ function ParkingManager({masterVehicles}){
       }catch(e){console.log("Parking mergeSave error",e);DB.parking.save(localDoc);/*失敗時は従来保存でフォールバック*/}
     },600);
   };
+  // 🔴 同期スナップショットとの差分判定用シグネチャ (savedAt除外)
+  const parkSig=(o)=>o?JSON.stringify({spots:o.spots,cars:o.cars,washMap:o.washMap,washTimeMap:o.washTimeMap,maintMap:o.maintMap,staffCarMap:o.staffCarMap,warehouseMap:o.warehouseMap,history:o.history}):null;
   // 自動保存
   useEffect(()=>{
     const d={spots,cars,washMap,washTimeMap,maintMap,staffCarMap,warehouseMap,history,savedAt:new Date().toISOString()};
     DB.parking.lsSave(d);
-    if(!isRemoteUpdate.current){
-      // 🔴 ローカル起因の変更 = 直近ローカル変更時刻を記録 (Realtime/Pollingを拒否する根拠)
+    // 🔴 修正: isRemoteUpdateフラグ依存をやめ「同期点と実際に違うか」で保存判定。
+    //   旧実装はリモート受信後3秒間isRemoteUpdate=trueでauto-saveをスキップ→
+    //   複数端末稼働時に自分の操作がその窓に入りDB未保存のまま消える(=戻り)バグの主因だった。
+    if(parkSig(d)!==parkSig(lastSyncedRef.current)){
       lastLocalChangeAt.current=Date.now();
-      mergeSave(d); // 🔴 丸ごと上書き→3wayマージ保存 (同時編集の戻り防止)
+      mergeSave(d); // 3wayマージ保存 (他端末の変更を保全しつつ自分の変更を必ず書く)
     }
   },[spots,cars,washMap,washTimeMap,maintMap,staffCarMap,warehouseMap,history]);
 
