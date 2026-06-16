@@ -2609,6 +2609,13 @@ function fixR0R8QVZR() {
   Logger.log('R0R8QVZR → 入金済みに更新。この関数は削除してOK。');
 }
 
+// ★ 2026-06-09 応急処置: R02ZLN4R(ヤマダ シュンイチ様 ¥30,300) はSquare Tap to Payで6/5入金済だが
+//   SS-A「支払い管理」が⏳未払いのまま残り未入金アラートが誤発火。1回実行してSS-A行を入金済みにする。実行後は削除OK。
+function fixR02ZLN4R() {
+  updatePaymentSheetStatus_('R02ZLN4R', '✅ 入金済み', '2026-06-05T08:31:00Z');
+  Logger.log('R02ZLN4R → SS-A 入金済みに更新。アラート停止。この関数は削除してOK。');
+}
+
 function updateSheetOtaColumn() {
   var sheetId = '1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc';
   var ss = SpreadsheetApp.openById(sheetId);
