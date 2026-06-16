@@ -94,6 +94,20 @@ button{font-family:inherit;cursor:pointer}
 .ddel{margin-top:22px;background:none;border:1px solid #fecaca;color:#dc2626;border-radius:8px;padding:8px 13px;font-size:12px;font-weight:700}
 .scrim{position:fixed;inset:0;background:rgba(0,0,0,.32);z-index:49;opacity:0;pointer-events:none;transition:.2s}
 .scrim.on{opacity:1;pointer-events:auto}
+#memModal{position:fixed;inset:0;z-index:60;display:none;align-items:center;justify-content:center;padding:18px;pointer-events:none}
+#memModal.on{display:flex;pointer-events:auto}
+.mm-box{background:#fff;border-radius:16px;width:100%;max-width:380px;max-height:84vh;overflow-y:auto;padding:18px;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+.mm-h{display:flex;align-items:center;margin-bottom:6px}.mm-h b{font-size:16px}.mm-x{margin-left:auto;background:none;border:none;font-size:18px;color:#9a9ca2}
+.mm-sec{font-size:11px;font-weight:800;color:#6b6f76;margin:13px 0 6px}
+.mm-chips{display:flex;flex-wrap:wrap;gap:6px}
+.mm-chip{font-size:13px;font-weight:700;padding:7px 13px;border-radius:20px;background:#f1f1f2;color:#444;border:1.5px solid transparent}
+.mm-chip.on{background:#eef0ff;color:#5b4eea;border-color:#5b4eea}
+.mm-list{display:flex;flex-direction:column;gap:4px}
+.mm-row{display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:#f8f8fa;border-radius:8px;font-size:13px}
+.mm-row button{background:none;border:none;color:#dc2626;font-size:12px;font-weight:700}
+.mm-add{display:flex;gap:7px;margin-top:8px}
+.mm-add input{flex:1;border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:13px}
+.mm-add button{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:0 14px;font-weight:800;font-size:13px}
 .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);background:#1e1f21;color:#fff;padding:10px 18px;border-radius:10px;font-size:13px;font-weight:700;z-index:200;opacity:0;transition:.25s;pointer-events:none}
 .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
 /* ===== mobile ===== */
@@ -119,12 +133,13 @@ button{font-family:inherit;cursor:pointer}
     <div class="sgrp">プロジェクト</div>
     <div class="nav" id="navProjects"></div>
     <button class="addpj" onclick="addProject()">＋ プロジェクトを追加</button>
-    <div class="me">👤 <input id="meName" placeholder="あなたの名前" oninput="saveMe(this.value)"></div>
+    <div class="me" onclick="openMembers()" style="cursor:pointer"><span id="meSide">👤 自分を選択</span></div>
   </aside>
   <main class="main">
     <div class="top">
       <h1><span class="pcdot" id="topDot"></span><span id="topTitle">全タスク</span></h1>
       <div class="sp">
+        <button class="filt" onclick="openMembers()" style="display:flex;align-items:center;gap:5px">👤 <span id="meLabel">自分</span></button>
         <select class="filt" id="filtSel" onchange="render()">
           <option value="open">未完のみ</option>
           <option value="tome">自分宛（回答待ち）</option>
@@ -139,8 +154,9 @@ button{font-family:inherit;cursor:pointer}
     <div class="list" id="taskList"><div class="empty">読み込み中…</div></div>
   </main>
 </div>
-<div class="scrim" id="scrim" onclick="closeDetail()"></div>
+<div class="scrim" id="scrim" onclick="closeDetail();closeMembers()"></div>
 <div class="detail" id="detail"></div>
+<div id="memModal"></div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -162,6 +178,7 @@ function normStatus(s){if(!s)return 'consult';if(STATUSES.some(x=>x.k===s))retur
 let STORE=localStorage.getItem('asana_store')||'spk';
 let ME=localStorage.getItem('asana_me')||'';
 let TASKS=[];
+let MEMBERS=[];             // 事前登録メンバー（プルダウン用・Supabase共有）
 let CUR='__all';            // 選択中プロジェクト(area) or '__all'
 let SEL=null;               // 選択中タスクid
 let EXTRA_PJ=JSON.parse(localStorage.getItem('asana_pj_'+STORE)||'[]'); // 空プロジェクト名
@@ -185,7 +202,9 @@ async function sbPatch(tbl,id,obj){obj.updated_at=new Date().toISOString();const
 /* ---- data ---- */
 async function load(){
   const rows=await sbGet(TBL()+'?deleted=eq.false&select=*&order=updated_at.desc');
-  TASKS=(rows||[]).map(t=>{const logs=Array.isArray(t.logs)?t.logs:[];const rq=logs.find(l=>l&&l.type==='req');return {...t,_st:normStatus(t.status),logs,requester:t.requester||(rq&&rq.by)||''};});
+  const memRow=(rows||[]).find(r=>r.id==='_members');
+  MEMBERS=Array.isArray(memRow&&memRow.attachments)?memRow.attachments.filter(Boolean):[];
+  TASKS=(rows||[]).filter(r=>r.id!=='_members').map(t=>{const logs=Array.isArray(t.logs)?t.logs:[];const rq=logs.find(l=>l&&l.type==='req');return {...t,_st:normStatus(t.status),logs,requester:t.requester||(rq&&rq.by)||''};});
   render();
 }
 function projects(){
@@ -200,7 +219,7 @@ function curTasks(){return TASKS.filter(t=>!t.parent_id&&(CUR==='__all'||(t.area
 
 /* ---- render ---- */
 function render(){
-  document.getElementById('meName').value=ME;
+  updateMeUI();
   // sidebar projects
   const pjs=projects();
   const navHtml=`<div class="pj ${CUR==='__all'?'on':''}" onclick="selPj('__all')"><span class="pc" style="background:#9aa0a6"></span>全タスク<span class="cnt">${TASKS.filter(t=>!t.parent_id).length}</span></div>`+
@@ -253,13 +272,30 @@ function taskRow(t){
 
 /* ---- actions ---- */
 function selPj(a){CUR=a;render();}
-function saveMe(v){ME=v.trim();localStorage.setItem('asana_me',ME);}
+function memberOpts(sel){return '<option value="">未割当</option>'+MEMBERS.map(m=>'<option '+(m===sel?'selected':'')+'>'+esc(m)+'</option>').join('')+((sel&&!MEMBERS.includes(sel))?'<option selected>'+esc(sel)+'</option>':'');}
+function updateMeUI(){var l=document.getElementById('meLabel');if(l)l.textContent=ME||'自分を選択';var s=document.getElementById('meSide');if(s)s.textContent='👤 '+(ME||'自分を選択');}
+function setMe(v){ME=(v||'').trim();localStorage.setItem('asana_me',ME);updateMeUI();render();}
+async function saveMembers(){try{await fetch(SU+'/rest/v1/asana_tasks',{method:'POST',headers:{apikey:SK,Authorization:authH(),'Content-Type':'application/json',Prefer:'resolution=merge-duplicates'},body:JSON.stringify({id:'_members',store:STORE,title:'__members__',attachments:MEMBERS,deleted:false,updated_at:new Date().toISOString()})});}catch(e){toast('メンバー保存失敗');}}
+function openMembers(){
+  const m=document.getElementById('memModal');
+  m.innerHTML='<div class="mm-box"><div class="mm-h"><b>👥 メンバー</b><button class="mm-x" onclick="closeMembers()">✕</button></div>'+
+    '<div class="mm-sec">あなたは誰？（タップで自分に設定）</div>'+
+    '<div class="mm-chips">'+(MEMBERS.length?MEMBERS.map((n,i)=>'<button class="mm-chip '+(n===ME?'on':'')+'" onclick="pickMe('+i+')">'+esc(n)+'</button>').join(''):'<span style="font-size:12px;color:#9a9ca2">メンバー未登録。下で追加してください</span>')+'</div>'+
+    '<div class="mm-sec">メンバー管理</div>'+
+    '<div class="mm-list">'+MEMBERS.map((n,i)=>'<div class="mm-row"><span>'+esc(n)+'</span><button onclick="delMember('+i+')">削除</button></div>').join('')+'</div>'+
+    '<div class="mm-add"><input id="mmInput" placeholder="名前を追加" onkeydown="if(event.key===\'Enter\')addMember()"><button onclick="addMember()">＋ 追加</button></div></div>';
+  m.classList.add('on');document.getElementById('scrim').classList.add('on');
+}
+function pickMe(i){setMe(MEMBERS[i]||'');openMembers();}
+function closeMembers(){var m=document.getElementById('memModal');if(m)m.classList.remove('on');document.getElementById('scrim').classList.remove('on');render();}
+async function addMember(){var inp=document.getElementById('mmInput');var n=(inp&&inp.value||'').trim();if(!n)return;if(!MEMBERS.includes(n))MEMBERS.push(n);if(inp)inp.value='';await saveMembers();openMembers();render();}
+async function delMember(i){MEMBERS.splice(i,1);await saveMembers();openMembers();render();}
 function changeStore(s){STORE=s;localStorage.setItem('asana_store',s);EXTRA_PJ=JSON.parse(localStorage.getItem('asana_pj_'+STORE)||'[]');CUR='__all';SEL=null;closeDetail();document.getElementById('taskList').innerHTML='<div class="empty">読み込み中…</div>';load();}
 function addProject(){const n=prompt('プロジェクト名');if(!n||!n.trim())return;const a=n.trim();if(!EXTRA_PJ.includes(a))EXTRA_PJ.push(a);localStorage.setItem('asana_pj_'+STORE,JSON.stringify(EXTRA_PJ));CUR=a;render();}
 async function quickAdd(){
   if(!needMe())return;
   const title=prompt('依頼内容（タスク名）');if(!title||!title.trim())return;
-  const assignee=(prompt('誰に依頼しますか？（担当者の名前・空欄可）','')||'').trim();
+  const assignee='';
   const area=(CUR==='__all'?'一般':CUR);
   const now=new Date().toISOString();
   const reqlog={type:'req',by:ME,at:now,text:title.trim()};
@@ -306,7 +342,7 @@ function subRow(s){const st=ST(s._st);const done=s._st==='done';return `<div cla
 async function addSubtask(parentId){
   if(!needMe())return;
   const title=prompt('項目（依頼内容）');if(!title||!title.trim())return;
-  const assignee=(prompt('誰に依頼？（担当者・空欄可）','')||'').trim();
+  const assignee='';
   const p=TASKS.find(x=>x.id===parentId);const now=new Date().toISOString();
   const reqlog={type:'req',by:ME,at:now,text:title.trim()};
   const row={id:uid(),store:STORE,area:(p&&p.area)||'一般',title:title.trim(),requester:ME,assignee,parent_id:parentId,status:'consult',priority:'中',progress:0,description:'',logs:[reqlog],attachments:[],admin_confirmed:false,deleted:false,created_at:now};
@@ -336,7 +372,7 @@ function openTask(id){
       <div class="statpills">${STATUSES.map(s=>`<button class="statpill ${t._st===s.k?'on':''}" style="${t._st===s.k?('background:'+s.bg+';color:'+s.c+';border-color:'+s.c):''}" onclick="setField('${t.id}','status','${s.k}')">${s.l}</button>`).join('')}</div>
       <div style="height:10px"></div>
       <div class="frow"><label>依頼者</label><div style="font-weight:800;color:#5b4eea">${esc(t.requester||'(未設定)')}</div></div>
-      <div class="frow"><label>担当(回答)</label><input value="${esc(t.assignee||'')}" placeholder="誰に依頼" onchange="setField('${t.id}','assignee',this.value)"></div>
+      <div class="frow"><label>担当(回答)</label><select onchange="setField('${t.id}','assignee',this.value)">${memberOpts(t.assignee||'')}</select></div>
       <div class="frow"><label>期限</label><input type="date" value="${esc(t.due_date||'')}" onchange="setField('${t.id}','due_date',this.value)"></div>
       <div class="frow"><label>優先度</label><select onchange="setField('${t.id}','priority',this.value)">${['低','中','高'].map(p=>`<option ${(t.priority||'中')===p?'selected':''}>${p}</option>`).join('')}</select></div>
       <div class="frow"><label>プロジェクト</label><select onchange="setField('${t.id}','area',this.value)">${pjOpts}</select></div>
@@ -355,7 +391,7 @@ function closeDetail(){SEL=null;document.getElementById('detail').classList.remo
 function fmtAt(iso){try{const d=new Date(iso);const m=d.getMonth()+1,day=d.getDate(),hh=String(d.getHours()).padStart(2,'0'),mm=String(d.getMinutes()).padStart(2,'0');return m+'/'+day+' '+hh+':'+mm;}catch(e){return '';}}
 
 /* ---- init + poll（ログイン不要・anon） ---- */
-function needMe(){ if(ME)return true; const n=(prompt('あなたの名前を入力してください（誰が依頼/回答したか記録用）')||'').trim(); if(!n)return false; ME=n; localStorage.setItem('asana_me',ME); var el=document.getElementById('meName'); if(el)el.value=ME; return true; }
+function needMe(){ if(ME)return true; openMembers(); toast('まず「あなたは誰？」で自分を選んでください（未登録なら追加）'); return false; }
 load(); setInterval(function(){ if(!document.hidden) load(); },15000);
 </script>
 </body>
