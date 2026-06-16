@@ -171,7 +171,7 @@ let CUR='__all';            // 選択中プロジェクト(area) or '__all'
 let SEL=null;               // 選択中タスクid
 let EXTRA_PJ=JSON.parse(localStorage.getItem('asana_pj_'+STORE)||'[]'); // 空プロジェクト名
 
-function TBL(){return STORE+'_todo_tasks';}
+function TBL(){return 'asana_tasks';}
 function uid(){return 'asn_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function ini(n){n=(n||'').trim();return n?n.slice(0,2):'?';}
@@ -180,7 +180,7 @@ function toast(t){var el=document.getElementById('toast');el.textContent=t;el.cl
 /* ---- auth + REST ---- */
 function _ex(d){if(!d)return null;if(typeof d==='string')return d;if(d.access_token)return d.access_token;if(d.currentSession&&d.currentSession.access_token)return d.currentSession.access_token;if(d.session&&d.session.access_token)return d.session.access_token;if(Array.isArray(d)&&typeof d[0]==='string')return d[0];return null;}
 function getTok(){try{const v=localStorage.getItem('sb-ckrxttbnawkclshczsia-auth-token');if(v){try{const t=_ex(JSON.parse(v));if(t)return t;}catch(e){}}for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith('sb-')&&k.indexOf('auth-token')>=0){const val=localStorage.getItem(k);if(!val)continue;try{const t=_ex(JSON.parse(val));if(t)return t;}catch(e){}}}return null;}catch(e){return null;}}
-function authH(){return 'Bearer '+(getTok()||SK);}
+function authH(){return 'Bearer '+(getTok()||SK);}/* anon可。ログイン済みならトークンも使う */
 function ensureAuth(cb){if(getTok()){cb();return;}var ov=document.createElement('div');ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px';ov.innerHTML='<div style="background:#fff;padding:28px 24px;border-radius:16px;width:90%;max-width:340px;text-align:center"><div style="font-size:16px;font-weight:900;margin-bottom:14px">ログイン</div><input id="ae" type="email" autocapitalize="off" placeholder="メール" style="width:100%;padding:11px;border:1.5px solid #ddd;border-radius:8px;font-size:15px;margin-bottom:8px"><input id="ap" type="password" placeholder="パスワード" style="width:100%;padding:11px;border:1.5px solid #ddd;border-radius:8px;font-size:15px;margin-bottom:8px"><div id="aerr" style="color:#dc2626;font-size:12px;display:none;margin-bottom:8px"></div><button id="ab" style="width:100%;padding:12px;background:#796eff;color:#fff;border:none;border-radius:9px;font-weight:800">ログイン</button></div>';document.body.appendChild(ov);ov.addEventListener('keydown',e=>{if(e.key==='Enter')dl(cb,ov);});document.getElementById('ab').onclick=()=>dl(cb,ov);}
 async function dl(cb,ov){var b=document.getElementById('ab'),er=document.getElementById('aerr');var em=(document.getElementById('ae')||{}).value||'',pw=(document.getElementById('ap')||{}).value||'';if(!em||!pw){er.style.display='';er.textContent='入力してください';return;}b.disabled=true;b.textContent='確認中...';try{var r=await fetch(SU+'/auth/v1/token?grant_type=password',{method:'POST',headers:{apikey:SK,'Content-Type':'application/json'},body:JSON.stringify({email:em,password:pw})});var d=await r.json();if(d&&d.access_token){localStorage.setItem('sb-ckrxttbnawkclshczsia-auth-token',JSON.stringify({access_token:d.access_token,refresh_token:d.refresh_token||'',expires_at:Math.floor(Date.now()/1000)+(d.expires_in||3600),token_type:'bearer',user:d.user||{}}));if(!ME&&d.user&&d.user.email){ME=d.user.email.split('@')[0];localStorage.setItem('asana_me',ME);}ov.remove();cb();}else{er.style.display='';er.textContent='認証失敗';b.disabled=false;b.textContent='ログイン';}}catch(e){er.style.display='';er.textContent='接続エラー';b.disabled=false;b.textContent='ログイン';}}
 async function sbGet(q){const r=await fetch(SU+'/rest/v1/'+q,{headers:{apikey:SK,Authorization:authH()}});if(!r.ok)return null;return r.json();}
@@ -189,8 +189,8 @@ async function sbPatch(tbl,id,obj){obj.updated_at=new Date().toISOString();const
 
 /* ---- data ---- */
 async function load(){
-  const rows=await sbGet(TBL()+'?deleted=eq.false&select=*&order=updated_at.desc');
-  TASKS=(rows||[]).map(t=>{const logs=Array.isArray(t.logs)?t.logs:[];const rq=logs.find(l=>l&&l.type==='req');return {...t,_st:normStatus(t.status),logs,requester:(rq&&rq.by)||t.requester||''};});
+  const rows=await sbGet(TBL()+'?deleted=eq.false&store=eq.'+STORE+'&select=*&order=updated_at.desc');
+  TASKS=(rows||[]).map(t=>{const logs=Array.isArray(t.logs)?t.logs:[];const rq=logs.find(l=>l&&l.type==='req');return {...t,_st:normStatus(t.status),logs,requester:t.requester||(rq&&rq.by)||''};});
   render();
 }
 function projects(){
@@ -263,13 +263,13 @@ function saveMe(v){ME=v.trim();localStorage.setItem('asana_me',ME);}
 function changeStore(s){STORE=s;localStorage.setItem('asana_store',s);EXTRA_PJ=JSON.parse(localStorage.getItem('asana_pj_'+STORE)||'[]');CUR='__all';SEL=null;closeDetail();document.getElementById('taskList').innerHTML='<div class="empty">読み込み中…</div>';load();}
 function addProject(){const n=prompt('プロジェクト名');if(!n||!n.trim())return;const a=n.trim();if(!EXTRA_PJ.includes(a))EXTRA_PJ.push(a);localStorage.setItem('asana_pj_'+STORE,JSON.stringify(EXTRA_PJ));CUR=a;render();}
 async function quickAdd(){
-  if(!ME){toast('先に左下/設定で「あなたの名前」を入れてください');return;}
+  if(!needMe())return;
   const title=prompt('依頼内容（タスク名）');if(!title||!title.trim())return;
   const assignee=(prompt('誰に依頼しますか？（担当者の名前・空欄可）','')||'').trim();
   const area=(CUR==='__all'?'一般':CUR);
   const now=new Date().toISOString();
   const reqlog={type:'req',by:ME,at:now,text:title.trim()};
-  const row={id:uid(),area,title:title.trim(),assignee,status:'consult',priority:'中',progress:0,description:'',logs:[reqlog],attachments:[],admin_confirmed:false,deleted:false,created_at:now};
+  const row={id:uid(),store:STORE,area,title:title.trim(),requester:ME,assignee,status:'consult',priority:'中',progress:0,description:'',logs:[reqlog],attachments:[],admin_confirmed:false,deleted:false,created_at:now};
   try{const r=await sbPost(TBL(),row);const saved=(r&&r[0])||row;TASKS.unshift({...saved,_st:'consult',logs:[reqlog],requester:ME});render();openTask(saved.id);}
   catch(e){toast('保存失敗: '+e.message);}
 }
@@ -295,6 +295,7 @@ async function toggleConfirm(id){
 }
 async function addComment(id){
   const inp=document.getElementById('cmtInput');const txt=(inp.value||'').trim();if(!txt)return;
+  if(!needMe())return;
   const t=TASKS.find(x=>x.id===id);if(!t)return;
   const c={at:new Date().toISOString(),by:ME||'(名前未設定)',text:txt};
   t.logs=[...(t.logs||[]),c];inp.value='';openTask(id);render();
@@ -309,12 +310,12 @@ async function delTask(id){
 /* ---- detail panel ---- */
 function subRow(s){const st=ST(s._st);const done=s._st==='done';return `<div class="subrow ${done?'d':''}"><div class="chk ${done?'done':''}" style="width:18px;height:18px;font-size:11px" onclick="event.stopPropagation();toggleDone('${s.id}')">✓</div><span class="stt" onclick="openTask('${s.id}')">${esc(s.title)||'(無題)'}</span><span class="sst" style="background:${st.bg};color:${st.c}">${st.l}</span>${s.assignee?`<span class="sav">→${esc(s.assignee)}</span>`:''}</div>`;}
 async function addSubtask(parentId){
-  if(!ME){toast('先に「あなたの名前」を入れてください');return;}
+  if(!needMe())return;
   const title=prompt('項目（依頼内容）');if(!title||!title.trim())return;
   const assignee=(prompt('誰に依頼？（担当者・空欄可）','')||'').trim();
   const p=TASKS.find(x=>x.id===parentId);const now=new Date().toISOString();
   const reqlog={type:'req',by:ME,at:now,text:title.trim()};
-  const row={id:uid(),area:(p&&p.area)||'一般',title:title.trim(),assignee,parent_id:parentId,status:'consult',priority:'中',progress:0,description:'',logs:[reqlog],attachments:[],admin_confirmed:false,deleted:false,created_at:now};
+  const row={id:uid(),store:STORE,area:(p&&p.area)||'一般',title:title.trim(),requester:ME,assignee,parent_id:parentId,status:'consult',priority:'中',progress:0,description:'',logs:[reqlog],attachments:[],admin_confirmed:false,deleted:false,created_at:now};
   try{const r=await sbPost(TBL(),row);const saved=(r&&r[0])||row;TASKS.push({...saved,_st:'consult',logs:[reqlog],requester:ME});openTask(parentId);render();}
   catch(e){toast('保存失敗: '+e.message);}
 }
@@ -359,8 +360,9 @@ function openTask(id){
 function closeDetail(){SEL=null;document.getElementById('detail').classList.remove('on');document.getElementById('scrim').classList.remove('on');render();}
 function fmtAt(iso){try{const d=new Date(iso);const m=d.getMonth()+1,day=d.getDate(),hh=String(d.getHours()).padStart(2,'0'),mm=String(d.getMinutes()).padStart(2,'0');return m+'/'+day+' '+hh+':'+mm;}catch(e){return '';}}
 
-/* ---- init + poll ---- */
-ensureAuth(function(){ load(); setInterval(()=>{ if(!document.hidden) load(); },15000); });
+/* ---- init + poll（ログイン不要・anon） ---- */
+function needMe(){ if(ME)return true; const n=(prompt('あなたの名前を入力してください（誰が依頼/回答したか記録用）')||'').trim(); if(!n)return false; ME=n; localStorage.setItem('asana_me',ME); var el=document.getElementById('meName'); if(el)el.value=ME; return true; }
+load(); setInterval(function(){ if(!document.hidden) load(); },15000);
 </script>
 </body>
 </html>
