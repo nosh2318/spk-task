@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v813';
+  var CV='spk-v814';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=700').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=701').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -19047,13 +19047,15 @@ function InventoryTab({data,sb,store}){
   // 既定値：取込=true / メール送信=楽天以外true・楽天false / 在庫調整=false / 在庫開放=false
   const defOf=(r)=>({stock_adjusted:false,app_imported:true,mail_sent:r.ota!=="R",stock_released:false});
   const sOf=(r)=>stat[r.id]||defOf(r);
-  // 表示対象：これからの貸出。キャンセルは「在庫開放待ち」として残す（返却日が未来＝まだ開放が必要）
-  const rows=React.useMemo(()=>(data||[]).filter(r=>{const d=r.returnDate||r.lendDate;if(!d||d<today)return false;return isCxl(r)?true:(r.lendDate&&r.lendDate>=today);}).sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||"")),[data,today]);
+  // キャンセルで在庫開放が要るのは「予約時に在庫調整(在庫を押さえた)済み」だった予約だけ。調整前のキャンセルは押さえてない＝開放不要
+  const cxNeedRel=(r)=>isCxl(r)&&!!(stat[r.id]&&stat[r.id].stock_adjusted)&&!sOf(r).stock_released;
+  // 表示対象：これからの貸出（通常）＋ 開放が必要なキャンセル。調整前キャンセル＝やることなし→非表示
+  const rows=React.useMemo(()=>(data||[]).filter(r=>{const d=r.returnDate||r.lendDate;if(!d||d<today)return false;return isCxl(r)?cxNeedRel(r):(r.lendDate&&r.lendDate>=today);}).sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||"")),[data,today,stat]);
   // 要対応：キャンセル→在庫開放が未／通常→在庫調整・取込・(楽天)メール送信のいずれか未
   const isTodo=(r)=>{const s=sOf(r);return isCxl(r)?!s.stock_released:(!s.stock_adjusted||!s.app_imported||(r.ota==="R"&&!s.mail_sent));};
   const isNew=(r)=>!stat[r.id]&&!isCxl(r); // まだ一度も触っていない＝新規（キャンセルは別扱い）
   const shown=rows.filter(r=>filt==="all"?true:filt==="todo"?isTodo(r):filt==="cxl"?isCxl(r):r.ota===filt);
-  const cntTodo=rows.filter(isTodo).length, cntNew=rows.filter(r=>isNew(r)&&isTodo(r)).length, cntCxl=rows.filter(r=>isCxl(r)&&!sOf(r).stock_released).length, cntDone=rows.length-cntTodo;
+  const cntTodo=rows.filter(isTodo).length, cntNew=rows.filter(r=>isNew(r)&&isTodo(r)).length, cntCxl=rows.filter(cxNeedRel).length, cntDone=rows.length-cntTodo;
   const toggle=async(r,key)=>{
     const cur=sOf(r);const next={...cur,[key]:!cur[key]};
     setStat(s=>({...s,[r.id]:next}));
@@ -19503,7 +19505,7 @@ function App(){
     const ch=sb.channel("spk_inv_badge").on("postgres_changes",{event:"*",schema:"public",table:"spk_inventory_status"},p=>{const r=p.new;if(!r||!r.id)return;setInvAdjSet(s=>{const n=new Set(s);r.stock_adjusted?n.add(r.id):n.delete(r.id);return n;});setInvRelSet(s=>{const n=new Set(s);r.stock_released?n.add(r.id):n.delete(r.id);return n;});}).subscribe();
     return()=>{on=false;try{sb.removeChannel(ch);}catch(e){}};
   },[sb]);
-  const invTodoCount=React.useMemo(()=>(data||[]).filter(r=>{const d=r.returnDate||r.lendDate;if(!d||d<today)return false;return r.status==="cancelled"?!invRelSet.has(r.id):(r.lendDate>=today&&!invAdjSet.has(r.id));}).length,[data,today,invAdjSet,invRelSet]);
+  const invTodoCount=React.useMemo(()=>(data||[]).filter(r=>{const d=r.returnDate||r.lendDate;if(!d||d<today)return false;return r.status==="cancelled"?(invAdjSet.has(r.id)&&!invRelSet.has(r.id)):(r.lendDate>=today&&!invAdjSet.has(r.id));}).length,[data,today,invAdjSet,invRelSet]);
   // ★ じゃらん新システム(jalan_payments)の入金済みSet — localStorage キャッシュで即時復元
   const[jpNewPaidSet,setJpNewPaidSet]=useState(()=>{try{const s=localStorage.getItem("spk_jp_paid_ids");const arr=s?JSON.parse(s):[];return new Set(arr);}catch(e){return new Set();}});
   useEffect(()=>{
@@ -21255,7 +21257,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.268";
+const APP_VERSION="v4.7.269";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
