@@ -212,6 +212,9 @@ function projects(){
 function pjColor(a){let h=0;for(let i=0;i<a.length;i++)h=(h*31+a.charCodeAt(i))%360;return 'hsl('+h+',62%,55%)';}
 function children(id){return TASKS.filter(t=>t.parent_id===id).sort((a,b)=>(a.created_at||'').localeCompare(b.created_at||''));}
 function curTasks(){return TASKS.filter(t=>!t.parent_id&&(CUR==='__all'||(t.area||'一般')===CUR));}
+function depthOf(t){let d=0,cur=t,g=0;while(cur&&cur.parent_id&&g++<10){cur=TASKS.find(x=>x.id===cur.parent_id);if(cur)d++;else break;}return d;}
+function chainOf(t){const arr=[];let cur=t,g=0;while(cur&&cur.parent_id&&g++<10){const p=TASKS.find(x=>x.id===cur.parent_id);if(!p)break;arr.unshift(p);cur=p;}return arr;}
+const SUBLBL=['子タスク','孫タスク','ひ孫タスク'];
 
 /* ---- render ---- */
 function render(){
@@ -327,9 +330,10 @@ async function delTask(id){
 }
 
 /* ---- detail panel ---- */
-function subRow(s){const st=ST(s._st);const done=s._st==='done';return `<div class="subrow ${done?'d':''}"><div class="chk ${done?'done':''}" style="width:18px;height:18px;font-size:11px" onclick="event.stopPropagation();toggleDone('${s.id}')">✓</div><span class="stt" onclick="openTask('${s.id}')">${esc(s.title)||'(無題)'}</span><span class="sst" style="background:${st.bg};color:${st.c}">${st.l}</span>${s.assignee?`<span class="sav">→${esc(s.assignee)}</span>`:''}</div>`;}
+function subRow(s){const st=ST(s._st);const done=s._st==='done';const gc=children(s.id);return `<div class="subrow ${done?'d':''}"><div class="chk ${done?'done':''}" style="width:18px;height:18px;font-size:11px" onclick="event.stopPropagation();toggleDone('${s.id}')">✓</div><span class="stt" onclick="openTask('${s.id}')">${esc(s.title)||'(無題)'}</span><span class="sst" style="background:${st.bg};color:${st.c}">${st.l}</span>${gc.length?`<span class="sav" style="color:#5b4eea">☑${gc.filter(g=>g._st==='done').length}/${gc.length}</span>`:''}${s.assignee?`<span class="sav">→${esc(s.assignee)}</span>`:''}</div>`;}
 async function addSubtask(parentId){
-  const title=prompt('項目（依頼内容）');if(!title||!title.trim())return;
+  const p0=TASKS.find(x=>x.id===parentId);const lbl=SUBLBL[depthOf(p0)]||'サブタスク';
+  const title=prompt(lbl+'（依頼内容）');if(!title||!title.trim())return;
   const p=TASKS.find(x=>x.id===parentId);const now=new Date().toISOString();
   const reqlog={type:'req',by:'',at:now,text:title.trim()};
   const row={id:uid(),store:STORE,area:(p&&p.area)||'一般',title:title.trim(),requester:'',assignee:'',parent_id:parentId,status:'consult',priority:'中',progress:0,description:'',logs:[reqlog],attachments:[],admin_confirmed:false,deleted:false,created_at:now};
@@ -339,10 +343,12 @@ async function addSubtask(parentId){
 function openTask(id){
   const t=TASKS.find(x=>x.id===id);if(!t)return;SEL=id;
   const d=document.getElementById('detail');
-  const isChild=!!t.parent_id;const parent=isChild?TASKS.find(x=>x.id===t.parent_id):null;
-  const subs=isChild?[]:children(t.id);
-  const subHtml=isChild?'':`<div class="dsec-t">☑ 項目（サブタスク）${subs.length?` ・ 進行 ${subs.filter(s=>s._st==='done').length}/${subs.length}`:''}</div><div class="subs">${subs.map(subRow).join('')||'<div style="font-size:12px;color:#9a9ca2;padding:4px 0">項目を分けると、誰が何に回答すべきか一目で分かります</div>'}</div><button class="subadd" onclick="addSubtask('${t.id}')">＋ 項目を追加（個別に依頼/回答）</button>`;
-  const bcrumb=isChild?`<button class="bcrumb" onclick="openTask('${parent?parent.id:''}')">← 親タスク: ${esc(parent?parent.title:'')}</button>`:'';
+  const depth=depthOf(t);const chain=chainOf(t);
+  const canSub=depth<2;            // 親(0)・子(1)はサブを持てる、孫(2)は不可＝3層まで
+  const subLbl=SUBLBL[depth]||'サブタスク';
+  const subs=canSub?children(t.id):[];
+  const subHtml=!canSub?'':`<div class="dsec-t">☑ ${subLbl}${subs.length?` ・ 進行 ${subs.filter(s=>s._st==='done').length}/${subs.length}`:''}</div><div class="subs">${subs.map(subRow).join('')||'<div style="font-size:12px;color:#9a9ca2;padding:4px 0">'+subLbl+'を分けると、誰が何に回答すべきか一目で分かります</div>'}</div><button class="subadd" onclick="addSubtask('${t.id}')">＋ ${subLbl}を追加（個別に依頼/回答）</button>`;
+  const bcrumb=chain.length?`<div style="margin-bottom:8px;font-size:12px;font-weight:700;line-height:1.6">${chain.map(p=>`<span onclick="openTask('${p.id}')" style="color:#5b4eea;cursor:pointer">${esc(p.title)||'(無題)'}</span>`).join(' <span style="color:#c9c3ff">›</span> ')} <span style="color:#c9c3ff">›</span> <span style="color:#9a9ca2">${esc(t.title)||'(無題)'}</span></div>`:'';
   const cmts=(t.logs||[]).map(c=>{
     if(c.type==='req')return `<div class="cmt"><div class="av" style="background:#eef2ff;color:#6366f1">📨</div><div class="cb"><div class="cmeta"><b>${esc(c.by)}</b> が依頼 ・ ${esc(fmtAt(c.at))}</div><div class="ctxt" style="background:#eef2ff">${esc(c.text)}</div></div></div>`;
     return `<div class="cmt"><div class="av">${esc(ini(c.by))}</div><div class="cb"><div class="cmeta"><b>${esc(c.by)}</b> ・ ${esc(fmtAt(c.at))}</div><div class="ctxt">${esc(c.text)}</div></div></div>`;
