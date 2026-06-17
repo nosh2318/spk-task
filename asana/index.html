@@ -410,8 +410,8 @@ function taskRow(t){
 
 /* ---- 承認インボックス（決済者用・別枠） ---- */
 function apCard(t,kind){
-  const cmts=(t.logs||[]).filter(l=>l&&l.type!=='req');
-  const lastCmts=cmts.slice(-3).map(c=>`<div class="apcmt"><b>${esc(c.by||'?')}</b> ${esc(c.text)}</div>`).join('');
+  const cmtEntries=(t.logs||[]).map((l,i)=>({l,i})).filter(o=>o.l&&o.l.type!=='req');
+  const lastCmts=cmtEntries.slice(-3).map(o=>`<div class="apcmt" style="display:flex;align-items:flex-start;gap:6px"><span style="flex:1;min-width:0"><b>${esc(o.l.by||'?')}</b> ${esc(o.l.text)}</span><button onclick="event.stopPropagation();delComment('${t.id}',${o.i})" title="削除" style="background:none;border:none;color:#cbd5e1;font-size:12px;cursor:pointer;padding:0;flex-shrink:0">✕</button></div>`).join('');
   const verdict=kind==='appr'?'<span class="apverdict appr">✅ 承認済</span>':kind==='rej'?'<span class="apverdict rej">⛔ 却下</span>':'<span class="apverdict pend">⏳ 承認待ち</span>';
   const ap=appOf(t);
   const decided=ap.decided_by?`<span>判定: ${esc(ap.decided_by)} ・ ${esc(fmtAt(ap.decided_at||''))}</span>`:'';
@@ -476,6 +476,13 @@ async function reopenApproval(id){
   const t=TASKS.find(x=>x.id===id);if(!t)return;const a=appOf(t);const nb={...a,state:'pending',decided_by:'',decided_at:''};
   t.approval=nb;t._st='approval';t.status='approval';render();
   try{await sbPatch(TBL(),id,{approval:nb,status:'approval'});}catch(e){toast('保存失敗');load();}
+}
+async function delComment(id,idx){
+  const t=TASKS.find(x=>x.id===id);if(!t)return;
+  const logs=(t.logs||[]).slice();if(idx<0||idx>=logs.length)return;
+  if(!confirm('このコメントを削除しますか？'))return;
+  logs.splice(idx,1);t.logs=logs;render();if(SEL===id)openTask(id);
+  try{await sbPatch(TBL(),id,{logs});}catch(e){toast('削除失敗');load();}
 }
 async function apComment(id){
   const inp=document.getElementById('apc_'+id);const txt=((inp&&inp.value)||'').trim();if(!txt)return;
@@ -644,9 +651,10 @@ function openTask(id){
   const subs=canSub?children(t.id):[];
   const subHtml=!canSub?'':`<div class="dsec-t">☑ ${subLbl}${subs.length?` ・ 進行 ${subs.filter(s=>s._st==='done').length}/${subs.length}`:''}</div><div class="subs">${subs.map(subRow).join('')||'<div style="font-size:12px;color:#9a9ca2;padding:4px 0">'+subLbl+'を分けると、誰が何に回答すべきか一目で分かります</div>'}</div><button class="subadd" onclick="addSubtask('${t.id}')">＋ ${subLbl}を追加（個別に依頼/回答）</button>`;
   const bcrumb=chain.length?`<div style="margin-bottom:8px;font-size:12px;font-weight:700;line-height:1.6">${chain.map(p=>`<span onclick="openTask('${p.id}')" style="color:#5b4eea;cursor:pointer">${esc(p.title)||'(無題)'}</span>`).join(' <span style="color:#c9c3ff">›</span> ')} <span style="color:#c9c3ff">›</span> <span style="color:#9a9ca2">${esc(t.title)||'(無題)'}</span></div>`:'';
-  const cmts=(t.logs||[]).map(c=>{
-    if(c.type==='req')return `<div class="cmt"><div class="av" style="background:#eef2ff;color:#6366f1">📨</div><div class="cb"><div class="cmeta"><b>${esc(c.by)}</b> が依頼 ・ ${esc(fmtAt(c.at))}</div><div class="ctxt" style="background:#eef2ff">${esc(c.text)}</div></div></div>`;
-    return `<div class="cmt"><div class="av">${esc(ini(c.by))}</div><div class="cb"><div class="cmeta"><b>${esc(c.by)}</b> ・ ${esc(fmtAt(c.at))}</div><div class="ctxt">${esc(c.text)}</div></div></div>`;
+  const cdel=idx=>`<button onclick="delComment('${t.id}',${idx})" title="削除" style="background:none;border:none;color:#cbd5e1;font-size:13px;cursor:pointer;margin-left:6px;padding:0">✕</button>`;
+  const cmts=(t.logs||[]).map((c,idx)=>{
+    if(c.type==='req')return `<div class="cmt"><div class="av" style="background:#eef2ff;color:#6366f1">📨</div><div class="cb"><div class="cmeta"><b>${esc(c.by)}</b> が依頼 ・ ${esc(fmtAt(c.at))}${cdel(idx)}</div><div class="ctxt" style="background:#eef2ff">${esc(c.text)}</div></div></div>`;
+    return `<div class="cmt"><div class="av">${esc(ini(c.by))}</div><div class="cb"><div class="cmeta"><b>${esc(c.by)}</b> ・ ${esc(fmtAt(c.at))}${cdel(idx)}</div><div class="ctxt">${esc(c.text)}</div></div></div>`;
   }).join('')||'<div style="font-size:12px;color:#9a9ca2">まだコメントはありません</div>';
   const pjOpts=projects().map(p=>`<option value="${esc(p.a)}" ${(t.area||'一般')===p.a?'selected':''}>${esc(p.a)}</option>`).join('');
   const apOn=isApprPending(t);const apSt=apDecision(t);
