@@ -421,7 +421,7 @@ async function dl(cb,ov){var b=document.getElementById('ab'),er=document.getElem
 async function sbGet(q){let r;try{r=await fetch(SU+'/rest/v1/'+q,{headers:{apikey:SK,Authorization:authH()}});}catch(e){r=null;}
   if(!r||!r.ok){try{r=await fetch(SU+'/rest/v1/'+q,{headers:{apikey:SK,Authorization:'Bearer '+SK}});}catch(e){return null;}}
   if(!r||!r.ok)return null;return r.json();}
-async function sbPost(tbl,obj){const r=await fetch(SU+'/rest/v1/'+tbl,{method:'POST',headers:{apikey:SK,Authorization:authH(),'Content-Type':'application/json',Prefer:'return=representation'},body:JSON.stringify(obj)});if(!r.ok)throw new Error('HTTP '+r.status+' '+await r.text());return r.json();}
+async function sbPost(tbl,obj){let last='';for(let i=0;i<4;i++){try{const r=await fetch(SU+'/rest/v1/'+tbl,{method:'POST',headers:{apikey:SK,Authorization:authH(),'Content-Type':'application/json',Prefer:'return=representation,resolution=merge-duplicates'},body:JSON.stringify(obj)});if(r.ok)return r.json();last='HTTP '+r.status+' '+await r.text();}catch(e){last=(e&&e.message)||'net';}await new Promise(res=>setTimeout(res,300*(i+1)));}throw new Error(last||'post failed');}
 // 画像を Supabase Storage(asana-attachments) にアップロード→公開URLを返す
 const ASANA_BUCKET='asana-attachments';
 async function uploadImg(file,taskId){
@@ -432,6 +432,16 @@ async function uploadImg(file,taskId){
   return SU+'/storage/v1/object/public/'+ASANA_BUCKET+'/'+encodeURI(path);
 }
 async function uploadImgs(files,taskId){const out=[];for(const f of files){if(!f||!(f.type||'').startsWith('image/'))continue;out.push(await uploadImg(f,taskId));}return out;}
+// ログ(コメント/承認)を「DB最新を取得→追記」で保存。複数人の同時コメント上書きを防止
+async function appendLog(id,entry){
+  let base=null;try{const rows=await sbGet(TBL()+'?id=eq.'+encodeURIComponent(id)+'&select=logs');if(rows&&rows[0]&&Array.isArray(rows[0].logs))base=rows[0].logs;}catch(e){}
+  const t=TASKS.find(x=>x.id===id);
+  if(base===null)base=(t&&Array.isArray(t.logs))?t.logs:[];
+  const merged=base.concat([entry]);
+  if(t)t.logs=merged;
+  await sbPatch(TBL(),id,{logs:merged});
+  return merged;
+}
 function taskImages(t){return (Array.isArray(t.attachments)?t.attachments:[]).filter(a=>a&&a.type==='img'&&a.url).map(a=>({url:a.url,name:a.name||''}));}
 async function pickTaskImg(id){const inp=document.getElementById('dImgInput');if(!inp)return;inp.value='';inp.onchange=async()=>{const files=[...(inp.files||[])];for(const f of files){if(!f.type||!f.type.startsWith('image/'))continue;toast('画像アップロード中…');try{const url=await uploadImg(f,id);const t=TASKS.find(x=>x.id===id);if(!t)continue;const arr=[...(Array.isArray(t.attachments)?t.attachments:[]),{type:'img',url,name:f.name||''}];t.attachments=arr;await sbPatch(TBL(),id,{attachments:arr});}catch(e){toast('画像アップロード失敗（バケット未作成?）');}}render();if(SEL===id)openTask(id);};inp.click();}
 async function delTaskImg(id,url){const t=TASKS.find(x=>x.id===id);if(!t)return;const arr=(Array.isArray(t.attachments)?t.attachments:[]).filter(a=>!(a&&a.type==='img'&&a.url===url));t.attachments=arr;render();if(SEL===id)openTask(id);try{await sbPatch(TBL(),id,{attachments:arr});}catch(e){toast('保存失敗');}}
@@ -439,11 +449,13 @@ let _cmtImgs=[];
 function cmtChip(){const chip=document.getElementById('cmtImgChip');if(!chip)return;chip.innerHTML=_cmtImgs.length?`🖼 ${_cmtImgs.length}枚 <span onclick="clearCmtImg()" style="cursor:pointer;color:#dc2626;font-weight:800">✕</span>`:'';}
 function onCmtImgPick(){const inp=document.getElementById('cmtImgInput');const fs=[...((inp&&inp.files)||[])].filter(f=>f&&(f.type||'').startsWith('image/'));if(!fs.length)return;_cmtImgs=_cmtImgs.concat(fs);if(inp)inp.value='';cmtChip();}
 function clearCmtImg(){_cmtImgs=[];const inp=document.getElementById('cmtImgInput');if(inp)inp.value='';cmtChip();}
-async function sbPatch(tbl,id,obj){obj.updated_at=new Date().toISOString();const r=await fetch(SU+'/rest/v1/'+tbl+'?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{apikey:SK,Authorization:authH(),'Content-Type':'application/json'},body:JSON.stringify(obj)});if(!r.ok)throw new Error('HTTP '+r.status);}
+async function sbPatch(tbl,id,obj){obj.updated_at=new Date().toISOString();let last='';for(let i=0;i<4;i++){try{const r=await fetch(SU+'/rest/v1/'+tbl+'?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{apikey:SK,Authorization:authH(),'Content-Type':'application/json'},body:JSON.stringify(obj)});if(r.ok)return;last='HTTP '+r.status;}catch(e){last=(e&&e.message)||'net';}await new Promise(res=>setTimeout(res,300*(i+1)));}throw new Error(last||'patch failed');}
 
 /* ---- data ---- */
 async function load(){
   const rows=await sbGet(TBL()+'?deleted=eq.false&select=*&order=updated_at.desc');
+  // 取得失敗（通信断・一時エラー）時は既存表示を維持して空にしない＝「タスクが消えた」を防止
+  if(rows===null){const lc=document.getElementById('taskList');if(lc&&!TASKS.length)lc.innerHTML='<div class="empty">接続待ち…（自動で再試行します）</div>';return;}
   const memRow=(rows||[]).find(r=>r.id==='_members');
   MEMBERS=Array.isArray(memRow&&memRow.attachments)?memRow.attachments.filter(Boolean):[];
   const projRow=(rows||[]).find(r=>r.id==='_projects');
@@ -715,8 +727,10 @@ async function applyApprove(id,assignee){
   const sel=document.getElementById('apDecider');const who=((sel&&sel.value)||localStorage.getItem('asana_decider')||ME||'承認者').trim();
   const inp=document.getElementById('apc_'+id);const note=((inp&&inp.value)||'').trim();
   const nowIso=new Date().toISOString();
+  // 最新logsを取得して追記（同時コメント/承認の上書き防止）
+  let base=t.logs||[];try{const rows=await sbGet(TBL()+'?id=eq.'+encodeURIComponent(id)+'&select=logs');if(rows&&rows[0]&&Array.isArray(rows[0].logs))base=rows[0].logs;}catch(e){}
   const a=appOf(t);const nb={...a,required:true,state:'approved',decided_by:who,decided_at:nowIso};
-  const logs=[...(t.logs||[]),{at:nowIso,by:who,text:'✅ 承認'+(assignee?'（担当: '+assignee+'）':'')+(note?'：'+note:'')}];
+  const logs=[...base,{at:nowIso,by:who,text:'✅ 承認'+(assignee?'（担当: '+assignee+'）':'')+(note?'：'+note:'')}];
   const patch={approval:nb,logs,admin_confirmed:true};
   if(assignee!==undefined){patch.assignee=assignee;t.assignee=assignee;}
   var gk=hasSt('go')?'go':((STATUSES.find(function(s){return s.k!=='approval';})||{}).k);
@@ -772,9 +786,8 @@ async function apComment(id){
   let imgs=[];
   if(fs.length){toast('画像アップロード中…');try{imgs=await uploadImgs(fs,id);}catch(e){toast('画像アップロード失敗（バケット未作成?）');return;}}
   const c={at:new Date().toISOString(),by:who,text:txt};if(imgs.length)c.imgs=imgs;
-  const logs=[...(t.logs||[]),c];delete _apcImgs[id];
-  t.logs=logs;render();if(SEL===id)openTask(id);
-  try{await sbPatch(TBL(),id,{logs});}catch(e){toast('コメント保存失敗');}
+  delete _apcImgs[id];
+  try{await appendLog(id,c);render();if(SEL===id)openTask(id);}catch(e){toast('コメント保存失敗（再試行してください）');}
 }
 
 /* ---- actions ---- */
@@ -866,8 +879,8 @@ async function addComment(id){
   let imgs=[];
   if(fs.length){toast('画像アップロード中…');try{imgs=await uploadImgs(fs,id);}catch(e){toast('画像アップロード失敗（バケット未作成?）');return;}}
   const c={at:new Date().toISOString(),by:by,text:txt};if(imgs.length)c.imgs=imgs;
-  t.logs=[...(t.logs||[]),c];inp.value='';clearCmtImg();openTask(id);render();
-  try{await sbPatch(TBL(),id,{logs:t.logs});}catch(e){toast('コメント保存失敗');}
+  inp.value='';clearCmtImg();
+  try{await appendLog(id,c);openTask(id);render();}catch(e){toast('コメント保存失敗（再試行してください）');}
 }
 async function delTask(id){
   if(!confirm('このタスクを削除しますか？'))return;
@@ -1067,7 +1080,11 @@ function fmtAt(iso){try{const d=new Date(iso);const m=d.getMonth()+1,day=d.getDa
 
 /* ---- init + poll（ログイン不要・anon） ---- */
 setupDnD();
-load(); setInterval(function(){ if(!document.hidden) load(); },15000);
+load(); setInterval(function(){ if(!document.hidden) load(); },10000);
+// 復帰時に即同期（タブ復帰・ウィンドウフォーカス・オンライン復帰）＝更新の取りこぼし防止
+document.addEventListener('visibilitychange',function(){ if(!document.hidden) load(); });
+window.addEventListener('focus',function(){ load(); });
+window.addEventListener('online',function(){ load(); });
 </script>
 </body>
 </html>
