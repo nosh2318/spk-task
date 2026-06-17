@@ -151,6 +151,8 @@ button{font-family:inherit;cursor:pointer}
 .cmtbar button{background:var(--accent);color:#fff;border:none;border-radius:20px;padding:0 16px;font-weight:800;font-size:13px}
 .cmtby{border:1px solid var(--line);border-radius:14px;padding:0 6px;font-size:12px;max-width:96px;background:#fff;flex-shrink:0}
 .ddel{margin-top:22px;background:none;border:1px solid #fecaca;color:#dc2626;border-radius:8px;padding:8px 13px;font-size:12px;font-weight:700}
+.dcopy{background:#fff;border:1px solid var(--line);color:#475569;border-radius:8px;padding:8px 13px;font-size:12px;font-weight:700}
+.dcopy:hover{border-color:#c9c3ff;color:#5b4eea}
 .scrim{position:fixed;inset:0;background:rgba(0,0,0,.32);z-index:49;opacity:0;pointer-events:none;transition:.2s}
 .scrim.on{opacity:1;pointer-events:auto}
 #memModal{position:fixed;inset:0;z-index:60;display:none;align-items:center;justify-content:center;padding:18px;pointer-events:none}
@@ -619,6 +621,29 @@ async function delTask(id){
   const i=TASKS.findIndex(x=>x.id===id);if(i<0)return;TASKS.splice(i,1);closeDetail();render();
   try{await sbPatch(TBL(),id,{deleted:true});}catch(e){toast('削除失敗');load();}
 }
+function descTasks(rootId){const out=[];(function walk(pid){children(pid).forEach(function(c){out.push(c);walk(c.id);});})(rootId);return out;}
+async function copyTask(id){
+  const t=TASKS.find(x=>x.id===id);if(!t)return;
+  const tree=[t].concat(descTasks(id));
+  if(!confirm('このタスク'+(tree.length>1?'と子タスク'+(tree.length-1)+'件':'')+'を複製しますか？\n複製後、開いた画面で「プロジェクト」を変えると別カテゴリへ移動できます。'))return;
+  const idmap={};tree.forEach(function(o){idmap[o.id]=uid();});
+  const now=new Date().toISOString();
+  const copies=tree.map(function(o){var isRoot=o.id===id;return {
+    id:idmap[o.id],store:STORE,area:o.area||'一般',
+    title:(o.title||'')+(isRoot?'（コピー）':''),
+    requester:o.requester||'',assignee:o.assignee||'',
+    parent_id:isRoot?null:idmap[o.parent_id],
+    status:o.status||fstK(),priority:o.priority||'中',progress:o.progress||0,
+    due_date:o.due_date||null,start_date:o.start_date||null,description:o.description||'',
+    logs:[],attachments:Array.isArray(o.attachments)?o.attachments:[],
+    admin_confirmed:false,approval:{},completed_at:o.completed_at||null,
+    deleted:false,created_at:now
+  };});
+  copies.forEach(function(c){TASKS.unshift(Object.assign({},c,{_st:normStatus(c.status),requester:c.requester}));});
+  render();
+  try{await Promise.all(copies.map(function(c){return sbPost(TBL(),c);}));toast('複製しました（'+copies.length+'件）。プロジェクトを変えて移動できます');openTask(idmap[id]);}
+  catch(e){toast('複製失敗: '+e.message);load();}
+}
 
 /* ---- board view（列=ステータス・カードをドラッグで状態変更／プロジェクトごと） ---- */
 function toggleView(){VIEW=VIEW==='board'?'list':'board';localStorage.setItem('asana_view',VIEW);render();}
@@ -720,7 +745,7 @@ function openTask(id){
       ${subHtml}
       <div class="dsec-t">💬 コメント（やり取り）</div>
       <div class="cmts">${cmts}</div>
-      <button class="ddel" onclick="delTask('${t.id}')">🗑 タスクを削除</button>
+      <div style="margin-top:22px;display:flex;gap:8px;flex-wrap:wrap"><button class="dcopy" onclick="copyTask('${t.id}')">📋 複製（別カテゴリへ移動可）</button><button class="ddel" onclick="delTask('${t.id}')" style="margin-top:0">🗑 タスクを削除</button></div>
     </div>
     <div class="cmtbar"><input id="cmtInput" placeholder="コメントを書く…" onkeydown="if(event.key==='Enter'){event.preventDefault();addComment('${t.id}')}"><button onclick="addComment('${t.id}')">送信</button></div>`;
   d.classList.add('on');document.getElementById('scrim').classList.add('on');
