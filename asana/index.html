@@ -278,6 +278,14 @@ button{font-family:inherit;cursor:pointer}
 .apverdict{font-size:11px;font-weight:800;padding:3px 10px;border-radius:20px;white-space:nowrap}
 .apverdict.appr{background:#dcfce7;color:#15803d}.apverdict.rej{background:#fee2e2;color:#b91c1c}.apverdict.pend{background:#ffedd5;color:#c2410c}
 .apsec{font-size:12px;font-weight:800;color:#9a9ca2;margin:18px 2px 8px}
+.aptools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 14px}
+.aptools label{font-size:12px;font-weight:800;color:#6b6f76}
+.aptools select{border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:13px;background:#fff}
+.apgrp{border:1px solid var(--line);background:#fff;border-radius:8px;padding:7px 11px;font-size:12.5px;font-weight:700;color:var(--sub);cursor:pointer}
+.apgrp.on{background:var(--ink);color:#fff}
+.apgh{display:flex;align-items:center;gap:8px;font-weight:800;font-size:13.5px;margin:16px 0 9px;padding-bottom:6px;border-bottom:2px solid #ececed}
+.apgh .bav{width:24px;height:24px;border-radius:50%;color:#fff;font-size:10px;font-weight:800;display:grid;place-items:center;flex-shrink:0}
+.apgh .apgn{color:#9a9ca2;font-weight:700}
 .apflag{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:800;padding:2px 7px;border-radius:6px;background:#ffedd5;color:#c2410c}
 .apflag.appr{background:#dcfce7;color:#15803d}.apflag.rej{background:#fee2e2;color:#b91c1c}
 .aptoggle{display:flex;align-items:center;gap:8px;margin:12px 0 2px;flex-wrap:wrap}
@@ -477,6 +485,7 @@ function personColor(n){n=(n||'').trim();if(!n||n==='未'||n==='未割当')retur
 /* ---- アクティビティ（コメント・承認・依頼の一元タイムライン） ---- */
 let ACTF='all';
 function setActF(k){ACTF=k;render();}
+let APPRASG='__all',APPRGRP=false;
 function actKind(l){if(l&&l.type==='req')return {k:'req',ic:'📨',lbl:'依頼',c:'#6366f1'};const tx=(l&&l.text)||'';if(tx.indexOf('✅ 承認')===0)return {k:'appr',ic:'✅',lbl:'承認',c:'#16a34a'};if(tx.indexOf('⛔ 却下')===0)return {k:'rej',ic:'⛔',lbl:'却下',c:'#dc2626'};return {k:'cmt',ic:'💬',lbl:'コメント',c:'#0891b2'};}
 function activityHtml(){
   const ev=[];
@@ -638,13 +647,23 @@ function apCard(t,kind){
 }
 function approvalHtml(){
   const sortDue=a=>a.sort((x,y)=>(x.due_date||'9999').localeCompare(y.due_date||'9999'));
-  const pend=sortDue(TASKS.filter(isApprPending));
-  const appr=TASKS.filter(t=>!isApprPending(t)&&apDecision(t)==='approved');
-  const rej=TASKS.filter(t=>!isApprPending(t)&&apDecision(t)==='rejected');
+  const matchAsg=t=>APPRASG==='__all'||(t.assignee||'')===(APPRASG==='__none'?'':APPRASG);
+  const pend=sortDue(TASKS.filter(isApprPending)).filter(matchAsg);
+  const appr=TASKS.filter(t=>!isApprPending(t)&&apDecision(t)==='approved').filter(matchAsg);
+  const rej=TASKS.filter(t=>!isApprPending(t)&&apDecision(t)==='rejected').filter(matchAsg);
+  // 承認待ちの担当者候補
+  const asgSet={};TASKS.filter(isApprPending).forEach(t=>{const a=(t.assignee||'').trim();asgSet[a]=(asgSet[a]||0)+1;});
+  const asgNames=MEMBERS.filter(m=>asgSet[m]).concat(Object.keys(asgSet).filter(a=>a&&!MEMBERS.includes(a)));
+  const asgOpts=`<option value="__all">すべての担当</option>`+asgNames.map(m=>`<option value="${esc(m)}" ${APPRASG===m?'selected':''}>${esc(m)}（${asgSet[m]}）</option>`).join('')+(asgSet['']?`<option value="__none" ${APPRASG==='__none'?'selected':''}>未割当（${asgSet['']}）</option>`:'');
   let h='<div class="apwrap">';
   h+=`<div class="apintro">🔖 ステータスを「承認待ち」にしたタスクが集まります。決済者が確認し、コメントバック・承認で進めます。<span class="who">決済者 <select id="apDecider" onchange="localStorage.setItem('asana_decider',this.value)">${memberOpts(localStorage.getItem('asana_decider')||ME||'')}</select></span></div>`;
+  h+=`<div class="aptools"><label>👤 担当者で表示</label><select onchange="APPRASG=this.value;render()">${asgOpts}</select><button class="apgrp ${APPRGRP?'on':''}" onclick="APPRGRP=!APPRGRP;render()">👥 担当者別グループ</button></div>`;
   h+=`<div class="apsec">⏳ 承認待ち（${pend.length}）</div>`;
-  h+= pend.length?pend.map(t=>apCard(t,'pend')).join(''):'<div class="empty">承認待ちはありません 🎉</div>';
+  if(!pend.length)h+='<div class="empty">承認待ちはありません 🎉</div>';
+  else if(APPRGRP){
+    const groups={};pend.forEach(t=>{const a=(t.assignee||'').trim()||'未割当';(groups[a]=groups[a]||[]).push(t);});
+    Object.keys(groups).sort().forEach(a=>{h+=`<div class="apgh"><span class="bav" style="background:${personColor(a==='未割当'?'':a)}">${esc(ini(a))}</span>${esc(a)} <span class="apgn">${groups[a].length}</span></div>`+groups[a].map(t=>apCard(t,'pend')).join('');});
+  }else h+=pend.map(t=>apCard(t,'pend')).join('');
   if(appr.length){h+=`<div class="apsec">✅ 承認済（${appr.length}）</div>`+appr.map(t=>apCard(t,'appr')).join('');}
   if(rej.length){h+=`<div class="apsec">⛔ 却下（${rej.length}）</div>`+rej.map(t=>apCard(t,'rej')).join('');}
   return h+'</div>';
