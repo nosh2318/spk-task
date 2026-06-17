@@ -239,7 +239,7 @@ button{font-family:inherit;cursor:pointer}
 <script>
 const SU='https://ckrxttbnawkclshczsia.supabase.co';
 const SK='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8';
-const STATUSES=[
+const DEFAULT_STATUSES=[
   {k:'consult', l:'依頼・相談', c:'#6366f1', bg:'#eef2ff'},
   {k:'approval',l:'承認待ち',  c:'#d97706', bg:'#fff7ed'},
   {k:'go',      l:'進行OK',    c:'#0891b2', bg:'#ecfeff'},
@@ -247,10 +247,14 @@ const STATUSES=[
   {k:'reject',  l:'却下',      c:'#dc2626', bg:'#fef2f2'},
   {k:'done',    l:'完了',      c:'#16a34a', bg:'#f0fdf4'},
 ];
+let STATUSES=DEFAULT_STATUSES.map(s=>({...s})); // Supabase _statuses で上書き（全端末共有）
+const PROTECTED_ST=['consult','approval','go','hold','done']; // システムが内部で使う列＝削除不可（却下/独自列は削除可）
+const ST_PAL=[['#6366f1','#eef2ff'],['#d97706','#fff7ed'],['#0891b2','#ecfeff'],['#64748b','#f1f5f9'],['#dc2626','#fef2f2'],['#16a34a','#f0fdf4'],['#7c3aed','#f5f3ff'],['#db2777','#fdf2f8']];
 const ST=k=>STATUSES.find(s=>s.k===k)||STATUSES[0];
+const hasSt=k=>STATUSES.some(s=>s.k===k);
 // 旧アプリ内ステータス→Asanaバケットへ寄せる
 const MAPOLD={'未着手':'consult','相談必要':'approval','取り止め':'reject','進行中':'go','完了':'done'};
-function normStatus(s){if(!s)return 'consult';if(STATUSES.some(x=>x.k===s))return s;return MAPOLD[s]||'consult';}
+function normStatus(s){const f=(STATUSES[0]||{k:'consult'}).k;if(!s)return f;if(hasSt(s))return s;const m=MAPOLD[s];if(m&&hasSt(m))return m;return f;}
 /* ---- 承認（別枠）helpers ---- */
 /* 「承認待ち」列(status='approval')＝承認タブのpending に一本化。approval.state は判定結果(approved/rejected)を保持 */
 function appOf(t){return (t&&t.approval&&typeof t.approval==='object'&&!Array.isArray(t.approval))?t.approval:{};}
@@ -293,7 +297,9 @@ async function load(){
   MEMBERS=Array.isArray(memRow&&memRow.attachments)?memRow.attachments.filter(Boolean):[];
   const projRow=(rows||[]).find(r=>r.id==='_projects');
   PROJECTS=Array.isArray(projRow&&projRow.attachments)?projRow.attachments.filter(Boolean):[];
-  TASKS=(rows||[]).filter(r=>r.id!=='_members'&&r.id!=='_projects').map(t=>{const logs=Array.isArray(t.logs)?t.logs:[];const rq=logs.find(l=>l&&l.type==='req');return {...t,_st:normStatus(t.status),logs,requester:t.requester||(rq&&rq.by)||''};});
+  const stRow=(rows||[]).find(r=>r.id==='_statuses');
+  STATUSES=(Array.isArray(stRow&&stRow.attachments)&&stRow.attachments.filter(s=>s&&s.k&&s.l).length)?stRow.attachments.filter(s=>s&&s.k&&s.l):DEFAULT_STATUSES.map(s=>({...s}));
+  TASKS=(rows||[]).filter(r=>r.id!=='_members'&&r.id!=='_projects'&&r.id!=='_statuses').map(t=>{const logs=Array.isArray(t.logs)?t.logs:[];const rq=logs.find(l=>l&&l.type==='req');return {...t,_st:normStatus(t.status),logs,requester:t.requester||(rq&&rq.by)||''};});
   render();
 }
 function projects(){
@@ -305,6 +311,23 @@ function projects(){
 }
 async function saveProjects(){try{await fetch(SU+'/rest/v1/asana_tasks',{method:'POST',headers:{apikey:SK,Authorization:authH(),'Content-Type':'application/json',Prefer:'resolution=merge-duplicates'},body:JSON.stringify({id:'_projects',store:STORE,title:'__projects__',attachments:PROJECTS,deleted:false,updated_at:new Date().toISOString()})});}catch(e){toast('プロジェクト保存失敗');}}
 function pjColor(a){let h=0;for(let i=0;i<a.length;i++)h=(h*31+a.charCodeAt(i))%360;return 'hsl('+h+',62%,55%)';}
+/* ---- ステータス（列）管理：Supabase _statuses で全端末共有 ---- */
+async function saveStatuses(){try{await fetch(SU+'/rest/v1/asana_tasks',{method:'POST',headers:{apikey:SK,Authorization:authH(),'Content-Type':'application/json',Prefer:'resolution=merge-duplicates'},body:JSON.stringify({id:'_statuses',store:STORE,title:'__statuses__',attachments:STATUSES,deleted:false,updated_at:new Date().toISOString()})});}catch(e){toast('ステータス保存失敗');}}
+async function addStatus(){var inp=document.getElementById('stInput');var n=(inp&&inp.value||'').trim();if(!n)return;if(STATUSES.some(function(s){return s.l===n;})){toast('同名のステータスがあります');return;}var pal=ST_PAL[STATUSES.length%ST_PAL.length];STATUSES.push({k:'st_'+Math.random().toString(36).slice(2,7),l:n,c:pal[0],bg:pal[1]});await saveStatuses();render();}
+async function renameStatus(k){var s=STATUSES.find(function(x){return x.k===k;});if(!s)return;var nn=prompt('ステータス名を変更',s.l);if(nn===null)return;nn=nn.trim();if(!nn||nn===s.l)return;s.l=nn;await saveStatuses();render();}
+async function moveStatus(i,dir){var j=i+dir;if(j<0||j>=STATUSES.length)return;var tmp=STATUSES[i];STATUSES[i]=STATUSES[j];STATUSES[j]=tmp;await saveStatuses();render();}
+async function delStatus(k){
+  if(PROTECTED_ST.indexOf(k)>=0){toast('このステータスは削除できません（システムで使用）');return;}
+  var s=STATUSES.find(function(x){return x.k===k;});
+  var aff=TASKS.filter(function(t){return t._st===k;});
+  var fb=hasSt('consult')?'consult':((STATUSES.find(function(x){return x.k!==k;})||{}).k||'consult');
+  var fbl=(STATUSES.find(function(x){return x.k===fb;})||{}).l||fb;
+  if(!confirm('ステータス「'+(s?s.l:k)+'」を削除しますか？'+(aff.length?'\n'+aff.length+'件のタスクは「'+fbl+'」へ移動します。':'')))return;
+  STATUSES=STATUSES.filter(function(x){return x.k!==k;});
+  aff.forEach(function(t){t.status=fb;t._st=fb;});
+  await saveStatuses();render();
+  try{await Promise.all(aff.map(function(t){return sbPatch(TBL(),t.id,{status:fb});}));toast('削除しました');}catch(e){toast('一部の反映に失敗');load();}
+}
 function children(id){return TASKS.filter(t=>t.parent_id===id).sort((a,b)=>(a.created_at||'').localeCompare(b.created_at||''));}
 function curTasks(){return TASKS.filter(t=>!t.parent_id&&(CUR==='__all'||(t.area||'一般')===CUR));}
 function depthOf(t){let d=0,cur=t,g=0;while(cur&&cur.parent_id&&g++<10){cur=TASKS.find(x=>x.id===cur.parent_id);if(cur)d++;else break;}return d;}
@@ -478,6 +501,10 @@ function adminHtml(){
     '<div style="font-size:12px;color:#6b6f76;margin-bottom:10px">プロジェクトを登録・名前変更・削除できます（全端末で共有）。名前変更・削除は中のタスクにも反映します。</div>'+
     '<div class="mm-add" style="margin-bottom:12px"><input id="pjInput" placeholder="プロジェクト名を追加" onkeydown="if(event.key===\'Enter\')addProjectName()"><button onclick="addProjectName()">＋ 追加</button></div>'+
     '<div class="mm-list">'+(pjs.length?pjs.map(function(p){return '<div class="mm-row"><span><span style="display:inline-block;width:9px;height:9px;border-radius:3px;background:'+pjColor(p.a)+';margin-right:7px;vertical-align:middle"></span>'+esc(p.a)+' <small style="color:#9a9ca2">'+p.n+'件</small></span><span style="display:flex;gap:6px"><button onclick="renameProject(\''+esc(p.a).replace(/'/g,"\\'")+'\')">名前変更</button><button onclick="delProject(\''+esc(p.a).replace(/'/g,"\\'")+'\')" style="color:#dc2626">削除</button></span></div>';}).join(''):'<div style="font-size:12px;color:#9a9ca2">プロジェクト未登録。上で追加してください</div>')+'</div>'+
+  '<div style="font-size:15px;font-weight:800;margin:24px 0 3px">🚦 ステータス（ボードの列）</div>'+
+    '<div style="font-size:12px;color:#6b6f76;margin-bottom:10px">列（ステータス）を追加・名前変更・並び替え・削除できます（全端末で共有）。削除すると、その列のタスクは先頭の列へ移動します。「必須」表示の列はシステムで使うため削除できません。</div>'+
+    '<div class="mm-add" style="margin-bottom:12px"><input id="stInput" placeholder="ステータス名を追加" onkeydown="if(event.key===\'Enter\')addStatus()"><button onclick="addStatus()">＋ 追加</button></div>'+
+    '<div class="mm-list">'+STATUSES.map(function(s,i){var prot=PROTECTED_ST.indexOf(s.k)>=0;var n=TASKS.filter(function(t){return t.id!=='_members'&&t.id!=='_projects'&&t.id!=='_statuses'&&t._st===s.k;}).length;return '<div class="mm-row"><span style="display:flex;align-items:center;gap:8px;min-width:0"><span style="width:11px;height:11px;border-radius:4px;background:'+s.c+';flex-shrink:0"></span><b style="color:'+s.c+'">'+esc(s.l)+'</b> <small style="color:#9a9ca2">'+n+'件</small></span><span style="display:flex;gap:5px;flex-shrink:0">'+(i>0?'<button onclick="moveStatus('+i+',-1)" title="上へ">▲</button>':'')+(i<STATUSES.length-1?'<button onclick="moveStatus('+i+',1)" title="下へ">▼</button>':'')+'<button onclick="renameStatus(\''+s.k+'\')">名前変更</button>'+(prot?'<span style="font-size:11px;color:#9a9ca2;align-self:center">必須</span>':'<button onclick="delStatus(\''+s.k+'\')" style="color:#dc2626">削除</button>')+'</span></div>';}).join('')+'</div>'+
   '</div>';
 }
 async function addMember(){var inp=document.getElementById('mmInput');var n=(inp&&inp.value||'').trim();if(!n)return;if(!MEMBERS.includes(n))MEMBERS.push(n);await saveMembers();render();}
