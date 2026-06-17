@@ -225,6 +225,7 @@ let STORE=localStorage.getItem('asana_store')||'spk';
 let ME=localStorage.getItem('asana_me')||'';
 let TASKS=[];
 let MEMBERS=[];             // 事前登録メンバー（プルダウン用・Supabase共有）
+let PROJECTS=[];            // プロジェクト一覧（Supabase共有・全端末同期）
 let CUR='__all';            // 選択中プロジェクト(area) or '__all'
 let SEL=null;               // 選択中タスクid
 let VIEW=localStorage.getItem('asana_view')||'board';
@@ -252,15 +253,19 @@ async function load(){
   const rows=await sbGet(TBL()+'?deleted=eq.false&select=*&order=updated_at.desc');
   const memRow=(rows||[]).find(r=>r.id==='_members');
   MEMBERS=Array.isArray(memRow&&memRow.attachments)?memRow.attachments.filter(Boolean):[];
-  TASKS=(rows||[]).filter(r=>r.id!=='_members').map(t=>{const logs=Array.isArray(t.logs)?t.logs:[];const rq=logs.find(l=>l&&l.type==='req');return {...t,_st:normStatus(t.status),logs,requester:t.requester||(rq&&rq.by)||''};});
+  const projRow=(rows||[]).find(r=>r.id==='_projects');
+  PROJECTS=Array.isArray(projRow&&projRow.attachments)?projRow.attachments.filter(Boolean):[];
+  TASKS=(rows||[]).filter(r=>r.id!=='_members'&&r.id!=='_projects').map(t=>{const logs=Array.isArray(t.logs)?t.logs:[];const rq=logs.find(l=>l&&l.type==='req');return {...t,_st:normStatus(t.status),logs,requester:t.requester||(rq&&rq.by)||''};});
   render();
 }
 function projects(){
   const set={};TASKS.forEach(t=>{if(t.parent_id)return;const a=(t.area||'一般').trim()||'一般';set[a]=(set[a]||0)+1;});
-  EXTRA_PJ.forEach(a=>{if(!(a in set))set[a]=0;});
+  PROJECTS.forEach(a=>{if(a&&!(a in set))set[a]=0;});
+  EXTRA_PJ.forEach(a=>{if(a&&!(a in set))set[a]=0;});
   if(!Object.keys(set).length)set['一般']=0;
   return Object.keys(set).sort().map(a=>({a,n:set[a]}));
 }
+async function saveProjects(){try{await fetch(SU+'/rest/v1/asana_tasks',{method:'POST',headers:{apikey:SK,Authorization:authH(),'Content-Type':'application/json',Prefer:'resolution=merge-duplicates'},body:JSON.stringify({id:'_projects',store:STORE,title:'__projects__',attachments:PROJECTS,deleted:false,updated_at:new Date().toISOString()})});}catch(e){toast('プロジェクト保存失敗');}}
 function pjColor(a){let h=0;for(let i=0;i<a.length;i++)h=(h*31+a.charCodeAt(i))%360;return 'hsl('+h+',62%,55%)';}
 function children(id){return TASKS.filter(t=>t.parent_id===id).sort((a,b)=>(a.created_at||'').localeCompare(b.created_at||''));}
 function curTasks(){return TASKS.filter(t=>!t.parent_id&&(CUR==='__all'||(t.area||'一般')===CUR));}
@@ -343,21 +348,46 @@ function selPj(a){CUR=a;render();}
 function memberOpts(sel){return '<option value="">未割当</option>'+MEMBERS.map(m=>'<option '+(m===sel?'selected':'')+'>'+esc(m)+'</option>').join('')+((sel&&!MEMBERS.includes(sel))?'<option selected>'+esc(sel)+'</option>':'');}
 async function saveMembers(){try{await fetch(SU+'/rest/v1/asana_tasks',{method:'POST',headers:{apikey:SK,Authorization:authH(),'Content-Type':'application/json',Prefer:'resolution=merge-duplicates'},body:JSON.stringify({id:'_members',store:STORE,title:'__members__',attachments:MEMBERS,deleted:false,updated_at:new Date().toISOString()})});}catch(e){toast('メンバー保存失敗');}}
 function adminHtml(){
+  var pjs=projects();
   return '<div style="max-width:560px;margin:0 auto;padding:18px 16px">'+
     '<div style="font-size:15px;font-weight:800;margin-bottom:3px">👥 メンバー登録</div>'+
     '<div style="font-size:12px;color:#6b6f76;margin-bottom:12px">依頼者・担当者・コメント投稿者のプルダウンに出るメンバーを管理します（全端末で共有）。</div>'+
     '<div class="mm-add" style="margin-bottom:12px"><input id="mmInput" placeholder="名前を追加" onkeydown="if(event.key===\'Enter\')addMember()"><button onclick="addMember()">＋ 追加</button></div>'+
     '<div class="mm-list">'+(MEMBERS.length?MEMBERS.map((n,i)=>'<div class="mm-row"><span>'+esc(n)+'</span><button onclick="delMember('+i+')">削除</button></div>').join(''):'<div style="font-size:12px;color:#9a9ca2">メンバー未登録。上で追加してください</div>')+'</div>'+
     '<div style="font-size:15px;font-weight:800;margin:24px 0 3px">🗂 プロジェクト</div>'+
-    '<div style="font-size:12px;color:#6b6f76;margin-bottom:10px">空のプロジェクトを追加できます（タスクで使うと自動表示）。</div>'+
-    '<div class="mm-add"><input id="pjInput" placeholder="プロジェクト名" onkeydown="if(event.key===\'Enter\')addProjectName()"><button onclick="addProjectName()">＋ 追加</button></div>'+
+    '<div style="font-size:12px;color:#6b6f76;margin-bottom:10px">プロジェクトを登録・名前変更・削除できます（全端末で共有）。名前変更・削除は中のタスクにも反映します。</div>'+
+    '<div class="mm-add" style="margin-bottom:12px"><input id="pjInput" placeholder="プロジェクト名を追加" onkeydown="if(event.key===\'Enter\')addProjectName()"><button onclick="addProjectName()">＋ 追加</button></div>'+
+    '<div class="mm-list">'+(pjs.length?pjs.map(function(p){return '<div class="mm-row"><span><span style="display:inline-block;width:9px;height:9px;border-radius:3px;background:'+pjColor(p.a)+';margin-right:7px;vertical-align:middle"></span>'+esc(p.a)+' <small style="color:#9a9ca2">'+p.n+'件</small></span><span style="display:flex;gap:6px"><button onclick="renameProject(\''+esc(p.a).replace(/'/g,"\\'")+'\')">名前変更</button><button onclick="delProject(\''+esc(p.a).replace(/'/g,"\\'")+'\')" style="color:#dc2626">削除</button></span></div>';}).join(''):'<div style="font-size:12px;color:#9a9ca2">プロジェクト未登録。上で追加してください</div>')+'</div>'+
   '</div>';
 }
 async function addMember(){var inp=document.getElementById('mmInput');var n=(inp&&inp.value||'').trim();if(!n)return;if(!MEMBERS.includes(n))MEMBERS.push(n);await saveMembers();render();}
 async function delMember(i){MEMBERS.splice(i,1);await saveMembers();render();}
-function addProjectName(){var inp=document.getElementById('pjInput');var n=(inp&&inp.value||'').trim();if(!n)return;if(!EXTRA_PJ.includes(n))EXTRA_PJ.push(n);localStorage.setItem('asana_pj_'+STORE,JSON.stringify(EXTRA_PJ));render();}
+async function addProjectName(){var inp=document.getElementById('pjInput');var n=(inp&&inp.value||'').trim();if(!n)return;if(!PROJECTS.includes(n))PROJECTS.push(n);await saveProjects();render();}
+async function renameProject(oldName){
+  var nn=prompt('プロジェクト名を変更',oldName);if(nn===null)return;nn=nn.trim();if(!nn||nn===oldName)return;
+  // 共有リスト更新
+  PROJECTS=PROJECTS.filter(function(x){return x!==oldName;});if(!PROJECTS.includes(nn))PROJECTS.push(nn);
+  EXTRA_PJ=EXTRA_PJ.filter(function(x){return x!==oldName;});localStorage.setItem('asana_pj_'+STORE,JSON.stringify(EXTRA_PJ));
+  // 中のタスクのareaを付け替え
+  var affected=TASKS.filter(function(t){return (t.area||'一般')===oldName;});
+  affected.forEach(function(t){t.area=nn;});
+  if(CUR===oldName)CUR=nn;
+  await saveProjects();render();
+  try{await Promise.all(affected.map(function(t){return sbPatch(TBL(),t.id,{area:nn});}));toast('プロジェクト名を変更しました');}catch(e){toast('一部の反映に失敗');load();}
+}
+async function delProject(name){
+  var used=TASKS.filter(function(t){return (t.area||'一般')===name;}).length;
+  if(!confirm('プロジェクト「'+name+'」を削除しますか？'+(used?'\n中の'+used+'件のタスクは「一般」へ移動します。':'')))return;
+  PROJECTS=PROJECTS.filter(function(x){return x!==name;});
+  EXTRA_PJ=EXTRA_PJ.filter(function(x){return x!==name;});localStorage.setItem('asana_pj_'+STORE,JSON.stringify(EXTRA_PJ));
+  var affected=TASKS.filter(function(t){return (t.area||'一般')===name;});
+  affected.forEach(function(t){t.area='一般';});
+  if(CUR===name)CUR='__all';
+  await saveProjects();render();
+  try{await Promise.all(affected.map(function(t){return sbPatch(TBL(),t.id,{area:'一般'});}));toast('削除しました');}catch(e){toast('一部の反映に失敗');load();}
+}
 function changeStore(s){STORE=s;localStorage.setItem('asana_store',s);EXTRA_PJ=JSON.parse(localStorage.getItem('asana_pj_'+STORE)||'[]');CUR='__all';SEL=null;closeDetail();document.getElementById('taskList').innerHTML='<div class="empty">読み込み中…</div>';load();}
-function addProject(){const n=prompt('プロジェクト名');if(!n||!n.trim())return;const a=n.trim();if(!EXTRA_PJ.includes(a))EXTRA_PJ.push(a);localStorage.setItem('asana_pj_'+STORE,JSON.stringify(EXTRA_PJ));CUR=a;render();}
+async function addProject(){const n=prompt('プロジェクト名');if(!n||!n.trim())return;const a=n.trim();if(!PROJECTS.includes(a))PROJECTS.push(a);CUR=a;await saveProjects();render();}
 async function quickAdd(){
   const title=prompt('依頼内容（タスク名）');if(!title||!title.trim())return;
   const area=(CUR==='__all'||CUR==='__admin'?'一般':CUR);
