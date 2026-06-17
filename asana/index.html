@@ -247,11 +247,11 @@ const DEFAULT_STATUSES=[
   {k:'reject',  l:'却下',      c:'#dc2626', bg:'#fef2f2'},
   {k:'done',    l:'完了',      c:'#16a34a', bg:'#f0fdf4'},
 ];
-let STATUSES=DEFAULT_STATUSES.map(s=>({...s})); // Supabase _statuses で上書き（全端末共有）
-const PROTECTED_ST=['consult','approval','go','hold','done']; // システムが内部で使う列＝削除不可（却下/独自列は削除可）
+let STATUSES=DEFAULT_STATUSES.map(s=>({...s})); // Supabase _statuses で上書き（全端末共有）。全列が追加/名前変更/削除可（最低1列は残す）
 const ST_PAL=[['#6366f1','#eef2ff'],['#d97706','#fff7ed'],['#0891b2','#ecfeff'],['#64748b','#f1f5f9'],['#dc2626','#fef2f2'],['#16a34a','#f0fdf4'],['#7c3aed','#f5f3ff'],['#db2777','#fdf2f8']];
 const ST=k=>STATUSES.find(s=>s.k===k)||STATUSES[0];
 const hasSt=k=>STATUSES.some(s=>s.k===k);
+const fstK=()=>(STATUSES[0]||{k:'consult'}).k;
 // 旧アプリ内ステータス→Asanaバケットへ寄せる
 const MAPOLD={'未着手':'consult','相談必要':'approval','取り止め':'reject','進行中':'go','完了':'done'};
 function normStatus(s){const f=(STATUSES[0]||{k:'consult'}).k;if(!s)return f;if(hasSt(s))return s;const m=MAPOLD[s];if(m&&hasSt(m))return m;return f;}
@@ -317,7 +317,7 @@ async function addStatus(){var inp=document.getElementById('stInput');var n=(inp
 async function renameStatus(k){var s=STATUSES.find(function(x){return x.k===k;});if(!s)return;var nn=prompt('ステータス名を変更',s.l);if(nn===null)return;nn=nn.trim();if(!nn||nn===s.l)return;s.l=nn;await saveStatuses();render();}
 async function moveStatus(i,dir){var j=i+dir;if(j<0||j>=STATUSES.length)return;var tmp=STATUSES[i];STATUSES[i]=STATUSES[j];STATUSES[j]=tmp;await saveStatuses();render();}
 async function delStatus(k){
-  if(PROTECTED_ST.indexOf(k)>=0){toast('このステータスは削除できません（システムで使用）');return;}
+  if(STATUSES.length<=1){toast('最後の1列は削除できません');return;}
   var s=STATUSES.find(function(x){return x.k===k;});
   var aff=TASKS.filter(function(t){return t._st===k;});
   var fb=hasSt('consult')?'consult':((STATUSES.find(function(x){return x.k!==k;})||{}).k||'consult');
@@ -467,8 +467,8 @@ async function decide(id,verdict){
   const logs=[...(t.logs||[]),{at:nowIso,by:who,text:(verdict==='approved'?'✅ 承認':'⛔ 却下')+(note?'：'+note:'')}];
   const patch={approval:nb,logs};
   // 承認＝進行OK / 却下＝保留 に状態も連動（最低限のやり取りで前へ進む）
-  if(verdict==='approved'){patch.admin_confirmed=true;t.admin_confirmed=true;if(t._st==='approval'||t._st==='consult'){patch.status='go';t._st='go';t.status='go';}}
-  else{if(t._st==='approval'||t._st==='consult'){patch.status='hold';t._st='hold';t.status='hold';}}
+  if(verdict==='approved'){patch.admin_confirmed=true;t.admin_confirmed=true;var gk=hasSt('go')?'go':((STATUSES.find(function(s){return s.k!=='approval';})||{}).k);if(gk&&(t._st==='approval'||t._st==='consult')){patch.status=gk;t._st=gk;t.status=gk;}}
+  else{var hk=hasSt('hold')?'hold':((STATUSES.find(function(s){return s.k!=='approval';})||{}).k);if(hk&&(t._st==='approval'||t._st==='consult')){patch.status=hk;t._st=hk;t.status=hk;}}
   t.approval=nb;t.logs=logs;render();if(SEL===id)openTask(id);
   try{await sbPatch(TBL(),id,patch);toast(verdict==='approved'?'承認しました':'却下しました');}catch(e){toast('保存失敗（承認列のSQL未RUN?）');load();}
 }
@@ -504,7 +504,7 @@ function adminHtml(){
   '<div style="font-size:15px;font-weight:800;margin:24px 0 3px">🚦 ステータス（ボードの列）</div>'+
     '<div style="font-size:12px;color:#6b6f76;margin-bottom:10px">列（ステータス）を追加・名前変更・並び替え・削除できます（全端末で共有）。削除すると、その列のタスクは先頭の列へ移動します。「必須」表示の列はシステムで使うため削除できません。</div>'+
     '<div class="mm-add" style="margin-bottom:12px"><input id="stInput" placeholder="ステータス名を追加" onkeydown="if(event.key===\'Enter\')addStatus()"><button onclick="addStatus()">＋ 追加</button></div>'+
-    '<div class="mm-list">'+STATUSES.map(function(s,i){var prot=PROTECTED_ST.indexOf(s.k)>=0;var n=TASKS.filter(function(t){return t.id!=='_members'&&t.id!=='_projects'&&t.id!=='_statuses'&&t._st===s.k;}).length;return '<div class="mm-row"><span style="display:flex;align-items:center;gap:8px;min-width:0"><span style="width:11px;height:11px;border-radius:4px;background:'+s.c+';flex-shrink:0"></span><b style="color:'+s.c+'">'+esc(s.l)+'</b> <small style="color:#9a9ca2">'+n+'件</small></span><span style="display:flex;gap:5px;flex-shrink:0">'+(i>0?'<button onclick="moveStatus('+i+',-1)" title="上へ">▲</button>':'')+(i<STATUSES.length-1?'<button onclick="moveStatus('+i+',1)" title="下へ">▼</button>':'')+'<button onclick="renameStatus(\''+s.k+'\')">名前変更</button>'+(prot?'<span style="font-size:11px;color:#9a9ca2;align-self:center">必須</span>':'<button onclick="delStatus(\''+s.k+'\')" style="color:#dc2626">削除</button>')+'</span></div>';}).join('')+'</div>'+
+    '<div class="mm-list">'+STATUSES.map(function(s,i){var n=TASKS.filter(function(t){return t.id!=='_members'&&t.id!=='_projects'&&t.id!=='_statuses'&&t._st===s.k;}).length;return '<div class="mm-row"><span style="display:flex;align-items:center;gap:8px;min-width:0"><span style="width:11px;height:11px;border-radius:4px;background:'+s.c+';flex-shrink:0"></span><b style="color:'+s.c+'">'+esc(s.l)+'</b> <small style="color:#9a9ca2">'+n+'件</small></span><span style="display:flex;gap:5px;flex-shrink:0">'+(i>0?'<button onclick="moveStatus('+i+',-1)" title="上へ">▲</button>':'')+(i<STATUSES.length-1?'<button onclick="moveStatus('+i+',1)" title="下へ">▼</button>':'')+'<button onclick="renameStatus(\''+s.k+'\')">名前変更</button>'+(STATUSES.length>1?'<button onclick="delStatus(\''+s.k+'\')" style="color:#dc2626">削除</button>':'')+'</span></div>';}).join('')+'</div>'+
   '</div>';
 }
 async function addMember(){var inp=document.getElementById('mmInput');var n=(inp&&inp.value||'').trim();if(!n)return;if(!MEMBERS.includes(n))MEMBERS.push(n);await saveMembers();render();}
@@ -540,14 +540,14 @@ async function quickAdd(){
   const area=(CUR==='__all'||CUR==='__admin'?'一般':CUR);
   const now=new Date().toISOString();
   const reqlog={type:'req',by:'',at:now,text:title.trim()};
-  const row={id:uid(),store:STORE,area,title:title.trim(),requester:'',assignee:'',status:'consult',priority:'中',progress:0,description:'',logs:[reqlog],attachments:[],admin_confirmed:false,deleted:false,created_at:now};
-  try{const r=await sbPost(TBL(),row);const saved=(r&&r[0])||row;TASKS.unshift({...saved,_st:'consult',logs:[reqlog],requester:''});render();openTask(saved.id);}
+  const row={id:uid(),store:STORE,area,title:title.trim(),requester:'',assignee:'',status:fstK(),priority:'中',progress:0,description:'',logs:[reqlog],attachments:[],admin_confirmed:false,deleted:false,created_at:now};
+  try{const r=await sbPost(TBL(),row);const saved=(r&&r[0])||row;TASKS.unshift({...saved,_st:fstK(),logs:[reqlog],requester:''});render();openTask(saved.id);}
   catch(e){toast('保存失敗: '+e.message);}
 }
 async function toggleDone(id){
   const t=TASKS.find(x=>x.id===id);if(!t)return;
   const done=t._st==='done';
-  const ns=done?'go':'done';
+  const ns=done?(hasSt('go')?'go':fstK()):'done';
   t._st=ns;t.status=ns;t.completed_at=done?null:new Date().toISOString();
   render();if(SEL===id)openTask(id);
   try{await sbPatch(TBL(),id,{status:ns,completed_at:t.completed_at});}catch(e){toast('更新失敗');load();}
@@ -631,8 +631,8 @@ async function addSubtask(parentId){
   const title=prompt(lbl+'（依頼内容）');if(!title||!title.trim())return;
   const p=TASKS.find(x=>x.id===parentId);const now=new Date().toISOString();
   const reqlog={type:'req',by:'',at:now,text:title.trim()};
-  const row={id:uid(),store:STORE,area:(p&&p.area)||'一般',title:title.trim(),requester:'',assignee:'',parent_id:parentId,status:'consult',priority:'中',progress:0,description:'',logs:[reqlog],attachments:[],admin_confirmed:false,deleted:false,created_at:now};
-  try{const r=await sbPost(TBL(),row);const saved=(r&&r[0])||row;TASKS.push({...saved,_st:'consult',logs:[reqlog],requester:''});openTask(parentId);render();}
+  const row={id:uid(),store:STORE,area:(p&&p.area)||'一般',title:title.trim(),requester:'',assignee:'',parent_id:parentId,status:fstK(),priority:'中',progress:0,description:'',logs:[reqlog],attachments:[],admin_confirmed:false,deleted:false,created_at:now};
+  try{const r=await sbPost(TBL(),row);const saved=(r&&r[0])||row;TASKS.push({...saved,_st:fstK(),logs:[reqlog],requester:''});openTask(parentId);render();}
   catch(e){toast('保存失敗: '+e.message);}
 }
 function openTask(id){
