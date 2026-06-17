@@ -252,11 +252,12 @@ const ST=k=>STATUSES.find(s=>s.k===k)||STATUSES[0];
 const MAPOLD={'未着手':'consult','相談必要':'approval','取り止め':'reject','進行中':'go','完了':'done'};
 function normStatus(s){if(!s)return 'consult';if(STATUSES.some(x=>x.k===s))return s;return MAPOLD[s]||'consult';}
 /* ---- 承認（別枠）helpers ---- */
+/* 「承認待ち」列(status='approval')＝承認タブのpending に一本化。approval.state は判定結果(approved/rejected)を保持 */
 function appOf(t){return (t&&t.approval&&typeof t.approval==='object'&&!Array.isArray(t.approval))?t.approval:{};}
-function apReq(t){return !!appOf(t).required;}
-function apState(t){const a=appOf(t);return a.required?(a.state||'pending'):'';}
-function apFlag(t){if(!apReq(t))return '';const s=apState(t);const cls=s==='approved'?'apflag appr':s==='rejected'?'apflag rej':'apflag';const lbl=s==='approved'?'承認':s==='rejected'?'却下':'要承認';return `<span class="${cls}">🔖${lbl}</span>`;}
-function pendingApprovals(){return TASKS.filter(t=>apReq(t)&&apState(t)==='pending');}
+function apDecision(t){return appOf(t).state||'';} // 'approved'|'rejected'|'pending'|''
+function isApprPending(t){return t._st==='approval';}
+function apFlag(t){if(isApprPending(t))return '<span class="apflag">🔖承認待ち</span>';const s=apDecision(t);if(s==='approved')return '<span class="apflag appr">✅承認</span>';if(s==='rejected')return '<span class="apflag rej">⛔却下</span>';return '';}
+function pendingApprovals(){return TASKS.filter(isApprPending);}
 
 let STORE=localStorage.getItem('asana_store')||'spk';
 let ME=localStorage.getItem('asana_me')||'';
@@ -388,8 +389,7 @@ function taskRow(t){
 function apCard(t,kind){
   const cmts=(t.logs||[]).filter(l=>l&&l.type!=='req');
   const lastCmts=cmts.slice(-3).map(c=>`<div class="apcmt"><b>${esc(c.by||'?')}</b> ${esc(c.text)}</div>`).join('');
-  const st=apState(t);
-  const verdict=st==='approved'?'<span class="apverdict appr">✅ 承認済</span>':st==='rejected'?'<span class="apverdict rej">⛔ 却下</span>':'<span class="apverdict pend">⏳ 承認待ち</span>';
+  const verdict=kind==='appr'?'<span class="apverdict appr">✅ 承認済</span>':kind==='rej'?'<span class="apverdict rej">⛔ 却下</span>':'<span class="apverdict pend">⏳ 承認待ち</span>';
   const ap=appOf(t);
   const decided=ap.decided_by?`<span>判定: ${esc(ap.decided_by)} ・ ${esc(fmtAt(ap.decided_at||''))}</span>`:'';
   return `<div class="apcard ${kind}">`+
@@ -409,13 +409,12 @@ function apCard(t,kind){
   `</div>`;
 }
 function approvalHtml(){
-  const flagged=TASKS.filter(apReq);
   const sortDue=a=>a.sort((x,y)=>(x.due_date||'9999').localeCompare(y.due_date||'9999'));
-  const pend=sortDue(flagged.filter(t=>apState(t)==='pending'));
-  const appr=flagged.filter(t=>apState(t)==='approved');
-  const rej=flagged.filter(t=>apState(t)==='rejected');
+  const pend=sortDue(TASKS.filter(isApprPending));
+  const appr=TASKS.filter(t=>!isApprPending(t)&&apDecision(t)==='approved');
+  const rej=TASKS.filter(t=>!isApprPending(t)&&apDecision(t)==='rejected');
   let h='<div class="apwrap">';
-  h+=`<div class="apintro">🔖 承認が必要なタスクだけが集まる場所です。決済者が確認し、コメントバック・承認/却下で進めます。<span class="who">決済者 <select id="apDecider" onchange="localStorage.setItem('asana_decider',this.value)">${memberOpts(localStorage.getItem('asana_decider')||ME||'')}</select></span></div>`;
+  h+=`<div class="apintro">🔖 ステータスを「承認待ち」にしたタスクが集まります。決済者が確認し、コメントバック・承認/却下で進めます。<span class="who">決済者 <select id="apDecider" onchange="localStorage.setItem('asana_decider',this.value)">${memberOpts(localStorage.getItem('asana_decider')||ME||'')}</select></span></div>`;
   h+=`<div class="apsec">⏳ 承認待ち（${pend.length}）</div>`;
   h+= pend.length?pend.map(t=>apCard(t,'pend')).join(''):'<div class="empty">承認待ちはありません 🎉</div>';
   if(appr.length){h+=`<div class="apsec">✅ 承認済（${appr.length}）</div>`+appr.map(t=>apCard(t,'appr')).join('');}
@@ -425,9 +424,15 @@ function approvalHtml(){
 async function setApprovalFlag(id,on){
   const t=TASKS.find(x=>x.id===id);if(!t)return;
   const a=appOf(t);
-  const nb=on?{...a,required:true,state:(a.state==='approved'||a.state==='rejected')?'pending':(a.state||'pending'),by:ME||'',at:new Date().toISOString()}:{...a,required:false};
-  t.approval=nb;if(SEL===id)openTask(id);render();
-  try{await sbPatch(TBL(),id,{approval:nb});}catch(e){toast('承認列が未作成です（SQLをRUN）');}
+  if(on){
+    const nb={...a,state:'pending',by:ME||'',at:new Date().toISOString(),decided_by:'',decided_at:''};
+    t.approval=nb;t._st='approval';t.status='approval';if(SEL===id)openTask(id);render();
+    try{await sbPatch(TBL(),id,{approval:nb,status:'approval'});}catch(e){toast('承認列が未作成です（SQLをRUN）');}
+  }else{
+    const nb={...a,state:''};t.approval=nb;if(t._st==='approval'){t._st='consult';t.status='consult';}
+    if(SEL===id)openTask(id);render();
+    try{await sbPatch(TBL(),id,{approval:nb,status:t.status});}catch(e){toast('保存失敗');}
+  }
 }
 async function decide(id,verdict){
   const t=TASKS.find(x=>x.id===id);if(!t)return;
@@ -445,9 +450,9 @@ async function decide(id,verdict){
   try{await sbPatch(TBL(),id,patch);toast(verdict==='approved'?'承認しました':'却下しました');}catch(e){toast('保存失敗（承認列のSQL未RUN?）');load();}
 }
 async function reopenApproval(id){
-  const t=TASKS.find(x=>x.id===id);if(!t)return;const a=appOf(t);const nb={...a,required:true,state:'pending',decided_by:'',decided_at:''};
-  t.approval=nb;render();
-  try{await sbPatch(TBL(),id,{approval:nb});}catch(e){toast('保存失敗');load();}
+  const t=TASKS.find(x=>x.id===id);if(!t)return;const a=appOf(t);const nb={...a,state:'pending',decided_by:'',decided_at:''};
+  t.approval=nb;t._st='approval';t.status='approval';render();
+  try{await sbPatch(TBL(),id,{approval:nb,status:'approval'});}catch(e){toast('保存失敗');load();}
 }
 async function apComment(id){
   const inp=document.getElementById('apc_'+id);const txt=((inp&&inp.value)||'').trim();if(!txt)return;
@@ -523,8 +528,10 @@ async function toggleDone(id){
 async function setField(id,field,val){
   const t=TASKS.find(x=>x.id===id);if(!t)return;
   t[field]=val;if(field==='status'){t._st=normStatus(val);if(val==='done'&&!t.completed_at)t.completed_at=new Date().toISOString();}
-  render();
   const patch={};patch[field]=val;if(field==='status'&&val==='done')patch.completed_at=t.completed_at;
+  // 「承認待ち」へ入れたら承認タブのpendingに（過去の判定はリセット）
+  if(field==='status'&&val==='approval'){const a=appOf(t);const nb={...a,state:'pending',by:ME||'',at:new Date().toISOString(),decided_by:'',decided_at:''};t.approval=nb;patch.approval=nb;}
+  render();
   try{await sbPatch(TBL(),id,patch);}catch(e){toast('更新失敗');}
 }
 async function toggleConfirm(id){
@@ -617,7 +624,7 @@ function openTask(id){
     return `<div class="cmt"><div class="av">${esc(ini(c.by))}</div><div class="cb"><div class="cmeta"><b>${esc(c.by)}</b> ・ ${esc(fmtAt(c.at))}</div><div class="ctxt">${esc(c.text)}</div></div></div>`;
   }).join('')||'<div style="font-size:12px;color:#9a9ca2">まだコメントはありません</div>';
   const pjOpts=projects().map(p=>`<option value="${esc(p.a)}" ${(t.area||'一般')===p.a?'selected':''}>${esc(p.a)}</option>`).join('');
-  const apOn=apReq(t);const apSt=apState(t);
+  const apOn=isApprPending(t);const apSt=apDecision(t);
   d.innerHTML=`
     <div class="dh">
       <button class="x" onclick="closeDetail()">✕</button>
@@ -627,7 +634,7 @@ function openTask(id){
       ${bcrumb}
       <textarea class="dtitle" id="dTitle" rows="1" onchange="setField('${t.id}','title',this.value)">${esc(t.title)}</textarea>
       <div class="statpills">${STATUSES.map(s=>`<button class="statpill ${t._st===s.k?'on':''}" style="${t._st===s.k?('background:'+s.bg+';color:'+s.c+';border-color:'+s.c):''}" onclick="setField('${t.id}','status','${s.k}')">${s.l}</button>`).join('')}</div>
-      <div class="aptoggle"><span class="apl">承認</span><button class="${apOn?'on':''}" onclick="setApprovalFlag('${t.id}',${apOn?'false':'true'})">${apOn?'🔖 承認が必要（承認タブへ）':'承認は不要'}</button>${apOn?(apSt==='approved'?'<span class="apverdict appr">✅ 承認済</span>':apSt==='rejected'?'<span class="apverdict rej">⛔ 却下</span>':'<span class="apverdict pend">⏳ 承認待ち</span>'):''}</div>
+      <div class="aptoggle"><span class="apl">承認</span><button class="${apOn?'on':''}" onclick="setApprovalFlag('${t.id}',${apOn?'false':'true'})">${apOn?'🔖 承認待ち（承認タブに表示中）':'🔖 承認に出す'}</button>${apOn?'<span class="apverdict pend">⏳ 承認待ち</span>':(apSt==='approved'?'<span class="apverdict appr">✅ 承認済</span>':apSt==='rejected'?'<span class="apverdict rej">⛔ 却下</span>':'')}</div>
       <div style="height:10px"></div>
       <div class="frow"><label>依頼者</label><select onchange="setField('${t.id}','requester',this.value)">${memberOpts(t.requester||'')}</select></div>
       <div class="frow"><label>担当(回答)</label><select onchange="setField('${t.id}','assignee',this.value)">${memberOpts(t.assignee||'')}</select></div>
