@@ -93,6 +93,11 @@ button{font-family:inherit;cursor:pointer}
 .bcard-m .bav{width:22px;height:22px;border-radius:50%;background:#e4e2ff;color:#5b4eea;font-size:10px;font-weight:800;display:grid;place-items:center;flex-shrink:0}
 .baddsub{background:none;border:1px dashed #c9c3ff;color:#6b62e6;border-radius:8px;padding:8px;font-size:12px;font-weight:700;width:100%;text-align:center;margin-top:2px}
 .bhint{font-size:11px;color:#9a9ca2;padding:8px 18px 0}
+.bgrp{display:flex;align-items:center;gap:7px;padding:8px 18px 2px}
+.bgrp-l{font-size:11px;font-weight:800;color:#9a9ca2}
+.bgrpb{border:1px solid var(--line);background:#fff;border-radius:8px;padding:6px 11px;font-size:12px;font-weight:700;color:var(--sub);cursor:pointer}
+.bgrpb.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.bcol-h .bav{width:22px;height:22px;border-radius:50%;font-size:10px;font-weight:800;display:grid;place-items:center;flex-shrink:0}
 @media(max-width:768px){.bcol{flex-basis:82vw;max-width:82vw}}
 /* ===== list (Asana風テーブル) ===== */
 .ltbl{min-width:680px}
@@ -980,9 +985,32 @@ function statusCol(s){
     `<div class="bcol-body" data-zone="status" data-status="${s.k}">${cards.map(boardCard).join('')}<button class="baddsub" onclick="quickAddStatus('${s.k}')">＋ タスクを追加</button></div></div>`;
 }
 function boardHtml(){
-  return '<div class="bhint">💡 PCはドラッグ／スマホは<b>カードを長押し→指を移動</b>で列（ステータス）を変更。タップで詳細を開き、ステータスボタンでも変更できます。</div><div class="board" id="board">'+STATUSES.map(statusCol).join('')+'</div>';
+  const toggle=`<div class="bgrp"><span class="bgrp-l">列の分け方</span><button class="bgrpb ${BOARDGRP==='status'?'on':''}" onclick="setBoardGrp('status')">📊 ステータス</button><button class="bgrpb ${BOARDGRP==='assignee'?'on':''}" onclick="setBoardGrp('assignee')">👤 担当者</button></div>`;
+  let cols,hint;
+  if(BOARDGRP==='assignee'){
+    const rows=curTasks();const cnt={};rows.forEach(t=>{const a=(t.assignee||'').trim();cnt[a]=(cnt[a]||0)+1;});
+    const ordered=MEMBERS.filter(m=>cnt[m]!==undefined);Object.keys(cnt).forEach(a=>{if(a&&!ordered.includes(a))ordered.push(a);});
+    if(cnt['']!==undefined)ordered.push('');
+    if(!ordered.length)ordered.push('');
+    cols=ordered.map(assigneeCol).join('');
+    hint='💡 担当者ごとの縦列。カードを別の人の列へドラッグ（スマホは長押し→移動）すると<b>担当者が変わります</b>。';
+  }else{
+    cols=STATUSES.map(statusCol).join('');
+    hint='💡 PCはドラッグ／スマホは<b>カードを長押し→指を移動</b>で列（ステータス）を変更。タップで詳細でも変更可。';
+  }
+  return '<div class="bhint">'+hint+'</div>'+toggle+'<div class="board" id="board">'+cols+'</div>';
 }
-function zoneFor(target){if(!DRAG||!target||!target.closest)return null;const el=target.closest('[data-zone="status"]');return el||null;}
+function zoneFor(target){if(!target||!target.closest)return null;return target.closest('[data-zone]')||null;}
+// ドロップ先ゾーンに応じて状態 or 担当者を変更
+function applyZone(id,z){const t=TASKS.find(x=>x.id===id);if(!t||!z)return;if(z.dataset.zone==='assignee'){const a=z.dataset.assignee||'';if((t.assignee||'')!==a)setField(id,'assignee',a);}else{const ns=z.dataset.status;if(ns&&t._st!==ns)setField(id,'status',ns);}}
+let BOARDGRP=localStorage.getItem('asana_boardgrp')||'status';
+function setBoardGrp(g){BOARDGRP=g;localStorage.setItem('asana_boardgrp',g);render();}
+function assigneeCol(name){
+  const label=name||'未割当';
+  const cards=curTasks().filter(t=>(t.assignee||'')===name).sort((a,b)=>(a.due_date||'9999').localeCompare(b.due_date||'9999'));
+  return `<div class="bcol"><div class="bcol-h"><span class="bav" style="background:${personColor(name)};color:#fff">${esc(ini(label))}</span>${esc(label)}<span class="bn">${cards.length}</span></div>`+
+    `<div class="bcol-body" data-zone="assignee" data-assignee="${esc(name)}">${cards.map(boardCard).join('')||'<div style="font-size:11px;color:#cfd0d4;padding:8px 4px">ここにドラッグで担当に割当</div>'}</div></div>`;
+}
 async function quickAddStatus(stKey){
   const title=prompt('タスク名');if(!title||!title.trim())return;
   const area=(CUR==='__all'||CUR==='__admin'?'一般':CUR);const now=new Date().toISOString();
@@ -997,7 +1025,7 @@ function setupDnD(){
   root.addEventListener('dragend',()=>{DRAG=null;root.querySelectorAll('.dragging,.dragover').forEach(x=>x.classList.remove('dragging','dragover'));});
   root.addEventListener('dragover',e=>{const z=zoneFor(e.target);if(!z)return;e.preventDefault();root.querySelectorAll('.dragover').forEach(x=>{if(x!==z)x.classList.remove('dragover');});z.classList.add('dragover');});
   root.addEventListener('dragleave',e=>{const z=e.target.closest&&e.target.closest('[data-zone]');if(z&&!z.contains(e.relatedTarget))z.classList.remove('dragover');});
-  root.addEventListener('drop',e=>{const z=zoneFor(e.target);if(!z||!DRAG)return;e.preventDefault();const id=DRAG.id,ns=z.dataset.status;z.classList.remove('dragover');const t=TASKS.find(x=>x.id===id);if(t&&t._st!==ns)setField(id,'status',ns);});
+  root.addEventListener('drop',e=>{const z=zoneFor(e.target);if(!z||!DRAG)return;e.preventDefault();const id=DRAG.id;z.classList.remove('dragover');applyZone(id,z);});
   // タッチ端末用ドラッグ（HTML5 dragはタッチ非対応）。長押し(350ms)で移動開始＝通常スワイプはスクロールのまま
   let TD=null,TDt=null;
   const tdClear=()=>{if(TDt){clearTimeout(TDt);TDt=null;}if(TD&&TD.el)TD.el.classList.remove('dragging');root.querySelectorAll('.dragover').forEach(x=>x.classList.remove('dragover'));};
@@ -1006,7 +1034,7 @@ function setupDnD(){
     if(!TD.ready){if(Math.abs(t.clientX-TD.x0)+Math.abs(t.clientY-TD.y0)>10){if(TDt){clearTimeout(TDt);TDt=null;}TD=null;}return;}
     TD.active=true;e.preventDefault();const tgt=document.elementFromPoint(t.clientX,t.clientY);const z=tgt&&tgt.closest&&tgt.closest('[data-zone]');root.querySelectorAll('.dragover').forEach(x=>{if(x!==z)x.classList.remove('dragover');});if(z)z.classList.add('dragover');},{passive:false});
   root.addEventListener('touchend',e=>{if(!TD){tdClear();return;}const td=TD;tdClear();TD=null;
-    if(!td.active)return;root._suppressClick=true;const t=e.changedTouches[0];const tgt=document.elementFromPoint(t.clientX,t.clientY);const z=tgt&&tgt.closest&&tgt.closest('[data-zone]');if(z){const ns=z.dataset.status;const tk=TASKS.find(x=>x.id===td.id);if(tk&&tk._st!==ns)setField(td.id,'status',ns);}},{passive:true});
+    if(!td.active)return;root._suppressClick=true;const t=e.changedTouches[0];const tgt=document.elementFromPoint(t.clientX,t.clientY);const z=tgt&&tgt.closest&&tgt.closest('[data-zone]');if(z)applyZone(td.id,z);},{passive:true});
   root.addEventListener('touchcancel',()=>{tdClear();TD=null;},{passive:true});
   root.addEventListener('click',e=>{if(root._suppressClick){root._suppressClick=false;e.stopPropagation();e.preventDefault();}},true);
 }
