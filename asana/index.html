@@ -287,7 +287,7 @@ button{font-family:inherit;cursor:pointer}
 .apact{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
 .apact input{flex:1;min-width:150px;border:1px solid var(--line);border-radius:9px;padding:9px 11px;font-size:13px}
 .apbtn{border:none;border-radius:9px;padding:9px 15px;font-size:13px;font-weight:800;color:#fff}
-.apbtn.ok{background:#16a34a}.apbtn.no{background:#dc2626}.apbtn.cm{background:#796eff}
+.apbtn.ok{background:#16a34a}.apbtn.no{background:#dc2626}.apbtn.cm{background:#796eff}.apbtn.back{background:#ea580c}
 .apbtn.re{background:#64748b}
 .apverdict{font-size:11px;font-weight:800;padding:3px 10px;border-radius:20px;white-space:nowrap}
 .apverdict.appr{background:#dcfce7;color:#15803d}.apverdict.rej{background:#fee2e2;color:#b91c1c}.apverdict.pend{background:#ffedd5;color:#c2410c}
@@ -488,7 +488,11 @@ function clearCmtImg(){_cmtImgs=[];const inp=document.getElementById('cmtImgInpu
 async function sbPatch(tbl,id,obj){obj.updated_at=new Date().toISOString();let last='';for(let i=0;i<4;i++){try{const r=await fetch(SU+'/rest/v1/'+tbl+'?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{apikey:SK,Authorization:authH(),'Content-Type':'application/json'},body:JSON.stringify(obj)});if(r.ok)return;last='HTTP '+r.status;}catch(e){last=(e&&e.message)||'net';}await new Promise(res=>setTimeout(res,300*(i+1)));}throw new Error(last||'patch failed');}
 
 /* ---- data ---- */
-async function load(){
+let _lastSig='';
+function dataSig(){return TASKS.map(t=>t.id+':'+(t.updated_at||'')+':'+t._st+':'+(t.assignee||'')+':'+((t.logs||[]).length)).join('|')+'|m'+MEMBERS.length+'p'+PROJECTS.length+'s'+STATUSES.map(s=>s.k).join(',');}
+function isEditing(){const a=document.activeElement;return !!(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));}
+function renderKeepScroll(){const lc=document.getElementById('taskList');const st=lc?lc.scrollTop:0;const inn=lc&&(lc.querySelector('.board')||lc.querySelector('.gantt'));const il=inn?inn.scrollLeft:0,it=inn?inn.scrollTop:0;render();const lc2=document.getElementById('taskList');if(lc2)lc2.scrollTop=st;const inn2=lc2&&(lc2.querySelector('.board')||lc2.querySelector('.gantt'));if(inn2){inn2.scrollLeft=il;inn2.scrollTop=it;}}
+async function load(isPoll){
   const rows=await sbGet(TBL()+'?deleted=eq.false&select=*&order=updated_at.desc');
   // 取得失敗（通信断・一時エラー）時は既存表示を維持して空にしない＝「タスクが消えた」を防止
   if(rows===null){const lc=document.getElementById('taskList');if(lc&&!TASKS.length)lc.innerHTML='<div class="empty">接続待ち…（自動で再試行します）</div>';return;}
@@ -499,7 +503,13 @@ async function load(){
   const stRow=(rows||[]).find(r=>r.id==='_statuses');
   STATUSES=(Array.isArray(stRow&&stRow.attachments)&&stRow.attachments.filter(s=>s&&s.k&&s.l).length)?stRow.attachments.filter(s=>s&&s.k&&s.l):DEFAULT_STATUSES.map(s=>({...s}));
   TASKS=(rows||[]).filter(r=>r.id!=='_members'&&r.id!=='_projects'&&r.id!=='_statuses').map(t=>{const logs=Array.isArray(t.logs)?t.logs:[];const rq=logs.find(l=>l&&l.type==='req');return {...t,_st:normStatus(t.status),logs,requester:t.requester||(rq&&rq.by)||''};});
-  render();
+  const sig=dataSig();
+  if(isPoll){
+    if(sig===_lastSig)return;            // 変化なし→再描画しない（見ている位置を動かさない）
+    if(isEditing())return;               // 入力中（コメント等）は再描画しない＝消えない・ズレない
+  }
+  _lastSig=sig;
+  if(isPoll)renderKeepScroll(); else render();
   checkApprovalAlerts();
 }
 // 承認イベントをヘッダーにアラート表示（他端末の承認も次回load時に検知）
@@ -581,6 +591,10 @@ function activityHtml(){
 }
 /* ---- ステータス（列）管理：Supabase _statuses で全端末共有 ---- */
 async function saveStatuses(){try{await fetch(SU+'/rest/v1/asana_tasks',{method:'POST',headers:{apikey:SK,Authorization:authH(),'Content-Type':'application/json',Prefer:'resolution=merge-duplicates'},body:JSON.stringify({id:'_statuses',store:STORE,title:'__statuses__',attachments:STATUSES,deleted:false,updated_at:new Date().toISOString()})});}catch(e){toast('ステータス保存失敗');}}
+// ワークフロー用ステータス（対応中=決済者実行中 / チェック=依頼者確認）
+const ST_DOING={k:'doing',l:'対応中',c:'#0891b2',bg:'#ecfeff'};
+const ST_CHECK={k:'check',l:'チェック',c:'#7c3aed',bg:'#f5f3ff'};
+async function ensureStatus(def){if(STATUSES.some(s=>s.k===def.k))return;const di=STATUSES.findIndex(s=>s.k==='done');if(di>=0)STATUSES.splice(di,0,{...def});else STATUSES.push({...def});await saveStatuses();}
 async function addStatus(){var inp=document.getElementById('stInput');var n=(inp&&inp.value||'').trim();if(!n)return;if(STATUSES.some(function(s){return s.l===n;})){toast('同名のステータスがあります');return;}var pal=ST_PAL[STATUSES.length%ST_PAL.length];STATUSES.push({k:'st_'+Math.random().toString(36).slice(2,7),l:n,c:pal[0],bg:pal[1]});await saveStatuses();render();}
 async function renameStatus(k){var s=STATUSES.find(function(x){return x.k===k;});if(!s)return;var nn=prompt('ステータス名を変更',s.l);if(nn===null)return;nn=nn.trim();if(!nn||nn===s.l)return;s.l=nn;await saveStatuses();render();}
 async function moveStatus(i,dir){var j=i+dir;if(j<0||j>=STATUSES.length)return;var tmp=STATUSES[i];STATUSES[i]=STATUSES[j];STATUSES[j]=tmp;await saveStatuses();render();}
@@ -643,7 +657,7 @@ function lrow(t,depth){
   let h=`<div class="lrow ${SEL===t.id?'sel':''} ${apDecision(t)==='approved'?'apprd':''}" style="--d:${depth}">`+
     `<span class="ltw">${has?`<button class="lexp" onclick="event.stopPropagation();toggleExp('${t.id}')">${exp?'▾':'▸'}</button>`:''}</span>`+
     `<span class="lchk ${done?'done':''}" onclick="event.stopPropagation();toggleDone('${t.id}')">✓</span>`+
-    `<div class="lname" onclick="openTask('${t.id}')"><span class="lnt" style="${done?'text-decoration:line-through;color:#9a9ca2':''}">${esc(t.title)||'(無題)'}</span>${has?`<span class="lsubn">☑${subDone}/${subs.length}</span>`:''}${(t.logs||[]).filter(l=>!l||l.type!=='req').length?`<span class="lsubn">💬${(t.logs||[]).filter(l=>!l||l.type!=='req').length}</span>`:''}${apFlag(t)}</div>`+
+    `<div class="lname" onclick="openTask('${t.id}')"><span class="lnt" style="${done?'text-decoration:line-through;color:#9a9ca2':''}">${esc(t.title)||'(無題)'}</span>${has?`<span class="lsubn">☑${subDone}/${subs.length}</span>`:''}${(t.logs||[]).filter(l=>l&&!l.type).length?`<span class="lsubn">💬${(t.logs||[]).filter(l=>l&&!l.type).length}</span>`:''}${apFlag(t)}</div>`+
     `<div class="lcol lasg" onclick="openTask('${t.id}')">${t.assignee?`<span class="bav" style="background:${personColor(t.assignee)};color:#fff">${esc(ini(t.assignee))}</span><span class="lasgn" style="color:${personColor(t.assignee)};font-weight:700">${esc(t.assignee)}</span>`:'<span class="ldash">—</span>'}</div>`+
     `<div class="lcol ldue" onclick="openTask('${t.id}')">${t.due_date?`<span class="due ${dueClass(t.due_date)}">${dueLabel(t.due_date)}</span>`:'<span class="ldash">—</span>'}</div>`+
     `<div class="lcol" onclick="openTask('${t.id}')">${prioChip(t.priority)}</div>`+
@@ -680,7 +694,7 @@ function dueClass(d){if(!d)return '';const today=new Date().toISOString().slice(
 function dueLabel(d){if(!d)return '';const md=d.slice(5).replace('-','/');return md;}
 function taskRow(t){
   const done=t._st==='done';
-  const cmt=(t.logs||[]).filter(l=>!l||l.type!=='req').length;
+  const cmt=(t.logs||[]).filter(l=>l&&!l.type).length;
   const subs=children(t.id);
   return `<div class="trow ${SEL===t.id?'sel':''} ${done?'cdone':''}" onclick="openTask('${t.id}')">`+
     `<div class="chk ${done?'done':''}" onclick="event.stopPropagation();toggleDone('${t.id}')">✓</div>`+
@@ -699,7 +713,7 @@ function taskRow(t){
 
 /* ---- 承認インボックス（決済者用・別枠） ---- */
 function apCard(t,kind){
-  const cmtEntries=(t.logs||[]).map((l,i)=>({l,i})).filter(o=>o.l&&o.l.type!=='req');
+  const cmtEntries=(t.logs||[]).map((l,i)=>({l,i})).filter(o=>o.l&&!o.l.type);
   const lastCmts=cmtEntries.slice(-3).map(o=>`<div class="apcmt" style="display:flex;align-items:flex-start;gap:6px"><span style="flex:1;min-width:0"><b>${esc(o.l.by||'?')}</b> ${esc(o.l.text||((o.l.img||(o.l.imgs&&o.l.imgs.length))?'🖼 画像':''))}</span><button onclick="event.stopPropagation();delComment('${t.id}',${o.i})" title="削除" style="background:none;border:none;color:#cbd5e1;font-size:12px;cursor:pointer;padding:0;flex-shrink:0">✕</button></div>`).join('');
   const verdict=kind==='appr'?'<span class="apverdict appr">✅ 承認済</span>':kind==='rej'?'<span class="apverdict rej">⛔ 却下</span>':'<span class="apverdict pend">⏳ 承認待ち</span>';
   const ap=appOf(t);
@@ -716,7 +730,7 @@ function apCard(t,kind){
     (t.description?`<div class="apdesc">${esc(t.description)}</div>`:'')+
     (lastCmts?`<div class="apcmts">${lastCmts}</div>`:'')+
     (kind==='pend'
-      ? `<div class="apact"><input type="file" id="apcimg_${t.id}" accept="image/*" multiple style="display:none" onchange="onApcImgPick('${t.id}')"><button class="apbtn att" onclick="document.getElementById('apcimg_${t.id}').click()" title="画像を添付（複数可）">📎</button><input id="apc_${t.id}" placeholder="コメントバック（任意・Enterで送信）" onkeydown="if(event.key==='Enter'&&!event.isComposing&&event.keyCode!==229){event.preventDefault();apComment('${t.id}')}"><span id="apcchip_${t.id}" class="apcchip"></span><button class="apbtn cm" onclick="apComment('${t.id}')">💬</button><button class="apbtn ok" onclick="openApproveModal('${t.id}')">✅ 承認</button></div>`
+      ? `<div class="apact"><input type="file" id="apcimg_${t.id}" accept="image/*" multiple style="display:none" onchange="onApcImgPick('${t.id}')"><button class="apbtn att" onclick="document.getElementById('apcimg_${t.id}').click()" title="画像を添付（複数可）">📎</button><input id="apc_${t.id}" placeholder="コメントバック（任意・Enterで送信）" onkeydown="if(event.key==='Enter'&&!event.isComposing&&event.keyCode!==229){event.preventDefault();apComment('${t.id}')}"><span id="apcchip_${t.id}" class="apcchip"></span><button class="apbtn cm" onclick="apComment('${t.id}')">💬</button><button class="apbtn back" onclick="sendBack('${t.id}')">↩ 差し戻し</button><button class="apbtn ok" onclick="openApproveModal('${t.id}')">✅ 承認</button></div>`
       : `<div class="apact"><button class="apbtn re" onclick="reopenApproval('${t.id}')">↩ 承認待ちへ戻す</button></div>`)+
   `</div>`;
 }
@@ -790,14 +804,36 @@ async function applyApprove(id,assignee){
   const nowIso=new Date().toISOString();
   // 最新logsを取得して追記（同時コメント/承認の上書き防止）
   let base=t.logs||[];try{const rows=await sbGet(TBL()+'?id=eq.'+encodeURIComponent(id)+'&select=logs');if(rows&&rows[0]&&Array.isArray(rows[0].logs))base=rows[0].logs;}catch(e){}
+  await ensureStatus(ST_DOING);          // ⑤ 承認＝対応中（決済者実行中）へ
+  const fromL=(ST(t._st)||{}).l||t._st||'';
   const a=appOf(t);const nb={...a,required:true,state:'approved',decided_by:who,decided_at:nowIso};
-  const logs=[...base,{at:nowIso,by:who,text:'✅ 承認'+(assignee?'（担当: '+assignee+'）':'')+(note?'：'+note:'')}];
-  const patch={approval:nb,logs,admin_confirmed:true};
+  const logs=[...base,
+    {at:nowIso,by:who,text:'✅ 承認'+(assignee?'（担当: '+assignee+'）':'')+(note?'：'+note:'')},
+    {type:'status',at:nowIso,by:who,from:fromL,to:'対応中'}];
+  const patch={approval:nb,logs,admin_confirmed:true,status:'doing'};
+  t._st='doing';t.status='doing';
   if(assignee!==undefined){patch.assignee=assignee;t.assignee=assignee;}
-  var gk=hasSt('go')?'go':((STATUSES.find(function(s){return s.k!=='approval';})||{}).k);
-  if(gk&&(t._st==='approval'||t._st==='consult')){patch.status=gk;t._st=gk;t.status=gk;}
   t.approval=nb;t.logs=logs;t.admin_confirmed=true;render();if(SEL===id)openTask(id);
-  try{await sbPatch(TBL(),id,patch);toast('承認しました'+(assignee?'（担当: '+assignee+'）':''));}catch(e){toast('保存失敗');load();}
+  try{await sbPatch(TBL(),id,patch);toast('承認→対応中にしました'+(assignee?'（担当: '+assignee+'）':''));}catch(e){toast('保存失敗');load();}
+}
+// ③④ 差し戻し：承認待ちから依頼者へ戻して現場で再検討（コメント付き）
+async function sendBack(id){
+  const t=TASKS.find(x=>x.id===id);if(!t)return;
+  const reason=prompt('差し戻し（依頼者へ戻して現場で再検討）\n理由・指示を入力してください（任意）');
+  if(reason===null)return; // キャンセル
+  const sel=document.getElementById('apDecider');const who=((sel&&sel.value)||localStorage.getItem('asana_decider')||ME||'承認者').trim();
+  const nowIso=new Date().toISOString();
+  const req=(t.requester||'').trim();
+  const consultK=hasSt('consult')?'consult':fstK();
+  let base=t.logs||[];try{const rows=await sbGet(TBL()+'?id=eq.'+encodeURIComponent(id)+'&select=logs');if(rows&&rows[0]&&Array.isArray(rows[0].logs))base=rows[0].logs;}catch(e){}
+  const a=appOf(t);const nb={...a,state:'',decided_by:who,decided_at:nowIso};
+  const logs=[...base,{at:nowIso,by:who,text:'↩️ 差し戻し（依頼者へ・再検討依頼）'+((reason||'').trim()?'：'+reason.trim():'')}];
+  if(req&&(t.assignee||'')!==req)logs.push({type:'assign',at:nowIso,by:who,from:t.assignee||'未割当',to:req});
+  logs.push({type:'status',at:nowIso,by:who,from:(ST(t._st)||{}).l||t._st||'承認待ち',to:(ST(consultK)||{}).l||'依頼・相談'});
+  const patch={approval:nb,status:consultK,logs};
+  if(req)patch.assignee=req;
+  t.approval=nb;t._st=consultK;t.status=consultK;if(req)t.assignee=req;t.logs=logs;render();if(SEL===id)openTask(id);
+  try{await sbPatch(TBL(),id,patch);toast('差し戻しました（依頼者へ）');}catch(e){toast('保存失敗');load();}
 }
 async function reopenApproval(id){
   const t=TASKS.find(x=>x.id===id);if(!t)return;const a=appOf(t);const nb={...a,state:'pending',decided_by:'',decided_at:''};
@@ -920,6 +956,18 @@ async function toggleDone(id){
 function confirmAssign(id,el){const v=el.value;const t=TASKS.find(x=>x.id===id);const cur=(t&&t.assignee)||'';if(v===cur)return;const label=v||'未割当';if(confirm('担当者を「'+label+'」に変更します。いいですか？')){setField(id,'assignee',v);}else{el.value=cur;}}
 async function setField(id,field,val){
   const t=TASKS.find(x=>x.id===id);if(!t)return;
+  // ⑥ 対応中→完了 は、いったん依頼者の「チェック」へ回す（最終完了は依頼者が確定）
+  if(field==='status'&&val==='done'&&t._st==='doing'){
+    await ensureStatus(ST_CHECK);
+    const who=(ME||'担当').trim();const now=new Date().toISOString();const req=(t.requester||'').trim();
+    let base=t.logs||[];try{const rows=await sbGet(TBL()+'?id=eq.'+encodeURIComponent(id)+'&select=logs');if(rows&&rows[0]&&Array.isArray(rows[0].logs))base=rows[0].logs;}catch(e){}
+    const logs=[...base,{type:'status',at:now,by:who,from:'対応中',to:'チェック'},{at:now,by:who,text:'🏁 対応完了 → 依頼者の最終チェック待ち'}];
+    if(req&&(t.assignee||'')!==req)logs.push({type:'assign',at:now,by:who,from:t.assignee||'未割当',to:req});
+    const patch={status:'check',logs};if(req)patch.assignee=req;
+    t._st='check';t.status='check';if(req)t.assignee=req;t.logs=logs;render();if(SEL===id)openTask(id);
+    try{await sbPatch(TBL(),id,patch);toast('依頼者へ最終チェックを依頼しました');}catch(e){toast('更新失敗');}
+    return;
+  }
   const before=t[field];
   t[field]=val;if(field==='status'){t._st=normStatus(val);if(val==='done'&&!t.completed_at)t.completed_at=new Date().toISOString();}
   const patch={};patch[field]=val;if(field==='status'&&val==='done')patch.completed_at=t.completed_at;
@@ -1024,7 +1072,7 @@ function timelineHtml(){
 }
 function boardCard(t){
   const done=t._st==='done';const subs=children(t.id);const subDone=subs.filter(s=>s._st==='done').length;
-  const cmt=(t.logs||[]).filter(l=>!l||l.type!=='req').length;
+  const cmt=(t.logs||[]).filter(l=>l&&!l.type).length;
   const pc=t.priority==='高'?'#dc2626':t.priority==='低'?'#94a3b8':'#d97706';
   return `<div class="bcard ${apDecision(t)==='approved'?'apprd':''}" draggable="true" data-drag data-id="${t.id}" onclick="openTask('${t.id}')" style="border-left:5px solid ${pc}">`+
     `<div class="bcard-t" style="${done?'text-decoration:line-through;color:#9a9ca2':''}">${esc(t.title)||'(無題)'}</div>`+
@@ -1171,11 +1219,10 @@ function fmtAt(iso){try{const d=new Date(iso);const m=d.getMonth()+1,day=d.getDa
 
 /* ---- init + poll（ログイン不要・anon） ---- */
 setupDnD();
-load(); setInterval(function(){ if(!document.hidden) load(); },10000);
-// 復帰時に即同期（タブ復帰・ウィンドウフォーカス・オンライン復帰）＝更新の取りこぼし防止
-document.addEventListener('visibilitychange',function(){ if(!document.hidden) load(); });
-window.addEventListener('focus',function(){ load(); });
-window.addEventListener('online',function(){ load(); });
+load(); setInterval(function(){ if(!document.hidden) load(true); },10000);
+// 復帰時に即同期（タブ復帰・オンライン復帰）＝更新の取りこぼし防止（入力中・変化なしは描画しない）
+document.addEventListener('visibilitychange',function(){ if(!document.hidden) load(true); });
+window.addEventListener('online',function(){ load(true); });
 </script>
 </body>
 </html>
