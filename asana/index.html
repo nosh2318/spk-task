@@ -256,6 +256,13 @@ button{font-family:inherit;cursor:pointer}
 .acttxt{font-size:12.5px;color:#475569;background:#f8f8fa;border-radius:8px;padding:6px 9px;margin-top:3px;white-space:pre-wrap;word-break:break-word}
 .actimgs{display:flex;flex-wrap:wrap;gap:6px;margin-top:5px}
 .actimg{max-width:150px;max-height:150px;border-radius:8px;border:1px solid var(--line);display:block;object-fit:cover}
+.actseen{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:9px 12px;margin:8px 16px;font-size:12.5px;color:#1e40af}
+.actseenb{background:#2563eb;color:#fff;border:none;border-radius:8px;padding:7px 13px;font-size:12px;font-weight:800;cursor:pointer}
+.actrow.isnew{background:#fffbeb}
+.newbadge{display:inline-block;background:#f59e0b;color:#fff;font-size:9px;font-weight:900;padding:1px 6px;border-radius:5px;vertical-align:middle;margin-right:2px}
+.actnow{display:flex;gap:8px;flex-wrap:wrap;margin-top:5px}
+.actnow-st{font-size:10.5px;font-weight:800;border-radius:6px;padding:2px 8px}
+.actnow-as{font-size:11px;font-weight:700;color:#475569;background:#f1f5f9;border-radius:6px;padding:2px 8px}
 /* ===== 承認ヘッダーアラート ===== */
 .apralert{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9998;display:flex;flex-direction:column;gap:8px;align-items:center;width:min(92vw,460px);pointer-events:none}
 .apr-toast{pointer-events:auto;background:#ecfdf5;border:1px solid #6ee7b7;color:#065f46;border-radius:12px;padding:11px 14px;font-size:13px;font-weight:700;box-shadow:0 8px 24px rgba(16,185,129,.25);cursor:pointer;display:flex;align-items:center;gap:8px;width:100%;transition:opacity .4s}
@@ -461,6 +468,16 @@ async function appendLog(id,entry){
   await sbPatch(TBL(),id,{logs:merged});
   return merged;
 }
+// 状態/担当の変更を監査ログに記録しつつフィールドも保存（最新logs取得で上書き防止）
+async function logEvent(id,entry,patch){
+  let base=null;try{const rows=await sbGet(TBL()+'?id=eq.'+encodeURIComponent(id)+'&select=logs');if(rows&&rows[0]&&Array.isArray(rows[0].logs))base=rows[0].logs;}catch(e){}
+  const t=TASKS.find(x=>x.id===id);
+  if(base===null)base=(t&&Array.isArray(t.logs))?t.logs:[];
+  const logs=base.concat([entry]);
+  if(t)t.logs=logs;
+  await sbPatch(TBL(),id,Object.assign({logs},patch||{}));
+  return logs;
+}
 function taskImages(t){return (Array.isArray(t.attachments)?t.attachments:[]).filter(a=>a&&a.type==='img'&&a.url).map(a=>({url:a.url,name:a.name||''}));}
 async function pickTaskImg(id){const inp=document.getElementById('dImgInput');if(!inp)return;inp.value='';inp.onchange=async()=>{const files=[...(inp.files||[])];for(const f of files){if(!f.type||!f.type.startsWith('image/'))continue;toast('画像アップロード中…');try{const url=await uploadImg(f,id);const t=TASKS.find(x=>x.id===id);if(!t)continue;const arr=[...(Array.isArray(t.attachments)?t.attachments:[]),{type:'img',url,name:f.name||''}];t.attachments=arr;await sbPatch(TBL(),id,{attachments:arr});}catch(e){toast('画像アップロード失敗（バケット未作成?）');}}render();if(SEL===id)openTask(id);};inp.click();}
 async function delTaskImg(id,url){const t=TASKS.find(x=>x.id===id);if(!t)return;const arr=(Array.isArray(t.attachments)?t.attachments:[]).filter(a=>!(a&&a.type==='img'&&a.url===url));t.attachments=arr;render();if(SEL===id)openTask(id);try{await sbPatch(TBL(),id,{attachments:arr});}catch(e){toast('保存失敗');}}
@@ -519,25 +536,46 @@ function pjColor(a){let h=0;for(let i=0;i<a.length;i++)h=(h*31+a.charCodeAt(i))%
 function personColor(n){n=(n||'').trim();if(!n||n==='未'||n==='未割当')return '#b8b9bd';let h=0;for(let i=0;i<n.length;i++)h=(h*37+n.charCodeAt(i)*7)%360;return 'hsl('+h+',52%,50%)';}
 /* ---- アクティビティ（コメント・承認・依頼の一元タイムライン） ---- */
 let ACTF='all';
+let ACT_SEEN=localStorage.getItem('asana_act_seen')||'';
+if(!ACT_SEEN){ACT_SEEN=new Date().toISOString();localStorage.setItem('asana_act_seen',ACT_SEEN);}
 function setActF(k){ACTF=k;render();}
+function markActSeen(){ACT_SEEN=new Date().toISOString();localStorage.setItem('asana_act_seen',ACT_SEEN);render();}
+function actCountSince(iso){if(!iso)return 0;let n=0;TASKS.forEach(t=>{if(!t.id||t.id[0]==='_')return;(t.logs||[]).forEach(l=>{if(l&&l.at&&l.at>iso)n++;});});return n;}
+function actText(l){if(!l)return '';if(l.type==='status')return '状態を「'+esc(l.from||'?')+'」→「'+esc(l.to||'?')+'」に変更';if(l.type==='assign')return '担当を「'+esc(l.from||'未割当')+'」→「'+esc(l.to||'未割当')+'」に変更';if(l.type==='req')return esc(l.text||'タスクを作成');return esc(l.text||'');}
 let APPRASG='__all',APPRLAYOUT=localStorage.getItem('asana_apprlayout')||'col';
 function setApprLayout(v){APPRLAYOUT=v;localStorage.setItem('asana_apprlayout',v);render();}
-function actKind(l){if(l&&l.type==='req')return {k:'req',ic:'📨',lbl:'依頼',c:'#6366f1'};const tx=(l&&l.text)||'';if(tx.indexOf('✅ 承認')===0)return {k:'appr',ic:'✅',lbl:'承認',c:'#16a34a'};if(tx.indexOf('⛔ 却下')===0)return {k:'rej',ic:'⛔',lbl:'却下',c:'#dc2626'};return {k:'cmt',ic:'💬',lbl:'コメント',c:'#0891b2'};}
+function actKind(l){
+  if(l&&l.type==='req')return {k:'created',ic:'🆕',lbl:'作成',c:'#6366f1'};
+  if(l&&l.type==='status')return {k:'status',ic:(l.to==='完了'?'🏁':'🔄'),lbl:'状態',c:'#0891b2'};
+  if(l&&l.type==='assign')return {k:'assign',ic:'👤',lbl:'担当',c:'#7c3aed'};
+  const tx=(l&&l.text)||'';if(tx.indexOf('✅ 承認')===0)return {k:'appr',ic:'✅',lbl:'承認',c:'#16a34a'};if(tx.indexOf('⛔ 却下')===0)return {k:'rej',ic:'⛔',lbl:'却下',c:'#dc2626'};
+  return {k:'cmt',ic:'💬',lbl:'コメント',c:'#0891b2'};
+}
 function activityHtml(){
   const ev=[];
   TASKS.filter(t=>t.id&&t.id[0]!=='_').forEach(t=>{(t.logs||[]).forEach((l,idx)=>{if(!l)return;ev.push({t,l,idx,k:actKind(l),at:l.at||''});});});
   ev.sort((a,b)=>(b.at||'').localeCompare(a.at||''));
   const roots=TASKS.filter(t=>!t.parent_id);
   const sumHtml=`<div class="actsum">`+STATUSES.map(s=>{const n=roots.filter(t=>t._st===s.k).length;return `<div class="actsum-c" onclick="VIEW='board';localStorage.setItem('asana_view','board');selPj('__all')"><span class="pd" style="background:${s.c}"></span><span class="actsum-n">${n}</span><span class="actsum-l">${esc(s.l)}</span></div>`;}).join('')+`</div>`;
-  const filterHtml=`<div class="actfil">`+[['all','すべて'],['cmt','💬コメント'],['appr','✅承認'],['req','📨依頼']].map(f=>`<button class="actchip ${ACTF===f[0]?'on':''}" onclick="setActF('${f[0]}')">${f[1]}</button>`).join('')+`</div>`;
-  let list=ACTF==='all'?ev:ev.filter(e=>e.k.k===ACTF);
-  if(!list.length)return sumHtml+filterHtml+'<div class="empty">アクティビティがありません</div>';
-  let h=sumHtml+filterHtml+'<div class="actwrap">';let cur='';
+  const seen=ACT_SEEN;const newCount=ev.filter(e=>seen&&e.at>seen).length;
+  const me=(ME||'').trim();
+  const mineMatch=e=>me&&(e.l.by===me||(e.t.assignee||'')===me||(e.t.requester||'')===me||e.l.from===me||e.l.to===me);
+  const FILTERS=[['all','すべて'],['new','🆕 新着'+(newCount?'('+newCount+')':'')],['mine','👤 自分'],['status','🔄 状態'],['assign','👤 担当'],['cmt','💬 コメント'],['appr','✅ 承認']];
+  const filterHtml=`<div class="actfil">`+FILTERS.map(f=>`<button class="actchip ${ACTF===f[0]?'on':''}" onclick="setActF('${f[0]}')">${f[1]}</button>`).join('')+`</div>`;
+  const seenBar=`<div class="actseen"><span>📌 前回確認 <b>${seen?esc(fmtAt(seen)):'—'}</b> 以降の更新 <b>${newCount}件</b></span><button class="actseenb" onclick="markActSeen()">✓ ここまで確認（既読）</button></div>`;
+  let list=ev;
+  if(ACTF==='new')list=ev.filter(e=>seen&&e.at>seen);
+  else if(ACTF==='mine')list=ev.filter(mineMatch);
+  else if(ACTF!=='all')list=ev.filter(e=>e.k.k===ACTF);
+  if(!list.length)return sumHtml+seenBar+filterHtml+'<div class="empty">該当する更新はありません</div>';
+  let h=sumHtml+seenBar+filterHtml+'<div class="actwrap">';let cur='';
   list.forEach(e=>{const dk=(e.at||'').slice(0,10);if(dk!==cur){cur=dk;h+=`<div class="actdate">${dk?tlDateLabel(dk):'日時不明'}</div>`;}
+    const isNew=seen&&e.at>seen;
     const actImgArr=[...(Array.isArray(e.l.imgs)?e.l.imgs:[]),...(e.l.img?[e.l.img]:[])];
     const cimg=actImgArr.length?`<div class="actimgs">${actImgArr.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener" onclick="event.stopPropagation()"><img class="actimg" src="${esc(u)}" loading="lazy"></a>`).join('')}</div>`:'';
-    const txt=e.l.text?esc(e.l.text):(actImgArr.length?'🖼 画像':'');
-    h+=`<div class="actrow" onclick="openTask('${e.t.id}')"><div class="actav" style="background:${e.k.k==='req'?'#eef2ff':personColor(e.l.by)};color:${e.k.k==='req'?'#6366f1':'#fff'}">${e.k.ic}</div><div class="actbody"><div class="actmeta"><b style="color:${e.k.c}">${e.k.lbl}</b> ・ <b>${esc(e.l.by||'?')}</b> ・ ${esc(fmtAt(e.at))}</div><div class="acttask">${esc(e.t.title||'(無題)')}${e.t.parent_id?' <span style="color:#9a9ca2;font-weight:600">(サブ)</span>':''} <span style="color:${pjColor(e.t.area||'一般')};font-weight:700">●${esc(e.t.area||'一般')}</span></div>${txt?`<div class="acttxt">${txt}</div>`:''}${cimg}</div></div>`;
+    const txt=actText(e.l)||(actImgArr.length?'🖼 画像':'');
+    const cs=ST(e.t._st);
+    h+=`<div class="actrow ${isNew?'isnew':''}" onclick="openTask('${e.t.id}')"><div class="actav" style="background:${e.k.k==='created'?'#eef2ff':personColor(e.l.by)};color:${e.k.k==='created'?'#6366f1':'#fff'}">${e.k.ic}</div><div class="actbody"><div class="actmeta">${isNew?'<span class="newbadge">NEW</span> ':''}<b style="color:${e.k.c}">${e.k.lbl}</b> ・ <b>${esc(e.l.by||'?')}</b> ・ ${esc(fmtAt(e.at))}</div><div class="acttask">${esc(e.t.title||'(無題)')}${e.t.parent_id?' <span style="color:#9a9ca2;font-weight:600">(サブ)</span>':''} <span style="color:${pjColor(e.t.area||'一般')};font-weight:700">●${esc(e.t.area||'一般')}</span></div>${txt?`<div class="acttxt">${txt}</div>`:''}${cimg}<div class="actnow"><span class="actnow-st" style="background:${cs.bg};color:${cs.c}">今: ${esc(cs.l)}</span><span class="actnow-as">担当: ${esc(e.t.assignee||'未割当')}</span></div></div></div>`;
   });
   return h+'</div>';
 }
@@ -570,7 +608,8 @@ function render(){
   const adminItem=`<div class="pj ${CUR==='__admin'?'on':''}" onclick="selPj('__admin')" style="border-top:1px solid rgba(255,255,255,.08);margin-top:8px"><span class="pc" style="background:#a78bfa"></span>⚙️ 管理者</div>`;
   const pend=pendingApprovals().length;
   const apprItem=`<div class="pj appr ${CUR==='__approval'?'on':''}" onclick="selPj('__approval')"><span class="pc" style="background:#d97706"></span>🔖 承認${pend?`<span class="abadge">${pend}</span>`:'<span class="cnt">0</span>'}</div>`;
-  const actItem=`<div class="pj ${CUR==='__activity'?'on':''}" onclick="selPj('__activity')"><span class="pc" style="background:#0891b2"></span>🔔 アクティビティ</div>`;
+  const actNew=actCountSince(ACT_SEEN);
+  const actItem=`<div class="pj ${CUR==='__activity'?'on':''}" onclick="selPj('__activity')"><span class="pc" style="background:#0891b2"></span>🔔 アクティビティ${actNew?`<span class="abadge">${actNew}</span>`:''}</div>`;
   // 担当者別フィルタ（メンバーごとのタスク数）
   const roots=TASKS.filter(t=>!t.parent_id);
   const asgCount={};roots.forEach(t=>{const a=(t.assignee||'').trim();if(a)asgCount[a]=(asgCount[a]||0)+1;});
@@ -582,7 +621,7 @@ function render(){
   document.getElementById('navProjects').innerHTML=navHtml;
   document.getElementById('pjChips').innerHTML=`<button class="pjchip ${CUR==='__all'?'on':''}" onclick="selPj('__all')">全タスク</button>`+
     `<button class="pjchip ${CUR==='__approval'?'on':''}" onclick="selPj('__approval')">🔖承認${pend?` (${pend})`:''}</button>`+
-    `<button class="pjchip ${CUR==='__activity'?'on':''}" onclick="selPj('__activity')">🔔活動</button>`+
+    `<button class="pjchip ${CUR==='__activity'?'on':''}" onclick="selPj('__activity')">🔔活動${actNew?` (${actNew})`:''}</button>`+
     pjs.map(p=>`<button class="pjchip ${CUR===p.a?'on':''}" onclick="selPj('${esc(p.a).replace(/'/g,"\\'")}')"><span style="width:8px;height:8px;border-radius:3px;background:${pjColor(p.a)};display:inline-block"></span>${esc(p.a)}</button>`).join('')+`<button class="pjchip ${CUR==='__admin'?'on':''}" onclick="selPj('__admin')">⚙️管理</button>`+asgNames.map(a=>`<button class="pjchip ${CUR==='__asg__'+a?'on':''}" onclick="selPj('__asg__${asgEsc(a)}')">👤${esc(a)}</button>`).join('');
   const vs=document.getElementById('viewSeg');if(vs)vs.innerHTML=[['board','🗂','ボード'],['list','📋','リスト'],['timeline','📅','タイムライン']].map(v=>`<button class="vsegb ${VIEW===v[0]?'on':''}" onclick="setView('${v[0]}')"><span class="vsi">${v[1]}</span><span class="vsl">${v[2]}</span></button>`).join('');
   const lc=document.getElementById('taskList');
@@ -881,12 +920,17 @@ async function toggleDone(id){
 function confirmAssign(id,el){const v=el.value;const t=TASKS.find(x=>x.id===id);const cur=(t&&t.assignee)||'';if(v===cur)return;const label=v||'未割当';if(confirm('担当者を「'+label+'」に変更します。いいですか？')){setField(id,'assignee',v);}else{el.value=cur;}}
 async function setField(id,field,val){
   const t=TASKS.find(x=>x.id===id);if(!t)return;
+  const before=t[field];
   t[field]=val;if(field==='status'){t._st=normStatus(val);if(val==='done'&&!t.completed_at)t.completed_at=new Date().toISOString();}
   const patch={};patch[field]=val;if(field==='status'&&val==='done')patch.completed_at=t.completed_at;
   // 「承認待ち」へ入れたら承認タブのpendingに（過去の判定はリセット）
   if(field==='status'&&val==='approval'){const a=appOf(t);const nb={...a,state:'pending',by:ME||'',at:new Date().toISOString(),decided_by:'',decided_at:''};t.approval=nb;patch.approval=nb;}
+  // 監査ログ：状態変更・担当変更を記録（誰が・いつ・何→何）
+  const who=(ME||'担当').trim();let evt=null;
+  if(field==='status'&&before!==val){const fl=(ST(normStatus(before))||{}).l||before||'未設定';const tl=(ST(normStatus(val))||{}).l||val;evt={type:'status',at:new Date().toISOString(),by:who,from:fl,to:tl};}
+  else if(field==='assignee'&&(before||'')!==(val||'')){evt={type:'assign',at:new Date().toISOString(),by:who,from:before||'未割当',to:val||'未割当'};}
   render();
-  try{await sbPatch(TBL(),id,patch);}catch(e){toast('更新失敗');}
+  try{if(evt){await logEvent(id,evt,patch);}else{await sbPatch(TBL(),id,patch);}}catch(e){toast('更新失敗');}
 }
 async function toggleConfirm(id){
   const t=TASKS.find(x=>x.id===id);if(!t)return;t.admin_confirmed=!t.admin_confirmed;
@@ -1081,7 +1125,8 @@ function openTask(id){
   const cmts=(t.logs||[]).map((c,idx)=>{
     const cimgArr=[...(Array.isArray(c.imgs)?c.imgs:[]),...(c.img?[c.img]:[])];
     const cimg=cimgArr.length?`<div class="cimgs">${cimgArr.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener"><img class="cimg" src="${esc(u)}" loading="lazy"></a>`).join('')}</div>`:'';
-    if(c.type==='req')return `<div class="cmt"><div class="av" style="background:#eef2ff;color:#6366f1">📨</div><div class="cb"><div class="cmeta"><b>${esc(c.by)}</b> が依頼 ・ ${esc(fmtAt(c.at))}${cdel(idx)}</div>${c.text?`<div class="ctxt" style="background:#eef2ff">${esc(c.text)}</div>`:''}${cimg}</div></div>`;
+    if(c.type==='status'||c.type==='assign'){const k=actKind(c);return `<div class="cmt"><div class="av" style="background:${c.type==='assign'?'#f5f3ff':'#ecfeff'};color:${k.c}">${k.ic}</div><div class="cb"><div class="cmeta"><b>${esc(c.by)}</b> ・ ${esc(fmtAt(c.at))}${cdel(idx)}</div><div class="ctxt" style="background:#f8fafc;color:#334155">${actText(c)}</div></div></div>`;}
+    if(c.type==='req')return `<div class="cmt"><div class="av" style="background:#eef2ff;color:#6366f1">🆕</div><div class="cb"><div class="cmeta"><b>${esc(c.by)}</b> が依頼 ・ ${esc(fmtAt(c.at))}${cdel(idx)}</div>${c.text?`<div class="ctxt" style="background:#eef2ff">${esc(c.text)}</div>`:''}${cimg}</div></div>`;
     return `<div class="cmt"><div class="av" style="background:${personColor(c.by)};color:#fff">${esc(ini(c.by))}</div><div class="cb"><div class="cmeta"><b>${esc(c.by)}</b> ・ ${esc(fmtAt(c.at))}${cdel(idx)}</div>${c.text?`<div class="ctxt">${esc(c.text)}</div>`:''}${cimg}</div></div>`;
   }).join('')||'<div style="font-size:12px;color:#9a9ca2">まだコメントはありません</div>';
   const pjOpts=projects().map(p=>`<option value="${esc(p.a)}" ${(t.area||'一般')===p.a?'selected':''}>${esc(p.a)}</option>`).join('');
