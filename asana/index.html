@@ -502,6 +502,9 @@ async function load(isPoll){
   PROJECTS=Array.isArray(projRow&&projRow.attachments)?projRow.attachments.filter(Boolean):[];
   const stRow=(rows||[]).find(r=>r.id==='_statuses');
   STATUSES=(Array.isArray(stRow&&stRow.attachments)&&stRow.attachments.filter(s=>s&&s.k&&s.l).length)?stRow.attachments.filter(s=>s&&s.k&&s.l):DEFAULT_STATUSES.map(s=>({...s}));
+  // ワークフロー用ステータス（対応中・チェック）を常設化
+  if(!STATUSES.some(s=>s.k==='doing')){await ensureStatus(ST_DOING);}
+  if(!STATUSES.some(s=>s.k==='check')){await ensureStatus(ST_CHECK);}
   TASKS=(rows||[]).filter(r=>r.id!=='_members'&&r.id!=='_projects'&&r.id!=='_statuses').map(t=>{const logs=Array.isArray(t.logs)?t.logs:[];const rq=logs.find(l=>l&&l.type==='req');return {...t,_st:normStatus(t.status),logs,requester:t.requester||(rq&&rq.by)||''};});
   const sig=dataSig();
   if(isPoll){
@@ -715,7 +718,7 @@ function taskRow(t){
 function apCard(t,kind){
   const cmtEntries=(t.logs||[]).map((l,i)=>({l,i})).filter(o=>o.l&&!o.l.type);
   const lastCmts=cmtEntries.slice(-3).map(o=>`<div class="apcmt" style="display:flex;align-items:flex-start;gap:6px"><span style="flex:1;min-width:0"><b>${esc(o.l.by||'?')}</b> ${esc(o.l.text||((o.l.img||(o.l.imgs&&o.l.imgs.length))?'🖼 画像':''))}</span><button onclick="event.stopPropagation();delComment('${t.id}',${o.i})" title="削除" style="background:none;border:none;color:#cbd5e1;font-size:12px;cursor:pointer;padding:0;flex-shrink:0">✕</button></div>`).join('');
-  const verdict=kind==='appr'?'<span class="apverdict appr">✅ 承認済</span>':kind==='rej'?'<span class="apverdict rej">⛔ 却下</span>':'<span class="apverdict pend">⏳ 承認待ち</span>';
+  const verdict=kind==='appr'?'<span class="apverdict appr">✅ 承認済</span>':kind==='rej'?'<span class="apverdict rej">⛔ 却下</span>':kind==='doing'?'<span class="apverdict" style="background:#ecfeff;color:#0891b2">🔧 対応中</span>':kind==='check'?'<span class="apverdict" style="background:#f5f3ff;color:#7c3aed">🔍 チェック</span>':'<span class="apverdict pend">⏳ 承認待ち</span>';
   const ap=appOf(t);
   const decided=ap.decided_by?`<span>判定: ${esc(ap.decided_by)} ・ ${esc(fmtAt(ap.decided_at||''))}</span>`:'';
   return `<div class="apcard ${kind}">`+
@@ -729,23 +732,27 @@ function apCard(t,kind){
     `</div>`+
     (t.description?`<div class="apdesc">${esc(t.description)}</div>`:'')+
     (lastCmts?`<div class="apcmts">${lastCmts}</div>`:'')+
-    (kind==='pend'
-      ? `<div class="apact"><input type="file" id="apcimg_${t.id}" accept="image/*" multiple style="display:none" onchange="onApcImgPick('${t.id}')"><button class="apbtn att" onclick="document.getElementById('apcimg_${t.id}').click()" title="画像を添付（複数可）">📎</button><input id="apc_${t.id}" placeholder="コメントバック（任意・Enterで送信）" onkeydown="if(event.key==='Enter'&&!event.isComposing&&event.keyCode!==229){event.preventDefault();apComment('${t.id}')}"><span id="apcchip_${t.id}" class="apcchip"></span><button class="apbtn cm" onclick="apComment('${t.id}')">💬</button><button class="apbtn back" onclick="sendBack('${t.id}')">↩ 差し戻し</button><button class="apbtn ok" onclick="openApproveModal('${t.id}')">✅ 承認</button></div>`
-      : `<div class="apact"><button class="apbtn re" onclick="reopenApproval('${t.id}')">↩ 承認待ちへ戻す</button></div>`)+
+    (()=>{
+      const cb=`<input type="file" id="apcimg_${t.id}" accept="image/*" multiple style="display:none" onchange="onApcImgPick('${t.id}')"><button class="apbtn att" onclick="document.getElementById('apcimg_${t.id}').click()" title="画像を添付（複数可）">📎</button><input id="apc_${t.id}" placeholder="コメント（任意・Enterで送信）" onkeydown="if(event.key==='Enter'&&!event.isComposing&&event.keyCode!==229){event.preventDefault();apComment('${t.id}')}"><span id="apcchip_${t.id}" class="apcchip"></span><button class="apbtn cm" onclick="apComment('${t.id}')">💬</button>`;
+      if(kind==='pend')return `<div class="apact">${cb}<button class="apbtn back" onclick="sendBack('${t.id}')">↩ 差し戻し</button><button class="apbtn ok" onclick="openApproveModal('${t.id}')">✅ 承認</button></div>`;
+      if(kind==='doing')return `<div class="apact">${cb}<button class="apbtn ok" onclick="setField('${t.id}','status','done')">🏁 対応完了（→依頼者チェック）</button></div>`;
+      if(kind==='check')return `<div class="apact">${cb}<button class="apbtn back" onclick="sendBack('${t.id}')">↩ 差し戻し</button><button class="apbtn ok" onclick="setField('${t.id}','status','done')">✅ 最終完了</button></div>`;
+      return `<div class="apact"><button class="apbtn re" onclick="reopenApproval('${t.id}')">↩ 承認待ちへ戻す</button></div>`;
+    })()+
   `</div>`;
 }
 function approvalHtml(){
   const sortDue=a=>a.sort((x,y)=>(x.due_date||'9999').localeCompare(y.due_date||'9999'));
   const matchAsg=t=>APPRASG==='__all'||(t.assignee||'')===(APPRASG==='__none'?'':APPRASG);
   const pend=sortDue(TASKS.filter(isApprPending)).filter(matchAsg);
-  const appr=TASKS.filter(t=>!isApprPending(t)&&apDecision(t)==='approved').filter(matchAsg);
+  const appr=TASKS.filter(t=>!isApprPending(t)&&apDecision(t)==='approved'&&t._st!=='doing'&&t._st!=='check').filter(matchAsg);
   const rej=TASKS.filter(t=>!isApprPending(t)&&apDecision(t)==='rejected').filter(matchAsg);
   // 承認待ちの担当者候補
   const asgSet={};TASKS.filter(isApprPending).forEach(t=>{const a=(t.assignee||'').trim();asgSet[a]=(asgSet[a]||0)+1;});
   const asgNames=MEMBERS.filter(m=>asgSet[m]).concat(Object.keys(asgSet).filter(a=>a&&!MEMBERS.includes(a)));
   const asgOpts=`<option value="__all">すべての担当</option>`+asgNames.map(m=>`<option value="${esc(m)}" ${APPRASG===m?'selected':''}>${esc(m)}（${asgSet[m]}）</option>`).join('')+(asgSet['']?`<option value="__none" ${APPRASG==='__none'?'selected':''}>未割当（${asgSet['']}）</option>`:'');
   let h='<div class="apwrap'+(APPRLAYOUT==='col'?' apwide':'')+'">';
-  h+=`<div class="apintro">🔖 ステータスを「承認待ち」にしたタスクが集まります。決済者が確認し、コメントバック・承認で進めます。<span class="who">決済者 <select id="apDecider" onchange="localStorage.setItem('asana_decider',this.value)">${memberOpts(localStorage.getItem('asana_decider')||ME||'')}</select></span></div>`;
+  h+=`<div class="apintro">🛡 決済者タブ：承認待ち → 🔧対応中（承認後の実行）→ 🔍チェック（依頼者確認）→ 完了 を一気通貫で管理。<span class="who">決済者 <select id="apDecider" onchange="localStorage.setItem('asana_decider',this.value)">${memberOpts(localStorage.getItem('asana_decider')||ME||'')}</select></span></div>`;
   h+=`<div class="aptools"><label>👤 担当者で表示</label><select onchange="APPRASG=this.value;render()">${asgOpts}</select><span class="aplay"><button class="apgrp ${APPRLAYOUT==='col'?'on':''}" onclick="setApprLayout('col')">👤 担当者カラム</button><button class="apgrp ${APPRLAYOUT!=='col'?'on':''}" onclick="setApprLayout('list')">📋 リスト</button></span></div>`;
   h+=`<div class="apsec">⏳ 承認待ち（${pend.length}）${APPRLAYOUT==='col'?'・担当者カラム':''}</div>`;
   if(!pend.length)h+='<div class="empty">承認待ちはありません 🎉</div>';
@@ -755,7 +762,12 @@ function approvalHtml(){
     if(cnt['']!==undefined)ordered.push('');
     h+=`<div class="board apboard">`+ordered.map(name=>{const label=name||'未割当';const cards=pend.filter(t=>(t.assignee||'')===name);return `<div class="bcol"><div class="bcol-h"><span class="bav" style="background:${personColor(name)};color:#fff">${esc(ini(label))}</span>${esc(label)}<span class="bn">${cards.length}</span></div><div class="bcol-body apcolbody">${cards.map(t=>apCard(t,'pend')).join('')}</div></div>`;}).join('')+`</div>`;
   }else h+=pend.map(t=>apCard(t,'pend')).join('');
-  if(appr.length){h+=`<div class="apsec">✅ 承認済（${appr.length}）</div>`+appr.map(t=>apCard(t,'appr')).join('');}
+  // 承認に紐づく実行ステージ（決済者タブで一気通貫管理）
+  const doing=sortDue(TASKS.filter(t=>!t.parent_id&&t._st==='doing')).filter(matchAsg);
+  const check=sortDue(TASKS.filter(t=>!t.parent_id&&t._st==='check')).filter(matchAsg);
+  h+=`<div class="apsec">🔧 対応中（${doing.length}）・決済者実行中</div>`+(doing.length?doing.map(t=>apCard(t,'doing')).join(''):'<div class="empty">対応中はありません</div>');
+  if(check.length){h+=`<div class="apsec">🔍 チェック・依頼者確認待ち（${check.length}）</div>`+check.map(t=>apCard(t,'check')).join('');}
+  if(appr.length){h+=`<div class="apsec">✅ 承認済（履歴）（${appr.length}）</div>`+appr.map(t=>apCard(t,'appr')).join('');}
   if(rej.length){h+=`<div class="apsec">⛔ 却下（${rej.length}）</div>`+rej.map(t=>apCard(t,'rej')).join('');}
   return h+'</div>';
 }
