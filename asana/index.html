@@ -598,6 +598,9 @@ async function saveStatuses(){try{await fetch(SU+'/rest/v1/asana_tasks',{method:
 const ST_DOING={k:'doing',l:'対応中',c:'#0891b2',bg:'#ecfeff'};
 const ST_CHECK={k:'check',l:'チェック',c:'#7c3aed',bg:'#f5f3ff'};
 async function ensureStatus(def){if(STATUSES.some(s=>s.k===def.k))return;const di=STATUSES.findIndex(s=>s.k==='done');if(di>=0)STATUSES.splice(di,0,{...def});else STATUSES.push({...def});await saveStatuses();}
+// 対応中・チェックは「承認とセット＝決済者タスク」なので決済者タブのみで管理。ボード/リストの列からは除外
+const WF_DECIDER=['doing','check'];
+function boardStatuses(){return STATUSES.filter(s=>WF_DECIDER.indexOf(s.k)<0);}
 async function addStatus(){var inp=document.getElementById('stInput');var n=(inp&&inp.value||'').trim();if(!n)return;if(STATUSES.some(function(s){return s.l===n;})){toast('同名のステータスがあります');return;}var pal=ST_PAL[STATUSES.length%ST_PAL.length];STATUSES.push({k:'st_'+Math.random().toString(36).slice(2,7),l:n,c:pal[0],bg:pal[1]});await saveStatuses();render();}
 async function renameStatus(k){var s=STATUSES.find(function(x){return x.k===k;});if(!s)return;var nn=prompt('ステータス名を変更',s.l);if(nn===null)return;nn=nn.trim();if(!nn||nn===s.l)return;s.l=nn;await saveStatuses();render();}
 async function moveStatus(i,dir){var j=i+dir;if(j<0||j>=STATUSES.length)return;var tmp=STATUSES[i];STATUSES[i]=STATUSES[j];STATUSES[j]=tmp;await saveStatuses();render();}
@@ -675,7 +678,7 @@ function listHtml(){
   if(filt==='open')rows=rows.filter(t=>t._st!=='done');
   else if(filt==='done')rows=rows.filter(t=>t._st==='done');
   let html='<div class="ltbl"><div class="lhead"><span class="ltw"></span><span class="lchk2"></span><div class="lname">名前</div><div class="lcol">担当</div><div class="lcol">期日</div><div class="lcol">優先度</div><div class="lcol ltag">プロジェクト</div></div>';
-  STATUSES.forEach(s=>{
+  boardStatuses().forEach(s=>{
     const g=rows.filter(t=>t._st===s.k).sort((a,b)=>(a.due_date||'9999').localeCompare(b.due_date||'9999'));
     const col=!!COLLAPSE[s.k];
     html+=`<div class="lgh" onclick="toggleGroup('${s.k}')"><span class="lgtw">${col?'▸':'▾'}</span><span class="chip" style="background:${s.bg};color:${s.c}">${s.l}</span><span class="lgn">${g.length}</span></div>`;
@@ -1125,7 +1128,7 @@ function boardHtml(){
     cols=ordered.map(assigneeCol).join('');
     hint='💡 担当者ごとの縦列。カードを別の人の列へドラッグ（スマホは長押し→移動）すると<b>担当者が変わります</b>。';
   }else{
-    cols=STATUSES.map(statusCol).join('');
+    cols=boardStatuses().map(statusCol).join('');
     hint='💡 PCはドラッグ／スマホは<b>カードを長押し→指を移動</b>で列（ステータス）を変更。タップで詳細でも変更可。';
   }
   return '<div class="bhint">'+hint+'</div>'+toggle+'<div class="board" id="board">'+cols+'</div>';
@@ -1213,7 +1216,7 @@ function openTask(id){
       ${bcrumb}
       <textarea class="dtitle" id="dTitle" rows="1" onchange="setField('${t.id}','title',this.value)">${esc(t.title)}</textarea>
       <div style="font-size:11px;color:#9a9ca2;margin:-8px 0 10px">✏️ 編集したら右上の「💾保存」で確定（各項目は変更時にも自動保存されます）</div>
-      <div class="statpills">${STATUSES.map(s=>`<button class="statpill ${t._st===s.k?'on':''}" style="${t._st===s.k?('background:'+s.bg+';color:'+s.c+';border-color:'+s.c):''}" onclick="setField('${t.id}','status','${s.k}')">${s.l}</button>`).join('')}</div>
+      <div class="statpills">${(()=>{let ps=boardStatuses();if((t._st==='doing'||t._st==='check')&&!ps.some(s=>s.k===t._st))ps=ps.concat([ST(t._st)]);return ps.map(s=>`<button class="statpill ${t._st===s.k?'on':''}" style="${t._st===s.k?('background:'+s.bg+';color:'+s.c+';border-color:'+s.c):''}" onclick="setField('${t.id}','status','${s.k}')">${s.l}</button>`).join('');})()}</div>
       <div class="aptoggle"><span class="apl">承認</span><button class="${apOn?'on':''}" onclick="setApprovalFlag('${t.id}',${apOn?'false':'true'})">${apOn?'🔖 承認待ち（承認タブに表示中）':'🔖 承認に出す'}</button>${apOn?'<span class="apverdict pend">⏳ 承認待ち</span>':(apSt==='approved'?'<span class="apverdict appr">✅ 承認済</span>':apSt==='rejected'?'<span class="apverdict rej">⛔ 却下</span>':'')}</div>
       <div style="height:10px"></div>
       <div class="frow"><label>依頼者</label><select id="dReq" onchange="setField('${t.id}','requester',this.value)">${memberOpts(t.requester||'')}</select></div>
