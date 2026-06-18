@@ -344,6 +344,20 @@ function MyTasks({tasks,me,people,...h}){
 }
 
 /* ===== TIMELINE ===== */
+function AreasView({tasks,h,onAddTop}){
+  const [v,setV]=useState(()=>{try{return localStorage.getItem("hdmtodo_areasview")||"board";}catch(e){return "board";}});
+  const setVP=x=>{setV(x);try{localStorage.setItem("hdmtodo_areasview",x);}catch(e){}};
+  return (<div>
+    <div className="tl-grp" style={{marginBottom:12}}>
+      <span className="tl-grp-l">表示</span>
+      <button className={v==="board"?"on":""} onClick={()=>setVP("board")}>▦ ボード（状態で動かす）</button>
+      <button className={v==="tree"?"on":""} onClick={()=>setVP("tree")}>🗂 領域ツリー（領域→親→子で俯瞰）</button>
+    </div>
+    {v==="tree"
+      ? <AreaTree tasks={tasks} onOpen={h.onOpen} onAddChild={h.onAddChild} onAddTop={onAddTop} onComplete={h.onComplete}/>
+      : <TaskList tasks={tasks} {...h}/>}
+  </div>);
+}
 function Timeline({tasks,goals,onOpen,onCreate,shifts,onSchedule}){
   const base = parse(goals.month+"-01");
   const dim = new Date(base.getFullYear(),base.getMonth()+1,0).getDate();
@@ -1119,7 +1133,7 @@ function TodoTab({store, sb, label, hostStaff, hostShifts}){
   const syncColor=sync==="cloud"?"#14a44d":sync==="off"?"#e8384f":"#f59e0b";
 
   const body=(
-    tab==="areas"   ? <TaskList tasks={viewTasks} {...h}/> :
+    tab==="areas"   ? <AreasView tasks={viewTasks} h={h} onAddTop={onAddTop}/> :
     tab==="timeline"? <Timeline tasks={viewTasks} goals={goals} onOpen={onOpen} onCreate={onNew} shifts={hostShifts} onSchedule={(id,start,due,patch)=>updTask(id,{start,due,...(patch||{})})}/> :
     tab==="list"    ? <TaskList tasks={viewTasks} {...h}/> :
     tab==="dash"    ? <Dashboard tasks={viewTasks} goals={goals} go={setTab}/> :

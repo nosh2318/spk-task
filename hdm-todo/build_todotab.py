@@ -227,7 +227,7 @@ function TodoTab({store, sb, label, hostStaff, hostShifts}){
   const syncColor=sync==="cloud"?"#14a44d":sync==="off"?"#e8384f":"#f59e0b";
 
   const body=(
-    tab==="areas"   ? <TaskList tasks={viewTasks} {...h}/> :
+    tab==="areas"   ? <AreasView tasks={viewTasks} h={h} onAddTop={onAddTop}/> :
     tab==="timeline"? <Timeline tasks={viewTasks} goals={goals} onOpen={onOpen} onCreate={onNew} shifts={hostShifts} onSchedule={(id,start,due,patch)=>updTask(id,{start,due,...(patch||{})})}/> :
     tab==="list"    ? <TaskList tasks={viewTasks} {...h}/> :
     tab==="dash"    ? <Dashboard tasks={viewTasks} goals={goals} go={setTab}/> :
