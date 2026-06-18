@@ -209,7 +209,7 @@ function TodoTab({store, sb, label, hostStaff, hostShifts}){
     if(patch.status==="完了"&&!patch.completedAt)patch.completedAt=TODAY;
     if(patch.status!=="完了")patch.completedAt=null;
     if(patch.id){ updTask(patch.id,patch); }
-    else{ const nt={...patch,id:uid(),createdAt:TODAY}; setTasks(ts=>[nt,...ts]); dbUpsertTask(nt); }
+    else{ if(!confirm("このタスクを登録します。いいですか？"))return; const nt={...patch,id:uid(),createdAt:TODAY}; setTasks(ts=>[nt,...ts]); dbUpsertTask(nt); }
     setEditor(null);
   };
   const delTask=f=>{
@@ -228,7 +228,7 @@ function TodoTab({store, sb, label, hostStaff, hostShifts}){
 
   const body=(
     tab==="areas"   ? <TaskList tasks={viewTasks} {...h}/> :
-    tab==="timeline"? <Timeline tasks={viewTasks} goals={goals} onOpen={onOpen} onCreate={onNew} shifts={hostShifts}/> :
+    tab==="timeline"? <Timeline tasks={viewTasks} goals={goals} onOpen={onOpen} onCreate={onNew} shifts={hostShifts} onSchedule={(id,start,due,assignee)=>updTask(id,assignee?{start,due,assignee}:{start,due})}/> :
     tab==="list"    ? <TaskList tasks={viewTasks} {...h}/> :
     tab==="dash"    ? <Dashboard tasks={viewTasks} goals={goals} go={setTab}/> :
     tab==="ai"      ? <AIManager tasks={viewTasks} goals={goals}/> :
