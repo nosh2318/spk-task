@@ -227,7 +227,7 @@ function TodoTab({store, sb, label, hostStaff, hostShifts}){
   const syncColor=sync==="cloud"?"#14a44d":sync==="off"?"#e8384f":"#f59e0b";
 
   const body=(
-    tab==="areas"   ? <AreaTree tasks={viewTasks} onOpen={onOpen} onAddChild={onAddChild} onAddTop={onAddTop} onComplete={onComplete}/> :
+    tab==="areas"   ? <TaskList tasks={viewTasks} {...h}/> :
     tab==="timeline"? <Timeline tasks={viewTasks} goals={goals} onOpen={onOpen} onCreate={onNew} shifts={hostShifts}/> :
     tab==="list"    ? <TaskList tasks={viewTasks} {...h}/> :
     tab==="dash"    ? <Dashboard tasks={viewTasks} goals={goals} go={setTab}/> :
@@ -263,7 +263,7 @@ function TodoTab({store, sb, label, hostStaff, hostShifts}){
   );
 }
 const TODO_TABS=[
-  {k:"areas",ic:"🗂",label:"担当領域"},{k:"timeline",ic:"🗓",label:"タイムライン"},
+  {k:"areas",ic:"▦",label:"ボード"},{k:"timeline",ic:"🗓",label:"タイムライン"},
   {k:"list",ic:"≣",label:"一覧"},{k:"dash",ic:"📊",label:"ダッシュ"},
   {k:"ai",ic:"🤖",label:"AI管理"},{k:"logs",ic:"📜",label:"ログ"},
   {k:"staff",ic:"👥",label:"スタッフ"},{k:"goals",ic:"🎯",label:"目標"},
