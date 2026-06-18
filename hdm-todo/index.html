@@ -157,6 +157,10 @@ input,select,textarea{font-family:inherit;font-size:16px}
   box-shadow:0 1px 2px rgba(0,0,0,.18)}
 .tl-bar .pf{position:absolute;left:0;top:0;bottom:0;background:#ffffff38;border-radius:7px}
 .tl-hint{font-size:12px;color:var(--sub);padding:9px 14px;background:var(--accent-soft);border-radius:10px;margin-bottom:12px;display:flex;gap:8px;align-items:center}
+.tl-grp{display:flex;align-items:center;gap:7px;margin-bottom:10px}
+.tl-grp .tl-grp-l{font-size:11px;font-weight:800;color:var(--sub)}
+.tl-grp button{border:1px solid var(--line);background:#fff;border-radius:9px;padding:7px 12px;font-size:12.5px;font-weight:700;color:var(--sub)}
+.tl-grp button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
 .tl-unsched{background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:12px}
 .tl-unsched-h{font-size:12.5px;font-weight:800;color:var(--sub);margin-bottom:8px}
 .tl-unsched-tip{font-weight:600;color:var(--mut);font-size:11px}
@@ -710,16 +714,22 @@ function Timeline({tasks,goals,onOpen,onCreate,shifts,onSchedule}){
   const rows = assigneeList();
   const [drag,setDrag] = useState(null);
   const [schedId,setSchedId] = useState(null);
+  const [grp,setGrp] = useState(()=>{try{return localStorage.getItem("hdmtodo_tlgrp")||"assignee";}catch(e){return "assignee";}});
+  const setGrpP = v=>{setGrp(v);try{localStorage.setItem("hdmtodo_tlgrp",v);}catch(e){}};
   const dragging = useRef(false);
   const cellRange = (a,b)=>[Math.min(a,b),Math.max(a,b)];
   const start = (row,i)=>{dragging.current=true;setDrag({row,a:i,b:i});};
   const move  = (row,i)=>{if(dragging.current && drag && drag.row===row)setDrag(d=>({...d,b:i}));};
-  const end   = ()=>{ if(dragging.current && drag){const [a,b]=cellRange(drag.a,drag.b); if(schedId){ onSchedule&&onSchedule(schedId, iso(days[a]), iso(days[b]), drag.row); setSchedId(null);} else { onCreate({assignee:drag.row, start:iso(days[a]), due:iso(days[b])}); } } dragging.current=false;setDrag(null); };
+  const rowPatch = r => grp==="area" ? {area:r} : {assignee:r};
+  const end   = ()=>{ if(dragging.current && drag){const [a,b]=cellRange(drag.a,drag.b); if(schedId){ onSchedule&&onSchedule(schedId, iso(days[a]), iso(days[b]), rowPatch(drag.row)); setSchedId(null);} else { onCreate({...rowPatch(drag.row), start:iso(days[a]), due:iso(days[b])}); } } dragging.current=false;setDrag(null); };
   useEffect(()=>{const up=()=>{if(dragging.current){end();}};window.addEventListener("mouseup",up);window.addEventListener("touchend",up);return()=>{window.removeEventListener("mouseup",up);window.removeEventListener("touchend",up);};});
   const inMonth = t => {const ts=parse(t.start||t.due), te=parse(t.due||t.start);return te>=base && ts<=addDays(base,dim-1);};
   // 実作業（末端タスク）を担当者ごとに表示。1人が複数タスクを持つ前提で「レーン分割」して全件を可視化
   const leaves = tasks.filter(t=>!hasChildren(tasks,t.id));
   const unscheduled = leaves.filter(t=>!t.start&&!t.due&&t.status!=="完了"&&t.status!=="取り止め");
+  const AREA_LIST=(()=>{const used=[...new Set(leaves.map(t=>t.area).filter(Boolean))];const baseA=(typeof AREAS!=="undefined"?AREAS.map(a=>a.name):[]);const all=[...new Set([...baseA,...used])];return all.length?all:["（未分類）"];})();
+  const rowList = grp==="area" ? AREA_LIST : rows;
+  const rowKey = (t)=> grp==="area" ? (t.area||"（未分類）") : t.assignee;
   const BAR_H=24, GAP=5, PADV=7;
   const layoutRow = (items)=>{
     const sorted=[...items].sort((a,b)=>(a.start||a.due||"").localeCompare(b.start||b.due||""));
@@ -749,7 +759,8 @@ function Timeline({tasks,goals,onOpen,onCreate,shifts,onSchedule}){
           </div>
         </div>
       )}
-      <div className="tl-hint">🗓 <b style={{margin:"0 4px"}}>スケジュール起点</b>：担当行の空きをドラッグ（スマホはタップ）すると、その期間でタスクを作成できます。{schedId&&<b style={{color:"var(--accent)",marginLeft:6}}>選択中のタスクを期間設定モード</b>}</div>
+      <div className="tl-grp"><span className="tl-grp-l">行の分け方</span><button className={grp==="assignee"?"on":""} onClick={()=>setGrpP("assignee")}>👤 担当者</button><button className={grp==="area"?"on":""} onClick={()=>setGrpP("area")}>🗂 領域</button></div>
+      <div className="tl-hint">🗓 <b style={{margin:"0 4px"}}>スケジュール起点</b>：{grp==="area"?"領域":"担当"}行の空きをドラッグ（スマホはタップ）すると、その期間でタスクを作成できます。{schedId&&<b style={{color:"var(--accent)",marginLeft:6}}>選択中のタスクを期間設定モード</b>}</div>
       <div className="card tl-wrap">
         <div className="tl">
           <div className="tl-head">
@@ -761,14 +772,14 @@ function Timeline({tasks,goals,onOpen,onCreate,shifts,onSchedule}){
                 </div>);})}
             </div>
           </div>
-          {rows.map(row=>{
-            const items = leaves.filter(t=>t.assignee===row && inMonth(t));
+          {rowList.map(row=>{
+            const items = leaves.filter(t=>rowKey(t)===row && inMonth(t));
             const {placed,lanes} = layoutRow(items);
             const rowH = PADV*2 + lanes*BAR_H + (lanes-1)*GAP;
             return (
               <div className="tl-row" key={row} style={{minHeight:rowH}}>
                 <div className="tl-name-col">
-                  {row==="全員"?<span className="dot" style={{background:"#64748b"}}/>:<span className="avatar" style={{width:20,height:20,fontSize:10,background:personColor(row)}}>{row[0]}</span>}
+                  {grp==="area"?<span className="dot" style={{background:areaColor(row),width:11,height:11,borderRadius:4}}/>:(row==="全員"?<span className="dot" style={{background:"#64748b"}}/>:<span className="avatar" style={{width:20,height:20,fontSize:10,background:personColor(row)}}>{row[0]}</span>)}
                   <span>{row}</span>
                   {items.length>0 && <span className="tl-cnt">{items.length}件{lanes>1?` · ${lanes}段`:""}</span>}
                 </div>
@@ -1516,7 +1527,7 @@ function App(){
 
   const body = (
     tab==="areas"   ? <TaskList tasks={tasks} {...h}/> :
-    tab==="timeline"? <Timeline tasks={tasks} goals={goals} onOpen={onOpen} onCreate={onNew} onSchedule={(id,start,due,assignee)=>updTask(id,assignee?{start,due,assignee}:{start,due})}/> :
+    tab==="timeline"? <Timeline tasks={tasks} goals={goals} onOpen={onOpen} onCreate={onNew} onSchedule={(id,start,due,patch)=>updTask(id,{start,due,...(patch||{})})}/> :
     tab==="list"    ? <TaskList tasks={tasks} {...h}/> :
     tab==="dash"    ? <Dashboard tasks={tasks} goals={goals} go={setTab}/> :
     tab==="ai"      ? <AIManager tasks={tasks} goals={goals}/> :

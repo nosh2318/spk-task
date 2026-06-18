@@ -228,7 +228,7 @@ function TodoTab({store, sb, label, hostStaff, hostShifts}){
 
   const body=(
     tab==="areas"   ? <TaskList tasks={viewTasks} {...h}/> :
-    tab==="timeline"? <Timeline tasks={viewTasks} goals={goals} onOpen={onOpen} onCreate={onNew} shifts={hostShifts} onSchedule={(id,start,due,assignee)=>updTask(id,assignee?{start,due,assignee}:{start,due})}/> :
+    tab==="timeline"? <Timeline tasks={viewTasks} goals={goals} onOpen={onOpen} onCreate={onNew} shifts={hostShifts} onSchedule={(id,start,due,patch)=>updTask(id,{start,due,...(patch||{})})}/> :
     tab==="list"    ? <TaskList tasks={viewTasks} {...h}/> :
     tab==="dash"    ? <Dashboard tasks={viewTasks} goals={goals} go={setTab}/> :
     tab==="ai"      ? <AIManager tasks={viewTasks} goals={goals}/> :
