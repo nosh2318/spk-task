@@ -1,5 +1,47 @@
 # SPK業務管理APP（札幌店）
 
+## 🗂 2026-06-17〜18 asana タスク管理アプリ（BUDDICA向け）大規模改修 — 承認ワークフロー / ステータスログ / 多人数同時 / モバイル
+
+### 基本情報（覚える）
+- **URL**: https://nosh2318.github.io/spk-task/asana/ （リポ内 `~/spk-task/asana/index.html`・**単一HTML・vanilla JS・build不要**。push＝即本番、GitHub Pages反映に数分）
+- **DB**: Supabase `ckrxttbnawkclshczsia` の **`asana_tasks`** テーブル。1タスク=1行（per-row）。論理削除（`deleted=true`）。
+  - 設定系は特殊行：`_members`/`_projects`/`_statuses`（`attachments`列に配列を格納）。
+  - `logs`(jsonb)＝イベント配列（コメント＝typeなし / `type:'req'`作成 / `type:'status'` / `type:'assign'`）。`approval`(jsonb)＝承認状態。`attachments`(jsonb)＝関連URL＋画像（`{type:'img',url}`）。
+  - RLS：anon でも read/write 可（社内ツール）。**ログイン不要**だが、期限切れトークンが localStorage に残ると401→空になる罠あり（下記）。
+- **画像Storage**: バケット **`asana-attachments`**（public・2026-06-17作成済＋RLSポリシー適用済＝要対応ゼロ）。アップロードは `uploadImg`/`uploadImgs`、コメント/説明とも複数枚対応（`imgs[]`配列・旧`img`互換）。
+- **構文チェック**: `python3`で`<script>`抽出→`node --check`（minifyではない素のJS）。
+
+### 決済者ワークフロー（中核・このセッションで構築）
+- ステータス流れ：**依頼/相談(consult) → 承認待ち(approval) → 対応中(doing) → チェック(check) → 完了(done)**。`doing/check`は`ensureStatus`でload時に常設化。
+- **対応中＝承認とセット＝決済者のタスク**（進行中(go)とは別物）。
+- 承認タブ＝**決済者タブ**。承認(openApproveModal→applyApprove)で**担当者割当モーダル→確認→承認＝担当アサイン**、status→**doing(対応中)**。
+- **差し戻し(sendBack)**：承認待ち/チェックから依頼者へ戻す（status→consult・assignee→requester・コメント記録）。
+- **対応完了(confirmComplete 'doing')**：確認＋コメント未入力なら追加確認→ status done だが setField がインターセプトして **doing→check（依頼者チェック・assignee→requester）** に回す。**最終完了(confirmComplete 'check')**で done。
+- 承認タブ表示：**🗂ステージ列**（承認待ち｜対応中｜チェックの縦3カンバン・担当はカード表示・既定）/ **📋リスト**。担当者フィルタ(APPRASG)あり。
+- **ボード/リストでは doing/check を単独列にしない**（`boardStatuses()`で除外）が、**「承認・確認」列に内包表示**（statusCol/listHtmlでapproval列が doing/check も含む）＝対応中タスクがボードから消えない。カードに🔧対応中/🔍チェックのステージチップ。詳細のstatpillsからもdoing/check除外（現状態のみ表示維持）。
+- 承認カードに**カテゴリチップ・担当者プルダウン(点滅パルス・confirmAssignで「いいですか？」確認)・関連URL/画像のクリック表示**。
+
+### アクティビティ＝ステータスログ化＋「朝の新着」
+- `setField`が status/assign 変更を**監査ログに自動記録**（誰が/いつ/何→何）。`logEvent`は最新logs取得→追記で同時上書き防止。
+- アクティビティ：種別フィルタ(🆕新着/👤自分/🔄状態/👤担当/💬コメント/✅承認)・各行に**現在の状態＋担当**・詳細パネルにタスク別タイムライン。
+- **新着**：`ACT_SEEN`(localStorage)以降をNEW表示・「✓ここまで確認(既読)」ボタン・🔔活動にバッジ。朝に何が変わったか一発。
+- **💬カウントは`!l.type`（実コメントのみ）**＝status/assignログを数えない（修正済）。
+
+### データ安全・多人数同時（重要・このセッションの恒久対策）
+- **取得失敗(null)時は画面を空にしない**（既存表示維持）。**書込3〜4回リトライ(sbPatch/sbPost)・新規はupsert(merge-duplicates)で二重作成防止**。
+- **ポーリング10秒だが `load(true)`：変化なし(dataSig)or入力中(isEditing)は再描画しない＋スクロール位置保持(renderKeepScroll)**＝スマホで見ている場所が飛ぶ/コメント入力が消える問題を解消。タブ復帰・オンライン復帰で即同期。
+- コメント/承認は`appendLog`/最新logs取得→追記で同時コメントの上書き防止。
+
+### モバイル「タスクが出ない」真因（重要）
+- 症状：PCは出るがスマホはタスク0。**原因＝localStorageの期限切れトークンで`authH()`が401→空**。
+- 対策：`getTok`に**有効期限チェック**（`_exTok`）＋`sbGet`に**anon再試行フォールバック**。anon read/writeは可（検証済）。
+- ほか：`.app`をflex縦＋`min-height:0`、ボード/ガント`min-height`フォールバック、**タッチ長押しドラッグ**(setupDnD・350ms・通常スワイプはスクロール)、no-cacheメタ。
+
+### 🔑 デプロイ（push）の注意（2026-06-18）
+- **これまでの push用トークン `pricing-agent-push-2`(classic) が2026-06-17に期限切れ**→ osxkeychain経由のpushが「could not read Username / Device not configured」で失敗。
+- オーナーが**新classicトークン `spk push`(repoスコープ・No expiration) を発行**。当面 push は `git push "https://nosh2318:<token>@github.com/nosh2318/spk-task.git" main` の埋め込みURLで実行（**トークン値はCLAUDE.mdに書かない**。GitHub Settings→Developer settings→Tokens(classic)に保存済）。`handyman-omni-bot`トークン(repo,workflow・〜2026-08)も有効。
+- IME変換確定Enterの誤送信は全入力に`!event.isComposing&&keyCode!==229`ガード済。
+
 ## 🧾 2026-06-08 受領請求書 一元管理システム（DB作成→TOP導線→複数内容→告知→マニュアル）
 
 このセッションでの一連の作業まとめ（NHA/SPK 両店＋ローカルツール）。
