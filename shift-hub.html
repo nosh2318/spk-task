@@ -262,8 +262,11 @@ async function loadStore(st){
   const m={};
   (sh||[]).forEach(r=>{const dt=String(r.date).slice(0,10);if(!dt)return;if(!m[r.staff_name])m[r.staff_name]={};const sym=r.symbol||((r.start_time&&r.end_time)?'●':'');m[r.staff_name][dt]={symbol:sym,start:r.start_time||'',end:r.end_time||''};});
   masterByStore[st.key]=m;
-  // タスク数（OPシート準拠・確定予約から算出）📋OP=配達(貸出日)+回収(返却日) / 🧽洗車=返却台数
+  // タスク数（OPシート generateTasks 準拠・確定予約から算出）
+  //  📋OPタスク = 配達(貸出日=DEL/PU) + 回収(返却日=COL/BD)
+  //  🧽洗車    = 翌日出発分を当日カウント（OPシートは出発の前日に洗車する＝返却日ではない）
   const monthSet=new Set(MONTHS);
+  const _prevDay=(s)=>{const a=s.split('-').map(Number);return new Date(Date.UTC(a[0],a[1]-1,a[2]-1)).toISOString().slice(0,10);};
   let rs=[];
   try{rs=await sbGet(st.proj,st.resTbl+'?select='+st.sdCol+','+st.edCol+',status&or=('+st.sdCol+'.gte.'+LO+','+st.edCol+'.gte.'+LO+')&'+st.sdCol+'=lte.'+HI);}catch(e){
     try{rs=await sbGet(st.proj,st.resTbl+'?select='+st.sdCol+','+st.edCol+',status&'+st.edCol+'=gte.'+LO+'&'+st.sdCol+'=lte.'+HI);}catch(e2){rs=[];}
@@ -271,9 +274,10 @@ async function loadStore(st){
   const tc={};
   (rs||[]).forEach(r=>{
     if(/cancel|キャンセル/i.test(String(r.status||'')))return;
-    const sd=String(r[st.sdCol]||''),ed=String(r[st.edCol]||'');
-    if(monthSet.has(sd.slice(0,7))){const k=sd.slice(0,10);if(k){tc[k]=tc[k]||{w:0,o:0};tc[k].o++;}}
-    if(monthSet.has(ed.slice(0,7))){const k=ed.slice(0,10);if(k){tc[k]=tc[k]||{w:0,o:0};tc[k].o++;tc[k].w++;}}
+    const sd=String(r[st.sdCol]||'').slice(0,10),ed=String(r[st.edCol]||'').slice(0,10);
+    if(sd&&monthSet.has(sd.slice(0,7))){tc[sd]=tc[sd]||{w:0,o:0};tc[sd].o++;}            // DEL(貸出日)
+    if(ed&&monthSet.has(ed.slice(0,7))){tc[ed]=tc[ed]||{w:0,o:0};tc[ed].o++;}            // COL(返却日)
+    if(sd){const pw=_prevDay(sd);if(monthSet.has(pw.slice(0,7))){tc[pw]=tc[pw]||{w:0,o:0};tc[pw].w++;}} // 洗車=出発の前日
   });
   taskCountByStore[st.key]=tc;
   // 名簿に無いがシフトに居る人を補完
