@@ -63,6 +63,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","N
 .ov .box button{width:100%;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:10px;font-weight:800;font-size:14px;cursor:pointer}
 .toast{position:fixed;bottom:64px;left:50%;transform:translateX(-50%) translateY(20px);background:#1e2733;color:#fff;padding:10px 18px;border-radius:10px;font-size:13px;font-weight:700;z-index:200;opacity:0;transition:.25s;pointer-events:none}
 .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+.store-h .eye{background:#fff;border:1px solid var(--line);border-radius:7px;width:30px;height:27px;cursor:pointer;color:var(--gray);font-size:14px;margin-left:10px}
+.store-h .eye:hover{border-color:var(--gray)}
+.store.collapsed .collbar{display:flex;align-items:center;gap:9px;padding:11px 14px;font-weight:800;color:var(--gray)}
+.collbar button{margin-left:auto;background:var(--accent);color:#fff;border:none;border-radius:8px;padding:5px 13px;font-weight:800;cursor:pointer;font-size:12px}
+.grid .nm .hidebtn{float:right;background:none;border:none;color:#cdd6e0;font-size:11px;cursor:pointer;padding:0 0 0 4px;line-height:1}
+.grid .nm .hidebtn:hover{color:#e8505b}
+.hiddenchips{display:flex;flex-wrap:wrap;gap:6px;padding:8px 14px;border-top:1px dashed #eef2f6;align-items:center}
+.hiddenchips .hc{font-size:10.5px;font-weight:700;color:var(--gray);background:#f1f5f9;border:1px solid var(--line);border-radius:14px;padding:3px 10px;cursor:pointer}
+.hiddenchips .hc:hover{background:#e2e8f0;color:var(--ink)}
 @media(max-width:640px){.foot{font-size:11px;gap:8px}.tabs{margin-left:0;width:100%}}
 </style>
 </head>
@@ -121,6 +130,15 @@ const WK=['日','月','火','水','木','金','土'];
 let curMonth=MONTHS[0];
 let tab='master';
 let staffByStore={}, masterByStore={}, simByStore={};
+let hidden={stores:[],staff:{}}; // 各店/各人の非表示（localStorage保持・表示と人件費から除外）
+function loadHidden(){try{const h=JSON.parse(localStorage.getItem('shifthub_hidden'));if(h)hidden={stores:h.stores||[],staff:h.staff||{}};}catch(e){}}
+function saveHidden(){try{localStorage.setItem('shifthub_hidden',JSON.stringify(hidden));}catch(e){}}
+function isStoreHidden(k){return hidden.stores.indexOf(k)>=0;}
+function isStaffHidden(k,name){return (hidden.staff[k]||[]).indexOf(name)>=0;}
+function hideStore(k){if(!isStoreHidden(k))hidden.stores.push(k);saveHidden();render();}
+function showStore(k){hidden.stores=hidden.stores.filter(x=>x!==k);saveHidden();render();}
+function hideStaff(k,enc){const n=decodeURIComponent(enc);hidden.staff[k]=hidden.staff[k]||[];if(hidden.staff[k].indexOf(n)<0)hidden.staff[k].push(n);saveHidden();render();}
+function showStaff(k,enc){const n=decodeURIComponent(enc);hidden.staff[k]=(hidden.staff[k]||[]).filter(x=>x!==n);saveHidden();render();}
 const $=id=>document.getElementById(id);
 const pad=n=>String(n).padStart(2,'0');
 const yen=n=>'¥'+Math.round(n).toLocaleString();
@@ -231,6 +249,7 @@ function storeCost(stKey,data,defH){
   let wage=0,trans=0,days=0,hours=0;
   const staff=staffByStore[stKey]||[];
   staff.forEach(s=>{
+    if(isStaffHidden(stKey,s.name))return;
     const row=data[s.name]||{};
     Object.keys(row).forEach(dn=>{const c=row[dn];if(c&&c.symbol==='●'){days++;const h=cellHours(c,defH);hours+=h;if(s.wage>0){wage+=h*s.wage;trans+=s.trans;}}});
   });
@@ -245,6 +264,7 @@ function gridHtml(stKey,editable){
   head+='<th>出勤</th>';
   let body='';
   staff.forEach(s=>{
+    if(isStaffHidden(stKey,s.name))return;
     const row=data[s.name]||{};
     let cnt=0;
     let tds='';
@@ -257,7 +277,7 @@ function gridHtml(stKey,editable){
       tds+=`<td class="${cls}" style="${style}" ${editable?`onclick="cyc('${stKey}','${encodeURIComponent(s.name)}',${d})"`:''}>${sym}</td>`;
     }
     const wg=s.wage>0?`<span class="wg">時給¥${s.wage.toLocaleString()}${s.type==='アルバイト'?'':' ('+(s.type||'-')+')'}</span>`:(s.monthly>0?`<span class="wg">月給</span>`:`<span class="wg">${s.type||''}</span>`);
-    body+=`<tr><td class="nm">${esc(s.name)}<br>${wg}</td>${tds}<td class="sum">${cnt}</td></tr>`;
+    body+=`<tr><td class="nm"><button class="hidebtn" title="この人を非表示" onclick="hideStaff('${stKey}','${encodeURIComponent(s.name)}')">✕</button>${esc(s.name)}<br>${wg}</td>${tds}<td class="sum">${cnt}</td></tr>`;
   });
   return `<div class="gwrap"><table class="grid ${editable?'edit':''}"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
@@ -270,14 +290,21 @@ function render(){
   const defH=+($('defH').value)||8;
   let html='';let grand=0;
   STORES.forEach(st=>{
+    if(isStoreHidden(st.key)){
+      html+=`<div class="store collapsed"><div class="collbar"><span style="width:12px;height:12px;border-radius:4px;display:inline-block;background:${st.color}"></span>${st.label}店（非表示）<button onclick="showStore('${st.key}')">表示する</button></div></div>`;
+      return;
+    }
     const connected=projConnected(st.proj);
     const data=tab==='sim'?(simByStore[st.key]||{}):(masterByStore[st.key]||{});
     const cost=connected?storeCost(st.key,data,defH):null;
     if(cost)grand+=cost.total;
     html+=`<div class="store"><div class="store-h"><span class="sdot" style="background:${st.color}"></span>${st.label}店`+
       (connected? (cost?`<span class="cost">出勤 ${cost.days}日 ・ ${cost.hours.toFixed(1)}h ・ 人件費 <b>${yen(cost.total)}</b><span style="font-size:10px;color:#9aa6b2"> (賃金${yen(cost.wage)}+交通${yen(cost.trans)})</span></span>`:'') : `<span class="cost" style="color:#e8505b">未接続 → 上部でログイン</span>`)+
+      `<button class="eye" title="この店を非表示" onclick="hideStore('${st.key}')">🙈</button>`+
       `</div>`;
     if(connected) html+=gridHtml(st.key,tab==='sim');
+    const hs=(hidden.staff[st.key]||[]);
+    if(hs.length) html+=`<div class="hiddenchips"><span style="color:#9aa6b2">🙈 非表示の人:</span>`+hs.map(n=>`<span class="hc" onclick="showStaff('${st.key}','${encodeURIComponent(n)}')">${esc(n)} ↩戻す</span>`).join('')+`</div>`;
     html+=`<div class="legend">`+Object.keys(SYM).map(k=>`<span><i style="background:${SYM[k].bg};color:${SYM[k].c}">${k}</i>${SYM[k].l}</span>`).join('')+`</div></div>`;
   });
   $('stores').innerHTML=html;
@@ -298,7 +325,7 @@ function cyc(stKey,nameEnc,d){
 }
 
 /* ===== init ===== */
-renderMonths();renderConn();
+loadHidden();renderMonths();renderConn();
 $('loginOv').addEventListener('keydown',e=>{if(e.key==='Enter'&&_loginCb)doLogin(_loginCb);});
 loadAll();
 </script>
