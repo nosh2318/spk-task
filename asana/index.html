@@ -840,7 +840,7 @@ function apCard(t,kind){
     `<div class="apmore">🔍 タップで全内容を表示（説明・全コメント・サブタスク・履歴）</div>`+
     `</div>`+
     (()=>{
-      const cb=`<select id="apcwho_${t.id}" class="apcwho" title="コメント投稿者（あなた）" onchange="asanaSetMe(this.value)">${whoOpts()}</select><input type="file" id="apcimg_${t.id}" accept="image/*" multiple style="display:none" onchange="onApcImgPick('${t.id}')"><button class="apbtn att" onclick="document.getElementById('apcimg_${t.id}').click()" title="画像を添付（複数可）">📎</button><textarea id="apc_${t.id}" rows="1" placeholder="コメント（任意・改行=Enter / 送信=Shift+Enter）" oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px'" onkeydown="if(event.key==='Enter'&&event.shiftKey&&!event.isComposing&&event.keyCode!==229){event.preventDefault();apComment('${t.id}')}"></textarea><span id="apcchip_${t.id}" class="apcchip"></span><button class="apbtn cm" onclick="apComment('${t.id}')">💬</button>`;
+      const cb=`<input type="file" id="apcimg_${t.id}" accept="image/*" multiple style="display:none" onchange="onApcImgPick('${t.id}')"><button class="apbtn att" onclick="document.getElementById('apcimg_${t.id}').click()" title="画像を添付（複数可）">📎</button><textarea id="apc_${t.id}" rows="1" placeholder="コメント（任意・改行=Enter / 送信=Shift+Enter）" oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px'" onkeydown="if(event.key==='Enter'&&event.shiftKey&&!event.isComposing&&event.keyCode!==229){event.preventDefault();apComment('${t.id}')}"></textarea><span id="apcchip_${t.id}" class="apcchip"></span><button class="apbtn cm" onclick="apComment('${t.id}')">💬</button>`;
       if(kind==='pend'||kind==='prio'){const fg=appOf(t).flag===true;return `<div class="apact">${cb}<button class="apbtn flag${fg?' on':''}" onclick="toggleApprFlag('${t.id}')" title="${fg?'優先承認待ちから外す':'優先承認待ちにする'}">🚩${fg?'優先中':'優先'}</button><button class="apbtn back" onclick="sendBack('${t.id}')">↩ 差し戻し</button><button class="apbtn ok" onclick="openApproveModal('${t.id}')">✅ 承認</button></div>`;}
       if(kind==='doing')return `<div class="apact">${cb}<button class="apbtn ok" onclick="confirmComplete('${t.id}','doing')">🏁 対応完了（→依頼者チェック）</button></div>`;
       if(kind==='check')return `<div class="apact">${cb}<button class="apbtn back" onclick="sendBack('${t.id}')">↩ 差し戻し</button><button class="apbtn ok" onclick="confirmComplete('${t.id}','check')">✅ 最終完了</button></div>`;
@@ -1007,21 +1007,36 @@ let _apcImgs={};
 function apcChip(id){const chip=document.getElementById('apcchip_'+id);if(!chip)return;const n=(_apcImgs[id]||[]).length;chip.innerHTML=n?`🖼 ${n}枚 <span onclick="clearApcImg('${id}')" style="cursor:pointer;color:#dc2626;font-weight:800">✕</span>`:'';}
 function onApcImgPick(id){const inp=document.getElementById('apcimg_'+id);const fs=[...((inp&&inp.files)||[])].filter(f=>f&&(f.type||'').startsWith('image/'));if(!fs.length)return;_apcImgs[id]=(_apcImgs[id]||[]).concat(fs);if(inp)inp.value='';apcChip(id);}
 function clearApcImg(id){delete _apcImgs[id];const inp=document.getElementById('apcimg_'+id);if(inp)inp.value='';apcChip(id);}
+// 送信時に「登録メンバーのプルダウン」で投稿者を選ばせて確定（FIX）。共有ログインでも誰が打ったか特定できる
+let _whoResolve=null;
+function pickWho(preview){
+  return new Promise(res=>{
+    if(!MEMBERS.length){alert('先に管理者でメンバー登録をしてください（登録メンバーから投稿者を選びます）');res(null);return;}
+    _whoResolve=res;
+    const ov=document.createElement('div');ov.className='apmodal';ov.id='cwhoModal';
+    ov.onclick=e=>{if(e.target===ov)closeWho(null);};
+    ov.innerHTML=`<div class="apmbox"><div class="apmh">👤 投稿者を選んで送信</div>${preview?`<div class="apmt" style="white-space:pre-wrap;max-height:120px;overflow:auto">${esc(preview)}</div>`:''}<label class="apml">コメントした人（登録メンバーから選択）</label><select id="cwhoSel" class="apmsel">${MEMBERS.map(m=>'<option '+(m===ME?'selected':'')+'>'+esc(m)+'</option>').join('')}</select><div class="apmbtns"><button class="apmcancel" onclick="closeWho(null)">キャンセル</button><button class="apmok" onclick="closeWho((document.getElementById('cwhoSel')||{}).value||'')">💬 この人で送信</button></div></div>`;
+    document.body.appendChild(ov);
+    try{document.getElementById('cwhoSel').focus();}catch(e){}
+  });
+}
+function closeWho(v){const m=document.getElementById('cwhoModal');if(m)m.remove();if(_whoResolve){const r=_whoResolve;_whoResolve=null;r(v);}}
+async function _apPostComment(id,who,txt,fs){
+  const t=TASKS.find(x=>x.id===id);if(!t)return;
+  let imgs=[];
+  if(fs&&fs.length){toast('画像アップロード中…');try{imgs=await uploadImgs(fs,id);}catch(e){toast('画像アップロード失敗（バケット未作成?）');return;}}
+  const c={at:new Date().toISOString(),by:who,text:txt};if(imgs.length)c.imgs=imgs;
+  delete _apcImgs[id];
+  try{await appendLog(id,c);render();if(SEL===id)openTask(id);}catch(e){toast('コメント保存失敗（再試行してください）');}
+}
 async function apComment(id){
   const inp=document.getElementById('apc_'+id);const txt=((inp&&inp.value)||'').trim();
   const fs=_apcImgs[id]||[];
   if(!txt&&!fs.length)return;
-  // コメント投稿者＝コメント欄の「投稿者(自分)」セレクタの人。共有ログインなので決済者ドロップダウンは使わない
-  const wsel=document.getElementById('apcwho_'+id);
-  const who=((wsel&&wsel.value)||ME||'').trim();
-  if(!who){toast('コメント投稿者（あなた）を選んでください');if(wsel){try{wsel.focus();}catch(e){}}return;}
+  const who=await pickWho(txt||'(画像のみ)');   // 送信時にプルダウンで投稿者をFIX
+  if(!who)return;                                // キャンセル＝送信しない
   asanaSetMe(who);
-  const t=TASKS.find(x=>x.id===id);if(!t)return;
-  let imgs=[];
-  if(fs.length){toast('画像アップロード中…');try{imgs=await uploadImgs(fs,id);}catch(e){toast('画像アップロード失敗（バケット未作成?）');return;}}
-  const c={at:new Date().toISOString(),by:who,text:txt};if(imgs.length)c.imgs=imgs;
-  delete _apcImgs[id];
-  try{await appendLog(id,c);render();if(SEL===id)openTask(id);}catch(e){toast('コメント保存失敗（再試行してください）');}
+  await _apPostComment(id,who,txt,fs);
 }
 // 完了系ボタン：確認＋コメント未入力なら追加確認。コメントが入っていれば一緒に記録してから完了
 async function confirmComplete(id,kind){
