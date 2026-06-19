@@ -62,14 +62,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v834';
+  var CV='spk-v835';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=721').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=722').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -19178,6 +19178,11 @@ function ReceivedInvoicesTab({sb,store}){
   const [form,setForm]=React.useState({payee:"",amount:"",received_date:"",issue_date:"",due_date:"",description:"",tax_rate:"込",status:"unpaid",memo:"",pay_method:"カード",category:""});
   const todayYM=new Date().toISOString().slice(0,7);
   const [openMonths,setOpenMonths]=React.useState({[todayYM]:true});
+  // 💳 会計カード連携（保存後にボタンで送る・登録処理とは完全に分離）
+  const [linkedMap,setLinkedMap]=React.useState({});
+  const [linkRec,setLinkRec]=React.useState(null);
+  const [linkCat,setLinkCat]=React.useState("");
+  const CARD_CATS=(typeof ACCT_CARD_CATEGORIES!=="undefined")?ACCT_CARD_CATEGORIES:["燃料費","車両整備費","車検費","点検費","修理費","保険料","駐車場代","消耗品費","広告宣伝費","通信費","水道光熱費","旅費交通費","外注費","支払手数料","租税公課","雑費","その他"];
 
   const reload=async()=>{
     if(!sb)return;
@@ -19186,7 +19191,28 @@ function ReceivedInvoicesTab({sb,store}){
       // 自店ぶん＋本社(hq)ぶんを表示（本社請求書も各店から見え、支払済が本社↔店で双方向同期する）
       const {data,error}=await sb.from(TABLE).select("*").in("store",[store,"hq"]).order("received_date",{ascending:false});
       if(!error)setList(data||[]);
+      // 会計連携済みの請求書を把握（best-effort）
+      try{
+        const {data:ar}=await sb.from(store+"_accounting").select("id,category").like("id","acct_inv_%");
+        const m={};(ar||[]).forEach(a=>{m[String(a.id).replace("acct_inv_","")]=a.category||"";});
+        setLinkedMap(m);
+      }catch(e){}
     }finally{setLoading(false);}
+  };
+  const openLink=r=>{setLinkCat(linkedMap[r.id]||"");setLinkRec(r);};
+  const doLink=async()=>{
+    if(!linkRec)return;if(!linkCat){alert("科目を選んでください");return;}
+    const r=linkRec;
+    try{
+      await sb.from(store+"_accounting").upsert({id:"acct_inv_"+r.id,date:(r.due_date||r.received_date||null),type:"card_pay",category:linkCat,
+        payee:r.payee||"",pay_content:(r.description||"").split("\n").map(s=>s.trim()).filter(Boolean)[0]||"",
+        amount:r.amount||0,paid:(r.status==="paid"),pay_method:"カード",user_name:"受領請求書連携",memo:"受領請求書#"+r.id+" 連携"},{onConflict:"id"});
+      setLinkRec(null);await reload();
+    }catch(e){alert("会計連携に失敗: "+(e.message||e));}
+  };
+  const unLink=async()=>{
+    if(!linkRec)return;const r=linkRec;
+    try{await sb.from(store+"_accounting").delete().eq("id","acct_inv_"+r.id);setLinkRec(null);await reload();}catch(e){alert("解除に失敗: "+(e.message||e));}
   };
 
   React.useEffect(()=>{
@@ -19379,6 +19405,7 @@ function ReceivedInvoicesTab({sb,store}){
                 <td style={{padding:"8px 10px",textAlign:"center"}}>
                   <div style={{display:"flex",gap:4,justifyContent:"center",flexWrap:"wrap"}}>
                     <button onClick={()=>toggleStatus(r)} style={{background:r.status==="paid"?"#6b7280":"#16a34a",color:"white",border:"none",borderRadius:4,padding:"3px 8px",fontSize:10,cursor:"pointer",whiteSpace:"nowrap"}}>{r.status==="paid"?"未払いに戻す":"支払済にする"}</button>
+                    <button onClick={()=>openLink(r)} title="会計カードへ連携" style={{background:linkedMap[r.id]?"#ede9fe":"#fff",border:"1px solid "+(linkedMap[r.id]?"#7c3aed":"#d1d5db"),color:linkedMap[r.id]?"#6d28d9":"#374151",borderRadius:4,padding:"3px 8px",fontSize:10,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>{linkedMap[r.id]?"💳連携済":"💳会計へ"}</button>
                     <button onClick={()=>openEdit(r)} style={{background:"none",border:"1px solid #d1d5db",borderRadius:4,padding:"3px 8px",fontSize:11,cursor:"pointer"}}>✏️</button>
                     <button onClick={()=>del(r.id)} style={{background:"#fee2e2",border:"none",color:"#dc2626",borderRadius:4,padding:"3px 8px",fontSize:11,cursor:"pointer"}}>🗑</button>
                   </div>
@@ -19459,6 +19486,30 @@ function ReceivedInvoicesTab({sb,store}){
             <button onClick={save} disabled={uploading} style={{background:uploading?"#86efac":"#16a34a",color:"white",border:"none",borderRadius:5,padding:"7px 16px",fontWeight:"bold",fontSize:12,cursor:uploading?"wait":"pointer"}}>
               {uploading?"⏳ 保存中...":"📥 登録する"}
             </button>
+          </div>
+        </div>
+      </div>
+    </div>}
+    {linkRec&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:320,display:"flex",alignItems:"center",justifyContent:"center",padding:16}} onClick={e=>{if(e.target===e.currentTarget)setLinkRec(null);}}>
+      <div style={{background:"#fff",borderRadius:14,width:"100%",maxWidth:420,overflow:"hidden"}}>
+        <div style={{background:"#7c3aed",color:"#fff",padding:"13px 16px",fontWeight:"bold",fontSize:15}}>💳 会計カードへ連携</div>
+        <div style={{padding:18}}>
+          <div style={{fontSize:12,color:"#475569",marginBottom:10,background:"#f8fafc",borderRadius:8,padding:"8px 10px"}}>
+            <div><b>{linkRec.payee||"(支払先なし)"}</b> ／ ¥{(linkRec.amount||0).toLocaleString()}</div>
+            <div style={{fontSize:11,color:"#64748b",marginTop:2}}>計上日＝支払期日（{linkRec.due_date||linkRec.received_date||"—"}）／ {linkRec.status==="paid"?"支払済":"未払い"}</div>
+          </div>
+          <label style={{fontSize:11,color:"#666",fontWeight:"bold",display:"block",marginBottom:4}}>科目 *</label>
+          <select style={sel} value={linkCat} onChange={e=>setLinkCat(e.target.value)}>
+            <option value="">選択してください</option>
+            {CARD_CATS.map(c=><option key={c} value={c}>{c}</option>)}
+          </select>
+          <div style={{fontSize:10,color:"#7c3aed",marginTop:8}}>→ 会計タブ「💳カード」に計上されます。請求書を編集/削除すると会計側も追従します。</div>
+          <div style={{display:"flex",gap:8,justifyContent:"space-between",marginTop:16,paddingTop:12,borderTop:"1px solid #e5e7eb"}}>
+            <div>{linkedMap[linkRec.id]&&<button onClick={unLink} style={{background:"#fee2e2",border:"none",color:"#dc2626",borderRadius:6,padding:"7px 14px",fontSize:12,fontWeight:"bold",cursor:"pointer"}}>連携を解除</button>}</div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>setLinkRec(null)} style={{background:"#fff",border:"1px solid #d1d5db",borderRadius:6,padding:"7px 14px",fontSize:12,cursor:"pointer"}}>キャンセル</button>
+              <button onClick={doLink} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:6,padding:"7px 16px",fontSize:12,fontWeight:"bold",cursor:"pointer"}}>💳 会計へ連携</button>
+            </div>
           </div>
         </div>
       </div>
@@ -21313,7 +21364,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.289";
+const APP_VERSION="v4.7.290";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
