@@ -219,6 +219,19 @@ button{font-family:inherit;cursor:pointer}
 .apcchip{font-size:11px;color:#475569;white-space:nowrap;align-self:center}
 .cto{font-size:11px;font-weight:700;color:#0891b2;background:#ecfeff;border-radius:6px;padding:0 6px;margin-left:2px}
 .cto.memo{color:#9333ea;background:#faf5ff}
+.recvwrap{margin:14px 8px 32px;background:#fff;border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.recvhd{padding:11px 14px;font-size:13px;font-weight:800;color:#0e7490;background:#ecfeff;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.recvn{background:#0891b2;color:#fff;border-radius:999px;padding:0 8px;font-size:11px}
+.recvack{font-size:11px;color:#16a34a;font-weight:800;margin-left:auto}
+.recvempty{padding:16px;font-size:12px;color:#9aa0a6;text-align:center}
+.recvrow{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-top:1px solid #f0f1f3}
+.recvrow.seen{background:#f8fafc}
+.recvchk{flex-shrink:0;width:26px;height:26px;border-radius:50%;border:1.5px solid #cbd5e1;background:#fff;color:#cbd5e1;font-weight:900;cursor:pointer;font-size:13px}
+.recvchk.on{background:#16a34a;border-color:#16a34a;color:#fff}
+.recvbody{flex:1;min-width:0;cursor:pointer}
+.recvmeta{font-size:12px;color:#475569}
+.recvtxt{font-size:13px;color:#1e293b;margin:2px 0;white-space:pre-wrap;word-break:break-word}
+.recvtask{font-size:11px;color:#9aa0a6}
 .apbtn.att{background:#eef2ff;color:#4f46e5}
 .cmtbar button.cmtimgbtn{background:none;border:none;color:inherit;font-size:19px;cursor:pointer;padding:0 4px;flex-shrink:0}
 .cmtimgchip{font-size:11px;color:#475569;white-space:nowrap;flex-shrink:0}
@@ -461,7 +474,7 @@ function apFlag(t){if(isApprPending(t))return '<span class="apflag">🔖承認�
 function pendingApprovals(){return TASKS.filter(isApprPending);}
 
 /* ===== 自動アップデート：不特定多数が常に最新を使えるよう、新版検知で強制リロード ===== */
-const ASANA_BUILD='20260619c';   // ★デプロイ毎に必ずこの値を変える（全クライアントが自動更新される）
+const ASANA_BUILD='20260619d';   // ★デプロイ毎に必ずこの値を変える（全クライアントが自動更新される）
 (function(){
   async function chkUpd(){
     try{
@@ -772,9 +785,50 @@ function render(){
   if(CUR==='__admin'){document.getElementById('topTitle').textContent='⚙️ 管理者';document.getElementById('topDot').style.background='#a78bfa';lc.innerHTML=adminHtml();return;}
   if(CUR&&CUR.indexOf('__asg__')===0){const who=CUR.slice(7)||'未割当';document.getElementById('topTitle').textContent='👤 '+who+' のタスク';document.getElementById('topDot').style.background=personColor(who);}
   else{document.getElementById('topTitle').textContent=CUR==='__all'?'全タスク':CUR;document.getElementById('topDot').style.background=CUR==='__all'?'#9aa0a6':pjColor(CUR);}
-  if(VIEW==='board'){lc.innerHTML=boardHtml();return;}
-  if(VIEW==='timeline'){lc.innerHTML=timelineHtml();return;}
-  lc.innerHTML=listHtml();
+  const _asgWho=(CUR&&CUR.indexOf('__asg__')===0)?(CUR.slice(7)||'未割当'):null;
+  const _recv=_asgWho?recvCmtHtml(_asgWho):'';
+  if(VIEW==='board'){lc.innerHTML=boardHtml()+_recv;return;}
+  if(VIEW==='timeline'){lc.innerHTML=timelineHtml()+_recv;return;}
+  lc.innerHTML=listHtml()+_recv;
+}
+// 担当者別ビューの下に「その人が受けたコメント」（to===本人 または 全員ALL）を表示。確認チェック(ack)付き
+function recvCmtHtml(person){
+  const items=[];
+  TASKS.forEach(t=>{(t.logs||[]).forEach((l,i)=>{
+    if(!l||l.type)return;                              // コメントのみ（状態/担当/依頼ログ除外）
+    const to=l.to||'ALL';
+    if(!((to===person)||(to==='ALL')))return;          // 本人宛 or 全員宛 だけ
+    if((l.by||'')===person)return;                     // 自分の投稿は除外
+    items.push({t,l,to});
+  });});
+  items.sort((a,b)=>String(b.l.at||'').localeCompare(String(a.l.at||'')));
+  const ackd=items.filter(x=>Array.isArray(x.l.ack)&&x.l.ack.indexOf(person)>=0).length;
+  let h=`<div class="recvwrap"><div class="recvhd">📥 ${esc(person)} が受けたコメント <span class="recvn">${items.length}</span>${items.length?`<span class="recvack">✓確認 ${ackd}/${items.length}</span>`:''}</div>`;
+  if(!items.length)return h+`<div class="recvempty">受けたコメントはありません</div></div>`;
+  h+=items.slice(0,80).map(x=>{
+    const seen=Array.isArray(x.l.ack)&&x.l.ack.indexOf(person)>=0;
+    const toL=(x.to==='ALL')?'<span class="cto">📢全員</span>':`<span class="cto">→ ${esc(person)}</span>`;
+    const by=(x.l.by||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+    const pn=person.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+    return `<div class="recvrow ${seen?'seen':''}"><button class="recvchk ${seen?'on':''}" title="確認済みにする" onclick="ackRecv('${x.t.id}','${esc(x.l.at)}','${by}','${pn}')">✓</button><div class="recvbody" onclick="openTask('${x.t.id}')"><div class="recvmeta"><b>${esc(x.l.by||'?')}</b> ${toL} ・ ${esc(fmtAt(x.l.at))}</div><div class="recvtxt">${esc(x.l.text||((x.l.imgs&&x.l.imgs.length)?'🖼 画像':''))}</div><div class="recvtask">📌 ${esc(x.t.title||'(無題)')}</div></div></div>`;
+  }).join('');
+  return h+`</div>`;
+}
+async function ackRecv(taskId,at,by,person){
+  try{
+    let logs=null;
+    try{const rows=await sbGet(TBL()+'?id=eq.'+encodeURIComponent(taskId)+'&select=logs');if(rows&&rows[0]&&Array.isArray(rows[0].logs))logs=rows[0].logs;}catch(e){}
+    const t=TASKS.find(x=>x.id===taskId);
+    if(logs===null)logs=(t&&Array.isArray(t.logs))?t.logs.slice():[];
+    const idx=logs.findIndex(l=>l&&!l.type&&String(l.at)===String(at)&&String(l.by||'')===String(by));
+    if(idx<0){toast('対象コメントが見つかりません');return;}
+    const ack=Array.isArray(logs[idx].ack)?logs[idx].ack.slice():[];
+    const p=ack.indexOf(person);if(p>=0)ack.splice(p,1);else ack.push(person);
+    logs=logs.slice();logs[idx]=Object.assign({},logs[idx],{ack});
+    if(t)t.logs=logs;
+    await sbPatch(TBL(),taskId,{logs});
+    render();
+  }catch(e){toast('確認の更新に失敗しました');}
 }
 let COLLAPSE={};let EXPAND={};
 function toggleGroup(k){COLLAPSE[k]=!COLLAPSE[k];render();}
