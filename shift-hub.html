@@ -69,6 +69,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","N
 .collbar button{margin-left:auto;background:var(--accent);color:#fff;border:none;border-radius:8px;padding:5px 13px;font-weight:800;cursor:pointer;font-size:12px}
 .grid .nm .hidebtn{float:right;background:#f1f5f9;border:1px solid var(--line);border-radius:6px;color:var(--gray);font-size:11px;cursor:pointer;padding:1px 5px;line-height:1.3;margin-left:4px}
 .grid .nm .hidebtn:hover{background:#fde8ea;border-color:#f3c0c6;color:#e8505b}
+.grid .nm .hcfg{font-size:9.5px;color:#5d6b7a;font-weight:700;white-space:nowrap}
+.grid .nm .hcfg input{width:40px;border:1px solid var(--line);border-radius:5px;padding:1px 3px;font-size:10px;text-align:right;margin:0 2px;background:#fffdf5}
 .hiddenchips{display:flex;flex-wrap:wrap;gap:6px;padding:8px 14px;border-top:1px dashed #eef2f6;align-items:center}
 .hiddenchips .hc{font-size:10.5px;font-weight:700;color:var(--gray);background:#f1f5f9;border:1px solid var(--line);border-radius:14px;padding:3px 10px;cursor:pointer}
 .hiddenchips .hc:hover{background:#e2e8f0;color:var(--ink)}
@@ -85,7 +87,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","N
 <div class="wrap">
   <div class="toolbar">
     <div class="months" id="months"></div>
-    <button class="btn btn-sync" onclick="syncFromMasters()">🔄 同期（実シフトを取り込む）</button>
+    <button class="btn btn-sync" onclick="syncFromMasters()">🔄 全同期</button>
+    <button class="btn btn-ghost" onclick="syncSeishainOnly()">👔 正社員のみ同期</button>
     <div class="tabs">
       <button class="tab on" id="tab-master" onclick="setTab('master')">📋 マスター（実態）</button>
       <button class="tab" id="tab-sim" onclick="setTab('sim')">✏️ 編集（シミュレーション）</button>
@@ -139,6 +142,15 @@ function hideStore(k){if(!isStoreHidden(k))hidden.stores.push(k);saveHidden();re
 function showStore(k){hidden.stores=hidden.stores.filter(x=>x!==k);saveHidden();render();}
 function hideStaff(k,enc){const n=decodeURIComponent(enc);hidden.staff[k]=hidden.staff[k]||[];if(hidden.staff[k].indexOf(n)<0)hidden.staff[k].push(n);saveHidden();render();}
 function showStaff(k,enc){const n=decodeURIComponent(enc);hidden.staff[k]=(hidden.staff[k]||[]).filter(x=>x!==n);saveHidden();render();}
+// 人ごとの試算用 時給×勤務時間（シミュ専用・localStorage保持。初期＝実シフトから推定/master時給）
+let simCfg={};
+function loadCfg(){try{const c=JSON.parse(localStorage.getItem('shifthub_cfg'));if(c)simCfg=c;}catch(e){}}
+function saveCfg(){try{localStorage.setItem('shifthub_cfg',JSON.stringify(simCfg));}catch(e){}}
+function staffWage(k,name){const s=(staffByStore[k]||[]).find(x=>x.name===name);return s?s.wage:0;}
+function estHours(k,name){const row=(masterByStore[k]||{})[name];if(!row)return 0;let sum=0,n=0;Object.keys(row).forEach(d=>{const c=row[d];if(c&&c.symbol==='●'&&c.start&&c.end){const a=c.start.split(':').map(Number),b=c.end.split(':').map(Number);let h=(b[0]*60+b[1]-(a[0]*60+a[1]))/60;if(h<0)h+=24;if(h>0){sum+=h;n++;}}});return n?Math.round(sum/n*10)/10:0;}
+function cfgHours(k,name){const c=simCfg[k]&&simCfg[k][name];if(c&&c.h>0)return c.h;const e=estHours(k,name);return e||(+(($('defH')||{}).value)||8);}
+function cfgWage(k,name){const c=simCfg[k]&&simCfg[k][name];if(c&&c.wage!=null&&c.wage!=='')return +c.wage;return staffWage(k,name);}
+function setCfg(k,enc,field,v){const name=decodeURIComponent(enc);simCfg[k]=simCfg[k]||{};simCfg[k][name]=simCfg[k][name]||{};simCfg[k][name][field]=+v||0;saveCfg();render();}
 const $=id=>document.getElementById(id);
 const pad=n=>String(n).padStart(2,'0');
 const yen=n=>'¥'+Math.round(n).toLocaleString();
@@ -239,19 +251,36 @@ function syncFromMasters(){
     saveSim();render();toast('実シフトを取り込みました');
   })();
 }
+// 正社員だけ実態から取り込む（バイトのシミュは残す＝正社員のシフト変更だけ追従）
+function syncSeishainOnly(){
+  (async()=>{
+    for(const st of STORES){if(projConnected(st.proj)){try{await loadStore(st);}catch(e){}}}
+    let cnt=0;
+    STORES.forEach(st=>{
+      const m=masterByStore[st.key]||{};
+      simByStore[st.key]=simByStore[st.key]||{};
+      (staffByStore[st.key]||[]).forEach(s=>{
+        if(s.type==='正社員'){ if(m[s.name]){simByStore[st.key][s.name]=deepCopy(m[s.name]);} else {delete simByStore[st.key][s.name];} cnt++; }
+      });
+    });
+    saveSim();render();toast('正社員のシフトを実態から取り込みました（'+cnt+'名）');
+  })();
+}
 
 /* ===== render ===== */
 function setTab(t){tab=t;$('tab-master').classList.toggle('on',t==='master');$('tab-sim').classList.toggle('on',t==='sim');render();}
 function renderMonths(){$('months').innerHTML=MONTHS.map(m=>`<button class="mbtn ${m===curMonth?'on':''}" onclick="setMonth('${m}')">${+m.slice(5)}月</button>`).join('');}
 function setMonth(m){curMonth=m;renderMonths();loadAll();}
 function cellHours(c,defH){if(c&&c.start&&c.end){const a=c.start.split(':').map(Number),b=c.end.split(':').map(Number);let h=(b[0]*60+b[1]-(a[0]*60+a[1]))/60;if(h<0)h+=24;if(h>0)return h;}return defH;}
-function storeCost(stKey,data,defH){
+function storeCost(stKey,data,defH,editable){
   let wage=0,trans=0,days=0,hours=0;
   const staff=staffByStore[stKey]||[];
   staff.forEach(s=>{
     if(isStaffHidden(stKey,s.name))return;
+    const fb=editable?cfgHours(stKey,s.name):defH;
+    const w=editable?cfgWage(stKey,s.name):s.wage;
     const row=data[s.name]||{};
-    Object.keys(row).forEach(dn=>{const c=row[dn];if(c&&c.symbol==='●'){days++;const h=cellHours(c,defH);hours+=h;if(s.wage>0){wage+=h*s.wage;trans+=s.trans;}}});
+    Object.keys(row).forEach(dn=>{const c=row[dn];if(c&&c.symbol==='●'){days++;const h=cellHours(c,fb);hours+=h;if(w>0){wage+=h*w;trans+=s.trans;}}});
   });
   return {wage,trans,days,hours,total:wage+trans};
 }
@@ -277,7 +306,12 @@ function gridHtml(stKey,editable){
       tds+=`<td class="${cls}" style="${style}" ${editable?`onclick="cyc('${stKey}','${encodeURIComponent(s.name)}',${d})"`:''}>${sym}</td>`;
     }
     const wg=s.wage>0?`<span class="wg">時給¥${s.wage.toLocaleString()}${s.type==='アルバイト'?'':' ('+(s.type||'-')+')'}</span>`:(s.monthly>0?`<span class="wg">月給</span>`:`<span class="wg">${s.type||''}</span>`);
-    body+=`<tr><td class="nm"><button class="hidebtn" title="この人を非表示" onclick="hideStaff('${stKey}','${encodeURIComponent(s.name)}')">🙈</button>${esc(s.name)}<br>${wg}</td>${tds}<td class="sum">${cnt}</td></tr>`;
+    const isHourly=s.type==='アルバイト'||s.wage>0;
+    const enc=encodeURIComponent(s.name);
+    const sub=(editable&&isHourly)
+      ? `<span class="hcfg">時給<input type="number" step="10" min="0" value="${cfgWage(stKey,s.name)}" onclick="event.stopPropagation()" onchange="setCfg('${stKey}','${enc}','wage',this.value)">×<input type="number" step="0.5" min="0" value="${cfgHours(stKey,s.name)}" onclick="event.stopPropagation()" onchange="setCfg('${stKey}','${enc}','h',this.value)">h</span>`
+      : wg;
+    body+=`<tr><td class="nm"><button class="hidebtn" title="この人を非表示" onclick="hideStaff('${stKey}','${enc}')">🙈</button>${esc(s.name)}<br>${sub}</td>${tds}<td class="sum">${cnt}</td></tr>`;
   });
   return `<div class="gwrap"><table class="grid ${editable?'edit':''}"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
@@ -286,7 +320,7 @@ function render(){
   renderConn();
   $('topnote').innerHTML=tab==='master'
     ? '📋 <b>マスター（実態）</b>：各店の出勤簿の現在の状態をそのまま表示（編集不可）。これが正本です。'
-    : '✏️ <b>編集（シミュレーション）</b>：セルをタップで 空→●→公→希→有→出 と切替。<b>マスターには書き戻しません</b>。「🔄同期」で実シフトを取り込み直せます。時給は各店スタッフ情報から自動取得。';
+    : '✏️ <b>編集（シミュレーション）</b>：セルをタップで 空→●→公→希→有→出。バイトは行に<b>時給×勤務時間</b>を持ち（初期＝実シフトから推定）、●の数×時給×時間で人件費を試算。<b>マスターには書き戻しません</b>。「🔄全同期」=全部を実シフトで上書き／「👔正社員のみ同期」=バイトのシミュは残して正社員シフトだけ追従。';
   const defH=+($('defH').value)||8;
   let html='';let grand=0;
   STORES.forEach(st=>{
@@ -296,7 +330,7 @@ function render(){
     }
     const connected=projConnected(st.proj);
     const data=tab==='sim'?(simByStore[st.key]||{}):(masterByStore[st.key]||{});
-    const cost=connected?storeCost(st.key,data,defH):null;
+    const cost=connected?storeCost(st.key,data,defH,tab==='sim'):null;
     if(cost)grand+=cost.total;
     html+=`<div class="store"><div class="store-h"><span class="sdot" style="background:${st.color}"></span>${st.label}店`+
       (connected? (cost?`<span class="cost">出勤 ${cost.days}日 ・ ${cost.hours.toFixed(1)}h ・ 人件費 <b>${yen(cost.total)}</b><span style="font-size:10px;color:#9aa6b2"> (賃金${yen(cost.wage)}+交通${yen(cost.trans)})</span></span>`:'') : `<span class="cost" style="color:#e8505b">未接続 → 上部でログイン</span>`)+
@@ -325,7 +359,7 @@ function cyc(stKey,nameEnc,d){
 }
 
 /* ===== init ===== */
-loadHidden();renderMonths();renderConn();
+loadHidden();loadCfg();renderMonths();renderConn();
 $('loginOv').addEventListener('keydown',e=>{if(e.key==='Enter'&&_loginCb)doLogin(_loginCb);});
 loadAll();
 </script>
