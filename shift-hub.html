@@ -49,6 +49,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","N
 .grid thead th .tkc.cw{color:#1d6fb8;background:#e7f1fb}
 .grid thead th .tkc.co{color:#0c8f80;background:#e3f8f4}
 /* 出勤者0の日（調整対象）強調 */
+/* 月の区切り（全月連続表示） */
+.grid th.mstart,.grid td.mstart{border-left:3px solid #1f3a5f}
+.grid thead th.mstart .mlabel{display:block;font-size:10px;font-weight:800;color:#1f3a5f;background:#e8eef6;border-radius:5px;padding:0 4px;margin-bottom:2px}
 .grid thead th.noone{background:#ffe2e2!important;color:#b91c1c!important;box-shadow:inset 0 -3px 0 #e8505b}
 .grid thead th.noone .noneflag{display:block;font-size:11px;line-height:1}
 .grid tr.cntrow td{background:#f1f5f9;font-weight:800;font-size:11px;color:#475569;height:24px}
@@ -252,23 +255,25 @@ async function loadStore(st){
   try{staff=await sbGet(st.proj,st.staffTbl+'?select=*&order=sort_order');}catch(e){staff=[];}
   staff=(staff||[]).filter(s=>s&&s.name&&(s.active===undefined||s.active!==false));
   staffByStore[st.key]=staff.map(s=>({name:s.name,type:s.type||'',wage:+(s.hourly_wage||0),trans:+(s.transport_cost||0),monthly:+(s.monthly_salary||0),color:s.color||'#94a3b8'}));
-  // shifts (当月)
+  // shifts（全月 6〜10月をフル日付キーで一括読み込み）
+  const LO=MONTHS[0]+'-01', HI=MONTHS[MONTHS.length-1]+'-31';
   let sh=[];
-  try{sh=await sbGet(st.proj,st.shiftTbl+'?select=date,staff_name,symbol,start_time,end_time&date=like.'+encodeURIComponent(curMonth+'-%'));}catch(e){sh=[];}
+  try{sh=await sbGet(st.proj,st.shiftTbl+'?select=date,staff_name,symbol,start_time,end_time&date=gte.'+LO+'&date=lte.'+HI);}catch(e){sh=[];}
   const m={};
-  (sh||[]).forEach(r=>{const dn=+String(r.date).slice(8,10);if(!dn)return;if(!m[r.staff_name])m[r.staff_name]={};const sym=r.symbol||((r.start_time&&r.end_time)?'●':'');m[r.staff_name][dn]={symbol:sym,start:r.start_time||'',end:r.end_time||''};});
+  (sh||[]).forEach(r=>{const dt=String(r.date).slice(0,10);if(!dt)return;if(!m[r.staff_name])m[r.staff_name]={};const sym=r.symbol||((r.start_time&&r.end_time)?'●':'');m[r.staff_name][dt]={symbol:sym,start:r.start_time||'',end:r.end_time||''};});
   masterByStore[st.key]=m;
-  // タスク数（OPシート準拠・未来月でも数えられるよう確定予約から算出）
-  //  📋OPタスク = 配達(DEL=貸出日) + 回収(COL=返却日) / 🧽洗車 = 返却台数（返却日に1台1洗車）
-  const ym=curMonth;
+  // タスク数（OPシート準拠・確定予約から算出）📋OP=配達(貸出日)+回収(返却日) / 🧽洗車=返却台数
+  const monthSet=new Set(MONTHS);
   let rs=[];
-  try{rs=await sbGet(st.proj,st.resTbl+'?select='+st.sdCol+','+st.edCol+',status&or=('+st.sdCol+'.like.'+encodeURIComponent(ym+'-%')+','+st.edCol+'.like.'+encodeURIComponent(ym+'-%')+')');}catch(e){rs=[];}
+  try{rs=await sbGet(st.proj,st.resTbl+'?select='+st.sdCol+','+st.edCol+',status&or=('+st.sdCol+'.gte.'+LO+','+st.edCol+'.gte.'+LO+')&'+st.sdCol+'=lte.'+HI);}catch(e){
+    try{rs=await sbGet(st.proj,st.resTbl+'?select='+st.sdCol+','+st.edCol+',status&'+st.edCol+'=gte.'+LO+'&'+st.sdCol+'=lte.'+HI);}catch(e2){rs=[];}
+  }
   const tc={};
   (rs||[]).forEach(r=>{
     if(/cancel|キャンセル/i.test(String(r.status||'')))return;
     const sd=String(r[st.sdCol]||''),ed=String(r[st.edCol]||'');
-    if(sd.slice(0,7)===ym){const d=+sd.slice(8,10);if(d){tc[d]=tc[d]||{w:0,o:0};tc[d].o++;}}
-    if(ed.slice(0,7)===ym){const d=+ed.slice(8,10);if(d){tc[d]=tc[d]||{w:0,o:0};tc[d].o++;tc[d].w++;}}
+    if(monthSet.has(sd.slice(0,7))){const k=sd.slice(0,10);if(k){tc[k]=tc[k]||{w:0,o:0};tc[k].o++;}}
+    if(monthSet.has(ed.slice(0,7))){const k=ed.slice(0,10);if(k){tc[k]=tc[k]||{w:0,o:0};tc[k].o++;tc[k].w++;}}
   });
   taskCountByStore[st.key]=tc;
   // 名簿に無いがシフトに居る人を補完
@@ -283,7 +288,7 @@ async function loadAll(){
   render();
 }
 /* ===== sim persistence (localStorage + project A app_settings) ===== */
-function simKey(){return 'shifthub_sim_'+curMonth;}
+function simKey(){return 'shifthub_sim_all';}
 function loadSim(){
   let s=null;
   try{s=JSON.parse(localStorage.getItem(simKey()));}catch(e){}
@@ -339,7 +344,7 @@ function resetToMaster(){
 /* ===== render ===== */
 function setTab(t){tab=t;$('tab-master').classList.toggle('on',t==='master');$('tab-sim').classList.toggle('on',t==='sim');render();}
 function renderMonths(){$('months').innerHTML=MONTHS.map(m=>`<button class="mbtn ${m===curMonth?'on':''}" onclick="setMonth('${m}')">${+m.slice(5)}月</button>`).join('');}
-function setMonth(m){curMonth=m;renderMonths();loadAll();}
+function setMonth(m){curMonth=m;renderMonths();document.querySelectorAll('.gwrap').forEach(w=>{const el=w.querySelector('[id$="-'+m+'-01"]');if(el){w.scrollLeft+=el.getBoundingClientRect().left-w.getBoundingClientRect().left-156;}});}
 function cellHours(c,defH){if(c&&c.start&&c.end){const a=c.start.split(':').map(Number),b=c.end.split(':').map(Number);let h=(b[0]*60+b[1]-(a[0]*60+a[1]))/60;if(h<0)h+=24;if(h>0)return h;}return defH;}
 function storeCost(stKey,data,defH,editable){
   let wage=0,trans=0,days=0,hours=0;
@@ -357,18 +362,19 @@ function storeCost(stKey,data,defH,editable){
 function gridHtml(stKey,editable){
   const data=editable?(simByStore[stKey]||{}):(masterByStore[stKey]||{});
   const staff=staffByStore[stKey]||[];
-  const dn=daysIn(curMonth);
   const tc=taskCountByStore[stKey]||{};
+  // 全月（6〜10月）を連続表示。日付はフル日付キー。右スクロールで先の月まで見れる
+  const COLS=[];MONTHS.forEach(ym=>{const di=daysIn(ym);for(let d=1;d<=di;d++)COLS.push({ym,d,key:ym+'-'+String(d).padStart(2,'0'),w:dow(ym,d)});});
   // 出勤者数を日ごとに集計（非表示は除外・編集タブの増減に都度追従）
-  const dayCnt={};for(let d=1;d<=dn;d++)dayCnt[d]=0;
-  staff.forEach(s=>{ if(isStaffHidden(stKey,s.name))return; const r=data[s.name]||{}; for(let d=1;d<=dn;d++){ if((r[d]&&r[d].symbol)==='●')dayCnt[d]++; } });
-  const noneDays=[];for(let d=1;d<=dn;d++){if(dayCnt[d]===0)noneDays.push(d);}
+  const dayCnt={};COLS.forEach(co=>dayCnt[co.key]=0);
+  staff.forEach(s=>{ if(isStaffHidden(stKey,s.name))return; const r=data[s.name]||{}; COLS.forEach(co=>{ if((r[co.key]&&r[co.key].symbol)==='●')dayCnt[co.key]++; }); });
+  const noneDays=COLS.filter(co=>dayCnt[co.key]===0);
   let head='<th class="nm">スタッフ<br><span class="tkh">🧽洗車 / 📋OPタスク</span></th>';
-  for(let d=1;d<=dn;d++){const w=dow(curMonth,d);const c=tc[d]||{w:0,o:0};const none=dayCnt[d]===0;head+=`<th id="thd-${stKey}-${d}" class="${w===0?'sun':w===6?'sat':''}${none?' noone':''}" title="${none?'⚠️ 出勤者0人（調整対象）':''}">${none?'<span class="noneflag">⚠️</span>':''}${d}<br><span style="font-size:8px">${WK[w]}</span><br><span class="tkc cw" title="洗車">🧽${c.w||0}</span><br><span class="tkc co" title="OPタスク">📋${c.o||0}</span></th>`;}
+  COLS.forEach(co=>{const w=co.w;const c=tc[co.key]||{w:0,o:0};const none=dayCnt[co.key]===0;const ms=co.d===1;head+=`<th id="thd-${stKey}-${co.key}" class="${w===0?'sun':w===6?'sat':''}${none?' noone':''}${ms?' mstart':''}" title="${none?'⚠️ 出勤者0人（調整対象）':''}">${ms?`<span class="mlabel">${+co.ym.slice(5)}月</span>`:''}${none?'<span class="noneflag">⚠️</span>':''}${co.d}<br><span style="font-size:8px">${WK[w]}</span><br><span class="tkc cw" title="洗車">🧽${c.w||0}</span><br><span class="tkc co" title="OPタスク">📋${c.o||0}</span></th>`;});
   head+='<th>出勤</th>';
   // 👥出勤者数の集計行（0人＝赤・調整対象）
   let cntRow='<tr class="cntrow"><td class="nm">👥 出勤者数</td>';
-  for(let d=1;d<=dn;d++){const n=dayCnt[d];cntRow+=`<td class="${n===0?'cell noone0':'cell'}">${n===0?'0':n}</td>`;}
+  COLS.forEach(co=>{const n=dayCnt[co.key];cntRow+=`<td class="${n===0?'cell noone0':'cell'}${co.d===1?' mstart':''}">${n===0?'0':n}</td>`;});
   cntRow+=`<td class="sum">${noneDays.length?'⚠️'+noneDays.length+'日':'OK'}</td></tr>`;
   let body=cntRow;
   staff.forEach(s=>{
@@ -376,14 +382,14 @@ function gridHtml(stKey,editable){
     const row=data[s.name]||{};
     let cnt=0;
     let tds='';
-    for(let d=1;d<=dn;d++){
-      const w=dow(curMonth,d);const c=row[d];const sym=c&&c.symbol||'';
+    COLS.forEach(co=>{
+      const w=co.w;const c=row[co.key];const sym=c&&c.symbol||'';
       if(sym==='●')cnt++;
       const m=SYM[sym];
       const style=m?`background:${m.bg};color:${m.c}`:'';
-      const cls='cell'+(w===0?' sun':w===6?' sat':'');
-      tds+=`<td class="${cls}" style="${style}" ${editable?`onclick="cyc('${stKey}','${encodeURIComponent(s.name)}',${d})"`:''}>${sym}</td>`;
-    }
+      const cls='cell'+(w===0?' sun':w===6?' sat':'')+(co.d===1?' mstart':'');
+      tds+=`<td class="${cls}" style="${style}" ${editable?`onclick="cyc('${stKey}','${encodeURIComponent(s.name)}','${co.key}')"`:''}>${sym}</td>`;
+    });
     const wg=s.wage>0?`<span class="wg">時給¥${s.wage.toLocaleString()}${s.type==='アルバイト'?'':' ('+(s.type||'-')+')'}</span>`:(s.monthly>0?`<span class="wg">月給</span>`:`<span class="wg">${s.type||''}</span>`);
     const isHourly=s.type==='アルバイト';
     const enc=encodeURIComponent(s.name);
@@ -392,9 +398,8 @@ function gridHtml(stKey,editable){
       : wg;
     body+=`<tr><td class="nm"><button class="hidebtn" title="この人を非表示" onclick="hideStaff('${stKey}','${enc}')">🙈</button>${esc(s.name)}<br>${sub}</td>${tds}<td class="sum">${cnt}</td></tr>`;
   });
-  const mm=+curMonth.slice(5);
   const holes=noneDays.length
-    ? `<div class="holelist">${noneDays.map(d=>{const w=dow(curMonth,d);return `<button class="holeitem ${w===0?'sun':w===6?'sat':''}" onclick="(document.getElementById('thd-${stKey}-${d}')||{}).scrollIntoView&&document.getElementById('thd-${stKey}-${d}').scrollIntoView({inline:'center',block:'nearest'})"><b>${mm}/${d}</b><span class="hw">(${WK[w]})</span></button>`;}).join('')}</div>`
+    ? `<div class="holelist">${noneDays.map(co=>`<button class="holeitem ${co.w===0?'sun':co.w===6?'sat':''}" onclick="(document.getElementById('thd-${stKey}-${co.key}')||{}).scrollIntoView&&document.getElementById('thd-${stKey}-${co.key}').scrollIntoView({inline:'center',block:'nearest'})"><b>${+co.ym.slice(5)}/${co.d}</b><span class="hw">(${WK[co.w]})</span></button>`).join('')}</div>`
     : `<div class="holeok">✅ 穴なし<br><span>全日に出勤者あり</span></div>`;
   const holepane=`<div class="holepane"><div class="holehd">🕳 あな（出勤者0）<span class="holecnt ${noneDays.length?'bad':'ok'}">${noneDays.length}日</span></div>${holes}</div>`;
   return `<div class="storerow">${holepane}<div class="gwrap"><table class="grid ${editable?'edit':''}"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div></div>`;
