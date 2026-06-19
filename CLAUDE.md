@@ -1,5 +1,44 @@
 # SPK業務管理APP（札幌店）
 
+## 🗓 2026-06-19 シフト一元管理ハブ shift-hub.html 新設（NHA/SPK/BT・7〜10月）＋ asanaタスク強化＋BTシフト試算→出勤簿
+このセッションの成果物まとめ（次回はまずここを見る）。
+
+### ① shift-hub.html（3店舗シフト一元管理ハブ）★新規
+- URL: **https://nosh2318.github.io/spk-task/shift-hub.html**（spk-taskリポ・単一HTML・vanilla JS・buildなし）
+- 目的: 那覇/札幌/高松の**シフトを1画面**で閲覧＋シミュ（7〜10月限定）。**各店APPが正本＝マスター。ハブは読み取り＋試算のみ（マスターに書き戻さない）**。
+- **別Supabase2系統対応**: NHA/SPK=projA(ckrxttbnawkclshczsia)・BT=projB(ggqugvyskyiblxiycpci)。anonキーは両方コード内。
+  - 認証: A=同オリジン(nosh2318)の既存ログイントークン再利用／B=ツール内ログイン(buddica)→`shifthub_tokB`保存。**BTトークンは自動更新されず1hr失効→`ensureFreshB()`でrefresh_token自動延長＋`_notExpired()`失効判定**（「接続済なのに空」事故の対策）。
+- データ源（各店APPと同じ表）: staff= nha_staff / staff / bt_staff、shift= nha_shifts / shifts / bt_shifts（store列は無視・全件）。
+- 2タブ: **マスター(実態・編集不可ミラー)** / **編集(シミュ)**。編集はセルタップで 空→●→公→希→有→出。
+- **人件費試算＝アルバイトのみ**（正社員は時給/時間欄を出さない・集計除外。type==='アルバイト'判定。BT正社員はhourly_wage=1100が入るので type で厳格化）。人ごと**時給×勤務時間**を `simCfg`(localStorage)で編集可・初期=実シフトから推定。
+- **各日付の下にタスク数**＝🧽洗車/📋OPタスク。**未来月はtasksテーブルが未生成（NHAは直前生成で7月31件のみ）→確定予約から算出**: OP=DEL(貸出日)+COL(返却日)/洗車=返却台数。resTbl/sdCol/edCol（nha:start_date,spk:lend_date,bt:start_date）+OR filter。cancel除外。**両タブ常に実数・シフト編集で不変**。
+- 各店/各人**🙈非表示**（人件費からも除外・localStorage `shifthub_hidden`）。ボタン: ↻最新に更新(マスター再読込・シミュ保持)/🔄全同期/👔正社員のみ同期(バイトのシミュ残し正社員だけ追従)/↩デフォルトに戻す(シフト+時給時間破棄)/💾保存。
+- 注意: マスターは**自動リアルタイムではない**→本番変更は「↻最新に更新」で反映。ページは公開URLだがデータはログイン必須。
+
+### ② asana/index.html（タスク管理ツール・vanilla・asana_tasksテーブル）強化
+公開: https://nosh2318.github.io/spk-task/asana/ 。要SQL `asana/asana_approval_migration.sql`（approval jsonb列・RUN済）。
+- **🔖承認フロー**: タスクに承認フラグ。**「承認待ち」ステータス=承認タブに集約**（status='approval'駆動）。左サイドに🔖承認の別枠（件数バッジ）。決済者がコメントバック＋[✅承認(→進行OK)][⛔却下(→保留)]。approval.stateに判定記録。
+- **管理者でステータス(列)を全て追加/名前変更/並び替え/削除**（_statusesでSupabase共有・最低1列）。コメント削除・コメント投稿者欄は撤去(ログイン名自動)。
+- タスク**📋複製**（子孫ごと→別プロジェクトへ移動）・**🔗関連URL**（attachments・複数）・**担当者で色分け**（personColor・アバター/担当名）・優先度でボード左ボーダー色。
+
+### ③ BT shift-sim.html（高松シフト試算）→出勤簿反映
+- 「📥出勤簿に反映」=表示中月のシフトを bt_shifts へupsert（●出勤＋開始〜終了時刻・staff各人に開始時刻欄追加）。「🧹反映を削除」=memo='試算反映'分だけ削除。名前一致した人だけ出勤簿に出る。**試算＝計画/出勤簿＝正本・連携はボタンのみ・自動同期なし**（画面明記）。v1.0.88-BT。
+
+### ④ NHA/SPK 出勤簿 過去月が見れないバグ修正
+- ShiftCalendar `canPrev=viewYM>todayYM`（逆）→`minYM`下限まで遡れるよう修正（NHA v3.5.160 / SPK v4.7.283）。両店同型。
+- ⚠️ 並行注意: このセッション中 Slack omni がNHA/SPKを高速コミット中で NHA作業dirが `~/Desktop/AI/naha-project` に移動。コミット前に git fetch+log+status 必須。
+
+## 🧾 2026-06-19 invoice_manager.html（受領請求書 一元管理ツール・file://）画像登録不能バグ修正
+- **場所**：`~/Desktop/HANDYMAN/invoices/invoice_manager.html`（**ローカルfile://・git管理外＝保存だけで反映**・anon直叩き）。DB＝`received_invoices`（Supabase ckrxttbnawkclshczsia・public bucket `received-invoices`）。
+- **症状**：6/18まで画像付きで登録できていたが6/19に「請求書が登録されない／画像が入らない」。6/19分はDBに1件も無し＝保存全体が失敗。
+- **真因（確定・3つ）**：
+  1. 🔴 **Storageアップロードは `Authorization` ヘッダー必須**。エラー実文 `headers must have required property 'authorization'`(HTTP400)。旧コードは「ユーザートークンがある時だけ Authorization を付与」→ file://でセッション無し＝未付与→400で画像が入らない（6/18までは別セッションのトークンが付いていて通っていた）。**修正：anonキーを必ず `Authorization: Bearer <token||_SB_ANON>` に付与**。※PostgREST(REST)はapikey単体でOKだがStorageはAuth必須、という非対称が罠。
+  2. **新規登録モードで「📥登録する」ボタンが`display:none`**（`showReceivedForm`のelse分岐）＝**ファイルをアップロードした時(loadRvFile=1452)だけ表示**。ファイルなし手入力だと登録ボタンが出ず「何も動かない」。**修正：新規でも最初から登録ボタン表示**。
+  3. **`_getSbToken`が期限切れトークンを無検査で送る**→操作中に失効すると401。**修正：expires_atチェックで期限切れはnull＝anonフォールバック**＋`_sbReq`を401/403でanon(apikeyのみ)再試行。
+- **切り分け手法（有効だった）**：①anon直で `received_invoices` にPOST→201、Storageに `received-invoices` へPOST→200（**バックエンド正常を先に確定**）②`received_invoices`をcreated_at降順で見て「6/19分が無い＝client失敗」を確認③`file_url`列で「アップロード失敗 vs 表示だけ」を切り分け④保存関数を try/catch で全体包囲＋**失敗理由を画面alert表示**（F12不可環境向け）→ ユーザーがHTTP400文言を撮影できて一発確定。
+- **教訓**：Supabase Storage は `Authorization` 必須（apikey単体不可）。anonツールでも `Authorization: Bearer <anonキー>` を必ず付ける（asana uploadImgは`authH()=Bearer token||SK`で元から正しい＝今回の良い手本）。「動かない」報告は alertで原因を画面に出させるのが最短（コンソール非対応端末多い）。
+
+
 ## 🗂 2026-06-17〜18 asana タスク管理アプリ（BUDDICA向け）大規模改修 — 承認ワークフロー / ステータスログ / 多人数同時 / モバイル
 
 ### 基本情報（覚える）
