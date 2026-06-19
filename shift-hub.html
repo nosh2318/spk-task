@@ -167,13 +167,26 @@ function toast(t){const e=$('toast');e.textContent=t;e.classList.add('on');setTi
 
 /* ===== auth ===== */
 function _ex(d){if(!d)return null;if(typeof d==='string')return d;if(d.access_token)return d.access_token;if(d.currentSession&&d.currentSession.access_token)return d.currentSession.access_token;if(d.session&&d.session.access_token)return d.session.access_token;if(Array.isArray(d)&&typeof d[0]==='string')return d[0];return null;}
+function _notExpired(o){try{if(o&&typeof o==='object'&&o.expires_at)return (o.expires_at*1000)>Date.now()+5000;}catch(e){}return true;}
 function tokenFor(proj){
   const c=PROJ[proj];
-  try{const h=localStorage.getItem(c.hubls);if(h){const t=_ex(JSON.parse(h));if(t)return t;}}catch(e){}
-  try{const v=localStorage.getItem(c.ls);if(v){const t=_ex(JSON.parse(v));if(t)return t;}}catch(e){}
+  try{const h=localStorage.getItem(c.hubls);if(h){const o=JSON.parse(h);const t=_ex(o);if(t&&_notExpired(o))return t;}}catch(e){}
+  try{const v=localStorage.getItem(c.ls);if(v){const o=JSON.parse(v);const t=_ex(o);if(t&&_notExpired(o))return t;}}catch(e){}
   // 同一プロジェクトの sb-*-auth-token を総当り
-  try{for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.indexOf('sb-')===0&&k.indexOf('-auth-token')>0&&k.indexOf(c.url.split('//')[1].split('.')[0])>=0){const t=_ex(JSON.parse(localStorage.getItem(k)));if(t)return t;}}}catch(e){}
+  try{for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.indexOf('sb-')===0&&k.indexOf('-auth-token')>0&&k.indexOf(c.url.split('//')[1].split('.')[0])>=0){const o=JSON.parse(localStorage.getItem(k));const t=_ex(o);if(t&&_notExpired(o))return t;}}}catch(e){}
   return null;
+}
+// BTトークン（ハブ保存・自動更新されない）を refresh_token で延長。失効していたら更新
+async function ensureFreshB(){
+  try{
+    const raw=localStorage.getItem(PROJ.B.hubls);if(!raw)return;
+    const o=JSON.parse(raw);
+    if(o.expires_at&&(o.expires_at*1000)>Date.now()+60000)return; // まだ有効
+    if(!o.refresh_token){return;}
+    const r=await fetch(PROJ.B.url+'/auth/v1/token?grant_type=refresh_token',{method:'POST',headers:{apikey:PROJ.B.key,'Content-Type':'application/json'},body:JSON.stringify({refresh_token:o.refresh_token})});
+    const d=await r.json();
+    if(d&&d.access_token){localStorage.setItem(PROJ.B.hubls,JSON.stringify({access_token:d.access_token,refresh_token:d.refresh_token||o.refresh_token,expires_at:Math.floor(Date.now()/1000)+(d.expires_in||3600)}));}
+  }catch(e){}
 }
 function hdr(proj){const c=PROJ[proj];return {'apikey':c.key,'Authorization':'Bearer '+(tokenFor(proj)||c.key),'Content-Type':'application/json'};}
 async function sbGet(proj,path){const c=PROJ[proj];const r=await fetch(c.url+'/rest/v1/'+path,{headers:hdr(proj)});if(!r.ok)throw new Error(proj+' HTTP '+r.status);return r.json();}
@@ -244,6 +257,7 @@ async function loadStore(st){
 }
 async function loadAll(){
   $('stores').innerHTML='<div style="text-align:center;color:#9aa6b2;padding:40px">読み込み中…</div>';
+  await ensureFreshB();
   for(const st of STORES){ if(projConnected(st.proj)){ try{await loadStore(st);}catch(e){masterByStore[st.key]={};staffByStore[st.key]=[];} } else { masterByStore[st.key]=null;staffByStore[st.key]=[]; } }
   loadSim();
   render();
@@ -269,6 +283,7 @@ function syncFromMasters(){
   if(!confirm(curMonth+' のシミュレーションを「各店の実シフト」で上書きします。\n（マスターには一切影響しません。手元の編集は消えます）'))return;
   loadStore;  // noop guard
   (async()=>{
+    await ensureFreshB();
     for(const st of STORES){if(projConnected(st.proj)){try{await loadStore(st);}catch(e){}}}
     simByStore={};STORES.forEach(st=>{simByStore[st.key]=deepCopy(masterByStore[st.key]||{});});
     saveSim();render();toast('実シフトを取り込みました');
@@ -277,6 +292,7 @@ function syncFromMasters(){
 // 正社員だけ実態から取り込む（バイトのシミュは残す＝正社員のシフト変更だけ追従）
 function syncSeishainOnly(){
   (async()=>{
+    await ensureFreshB();
     for(const st of STORES){if(projConnected(st.proj)){try{await loadStore(st);}catch(e){}}}
     let cnt=0;
     STORES.forEach(st=>{
@@ -293,6 +309,7 @@ function syncSeishainOnly(){
 function resetToMaster(){
   if(!confirm(curMonth+' の編集（シミュレーション）を破棄して、マスター（実態）に戻します。\n手元のシフト編集・時給/時間の変更はすべて消えます。'))return;
   (async()=>{
+    await ensureFreshB();
     for(const st of STORES){if(projConnected(st.proj)){try{await loadStore(st);}catch(e){}}}
     simByStore={};STORES.forEach(st=>{simByStore[st.key]=deepCopy(masterByStore[st.key]||{});});
     simCfg={};saveCfg();saveSim();render();toast('マスターの状態に戻しました');
