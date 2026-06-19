@@ -45,8 +45,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","N
 .grid td.sat{background:#eaf3fc}.grid td.sun{background:#fdeef0}
 .grid .nm.sat,.grid .nm.sun{background:#fff}
 .grid thead th.sat{color:#2c82c9}.grid thead th.sun{color:#e8505b}
-.grid thead th .tkc{display:inline-block;font-size:9px;font-weight:800;color:#0c8f80;background:#e3f8f4;border-radius:6px;padding:0 4px;margin-top:1px;min-width:13px}
-.grid thead .nm .tkh{font-size:8.5px;font-weight:700;color:#0c8f80}
+.grid thead th .tkc{display:inline-block;font-size:8.5px;font-weight:800;border-radius:5px;padding:0 3px;margin-top:1px;min-width:16px;line-height:1.5}
+.grid thead th .tkc.cw{color:#1d6fb8;background:#e7f1fb}
+.grid thead th .tkc.co{color:#0c8f80;background:#e3f8f4}
+.grid thead .nm .tkh{font-size:8.5px;font-weight:700;color:#5d6b7a}
 .sum{font-size:10px;color:var(--gray);font-weight:700}
 .legend{display:flex;gap:10px;flex-wrap:wrap;font-size:10.5px;color:var(--gray);padding:8px 14px;border-top:1px dashed #eef2f6}
 .legend span{display:inline-flex;align-items:center;gap:4px}
@@ -128,9 +130,9 @@ const PROJ={
   B:{url:'https://ggqugvyskyiblxiycpci.supabase.co',key:'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdncXVndnlza3lpYmx4aXljcGNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxMDc3NjksImV4cCI6MjA5MzY4Mzc2OX0.uNhWcBd_Dl5nzemZDQfJ8mQV6iY73MwystGGpTRPC18',ls:'sb-ggqugvyskyiblxiycpci-auth-token',hubls:'shifthub_tokB'}
 };
 const STORES=[
-  {key:'nha',label:'那覇',color:'var(--nha)',proj:'A',staffTbl:'nha_staff',shiftTbl:'nha_shifts',taskTbl:'nha_tasks'},
-  {key:'spk',label:'札幌',color:'var(--spk)',proj:'A',staffTbl:'staff',shiftTbl:'shifts',taskTbl:'tasks'},
-  {key:'bt', label:'高松',color:'var(--bt)', proj:'B',staffTbl:'bt_staff',shiftTbl:'bt_shifts',taskTbl:'bt_tasks'}
+  {key:'nha',label:'那覇',color:'var(--nha)',proj:'A',staffTbl:'nha_staff',shiftTbl:'nha_shifts',taskTbl:'nha_tasks',taskTypeCol:'内容'},
+  {key:'spk',label:'札幌',color:'var(--spk)',proj:'A',staffTbl:'staff',shiftTbl:'shifts',taskTbl:'tasks',taskTypeCol:'type'},
+  {key:'bt', label:'高松',color:'var(--bt)', proj:'B',staffTbl:'bt_staff',shiftTbl:'bt_shifts',taskTbl:'bt_tasks',taskTypeCol:'内容'}
 ];
 const MONTHS=['2026-07','2026-08','2026-09','2026-10'];
 const SYM={'●':{l:'出勤',c:'#2563eb',bg:'#D4EBFA'},'公':{l:'公休',c:'#64748b',bg:'#E8E8E8'},'希':{l:'希望休',c:'#b45309',bg:'#FFF3CD'},'有':{l:'有休',c:'#15803d',bg:'#dcfce7'},'出':{l:'出張',c:'#6d28d9',bg:'#ede9fe'}};
@@ -223,10 +225,12 @@ async function loadStore(st){
   const m={};
   (sh||[]).forEach(r=>{const dn=+String(r.date).slice(8,10);if(!dn)return;if(!m[r.staff_name])m[r.staff_name]={};const sym=r.symbol||((r.start_time&&r.end_time)?'●':'');m[r.staff_name][dn]={symbol:sym,start:r.start_time||'',end:r.end_time||''};});
   masterByStore[st.key]=m;
-  // タスク件数（OPシートのタスク数＝各店tasksテーブルの日別件数・洗車含む）
+  // タスク件数（OPシート準拠・各店tasksテーブル）を 🧽洗車 / 📋OPタスク の2系統で集計
+  const typeCol=st.taskTypeCol;
   let tk=[];
-  try{tk=await sbGet(st.proj,st.taskTbl+'?select=date&date=like.'+encodeURIComponent(curMonth+'-%'));}catch(e){tk=[];}
-  const tc={};(tk||[]).forEach(r=>{const d2=+String(r.date).slice(8,10);if(d2)tc[d2]=(tc[d2]||0)+1;});
+  try{tk=await sbGet(st.proj,st.taskTbl+'?select=date,'+encodeURIComponent(typeCol)+'&date=like.'+encodeURIComponent(curMonth+'-%'));}catch(e){tk=[];}
+  const tc={};
+  (tk||[]).forEach(r=>{const d2=+String(r.date).slice(8,10);if(!d2)return;const isW=String(r[typeCol]||'')==='洗車';tc[d2]=tc[d2]||{w:0,o:0};if(isW)tc[d2].w++;else tc[d2].o++;});
   taskCountByStore[st.key]=tc;
   // 名簿に無いがシフトに居る人を補完
   const have=new Set(staffByStore[st.key].map(s=>s.name));
@@ -312,8 +316,8 @@ function gridHtml(stKey,editable){
   const staff=staffByStore[stKey]||[];
   const dn=daysIn(curMonth);
   const tc=taskCountByStore[stKey]||{};
-  let head='<th class="nm">スタッフ<br><span class="tkh">📋タスク</span></th>';
-  for(let d=1;d<=dn;d++){const w=dow(curMonth,d);const t=tc[d]||0;head+=`<th class="${w===0?'sun':w===6?'sat':''}">${d}<br><span style="font-size:8px">${WK[w]}</span><br><span class="tkc">${t||'·'}</span></th>`;}
+  let head='<th class="nm">スタッフ<br><span class="tkh">🧽洗車 / 📋OPタスク</span></th>';
+  for(let d=1;d<=dn;d++){const w=dow(curMonth,d);const c=tc[d]||{w:0,o:0};head+=`<th class="${w===0?'sun':w===6?'sat':''}">${d}<br><span style="font-size:8px">${WK[w]}</span><br><span class="tkc cw" title="洗車">🧽${c.w||0}</span><br><span class="tkc co" title="OPタスク">📋${c.o||0}</span></th>`;}
   head+='<th>出勤</th>';
   let body='';
   staff.forEach(s=>{
