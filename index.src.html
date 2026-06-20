@@ -64,14 +64,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v845';
+  var CV='spk-v846';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=732').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=733').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -2928,6 +2928,22 @@ function FleetManager(p){
     }).then(function(){setLogCost("");setLogDesc("");});
   };
   var delLog=function(id){if(!window.confirm("削除しますか？"))return;save(function(){return DB.hm.deleteLog(id)})};
+  // 受領請求書連携ログ(id=0a1b2c3d-...)から、連携元の受領請求書の画像/PDFを開く
+  var INV_LOG_PREFIX="0a1b2c3d-0000-4000-8000-";
+  var isInvLog=function(id){return String(id||"").indexOf(INV_LOG_PREFIX)===0;};
+  var openLinkedInvoice=function(id){
+    try{
+      var hex=String(id).slice(INV_LOG_PREFIX.length);var invId=parseInt(hex,16);
+      if(!invId){alert("請求書IDを特定できません");return;}
+      sb.from("received_invoices").select("file_url,file_name,payee").eq("id",invId).maybeSingle().then(function(res){
+        if(res.error){alert("請求書の取得に失敗: "+res.error.message);return;}
+        var r=res.data;
+        if(!r){alert("連携元の受領請求書が見つかりません（削除済みの可能性）");return;}
+        if(!r.file_url){alert("この受領請求書には画像/PDFが添付されていません（受領請求書タブで画像を登録してください）");return;}
+        window.open(r.file_url,"_blank","noopener,noreferrer");
+      });
+    }catch(e){alert("請求書の取得に失敗: "+(e.message||e));}
+  };
   // ★ 2026-06-08: マスター vehicles にあるが整備cars未登録の車を、タップで整備管理に登録
   var registerHmCar=function(v){if(!v)return;var nc={id:crypto.randomUUID(),store_id:"sapporo",name:v.name||"",plate:v.no||"",class_id:v.type||"",status:v.active===false?"inactive":"active"};save(function(){return DB.hm.saveCar(nc);}).then(function(){setSelCar(nc);setView("detail");});};
 
@@ -3181,8 +3197,10 @@ function FleetManager(p){
               E("td",{style:{padding:"5px 8px"}},l.date||""),
               E("td",{style:{padding:"5px 8px"}},E("span",{style:{fontSize:10,padding:"2px 8px",borderRadius:4,background:l.type==="inspection"?"#dbeafe":l.type==="repair"?"#fee2e2":l.type==="semi_annual"?"#fef3c7":l.type==="oil"?"#fff7ed":"#f1f5f9",color:l.type==="inspection"?"#1e40af":l.type==="repair"?"#991b1b":l.type==="semi_annual"?"#92400e":l.type==="oil"?"#9a3412":"#475569",fontWeight:600}},catLabel(l.type))),
               E("td",{style:{padding:"5px 8px",textAlign:"right",fontWeight:700}},"¥"+Number(l.cost||0).toLocaleString()),
-              E("td",{style:{padding:"5px 8px",color:"#475569",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis"}},l.description||""),
-              E("td",{style:{padding:"5px 8px",textAlign:"right"}},E("button",{onClick:function(){delLog(l.id)},style:{fontSize:10,color:"#dc2626",background:"none",border:"none",cursor:"pointer"}},"削除"))
+              E("td",{style:{padding:"5px 8px",color:"#475569",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis"}},l.description||"",isInvLog(l.id)?E("span",{style:{marginLeft:6,fontSize:9,fontWeight:700,color:"#1a56db",background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:4,padding:"1px 5px",whiteSpace:"nowrap"}},"📥連携"):null),
+              E("td",{style:{padding:"5px 8px",textAlign:"right",whiteSpace:"nowrap"}},
+                isInvLog(l.id)?E("button",{onClick:function(){openLinkedInvoice(l.id)},style:{fontSize:10,color:"#1a56db",background:"#eff6ff",border:"1px solid #93c5fd",borderRadius:5,cursor:"pointer",padding:"2px 7px",marginRight:6,fontWeight:700}},"📄 請求書"):null,
+                E("button",{onClick:function(){delLog(l.id)},style:{fontSize:10,color:"#dc2626",background:"none",border:"none",cursor:"pointer"}},"削除"))
             )}))
           )
         ):E("div",{style:{fontSize:11,color:"#94a3b8",padding:12,textAlign:"center"}},"まだ整備記録がありません。上のフォームから追加してください。")
@@ -21475,7 +21493,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.300";
+const APP_VERSION="v4.7.301";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
