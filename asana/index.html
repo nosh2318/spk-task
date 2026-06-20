@@ -511,7 +511,7 @@ function apFlag(t){if(isApprPending(t))return '<span class="apflag">🔖承認�
 function pendingApprovals(){return TASKS.filter(isApprPending);}
 
 /* ===== 自動アップデート：不特定多数が常に最新を使えるよう、新版検知で強制リロード ===== */
-const ASANA_BUILD='20260620a';   // ★デプロイ毎に必ずこの値を変える（全クライアントが自動更新される）
+const ASANA_BUILD='20260620b';   // ★デプロイ毎に必ずこの値を変える（全クライアントが自動更新される）
 (function(){
   async function chkUpd(){
     try{
@@ -827,8 +827,10 @@ function progressHtml(){
     <div class="prgsum-c"><div class="prgsum-n" style="color:#d97706">${midN}</div><div class="prgsum-l">進行中 1-99%</div></div>
     <div class="prgsum-c"><div class="prgsum-n" style="color:#9aa0a6">${zeroN}</div><div class="prgsum-l">未着手 0%</div></div>
   </div>`;
-  // プロジェクト別グループ（表示中のものだけ）
-  const areas=[...new Set(visRoots.map(t=>t.area||'一般'))];
+  // 完了(status=完了)は専用グループにまとめる／それ以外をプロジェクト別に
+  const activeRoots=visRoots.filter(t=>t._st!=='done');
+  const doneRoots=visRoots.filter(t=>t._st==='done');
+  const areas=[...new Set(activeRoots.map(t=>t.area||'一般'))];
   const rowHtml=(t,isSub)=>{
     const p=progressOf(t);const cs=ST(t._st);const has=children(t.id).length>0;
     const asg=(t.assignee||'').trim();
@@ -843,18 +845,26 @@ function progressHtml(){
     </div>`;
   };
   const groups=areas.map(ar=>{
-    const list=visRoots.filter(t=>(t.area||'一般')===ar);
+    const list=activeRoots.filter(t=>(t.area||'一般')===ar);
     const gp=list.map(progressOf);const gavg=gp.length?Math.round(gp.reduce((a,b)=>a+b,0)/gp.length):0;
     let rows='';
     list.forEach(t=>{
-      let pr=progressOf(t);if(PRG_HIDE&&pr>=100&&children(t.id).length===0)return;
       rows+=rowHtml(t,false);
-      children(t.id).forEach(c=>{if(!match(c))return;if(PRG_HIDE&&progressOf(c)>=100)return;rows+=rowHtml(c,true);});
+      // 完了サブは完了グループへ寄せる（親配下では未完サブのみ表示）
+      children(t.id).forEach(c=>{if(!match(c))return;if(c._st==='done')return;rows+=rowHtml(c,true);});
     });
     if(!rows)return '';
     return `<div class="prggrp"><div class="prggrp-h"><span class="gc" style="background:${pjColor(ar)}"></span>${esc(ar)}<span class="gavg">平均 ${gavg}%</span></div>${rows}</div>`;
   }).join('');
-  return `<div class="prgwrap">${filt}${sum}${groups||'<div style="text-align:center;color:#9aa0a6;padding:40px;font-weight:700">該当タスクなし</div>'}</div>`;
+  // 完了グループ（status=完了の全タスクを集約）
+  let doneGroup='';
+  const doneSubs=[];TASKS.forEach(t=>{if(t.parent_id&&t._st==='done'&&match(t))doneSubs.push(t);});
+  const allDone=doneRoots.concat(doneSubs.filter(t=>!doneRoots.some(r=>r.id===t.id)));
+  if(!PRG_HIDE&&allDone.length){
+    const drows=allDone.map(t=>rowHtml(t,!!t.parent_id)).join('');
+    doneGroup=`<div class="prggrp"><div class="prggrp-h"><span class="gc" style="background:#16a34a"></span>✅ 完了<span class="gavg" style="color:#16a34a">${allDone.length}件</span></div>${drows}</div>`;
+  }
+  return `<div class="prgwrap">${filt}${sum}${groups}${doneGroup}${(groups||doneGroup)?'':'<div style="text-align:center;color:#9aa0a6;padding:40px;font-weight:700">該当タスクなし</div>'}</div>`;
 }
 
 /* ---- render ---- */
