@@ -58,6 +58,12 @@ button{font-family:inherit;cursor:pointer}
 .hqac-add input{flex:1;border:1.5px solid #e2e4e8;border-radius:8px;padding:6px 9px;font-size:13px}
 .hqac-add button{background:#0f766e;color:#fff;border:none;border-radius:8px;padding:6px 12px;font-weight:800;cursor:pointer}
 .apgrp.del{color:#dc2626;border-color:#fecaca}
+/* 本部通達モーダル */
+.bc-in{width:100%;border:1.5px solid #e2e4e8;border-radius:9px;padding:9px 11px;font-size:14px;margin-bottom:10px;font-family:inherit;box-sizing:border-box}
+.bc-l{font-size:12px;font-weight:800;color:#3a3f4b;margin:4px 0 8px;display:flex;align-items:center;gap:6px}
+.bc-list{display:flex;flex-direction:column;gap:7px;max-height:220px;overflow-y:auto;border:1px solid #eee;border-radius:9px;padding:9px}
+.bc-chk{display:flex;align-items:center;font-size:13px;font-weight:600;color:#374151;cursor:pointer}
+.bc-chk input{width:16px;height:16px}
 /* サイドバー：プロジェクト名の横に✏️名前変更 */
 .side .pj .pjname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .side .pj .pjedit{background:none;border:none;color:#cfd0d4;font-size:12px;cursor:pointer;opacity:.45;padding:0 3px;flex-shrink:0;line-height:1}
@@ -591,7 +597,7 @@ function apFlag(t){if(isApprPending(t))return '<span class="apflag">🔖承認�
 function pendingApprovals(){return TASKS.filter(isApprPending);}
 
 /* ===== 自動アップデート：不特定多数が常に最新を使えるよう、新版検知で強制リロード ===== */
-const ASANA_BUILD='20260622u';   // ★デプロイ毎に必ずこの値を変える（全クライアントが自動更新される）
+const ASANA_BUILD='20260622w';   // ★デプロイ毎に必ずこの値を変える（全クライアントが自動更新される）
 (function(){
   async function chkUpd(){
     try{
@@ -691,6 +697,7 @@ const DEFAULT_BIZ=[{store:'spk',name:'BUDDICA TOURISM',color:'#e11d48'}];
 let BUSINESSES=DEFAULT_BIZ.slice();   // [{store,name,color}] 全事業（_hqの_businesses行で共有）
 let HQ_TASKS=[];                      // 本部に集約された全事業の承認案件
 let HQ_BROADCASTS=[];                 // 本部が出したタスク（📢本部通達）の横断一覧
+let HQ_ALL=[];                        // 本部「全タスク」＝全PJ横断の全タスク
 let HQ_MEMBERS=[];                    // 全事業メンバーの和集合（本部の担当割当用）
 let HQ_PEND=0;                        // 本部バッジ件数
 let HQ_BIZ='__all';                   // 本部の事業絞り込み（BUDDICA TOURISM等）
@@ -720,7 +727,7 @@ function hqAdminHtml(){
     var prj=(a.projects||[]).map(function(n,i){return '<span class="hqtag" style="border-color:'+pjColor(n)+'55"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:'+pjColor(n)+';margin-right:4px"></span>'+esc(n)+'<button onclick="hqRenameProject(\''+b.store+'\','+i+')" title="名前変更">✏️</button><button onclick="hqDelProject(\''+b.store+'\','+i+')" title="削除">✕</button></span>';}).join('')||'<span style="font-size:11px;color:#9a9ca2">プロジェクト未登録</span>';
     return '<div class="hqacard" style="border-left:5px solid '+(b.color||'#e11d48')+'">'+
       '<div class="hqac-h"><span style="display:inline-block;width:11px;height:11px;border-radius:3px;background:'+(b.color||'#e11d48')+'"></span><b style="font-size:14px">'+esc(b.name)+'</b>'+(b.store===STORE?' <small style="color:#16a34a;font-weight:800">● 操作中</small>':'')+
-        '<span style="margin-left:auto;display:flex;gap:6px"><button class="apgrp" onclick="switchBiz(\''+b.store+'\')">開く</button><button class="apgrp" onclick="renameBusiness(\''+b.store+'\')">名前変更</button>'+(BUSINESSES.length>1?'<button class="apgrp del" onclick="delBusiness(\''+b.store+'\')">削除</button>':'')+'</span></div>'+
+        '<span style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap"><button class="apgrp" onclick="switchBiz(\''+b.store+'\')">📂 開く</button><button class="apgrp" onclick="renameBusiness(\''+b.store+'\')">✏️ 名前変更</button>'+(BUSINESSES.length>1?'<button class="apgrp del" onclick="delBusiness(\''+b.store+'\')">🗑 削除</button>':'')+'</span></div>'+
       '<div class="hqac-sec"><div class="hqac-l">👥 メンバー</div><div class="hqtags">'+mem+'</div><div class="hqac-add"><input id="hqm_'+b.store+'" placeholder="メンバー追加" onkeydown="if(event.key===\'Enter\')hqAddMember(\''+b.store+'\')"><button onclick="hqAddMember(\''+b.store+'\')">＋</button></div></div>'+
       '<div class="hqac-sec"><div class="hqac-l">🗂 プロジェクト</div><div class="hqtags">'+prj+'</div><div class="hqac-add"><input id="hqp_'+b.store+'" placeholder="プロジェクト追加" onkeydown="if(event.key===\'Enter\')hqAddProject(\''+b.store+'\')"><button onclick="hqAddProject(\''+b.store+'\')">＋</button></div></div>'+
     '</div>';
@@ -732,9 +739,40 @@ async function hqDelMember(store,i){const cur=((HQADMIN[store]||{}).members||[])
 async function hqAddProject(store){const inp=document.getElementById('hqp_'+store);const n=(inp&&inp.value||'').trim();if(!n)return;const cur=((HQADMIN[store]||{}).projects||[]).slice();if(!cur.includes(n))cur.push(n);HQADMIN[store]=Object.assign({members:[]},HQADMIN[store],{projects:cur});if(store===STORE)PROJECTS=cur.slice();render();await saveProjectsFor(store,cur);}
 async function hqDelProject(store,i){const cur=((HQADMIN[store]||{}).projects||[]).slice();if(i<0||i>=cur.length)return;const nm=cur[i];if(!confirm('プロジェクト「'+nm+'」を削除しますか？（中のタスクは「一般」へ）'))return;cur.splice(i,1);HQADMIN[store]=Object.assign({members:[]},HQADMIN[store],{projects:cur});if(store===STORE)PROJECTS=cur.slice();render();await saveProjectsFor(store,cur);}
 async function hqRenameProject(store,i){const cur=((HQADMIN[store]||{}).projects||[]).slice();if(i<0||i>=cur.length)return;let nn=prompt('プロジェクト名を変更',cur[i]);if(nn===null)return;nn=nn.trim();if(!nn||nn===cur[i])return;cur[i]=nn;HQADMIN[store]=Object.assign({members:[]},HQADMIN[store],{projects:cur});if(store===STORE)PROJECTS=cur.slice();render();await saveProjectsFor(store,cur);}
-// 現在事業 or 本部（承認/通達）からタスクを解決（アクションを横断storeで動かす）
-function findT(id){if(CUR==='__hq')return HQ_TASKS.find(x=>x.id===id)||HQ_BROADCASTS.find(x=>x.id===id)||TASKS.find(x=>x.id===id);return TASKS.find(x=>x.id===id)||HQ_TASKS.find(x=>x.id===id)||HQ_BROADCASTS.find(x=>x.id===id);}
-function curBiz(){return BUSINESSES.find(b=>b.store===STORE)||{store:STORE,name:(STORE==='spk'?'BUDDICA TOURISM':STORE),color:'#e11d48'};}
+// 本部「全タスク」＝全PJ横断の全タスクを取得
+async function loadHqAll(rerender){
+  const stores=[...new Set(BUSINESSES.map(b=>b.store).concat([HQ_STORE]))];
+  const inList=stores.map(s=>encodeURIComponent(s)).join(',');
+  const rows=await sbGet(TBL()+'?store=in.('+inList+')&deleted=eq.false&select=*&order=updated_at.desc');
+  if(rows===null)return;
+  HQ_ALL=rows.filter(r=>r&&r.id&&String(r.id).charAt(0)!=='_').map(t=>{const logs=Array.isArray(t.logs)?t.logs:[];const rq=logs.find(l=>l&&l.type==='req');return {...t,_st:normStatus(t.status),logs,requester:t.requester||(rq&&rq.by)||''};});
+  if(rerender&&CUR==='__hqall')render();
+}
+function hqAllTable(list){
+  let html='<div class="ltbl"><div class="lhead"><span class="ltw"></span><span class="lchk2"></span><div class="lname">名前</div><div class="lcol">担当</div><div class="lcol">期日</div><div class="lcol">優先度</div><div class="lcol ltag">プロジェクト</div></div>';
+  STATUSES.forEach(s=>{const g=list.filter(t=>t._st===s.k).sort((a,b)=>(a.due_date||'9999').localeCompare(b.due_date||'9999'));if(!g.length)return;
+    html+=`<div class="lgh"><span class="lgtw"></span><span class="chip" style="background:${s.bg};color:${s.c}">${esc(s.l)}</span><span class="lgn">${g.length}</span></div>`;
+    g.forEach(t=>{html+=lrow(t,0);});});
+  return html+'</div>';
+}
+function hqAllHtml(){
+  const filt=(document.getElementById('filtSel')||{}).value||'open';
+  let rows=HQ_ALL.filter(t=>!t.parent_id);
+  if(filt==='open')rows=rows.filter(t=>t._st!=='done');else if(filt==='done')rows=rows.filter(t=>t._st==='done');
+  if(!rows.length)return '<div class="apwrap apwide"><div class="empty">タスクがありません</div></div>';
+  if(VIEW==='timeline')return '<div class="apwrap apwide">'+timelineHtml(rows)+'</div>';
+  const byBiz={};rows.forEach(t=>{(byBiz[t.store]=byBiz[t.store]||[]).push(t);});
+  const order=[HQ_STORE].concat(BUSINESSES.map(b=>b.store));
+  let h='<div class="apwrap apwide"><div class="apsec" style="margin-top:0">🗂 全タスク（全PJ横断・'+rows.length+'件）</div>';
+  order.forEach(store=>{const list=byBiz[store]||[];if(!list.length)return;
+    const b=(store===HQ_STORE)?{name:'🏛 本部',color:'#7c3aed'}:(BUSINESSES.find(x=>x.store===store)||{name:store,color:'#888'});
+    h+=`<div class="hqbiz" style="border-left:5px solid ${b.color}"><div class="hqbizh"><span class="pc" style="background:${b.color}"></span>${esc(b.name)}<span class="hqcnt">${list.length}件</span>${store!==STORE?`<button class="hqopen" onclick="switchBiz('${store}')">開く →</button>`:''}</div>`+hqAllTable(list)+`</div>`;
+  });
+  return h+'</div>';
+}
+// 現在事業 or 本部（承認/通達/全タスク）からタスクを解決（アクションを横断storeで動かす）
+function findT(id){return TASKS.find(x=>x.id===id)||HQ_TASKS.find(x=>x.id===id)||HQ_BROADCASTS.find(x=>x.id===id)||HQ_ALL.find(x=>x.id===id);}
+function curBiz(){if(STORE===HQ_STORE)return {store:HQ_STORE,name:'🏛 本部',color:'#7c3aed'};return BUSINESSES.find(b=>b.store===STORE)||{store:STORE,name:(STORE==='spk'?'BUDDICA TOURISM':STORE),color:'#e11d48'};}
 async function loadBusinesses(){
   try{const rows=await sbGet(TBL()+'?store=eq.'+encodeURIComponent(HQ_STORE)+'&id=eq._businesses&select=attachments');
     const arr=(rows&&rows[0]&&Array.isArray(rows[0].attachments))?rows[0].attachments.filter(b=>b&&b.store):[];
@@ -742,8 +780,8 @@ async function loadBusinesses(){
   }catch(e){BUSINESSES=DEFAULT_BIZ.slice();}
   // spk(BUDDICA)は必ず候補に含める（基幹事業）
   if(!BUSINESSES.some(b=>b.store==='spk'))BUSINESSES.unshift({store:'spk',name:'BUDDICA TOURISM',color:'#e11d48'});
-  // 登録外の事業を開いている（＝削除された等）→勝手に再追加せず、有効な事業へ戻す
-  if(!BUSINESSES.some(b=>b.store===STORE)){STORE=BUSINESSES[0].store;try{localStorage.setItem('asana_store',STORE);}catch(e){}}
+  // 登録外の事業を開いている（＝削除された等）→勝手に再追加せず、有効な事業へ戻す（本部_hqは常に有効）
+  if(STORE!==HQ_STORE&&!BUSINESSES.some(b=>b.store===STORE)){STORE=BUSINESSES[0].store;try{localStorage.setItem('asana_store',STORE);}catch(e){}}
   // 初期化：DB未登録なら現状を保存（BUDDICA TOURISMを最初の事業として確立）
   try{const rows=await sbGet(TBL()+'?store=eq.'+encodeURIComponent(HQ_STORE)+'&id=eq._businesses&select=id');if(!(rows&&rows.length))await saveBusinesses();}catch(e){}
 }
@@ -763,7 +801,7 @@ async function loadHQ(rerender){
   if(rerender&&(CUR==='__hq'||CUR==='__hqcast'))render();
 }
 // 事業切替（changeStore互換：CUR/SELリセットして該当事業を読込）
-function switchBiz(store){if(store===STORE){CUR='__all';render();return;}changeStore(store);}
+function switchBiz(store){const def=(store===HQ_STORE?'__hq':'__all');if(store===STORE){CUR=def;render();return;}changeStore(store,def);}
 async function addBusiness(){
   const inp=document.getElementById('bizInput');
   let name=(inp&&(inp.value||'').trim())?inp.value.trim():prompt('新しい事業名（例：◯◯事業）');
@@ -790,29 +828,36 @@ async function delBusiness(store){
   if(store===STORE){bizMgrClose();switchBiz(BUSINESSES[0].store);}else{render();loadHQ(false);if(document.getElementById('bizMgr'))openBizManager();}
 }
 // 🏢 事業を管理（本部）モーダル：事業の追加/開く/名前変更/削除。管理者タブからは分離
-function openBizManager(){
-  bizMgrClose();
-  const ov=document.createElement('div');ov.className='apmodal';ov.id='bizMgr';
-  ov.onclick=e=>{if(e.target===ov)bizMgrClose();};
-  const rows=BUSINESSES.map(b=>`<div class="mm-row"><span style="display:flex;align-items:center;gap:7px;min-width:0"><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${b.color||'#e11d48'};flex-shrink:0"></span><b>${esc(b.name)}</b>${b.store===STORE?' <small style="color:#16a34a;font-weight:800">● 操作中</small>':''}</span><span style="display:flex;gap:6px;flex-shrink:0"><button onclick="bizMgrClose();switchBiz('${b.store}')">開く</button><button onclick="renameBusiness('${b.store}')">名前変更</button>${BUSINESSES.length>1?`<button onclick="delBusiness('${b.store}')" style="color:#dc2626">削除</button>`:''}</span></div>`).join('');
-  ov.innerHTML=`<div class="apmbox" style="max-width:500px;width:92%" onclick="event.stopPropagation()"><div class="apmh">🏢 事業を管理（本部）</div><div style="font-size:12px;color:#6b6f76;margin:-6px 0 12px;line-height:1.6">「<b>事業</b>」＝本部配下の独立組織（例：BUDDICA TOURISM）。各事業は<b>自分のプロジェクト・メンバー・タスク・承認</b>を別々に持ちます。追加後は各事業の<b>⚙️管理者</b>で初期登録してください。</div><div class="mm-add" style="margin-bottom:12px"><input id="bizInput" placeholder="事業名を追加（例：◯◯事業）" onkeydown="if(event.key==='Enter')addBusiness()"><button onclick="addBusiness()">＋ 追加</button></div><div class="mm-list">${rows}</div><div class="apmbtns" style="margin-top:14px"><button class="apmcancel" onclick="bizMgrClose()">閉じる</button></div></div>`;
-  document.body.appendChild(ov);
-}
+// 旧ポップアップは廃止 → 見やすい「⚙️本部管理」ページへ集約
+function openBizManager(){selPj('__hqadmin');}
 function bizMgrClose(){const m=document.getElementById('bizMgr');if(m)m.remove();}
 // 📢 本部通達（下り）：本部発のタスクを全事業へ配布。各事業のボードに出る
-async function openHqBroadcast(){
-  const title=prompt('📢 本部通達（全事業へ配布するタスク名）');if(!title||!title.trim())return;
-  const desc=prompt('内容・指示（任意）','')||'';
-  if(!confirm('「'+title.trim()+'」を全'+BUSINESSES.length+'事業に配布します。いいですか？'))return;
+// 📢 本部通達：配布先PJ（指定 or 全PJ）を選んでタスクを配る
+function openHqBroadcast(){
+  bcClose();
+  const ov=document.createElement('div');ov.className='apmodal';ov.id='bcModal';
+  ov.onclick=e=>{if(e.target===ov)bcClose();};
+  const checks=BUSINESSES.map(b=>`<label class="bc-chk"><input type="checkbox" class="bc-biz" value="${b.store}" checked><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${b.color||'#e11d48'};margin:0 6px"></span>${esc(b.name)}</label>`).join('');
+  ov.innerHTML=`<div class="apmbox" style="max-width:460px;width:92%" onclick="event.stopPropagation()"><div class="apmh">📢 本部通達を作成</div><div style="font-size:12px;color:#6b6f76;margin:-6px 0 12px">指定したPJ（事業）にタスクを配布します。各PJのボードに「📢本部通達」として表示され、進捗を本部で追えます。</div><input id="bcTitle" class="bc-in" placeholder="タスク名（例：月次報告を提出）"><textarea id="bcDesc" class="bc-in" rows="3" placeholder="内容・指示（任意）"></textarea><div class="bc-l">配布先PJ <button class="apgrp" onclick="bcAll(true)">全選択</button><button class="apgrp" onclick="bcAll(false)">全解除</button></div><div class="bc-list">${checks}</div><div class="apmbtns" style="margin-top:14px"><button class="apmcancel" onclick="bcClose()">キャンセル</button><button class="apmok" onclick="bcSubmit()">📢 配布する</button></div></div>`;
+  document.body.appendChild(ov);
+  setTimeout(()=>{const e=document.getElementById('bcTitle');if(e)e.focus();},30);
+}
+function bcClose(){const m=document.getElementById('bcModal');if(m)m.remove();}
+function bcAll(v){document.querySelectorAll('.bc-biz').forEach(c=>{c.checked=v;});}
+async function bcSubmit(){
+  const title=((document.getElementById('bcTitle')||{}).value||'').trim();if(!title){alert('タスク名を入力してください');return;}
+  const desc=((document.getElementById('bcDesc')||{}).value||'');
+  const targets=[...document.querySelectorAll('.bc-biz')].filter(c=>c.checked).map(c=>c.value);
+  if(!targets.length){alert('配布先PJを1つ以上選んでください');return;}
+  bcClose();
   const now=new Date().toISOString();let ok=0;
-  for(const b of BUSINESSES){
-    const reqlog={type:'req',by:'🏛本部',at:now,text:title.trim()};
-    const row={id:uid(),store:b.store,area:HQ_BCAST_AREA,title:title.trim(),requester:'🏛本部',assignee:'',status:'consult',priority:'高',progress:0,description:desc,logs:[reqlog],attachments:[],admin_confirmed:false,deleted:false,created_at:now};
+  for(const store of targets){
+    const reqlog={type:'req',by:'🏛本部',at:now,text:title};
+    const row={id:uid(),store:store,area:HQ_BCAST_AREA,title:title,requester:'🏛本部',assignee:'',status:'consult',priority:'高',progress:0,description:desc,logs:[reqlog],attachments:[],admin_confirmed:false,deleted:false,created_at:now};
     try{await sbPost(TBL(),row);ok++;}catch(e){}
   }
-  toast('本部通達を'+ok+'/'+BUSINESSES.length+'事業へ配布しました');
-  loadHQ(true);
-  if(STORE&&BUSINESSES.some(b=>b.store===STORE))load();
+  toast('本部通達を'+ok+'/'+targets.length+'PJへ配布しました');
+  loadHQ(true);if(STORE&&targets.indexOf(STORE)>=0)load();
 }
 // 📢 本部が出したタスク（通達）の一覧。配布タイトル単位でまとめ、事業別の進捗チップを表示
 function hqBroadcastHtml(){
@@ -942,7 +987,7 @@ async function load(isPoll){
   // ワークフロー用ステータス（対応中・チェック）を常設化
   if(!STATUSES.some(s=>s.k==='doing')){await ensureStatus(ST_DOING);}
   if(!STATUSES.some(s=>s.k==='check')){await ensureStatus(ST_CHECK);}
-  TASKS=(rows||[]).filter(r=>r.id!=='_members'&&r.id!=='_projects'&&r.id!=='_statuses').map(t=>{const logs=Array.isArray(t.logs)?t.logs:[];const rq=logs.find(l=>l&&l.type==='req');return {...t,_st:normStatus(t.status),logs,requester:t.requester||(rq&&rq.by)||''};});
+  TASKS=(rows||[]).filter(r=>r.id&&String(r.id).charAt(0)!=='_').map(t=>{const logs=Array.isArray(t.logs)?t.logs:[];const rq=logs.find(l=>l&&l.type==='req');return {...t,_st:normStatus(t.status),logs,requester:t.requester||(rq&&rq.by)||''};});
   const sig=dataSig();
   if(isPoll){
     if(sig===_lastSig)return;            // 変化なし→再描画しない（見ている位置を動かさない）
@@ -1229,34 +1274,49 @@ function render(){
   const asgNames=MEMBERS.concat(Object.keys(asgCount).filter(a=>a&&!MEMBERS.includes(a)));  // 登録メンバーは全員表示（タスク0でも）
   const asgEsc=a=>esc(a).replace(/'/g,"\\'");
   const asgHtml=asgNames.length?`<div class="sgrp" style="margin-top:14px">担当者</div>`+asgNames.map(a=>`<div class="pj ${CUR==='__asg__'+a?'on':''}" onclick="selPj('__asg__${asgEsc(a)}')"><span class="pc" style="background:${personColor(a)}"></span>👤 ${esc(a)}<span class="cnt">${asgCount[a]||0}</span></div>`).join(''):'';
-  // 🏛 新規事業本部：本部（承認を事業別に横断集約）＋ 事業スイッチャー
-  const hqItem=`<div class="pj hqitem ${CUR==='__hq'?'on':''}" onclick="selPj('__hq')"><span class="pc" style="background:#7c3aed"></span>🏛 本部${HQ_PEND?`<span class="abadge">${HQ_PEND}</span>`:''}</div>`;
-  const hqcastItem=`<div class="pj hqcast ${CUR==='__hqcast'?'on':''}" onclick="selPj('__hqcast')"><span class="pc" style="background:#a78bfa"></span>📢 本部通達${HQ_BROADCASTS.length?`<span class="cnt">${HQ_BROADCASTS.length}</span>`:''}</div>`;
-  const hqadminItem=`<div class="pj hqcast ${CUR==='__hqadmin'?'on':''}" onclick="selPj('__hqadmin')"><span class="pc" style="background:#0f766e"></span>⚙️ 本部管理</div>`;
-  const cb=curBiz();
-  const bizNav=`<div class="sgrp">事業（${BUSINESSES.length}）</div>`+BUSINESSES.map(b=>`<div class="pj biz ${b.store===STORE?'curbiz':''}" onclick="switchBiz('${b.store}')"><span class="pc" style="background:${b.color||'#e11d48'}"></span>${esc(b.name)}${b.store===STORE?'<span class="cnt">●</span>':''}</div>`).join('')+`<div class="pj addbiz" onclick="addBusiness()">＋ 事業を追加</div>`;
-  // ── サイドバー整理：操作中の事業を明示 → ビュー / プロジェクト / 担当者 / 設定 にグループ分け ──
-  const allItem=`<div class="pj ${CUR==='__all'?'on':''}" onclick="selPj('__all')"><span class="pc" style="background:#9aa0a6"></span>全タスク<span class="cnt">${TASKS.filter(t=>!t.parent_id).length}</span></div>`;
-  // 新しい事業＝メンバー未登録（初期登録まだ）なら管理者タブを点滅＋「初期登録して」
+  const cb=curBiz();const isHq=STORE===HQ_STORE;
+  // ── PJ（本部／事業）スイッチャー：本部も1つのPJ。操作中以外は薄く ──
+  const hqSwitch=`<div class="pj biz ${isHq?'curbiz':''}" onclick="switchBiz('${HQ_STORE}')"><span class="pc" style="background:#7c3aed"></span>🏛 本部${HQ_PEND?`<span class="abadge">${HQ_PEND}</span>`:(isHq?'<span class="cnt">●</span>':'')}</div>`;
+  const bizNav=`<div class="sgrp">PJ（本部／事業）</div>`+hqSwitch+BUSINESSES.map(b=>`<div class="pj biz ${(!isHq&&b.store===STORE)?'curbiz':''}" onclick="switchBiz('${b.store}')"><span class="pc" style="background:${b.color||'#e11d48'}"></span>${esc(b.name)}${(!isHq&&b.store===STORE)?'<span class="cnt">●</span>':''}</div>`).join('')+`<div class="pj addbiz" onclick="addBusiness()">＋ 事業を追加</div>`;
+  // 新しいPJ＝メンバー未登録（初期登録まだ）なら管理者タブを点滅＋「初期登録して」
   const needsSetup=MEMBERS.length===0&&CUR!=='__admin';
   const adminPlain=`<div class="pj ${CUR==='__admin'?'on':''} ${needsSetup?'blink':''}" onclick="selPj('__admin')"><span class="pc" style="background:#a78bfa"></span>⚙️ 管理者${needsSetup?'<span class="setupbadge">初期登録して</span>':''}</div>`;
   const bizhdr=`<div class="bizhdr"><span class="pc" style="background:${cb.color||'#e11d48'}"></span>操作中 ▸ <b>${esc(cb.name)}</b></div>`;
-  const navHtml=hqItem+hqcastItem+hqadminItem+bizNav+bizhdr+
-    `<div class="sgrp">ビュー</div>`+allItem+actItem+prgItem+
-    `<div class="sgrp">📁 プロジェクト（${pjs.length}）</div>`+
+  // プロジェクト一覧＋担当者は共通
+  const pjListHtml=`<div class="sgrp">📁 プロジェクト（${pjs.length}）</div>`+
     pjs.map(p=>{const q=esc(p.a).replace(/'/g,"\\'");return `<div class="pj ${CUR===p.a?'on':''}" onclick="selPj('${q}')"><span class="pc" style="background:${pjColor(p.a)}"></span><span class="pjname">${esc(p.a)}</span><button class="pjedit" title="プロジェクト名を変更" onclick="event.stopPropagation();renameProject('${q}')">✏️</button><span class="cnt">${p.n}</span></div>`;}).join('')+
-    `<div class="pj addpj2" onclick="addProject()" style="color:#8a8d93;font-size:12.5px">＋ プロジェクトを追加</div>`+
-    asgHtml+
-    `<div class="sgrp">設定</div>`+adminPlain+helpItem;
+    `<div class="pj addpj2" onclick="addProject()" style="color:#8a8d93;font-size:12.5px">＋ プロジェクトを追加</div>`;
+  let viewsHtml;
+  if(isHq){
+    // 本部の3ビュー：✅承認 / 📋タスク / 📢通達 ＋ ⚙️本部管理
+    const hqApprItem=`<div class="pj ${CUR==='__hq'?'on':''}" onclick="selPj('__hq')"><span class="pc" style="background:#d97706"></span>✅ 承認${HQ_PEND?`<span class="abadge">${HQ_PEND}</span>`:''}</div>`;
+    const hqTaskItem=`<div class="pj ${CUR==='__all'?'on':''}" onclick="selPj('__all')"><span class="pc" style="background:#9aa0a6"></span>📋 タスク（本部）<span class="cnt">${TASKS.filter(t=>!t.parent_id).length}</span></div>`;
+    const hqAllItem=`<div class="pj ${CUR==='__hqall'?'on':''}" onclick="selPj('__hqall')"><span class="pc" style="background:#475569"></span>🗂 全タスク（全PJ）<span class="cnt">${HQ_ALL.filter(t=>!t.parent_id).length||''}</span></div>`;
+    const hqCastV=`<div class="pj ${CUR==='__hqcast'?'on':''}" onclick="selPj('__hqcast')"><span class="pc" style="background:#a78bfa"></span>📢 通達${HQ_BROADCASTS.length?`<span class="cnt">${HQ_BROADCASTS.length}</span>`:''}</div>`;
+    const hqAdminV=`<div class="pj ${CUR==='__hqadmin'?'on':''}" onclick="selPj('__hqadmin')"><span class="pc" style="background:#0f766e"></span>⚙️ 本部管理（全事業）</div>`;
+    viewsHtml=`<div class="sgrp">本部</div>`+hqApprItem+hqTaskItem+hqAllItem+hqCastV+actItem+prgItem+pjListHtml+asgHtml+`<div class="sgrp">設定</div>`+hqAdminV+adminPlain+helpItem;
+  }else{
+    const allItem=`<div class="pj ${CUR==='__all'?'on':''}" onclick="selPj('__all')"><span class="pc" style="background:#9aa0a6"></span>全タスク<span class="cnt">${TASKS.filter(t=>!t.parent_id).length}</span></div>`;
+    viewsHtml=`<div class="sgrp">ビュー</div>`+allItem+actItem+prgItem+pjListHtml+asgHtml+`<div class="sgrp">設定</div>`+adminPlain+helpItem;
+  }
+  const navHtml=bizNav+bizhdr+viewsHtml;
   document.getElementById('navProjects').innerHTML=navHtml;
-  document.getElementById('pjChips').innerHTML=`<button class="pjchip ${CUR==='__hq'?'on':''}" onclick="selPj('__hq')" style="font-weight:800">🏛 本部${HQ_PEND?` (${HQ_PEND})`:''}</button>`+
-    `<button class="pjchip ${CUR==='__hqcast'?'on':''}" onclick="selPj('__hqcast')">📢 本部通達</button>`+
-    `<button class="pjchip ${CUR==='__hqadmin'?'on':''}" onclick="selPj('__hqadmin')">⚙️ 本部管理</button>`+
-    `<button class="pjchip ${CUR==='__all'?'on':''}" onclick="selPj('__all')">全タスク</button>`+
-    `<button class="pjchip ${CUR==='__activity'?'on':''}" onclick="selPj('__activity')">🔔活動${actNew?` (${actNew})`:''}</button>`+
-    `<button class="pjchip ${CUR==='__progress'?'on':''}" onclick="selPj('__progress')">📊進捗</button>`+
-    `<button class="pjchip ${CUR==='__help'?'on':''}" onclick="selPj('__help')">📖使い方</button>`+
-    pjs.map(p=>`<button class="pjchip ${CUR===p.a?'on':''}" onclick="selPj('${esc(p.a).replace(/'/g,"\\'")}')"><span style="width:8px;height:8px;border-radius:3px;background:${pjColor(p.a)};display:inline-block"></span>${esc(p.a)}</button>`).join('')+`<button class="pjchip ${CUR==='__admin'?'on':''}" onclick="selPj('__admin')">⚙️管理</button>`+asgNames.map(a=>`<button class="pjchip ${CUR==='__asg__'+a?'on':''}" onclick="selPj('__asg__${asgEsc(a)}')">👤${esc(a)}</button>`).join('');
+  let chips=`<button class="pjchip ${isHq?'on':''}" onclick="switchBiz('${HQ_STORE}')" style="font-weight:800">🏛 本部</button>`+
+    BUSINESSES.map(b=>`<button class="pjchip ${(!isHq&&b.store===STORE)?'on':''}" onclick="switchBiz('${b.store}')">${esc(b.name)}</button>`).join('')+`<span style="border-left:1px solid #ddd;margin:0 2px"></span>`;
+  if(isHq){
+    chips+=`<button class="pjchip ${CUR==='__hq'?'on':''}" onclick="selPj('__hq')">✅承認${HQ_PEND?` (${HQ_PEND})`:''}</button>`+
+      `<button class="pjchip ${CUR==='__all'?'on':''}" onclick="selPj('__all')">📋タスク</button>`+
+      `<button class="pjchip ${CUR==='__hqall'?'on':''}" onclick="selPj('__hqall')">🗂全タスク</button>`+
+      `<button class="pjchip ${CUR==='__hqcast'?'on':''}" onclick="selPj('__hqcast')">📢通達</button>`+
+      `<button class="pjchip ${CUR==='__hqadmin'?'on':''}" onclick="selPj('__hqadmin')">⚙️本部管理</button>`;
+  }else{
+    chips+=`<button class="pjchip ${CUR==='__all'?'on':''}" onclick="selPj('__all')">全タスク</button>`+
+      `<button class="pjchip ${CUR==='__activity'?'on':''}" onclick="selPj('__activity')">🔔活動${actNew?` (${actNew})`:''}</button>`+
+      `<button class="pjchip ${CUR==='__progress'?'on':''}" onclick="selPj('__progress')">📊進捗</button>`+
+      `<button class="pjchip ${CUR==='__admin'?'on':''}" onclick="selPj('__admin')">⚙️管理</button>`;
+  }
+  chips+=pjs.map(p=>`<button class="pjchip ${CUR===p.a?'on':''}" onclick="selPj('${esc(p.a).replace(/'/g,"\\'")}')"><span style="width:8px;height:8px;border-radius:3px;background:${pjColor(p.a)};display:inline-block"></span>${esc(p.a)}</button>`).join('')+asgNames.map(a=>`<button class="pjchip ${CUR==='__asg__'+a?'on':''}" onclick="selPj('__asg__${asgEsc(a)}')">👤${esc(a)}</button>`).join('')+`<button class="pjchip ${CUR==='__help'?'on':''}" onclick="selPj('__help')">📖使い方</button>`;
+  document.getElementById('pjChips').innerHTML=chips;
   const vs=document.getElementById('viewSeg');if(vs)vs.innerHTML=[['board','🗂','ボード'],['list','📋','リスト'],['timeline','📅','タイムライン']].map(v=>`<button class="vsegb ${VIEW===v[0]?'on':''}" onclick="setView('${v[0]}')"><span class="vsi">${v[1]}</span><span class="vsl">${v[2]}</span></button>`).join('');
   const lc=document.getElementById('taskList');
   if(CUR==='__help'){document.getElementById('topTitle').textContent='📖 使い方';document.getElementById('topDot').style.background='#16a34a';lc.innerHTML=helpHtml();return;}
@@ -1265,11 +1325,12 @@ function render(){
   if(CUR==='__hq'){document.getElementById('topTitle').textContent='🏛 本部（事業別の承認）';document.getElementById('topDot').style.background='#7c3aed';lc.innerHTML=hqHtml();return;}
   if(CUR==='__hqcast'){document.getElementById('topTitle').textContent='📢 本部通達';document.getElementById('topDot').style.background='#a78bfa';lc.innerHTML=hqcastHtml();return;}
   if(CUR==='__hqadmin'){document.getElementById('topTitle').textContent='⚙️ 本部管理（全事業）';document.getElementById('topDot').style.background='#0f766e';lc.innerHTML=hqAdminHtml();return;}
+  if(CUR==='__hqall'){document.getElementById('topTitle').textContent='🗂 全タスク（全PJ）';document.getElementById('topDot').style.background='#475569';lc.innerHTML=hqAllHtml();return;}
   if(CUR==='__approval'){document.getElementById('topTitle').textContent='🔖 承認';document.getElementById('topDot').style.background='#d97706';lc.innerHTML=approvalHtml();return;}
   if(CUR==='__admin'){document.getElementById('topTitle').textContent='⚙️ 管理者';document.getElementById('topDot').style.background='#a78bfa';lc.innerHTML=adminHtml();return;}
   // パンくず：いまどの事業のどのプロジェクト/ビューを操作中かを明示
   if(CUR&&CUR.indexOf('__asg__')===0){const who=CUR.slice(7)||'未割当';document.getElementById('topTitle').textContent=cb.name+' ／ 👤'+who;document.getElementById('topDot').style.background=personColor(who);}
-  else{document.getElementById('topTitle').textContent=cb.name+' ／ '+(CUR==='__all'?'全タスク':CUR);document.getElementById('topDot').style.background=CUR==='__all'?'#9aa0a6':pjColor(CUR);}
+  else{document.getElementById('topTitle').textContent=cb.name+' ／ '+(CUR==='__all'?(isHq?'タスク':'全タスク'):CUR);document.getElementById('topDot').style.background=CUR==='__all'?'#9aa0a6':pjColor(CUR);}
   const _asgWho=(CUR&&CUR.indexOf('__asg__')===0)?(CUR.slice(7)||'未割当'):null;
   const _recv=_asgWho?recvCmtHtml(_asgWho):'';
   if(VIEW==='board'){lc.innerHTML=boardHtml()+_recv;return;}
@@ -1618,7 +1679,7 @@ async function confirmComplete(id,kind){
 }
 
 /* ---- actions ---- */
-function selPj(a){CUR=a;if(a==='__hq'||a==='__hqcast')loadHQ(true);if(a==='__hqadmin'){loadHQ(true);hqAdminLoad(true);}render();}
+function selPj(a){CUR=a;if(a==='__hq'||a==='__hqcast')loadHQ(true);if(a==='__hqadmin'){loadHQ(true);hqAdminLoad(true);}if(a==='__hqall')loadHqAll(true);render();}
 function memberOpts(sel){const pool=(CUR==='__hq'&&HQ_MEMBERS.length)?HQ_MEMBERS:MEMBERS;return '<option value="">未割当</option>'+pool.map(m=>'<option '+(m===sel?'selected':'')+'>'+esc(m)+'</option>').join('')+((sel&&!pool.includes(sel))?'<option selected>'+esc(sel)+'</option>':'');}
 // コメント投稿者（＝自分）セレクタ。共有ログインのため各自が自分を選ぶ。前回選択(ME=asana_me)を既定に。
 function whoOpts(){const me=ME||'';let o='<option value="">👤投稿者を選択</option>'+MEMBERS.map(m=>'<option '+(m===me?'selected':'')+'>'+esc(m)+'</option>').join('');if(me&&!MEMBERS.includes(me))o+='<option selected>'+esc(me)+'</option>';return o;}
@@ -1681,7 +1742,7 @@ async function delProject(name){
   await saveProjects();render();
   try{await Promise.all(affected.map(function(t){return sbPatch(TBL(),t.id,{area:'一般'});}));toast('削除しました');}catch(e){toast('一部の反映に失敗');load();}
 }
-function changeStore(s){STORE=s;localStorage.setItem('asana_store',s);EXTRA_PJ=JSON.parse(localStorage.getItem('asana_pj_'+STORE)||'[]');CUR='__all';SEL=null;closeDetail();document.getElementById('taskList').innerHTML='<div class="empty">読み込み中…</div>';load();}
+function changeStore(s,curDefault){STORE=s;localStorage.setItem('asana_store',s);EXTRA_PJ=JSON.parse(localStorage.getItem('asana_pj_'+STORE)||'[]');CUR=curDefault||'__all';SEL=null;closeDetail();document.getElementById('taskList').innerHTML='<div class="empty">読み込み中…</div>';load();}
 async function addProject(){const n=prompt('プロジェクト名');if(!n||!n.trim())return;const a=n.trim();if(!PROJECTS.includes(a))PROJECTS.push(a);CUR=a;await saveProjects();render();}
 async function quickAdd(){
   const title=prompt('依頼内容（タスク名）');if(!title||!title.trim())return;
@@ -1982,7 +2043,7 @@ function fmtAt(iso){try{const d=new Date(iso);const m=d.getMonth()+1,day=d.getDa
 /* ---- init + poll（ログイン不要・anon） ---- */
 setupDnD();
 loadBusinesses().then(function(){ render(); load(); loadHQ(false); });
-setInterval(function(){ if(document.hidden)return; load(true); const hv=(CUR==='__hq'||CUR==='__hqcast'); loadHQ(hv); },10000);
+setInterval(function(){ if(document.hidden)return; load(true); const hv=(CUR==='__hq'||CUR==='__hqcast'); loadHQ(hv); if(CUR==='__hqall'&&!isEditing())loadHqAll(true); },10000);
 // 復帰時に即同期（タブ復帰・オンライン復帰）＝更新の取りこぼし防止（入力中・変化なしは描画しない）
 document.addEventListener('visibilitychange',function(){ if(!document.hidden){ load(true); loadHQ(CUR==='__hq'||CUR==='__hqcast'); } });
 window.addEventListener('online',function(){ load(true); loadHQ(CUR==='__hq'||CUR==='__hqcast'); });
