@@ -1382,10 +1382,14 @@ function sendSlackToSpk_(subject, body) {
   }
 }
 
+function otaDispLbl_(c) {
+  return ({J:'JLN',R:'RKT',S:'SKT',O:'ART',A:'ART',HP:'HMD',RC:'RDC',G:'GOT',KEYDROP:'KEY'})[c] || c;
+}
+
 function sendSlackSuccess_(items) {
   var lines = ['✅ 札幌店新規予約取込完了通知', ''];
   items.forEach(function(r) {
-    lines.push('【' + r.ota + '】' + r.id);
+    lines.push('【' + otaDispLbl_(r.ota) + '】' + r.id);
     lines.push('  ' + r.name + ' / ' + r.dates + ' / ' + r.vehicle + 'クラス');
     lines.push('  → 配車: ' + r.assignedTo);
     lines.push('');
@@ -1397,7 +1401,7 @@ function sendSlackSuccess_(items) {
 function sendSlackFailure_(items) {
   var lines = ['❌ 札幌店新規予約取込失敗通知', ''];
   items.forEach(function(r) {
-    lines.push('【' + r.ota + '】' + (r.id || '不明'));
+    lines.push('【' + otaDispLbl_(r.ota) + '】' + (r.id || '不明'));
     if (r.name) lines.push('  ' + r.name + (r.dates ? ' / ' + r.dates : ''));
     lines.push('  理由: ' + r.reason);
     lines.push('');
@@ -1408,7 +1412,7 @@ function sendSlackFailure_(items) {
 
 function sendSlackCancel_(items) {
   var lines = ['🔄 札幌店予約キャンセル処理通知', ''];
-  items.forEach(function(r) { lines.push('【' + r.ota + '】' + r.id + ' → キャンセル処理完了'); });
+  items.forEach(function(r) { lines.push('【' + otaDispLbl_(r.ota) + '】' + r.id + ' → キャンセル処理完了'); });
   lines.push(''); lines.push('合計: ' + items.length + '件');
   sendSlackToSpk_('🔄 札幌店予約キャンセル処理 ' + items.length + '件', lines.join('\n'));
 }
