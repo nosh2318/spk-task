@@ -1,5 +1,14 @@
 # SPK業務管理APP（札幌店）
 
+## 🪪 2026-06-22 免許証アップロードの保存先＝Googleドライブ(GAS経由)に統一（那覇/札幌 店舗別フォルダ）
+- **背景**：免許証/パスポートは**貸渡終了から2年間の保存義務（国交省通達）**。無料Supabase Storage(1GB)では那覇の量(2年で約1〜2GB)が入らず、かつ法令で消せない→**自動削除案は不可**。オーナー「有料化しない」「那覇も札幌も同じドライブにファイルを分けて保存」。
+- **構成**：1つのGAS「**HANDYMAN 免許証保存**」(Webアプリ・実行=自分/アクセス=全員) を那覇/札幌 **両方の license.html が共用**。`doPost`で `store`(nha/spk)→ Drive `HANDYMAN_免許証/那覇 or 札幌/<予約番号 氏名>/<label>_<ts>.jpg` に保存。本体GASコード＝`~/Desktop/HANDYMAN/license_drive_upload.gs`。
+- **/exec URL**（本番デプロイ済・GET疎通&POST書込テスト合格）：`https://script.google.com/macros/s/AKfycbyR29DN3sCW2addxE8_Elg2tvCPaopPJPNLlc4JNbQTXemwwVQkbaDER-blieKdMy0P/exec`。SECRET=`hdm-lic-7c3f9a21`（license.html `GAS_LICENSE_SECRET` と一致必須）。
+- **license.html 改修（NHA/SPK 両方・standalone＝buildなし/push即反映）**：旧Supabase Storage(`licenses`/`licenses_nha`バケット)POST → `fetch(GAS_LICENSE_URL,{body:JSON.stringify({secret,store,resId,custName,label,fileName,mime,b64})})`。**Content-Type未指定=text/plainでCORSプリフライト回避**（GASは`e.postData.contents`をJSON.parse）。`GAS_LICENSE_URL`空なら保存せず「URL未設定」案内（誤って空でデプロイしてもエラーで止まるだけ＝安全）。
+- **🔑 Drive保存=容量問題ゼロ**：DriveはGoogleアカウント容量(大)。2年保存でも実質心配なし。Supabase Storageは「500枚≒1GB÷2MB」感覚ですぐ満杯＝免許証には不適。**今後の画像系で2年級の長期保存が要るものはSupabaseでなくDrive(GAS)へ**。
+- **GASデプロイは私(CLI/Slack)単独不可**＝オーナーがGASエディタでWebアプリ デプロイ→/exec URLを受領して license.html に設定する運用（service_roleキーは手元に無い／バケット作成も同様にSQL Editor or service_role必要）。
+- **残**：①SPK旧Supabase `licenses`バケットの過去分はDriveへ未移行（残置）。②Drive `札幌/TESTDEL 接続テスト/test.jpg` は疎通テストのゴミ＝削除可。③札幌のUIは免許証タブ(license.html)から利用（タスクサマリーの🪪アイコン+インバウンドはNHA限定＝拡張不要のオーナー指示どおり）。
+
 ## 🧾 2026-06-22 受領請求書 ①本社hqの全店漏れを完全エリア分離 ②invoice_managerに会計/車両連携追加
 - **背景（オーナー指摘・スクショ invoice_manager）**：①本社で登録した請求書が全店に出る ②invoice_manager(本社マスターツール)に「会計へ/車両へ」連携が無い。
 - **① 完全エリア分離**：各店APP内タブ `ReceivedInvoicesTab.reload` の読込を `.in("store",[store,"hq"])`→`.eq("store",store)` に変更（SPK index.src.html / NHA index.html.bak 両方・同構造）。**本社hq請求書は本社/invoice_managerでのみ表示・各店には出さない**。旧仕様の「自店＋hq双方向同期」はオーナー判断で廃止。本社が特定店の請求書を登録したい時は invoice_manager の登録フォームでエリアを nha/spk にして登録する運用。SPK v4.7.306 / NHA v3.5.187-NHA。
