@@ -1,5 +1,20 @@
 # SPK業務管理APP（札幌店）
 
+## 🧾 2026-06-22 受領請求書 ①本社hqの全店漏れを完全エリア分離 ②invoice_managerに会計/車両連携追加
+- **背景（オーナー指摘・スクショ invoice_manager）**：①本社で登録した請求書が全店に出る ②invoice_manager(本社マスターツール)に「会計へ/車両へ」連携が無い。
+- **① 完全エリア分離**：各店APP内タブ `ReceivedInvoicesTab.reload` の読込を `.in("store",[store,"hq"])`→`.eq("store",store)` に変更（SPK index.src.html / NHA index.html.bak 両方・同構造）。**本社hq請求書は本社/invoice_managerでのみ表示・各店には出さない**。旧仕様の「自店＋hq双方向同期」はオーナー判断で廃止。本社が特定店の請求書を登録したい時は invoice_manager の登録フォームでエリアを nha/spk にして登録する運用。SPK v4.7.306 / NHA v3.5.187-NHA。
+- **② invoice_manager 連携追加**（`~/Desktop/HANDYMAN/invoices/invoice_manager.html`・file://・git管理外＝保存だけで反映）：各行に💳会計へ/🚗車両へ＋連携済みバッジ＋解除。**連携時に店舗(nha/spk)を毎回選択**（hqには会計テーブルが無いため）。会計＝`{store}_accounting` に id=`acct_inv_{id}` でupsert（in-appと同一カラム）。車両＝`logs`(sapporo)/`nha_logs`(naha) に id=`_loginvId`。
+- **🔑 anon書込のRLS非対称（検証済）**：invoice_managerはanonキー。`spk_accounting`/`nha_accounting`はanonでSELECT/INSERT/UPDATE/DELETE可＝**会計連携は完全動作**。一方 `logs`/`nha_logs`/`nha_cars`/`vehicles`は**anon書込401・SELECTも空(RLS)**＝**車両連携はauthトークンがある時のみ有効**（file://は基本anon＝🔒無効表示＋「各店APPタブから連携を」と案内）。車両連携をinvoice_managerでも使うには logs/nha_logs のanonポリシー緩和 or ログイン済オリジン配置が必要（オーナー判断・未実施）。
+- **🔁 鉄則**：受領請求書の `ReceivedInvoicesTab` はSPK/NHA同構造（NHAは tables=nha_accounting/nha_logs/nha_cars・store_id=naha、SPKは spk_accounting/logs/cars・store_id=sapporo）。表示/連携の修正は必ず両店横展開。
+
+## 🛡 2026-06-21 タスク消失（読込失敗時の自動再生成）恒久対策＝3店横展開完了
+- **真因**：通信瞬断/RLS/DB認証エラーで `fetchTasks` が一時的に空を返すと、`OPScreen.loadTasks` の「DBにタスクなし→自動生成」分岐が `generateTasks→upsertTasks` で既存タスクを**予約初期値で丸ごと上書き**し、スタッフ入力（担当assignee・手入力place/colPlace・time/returnTime・done・memo）を白紙化していた。「ずっと正常だったのに時間が経って突然リセット」の正体（CSV操作は無関係）。
+- **3層防御**（SPK v4.7.305=3183c96 が先行確定 → NHA v3.5.186 / BT v1.0.100 へ横展開済 2026-06-21）：
+  - 層1/2：`fetchTasks` がエラー由来の空に `_fetchError=true` を付与。`loadTasks` は `_fetchError` 時は**再生成・upsertせずLS表示維持のみ**（上書き根本回避）。
+  - 層3：`upsertTasks(tasks,date,{protect:true})` 追加。再生成保存時にDB既存行を読み `_mergeUserInput`（+`_mergeMemo`）で担当/場所/時間/済/メモ/SS痕跡(_ssPlace/_ssTime)/_placeSource/_changed を**焼き戻してから保存**。
+- **🔁 鉄則**：`fetchTasks`/`upsertTasks`/`loadTasks` は**3店(SPK=tasks・NHA=nha_tasks・BT=bt_tasks)同構造**。タスク消失系の修正は必ず3店横展開。NHA/BT は `_fromDbTask` が日本語カラム、NHA upsertTasksは件数/日付GUARDあり、BTは無し。
+- **検出の限界（オーナーへの回答）**：同じ経路で**他日も気付かず白紙化された可能性はある**が、上書きは痕跡を残さず**過去分は自動検出不可**（タスク履歴を持たない）。今後は protect 焼き戻しで実質ゼロ。担当だけは履歴が無く自動復元不可＝直近日の担当は目視確認推奨。
+
 ## 🗓 2026-06-19 シフト一元管理ハブ shift-hub.html 新設（NHA/SPK/BT・7〜10月）＋ asanaタスク強化＋BTシフト試算→出勤簿
 このセッションの成果物まとめ（次回はまずここを見る）。
 
