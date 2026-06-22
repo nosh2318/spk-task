@@ -567,7 +567,7 @@ function apFlag(t){if(isApprPending(t))return '<span class="apflag">🔖承認�
 function pendingApprovals(){return TASKS.filter(isApprPending);}
 
 /* ===== 自動アップデート：不特定多数が常に最新を使えるよう、新版検知で強制リロード ===== */
-const ASANA_BUILD='20260622q';   // ★デプロイ毎に必ずこの値を変える（全クライアントが自動更新される）
+const ASANA_BUILD='20260622r';   // ★デプロイ毎に必ずこの値を変える（全クライアントが自動更新される）
 (function(){
   async function chkUpd(){
     try{
@@ -777,6 +777,21 @@ async function delBroadcast(createdAt){
   toast('本部通達を削除しました（'+ok+'/'+items.length+'事業）');
   loadHQ(true);if(STORE&&BUSINESSES.some(b=>b.store===STORE))load();
 }
+// 本部リスト＝通常タスクと同じ表(ltbl/lrow)。承認ステージ(承認待ち/対応中/チェック)でグループ
+function hqListHtml(rows){
+  const filt=(document.getElementById('filtSel')||{}).value||'open';
+  if(filt==='open')rows=rows.filter(t=>t._st!=='done');else if(filt==='done')rows=rows.filter(t=>t._st==='done');
+  if(!rows.length)return '<div class="empty">承認案件はありません</div>';
+  const stages=[{l:'⏳ 承認待ち',bg:'#fff7ed',c:'#d97706',m:t=>isApprPending(t)},{l:'🔧 対応中',bg:'#ecfeff',c:'#0891b2',m:t=>t._st==='doing'},{l:'🔍 チェック',bg:'#f5f3ff',c:'#7c3aed',m:t=>t._st==='check'}];
+  let html='<div class="ltbl"><div class="lhead"><span class="ltw"></span><span class="lchk2"></span><div class="lname">名前</div><div class="lcol">担当</div><div class="lcol">期日</div><div class="lcol">優先度</div><div class="lcol ltag">プロジェクト</div></div>';
+  stages.forEach(s=>{
+    const g=rows.filter(s.m).sort((a,b)=>(a.due_date||'9999').localeCompare(b.due_date||'9999'));
+    if(!g.length)return;
+    html+=`<div class="lgh"><span class="lgtw"></span><span class="chip" style="background:${s.bg};color:${s.c}">${s.l}</span><span class="lgn">${g.length}</span></div>`;
+    g.forEach(t=>{html+=lrow(t,0);});
+  });
+  return html+'</div>';
+}
 function hqKind(t){return isApprPending(t)?'pend':(t._st==='doing'?'doing':'check');}
 function hqStageLabel(t){return isApprPending(t)?'<span class="hqst pend">⏳承認待ち</span>':(t._st==='doing'?'<span class="hqst doing">🔧対応中</span>':'<span class="hqst check">🔍チェック</span>');}
 function hqRow(t){
@@ -798,7 +813,7 @@ function stageColsHtml(list){
   return `<div class="board apboard hqstage">`+cols.map(col=>`<div class="bcol" style="border-top:4px solid ${col.c}"><div class="bcol-h" style="color:${col.c}"><span class="pd" style="background:${col.c}"></span>${col.lbl}<span class="bn" style="background:${col.c}1f;color:${col.c};padding:1px 8px;border-radius:999px">${col.list.length}</span></div><div class="bcol-body apcolbody">${col.list.length?col.list.map(t=>apCard(t,col.key)).join(''):'<div style="font-size:11px;color:#cfd0d4;padding:8px 4px">なし</div>'}</div></div>`).join('')+`</div>`;
 }
 function hqHtml(){
-  let h='<div class="apwrap'+(VIEW==='board'?' apwide':'')+'">';
+  let h='<div class="apwrap apwide">';
   h+=`<div class="apintro">🏛 <b>本部</b>：全事業の承認を<b>事業 → プロジェクト別</b>に集約。承認/却下/差し戻しは<b>その事業にそのまま反映</b>。🗂ボード/📋リスト/📅タイムラインで切替。<span class="who">決済者 <select id="apDecider" onchange="localStorage.setItem('asana_decider',this.value)">${memberOpts(localStorage.getItem('asana_decider')||ME||'')}</select></span></div>`;
   // 🏢 事業 ＋ 📁 プロジェクト の2軸で絞り込み（併用可）。承認案件のある候補のみ表示
   const bizCount={};HQ_TASKS.forEach(t=>{bizCount[t.store]=(bizCount[t.store]||0)+1;});
@@ -811,11 +826,14 @@ function hqHtml(){
   h+=`<div class="aptools"><label>🏢 事業</label><select onchange="HQ_BIZ=this.value;HQ_PJ='__all';render()"><option value="__all"${HQ_BIZ==='__all'?' selected':''}>全事業（${HQ_TASKS.length}）</option>${bizOpts.map(b=>`<option value="${b.store}"${HQ_BIZ===b.store?' selected':''}>${esc(b.name)}（${bizCount[b.store]||0}）</option>`).join('')}</select>`+
     `<label style="margin-left:10px">📁 プロジェクト</label><select onchange="HQ_PJ=this.value;render()"><option value="__all"${HQ_PJ==='__all'?' selected':''}>全プロジェクト（${tasksAfterBiz.length}）</option>${allAreas.map(a=>`<option value="${esc(a)}"${HQ_PJ===a?' selected':''}>${esc(a)}（${areaCount[a]}）</option>`).join('')}</select>`+
     `${(HQ_BIZ!=='__all'||HQ_PJ!=='__all')?`<button class="apgrp" onclick="HQ_BIZ='__all';HQ_PJ='__all';render()">✕ 解除</button>`:''}</div>`;
-  const byBiz={};HQ_TASKS.forEach(t=>{
-    if(HQ_BIZ!=='__all'&&t.store!==HQ_BIZ)return;
-    if(HQ_PJ!=='__all'&&((t.area||'一般').trim()||'一般')!==HQ_PJ)return;
-    (byBiz[t.store]=byBiz[t.store]||[]).push(t);
-  });
+  // 2軸フィルタ適用後のフラットなタスク
+  const flt=t=>(HQ_BIZ==='__all'||t.store===HQ_BIZ)&&(HQ_PJ==='__all'||((t.area||'一般').trim()||'一般')===HQ_PJ);
+  const hqRows=HQ_TASKS.filter(flt);
+  // 📋 リスト＝通常タスクと同じ表 / 📅 タイムライン＝通常と同じガント
+  if(VIEW==='list'){return h+hqListHtml(hqRows)+'</div>';}
+  if(VIEW==='timeline'){return h+(hqRows.length?timelineHtml(hqRows):'<div class="empty">承認案件はありません</div>')+'</div>';}
+  // 🗂 ボード＝事業ごとの承認ステージ列（承認待ち/対応中/チェック）。本部から直接操作
+  const byBiz={};hqRows.forEach(t=>{(byBiz[t.store]=byBiz[t.store]||[]).push(t);});
   let any=false;
   BUSINESSES.forEach(b=>{
     if(HQ_BIZ!=='__all'&&b.store!==HQ_BIZ)return;
@@ -824,21 +842,7 @@ function hqHtml(){
     any=true;
     const pend=list.filter(isApprPending),doing=list.filter(t=>t._st==='doing'),check=list.filter(t=>t._st==='check');
     h+=`<div class="hqbiz" style="border-left:5px solid ${b.color||'#e11d48'}"><div class="hqbizh"><span class="pc" style="background:${b.color||'#e11d48'}"></span>${esc(b.name)}<span class="hqcnt">承認待ち ${pend.length}・対応中 ${doing.length}・チェック ${check.length}</span><button class="hqopen" onclick="switchBiz('${b.store}')">この事業を開く →</button></div>`;
-    // ★ 最適化＝承認タブと同じカード（apCard）。board=ステージ列／list=ステージ別に縦積み／timeline=期日順。PJは各カードの色チップで判別
-    const sortDue=a=>a.slice().sort((x,y)=>(x.due_date||'9999').localeCompare(y.due_date||'9999'));
-    if(VIEW==='board'){
-      h+=stageColsHtml(list);
-    }else if(VIEW==='timeline'){
-      h+=`<div class="apsec">📅 期日順</div>`+sortDue(list).map(t=>apCard(t,hqKind(t))).join('');
-    }else{ // list＝ステージ別にカード縦積み
-      const pendP=list.filter(t=>isApprPending(t)&&appOf(t).flag===true);
-      const pendN=list.filter(t=>isApprPending(t)&&!(appOf(t).flag===true));
-      const doingL=list.filter(t=>t._st==='doing'),checkL=list.filter(t=>t._st==='check');
-      if(pendP.length)h+=`<div class="apsec">🚩 優先承認待ち（${pendP.length}）</div>`+sortDue(pendP).map(t=>apCard(t,'prio')).join('');
-      h+=`<div class="apsec">⏳ 承認待ち（${pendN.length}）</div>`+(pendN.length?sortDue(pendN).map(t=>apCard(t,'pend')).join(''):'<div class="empty" style="margin:2px 0 8px">なし</div>');
-      if(doingL.length)h+=`<div class="apsec">🔧 対応中（${doingL.length}）</div>`+sortDue(doingL).map(t=>apCard(t,'doing')).join('');
-      if(checkL.length)h+=`<div class="apsec">🔍 チェック（${checkL.length}）</div>`+sortDue(checkL).map(t=>apCard(t,'check')).join('');
-    }
+    h+=stageColsHtml(list);
     h+='</div>';
   });
   if(!any)h+='<div style="text-align:center;color:#9aa0a6;padding:14px;font-weight:700">承認案件はありません 🎉</div>';
@@ -1705,9 +1709,9 @@ function setView(v){VIEW=v;localStorage.setItem('asana_view',v);render();}
 function tlDateLabel(k){const d=new Date(k+'T00:00:00');const w=['日','月','火','水','木','金','土'][d.getDay()];return `${d.getFullYear()}/${d.getMonth()+1}/${d.getDate()}（${w}）`;}
 function tlCard(t){const st=ST(t._st);const done=t._st==='done';return `<div class="tlcard ${apDecision(t)==='approved'?'apprd':''}" onclick="openTask('${t.id}')" style="border-left:4px solid ${pjColor(t.area||'一般')}"><div class="tlc-t" style="${done?'text-decoration:line-through;color:#9a9ca2':''}">${esc(t.title)||'(無題)'}</div><div class="tlc-m"><span class="tlstat" style="background:${st.bg};color:${st.c}">${esc(st.l)}</span>${t.assignee?`<span class="tlasg" style="color:${personColor(t.assignee)}">👤${esc(t.assignee)}</span>`:''}${t.area?`<span class="btag" style="background:${pjColor(t.area)}1f;color:${pjColor(t.area)}">${esc(t.area)}</span>`:''}${prioChip(t.priority)}${apFlag(t)}</div></div>`;}
 // 配車表(FleetTimeline)風ガント：行=タスク / 列=日付 / バー=開始〜期日
-function timelineHtml(){
+function timelineHtml(srcRows){
   const f=(document.getElementById('filtSel')||{}).value||'open';
-  let rows=curTasks();
+  let rows=srcRows||curTasks();
   if(f==='open')rows=rows.filter(t=>t._st!=='done');else if(f==='done')rows=rows.filter(t=>t._st==='done');
   if(!rows.length)return '<div class="empty">タスクがありません</div>';
   const MS=86400000,DAYW=40,LBLW=156;
