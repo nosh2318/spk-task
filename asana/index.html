@@ -42,6 +42,19 @@ button{font-family:inherit;cursor:pointer}
 .hqbizh .pc{width:11px;height:11px;border-radius:4px}
 .hqbizh .hqcnt{font-size:11px;font-weight:700;color:#6b6f76;background:#f4f5f7;padding:2px 9px;border-radius:999px}
 .hqbizh .hqopen{margin-left:auto;font-size:11px;font-weight:800;color:#7c3aed;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:3px 9px;cursor:pointer}
+.hqpj{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:800;color:#3a3f4b;margin:10px 0 6px;padding-bottom:4px;border-bottom:1px dashed #e6e8ec}
+.hqpj .hqpjdot{width:9px;height:9px;border-radius:3px}
+.hqpj .hqpjn{font-size:11px;font-weight:700;color:#8a8d93;background:#f4f5f7;border-radius:999px;padding:1px 8px}
+.hqlist{display:flex;flex-direction:column;gap:5px;margin-bottom:6px}
+.hqrow{display:flex;align-items:center;gap:10px;background:#fff;border:1px solid #eceef1;border-radius:9px;padding:8px 10px;cursor:pointer}
+.hqrow:hover{border-color:#cbd5e1;background:#fafbfc}
+.hqrow .hqst{font-size:10.5px;font-weight:800;border-radius:6px;padding:2px 7px;white-space:nowrap;flex-shrink:0}
+.hqrow .hqst.pend{background:#fff7ed;color:#d97706}
+.hqrow .hqst.doing{background:#ecfeff;color:#0891b2}
+.hqrow .hqst.check{background:#f5f3ff;color:#7c3aed}
+.hqrow .hqtt{flex:1;min-width:0;font-size:13px;font-weight:700;color:#1f2430;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hqrow .hqasg{font-size:11.5px;color:#6b6f76;white-space:nowrap;flex-shrink:0}
+.hqrow .due{flex-shrink:0}
 .side .me{padding:10px 14px;border-top:1px solid rgba(255,255,255,.08);font-size:11px;color:#9a9ca2;display:flex;align-items:center;gap:8px;flex-shrink:0}
 .side .me input{flex:1;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);border-radius:6px;color:#fff;padding:5px 7px;font-size:12px}
 /* ===== main ===== */
@@ -536,7 +549,7 @@ function apFlag(t){if(isApprPending(t))return '<span class="apflag">🔖承認�
 function pendingApprovals(){return TASKS.filter(isApprPending);}
 
 /* ===== 自動アップデート：不特定多数が常に最新を使えるよう、新版検知で強制リロード ===== */
-const ASANA_BUILD='20260622b';   // ★デプロイ毎に必ずこの値を変える（全クライアントが自動更新される）
+const ASANA_BUILD='20260622d';   // ★デプロイ毎に必ずこの値を変える（全クライアントが自動更新される）
 (function(){
   async function chkUpd(){
     try{
@@ -665,13 +678,29 @@ async function loadHQ(rerender){
 // 事業切替（changeStore互換：CUR/SELリセットして該当事業を読込）
 function switchBiz(store){if(store===STORE){CUR='__all';render();return;}changeStore(store);}
 async function addBusiness(){
-  const name=prompt('新しい事業名（例：◯◯事業）');if(!name||!name.trim())return;
-  let slug=prompt('事業コード（半角英数。データ分離キー。例：biz_xxx）','biz_'+Date.now().toString(36));if(slug===null)return;slug=(slug||'').trim().toLowerCase().replace(/[^a-z0-9_]/g,'');
-  if(!slug){toast('事業コードが不正です');return;}
-  if(slug===HQ_STORE||BUSINESSES.some(b=>b.store===slug)){toast('そのコードは使用済みです');return;}
+  const inp=document.getElementById('bizInput');
+  let name=(inp&&(inp.value||'').trim())?inp.value.trim():prompt('新しい事業名（例：◯◯事業）');
+  if(!name||!name.trim())return;name=name.trim();
+  if(BUSINESSES.some(b=>b.name===name)&&!confirm('同名の事業「'+name+'」が既にあります。それでも追加しますか？'))return;
+  const slug='biz_'+Date.now().toString(36)+Math.random().toString(36).slice(2,5);  // コードは自動採番（内部キー）
   const colors=['#e11d48','#2563eb','#059669','#d97706','#7c3aed','#0891b2','#db2777','#65a30d'];
-  BUSINESSES.push({store:slug,name:name.trim(),color:colors[BUSINESSES.length%colors.length]});
-  await saveBusinesses();toast('事業「'+name.trim()+'」を追加しました');switchBiz(slug);
+  BUSINESSES.push({store:slug,name:name,color:colors[BUSINESSES.length%colors.length]});
+  if(inp)inp.value='';
+  await saveBusinesses();toast('事業「'+name+'」を追加しました');switchBiz(slug);
+}
+async function renameBusiness(store){
+  const b=BUSINESSES.find(x=>x.store===store);if(!b)return;
+  let nn=prompt('事業名を変更',b.name);if(nn===null)return;nn=nn.trim();if(!nn||nn===b.name)return;
+  b.name=nn;await saveBusinesses();render();toast('事業名を変更しました');
+}
+async function delBusiness(store){
+  if(BUSINESSES.length<=1){toast('最後の事業は削除できません');return;}
+  const b=BUSINESSES.find(x=>x.store===store);if(!b)return;
+  let cnt=0;try{const rows=await sbGet(TBL()+'?store=eq.'+encodeURIComponent(store)+'&deleted=eq.false&select=id');cnt=(rows||[]).filter(r=>r.id&&String(r.id).charAt(0)!=='_').length;}catch(e){}
+  if(!confirm('事業「'+b.name+'」を一覧から削除しますか？'+(cnt?'\n※この事業のタスク'+cnt+'件はDBに残ります（同じ事業を作り直す/復元は要相談）。':'（タスクは0件）')))return;
+  BUSINESSES=BUSINESSES.filter(x=>x.store!==store);
+  await saveBusinesses();toast('事業を削除しました');
+  if(store===STORE){switchBiz(BUSINESSES[0].store);}else{render();loadHQ(false);}
 }
 // 📢 本部通達（下り）：本部発のタスクを全事業へ配布。各事業のボードに出る
 async function openHqBroadcast(){
@@ -687,10 +716,16 @@ async function openHqBroadcast(){
   toast('本部通達を'+ok+'/'+BUSINESSES.length+'事業へ配布しました');
   if(STORE&&BUSINESSES.some(b=>b.store===STORE))load();
 }
+function hqKind(t){return isApprPending(t)?'pend':(t._st==='doing'?'doing':'check');}
+function hqStageLabel(t){return isApprPending(t)?'<span class="hqst pend">⏳承認待ち</span>':(t._st==='doing'?'<span class="hqst doing">🔧対応中</span>':'<span class="hqst check">🔍チェック</span>');}
+function hqRow(t){
+  return `<div class="hqrow" onclick="openTask('${t.id}')">${hqStageLabel(t)}<span class="hqtt">${esc(t.title||'(無題)')}</span><span class="hqasg">${t.requester?esc(t.requester)+' → ':''}${esc(t.assignee||'未割当')}</span>${t.due_date?`<span class="due ${dueClass(t.due_date)}">📅${dueLabel(t.due_date)}</span>`:'<span class="due" style="visibility:hidden">―</span>'}</div>`;
+}
 function hqHtml(){
   let h='<div class="apwrap">';
-  h+=`<div class="apintro">🏛 <b>本部</b>：全事業から上がった承認を<b>事業別</b>に集約。ここで承認/却下/差し戻しすると<b>その事業にそのまま反映</b>されます。<button onclick="openHqBroadcast()" style="background:#7c3aed;color:#fff;border:none;border-radius:8px;padding:6px 11px;font-size:12px;font-weight:800;cursor:pointer">📢 本部通達を作成</button><span class="who">決済者 <select id="apDecider" onchange="localStorage.setItem('asana_decider',this.value)">${memberOpts(localStorage.getItem('asana_decider')||ME||'')}</select></span></div>`;
+  h+=`<div class="apintro">🏛 <b>本部</b>：全事業の承認を<b>事業 → プロジェクト別</b>に集約。承認/却下/差し戻しは<b>その事業にそのまま反映</b>。上の🗂ボード/📋リスト/📅タイムラインで表示切替できます。<button onclick="openHqBroadcast()" style="background:#7c3aed;color:#fff;border:none;border-radius:8px;padding:6px 11px;font-size:12px;font-weight:800;cursor:pointer">📢 本部通達を作成</button><span class="who">決済者 <select id="apDecider" onchange="localStorage.setItem('asana_decider',this.value)">${memberOpts(localStorage.getItem('asana_decider')||ME||'')}</select></span></div>`;
   const byBiz={};HQ_TASKS.forEach(t=>{(byBiz[t.store]=byBiz[t.store]||[]).push(t);});
+  const order={approval:0,doing:1,check:2};
   let any=false;
   BUSINESSES.forEach(b=>{
     const list=byBiz[b.store]||[];
@@ -698,9 +733,22 @@ function hqHtml(){
     h+=`<div class="hqbiz" style="border-left:5px solid ${b.color||'#e11d48'}"><div class="hqbizh"><span class="pc" style="background:${b.color||'#e11d48'}"></span>${esc(b.name)}<span class="hqcnt">承認待ち ${pend.length}・対応中 ${doing.length}・チェック ${check.length}</span><button class="hqopen" onclick="switchBiz('${b.store}')">この事業を開く →</button></div>`;
     if(!list.length){h+='<div class="empty" style="margin:4px 0 6px">承認案件はありません</div>';}
     else{any=true;
-      if(pend.length)h+=`<div class="apsec">⏳ 承認待ち（${pend.length}）</div>`+pend.map(t=>apCard(t,'pend')).join('');
-      if(doing.length)h+=`<div class="apsec">🔧 対応中（${doing.length}）</div>`+doing.map(t=>apCard(t,'doing')).join('');
-      if(check.length)h+=`<div class="apsec">🔍 チェック（${check.length}）</div>`+check.map(t=>apCard(t,'check')).join('');
+      // ★ まとめずプロジェクト(area)別に表示
+      const byPj={};list.forEach(t=>{const a=(t.area||'一般').trim()||'一般';(byPj[a]=byPj[a]||[]).push(t);});
+      Object.keys(byPj).sort().forEach(pj=>{
+        const items=byPj[pj];
+        h+=`<div class="hqpj"><span class="hqpjdot" style="background:${pjColor(pj)}"></span>${esc(pj)}<span class="hqpjn">${items.length}</span></div>`;
+        if(VIEW==='timeline'){
+          items.sort((x,y)=>(x.due_date||'9999').localeCompare(y.due_date||'9999'));
+          h+=`<div class="hqlist">`+items.map(hqRow).join('')+`</div>`;
+        }else if(VIEW==='list'){
+          items.sort((x,y)=>((order[x._st]==null?9:order[x._st])-(order[y._st]==null?9:order[y._st]))||(x.due_date||'9999').localeCompare(y.due_date||'9999'));
+          h+=`<div class="hqlist">`+items.map(hqRow).join('')+`</div>`;
+        }else{ // board（既定）＝承認カード
+          items.sort((x,y)=>((order[x._st]==null?9:order[x._st])-(order[y._st]==null?9:order[y._st]))||(x.due_date||'9999').localeCompare(y.due_date||'9999'));
+          h+=items.map(t=>apCard(t,hqKind(t))).join('');
+        }
+      });
     }
     h+='</div>';
   });
@@ -1398,12 +1446,16 @@ async function saveMembers(){try{await fetch(SU+'/rest/v1/asana_tasks',{method:'
 function adminHtml(){
   var pjs=projects();
   return '<div style="max-width:560px;margin:0 auto;padding:18px 16px">'+
-    '<div style="font-size:15px;font-weight:800;margin-bottom:3px">👥 メンバー登録</div>'+
+    '<div style="font-size:15px;font-weight:800;margin-bottom:3px">🏛 事業（本部の配下）</div>'+
+    '<div style="font-size:12px;color:#6b6f76;margin-bottom:4px;line-height:1.6">「<b>事業</b>」＝本部の中の独立した組織（例：BUDDICA TOURISM）。各事業は<b>自分のプロジェクト・メンバー・タスク・承認</b>を別々に持ちます。<br>「<b>プロジェクト</b>」＝その事業の中の分類（下の🗂で管理）。<b>事業とプロジェクトは別物</b>です。</div>'+
+    '<div class="mm-add" style="margin-bottom:12px"><input id="bizInput" placeholder="事業名を追加（例：◯◯事業）" onkeydown="if(event.key===\'Enter\')addBusiness()"><button onclick="addBusiness()">＋ 追加</button></div>'+
+    '<div class="mm-list">'+BUSINESSES.map(function(b){return '<div class="mm-row"><span style="display:flex;align-items:center;gap:7px;min-width:0"><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:'+(b.color||'#e11d48')+';flex-shrink:0"></span><b>'+esc(b.name)+'</b>'+(b.store===STORE?' <small style="color:#16a34a;font-weight:800">● 操作中</small>':'')+'</span><span style="display:flex;gap:6px;flex-shrink:0"><button onclick="switchBiz(\''+b.store+'\')">開く</button><button onclick="renameBusiness(\''+b.store+'\')">名前変更</button>'+(BUSINESSES.length>1?'<button onclick="delBusiness(\''+b.store+'\')" style="color:#dc2626">削除</button>':'')+'</span></div>';}).join('')+'</div>'+
+    '<div style="font-size:15px;font-weight:800;margin:24px 0 3px">👥 メンバー登録 <small style="font-weight:600;color:#9a9ca2">（'+esc(curBiz().name)+'）</small></div>'+
     '<div style="font-size:12px;color:#6b6f76;margin-bottom:12px">依頼者・担当者・コメント投稿者のプルダウンに出るメンバーを管理します（全端末で共有）。</div>'+
     '<div class="mm-add" style="margin-bottom:12px"><input id="mmInput" placeholder="名前を追加" onkeydown="if(event.key===\'Enter\')addMember()"><button onclick="addMember()">＋ 追加</button></div>'+
     '<div class="mm-list">'+(MEMBERS.length?MEMBERS.map((n,i)=>'<div class="mm-row"><span>'+esc(n)+'</span><span style="display:flex;gap:6px"><button onclick="renameMember('+i+')">名前変更</button><button onclick="delMember('+i+')" style="color:#dc2626">削除</button></span></div>').join(''):'<div style="font-size:12px;color:#9a9ca2">メンバー未登録。上で追加してください</div>')+'</div>'+
-    '<div style="font-size:15px;font-weight:800;margin:24px 0 3px">🗂 プロジェクト</div>'+
-    '<div style="font-size:12px;color:#6b6f76;margin-bottom:10px">プロジェクトを登録・名前変更・削除できます（全端末で共有）。名前変更・削除は中のタスクにも反映します。</div>'+
+    '<div style="font-size:15px;font-weight:800;margin:24px 0 3px">🗂 プロジェクト <small style="font-weight:600;color:#9a9ca2">（'+esc(curBiz().name)+' の中）</small></div>'+
+    '<div style="font-size:12px;color:#6b6f76;margin-bottom:10px">この事業の中のプロジェクトを登録・名前変更・削除できます（全端末で共有）。名前変更・削除は中のタスクにも反映します。</div>'+
     '<div class="mm-add" style="margin-bottom:12px"><input id="pjInput" placeholder="プロジェクト名を追加" onkeydown="if(event.key===\'Enter\')addProjectName()"><button onclick="addProjectName()">＋ 追加</button></div>'+
     '<div class="mm-list">'+(pjs.length?pjs.map(function(p){return '<div class="mm-row"><span><span style="display:inline-block;width:9px;height:9px;border-radius:3px;background:'+pjColor(p.a)+';margin-right:7px;vertical-align:middle"></span>'+esc(p.a)+' <small style="color:#9a9ca2">'+p.n+'件</small></span><span style="display:flex;gap:6px"><button onclick="renameProject(\''+esc(p.a).replace(/'/g,"\\'")+'\')">名前変更</button><button onclick="delProject(\''+esc(p.a).replace(/'/g,"\\'")+'\')" style="color:#dc2626">削除</button></span></div>';}).join(''):'<div style="font-size:12px;color:#9a9ca2">プロジェクト未登録。上で追加してください</div>')+'</div>'+
   '<div style="font-size:15px;font-weight:800;margin:24px 0 3px">🚦 ステータス（ボードの列）</div>'+
