@@ -42,10 +42,9 @@ button{font-family:inherit;cursor:pointer}
 .hqbizh .pc{width:11px;height:11px;border-radius:4px}
 .hqbizh .hqcnt{font-size:11px;font-weight:700;color:#6b6f76;background:#f4f5f7;padding:2px 9px;border-radius:999px}
 .hqbizh .hqopen{margin-left:auto;font-size:11px;font-weight:800;color:#7c3aed;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:3px 9px;cursor:pointer}
-.hqboard{padding:4px 0 8px;margin:0}
-.hqboard .bcol{flex:0 0 290px;max-width:290px}
-.hqboard .bcol-body{max-height:62vh;overflow-y:auto}
-@media(max-width:768px){.hqboard .bcol{flex-basis:82vw;max-width:82vw}}
+.hqstage{padding:2px 0 6px;margin:0 0 14px}
+.hqstage .bcol{flex:0 0 280px;max-width:280px}
+@media(max-width:768px){.hqstage .bcol{flex-basis:82vw;max-width:82vw}}
 .hqpj{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:800;color:#3a3f4b;margin:10px 0 6px;padding-bottom:4px;border-bottom:1px dashed #e6e8ec}
 .hqpj .hqpjdot{width:9px;height:9px;border-radius:3px}
 .hqpj .hqpjn{font-size:11px;font-weight:700;color:#8a8d93;background:#f4f5f7;border-radius:999px;padding:1px 8px}
@@ -561,7 +560,7 @@ function apFlag(t){if(isApprPending(t))return '<span class="apflag">🔖承認�
 function pendingApprovals(){return TASKS.filter(isApprPending);}
 
 /* ===== 自動アップデート：不特定多数が常に最新を使えるよう、新版検知で強制リロード ===== */
-const ASANA_BUILD='20260622e';   // ★デプロイ毎に必ずこの値を変える（全クライアントが自動更新される）
+const ASANA_BUILD='20260622f';   // ★デプロイ毎に必ずこの値を変える（全クライアントが自動更新される）
 (function(){
   async function chkUpd(){
     try{
@@ -751,6 +750,21 @@ function hqStageLabel(t){return isApprPending(t)?'<span class="hqst pend">⏳承
 function hqRow(t){
   return `<div class="hqrow" onclick="openTask('${t.id}')">${hqStageLabel(t)}<span class="hqtt">${esc(t.title||'(無題)')}</span><span class="hqasg">${t.requester?esc(t.requester)+' → ':''}${esc(t.assignee||'未割当')}</span>${t.due_date?`<span class="due ${dueClass(t.due_date)}">📅${dueLabel(t.due_date)}</span>`:'<span class="due" style="visibility:hidden">―</span>'}</div>`;
 }
+// 承認ステージ列（承認タブと同じ：🚩優先/⏳承認待ち/🔧対応中/🔍チェック）。本部でPJごとに使う＝そこから直接承認操作可
+function stageColsHtml(list){
+  const sortDue=a=>a.slice().sort((x,y)=>(x.due_date||'9999').localeCompare(y.due_date||'9999'));
+  const pend=list.filter(isApprPending);
+  const pendPrio=pend.filter(t=>appOf(t).flag===true);
+  const pendNorm=pend.filter(t=>!(appOf(t).flag===true));
+  const doing=list.filter(t=>t._st==='doing');
+  const check=list.filter(t=>t._st==='check');
+  const cols=[];
+  if(pendPrio.length)cols.push({key:'prio',lbl:'🚩 優先承認待ち',c:'#dc2626',list:sortDue(pendPrio)});
+  cols.push({key:'pend',lbl:'⏳ 承認待ち',c:'#d97706',list:sortDue(pendNorm)});
+  cols.push({key:'doing',lbl:'🔧 対応中',c:'#0891b2',list:sortDue(doing)});
+  cols.push({key:'check',lbl:'🔍 チェック',c:'#7c3aed',list:sortDue(check)});
+  return `<div class="board apboard hqstage">`+cols.map(col=>`<div class="bcol" style="border-top:4px solid ${col.c}"><div class="bcol-h" style="color:${col.c}"><span class="pd" style="background:${col.c}"></span>${col.lbl}<span class="bn" style="background:${col.c}1f;color:${col.c};padding:1px 8px;border-radius:999px">${col.list.length}</span></div><div class="bcol-body apcolbody">${col.list.length?col.list.map(t=>apCard(t,col.key)).join(''):'<div style="font-size:11px;color:#cfd0d4;padding:8px 4px">なし</div>'}</div></div>`).join('')+`</div>`;
+}
 function hqHtml(){
   let h='<div class="apwrap">';
   h+=`<div class="apintro">🏛 <b>本部</b>：全事業の承認を<b>事業 → プロジェクト別</b>に集約。承認/却下/差し戻しは<b>その事業にそのまま反映</b>。上の🗂ボード/📋リスト/📅タイムラインで表示切替できます。<button onclick="openHqBroadcast()" style="background:#7c3aed;color:#fff;border:none;border-radius:8px;padding:6px 11px;font-size:12px;font-weight:800;cursor:pointer">📢 本部通達を作成</button><span class="who">決済者 <select id="apDecider" onchange="localStorage.setItem('asana_decider',this.value)">${memberOpts(localStorage.getItem('asana_decider')||ME||'')}</select></span></div>`;
@@ -768,11 +782,12 @@ function hqHtml(){
       const pjNames=Object.keys(byPj).sort();
       const stageSort=(x,y)=>((order[x._st]==null?9:order[x._st])-(order[y._st]==null?9:order[y._st]))||(x.due_date||'9999').localeCompare(y.due_date||'9999');
       if(VIEW==='board'){
-        // プロジェクト別の縦列（カンバン）
-        h+=`<div class="board apboard hqboard">`+pjNames.map(pj=>{
-          const items=byPj[pj].slice().sort(stageSort);const c=pjColor(pj);
-          return `<div class="bcol" style="border-top:4px solid ${c}"><div class="bcol-h" style="color:${c}"><span class="pd" style="background:${c}"></span>${esc(pj)}<span class="bn" style="background:${c}1f;color:${c};padding:1px 8px;border-radius:999px">${items.length}</span></div><div class="bcol-body apcolbody">${items.map(t=>apCard(t,hqKind(t))).join('')}</div></div>`;
-        }).join('')+`</div>`;
+        // ★ プロジェクト別 × 承認ステージ列（承認待ち｜対応中｜チェック）＝事業の承認タブと同じUIをPJごとに。本部から直接操作
+        pjNames.forEach(pj=>{
+          const c=pjColor(pj);
+          h+=`<div class="hqpj"><span class="hqpjdot" style="background:${c}"></span>${esc(pj)}<span class="hqpjn">${byPj[pj].length}</span></div>`;
+          h+=stageColsHtml(byPj[pj]);
+        });
       }else{
         // リスト/タイムライン＝プロジェクト見出し＋1行表示
         pjNames.forEach(pj=>{
