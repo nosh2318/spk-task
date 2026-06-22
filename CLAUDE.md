@@ -7,7 +7,8 @@
 - **license.html 改修（NHA/SPK 両方・standalone＝buildなし/push即反映）**：旧Supabase Storage(`licenses`/`licenses_nha`バケット)POST → `fetch(GAS_LICENSE_URL,{body:JSON.stringify({secret,store,resId,custName,label,fileName,mime,b64})})`。**Content-Type未指定=text/plainでCORSプリフライト回避**（GASは`e.postData.contents`をJSON.parse）。`GAS_LICENSE_URL`空なら保存せず「URL未設定」案内（誤って空でデプロイしてもエラーで止まるだけ＝安全）。
 - **🔑 Drive保存=容量問題ゼロ**：DriveはGoogleアカウント容量(大)。2年保存でも実質心配なし。Supabase Storageは「500枚≒1GB÷2MB」感覚ですぐ満杯＝免許証には不適。**今後の画像系で2年級の長期保存が要るものはSupabaseでなくDrive(GAS)へ**。
 - **GASデプロイは私(CLI/Slack)単独不可**＝オーナーがGASエディタでWebアプリ デプロイ→/exec URLを受領して license.html に設定する運用（service_roleキーは手元に無い／バケット作成も同様にSQL Editor or service_role必要）。
-- **残**：①SPK旧Supabase `licenses`バケットの過去分はDriveへ未移行（残置）。②Drive `札幌/TESTDEL 接続テスト/test.jpg` は疎通テストのゴミ＝削除可。③札幌のUIは免許証タブ(license.html)から利用（タスクサマリーの🪪アイコン+インバウンドはNHA限定＝拡張不要のオーナー指示どおり）。
+- **②機能(アイコンUP/プリフィル/裏面任意/インバウンド)＝NHA/SPK両対応済(2026-06-22)**：NHAはSlack omni v3.5.188で実装。SPKは元々 個人別タスクサマリーのDEL/COL行に🪪免許証ボタン(license.html?id&name プリフィル)＋裏面任意(表面1枚でOK)があり、**インバウンド(パスポート/免許証)切替を license.html に追加(SPK 0f52161)**＝那覇と仕様統一。リリース案内を #handyman_development(C07B5G3PV7C) に投稿済(ts=1782103425.331669)。
+- **残**：①SPK旧Supabase `licenses`バケットの過去分はDriveへ未移行（残置・今後ぶんはDrive）。②Drive `那覇/札幌 の TESTDEL 接続テスト/test.jpg` は疎通テストのゴミ＝オーナー削除可。
 
 ## 🧾 2026-06-22 受領請求書 ①本社hqの全店漏れを完全エリア分離 ②invoice_managerに会計/車両連携追加
 - **背景（オーナー指摘・スクショ invoice_manager）**：①本社で登録した請求書が全店に出る ②invoice_manager(本社マスターツール)に「会計へ/車両へ」連携が無い。
