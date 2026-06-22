@@ -565,7 +565,7 @@ function apFlag(t){if(isApprPending(t))return '<span class="apflag">🔖承認�
 function pendingApprovals(){return TASKS.filter(isApprPending);}
 
 /* ===== 自動アップデート：不特定多数が常に最新を使えるよう、新版検知で強制リロード ===== */
-const ASANA_BUILD='20260622m';   // ★デプロイ毎に必ずこの値を変える（全クライアントが自動更新される）
+const ASANA_BUILD='20260622o';   // ★デプロイ毎に必ずこの値を変える（全クライアントが自動更新される）
 (function(){
   async function chkUpd(){
     try{
@@ -667,7 +667,8 @@ let HQ_TASKS=[];                      // 本部に集約された全事業の承
 let HQ_BROADCASTS=[];                 // 本部が出したタスク（📢本部通達）の横断一覧
 let HQ_MEMBERS=[];                    // 全事業メンバーの和集合（本部の担当割当用）
 let HQ_PEND=0;                        // 本部バッジ件数
-let HQ_PJ='__all';                    // 本部のプロジェクト絞り込み
+let HQ_BIZ='__all';                   // 本部の事業絞り込み（BUDDICA TOURISM等）
+let HQ_PJ='__all';                    // 本部のプロジェクト(area)絞り込み（事業フィルタと併用）
 const HQ_BCAST_AREA='📢本部通達';
 // 現在事業 or 本部（承認/通達）からタスクを解決（アクションを横断storeで動かす）
 function findT(id){if(CUR==='__hq')return HQ_TASKS.find(x=>x.id===id)||HQ_BROADCASTS.find(x=>x.id===id)||TASKS.find(x=>x.id===id);return TASKS.find(x=>x.id===id)||HQ_TASKS.find(x=>x.id===id)||HQ_BROADCASTS.find(x=>x.id===id);}
@@ -774,38 +775,48 @@ function stageColsHtml(list){
 function hqHtml(){
   let h='<div class="apwrap'+(VIEW==='board'?' apwide':'')+'">';
   h+=`<div class="apintro">🏛 <b>本部</b>：全事業の承認を<b>事業 → プロジェクト別</b>に集約。承認/却下/差し戻しは<b>その事業にそのまま反映</b>。🗂ボード/📋リスト/📅タイムラインで切替。<span class="who">決済者 <select id="apDecider" onchange="localStorage.setItem('asana_decider',this.value)">${memberOpts(localStorage.getItem('asana_decider')||ME||'')}</select></span></div>`;
-  // 📁 プロジェクトで絞り込み（全事業横断のarea一覧）
-  const allAreas=[...new Set(HQ_TASKS.map(t=>(t.area||'一般').trim()||'一般'))].sort();
+  // 🏢 事業 ＋ 📁 プロジェクト の2軸で絞り込み（併用可）。承認案件のある候補のみ表示
+  const bizCount={};HQ_TASKS.forEach(t=>{bizCount[t.store]=(bizCount[t.store]||0)+1;});
+  if(HQ_BIZ!=='__all'&&!BUSINESSES.some(b=>b.store===HQ_BIZ))HQ_BIZ='__all';
+  const tasksAfterBiz=HQ_TASKS.filter(t=>HQ_BIZ==='__all'||t.store===HQ_BIZ);
+  const areaCount={};tasksAfterBiz.forEach(t=>{const a=(t.area||'一般').trim()||'一般';areaCount[a]=(areaCount[a]||0)+1;});
+  const allAreas=Object.keys(areaCount).sort();
   if(HQ_PJ!=='__all'&&!allAreas.includes(HQ_PJ))HQ_PJ='__all';
-  h+=`<div class="aptools"><label>📁 プロジェクトで絞り込み</label><select onchange="HQ_PJ=this.value;render()"><option value="__all"${HQ_PJ==='__all'?' selected':''}>全プロジェクト（${HQ_TASKS.length}）</option>${allAreas.map(a=>{const n=HQ_TASKS.filter(t=>((t.area||'一般').trim()||'一般')===a).length;return `<option value="${esc(a)}"${HQ_PJ===a?' selected':''}>${esc(a)}（${n}）</option>`;}).join('')}</select>${HQ_PJ!=='__all'?`<button class="apgrp" onclick="HQ_PJ='__all';render()">✕ 解除</button>`:''}</div>`;
-  const byBiz={};HQ_TASKS.forEach(t=>{if(HQ_PJ!=='__all'&&((t.area||'一般').trim()||'一般')!==HQ_PJ)return;(byBiz[t.store]=byBiz[t.store]||[]).push(t);});
-  const order={approval:0,doing:1,check:2};
+  const bizOpts=BUSINESSES.filter(b=>(bizCount[b.store]||0)>0);
+  h+=`<div class="aptools"><label>🏢 事業</label><select onchange="HQ_BIZ=this.value;HQ_PJ='__all';render()"><option value="__all"${HQ_BIZ==='__all'?' selected':''}>全事業（${HQ_TASKS.length}）</option>${bizOpts.map(b=>`<option value="${b.store}"${HQ_BIZ===b.store?' selected':''}>${esc(b.name)}（${bizCount[b.store]||0}）</option>`).join('')}</select>`+
+    `<label style="margin-left:10px">📁 プロジェクト</label><select onchange="HQ_PJ=this.value;render()"><option value="__all"${HQ_PJ==='__all'?' selected':''}>全プロジェクト（${tasksAfterBiz.length}）</option>${allAreas.map(a=>`<option value="${esc(a)}"${HQ_PJ===a?' selected':''}>${esc(a)}（${areaCount[a]}）</option>`).join('')}</select>`+
+    `${(HQ_BIZ!=='__all'||HQ_PJ!=='__all')?`<button class="apgrp" onclick="HQ_BIZ='__all';HQ_PJ='__all';render()">✕ 解除</button>`:''}</div>`;
+  const byBiz={};HQ_TASKS.forEach(t=>{
+    if(HQ_BIZ!=='__all'&&t.store!==HQ_BIZ)return;
+    if(HQ_PJ!=='__all'&&((t.area||'一般').trim()||'一般')!==HQ_PJ)return;
+    (byBiz[t.store]=byBiz[t.store]||[]).push(t);
+  });
   let any=false;
   BUSINESSES.forEach(b=>{
+    if(HQ_BIZ!=='__all'&&b.store!==HQ_BIZ)return;
     const list=byBiz[b.store]||[];
+    if(!list.length)return;   // ★ 空（承認案件0）の事業は表示しない
+    any=true;
     const pend=list.filter(isApprPending),doing=list.filter(t=>t._st==='doing'),check=list.filter(t=>t._st==='check');
     h+=`<div class="hqbiz" style="border-left:5px solid ${b.color||'#e11d48'}"><div class="hqbizh"><span class="pc" style="background:${b.color||'#e11d48'}"></span>${esc(b.name)}<span class="hqcnt">承認待ち ${pend.length}・対応中 ${doing.length}・チェック ${check.length}</span><button class="hqopen" onclick="switchBiz('${b.store}')">この事業を開く →</button></div>`;
-    if(!list.length){h+='<div class="empty" style="margin:4px 0 6px">承認案件はありません</div>';}
-    else{any=true;
-      // ★ 最適化＝承認タブと同じカード（apCard）。board=ステージ列／list=ステージ別に縦積み／timeline=期日順。PJは各カードの色チップで判別
-      const sortDue=a=>a.slice().sort((x,y)=>(x.due_date||'9999').localeCompare(y.due_date||'9999'));
-      if(VIEW==='board'){
-        h+=stageColsHtml(list);
-      }else if(VIEW==='timeline'){
-        h+=`<div class="apsec">📅 期日順</div>`+sortDue(list).map(t=>apCard(t,hqKind(t))).join('');
-      }else{ // list＝ステージ別にカード縦積み
-        const pendP=list.filter(t=>isApprPending(t)&&appOf(t).flag===true);
-        const pendN=list.filter(t=>isApprPending(t)&&!(appOf(t).flag===true));
-        const doingL=list.filter(t=>t._st==='doing'),checkL=list.filter(t=>t._st==='check');
-        if(pendP.length)h+=`<div class="apsec">🚩 優先承認待ち（${pendP.length}）</div>`+sortDue(pendP).map(t=>apCard(t,'prio')).join('');
-        h+=`<div class="apsec">⏳ 承認待ち（${pendN.length}）</div>`+(pendN.length?sortDue(pendN).map(t=>apCard(t,'pend')).join(''):'<div class="empty" style="margin:2px 0 8px">なし</div>');
-        if(doingL.length)h+=`<div class="apsec">🔧 対応中（${doingL.length}）</div>`+sortDue(doingL).map(t=>apCard(t,'doing')).join('');
-        if(checkL.length)h+=`<div class="apsec">🔍 チェック（${checkL.length}）</div>`+sortDue(checkL).map(t=>apCard(t,'check')).join('');
-      }
+    // ★ 最適化＝承認タブと同じカード（apCard）。board=ステージ列／list=ステージ別に縦積み／timeline=期日順。PJは各カードの色チップで判別
+    const sortDue=a=>a.slice().sort((x,y)=>(x.due_date||'9999').localeCompare(y.due_date||'9999'));
+    if(VIEW==='board'){
+      h+=stageColsHtml(list);
+    }else if(VIEW==='timeline'){
+      h+=`<div class="apsec">📅 期日順</div>`+sortDue(list).map(t=>apCard(t,hqKind(t))).join('');
+    }else{ // list＝ステージ別にカード縦積み
+      const pendP=list.filter(t=>isApprPending(t)&&appOf(t).flag===true);
+      const pendN=list.filter(t=>isApprPending(t)&&!(appOf(t).flag===true));
+      const doingL=list.filter(t=>t._st==='doing'),checkL=list.filter(t=>t._st==='check');
+      if(pendP.length)h+=`<div class="apsec">🚩 優先承認待ち（${pendP.length}）</div>`+sortDue(pendP).map(t=>apCard(t,'prio')).join('');
+      h+=`<div class="apsec">⏳ 承認待ち（${pendN.length}）</div>`+(pendN.length?sortDue(pendN).map(t=>apCard(t,'pend')).join(''):'<div class="empty" style="margin:2px 0 8px">なし</div>');
+      if(doingL.length)h+=`<div class="apsec">🔧 対応中（${doingL.length}）</div>`+sortDue(doingL).map(t=>apCard(t,'doing')).join('');
+      if(checkL.length)h+=`<div class="apsec">🔍 チェック（${checkL.length}）</div>`+sortDue(checkL).map(t=>apCard(t,'check')).join('');
     }
     h+='</div>';
   });
-  if(!any)h+='<div style="text-align:center;color:#9aa0a6;padding:14px;font-weight:700">全事業、承認案件はありません 🎉</div>';
+  if(!any)h+='<div style="text-align:center;color:#9aa0a6;padding:14px;font-weight:700">承認案件はありません 🎉</div>';
   return h+'</div>';
 }
 // 📢 本部通達（専用ページ）：本部の下の項目。作成＋配布済み通達の一覧
