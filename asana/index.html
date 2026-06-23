@@ -1365,7 +1365,9 @@ function render(){
   if(CUR==='__approval'){document.getElementById('topTitle').textContent='🔖 承認';document.getElementById('topDot').style.background='#d97706';lc.innerHTML=approvalHtml();return;}
   if(CUR==='__admin'){document.getElementById('topTitle').textContent='⚙️ 管理者';document.getElementById('topDot').style.background='#a78bfa';lc.innerHTML=adminHtml();return;}
   // 本部の担当者ビュー＝その人の全PJ横断タスク（連動）
-  if(isHq&&CUR&&CUR.indexOf('__asg__')===0){const who=CUR.slice(7)||'未割当';document.getElementById('topTitle').textContent='🏛 本部 ／ 👤'+who;document.getElementById('topDot').style.background=personColor(who);const _r=recvCmtHtml(who);if(VIEW==='board'){lc.innerHTML=boardHtml()+_r;}else if(VIEW==='timeline'){lc.innerHTML=timelineHtml()+_r;}else{lc.innerHTML=hqPersonHtml(who);}return;}
+  if(isHq&&CUR&&CUR.indexOf('__asg__')===0){const who=CUR.slice(7)||'未割当';document.getElementById('topTitle').textContent='🏛 本部 ／ 👤'+who;document.getElementById('topDot').style.background=personColor(who);
+    if(VIEW==='board'||VIEW==='timeline'){const tgt=(who==='未割当')?'':who;let rows=HQ_ALL.filter(t=>!t.parent_id&&(t.assignee||'')===tgt);const filt=(document.getElementById('filtSel')||{}).value||'open';if(filt==='open')rows=rows.filter(t=>t._st!=='done');else if(filt==='done')rows=rows.filter(t=>t._st==='done');const _r=recvCmtHtml(who);lc.innerHTML=(VIEW==='board'?boardHtml(rows):timelineHtml(rows))+_r;}
+    else{lc.innerHTML=hqPersonHtml(who);}return;}
   // パンくず：いまどの事業のどのプロジェクト/ビューを操作中かを明示
   if(CUR&&CUR.indexOf('__asg__')===0){const who=CUR.slice(7)||'未割当';document.getElementById('topTitle').textContent=cb.name+' ／ 👤'+who;document.getElementById('topDot').style.background=personColor(who);}
   else{document.getElementById('topTitle').textContent=cb.name+' ／ '+(CUR==='__all'?(isHq?'タスク':'全タスク'):CUR);document.getElementById('topDot').style.background=CUR==='__all'?'#9aa0a6':pjColor(CUR);}
@@ -1948,16 +1950,19 @@ function boardCard(t){
 function statusCol(s){
   // 承認列は「承認とセット」の対応中・チェックも内包して表示（決済者ステージを1列に集約）
   const inCol=s.k==='approval'?(t=>t._st==='approval'||t._st==='doing'):(t=>t._st===s.k);
-  const cards=curTasks().filter(inCol).sort((a,b)=>(a.due_date||'9999').localeCompare(b.due_date||'9999'));
+  const cards=curBoardTasks().filter(inCol).sort((a,b)=>(a.due_date||'9999').localeCompare(b.due_date||'9999'));
   const lbl=s.k==='approval'?s.l+'／対応中':s.l;
   return `<div class="bcol" style="border-top:4px solid ${s.c}"><div class="bcol-h" style="color:${s.c}"><span class="pd" style="background:${s.c}"></span>${esc(lbl)}<span class="bn" style="background:${s.c}1f;color:${s.c};padding:1px 8px;border-radius:999px">${cards.length}</span></div>`+
     `<div class="bcol-body" data-zone="status" data-status="${s.k}">${cards.map(boardCard).join('')}<button class="baddsub" onclick="quickAddStatus('${s.k}')">＋ タスクを追加</button></div></div>`;
 }
-function boardHtml(){
+let _BSRC=null;
+function curBoardTasks(){return _BSRC||curTasks();}
+function boardHtml(srcRows){
+  _BSRC=srcRows||null;
   const toggle=`<div class="bgrp"><span class="bgrp-l">列の分け方</span><button class="bgrpb ${BOARDGRP==='status'?'on':''}" onclick="setBoardGrp('status')">📊 ステータス</button><button class="bgrpb ${BOARDGRP==='assignee'?'on':''}" onclick="setBoardGrp('assignee')">👤 担当者</button></div>`;
   let cols,hint;
   if(BOARDGRP==='assignee'){
-    const rows=curTasks();const cnt={};rows.forEach(t=>{const a=(t.assignee||'').trim();cnt[a]=(cnt[a]||0)+1;});
+    const rows=curBoardTasks();const cnt={};rows.forEach(t=>{const a=(t.assignee||'').trim();cnt[a]=(cnt[a]||0)+1;});
     const ordered=MEMBERS.filter(m=>cnt[m]!==undefined);Object.keys(cnt).forEach(a=>{if(a&&!ordered.includes(a))ordered.push(a);});
     if(cnt['']!==undefined)ordered.push('');
     if(!ordered.length)ordered.push('');
@@ -1967,6 +1972,7 @@ function boardHtml(){
     cols=boardStatuses().map(statusCol).join('');
     hint='💡 PCはドラッグ／スマホは<b>カードを長押し→指を移動</b>で列（ステータス）を変更。タップで詳細でも変更可。';
   }
+  _BSRC=null;
   return '<div class="bhint">'+hint+'</div>'+toggle+'<div class="board" id="board">'+cols+'</div>';
 }
 function zoneFor(target){if(!target||!target.closest)return null;return target.closest('[data-zone]')||null;}
@@ -1976,7 +1982,7 @@ let BOARDGRP=localStorage.getItem('asana_boardgrp')||'status';
 function setBoardGrp(g){BOARDGRP=g;localStorage.setItem('asana_boardgrp',g);render();}
 function assigneeCol(name){
   const label=name||'未割当';
-  const cards=curTasks().filter(t=>(t.assignee||'')===name).sort((a,b)=>(a.due_date||'9999').localeCompare(b.due_date||'9999'));
+  const cards=curBoardTasks().filter(t=>(t.assignee||'')===name).sort((a,b)=>(a.due_date||'9999').localeCompare(b.due_date||'9999'));
   const pc=personColor(name);
   return `<div class="bcol" style="border-top:4px solid ${pc}"><div class="bcol-h" style="color:${pc}"><span class="bav" style="background:${pc};color:#fff">${esc(ini(label))}</span>${esc(label)}<span class="bn" style="background:${pc}1f;color:${pc};padding:1px 8px;border-radius:999px">${cards.length}</span></div>`+
     `<div class="bcol-body" data-zone="assignee" data-assignee="${esc(name)}">${cards.map(boardCard).join('')||'<div style="font-size:11px;color:#cfd0d4;padding:8px 4px">ここにドラッグで担当に割当</div>'}</div></div>`;
