@@ -5361,3 +5361,96 @@ function setupPartnerWatchTrigger() {
   ScriptApp.newTrigger('watchPartnerCustomerReservations').timeBased().everyMinutes(15).create();
   Logger.log('[PartnerWatch] trigger set (15min)');
 }
+
+// ============================================================
+// 📍 場所未確定アラート（DEL/COL 場所空欄）→ Slack #place-alert
+//   背景: 場所が空欄＝①LINE未登録 ②受付フォーム未回答 ③予約番号不一致 のいずれか。
+//        LINE確認・お客様への回答催促が必要。一目で把握できるよう毎朝通知する。
+//   対象: 今日〜3日先の DEL/COL タスクで、解決後の場所が空欄のもの（done除く・キャンセル除く）
+//   APP表示と一致: 場所 = changed_json._placeSource==='manual' ? place : (changed_json._ssPlace || place)
+// ============================================================
+var PLACE_ALERT_CHANNEL = 'C0AS5K1JZNJ';
+var PLACE_ALERT_DAYS_AHEAD = 3; // 今日含め今日〜+3日
+
+function placeIsPlaceholder_(s) {
+  s = String(s == null ? '' : s).trim();
+  if (!s) return true;
+  return /(札幌デリバリー専門店|デリバリー専門店|★ホテルや自宅|LINE完結|即出発|★OTAデリバリー)/.test(s);
+}
+function resolveTaskPlace_(t) {
+  var cj = t.changed_json || {};
+  var p = (cj._placeSource === 'manual') ? t.place : (cj._ssPlace || t.place);
+  return placeIsPlaceholder_(p) ? '' : String(p).trim();
+}
+
+function checkMissingPlaceAlert() {
+  try {
+    var today = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd');
+    var end = Utilities.formatDate(new Date(Date.now() + PLACE_ALERT_DAYS_AHEAD * 86400000), 'Asia/Tokyo', 'yyyy-MM-dd');
+    var rows = supabaseGet_('tasks',
+      'type=in.(DEL,COL)&done=eq.false&date=gte.' + today + '&date=lte.' + end +
+      '&select=_id,type,date,time,name,place,col_place,reservation_id,changed_json,ota&order=date.asc');
+    if (!Array.isArray(rows)) rows = [];
+
+    // 場所未確定だけ抽出
+    var missing = rows.filter(function(t) { return !resolveTaskPlace_(t); });
+
+    // キャンセル済み予約を除外（reservations.status）
+    var ids = missing.map(function(t) { return t.reservation_id; }).filter(function(x) { return x; });
+    var cancelled = {};
+    if (ids.length) {
+      var uniq = ids.filter(function(v, i) { return ids.indexOf(v) === i; });
+      // PostgRESTのin.()でまとめて取得
+      var inList = uniq.map(function(v) { return '"' + String(v).replace(/"/g, '') + '"'; }).join(',');
+      var rs = supabaseGet_('reservations', 'id=in.(' + inList + ')&select=id,status');
+      if (Array.isArray(rs)) rs.forEach(function(r) {
+        if (String(r.status || '').toLowerCase().indexOf('cancel') >= 0 || r.status === 'キャンセル') cancelled[r.id] = true;
+      });
+    }
+    missing = missing.filter(function(t) { return !cancelled[t.reservation_id]; });
+
+    updateHeartbeat_('spk_place_alert', { success: 1, processed: missing.length });
+
+    if (!missing.length) {
+      Logger.log('[PlaceAlert] 場所未確定なし（' + today + '〜' + end + '）');
+      return;
+    }
+
+    // 日付ごとにグループ化
+    var byDate = {};
+    missing.forEach(function(t) { (byDate[t.date] = byDate[t.date] || []).push(t); });
+    var dates = Object.keys(byDate).sort();
+
+    var wd = ['日','月','火','水','木','金','土'];
+    var lines = [];
+    lines.push('📍 *場所未確定アラート（札幌）* — ' + missing.length + '件');
+    lines.push('場所が空欄＝① LINE未登録 ② 受付フォーム未回答 ③ 予約番号不一致 のいずれか。');
+    lines.push('→ LINEを確認し、必要ならお客様に受付フォームの回答を催促してください。');
+    dates.forEach(function(d) {
+      var dt = new Date(d + 'T00:00:00+09:00');
+      var label = (d === today) ? '本日' : '';
+      lines.push('');
+      lines.push('*' + d + '(' + wd[dt.getDay()] + ')' + (label ? ' ' + label : '') + '*');
+      byDate[d].forEach(function(t) {
+        var tm = t.time ? t.time + ' ' : '';
+        var resv = t.reservation_id ? ' ｜ ' + t.reservation_id : '';
+        lines.push('　• ' + t.type + ' ' + tm + (t.name || '名前なし') + resv);
+      });
+    });
+
+    postToSlackChannel_(PLACE_ALERT_CHANNEL, lines.join('\n'));
+    Logger.log('[PlaceAlert] 通知送信 ' + missing.length + '件');
+  } catch (e) {
+    updateHeartbeat_('spk_place_alert', { success: 0, failure: 1 });
+    Logger.log('[PlaceAlert] ERROR: ' + e.message);
+  }
+}
+
+// 毎朝8:30に通知（1回だけ手動実行してトリガー設定）
+function setupMissingPlaceAlertTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'checkMissingPlaceAlert') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('checkMissingPlaceAlert').timeBased().atHour(8).nearMinute(30).everyDays(1).create();
+  Logger.log('[PlaceAlert] trigger set (毎朝8:30)');
+}
