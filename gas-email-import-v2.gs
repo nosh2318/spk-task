@@ -5378,7 +5378,9 @@ function placeIsPlaceholder_(s) {
   return /(札幌デリバリー専門店|デリバリー専門店|★ホテルや自宅|LINE完結|即出発|★OTAデリバリー)/.test(s);
 }
 function resolveTaskPlace_(t) {
+  // changed_json は REST 経由で文字列(JSON)で返る場合がある → パースして _ssPlace/_placeSource を読む
   var cj = t.changed_json || {};
+  if (typeof cj === 'string') { try { cj = JSON.parse(cj) || {}; } catch (e) { cj = {}; } }
   var p = (cj._placeSource === 'manual') ? t.place : (cj._ssPlace || t.place);
   return placeIsPlaceholder_(p) ? '' : String(p).trim();
 }
