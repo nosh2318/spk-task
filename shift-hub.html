@@ -38,6 +38,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","N
 .store-h .sdot{width:12px;height:12px;border-radius:4px}
 .store-h .cost{margin-left:auto;font-size:12px;color:var(--gray);font-weight:700}
 .store-h .cost b{font-size:15px;color:var(--navy)}
+.mcosts{margin-left:auto;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.mcost{font-size:11px;color:var(--gray);font-weight:700;background:#f1f5f9;border:1px solid var(--line);border-radius:7px;padding:3px 8px;cursor:pointer;white-space:nowrap}
+.mcost b{font-size:13px;color:var(--navy);margin-left:3px}
+.mcost.on{background:#1e40af;border-color:#1e40af;color:#cfe0ff}
+.mcost.on b{color:#fff}
+.mcost.box{border-color:#93c5fd}
 .gwrap{overflow-x:auto}
 .grid{border-collapse:collapse;font-size:11px;table-layout:fixed}
 .grid th,.grid td{border:1px solid #eef2f6;text-align:center;white-space:nowrap;overflow:hidden}
@@ -130,6 +136,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","N
   /* 店ヘッダー：店名と人件費を改行 */
   .store-h{flex-wrap:wrap;padding:9px 10px;font-size:13px;gap:7px}
   .store-h .cost{margin-left:0;order:5;width:100%;font-size:11px;border-top:1px dashed var(--line);padding-top:6px}
+  .mcosts{margin-left:0;order:5;width:100%;border-top:1px dashed var(--line);padding-top:6px}
   .store-h .cost b{font-size:14px}
   .store-h .eye{margin-left:auto}
   /* 集約バー */
@@ -200,8 +207,8 @@ const PROJ={
   B:{url:'https://ggqugvyskyiblxiycpci.supabase.co',key:'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdncXVndnlza3lpYmx4aXljcGNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxMDc3NjksImV4cCI6MjA5MzY4Mzc2OX0.uNhWcBd_Dl5nzemZDQfJ8mQV6iY73MwystGGpTRPC18',ls:'sb-ggqugvyskyiblxiycpci-auth-token',hubls:'shifthub_tokB'}
 };
 const STORES=[
-  {key:'nha',label:'那覇',color:'var(--nha)',proj:'A',staffTbl:'nha_staff',shiftTbl:'nha_shifts',resTbl:'nha_reservations',sdCol:'start_date',edCol:'end_date',wageTbl:'nha_wage_history'},
-  {key:'spk',label:'札幌',color:'var(--spk)',proj:'A',staffTbl:'staff',shiftTbl:'shifts',resTbl:'reservations',sdCol:'lend_date',edCol:'return_date'},
+  {key:'nha',label:'那覇',color:'var(--nha)',proj:'A',staffTbl:'nha_staff',shiftTbl:'nha_shifts',resTbl:'nha_reservations',sdCol:'start_date',edCol:'end_date',wageTbl:'nha_wage_history',settingsTbl:'nha_app_settings',bpfx:'labor_budget_nha_'},
+  {key:'spk',label:'札幌',color:'var(--spk)',proj:'A',staffTbl:'staff',shiftTbl:'shifts',resTbl:'reservations',sdCol:'lend_date',edCol:'return_date',settingsTbl:'app_settings',bpfx:'labor_budget_spk_'},
   {key:'bt', label:'高松',color:'var(--bt)', proj:'B',staffTbl:'bt_staff',shiftTbl:'bt_shifts',resTbl:'bt_reservations',sdCol:'start_date',edCol:'end_date'}
 ];
 const MONTHS=['2026-06','2026-07','2026-08','2026-09','2026-10'];
@@ -211,7 +218,7 @@ const WK=['日','月','火','水','木','金','土'];
 
 let curMonth=MONTHS[0];
 let tab='master';
-let staffByStore={}, masterByStore={}, simByStore={}, taskCountByStore={}, wageHistByStore={};
+let staffByStore={}, masterByStore={}, simByStore={}, taskCountByStore={}, wageHistByStore={}, laborBudgetByStore={};
 let hidden={stores:[],staff:{}}; // 各店/各人の非表示（localStorage保持・表示と人件費から除外）
 function loadHidden(){try{const h=JSON.parse(localStorage.getItem('shifthub_hidden'));if(h)hidden={stores:h.stores||[],staff:h.staff||{}};}catch(e){}}
 function saveHidden(){try{localStorage.setItem('shifthub_hidden',JSON.stringify(hidden));}catch(e){}}
@@ -305,9 +312,17 @@ async function loadStore(st){
   const _rank=t=>t==='正社員'?0:(t==='アルバイト'?1:2);
   staff.sort((a,b)=>{const r=_rank(a.type)-_rank(b.type);return r!==0?r:((+a.sort_order||0)-(+b.sort_order||0));});
   staffByStore[st.key]=staff.map(s=>({name:s.name,type:s.type||'',wage:+(s.hourly_wage||0),trans:+(s.transport_cost||0),monthly:+(s.monthly_salary||0),color:s.color||'#94a3b8'}));
-  // 日別時給（給与タブ「予算（シフト）」と同じ計算に使用。nhaのみ wage_history テーブルあり）
+  // 日別時給（fallback計算用。nhaのみ wage_history テーブルあり）
   wageHistByStore[st.key]=[];
   if(st.wageTbl){try{wageHistByStore[st.key]=await sbGet(st.proj,st.wageTbl+'?select=staff_name,effective_date,hourly_wage')||[];}catch(e){wageHistByStore[st.key]=[];}}
+  // ★ 給与タブが保存した月次アルバイト予算（箱）を読む＝これをそのまま表示（計算しない）
+  laborBudgetByStore[st.key]={};
+  if(st.settingsTbl&&st.bpfx){
+    try{
+      const rows=await sbGet(st.proj,st.settingsTbl+'?select=key,value&key=like.'+encodeURIComponent(st.bpfx+'%'));
+      (rows||[]).forEach(r=>{const ym=String(r.key).replace(st.bpfx,'');const v=parseInt(String(r.value).replace(/[^\d-]/g,''),10);if(ym&&!isNaN(v))laborBudgetByStore[st.key][ym]=v;});
+    }catch(e){laborBudgetByStore[st.key]={};}
+  }
   // shifts（全月 6〜10月をフル日付キーで一括読み込み）
   const LO=MONTHS[0]+'-01', HI=MONTHS[MONTHS.length-1]+'-31';
   let sh=[];
@@ -415,7 +430,8 @@ function hoursOf(c,defH){
   return defH;
 }
 // ★ 給与タブ「予算（シフト）」と同一の集計を当月(curMonth)分のみ行う（再集計でなく給与タブと同じ式）
-function storeCost(stKey,data,defH,editable){
+function storeCost(stKey,data,defH,editable,ym){
+  ym=ym||curMonth;
   let wage=0,trans=0,days=0,hours=0;
   const staff=staffByStore[stKey]||[];
   staff.forEach(s=>{
@@ -425,7 +441,7 @@ function storeCost(stKey,data,defH,editable){
     const isMonthly=(!s.wage||s.wage<=0)&&s.monthly>0; // 月給アルバイトは固定月給
     let mDays=0;
     Object.keys(row).forEach(dn=>{
-      if(dn.slice(0,7)!==curMonth)return;                                   // ★当月のみ
+      if(dn.slice(0,7)!==ym)return;                                         // ★指定月のみ
       const c=row[dn];
       if(!c||!c.symbol||c.symbol==='公'||c.symbol==='希'||c.symbol==='有')return; // 非休日のみ（公/希/有を除く）
       days++;mDays++;
@@ -439,7 +455,13 @@ function storeCost(stKey,data,defH,editable){
     });
     if(isMonthly&&mDays>0)wage+=s.monthly;
   });
-  return {wage:Math.round(wage),trans,days,hours,total:Math.round(wage)+trans};
+  // ★ 実態(master)は給与タブが保存した箱の値をそのまま採用（計算しない）。箱が無い月のみ上の式でfallback。
+  let total=Math.round(wage)+trans, fromBox=false;
+  if(!editable){
+    const b=laborBudgetByStore[stKey]&&laborBudgetByStore[stKey][ym];
+    if(b!=null&&!isNaN(b)){total=b;fromBox=true;}
+  }
+  return {wage:Math.round(wage),trans,days,hours,total,fromBox};
 }
 function gridHtml(stKey,editable){
   const data=editable?(simByStore[stKey]||{}):(masterByStore[stKey]||{});
@@ -505,10 +527,18 @@ function render(){
     }
     const connected=projConnected(st.proj);
     const data=tab==='sim'?(simByStore[st.key]||{}):(masterByStore[st.key]||{});
-    const cost=connected?storeCost(st.key,data,defH,tab==='sim'):null;
-    if(cost)grand+=cost.total;
+    // ★ 各月ごとに人件費を表示（給与タブ保存値=box。当月をハイライト）
+    let monthsHtml='';
+    if(connected){
+      monthsHtml=MONTHS.map(ym=>{
+        const c=storeCost(st.key,data,defH,tab==='sim',ym);
+        if(ym===curMonth)grand+=c.total;
+        const cls='mcost'+(ym===curMonth?' on':'')+(c.fromBox?' box':'');
+        return `<span class="${cls}" onclick="setMonth('${ym}')">${+ym.slice(5)}月 <b>${yen(c.total)}</b></span>`;
+      }).join('');
+    }
     html+=`<div class="store"><div class="store-h"><span class="sdot" style="background:${st.color}"></span>${st.label}店`+
-      (connected? (cost?`<span class="cost">バイト出勤 ${cost.days}日 ・ ${cost.hours.toFixed(1)}h ・ バイト人件費 <b>${yen(cost.total)}</b><span style="font-size:10px;color:#9aa6b2"> (賃金${yen(cost.wage)}+交通${yen(cost.trans)})</span></span>`:'') : `<span class="cost" style="color:#e8505b">未接続 → 上部でログイン</span>`)+
+      (connected? `<span class="mcosts">${monthsHtml}</span>` : `<span class="cost" style="color:#e8505b">未接続 → 上部でログイン</span>`)+
       `<button class="eye" title="この店を非表示" onclick="hideStore('${st.key}')">🙈</button>`+
       `</div>`;
     if(connected) html+=gridHtml(st.key,tab==='sim');
@@ -522,7 +552,7 @@ function render(){
   const hideBar=hideHtml?`<div class="hiddenchips"><span style="color:#9aa6b2">🙈 非表示の人:</span>${hideHtml}</div>`:'';
   $('gbar').innerHTML=`<div class="gbar">${legend}${hideBar}</div>`;
   $('footmode').textContent=tab==='sim'?'モード：シミュレーション（保存は自動・マスター非干渉）':'モード：実態ミラー';
-  $('foottot').textContent=(tab==='sim'?'シミュ ':'実態 ')+'3店バイト人件費合計 '+yen(grand);
+  $('foottot').textContent=(tab==='sim'?'シミュ ':'実態 ')+(+curMonth.slice(5))+'月 3店バイト人件費合計 '+yen(grand);
   syncScroll();
 }
 // 全店の横スクロール軸を同期（同じ日付列が揃って見える）
