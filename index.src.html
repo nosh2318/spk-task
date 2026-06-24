@@ -12786,14 +12786,7 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
     return result;
   },[staff,shifts,attendance,viewYM,dim,vy,vmo,overtimeEvents]);
 
-  // ★ 2026-06-24: 表示中の月のアルバイト予算（給与タブ「予算（シフト）」合計）を箱(app_settings)へ保存。
-  //   shift-hub等が計算せず・この保存値をそのまま読む単一ソース。allStaffData(=画面の値)を再利用＝必ず一致。
-  React.useEffect(()=>{
-    if(!sb||!staff||!staff.length)return;
-    let total=0;
-    staff.forEach(s=>{if(s.type!=="アルバイト")return;const d=allStaffData[s.name];if(d)total+=d.budgetTotal;});
-    try{sb.from("app_settings").upsert({key:"labor_budget_spk_"+viewYM,value:String(Math.round(total))},{onConflict:"key"}).then(()=>{}).catch(()=>{});}catch(e){}
-  },[allStaffData,staff,viewYM]);
+  // （月次アルバイト予算の箱保存はアプリ全体(App root)へ移動＝タブ非依存・全月一括）
 
   // シフトから勤怠レコード自動生成（シフト変更時にも反映）
   // 注意: attendanceをrefで参照し、依存配列に入れないことで無限ループを防止
@@ -19756,6 +19749,44 @@ function ReceivedInvoicesTab({sb,store,vehicles}){
 /* ==========================================
    App
    ========================================== */
+// ★ 2026-06-24: SPK月次アルバイト予算（給与タブ「予算（シフト）」と同一式）を全月計算。
+//   月給/時給複合・日給複合・休憩控除・固定曜日を給与タブallStaffDataと完全一致で再現（7月=154,360検証済）。
+//   shift-hub等が「計算せず・この保存値を読む」単一ソース。アプリ全体で実行＝シフト増減で即更新。
+function _spkPartBudgetByMonth(staff,shifts){
+  const DOW=["日","月","火","水","木","金","土"];
+  const ch=(s,e,br)=>{if(!s||!e)return 0;const a=s.split(":").map(Number),b=e.split(":").map(Number);let d=(b[0]*60+b[1])-(a[0]*60+a[1]);if(br>0)d-=br;return d>0?Math.round(d/60*10)/10:0;};
+  const part=(staff||[]).filter(s=>s&&s.type==="アルバイト");
+  const byName={},months=new Set();
+  Object.keys(shifts||{}).forEach(dt=>{months.add(String(dt).slice(0,7));(shifts[dt]||[]).forEach(sh=>{(byName[sh.name]=byName[sh.name]||{})[dt]=sh;});});
+  const out={};
+  months.forEach(ym=>{
+    let monthTotal=0;
+    part.forEach(s=>{
+      const hourly=s.hourlyWage||0,daily=s.dailyWage||0,monthly=s.monthlySalary||0,trans=s.transportCost||0,fixedDays=s.fixedDays||"",br=s.breakMinutes||0;
+      const isMonthlyBase=monthly>0;
+      const monthlyHasHourly=isMonthlyBase&&hourly>0&&!!fixedDays;
+      const hasDailyWage=daily>0&&!!fixedDays;
+      const useFixedDow=hasDailyWage||monthlyHasHourly;
+      let days=0,hours=0,fixed=0,vr=0;
+      const rows=byName[s.name]||{};
+      Object.keys(rows).forEach(dt=>{
+        if(String(dt).slice(0,7)!==ym)return;
+        const r=rows[dt],sym=r.symbol||"";if(sym==="公"||sym==="希"||sym==="有")return;
+        const p=dt.split("-").map(Number),dow=new Date(p[0],p[1]-1,p[2]).getDay();
+        const fx=useFixedDow&&fixedDays.indexOf(DOW[dow])>=0;
+        days++;const h=ch(r.start||"09:00",r.end||"18:00",br);hours+=h;
+        if(fx)fixed++;else vr+=(monthlyHasHourly?ch(r.start||"09:00",r.end||"18:00",0):h);
+      });
+      let wage;
+      if(isMonthlyBase)wage=monthly+(monthlyHasHourly?hourly*vr:0);
+      else if(hasDailyWage)wage=daily*fixed+hourly*vr;
+      else wage=hourly*hours;
+      monthTotal+=Math.round(wage)+trans*days;
+    });
+    out[ym]=monthTotal;
+  });
+  return out;
+}
 function App(){
   const[data,setData]=useState([]);const[tab,setTab_]=useState("top");const[tabHistory,setTabHistory]=useState([]);const[highlightVehicle,setHighlightVehicle]=useState(null);const[taskSumOpen,setTaskSumOpen]=useState(false);const[tomSumOpen,setTomSumOpen]=useState(false);const[topCalEvents,setTopCalEvents]=useState([]);
   const setTab=useCallback((newTab)=>{setTab_(prev=>{if(prev&&prev!==newTab){setTabHistory(h=>[...h,prev].slice(-20));}return newTab;});},[]);
@@ -19878,6 +19909,13 @@ function App(){
   },[jpNewPaidSet,jalanPay]);
   const[staff,setStaff]=useState(INIT_STAFF);
   const[attendance,setAttendance]=useState({});
+  // ★ 2026-06-24: SPK月次アルバイト予算を箱(app_settings)へ自動保存（タブ非依存・シフト増減で即更新）。
+  useEffect(()=>{
+    if(!sb||!staff||!staff.length)return;
+    const byYm=_spkPartBudgetByMonth(staff,shifts);
+    const rows=Object.keys(byYm).map(ym=>({key:"labor_budget_spk_"+ym,value:String(byYm[ym])}));
+    if(rows.length){try{sb.from("app_settings").upsert(rows,{onConflict:"key"}).then(()=>{}).catch(()=>{});}catch(e){}}
+  },[shifts,staff]);
   const[vehicles,setVehicles]=useState(INIT_VEHICLES);
   // ★ クラス管理 (2026-05-26 オーナー要望): 新クラス追加+既存編集対応
   //   保存先: localStorage (端末別) / バリデーション最小限
