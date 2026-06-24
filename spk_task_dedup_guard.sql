@@ -26,7 +26,7 @@ begin
     time          = coalesce(nullif(btrim(NEW.time),''),      tasks.time),
     name          = coalesce(nullif(btrim(NEW.name),''),      tasks.name),
     assignee      = coalesce(nullif(btrim(NEW.assignee),''),  tasks.assignee),
-    assignee_custom = coalesce(nullif(btrim(NEW.assignee_custom),''), tasks.assignee_custom),
+    assignee_custom = NEW.assignee_custom,   -- ★ boolean列(btrim不可)
     done          = NEW.done,
     memo          = coalesce(nullif(btrim(NEW.memo),''),      tasks.memo),
     place         = coalesce(nullif(btrim(NEW.place),''),     tasks.place),
