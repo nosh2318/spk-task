@@ -200,7 +200,7 @@ const PROJ={
   B:{url:'https://ggqugvyskyiblxiycpci.supabase.co',key:'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdncXVndnlza3lpYmx4aXljcGNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxMDc3NjksImV4cCI6MjA5MzY4Mzc2OX0.uNhWcBd_Dl5nzemZDQfJ8mQV6iY73MwystGGpTRPC18',ls:'sb-ggqugvyskyiblxiycpci-auth-token',hubls:'shifthub_tokB'}
 };
 const STORES=[
-  {key:'nha',label:'那覇',color:'var(--nha)',proj:'A',staffTbl:'nha_staff',shiftTbl:'nha_shifts',resTbl:'nha_reservations',sdCol:'start_date',edCol:'end_date'},
+  {key:'nha',label:'那覇',color:'var(--nha)',proj:'A',staffTbl:'nha_staff',shiftTbl:'nha_shifts',resTbl:'nha_reservations',sdCol:'start_date',edCol:'end_date',wageTbl:'nha_wage_history'},
   {key:'spk',label:'札幌',color:'var(--spk)',proj:'A',staffTbl:'staff',shiftTbl:'shifts',resTbl:'reservations',sdCol:'lend_date',edCol:'return_date'},
   {key:'bt', label:'高松',color:'var(--bt)', proj:'B',staffTbl:'bt_staff',shiftTbl:'bt_shifts',resTbl:'bt_reservations',sdCol:'start_date',edCol:'end_date'}
 ];
@@ -211,7 +211,7 @@ const WK=['日','月','火','水','木','金','土'];
 
 let curMonth=MONTHS[0];
 let tab='master';
-let staffByStore={}, masterByStore={}, simByStore={}, taskCountByStore={};
+let staffByStore={}, masterByStore={}, simByStore={}, taskCountByStore={}, wageHistByStore={};
 let hidden={stores:[],staff:{}}; // 各店/各人の非表示（localStorage保持・表示と人件費から除外）
 function loadHidden(){try{const h=JSON.parse(localStorage.getItem('shifthub_hidden'));if(h)hidden={stores:h.stores||[],staff:h.staff||{}};}catch(e){}}
 function saveHidden(){try{localStorage.setItem('shifthub_hidden',JSON.stringify(hidden));}catch(e){}}
@@ -305,6 +305,9 @@ async function loadStore(st){
   const _rank=t=>t==='正社員'?0:(t==='アルバイト'?1:2);
   staff.sort((a,b)=>{const r=_rank(a.type)-_rank(b.type);return r!==0?r:((+a.sort_order||0)-(+b.sort_order||0));});
   staffByStore[st.key]=staff.map(s=>({name:s.name,type:s.type||'',wage:+(s.hourly_wage||0),trans:+(s.transport_cost||0),monthly:+(s.monthly_salary||0),color:s.color||'#94a3b8'}));
+  // 日別時給（給与タブ「予算（シフト）」と同じ計算に使用。nhaのみ wage_history テーブルあり）
+  wageHistByStore[st.key]=[];
+  if(st.wageTbl){try{wageHistByStore[st.key]=await sbGet(st.proj,st.wageTbl+'?select=staff_name,effective_date,hourly_wage')||[];}catch(e){wageHistByStore[st.key]=[];}}
   // shifts（全月 6〜10月をフル日付キーで一括読み込み）
   const LO=MONTHS[0]+'-01', HI=MONTHS[MONTHS.length-1]+'-31';
   let sh=[];
@@ -398,20 +401,45 @@ function resetToMaster(){
 /* ===== render ===== */
 function setTab(t){tab=t;$('tab-master').classList.toggle('on',t==='master');$('tab-sim').classList.toggle('on',t==='sim');render();}
 function renderMonths(){$('months').innerHTML=MONTHS.map(m=>`<button class="mbtn ${m===curMonth?'on':''}" onclick="setMonth('${m}')">${+m.slice(5)}月</button>`).join('');}
-function setMonth(m){curMonth=m;renderMonths();const ws=[...document.querySelectorAll('.gwrap')];const ref=ws.find(w=>w.querySelector('[id$="-'+m+'-01"]'));if(!ref)return;const el=ref.querySelector('[id$="-'+m+'-01"]');const target=ref.scrollLeft+el.getBoundingClientRect().left-ref.getBoundingClientRect().left-156;ws.forEach(w=>{w.scrollLeft=target;});}
+function setMonth(m){curMonth=m;renderMonths();render();const ws=[...document.querySelectorAll('.gwrap')];const ref=ws.find(w=>w.querySelector('[id$="-'+m+'-01"]'));if(!ref)return;const el=ref.querySelector('[id$="-'+m+'-01"]');const target=ref.scrollLeft+el.getBoundingClientRect().left-ref.getBoundingClientRect().left-156;ws.forEach(w=>{w.scrollLeft=target;});}
 function cellHours(c,defH){if(c&&c.start&&c.end){const a=c.start.split(':').map(Number),b=c.end.split(':').map(Number);let h=(b[0]*60+b[1]-(a[0]*60+a[1]))/60;if(h<0)h+=24;if(h>0)return h;}return defH;}
+// 日別時給（給与タブ getWageForDate と同じ：effective_date<=該当日 の最新を採用、無ければstaff時給）
+function getWageForDate(stKey,name,date,fb){
+  const arr=(wageHistByStore[stKey]||[]).filter(r=>r.staff_name===name&&(r.effective_date||'')<=date);
+  if(arr.length){arr.sort((a,b)=>(a.effective_date||'').localeCompare(b.effective_date||''));const w=+arr[arr.length-1].hourly_wage;if(w>0)return w;}
+  return fb;
+}
+// 実働時間（給与タブ calcHours と同じ：実時刻の差を0.1h丸め・休憩控除なし。時刻無しは既定）
+function hoursOf(c,defH){
+  if(c&&c.start&&c.end){const a=c.start.split(':').map(Number),b=c.end.split(':').map(Number);let m=(b[0]*60+b[1])-(a[0]*60+a[1]);if(m<0)m+=1440;if(m>0)return Math.round(m/60*10)/10;}
+  return defH;
+}
+// ★ 給与タブ「予算（シフト）」と同一の集計を当月(curMonth)分のみ行う（再集計でなく給与タブと同じ式）
 function storeCost(stKey,data,defH,editable){
   let wage=0,trans=0,days=0,hours=0;
   const staff=staffByStore[stKey]||[];
   staff.forEach(s=>{
     if(isStaffHidden(stKey,s.name))return;
-    if(s.type!=='アルバイト')return; // 正社員等は月給→時給ベースの人件費に含めない
-    const fb=editable?cfgHours(stKey,s.name):defH;
-    const w=editable?cfgWage(stKey,s.name):s.wage;
+    if(s.type!=='アルバイト')return; // 正社員は除外（給与タブと同じ）
     const row=data[s.name]||{};
-    Object.keys(row).forEach(dn=>{const c=row[dn];if(c&&c.symbol==='●'){days++;const h=cellHours(c,fb);hours+=h;if(w>0){wage+=h*w;trans+=s.trans;}}});
+    const isMonthly=(!s.wage||s.wage<=0)&&s.monthly>0; // 月給アルバイトは固定月給
+    let mDays=0;
+    Object.keys(row).forEach(dn=>{
+      if(dn.slice(0,7)!==curMonth)return;                                   // ★当月のみ
+      const c=row[dn];
+      if(!c||!c.symbol||c.symbol==='公'||c.symbol==='希'||c.symbol==='有')return; // 非休日のみ（公/希/有を除く）
+      days++;mDays++;
+      const h=editable?cellHours(c,cfgHours(stKey,s.name)):hoursOf(c,defH);
+      hours+=h;
+      if(!isMonthly){
+        const w=editable?cfgWage(stKey,s.name):getWageForDate(stKey,s.name,dn,s.wage);
+        if(w>0)wage+=h*w;
+      }
+      trans+=s.trans;
+    });
+    if(isMonthly&&mDays>0)wage+=s.monthly;
   });
-  return {wage,trans,days,hours,total:wage+trans};
+  return {wage:Math.round(wage),trans,days,hours,total:Math.round(wage)+trans};
 }
 function gridHtml(stKey,editable){
   const data=editable?(simByStore[stKey]||{}):(masterByStore[stKey]||{});
