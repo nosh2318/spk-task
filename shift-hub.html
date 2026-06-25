@@ -174,6 +174,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","N
     <button class="btn btn-ghost" onclick="syncSeishainOnly()">👔 正社員のみ同期</button>
     <button class="btn btn-ghost" onclick="resetToMaster()">↩ デフォルトに戻す</button>
     <button class="btn btn-sync" onclick="saveNow()">💾 保存</button>
+    <button class="btn btn-sync" onclick="savePattern()">📸 パターン保存</button>
+    <select id="patSel" class="btn btn-ghost" style="padding:6px 8px;cursor:pointer;" onchange="applyPattern(this.value)"><option value="">📌 保存パターン…</option></select>
+    <button class="btn btn-ghost" onclick="exitPattern()">↩ ライブに戻る</button>
     <div class="tabs">
       <button class="tab on" id="tab-master" onclick="setTab('master')">📋 マスター（実態）</button>
       <button class="tab" id="tab-sim" onclick="setTab('sim')">✏️ 編集（シミュレーション）</button>
@@ -267,6 +270,36 @@ async function ensureFreshB(){
 }
 function hdr(proj){const c=PROJ[proj];return {'apikey':c.key,'Authorization':'Bearer '+(tokenFor(proj)||c.key),'Content-Type':'application/json'};}
 async function sbGet(proj,path){const c=PROJ[proj];const r=await fetch(c.url+'/rest/v1/'+path,{headers:hdr(proj)});if(!r.ok)throw new Error(proj+' HTTP '+r.status);return r.json();}
+async function sbPost(proj,path,body){const c=PROJ[proj];const r=await fetch(c.url+'/rest/v1/'+path,{method:'POST',headers:Object.assign({},hdr(proj),{'Prefer':'return=representation'}),body:JSON.stringify(body)});if(!r.ok)throw new Error(proj+' HTTP '+r.status);return r.json();}
+/* ===== パターン保存（チーム共有・固定スナップショット / projA: shifthub_patterns） ===== */
+let _patternMode=false,_patternName='';
+async function savePattern(){
+  if(!projConnected('A')){alert('那覇・札幌に未接続です（上部でログイン）');return;}
+  const sel=document.getElementById('patSel'); const def='パターン'+(sel?sel.options.length:1);
+  const name=prompt('保存するパターン名を入力',def); if(!name)return;
+  const data={master:masterByStore,staff:staffByStore,wage:wageHistByStore,budget:laborBudgetByStore,taskc:taskCountByStore,cfg:simCfg,savedMonth:curMonth};
+  try{ await sbPost('A','shifthub_patterns',{name:name,data:data,created_by:'shift-hub'}); toast('📸 保存しました：'+name); await loadPatternList(); }
+  catch(e){ alert('保存に失敗しました: '+e.message); }
+}
+async function loadPatternList(){
+  const sel=document.getElementById('patSel'); if(!sel||!projConnected('A'))return;
+  try{
+    const rows=await sbGet('A','shifthub_patterns?select=id,name,created_at&order=created_at.desc');
+    sel.innerHTML='<option value="">📌 保存パターン…</option>'+rows.map(function(r){var dt=(r.created_at||'').slice(5,16).replace('T',' ');return '<option value="'+r.id+'">'+esc(r.name)+'（'+dt+'）</option>';}).join('');
+  }catch(e){}
+}
+async function applyPattern(id){
+  if(!id)return;
+  try{
+    const rows=await sbGet('A','shifthub_patterns?id=eq.'+encodeURIComponent(id)+'&select=*'); const p=rows&&rows[0]; if(!p){alert('パターンが見つかりません');return;}
+    const d=p.data||{};
+    masterByStore=d.master||{}; staffByStore=d.staff||{}; wageHistByStore=d.wage||{}; laborBudgetByStore=d.budget||{}; taskCountByStore=d.taskc||{};
+    simByStore=JSON.parse(JSON.stringify(d.master||{})); if(d.cfg)simCfg=d.cfg;
+    _patternMode=true; _patternName=p.name; tab='master';
+    render(); toast('📌 '+p.name+' を表示中（固定・実シフトとは連動しません）');
+  }catch(e){ alert('読み込みに失敗: '+e.message); }
+}
+function exitPattern(){ _patternMode=false; _patternName=''; var s=document.getElementById('patSel'); if(s)s.value=''; loadAll(); toast('↩ ライブ（実シフト）に戻りました'); }
 let _loginCb=null;
 function openLogin(proj){
   const c=PROJ[proj];
@@ -288,7 +321,7 @@ async function doLogin(proj){
     if(d&&d.access_token){
       localStorage.setItem(c.hubls,JSON.stringify({access_token:d.access_token,refresh_token:d.refresh_token||'',expires_at:Math.floor(Date.now()/1000)+(d.expires_in||3600)}));
       $('loginOv').classList.remove('on');b.disabled=false;b.textContent='ログイン';
-      renderConn();loadAll();
+      renderConn();loadAll();loadPatternList();
     }else{er.style.display='';er.textContent='認証に失敗しました';b.disabled=false;b.textContent='ログイン';}
   }catch(e){er.style.display='';er.textContent='接続エラー';b.disabled=false;b.textContent='ログイン';}
 }
@@ -414,7 +447,7 @@ function resetToMaster(){
 }
 
 /* ===== render ===== */
-function setTab(t){tab=t;$('tab-master').classList.toggle('on',t==='master');$('tab-sim').classList.toggle('on',t==='sim');render();}
+function setTab(t){if(_patternMode){_patternMode=false;_patternName='';var s=document.getElementById('patSel');if(s)s.value='';loadAll();}tab=t;$('tab-master').classList.toggle('on',t==='master');$('tab-sim').classList.toggle('on',t==='sim');render();}
 function renderMonths(){$('months').innerHTML=MONTHS.map(m=>`<button class="mbtn ${m===curMonth?'on':''}" onclick="setMonth('${m}')">${+m.slice(5)}月</button>`).join('');}
 function setMonth(m){curMonth=m;renderMonths();render();const ws=[...document.querySelectorAll('.gwrap')];const ref=ws.find(w=>w.querySelector('[id$="-'+m+'-01"]'));if(!ref)return;const el=ref.querySelector('[id$="-'+m+'-01"]');const target=ref.scrollLeft+el.getBoundingClientRect().left-ref.getBoundingClientRect().left-156;ws.forEach(w=>{w.scrollLeft=target;});}
 function cellHours(c,defH){if(c&&c.start&&c.end){const a=c.start.split(':').map(Number),b=c.end.split(':').map(Number);let h=(b[0]*60+b[1]-(a[0]*60+a[1]))/60;if(h<0)h+=24;if(h>0)return h;}return defH;}
@@ -584,6 +617,7 @@ function cyc(stKey,nameEnc,d){
 loadHidden();loadCfg();renderMonths();renderConn();
 $('loginOv').addEventListener('keydown',e=>{if(e.key==='Enter'&&_loginCb)doLogin(_loginCb);});
 loadAll();
+setTimeout(loadPatternList,1000);
 </script>
 </body>
 </html>
