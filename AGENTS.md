@@ -5,10 +5,11 @@
 - 対象: `price-optimizer.html`（公開場所は `spk-task` 配下だが、内容・DB参照は那覇専用）
 - 空き台数の固定母数56台を廃止し、該当月の `nha_vehicle_monthly_kpi.active` を反映した稼働対象車両のみを母数に変更
 - 月次KPIに明示値がない車両は、既存APPと同じく `nha_vehicles.active` をフォールバックとして使用
-- 参照テーブル: `nha_vehicles` / `nha_vehicle_monthly_kpi` / `nha_reservations` / `nha_fleet`
+- 参照テーブル: `nha_vehicles` / `nha_vehicle_monthly_kpi` / `nha_reservations` / `nha_fleet` / `nha_maintenance`
 - 貸出中は、稼働対象車両に配車された予約だけを日別に再集計。返却日は貸出中から除外（`start_date <= 日付 < end_date`）
-- カレンダーと日別モーダルの分母・クラス別「稼働対象」台数を月ごとに可変表示
-- 本体管理APPのSupabaseログインセッションを同一オリジンで再利用。未ログイン・取得失敗時は0台表示にせず、埋込固定データへ安全にフォールバック
+- `nha_maintenance` の期間に該当する車両も日別の空きから除外（`start_date <= 日付 <= end_date`）。貸出中とメンテが重なる車両は二重控除しない
+- カレンダーと日別モーダルの分母・クラス別「稼働対象／貸出中／メンテ中／空き」台数を月・日ごとに可変表示
+- 本体管理APPのSupabaseログインセッションを再利用し、直接URLを開いて未ログインなら既存の共通メンバー認証を実行。取得失敗時は0台表示にせず、埋込固定データへ安全にフォールバック
 - 絶対ルール: このページを札幌データへ切り替えない。那覇専用として維持する
 
 ## 2026-05-02 修正履歴

@@ -60,15 +60,21 @@ async function sbRows(table,select){
  return rows;
 }
 function isCancelled(status){return['cancelled','canceled','キャンセル','cancel'].includes(String(status||'').toLowerCase());}
+async function ensureAuth(){
+ const{data}=await sbClient.auth.getSession();
+ if(data&&data.session)return;
+ const{error}=await sbClient.auth.signInWithPassword({email:'member@g-lines.jp',password:'8888'});
+ if(error)throw new Error('認証失敗: '+error.message);
+}
 async function loadMonthlyFleet(){
  try{
-  const{data:auth}=await sbClient.auth.getSession();
-  if(!auth||!auth.session)throw new Error('管理APPへのログインが必要です');
-  const [vehicles,kpis,reservations,fleetRows]=await Promise.all([
+  await ensureAuth();
+  const [vehicles,kpis,reservations,fleetRows,maintenanceRows]=await Promise.all([
    sbRows('nha_vehicles','code,type,active'),
    sbRows('nha_vehicle_monthly_kpi','year_month,vehicle_code,active'),
    sbRows('nha_reservations','id,start_date,end_date,status'),
-   sbRows('nha_fleet','reservation_id,vehicle_code')
+   sbRows('nha_fleet','reservation_id,vehicle_code'),
+   sbRows('nha_maintenance','id,vehicle_code,start_date,end_date')
   ]);
   if(!vehicles.length)throw new Error('那覇の車両データが0件です');
   const monthKeys=Object.keys(CAL);
@@ -88,14 +94,16 @@ async function loadMonthlyFleet(){
     const ds=`${mo}-${String(d).padStart(2,'0')}`;
     const occupied=new Set();
     activeReservations.forEach(r=>{const code=fleetByReservation[r.id];if(activeCodes.has(code)&&r.start_date<=ds&&ds<r.end_date)occupied.add(code);});
+    const maintained=new Set();
+    maintenanceRows.forEach(m=>{if(activeCodes.has(m.vehicle_code)&&m.start_date&&m.end_date&&m.start_date<=ds&&ds<=m.end_date&&!occupied.has(m.vehicle_code))maintained.add(m.vehicle_code);});
     const classRows={};
-    Object.keys(byClass).forEach(c=>{const codes=byClass[c];const out=codes.filter(code=>occupied.has(code)).length;classRows[c]={fleet:codes.length,out,avail:codes.length-out};});
+    Object.keys(byClass).forEach(c=>{const codes=byClass[c];const out=codes.filter(code=>occupied.has(code)).length;const maint=codes.filter(code=>maintained.has(code)).length;classRows[c]={fleet:codes.length,out,maint,avail:codes.length-out-maint};});
     DAYCLS[ds]=classRows;
-    const prev=DAYTOT[ds]||{};const total=activeVehicles.length;const out=occupied.size;
-    DAYTOT[ds]={...prev,fleet:total,out,avail:total-out,u:total?Math.round(out/total*100):null};
+    const prev=DAYTOT[ds]||{};const total=activeVehicles.length;const out=occupied.size;const maint=maintained.size;
+    DAYTOT[ds]={...prev,fleet:total,out,maint,avail:total-out-maint,u:total?Math.round(out/total*100):null};
    }
   }
-  document.getElementById('fleetSummary').textContent='那覇・該当月の稼働車両のみ・空き=稼働対象−貸出中(返却日除外)';
+  document.getElementById('fleetSummary').textContent='那覇・該当月の稼働車両のみ・空き=稼働対象−貸出中−メンテ中';
   render();
  }catch(e){
   console.error('[monthly fleet]',e);
@@ -113,7 +121,7 @@ function rec(u,pos){const high=pos=='5位〜10位'||pos=='10位超',cheap=pos=='
  if(u<50)return['要改善','a-tr'];return['維持','a-kp'];}
 function renderCal(){
  let h=`<div class="card"><h2>📅 空き台数カレンダー（月次稼働フラグ基準）</h2>
- <div class="sub">数字＝<b>その日の空き台数（該当月の稼働対象車両−貸出中／返却日除外）</b>。色＝その日の稼働率(目標50%)。紫枠＝お盆。<b>日をタップ</b>→クラス別の稼働対象・貸出中・空き＋現価格・市場位置・先手。</div>
+ <div class="sub">数字＝<b>その日の空き台数（該当月の稼働対象車両−貸出中−メンテ中／返却日除外）</b>。色＝その日の稼働率(目標50%)。紫枠＝お盆。<b>日をタップ</b>→クラス別の稼働対象・貸出中・メンテ中・空き＋現価格・市場位置・先手。</div>
  <div class="legend"><span><i class="u-hi"></i>稼働50%+（空き少＝強気）</span><span><i class="u-mid"></i>35-49</span><span><i class="u-lo"></i>20-34</span><span><i class="u-vlo"></i>~19（空き多＝要販売）</span><span><i style="box-shadow:0 0 0 2px #7c3aed inset;background:#fff"></i>お盆</span></div>
  <div class="calwrap">`;
  for(const mo of Object.keys(CAL)){
@@ -139,9 +147,9 @@ function openDay(ds){
  for(const c of owned){const p=PC[c];if(!p)continue;const u2=p.fleet?Math.round(p.out/p.fleet*100):null;
   const ux=(UNI[c]||{})[ds]||{};const[ra,rc]=rec(u2,ux.pos);
   const avc=p.avail==0?'av-full':(p.avail>=p.fleet*0.6?'av-lots':'av-some');
-  rows+=`<tr><td class="l"><b>${c}</b></td><td>${p.fleet}</td><td>${p.out}</td><td class="${avc}">${p.avail}</td><td>${ux.p?yen(ux.p):'—'}</td><td class="${pclass(ux.pos)}">${ux.pos||'—'}</td><td><span class="act ${rc}">${ra}</span></td></tr>`;
+  rows+=`<tr><td class="l"><b>${c}</b></td><td>${p.fleet}</td><td>${p.out}</td><td>${p.maint||0}</td><td class="${avc}">${p.avail}</td><td>${ux.p?yen(ux.p):'—'}</td><td class="${pclass(ux.pos)}">${ux.pos||'—'}</td><td><span class="act ${rc}">${ra}</span></td></tr>`;
  }
- const extra=(T.a2||T.b2)?`<tr><td class="l" style="color:#7c3aed">預かりA2/B2</td><td>—</td><td>${(T.a2||0)+(T.b2||0)}</td><td colspan=4 class="l" style="color:#94a3b8">協力会社車（保有外）</td></tr>`:'';
+ const extra=(T.a2||T.b2)?`<tr><td class="l" style="color:#7c3aed">預かりA2/B2</td><td>—</td><td>${(T.a2||0)+(T.b2||0)}</td><td>—</td><td colspan=4 class="l" style="color:#94a3b8">協力会社車（保有外）</td></tr>`:'';
  const u=T.u;const ok=u!=null&&u>=50;
  document.getElementById('sheet').innerHTML=`<span class="x" onclick="closeM()">✕</span>
   <h3>📅 ${m}/${d}(${dow}) <span style="font-size:12px;color:#7c3aed">${TN[tier]}</span></h3>
@@ -149,10 +157,11 @@ function openDay(ds){
   <div class="gauge"><div class="gfill ${ok?'ok':'ng'}" style="width:${Math.min(u||0,100)}%"></div><div class="gline"></div></div>
   <div class="daykpi"><div><div class="n av-lots">${T.avail??'—'}<small style="font-size:11px;color:#94a3b8">/${T.fleet??'—'}</small></div><div class="l">空き台数</div></div>
    <div><div class="n">${T.out??'—'}台</div><div class="l">貸出中</div></div>
+   <div><div class="n">${T.maint??0}台</div><div class="l">メンテ中</div></div>
    <div><div class="n" style="color:${ok?'#15803d':'#d97706'}">${u??'—'}%</div><div class="l">稼働率(目標50%)</div></div>
    <div><div class="n">${man(T.rev)}</div><div class="l">想定売上(日割)</div></div></div>
-  <table><thead><tr><th class="l">クラス</th><th>稼働対象</th><th>貸出中</th><th>空き</th><th>現価格</th><th>市場位置</th><th>先手</th></tr></thead><tbody>${rows}${extra}</tbody></table>
-  <div class="muted">空き＝該当月の稼働対象車両−貸出中（返却日除外）。市場位置＝現価格 vs 5OTA。先手＝稼働(50%)×市場位置。価格/市場は日帰り基準・該当データのみ。</div>`;
+  <table><thead><tr><th class="l">クラス</th><th>稼働対象</th><th>貸出中</th><th>メンテ中</th><th>空き</th><th>現価格</th><th>市場位置</th><th>先手</th></tr></thead><tbody>${rows}${extra}</tbody></table>
+  <div class="muted">空き＝該当月の稼働対象車両−貸出中−メンテ中（返却日除外）。貸出中とメンテが重なる車両は二重控除しません。市場位置＝現価格 vs 5OTA。先手＝稼働(50%)×市場位置。価格/市場は日帰り基準・該当データのみ。</div>`;
  document.getElementById('sheet').style.display='block';document.getElementById('scrim').classList.add('on');
 }
 function closeM(e){if(e&&e.target!==document.getElementById('scrim'))return;document.getElementById('sheet').style.display='none';document.getElementById('scrim').classList.remove('on');}
