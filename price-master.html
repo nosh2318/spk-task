@@ -25,6 +25,7 @@ input.p:focus{border-color:#2563eb;outline:none}
 <div class="top"><b>💴 現価格マスター</b>
  <span style="display:flex;gap:4px;margin-left:6px"><button class="storebtn on" data-s="nha" onclick="selStore('nha')">那覇</button><button class="storebtn" data-s="spk" onclick="selStore('spk')">札幌</button></span>
  <select id="mon" onchange="render()"></select>
+ <button id="kdlink" class="storebtn" onclick="toggleKD()" style="background:#334155;color:#cbd5e1">🔗 KEYDROP連動: …</button>
  <button class="save" onclick="save()">💾 保存（コントローラー更新）</button>
 </div>
 <div class="wrap">
@@ -40,7 +41,35 @@ let STORE='nha', MASTER=null, MONTH=null;
 const tbl=()=>STORE==='spk'?'app_settings':'nha_app_settings';
 function authHeader(){try{var t=JSON.parse(localStorage.getItem('sb-ckrxttbnawkclshczsia-auth-token'));if(t&&t.access_token&&(!t.expires_at||t.expires_at>Math.floor(Date.now()/1000)))return 'Bearer '+t.access_token;}catch(e){}return 'Bearer '+SK;}
 async function sbGet(path){const r=await fetch(SU+'/rest/v1/'+path,{headers:{apikey:SK,'Authorization':authHeader()}});if(!r.ok)return null;return await r.json();}
-async function sbPut(value){const r=await fetch(SU+'/rest/v1/'+tbl()+'?on_conflict=key',{method:'POST',headers:{apikey:SK,'Authorization':authHeader(),'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({key:'hdm_price_master',value:JSON.stringify(value)})});if(!r.ok)throw new Error('HTTP '+r.status+' '+await r.text());}
+async function sbPutKey(key,value){const r=await fetch(SU+'/rest/v1/'+tbl()+'?on_conflict=key',{method:'POST',headers:{apikey:SK,'Authorization':authHeader(),'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({key:key,value:JSON.stringify(value)})});if(!r.ok)throw new Error('HTTP '+r.status+' '+await r.text());}
+async function sbPut(value){return sbPutKey('hdm_price_master',value);}
+// 現価格マスター → KEYDROP価格(prices+presets)へ変換。日付ごとに現価格課金を再現（keydrop.js無改修）
+function masterToKeydrop(m){
+ const prices={},presets=[];let idx=0;const classes=new Set();
+ Object.values(m.prices||{}).forEach(mo=>Object.values(mo).forEach(t=>Object.keys(t).forEach(c=>classes.add(c))));
+ const cls=[...classes].sort();cls.forEach(c=>prices[c]=[]);
+ Object.keys(m.prices||{}).sort().forEach(month=>{
+  Object.keys(m.prices[month]).forEach(tier=>{
+   cls.forEach(c=>{const v=(m.prices[month][tier]||{})[c];prices[c].push(v?v[0]:0);});
+   ((m.ranges||{})[month]||{})[tier]&&(m.ranges[month][tier]||[]).forEach(r=>{if(r[0]&&r[1])presets.push({start:r[0].slice(5),end:r[1].slice(5),tier:idx});});
+   idx++;
+  });
+ });
+ return {prices:prices,presets:presets,default:0,_linkedFrom:'hdm_price_master',_at:new Date().toISOString().slice(0,10)};
+}
+let KDMODE='manual';
+async function loadKDMode(){const r=await sbGet(tbl()+'?key=eq.hdm_keydrop_mode&select=value');let v=(r&&r[0])?r[0].value:null;try{v=JSON.parse(v);}catch(e){}KDMODE=(v&&v.mode)||v||'manual';if(KDMODE!=='linked')KDMODE='manual';paintKD();}
+function paintKD(){const b=document.getElementById('kdlink');if(!b)return;const on=KDMODE==='linked';b.textContent='🔗 KEYDROP連動: '+(on?'ON':'OFF');b.style.background=on?'#16a34a':'#334155';b.style.color=on?'#fff':'#cbd5e1';}
+async function syncKD(){if(!MASTER)return;const kd=masterToKeydrop(MASTER);await sbPutKey('hdm_keydrop_price',kd);}
+async function toggleKD(){
+ const on=KDMODE==='linked';
+ if(!on){ if(!confirm((STORE==='spk'?'札幌':'那覇')+'のKEYDROP価格を「現価格マスターと連動」にします。\nKEYDROPの手動価格は現価格で上書きされ、以降マスター保存で自動反映されます。よろしいですか？'))return;
+  try{await syncKD();KDMODE='linked';await sbPutKey('hdm_keydrop_mode',{mode:'linked'});paintKD();document.getElementById('status').textContent='✅ KEYDROP連動ON（現価格を反映済み）';document.getElementById('status').style.color='#16a34a';}
+  catch(e){if(String(e).match(/40[13]/)){needLogin();return;}alert('連動失敗: '+e.message);}
+ }else{ if(!confirm('KEYDROP連動をOFF（手動）に戻します。現在の価格は維持され、以降マスター保存では変わりません。'))return;
+  KDMODE='manual';await sbPutKey('hdm_keydrop_mode',{mode:'manual'});paintKD();document.getElementById('status').textContent='KEYDROP連動OFF（手動）';
+ }
+}
 function needLogin(){const s=document.createElement('div');s.className='scrim';s.innerHTML='<div class="lg"><div style="font-weight:800;margin-bottom:8px">ログイン</div><input id="ae" placeholder="メール" autocomplete="username"><input id="ap" type="password" placeholder="パスワード" autocomplete="current-password"><div id="aerr" class="err" style="display:none"></div><button id="ab" onclick="doLogin()">ログイン</button></div>';document.body.appendChild(s);window._lov=s;}
 async function doLogin(){var e=document.getElementById('ae').value,p=document.getElementById('ap').value,err=document.getElementById('aerr');try{var r=await fetch(SU+'/auth/v1/token?grant_type=password',{method:'POST',headers:{apikey:SK,'Content-Type':'application/json'},body:JSON.stringify({email:e,password:p})});var d=await r.json();if(d&&d.access_token){localStorage.setItem('sb-ckrxttbnawkclshczsia-auth-token',JSON.stringify({access_token:d.access_token,refresh_token:d.refresh_token||'',expires_at:Math.floor(Date.now()/1000)+(d.expires_in||3600),token_type:'bearer',user:d.user||{}}));window._lov.remove();load();}else{err.style.display='';err.textContent='メール/パスワードが違います';}}catch(x){err.style.display='';err.textContent='接続エラー';}}
 function selStore(s){STORE=s;document.querySelectorAll('.storebtn').forEach(b=>b.classList.toggle('on',b.dataset.s===s));load();}
@@ -54,6 +83,7 @@ async function load(){
  const sel=document.getElementById('mon');sel.innerHTML=mons.map(m=>`<option ${m===MONTH?'selected':''}>${m}</option>`).join('');
  if(!mons.includes(MONTH))MONTH=mons[0];sel.value=MONTH;
  document.getElementById('status').textContent='読込OK（'+(STORE==='spk'?'札幌':'那覇')+'・更新:'+(MASTER.updated_at||'-')+'）';
+ loadKDMode();
  render();
 }
 function render(){
@@ -73,7 +103,10 @@ function setP(t,c,v){v=parseInt(v,10)||0;MASTER.prices[MONTH][t][c]=[v,v*2,v*3,v
 function setRange(t,i,j,v){MASTER.ranges=MASTER.ranges||{};MASTER.ranges[MONTH]=MASTER.ranges[MONTH]||{};MASTER.ranges[MONTH][t]=MASTER.ranges[MONTH][t]||[];MASTER.ranges[MONTH][t][i]=MASTER.ranges[MONTH][t][i]||['',''];MASTER.ranges[MONTH][t][i][j]=v;}
 async function save(){
  if(!MASTER)return;MASTER.updated_at=new Date().toISOString().slice(0,10);MASTER.store=STORE;
- try{await sbPut(MASTER);document.getElementById('status').textContent='✅ 保存しました（'+MASTER.updated_at+'）';document.getElementById('status').style.color='#16a34a';}
+ try{await sbPut(MASTER);
+   let extra='';
+   if(KDMODE==='linked'){await syncKD();extra='＋KEYDROPに連動反映';}
+   document.getElementById('status').textContent='✅ 保存しました（'+MASTER.updated_at+'）'+extra;document.getElementById('status').style.color='#16a34a';}
  catch(e){if(String(e).includes('401')||String(e).includes('403')){needLogin();return;}document.getElementById('status').textContent='保存失敗: '+e.message;document.getElementById('status').style.color='#dc2626';}
 }
 load();
