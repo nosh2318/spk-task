@@ -32,7 +32,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}th,td{padding:5px 7px
 .ins{font-size:12.5px;font-weight:700;margin-top:8px;padding:9px 11px;border-radius:8px}.v-up{background:#ecfdf5;border:1px solid #34d399}.v-down{background:#fef2f2;border:1px solid #f87171}.v-keep{background:#eff6ff;border:1px solid #60a5fa}.v-na{background:#f8fafc;border:1px solid #e2e8f0}.v-traffic{background:#fffbeb;border:1px solid #f0d000}
 </style></head><body>
 <div class="top"><b>💹 価格最適化</b><span class="st" id="fleetSummary">那覇・月次稼働フラグを読込中…</span></div>
-<div class="tab"><button class="on" data-t="cal" onclick="tab(this)">📅 空き台数カレンダー</button><button data-t="action" onclick="tab(this)">🎯 アクション</button><button data-t="trend" onclick="tab(this)">📋 クラス別予約傾向</button></div>
+<div class="tab"><button class="on" data-t="cal" onclick="tab(this)">📅 空き台数カレンダー</button><button data-t="action" onclick="tab(this)">🎯 アクション</button><button data-t="trend" onclick="tab(this)">📋 クラス別予約傾向</button><button data-t="judge" onclick="tab(this)">⚖️ 値付け評価</button></div>
 <div class="wrap"><div id="body"></div></div>
 <div class="scrim" id="scrim" onclick="closeM(event)"></div><div class="sheet" id="sheet" style="display:none"></div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -271,7 +271,45 @@ function renderTrend(){
  for(var t of['A','B','C']){var d=DATA[SC+'|'+t];if(d&&d.verdict){h+='<div class="ins '+vclass(d.verdict)+'" style="margin-top:6px"><b>'+d.tname+'：</b>'+d.verdict+'</div>';}}
  h+='<div class="muted">本数＝価格別の成約数（99%紐付け・日帰り基準）。市場位置＝その価格 vs 5OTA最安/5位/10位。</div></div>';
  return h;}
+function judgeTier(d){
+ var rep=(d.util&&d.util.rep!=null)?d.util.rep:null;var mn=d.market.min,p10=d.market.p10;
+ var cheapN=0,loss=0,highN=0,fairN=0;
+ for(var j=0;j<d.levels.length;j++){var L=d.levels[j];
+  if(mn&&L.price<mn){cheapN+=L.cnt;loss+=(mn-L.price)*L.cnt;}
+  else if(p10&&L.price>p10){highN+=L.cnt;}
+  else fairN+=L.cnt;}
+ var hit=(rep!=null&&rep>=50);
+ var verdict,vc,note;
+ if(cheapN>0&&loss>0&&hit){verdict='⚠️ 悪（安売り）';vc='v-down';note='稼働'+rep+'%達成なのに市場最安未満で'+cheapN+'本＝もっと高く取れた。取りこぼし約'+yen(loss);}
+ else if(highN>0&&!hit){verdict='⚠️ 悪（高すぎ）';vc='v-down';note='市場10位超で'+highN+'本・稼働'+(rep==null?'—':rep+'%')+'＝高すぎて本数が伸びず機会損失。下げれば本数増';}
+ else if(hit&&fairN>=cheapN&&fairN>=highN){verdict='✅ 正義';vc='v-up';note='競争圏中心＋稼働'+rep+'%達成＝本数も取れて適正';}
+ else if(cheapN>0&&!hit){verdict='△ グレー（安いが未達）';vc='v-na';note='安く出したが稼働'+(rep==null?'—':rep+'%')+'＝集客側の問題の可能性。安さは正当化されうる';}
+ else {verdict='△ 要検討';vc='v-na';note='稼働'+(rep==null?'—':rep+'%')+'・安売り'+cheapN+'/適正'+fairN+'/高すぎ'+highN+'本';}
+ return {rep:rep,cheapN:cheapN,loss:loss,highN:highN,fairN:fairN,hit:hit,verdict:verdict,vc:vc,note:note};
+}
+function renderJudge(){
+ // 全体取りこぼし（全クラス×tier・稼働達成かつ安売りのみ＝堅い分）
+ var grand=0,seigi=0,aku=0;
+ for(var i=0;i<owned.length;i++)for(var t of['A','B','C']){var d=DATA[owned[i]+'|'+t];if(!d)continue;var J=judgeTier(d);
+  if(J.hit)grand+=J.loss;if(J.verdict.indexOf('正義')>=0)seigi++;if(J.verdict.indexOf('悪')>=0)aku++;}
+ var h='<div class="card"><h2>⚖️ 値付け評価（正義／悪）</h2><div class="sub">生データ（価格→本数）を<b>市場位置×稼働率(目標50%)</b>と突合し、その値付けが正義か悪かを判定。<b>取りこぼし＝(市場最安−自社価格)×本数</b>（稼働達成＝需要があった枠のみ計上＝堅い下限）。</div>'
+  +'<div class="daykpi"><div><div class="n" style="color:#dc2626">'+man(grand)+'</div><div class="l">取りこぼし試算(安売り・稼働達成枠)</div></div>'
+  +'<div><div class="n" style="color:#16a34a">'+seigi+'</div><div class="l">正義の枠</div></div>'
+  +'<div><div class="n" style="color:#dc2626">'+aku+'</div><div class="l">悪の枠</div></div></div>'
+  +'<div class="muted">※「日帰り定価ベース・該当期間の成約」。高すぎ枠の機会損失（下げれば増えた本数）は金額化せず件数で表示。</div></div>';
+ h+=clsChips();
+ // 選択クラスのtier別判定
+ for(var t of['A','B','C']){var d=DATA[SC+'|'+t];if(!d)continue;var J=judgeTier(d);
+  h+='<div class="card"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><h2 style="margin:0">'+SC+' / '+d.tname+'</h2>'
+   +'<span style="font-size:11px;color:#888">'+TD[t]+'・計'+d.total+'本</span>'
+   +'<span class="ins '+J.vc+'" style="margin-left:auto;padding:4px 10px">'+J.verdict+'</span></div>'
+   +'<div class="sub" style="margin-top:6px">市場：最安 '+yen(d.market.min)+' ／ 5位 '+yen(d.market.p5)+' ／ 10位 '+yen(d.market.p10)+'　稼働 '+(J.rep==null?'—':J.rep+'%')+(J.hit?'(達成)':'(未達)')+'</div>'
+   +'<table><thead><tr><th>安売り(最安未満)</th><th>適正(最安〜10位)</th><th>高すぎ(10位超)</th><th>取りこぼし</th></tr></thead><tbody>'
+   +'<tr><td>'+J.cheapN+'本</td><td>'+J.fairN+'本</td><td>'+J.highN+'本</td><td class="'+(J.hit&&J.loss>0?"p-high":"")+'">'+(J.hit?yen(J.loss):'—')+'</td></tr></tbody></table>'
+   +'<div class="ins '+J.vc+'" style="margin-top:8px">'+J.note+'</div></div>';}
+ return h;
+}
 function setSC(v){SC=v;render();}
-function render(){var r={cal:renderCal,action:renderAction,trend:renderTrend}[TAB];document.getElementById('body').innerHTML=r();}
+function render(){var r={cal:renderCal,action:renderAction,trend:renderTrend,judge:renderJudge}[TAB];document.getElementById('body').innerHTML=r();}
 render();loadMonthlyFleet();
 </script></body></html>
