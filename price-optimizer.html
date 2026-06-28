@@ -33,7 +33,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}th,td{padding:5px 7px
 .ins{font-size:12.5px;font-weight:700;margin-top:8px;padding:9px 11px;border-radius:8px}.v-up{background:#ecfdf5;border:1px solid #34d399}.v-down{background:#fef2f2;border:1px solid #f87171}.v-keep{background:#eff6ff;border:1px solid #60a5fa}.v-na{background:#f8fafc;border:1px solid #e2e8f0}.v-traffic{background:#fffbeb;border:1px solid #f0d000}
 </style></head><body>
 <div class="top"><b>💹 価格最適化</b><span style="display:flex;gap:4px;margin-left:6px"><button class="storebtn on" data-s="nha" onclick="selectStore('nha')">那覇</button><button class="storebtn" data-s="spk" onclick="selectStore('spk')">札幌</button></span><span class="st" id="fleetSummary">読込中…</span></div>
-<div class="tab"><button class="on" data-t="cal" onclick="tab(this)">📅 空き台数カレンダー</button><button data-t="action" onclick="tab(this)">🎯 アクション</button><button data-t="trend" onclick="tab(this)">📋 クラス別予約傾向</button><button data-t="lt" onclick="tab(this)">🕐 リードタイム×価格</button><button data-t="curve" onclick="tab(this)">📉 活発期×価格ギャップ</button></div>
+<div class="tab"><button class="on" data-t="cal" onclick="tab(this)">📅 空き台数カレンダー</button><button data-t="prices" onclick="tab(this)">💴 現在価格一覧</button><button data-t="action" onclick="tab(this)">🎯 アクション</button><button data-t="trend" onclick="tab(this)">📋 クラス別予約傾向</button><button data-t="lt" onclick="tab(this)">🕐 リードタイム×価格</button><button data-t="curve" onclick="tab(this)">📉 活発期×価格ギャップ</button></div>
 <div class="wrap"><div id="body"></div></div>
 <div class="scrim" id="scrim" onclick="closeM(event)"></div><div class="sheet" id="sheet" style="display:none"></div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -324,6 +324,32 @@ function renderCurve(){
  h+='<div class="card"><div class="muted">★これがトリガー：将来枠の現在LTで「カーブ上いるべき本数」と実先行予約を比べ、遅れ→下げ／過熱→上げ。次段で各日に重ねて自動アラート化。</div></div>';
  return h;}
 function setSC(v){SC=v;render();}
-function render(){var r={cal:renderCal,action:renderAction,trend:renderTrend,lt:renderLT,curve:renderCurve}[TAB];document.getElementById('body').innerHTML=r();}
+var PRICEMASTER={nha:null,spk:null};
+async function loadPriceMaster(){
+ var tbl=STORE==='spk'?'app_settings':'nha_app_settings';
+ try{try{await ensureAuth();}catch(e){}var d=await sbClient.from(tbl).select('value').eq('key','hdm_price_master').maybeSingle();
+  var v=d&&d.data?d.data.value:null;if(typeof v==='string'){try{v=JSON.parse(v);}catch(e){}}
+  PRICEMASTER[STORE]=v||{};if(TAB==='prices')render();
+ }catch(e){PRICEMASTER[STORE]={_err:String(e)};if(TAB==='prices')render();}
+}
+function renderPrices(){
+ var TNp={A:'A 通常',B:'B 準繁忙',C:'C 繁忙(お盆/年末)'},TCp={A:'#dcfce7',B:'#fef9c3',C:'#fee2e2'};
+ var m=PRICEMASTER[STORE];
+ if(m===null){loadPriceMaster();return '<div class="card"><div class="sub">現価格マスター読込中…（'+(STORE==='spk'?'札幌':'那覇')+'）</div></div>';}
+ if(m._err)return '<div class="card"><div class="sub">読込失敗（ログインが必要な場合あり）: '+m._err+'</div></div>';
+ if(!m.prices)return '<div class="card"><div class="sub">現価格マスター未作成</div></div>';
+ var h='<div class="card"><h2>💴 現在価格一覧（'+(STORE==='spk'?'札幌':'那覇')+'・現価格マスター）</h2><div class="sub">日帰り単価（1日）。泊数は×日数。tier＝シーズナル区分。出所＝price-master.html（編集はそちら）。更新:'+(m.updated_at||'-')+'</div></div>';
+ var months=Object.keys(m.prices).sort();
+ for(var i=0;i<months.length;i++){var mo=months[i];var mp=m.prices[mo];var rng=(m.ranges||{})[mo]||{};
+  var tiers=Object.keys(mp);var classes=[];tiers.forEach(function(t){Object.keys(mp[t]).forEach(function(c){if(classes.indexOf(c)<0)classes.push(c);});});
+  var head='<tr><th class="l">クラス</th>'+tiers.map(function(t){
+    var r=(rng[t]||[]).map(function(x){return x[0].slice(5)+'〜'+x[1].slice(5);}).join(' / ');
+    return '<th style="background:'+(TCp[t]||'#1e293b')+';color:#0f172a">'+(TNp[t]||t)+'<br><span style="font-weight:400;font-size:9px">'+(r||'')+'</span></th>';}).join('')+'</tr>';
+  var body=classes.map(function(c){return '<tr><td class="l"><b>'+c+'</b></td>'+tiers.map(function(t){var v=(mp[t]||{})[c];return '<td>'+(v?'¥'+Number(v[0]).toLocaleString():'—')+'</td>';}).join('')+'</tr>';}).join('');
+  h+='<div class="card"><h2 style="font-size:14px">'+mo+'</h2><table><thead>'+head+'</thead><tbody>'+body+'</tbody></table></div>';
+ }
+ return h;
+}
+function render(){var r={cal:renderCal,action:renderAction,trend:renderTrend,lt:renderLT,curve:renderCurve,prices:renderPrices}[TAB];document.getElementById('body').innerHTML=r();}
 render();loadMonthlyFleet();
 </script></body></html>
