@@ -46,6 +46,47 @@ const SUPABASE_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSI
 const sbClient=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
 const yen=n=>n==null?'—':'¥'+Number(n).toLocaleString();
 const man=n=>n==null?'—':'¥'+(n/10000).toFixed(1)+'万';
+const PRICE_STORAGE_KEY='hdm_nha_seasonal_v1';
+let PRICE_MASTER_STATUS='missing';
+function loadNhaPriceMaster(){
+ try{
+  const raw=localStorage.getItem(PRICE_STORAGE_KEY);if(!raw)return null;
+  const state=JSON.parse(raw);PRICE_MASTER_STATUS='loaded';return state;
+ }catch(e){console.warn('[price master]',e);PRICE_MASTER_STATUS='error';return null;}
+}
+function priceForDate(state,ds,cls,tier){
+ if(!state)return null;
+ const seg=state.segments?.proper||state;
+ const day=(seg.dayPrices||state.dayPrices||{})[ds];
+ if(day&&day[cls]!=null&&Number.isFinite(+day[cls]))return +day[cls];
+ const [y,m]=ds.split('-');const ym=`${y}-${Number(m)}`;
+ const monthly=seg.monthlyTierClassPrices||state.monthlyTierClassPrices||{};
+ const mv=monthly[ym]?.[tier]?.[cls]??monthly[`${y}-${m}`]?.[tier]?.[cls];
+ if(mv!=null&&Number.isFinite(+mv))return +mv;
+ const tv=(seg.tierClassPrices||state.tierClassPrices||{})[tier]?.[cls];
+ if(tv!=null&&Number.isFinite(+tv))return +tv;
+ const base=(seg.basePrices||state.basePrices||{})[cls];
+ const coef=(state.tierCoef||{})[tier];
+ if(base!=null&&Number.isFinite(+base))return Math.round(+base*(coef==null?1:+coef));
+ return null;
+}
+function marketPosition(price,market){
+ if(price==null||!market)return'—';
+ if(price<=market.min)return'最安以下';
+ if(price<=market.p5)return'最安〜5位';
+ if(price<=market.p10)return'5位〜10位';
+ return'10位超';
+}
+function hydratePricing(){
+ const state=loadNhaPriceMaster();
+ for(const [cls,days] of Object.entries(UNI))for(const [ds,ux] of Object.entries(days)){
+  const masterPrice=priceForDate(state,ds,cls,ux.t);
+  if(masterPrice!=null)ux.p=masterPrice;
+  const market=DATA[`${cls}|${ux.t}`]?.market;
+  if(market){ux.min=market.min;ux.p5=market.p5;ux.p10=market.p10;ux.pos=marketPosition(ux.p,market);}
+ }
+}
+hydratePricing();
 async function sbRows(table,select){
  const rows=[];let from=0;const size=1000;
  while(true){
@@ -165,7 +206,7 @@ function openDay(ds){
    <div><div class="n" style="color:${ok?'#15803d':'#d97706'}">${u??'—'}%</div><div class="l">稼働率(目標50%)</div></div>
    <div><div class="n">${man(T.rev)}</div><div class="l">想定売上(日割)</div></div></div>
   <table><thead><tr><th class="l">クラス</th><th>稼働対象</th><th>貸出中</th><th>メンテ中</th><th>翌日予約</th><th>空き</th><th>現価格</th><th>市場位置</th><th>先手</th></tr></thead><tbody>${rows}${extra}</tbody></table>
-  <div class="muted">空き＝該当月の稼働対象車両−貸出中−メンテ中−翌日貸出開始車両（返却日除外）。同じ車両は二重控除しません。市場位置＝現価格 vs 5OTA。先手＝稼働(50%)×市場位置。価格/市場は日帰り基準・該当データのみ。</div>`;
+  <div class="muted">空き＝該当月の稼働対象車両−貸出中−メンテ中−翌日貸出開始車両（返却日除外）。同じ車両は二重控除しません。市場位置＝那覇価格マスターの現価格 vs 5OTA。先手＝稼働(50%)×市場位置。価格/市場は日帰り基準。${PRICE_MASTER_STATUS==='loaded'?'価格マスター連携済み。':'⚠️ この端末で那覇価格マスターを一度開いてください。'}</div>`;
  document.getElementById('sheet').style.display='block';document.getElementById('scrim').classList.add('on');
 }
 function closeM(e){if(e&&e.target!==document.getElementById('scrim'))return;document.getElementById('sheet').style.display='none';document.getElementById('scrim').classList.remove('on');}
