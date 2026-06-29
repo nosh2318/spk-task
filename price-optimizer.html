@@ -33,7 +33,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}th,td{padding:5px 7px
 .ins{font-size:12.5px;font-weight:700;margin-top:8px;padding:9px 11px;border-radius:8px}.v-up{background:#ecfdf5;border:1px solid #34d399}.v-down{background:#fef2f2;border:1px solid #f87171}.v-keep{background:#eff6ff;border:1px solid #60a5fa}.v-na{background:#f8fafc;border:1px solid #e2e8f0}.v-traffic{background:#fffbeb;border:1px solid #f0d000}
 </style></head><body>
 <div class="top"><b>💹 価格最適化</b><span style="display:flex;gap:4px;margin-left:6px"><button class="storebtn on" data-s="nha" onclick="selectStore('nha')">那覇</button><button class="storebtn" data-s="spk" onclick="selectStore('spk')">札幌</button></span><span class="st" id="fleetSummary">読込中…</span></div>
-<div class="tab"><button class="on" data-t="cal" onclick="tab(this)">📅 空き台数カレンダー</button><button data-t="prices" onclick="tab(this)">💴 価格＋リードタイム</button><button data-t="action" onclick="tab(this)">🎯 アクション</button><button data-t="trend" onclick="tab(this)">📋 クラス別予約傾向</button><button data-t="curve" onclick="tab(this)">📉 活発期×価格ギャップ</button><button data-t="decide" onclick="tab(this)">📋 価格提案</button></div>
+<div class="tab"><button class="on" data-t="cal" onclick="tab(this)">📅 空き台数カレンダー</button><button data-t="prices" onclick="tab(this)">💴 価格＋リードタイム</button><button data-t="action" onclick="tab(this)">🎯 アクション</button><button data-t="trend" onclick="tab(this)">📋 クラス別予約傾向</button><button data-t="curve" onclick="tab(this)">📉 活発期×価格ギャップ</button><button data-t="decide" onclick="tab(this)">📋 価格提案</button><button data-t="config" onclick="tab(this)">⚙️ 決定設定</button></div>
 <div class="wrap"><div id="body"></div></div>
 <div class="scrim" id="scrim" onclick="closeM(event)"></div><div class="sheet" id="sheet" style="display:none"></div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -168,7 +168,7 @@ async function loadMonthlyFleet(){
   render();
  }catch(e){console.error('[monthly fleet]',e);document.getElementById('fleetSummary').textContent=STORE_LABEL[STORE]+'・月次稼働フラグ取得失敗（固定データ表示中）';render();}
 }
-function selectStore(s){if(STORE===s)return;STORE=s;applyStore();hydratePricing();SC=owned.indexOf(SC)>=0?SC:owned[0];document.querySelectorAll('.storebtn').forEach(b=>b.classList.toggle('on',b.dataset.s===s));applyMarketNow();render();loadMonthlyFleet();loadMarketNow();loadDecisions();}
+function selectStore(s){if(STORE===s)return;STORE=s;applyStore();hydratePricing();SC=owned.indexOf(SC)>=0?SC:owned[0];document.querySelectorAll('.storebtn').forEach(b=>b.classList.toggle('on',b.dataset.s===s));applyMarketNow();render();loadMonthlyFleet();loadMarketNow();loadDecisions();loadDecCfg();}
 function tab(b){document.querySelectorAll('.tab button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;render();}
 function uCls(u){if(u==null)return'u-none';if(u>=50)return'u-hi';if(u>=35)return'u-mid';if(u>=20)return'u-lo';return'u-vlo';}
 var MARKETNOW={nha:null,spk:null};
@@ -435,6 +435,95 @@ function renderDecide(){
  });
  return head+meta+h;
 }
-function render(){var r={cal:renderCal,action:renderAction,trend:renderTrend,curve:renderCurve,prices:renderPrices,decide:renderDecide}[TAB];document.getElementById('body').innerHTML=r();}
-document.querySelectorAll('.storebtn').forEach(function(b){b.classList.toggle('on',b.dataset.s===STORE);});applyMarketNow();render();loadMonthlyFleet();loadMarketNow();loadDecisions();
+
+var DECCFG={nha:null,spk:null};
+async function loadDecCfg(){
+ var tbl=STORE==='spk'?'app_settings':'nha_app_settings';
+ try{try{await ensureAuth();}catch(e){}var d=await sbClient.from(tbl).select('value').eq('key','hdm_decide_config').maybeSingle();
+  var v=d&&d.data?d.data.value:null;if(typeof v==='string'){try{v=JSON.parse(v);}catch(e){}}
+  DECCFG[STORE]=v||{_empty:true};if(TAB==='config')render();
+ }catch(e){DECCFG[STORE]={_err:String(e)};if(TAB==='config')render();}
+}
+var OTA_OPT=['','JLN','RKT','ART','SKT','RDC','TBR'];
+var TIER_OPT=[[1,'最安'],[5,'5位'],[10,'10位'],[15,'15位'],[20,'20位']];
+var BK_LB=['今月','翌月','2ヶ月後','3ヶ月後','それ以降'];
+function _v(id){var e=document.getElementById(id);return e?e.value:'';}
+function _sel(id,opts,cur,w){return '<select id="'+id+'" style="padding:3px;border:1px solid #cbd5e1;border-radius:5px;'+(w?'width:'+w:'')+'">'+opts.map(function(o){var val=Array.isArray(o)?o[0]:o,lb=Array.isArray(o)?o[1]:(o||'店default');return '<option value="'+val+'"'+(String(cur)===String(val)?' selected':'')+'>'+lb+'</option>';}).join('')+'</select>';}
+function _num(id,cur,w){return '<input id="'+id+'" type="number" value="'+(cur==null?'':cur)+'" style="padding:3px;border:1px solid #cbd5e1;border-radius:5px;width:'+(w||'70px')+'">';}
+function collectCfg(){
+ var c=DECCFG[STORE];if(!c||!c.classes)return;
+ var sp=c.store_params;
+ sp.deadband_pct=+_v('cf_deadband');sp.bigmove_pct=+_v('cf_bigmove');sp.base_ota=_v('cf_baseota');
+ sp.depth_band_pct=+_v('cf_depthband');sp.depth_bidirectional=_v('cf_bidir')==='true';sp.max_util_period_months=+_v('cf_maxutil');sp.fee_yen=+_v('cf_fee');
+ c.auto_apply=_v('cf_auto')==='true';
+ Object.keys(c.classes).forEach(function(cl){var cc=c.classes[cl];
+  cc.base_ota=_v('cf_'+cl+'_baseota')||null;cc.corr_ref=_v('cf_'+cl+'_ref')||null;
+  cc.corr_rel=_v('cf_'+cl+'_rel')||null;cc.corr_diff=+_v('cf_'+cl+'_diff')||0;cc.floor=+_v('cf_'+cl+'_floor')||0;});
+ Object.keys(c.tiers).forEach(function(cl){for(var b=0;b<5;b++){c.tiers[cl].tier[b]=+_v('cf_'+cl+'_t'+b);c.tiers[cl].util[b]=+_v('cf_'+cl+'_u'+b);}});
+}
+async function saveDecCfg(){collectCfg();var c=DECCFG[STORE];if(!c){return;}
+ var tbl=STORE==='spk'?'app_settings':'nha_app_settings';
+ try{try{await ensureAuth();}catch(e){}
+  var r=await sbClient.from(tbl).upsert({key:'hdm_decide_config',value:JSON.stringify(c)},{onConflict:'key'});
+  if(r&&r.error){alert('保存失敗: '+r.error.message);return;}
+  alert('✅ 保存しました。次回の自走実行から反映されます（毎回ライブ読み）。');
+ }catch(e){alert('保存失敗: '+e);}
+}
+function addCfgClass(){collectCfg();var cl=(prompt('追加するクラス記号（例 A2 / S / D）')||'').trim().toUpperCase();if(!cl)return;
+ var c=DECCFG[STORE];if(c.classes[cl]){alert('既にあります');return;}
+ c.classes[cl]={base_ota:null,corr_ref:null,corr_rel:null,corr_diff:0,floor:0};
+ c.tiers[cl]={tier:[5,5,5,5,5],util:[55,50,38,22,12]};render();}
+function delCfgClass(cl){if(!confirm(cl+' を削除？'))return;collectCfg();var c=DECCFG[STORE];delete c.classes[cl];delete c.tiers[cl];render();}
+function renderConfig(){
+ var c=DECCFG[STORE];
+ if(c===null){loadDecCfg();return '<div class="card"><div class="sub">決定設定 読込中…</div></div>';}
+ if(c._err)return '<div class="card"><h2>⚙️ 決定設定</h2><div class="sub">読込失敗: '+c._err+'</div></div>';
+ if(c._empty||!c.classes)return '<div class="card"><h2>⚙️ 決定設定</h2><div class="sub">設定がまだありません。</div></div>';
+ var sp=c.store_params;var SL=STORE==='spk'?'札幌':'那覇';
+ var h='<div class="card"><h2>⚙️ 決定ロジック設定（'+SL+'）</h2><div class="sub">スタッフ調整可。<b>店舗ごとにルールが違う</b>（エリア違い）。保存すると次回の自走実行から反映（毎回ライブ読み）。'+(c._note?'<br>※ '+c._note:'')+'</div>'
+  +'<div style="text-align:right"><button onclick="saveDecCfg()" style="background:#16a34a;color:#fff;border:0;padding:7px 18px;border-radius:7px;font-weight:800;cursor:pointer">💾 保存</button></div></div>';
+ // Block1 店舗パラメータ
+ h+='<div class="card"><h2 style="font-size:14px">① 店舗パラメータ（全クラス共通）</h2><table><tbody>'
+  +'<tr><td class="l">デッドバンド%（±この範囲は据え置き）</td><td>'+_num('cf_deadband',sp.deadband_pct)+'</td></tr>'
+  +'<tr><td class="l">大幅%（±超は⚠️・自動適用しない）</td><td>'+_num('cf_bigmove',sp.bigmove_pct)+'</td></tr>'
+  +'<tr><td class="l">起点OTA（店default）</td><td>'+_sel('cf_baseota',OTA_OPT,sp.base_ota||'')+'</td></tr>'
+  +'<tr><td class="l">深さ関数 1段の稼働率幅%</td><td>'+_num('cf_depthband',sp.depth_band_pct)+'</td></tr>'
+  +'<tr><td class="l">深さ関数 双方向（高稼働で値上げも）</td><td>'+_sel('cf_bidir',[['true','ON'],['false','OFF']],String(sp.depth_bidirectional))+'</td></tr>'
+  +'<tr><td class="l">稼働率を反映する最長（月先）</td><td>'+_num('cf_maxutil',sp.max_util_period_months)+'</td></tr>'
+  +'<tr><td class="l">免責正規化額¥（SKT/TBR）</td><td>'+_num('cf_fee',sp.fee_yen)+'</td></tr>'
+  +'<tr><td class="l"><b>自動適用</b>（OFF=提案のみ）</td><td>'+_sel('cf_auto',[['false','OFF（提案のみ）'],['true','ON（自動反映）']],String(!!c.auto_apply))+'</td></tr>'
+  +'</tbody></table></div>';
+ // Block2 クラス設定
+ var cls=Object.keys(c.classes);
+ h+='<div class="card"><h2 style="font-size:14px">② クラス設定 <button onclick="addCfgClass()" style="font-size:11px;background:#0f172a;color:#fff;border:0;padding:3px 10px;border-radius:6px;cursor:pointer">＋クラス追加</button></h2>'
+  +'<div class="sub">関係≤かつ差額X→この行 ≤ 参照−X（X以上安く）。≥は逆。差額0=同額可。原価フロア=日帰り下限。</div>'
+  +'<div style="overflow-x:auto"><table style="font-size:12px"><thead><tr><th class="l">クラス</th><th>起点OTA上書き</th><th>補正 参照</th><th>関係</th><th>差額¥</th><th>原価フロア¥</th><th></th></tr></thead><tbody>';
+ cls.forEach(function(cl){var cc=c.classes[cl];
+  h+='<tr><td class="l"><b>'+cl+'</b></td>'
+   +'<td>'+_sel('cf_'+cl+'_baseota',OTA_OPT,cc.base_ota||'')+'</td>'
+   +'<td>'+_sel('cf_'+cl+'_ref',[''].concat(cls.filter(function(x){return x!==cl;})),cc.corr_ref||'')+'</td>'
+   +'<td>'+_sel('cf_'+cl+'_rel',[['',''],['<=','≤'],['>=','≥']],cc.corr_rel||'')+'</td>'
+   +'<td>'+_num('cf_'+cl+'_diff',cc.corr_diff,'70px')+'</td>'
+   +'<td>'+_num('cf_'+cl+'_floor',cc.floor,'80px')+'</td>'
+   +'<td><button onclick="delCfgClass(\''+cl+'\')" style="background:#fee2e2;color:#b91c1c;border:0;border-radius:5px;padding:2px 7px;cursor:pointer">削除</button></td></tr>';
+ });
+ h+='</tbody></table></div></div>';
+ // Block3 起点ティア×しきい値
+ h+='<div class="card"><h2 style="font-size:14px">③ 起点ティア × 稼働率しきい値（クラス×時期）</h2>'
+  +'<div class="sub">起点ティア=狙う順位。しきい値=予約カーブ期待%（実測がこれを下回るほど安い側へ）。</div>'
+  +'<div style="overflow-x:auto"><table style="font-size:11.5px"><thead><tr><th class="l">クラス</th><th>項目</th>'+BK_LB.map(function(x){return '<th>'+x+'</th>';}).join('')+'</tr></thead><tbody>';
+ Object.keys(c.tiers).forEach(function(cl){var tt=c.tiers[cl];
+  h+='<tr><td class="l" rowspan="2"><b>'+cl+'</b></td><td>起点ティア</td>';
+  for(var b=0;b<5;b++)h+='<td>'+_sel('cf_'+cl+'_t'+b,TIER_OPT,tt.tier[b],'68px')+'</td>';
+  h+='</tr><tr><td>しきい値%</td>';
+  for(var b2=0;b2<5;b2++)h+='<td>'+_num('cf_'+cl+'_u'+b2,tt.util[b2],'55px')+'</td>';
+  h+='</tr>';
+ });
+ h+='</tbody></table></div></div>';
+ h+='<div class="card"><div class="sub">※ ここの数値・参照・フロア・しきい値は全部すぐ反映されます（毎回ライブ読み）。新しい「ロジックの種類」を増やす場合だけエンジン側の対応が要ります。</div></div>';
+ return h;
+}
+function render(
+){var r={cal:renderCal,action:renderAction,trend:renderTrend,curve:renderCurve,prices:renderPrices,decide:renderDecide,config:renderConfig}[TAB];document.getElementById('body').innerHTML=r();}
+document.querySelectorAll('.storebtn').forEach(function(b){b.classList.toggle('on',b.dataset.s===STORE);});applyMarketNow();render();loadMonthlyFleet();loadMarketNow();loadDecisions();loadDecCfg();
 </script></body></html>
