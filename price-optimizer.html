@@ -33,7 +33,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}th,td{padding:5px 7px
 .ins{font-size:12.5px;font-weight:700;margin-top:8px;padding:9px 11px;border-radius:8px}.v-up{background:#ecfdf5;border:1px solid #34d399}.v-down{background:#fef2f2;border:1px solid #f87171}.v-keep{background:#eff6ff;border:1px solid #60a5fa}.v-na{background:#f8fafc;border:1px solid #e2e8f0}.v-traffic{background:#fffbeb;border:1px solid #f0d000}
 </style></head><body>
 <div class="top"><b>💹 価格最適化</b><span style="display:flex;gap:4px;margin-left:6px"><button class="storebtn on" data-s="nha" onclick="selectStore('nha')">那覇</button><button class="storebtn" data-s="spk" onclick="selectStore('spk')">札幌</button></span><span class="st" id="fleetSummary">読込中…</span></div>
-<div class="tab"><button class="on" data-t="cal" onclick="tab(this)">📅 空き台数カレンダー</button><button data-t="prices" onclick="tab(this)">💴 価格＋リードタイム</button><button data-t="action" onclick="tab(this)">🎯 アクション</button><button data-t="trend" onclick="tab(this)">📋 クラス別予約傾向</button><button data-t="curve" onclick="tab(this)">📉 活発期×価格ギャップ</button><button data-t="decide" onclick="tab(this)">📋 価格提案</button><button data-t="config" onclick="tab(this)">⚙️ 決定設定</button></div>
+<div class="tab"><button class="on" data-t="cal" onclick="tab(this)">📅 空き台数カレンダー</button><button data-t="prices" onclick="tab(this)">💴 価格＋リードタイム</button><button data-t="action" onclick="tab(this)">🎯 アクション</button><button data-t="trend" onclick="tab(this)">📋 クラス別予約傾向</button><button data-t="curve" onclick="tab(this)">📉 活発期×価格ギャップ</button><button data-t="decide" onclick="tab(this)">📋 価格提案</button><button data-t="util" onclick="tab(this)">📊 稼働率</button><button data-t="config" onclick="tab(this)">⚙️ 決定設定</button></div>
 <div class="wrap"><div id="body"></div></div>
 <div class="scrim" id="scrim" onclick="closeM(event)"></div><div class="sheet" id="sheet" style="display:none"></div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -168,7 +168,7 @@ async function loadMonthlyFleet(){
   render();
  }catch(e){console.error('[monthly fleet]',e);document.getElementById('fleetSummary').textContent=STORE_LABEL[STORE]+'・月次稼働フラグ取得失敗（固定データ表示中）';render();}
 }
-function selectStore(s){if(STORE===s)return;STORE=s;applyStore();hydratePricing();SC=owned.indexOf(SC)>=0?SC:owned[0];document.querySelectorAll('.storebtn').forEach(b=>b.classList.toggle('on',b.dataset.s===s));applyMarketNow();render();loadMonthlyFleet();loadMarketNow();loadDecisions();loadDecCfg();loadPriceMaster();}
+function selectStore(s){if(STORE===s)return;STORE=s;applyStore();hydratePricing();SC=owned.indexOf(SC)>=0?SC:owned[0];document.querySelectorAll('.storebtn').forEach(b=>b.classList.toggle('on',b.dataset.s===s));applyMarketNow();render();loadMonthlyFleet();loadMarketNow();loadDecisions();loadDecCfg();loadPriceMaster();loadUtilSnap();}
 function tab(b){document.querySelectorAll('.tab button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;render();}
 function uCls(u){if(u==null)return'u-none';if(u>=50)return'u-hi';if(u>=35)return'u-mid';if(u>=20)return'u-lo';return'u-vlo';}
 var MARKETNOW={nha:null,spk:null};
@@ -543,7 +543,39 @@ function renderConfig(){
  h+='<div class="card"><div class="sub">※ ここの数値・参照・フロア・しきい値は全部すぐ反映されます（毎回ライブ読み）。新しい「ロジックの種類」を増やす場合だけエンジン側の対応が要ります。</div></div>';
  return h;
 }
+
+var UTILSNAP={nha:null,spk:null};
+async function loadUtilSnap(){
+ try{try{await ensureAuth();}catch(e){}
+  var d=await sbClient.from('monthly_snapshots').select('year_month,utilization_pct,active_vehicles,class_detail').eq('store',STORE).order('year_month');
+  UTILSNAP[STORE]=(d&&d.data)?d.data:[];if(TAB==='util')render();
+ }catch(e){UTILSNAP[STORE]={_err:String(e)};if(TAB==='util')render();}
+}
+function _uColor(u){if(u==null)return ['#f8fafc','#cbd5e1'];if(u>=50)return['#dcfce7','#15803d'];if(u>=35)return['#e0f2fe','#0369a1'];if(u>=20)return['#fef9c3','#a16207'];return['#fee2e2','#b91c1c'];}
+function renderUtil(){
+ var V=UTILSNAP[STORE];
+ if(V===null){loadUtilSnap();return '<div class="card"><div class="sub">稼働率 読込中…</div></div>';}
+ if(V._err)return '<div class="card"><h2>📊 稼働率</h2><div class="sub">読込失敗: '+V._err+'</div></div>';
+ if(!V.length)return '<div class="card"><h2>📊 稼働率（クラス×月）</h2><div class="sub">snapshotデータなし（'+(STORE==='spk'?'札幌':'那覇')+'）</div></div>';
+ var _pad=function(n){return(n<10?'0':'')+n;};var _t=new Date();var _MO=_t.getFullYear()+'-'+_pad(_t.getMonth()+1);
+ var months=[],cls=[],map={},overall={},active={};
+ V.forEach(function(s){var mo=s.year_month;if(months.indexOf(mo)<0)months.push(mo);overall[mo]=s.utilization_pct;active[mo]=s.active_vehicles;
+  var cd=s.class_detail;if(typeof cd==='string'){try{cd=JSON.parse(cd);}catch(e){cd=[];}}
+  (cd||[]).forEach(function(c){if(cls.indexOf(c.type)<0)cls.push(c.type);map[c.type+'|'+mo]={u:c.util_pct,rd:c.rental_days,ad:c.avail_days,cnt:c.count};});});
+ months.sort();
+ var CORD=['A','A2','B','B2','C','D','F','H','S'];cls.sort(function(a,b){var i=CORD.indexOf(a),j=CORD.indexOf(b);return (i<0?99:i)-(j<0?99:j);});
+ var h='<div class="card"><h2>📊 稼働率 一覧（クラス×月）'+'</h2><div class="sub">出所＝monthly_snapshots（解析タブA相当）。目標<b>50%</b>＝成績表。分母＝稼働台数(active)。<b>当月('+_MO.slice(5)+'月)以降は先行予約のみの途中値（確定ではない・これから埋まる）</b>。色：<span style="background:#dcfce7;color:#15803d;padding:0 4px;border-radius:4px">緑≥50</span> <span style="background:#e0f2fe;color:#0369a1;padding:0 4px;border-radius:4px">青35-49</span> <span style="background:#fef9c3;color:#a16207;padding:0 4px;border-radius:4px">黄20-34</span> <span style="background:#fee2e2;color:#b91c1c;padding:0 4px;border-radius:4px">赤<20</span></div>'
+  +'<div style="overflow-x:auto"><table style="font-size:11.5px"><thead><tr><th class="l" style="position:sticky;left:0;background:#f8fafc">クラス</th>'+months.map(function(mo){var fut=mo>=_MO;return '<th>'+mo.slice(5)+'月'+(fut?'<br><span style="font-size:8px;color:#f59e0b">途中</span>':'')+'</th>';}).join('')+'</tr></thead><tbody>';
+ h+='<tr style="background:#0f172a;color:#fff"><td class="l" style="color:#fff;position:sticky;left:0;background:#0f172a"><b>全体</b></td>'+months.map(function(mo){var u=overall[mo];return '<td><b>'+(u==null?'—':u+'%')+'</b></td>';}).join('')+'</tr>';
+ cls.forEach(function(c){
+  h+='<tr><td class="l" style="position:sticky;left:0;background:#fff"><b>'+c+'</b></td>'+months.map(function(mo){var d=map[c+'|'+mo];if(!d||d.u==null)return '<td style="color:#cbd5e1">—</td>';var col=_uColor(d.u);return '<td style="background:'+col[0]+';color:'+col[1]+';font-weight:700" title="稼働'+(d.rd||0)+'/'+(d.ad||0)+'日・'+(d.cnt||0)+'台">'+d.u+'%</td>';}).join('')+'</tr>';
+ });
+ h+='</tbody></table></div></div>';
+ h+='<div class="card"><div class="sub">※ セルにマウスを乗せると「稼働日/可能日・台数」。確定月（当月より前）＝実績、当月以降＝途中値。札幌は当月以降のsnapshot未記録の場合あり（記録されると自動表示）。</div></div>';
+ return h;
+}
 function render(
-){var r={cal:renderCal,action:renderAction,trend:renderTrend,curve:renderCurve,prices:renderPrices,decide:renderDecide,config:renderConfig}[TAB];document.getElementById('body').innerHTML=r();}
-document.querySelectorAll('.storebtn').forEach(function(b){b.classList.toggle('on',b.dataset.s===STORE);});applyMarketNow();render();loadMonthlyFleet();loadMarketNow();loadDecisions();loadDecCfg();loadPriceMaster();
+
+){var r={cal:renderCal,action:renderAction,trend:renderTrend,curve:renderCurve,prices:renderPrices,decide:renderDecide,config:renderConfig,util:renderUtil}[TAB];document.getElementById('body').innerHTML=r();}
+document.querySelectorAll('.storebtn').forEach(function(b){b.classList.toggle('on',b.dataset.s===STORE);});applyMarketNow();render();loadMonthlyFleet();loadMarketNow();loadDecisions();loadDecCfg();loadPriceMaster();loadUtilSnap();
 </script></body></html>
