@@ -49,7 +49,7 @@ const STORE_LABEL={nha:'那覇',spk:'札幌'};
 const FLEET_CFG={nha:{v:'nha_vehicles',k:'nha_vehicle_monthly_kpi',r:'nha_reservations',f:'nha_fleet',m:'nha_maintenance',sd:'start_date',ed:'end_date'},spk:{v:'vehicles',k:'vehicle_monthly_kpi',r:'reservations',f:'fleet',m:'maintenance',sd:'lend_date',ed:'return_date'}};
 const DATASETS={nha:{DATA:NHA_DATA,CAL:NHA_CAL,UNI:NHA_UNI,AV:NHA_AV,CURVE:NHA_CURVE,LT_DATA:NHA_LT_DATA,owned:['A','B','C','D','F','H','S']},spk:{DATA:SPK_DATA,CAL:NHA_CAL,UNI:SPK_UNI,AV:SPK_AV,CURVE:SPK_CURVE,LT_DATA:SPK_LT_DATA,owned:['A','A2','B','B2','C','F','H','S']}};
 let STORE='nha';
-let SNAP={};  // 経営タブ正本: year_month → utilization_pct (monthly_snapshots)
+
 let DATA,CAL,UNI,AV,CURVE,LT_DATA,owned,DAYCLS,DAYTOT,FLEET,FTOT;
 function applyStore(){var X=DATASETS[STORE];DATA=X.DATA;CAL=X.CAL;UNI=X.UNI;AV=X.AV;CURVE=X.CURVE;LT_DATA=X.LT_DATA;owned=X.owned;DAYCLS=AV.daycls;DAYTOT=AV.daytot;FLEET=AV.fleet;FTOT=AV.ftot;}
 applyStore();
@@ -164,12 +164,6 @@ async function loadMonthlyFleet(){
     DAYTOT[ds]={...(DAYTOT[ds]||{}),fleet:total,out,maint,next,avail:total-out-maint-next,u:total?Math.round(out/total*100):null};
    }
   }
-  // 経営タブ正本(monthly_snapshots)の月次稼働率をそのまま使う（再計算しない）
-  try{
-   SNAP={};
-   const{data:snaps}=await sbClient.from('monthly_snapshots').select('year_month,utilization_pct').eq('store',STORE);
-   (snaps||[]).forEach(s=>{SNAP[s.year_month]=s.utilization_pct;});
-  }catch(e){console.error('[snapshot]',e);}
   document.getElementById('fleetSummary').textContent=STORE_LABEL[STORE]+'・空き=月次稼働対象−貸出中−メンテ中−翌日予約';
   render();
  }catch(e){console.error('[monthly fleet]',e);document.getElementById('fleetSummary').textContent=STORE_LABEL[STORE]+'・月次稼働フラグ取得失敗（固定データ表示中）';render();}
@@ -193,13 +187,15 @@ function renderCal(){
   const dayTier={};C.segs.forEach(s=>{for(let d=s.start;d<=s.end;d++)dayTier[d]=s.tier;});
   let g='<div class="grid">'+['日','月','火','水','木','金','土'].map(x=>`<div class="hd">${x}</div>`).join('');
   for(let i=0;i<startCol;i++)g+='<div></div>';
+  let mOut=0,mFleet=0;
   for(let d=1;d<=C.ndays;d++){
    const ds=`${mo}-${String(d).padStart(2,'0')}`;const T=DAYTOT[ds];const u=T?T.u:null;const tier=dayTier[d];
+   if(T){mOut+=(T.out||0);mFleet+=(T.fleet||0);}
    g+=`<div class="cell ${uCls(u)}${tier=='C'?' obon':''}" onclick="openDay('${ds}')"><span class="dn">${d}</span><span class="av">${T?'空'+T.avail:''}<small>${T?'/'+T.fleet:''}</small></span>${tier=='C'?'<span class="ob">盆</span>':''}</div>`;
   }
   g+='</div>';
-  // 月次稼働率＝経営タブ正本(monthly_snapshots)の値をそのまま表示（再計算しない）
-  const mg=(SNAP[mo]!=null)?SNAP[mo]:null;
+  // 月次稼働率＝経営ダッシュボードと同一式（Σ貸出日 ÷ Σ稼働台数＝totalDays/(active×日数)）。snapshotは古い途中値固定なので使わない。
+  const mg=mFleet?Math.round(mOut/mFleet*100):null;
   const mgC=mg==null?'#94a3b8':(mg>=50?'#15803d':(mg>=35?'#0ea5e9':'#d97706'));
   const mgBadge=mg!=null?` <span style="font-size:11px;font-weight:800;color:#fff;background:${mgC};padding:2px 8px;border-radius:999px;vertical-align:middle">稼働率 ${mg}%</span>`:'';
   h+=`<div class="mcal"><h3>${C.mn}月${mgBadge}</h3>${g}</div>`;
