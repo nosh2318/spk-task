@@ -168,9 +168,20 @@ async function loadMonthlyFleet(){
   render();
  }catch(e){console.error('[monthly fleet]',e);document.getElementById('fleetSummary').textContent=STORE_LABEL[STORE]+'・月次稼働フラグ取得失敗（固定データ表示中）';render();}
 }
-function selectStore(s){if(STORE===s)return;STORE=s;applyStore();hydratePricing();SC=owned.indexOf(SC)>=0?SC:owned[0];document.querySelectorAll('.storebtn').forEach(b=>b.classList.toggle('on',b.dataset.s===s));render();loadMonthlyFleet();}
+function selectStore(s){if(STORE===s)return;STORE=s;applyStore();hydratePricing();SC=owned.indexOf(SC)>=0?SC:owned[0];document.querySelectorAll('.storebtn').forEach(b=>b.classList.toggle('on',b.dataset.s===s));applyMarketNow();render();loadMonthlyFleet();loadMarketNow();}
 function tab(b){document.querySelectorAll('.tab button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;render();}
 function uCls(u){if(u==null)return'u-none';if(u>=50)return'u-hi';if(u>=35)return'u-mid';if(u>=20)return'u-lo';return'u-vlo';}
+var MARKETNOW={nha:null,spk:null};
+function posOf(price,m){if(!m||m.min==null)return '市場不明';if(price<=m.min)return '最安以下';if(m.p5&&price<=m.p5)return '最安〜5位';if(m.p10&&price<=m.p10)return '5位〜10位';return '10位超';}
+function applyMarketNow(){var mn=MARKETNOW[STORE];window._mktN=0;window._mktAt='';if(!mn||!mn.market)return;
+ for(var key in mn.market){var d=DATA[key];if(!d)continue;var lm=mn.market[key];
+  d.market={min:lm.min,p5:lm.p5,p10:lm.p10};d._mktLive=true;d._mktN=lm.n_ota;d._mktAt=lm.at;window._mktAt=lm.at;
+  (d.levels||[]).forEach(function(L){L.pos=posOf(L.price,d.market);});window._mktN++;}
+}
+async function loadMarketNow(){var tbl=STORE==='spk'?'app_settings':'nha_app_settings';
+ try{try{await ensureAuth();}catch(e){}var dd=await sbClient.from(tbl).select('value').eq('key','hdm_market_now').maybeSingle();
+  var v=dd&&dd.data?dd.data.value:null;if(typeof v==='string'){try{v=JSON.parse(v);}catch(e){}}
+  MARKETNOW[STORE]=v||{};applyMarketNow();render();}catch(e){}}
 function pclass(p){return {'最安以下':'p-cheapest','最安〜5位':'p-comp','5位〜10位':'p-mid','10位超':'p-high'}[p]||''}
 function rec(u,pos){const high=pos=='5位〜10位'||pos=='10位超',cheap=pos=='最安以下';
  if(!pos||pos=='—')return['—','a-kp'];
@@ -271,8 +282,8 @@ function renderTrend(){
  recs.sort(function(a,b){return b.cnt-a.cnt;});
  var mx=Math.max.apply(null,recs.map(function(r){return r.cnt;}).concat([1]));
  // 市場参照
- var mref='';for(var t of['A','B','C']){if(mkts[t])mref+='<span class="mchip">'+({A:'通常',B:'準繁忙',C:'お盆'}[t])+' 最安'+yen(mkts[t].min)+'/5位'+yen(mkts[t].p5)+'/10位'+yen(mkts[t].p10)+'</span>';}
- h+='<div style="font-size:11px;color:#64748b;margin:2px 0 8px">市場(5OTA中央値)：'+mref+'</div>';
+ var mref='';for(var t of['A','B','C']){if(mkts[t]){var dd=DATA[SC+'|'+t];var lv=dd&&dd._mktLive;var bdg=lv?' <span style="background:#16a34a;color:#fff;font-size:8px;padding:0 4px;border-radius:5px">自走'+(dd._mktN||'')+'OTA</span>':' <span style="background:#cbd5e1;color:#475569;font-size:8px;padding:0 4px;border-radius:5px">SS</span>';mref+='<span class="mchip">'+({A:'通常',B:'準繁忙',C:'お盆'}[t])+' 最安'+yen(mkts[t].min)+'/5位'+yen(mkts[t].p5)+'/10位'+yen(mkts[t].p10)+bdg+'</span>';}}
+ h+='<div style="font-size:11px;color:#64748b;margin:2px 0 8px">市場：'+mref+'<br><span style="font-size:10px;color:#94a3b8">🟢自走＝OTA自走調査(ota_market_prices)／SS＝暫定。対象日を増やすと自走が全tierに拡大。</span></div>';
  h+='<table><thead><tr><th class="l">自社価格</th><th class="l">いつ（シーズン）</th><th>本数</th><th>市場位置</th></tr></thead><tbody>';
  for(var k=0;k<recs.length;k++){var r=recs[k];var tdates={A:'通常 7/1-16・9月 等',B:'準繁忙 7/17-31 等',C:'お盆 8/7-16'}[r.t];
   h+='<tr><td class="l"><b>'+yen(r.price)+'</b></td><td class="l" style="font-size:11px">'+r.tn+'<br><span style="color:#94a3b8">'+tdates+'</span></td>'
@@ -378,5 +389,5 @@ function renderPrices(){
  return h+ltc;
 }
 function render(){var r={cal:renderCal,action:renderAction,trend:renderTrend,curve:renderCurve,prices:renderPrices}[TAB];document.getElementById('body').innerHTML=r();}
-render();loadMonthlyFleet();
+applyMarketNow();render();loadMonthlyFleet();loadMarketNow();
 </script></body></html>
