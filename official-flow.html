@@ -4,6 +4,8 @@
 <title>ご予約（那覇）｜ HANDYMAN RENTCAR</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
 :root{--navy:#002063;--navy2:#0a2e80;--ink:#00163f;--y:#FABE00;--line:#1b3a73;--mut:#a8bae0}
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -38,6 +40,13 @@ textarea.fld{height:auto;padding:10px 12px;min-height:70px}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 @media(max-width:560px){.row2{grid-template-columns:1fr}}
 .mapph{height:160px;border-radius:10px;border:1px dashed #2c4f93;background:linear-gradient(135deg,#0a2150,#13294f);display:flex;align-items:center;justify-content:center;color:var(--mut);font-size:12px;margin-top:10px}
+.mapsearch{display:flex;gap:8px;margin-top:10px}
+.mapsearch input{flex:1;height:44px;background:#fff;border:2px solid #fff;border-radius:10px;padding:0 12px;font-size:14px;font-family:inherit;color:#1a2533;outline:none}
+.mapsearch button{flex:0 0 auto;background:var(--y);color:#10203f;border:0;border-radius:10px;padding:0 16px;font-size:14px;font-weight:900;cursor:pointer;font-family:inherit}
+#delMap{height:260px;border-radius:12px;margin-top:10px;border:1px solid var(--line);z-index:0}
+.mappick{margin-top:10px;background:#08306a;border:1px solid var(--y);border-radius:10px;padding:10px 12px;font-size:12.5px;color:#fff;display:none}
+.mappick.on{display:block}.mappick b{color:var(--y)}
+.leaflet-container{font-family:inherit}
 .hint{font-size:11.5px;color:var(--mut);margin-top:10px;line-height:1.7}
 /* vehicle grid */
 .vgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -192,10 +201,13 @@ var ST2={delivery:'お届け・車両',airport:'送迎・車両',store:'来店�
 document.getElementById('st2t').textContent=ST2[method]||'受取・車両';
 var mc=document.getElementById('methodCard');
 if(method==='delivery'){
-  mc.innerHTML='<label class="fl">お届け先（ホテル名・住所）</label><input class="fld" placeholder="例）那覇市〇〇 △△ホテル">'+
+  mc.innerHTML='<label class="fl">お届け先（ホテル名・住所）</label>'+
+    '<div class="mapsearch"><input id="addrInput" placeholder="例）'+(area==='sapporo'?'札幌市中央区〇〇 / ◯◯ホテル':'那覇市〇〇 / △△ホテル')+'"><button onclick="geocodeAddr()">🔍 検索</button></div>'+
+    '<div id="delMap"></div>'+
+    '<div class="mappick" id="delPick"></div>'+
     '<div class="row2" style="margin-top:12px"><div><label class="fl">回収先</label><input class="fld" placeholder="お届け先と同じ場合は空欄"></div><div><label class="fl">ご連絡先電話</label><input class="fld" inputmode="tel" placeholder="090-0000-0000"></div></div>'+
-    '<div class="mapph">🗺 地図でお届け先を指定（'+(area==='sapporo'?'札幌市・北広島市':'沖縄本島の対応エリア')+'）</div>'+
-    '<div class="hint">'+(area==='sapporo'?'札幌＝札幌市・北広島市へお届け／回収します。':'那覇＝沖縄本島の対応エリアへお届け／回収します。')+'エリア外はご相談ください。</div>';
+    '<div class="hint">地図をタップ、または住所/ホテル名で検索してお届け先を指定してください。'+(area==='sapporo'?'札幌＝札幌市・北広島市':'那覇＝沖縄本島の対応エリア')+'へお届け／回収します。エリア外はご相談ください。</div>';
+  initDelMap();
 }else if(method==='airport'){
   mc.innerHTML='<div class="row2"><div><label class="fl">送迎（行き）場所</label><select class="fld"><option>那覇空港</option><option>赤嶺駅</option></select></div><div><label class="fl">行きの時間（出発）</label><input class="fld" value="'+fmtDT(pD,pT)+'" readonly style="background:#eef2f8;color:#5a6b85"></div></div>'+
     '<div class="row2" style="margin-top:12px"><div><label class="fl">送迎（帰り）場所</label><select class="fld"><option>那覇空港</option><option>赤嶺駅</option></select></div><div><label class="fl">帰りの時間（返却）</label><input class="fld" value="'+fmtDT(rD,rT)+'" readonly style="background:#eef2f8;color:#5a6b85"></div></div>'+
@@ -206,6 +218,34 @@ if(method==='delivery'){
     '<div class="hint">店舗にてお引き渡し・ご返却を行います。来店時間は日時選択に準じます。</div>';
 }
 
+// ===== 場所選択（地図）=====
+var MAPCFG={naha:{c:[26.2125,127.6790],z:11,vb:'127.0,26.0,128.5,26.9'},sapporo:{c:[43.0618,141.3545],z:11,vb:'141.0,42.7,141.8,43.3'}};
+var delMap=null,delMarker=null;
+function initDelMap(){
+  var ar=(area==='sapporo')?'sapporo':'naha';var cf=MAPCFG[ar];
+  setTimeout(function(){
+    if(typeof L==='undefined')return;
+    delMap=L.map('delMap',{scrollWheelZoom:false}).setView(cf.c,cf.z);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(delMap);
+    delMap.on('click',function(e){setPin(e.latlng.lat,e.latlng.lng);reverseGeo(e.latlng.lat,e.latlng.lng);});
+  },60);
+}
+function setPin(lat,lng){if(!delMap)return;if(delMarker)delMarker.setLatLng([lat,lng]);else delMarker=L.marker([lat,lng],{draggable:true}).addTo(delMap).on('dragend',function(ev){var p=ev.target.getLatLng();reverseGeo(p.lat,p.lng);});delMap.panTo([lat,lng]);}
+function showPick(txt){var el=document.getElementById('delPick');if(el){el.innerHTML='📍 お届け先：<b>'+txt+'</b>';el.classList.add('on');}}
+function geocodeAddr(){
+  var q=(document.getElementById('addrInput')||{}).value||'';if(!q){return;}
+  var ar=(area==='sapporo')?'sapporo':'naha';var cf=MAPCFG[ar];
+  fetch('https://nominatim.openstreetmap.org/search?format=json&countrycodes=jp&limit=1&bounded=1&viewbox='+cf.vb+'&q='+encodeURIComponent(q),{headers:{'Accept':'application/json'}})
+   .then(function(r){return r.json();}).then(function(d){
+     if(d&&d[0]){setPin(+d[0].lat,+d[0].lon);if(delMap)delMap.setView([+d[0].lat,+d[0].lon],15);showPick(d[0].display_name.split(',').slice(0,3).join('').trim()||q);}
+     else{showPick(q+'（地図で位置をご確認ください）');}
+   }).catch(function(){showPick(q);});
+}
+function reverseGeo(lat,lng){
+  fetch('https://nominatim.openstreetmap.org/reverse?format=json&lat='+lat+'&lon='+lng,{headers:{'Accept':'application/json'}})
+   .then(function(r){return r.json();}).then(function(d){showPick((d&&d.display_name)?d.display_name.split(',').slice(0,3).reverse().join(' ').trim():(lat.toFixed(4)+', '+lng.toFixed(4)));})
+   .catch(function(){showPick(lat.toFixed(4)+', '+lng.toFixed(4));});
+}
 // KEYDROPと同じ車両画像（那覇=_nha優先→無ければ共通にフォールバック / 札幌=共通）
 function carImg(k){var base=(k==='A2')?'A':k;var common='official-assets/cars/class_'+base+'.png';var src=(area==='naha')?'official-assets/cars/class_'+base+'_nha.png':common;return '<img src="'+src+'" onerror="this.onerror=null;this.src=\''+common+'\'" alt="" style="width:100%;height:100%;object-fit:contain;background:#fff;padding:5px">';}
 // 車両グリッド
