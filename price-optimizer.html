@@ -33,7 +33,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}th,td{padding:5px 7px
 .ins{font-size:12.5px;font-weight:700;margin-top:8px;padding:9px 11px;border-radius:8px}.v-up{background:#ecfdf5;border:1px solid #34d399}.v-down{background:#fef2f2;border:1px solid #f87171}.v-keep{background:#eff6ff;border:1px solid #60a5fa}.v-na{background:#f8fafc;border:1px solid #e2e8f0}.v-traffic{background:#fffbeb;border:1px solid #f0d000}
 </style></head><body>
 <div class="top"><b>💹 価格最適化</b><span style="display:flex;gap:4px;margin-left:6px"><button class="storebtn on" data-s="nha" onclick="selectStore('nha')">那覇</button><button class="storebtn" data-s="spk" onclick="selectStore('spk')">札幌</button></span><span class="st" id="fleetSummary">読込中…</span></div>
-<div class="tab"><button class="on" data-t="cal" onclick="tab(this)">📅 空き台数カレンダー</button><button data-t="prices" onclick="tab(this)">💴 価格＋リードタイム</button><button data-t="action" onclick="tab(this)">🎯 アクション</button><button data-t="trend" onclick="tab(this)">📋 クラス別予約傾向</button><button data-t="curve" onclick="tab(this)">📉 活発期×価格ギャップ</button></div>
+<div class="tab"><button class="on" data-t="cal" onclick="tab(this)">📅 空き台数カレンダー</button><button data-t="prices" onclick="tab(this)">💴 価格＋リードタイム</button><button data-t="action" onclick="tab(this)">🎯 アクション</button><button data-t="trend" onclick="tab(this)">📋 クラス別予約傾向</button><button data-t="curve" onclick="tab(this)">📉 活発期×価格ギャップ</button><button data-t="decide" onclick="tab(this)">📋 価格提案</button></div>
 <div class="wrap"><div id="body"></div></div>
 <div class="scrim" id="scrim" onclick="closeM(event)"></div><div class="sheet" id="sheet" style="display:none"></div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -48,7 +48,7 @@ const SPK_DATA={"C|C": {"cls": "C", "tier": "C", "tname": "繁忙(お盆)", "mar
 const STORE_LABEL={nha:'那覇',spk:'札幌'};
 const FLEET_CFG={nha:{v:'nha_vehicles',k:'nha_vehicle_monthly_kpi',r:'nha_reservations',f:'nha_fleet',m:'nha_maintenance',sd:'start_date',ed:'end_date'},spk:{v:'vehicles',k:'vehicle_monthly_kpi',r:'reservations',f:'fleet',m:'maintenance',sd:'lend_date',ed:'return_date'}};
 const DATASETS={nha:{DATA:NHA_DATA,CAL:NHA_CAL,UNI:NHA_UNI,AV:NHA_AV,CURVE:NHA_CURVE,LT_DATA:NHA_LT_DATA,owned:['A','B','C','D','F','H','S']},spk:{DATA:SPK_DATA,CAL:NHA_CAL,UNI:SPK_UNI,AV:SPK_AV,CURVE:SPK_CURVE,LT_DATA:SPK_LT_DATA,owned:['A','A2','B','B2','C','F','H','S']}};
-let STORE='nha';
+let STORE=(new URLSearchParams(location.search).get('store')==='spk')?'spk':'nha';
 
 let DATA,CAL,UNI,AV,CURVE,LT_DATA,owned,DAYCLS,DAYTOT,FLEET,FTOT;
 function applyStore(){var X=DATASETS[STORE];DATA=X.DATA;CAL=X.CAL;UNI=X.UNI;AV=X.AV;CURVE=X.CURVE;LT_DATA=X.LT_DATA;owned=X.owned;DAYCLS=AV.daycls;DAYTOT=AV.daytot;FLEET=AV.fleet;FTOT=AV.ftot;}
@@ -168,7 +168,7 @@ async function loadMonthlyFleet(){
   render();
  }catch(e){console.error('[monthly fleet]',e);document.getElementById('fleetSummary').textContent=STORE_LABEL[STORE]+'・月次稼働フラグ取得失敗（固定データ表示中）';render();}
 }
-function selectStore(s){if(STORE===s)return;STORE=s;applyStore();hydratePricing();SC=owned.indexOf(SC)>=0?SC:owned[0];document.querySelectorAll('.storebtn').forEach(b=>b.classList.toggle('on',b.dataset.s===s));applyMarketNow();render();loadMonthlyFleet();loadMarketNow();}
+function selectStore(s){if(STORE===s)return;STORE=s;applyStore();hydratePricing();SC=owned.indexOf(SC)>=0?SC:owned[0];document.querySelectorAll('.storebtn').forEach(b=>b.classList.toggle('on',b.dataset.s===s));applyMarketNow();render();loadMonthlyFleet();loadMarketNow();loadDecisions();}
 function tab(b){document.querySelectorAll('.tab button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;render();}
 function uCls(u){if(u==null)return'u-none';if(u>=50)return'u-hi';if(u>=35)return'u-mid';if(u>=20)return'u-lo';return'u-vlo';}
 var MARKETNOW={nha:null,spk:null};
@@ -388,6 +388,53 @@ function renderPrices(){
  ltc+= any?'':'<div class="sub">実績データなし</div>';ltc+='</div>';
  return h+ltc;
 }
-function render(){var r={cal:renderCal,action:renderAction,trend:renderTrend,curve:renderCurve,prices:renderPrices}[TAB];document.getElementById('body').innerHTML=r();}
-applyMarketNow();render();loadMonthlyFleet();loadMarketNow();
+
+var DECISIONS={nha:null,spk:null};
+async function loadDecisions(){
+ var tbl=STORE==='spk'?'app_settings':'nha_app_settings';
+ try{try{await ensureAuth();}catch(e){}var d=await sbClient.from(tbl).select('value').eq('key','hdm_price_decisions').maybeSingle();
+  var v=d&&d.data?d.data.value:null;if(typeof v==='string'){try{v=JSON.parse(v);}catch(e){}}
+  DECISIONS[STORE]=v||{_empty:true};if(TAB==='decide')render();
+ }catch(e){DECISIONS[STORE]={_err:String(e)};if(TAB==='decide')render();}
+}
+function _tierName(r){return r<=1?'最安':r+'位';}
+function _actCls(d){return d==='値下げ'?['#dbeafe','#1d4ed8']:d==='値上げ'?['#dcfce7','#15803d']:d==='据え置き'?['#f1f5f9','#64748b']:d==='⚠️大幅'?['#fee2e2','#b91c1c']:['#fef9c3','#854d0e'];}
+function _actLab(d){return d==='値下げ'?'値下げ▼':d==='値上げ'?'値上げ▲':d==='据え置き'?'据え置き＝':d;}
+function renderDecide(){
+ var V=DECISIONS[STORE];
+ if(V===null){loadDecisions();return '<div class="card"><div class="sub">価格提案 読込中…</div></div>';}
+ if(V._err)return '<div class="card"><h2>📋 価格提案（自走）</h2><div class="sub">読込失敗: '+V._err+'</div></div>';
+ var SEAS={A:'通常',B:'準繁忙',C:'繁忙(お盆)'},SC2={A:'#0284c7',B:'#d97706',C:'#dc2626'},CORD=['A','A2','B','B2','D','F','H'];
+ var head='<div class="card"><h2>📋 価格提案（自走）</h2><div class="sub">市場を自走調査→ロジックで価格提案（<b>提案のみ・自動では変えません</b>）。順位＝各OTAで安い順（最安=1位）。起点ティア＝狙う順位。稼働率が想定（しきい値）を下回るほど安い側へ自動で深掘り。'
+  +'<span style="background:#dcfce7;color:#15803d;padding:0 5px;border-radius:5px;font-weight:700">値上げ▲</span> '
+  +'<span style="background:#dbeafe;color:#1d4ed8;padding:0 5px;border-radius:5px;font-weight:700">値下げ▼</span> '
+  +'<span style="background:#f1f5f9;color:#64748b;padding:0 5px;border-radius:5px;font-weight:700">据え置き＝</span>(±3%) '
+  +'<span style="background:#fee2e2;color:#b91c1c;padding:0 5px;border-radius:5px;font-weight:700">⚠️大幅</span>(±15%超・自動適用しない)</div></div>';
+ if(!V.rows||!V.rows.length)return head+'<div class="card"><div class="sub" style="text-align:center;padding:24px">まだ提案がありません。次回の自走実行（週2回 月・木 5:00）で生成されます。</div></div>';
+ var yen=function(v){return v==null?'—':'¥'+Number(v).toLocaleString();};
+ var meta='<div class="card"><div class="sub">最終更新 <b>'+(V.at||'?')+'</b>　調査 '+(V.run||'')+'　計'+V.rows.length+'件</div></div>';
+ var seen={},byS={A:[],B:[],C:[]};
+ V.rows.forEach(function(r){var k=r.class+'|'+r.season;if(seen[k])return;seen[k]=1;if(byS[r.season])byS[r.season].push(r);});
+ var h='';
+ ['A','B','C'].forEach(function(s){var rows=byS[s];if(!rows||!rows.length)return;
+  rows.sort(function(a,b){return CORD.indexOf(a.class)-CORD.indexOf(b.class);});
+  h+='<div class="card"><h2 style="font-size:14px;color:'+SC2[s]+'">'+SEAS[s]+'シーズン</h2><table><thead><tr><th class="l">クラス</th><th class="l">既存価格</th><th class="l">調査結果（順位＋定義）</th><th class="l">アクション</th><th class="l">変更後価格</th></tr></thead><tbody>';
+  rows.forEach(function(r){
+   var res;
+   if(r.decision==='市場なし'){res='市場データ未取得';}
+   else{res='市場 <b>'+_tierName(r.tier)+'</b>（'+r.ota+' '+yen(r.market)+'）';
+    if(r.util!=null)res+='<br><span style="color:#64748b">稼働'+r.util+'%／想定'+r.thr+'%'+(r.depth&&r.depth!==0?'（'+(r.depth<0?Math.abs(r.depth)+'段安い側へ':r.depth+'段高い側へ')+'）':'')+'</span>';
+    if(r.corr&&r.corr!=='-')res+='<br><span style="color:#64748b">補正:'+r.corr+'</span>';}
+   var ac=_actCls(r.decision);
+   var pct=(r.pct!=null&&r.decision!=='据え置き'&&r.decision!=='市場なし')?'<span style="font-size:9px;color:#94a3b8"> ('+(r.pct>0?'+':'')+r.pct+'%)</span>':'';
+   h+='<tr'+(r.decision==='値上げ'||r.decision==='値下げ'?' style="background:#fafffb"':'')+'><td class="l"><b>'+r.class+'</b></td><td class="l" style="color:#64748b">'+yen(r.current)+'</td><td class="l" style="font-size:11px">'+res+'</td>'
+     +'<td class="l"><span style="background:'+ac[0]+';color:'+ac[1]+';padding:2px 8px;border-radius:6px;font-weight:800;font-size:11px;white-space:nowrap">'+(_actLab(r.decision)||r.decision)+'</span></td>'
+     +'<td class="l"><b style="font-size:14px">'+yen(r.new)+'</b>'+pct+'</td></tr>';
+  });
+  h+='</tbody></table></div>';
+ });
+ return head+meta+h;
+}
+function render(){var r={cal:renderCal,action:renderAction,trend:renderTrend,curve:renderCurve,prices:renderPrices,decide:renderDecide}[TAB];document.getElementById('body').innerHTML=r();}
+document.querySelectorAll('.storebtn').forEach(function(b){b.classList.toggle('on',b.dataset.s===STORE);});applyMarketNow();render();loadMonthlyFleet();loadMarketNow();loadDecisions();
 </script></body></html>
