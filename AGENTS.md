@@ -1,5 +1,15 @@
 # SPK業務管理APP（札幌店）
 
+## 2026-06-30 KEYDROP 予約UI 再設計モック
+
+- 本番コードへ触れない独立モック: `keydrop-redesign-mock.html`
+- ロゴ素材: `official-assets/keydrop_logo_header.png`（既存KEYDROP正本から複製）
+- 場所指定／車両選択／予約確認／オプションの4画面を上部タブと画面内CTAで切替可能
+- デザイン方針: TRUST × PREMIUM × SIMPLE。ネイビー・白・アンバーを基本とし、黄色は現在地・選択中・主CTAに限定
+- 既存UIの黄色い多重枠、絵文字過多、重複サマリー、画面ごとに異なるCTA表現を整理
+- PCでは左に設計意図、右に430pxスマホモックを表示。820px以下はスマホUIのみ全幅表示
+- 地図は外部API不要のCSSモック。車両画像は既存 `official-assets/cars/` を参照
+
 ## 2026-06-30 公式デザインモック ヒーローのスマホ最適化
 
 - 対象: `official-design.html`
