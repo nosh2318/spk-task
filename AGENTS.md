@@ -3,6 +3,10 @@
 ## 2026-06-30 KEYDROP 予約UI 再設計モック
 
 - 本番コードへ触れない独立モック: `keydrop-redesign-mock.html`
+- 前案が既存UIの整理に留まったため、構造から変えたB案 `keydrop-redesign-concept-b.html` を追加
+- B案テーマ: `JOURNEY CANVAS`（予約フォームではなく旅のコックピット）
+- B案は地図全面＋操作ドック／1台ずつ大きく見せる車両ギャラリー／旅程チケット型確認／タップ式アドオンへ全面変更
+- B案は白背景のカード一覧を主役にせず、ネイビーの没入背景と黄色のルート・現在地・主CTAでKEYDROP体験を表現
 - ロゴ素材: `official-assets/keydrop_logo_header.png`（既存KEYDROP正本から複製）
 - 場所指定／車両選択／予約確認／オプションの4画面を上部タブと画面内CTAで切替可能
 - デザイン方針: TRUST × PREMIUM × SIMPLE。ネイビー・白・アンバーを基本とし、黄色は現在地・選択中・主CTAに限定
