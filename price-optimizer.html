@@ -33,7 +33,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}th,td{padding:5px 7px
 .ins{font-size:12.5px;font-weight:700;margin-top:8px;padding:9px 11px;border-radius:8px}.v-up{background:#ecfdf5;border:1px solid #34d399}.v-down{background:#fef2f2;border:1px solid #f87171}.v-keep{background:#eff6ff;border:1px solid #60a5fa}.v-na{background:#f8fafc;border:1px solid #e2e8f0}.v-traffic{background:#fffbeb;border:1px solid #f0d000}
 </style></head><body>
 <div class="top"><b>💹 価格最適化</b><span style="display:flex;gap:4px;margin-left:6px"><button class="storebtn on" data-s="nha" onclick="selectStore('nha')">那覇</button><button class="storebtn" data-s="spk" onclick="selectStore('spk')">札幌</button></span><span class="st" id="fleetSummary">読込中…</span></div>
-<div class="tab"><button class="on" data-t="cal" onclick="tab(this)">📅 空き台数カレンダー</button><button data-t="prices" onclick="tab(this)">💴 価格＋リードタイム</button><button data-t="action" onclick="tab(this)">🎯 アクション</button><button data-t="trend" onclick="tab(this)">📋 クラス別予約傾向</button><button data-t="curve" onclick="tab(this)">📉 活発期×価格ギャップ</button><button data-t="decide" onclick="tab(this)">📋 価格提案</button><button data-t="util" onclick="tab(this)">📊 稼働率</button><button data-t="config" onclick="tab(this)">⚙️ 決定設定</button></div>
+<div class="tab"><button class="on" data-t="cal" onclick="tab(this)">📅 空き台数カレンダー</button><button data-t="prices" onclick="tab(this)">💴 価格＋リードタイム</button><button data-t="action" onclick="tab(this)">🎯 アクション</button><button data-t="trend" onclick="tab(this)">📋 クラス別予約傾向</button><button data-t="curve" onclick="tab(this)">📉 活発期×価格ギャップ</button><button data-t="decide" onclick="tab(this)">📋 価格提案</button><button data-t="util" onclick="tab(this)">📊 稼働率</button><button data-t="research" onclick="tab(this)">🔎 市場調査</button><button data-t="config" onclick="tab(this)">⚙️ 決定設定</button></div>
 <div class="wrap"><div id="body"></div></div>
 <div class="scrim" id="scrim" onclick="closeM(event)"></div><div class="sheet" id="sheet" style="display:none"></div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -168,7 +168,7 @@ async function loadMonthlyFleet(){
   render();
  }catch(e){console.error('[monthly fleet]',e);document.getElementById('fleetSummary').textContent=STORE_LABEL[STORE]+'・月次稼働フラグ取得失敗（固定データ表示中）';render();}
 }
-function selectStore(s){if(STORE===s)return;STORE=s;applyStore();hydratePricing();SC=owned.indexOf(SC)>=0?SC:owned[0];document.querySelectorAll('.storebtn').forEach(b=>b.classList.toggle('on',b.dataset.s===s));applyMarketNow();render();loadMonthlyFleet();loadMarketNow();loadDecisions();loadDecCfg();loadPriceMaster();loadUtilSnap();}
+function selectStore(s){if(STORE===s)return;STORE=s;applyStore();hydratePricing();SC=owned.indexOf(SC)>=0?SC:owned[0];document.querySelectorAll('.storebtn').forEach(b=>b.classList.toggle('on',b.dataset.s===s));applyMarketNow();render();loadMonthlyFleet();loadMarketNow();loadDecisions();loadDecCfg();loadPriceMaster();loadUtilSnap();loadMktRaw();}
 function tab(b){document.querySelectorAll('.tab button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;render();}
 function uCls(u){if(u==null)return'u-none';if(u>=50)return'u-hi';if(u>=35)return'u-mid';if(u>=20)return'u-lo';return'u-vlo';}
 var MARKETNOW={nha:null,spk:null};
@@ -575,8 +575,69 @@ function renderUtil(){
  h+='<div class="card"><div class="sub">※ セルにマウスを乗せると「稼働日/可能日・台数」。確定月（当月より前）＝実績、当月以降＝途中値。札幌は当月以降のsnapshot未記録の場合あり（記録されると自動表示）。</div></div>';
  return h;
 }
+
+var MKTRAW={nha:null,spk:null};
+var RSTATE={car:'',cls:'',nights:1,done:false};
+function _rankP(tp,n){var x=(tp||[]).filter(function(p){return p&&p.rank===n;})[0];if(x)return x.price;var a=(tp||[]).map(function(p){return p.price;}).filter(function(p){return p;}).sort(function(a,b){return a-b;});return a.length>=n?a[n-1]:null;}
+function _med(arr){arr=(arr||[]).filter(function(x){return x!=null;}).sort(function(a,b){return a-b;});if(!arr.length)return null;var m=Math.floor(arr.length/2);return arr.length%2?arr[m]:Math.round((arr[m-1]+arr[m])/2);}
+async function loadMktRaw(){
+ try{try{await ensureAuth();}catch(e){}
+  var rn=await sbClient.from('ota_market_prices').select('run_id,fetched_at').eq('store',STORE).like('run_id','selfdrive-%').order('fetched_at',{ascending:false}).limit(1);
+  var rid=rn&&rn.data&&rn.data[0]?rn.data[0].run_id:null;
+  if(!rid){MKTRAW[STORE]={_empty:true};if(TAB==='research')render();return;}
+  var d=await sbClient.from('ota_market_prices').select('ota,class_name,hdm_class,target_date,total_count,hdm_rank,top_prices').eq('store',STORE).eq('run_id',rid).not('hdm_class','is',null);
+  var rows=(d&&d.data)||[];var agg={},at='';var T=[1,5,10,15,20];
+  rows.forEach(function(r){var c=r.hdm_class;if(!c)return;if(!agg[c])agg[c]={t:{1:[],5:[],10:[],15:[],20:[]},otas:{},names:{},per:{}};
+   var pr={};T.forEach(function(n){var v=_rankP(r.top_prices,n);pr[n]=v;if(v)agg[c].t[n].push(v);});
+   agg[c].otas[r.ota]=1;agg[c].names[r.class_name]=1;agg[c].per[r.ota]={cnt:r.total_count,rank:r.hdm_rank,p:pr};at=r.target_date;});
+  var out={};Object.keys(agg).forEach(function(c){var a=agg[c];var mt={};T.forEach(function(n){mt[n]=_med(a.t[n]);});out[c]={t:mt,otas:Object.keys(a.otas),names:Object.keys(a.names),per:a.per};});
+  MKTRAW[STORE]={cells:out,run:rid,at:at};if(TAB==='research')render();
+ }catch(e){MKTRAW[STORE]={_err:String(e)};if(TAB==='research')render();}
+}
+var CAR2CLS={'アルファード':'A','ヴェルファイア':'A2','ノア':'B','デリカ':'B','セレナ':'B','ヴォクシー':'B','ロッキー':'C','cx-3':'C','cx3':'C','ヤリスクロス':'C','ライズ':'C','ハリアー':'S','cx-5':'S','cx5':'S','ルーミー':'F','ソリオ':'F','ヴィッツ':'F','ヤリス':'F','デミオ':'F','フィット':'F','マツダ2':'F','パッソ':'F','アクア':'F','ノート':'F','コンパクト':'F','カローラ':'H','アクセラ':'H','プリウス':'H'};
+function carToCls(car){var s=String(car||'').toLowerCase().replace(/[\s　]/g,'');for(var kk in CAR2CLS){if(s&&s.indexOf(String(kk).toLowerCase().replace(/[\s　]/g,''))>=0)return CAR2CLS[kk];}return '';}
+function _curMasterPrice(cls){var m=PRICEMASTER[STORE];if(!m||!m.prices)return null;var _p=function(n){return(n<10?'0':'')+n;};var _t=new Date();var mo=_t.getFullYear()+'-'+_p(_t.getMonth()+1);var pm=m.prices[mo]||m.prices[Object.keys(m.prices).sort().filter(function(x){return x>=mo;})[0]]||{};var t=pm['A']||pm[Object.keys(pm)[0]]||{};var v=t[cls];return v?v[0]:null;}
+function _curUtil(cls){var V=UTILSNAP[STORE];if(!V||!V.length)return null;var _p=function(n){return(n<10?'0':'')+n;};var _t=new Date();var mo=_t.getFullYear()+'-'+_p(_t.getMonth()+1);var best=null;V.forEach(function(s){if(s.year_month<mo){var cd=s.class_detail;if(typeof cd==='string'){try{cd=JSON.parse(cd);}catch(e){cd=[];}}(cd||[]).forEach(function(c){if(c.type===cls)best={u:c.util_pct,m:s.year_month};});}});return best;}
+function runResearch(){var car=(document.getElementById('rs_car')||{}).value||'';var cls=((document.getElementById('rs_cls')||{}).value)||carToCls(car);var nights=+((document.getElementById('rs_nights')||{}).value||1);RSTATE={car:car,cls:cls,nights:nights,done:true};render();}
+function renderResearch(){
+ var V=MKTRAW[STORE];
+ if(V===null){loadMktRaw();return '<div class="card"><div class="sub">市場データ読込中…</div></div>';}
+ if(V._err)return '<div class="card"><h2>🔎 市場調査</h2><div class="sub">読込失敗: '+V._err+'</div></div>';
+ if(V._empty||!V.cells)return '<div class="card"><h2>🔎 市場調査</h2><div class="sub">自走市場データがまだありません（週2回の巡回で蓄積）。</div></div>';
+ var yen=function(v){return v==null?'—':'¥'+Number(v).toLocaleString();};
+ var clsList=Object.keys(V.cells).sort();
+ var NT=[['1','日帰り'],['2','1泊'],['3','2泊'],['4','3泊'],['5','4泊']];
+ var h='<div class="card"><h2>🔎 市場調査（即時・蓄積データ照会）</h2><div class="sub">'+(STORE==='spk'?'札幌':'那覇')+'。自走OTA調査('+(V.run||'')+'・'+(V.at||'')+')から即表示。車種→所属クラス自動判定。</div>'
+  +'<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">'
+  +'<div><div style="font-size:11px;color:#64748b">車種名（任意）</div><input id="rs_car" value="'+(RSTATE.car||'')+'" placeholder="例：ヴィッツ / デミオ" style="padding:6px 8px;border:1px solid #cbd5e1;border-radius:6px;width:160px"></div>'
+  +'<div><div style="font-size:11px;color:#64748b">クラス</div><select id="rs_cls" style="padding:6px;border:1px solid #cbd5e1;border-radius:6px"><option value="">車種から自動</option>'+clsList.map(function(c){return '<option value="'+c+'"'+(RSTATE.cls===c?' selected':'')+'>'+c+'</option>';}).join('')+'</select></div>'
+  +'<div><div style="font-size:11px;color:#64748b">泊数</div><select id="rs_nights" style="padding:6px;border:1px solid #cbd5e1;border-radius:6px">'+NT.map(function(n){return '<option value="'+n[0]+'"'+(String(RSTATE.nights)===n[0]?' selected':'')+'>'+n[1]+'</option>';}).join('')+'</select></div>'
+  +'<button onclick="runResearch()" style="background:#2563eb;color:#fff;border:0;padding:8px 20px;border-radius:8px;font-weight:800;cursor:pointer">🔎 調べる</button>'
+  +'</div></div>';
+ if(!RSTATE.done)return h+'<div class="card"><div class="sub" style="text-align:center;padding:20px">条件を入れて「🔎 調べる」を押してください。</div></div>';
+ var cls=RSTATE.cls; var cell=cls?V.cells[cls]:null;
+ if(!cls)return h+'<div class="card"><div class="sub">車種「'+RSTATE.car+'」からクラス判定不可。クラスを選んでください。</div></div>';
+ if(!cell)return h+'<div class="card"><div class="sub">クラス '+cls+' の市場データがありません。</div></div>';
+ var n=RSTATE.nights; var mult=n; var T=[1,5,10,15,20]; var TL={1:'最安',5:'5位',10:'10位',15:'15位',20:'20位'};
+ var cur=_curMasterPrice(cls); var util=_curUtil(cls);
+ var recAgg=cell.t[1], recStd=cell.t[5];
+ var rH='<div class="card"><h2>📊 '+(RSTATE.car?RSTATE.car+' → ':'')+'<span style="color:#2563eb">'+cls+'クラス</span>'+(n>1?'（'+NT.filter(function(x){return x[0]==String(n);})[0][1]+'）':'（日帰り）')+'</h2>'
+  +'<div class="sub">OTAカテゴリ：'+cell.names.join('/')+'　根拠：'+cell.otas.length+'OTA・巡回'+(V.at||'')+'</div>'
+  +'<div style="overflow-x:auto"><table style="font-size:12px"><thead><tr><th class="l">出所</th><th>掲載</th>'+T.map(function(t){return '<th>'+TL[t]+'</th>';}).join('')+'<th>自社順位</th></tr></thead><tbody>'
+  +'<tr style="background:#eef2ff;font-weight:800"><td class="l">市場(中央値)</td><td>—</td>'+T.map(function(t){return '<td>'+yen(cell.t[t]?cell.t[t]*mult:null)+'</td>';}).join('')+'<td>—</td></tr>'
+  +cell.otas.sort().map(function(o){var p=cell.per[o];return '<tr><td class="l">'+o+'</td><td>'+(p.cnt||'—')+'</td>'+T.map(function(t){return '<td>'+yen(p.p[t]?p.p[t]*mult:null)+'</td>';}).join('')+'<td>'+(p.rank!=null?p.rank+'位':'—')+'</td></tr>';}).join('')
+  +'</tbody></table></div>'
+  +'<table style="margin-top:8px"><tbody>'
+  +'<tr style="background:#f0fdf4"><td class="l"><b>推奨1日価格</b></td><td><b style="font-size:15px;color:#15803d">'+yen(recAgg)+'〜'+yen(recStd)+'</b> <span style="font-size:10px;color:#64748b">最安〜5位／泊数は×日数</span></td></tr>'
+  +'<tr><td class="l">自社 現価格（通常・日帰り）</td><td>'+yen(cur)+(cur!=null&&cell.t[1]?(cur<cell.t[1]?' <span style="color:#dc2626">市場最安より安い＝上げ余地</span>':cell.t[5]&&cur>cell.t[5]?' <span style="color:#0369a1">市場5位より高い</span>':' <span style="color:#15803d">市場最安〜5位内</span>'):'')+'</td></tr>'
+  +'<tr><td class="l">稼働率（成績表・直近確定）</td><td>'+(util?util.u+'% <span style="font-size:10px;color:#94a3b8">('+util.m+')</span>':'—')+'</td></tr>'
+  +'</tbody></table>'
+  +'<div class="sub" style="margin-top:6px">※泊数は日帰り単価×日数の目安。15位/20位が「—」はその級の掲載数が少ない（例:12件）ため。</div></div>';
+ return h+rH;
+}
 function render(
 
-){var r={cal:renderCal,action:renderAction,trend:renderTrend,curve:renderCurve,prices:renderPrices,decide:renderDecide,config:renderConfig,util:renderUtil}[TAB];document.getElementById('body').innerHTML=r();}
-document.querySelectorAll('.storebtn').forEach(function(b){b.classList.toggle('on',b.dataset.s===STORE);});applyMarketNow();render();loadMonthlyFleet();loadMarketNow();loadDecisions();loadDecCfg();loadPriceMaster();loadUtilSnap();
+
+){var r={cal:renderCal,action:renderAction,trend:renderTrend,curve:renderCurve,prices:renderPrices,decide:renderDecide,config:renderConfig,util:renderUtil,research:renderResearch}[TAB];document.getElementById('body').innerHTML=r();}
+document.querySelectorAll('.storebtn').forEach(function(b){b.classList.toggle('on',b.dataset.s===STORE);});applyMarketNow();render();loadMonthlyFleet();loadMarketNow();loadDecisions();loadDecCfg();loadPriceMaster();loadUtilSnap();loadMktRaw();
 </script></body></html>
