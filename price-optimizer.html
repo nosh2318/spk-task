@@ -606,6 +606,16 @@ async function loadMktRaw(){
 var CAR2CLS={'アルファード':'A','ヴェルファイア':'A2','ノア':'B','デリカ':'B','セレナ':'B','ヴォクシー':'B','ロッキー':'C','cx-3':'C','cx3':'C','ヤリスクロス':'C','ライズ':'C','ハリアー':'S','cx-5':'S','cx5':'S','ルーミー':'F','ソリオ':'F','ヴィッツ':'F','ヤリス':'F','デミオ':'F','フィット':'F','マツダ2':'F','パッソ':'F','アクア':'F','ノート':'F','コンパクト':'F','カローラ':'H','アクセラ':'H','プリウス':'H'};
 function carToCls(car){var s=String(car||'').toLowerCase().replace(/[\s　]/g,'');for(var kk in CAR2CLS){if(s&&s.indexOf(String(kk).toLowerCase().replace(/[\s　]/g,''))>=0)return CAR2CLS[kk];}return '';}
 function _curMasterPrice(cls){var m=PRICEMASTER[STORE];if(!m||!m.prices)return null;var _p=function(n){return(n<10?'0':'')+n;};var _t=new Date();var mo=_t.getFullYear()+'-'+_p(_t.getMonth()+1);var pm=m.prices[mo]||m.prices[Object.keys(m.prices).sort().filter(function(x){return x>=mo;})[0]]||{};var t=pm['A']||pm[Object.keys(pm)[0]]||{};var v=t[cls];return v?v[0]:null;}
+// 自社価格＝持っているデータ(hdm_price_master)から。指定シーズナル(月×tier)の該当クラス日帰り。
+function _masterPriceFor(cls,mo,tier){var m=PRICEMASTER[STORE];if(!m||!m.prices)return null;var pm=m.prices[mo]||{};var t=pm[tier]||pm['A']||pm[Object.keys(pm)[0]]||{};var v=(t||{})[cls];return v?v[0]:null;}
+// 自社価格が市場の何位相当か（持っている自社価格 vs 市場順位価格）
+function _posLabel(price,t){if(price==null||!t)return {txt:'—',col:'#94a3b8'};
+ if(t[1]!=null&&price<=t[1])return {txt:'最安以下(1位圏)',col:'#dc2626'};
+ if(t[5]!=null&&price<=t[5])return {txt:'最安〜5位',col:'#15803d'};
+ if(t[10]!=null&&price<=t[10])return {txt:'5〜10位',col:'#a16207'};
+ if(t[15]!=null&&price<=t[15])return {txt:'10〜15位',col:'#0369a1'};
+ if(t[20]!=null&&price<=t[20])return {txt:'15〜20位',col:'#0369a1'};
+ return {txt:'20位圏外',col:'#b91c1c'};}
 function _curUtil(cls){var V=UTILSNAP[STORE];if(!V||!V.length)return null;var _p=function(n){return(n<10?'0':'')+n;};var _t=new Date();var mo=_t.getFullYear()+'-'+_p(_t.getMonth()+1);var best=null;V.forEach(function(s){if(s.year_month<mo){var cd=s.class_detail;if(typeof cd==='string'){try{cd=JSON.parse(cd);}catch(e){cd=[];}}(cd||[]).forEach(function(c){if(c.type===cls)best={u:c.util_pct,m:s.year_month};});}});return best;}
 function runResearch(){var car=(document.getElementById('rs_car')||{}).value||'';var cls=((document.getElementById('rs_cls')||{}).value)||carToCls(car);var nights=+((document.getElementById('rs_nights')||{}).value||1);var date=(document.getElementById('rs_season')||{}).value||'';RSTATE={car:car,cls:cls,nights:nights,date:date,done:true};render();}
 function renderResearch(){
@@ -632,17 +642,19 @@ function renderResearch(){
  if(!cls)return h+'<div class="card"><div class="sub">車種「'+RSTATE.car+'」からクラス判定不可。クラスを選んでください。</div></div>';
  if(!cell)return h+'<div class="card"><div class="sub">クラス '+cls+' の市場データがありません。</div></div>';
  var n=RSTATE.nights; var mult=n; var T=[1,5,10,15,20]; var TL={1:'最安',5:'5位',10:'10位',15:'15位',20:'20位'};
- var cur=_curMasterPrice(cls); var util=_curUtil(cls);
+ var _seas=_seasonOf(curDate); var cur=_masterPriceFor(cls,_seas.mo,_seas.tier); var util=_curUtil(cls);
+ var _pos=_posLabel(cur!=null?cur*mult:null,{1:cell.t[1]?cell.t[1]*mult:null,5:cell.t[5]?cell.t[5]*mult:null,10:cell.t[10]?cell.t[10]*mult:null,15:cell.t[15]?cell.t[15]*mult:null,20:cell.t[20]?cell.t[20]*mult:null});
  var recAgg=cell.t[1], recStd=cell.t[5];
  var rH='<div class="card"><h2>📊 '+(RSTATE.car?RSTATE.car+' → ':'')+'<span style="color:#2563eb">'+cls+'クラス</span>'+(n>1?'（'+NT.filter(function(x){return x[0]==String(n);})[0][1]+'）':'（日帰り）')+'</h2>'
   +'<div class="sub">シーズナル：<b>'+_seasonOf(curDate).label+'</b>（対象日 '+curDate+'）／OTAカテゴリ：'+cell.names.join('/')+'　根拠：'+cell.otas.length+'OTA</div>'
   +'<div style="overflow-x:auto"><table style="font-size:12px"><thead><tr><th class="l">出所</th><th>掲載</th>'+T.map(function(t){return '<th>'+TL[t]+'</th>';}).join('')+'<th>自社順位</th></tr></thead><tbody>'
   +'<tr style="background:#eef2ff;font-weight:800"><td class="l">市場(中央値)</td><td>—</td>'+T.map(function(t){return '<td>'+yen(cell.t[t]?cell.t[t]*mult:null)+'</td>';}).join('')+'<td>—</td></tr>'
+  +'<tr style="background:#fffbea;font-weight:800"><td class="l">🏠 自社（現価格）</td><td>—</td><td colspan="5" style="text-align:center">'+(cur!=null?yen(cur*mult)+' <span style="font-size:10px;color:#94a3b8">'+_seas.name+'・自社マスター</span>':'<span style="color:#94a3b8">価格マスター未設定</span>')+'</td><td style="color:'+_pos.col+'">'+_pos.txt+'</td></tr>'
   +cell.otas.sort().map(function(o){var p=cell.per[o];return '<tr><td class="l">'+o+'</td><td>'+(p.cnt||'—')+'</td>'+T.map(function(t){return '<td>'+yen(p.p[t]?p.p[t]*mult:null)+'</td>';}).join('')+'<td>'+(p.rank!=null?p.rank+'位':'—')+'</td></tr>';}).join('')
-  +'</tbody></table></div>'
+  +'</tbody></table><div class="sub" style="margin-top:4px">🏠自社＝<b>持っている自社価格(hdm_price_master)</b>を表示（掲載検出に依存しない）。自社順位列＝市場価格順位に対する自社の位置。OTAの「自社順位」は掲載検出時のみ。</div></div>'
   +'<table style="margin-top:8px"><tbody>'
   +'<tr style="background:#f0fdf4"><td class="l"><b>推奨1日価格</b></td><td><b style="font-size:15px;color:#15803d">'+yen(recAgg)+'〜'+yen(recStd)+'</b> <span style="font-size:10px;color:#64748b">最安〜5位／泊数は×日数</span></td></tr>'
-  +'<tr><td class="l">自社 現価格（通常・日帰り）</td><td>'+yen(cur)+(cur!=null&&cell.t[1]?(cur<cell.t[1]?' <span style="color:#dc2626">市場最安より安い＝上げ余地</span>':cell.t[5]&&cur>cell.t[5]?' <span style="color:#0369a1">市場5位より高い</span>':' <span style="color:#15803d">市場最安〜5位内</span>'):'')+'</td></tr>'
+  +'<tr><td class="l">自社 現価格（'+_seas.name+'）</td><td>'+yen(cur!=null?cur*mult:null)+' <span style="color:'+_pos.col+';font-weight:700">'+_pos.txt+'</span> <span style="font-size:10px;color:#94a3b8">出所＝自社マスター(調べない)</span></td></tr>'
   +'<tr><td class="l">稼働率（成績表・直近確定）</td><td>'+(util?util.u+'% <span style="font-size:10px;color:#94a3b8">('+util.m+')</span>':'—')+'</td></tr>'
   +'</tbody></table>'
   +'<div class="sub" style="margin-top:6px">※泊数は日帰り単価×日数の目安。15位/20位が「—」はその級の掲載数が少ない（例:12件）ため。</div></div>';
