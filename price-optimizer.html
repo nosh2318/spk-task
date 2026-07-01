@@ -577,7 +577,12 @@ function renderUtil(){
 }
 
 var MKTRAW={nha:null,spk:null};
-var RSTATE={car:'',cls:'',nights:1,done:false};
+var RSTATE={car:'',cls:'',nights:1,date:'',done:false};
+// 対象日→シーズナル（教科書＝hdm_price_master.ranges から判定）
+function _seasonOf(ds){var mo=ds.slice(0,7);var pm=PRICEMASTER[STORE]||{};var rng=(pm.ranges||{})[mo]||{};var tier='A',range='';
+ Object.keys(rng).forEach(function(k){(rng[k]||[]).forEach(function(r){if(r[0]<=ds&&ds<=r[1]){tier=k;range=r[0].slice(5)+'〜'+r[1].slice(5);}});});
+ var nm={A:'通常',B:'準繁忙',C:'繁忙(お盆/年末)'}[tier]||tier;
+ return {mo:mo,tier:tier,name:nm,range:range,label:(+mo.slice(5))+'月 '+nm+(range?'（'+range+'）':'')};}
 function _rankP(tp,n){var x=(tp||[]).filter(function(p){return p&&p.rank===n;})[0];if(x)return x.price;var a=(tp||[]).map(function(p){return p.price;}).filter(function(p){return p;}).sort(function(a,b){return a-b;});return a.length>=n?a[n-1]:null;}
 function _med(arr){arr=(arr||[]).filter(function(x){return x!=null;}).sort(function(a,b){return a-b;});if(!arr.length)return null;var m=Math.floor(arr.length/2);return arr.length%2?arr[m]:Math.round((arr[m-1]+arr[m])/2);}
 async function loadMktRaw(){
@@ -586,43 +591,51 @@ async function loadMktRaw(){
   var rid=rn&&rn.data&&rn.data[0]?rn.data[0].run_id:null;
   if(!rid){MKTRAW[STORE]={_empty:true};if(TAB==='research')render();return;}
   var d=await sbClient.from('ota_market_prices').select('ota,class_name,hdm_class,target_date,total_count,hdm_rank,top_prices').eq('store',STORE).eq('run_id',rid).not('hdm_class','is',null);
-  var rows=(d&&d.data)||[];var agg={},at='';var T=[1,5,10,15,20];
-  rows.forEach(function(r){var c=r.hdm_class;if(!c)return;if(!agg[c])agg[c]={t:{1:[],5:[],10:[],15:[],20:[]},otas:{},names:{},per:{}};
+  var rows=(d&&d.data)||[];var byDate={};var T=[1,5,10,15,20];
+  // 対象日（＝シーズナル代表日）ごとに保持する。シーズナルはデータで持つ。
+  rows.forEach(function(r){var c=r.hdm_class;if(!c)return;var td=r.target_date;if(!td)return;
+   if(!byDate[td])byDate[td]={};var agg=byDate[td];
+   if(!agg[c])agg[c]={t:{1:[],5:[],10:[],15:[],20:[]},otas:{},names:{},per:{}};
    var pr={};T.forEach(function(n){var v=_rankP(r.top_prices,n);pr[n]=v;if(v)agg[c].t[n].push(v);});
-   agg[c].otas[r.ota]=1;agg[c].names[r.class_name]=1;agg[c].per[r.ota]={cnt:r.total_count,rank:r.hdm_rank,p:pr};at=r.target_date;});
-  var out={};Object.keys(agg).forEach(function(c){var a=agg[c];var mt={};T.forEach(function(n){mt[n]=_med(a.t[n]);});out[c]={t:mt,otas:Object.keys(a.otas),names:Object.keys(a.names),per:a.per};});
-  MKTRAW[STORE]={cells:out,run:rid,at:at};if(TAB==='research')render();
+   agg[c].otas[r.ota]=1;agg[c].names[r.class_name]=1;agg[c].per[r.ota]={cnt:r.total_count,rank:r.hdm_rank,p:pr};});
+  var cellsByDate={};Object.keys(byDate).forEach(function(td){var out={};Object.keys(byDate[td]).forEach(function(c){var a=byDate[td][c];var mt={};T.forEach(function(n){mt[n]=_med(a.t[n]);});out[c]={t:mt,otas:Object.keys(a.otas),names:Object.keys(a.names),per:a.per};});cellsByDate[td]=out;});
+  var dates=Object.keys(cellsByDate).sort();
+  MKTRAW[STORE]={cellsByDate:cellsByDate,dates:dates,run:rid};if(TAB==='research')render();
  }catch(e){MKTRAW[STORE]={_err:String(e)};if(TAB==='research')render();}
 }
 var CAR2CLS={'アルファード':'A','ヴェルファイア':'A2','ノア':'B','デリカ':'B','セレナ':'B','ヴォクシー':'B','ロッキー':'C','cx-3':'C','cx3':'C','ヤリスクロス':'C','ライズ':'C','ハリアー':'S','cx-5':'S','cx5':'S','ルーミー':'F','ソリオ':'F','ヴィッツ':'F','ヤリス':'F','デミオ':'F','フィット':'F','マツダ2':'F','パッソ':'F','アクア':'F','ノート':'F','コンパクト':'F','カローラ':'H','アクセラ':'H','プリウス':'H'};
 function carToCls(car){var s=String(car||'').toLowerCase().replace(/[\s　]/g,'');for(var kk in CAR2CLS){if(s&&s.indexOf(String(kk).toLowerCase().replace(/[\s　]/g,''))>=0)return CAR2CLS[kk];}return '';}
 function _curMasterPrice(cls){var m=PRICEMASTER[STORE];if(!m||!m.prices)return null;var _p=function(n){return(n<10?'0':'')+n;};var _t=new Date();var mo=_t.getFullYear()+'-'+_p(_t.getMonth()+1);var pm=m.prices[mo]||m.prices[Object.keys(m.prices).sort().filter(function(x){return x>=mo;})[0]]||{};var t=pm['A']||pm[Object.keys(pm)[0]]||{};var v=t[cls];return v?v[0]:null;}
 function _curUtil(cls){var V=UTILSNAP[STORE];if(!V||!V.length)return null;var _p=function(n){return(n<10?'0':'')+n;};var _t=new Date();var mo=_t.getFullYear()+'-'+_p(_t.getMonth()+1);var best=null;V.forEach(function(s){if(s.year_month<mo){var cd=s.class_detail;if(typeof cd==='string'){try{cd=JSON.parse(cd);}catch(e){cd=[];}}(cd||[]).forEach(function(c){if(c.type===cls)best={u:c.util_pct,m:s.year_month};});}});return best;}
-function runResearch(){var car=(document.getElementById('rs_car')||{}).value||'';var cls=((document.getElementById('rs_cls')||{}).value)||carToCls(car);var nights=+((document.getElementById('rs_nights')||{}).value||1);RSTATE={car:car,cls:cls,nights:nights,done:true};render();}
+function runResearch(){var car=(document.getElementById('rs_car')||{}).value||'';var cls=((document.getElementById('rs_cls')||{}).value)||carToCls(car);var nights=+((document.getElementById('rs_nights')||{}).value||1);var date=(document.getElementById('rs_season')||{}).value||'';RSTATE={car:car,cls:cls,nights:nights,date:date,done:true};render();}
 function renderResearch(){
  var V=MKTRAW[STORE];
  if(V===null){loadMktRaw();return '<div class="card"><div class="sub">市場データ読込中…</div></div>';}
  if(V._err)return '<div class="card"><h2>🔎 市場調査</h2><div class="sub">読込失敗: '+V._err+'</div></div>';
- if(V._empty||!V.cells)return '<div class="card"><h2>🔎 市場調査</h2><div class="sub">自走市場データがまだありません（週2回の巡回で蓄積）。</div></div>';
+ if(V._empty||!V.cellsByDate||!V.dates||!V.dates.length)return '<div class="card"><h2>🔎 市場調査</h2><div class="sub">自走市場データがまだありません（週2回の巡回で蓄積）。</div></div>';
  var yen=function(v){return v==null?'—':'¥'+Number(v).toLocaleString();};
- var clsList=Object.keys(V.cells).sort();
+ // 対象日＝シーズナルで決まる。選択が無ければ先頭
+ var curDate=(RSTATE.date&&V.dates.indexOf(RSTATE.date)>=0)?RSTATE.date:V.dates[0];
+ var cells=V.cellsByDate[curDate]||{};
+ var clsList=Object.keys(cells).sort();
  var NT=[['1','日帰り'],['2','1泊'],['3','2泊'],['4','3泊'],['5','4泊']];
- var h='<div class="card"><h2>🔎 市場調査（即時・蓄積データ照会）</h2><div class="sub">'+(STORE==='spk'?'札幌':'那覇')+'。自走OTA調査('+(V.run||'')+'・'+(V.at||'')+')から即表示。車種→所属クラス自動判定。</div>'
+ var h='<div class="card"><h2>🔎 市場調査（即時・蓄積データ照会）</h2><div class="sub">'+(STORE==='spk'?'札幌':'那覇')+'。自走OTA調査('+(V.run||'')+')から即表示。<b>シーズナルを選ぶと対象日が決まります</b>。車種→所属クラス自動判定。</div>'
   +'<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">'
+  +'<div><div style="font-size:11px;color:#64748b">シーズナル（対象日）</div><select id="rs_season" style="padding:6px;border:1px solid #cbd5e1;border-radius:6px">'+V.dates.map(function(d){var s=_seasonOf(d);return '<option value="'+d+'"'+(curDate===d?' selected':'')+'>'+s.label+' ／ '+d+'</option>';}).join('')+'</select></div>'
   +'<div><div style="font-size:11px;color:#64748b">車種名（任意）</div><input id="rs_car" value="'+(RSTATE.car||'')+'" placeholder="例：ヴィッツ / デミオ" style="padding:6px 8px;border:1px solid #cbd5e1;border-radius:6px;width:160px"></div>'
   +'<div><div style="font-size:11px;color:#64748b">クラス</div><select id="rs_cls" style="padding:6px;border:1px solid #cbd5e1;border-radius:6px"><option value="">車種から自動</option>'+clsList.map(function(c){return '<option value="'+c+'"'+(RSTATE.cls===c?' selected':'')+'>'+c+'</option>';}).join('')+'</select></div>'
   +'<div><div style="font-size:11px;color:#64748b">泊数</div><select id="rs_nights" style="padding:6px;border:1px solid #cbd5e1;border-radius:6px">'+NT.map(function(n){return '<option value="'+n[0]+'"'+(String(RSTATE.nights)===n[0]?' selected':'')+'>'+n[1]+'</option>';}).join('')+'</select></div>'
   +'<button onclick="runResearch()" style="background:#2563eb;color:#fff;border:0;padding:8px 20px;border-radius:8px;font-weight:800;cursor:pointer">🔎 調べる</button>'
   +'</div></div>';
- if(!RSTATE.done)return h+'<div class="card"><div class="sub" style="text-align:center;padding:20px">条件を入れて「🔎 調べる」を押してください。</div></div>';
- var cls=RSTATE.cls; var cell=cls?V.cells[cls]:null;
+ if(!RSTATE.done)return h+'<div class="card"><div class="sub" style="text-align:center;padding:20px">シーズナル・条件を選んで「🔎 調べる」を押してください。</div></div>';
+ var cls=RSTATE.cls; var cell=cls?cells[cls]:null;
  if(!cls)return h+'<div class="card"><div class="sub">車種「'+RSTATE.car+'」からクラス判定不可。クラスを選んでください。</div></div>';
  if(!cell)return h+'<div class="card"><div class="sub">クラス '+cls+' の市場データがありません。</div></div>';
  var n=RSTATE.nights; var mult=n; var T=[1,5,10,15,20]; var TL={1:'最安',5:'5位',10:'10位',15:'15位',20:'20位'};
  var cur=_curMasterPrice(cls); var util=_curUtil(cls);
  var recAgg=cell.t[1], recStd=cell.t[5];
  var rH='<div class="card"><h2>📊 '+(RSTATE.car?RSTATE.car+' → ':'')+'<span style="color:#2563eb">'+cls+'クラス</span>'+(n>1?'（'+NT.filter(function(x){return x[0]==String(n);})[0][1]+'）':'（日帰り）')+'</h2>'
-  +'<div class="sub">OTAカテゴリ：'+cell.names.join('/')+'　根拠：'+cell.otas.length+'OTA・巡回'+(V.at||'')+'</div>'
+  +'<div class="sub">シーズナル：<b>'+_seasonOf(curDate).label+'</b>（対象日 '+curDate+'）／OTAカテゴリ：'+cell.names.join('/')+'　根拠：'+cell.otas.length+'OTA</div>'
   +'<div style="overflow-x:auto"><table style="font-size:12px"><thead><tr><th class="l">出所</th><th>掲載</th>'+T.map(function(t){return '<th>'+TL[t]+'</th>';}).join('')+'<th>自社順位</th></tr></thead><tbody>'
   +'<tr style="background:#eef2ff;font-weight:800"><td class="l">市場(中央値)</td><td>—</td>'+T.map(function(t){return '<td>'+yen(cell.t[t]?cell.t[t]*mult:null)+'</td>';}).join('')+'<td>—</td></tr>'
   +cell.otas.sort().map(function(o){var p=cell.per[o];return '<tr><td class="l">'+o+'</td><td>'+(p.cnt||'—')+'</td>'+T.map(function(t){return '<td>'+yen(p.p[t]?p.p[t]*mult:null)+'</td>';}).join('')+'<td>'+(p.rank!=null?p.rank+'位':'—')+'</td></tr>';}).join('')
