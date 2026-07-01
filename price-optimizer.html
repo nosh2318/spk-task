@@ -455,16 +455,43 @@ function _snapshotRevisions(m,today){var changed=0,seeded=0;m.history=m.history|
   m.history[mo][t][c]=hist;
  });});});
  return {changed:changed,seeded:seeded};}
+// 現価格マスター → KEYDROP価格形式へ変換（price-master.html の masterToKeydrop と同一・日帰り値使用）
+function _masterToKeydrop(m){
+ var prices={},presets=[],idx=0,clsSet={};
+ Object.keys(m.prices||{}).forEach(function(mo){Object.keys(m.prices[mo]||{}).forEach(function(t){Object.keys(m.prices[mo][t]||{}).forEach(function(c){clsSet[c]=1;});});});
+ var cls=Object.keys(clsSet).sort();cls.forEach(function(c){prices[c]=[];});
+ Object.keys(m.prices||{}).sort().forEach(function(month){
+  Object.keys(m.prices[month]).forEach(function(tier){
+   cls.forEach(function(c){var v=(m.prices[month][tier]||{})[c];prices[c].push(v?v[0]:0);});
+   var rr=((m.ranges||{})[month]||{})[tier];
+   if(rr){rr.forEach(function(r){if(r[0]&&r[1]){presets.push({start:r[0].slice(5),end:r[1].slice(5),tier:idx});}});}
+   idx++;
+  });
+ });
+ return {prices:prices,presets:presets,default:0,_linkedFrom:'hdm_price_master',_at:new Date().toISOString().slice(0,10)};
+}
+async function _kdSyncIfLinked(m,tbl){
+ try{var d=await sbClient.from(tbl).select('value').eq('key','hdm_keydrop_mode').maybeSingle();
+  var mv=d&&d.data?d.data.value:null;if(typeof mv==='string'){try{mv=JSON.parse(mv);}catch(e){}}
+  var linked=((mv&&mv.mode)||mv)==='linked';
+  if(!linked)return '';
+  var kd=_masterToKeydrop(m);
+  var r=await sbClient.from(tbl).upsert({key:'hdm_keydrop_price',value:JSON.stringify(kd)},{onConflict:'key'});
+  if(r&&r.error)return '（⚠️KEYDROP連動反映は失敗: '+r.error.message+'）';
+  return '＋KEYDROPに連動反映';
+ }catch(e){return '（⚠️KEYDROP連動確認に失敗: '+e+'）';}
+}
 async function savePM(){var m=PRICEMASTER[STORE];if(!m){return;}var _p=function(n){return(n<10?'0':'')+n;};var _t=new Date();
  var today=_t.getFullYear()+'-'+_p(_t.getMonth()+1)+'-'+_p(_t.getDate());
  var snap=_snapshotRevisions(m,today);
- m.updated_at=today+' '+_p(_t.getHours())+':'+_p(_t.getMinutes());
+ m.updated_at=today+' '+_p(_t.getHours())+':'+_p(_t.getMinutes());m.store=STORE;
  var tbl=STORE==='spk'?'app_settings':'nha_app_settings';
  try{try{await ensureAuth();}catch(e){}
   var r=await sbClient.from(tbl).upsert({key:'hdm_price_master',value:JSON.stringify(m)},{onConflict:'key'});
   if(r&&r.error){alert('保存失敗: '+r.error.message);return;}
+  var kd=await _kdSyncIfLinked(m,tbl);
   var msg=snap.changed?('価格変更 '+snap.changed+'件を履歴に記録。'):(snap.seeded?('初回ベースライン '+snap.seeded+'件を記録。'):'変更なし。');
-  alert('✅ 保存しました（'+(STORE==='spk'?'札幌':'那覇')+'）。'+msg+'現価格＝最新値。過去は🕘変更履歴に保持。OTA/KEYDROP連動はこの値を参照します。');render();
+  alert('✅ 保存しました（'+(STORE==='spk'?'札幌':'那覇')+'）。'+msg+'現価格＝最新値。過去は🕘変更履歴に保持。OTA/KEYDROP連動はこの値を参照します。'+(kd?('\n'+kd):''));render();
  }catch(e){alert('保存失敗: '+e);}
 }
 
