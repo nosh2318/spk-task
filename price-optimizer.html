@@ -765,6 +765,20 @@ function renderUtil(){
 
 var MKTRAW={nha:null,spk:null};
 var RSTATE={car:'',cls:'',nights:1,date:'',done:false};
+// 調査対象OTA（店舗別・crawlerが hdm_research_otas を読んで絞る）
+var RESEARCH_OTAS=[['JLN','じゃらん'],['RKT','楽天'],['ART','エアトリ'],['SKT','スカイ'],['RDC','レンタカーDC']];
+var ROTAS={nha:null,spk:null};
+async function loadResearchOtas(){var tbl=STORE==='spk'?'app_settings':'nha_app_settings';
+ try{try{await ensureAuth();}catch(e){}var d=await sbClient.from(tbl).select('value').eq('key','hdm_research_otas').maybeSingle();
+  var v=d&&d.data?d.data.value:null;if(typeof v==='string'){try{v=JSON.parse(v);}catch(e){}}
+  ROTAS[STORE]=(v&&v.otas)?v.otas:RESEARCH_OTAS.map(function(x){return x[0];});if(TAB==='research')render();
+ }catch(e){ROTAS[STORE]=RESEARCH_OTAS.map(function(x){return x[0];});}}
+function toggleROta(code){var cur=(ROTAS[STORE]||RESEARCH_OTAS.map(function(x){return x[0];})).slice();var i=cur.indexOf(code);if(i>=0)cur.splice(i,1);else cur.push(code);ROTAS[STORE]=cur;render();}
+async function saveResearchOtas(){var tbl=STORE==='spk'?'app_settings':'nha_app_settings';var otas=ROTAS[STORE]||[];
+ try{try{await ensureAuth();}catch(e){}var r=await sbClient.from(tbl).upsert({key:'hdm_research_otas',value:JSON.stringify({otas:otas})},{onConflict:'key'});
+  if(r&&r.error){alert('保存失敗: '+r.error.message);return;}
+  alert('✅ 調査対象OTAを保存（'+(STORE==='spk'?'札幌':'那覇')+'）：'+(otas.length?otas.join(' / '):'なし')+'\\n次回の巡回（月木5:00 or 手動実行）から反映されます。');
+ }catch(e){alert('保存失敗: '+e);}}
 // 対象日→シーズナル（教科書＝hdm_price_master.ranges から判定）
 function _seasonOf(ds){var mo=ds.slice(0,7);var pm=PRICEMASTER[STORE]||{};var rng=(pm.ranges||{})[mo]||{};var tier='A',range='';
  Object.keys(rng).forEach(function(k){(rng[k]||[]).forEach(function(r){if(r[0]<=ds&&ds<=r[1]){tier=k;range=r[0].slice(5)+'〜'+r[1].slice(5);}});});
@@ -823,7 +837,12 @@ function renderResearch(){
  var cells=V.cellsByDate[curDate]||{};
  var clsList=Object.keys(cells).sort();
  var NT=[['1','日帰り'],['2','1泊'],['3','2泊'],['4','3泊'],['5','4泊']];
- var h='<div class="card"><h2>🔎 市場調査（即時・蓄積データ照会）</h2><div class="sub">'+(STORE==='spk'?'札幌':'那覇')+'。<b>蓄積データを即表示</b>（下記の調査日時のもの）。<b>シーズナルを選ぶと対象日が決まります</b>。車種→所属クラス自動判定。</div>'
+ if(ROTAS[STORE]==null){loadResearchOtas();}
+ var _rsel=ROTAS[STORE]||RESEARCH_OTAS.map(function(x){return x[0];});
+ var hOta='<div class="card"><h2 style="font-size:15px">🛰 調査対象OTA</h2><div class="sub">市場調査で巡回する OTA を選択。<b>チェックしたOTAだけ</b>次回巡回（月木5:00 or 手動実行）で調べます。</div><div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px">'
+  +RESEARCH_OTAS.map(function(o){var on=_rsel.indexOf(o[0])>=0;return '<label style="display:inline-flex;align-items:center;gap:5px;padding:5px 11px;border:1px solid '+(on?"#2563eb":"#cbd5e1")+';background:'+(on?"#eff6ff":"#fff")+';border-radius:8px;cursor:pointer;font-weight:700;font-size:12px"><input type="checkbox" '+(on?"checked":"")+' onchange="toggleROta(\''+o[0]+'\')">'+o[1]+'</label>';}).join('')
+  +'</div><div style="text-align:right;margin-top:8px"><button onclick="saveResearchOtas()" style="background:#16a34a;color:#fff;border:0;padding:6px 16px;border-radius:7px;font-weight:800;cursor:pointer">💾 保存</button></div></div>';
+ var h=hOta+'<div class="card"><h2>🔎 市場調査（即時・蓄積データ照会）</h2><div class="sub">'+(STORE==='spk'?'札幌':'那覇')+'。<b>蓄積データを即表示</b>（下記の調査日時のもの）。<b>シーズナルを選ぶと対象日が決まります</b>。車種→所属クラス自動判定。</div>'
   +'<div class="sub" style="margin-top:2px">'+_freshBadge(V.fetched)+'　<span style="font-size:10px;color:#94a3b8">週2回(月木5:00)の自走巡回で更新／run '+(V.run||'')+'</span></div>'
   +'<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">'
   +'<div><div style="font-size:11px;color:#64748b">シーズナル（対象日）</div><select id="rs_season" style="padding:6px;border:1px solid #cbd5e1;border-radius:6px">'+V.dates.map(function(d){var s=_seasonOf(d);return '<option value="'+d+'"'+(curDate===d?' selected':'')+'>'+s.label+' ／ '+d+'</option>';}).join('')+'</select></div>'
