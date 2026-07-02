@@ -22,7 +22,6 @@ Deno.serve(async (req) => {
   const rows = await (await fetch(`${SB_URL}/rest/v1/reservations?id=eq.${encodeURIComponent(r)}&kd_driver_token=eq.${encodeURIComponent(d)}&select=id,ota,kd_status,kd_track_token`, { headers: H })).json();
   const rec = rows[0];
   if (!rec) return json({ ok: false, reason: "invalid_driver_token" }, 401);
-  if (rec.ota === "KEYDROP") return json({ ok: false, reason: "skipped_keydrop" });
 
   // ステータス→アクション/案内ページ
   let action = "", guide = "", head = "";

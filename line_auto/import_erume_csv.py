@@ -15,6 +15,7 @@ import sys, csv, os, json, urllib.request, io
 
 SB_URL = "https://ckrxttbnawkclshczsia.supabase.co"
 KEY = os.environ.get("SB_SERVICE_ROLE", "")
+TABLE = os.environ.get("SB_TABLE", "spk_line_links")  # 那覇は nha_line_links
 
 def read_rows(path):
     raw = open(path, "rb").read()
@@ -88,7 +89,7 @@ def main():
             rec["answered_at"] = a.replace("/", "-").replace(" ", "T")
     body = json.dumps(recs, ensure_ascii=False).encode()
     req = urllib.request.Request(
-        f"{SB_URL}/rest/v1/spk_line_links?on_conflict=resv_no",
+        f"{SB_URL}/rest/v1/{TABLE}?on_conflict=resv_no",
         data=body, method="POST",
         headers={"apikey": KEY, "Authorization": f"Bearer {KEY}",
                  "Content-Type": "application/json",

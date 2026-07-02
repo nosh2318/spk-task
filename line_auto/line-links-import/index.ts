@@ -21,6 +21,8 @@ Deno.serve(async (req) => {
 
   const body = await req.json().catch(() => null);
   if (!body || !Array.isArray(body.rows)) return j({ error: "rows がありません" }, 400);
+  const store = (body.store === "nha") ? "nha" : "spk";
+  const TABLE = `${store}_line_links`;
 
   // 予約番号・userId 必須。テスト/空は除外
   const clean = body.rows
@@ -36,7 +38,7 @@ Deno.serve(async (req) => {
     }));
   if (!clean.length) return j({ ok: true, count: 0, note: "有効行なし" });
 
-  const resp = await fetch(`${SB_URL}/rest/v1/spk_line_links?on_conflict=resv_no`, {
+  const resp = await fetch(`${SB_URL}/rest/v1/${TABLE}?on_conflict=resv_no`, {
     method: "POST", headers: { ...H, Prefer: "resolution=merge-duplicates,return=minimal" },
     body: JSON.stringify(clean),
   });
