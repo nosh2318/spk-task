@@ -46,7 +46,9 @@ Deno.serve(async (req) => {
     const st = String(resv[0].status || "").toLowerCase();
     if (st.includes("cancel") || st.includes("キャンセル")) { await logSend({ resv_no, action, status: "skipped", error: "cancelled" }); return json({ ok: false, reason: "cancelled" }); }
     const todayJST = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
-    const refDate = action === "track_col" ? resv[0][colCol] : resv[0][delCol];
+    // 返却時アクション(回収追跡/乗り捨て/御礼)は返却日で、貸出時アクション(傷チェック/お届け追跡/到着)は貸出日で判定
+    const returnAct = action === "track_col" || action === "dropoff" || action === "thanks";
+    const refDate = returnAct ? resv[0][colCol] : resv[0][delCol];
     if (!refDate || String(refDate).slice(0, 10) < todayJST) { await logSend({ resv_no, action, status: "skipped", error: "past_or_no_date:" + (refDate || "") }); return json({ ok: false, reason: "past_or_no_date" }); }
   }
 
