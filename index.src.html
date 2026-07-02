@@ -65,14 +65,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v883';
+  var CV='spk-v884';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=770').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=771').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -5546,10 +5546,27 @@ async function saveMonthlySnapshot(store,ym,data,vehicles,fleet,kpiFlags,kpiTabl
   const retRes=allRes.filter(r=>r.returnDate&&r.returnDate.slice(0,7)===ym);
   const sameMonth=retRes.filter(r=>r.createdAt&&r.createdAt.slice(0,7)===ym);
   // クラス別集計
-  let totalDays=0,activeCount=0,totalRevenue=0;
+  // ★2026-07 稼働率 新統一式：分子=予約(配車)日数／分母=稼働可能日(その月の日数−メンテ日)。メンテ/車検/点検/その他は稼働日にも可能日にも数えない（実稼働ベース）
+  const maintTbl=store==="spk"?"maintenance":"nha_maintenance";
+  const maintByVeh={};
+  try{
+    const{data:mRows}=await sb.from(maintTbl).select("vehicle_code,start_date,end_date,block_type");
+    (mRows||[]).forEach(m=>{
+      if(m.block_type&&m.block_type!=="maintenance")return;// partner_reserved等は分母から除外しない（メンテ系のみ除外）
+      if(!m.start_date||!m.end_date)return;
+      const set=maintByVeh[m.vehicle_code]||(maintByVeh[m.vehicle_code]=new Set());
+      const a=new Date(m.start_date+"T00:00:00"),b=new Date(m.end_date+"T00:00:00");
+      const s=a>ms?a:ms,e=b<me?b:me;
+      for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1)){set.add(toLD(d));}
+    });
+  }catch(e){console.warn("[Snapshot] maintenance fetch failed",e&&e.message);}
+  let totalDays=0,totalAvail=0,activeCount=0,totalRevenue=0;
   const clsMap={};
   vehicles.forEach(v=>{
     if(!isKpiActive(v.code))return;
+    const mSet=maintByVeh[v.code]||new Set();
+    const availV=dim-mSet.size;
+    if(availV<=0)return;// 丸ごとメンテ＝稼働可能日0→分母に入れない
     activeCount++;
     const rentalDays=new Set();let vRev=0;
     allRes.forEach(r=>{if(fleet[r.id]!==v.code)return;
@@ -5558,14 +5575,15 @@ async function saveMonthlySnapshot(store,ym,data,vehicles,fleet,kpiFlags,kpiTabl
       for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1)){rentalDays.add(toLD(d));}
       if(r.returnDate&&r.returnDate.slice(0,7)===ym)vRev+=(Number(r.price)||0);
     });
+    mSet.forEach(dd=>rentalDays.delete(dd));// メンテ日と重なる稼働は実稼働から除外
     const vDays=rentalDays.size;
-    totalDays+=vDays;totalRevenue+=vRev;
+    totalDays+=vDays;totalAvail+=availV;totalRevenue+=vRev;
     const tp=v.type||"?";
-    if(!clsMap[tp])clsMap[tp]={type:tp,count:0,rental_days:0,revenue:0};
-    clsMap[tp].count++;clsMap[tp].rental_days+=vDays;clsMap[tp].revenue+=vRev;
+    if(!clsMap[tp])clsMap[tp]={type:tp,count:0,rental_days:0,avail_days:0,revenue:0};
+    clsMap[tp].count++;clsMap[tp].rental_days+=vDays;clsMap[tp].avail_days+=availV;clsMap[tp].revenue+=vRev;
   });
   const classDetail=Object.values(clsMap).map(c=>{
-    const avail=c.count*dim;
+    const avail=c.avail_days;
     return{...c,avail_days:avail,util_pct:avail>0?Math.round(c.rental_days/avail*100):0,
       adr:c.rental_days>0?Math.round(c.revenue/c.rental_days):0,
       revpacd:avail>0?Math.round(c.revenue/avail):0};
@@ -5583,7 +5601,7 @@ async function saveMonthlySnapshot(store,ym,data,vehicles,fleet,kpiFlags,kpiTabl
     (exRows||[]).forEach(r=>{if((r.description||"").startsWith("じゃらん事前決済"))return;if((r.date||"").slice(0,7)===ym)extraRevenue+=(Number(r.amount)||0);});
   }catch(e){console.warn("[Snapshot] extra_sales fetch failed",e&&e.message);}
   const grandRevenue=resRevenue+extraRevenue;
-  const totalAvail=activeCount*dim;
+  // totalAvail は稼働ループで実稼働可能日(メンテ除外)を積算済み
   const row={store,year_month:ym,active_vehicles:activeCount,
     total_rental_days:totalDays,total_available_days:totalAvail,
     utilization_pct:totalAvail>0?Math.round(totalDays/totalAvail*100):0,
@@ -5749,7 +5767,7 @@ function ClsRevCard({u,nowYm}){
   Object.values(u.perVeh).forEach(d=>{
     const t=d.type||"?";
     if(!clsMap[t])clsMap[t]={rev:0,count:0,days:0,maxDays:0};
-    clsMap[t].rev+=d.rev;clsMap[t].count++;clsMap[t].days+=d.days;clsMap[t].maxDays+=u.dim;
+    clsMap[t].rev+=d.rev;clsMap[t].count++;clsMap[t].days+=d.days;clsMap[t].maxDays+=(d.maxDays!=null?d.maxDays:u.dim);
   });
   const entries=classOrder.filter(t=>clsMap[t]);
   if(!entries.length)return null;
@@ -6638,6 +6656,7 @@ function ManagementTab({store,data,vehicles,fleet}){
   const[dbFleet,setDbFleet]=useState([]);
   const[dbVehs,setDbVehs]=useState([]);
   const[dbKpi,setDbKpi]=useState([]);
+  const[dbMaint,setDbMaint]=useState([]);
   const[dbPlaces,setDbPlaces]=useState([]);
   const[dbTasks,setDbTasks]=useState([]);
   const[dbLoading2,setDbLoading2]=useState(false);
@@ -6773,8 +6792,9 @@ function ManagementTab({store,data,vehicles,fleet}){
       loadDbAll(isSpk?"vehicle_monthly_kpi":"nha_vehicle_monthly_kpi"),
       sub==="analytics"?loadDbAll(tasksTable):Promise.resolve([]),
       sub==="analytics"?sb.from("logs").select("car_id,date,cost,type").eq("store_id","sapporo").then(r2=>r2.data||[]):Promise.resolve([]),
-    ]).then(([r,f,v,k,t,hl])=>{
-      setDbResvs(r);setDbFleet(f);setDbVehs(v);setDbKpi(k);
+      loadDbAll(isSpk?"maintenance":"nha_maintenance"),
+    ]).then(([r,f,v,k,t,hl,mnt])=>{
+      setDbResvs(r);setDbFleet(f);setDbVehs(v);setDbKpi(k);setDbMaint(mnt||[]);
       if(hl)setHmLogsForPL(hl);
       if(sub==="analytics"){
         setDbTasks(t.filter(tk=>tk.type==="DEL"||tk.type==="COL"));
@@ -7007,12 +7027,23 @@ function ManagementTab({store,data,vehicles,fleet}){
       const m=months[ym];
       const y=parseInt(ym.split("-")[0]),mo=parseInt(ym.split("-")[1]);
       const dim=new Date(y,mo,0).getDate();
-      // isKpiActive
+      const ms=new Date(y,mo-1,1),me=new Date(y,mo-1,dim);
       const kf=kpiF[ym]||{};
+      // ★2026-07 新統一式：メンテ/車検/点検/その他の日は分母(稼働可能日)からも除く（実稼働ベース）
+      const maintByVeh={};
+      (dbMaint||[]).forEach(mm=>{
+        if(mm.block_type&&mm.block_type!=="maintenance")return;
+        if(!mm.start_date||!mm.end_date)return;
+        let s=new Date(mm.start_date.slice(0,10)),e=new Date(mm.end_date.slice(0,10));
+        if(s<ms)s=ms;if(e>me)e=me;if(s>e)return;
+        const set=maintByVeh[mm.vehicle_code]||(maintByVeh[mm.vehicle_code]=new Set());
+        for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1))set.add(d.toISOString().slice(0,10));
+      });
+      const availOf=(c)=>dim-((maintByVeh[c]&&maintByVeh[c].size)||0);
       const activeVehs=dbVehs.filter(v=>{
         const c=v.code;
-        if(kf[c]!==undefined)return kf[c]!==false;
-        return v.active!==false;
+        const act=(kf[c]!==undefined)?(kf[c]!==false):(v.active!==false);
+        return act&&availOf(c)>0;// 丸ごとメンテ＝稼働可能日0→分母に入れない
       });
       m.activeCount=activeVehs.length;
       m.totalVehs=dbVehs.length;
@@ -7025,7 +7056,6 @@ function ManagementTab({store,data,vehicles,fleet}){
         const vc=fMap[r.id];
         if(!vc)return;
         if(!activeVehs.find(v=>v.code===vc))return;
-        const ms=new Date(y,mo-1,1),me=new Date(y,mo-1,dim);
         let s=new Date(ld.slice(0,10)),e=new Date(rd2.slice(0,10));
         if(s<ms)s=ms;if(e>me)e=me;
         if(s>e)return;
@@ -7034,19 +7064,21 @@ function ManagementTab({store,data,vehicles,fleet}){
           vehDays[vc].add(d.toISOString().slice(0,10));
         }
       });
-      let totalDays=0;
-      Object.values(vehDays).forEach(s=>{totalDays+=s.size;});
+      // メンテ日と重なる稼働は実稼働から除外
+      Object.keys(vehDays).forEach(vc=>{const mset=maintByVeh[vc];if(mset)mset.forEach(dd=>vehDays[vc].delete(dd));});
+      let totalDays=0,totalAvail=0;
+      activeVehs.forEach(v=>{totalDays+=(vehDays[v.code]?vehDays[v.code].size:0);totalAvail+=availOf(v.code);});
       m.rentalDays=totalDays;
-      m.maxDays=m.activeCount*dim;
+      m.maxDays=totalAvail;
       m.utilPct=m.maxDays>0?Math.round(totalDays/m.maxDays*100):0;
       // 車両タイプ別稼働率
       m.vtUtil={};
       DB_VEH_TYPES.forEach(t=>{
         const typeVehs=activeVehs.filter(v=>(v.type||"")==t);
         if(typeVehs.length===0)return;
-        let tDays=0;
-        typeVehs.forEach(v=>{if(vehDays[v.code])tDays+=vehDays[v.code].size;});
-        m.vtUtil[t]=typeVehs.length*dim>0?Math.round(tDays/(typeVehs.length*dim)*1000)/10:0;
+        let tDays=0,tAvail=0;
+        typeVehs.forEach(v=>{tDays+=(vehDays[v.code]?vehDays[v.code].size:0);tAvail+=availOf(v.code);});
+        m.vtUtil[t]=tAvail>0?Math.round(tDays/tAvail*1000)/10:0;
       });
     });
 
@@ -7058,7 +7090,7 @@ function ManagementTab({store,data,vehicles,fleet}){
     Object.keys(months).forEach(ym=>{if(months[ym].extraRev===undefined)months[ym].extraRev=extraByM[ym]||0;});
 
     return{months,ymList};
-  },[dbResvs,dbFleet,dbVehs,dbKpi,dbStore,extraByM]);
+  },[dbResvs,dbFleet,dbVehs,dbKpi,dbMaint,dbStore,extraByM]);
 
   // サブタブ切替時にロード
   useEffect(()=>{
@@ -7243,7 +7275,7 @@ function ManagementTab({store,data,vehicles,fleet}){
     const avgNights=daysCnt>0?(daysSum/daysCnt):0;
     const unitPrice=plCnt>0?(plRev/plCnt):0;
     const dailyRate=daysSum>0?(plRev/daysSum):0;
-    // ★ 稼働率（TOPウィジェットと統一）: 車両×日ユニーク数 / (稼働車両×月日数)
+    // ★2026-07 稼働率 新統一式: 分母=稼働可能日(月日数−メンテ日)、メンテ重複は稼働から除外（実稼働ベース）
     let utilDays=0,utilActiveCount=0,utilMaxDays=0,utilPct=0;
     {
       const[yr,mo]=ym.split("-").map(Number);
@@ -7252,9 +7284,21 @@ function ManagementTab({store,data,vehicles,fleet}){
       const fMap={};dbFleet.forEach(f=>{fMap[f.reservation_id]=f.vehicle_code;});
       const kpiYm={};dbKpi.filter(k=>k.year_month===ym).forEach(k=>{kpiYm[k.vehicle_code]=k.active;});
       const isKpiActive=(code)=>kpiYm[code]!==undefined?kpiYm[code]:(dbVehs.find(v=>v.code===code)?.active!==false);
+      const maintByVeh={};
+      (dbMaint||[]).forEach(mm=>{
+        if(mm.block_type&&mm.block_type!=="maintenance")return;
+        if(!mm.start_date||!mm.end_date)return;
+        let s=new Date(mm.start_date.slice(0,10)),e=new Date(mm.end_date.slice(0,10));
+        if(s<ms)s=ms;if(e>me)e=me;if(s>e)return;
+        const set=maintByVeh[mm.vehicle_code]||(maintByVeh[mm.vehicle_code]=new Set());
+        for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1))set.add(d.toISOString().slice(0,10));
+      });
       dbVehs.forEach(v=>{
         if(!isKpiActive(v.code))return;
-        utilActiveCount++;
+        const mSet=maintByVeh[v.code]||new Set();
+        const availV=dim-mSet.size;
+        if(availV<=0)return;// 丸ごとメンテ＝分母に入れない
+        utilActiveCount++;utilMaxDays+=availV;
         const days=new Set();
         active.forEach(r=>{
           if(fMap[r.id]!==v.code)return;
@@ -7263,15 +7307,15 @@ function ManagementTab({store,data,vehicles,fleet}){
           const s=lDate>ms?lDate:ms;const e=rDate<me?rDate:me;
           for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1)){days.add(d.toISOString().slice(0,10));}
         });
+        mSet.forEach(dd=>days.delete(dd));// メンテ重複を実稼働から除外
         utilDays+=days.size;
       });
-      utilMaxDays=utilActiveCount*dim;
       utilPct=utilMaxDays>0?Math.round(utilDays/utilMaxDays*100):0;
     }
     // CF入金（当月入金分）
     const cfIn=cfPivot.chs.reduce((a,ch)=>a+((cfPivot.map[ym+"|"+ch]||{}).cash_in||0),0);
     return{plRev,plCnt,cfIn,byCh,byChBreak,plBase,plOpt,plDisc,avgNights,daysSum,unitPrice,dailyRate,utilDays,utilActiveCount,utilMaxDays,utilPct};
-  },[dbResvs,dbFleet,dbVehs,dbKpi,dbStore,dashYm,cfPivot]);
+  },[dbResvs,dbFleet,dbVehs,dbKpi,dbMaint,dbStore,dashYm,cfPivot]);
 
   // ★ ダッシュボード用 予約外売上（じゃらん事前決済除外）
   const[dashExtraRev,setDashExtraRev]=useState(0);
@@ -7345,10 +7389,23 @@ function ManagementTab({store,data,vehicles,fleet}){
       const ms=new Date(yr,mo-1,1),me=new Date(yr,mo-1,dim);
       const kpiYm={};dbKpi.filter(k=>k.year_month===ym).forEach(k=>{kpiYm[k.vehicle_code]=k.active;});
       const isKpiActive=(code)=>kpiYm[code]!==undefined?kpiYm[code]:(dbVehs.find(v=>v.code===code)?.active!==false);
-      let utilDays=0,utilActiveCount=0;
+      // ★2026-07 新統一式：分母からメンテ日を除く（実稼働ベース）
+      const maintByVeh={};
+      (dbMaint||[]).forEach(mm=>{
+        if(mm.block_type&&mm.block_type!=="maintenance")return;
+        if(!mm.start_date||!mm.end_date)return;
+        let s=new Date(mm.start_date.slice(0,10)),e=new Date(mm.end_date.slice(0,10));
+        if(s<ms)s=ms;if(e>me)e=me;if(s>e)return;
+        const set=maintByVeh[mm.vehicle_code]||(maintByVeh[mm.vehicle_code]=new Set());
+        for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1))set.add(d.toISOString().slice(0,10));
+      });
+      let utilDays=0,utilActiveCount=0,utilMaxDays=0;
       dbVehs.forEach(v=>{
         if(!isKpiActive(v.code))return;
-        utilActiveCount++;
+        const mSet=maintByVeh[v.code]||new Set();
+        const availV=dim-mSet.size;
+        if(availV<=0)return;
+        utilActiveCount++;utilMaxDays+=availV;
         const days=new Set();
         active.forEach(r=>{
           if(fMap[r.id]!==v.code)return;
@@ -7357,9 +7414,9 @@ function ManagementTab({store,data,vehicles,fleet}){
           const s=lDate>ms?lDate:ms;const e=rDate<me?rDate:me;
           for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1)){days.add(d.toISOString().slice(0,10));}
         });
+        mSet.forEach(dd=>days.delete(dd));
         utilDays+=days.size;
       });
-      const utilMaxDays=utilActiveCount*dim;
       const utilPct=utilMaxDays>0?Math.round(utilDays/utilMaxDays*100):0;
       const cfIn=cfPivot.chs.reduce((a,ch)=>a+((cfPivot.map[ym+"|"+ch]||{}).cash_in||0),0);
       const extraRev=dashYearlyExtra[ym]||0;
@@ -7367,7 +7424,7 @@ function ManagementTab({store,data,vehicles,fleet}){
     }
     const total=months.reduce((a,m)=>({plRev:a.plRev+m.plRev,plCnt:a.plCnt+m.plCnt,extraRev:a.extraRev+m.extraRev,totalRev:a.totalRev+m.totalRev,cfIn:a.cfIn+m.cfIn,daysSum:a.daysSum+m.daysSum,plBase:a.plBase+m.plBase,plOpt:a.plOpt+m.plOpt,plDisc:a.plDisc+m.plDisc}),{plRev:0,plCnt:0,extraRev:0,totalRev:0,cfIn:0,daysSum:0,plBase:0,plOpt:0,plDisc:0});
     return{year,months,total,yearByCh};
-  },[dbResvs,dbFleet,dbVehs,dbKpi,dbStore,dashYm,cfPivot,dashYearlyExtra]);
+  },[dbResvs,dbFleet,dbVehs,dbKpi,dbMaint,dbStore,dashYm,cfPivot,dashYearlyExtra]);
 
   // ★ 月/年切替対応の派生KPI: dashPeriod="month" → dashSummary相当 / "year" → dashYearly.total から加重平均で再計算
   const dashKpi=useMemo(()=>{
@@ -9216,26 +9273,39 @@ function ManagementTab({store,data,vehicles,fleet}){
       ymList.forEach(ym=>{
         const[y,mo]=[parseInt(ym.split("-")[0]),parseInt(ym.split("-")[1])];
         const dim=new Date(y,mo,0).getDate();
+        const ms2=new Date(y,mo-1,1),me2=new Date(y,mo-1,dim);
         const kf=kpiF[ym]||{};
-        const activeVehs=dbVehs.filter(v=>{const c=v.code;if(kf[c]!==undefined)return kf[c]!==false;return v.active!==false;});
+        // ★2026-07 新統一式：メンテ/車検/点検/その他の日を分母から除く（実稼働ベース）
+        const maintByVeh={};
+        (dbMaint||[]).forEach(mm=>{
+          if(mm.block_type&&mm.block_type!=="maintenance")return;
+          if(!mm.start_date||!mm.end_date)return;
+          let s=new Date(mm.start_date.slice(0,10)),e=new Date(mm.end_date.slice(0,10));
+          if(s<ms2)s=ms2;if(e>me2)e=me2;if(s>e)return;
+          const set=maintByVeh[mm.vehicle_code]||(maintByVeh[mm.vehicle_code]=new Set());
+          for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1))set.add(d.toISOString().slice(0,10));
+        });
+        const availOf=(c)=>dim-((maintByVeh[c]&&maintByVeh[c].size)||0);
+        const activeVehs=dbVehs.filter(v=>{const c=v.code;const act=(kf[c]!==undefined)?(kf[c]!==false):(v.active!==false);return act&&availOf(c)>0;});
         const vehDays={};
         reliable.forEach(r=>{
           const ld=r[ldKey],rd2=r[rdKey];if(!ld||!rd2)return;
           const vc=fMap[r.id];if(!vc)return;
           if(!activeVehs.find(v=>v.code===vc))return;
-          const ms2=new Date(y,mo-1,1),me2=new Date(y,mo-1,dim);
           let s=new Date(ld.slice(0,10)),e=new Date(rd2.slice(0,10));
           if(s<ms2)s=ms2;if(e>me2)e=me2;if(s>e)return;
           if(!vehDays[vc])vehDays[vc]=new Set();
           for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1))vehDays[vc].add(d.toISOString().slice(0,10));
         });
-        let totalDays=0;Object.values(vehDays).forEach(s2=>{totalDays+=s2.size;});
+        Object.keys(vehDays).forEach(vc=>{const mset=maintByVeh[vc];if(mset)mset.forEach(dd=>vehDays[vc].delete(dd));});
+        let totalDays=0,totalAvail=0;
+        activeVehs.forEach(v=>{totalDays+=(vehDays[v.code]?vehDays[v.code].size:0);totalAvail+=availOf(v.code);});
         const vtUtil={};const vtCount={};
         DB_VEH_TYPES.forEach(t=>{
           const tv=activeVehs.filter(v=>(v.type||"")==t);if(tv.length===0)return;
           vtCount[t]=tv.length;
-          let tD=0;tv.forEach(v=>{if(vehDays[v.code])tD+=vehDays[v.code].size;});
-          vtUtil[t]=tv.length*dim>0?Math.round(tD/(tv.length*dim)*1000)/10:0;
+          let tD=0,tA=0;tv.forEach(v=>{tD+=(vehDays[v.code]?vehDays[v.code].size:0);tA+=availOf(v.code);});
+          vtUtil[t]=tA>0?Math.round(tD/tA*1000)/10:0;
         });
         // per-vehicle util + revenue
         const vehRevM={};
@@ -9245,10 +9315,10 @@ function ManagementTab({store,data,vehicles,fleet}){
         });
         const perVeh={};
         activeVehs.forEach(v=>{
-          const ds=vehDays[v.code]?vehDays[v.code].size:0;
-          perVeh[v.code]={days:ds,pct:dim>0?Math.round(ds/dim*1000)/10:0,name:v.name||v.code,type:v.type||"?",rev:vehRevM[v.code]||0};
+          const ds=vehDays[v.code]?vehDays[v.code].size:0;const av=availOf(v.code);
+          perVeh[v.code]={days:ds,maxDays:av,pct:av>0?Math.round(ds/av*1000)/10:0,name:v.name||v.code,type:v.type||"?",rev:vehRevM[v.code]||0};
         });
-        utilByM[ym]={activeCount:activeVehs.length,dim,totalDays,maxDays:activeVehs.length*dim,pct:activeVehs.length*dim>0?Math.round(totalDays/(activeVehs.length*dim)*100):0,vtUtil,vtCount,perVeh,vehDays};
+        utilByM[ym]={activeCount:activeVehs.length,dim,totalDays,maxDays:totalAvail,pct:totalAvail>0?Math.round(totalDays/totalAvail*100):0,vtUtil,vtCount,perVeh,vehDays};
       });
 
       // year aggregation
@@ -11168,8 +11238,18 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
     const[y,mo]=selYM.split("-").map(Number);
     const dim=new Date(y,mo,0).getDate();
     const ms=new Date(y,mo-1,1),me=new Date(y,mo-1,dim);
-    let totalDays=0,activeCount=0;
+    let totalDays=0,activeCount=0,totalAvail=0;
     const active=data.filter(r=>r.status!=="cancelled");
+    // ★2026-07 稼働率 新統一式：メンテ/車検/点検/その他の日を分母(稼働可能日)からも除く（実稼働ベース）。maintは app state=camelCase
+    const maintByVeh={};
+    (maintenance||[]).forEach(mm=>{
+      if(mm.blockType&&mm.blockType!=="maintenance")return;
+      if(!mm.startDate||!mm.endDate)return;
+      let s=new Date(mm.startDate.slice(0,10)),e=new Date(mm.endDate.slice(0,10));
+      if(s<ms)s=ms;if(e>me)e=me;if(s>e)return;
+      const set=maintByVeh[mm.vehicleCode]||(maintByVeh[mm.vehicleCode]=new Set());
+      for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1))set.add(toLD(d));
+    });
     // ★ 当月売上（経営DBと完全一致）= DB直接取得値で計算、data staleness対策
     // dbRevRows（DB直取得・raw column名）から、statusがcancelled系でないものだけ使う
     const dbActive=dbRevRows.filter(r=>r.status!=="cancelled"&&r.status!=="キャンセル"&&r.status!=="cancel");
@@ -11188,7 +11268,10 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
     const byClass={};
     vehicles.forEach(v=>{
       if(!isKpiActive(v.code))return;
-      activeCount++;
+      const mSet=maintByVeh[v.code]||new Set();
+      const availV=dim-mSet.size;
+      if(availV<=0)return;// 丸ごとメンテ＝稼働可能日0→分母に入れない
+      activeCount++;totalAvail+=availV;
       const rentalDays=new Set();let vRev=0;
       active.forEach(r=>{if(fleet[r.id]!==v.code)return;
         const ld=new Date(norm(r.lendDate)+"T00:00:00"),rd=new Date(norm(r.returnDate)+"T00:00:00");
@@ -11199,18 +11282,20 @@ function LeadTimeWidget({data,vehicles,fleet,maintenance}){
           vRev+=(dbRevMap[r.id]!==undefined?dbRevMap[r.id]:revOf(r));
         }
       });
+      mSet.forEach(dd=>rentalDays.delete(dd));// メンテ重複を実稼働から除外
       const vDays=rentalDays.size;
       totalDays+=vDays;
       const tp=v.type||"?";
-      if(!byClass[tp]){const cl=INIT_CLASSES.find(c=>c.type===tp);byClass[tp]={label:cl?cl.label:tp,color:CLASS_C[tp]||"#64748b",count:0,days:0,revenue:0,vehicles:[]};}
+      if(!byClass[tp]){const cl=INIT_CLASSES.find(c=>c.type===tp);byClass[tp]={label:cl?cl.label:tp,color:CLASS_C[tp]||"#64748b",count:0,days:0,maxDays:0,revenue:0,vehicles:[]};}
       byClass[tp].count++;
       byClass[tp].days+=vDays;
+      byClass[tp].maxDays+=availV;
       byClass[tp].revenue+=vRev;
-      byClass[tp].vehicles.push({code:v.code,name:v.name,days:vDays,pct:dim>0?Math.round(vDays/dim*100):0,revenue:vRev});
+      byClass[tp].vehicles.push({code:v.code,name:v.name,days:vDays,pct:availV>0?Math.round(vDays/availV*100):0,revenue:vRev});
     });
-    Object.values(byClass).forEach(c=>{c.maxDays=c.count*dim;c.pct=c.maxDays>0?Math.round(c.days/c.maxDays*100):0;c.revpacd=c.maxDays>0?Math.round(c.revenue/c.maxDays):0;c.vehicles.sort((a,b)=>b.pct-a.pct);});
+    Object.values(byClass).forEach(c=>{c.pct=c.maxDays>0?Math.round(c.days/c.maxDays*100):0;c.revpacd=c.maxDays>0?Math.round(c.revenue/c.maxDays):0;c.vehicles.sort((a,b)=>b.pct-a.pct);});
     const classOrder=INIT_CLASSES.map(c=>c.type).filter(t=>byClass[t]);
-    const maxDays=activeCount*dim;
+    const maxDays=totalAvail;
     const revpacd=maxDays>0?Math.round(totalRevenue/maxDays):0;
     const perVehicleRevenue=activeCount>0?Math.round(totalRevenue/activeCount):0;
     // ★ 予約単価（1予約あたり単価）をHP(自社)とOTAに分けて集計
@@ -21686,7 +21771,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.338";
+const APP_VERSION="v4.7.339";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
