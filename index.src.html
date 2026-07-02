@@ -65,14 +65,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v901';
+  var CV='spk-v902';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=788').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=789').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -12842,8 +12842,13 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
         const fixed=useFixedDow&&isFixedDay(dow,s.fixedDays);
         days.push({date:ds,day:d,dow,shift:sh,att,fixed});
       }
+      const isP=s.type==="アルバイト";
+      // ★ 2026-07-03 早出/残業割増: アルバイトで1日8時間(休憩控除後の実労働)超の分に残業代を反映
+      //   固定曜日(月給/日給に内包)の超過 = 時給×1.25 全額上乗せ / 変動日・時給日の超過 = 割増分の時給×0.25
+      const otRate=(s.hourlyWage||0);
+      const dayOtPay=(realH,isFixed)=>{const ot=Math.max(0,Math.round((realH-8)*10)/10);if(!isP||otRate<=0||ot<=0)return{ot:0,pay:0};return{ot,pay:otRate*(isFixed?1.25:0.25)*ot};};
       // 予算（シフトベース）
-      let budgetDays=0,budgetHours=0,budgetFixedDays=0,budgetVarHours=0;
+      let budgetDays=0,budgetHours=0,budgetFixedDays=0,budgetVarHours=0,budgetOtH=0,budgetOtPay=0;
       days.forEach(d=>{
         if(d.shift&&d.shift.symbol!=="公"&&d.shift.symbol!=="希"&&d.shift.symbol!=="有"){
           budgetDays++;
@@ -12852,9 +12857,9 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
           if(d.fixed)budgetFixedDays++;
           // 月給/時給複合の変動分（ヘルプ出勤）は休憩控除なし（A方針）。日給複合は従来通り休憩控除あり
           else budgetVarHours+=(monthlyHasHourly?calcHours(d.shift.start||"09:00",d.shift.end||"18:00",0):h);
+          const ot=dayOtPay(h,d.fixed);budgetOtH+=ot.ot;budgetOtPay+=ot.pay;
         }
       });
-      const isP=s.type==="アルバイト";
       let budgetWage;
       if(isMonthlyBase){
         // 月給（固定給）+ 変動曜日の時給上乗せ（複合時のみ）
@@ -12864,9 +12869,10 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
       }else{
         budgetWage=isP?(s.hourlyWage||0)*budgetHours:(s.monthlySalary||0);
       }
+      budgetWage+=budgetOtPay;
       const budgetTransport=(s.transportCost||0)*budgetDays;
       // 実績（勤怠承認ベース）— 欠勤は出勤0扱い
-      let actualDays=0,actualHours=0,absentDays=0,actualFixedDays=0,actualVarHours=0;
+      let actualDays=0,actualHours=0,absentDays=0,actualFixedDays=0,actualVarHours=0,actualOtH=0,actualOtPay=0;
       days.forEach(d=>{
         if(d.att&&d.att.approved){
           if(d.att.absent){absentDays++;return;}
@@ -12877,6 +12883,7 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
           if(d.fixed)actualFixedDays++;
           // 月給/時給複合の変動分（ヘルプ出勤）は休憩控除なし（A方針）。日給複合は従来通り休憩控除あり
           else actualVarHours+=(monthlyHasHourly?calcHours(d.att.start,d.att.end,0):h);
+          const ot=dayOtPay(h,d.fixed);actualOtH+=ot.ot;actualOtPay+=ot.pay;
         }
       });
       let actualWage;
@@ -12888,6 +12895,7 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
       }else{
         actualWage=isP?(s.hourlyWage||0)*actualHours:(s.monthlySalary||0);
       }
+      actualWage+=actualOtPay;
       const actualTransport=(s.transportCost||0)*actualDays;
       // 残業/休日出勤
       const otHours=otHByStaff[s.name]||0;
@@ -12901,6 +12909,7 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
         otHours,hwHours,hwDays,otEvents,hwEvents,
         actualTotal:Math.round(actualWage)+actualTransport,isP,absentDays,
         hasDailyWage,isMonthlyPart:isMonthlyBase,monthlyHasHourly,budgetFixedDays,budgetVarHours:Math.round(budgetVarHours*10)/10,actualFixedDays,actualVarHours:Math.round(actualVarHours*10)/10,
+        budgetOtH:Math.round(budgetOtH*10)/10,budgetOtPay:Math.round(budgetOtPay),actualOtH:Math.round(actualOtH*10)/10,actualOtPay:Math.round(actualOtPay),
         dailyWage:s.dailyWage||0,hourlyWage:s.hourlyWage||0,breakMin};
     });
     return result;
@@ -13185,6 +13194,10 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
                 </div>
               </>}
             </>}
+            {d.actualOtPay>0&&<div style={{display:"flex",justifyContent:"space-between",borderBottom:"1px solid #fed7aa",background:"#fff7ed",margin:"4px -8px",padding:"7px 10px",borderRadius:6}}>
+              <span style={{color:"#c2410c",fontWeight:700,fontSize:12}}>⏱ 早出/残業割増（8h超・上の基本給に含む）</span>
+              <span style={{fontWeight:800,color:"#ea580c"}}>{d.actualOtH.toFixed(1)}h ＝ +¥{d.actualOtPay.toLocaleString()}</span>
+            </div>}
             {d.otHours>0&&<div style={{display:"flex",justifyContent:"space-between",borderBottom:"1px solid #fed7aa",background:"#fff7ed",margin:"4px -8px",padding:"7px 10px",borderRadius:6}}>
               <span style={{color:"#92400e",fontWeight:700,fontSize:12}}>🟠 残業（ログ）</span>
               <span style={{fontWeight:800,color:"#f97316"}}>{d.otEvents.length}件 / {d.otHours.toFixed(1)}h</span>
@@ -20019,7 +20032,7 @@ function _spkPartBudgetByMonth(staff,shifts){
       const monthlyHasHourly=isMonthlyBase&&hourly>0&&!!fixedDays;
       const hasDailyWage=daily>0&&!!fixedDays;
       const useFixedDow=hasDailyWage||monthlyHasHourly;
-      let days=0,hours=0,fixed=0,vr=0;
+      let days=0,hours=0,fixed=0,vr=0,otPay=0;
       const rows=byName[s.name]||{};
       Object.keys(rows).forEach(dt=>{
         if(String(dt).slice(0,7)!==ym)return;
@@ -20028,11 +20041,14 @@ function _spkPartBudgetByMonth(staff,shifts){
         const fx=useFixedDow&&fixedDays.indexOf(DOW[dow])>=0;
         days++;const h=ch(r.start||"09:00",r.end||"18:00",br);hours+=h;
         if(fx)fixed++;else vr+=(monthlyHasHourly?ch(r.start||"09:00",r.end||"18:00",0):h);
+        // 早出/残業割増: 1日8時間(休憩控除後)超の分 = 固定日×1.25全額 / 変動日×0.25割増分
+        if(hourly>0){const ot=Math.max(0,Math.round((h-8)*10)/10);if(ot>0)otPay+=hourly*(fx?1.25:0.25)*ot;}
       });
       let wage;
       if(isMonthlyBase)wage=monthly+(monthlyHasHourly?hourly*vr:0);
       else if(hasDailyWage)wage=daily*fixed+hourly*vr;
       else wage=hourly*hours;
+      wage+=otPay;
       monthTotal+=Math.round(wage)+trans*days;
     });
     out[ym]=monthTotal;
@@ -21921,7 +21937,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.356";
+const APP_VERSION="v4.7.357";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
