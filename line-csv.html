@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ja"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LINE紐付けCSV更新｜HANDYMAN札幌</title>
+<style>
+ body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans",sans-serif;margin:0;background:#f1f5f9;color:#0f172a}
+ .wrap{max-width:640px;margin:0 auto;padding:16px}
+ h1{font-size:18px;margin:8px 0}
+ .card{background:#fff;border-radius:12px;padding:16px;margin:12px 0;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+ .btn{display:inline-block;background:#16a34a;color:#fff;border:none;border-radius:8px;padding:12px 18px;font-size:15px;font-weight:700;cursor:pointer}
+ .btn:disabled{opacity:.5}
+ input[type=file]{font-size:15px;width:100%;padding:10px 0}
+ .muted{color:#64748b;font-size:13px;line-height:1.7}
+ .ok{color:#15803d;font-weight:700}.err{color:#b91c1c;font-weight:700}
+ ol{padding-left:20px;line-height:1.9;font-size:14px}
+ code{background:#f1f5f9;padding:1px 5px;border-radius:4px}
+ #result{white-space:pre-wrap;font-size:14px;margin-top:10px}
+</style></head><body>
+<div class="wrap">
+ <h1>📱 LINE紐付けCSV 更新（札幌）</h1>
+ <div class="card">
+   <div class="muted"><b>毎日の業務</b>：エルメの受付フォーム回答をCSVでエクスポートし、ここにアップロードしてください。新規のお客様が自動送信対象（📱OK）になります。</div>
+ </div>
+ <div class="card">
+   <b>手順</b>
+   <ol>
+     <li>エルメ →「フォーム作成」→ <b>フォーム_1</b> の「⬇ CSV」でCSVをダウンロード</li>
+     <li>下の「ファイルを選択」でそのCSVを選ぶ</li>
+     <li>「アップロードして更新」を押す</li>
+   </ol>
+   <input type="file" id="file" accept=".csv"><br>
+   <button class="btn" id="go" disabled>アップロードして更新</button>
+   <div id="result"></div>
+ </div>
+ <div class="card muted">
+   ※このページは<b>本体アプリにログイン済みの端末</b>でのみ動作します（未ログインは「ログインが必要です」と出ます）。<br>
+   ※予約番号が一致しない/フォーム未回答のお客様は📱手動のままです（安全のため完全一致のみ自動）。
+ </div>
+</div>
+<script>
+const FN="https://ckrxttbnawkclshczsia.supabase.co/functions/v1/line-links-import";
+function getToken(){
+  for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);
+    if(/sb-.*-auth-token/.test(k)){try{const v=JSON.parse(localStorage.getItem(k));
+      const t=v.access_token||(v.currentSession&&v.currentSession.access_token)||(Array.isArray(v)&&v[0]);
+      if(t)return t;}catch(e){}}}
+  return null;
+}
+function parseCSV(text){
+  const rows=[];let f='',row=[],q=false;
+  for(let i=0;i<text.length;i++){const c=text[i];
+    if(q){if(c==='"'){if(text[i+1]==='"'){f+='"';i++;}else q=false;}else f+=c;}
+    else{if(c==='"')q=true;else if(c===','){row.push(f);f='';}
+      else if(c==='\n'){row.push(f);rows.push(row);row=[];f='';}
+      else if(c==='\r'){}else f+=c;}}
+  if(f.length||row.length){row.push(f);rows.push(row);}
+  return rows;
+}
+function idx(h,key){for(let i=0;i<h.length;i++)if(h[i].indexOf(key)>=0)return i;return -1;}
+let picked=null;
+document.getElementById('file').onchange=e=>{picked=e.target.files[0];document.getElementById('go').disabled=!picked;document.getElementById('result').textContent=picked?('選択: '+picked.name):'';};
+document.getElementById('go').onclick=async()=>{
+  const R=document.getElementById('result');const btn=document.getElementById('go');
+  const token=getToken();
+  if(!token){R.innerHTML='<span class="err">ログインが必要です。本体アプリにログインした端末で開いてください。</span>';return;}
+  if(!picked){return;}
+  btn.disabled=true;R.textContent='読み込み中…';
+  try{
+    const buf=await picked.arrayBuffer();
+    let text;try{text=new TextDecoder('shift-jis').decode(buf);}catch(_){text=new TextDecoder('utf-8').decode(buf);}
+    if(text.indexOf('�')>=0){try{text=new TextDecoder('utf-8').decode(buf);}catch(_){}}
+    const rows=parseCSV(text);const h=rows[0];
+    const iU=idx(h,'ユーザーID'),iR=idx(h,'予約番号'),iN=idx(h,'予約者'),iL=idx(h,'LINE名'),iM=idx(h,'媒体'),iAid=idx(h,'回答ID');
+    if(iU<0||iR<0){R.innerHTML='<span class="err">CSVの形式が違います（LINEユーザーID/予約番号 列が見つかりません）。</span>';btn.disabled=false;return;}
+    const seen={},data=[];
+    for(let i=1;i<rows.length;i++){const r=rows[i];if(!r||r.length<=iU)continue;
+      const rn=(r[iR]||'').trim(),uid=(r[iU]||'').trim();
+      if(!rn||!uid||/テスト|test/i.test(rn))continue;
+      const aid=iAid>=0?parseInt(r[iAid]||'0'):0;
+      if(seen[rn]!==undefined&&aid<seen[rn])continue;seen[rn]=aid;
+      data.push({resv_no:rn,line_user_id:uid,line_name:iL>=0?r[iL]:null,cust_name:iN>=0?r[iN]:null,media:iM>=0?r[iM]:null,answer_id:aid});
+    }
+    R.textContent='送信中… '+data.length+'件';
+    const resp=await fetch(FN,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({rows:data})});
+    const j=await resp.json();
+    if(j.ok)R.innerHTML='<span class="ok">✅ 更新完了：'+j.count+'件を反映しました。</span>\n（数分後にアプリの📱OK/手動バッジに反映されます）';
+    else R.innerHTML='<span class="err">エラー：'+(j.error||JSON.stringify(j))+'</span>';
+  }catch(err){R.innerHTML='<span class="err">失敗：'+err.message+'</span>';}
+  btn.disabled=false;
+};
+</script></body></html>
