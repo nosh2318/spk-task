@@ -613,15 +613,22 @@ function detectInsurance_(text) {
   if (/フルカバー|フル補償|安心フル|あんしんフル/i.test(text)) return 'フル';
   // ★ 楽天形式: 「免責補償別 N」「NOC補償 N」両方検出して組み合わせ判定
   // 「N」は1以上の数字（「免責補償別 0」=未加入は除外）
-  var hasNocRakuten = /NOC補償\s*[1-9]/i.test(text);
+  // ★ 2026-06-28 修正: 楽天「免責補償別＋NOC補償」両方記載＝標準のNOC加入（フルではない）。
+  //   エアトリ「免責補償+NOC補償セット」・スカイチケット「NOC補償×N」もNOC加入として検出。
+  var hasNocRakuten = /NOC補償[\s　×xＸ*]*[1-9]/i.test(text) || /NOC補償セット/i.test(text) || /免責補償\s*\+\s*NOC補償/i.test(text);
   var hasCdwRakuten = /免責補償別\s*[1-9]/i.test(text);
-  if (hasNocRakuten && hasCdwRakuten) return 'フル';  // 両方加入 = フル相当
-  if (hasNocRakuten) return 'NOC';                    // NOCのみ
+  if (hasNocRakuten) return 'NOC';                    // NOC加入（楽天両方/エアトリセット/スカイNOC）
   // NOC/安心パック「あり」を明示的に確認
   if (/レンタカー安心パック[：:\s]*あり/i.test(text)) return 'NOC';
   if (/安心パック[：:\s]*あり/i.test(text)) return 'NOC';
   if (/NOC[補償]*[：:\s]*あり/i.test(text)) return 'NOC';
   if (/ノンオペレーション[補償料金]*[：:\s]*あり|ノンオペ[：:\s]*あり/i.test(text)) return 'NOC';
+  // ★ 2026-06-25 fix: じゃらん形式「ノンオペレーションチャージ補償」(プレーン列挙)を NOC として検出
+  //   じゃらんは補償（任意加入）欄に"加入済みオプションのみ"を列挙する（あり/なしのチェックリストではない）。
+  //   「免責補償制度 ノンオペレーションチャージ補償」= NOC加入。旧ロジックは「：あり」が無く、かつ
+  //   [補償料金]* が「チャージ」を含まないため取りこぼし → 最後の汎用「免責」フォールバックに落ちて 免責 と誤判定。
+  //   HP形式「ノンオペレーションチャージ補償: なし」(同一行に なし/未加入/0円)は除外する。
+  if (/ノンオペレーションチャージ(?![^。\n]*(なし|未加入|無し|0円|加入しない))/i.test(text)) return 'NOC';
   // 免責「あり」を明示的に確認
   if (/免責補償制度\(CDW\)[：:\s]*あり/i.test(text)) return '免責';
   if (/免責補償[：:\s]*あり|免責補償制度[：:\s]*あり|免責[：:\s]*加入|免責補償料/i.test(text)) return '免責';
@@ -1029,11 +1036,16 @@ function parseOfficial_(body) {
   var mailMatch = body.match(/【メールアドレス】\s*\n\s*(\S+)/);
   var mail = mailMatch ? mailMatch[1].trim() : '';
   var delPlaceMatch = body.match(/【お届け場所名】\s*\n\s*(.+)/);
-  var delPlace = delPlaceMatch ? delPlaceMatch[1].trim() : '';
+  var delName = delPlaceMatch ? delPlaceMatch[1].trim() : '';
   var colPlaceMatch = body.match(/【回収場所名】\s*\n\s*(.+)/);
-  var colPlace = colPlaceMatch ? colPlaceMatch[1].trim() : '';
+  var colName = colPlaceMatch ? colPlaceMatch[1].trim() : '';
   var addressMatch = body.match(/【お届け場所住所】\s*\n\s*(.+)/);
   var address = addressMatch ? addressMatch[1].trim() : '';
+  var colAddressMatch = body.match(/【回収場所住所】\s*\n\s*(.+)/);
+  var colAddress = colAddressMatch ? colAddressMatch[1].trim() : '';
+  // ★ 2026-06-26: HPオフィシャルは「場所名(自宅等)」ではなく住所をappの場所に採用（マップリンク精度向上）。住所が空なら場所名にフォールバック
+  var delPlace = address || delName;
+  var colPlace = colAddress || colName;
   var hpStore = '';
   var storeMatch = body.match(/【(?:ご利用|利用)?店舗[名]?】\s*\n?\s*(.+)/);
   if (storeMatch) {
@@ -1560,7 +1572,7 @@ function handleJalanPayment_(reservation) {
 }
 
 function handleJalanPaymentCancel_(reservationId) {
-  var rows = supabaseGet_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(reservationId) + '&select=id,status,amount,customer_name');
+  var rows = supabaseGet_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(reservationId) + '&select=id,status,amount,customer_name,square_payment_url');
   if (!rows || rows.length === 0) return;
   var pay = rows[0];
   var prevStatus = pay.status;
@@ -1571,11 +1583,49 @@ function handleJalanPaymentCancel_(reservationId) {
     updatePaymentSheetStatus_(reservationId, '⚠️ 要返金', '');
     postToSlackChannel_(JALAN_PAY_CHANNEL, '⚠️ *返金対応必要*\n予約番号： ' + reservationId + '\n宛名： ' + (pay.customer_name||'') + '\n金額： ¥' + (pay.amount||0) + '\n状態： 入金済みキャンセル → *要Square返金*');
   } else {
+    // ★ 2026-06-29: 未入金キャンセル時は Squareリンクを無効化（削除）して二重決済を防止
+    var deact = deactivateSquareLinkByUrl_(pay.square_payment_url);
+    var linkMsg = deact.ok ? '✅ Squareリンク無効化済（決済不可）'
+                           : '⚠️ Squareリンク無効化に失敗（' + (deact.reason||'') + '）→ *Square管理画面で手動無効化してください*';
     supabaseUpdate_('jalan_payments', 'reservation_id=eq.' + encodeURIComponent(reservationId), {status:'cancelled', cancelled_at:now});
     updatePaymentSheetStatus_(reservationId, '❌ キャンセル', '');
-    postToSlackChannel_(JALAN_PAY_CHANNEL, '🔄 *キャンセル（決済前）*\n予約番号： ' + reservationId + '\n宛名： ' + (pay.customer_name||'') + '\n金額： ¥' + (pay.amount||0) + '\n状態： 未入金キャンセル・対応不要');
+    postToSlackChannel_(JALAN_PAY_CHANNEL, '🔄 *キャンセル（決済前）*\n予約番号： ' + reservationId + '\n宛名： ' + (pay.customer_name||'') + '\n金額： ¥' + (pay.amount||0) + '\n' + linkMsg);
+    Logger.log('[JalanPaymentCancel] Link deactivate: ' + reservationId + ' → ' + JSON.stringify(deact));
   }
   Logger.log('[JalanPaymentCancel] Done: ' + reservationId + ' → ' + (prevStatus === 'paid' ? 'refund' : 'cancelled'));
+}
+
+// ★ 2026-06-29: URLから Square Payment Link を特定して削除（無効化）。削除後はリンクを開いても404＝決済不可
+function deactivateSquareLinkByUrl_(url) {
+  if (!url) return {ok:false, reason:'決済URLなし'};
+  var token = getSquareToken_();
+  if (!token) return {ok:false, reason:'SQUARE_API_TOKEN未設定'};
+  var target = normalizeSquareUrl_(url);
+  var foundId = null, cursor = null, fetched = 0;
+  do {
+    var apiUrl = 'https://connect.squareup.com/v2/online-checkout/payment-links?limit=100';
+    if (cursor) apiUrl += '&cursor=' + encodeURIComponent(cursor);
+    try {
+      var resp = UrlFetchApp.fetch(apiUrl, {method:'get', headers:{'Authorization':'Bearer '+token,'Square-Version':'2024-01-18'}, muteHttpExceptions:true});
+      if (resp.getResponseCode() !== 200) return {ok:false, reason:'一覧取得 ' + resp.getResponseCode()};
+      var data = JSON.parse(resp.getContentText());
+      var links = data.payment_links || [];
+      for (var i = 0; i < links.length; i++) {
+        var l = links[i];
+        if (!l.id) continue;
+        if ((l.url && normalizeSquareUrl_(l.url) === target) || (l.long_url && normalizeSquareUrl_(l.long_url) === target)) { foundId = l.id; break; }
+      }
+      fetched += links.length;
+      cursor = data.cursor;
+    } catch (e) { return {ok:false, reason:'一覧例外: ' + e.message}; }
+  } while (!foundId && cursor && fetched < 500);
+  if (!foundId) return {ok:false, reason:'URLからID特定不可'};
+  try {
+    var delResp = UrlFetchApp.fetch('https://connect.squareup.com/v2/online-checkout/payment-links/' + foundId, {method:'delete', headers:{'Authorization':'Bearer '+token,'Square-Version':'2024-01-18'}, muteHttpExceptions:true});
+    var c = delResp.getResponseCode();
+    if (c >= 200 && c < 300) return {ok:true, id:foundId};
+    return {ok:false, reason:'DELETE ' + c + ': ' + delResp.getContentText().slice(0,150)};
+  } catch (e) { return {ok:false, reason:'DELETE例外: ' + e.message}; }
 }
 
 function postToSlackChannel_(channel, text, blocks) {
@@ -2357,7 +2407,7 @@ function checkUnpaidAlert() {
       // 判定不能/両店該当時は両チャンネルにアラート（札幌に勝手に流さない）
       resolved.channels.forEach(function(ch) {
         alertsByCh[ch] = alertsByCh[ch] || [];
-        alertsByCh[ch].push({reservationId:resvId, customerName:name, amount:amount, lendDate:lendDate, daysLeft:diffDays, store:resolved.label, warning:resolved.warning});
+        alertsByCh[ch].push({reservationId:resvId, customerName:name, amount:amount, lendDate:lendDate, daysLeft:diffDays, store:resolved.label, warning:resolved.warning, url:url});
       });
     }
   }
@@ -2369,6 +2419,7 @@ function checkUnpaidAlert() {
     alerts.forEach(function(a) {
       var urgency = a.daysLeft<=0 ? '🔴期限超過' : a.daysLeft<=1 ? '🟠明日出発' : '🟡'+a.daysLeft+'日後';
       lines.push('• ' + a.reservationId + ' ' + a.customerName + ' ¥' + a.amount + '（出発: ' + a.lendDate + ' ' + urgency + '）');
+      if (a.url) lines.push('   💳 ' + a.url);
     });
     lines.push('\n期限超過・要電話確認');
     postToSlackChannel_(ch, lines.join('\n'));
@@ -4485,6 +4536,45 @@ function bulkReprocessPatternB() {
  * Gmail検索を伴うため CLAUDE.md ルール「1日1関数 / 100件以下」を遵守。今回対象は最大13件。
  * GASエディタで関数選択 → ▶️実行（1回のみ）
  */
+// ★ 2026-06-25 じゃらん補償(insurance) バックフィル（一回限り手動実行）
+// 「ノンオペレーションチャージ補償」NOC加入なのに 免責 と誤保存された予約を再判定して修正。
+// reservations.insurance と tasks.insurance(DEL/COL) の両方を更新する。
+// 対象: ota='J' & insurance='免責' & lend_date が今日以降。
+function backfillJalanInsurance(dryRun) {
+  var today = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd');
+  var rows = supabaseGet_('reservations',
+    'ota=eq.J&insurance=eq.' + encodeURIComponent('免責') +
+    '&lend_date=gte.' + today + '&select=id,name,lend_date,insurance');
+  Logger.log('[JalanInsBackfill] 候補 ' + rows.length + ' 件 (dryRun=' + dryRun + ')');
+  var fixed = 0, notfound = 0, unchanged = 0;
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    var threads = GmailApp.search('"' + r.id + '" from:jalan-rentacar.jalan.net', 0, 5);
+    var body = '';
+    for (var t = 0; t < threads.length && !body; t++) {
+      var msgs = threads[t].getMessages();
+      for (var m = 0; m < msgs.length; m++) {
+        var b = msgs[m].getPlainBody();
+        if (b.indexOf(r.id) >= 0) { body = b; break; }
+      }
+    }
+    if (!body) { notfound++; Logger.log('  [未検出] ' + r.id + ' ' + r.name); continue; }
+    var ins = detectInsurance_(body);
+    if (ins !== '免責') {
+      Logger.log('  [修正] ' + r.id + ' ' + r.name + ' 免責 → ' + ins);
+      if (!dryRun) {
+        supabaseUpdate_('reservations', 'id=eq.' + encodeURIComponent(r.id), { insurance: ins });
+        supabaseUpdate_('tasks', 'reservation_id=eq.' + encodeURIComponent(r.id), { insurance: ins });
+      }
+      fixed++;
+    } else { unchanged++; }
+    Utilities.sleep(200);
+  }
+  Logger.log('[JalanInsBackfill] 完了: 修正' + fixed + ' / 正常(免責のまま)' + unchanged + ' / メール未検出' + notfound);
+}
+function backfillJalanInsuranceDryRun() { backfillJalanInsurance(true); }
+function backfillJalanInsuranceApply()  { backfillJalanInsurance(false); }
+
 function backfillJalanPeople() {
   var resvs = supabaseGet_('reservations', 'ota=eq.J&people=eq.0&status=neq.cancelled&select=id,name,lend_date&order=lend_date.desc&limit=200');
   if (!resvs || !resvs.length) { Logger.log('[BackfillPeople] 対象0件'); return; }
