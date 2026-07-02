@@ -67,24 +67,46 @@ Deno.serve(async (req) => {
 
   // 予約番号 → userId（完全一致）
   const link = await sbGet(`spk_line_links?resv_no=eq.${encodeURIComponent(resv_no)}&select=line_user_id`);
-  const userId = link[0]?.line_user_id;
-  if (!userId) {
+  const realUserId = link[0]?.line_user_id;
+  if (!realUserId) {
     await logSend({ resv_no, action, status: "no_userid", message });
     return json({ ok: false, reason: "no_userid" }); // 呼び出し側でSlack通知・手動対応
+  }
+
+  // 安全スイッチ（spk_line_config）: ON/OFF＋テストモード
+  const cfg = (await sbGet(`spk_line_config?id=eq.1&select=*`))[0] || {};
+  let enabled = true;
+  if (action === "damage_check") enabled = cfg.damage_enabled === true;
+  else if (action === "track_del" || action === "track_col") enabled = cfg.track_enabled === true;
+  const testActive = !isTest && cfg.test_mode === true;
+  if (!isTest && !testActive && !enabled) {
+    await logSend({ resv_no, action, line_user_id: realUserId, status: "skipped", error: "disabled" });
+    return json({ ok: false, reason: "disabled" });
+  }
+  // 全LINE送信 共通の冒頭挨拶（実アクションのみ・テスト/オーナーpingには付けない）
+  const GREETING = "この度はHANDYMANをご利用頂きまして誠にありがとうございます。\n\n";
+  const isRealMsg = action === "damage_check" || action === "track_del" || action === "track_col";
+  const withGreeting = isRealMsg ? GREETING + message : message;
+  // テストモード: 宛先を強制的にテスト用(オーナー)へ・本文に印
+  let targetUser = realUserId;
+  let outMsg = withGreeting;
+  if (testActive) {
+    targetUser = cfg.test_user_id || realUserId;
+    outMsg = "【テストモード】\n" + withGreeting + "\n（本番なら宛先: " + String(realUserId).slice(0, 8) + "…）";
   }
 
   // LINE push
   const r = await fetch("https://api.line.me/v2/bot/message/push", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${LINE_TOKEN}` },
-    body: JSON.stringify({ to: userId, messages: [{ type: "text", text: message }] }),
+    body: JSON.stringify({ to: targetUser, messages: [{ type: "text", text: outMsg }] }),
   });
   if (r.ok) {
-    await logSend({ resv_no, action, line_user_id: userId, status: "sent", message });
-    return json({ ok: true });
+    await logSend({ resv_no, action, line_user_id: targetUser, status: "sent", message: outMsg, error: testActive ? "TEST_MODE" : null });
+    return json({ ok: true, test: testActive });
   } else {
     const err = await r.text();
-    await logSend({ resv_no, action, line_user_id: userId, status: "failed", message, error: err.slice(0, 300) });
+    await logSend({ resv_no, action, line_user_id: targetUser, status: "failed", message: outMsg, error: err.slice(0, 300) });
     return json({ ok: false, reason: "line_error", error: err.slice(0, 300) }, 502);
   }
 });
