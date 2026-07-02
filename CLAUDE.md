@@ -1,5 +1,15 @@
 # SPK業務管理APP（札幌店）
 
+## 📊 2026-07-02 稼働率の計算を「新統一式（実稼働ベース）」に全店全タブ統一（オーナー確定）
+- **新定義（全店全タブ・恒久）**：`稼働率 = 予約(配車)日数 ÷（その月の日数 − メンテ/車検/点検/その他のブロック日）`＝**実稼働ベース**。分子=配車で埋まった日数(cancel除外)、分母=稼働フラグON車両の稼働可能日(月日数−メンテ日)。**メンテ等は稼働日にも稼働可能日にも数えない**（丸ごとメンテの車は分母から除外＝availV<=0でskip）。**車両別→クラス別→グロスは積み上げで完全一致**（クラス=車両合計・全体=クラス合計）。
+- **旧式は廃止**：旧「分母＝稼働台数×月日数(メンテ込み)」は使わない。差は分母のメンテ除外のみ＝分子(予約日数)は旧snapshotと1日も違わない。
+- **統一した箇所（式が7箇所に散っていた＝値ブレの元）**：①saveMonthlySnapshot ②解析タブA(dbMetrics) ③ダッシュボード(dashSummary) ④年間推移(dashYearly) ⑤TOP稼働率(LeadTimeWidget utilStats) ⑥車両ランキング(utilByM→ClsRevCard/ClsUtilCard/VehicleProfitTable)。年モードdashKpiは④を合算＝自動整合。ts-report(openFullMonthlyReport_)はdashKpi(新式)を使うので整合(fallbackのactiveVehs.length*dimはdashKpi無し時のみ＝実運用は通らない)。
+- **snapshot経由で価格タブ(price-optimizer)・収支シミュ(sim)・売上予測(forecast)・ClsUtilCardも自動統一**（monthly_snapshotsを読むだけ）。反映は各店「📸 全月を再記録」を1回押す。
+- **maintデータの取り込み場所と型に注意**：ManagementTab(dbMetrics等)は`loadDbAll("maintenance"/"nha_maintenance"/"bt_maintenance")`＝**snake_case**(`start_date`/`block_type`)。LeadTimeWidgetはappの`maintenance`state＝**camelCase**(`startDate`/`blockType`/`vehicleCode`)。snapshotは`sb.from(maintTbl)`直fetch＝snake。`block_type='maintenance'`のみ分母除外(partner_reservedは残す)。nha_maintenance/bt_maintenanceはblock_type列無し＝全て除外対象。
+- **検証（curl+Python `/tmp/canon_util*.py`・両店実データ）**：札幌グロス 2026 3月33/4月44/5月35/6月37% ／ 那覇 3月61/4月62/5月50/6月50%(6月=当月途中)。⚠️NHAは予約2000超→PostgREST 1000行上限でページネーション必須(でないと過少)。
+- バージョン：**SPK v4.7.339 / NHA v3.5.229-NHA(~/Desktop/AI/naha-project) / BT v1.0.101-BT**。BTはbt_maintenance・別Supabase・リリース前(データ蓄積後に有効)。
+- 実装Tips：解析A/ダッシュボード/ランキングは`dbMaint` stateを追加しPromise.allにmaintenance fetch追加＋useMemo depsに`dbMaint`追加。utilByMは`sub==="analytics"`のIIFE内(useMemoでない)＝dep不要。NHA utilByM/ClsRevCardは`inactiveCodes`版(SPKと微差)。
+
 ## 🅿️ 2026-07-01 駐車場 車両位置シャッフル/重複 根本修正（v4.7.336）＝再発を実データで特定
 - **症状**：退社前に整えた駐車位置が翌朝ごちゃごちゃ（過去に戻る/シャッフル）。洗車済/未洗車も混ざる。以前v4.6.55で対処も再発。
 - **実データで確定**：parking_state(別Supabase rkrvjpipvpybkmqadmrb・id=1)を直読み→**同一車「ノア5398」がNo.260とトラストパークに"二重駐車"**（物理的にありえない）。No.260への入庫ログ無し＝ユーザー操作でなく**マージが古い配置を復活**。history時刻も19時台と08-09時台が混在＝別セッション/古い端末の状態が混ざっている。**DB保存自体は動作（保存失敗ではない）**。
