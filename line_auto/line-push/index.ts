@@ -45,11 +45,19 @@ Deno.serve(async (req) => {
     if (!resv[0]) { await logSend({ resv_no, action, status: "skipped", error: "reservation_not_found" }); return json({ ok: false, reason: "reservation_not_found" }); }
     const st = String(resv[0].status || "").toLowerCase();
     if (st.includes("cancel") || st.includes("キャンセル")) { await logSend({ resv_no, action, status: "skipped", error: "cancelled" }); return json({ ok: false, reason: "cancelled" }); }
-    const todayJST = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+    const nowMs = Date.now() + 9 * 3600 * 1000;
+    const dstr = (off: number) => new Date(nowMs + off * 86400000).toISOString().slice(0, 10);
+    const todayJST = dstr(0);
     // 返却時アクション(回収追跡/乗り捨て/御礼)は返却日で、貸出時アクション(傷チェック/お届け追跡/到着)は貸出日で判定
     const returnAct = action === "track_col" || action === "dropoff" || action === "thanks";
     const refDate = returnAct ? resv[0][colCol] : resv[0][delCol];
-    if (!refDate || String(refDate).slice(0, 10) < todayJST) { await logSend({ resv_no, action, status: "skipped", error: "past_or_no_date:" + (refDate || "") }); return json({ ok: false, reason: "past_or_no_date" }); }
+    const rd = refDate ? String(refDate).slice(0, 10) : "";
+    if (action === "thanks") {
+      // 御礼は返却が直近(過去7日〜明日)ならOK＝返却翌日の自動送信を通す
+      if (!rd || rd < dstr(-7) || rd > dstr(1)) { await logSend({ resv_no, action, status: "skipped", error: "thanks_out_of_window:" + rd }); return json({ ok: false, reason: "thanks_out_of_window" }); }
+    } else {
+      if (!rd || rd < todayJST) { await logSend({ resv_no, action, status: "skipped", error: "past_or_no_date:" + rd }); return json({ ok: false, reason: "past_or_no_date" }); }
+    }
   }
 
   // 予約番号 → userId（完全一致）
