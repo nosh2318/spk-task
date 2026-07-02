@@ -1,5 +1,38 @@
 # SPK業務管理APP（札幌店）
 
+## 📱 2026-07-03 LINE自動送信システム（傷チェック/位置追跡）札幌＋那覇 本番稼働（このセッション）
+**お客様への各種URLをLINE公式アカウントから自動送信する仕組み。エルメ手動コピペを自動化。札幌(@730kyhwl)・那覇(@466dbckq)＝別LINEアカウント・別Supabaseテーブルで並走。**
+
+### 全体構成（Edge Function＝ckrxttbnawkclshczsia／全て `--no-verify-jwt`・store対応 spk|nha）
+- **`line-push`**：予約番号→userId解決→LINE push→ログ。挨拶文付与／設定ON-OFF／テストモード（宛先=test_user_id・未設定なら送らない）／**誤送信ガード**（予約不在・キャンセル・過去日・番号不一致は送らずログ）。body`{secret,store,resv_no,action,message}`。token=`LINE_CHANNEL_TOKEN`(spk)/`NHA_LINE_CHANNEL_TOKEN`(nha)。**KEYDROP予約も送信対象**（linksにuserIDあれば送る・無ければno_userid＝安全）。
+- **`damage-check-cron`**：pg_cron `line-damage-check`(spk `{}`)/`line-damage-check-nha`(`{"store":"nha"}`) 各5分。**札幌=DEL/30分前**、**那覇=PUB・DEL・来店/60分前**。出発時刻(時間欄)の lead分前になったら傷チェックURL(vehicle_twins.share_token)をline-push経由送信。既送信(sent)は除外。x-cron-secret=`CRON_SECRET`。
+- **`line-track`**：driverページ「📡位置送信を開始」から`{r,d}`。**予約IDがreservations→札幌/nha_reservations→那覇で店舗自動判定**（driverページ`handyman-driver.html`は共有）。kd_status delivering→track_del(delivery-guide)/collecting→track_col(collection-guide)。line-push経由。
+- **`line-links-import`**：CSVアップローダーから`{store,rows}`。ログイン済みスタッフJWTを`/auth/v1/user`検証→`{store}_line_links`へupsert（"test"含む/空は除外）。
+
+### DBテーブル（spk_*/nha_* 同構造）
+- **`{store}_line_links`**：`resv_no`(PK・reservations.idと完全一致で突合)/`line_user_id`(U+32hex・**チャネル毎に別物**)/cust_name/media/answer_id…。エルメ受付フォーム回答CSV由来（札幌367・那覇1443件）。**送信可否の照合キー＝予約番号**（userIdは宛先であって照合キーではない）。
+- **`{store}_line_sends`**：送信ログ。status=`sent`(自動)/`no_userid`/`skipped`(cancelled/past/disabled等)/`failed`/**`manual_done`**(スタッフ手動対応)。authenticatedはmanual_doneのみinsert可(policy)。
+- **`{store}_line_config`**（id=1）：`damage_enabled`/`track_enabled`/`test_mode`/`test_user_id`/`lead_min`(spk30/nha60)。**現在：両店とも damage=ON,track=ON,test=OFF（フル本番）**。
+
+### アプリUI（SPK index.src.html / NHA index.html.bak・両build.js）
+- **📱OK/手動バッジ**(`LineStatusBadge`・`window._lineLinkMap`=`{store}_line_links`のresv_no有無から導出)：TOP個人別サマリー・OPマスター・OPスケジュール(サブタブ)。緑OK=自動送信可/赤手動=未登録or番号不一致。
+- **🩹傷チェック送信リスト**(`DamageSendList`)：TOP「日常業務」アイコン→専用タブ。本日時系列(札幌DEL/那覇PUB・DEL・来店)、担当名・📱OK/手動、自動=✅送信済(ログ連動)、手動=[📋コピー]→[✅対応](manual_done記録・全端末共有)。
+- **出発/回収ボタン**：📱OK客=「位置送信開始で自動送信・貼付不要」/📱手動客=「コピーして貼付」に条件分岐（二重送信対策）。
+- **📱LINE紐付け更新**(アップローダー`line-csv.html`・各store originに配置)：TOP設定。エルメCSVをアップ→`{store}_line_links`更新。**毎日CSV更新が必要な理由＝userIDはエルメのCSVエクスポートにしか無い**（自動連携シートは回答者ID(内部番号)のみでLINE送信不可・Webhook/API無し）。
+
+### 位置追跡ページ（hdm-car-delivery＝keydrop.jp・静的）
+- driver=`handyman-driver.html`(赤)/`keydrop-driver.html`＝スタッフ位置送信・「📡位置送信を開始」に`line-track`フック(`__trackLineSent`・共有＝両店効く)。顧客追跡=`handyman-delivery-guide/collection-guide/track/handyman-track.html`(橙)。**全ページに「画面を開いたままに（閉じると位置共有が止まる）」注釈バナー`<!--KEEPOPEN-->`**。
+
+### 運用・鍵の在り処
+- Supabaseデプロイ：PAT=`~/.config/keydrop/sb_token`(sbp_・30日失効・失効時は https://supabase.com/dashboard/account/tokens で再発行)。`SUPABASE_ACCESS_TOKEN=$(cat) ~/.local/share/supabase/supabase functions deploy <fn> --project-ref ckrxttbnawkclshczsia --no-verify-jwt`。SQL/APIキー取得はManagement API `/database/query`・`/api-keys`(curl)。
+- secret値保管：`~/.config/keydrop/{linepush_func_secret,linepush_cron_secret,line_token(spk),nha_line_token}`。LINEトークンは`/v2/bot/info`で正当性確認可(spk=@730kyhwl/nha=@466dbckq)。
+- **LINE userIDはチャネル毎に固有**（札幌のuserIDは那覇で使えない）。オーナー那覇テスト宛先=`U2a777a5fc6310a32e4f93582515a490d`(nha_line_config.test_user_id)。
+- テスト送信は必ずオーナーのそのチャネルのuserID宛のみ（勝手に顧客へ送らない・強く指導された）。実DELでのテストは一時的にmapping/kd_*を差し替え→即復元。
+- **残**：BUDDICA(高松)展開はBTのLINE公式/エルメ＋別Supabase(ggqugvyskyiblxiycpci)対応が必要で保留。
+
+### コード正本
+- Edge Function正本：`~/spk-task/line_auto/{line-push,damage-check-cron,line-track,line-links-import}/index.ts`＋`schema.sql`＋`import_erume_csv.py`（デプロイ実体は`~/hdm-car-delivery/supabase/functions/`にコピーして deploy）。
+
 ## 📊 2026-07-02 稼働率の計算を「新統一式（実稼働ベース）」に全店全タブ統一（オーナー確定）
 - **新定義（全店全タブ・恒久）**：`稼働率 = 予約(配車)日数 ÷（その月の日数 − メンテ/車検/点検/その他のブロック日）`＝**実稼働ベース**。分子=配車で埋まった日数(cancel除外)、分母=稼働フラグON車両の稼働可能日(月日数−メンテ日)。**メンテ等は稼働日にも稼働可能日にも数えない**（丸ごとメンテの車は分母から除外＝availV<=0でskip）。**車両別→クラス別→グロスは積み上げで完全一致**（クラス=車両合計・全体=クラス合計）。
 - **旧式は廃止**：旧「分母＝稼働台数×月日数(メンテ込み)」は使わない。差は分母のメンテ除外のみ＝分子(予約日数)は旧snapshotと1日も違わない。
