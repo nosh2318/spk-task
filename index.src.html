@@ -65,14 +65,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v892';
+  var CV='spk-v893';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=779').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=780').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -19279,6 +19279,83 @@ function LineStatusBadge({resvNo,size}){
       background: ok?"#dcfce7":"#fee2e2", color: ok?"#15803d":"#b91c1c", border:"1px solid "+(ok?"#86efac":"#fca5a5")}
   }, ok?"📱OK":"📱手動");
 }
+/* DamageSendList — 2026-07-03: 傷チェック送信リスト（本日・時系列）
+   📱OK=自動送信済/予定、📱手動=[📋コピー]→[✅対応]でmanual_done記録 */
+function DamageSendList({sb,store}){
+  const [rows,setRows]=React.useState([]);
+  const [open,setOpen]=React.useState(true);
+  const isNha=store==="nha";
+  const today=(()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");})();
+  const load=React.useCallback(async()=>{
+    if(!sb)return;
+    try{
+      let tasks=[];
+      if(isNha){
+        const{data}=await sb.from("nha_tasks").select("時間,予約者,担当,予約番号,assigned_vehicle,内容").eq("date",today);
+        tasks=(data||[]).filter(t=>["PUB","DEL","来店"].includes(t["内容"])).map(t=>({time:t["時間"]||"",name:t["予約者"]||"",assignee:t["担当"]||"",resv:t["予約番号"]||"",veh:t.assigned_vehicle||"",type:t["内容"]}));
+      }else{
+        const{data}=await sb.from("tasks").select("time,name,assignee,reservation_id,assigned_vehicle,type").eq("date",today).eq("type","DEL");
+        tasks=(data||[]).map(t=>({time:t.time||"",name:t.name||"",assignee:t.assignee||"",resv:t.reservation_id||"",veh:t.assigned_vehicle||"",type:t.type}));
+      }
+      tasks=tasks.filter(t=>t.resv);
+      const sendsTbl=isNha?"nha_line_sends":"spk_line_sends";
+      const resvs=[...new Set(tasks.map(t=>t.resv))];
+      const sendMap={};
+      if(resvs.length){
+        const{data:sd}=await sb.from(sendsTbl).select("resv_no,status,sent_at").eq("action","damage_check").in("resv_no",resvs).order("sent_at",{ascending:false});
+        (sd||[]).forEach(s=>{ if(!sendMap[s.resv_no])sendMap[s.resv_no]=s; });
+      }
+      const linkM=window._lineLinkMap||{}, dmgM=window._dmgShareMap||{};
+      const out=tasks.map(t=>{
+        const s=sendMap[t.resv]; const dm=dmgM[t.veh];
+        const token=(dm&&dm.enabled&&dm.token)?dm.token:null;
+        let status="pending";
+        if(s&&s.status==="sent")status="sent"; else if(s&&s.status==="manual_done")status="manual_done";
+        return {...t,ok:!!linkM[t.resv],token,status,at:s?s.sent_at:null};
+      }).sort((a,b)=>(a.time||"99").localeCompare(b.time||"99"));
+      setRows(out);
+    }catch(e){console.warn("[dmgSendList]",e.message);}
+  },[sb,store,today,isNha]);
+  React.useEffect(()=>{ load(); const t=setInterval(()=>{if(document.visibilityState==="visible")load();},60000); return ()=>clearInterval(t); },[load]);
+  const copyMsg=async(r)=>{
+    if(!r.token){alert("この車両は傷チェック未発行です（傷チェックAPPで共有を発行してください）");return;}
+    const url="https://nosh2318.github.io/handyman-damage/v.html?t="+r.token+"&v=v3";
+    const msg="この度はHANDYMANをご利用頂きまして誠にありがとうございます。\n\n【HANDYMAN "+(isNha?"那覇":"札幌")+"】ご利用車両 傷チェックのご案内\nご出発前に、車両の状態を下記URLからご確認ください（アプリ不要）。\n"+url+"\n気になる点がございましたら車両引き渡し時に担当スタッフまでお申し付けくださいませ。\n※ご出発後の申告は対応いたしかねる場合がございます。";
+    try{await navigator.clipboard.writeText(msg);alert("📋 傷チェック案内をコピーしました。\nエルメ/LINEに貼り付けて送ってください。\n送信したら『✅対応』を押してください。");}catch(e){alert("コピーに失敗しました");}
+  };
+  const markDone=async(r)=>{
+    const tbl=isNha?"nha_line_sends":"spk_line_sends";
+    try{await sb.from(tbl).insert({resv_no:r.resv,action:"damage_check",status:"manual_done",message:"手動対応"});load();}catch(e){alert("記録に失敗:"+e.message);}
+  };
+  const fmt=(iso)=>{try{const d=new Date(iso);return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");}catch(e){return"";}};
+  const pending=rows.filter(r=>!r.ok&&r.status==="pending").length;
+  if(!rows.length)return null;
+  return <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:12,margin:"8px 0",overflow:"hidden"}}>
+    <div onClick={()=>setOpen(o=>!o)} style={{padding:"10px 12px",background:"#fef2f2",cursor:"pointer",display:"flex",alignItems:"center",gap:8,borderBottom:open?"1px solid #fecaca":"none"}}>
+      <span style={{fontSize:14,fontWeight:800,color:"#0f172a"}}>🩹 傷チェック送信（本日 {rows.length}件）</span>
+      {pending>0&&<span style={{fontSize:11,fontWeight:800,color:"#fff",background:"#dc2626",padding:"1px 8px",borderRadius:10}}>手動 未対応 {pending}</span>}
+      <span style={{marginLeft:"auto",fontSize:12,color:"#64748b"}}>{open?"▲":"▼"}</span>
+    </div>
+    {open&&<div>
+      {rows.map((r,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:6,padding:"7px 10px",borderBottom:"1px solid #f1f5f9",flexWrap:"wrap",fontSize:12,opacity:(r.status==="sent"||r.status==="manual_done")?.6:1}}>
+        <span style={{fontFamily:"monospace",fontWeight:800,color:"#334155",width:42}}>{r.time||"--:--"}</span>
+        <span style={{fontSize:9,fontWeight:800,color:"#7c3aed"}}>{r.type}</span>
+        <span style={{fontWeight:700,color:"#0f172a",maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name||"名前なし"}</span>
+        {r.assignee&&<span style={{fontSize:10,background:"#ede9fe",color:"#6d28d9",fontWeight:700,padding:"1px 6px",borderRadius:4}}>👤{r.assignee}</span>}
+        <LineStatusBadge resvNo={r.resv} size={9}/>
+        <span style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:5}}>
+          {r.status==="sent"&&<span style={{fontSize:11,fontWeight:700,color:"#15803d"}}>✅送信済{r.at?" "+fmt(r.at):""}</span>}
+          {r.status==="manual_done"&&<span style={{fontSize:11,fontWeight:700,color:"#15803d"}}>✅対応済{r.at?" "+fmt(r.at):""}</span>}
+          {r.status==="pending"&&r.ok&&<span style={{fontSize:11,fontWeight:700,color:"#0284c7"}}>⏳自動予定</span>}
+          {r.status==="pending"&&!r.ok&&<span style={{display:"flex",gap:5}}>
+            <button onClick={()=>copyMsg(r)} style={{fontSize:10,fontWeight:800,padding:"4px 9px",borderRadius:6,background:"#2563eb",color:"#fff",border:"none",cursor:"pointer"}}>📋コピー</button>
+            <button onClick={()=>markDone(r)} style={{fontSize:10,fontWeight:800,padding:"4px 9px",borderRadius:6,background:"#16a34a",color:"#fff",border:"none",cursor:"pointer"}}>✅対応</button>
+          </span>}
+        </span>
+      </div>)}
+    </div>}
+  </div>;
+}
 const DMG_SHARE_BASE="https://nosh2318.github.io/handyman-damage/v.html";
 function DmgShareIcon({code,size}){
   const [info,setInfo]=React.useState(null);
@@ -21183,6 +21260,7 @@ function App(){
                 </div>;
               })()}
               <MemoBox today={today}/>
+              <DamageSendList sb={sb} store="spk"/>
               <KdChangeAlert onGo={()=>setTab("kdcancel")}/>
               <KdCancelAlert onGo={()=>setTab("kdcancel")}/>
               {/* ===== 🚗 空車ウィジェット（今日/明日 クラス別） ===== */}
@@ -21842,7 +21920,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.347";
+const APP_VERSION="v4.7.348";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
