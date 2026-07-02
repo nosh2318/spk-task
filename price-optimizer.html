@@ -33,7 +33,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}th,td{padding:5px 7px
 .ins{font-size:12.5px;font-weight:700;margin-top:8px;padding:9px 11px;border-radius:8px}.v-up{background:#ecfdf5;border:1px solid #34d399}.v-down{background:#fef2f2;border:1px solid #f87171}.v-keep{background:#eff6ff;border:1px solid #60a5fa}.v-na{background:#f8fafc;border:1px solid #e2e8f0}.v-traffic{background:#fffbeb;border:1px solid #f0d000}
 </style></head><body>
 <div class="top"><b>💹 価格最適化</b><span style="display:flex;gap:4px;margin-left:6px"><button class="storebtn on" data-s="nha" onclick="selectStore('nha')">那覇</button><button class="storebtn" data-s="spk" onclick="selectStore('spk')">札幌</button></span><span class="st" id="fleetSummary">読込中…</span></div>
-<div class="tab"><button class="on" data-t="cal" onclick="tab(this)">📅 空き台数カレンダー</button><button data-t="prices" onclick="tab(this)">💴 価格</button><button data-t="lead" onclick="tab(this)">🕐 リードタイム</button><button data-t="action" onclick="tab(this)">🎯 アクション</button><button data-t="trend" onclick="tab(this)">📋 クラス別予約傾向</button><button data-t="curve" onclick="tab(this)">📉 活発期×価格ギャップ</button><button data-t="util" onclick="tab(this)">📊 稼働率</button><button data-t="research" onclick="tab(this)">🔎 市場調査</button><button data-t="config" onclick="tab(this)">⚙️ 決定設定</button></div>
+<div class="tab"><button class="on" data-t="cal" onclick="tab(this)">📅 空き台数カレンダー</button><button data-t="prices" onclick="tab(this)">💴 価格</button><button data-t="season" onclick="tab(this)">🗓 シーズナル</button><button data-t="lead" onclick="tab(this)">🕐 リードタイム</button><button data-t="action" onclick="tab(this)">🎯 アクション</button><button data-t="trend" onclick="tab(this)">📋 クラス別予約傾向</button><button data-t="curve" onclick="tab(this)">📉 活発期×価格ギャップ</button><button data-t="util" onclick="tab(this)">📊 稼働率</button><button data-t="research" onclick="tab(this)">🔎 市場調査</button><button data-t="config" onclick="tab(this)">⚙️ 決定設定</button></div>
 <div class="wrap"><div id="body"></div></div>
 <div class="scrim" id="scrim" onclick="closeM(event)"></div><div class="sheet" id="sheet" style="display:none"></div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -354,8 +354,8 @@ async function loadPriceMaster(){
  var tbl=STORE==='spk'?'app_settings':'nha_app_settings';
  try{try{await ensureAuth();}catch(e){}var d=await sbClient.from(tbl).select('value').eq('key','hdm_price_master').maybeSingle();
   var v=d&&d.data?d.data.value:null;if(typeof v==='string'){try{v=JSON.parse(v);}catch(e){}}
-  PRICEMASTER[STORE]=v||{};if(TAB==='prices'||TAB==='lead'||TAB==='cal')render();
- }catch(e){PRICEMASTER[STORE]={_err:String(e)};if(TAB==='prices'||TAB==='lead'||TAB==='cal')render();}
+  PRICEMASTER[STORE]=v||{};if(TAB==='prices'||TAB==='season'||TAB==='lead'||TAB==='cal')render();
+ }catch(e){PRICEMASTER[STORE]={_err:String(e)};if(TAB==='prices'||TAB==='season'||TAB==='lead'||TAB==='cal')render();}
 }
 function renderPrices(){
  var TNp={A:'A 通常',B:'B 準繁忙',C:'C 繁忙(お盆/年末)'},TCp={A:'#dcfce7',B:'#fef9c3',C:'#fee2e2'};
@@ -516,6 +516,50 @@ async function savePM(){var m=PRICEMASTER[STORE];if(!m){return;}var _p=function(
   var msg=snap.changed?('価格変更 '+snap.changed+'件を履歴に記録。'):(snap.seeded?('初回ベースライン '+snap.seeded+'件を記録。'):'変更なし。');
   alert('✅ 保存しました（'+(STORE==='spk'?'札幌':'那覇')+'）。'+msg+'現価格＝最新値。過去は🕘変更履歴に保持。OTA/KEYDROP連動はこの値を参照します。'+(kd?('\n'+kd):''));render();
  }catch(e){alert('保存失敗: '+e);}
+}
+// ===== 🗓 シーズナル登録（通常A=それ以外／準繁忙B・繁忙C の期間を登録＝hdm_price_master.ranges）=====
+function _ensR(mo,t){var m=PRICEMASTER[STORE];m.ranges=m.ranges||{};m.ranges[mo]=m.ranges[mo]||{};m.ranges[mo][t]=m.ranges[mo][t]||[];return m;}
+function addRange(mo,t){var m=_ensR(mo,t);m.ranges[mo][t].push(['','']);render();}
+function setRangeS(mo,t,i,w,v){var m=_ensR(mo,t);var r=m.ranges[mo][t][i]||['',''];r[w]=v;m.ranges[mo][t][i]=r;}
+function delRange(mo,t,i){var m=_ensR(mo,t);m.ranges[mo][t].splice(i,1);render();}
+async function saveSeason(){var m=PRICEMASTER[STORE];if(!m){return;}
+ // 空期間を除去
+ Object.keys(m.ranges||{}).forEach(function(mo){Object.keys(m.ranges[mo]||{}).forEach(function(t){m.ranges[mo][t]=(m.ranges[mo][t]||[]).filter(function(r){return r&&r[0]&&r[1];});});});
+ var _p=function(n){return(n<10?'0':'')+n;};var _t=new Date();m.updated_at=_t.getFullYear()+'-'+_p(_t.getMonth()+1)+'-'+_p(_t.getDate())+' '+_p(_t.getHours())+':'+_p(_t.getMinutes());m.store=STORE;
+ var tbl=STORE==='spk'?'app_settings':'nha_app_settings';
+ try{try{await ensureAuth();}catch(e){}
+  var r=await sbClient.from(tbl).upsert({key:'hdm_price_master',value:JSON.stringify(m)},{onConflict:'key'});
+  if(r&&r.error){alert('保存失敗: '+r.error.message);return;}
+  var kd=await _kdSyncIfLinked(m,tbl);
+  alert('✅ シーズナル期間を保存しました（'+(STORE==='spk'?'札幌':'那覇')+'）。市場調査の対象日・tier判定・KEYDROPの繁忙切替に反映。'+(kd?('\n'+kd):''));render();
+ }catch(e){alert('保存失敗: '+e);}
+}
+function renderSeason(){
+ var m=PRICEMASTER[STORE];
+ if(m===null){loadPriceMaster();return '<div class="card"><div class="sub">現価格マスター読込中…</div></div>';}
+ if(m._err)return '<div class="card"><div class="sub">読込失敗: '+m._err+'</div></div>';
+ if(!m.prices)return '<div class="card"><div class="sub">現価格マスター未作成</div></div>';
+ m.ranges=m.ranges||{};
+ var SL=STORE==='spk'?'札幌':'那覇';var TN={B:'準繁忙',C:'繁忙(お盆/年末)'};var TCp={B:'#fef9c3',C:'#fee2e2'};
+ var _pad=function(n){return (n<10?'0':'')+n;};var _t=new Date();var _TODAYMO=_t.getFullYear()+'-'+_pad(_t.getMonth()+1);
+ var months=Object.keys(m.prices).sort().filter(function(mo){return mo>=_TODAYMO;});
+ var h='<div class="card"><h2>🗓 シーズナル登録（'+SL+'）</h2><div class="sub">月ごとに<b>準繁忙(B)・繁忙(C)の期間</b>を登録。<b>通常(A)＝下記以外の全日</b>。ここが市場調査の対象日・tier(通常/準繁忙/繁忙)判定・KEYDROPの繁忙切替・価格表の土台。日付はカレンダー選択。1シーズナルに複数期間OK（お盆の飛び地等）。編集後は必ず<b>💾保存</b>。</div><div style="text-align:right"><button onclick="saveSeason()" style="background:#16a34a;color:#fff;border:0;padding:8px 22px;border-radius:7px;font-weight:800;cursor:pointer">💾 保存</button></div></div>';
+ if(!months.length){h+='<div class="card"><div class="sub">受付中の月がありません</div></div>';return h;}
+ months.forEach(function(mo){
+  var rng=m.ranges[mo]||{};var moLb=mo.slice(0,4)+'/'+(+mo.slice(5));
+  h+='<div class="card"><h2 style="font-size:15px">📅 '+moLb+'</h2><div class="sub" style="margin-bottom:6px">🟢 <b>通常(A)</b>＝下記の準繁忙・繁忙<b>以外の全日</b>（登録不要）</div>';
+  ['B','C'].forEach(function(t){
+   var rs=rng[t]||[];
+   h+='<div style="margin:8px 0;padding:8px;border-left:4px solid '+TCp[t]+';background:'+TCp[t]+'55;border-radius:6px"><b>'+t+' '+TN[t]+'</b>'+(rs.length?'':' <span style="color:#94a3b8">（なし）</span>');
+   h+=rs.map(function(r,i){return '<div style="margin:4px 0 4px 8px">'
+     +'<input type="date" value="'+(r[0]||'')+'" onchange="setRangeS(\''+mo+'\',\''+t+'\','+i+',0,this.value)" style="padding:3px;border:1px solid #cbd5e1;border-radius:5px;width:130px"> 〜 '
+     +'<input type="date" value="'+(r[1]||'')+'" onchange="setRangeS(\''+mo+'\',\''+t+'\','+i+',1,this.value)" style="padding:3px;border:1px solid #cbd5e1;border-radius:5px;width:130px"> '
+     +'<button onclick="delRange(\''+mo+'\',\''+t+'\','+i+')" style="font-size:10px;padding:3px 8px;border:1px solid #fca5a5;color:#b91c1c;background:#fff;border-radius:5px;cursor:pointer">削除</button></div>';}).join('');
+   h+='<div style="margin-left:8px"><button onclick="addRange(\''+mo+'\',\''+t+'\')" style="font-size:11px;padding:3px 10px;border:1px dashed #94a3b8;background:#fff;border-radius:6px;cursor:pointer">＋ 期間を追加</button></div></div>';
+  });
+  h+='</div>';
+ });
+ return h;
 }
 
 var DECISIONS={nha:null,spk:null};
@@ -802,6 +846,6 @@ function renderResearch(){
 function render(
 
 
-){var r={cal:renderCal,action:renderAction,trend:renderTrend,curve:renderCurve,prices:renderPrices,lead:renderLead,config:renderConfig,util:renderUtil,research:renderResearch}[TAB];document.getElementById('body').innerHTML=(r||renderCal)();}
+){var r={cal:renderCal,action:renderAction,trend:renderTrend,curve:renderCurve,prices:renderPrices,season:renderSeason,lead:renderLead,config:renderConfig,util:renderUtil,research:renderResearch}[TAB];document.getElementById('body').innerHTML=(r||renderCal)();}
 document.querySelectorAll('.storebtn').forEach(function(b){b.classList.toggle('on',b.dataset.s===STORE);});applyMarketNow();render();loadMonthlyFleet();loadMarketNow();loadDecisions();loadDecCfg();loadPriceMaster();loadUtilSnap();loadMktRaw();
 </script></body></html>
