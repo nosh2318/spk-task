@@ -64,6 +64,14 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
 .grp{border:1px solid var(--line);border-radius:10px;margin-bottom:10px;overflow:hidden}
 .grp-h{background:#f6f8fa;font-size:11.5px;font-weight:800;color:var(--ink);padding:6px 12px;border-bottom:1px solid var(--line)}
 .grp .kv{padding:6px 12px}.grp .kv:first-of-type{border-top:0}
+.karte{background:#fffdf5;border:1px solid #f0e3b8;border-radius:12px;padding:12px}
+.karte h3{margin-bottom:8px;color:#8a6d00}
+.ktags{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.ktags button{font-size:11.5px;font-weight:700;border:1px solid #e6d59a;background:#fff;color:#7a5c00;border-radius:999px;padding:5px 10px;cursor:pointer}
+.ktags button:hover{background:#fff6d8}
+#knote{width:100%;min-height:70px;padding:10px;border:1.5px solid #e6d59a;border-radius:9px;font-size:14px;font-family:inherit;resize:vertical}
+.karteflag{margin-left:5px}
+.kartepeek{font-size:11px;color:#8a6d00;background:#fff8e1;border-radius:6px;padding:2px 7px;margin-top:3px;display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .warn{border:1px solid #f3c9c9;background:#fff6f6;border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:12.5px}
 .warn b{color:var(--danger)}
 .mmrow{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:5px}
@@ -151,7 +159,7 @@ function ago(days){const d=new Date();d.setDate(d.getDate()-days);return d.getFu
 async function loadAll(keepSel){
   const [cfg,res,chg]=await Promise.all([
     api("spk_line_config?id=eq.1&select=*"),
-    api("reservations?return_date=gte."+ago(2)+"&status=not.in.(%22%E3%82%AD%E3%83%A3%E3%83%B3%E3%82%BB%E3%83%AB%22,cancelled)&order=lend_date.asc&limit=400&select=id,name,ota,lend_date,return_date,lend_time,return_time,vehicle,del_place,col_place,people,opt_b,opt_c,opt_j,insurance,status,mypage_token,mypage_locked"),
+    api("reservations?return_date=gte."+ago(2)+"&status=not.in.(%22%E3%82%AD%E3%83%A3%E3%83%B3%E3%82%BB%E3%83%AB%22,cancelled)&order=lend_date.asc&limit=400&select=id,name,ota,lend_date,return_date,lend_time,return_time,vehicle,del_place,col_place,people,opt_b,opt_c,opt_j,insurance,status,mypage_token,mypage_locked,staff_note,tel,mail"),
     api("mypage_changes?store=eq.spk&order=created_at.desc&limit=500&select=id,reservation_id,field,old_value,new_value,source,status,note,created_at"),
   ]);
   CFG=cfg[0]||{}; RES=res||[];
@@ -179,7 +187,7 @@ function renderInner(){
   const chgN=RES.filter(r=>resFlag(r.id)).length;
   $("#app").innerHTML=`
   <div class="hd"><div class="logo">HAND<b>Y</b>MAN</div><div class="t">マイページ管理</div>
-    <div class="sp" style="font-size:10px;opacity:.6;font-weight:600">v1.8 日時場所を段分け</div>
+    <div class="sp" style="font-size:10px;opacity:.6;font-weight:600">v1.9 カルテMEMO</div>
     <button class="${rc?"alert":""}" onclick="VIEW='changes';SEL=null;render()">🔔 変更依頼 ${rc}</button>
     <button onclick="openCfg()">⚙️ トリガー設定</button>
   </div>
@@ -204,8 +212,9 @@ function liHtml(r){
   return `<div class="li ${f} ${SEL===r.id?"sel":""}" onclick="selectRes('${r.id}')">
     <div class="clsbadge" style="background:${CLSC[r.vehicle]||'#64748b'}">${esc(r.vehicle||"?")}</div>
     <div class="m">
-      <div class="nm">${esc(r.name||"—")} 様 <span class="otatag" style="background:${otaColor(r.ota)}">${esc(otaLabel(r.ota))}</span></div>
+      <div class="nm">${esc(r.name||"—")} 様 <span class="otatag" style="background:${otaColor(r.ota)}">${esc(otaLabel(r.ota))}</span>${r.staff_note?`<span class="karteflag" title="${esc(r.staff_note)}">🗒</span>`:""}</div>
       <div class="rid2">🎫 ${esc(r.id)}</div>
+      ${r.staff_note?`<div class="kartepeek">🗒 ${esc(r.staff_note.split("\n").join(" / ").slice(0,42))}</div>`:""}
       <div class="r2">${fmtD(r.lend_date)} ${esc(r.lend_time||"")} 〜 ${fmtD(r.return_date)}</div>
     </div>
     ${f==="req"?`<span class="pop">要対応${rq>1?" "+rq:""}</span>`:(f==="chg"?`<span class="pop chg">変更</span>`:"")}
@@ -283,6 +292,14 @@ function detailHtml(){
     <div class="dst">${esc(r.status||"予約確定")}</div>
   </div>
   <div class="dbody">
+    <div class="sec karte">
+      <h3>🗒 カルテ / スタッフメモ <span style="color:var(--sub);font-weight:600;text-transform:none">（LINE・電話で受けた依頼や特記事項をここに）</span></h3>
+      <div class="ktags">
+        ${["📵連絡取れない","🚬タバコ臭い","⚠️要注意","⭐常連/VIP","📞電話で依頼","💬LINEで依頼","🅿️駐車場所","🐶ペット"].map(t=>`<button onclick="addTag(${JSON.stringify(t)})">${esc(t)}</button>`).join("")}
+      </div>
+      <textarea id="knote" placeholder="この予約・お客様の記録（連絡状況・特記事項・受けた変更依頼の内容 など）">${esc(r.staff_note||"")}</textarea>
+      <button class="btn pri" style="margin-top:6px" onclick="saveNote('${r.id}')">💾 カルテを保存</button>
+    </div>
     ${mm.length?`<div class="warn"><b>⚠️ 場所の食い違い（予約正本 ⇄ OPシート）</b>
       ${mm.map(m=>`<div class="mmrow"><div><div class="lab">${esc(m.kind)}・予約</div>${esc(m.resv)}</div>
         <div><div class="lab">OPシート表示</div>${esc(m.op)||"（空）"}</div></div>`).join("")}
@@ -338,6 +355,17 @@ async function decide(id,status){
     const arr=Object.values(CHG).flat();const c=arr.find(x=>x.id===id);if(c)c.status=status;
     toast(status==="approved"?"承認しました":"却下しました");render();
   }catch(e){toast("更新失敗（ログイン要）")}
+}
+function addTag(t){const ta=document.getElementById("knote");if(!ta)return;
+  const cur=ta.value.trim();ta.value=(cur?cur+"\n":"")+t+" ";ta.focus()}
+async function saveNote(id){
+  const ta=document.getElementById("knote");if(!ta)return;
+  const note=ta.value.trim();
+  try{await api("reservations?id=eq."+encodeURIComponent(id),{method:"PATCH",headers:{Prefer:"return=minimal"},
+    body:JSON.stringify({staff_note:note,staff_note_at:new Date().toISOString()})});
+    const r=RES.find(x=>x.id===id);if(r)r.staff_note=note;
+    toast("カルテを保存しました");render();
+  }catch(e){toast("保存失敗（ログイン要）")}
 }
 function openMy(t){window.open(MYURL+t+"&v="+Date.now(),"_blank")}
 function copyMy(t){navigator.clipboard.writeText(MYURL+t).then(()=>toast("URLをコピーしました"),()=>toast("コピー失敗"))}
