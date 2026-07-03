@@ -64,6 +64,9 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
 .grp{border:1px solid var(--line);border-radius:10px;margin-bottom:10px;overflow:hidden}
 .grp-h{background:#f6f8fa;font-size:11.5px;font-weight:800;color:var(--ink);padding:6px 12px;border-bottom:1px solid var(--line)}
 .grp .kv{padding:6px 12px}.grp .kv:first-of-type{border-top:0}
+.reanswer{background:#fff4f0;border:1.5px solid #f0b89a;border-left:5px solid var(--warn);border-radius:12px;padding:12px;margin-bottom:12px}
+.reanswer .ra-h{font-weight:900;font-size:13.5px;color:var(--warn)}
+.reanswer .ra-b{font-size:12.5px;margin-top:4px;line-height:1.5}
 .karte{background:#fffdf5;border:1px solid #f0e3b8;border-radius:12px;padding:12px}
 .karte h3{margin-bottom:8px;color:#8a6d00}
 .ktags{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
@@ -187,7 +190,7 @@ function renderInner(){
   const chgN=RES.filter(r=>resFlag(r.id)).length;
   $("#app").innerHTML=`
   <div class="hd"><div class="logo">HAND<b>Y</b>MAN</div><div class="t">マイページ管理</div>
-    <div class="sp" style="font-size:10px;opacity:.6;font-weight:600">v1.9 カルテMEMO</div>
+    <div class="sp" style="font-size:10px;opacity:.6;font-weight:600">v2.0 フォーム再回答アラート</div>
     <button class="${rc?"alert":""}" onclick="VIEW='changes';SEL=null;render()">🔔 変更依頼 ${rc}</button>
     <button onclick="openCfg()">⚙️ トリガー設定</button>
   </div>
@@ -228,6 +231,30 @@ async function selectRes(id,silent){
   if(!silent){const el=document.getElementById("detail");if(el&&window.innerWidth<=820)el.scrollIntoView({behavior:"smooth"});}
 }
 function opDisp(t){let cj={};try{cj=JSON.parse(t.changed_json||"{}")}catch(e){}return cj._placeSource==="manual"?t.place:(cj._ssPlace||t.place||"")}
+function _cj(t){try{return JSON.parse(t.changed_json||"{}")}catch(e){return {}}}
+// フォーム再回答検知(_ssAlert)をカルテに出す
+function formReanswer(){
+  if(!SELTASKS)return[];const out=[];
+  SELTASKS.forEach(t=>{const cj=_cj(t);if(cj._ssAlert&&String(cj._ssAlert).trim()){
+    const isCol=String(t._id).slice(0,2)==="c-";
+    out.push({kind:isCol?"回収先":"お届け先",field:isCol?"col_place":"del_place",val:String(cj._ssAlert),taskId:t._id});}});
+  return out;
+}
+async function patchTaskCj(taskId,patchObj){
+  const t=(SELTASKS||[]).find(x=>x._id===taskId);if(!t)return;
+  const cj=_cj(t);Object.assign(cj,patchObj);
+  await api("tasks?_id=eq."+encodeURIComponent(taskId),{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({changed_json:JSON.stringify(cj)})});
+}
+async function applyReanswer(taskId,field,val){
+  try{
+    await api("reservations?id=eq."+encodeURIComponent(SEL),{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({[field]:val})});
+    await patchTaskCj(taskId,{_ssPlace:val,_placeSource:"manual",_ssAlert:""});
+    toast("反映しました");await loadAll(true);selectRes(SEL,true);
+  }catch(e){toast("反映失敗（ログイン要）")}
+}
+async function dismissReanswer(taskId){
+  try{await patchTaskCj(taskId,{_ssAlert:""});toast("確認済みにしました");selectRes(SEL,true);}catch(e){toast("失敗")}
+}
 function mismatch(r){
   if(!SELTASKS)return[];const out=[];
   const d=SELTASKS.find(t=>t._id.slice(0,2)==="d-"),c=SELTASKS.find(t=>t._id.slice(0,2)==="c-");
@@ -292,6 +319,14 @@ function detailHtml(){
     <div class="dst">${esc(r.status||"予約確定")}</div>
   </div>
   <div class="dbody">
+    ${formReanswer().map(fr=>`<div class="reanswer">
+      <div class="ra-h">🔔 フォームで情報を更新しています（要確認）</div>
+      <div class="ra-b">お客様が予約フォームで <b>${esc(fr.kind)}</b> を <b>「${esc(fr.val)}」</b> に更新しました。<br>
+        <span style="color:var(--sub)">※自動反映されていません。内容を確認して反映してください。</span></div>
+      <div class="acts">
+        <button class="btn ok" onclick="applyReanswer('${fr.taskId}','${fr.field}',${JSON.stringify(fr.val).replace(/"/g,"&quot;")})">この場所で反映</button>
+        <button class="btn ghost" onclick="dismissReanswer('${fr.taskId}')">確認済み（消す）</button>
+      </div></div>`).join("")}
     <div class="sec karte">
       <h3>🗒 カルテ / スタッフメモ <span style="color:var(--sub);font-weight:600;text-transform:none">（LINE・電話で受けた依頼や特記事項をここに）</span></h3>
       <div class="ktags">
