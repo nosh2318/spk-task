@@ -14947,16 +14947,16 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                   if(norm!==t._ssTime){next._ssTime=norm;next._ssTimeAt=new Date().toISOString();changed=true;}
                 }
               }
-              // 🔒 いいパトロール(2026-07-04): 未渡し=初動補完(ラッチ) / 渡し済み×SS変化=フォーム再回答→_ssAlert通知(OPは変えない)
+              // 🔄 いいパトロール(2026-07-04改): SS更新→OPタスク常に最新化＋変化は迷子通知。mypage/手動だけ保護。
               const p=placeMap[t.reservationId];
               const _ssValA=p?((t.type==="DEL"?p.delPlace:t.type==="COL"?p.colPlace:"")||""):"";
-              const _hasPlaceA=!!(String(t._ssPlace||"").trim()||String(t.place||"").trim());
-              const _handedOffA=!!t._placeSource||_hasPlaceA;
               if(_ssValA){
-                if(!_handedOffA){next._ssPlace=_ssValA;next._ssPlaceAt=new Date().toISOString();next._placeSource="ss";next._ssSeen=_ssValA;changed=true;}
-                else if(_ssValA!==String(t._ssSeen||"")){next._ssSeen=_ssValA;next._ssAlert=_ssValA;changed=true;}
+                const _protA=(t._placeSource==="manual"||t._placeSource==="customer");
+                const _prevA=String(t._ssSeen||"");const _firstA=!_prevA;const _chgA=!_firstA&&_ssValA!==_prevA;
+                if(_protA){if(_chgA){next._ssSeen=_ssValA;next._ssAlert=_ssValA;changed=true;}else if(_firstA){next._ssSeen=_ssValA;changed=true;}}
+                else{next._ssPlace=_ssValA;next._ssPlaceAt=new Date().toISOString();next._placeSource="ss";next._ssSeen=_ssValA;changed=true;if(_chgA)next._ssAlert=_ssValA;}
               }
-              if(p&&t.type==="DEL"&&p.colPlace&&!t._manualColPlace&&t._placeSource!=="customer"&&!String(t.colPlace||"").trim()){next.colPlace=p.colPlace;}
+              if(p&&t.type==="DEL"&&p.colPlace&&!t._manualColPlace&&t._placeSource!=="customer"){next.colPlace=p.colPlace;}
               return changed?next:t;
             });
             DB._lsSave(upd,selDate);
@@ -15212,19 +15212,21 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
           if(!t.reservationId||!placeMap[t.reservationId])return t;
           const p=placeMap[t.reservationId];
           let changed=false;const next={...t};
-          // 🔒 いいパトロール(2026-07-04): ①未渡し=SSから初動補完(1回)→ss/ssSeenラッチ ②渡し済みでSSが変化=フォーム再回答→OPは変えず_ssAlertで通知
+          // 🔄 いいパトロール(2026-07-04改): SS更新→OPタスクは常に最新化(回数制限なし)＋変化は迷子(_ssAlert)で通知。mypage/手動編集だけ保護。
           const _ssVal=(t.type==="DEL"?p.delPlace:t.type==="COL"?p.colPlace:"")||"";
-          const _hasPlace=!!(String(t._ssPlace||"").trim()||String(t.place||"").trim());
-          const _handedOff=!!t._placeSource||_hasPlace; // 役目終了済みか
           if(_ssVal){
-            if(!_handedOff){ // 初動ハンドオフ
+            const _prot=(t._placeSource==="manual"||t._placeSource==="customer");
+            const _prev=String(t._ssSeen||"");const _first=!_prev;const _chg=!_first&&_ssVal!==_prev;
+            if(_prot){ // mypage/手動は上書きしない。SSが違えば迷子で知らせる
+              if(_chg){next._ssSeen=_ssVal;next._ssAlert=_ssVal;changed=true;}
+              else if(_first){next._ssSeen=_ssVal;changed=true;}
+            } else { // SS由来：OPを常に最新へ
               next._ssPlace=_ssVal;next._ssPlaceAt=new Date().toISOString();next._placeSource="ss";next._ssSeen=_ssVal;changed=true;
-            } else if(_ssVal!==String(t._ssSeen||"")){ // 渡し済み×SS変化＝フォーム再回答（OPは変えない）
-              next._ssSeen=_ssVal;next._ssAlert=_ssVal;changed=true;
+              if(_chg)next._ssAlert=_ssVal; // 変更(初回以外)は迷子でも通知
             }
           }
-          // colPlace(DELタスクの返却場所ミラー)は空の時だけ初動補完
-          if(t.type==="DEL"&&p.colPlace&&!t._manualColPlace&&t._placeSource!=="customer"&&!String(t.colPlace||"").trim()){next.colPlace=p.colPlace;changed=true;}
+          // colPlace(DELタスクの返却場所ミラー)：手動でなければ最新化
+          if(t.type==="DEL"&&p.colPlace&&!t._manualColPlace&&t._placeSource!=="customer"){next.colPlace=p.colPlace;changed=true;}
           return changed?next:t;
         });
         DB._lsSave(updatedTasks,selDate);
