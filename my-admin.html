@@ -44,8 +44,15 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
 .li .otatag{font-size:9.5px;font-weight:800;color:#fff;border-radius:5px;padding:1px 6px;vertical-align:middle}
 .li .rid2{font-family:ui-monospace,monospace;font-size:12px;color:var(--ink);font-weight:700;margin-top:2px}
 .li .r2{font-size:11.5px;color:var(--sub);margin-top:1px}
-.li .pop{position:absolute;right:8px;top:8px;font-size:10px;font-weight:800;color:#fff;background:var(--danger);border-radius:999px;padding:1px 7px;animation:pop 1.4s infinite}
+.li .pop{position:absolute;right:8px;top:8px;font-size:10px;font-weight:800;color:#fff;background:var(--gold);border-radius:999px;padding:1px 7px;animation:pop 1.4s infinite}
 .li .pop.chg{background:var(--ok);animation:none}
+.li .pop.reans{background:#7c3aed}
+.li .pop.chg2{background:var(--danger)}
+.li .pop.miss{background:#64748b;animation:none}
+.li .pop.ack{background:#0e9f50;animation:none}
+.chip.reanswer.on{background:#7c3aed;border-color:#7c3aed}
+.chip.noplace.on{background:#64748b;border-color:#64748b}
+.li.reans{box-shadow:inset 4px 0 0 #7c3aed}.li.miss{box-shadow:inset 4px 0 0 #64748b}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
 @keyframes pop{0%,100%{transform:scale(1)}50%{transform:scale(1.12)}}
 /* detail */
@@ -143,7 +150,7 @@ function showErr(m){const e=document.getElementById("errbar");if(e){e.style.disp
 window.onerror=function(msg,src,ln){showErr(msg+" @"+ln);return false};
 window.addEventListener("unhandledrejection",e=>showErr("Promise: "+(e.reason&&e.reason.message||e.reason)));
 const MYURL="https://nosh2318.github.io/spk-task/my.html?t=";
-let CFG={},RES=[],CHG={},FILTER="req",Q="",SEL=null,SELTASKS=null,VIEW="changes",CFILTER="req",STAFF=[],OPERATOR=localStorage.getItem("admin_op")||"";
+let CFG={},RES=[],CHG={},FILTER="userchg",Q="",SEL=null,SELTASKS=null,VIEW="changes",CFILTER="req",STAFF=[],OPERATOR=localStorage.getItem("admin_op")||"";
 const TIMES=(()=>{let a=[];for(let h=9;h<=19;h++){a.push(("0"+h).slice(-2)+":00");if(h<19)a.push(("0"+h).slice(-2)+":30")}return a})();
 function setOp(v){OPERATOR=v;localStorage.setItem("admin_op",v);render()}
 function needOp(){if(!OPERATOR){toast("先に担当者を選んでください");return false}return true}
@@ -179,26 +186,53 @@ async function loadAll(keepSel){
   CFG=cfg[0]||{}; RES=res||[]; STAFF=(stf||[]).map(s=>s.name).filter(Boolean);
   CHG={}; (chg||[]).forEach(c=>{(CHG[c.reservation_id]=CHG[c.reservation_id]||[]).push(c)});
   render();
+  // フォーム再回答(迷子)検出：全予約のtasksから _ssAlert を持つ予約を集める（本体パトロールが検知済みの値）
+  try{
+    const ids=RES.map(r=>r.id);const found=new Set();
+    for(let i=0;i<ids.length;i+=60){
+      const chunk=ids.slice(i,i+60).map(encodeURIComponent).join(",");
+      const ts=await api("tasks?reservation_id=in.("+chunk+")&select=reservation_id,changed_json").catch(()=>[]);
+      (ts||[]).forEach(t=>{let cj={};try{cj=JSON.parse(t.changed_json||"{}")}catch(e){}if(cj._ssAlert&&String(cj._ssAlert).trim())found.add(t.reservation_id)});
+    }
+    ALERT_RES=found;render();
+  }catch(e){}
   if(keepSel&&SEL)selectRes(SEL,true);
 }
-function resFlag(id){const cs=CHG[id]||[];if(cs.some(c=>c.status==="requested"))return"req";if(cs.length)return"chg";return""}
-function reqTotal(){return Object.values(CHG).flat().filter(c=>c.status==="requested").length}
+/* ==== ステータス判定（7分類）==== */
+function csOf(r){return CHG[(typeof r==="string"?r:r.id)]||[]}
+function stMissing(r){return !String(r.del_place||"").trim()||!String(r.col_place||"").trim()||!String(r.lend_time||"").trim()||!String(r.return_time||"").trim()}
+function stReq(r){return csOf(r).some(c=>c.status==="requested")}                                   // ④変更リクエスト
+function stUserChg(r){return csOf(r).some(c=>c.source==="customer"&&c.status==="applied")}          // ①情報変更有り(未確認)
+function stAck(r){const cs=csOf(r);return !stUserChg(r)&&cs.some(c=>c.source==="customer"&&c.status==="acknowledged")} // ②確認済み
+let ALERT_RES=new Set();                                                                             // フォーム再回答(迷子)を持つ予約
+function stReanswer(r){return ALERT_RES.has(r.id)}                                                   // ⑤フォーム再回答(迷子)
+function stToday(r){return r.lend_date===today()||r.return_date===today()}                          // ⑥本日
+function resFlag(id){const r=(typeof id==="string")?RES.find(x=>x.id===id):id;if(!r)return"";
+  if(stReanswer(r))return"reans"; if(stReq(r))return"req"; if(stUserChg(r))return"chg"; if(stMissing(r))return"miss"; return""}
+const STATUS_DEFS=[
+  {k:"userchg",label:"情報変更有り",fn:stUserChg},
+  {k:"ack",label:"確認済み",fn:stAck},
+  {k:"noplace",label:"場所情報なし",fn:stMissing},
+  {k:"req",label:"変更リクエスト",fn:stReq},
+  {k:"reanswer",label:"フォーム再回答(迷子)",fn:stReanswer},
+  {k:"today",label:"本日",fn:stToday},
+  {k:"all",label:"全予約",fn:()=>true},
+];
+function statusCount(k){const d=STATUS_DEFS.find(x=>x.k===k);return d?RES.filter(d.fn).length:0}
+function reqTotal(){return RES.filter(stUserChg).length+RES.filter(r=>stReq(r)).length}
 
 function render(){try{renderInner()}catch(e){showErr("描画: "+(e.message||e));if($("#app").querySelector(".spin"))$("#app").innerHTML='<div class="empty">描画エラー：'+esc(e.message||"")+'<br><button class="btn ghost" onclick="location.reload()">再読込</button></div>'}}
 function renderInner(){
   const q=Q.trim();
+  const fdef=STATUS_DEFS.find(x=>x.k===FILTER)||STATUS_DEFS[STATUS_DEFS.length-1];
   let list=RES.filter(r=>{
-    const f=resFlag(r.id);
-    if(FILTER==="req"&&f!=="req")return false;
-    if(FILTER==="chg"&&!f)return false;
-    if(FILTER==="today"&&r.lend_date!==today()&&r.return_date!==today())return false;
+    if(!fdef.fn(r))return false;
     if(q&&!((r.name||"").includes(q)||(r.id||"").toUpperCase().includes(q.toUpperCase())))return false;
     return true;
   });
-  // 時系列順（お届け日→時間）。変更ありは点滅で分かるので並びは日付優先。
+  // 時系列順（お届け日→時間）。ステータスは色・点滅で分かるので並びは日付優先。
   list.sort((a,b)=>((a.lend_date||"")+ (a.lend_time||"")).localeCompare((b.lend_date||"")+(b.lend_time||"")));
-  const rc=reqTotal();
-  const chgN=RES.filter(r=>resFlag(r.id)).length;
+  const rc=RES.filter(stUserChg).length+RES.filter(stReq).length;
   $("#app").innerHTML=`
   <div class="hd"><div class="logo">HAND<b>Y</b>MAN</div><div class="t">マイページ管理</div>
     <div class="sp"></div>
@@ -214,10 +248,7 @@ function renderInner(){
     <div class="pane">
       <div class="lsearch"><input placeholder="🔍 予約番号・お名前で検索" value="${esc(Q)}" oninput="Q=this.value;render()"></div>
       <div class="chips">
-        <div class="chip ${FILTER==="req"?"on":""}" onclick="setF('req')">要対応<span class="n">${rc}</span></div>
-        <div class="chip ${FILTER==="chg"?"on":""}" onclick="setF('chg')">変更あり<span class="n">${chgN}</span></div>
-        <div class="chip ${FILTER==="today"?"on":""}" onclick="setF('today')">本日</div>
-        <div class="chip ${FILTER==="all"?"on":""}" onclick="setF('all')">全予約<span class="n">${RES.length}</span></div>
+        ${STATUS_DEFS.map(d=>`<div class="chip ${FILTER===d.k?"on":""} ${d.k}" onclick="setF('${d.k}')">${d.label}<span class="n">${statusCount(d.k)}</span></div>`).join("")}
       </div>
       <div class="list">${list.length?list.map(liHtml).join(""):`<div class="empty">該当なし</div>`}</div>
     </div>
@@ -227,7 +258,12 @@ function renderInner(){
   </div>`;
 }
 function liHtml(r){
-  const f=resFlag(r.id);const cs=CHG[r.id]||[];const rq=cs.filter(c=>c.status==="requested").length;
+  const f=resFlag(r.id);const rq=csOf(r).filter(c=>c.status==="requested").length;
+  const pop=stReanswer(r)?`<span class="pop reans">🔔迷子</span>`
+    :stReq(r)?`<span class="pop">リクエスト${rq>1?" "+rq:""}</span>`
+    :stUserChg(r)?`<span class="pop chg2">情報変更有り</span>`
+    :stMissing(r)?`<span class="pop miss">場所情報なし</span>`
+    :stAck(r)?`<span class="pop ack">確認済</span>`:"";
   return `<div class="li ${f} ${SEL===r.id?"sel":""}" onclick="selectRes('${r.id}')">
     <div class="clsbadge" style="background:${CLSC[r.vehicle]||'#64748b'}">${esc(r.vehicle||"?")}</div>
     <div class="m">
@@ -236,7 +272,7 @@ function liHtml(r){
       ${r.staff_note?`<div class="kartepeek">🗒 ${esc(r.staff_note.split("\n").join(" / ").slice(0,42))}</div>`:""}
       <div class="r2">${fmtD(r.lend_date)} ${esc(r.lend_time||"")} 〜 ${fmtD(r.return_date)}</div>
     </div>
-    ${f==="req"?`<span class="pop">要対応${rq>1?" "+rq:""}</span>`:(f==="chg"?`<span class="pop chg">変更</span>`:"")}
+    ${pop}
   </div>`;
 }
 async function selectRes(id,silent){
@@ -388,10 +424,12 @@ function detailHtml(){
   </div>`;
 }
 function chgHtml(c){
-  const cls=c.field==="cancel"?"cancel":(c.status==="requested"?"req":(c.status==="applied"?"applied":""));
+  const cls=c.field==="cancel"?"cancel":(c.status==="requested"?"req":(c.status==="applied"?"applied":c.status==="acknowledged"?"applied":""));
+  const stLbl={requested:"要対応",applied:"情報変更(未確認)",approved:"承認済",rejected:"却下",acknowledged:"確認済み"}[c.status]||c.status;
+  const isUserApplied=c.source==="customer"&&c.status==="applied";
   return `<div class="chg-item ${cls}">
     <div class="ci">${esc(FLD[c.field]||c.field)}
-      <span class="st ${c.status}">${{requested:"要対応",applied:"反映済",approved:"承認済",rejected:"却下"}[c.status]||c.status}</span></div>
+      <span class="st ${c.status}">${stLbl}</span></div>
     ${cbHtml(c)}
     ${c.note?`<div class="meta">📝 ${esc(c.note)}</div>`:""}
     ${chgMeta(c)}
@@ -399,8 +437,19 @@ function chgHtml(c){
       <button class="btn ok" onclick="decide(${c.id},'approved')">承認</button>
       <button class="btn dang" onclick="decide(${c.id},'rejected')">却下</button>
       <span style="flex:1;font-size:10.5px;color:var(--sub);align-self:center">※承認後アプリで内容を反映${c.field==="cancel"?"/キャンセル確定":""}</span>
+    </div>`:isUserApplied?`<div class="acts">
+      <button class="btn ok" onclick="ackChange(${c.id})">✅ 確認済みにする</button>
+      <span style="flex:1;font-size:10.5px;color:var(--sub);align-self:center">お客様の変更を確認したら押す（①→②）</span>
     </div>`:""}
   </div>`;
+}
+async function ackChange(id){
+  if(!needOp())return;
+  if(!sure("この情報変更を確認済みにして"))return;
+  try{await api("mypage_changes?id=eq."+id,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({status:"acknowledged",actor:OPERATOR})});
+    const c=Object.values(CHG).flat().find(x=>x.id===id);if(c){c.status="acknowledged";c.actor=OPERATOR;}
+    toast("確認済みにしました");render();
+  }catch(e){toast("更新失敗（ログイン要）")}
 }
 function setF(f){FILTER=f;render()}
 async function decide(id,status){
