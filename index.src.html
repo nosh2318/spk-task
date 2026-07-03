@@ -65,14 +65,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v909';
+  var CV='spk-v910';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=796').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=797').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -355,7 +355,7 @@ const DB = {
   },
   async fetchTasks(date){
     if(!sb){const ls=DB._lsLoad(date)||[];if(!ls.length){ls._fetchError=true;}return ls;}
-    const{data,error}=await sb.from("tasks").select("*").eq("date",date).order("sort_order");
+    const{data,error}=await sb.from("tasks").select("*").eq("date",date).neq("deleted",true).order("sort_order");
     if(error){dbLog("fetchTasks",false,error.message);const ls=DB._lsLoad(date)||[];ls._fetchError=true;return ls;}
     const tasks=(data||[]).map(DB._fromDbTask);
     // ★ 保存中の場合はlocalStorageを上書きしない（保存中のデータが消えるのを防ぐ）
@@ -467,9 +467,9 @@ const DB = {
     finally{DB._pendingSave--;}
   },
   async deleteTasks(date){try{localStorage.removeItem(DB._lsKey(date));}catch(e){} if(!sb)return;const{error}=await sb.from("tasks").delete().eq("date",date);if(error)dbLog("deleteTasks",false,error.message);},
-  async deleteTask(id,date){if(!sb)return;const{error}=await sb.from("tasks").delete().eq("_id",id);if(error)dbLog("deleteTask",false,error.message);else dbLog("deleteTask",true,id);try{const ls=DB._lsLoad(date);if(ls){const next=ls.filter(t=>t._id!==id);localStorage.setItem(DB._lsKey(date),JSON.stringify(next));}}catch(e){}},
+  async deleteTask(id,date){if(!sb)return;/* ★2026-07-03 墓標方式: 物理削除せず deleted=true。再生成/マージ/他端末が二度と復活させられない。upsertは deleted 列を書かない(=保持)ので復活しない。 */const{error}=await sb.from("tasks").update({deleted:true}).eq("_id",id);if(error)dbLog("deleteTask",false,error.message);else dbLog("deleteTask",true,id);try{const ls=DB._lsLoad(date);if(ls){const next=ls.filter(t=>t._id!==id);localStorage.setItem(DB._lsKey(date),JSON.stringify(next));}}catch(e){}},
   async deleteTasksByReservation(resId){if(!sb||!resId)return;const{error}=await sb.from("tasks").delete().eq("reservation_id",resId);if(error)dbLog("deleteTasksByRes",false,error.message);else dbLog("deleteTasksByRes",true,resId);},
-  async fetchTasksRange(fromDate,toDate){if(!sb)return[];const{data,error}=await sb.from("tasks").select("*").gte("date",fromDate).lte("date",toDate).order("date",{ascending:false}).order("sort_order");if(error){dbLog("fetchTasksRange",false,error.message);return[];}return(data||[]).map(r=>({...DB._fromDbTask(r),_date:r.date}));},
+  async fetchTasksRange(fromDate,toDate){if(!sb)return[];const{data,error}=await sb.from("tasks").select("*").gte("date",fromDate).lte("date",toDate).neq("deleted",true).order("date",{ascending:false}).order("sort_order");if(error){dbLog("fetchTasksRange",false,error.message);return[];}return(data||[]).map(r=>({...DB._fromDbTask(r),_date:r.date}));},
   // ★ B/C/J数量をmemoに埋め込み（確実にDB保存される）
   _BCJ_TAG:"\n##BCJ:",
   _encodeMemo(t){const base=(t.memo||"").split("\n##BCJ:")[0];const b=+(t.opts?.b||0),c=+(t.opts?.c||0),j=+(t.opts?.j||0);if(b||c||j)return base+"\n##BCJ:"+b+","+c+","+j;return base;},
@@ -21953,7 +21953,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.364";
+const APP_VERSION="v4.7.365";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
