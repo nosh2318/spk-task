@@ -25,6 +25,8 @@ async function sbPatch(t: string, q: string, b: unknown): Promise<boolean> { con
 async function sbPost(t: string, b: unknown): Promise<void> { const r = await fetch(`${SB_URL}/rest/v1/${t}`, { method: "POST", headers: { ...H, Prefer: "return=minimal" }, body: JSON.stringify(b) }); if (!r.ok) console.error(`POST ${t}`, await r.text()); }
 
 async function notifySlack(text: string): Promise<void> {
+  // 一時ミュート（MYPAGE_SILENT=1 の間はSlack通知を出さない＝開発/テスト中の混乱防止）
+  if (Deno.env.get("MYPAGE_SILENT") === "1") { console.log("[slack muted]", text); return; }
   const token = Deno.env.get("SLACK_BOT_TOKEN"); const ch = Deno.env.get("SLACK_KEYDROP_CHANNEL") || "C08TDTPEB36";
   if (!token) { console.log("[slack skip]", text); return; }
   try { const r = await fetch("https://slack.com/api/chat.postMessage", { method: "POST", headers: { Authorization: `Bearer ${token}`, "content-type": "application/json; charset=utf-8" }, body: JSON.stringify({ channel: ch, text }) }); const d = await r.json().catch(() => ({})); if (!d.ok) console.error("[slack]", JSON.stringify(d)); } catch (e) { console.error("[slack]", String(e)); }
