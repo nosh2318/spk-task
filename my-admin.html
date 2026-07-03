@@ -46,6 +46,9 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
 .clsbadge.sm{width:30px;height:30px;font-size:14px;border-radius:8px}
 .bc-nm{font-weight:800;font-size:13px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bc-sub{font-size:10.5px;color:var(--sub);font-family:ui-monospace,monospace;margin-top:5px;line-height:1.5}
+.bc-btn{width:100%;margin-top:8px;padding:7px;border-radius:8px;font-weight:800;font-size:12px;border:0;cursor:pointer}
+.bc-btn.chk{background:var(--ok);color:#fff}
+.bc-btn.undo{background:#eef1f4;color:var(--sub)}
 .karte-pane{background:var(--card);border:1px solid var(--line);border-radius:var(--r);overflow:auto;height:100%}
 .karte-back{display:none}
 @media(max-width:900px){
@@ -238,7 +241,7 @@ function ago(days){const d=new Date();d.setDate(d.getDate()-days);return d.getFu
 async function loadAll(keepSel){
   const [cfg,res,chg,stf]=await Promise.all([
     api("spk_line_config?id=eq.1&select=*"),
-    api("reservations?return_date=gte."+ago(2)+"&status=not.in.(%22%E3%82%AD%E3%83%A3%E3%83%B3%E3%82%BB%E3%83%AB%22,cancelled)&order=lend_date.asc&limit=400&select=id,name,ota,lend_date,return_date,lend_time,return_time,vehicle,del_place,col_place,people,opt_b,opt_c,opt_j,insurance,status,mypage_token,mypage_locked,staff_note,tel,mail"),
+    api("reservations?return_date=gte."+ago(2)+"&status=not.in.(%22%E3%82%AD%E3%83%A3%E3%83%B3%E3%82%BB%E3%83%AB%22,cancelled)&order=lend_date.asc&limit=400&select=id,name,ota,lend_date,return_date,lend_time,return_time,vehicle,del_place,col_place,people,opt_b,opt_c,opt_j,insurance,status,mypage_token,mypage_locked,staff_note,tel,mail,admin_checked_at,admin_checked_by"),
     api("mypage_changes?store=eq.spk&order=created_at.desc&limit=500&select=id,reservation_id,field,old_value,new_value,source,status,note,actor,created_at"),
     api("staff?select=name&order=name.asc").catch(()=>[]),
   ]);
@@ -260,9 +263,13 @@ async function loadAll(keepSel){
 /* ==== ステータス判定（7分類）==== */
 function csOf(r){return CHG[(typeof r==="string"?r:r.id)]||[]}
 function stMissing(r){return !String(r.del_place||"").trim()||!String(r.col_place||"").trim()||!String(r.lend_time||"").trim()||!String(r.return_time||"").trim()}
-function stReq(r){return csOf(r).some(c=>c.status==="requested")}                                   // ④変更リクエスト
-function stUserChg(r){return csOf(r).some(c=>c.source==="customer"&&c.status==="applied")}          // ①情報変更有り(未確認)
-function stAck(r){const cs=csOf(r);return !stUserChg(r)&&cs.some(c=>c.source==="customer"&&c.status==="acknowledged")} // ②確認済み
+function stReq(r){return csOf(r).some(c=>c.status==="requested")}                                   // 変更リクエスト
+function stUserChg(r){return csOf(r).some(c=>c.source==="customer"&&c.status==="applied")}          // 情報変更有り
+// この予約の最後の"活動"時刻（変更/依頼の作成時刻。迷子は活動扱い＝常に要確認）
+function lastActivityAt(r){let t="";csOf(r).forEach(c=>{if((c.created_at||"")>t)t=c.created_at});return t}
+// スタッフが確認済みにした後、新しい活動が無ければ「確認済み」
+function isChecked(r){const ca=r.admin_checked_at;if(!ca)return false;if(stReanswer(r))return false;const la=lastActivityAt(r);return !la||la<=ca}
+function stAck(r){return isChecked(r)}                                                              // 確認済みBOX
 let ALERT_RES=new Set();                                                                             // フォーム再回答(迷子)を持つ予約
 function stReanswer(r){return ALERT_RES.has(r.id)}                                                   // ⑤フォーム再回答(迷子)
 function stToday(r){return r.lend_date===today()||r.return_date===today()}                          // ⑥本日
@@ -288,12 +295,14 @@ const BOARD_COLS=[
   {k:"ack",label:"✅ 確認済み",color:"#0e9f50"},
 ];
 function resColumn(r){
+  const anyActivity=stReanswer(r)||stReq(r)||stUserChg(r)||stMissing(r);
+  if(!anyActivity)return"ok";                // 活動なし＝板に出さない
+  if(isChecked(r))return"ack";               // 対応済み＝確認済みBOXへ移動
   if(stReanswer(r))return"reanswer";
   if(stReq(r))return"req";
   if(stUserChg(r))return"userchg";
   if(stMissing(r))return"miss";
-  if(stAck(r))return"ack";
-  return"ok"; // 活動なし＝板に出さない
+  return"ok";
 }
 function matchQ(r){const q=Q.trim();return !q||((r.name||"").includes(q)||(r.id||"").toUpperCase().includes(q.toUpperCase()))}
 function cardHtml(r){
@@ -304,6 +313,9 @@ function cardHtml(r){
     <div class="bc-sub">🎫 ${esc(r.id)}<br>${fmtD(r.lend_date)} ${esc(r.lend_time||"")}〜${fmtD(r.return_date)}</div>
     ${act?`<div class="actline ${act.cls}">${esc(act.t)}</div>`:""}
     ${r.staff_note?`<div class="kartepeek">🗒 ${esc(r.staff_note.split("\n").join(" / ").slice(0,36))}</div>`:""}
+    ${resColumn(r)==="ack"
+      ?`<button class="bc-btn undo" onclick="event.stopPropagation();uncheckRes('${r.id}')">↩ 未対応に戻す${r.admin_checked_by?" ("+esc(r.admin_checked_by)+")":""}</button>`
+      :`<button class="bc-btn chk" onclick="event.stopPropagation();checkRes('${r.id}')">✅ 確認済みにする</button>`}
   </div>`;
 }
 
@@ -478,15 +490,24 @@ function changeCompare(r){
       </div>`).join("")}
     </div>
     <div style="font-size:11px;color:var(--sub);margin-top:6px">※OPシートには反映済みです。内容を確認したら押してください。</div>
-    <button class="btn ok" style="margin-top:6px" onclick="ackAll('${r.id}')">✅ 確認済みにする</button>
+    <button class="btn ok" style="margin-top:6px" onclick="checkRes('${r.id}')">✅ 確認済みにする</button>
   </div>`;
 }
-async function ackAll(id){
+async function checkRes(id){
   if(!needOp())return;
-  if(!sure("この変更をすべて確認済みにして"))return;
-  const cs=csOf(id).filter(c=>c.source==="customer"&&c.status==="applied");
-  try{for(const c of cs){await api("mypage_changes?id=eq."+c.id,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({status:"acknowledged",actor:OPERATOR})});c.status="acknowledged";c.actor=OPERATOR;}
-    toast("確認済みにしました");render();
+  if(!sure("この予約を確認済みにして"))return;
+  const now=new Date().toISOString();
+  try{await api("reservations?id=eq."+encodeURIComponent(id),{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({admin_checked_at:now,admin_checked_by:OPERATOR})});
+    const r=RES.find(x=>x.id===id);if(r){r.admin_checked_at=now;r.admin_checked_by=OPERATOR;}
+    toast("確認済みにしました（確認済みBOXへ）");render();
+  }catch(e){toast("更新失敗（ログイン要）")}
+}
+async function uncheckRes(id){
+  if(!needOp())return;
+  if(!sure("未対応に戻して"))return;
+  try{await api("reservations?id=eq."+encodeURIComponent(id),{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({admin_checked_at:null})});
+    const r=RES.find(x=>x.id===id);if(r)r.admin_checked_at=null;
+    toast("未対応に戻しました");render();
   }catch(e){toast("更新失敗（ログイン要）")}
 }
 function detailHtml(){
