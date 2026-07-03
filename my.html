@@ -102,6 +102,13 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 .optprev{background:#fff8ec;border:1px solid #f3d9a8;border-radius:10px;padding:10px 12px;margin-top:12px}
 .optprev-h{font-size:11px;font-weight:800;color:var(--gold);margin-bottom:4px}
 .optprev-r{font-size:13px;font-weight:600}
+.mpmap{width:100%;height:230px;border-radius:12px;border:1px solid var(--line);overflow:hidden;background:#eef1f4}
+.mpsug{position:absolute;left:0;right:0;top:100%;z-index:5;background:#fff;border:1px solid var(--line);
+  border-radius:0 0 10px 10px;box-shadow:0 8px 20px rgba(20,30,45,.12);display:none;max-height:220px;overflow:auto}
+.mpsug-i{padding:10px 12px;font-size:13px;border-bottom:1px solid #f2f4f6;cursor:pointer}
+.mpsug-i:hover{background:#f5f8ff}
+.mppicked{margin-top:10px;font-size:13px;background:#eafaf5;border:1px solid #b7e6da;border-radius:10px;padding:9px 12px}
+.mppicked b{color:var(--accent-d)}
 .inscard{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:#fafbfc}
 .insttl{font-weight:800;font-size:13px;display:flex;align-items:center;justify-content:space-between;gap:8px}
 .insprice{color:var(--accent-d);font-size:13px}
@@ -127,7 +134,7 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 <div class="toast" id="toast"></div>
 
 <script>
-const VER = "v2.3 (07-03 24h注記を強調)";
+const VER = "v2.4 (07-03 場所を地図ピッカー化)";
 const FN = "https://ckrxttbnawkclshczsia.supabase.co/functions/v1/handyman-mypage";
 const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const $ = s=>document.querySelector(s);
@@ -198,11 +205,11 @@ function render(){
   <div class="card">
     <h2><span class="em">📍</span>お届け・回収</h2>
     <div class="row"><div class="k">お届け先</div><div class="v">${esc(r.del_place||"—（未設定）")}
-      ${editable?`<span class="edit" onclick="editField('del_place')">変更</span>`:""}</div></div>
+      ${editable?`<span class="edit" onclick="mapPicker('del_place')">変更</span>`:""}</div></div>
     <div class="row"><div class="k">お届け日時</div><div class="v">${esc(dateTime(r.lend_date,r.lend_time))}
       ${editable?`<span class="edit" onclick="editField('lend_time')">時間変更</span>`:""}</div></div>
     <div class="row"><div class="k">回収先</div><div class="v">${esc(r.col_place||"—（未設定）")}
-      ${editable?`<span class="edit" onclick="editField('col_place')">変更</span>`:""}</div></div>
+      ${editable?`<span class="edit" onclick="mapPicker('col_place')">変更</span>`:""}</div></div>
     <div class="row"><div class="k">回収日時</div><div class="v">${esc(dateTime(r.return_date,r.return_time))}
       ${editable?`<span class="edit" onclick="editField('return_time')">時間変更</span>`:""}</div></div>
     ${editable?`<div class="hint">⏰ <b>出発24時間前まで</b>、場所・時間をご自身で変更いただけます。<br>それ以降の変更は<b>公式LINE</b>にて承ります。</div>`:""}
@@ -270,6 +277,112 @@ async function saveField(field){
   if(v===cur){toast("変更がありません");return}
   if((field==="del_place"||field==="col_place")&&v.length<2){toast("2文字以上で入力してください");return}
   const {json}=await call("update",{[field]:v});
+  if(json.ok){closeSheet();toast("変更を反映しました");await load()}
+  else if(json.lineOnly){closeSheet();toast(json.error)}
+  else toast(json.error||"変更に失敗しました");
+}
+
+/* ================= 地図ピッカー（KEYDROP方式・検索候補＋ドラッグピン）================= */
+const GMAPS_KEY="AIzaSyCoX1EyEx-N5A0r4vRzC1KmVp3T29HILbI";
+const SPK_CENTER={lat:43.0621,lng:141.3544}; // 札幌中心
+let _gLoaded=false,_gLoading=null,mpMap=null,mpMarker=null,mpGeocoder=null,mpAuto=null,mpPlaces=null,mpTok=null;
+let mpField=null,mpPicked={place:"",lat:null,lng:null};
+function loadGoogle(){
+  if(_gLoaded)return Promise.resolve();
+  if(_gLoading)return _gLoading;
+  _gLoading=new Promise((res,rej)=>{
+    const s=document.createElement("script");
+    s.src=`https://maps.googleapis.com/maps/api/js?key=${GMAPS_KEY}&libraries=places&language=ja`;
+    s.async=true;s.onload=()=>{_gLoaded=true;res()};s.onerror=rej;document.head.appendChild(s);
+  });
+  return _gLoading;
+}
+function mapPicker(field){
+  mpField=field;
+  const r=DATA.reservation, isDel=field==="del_place";
+  mpPicked={place:(isDel?r.del_place:r.col_place)||"",
+    lat:(isDel?r.del_lat:r.col_lat)||null,lng:(isDel?r.del_lng:r.col_lng)||null};
+  $("#sheet").innerHTML=`
+    <h3>${isDel?"お届け先":"回収先"}の変更</h3>
+    <p class="sub">検索して選ぶか、地図のピンを動かして正確な場所を指定してください。</p>
+    <div class="field" style="position:relative;margin-bottom:8px">
+      <input id="mpSearch" placeholder="🔍 住所・ホテル名・施設名で検索" autocomplete="off"
+        oninput="mpSearchInput()" value="${esc(mpPicked.place)}">
+      <div id="mpSuggest" class="mpsug"></div>
+    </div>
+    <div id="mpMap" class="mpmap"><div class="center" style="padding:30px"><div class="spin"></div>地図を読み込み中…</div></div>
+    <div class="mppicked">📍 <b id="mpPicked">${esc(mpPicked.place||"未選択")}</b></div>
+    <div class="hint" style="margin-top:8px">⏰ 出発24時間前まで変更できます。変更後すぐ反映されます。</div>
+    <div class="acts" style="margin-top:12px"><button class="btn-cancel" onclick="closeSheet()">やめる</button>
+      <button class="btn-ok" id="mpBtn" onclick="mpSave()">この場所で変更する</button></div>`;
+  $("#scrim").classList.add("show");
+  loadGoogle().then(initMpMap).catch(()=>{
+    document.getElementById("mpMap").innerHTML='<div class="center" style="padding:20px;font-size:12px">地図を読み込めませんでした。検索欄に入力して変更できます。</div>';
+  });
+}
+function initMpMap(){
+  const el=document.getElementById("mpMap"); if(!el)return;
+  const c=(mpPicked.lat&&mpPicked.lng)?{lat:+mpPicked.lat,lng:+mpPicked.lng}:SPK_CENTER;
+  el.innerHTML="";
+  mpMap=new google.maps.Map(el,{center:c,zoom:mpPicked.lat?16:13,disableDefaultUI:true,zoomControl:true,gestureHandling:"greedy",clickableIcons:false});
+  mpMarker=new google.maps.Marker({position:c,map:mpMap,draggable:true});
+  mpGeocoder=new google.maps.Geocoder();
+  mpAuto=new google.maps.places.AutocompleteService();
+  mpPlaces=new google.maps.places.PlacesService(mpMap);
+  mpTok=new google.maps.places.AutocompleteSessionToken();
+  mpMap.addListener("click",e=>{mpMarker.setPosition(e.latLng);mpReverse(e.latLng.lat(),e.latLng.lng())});
+  mpMarker.addListener("dragend",()=>{const ll=mpMarker.getPosition();mpReverse(ll.lat(),ll.lng())});
+}
+function mpReverse(lat,lng){
+  mpPicked.lat=lat;mpPicked.lng=lng;
+  const pe=document.getElementById("mpPicked"); if(pe)pe.textContent="住所を取得中…";
+  mpGeocoder.geocode({location:{lat,lng},language:"ja"},(res,st)=>{
+    let addr=`${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+    if(st==="OK"&&res&&res[0])addr=res[0].formatted_address.replace(/^日本[、,]\s*/,"").replace(/〒?\s*\d{3}-?\d{4}\s*/,"").trim();
+    mpPicked.place=addr;
+    const pe=document.getElementById("mpPicked"); if(pe)pe.textContent=addr;
+    const si=document.getElementById("mpSearch"); if(si)si.value=addr;
+  });
+}
+let _mpDeb=null;
+function mpSearchInput(){
+  const q=document.getElementById("mpSearch").value.trim();
+  const box=document.getElementById("mpSuggest");
+  if(q.length<2){box.style.display="none";return}
+  clearTimeout(_mpDeb);
+  _mpDeb=setTimeout(()=>{
+    if(!mpAuto){box.style.display="none";return}
+    mpAuto.getPlacePredictions({input:q,sessionToken:mpTok,language:"ja",
+      locationBias:{center:SPK_CENTER,radius:60000},componentRestrictions:{country:"jp"}},(preds,st)=>{
+      if(st!=="OK"||!preds||!preds.length){box.innerHTML='<div class="mpsug-i" style="color:#999">該当なし</div>';box.style.display="block";return}
+      box.innerHTML=preds.slice(0,6).map(p=>`<div class="mpsug-i" onclick="mpPick('${p.place_id}')">📍 ${esc(p.description)}</div>`).join("");
+      box.style.display="block";
+    });
+  },350);
+}
+function mpPick(placeId){
+  document.getElementById("mpSuggest").style.display="none";
+  mpPlaces.getDetails({placeId,fields:["geometry","name","formatted_address"],sessionToken:mpTok,language:"ja"},(pl,st)=>{
+    mpTok=new google.maps.places.AutocompleteSessionToken();
+    if(st!=="OK"||!pl||!pl.geometry)return;
+    const lat=pl.geometry.location.lat(),lng=pl.geometry.location.lng();
+    let addr=(pl.formatted_address||"").replace(/^日本[、,]\s*/,"").replace(/〒?\s*\d{3}-?\d{4}\s*/,"").trim();
+    const name=pl.name?(pl.name+(addr?" "+addr:"")):addr;
+    mpPicked={place:name,lat,lng};
+    document.getElementById("mpPicked").textContent=name;
+    document.getElementById("mpSearch").value=name;
+    if(mpMap){mpMap.setCenter({lat,lng});mpMap.setZoom(16);mpMarker.setPosition({lat,lng})}
+  });
+}
+async function mpSave(){
+  const r=DATA.reservation, isDel=mpField==="del_place";
+  const cur=(isDel?r.del_place:r.col_place)||"";
+  const place=(document.getElementById("mpSearch").value||mpPicked.place||"").trim();
+  if(place.length<2){toast("場所を入力してください");return}
+  if(place===cur){toast("変更がありません");return}
+  const body={[mpField]:place};
+  if(mpPicked.lat&&mpPicked.lng){body[isDel?"del_lat":"col_lat"]=mpPicked.lat;body[isDel?"del_lng":"col_lng"]=mpPicked.lng}
+  const {json}=await call("update",body);
   if(json.ok){closeSheet();toast("変更を反映しました");await load()}
   else if(json.lineOnly){closeSheet();toast(json.error)}
   else toast(json.error||"変更に失敗しました");
