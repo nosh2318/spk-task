@@ -19,6 +19,9 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
 .hd .sp{margin-left:auto}
 .hd button{background:rgba(255,255,255,.14);color:#fff;border:0;border-radius:8px;padding:7px 12px;font-weight:700;font-size:12.5px;cursor:pointer}
 .hd button.alert{background:var(--danger);animation:blink 1.2s infinite}
+.opsel{background:#fff;color:var(--ink);border:0;border-radius:8px;padding:7px 10px;font-weight:800;font-size:12.5px;max-width:150px}
+.opsel.need{background:#FABE00;color:#0F1F45;animation:blink 1.4s infinite}
+.miniedit{margin-left:8px;font-size:11px;font-weight:800;color:var(--accent);background:#eafaf5;border:1px solid #b7e6da;border-radius:999px;padding:2px 9px;cursor:pointer;vertical-align:middle}
 /* layout */
 .main{display:grid;grid-template-columns:380px 1fr;gap:12px;padding:12px;max-width:1200px;margin:0 auto;align-items:start}
 @media(max-width:820px){.main{grid-template-columns:1fr}.detail.empty-mobile{display:none}}
@@ -140,7 +143,11 @@ function showErr(m){const e=document.getElementById("errbar");if(e){e.style.disp
 window.onerror=function(msg,src,ln){showErr(msg+" @"+ln);return false};
 window.addEventListener("unhandledrejection",e=>showErr("Promise: "+(e.reason&&e.reason.message||e.reason)));
 const MYURL="https://nosh2318.github.io/spk-task/my.html?t=";
-let CFG={},RES=[],CHG={},FILTER="req",Q="",SEL=null,SELTASKS=null,VIEW="changes",CFILTER="req";
+let CFG={},RES=[],CHG={},FILTER="req",Q="",SEL=null,SELTASKS=null,VIEW="changes",CFILTER="req",STAFF=[],OPERATOR=localStorage.getItem("admin_op")||"";
+const TIMES=(()=>{let a=[];for(let h=9;h<=19;h++){a.push(("0"+h).slice(-2)+":00");if(h<19)a.push(("0"+h).slice(-2)+":30")}return a})();
+function setOp(v){OPERATOR=v;localStorage.setItem("admin_op",v);render()}
+function needOp(){if(!OPERATOR){toast("先に担当者を選んでください");return false}return true}
+function sure(msg){return window.confirm("本当に"+msg+"よろしいですか？")}
 const CLS={A:"アルファード/ヴェル",B:"ノア/デリカ",C:"ロッキー/CX-3",S:"ハリアー/CX-5",F:"ルーミー/ソリオ",H:"カローラ/アクセラ"};
 const CLSC={A:"#7c3aed",B:"#0284c7",C:"#059669",S:"#d97706",F:"#db2777",H:"#64748b"};
 // 流入先(OTA)ラベル＋色
@@ -152,6 +159,9 @@ const FLD={del_place:"お届け先",col_place:"回収先",lend_time:"お届け�
 const WD=["日","月","火","水","木","金","土"];
 function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
 function fmtD(d){if(!d)return"";const m=/^(\d{4})-(\d{2})-(\d{2})/.exec(d);if(!m)return d;const dt=new Date(+m[1],+m[2]-1,+m[3]);return `${+m[2]}/${+m[3]}(${WD[dt.getDay()]})`}
+function fmtDT(s){if(!s)return"";return String(s).replace("T"," ").slice(0,16)}
+function srcLabel(s){return s==="customer"?"顧客(マイページ)":s==="staff"?"スタッフ(管理画面)":s==="form"?"フォーム":s||""}
+function chgMeta(c){return `<div class="meta">📅 ${esc(fmtDT(c.created_at))} ・ ${esc(srcLabel(c.source))}${c.actor?" ・ 担当:<b>"+esc(c.actor)+"</b>":""}${["del_place","col_place","lend_time","return_time"].includes(c.field)?" ・ ✅OPシート反映":""}</div>`}
 function toast(m){const t=$("#toast");t.textContent=m;t.classList.add("show");setTimeout(()=>t.classList.remove("show"),2200)}
 function tok(){try{for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.indexOf("sb-")===0&&k.indexOf("auth-token")>=0){let v=null;try{v=JSON.parse(localStorage.getItem(k))}catch(e){continue}const t=(v&&v.access_token)||(v&&v.currentSession&&v.currentSession.access_token)||(v&&v.session&&v.session.access_token)||(Array.isArray(v)&&typeof v[0]==="string"?v[0]:null);if(t)return t}}}catch(e){}return null}
 function H(){return{apikey:ANON,Authorization:"Bearer "+(tok()||ANON),"Content-Type":"application/json"}}
@@ -160,12 +170,13 @@ function today(){const d=new Date();return d.getFullYear()+"-"+("0"+(d.getMonth(
 function ago(days){const d=new Date();d.setDate(d.getDate()-days);return d.getFullYear()+"-"+("0"+(d.getMonth()+1)).slice(-2)+"-"+("0"+d.getDate()).slice(-2)}
 
 async function loadAll(keepSel){
-  const [cfg,res,chg]=await Promise.all([
+  const [cfg,res,chg,stf]=await Promise.all([
     api("spk_line_config?id=eq.1&select=*"),
     api("reservations?return_date=gte."+ago(2)+"&status=not.in.(%22%E3%82%AD%E3%83%A3%E3%83%B3%E3%82%BB%E3%83%AB%22,cancelled)&order=lend_date.asc&limit=400&select=id,name,ota,lend_date,return_date,lend_time,return_time,vehicle,del_place,col_place,people,opt_b,opt_c,opt_j,insurance,status,mypage_token,mypage_locked,staff_note,tel,mail"),
-    api("mypage_changes?store=eq.spk&order=created_at.desc&limit=500&select=id,reservation_id,field,old_value,new_value,source,status,note,created_at"),
+    api("mypage_changes?store=eq.spk&order=created_at.desc&limit=500&select=id,reservation_id,field,old_value,new_value,source,status,note,actor,created_at"),
+    api("staff?select=name&order=name.asc").catch(()=>[]),
   ]);
-  CFG=cfg[0]||{}; RES=res||[];
+  CFG=cfg[0]||{}; RES=res||[]; STAFF=(stf||[]).map(s=>s.name).filter(Boolean);
   CHG={}; (chg||[]).forEach(c=>{(CHG[c.reservation_id]=CHG[c.reservation_id]||[]).push(c)});
   render();
   if(keepSel&&SEL)selectRes(SEL,true);
@@ -190,7 +201,12 @@ function renderInner(){
   const chgN=RES.filter(r=>resFlag(r.id)).length;
   $("#app").innerHTML=`
   <div class="hd"><div class="logo">HAND<b>Y</b>MAN</div><div class="t">マイページ管理</div>
-    <div class="sp" style="font-size:10px;opacity:.6;font-weight:600">v2.0 フォーム再回答アラート</div>
+    <div class="sp"></div>
+    <select class="opsel ${OPERATOR?"":"need"}" onchange="setOp(this.value)">
+      <option value="">担当者を選択…</option>
+      ${STAFF.map(n=>`<option ${n===OPERATOR?"selected":""}>${esc(n)}</option>`).join("")}
+      ${OPERATOR&&!STAFF.includes(OPERATOR)?`<option selected>${esc(OPERATOR)}</option>`:""}
+    </select>
     <button class="${rc?"alert":""}" onclick="VIEW='changes';SEL=null;render()">🔔 変更依頼 ${rc}</button>
     <button onclick="openCfg()">⚙️ トリガー設定</button>
   </div>
@@ -246,6 +262,8 @@ async function patchTaskCj(taskId,patchObj){
   await api("tasks?_id=eq."+encodeURIComponent(taskId),{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({changed_json:JSON.stringify(cj)})});
 }
 async function applyReanswer(taskId,field,val){
+  if(!needOp())return;
+  if(!sure("フォーム再回答の内容をこの予約に反映して"))return;
   try{
     await api("reservations?id=eq."+encodeURIComponent(SEL),{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({[field]:val})});
     await patchTaskCj(taskId,{_ssPlace:val,_placeSource:"manual",_ssAlert:""});
@@ -253,6 +271,7 @@ async function applyReanswer(taskId,field,val){
   }catch(e){toast("反映失敗（ログイン要）")}
 }
 async function dismissReanswer(taskId){
+  if(!sure("この通知を確認済みにして"))return;
   try{await patchTaskCj(taskId,{_ssAlert:""});toast("確認済みにしました");selectRes(SEL,true);}catch(e){toast("失敗")}
 }
 function mismatch(r){
@@ -293,7 +312,7 @@ function globalChangesHtml(){
         <span class="st ${c.status}">${{requested:"要対応",applied:"反映済",approved:"承認済",rejected:"却下"}[c.status]||c.status}</span></div>
       ${cbHtml(c)}
       ${c.note?`<div class="meta">📝 ${esc(c.note)}</div>`:""}
-      <div class="meta">${c.source==="customer"?"顧客":"スタッフ"} ・ ${esc((c.created_at||"").slice(5,16).replace("T"," "))}</div>
+      ${chgMeta(c)}
       ${c.status==="requested"?`<div class="acts">
         <button class="btn ok" onclick="decide(${c.id},'approved')">承認</button>
         <button class="btn dang" onclick="decide(${c.id},'rejected')">却下</button>
@@ -342,14 +361,14 @@ function detailHtml(){
 
     <div class="sec"><h3>予約内容 ${Object.keys(lk).length?'<span style="color:var(--gold)">● 顧客変更あり</span>':""}</h3>
       <div class="grp"><div class="grp-h">📦 お届け</div>
-        <div class="kv"><div class="k">場所</div><div class="v ${chgd("del_place")}">${esc(r.del_place||"—（未設定）")}</div></div>
+        <div class="kv"><div class="k">場所</div><div class="v ${chgd("del_place")}">${esc(r.del_place||"—（未設定）")}<button class="miniedit" onclick="staffEdit('del_place')">✏️編集</button></div></div>
         <div class="kv"><div class="k">日付</div><div class="v">${fmtD(r.lend_date)||"—"}</div></div>
-        <div class="kv"><div class="k">時間</div><div class="v ${chgd("lend_time")}">${esc(r.lend_time||"—")}</div></div>
+        <div class="kv"><div class="k">時間</div><div class="v ${chgd("lend_time")}">${esc(r.lend_time||"—")}<button class="miniedit" onclick="staffEdit('lend_time')">✏️編集</button></div></div>
       </div>
       <div class="grp"><div class="grp-h">🔄 回収</div>
-        <div class="kv"><div class="k">場所</div><div class="v ${chgd("col_place")}">${esc(r.col_place||"—（未設定）")}</div></div>
+        <div class="kv"><div class="k">場所</div><div class="v ${chgd("col_place")}">${esc(r.col_place||"—（未設定）")}<button class="miniedit" onclick="staffEdit('col_place')">✏️編集</button></div></div>
         <div class="kv"><div class="k">日付</div><div class="v">${fmtD(r.return_date)||"—"}</div></div>
-        <div class="kv"><div class="k">時間</div><div class="v ${chgd("return_time")}">${esc(r.return_time||"—")}</div></div>
+        <div class="kv"><div class="k">時間</div><div class="v ${chgd("return_time")}">${esc(r.return_time||"—")}<button class="miniedit" onclick="staffEdit('return_time')">✏️編集</button></div></div>
       </div>
       <div class="kv"><div class="k">人数</div><div class="v">${esc(r.people||"—")}名</div></div>
       <div class="kv"><div class="k">オプション</div><div class="v">${opts.length?esc(opts.join("・")):"なし"}</div></div>
@@ -375,8 +394,7 @@ function chgHtml(c){
       <span class="st ${c.status}">${{requested:"要対応",applied:"反映済",approved:"承認済",rejected:"却下"}[c.status]||c.status}</span></div>
     ${cbHtml(c)}
     ${c.note?`<div class="meta">📝 ${esc(c.note)}</div>`:""}
-    <div class="meta">${c.source==="customer"?"顧客":"スタッフ"} ・ ${esc((c.created_at||"").slice(5,16).replace("T"," "))}
-      ${["del_place","col_place","lend_time","return_time"].includes(c.field)?" ・ ✅OPシート即反映":""}</div>
+    ${chgMeta(c)}
     ${c.status==="requested"?`<div class="acts">
       <button class="btn ok" onclick="decide(${c.id},'approved')">承認</button>
       <button class="btn dang" onclick="decide(${c.id},'rejected')">却下</button>
@@ -386,18 +404,62 @@ function chgHtml(c){
 }
 function setF(f){FILTER=f;render()}
 async function decide(id,status){
-  try{await api("mypage_changes?id=eq."+id,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({status})});
-    const arr=Object.values(CHG).flat();const c=arr.find(x=>x.id===id);if(c)c.status=status;
+  if(!needOp())return;
+  if(!sure(status==="approved"?"この依頼を承認して":"この依頼を却下して"))return;
+  try{await api("mypage_changes?id=eq."+id,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({status,actor:OPERATOR})});
+    const arr=Object.values(CHG).flat();const c=arr.find(x=>x.id===id);if(c){c.status=status;c.actor=OPERATOR;}
     toast(status==="approved"?"承認しました":"却下しました");render();
   }catch(e){toast("更新失敗（ログイン要）")}
+}
+/* ---- スタッフがマイページ情報(場所/時間)を編集＝マニュアル受付 ---- */
+function staffEdit(field){
+  if(!needOp())return;
+  const r=RES.find(x=>x.id===SEL);if(!r)return;
+  const isTime=field==="lend_time"||field==="return_time";
+  const label={del_place:"お届け先",col_place:"回収先",lend_time:"お届け時間",return_time:"回収時間"}[field];
+  const cur={del_place:r.del_place,col_place:r.col_place,lend_time:r.lend_time,return_time:r.return_time}[field]||"";
+  const input=isTime
+    ?`<select id="sev">${["",...TIMES].map(t=>`<option ${t===cur?"selected":""}>${t||"（未設定）"}</option>`).join("")}</select>`
+    :`<input id="sev" value="${esc(cur)}" placeholder="住所・ホテル名・場所">`;
+  $("#modal").innerHTML=`<h3>${label}を変更</h3>
+    <div style="font-size:12px;color:var(--sub);margin-bottom:10px">📞 電話・LINEで受けた変更をここで反映（担当：<b>${esc(OPERATOR)}</b>）</div>
+    <div class="field"><label style="display:block;font-size:11px;color:var(--sub);margin-bottom:4px">現在：${esc(cur||"未設定")}</label>${input}</div>
+    <div class="acts" style="margin-top:12px">
+      <button class="btn pri" onclick="staffEditSave('${field}')">この内容で変更</button>
+      <button class="btn ghost" onclick="closeM()">やめる</button></div>`;
+  $("#scrim").classList.add("show");
+}
+async function staffEditSave(field){
+  const r=RES.find(x=>x.id===SEL);if(!r)return;
+  const v=(document.getElementById("sev").value||"").trim();
+  const label={del_place:"お届け先",col_place:"回収先",lend_time:"お届け時間",return_time:"回収時間"}[field];
+  const cur={del_place:r.del_place,col_place:r.col_place,lend_time:r.lend_time,return_time:r.return_time}[field]||"";
+  if(v===cur){toast("変更がありません");return}
+  if(!sure(label+"を「"+(v||"未設定")+"」に変更して"))return;
+  try{
+    const rp={};
+    if(field==="del_place")rp.del_place=v; if(field==="col_place")rp.col_place=v;
+    if(field==="lend_time"){rp.lend_time=v;rp.del_time=v;} if(field==="return_time"){rp.return_time=v;rp.col_time=v;}
+    await api("reservations?id=eq."+encodeURIComponent(SEL),{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify(rp)});
+    const isCol=field==="col_place"||field==="return_time";
+    const task=(SELTASKS||[]).find(t=>String(t._id).slice(0,2)===(isCol?"c-":"d-"));
+    if(task){
+      if(field.indexOf("place")>=0)await patchTaskCj(task._id,{_ssPlace:v,_placeSource:"manual",_ssAlert:""});
+      else{await api("tasks?_id=eq."+encodeURIComponent(task._id),{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({time:v})});await patchTaskCj(task._id,{_ssTime:v});}
+    }
+    await api("mypage_changes",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({reservation_id:SEL,store:"spk",field,old_value:cur,new_value:v,source:"staff",actor:OPERATOR,status:"applied",note:"管理画面で変更"})});
+    toast("変更しました");closeM();await loadAll(true);selectRes(SEL,true);
+  }catch(e){toast("変更失敗（ログイン要）")}
 }
 function addTag(t){const ta=document.getElementById("knote");if(!ta)return;
   const cur=ta.value.trim();ta.value=(cur?cur+"\n":"")+t+" ";ta.focus()}
 async function saveNote(id){
+  if(!needOp())return;
   const ta=document.getElementById("knote");if(!ta)return;
   const note=ta.value.trim();
+  if(!sure("カルテを保存して"))return;
   try{await api("reservations?id=eq."+encodeURIComponent(id),{method:"PATCH",headers:{Prefer:"return=minimal"},
-    body:JSON.stringify({staff_note:note,staff_note_at:new Date().toISOString()})});
+    body:JSON.stringify({staff_note:note,staff_note_at:new Date().toISOString(),staff_note_by:OPERATOR})});
     const r=RES.find(x=>x.id===id);if(r)r.staff_note=note;
     toast("カルテを保存しました");render();
   }catch(e){toast("保存失敗（ログイン要）")}
