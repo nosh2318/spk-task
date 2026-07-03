@@ -92,6 +92,9 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 .optrow{display:grid;grid-template-columns:1fr auto 18px 96px;gap:8px;align-items:center;
   padding:9px 0;border-top:1px solid var(--line)}
 .optlbl{font-weight:700;font-size:13px}
+.optlbl .opti{margin-right:5px;font-size:15px}
+.optprice{display:block;font-size:11px;color:var(--sub);font-weight:600;margin-top:1px}
+.optprev-tot{margin-top:6px;padding-top:6px;border-top:1px dashed #e6cfa0;font-weight:800;font-size:14px;text-align:right;color:var(--gold)}
 .optcur{font-size:13px;color:var(--sub);text-align:right}
 .optarrow{text-align:center;color:var(--sub)}
 .optsel{padding:8px;border:1.5px solid var(--line);border-radius:9px;font-size:15px;background:#fff}
@@ -119,7 +122,7 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 <div class="toast" id="toast"></div>
 
 <script>
-const VER = "v1.7 (07-03 個別変更)";
+const VER = "v1.8 (07-03 金額+補償プルダウン)";
 const FN = "https://ckrxttbnawkclshczsia.supabase.co/functions/v1/handyman-mypage";
 const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const $ = s=>document.querySelector(s);
@@ -268,33 +271,42 @@ async function saveField(field){
 }
 
 /* ---- オプション 変更依頼（現在値を残し、右に変更後をプルダウンで選ぶ）---- */
+// ※料金は税込・目安（確定額は担当が確定）。札幌はUSB無し。
 const OPTDEF=[
-  {key:"opt_c",label:"チャイルドシート",max:3},
-  {key:"opt_j",label:"ジュニアシート",max:3},
-  {key:"opt_b",label:"ベビーシート",max:3},
-  {key:"opt_usb",label:"USB充電",max:1,bool:true},
+  {key:"opt_c",label:"チャイルドシート",max:3,price:1500},
+  {key:"opt_j",label:"ジュニアシート",max:3,price:1500},
+  {key:"opt_b",label:"ベビーシート",max:3,price:1500},
 ];
+// 補償プラン（プルダウン・リクエスト制）※料金は税込・目安/日
+const INS_PLANS=[
+  {v:"なし",label:"加入なし（基本補償）",price:0},
+  {v:"免責",label:"免責補償（CDW）",price:1100,unit:"/日"},
+  {v:"NOC",label:"フル補償（NOC込み・安心）",price:2200,unit:"/日"},
+];
+const OPT_ICON={opt_c:"🪑",opt_j:"🧒",opt_b:"👶"};
+function yen(n){return "¥"+Number(n||0).toLocaleString()}
 function reqOption(){
   const r=DATA.reservation;
   const rows=OPTDEF.map(o=>{
     const cur=+(r[o.key]||0);
-    const curTxt=o.bool?(cur?"あり":"なし"):(cur+"個");
     let opts="";
-    for(let i=0;i<=o.max;i++){const t=o.bool?(i?"あり":"なし"):(i+"個");opts+=`<option value="${i}" ${i===cur?"selected":""}>${t}</option>`}
+    for(let i=0;i<=o.max;i++)opts+=`<option value="${i}" ${i===cur?"selected":""}>${i}個</option>`;
     return `<div class="optrow">
-      <div class="optlbl">${o.label}</div>
-      <div class="optcur">${curTxt}</div>
+      <div class="optlbl"><span class="opti">${OPT_ICON[o.key]||"🔧"}</span>${o.label}
+        <span class="optprice">${yen(o.price)}/台</span></div>
+      <div class="optcur">${cur}個</div>
       <div class="optarrow">→</div>
-      <select class="optsel" data-key="${o.key}" data-cur="${cur}" onchange="optPreview()">${opts}</select>
+      <select class="optsel" data-key="${o.key}" data-cur="${cur}" data-price="${o.price}" onchange="optPreview()">${opts}</select>
     </div>`;
   }).join("");
   $("#sheet").innerHTML=`
     <h3>有料オプションの変更依頼</h3>
-    <p class="sub">現在の内容（左）はそのまま、右で変更後をお選びください。担当が空き状況を確認し確定します。</p>
+    <p class="sub">現在（左）はそのまま、右で変更後をお選びください。担当が空き状況を確認し確定します。</p>
     <div class="opthead"><span>項目</span><span>現在</span><span></span><span>変更後</span></div>
     ${rows}
     <div id="optprev" class="optprev" style="display:none"></div>
-    <div class="acts" style="margin-top:12px"><button class="btn-cancel" onclick="closeSheet()">やめる</button>
+    <div class="note" style="margin-top:8px">※ 料金は税込・目安です。最終金額は担当が確定します。</div>
+    <div class="acts" style="margin-top:10px"><button class="btn-cancel" onclick="closeSheet()">やめる</button>
       <button class="btn-ok req" id="optbtn" disabled onclick="sendOption()">この内容で依頼する</button></div>`;
   $("#scrim").classList.add("show");
 }
@@ -303,21 +315,26 @@ function optDiffs(){
   document.querySelectorAll(".optsel").forEach(s=>{
     const cur=+s.dataset.cur, nv=+s.value; if(cur===nv)return;
     const def=OPTDEF.find(o=>o.key===s.dataset.key);
-    const f=v=>def.bool?(v?"あり":"なし"):(v+"個");
-    diffs.push({label:def.label,from:f(cur),to:f(nv)});
+    diffs.push({label:def.label,from:cur,to:nv,price:+s.dataset.price,diff:(nv-cur)*(+s.dataset.price)});
   });
   return diffs;
 }
 function optPreview(){
   const d=optDiffs(), box=$("#optprev"), btn=$("#optbtn");
   if(!d.length){box.style.display="none";btn.disabled=true;return}
+  const total=d.reduce((s,x)=>s+x.diff,0);
+  const sign=total>=0?"＋":"−";
   box.style.display="block";
-  box.innerHTML="<div class='optprev-h'>変更内容</div>"+d.map(x=>`<div class="optprev-r">${x.label}：<b>${x.from}</b> → <b style="color:var(--gold)">${x.to}</b></div>`).join("");
+  box.innerHTML="<div class='optprev-h'>変更内容</div>"+
+    d.map(x=>`<div class="optprev-r">${x.label}：<b>${x.from}個</b> → <b style="color:var(--gold)">${x.to}個</b>
+      <span style="color:var(--sub)">（${x.diff>=0?"＋":"−"}${yen(Math.abs(x.diff))}）</span></div>`).join("")+
+    `<div class="optprev-tot">概算 ${sign}${yen(Math.abs(total))}</div>`;
   btn.disabled=false;
 }
 async function sendOption(){
   const d=optDiffs(); if(!d.length){toast("変更がありません");return}
-  const detail=d.map(x=>`${x.label} ${x.from}→${x.to}`).join(" / ");
+  const total=d.reduce((s,x)=>s+x.diff,0);
+  const detail=d.map(x=>`${x.label} ${x.from}個→${x.to}個`).join(" / ")+`（概算${total>=0?"＋":"−"}${yen(Math.abs(total))}）`;
   const {json}=await call("request",{req_type:"option",detail});
   if(json.ok){closeSheet();toast(json.alreadyRequested?"受付済みです":"依頼を受け付けました")}
   else toast(json.error||"送信に失敗しました");
@@ -333,16 +350,44 @@ function reqMethod(){
       <button class="btn-ok req" onclick="sendReq('method')">この内容で依頼する</button></div>`;
   $("#scrim").classList.add("show");
 }
-/* ---- 補償 変更依頼 ---- */
+/* ---- 補償 変更依頼（プルダウンで選択・金額表示）---- */
+function insCur(){const ins=String(DATA.reservation.insurance||"");
+  if(/フル|NOC|安心/.test(ins))return"NOC"; if(/免責|CDW/.test(ins))return"免責"; return"なし"}
 function reqInsurance(){
+  const cur=insCur();
+  const curLabel=(INS_PLANS.find(p=>p.v===cur)||{}).label||"—";
+  const opts=INS_PLANS.map(p=>`<option value="${p.v}" ${p.v===cur?"selected":""}>${p.label}（${p.price?yen(p.price)+(p.unit||""):"無料"}）</option>`).join("");
   $("#sheet").innerHTML=`
     <h3>補償の変更依頼</h3>
-    <p class="sub">補償（免責）内容の変更をご依頼ください。担当が確認し確定します。</p>
-    <div class="field"><label>ご希望内容</label>
-      <textarea id="rq" placeholder="例：免責補償をフル補償（NOC込み）に変更希望"></textarea></div>
-    <div class="acts"><button class="btn-cancel" onclick="closeSheet()">やめる</button>
-      <button class="btn-ok req" onclick="sendReq('insurance')">この内容で依頼する</button></div>`;
+    <p class="sub">現在の補償はそのまま、ご希望のプランをお選びください。担当が確認し確定します。</p>
+    <div class="row" style="border:0;padding:0 0 10px"><div class="k">現在</div><div class="v">${esc(curLabel)}</div></div>
+    <div class="field"><label>変更後のプラン</label>
+      <select id="insel" onchange="insPreview()">${opts}</select></div>
+    <div id="insprev" class="optprev" style="display:none"></div>
+    <div class="note" style="margin-top:6px">※ 料金は税込・目安/日です。最終金額は担当が確定します。</div>
+    <div class="acts" style="margin-top:10px"><button class="btn-cancel" onclick="closeSheet()">やめる</button>
+      <button class="btn-ok req" id="insbtn" disabled onclick="sendInsurance()">この内容で依頼する</button></div>`;
   $("#scrim").classList.add("show");
+}
+function insPreview(){
+  const cur=insCur(), sel=$("#insel").value, box=$("#insprev"), btn=$("#insbtn");
+  if(sel===cur){box.style.display="none";btn.disabled=true;return}
+  const a=INS_PLANS.find(p=>p.v===cur)||{price:0}, b=INS_PLANS.find(p=>p.v===sel)||{price:0};
+  const diff=(b.price||0)-(a.price||0);
+  box.style.display="block";
+  box.innerHTML=`<div class='optprev-h'>変更内容</div>
+    <div class="optprev-r"><b>${esc(a.label||cur)}</b> → <b style="color:var(--gold)">${esc(b.label)}</b></div>
+    <div class="optprev-tot">概算 ${diff>=0?"＋":"−"}${yen(Math.abs(diff))}/日</div>`;
+  btn.disabled=false;
+}
+async function sendInsurance(){
+  const cur=insCur(), sel=$("#insel").value;
+  if(sel===cur){toast("変更がありません");return}
+  const b=INS_PLANS.find(p=>p.v===sel)||{};
+  const detail=`補償を「${b.label}」に変更希望（現在:${(INS_PLANS.find(p=>p.v===cur)||{}).label||cur}）`;
+  const {json}=await call("request",{req_type:"insurance",detail});
+  if(json.ok){closeSheet();toast(json.alreadyRequested?"受付済みです":"依頼を受け付けました")}
+  else toast(json.error||"送信に失敗しました");
 }
 async function sendReq(kind){
   const detail=$("#rq").value.trim();
