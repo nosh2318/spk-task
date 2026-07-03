@@ -241,28 +241,44 @@ function ago(days){const d=new Date();d.setDate(d.getDate()-days);return d.getFu
 async function loadAll(keepSel){
   const [cfg,res,chg,stf]=await Promise.all([
     api("spk_line_config?id=eq.1&select=*"),
-    api("reservations?return_date=gte."+ago(2)+"&status=not.in.(%22%E3%82%AD%E3%83%A3%E3%83%B3%E3%82%BB%E3%83%AB%22,cancelled)&order=lend_date.asc&limit=400&select=id,name,ota,lend_date,return_date,lend_time,return_time,vehicle,del_place,col_place,people,opt_b,opt_c,opt_j,insurance,status,mypage_token,mypage_locked,staff_note,tel,mail,admin_checked_at,admin_checked_by"),
+    api("reservations?return_date=gte."+ago(2)+"&status=not.in.(%22%E3%82%AD%E3%83%A3%E3%83%B3%E3%82%BB%E3%83%AB%22,cancelled)&order=lend_date.asc&limit=400&select=id,name,ota,lend_date,return_date,lend_time,return_time,vehicle,del_place,col_place,visit_type,return_type,people,opt_b,opt_c,opt_j,insurance,status,mypage_token,mypage_locked,staff_note,tel,mail,admin_checked_at,admin_checked_by"),
     api("mypage_changes?store=eq.spk&order=created_at.desc&limit=500&select=id,reservation_id,field,old_value,new_value,source,status,note,actor,created_at"),
     api("staff?select=name&order=name.asc").catch(()=>[]),
   ]);
   CFG=cfg[0]||{}; RES=res||[]; STAFF=(stf||[]).map(s=>s.name).filter(Boolean);
   CHG={}; (chg||[]).forEach(c=>{(CHG[c.reservation_id]=CHG[c.reservation_id]||[]).push(c)});
   render();
-  // フォーム再回答(迷子)検出：全予約のtasksから _ssAlert を持つ予約を集める（本体パトロールが検知済みの値）
+  // OPタスクから ①場所マップ(実際の場所は tasks._ssPlace) ②フォーム再回答(_ssAlert) を集める
   try{
-    const ids=RES.map(r=>r.id);const found=new Set();
+    const ids=RES.map(r=>r.id);const found=new Set();const pmap={};
     for(let i=0;i<ids.length;i+=60){
       const chunk=ids.slice(i,i+60).map(encodeURIComponent).join(",");
-      const ts=await api("tasks?reservation_id=in.("+chunk+")&select=reservation_id,changed_json").catch(()=>[]);
-      (ts||[]).forEach(t=>{let cj={};try{cj=JSON.parse(t.changed_json||"{}")}catch(e){}if(cj._ssAlert&&String(cj._ssAlert).trim())found.add(t.reservation_id)});
+      const ts=await api("tasks?reservation_id=in.("+chunk+")&select=_id,reservation_id,place,changed_json").catch(()=>[]);
+      (ts||[]).forEach(t=>{
+        let cj={};try{cj=JSON.parse(t.changed_json||"{}")}catch(e){}
+        if(cj._ssAlert&&String(cj._ssAlert).trim())found.add(t.reservation_id);
+        const disp=(cj._placeSource==="manual"?t.place:(cj._ssPlace||t.place))||"";
+        const kind=String(t._id).slice(0,2);const rid=t.reservation_id;
+        pmap[rid]=pmap[rid]||{};
+        if(kind==="d-")pmap[rid].del=disp;
+        if(kind==="c-")pmap[rid].col=disp;
+      });
     }
-    ALERT_RES=found;render();
+    ALERT_RES=found;PLACE_MAP=pmap;render();
   }catch(e){}
   if(keepSel&&SEL)selectRes(SEL,true);
 }
 /* ==== ステータス判定（7分類）==== */
 function csOf(r){return CHG[(typeof r==="string"?r:r.id)]||[]}
-function stMissing(r){return !String(r.del_place||"").trim()||!String(r.col_place||"").trim()||!String(r.lend_time||"").trim()||!String(r.return_time||"").trim()}
+// 場所情報なし＝OPシートの実際の場所(tasks._ssPlace優先)＋区分で判定。来店/PUB=お届け場所不要、返却=回収場所不要
+function stMissing(r){
+  const p=opPlaceOf(r);
+  const vt=String(r.visit_type||""),rtp=String(r.return_type||"");
+  const needDel=vt!=="来店"&&vt!=="PUB"&&vt!=="PUB来店";
+  const needCol=rtp!=="返却";
+  const timeOk=String(r.lend_time||"").trim()&&String(r.return_time||"").trim();
+  return (needDel&&!p.del)||(needCol&&!p.col)||!timeOk;
+}
 function stReq(r){return csOf(r).some(c=>c.status==="requested")}                                   // 変更リクエスト
 function stUserChg(r){return csOf(r).some(c=>c.source==="customer"&&c.status==="applied")}          // 情報変更有り
 // この予約の最後の"活動"時刻（変更/依頼の作成時刻。迷子は活動扱い＝常に要確認）
@@ -271,6 +287,8 @@ function lastActivityAt(r){let t="";csOf(r).forEach(c=>{if((c.created_at||"")>t)
 function isChecked(r){const ca=r.admin_checked_at;if(!ca)return false;if(stReanswer(r))return false;const la=lastActivityAt(r);return !la||la<=ca}
 function stAck(r){return isChecked(r)}                                                              // 確認済みBOX
 let ALERT_RES=new Set();                                                                             // フォーム再回答(迷子)を持つ予約
+let PLACE_MAP={};                                                                                    // 予約→OPシートの実際の場所 {del,col}
+function opPlaceOf(r){const p=PLACE_MAP[r.id]||{};return{del:String(p.del||r.del_place||"").trim(),col:String(p.col||r.col_place||"").trim()}}
 function stReanswer(r){return ALERT_RES.has(r.id)}                                                   // ⑤フォーム再回答(迷子)
 function stToday(r){return r.lend_date===today()||r.return_date===today()}                          // ⑥本日
 function resFlag(id){const r=(typeof id==="string")?RES.find(x=>x.id===id):id;if(!r)return"";
@@ -378,7 +396,11 @@ function activity(r){
     return {cls:"a-req",t:"🟡 "+kind+"："+(c.new_value||"")+(reqs.length>1?" 他"+(reqs.length-1)+"件":"")};}
   const ucs=cs.filter(c=>c.source==="customer"&&c.status==="applied");
   if(ucs.length){const fs=[...new Set(ucs.map(c=>fldJp(c.field)))];return {cls:"a-chg",t:"🔴 お客様が変更："+fs.join("・")};}
-  if(stMissing(r)){const m=[];if(!String(r.del_place||"").trim())m.push("お届け先");if(!String(r.lend_time||"").trim())m.push("お届け時間");if(!String(r.col_place||"").trim())m.push("回収先");if(!String(r.return_time||"").trim())m.push("回収時間");
+  if(stMissing(r)){const p=opPlaceOf(r);const vt=String(r.visit_type||""),rtp=String(r.return_type||"");const m=[];
+    if(vt!=="来店"&&vt!=="PUB"&&vt!=="PUB来店"&&!p.del)m.push("お届け先");
+    if(!String(r.lend_time||"").trim())m.push("お届け時間");
+    if(rtp!=="返却"&&!p.col)m.push("回収先");
+    if(!String(r.return_time||"").trim())m.push("回収時間");
     return {cls:"a-miss",t:"⚪ 未設定："+m.join("・")};}
   if(stAck(r))return {cls:"a-ack",t:"✅ 確認済み"};
   return null;
