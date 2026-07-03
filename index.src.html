@@ -65,14 +65,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v910';
+  var CV='spk-v911';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=797').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=798').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -15423,7 +15423,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
           const newTask={_id:newId,type:"洗車",time:washAddTime||"",name:washAddCat+(isAll?" 全車両":(veh?" "+veh.name:"")),memo:washAddMemo||(isAll?"未洗車の在庫車を担当が選んで洗車":(veh?veh.name+(veh.no?" ("+veh.no+")":""):"")),people:0,place:"",vehicle:isAll?"全車両":(veh?veh.type:""),assignedVehicle:isAll?"":washAddVc,plateNo:veh?veh.no:"",reservationId:"",ota:"",tel:"",mail:"",done:false,assignee:"",flight:"",returnDate:"",returnTime:"",returnType:"",colPlace:"",insurance:"",opts:{b:0,c:0,j:0,usb:0},yakkan:false,line:false,payment:false,manual:true,_taskDate:selDate,timeChange:"",typeChange:"",_changed:{}};
           selfUpdateRef.current[selDate]=Date.now();pendingSaves.current++;
           setTasks(ts=>{const next=[...ts,newTask];DB._lsSave(next,selDate);return next;});
-          DB.upsertTasks([...tasks,newTask],selDate).catch(e=>console.error("[addWashTask]",e)).finally(()=>{selfUpdateRef.current[selDate]=Date.now();pendingSaves.current--;});
+          /* ★2026-07-03 恒久ルール: 新規1件だけ書く(updateTask=単一行upsert)。既存全行をまとめて保存し直さない=既存データを壊さない。 */
+          DB.updateTask(newTask,selDate).catch(e=>console.error("[addWashTask]",e)).finally(()=>{selfUpdateRef.current[selDate]=Date.now();pendingSaves.current--;});
           setWashAddCat("");setWashAddVc("");setWashAddTime("");setWashAddMemo("");
         };
         const deleteWashTask=(id)=>{
@@ -15519,7 +15520,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
           const newTask={_id:newId,type:otherAddType,time:otherAddTime||"",name:displayName,memo:otherAddMemo||"",people:0,place:otherAddPlace||"",vehicle:isAll?"全車両":(veh?veh.type:""),assignedVehicle:isAll?"":(otherAddVc||""),plateNo:veh?veh.no:"",reservationId:"",ota:"",tel:"",mail:"",done:false,assignee:otherAddAssignee||"",flight:"",returnDate:"",returnTime:"",returnType:"",colPlace:"",insurance:"",opts:{b:0,c:0,j:0},yakkan:false,line:false,payment:false,manual:true,_taskDate:selDate,timeChange:"",typeChange:"",_changed:{}};
           selfUpdateRef.current[selDate]=Date.now();pendingSaves.current++;
           setTasks(ts=>{const next=[...ts,newTask];DB._lsSave(next,selDate);return next;});
-          Promise.resolve(DB.upsertTasks([...tasks,newTask],selDate)).catch(e=>console.error("[addOtherTask]",e)).finally(()=>{selfUpdateRef.current[selDate]=Date.now();pendingSaves.current--;});
+          /* ★2026-07-03 恒久ルール: 新規1件だけ書く(updateTask=単一行upsert)。既存全行をまとめて保存し直さない=既存データを壊さない。 */
+          Promise.resolve(DB.updateTask(newTask,selDate)).catch(e=>console.error("[addOtherTask]",e)).finally(()=>{selfUpdateRef.current[selDate]=Date.now();pendingSaves.current--;});
           setOtherAddType("");setOtherAddName("");setOtherAddTime("");setOtherAddPlace("");setOtherAddVc("");setOtherAddMemo("");setOtherAddAssignee("");
         };
         const deleteOtherTask=(id)=>{if(!window.confirm("このタスクを削除しますか？"))return;selfUpdateRef.current[selDate]=Date.now();pendingSaves.current++;setTasks(ts=>{const next=ts.filter(x=>x._id!==id);DB._lsSave(next,selDate);return next;});Promise.resolve(DB.deleteTask(id,selDate)).catch(e=>console.error("[deleteOtherTask]",e)).finally(()=>{selfUpdateRef.current[selDate]=Date.now();pendingSaves.current--;});};
@@ -21074,7 +21076,7 @@ function App(){
     await DB.updateReservationField(id,{status:"cancelled"});
     // ★ 関連タスクをCXLに変更（削除ではなくグレー表示）
     // localStorage無い日付はDB直接取得してからCXL化
-    try{const _cxl=async(d)=>{if(!d)return;let tks=DB._lsLoad(d);if(!tks||!tks.length){tks=await DB.fetchTasks(d);}if(!tks||!tks.length)return;const updated=tks.map(tk=>tk.reservationId===id?{...tk,type:"CXL",done:true,assignee:"",assignedVehicle:"",plateNo:""}:tk);if(JSON.stringify(updated)!==JSON.stringify(tks)){DB._lsSave(updated,d);await DB.upsertTasks(updated,d);}};const ld=norm(res.lendDate),rd=norm(res.returnDate);await _cxl(ld);if(rd!==ld)await _cxl(rd);await _cxl(dOff(ld,-1));}catch(e){console.error("[cancel task CXL]",e);}
+    try{const _cxl=async(d)=>{if(!d)return;let tks=DB._lsLoad(d);if(!tks||!tks.length){tks=await DB.fetchTasks(d);}if(!tks||!tks.length)return;const updated=tks.map(tk=>tk.reservationId===id?{...tk,type:"CXL",done:true,assignee:"",assignedVehicle:"",plateNo:""}:tk);if(JSON.stringify(updated)!==JSON.stringify(tks)){DB._lsSave(updated,d);/* ★2026-07-03 既存全行を保存し直さない=対象予約の行だけ書く */for(const _r of updated.filter(x=>x.reservationId===id))await DB.updateTask(_r,d);}};const ld=norm(res.lendDate),rd=norm(res.returnDate);await _cxl(ld);if(rd!==ld)await _cxl(rd);await _cxl(dOff(ld,-1));}catch(e){console.error("[cancel task CXL]",e);}
   },[data]);
   // ★ キャンセル復元
   const restoreReservation=useCallback(async(id)=>{
@@ -21087,7 +21089,7 @@ function App(){
     await DB.updateReservationField(id,{status:"confirmed"});
     // タスクのCXL状態を解除
     const res=data.find(r=>r.id===id);
-    if(res){try{const rd=norm(res.returnDate);const _restore=async(d)=>{if(!d)return;const tks=DB._lsLoad(d);if(!tks||!tks.length)return;const updated=tks.map(t=>t.reservationId===id&&t.type==="CXL"?{...t,type:d===rd?"COL":"DEL",done:false}:t);if(JSON.stringify(updated)!==JSON.stringify(tks)){DB._lsSave(updated,d);await DB.upsertTasks(updated,d);}};const ld=norm(res.lendDate);await _restore(ld);if(rd!==ld)await _restore(rd);await _restore(dOff(ld,-1));}catch(e){console.error("[restore task]",e);}}
+    if(res){try{const rd=norm(res.returnDate);const _restore=async(d)=>{if(!d)return;const tks=DB._lsLoad(d);if(!tks||!tks.length)return;const updated=tks.map(t=>t.reservationId===id&&t.type==="CXL"?{...t,type:d===rd?"COL":"DEL",done:false}:t);if(JSON.stringify(updated)!==JSON.stringify(tks)){DB._lsSave(updated,d);/* ★2026-07-03 対象予約の行だけ書く */for(const _r of updated.filter(x=>x.reservationId===id))await DB.updateTask(_r,d);}};const ld=norm(res.lendDate);await _restore(ld);if(rd!==ld)await _restore(rd);await _restore(dOff(ld,-1));}catch(e){console.error("[restore task]",e);}}
   },[data]);
 
   // 予約情報を部分更新（配車表モーダル/データタブから）
@@ -21953,7 +21955,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.365";
+const APP_VERSION="v4.7.366";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
