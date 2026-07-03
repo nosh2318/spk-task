@@ -1,5 +1,52 @@
 # SPK業務管理APP（札幌店）
 
+## 🪪 2026-07-03 HANDYMAN 統合マイページ（全予約ユニークURL・札幌先行・構築中）★このセッション
+**全予約(OTA/HP不問)に token を発行し、顧客が自分の予約を1画面で閲覧/変更。LINEは「マイページに更新があります＋URL」の通知ハブに徹し、情報の正本は常にマイページ1枚。KEYDROPの変更フローを踏襲（場所/時間=即反映・24h前まで／オプション/補償/キャンセル=依頼）。**
+
+### 構成物
+- **顧客ページ `~/spk-task/my.html`**（standalone・buildなし・push即反映）。URL＝`https://nosh2318.github.io/spk-task/my.html?t=<mypage_token>`（**公開しない・LINE個別送信のみ**）。フッターに版数(VER)表示＝キャッシュ判別用。GitHub Pages/LINE内蔵ブラウザは最大10分キャッシュ→確認は`&v=N`を変えると即最新。
+- **Edge Function `handyman-mypage`**（正本`~/spk-task/line_auto/handyman-mypage/index.ts`→deployは`~/hdm-car-delivery/supabase/functions/`にコピーして`--no-verify-jwt`）。KEYDROP `keydrop-mypage`を複製元に札幌用に簡約。token認証(mypage_token所持=本人)。
+- **管理コンソール `my-admin.html`（未実装・次タスク）**：変更/依頼一覧・承認/却下・場所食い違い警告・⚙️トリガー設定(spk_line_config)。認証＝本体ログイントークン再利用(sim.html方式 `_sbToken()`＝localStorage `sb-*-auth-token`)。
+
+### DB（SQL: `~/hdm-car-delivery/sql/040_handyman_mypage.sql` 適用済）
+- `reservations.mypage_token uuid unique default gen_random_uuid()`（全466予約に発行済）
+- `reservations.mypage_locked jsonb`（顧客が確定した項目の印 `{del_place:{at,by:"customer"}}`）
+- `reservations.del_lat/del_lng/col_lat/col_lng double precision`（地図ピンの座標＝ドライバー正確ナビ用）
+- **`mypage_changes`**（追記専用の監査ログ＝上書き/消失しても検出&復元できる保険）：reservation_id/store/field/old_value/new_value/source(customer|staff)/status(applied|requested|approved|rejected)/note/created_at。RLS: authenticated読取可。**承認用にauthenticated UPDATEポリシー追加が必要（未実施）**。
+
+### Edge Function アクション
+- **lookup**（token）：予約表示＋傷チェックgate＋追跡状態＋直近変更。傷チェックは**出発日8:00解禁**（`lend_date<today || (==today && hh>=8)`）、fleet→vehicles.plate_no→vehicle_twins.display_label(ilike)→share_token でURL解決(best-effort)。追跡は kd_status(delivering/collecting)＋kd_track_token返却。
+- **update**（場所/時間 即反映・24h前まで）：within24h超は`lineOnly`で「公式LINEで承ります」。reservations(正本)更新＋**mypage_lockedに印**＋`patchTasksSpk`でtasks(d-/c-)同期＋監査ログ＋Slack通知。時間はlend_time/del_time両系統。lat/lngも保存。
+- **request**（req_type=option|method|insurance・即反映しない依頼）：mypage_changes(status=requested)＋Slack。同内容の重複依頼はブロック。
+- **cancel_request**（即削除しない＝OTA安全側・スタッフ承認制）：mypage_changes(field=cancel,status=requested)＋Slack。再申請防止。
+
+### tasks同期＝OPシート反映（`patchTasksSpk`）
+札幌tasks: **PK=`_id`（d-/c-/w-接頭辞で種別）・reservation_id列で紐付け・changed_jsonはtext型**。d-=お届け/c-=回収。変更を `place`/`time` と **`changed_json._ssPlace`/`_ssTime`/`_placeSource="customer"`** に書き、memoに「✅変更済(MM-DD HH:MM):項目」マーカー。OPシートは `(_placeSource==="manual"?place:(_ssPlace||place))` を表示＝**mypage変更が正しく出る**。
+
+### 🛡 保存の永続性（上書きされないか）＝検証済✅（オーナー最大の懸念）
+- **実データE2Eテスト（RC12461205360393577で実施→原状復帰済）**：mypage update→reservations(del_place/del_time/lend_time/lat/lng/locked)＋tasks d-(place/time/memo✅/`_ssPlace`/`_ssTime`/`_placeSource=customer`)＋mypage_changes 2件、すべて反映確認。
+- **アプリのタスク再生成protect(`_mergeUserInput` index.src.html L407-408) が `_ssPlace`/`_ssTime` を必ず焼き戻す**＝mypageはこのスロットに書くので**再生成でも保護される**。reservations.del_placeは非空になるのでGASも上書きしない(空欄のみ補完＋2026-06-07「予約番号完全一致以外は場所書かない」)。
+- **mypage変更はEdge FunctionがDBに確定書込してからアプリが読む**＝「当日洗車が消える」等の*ローカル未保存編集×15秒自動リロード*競合(2026-07-03 SPK v4.7.359で修正)の**外側**にいる＝より安全。
+- 3重の砦：①上書きしない(_ssPlace保護)②消えても復元(mypage_changes)③消えたら気づく(管理コンソールの食い違い警告＝未実装)。
+
+### 表示・変更UI（my.html・全て札幌確定値）
+- ヘッダー「**<予約者名> 様 専用ページ**」（r.nameで特定・タブtitleも）。heroに**車両クラス画像**（`images/class_A〜H.png`＝spk-task同梱・https同一オリジン。**keydrop.jpは301→httpでmixed-content不可なので同梱必須**）。
+- **場所変更＝KEYDROP方式の地図ピッカー**（Google Places Autocomplete候補＋ドラッグ/タップピン＋逆ジオコード・GMAPS_KEY=`AIzaSyCoX1EyEx-N5A0r4vRzC1KmVp3T29HILbI`・見つからねば自由入力送信可）。座標も保存。
+- **時間変更＝項目ごと個別**（お届け時間/回収時間をプルダウン・**日付は固定**）。お届け/回収は**日付+時間(曜日付)**表示。24h注記はアクセント色バナーで強調。
+- **オプション変更依頼**＝現在→変更後プルダウン（初期値保持・右に差額概算）。**札幌＝チャイルドシート¥1,000/ジュニアシート¥500の2種のみ・実写真(`images/opt_child.png`/`opt_junior.png`)**。USBは札幌削除。
+- **補償変更依頼**＝プルダウン＋プラン説明カード（正式・税込/24h）：**基本プラン(保険付き)¥0／基本+免責補償¥1,100／基本+免責+NOC補償(安心ワイド)¥1,650**。
+- **キャンセル申請**＝規定表提示→同意チェック→申請→「🕓キャンセル申請済み」＋Slack。**正式規定：7日前まで無料／6-3日前20%／2日前・前日30%／当日以降50%／台風等不可抗力(北海道着 航空便欠航証明)は無料**。※札幌は受渡方法変更なし(お届け固定)。
+- **傷チェック**＝出発日8:00解禁(それまで🔒準備中でぼかし)。**追跡＝このページ内にiframe埋込表示**（別URLに飛ばさない=完結。開始前は本番配色(ネイビー#0F1F45×ゴールド#FABE00×緑#0e9f50)の見本プレビュー・🚚アニメ・「あと約8分」・「今いる場所を共有」）。`trackUrl()`＝`https://keydrop.jp/handyman-{delivery|collection}-guide.html?r=&t=&embed=1`。
+
+### 想定フロー（オーナー合意）
+予約→LINE登録→**最初のエルメフォーム入力でuserId取得**（既存`{store}_line_links`）→**mypage URL(my.html?t=token)を`line-push`で自動送信**→顧客がmypageで閲覧/変更→OPシート反映・保存（上記の砦で保護）。LINEは以降も「マイページに更新があります＋URL」の通知ハブ。
+
+### 残タスク（次セッション）
+1. **管理コンソール my-admin.html**（変更/依頼一覧・承認/却下・場所食い違い赤警告・⚙️トリガー設定＝spk_line_config: damage/track/thanks_enabled・test_mode・test_user_id・lead_min）。mypage_changesにauthenticated UPDATEポリシー追加。
+2. **mypage URL の LINE自動送信**（userId取得時/予約確定時トリガー）。
+3. **NHA展開**（nha_reservations/nha_tasks・日本語列・区分PUB/DEL/来店・BD/BDB/COL/返却で表示変更・**BUS運行時刻表(bus.html)も設置**・クラス画像は`_nha`）。
+4. cancel_request承認＝reservations status=キャンセル＋fleet/tasks除去の実処理（KEYDROP cancelを参照）。
+
 ## 📱 2026-07-03 LINE自動送信システム（傷チェック/位置追跡）札幌＋那覇 本番稼働（このセッション）
 **お客様への各種URLをLINE公式アカウントから自動送信する仕組み。エルメ手動コピペを自動化。札幌(@730kyhwl)・那覇(@466dbckq)＝別LINEアカウント・別Supabaseテーブルで並走。**
 
