@@ -153,6 +153,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
 .verdict.ss{background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe}
 .verdict.unk{background:#f8fafc;color:#475569;border:1px solid #e2e8f0}
 .okline{font-size:12px;font-weight:800;color:#0e9f50;margin:2px 0 8px}
+.vfoot{display:block;margin-top:4px;font-size:10.5px;font-weight:700;color:#7c2d12;opacity:.8}
 .reanswer{background:#fff4f0;border:1.5px solid #f0b89a;border-left:5px solid var(--warn);border-radius:12px;padding:12px;margin-bottom:12px}
 .reanswer .ra-h{font-weight:900;font-size:13.5px;color:var(--warn)}
 .reanswer .ra-b{font-size:12.5px;margin-top:4px;line-height:1.5}
@@ -277,8 +278,9 @@ async function loadAll(keepSel){
         const opAt=(manual?(cj._manualPlaceAt||t.updated_at):(cj._ssPlaceAt||t.updated_at))||"";  // OP側の場所確定時刻(近似)
         const kind=String(t._id).slice(0,2);const rid=t.reservation_id;
         pmap[rid]=pmap[rid]||{};
-        if(kind==="d-"){pmap[rid].del=disp;pmap[rid].delAt=opAt;pmap[rid].delSrc=cj._placeSource||"";}
-        if(kind==="c-"){pmap[rid].col=disp;pmap[rid].colAt=opAt;pmap[rid].colSrc=cj._placeSource||"";}
+        const opExact=manual?!!cj._manualPlaceAt:!!cj._ssPlaceAt;  // 場所の確定時刻が正確か(概算=updated_atなら不確か)
+        if(kind==="d-"){pmap[rid].del=disp;pmap[rid].delAt=opAt;pmap[rid].delSrc=cj._placeSource||"";pmap[rid].delExact=opExact;}
+        if(kind==="c-"){pmap[rid].col=disp;pmap[rid].colAt=opAt;pmap[rid].colSrc=cj._placeSource||"";pmap[rid].colExact=opExact;}
       });
     }
     PLACE_MAP=pmap;computeMismatch();render();
@@ -320,9 +322,9 @@ function stReanswer(r){return ALERT_RES.has(r.id)}                              
 // SS回答日時(JST文字列)→epoch ms
 function ssTimeMs(s){if(!s)return NaN;const m=String(s).match(/(\d{4})\/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);if(!m)return NaN;return Date.parse(m[1]+"-"+String(m[2]).padStart(2,"0")+"-"+String(m[3]).padStart(2,"0")+"T"+String(m[4]).padStart(2,"0")+":"+m[5]+":"+(m[6]||"00")+"+09:00")}
 function fmtT(ms){if(isNaN(ms))return"不明";const d=new Date(ms);return (d.getMonth()+1)+"/"+d.getDate()+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0")}
-function mkDiff(kind,ss,op,ssMs,opAt,opSrc){const opMs=opAt?Date.parse(opAt):NaN;let newer="?";if(!isNaN(ssMs)&&!isNaN(opMs))newer=ssMs>opMs?"ss":"op";return{kind:kind,ss:ss,op:op||"(空)",ssAt:ssMs,opAt:opMs,opSrc:opSrc||"",newer:newer}}
+function mkDiff(kind,ss,op,ssMs,opAt,opSrc,opExact){const opMs=opAt?Date.parse(opAt):NaN;let newer="?";if(!isNaN(ssMs)&&!isNaN(opMs))newer=ssMs>opMs?"ss":"op";return{kind:kind,ss:ss,op:op||"(空)",ssAt:ssMs,opAt:opMs,opSrc:opSrc||"",opExact:!!opExact,newer:newer}}
 // SS_MAP と PLACE_MAP を突合して情報相違を再計算（新旧＝時系列も判定）
-function computeMismatch(){const mm=new Set(),map={},al=new Set();RES.forEach(r=>{const ss=SS_MAP[r.id];if(!ss)return;if(ss.prevDel||ss.prevCol)al.add(r.id);const p=PLACE_MAP[r.id]||{};const op=opPlaceOf(r);const ssMs=ssTimeMs(ss.ts);const list=[];if(placeConflict(ss.del,op.del))list.push(mkDiff("お届け先",ss.del,op.del,ssMs,p.delAt,p.delSrc));if(placeConflict(ss.col,op.col))list.push(mkDiff("回収先",ss.col,op.col,ssMs,p.colAt,p.colSrc));if(list.length){mm.add(r.id);map[r.id]=list}});MISMATCH_RES=mm;MISMATCH_MAP=map;ALERT_RES=al}
+function computeMismatch(){const mm=new Set(),map={},al=new Set();RES.forEach(r=>{const ss=SS_MAP[r.id];if(!ss)return;if(ss.prevDel||ss.prevCol)al.add(r.id);const p=PLACE_MAP[r.id]||{};const op=opPlaceOf(r);const ssMs=ssTimeMs(ss.ts);const list=[];if(placeConflict(ss.del,op.del))list.push(mkDiff("お届け先",ss.del,op.del,ssMs,p.delAt,p.delSrc,p.delExact));if(placeConflict(ss.col,op.col))list.push(mkDiff("回収先",ss.col,op.col,ssMs,p.colAt,p.colSrc,p.colExact));if(list.length){mm.add(r.id);map[r.id]=list}});MISMATCH_RES=mm;MISMATCH_MAP=map;ALERT_RES=al}
 // ライブSS(公開CSV)を取得して SS_MAP を作る（列: 4=予約番号,1=回答日時,8=DEL場所,11=COL場所。同一予約は回答日時が最新の行）
 async function fetchSS(){try{const resp=await fetch(PLACE_SHEET_CSV,{cache:"no-store"});if(!resp.ok)return;const rows=parseCSV(await resp.text());if(rows.length<2)return;const byId={};rows.slice(1).forEach(r=>{const rid=(r[4]||"").trim();if(!rid)return;(byId[rid]=byId[rid]||[]).push({ts:(r[1]||"").trim(),del:(r[8]||"").trim(),col:(r[11]||"").trim()})});const m={};Object.entries(byId).forEach(([rid,arr])=>{arr.sort((a,b)=>a.ts<b.ts?1:(a.ts>b.ts?-1:0));const pick=(f)=>{const ne=arr.filter(x=>x[f]);const cur=ne[0];if(!cur)return{val:"",at:"",prev:"",prevAt:""};const pv=ne.find(x=>x!==cur&&x[f]!==cur[f]);return{val:cur[f],at:cur.ts,prev:pv?pv[f]:"",prevAt:pv?pv.ts:""}};const d=pick("del"),c=pick("col");m[rid]={del:d.val,delTs:d.at,prevDel:d.prev,prevDelTs:d.prevAt,col:c.val,colTs:c.at,prevCol:c.prev,prevColTs:c.prevAt,ts:(d.at>c.at?d.at:c.at)}});SS_MAP=m}catch(e){}}
 // 簡易CSVパーサ（引用符・改行・カンマ対応）
@@ -594,9 +596,9 @@ function detailHtml(){
       <div class="ra-h">🔴 情報相違・${esc(d.kind)}</div>
       <div class="dft">
         <div class="dft-r${d.newer==="ss"?" nw":""}"><span class="dft-l">SS(フォーム)</span><span class="dft-t">${fmtT(d.ssAt)}${d.newer==="ss"?" 🆕":""}</span><span class="dft-v">${esc(d.ss||"(空)")}</span></div>
-        <div class="dft-r${d.newer==="op"?" nw":""}"><span class="dft-l">OP(${d.opSrc==="manual"?"手動":"SS反映"})</span><span class="dft-t">${fmtT(d.opAt)}${d.newer==="op"?" 🆕":""}</span><span class="dft-v">${esc(d.op||"(空)")}</span></div>
+        <div class="dft-r${d.newer==="op"?" nw":""}"><span class="dft-l">OP(${d.opSrc==="manual"?"手動":"SS反映"})</span><span class="dft-t">${fmtT(d.opAt)}${d.opExact?"":"≈概算"}${d.newer==="op"?" 🆕":""}</span><span class="dft-v">${esc(d.op||"(空)")}</span></div>
       </div>
-      <div class="verdict ${d.newer==="?"?"unk":d.newer}">${d.newer==="op"?"🆕 OPが新しい → 後からの手動変更＝意図的かも。SSへ戻さない":d.newer==="ss"?"🆕 フォームが新しい → 客が後で変更＝SS採用が有力":"⚠️ 新旧不明 → 両方を確認"}</div>
+      <div class="verdict ${d.newer==="?"?"unk":d.newer}">${d.newer==="op"?"🆕 OPが新しい"+(d.opExact?"":"（推定・OP時刻は概算）")+" → 後からの手動変更＝意図的かも。SSへ戻さない":d.newer==="ss"?"🆕 フォームが新しい → 客が後で変更＝SS採用が有力":"⚠️ 新旧不明 → 両方を確認"}<span class="vfoot">※最終判断は必ず人が（電話/LINEで確認してから確定）</span></div>
     </div>`).join("")}
     ${formReanswer().filter(fr=>fr.applied).map(fr=>`<div class="reanswer">
       <div class="ra-h">🔔 フォーム再回答・${esc(fr.kind)}（お客様が変更）</div>
