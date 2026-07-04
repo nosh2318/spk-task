@@ -1,5 +1,28 @@
 # SPK業務管理APP（札幌店）
 
+## 🔴🔴 2026-07-04 「勝手に動く」根絶＝唯一のルール＋改ざん検知台帳（全店共通・最重要）
+オーナー数十回の指摘＝人が入力/編集したデータが「消える・別日に動く・重複・消したのに復活・元に戻される」。**本質＝ルールが雑**（各コードが上書き/保護/再生成バラバラ＝統一ルール無し）。**2大タイトル＝①タスク変更 ②予約変更**（予約が勝手に変わる＝派生タスクも全部ずれる＝最も異常）。
+
+### 🔴 唯一のルール（これが全て・オーナー最終確定）
+> **既存データは、変更した本人（人間／外部の手動編集）以外が書き換えない。システムは表示するだけ。書くのは1アクション＝1件。丸ごと再保存・再取込で他人の入力を上書きしない。競合したら人間が勝つ（人間入力＝正本）。**
+バラバラのパッチをやめ、この1ルールを全経路に効かせDBレベルで強制＋台帳で証明。
+
+### 改ざん検知台帳（Audit Ledger＝誰が・いつ・何を の追記レシート＝根絶の証拠・2026-07-04設置）
+「動いた結果を戻す(対症)」→「原因の書込を特定して消す(根治)」への転換器。全て AFTER UPDATE・例外安全(`EXCEPTION WHEN OTHERS THEN NULL`＝書込を絶対止めない)・`current_setting('application_name',true)`で出所記録。
+- **task_audit**（tasks/nha_tasks=main ckrxttbnawkclshczsia・bt_tasks=BT ggqugvyskyiblxiycpci）trg_audit_tasks_spk/nha/bt：タスクの date/assignee(担当)/done。
+- **reservation_audit**（reservations/nha_reservations=main・bt_reservations=BT）trg_audit_res_spk/nha/bt：予約の 日付(lend/return/start/end/del/col)/status/vehicle。
+- 設置時刻から前方記録。次のドリフトで「出所+時刻+from→to」のレシート→経路特定→塞ぐ＝根絶。出所粒度(正直)＝種別まで(アプリ/GAS/mgmt-api)＋時刻＋from→to（端末/個人は未記録・要れば利用者ID刻む＝次段）。中身確認＝Management API `/database/query`(token `~/.config/keydrop/sb_token`)で `SELECT * FROM task_audit/reservation_audit ORDER BY id DESC`。
+
+### 予約変更(②)の穴＝CSV取込が既存予約を丸ごと上書き（発見・未修正）
+NHA `imp`(index.html.bak L23578〜)：`imported.forEach(r=>map.set(r.id,r))`(L23596)＝**既存予約をCSV値で丸ごと置換**(priceだけ弱保護)。→ **スタッフが直した予約でも古いCSV取込で元に戻る**＝オーナー懸念の実体。タスクで潰した「丸ごと再保存」病が予約取込側に残存(タスクは`_mergeUserInput`保護済／予約取込は無保護＝穴)。証拠＝NHA churn 直近1h 46件更新(全部既存再書込・新規0)・19:40=33/19:50=25/20:55=21件の塊。今は同値でno-op(台帳空)だがstale掴めば実害。SPKは1件ずつ＝安全。**直す方向＝予約に手動編集マーカー(タスクの`_placeSource:"manual"`思想)＋CSV取込をマージ化(手動編集項目はCSVで上書きせず保持)。基幹＝実機検証込みで慎重に(盲目編集で壊した前例あり)。**
+
+### 番人(Guardian・pg_cron */15・動いたら戻す対症)
+task_integrity_guardian(main・`task_integrity_scan(p_fix)`＝SPK自動修正ON/NHA検知のみ・`task_integrity_log`)＋parking-integrity-guardian(rkrvjpipvpybkmqadmrb・同一carId2枠検知・`parking_integrity_log`)。番人=現場を止めない／台帳=原因を消す の両輪。
+
+### 根本4砦(全店デプロイ済)＋現状認識
+固定ID(`d-/c-/w-`+予約ID＝重複根絶)／固定日付(`_taskDate`＝移動根絶)／単独書込+読むだけ(消失根絶)／墓標(deleted=true＝復活根絶)。版 SPK v4.7.368/NHA v3.5.251/BT v1.0.108。**正直：修正はデプロイ済だが"効いた"は未証明。デプロイ後もドリフト検知＝欠陥はまだ生きてる(古いキャッシュ端末 or 修正の穴＝台帳が次に判定)。**次段＝保護フィールド(日付/担当/done/予約日/status)は人以外の書込を拒否(tamper-evidence→resistance)。
+### 教訓(この日)：Supabase全停止はAPI層hang(Postgres健全)＝アプリバグでない→**プロジェクト再起動で復旧**(誤診してrevートした)。python heredocはBashで無言失敗→Write→`python3 /tmp/x.py`。curl+SQLは`--data-binary @-`かjson.dumps。並行エージェント注意＝commit前に`git fetch`+`git log`。
+
 ## 🚨 2026-07-04 Supabase広域障害 → 事業継続(オフライン)＋独立バックアップ体制を構築（このセッション最重要）
 **障害の実態と、二度と"営業が止まる/データ不明"にしないための仕組み。次に障害が来たらまずここを見る。**
 
@@ -125,6 +148,9 @@ my.html `insCur()` は insurance生値を3プランに寄せる：**`フル|NOC|
 4. **顧客へLINE通知**（line-push新アクション`mypage_decision`＝日付ガード回避・not-cancelled/userid/test_modeは維持・未連携は`no_userid`で安全スキップ）。反映前(有効なうち)に先に送る。
 5. **マイページ反映**：my.htmlに「📨ご依頼の状況」カード（requested→確認中/approved→承認・反映済/rejected→見送り）。
 - 認証：不正JWT=401・処理済み再承認=409。`mypage_changes`は authenticated に SELECT/INSERT/UPDATE 付与済（旧「未実施」解消）。秘密＝handyman-mypageに`LINEPUSH_SECRET`をsecrets登録→内部でline-push呼出（クライアントに出さない）。E2E検証済(DY00000000907・LINE未連携で安全)。
+
+### 📖 マイページ仕様＝マニュアル（my-admin.html 内・2026-07-05）
+マイページの仕様書は **my-admin.html ヘッダー「📖 マニュアル」→モーダル**（`openManual`/`renderManual`）に常設。**👤お客様側**（閲覧範囲・変更受付ルール表・依頼後の流れ）と**🧑‍💼スタッフ側**（ボードの見方・🔔承認/却下=実反映+LINE・ステータス・カルテ・トリガー・注意）に分離。**マイページの挙動を変えたら必ずこのマニュアル(renderManualのUSER/STAFF文言)も更新**（成長型マニュアル＝マイページ版）。
 
 ### Edge Function アクション
 - **decide**（staff_token＝本体JWT・change_id・decision）：承認/却下→実反映＋顧客LINE＋Slack（管理者用・上記）。
