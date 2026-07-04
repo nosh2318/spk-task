@@ -163,7 +163,14 @@ my.html `insCur()` は insurance生値を3プランに寄せる：**`フル|NOC|
 ### 📣 マイページ通知の宛先＝#sapporo_user_action（2026-07-05）
 マイページ関連の**全Slack通知（変更即時/依頼/キャンセル/承認却下/整合アラート）は `#sapporo_user_action`（C0BER0YC6AK）**へ。handyman-mypageの`slackPost`が`SLACK_MYPAGE_CHANNEL`(=C0BER0YC6AK)を使用（keydrop系のSLACK_KEYDROP_CHANNELとは分離）。**ボット＝`sns_auto`(U0AP367KETH)。このチャンネルへ手動`/invite @SNS Auto`が必要**（未招待だとnot_in_channelで飛ばない）。⚠️変更/依頼/キャンセル/承認の通知は`notifySlack`経由＝**MYPAGE_SILENT=1の間はミュート**（開発中）。本番で飛ばすにはMYPAGE_SILENTを解除。整合アラート(patrol)は`slackPost`直＝ミュート対象外で常時発報。
 
+### 🛠 対応センター（my-admin「🛠 対応」タブ・2026-07-05・本セクションのメインTODO）
+オーナー要望「Slackのテキストだけでは何をすべきか分からない→アラート→確認→対応→正常化 までを1画面で導く」。my-adminヘッダー「🛠 対応」で対応センターを開くと、要対応の事象を各**【事象／簡易説明／対応(ボタン)／結果】**で表示：
+- **整合の相違**（patrol由来・予約情報≠マイページ/OP）→ ワンボタン「マイページ・OPの値で統一（推奨）」or「予約情報の値で統一」→ Edge Function **`resolve`**（staff認証・reservation_id/field/value/target=resv|op）で書込→即一致＝正常化。「結果」に✅表示。
+- **お客様の依頼**（mypage_changes requested）→「承認して反映＋LINE」「却下＋LINE」（decide連携）。
+- Slackアラート文に対応タブURLの導線を追加。**MYPAGE_SILENT=0に解除済＝変更/依頼/キャンセル/承認の通知も本番化**（#sapporo_user_action・要ボット招待）。
+
 ### Edge Function アクション
+- **resolve**（staff_token・reservation_id・field・value・target=resv/op）：整合相違を指定値で統一（対応センター用）。
 - **patrol**（staff_token or x-cron-secret）：reservations↔tasks整合を全予約突合→相違レポート＋Slackアラート（監視・上記）。
 - **decide**（staff_token＝本体JWT・change_id・decision）：承認/却下→実反映＋顧客LINE＋Slack（管理者用・上記）。
 - **lookup**（token）：予約表示＋傷チェックgate＋追跡状態＋直近変更。**場所/時間はOPタスク(d-/c-)から解決（上記）**。傷チェックは**出発日8:00解禁**（`lend_date<today || (==today && hh>=8)`）、fleet→vehicles.plate_no→vehicle_twins.display_label(ilike)→share_token でURL解決(best-effort)。追跡は kd_status(delivering/collecting)＋kd_track_token返却。
