@@ -462,7 +462,7 @@ Deno.serve(async (req) => {
     // ---- 即時反映（DELは24h超 / COLは2h超）----
     const labels = await applyPlaceTime(store, r, resId, delPlace, colPlace, lendTime, returnTime, dLat, dLng, cLat, cLng, "customer:" + resId);
     if (labels === null) return json({ error: "変更の保存に失敗しました" }, 500, origin);
-    await notifySlack(`📝 *マイページ変更(即反映)* [札幌] ${r.name}様 ${resId}\n変更: ${labels.join("・")}\n→ お届け先:${(delPlace ?? r.del_place) || "-"} / 回収先:${(colPlace ?? r.col_place) || "-"} / 出発:${(lendTime ?? r.lend_time) || "-"} / 返却:${(returnTime ?? r.return_time) || "-"}\n※OPシートに✅変更済マーカー反映済`);
+    await notifySlack(`✏️ *${r.name}様が ${labels.join("・")} を編集しました*（マイページ・即反映）[札幌] ${resId}\n→ お届け先:${(delPlace ?? r.del_place) || "-"} / 回収先:${(colPlace ?? r.col_place) || "-"} / 出発:${(lendTime ?? r.lend_time) || "-"} / 返却:${(returnTime ?? r.return_time) || "-"}\n※OPシート反映済・管理画面の🕘履歴にも記録`);
     return json({ ok: true, updated: labels }, 200, origin);
   }
 
