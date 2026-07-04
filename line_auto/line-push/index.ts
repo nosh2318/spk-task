@@ -45,6 +45,9 @@ Deno.serve(async (req) => {
     if (!resv[0]) { await logSend({ resv_no, action, status: "skipped", error: "reservation_not_found" }); return json({ ok: false, reason: "reservation_not_found" }); }
     const st = String(resv[0].status || "").toLowerCase();
     if (st.includes("cancel") || st.includes("キャンセル")) { await logSend({ resv_no, action, status: "skipped", error: "cancelled" }); return json({ ok: false, reason: "cancelled" }); }
+    // マイページ承認/却下のお知らせ（mypage_decision）は日付ウィンドウ外でも送る（将来/過去日どちらでも通知が必要）
+    const noticeAct = action === "mypage_decision";
+    if (!noticeAct) {
     const nowMs = Date.now() + 9 * 3600 * 1000;
     const dstr = (off: number) => new Date(nowMs + off * 86400000).toISOString().slice(0, 10);
     const todayJST = dstr(0);
@@ -57,6 +60,7 @@ Deno.serve(async (req) => {
       if (!rd || rd < dstr(-7) || rd > dstr(1)) { await logSend({ resv_no, action, status: "skipped", error: "thanks_out_of_window:" + rd }); return json({ ok: false, reason: "thanks_out_of_window" }); }
     } else {
       if (!rd || rd < todayJST) { await logSend({ resv_no, action, status: "skipped", error: "past_or_no_date:" + rd }); return json({ ok: false, reason: "past_or_no_date" }); }
+    }
     }
   }
 

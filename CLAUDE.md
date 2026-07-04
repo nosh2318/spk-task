@@ -1,5 +1,27 @@
 # SPK業務管理APP（札幌店）
 
+## 🚨 2026-07-04 Supabase広域障害 → 事業継続(オフライン)＋独立バックアップ体制を構築（このセッション最重要）
+**障害の実態と、二度と"営業が止まる/データ不明"にしないための仕組み。次に障害が来たらまずここを見る。**
+
+### 起きたこと（切り分けの記録）
+- 症状：両店アプリが開けない／「タスク・OPシートが消えた」。原因＝**Supabase基盤の広域障害**（公式 "Partially Degraded Service"＋インシデント "Project status change failures in multiple regions" 6/30〜）。
+- **データは1件も消えていない**（障害中に管理API経由で照合：SPK tasks 1199／NHA nha_tasks 879／削除0）。"読めない"だけ＝可用性障害でありデータ消失ではない。
+- **切り分けの罠**：プロジェクト状態は `ACTIVE_HEALTHY`・`/auth/v1/health`は即応(401)だが、**実クエリ(/rest/v1・Management API /database/query)がHTTP 000/503/521でタイムアウト**＝接続プール/コンピュート側が詰まる。**フラッピング(一瞬復旧→また落ちる)**。
+- ⚠️**復旧判定は"アプリの実経路 /rest/v1"で見る**。Management API(/database/query)は別経路で先に復活する→これで「復旧」と誤判定した（反省）。復旧＝`/rest/v1`が5回連続で521/000以外。
+- ⚠️ Management APIを**urllibで叩くとCloudflare bot判定で403**。必ず**curl**(`--data @file`)。監視の叩きすぎでもレート制限403→間隔を空ける。
+- 障害中の対応＝**触らない・再入力させない**（復旧時に二重化/破損）。#handyman_development(C07B5G3PV7C)に周知投稿済。**自前Restart非推奨**（インシデントが"状態変更失敗"系＝固まるリスク）→サポート連絡が最短。
+
+### 作った仕組み（3層）
+1. **事業継続＝本体アプリのオフライン読取キャッシュ（本命・v4.7.370）**：`DB.fetchReservations`/`fetchVehicles` に localStorageキャッシュ＋障害時フォールバック追加（**fleet=`_fleetLs*`・tasks=`_lsKey`は既に実装済み**の同パターン踏襲）。キー＝`spk_reservations_cache`/`spk_vehicles_cache`。→ **Supabaseが落ちてもOPシート/タスクサマリ/スケジュール/データタブ/配車表の5画面が"手元コピー"で読める＝営業継続**（読取専用・既存「⚠️オフライン」バナー）。**書込処理は一切不変(低リスク)**。使い方＝普段通り使うだけ(開くたび自動保存→障害時に自動で手元コピー表示)。**今日の障害はネット正常・Supabaseのみダウン→アプリ自体はGitHub Pagesから開けた→SW不要、データキャッシュだけで足りた**。
+2. **独立バックアップ＋復元（保険）**：`~/Desktop/HANDYMAN/backups/` に3ファイル。
+   - `hdm_snapshot.py`：主要20テーブル(SPK/NHA)を1時間ごとJSON保存(Supabaseと別系統)。**launchd `com.handyman.snapshot`(毎時:05・3日保持)登録済**。≈7.5MB/回。**curl必須**(urllib=403)・テーブル間3s間隔。
+   - `hdm_restore.py`：任意スナップから**選択復元**(`--table tasks --where "date='...'" --dry/--apply`・`--missing-only`=消えた行だけ復活)。`json_populate_recordset(null::table,$hdm$json$hdm$) on conflict`でJSON→型自動upsert。PKマップ内蔵。
+   - `hdm_console.py`：**可視化＝復元コンソール**(`python3 hdm_console.py`→localhost:8899)。スナップ一覧→その時点⇄今のDB差分(🔴消えた/🟡変化/⚪一致)→ボタンで復元。**PATはサーバ側のみ・ブラウザに出さない**。
+3. **Supabase自動バックアップ(既存)**：日次7日分(walg有効・**PITR OFF**)。→ **PITR ONにすれば"障害N時間前の任意秒"にDB全体復元可**(有料・ダッシュボード)。今は日次単位=最大〜24hズレ。
+- 補足：opsheet-offline.html(当日配車の単独PWA)も作ったが**本命は①**(5画面を作り直さず既存画面がそのまま生きる)。
+- **区別**：①=障害中も"止めない"(読取継続)／②③=壊れた後に"復旧"。**復元はDBが生きている前提＝障害の最中は使えない**。今日困ったのは①。
+- **残**：NHA(index.html.bak)へ同オフラインキャッシュ展開(未)／Mac起動中のみ稼働の穴→GAS版(Google基盤24h)は将来／PITR ON判断はオーナー。
+
 ## 🃏 2026-07-04 my-admin.html（マイページ管理コンソール）ステータス定義とデータ照合の確定メモ
 **オーナー確認済みの定義。my-adminのボード/フィルタを触る時はこれを基準にする。**
 
@@ -84,8 +106,25 @@
 - `reservations.del_lat/del_lng/col_lat/col_lng double precision`（地図ピンの座標＝ドライバー正確ナビ用）
 - **`mypage_changes`**（追記専用の監査ログ＝上書き/消失しても検出&復元できる保険）：reservation_id/store/field/old_value/new_value/source(customer|staff)/status(applied|requested|approved|rejected)/note/created_at。RLS: authenticated読取可。**承認用にauthenticated UPDATEポリシー追加が必要（未実施）**。
 
+### 🔴 場所/時間/オプション/補償は「reservationsとtasksの実値ある方」を採用（2026-07-04 バグ修正）
+lookupは当初これらを `reservations` 直読みしていたが、**SPKでは reservations 側が空でOPタスク(d-/c-)側に実値、というズレがsystemicに存在**（未来141件中：場所57件・オプション13件・補償4件がズレ）。→ マイページだけ「未設定/なし」と誤表示。原因は「予約系の値は tasks(changed_json) 経由で最新化される」設計（場所=2026-06-07完全一致ルール、opt=2026-04-23同期、insurance=tasks.insurance）。**修正（lookupで両ソースの実値を統合）**：
+- 場所/時間＝OPシート同一式 `_placeSource==="manual"?place:(_ssPlace||place)` / `_ssTime||time` でタスク優先、無ければreservations（`resolveTaskPlace`/`resolveTaskTime`）。
+- オプション＝`Math.max(reservations.opt_*, tasks._optB/_optC/_optJ)`（どちらかにしか無いケースを両取り）。
+- 補償＝`reservations.insurance` が空なら `tasks.insurance` にフォールバック。
+- ⚠️ tasks.changed_json は**text型**なのでJSON.parse必須。今後マイページ表示は必ずタスクも見て「実値のある方」を採る（reservations単独直読み禁止）。
+
+### 🟢 承認フロー完成（2026-07-04）＝依頼→Slack→管理画面で承認/却下→顧客LINE通知＋マイページstatus反映
+オーナー指定フロー実装済み。**オプション/補償/キャンセルの依頼**は即反映せず承認制：
+1. 顧客がマイページで依頼→`mypage_changes`(status=requested)＋Slack通知。**構造化target**を`payload`(jsonb・新設列)に保存（補償=`{insurance:"NOC"}`、オプション=`{opt_c,opt_j,opt_b}`）。
+2. スタッフが`my-admin.html`「🔔変更依頼」で[承認]/[却下]→ handyman-mypage の**`decide`アクション**（本体ログインJWTを`/auth/v1/user`で検証・change_id+decision）。
+3. 承認時に**実反映**：補償→reservations.insurance＋tasks.insurance／オプション→reservations.opt_*＋tasks.changed_json._optB/C/J／キャンセル→reservations.status=cancelled＋fleet削除＋tasks墓標(deleted=true)。method(自由記述)は自動反映せず手動。
+4. **顧客へLINE通知**（line-push新アクション`mypage_decision`＝日付ガード回避・not-cancelled/userid/test_modeは維持・未連携は`no_userid`で安全スキップ）。反映前(有効なうち)に先に送る。
+5. **マイページ反映**：my.htmlに「📨ご依頼の状況」カード（requested→確認中/approved→承認・反映済/rejected→見送り）。
+- 認証：不正JWT=401・処理済み再承認=409。`mypage_changes`は authenticated に SELECT/INSERT/UPDATE 付与済（旧「未実施」解消）。秘密＝handyman-mypageに`LINEPUSH_SECRET`をsecrets登録→内部でline-push呼出（クライアントに出さない）。E2E検証済(DY00000000907・LINE未連携で安全)。
+
 ### Edge Function アクション
-- **lookup**（token）：予約表示＋傷チェックgate＋追跡状態＋直近変更。傷チェックは**出発日8:00解禁**（`lend_date<today || (==today && hh>=8)`）、fleet→vehicles.plate_no→vehicle_twins.display_label(ilike)→share_token でURL解決(best-effort)。追跡は kd_status(delivering/collecting)＋kd_track_token返却。
+- **decide**（staff_token＝本体JWT・change_id・decision）：承認/却下→実反映＋顧客LINE＋Slack（管理者用・上記）。
+- **lookup**（token）：予約表示＋傷チェックgate＋追跡状態＋直近変更。**場所/時間はOPタスク(d-/c-)から解決（上記）**。傷チェックは**出発日8:00解禁**（`lend_date<today || (==today && hh>=8)`）、fleet→vehicles.plate_no→vehicle_twins.display_label(ilike)→share_token でURL解決(best-effort)。追跡は kd_status(delivering/collecting)＋kd_track_token返却。
 - **update**（場所/時間 即反映・24h前まで）：within24h超は`lineOnly`で「公式LINEで承ります」。reservations(正本)更新＋**mypage_lockedに印**＋`patchTasksSpk`でtasks(d-/c-)同期＋監査ログ＋Slack通知。時間はlend_time/del_time両系統。lat/lngも保存。
 - **request**（req_type=option|method|insurance・即反映しない依頼）：mypage_changes(status=requested)＋Slack。同内容の重複依頼はブロック。
 - **cancel_request**（即削除しない＝OTA安全側・スタッフ承認制）：mypage_changes(field=cancel,status=requested)＋Slack。再申請防止。

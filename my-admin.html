@@ -225,6 +225,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
 <div class="toast" id="toast"></div>
 <script>
 const SB="https://ckrxttbnawkclshczsia.supabase.co";
+const FN=SB+"/functions/v1";
 const ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
 const $=s=>document.querySelector(s);
 function showErr(m){const e=document.getElementById("errbar");if(e){e.style.display="block";e.textContent="⚠️ "+m}}
@@ -687,11 +688,20 @@ async function ackChange(id){
 function setF(f){FILTER=f;render()}
 async function decide(id,status){
   if(!needOp())return;
-  if(!sure(status==="approved"?"この依頼を承認して":"この依頼を却下して"))return;
-  try{await api("mypage_changes?id=eq."+id,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({status,actor:OPERATOR})});
-    const arr=Object.values(CHG).flat();const c=arr.find(x=>x.id===id);if(c){c.status=status;c.actor=OPERATOR;}
-    toast(status==="approved"?"承認しました":"却下しました");render();
-  }catch(e){toast("更新失敗（ログイン要）")}
+  const c0=Object.values(CHG).flat().find(x=>x.id===id);
+  const applyNote=(c0&&["insurance","option","cancel"].includes(c0.field))
+    ? (status==="approved"?(c0.field==="cancel"?"\n※承認するとキャンセル確定（配車解除）＋顧客へLINE通知します":"\n※承認すると内容を予約に反映＋顧客へLINE通知します"):"\n※却下すると顧客へLINE通知します")
+    : "\n※顧客へLINE通知します";
+  if(!sure((status==="approved"?"この依頼を承認しますか？":"この依頼を却下しますか？")+applyNote))return;
+  const st=tok(); if(!st){toast("ログインが必要です");return}
+  try{
+    const r=await fetch(FN+"/handyman-mypage",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({action:"decide",staff_token:st,change_id:id,decision:status})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok){toast("処理失敗："+(j.error||r.status));return}
+    const c=Object.values(CHG).flat().find(x=>x.id===id);if(c){c.status=status;c.actor=OPERATOR;}
+    toast(status==="approved"?"承認・反映＋通知しました":"却下＋通知しました");render();
+  }catch(e){toast("処理失敗（通信）")}
 }
 /* ---- スタッフがマイページ情報(場所/時間)を編集＝マニュアル受付 ---- */
 function staffEdit(field){
