@@ -60,6 +60,11 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
   background:var(--accent);color:#fff;text-decoration:none}
 .bigbtn.ghost{background:#fff;color:var(--accent);border:1.5px solid var(--accent)}
 .note{font-size:12px;color:var(--sub);margin-top:8px;line-height:1.5}
+.hrow{display:flex;gap:8px;align-items:baseline;padding:7px 0;border-top:1px solid var(--line);font-size:13px}
+.hrow:first-of-type{border-top:0}
+.hdate{color:var(--sub);font-size:11.5px;flex:0 0 auto;min-width:32px;font-weight:700}
+.htx{flex:1;line-height:1.5}
+.hpill{flex:0 0 auto;padding:1px 8px;border-radius:999px;font-size:10.5px;font-weight:700}
 .hint{font-size:12.5px;color:var(--accent-d);background:#eafaf5;border:1px solid #b7e6da;
   border-left:4px solid var(--accent);border-radius:10px;padding:10px 12px;margin-top:10px;line-height:1.6;font-weight:600}
 .hint b{color:var(--accent-d)}
@@ -184,7 +189,7 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 <div class="toast" id="toast"></div>
 
 <script>
-const VER = "v3.6 受付ルール(DEL24h承認制/COL2h)";
+const VER = "v3.7 最近の履歴";
 const FN = "https://ckrxttbnawkclshczsia.supabase.co/functions/v1/handyman-mypage";
 const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const $ = s=>document.querySelector(s);
@@ -216,6 +221,33 @@ async function call(action, body){
   return {status:r.status, json: await r.json().catch(()=>({}))};
 }
 
+// 履歴1行を自然文で生成（日単位）。mode:"you"=お客様ページ視点。対象外はnull。
+const HFLD={del_place:"お届け場所",col_place:"回収場所",lend_time:"お届け時間",return_time:"回収時間",option:"オプション",insurance:"補償",method:"受渡方法",cancel:"キャンセル"};
+function hDate(iso){if(!iso)return"";const d=new Date(iso);if(isNaN(d))return"";const j=new Date(d.getTime()+9*3600*1000);return(j.getUTCMonth()+1)+"/"+j.getUTCDate();}
+function histLine(c,mode){
+  const L=HFLD[c.field]; if(!L)return null;
+  if(!["applied","requested","approved","rejected"].includes(c.status))return null;
+  const cust = mode==="you" ? "お客様" : "お客様";
+  const staff = "担当";
+  const val = String(c.new_value||"");
+  const PILL={requested:{t:"確認中",c:"#b45309",b:"#fef3c7"},approved:{t:"反映済",c:"#0e7a3b",b:"#dcfce7"},rejected:{t:"見送り",c:"#64748b",b:"#f1f5f9"}};
+  let text="",pill=null;
+  if(c.status==="applied"){
+    if(c.field==="del_place"||c.field==="col_place") text=`${cust}が${L}を「${val}」に変更しました`;
+    else if(c.field==="lend_time"||c.field==="return_time") text=`${cust}が${L}を ${val} に変更しました`;
+    else text=`${cust}が${L}を変更しました`;
+  }else if(c.status==="requested"){
+    text = c.field==="cancel" ? `${cust}がキャンセルを申請しました` : `${cust}が${L}の変更を依頼しました`;
+    pill=PILL.requested;
+  }else if(c.status==="approved"){
+    text = c.field==="cancel" ? `${staff}がキャンセルを承認しました` : `${staff}が${L}の変更を承認・反映しました`;
+    pill=PILL.approved;
+  }else if(c.status==="rejected"){
+    text = c.field==="cancel" ? `${staff}がキャンセル申請を見送りました` : `${staff}が${L}の変更を見送りました`;
+    pill=PILL.rejected;
+  }
+  return {date:hDate(c.created_at),text:esc(text),pill:pill?pill.t:null,pc:pill?pill.c:"",pb:pill?pill.b:""};
+}
 const TIMES=(()=>{let a=[];for(let h=9;h<=19;h++){a.push(("0"+h).slice(-2)+":00");if(h<19)a.push(("0"+h).slice(-2)+":30")}return a})();
 function timeSel(id,val){return `<select id="${id}"><option value="">指定なし</option>`+
   TIMES.map(t=>`<option ${t===val?"selected":""}>${t}</option>`).join("")+`</select>`}
@@ -324,13 +356,10 @@ function render(){
     <div class="dashed"><span class="pill wait">🕓 キャンセル申請済み</span><div style="margin-top:8px">担当者が確認しご連絡します。</div></div>
   </div>`:"")}
 
-  ${(()=>{const RQ={option:"オプション変更",insurance:"補償変更",method:"受渡方法変更",cancel:"キャンセル申請",del_place:"お届け場所変更",lend_time:"お届け時間変更",col_place:"回収場所変更",return_time:"回収時間変更"};
-    const ST={requested:{t:"確認中",c:"#b45309",bg:"#fef3c7"},approved:{t:"承認・反映済",c:"#0e7a3b",bg:"#dcfce7"},rejected:{t:"見送り",c:"#64748b",bg:"#f1f5f9"}};
-    const list=(d.recentChanges||[]).filter(c=>RQ[c.field]&&["requested","approved","rejected"].includes(c.status));
+  ${(()=>{const list=(d.recentChanges||[]).filter(c=>histLine(c,"you"));
     if(!list.length)return"";
-    return `<div class="card"><h2><span class="em">📨</span>ご依頼の状況</h2>`+
-      list.map(c=>{const s=ST[c.status]||ST.requested;return `<div class="row"><div class="k">${RQ[c.field]}</div>
-        <div class="v"><span style="display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:700;color:${s.c};background:${s.bg}">${s.t}</span></div></div>`}).join("")+
+    return `<div class="card"><h2><span class="em">🕘</span>最近の履歴</h2>`+
+      list.map(c=>{const h=histLine(c,"you");return `<div class="hrow"><span class="hdate">${h.date}</span><span class="htx">${h.text}</span>${h.pill?`<span class="hpill" style="color:${h.pc};background:${h.pb}">${h.pill}</span>`:""}</div>`}).join("")+
       `<div class="note">ご依頼は担当が確認し、処理後にLINEでお知らせします。状況はこの画面に反映されます。</div></div>`})()}
 
   <div class="foot">

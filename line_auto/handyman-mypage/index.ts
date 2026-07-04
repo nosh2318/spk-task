@@ -266,7 +266,7 @@ Deno.serve(async (req) => {
     const optJR = Math.max(Number(r.opt_j) || 0, taskOptNum(dTask, "_optJ"), taskOptNum(cTask, "_optJ"));
     // 補償：reservations が空なら tasks.insurance にフォールバック
     const insR = String(r.insurance || "").trim() || String(dTask?.insurance || cTask?.insurance || "").trim();
-    const chg = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&order=created_at.desc&limit=5&select=field,new_value,status,created_at`);
+    const chg = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&order=created_at.desc&limit=10&select=field,old_value,new_value,source,status,actor,created_at`);
     const pendingCancel = chg.some((c: any) => c.field === "cancel" && c.status === "requested");
     return json({
       ok: true, store: "spk", label: store.label,
