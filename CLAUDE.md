@@ -152,7 +152,16 @@ my.html `insCur()` は insurance生値を3プランに寄せる：**`フル|NOC|
 ### 📖 マイページ仕様＝マニュアル（my-admin.html 内・2026-07-05）
 マイページの仕様書は **my-admin.html ヘッダー「📖 マニュアル」→モーダル**（`openManual`/`renderManual`）に常設。**👤お客様側**（閲覧範囲・変更受付ルール表・依頼後の流れ）と**🧑‍💼スタッフ側**（ボードの見方・🔔承認/却下=実反映+LINE・ステータス・カルテ・トリガー・注意）に分離。**マイページの挙動を変えたら必ずこのマニュアル(renderManualのUSER/STAFF文言)も更新**（成長型マニュアル＝マイページ版）。
 
+### 🕘 履歴＋🔍 整合パトロール（2026-07-05）
+- **最新の履歴**（ユーザー側my.html・管理側my-admin）：誰が・何を・いつ（日単位）。lookupが`history[]`を返す＝`mypage_changes`＋**OPタスクchanged_json由来**（`_ssPlaceAt`=お客様フォーム/`_manualPlaceAt`=担当編集/`_placeSource=customer`=マイページ）を統合。**mypage_changesが0でも既存活動で埋まる**（「履歴が出ない」の解決）。my-admin「🕘履歴」はPLACE_MAP(確定時刻が正確な場所)＋CHG統合。文言はsource別（お客様がフォームで/お客様が/担当が）。
+- **整合パトロール**＝「予約情報(reservations)＝マイページ＝OPシート が常に同じか」を保証する仕組み。3画面は同じ元データ（reservations＋tasks）から解決するので、**食い違いの根＝reservationsとtasksの値が両方あり競合している予約**を全件検出。`patrol`アクション（staff_token or cron `x-cron-secret`=CRON_SECRET）。my-admin「🔍整合」ボタンでオンデマンド（✅全一致/⚠️相違N件・タップで該当予約へ）。**cron `mypage-consistency-patrol` 毎朝6:00JST→相違ありでSlack強制発報**（監視アラートは`slackPost`でMYPAGE_SILENTミュート対象外）。実測138件→一致109/相違29（時刻/場所の予約vsOPズレ）。空欄側は自動フォールバックで一致扱い＝相違に含めない。
+- ⚠️ patrolは検知のみ（自動修正しない）。相違はmy-adminで人が確認・修正。将来audit_log/revert基盤と連携可。
+
+### 🔗 マイページ書込は「唯一ルール」順守（2026-07-05・監査基盤連携）
+マイページの全書込は「既存を丸ごと再保存しない／人間入力を上書きしない／顧客は許可項目のみ・センシティブは承認制」に従う：**update＝顧客が変えた特定フィールドのみsbPatch＋patchTasksSpkはchanged_jsonを`{...cj}`マージ（他キー保持）**／request＝行追加のみ（reservation不変）／decide＝特定フィールドのみ・actor記録。**顧客はDB資格情報を持たずEdge Function(token)経由のみ＝関所はEdge Function**（許可項目以外は物理的に書けない）。source識別＝`mypage_changes.source`(customer/staff)・tasks`_placeSource`・`actor`。全書込はaudit_log(DBトリガ)に記録・ハッシュ連鎖で改ざん不能。
+
 ### Edge Function アクション
+- **patrol**（staff_token or x-cron-secret）：reservations↔tasks整合を全予約突合→相違レポート＋Slackアラート（監視・上記）。
 - **decide**（staff_token＝本体JWT・change_id・decision）：承認/却下→実反映＋顧客LINE＋Slack（管理者用・上記）。
 - **lookup**（token）：予約表示＋傷チェックgate＋追跡状態＋直近変更。**場所/時間はOPタスク(d-/c-)から解決（上記）**。傷チェックは**出発日8:00解禁**（`lend_date<today || (==today && hh>=8)`）、fleet→vehicles.plate_no→vehicle_twins.display_label(ilike)→share_token でURL解決(best-effort)。追跡は kd_status(delivering/collecting)＋kd_track_token返却。
 - **🕒 update 受付ルール（2026-07-04 オーナー確定・変更）**：**DEL(お届け)＝24h前まで即時／24h以内は承認制**（即反映せず mypage_changes に field=del_place/lend_time・status=requested・payloadで記録→Slack→管理画面で承認→`applyPlaceTime`で反映＋顧客LINE）。**COL(回収)＝2h前まで即時／2h以内は受付終了(`lineOnly`)**。DEL承認・COL即時の混在時はDELのみ依頼化・COL即時。判定はDEL=lend/COL=return日時で別(`withinHours`)。応答：即時=`{ok,updated}`／DEL承認待ち=`{ok,pendingApproval,requested}`／COL2h内=`{lineOnly}`。即時反映は`applyPlaceTime`(reservations＋mypage_locked＋監査ログapplied＋`patchTasksSpk`)。decideは del_place/col_place/lend_time/return_time の承認適用に対応。旧「両方24h一律lineOnly」は廃止。
