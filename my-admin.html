@@ -386,6 +386,7 @@ function cardHtml(r){
 
 function render(){try{renderInner()}catch(e){showErr("描画: "+(e.message||e));if($("#app").querySelector(".spin"))$("#app").innerHTML='<div class="empty">描画エラー：'+esc(e.message||"")+'<br><button class="btn ghost" onclick="location.reload()">再読込</button></div>'}}
 function renderInner(){
+  if(VIEW==="actions"){return renderActionsView();}
   const q=Q.trim();
   const fdef=STATUS_DEFS.find(x=>x.k===FILTER)||STATUS_DEFS[STATUS_DEFS.length-1];
   let list=RES.filter(r=>{
@@ -407,7 +408,7 @@ function renderInner(){
     <span class="fresh" title="30秒ごと自動更新。SS(フォーム)はGoogle側で最大約5分キャッシュされるため、お客様の変更反映に数分の遅れがあります。">🕐 ${fmtClock(LAST_LOAD)} <span class="auto">自動30秒</span></span>
     <button onclick="loadAll(true)">🔄 更新</button>
     <button class="${rc?"alert":""}" onclick="VIEW='changes';SEL=null;render()">🔔 変更依頼 ${rc}</button>
-    <button class="alert" onclick="openActions()">🛠 対応</button>
+    <button class="alert" onclick="enterActions()">🛠 対応</button>
     <button onclick="openPatrol()">🔍 整合</button>
     <button onclick="openHistory()">🕘 履歴</button>
     <button onclick="openManual()">📖 マニュアル</button>
@@ -837,75 +838,117 @@ function openHistory(){
   $("#scrim").classList.add("show");
 }
 /* ===== 🛠 対応センター：アラート→確認→対応→正常化 を1画面で導く ===== */
-let AC_ITEMS=[];
+let AC_ITEMS=[], AC_CONF=[], AC_LOADING=false, AC_DONE={};
 function acFldJp(f){return {del_place:"お届け場所",col_place:"回収場所",lend_time:"お届け時間",return_time:"回収時間",insurance:"補償",opt_c:"チャイルドシート",opt_j:"ジュニアシート",opt_b:"ベビーシート"}[f]||f}
-async function openActions(){
-  const st=tok(); if(!st){toast("ログインが必要です");return}
-  $("#modal").style.maxWidth="840px";
-  $("#modal").innerHTML=`<h3>🛠 対応センター</h3><div class="empty">状況を確認中…</div>`;
-  $("#scrim").classList.add("show");
+async function enterActions(){
+  if(!tok()){toast("ログインが必要です");return}
+  VIEW="actions"; SEL=null; AC_LOADING=true; render();
+  await acReload();
+}
+async function acReload(){
+  const st=tok(); if(!st)return;
+  AC_LOADING=true; if(VIEW==="actions")render();
   let conflicts=[];
   try{const r=await fetch(FN+"/handyman-mypage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"patrol",staff_token:st})});const j=await r.json().catch(()=>({}));if(j.ok)conflicts=j.conflicts||[];}catch(e){}
-  AC_ITEMS=[];
-  conflicts.forEach(c=>c.fields.forEach(f=>AC_ITEMS.push({id:c.id,name:c.name,field:f.field,resv:f.reservations,op:f.op})));
-  renderActions();
+  AC_CONF=conflicts; AC_LOADING=false; if(VIEW==="actions")render();
 }
-function renderActions(){
+function acKey(it){return it.id+"|"+it.field}
+// 🛠 対応センターを本体エリアにボード表示（モーダルでなく常設の枠）
+function renderActionsView(){
+  AC_ITEMS=[]; AC_CONF.forEach(c=>c.fields.forEach(f=>AC_ITEMS.push({id:c.id,name:c.name,field:f.field,resv:f.reservations,op:f.op})));
   const reqs=Object.values(CHG).flat().filter(c=>c.status==="requested");
   const nameOf=id=>{const r=RES.find(x=>x.id===id);return r?r.name:""};
-  const step=(n,t)=>`<span style="display:inline-block;min-width:52px;font-size:10.5px;font-weight:800;color:#64748b">${t}</span>`;
-  // 整合の相違カード
   const isTime=f=>f==="lend_time"||f==="return_time";
+  const row=(k,v,c)=>`<div style="font-size:10.5px;font-weight:800;color:${c||'#64748b'};padding-top:2px">${k}</div><div>${v}</div>`;
   const confCards=AC_ITEMS.map((it,idx)=>{
     const L=acFldJp(it.field);
-    const opv=isTime(it.field)?it.op:`「${esc(it.op)}」`, rev=isTime(it.field)?it.resv:`「${esc(it.resv)}」`;
+    const opv=isTime(it.field)?esc(it.op):`「${esc(it.op)}」`, rev=isTime(it.field)?esc(it.resv):`「${esc(it.resv)}」`;
+    const done=AC_DONE[acKey(it)];
+    const actionHtml = done
+      ? `<div style="color:#0e7a3b;font-weight:700">✅ ${esc(done.label)}（正常化）</div>
+         <button class="btn ghost" style="font-size:11.5px;margin-top:5px" onclick="acUndo(${idx})">↩ 元に戻す</button>`
+      : `どちらの値に統一しますか？<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:5px">
+          <button class="btn ok acb${idx}" style="font-size:12px" onclick="acResolve(${idx},'resv')">✅ マイページ・OPの${opv}で統一（推奨）</button>
+          <button class="btn ghost acb${idx}" style="font-size:12px" onclick="acResolve(${idx},'op')">予約情報の${rev}で統一</button>
+          <button class="btn ghost" style="font-size:12px" onclick="VIEW='changes';selectRes('${it.id}')">予約を開く ▸</button></div>`;
     return `<div style="border:1px solid #f0d0d0;border-radius:11px;padding:11px 12px;margin-bottom:9px;background:#fffafa">
       <div style="font-weight:800;font-size:13px;margin-bottom:6px">${esc(it.name||"—")}様 <span style="color:#94a3b8;font-weight:600;font-size:11px">${esc(it.id)}</span></div>
       <div style="display:grid;grid-template-columns:56px 1fr;gap:4px 6px;font-size:12.5px;line-height:1.6">
-        <div style="font-size:10.5px;font-weight:800;color:#dc2626;padding-top:2px">事象</div><div><b>${esc(L)}</b>が予約情報とマイページ/OPで<b style="color:#dc2626">食い違っています</b></div>
-        <div style="font-size:10.5px;font-weight:800;color:#64748b;padding-top:2px">説明</div><div>予約情報＝${esc(rev)}／マイページ・OP＝<b>${esc(opv)}</b>。マイページ・OP側が<b>運用の最新</b>（お客様に表示中）。このままだと画面により表示が違います。</div>
-        <div style="font-size:10.5px;font-weight:800;color:#0e7a3b;padding-top:3px">対応</div><div>どちらの値に統一しますか？<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:5px">
-          <button class="btn ok acb${idx}" style="font-size:12px" onclick="acResolve(${idx},'resv')">✅ マイページ・OPの${esc(opv)}で統一（推奨）</button>
-          <button class="btn ghost acb${idx}" style="font-size:12px" onclick="acResolve(${idx},'op')">予約情報の${esc(rev)}で統一</button>
-          <button class="btn ghost acb${idx}" style="font-size:12px" onclick="closeM();selectRes('${it.id}')">予約を開く ▸</button></div></div>
-        <div style="font-size:10.5px;font-weight:800;color:#64748b;padding-top:2px">結果</div><div id="acres_${idx}" style="color:#94a3b8">未対応</div>
+        ${row("事象",`<b>${esc(L)}</b>が予約情報とマイページ/OPで<b style="color:#dc2626">食い違っています</b>`,"#dc2626")}
+        ${row("説明",`予約情報＝${rev}／マイページ・OP＝<b>${opv}</b>。マイページ・OP側が<b>運用の最新</b>（お客様に表示中）。このままだと画面により表示が違います。`)}
+        ${row("対応",actionHtml,"#0e7a3b")}
       </div></div>`;
-  }).join("");
-  // 変更依頼カード
+  }).join("")||`<div class="bcol-empty">相違はありません ✅</div>`;
   const reqCards=reqs.map(c=>{
     const nm=nameOf(c.reservation_id)||"お客様";
     return `<div style="border:1px solid #f0e0c0;border-radius:11px;padding:11px 12px;margin-bottom:9px;background:#fffdf5">
       <div style="font-weight:800;font-size:13px;margin-bottom:6px">${esc(nm)}様 <span style="color:#94a3b8;font-weight:600;font-size:11px">${esc(c.reservation_id)}</span></div>
       <div style="display:grid;grid-template-columns:56px 1fr;gap:4px 6px;font-size:12.5px;line-height:1.6">
-        <div style="font-size:10.5px;font-weight:800;color:#b45309;padding-top:2px">事象</div><div>お客様が<b>${esc(fldJp(c.field))}${c.field==="cancel"?"を申請":"の変更を依頼"}</b></div>
-        <div style="font-size:10.5px;font-weight:800;color:#64748b;padding-top:2px">説明</div><div>${esc(c.new_value||c.note||"")}</div>
-        <div style="font-size:10.5px;font-weight:800;color:#0e7a3b;padding-top:3px">対応</div><div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:2px">
-          <button class="btn ok" style="font-size:12px" onclick="decide(${c.id},'approved').then(()=>openActions())">承認して反映＋LINE通知</button>
-          <button class="btn dang" style="font-size:12px" onclick="decide(${c.id},'rejected').then(()=>openActions())">却下＋LINE通知</button></div></div>
-        <div style="font-size:10.5px;font-weight:800;color:#64748b;padding-top:2px">結果</div><div style="color:#94a3b8">未対応（承認/却下で確定・お客様へ自動通知）</div>
+        ${row("事象",`お客様が<b>${esc(fldJp(c.field))}${c.field==="cancel"?"を申請":"の変更を依頼"}</b>`,"#b45309")}
+        ${row("説明",esc(c.new_value||c.note||""))}
+        ${row("対応",`<div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn ok" style="font-size:12px" onclick="acDecide(${c.id},'approved')">承認して反映＋LINE通知</button>
+          <button class="btn dang" style="font-size:12px" onclick="acDecide(${c.id},'rejected')">却下＋LINE通知</button></div>`,"#0e7a3b")}
       </div></div>`;
-  }).join("");
+  }).join("")||`<div class="bcol-empty">依頼はありません</div>`;
   const nTot=AC_ITEMS.length+reqs.length;
-  $("#modal").innerHTML=`<h3>🛠 対応センター <span style="font-size:12px;color:${nTot?'#dc2626':'#0e7a3b'};font-weight:800">${nTot?`要対応 ${nTot}件`:'すべて対応済み ✅'}</span></h3>
-    <div style="font-size:11.5px;color:var(--sub);margin-bottom:10px">アラートで来た事象を上から確認 → ボタンで対応 → 「結果」に反映されれば正常化完了です。</div>
-    <div style="max-height:66vh;overflow:auto">
-      ${AC_ITEMS.length?`<div style="font-weight:800;font-size:12.5px;color:#dc2626;margin:2px 0 7px">🔴 整合の相違（予約情報とマイページ/OPが違う）${AC_ITEMS.length}件</div>${confCards}`:""}
-      ${reqs.length?`<div style="font-weight:800;font-size:12.5px;color:#b45309;margin:12px 0 7px">🟡 お客様からの依頼 ${reqs.length}件</div>${reqCards}`:""}
-      ${nTot?"":`<div class="empty">✅ 現在、対応が必要な事象はありません<br><span style="font-size:11.5px">予約情報・マイページ・OPシートは一致しています</span></div>`}
+  $("#app").innerHTML=`
+  <div class="hd"><div class="logo">HAND<b>Y</b>MAN</div><div class="t">🛠 対応センター</div>
+    <div class="sp"></div>
+    <select class="opsel ${OPERATOR?"":"need"}" onchange="setOp(this.value)">
+      <option value="">担当者を選択…</option>
+      ${STAFF.map(n=>`<option ${n===OPERATOR?"selected":""}>${esc(n)}</option>`).join("")}
+      ${OPERATOR&&!STAFF.includes(OPERATOR)?`<option selected>${esc(OPERATOR)}</option>`:""}
+    </select>
+    <span class="fresh">要対応 <b style="color:${nTot?'#dc2626':'#0e7a3b'}">${nTot}</b>件</span>
+    <button onclick="acReload()">🔄 再チェック</button>
+    <button onclick="VIEW='changes';render()">← ボードに戻る</button>
+  </div>
+  <div style="padding:10px 12px;font-size:12px;color:var(--sub);background:#f8fafc;border-bottom:1px solid var(--line)">
+    アラートで来た事象を確認 → ボタンで対応 → 「正常化」まで。<b>押す前に確認</b>が出ます。対応後は<b>↩ 元に戻す</b>で取り消せます。</div>
+  ${AC_LOADING?`<div class="empty" style="padding:40px">全予約を照合中…</div>`:`
+  <div style="display:flex;gap:12px;padding:12px;align-items:flex-start;flex-wrap:wrap">
+    <div style="flex:1;min-width:320px">
+      <div style="font-weight:800;font-size:13px;color:#dc2626;margin:2px 0 8px">🔴 整合の相違（予約情報 ≠ マイページ/OP）${AC_ITEMS.length}件</div>
+      ${confCards}
     </div>
-    <div class="acts" style="margin-top:10px"><button class="btn ghost" onclick="openActions()">🔄 再チェック</button><button class="btn ghost" onclick="closeM()">閉じる</button></div>`;
+    <div style="flex:1;min-width:320px">
+      <div style="font-weight:800;font-size:13px;color:#b45309;margin:2px 0 8px">🟡 お客様からの依頼 ${reqs.length}件</div>
+      ${reqCards}
+    </div>
+  </div>`}`;
+  document.body.classList.remove("karte-open");
 }
 async function acResolve(idx,target){
   const it=AC_ITEMS[idx]; if(!it)return; const st=tok(); if(!st){toast("ログインが必要");return}
-  const value=(target==="resv")?it.op:it.resv;
-  const res=document.getElementById("acres_"+idx); if(res){res.innerHTML="⏳ 反映中…";res.style.color="#b45309"}
+  const isTime=(it.field==="lend_time"||it.field==="return_time");
+  const value=(target==="resv")?it.op:it.resv, from=(target==="resv")?it.resv:it.op;
+  const q=isTime?value:`「${value}」`, qf=isTime?from:`「${from}」`;
+  if(!sure(`${acFldJp(it.field)}を ${q} に統一（${target==="resv"?"予約情報":"マイページ/OP"}の ${qf} → ${q}）。`))return;
   document.querySelectorAll(".acb"+idx).forEach(b=>b.disabled=true);
   try{
     const r=await fetch(FN+"/handyman-mypage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"resolve",staff_token:st,reservation_id:it.id,field:it.field,value,target})});
     const j=await r.json().catch(()=>({}));
-    if(r.ok&&j.ok){if(res){res.innerHTML=`✅ 「${esc(value)}」で統一しました（正常化）`;res.style.color="#0e7a3b"}it.done=true;loadAll(true);}
-    else{if(res){res.textContent="失敗："+(j.error||r.status);res.style.color="#dc2626"}document.querySelectorAll(".acb"+idx).forEach(b=>b.disabled=false);}
-  }catch(e){if(res){res.textContent="通信エラー";res.style.color="#dc2626"}document.querySelectorAll(".acb"+idx).forEach(b=>b.disabled=false);}
+    if(r.ok&&j.ok){AC_DONE[acKey(it)]={target,value,from,label:`${q} で統一しました`};toast("統一しました");loadAll(true);render();}
+    else{toast("失敗："+(j.error||r.status));document.querySelectorAll(".acb"+idx).forEach(b=>b.disabled=false);}
+  }catch(e){toast("通信エラー");document.querySelectorAll(".acb"+idx).forEach(b=>b.disabled=false);}
+}
+async function acUndo(idx){
+  const it=AC_ITEMS[idx]; if(!it)return; const st=tok(); if(!st)return;
+  const d=AC_DONE[acKey(it)]; if(!d)return;
+  const isTime=(it.field==="lend_time"||it.field==="return_time");
+  const q=isTime?d.from:`「${d.from}」`;
+  if(!sure(`元に戻す（${acFldJp(it.field)}を ${q} に戻す）。`))return;
+  try{
+    const r=await fetch(FN+"/handyman-mypage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"resolve",staff_token:st,reservation_id:it.id,field:it.field,value:d.from,target:d.target})});
+    const j=await r.json().catch(()=>({}));
+    if(r.ok&&j.ok){delete AC_DONE[acKey(it)];toast("元に戻しました");loadAll(true);render();}
+    else toast("失敗："+(j.error||r.status));
+  }catch(e){toast("通信エラー")}
+}
+async function acDecide(id,status){
+  await decide(id,status); // decide内で確認・実反映・LINE・render
+  if(VIEW==="actions")render();
 }
 /* ===== 整合パトロール：予約情報＝マイページ＝OPシート を全予約で突合 ===== */
 async function openPatrol(){
