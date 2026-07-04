@@ -325,7 +325,7 @@ function mkDiff(kind,ss,op,ssMs,opAt,opSrc){const opMs=opAt?Date.parse(opAt):NaN
 // SS_MAP と PLACE_MAP を突合して情報相違を再計算（新旧＝時系列も判定）
 function computeMismatch(){const mm=new Set(),map={};RES.forEach(r=>{const ss=SS_MAP[r.id];if(!ss)return;const p=PLACE_MAP[r.id]||{};const op=opPlaceOf(r);const ssMs=ssTimeMs(ss.ts);const list=[];if(placeConflict(ss.del,op.del))list.push(mkDiff("お届け先",ss.del,op.del,ssMs,p.delAt,p.delSrc));if(placeConflict(ss.col,op.col))list.push(mkDiff("回収先",ss.col,op.col,ssMs,p.colAt,p.colSrc));if(list.length){mm.add(r.id);map[r.id]=list}});MISMATCH_RES=mm;MISMATCH_MAP=map}
 // ライブSS(公開CSV)を取得して SS_MAP を作る（列: 4=予約番号,1=回答日時,8=DEL場所,11=COL場所。同一予約は回答日時が最新の行）
-async function fetchSS(){try{const resp=await fetch(PLACE_SHEET_CSV,{cache:"no-store"});if(!resp.ok)return;const rows=parseCSV(await resp.text());if(rows.length<2)return;const best={};rows.slice(1).forEach(r=>{const rid=(r[4]||"").trim();if(!rid)return;const ts=(r[1]||"").trim();if(!best[rid]||ts>best[rid].ts)best[rid]={ts,del:(r[8]||"").trim(),col:(r[11]||"").trim()}});const m={};Object.entries(best).forEach(([rid,v])=>{m[rid]={del:v.del,col:v.col,ts:v.ts}});SS_MAP=m}catch(e){}}
+async function fetchSS(){try{const resp=await fetch(PLACE_SHEET_CSV,{cache:"no-store"});if(!resp.ok)return;const rows=parseCSV(await resp.text());if(rows.length<2)return;const byId={};rows.slice(1).forEach(r=>{const rid=(r[4]||"").trim();if(!rid)return;(byId[rid]=byId[rid]||[]).push({ts:(r[1]||"").trim(),del:(r[8]||"").trim(),col:(r[11]||"").trim()})});const m={};Object.entries(byId).forEach(([rid,arr])=>{arr.sort((a,b)=>a.ts<b.ts?1:(a.ts>b.ts?-1:0));const cur=arr[0]||{};const pd=arr.find(x=>x!==cur&&x.del&&x.del!==cur.del);const pc=arr.find(x=>x!==cur&&x.col&&x.col!==cur.col);m[rid]={del:cur.del,col:cur.col,ts:cur.ts,prevDel:pd?pd.del:"",prevDelTs:pd?pd.ts:"",prevCol:pc?pc.col:"",prevColTs:pc?pc.ts:""}});SS_MAP=m}catch(e){}}
 // 簡易CSVパーサ（引用符・改行・カンマ対応）
 function parseCSV(t){const rows=[];let f="",row=[],q=false;for(let i=0;i<t.length;i++){const c=t[i];if(q){if(c==='"'){if(t[i+1]==='"'){f+='"';i++}else q=false}else f+=c}else{if(c==='"')q=true;else if(c===","){row.push(f);f=""}else if(c==="\n"){row.push(f);rows.push(row);row=[];f=""}else if(c==="\r"){}else f+=c}}if(f!==""||row.length){row.push(f);rows.push(row)}return rows}
 function stToday(r){return r.lend_date===today()}                                                   // ⑥本日＝本日出発
@@ -476,7 +476,8 @@ function formReanswer(){
     const ss=String(cj._ssAlert);
     const mismatch=String(opVal).trim()!==ss.trim();  // OP(タスク)現在値 ≠ SS(フォーム回答) ＝相違
     const ssAt=cj._ssPlaceAt?Date.parse(cj._ssPlaceAt):NaN;  // OP反映時刻
-    out.push({kind:isCol?"回収先":"お届け先",field:isCol?"col_place":"del_place",val:ss,opVal:String(opVal),mismatch:mismatch,taskId:t._id,formAt:formAt,ssAt:ssAt});}});
+    const prevVal=isCol?ssRow.prevCol:ssRow.prevDel;const prevAt=ssTimeMs(isCol?ssRow.prevColTs:ssRow.prevDelTs);  // フォーム前回値
+    out.push({kind:isCol?"回収先":"お届け先",field:isCol?"col_place":"del_place",val:ss,opVal:String(opVal),mismatch:mismatch,taskId:t._id,formAt:formAt,ssAt:ssAt,prevVal:prevVal||"",prevAt:prevAt});}});
   return out;
 }
 async function patchTaskCj(taskId,patchObj){
@@ -608,10 +609,10 @@ function detailHtml(){
     ${formReanswer().filter(fr=>!fr.mismatch).map(fr=>`<div class="reanswer">
       <div class="ra-h">🔔 位置情報更新・${esc(fr.kind)}</div>
       <div class="dft">
-        <div class="dft-r"><span class="dft-l">更新値</span><span class="dft-v">${esc(fr.val)}</span></div>
-        <div class="dft-r"><span class="dft-l">🕐 更新</span><span class="dft-v">フォーム ${fmtT(fr.formAt)}${!isNaN(fr.ssAt)?" → OP反映 "+fmtT(fr.ssAt):""}</span></div>
+        <div class="dft-r"><span class="dft-l">変更前</span><span class="dft-t">${fr.prevVal?fmtT(fr.prevAt):""}</span><span class="dft-v old">${fr.prevVal?esc(fr.prevVal):"（以前の記録なし・初回回答）"}</span></div>
+        <div class="dft-r nw"><span class="dft-l">変更後</span><span class="dft-t">${fmtT(fr.formAt)} 🆕</span><span class="dft-v">${esc(fr.val)}</span></div>
       </div>
-      <div class="okline">✅ OPに自動反映済み（値は一致）</div>
+      <div class="okline">✅ OPに自動反映済み（${!isNaN(fr.ssAt)?fmtT(fr.ssAt)+"）":"）"}</div>
       <div class="acts"><button class="btn ghost" onclick="dismissReanswer('${fr.taskId}')">✅ 確認済み（消す）</button></div>
     </div>`).join("")}
     ${changeCompare(r)}
