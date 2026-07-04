@@ -137,6 +137,9 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
 .cmp-b{color:var(--sub);text-decoration:line-through}
 .cmp-ar{text-align:center;color:var(--danger);font-weight:900}
 .cmp-a{font-weight:900;color:var(--danger)}
+.cmp-c.newer{border-width:2px;box-shadow:0 0 0 2px rgba(220,38,38,.15)}
+.cmp-c.newer .cmp-l{color:#dc2626}
+.mm-hint{margin-top:8px;font-size:12px;font-weight:800;color:#b91c1c;background:#fff;border:1px dashed #fca5a5;border-radius:8px;padding:7px 9px}
 .reanswer{background:#fff4f0;border:1.5px solid #f0b89a;border-left:5px solid var(--warn);border-radius:12px;padding:12px;margin-bottom:12px}
 .reanswer .ra-h{font-weight:900;font-size:13.5px;color:var(--warn)}
 .reanswer .ra-b{font-size:12.5px;margin-top:4px;line-height:1.5}
@@ -253,14 +256,16 @@ async function loadAll(keepSel){
     const ids=RES.map(r=>r.id);const found=new Set();const pmap={};
     for(let i=0;i<ids.length;i+=60){
       const chunk=ids.slice(i,i+60).map(encodeURIComponent).join(",");
-      const ts=await api("tasks?reservation_id=in.("+chunk+")&select=_id,reservation_id,place,changed_json").catch(()=>[]);
+      const ts=await api("tasks?reservation_id=in.("+chunk+")&select=_id,reservation_id,place,changed_json,updated_at").catch(()=>[]);
       (ts||[]).forEach(t=>{
         let cj={};try{cj=JSON.parse(t.changed_json||"{}")}catch(e){}
-        const disp=(cj._placeSource==="manual"?t.place:(cj._ssPlace||t.place))||"";
+        const manual=cj._placeSource==="manual";
+        const disp=(manual?t.place:(cj._ssPlace||t.place))||"";
+        const opAt=(manual?(cj._manualPlaceAt||t.updated_at):(cj._ssPlaceAt||t.updated_at))||"";  // OP側の場所確定時刻(近似)
         const kind=String(t._id).slice(0,2);const rid=t.reservation_id;
         pmap[rid]=pmap[rid]||{};
-        if(kind==="d-")pmap[rid].del=disp;
-        if(kind==="c-")pmap[rid].col=disp;
+        if(kind==="d-"){pmap[rid].del=disp;pmap[rid].delAt=opAt;pmap[rid].delSrc=cj._placeSource||"";}
+        if(kind==="c-"){pmap[rid].col=disp;pmap[rid].colAt=opAt;pmap[rid].colSrc=cj._placeSource||"";}
         if(cj._ssAlert&&String(cj._ssAlert).trim())found.add(rid);   // フォーム再回答(迷子)
       });
     }
@@ -300,10 +305,14 @@ function coreP(s){return String(s||"").replace(/[\s　]/g,"").replace(/\d{1,2}[:
 function placeConflict(ss,op){const a=coreP(ss),b=coreP(op);if(!a||!b)return false;return !(a.includes(b)||b.includes(a))}
 function stMismatch(r){return MISMATCH_RES.has(r.id)}                                                // 🔴 情報相違＝要確認・修正
 function stReanswer(r){return ALERT_RES.has(r.id)}                                                   // ⑤フォーム再回答(迷子)
-// SS_MAP と PLACE_MAP を突合して情報相違を再計算
-function computeMismatch(){const mm=new Set(),map={};RES.forEach(r=>{const ss=SS_MAP[r.id];if(!ss)return;const op=opPlaceOf(r);const list=[];if(placeConflict(ss.del,op.del))list.push({kind:"お届け先",ss:ss.del,op:op.del||"(空)"});if(placeConflict(ss.col,op.col))list.push({kind:"回収先",ss:ss.col,op:op.col||"(空)"});if(list.length){mm.add(r.id);map[r.id]=list}});MISMATCH_RES=mm;MISMATCH_MAP=map}
+// SS回答日時(JST文字列)→epoch ms
+function ssTimeMs(s){if(!s)return NaN;const m=String(s).match(/(\d{4})\/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);if(!m)return NaN;return Date.parse(m[1]+"-"+String(m[2]).padStart(2,"0")+"-"+String(m[3]).padStart(2,"0")+"T"+String(m[4]).padStart(2,"0")+":"+m[5]+":"+(m[6]||"00")+"+09:00")}
+function fmtT(ms){if(isNaN(ms))return"不明";const d=new Date(ms);return (d.getMonth()+1)+"/"+d.getDate()+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0")}
+function mkDiff(kind,ss,op,ssMs,opAt,opSrc){const opMs=opAt?Date.parse(opAt):NaN;let newer="?";if(!isNaN(ssMs)&&!isNaN(opMs))newer=ssMs>opMs?"ss":"op";return{kind:kind,ss:ss,op:op||"(空)",ssAt:ssMs,opAt:opMs,opSrc:opSrc||"",newer:newer}}
+// SS_MAP と PLACE_MAP を突合して情報相違を再計算（新旧＝時系列も判定）
+function computeMismatch(){const mm=new Set(),map={};RES.forEach(r=>{const ss=SS_MAP[r.id];if(!ss)return;const p=PLACE_MAP[r.id]||{};const op=opPlaceOf(r);const ssMs=ssTimeMs(ss.ts);const list=[];if(placeConflict(ss.del,op.del))list.push(mkDiff("お届け先",ss.del,op.del,ssMs,p.delAt,p.delSrc));if(placeConflict(ss.col,op.col))list.push(mkDiff("回収先",ss.col,op.col,ssMs,p.colAt,p.colSrc));if(list.length){mm.add(r.id);map[r.id]=list}});MISMATCH_RES=mm;MISMATCH_MAP=map}
 // ライブSS(公開CSV)を取得して SS_MAP を作る（列: 4=予約番号,1=回答日時,8=DEL場所,11=COL場所。同一予約は回答日時が最新の行）
-async function fetchSS(){try{const resp=await fetch(PLACE_SHEET_CSV,{cache:"no-store"});if(!resp.ok)return;const rows=parseCSV(await resp.text());if(rows.length<2)return;const best={};rows.slice(1).forEach(r=>{const rid=(r[4]||"").trim();if(!rid)return;const ts=(r[1]||"").trim();if(!best[rid]||ts>best[rid].ts)best[rid]={ts,del:(r[8]||"").trim(),col:(r[11]||"").trim()}});const m={};Object.entries(best).forEach(([rid,v])=>{m[rid]={del:v.del,col:v.col}});SS_MAP=m}catch(e){}}
+async function fetchSS(){try{const resp=await fetch(PLACE_SHEET_CSV,{cache:"no-store"});if(!resp.ok)return;const rows=parseCSV(await resp.text());if(rows.length<2)return;const best={};rows.slice(1).forEach(r=>{const rid=(r[4]||"").trim();if(!rid)return;const ts=(r[1]||"").trim();if(!best[rid]||ts>best[rid].ts)best[rid]={ts,del:(r[8]||"").trim(),col:(r[11]||"").trim()}});const m={};Object.entries(best).forEach(([rid,v])=>{m[rid]={del:v.del,col:v.col,ts:v.ts}});SS_MAP=m}catch(e){}}
 // 簡易CSVパーサ（引用符・改行・カンマ対応）
 function parseCSV(t){const rows=[];let f="",row=[],q=false;for(let i=0;i<t.length;i++){const c=t[i];if(q){if(c==='"'){if(t[i+1]==='"'){f+='"';i++}else q=false}else f+=c}else{if(c==='"')q=true;else if(c===","){row.push(f);f=""}else if(c==="\n"){row.push(f);rows.push(row);row=[];f=""}else if(c==="\r"){}else f+=c}}if(f!==""||row.length){row.push(f);rows.push(row)}return rows}
 function stToday(r){return r.lend_date===today()}                                                   // ⑥本日＝本日出発
@@ -574,9 +583,11 @@ function detailHtml(){
   </div>
   <div class="dbody">
     ${(MISMATCH_MAP[r.id]||[]).map(d=>`<div class="reanswer mm">
-      <div class="ra-h">🔴 情報相違 — SS(フォーム実値)とOP(タスク実値)が不一致（要確認・修正）</div>
-      <div class="ra-b"><b>${esc(d.kind)}</b> で、お客様のフォーム(SS)とOPシートの表示が食い違っています。SSが正なら場所編集でSS値に修正してください（バグ取り期間）。
-        <div class="cmp"><div class="cmp-c ss"><span class="cmp-l">SS(フォーム)</span><b>${esc(d.ss||"(空)")}</b></div><div class="cmp-a">≠</div><div class="cmp-c op"><span class="cmp-l">OP(タスク)</span><b>${esc(d.op||"(空)")}</b></div></div></div>
+      <div class="ra-h">🔴 情報相違 — ${esc(d.kind)}：SS(フォーム)とOP(タスク)が不一致（要確認・修正）</div>
+      <div class="ra-b">
+        <div class="cmp"><div class="cmp-c ss${d.newer==="ss"?" newer":""}"><span class="cmp-l">SS(フォーム)${d.newer==="ss"?" 🆕新":""}・${fmtT(d.ssAt)}</span><b>${esc(d.ss||"(空)")}</b></div><div class="cmp-a">≠</div><div class="cmp-c op${d.newer==="op"?" newer":""}"><span class="cmp-l">OP(${d.opSrc==="manual"?"手動":"SS反映"})${d.newer==="op"?" 🆕新":""}・${fmtT(d.opAt)}</span><b>${esc(d.op||"(空)")}</b></div></div>
+        <div class="mm-hint">${d.newer==="ss"?"→ フォーム回答の方が新しい＝お客様が後で変更。SS(フォーム)を採用する可能性が高い":d.newer==="op"?"→ OPの方が新しい＝スタッフが後から"+(d.opSrc==="manual"?"手動で":"")+"変更。意図的な上書きかも(電話確認済み等)。安易にSSへ戻さない":"→ 新旧が判定できません。両方を確認してください"}</div>
+      </div>
     </div>`).join("")}
     ${formReanswer().map(fr=>fr.mismatch?`<div class="reanswer mm">
       <div class="ra-h">🔴 相違あり — OP(タスク)とフォーム回答が不一致（要判断）</div>
