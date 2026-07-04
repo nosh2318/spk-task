@@ -798,22 +798,32 @@ function histLineA(c,name){
   const FL={del_place:"お届け場所",col_place:"回収場所",lend_time:"お届け時間",return_time:"回収時間",option:"オプション",insurance:"補償",method:"受渡方法",cancel:"キャンセル"};
   const L=FL[c.field]; if(!L)return null;
   if(!["applied","requested","approved","rejected"].includes(c.status))return null;
-  const cust=(name||"お客様")+"様", staff=(c.actor?String(c.actor).split("@")[0]:"担当"), val=String(c.new_value||"");
+  const nm=(name||"お客様")+"様", actor=(c.actor?String(c.actor).split("@")[0]:"担当");
+  const val=String(c.value!=null?c.value:(c.new_value||"")), isPlace=(c.field==="del_place"||c.field==="col_place"), src=c.source||"customer_mypage";
   const P={requested:{t:"確認中",c:"#b45309",b:"#fef3c7"},approved:{t:"反映済",c:"#0e7a3b",b:"#dcfce7"},rejected:{t:"見送り",c:"#64748b",b:"#f1f5f9"}};
   let text="",pill=null;
   if(c.status==="applied"){
-    if(c.field==="del_place"||c.field==="col_place")text=`${cust}が${L}を「${val}」に変更しました`;
-    else if(c.field==="lend_time"||c.field==="return_time")text=`${cust}が${L}を ${val} に変更しました`;
-    else text=`${cust}が${L}を変更しました`;
-  }else if(c.status==="requested"){text=c.field==="cancel"?`${cust}がキャンセルを申請しました`:`${cust}が${L}の変更を依頼しました`;pill=P.requested;}
-  else if(c.status==="approved"){text=c.field==="cancel"?`${staff}が${cust}のキャンセルを承認しました`:`${staff}が${cust}の${L}変更を承認・反映しました`;pill=P.approved;}
-  else if(c.status==="rejected"){text=c.field==="cancel"?`${staff}が${cust}のキャンセル申請を見送りました`:`${staff}が${cust}の${L}変更を見送りました`;pill=P.rejected;}
-  return {date:hDateA(c.created_at),text:esc(text),pill:pill?pill.t:null,pc:pill?pill.c:"",pb:pill?pill.b:""};
+    const who=src==="customer_form"?`${nm}がフォームで`:(src==="staff"?`${actor}が`:`${nm}がマイページで`);
+    const suf=src==="customer_form"?"にしました":"に変更しました";
+    if(c.field==="cancel")text=`${who}キャンセルしました`;
+    else if(isPlace)text=`${who}${L}を「${val}」${suf}`;
+    else text=`${who}${L}を ${val} ${suf}`;
+  }else if(c.status==="requested"){text=c.field==="cancel"?`${nm}がキャンセルを申請しました`:`${nm}が${L}の変更を依頼しました`;pill=P.requested;}
+  else if(c.status==="approved"){text=c.field==="cancel"?`${actor}が${nm}のキャンセルを承認しました`:`${actor}が${nm}の${L}変更を承認・反映しました`;pill=P.approved;}
+  else if(c.status==="rejected"){text=c.field==="cancel"?`${actor}が${nm}のキャンセル申請を見送りました`:`${actor}が${nm}の${L}変更を見送りました`;pill=P.rejected;}
+  return {date:hDateA(c.at||c.created_at),text:esc(text),pill:pill?pill.t:null,pc:pill?pill.c:"",pb:pill?pill.b:""};
 }
 function openHistory(){
   const nameOf=id=>{const r=RES.find(x=>x.id===id);return r?r.name:""};
-  const rows=Object.values(CHG).flat().slice().sort((a,b)=>String(b.created_at||"").localeCompare(String(a.created_at||""))).slice(0,60);
-  const lines=rows.map(c=>histLineA(c,nameOf(c.reservation_id))).filter(Boolean);
+  const items=[];
+  Object.values(CHG).flat().forEach(c=>items.push({field:c.field,value:c.new_value,at:c.created_at,source:c.source==="staff"?"staff":"customer_mypage",status:c.status,actor:c.actor,rid:c.reservation_id}));
+  // OPタスク由来（フォーム回答・担当編集の場所）＝確定時刻が正確なものだけ。マイページ即時分(customer)はCHGと重複するので除外。
+  Object.entries(PLACE_MAP).forEach(([rid,p])=>{
+    const ev=(place,at,srcp,exact,field)=>{if(place&&at&&exact&&srcp!=="customer")items.push({field,value:place,at,source:srcp==="manual"?"staff":"customer_form",status:"applied",rid});};
+    ev(p.del,p.delAt,p.delSrc,p.delExact,"del_place"); ev(p.col,p.colAt,p.colSrc,p.colExact,"col_place");
+  });
+  items.sort((a,b)=>String(b.at||"").localeCompare(String(a.at||"")));
+  const lines=items.slice(0,120).map(c=>histLineA(c,nameOf(c.rid))).filter(Boolean).slice(0,80);
   $("#modal").style.maxWidth="640px";
   $("#modal").innerHTML=`<h3>🕘 最新の履歴</h3>
     <div style="font-size:11.5px;color:var(--sub);margin-bottom:8px">お客様・担当がマイページで行った変更／依頼の履歴（新しい順・最大60件）</div>

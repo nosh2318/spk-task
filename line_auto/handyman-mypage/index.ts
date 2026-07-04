@@ -268,6 +268,27 @@ Deno.serve(async (req) => {
     const insR = String(r.insurance || "").trim() || String(dTask?.insurance || cTask?.insurance || "").trim();
     const chg = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&order=created_at.desc&limit=10&select=field,old_value,new_value,source,status,actor,created_at`);
     const pendingCancel = chg.some((c: any) => c.field === "cancel" && c.status === "requested");
+    // 履歴：mypage_changes（依頼/承認/マイページ即時）＋ OPタスク由来（フォーム回答・担当編集の場所/時間）を統合。
+    const history: any[] = [];
+    for (const c of chg) history.push({ field: c.field, value: c.new_value, at: c.created_at, source: c.source === "staff" ? "staff" : "customer_mypage", status: c.status, actor: c.actor });
+    const pushTaskHist = (task: any, placeField: string, timeField: string) => {
+      if (!task) return;
+      let cj: any = task.changed_json; if (typeof cj === "string") { try { cj = JSON.parse(cj); } catch { cj = {}; } } cj = cj || {};
+      const src = cj._placeSource === "manual" ? "staff" : (cj._placeSource === "customer" ? "customer_mypage" : "customer_form");
+      // 場所（マイページ即時分=customerはmypage_changes側にあるので重複回避）
+      if (src !== "customer_mypage") {
+        const pv = cj._placeSource === "manual" ? (task.place || "") : (cj._ssPlace || task.place || "");
+        const pat = cj._manualPlaceAt || cj._ssPlaceAt || "";
+        if (pv && pat) history.push({ field: placeField, value: pv, at: pat, source: src, status: "applied" });
+        const tv = cj._ssTime || task.time || "";
+        const tat = cj._manualTimeAt || cj._ssTimeAt || "";
+        if (tv && tat) history.push({ field: timeField, value: tv, at: tat, source: src, status: "applied" });
+      }
+    };
+    pushTaskHist(dTask, "del_place", "lend_time");
+    pushTaskHist(cTask, "col_place", "return_time");
+    history.sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+    const historyTop = history.slice(0, 10);
     return json({
       ok: true, store: "spk", label: store.label,
       reservation: {
@@ -281,7 +302,7 @@ Deno.serve(async (req) => {
       },
       damage: { ready: damageReady, url: damageUrl },
       tracking: { active: r.kd_status === "delivering" || r.kd_status === "collecting", kd_status: r.kd_status || null, token: r.kd_track_token || null },
-      pendingCancel, recentChanges: chg,
+      pendingCancel, recentChanges: chg, history: historyTop,
     }, 200, origin);
   }
 
