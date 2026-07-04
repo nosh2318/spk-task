@@ -20,9 +20,11 @@ function cors(o: string | null) {
 }
 function json(b: unknown, s: number, o: string | null) { return new Response(JSON.stringify(b), { status: s, headers: { ...cors(o), "content-type": "application/json" } }); }
 
+// x-hdm-actor: 監査ログ(_audit_actor)が「誰が書いたか」を区別するためのヘッダ。customer:<予約番号> / staff:<email> を載せる。
+function withActor(actor?: string): Record<string, string> { return actor ? { ...H, "x-hdm-actor": actor } : H; }
 async function sbGet(t: string, q: string): Promise<any[]> { const r = await fetch(`${SB_URL}/rest/v1/${t}?${q}`, { headers: H }); if (!r.ok) { console.error(`GET ${t}`, await r.text()); return []; } return await r.json(); }
-async function sbPatch(t: string, q: string, b: unknown): Promise<boolean> { const r = await fetch(`${SB_URL}/rest/v1/${t}?${q}`, { method: "PATCH", headers: { ...H, Prefer: "return=representation" }, body: JSON.stringify(b) }); if (!r.ok) { console.error(`PATCH ${t}`, await r.text()); return false; } const d = await r.json(); return Array.isArray(d) && d.length > 0; }
-async function sbPost(t: string, b: unknown): Promise<void> { const r = await fetch(`${SB_URL}/rest/v1/${t}`, { method: "POST", headers: { ...H, Prefer: "return=minimal" }, body: JSON.stringify(b) }); if (!r.ok) console.error(`POST ${t}`, await r.text()); }
+async function sbPatch(t: string, q: string, b: unknown, actor?: string): Promise<boolean> { const r = await fetch(`${SB_URL}/rest/v1/${t}?${q}`, { method: "PATCH", headers: { ...withActor(actor), Prefer: "return=representation" }, body: JSON.stringify(b) }); if (!r.ok) { console.error(`PATCH ${t}`, await r.text()); return false; } const d = await r.json(); return Array.isArray(d) && d.length > 0; }
+async function sbPost(t: string, b: unknown, actor?: string): Promise<void> { const r = await fetch(`${SB_URL}/rest/v1/${t}`, { method: "POST", headers: { ...withActor(actor), Prefer: "return=minimal" }, body: JSON.stringify(b) }); if (!r.ok) console.error(`POST ${t}`, await r.text()); }
 
 // 顧客へLINE通知（line-push 経由。誤送信ガード・userId解決・test_mode は line-push 側で担保）
 async function pushLine(resvNo: string, message: string): Promise<void> {
@@ -99,7 +101,7 @@ function taskOptNum(t: any, key: string): number {
 
 // tasks を protect merge で同期（顧客入力を優先・memoに✅変更済マーカー）
 // 札幌tasks: PK=_id（d-/c-/w-接頭辞で種別）・reservation_id列で予約紐付け。
-async function patchTasksSpk(store: any, resId: string, delPlace: string | null, colPlace: string | null, lendTime: string | null, returnTime: string | null, labels: string[]): Promise<void> {
+async function patchTasksSpk(store: any, resId: string, delPlace: string | null, colPlace: string | null, lendTime: string | null, returnTime: string | null, labels: string[], actor?: string): Promise<void> {
   const tasks = await sbGet(store.tasks, `reservation_id=eq.${encodeURIComponent(resId)}&select=_id,place,col_place,time,memo,changed_json`);
   const stamp = nowJst(true);
   const marker = `✅変更済(${stamp}):${labels.join("・")}`;
@@ -115,12 +117,12 @@ async function patchTasksSpk(store: any, resId: string, delPlace: string | null,
     if (lendTime !== null && isDel) { patch.time = lendTime; cj._ssTime = lendTime; }
     if (returnTime !== null && isCol) { patch.time = returnTime; cj._ssTime = returnTime; }
     let m = String(t.memo || ""); if (!m.includes(marker)) m = m ? `${m} ${marker}` : marker; patch.memo = m; patch.changed_json = cj;
-    if (Object.keys(patch).length) await sbPatch(store.tasks, `_id=eq.${encodeURIComponent(String(t._id))}`, patch);
+    if (Object.keys(patch).length) await sbPatch(store.tasks, `_id=eq.${encodeURIComponent(String(t._id))}`, patch, actor);
   }
 }
 
 // 場所/時間を即時反映（reservations＋mypage_locked＋監査ログ(applied)＋tasks同期）。labels配列、失敗はnull。
-async function applyPlaceTime(store: any, r: any, resId: string, delPlace: string | null, colPlace: string | null, lendTime: string | null, returnTime: string | null, dLat: number | null, dLng: number | null, cLat: number | null, cLng: number | null): Promise<string[] | null> {
+async function applyPlaceTime(store: any, r: any, resId: string, delPlace: string | null, colPlace: string | null, lendTime: string | null, returnTime: string | null, dLat: number | null, dLng: number | null, cLat: number | null, cLng: number | null, actor?: string): Promise<string[] | null> {
   const rPatch: Record<string, unknown> = {};
   const locked = (r.mypage_locked && typeof r.mypage_locked === "object") ? { ...r.mypage_locked } : {};
   const changes: any[] = []; const labels: string[] = [];
@@ -131,10 +133,10 @@ async function applyPlaceTime(store: any, r: any, resId: string, delPlace: strin
   if (returnTime != null) { rPatch[store.returnTimeCol] = returnTime; rPatch.col_time = returnTime; mark("return_time", r.return_time, returnTime); labels.push("回収時間"); }
   if (!labels.length) return [];
   rPatch.mypage_locked = locked;
-  const ok = await sbPatch(store.resv, `id=eq.${encodeURIComponent(resId)}`, rPatch);
+  const ok = await sbPatch(store.resv, `id=eq.${encodeURIComponent(resId)}`, rPatch, actor);
   if (!ok) return null;
-  for (const c of changes) await sbPost("mypage_changes", c);
-  await patchTasksSpk(store, resId, delPlace, colPlace, lendTime, returnTime, labels);
+  for (const c of changes) await sbPost("mypage_changes", c, actor);
+  await patchTasksSpk(store, resId, delPlace, colPlace, lendTime, returnTime, labels, actor);
   return labels;
 }
 
@@ -155,6 +157,7 @@ Deno.serve(async (req) => {
     if (!who.ok) return json({ error: "スタッフ認証に失敗しました" }, 401, origin);
     const user = await who.json().catch(() => ({}));
     const actor = String(user?.email || user?.id || "staff");
+    const sAct = "staff:" + actor; // 監査ログ用（誰が＝担当個人）
     const changeId = p.change_id;
     const decision = String(p.decision || "").trim(); // approved | rejected
     if (!changeId || (decision !== "approved" && decision !== "rejected")) return json({ error: "パラメータ不正" }, 400, origin);
@@ -183,15 +186,15 @@ Deno.serve(async (req) => {
     // 承認時の実反映
     if (decision === "approved") {
       if (c.field === "insurance" && pl.insurance) {
-        await sbPatch(st0.resv, `id=eq.${encodeURIComponent(resId2)}`, { insurance: String(pl.insurance) });
+        await sbPatch(st0.resv, `id=eq.${encodeURIComponent(resId2)}`, { insurance: String(pl.insurance) }, sAct);
         const its = await sbGet(st0.tasks, `reservation_id=eq.${encodeURIComponent(resId2)}&deleted=not.is.true&select=_id`);
-        for (const t of its) await sbPatch(st0.tasks, `_id=eq.${encodeURIComponent(String(t._id))}`, { insurance: String(pl.insurance) });
+        for (const t of its) await sbPatch(st0.tasks, `_id=eq.${encodeURIComponent(String(t._id))}`, { insurance: String(pl.insurance) }, sAct);
       } else if (c.field === "option") {
         const rp: Record<string, unknown> = {};
         if (pl.opt_b != null) rp.opt_b = Number(pl.opt_b) || 0;
         if (pl.opt_c != null) rp.opt_c = Number(pl.opt_c) || 0;
         if (pl.opt_j != null) rp.opt_j = Number(pl.opt_j) || 0;
-        if (Object.keys(rp).length) await sbPatch(st0.resv, `id=eq.${encodeURIComponent(resId2)}`, rp);
+        if (Object.keys(rp).length) await sbPatch(st0.resv, `id=eq.${encodeURIComponent(resId2)}`, rp, sAct);
         // tasks(d-/c-) の changed_json._optB/_optC/_optJ も同期（OPシート表示の正本）
         const its = await sbGet(st0.tasks, `reservation_id=eq.${encodeURIComponent(resId2)}&deleted=not.is.true&select=_id,changed_json`);
         for (const t of its) {
@@ -199,7 +202,7 @@ Deno.serve(async (req) => {
           if (pl.opt_b != null) cj._optB = Number(pl.opt_b) || 0;
           if (pl.opt_c != null) cj._optC = Number(pl.opt_c) || 0;
           if (pl.opt_j != null) cj._optJ = Number(pl.opt_j) || 0;
-          await sbPatch(st0.tasks, `_id=eq.${encodeURIComponent(String(t._id))}`, { changed_json: cj, opt_c: (Number(pl.opt_c) || 0) > 0 });
+          await sbPatch(st0.tasks, `_id=eq.${encodeURIComponent(String(t._id))}`, { changed_json: cj, opt_c: (Number(pl.opt_c) || 0) > 0 }, sAct);
         }
       } else if (c.field === "del_place" || c.field === "col_place" || c.field === "lend_time" || c.field === "return_time") {
         // お届け24h以内の場所/時間 承認 → 即時反映と同じ経路で適用
@@ -208,18 +211,18 @@ Deno.serve(async (req) => {
           c.field === "col_place" ? (pl.col_place ?? null) : null,
           c.field === "lend_time" ? (pl.lend_time ?? null) : null,
           c.field === "return_time" ? (pl.return_time ?? null) : null,
-          pl.del_lat ?? null, pl.del_lng ?? null, pl.col_lat ?? null, pl.col_lng ?? null);
+          pl.del_lat ?? null, pl.del_lng ?? null, pl.col_lat ?? null, pl.col_lng ?? null, sAct);
       } else if (c.field === "cancel") {
-        await sbPatch(st0.resv, `id=eq.${encodeURIComponent(resId2)}`, { status: "cancelled" });
+        await sbPatch(st0.resv, `id=eq.${encodeURIComponent(resId2)}`, { status: "cancelled" }, sAct);
         // 配車解除＋タスク墓標（1アクション=対象のみ・復活させない）
-        await fetch(`${SB_URL}/rest/v1/${st0.fleet}?reservation_id=eq.${encodeURIComponent(resId2)}`, { method: "DELETE", headers: H });
+        await fetch(`${SB_URL}/rest/v1/${st0.fleet}?reservation_id=eq.${encodeURIComponent(resId2)}`, { method: "DELETE", headers: withActor(sAct) });
         const its = await sbGet(st0.tasks, `reservation_id=eq.${encodeURIComponent(resId2)}&deleted=not.is.true&select=_id`);
-        for (const t of its) await sbPatch(st0.tasks, `_id=eq.${encodeURIComponent(String(t._id))}`, { deleted: true });
+        for (const t of its) await sbPatch(st0.tasks, `_id=eq.${encodeURIComponent(String(t._id))}`, { deleted: true }, sAct);
       }
       // method は自由記述のため自動反映せず（スタッフが本体で対応）
     }
 
-    await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: decision, actor });
+    await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: decision, actor }, sAct);
     await notifySlack(`${decision === "approved" ? "✅ *承認*" : "🚫 *却下*"} [札幌] ${rr.name || ""}様 ${resId2}\n依頼: ${label}（${c.note || c.new_value || ""}）\n担当: ${actor}\n→ 顧客へLINE通知${c.field === "cancel" && decision === "approved" ? "＋キャンセル確定(配車解除)" : ""}`);
     return json({ ok: true, decision, field: c.field }, 200, origin);
   }
@@ -294,6 +297,7 @@ Deno.serve(async (req) => {
     const who = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${staffToken}` } });
     if (!who.ok) return json({ error: "スタッフ認証に失敗しました" }, 401, origin);
     const user = await who.json().catch(() => ({})); const actor = String(user?.email || "staff");
+    const sAct = "staff:" + actor;
     const st0 = STORES.spk;
     const rid = String(p.reservation_id || "");
     const field = String(p.field || "");
@@ -309,16 +313,16 @@ Deno.serve(async (req) => {
       else if (field === "return_time") { rp.return_time = value; rp.col_time = value; }
       else if (field.startsWith("opt")) rp[field] = Number(value) || 0;
       else rp[field] = value;
-      await sbPatch(st0.resv, `id=eq.${encodeURIComponent(rid)}`, rp);
+      await sbPatch(st0.resv, `id=eq.${encodeURIComponent(rid)}`, rp, sAct);
     } else { // op: tasksへ書いて予約情報側の値をOP/マイページに反映
-      if (field === "del_place") await patchTasksSpk(st0, rid, value, null, null, null, ["お届け場所"]);
-      else if (field === "col_place") await patchTasksSpk(st0, rid, null, value, null, null, ["回収場所"]);
-      else if (field === "lend_time") await patchTasksSpk(st0, rid, null, null, value, null, ["お届け時間"]);
-      else if (field === "return_time") await patchTasksSpk(st0, rid, null, null, null, value, ["回収時間"]);
-      else if (field === "insurance") { const its = await sbGet(st0.tasks, `reservation_id=eq.${encodeURIComponent(rid)}&deleted=not.is.true&select=_id`); for (const t of its) await sbPatch(st0.tasks, `_id=eq.${encodeURIComponent(String(t._id))}`, { insurance: value }); }
-      else if (field.startsWith("opt")) { const key = "_opt" + field.slice(4).toUpperCase(); const its = await sbGet(st0.tasks, `reservation_id=eq.${encodeURIComponent(rid)}&deleted=not.is.true&select=_id,changed_json`); for (const t of its) { let cj: any = t.changed_json; if (typeof cj === "string") { try { cj = JSON.parse(cj); } catch { cj = {}; } } cj = cj || {}; cj[key] = Number(value) || 0; await sbPatch(st0.tasks, `_id=eq.${encodeURIComponent(String(t._id))}`, { changed_json: cj, ...(field === "opt_c" ? { opt_c: (Number(value) || 0) > 0 } : {}) }); } }
+      if (field === "del_place") await patchTasksSpk(st0, rid, value, null, null, null, ["お届け場所"], sAct);
+      else if (field === "col_place") await patchTasksSpk(st0, rid, null, value, null, null, ["回収場所"], sAct);
+      else if (field === "lend_time") await patchTasksSpk(st0, rid, null, null, value, null, ["お届け時間"], sAct);
+      else if (field === "return_time") await patchTasksSpk(st0, rid, null, null, null, value, ["回収時間"], sAct);
+      else if (field === "insurance") { const its = await sbGet(st0.tasks, `reservation_id=eq.${encodeURIComponent(rid)}&deleted=not.is.true&select=_id`); for (const t of its) await sbPatch(st0.tasks, `_id=eq.${encodeURIComponent(String(t._id))}`, { insurance: value }, sAct); }
+      else if (field.startsWith("opt")) { const key = "_opt" + field.slice(4).toUpperCase(); const its = await sbGet(st0.tasks, `reservation_id=eq.${encodeURIComponent(rid)}&deleted=not.is.true&select=_id,changed_json`); for (const t of its) { let cj: any = t.changed_json; if (typeof cj === "string") { try { cj = JSON.parse(cj); } catch { cj = {}; } } cj = cj || {}; cj[key] = Number(value) || 0; await sbPatch(st0.tasks, `_id=eq.${encodeURIComponent(String(t._id))}`, { changed_json: cj, ...(field === "opt_c" ? { opt_c: (Number(value) || 0) > 0 } : {}) }, sAct); } }
     }
-    await sbPost("mypage_changes", { reservation_id: rid, store: "spk", field, old_value: "", new_value: value, source: "staff", status: "applied", actor, note: `整合統一(${target === "resv" ? "予約側を更新" : "OP側を更新"})` });
+    await sbPost("mypage_changes", { reservation_id: rid, store: "spk", field, old_value: "", new_value: value, source: "staff", status: "applied", actor, note: `整合統一(${target === "resv" ? "予約側を更新" : "OP側を更新"})` }, sAct);
     return json({ ok: true, field, value, target }, 200, origin);
   }
 
@@ -440,23 +444,24 @@ Deno.serve(async (req) => {
 
     // ---- DEL が24時間以内 → 承認制（依頼として記録・即反映しない）----
     if (delApproval) {
+      const cAct = "customer:" + resId;
       const mkReq = async (field: string, newV: string, payload: any) => {
         const ex = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.${field}&status=eq.requested&select=id&limit=1`);
-        if (ex[0]) await sbPatch("mypage_changes", `id=eq.${ex[0].id}`, { new_value: newV, payload });
-        else await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field, old_value: String((field === "del_place" ? r.del_place : r.lend_time) ?? ""), new_value: newV, source: "customer", status: "requested", note: field === "del_place" ? "お届け場所変更(24h以内)" : "お届け時間変更(24h以内)", payload });
+        if (ex[0]) await sbPatch("mypage_changes", `id=eq.${ex[0].id}`, { new_value: newV, payload }, cAct);
+        else await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field, old_value: String((field === "del_place" ? r.del_place : r.lend_time) ?? ""), new_value: newV, source: "customer", status: "requested", note: field === "del_place" ? "お届け場所変更(24h以内)" : "お届け時間変更(24h以内)", payload }, cAct);
       };
       const reqLabels: string[] = [];
       if (delPlace !== null) { await mkReq("del_place", delPlace, { del_place: delPlace, ...(dLat != null && dLng != null ? { del_lat: dLat, del_lng: dLng } : {}) }); reqLabels.push("お届け場所"); }
       if (lendTime !== null) { await mkReq("lend_time", lendTime, { lend_time: lendTime }); reqLabels.push("お届け時間"); }
       // COL も同時指定で2h超なら即時反映（DELは承認・COLは即時）
       let colLabels: string[] = [];
-      if (touchesCol) colLabels = (await applyPlaceTime(store, r, resId, null, colPlace, null, returnTime, null, null, cLat, cLng)) || [];
+      if (touchesCol) colLabels = (await applyPlaceTime(store, r, resId, null, colPlace, null, returnTime, null, null, cLat, cLng, cAct)) || [];
       await notifySlack(`🟡 *お届け変更の依頼(24h以内・承認制)* [札幌] ${r.name}様 ${resId}\n依頼: ${reqLabels.join("・")}${colLabels.length ? " ／ 即時反映:" + colLabels.join("・") : ""}\n→ 管理コンソールで承認してください（承認で反映＋顧客LINE通知）`);
       return json({ ok: true, pendingApproval: true, requested: reqLabels, updated: colLabels }, 200, origin);
     }
 
     // ---- 即時反映（DELは24h超 / COLは2h超）----
-    const labels = await applyPlaceTime(store, r, resId, delPlace, colPlace, lendTime, returnTime, dLat, dLng, cLat, cLng);
+    const labels = await applyPlaceTime(store, r, resId, delPlace, colPlace, lendTime, returnTime, dLat, dLng, cLat, cLng, "customer:" + resId);
     if (labels === null) return json({ error: "変更の保存に失敗しました" }, 500, origin);
     await notifySlack(`📝 *マイページ変更(即反映)* [札幌] ${r.name}様 ${resId}\n変更: ${labels.join("・")}\n→ お届け先:${(delPlace ?? r.del_place) || "-"} / 回収先:${(colPlace ?? r.col_place) || "-"} / 出発:${(lendTime ?? r.lend_time) || "-"} / 返却:${(returnTime ?? r.return_time) || "-"}\n※OPシートに✅変更済マーカー反映済`);
     return json({ ok: true, updated: labels }, 200, origin);
@@ -474,7 +479,7 @@ Deno.serve(async (req) => {
     if (already[0]) return json({ ok: true, alreadyRequested: true, message: "同じ内容の依頼を受付済みです" }, 200, origin);
     // 構造化ターゲット（承認時に自動反映するための値）: insurance={insurance:"NOC"} / option={opt_c:1,opt_j:0,...}
     const payload = (p.target && typeof p.target === "object") ? p.target : null;
-    await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field: reqType, old_value: "", new_value: detail, source: "customer", status: "requested", note: map[reqType], payload });
+    await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field: reqType, old_value: "", new_value: detail, source: "customer", status: "requested", note: map[reqType], payload }, "customer:" + resId);
     await notifySlack(`🟡 *${map[reqType]}の依頼* [札幌] ${r.name}様 ${resId}\n利用:${r.lend_date}〜${r.return_date} / ${r.vehicle}\n依頼内容: ${detail}\n→ 管理コンソールで対応/反映してください（即時反映されていません）`);
     return json({ ok: true, requested: true, kind: map[reqType] }, 200, origin);
   }
@@ -485,7 +490,7 @@ Deno.serve(async (req) => {
     const reason = String(p.reason || "").trim().slice(0, 200);
     const already = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.cancel&status=eq.requested&select=id&limit=1`);
     if (already[0]) return json({ ok: true, alreadyRequested: true }, 200, origin);
-    await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field: "cancel", old_value: st, new_value: "キャンセル依頼", source: "customer", status: "requested", note: reason });
+    await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field: "cancel", old_value: st, new_value: "キャンセル依頼", source: "customer", status: "requested", note: reason }, "customer:" + resId);
     await notifySlack(`🔴 *キャンセル依頼* [札幌] ${r.name}様 ${resId}\n利用:${r.lend_date}〜${r.return_date} / ${r.vehicle}\n理由:${reason || "(なし)"}\n→ 管理コンソールで承認/却下してください`);
     return json({ ok: true, requested: true }, 200, origin);
   }
