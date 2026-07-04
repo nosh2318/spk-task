@@ -250,7 +250,7 @@ async function loadAll(keepSel){
   render();
   // OPタスクから ①場所マップ(実際の場所は tasks._ssPlace) ②フォーム再回答(_ssAlert) を集める
   try{
-    const ids=RES.map(r=>r.id);const found=new Set();const pmap={};const mm=new Set();const mmmap={};
+    const ids=RES.map(r=>r.id);const found=new Set();const pmap={};
     for(let i=0;i<ids.length;i+=60){
       const chunk=ids.slice(i,i+60).map(encodeURIComponent).join(",");
       const ts=await api("tasks?reservation_id=in.("+chunk+")&select=_id,reservation_id,place,changed_json").catch(()=>[]);
@@ -261,15 +261,11 @@ async function loadAll(keepSel){
         pmap[rid]=pmap[rid]||{};
         if(kind==="d-")pmap[rid].del=disp;
         if(kind==="c-")pmap[rid].col=disp;
-        // フォーム回答(SS=_ssAlert)がある＝迷子。OP現在値(disp)とSS値が食い違えば「相違」＝要判断
-        if(cj._ssAlert&&String(cj._ssAlert).trim()){
-          found.add(rid);
-          const ss=String(cj._ssAlert).trim(),op=String(disp).trim();
-          if(ss!==op){mm.add(rid);(mmmap[rid]=mmmap[rid]||[]).push({kind:kind==="c-"?"回収先":"お届け先",op:op,ss:ss});}
-        }
+        if(cj._ssAlert&&String(cj._ssAlert).trim())found.add(rid);   // フォーム再回答(迷子)
       });
     }
-    ALERT_RES=found;PLACE_MAP=pmap;MISMATCH_RES=mm;MISMATCH_MAP=mmmap;render();
+    ALERT_RES=found;PLACE_MAP=pmap;computeMismatch();render();
+    await fetchSS();computeMismatch();render();                       // ライブSSを取得→情報相違を確定
   }catch(e){}
   if(keepSel&&SEL)selectRes(SEL,true);
 }
@@ -293,16 +289,28 @@ function isChecked(r){const ca=r.admin_checked_at;if(!ca)return false;if(stReans
 function stAck(r){return isChecked(r)}                                                              // 確認済みBOX
 let ALERT_RES=new Set();                                                                             // フォーム再回答(迷子)を持つ予約
 let PLACE_MAP={};                                                                                    // 予約→OPシートの実際の場所 {del,col}
-let MISMATCH_RES=new Set();                                                                          // OP(タスク)とSS(フォーム回答)が相違する予約
+let SS_MAP={};                                                                                       // 予約→ライブSS(フォーム実値) {del,col}
+let MISMATCH_RES=new Set();                                                                          // 情報相違: OP(タスク実値) ≠ SS(フォーム実値)
 let MISMATCH_MAP={};                                                                                 // 予約→相違明細 [{kind,op,ss}]
+const PLACE_SHEET_CSV="https://docs.google.com/spreadsheets/d/e/2PACX-1vSsixHeH7WvPEhA0BqOhFcun6DgBAeB9z11ikzRgXQcB_OxKKwWT8uCvl6Fb551nYlRmBGLj0e7OcGi/pub?gid=854005754&single=true&output=csv";
 function opPlaceOf(r){const p=PLACE_MAP[r.id]||{};return{del:String(p.del||r.del_place||"").trim(),col:String(p.col||r.col_place||"").trim()}}
-function stMismatch(r){return MISMATCH_RES.has(r.id)}                                                // 🔴 相違(OP≠SS)＝要判断
+// 場所の"芯"を抽出（全角/半角空白除去→時刻表記以降を落とす）。「札幌駅北口 9:50でいいです」→「札幌駅北口」
+function coreP(s){return String(s||"").replace(/[\s　]/g,"").replace(/\d{1,2}[:：]\d{2}.*$/,"").trim()}
+// SS(芯) と OP(芯) が実質的に食い違うか（双方向の包含で住所⇔名称のブレを許容）
+function placeConflict(ss,op){const a=coreP(ss),b=coreP(op);if(!a||!b)return false;return !(a.includes(b)||b.includes(a))}
+function stMismatch(r){return MISMATCH_RES.has(r.id)}                                                // 🔴 情報相違＝要確認・修正
 function stReanswer(r){return ALERT_RES.has(r.id)}                                                   // ⑤フォーム再回答(迷子)
+// SS_MAP と PLACE_MAP を突合して情報相違を再計算
+function computeMismatch(){const mm=new Set(),map={};RES.forEach(r=>{const ss=SS_MAP[r.id];if(!ss)return;const op=opPlaceOf(r);const list=[];if(placeConflict(ss.del,op.del))list.push({kind:"お届け先",ss:ss.del,op:op.del||"(空)"});if(placeConflict(ss.col,op.col))list.push({kind:"回収先",ss:ss.col,op:op.col||"(空)"});if(list.length){mm.add(r.id);map[r.id]=list}});MISMATCH_RES=mm;MISMATCH_MAP=map}
+// ライブSS(公開CSV)を取得して SS_MAP を作る（列: 4=予約番号,1=回答日時,8=DEL場所,11=COL場所。同一予約は回答日時が最新の行）
+async function fetchSS(){try{const resp=await fetch(PLACE_SHEET_CSV,{cache:"no-store"});if(!resp.ok)return;const rows=parseCSV(await resp.text());if(rows.length<2)return;const best={};rows.slice(1).forEach(r=>{const rid=(r[4]||"").trim();if(!rid)return;const ts=(r[1]||"").trim();if(!best[rid]||ts>best[rid].ts)best[rid]={ts,del:(r[8]||"").trim(),col:(r[11]||"").trim()}});const m={};Object.entries(best).forEach(([rid,v])=>{m[rid]={del:v.del,col:v.col}});SS_MAP=m}catch(e){}}
+// 簡易CSVパーサ（引用符・改行・カンマ対応）
+function parseCSV(t){const rows=[];let f="",row=[],q=false;for(let i=0;i<t.length;i++){const c=t[i];if(q){if(c==='"'){if(t[i+1]==='"'){f+='"';i++}else q=false}else f+=c}else{if(c==='"')q=true;else if(c===","){row.push(f);f=""}else if(c==="\n"){row.push(f);rows.push(row);row=[];f=""}else if(c==="\r"){}else f+=c}}if(f!==""||row.length){row.push(f);rows.push(row)}return rows}
 function stToday(r){return r.lend_date===today()}                                                   // ⑥本日＝本日出発
 function resFlag(id){const r=(typeof id==="string")?RES.find(x=>x.id===id):id;if(!r)return"";
   if(stReanswer(r))return"reans"; if(stReq(r))return"req"; if(stUserChg(r))return"chg"; if(stMissing(r))return"miss"; return""}
 const STATUS_DEFS=[
-  {k:"mismatch",label:"🔴 相違(OP≠SS)",fn:stMismatch},
+  {k:"mismatch",label:"🔴 情報相違(SS≠OP)",fn:stMismatch},
   {k:"userchg",label:"情報変更有り",fn:stUserChg},
   {k:"ack",label:"確認済み",fn:stAck},
   {k:"noplace",label:"場所情報なし",fn:stMissing},
@@ -315,7 +323,7 @@ function statusCount(k){const d=STATUS_DEFS.find(x=>x.k===k);return d?RES.filter
 function reqTotal(){return RES.filter(stUserChg).length+RES.filter(r=>stReq(r)).length}
 /* ==== カンバン：各予約を1列に割当（優先度）==== */
 const BOARD_COLS=[
-  {k:"mismatch",label:"🔴 相違（OP≠SS）要判断",color:"#dc2626"},
+  {k:"mismatch",label:"🔴 情報相違（SS≠OP）要確認・修正",color:"#dc2626"},
   {k:"reanswer",label:"🔔 位置情報更新あり（迷子）",color:"#7c3aed"},
   {k:"req",label:"🟡 変更リクエスト",color:"#b45309"},
   {k:"userchg",label:"🔴 情報変更(未確認)",color:"#b91c1c"},
@@ -565,6 +573,11 @@ function detailHtml(){
     <div class="dst">${esc(r.status||"予約確定")}</div>
   </div>
   <div class="dbody">
+    ${(MISMATCH_MAP[r.id]||[]).map(d=>`<div class="reanswer mm">
+      <div class="ra-h">🔴 情報相違 — SS(フォーム実値)とOP(タスク実値)が不一致（要確認・修正）</div>
+      <div class="ra-b"><b>${esc(d.kind)}</b> で、お客様のフォーム(SS)とOPシートの表示が食い違っています。SSが正なら場所編集でSS値に修正してください（バグ取り期間）。
+        <div class="cmp"><div class="cmp-c ss"><span class="cmp-l">SS(フォーム)</span><b>${esc(d.ss||"(空)")}</b></div><div class="cmp-a">≠</div><div class="cmp-c op"><span class="cmp-l">OP(タスク)</span><b>${esc(d.op||"(空)")}</b></div></div></div>
+    </div>`).join("")}
     ${formReanswer().map(fr=>fr.mismatch?`<div class="reanswer mm">
       <div class="ra-h">🔴 相違あり — OP(タスク)とフォーム回答が不一致（要判断）</div>
       <div class="ra-b"><b>${esc(fr.kind)}</b> で、OPシートの現在値とお客様のフォーム回答が食い違っています。どちらが正しいか確認し、正しい場所を場所編集で確定してください。
