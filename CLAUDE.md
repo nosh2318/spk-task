@@ -150,7 +150,7 @@ my.html `insCur()` は insurance生値を3プランに寄せる：**`フル|NOC|
 - 認証：不正JWT=401・処理済み再承認=409。`mypage_changes`は authenticated に SELECT/INSERT/UPDATE 付与済（旧「未実施」解消）。秘密＝handyman-mypageに`LINEPUSH_SECRET`をsecrets登録→内部でline-push呼出（クライアントに出さない）。E2E検証済(DY00000000907・LINE未連携で安全)。
 
 ### 📖 マイページ仕様＝マニュアル（my-admin.html 内・2026-07-05）
-マイページの仕様書は **my-admin.html ヘッダー「📖 マニュアル」→モーダル**（`openManual`/`renderManual`）に常設。**👤お客様側**（閲覧範囲・変更受付ルール表・依頼後の流れ）と**🧑‍💼スタッフ側**（ボードの見方・🔔承認/却下=実反映+LINE・ステータス・カルテ・トリガー・注意）に分離。**マイページの挙動を変えたら必ずこのマニュアル(renderManualのUSER/STAFF文言)も更新**（成長型マニュアル＝マイページ版）。
+マイページの仕様書は **my-admin.html ヘッダー「📖 マニュアル」→モーダル**（`openManual`/`renderManual`）に常設。**👤お客様側**（閲覧範囲・変更受付ルール表・依頼後の流れ）と**🧑‍🔧スタッフ側**（🛠対応センター・ボードの見方・🔔承認/却下=実反映+LINE・ステータス・カルテ・トリガー・注意）に分離。**🔴 都度更新ルール（2026-07-05 オーナー指示・絶対）＝マイページ関連の修正/対応をするたびに、同じコミットで renderManual(USER/STAFF文言)も必ず更新する**（画面の使い方が変わらない内部バグ修正は除外可）。Definition of Done。
 
 ### 🕘 履歴＋🔍 整合パトロール（2026-07-05）
 - **最新の履歴**（ユーザー側my.html・管理側my-admin）：誰が・何を・いつ（日単位）。lookupが`history[]`を返す＝`mypage_changes`＋**OPタスクchanged_json由来**（`_ssPlaceAt`=お客様フォーム/`_manualPlaceAt`=担当編集/`_placeSource=customer`=マイページ）を統合。**mypage_changesが0でも既存活動で埋まる**（「履歴が出ない」の解決）。my-admin「🕘履歴」はPLACE_MAP(確定時刻が正確な場所)＋CHG統合。文言はsource別（お客様がフォームで/お客様が/担当が）。
