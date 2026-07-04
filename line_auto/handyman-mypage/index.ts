@@ -37,12 +37,15 @@ async function pushLine(resvNo: string, message: string): Promise<void> {
   } catch (e) { console.error("[line-push]", String(e)); }
 }
 
-async function notifySlack(text: string): Promise<void> {
-  // 一時ミュート（MYPAGE_SILENT=1 の間はSlack通知を出さない＝開発/テスト中の混乱防止）
-  if (Deno.env.get("MYPAGE_SILENT") === "1") { console.log("[slack muted]", text); return; }
+async function slackPost(text: string): Promise<void> {
   const token = Deno.env.get("SLACK_BOT_TOKEN"); const ch = Deno.env.get("SLACK_KEYDROP_CHANNEL") || "C08TDTPEB36";
   if (!token) { console.log("[slack skip]", text); return; }
   try { const r = await fetch("https://slack.com/api/chat.postMessage", { method: "POST", headers: { Authorization: `Bearer ${token}`, "content-type": "application/json; charset=utf-8" }, body: JSON.stringify({ channel: ch, text }) }); const d = await r.json().catch(() => ({})); if (!d.ok) console.error("[slack]", JSON.stringify(d)); } catch (e) { console.error("[slack]", String(e)); }
+}
+async function notifySlack(text: string): Promise<void> {
+  // 一時ミュート（MYPAGE_SILENT=1 の間はSlack通知を出さない＝開発/テスト中の混乱防止）
+  if (Deno.env.get("MYPAGE_SILENT") === "1") { console.log("[slack muted]", text); return; }
+  await slackPost(text);
 }
 
 // 店舗マップ（P1=spk）。那覇は resv:nha_reservations, 列エイリアスで札幌名に揃える。
@@ -218,6 +221,69 @@ Deno.serve(async (req) => {
     await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: decision, actor });
     await notifySlack(`${decision === "approved" ? "✅ *承認*" : "🚫 *却下*"} [札幌] ${rr.name || ""}様 ${resId2}\n依頼: ${label}（${c.note || c.new_value || ""}）\n担当: ${actor}\n→ 顧客へLINE通知${c.field === "cancel" && decision === "approved" ? "＋キャンセル確定(配車解除)" : ""}`);
     return json({ ok: true, decision, field: c.field }, 200, origin);
+  }
+
+  // ==== 整合パトロール: 予約情報(reservations) と マイページ/OP(tasks) が一致しているか全予約突合 ====
+  // 認証: スタッフJWT(オンデマンド) または CRON_SECRET(定期・Slackアラート)。
+  // マイページ・マイページ管理・OPシートは同じ resolve を使うので、食い違いの根＝reservations と tasks の値が競合している予約を検出する。
+  if (action === "patrol") {
+    const cronSecret = Deno.env.get("CRON_SECRET");
+    const hdrSecret = req.headers.get("x-cron-secret");
+    const bySecret = !!cronSecret && (hdrSecret === cronSecret || String(p.secret || "") === cronSecret);
+    if (!bySecret) {
+      const staffToken = String(p.staff_token || "").trim();
+      if (!staffToken) return json({ error: "認証がありません" }, 401, origin);
+      const who = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${staffToken}` } });
+      if (!who.ok) return json({ error: "スタッフ認証に失敗しました" }, 401, origin);
+    }
+    const st0 = STORES.spk;
+    const today = nowJst().slice(0, 10);
+    const resvs = await sbGet(st0.resv, `return_date=gte.${today}&status=not.in.("キャンセル",cancelled,cancel)&select=id,name,del_place,col_place,lend_time,return_time,del_time,col_time,insurance,opt_b,opt_c,opt_j&limit=1000`);
+    // tasks をまとめて取得
+    const ids = resvs.map((r: any) => r.id);
+    const taskByRes: Record<string, any[]> = {};
+    for (let i = 0; i < ids.length; i += 60) {
+      const chunk = ids.slice(i, i + 60).map((x: string) => encodeURIComponent(x)).join(",");
+      const ts = await sbGet(st0.tasks, `reservation_id=in.(${chunk})&deleted=not.is.true&select=_id,reservation_id,place,time,insurance,changed_json`);
+      for (const t of ts) (taskByRes[t.reservation_id] = taskByRes[t.reservation_id] || []).push(t);
+    }
+    const norm = (v: any) => String(v ?? "").trim();
+    const conflicts: any[] = []; let checked = 0; let okCount = 0;
+    for (const r of resvs) {
+      const tk = taskByRes[r.id] || [];
+      const dT = tk.find((t: any) => String(t._id || "").startsWith("d-"));
+      const cT = tk.find((t: any) => String(t._id || "").startsWith("c-"));
+      const rowConf: any[] = [];
+      const cmpText = (field: string, resvV: string, taskV: string) => {
+        const a = norm(resvV), b = norm(taskV);
+        if (a && b && a !== b) rowConf.push({ field, reservations: a, op: b });
+      };
+      cmpText("del_place", r.del_place, resolveTaskPlace(dT));
+      cmpText("col_place", r.col_place, resolveTaskPlace(cT));
+      cmpText("lend_time", r.lend_time || r.del_time, resolveTaskTime(dT));
+      cmpText("return_time", r.return_time || r.col_time, resolveTaskTime(cT));
+      cmpText("insurance", r.insurance, (dT?.insurance || cT?.insurance || ""));
+      // オプション（両方>0で不一致のみ）
+      const optCmp = (field: string, resvN: number, key: string) => {
+        const tN = Math.max(taskOptNum(dT, key), taskOptNum(cT, key));
+        if (resvN > 0 && tN > 0 && resvN !== tN) rowConf.push({ field, reservations: String(resvN), op: String(tN) });
+      };
+      optCmp("opt_c", Number(r.opt_c) || 0, "_optC");
+      optCmp("opt_j", Number(r.opt_j) || 0, "_optJ");
+      optCmp("opt_b", Number(r.opt_b) || 0, "_optB");
+      checked++;
+      if (rowConf.length) conflicts.push({ id: r.id, name: r.name, fields: rowConf });
+      else okCount++;
+    }
+    const report = { ok: true, checked, matched: okCount, conflictCount: conflicts.length, conflicts, at: nowJst() };
+    // 監視アラートは MYPAGE_SILENT に関係なく必ず発報（slackPost で強制）
+    if (conflicts.length > 0) {
+      const lines = conflicts.slice(0, 15).map((c: any) => `・${c.name || ""}様 ${c.id}: ${c.fields.map((f: any) => `${f.field}[予約:${f.reservations}≠OP:${f.op}]`).join(" / ")}`).join("\n");
+      await slackPost(`🔍 *マイページ整合パトロール* [札幌]\n照合${checked}件 → 一致${okCount} / *相違${conflicts.length}件*\n${lines}${conflicts.length > 15 ? `\n…他${conflicts.length - 15}件` : ""}\n※予約情報とマイページ/OPで表示が異なる可能性。管理画面で確認・修正を。`);
+    } else if (bySecret) {
+      await slackPost(`🟢 *マイページ整合パトロール* [札幌] 照合${checked}件すべて一致（予約情報＝マイページ＝OPシート）。`);
+    }
+    return json(report, 200, origin);
   }
 
   const token = String(p.token || "").trim();
