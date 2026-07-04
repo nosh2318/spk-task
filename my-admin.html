@@ -266,7 +266,7 @@ async function loadAll(keepSel){
   render();
   // OPタスクから ①場所マップ(実際の場所は tasks._ssPlace) ②フォーム再回答(_ssAlert) を集める
   try{
-    const ids=RES.map(r=>r.id);const found=new Set();const pmap={};
+    const ids=RES.map(r=>r.id);const pmap={};
     for(let i=0;i<ids.length;i+=60){
       const chunk=ids.slice(i,i+60).map(encodeURIComponent).join(",");
       const ts=await api("tasks?reservation_id=in.("+chunk+")&select=_id,reservation_id,place,changed_json,updated_at").catch(()=>[]);
@@ -279,11 +279,10 @@ async function loadAll(keepSel){
         pmap[rid]=pmap[rid]||{};
         if(kind==="d-"){pmap[rid].del=disp;pmap[rid].delAt=opAt;pmap[rid].delSrc=cj._placeSource||"";}
         if(kind==="c-"){pmap[rid].col=disp;pmap[rid].colAt=opAt;pmap[rid].colSrc=cj._placeSource||"";}
-        if(cj._ssAlert&&String(cj._ssAlert).trim())found.add(rid);   // フォーム再回答(迷子)
       });
     }
-    ALERT_RES=found;PLACE_MAP=pmap;computeMismatch();render();
-    await fetchSS();computeMismatch();render();                       // ライブSSを取得→情報相違を確定
+    PLACE_MAP=pmap;computeMismatch();render();
+    await fetchSS();computeMismatch();render();                       // ライブSS取得→情報相違(SS≠OP)＋迷子(SS再回答で値変化)を確定
   }catch(e){}
   if(keepSel&&SEL)selectRes(SEL,true);
 }
@@ -301,9 +300,9 @@ function stMissing(r){
 function stReq(r){return csOf(r).some(c=>c.status==="requested")}                                   // 変更リクエスト
 function stUserChg(r){return csOf(r).some(c=>c.source==="customer"&&c.status==="applied")}          // 情報変更有り
 // この予約の最後の"活動"時刻（変更/依頼の作成時刻。迷子は活動扱い＝常に要確認）
-function lastActivityAt(r){let t="";csOf(r).forEach(c=>{if((c.created_at||"")>t)t=c.created_at});return t}
-// スタッフが確認済みにした後、新しい活動が無ければ「確認済み」
-function isChecked(r){const ca=r.admin_checked_at;if(!ca)return false;if(stReanswer(r))return false;const la=lastActivityAt(r);return !la||la<=ca}
+function lastActivityAt(r){let t="";csOf(r).forEach(c=>{if((c.created_at||"")>t)t=c.created_at});const ss=SS_MAP[r.id];if(ss&&ss.ts){const ms=ssTimeMs(ss.ts);if(!isNaN(ms)){const iso=new Date(ms).toISOString();if(iso>t)t=iso}}return t}
+// スタッフが確認した後、新しい活動(変更/フォーム再回答)が無ければ「確認済み」。迷子も確認後(admin_checked_at≧最新フォーム回答)なら消える
+function isChecked(r){const ca=r.admin_checked_at;if(!ca)return false;const la=lastActivityAt(r);return !la||la<=ca}
 function stAck(r){return isChecked(r)}                                                              // 確認済みBOX
 let ALERT_RES=new Set();                                                                             // フォーム再回答(迷子)を持つ予約
 let PLACE_MAP={};                                                                                    // 予約→OPシートの実際の場所 {del,col}
@@ -323,9 +322,9 @@ function ssTimeMs(s){if(!s)return NaN;const m=String(s).match(/(\d{4})\/(\d{1,2}
 function fmtT(ms){if(isNaN(ms))return"不明";const d=new Date(ms);return (d.getMonth()+1)+"/"+d.getDate()+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0")}
 function mkDiff(kind,ss,op,ssMs,opAt,opSrc){const opMs=opAt?Date.parse(opAt):NaN;let newer="?";if(!isNaN(ssMs)&&!isNaN(opMs))newer=ssMs>opMs?"ss":"op";return{kind:kind,ss:ss,op:op||"(空)",ssAt:ssMs,opAt:opMs,opSrc:opSrc||"",newer:newer}}
 // SS_MAP と PLACE_MAP を突合して情報相違を再計算（新旧＝時系列も判定）
-function computeMismatch(){const mm=new Set(),map={};RES.forEach(r=>{const ss=SS_MAP[r.id];if(!ss)return;const p=PLACE_MAP[r.id]||{};const op=opPlaceOf(r);const ssMs=ssTimeMs(ss.ts);const list=[];if(placeConflict(ss.del,op.del))list.push(mkDiff("お届け先",ss.del,op.del,ssMs,p.delAt,p.delSrc));if(placeConflict(ss.col,op.col))list.push(mkDiff("回収先",ss.col,op.col,ssMs,p.colAt,p.colSrc));if(list.length){mm.add(r.id);map[r.id]=list}});MISMATCH_RES=mm;MISMATCH_MAP=map}
+function computeMismatch(){const mm=new Set(),map={},al=new Set();RES.forEach(r=>{const ss=SS_MAP[r.id];if(!ss)return;if(ss.prevDel||ss.prevCol)al.add(r.id);const p=PLACE_MAP[r.id]||{};const op=opPlaceOf(r);const ssMs=ssTimeMs(ss.ts);const list=[];if(placeConflict(ss.del,op.del))list.push(mkDiff("お届け先",ss.del,op.del,ssMs,p.delAt,p.delSrc));if(placeConflict(ss.col,op.col))list.push(mkDiff("回収先",ss.col,op.col,ssMs,p.colAt,p.colSrc));if(list.length){mm.add(r.id);map[r.id]=list}});MISMATCH_RES=mm;MISMATCH_MAP=map;ALERT_RES=al}
 // ライブSS(公開CSV)を取得して SS_MAP を作る（列: 4=予約番号,1=回答日時,8=DEL場所,11=COL場所。同一予約は回答日時が最新の行）
-async function fetchSS(){try{const resp=await fetch(PLACE_SHEET_CSV,{cache:"no-store"});if(!resp.ok)return;const rows=parseCSV(await resp.text());if(rows.length<2)return;const byId={};rows.slice(1).forEach(r=>{const rid=(r[4]||"").trim();if(!rid)return;(byId[rid]=byId[rid]||[]).push({ts:(r[1]||"").trim(),del:(r[8]||"").trim(),col:(r[11]||"").trim()})});const m={};Object.entries(byId).forEach(([rid,arr])=>{arr.sort((a,b)=>a.ts<b.ts?1:(a.ts>b.ts?-1:0));const cur=arr[0]||{};const pd=arr.find(x=>x!==cur&&x.del&&x.del!==cur.del);const pc=arr.find(x=>x!==cur&&x.col&&x.col!==cur.col);m[rid]={del:cur.del,col:cur.col,ts:cur.ts,prevDel:pd?pd.del:"",prevDelTs:pd?pd.ts:"",prevCol:pc?pc.col:"",prevColTs:pc?pc.ts:""}});SS_MAP=m}catch(e){}}
+async function fetchSS(){try{const resp=await fetch(PLACE_SHEET_CSV,{cache:"no-store"});if(!resp.ok)return;const rows=parseCSV(await resp.text());if(rows.length<2)return;const byId={};rows.slice(1).forEach(r=>{const rid=(r[4]||"").trim();if(!rid)return;(byId[rid]=byId[rid]||[]).push({ts:(r[1]||"").trim(),del:(r[8]||"").trim(),col:(r[11]||"").trim()})});const m={};Object.entries(byId).forEach(([rid,arr])=>{arr.sort((a,b)=>a.ts<b.ts?1:(a.ts>b.ts?-1:0));const pick=(f)=>{const ne=arr.filter(x=>x[f]);const cur=ne[0];if(!cur)return{val:"",at:"",prev:"",prevAt:""};const pv=ne.find(x=>x!==cur&&x[f]!==cur[f]);return{val:cur[f],at:cur.ts,prev:pv?pv[f]:"",prevAt:pv?pv.ts:""}};const d=pick("del"),c=pick("col");m[rid]={del:d.val,delTs:d.at,prevDel:d.prev,prevDelTs:d.prevAt,col:c.val,colTs:c.at,prevCol:c.prev,prevColTs:c.prevAt,ts:(d.at>c.at?d.at:c.at)}});SS_MAP=m}catch(e){}}
 // 簡易CSVパーサ（引用符・改行・カンマ対応）
 function parseCSV(t){const rows=[];let f="",row=[],q=false;for(let i=0;i<t.length;i++){const c=t[i];if(q){if(c==='"'){if(t[i+1]==='"'){f+='"';i++}else q=false}else f+=c}else{if(c==='"')q=true;else if(c===","){row.push(f);f=""}else if(c==="\n"){row.push(f);rows.push(row);row=[];f=""}else if(c==="\r"){}else f+=c}}if(f!==""||row.length){row.push(f);rows.push(row)}return rows}
 function stToday(r){return r.lend_date===today()}                                                   // ⑥本日＝本日出発
@@ -466,18 +465,11 @@ async function selectRes(id,silent){
 }
 function opDisp(t){let cj={};try{cj=JSON.parse(t.changed_json||"{}")}catch(e){}return cj._placeSource==="manual"?t.place:(cj._ssPlace||t.place||"")}
 function _cj(t){try{return JSON.parse(t.changed_json||"{}")}catch(e){return {}}}
-// フォーム再回答検知(_ssAlert)をカルテに出す
+// フォーム再回答＝SS履歴で「前回値(非空)と異なる値に変わった」場合のみ迷子として出す（1回のみ=正常）
 function formReanswer(){
-  if(!SELTASKS)return[];const out=[];
-  const ssRow=SS_MAP[SEL]||{};const formAt=ssTimeMs(ssRow.ts);
-  SELTASKS.forEach(t=>{const cj=_cj(t);if(cj._ssAlert&&String(cj._ssAlert).trim()){
-    const isCol=String(t._id).slice(0,2)==="c-";
-    const opVal=(cj._placeSource==="manual"?t.place:(cj._ssPlace||t.place))||"";
-    const ss=String(cj._ssAlert);
-    const mismatch=String(opVal).trim()!==ss.trim();  // OP(タスク)現在値 ≠ SS(フォーム回答) ＝相違
-    const ssAt=cj._ssPlaceAt?Date.parse(cj._ssPlaceAt):NaN;  // OP反映時刻
-    const prevVal=isCol?ssRow.prevCol:ssRow.prevDel;const prevAt=ssTimeMs(isCol?ssRow.prevColTs:ssRow.prevDelTs);  // フォーム前回値
-    out.push({kind:isCol?"回収先":"お届け先",field:isCol?"col_place":"del_place",val:ss,opVal:String(opVal),mismatch:mismatch,taskId:t._id,formAt:formAt,ssAt:ssAt,prevVal:prevVal||"",prevAt:prevAt});}});
+  const ss=SS_MAP[SEL];if(!ss)return[];const r=RES.find(x=>x.id===SEL)||{id:SEL};const op=opPlaceOf(r);const out=[];
+  if(ss.prevDel)out.push({kind:"お届け先",field:"del_place",prevVal:ss.prevDel,prevAt:ssTimeMs(ss.prevDelTs),val:ss.del,formAt:ssTimeMs(ss.delTs),applied:!placeConflict(ss.del,op.del)});
+  if(ss.prevCol)out.push({kind:"回収先",field:"col_place",prevVal:ss.prevCol,prevAt:ssTimeMs(ss.prevColTs),val:ss.col,formAt:ssTimeMs(ss.colTs),applied:!placeConflict(ss.col,op.col)});
   return out;
 }
 async function patchTaskCj(taskId,patchObj){
@@ -606,14 +598,14 @@ function detailHtml(){
       </div>
       <div class="verdict ${d.newer==="?"?"unk":d.newer}">${d.newer==="op"?"🆕 OPが新しい → 後からの手動変更＝意図的かも。SSへ戻さない":d.newer==="ss"?"🆕 フォームが新しい → 客が後で変更＝SS採用が有力":"⚠️ 新旧不明 → 両方を確認"}</div>
     </div>`).join("")}
-    ${formReanswer().filter(fr=>!fr.mismatch).map(fr=>`<div class="reanswer">
-      <div class="ra-h">🔔 位置情報更新・${esc(fr.kind)}</div>
+    ${formReanswer().filter(fr=>fr.applied).map(fr=>`<div class="reanswer">
+      <div class="ra-h">🔔 フォーム再回答・${esc(fr.kind)}（お客様が変更）</div>
       <div class="dft">
-        <div class="dft-r"><span class="dft-l">変更前</span><span class="dft-t">${fr.prevVal?fmtT(fr.prevAt):""}</span><span class="dft-v old">${fr.prevVal?esc(fr.prevVal):"（以前の記録なし・初回回答）"}</span></div>
+        <div class="dft-r"><span class="dft-l">変更前</span><span class="dft-t">${fmtT(fr.prevAt)}</span><span class="dft-v old">${esc(fr.prevVal)}</span></div>
         <div class="dft-r nw"><span class="dft-l">変更後</span><span class="dft-t">${fmtT(fr.formAt)} 🆕</span><span class="dft-v">${esc(fr.val)}</span></div>
       </div>
-      <div class="okline">✅ OPに自動反映済み（${!isNaN(fr.ssAt)?fmtT(fr.ssAt)+"）":"）"}</div>
-      <div class="acts"><button class="btn ghost" onclick="dismissReanswer('${fr.taskId}')">✅ 確認済み（消す）</button></div>
+      <div class="okline">✅ OPに反映済み（値は一致）</div>
+      <div class="acts"><button class="btn ghost" onclick="checkRes('${r.id}')">✅ 確認済み</button></div>
     </div>`).join("")}
     ${changeCompare(r)}
     ${mm.length?`<div class="warn"><b>⚠️ 場所の食い違い（予約正本 ⇄ OPシート）</b>
