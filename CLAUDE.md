@@ -20,7 +20,8 @@
 3. **Supabase自動バックアップ(既存)**：日次7日分(walg有効・**PITR OFF**)。→ **PITR ONにすれば"障害N時間前の任意秒"にDB全体復元可**(有料・ダッシュボード)。今は日次単位=最大〜24hズレ。
 - 補足：opsheet-offline.html(当日配車の単独PWA)も作ったが**本命は①**(5画面を作り直さず既存画面がそのまま生きる)。
 - **区別**：①=障害中も"止めない"(読取継続)／②③=壊れた後に"復旧"。**復元はDBが生きている前提＝障害の最中は使えない**。今日困ったのは①。
-- **残**：NHA(index.html.bak)へ同オフラインキャッシュ展開(未)／Mac起動中のみ稼働の穴→GAS版(Google基盤24h)は将来／PITR ON判断はオーナー。
+- **✅ 3店とも展開完了（2026-07-04）**：SPK v4.7.370 / NHA v3.5.253-NHA(~/Desktop/AI/naha-project・55ae18f) / BT v1.0.111-BT(~/buddica-touring/app・1a28e21)。全店 `{store}_reservations_cache`/`{store}_vehicles_cache` 追加（fleet=`_fleetLsKey`・tasks=`_lsKey`は元から実装済＝5画面フル対応）。NHA/BTは`fetchReservations`が`fetchAllRows`(ページネーション)なのでtry/catch＋DB空時もキャッシュfallback。fetchVehiclesは成功時`_vm`変数化して`_vehLsSave`。**書込は一切不変(低リスク)**。ビルド＝NHA/BTは`node build.js`後にBASE_V(index.html)も+1。SPKはCV＋APP_VERSION＋sw.js?v。
+- **残（オーナー判断/将来）**：Mac起動中のみ稼働の穴→GAS版バックアップ(Google基盤24h)／Supabase PITR ON(有料・任意秒復元)／opsheet-offline.htmlは本命①の補助。
 
 ## 🃏 2026-07-04 my-admin.html（マイページ管理コンソール）ステータス定義とデータ照合の確定メモ
 **オーナー確認済みの定義。my-adminのボード/フィルタを触る時はこれを基準にする。**
@@ -128,7 +129,7 @@ my.html `insCur()` は insurance生値を3プランに寄せる：**`フル|NOC|
 ### Edge Function アクション
 - **decide**（staff_token＝本体JWT・change_id・decision）：承認/却下→実反映＋顧客LINE＋Slack（管理者用・上記）。
 - **lookup**（token）：予約表示＋傷チェックgate＋追跡状態＋直近変更。**場所/時間はOPタスク(d-/c-)から解決（上記）**。傷チェックは**出発日8:00解禁**（`lend_date<today || (==today && hh>=8)`）、fleet→vehicles.plate_no→vehicle_twins.display_label(ilike)→share_token でURL解決(best-effort)。追跡は kd_status(delivering/collecting)＋kd_track_token返却。
-- **update**（場所/時間 即反映・24h前まで）：within24h超は`lineOnly`で「公式LINEで承ります」。reservations(正本)更新＋**mypage_lockedに印**＋`patchTasksSpk`でtasks(d-/c-)同期＋監査ログ＋Slack通知。時間はlend_time/del_time両系統。lat/lngも保存。
+- **🕒 update 受付ルール（2026-07-04 オーナー確定・変更）**：**DEL(お届け)＝24h前まで即時／24h以内は承認制**（即反映せず mypage_changes に field=del_place/lend_time・status=requested・payloadで記録→Slack→管理画面で承認→`applyPlaceTime`で反映＋顧客LINE）。**COL(回収)＝2h前まで即時／2h以内は受付終了(`lineOnly`)**。DEL承認・COL即時の混在時はDELのみ依頼化・COL即時。判定はDEL=lend/COL=return日時で別(`withinHours`)。応答：即時=`{ok,updated}`／DEL承認待ち=`{ok,pendingApproval,requested}`／COL2h内=`{lineOnly}`。即時反映は`applyPlaceTime`(reservations＋mypage_locked＋監査ログapplied＋`patchTasksSpk`)。decideは del_place/col_place/lend_time/return_time の承認適用に対応。旧「両方24h一律lineOnly」は廃止。
 - **request**（req_type=option|method|insurance・即反映しない依頼）：mypage_changes(status=requested)＋Slack。同内容の重複依頼はブロック。
 - **cancel_request**（即削除しない＝OTA安全側・スタッフ承認制）：mypage_changes(field=cancel,status=requested)＋Slack。再申請防止。
 

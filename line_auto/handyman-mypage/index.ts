@@ -56,13 +56,14 @@ const STORES: Record<string, any> = {
 
 // 営業時間内・30分刻み（9:00〜19:00）
 function validTime(t: string): boolean { const m = /^(\d{1,2}):(\d{2})$/.exec(t); if (!m) return false; const h = +m[1], mi = +m[2]; if (mi % 30 !== 0) return false; const v = h * 60 + mi; return v >= 540 && v <= 1140; }
-// 出発24時間以内か（JST基準・雑に安全側）
-function within24h(lendDate: string, lendTime: string): boolean {
-  if (!lendDate) return false;
-  const t = (lendTime && /^\d{1,2}:\d{2}$/.test(lendTime)) ? lendTime : "09:00";
-  const dep = new Date(`${lendDate}T${t}:00+09:00`).getTime();
-  return (dep - Date.now()) < 24 * 3600 * 1000;
+// 基準日時まで hours 時間以内か（JST基準・雑に安全側）。日付なしは false（=まだ余裕あり扱い）。
+function withinHours(date: string, time: string, hours: number): boolean {
+  if (!date) return false;
+  const t = (time && /^\d{1,2}:\d{2}$/.test(time)) ? time : "09:00";
+  const dep = new Date(`${date}T${t}:00+09:00`).getTime();
+  return (dep - Date.now()) < hours * 3600 * 1000;
 }
+function within24h(lendDate: string, lendTime: string): boolean { return withinHours(lendDate, lendTime, 24); }
 function nowJst(slice = false): string { const s = new Date(Date.now() + 9 * 3600 * 1000).toISOString(); return slice ? s.slice(5, 16).replace("T", " ") : s.replace("Z", "+09:00"); }
 
 // OPシート/my-admin と同一の場所解決式。SPKでは実際の場所は reservations でなく tasks(changed_json._ssPlace) にある。
@@ -114,6 +115,25 @@ async function patchTasksSpk(store: any, resId: string, delPlace: string | null,
   }
 }
 
+// 場所/時間を即時反映（reservations＋mypage_locked＋監査ログ(applied)＋tasks同期）。labels配列、失敗はnull。
+async function applyPlaceTime(store: any, r: any, resId: string, delPlace: string | null, colPlace: string | null, lendTime: string | null, returnTime: string | null, dLat: number | null, dLng: number | null, cLat: number | null, cLng: number | null): Promise<string[] | null> {
+  const rPatch: Record<string, unknown> = {};
+  const locked = (r.mypage_locked && typeof r.mypage_locked === "object") ? { ...r.mypage_locked } : {};
+  const changes: any[] = []; const labels: string[] = [];
+  const mark = (f: string, oldV: any, newV: any) => { locked[f] = { at: nowJst(), by: "customer" }; changes.push({ reservation_id: resId, store: "spk", field: f, old_value: String(oldV ?? ""), new_value: String(newV ?? ""), source: "customer", status: "applied" }); };
+  if (delPlace != null) { rPatch.del_place = delPlace; if (dLat != null && dLng != null) { rPatch.del_lat = dLat; rPatch.del_lng = dLng; } mark("del_place", r.del_place, delPlace); labels.push("お届け場所"); }
+  if (colPlace != null) { rPatch.col_place = colPlace; if (cLat != null && cLng != null) { rPatch.col_lat = cLat; rPatch.col_lng = cLng; } mark("col_place", r.col_place, colPlace); labels.push("回収場所"); }
+  if (lendTime != null) { rPatch[store.lendTimeCol] = lendTime; rPatch.del_time = lendTime; mark("lend_time", r.lend_time, lendTime); labels.push("お届け時間"); }
+  if (returnTime != null) { rPatch[store.returnTimeCol] = returnTime; rPatch.col_time = returnTime; mark("return_time", r.return_time, returnTime); labels.push("回収時間"); }
+  if (!labels.length) return [];
+  rPatch.mypage_locked = locked;
+  const ok = await sbPatch(store.resv, `id=eq.${encodeURIComponent(resId)}`, rPatch);
+  if (!ok) return null;
+  for (const c of changes) await sbPost("mypage_changes", c);
+  await patchTasksSpk(store, resId, delPlace, colPlace, lendTime, returnTime, labels);
+  return labels;
+}
+
 Deno.serve(async (req) => {
   const origin = req.headers.get("origin");
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors(origin) });
@@ -140,9 +160,9 @@ Deno.serve(async (req) => {
     if (!c) return json({ error: "依頼が見つかりません" }, 404, origin);
     if (c.status !== "requested") return json({ error: "この依頼は既に処理済みです" }, 409, origin);
     const resId2 = String(c.reservation_id);
-    const rr = (await sbGet(st0.resv, `id=eq.${encodeURIComponent(resId2)}&select=id,name,vehicle,lend_date,return_date,mypage_token`))[0] || {};
+    const rr = (await sbGet(st0.resv, `id=eq.${encodeURIComponent(resId2)}&select=id,name,vehicle,lend_date,return_date,lend_time,return_time,del_place,col_place,mypage_locked,mypage_token`))[0] || {};
     const myUrl = rr.mypage_token ? `https://nosh2318.github.io/spk-task/my.html?t=${rr.mypage_token}` : "";
-    const kindJp: Record<string, string> = { option: "オプション", insurance: "補償", method: "受渡方法", cancel: "キャンセル" };
+    const kindJp: Record<string, string> = { option: "オプション", insurance: "補償", method: "受渡方法", cancel: "キャンセル", del_place: "お届け場所", col_place: "回収場所", lend_time: "お届け時間", return_time: "回収時間" };
     const label = kindJp[c.field] || c.field;
     const pl = (c.payload && typeof c.payload === "object") ? c.payload : {};
 
@@ -177,6 +197,14 @@ Deno.serve(async (req) => {
           if (pl.opt_j != null) cj._optJ = Number(pl.opt_j) || 0;
           await sbPatch(st0.tasks, `_id=eq.${encodeURIComponent(String(t._id))}`, { changed_json: cj, opt_c: (Number(pl.opt_c) || 0) > 0 });
         }
+      } else if (c.field === "del_place" || c.field === "col_place" || c.field === "lend_time" || c.field === "return_time") {
+        // お届け24h以内の場所/時間 承認 → 即時反映と同じ経路で適用
+        await applyPlaceTime(st0, rr, resId2,
+          c.field === "del_place" ? (pl.del_place ?? null) : null,
+          c.field === "col_place" ? (pl.col_place ?? null) : null,
+          c.field === "lend_time" ? (pl.lend_time ?? null) : null,
+          c.field === "return_time" ? (pl.return_time ?? null) : null,
+          pl.del_lat ?? null, pl.del_lng ?? null, pl.col_lat ?? null, pl.col_lng ?? null);
       } else if (c.field === "cancel") {
         await sbPatch(st0.resv, `id=eq.${encodeURIComponent(resId2)}`, { status: "cancelled" });
         // 配車解除＋タスク墓標（1アクション=対象のみ・復活させない）
@@ -272,33 +300,42 @@ Deno.serve(async (req) => {
     // （本日お届けでも回収が数日後なら回収の変更は可能）
     const touchesDel = delPlace !== null || lendTime !== null;
     const touchesCol = colPlace !== null || returnTime !== null;
-    if (touchesDel && within24h(r.lend_date, r.lend_time || r.del_time || "")) return json({ error: "お届けの24時間前を過ぎているため、お届けの変更は公式LINEにて承ります", lineOnly: true }, 409, origin);
-    if (touchesCol && within24h(r.return_date, r.return_time || r.col_time || "")) return json({ error: "回収の24時間前を過ぎているため、回収の変更は公式LINEにて承ります", lineOnly: true }, 409, origin);
     if (delPlace !== null && delPlace.length < 2) return json({ error: "お届け場所が不正です" }, 400, origin);
     if (colPlace !== null && colPlace.length < 2) return json({ error: "回収場所が不正です" }, 400, origin);
     if (lendTime !== null && !validTime(lendTime)) return json({ error: "お届け時間は9:00〜19:00（30分刻み）で指定してください" }, 400, origin);
     if (returnTime !== null && !validTime(returnTime)) return json({ error: "回収時間は9:00〜19:00（30分刻み）で指定してください" }, 400, origin);
     if (delPlace === null && colPlace === null && lendTime === null && returnTime === null) return json({ error: "変更内容がありません" }, 400, origin);
 
-    const rPatch: Record<string, unknown> = {};
-    const locked = (r.mypage_locked && typeof r.mypage_locked === "object") ? { ...r.mypage_locked } : {};
-    const changes: any[] = []; const labels: string[] = [];
-    const mark = (f: string, oldV: any, newV: any) => { locked[f] = { at: nowJst(), by: "customer" }; changes.push({ reservation_id: resId, store: "spk", field: f, old_value: String(oldV ?? ""), new_value: String(newV ?? ""), source: "customer", status: "applied" }); };
-    // 緯度経度（地図ピンで確定した座標・任意）
+    // 受付ルール（2026-07-04 オーナー確定）:
+    //  DEL(お届け): 24時間前まで即時。24時間以内は「承認制」(依頼→スタッフ承認で反映)。
+    //  COL(回収):   2時間前まで即時。2時間以内は受付終了(公式LINE)。
     const num = (k: string) => (has(k) && p[k] != null && p[k] !== "") ? Number(p[k]) : null;
     const dLat = num("del_lat"), dLng = num("del_lng"), cLat = num("col_lat"), cLng = num("col_lng");
-    if (delPlace !== null) { rPatch.del_place = delPlace; if (dLat != null && dLng != null) { rPatch.del_lat = dLat; rPatch.del_lng = dLng; } mark("del_place", r.del_place, delPlace); labels.push("お届け場所"); }
-    if (colPlace !== null) { rPatch.col_place = colPlace; if (cLat != null && cLng != null) { rPatch.col_lat = cLat; rPatch.col_lng = cLng; } mark("col_place", r.col_place, colPlace); labels.push("回収場所"); }
-    if (lendTime !== null) { rPatch[store.lendTimeCol] = lendTime; rPatch.del_time = lendTime; mark("lend_time", r.lend_time, lendTime); labels.push("お届け時間"); }
-    if (returnTime !== null) { rPatch[store.returnTimeCol] = returnTime; rPatch.col_time = returnTime; mark("return_time", r.return_time, returnTime); labels.push("回収時間"); }
-    rPatch.mypage_locked = locked;
+    const delApproval = touchesDel && within24h(r.lend_date, r.lend_time || r.del_time || "");
+    if (touchesCol && withinHours(r.return_date, r.return_time || r.col_time || "", 2))
+      return json({ error: "回収の2時間前を過ぎているため、回収の変更は公式LINEにて承ります", lineOnly: true }, 409, origin);
 
-    const ok = await sbPatch(store.resv, `id=eq.${encodeURIComponent(resId)}`, rPatch);
-    if (!ok) return json({ error: "変更の保存に失敗しました" }, 500, origin);
-    // 監査ログ（追記）＋ tasks 同期（protect）
-    for (const c of changes) await sbPost("mypage_changes", c);
-    await patchTasksSpk(store, resId, delPlace, colPlace, lendTime, returnTime, labels);
-    await notifySlack(`📝 *マイページ変更(即反映)* [札幌] ${r.name}様 ${resId}\n変更: ${labels.join("・")}\n→ お届け先:${(rPatch.del_place ?? r.del_place) || "-"} / 回収先:${(rPatch.col_place ?? r.col_place) || "-"} / 出発:${(rPatch.del_time ?? r.lend_time) || "-"} / 返却:${(rPatch.col_time ?? r.return_time) || "-"}\n※OPシートに✅変更済マーカー反映済`);
+    // ---- DEL が24時間以内 → 承認制（依頼として記録・即反映しない）----
+    if (delApproval) {
+      const mkReq = async (field: string, newV: string, payload: any) => {
+        const ex = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.${field}&status=eq.requested&select=id&limit=1`);
+        if (ex[0]) await sbPatch("mypage_changes", `id=eq.${ex[0].id}`, { new_value: newV, payload });
+        else await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field, old_value: String((field === "del_place" ? r.del_place : r.lend_time) ?? ""), new_value: newV, source: "customer", status: "requested", note: field === "del_place" ? "お届け場所変更(24h以内)" : "お届け時間変更(24h以内)", payload });
+      };
+      const reqLabels: string[] = [];
+      if (delPlace !== null) { await mkReq("del_place", delPlace, { del_place: delPlace, ...(dLat != null && dLng != null ? { del_lat: dLat, del_lng: dLng } : {}) }); reqLabels.push("お届け場所"); }
+      if (lendTime !== null) { await mkReq("lend_time", lendTime, { lend_time: lendTime }); reqLabels.push("お届け時間"); }
+      // COL も同時指定で2h超なら即時反映（DELは承認・COLは即時）
+      let colLabels: string[] = [];
+      if (touchesCol) colLabels = (await applyPlaceTime(store, r, resId, null, colPlace, null, returnTime, null, null, cLat, cLng)) || [];
+      await notifySlack(`🟡 *お届け変更の依頼(24h以内・承認制)* [札幌] ${r.name}様 ${resId}\n依頼: ${reqLabels.join("・")}${colLabels.length ? " ／ 即時反映:" + colLabels.join("・") : ""}\n→ 管理コンソールで承認してください（承認で反映＋顧客LINE通知）`);
+      return json({ ok: true, pendingApproval: true, requested: reqLabels, updated: colLabels }, 200, origin);
+    }
+
+    // ---- 即時反映（DELは24h超 / COLは2h超）----
+    const labels = await applyPlaceTime(store, r, resId, delPlace, colPlace, lendTime, returnTime, dLat, dLng, cLat, cLng);
+    if (labels === null) return json({ error: "変更の保存に失敗しました" }, 500, origin);
+    await notifySlack(`📝 *マイページ変更(即反映)* [札幌] ${r.name}様 ${resId}\n変更: ${labels.join("・")}\n→ お届け先:${(delPlace ?? r.del_place) || "-"} / 回収先:${(colPlace ?? r.col_place) || "-"} / 出発:${(lendTime ?? r.lend_time) || "-"} / 返却:${(returnTime ?? r.return_time) || "-"}\n※OPシートに✅変更済マーカー反映済`);
     return json({ ok: true, updated: labels }, 200, origin);
   }
 
