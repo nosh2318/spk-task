@@ -356,6 +356,10 @@ function computeResvConf(){
   });
 }
 function stResvConf(r){return !!RESV_CONF[(typeof r==="string"?r:r.id)]}
+// フォーム履歴（SS回答）があるか。予約≠OP の差は「フォーム済なら正常／未なら異常値の疑い」で判断する。
+function stFormDone(r){const s=SS_MAP[(typeof r==="string"?r:r.id)];return !!(s&&(s.del||s.col||s.ts))}
+function stInfoProvided(r){if(stFormDone(r))return true;const id=(typeof r==="string"?r:r.id);return (CHG[id]||[]).some(c=>["del_place","col_place","lend_time","return_time"].includes(c.field)&&c.source==="customer")}
+function stAbnormalConf(r){return stResvConf(r)&&!stInfoProvided(r)}  // ⚠️ 予約≠OP だが情報提供履歴なし＝異常値の疑い（要確認）
 // ライブSS(公開CSV)を取得して SS_MAP を作る（列: 4=予約番号,1=回答日時,8=DEL場所,11=COL場所。同一予約は回答日時が最新の行）
 async function fetchSS(){try{const resp=await fetch(PLACE_SHEET_CSV,{cache:"no-store"});if(!resp.ok)return;const rows=parseCSV(await resp.text());if(rows.length<2)return;const byId={};rows.slice(1).forEach(r=>{const rid=(r[4]||"").trim();if(!rid)return;(byId[rid]=byId[rid]||[]).push({ts:(r[1]||"").trim(),del:(r[8]||"").trim(),col:(r[11]||"").trim()})});const m={};Object.entries(byId).forEach(([rid,arr])=>{arr.sort((a,b)=>a.ts<b.ts?1:(a.ts>b.ts?-1:0));const pick=(f)=>{const ne=arr.filter(x=>x[f]);const cur=ne[0];if(!cur)return{val:"",at:"",prev:"",prevAt:""};const pv=ne.find(x=>x!==cur&&x[f]!==cur[f]);return{val:cur[f],at:cur.ts,prev:pv?pv[f]:"",prevAt:pv?pv.ts:""}};const d=pick("del"),c=pick("col");m[rid]={del:d.val,delTs:d.at,prevDel:d.prev,prevDelTs:d.prevAt,col:c.val,colTs:c.at,prevCol:c.prev,prevColTs:c.prevAt,ts:(d.at>c.at?d.at:c.at)}});SS_MAP=m}catch(e){}}
 // 簡易CSVパーサ（引用符・改行・カンマ対応）
@@ -365,7 +369,8 @@ function resFlag(id){const r=(typeof id==="string")?RES.find(x=>x.id===id):id;if
   if(stReanswer(r))return"reans"; if(stReq(r))return"req"; if(stUserChg(r))return"chg"; if(stMissing(r))return"miss"; return""}
 const STATUS_DEFS=[
   {k:"mismatch",label:"🔴 情報相違(SS≠OP)",fn:stMismatch},
-  {k:"resvconf",label:"🔴 予約情報≠マイページ/OP",fn:stResvConf},
+  {k:"resvabn",label:"⚠️ 予約情報≠OP・フォーム未(要確認)",fn:stAbnormalConf},
+  {k:"formdone",label:"📝 フォーム済",fn:stFormDone},
   {k:"userchg",label:"情報変更有り",fn:stUserChg},
   {k:"ack",label:"確認済み",fn:stAck},
   {k:"noplace",label:"場所情報なし",fn:stMissing},
@@ -379,7 +384,7 @@ function reqTotal(){return RES.filter(stUserChg).length+RES.filter(r=>stReq(r)).
 /* ==== カンバン：各予約を1列に割当（優先度）==== */
 const BOARD_COLS=[
   {k:"mismatch",label:"🔴 情報相違（SS≠OP）要確認・修正",color:"#dc2626"},
-  {k:"resvconf",label:"🔴 予約情報 ≠ マイページ/OP（整合・要対応）",color:"#e11d48"},
+  {k:"resvabn",label:"⚠️ 予約情報 ≠ マイページ/OP（フォーム未回答＝異常値の疑い）",color:"#e11d48"},
   {k:"req",label:"🟡 変更リクエスト（オプション/補償）",color:"#b45309"},
   {k:"reanswer",label:"🔔 位置情報更新あり（迷子）",color:"#7c3aed"},
   {k:"userchg",label:"🔴 情報変更(未確認)",color:"#b91c1c"},
@@ -394,17 +399,19 @@ function resColumn(r){
   if(stReq(r))return"req";                    // 変更リクエスト(承認制)＝顧客の依頼を優先表示
   if(stReanswer(r))return"reanswer";
   if(stUserChg(r))return"userchg";
-  if(stResvConf(r))return"resvconf";          // 🔴 予約情報≠OP＝動きが無くても必ず板に出す
+  if(stAbnormalConf(r))return"resvabn";       // ⚠️ 予約≠OP かつ フォーム/マイページ履歴なし＝異常値の疑い。フォーム済の差は正常なので出さない
   if(stMissing(r))return"miss";
   return"ok";
 }
 function matchQ(r){const q=Q.trim();return !q||((r.name||"").includes(q)||(r.id||"").toUpperCase().includes(q.toUpperCase()))}
+function formBadge(r){const done=stFormDone(r);return `<span style="display:inline-block;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:800;color:#fff;background:${done?'#0e9f50':'#94a3b8'};white-space:nowrap">${done?'📝 フォーム済':'フォーム未'}</span>`}
 function cardHtml(r){
   const act=activity(r);
   return `<div class="bcard ${SEL===r.id?"sel":""}" onclick="selectRes('${r.id}')">
     <div class="bc-top"><div class="clsbadge sm" style="background:${CLSC[r.vehicle]||'#64748b'}">${esc(r.vehicle||"?")}</div>
       <div class="bc-nm">${esc(r.name||"—")}<span class="otatag" style="background:${otaColor(r.ota)}">${esc(otaLabel(r.ota))}</span></div></div>
     <div class="bc-sub">🎫 ${esc(r.id)}<br>${fmtD(r.lend_date)} ${esc(r.lend_time||"")}〜${fmtD(r.return_date)}</div>
+    <div style="margin-top:5px">${formBadge(r)}</div>
     ${act?`<div class="actline ${act.cls}">${esc(act.t)}</div>`:""}
     ${r.staff_note?`<div class="kartepeek">🗒 ${esc(r.staff_note.split("\n").join(" / ").slice(0,36))}</div>`:""}
     ${resColumn(r)==="ack"
@@ -480,7 +487,7 @@ function activity(r){
     return {cls:"a-req",t:"🟡 "+kind+"："+(c.new_value||"")+(reqs.length>1?" 他"+(reqs.length-1)+"件":"")};}
   const ucs=cs.filter(c=>c.source==="customer"&&c.status==="applied");
   if(ucs.length){const fs=[...new Set(ucs.map(c=>fldJp(c.field)))];return {cls:"a-chg",t:"🔴 お客様が変更："+fs.join("・")};}
-  if(stResvConf(r)){const fs=RESV_CONF[r.id]||[];return {cls:"a-req",t:"🔴 予約情報とマイページ/OPが相違："+fs.map(f=>fldJp(f.field)).join("・")};}
+  if(stAbnormalConf(r)){const fs=RESV_CONF[r.id]||[];return {cls:"a-req",t:"⚠️ 予約情報≠OP・フォーム未回答（異常値の疑い）："+fs.map(f=>fldJp(f.field)).join("・")};}
   if(stMissing(r)){const p=opPlaceOf(r);const vt=String(r.visit_type||""),rtp=String(r.return_type||"");const m=[];
     if(vt!=="来店"&&vt!=="PUB"&&vt!=="PUB来店"&&!p.del)m.push("お届け先");
     if(!String(r.lend_time||"").trim())m.push("お届け時間");
@@ -644,14 +651,19 @@ function detailHtml(){
       </div>
       <div class="verdict ${d.newer==="?"?"unk":d.newer}">${d.newer==="op"?"🆕 OPが新しい"+(d.opExact?"":"（推定・OP時刻は概算）")+" → 後からの手動変更＝意図的かも。SSへ戻さない":d.newer==="ss"?"🆕 フォームが新しい → 客が後で変更＝SS採用が有力":"⚠️ 新旧不明 → 両方を確認"}<span class="vfoot">※最終判断は必ず人が（電話/LINEで確認してから確定）</span></div>
     </div>`).join("")}
-    ${(RESV_CONF[r.id]||[]).map((f,fi)=>{const isTime=(f.field==="lend_time"||f.field==="return_time");const opv=isTime?f.op:("「"+esc(f.op)+"」"),rev=isTime?f.resv:("「"+esc(f.resv)+"」");return `<div class="reanswer mm">
-      <div class="ra-h">🔴 整合の相違・${esc(acFldJp(f.field))}（予約情報 ≠ マイページ/OP）</div>
-      <div style="font-size:12.5px;padding:8px 10px;line-height:1.65">予約情報＝<b>${rev}</b> ／ マイページ・OP＝<b style="color:#dc2626">${opv}</b><br><span style="color:var(--sub);font-size:11.5px">マイページ・OP側が運用の最新（お客様に表示中）。どちらの値に統一しますか？</span>
+    ${(RESV_CONF[r.id]||[]).length ? (stFormDone(r)
+      ? `<div class="reanswer" style="border-color:#bbf7d0;background:#f0fdf4">
+          <div class="ra-h" style="color:#0e7a3b">✅ 予約原本と運用値の差（📝フォームで確定済み＝正常）</div>
+          <div style="font-size:12px;padding:6px 10px;color:#334155;line-height:1.6">${(RESV_CONF[r.id]||[]).map(f=>esc(acFldJp(f.field))+"：予約原本「"+esc(f.resv)+"」→ 運用「"+esc(f.op)+"」").join("<br>")}<br><span style="color:var(--sub)">お客様がフォームで確定した結果です。対応不要。</span></div>
+        </div>`
+      : (RESV_CONF[r.id]||[]).map((f,fi)=>{const isTime=(f.field==="lend_time"||f.field==="return_time");const opv=isTime?f.op:("「"+esc(f.op)+"」"),rev=isTime?f.resv:("「"+esc(f.resv)+"」");return `<div class="reanswer mm">
+      <div class="ra-h">⚠️ 予約情報≠OP・フォーム未回答＝<b>異常値の疑い</b>・${esc(acFldJp(f.field))}</div>
+      <div style="font-size:12.5px;padding:8px 10px;line-height:1.65">予約情報＝<b>${rev}</b> ／ マイページ・OP＝<b style="color:#dc2626">${opv}</b><br><span style="color:var(--sub);font-size:11.5px">お客様のフォーム回答が無いのに差があります。誤値の可能性。確認のうえ揃えてください。</span>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
           <button class="btn ok" style="font-size:12px" onclick="acResolve('${r.id}',${fi},'resv')">✅ ${opv}で統一（推奨）</button>
           <button class="btn ghost" style="font-size:12px" onclick="acResolve('${r.id}',${fi},'op')">${rev}で統一</button>
         </div></div>
-    </div>`}).join("")}
+    </div>`}).join("")) : ""}
     ${Object.keys(AC_DONE).filter(k=>k.indexOf(r.id+"|")===0).map(k=>{const field=k.slice((r.id+"|").length);const d=AC_DONE[k];const isTime=(field==="lend_time"||field==="return_time");const val=isTime?esc(d.value):("「"+esc(d.value)+"」");return `<div class="reanswer">
       <div class="ra-h">✅ 整合を統一済み・${esc(acFldJp(field))}</div>
       <div style="font-size:12.5px;padding:8px 10px">${val} で統一しました（正常化）。<button class="btn ghost" style="font-size:11.5px;margin-left:8px" onclick="acUndo('${r.id}','${field}')">↩ 元に戻す</button></div>
@@ -966,7 +978,7 @@ function renderManual(){
     ${sec("依頼したあとの流れ",`①お客様が依頼 → ②「🕘最近の履歴」に<b>確認中</b>で表示 → ③スタッフが承認/却下 → ④<b>処理後にLINEで自動通知</b>＋履歴が<b>反映済</b>／<b>見送り</b>に変わる。`)}`;
   const STAFF=`
     ${sec("この画面の役割",`お客様のマイページの変更・依頼を<b>確認して処理する</b>ための管理コンソール。基本は<b>見るだけ・ログ</b>（場所はSSパトロールで自動最新化）。操作は<b>承認/却下</b>と<b>確認済みチェック</b>のみ。`)}
-    ${sec("整合の相違（予約情報≠マイページ/OP）の対応",`ボードの<b>「🔴 予約情報 ≠ マイページ/OP」列</b>に、値が食い違う予約が並びます。カードを開くと【予約情報の値】と【マイページ/OPの値】が出るので、<br>「✅ マイページ・OPの値で統一（推奨）」または「予約情報の値で統一」を押すと<b>一致＝正常化</b>。<br>🛡 <b>押す前に確認</b>ダイアログが出ます。統一後も<b>「↩ 元に戻す」</b>で取り消せます。<br>※毎朝6時の自動チェックで相違があればSlackにも通知。`)}
+    ${sec("📝 フォーム済/未 と 予約情報≠OP の考え方",`各カードに<b>「📝フォーム済／フォーム未」バッジ</b>が付きます。<br>・<b>予約情報とOP/マイページの差</b>は、<b>フォーム済なら正常</b>（お客様がフォームで確定した結果）＝対応不要。<br>・<b>フォーム未回答なのに差がある</b>＝異常値の疑い → 板の<b>「⚠️ 予約情報≠OP（フォーム未回答）」列</b>に出ます。カルテで確認し「統一」で揃える（確認・↩元に戻す付き）。<br>・<b>SS（フォーム）≠OP</b> は別で「要確認・修正」列に出ます（フォーム回答とOPの食い違い＝手動対応の確認）。`)}
     ${sec("ボードの見方（列）",`・${chip("情報相違(SS≠OP)","#dc2626")} フォーム(SS)とOPシートの場所が食い違い＝要確認・修正<br>・${chip("位置情報更新あり(迷子)","#7c3aed")} お客様がフォームで場所を再更新＝要確認（更新後の値は入っている）<br>・${chip("変更リクエスト","#b45309")} お客様が承認制の依頼を出した（要対応）<br>・${chip("情報変更(未確認)","#b91c1c")} お客様が即時変更を行った（お届け24h前まで/回収2h前まで）`)}
     ${sec("🕘 変更履歴（誰が・どこから・何を）",`ヘッダー「🕘 履歴」で全予約の変更/依頼を新しい順に一覧。各予約のカルテにも<b>「🕘 変更履歴（どこから登録・編集したか）」</b>があり、<b>📝フォーム／📱マイページ／👤担当</b>のバッジで<b>どこから</b>変更したかが分かります。`)}
     ${sec("🔔 変更依頼の承認/却下（重要）",`「🔔 変更依頼」を開く → 各依頼に<b>[承認]</b>/<b>[却下]</b>。<br>・<b>承認</b>＝<b>実際に反映</b>されます：補償→予約に反映／オプション→予約＋OPシート／お届け場所・時間(24h以内)→反映／キャンセル→<b>予約キャンセル＋配車解除</b>。同時に<b>お客様へLINE通知</b>。<br>・<b>却下</b>＝反映せず<b>お客様へLINE通知</b>（見送り）。<br><b>※承認/却下は取り消せません</b>。特にキャンセル承認は配車も解除されるので内容を確認のうえ実行。`)}
