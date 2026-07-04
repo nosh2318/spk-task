@@ -687,6 +687,10 @@ function detailHtml(){
       <div class="kv"><div class="k">補償</div><div class="v">${esc(r.insurance||"—")}</div></div>
     </div>
 
+    <div class="sec"><h3>🕘 変更履歴（どこから登録・編集したか）</h3>
+      ${srcHistoryHtml(r)}
+    </div>
+
     <div class="sec"><h3>変更・依頼 履歴（${cs.length}）</h3>
       ${cs.length?cs.map(chgHtml).join(""):`<div style="color:var(--sub);font-size:12.5px">変更・依頼はありません</div>`}
     </div>
@@ -706,6 +710,29 @@ function detailHtml(){
       <button class="btn pri" style="margin-top:6px" onclick="saveNote('${r.id}')">💾 カルテを保存</button>
     </div>
   </div>`;
+}
+function srcBadge(src){const M={form:{t:"📝 フォーム",b:"#7c3aed"},mypage:{t:"📱 マイページ",b:"#0e7a6b"},staff:{t:"👤 担当",b:"#64748b"}};const x=M[src]||M.staff;return `<span style="display:inline-block;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:800;color:#fff;background:${x.b};white-space:nowrap">${x.t}</span>`}
+// 変更履歴（どこから）：フォーム(SS_MAP)＋マイページ/担当(mypage_changes)を時系列で。誰がどこから登録/編集したかのログ。
+function srcHistoryHtml(r){
+  const ev=[];
+  (CHG[r.id]||[]).forEach(c=>{ if(!fldJp(c.field))return; if(!["applied","requested","approved","rejected"].includes(c.status))return;
+    ev.push({ms:Date.parse(c.created_at)||0, src:c.source==="staff"?"staff":"mypage", field:c.field, val:c.new_value||"", status:c.status, actor:c.actor}); });
+  const ss=SS_MAP[r.id];
+  if(ss){const add=(field,val,ts)=>{if(val&&ts){const ms=ssTimeMs(ts);ev.push({ms:isNaN(ms)?0:ms, src:"form", field, val, status:"applied"});}};
+    add("del_place",ss.del,ss.delTs); add("del_place",ss.prevDel,ss.prevDelTs);
+    add("col_place",ss.col,ss.colTs); add("col_place",ss.prevCol,ss.prevColTs);}
+  ev.sort((a,b)=>b.ms-a.ms);
+  if(!ev.length)return `<div style="color:var(--sub);font-size:12.5px">変更・登録の履歴はありません</div>`;
+  return ev.map(e=>{
+    const verb=e.status==="requested"?"の変更を依頼":e.status==="approved"?"の変更を承認・反映":e.status==="rejected"?"の変更を見送り":"を登録/編集";
+    const who=e.src==="staff"?(e.actor?esc(String(e.actor).split("@")[0]):"担当"):"お客様";
+    const dt=e.ms?fmtT(e.ms):"";
+    return `<div style="display:flex;gap:8px;align-items:baseline;padding:7px 2px;border-top:1px solid #eef2f7;font-size:12.5px">
+      <span style="color:#64748b;font-size:10.5px;font-weight:700;min-width:74px">${dt}</span>
+      <span>${srcBadge(e.src)}</span>
+      <span style="flex:1;line-height:1.5">${who}が ${esc(fldJp(e.field))}「${esc(e.val)}」${verb}</span>
+    </div>`;
+  }).join("");
 }
 function chgHtml(c){
   const cls=c.field==="cancel"?"cancel":(c.status==="requested"?"req":(c.status==="applied"?"applied":c.status==="acknowledged"?"applied":""));
@@ -941,7 +968,7 @@ function renderManual(){
     ${sec("この画面の役割",`お客様のマイページの変更・依頼を<b>確認して処理する</b>ための管理コンソール。基本は<b>見るだけ・ログ</b>（場所はSSパトロールで自動最新化）。操作は<b>承認/却下</b>と<b>確認済みチェック</b>のみ。`)}
     ${sec("整合の相違（予約情報≠マイページ/OP）の対応",`ボードの<b>「🔴 予約情報 ≠ マイページ/OP」列</b>に、値が食い違う予約が並びます。カードを開くと【予約情報の値】と【マイページ/OPの値】が出るので、<br>「✅ マイページ・OPの値で統一（推奨）」または「予約情報の値で統一」を押すと<b>一致＝正常化</b>。<br>🛡 <b>押す前に確認</b>ダイアログが出ます。統一後も<b>「↩ 元に戻す」</b>で取り消せます。<br>※毎朝6時の自動チェックで相違があればSlackにも通知。`)}
     ${sec("ボードの見方（列）",`・${chip("情報相違(SS≠OP)","#dc2626")} フォーム(SS)とOPシートの場所が食い違い＝要確認・修正<br>・${chip("位置情報更新あり(迷子)","#7c3aed")} お客様がフォームで場所を再更新＝要確認（更新後の値は入っている）<br>・${chip("変更リクエスト","#b45309")} お客様が承認制の依頼を出した（要対応）<br>・${chip("情報変更(未確認)","#b91c1c")} お客様が即時変更を行った（お届け24h前まで/回収2h前まで）`)}
-    ${sec("🕘 履歴（誰が・何を・いつ）",`ヘッダー「🕘 履歴」で、お客様・担当がマイページで行った<b>変更／依頼を新しい順</b>に一覧（日単位）。「〇〇様がお届け場所を変更しました」「担当が補償変更を承認・反映しました」等。`)}
+    ${sec("🕘 変更履歴（誰が・どこから・何を）",`ヘッダー「🕘 履歴」で全予約の変更/依頼を新しい順に一覧。各予約のカルテにも<b>「🕘 変更履歴（どこから登録・編集したか）」</b>があり、<b>📝フォーム／📱マイページ／👤担当</b>のバッジで<b>どこから</b>変更したかが分かります。`)}
     ${sec("🔔 変更依頼の承認/却下（重要）",`「🔔 変更依頼」を開く → 各依頼に<b>[承認]</b>/<b>[却下]</b>。<br>・<b>承認</b>＝<b>実際に反映</b>されます：補償→予約に反映／オプション→予約＋OPシート／お届け場所・時間(24h以内)→反映／キャンセル→<b>予約キャンセル＋配車解除</b>。同時に<b>お客様へLINE通知</b>。<br>・<b>却下</b>＝反映せず<b>お客様へLINE通知</b>（見送り）。<br><b>※承認/却下は取り消せません</b>。特にキャンセル承認は配車も解除されるので内容を確認のうえ実行。`)}
     ${sec("ステータスの意味",`${chip("確認中","#b45309")}=お客様が依頼・未処理／${chip("承認・反映済","#0e7a3b")}=承認して反映済み／${chip("見送り","#64748b")}=却下／情報変更(applied)=お客様が即時変更した記録。`)}
     ${sec("カルテ / スタッフメモ",`電話・LINEで受けた依頼や特記事項を予約ごとに記録。タグ（要注意/常連/連絡取れない 等）も付けられます。`)}
