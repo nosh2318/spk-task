@@ -160,6 +160,9 @@ my.html `insCur()` は insurance生値を3プランに寄せる：**`フル|NOC|
 ### 🔗 マイページ書込は「唯一ルール」順守（2026-07-05・監査基盤連携）
 マイページの全書込は「既存を丸ごと再保存しない／人間入力を上書きしない／顧客は許可項目のみ・センシティブは承認制」に従う：**update＝顧客が変えた特定フィールドのみsbPatch＋patchTasksSpkはchanged_jsonを`{...cj}`マージ（他キー保持）**／request＝行追加のみ（reservation不変）／decide＝特定フィールドのみ・actor記録。**顧客はDB資格情報を持たずEdge Function(token)経由のみ＝関所はEdge Function**（許可項目以外は物理的に書けない）。source識別＝`mypage_changes.source`(customer/staff)・tasks`_placeSource`・`actor`。全書込はaudit_log(DBトリガ)に記録・ハッシュ連鎖で改ざん不能。
 
+### 📣 マイページ通知の宛先＝#sapporo_user_action（2026-07-05）
+マイページ関連の**全Slack通知（変更即時/依頼/キャンセル/承認却下/整合アラート）は `#sapporo_user_action`（C0BER0YC6AK）**へ。handyman-mypageの`slackPost`が`SLACK_MYPAGE_CHANNEL`(=C0BER0YC6AK)を使用（keydrop系のSLACK_KEYDROP_CHANNELとは分離）。**ボット＝`sns_auto`(U0AP367KETH)。このチャンネルへ手動`/invite @SNS Auto`が必要**（未招待だとnot_in_channelで飛ばない）。⚠️変更/依頼/キャンセル/承認の通知は`notifySlack`経由＝**MYPAGE_SILENT=1の間はミュート**（開発中）。本番で飛ばすにはMYPAGE_SILENTを解除。整合アラート(patrol)は`slackPost`直＝ミュート対象外で常時発報。
+
 ### Edge Function アクション
 - **patrol**（staff_token or x-cron-secret）：reservations↔tasks整合を全予約突合→相違レポート＋Slackアラート（監視・上記）。
 - **decide**（staff_token＝本体JWT・change_id・decision）：承認/却下→実反映＋顧客LINE＋Slack（管理者用・上記）。
