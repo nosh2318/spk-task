@@ -263,7 +263,7 @@ function ago(days){const d=new Date();d.setDate(d.getDate()-days);return d.getFu
 async function loadAll(keepSel){
   const [cfg,res,chg,stf]=await Promise.all([
     api("spk_line_config?id=eq.1&select=*"),
-    api("reservations?return_date=gte."+ago(2)+"&status=not.in.(%22%E3%82%AD%E3%83%A3%E3%83%B3%E3%82%BB%E3%83%AB%22,cancelled)&order=lend_date.asc&limit=400&select=id,name,ota,lend_date,return_date,lend_time,return_time,vehicle,del_place,col_place,visit_type,return_type,people,opt_b,opt_c,opt_j,insurance,status,mypage_token,mypage_locked,staff_note,tel,mail,admin_checked_at,admin_checked_by"),
+    api("reservations?return_date=gte."+ago(2)+"&status=not.in.(%22%E3%82%AD%E3%83%A3%E3%83%B3%E3%82%BB%E3%83%AB%22,cancelled)&order=lend_date.asc&limit=400&select=id,name,ota,lend_date,return_date,lend_time,return_time,del_time,col_time,vehicle,del_place,col_place,visit_type,return_type,people,opt_b,opt_c,opt_j,insurance,status,mypage_token,mypage_locked,staff_note,tel,mail,admin_checked_at,admin_checked_by"),
     api("mypage_changes?store=eq.spk&order=created_at.desc&limit=500&select=id,reservation_id,field,old_value,new_value,source,status,note,actor,created_at"),
     api("staff?select=name&order=name.asc").catch(()=>[]),
   ]);
@@ -275,20 +275,26 @@ async function loadAll(keepSel){
     const ids=RES.map(r=>r.id);const pmap={};
     for(let i=0;i<ids.length;i+=60){
       const chunk=ids.slice(i,i+60).map(encodeURIComponent).join(",");
-      const ts=await api("tasks?reservation_id=in.("+chunk+")&select=_id,reservation_id,place,changed_json,updated_at").catch(()=>[]);
+      const ts=await api("tasks?reservation_id=in.("+chunk+")&select=_id,reservation_id,place,time,insurance,changed_json,updated_at").catch(()=>[]);
       (ts||[]).forEach(t=>{
         let cj={};try{cj=JSON.parse(t.changed_json||"{}")}catch(e){}
         const manual=cj._placeSource==="manual";
         const disp=(manual?t.place:(cj._ssPlace||t.place))||"";
         const opAt=(manual?(cj._manualPlaceAt||t.updated_at):(cj._ssPlaceAt||t.updated_at))||"";  // OP側の場所確定時刻(近似)
+        const opTime=(cj._ssTime||t.time||"");  // OP側の時刻(運用値)
         const kind=String(t._id).slice(0,2);const rid=t.reservation_id;
         pmap[rid]=pmap[rid]||{};
         const opExact=manual?!!cj._manualPlaceAt:!!cj._ssPlaceAt;  // 場所の確定時刻が正確か(概算=updated_atなら不確か)
-        if(kind==="d-"){pmap[rid].del=disp;pmap[rid].delAt=opAt;pmap[rid].delSrc=cj._placeSource||"";pmap[rid].delExact=opExact;}
-        if(kind==="c-"){pmap[rid].col=disp;pmap[rid].colAt=opAt;pmap[rid].colSrc=cj._placeSource||"";pmap[rid].colExact=opExact;}
+        // 補償・オプションはd-/c-いずれかの実値を採用
+        if(t.insurance&&String(t.insurance).trim())pmap[rid].ins=String(t.insurance).trim();
+        pmap[rid].optC=Math.max(pmap[rid].optC||0,+(cj._optC)||0);
+        pmap[rid].optJ=Math.max(pmap[rid].optJ||0,+(cj._optJ)||0);
+        pmap[rid].optB=Math.max(pmap[rid].optB||0,+(cj._optB)||0);
+        if(kind==="d-"){pmap[rid].del=disp;pmap[rid].delAt=opAt;pmap[rid].delSrc=cj._placeSource||"";pmap[rid].delExact=opExact;pmap[rid].delTime=opTime;}
+        if(kind==="c-"){pmap[rid].col=disp;pmap[rid].colAt=opAt;pmap[rid].colSrc=cj._placeSource||"";pmap[rid].colExact=opExact;pmap[rid].colTime=opTime;}
       });
     }
-    PLACE_MAP=pmap;computeMismatch();render();
+    PLACE_MAP=pmap;computeMismatch();computeResvConf();render();
     await fetchSS();computeMismatch();LAST_LOAD=Date.now();render();  // ライブSS取得→情報相違(SS≠OP)＋迷子(SS再回答で値変化)を確定
   }catch(e){}
   if(keepSel&&SEL)selectRes(SEL,true);
@@ -330,6 +336,26 @@ function fmtT(ms){if(isNaN(ms))return"不明";const d=new Date(ms);return (d.get
 function mkDiff(kind,ss,op,ssMs,opAt,opSrc,opExact){const opMs=opAt?Date.parse(opAt):NaN;let newer="?";if(!isNaN(ssMs)&&!isNaN(opMs))newer=ssMs>opMs?"ss":"op";return{kind:kind,ss:ss,op:op||"(空)",ssAt:ssMs,opAt:opMs,opSrc:opSrc||"",opExact:!!opExact,newer:newer}}
 // SS_MAP と PLACE_MAP を突合して情報相違を再計算（新旧＝時系列も判定）
 function computeMismatch(){const mm=new Set(),map={},al=new Set();RES.forEach(r=>{const ss=SS_MAP[r.id];if(!ss)return;if(ss.prevDel||ss.prevCol)al.add(r.id);const p=PLACE_MAP[r.id]||{};const op=opPlaceOf(r);const ssMs=ssTimeMs(ss.ts);const list=[];if(placeConflict(ss.del,op.del))list.push(mkDiff("お届け先",ss.del,op.del,ssMs,p.delAt,p.delSrc,p.delExact));if(placeConflict(ss.col,op.col))list.push(mkDiff("回収先",ss.col,op.col,ssMs,p.colAt,p.colSrc,p.colExact));if(list.length){mm.add(r.id);map[r.id]=list}});MISMATCH_RES=mm;MISMATCH_MAP=map;ALERT_RES=al}
+// 整合の相違: 予約情報(reservations) ≠ マイページ/OP(tasks)。両方に実値があり食い違う項目を検出（patrolと同じ）。
+let RESV_CONF={};
+function computeResvConf(){
+  RESV_CONF={};
+  const norm=v=>String(v==null?"":v).trim();
+  RES.forEach(r=>{
+    const p=PLACE_MAP[r.id]; if(!p)return;
+    const fs=[];
+    const cmp=(field,a,b)=>{a=norm(a);b=norm(b);if(a&&b&&a!==b)fs.push({field,resv:a,op:b});};
+    cmp("del_place",r.del_place,p.del);
+    cmp("col_place",r.col_place,p.col);
+    cmp("lend_time",r.lend_time||r.del_time,p.delTime);
+    cmp("return_time",r.return_time||r.col_time,p.colTime);
+    cmp("insurance",r.insurance,p.ins);
+    const oc=(f,rn,tn)=>{rn=+rn||0;tn=+tn||0;if(rn>0&&tn>0&&rn!==tn)fs.push({field:f,resv:String(rn),op:String(tn)});};
+    oc("opt_c",r.opt_c,p.optC);oc("opt_j",r.opt_j,p.optJ);oc("opt_b",r.opt_b,p.optB);
+    if(fs.length)RESV_CONF[r.id]=fs;
+  });
+}
+function stResvConf(r){return !!RESV_CONF[(typeof r==="string"?r:r.id)]}
 // ライブSS(公開CSV)を取得して SS_MAP を作る（列: 4=予約番号,1=回答日時,8=DEL場所,11=COL場所。同一予約は回答日時が最新の行）
 async function fetchSS(){try{const resp=await fetch(PLACE_SHEET_CSV,{cache:"no-store"});if(!resp.ok)return;const rows=parseCSV(await resp.text());if(rows.length<2)return;const byId={};rows.slice(1).forEach(r=>{const rid=(r[4]||"").trim();if(!rid)return;(byId[rid]=byId[rid]||[]).push({ts:(r[1]||"").trim(),del:(r[8]||"").trim(),col:(r[11]||"").trim()})});const m={};Object.entries(byId).forEach(([rid,arr])=>{arr.sort((a,b)=>a.ts<b.ts?1:(a.ts>b.ts?-1:0));const pick=(f)=>{const ne=arr.filter(x=>x[f]);const cur=ne[0];if(!cur)return{val:"",at:"",prev:"",prevAt:""};const pv=ne.find(x=>x!==cur&&x[f]!==cur[f]);return{val:cur[f],at:cur.ts,prev:pv?pv[f]:"",prevAt:pv?pv.ts:""}};const d=pick("del"),c=pick("col");m[rid]={del:d.val,delTs:d.at,prevDel:d.prev,prevDelTs:d.prevAt,col:c.val,colTs:c.at,prevCol:c.prev,prevColTs:c.prevAt,ts:(d.at>c.at?d.at:c.at)}});SS_MAP=m}catch(e){}}
 // 簡易CSVパーサ（引用符・改行・カンマ対応）
@@ -339,6 +365,7 @@ function resFlag(id){const r=(typeof id==="string")?RES.find(x=>x.id===id):id;if
   if(stReanswer(r))return"reans"; if(stReq(r))return"req"; if(stUserChg(r))return"chg"; if(stMissing(r))return"miss"; return""}
 const STATUS_DEFS=[
   {k:"mismatch",label:"🔴 情報相違(SS≠OP)",fn:stMismatch},
+  {k:"resvconf",label:"🔴 予約情報≠マイページ/OP",fn:stResvConf},
   {k:"userchg",label:"情報変更有り",fn:stUserChg},
   {k:"ack",label:"確認済み",fn:stAck},
   {k:"noplace",label:"場所情報なし",fn:stMissing},
@@ -352,8 +379,9 @@ function reqTotal(){return RES.filter(stUserChg).length+RES.filter(r=>stReq(r)).
 /* ==== カンバン：各予約を1列に割当（優先度）==== */
 const BOARD_COLS=[
   {k:"mismatch",label:"🔴 情報相違（SS≠OP）要確認・修正",color:"#dc2626"},
+  {k:"resvconf",label:"🔴 予約情報 ≠ マイページ/OP（整合・要対応）",color:"#e11d48"},
+  {k:"req",label:"🟡 変更リクエスト（オプション/補償）",color:"#b45309"},
   {k:"reanswer",label:"🔔 位置情報更新あり（迷子）",color:"#7c3aed"},
-  {k:"req",label:"🟡 変更リクエスト",color:"#b45309"},
   {k:"userchg",label:"🔴 情報変更(未確認)",color:"#b91c1c"},
   {k:"miss",label:"⚪ 場所情報なし",color:"#64748b"},
   {k:"ack",label:"✅ 確認済み",color:"#0e9f50"},
@@ -361,12 +389,12 @@ const BOARD_COLS=[
 function hasAction(r){return stReanswer(r)||stReq(r)||stUserChg(r)}          // 顧客の能動的な動き
 function resColumn(r){
   // 場所が入っていて動きもない＝通常＝板に出さない。場所未設定(フォーム未回答含む)は「場所情報なし」に出す。
-  if(stMismatch(r))return"mismatch";         // 🔴 情報相違(SS≠OP)＝最優先。動きが無く場所が入っていても必ず板に出す
-  if(!hasAction(r)&&!stMissing(r))return"ok";
+  if(stMismatch(r))return"mismatch";         // 🔴 情報相違(SS≠OP)＝最優先
   if(isChecked(r))return"ack";               // 対応済み＝確認済みBOXへ移動
+  if(stReq(r))return"req";                    // 変更リクエスト(承認制)＝顧客の依頼を優先表示
   if(stReanswer(r))return"reanswer";
-  if(stReq(r))return"req";
   if(stUserChg(r))return"userchg";
+  if(stResvConf(r))return"resvconf";          // 🔴 予約情報≠OP＝動きが無くても必ず板に出す
   if(stMissing(r))return"miss";
   return"ok";
 }
@@ -393,7 +421,6 @@ function render(){
   if(wasSearch){const el=document.querySelector(".bsearch");if(el){el.focus();const L=el.value.length,p=(cs==null?L:Math.min(cs,L));try{el.setSelectionRange(p,p)}catch(_){}}}
 }
 function renderInner(){
-  if(VIEW==="actions"){return renderActionsView();}
   const q=Q.trim();
   const fdef=STATUS_DEFS.find(x=>x.k===FILTER)||STATUS_DEFS[STATUS_DEFS.length-1];
   let list=RES.filter(r=>{
@@ -415,8 +442,6 @@ function renderInner(){
     <span class="fresh" title="30秒ごと自動更新。SS(フォーム)はGoogle側で最大約5分キャッシュされるため、お客様の変更反映に数分の遅れがあります。">🕐 ${fmtClock(LAST_LOAD)} <span class="auto">自動30秒</span></span>
     <button onclick="loadAll(true)">🔄 更新</button>
     <button class="${rc?"alert":""}" onclick="VIEW='changes';SEL=null;render()">🔔 変更依頼 ${rc}</button>
-    <button class="alert" onclick="enterActions()">🛠 対応</button>
-    <button onclick="openPatrol()">🔍 整合</button>
     <button onclick="openHistory()">🕘 履歴</button>
     <button onclick="openManual()">📖 マニュアル</button>
     <button onclick="openCfg()">⚙️ トリガー設定</button>
@@ -455,6 +480,7 @@ function activity(r){
     return {cls:"a-req",t:"🟡 "+kind+"："+(c.new_value||"")+(reqs.length>1?" 他"+(reqs.length-1)+"件":"")};}
   const ucs=cs.filter(c=>c.source==="customer"&&c.status==="applied");
   if(ucs.length){const fs=[...new Set(ucs.map(c=>fldJp(c.field)))];return {cls:"a-chg",t:"🔴 お客様が変更："+fs.join("・")};}
+  if(stResvConf(r)){const fs=RESV_CONF[r.id]||[];return {cls:"a-req",t:"🔴 予約情報とマイページ/OPが相違："+fs.map(f=>fldJp(f.field)).join("・")};}
   if(stMissing(r)){const p=opPlaceOf(r);const vt=String(r.visit_type||""),rtp=String(r.return_type||"");const m=[];
     if(vt!=="来店"&&vt!=="PUB"&&vt!=="PUB来店"&&!p.del)m.push("お届け先");
     if(!String(r.lend_time||"").trim())m.push("お届け時間");
@@ -618,6 +644,18 @@ function detailHtml(){
       </div>
       <div class="verdict ${d.newer==="?"?"unk":d.newer}">${d.newer==="op"?"🆕 OPが新しい"+(d.opExact?"":"（推定・OP時刻は概算）")+" → 後からの手動変更＝意図的かも。SSへ戻さない":d.newer==="ss"?"🆕 フォームが新しい → 客が後で変更＝SS採用が有力":"⚠️ 新旧不明 → 両方を確認"}<span class="vfoot">※最終判断は必ず人が（電話/LINEで確認してから確定）</span></div>
     </div>`).join("")}
+    ${(RESV_CONF[r.id]||[]).map((f,fi)=>{const isTime=(f.field==="lend_time"||f.field==="return_time");const opv=isTime?f.op:("「"+esc(f.op)+"」"),rev=isTime?f.resv:("「"+esc(f.resv)+"」");return `<div class="reanswer mm">
+      <div class="ra-h">🔴 整合の相違・${esc(acFldJp(f.field))}（予約情報 ≠ マイページ/OP）</div>
+      <div style="font-size:12.5px;padding:8px 10px;line-height:1.65">予約情報＝<b>${rev}</b> ／ マイページ・OP＝<b style="color:#dc2626">${opv}</b><br><span style="color:var(--sub);font-size:11.5px">マイページ・OP側が運用の最新（お客様に表示中）。どちらの値に統一しますか？</span>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+          <button class="btn ok" style="font-size:12px" onclick="acResolve('${r.id}',${fi},'resv')">✅ ${opv}で統一（推奨）</button>
+          <button class="btn ghost" style="font-size:12px" onclick="acResolve('${r.id}',${fi},'op')">${rev}で統一</button>
+        </div></div>
+    </div>`}).join("")}
+    ${Object.keys(AC_DONE).filter(k=>k.indexOf(r.id+"|")===0).map(k=>{const field=k.slice((r.id+"|").length);const d=AC_DONE[k];const isTime=(field==="lend_time"||field==="return_time");const val=isTime?esc(d.value):("「"+esc(d.value)+"」");return `<div class="reanswer">
+      <div class="ra-h">✅ 整合を統一済み・${esc(acFldJp(field))}</div>
+      <div style="font-size:12.5px;padding:8px 10px">${val} で統一しました（正常化）。<button class="btn ghost" style="font-size:11.5px;margin-left:8px" onclick="acUndo('${r.id}','${field}')">↩ 元に戻す</button></div>
+    </div>`}).join("")}
     ${formReanswer().filter(fr=>fr.applied).map(fr=>`<div class="reanswer">
       <div class="ra-h">🔔 フォーム再回答・${esc(fr.kind)}（お客様が変更）</div>
       <div class="dft">
@@ -845,142 +883,35 @@ function openHistory(){
   $("#scrim").classList.add("show");
 }
 /* ===== 🛠 対応センター：アラート→確認→対応→正常化 を1画面で導く ===== */
-let AC_ITEMS=[], AC_CONF=[], AC_LOADING=false, AC_DONE={};
+let AC_DONE={};
 function acFldJp(f){return {del_place:"お届け場所",col_place:"回収場所",lend_time:"お届け時間",return_time:"回収時間",insurance:"補償",opt_c:"チャイルドシート",opt_j:"ジュニアシート",opt_b:"ベビーシート"}[f]||f}
-async function enterActions(){
-  if(!tok()){toast("ログインが必要です");return}
-  VIEW="actions"; SEL=null; AC_LOADING=true; render();
-  await acReload();
-}
-async function acReload(){
-  const st=tok(); if(!st)return;
-  AC_LOADING=true; if(VIEW==="actions")render();
-  let conflicts=[];
-  try{const r=await fetch(FN+"/handyman-mypage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"patrol",staff_token:st})});const j=await r.json().catch(()=>({}));if(j.ok)conflicts=j.conflicts||[];}catch(e){}
-  AC_CONF=conflicts; AC_LOADING=false; if(VIEW==="actions")render();
-}
-function acKey(it){return it.id+"|"+it.field}
-// 🛠 対応センターを本体エリアにボード表示（モーダルでなく常設の枠）
-function renderActionsView(){
-  AC_ITEMS=[]; AC_CONF.forEach(c=>c.fields.forEach(f=>AC_ITEMS.push({id:c.id,name:c.name,field:f.field,resv:f.reservations,op:f.op})));
-  const reqs=Object.values(CHG).flat().filter(c=>c.status==="requested");
-  const nameOf=id=>{const r=RES.find(x=>x.id===id);return r?r.name:""};
-  const isTime=f=>f==="lend_time"||f==="return_time";
-  const row=(k,v,c)=>`<div style="font-size:10.5px;font-weight:800;color:${c||'#64748b'};padding-top:2px">${k}</div><div>${v}</div>`;
-  const confCards=AC_ITEMS.map((it,idx)=>{
-    const L=acFldJp(it.field);
-    const opv=isTime(it.field)?esc(it.op):`「${esc(it.op)}」`, rev=isTime(it.field)?esc(it.resv):`「${esc(it.resv)}」`;
-    const done=AC_DONE[acKey(it)];
-    const actionHtml = done
-      ? `<div style="color:#0e7a3b;font-weight:700">✅ ${esc(done.label)}（正常化）</div>
-         <button class="btn ghost" style="font-size:11.5px;margin-top:5px" onclick="acUndo(${idx})">↩ 元に戻す</button>`
-      : `どちらの値に統一しますか？<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:5px">
-          <button class="btn ok acb${idx}" style="font-size:12px" onclick="acResolve(${idx},'resv')">✅ マイページ・OPの${opv}で統一（推奨）</button>
-          <button class="btn ghost acb${idx}" style="font-size:12px" onclick="acResolve(${idx},'op')">予約情報の${rev}で統一</button>
-          <button class="btn ghost" style="font-size:12px" onclick="VIEW='changes';selectRes('${it.id}')">予約を開く ▸</button></div>`;
-    return `<div style="border:1px solid #f0d0d0;border-radius:11px;padding:11px 12px;margin-bottom:9px;background:#fffafa">
-      <div style="font-weight:800;font-size:13px;margin-bottom:6px">${esc(it.name||"—")}様 <span style="color:#94a3b8;font-weight:600;font-size:11px">${esc(it.id)}</span></div>
-      <div style="display:grid;grid-template-columns:56px 1fr;gap:4px 6px;font-size:12.5px;line-height:1.6">
-        ${row("事象",`<b>${esc(L)}</b>が予約情報とマイページ/OPで<b style="color:#dc2626">食い違っています</b>`,"#dc2626")}
-        ${row("説明",`予約情報＝${rev}／マイページ・OP＝<b>${opv}</b>。マイページ・OP側が<b>運用の最新</b>（お客様に表示中）。このままだと画面により表示が違います。`)}
-        ${row("対応",actionHtml,"#0e7a3b")}
-      </div></div>`;
-  }).join("")||`<div class="bcol-empty">相違はありません ✅</div>`;
-  const reqCards=reqs.map(c=>{
-    const nm=nameOf(c.reservation_id)||"お客様";
-    return `<div style="border:1px solid #f0e0c0;border-radius:11px;padding:11px 12px;margin-bottom:9px;background:#fffdf5">
-      <div style="font-weight:800;font-size:13px;margin-bottom:6px">${esc(nm)}様 <span style="color:#94a3b8;font-weight:600;font-size:11px">${esc(c.reservation_id)}</span></div>
-      <div style="display:grid;grid-template-columns:56px 1fr;gap:4px 6px;font-size:12.5px;line-height:1.6">
-        ${row("事象",`お客様が<b>${esc(fldJp(c.field))}${c.field==="cancel"?"を申請":"の変更を依頼"}</b>`,"#b45309")}
-        ${row("説明",esc(c.new_value||c.note||""))}
-        ${row("対応",`<div style="display:flex;gap:6px;flex-wrap:wrap">
-          <button class="btn ok" style="font-size:12px" onclick="acDecide(${c.id},'approved')">承認して反映＋LINE通知</button>
-          <button class="btn dang" style="font-size:12px" onclick="acDecide(${c.id},'rejected')">却下＋LINE通知</button></div>`,"#0e7a3b")}
-      </div></div>`;
-  }).join("")||`<div class="bcol-empty">依頼はありません</div>`;
-  const nTot=AC_ITEMS.length+reqs.length;
-  $("#app").innerHTML=`
-  <div class="hd"><div class="logo">HAND<b>Y</b>MAN</div><div class="t">🛠 対応センター</div>
-    <div class="sp"></div>
-    <select class="opsel ${OPERATOR?"":"need"}" onchange="setOp(this.value)">
-      <option value="">担当者を選択…</option>
-      ${STAFF.map(n=>`<option ${n===OPERATOR?"selected":""}>${esc(n)}</option>`).join("")}
-      ${OPERATOR&&!STAFF.includes(OPERATOR)?`<option selected>${esc(OPERATOR)}</option>`:""}
-    </select>
-    <span class="fresh">要対応 <b style="color:${nTot?'#dc2626':'#0e7a3b'}">${nTot}</b>件</span>
-    <button onclick="acReload()">🔄 再チェック</button>
-    <button onclick="VIEW='changes';render()">← ボードに戻る</button>
-  </div>
-  <div style="padding:10px 12px;font-size:12px;color:var(--sub);background:#f8fafc;border-bottom:1px solid var(--line)">
-    アラートで来た事象を確認 → ボタンで対応 → 「正常化」まで。<b>押す前に確認</b>が出ます。対応後は<b>↩ 元に戻す</b>で取り消せます。</div>
-  ${AC_LOADING?`<div class="empty" style="padding:40px">全予約を照合中…</div>`:`
-  <div style="display:flex;gap:12px;padding:12px;align-items:flex-start;flex-wrap:wrap">
-    <div style="flex:1;min-width:320px">
-      <div style="font-weight:800;font-size:13px;color:#dc2626;margin:2px 0 8px">🔴 整合の相違（予約情報 ≠ マイページ/OP）${AC_ITEMS.length}件</div>
-      ${confCards}
-    </div>
-    <div style="flex:1;min-width:320px">
-      <div style="font-weight:800;font-size:13px;color:#b45309;margin:2px 0 8px">🟡 お客様からの依頼 ${reqs.length}件</div>
-      ${reqCards}
-    </div>
-  </div>`}`;
-  document.body.classList.remove("karte-open");
-}
-async function acResolve(idx,target){
-  const it=AC_ITEMS[idx]; if(!it)return; const st=tok(); if(!st){toast("ログインが必要");return}
+// 整合の相違をカルテ(詳細)から統一（予約情報↔OP どちらの値で揃えるか）。押す前に確認・後で元に戻せる。
+async function acResolve(id,fi,target){
+  const st=tok(); if(!st){toast("ログインが必要");return}
+  const fs=RESV_CONF[id]||[]; const it=fs[fi]; if(!it)return;
   const isTime=(it.field==="lend_time"||it.field==="return_time");
   const value=(target==="resv")?it.op:it.resv, from=(target==="resv")?it.resv:it.op;
-  const q=isTime?value:`「${value}」`, qf=isTime?from:`「${from}」`;
+  const q=isTime?value:("「"+value+"」"), qf=isTime?from:("「"+from+"」");
   if(!sure(`${acFldJp(it.field)}を ${q} に統一（${target==="resv"?"予約情報":"マイページ/OP"}の ${qf} → ${q}）。`))return;
-  document.querySelectorAll(".acb"+idx).forEach(b=>b.disabled=true);
   try{
-    const r=await fetch(FN+"/handyman-mypage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"resolve",staff_token:st,reservation_id:it.id,field:it.field,value,target})});
+    const r=await fetch(FN+"/handyman-mypage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"resolve",staff_token:st,reservation_id:id,field:it.field,value,target})});
     const j=await r.json().catch(()=>({}));
-    if(r.ok&&j.ok){AC_DONE[acKey(it)]={target,value,from,label:`${q} で統一しました`};toast("統一しました");loadAll(true);render();}
-    else{toast("失敗："+(j.error||r.status));document.querySelectorAll(".acb"+idx).forEach(b=>b.disabled=false);}
-  }catch(e){toast("通信エラー");document.querySelectorAll(".acb"+idx).forEach(b=>b.disabled=false);}
-}
-async function acUndo(idx){
-  const it=AC_ITEMS[idx]; if(!it)return; const st=tok(); if(!st)return;
-  const d=AC_DONE[acKey(it)]; if(!d)return;
-  const isTime=(it.field==="lend_time"||it.field==="return_time");
-  const q=isTime?d.from:`「${d.from}」`;
-  if(!sure(`元に戻す（${acFldJp(it.field)}を ${q} に戻す）。`))return;
-  try{
-    const r=await fetch(FN+"/handyman-mypage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"resolve",staff_token:st,reservation_id:it.id,field:it.field,value:d.from,target:d.target})});
-    const j=await r.json().catch(()=>({}));
-    if(r.ok&&j.ok){delete AC_DONE[acKey(it)];toast("元に戻しました");loadAll(true);render();}
+    if(r.ok&&j.ok){AC_DONE[id+"|"+it.field]={target,from,value};toast("統一しました（正常化）");await loadAll(true);}
     else toast("失敗："+(j.error||r.status));
   }catch(e){toast("通信エラー")}
 }
-async function acDecide(id,status){
-  await decide(id,status); // decide内で確認・実反映・LINE・render
-  if(VIEW==="actions")render();
-}
-/* ===== 整合パトロール：予約情報＝マイページ＝OPシート を全予約で突合 ===== */
-async function openPatrol(){
-  const st=tok(); if(!st){toast("ログインが必要です");return}
-  $("#modal").style.maxWidth="660px";
-  $("#modal").innerHTML=`<h3>🔍 マイページ整合チェック</h3><div class="empty">全予約を照合中…</div>`;
-  $("#scrim").classList.add("show");
+async function acUndo(id,field){
+  const st=tok(); if(!st)return;
+  const d=AC_DONE[id+"|"+field]; if(!d)return;
+  const isTime=(field==="lend_time"||field==="return_time");
+  const q=isTime?d.from:("「"+d.from+"」");
+  if(!sure(`元に戻す（${acFldJp(field)}を ${q} に戻す）。`))return;
   try{
-    const r=await fetch(FN+"/handyman-mypage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"patrol",staff_token:st})});
+    const r=await fetch(FN+"/handyman-mypage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"resolve",staff_token:st,reservation_id:id,field,value:d.from,target:d.target})});
     const j=await r.json().catch(()=>({}));
-    if(!r.ok||!j.ok){$("#modal").innerHTML=`<h3>🔍 マイページ整合チェック</h3><div class="empty">失敗：${esc(j.error||String(r.status))}</div><div class="acts" style="margin-top:12px"><button class="btn ghost" onclick="closeM()">閉じる</button></div>`;return}
-    const bad=j.conflictCount>0;
-    const head=`<div style="display:flex;gap:12px;align-items:center;padding:10px 12px;border-radius:10px;background:${bad?'#fff7f7':'#f0fdf4'};border:1px solid ${bad?'#fdd':'#bbf7d0'};margin-bottom:10px">
-      <div style="font-size:22px">${bad?'⚠️':'✅'}</div>
-      <div style="font-size:13px;line-height:1.5">照合 <b>${j.checked}</b>件 → 一致 <b style="color:#0e7a3b">${j.matched}</b> ／ 相違 <b style="color:${bad?'#dc2626':'#0e7a3b'}">${j.conflictCount}</b>件<br>
-      <span style="color:var(--sub);font-size:11.5px">${bad?'予約情報とマイページ/OPで表示が異なる予約があります。下記を確認・修正してください。':'予約情報・マイページ・OPシートは全件一致しています。'}</span></div></div>`;
-    const body=bad? j.conflicts.map(c=>`<div style="padding:9px 10px;border:1px solid #f1d5d5;border-radius:9px;margin-bottom:7px;background:#fffafa">
-        <div style="font-weight:800;font-size:12.5px;cursor:pointer" onclick="closeM();selectRes('${c.id}')">${esc(c.name||'—')}様 <span style="color:var(--sub);font-weight:600">${esc(c.id)}</span> ▸</div>
-        ${c.fields.map(f=>`<div style="font-size:12px;margin-top:3px">${esc(fldJp(f.field))}：予約「<b>${esc(f.reservations)}</b>」 ≠ OP/マイページ「<b style="color:#dc2626">${esc(f.op)}</b>」</div>`).join('')}
-      </div>`).join('') : `<div class="empty">✅ 相違はありません</div>`;
-    $("#modal").innerHTML=`<h3>🔍 マイページ整合チェック</h3>${head}
-      <div style="max-height:60vh;overflow:auto">${body}</div>
-      <div style="font-size:11px;color:var(--sub);margin-top:8px">「予約情報(reservations)」と「OPシート/マイページ(タスク)」の両方に値があり食い違う項目を検出。空欄側は自動でもう一方を表示するため相違に含めません。</div>
-      <div class="acts" style="margin-top:10px"><button class="btn ghost" onclick="openPatrol()">🔄 再チェック</button><button class="btn ghost" onclick="closeM()">閉じる</button></div>`;
-  }catch(e){$("#modal").innerHTML=`<h3>🔍 マイページ整合チェック</h3><div class="empty">通信エラー</div><div class="acts" style="margin-top:12px"><button class="btn ghost" onclick="closeM()">閉じる</button></div>`}
+    if(r.ok&&j.ok){delete AC_DONE[id+"|"+field];toast("元に戻しました");await loadAll(true);}
+    else toast("失敗："+(j.error||r.status));
+  }catch(e){toast("通信エラー")}
 }
 function closeM(){$("#scrim").classList.remove("show");$("#modal").style.maxWidth=""}
 $("#scrim").addEventListener("click",e=>{if(e.target.id==="scrim")closeM()});
@@ -1008,7 +939,7 @@ function renderManual(){
     ${sec("依頼したあとの流れ",`①お客様が依頼 → ②「🕘最近の履歴」に<b>確認中</b>で表示 → ③スタッフが承認/却下 → ④<b>処理後にLINEで自動通知</b>＋履歴が<b>反映済</b>／<b>見送り</b>に変わる。`)}`;
   const STAFF=`
     ${sec("この画面の役割",`お客様のマイページの変更・依頼を<b>確認して処理する</b>ための管理コンソール。基本は<b>見るだけ・ログ</b>（場所はSSパトロールで自動最新化）。操作は<b>承認/却下</b>と<b>確認済みチェック</b>のみ。`)}
-    ${sec("🛠 対応センター（まずここ）",`Slackにアラートが来たら、ヘッダー「🛠 対応」を開くと<b>専用ボード</b>（🔴整合の相違｜🟡お客様の依頼）で一覧。各事象が【事象】【説明】【対応（ボタン）】で表示され、<b>ボタンを押すだけで正常化</b>。<br>・<b>整合の相違</b>（予約情報≠マイページ/OP）→「マイページ・OPの値で統一（推奨）」で一致＝正常化。<br>・<b>お客様の依頼</b>→「承認して反映＋LINE通知」/「却下＋LINE通知」。<br>🛡 <b>押す前に確認</b>ダイアログが出ます。統一した後も<b>「↩ 元に戻す」</b>で取り消せます（一度で確定して戻せない、ではありません）。`)}
+    ${sec("整合の相違（予約情報≠マイページ/OP）の対応",`ボードの<b>「🔴 予約情報 ≠ マイページ/OP」列</b>に、値が食い違う予約が並びます。カードを開くと【予約情報の値】と【マイページ/OPの値】が出るので、<br>「✅ マイページ・OPの値で統一（推奨）」または「予約情報の値で統一」を押すと<b>一致＝正常化</b>。<br>🛡 <b>押す前に確認</b>ダイアログが出ます。統一後も<b>「↩ 元に戻す」</b>で取り消せます。<br>※毎朝6時の自動チェックで相違があればSlackにも通知。`)}
     ${sec("ボードの見方（列）",`・${chip("情報相違(SS≠OP)","#dc2626")} フォーム(SS)とOPシートの場所が食い違い＝要確認・修正<br>・${chip("位置情報更新あり(迷子)","#7c3aed")} お客様がフォームで場所を再更新＝要確認（更新後の値は入っている）<br>・${chip("変更リクエスト","#b45309")} お客様が承認制の依頼を出した（要対応）<br>・${chip("情報変更(未確認)","#b91c1c")} お客様が即時変更を行った（お届け24h前まで/回収2h前まで）`)}
     ${sec("🕘 履歴（誰が・何を・いつ）",`ヘッダー「🕘 履歴」で、お客様・担当がマイページで行った<b>変更／依頼を新しい順</b>に一覧（日単位）。「〇〇様がお届け場所を変更しました」「担当が補償変更を承認・反映しました」等。`)}
     ${sec("🔔 変更依頼の承認/却下（重要）",`「🔔 変更依頼」を開く → 各依頼に<b>[承認]</b>/<b>[却下]</b>。<br>・<b>承認</b>＝<b>実際に反映</b>されます：補償→予約に反映／オプション→予約＋OPシート／お届け場所・時間(24h以内)→反映／キャンセル→<b>予約キャンセル＋配車解除</b>。同時に<b>お客様へLINE通知</b>。<br>・<b>却下</b>＝反映せず<b>お客様へLINE通知</b>（見送り）。<br><b>※承認/却下は取り消せません</b>。特にキャンセル承認は配車も解除されるので内容を確認のうえ実行。`)}

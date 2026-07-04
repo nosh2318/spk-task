@@ -433,7 +433,7 @@ Deno.serve(async (req) => {
     if (returnTime !== null && !validTime(returnTime)) return json({ error: "回収時間は9:00〜19:00（30分刻み）で指定してください" }, 400, origin);
     if (delPlace === null && colPlace === null && lendTime === null && returnTime === null) return json({ error: "変更内容がありません" }, 400, origin);
 
-    // 受付ルール（2026-07-04 オーナー確定）:
+    // 受付ルール（ユーザー主導での時間・場所変更・オーナー確定）:
     //  DEL(お届け): 24時間前まで即時。24時間以内は「承認制」(依頼→スタッフ承認で反映)。
     //  COL(回収):   2時間前まで即時。2時間以内は受付終了(公式LINE)。
     const num = (k: string) => (has(k) && p[k] != null && p[k] !== "") ? Number(p[k]) : null;
@@ -453,7 +453,6 @@ Deno.serve(async (req) => {
       const reqLabels: string[] = [];
       if (delPlace !== null) { await mkReq("del_place", delPlace, { del_place: delPlace, ...(dLat != null && dLng != null ? { del_lat: dLat, del_lng: dLng } : {}) }); reqLabels.push("お届け場所"); }
       if (lendTime !== null) { await mkReq("lend_time", lendTime, { lend_time: lendTime }); reqLabels.push("お届け時間"); }
-      // COL も同時指定で2h超なら即時反映（DELは承認・COLは即時）
       let colLabels: string[] = [];
       if (touchesCol) colLabels = (await applyPlaceTime(store, r, resId, null, colPlace, null, returnTime, null, null, cLat, cLng, cAct)) || [];
       await notifySlack(`🟡 *お届け変更の依頼(24h以内・承認制)* [札幌] ${r.name}様 ${resId}\n依頼: ${reqLabels.join("・")}${colLabels.length ? " ／ 即時反映:" + colLabels.join("・") : ""}\n→ 管理コンソールで承認してください（承認で反映＋顧客LINE通知）`);
@@ -475,6 +474,9 @@ Deno.serve(async (req) => {
     const map: Record<string, string> = { option: "有料オプション(シート類)変更", method: "貸出/返却方法(区分)変更", insurance: "補償(免責)変更" };
     if (!map[reqType]) return json({ error: "リクエスト種別が不正です" }, 400, origin);
     if (detail.length < 1) return json({ error: "変更内容を入力してください" }, 400, origin);
+    // オプション・補償の変更リクエストは「出発(お届け)の2時間前まで」受付。以降は公式LINE。
+    if (withinHours(r.lend_date, r.lend_time || r.del_time || "", 2))
+      return json({ error: "出発の2時間前を過ぎているため、変更のご依頼は公式LINEにて承ります", lineOnly: true }, 409, origin);
     const already = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.${reqType}&status=eq.requested&select=id&limit=1`);
     if (already[0]) return json({ ok: true, alreadyRequested: true, message: "同じ内容の依頼を受付済みです" }, 200, origin);
     // 構造化ターゲット（承認時に自動反映するための値）: insurance={insurance:"NOC"} / option={opt_c:1,opt_j:0,...}
