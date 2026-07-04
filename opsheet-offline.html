@@ -1,0 +1,125 @@
+<!doctype html><html lang=ja><head>
+<meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta http-equiv="Cache-Control" content="no-cache">
+<title>当日配車（オフライン対応）</title>
+<style>
+*{box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans",sans-serif;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:#f4f6fa;color:#0f1f45}
+.hd{position:sticky;top:0;z-index:5;background:#0f1f45;color:#fff;padding:calc(env(safe-area-inset-top) + 10px) 14px 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.hd b{color:#fabe00}.hd .t{font-weight:800;font-size:15px}
+.state{margin-left:auto;font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px}
+.state.on{background:#0e9f50;color:#fff}.state.off{background:#dc2626;color:#fff}.state.load{background:#334; color:#cdd9f0}
+.banner{background:#fff4e5;border-bottom:2px solid #f59e0b;color:#92400e;font-size:12.5px;font-weight:700;padding:8px 14px}
+.day{padding:12px 14px 4px;font-weight:900;font-size:14px;color:#334}
+.day .cnt{font-weight:700;font-size:11px;color:#64748b;margin-left:6px}
+.card{background:#fff;margin:6px 12px;border-radius:12px;border:1px solid #e5e9f0;padding:10px 12px;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+.card .r1{display:flex;align-items:center;gap:8px}
+.tag{font-weight:900;font-size:11px;padding:3px 8px;border-radius:7px;color:#fff;white-space:nowrap}
+.time{font-weight:900;font-size:16px;font-variant-numeric:tabular-nums}
+.nm{font-weight:800;font-size:14px;margin-left:auto;text-align:right}
+.r2{margin-top:6px;font-size:13px;display:flex;flex-wrap:wrap;gap:4px 12px}
+.r2 .lb{color:#94a3b8;font-weight:700;font-size:11px}
+.car{font-weight:800;color:#0f1f45}
+.place{font-weight:700}
+.asg{background:#eef2ff;color:#3730a3;border-radius:6px;padding:1px 7px;font-weight:800;font-size:12px}
+.empty{padding:40px;text-align:center;color:#94a3b8}
+.login{max-width:340px;margin:60px auto;padding:24px;background:#fff;border-radius:14px;text-align:center}
+.login input{width:100%;padding:12px;border:1.5px solid #cbd5e1;border-radius:10px;margin-bottom:10px;font-size:16px}
+.login button{width:100%;padding:13px;background:#0f1f45;color:#fff;border:0;border-radius:10px;font-weight:800;font-size:15px}
+.foot{padding:16px;text-align:center;color:#94a3b8;font-size:11px}
+.rfr{background:#1b3a6b;color:#fff;border:0;border-radius:8px;padding:5px 10px;font-weight:700;font-size:12px}
+</style></head><body>
+<div id=app><div class=empty>読み込み中…</div></div>
+<script>
+const SB="https://ckrxttbnawkclshczsia.supabase.co";
+const ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
+const TKEY="sb-ckrxttbnawkclshczsia-auth-token";
+const CACHE="spk_opcache_v1";
+const $=s=>document.querySelector(s);
+function tok(){try{const d=JSON.parse(localStorage.getItem(TKEY)||"{}");const t=d.access_token||(Array.isArray(d)?d[0]:"")||d.currentSession?.access_token||"";const ex=d.expires_at||d.currentSession?.expires_at;if(ex&&ex*1000<Date.now())return"";return t;}catch(e){return""}}
+function ymd(o){const d=new Date(Date.now()+9*3600000+o*86400000);return d.toISOString().slice(0,10)}
+function fmtClock(ms){if(!ms)return"—";const d=new Date(ms);return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0")}
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
+const TAGC={"DEL":"#0e9f50","COL":"#dc2626","洗車":"#0284c7","その他":"#64748b"};
+const TAGL={"DEL":"お届け","COL":"回収","洗車":"洗車","その他":"その他"};
+function placeOf(t){let cj={};try{cj=JSON.parse(t.changed_json||"{}")}catch(e){}return(cj._placeSource==="manual"?t.place:(cj._ssPlace||t.place))||""}
+
+async function fetchOP(){
+  const t=tok();const h={apikey:ANON,Authorization:"Bearer "+(t||ANON)};
+  const days="("+ymd(0)+","+ymd(1)+")";
+  const url=SB+"/rest/v1/tasks?date=in."+days+"&select=_id,type,date,time,name,place,changed_json,assignee,assigned_vehicle,plate_no,vehicle,tel,ota,done,deleted&order=date.asc,time.asc";
+  const r=await fetch(url,{headers:h,signal:AbortSignal.timeout(12000)});
+  if(!r.ok)throw new Error("HTTP "+r.status);
+  return await r.json();
+}
+function saveCache(rows){try{localStorage.setItem(CACHE,JSON.stringify({at:Date.now(),rows}))}catch(e){}}
+function loadCache(){try{return JSON.parse(localStorage.getItem(CACHE)||"null")}catch(e){return null}}
+
+function render(rows,online,at){
+  const days=[ymd(0),ymd(1)];const wd=["日","月","火","水","木","金","土"];
+  let body="";
+  for(const d of days){
+    const dr=rows.filter(x=>x.date===d&&x.type!=="CXL"&&x.deleted!==true);
+    const dd=new Date(d+"T00:00:00+09:00");
+    body+=`<div class=day>${d.slice(5).replace("-","/")}(${wd[dd.getDay()]}) <span class=cnt>${dr.length}件</span></div>`;
+    if(!dr.length){body+=`<div class=empty style="padding:16px">なし</div>`;continue;}
+    for(const t of dr){
+      const ty=(t.type==="DEL"||t.type==="COL"||t.type==="洗車")?t.type:"その他";
+      const pl=placeOf(t);const car=[t.assigned_vehicle,t.plate_no].filter(Boolean).join(" ");
+      body+=`<div class=card><div class=r1>
+        <span class=tag style="background:${TAGC[ty]}">${TAGL[ty]}</span>
+        <span class=time>${esc(t.time||"—")}</span>
+        <span class=nm>${esc(t.name||"")}</span></div>
+        <div class=r2>
+          ${car?`<span><span class=lb>車 </span><span class=car>${esc(car)}</span></span>`:""}
+          ${pl?`<span><span class=lb>場所 </span><span class=place>${esc(pl)}</span></span>`:`<span><span class=lb>場所 </span><span style="color:#dc2626">未設定</span></span>`}
+          ${t.assignee?`<span class=asg>${esc(t.assignee)}</span>`:""}
+          ${t.tel?`<span><span class=lb>☎ </span>${esc(t.tel)}</span>`:""}
+          ${t.ota?`<span class=lb>${esc(t.ota)}</span>`:""}
+        </div></div>`;
+    }
+  }
+  const st=online?`<span class="state on">🟢 最新 ${fmtClock(at)}</span>`:`<span class="state off">⚠️ オフライン</span>`;
+  const banner=online?"":`<div class=banner>⚠️ サーバーに接続できません。<b>${fmtClock(at)}時点の保存データ</b>を表示中（読み取り専用）。復旧後に自動更新されます。</div>`;
+  $("#app").innerHTML=`<div class=hd><span class=t>📋 当日配車 <b>札幌</b></span>${st}
+    <button class=rfr onclick="refresh()">🔄更新</button></div>${banner}${body}
+    <div class=foot>オフライン対応：一度読めた当日データを端末に保存。サーバー障害中も当日分は見られます。<br>最終取得 ${at?new Date(at).toLocaleString("ja-JP"):"—"}</div>`;
+}
+function showLogin(msg){
+  $("#app").innerHTML=`<div class=login><div style="font-weight:900;font-size:18px;color:#0f1f45;margin-bottom:4px">当日配車</div>
+    <div style="font-size:12px;color:#64748b;margin-bottom:14px">本体アプリと同じアカウント</div>
+    <input id=le type=email placeholder=メール autocapitalize=off autocorrect=off inputmode=email>
+    <input id=lp type=password placeholder=パスワード onkeydown="if(event.key==='Enter')doLogin()">
+    <button onclick=doLogin()>ログイン</button>
+    <div id=lerr style="color:#dc2626;font-size:12px;margin-top:8px">${msg?esc(msg):""}</div></div>`;
+}
+async function doLogin(){
+  const email=($("#le").value||"").trim().toLowerCase(),password=($("#lp").value||"").trim();
+  if(!email||!password){$("#lerr").textContent="入力してください";return}
+  $("#lerr").textContent="ログイン中…";
+  try{const r=await fetch(SB+"/auth/v1/token?grant_type=password",{method:"POST",headers:{apikey:ANON,"Content-Type":"application/json"},body:JSON.stringify({email,password})});
+    const d=await r.json();if(!r.ok||!d.access_token){$("#lerr").textContent="失敗:"+(d.error_description||d.msg||"確認してください");return}
+    localStorage.setItem(TKEY,JSON.stringify(d));boot();
+  }catch(e){$("#lerr").textContent="通信エラー:"+e}
+}
+async function refresh(){
+  try{
+    const rows=await fetchOP();saveCache(rows);render(rows,true,Date.now());
+  }catch(e){
+    const c=loadCache();
+    if(c&&c.rows){render(c.rows,false,c.at);}
+    else{ if(!tok()){showLogin("");return;} $("#app").innerHTML=`<div class=empty>サーバー障害中で、まだ保存データがありません。<br>接続が戻ったら一度開いてください。<br><button class=rfr onclick=refresh() style="margin-top:10px">再試行</button></div>`;}
+  }
+}
+function boot(){
+  // まずキャッシュを即表示（オフラインでも一瞬で出す）→ その後オンラインなら更新
+  const c=loadCache();
+  if(c&&c.rows)render(c.rows,false,c.at);
+  else if(!tok()){showLogin("");return;}
+  else $("#app").innerHTML=`<div class=empty>読み込み中…</div>`;
+  refresh();
+}
+boot();
+setInterval(()=>{if(navigator.onLine)refresh()},180000); // 3分ごと自動更新（オンライン時）
+window.addEventListener("online",refresh);
+</script></body></html>
