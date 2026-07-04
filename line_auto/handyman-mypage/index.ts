@@ -280,11 +280,46 @@ Deno.serve(async (req) => {
     // 監視アラートは MYPAGE_SILENT に関係なく必ず発報（slackPost で強制）
     if (conflicts.length > 0) {
       const lines = conflicts.slice(0, 15).map((c: any) => `・${c.name || ""}様 ${c.id}: ${c.fields.map((f: any) => `${f.field}[予約:${f.reservations}≠OP:${f.op}]`).join(" / ")}`).join("\n");
-      await slackPost(`🔍 *マイページ整合パトロール* [札幌]\n照合${checked}件 → 一致${okCount} / *相違${conflicts.length}件*\n${lines}${conflicts.length > 15 ? `\n…他${conflicts.length - 15}件` : ""}\n※予約情報とマイページ/OPで表示が異なる可能性。管理画面で確認・修正を。`);
+      await slackPost(`🔍 *マイページ整合アラート* [札幌]\n照合${checked}件 → 一致${okCount} / *要対応 ${conflicts.length}件*\n${lines}${conflicts.length > 15 ? `\n…他${conflicts.length - 15}件` : ""}\n\n👉 *対応はこちら（1画面で確認→ボタンで統一）*\nhttps://nosh2318.github.io/spk-task/my-admin.html の「🛠 対応」タブ`);
     } else if (bySecret) {
       await slackPost(`🟢 *マイページ整合パトロール* [札幌] 照合${checked}件すべて一致（予約情報＝マイページ＝OPシート）。`);
     }
     return json(report, 200, origin);
+  }
+
+  // ==== resolve: 整合相違を「どちらかの値で統一」して解消（対応タブから）====
+  if (action === "resolve") {
+    const staffToken = String(p.staff_token || "").trim();
+    if (!staffToken) return json({ error: "スタッフ認証がありません" }, 401, origin);
+    const who = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${staffToken}` } });
+    if (!who.ok) return json({ error: "スタッフ認証に失敗しました" }, 401, origin);
+    const user = await who.json().catch(() => ({})); const actor = String(user?.email || "staff");
+    const st0 = STORES.spk;
+    const rid = String(p.reservation_id || "");
+    const field = String(p.field || "");
+    const value = String(p.value ?? "");
+    const target = String(p.target || ""); // "resv"（予約に合わせる）| "op"（OP/マイページに合わせる）
+    const FIELDS = ["del_place", "col_place", "lend_time", "return_time", "insurance", "opt_c", "opt_j", "opt_b"];
+    if (!rid || !FIELDS.includes(field) || (target !== "resv" && target !== "op")) return json({ error: "パラメータ不正" }, 400, origin);
+    const rr = (await sbGet(st0.resv, `id=eq.${encodeURIComponent(rid)}&select=id,${field.startsWith("opt") ? field : field},del_time,col_time,lend_time,return_time`))[0];
+    if (!rr) return json({ error: "予約が見つかりません" }, 404, origin);
+    if (target === "resv") {
+      const rp: Record<string, unknown> = {};
+      if (field === "lend_time") { rp.lend_time = value; rp.del_time = value; }
+      else if (field === "return_time") { rp.return_time = value; rp.col_time = value; }
+      else if (field.startsWith("opt")) rp[field] = Number(value) || 0;
+      else rp[field] = value;
+      await sbPatch(st0.resv, `id=eq.${encodeURIComponent(rid)}`, rp);
+    } else { // op: tasksへ書いて予約情報側の値をOP/マイページに反映
+      if (field === "del_place") await patchTasksSpk(st0, rid, value, null, null, null, ["お届け場所"]);
+      else if (field === "col_place") await patchTasksSpk(st0, rid, null, value, null, null, ["回収場所"]);
+      else if (field === "lend_time") await patchTasksSpk(st0, rid, null, null, value, null, ["お届け時間"]);
+      else if (field === "return_time") await patchTasksSpk(st0, rid, null, null, null, value, ["回収時間"]);
+      else if (field === "insurance") { const its = await sbGet(st0.tasks, `reservation_id=eq.${encodeURIComponent(rid)}&deleted=not.is.true&select=_id`); for (const t of its) await sbPatch(st0.tasks, `_id=eq.${encodeURIComponent(String(t._id))}`, { insurance: value }); }
+      else if (field.startsWith("opt")) { const key = "_opt" + field.slice(4).toUpperCase(); const its = await sbGet(st0.tasks, `reservation_id=eq.${encodeURIComponent(rid)}&deleted=not.is.true&select=_id,changed_json`); for (const t of its) { let cj: any = t.changed_json; if (typeof cj === "string") { try { cj = JSON.parse(cj); } catch { cj = {}; } } cj = cj || {}; cj[key] = Number(value) || 0; await sbPatch(st0.tasks, `_id=eq.${encodeURIComponent(String(t._id))}`, { changed_json: cj, ...(field === "opt_c" ? { opt_c: (Number(value) || 0) > 0 } : {}) }); } }
+    }
+    await sbPost("mypage_changes", { reservation_id: rid, store: "spk", field, old_value: "", new_value: value, source: "staff", status: "applied", actor, note: `整合統一(${target === "resv" ? "予約側を更新" : "OP側を更新"})` });
+    return json({ ok: true, field, value, target }, 200, origin);
   }
 
   const token = String(p.token || "").trim();

@@ -407,6 +407,7 @@ function renderInner(){
     <span class="fresh" title="30秒ごと自動更新。SS(フォーム)はGoogle側で最大約5分キャッシュされるため、お客様の変更反映に数分の遅れがあります。">🕐 ${fmtClock(LAST_LOAD)} <span class="auto">自動30秒</span></span>
     <button onclick="loadAll(true)">🔄 更新</button>
     <button class="${rc?"alert":""}" onclick="VIEW='changes';SEL=null;render()">🔔 変更依頼 ${rc}</button>
+    <button class="alert" onclick="openActions()">🛠 対応</button>
     <button onclick="openPatrol()">🔍 整合</button>
     <button onclick="openHistory()">🕘 履歴</button>
     <button onclick="openManual()">📖 マニュアル</button>
@@ -835,6 +836,77 @@ function openHistory(){
     <div class="acts" style="margin-top:12px"><button class="btn ghost" onclick="closeM()">閉じる</button></div>`;
   $("#scrim").classList.add("show");
 }
+/* ===== 🛠 対応センター：アラート→確認→対応→正常化 を1画面で導く ===== */
+let AC_ITEMS=[];
+function acFldJp(f){return {del_place:"お届け場所",col_place:"回収場所",lend_time:"お届け時間",return_time:"回収時間",insurance:"補償",opt_c:"チャイルドシート",opt_j:"ジュニアシート",opt_b:"ベビーシート"}[f]||f}
+async function openActions(){
+  const st=tok(); if(!st){toast("ログインが必要です");return}
+  $("#modal").style.maxWidth="840px";
+  $("#modal").innerHTML=`<h3>🛠 対応センター</h3><div class="empty">状況を確認中…</div>`;
+  $("#scrim").classList.add("show");
+  let conflicts=[];
+  try{const r=await fetch(FN+"/handyman-mypage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"patrol",staff_token:st})});const j=await r.json().catch(()=>({}));if(j.ok)conflicts=j.conflicts||[];}catch(e){}
+  AC_ITEMS=[];
+  conflicts.forEach(c=>c.fields.forEach(f=>AC_ITEMS.push({id:c.id,name:c.name,field:f.field,resv:f.reservations,op:f.op})));
+  renderActions();
+}
+function renderActions(){
+  const reqs=Object.values(CHG).flat().filter(c=>c.status==="requested");
+  const nameOf=id=>{const r=RES.find(x=>x.id===id);return r?r.name:""};
+  const step=(n,t)=>`<span style="display:inline-block;min-width:52px;font-size:10.5px;font-weight:800;color:#64748b">${t}</span>`;
+  // 整合の相違カード
+  const isTime=f=>f==="lend_time"||f==="return_time";
+  const confCards=AC_ITEMS.map((it,idx)=>{
+    const L=acFldJp(it.field);
+    const opv=isTime(it.field)?it.op:`「${esc(it.op)}」`, rev=isTime(it.field)?it.resv:`「${esc(it.resv)}」`;
+    return `<div style="border:1px solid #f0d0d0;border-radius:11px;padding:11px 12px;margin-bottom:9px;background:#fffafa">
+      <div style="font-weight:800;font-size:13px;margin-bottom:6px">${esc(it.name||"—")}様 <span style="color:#94a3b8;font-weight:600;font-size:11px">${esc(it.id)}</span></div>
+      <div style="display:grid;grid-template-columns:56px 1fr;gap:4px 6px;font-size:12.5px;line-height:1.6">
+        <div style="font-size:10.5px;font-weight:800;color:#dc2626;padding-top:2px">事象</div><div><b>${esc(L)}</b>が予約情報とマイページ/OPで<b style="color:#dc2626">食い違っています</b></div>
+        <div style="font-size:10.5px;font-weight:800;color:#64748b;padding-top:2px">説明</div><div>予約情報＝${esc(rev)}／マイページ・OP＝<b>${esc(opv)}</b>。マイページ・OP側が<b>運用の最新</b>（お客様に表示中）。このままだと画面により表示が違います。</div>
+        <div style="font-size:10.5px;font-weight:800;color:#0e7a3b;padding-top:3px">対応</div><div>どちらの値に統一しますか？<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:5px">
+          <button class="btn ok acb${idx}" style="font-size:12px" onclick="acResolve(${idx},'resv')">✅ マイページ・OPの${esc(opv)}で統一（推奨）</button>
+          <button class="btn ghost acb${idx}" style="font-size:12px" onclick="acResolve(${idx},'op')">予約情報の${esc(rev)}で統一</button>
+          <button class="btn ghost acb${idx}" style="font-size:12px" onclick="closeM();selectRes('${it.id}')">予約を開く ▸</button></div></div>
+        <div style="font-size:10.5px;font-weight:800;color:#64748b;padding-top:2px">結果</div><div id="acres_${idx}" style="color:#94a3b8">未対応</div>
+      </div></div>`;
+  }).join("");
+  // 変更依頼カード
+  const reqCards=reqs.map(c=>{
+    const nm=nameOf(c.reservation_id)||"お客様";
+    return `<div style="border:1px solid #f0e0c0;border-radius:11px;padding:11px 12px;margin-bottom:9px;background:#fffdf5">
+      <div style="font-weight:800;font-size:13px;margin-bottom:6px">${esc(nm)}様 <span style="color:#94a3b8;font-weight:600;font-size:11px">${esc(c.reservation_id)}</span></div>
+      <div style="display:grid;grid-template-columns:56px 1fr;gap:4px 6px;font-size:12.5px;line-height:1.6">
+        <div style="font-size:10.5px;font-weight:800;color:#b45309;padding-top:2px">事象</div><div>お客様が<b>${esc(fldJp(c.field))}${c.field==="cancel"?"を申請":"の変更を依頼"}</b></div>
+        <div style="font-size:10.5px;font-weight:800;color:#64748b;padding-top:2px">説明</div><div>${esc(c.new_value||c.note||"")}</div>
+        <div style="font-size:10.5px;font-weight:800;color:#0e7a3b;padding-top:3px">対応</div><div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:2px">
+          <button class="btn ok" style="font-size:12px" onclick="decide(${c.id},'approved').then(()=>openActions())">承認して反映＋LINE通知</button>
+          <button class="btn dang" style="font-size:12px" onclick="decide(${c.id},'rejected').then(()=>openActions())">却下＋LINE通知</button></div></div>
+        <div style="font-size:10.5px;font-weight:800;color:#64748b;padding-top:2px">結果</div><div style="color:#94a3b8">未対応（承認/却下で確定・お客様へ自動通知）</div>
+      </div></div>`;
+  }).join("");
+  const nTot=AC_ITEMS.length+reqs.length;
+  $("#modal").innerHTML=`<h3>🛠 対応センター <span style="font-size:12px;color:${nTot?'#dc2626':'#0e7a3b'};font-weight:800">${nTot?`要対応 ${nTot}件`:'すべて対応済み ✅'}</span></h3>
+    <div style="font-size:11.5px;color:var(--sub);margin-bottom:10px">アラートで来た事象を上から確認 → ボタンで対応 → 「結果」に反映されれば正常化完了です。</div>
+    <div style="max-height:66vh;overflow:auto">
+      ${AC_ITEMS.length?`<div style="font-weight:800;font-size:12.5px;color:#dc2626;margin:2px 0 7px">🔴 整合の相違（予約情報とマイページ/OPが違う）${AC_ITEMS.length}件</div>${confCards}`:""}
+      ${reqs.length?`<div style="font-weight:800;font-size:12.5px;color:#b45309;margin:12px 0 7px">🟡 お客様からの依頼 ${reqs.length}件</div>${reqCards}`:""}
+      ${nTot?"":`<div class="empty">✅ 現在、対応が必要な事象はありません<br><span style="font-size:11.5px">予約情報・マイページ・OPシートは一致しています</span></div>`}
+    </div>
+    <div class="acts" style="margin-top:10px"><button class="btn ghost" onclick="openActions()">🔄 再チェック</button><button class="btn ghost" onclick="closeM()">閉じる</button></div>`;
+}
+async function acResolve(idx,target){
+  const it=AC_ITEMS[idx]; if(!it)return; const st=tok(); if(!st){toast("ログインが必要");return}
+  const value=(target==="resv")?it.op:it.resv;
+  const res=document.getElementById("acres_"+idx); if(res){res.innerHTML="⏳ 反映中…";res.style.color="#b45309"}
+  document.querySelectorAll(".acb"+idx).forEach(b=>b.disabled=true);
+  try{
+    const r=await fetch(FN+"/handyman-mypage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"resolve",staff_token:st,reservation_id:it.id,field:it.field,value,target})});
+    const j=await r.json().catch(()=>({}));
+    if(r.ok&&j.ok){if(res){res.innerHTML=`✅ 「${esc(value)}」で統一しました（正常化）`;res.style.color="#0e7a3b"}it.done=true;loadAll(true);}
+    else{if(res){res.textContent="失敗："+(j.error||r.status);res.style.color="#dc2626"}document.querySelectorAll(".acb"+idx).forEach(b=>b.disabled=false);}
+  }catch(e){if(res){res.textContent="通信エラー";res.style.color="#dc2626"}document.querySelectorAll(".acb"+idx).forEach(b=>b.disabled=false);}
+}
 /* ===== 整合パトロール：予約情報＝マイページ＝OPシート を全予約で突合 ===== */
 async function openPatrol(){
   const st=tok(); if(!st){toast("ログインが必要です");return}
@@ -886,6 +958,7 @@ function renderManual(){
     ${sec("依頼したあとの流れ",`①お客様が依頼 → ②「🕘最近の履歴」に<b>確認中</b>で表示 → ③スタッフが承認/却下 → ④<b>処理後にLINEで自動通知</b>＋履歴が<b>反映済</b>／<b>見送り</b>に変わる。`)}`;
   const STAFF=`
     ${sec("この画面の役割",`お客様のマイページの変更・依頼を<b>確認して処理する</b>ための管理コンソール。基本は<b>見るだけ・ログ</b>（場所はSSパトロールで自動最新化）。操作は<b>承認/却下</b>と<b>確認済みチェック</b>のみ。`)}
+    ${sec("🛠 対応センター（まずここ）",`Slackにアラートが来たら、ヘッダー「🛠 対応」を開けば<b>1画面で完結</b>します。各事象が【事象】【説明】【対応（ボタン）】【結果】で表示され、<b>ボタンを押すだけで正常化</b>。<br>・<b>整合の相違</b>（予約情報とマイページ/OPが違う）→「マイページ・OPの値で統一（推奨）」を押すと一致＝正常化。<br>・<b>お客様の依頼</b>→「承認して反映＋LINE通知」/「却下＋LINE通知」。<br>「結果」に✅が出れば対応完了です。`)}
     ${sec("ボードの見方（列）",`・${chip("情報相違(SS≠OP)","#dc2626")} フォーム(SS)とOPシートの場所が食い違い＝要確認・修正<br>・${chip("位置情報更新あり(迷子)","#7c3aed")} お客様がフォームで場所を再更新＝要確認（更新後の値は入っている）<br>・${chip("変更リクエスト","#b45309")} お客様が承認制の依頼を出した（要対応）<br>・${chip("情報変更(未確認)","#b91c1c")} お客様が即時変更を行った（お届け24h前まで/回収2h前まで）`)}
     ${sec("🕘 履歴（誰が・何を・いつ）",`ヘッダー「🕘 履歴」で、お客様・担当がマイページで行った<b>変更／依頼を新しい順</b>に一覧（日単位）。「〇〇様がお届け場所を変更しました」「担当が補償変更を承認・反映しました」等。`)}
     ${sec("🔔 変更依頼の承認/却下（重要）",`「🔔 変更依頼」を開く → 各依頼に<b>[承認]</b>/<b>[却下]</b>。<br>・<b>承認</b>＝<b>実際に反映</b>されます：補償→予約に反映／オプション→予約＋OPシート／お届け場所・時間(24h以内)→反映／キャンセル→<b>予約キャンセル＋配車解除</b>。同時に<b>お客様へLINE通知</b>。<br>・<b>却下</b>＝反映せず<b>お客様へLINE通知</b>（見送り）。<br><b>※承認/却下は取り消せません</b>。特にキャンセル承認は配車も解除されるので内容を確認のうえ実行。`)}
