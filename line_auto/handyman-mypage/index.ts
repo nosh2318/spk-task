@@ -184,6 +184,42 @@ Deno.serve(async (req) => {
   // ==== keep-warm ping（DB不使用・即応答）＝cronでisolateを温めコールドスタート回避 ====
   if (action === "ping") return json({ ok: true, warm: true }, 200, origin);
 
+  // ==== notify_preview: 全通知パターンをサンプルデータでSlackへ（DB書込/LINEなし・リリース前確認用）====
+  if (action === "notify_preview") {
+    const who = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${String(p.staff_token || "").trim()}` } });
+    if (!who.ok) return json({ error: "unauthorized" }, 401, origin);
+    const N = "山田 太郎", ID = "R0SAMPLE01", PD = "2026-07-10〜2026-07-12", V = "ノア（Bクラス）";
+    const samples: MpCard[] = [
+      { emoji: "✏️", title: "マイページで変更（即時反映済）", name: N, resId: ID, period: PD, vehicle: V,
+        lines: ["📍 *お届け先*　（未設定） → *ススキノ ○○ホテル*", "🕐 *お届け時間*　10:00 → *11:00*", "📍 *回収先*　札幌駅 → *大通公園*"],
+        action: "✅ OPシートに反映済み・*対応不要*（内容をご確認ください／🕘履歴にも記録）" },
+      { emoji: "🟡", title: "お届け変更の承認待ち（お届け24時間以内）", name: N, resId: ID, period: PD, vehicle: V,
+        lines: ["📍 *お届け先*（希望）　○○ホテル → *△△ホテル*", "🕐 *お届け時間*（希望）　10:00 → *09:30*", "↳ 回収側（回収時間）は即時反映済み"],
+        action: "⚠️ *要承認*：管理コンソール →「🔔変更依頼」で承認（承認で反映＋顧客へLINE通知）" },
+      { emoji: "🟡", title: "有料オプション(シート類)変更の依頼（承認待ち）", name: N, resId: ID, period: PD, vehicle: V,
+        lines: ["📝 *依頼内容*\nチャイルドシート 1 → 2"], action: "⚠️ *要対応*：管理コンソール →「🔔変更依頼」で承認/却下（即時反映されていません）" },
+      { emoji: "🟡", title: "補償(免責)変更の依頼（承認待ち）", name: N, resId: ID, period: PD, vehicle: V,
+        lines: ["📝 *依頼内容*\n基本＋免責補償 → 安心ワイドパック（NOC）"], action: "⚠️ *要対応*：管理コンソール →「🔔変更依頼」で承認/却下（即時反映されていません）" },
+      { emoji: "🟡", title: "貸出/返却方法(区分)変更の依頼（承認待ち）", name: N, resId: ID, period: PD, vehicle: V,
+        lines: ["📝 *依頼内容*\nお届け → 来店受取に変更希望"], action: "⚠️ *要対応*：管理コンソール →「🔔変更依頼」で承認/却下（即時反映されていません）" },
+      { emoji: "🔴", title: "キャンセル申請（承認待ち）", name: N, resId: ID, period: PD, vehicle: V,
+        lines: ["📝 *理由*\n急な予定変更のため"], action: "⚠️ *要対応*：管理コンソール →「🔔変更依頼」で承認/却下（承認でキャンセル確定＋配車解除＋顧客LINE）" },
+      { emoji: "🟢", title: "早め回収OK（返却準備完了）", name: N, resId: ID, period: PD, vehicle: V,
+        lines: ["🕐 *予定回収*　12:00", "🕒 *お客様の希望*　*10:30〜*"], action: "💡 スケジュールに余裕があれば早めに回収をご検討ください（お客様には「確認中」と表示中）" },
+      { emoji: "🟢", title: "早め回収OK（返却準備完了）", name: N, resId: ID, period: PD, vehicle: V,
+        lines: ["🕐 *予定回収*　12:00", "🕒 *お客様の希望*　指定なし"], action: "💡 スケジュールに余裕があれば早めに回収をご検討ください（お客様には「確認中」と表示中）" },
+      { emoji: "✅", title: "承認して反映しました（オプション）", name: N, resId: ID, period: PD, vehicle: V,
+        lines: ["📝 *内容*　チャイルドシート 1 → 2", "👤 *担当*　大下"], action: "✅ 顧客へLINE通知済み・予約に反映済み" },
+      { emoji: "✅", title: "承認して反映しました（キャンセル）", name: N, resId: ID, period: PD, vehicle: V,
+        lines: ["📝 *内容*　キャンセル依頼", "👤 *担当*　大下"], action: "✅ 顧客へLINE通知済み＋キャンセル確定・配車解除" },
+      { emoji: "🚫", title: "却下しました（補償）", name: N, resId: ID, period: PD, vehicle: V,
+        lines: ["📝 *内容*　安心ワイドパックへ変更希望", "👤 *担当*　大下"], action: "✅ 顧客へLINE通知済み（見送り）" },
+    ];
+    await slackPost("🧪 *マイページ通知プレビュー*（本日リリース前の全パターン確認・以下はサンプルで実データではありません）");
+    for (const s of samples) { const { text, blocks } = mpCard(s); await slackPost(text, blocks); }
+    return json({ ok: true, sent: samples.length }, 200, origin);
+  }
+
   // ==== 管理者アクション: decide（承認/却下→実反映＋顧客LINE通知）====
   // スタッフの本体ログインJWTを検証（token=mypage_tokenは使わない）。
   if (action === "decide") {
