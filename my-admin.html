@@ -226,7 +226,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
 <script>
 const SB="https://ckrxttbnawkclshczsia.supabase.co";
 const FN=SB+"/functions/v1";
-const ADMIN_VER="v2.4 異常値=場所ソース不整合を広く捕捉";
+const ADMIN_VER="v2.5 異常値=3条件確定＋定義ポップ";
 const ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
 const $=s=>document.querySelector(s);
 function showErr(m){const e=document.getElementById("errbar");if(e){e.style.display="block";e.textContent="⚠️ "+m}}
@@ -393,13 +393,23 @@ function stInfoProvided(r){if(stFormDone(r))return true;const id=(typeof r==="st
 function isOfficial(r){const o=(typeof r==="string"?(RES.find(x=>x.id===r)||{}).ota:r.ota);return o==="HP"||o==="SP"||o==="direct"}
 function hasPlace(r){const p=opPlaceOf(r);return !!(String(p.del||"").trim()||String(p.col||"").trim())}
 // ⚠️ 異常値（一旦まとめ）＝OTA予約(HP除く)で、フォーム/マイページ履歴が無いのに「場所が入っている(出所不明)」or「予約情報とOPが相違」。
-// ⚠️ 異常値・要確認＝【フォーム/マイページ 未回答（＝顧客が情報を入れていない）なのに、データがおかしい】＝システム/導線の問題。
-//  フォーム回答済み(stInfoProvided)なら、場所差・時間差は顧客/スタッフの調整＝正常（異常値に入れない。場所の食い違いは①SS≠OPで別途）。
-//  A. 場所が入っている(出所不明＝誰も入れていないのに場所がある)  B. 予約情報≠OP(場所/補償/オプション・時間除外)
+// ⚠️ 異常値・要確認＝オーナー確定の3条件のみ（2026-07-05）：
+//  ① フォーム踏んでないのに場所がある（非HP・フォーム未回答なのに場所あり＝出所不明）
+//  ② HPなのに場所がない（HPは予約時に場所が入るはず→無いのは異常）
+//  ③ 場所があるのにOPシートタスクに場所がない（フォーム/予約に場所ありなのに生成済みOPタスクが空＝同期漏れ）
 function stAbnormalConf(r){
-  if(isOfficial(r))return false;                 // HP/直販=予約時に場所→対象外
-  if(stInfoProvided(r))return false;             // フォーム/マイページ回答済み=正常
-  return hasPlace(r)||stResvConf(r);
+  const s=placeSources(r),op=opPlaceOf(r);
+  const opDel=String(op.del||"").trim(),opCol=String(op.col||"").trim();
+  // ① 非HP・フォーム未回答なのに場所あり
+  if(!isOfficial(r)&&!stInfoProvided(r)&&(opDel||opCol))return true;
+  // ② HPなのに場所がない
+  if(isOfficial(r)&&((s.needDel&&!opDel)||(s.needCol&&!opCol)))return true;
+  // ③ 場所があるのにOPシートタスクに場所がない（タスク生成済みなのに空・同期漏れ）
+  if(s.op.exists){
+    if(s.needDel&&!s.op.del&&(s.form.del||s.resv.del))return true;
+    if(s.needCol&&!s.op.col&&(s.form.col||s.resv.col))return true;
+  }
+  return false;
 }
 // ライブSS(公開CSV)を取得して SS_MAP を作る（列: 4=予約番号,1=回答日時,8=DEL場所,11=COL場所。同一予約は回答日時が最新の行）
 async function fetchSS(){try{const resp=await fetch(PLACE_SHEET_CSV,{cache:"no-store"});if(!resp.ok)return;const rows=parseCSV(await resp.text());if(rows.length<2)return;const byId={};rows.slice(1).forEach(r=>{const rid=(r[4]||"").trim();if(!rid)return;(byId[rid]=byId[rid]||[]).push({ts:(r[1]||"").trim(),del:(r[8]||"").trim(),col:(r[11]||"").trim()})});const m={};Object.entries(byId).forEach(([rid,arr])=>{arr.sort((a,b)=>a.ts<b.ts?1:(a.ts>b.ts?-1:0));const pick=(f)=>{const ne=arr.filter(x=>x[f]);const cur=ne[0];if(!cur)return{val:"",at:"",prev:"",prevAt:""};const pv=ne.find(x=>x!==cur&&x[f]!==cur[f]);return{val:cur[f],at:cur.ts,prev:pv?pv[f]:"",prevAt:pv?pv.ts:""}};const d=pick("del"),c=pick("col");m[rid]={del:d.val,delTs:d.at,prevDel:d.prev,prevDelTs:d.prevAt,col:c.val,colTs:c.at,prevCol:c.prev,prevColTs:c.prevAt,ts:(d.at>c.at?d.at:c.at)}});SS_MAP=m}catch(e){}}
@@ -424,14 +434,15 @@ function statusCount(k){const d=STATUS_DEFS.find(x=>x.k===k);return d?RES.filter
 function reqTotal(){return RES.filter(stUserChg).length+RES.filter(r=>stReq(r)).length}
 /* ==== カンバン：各予約を1列に割当（優先度）==== */
 const BOARD_COLS=[
-  {k:"mismatch",label:"🔴 情報相違（SS≠OP）要確認・修正",color:"#dc2626"},
-  {k:"resvabn",label:"⚠️ 異常値・要確認（システム/導線の問題）",color:"#e11d48"},
-  {k:"req",label:"🟡 変更リクエスト（オプション/補償）",color:"#b45309"},
-  {k:"reanswer",label:"🔔 位置情報更新あり（迷子）",color:"#7c3aed"},
-  {k:"userchg",label:"🔴 情報変更(未確認)",color:"#b91c1c"},
-  {k:"miss",label:"⚪ 場所情報なし",color:"#64748b"},
-  {k:"ack",label:"✅ 確認済み",color:"#0e9f50"},
+  {k:"mismatch",label:"🔴 情報相違（SS≠OP）要確認・修正",color:"#dc2626",def:"フォームで回答した場所と、OP(マイページ)の場所が<b>明確に別物</b>＝手動対応の食い違い。どちらが正しいか確認して統一。"},
+  {k:"resvabn",label:"⚠️ 異常値・要確認（システム/導線の問題）",color:"#e11d48",def:"システム/導線の異常＝次の3つ：<br><b>① フォーム踏んでない(未回答)のに場所がある</b>（非HP・出所不明）<br><b>② HPなのに場所がない</b>（HPは予約時に場所が入るはず）<br><b>③ 場所があるのにOPシートのタスクに場所がない</b>（フォーム/予約に場所ありなのに生成済みOPタスクが空＝同期漏れ）"},
+  {k:"req",label:"🟡 変更リクエスト（オプション/補償）",color:"#b45309",def:"お客様がマイページで<b>オプション/補償/早め回収/キャンセル</b>を依頼＝カードで承認/却下（承認＝実反映＋LINE通知）。"},
+  {k:"reanswer",label:"🔔 位置情報更新あり（迷子）",color:"#7c3aed",def:"お客様が<b>フォームで場所を更新</b>した（＝迷子/場所変更）。更新後の場所を確認。"},
+  {k:"userchg",label:"🔴 情報変更(未確認)",color:"#b91c1c",def:"お客様が<b>マイページで場所/時間を即時変更</b>した記録（未確認）。内容を確認して確認済みに。"},
+  {k:"miss",label:"⚪ 場所情報なし",color:"#64748b",def:"<b>フォーム未回答 かつ 予約情報/フォーム/OP のどこにも場所が無い</b>＝真に未確定のお客様。LINE ID有りなら場所催促を自動化可（📣通知②）。"},
+  {k:"ack",label:"✅ 確認済み",color:"#0e9f50",def:"スタッフが確認済み。新しい活動（変更/フォーム再回答）が来ると自動で戻る。"},
 ];
+function defPop(label,text){let el=document.getElementById("defpop");if(!el){el=document.createElement("div");el.id="defpop";el.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px";el.onclick=function(){el.remove()};document.body.appendChild(el);}el.innerHTML='<div style="background:#fff;border-radius:14px;max-width:440px;width:100%;padding:18px 18px 14px;box-shadow:0 14px 44px rgba(0,0,0,.35)"><div style="font-weight:800;font-size:15px;margin-bottom:10px">'+label+'</div><div style="font-size:13px;line-height:1.8;color:#33415a">'+text+'</div><div style="text-align:right;margin-top:14px"><button style="background:#0e9f50;color:#fff;border:0;border-radius:8px;padding:8px 18px;font-weight:700;cursor:pointer" onclick="var e=document.getElementById(\'defpop\');if(e)e.remove()">閉じる</button></div></div>';el.querySelector("div").onclick=function(ev){ev.stopPropagation()};}
 function hasAction(r){return stReanswer(r)||stReq(r)||stUserChg(r)}          // 顧客の能動的な動き
 function resColumn(r){
   // 場所が入っていて動きもない＝通常＝板に出さない。場所未設定(フォーム未回答含む)は「場所情報なし」に出す。
@@ -512,7 +523,7 @@ function renderInner(){
           const cards=RES.filter(r=>resColumn(r)===col.k&&matchQ(r)&&(!TODAY_ONLY||stToday(r)))
             .sort((a,b)=>((a.lend_date||"")+(a.lend_time||"")).localeCompare((b.lend_date||"")+(b.lend_time||"")));
           return `<div class="bcol">
-            <div class="bcol-h" style="border-top:3px solid ${col.color}">${col.label}<span class="bcol-n">${cards.length}</span></div>
+            <div class="bcol-h" style="border-top:3px solid ${col.color}">${col.label}${col.def?` <span onclick="event.stopPropagation();defPop('${col.label.replace(/'/g,"")}','${String(col.def).replace(/'/g,"")}')" style="cursor:pointer;display:inline-block;width:16px;height:16px;line-height:16px;text-align:center;border-radius:50%;background:#e2e8f0;color:#475569;font-size:11px;font-weight:800" title="定義を見る">i</span>`:""}<span class="bcol-n">${cards.length}</span></div>
             <div class="bcol-body">${cards.length?cards.map(cardHtml).join(""):`<div class="bcol-empty">なし</div>`}</div>
           </div>`;
         }).join("")}
@@ -537,8 +548,10 @@ function activity(r){
   const ucs=cs.filter(c=>c.source==="customer"&&c.status==="applied");
   if(ucs.length){const fs=[...new Set(ucs.map(c=>fldJp(c.field)))];return {cls:"a-chg",t:"🔴 お客様が変更："+fs.join("・")};}
   if(stAbnormalConf(r)){const rs=[];const p=opPlaceOf(r);
-    if(!stInfoProvided(r)&&(p.del||p.col))rs.push("フォーム未なのに場所あり(出所不明)");
-    if(stResvConf(r))rs.push("予約情報とOPが相違(場所/補償/オプション)");
+    const s=placeSources(r);const opD=String(p.del||"").trim(),opC=String(p.col||"").trim();
+    if(!isOfficial(r)&&!stInfoProvided(r)&&(opD||opC))rs.push("フォーム未回答なのに場所あり(出所不明)");
+    if(isOfficial(r)&&((s.needDel&&!opD)||(s.needCol&&!opC)))rs.push("HPなのに場所がない");
+    if(s.op.exists){const w=[];if(s.needDel&&!s.op.del&&(s.form.del||s.resv.del))w.push("お届け");if(s.needCol&&!s.op.col&&(s.form.col||s.resv.col))w.push("回収");if(w.length)rs.push("場所があるのにOPタスクに未反映("+w.join("・")+")");}
     return {cls:"a-req",t:"⚠️ 異常値・要確認："+rs.join("／")};}
   if(stMissing(r)){const p=opPlaceOf(r);const vt=String(r.visit_type||""),rtp=String(r.return_type||"");const m=[];
     if(vt!=="来店"&&vt!=="PUB"&&vt!=="PUB来店"&&!p.del)m.push("お届け先");
