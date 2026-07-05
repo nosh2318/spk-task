@@ -124,6 +124,13 @@ task_integrity_guardian(main・`task_integrity_scan(p_fix)`＝SPK自動修正ON/
 - **リリース前チェックリスト**：(1)🔴@SNS Autoを#sapporo_user_actionに招待(未招待だと通知飛ばない) (2)test_mode=ON＋自分のuserIDで通知検証→本番ON (3)mypage_notify_enabled既定OFF＝ONまで送信されない。
 - 検証済(E2E)：リクエスト到達／承認→マイページ連動／場所時間→reservations＋OPタスク反映／audit_log記録。多言語(日英繁韓)・OPシートURL・返却済非表示・確認ダイアログ 実装済。
 
+## 🟢 2026-07-05 マイページ 返却準備完了ボタン＋アクセス速度チューニング（このセッション）
+- **返却準備完了ボタン（早め回収OK）**：顧客がmy.htmlで押す→EF`ready`アクション→`mypage_changes`(field=ready,status=requested,source=customer)＋Slack🟢通知→顧客側は「🕓承りました。確認中」に切替。承認/却下はmy-adminの変更依頼カード(decide)＝approve時LINE「早めのご返却を承りました」/reject「予定のお時間で回収」。重複申請ブロック。my-admin活動ライン「🟢 返却準備完了・早め回収OK」。多言語(ja/en/zh/ko)。my.html VER v4.2 / my-admin ADMIN_VER v2.2。
+- **速度実測＝本体は既に軽量**：my.html=71KB・**vanilla JS/CDN依存ゼロ**(React/Tailwind/Babel不使用)・即スピナー表示(白画面なし)・Google Mapsは場所編集時のみ動的ロード(初期ブロックしない)。GitHub Pages応答 0.09〜0.36s＝問題なし。
+- **ボトルネックはEdge Function lookup**：旧=5クエリ**直列**(token→fleet→vehicles→vehicle_twins→tasks→mypage_changes)。**独立3系統(傷チェックURL解決チェーン／OPタスク／変更履歴)をPromise.allで並列化**→warm **5ホップ→0.44s**。傷チェックのfleet→vehicles→twinsは依存直列なのでIIFEで内部直列のまま束ねる。
+- **コールドスタート対策**：`action:"ping"`(DB不使用即応答)追加＋**pg_cron`mypage-keepwarm`(jobid16・*/4分)**でisolate常時ウォーム→初回訪問者の~1.4s待ちを回避。cronは`net.http_post`でEFに`{"action":"ping"}`。
+- 教訓：顧客向けページは①本体は同期CDN排除＋即ローディングUI②データ取得EFは独立クエリを必ずPromise.all③コールドスタートはping+keep-warm cronで潰す。
+
 ## 🪪 2026-07-03 HANDYMAN 統合マイページ（全予約ユニークURL・札幌先行・構築中）★このセッション
 **全予約(OTA/HP不問)に token を発行し、顧客が自分の予約を1画面で閲覧/変更。LINEは「マイページに更新があります＋URL」の通知ハブに徹し、情報の正本は常にマイページ1枚。KEYDROPの変更フローを踏襲（場所/時間=即反映・24h前まで／オプション/補償/キャンセル=依頼）。**
 
