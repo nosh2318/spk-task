@@ -60,8 +60,17 @@ const STORES: Record<string, any> = {
   },
 };
 
-// 営業時間内・30分刻み（9:00〜19:00）
+// 営業時間内・30分刻み（9:00〜19:00・曜日問わず）
 function validTime(t: string): boolean { const m = /^(\d{1,2}):(\d{2})$/.exec(t); if (!m) return false; const h = +m[1], mi = +m[2]; if (mi % 30 !== 0) return false; const v = h * 60 + mi; return v >= 540 && v <= 1140; }
+// 場所は札幌市内限定・新千歳空港(千歳市)は不可。lat/lngがあれば札幌市域で判定、無ければ「札幌」表記を要求。
+function isChitose(s: string): boolean { return /新千歳|千歳空港|千歳市/i.test(s || "") || /(^|[^A-Za-z])CTS([^A-Za-z]|$)/.test(s || ""); }
+function inSapporo(lat: number, lng: number): boolean { return lat >= 42.90 && lat <= 43.30 && lng >= 141.15 && lng <= 141.62; }
+function placeError(place: string, lat: number | null, lng: number | null): string | null {
+  if (isChitose(place)) return "新千歳空港・千歳市は対象外です。札幌市内の場所をご指定ください。";
+  if (lat != null && lng != null) { return inSapporo(lat, lng) ? null : "札幌市内の場所をご指定ください（新千歳空港など市外は不可）。"; }
+  if (!/札幌/.test(place)) return "札幌市内の場所をご指定ください（地図から選ぶと確実です）。";
+  return null;
+}
 // 基準日時まで hours 時間以内か（JST基準・雑に安全側）。日付なしは false（=まだ余裕あり扱い）。
 function withinHours(date: string, time: string, hours: number): boolean {
   if (!date) return false;
@@ -432,6 +441,11 @@ Deno.serve(async (req) => {
     if (lendTime !== null && !validTime(lendTime)) return json({ error: "お届け時間は9:00〜19:00（30分刻み）で指定してください" }, 400, origin);
     if (returnTime !== null && !validTime(returnTime)) return json({ error: "回収時間は9:00〜19:00（30分刻み）で指定してください" }, 400, origin);
     if (delPlace === null && colPlace === null && lendTime === null && returnTime === null) return json({ error: "変更内容がありません" }, 400, origin);
+    // 場所は札幌市内限定・新千歳空港不可（サーバー側で強制）
+    { const dLat0 = (has("del_lat") && p.del_lat != null && p.del_lat !== "") ? Number(p.del_lat) : null; const dLng0 = (has("del_lng") && p.del_lng != null && p.del_lng !== "") ? Number(p.del_lng) : null;
+      const cLat0 = (has("col_lat") && p.col_lat != null && p.col_lat !== "") ? Number(p.col_lat) : null; const cLng0 = (has("col_lng") && p.col_lng != null && p.col_lng !== "") ? Number(p.col_lng) : null;
+      if (delPlace !== null) { const e = placeError(delPlace, dLat0, dLng0); if (e) return json({ error: e }, 400, origin); }
+      if (colPlace !== null) { const e = placeError(colPlace, cLat0, cLng0); if (e) return json({ error: e }, 400, origin); } }
 
     // 受付ルール（ユーザー主導での時間・場所変更・オーナー確定）:
     //  DEL(お届け): 24時間前まで即時。24時間以内は「承認制」(依頼→スタッフ承認で反映)。

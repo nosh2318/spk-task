@@ -226,7 +226,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
 <script>
 const SB="https://ckrxttbnawkclshczsia.supabase.co";
 const FN=SB+"/functions/v1";
-const ADMIN_VER="v2.0 リリース仕様(6カテゴリ確定)";
+const ADMIN_VER="v2.1 LINE ID有無バッジ";
 const ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
 const $=s=>document.querySelector(s);
 function showErr(m){const e=document.getElementById("errbar");if(e){e.style.display="block";e.textContent="⚠️ "+m}}
@@ -261,13 +261,15 @@ function today(){const d=new Date();return d.getFullYear()+"-"+("0"+(d.getMonth(
 function ago(days){const d=new Date();d.setDate(d.getDate()-days);return d.getFullYear()+"-"+("0"+(d.getMonth()+1)).slice(-2)+"-"+("0"+d.getDate()).slice(-2)}
 
 async function loadAll(keepSel){
-  const [cfg,res,chg,stf]=await Promise.all([
+  const [cfg,res,chg,stf,links]=await Promise.all([
     api("spk_line_config?id=eq.1&select=*"),
     api("reservations?return_date=gte."+today()+"&status=not.in.(%22%E3%82%AD%E3%83%A3%E3%83%B3%E3%82%BB%E3%83%AB%22,cancelled)&order=lend_date.asc&limit=400&select=id,name,ota,lend_date,return_date,lend_time,return_time,del_time,col_time,vehicle,del_place,col_place,visit_type,return_type,people,opt_b,opt_c,opt_j,insurance,status,mypage_token,mypage_locked,staff_note,tel,mail,admin_checked_at,admin_checked_by"),
     api("mypage_changes?store=eq.spk&order=created_at.desc&limit=500&select=id,reservation_id,field,old_value,new_value,source,status,note,actor,created_at"),
     api("staff?select=name&order=name.asc").catch(()=>[]),
+    api("spk_line_links?select=resv_no,line_user_id&limit=5000").catch(()=>[]),
   ]);
   CFG=cfg[0]||{}; RES=res||[]; STAFF=(stf||[]).map(s=>s.name).filter(Boolean);
+  LINE_SET=new Set((links||[]).filter(l=>l.resv_no&&l.line_user_id).map(l=>l.resv_no));
   CHG={}; (chg||[]).forEach(c=>{(CHG[c.reservation_id]=CHG[c.reservation_id]||[]).push(c)});
   render();
   // OPタスクから ①場所マップ(実際の場所は tasks._ssPlace) ②フォーム再回答(_ssAlert) を集める
@@ -318,6 +320,7 @@ function lastActivityAt(r){let t="";csOf(r).forEach(c=>{if((c.created_at||"")>t)
 function isChecked(r){const ca=r.admin_checked_at;if(!ca)return false;const la=lastActivityAt(r);return !la||la<=ca}
 function stAck(r){return isChecked(r)}                                                              // 確認済みBOX
 let ALERT_RES=new Set();                                                                             // フォーム再回答(迷子)を持つ予約
+let LINE_SET=new Set();                                                                              // LINE ID有りの予約番号
 let PLACE_MAP={};                                                                                    // 予約→OPシートの実際の場所 {del,col}
 let SS_MAP={};                                                                                       // 予約→ライブSS(フォーム実値) {del,col}
 let MISMATCH_RES=new Set();                                                                          // 情報相違: OP(タスク実値) ≠ SS(フォーム実値)
@@ -413,13 +416,14 @@ function formBadge(r){
   const done=stFormDone(r)||stInfoProvided(r);
   return `<span style="display:inline-block;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:800;color:#fff;background:${done?'#0e9f50':'#94a3b8'};white-space:nowrap">${done?'📝 フォーム済':'フォーム未'}</span>`;
 }
+function lineBadge(r){const ok=LINE_SET.has(r.id);return `<span style="display:inline-block;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:800;color:#fff;background:${ok?'#06c755':'#cbd5e1'};white-space:nowrap" title="${ok?'LINE連携済＝通知/自動送信できる':'LINE未連携＝通知が飛ばない(no_userid)'}">${ok?'📱 LINE ID有':'LINE ID無'}</span>`}
 function cardHtml(r){
   const act=activity(r);
   return `<div class="bcard ${SEL===r.id?"sel":""}" onclick="selectRes('${r.id}')">
     <div class="bc-top"><div class="clsbadge sm" style="background:${CLSC[r.vehicle]||'#64748b'}">${esc(r.vehicle||"?")}</div>
       <div class="bc-nm">${esc(r.name||"—")}<span class="otatag" style="background:${otaColor(r.ota)}">${esc(otaLabel(r.ota))}</span></div></div>
     <div class="bc-sub">🎫 ${esc(r.id)}<br>${fmtD(r.lend_date)} ${esc(r.lend_time||"")}〜${fmtD(r.return_date)}</div>
-    <div style="margin-top:5px">${formBadge(r)}</div>
+    <div style="margin-top:5px;display:flex;gap:4px;flex-wrap:wrap">${formBadge(r)}${lineBadge(r)}</div>
     ${act?`<div class="actline ${act.cls}">${esc(act.t)}</div>`:""}
     ${r.staff_note?`<div class="kartepeek">🗒 ${esc(r.staff_note.split("\n").join(" / ").slice(0,36))}</div>`:""}
     ${resColumn(r)==="ack"
