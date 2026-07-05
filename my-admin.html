@@ -226,7 +226,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
 <script>
 const SB="https://ckrxttbnawkclshczsia.supabase.co";
 const FN=SB+"/functions/v1";
-const ADMIN_VER="v2.5 異常値=3条件確定＋定義ポップ";
+const ADMIN_VER="v2.6 異常値③=d-/c-実在のみ(洗車のみ未来予約の誤検知を除去)";
 const ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
 const $=s=>document.querySelector(s);
 function showErr(m){const e=document.getElementById("errbar");if(e){e.style.display="block";e.textContent="⚠️ "+m}}
@@ -295,8 +295,8 @@ async function loadAll(keepSel){
         pmap[rid].optJ=Math.max(pmap[rid].optJ||0,+(cj._optJ)||0);
         pmap[rid].optB=Math.max(pmap[rid].optB||0,+(cj._optB)||0);
         const fromForm=!manual&&!!String(cj._ssPlace||"").trim();  // OP場所がフォーム由来(_ssPlace)＝顧客が回答して入れた証拠
-        if(kind==="d-"){pmap[rid].del=disp;pmap[rid].delAt=opAt;pmap[rid].delSrc=cj._placeSource||"";pmap[rid].delExact=opExact;pmap[rid].delTime=opTime;pmap[rid].delForm=fromForm;}
-        if(kind==="c-"){pmap[rid].col=disp;pmap[rid].colAt=opAt;pmap[rid].colSrc=cj._placeSource||"";pmap[rid].colExact=opExact;pmap[rid].colTime=opTime;pmap[rid].colForm=fromForm;}
+        if(kind==="d-"){pmap[rid].del=disp;pmap[rid].delAt=opAt;pmap[rid].delSrc=cj._placeSource||"";pmap[rid].delExact=opExact;pmap[rid].delTime=opTime;pmap[rid].delForm=fromForm;pmap[rid].hasDel=true;}
+        if(kind==="c-"){pmap[rid].col=disp;pmap[rid].colAt=opAt;pmap[rid].colSrc=cj._placeSource||"";pmap[rid].colExact=opExact;pmap[rid].colTime=opTime;pmap[rid].colForm=fromForm;pmap[rid].hasCol=true;}
       });
     }
     PLACE_MAP=pmap;mergeLinkIntoSS();computeMismatch();computeResvConf();render();
@@ -314,7 +314,7 @@ function placeSources(r){
   return {
     form:{del:String(ss.del||"").trim(),col:String(ss.col||"").trim()},
     resv:{del:String(rr.del_place||"").trim(),col:String(rr.col_place||"").trim()},
-    op:{del:pm?String(pm.del||"").trim():"",col:pm?String(pm.col||"").trim():"",exists:!!pm},
+    op:{del:pm?String(pm.del||"").trim():"",col:pm?String(pm.col||"").trim():"",exists:!!pm,delExists:!!(pm&&pm.hasDel),colExists:!!(pm&&pm.hasCol)},
     needDel:vt!=="来店"&&vt!=="PUB"&&vt!=="PUB来店",
     needCol:rtp!=="返却"
   };
@@ -404,11 +404,9 @@ function stAbnormalConf(r){
   if(!isOfficial(r)&&!stInfoProvided(r)&&(opDel||opCol))return true;
   // ② HPなのに場所がない
   if(isOfficial(r)&&((s.needDel&&!opDel)||(s.needCol&&!opCol)))return true;
-  // ③ 場所があるのにOPシートタスクに場所がない（タスク生成済みなのに空・同期漏れ）
-  if(s.op.exists){
-    if(s.needDel&&!s.op.del&&(s.form.del||s.resv.del))return true;
-    if(s.needCol&&!s.op.col&&(s.form.col||s.resv.col))return true;
-  }
+  // ③ 場所があるのにOPシートタスクに場所がない（d-/c-タスクが実在するのに空・同期漏れ）。洗車(w-)だけの未来予約は対象外。
+  if(s.needDel&&s.op.delExists&&!s.op.del&&(s.form.del||s.resv.del))return true;
+  if(s.needCol&&s.op.colExists&&!s.op.col&&(s.form.col||s.resv.col))return true;
   return false;
 }
 // ライブSS(公開CSV)を取得して SS_MAP を作る（列: 4=予約番号,1=回答日時,8=DEL場所,11=COL場所。同一予約は回答日時が最新の行）
@@ -551,7 +549,7 @@ function activity(r){
     const s=placeSources(r);const opD=String(p.del||"").trim(),opC=String(p.col||"").trim();
     if(!isOfficial(r)&&!stInfoProvided(r)&&(opD||opC))rs.push("フォーム未回答なのに場所あり(出所不明)");
     if(isOfficial(r)&&((s.needDel&&!opD)||(s.needCol&&!opC)))rs.push("HPなのに場所がない");
-    if(s.op.exists){const w=[];if(s.needDel&&!s.op.del&&(s.form.del||s.resv.del))w.push("お届け");if(s.needCol&&!s.op.col&&(s.form.col||s.resv.col))w.push("回収");if(w.length)rs.push("場所があるのにOPタスクに未反映("+w.join("・")+")");}
+    {const w=[];if(s.needDel&&s.op.delExists&&!s.op.del&&(s.form.del||s.resv.del))w.push("お届け");if(s.needCol&&s.op.colExists&&!s.op.col&&(s.form.col||s.resv.col))w.push("回収");if(w.length)rs.push("場所があるのにOPタスクに未反映("+w.join("・")+")");}
     return {cls:"a-req",t:"⚠️ 異常値・要確認："+rs.join("／")};}
   if(stMissing(r)){const p=opPlaceOf(r);const vt=String(r.visit_type||""),rtp=String(r.return_type||"");const m=[];
     if(vt!=="来店"&&vt!=="PUB"&&vt!=="PUB来店"&&!p.del)m.push("お届け先");
