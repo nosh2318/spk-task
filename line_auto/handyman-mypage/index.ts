@@ -46,13 +46,17 @@ async function slackPost(text: string, blocks?: unknown[]): Promise<void> {
   const body: any = { channel: ch, text }; if (blocks) body.blocks = blocks;
   try { const r = await fetch("https://slack.com/api/chat.postMessage", { method: "POST", headers: { Authorization: `Bearer ${token}`, "content-type": "application/json; charset=utf-8" }, body: JSON.stringify(body) }); const d = await r.json().catch(() => ({})); if (!d.ok) console.error("[slack]", JSON.stringify(d)); } catch (e) { console.error("[slack]", String(e)); }
 }
-// マイページ通知カード（統一フォーマット）＝ 見出し＋基本情報(お客様/予約番号/利用/車両)＋内容＋対応の要否
-type MpCard = { emoji: string; title: string; name: string; resId: string; period?: string; vehicle?: string; lines?: string[]; action: string };
+// 予約もと（OTA）ラベル
+const OTA_JP: Record<string, string> = { J: "じゃらん", R: "楽天", S: "skyticket", O: "エアトリ", RC: "レンタカーcom", G: "GoGoOut", HP: "オフィシャル(HP)", SP: "オフィシャル(HP)", direct: "直販", KEYDROP: "KEYDROP" };
+function otaJp(o?: string): string { const k = String(o || ""); return OTA_JP[k] || k || "—"; }
+// マイページ通知カード（統一フォーマット）＝ 見出し＋基本情報(お客様/予約番号/予約もと/利用/車両)＋内容＋対応の要否
+type MpCard = { emoji: string; title: string; name: string; resId: string; ota?: string; period?: string; vehicle?: string; lines?: string[]; action: string };
 function mpCard(c: MpCard): { text: string; blocks: unknown[] } {
   const fields: any[] = [
     { type: "mrkdwn", text: `*お客様*\n${c.name || "-"} 様` },
     { type: "mrkdwn", text: `*予約番号*\n\`${c.resId}\`` },
   ];
+  fields.push({ type: "mrkdwn", text: `*予約もと*\n${otaJp(c.ota)}` });
   if (c.period) fields.push({ type: "mrkdwn", text: `*利用期間*\n${c.period}` });
   if (c.vehicle) fields.push({ type: "mrkdwn", text: `*車両*\n${c.vehicle}` });
   const blocks: any[] = [
@@ -188,31 +192,31 @@ Deno.serve(async (req) => {
   if (action === "notify_preview") {
     const who = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${String(p.staff_token || "").trim()}` } });
     if (!who.ok) return json({ error: "unauthorized" }, 401, origin);
-    const N = "山田 太郎", ID = "R0SAMPLE01", PD = "2026-07-10〜2026-07-12", V = "ノア（Bクラス）";
+    const N = "山田 太郎", ID = "R0SAMPLE01", OT = "R", PD = "2026-07-10〜2026-07-12", V = "ノア（Bクラス）";
     const samples: MpCard[] = [
-      { emoji: "✏️", title: "マイページで変更（即時反映済）", name: N, resId: ID, period: PD, vehicle: V,
+      { emoji: "✏️", title: "マイページで変更（即時反映済）", name: N, resId: ID, ota: OT, period: PD, vehicle: V,
         lines: ["📍 *お届け先*　（未設定） → *ススキノ ○○ホテル*", "🕐 *お届け時間*　10:00 → *11:00*", "📍 *回収先*　札幌駅 → *大通公園*"],
         action: "✅ OPシートに反映済み・*対応不要*（内容をご確認ください／🕘履歴にも記録）" },
-      { emoji: "🟡", title: "お届け変更の承認待ち（お届け24時間以内）", name: N, resId: ID, period: PD, vehicle: V,
+      { emoji: "🟡", title: "お届け変更の承認待ち（お届け24時間以内）", name: N, resId: ID, ota: OT, period: PD, vehicle: V,
         lines: ["📍 *お届け先*（希望）　○○ホテル → *△△ホテル*", "🕐 *お届け時間*（希望）　10:00 → *09:30*", "↳ 回収側（回収時間）は即時反映済み"],
         action: "⚠️ *要承認*：管理コンソール →「🔔変更依頼」で承認（承認で反映＋顧客へLINE通知）" },
-      { emoji: "🟡", title: "有料オプション(シート類)変更の依頼（承認待ち）", name: N, resId: ID, period: PD, vehicle: V,
+      { emoji: "🟡", title: "有料オプション(シート類)変更の依頼（承認待ち）", name: N, resId: ID, ota: OT, period: PD, vehicle: V,
         lines: ["📝 *依頼内容*\nチャイルドシート 1 → 2"], action: "⚠️ *要対応*：管理コンソール →「🔔変更依頼」で承認/却下（即時反映されていません）" },
-      { emoji: "🟡", title: "補償(免責)変更の依頼（承認待ち）", name: N, resId: ID, period: PD, vehicle: V,
+      { emoji: "🟡", title: "補償(免責)変更の依頼（承認待ち）", name: N, resId: ID, ota: OT, period: PD, vehicle: V,
         lines: ["📝 *依頼内容*\n基本＋免責補償 → 安心ワイドパック（NOC）"], action: "⚠️ *要対応*：管理コンソール →「🔔変更依頼」で承認/却下（即時反映されていません）" },
-      { emoji: "🟡", title: "貸出/返却方法(区分)変更の依頼（承認待ち）", name: N, resId: ID, period: PD, vehicle: V,
+      { emoji: "🟡", title: "貸出/返却方法(区分)変更の依頼（承認待ち）", name: N, resId: ID, ota: OT, period: PD, vehicle: V,
         lines: ["📝 *依頼内容*\nお届け → 来店受取に変更希望"], action: "⚠️ *要対応*：管理コンソール →「🔔変更依頼」で承認/却下（即時反映されていません）" },
-      { emoji: "🔴", title: "キャンセル申請（承認待ち）", name: N, resId: ID, period: PD, vehicle: V,
+      { emoji: "🔴", title: "キャンセル申請（承認待ち）", name: N, resId: ID, ota: OT, period: PD, vehicle: V,
         lines: ["📝 *理由*\n急な予定変更のため"], action: "⚠️ *要対応*：管理コンソール →「🔔変更依頼」で承認/却下（承認でキャンセル確定＋配車解除＋顧客LINE）" },
-      { emoji: "🟢", title: "早め回収OK（返却準備完了）", name: N, resId: ID, period: PD, vehicle: V,
+      { emoji: "🟢", title: "早め回収OK（返却準備完了）", name: N, resId: ID, ota: OT, period: PD, vehicle: V,
         lines: ["🕐 *予定回収*　12:00", "🕒 *お客様の希望*　*10:30〜*"], action: "💡 スケジュールに余裕があれば早めに回収をご検討ください（お客様には「確認中」と表示中）" },
-      { emoji: "🟢", title: "早め回収OK（返却準備完了）", name: N, resId: ID, period: PD, vehicle: V,
+      { emoji: "🟢", title: "早め回収OK（返却準備完了）", name: N, resId: ID, ota: OT, period: PD, vehicle: V,
         lines: ["🕐 *予定回収*　12:00", "🕒 *お客様の希望*　指定なし"], action: "💡 スケジュールに余裕があれば早めに回収をご検討ください（お客様には「確認中」と表示中）" },
-      { emoji: "✅", title: "承認して反映しました（オプション）", name: N, resId: ID, period: PD, vehicle: V,
+      { emoji: "✅", title: "承認して反映しました（オプション）", name: N, resId: ID, ota: OT, period: PD, vehicle: V,
         lines: ["📝 *内容*　チャイルドシート 1 → 2", "👤 *担当*　大下"], action: "✅ 顧客へLINE通知済み・予約に反映済み" },
-      { emoji: "✅", title: "承認して反映しました（キャンセル）", name: N, resId: ID, period: PD, vehicle: V,
+      { emoji: "✅", title: "承認して反映しました（キャンセル）", name: N, resId: ID, ota: OT, period: PD, vehicle: V,
         lines: ["📝 *内容*　キャンセル依頼", "👤 *担当*　大下"], action: "✅ 顧客へLINE通知済み＋キャンセル確定・配車解除" },
-      { emoji: "🚫", title: "却下しました（補償）", name: N, resId: ID, period: PD, vehicle: V,
+      { emoji: "🚫", title: "却下しました（補償）", name: N, resId: ID, ota: OT, period: PD, vehicle: V,
         lines: ["📝 *内容*　安心ワイドパックへ変更希望", "👤 *担当*　大下"], action: "✅ 顧客へLINE通知済み（見送り）" },
     ];
     await slackPost("🧪 *マイページ通知プレビュー*（本日リリース前の全パターン確認・以下はサンプルで実データではありません）");
@@ -239,7 +243,7 @@ Deno.serve(async (req) => {
     if (!c) return json({ error: "依頼が見つかりません" }, 404, origin);
     if (c.status !== "requested") return json({ error: "この依頼は既に処理済みです" }, 409, origin);
     const resId2 = String(c.reservation_id);
-    const rr = (await sbGet(st0.resv, `id=eq.${encodeURIComponent(resId2)}&select=id,name,vehicle,lend_date,return_date,lend_time,return_time,del_place,col_place,mypage_locked,mypage_token`))[0] || {};
+    const rr = (await sbGet(st0.resv, `id=eq.${encodeURIComponent(resId2)}&select=id,name,ota,vehicle,lend_date,return_date,lend_time,return_time,del_place,col_place,mypage_locked,mypage_token`))[0] || {};
     const myUrl = rr.mypage_token ? `https://nosh2318.github.io/spk-task/my.html?t=${rr.mypage_token}` : "";
     const kindJp: Record<string, string> = { option: "オプション", insurance: "補償", method: "受渡方法", cancel: "キャンセル", del_place: "お届け場所", col_place: "回収場所", lend_time: "お届け時間", return_time: "回収時間", ready: "早め回収(返却準備)" };
     const label = kindJp[c.field] || c.field;
@@ -300,7 +304,7 @@ Deno.serve(async (req) => {
     await notifySlackCard({
       emoji: decision === "approved" ? "✅" : "🚫",
       title: decision === "approved" ? `承認して反映しました（${label}）` : `却下しました（${label}）`,
-      name: rr.name || "", resId: resId2,
+      name: rr.name || "", resId: resId2, ota: rr.ota,
       period: (rr.lend_date ? `${rr.lend_date}〜${rr.return_date}` : undefined),
       vehicle: rr.vehicle,
       lines: [`📝 *内容*　${c.note || c.new_value || "-"}`, `👤 *担当*　${actor}`],
@@ -489,7 +493,7 @@ Deno.serve(async (req) => {
       reservation: {
         id: r.id, vehicle: r.vehicle, lend_date: r.lend_date, return_date: r.return_date,
         lend_time: lendTimeR, return_time: returnTimeR,
-        name: r.name, people: r.people, status: r.status, insurance: insR,
+        name: r.name, people: r.people, status: r.status, insurance: insR, ota: r.ota,
         del_place: delPlaceR, col_place: colPlaceR,
         del_lat: r.del_lat ?? null, del_lng: r.del_lng ?? null, col_lat: r.col_lat ?? null, col_lng: r.col_lng ?? null,
         opt_b: optBR, opt_c: optCR, opt_j: optJR, opt_usb: r.opt_usb || 0,
@@ -553,7 +557,7 @@ Deno.serve(async (req) => {
       if (delPlace !== null) aLines.push(`📍 *お届け先*（希望）　${r.del_place || "（未設定）"} → *${delPlace}*`);
       if (lendTime !== null) aLines.push(`🕐 *お届け時間*（希望）　${r.lend_time || "（未設定）"} → *${lendTime}*`);
       if (colLabels.length) aLines.push(`↳ 回収側（${colLabels.join("・")}）は即時反映済み`);
-      await notifySlackCard({ emoji: "🟡", title: "お届け変更の承認待ち（お届け24時間以内）", name: r.name, resId, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: aLines, action: "⚠️ *要承認*：管理コンソール →「🔔変更依頼」で承認（承認で反映＋顧客へLINE通知）" });
+      await notifySlackCard({ emoji: "🟡", title: "お届け変更の承認待ち（お届け24時間以内）", name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: aLines, action: "⚠️ *要承認*：管理コンソール →「🔔変更依頼」で承認（承認で反映＋顧客へLINE通知）" });
       return json({ ok: true, pendingApproval: true, requested: reqLabels, updated: colLabels }, 200, origin);
     }
 
@@ -566,7 +570,7 @@ Deno.serve(async (req) => {
     if (lendTime !== null) chLines.push(`🕐 *お届け時間*　${r.lend_time || "（未設定）"} → *${lendTime}*`);
     if (colPlace !== null) chLines.push(`📍 *回収先*　${r.col_place || "（未設定）"} → *${colPlace}*`);
     if (returnTime !== null) chLines.push(`🕐 *回収時間*　${r.return_time || "（未設定）"} → *${returnTime}*`);
-    await notifySlackCard({ emoji: "✏️", title: "マイページで変更（即時反映済）", name: r.name, resId, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: chLines, action: "✅ OPシートに反映済み・*対応不要*（内容をご確認ください／🕘履歴にも記録）" });
+    await notifySlackCard({ emoji: "✏️", title: "マイページで変更（即時反映済）", name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: chLines, action: "✅ OPシートに反映済み・*対応不要*（内容をご確認ください／🕘履歴にも記録）" });
     return json({ ok: true, updated: labels }, 200, origin);
   }
 
@@ -586,7 +590,7 @@ Deno.serve(async (req) => {
     // 構造化ターゲット（承認時に自動反映するための値）: insurance={insurance:"NOC"} / option={opt_c:1,opt_j:0,...}
     const payload = (p.target && typeof p.target === "object") ? p.target : null;
     await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field: reqType, old_value: "", new_value: detail, source: "customer", status: "requested", note: map[reqType], payload }, "customer:" + resId);
-    await notifySlackCard({ emoji: "🟡", title: `${map[reqType]}の依頼（承認待ち）`, name: r.name, resId, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: [`📝 *依頼内容*\n${detail}`], action: "⚠️ *要対応*：管理コンソール →「🔔変更依頼」で承認/却下（即時反映されていません）" });
+    await notifySlackCard({ emoji: "🟡", title: `${map[reqType]}の依頼（承認待ち）`, name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: [`📝 *依頼内容*\n${detail}`], action: "⚠️ *要対応*：管理コンソール →「🔔変更依頼」で承認/却下（即時反映されていません）" });
     return json({ ok: true, requested: true, kind: map[reqType] }, 200, origin);
   }
 
@@ -597,7 +601,7 @@ Deno.serve(async (req) => {
     const already = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.cancel&status=eq.requested&select=id&limit=1`);
     if (already[0]) return json({ ok: true, alreadyRequested: true }, 200, origin);
     await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field: "cancel", old_value: st, new_value: "キャンセル依頼", source: "customer", status: "requested", note: reason }, "customer:" + resId);
-    await notifySlackCard({ emoji: "🔴", title: "キャンセル申請（承認待ち）", name: r.name, resId, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: [`📝 *理由*\n${reason || "（記載なし）"}`], action: "⚠️ *要対応*：管理コンソール →「🔔変更依頼」で承認/却下（承認でキャンセル確定＋配車解除＋顧客LINE）" });
+    await notifySlackCard({ emoji: "🔴", title: "キャンセル申請（承認待ち）", name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: [`📝 *理由*\n${reason || "（記載なし）"}`], action: "⚠️ *要対応*：管理コンソール →「🔔変更依頼」で承認/却下（承認でキャンセル確定＋配車解除＋顧客LINE）" });
     return json({ ok: true, requested: true }, 200, origin);
   }
 
@@ -609,7 +613,7 @@ Deno.serve(async (req) => {
     const rdyTime = (typeof p.time === "string" && /^\d{1,2}:\d{2}$/.test(p.time.trim())) ? p.time.trim() : "";
     const newVal = rdyTime ? `返却準備完了(早め回収OK) 希望時間 ${rdyTime}〜` : "返却準備完了(早め回収OK)";
     await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field: "ready", old_value: "", new_value: newVal, source: "customer", status: "requested", note: rdyTime ? `希望回収時間の目安 ${rdyTime}〜` : "予定時間より早い回収OK" }, "customer:" + resId);
-    await notifySlackCard({ emoji: "🟢", title: "早め回収OK（返却準備完了）", name: r.name, resId, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: [`🕐 *予定回収*　${r.return_time || r.col_time || "-"}`, `🕒 *お客様の希望*　${rdyTime ? `*${rdyTime}〜*` : "指定なし"}`], action: "💡 スケジュールに余裕があれば早めに回収をご検討ください（お客様には「確認中」と表示中）" });
+    await notifySlackCard({ emoji: "🟢", title: "早め回収OK（返却準備完了）", name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: [`🕐 *予定回収*　${r.return_time || r.col_time || "-"}`, `🕒 *お客様の希望*　${rdyTime ? `*${rdyTime}〜*` : "指定なし"}`], action: "💡 スケジュールに余裕があれば早めに回収をご検討ください（お客様には「確認中」と表示中）" });
     return json({ ok: true, requested: true }, 200, origin);
   }
 
