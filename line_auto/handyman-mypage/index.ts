@@ -372,14 +372,17 @@ Deno.serve(async (req) => {
     })() : Promise.resolve(null);
     const opTasksP = sbGet(store.tasks, `reservation_id=eq.${encodeURIComponent(resId)}&deleted=not.is.true&select=_id,place,time,insurance,changed_json`);
     const chgP = sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&order=created_at.desc&limit=10&select=field,old_value,new_value,source,status,actor,created_at`);
-    const [damageUrl, opTasks, chg] = await Promise.all([damageP, opTasksP, chgP]);
+    // エルメ受付フォーム回答（予約番号完全一致）＝reservations/OPが空でも顧客の回答済み場所を表示
+    const linkP = sbGet("spk_line_links", `resv_no=eq.${encodeURIComponent(resId)}&select=del_place,col_place,del_time,col_time&limit=1`);
+    const [damageUrl, opTasks, chg, links] = await Promise.all([damageP, opTasksP, chgP, linkP]);
+    const link = links[0] || {};
     // 場所/時間/オプション/補償は OPタスク(d-/c-)も見て「実値のある方」を採用（reservations 側が空のことが多い）。
     const dTask = opTasks.find((t: any) => String(t._id || "").startsWith("d-"));
     const cTask = opTasks.find((t: any) => String(t._id || "").startsWith("c-"));
-    const delPlaceR = resolveTaskPlace(dTask) || (r.del_place || "");
-    const colPlaceR = resolveTaskPlace(cTask) || (r.col_place || "");
-    const lendTimeR = resolveTaskTime(dTask) || r.lend_time || r.del_time || "";
-    const returnTimeR = resolveTaskTime(cTask) || r.return_time || r.col_time || "";
+    const delPlaceR = resolveTaskPlace(dTask) || (r.del_place || "") || String(link.del_place || "").trim();
+    const colPlaceR = resolveTaskPlace(cTask) || (r.col_place || "") || String(link.col_place || "").trim();
+    const lendTimeR = resolveTaskTime(dTask) || r.lend_time || r.del_time || String(link.del_time || "").trim();
+    const returnTimeR = resolveTaskTime(cTask) || r.return_time || r.col_time || String(link.col_time || "").trim();
     // オプション：reservations と tasks の大きい方（どちらかにしか入っていないケースを両方拾う）
     const optBR = Math.max(Number(r.opt_b) || 0, taskOptNum(dTask, "_optB"), taskOptNum(cTask, "_optB"));
     const optCR = Math.max(Number(r.opt_c) || 0, taskOptNum(dTask, "_optC"), taskOptNum(cTask, "_optC"));
