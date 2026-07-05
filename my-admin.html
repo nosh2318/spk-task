@@ -226,7 +226,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
 <script>
 const SB="https://ckrxttbnawkclshczsia.supabase.co";
 const FN=SB+"/functions/v1";
-const ADMIN_VER="v2.3 フォーム回答(エルメ)を場所判定に統合";
+const ADMIN_VER="v2.4 異常値=場所ソース不整合を広く捕捉";
 const ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
 const $=s=>document.querySelector(s);
 function showErr(m){const e=document.getElementById("errbar");if(e){e.style.display="block";e.textContent="⚠️ "+m}}
@@ -305,17 +305,40 @@ async function loadAll(keepSel){
 }
 /* ==== ステータス判定（7分類）==== */
 function csOf(r){return CHG[(typeof r==="string"?r:r.id)]||[]}
-// 場所情報なし＝OPシートの実際の場所(tasks._ssPlace優先)＋区分で判定。来店/PUB=お届け場所不要、返却=回収場所不要
-function stMissing(r){
-  const p=opPlaceOf(r);const ss=SS_MAP[(typeof r==="string"?r:r.id)]||{};
-  // フォーム(SS/エルメ)回答済みの場所も「場所あり」とみなす＝場所情報なし＝フォーム未回答 に限定
-  const del=String(p.del||ss.del||"").trim(),col=String(p.col||ss.col||"").trim();
-  const vt=String(r.visit_type||""),rtp=String(r.return_type||"");
-  const needDel=vt!=="来店"&&vt!=="PUB"&&vt!=="PUB来店";
-  const needCol=rtp!=="返却";
-  const timeOk=String(r.lend_time||"").trim()&&String(r.return_time||"").trim();
-  return (needDel&&!del)||(needCol&&!col)||!timeOk;
+// 場所の全ソースを収集：form(SS/エルメ)・resv(予約情報)・op(OPタスクの実体・_ssPlace優先)。区分で要否も返す。
+function placeSources(r){
+  const id=(typeof r==="string"?r:r.id);const rr=(typeof r==="string"?(RES.find(x=>x.id===id)||{}):r)||{};
+  const ss=SS_MAP[id]||{};const pm=PLACE_MAP[id];  // pm=OPタスクが存在すれば{del,col}(未来で未生成ならundefined)
+  const vt=String(rr.visit_type||""),rtp=String(rr.return_type||"");
+  return {
+    form:{del:String(ss.del||"").trim(),col:String(ss.col||"").trim()},
+    resv:{del:String(rr.del_place||"").trim(),col:String(rr.col_place||"").trim()},
+    op:{del:pm?String(pm.del||"").trim():"",col:pm?String(pm.col||"").trim():"",exists:!!pm},
+    needDel:vt!=="来店"&&vt!=="PUB"&&vt!=="PUB来店",
+    needCol:rtp!=="返却"
+  };
 }
+// 場所情報なし＝【どのソース(form/予約/OP)にも場所が無い】＝真の未回答 のみ。＋時刻欠落。
+// 「場所がどこかにあるのに場所なしに落ちる」事態を無くす（それは異常値で拾う）。
+function stMissing(r){
+  const s=placeSources(r);
+  const delMiss=s.needDel&&!(s.form.del||s.resv.del||s.op.del);
+  const colMiss=s.needCol&&!(s.form.col||s.resv.col||s.op.col);
+  const timeOk=String(r.lend_time||"").trim()&&String(r.return_time||"").trim();
+  return delMiss||colMiss||!timeOk;
+}
+// 場所ソース不整合＝【どこかに場所があるのにOPに反映されていない/食い違う】＝システム/導線の異常。
+//  ・OPタスク生成済みなのにOP側が空(form/予約には場所あり)＝同期漏れ
+//  ・予約情報とフォームが両方あるのに食い違う＝どちらが正か要確認
+function stPlaceInconsistent(r){
+  const s=placeSources(r);
+  const chk=(f,need)=>{if(!need)return false;const form=s.form[f],resv=s.resv[f],op=s.op[f];const any=form||resv||op;if(!any)return false;
+    if(s.op.exists&&!op)return true;                                   // OP生成済みなのに空＝どこかにあるのに未反映
+    if(form&&resv&&!placeSame(form,resv))return true;                  // フォーム≠予約情報(両方実値)
+    return false;};
+  return chk("del",s.needDel)||chk("col",s.needCol);
+}
+function placeSame(a,b){const x=coreP(a),y=coreP(b);return !!x&&!!y&&(x.includes(y)||y.includes(x));}
 function stReq(r){return csOf(r).some(c=>c.status==="requested")}                                   // 変更リクエスト
 function stUserChg(r){return csOf(r).some(c=>c.source==="customer"&&c.status==="applied")}          // 情報変更有り
 // この予約の最後の"活動"時刻（変更/依頼の作成時刻。迷子は活動扱い＝常に要確認）
@@ -373,7 +396,15 @@ function stInfoProvided(r){if(stFormDone(r))return true;const id=(typeof r==="st
 function isOfficial(r){const o=(typeof r==="string"?(RES.find(x=>x.id===r)||{}).ota:r.ota);return o==="HP"||o==="SP"||o==="direct"}
 function hasPlace(r){const p=opPlaceOf(r);return !!(String(p.del||"").trim()||String(p.col||"").trim())}
 // ⚠️ 異常値（一旦まとめ）＝OTA予約(HP除く)で、フォーム/マイページ履歴が無いのに「場所が入っている(出所不明)」or「予約情報とOPが相違」。
-function stAbnormalConf(r){return !isOfficial(r)&&!stInfoProvided(r)&&(hasPlace(r)||stResvConf(r))}
+// ⚠️ 異常値・要確認＝システム/導線の問題を抱えた予約を広く拾う（役目＝取りこぼさない）：
+//  A. OTAでフォーム/マイページ履歴なしなのに場所あり(出所不明)  B. 予約情報≠OP  C. 場所ソース不整合(どこかにあるのにOP未反映/食い違い)
+//  ※Cは非HP/HP問わず「場所があるのに場所なしに落ちる」類のシステム不整合を拾う。
+function stAbnormalConf(r){
+  if(stPlaceInconsistent(r))return true;                                              // C 場所ソース不整合(最重要＝場所あるのに未反映)
+  if(!isOfficial(r)&&!stInfoProvided(r)&&hasPlace(r))return true;                      // A 出所不明
+  if(stResvConf(r))return true;                                                        // B 予約情報≠OP
+  return false;
+}
 // ライブSS(公開CSV)を取得して SS_MAP を作る（列: 4=予約番号,1=回答日時,8=DEL場所,11=COL場所。同一予約は回答日時が最新の行）
 async function fetchSS(){try{const resp=await fetch(PLACE_SHEET_CSV,{cache:"no-store"});if(!resp.ok)return;const rows=parseCSV(await resp.text());if(rows.length<2)return;const byId={};rows.slice(1).forEach(r=>{const rid=(r[4]||"").trim();if(!rid)return;(byId[rid]=byId[rid]||[]).push({ts:(r[1]||"").trim(),del:(r[8]||"").trim(),col:(r[11]||"").trim()})});const m={};Object.entries(byId).forEach(([rid,arr])=>{arr.sort((a,b)=>a.ts<b.ts?1:(a.ts>b.ts?-1:0));const pick=(f)=>{const ne=arr.filter(x=>x[f]);const cur=ne[0];if(!cur)return{val:"",at:"",prev:"",prevAt:""};const pv=ne.find(x=>x!==cur&&x[f]!==cur[f]);return{val:cur[f],at:cur.ts,prev:pv?pv[f]:"",prevAt:pv?pv.ts:""}};const d=pick("del"),c=pick("col");m[rid]={del:d.val,delTs:d.at,prevDel:d.prev,prevDelTs:d.prevAt,col:c.val,colTs:c.at,prevCol:c.prev,prevColTs:c.prevAt,ts:(d.at>c.at?d.at:c.at)}});SS_MAP=m}catch(e){}}
 // 簡易CSVパーサ（引用符・改行・カンマ対応）
@@ -509,7 +540,11 @@ function activity(r){
     return {cls:"a-req",t:"🟡 "+kind+"："+(c.new_value||"")+(reqs.length>1?" 他"+(reqs.length-1)+"件":"")};}
   const ucs=cs.filter(c=>c.source==="customer"&&c.status==="applied");
   if(ucs.length){const fs=[...new Set(ucs.map(c=>fldJp(c.field)))];return {cls:"a-chg",t:"🔴 お客様が変更："+fs.join("・")};}
-  if(stAbnormalConf(r)){const rs=[];const p=opPlaceOf(r);if(!stInfoProvided(r)&&(p.del||p.col))rs.push("フォーム未なのに場所あり(出所不明)");if(stResvConf(r))rs.push("予約情報とOPが相違");return {cls:"a-req",t:"⚠️ 異常値・要確認："+rs.join("／")};}
+  if(stAbnormalConf(r)){const rs=[];const p=opPlaceOf(r);
+    if(stPlaceInconsistent(r)){const s=placeSources(r);const w=[];if(s.needDel&&(s.form.del||s.resv.del)&&s.op.exists&&!s.op.del)w.push("お届け");if(s.needCol&&(s.form.col||s.resv.col)&&s.op.exists&&!s.op.col)w.push("回収");if(w.length)rs.push("場所があるのにOP未反映("+w.join("・")+")");else rs.push("場所ソース不整合(フォーム≠予約情報)");}
+    if(!stInfoProvided(r)&&(p.del||p.col))rs.push("フォーム未なのに場所あり(出所不明)");
+    if(stResvConf(r))rs.push("予約情報とOPが相違");
+    return {cls:"a-req",t:"⚠️ 異常値・要確認："+rs.join("／")};}
   if(stMissing(r)){const p=opPlaceOf(r);const vt=String(r.visit_type||""),rtp=String(r.return_type||"");const m=[];
     if(vt!=="来店"&&vt!=="PUB"&&vt!=="PUB来店"&&!p.del)m.push("お届け先");
     if(!String(r.lend_time||"").trim())m.push("お届け時間");
@@ -1040,12 +1075,12 @@ function renderManual(){
     ${sec("📝 フォーム済/未 バッジ と ⚠️異常値BOX",`各カードにバッジ：<b>🏠HP予約</b>（場所は予約時入力・フォーム不要）／<b>📝フォーム済</b>／<b>フォーム未</b>。<br><b>⚠️ 異常値・要確認BOX</b>＝システム/導線の問題を抱えた予約が集まる：<br>・<b>OTA予約でフォーム未回答なのに場所が入っている</b>（出所不明＝データ書き込みミス等の疑い）<br>・<b>予約情報 ≠ マイページ/OP の相違</b>（フォーム未・非HP）<br>→ カルテで出所を🕘変更履歴/LINE・電話で確認し、正しければ「✅確認済み」、差は「統一」で揃える。<br>※HPは予約時に場所が入るのでフォーム未でも正常（対象外）。フォーム済の差も正常（対象外）。<br>・<b>SS（フォーム）≠OP</b> は別で「🔴要確認・修正」列（フォーム回答とOPの食い違い＝手動対応の確認）。`)}
     ${sec("ボードの6カテゴリ（この画面でやること＝情報整理と確認）",`どの予約の情報整理が必要かを見てアクション。<br>
       ①${chip("情報相違(SS≠OP)","#dc2626")} フォーム(SS)とOPが不一致（主にスタッフ手動入力）＝確認・修正<br>
-      ②${chip("異常値・要確認","#e11d48")} フォーム未回答なのに場所あり(出所不明)／システムエラーの疑い＝確認<br>
+      ②${chip("異常値・要確認","#e11d48")} システム/導線の問題＝確認。<b>場所がどこか(フォーム/予約情報)にあるのにOPに反映されていない</b>／フォーム未回答なのに場所あり(出所不明)／予約情報≠OP／フォーム≠予約情報。※「場所があるのに場所情報なしに落ちる」類は全部ここで拾う<br>
       ③${chip("変更リクエスト","#b45309")} お客様がマイページでオプション/補償の変更を依頼＝承認/却下＋関連TODO<br>
       ④${chip("位置情報更新あり","#7c3aed")} フォームで場所が更新された（迷子）＝確認<br>
       ⑤${chip("情報変更","#b91c1c")} お客様がマイページで場所/時間を変更（DEL24h前/COL2h前）＝確認＋OPタスク調整<br>
-      ⑥${chip("場所情報なし","#64748b")} フォーム未回答＝未確定ユーザー。LINE ID有りなら場所催促を自動化可（📣通知②）<br>
-      <span style="font-size:11px;color:#64748b">※お客様がフォーム（エルメ受付/SS）で場所を回答済みなら「フォーム済・正常」として⑥から自動で外れます（予約番号完全一致で判定）。フォーム回答はマイページにも表示されます。</span>`)}
+      ⑥${chip("場所情報なし","#64748b")} <b>どのソース(フォーム/予約情報/OP)にも場所が無い</b>＝真の未回答・未確定ユーザー。LINE ID有りなら場所催促を自動化可（📣通知②）<br>
+      <span style="font-size:11px;color:#64748b">※どこかに場所があるのに⑥に入ることはありません（その状態は②異常値で拾う）。お客様がフォーム（エルメ受付/SS）で回答済みなら場所ありとして扱い、マイページにも表示されます（予約番号完全一致で判定）。</span>`)}
     ${sec("⑦ 想定エラーと対応（多くは公式LINEで解消）",`・マイページが開けない（デバイス/通信）／・リクエストしたが回答がない・ステータス変わらない／・時間・場所を変更したが反映されない／・LINEを使わない・共有したくない。<br>基本は公式LINEでのご案内で解消。運用は<b>LINEより管理画面中心</b>（マイページ利用率に連動）：情報相違/異常値/変更リクエスト/情報変更(場所時間)/場所なし のチェックと処理。`)}
     ${sec("🕘 変更履歴（誰が・どこから・何を）",`ヘッダー「🕘 履歴」で全予約の変更/依頼を新しい順に一覧。各予約のカルテにも<b>「🕘 変更履歴（どこから登録・編集したか）」</b>があり、<b>📝フォーム／📱マイページ／👤担当</b>のバッジで<b>どこから</b>変更したかが分かります。`)}
     ${sec("🔔 変更依頼の承認/却下（重要）",`「🔔 変更依頼」を開く → 各依頼に<b>[承認]</b>/<b>[却下]</b>。<br>・<b>承認</b>＝<b>実際に反映</b>されます：補償→予約に反映／オプション→予約＋OPシート／お届け場所・時間(24h以内)→反映／キャンセル→<b>予約キャンセル＋配車解除</b>。同時に<b>お客様へLINE通知</b>。<br>・<b>却下</b>＝反映せず<b>お客様へLINE通知</b>（見送り）。<br><b>※承認/却下は取り消せません</b>。特にキャンセル承認は配車も解除されるので内容を確認のうえ実行。`)}
