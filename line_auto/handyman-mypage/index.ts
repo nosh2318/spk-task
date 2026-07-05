@@ -157,6 +157,9 @@ Deno.serve(async (req) => {
 
   const action = String(p.action || "lookup").trim();
 
+  // ==== keep-warm ping（DB不使用・即応答）＝cronでisolateを温めコールドスタート回避 ====
+  if (action === "ping") return json({ ok: true, warm: true }, 200, origin);
+
   // ==== 管理者アクション: decide（承認/却下→実反映＋顧客LINE通知）====
   // スタッフの本体ログインJWTを検証（token=mypage_tokenは使わない）。
   if (action === "decide") {
@@ -353,24 +356,24 @@ Deno.serve(async (req) => {
     const today = nowJst().slice(0, 10);
     const hh = +nowJst().slice(11, 13);
     const damageReady = (!!r.lend_date && (r.lend_date < today || (r.lend_date === today && hh >= 8)));
-    let damageUrl: string | null = null;
-    if (damageReady) {
-      // fleet→vehicle_code→vehicles.plate→vehicle_twins.share_token（best-effort）
+    // ▼ 独立した3クエリを並列化（傷チェックURL解決・OPタスク・変更履歴）＝lookupの応答短縮
+    const damageP: Promise<string | null> = damageReady ? (async () => {
+      // fleet→vehicle_code→vehicles.plate→vehicle_twins.share_token（best-effort・内部は依存直列）
       try {
         const fl = await sbGet(store.fleet, `reservation_id=eq.${encodeURIComponent(resId)}&select=vehicle_code`);
         const code = fl[0]?.vehicle_code;
-        if (code) {
-          const vs = await sbGet("vehicles", `code=eq.${encodeURIComponent(code)}&select=plate_no`);
-          const plate = vs[0]?.plate_no;
-          if (plate) {
-            const tw = await sbGet("vehicle_twins", `display_label=ilike.*${encodeURIComponent(plate)}*&share_enabled=eq.true&select=share_token&limit=1`);
-            if (tw[0]?.share_token) damageUrl = `https://nosh2318.github.io/handyman-damage/v.html?t=${tw[0].share_token}&v=v3`;
-          }
-        }
-      } catch (_) { /* 取れなければ準備中扱い */ }
-    }
+        if (!code) return null;
+        const vs = await sbGet("vehicles", `code=eq.${encodeURIComponent(code)}&select=plate_no`);
+        const plate = vs[0]?.plate_no;
+        if (!plate) return null;
+        const tw = await sbGet("vehicle_twins", `display_label=ilike.*${encodeURIComponent(plate)}*&share_enabled=eq.true&select=share_token&limit=1`);
+        return tw[0]?.share_token ? `https://nosh2318.github.io/handyman-damage/v.html?t=${tw[0].share_token}&v=v3` : null;
+      } catch (_) { return null; }
+    })() : Promise.resolve(null);
+    const opTasksP = sbGet(store.tasks, `reservation_id=eq.${encodeURIComponent(resId)}&deleted=not.is.true&select=_id,place,time,insurance,changed_json`);
+    const chgP = sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&order=created_at.desc&limit=10&select=field,old_value,new_value,source,status,actor,created_at`);
+    const [damageUrl, opTasks, chg] = await Promise.all([damageP, opTasksP, chgP]);
     // 場所/時間/オプション/補償は OPタスク(d-/c-)も見て「実値のある方」を採用（reservations 側が空のことが多い）。
-    const opTasks = await sbGet(store.tasks, `reservation_id=eq.${encodeURIComponent(resId)}&deleted=not.is.true&select=_id,place,time,insurance,changed_json`);
     const dTask = opTasks.find((t: any) => String(t._id || "").startsWith("d-"));
     const cTask = opTasks.find((t: any) => String(t._id || "").startsWith("c-"));
     const delPlaceR = resolveTaskPlace(dTask) || (r.del_place || "");
@@ -383,7 +386,6 @@ Deno.serve(async (req) => {
     const optJR = Math.max(Number(r.opt_j) || 0, taskOptNum(dTask, "_optJ"), taskOptNum(cTask, "_optJ"));
     // 補償：reservations が空なら tasks.insurance にフォールバック
     const insR = String(r.insurance || "").trim() || String(dTask?.insurance || cTask?.insurance || "").trim();
-    const chg = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&order=created_at.desc&limit=10&select=field,old_value,new_value,source,status,actor,created_at`);
     const pendingCancel = chg.some((c: any) => c.field === "cancel" && c.status === "requested");
     const readyPending = chg.some((c: any) => c.field === "ready" && c.status === "requested");
     // 履歴：mypage_changes（依頼/承認/マイページ即時）＋ OPタスク由来（フォーム回答・担当編集の場所/時間）を統合。
