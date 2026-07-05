@@ -524,8 +524,10 @@ Deno.serve(async (req) => {
     if (cancelled) return json({ error: "キャンセル済みの予約です" }, 409, origin);
     const already = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.ready&status=eq.requested&select=id&limit=1`);
     if (already[0]) return json({ ok: true, alreadyRequested: true }, 200, origin);
-    await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field: "ready", old_value: "", new_value: "返却準備完了(早め回収OK)", source: "customer", status: "requested", note: "予定時間より早い回収OK" }, "customer:" + resId);
-    await notifySlack(`🟢 *${r.name}様が「返却準備完了・早め回収OK」* [札幌] ${resId}\n利用:${r.lend_date}〜${r.return_date} / 予定回収:${r.return_time || r.col_time || "-"}\n→ スケジュールに余裕があれば早めの回収をご検討ください（お客様には「確認中」と表示中）`);
+    const rdyTime = (typeof p.time === "string" && /^\d{1,2}:\d{2}$/.test(p.time.trim())) ? p.time.trim() : "";
+    const newVal = rdyTime ? `返却準備完了(早め回収OK) 希望時間 ${rdyTime}〜` : "返却準備完了(早め回収OK)";
+    await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field: "ready", old_value: "", new_value: newVal, source: "customer", status: "requested", note: rdyTime ? `希望回収時間の目安 ${rdyTime}〜` : "予定時間より早い回収OK" }, "customer:" + resId);
+    await notifySlack(`🟢 *${r.name}様が「返却準備完了・早め回収OK」* [札幌] ${resId}\n利用:${r.lend_date}〜${r.return_date} / 予定回収:${r.return_time || r.col_time || "-"}${rdyTime ? ` / 🕒お客様希望:${rdyTime}〜` : ""}\n→ スケジュールに余裕があれば早めの回収をご検討ください（お客様には「確認中」と表示中）`);
     return json({ ok: true, requested: true }, 200, origin);
   }
 

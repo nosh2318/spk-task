@@ -193,7 +193,7 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 <div class="toast" id="toast"></div>
 
 <script>
-const VER = "v5.1 A/A2定員8";
+const VER = "v5.2 早め返却=時間指定";
 const FN = "https://ckrxttbnawkclshczsia.supabase.co/functions/v1/handyman-mypage";
 const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const $ = s=>document.querySelector(s);
@@ -360,6 +360,12 @@ const TX={
  ready_approved_note:{ja:"担当がスケジュールを調整し、回収時間が早まる場合は改めてご連絡します。",en:"Our staff will adjust and contact you if pickup can be earlier.",zh:"專員將調整排程，若可提前取車會再與您聯繫。",ko:"담당자가 일정을 조정하여 회수가 앞당겨지면 다시 연락드립니다."},
  ready_rejected:{ja:"今回は予定のお時間で回収いたします",en:"Pickup will be at the scheduled time",zh:"本次將依預定時間取車",ko:"이번에는 예정 시간에 회수합니다"},
  ready_confirm:{ja:"返却の準備ができたことをお知らせします。\nよろしいですか？",en:"Notify staff that you are ready to return.\nProceed?",zh:"通知專員您已可還車。\n是否確認？",ko:"반납 준비 완료를 알립니다.\n진행할까요?"},
+ ready_time_title:{ja:"返却の準備ができました",en:"Ready to return early",zh:"已可提前還車",ko:"조기 반납 준비 완료"},
+ ready_time_label:{ja:"回収に来てほしい時間の目安",en:"Preferred pickup time (approx.)",zh:"希望取車時間（約）",ko:"희망 회수 시간(대략)"},
+ ready_time_sub:{ja:"この時間以降なら回収OKという目安をお選びください（確約ではありません）。",en:"Select a time from when pickup is OK (not guaranteed).",zh:"請選擇之後可取車的時間（非保證）。",ko:"이 시간 이후 회수 가능한 시간을 선택하세요(확약 아님)."},
+ ready_time_req:{ja:"時間を選んでください",en:"Please select a time",zh:"請選擇時間",ko:"시간을 선택하세요"},
+ ready_send:{ja:"この内容で知らせる",en:"Notify",zh:"通知",ko:"알리기"},
+ ready_at:{ja:"希望時間の目安",en:"Preferred time",zh:"希望時間",ko:"희망 시간"},
 };
 function placeErrJs(place,lat,lng){
   if(/新千歳|千歳空港|千歳市/.test(place))return t('err_chitose');
@@ -429,7 +435,10 @@ function timeSel(id,val){return `<select id="${id}"><option value="">${{ja:"指�
 
 function pendReq(f){return ((DATA&&DATA.recentChanges)||[]).some(c=>c.field===f&&c.status==="requested")}
 // 返却準備(ready)の最新状態: none/requested/approved/rejected（recentChangesは新しい順）
-function readyState(){const rc=((DATA&&DATA.recentChanges)||[]).filter(c=>c.field==="ready");return rc.length?rc[0].status:"none"}
+function readyLatest(){const rc=((DATA&&DATA.recentChanges)||[]).filter(c=>c.field==="ready");return rc.length?rc[0]:null}
+function readyState(){const c=readyLatest();return c?c.status:"none"}
+// 希望時間の目安（new_value末尾の HH:MM を抽出）
+function readyTime(){const c=readyLatest();if(!c)return"";const m=String(c.new_value||"").match(/(\d{1,2}:\d{2})/);return m?m[1]:""}
 function render(){
   const d=DATA, r=d.reservation;
   const cls={A:"アルファード/ヴェルファイア",B:"ノア/デリカ",C:"ロッキー/CX-3",S:"ハリアー/CX-5",F:"ルーミー/ソリオ",H:"カローラ/アクセラ"}[r.vehicle]||r.vehicle;
@@ -527,11 +536,11 @@ function render(){
   ${editable?`
   <div class="card">
     <h2><span class="em">🟢</span>${t('ready_title')}</h2>
-    ${(()=>{const rs=readyState();
-      if(rs==="requested")return `<div class="dashed"><span class="pill wait">${t('ready_received')}</span><div style="margin-top:8px">${t('ready_pending')}</div></div>`;
-      if(rs==="approved")return `<div class="dashed" style="border-color:#0e9f50;background:#f0fdf4"><span class="pill" style="background:#dcfce7;color:#0e7a3b">${t('ready_approved')}</span><div style="margin-top:8px">${t('ready_approved_note')}</div></div>`;
+    ${(()=>{const rs=readyState(),rt=readyTime();const tline=rt?`<div style="margin-top:6px;font-size:13px"><b>${t('ready_at')}：</b>${rt}〜</div>`:"";
+      if(rs==="requested")return `<div class="dashed"><span class="pill wait">${t('ready_received')}</span>${tline}<div style="margin-top:8px">${t('ready_pending')}</div></div>`;
+      if(rs==="approved")return `<div class="dashed" style="border-color:#0e9f50;background:#f0fdf4"><span class="pill" style="background:#dcfce7;color:#0e7a3b">${t('ready_approved')}</span>${tline}<div style="margin-top:8px">${t('ready_approved_note')}</div></div>`;
       if(rs==="rejected")return `<div class="dashed"><span class="pill" style="background:#f1f5f9;color:#64748b">${t('ready_rejected')}</span></div>`;
-      return `<button class="bigbtn" style="background:#0e9f50" onclick="sendReady()">${t('ready_btn')}</button><div class="note">${t('ready_note')}</div>`;
+      return `<button class="bigbtn" style="background:#0e9f50" onclick="openReady()">${t('ready_btn')}</button><div class="note">${t('ready_note')}</div>`;
     })()}
   </div>`:""}
 
@@ -865,10 +874,21 @@ function askCancel(){
       <button class="btn-ok danger" id="cbtn" disabled onclick="sendCancel()">${t('cancel_apply')}</button></div>`;
   $("#scrim").classList.add("show");
 }
-async function sendReady(){
-  if(!confirm(t('ready_confirm')))return;
-  const {json}=await call("ready",{});
-  if(json.ok){toast(t('ready_received'));await load()}
+function openReady(){
+  const r=DATA.reservation;
+  $("#sheet").innerHTML=`
+    <h3>🟢 ${t('ready_time_title')}</h3>
+    <p class="sub">${t('ready_time_sub')}</p>
+    <div class="field"><label>${t('ready_time_label')}（${fmtDate(r.return_date)}）</label>${timeSel("rdyt",r.return_time||"")}</div>
+    <div class="acts"><button class="btn-cancel" onclick="closeSheet()">${t('cancel_btn')}</button>
+      <button class="btn-ok" style="background:#0e9f50" onclick="confirmReady()">${t('ready_send')}</button></div>`;
+  $("#scrim").classList.add("show");
+}
+async function confirmReady(){
+  const time=$("#rdyt").value.trim();
+  if(!time){toast(t('ready_time_req'));return}
+  const {json}=await call("ready",{time});
+  if(json.ok){closeSheet();toast(json.alreadyRequested?t('already_req'):t('ready_received'));await load()}
   else toast(json.error||t('send_fail'));
 }
 async function sendCancel(){
