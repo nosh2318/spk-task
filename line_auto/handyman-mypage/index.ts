@@ -469,7 +469,7 @@ Deno.serve(async (req) => {
     const readyPending = chg.some((c: any) => c.field === "ready" && c.status === "requested");
     // 履歴：mypage_changes（依頼/承認/マイページ即時）＋ OPタスク由来（フォーム回答・担当編集の場所/時間）を統合。
     const history: any[] = [];
-    for (const c of chg) history.push({ field: c.field, value: c.new_value, at: c.created_at, source: c.source === "staff" ? "staff" : "customer_mypage", status: c.status, actor: c.actor });
+    for (const c of chg) history.push({ field: c.field, value: c.new_value, old: c.old_value, at: c.created_at, source: c.source === "staff" ? "staff" : "customer_mypage", status: c.status, actor: c.actor });
     const pushTaskHist = (task: any, placeField: string, timeField: string) => {
       if (!task) return;
       let cj: any = task.changed_json; if (typeof cj === "string") { try { cj = JSON.parse(cj); } catch { cj = {}; } } cj = cj || {};
