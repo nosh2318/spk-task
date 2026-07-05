@@ -178,7 +178,7 @@ Deno.serve(async (req) => {
     const resId2 = String(c.reservation_id);
     const rr = (await sbGet(st0.resv, `id=eq.${encodeURIComponent(resId2)}&select=id,name,vehicle,lend_date,return_date,lend_time,return_time,del_place,col_place,mypage_locked,mypage_token`))[0] || {};
     const myUrl = rr.mypage_token ? `https://nosh2318.github.io/spk-task/my.html?t=${rr.mypage_token}` : "";
-    const kindJp: Record<string, string> = { option: "オプション", insurance: "補償", method: "受渡方法", cancel: "キャンセル", del_place: "お届け場所", col_place: "回収場所", lend_time: "お届け時間", return_time: "回収時間" };
+    const kindJp: Record<string, string> = { option: "オプション", insurance: "補償", method: "受渡方法", cancel: "キャンセル", del_place: "お届け場所", col_place: "回収場所", lend_time: "お届け時間", return_time: "回収時間", ready: "早め回収(返却準備)" };
     const label = kindJp[c.field] || c.field;
     const pl = (c.payload && typeof c.payload === "object") ? c.payload : {};
 
@@ -186,9 +186,11 @@ Deno.serve(async (req) => {
     let msg: string;
     if (decision === "approved") {
       if (c.field === "cancel") msg = `【HANDYMAN】ご予約 ${resId2} のキャンセルを承りました。\n担当より別途ご連絡いたします。ご利用ありがとうございました。`;
+      else if (c.field === "ready") msg = `【HANDYMAN】早めのご返却（回収）を承りました。\nスケジュールを調整し、回収時間が早まる場合は改めてご連絡いたします。`;
       else msg = `【HANDYMAN】ご依頼の${label}変更を承り、反映いたしました。\nマイページよりご確認ください。\n${myUrl}`;
     } else {
-      msg = `【HANDYMAN】ご依頼いただいた${label}${c.field === "cancel" ? "申請" : "変更"}につきまして、恐れ入りますが今回はお受けいたしかねます。\n詳細は公式LINEにてご連絡いたします。`;
+      if (c.field === "ready") msg = `【HANDYMAN】ご連絡ありがとうございます。今回は予定のお時間での回収を予定しております。何卒よろしくお願いいたします。`;
+      else msg = `【HANDYMAN】ご依頼いただいた${label}${c.field === "cancel" ? "申請" : "変更"}につきまして、恐れ入りますが今回はお受けいたしかねます。\n詳細は公式LINEにてご連絡いたします。`;
     }
     await pushLine(resId2, msg);
 
@@ -383,6 +385,7 @@ Deno.serve(async (req) => {
     const insR = String(r.insurance || "").trim() || String(dTask?.insurance || cTask?.insurance || "").trim();
     const chg = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&order=created_at.desc&limit=10&select=field,old_value,new_value,source,status,actor,created_at`);
     const pendingCancel = chg.some((c: any) => c.field === "cancel" && c.status === "requested");
+    const readyPending = chg.some((c: any) => c.field === "ready" && c.status === "requested");
     // 履歴：mypage_changes（依頼/承認/マイページ即時）＋ OPタスク由来（フォーム回答・担当編集の場所/時間）を統合。
     const history: any[] = [];
     for (const c of chg) history.push({ field: c.field, value: c.new_value, at: c.created_at, source: c.source === "staff" ? "staff" : "customer_mypage", status: c.status, actor: c.actor });
@@ -417,7 +420,7 @@ Deno.serve(async (req) => {
       },
       damage: { ready: damageReady, url: damageUrl },
       tracking: { active: r.kd_status === "delivering" || r.kd_status === "collecting", kd_status: r.kd_status || null, token: r.kd_track_token || null },
-      pendingCancel, recentChanges: chg, history: historyTop,
+      pendingCancel, readyPending, recentChanges: chg, history: historyTop,
     }, 200, origin);
   }
 
@@ -508,6 +511,16 @@ Deno.serve(async (req) => {
     if (already[0]) return json({ ok: true, alreadyRequested: true }, 200, origin);
     await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field: "cancel", old_value: st, new_value: "キャンセル依頼", source: "customer", status: "requested", note: reason }, "customer:" + resId);
     await notifySlack(`🔴 *キャンセル依頼* [札幌] ${r.name}様 ${resId}\n利用:${r.lend_date}〜${r.return_date} / ${r.vehicle}\n理由:${reason || "(なし)"}\n→ 管理コンソールで承認/却下してください`);
+    return json({ ok: true, requested: true }, 200, origin);
+  }
+
+  // ---- ready: 返却準備完了（予定より早く回収してOKの合図）。スケジュールに余裕があれば早める判断材料。----
+  if (action === "ready") {
+    if (cancelled) return json({ error: "キャンセル済みの予約です" }, 409, origin);
+    const already = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.ready&status=eq.requested&select=id&limit=1`);
+    if (already[0]) return json({ ok: true, alreadyRequested: true }, 200, origin);
+    await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field: "ready", old_value: "", new_value: "返却準備完了(早め回収OK)", source: "customer", status: "requested", note: "予定時間より早い回収OK" }, "customer:" + resId);
+    await notifySlack(`🟢 *${r.name}様が「返却準備完了・早め回収OK」* [札幌] ${resId}\n利用:${r.lend_date}〜${r.return_date} / 予定回収:${r.return_time || r.col_time || "-"}\n→ スケジュールに余裕があれば早めの回収をご検討ください（お客様には「確認中」と表示中）`);
     return json({ ok: true, requested: true }, 200, origin);
   }
 
