@@ -294,8 +294,9 @@ async function loadAll(keepSel){
         pmap[rid].optC=Math.max(pmap[rid].optC||0,+(cj._optC)||0);
         pmap[rid].optJ=Math.max(pmap[rid].optJ||0,+(cj._optJ)||0);
         pmap[rid].optB=Math.max(pmap[rid].optB||0,+(cj._optB)||0);
-        if(kind==="d-"){pmap[rid].del=disp;pmap[rid].delAt=opAt;pmap[rid].delSrc=cj._placeSource||"";pmap[rid].delExact=opExact;pmap[rid].delTime=opTime;}
-        if(kind==="c-"){pmap[rid].col=disp;pmap[rid].colAt=opAt;pmap[rid].colSrc=cj._placeSource||"";pmap[rid].colExact=opExact;pmap[rid].colTime=opTime;}
+        const fromForm=!manual&&!!String(cj._ssPlace||"").trim();  // OP場所がフォーム由来(_ssPlace)＝顧客が回答して入れた証拠
+        if(kind==="d-"){pmap[rid].del=disp;pmap[rid].delAt=opAt;pmap[rid].delSrc=cj._placeSource||"";pmap[rid].delExact=opExact;pmap[rid].delTime=opTime;pmap[rid].delForm=fromForm;}
+        if(kind==="c-"){pmap[rid].col=disp;pmap[rid].colAt=opAt;pmap[rid].colSrc=cj._placeSource||"";pmap[rid].colExact=opExact;pmap[rid].colTime=opTime;pmap[rid].colForm=fromForm;}
       });
     }
     PLACE_MAP=pmap;mergeLinkIntoSS();computeMismatch();computeResvConf();render();
@@ -385,19 +386,20 @@ function computeResvConf(){
 function stResvConf(r){return !!RESV_CONF[(typeof r==="string"?r:r.id)]}
 // フォーム履歴（SS回答）があるか。予約≠OP の差は「フォーム済なら正常／未なら異常値の疑い」で判断する。
 function stFormDone(r){const s=SS_MAP[(typeof r==="string"?r:r.id)];return !!(s&&(s.del||s.col||s.ts))}
-function stInfoProvided(r){if(stFormDone(r))return true;const id=(typeof r==="string"?r:r.id);return (CHG[id]||[]).some(c=>["del_place","col_place","lend_time","return_time"].includes(c.field)&&c.source==="customer")}
+function stInfoProvided(r){if(stFormDone(r))return true;const id=(typeof r==="string"?r:r.id);
+  const pm=PLACE_MAP[id]; if(pm&&(pm.delForm||pm.colForm))return true;  // OP場所がフォーム由来(_ssPlace)＝顧客が回答済み
+  return (CHG[id]||[]).some(c=>["del_place","col_place","lend_time","return_time"].includes(c.field)&&c.source==="customer");}
 // HP/オフィシャル/直販は予約時に場所が入る＝フォーム不要。OTAは場所をフォームで入れる。
 function isOfficial(r){const o=(typeof r==="string"?(RES.find(x=>x.id===r)||{}).ota:r.ota);return o==="HP"||o==="SP"||o==="direct"}
 function hasPlace(r){const p=opPlaceOf(r);return !!(String(p.del||"").trim()||String(p.col||"").trim())}
 // ⚠️ 異常値（一旦まとめ）＝OTA予約(HP除く)で、フォーム/マイページ履歴が無いのに「場所が入っている(出所不明)」or「予約情報とOPが相違」。
-// ⚠️ 異常値・要確認＝システム/導線の問題を抱えた予約を広く拾う（役目＝取りこぼさない）：
-//  A. OTAでフォーム/マイページ履歴なしなのに場所あり(出所不明)  B. 予約情報≠OP  C. 場所ソース不整合(どこかにあるのにOP未反映/食い違い)
-//  ※Cは非HP/HP問わず「場所があるのに場所なしに落ちる」類のシステム不整合を拾う。
+// ⚠️ 異常値・要確認＝【フォーム/マイページ 未回答（＝顧客が情報を入れていない）なのに、データがおかしい】＝システム/導線の問題。
+//  フォーム回答済み(stInfoProvided)なら、場所差・時間差は顧客/スタッフの調整＝正常（異常値に入れない。場所の食い違いは①SS≠OPで別途）。
+//  A. 場所が入っている(出所不明＝誰も入れていないのに場所がある)  B. 予約情報≠OP(場所/補償/オプション・時間除外)
 function stAbnormalConf(r){
-  if(stPlaceInconsistent(r))return true;                                              // C 場所ソース不整合(最重要＝場所あるのに未反映)
-  if(!isOfficial(r)&&!stInfoProvided(r)&&hasPlace(r))return true;                      // A 出所不明
-  if(stResvConf(r))return true;                                                        // B 予約情報≠OP
-  return false;
+  if(isOfficial(r))return false;                 // HP/直販=予約時に場所→対象外
+  if(stInfoProvided(r))return false;             // フォーム/マイページ回答済み=正常
+  return hasPlace(r)||stResvConf(r);
 }
 // ライブSS(公開CSV)を取得して SS_MAP を作る（列: 4=予約番号,1=回答日時,8=DEL場所,11=COL場所。同一予約は回答日時が最新の行）
 async function fetchSS(){try{const resp=await fetch(PLACE_SHEET_CSV,{cache:"no-store"});if(!resp.ok)return;const rows=parseCSV(await resp.text());if(rows.length<2)return;const byId={};rows.slice(1).forEach(r=>{const rid=(r[4]||"").trim();if(!rid)return;(byId[rid]=byId[rid]||[]).push({ts:(r[1]||"").trim(),del:(r[8]||"").trim(),col:(r[11]||"").trim()})});const m={};Object.entries(byId).forEach(([rid,arr])=>{arr.sort((a,b)=>a.ts<b.ts?1:(a.ts>b.ts?-1:0));const pick=(f)=>{const ne=arr.filter(x=>x[f]);const cur=ne[0];if(!cur)return{val:"",at:"",prev:"",prevAt:""};const pv=ne.find(x=>x!==cur&&x[f]!==cur[f]);return{val:cur[f],at:cur.ts,prev:pv?pv[f]:"",prevAt:pv?pv.ts:""}};const d=pick("del"),c=pick("col");m[rid]={del:d.val,delTs:d.at,prevDel:d.prev,prevDelTs:d.prevAt,col:c.val,colTs:c.at,prevCol:c.prev,prevColTs:c.prevAt,ts:(d.at>c.at?d.at:c.at)}});SS_MAP=m}catch(e){}}
@@ -535,9 +537,8 @@ function activity(r){
   const ucs=cs.filter(c=>c.source==="customer"&&c.status==="applied");
   if(ucs.length){const fs=[...new Set(ucs.map(c=>fldJp(c.field)))];return {cls:"a-chg",t:"🔴 お客様が変更："+fs.join("・")};}
   if(stAbnormalConf(r)){const rs=[];const p=opPlaceOf(r);
-    if(stPlaceInconsistent(r)){const s=placeSources(r);const op=opPlaceOf(r);const w=[];if(s.needDel&&(s.form.del||s.resv.del)&&!String(op.del||"").trim())w.push("お届け");if(s.needCol&&(s.form.col||s.resv.col)&&!String(op.col||"").trim())w.push("回収");if(w.length)rs.push("場所があるのに運用(OP)に未反映("+w.join("・")+")");}
     if(!stInfoProvided(r)&&(p.del||p.col))rs.push("フォーム未なのに場所あり(出所不明)");
-    if(stResvConf(r))rs.push("予約情報とOPが相違");
+    if(stResvConf(r))rs.push("予約情報とOPが相違(場所/補償/オプション)");
     return {cls:"a-req",t:"⚠️ 異常値・要確認："+rs.join("／")};}
   if(stMissing(r)){const p=opPlaceOf(r);const vt=String(r.visit_type||""),rtp=String(r.return_type||"");const m=[];
     if(vt!=="来店"&&vt!=="PUB"&&vt!=="PUB来店"&&!p.del)m.push("お届け先");
