@@ -226,7 +226,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
 <script>
 const SB="https://ckrxttbnawkclshczsia.supabase.co";
 const FN=SB+"/functions/v1";
-const ADMIN_VER="v1.8 異常値BOX(HP除外)";
+const ADMIN_VER="v1.9 通知タブ+テンプレ";
 const ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
 const $=s=>document.querySelector(s);
 function showErr(m){const e=document.getElementById("errbar");if(e){e.style.display="block";e.textContent="⚠️ "+m}}
@@ -459,6 +459,7 @@ function renderInner(){
     <button class="${rc?"alert":""}" onclick="VIEW='changes';SEL=null;render()">🔔 変更依頼 ${rc}</button>
     <button onclick="openHistory()">🕘 履歴</button>
     <button onclick="openManual()">📖 マニュアル</button>
+    <button onclick="openNotify()">📣 通知</button>
     <button onclick="openCfg()">⚙️ トリガー設定</button>
   </div>
   <div class="main">
@@ -960,6 +961,43 @@ async function acUndo(id,field){
     else toast("失敗："+(j.error||r.status));
   }catch(e){toast("通信エラー")}
 }
+/* ===== 📣 通知（マイページURL自動送信）タイミング・テンプレ・トリガー一覧＋ON/OFF ===== */
+const NOTIFY_ROWS=[
+  {ic:"①",name:"初動（LINE ID取得後）",trig:"お客様がフォーム回答→LINE ID取得された予約に、まだ未送信なら送る",tpl:"ご予約ありがとうございます。専用マイページで日時・場所の確認/変更ができます👇（日英併記）＋URL"},
+  {ic:"②",name:"場所未設定リマインド（貸出3日前）",trig:"貸出3日前・OP解決の場所が空 の予約のみ",tpl:"お届け／回収の場所が未設定です。マイページからご登録ください👇 ＋URL"},
+  {ic:"③",name:"前日",trig:"貸出日の前日",tpl:"明日がご利用日です。日時・お届け場所をご確認ください👇 ＋URL"},
+  {ic:"④",name:"返却3時間前",trig:"返却日時の約3時間前（15分毎cronで検知）",tpl:"まもなくご返却のお時間です。回収場所・時間をご確認ください👇 ＋URL"},
+  {ic:"⑤",name:"リクエスト承認/却下時",trig:"スタッフが変更依頼を承認/却下した瞬間（自動・実装済）",tpl:"ご依頼を承り反映しました／今回はお受けできません。＋URL"},
+];
+async function openNotify(){
+  $("#modal").style.maxWidth="720px";
+  const on=!!CFG.mypage_notify_enabled, tm=!!CFG.test_mode;
+  const rows=NOTIFY_ROWS.map(r=>`<div style="border:1px solid #e2e8f0;border-radius:10px;padding:9px 11px;margin-bottom:7px">
+    <div style="font-weight:800;font-size:13px">${r.ic} ${esc(r.name)}</div>
+    <div style="font-size:11.5px;color:#334155;margin-top:3px"><b>トリガー：</b>${esc(r.trig)}</div>
+    <div style="font-size:11.5px;color:#64748b;margin-top:2px"><b>テンプレ：</b>${esc(r.tpl)}</div>
+  </div>`).join("");
+  $("#modal").innerHTML=`<h3>📣 マイページ通知（自動送信）</h3>
+    <div style="font-size:11.5px;color:var(--sub);margin-bottom:8px">各通知＝<b>固定テンプレ文＋お客様専用マイページURL</b>を公式LINEへ自動送信。LINE未連携は安全にスキップ。</div>
+    <div style="display:flex;gap:10px;align-items:center;padding:10px 12px;border-radius:10px;background:${on?(tm?'#fff7ed':'#f0fdf4'):'#f1f5f9'};border:1px solid ${on?(tm?'#fed7aa':'#bbf7d0'):'#e2e8f0'};margin-bottom:10px">
+      <div style="font-size:20px">${on?(tm?'🧪':'🟢'):'⛔'}</div>
+      <div style="flex:1;font-size:12.5px">状態：<b>${on?(tm?'テスト送信中（テスト宛先のみ）':'本番ON（お客様に送信）'):'OFF（送信停止）'}</b><br>
+        <span style="color:var(--sub);font-size:11px">test_mode=${tm?'ON':'OFF'} / テスト宛先=${esc(CFG.test_user_id||'未設定')}</span></div>
+      <button class="btn ${on?'dang':'ok'}" onclick="toggleNotify()">${on?'OFFにする':'ONにする'}</button>
+    </div>
+    <div style="max-height:56vh;overflow:auto">${rows}</div>
+    <div style="font-size:11px;color:var(--sub);margin-top:8px">⚠️ 本番送信の前に：①<b>@SNS Auto を #sapporo_user_action に招待</b> ②まず<b>test_mode=ON＋自分のuserID</b>で検証→問題なければ本番ON。<br>タイミング/テンプレの調整は Edge Function <code>mypage-notify</code> で可能。15分毎cronで自動実行。</div>
+    <div class="acts" style="margin-top:10px"><button class="btn ghost" onclick="openCfg()">⚙️ test_mode/宛先の設定へ</button><button class="btn ghost" onclick="closeM()">閉じる</button></div>`;
+  $("#scrim").classList.add("show");
+}
+async function toggleNotify(){
+  if(!tok()){toast("ログインが必要です");return}
+  const next=!CFG.mypage_notify_enabled;
+  if(next&&!CFG.test_mode){if(!sure("本番ONにします（お客様に実際に送信されます）。テスト未実施なら先にtest_modeで確認を。"))return;}
+  try{await api("spk_line_config?id=eq.1",{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({mypage_notify_enabled:next})});
+    CFG.mypage_notify_enabled=next;toast(next?"通知をONにしました":"通知をOFFにしました");openNotify();
+  }catch(e){toast("保存失敗（ログイン要）")}
+}
 function closeM(){$("#scrim").classList.remove("show");$("#modal").style.maxWidth=""}
 $("#scrim").addEventListener("click",e=>{if(e.target.id==="scrim")closeM()});
 
@@ -1003,7 +1041,7 @@ function renderManual(){
 async function saveCfg(){
   try{await api("spk_line_config?id=eq.1",{method:"PATCH",headers:{Prefer:"return=minimal"},
     body:JSON.stringify({damage_enabled:!!CFG.damage_enabled,track_enabled:!!CFG.track_enabled,thanks_enabled:!!CFG.thanks_enabled,
-      test_mode:!!CFG.test_mode,test_user_id:CFG.test_user_id||"",lead_min:parseInt(CFG.lead_min)||30})});
+      test_mode:!!CFG.test_mode,test_user_id:CFG.test_user_id||"",lead_min:parseInt(CFG.lead_min)||30,mypage_notify_enabled:!!CFG.mypage_notify_enabled})});
     toast("設定を保存しました");closeM();
   }catch(e){toast("保存失敗（ログイン要）")}
 }

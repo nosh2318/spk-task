@@ -45,8 +45,8 @@ Deno.serve(async (req) => {
     if (!resv[0]) { await logSend({ resv_no, action, status: "skipped", error: "reservation_not_found" }); return json({ ok: false, reason: "reservation_not_found" }); }
     const st = String(resv[0].status || "").toLowerCase();
     if (st.includes("cancel") || st.includes("キャンセル")) { await logSend({ resv_no, action, status: "skipped", error: "cancelled" }); return json({ ok: false, reason: "cancelled" }); }
-    // マイページ承認/却下のお知らせ（mypage_decision）は日付ウィンドウ外でも送る（将来/過去日どちらでも通知が必要）
-    const noticeAct = action === "mypage_decision";
+    // マイページ関連通知（mypage_*）は日付ウィンドウ外でも送る（承認/却下・各種案内は将来/過去日どちらでも必要）
+    const noticeAct = action.startsWith("mypage_");
     if (!noticeAct) {
     const nowMs = Date.now() + 9 * 3600 * 1000;
     const dstr = (off: number) => new Date(nowMs + off * 86400000).toISOString().slice(0, 10);
