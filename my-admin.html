@@ -327,18 +327,13 @@ function stMissing(r){
   const timeOk=String(r.lend_time||"").trim()&&String(r.return_time||"").trim();
   return delMiss||colMiss||!timeOk;
 }
-// 場所ソース不整合＝【どこかに場所があるのにOPに反映されていない/食い違う】＝システム/導線の異常。
-//  ・OPタスク生成済みなのにOP側が空(form/予約には場所あり)＝同期漏れ
-//  ・予約情報とフォームが両方あるのに食い違う＝どちらが正か要確認
+// 場所ソース不整合＝【場所がどこか(フォーム/予約情報/OP)にあるのに"運用上の場所"が空】＝場所があるのに場所なしに落ちる異常。
+//  運用値=opPlaceOf(タスク実値||予約情報)。これが空で、かつフォーム等どこかに場所がある＝反映漏れ。表記ゆれの食い違いは拾わない(誤検知回避)。
 function stPlaceInconsistent(r){
-  const s=placeSources(r);
-  const chk=(f,need)=>{if(!need)return false;const form=s.form[f],resv=s.resv[f],op=s.op[f];const any=form||resv||op;if(!any)return false;
-    if(s.op.exists&&!op)return true;                                   // OP生成済みなのに空＝どこかにあるのに未反映
-    if(form&&resv&&!placeSame(form,resv))return true;                  // フォーム≠予約情報(両方実値)
-    return false;};
+  const s=placeSources(r);const op=opPlaceOf(r);
+  const chk=(f,need)=>{if(!need)return false;const opv=String(op[f]||"").trim();const any=s.form[f]||s.resv[f]||s.op[f];return !opv&&!!any;};
   return chk("del",s.needDel)||chk("col",s.needCol);
 }
-function placeSame(a,b){const x=coreP(a),y=coreP(b);return !!x&&!!y&&(x.includes(y)||y.includes(x));}
 function stReq(r){return csOf(r).some(c=>c.status==="requested")}                                   // 変更リクエスト
 function stUserChg(r){return csOf(r).some(c=>c.source==="customer"&&c.status==="applied")}          // 情報変更有り
 // この予約の最後の"活動"時刻（変更/依頼の作成時刻。迷子は活動扱い＝常に要確認）
@@ -380,8 +375,7 @@ function computeResvConf(){
     const cmp=(field,a,b)=>{a=norm(a);b=norm(b);if(a&&b&&a!==b)fs.push({field,resv:a,op:b});};
     cmp("del_place",r.del_place,p.del);
     cmp("col_place",r.col_place,p.col);
-    cmp("lend_time",r.lend_time||r.del_time,p.delTime);
-    cmp("return_time",r.return_time||r.col_time,p.colTime);
+    // ※時間(lend_time/return_time)は異常判定から除外：フォーム回答で予約情報(OTAデフォルト)から変わるのが正常。差=異常ではない。
     cmp("insurance",r.insurance,p.ins);
     const oc=(f,rn,tn)=>{rn=+rn||0;tn=+tn||0;if(rn>0&&tn>0&&rn!==tn)fs.push({field:f,resv:String(rn),op:String(tn)});};
     oc("opt_c",r.opt_c,p.optC);oc("opt_j",r.opt_j,p.optJ);oc("opt_b",r.opt_b,p.optB);
@@ -541,7 +535,7 @@ function activity(r){
   const ucs=cs.filter(c=>c.source==="customer"&&c.status==="applied");
   if(ucs.length){const fs=[...new Set(ucs.map(c=>fldJp(c.field)))];return {cls:"a-chg",t:"🔴 お客様が変更："+fs.join("・")};}
   if(stAbnormalConf(r)){const rs=[];const p=opPlaceOf(r);
-    if(stPlaceInconsistent(r)){const s=placeSources(r);const w=[];if(s.needDel&&(s.form.del||s.resv.del)&&s.op.exists&&!s.op.del)w.push("お届け");if(s.needCol&&(s.form.col||s.resv.col)&&s.op.exists&&!s.op.col)w.push("回収");if(w.length)rs.push("場所があるのにOP未反映("+w.join("・")+")");else rs.push("場所ソース不整合(フォーム≠予約情報)");}
+    if(stPlaceInconsistent(r)){const s=placeSources(r);const op=opPlaceOf(r);const w=[];if(s.needDel&&(s.form.del||s.resv.del)&&!String(op.del||"").trim())w.push("お届け");if(s.needCol&&(s.form.col||s.resv.col)&&!String(op.col||"").trim())w.push("回収");if(w.length)rs.push("場所があるのに運用(OP)に未反映("+w.join("・")+")");}
     if(!stInfoProvided(r)&&(p.del||p.col))rs.push("フォーム未なのに場所あり(出所不明)");
     if(stResvConf(r))rs.push("予約情報とOPが相違");
     return {cls:"a-req",t:"⚠️ 異常値・要確認："+rs.join("／")};}
