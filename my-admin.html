@@ -238,7 +238,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
 <script>
 const SB="https://ckrxttbnawkclshczsia.supabase.co";
 const FN=SB+"/functions/v1";
-const ADMIN_VER="v3.4 利用状況に予約もと表示";
+const ADMIN_VER="v3.5 複数対応は各列に表示＋列バッジ";
 const ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
 const $=s=>document.querySelector(s);
 function showErr(m){const e=document.getElementById("errbar");if(e){e.style.display="block";e.textContent="⚠️ "+m}}
@@ -459,16 +459,43 @@ const BOARD_COLS=[
 ];
 function defPop(label,text){let el=document.getElementById("defpop");if(!el){el=document.createElement("div");el.id="defpop";el.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px";el.onclick=function(){el.remove()};document.body.appendChild(el);}el.innerHTML='<div style="background:#fff;border-radius:14px;max-width:440px;width:100%;padding:18px 18px 14px;box-shadow:0 14px 44px rgba(0,0,0,.35)"><div style="font-weight:800;font-size:15px;margin-bottom:10px">'+label+'</div><div style="font-size:13px;line-height:1.8;color:#33415a">'+text+'</div><div style="text-align:right;margin-top:14px"><button style="background:#0e9f50;color:#fff;border:0;border-radius:8px;padding:8px 18px;font-weight:700;cursor:pointer" onclick="var e=document.getElementById(\'defpop\');if(e)e.remove()">閉じる</button></div></div>';el.querySelector("div").onclick=function(ev){ev.stopPropagation()};}
 function hasAction(r){return stReanswer(r)||stReq(r)||stUserChg(r)}          // 顧客の能動的な動き
-function resColumn(r){
-  // 場所が入っていて動きもない＝通常＝板に出さない。場所未設定(フォーム未回答含む)は「場所情報なし」に出す。
-  if(stMismatch(r))return"mismatch";         // 🔴 情報相違(SS≠OP)＝最優先
-  if(isChecked(r))return"ack";               // 対応済み＝確認済みBOXへ移動
-  if(stReq(r))return"req";                    // 変更リクエスト(承認制)＝顧客の依頼を優先表示
-  if(stReanswer(r))return"reanswer";
-  if(stUserChg(r))return"userchg";
-  if(stAbnormalConf(r))return"resvabn";       // ⚠️ 予約≠OP かつ フォーム/マイページ履歴なし＝異常値の疑い。フォーム済の差は正常なので出さない
-  if(stMissing(r))return"miss";
-  return"ok";
+// 1予約が複数の「やること」を同時に持つ場合、該当する全カラムに表示する。
+// 例：オプション/補償の【変更リクエスト(req・承認待ち)】と、場所/時間の【情報変更(userchg・即時反映の確認)】は独立の対応事項＝両方に出すのが正解。
+function resColumns(r){
+  if(stMismatch(r))return["mismatch"];       // 🔴 情報相違(SS≠OP)＝最優先・単独
+  if(isChecked(r))return["ack"];             // 対応済み＝確認済みBOX（新しい動きが来れば isChecked=false で自動復帰）
+  const cols=[];
+  if(stReq(r))cols.push("req");              // 承認待ちの依頼（オプション/補償/早め回収/キャンセル）
+  if(stReanswer(r))cols.push("reanswer");    // フォーム再回答(迷子)
+  if(stUserChg(r))cols.push("userchg");      // お客様がマイページで即時変更（要確認）
+  if(cols.length)return cols;                // ↑独立の対応事項は同時に複数列へ
+  if(stAbnormalConf(r))return["resvabn"];    // ⚠️ 異常値
+  if(stMissing(r))return["miss"];            // 場所情報なし
+  return["ok"];
+}
+function resColumn(r){return resColumns(r)[0];}  // 代表カラム（件数/ackボタン等の単一用途）
+// カラム別のアクティビティ行（同じ予約が2列に出る時、その列に関係する内容を表示）
+function activityFor(r,colk){
+  const cs=csOf(r);
+  if(colk==="userchg"){
+    const ucs=cs.filter(c=>c.source==="customer"&&c.status==="applied");
+    if(ucs.length){const fs=[...new Set(ucs.map(c=>fldJp(c.field)))];return {cls:"a-chg",t:"🔴 お客様が変更："+fs.join("・")};}
+  }
+  if(colk==="req"){
+    const reqs=cs.filter(c=>c.status==="requested");
+    const rdy=reqs.find(c=>c.field==="ready");
+    if(rdy){const m=String(rdy.new_value||"").match(/(\d{1,2}:\d{2})/);const tm=m?"（希望 "+m[1]+"〜）":"（スケジュール調整可能なら早めに回収）";
+      return {cls:"a-req",t:"🟢 返却準備完了・早め回収OK"+tm+(reqs.length>1?" 他"+(reqs.length-1)+"件":"")};}
+    if(reqs.length){const c=reqs[0];const kind=c.field==="cancel"?"キャンセル申請":fldJp(c.field)+"変更依頼";
+      return {cls:"a-req",t:"🟡 "+kind+"："+(c.new_value||"")+(reqs.length>1?" 他"+(reqs.length-1)+"件":"")};}
+  }
+  return activity(r);
+}
+// この列に出ている理由バッジ（同じ予約番号が複数列に出る時の識別用）
+function colBadge(colk){
+  const c=BOARD_COLS.find(x=>x.k===colk);if(!c)return"";
+  const short={req:"🟡 変更リクエスト",userchg:"🔴 情報変更",mismatch:"情報相違",miss:"場所なし",resvabn:"要確認",reanswer:"迷子",ack:"確認済み"}[colk]||c.label;
+  return `<span style="display:inline-block;padding:2px 9px;border-radius:999px;font-size:10.5px;font-weight:800;color:#fff;background:${c.color};white-space:nowrap;box-shadow:0 1px 2px rgba(0,0,0,.12)">📌 この列は「${short}」</span>`;
 }
 function matchQ(r){const q=Q.trim();return !q||((r.name||"").includes(q)||(r.id||"").toUpperCase().includes(q.toUpperCase()))}
 function formBadge(r){
@@ -477,16 +504,19 @@ function formBadge(r){
   return `<span style="display:inline-block;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:800;color:#fff;background:${done?'#0e9f50':'#94a3b8'};white-space:nowrap">${done?'📝 フォーム済':'フォーム未'}</span>`;
 }
 function lineBadge(r){const ok=LINE_SET.has(r.id);return `<span style="display:inline-block;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:800;color:#fff;background:${ok?'#06c755':'#cbd5e1'};white-space:nowrap" title="${ok?'LINE連携済＝通知/自動送信できる':'LINE未連携＝通知が飛ばない(no_userid)'}">${ok?'📱 LINE ID有':'LINE ID無'}</span>`}
-function cardHtml(r){
-  const act=activity(r);
+function cardHtml(r,colk){
+  colk=colk||resColumn(r);
+  const multi=resColumns(r).length>1;               // 同じ予約が複数列に出ている
+  const act=activityFor(r,colk);
   return `<div class="bcard ${SEL===r.id?"sel":""}" onclick="selectRes('${r.id}')">
+    ${multi?`<div style="margin:-2px 0 6px">${colBadge(colk)}</div>`:""}
     <div class="bc-top"><div class="clsbadge sm" style="background:${CLSC[r.vehicle]||'#64748b'}">${esc(r.vehicle||"?")}</div>
       <div class="bc-nm">${esc(r.name||"—")}<span class="otatag" style="background:${otaColor(r.ota)}">${esc(otaLabel(r.ota))}</span></div></div>
-    <div class="bc-sub">🎫 ${esc(r.id)}<br>${fmtD(r.lend_date)} ${esc(r.lend_time||"")}〜${fmtD(r.return_date)}</div>
+    <div class="bc-sub">🎫 ${esc(r.id)}${multi?` <span style="color:#94a3b8;font-size:10px">(複数の対応あり)</span>`:""}<br>${fmtD(r.lend_date)} ${esc(r.lend_time||"")}〜${fmtD(r.return_date)}</div>
     <div style="margin-top:5px;display:flex;gap:4px;flex-wrap:wrap">${formBadge(r)}${lineBadge(r)}</div>
     ${act?`<div class="actline ${act.cls}">${esc(act.t)}</div>`:""}
     ${r.staff_note?`<div class="kartepeek">🗒 ${esc(r.staff_note.split("\n").join(" / ").slice(0,36))}</div>`:""}
-    ${resColumn(r)==="ack"
+    ${colk==="ack"
       ?`<button class="bc-btn undo" onclick="event.stopPropagation();uncheckRes('${r.id}')">↩ 未対応に戻す${r.admin_checked_by?" ("+esc(r.admin_checked_by)+")":""}</button>`
       :`<button class="bc-btn chk" onclick="event.stopPropagation();checkRes('${r.id}')">✅ 確認済みにする</button>`}
   </div>`;
@@ -537,12 +567,12 @@ function renderInner(){
       </div>
       <div class="bcols">
         ${BOARD_COLS.map(col=>{
-          const cards=RES.filter(r=>resColumn(r)===col.k&&matchQ(r)&&(!TODAY_ONLY||stToday(r)))
+          const cards=RES.filter(r=>resColumns(r).includes(col.k)&&matchQ(r)&&(!TODAY_ONLY||stToday(r)))
             .sort((a,b)=>((a.lend_date||"")+(a.lend_time||"")).localeCompare((b.lend_date||"")+(b.lend_time||"")));
           const hot=cards.length>0;
           return `<div class="bcol" style="background:${col.color}12;border:1.5px solid ${col.color}${hot?"88":"44"}">
             <div class="bcol-h" style="border-top:4px solid ${col.color};background:${col.color}26;border-bottom:1.5px solid ${col.color}55;color:${col.color}">${col.label}${col.def?` <span onclick="event.stopPropagation();defPop('${col.label.replace(/'/g,"")}','${String(col.def).replace(/'/g,"")}')" style="cursor:pointer;display:inline-block;width:16px;height:16px;line-height:16px;text-align:center;border-radius:50%;background:#ffffffcc;color:${col.color};font-size:11px;font-weight:800;border:1px solid ${col.color}66" title="定義を見る">i</span>`:""}<span class="bcol-n" style="background:${col.color}">${cards.length}</span></div>
-            <div class="bcol-body">${cards.length?cards.map(cardHtml).join(""):`<div class="bcol-empty">なし</div>`}</div>
+            <div class="bcol-body">${cards.length?cards.map(r=>cardHtml(r,col.k)).join(""):`<div class="bcol-empty">なし</div>`}</div>
           </div>`;
         }).join("")}
       </div>
