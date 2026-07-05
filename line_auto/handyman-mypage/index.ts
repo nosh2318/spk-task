@@ -68,7 +68,7 @@ function inSapporo(lat: number, lng: number): boolean { return lat >= 42.90 && l
 function placeError(place: string, lat: number | null, lng: number | null): string | null {
   if (isChitose(place)) return "新千歳空港・千歳市は対象外です。札幌市内の場所をご指定ください。";
   if (lat != null && lng != null) { return inSapporo(lat, lng) ? null : "札幌市内の場所をご指定ください（新千歳空港など市外は不可）。"; }
-  if (!/札幌/.test(place)) return "札幌市内の場所をご指定ください（地図から選ぶと確実です）。";
+  // ピン座標が無い自由入力は「札幌」表記必須をやめる（すすきの/大通/丘珠/カタカナ名等の有効な場所が弾かれないように）。市外の明示(新千歳/千歳)のみ上でブロック。
   return null;
 }
 // 基準日時まで hours 時間以内か（JST基準・雑に安全側）。日付なしは false（=まだ余裕あり扱い）。
