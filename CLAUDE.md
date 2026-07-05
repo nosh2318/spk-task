@@ -185,6 +185,17 @@ my.html `insCur()` は insurance生値を3プランに寄せる：**`フル|NOC|
 ### 📣 マイページ通知の宛先＝#sapporo_user_action（2026-07-05）
 マイページ関連の**全Slack通知（変更即時/依頼/キャンセル/承認却下/整合アラート）は `#sapporo_user_action`（C0BER0YC6AK）**へ。handyman-mypageの`slackPost`が`SLACK_MYPAGE_CHANNEL`(=C0BER0YC6AK)を使用（keydrop系のSLACK_KEYDROP_CHANNELとは分離）。**ボット＝`sns_auto`(U0AP367KETH)。このチャンネルへ手動`/invite @SNS Auto`が必要**（未招待だとnot_in_channelで飛ばない）。⚠️変更/依頼/キャンセル/承認の通知は`notifySlack`経由＝**MYPAGE_SILENT=1の間はミュート**（開発中）。本番で飛ばすにはMYPAGE_SILENTを解除。整合アラート(patrol)は`slackPost`直＝ミュート対象外で常時発報。
 
+### 🎯 my-admin カテゴリ定義 確定（2026-07-05 オーナー確定・これが正）
+分類が曖昧で churn したため確定。**大原則＝顧客がフォーム/マイページで情報を入れたら正常（場所差・時間差は顧客/スタッフの調整＝正常）。時間差は常に正常＝異常判定に一切使わない。**
+- **⚠️ 異常値・要確認＝次の3条件のみ**（`stAbnormalConf`）：①**非HPでフォーム未回答なのに場所がある**（出所不明。ただしOP場所が`_ssPlace`＝フォーム由来なら回答済み扱いで除外）②**HPなのに場所がない**（HPは予約時に場所が入る）③**場所があるのにOPシートタスクが空**（フォーム/予約に場所ありなのに生成済みd-/c-タスクの場所が空＝同期漏れ）。**値の食い違い(予約≠OP)や時間差は異常値に含めない**。
+- **⑥ 場所情報なし**（`stMissing`）＝フォーム未回答 かつ **予約情報/フォーム(SS+エルメ)/OP のどこにも場所が無い**（真に未確定）。「場所があるのに場所情報なしに落ちる」は禁止（あれば②か①へ）。
+- **① 情報相違(SS≠OP)**＝フォーム回答の場所とOP場所が明確に別物（`placeConflict`）。
+- **フォーム回答済み判定`stInfoProvided`**＝SS_MAP(ライブGoogleシート＋`spk_line_links`)に回答あり OR 顧客mypage変更 OR **OPタスク場所が`_ssPlace`(フォーム由来)**。←最後の条件が重要（これが無いと「実はフォーム済」を出所不明と誤検知）。
+- 各カテゴリ定義はmy-adminのボード見出し**ⓘタップでポップ表示**(`defPop`)。ADMIN_VER v2.5。実データ検証：異常値は31→13→3に収束（誤検知の時間差・値相違・フォーム済を除外）。
+
+### 🧪 マイページ ダミーテスト予約（2026-07-05・オーナー自己テスト用）
+- `reservations` id=**ZZMYPAGETEST0705**（テスト マイページ・B・楽天・2026-07-10〜12）＋`spk_line_links`でLINE宛=**オーナーtest_user_id(Ua1f5217…)**に固定＝本物の顧客に飛ばない。mypage URL＝`https://nosh2318.github.io/spk-task/my.html?t=1bc38c91-9cfc-4404-9909-3ad88e9eb4f6`。初動LINE送信済(line-push mypage_initial)。**テスト後の掃除**＝`delete from reservations where id='ZZMYPAGETEST0705'`＋`delete from spk_line_links where resv_no='ZZMYPAGETEST0705'`＋`delete from mypage_changes where reservation_id='ZZMYPAGETEST0705'`＋生成されたtasks/fleet。
+
 ### 🛠 対応センター（my-admin「🛠 対応」タブ・2026-07-05・本セクションのメインTODO）
 オーナー要望「Slackのテキストだけでは何をすべきか分からない→アラート→確認→対応→正常化 までを1画面で導く」。my-adminヘッダー「🛠 対応」で対応センターを開くと、要対応の事象を各**【事象／簡易説明／対応(ボタン)／結果】**で表示：
 - **整合の相違**（patrol由来・予約情報≠マイページ/OP）→ ワンボタン「マイページ・OPの値で統一（推奨）」or「予約情報の値で統一」→ Edge Function **`resolve`**（staff認証・reservation_id/field/value/target=resv|op）で書込→即一致＝正常化。「結果」に✅表示。
