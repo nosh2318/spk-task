@@ -18,9 +18,9 @@ function dstr(off: number): string { const d = jstNow(); d.setUTCDate(d.getUTCDa
 // テンプレ（日本語＋English）＋ URL
 const TPL: Record<string, (u: string, r: any) => string> = {
   mypage_initial: (u) => `【HANDYMAN 札幌デリバリー】\nご予約ありがとうございます。専用マイページで、お届け／回収の日時・場所の確認・変更ができます👇\nThank you for your booking! Check & edit your delivery/pickup details here 👇\n${u}`,
-  mypage_place: (u) => `【HANDYMAN】お届け／回収の場所がまだ未設定です。スムーズなお引き渡しのため、マイページからご登録をお願いします👇\nYour delivery/pickup location is not set yet. Please set it from your page 👇\n${u}`,
-  mypage_daybefore: (u) => `【HANDYMAN】明日がご利用日です。日時・お届け場所を今一度ご確認ください👇\nYour rental starts tomorrow. Please review the date/time & location 👇\n${u}`,
-  mypage_return3h: (u) => `【HANDYMAN】まもなくご返却のお時間です（約3時間後）。回収の場所・時間をご確認ください👇\nPickup is in about 3 hours. Please review the pickup place & time 👇\n${u}`,
+  mypage_place: (u) => `【HANDYMAN 札幌デリバリー】お届け／回収の場所がまだ未設定です。スムーズなお引き渡しのため、マイページからご登録をお願いします👇\nYour delivery/pickup location is not set yet. Please set it from your page 👇\n${u}`,
+  mypage_daybefore: (u) => `【HANDYMAN 札幌デリバリー】明日がご利用日です。日時・お届け場所を今一度ご確認ください👇\nYour rental starts tomorrow. Please review the date/time & location 👇\n${u}`,
+  mypage_return3h: (u) => `【HANDYMAN 札幌デリバリー】まもなくご返却のお時間です（約3時間後）。回収の場所・時間をご確認ください👇\nPickup is in about 3 hours. Please review the pickup place & time 👇\n${u}`,
 };
 
 async function callLinePush(store: string, resvNo: string, action: string, message: string): Promise<any> {

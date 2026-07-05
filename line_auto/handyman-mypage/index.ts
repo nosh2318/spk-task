@@ -188,12 +188,12 @@ Deno.serve(async (req) => {
     // 顧客へLINE通知は「予約が有効なうち」に先に送る（キャンセル確定で cancelled になる前）
     let msg: string;
     if (decision === "approved") {
-      if (c.field === "cancel") msg = `【HANDYMAN】ご予約 ${resId2} のキャンセルを承りました。\n担当より別途ご連絡いたします。ご利用ありがとうございました。`;
-      else if (c.field === "ready") msg = `【HANDYMAN】早めのご返却（回収）を承りました。\nスケジュールを調整し、回収時間が早まる場合は改めてご連絡いたします。`;
-      else msg = `【HANDYMAN】ご依頼の${label}変更を承り、反映いたしました。\nマイページよりご確認ください。\n${myUrl}`;
+      if (c.field === "cancel") msg = `【HANDYMAN 札幌デリバリー】ご予約 ${resId2} のキャンセルを承りました。\n担当より別途ご連絡いたします。ご利用ありがとうございました。`;
+      else if (c.field === "ready") msg = `【HANDYMAN 札幌デリバリー】早めのご返却（回収）を承りました。\nスケジュールを調整し、回収時間が早まる場合は改めてご連絡いたします。`;
+      else msg = `【HANDYMAN 札幌デリバリー】ご依頼の${label}変更を承り、反映いたしました。\nマイページよりご確認ください。\n${myUrl}`;
     } else {
-      if (c.field === "ready") msg = `【HANDYMAN】ご連絡ありがとうございます。今回は予定のお時間での回収を予定しております。何卒よろしくお願いいたします。`;
-      else msg = `【HANDYMAN】ご依頼いただいた${label}${c.field === "cancel" ? "申請" : "変更"}につきまして、恐れ入りますが今回はお受けいたしかねます。\n詳細は公式LINEにてご連絡いたします。`;
+      if (c.field === "ready") msg = `【HANDYMAN 札幌デリバリー】ご連絡ありがとうございます。今回は予定のお時間での回収を予定しております。何卒よろしくお願いいたします。`;
+      else msg = `【HANDYMAN 札幌デリバリー】ご依頼いただいた${label}${c.field === "cancel" ? "申請" : "変更"}につきまして、恐れ入りますが今回はお受けいたしかねます。\n詳細は公式LINEにてご連絡いたします。`;
     }
     await pushLine(resId2, msg);
 
