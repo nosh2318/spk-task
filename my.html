@@ -193,7 +193,7 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 <div class="toast" id="toast"></div>
 
 <script>
-const VER = "v5.3 早め返却=時間指定/承認文言";
+const VER = "v5.4 二重送信ガード";
 const FN = "https://ckrxttbnawkclshczsia.supabase.co/functions/v1/handyman-mypage";
 const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const $ = s=>document.querySelector(s);
@@ -397,10 +397,15 @@ function toast(m){const t=$("#toast");t.textContent=m;t.classList.add("show");se
 function closeSheet(){$("#scrim").classList.remove("show");$("#sheet").innerHTML=""}
 $("#scrim").addEventListener("click",e=>{if(e.target.id==="scrim")closeSheet()});
 
+let SENDING=false; // 送信系(lookup以外)の多重実行ガード（モバイルのゴーストクリック/二重タップで2回叩かれるのを防ぐ）
 async function call(action, body){
-  const r = await fetch(FN,{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({action,token:TOKEN,...body})});
-  return {status:r.status, json: await r.json().catch(()=>({}))};
+  const mut = action!=="lookup";
+  if(mut){ if(SENDING) return {status:0, json:{dropped:true}}; SENDING=true; }
+  try{
+    const r = await fetch(FN,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({action,token:TOKEN,...body})});
+    return {status:r.status, json: await r.json().catch(()=>({}))};
+  } finally { if(mut) SENDING=false; }
 }
 
 // 履歴1行を自然文で生成（日単位・多言語）。mode:"you"=お客様ページ視点。対象外はnull。
@@ -600,6 +605,7 @@ async function saveField(field){
   const _lb={del_place:t('del_place'),col_place:t('col_place'),lend_time:t('del_dt'),return_time:t('col_dt')}[field]||"";
   if(!confirm(tf('reg_confirm',_lb,v)))return;
   const {json}=await call("update",{[field]:v});
+  if(json.dropped)return;
   if(json.ok){closeSheet();toast(json.pendingApproval?t('pending_appr'):t('saved'));await load()}
   else if(json.lineOnly){closeSheet();toast(json.error)}
   else toast(json.error||t('save_fail'));
@@ -712,6 +718,7 @@ async function mpSave(){
   const body={[mpField]:place};
   if(mpPicked.lat&&mpPicked.lng){body[isDel?"del_lat":"col_lat"]=mpPicked.lat;body[isDel?"del_lng":"col_lng"]=mpPicked.lng}
   const {json}=await call("update",body);
+  if(json.dropped)return;
   if(json.ok){closeSheet();toast(json.pendingApproval?t('pending_appr'):t('saved'));await load()}
   else if(json.lineOnly){closeSheet();toast(json.error)}
   else toast(json.error||t('save_fail'));
@@ -791,6 +798,7 @@ async function sendOption(){
   const target={}; document.querySelectorAll(".optsel").forEach(s=>{target[s.dataset.key]=+s.value});
   if(!confirm(t('opt_confirm')+"\n"+detail+"\n"+t('confirm_ok')))return;
   const {json}=await call("request",{req_type:"option",detail,target});
+  if(json.dropped)return;
   if(json.ok){closeSheet();toast(json.alreadyRequested?t('already_req'):t('received'));await load()}
   else toast(json.error||t('send_fail'));
 }
@@ -835,6 +843,7 @@ async function sendInsurance(){
   const detail=`補償を「${insLabel(sel)}」に変更希望（現在:${insLabel(cur)}）`;
   if(!confirm(t('ins_confirm')+"\n"+insLabel(sel)+"\n"+t('confirm_ok')))return;
   const {json}=await call("request",{req_type:"insurance",detail,target:{insurance:sel}});
+  if(json.dropped)return;
   if(json.ok){closeSheet();toast(json.alreadyRequested?t('already_req'):t('received'));await load()}
   else toast(json.error||t('send_fail'));
 }
@@ -843,6 +852,7 @@ async function sendReq(kind){
   if(detail.length<1){toast(t('enter_content'));return}
   if(!confirm(detail+"\n"+t('confirm_ok')))return;
   const {json}=await call("request",{req_type:kind,detail});
+  if(json.dropped)return;
   if(json.ok){closeSheet();toast(json.alreadyRequested?t('already_req'):t('received'));await load()}
   else toast(json.error||t('send_fail'));
 }
@@ -888,6 +898,7 @@ async function confirmReady(){
   const time=$("#rdyt").value.trim();
   if(!time){toast(t('ready_time_req'));return}
   const {json}=await call("ready",{time});
+  if(json.dropped)return;
   if(json.ok){closeSheet();toast(json.alreadyRequested?t('already_req'):t('ready_received'));await load()}
   else toast(json.error||t('send_fail'));
 }
@@ -895,6 +906,7 @@ async function sendCancel(){
   const reason=$("#cr").value.trim();
   if(!confirm(t('cancel_confirm')+"\n"+t('confirm_contact')))return;
   const {json}=await call("cancel_request",{reason});
+  if(json.dropped)return;
   if(json.ok){closeSheet();toast(json.alreadyRequested?t('applied_already'):t('cancel_req_done'));await load()}
   else toast(json.error||t('send_fail'));
 }
