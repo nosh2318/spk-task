@@ -352,6 +352,8 @@ Deno.serve(async (req) => {
 
   // ---- lookup: マイページ表示（正本を1画面に集約）----
   if (action === "lookup") {
+    // 開封記録（アクティブ/スルー可視化用）: 顧客がマイページを開いた＝lookup。RPCでupsert（応答をブロックしない・失敗無視）。
+    sbPost("rpc/mypage_touch_view", { p_rid: resId, p_store: "spk" }).catch(() => {});
     // 傷チェック解禁: 出発日の8:00以降のみ（それ以前は準備中でぼかす）
     const today = nowJst().slice(0, 10);
     const hh = +nowJst().slice(11, 13);

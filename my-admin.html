@@ -238,7 +238,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
 <script>
 const SB="https://ckrxttbnawkclshczsia.supabase.co";
 const FN=SB+"/functions/v1";
-const ADMIN_VER="v3.1 早め回収=希望時間表示";
+const ADMIN_VER="v3.2 マイページ利用状況(アクティブ/スルー)";
 const ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
 const $=s=>document.querySelector(s);
 function showErr(m){const e=document.getElementById("errbar");if(e){e.style.display="block";e.textContent="⚠️ "+m}}
@@ -246,6 +246,7 @@ window.onerror=function(msg,src,ln){showErr(msg+" @"+ln);return false};
 window.addEventListener("unhandledrejection",e=>showErr("Promise: "+(e.reason&&e.reason.message||e.reason)));
 const MYURL="https://nosh2318.github.io/spk-task/my.html?t=";
 let CFG={},RES=[],CHG={},FILTER="userchg",Q="",SEL=null,SELTASKS=null,VIEW="changes",CFILTER="req",STAFF=[],OPERATOR=localStorage.getItem("admin_op")||"",TODAY_ONLY=false,LAST_LOAD=0;
+let SENDS={},VIEWS={},UFILTER="all"; // SENDS=mypage URL送信ログ, VIEWS=マイページ開封(mypage_views)
 function fmtClock(ms){if(!ms)return"—";const d=new Date(ms);return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0")+":"+String(d.getSeconds()).padStart(2,"0")}
 const TIMES=(()=>{let a=[];for(let h=9;h<=19;h++){a.push(("0"+h).slice(-2)+":00");if(h<19)a.push(("0"+h).slice(-2)+":30")}return a})();
 function setOp(v){OPERATOR=v;localStorage.setItem("admin_op",v);render()}
@@ -273,15 +274,19 @@ function today(){const d=new Date();return d.getFullYear()+"-"+("0"+(d.getMonth(
 function ago(days){const d=new Date();d.setDate(d.getDate()-days);return d.getFullYear()+"-"+("0"+(d.getMonth()+1)).slice(-2)+"-"+("0"+d.getDate()).slice(-2)}
 
 async function loadAll(keepSel){
-  const [cfg,res,chg,stf,links]=await Promise.all([
+  const [cfg,res,chg,stf,links,sends,views]=await Promise.all([
     api("spk_line_config?id=eq.1&select=*"),
     api("reservations?return_date=gte."+today()+"&status=not.in.(%22%E3%82%AD%E3%83%A3%E3%83%B3%E3%82%BB%E3%83%AB%22,cancelled)&order=lend_date.asc&limit=400&select=id,name,ota,lend_date,return_date,lend_time,return_time,del_time,col_time,vehicle,del_place,col_place,visit_type,return_type,people,opt_b,opt_c,opt_j,insurance,status,mypage_token,mypage_locked,staff_note,tel,mail,admin_checked_at,admin_checked_by"),
     api("mypage_changes?store=eq.spk&order=created_at.desc&limit=500&select=id,reservation_id,field,old_value,new_value,source,status,note,actor,created_at"),
     api("staff?select=name&order=name.asc").catch(()=>[]),
     api("spk_line_links?select=resv_no,line_user_id,del_place,col_place,del_time,col_time,answered_at&limit=5000").catch(()=>[]),
+    api("spk_line_sends?action=eq.mypage_initial&order=sent_at.desc&limit=3000&select=resv_no,status,sent_at").catch(()=>[]),
+    api("mypage_views?select=reservation_id,first_at,last_at,view_count&limit=5000").catch(()=>[]),
   ]);
   CFG=cfg[0]||{}; RES=res||[]; STAFF=(stf||[]).map(s=>s.name).filter(Boolean);
   LINE_SET=new Set((links||[]).filter(l=>l.resv_no&&l.line_user_id).map(l=>l.resv_no));
+  SENDS={}; (sends||[]).forEach(s=>{ if(s.resv_no&&!SENDS[s.resv_no]) SENDS[s.resv_no]={at:s.sent_at,status:s.status}; }); // 最新のURL送信
+  VIEWS={}; (views||[]).forEach(v=>{ if(v.reservation_id) VIEWS[v.reservation_id]={first:v.first_at,last:v.last_at,count:v.view_count}; });
   // エルメ受付フォーム(spk_line_links)＝SSと同一ソース。ライブSSシートに無い回答をここで補完（フォーム回答済み判定・場所あり判定に使う）
   LINK_MAP={}; (links||[]).forEach(l=>{ if(!l.resv_no)return; const del=String(l.del_place||"").trim(),col=String(l.col_place||"").trim(); if(del||col) LINK_MAP[l.resv_no]={del,col,delTime:String(l.del_time||"").trim(),colTime:String(l.col_time||"").trim(),ts:l.answered_at||""}; });
   CHG={}; (chg||[]).forEach(c=>{(CHG[c.reservation_id]=CHG[c.reservation_id]||[]).push(c)});
@@ -517,6 +522,7 @@ function renderInner(){
     <button onclick="loadAll(true)">🔄 更新</button>
     <button class="${rc?"alert":""}" onclick="VIEW='changes';SEL=null;render()">🔔 変更依頼 ${rc}</button>
     <button onclick="openHistory()">🕘 履歴</button>
+    <button onclick="openUsage()">📲 利用状況</button>
     <button onclick="openManual()">📖 マニュアル</button>
     <button onclick="openNotify()">📣 通知</button>
     <button onclick="openCfg()">⚙️ トリガー設定</button>
@@ -1079,6 +1085,50 @@ async function toggleNotify(){
     CFG.mypage_notify_enabled=next;toast(next?"通知をONにしました":"通知をOFFにしました");openNotify();
   }catch(e){toast("保存失敗（ログイン要）")}
 }
+// ===== 📲 マイページ利用状況（送信→開封→操作 のファネル。アクティブ/スルーが分かる）=====
+function fmtDT(s){ if(!s)return"-"; const d=new Date(s); if(isNaN(d))return"-"; const p=n=>("0"+n).slice(-2); return p(d.getMonth()+1)+"/"+p(d.getDate())+" "+p(d.getHours())+":"+p(d.getMinutes()); }
+function usageStat(r){
+  const id=r.id, v=VIEWS[id], sent=SENDS[id], reach=LINE_SET.has(id);
+  const acted=(CHG[id]||[]).some(c=>c.source==="customer");
+  if(v)return {k:"active",chip:acted?"🟢 アクティブ・操作あり":"🟢 アクティブ",c:"#0e7a3b",b:"#dcfce7",acted};
+  if(sent&&sent.status==="sent")return {k:"through",chip:"🟡 送信済・未開封（スルー）",c:"#b45309",b:"#fef3c7"};
+  if(reach)return {k:"unsent",chip:"⚪ 未送信（LINE連携済）",c:"#475569",b:"#e2e8f0"};
+  return {k:"noline",chip:"⚫ LINE未連携",c:"#64748b",b:"#f1f5f9"};
+}
+function openUsage(){
+  const rows=RES.map(r=>({r,u:usageStat(r)}));
+  const cnt={active:0,through:0,unsent:0,noline:0}; rows.forEach(x=>cnt[x.u.k]++);
+  const reachN=rows.filter(x=>x.u.k!=="noline").length;
+  const sentN=rows.filter(x=>SENDS[x.r.id]&&SENDS[x.r.id].status==="sent").length;
+  const openN=cnt.active;
+  const rate=(a,b)=>b>0?Math.round(a/b*100)+"%":"–";
+  const stat=(n,l,c)=>`<div style="flex:1;min-width:74px;background:${c}12;border:1px solid ${c}44;border-radius:10px;padding:8px 6px;text-align:center"><div style="font-size:20px;font-weight:800;color:${c}">${n}</div><div style="font-size:10.5px;color:#475569;font-weight:700">${l}</div></div>`;
+  const fchip=(k,l)=>`<button onclick="UFILTER='${k}';openUsage()" style="padding:5px 11px;border-radius:999px;border:1px solid ${UFILTER===k?"#0F1F45":"#cbd5e1"};background:${UFILTER===k?"#0F1F45":"#fff"};color:${UFILTER===k?"#fff":"#475569"};font-weight:700;font-size:12px;cursor:pointer">${l}</button>`;
+  let list=rows.filter(x=>UFILTER==="all"||x.u.k===UFILTER);
+  list.sort((a,b)=>{const o={active:0,through:1,unsent:2,noline:3};return (o[a.u.k]-o[b.u.k])||((a.r.lend_date||"").localeCompare(b.r.lend_date||""));});
+  const row=x=>{const r=x.r,u=x.u,v=VIEWS[r.id],sent=SENDS[r.id],acted=(CHG[r.id]||[]).some(c=>c.source==="customer");
+    return `<div onclick="closeM();selectRes('${r.id}')" style="display:flex;gap:8px;align-items:center;padding:8px 4px;border-top:1px solid #eef2f7;font-size:12.5px;cursor:pointer">
+      <div style="flex:1;min-width:0"><b>${esc(r.name||"")}</b>様 <span style="color:#94a3b8;font-size:11px">${esc(r.id)}</span><br>
+        <span style="color:#64748b;font-size:11px">利用 ${esc(r.lend_date||"")}〜${esc(r.return_date||"")}</span></div>
+      <div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end;align-items:center;min-width:0">
+        <span style="font-size:10.5px;color:${LINE_SET.has(r.id)?"#0e7a3b":"#cbd5e1"}">${LINE_SET.has(r.id)?"LINE連携":"LINE無"}</span>
+        <span style="font-size:10.5px;color:${sent&&sent.status==="sent"?"#334155":"#cbd5e1"}">${sent&&sent.status==="sent"?"送信"+fmtDT(sent.at):"未送信"}</span>
+        <span style="font-size:10.5px;color:${v?"#0e7a3b":"#cbd5e1"}">${v?"開封"+v.count+"回・"+fmtDT(v.last):"未開封"}</span>
+        ${acted?`<span style="font-size:10.5px;color:#7c3aed">✍️操作</span>`:""}
+        <span style="padding:2px 8px;border-radius:999px;font-size:10.5px;font-weight:800;color:${u.c};background:${u.b};white-space:nowrap">${u.chip}</span>
+      </div></div>`;};
+  $("#modal").style.maxWidth="720px";
+  $("#modal").innerHTML=`<h3>📲 マイページ 利用状況</h3>
+    <div style="font-size:11.5px;color:var(--sub);margin-bottom:8px">現在〜未来の予約${RES.length}件。LINEでURL送信→開封→操作 のファネル。<b>開封=マイページを開いた＝アクティブ</b>／送信済で未開封=スルー。</div>
+    <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+      ${stat(cnt.active,"🟢 アクティブ","#0e9f50")}${stat(cnt.through,"🟡 スルー","#d97706")}${stat(cnt.unsent,"⚪ 未送信","#64748b")}${stat(cnt.noline,"⚫ LINE未連携","#94a3b8")}</div>
+    <div style="font-size:11.5px;color:#475569;margin-bottom:10px;text-align:center">LINE連携率 <b>${rate(reachN,RES.length)}</b>（${reachN}/${RES.length}） ／ 送信済 <b>${sentN}</b> ／ 開封率 <b>${rate(openN,sentN)}</b>（開封${openN}/送信${sentN}）</div>
+    <div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap">
+      ${fchip("all","すべて "+RES.length)}${fchip("active","🟢 アクティブ "+cnt.active)}${fchip("through","🟡 スルー "+cnt.through)}${fchip("unsent","⚪ 未送信 "+cnt.unsent)}${fchip("noline","⚫ LINE未連携 "+cnt.noline)}</div>
+    <div style="max-height:60vh;overflow:auto">${list.length?list.map(row).join(""):`<div class="empty">該当なし</div>`}</div>
+    <div class="acts" style="margin-top:12px"><button class="btn ghost" onclick="closeM()">閉じる</button></div>`;
+  $("#scrim").classList.add("show");
+}
 function closeM(){$("#scrim").classList.remove("show");$("#modal").style.maxWidth=""}
 $("#scrim").addEventListener("click",e=>{if(e.target.id==="scrim")closeM()});
 
@@ -1117,6 +1167,7 @@ function renderManual(){
       <span style="font-size:11px;color:#64748b">※どこかに場所があるのに⑥に入ることはありません（その状態は②異常値で拾う）。お客様がフォーム（エルメ受付/SS）で回答済みなら場所ありとして扱い、マイページにも表示されます（予約番号完全一致で判定）。</span>`)}
     ${sec("⑦ 想定エラーと対応（多くは公式LINEで解消）",`・マイページが開けない（デバイス/通信）／・リクエストしたが回答がない・ステータス変わらない／・時間・場所を変更したが反映されない／・LINEを使わない・共有したくない。<br>基本は公式LINEでのご案内で解消。運用は<b>LINEより管理画面中心</b>（マイページ利用率に連動）：情報相違/異常値/変更リクエスト/情報変更(場所時間)/場所なし のチェックと処理。`)}
     ${sec("🕘 変更履歴（誰が・どこから・何を）",`ヘッダー「🕘 履歴」で全予約の変更/依頼を新しい順に一覧。各予約のカルテにも<b>「🕘 変更履歴（どこから登録・編集したか）」</b>があり、<b>📝フォーム／📱マイページ／👤担当</b>のバッジで<b>どこから</b>変更したかが分かります。`)}
+    ${sec("📲 マイページ利用状況（アクティブ/スルー）",`ヘッダー「📲 利用状況」で、LINEでURLを送った後<b>お客様がマイページを開いたか</b>を一覧化。<b>🟢アクティブ</b>=開封済（操作の有無も表示）／<b>🟡スルー</b>=送信済だが未開封／<b>⚪未送信</b>=LINE連携済だが未送信／<b>⚫LINE未連携</b>。上部にLINE連携率・開封率のファネル。行タップでカルテへ。「未開封」の連携済ユーザーには📣通知で開封を促せます。`)}
     ${sec("🔔 変更依頼の承認/却下（重要）",`「🔔 変更依頼」を開く → 各依頼に<b>[承認]</b>/<b>[却下]</b>。<br>・<b>承認</b>＝<b>実際に反映</b>されます：補償→予約に反映／オプション→予約＋OPシート／お届け場所・時間(24h以内)→反映／キャンセル→<b>予約キャンセル＋配車解除</b>。同時に<b>お客様へLINE通知</b>。<br>・<b>却下</b>＝反映せず<b>お客様へLINE通知</b>（見送り）。<br><b>※承認/却下は取り消せません</b>。特にキャンセル承認は配車も解除されるので内容を確認のうえ実行。`)}
     ${sec("ステータスの意味",`${chip("確認中","#b45309")}=お客様が依頼・未処理／${chip("承認・反映済","#0e7a3b")}=承認して反映済み／${chip("見送り","#64748b")}=却下／情報変更(applied)=お客様が即時変更した記録。`)}
     ${sec("カルテ / スタッフメモ",`電話・LINEで受けた依頼や特記事項を予約ごとに記録。タグ（要注意/常連/連絡取れない 等）も付けられます。`)}
