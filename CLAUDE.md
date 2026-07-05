@@ -124,6 +124,12 @@ task_integrity_guardian(main・`task_integrity_scan(p_fix)`＝SPK自動修正ON/
 - **リリース前チェックリスト**：(1)🔴@SNS Autoを#sapporo_user_actionに招待(未招待だと通知飛ばない) (2)test_mode=ON＋自分のuserIDで通知検証→本番ON (3)mypage_notify_enabled既定OFF＝ONまで送信されない。
 - 検証済(E2E)：リクエスト到達／承認→マイページ連動／場所時間→reservations＋OPタスク反映／audit_log記録。多言語(日英繁韓)・OPシートURL・返却済非表示・確認ダイアログ 実装済。
 
+## 🗺 2026-07-05 「場所登録済みなのに場所情報なしBOX」＝エルメ受付フォーム(spk_line_links)未統合の修正
+- **症状**：ワカツキ様(RC32461200845228864・A2楽天9/20)がmy-admin「場所情報なし」に入るがフォームで場所回答済み。スクショの変更履歴は**ブラウザキャッシュ(古い表示)**でライブlookupは`del_place=""`/`history=[]`だった。
+- **真因**：顧客のフォーム回答(6/9)は`spk_line_links`(エルメ受付CSV・del_place/col_place・answered_at)に残っていたが、reservations/OPタスク/places/mypage_changes は全て空（未来予約でOPタスク未生成＋line_links→reservations同期が走っていない）。my-adminのSS判定(`fetchSS`＝Googleシート別ソース)と`stMissing`(OP側しか見ない)がline_linksを見ておらず「フォーム未回答」と誤判定。該当**60件**(直近7/5含む)。
+- **修正(表示のみ・DB書込なし)**：`spk_line_links`＝SSと同一ソースとして統合。my-admin＝`LINK_MAP`ロード→`mergeLinkIntoSS()`でSS_MAPに補完(ライブSS優先/無ければlink)＋`stMissing`が`op.del||ss.del`で判定→フォーム回答済みは⑥から外れ「フォーム済(正常)」に。EF lookup＝`del/col_place`と時刻の最終フォールバックに`spk_line_links`(**予約番号完全一致**)を追加→顧客マイページに回答済み場所を表示。検証：ワカツキ様lookupで「ホテルtheb札幌/ニューオータニイン札幌」表示OK。ADMIN_VER v2.3。
+- **教訓**：フォーム回答の正本は`spk_line_links`(resv_no=予約id完全一致)。「場所情報なし=フォーム未回答」判定は必ずline_linksも見る。`placeConflict`は空欄側を相違に含めない設計なので、空OP+SS場所ありをmismatchでは拾えない→stMissing側で吸収。**残(要オーナー判断)**：line_links場所→reservations.del_place/OPタスクへの実書込backfill(60件・完全一致・空欄のみ)は未実施＝OPシート実体には未反映(表示は解決済)。
+
 ## 🟢 2026-07-05 マイページ 返却準備完了ボタン＋アクセス速度チューニング（このセッション）
 - **返却準備完了ボタン（早め回収OK）**：顧客がmy.htmlで押す→EF`ready`アクション→`mypage_changes`(field=ready,status=requested,source=customer)＋Slack🟢通知→顧客側は「🕓承りました。確認中」に切替。承認/却下はmy-adminの変更依頼カード(decide)＝approve時LINE「早めのご返却を承りました」/reject「予定のお時間で回収」。重複申請ブロック。my-admin活動ライン「🟢 返却準備完了・早め回収OK」。多言語(ja/en/zh/ko)。my.html VER v4.2 / my-admin ADMIN_VER v2.2。
 - **速度実測＝本体は既に軽量**：my.html=71KB・**vanilla JS/CDN依存ゼロ**(React/Tailwind/Babel不使用)・即スピナー表示(白画面なし)・Google Mapsは場所編集時のみ動的ロード(初期ブロックしない)。GitHub Pages応答 0.09〜0.36s＝問題なし。
