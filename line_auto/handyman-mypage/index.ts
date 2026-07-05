@@ -39,11 +39,35 @@ async function pushLine(resvNo: string, message: string): Promise<void> {
   } catch (e) { console.error("[line-push]", String(e)); }
 }
 
-async function slackPost(text: string): Promise<void> {
+async function slackPost(text: string, blocks?: unknown[]): Promise<void> {
   // マイページ関連の全通知（変更/依頼/キャンセル/承認却下/整合アラート）は #sapporo_user_action へ
   const token = Deno.env.get("SLACK_BOT_TOKEN"); const ch = Deno.env.get("SLACK_MYPAGE_CHANNEL") || "C0BER0YC6AK";
   if (!token) { console.log("[slack skip]", text); return; }
-  try { const r = await fetch("https://slack.com/api/chat.postMessage", { method: "POST", headers: { Authorization: `Bearer ${token}`, "content-type": "application/json; charset=utf-8" }, body: JSON.stringify({ channel: ch, text }) }); const d = await r.json().catch(() => ({})); if (!d.ok) console.error("[slack]", JSON.stringify(d)); } catch (e) { console.error("[slack]", String(e)); }
+  const body: any = { channel: ch, text }; if (blocks) body.blocks = blocks;
+  try { const r = await fetch("https://slack.com/api/chat.postMessage", { method: "POST", headers: { Authorization: `Bearer ${token}`, "content-type": "application/json; charset=utf-8" }, body: JSON.stringify(body) }); const d = await r.json().catch(() => ({})); if (!d.ok) console.error("[slack]", JSON.stringify(d)); } catch (e) { console.error("[slack]", String(e)); }
+}
+// マイページ通知カード（統一フォーマット）＝ 見出し＋基本情報(お客様/予約番号/利用/車両)＋内容＋対応の要否
+type MpCard = { emoji: string; title: string; name: string; resId: string; period?: string; vehicle?: string; lines?: string[]; action: string };
+function mpCard(c: MpCard): { text: string; blocks: unknown[] } {
+  const fields: any[] = [
+    { type: "mrkdwn", text: `*お客様*\n${c.name || "-"} 様` },
+    { type: "mrkdwn", text: `*予約番号*\n\`${c.resId}\`` },
+  ];
+  if (c.period) fields.push({ type: "mrkdwn", text: `*利用期間*\n${c.period}` });
+  if (c.vehicle) fields.push({ type: "mrkdwn", text: `*車両*\n${c.vehicle}` });
+  const blocks: any[] = [
+    { type: "header", text: { type: "plain_text", text: `${c.emoji} ${c.title}`, emoji: true } },
+    { type: "section", fields },
+  ];
+  if (c.lines && c.lines.length) blocks.push({ type: "section", text: { type: "mrkdwn", text: c.lines.join("\n") } });
+  blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: c.action }] });
+  blocks.push({ type: "divider" });
+  const text = `${c.emoji} ${c.title}｜${c.name}様 ${c.resId}`; // 通知バナー/フォールバック用の一行
+  return { text, blocks };
+}
+async function notifySlackCard(c: MpCard): Promise<void> {
+  if (Deno.env.get("MYPAGE_SILENT") === "1") { console.log("[slack muted]", c.title); return; }
+  const { text, blocks } = mpCard(c); await slackPost(text, blocks);
 }
 async function notifySlack(text: string): Promise<void> {
   // 一時ミュート（MYPAGE_SILENT=1 の間はSlack通知を出さない＝開発/テスト中の混乱防止）
@@ -237,7 +261,17 @@ Deno.serve(async (req) => {
     }
 
     await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: decision, actor }, sAct);
-    await notifySlack(`${decision === "approved" ? "✅ *承認*" : "🚫 *却下*"} [札幌] ${rr.name || ""}様 ${resId2}\n依頼: ${label}（${c.note || c.new_value || ""}）\n担当: ${actor}\n→ 顧客へLINE通知${c.field === "cancel" && decision === "approved" ? "＋キャンセル確定(配車解除)" : ""}`);
+    await notifySlackCard({
+      emoji: decision === "approved" ? "✅" : "🚫",
+      title: decision === "approved" ? `承認して反映しました（${label}）` : `却下しました（${label}）`,
+      name: rr.name || "", resId: resId2,
+      period: (rr.lend_date ? `${rr.lend_date}〜${rr.return_date}` : undefined),
+      vehicle: rr.vehicle,
+      lines: [`📝 *内容*　${c.note || c.new_value || "-"}`, `👤 *担当*　${actor}`],
+      action: decision === "approved"
+        ? `✅ 顧客へLINE通知済み${c.field === "cancel" ? "＋キャンセル確定・配車解除" : "・予約に反映済み"}`
+        : "✅ 顧客へLINE通知済み（見送り）",
+    });
     return json({ ok: true, decision, field: c.field }, 200, origin);
   }
 
@@ -479,14 +513,24 @@ Deno.serve(async (req) => {
       if (lendTime !== null) { await mkReq("lend_time", lendTime, { lend_time: lendTime }); reqLabels.push("お届け時間"); }
       let colLabels: string[] = [];
       if (touchesCol) colLabels = (await applyPlaceTime(store, r, resId, null, colPlace, null, returnTime, null, null, cLat, cLng, cAct)) || [];
-      await notifySlack(`🟡 *お届け変更の依頼(24h以内・承認制)* [札幌] ${r.name}様 ${resId}\n依頼: ${reqLabels.join("・")}${colLabels.length ? " ／ 即時反映:" + colLabels.join("・") : ""}\n→ 管理コンソールで承認してください（承認で反映＋顧客LINE通知）`);
+      const aLines: string[] = [];
+      if (delPlace !== null) aLines.push(`📍 *お届け先*（希望）　${r.del_place || "（未設定）"} → *${delPlace}*`);
+      if (lendTime !== null) aLines.push(`🕐 *お届け時間*（希望）　${r.lend_time || "（未設定）"} → *${lendTime}*`);
+      if (colLabels.length) aLines.push(`↳ 回収側（${colLabels.join("・")}）は即時反映済み`);
+      await notifySlackCard({ emoji: "🟡", title: "お届け変更の承認待ち（お届け24時間以内）", name: r.name, resId, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: aLines, action: "⚠️ *要承認*：管理コンソール →「🔔変更依頼」で承認（承認で反映＋顧客へLINE通知）" });
       return json({ ok: true, pendingApproval: true, requested: reqLabels, updated: colLabels }, 200, origin);
     }
 
     // ---- 即時反映（DELは24h超 / COLは2h超）----
     const labels = await applyPlaceTime(store, r, resId, delPlace, colPlace, lendTime, returnTime, dLat, dLng, cLat, cLng, "customer:" + resId);
     if (labels === null) return json({ error: "変更の保存に失敗しました" }, 500, origin);
-    await notifySlack(`✏️ *${r.name}様が ${labels.join("・")} を編集しました*（マイページ・即反映）[札幌] ${resId}\n→ お届け先:${(delPlace ?? r.del_place) || "-"} / 回収先:${(colPlace ?? r.col_place) || "-"} / 出発:${(lendTime ?? r.lend_time) || "-"} / 返却:${(returnTime ?? r.return_time) || "-"}\n※OPシート反映済・管理画面の🕘履歴にも記録`);
+    // 変更されたフィールドだけを 変更前→変更後 で表示（4項目まとめ表示のノイズを排除）
+    const chLines: string[] = [];
+    if (delPlace !== null) chLines.push(`📍 *お届け先*　${r.del_place || "（未設定）"} → *${delPlace}*`);
+    if (lendTime !== null) chLines.push(`🕐 *お届け時間*　${r.lend_time || "（未設定）"} → *${lendTime}*`);
+    if (colPlace !== null) chLines.push(`📍 *回収先*　${r.col_place || "（未設定）"} → *${colPlace}*`);
+    if (returnTime !== null) chLines.push(`🕐 *回収時間*　${r.return_time || "（未設定）"} → *${returnTime}*`);
+    await notifySlackCard({ emoji: "✏️", title: "マイページで変更（即時反映済）", name: r.name, resId, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: chLines, action: "✅ OPシートに反映済み・*対応不要*（内容をご確認ください／🕘履歴にも記録）" });
     return json({ ok: true, updated: labels }, 200, origin);
   }
 
@@ -506,7 +550,7 @@ Deno.serve(async (req) => {
     // 構造化ターゲット（承認時に自動反映するための値）: insurance={insurance:"NOC"} / option={opt_c:1,opt_j:0,...}
     const payload = (p.target && typeof p.target === "object") ? p.target : null;
     await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field: reqType, old_value: "", new_value: detail, source: "customer", status: "requested", note: map[reqType], payload }, "customer:" + resId);
-    await notifySlack(`🟡 *${map[reqType]}の依頼* [札幌] ${r.name}様 ${resId}\n利用:${r.lend_date}〜${r.return_date} / ${r.vehicle}\n依頼内容: ${detail}\n→ 管理コンソールで対応/反映してください（即時反映されていません）`);
+    await notifySlackCard({ emoji: "🟡", title: `${map[reqType]}の依頼（承認待ち）`, name: r.name, resId, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: [`📝 *依頼内容*\n${detail}`], action: "⚠️ *要対応*：管理コンソール →「🔔変更依頼」で承認/却下（即時反映されていません）" });
     return json({ ok: true, requested: true, kind: map[reqType] }, 200, origin);
   }
 
@@ -517,7 +561,7 @@ Deno.serve(async (req) => {
     const already = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.cancel&status=eq.requested&select=id&limit=1`);
     if (already[0]) return json({ ok: true, alreadyRequested: true }, 200, origin);
     await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field: "cancel", old_value: st, new_value: "キャンセル依頼", source: "customer", status: "requested", note: reason }, "customer:" + resId);
-    await notifySlack(`🔴 *キャンセル依頼* [札幌] ${r.name}様 ${resId}\n利用:${r.lend_date}〜${r.return_date} / ${r.vehicle}\n理由:${reason || "(なし)"}\n→ 管理コンソールで承認/却下してください`);
+    await notifySlackCard({ emoji: "🔴", title: "キャンセル申請（承認待ち）", name: r.name, resId, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: [`📝 *理由*\n${reason || "（記載なし）"}`], action: "⚠️ *要対応*：管理コンソール →「🔔変更依頼」で承認/却下（承認でキャンセル確定＋配車解除＋顧客LINE）" });
     return json({ ok: true, requested: true }, 200, origin);
   }
 
@@ -529,7 +573,7 @@ Deno.serve(async (req) => {
     const rdyTime = (typeof p.time === "string" && /^\d{1,2}:\d{2}$/.test(p.time.trim())) ? p.time.trim() : "";
     const newVal = rdyTime ? `返却準備完了(早め回収OK) 希望時間 ${rdyTime}〜` : "返却準備完了(早め回収OK)";
     await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field: "ready", old_value: "", new_value: newVal, source: "customer", status: "requested", note: rdyTime ? `希望回収時間の目安 ${rdyTime}〜` : "予定時間より早い回収OK" }, "customer:" + resId);
-    await notifySlack(`🟢 *${r.name}様が「返却準備完了・早め回収OK」* [札幌] ${resId}\n利用:${r.lend_date}〜${r.return_date} / 予定回収:${r.return_time || r.col_time || "-"}${rdyTime ? ` / 🕒お客様希望:${rdyTime}〜` : ""}\n→ スケジュールに余裕があれば早めの回収をご検討ください（お客様には「確認中」と表示中）`);
+    await notifySlackCard({ emoji: "🟢", title: "早め回収OK（返却準備完了）", name: r.name, resId, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: [`🕐 *予定回収*　${r.return_time || r.col_time || "-"}`, `🕒 *お客様の希望*　${rdyTime ? `*${rdyTime}〜*` : "指定なし"}`], action: "💡 スケジュールに余裕があれば早めに回収をご検討ください（お客様には「確認中」と表示中）" });
     return json({ ok: true, requested: true }, 200, origin);
   }
 
