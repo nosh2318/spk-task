@@ -238,7 +238,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
 <script>
 const SB="https://ckrxttbnawkclshczsia.supabase.co";
 const FN=SB+"/functions/v1";
-const ADMIN_VER="v3.6 マイページ発行カバレッジ可視化";
+const ADMIN_VER="v3.7 送信済ステータス分離";
 const ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
 const $=s=>document.querySelector(s);
 function showErr(m){const e=document.getElementById("errbar");if(e){e.style.display="block";e.textContent="⚠️ "+m}}
@@ -1118,17 +1118,22 @@ async function toggleNotify(){
 }
 // ===== 📲 マイページ利用状況（送信→開封→操作 のファネル。アクティブ/スルーが分かる）=====
 function fmtDT(s){ if(!s)return"-"; const d=new Date(s); if(isNaN(d))return"-"; const p=n=>("0"+n).slice(-2); return p(d.getMonth()+1)+"/"+p(d.getDate())+" "+p(d.getHours())+":"+p(d.getMinutes()); }
+function daysSince(s){const d=new Date(s);if(isNaN(d))return 0;return (Date.now()-d.getTime())/86400000;}
 function usageStat(r){
   const id=r.id, v=VIEWS[id], sent=SENDS[id], reach=LINE_SET.has(id);
   const acted=(CHG[id]||[]).some(c=>c.source==="customer");
   if(v)return {k:"active",chip:acted?"🟢 アクティブ・操作あり":"🟢 アクティブ",c:"#0e7a3b",b:"#dcfce7",acted};
-  if(sent&&sent.status==="sent")return {k:"through",chip:"🟡 送信済・未開封（スルー）",c:"#b45309",b:"#fef3c7"};
+  if(sent&&sent.status==="sent"){
+    // 送信後2日以上たっても未開封＝スルー、それ未満＝送信済(未開封・様子見)
+    if(daysSince(sent.at)>=2)return {k:"through",chip:"🟡 スルー（2日以上未開封）",c:"#b45309",b:"#fef3c7"};
+    return {k:"sent",chip:"🔵 送信済（未開封）",c:"#0284c7",b:"#e0f2fe"};
+  }
   if(reach)return {k:"unsent",chip:"⚪ 未送信（LINE連携済）",c:"#475569",b:"#e2e8f0"};
   return {k:"noline",chip:"⚫ LINE未連携",c:"#64748b",b:"#f1f5f9"};
 }
 function openUsage(){
   const rows=RES.map(r=>({r,u:usageStat(r)}));
-  const cnt={active:0,through:0,unsent:0,noline:0}; rows.forEach(x=>cnt[x.u.k]++);
+  const cnt={active:0,sent:0,through:0,unsent:0,noline:0}; rows.forEach(x=>cnt[x.u.k]++);
   const reachN=rows.filter(x=>x.u.k!=="noline").length;
   const sentN=rows.filter(x=>SENDS[x.r.id]&&SENDS[x.r.id].status==="sent").length;
   const openN=cnt.active;
@@ -1138,7 +1143,7 @@ function openUsage(){
   const stat=(n,l,c)=>`<div style="flex:1;min-width:74px;background:${c}12;border:1px solid ${c}44;border-radius:10px;padding:8px 6px;text-align:center"><div style="font-size:20px;font-weight:800;color:${c}">${n}</div><div style="font-size:10.5px;color:#475569;font-weight:700">${l}</div></div>`;
   const fchip=(k,l)=>`<button onclick="UFILTER='${k}';openUsage()" style="padding:5px 11px;border-radius:999px;border:1px solid ${UFILTER===k?"#0F1F45":"#cbd5e1"};background:${UFILTER===k?"#0F1F45":"#fff"};color:${UFILTER===k?"#fff":"#475569"};font-weight:700;font-size:12px;cursor:pointer">${l}</button>`;
   let list=rows.filter(x=>UFILTER==="all"||x.u.k===UFILTER);
-  list.sort((a,b)=>{const o={active:0,through:1,unsent:2,noline:3};return (o[a.u.k]-o[b.u.k])||((a.r.lend_date||"").localeCompare(b.r.lend_date||""));});
+  list.sort((a,b)=>{const o={active:0,sent:1,through:2,unsent:3,noline:4};return (o[a.u.k]-o[b.u.k])||((a.r.lend_date||"").localeCompare(b.r.lend_date||""));});
   const row=x=>{const r=x.r,u=x.u,v=VIEWS[r.id],sent=SENDS[r.id],acted=(CHG[r.id]||[]).some(c=>c.source==="customer");
     return `<div onclick="closeM();selectRes('${r.id}')" style="display:flex;gap:8px;align-items:center;padding:8px 4px;border-top:1px solid #eef2f7;font-size:12.5px;cursor:pointer">
       <div style="flex:1;min-width:0"><b>${esc(r.name||"")}</b>様 <span class="otatag" style="background:${otaColor(r.ota)}">${esc(otaLabel(r.ota))}</span> <span style="color:#94a3b8;font-size:11px">${esc(r.id)}</span><br>
@@ -1153,7 +1158,7 @@ function openUsage(){
       </div></div>`;};
   $("#modal").style.maxWidth="720px";
   $("#modal").innerHTML=`<h3>📲 マイページ 利用状況</h3>
-    <div style="font-size:11.5px;color:var(--sub);margin-bottom:8px">現在〜未来の予約${RES.length}件。LINEでURL送信→開封→操作 のファネル。<b>開封=マイページを開いた＝アクティブ</b>／送信済で未開封=スルー。</div>
+    <div style="font-size:11.5px;color:var(--sub);margin-bottom:8px">現在〜未来の予約${RES.length}件。LINEでURL送信→開封→操作 のファネル。<b>🔵送信済=送った直後（未開封）</b>／<b>🟢アクティブ=開封済</b>／<b>🟡スルー=送信後2日以上たっても未開封</b>。</div>
     <div style="margin-bottom:10px;padding:10px 12px;border-radius:10px;background:${noTok.length?'#fef2f2':'#f0fdf4'};border:1.5px solid ${noTok.length?'#fecaca':'#bbf7d0'}">
       <div style="font-weight:800;font-size:13.5px;color:${noTok.length?'#b91c1c':'#0e7a3b'}">🪪 マイページ発行：${issuedN}/${RES.length}件（${rate(issuedN,RES.length)}）${noTok.length?'':' ✓ 全予約者に付与済み'}</div>
       ${noTok.length
@@ -1161,10 +1166,10 @@ function openUsage(){
         :`<div style="font-size:11px;color:#475569;margin-top:2px">全お客様に固有マイページURLが用意されています（新規予約にもDB既定で自動付与）。</div>`}
     </div>
     <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
-      ${stat(cnt.active,"🟢 アクティブ","#0e9f50")}${stat(cnt.through,"🟡 スルー","#d97706")}${stat(cnt.unsent,"⚪ 未送信","#64748b")}${stat(cnt.noline,"⚫ LINE未連携","#94a3b8")}</div>
+      ${stat(cnt.active,"🟢 アクティブ","#0e9f50")}${stat(cnt.sent,"🔵 送信済(未開封)","#0284c7")}${stat(cnt.through,"🟡 スルー","#d97706")}${stat(cnt.unsent,"⚪ 未送信","#64748b")}${stat(cnt.noline,"⚫ LINE未連携","#94a3b8")}</div>
     <div style="font-size:11.5px;color:#475569;margin-bottom:10px;text-align:center">LINE連携率 <b>${rate(reachN,RES.length)}</b>（${reachN}/${RES.length}） ／ 送信済 <b>${sentN}</b> ／ 開封率 <b>${rate(openN,sentN)}</b>（開封${openN}/送信${sentN}）</div>
     <div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap">
-      ${fchip("all","すべて "+RES.length)}${fchip("active","🟢 アクティブ "+cnt.active)}${fchip("through","🟡 スルー "+cnt.through)}${fchip("unsent","⚪ 未送信 "+cnt.unsent)}${fchip("noline","⚫ LINE未連携 "+cnt.noline)}</div>
+      ${fchip("all","すべて "+RES.length)}${fchip("active","🟢 アクティブ "+cnt.active)}${fchip("sent","🔵 送信済 "+cnt.sent)}${fchip("through","🟡 スルー "+cnt.through)}${fchip("unsent","⚪ 未送信 "+cnt.unsent)}${fchip("noline","⚫ LINE未連携 "+cnt.noline)}</div>
     <div style="max-height:60vh;overflow:auto">${list.length?list.map(row).join(""):`<div class="empty">該当なし</div>`}</div>
     <div class="acts" style="margin-top:12px"><button class="btn ghost" onclick="closeM()">閉じる</button></div>`;
   $("#scrim").classList.add("show");
