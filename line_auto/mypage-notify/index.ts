@@ -51,7 +51,9 @@ Deno.serve(async (req) => {
   const today = dstr(0), d1 = dstr(1), d3 = dstr(3);
   const RESV = "reservations";
   // 対象＝返却が今日以降・未キャンセル
-  const resvs = await sbGet(RESV, `return_date=gte.${today}&status=not.in.("キャンセル",cancelled,cancel)&select=id,name,lend_date,lend_time,return_date,return_time,del_time,col_time,del_place,mypage_token&limit=1000`);
+  const resvsAll = await sbGet(RESV, `return_date=gte.${today}&status=not.in.("キャンセル",cancelled,cancel)&select=id,name,ota,lend_date,lend_time,return_date,return_time,del_time,col_time,del_place,mypage_token&limit=1000`);
+  // KEYDROPは独自マイページ(keydrop.jp)を使うため、HANDYMANマイページの送信対象から除外
+  const resvs = resvsAll.filter((r: any) => String(r.ota || "").toUpperCase() !== "KEYDROP");
   // LINE連携済み（userIdあり）だけが対象
   const links = await sbGet(`${store}_line_links`, `select=resv_no,line_user_id&limit=5000`);
   const linked = new Set(links.filter((l: any) => l.resv_no && l.line_user_id).map((l: any) => l.resv_no));
