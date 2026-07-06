@@ -107,6 +107,18 @@ function withinHours(date: string, time: string, hours: number): boolean {
   return (dep - Date.now()) < hours * 3600 * 1000;
 }
 function within24h(lendDate: string, lendTime: string): boolean { return withinHours(lendDate, lendTime, 24); }
+// オプション受付期限＝貸出前日19:00（= 貸出日00:00 の 5時間前）
+function pastOptionDeadline(lendDate: string): boolean {
+  if (!lendDate) return false;
+  const cutoff = new Date(`${lendDate}T00:00:00+09:00`).getTime() - 5 * 3600 * 1000;
+  return Date.now() >= cutoff;
+}
+// 補償受付期限＝貸出前まで（貸出開始後は不可）
+function pastInsDeadline(lendDate: string, lendTime: string): boolean {
+  if (!lendDate) return false;
+  const t = (lendTime && /^\d{1,2}:\d{2}$/.test(lendTime)) ? lendTime : "09:00";
+  return Date.now() >= new Date(`${lendDate}T${t}:00+09:00`).getTime();
+}
 function nowJst(slice = false): string { const s = new Date(Date.now() + 9 * 3600 * 1000).toISOString(); return slice ? s.slice(5, 16).replace("T", " ") : s.replace("Z", "+09:00"); }
 
 // OPシート/my-admin と同一の場所解決式。SPKでは実際の場所は reservations でなく tasks(changed_json._ssPlace) にある。
@@ -592,8 +604,12 @@ Deno.serve(async (req) => {
     const map: Record<string, string> = { option: "有料オプション(シート類)変更", method: "貸出/返却方法(区分)変更", insurance: "補償(免責)変更" };
     if (!map[reqType]) return json({ error: "リクエスト種別が不正です" }, 400, origin);
     if (detail.length < 1) return json({ error: "変更内容を入力してください" }, 400, origin);
-    // オプション・補償の変更リクエストは「出発(お届け)の2時間前まで」受付。以降は公式LINE。
-    if (withinHours(r.lend_date, r.lend_time || r.del_time || "", 2))
+    // 受付期限（種別ごと）: option=貸出前日19:00 / insurance=貸出前まで / method=出発2時間前
+    if (reqType === "option" && pastOptionDeadline(r.lend_date))
+      return json({ error: "オプション（シート類）の受付は貸出前日の19:00までです。以降は公式LINEにて承ります", lineOnly: true }, 409, origin);
+    if (reqType === "insurance" && pastInsDeadline(r.lend_date, r.lend_time || r.del_time || ""))
+      return json({ error: "補償プランの変更は貸出前まで（貸出開始後は変更できません）。公式LINEにてご相談ください", lineOnly: true }, 409, origin);
+    if (reqType === "method" && withinHours(r.lend_date, r.lend_time || r.del_time || "", 2))
       return json({ error: "出発の2時間前を過ぎているため、変更のご依頼は公式LINEにて承ります", lineOnly: true }, 409, origin);
     const already = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.${reqType}&status=eq.requested&select=id&limit=1`);
     if (already[0]) return json({ ok: true, alreadyRequested: true, message: "同じ内容の依頼を受付済みです" }, 200, origin);
