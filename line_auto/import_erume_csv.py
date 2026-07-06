@@ -99,6 +99,16 @@ def main():
         print(f"✅ upsert完了: {len(recs)}件")
     except urllib.error.HTTPError as e:
         print("HTTP", e.code, e.read().decode()[:500])
+    # 取込直後に「フォーム場所→予約/OPの空欄」を即反映（完全一致・空欄のみ・上書きなし）
+    try:
+        req2 = urllib.request.Request(
+            f"{SB_URL}/rest/v1/rpc/mypage_propagate_places",
+            data=b"{}", method="POST",
+            headers={"apikey": KEY, "Authorization": f"Bearer {KEY}", "Content-Type": "application/json"})
+        urllib.request.urlopen(req2)
+        print("✅ 場所の予約/OP空欄補完 実行")
+    except Exception as e:
+        print("propagate skip:", str(e)[:200])
 
 if __name__ == "__main__":
     main()
