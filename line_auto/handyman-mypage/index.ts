@@ -455,10 +455,18 @@ Deno.serve(async (req) => {
     // 場所/時間/オプション/補償は OPタスク(d-/c-)も見て「実値のある方」を採用（reservations 側が空のことが多い）。
     const dTask = opTasks.find((t: any) => String(t._id || "").startsWith("d-"));
     const cTask = opTasks.find((t: any) => String(t._id || "").startsWith("c-"));
-    const delPlaceR = resolveTaskPlace(dTask) || (r.del_place || "") || String(link.del_place || "").trim();
-    const colPlaceR = resolveTaskPlace(cTask) || (r.col_place || "") || String(link.col_place || "").trim();
-    const lendTimeR = resolveTaskTime(dTask) || r.lend_time || r.del_time || String(link.del_time || "").trim();
-    const returnTimeR = resolveTaskTime(cTask) || r.return_time || r.col_time || String(link.col_time || "").trim();
+    // 🔴 顧客/スタッフが確定した「適用済み変更(applied)」を最優先。
+    // 理由: マイページで変更しても、SSパトロールが tasks._ssPlace/_ssTime をフォーム値に戻すため、
+    // resolveTask* だけだと変更が表示に反映されない（お客様に古い値が見える／OP時間も戻る）。
+    // mypage_changes(applied) は変更の正本ログなので、これを表示の最優先にする。
+    const appliedChg = (field: string): string | null => {
+      const c = chg.find((x: any) => x.field === field && x.status === "applied"); // chgは created_at desc=最新が先頭
+      return c && String(c.new_value || "").trim() ? String(c.new_value).trim() : null;
+    };
+    const delPlaceR = appliedChg("del_place") ?? (resolveTaskPlace(dTask) || (r.del_place || "") || String(link.del_place || "").trim());
+    const colPlaceR = appliedChg("col_place") ?? (resolveTaskPlace(cTask) || (r.col_place || "") || String(link.col_place || "").trim());
+    const lendTimeR = appliedChg("lend_time") ?? (resolveTaskTime(dTask) || r.lend_time || r.del_time || String(link.del_time || "").trim());
+    const returnTimeR = appliedChg("return_time") ?? (resolveTaskTime(cTask) || r.return_time || r.col_time || String(link.col_time || "").trim());
     // オプション：reservations と tasks の大きい方（どちらかにしか入っていないケースを両方拾う）
     const optBR = Math.max(Number(r.opt_b) || 0, taskOptNum(dTask, "_optB"), taskOptNum(cTask, "_optB"));
     const optCR = Math.max(Number(r.opt_c) || 0, taskOptNum(dTask, "_optC"), taskOptNum(cTask, "_optC"));
