@@ -37,7 +37,14 @@ Deno.serve(async (req) => {
 
   const tk = rec.kd_track_token || "";
   const url = `https://keydrop.jp/${guide}?r=${encodeURIComponent(r)}${tk ? "&t=" + encodeURIComponent(tk) : ""}`;
-  const message = "【HANDYMAN " + (store === "nha" ? "那覇" : "札幌") + "】" + head + "\n" + url + "\n※「今いる場所を共有」を押していただくとスムーズに合流できます。";
+  // ★Layer4: 顧客RPCと同じ解決で目的地を取得し本文に明記（地図＋テキストの二重・食い違い検知）
+  let placeLine = "";
+  try {
+    const trk = await (await fetch(`${SB_URL}/rest/v1/rpc/keydrop_track_get`, { method: "POST", headers: H, body: JSON.stringify({ p_res: r, p_token: tk }) })).json();
+    const place = (trk && trk[0] && trk[0].del_place) ? String(trk[0].del_place).trim() : "";
+    if (place) placeLine = "\n" + (action === "track_col" ? "回収先" : "お届け先") + "：" + place;
+  } catch (_) { /* 取得失敗時は場所行なし（誤った場所は出さない） */ }
+  const message = "【HANDYMAN " + (store === "nha" ? "那覇" : "札幌") + "】" + head + placeLine + "\n" + url + "\n※「今いる場所を共有」を押していただくとスムーズに合流できます。";
 
   const pr = await fetch(`${SB_URL}/functions/v1/line-push`, {
     method: "POST", headers: { "Content-Type": "application/json" },

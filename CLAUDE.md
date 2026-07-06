@@ -1,5 +1,14 @@
 # SPK業務管理APP（札幌店）
 
+## 🧽 2026-07-05 NHA OPシート「時間が消える」根治＝翌日出発洗車タスクの非決定ID複製（このセッション）
+オーナー報告「那覇OPシートでまた時間が消える・台帳で予約IDが複製されてる」。**台帳(audit_log)で発生源を完全特定→固定IDで根治。**
+- **要因**：`generateTasks`のDEL/COLは固定ID(`d-`/`c-`+予約ID)だが、**「翌日出発の洗車タスク」だけが非決定ID `uid()`(=`t35`,`t91`…)で生成**されていた（`~/Desktop/AI/naha-project/index.html.bak` L4364＝generateTasks・L17808＝loadTasks不足追加 の2箇所）。→ 画面を開くたびに同じ車の洗車を別IDで**新規INSERT複製**（uid()はupsertでなく毎回別行）。同一予約に洗車が複数行＝**台帳で見えた「予約IDの複製」**（同じ予約IDが複数の洗車行に付く）。
+- **時間消失の実体**：複製を消す掃除（GAS日次 cleanupDailyNha の**物理DELETE**）が、担当・時間が入った洗車行を消す。台帳の物理削除実例＝`t35`(洗車・担当赤嶺/時間13:00)、`t90`(担当赤嶺/18:00)を07/05 03:11:38に物理DELETE。※両方とも同一内容の生き残り(t89/t36)が残存し実損失は無かったが、機構として危険。
+- **修正(v3.5.256-NHA・push済 5208c74)**：洗車IDを`uid()`→**固定ID `w-`+予約ID**（未配車は`w-v-`+車両コード）に。同一予約の洗車は常に同じ`_id`＝再生成でも1行に上書き＝**不要な複製行を作らない**（＝オーナー指示「不要なものを作るな」）。既存重複1件(RC32461200023392699の`t37`)は墓標化、稼働中の重複洗車0件。
+- **台帳の全確認結果(直近7日)**：システム起因の削除＝**上記洗車2件のみ**／タスクの別日移動＝**0件**(`_taskDate`固定が有効)／時間・担当・内容の「値→空」書換＝**0件**／予約の日付変更＝**0件**。他に勝手に消えた/動いた箇所なし。
+- **🔴教訓（消失調査の鉄則）**：台帳で「時間:値→空」を検索して0件でも**消えている**＝上書きでなく **op=DELETE（重複行の物理削除）**で担当/時間ごと消えるケースがある。消失調査は必ず `audit_log` の **op='DELETE' と deleted=true（墓標）も見る**。DELETEのdiffは`diff->>'時間'`等トップレベル、UPDATEは`diff->'old'/'new'`。
+- **残**：既存の legacy `t###` 洗車行は当面残置（新コードのガード washByVehicle で新規複製は防止済）。気になれば legacy洗車→`w-`統一のワンタイム掃除を追加可。
+
 ## 🔴🔴 2026-07-04 「勝手に動く」根絶＝唯一のルール＋改ざん検知台帳（全店共通・最重要）
 オーナー数十回の指摘＝人が入力/編集したデータが「消える・別日に動く・重複・消したのに復活・元に戻される」。**本質＝ルールが雑**（各コードが上書き/保護/再生成バラバラ＝統一ルール無し）。**2大タイトル＝①タスク変更 ②予約変更**（予約が勝手に変わる＝派生タスクも全部ずれる＝最も異常）。
 
@@ -15,6 +24,13 @@
 
 ### 予約変更(②)の穴＝CSV取込が既存予約を丸ごと上書き（発見・未修正）
 NHA `imp`(index.html.bak L23578〜)：`imported.forEach(r=>map.set(r.id,r))`(L23596)＝**既存予約をCSV値で丸ごと置換**(priceだけ弱保護)。→ **スタッフが直した予約でも古いCSV取込で元に戻る**＝オーナー懸念の実体。タスクで潰した「丸ごと再保存」病が予約取込側に残存(タスクは`_mergeUserInput`保護済／予約取込は無保護＝穴)。証拠＝NHA churn 直近1h 46件更新(全部既存再書込・新規0)・19:40=33/19:50=25/20:55=21件の塊。今は同値でno-op(台帳空)だがstale掴めば実害。SPKは1件ずつ＝安全。**直す方向＝予約に手動編集マーカー(タスクの`_placeSource:"manual"`思想)＋CSV取込をマージ化(手動編集項目はCSVで上書きせず保持)。基幹＝実機検証込みで慎重に(盲目編集で壊した前例あり)。**
+
+### 🤖 2026-07-05 OMNI3号「台帳見張り」＝旧番人(audit-guardian)を廃止し状態照合型に置換
+- **旧 audit-guardian(pg_cron jobid17 */15) は unschedule済（ノイズ源）**。理由＝"変化の瞬間(差分)"を叩き、NHAタスク再生成の途中経過(一瞬消えて即戻る)を全部「R2物理削除/担当消えた」と誤報＝誰も動かないゴミ。実証：物理削除された予約は全部status=cancelled(正当削除)、時間消失/担当消失も直後に再生成で復旧済＝**今も壊れたまま放置されている実害は0件**。
+- **正しい判定＝"変化の瞬間"でなく"今も壊れたまま放置されているか(事後状態照合)"**。旧番人が16件叫ぶところを状態照合で0に正しく収束。
+- **実体＝`~/Desktop/HANDYMAN/audit_watch/audit_watch.py`＋launchd `com.handyman.audit-omni`(1時間毎・RunAtLoad)**。処理＝audit_logで怪しい変化を拾う→今のDB状態を照合(再生成で戻った分は握る)→本物だけ→**SPK(=_id予約固定・クリーン)のタスク手入力消失/生存予約の削除は自動revert(mgmt-api)**／NHA(=t連番スロット再利用で誤検知源)・予約日変更・予約物理削除は**報告のみ**→#omni-operation_3号機(C0B8747PR0R)にSlack、壊れゼロなら静か。
+- **誤検知除外(重要)**：①app_name=mgmt-api(自分の操作) ②予約idにTEST/ZZMYPAGE ③NHAは`予約番号`がdiffで変われば別予約への置換=スロット再利用=握る ④changed_json差分がタイムスタンプキー(_ssPlaceAt等)だけ=no-op ⑤空→値(補完)。
+- **運転モード**：現在 `--slack`(報告のみ)。自動修復(`--apply`)はSPKタスクのLOSE_FIELD/LOSE_PLACE/DEL_TASKのみ対象だが**未検証**→初回の本物発火時に修復内容を1回確認してから解禁(＝既知悪経路=検証済みだけ自動revert)。launchd操作＝`launchctl bootout/bootstrap gui/$UID`、手動＝`python3 audit_watch.py --days 7`(dry) / `--days 2 --slack`(本番同等)。
 
 ### 番人(Guardian・pg_cron */15・動いたら戻す対症)
 task_integrity_guardian(main・`task_integrity_scan(p_fix)`＝SPK自動修正ON/NHA検知のみ・`task_integrity_log`)＋parking-integrity-guardian(rkrvjpipvpybkmqadmrb・同一carId2枠検知・`parking_integrity_log`)。番人=現場を止めない／台帳=原因を消す の両輪。
@@ -130,6 +146,34 @@ task_integrity_guardian(main・`task_integrity_scan(p_fix)`＝SPK自動修正ON/
 - **修正(表示のみ・DB書込なし)**：`spk_line_links`＝SSと同一ソースとして統合。my-admin＝`LINK_MAP`ロード→`mergeLinkIntoSS()`でSS_MAPに補完(ライブSS優先/無ければlink)＋`stMissing`が`op.del||ss.del`で判定→フォーム回答済みは⑥から外れ「フォーム済(正常)」に。EF lookup＝`del/col_place`と時刻の最終フォールバックに`spk_line_links`(**予約番号完全一致**)を追加→顧客マイページに回答済み場所を表示。検証：ワカツキ様lookupで「ホテルtheb札幌/ニューオータニイン札幌」表示OK。ADMIN_VER v2.3。
 - **教訓**：フォーム回答の正本は`spk_line_links`(resv_no=予約id完全一致)。「場所情報なし=フォーム未回答」判定は必ずline_linksも見る。`placeConflict`は空欄側を相違に含めない設計なので、空OP+SS場所ありをmismatchでは拾えない→stMissing側で吸収。
 - **backfill実施済み(2026-07-05・進めて指示)**：`spk_line_links`場所→`reservations.del_place/col_place`へ書込(未来・未キャンセル・空欄のみ・完全一致 60件del+60件col)。**既存OPタスクに実値がある予約はOPが正としてreservationsをタスク値に整合**(del5/col6)→**予約≠OP相違ノイズ0**を実証。両方空の既存タスクは`_ssPlace`が既に埋まっており(place列空でもOP表示OK)ガードで保護、真に空の2タスクのみフォーム値を`_ssPlace`へ補完。結果：未来予約はタスク生成時にreservations.del_placeを継承・マイページ/my-admin/OP整合。**注意**：`_ssPlace`にはplace列が空でも値が入る＝「place列空」を「OP空」と誤判定しない(OP表示=`_ssPlace||place`)。書込は全て空欄埋め・単一項目・顧客自身の回答(完全一致)＝唯一ルール順守。
+
+## 🚀🚀 2026-07-06 マイページ 札幌 本番リリース完了＋通知刷新・可視化強化（このセッション・最重要）
+**リリース実行済み**：`spk_line_config.mypage_notify_enabled=true`（サーバSQLでON・UIトグルはログイン必須で効かず→Management APIで確実にON）。`test_mode=false`。初回マイページURLを**LINE連携済み67名全員に送信完了**（EF手動キック2回で残0）。現在の版：**my.html VER v5.8 / my-admin ADMIN_VER v3.7 / EF handyman-mypage デプロイ済**。全て札幌専用。
+- **🔑 初回送信の仕組み**：cron `mypage-notify-spk`(jobid15・15分毎)→EF `mypage-notify`(`x-cron-secret`=e564ecc8dc6590e3c2b2a1003d2cff6750f5bc1c)。**1回あたり約30件ずつ**送る(Edge Function実行時間内の分)＝残りは次巡回で自動送信＝取りこぼし無し。誤送信ガード(キャンセル/過去日/番号不一致/no_userid)有効。手動実行＝`curl EF -H x-cron-secret --data '{}'`。**EFのtoday=JST(dstr=jstNow)**。
+- **⚠️ 数字ズレ=タイムゾーン**：Management APIのSQL`current_date`は**UTC**、my-admin/EFは**JST**。UTC基準だと日跨ぎで数件多く出る→**JST基準(my-admin表示)が正**。件数照合はJST日付をリテラルで渡す。
+- **📲 利用状況リスト刷新(openUsage)**：ファネル5段＝🟢アクティブ(開封済)/🔵送信済(未開封=送った直後・新設)/🟡スルー(送信後**2日以上**未開封のみ)/⚪未送信/⚫LINE未連携。`daysSince(sent.at)>=2`でスルー判定。**送った直後をスルー扱いしない**(オーナー指摘)。開封検知=`mypage_views`(EF lookup冒頭で`rpc/mypage_touch_view`fire・前方記録)。**🪪マイページ発行カバレッジ**表示(全予約にmypage_token付与=481/481=100%・DB既定gen_random_uuid・未発行は`issueTokens()`で手動発行)。各行にOTA/🪪発行/LINE/送信/開封/操作バッジ。SENDS=spk_line_sends(action=mypage_initial)・VIEWS=mypage_views をloadAllで読込。
+- **🔔 Slack通知をBlock Kitカードに刷新**(mpCard)：見出し＋基本情報(お客様/予約番号/**予約もと(OTA)**/利用期間/車両)＋内容＋対応の要否。**即時変更は変更した項目のみ before→after**表示(4項目まとめのノイズ排除)。全種類(即時変更/24h承認待ち/オプション・補償・受渡依頼/キャンセル/早め回収/承認・却下)を統一。`notify_preview`アクション(認証必須・DB/LINE副作用なし)で全11パターンをサンプル送信→リリース前確認。宛先#sapporo_user_action(C0BER0YC6AK)・`slackPost(text,blocks?)`。
+- **予約もと(OTA)を3面に表示**：Slackカード(予約もとフィールド)／利用状況リスト(OTAバッジ)／顧客my.html(「ご予約元」行＋予約番号)。lookup応答に`ota`追加・`OTANAME`多言語マップ。
+- **ボード：1予約が複数対応を持つ時は各列に表示**(`resColumns`が配列)：変更リクエスト(承認待ち)と情報変更(即時変更)は独立→両列に出す。各カードに📌「この列は◯◯」バッジ＋(複数の対応あり)＋**列別アクティビティ行**(`activityFor`)で識別。mismatch/ack/miss/resvabnは単独。`resColumn=resColumns[0]`。
+- **早め返却=希望回収時間の指定**：my.html時間プルダウン付きシート→EF `ready`が`p.time`をmypage_changes/Slackに反映。管理3面(状況ボード/変更依頼カード/履歴)に希望時間表示。承認後文言は「確定」廃止→「承りました」(オーナー指示)。
+- **顧客履歴の before→after**：my.htmlの最近の履歴で場所/時間変更を「◯◯→△△」「10:00→11:00」表示(lookup historyに`old_value`追加・histLineでdel/col_place・lend/return_timeの旧→新・多言語)。
+- **二重送信ガード**：my.html `call()`に`SENDING`フラグ＝lookup以外は多重実行を弾く({dropped:true})。全送信系に`if(json.dropped)return`。スマホのゴーストクリックで2件insert/Slack2通の再発防止。
+- **札幌駅=北口推奨**：地図ピッカーで「札幌駅/Sapporo Station/札幌車站/삿포로역」検出時、赤ボックス「⚠️南口は停車不可→北口推奨」(mpStNote・入力/候補選択/逆ジオコード/起動時)。
+- **ボード列を色分け**(v3.3)：各列をカテゴリ色で背景/枠/見出し着色＋間隔・影で仕切り明確化。
+- **スマホ最適化 最終確認済**：my.html=max-width520・入力16px・ボトムシート・safe-area／my-admin=メディアクエリ(900/640)・カルテ全画面オーバーレイ・モーダルは`width:100%`で溢れなし。オプションselectを16px化(iOSズーム防止)。
+- **場所編集の本体は地図ピッカー`mapPicker`**(editFieldのtext版はplacesで未使用のレガシー)。del/col_place変更はmapPicker→mpSave→`call("update")`。
+- **止め方**：`UPDATE spk_line_config SET mypage_notify_enabled=false`。**残(将来)**：送信スコープ絞り(全員/直近/新規)は未実装＝ONで全員。NHA展開。
+
+## 🟢 2026-07-05(夜) マイページ 早め返却=時間指定／利用状況リスト／二重送信ガード／札幌駅注意（このセッション）
+現在の版：**my.html VER v5.5 / my-admin ADMIN_VER v3.2**。EF handyman-mypage デプロイ済。全て札幌専用（NHA/BT未展開）。
+- **早め返却(返却準備完了)に希望回収時間の指定を追加**：my.htmlのボタン→**時間プルダウン付きシート**(openReady/confirmReady・TIMES=9:00〜19:00/30分・初期=予定回収時間)→`call("ready",{time})`。EF `ready`が`p.time`(HH:MM検証)を`mypage_changes.new_value`=「返却準備完了(早め回収OK) 希望時間 HH:MM〜」＋note＋Slackに反映。**管理画面の出先3つ**＝①状況ボード「🟢 返却準備完了・早め回収OK（希望 HH:MM〜）」②🔔変更依頼カード(new_value)③🕘履歴。readyTime()=new_value末尾のHH:MM抽出。
+- **「確定しました」文言を廃止**（オーナー指示）：ready_approved「✅早めの回収が確定しました」→**「✅早めの回収を承りました」**。EFの承認LINE文は元から「承りました」。他の`確定`(予約確定/オプション・補償・キャンセルの"担当が確定します")は別文脈で残置。
+- **📲 マイページ利用状況リスト（アクティブ/スルー可視化）**：my-adminヘッダー「📲利用状況」モーダル(openUsage)。**送信→開封→操作のファネル**：🟢アクティブ(開封済)/🟡スルー(送信済・未開封)/⚪未送信(LINE連携済)/⚫LINE未連携。LINE連携率・開封率・フィルタチップ・行タップでカルテ。
+  - **開封検知＝新テーブル`mypage_views`**(reservation_id PK/first_at/last_at/view_count・authenticated select)＋RPC`mypage_touch_view(p_rid,p_store)`(security definer・ON CONFLICT加算)。EF `lookup`冒頭で`sbPost("rpc/mypage_touch_view",...)`をfire(応答ブロックせず)。**前方記録のみ**(デプロイ時点から)。
+  - my-admin loadAllに`spk_line_sends?action=eq.mypage_initial`(=SENDS)と`mypage_views`(=VIEWS)を追加読込。判定：VIEWS有→active/SENDS(sent)有→through/LINE_SET有→unsent/他→noline。
+- **🛡 二重送信ガード（1タップで2回叩かれる＝ゴーストクリック対策）**：my.htmlの`call()`に`SENDING`フラグ。**lookup以外(mutating)は前送信完了まで2回目を弾く**({dropped:true}返す)。全送信系(update×2/request×3/ready/cancel)に`if(json.dropped)return;`。JS単一スレッドで、call()冒頭同期でSENDING=trueにするので連続onclickの2発目は必ず弾かれる。原因＝スマホのtouchend+click二重発火で`ready`が2件insert・Slack2通。
+- **札幌駅=北口推奨の注意表示**：地図ピッカー(mapPicker)で場所が「札幌駅/Sapporo Station/札幌車站/삿포로역」を含む時、赤ボックスで**「⚠️札幌駅南口は停車不可のため北口を推奨」**(多言語)。`mpStNote()`を入力(mpSearchInput)/候補選択(mpPick)/逆ジオコード(mpReverse)/ピッカー起動時に呼ぶ。t()はHTML非エスケープなので`<b>`可。
+- 📍 場所編集の本体は**地図ピッカー`mapPicker`**（editFieldのtext版は places では未使用のレガシー）。del_place/col_placeの変更はmapPicker→mpSave→`call("update")`。
 
 ## 🟢 2026-07-05 マイページ 返却準備完了ボタン＋アクセス速度チューニング（このセッション）
 - **返却準備完了ボタン（早め回収OK）**：顧客がmy.htmlで押す→EF`ready`アクション→`mypage_changes`(field=ready,status=requested,source=customer)＋Slack🟢通知→顧客側は「🕓承りました。確認中」に切替。承認/却下はmy-adminの変更依頼カード(decide)＝approve時LINE「早めのご返却を承りました」/reject「予定のお時間で回収」。重複申請ブロック。my-admin活動ライン「🟢 返却準備完了・早め回収OK」。多言語(ja/en/zh/ko)。my.html VER v4.2 / my-admin ADMIN_VER v2.2。
