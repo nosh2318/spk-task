@@ -119,6 +119,32 @@ function pastInsDeadline(lendDate: string, lendTime: string): boolean {
   const t = (lendTime && /^\d{1,2}:\d{2}$/.test(lendTime)) ? lendTime : "09:00";
   return Date.now() >= new Date(`${lendDate}T${t}:00+09:00`).getTime();
 }
+// ==== 差額決済（追加オプション/補償）====
+const OPT_UNIT: Record<string, number> = { opt_c: 1000, opt_j: 500, opt_b: 1000 }; // 1レンタルあたり/台
+const INS_DAY: Record<string, number> = { "なし": 0, "免責": 1100, "NOC": 1650 };  // 1日あたり
+function insPriceOf(v: string): number { if (/フル|NOC|安心/.test(v)) return 1650; if (/免責|CDW/.test(v)) return 1100; return 0; }
+// 暦日数：7/10 19:00-7/11 9:00 = 2日（= 日付差+1、最低1）
+function calDays(lend: string, ret: string): number {
+  if (!lend) return 1;
+  const a = new Date(`${lend}T00:00:00+09:00`).getTime();
+  const b = new Date(`${(ret || lend)}T00:00:00+09:00`).getTime();
+  return Math.max(1, Math.round((b - a) / 86400000) + 1);
+}
+async function squareLink(name: string, amount: number, resId: string): Promise<{ url: string; orderId: string } | null> {
+  const token = Deno.env.get("SQUARE_ACCESS_TOKEN") || "";
+  if (!token || amount <= 0) return null;
+  const loc = Deno.env.get("SQUARE_LOCATION_ID") || "L8N7J9RKPN3WH";
+  try {
+    const r = await fetch("https://connect.squareup.com/v2/online-checkout/payment-links", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json", "Square-Version": "2024-06-04" },
+      body: JSON.stringify({ idempotency_key: `mypxtra-${resId}-${Date.now()}`, quick_pay: { name: `札幌店 ${name}様（${resId}）追加オプション/補償`, price_money: { amount, currency: "JPY" }, location_id: loc } }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d?.payment_link?.url) { console.log("[square link]", JSON.stringify(d)); return null; }
+    return { url: d.payment_link.url, orderId: d.payment_link.order_id || "" };
+  } catch (e) { console.error("[square link]", String(e)); return null; }
+}
 function nowJst(slice = false): string { const s = new Date(Date.now() + 9 * 3600 * 1000).toISOString(); return slice ? s.slice(5, 16).replace("T", " ") : s.replace("Z", "+09:00"); }
 
 // OPシート/my-admin と同一の場所解決式。SPKでは実際の場所は reservations でなく tasks(changed_json._ssPlace) にある。
@@ -202,6 +228,41 @@ Deno.serve(async (req) => {
   // ==== keep-warm ping（DB不使用・即応答）＝cronでisolateを温めコールドスタート回避 ====
   if (action === "ping") return json({ ok: true, warm: true }, 200, origin);
 
+  // ==== 追加決済の入金検知（cron/staff）: unpaid の charge を Square で照合→paid に更新＋顧客へ入金御礼LINE ====
+  if (action === "checkExtra") {
+    const cronSecret = Deno.env.get("CRON_SECRET");
+    const hdrSecret = req.headers.get("x-cron-secret");
+    const bySecret = !!cronSecret && (hdrSecret === cronSecret || String(p.secret || "") === cronSecret);
+    if (!bySecret) {
+      const staffToken = String(p.staff_token || "").trim();
+      if (!staffToken) return json({ error: "認証がありません" }, 401, origin);
+      const who = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${staffToken}` } });
+      if (!who.ok) return json({ error: "認証に失敗しました" }, 401, origin);
+    }
+    const token = Deno.env.get("SQUARE_ACCESS_TOKEN") || "";
+    if (!token) return json({ error: "SQUARE未設定" }, 503, origin);
+    const rows = await sbGet("mypage_extra_payments", `status=eq.unpaid&direction=eq.charge&square_order_id=not.is.null&select=id,reservation_id,square_order_id,amount,detail&limit=100`);
+    if (!rows.length) return json({ ok: true, checked: 0, paid: 0 }, 200, origin);
+    const ids = rows.map((x: any) => String(x.square_order_id));
+    const br = await fetch("https://connect.squareup.com/v2/orders/batch-retrieve", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json", "Square-Version": "2024-06-04" },
+      body: JSON.stringify({ location_ids: [Deno.env.get("SQUARE_LOCATION_ID") || "L8N7J9RKPN3WH"], order_ids: ids }),
+    });
+    const bd = await br.json().catch(() => ({}));
+    const orders = Array.isArray(bd?.orders) ? bd.orders : [];
+    const paidSet = new Set(orders.filter((o: any) => o.state === "COMPLETED" || (Array.isArray(o.tenders) && o.tenders.length > 0) || (o.net_amount_due_money && Number(o.net_amount_due_money.amount) === 0 && Number(o.total_money?.amount || 0) > 0)).map((o: any) => String(o.id)));
+    let paidCount = 0;
+    for (const row of rows) {
+      if (paidSet.has(String(row.square_order_id))) {
+        await sbPatch("mypage_extra_payments", `id=eq.${encodeURIComponent(String(row.id))}`, { status: "paid", paid_at: new Date().toISOString() }, "cron:extra");
+        await pushLine(String(row.reservation_id), `【HANDYMAN 札幌デリバリー】追加分（${row.detail}）¥${Number(row.amount).toLocaleString()} のご入金を確認いたしました。ありがとうございます。`);
+        paidCount++;
+      }
+    }
+    return json({ ok: true, checked: rows.length, paid: paidCount }, 200, origin);
+  }
+
   // ==== notify_preview: 全通知パターンをサンプルデータでSlackへ（DB書込/LINEなし・リリース前確認用）====
   if (action === "notify_preview") {
     const who = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${String(p.staff_token || "").trim()}` } });
@@ -257,7 +318,7 @@ Deno.serve(async (req) => {
     if (!c) return json({ error: "依頼が見つかりません" }, 404, origin);
     if (c.status !== "requested") return json({ error: "この依頼は既に処理済みです" }, 409, origin);
     const resId2 = String(c.reservation_id);
-    const rr = (await sbGet(st0.resv, `id=eq.${encodeURIComponent(resId2)}&select=id,name,ota,vehicle,lend_date,return_date,lend_time,return_time,del_place,col_place,mypage_locked,mypage_token`))[0] || {};
+    const rr = (await sbGet(st0.resv, `id=eq.${encodeURIComponent(resId2)}&select=id,name,ota,vehicle,lend_date,return_date,lend_time,return_time,del_place,col_place,insurance,opt_b,opt_c,opt_j,mypage_locked,mypage_token`))[0] || {};
     const myUrl = rr.mypage_token ? `https://nosh2318.github.io/spk-task/my.html?t=${rr.mypage_token}` : "";
     const kindJp: Record<string, string> = { option: "オプション", insurance: "補償", method: "受渡方法", cancel: "キャンセル", del_place: "お届け場所", col_place: "回収場所", lend_time: "お届け時間", return_time: "回収時間", ready: "早め回収(返却準備)" };
     const label = kindJp[c.field] || c.field;
@@ -314,6 +375,40 @@ Deno.serve(async (req) => {
       // method は自由記述のため自動反映せず（スタッフが本体で対応）
     }
 
+    // 差額決済（追加オプション/補償）: 承認時のみ。プラス=Square決済リンク発行＋LINE送信 / マイナス=返金保留（手動）
+    let extraLine = "";
+    try {
+    if (decision === "approved" && (c.field === "option" || c.field === "insurance")) {
+      let amt = 0, det = "";
+      if (c.field === "option") {
+        const oc = Number(rr.opt_c) || 0, nc = (pl.opt_c != null ? Number(pl.opt_c) : oc) || 0;
+        const oj = Number(rr.opt_j) || 0, nj = (pl.opt_j != null ? Number(pl.opt_j) : oj) || 0;
+        const ob = Number(rr.opt_b) || 0, nb = (pl.opt_b != null ? Number(pl.opt_b) : ob) || 0;
+        amt = (nc - oc) * OPT_UNIT.opt_c + (nj - oj) * OPT_UNIT.opt_j + (nb - ob) * OPT_UNIT.opt_b;
+        const ps: string[] = [];
+        if (nc !== oc) ps.push(`チャイルド${oc}→${nc}`);
+        if (nj !== oj) ps.push(`ジュニア${oj}→${nj}`);
+        if (nb !== ob) ps.push(`ベビー${ob}→${nb}`);
+        det = "オプション " + ps.join(" / ");
+      } else {
+        const days = calDays(rr.lend_date, rr.return_date);
+        const op = insPriceOf(String(rr.insurance || ""));
+        const np = INS_DAY[String(pl.insurance)] ?? 0;
+        amt = (np - op) * days;
+        det = `補償 ${rr.insurance || "なし"}→${pl.insurance}（${days}日）`;
+      }
+      if (amt > 0) {
+        const lk = await squareLink(rr.name || "", amt, resId2);
+        await sbPost("mypage_extra_payments", { reservation_id: resId2, store: "spk", change_id: String(changeId), kind: c.field, detail: det, amount: amt, direction: "charge", square_order_id: lk?.orderId || null, square_url: lk?.url || null, status: lk ? "unpaid" : "link_failed" }, sAct);
+        if (lk?.url) { await pushLine(resId2, `【HANDYMAN 札幌デリバリー】${det} の差額 ¥${amt.toLocaleString()} のお支払いをお願いいたします。\n下記リンクよりお手続きください。\n${lk.url}`); extraLine = `💳 *追加請求* ¥${amt.toLocaleString()}（決済リンク送信済・未決済）`; }
+        else extraLine = `⚠️ *追加請求* ¥${amt.toLocaleString()}（リンク発行失敗＝手動でリンク作成・送信）`;
+      } else if (amt < 0) {
+        await sbPost("mypage_extra_payments", { reservation_id: resId2, store: "spk", change_id: String(changeId), kind: c.field, detail: det, amount: amt, direction: "refund", status: "refund_pending" }, sAct);
+        extraLine = `↩️ *返金* ¥${Math.abs(amt).toLocaleString()}（手動で返金処理してください）`;
+      }
+    }
+    } catch (e) { console.error("[extra-payment]", String(e)); extraLine = "⚠️ 差額決済の処理でエラー（手動確認）"; }
+
     await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: decision, actor }, sAct);
     await notifySlackCard({
       emoji: decision === "approved" ? "✅" : "🚫",
@@ -321,7 +416,7 @@ Deno.serve(async (req) => {
       name: rr.name || "", resId: resId2, ota: rr.ota,
       period: (rr.lend_date ? `${rr.lend_date}〜${rr.return_date}` : undefined),
       vehicle: rr.vehicle,
-      lines: [`📝 *内容*　${c.note || c.new_value || "-"}`, `👤 *担当*　${actor}`],
+      lines: [`📝 *内容*　${c.note || c.new_value || "-"}`, `👤 *担当*　${actor}`, ...(extraLine ? [extraLine] : [])],
       action: decision === "approved"
         ? `✅ 顧客へLINE通知済み${c.field === "cancel" ? "＋キャンセル確定・配車解除" : "・予約に反映済み"}`
         : "✅ 顧客へLINE通知済み（見送り）",
