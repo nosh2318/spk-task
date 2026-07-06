@@ -125,7 +125,7 @@ function resolveTaskTime(t: any): string {
   let cj = t.changed_json;
   if (typeof cj === "string") { try { cj = JSON.parse(cj); } catch { cj = {}; } }
   cj = cj || {};
-  return String(cj._ssTime || t.time || "");
+  return String(cj._timeChange || cj._ssTime || t.time || "");  // OPシートと同じ優先(_timeChange最優先)
 }
 // オプション数量を tasks(changed_json._optB/_optC/_optJ) から取得（reservations と大きい方を採用）。
 function taskOptNum(t: any, key: string): number {
@@ -151,8 +151,10 @@ async function patchTasksSpk(store: any, resId: string, delPlace: string | null,
     if (delPlace !== null && isDel) { patch.place = delPlace; cj._ssPlace = delPlace; cj._placeSource = "customer"; }
     if (colPlace !== null && isCol) { patch.place = colPlace; cj._ssPlace = colPlace; cj._placeSource = "customer"; }
     if (colPlace !== null && isDel) { patch.col_place = colPlace; }
-    if (lendTime !== null && isDel) { patch.time = lendTime; cj._ssTime = lendTime; }
-    if (returnTime !== null && isCol) { patch.time = returnTime; cj._ssTime = returnTime; }
+    // 🔴 _timeChange も立てる：OPシート表示は timeChange||_ssTime||time の優先順で、_timeChangeが最優先。
+    // かつSSパトロールは「!t.timeChange のときだけ _ssTime を上書き」する＝これで顧客の時間変更がパトロールに戻されない（OPシートもマイページも新値のまま）。
+    if (lendTime !== null && isDel) { patch.time = lendTime; cj._ssTime = lendTime; cj._timeChange = lendTime; }
+    if (returnTime !== null && isCol) { patch.time = returnTime; cj._ssTime = returnTime; cj._timeChange = returnTime; }
     let m = String(t.memo || ""); if (!m.includes(marker)) m = m ? `${m} ${marker}` : marker; patch.memo = m; patch.changed_json = cj;
     if (Object.keys(patch).length) await sbPatch(store.tasks, `_id=eq.${encodeURIComponent(String(t._id))}`, patch, actor);
   }
