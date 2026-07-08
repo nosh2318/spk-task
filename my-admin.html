@@ -238,7 +238,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
 <script>
 const SB="https://ckrxttbnawkclshczsia.supabase.co";
 const FN=SB+"/functions/v1";
-const ADMIN_VER="v4.7 検索の日本語入力を修正";
+const ADMIN_VER="v4.8 通知一覧を全更新(御礼ON/ボタン/メール)";
 const ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
 const $=s=>document.querySelector(s);
 function showErr(m){const e=document.getElementById("errbar");if(e){e.style.display="block";e.textContent="⚠️ "+m}}
@@ -1099,22 +1099,32 @@ async function acUndo(id,field){
 }
 /* ===== 📣 通知（マイページURL自動送信）タイミング・テンプレ・トリガー一覧＋ON/OFF ===== */
 const NOTIFY_ROWS=[
-  {ic:"①",name:"初動（LINE ID取得後）",trig:"お客様がフォーム回答→LINE ID取得された予約に、まだ未送信なら送る",tpl:"ご予約ありがとうございます。専用マイページで日時・場所の確認/変更ができます👇（日英併記）＋URL"},
-  {ic:"②",name:"場所未設定リマインド（貸出3日前）",trig:"貸出3日前・OP解決の場所が空 の予約のみ",tpl:"お届け／回収の場所が未設定です。マイページからご登録ください👇 ＋URL"},
-  {ic:"③",name:"前日",trig:"貸出日の前日",tpl:"明日がご利用日です。日時・お届け場所をご確認ください👇 ＋URL"},
-  {ic:"④",name:"返却3時間前",trig:"返却日時の約3時間前（15分毎cronで検知）",tpl:"まもなくご返却のお時間です。回収場所・時間をご確認ください👇 ＋URL"},
-  {ic:"⑤",name:"リクエスト承認/却下時",trig:"スタッフが変更依頼を承認/却下した瞬間（自動・実装済）",tpl:"ご依頼を承り反映しました／今回はお受けできません。＋URL"},
+  {ic:"①",name:"初回マイページ案内",ch:"LINE",st:"ON",trig:"フォーム回答でLINE ID取得された予約に、未送信なら自動（15分毎cron mypage-notify）",tpl:"ご予約ありがとうございます。専用マイページで日時・場所の確認/変更ができます👇 ＋URL"},
+  {ic:"②",name:"前日リマインド",ch:"LINE",st:"ON",trig:"貸出前日（cron mypage_daybefore）",tpl:"明日がご利用日です。日時・お届け場所をご確認ください👇 ＋URL"},
+  {ic:"③",name:"返却3時間前",ch:"LINE",st:"ON",trig:"返却日時の約3時間前（15分毎cron mypage_return3h）",tpl:"まもなくご返却です。回収場所・時間をご確認ください👇 ＋URL"},
+  {ic:"④",name:"傷チェックURL",ch:"LINE",st:"ON",trig:"出発30分前（5分毎cron damage-check・lead 30分）",tpl:"ご利用車両の傷チェックはこちらでご確認ください👇 ＋URL"},
+  {ic:"⑤",name:"御礼",ch:"LINE",st:"ON（本日ON）",trig:"返却翌日 朝（毎日10:00cron thanks）",tpl:"先日はご利用いただき誠にありがとうございました。またのご利用をお待ちしております"},
+  {ic:"⑥",name:"場所未入力リマインド",ch:"メール",st:"ON",trig:"出発9/6/3日前・場所情報なし×実メールあり×フォーム未回答（毎日10:30・札幌GAS）※キャンセル/貸出済み/KEYDROPは除外",tpl:"お届け情報のご入力を。LINEフォーム必須＋LINE非利用者はマイページURL（reserve@から送信）"},
+  {ic:"⑦",name:"出発ボタン → お届け出発",ch:"LINE(APPボタン)",st:"手動操作",trig:"スタッフが🚚出発ボタン。LINE未登録は手動コピペにフォールバック",tpl:"お届けに出発しました🚚 マイページで現在地・受け取り場所・車両を確認👇 ＋URL"},
+  {ic:"⑧",name:"回収ボタン → 回収に向かう",ch:"LINE(APPボタン)",st:"手動操作",trig:"スタッフが🧭回収ボタン。LINE未登録は手動コピペ",tpl:"お車の回収に向かっています🧭 マイページで現在地・待ち合わせ場所を確認👇 ＋URL"},
+  {ic:"⑨",name:"到着のお知らせ",ch:"LINE(APPボタン)",st:"手動操作",trig:"スタッフが📱到着ボタン（お届け/回収で文面別）",tpl:"只今スタッフが到着いたしました。ご準備をお願いします（お届けは対象ナンバー付き）"},
+  {ic:"⑩",name:"リクエスト承認/却下",ch:"LINE",st:"ON",trig:"スタッフが変更依頼を承認/却下した瞬間（自動）",tpl:"ご依頼を承りました／今回はお受けできません ＋URL"},
+  {ic:"—",name:"位置追跡URLの単独送信（track）",ch:"LINE",st:"OFF（意図的）",trig:"停止中＝マイページに統合済（追跡はマイページ内で閲覧）",tpl:"別送信は不要（出発/回収ボタンのマイページ案内に内包）"},
 ];
 async function openNotify(){
   $("#modal").style.maxWidth="720px";
   const on=!!CFG.mypage_notify_enabled, tm=!!CFG.test_mode;
-  const rows=NOTIFY_ROWS.map(r=>`<div style="border:1px solid #e2e8f0;border-radius:10px;padding:9px 11px;margin-bottom:7px">
-    <div style="font-weight:800;font-size:13px">${r.ic} ${esc(r.name)}</div>
+  const chC=(c)=>c==="メール"?{bg:"#e0f2fe",fg:"#0369a1"}:c&&c.indexOf("APPボタン")>=0?{bg:"#fef3c7",fg:"#92400e"}:{bg:"#dcfce7",fg:"#15803d"};
+  const stC=(s)=>!s?{bg:"#f1f5f9",fg:"#475569"}:s.indexOf("OFF")>=0?{bg:"#fee2e2",fg:"#b91c1c"}:s.indexOf("手動")>=0?{bg:"#fef3c7",fg:"#92400e"}:{bg:"#dcfce7",fg:"#15803d"};
+  const rows=NOTIFY_ROWS.map(r=>{const cc=chC(r.ch),sc=stC(r.st);return `<div style="border:1px solid #e2e8f0;border-radius:10px;padding:9px 11px;margin-bottom:7px">
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span style="font-weight:800;font-size:13px">${r.ic} ${esc(r.name)}</span>
+      ${r.ch?`<span style="font-size:10px;font-weight:800;border-radius:999px;padding:1px 7px;background:${cc.bg};color:${cc.fg}">${esc(r.ch)}</span>`:""}
+      ${r.st?`<span style="font-size:10px;font-weight:800;border-radius:999px;padding:1px 7px;background:${sc.bg};color:${sc.fg}">${esc(r.st)}</span>`:""}</div>
     <div style="font-size:11.5px;color:#334155;margin-top:3px"><b>トリガー：</b>${esc(r.trig)}</div>
     <div style="font-size:11.5px;color:#64748b;margin-top:2px"><b>テンプレ：</b>${esc(r.tpl)}</div>
-  </div>`).join("");
-  $("#modal").innerHTML=`<h3>📣 マイページ通知（自動送信）</h3>
-    <div style="font-size:11.5px;color:var(--sub);margin-bottom:8px">各通知＝<b>固定テンプレ文＋お客様専用マイページURL</b>を公式LINEへ自動送信。LINE未連携は安全にスキップ。</div>
+  </div>`}).join("");
+  $("#modal").innerHTML=`<h3>📣 顧客通知 一覧（札幌）</h3>
+    <div style="font-size:11.5px;color:var(--sub);margin-bottom:8px">お客様への全通知。<b>🟢LINE</b>＝公式LINE自動（未連携はスキップ）／<b>🔵メール</b>＝reserve@から／<b>🟡APPボタン</b>＝スタッフ操作で送信。下の状態トグルは<b>①初回マイページ案内</b>のON/OFFです。</div>
     <div style="display:flex;gap:10px;align-items:center;padding:10px 12px;border-radius:10px;background:${on?(tm?'#fff7ed':'#f0fdf4'):'#f1f5f9'};border:1px solid ${on?(tm?'#fed7aa':'#bbf7d0'):'#e2e8f0'};margin-bottom:10px">
       <div style="font-size:20px">${on?(tm?'🧪':'🟢'):'⛔'}</div>
       <div style="flex:1;font-size:12.5px">状態：<b>${on?(tm?'テスト送信中（テスト宛先のみ）':'本番ON（お客様に送信）'):'OFF（送信停止）'}</b><br>
