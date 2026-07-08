@@ -1830,6 +1830,144 @@ function sendReservationWelcomeEmail_(reservation) {
   }
 }
 
+// ===== 📨 場所未入力リマインド（フォーム誘導・定期送信）2026-07-08 =====
+// 対象：場所情報なし × 実メールあり × フォーム未回答。3日おき・最大3回・場所入力で自動停止・貸出日前まで。
+// トリガー：setupFormReminderTrigger() を1回実行（毎日10:30）
+// フォームURL差し替え：ScriptProperty 'spk_form_reminder_url'（未設定なら下記デフォルト）
+var FORM_REMINDER_URL_DEFAULT = 'https://liff.line.me/2008205584-oWrKy5r3'; // LINEフォーム（LIFF・全員共通）
+var FORM_REMINDER_MYPAGE_BASE = 'https://nosh2318.github.io/spk-task/my.html?t='; // マイページ（+予約別トークン）
+var FORM_REMINDER_MAX = 3;            // 1予約あたり最大送信回数
+var FORM_REMINDER_INTERVAL_DAYS = 3; // 送信間隔（日）
+var FORM_REMINDER_START_DAYS = 9;    // 出発の何日前から対象にするか（9日前起点→9/6/3日前の3回・3日前が最終）
+function _frDaysBetween_(a, b) { return Math.round((new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z')) / 86400000); }
+
+function sendFormReminderEmails() {
+  var stats = {sent:0, targets:0, skipTooSoon:0, skipMaxed:0};
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var testTo  = (props.getProperty('spk_form_reminder_test') || '').trim(); // 設定時=テスト送信先（1通のみ・logは書かない）
+    var formUrl = (props.getProperty('spk_form_reminder_url')  || FORM_REMINDER_URL_DEFAULT).trim();
+    var LOG_KEY = 'spk_form_reminder_log';
+    var log = {}; try { log = JSON.parse(props.getProperty(LOG_KEY) || '{}'); } catch (e) { log = {}; }
+
+    var today = new Date(); today.setHours(0,0,0,0);
+    var todayStr = Utilities.formatDate(today, 'Asia/Tokyo', 'yyyy-MM-dd');
+
+    // フォーム回答済み（spk_line_links に場所あり）→対象外
+    var answered = {};
+    var links = supabaseGet_('spk_line_links', 'select=resv_no,del_place,col_place&limit=5000');
+    (links || []).forEach(function(l){ var d=(l.del_place||'').trim(), c=(l.col_place||'').trim(); if (l.resv_no && (d||c)) answered[l.resv_no]=true; });
+
+    var rows = supabaseGet_('reservations',
+      'select=id,name,ota,mail,lend_date,return_date,del_place,col_place,status,mypage_token'
+      + '&return_date=gte.' + todayStr + '&status=neq.cancelled&order=lend_date.asc&limit=1000');
+
+    var sentList = [];
+    (rows || []).forEach(function(r){
+      var mail = (r.mail || '').trim();
+      if (!mail || mail.indexOf('@') < 0) return;
+      if (/^ota.*@rent-handyman\.jp$/i.test(mail) || /^noreply/i.test(mail)) return; // ダミー除外
+      if (((r.del_place||'').trim()) || ((r.col_place||'').trim())) return;           // 場所あり→対象外
+      if (answered[r.id]) return;                                                     // フォーム回答済み→対象外
+      if ((r.lend_date||'') && r.lend_date < todayStr) return;                        // 貸出過去→対象外
+      var dUntil = (r.lend_date||'') ? _frDaysBetween_(todayStr, r.lend_date) : 999;
+      if (dUntil > FORM_REMINDER_START_DAYS) return;                                  // 出発9日前より先→まだ送らない（9/6/3日前で送るため）
+      stats.targets++;
+
+      var e = log[r.id] || {n:0, last:''};
+      if (e.n >= FORM_REMINDER_MAX) { stats.skipMaxed++; return; }
+      if (e.last) { var days = (today - new Date(e.last)) / 86400000; if (days < FORM_REMINDER_INTERVAL_DAYS) { stats.skipTooSoon++; return; } }
+      if (testTo && stats.sent >= 1) return; // テストは1通のみ
+
+      var to = testTo || mail;
+      var name = (r.name || 'お客').toString().trim();
+      var mypageUrl = (r.mypage_token ? (FORM_REMINDER_MYPAGE_BASE + r.mypage_token) : FORM_REMINDER_MYPAGE_BASE.replace(/\?t=$/, ''));
+      var subject = '【HANDYMAN札幌】お届け情報のご入力をお願いします（予約番号：' + r.id + '）' + (testTo ? ' [TEST]' : '');
+      var body =
+        name + ' 様\n' +
+        '予約番号：' + r.id + '\n' +
+        'ご利用日：' + (r.lend_date || '') + '〜\n\n' +
+        'レンタカーショップHANDYMAN 札幌デリバリー専門店です。\n' +
+        'この度はご予約ありがとうございます。\n\n' +
+        '当店はご指定の場所へお車をお届けするデリバリー専門店です。\n' +
+        'スムーズなお貸し出しのため、下記より【お届け場所・回収場所・ご希望時間】の\n' +
+        'ご入力を必ずお願いいたします。\n\n' +
+        '━━━━━━━━━━━━━━━━━━\n' +
+        '▼【LINEをお使いの方】こちらのフォームからご入力ください\n' +
+        '　' + formUrl + '\n' +
+        '　※ご登録後、当日の時間・場所のご連絡もLINEで行います\n' +
+        '━━━━━━━━━━━━━━━━━━\n' +
+        '▼【LINEをお使いでない方】こちらのマイページからご入力ください\n' +
+        '　' + mypageUrl + '\n' +
+        '　※地図から場所を選ぶだけ・アプリ登録不要\n' +
+        '━━━━━━━━━━━━━━━━━━\n\n' +
+        '【ご注意】\n' +
+        '・お貸し出し3日前の19:00までにご入力をお願いいたします。\n' +
+        '・期限までに情報が未確定の場合、ご希望に添えないことがございます。\n' +
+        '・無店舗型のデリバリー専門のため、当日は事前のご入力内容に基づきお届けします。\n\n' +
+        '【お問い合わせ】\n' +
+        'HANDYMANカスタマーサポート\n' +
+        '公式LINE：https://lin.ee/g6iDNYz（LINE ID：@730kyhwl）\n' +
+        '緊急連絡先：050-1724-6197（9:00〜19:00）\n';
+
+      try {
+        GmailApp.sendEmail(to, subject, body, {name:'HANDYMAN 札幌デリバリー専門店', from:'reserve@rent-handyman.jp', replyTo:'reserve@rent-handyman.jp'});
+        stats.sent++;
+        sentList.push(r.id + ' ' + name + ' → ' + to + (testTo ? '(TEST)' : ''));
+        if (!testTo) log[r.id] = {n:(e.n||0)+1, last:Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd HH:mm')};
+      } catch (err) { Logger.log('[FormReminder] send fail ' + r.id + ': ' + err.message); }
+    });
+
+    if (!testTo) props.setProperty(LOG_KEY, JSON.stringify(log));
+
+    try {
+      if (stats.sent > 0) {
+        postToSlackChannel_(JALAN_PAY_CHANNEL,
+          '📨 *場所未入力リマインド送信*' + (testTo ? '（テスト）' : '') + '\n' +
+          '送信 ' + stats.sent + '件 / 対象 ' + stats.targets + '件（間隔待ち ' + stats.skipTooSoon + ' / 上限到達 ' + stats.skipMaxed + '）\n' +
+          sentList.slice(0,20).join('\n'));
+      }
+    } catch (e2) {}
+    Logger.log('[FormReminder] ' + JSON.stringify(stats));
+    return stats;
+  } catch (e) {
+    Logger.log('[FormReminder] FATAL ' + e.message);
+    return stats;
+  }
+}
+
+// 🧪 プレビュー（送信せず対象だけログ出力）
+function previewFormReminders() {
+  var links = supabaseGet_('spk_line_links', 'select=resv_no,del_place,col_place&limit=5000');
+  var answered = {}; (links||[]).forEach(function(l){ var d=(l.del_place||'').trim(),c=(l.col_place||'').trim(); if(l.resv_no&&(d||c)) answered[l.resv_no]=true; });
+  var today = new Date(); today.setHours(0,0,0,0); var todayStr = Utilities.formatDate(today,'Asia/Tokyo','yyyy-MM-dd');
+  var rows = supabaseGet_('reservations','select=id,name,ota,mail,lend_date,del_place,col_place,status&return_date=gte.'+todayStr+'&status=neq.cancelled&order=lend_date.asc&limit=1000');
+  var out = [];
+  (rows||[]).forEach(function(r){ var mail=(r.mail||'').trim();
+    if(!mail||mail.indexOf('@')<0)return; if(/^ota.*@rent-handyman\.jp$/i.test(mail)||/^noreply/i.test(mail))return;
+    if(((r.del_place||'').trim())||((r.col_place||'').trim()))return; if(answered[r.id])return; if((r.lend_date||'')&&r.lend_date<todayStr)return;
+    var dU=(r.lend_date||'')?_frDaysBetween_(todayStr,r.lend_date):999; if(dU>FORM_REMINDER_START_DAYS)return;
+    out.push('出発'+dU+'日前 '+r.lend_date+' '+r.id+' '+r.name+' → '+mail); });
+  Logger.log('対象 ' + out.length + '件\n' + out.join('\n'));
+  return out.length;
+}
+
+// 🧪 テスト送信：大下さん宛に1通だけ送る（本文・リンク確認用。logは残さない）
+function testFormReminderToOwner() {
+  var props = PropertiesService.getScriptProperties();
+  props.setProperty('spk_form_reminder_test', 'oshita@mileshare.jp'); // 送信先を変えたければここ
+  var r = sendFormReminderEmails();
+  props.deleteProperty('spk_form_reminder_test');
+  Logger.log('テスト送信完了: ' + JSON.stringify(r));
+}
+
+// ⏰ 毎日10:30 に自動送信するトリガーを設定（GASエディタで1回だけ実行）
+function setupFormReminderTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function(t){ if(t.getHandlerFunction()==='sendFormReminderEmails') ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger('sendFormReminderEmails').timeBased().atHour(10).nearMinute(30).everyDays(1).create();
+  Logger.log('✅ 毎日10:30 sendFormReminderEmails トリガー設定完了');
+}
+
 /**
  * 🧪 sendReservationWelcomeEmail_ 動作テスト（GASエディタで手動実行）
  * テスト用ダミー予約で実際にメールを送信せず、対象判定とテンプレ出力のみ確認
@@ -5370,6 +5508,12 @@ function watchPartnerCustomerReservations() {
     if (!vehs || !vehs.length) return;
     var vmap = {}, codes = [];
     vehs.forEach(function(v){ vmap[v.code] = v; codes.push(v.code); });
+    // 協力会社の連絡先メール（先方へ直接通知用）: owner_company -> contact_email
+    var pcEmail = {};
+    try {
+      var pcs = supabaseGet_('partner_companies', 'select=id,label,contact_email,active');
+      (pcs || []).forEach(function(p){ if (p.contact_email && ('' + p.contact_email).indexOf('@') >= 0) pcEmail[p.id] = ('' + p.contact_email).trim(); });
+    } catch(e) { Logger.log('[PartnerWatch] pcEmail fetch error: ' + e.message); }
     var fl = supabaseGet_('fleet', 'vehicle_code=in.(' + codes.map(encodeURIComponent).join(',') + ')&select=reservation_id,vehicle_code');
     var cur = {};
     (fl || []).forEach(function(f){ cur[f.reservation_id] = f.vehicle_code; });
@@ -5405,6 +5549,7 @@ function watchPartnerCustomerReservations() {
       var vcode = cur[id], v = vmap[vcode] || {};
       postToSlackChannel_(PARTNER_NOTIFY_CHANNEL, fmt('🆕', '協力会社車両に新規予約', v, r, vcode));
       logPartnerResvAction_('customer_resv_add', v, r, vcode);
+      sendPartnerResvEmail_(v, r, vcode, pcEmail); // 先方(協力会社)へ自動メール（連絡先未登録なら安全にスキップ）
     });
     removed.forEach(function(id){
       var r = fetchResv(id);
@@ -5442,6 +5587,32 @@ function logPartnerResvAction_(type, v, r, vcode) {
       }
     });
   } catch(e) { Logger.log('[PartnerWatch] log error: ' + e.message); }
+}
+
+// 新規予約を検知したら協力会社(先方)の登録メールへ自動通知。連絡先未登録(空/不正)なら送らずスキップ。
+// added検知は state 差分ベースで冪等（1予約=1回のみ発火）→ 二重送信なし。
+function sendPartnerResvEmail_(v, r, vcode, pcEmail) {
+  try {
+    var to = pcEmail && pcEmail[v.owner_company];
+    if (!to) return; // メール未登録=スキップ（Slack通知は別途出ている）
+    var otaName = function(o){ return ({J:'じゃらん',R:'楽天',S:'スカイチケット',O:'エアトリ',HP:'HP',RC:'レンタカー.com',G:'GoGoOut',SP:'Slack',direct:'直接'})[o] || o || '-'; };
+    var subject = '【HANDYMAN】貴社車両に新規予約：' + (v.name || vcode) + ' ' + (r.lend_date || '') + '〜' + (r.return_date || '');
+    var body =
+      (v.owner_label || v.owner_company || '') + ' 御中\n\n' +
+      'いつもお世話になっております。HANDYMANでございます。\n' +
+      '貴社の車両に新しいご予約が入りましたのでお知らせいたします。\n\n' +
+      '━━━━━━━━━━━━━━━━━━━━\n' +
+      '■ 車両：' + (v.name || vcode) + '（' + (v.plate_no || '') + '） / ' + (r.vehicle || '') + 'クラス\n' +
+      '■ 期間：' + (r.lend_date || '') + ' 〜 ' + (r.return_date || '') + '\n' +
+      '■ 予約番号：' + r.id + '\n' +
+      '■ 予約経路：' + otaName(r.ota) + '\n' +
+      '━━━━━━━━━━━━━━━━━━━━\n\n' +
+      '詳細は協力会社ページよりご確認いただけます。\n' +
+      'https://nosh2318.github.io/spk-task/partner.html?owner=' + encodeURIComponent(v.owner_company || '') + '\n\n' +
+      '※本メールは新規予約の自動通知です。\nHANDYMAN 札幌デリバリー専門店';
+    GmailApp.sendEmail(to, subject, body, { name: 'HANDYMAN 札幌デリバリー専門店', from: 'reserve@rent-handyman.jp', replyTo: 'reserve@rent-handyman.jp' });
+    Logger.log('[PartnerWatch] 先方メール送信 -> ' + to + ' / ' + r.id);
+  } catch(e) { Logger.log('[PartnerWatch] email error: ' + e.message); }
 }
 
 function setupPartnerWatchTrigger() {
