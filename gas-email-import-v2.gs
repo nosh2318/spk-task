@@ -1869,6 +1869,7 @@ function sendFormReminderEmails() {
       if (/^ota.*@rent-handyman\.jp$/i.test(mail) || /^noreply/i.test(mail)) return; // ダミー除外
       if (((r.del_place||'').trim()) || ((r.col_place||'').trim())) return;           // 場所あり→対象外
       if (answered[r.id]) return;                                                     // フォーム回答済み→対象外
+      if (String(r.ota||'').toUpperCase()==='KEYDROP') return;                        // KEYDROPは独自リマインド→対象外
       if ((r.lend_date||'') && r.lend_date < todayStr) return;                        // 貸出過去→対象外
       var dUntil = (r.lend_date||'') ? _frDaysBetween_(todayStr, r.lend_date) : 999;
       if (dUntil > FORM_REMINDER_START_DAYS) return;                                  // 出発9日前より先→まだ送らない（9/6/3日前で送るため）
@@ -1945,7 +1946,7 @@ function previewFormReminders() {
   var out = [];
   (rows||[]).forEach(function(r){ var mail=(r.mail||'').trim();
     if(!mail||mail.indexOf('@')<0)return; if(/^ota.*@rent-handyman\.jp$/i.test(mail)||/^noreply/i.test(mail))return;
-    if(((r.del_place||'').trim())||((r.col_place||'').trim()))return; if(answered[r.id])return; if((r.lend_date||'')&&r.lend_date<todayStr)return;
+    if(((r.del_place||'').trim())||((r.col_place||'').trim()))return; if(answered[r.id])return; if(String(r.ota||'').toUpperCase()==='KEYDROP')return; if((r.lend_date||'')&&r.lend_date<todayStr)return;
     var dU=(r.lend_date||'')?_frDaysBetween_(todayStr,r.lend_date):999; if(dU>FORM_REMINDER_START_DAYS)return;
     out.push('出発'+dU+'日前 '+r.lend_date+' '+r.id+' '+r.name+' → '+mail); });
   Logger.log('対象 ' + out.length + '件\n' + out.join('\n'));
