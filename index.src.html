@@ -65,14 +65,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 <div id="root"><div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5"><div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);display:flex;align-items:center;justify-content:center;margin-bottom:12px"><span style="color:#fff;font-weight:900;font-size:24px">S</span></div><div style="font-size:16px;font-weight:700;color:#1e293b">札幌店 タスク管理</div><div style="margin-top:16px;width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#3b82f6;border-radius:50%;animation:sp .8s linear infinite"></div><div id="splash-status" style="margin-top:12px;font-size:11px;color:#94a3b8">読み込み中...</div><style>@keyframes sp{to{transform:rotate(360deg)}}</style></div></div>
 <script>
 (function(){
-  var CV='spk-v938';
+  var CV='spk-v939';
   if(localStorage.getItem('sw_cache_ver')!==CV){
     if('caches' in window){caches.keys().then(function(k){k.forEach(function(n){caches.delete(n);});});}
     if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister();});});}
     localStorage.setItem('sw_cache_ver',CV);
     setTimeout(function(){location.reload(true);},500);
   }else{
-    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=825').then(function(r){r.update();}).catch(function(){});}
+    if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js?v=826').then(function(r){r.update();}).catch(function(){});}
   }
 })();
 </script>
@@ -484,6 +484,17 @@ const DB = {
       dbLog("updateTask",true,t._id+" assignee="+t.assignee);
     }catch(e){dbLog("updateTask",false,e.message);}
     finally{DB._pendingSave--;}
+  },
+  // ★2026-07-09 SSパトロール専用の部分更新: changed_json(SS痕跡)だけを書く。担当(assignee)/済(done)/時間/場所/メモ等の人間入力列は絶対に触らない
+  //   → 別端末のパトロールが「最初の担当」を書き戻して復活させる事故を根絶（機械は人間入力を上書きしない=唯一ルール）。
+  async updateTaskCJ(t,date){
+    try{const ls=DB._lsLoad(date);if(ls){const i=ls.findIndex(x=>x._id===t._id);if(i>=0){ls[i]=t;DB._lsSave(ls,date);}}}catch(e){}
+    if(!sb)return;
+    try{
+      const cj=JSON.stringify({...(t._changed||{}),_optB:+(t.opts?.b||0),_optC:+(t.opts?.c||0),_optJ:+(t.opts?.j||0),_ssTime:t._ssTime||"",_ssTimeAt:t._ssTimeAt||"",_ssPlace:t._ssPlace||"",_ssPlaceAt:t._ssPlaceAt||"",_timeChange:t.timeChange||"",_placeSource:t._placeSource||"",_ssSeen:t._ssSeen||"",_ssAlert:t._ssAlert||"",_manualTimeAt:t._manualTimeAt||"",_manualPlaceAt:t._manualPlaceAt||"",_typeChange:t.typeChange||"",_manual:!!t.manual,_taskDate:(t._taskDate||date)});
+      const{error}=await sb.from("tasks").update({changed_json:cj}).eq("_id",t._id);
+      if(error)dbLog("updateTaskCJ",false,error.message);else dbLog("updateTaskCJ",true,t._id);
+    }catch(e){dbLog("updateTaskCJ",false,e.message);}
   },
   async deleteTasks(date){try{localStorage.removeItem(DB._lsKey(date));}catch(e){} if(!sb)return;const{error}=await sb.from("tasks").delete().eq("date",date);if(error)dbLog("deleteTasks",false,error.message);},
   async deleteTask(id,date){if(!sb)return;/* ★2026-07-03 墓標方式: 物理削除せず deleted=true。再生成/マージ/他端末が二度と復活させられない。upsertは deleted 列を書かない(=保持)ので復活しない。 */const{error}=await sb.from("tasks").update({deleted:true}).eq("_id",id);if(error)dbLog("deleteTask",false,error.message);else dbLog("deleteTask",true,id);try{const ls=DB._lsLoad(date);if(ls){const next=ls.filter(t=>t._id!==id);localStorage.setItem(DB._lsKey(date),JSON.stringify(next));}}catch(e){}},
@@ -15129,8 +15140,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
               return changed?next:t;
             });
             DB._lsSave(upd,selDate);
-            // ★ SS更新されたタスクをDBにも保存（changed_jsonに_ssTime/_ssPlace永続化）
-            upd.forEach((t,i)=>{if(t!==prev[i])DB.updateTask(t,selDate);});
+            // ★ SS更新されたタスクをDBに保存。★2026-07-09 changed_jsonのみ部分更新(updateTaskCJ)=担当等の人間入力列を触らない→別端末の書き戻しで担当が復活する事故を根絶。
+            upd.forEach((t,i)=>{if(t!==prev[i])DB.updateTaskCJ(t,selDate);});
             return upd;
           });
           // 場所をplacesテーブルにも保存
@@ -22171,7 +22182,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.393";
+const APP_VERSION="v4.7.394";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
