@@ -1,5 +1,142 @@
 # SPK業務管理APP（札幌店）
 
+
+
+## 🔕 2026-07-11 omni_gatekeeper 通知スパム対策＝時間復元のみは無音に
+`omni_gatekeeper_nha_restore`(pg_cron jobid24・*/15)が「（那覇 正常化）復活0/担当復元0/時間復元1件」を15分毎にSlack投稿してうるさい件。**復元処理と台帳ログ(omni_gatekeeper_log)は継続**しつつ、**Slack投稿は `nres>0(タスク復活) OR ntan>0(担当復元)` の深刻時のみ**に変更（時間復元njikのみの軽微は無音）。DB関数をCREATE OR REPLACEで差し替え（mgmt-api）。時間の綱引き(OPが空化→復元)はミラー化v3.5.286でOP側が空化しなくなれば2h以内に自然消滅。**教訓：門番の自動修復通知は"人の入力が失われた深刻時"だけSlackし、可逆で軽微な復元は台帳に残すだけ＝壊れゼロなら静か を徹底**。
+
+## 🪞 2026-07-11 NHA OP「動いて戻る/行が増えて戻る」根治＝定常時をミラーに統一（v3.5.286）
+**症状**：那覇OPマスターを開いて放置しているだけで、行の並びが変わって戻る・行が増えて戻るを反復。**台帳(audit_log)ではnha_tasksのDB書込は30分で2件のみ＝DB churnではなくクライアント描画の揺れ**。
+- **真因＝2経路が別配列を交互にsetTaskしていた**：①**30秒ポーリング/画面復帰**＝`loadTasks(selDate)`＝DB取得後に generateTasks不足追加・PU→PUB自動昇格・バス定員溢れ降格・翌日洗車再追加・dedup・fleet同期で**並びと行数を毎回再導出**した"augmented"配列を setTasks。②**Realtime**＝`setTasks(fresh)`＝**純粋DBミラー**（DB sort_order順）。開いて放置中もこの2つが交互に走り、rows が動く/増える→DB順に戻る。DB書込が出ないのは行数/順が一致してるからだが、それでも毎回別配列で再描画するので視覚的に揺れる。
+- **根治(オーナー指示「意思を持たすな＝ミラーだけ」)**：定常時(ポーリング/Realtime/画面復帰)を新設`mirrorTasks(date)`＝**DBをそのまま映すだけ**（孤立/キャンセルの表示除外のみ・**行追加/並べ替え/自動昇降格/洗車再生成をしない**・手動変更(_changed/place)保護・manual LS復元・DB空/取得エラー時は現状維持で行を消さない）に統一。生成が本当に要る**新規予約(reservations.length変化)・日付変更(selDate変化)だけ**は従来通り`loadTasks`が担当（洗車/不足追加は新規予約到着時に走る＝機能欠落なし）。
+- **教訓**：「定常ポーリングで毎回 生成/整形して setTask」する設計は、別経路(Realtime)の純ミラーと不一致になり"揺れ"を生む。**定常リフレッシュは必ず"DBミラー"に一本化し、生成は真に必要なトリガー(新規/日付変更)に限定する**。①=sort_order再index停止(v3.5.285)＋②=ポーリング/Realtimeのミラー統一(v3.5.286)で完結。SPKも同型ポーリングがあれば要確認（SPKは1件ずつ書込で比較的安全だが定常再生成の有無は未点検）。
+
+## 📌 2026-07-10 このセッション作業メモ（CLI omni / UI・インフラ）
+
+### 🛡 Supabase自動復旧ガーディアン 新設（launchd常駐・重要）
+- **`com.handyman.supabase-guardian`**（`~/Desktop/HANDYMAN/omni_bot/supabase_guardian.py`・120秒毎）＝API層ハング障害を**自動検知→DB健全確認→自動再起動→Slack通知**。手動対応(7/09)を自動化。
+- ロジック：`/rest/v1/nha_tasks・reservations`(anon)をプローブ→000/timeout/5xxが**3回連続(≈6分)**で「API層ハング」判定→**mgmt-api SQLでDB健全な時だけ**`POST /projects/<ref>/restart`（DBも死んでたら再起動せずSlack警告＝固まるリスク回避）→**クールダウン15分**で二重再起動防止。検知/再起動/復旧を#handyman_development(C07B5G3PV7C)へ自動投稿。state=`.sb_guardian_state.json`。anonキーはlive app.jsから動的取得。**OMNI全サービス一覧に追加（「全再稼働」時はこれも対象）**。
+
+### 📱 「更新が反映されない」根治＝SPK sw.jsを自己破棄型に（重要・全店に効く手法）
+- 症状：SPKだけ何度更新しても古い画面。原因＝**過去のキャッシュ型SWが端末に居座り古いapp.jsを配信**（sw.js 0バイト=空では古いキャッシュを消せない）。
+- 修正：`~/spk-task/sw.js`を**自己破棄型**に（install=skipWaiting／activate=全caches削除＋`registration.unregister()`＋開いてる全clientを`navigate`で再読込）。sw.js?vを上げて配信→端末のSW更新チェックで置換→キャッシュ全削除→以降常に最新。**教訓：0バイトの空sw.jsをregisterするのは無意味＝居座りSWを消せない。自己破棄型が正解**（NHA/BTも必要なら同様に）。
+
+### 🎨 タスクサマリ スマホ最適化＝「1タスク1カード・種別大・ナンバー大・薄枠」3店統一
+- 各タスクを**薄い枠(border+角丸+余白+薄影)+左に種別色ライン**のカードに（切れ目を明確化）。**行1=大きい種別色バッジ＋時刻大＋🚗車両ナンバー緑大バッジ**（未配車=赤）／行2=予約者+人数+LINE／行3=場所+便名／行4=担当+決済。操作ボタンは保持。
+- **⚠️描画サイトが多数**（1画面≠1箇所）：NHA=OPサマリー(opView=summary 18715)＋TOP個人別`NhaPersonalTasks`/`NhaPersonalTasks2`(22654/22787・rTは2つ同一→replace_all可)。SPK=個人別allSchedule(15864)＋本日スケジュール(21687)＋**スタッフ別サマリー(21622・出発ボタン付き＝オーナーが見ていた画面)**。BT=OPサマリー(17286)。「変わってない」時は別の描画サイトを見ている＝全サイト洗い出す。版：SPK v4.7.402/NHA v3.5.280/BT v1.0.117。
+- **マスター表は全行フラット統一**（洗車=黄/手動=緑/担当=黄 の色分けを全廃・縞のみ／種別は種別列の色で識別）。SPK/NHA/BT。
+
+### 🧽 当日洗車の可視化＝薄い緑ハイライトのみ(枠削除)・両店統一（オーナー確定）
+- マスター表の「返却→洗車リンク(同日・同ナンバーで返却がある洗車)」の**枠(アウトライン#0d9488)を削除**し、**薄い緑背景(#ecfdf5)のみ**に統一。SPK=枠除去(緑背景は既存)/NHA=枠除去+緑背景追加(`let rowBg`にして`if(_isLinked)rowBg="#ecfdf5"`)。🔗返却後洗車/🕐返却時刻以降のバッジは残置。SPK v4.7.403/NHA v3.5.281。
+
+### 🎣 フィッシング詐欺メール注意（スタッフ共有推奨）
+- 「【重要】メールボックス期限切れ・再有効化が必要」等でreserve@rent-handyman.jp宛に来る**フィッシング**。**リンク先が本物ドメインでない**(例`lamsharedonlywinsdom.sbs`＝`.sbs`はフィッシング常用)＝詐欺確定。**クリック・パスワード入力禁止→削除＋フィッシング報告**。正規のメール事業者が外部リンクでパスワード再認証を求めることはない。
+
+## 🗂 2026-07-10 エルメ取込・KEYDROP端末計測・ファネルリベース・札幌スルー/未連携方針（CLI omni）
+- **エルメCSV取込（LINE userID紐付け・毎日必要）**：札幌`spk_line_links`402件／那覇`nha_line_links`1618件(2ファイル)取込。手順＝`SB_TABLE=nha_line_links SB_SERVICE_ROLE=<service_role> python3 ~/spk-task/line_auto/import_erume_csv.py <csv> [--dry]`（那覇はSB_TABLE指定・札幌は既定）。service_roleは Management API `/api-keys?reveal=true`(token`~/.config/keydrop/sb_token`)で取得。取込で場所空欄補完も走る。userIDはエルメCSVにしか無い→両店毎日取込。
+- **KEYDROP 端末(PC/スマホ)計測 実装**：`kd_funnel_log`に`device`/`ua`列追加＋`index.html`のファネル書込(rest/v1/kd_funnel_log POST)に`navigator.userAgent`判定(pc/mobile/tablet)を付与＝全アクセスに端末記録。集計ビュー`public_kd_device_v`＋`kd-analytics.html`に「📱端末別内訳」カード(構成比/決済到達/完了CVR)。keydrop.jp反映済。
+- **KEYDROPファネル リベースライン（重要）**：2026-07-10のUIフロー変更で step番号割当が変わった（新: step_vehicle=1日付車両/confirm=2/options=3/**top=4＝お届け回収のマップ**/form=5情報/terms=6/payment=7/complete=8）。旧フローは別割当(top=1等)。混在集計で「step5>step4」逆転(あり得ない)。→ `public_kd_funnel_v`を **`created_at>='2026-07-10 07:27:41+00'(新フロー開始=step_vehicle=1初出)以降**に絞ってリベース→単調減少に正常化。⚠️Slack側がmigrationで同ビュー再適用するとカットオフが戻る→恒久化は該当migrationにも同条件を。**教訓：フロー(step番号)を変えたら過去データと混ざる→集計は必ずフロー変更日以降に絞る**。
+- **旧マップTOP vs 新スタイルの判断材料**：旧マップTOP＝入口90%離脱・CVR0.1%（施策ログの「97%離脱の本丸」）。新(日付・車両先出し)＝入口43%離脱（早期・母数7で未確定）。方向は**非マップ(現スタイル)寄りが妥当**。確定は数百セッション後、理想はA/B。
+- **札幌 スルー/未連携 対応方針**：①スルー(未開封)＝**前日/返却3hリマインドで自動再ナッジ済**(mypage_daybefore稼働)→緊急対応不要(利用日が近づけば再送される)。②未連携メール訴求＝**`sendFormReminderEmails`**(gas-email-import-v2.gs・毎朝10:30・**出発9/6/3日前・場所未設定&フォーム未回答・最大3回・KEYDROP除外**・LINE誘導メール＋my.htmlマイページURL)。dashboardの「メール訴求31」と乖離するのは正常＝リマインドは「9日前以内かつ場所未設定」の直前JITのみ(実測:訴求対象32/9日以内4/うち場所未設定=実対象1/28は窓外)。要`setupFormReminderTrigger`起動(GAS・owner作業)。窓拡大は`FORM_REMINDER_START_DAYS`(9→14等)。
+- **R0SH5VYY(照会)**：札幌じゃらん・ミズグチ タクヤ・7/10利用・¥6500・**未入金**(DB jalan_payments=email_sent/paid_at空＋Square注文=DRAFT/tenders無で二重確認)。リンク https://square.link/u/l6lBAhkT 。Squareトークン=`~/outputs/handyman-receipt-bot/Code.gs`のSQUARE_API_TOKEN(EAAAl0tQ…)、SearchOrders(location L8N7J9RKPN3WH・品目に予約番号)で実入金照合。
+- **KEYDROPクーポン利用(照会)**：`keydrop_coupon_redemptions`5件(実顧客2＝rikachan0509@i.softbank/kinsuke22、残3はowner test)。CV有効＝rikachan0509(paid・那覇)、kinsuke22はpaid→refunded。端末(PC/スマホ)は当時未記録→今回のdevice計測で今後は判別可。
+
+
+## 🚨 2026-07-09 Supabase障害（API層ハング）再発→再起動で復旧＋恒久手順（両店・重要）
+**症状**：那覇・札幌の両アプリで「開けるが予約が読み込めない」。一瞬戻る→また詰まる(フラッピング)。2026-07-04と同型の再発。
+**確定診断（実測）**：**PostgREST(API層)のハング、Postgres(DB本体)は健全＝データ無事**。
+- アプリ経路 `/rest/v1/<table>`＝**HTTP 000で8秒タイムアウト**（NHA `nha_reservations`・SPK `reservations` とも3回連続無応答）。
+- 管理API `/database/query`(`select 1`)＝**HTTP 201・3.3秒で成功**＝DB健全。プロジェクト状態は`ACTIVE_HEALTHY`表示(あてにならない)。
+- 両店は同一プロジェクト`ckrxttbnawkclshczsia`→同時に落ちる。**アプリのバグではない**。
+**復旧手当（今回実施・成功）**：Management APIで**プロジェクト再起動**＝`curl -s -X POST "https://api.supabase.com/v1/projects/ckrxttbnawkclshczsia/restart" -H "Authorization: Bearer $(cat ~/.config/keydrop/sb_token)"`→**HTTP 200**。数分フラッピング後に安定。復旧確認＝`/rest`実クエリ連続プローブで**NHA 6/6・SPK 6/6 HTTP 200**。データ損失なし。
+
+### 🔁 今後この障害が来た時の解消手順（正本）
+1. **切り分け**：`/rest/v1/<table>`(anonキー)が000/タイムアウト かつ `/database/query`(mgmt-api)のSQLが成功→**API層ハング＝DBは健全＝データ無事**。慌てない。
+2. **禁止**：アプリコードをrevertしない（アプリのバグではない・7/04はこれで誤対応した）。スタッフに連打リロード・再入力をさせない（復旧後の二重化防止）。
+3. **つなぎ**：各アプリのオフライン読取キャッシュで、一度開いた端末はOP/タスク/スケジュール/配車表を閲覧継続可（書込は復旧後）。
+4. **復旧**：ダッシュボード or 上記Management APIで**プロジェクト再起動**（API層バウンス）。※"状態変更失敗"系だと再起動で固まるリスクもある→戻らなければサポート連絡が最短。
+5. **復旧判定**：`/rest`実クエリを連続プローブし**5〜6回連続HTTP 200**で確定→1回クリーンにリロード。
+- anonキーはliveの`app.js`から`grep -oE 'eyJ[...]'`で取得可。復旧報告は#handyman_development(C07B5G3PV7C)へ。恒久策候補＝PITR ON／GAS版バックアップ(Google基盤24h)。
+
+## 🧷 2026-07-09 OPシート「担当を未割当(空)にすると旧担当に復活」根治＝DBトリガーの過剰防御（重要）
+**症状**：札幌OPシートで担当を**未割当(空)にすると必ず元の担当(例:大下)に戻る**。人→人の変更は正常保存。何度やっても未割当にできない。
+- **真因＝アプリでもchurnでもなく DBトリガー**：`tasks`に担当を記憶する `spk_task_assignments(reservation_id,role,assignee)` ＋トリガー2つ（`spk_tasks_fill_assignee` BEFORE INSERT/UPDATE＝空担当を記憶から埋め戻す／`spk_tasks_save_assignee` AFTER＝非空担当を記憶に保存）。**別セッションの「担当保護(再生成でassignee消失を防ぐ)」機能が過剰防御**で、人が明示的に空にしても記憶した旧担当で埋め戻していた。
+- **切り分けの罠(教訓・重要)**：
+  1. **audit_log は assignee 列を diff に記録しない**（大下→__TEST__に変えても old/new とも null）。→「担当変更0件」を「書けていない」と誤読。**担当系調査は audit を信用せず tasks 直読み/updated_atで見る**。
+  2. **アプリの書込は upsert(`INSERT ... ON CONFLICT DO UPDATE`)**。既存タスク更新でも**BEFORE INSERTトリガーが先に発火**する。純PATCH(UPDATEのみ)は通るのにアプリupsertは埋め戻す→修正はUPDATE側だけでは不足、**INSERT側にも「既存_id行があれば補填しない」**が必要。
+  3. 人→人は通り人→空だけ戻る＝**「空を旧値で上書きする`||`(coalesce)型ロジック」を疑う**（DBトリガー or アプリ`_mergeUserInput`行410も同型で`prev.assignee`非空を維持）。
+- **修正(適用済・Management API)**：`spk_tasks_fill_assignee` を書換。**`TG_OP='UPDATE' または 同_id行が既存(=upsertの更新/クリア)なら補填せず空を尊重＋記憶(spk_task_assignments)も削除**。**本当に新規生成されるINSERT行のみ記憶から補填**。アプリと同じupsert(POST `on_conflict=_id`, `resolution=merge-duplicates`)で空担当が通ることを検証済。**DB側修正＝全端末に即反映・アプリのリロード不要・スタッフ操作不要**。※`resolution=merge-duplicates`のPOSTは**指定列のみ更新(他列は保持)**でdamageなしを確認。
+- **併せて直した二次バグ(アプリ側 v4.7.393/394)**：SS自動取得パトロールが場所不変でも毎回`_ssPlaceAt=now`で全タスク再保存(2hで384回churn)＝負荷＆上書き圧。①場所が実際に変わった時だけ再保存 ②パトロールの再保存を全列upsert→`updateTaskCJ`(changed_jsonのみ部分更新)に＝担当/済/時間/場所の人間入力列を触らない。**実在バグだが「未割当が戻る」主犯ではなかった**（主犯はDBトリガー）。
+- **残**：那覇/高松に同型トリガー(`nha_tasks_fill_assignee`等)があれば同症状→要確認・同修正。`spk_task_role(type)`でDEL/COL/洗車ロール判定。
+
+## 📌 2026-07-09 このセッション 追加作業メモ（CLI omni）
+- **① 受領請求書 スマホ表 潰れ修正（SPK/NHA）**：一覧テーブルが`overflowX:auto`なのに`table width:100%`で、スマホ幅に9列押し込み→内容列が**1文字ずつ縦折れ**。table`min-width:860`＋受領日/支払先`nowrap`＋内容列`min-width:200`で横スクロール可読化。SPK v4.7.389 / NHA v3.5.270。
+- **② 配車表クラス境界の視認改善（全店）**：クラス見出し行に太い上ボーダー(3px #475569)＋濃い背景帯(#dbe3ec)。SPK v4.7.387/NHA v3.5.263/BT v1.0.116（見た目のみ）。
+- **③ イレギュラー車両変更でDEL/COLタスクの車両が未同期（R0SH5VYY ミズグチ タクヤ）**：配車(fleet)をRKY(ロッキー/C)に変えたが、**タスクの`vehicle`/`assigned_vehicle`/`plate_no`が d-/c- は更新されず(F/空)、w-(洗車)だけ更新**されていた→タスクサマリーで「未配車」表示。DBで d-/c- を C/RKY/299 に手動同期して解消。**タスクサマリーの表示自体は配車(fleet[reservationId])とフォーム場所(_ssPlace)からフォールバックする作りで正しい**が、タスク内部値のズレが残ると不整合。**恒久策候補＝車両変更時に3タスク(d-/c-/w-)すべて同期**（未実装）。
+- **④ OP→マイページ時間連動 検証OK**：NHA FUZ47993(吉柴 明日香・OP変更09:00)で `handyman-mypage-nha` lookup→`lend_time=09:00` を確認＝2026-07-09の全系統修正が実働。KDN/テスト予約(KD-TEST-0710-KDX・KDN-TEST-0710-NHA)は削除済(KEYDROPテストフローで再生成され得る)。
+- **⑤ 協力会社 新規予約→自動メール**：`sendPartnerResvEmail_`実装済だが**contact_email未登録＋GAS未貼付で未稼働**（残作業）。
+
+## 🕒 2026-07-09 OPシートの時間変更がマイページに反映されないバグ 全系統修正（HANDYMAN/KEYDROP × 那覇/札幌）
+- **症状**：那覇の予約でスタッフがOPシートで配達時間を変更(例17:30→17:00)しても、お客様マイページ(カルテ)は旧時間のまま。SMW34582(伊藤 紗采・7/12 DEL)で発覚。
+- **原因（那覇固有のスキーマ差）**：**那覇OP(nha_tasks)は時間変更を専用の日本語列「変更」(timeChange)に保存**し、OP表示は`変更||時間`。一方 **札幌(tasks)は`changed_json._timeChange`に保存**。マイページEFの`resolveTaskTime`は`changed_json._timeChange||_ssTime||time`しか読まず、**那覇の「変更」列を見ていなかった**→那覇だけ反映されず（札幌は元々OK）。
+- **さらにKEYDROP那覇の重大な穴**：`keydrop-mypage`のlookupが`nha_tasks`を**札幌用の列名(`reservation_id,place,time`)で読んでいて必ず失敗**→catchで空→予約本体`del_time/col_time`にフォールバック＝**OPタスクを一切見ていなかった**（時間も場所も）。nha_tasksは`予約番号`紐付け・日本語列(送迎場所/集客/返却/時間/変更)。
+- **修正（全4系統・デプロイ済 2026-07-09）**：`handyman-mypage-nha`＝mapに`timeChange:t["変更"]`追加＋resolveを`変更`最優先／`keydrop-mypage`＝opTasks読取をstore別分岐(那覇=nha_tasksを予約番号+日本語列で読み`変更`をtimeChangeにmap、c-は集客/返却採用)＋`resolveTaskTime`に`t.timeChange`最優先。札幌経路(handyman-mypage/keydrop札幌)は元から`cj._timeChange`で正常＝変更不要。
+- **デプロイ**：`SUPABASE_ACCESS_TOKEN=$(cat ~/.config/keydrop/sb_token) ~/.local/share/supabase/supabase functions deploy <fn> --project-ref ckrxttbnawkclshczsia --no-verify-jwt`。正本＝handyman-mypage-nhaは`~/spk-task/line_auto/`→`~/spk-task/supabase/functions/`にコピー、keydrop-mypageは`~/hdm-car-delivery/supabase/functions/`。
+- **検証**：那覇PYQ80311(OP 10:00→09:30)でEF lookup→`lend_time=09:30`確認。未反映5件(NHA)はデータ無改変で自動修正。SMW34582は即時性のためdel_time/start_time/タスク時間を17:00にデータ修正済。
+- **教訓**：**那覇の時間変更の正本は nha_tasks「変更」列**（changed_jsonでなくDB列）。今後 那覇タスクを読むコードは必ず`変更(timeChange)`を`時間`より優先。KEYDROP EFで`M.tasks`をSPK列名で読む箇所は那覇で壊れる→store別マッピング必須。
+
+## 🪪🚀 2026-07-08 那覇マイページ 本番リリース＋傷チェック8時統一＋利用状況/メール可視化（CLI omni）
+**那覇マイページを①情報公開フェーズで本番リリース完了。** 正本コード＝`~/spk-task/line_auto/`（handyman-mypage-nha / mypage-notify-nha / damage-check-cron）、ページ＝naha-project（my-nha.html / mypage-usage-nha.html / bus.html）。
+
+### 那覇カルテ（EF handyman-mypage-nha・my-nha.html）
+- **EF lookup+ping・閲覧専用**：token→nha_reservations＋nha_tasks。**応答は札幌my.htmlと同じflat形**(reservation.vehicle/del_place/col_place/lend_time…＋visit_type/return_type＋damage/tracking/history)＝**同一レンダラで表示統一**。場所/時間＝`_placeSource==="manual"?place:(_ssPlace||place)`/`_timeChange||_ssTime||時間`(日本語列)。**ro=1(スタッフ閲覧)はmypage_touch_viewしない**(利用状況の開封誤カウント防止)。傷URL=nha_fleet→nha_vehicles.plate_no→vehicle_twins.display_label(ilike)→share_token。deploy=`supabase functions deploy … --no-verify-jwt`(token`~/.config/keydrop/sb_token`)。
+- **my-nha.html(VER v7.2-nha)＝札幌my.htmlの"丸写し"＋最小差分**：①FN→-nha ②`RO=?ro=1`＋`editable=false`(①=変更UIなし) ③IMG_BASE→spk-task/images(クラス画像_nhaはB/C/F/H/Sのみ→A/A2/B2/Dは無画像) ④受け渡し=**DEL/COL:場所+時間／PU・PUB:空港お迎え(PUB=🚌バス時刻表)／BD・BDB:空港お見送り(BDB=バス)／来店・返却:店頭(時間のみ)** ⑤クラスラベルINIT_CLASSES準拠 ⑥`nh_*`多言語キー(日英繁韓) ⑦**lookupにタイムアウト15s+自動リトライ2回+🔄再読込ボタン**(詰まる端末の永久スピナー対策)。バスは同一タブ＋bus.htmlに「←戻る」。
+- **導線**：NHA本体 v3.5.269-NHA。`window._mypageTokenMap`生成＋**OPシート本体マスター表(名前セル)＋タスクサマリ/スケジュール**に🪪カルテ(ro=1)。
+
+### ボタン整理（NHA本体）
+DEL出発→`mypage_depart`／COL回収→`mypage_collect`でLINE連携済にマイページURL自動送信(line-send store=nha)・未連携はコピー。**到着にconfirm追加／📍追跡削除／出発msgから傷URL除去／全ボタンconfirm**。📱OK/📱手動をPU/BD/BDBにも表示。
+
+### 初回送付＋リリース（mypage-notify-nha）
+- LINE連携済・end_date>=today・KEYDROP除外・未送信 に初回URL送付。**🔴sbGetAll(Rangeページネーション)必須**(那覇2500超→limitだけだと22件しか拾えず。実証・修正)。本番cap=40/回。gate=`nha_line_config.mypage_notify_enabled`(列新規追加)。cron`mypage-notify-nha`(jobid34・*/15・x-cron-secret=e564…)。
+- **リリース**：test_mode=false＋mypage_notify_enabled=true＋cron作成 → **208名へ初回送付**(初回30・残178はcron・約1.5〜2h)。**全2517トークンユニーク=各自固有カルテ**実証。
+- **🔴テスト送信の後始末必須**：test_mode中でもsendログ(sent)が残る→本番前に`delete from nha_line_sends where action like 'mypage_%'`しないと実顧客がdedupでスキップ。mypage_viewsのスタッフ閲覧分もクリア。
+
+### 傷チェック8時統一（damage-check-cron・那覇札幌両方）
+旧=出発lead分前(SPK30/NHA60)→**新=出発日8:00**(`nowMin>=480`かつ出発>=8:00)。両店同EF(store分岐)。
+
+### 利用状況ダッシュボード＋メール可視化
+- **mypage-usage-nha.html**(TOP📲マイページ状況タイル)＝札幌my-admin openUsageの那覇版。ファネル(アクティブ/送信済/スルー/未送信/LINE未連携)。認証=本体ログインtoken再利用＋NHA anon(iat 1771878550)。
+- **未連携者のメアド常時表示＋「📧メール訴求対象」(未連携×有効メール)件数/絞り込み**を那覇・**札幌my-admin両方**に追加(`realMail`/`validMail`=ota@…/noreply/空除外)。
+
+### 未連携→登録誘導メール（札幌のみ・那覇保留）
+札幌`sendFormReminderEmails`(gas-email-import-v2.gs L1844)=**毎朝10:30・出発9/6/3日前・場所未設定&フォーム未回答・KEYDROP除外・最大3回**、LINEフォーム(liff.line.me/2008205584-oWrKy5r3)へ誘導。目的=フォーム未回答客をLINE受付フォーム登録へ(②編集不要)。**那覇版は那覇のLIFFフォーム本体URL待ち**(lin.ee/jMU6xdJは友だち追加リンクで別物)。②(顧客のマイページ編集)は那覇未実装(①閲覧のみ)。
+- 停止=`update nha_line_config set mypage_notify_enabled=false`＋cron unschedule。サーバ稼働(pg_cron+EF)＝PC非依存。
+
+### 📊 リリース当日実績＆追記（2026-07-08夜〜07-09）
+- **初回送付 完了：208名 全員送信済**（cronが数時間で完走）。**開封 約100名＝開封率48%**（100÷208・送信当日でこれは高い。未開封は時間で開封へ移動して伸びる）。
+- **ファネルの見方（混同注意）**：`🔵送信済(未開封)`は"未開封の残り"で送信総数ではない。**送達(reach)≒100%(208/208)** ／ **開封率=48%(100/208)** の2軸。リストはアクティブ上位ソートで上部が緑一色に見えるだけ。
+- **御礼(thanks) 那覇ON**：`nha_line_config.thanks_enabled=true`。cron`line-thanks-nha`(毎日10:05JST)で返却翌日の連携客へ御礼LINE。テンプレ=`line_auto/thanks-cron/index.ts`(純お礼文・口コミ無・store=nhaで「那覇店」)。→ 那覇の自動通知が 初回/お届け回収/傷8時/御礼 まで札幌と揃った。
+- **時間解決の精緻化(EF)**：resolveTaskTime/回収時間を **OP「変更」列(timeChange)最優先** に(`t.timeChange||cj._timeChange||cj._ssTime||time`)＝OP表示と一致。
+- **次の伸びしろ(未着手)**：①⚫LINE未連携229名のうち📧メール訴求対象を那覇リマインドメールで拾う=**那覇のLIFF受付フォーム本体URL待ち**。②未開封のまま利用日接近の連携客へ「未開封リマインド(LINE再送)」。
+
+## 📌 2026-07-08 このセッション（CLI omni）作業メモ
+- **① 協力会社への新規予約 自動メール通知（SPK・実装済/GAS貼付待ち）**：`gas-email-import-v2.gs` の `watchPartnerCustomerReservations`（15分毎・稼働中）に **`sendPartnerResvEmail_`** を追加。協力会社車両(owner_company≠HANDYMAN)に新規予約が入ると `partner_companies.contact_email` へ自動メール（件名「【HANDYMAN】貴社車両に新規予約：…」）。冪等・既存Slack通知は維持・**メール未登録なら安全スキップ**。**残：①各社 contact_email 登録（現在全社 空）②GASエディタへ貼付**（トリガー型で再デプロイ不要）。当初「グループLINE」希望だったが、招待/groupID取得が要るためメールに決定。※検知自体は元から動作（配車確定→次の15分サイクルで通知。YYO15628 は配車直後で未検知＝時間差であり不具合ではない）。
+- **② 配車表クラス境界の視認性改善（全店デプロイ済）**：FleetTimelineのクラス見出し行に**太い上ボーダー(3px #475569)＋濃い背景帯(#dbe3ec)**を追加＝クラス間の区切りが一目で分かる。SPK v4.7.387 / NHA v3.5.263-NHA / BT v1.0.116-BT（push済・見た目のみ・ロジック不変）。
+- **③ 全店 台帳チェック結果（直近24h）**：main(NHA/SPK)＝**クリーン**（NHA削除はnha_fleet1件=配車変更／SPK削除はテスト予約掃除＋カワソエ=キャンセル済み正常＋fleet1／墓標0・日付移動0）。**BT(別DB ggqugvyskyiblxiycpci)＝7/07 12:20に全256行(bt_tasks153/fleet51/予約52)を `app_name=mgmt-api` で一括削除→現在0件**＝アプリ不具合でなく**管理SQLによる意図的なテストデータ全消し**(BTリリース前)。→ 意図的削除ならOK・違えばaudit_revert/hdm_snapshotで復元可。
+- **④ 台帳読みの知見**：`audit_log` の **`app_name`で出所を識別**＝`mgmt-api`(管理API/SQL＝人/エージェントの手動)・`postgrest`+`actor=staff`(アプリ操作)・`system`。DELETEの旧値は `diff` トップレベル（UPDATEは `diff->'old'/'new'`）。「消えた」調査は必ず DELETE と `deleted=true`(墓標) の両方を見る（時間の値→空 検索だけでは物理削除を見逃す）。
+- **⑤ KEYDROPテスト予約 KD-TEST-0710-KDX**：mgmt-apiで7/07作成→アプリ(KEYDROPテストフロー)で再生成を繰り返す個体。削除実施（reservations/tasks d-/c-/w-）だが**元(KEYDROPテスト投入)を止めないと復活**。
+- **⑥ ビュート村田様 COSTAクルーズ照会**：便名4フィールド(到着/出発便名・時刻)に「COSTA」を含むオフィシャル予約＝**JAS72180 秋庭 園子(8/4)の1件のみ**（「コスタ千春」は人名で対象外）。
+
+## 🚨 2026-07-08 傷チェック手動送信「未対応アラート」EF新設（SPK/NHA・#handyman_development通知）
+傷チェック送信リスト(DamageSendList)で、出発時刻を過ぎても手動対応(manual_done)が付いていない「📱手動(LINE未連携)」タスクをcronで検知→Slack #handyman_development(C07B5G3PV7C)にBlock Kitアラート。
+- **EF**：`damage-overdue-alert`（正本`~/spk-task/line_auto/damage-overdue-alert/index.ts`→deploy実体`~/hdm-car-delivery/supabase/functions/`）。既存 damage-check-cron は不変（追加のみ）。
+- **cron**：`damage-overdue-alert-spk`(jobid30・`{}`) / `damage-overdue-alert-nha`(jobid31・`{"store":"nha"}`) 各 */15。x-cron-secret=CRON_SECRET(e564…)踏襲。
+- **判定定義（DamageSendListと完全一致・SQLで再現検証済）**：本日の傷チェック対象タスク(SPK=tasks type=DEL / NHA=nha_tasks 内容∈PUB,DEL,来店・予約番号あり・SPKはdone=false)のうち ①出発時刻(HH:MM)≤現在時刻JST(grace=0＝出発時刻ちょうど) ②`{store}_line_links`にresv_no無し(=📱手動・LINE未連携) ③`{store}_line_sends`のaction=damage_checkでstatus∈(sent,manual_done)が無い(=未対応) ④キャンセル予約でない、を抽出。
+- **dedup**：`{store}_line_sends`にaction='overdue_alert'を積む→同一予約は1回だけ通知（line_sendsにCHECK制約なし＝自由文字列OK）。Slack投稿成功時のみ記録。
+- **0件なら静か**（投稿しない）。ヘッダーに店舗名明記。`test:true`でDB非書込のSlack疎通テスト経路あり(監視ロジック不変)。
+- **検証(2026-07-08)**：SPK/NHA両方 overdue:0（正=NHA本日4件は10:47に全件manual_done対応済み＝EFが対応済みを正しく除外。SPK本日DEL2件はlinked=true=📱OK自動対象で手動対象外）。スクショの那覇「未対応4」は対応前の状態でEF定義と一致。Slack疎通テスト(test:true)でposted:true＝bot`sns_auto`は#handyman_developmentに招待済み・Block Kit投稿OK。
+- **オーナー手作業＝なし**（bot招待済・cron登録済・secret既存で全自動）。
+
 ## 🧽 2026-07-05 NHA OPシート「時間が消える」根治＝翌日出発洗車タスクの非決定ID複製（このセッション）
 オーナー報告「那覇OPシートでまた時間が消える・台帳で予約IDが複製されてる」。**台帳(audit_log)で発生源を完全特定→固定IDで根治。**
 - **要因**：`generateTasks`のDEL/COLは固定ID(`d-`/`c-`+予約ID)だが、**「翌日出発の洗車タスク」だけが非決定ID `uid()`(=`t35`,`t91`…)で生成**されていた（`~/Desktop/AI/naha-project/index.html.bak` L4364＝generateTasks・L17808＝loadTasks不足追加 の2箇所）。→ 画面を開くたびに同じ車の洗車を別IDで**新規INSERT複製**（uid()はupsertでなく毎回別行）。同一予約に洗車が複数行＝**台帳で見えた「予約IDの複製」**（同じ予約IDが複数の洗車行に付く）。
@@ -146,6 +283,20 @@ task_integrity_guardian(main・`task_integrity_scan(p_fix)`＝SPK自動修正ON/
 - **修正(表示のみ・DB書込なし)**：`spk_line_links`＝SSと同一ソースとして統合。my-admin＝`LINK_MAP`ロード→`mergeLinkIntoSS()`でSS_MAPに補完(ライブSS優先/無ければlink)＋`stMissing`が`op.del||ss.del`で判定→フォーム回答済みは⑥から外れ「フォーム済(正常)」に。EF lookup＝`del/col_place`と時刻の最終フォールバックに`spk_line_links`(**予約番号完全一致**)を追加→顧客マイページに回答済み場所を表示。検証：ワカツキ様lookupで「ホテルtheb札幌/ニューオータニイン札幌」表示OK。ADMIN_VER v2.3。
 - **教訓**：フォーム回答の正本は`spk_line_links`(resv_no=予約id完全一致)。「場所情報なし=フォーム未回答」判定は必ずline_linksも見る。`placeConflict`は空欄側を相違に含めない設計なので、空OP+SS場所ありをmismatchでは拾えない→stMissing側で吸収。
 - **backfill実施済み(2026-07-05・進めて指示)**：`spk_line_links`場所→`reservations.del_place/col_place`へ書込(未来・未キャンセル・空欄のみ・完全一致 60件del+60件col)。**既存OPタスクに実値がある予約はOPが正としてreservationsをタスク値に整合**(del5/col6)→**予約≠OP相違ノイズ0**を実証。両方空の既存タスクは`_ssPlace`が既に埋まっており(place列空でもOP表示OK)ガードで保護、真に空の2タスクのみフォーム値を`_ssPlace`へ補完。結果：未来予約はタスク生成時にreservations.del_placeを継承・マイページ/my-admin/OP整合。**注意**：`_ssPlace`にはplace列が空でも値が入る＝「place列空」を「OP空」と誤判定しない(OP表示=`_ssPlace||place`)。書込は全て空欄埋め・単一項目・顧客自身の回答(完全一致)＝唯一ルール順守。
+
+## 🔴 2026-07-06(続) マイページ 変更反映バグ根治＋運営お知らせ＋現場マニュアル（このセッション）
+版：**my.html VER v6.2 / my-admin ADMIN_VER v4.2 / EF handyman-mypage デプロイ済**。
+- **🔴🔴 最重要バグ根治：顧客のマイページ場所/時間変更が「本人ページにもOPシートにも反映されない」**（変更前に戻る＝スタッフも誤時間で動く重大バグ）。真因＝**SSパトロール(index.src.html L14975〜)が tasks._ssTime/_ssPlace をフォーム(エルメ)値へ戻す**。パトロールの保護は**場所=`_placeSource==="customer"`のみ、時間は`!t.timeChange`のときだけ**。マイページ時間変更は`_ssTime`だけ書いて`_timeChange`未設定→毎回パトロールに戻されていた。
+  - **修正2段**：①EF `applyPlaceTime`(patchTasksSpk)で時間変更時に **`cj._timeChange`を立てる**（OPシート表示`timeChange||_ssTime||time`で最優先＋パトロールが`!t.timeChange`でスキップ＝もう戻らない）。②EF lookup `resolveTaskTime`も`_timeChange||_ssTime||time`に。③さらにlookupは**適用済みmypage_changes(applied)を最優先**(`appliedChg`)＝表示は常に確定変更が勝つ。既存2件(R0FLNYBK/R0YLA9ZC)は`_timeChange`をSQLバックフィル済(jsonb `||`で注入)。
+  - **設計方針(オーナー確定)＝一度マイページで編集したらマイページ優先**（フォーム再取込で戻さない）。場所=`_placeSource=customer`／時間=`_timeChange`で担保。
+- **📣 運営からのお知らせ**（my.html TOP・ヒーロー直下常時表示・多言語）：「マイページにアクセス後はフォームからの時間/場所変更はお受けできません。変更はマイページから」。TR=notice_title/notice_body。
+- **顧客ページに『🔄変更前 〇〇』バッジ**：お届け/回収の場所・時間の行に、適用済みmypage_changesのold_valueを表示（例 10:00の隣に🔄変更前10:30）。`origOf(field)`/`chgBadge(field)`。履歴(v5.8 histLine)にも「10:30→10:00にしました」。
+- **🔒 スタッフは顧客マイページを閲覧専用で開く**(my-admin v3.8)：openMy→`&ro=1`。my.htmlは`RO=`検出で`editable=false`＋`call()`が書込ブロック＋🔒バナー。「🔗顧客へ送るURL」は編集可URL(ro無し・顧客に送る用)。スタッフが本人成りすまし編集する事故を防止。
+- **ボード改善(my-admin)**：①日付フィルタ「すべて/本日/明日」3択(`DAYF`・`onDay`=lend or return がその日／旧:本日のみ)。②**情報相違(mismatch)を排他にせず併存表示**(v4.0・`resColumns`)＝相違があっても情報変更/変更リクエストが隠れない(R0FLNYBK=時間変更が相違に吸われていた)。③ヘッダー「変更依頼」バッジ＝**承認待ち(stReq)のみ**に(v4.1・情報変更を合算しない)。④利用状況に**🔵送信済(未開封)を独立ステータス化**(v3.7・スルー=送信後2日以上未開封のみ・`daysSince>=2`)。⑤**本日の新規送信(初回URL)件数**(v4.2)。⑥**マイページ発行カバレッジ**(全予約にtoken 100%・`issueTokens`)。
+- **エルメCSV取込**：`line_auto/import_erume_csv.py`(SB_SERVICE_ROLE要・service_roleキーはManagement API`/api-keys?reveal=true`で取得可)。`python3 import_erume_csv.py <csv> [--dry]`。除外＝予約番号 空/テスト/test(実顧客でない)。取込でLINE連携67→78・CSV鮮度更新→未送信者に自動送信。**毎日TOP「📱LINE紐付け更新」で取り込む**(userIDはエルメCSVのみ・4日放置でLINE未連携が水増し)。**LINE未連携数≠場所なし数**の理由＝HP予約(場所は予約時・LINE不要)が未連携に含まれる。
+- **現場かんたんマニュアル**：`~/spk-task/field-manual.html`（https://nosh2318.github.io/spk-task/field-manual.html ・⌘P→PDF）。マイページ→洗車→検査→傷→出発→到着→回収→返却→御礼を**人間🧑/AI🤖**で分離。オーナーが洗車/検査ステップを追記。
+- **⚠️並行編集の教訓（再）**：Slack omniと同じmy.html/my-adminを同時編集→私のVER変更が飲まれGH Pages旧デプロイ配信で「お知らせ出ない」に見えた。**コミット前に`git fetch`＋`git status`＋VERを明確に上げて再push**、`curl ライブ?cb=時刻`でVER＋文言の両方を確認。GH Pagesは反映に1〜2分ラグ。
+- 現在の自動送信：mypage_notify_enabled=ON(本番)/damage_enabled=ON(傷30分前)/track_enabled=OFF/thanks_enabled=OFF。止める＝`UPDATE spk_line_config SET mypage_notify_enabled=false`。
 
 ## 🚀🚀 2026-07-06 マイページ 札幌 本番リリース完了＋通知刷新・可視化強化（このセッション・最重要）
 **リリース実行済み**：`spk_line_config.mypage_notify_enabled=true`（サーバSQLでON・UIトグルはログイン必須で効かず→Management APIで確実にON）。`test_mode=false`。初回マイページURLを**LINE連携済み67名全員に送信完了**（EF手動キック2回で残0）。現在の版：**my.html VER v5.8 / my-admin ADMIN_VER v3.7 / EF handyman-mypage デプロイ済**。全て札幌専用。

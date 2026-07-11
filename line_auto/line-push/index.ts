@@ -52,7 +52,7 @@ Deno.serve(async (req) => {
     const dstr = (off: number) => new Date(nowMs + off * 86400000).toISOString().slice(0, 10);
     const todayJST = dstr(0);
     // 返却時アクション(回収追跡/乗り捨て/御礼)は返却日で、貸出時アクション(傷チェック/お届け追跡/到着)は貸出日で判定
-    const returnAct = action === "track_col" || action === "dropoff" || action === "thanks" || action === "col_arrival";
+    const returnAct = action === "track_col" || action === "dropoff" || action === "thanks" || action === "col_arrival" || action === "collect_mypage";
     const refDate = returnAct ? resv[0][colCol] : resv[0][delCol];
     const rd = refDate ? String(refDate).slice(0, 10) : "";
     if (action === "thanks") {
