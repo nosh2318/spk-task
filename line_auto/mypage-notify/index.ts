@@ -125,8 +125,8 @@ Deno.serve(async (req) => {
     if (r.lend_date === d3 && !(placeByRes[r.id]) && !unLend(r.id)) await push(r, "mypage_place");
     // ③ 前日 ※無人貸出は除外
     if (r.lend_date === d1 && !unLend(r.id)) await push(r, "mypage_daybefore");
-    // ③' 返却日の朝(8時以降)に「本日返却日＋早め回収ボタンの使い方・訴求」を1回（札幌のみ・乗り捨て/無人返却は除外）
-    if (r.return_date === today && new Date(Date.now() + 9 * 3600 * 1000).getUTCHours() >= 8 && !unCol(r.id)) await push(r, "mypage_returnday");
+    // ③' 返却日の朝(9時以降)に「本日返却日＋早め回収ボタンの使い方・訴求」を1回（札幌のみ・乗り捨て/無人返却は除外）※8時=傷チェックと被らせないため9時
+    if (r.return_date === today && new Date(Date.now() + 9 * 3600 * 1000).getUTCHours() >= 9 && !unCol(r.id)) await push(r, "mypage_returnday");
     // ④ 返却3時間前（返却日時が now〜now+3h+window内）※乗り捨て/無人返却は除外
     if (r.return_date && r.return_date >= today && !unCol(r.id)) {
       const rt = (r.return_time || r.col_time || "18:00");
