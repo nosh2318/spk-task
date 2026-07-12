@@ -68,9 +68,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v957';
+var CV='spk-v958';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=844').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=845').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -15553,8 +15553,18 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
   },[tasks,sortKey,sortAsc]);
   const sortIcon=(key)=>sortKey===key?(sortAsc?"▲":"▼"):"";
   // ★ フィルター適用
-  /* ★2026-07-12 当日分の tasks に「翌日対応でこの日(=貸出日)に持ってきた洗車」(オーバーレイ)を合流。edit/delタブは対象外。 */
-  const tasksWithOverlay=useMemo(()=>nextDayWashOverlay.length?[...tasks,...nextDayWashOverlay]:tasks,[tasks,nextDayWashOverlay]);
+  /* ★2026-07-12 当日分の tasks に「翌日対応でこの日(=貸出日)に持ってきた洗車」(オーバーレイ)を合流。edit/delタブは対象外。
+     ★2026-07-12(fix) 同一_idの洗車が tasks とオーバーレイの両方に入ると表示が複製する→_idでdedup。
+     オーバーレイ(=当日貸出洗車=_nextDayWashShown)を優先して残し、tasks側の重複行を落とす。 */
+  const tasksWithOverlay=useMemo(()=>{
+    if(!nextDayWashOverlay.length)return tasks;
+    const ovIds=new Set(nextDayWashOverlay.map(t=>t._id));
+    const baseNoDup=tasks.filter(t=>!ovIds.has(t._id));
+    const merged=[...baseNoDup,...nextDayWashOverlay];
+    // 念のため最終配列も_idで一意化(先勝ち)
+    const seen=new Set();
+    return merged.filter(t=>{if(seen.has(t._id))return false;seen.add(t._id);return true;});
+  },[tasks,nextDayWashOverlay]);
   const filteredTasks=useMemo(()=>{const base=(sheetFilter==="master"||sheetFilter==="all"||sheetFilter==="wash")?tasksWithOverlay:tasks;const src=sortKey?doSort(base,sortKey,sortAsc):base;if(sheetFilter==="del")return src.filter(t=>t.type==="DEL"&&!t.manual);if(sheetFilter==="col")return src.filter(t=>t.type==="COL"&&!t.manual);if(sheetFilter==="wash")return src.filter(t=>t.type==="洗車"&&!t.manual);if(sheetFilter==="other")return src.filter(t=>(OTHER_TASK_TYPES.includes(t.type)||OTHER_TASK_TYPES_LEGACY.includes(t.type))&&t.manual===true);if(sheetFilter==="master"||sheetFilter==="edit"||sheetFilter==="all")return src;return src;},[tasks,tasksWithOverlay,sortKey,sortAsc,sheetFilter]);
   // 行移動
   const moveRow=(id,dir)=>{if(sortKey){alert("ソート中は手動並び替えできません。\nヘッダーを3回タップしてソート解除してください。");return;}selfUpdateRef.current[selDate]=Date.now();const idx=tasks.findIndex(t=>t._id===id);const ni=idx+dir;if(ni<0||ni>=tasks.length)return;const arr=[...tasks];[arr[idx],arr[ni]]=[arr[ni],arr[idx]];setTasks(arr);DB._lsSave(arr,selDate);if(sb){sb.from("tasks").update({sort_order:idx}).eq("_id",arr[idx]._id).then(()=>{}).catch(e=>{});sb.from("tasks").update({sort_order:ni}).eq("_id",arr[ni]._id).then(()=>{}).catch(e=>{});}};
@@ -20746,10 +20756,14 @@ function App(){
       const ystParsed=ystRes.data?ystRes.data.map(DB._fromDbTask):[];
       // 前日→本日へ来る当日貸出洗車
       const ystFwd=ystParsed.filter(t=>t.type==="洗車"&&t._nextDayWash).map(t=>({...t,_nextDayWashShown:true}));
+      // ★2026-07-12(fix) 同一_idの洗車が本日リストで複製しないよう_idでdedup。前送り(_nextDayWashShown)を優先。
+      const _dedup=arr=>{const seen=new Set();return arr.filter(t=>{if(seen.has(t._id))return false;seen.add(t._id);return true;});};
       // 本日の洗車で翌日へ出したもの → 本日はグレー / 翌日へ複製
-      const todayList=todayParsed.map(t=>(t.type==="洗車"&&t._nextDayWash)?{...t,_nextDayWashGray:true}:t).concat(ystFwd);
+      const _ovIdsT=new Set(ystFwd.map(t=>t._id));
+      const todayList=_dedup([...ystFwd,...todayParsed.map(t=>(t.type==="洗車"&&t._nextDayWash)?{...t,_nextDayWashGray:true}:t).filter(t=>!_ovIdsT.has(t._id))]);
       const todayFwd=todayParsed.filter(t=>t.type==="洗車"&&t._nextDayWash).map(t=>({...t,_nextDayWashShown:true}));
-      const tmrList=tmrParsed.concat(todayFwd);
+      const _ovIdsM=new Set(todayFwd.map(t=>t._id));
+      const tmrList=_dedup([...todayFwd,...tmrParsed.filter(t=>!_ovIdsM.has(t._id))]);
       setTodayTasks(todayList);
       setTomorrowTasks(tmrList);
     }catch(e){console.log("[refreshTopTasks] error",e);}
@@ -22426,7 +22440,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.412";
+const APP_VERSION="v4.7.413";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
