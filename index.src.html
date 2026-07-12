@@ -68,9 +68,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v956';
+var CV='spk-v957';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=843').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=844').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -423,6 +423,8 @@ const DB = {
     if(prev._ssSeen)m._ssSeen=prev._ssSeen;
     if(prev._ssAlert)m._ssAlert=prev._ssAlert;
     if(prev._manual)m.manual=prev._manual;
+    // ★2026-07-12 洗車「翌日対応」フラグ(=当日貸出洗車への切替)を再生成でも維持（人が押した設定=手入力扱い）
+    if(prev._nextDayWash){m._nextDayWash=true;m._nextDayWashAt=prev._nextDayWashAt||"";}
     // ユーザーが付けた済チェック・メモも維持
     if(prev.done)m.done=true;
     if(String(prev.memo||"").split("\n##BCJ:")[0].trim())m.memo=DB._mergeMemo(m.memo,prev.memo);
@@ -488,10 +490,21 @@ const DB = {
     try{const ls=DB._lsLoad(date);if(ls){const i=ls.findIndex(x=>x._id===t._id);if(i>=0){ls[i]=t;DB._lsSave(ls,date);}}}catch(e){}
     if(!sb)return;
     try{
-      const cj=JSON.stringify({...(t._changed||{}),_optB:+(t.opts?.b||0),_optC:+(t.opts?.c||0),_optJ:+(t.opts?.j||0),_ssTime:t._ssTime||"",_ssTimeAt:t._ssTimeAt||"",_ssPlace:t._ssPlace||"",_ssPlaceAt:t._ssPlaceAt||"",_timeChange:t.timeChange||"",_placeSource:t._placeSource||"",_ssSeen:t._ssSeen||"",_ssAlert:t._ssAlert||"",_manualTimeAt:t._manualTimeAt||"",_manualPlaceAt:t._manualPlaceAt||"",_typeChange:t.typeChange||"",_manual:!!t.manual,_taskDate:(t._taskDate||date)});
+      const cj=JSON.stringify({...(t._changed||{}),_optB:+(t.opts?.b||0),_optC:+(t.opts?.c||0),_optJ:+(t.opts?.j||0),_ssTime:t._ssTime||"",_ssTimeAt:t._ssTimeAt||"",_ssPlace:t._ssPlace||"",_ssPlaceAt:t._ssPlaceAt||"",_timeChange:t.timeChange||"",_placeSource:t._placeSource||"",_ssSeen:t._ssSeen||"",_ssAlert:t._ssAlert||"",_manualTimeAt:t._manualTimeAt||"",_manualPlaceAt:t._manualPlaceAt||"",_typeChange:t.typeChange||"",_manual:!!t.manual,_nextDayWash:!!t._nextDayWash,_nextDayWashAt:t._nextDayWashAt||"",_taskDate:(t._taskDate||date)});
       const{error}=await sb.from("tasks").update({changed_json:cj}).eq("_id",t._id);
       if(error)dbLog("updateTaskCJ",false,error.message);else dbLog("updateTaskCJ",true,t._id);
     }catch(e){dbLog("updateTaskCJ",false,e.message);}
+  },
+  // ★2026-07-12 洗車「翌日対応」トグル専用の部分更新: changed_json(_nextDayWash)だけを書く。
+  //   洗車タスク1件のフラグのみ書換=担当/済/時間/場所等の人間入力列は一切触らない(唯一ルール)。日付(date/_taskDate)は動かさない。
+  async updateWashNextDay(t,date){
+    try{const ls=DB._lsLoad(date);if(ls){const i=ls.findIndex(x=>x._id===t._id);if(i>=0){ls[i]=t;DB._lsSave(ls,date);}}}catch(e){}
+    if(!sb)return;
+    try{
+      const cj=JSON.stringify({...(t._changed||{}),_optB:+(t.opts?.b||0),_optC:+(t.opts?.c||0),_optJ:+(t.opts?.j||0),_ssTime:t._ssTime||"",_ssTimeAt:t._ssTimeAt||"",_ssPlace:t._ssPlace||"",_ssPlaceAt:t._ssPlaceAt||"",_timeChange:t.timeChange||"",_placeSource:t._placeSource||"",_ssSeen:t._ssSeen||"",_ssAlert:t._ssAlert||"",_manualTimeAt:t._manualTimeAt||"",_manualPlaceAt:t._manualPlaceAt||"",_typeChange:t.typeChange||"",_manual:!!t.manual,_nextDayWash:!!t._nextDayWash,_nextDayWashAt:t._nextDayWashAt||"",_taskDate:(t._taskDate||date)});
+      const{error}=await sb.from("tasks").update({changed_json:cj}).eq("_id",t._id);
+      if(error)dbLog("updateWashNextDay",false,error.message);else dbLog("updateWashNextDay",true,t._id);
+    }catch(e){dbLog("updateWashNextDay",false,e.message);}
   },
   async deleteTasks(date){try{localStorage.removeItem(DB._lsKey(date));}catch(e){} if(!sb)return;const{error}=await sb.from("tasks").delete().eq("date",date);if(error)dbLog("deleteTasks",false,error.message);},
   async deleteTask(id,date){if(!sb)return;/* ★2026-07-03 墓標方式: 物理削除せず deleted=true。再生成/マージ/他端末が二度と復活させられない。upsertは deleted 列を書かない(=保持)ので復活しない。 */const{error}=await sb.from("tasks").update({deleted:true}).eq("_id",id);if(error)dbLog("deleteTask",false,error.message);else dbLog("deleteTask",true,id);try{const ls=DB._lsLoad(date);if(ls){const next=ls.filter(t=>t._id!==id);localStorage.setItem(DB._lsKey(date),JSON.stringify(next));}}catch(e){}},
@@ -505,8 +518,8 @@ const DB = {
     // ★2026-07-03 恒久ルール(オーナー指示): その他タスク(手入力=manual)は入力した日(_taskDate)に固定。
     //   loadTasks/upsert/自動リロード等がどんな日付で保存しようとしても、自分の日付以外へは絶対に書かない=移動禁止。
     const _d=(t._taskDate)?t._taskDate:date; /* ★2026-07-04 全タスクを自分の日付に固定(予約連動も) */
-    const b=DB._toDbTaskBare(t,_d,i);b.changed_json=JSON.stringify({...(t._changed||{}),_optB:+(t.opts?.b||0),_optC:+(t.opts?.c||0),_optJ:+(t.opts?.j||0),_ssTime:t._ssTime||"",_ssTimeAt:t._ssTimeAt||"",_ssPlace:t._ssPlace||"",_ssPlaceAt:t._ssPlaceAt||"",_timeChange:t.timeChange||"",_placeSource:t._placeSource||"",_ssSeen:t._ssSeen||"",_ssAlert:t._ssAlert||"",_manualTimeAt:t._manualTimeAt||"",_manualPlaceAt:t._manualPlaceAt||"",_typeChange:t.typeChange||"",_manual:!!t.manual,_taskDate:(t._taskDate||_d)});return b;},
-  _fromDbTask(d){const md=DB._decodeMemo(d.memo);const cj=(()=>{try{const p=JSON.parse(d.changed_json||"{}");return Object.keys(p).length?p:null;}catch(e){return null;}})();const oB=(cj&&cj._optB!==undefined?cj._optB:0)||md.b||(d.opt_b?1:0);const oC=(cj&&cj._optC!==undefined?cj._optC:0)||md.c||(d.opt_c?1:0);const oJ=(cj&&cj._optJ!==undefined?cj._optJ:0)||md.j||(d.opt_j?1:0);const ssTime=cj&&cj._ssTime||"";const ssTimeAt=cj&&cj._ssTimeAt||"";const ssPlace=cj&&cj._ssPlace||"";const ssPlaceAt=cj&&cj._ssPlaceAt||"";const timeChange=cj&&cj._timeChange||"";const placeSource=cj&&cj._placeSource||"";const ssSeen=cj&&cj._ssSeen||"";const ssAlert=cj&&cj._ssAlert||"";const manualTimeAt=cj&&cj._manualTimeAt||"";const manualPlaceAt=cj&&cj._manualPlaceAt||"";const typeChange=cj&&cj._typeChange||"";const isManualTask=cj&&cj._manual;const taskDate=(cj&&cj._taskDate)||"";const ch=cj||{};delete ch._optB;delete ch._optC;delete ch._optJ;delete ch._ssTime;delete ch._ssTimeAt;delete ch._ssPlace;delete ch._ssPlaceAt;delete ch._timeChange;delete ch._placeSource;delete ch._ssSeen;delete ch._ssAlert;delete ch._manualTimeAt;delete ch._manualPlaceAt;delete ch._typeChange;delete ch._manual;delete ch._taskDate;return{_id:d._id,type:d.type,time:d.time,name:d.name,assignee:d.assignee,done:d.done,memo:md.memo,reservationId:d.reservation_id,ota:d.ota,tel:d.tel,mail:d.mail,assignedVehicle:d.assigned_vehicle,plateNo:d.plate_no,people:d.people,place:d.place,vehicle:d.vehicle,insurance:d.insurance,insuranceChange:d.insurance_change,flight:d.flight,returnDate:norm(d.return_date),returnTime:d.return_time,returnType:d.return_type,colPlace:d.col_place,opts:{b:oB,c:oC,j:oJ,usb:d.opt_usb,parasol:d.opt_parasol},yakkan:d.yakkan,line:d.line,payment:d.payment,_sortOrder:d.sort_order,_changed:ch,_ssTime:ssTime,_ssTimeAt:ssTimeAt,_ssPlace:ssPlace,_ssPlaceAt:ssPlaceAt,timeChange:timeChange,_placeSource:placeSource,_ssSeen:ssSeen,_ssAlert:ssAlert,_manualTimeAt:manualTimeAt,_manualPlaceAt:manualPlaceAt,typeChange:typeChange,manual:!!isManualTask,_taskDate:(taskDate||d.date)};},
+    const b=DB._toDbTaskBare(t,_d,i);b.changed_json=JSON.stringify({...(t._changed||{}),_optB:+(t.opts?.b||0),_optC:+(t.opts?.c||0),_optJ:+(t.opts?.j||0),_ssTime:t._ssTime||"",_ssTimeAt:t._ssTimeAt||"",_ssPlace:t._ssPlace||"",_ssPlaceAt:t._ssPlaceAt||"",_timeChange:t.timeChange||"",_placeSource:t._placeSource||"",_ssSeen:t._ssSeen||"",_ssAlert:t._ssAlert||"",_manualTimeAt:t._manualTimeAt||"",_manualPlaceAt:t._manualPlaceAt||"",_typeChange:t.typeChange||"",_manual:!!t.manual,_nextDayWash:!!t._nextDayWash,_nextDayWashAt:t._nextDayWashAt||"",_taskDate:(t._taskDate||_d)});return b;},
+  _fromDbTask(d){const md=DB._decodeMemo(d.memo);const cj=(()=>{try{const p=JSON.parse(d.changed_json||"{}");return Object.keys(p).length?p:null;}catch(e){return null;}})();const oB=(cj&&cj._optB!==undefined?cj._optB:0)||md.b||(d.opt_b?1:0);const oC=(cj&&cj._optC!==undefined?cj._optC:0)||md.c||(d.opt_c?1:0);const oJ=(cj&&cj._optJ!==undefined?cj._optJ:0)||md.j||(d.opt_j?1:0);const ssTime=cj&&cj._ssTime||"";const ssTimeAt=cj&&cj._ssTimeAt||"";const ssPlace=cj&&cj._ssPlace||"";const ssPlaceAt=cj&&cj._ssPlaceAt||"";const timeChange=cj&&cj._timeChange||"";const placeSource=cj&&cj._placeSource||"";const ssSeen=cj&&cj._ssSeen||"";const ssAlert=cj&&cj._ssAlert||"";const manualTimeAt=cj&&cj._manualTimeAt||"";const manualPlaceAt=cj&&cj._manualPlaceAt||"";const typeChange=cj&&cj._typeChange||"";const isManualTask=cj&&cj._manual;const nextDayWash=!!(cj&&cj._nextDayWash);const nextDayWashAt=(cj&&cj._nextDayWashAt)||"";const taskDate=(cj&&cj._taskDate)||"";const ch=cj||{};delete ch._optB;delete ch._optC;delete ch._optJ;delete ch._ssTime;delete ch._ssTimeAt;delete ch._ssPlace;delete ch._ssPlaceAt;delete ch._timeChange;delete ch._placeSource;delete ch._ssSeen;delete ch._ssAlert;delete ch._manualTimeAt;delete ch._manualPlaceAt;delete ch._typeChange;delete ch._manual;delete ch._nextDayWash;delete ch._nextDayWashAt;delete ch._taskDate;return{_id:d._id,type:d.type,time:d.time,name:d.name,assignee:d.assignee,done:d.done,memo:md.memo,reservationId:d.reservation_id,ota:d.ota,tel:d.tel,mail:d.mail,assignedVehicle:d.assigned_vehicle,plateNo:d.plate_no,people:d.people,place:d.place,vehicle:d.vehicle,insurance:d.insurance,insuranceChange:d.insurance_change,flight:d.flight,returnDate:norm(d.return_date),returnTime:d.return_time,returnType:d.return_type,colPlace:d.col_place,opts:{b:oB,c:oC,j:oJ,usb:d.opt_usb,parasol:d.opt_parasol},yakkan:d.yakkan,line:d.line,payment:d.payment,_sortOrder:d.sort_order,_changed:ch,_ssTime:ssTime,_ssTimeAt:ssTimeAt,_ssPlace:ssPlace,_ssPlaceAt:ssPlaceAt,timeChange:timeChange,_placeSource:placeSource,_ssSeen:ssSeen,_ssAlert:ssAlert,_manualTimeAt:manualTimeAt,_manualPlaceAt:manualPlaceAt,typeChange:typeChange,manual:!!isManualTask,_nextDayWash:nextDayWash,_nextDayWashAt:nextDayWashAt,_taskDate:(taskDate||d.date)};},
   // --- スタッフ ---
   _staffLsKey:"spk_staff_backup",
   _staffLsSave(arr){try{localStorage.setItem(DB._staffLsKey,JSON.stringify(arr));}catch(e){}},
@@ -14937,6 +14950,8 @@ function MaintForm({vehicleCode,startDate,onAdd,onClose,vehicles,defaultLabel}){
    ========================================== */
 function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFleet,vehicles,staff,resOpts,sheetPlaces,onUpdateSheetPlaces,repeaterMap,jalanPay,isJPaidFn,extraPayFn,cancelledIdsRef,onCancelReservation,onTaskChange}){
   const[dayOff,setDayOff]=useState(0);const selDate=dOff(today,dayOff);const[tasks,setTasks]=useState([]);
+  /* ★2026-07-12 洗車「翌日対応(当日貸出洗車)」オーバーレイ: 前日(selDate-1)にある洗車で_nextDayWash=trueのものを、その貸出日=selDateに表示上だけ持ってくる(DB書込なし・日付不変)。 */
+  const[nextDayWashOverlay,setNextDayWashOverlay]=useState([]);
   const[editResId,setEditResId]=useState(null);
   const[editBlock,setEditBlock]=useState(null);
   const[washAddCat,setWashAddCat]=useState("");const[washAddVc,setWashAddVc]=useState("");const[washAddTime,setWashAddTime]=useState("");const[washAddMemo,setWashAddMemo]=useState("");
@@ -15107,6 +15122,19 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
   },[vehicles]);// ★ reservationsをdepsから除外（refで参照）→不要な再実行を防止
   loadTasksRef.current=loadTasks;
   useEffect(()=>{loadTasks(selDate);},[selDate,loadTasks]);
+  // ★2026-07-12 「翌日対応」洗車オーバーレイ: 前日(selDate-1)の洗車で_nextDayWash=trueのものを取得し、
+  //   表示上だけ当日(selDate=その車の貸出日)に出す。DBへは一切書かない・日付も動かさない。selDate切替＋15秒毎(tasks更新時)に再取得。
+  const loadNextDayWashOverlay=React.useCallback(async(date)=>{
+    if(!sb){setNextDayWashOverlay([]);return;}
+    try{
+      const prev=dOff(date,-1);
+      const{data,error}=await sb.from("tasks").select("*").eq("date",prev).eq("type","洗車").neq("deleted",true);
+      if(error||!data){setNextDayWashOverlay([]);return;}
+      const ov=data.map(DB._fromDbTask).filter(t=>t._nextDayWash).map(t=>({...t,_nextDayWashShown:true,_srcDate:prev}));
+      setNextDayWashOverlay(ov);
+    }catch(e){setNextDayWashOverlay([]);}
+  },[]);
+  useEffect(()=>{loadNextDayWashOverlay(selDate);},[selDate,tasks,loadNextDayWashOverlay]);
   // ★ 時間・場所を日付切替時＋5分間隔で自動取得
   useEffect(()=>{
     const doAutoFetch=async()=>{
@@ -15242,6 +15270,29 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
     });
   };
   const mark=(t,field)=>({...t,_changed:{...t._changed,[field]:true}});
+  /* ★2026-07-12 洗車「翌日対応」トグル: _nextDayWashフラグを立て/外すだけ(その洗車タスク1件のchanged_jsonを部分更新・日付/_taskDateは不動)。
+     ONで「当日貸出洗車」(貸出日=前日+1に表示)へ、OFFで前日対応に戻る。オーバーレイ(前日実在)分は実日付=_srcDateへ書く。 */
+  const toggleNextDayWash=async(t)=>{
+    if(t.type!=="洗車")return;
+    const turningOn=!t._nextDayWash;
+    if(!window.confirm(turningOn?"この洗車を翌日（貸出当日）対応に切り替えますか？\n（前日はグレー表示になり、貸出当日に「当日貸出洗車」として表示されます）":"この洗車を前日対応に戻しますか？"))return;
+    const realDate=t._nextDayWashShown?(t._srcDate||dOff(selDate,-1)):selDate; /* オーバーレイは前日が実日付 */
+    const nt={...t,_nextDayWash:turningOn,_nextDayWashAt:turningOn?new Date().toISOString():""};
+    delete nt._nextDayWashShown;delete nt._srcDate;
+    selfUpdateRef.current[realDate]=Date.now();
+    // 表示即時反映
+    if(t._nextDayWashShown){
+      // オーバーレイ(前日実在)→OFFにしたので当日から消え、前日に戻る。オーバーレイ再取得＋前日LS更新。
+      setNextDayWashOverlay(ov=>ov.filter(x=>x._id!==t._id));
+    }else{
+      setTasks(ts=>{const next=ts.map(x=>x._id===t._id?nt:x);DB._lsSave(next,selDate);return next;});
+    }
+    try{await DB.updateWashNextDay(nt,realDate);}catch(e){console.error("[toggleNextDayWash]",e);}
+    selfUpdateRef.current[realDate]=Date.now();
+    // オーバーレイを取り直し(当日=selDateの前日を再スキャン)
+    setTimeout(()=>{if(loadNextDayWashOverlay)loadNextDayWashOverlay(selDate);},300);
+    _notifyTopChange();
+  };
   // ★ 予約者名の編集（マスター表）→ reservations本体＋同一予約の全タスク(DEL/COL/洗車)へ反映
   const saveNameEdit=async(t,newName)=>{
     newName=(newName||"").trim();
@@ -15502,7 +15553,9 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
   },[tasks,sortKey,sortAsc]);
   const sortIcon=(key)=>sortKey===key?(sortAsc?"▲":"▼"):"";
   // ★ フィルター適用
-  const filteredTasks=useMemo(()=>{const src=sortKey?doSort(tasks,sortKey,sortAsc):tasks;if(sheetFilter==="del")return src.filter(t=>t.type==="DEL"&&!t.manual);if(sheetFilter==="col")return src.filter(t=>t.type==="COL"&&!t.manual);if(sheetFilter==="wash")return src.filter(t=>t.type==="洗車"&&!t.manual);if(sheetFilter==="other")return src.filter(t=>(OTHER_TASK_TYPES.includes(t.type)||OTHER_TASK_TYPES_LEGACY.includes(t.type))&&t.manual===true);if(sheetFilter==="master"||sheetFilter==="edit"||sheetFilter==="all")return src;return src;},[tasks,sortKey,sortAsc,sheetFilter]);
+  /* ★2026-07-12 当日分の tasks に「翌日対応でこの日(=貸出日)に持ってきた洗車」(オーバーレイ)を合流。edit/delタブは対象外。 */
+  const tasksWithOverlay=useMemo(()=>nextDayWashOverlay.length?[...tasks,...nextDayWashOverlay]:tasks,[tasks,nextDayWashOverlay]);
+  const filteredTasks=useMemo(()=>{const base=(sheetFilter==="master"||sheetFilter==="all"||sheetFilter==="wash")?tasksWithOverlay:tasks;const src=sortKey?doSort(base,sortKey,sortAsc):base;if(sheetFilter==="del")return src.filter(t=>t.type==="DEL"&&!t.manual);if(sheetFilter==="col")return src.filter(t=>t.type==="COL"&&!t.manual);if(sheetFilter==="wash")return src.filter(t=>t.type==="洗車"&&!t.manual);if(sheetFilter==="other")return src.filter(t=>(OTHER_TASK_TYPES.includes(t.type)||OTHER_TASK_TYPES_LEGACY.includes(t.type))&&t.manual===true);if(sheetFilter==="master"||sheetFilter==="edit"||sheetFilter==="all")return src;return src;},[tasks,tasksWithOverlay,sortKey,sortAsc,sheetFilter]);
   // 行移動
   const moveRow=(id,dir)=>{if(sortKey){alert("ソート中は手動並び替えできません。\nヘッダーを3回タップしてソート解除してください。");return;}selfUpdateRef.current[selDate]=Date.now();const idx=tasks.findIndex(t=>t._id===id);const ni=idx+dir;if(ni<0||ni>=tasks.length)return;const arr=[...tasks];[arr[idx],arr[ni]]=[arr[ni],arr[idx]];setTasks(arr);DB._lsSave(arr,selDate);if(sb){sb.from("tasks").update({sort_order:idx}).eq("_id",arr[idx]._id).then(()=>{}).catch(e=>{});sb.from("tasks").update({sort_order:ni}).eq("_id",arr[ni]._id).then(()=>{}).catch(e=>{});}};
 
@@ -15617,7 +15670,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       {/* ★ 洗車タブ（NHA仕様: カテゴリ選択・車両選択・手動追加/削除） */}
       {sheetFilter==="wash"&&(()=>{
         const isMob=window.innerWidth<=768;
-        const sorted=tasks.filter(t=>t.type==="洗車");
+        /* ★2026-07-12 翌日対応で当日に来た洗車(オーバーレイ=前日実在の当日貸出洗車)も合流 */
+        const sorted=tasksWithOverlay.filter(t=>t.type==="洗車");
         const autoWash=sorted.filter(t=>!t.manual);
         const manualWash=sorted.filter(t=>t.manual);
         const doneC=sorted.filter(t=>t.done).length;
@@ -15642,10 +15696,14 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
         };
         const renderWashRow=(t)=>{
           const vn=t.assignedVehicle?vehicles.find(v=>v.code===t.assignedVehicle):null;
-          return <div key={t._id} style={{padding:isMob?"8px 10px":"6px 10px",borderBottom:"1px solid #f1f5f9",opacity:t.done?0.5:1}}>
+          const _wGray=t._nextDayWash&&!t._nextDayWashShown;const _wToday=!!t._nextDayWashShown;
+          return <div key={t._id} style={{padding:isMob?"8px 10px":"6px 10px",borderBottom:"1px solid #f1f5f9",opacity:_wGray?0.55:(t.done?0.5:1),background:_wGray?"#f1f5f9":_wToday?"#eff6ff":"transparent"}}>
             <div style={{display:"flex",alignItems:"center",gap:6,fontSize:isMob?13:11}}>
               <span style={{cursor:"pointer",fontSize:isMob?16:13,flexShrink:0}} onClick={()=>{upd(t._id,{...t,done:!t.done});}}>{t.done?"✅":"⬜"}</span>
-              <span style={{fontWeight:700,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name||""}</span>
+              {_wToday&&<span title="翌日対応に切り替えた洗車（当日貸出洗車）" style={{fontSize:isMob?9:8,fontWeight:800,color:"#fff",background:"#2563eb",borderRadius:4,padding:"1px 5px",flexShrink:0}}>🚿当日貸出</span>}
+              {_wGray&&<span title="翌日（貸出当日）に切り替え済み・当日は行いません" style={{fontSize:isMob?9:8,fontWeight:800,color:"#fff",background:"#94a3b8",borderRadius:4,padding:"1px 5px",flexShrink:0}}>→翌日対応</span>}
+              <span style={{fontWeight:700,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",textDecoration:_wGray?"line-through":"none"}}>{t.name||""}</span>
+              <button onClick={()=>toggleNextDayWash(t)} title={t._nextDayWash?"前日対応に戻す":"翌日（貸出当日）対応に切り替え＝当日貸出洗車"} style={{fontSize:isMob?9:8,fontWeight:700,padding:"2px 6px",borderRadius:5,background:t._nextDayWash?"#dbeafe":"#f1f5f9",color:t._nextDayWash?"#1d4ed8":"#475569",border:"1px solid "+(t._nextDayWash?"#93c5fd":"#cbd5e1"),cursor:"pointer",flexShrink:0}}>{t._nextDayWash?"前日に戻す":"翌日対応"}</button>
               <select value={t.time||""} onChange={e=>{const v=e.target.value;if(!window.confirm("洗車時間を「"+(v||"未設定")+"」に変更しますか？"))return;_save(t._id,{...t,time:v});}} style={{border:"1px solid #e2e8f0",borderRadius:4,padding:"1px 4px",fontSize:isMob?11:10,fontWeight:800,color:t.time?"#1e293b":"#94a3b8",fontFamily:"monospace",background:"#f1f5f9",flexShrink:0,width:isMob?70:60,cursor:"pointer"}}><option value="">--:--</option>{TIME_OPTS.filter(o=>o).map(o=><option key={o} value={o}>{o}</option>)}</select>
               {vn&&<span style={{color:"#059669",fontSize:isMob?10:9,fontWeight:600,flexShrink:0}}>🚗{vn.name}</span>}
               {t.plateNo&&<span style={{background:"#eff6ff",color:"#1e40af",fontSize:isMob?10:8,padding:"1px 4px",borderRadius:3,fontWeight:700,flexShrink:0}}>{t.plateNo}</span>}
@@ -15864,9 +15922,12 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       {/* ★ スケジュール: 時系列フラット表示（NHA仕様・洗車含む） */}
       {sheetFilter==="all"&&(()=>{
         const isMob=window.innerWidth<=768;
-        const timedWash=tasks.filter(t=>t.type==="洗車"&&t.time);
-        const untimedWash=tasks.filter(t=>t.type==="洗車"&&!t.time);
-        const allSchedule=[...tasks.filter(t=>t.type!=="洗車"&&t.type!=="CXL"),...timedWash].sort((a,b)=>{const ta=a.timeChange||a._ssTime||a.time||"99:99";const tb=b.timeChange||b._ssTime||b.time||"99:99";return ta.localeCompare(tb);});
+        /* ★2026-07-12 翌日対応で当日に来た洗車(オーバーレイ)も合流。当日の洗車で_nextDayWash=true(=翌日へ出した)はここでは非表示(下でグレー痕跡として別枠) */
+        const _schSrc=tasksWithOverlay;
+        const timedWash=_schSrc.filter(t=>t.type==="洗車"&&t.time&&!(t._nextDayWash&&!t._nextDayWashShown));
+        const untimedWash=_schSrc.filter(t=>t.type==="洗車"&&!t.time&&!(t._nextDayWash&&!t._nextDayWashShown));
+        const _grayWash=tasks.filter(t=>t.type==="洗車"&&t._nextDayWash&&!t._nextDayWashShown);
+        const allSchedule=[..._schSrc.filter(t=>t.type!=="洗車"&&t.type!=="CXL"),...timedWash].sort((a,b)=>{const ta=a.timeChange||a._ssTime||a.time||"99:99";const tb=b.timeChange||b._ssTime||b.time||"99:99";return ta.localeCompare(tb);});
         /* ★ 返却→洗車リンク（マスター表と同一定義）: 同日・同ナンバーで返却がある洗車＝返却後洗車 */
         const _schWRT=["COL","BD","BDB","返却"];const _schRetByPlate={};
         tasks.forEach(x=>{if(_schWRT.includes(x.type)&&x.plateNo){const rt=x.timeChange||x._ssTime||x.time||"";const ex=_schRetByPlate[x.plateNo];if(!ex||(rt&&(!ex.rt||rt>ex.rt)))_schRetByPlate[x.plateNo]={rt};}});
@@ -15893,7 +15954,9 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
               return <div key={t._id} onClick={()=>{if(t.reservationId){setEditResId(t.reservationId);setEditBlock(null);setSheetFilter("edit");}}} style={{border:"1px solid #e2e8f0",borderLeft:"4px solid "+ts.c,borderRadius:8,marginBottom:6,boxShadow:"0 1px 2px rgba(0,0,0,0.04)",cursor:t.reservationId?"pointer":"default",opacity:t.done?.5:1,background:t.done?"#fafafa":(_lk?"#ecfdf5":"#fff"),padding:isMob?"7px 10px":"6px 12px"}}>
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
                   <span style={{flexShrink:0,fontSize:isMob?15:14,fontWeight:900,color:"#fff",background:ts.c,borderRadius:6,padding:isMob?"3px 0":"2px 0",width:isMob?58:54,textAlign:"center",letterSpacing:.5}}>{t.type}</span>
+                  {t.type==="洗車"&&t._nextDayWashShown&&<span title="翌日対応に切り替えた洗車（当日貸出洗車）" style={{flexShrink:0,fontSize:isMob?10:9,fontWeight:800,color:"#fff",background:"#2563eb",borderRadius:4,padding:"2px 6px"}}>🚿当日貸出洗車</span>}
                   {_lk&&<span title="同日・同ナンバーで返却と洗車あり（洗車は返却後）" style={{flexShrink:0,fontSize:isMob?10:9,fontWeight:800,color:"#fff",background:"#0d9488",borderRadius:4,padding:"2px 6px"}}>🔗返却後洗車{_lkR&&_lkR.rt?<span style={{marginLeft:3,opacity:.9}}>🕐{_lkR.rt}以降</span>:null}</span>}
+                  {t.type==="洗車"&&<button onClick={e=>{e.stopPropagation();toggleNextDayWash(t);}} style={{flexShrink:0,fontSize:isMob?9:8,fontWeight:700,padding:"2px 6px",borderRadius:5,background:t._nextDayWash?"#dbeafe":"#f1f5f9",color:t._nextDayWash?"#1d4ed8":"#475569",border:"1px solid "+(t._nextDayWash?"#93c5fd":"#cbd5e1"),cursor:"pointer"}}>{t._nextDayWash?"前日に戻す":"翌日対応"}</button>}
                   <span style={{flexShrink:0,fontSize:isMob?17:15,fontWeight:800,color:"#0f172a",fontFamily:"monospace"}}>{resolvedT}</span>
                   <div style={{flex:1}}/>
                   {dispVn?<span style={{flexShrink:0,display:"inline-flex",alignItems:"center",gap:3,background:"#d1fae5",borderRadius:6,padding:isMob?"3px 9px":"2px 8px"}}>🚗<span style={{fontFamily:"monospace",fontSize:isMob?17:15,fontWeight:900,color:"#065f46"}}>{dispVn.no}</span><span style={{fontSize:isMob?10:9,fontWeight:700,color:"#047857"}}>{dispVn.name}</span></span>:(t.type!=="洗車"&&t.type!=="その他"?<span style={{flexShrink:0,fontSize:isMob?11:10,fontWeight:800,color:"#fff",background:"#dc2626",borderRadius:5,padding:"2px 8px"}}>未配車</span>:null)}
@@ -15928,13 +15991,32 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
               {untimedWash.map(t=>{
                 const vn=t.assignedVehicle?vehicles.find(v=>v.code===t.assignedVehicle):null;
                 const _lk=_schIsLinked(t);const _lkR=_schRet(t);
-                return <div key={t._id} style={{display:"flex",alignItems:"center",gap:8,padding:isMob?"6px 12px":"4px 12px",borderBottom:"1px solid #f5f5f5",opacity:t.done?.5:1,fontSize:isMob?11:10,flexWrap:"wrap",background:_lk?"#ecfdf5":"transparent"}}>
+                return <div key={t._id} style={{display:"flex",alignItems:"center",gap:8,padding:isMob?"6px 12px":"4px 12px",borderBottom:"1px solid #f5f5f5",opacity:t.done?.5:1,fontSize:isMob?11:10,flexWrap:"wrap",background:t._nextDayWashShown?"#eff6ff":(_lk?"#ecfdf5":"transparent")}}>
+                  {t._nextDayWashShown&&<span title="翌日対応に切り替えた洗車（当日貸出洗車）" style={{fontSize:isMob?9:8,fontWeight:800,color:"#fff",background:"#2563eb",borderRadius:4,padding:"1px 5px"}}>🚿当日貸出洗車</span>}
                   {_lk&&<span title="同日・同ナンバーで返却と洗車あり（洗車は返却後）" style={{fontSize:isMob?9:8,fontWeight:800,color:"#fff",background:"#0d9488",borderRadius:4,padding:"1px 5px"}}>🔗返却後洗車{_lkR&&_lkR.rt?<span style={{marginLeft:2,opacity:.9}}>🕐{_lkR.rt}以降</span>:null}</span>}
                   <span style={{fontWeight:600,color:"#64748b",flex:1}}>{t.memo||t.name||""}</span>
                   {t.opts&&<OptBadges opts={t.opts}/>}
                   {vn&&<span style={{color:"#059669",fontWeight:600,fontSize:isMob?10:9}}>🚗{vn.name}({vn.no})</span>}
                   {t.assignee&&<span style={{color:"#6d28d9",fontWeight:600,fontSize:isMob?10:9}}>👤{t.assignee}</span>}
+                  <button onClick={e=>{e.stopPropagation();toggleNextDayWash(t);}} style={{fontSize:isMob?9:8,fontWeight:700,padding:"2px 6px",borderRadius:5,background:t._nextDayWash?"#dbeafe":"#f1f5f9",color:t._nextDayWash?"#1d4ed8":"#475569",border:"1px solid "+(t._nextDayWash?"#93c5fd":"#cbd5e1"),cursor:"pointer",flexShrink:0}}>{t._nextDayWash?"前日に戻す":"翌日対応"}</button>
                   {t.done&&<span>✅</span>}
+                </div>;
+              })}
+            </div>}
+            {_grayWash.length>0&&<div>
+              <div style={{background:"#f8fafc",padding:"4px 12px",borderBottom:"1px solid #e2e8f0",display:"flex",alignItems:"center",gap:6}}>
+                <span style={{fontSize:isMob?13:12,fontWeight:800,color:"#94a3b8"}}>→翌日対応にした洗車（当日は行いません）</span>
+                <span style={{fontSize:9,color:"#cbd5e1",fontWeight:600}}>{_grayWash.length}件</span>
+                <div style={{flex:1,height:1,background:"#e2e8f0"}}/>
+              </div>
+              {_grayWash.map(t=>{
+                const vn=t.assignedVehicle?vehicles.find(v=>v.code===t.assignedVehicle):null;
+                return <div key={t._id} style={{display:"flex",alignItems:"center",gap:8,padding:isMob?"6px 12px":"4px 12px",borderBottom:"1px solid #f5f5f5",fontSize:isMob?11:10,flexWrap:"wrap",background:"#f1f5f9",color:"#94a3b8"}}>
+                  <span title="翌日（貸出当日）に切り替え済み" style={{fontSize:isMob?9:8,fontWeight:800,color:"#fff",background:"#94a3b8",borderRadius:4,padding:"1px 5px"}}>→翌日対応</span>
+                  <span style={{fontWeight:600,flex:1,textDecoration:"line-through"}}>{t.memo||t.name||""}</span>
+                  {vn&&<span style={{fontSize:isMob?10:9}}>🚗{vn.name}({vn.no})</span>}
+                  {t.assignee&&<span style={{fontSize:isMob?10:9}}>👤{t.assignee}</span>}
+                  <button onClick={e=>{e.stopPropagation();toggleNextDayWash(t);}} style={{fontSize:isMob?9:8,fontWeight:700,padding:"2px 6px",borderRadius:5,background:"#dbeafe",color:"#1d4ed8",border:"1px solid #93c5fd",cursor:"pointer",flexShrink:0}}>前日に戻す</button>
                 </div>;
               })}
             </div>}
@@ -15977,7 +16059,9 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
             const isChgDone=/変更済|変更承認/.test(t.memo||"");
             const vn=t.assignedVehicle?vehicles.find(x=>x.code===t.assignedVehicle):null;
             const _isLinked=!!(isWash&&t.plateNo&&_linkedPlates.has(t.plateNo));const _linkRet=_isLinked?_retByPlate[t.plateNo]:null;
-            const cellS={padding:"3px 4px",borderBottom:"1px solid #f1f5f9",borderRight:"1px solid #f1f5f9",opacity:t.done?0.4:1,verticalAlign:"middle",background:isCxl?"#ffedd5":isChgReq?"#fef9c3":_isLinked?"#ecfdf5":rowBg,cursor:t.reservationId?"pointer":"default"};
+            /* ★2026-07-12 翌日対応: 当日の洗車で_nextDayWash=true(=翌日へ出した)はグレー痕跡。オーバーレイ(前日→当日)は当日貸出洗車。翌日対応(グレー)は返却後洗車ハイライトより優先 */
+            const _wGray=isWash&&t._nextDayWash&&!t._nextDayWashShown;const _wToday=isWash&&t._nextDayWashShown;
+            const cellS={padding:"3px 4px",borderBottom:"1px solid #f1f5f9",borderRight:"1px solid #f1f5f9",opacity:_wGray?0.55:(t.done?0.4:1),verticalAlign:"middle",background:_wGray?"#f1f5f9":_wToday?"#eff6ff":isCxl?"#ffedd5":isChgReq?"#fef9c3":_isLinked?"#ecfdf5":rowBg,cursor:t.reservationId?"pointer":"default"};
             const rowClick=()=>{if(!t.reservationId||isWash)return;setEditResId(t.reservationId);setEditBlock(null);setSheetFilter("edit");};
             return <tr key={t._id} onClick={rowClick} style={{background:isCxl?"#ffedd5":isChgReq?"#fef9c3":hasAlert?"#fef2f2":"transparent",outline:isCxl?"2px solid #fb923c":isChgReq?"2px solid #eab308":"none"}}>
               <td style={{...cellS,textAlign:"center",fontSize:8,color:"#94a3b8"}}>{ri+1}</td>
@@ -15989,7 +16073,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
               </td>
               <td style={{...cellS,fontWeight:700,color:isWash?(t.time?"#1d4ed8":"#ef4444"):(rTime?"#1d4ed8":"#ef4444"),fontSize:9}}>{isWash?<React.Fragment><select value={t.time||""} onClick={e=>e.stopPropagation()} onChange={e=>{e.stopPropagation();const v=e.target.value;setTimeout(()=>{if(!window.confirm("洗車時間を「"+(v||"未設定")+"」に変更しますか？"))return;_save(t._id,{...t,time:v});},50);}} style={{border:"none",background:"transparent",fontSize:9,fontWeight:700,color:t.time?"#1d4ed8":"#ef4444",width:"100%",padding:0,cursor:"pointer"}}><option value="">-</option>{TIME_OPTS.filter(o=>o).map(o=><option key={o} value={o}>{o}</option>)}</select>{_linkRet&&_linkRet.rt?<div title="返却後に洗車が必要（返却時刻以降）" style={{fontSize:7,color:"#0d9488",fontWeight:800,lineHeight:1.1,marginTop:1}}>🕐{_linkRet.rt}以降</div>:null}</React.Fragment>:<div>{rTime||"-"}{(()=>{const orig=t.time||"";const changed=rTime||"";if(orig&&changed&&orig!==changed)return <div style={{fontSize:7,color:"#dc2626",fontWeight:600,lineHeight:1}}>←{orig}</div>;return null;})()}</div>}</td>
               <td style={{...cellS,fontWeight:700,color:tm.c,fontSize:10}}>{t.typeChange?<span title={t.typeChange}>{t.type}<span style={{fontSize:7,color:"#f59e0b",marginLeft:2}}>*</span></span>:(t.type||"")}</td>
-              <td style={{...cellS,fontWeight:600,color:"#0f172a"}}>{_isLinked&&<span title="同日・同ナンバーで返却と洗車あり（洗車は返却後）" style={{display:"inline-block",fontSize:7,fontWeight:800,color:"#fff",background:"#0d9488",borderRadius:3,padding:"1px 4px",marginRight:3}}>🔗返却後洗車</span>}{isCxl&&<span style={{display:"inline-block",fontSize:7,fontWeight:800,color:"#fff",background:"#dc2626",borderRadius:3,padding:"1px 4px",marginRight:3}}>CXL依頼</span>}{isChgReq&&<span style={{display:"inline-block",fontSize:7,fontWeight:800,color:"#fff",background:"#d97706",borderRadius:3,padding:"1px 4px",marginRight:3}}>変更申請中</span>}{!isChgReq&&isChgDone&&<span style={{display:"inline-block",fontSize:7,fontWeight:800,color:"#fff",background:"#2563eb",borderRadius:3,padding:"1px 4px",marginRight:3}}>変更済</span>}{t.ota==="KEYDROP"&&<span title="KEY-DROP（連絡はメール）" style={{display:"inline-block",fontSize:7,fontWeight:800,color:"#fff",background:"#111827",borderRadius:3,padding:"1px 4px",marginRight:3}}>KEY</span>}{(t.type!=="洗車"&&t.reservationId)?<input key={t._id+"nm"+(t.name||"")} defaultValue={t.name||""} onClick={e=>e.stopPropagation()} onBlur={e=>{const v=e.target.value.trim();if(v&&v!==(t.name||""))saveNameEdit(t,v);else if(!v)e.target.value=t.name||"";}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();if(e.key==="Escape"){e.target.value=t.name||"";e.target.blur();}}} title="タップで予約者名を編集（LINE照合用）" style={{border:"none",borderBottom:"1px dotted #cbd5e1",background:"transparent",fontSize:10,fontWeight:600,width:"100%",padding:0,color:"#0f172a",cursor:"text",outline:"none"}}/>:(t.name||"")}{t.reservationId&&<div style={{marginTop:1,lineHeight:1}}><LineStatusBadge resvNo={t.reservationId} size={7}/></div>}</td>
+              <td style={{...cellS,fontWeight:600,color:"#0f172a"}}>{_wToday&&<span title="翌日対応に切り替えた洗車（当日貸出洗車）" style={{display:"inline-block",fontSize:7,fontWeight:800,color:"#fff",background:"#2563eb",borderRadius:3,padding:"1px 4px",marginRight:3}}>🚿当日貸出洗車</span>}{_wGray&&<span title="翌日（貸出当日）に切り替え済み・当日は行いません" style={{display:"inline-block",fontSize:7,fontWeight:800,color:"#fff",background:"#94a3b8",borderRadius:3,padding:"1px 4px",marginRight:3}}>→翌日対応</span>}{_isLinked&&!_wGray&&<span title="同日・同ナンバーで返却と洗車あり（洗車は返却後）" style={{display:"inline-block",fontSize:7,fontWeight:800,color:"#fff",background:"#0d9488",borderRadius:3,padding:"1px 4px",marginRight:3}}>🔗返却後洗車</span>}{isCxl&&<span style={{display:"inline-block",fontSize:7,fontWeight:800,color:"#fff",background:"#dc2626",borderRadius:3,padding:"1px 4px",marginRight:3}}>CXL依頼</span>}{isChgReq&&<span style={{display:"inline-block",fontSize:7,fontWeight:800,color:"#fff",background:"#d97706",borderRadius:3,padding:"1px 4px",marginRight:3}}>変更申請中</span>}{!isChgReq&&isChgDone&&<span style={{display:"inline-block",fontSize:7,fontWeight:800,color:"#fff",background:"#2563eb",borderRadius:3,padding:"1px 4px",marginRight:3}}>変更済</span>}{t.ota==="KEYDROP"&&<span title="KEY-DROP（連絡はメール）" style={{display:"inline-block",fontSize:7,fontWeight:800,color:"#fff",background:"#111827",borderRadius:3,padding:"1px 4px",marginRight:3}}>KEY</span>}{(t.type!=="洗車"&&t.reservationId)?<input key={t._id+"nm"+(t.name||"")} defaultValue={t.name||""} onClick={e=>e.stopPropagation()} onBlur={e=>{const v=e.target.value.trim();if(v&&v!==(t.name||""))saveNameEdit(t,v);else if(!v)e.target.value=t.name||"";}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();if(e.key==="Escape"){e.target.value=t.name||"";e.target.blur();}}} title="タップで予約者名を編集（LINE照合用）" style={{border:"none",borderBottom:"1px dotted #cbd5e1",background:"transparent",fontSize:10,fontWeight:600,width:"100%",padding:0,color:"#0f172a",cursor:"text",outline:"none"}}/>:(t.name||"")}{isWash&&<button onClick={e=>{e.stopPropagation();toggleNextDayWash(t);}} title={t._nextDayWash?"前日対応に戻す":"翌日（貸出当日）対応に切り替え＝当日貸出洗車"} style={{display:"inline-block",marginLeft:4,fontSize:7,fontWeight:700,padding:"1px 5px",borderRadius:4,background:t._nextDayWash?"#dbeafe":"#f1f5f9",color:t._nextDayWash?"#1d4ed8":"#475569",border:"1px solid "+(t._nextDayWash?"#93c5fd":"#cbd5e1"),cursor:"pointer"}}>{t._nextDayWash?"前日に戻す":"翌日対応"}</button>}{t.reservationId&&<div style={{marginTop:1,lineHeight:1}}><LineStatusBadge resvNo={t.reservationId} size={7}/></div>}</td>
               <td style={{...cellS,fontSize:9,color:rPlace?"#111":"#ef4444"}}>{rPlace?<a href={"https://www.google.com/maps/search/?api=1&query="+encodeURIComponent(rPlace)} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{color:"#2563eb",textDecoration:"underline"}} title="Googleマップで開く">{rPlace}</a>:(isPlaceMissing(t)?<PlaceAlert size={8}/>:"-")}{rPlace&&(()=>{const origP=cleanPlace(t.place||"");if(origP&&origP!==rPlace)return <div style={{fontSize:7,color:"#dc2626",fontWeight:600,lineHeight:1}}>←{origP}</div>;return null;})()}</td>
               <td style={{...cellS,fontSize:9,fontWeight:700,color:"#64748b",textAlign:"center"}}>{t.vehicle||"-"}</td>
               <td style={{...cellS,fontSize:9,fontWeight:700,color:vn?"#1e40af":"#ccc"}}>{vn?<span style={{display:"inline-flex",alignItems:"center",gap:2}}>{vn.name}{t.assignedVehicle&&<DmgShareIcon code={t.assignedVehicle} size={11}/>}</span>:"-"}</td>
@@ -20634,10 +20718,12 @@ function App(){
   const refreshTopTasks=useCallback(async()=>{
     if(!SB_ENABLED||!sb)return;
     const tmr=dOff(today,1);
+    const yst=dOff(today,-1);
     try{
-      const[todayRes,tmrRes]=await Promise.all([
+      const[todayRes,tmrRes,ystRes]=await Promise.all([
         sb.from("tasks").select("*").eq("date",today),
-        sb.from("tasks").select("*").eq("date",tmr)
+        sb.from("tasks").select("*").eq("date",tmr),
+        sb.from("tasks").select("*").eq("date",yst).eq("type","洗車")
       ]);
       const enrichOpts=async(tasks)=>{
         const parsed=tasks.map(DB._fromDbTask);
@@ -20652,10 +20738,35 @@ function App(){
         }
         return parsed;
       };
-      if(todayRes.data)setTodayTasks(await enrichOpts(todayRes.data));
-      if(tmrRes.data)setTomorrowTasks(await enrichOpts(tmrRes.data));
+      /* ★2026-07-12 洗車「翌日対応(当日貸出洗車)」の前送り:
+         ・前日(yst)の洗車で_nextDayWash=true → その貸出日=本日に「当日貸出洗車」として本日リストに合流。
+         ・本日(today)の洗車で_nextDayWash=true → 翌日に出したので本日はグレー痕跡(_nextDayWashGray)、翌日リストに当日貸出洗車として合流。 */
+      const todayParsed=todayRes.data?await enrichOpts(todayRes.data):[];
+      const tmrParsed=tmrRes.data?await enrichOpts(tmrRes.data):[];
+      const ystParsed=ystRes.data?ystRes.data.map(DB._fromDbTask):[];
+      // 前日→本日へ来る当日貸出洗車
+      const ystFwd=ystParsed.filter(t=>t.type==="洗車"&&t._nextDayWash).map(t=>({...t,_nextDayWashShown:true}));
+      // 本日の洗車で翌日へ出したもの → 本日はグレー / 翌日へ複製
+      const todayList=todayParsed.map(t=>(t.type==="洗車"&&t._nextDayWash)?{...t,_nextDayWashGray:true}:t).concat(ystFwd);
+      const todayFwd=todayParsed.filter(t=>t.type==="洗車"&&t._nextDayWash).map(t=>({...t,_nextDayWashShown:true}));
+      const tmrList=tmrParsed.concat(todayFwd);
+      setTodayTasks(todayList);
+      setTomorrowTasks(tmrList);
     }catch(e){console.log("[refreshTopTasks] error",e);}
   },[today]);
+  /* ★2026-07-12 TOPサマリーからの洗車「翌日対応」トグル: フラグのみ書換(1件)。洗車の実DB日付=_taskDate。 */
+  const topToggleWash=useCallback(async(t)=>{
+    if(t.type!=="洗車"||!sb)return;
+    const turningOn=!t._nextDayWash;
+    if(!window.confirm(turningOn?"この洗車を翌日（貸出当日）対応に切り替えますか？\n（前日はグレー表示になり、貸出当日に「当日貸出洗車」として表示されます）":"この洗車を前日対応に戻しますか？"))return;
+    try{
+      const cur=await sb.from("tasks").select("changed_json").eq("_id",t._id).maybeSingle();
+      let cj={};try{cj=JSON.parse((cur&&cur.data&&cur.data.changed_json)||"{}");}catch(e){}
+      cj._nextDayWash=turningOn;cj._nextDayWashAt=turningOn?new Date().toISOString():"";
+      await sb.from("tasks").update({changed_json:JSON.stringify(cj)}).eq("_id",t._id);
+    }catch(e){console.error("[topToggleWash]",e);}
+    refreshTopTasks();
+  },[refreshTopTasks]);
   useEffect(()=>{
     if(!SB_ENABLED||!dbLoaded)return;
     refreshTopTasks();
@@ -21696,12 +21807,16 @@ function App(){
                             const vehName=veh?veh.name+" "+veh.no:"";
                             const toggleDone=async(e)=>{e.stopPropagation();try{const becomingDone=!t.done;if(sb){await sb.from("tasks").update({done:becomingDone}).eq("_id",t._id);const rid=t.reservationId||t.reservation_id;if(rid&&becomingDone&&(isDel||isCOL)){const ks=isDel?"active":"completed";try{await sb.from("reservations").update({kd_status:ks,kd_status_at:new Date().toISOString()}).eq("id",rid);}catch(_){}}}refreshTopTasks();}catch(err){console.error("[TOP toggleDone]",err);}};
                             const isWashCard=t.type==="洗車";const _wLinked=!!(isWashCard&&t.plateNo&&_wLinkedPlates.has(t.plateNo));const _wRet=_wLinked?_wRetByPlate[t.plateNo]:null;
-                            return <div key={t._id} style={{padding:"7px 9px",border:"1px solid #e2e8f0",borderLeft:"4px solid "+(tm.c||"#cbd5e1"),borderRadius:8,marginBottom:6,boxShadow:"0 1px 2px rgba(0,0,0,0.04)",background:_wLinked?"#ecfdf5":"#fff",opacity:t.done?.5:1}}>
+                            const _wGray=isWashCard&&t._nextDayWashGray;const _wToday=isWashCard&&t._nextDayWashShown;
+                            return <div key={t._id} style={{padding:"7px 9px",border:"1px solid #e2e8f0",borderLeft:"4px solid "+(_wGray?"#cbd5e1":(tm.c||"#cbd5e1")),borderRadius:8,marginBottom:6,boxShadow:"0 1px 2px rgba(0,0,0,0.04)",background:_wGray?"#f1f5f9":_wToday?"#eff6ff":(_wLinked?"#ecfdf5":"#fff"),opacity:_wGray?.6:(t.done?.5:1)}}>
                               {/* メイン行: チェック + タイプ + 時間 + 名前 */}
                               <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
                                 <span onClick={toggleDone} style={{fontSize:16,cursor:"pointer",flexShrink:0}}>{t.done?"✅":"⬜"}</span>
-                                <span style={{fontSize:13,fontWeight:900,padding:"2px 9px",borderRadius:5,background:tm.c,color:"#fff",flexShrink:0,minWidth:44,textAlign:"center",letterSpacing:.3}}>{tm.label}</span>
-                                {_wLinked&&<span title="同日・同ナンバーで返却と洗車あり（洗車は返却後）" style={{fontSize:9,fontWeight:800,color:"#fff",background:"#0d9488",borderRadius:4,padding:"2px 6px",flexShrink:0}}>🔗返却後洗車{_wRet&&_wRet.rt?<span style={{marginLeft:3,opacity:.9}}>🕐{_wRet.rt}以降</span>:null}</span>}
+                                <span style={{fontSize:13,fontWeight:900,padding:"2px 9px",borderRadius:5,background:_wGray?"#94a3b8":tm.c,color:"#fff",flexShrink:0,minWidth:44,textAlign:"center",letterSpacing:.3}}>{tm.label}</span>
+                                {_wToday&&<span title="翌日対応に切り替えた洗車（当日貸出洗車）" style={{fontSize:9,fontWeight:800,color:"#fff",background:"#2563eb",borderRadius:4,padding:"2px 6px",flexShrink:0}}>🚿当日貸出洗車</span>}
+                                {_wGray&&<span title="翌日（貸出当日）に切り替え済み・当日は行いません" style={{fontSize:9,fontWeight:800,color:"#fff",background:"#94a3b8",borderRadius:4,padding:"2px 6px",flexShrink:0}}>→翌日対応</span>}
+                                {isWashCard&&<button onClick={e=>{e.stopPropagation();topToggleWash(t);}} title={t._nextDayWash?"前日対応に戻す":"翌日（貸出当日）対応に切り替え＝当日貸出洗車"} style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:5,background:t._nextDayWash?"#dbeafe":"#f1f5f9",color:t._nextDayWash?"#1d4ed8":"#475569",border:"1px solid "+(t._nextDayWash?"#93c5fd":"#cbd5e1"),cursor:"pointer",flexShrink:0}}>{t._nextDayWash?"前日に戻す":"翌日対応"}</button>}
+                                {_wLinked&&!_wGray&&<span title="同日・同ナンバーで返却と洗車あり（洗車は返却後）" style={{fontSize:9,fontWeight:800,color:"#fff",background:"#0d9488",borderRadius:4,padding:"2px 6px",flexShrink:0}}>🔗返却後洗車{_wRet&&_wRet.rt?<span style={{marginLeft:3,opacity:.9}}>🕐{_wRet.rt}以降</span>:null}</span>}
                                 {(()=>{const rT=t.timeChange||t._ssTime||t.time||"--:--";const orig=t.time||"";const changed=rT!==orig;return <span style={{fontSize:15,fontWeight:800,color:changed?"#dc2626":"#0f172a",flexShrink:0,fontFamily:"monospace"}}>{rT}{changed&&orig&&<span style={{fontSize:8,color:"#9ca3af",marginLeft:2}}>({orig})</span>}</span>;})()}
                                 <span style={{fontSize:12,fontWeight:600,color:t.done?"#9ca3af":"#1e293b",textDecoration:t.done?"line-through":"none",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name}</span>
                                 {t.ota&&<OBadge ota={t.ota}/>}
@@ -21754,8 +21869,9 @@ function App(){
               {/* ★ 本日スケジュール（展開部分のみ - ヘッダーは上の2列に統合済み） */}
               {todayTasks.length>0&&(()=>{
                 const isMob=window.innerWidth<=768;
-                const timedWash=todayTasks.filter(t=>t.type==="洗車"&&t.time);
-                const untimedWash=todayTasks.filter(t=>t.type==="洗車"&&!t.time);
+                const timedWash=todayTasks.filter(t=>t.type==="洗車"&&t.time&&!t._nextDayWashGray);
+                const untimedWash=todayTasks.filter(t=>t.type==="洗車"&&!t.time&&!t._nextDayWashGray);
+                const _sGrayWash=todayTasks.filter(t=>t.type==="洗車"&&t._nextDayWashGray);
                 const allSchedule=[...todayTasks.filter(t=>t.type!=="洗車"&&t.type!=="CXL"),...timedWash].sort((a,b)=>{const ta=a.timeChange||a._ssTime||a.time||"99:99";const tb=b.timeChange||b._ssTime||b.time||"99:99";return ta.localeCompare(tb);});
                 /* ★ 返却→洗車リンク（マスター表と同一定義）: 同日・同ナンバーで返却がある洗車＝返却後洗車 */
                 const _sWRT=["COL","BD","BDB","返却"];const _sWRetByPlate={};
@@ -21780,7 +21896,9 @@ function App(){
                       return <div key={t._id} onClick={()=>{if(t.reservationId){setShowOP(true);}}} style={{border:"1px solid #e2e8f0",borderLeft:"4px solid "+ts.c,borderRadius:8,marginBottom:6,boxShadow:"0 1px 2px rgba(0,0,0,0.04)",cursor:t.reservationId?"pointer":"default",opacity:t.done?.5:1,background:t.done?"#fafafa":(_lk?"#ecfdf5":"#fff"),padding:isMob?"7px 10px":"6px 12px"}}>
                         <div style={{display:"flex",alignItems:"center",gap:8}}>
                           <span style={{flexShrink:0,fontSize:isMob?15:14,fontWeight:900,color:"#fff",background:ts.c,borderRadius:6,padding:isMob?"3px 0":"2px 0",width:isMob?58:54,textAlign:"center",letterSpacing:.5}}>{t.type}</span>
+                          {t.type==="洗車"&&t._nextDayWashShown&&<span title="翌日対応に切り替えた洗車（当日貸出洗車）" style={{flexShrink:0,fontSize:isMob?10:9,fontWeight:800,color:"#fff",background:"#2563eb",borderRadius:4,padding:"2px 6px"}}>🚿当日貸出洗車</span>}
                           {_lk&&<span title="同日・同ナンバーで返却と洗車あり（洗車は返却後）" style={{flexShrink:0,fontSize:isMob?10:9,fontWeight:800,color:"#fff",background:"#0d9488",borderRadius:4,padding:"2px 6px"}}>🔗返却後洗車{_lkR&&_lkR.rt?<span style={{marginLeft:3,opacity:.9}}>🕐{_lkR.rt}以降</span>:null}</span>}
+                          {t.type==="洗車"&&<button onClick={e=>{e.stopPropagation();topToggleWash(t);}} title={t._nextDayWash?"前日対応に戻す":"翌日（貸出当日）対応に切り替え＝当日貸出洗車"} style={{flexShrink:0,fontSize:isMob?9:8,fontWeight:700,padding:"2px 6px",borderRadius:5,background:t._nextDayWash?"#dbeafe":"#f1f5f9",color:t._nextDayWash?"#1d4ed8":"#475569",border:"1px solid "+(t._nextDayWash?"#93c5fd":"#cbd5e1"),cursor:"pointer"}}>{t._nextDayWash?"前日に戻す":"翌日対応"}</button>}
                           <span style={{flexShrink:0,fontSize:isMob?17:15,fontWeight:800,color:"#0f172a",fontFamily:"monospace"}}>{resolvedT}</span>
                           <div style={{flex:1}}/>
                           {dispVn?<span style={{flexShrink:0,display:"inline-flex",alignItems:"center",gap:3,background:"#d1fae5",borderRadius:6,padding:isMob?"3px 9px":"2px 8px"}}>🚗<span style={{fontFamily:"monospace",fontSize:isMob?17:15,fontWeight:900,color:"#065f46"}}>{dispVn.no}</span><span style={{fontSize:isMob?10:9,fontWeight:700,color:"#047857"}}>{dispVn.name}</span><DmgShareIcon code={dispVn.code} size={11}/></span>:(t.type!=="洗車"&&t.type!=="その他"?<span style={{flexShrink:0,fontSize:isMob?11:10,fontWeight:800,color:"#fff",background:"#dc2626",borderRadius:5,padding:"2px 8px"}}>未配車</span>:null)}
@@ -21813,13 +21931,32 @@ function App(){
                       {untimedWash.map(t=>{
                         const vn=t.assignedVehicle?vehicles.find(v=>v.code===t.assignedVehicle):null;
                         const _lk=_sWisLinked(t);const _lkR=_sWret(t);
-                        return <div key={t._id} style={{display:"flex",alignItems:"center",gap:8,padding:isMob?"6px 12px":"4px 12px",borderBottom:"1px solid #f5f5f5",opacity:t.done?.5:1,fontSize:isMob?11:10,flexWrap:"wrap",background:_lk?"#ecfdf5":"transparent"}}>
+                        return <div key={t._id} style={{display:"flex",alignItems:"center",gap:8,padding:isMob?"6px 12px":"4px 12px",borderBottom:"1px solid #f5f5f5",opacity:t.done?.5:1,fontSize:isMob?11:10,flexWrap:"wrap",background:t._nextDayWashShown?"#eff6ff":(_lk?"#ecfdf5":"transparent")}}>
+                          {t._nextDayWashShown&&<span title="翌日対応に切り替えた洗車（当日貸出洗車）" style={{fontSize:isMob?9:8,fontWeight:800,color:"#fff",background:"#2563eb",borderRadius:4,padding:"1px 5px"}}>🚿当日貸出洗車</span>}
                           {_lk&&<span title="同日・同ナンバーで返却と洗車あり（洗車は返却後）" style={{fontSize:isMob?9:8,fontWeight:800,color:"#fff",background:"#0d9488",borderRadius:4,padding:"1px 5px"}}>🔗返却後洗車{_lkR&&_lkR.rt?<span style={{marginLeft:2,opacity:.9}}>🕐{_lkR.rt}以降</span>:null}</span>}
                           <span style={{fontWeight:600,color:"#64748b",flex:1}}>{t.memo||t.name||""}</span>
                           {t.opts&&<OptBadges opts={t.opts}/>}
                           {vn&&<span style={{color:"#059669",fontWeight:600,fontSize:isMob?10:9}}>🚗{vn.name}({vn.no})</span>}
                           {t.assignee&&<span style={{color:"#6d28d9",fontWeight:600,fontSize:isMob?10:9}}>👤{t.assignee}</span>}
+                          <button onClick={e=>{e.stopPropagation();topToggleWash(t);}} style={{fontSize:isMob?9:8,fontWeight:700,padding:"2px 6px",borderRadius:5,background:t._nextDayWash?"#dbeafe":"#f1f5f9",color:t._nextDayWash?"#1d4ed8":"#475569",border:"1px solid "+(t._nextDayWash?"#93c5fd":"#cbd5e1"),cursor:"pointer",flexShrink:0}}>{t._nextDayWash?"前日に戻す":"翌日対応"}</button>
                           {t.done&&<span>✅</span>}
+                        </div>;
+                      })}
+                    </div>}
+                    {_sGrayWash.length>0&&<div>
+                      <div style={{background:"#f8fafc",padding:"4px 12px",borderBottom:"1px solid #e2e8f0",display:"flex",alignItems:"center",gap:6}}>
+                        <span style={{fontSize:isMob?13:12,fontWeight:800,color:"#94a3b8"}}>→翌日対応にした洗車（本日は行いません）</span>
+                        <span style={{fontSize:9,color:"#cbd5e1",fontWeight:600}}>{_sGrayWash.length}件</span>
+                        <div style={{flex:1,height:1,background:"#e2e8f0"}}/>
+                      </div>
+                      {_sGrayWash.map(t=>{
+                        const vn=t.assignedVehicle?vehicles.find(v=>v.code===t.assignedVehicle):null;
+                        return <div key={t._id} style={{display:"flex",alignItems:"center",gap:8,padding:isMob?"6px 12px":"4px 12px",borderBottom:"1px solid #f5f5f5",fontSize:isMob?11:10,flexWrap:"wrap",background:"#f1f5f9",color:"#94a3b8"}}>
+                          <span title="翌日（貸出当日）に切り替え済み" style={{fontSize:isMob?9:8,fontWeight:800,color:"#fff",background:"#94a3b8",borderRadius:4,padding:"1px 5px"}}>→翌日対応</span>
+                          <span style={{fontWeight:600,flex:1,textDecoration:"line-through"}}>{t.memo||t.name||""}</span>
+                          {vn&&<span style={{fontSize:isMob?10:9}}>🚗{vn.name}({vn.no})</span>}
+                          {t.assignee&&<span style={{fontSize:isMob?10:9}}>👤{t.assignee}</span>}
+                          <button onClick={e=>{e.stopPropagation();topToggleWash(t);}} style={{fontSize:isMob?9:8,fontWeight:700,padding:"2px 6px",borderRadius:5,background:"#dbeafe",color:"#1d4ed8",border:"1px solid #93c5fd",cursor:"pointer",flexShrink:0}}>前日に戻す</button>
                         </div>;
                       })}
                     </div>}
@@ -22289,7 +22426,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.411";
+const APP_VERSION="v4.7.412";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
