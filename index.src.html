@@ -68,9 +68,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v964';
+var CV='spk-v965';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=851').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=852').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -19681,22 +19681,34 @@ async function recordActionDone(sb,resv,action){
     window._actionDoneMap=m; window.dispatchEvent(new Event("actionDoneUpdate"));
   }catch(e){console.warn("[recordActionDone]",e&&e.message);}
 }
-/* LineStatusBadge — 2026-07-02: LINE自動送信の可否バッジ
-   window._lineLinkMap[resvNo] があれば 📱OK(緑=自動送信可)、無ければ 📱手動(赤=エルメで手動) */
+/* LineStatusBadge — 2026-07-02→2026-07-15: 連絡手段の3段階バッジ
+   📱OK(緑)=LINE連携済で自動送信可 / 📱手動(橙)=未連携だが電話・メールあり＝手動連絡可 /
+   🚨連絡不可(赤)=未連携かつ電話・メールも無い＝連絡手段ゼロ（楽天等・当日まで届かないリスク） */
 function LineStatusBadge({resvNo,size}){
-  const [ok,setOk]=React.useState(false);
+  const [st,setSt]=React.useState("manual"); // ok | manual | nocontact
   React.useEffect(()=>{
-    const update=()=>{ const m=window._lineLinkMap||{}; setOk(!!(resvNo&&m[resvNo])); };
+    const update=()=>{
+      const lm=window._lineLinkMap||{}, nc=window._noContactMap||{};
+      if(resvNo&&lm[resvNo])setSt("ok");
+      else if(resvNo&&nc[resvNo])setSt("nocontact");
+      else setSt("manual");
+    };
     update();
     window.addEventListener("lineLinkUpdate",update);
-    return ()=>window.removeEventListener("lineLinkUpdate",update);
+    window.addEventListener("noContactUpdate",update);
+    return ()=>{window.removeEventListener("lineLinkUpdate",update);window.removeEventListener("noContactUpdate",update);};
   },[resvNo]);
   const fs=size||9;
+  const C={
+    ok:{bg:"#dcfce7",fg:"#15803d",bd:"#86efac",t:"📱OK",ti:"LINE登録済＝自動送信OK"},
+    manual:{bg:"#fef3c7",fg:"#b45309",bd:"#fcd34d",t:"📱手動",ti:"LINE未登録だが電話/メールあり＝手動で連絡可"},
+    nocontact:{bg:"#fee2e2",fg:"#b91c1c",bd:"#f87171",t:"🚨連絡不可",ti:"LINE未登録＋電話・メールなし＝連絡手段がありません（楽天等）。事前に要対応"}
+  }[st];
   return React.createElement("span",{
-    title: ok?"LINE登録済＝自動送信OK":"LINE未登録/予約番号不一致＝エルメで手動送信",
+    title: C.ti,
     style:{fontSize:fs,fontWeight:800,padding:"1px 5px",borderRadius:4,flexShrink:0,whiteSpace:"nowrap",
-      background: ok?"#dcfce7":"#fee2e2", color: ok?"#15803d":"#b91c1c", border:"1px solid "+(ok?"#86efac":"#fca5a5")}
-  }, ok?"📱OK":"📱手動");
+      background:C.bg, color:C.fg, border:"1px solid "+C.bd}
+  }, C.t);
 }
 /* DamageSendList — 2026-07-03: 傷チェック送信リスト（本日・時系列）
    📱OK=自動送信済/予定、📱手動=[📋コピー]→[✅対応]でmanual_done記録 */
@@ -20506,6 +20518,30 @@ function App(){
     };
     fetchLinks();
     const t=setInterval(()=>{ if(document.visibilityState==="visible")fetchLinks(); }, 5*60*1000);
+    return ()=>clearInterval(t);
+  },[]);
+  // ★ 2026-07-15: 連絡手段の可視化。LINE未連携かつ電話・メールも無い予約＝連絡手段ゼロ（🚨連絡不可）を判定
+  //   window._noContactMap[resv_no]=true → LineStatusBadge が「🚨連絡不可」を表示（当日まで届かないリスクを事前に検知）
+  useEffect(()=>{
+    if(!sb)return;
+    const realTel=v=>{v=String(v||"").replace(/[^0-9]/g,"");if(!v)return false;if(/^0+$/.test(v))return false;return v.length>=9;};
+    const realMail=v=>{v=String(v||"").trim().toLowerCase();if(!v||v.indexOf("@")<0)return false;return ["ota@rent-handyman.jp","ota-reserve@rent-handyman.jp","noreply@rent-handyman.jp","reserve@rent-handyman.jp"].indexOf(v)<0;};
+    const fetchContact=async()=>{
+      try{
+        let all=[],from=0;
+        while(true){
+          const{data,error}=await sb.from("reservations").select("id,tel,mail").range(from,from+999);
+          if(error){console.warn("[noContact] fetch error:",error.message);break;}
+          (data||[]).forEach(r=>all.push(r));
+          if(!data||data.length<1000)break; from+=1000;
+        }
+        const m={}; all.forEach(r=>{ if(r.id && !realTel(r.tel) && !realMail(r.mail)) m[r.id]=true; });
+        window._noContactMap=m;
+        window.dispatchEvent(new Event("noContactUpdate"));
+      }catch(e){console.warn("[noContact] exception:",e.message);}
+    };
+    fetchContact();
+    const t=setInterval(()=>{ if(document.visibilityState==="visible")fetchContact(); }, 5*60*1000);
     return ()=>clearInterval(t);
   },[]);
   // ★ 2026-07-05: マイページtokenマップ（reservations.mypage_token）→ OPシートからマイページを開く
@@ -22484,7 +22520,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.419";
+const APP_VERSION="v4.7.420";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
