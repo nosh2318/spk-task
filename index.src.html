@@ -68,9 +68,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v972';
+var CV='spk-v973';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=859').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=860').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -15529,6 +15529,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
   };
   const[placeLoading,setPlaceLoading]=useState(false);
   const[lineModal,setLineModal]=useState(null);
+  const[timeReqTask,setTimeReqTask]=useState(null); // ★時間調整依頼モーダル対象タスク
+  const[timeReqTime,setTimeReqTime]=useState("08:30"); // ★変更希望時間(既定8:30)
   const updatePlaces=async()=>{
     const resIds=[...new Set(tasks.filter(t=>t.reservationId).map(t=>t.reservationId))];
     if(!resIds.length){alert("予約がありません");return;}
@@ -16133,12 +16135,13 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
         <div style={{padding:"6px 12px",background:"#eff6ff",borderBottom:"1px solid #bfdbfe",display:"flex",alignItems:"center",gap:8}}>
           <span style={{fontSize:11,color:"#1d4ed8",fontWeight:700}}>📋 マスター表</span>
           <span style={{fontSize:10,color:"#64748b"}}>行タップで編集画面へ</span>
+          <span style={{fontSize:9,color:"#64748b",background:"#fff",border:"1px solid #e2e8f0",borderRadius:6,padding:"2px 6px"}}>✅完了／🔖マーク(印だけ)／⏰お届け時間の調整依頼</span>
           <button onClick={()=>{setEditResId(null);setEditBlock(null);setSheetFilter("edit");}} style={{marginLeft:"auto",padding:"3px 10px",background:"#dc2626",color:"#fff",border:"none",borderRadius:6,fontSize:10,fontWeight:700,cursor:"pointer"}}>編集タブへ</button>
         </div>
         <div className="bg-white rounded-lg border border-gray-200 overflow-hidden mb-2"><div style={{overflowX:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:10,whiteSpace:"nowrap"}}><thead><tr style={{background:"#f1f5f9"}}>
           {[{h:"#",k:null},{h:"✓",k:"done"},{h:"担当",k:"assignee"},{h:"時間",k:"time"},{h:"内容",k:"type"},{h:"予約者",k:"name"},{h:"場所",k:null},{h:"クラス",k:"vehicle"},{h:"車種",k:null},{h:"No.",k:null},{h:"B",k:null},{h:"C",k:null},{h:"J",k:null},{h:"補償",k:null},{h:"メモ",k:null},{h:"OTA",k:null},{h:"予約番号",k:null},{h:"変更",k:null},{h:"決済",k:null}].map((col,i)=>{
-            const w=i===0?28:i===1?30:i===2?52:i===3?50:i===4?44:i===5?100:i===6?120:i===7?32:i===8?60:i===9?50:i<=12?22:i===13?36:i===14?100:i===15?30:i===16?130:i===17?80:36;
+            const w=i===0?28:i===1?46:i===2?52:i===3?50:i===4?44:i===5?100:i===6?120:i===7?32:i===8?60:i===9?50:i<=12?22:i===13?36:i===14?100:i===15?30:i===16?130:i===17?80:36;
             return <th key={i} onClick={col.k?()=>handleSort(col.k):undefined} style={{background:sortKey===col.k?"#dbeafe":"#f1f5f9",padding:"4px 2px",textAlign:"center",fontWeight:600,fontSize:8,color:col.k?"#1d4ed8":"#475569",borderBottom:"2px solid #cbd5e1",borderRight:"1px solid #e2e8f0",minWidth:w,maxWidth:w,cursor:col.k?"pointer":"default",userSelect:"none"}}>{col.h}{col.k?<span style={{fontSize:7,marginLeft:1}}>{sortIcon(col.k)}</span>:""}</th>;
           })}
         </tr></thead><tbody>
@@ -16156,11 +16159,16 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
             const _isLinked=!!(isWash&&t.plateNo&&_linkedPlates.has(t.plateNo));const _linkRet=_isLinked?_retByPlate[t.plateNo]:null;
             /* ★2026-07-12 翌日対応: 当日の洗車で_nextDayWash=true(=翌日へ出した)はグレー痕跡。オーバーレイ(前日→当日)は当日貸出洗車。翌日対応(グレー)は返却後洗車ハイライトより優先 */
             const _wGray=isWash&&t._nextDayWash&&!t._nextDayWashShown;const _wToday=isWash&&t._nextDayWashShown;
-            const cellS={padding:"3px 4px",borderBottom:"1px solid #f1f5f9",borderRight:"1px solid #f1f5f9",opacity:_wGray?0.55:(t.done?0.4:1),verticalAlign:"middle",background:_wGray?"#f1f5f9":_wToday?"#eff6ff":isCxl?"#ffedd5":isChgReq?"#fef9c3":_isLinked?"#ecfdf5":rowBg,cursor:t.reservationId?"pointer":"default"};
+            const _marked=!!(t._changed&&t._changed._mark); // ★マーク(印だけ・完了ではない)
+            const cellS={padding:"3px 4px",borderBottom:"1px solid #f1f5f9",borderRight:"1px solid #f1f5f9",opacity:_wGray?0.55:(t.done?0.4:1),verticalAlign:"middle",background:_wGray?"#f1f5f9":_wToday?"#eff6ff":isCxl?"#ffedd5":isChgReq?"#fef9c3":_isLinked?"#ecfdf5":(_marked&&!t.done?"#fffbeb":rowBg),cursor:t.reservationId?"pointer":"default"};
             const rowClick=()=>{if(!t.reservationId||isWash)return;setEditResId(t.reservationId);setEditBlock(null);setSheetFilter("edit");};
             return <tr key={t._id} onClick={rowClick} style={{background:isCxl?"#ffedd5":isChgReq?"#fef9c3":hasAlert?"#fef2f2":"transparent",outline:isCxl?"2px solid #fb923c":isChgReq?"2px solid #eab308":"none"}}>
               <td style={{...cellS,textAlign:"center",fontSize:8,color:"#94a3b8"}}>{ri+1}</td>
-              <td style={{...cellS,textAlign:"center",cursor:"pointer"}} onClick={e=>{e.stopPropagation();const next=!t.done;if(!window.confirm((next?"完了":"未完了")+"にしますか？"))return;_save(t._id,{...t,done:next});}}><span style={{fontSize:10}}>{t.done?"✅":"⬜"}</span></td>
+              <td style={{...cellS,textAlign:"center"}}><div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+                <span onClick={e=>{e.stopPropagation();const next=!t.done;if(!window.confirm((next?"完了":"未完了")+"にしますか？"))return;_save(t._id,{...t,done:next});}} title={t.done?"完了（タップで未完了に戻す）":"タップで完了にする"} style={{fontSize:12,cursor:"pointer",lineHeight:1}}>{t.done?"✅":"⬜"}</span>
+                <span onClick={e=>{e.stopPropagation();_save(t._id,{...t,_changed:{...(t._changed||{}),_mark:!_marked}});}} title={_marked?"マーク中（印だけ・完了ではない）／タップで解除":"タップでマーク（印だけ付ける）"} style={{fontSize:11,cursor:"pointer",lineHeight:1,opacity:_marked?1:0.3}}>🔖</span>
+                {t.type==="DEL"&&t.reservationId&&<span onClick={e=>{e.stopPropagation();setTimeReqTime("08:30");setTimeReqTask(t);}} title="お届け時間の調整依頼メッセージを作成" style={{fontSize:11,cursor:"pointer",lineHeight:1}}>⏰</span>}
+              </div></td>
               <td style={{...cellS,background:(()=>{const n=t.assignee;if(!n||n==="乗り捨て"||n==="無人")return rowBg;const P=["#ffd1d1","#d1e5ff","#d3f5d3","#fff0bf","#e6d1f7","#c4f2ec","#ffe0c4","#ffd1ec","#e2f0bf","#cfd6f7","#f7cfd8","#c4eef7"];let idx=activeMembers.indexOf(n);if(idx<0){let h=0;for(let i=0;i<n.length;i++)h=(h*31+n.charCodeAt(i))>>>0;idx=h;}return P[idx%P.length];})()}}>{/* 担当はマスター表で直接変更可・担当者ごとに区別しやすい優しいパステル12色 */}
                 <select value={activeMembers.includes(t.assignee)?t.assignee:["乗り捨て","無人"].includes(t.assignee)?t.assignee:t.assignee?"__custom":""} onClick={e=>e.stopPropagation()} onChange={e=>{e.stopPropagation();const v=e.target.value;if(v==="__other"){_save(t._id,mark({...t,_assigneeCustom:true,assignee:""},"assignee"));return;}setTimeout(()=>{if(!window.confirm("担当を「"+(v||"未割当")+"」に変更しますか？"))return;_save(t._id,mark({...t,assignee:v,_assigneeCustom:false},"assignee"));},50);}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,color:t.assignee?"#111":"#ccc",fontWeight:600}}>
                   <option value="">-</option>{activeMembers.map(m=><option key={m}>{m}</option>)}<option value="乗り捨て">乗り捨て</option><option value="無人">無人</option><option value="__other">その他...</option>{t.assignee&&!activeMembers.includes(t.assignee)&&!["乗り捨て","無人"].includes(t.assignee)&&<option value="__custom">{t.assignee}</option>}
@@ -16519,6 +16527,48 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
               <button onClick={()=>{window.open("https://web.carmon.alpine-srv.net/","_blank");close();}} style={{...btnS("#fef3c7","#f59e0b","#78350f"),textAlign:"center",fontSize:15}}>📍 CARMONを開く</button>
               <button onClick={()=>{localStorage.removeItem("spk_carmon_id");localStorage.removeItem("spk_carmon_pas");alert("ID/PASSをリセットしました");}} style={{display:"block",width:"100%",background:"none",border:"none",fontSize:10,color:"#94a3b8",cursor:"pointer",textAlign:"center",padding:4,marginTop:2}}>認証情報リセット</button>
             </div>
+          </div>
+        </div>;
+      })()}
+      {/* ★ 時間調整依頼モーダル（お届け時間の変更依頼・コピー/LINE送信） */}
+      {timeReqTask&&(()=>{
+        const t=timeReqTask;const rid=t.reservationId;const cn=(t.name||"")+"様";
+        const linked=!!(window._lineLinkMap||{})[rid];
+        const curT=(t.timeChange||t._ssTime||t.time)||"";
+        const close=()=>setTimeReqTask(null);
+        const buildMsg=(tm)=>`【お届け時間について】\n${cn}\n\nこの度はHANDYMANをご利用いただき、誠にありがとうございます。\nご利用日のお届けにつきまして、ご案内がございます。\n\n現在、お客様のご希望時間帯は配車が大変混み合っており、お届けまで通常よりお時間をいただく可能性がございます。\nできる限りお待たせすることなく、スムーズにご出発いただくため、誠に勝手なお願いではございますが、お受け取り時間を「${tm}」へご変更いただくことは可能でしょうか？\n\n急なお願いとなり、ご不便をおかけいたしますことを心よりお詫び申し上げます。\nお手数をおかけいたしますが、ご都合をご確認のうえ、ご返信いただけますと幸いです。\n何卒ご理解とご協力のほど、よろしくお願い申し上げます。`;
+        const msg=buildMsg(timeReqTime||"08:30");
+        const copy=async()=>{try{await navigator.clipboard.writeText(msg);alert("📋 本文をコピーしました");}catch(_){alert("コピーに失敗しました");}};
+        const send=async()=>{
+          if(!linked){await copy();alert("📱 このお客様はLINE未登録です。本文をコピーしました→エルメ/LINEに貼り付けて送信してください");return;}
+          if(!window.confirm(cn+" に「お届け時間の調整依頼」をLINEで自動送信します。よろしいですか？"))return;
+          try{
+            const{data:_s}=await sb.auth.getSession();const _tk=_s&&_s.session&&_s.session.access_token;
+            const _r=await fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/line-send",{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+_tk},body:JSON.stringify({store:"spk",resv_no:rid,action:"time_adjust",message:msg})});
+            const _j=await _r.json();
+            if(_j.ok){alert("✅ お届け時間の調整依頼をLINEに自動送信しました");close();}
+            else{await navigator.clipboard.writeText(msg);alert("⚠️自動送信できませんでした("+(_j.reason||"")+")。\n本文をコピーしました→手動で送信してください");}
+          }catch(_e){await navigator.clipboard.writeText(msg);alert("⚠️送信エラー。本文をコピーしました→手動で送信してください");}
+        };
+        return <div onClick={close} style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,.5)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+          <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:16,padding:20,width:"100%",maxWidth:400,maxHeight:"90vh",overflowY:"auto",boxShadow:"0 20px 60px rgba(0,0,0,.25)"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <div style={{fontSize:15,fontWeight:800,color:"#1e293b"}}>⏰ 時間調整依頼</div>
+              <button onClick={close} style={{background:"none",border:"none",fontSize:20,color:"#94a3b8",cursor:"pointer",padding:"4px 8px"}}>✕</button>
+            </div>
+            <div style={{fontSize:12,color:"#64748b",marginBottom:10,padding:"6px 10px",background:"#f8fafc",borderRadius:8}}>
+              <b style={{color:"#1e293b"}}>{t.name}</b> 様{curT?<span>／現在のお届け {curT}</span>:null}　{linked?<span style={{color:"#16a34a",fontWeight:700}}>📱LINE連携あり</span>:<span style={{color:"#dc2626",fontWeight:700}}>📱LINE未登録（手動）</span>}
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+              <span style={{fontSize:12,fontWeight:700,color:"#475569"}}>変更希望時間</span>
+              <select value={timeReqTime} onChange={e=>setTimeReqTime(e.target.value)} style={{padding:"6px 10px",borderRadius:8,border:"1px solid #cbd5e1",fontSize:15,fontWeight:800,color:"#c2410c"}}>{TIME_OPTS.filter(o=>o).map(o=><option key={o} value={o}>{o}</option>)}</select>
+            </div>
+            <textarea readOnly value={msg} style={{width:"100%",height:220,padding:10,borderRadius:8,border:"1px solid #e2e8f0",fontSize:12,lineHeight:1.5,color:"#1e293b",resize:"vertical",background:"#fafbfc",boxSizing:"border-box"}}/>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:10}}>
+              <button onClick={copy} style={{padding:"12px",background:"#eff6ff",border:"2px solid #93c5fd",borderRadius:10,fontSize:14,fontWeight:800,color:"#1d4ed8",cursor:"pointer"}}>📋 コピー</button>
+              <button onClick={send} style={{padding:"12px",background:linked?"#16a34a":"#f1f5f9",border:linked?"none":"2px solid #cbd5e1",borderRadius:10,fontSize:14,fontWeight:800,color:linked?"#fff":"#64748b",cursor:"pointer"}}>📱 送信</button>
+            </div>
+            <div style={{fontSize:10,color:"#94a3b8",marginTop:6,textAlign:"center"}}>{linked?"「送信」でLINE連携ユーザーへ自動送信します":"LINE未登録のため「送信」はコピーのみ（手動で貼り付け）"}</div>
           </div>
         </div>;
       })()}
@@ -22571,7 +22621,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.427";
+const APP_VERSION="v4.7.428";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
