@@ -68,9 +68,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v977';
+var CV='spk-v978';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=864').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=865').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -15025,6 +15025,285 @@ function MaintForm({vehicleCode,startDate,onAdd,onClose,vehicles,defaultLabel}){
 /* ==========================================
    OPシート（独立フルスクリーン）
    ========================================== */
+/* ★ 自動送信メッセージ 多言語対応（日/英/韓/繁体中文）— 回収遅延・時間調整・事前駐車 2026-07-19 */
+const AUTOSEND_LANGS=[{k:"ja",l:"日本語"},{k:"en",l:"English"},{k:"ko",l:"한국어"},{k:"zh",l:"繁中"}];
+function LangPicker({lang,setLang}){
+  return <div style={{display:"flex",gap:4,marginBottom:10}}>
+    {AUTOSEND_LANGS.map(o=><button key={o.k} onClick={()=>setLang(o.k)} style={{flex:1,padding:"6px 4px",borderRadius:8,fontSize:12,fontWeight:800,cursor:"pointer",border:lang===o.k?"none":"1px solid #cbd5e1",background:lang===o.k?"#0369a1":"#f8fafc",color:lang===o.k?"#fff":"#475569"}}>{o.l}</button>)}
+  </div>;
+}
+function msgColDelay(name,tm,lang){
+  const n=name||"";const t=tm||"—";
+  if(lang==="en")return `[About Vehicle Collection Time]
+Dear ${n},
+
+Thank you very much for choosing HANDYMAN.
+Due to current road and traffic conditions, our staff heading to collect your vehicle is running behind schedule.
+We sincerely apologize for the inconvenience.
+The estimated arrival time is around "${t}".
+We kindly ask for your patience a little longer. Thank you for your understanding.`;
+  if(lang==="ko")return `[차량 회수 시간 안내]
+${n} 님
+
+이번에 HANDYMAN을 이용해 주셔서 진심으로 감사드립니다.
+현재 도로 및 교통 혼잡 상황으로 인해 차량 회수를 위해 이동 중인 직원의 도착이 예정보다 지연되고 있습니다.
+불편을 끼쳐 드려 대단히 죄송합니다.
+도착 예정 시간은 "${t}"경으로 예상됩니다.
+번거로우시겠지만 잠시만 더 기다려 주시기 바랍니다.`;
+  if(lang==="zh")return `【關於車輛回收時間】
+${n} 您好
+
+感謝您選擇 HANDYMAN。
+由於目前道路及交通壅塞狀況，前往回收車輛的工作人員抵達時間較預定延遲。
+造成您的不便，我們深感抱歉。
+預計抵達時間約為「${t}」左右。
+敬請您再稍候片刻，感謝您的理解與配合。`;
+  return `【回収時間について】
+${n} 様
+
+この度はHANDYMANをご利用いただき、誠にありがとうございます。
+ただいま道路状況・混雑状況により、お車の回収に向かうスタッフの到着が予定より遅れております。
+ご迷惑をおかけし誠に申し訳ございません。
+到着予定は「${tm||"（　）"}」頃を見込んでおります。
+お手数をおかけいたしますが、もう暫しお待ちくださいませ。`;
+}
+function msgTimeAdjust(name,tm,lang){
+  const n=name||"";const t=tm||"08:30";
+  if(lang==="en")return `[About Your Delivery Time]
+Dear ${n},
+
+Thank you very much for choosing HANDYMAN.
+We would like to share an update regarding your vehicle delivery on your rental day.
+
+Your requested time slot is currently very busy, and delivery may take longer than usual.
+To help you depart smoothly with minimal waiting, we would be very grateful if you could kindly change your pick-up time to "${t}".
+
+We sincerely apologize for this sudden request and any inconvenience caused.
+We would appreciate it if you could check your schedule and reply to us.
+Thank you very much for your understanding and cooperation.`;
+  if(lang==="ko")return `[차량 전달 시간 안내]
+${n} 님
+
+이번에 HANDYMAN을 이용해 주셔서 진심으로 감사드립니다.
+이용일의 차량 전달에 관하여 안내 말씀드립니다.
+
+현재 고객님께서 희망하신 시간대는 배차가 매우 혼잡하여, 전달까지 평소보다 시간이 걸릴 가능성이 있습니다.
+가능한 한 기다리시지 않고 원활하게 출발하실 수 있도록, 대단히 죄송하지만 수령 시간을 "${t}"(으)로 변경해 주실 수 있으실까요?
+
+갑작스러운 부탁으로 불편을 끼쳐 드려 진심으로 사과드립니다.
+번거로우시겠지만 일정을 확인하신 후 회신해 주시면 감사하겠습니다.
+아무쪼록 이해와 협조를 부탁드립니다.`;
+  if(lang==="zh")return `【關於車輛交付時間】
+${n} 您好
+
+感謝您選擇 HANDYMAN。
+關於您租車當日的車輛交付，有以下事項向您說明。
+
+目前您希望的時段派車非常繁忙，交付車輛可能需要比平常更長的時間。
+為了讓您盡量無需久候、順利出發，冒昧向您提出請求，是否方便將取車時間變更為「${t}」呢？
+
+臨時提出請求造成您的不便，我們深表歉意。
+敬請您確認行程後回覆我們，將不勝感激。
+懇請您的理解與協助，謝謝。`;
+  return `【お届け時間について】
+${n} 様
+
+この度はHANDYMANをご利用いただき、誠にありがとうございます。
+ご利用日のお届けにつきまして、ご案内がございます。
+
+現在、お客様のご希望時間帯は配車が大変混み合っており、お届けまで通常よりお時間をいただく可能性がございます。
+できる限りお待たせすることなく、スムーズにご出発いただくため、誠に勝手なお願いではございますが、お受け取り時間を「${t}」へご変更いただくことは可能でしょうか？
+
+急なお願いとなり、ご不便をおかけいたしますことを心よりお詫び申し上げます。
+お手数をおかけいたしますが、ご都合をご確認のうえ、ご返信いただけますと幸いです。
+何卒ご理解とご協力のほど、よろしくお願い申し上げます。`;
+}
+function msgParkGreet(name,myUrl,lang){
+  const n=name||"";const u=myUrl||"";
+  if(lang==="en")return `[About the Vehicle Handover Method]
+Dear ${n},
+
+Thank you very much for choosing HANDYMAN.
+We would like to inform you about the handover method on your rental day.
+Your requested time slot is currently very busy, and delivery may take longer than usual.
+To help you depart smoothly with minimal waiting, we would be very grateful if you could accept an "unattended (self-service)" handover.
+
+- Vehicle Information & Reservation Details -
+${u}
+
+[Location of Key, Parking Fee & Parking Ticket]
+- Passenger-seat dashboard (parking fee, parking ticket)
+- Driver-side door pocket (key)
+
+[Damage Check]
+Please check via the URL sent to you on LINE.
+
+
+Please rest assured that you will not be held responsible for any vehicle trouble after parking.
+In the unlikely event of theft, the vehicle can be tracked by our security system.
+We apologize for not greeting you in person, and kindly ask for your confirmation and cooperation.
+
+HANDYMAN Customer Support
+Emergency TEL: 050-1724-6197
+Hours: 9:00-19:00`;
+  if(lang==="ko")return `[차량 인도 방법 안내]
+${n} 님
+
+이번에 HANDYMAN을 이용해 주셔서 진심으로 감사드립니다.
+이용일의 차량 인도 방법에 관하여 안내 말씀드립니다.
+현재 고객님께서 희망하신 시간대는 배차가 매우 혼잡하여, 전달까지 평소보다 시간이 걸릴 가능성이 있습니다.
+가능한 한 기다리시지 않고 원활하게 출발하실 수 있도록, 대단히 죄송하지만 "무인(셀프)" 인도로 진행해 주시면 감사하겠습니다.
+
+- 차량 정보 및 예약 상세 안내 -
+${u}
+
+[열쇠・주차요금・주차권 위치]
+・조수석 대시보드 (주차요금, 주차권)
+・운전석 도어 포켓 (열쇠)
+
+[차량 손상 체크]
+LINE으로 전송되는 URL에서 확인 부탁드립니다.
+
+
+주차 후 차량 문제에 대해서는 일절 책임을 묻지 않으니 안심하시기 바랍니다.
+만일의 도난 등의 경우에도 당사 보안 시스템으로 추적이 가능합니다.
+직접 인사드리지 못해 대단히 죄송하지만, 확인 및 대응 부탁드립니다.
+
+HANDYMAN 고객지원
+긴급 연락처 TEL: 050-1724-6197
+영업시간: 9:00〜19:00`;
+  if(lang==="zh")return `【關於車輛交付方式的說明】
+${n} 您好
+
+感謝您選擇 HANDYMAN。
+關於您租車當日的交付方式，有以下事項向您說明。
+目前您希望的時段派車非常繁忙，交付車輛可能需要比平常更長的時間。
+為了讓您盡量無需久候、順利出發，冒昧請求您接受「無人（自助）」交車方式，將不勝感激。
+
+- 車輛資訊及預約詳情通知 -
+${u}
+
+【鑰匙・停車費・停車券位置】
+・副駕駛座儀表板（停車費、停車券）
+・駕駛座車門置物袋（鑰匙）
+
+【車輛損傷確認】
+請透過 LINE 傳送的網址進行確認。
+
+
+停車後的車輛問題我們絕不會向您追究責任，敬請安心。
+萬一發生失竊等情況，本公司保全系統亦可追蹤車輛。
+未能當面向您問候，深感抱歉，敬請確認並配合處理。
+
+HANDYMAN 客戶服務中心
+緊急聯絡電話：050-1724-6197
+營業時間：9:00〜19:00`;
+  return `【貸渡し方法についてのご案内】
+${n} 様
+
+この度はHANDYMANをご利用いただき、誠にありがとうございます。
+ご利用日の貸渡し方法につきまして、ご案内がございます。
+現在、お客様のご希望時間帯は配車が大変混み合っており、お届けまで通常よりお時間をいただく可能性がございます。
+できる限りお待たせすることなく、スムーズにご出発いただくため、誠に勝手なお願いではございますが、お受け取りを「無人」での貸し出しとさせて頂けますと幸いです。
+
+-車両情報および予約詳細のお知らせ-
+${u}
+
+【鍵・駐車料金・駐車券の位置】
+・助手席ダッシュボード(駐車料金、駐車券)
+・運転席ドアポケット(鍵)
+
+【傷チェック】
+LINEに送付されるURLにてご確認をお願い申しあげます。
+
+
+駐車後の車両トラブルに関しては一切の責任は問いませんのでご安心くださいませ。
+万一の盗難等の際にも弊社セキュリティにて追跡可能となっております。
+直前ご挨拶できず誠に申し訳ございませんが、ご確認・ご対応お願いいたします。
+
+HANDYMANカスタマーサポート
+緊急時TEL： 050-1724-6197
+営業時間： 9:00〜19:00`;
+}
+function msgParkPlace(name,plate,lang){
+  const n=name||"";
+  if(lang==="en")return `[Location of Your Parked Vehicle]
+Dear ${n},
+
+Your vehicle is parked at the location below. Please confirm and pick it up.
+
+- Parking lot name: (          )
+- Address: (          )
+- Floor / Section / Number: (          )
+- License plate: ${plate||"(          )"}
+- Landmark / Notes: (          )
+
+[Location of Key, Parking Fee & Parking Ticket]
+- Passenger-seat dashboard (parking fee, parking ticket)
+- Driver-side door pocket (key)
+
+If you have any questions, please feel free to contact us.
+HANDYMAN Customer Support
+Emergency TEL: 050-1724-6197
+Hours: 9:00-19:00`;
+  if(lang==="ko")return `[차량 주차 위치 안내]
+${n} 님
+
+차량은 아래 위치에 주차되어 있습니다. 확인 후 수령 부탁드립니다.
+
+■주차장 이름: (          )
+■주소: (          )
+■층／구역／번호: (          )
+■차량 번호: ${plate||"(          )"}
+■표시・비고: (          )
+
+[열쇠・주차요금・주차권 위치]
+・조수석 대시보드 (주차요금, 주차권)
+・운전석 도어 포켓 (열쇠)
+
+궁금하신 점이 있으시면 편하게 연락 주시기 바랍니다.
+HANDYMAN 고객지원
+긴급 연락처 TEL: 050-1724-6197
+영업시간: 9:00〜19:00`;
+  if(lang==="zh")return `【車輛停放位置說明】
+${n} 您好
+
+車輛停放於下列位置，敬請確認後取車。
+
+■停車場名稱：（          ）
+■地址：（          ）
+■樓層／區域／車位號碼：（          ）
+■車牌號碼：${plate||"（          ）"}
+■標的物・備註：（          ）
+
+【鑰匙・停車費・停車券位置】
+・副駕駛座儀表板（停車費、停車券）
+・駕駛座車門置物袋（鑰匙）
+
+如有任何疑問，歡迎隨時與我們聯繫。
+HANDYMAN 客戶服務中心
+緊急聯絡電話：050-1724-6197
+營業時間：9:00〜19:00`;
+  return `【お車の停車場所のご案内】
+${n} 様
+
+お車は下記に駐車しております。ご確認のうえお受け取りをお願いいたします。
+
+■駐車場名：（　　　　　　　　）
+■住所：（　　　　　　　　）
+■階／区画／番号：（　　　　　　　　）
+■車両ナンバー：${plate||"（　　　　）"}
+■目印・備考：（　　　　　　　　）
+
+【鍵・駐車料金・駐車券の位置】
+・助手席ダッシュボード(駐車料金、駐車券)
+・運転席ドアポケット(鍵)
+
+ご不明な点がございましたらお気軽にご連絡くださいませ。
+HANDYMANカスタマーサポート
+緊急時TEL： 050-1724-6197
+営業時間： 9:00〜19:00`;
+}
 /* ★ 回収遅延のご案内モーダル（COL用・OPシート/サマリ共通）。⏰時間調整と同仕様、到着予定時間＋道路/混雑で遅延案内・コピー/LINE送信 */
 function ColDelayModal({task,onClose}){
   const t=task||{};const rid=t.reservationId||t.reservation_id||"";const cn=((t.name)||"")+"様";
@@ -15032,7 +15311,8 @@ function ColDelayModal({task,onClose}){
   const curT=(t.timeChange||t._ssTime||t.time)||"";
   const TIMES=useMemo(()=>{const o=[""];for(let h=6;h<=23;h++)for(let m=0;m<60;m+=15){o.push(String(h).padStart(2,"0")+":"+String(m).padStart(2,"0"));}return o;},[]);
   const[atime,setAtime]=useState(curT||"");
-  const build=(tm)=>`【回収時間について】\n${cn}\n\nこの度はHANDYMANをご利用いただき、誠にありがとうございます。\nただいま道路状況・混雑状況により、お車の回収に向かうスタッフの到着が予定より遅れております。\nご迷惑をおかけし誠に申し訳ございません。\n到着予定は「${tm||"（　）"}」頃を見込んでおります。\nお手数をおかけいたしますが、もう暫しお待ちくださいませ。`;
+  const[lang,setLang]=useState("ja");
+  const build=(tm)=>msgColDelay(t.name,tm,lang);
   const msg=build(atime);
   const copy=async()=>{try{await navigator.clipboard.writeText(msg);alert("📋 本文をコピーしました");}catch(_){alert("コピーに失敗しました");}};
   const send=async()=>{
@@ -15055,6 +15335,7 @@ function ColDelayModal({task,onClose}){
       <div style={{fontSize:12,color:"#64748b",marginBottom:10,padding:"6px 10px",background:"#f8fafc",borderRadius:8}}>
         <b style={{color:"#1e293b"}}>{t.name}</b> 様{curT?<span>／予定回収 {curT}</span>:null}　{linked?<span style={{color:"#16a34a",fontWeight:700}}>📱LINE連携あり</span>:<span style={{color:"#dc2626",fontWeight:700}}>📱LINE未登録（手動）</span>}
       </div>
+      <LangPicker lang={lang} setLang={setLang}/>
       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
         <span style={{fontSize:12,fontWeight:700,color:"#475569"}}>到着予定時間</span>
         <select value={atime} onChange={e=>setAtime(e.target.value)} style={{padding:"6px 10px",borderRadius:8,border:"1px solid #cbd5e1",fontSize:15,fontWeight:800,color:"#c2410c"}}>{TIMES.map(o=><option key={o} value={o}>{o||"—"}</option>)}</select>
@@ -15574,10 +15855,13 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
   const[lineModal,setLineModal]=useState(null);
   const[timeReqTask,setTimeReqTask]=useState(null); // ★時間調整依頼モーダル対象タスク
   const[timeReqTime,setTimeReqTime]=useState("08:30"); // ★変更希望時間(既定8:30)
+  const[timeReqLang,setTimeReqLang]=useState("ja"); // ★時間調整依頼メッセージ言語
   const[parkTask,setParkTask]=useState(null); // ★事前駐車依頼モーダル対象タスク
   const[parkMode,setParkMode]=useState("greet"); // "greet"(挨拶文)|"place"(停車場所フレーム)
   const[parkGreet,setParkGreet]=useState(""); // ★挨拶文(編集可)
   const[parkPlace,setParkPlace]=useState(""); // ★停車場所テンプレ(手動入力)
+  const[parkLang,setParkLang]=useState("ja"); // ★事前駐車メッセージ言語
+  const[parkParams,setParkParams]=useState({name:"",myUrl:"",plate:""}); // ★言語切替時の再生成用パラメータ
   const[delayTask,setDelayTask]=useState(null); // ★回収遅延案内モーダル対象タスク(COL)
   const updatePlaces=async()=>{
     const resIds=[...new Set(tasks.filter(t=>t.reservationId).map(t=>t.reservationId))];
@@ -16215,8 +16499,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
               <td style={{...cellS,textAlign:"center"}}><div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
                 <span onClick={e=>{e.stopPropagation();const next=!t.done;if(!window.confirm((next?"完了":"未完了")+"にしますか？"))return;_save(t._id,{...t,done:next});}} title={t.done?"完了（タップで未完了に戻す）":"タップで完了にする"} style={{fontSize:12,cursor:"pointer",lineHeight:1}}>{t.done?"✅":"⬜"}</span>
                 <span onClick={e=>{e.stopPropagation();_save(t._id,{...t,_changed:{...(t._changed||{}),_mark:!_marked}});}} title={_marked?"マーク中（印だけ・完了ではない）／タップで解除":"タップでマーク（印だけ付ける）"} style={{fontSize:11,cursor:"pointer",lineHeight:1,padding:"0 3px",borderRadius:4,border:_marked?"1.5px solid #f59e0b":"1px dashed #cbd5e1",background:_marked?"#fef3c7":"#fff"}}>🔖</span>
-                {t.type==="DEL"&&t.reservationId&&<span onClick={e=>{e.stopPropagation();setTimeReqTime("08:30");setTimeReqTask(t);}} title={actionDoneOf(t.reservationId,"time_adjust")?"お届け時間の調整依頼：送信済 "+actionDoneLabel(actionDoneOf(t.reservationId,"time_adjust").at):"お届け時間の調整依頼メッセージを作成"} style={{fontSize:11,cursor:"pointer",lineHeight:1,whiteSpace:"nowrap"}}>⏰{actionDoneOf(t.reservationId,"time_adjust")?<span style={{fontSize:7,color:"#16a34a",fontWeight:900}}>✓</span>:null}</span>}
-                {t.type==="DEL"&&t.reservationId&&<span onClick={e=>{e.stopPropagation();const cn=(t.name||"")+"様";const _tk=(window._mypageTokenMap||{})[t.reservationId];const myUrl=_tk?("https://nosh2318.github.io/spk-task/my.html?t="+_tk):"（マイページURL未取得）";const plate=t.plateNo||"";setParkGreet(`【貸渡し方法についてのご案内】\n${cn}\n\nこの度はHANDYMANをご利用いただき、誠にありがとうございます。\nご利用日の貸渡し方法につきまして、ご案内がございます。\n現在、お客様のご希望時間帯は配車が大変混み合っており、お届けまで通常よりお時間をいただく可能性がございます。\nできる限りお待たせすることなく、スムーズにご出発いただくため、誠に勝手なお願いではございますが、お受け取りを「無人」での貸し出しとさせて頂けますと幸いです。\n\n-車両情報および予約詳細のお知らせ-\n${myUrl}\n\n【鍵・駐車料金・駐車券の位置】\n・助手席ダッシュボード(駐車料金、駐車券)\n・運転席ドアポケット(鍵)\n\n【傷チェック】\nLINEに送付されるURLにてご確認をお願い申しあげます。\n\n\n駐車後の車両トラブルに関しては一切の責任は問いませんのでご安心くださいませ。\n万一の盗難等の際にも弊社セキュリティにて追跡可能となっております。\n直前ご挨拶できず誠に申し訳ございませんが、ご確認・ご対応お願いいたします。\n\nHANDYMANカスタマーサポート\n緊急時TEL： 050-1724-6197\n営業時間： 9:00〜19:00`);setParkPlace(`【お車の停車場所のご案内】\n${cn}\n\nお車は下記に駐車しております。ご確認のうえお受け取りをお願いいたします。\n\n■駐車場名：（　　　　　　　　）\n■住所：（　　　　　　　　）\n■階／区画／番号：（　　　　　　　　）\n■車両ナンバー：${plate||"（　　　　）"}\n■目印・備考：（　　　　　　　　）\n\n【鍵・駐車料金・駐車券の位置】\n・助手席ダッシュボード(駐車料金、駐車券)\n・運転席ドアポケット(鍵)\n\nご不明な点がございましたらお気軽にご連絡くださいませ。\nHANDYMANカスタマーサポート\n緊急時TEL： 050-1724-6197\n営業時間： 9:00〜19:00`);setParkMode("greet");setParkTask(t);}} title={(actionDoneOf(t.reservationId,"advance_park")||actionDoneOf(t.reservationId,"advance_park_place"))?"事前駐車依頼：送信済 "+actionDoneLabel((actionDoneOf(t.reservationId,"advance_park")||actionDoneOf(t.reservationId,"advance_park_place")).at):"事前駐車（無人貸出）依頼メッセージを作成"} style={{fontSize:11,cursor:"pointer",lineHeight:1,whiteSpace:"nowrap"}}>🅿️{(actionDoneOf(t.reservationId,"advance_park")||actionDoneOf(t.reservationId,"advance_park_place"))?<span style={{fontSize:7,color:"#16a34a",fontWeight:900}}>✓</span>:null}</span>}
+                {t.type==="DEL"&&t.reservationId&&<span onClick={e=>{e.stopPropagation();setTimeReqTime("08:30");setTimeReqLang("ja");setTimeReqTask(t);}} title={actionDoneOf(t.reservationId,"time_adjust")?"お届け時間の調整依頼：送信済 "+actionDoneLabel(actionDoneOf(t.reservationId,"time_adjust").at):"お届け時間の調整依頼メッセージを作成"} style={{fontSize:11,cursor:"pointer",lineHeight:1,whiteSpace:"nowrap"}}>⏰{actionDoneOf(t.reservationId,"time_adjust")?<span style={{fontSize:7,color:"#16a34a",fontWeight:900}}>✓</span>:null}</span>}
+                {t.type==="DEL"&&t.reservationId&&<span onClick={e=>{e.stopPropagation();const _tk=(window._mypageTokenMap||{})[t.reservationId];const myUrl=_tk?("https://nosh2318.github.io/spk-task/my.html?t="+_tk):"（マイページURL未取得）";const plate=t.plateNo||"";setParkParams({name:t.name||"",myUrl,plate});setParkLang("ja");setParkGreet(msgParkGreet(t.name,myUrl,"ja"));setParkPlace(msgParkPlace(t.name,plate,"ja"));setParkMode("greet");setParkTask(t);}} title={(actionDoneOf(t.reservationId,"advance_park")||actionDoneOf(t.reservationId,"advance_park_place"))?"事前駐車依頼：送信済 "+actionDoneLabel((actionDoneOf(t.reservationId,"advance_park")||actionDoneOf(t.reservationId,"advance_park_place")).at):"事前駐車（無人貸出）依頼メッセージを作成"} style={{fontSize:11,cursor:"pointer",lineHeight:1,whiteSpace:"nowrap"}}>🅿️{(actionDoneOf(t.reservationId,"advance_park")||actionDoneOf(t.reservationId,"advance_park_place"))?<span style={{fontSize:7,color:"#16a34a",fontWeight:900}}>✓</span>:null}</span>}
                 {t.type==="COL"&&t.reservationId&&<span onClick={e=>{e.stopPropagation();setDelayTask(t);}} title={actionDoneOf(t.reservationId,"col_delay")?"回収遅延のご案内：送信済 "+actionDoneLabel(actionDoneOf(t.reservationId,"col_delay").at):"回収の遅延（到着予定時間）のご案内メッセージを作成"} style={{fontSize:11,cursor:"pointer",lineHeight:1,whiteSpace:"nowrap"}}>⏳{actionDoneOf(t.reservationId,"col_delay")?<span style={{fontSize:7,color:"#16a34a",fontWeight:900}}>✓</span>:null}</span>}
               </div></td>
               <td style={{...cellS,background:(()=>{const n=t.assignee;if(!n||n==="乗り捨て"||n==="無人")return rowBg;const P=["#ffd1d1","#d1e5ff","#d3f5d3","#fff0bf","#e6d1f7","#c4f2ec","#ffe0c4","#ffd1ec","#e2f0bf","#cfd6f7","#f7cfd8","#c4eef7"];let idx=activeMembers.indexOf(n);if(idx<0){let h=0;for(let i=0;i<n.length;i++)h=(h*31+n.charCodeAt(i))>>>0;idx=h;}return P[idx%P.length];})()}}>{/* 担当はマスター表で直接変更可・担当者ごとに区別しやすい優しいパステル12色 */}
@@ -16586,7 +16870,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
         const linked=!!(window._lineLinkMap||{})[rid];
         const curT=(t.timeChange||t._ssTime||t.time)||"";
         const close=()=>setTimeReqTask(null);
-        const buildMsg=(tm)=>`【お届け時間について】\n${cn}\n\nこの度はHANDYMANをご利用いただき、誠にありがとうございます。\nご利用日のお届けにつきまして、ご案内がございます。\n\n現在、お客様のご希望時間帯は配車が大変混み合っており、お届けまで通常よりお時間をいただく可能性がございます。\nできる限りお待たせすることなく、スムーズにご出発いただくため、誠に勝手なお願いではございますが、お受け取り時間を「${tm}」へご変更いただくことは可能でしょうか？\n\n急なお願いとなり、ご不便をおかけいたしますことを心よりお詫び申し上げます。\nお手数をおかけいたしますが、ご都合をご確認のうえ、ご返信いただけますと幸いです。\n何卒ご理解とご協力のほど、よろしくお願い申し上げます。`;
+        const buildMsg=(tm)=>msgTimeAdjust(t.name,tm,timeReqLang);
         const msg=buildMsg(timeReqTime||"08:30");
         const copy=async()=>{try{await navigator.clipboard.writeText(msg);alert("📋 本文をコピーしました");}catch(_){alert("コピーに失敗しました");}};
         const send=async()=>{
@@ -16609,6 +16893,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
             <div style={{fontSize:12,color:"#64748b",marginBottom:10,padding:"6px 10px",background:"#f8fafc",borderRadius:8}}>
               <b style={{color:"#1e293b"}}>{t.name}</b> 様{curT?<span>／現在のお届け {curT}</span>:null}　{linked?<span style={{color:"#16a34a",fontWeight:700}}>📱LINE連携あり</span>:<span style={{color:"#dc2626",fontWeight:700}}>📱LINE未登録（手動）</span>}
             </div>
+            <LangPicker lang={timeReqLang} setLang={setTimeReqLang}/>
             <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
               <span style={{fontSize:12,fontWeight:700,color:"#475569"}}>変更希望時間</span>
               <select value={timeReqTime} onChange={e=>setTimeReqTime(e.target.value)} style={{padding:"6px 10px",borderRadius:8,border:"1px solid #cbd5e1",fontSize:15,fontWeight:800,color:"#c2410c"}}>{TIME_OPTS.filter(o=>o).map(o=><option key={o} value={o}>{o}</option>)}</select>
@@ -16644,6 +16929,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
           }catch(_e){await navigator.clipboard.writeText(body);alert("⚠️送信エラー。本文をコピーしました→手動で送信してください");}
         };
         const tabS=(on)=>({flex:1,padding:"8px",borderRadius:8,fontSize:12,fontWeight:800,cursor:"pointer",border:on?"none":"1px solid #cbd5e1",background:on?"#0f766e":"#f8fafc",color:on?"#fff":"#475569"});
+        const changeParkLang=(v)=>{setParkLang(v);setParkGreet(msgParkGreet(parkParams.name,parkParams.myUrl,v));setParkPlace(msgParkPlace(parkParams.name,parkParams.plate,v));};
         return <div onClick={close} style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,.5)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
           <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:16,padding:20,width:"100%",maxWidth:440,maxHeight:"92vh",overflowY:"auto",boxShadow:"0 20px 60px rgba(0,0,0,.25)"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
@@ -16653,6 +16939,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
             <div style={{fontSize:12,color:"#64748b",marginBottom:10,padding:"6px 10px",background:"#f8fafc",borderRadius:8}}>
               <b style={{color:"#1e293b"}}>{t.name}</b> 様{t.plateNo?<span>／{t.plateNo}</span>:null}　{linked?<span style={{color:"#16a34a",fontWeight:700}}>📱LINE連携あり</span>:<span style={{color:"#dc2626",fontWeight:700}}>📱LINE未登録（手動）</span>}
             </div>
+            <LangPicker lang={parkLang} setLang={changeParkLang}/>
+            <div style={{fontSize:10,color:"#94a3b8",marginBottom:6}}>※言語を切り替えると本文が再生成されます（編集内容はリセットされます）</div>
             <div style={{display:"flex",gap:6,marginBottom:8}}>
               <div onClick={()=>setParkMode("greet")} style={tabS(parkMode==="greet")}>①挨拶文</div>
               <div onClick={()=>setParkMode("place")} style={tabS(parkMode==="place")}>②停車場所（手動入力）</div>
@@ -22725,7 +23013,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.432";
+const APP_VERSION="v4.7.433";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
