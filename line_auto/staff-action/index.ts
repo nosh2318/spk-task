@@ -35,6 +35,47 @@ Deno.serve(async (req) => {
   if (!staff[0] || staff[0].active === false) return json({ ok: false, error: "invalid_token" }, 401);
   const staffName = staff[0].name;
 
+  // === 完了(done): タスクをdone化 + Slack通知 ===
+  if (action === "done") {
+    const task_id = String(body.task_id || "").trim();
+    if (!task_id) return json({ ok: false, error: "missing task_id" }, 400);
+    const tk = await sbGet(`tasks?_id=eq.${encodeURIComponent(task_id)}&select=_id,type,name,assigned_vehicle,plate_no,time,return_time,assignee,date,reservation_id&limit=1`);
+    if (!tk[0]) return json({ ok: false, error: "task_not_found" }, 404);
+    const T = tk[0];
+    await sbPatch(`tasks?_id=eq.${encodeURIComponent(task_id)}`, { done: true });
+    // Slack通知（#sapporo_operation）
+    const TYPE: Record<string, string> = { DEL: "🚚お届け", COL: "🧭回収", "洗車": "🧽洗車", PU: "🚐送迎お迎え", PUB: "🚌バスお迎え", BD: "🚐お見送り", BDB: "🚌バスお見送り", "返却": "🔑返却", "来店": "🏠来店" };
+    const tlabel = TYPE[T.type] || T.type;
+    const cust = T.name ? `${T.name}様` : "";
+    const veh = T.assigned_vehicle ? `${T.assigned_vehicle}${T.plate_no ? " (" + T.plate_no + ")" : ""}` : "未配車";
+    const tmv = T.time || T.return_time || "";
+    const nowJ = new Date(Date.now() + 9 * 3600 * 1000);
+    const hhmm = `${String(nowJ.getUTCHours()).padStart(2, "0")}:${String(nowJ.getUTCMinutes()).padStart(2, "0")}`;
+    const md = (T.date || "").split("-"); const mdstr = md.length === 3 ? `${+md[1]}/${+md[2]}` : (T.date || "");
+    const SLACK = Deno.env.get("SLACK_BOT_TOKEN") || "";
+    const CH = Deno.env.get("STAFF_DONE_CHANNEL") || "";
+    let posted = false;
+    if (SLACK && CH) {
+      const blocks = [
+        { type: "header", text: { type: "plain_text", text: "✅ タスク完了", emoji: true } },
+        { type: "section", fields: [
+          { type: "mrkdwn", text: `*👤 担当*\n${staffName}` },
+          { type: "mrkdwn", text: `*🕐 完了時刻*\n${mdstr} ${hhmm}` },
+          { type: "mrkdwn", text: `*📋 内容*\n${tlabel}　${cust}` },
+          { type: "mrkdwn", text: `*🚗 車両*\n${veh}${tmv ? "　" + tmv : ""}` },
+        ] },
+      ];
+      try {
+        const sr = await fetch("https://slack.com/api/chat.postMessage", {
+          method: "POST", headers: { Authorization: `Bearer ${SLACK}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ channel: CH, text: `✅ タスク完了：${staffName} / ${tlabel} ${cust}`, blocks }),
+        });
+        const sj = await sr.json(); posted = !!sj.ok;
+      } catch { /* noop */ }
+    }
+    return json({ ok: true, done: true, posted, staff: staffName });
+  }
+
   // 2) 予約取得
   const resv = await sbGet(`reservations?id=eq.${encodeURIComponent(resv_no)}&select=id,name,ota,status,mypage_token`);
   if (!resv[0]) return json({ ok: false, error: "reservation_not_found" }, 404);
