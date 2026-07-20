@@ -68,9 +68,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v984';
+var CV='spk-v985';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=871').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=872').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -15399,9 +15399,45 @@ function RequestModal({task,staff,onClose}){
     </div>
   </div>;
 }
+function BulkRequestModal({taskIds,tasks,staff,onClose,onDone}){
+  const list=(staff||[]).filter(s=>s&&s.active!==false&&s.name).map(s=>s.name);
+  const[sel,setSel]=useState([]);const[busy,setBusy]=useState(false);
+  const toggle=n=>setSel(p=>p.includes(n)?p.filter(x=>x!==n):[...p,n]);
+  const tlabel=t=>({DEL:"お届け",COL:"回収","洗車":"洗車",PU:"送迎",PUB:"バス送迎",BD:"見送り",BDB:"バス見送り","返却":"返却"}[t.type]||t.type);
+  const selTasks=(tasks||[]).filter(t=>taskIds.includes(t._id));
+  const save=async()=>{
+    if(!sel.length){alert("依頼先（スタッフ）を選択してください");return;}
+    if(!window.confirm(taskIds.length+"件のタスクを "+sel.length+"名に依頼します。よろしいですか？"))return;
+    setBusy(true);
+    try{await Promise.all(taskIds.map(id=>sb.from("tasks").update({requested_to:sel}).eq("_id",id)));
+      alert("📢 "+taskIds.length+"件のタスクを "+sel.length+"名に依頼しました。\n先着で「承認」した方が各タスクの担当になります（スタッフ個人URLに表示）。");
+      onDone();
+    }catch(e){setBusy(false);alert("保存に失敗しました："+(e&&e.message||e));}
+  };
+  return <div onClick={onClose} style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,.5)",zIndex:10000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+    <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:16,padding:20,width:"100%",maxWidth:420,maxHeight:"92vh",overflowY:"auto",boxShadow:"0 20px 60px rgba(0,0,0,.25)"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+        <div style={{fontSize:15,fontWeight:800,color:"#1e293b"}}>📢 複数タスクを依頼（{taskIds.length}件）</div>
+        <button onClick={onClose} style={{background:"none",border:"none",fontSize:20,color:"#94a3b8",cursor:"pointer"}}>✕</button>
+      </div>
+      <div style={{fontSize:11,color:"#64748b",marginBottom:10,padding:"8px 10px",background:"#f8fafc",borderRadius:8,maxHeight:120,overflowY:"auto"}}>
+        {selTasks.map((t,i)=><div key={t._id||i} style={{padding:"2px 0",borderBottom:i<selTasks.length-1?"1px solid #eef2f7":"none"}}><b style={{color:"#1e293b"}}>{tlabel(t)}</b>{t.time?" "+t.time:""}　{t.name?t.name+"様":""}　{t.assignedVehicle||t.vehicle||""}</div>)}
+      </div>
+      <div style={{fontSize:12,fontWeight:700,color:"#475569",marginBottom:6}}>誰に依頼しますか？（複数選択可）</div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:10}}>
+        {list.map(n=>{const on=sel.includes(n);return <button key={n} onClick={()=>toggle(n)} style={{padding:"9px 8px",borderRadius:8,border:"2px solid "+(on?"#f59e0b":"#e2e8f0"),background:on?"#fffbeb":"#fff",color:on?"#b45309":"#334155",fontWeight:on?800:600,fontSize:13,cursor:"pointer",textAlign:"left"}}>{on?"✓ ":"　"}{n}</button>;})}
+      </div>
+      {list.length===0&&<div style={{fontSize:12,color:"#dc2626",marginBottom:10}}>スタッフが登録されていません</div>}
+      <div style={{fontSize:10,color:"#94a3b8",marginBottom:10}}>※各タスクは、承認した方が担当になります（先着）。既存の依頼は上書きされます。</div>
+      <button onClick={save} disabled={busy} style={{width:"100%",padding:"13px",background:busy?"#fcd34d":"#f59e0b",border:"none",borderRadius:10,fontSize:15,fontWeight:800,color:"#fff",cursor:busy?"wait":"pointer"}}>{busy?"送信中…":("📢 "+taskIds.length+"件を"+(sel.length?sel.length+"名":"")+"に依頼する")}</button>
+    </div>
+  </div>;
+}
 function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFleet,vehicles,staff,resOpts,sheetPlaces,onUpdateSheetPlaces,repeaterMap,jalanPay,isJPaidFn,extraPayFn,cancelledIdsRef,onCancelReservation,onTaskChange}){
   const[requestTask,setRequestTask]=useState(null);
   const[moreTask,setMoreTask]=useState(null);
+  const[bulkMode,setBulkMode]=useState(false);const[bulkSel,setBulkSel]=useState([]);const[bulkReqOpen,setBulkReqOpen]=useState(false);
+  const bulkToggle=id=>setBulkSel(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id]);
   const[dayOff,setDayOff]=useState(0);const selDate=dOff(today,dayOff);const[tasks,setTasks]=useState([]);
   /* ★2026-07-12 洗車「翌日対応(当日貸出洗車)」オーバーレイ: 前日(selDate-1)にある洗車で_nextDayWash=trueのものを、その貸出日=selDateに表示上だけ持ってくる(DB書込なし・日付不変)。 */
   const[nextDayWashOverlay,setNextDayWashOverlay]=useState([]);
@@ -16520,7 +16556,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
           <span style={{fontSize:11,color:"#1d4ed8",fontWeight:700}}>📋 マスター表</span>
           <span style={{fontSize:10,color:"#64748b"}}>行タップで編集画面へ</span>
           <span style={{fontSize:9,color:"#64748b",background:"#fff",border:"1px solid #e2e8f0",borderRadius:6,padding:"2px 6px"}}>✅完了／⋯操作メニュー(🔖マーク・📢依頼・⏰時間調整・🅿️事前駐車・⏳遅延)※橙枠=実施済あり</span>
-          <button onClick={()=>{setEditResId(null);setEditBlock(null);setSheetFilter("edit");}} style={{marginLeft:"auto",padding:"3px 10px",background:"#dc2626",color:"#fff",border:"none",borderRadius:6,fontSize:10,fontWeight:700,cursor:"pointer"}}>編集タブへ</button>
+          <button onClick={()=>{setBulkMode(m=>{if(m)setBulkSel([]);return !m;});}} style={{marginLeft:"auto",padding:"3px 10px",background:bulkMode?"#f59e0b":"#fff7ed",color:bulkMode?"#fff":"#b45309",border:"1px solid #f59e0b",borderRadius:6,fontSize:10,fontWeight:800,cursor:"pointer"}}>{bulkMode?"✕ 選択終了":"📢 複数選択して依頼"}</button>
+          <button onClick={()=>{setEditResId(null);setEditBlock(null);setSheetFilter("edit");}} style={{padding:"3px 10px",background:"#dc2626",color:"#fff",border:"none",borderRadius:6,fontSize:10,fontWeight:700,cursor:"pointer"}}>編集タブへ</button>
         </div>
         <div className="bg-white rounded-lg border border-gray-200 overflow-hidden mb-2"><div style={{overflowX:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:10,whiteSpace:"nowrap"}}><thead><tr style={{background:"#f1f5f9"}}>
@@ -16546,17 +16583,21 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
             const _marked=!!(t._changed&&t._changed._mark); // ★マーク(印だけ・完了ではない)
             const _moreActive=_marked||!!(t.reservationId&&(actionDoneOf(t.reservationId,"time_adjust")||actionDoneOf(t.reservationId,"advance_park")||actionDoneOf(t.reservationId,"advance_park_place")||actionDoneOf(t.reservationId,"col_delay")||actionDoneOf(t.reservationId,"del_delay")||actionDoneOf(t.reservationId,"depart")||actionDoneOf(t.reservationId,"collect")));
             const cellS={padding:"3px 4px",borderBottom:"1px solid #f1f5f9",borderRight:"1px solid #f1f5f9",opacity:_wGray?0.55:(t.done?0.4:1),verticalAlign:"middle",background:_wGray?"#f1f5f9":_wToday?"#eff6ff":isCxl?"#ffedd5":isChgReq?"#fef9c3":_isLinked?"#ecfdf5":(_marked&&!t.done?"#fffbeb":rowBg),cursor:t.reservationId?"pointer":"default"};
-            const rowClick=()=>{if(!t.reservationId||isWash)return;setEditResId(t.reservationId);setEditBlock(null);setSheetFilter("edit");};
-            return <tr key={t._id} onClick={rowClick} style={{background:isCxl?"#ffedd5":isChgReq?"#fef9c3":hasAlert?"#fef2f2":"transparent",outline:isCxl?"2px solid #fb923c":isChgReq?"2px solid #eab308":"none"}}>
+            const _bsel=bulkMode&&!!t._id&&bulkSel.includes(t._id);
+            const rowClick=()=>{if(bulkMode){if(t._id)bulkToggle(t._id);return;}if(!t.reservationId||isWash)return;setEditResId(t.reservationId);setEditBlock(null);setSheetFilter("edit");};
+            return <tr key={t._id} onClick={rowClick} style={{background:_bsel?"#fef3c7":isCxl?"#ffedd5":isChgReq?"#fef9c3":hasAlert?"#fef2f2":"transparent",outline:_bsel?"2px solid #f59e0b":isCxl?"2px solid #fb923c":isChgReq?"2px solid #eab308":"none",cursor:bulkMode&&t._id?"pointer":undefined}}>
               <td style={{...cellS,textAlign:"center",fontSize:8,color:"#94a3b8"}}>{ri+1}</td>
               <td style={{...cellS,textAlign:"center"}}><div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:5}}>
+                {bulkMode?(t._id?<span onClick={e=>{e.stopPropagation();bulkToggle(t._id);}} title="このタスクを依頼対象に選択" style={{fontSize:22,cursor:"pointer",lineHeight:1,color:_bsel?"#f59e0b":"#cbd5e1"}}>{_bsel?"☑":"☐"}</span>:<span style={{fontSize:12,color:"#e2e8f0"}}>—</span>):<React.Fragment>
                 <span onClick={e=>{e.stopPropagation();const next=!t.done;if(!window.confirm((next?"完了":"未完了")+"にしますか？"))return;_save(t._id,{...t,done:next});}} title={t.done?"完了（タップで未完了に戻す）":"タップで完了にする"} style={{fontSize:15,cursor:"pointer",lineHeight:1}}>{t.done?"✅":"⬜"}</span>
                 {(t._id||t.reservationId)&&<span onClick={e=>{e.stopPropagation();setMoreTask(t);}} title="操作メニュー（マーク／依頼／時間調整／事前駐車／遅延）" style={{fontSize:13,cursor:"pointer",lineHeight:1,color:"#475569",fontWeight:900,padding:"3px 7px",borderRadius:6,border:"1px solid "+(_moreActive?"#f59e0b":"#cbd5e1"),background:_moreActive?"#fef3c7":"#fff"}}>⋯</span>}
+                </React.Fragment>}
               </div></td>
               <td style={{...cellS,background:(()=>{const n=t.assignee;if(!n||n==="乗り捨て"||n==="無人")return rowBg;const P=["#ffd1d1","#d1e5ff","#d3f5d3","#fff0bf","#e6d1f7","#c4f2ec","#ffe0c4","#ffd1ec","#e2f0bf","#cfd6f7","#f7cfd8","#c4eef7"];let idx=activeMembers.indexOf(n);if(idx<0){let h=0;for(let i=0;i<n.length;i++)h=(h*31+n.charCodeAt(i))>>>0;idx=h;}return P[idx%P.length];})(),boxShadow:t._approvedAt?"inset 0 0 0 3px #f59e0b":undefined}} title={t._approvedAt?("🙋 バイトが承認して引き受け"+(t._approvedBy?"："+t._approvedBy:"")):undefined}>{t._approvedAt&&<span style={{fontSize:8,fontWeight:900,color:"#b45309"}}>🙋承認 </span>}{/* 担当はマスター表で直接変更可・担当者ごとに区別しやすい優しいパステル12色。承認引き受けは橙リング */}
                 <select value={activeMembers.includes(t.assignee)?t.assignee:["乗り捨て","無人"].includes(t.assignee)?t.assignee:t.assignee?"__custom":""} onClick={e=>e.stopPropagation()} onChange={e=>{e.stopPropagation();const v=e.target.value;if(v==="__other"){_save(t._id,mark({...t,_assigneeCustom:true,assignee:""},"assignee"));return;}setTimeout(()=>{if(!window.confirm("担当を「"+(v||"未割当")+"」に変更しますか？"))return;_save(t._id,mark({...t,assignee:v,_assigneeCustom:false},"assignee"));},50);}} style={{border:"none",background:"transparent",fontSize:9,width:"100%",padding:0,color:t.assignee?"#111":"#ccc",fontWeight:600}}>
                   <option value="">-</option>{activeMembers.map(m=><option key={m}>{m}</option>)}<option value="乗り捨て">乗り捨て</option><option value="無人">無人</option><option value="__other">その他...</option>{t.assignee&&!activeMembers.includes(t.assignee)&&!["乗り捨て","無人"].includes(t.assignee)&&<option value="__custom">{t.assignee}</option>}
                 </select>
+                {Array.isArray(t.requested_to)&&t.requested_to.length>0&&!t._approvedAt&&!t.assignee&&<div style={{fontSize:8,fontWeight:800,color:"#b45309",background:"#fff7ed",border:"1px solid #fed7aa",borderRadius:5,padding:"1px 4px",marginTop:2,lineHeight:1.3,whiteSpace:"normal"}}>📢 {t.requested_to.join("・")}さんに依頼中</div>}
               </td>
               <td style={{...cellS,fontWeight:700,color:isWash?(t.time?"#1d4ed8":"#ef4444"):(rTime?"#1d4ed8":"#ef4444"),fontSize:9}}>{isWash?<React.Fragment><select value={t.time||""} onClick={e=>e.stopPropagation()} onChange={e=>{e.stopPropagation();const v=e.target.value;setTimeout(()=>{if(!window.confirm("洗車時間を「"+(v||"未設定")+"」に変更しますか？"))return;_save(t._id,{...t,time:v});},50);}} style={{border:"none",background:"transparent",fontSize:9,fontWeight:700,color:t.time?"#1d4ed8":"#ef4444",width:"100%",padding:0,cursor:"pointer"}}><option value="">-</option>{TIME_OPTS.filter(o=>o).map(o=><option key={o} value={o}>{o}</option>)}</select>{_linkRet&&_linkRet.rt?<div title="返却後に洗車が必要（返却時刻以降）" style={{fontSize:7,color:"#0d9488",fontWeight:800,lineHeight:1.1,marginTop:1}}>🕐{_linkRet.rt}以降</div>:null}</React.Fragment>:<div>{rTime||"-"}{(()=>{const orig=t.time||"";const changed=rTime||"";if(orig&&changed&&orig!==changed)return <div style={{fontSize:7,color:"#dc2626",fontWeight:600,lineHeight:1}}>←{orig}</div>;return null;})()}</div>}</td>
               <td style={{...cellS,fontWeight:700,color:tm.c,fontSize:10}}>{t.typeChange?<span title={t.typeChange}>{t.type}<span style={{fontSize:7,color:"#f59e0b",marginLeft:2}}>*</span></span>:(t.type||"")}</td>
@@ -17022,6 +17063,13 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
             </div>
           </div>
         </div>;})()}
+      {bulkMode&&<div style={{position:"fixed",left:0,right:0,bottom:0,zIndex:9998,background:"#1e293b",color:"#fff",padding:"12px 16px",display:"flex",alignItems:"center",gap:10,boxShadow:"0 -4px 20px rgba(0,0,0,.25)"}}>
+        <span style={{fontSize:14,fontWeight:800}}>📢 {bulkSel.length}件 選択中</span>
+        {bulkSel.length>0&&<button onClick={()=>setBulkSel([])} style={{fontSize:11,fontWeight:700,color:"#cbd5e1",background:"rgba(255,255,255,.12)",border:"none",borderRadius:8,padding:"6px 10px",cursor:"pointer"}}>全解除</button>}
+        <button onClick={()=>{if(!bulkSel.length){alert("依頼するタスクを選択してください（行をタップ）");return;}setBulkReqOpen(true);}} disabled={!bulkSel.length} style={{marginLeft:"auto",fontSize:14,fontWeight:800,color:bulkSel.length?"#1e293b":"#94a3b8",background:bulkSel.length?"#f59e0b":"#475569",border:"none",borderRadius:10,padding:"10px 18px",cursor:bulkSel.length?"pointer":"default"}}>📢 依頼する</button>
+        <button onClick={()=>{setBulkMode(false);setBulkSel([]);}} style={{fontSize:13,fontWeight:700,color:"#fff",background:"rgba(255,255,255,.12)",border:"none",borderRadius:10,padding:"10px 14px",cursor:"pointer"}}>終了</button>
+      </div>}
+      {bulkReqOpen&&<BulkRequestModal taskIds={bulkSel} tasks={tasks} staff={staff} onClose={()=>setBulkReqOpen(false)} onDone={()=>{setBulkReqOpen(false);setBulkMode(false);setBulkSel([]);loadTasks(selDate);}}/>}
     </div>
   </div>;
 }
@@ -23081,7 +23129,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.439";
+const APP_VERSION="v4.7.440";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
