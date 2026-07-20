@@ -29,6 +29,12 @@ function json(b: unknown, s: number, o: string | null) { return new Response(JSO
 
 async function sbGet(t: string, q: string): Promise<any[]> { const r = await fetch(`${SB_URL}/rest/v1/${t}?${q}`, { headers: H }); if (!r.ok) { console.error(`GET ${t}`, await r.text()); return []; } return await r.json(); }
 async function sbPost(t: string, b: unknown): Promise<void> { const r = await fetch(`${SB_URL}/rest/v1/${t}`, { method: "POST", headers: { ...H, Prefer: "return=minimal" }, body: JSON.stringify(b) }); if (!r.ok) console.error(`POST ${t}`, await r.text()); }
+// Slack通知（那覇のマイページ操作＝#okinawa_operations-team / 環境変数で上書き可）
+async function slackPost(text: string, blocks?: unknown): Promise<boolean> {
+  const token = Deno.env.get("SLACK_BOT_TOKEN"); const ch = Deno.env.get("SLACK_NHA_USER_CHANNEL") || "C06L91W6T08";
+  if (!token || !ch) return false;
+  try { const r = await fetch("https://slack.com/api/chat.postMessage", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ channel: ch, text, blocks }) }); const j = await r.json(); return !!j.ok; } catch { return false; }
+}
 
 // 予約もと（OTA）ラベル
 const OTA_JP: Record<string, string> = { J: "じゃらん", R: "楽天", S: "skyticket", O: "エアトリ", RC: "レンタカーcom", G: "GoGoOut", HP: "オフィシャル(HP)", SP: "オフィシャル(HP)", direct: "直販", KEYDROP: "KEYDROP" };
@@ -73,7 +79,7 @@ Deno.serve(async (req) => {
   // ==== keep-warm ping（DB不使用・即応答）====
   if (action === "ping") return json({ ok: true, warm: true, store: "nha" }, 200, origin);
 
-  if (action !== "lookup") return json({ error: "unsupported action（このEFは閲覧専用=lookupのみ）" }, 400, origin);
+  if (action !== "lookup" && action !== "license_uploaded") return json({ error: "unsupported action（このEFは閲覧専用=lookup/免許証通知のみ）" }, 400, origin);
 
   const token = String(p.token || "").trim();
   if (!token || token.length < 20) return json({ error: "アクセスキーが不正です" }, 400, origin);
@@ -84,6 +90,28 @@ Deno.serve(async (req) => {
   const r = rows[0];
   if (!r) return json({ error: "予約が見つかりません" }, 404, origin);
   const resId = String(r.id);
+
+  // ---- license_uploaded: お客様がマイページから免許証をアップした完了通知（Slack・那覇） ----
+  if (action === "license_uploaded") {
+    const cnt = Math.max(1, Math.min(20, parseInt(String(p.count || 1), 10) || 1));
+    const drivers = Math.max(1, Math.min(10, parseInt(String(p.drivers || 1), 10) || 1));
+    const blocks = [
+      { type: "header", text: { type: "plain_text", text: "🪪 免許証アップロード（お客様）", emoji: true } },
+      { type: "section", fields: [
+        { type: "mrkdwn", text: `*お客様:*\n${r.name || "-"}` },
+        { type: "mrkdwn", text: `*予約番号:*\n${resId}` },
+        { type: "mrkdwn", text: `*ご予約元:*\n${r.ota || "-"}` },
+        { type: "mrkdwn", text: `*利用期間:*\n${r.start_date || "-"} 〜 ${r.end_date || "-"}` },
+        { type: "mrkdwn", text: `*車両クラス:*\n${r.vehicle_class || r.vehicle_name || "-"}` },
+        { type: "mrkdwn", text: `*アップ枚数:*\n${cnt}枚（運転者${drivers}名）` },
+      ] },
+      { type: "context", elements: [ { type: "mrkdwn", text: "Googleドライブ（那覇フォルダ）に保存済み。貸渡手続きにご利用ください。" } ] },
+    ];
+    // OPシート「🪪免許OK」表示用にDB記録（upsert）
+    try { await fetch(`${SB_URL}/rest/v1/license_uploads?on_conflict=reservation_id`, { method: "POST", headers: { ...H, Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ reservation_id: resId, store: "nha", cnt, drivers, last_at: new Date().toISOString() }) }); } catch (_) { /* noop */ }
+    await slackPost(`🪪 免許証アップロード完了 [那覇] ${r.name || ""} / ${resId} / ${cnt}枚`, blocks);
+    return json({ ok: true }, 200, origin);
+  }
 
   // 開封記録（best-effort）。★スタッフ閲覧(ro=1)は「顧客の開封」に数えない＝利用状況ダッシュボードの誤カウント防止。
   if (!p.ro) sbPost("rpc/mypage_touch_view", { p_rid: resId, p_store: "nha" }).catch(() => {});

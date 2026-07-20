@@ -183,7 +183,13 @@ async function patchTasksSpk(store: any, resId: string, delPlace: string | null,
   for (const t of tasks) {
     const tp = String(t._id || "");
     const patch: Record<string, unknown> = {};
-    const cj = (t.changed_json && typeof t.changed_json === "object") ? { ...t.changed_json } : {};
+    // 🔴 2026-07-12 根治: tasks.changed_json は text型 → 必ずJSON.parse。旧コードは typeof==="object" が常にfalseで cj={} から作り直し、
+    // 別項目(場所変更)の直後に時間変更すると changed_json を丸ごと上書きして _placeSource=customer/_ssPlace を消していた（→SSパトロールが旧値復元）。
+    const cj: Record<string, unknown> = (() => {
+      const c: any = t.changed_json;
+      if (typeof c === "string") { try { return JSON.parse(c || "{}"); } catch { return {}; } }
+      return (c && typeof c === "object") ? { ...c } : {};
+    })();
     const isDel = tp.startsWith("d-");
     const isCol = tp.startsWith("c-");
     if (delPlace !== null && isDel) { patch.place = delPlace; cj._ssPlace = delPlace; cj._placeSource = "customer"; }
@@ -532,6 +538,28 @@ Deno.serve(async (req) => {
   const r = rows[0];
   if (!r) return json({ error: "予約が見つかりません" }, 404, origin);
   const resId = String(r.id);
+
+  // ---- license_uploaded: お客様がマイページから免許証をアップした完了通知（Slack） ----
+  if (action === "license_uploaded") {
+    const cnt = Math.max(1, Math.min(20, parseInt(String(p.count || 1), 10) || 1));
+    const drivers = Math.max(1, Math.min(10, parseInt(String(p.drivers || 1), 10) || 1));
+    const blocks = [
+      { type: "header", text: { type: "plain_text", text: "🪪 免許証アップロード（お客様）", emoji: true } },
+      { type: "section", fields: [
+        { type: "mrkdwn", text: `*お客様:*\n${r.name || "-"}` },
+        { type: "mrkdwn", text: `*予約番号:*\n${resId}` },
+        { type: "mrkdwn", text: `*ご予約元:*\n${r.ota || "-"}` },
+        { type: "mrkdwn", text: `*利用期間:*\n${r.lend_date || "-"} 〜 ${r.return_date || "-"}` },
+        { type: "mrkdwn", text: `*車両クラス:*\n${r.vehicle || "-"}` },
+        { type: "mrkdwn", text: `*アップ枚数:*\n${cnt}枚（運転者${drivers}名）` },
+      ] },
+      { type: "context", elements: [ { type: "mrkdwn", text: "Googleドライブに保存済み。貸渡手続きにご利用ください。" } ] },
+    ];
+    // OPシート「🪪免許OK」表示用にDB記録（upsert）
+    try { await fetch(`${SB_URL}/rest/v1/license_uploads?on_conflict=reservation_id`, { method: "POST", headers: { ...H, Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ reservation_id: resId, store: "spk", cnt, drivers, last_at: new Date().toISOString() }) }); } catch (_) { /* noop */ }
+    await slackPost(`🪪 免許証アップロード完了 [札幌] ${r.name || ""} / ${resId} / ${cnt}枚`, blocks);
+    return json({ ok: true }, 200, origin);
+  }
 
   // ---- lookup: マイページ表示（正本を1画面に集約）----
   if (action === "lookup") {

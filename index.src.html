@@ -68,9 +68,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v986';
+var CV='spk-v987';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=873').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=874').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -16484,6 +16484,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                   {t.opts&&(t.type==="洗車"||t.type==="DEL"||t.type==="COL")&&<OptBadges opts={t.opts}/>}
                   {t.type!=="洗車"&&ppl>0&&<span style={{fontSize:isMob?11:10,fontWeight:700,color:"#7c3aed",flexShrink:0}}>👥{ppl}</span>}
                   {(t.type==="DEL"||t.type==="COL")&&(t.reservationId||t.reservation_id)&&<LineStatusBadge resvNo={t.reservationId||t.reservation_id} size={isMob?9:8}/>}
+                  {(t.type==="DEL"||t.type==="COL")&&(t.reservationId||t.reservation_id)&&<LicenseBadge resvNo={t.reservationId||t.reservation_id} size={isMob?9:8}/>}
                   {t.done&&<span style={{flexShrink:0}}>✅</span>}
                 </div>
                 {(resolvedP||t.flight||((t.type==="DEL"||t.type==="COL")))&&<div style={{display:"flex",alignItems:"center",gap:6,marginTop:3,flexWrap:"wrap"}}>
@@ -20314,6 +20315,22 @@ function LineStatusBadge({resvNo,size}){
       background:C.bg, color:C.fg, border:"1px solid "+C.bd}
   }, C.t);
 }
+/* LicenseBadge — 2026-07-20: 顧客がマイページで免許証をアップ済み＝「🪪免許OK」表示（license_uploads由来） */
+function LicenseBadge({resvNo,size}){
+  const [n,setN]=React.useState(0);
+  React.useEffect(()=>{
+    const update=()=>{ const m=window._licenseMap||{}; setN(resvNo&&m[resvNo]?m[resvNo]:0); };
+    update();
+    window.addEventListener("licenseUpdate",update);
+    return ()=>window.removeEventListener("licenseUpdate",update);
+  },[resvNo]);
+  if(!n)return null;
+  const fs=size||9;
+  return React.createElement("span",{
+    title:"お客様がマイページで免許証をアップロード済み（"+n+"枚）",
+    style:{fontSize:fs,fontWeight:800,padding:"1px 5px",borderRadius:4,flexShrink:0,whiteSpace:"nowrap",background:"#e0e7ff",color:"#4338ca",border:"1px solid #a5b4fc"}
+  }, "🪪免許OK");
+}
 /* DamageSendList — 2026-07-03: 傷チェック送信リスト（本日・時系列）
    📱OK=自動送信済/予定、📱手動=[📋コピー]→[✅対応]でmanual_done記録 */
 function DamageSendList({sb,store}){
@@ -21122,6 +21139,27 @@ function App(){
     };
     fetchLinks();
     const t=setInterval(()=>{ if(document.visibilityState==="visible")fetchLinks(); }, 5*60*1000);
+    return ()=>clearInterval(t);
+  },[]);
+  // ★ 2026-07-20: 免許証アップロード済みマップ（license_uploads の reservation_id）→ OPで「🪪免許OK」表示
+  useEffect(()=>{
+    if(!sb)return;
+    const fetchLic=async()=>{
+      try{
+        let all=[],from=0;
+        while(true){
+          const{data,error}=await sb.from("license_uploads").select("reservation_id,cnt").range(from,from+999);
+          if(error){console.warn("[license] fetch error:",error.message);break;}
+          (data||[]).forEach(r=>{if(r.reservation_id)all.push(r);});
+          if(!data||data.length<1000)break; from+=1000;
+        }
+        const m={}; all.forEach(r=>{ m[r.reservation_id]=r.cnt||1; });
+        window._licenseMap=m;
+        window.dispatchEvent(new Event("licenseUpdate"));
+      }catch(e){console.warn("[license] exception:",e.message);}
+    };
+    fetchLic();
+    const t=setInterval(()=>{ if(document.visibilityState==="visible")fetchLic(); }, 3*60*1000);
     return ()=>clearInterval(t);
   },[]);
   // ★ 2026-07-15: 連絡手段の可視化。LINE未連携かつ電話・メールも無い予約＝連絡手段ゼロ（🚨連絡不可）を判定
@@ -22522,7 +22560,7 @@ function App(){
                                 <span style={{fontSize:12,fontWeight:600,color:t.done?"#9ca3af":"#1e293b",textDecoration:t.done?"line-through":"none",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name}</span>
                                 {t.ota&&<OBadge ota={t.ota}/>}
                                 {t.opts&&<OptBadges opts={t.opts}/>}
-                                {(isDel||isCOL)&&(()=>{const rid=t.reservationId||t.reservation_id;return <LineStatusBadge resvNo={rid} size={8}/>;})()}
+                                {(isDel||isCOL)&&(()=>{const rid=t.reservationId||t.reservation_id;return <React.Fragment><LineStatusBadge resvNo={rid} size={8}/><LicenseBadge resvNo={rid} size={8}/></React.Fragment>;})()}
                                 {(isDel||isCOL)&&(()=>{const rid=t.reservationId||t.reservation_id;const _tk=(window._mypageTokenMap||{})[rid];if(!_tk)return null;return <a href={"https://nosh2318.github.io/spk-task/my.html?t="+_tk+"&ro=1"} target="_blank" rel="noopener" onClick={e=>e.stopPropagation()} title="お客様マイページ（閲覧専用）" style={{fontSize:8,fontWeight:800,padding:"1px 5px",borderRadius:4,background:"#0e7a6b",color:"#fff",textDecoration:"none",whiteSpace:"nowrap",flexShrink:0}}>🪪MyP</a>;})()}
                                 {t.ota==="J"&&(()=>{const rid=t.reservationId||t.reservation_id;const done=isJPaidFn(rid);return <span style={{fontSize:8,fontWeight:700,padding:"1px 5px",borderRadius:4,background:done?"#dcfce7":"#fef2f2",color:done?"#16a34a":"#dc2626",flexShrink:0}}>{done?"💳決済":"💳未決済"}</span>;})()}{(()=>{const ep=extraPayFn&&extraPayFn(t.reservationId||t.reservation_id);if(!ep)return null;const pd=ep.status==="paid";return <span title="オプション/補償の追加分" style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:4,marginLeft:3,background:pd?"#dbeafe":"#fef9c3",color:pd?"#1d4ed8":"#a16207"}}>{pd?"追加済":"追加未"}</span>;})()}
                                 {isPlaceMissing(t)&&<PlaceAlert size={8}/>}
@@ -22612,6 +22650,7 @@ function App(){
                           {t.opts&&(t.type==="洗車"||t.type==="DEL"||t.type==="COL")&&<OptBadges opts={t.opts}/>}
                           {t.type!=="洗車"&&ppl>0&&<span style={{fontSize:isMob?11:10,fontWeight:700,color:"#7c3aed",flexShrink:0}}>👥{ppl}</span>}
                           {(t.type==="DEL"||t.type==="COL")&&(t.reservationId||t.reservation_id)&&<LineStatusBadge resvNo={t.reservationId||t.reservation_id} size={isMob?9:8}/>}
+                  {(t.type==="DEL"||t.type==="COL")&&(t.reservationId||t.reservation_id)&&<LicenseBadge resvNo={t.reservationId||t.reservation_id} size={isMob?9:8}/>}
                           {t.done&&<span style={{flexShrink:0}}>✅</span>}
                         </div>
                         {(resolvedP||t.flight)&&<div style={{display:"flex",alignItems:"center",gap:6,marginTop:3,flexWrap:"wrap"}}>
@@ -23129,7 +23168,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.441";
+const APP_VERSION="v4.7.442";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
