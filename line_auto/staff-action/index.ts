@@ -29,7 +29,7 @@ Deno.serve(async (req) => {
   const resv_no = String(body.resv_no || "").trim();
   const action = String(body.action || "").trim();
   if (!token || !action) return json({ ok: false, error: "missing params" }, 400);
-  if (action !== "done" && !resv_no) return json({ ok: false, error: "missing resv_no" }, 400);
+  if (action !== "done" && action !== "approve" && !resv_no) return json({ ok: false, error: "missing resv_no" }, 400);
 
   // 1) staff token 検証
   const staff = await sbGet(`staff?share_token=eq.${encodeURIComponent(token)}&select=name,active&limit=1`);
