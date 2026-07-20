@@ -36,6 +36,46 @@ Deno.serve(async (req) => {
   if (!staff[0] || staff[0].active === false) return json({ ok: false, error: "invalid_token" }, 401);
   const staffName = staff[0].name;
 
+  // === 承認(approve): 依頼タスクを引き受け → assignee=自分 + requested_to クリア + Slack ===
+  if (action === "approve") {
+    const task_id = String(body.task_id || "").trim();
+    if (!task_id) return json({ ok: false, error: "missing task_id" }, 400);
+    const tk = await sbGet(`tasks?_id=eq.${encodeURIComponent(task_id)}&select=_id,type,name,assigned_vehicle,plate_no,time,return_time,date,requested_to,assignee&limit=1`);
+    if (!tk[0]) return json({ ok: false, error: "task_not_found" }, 404);
+    const T = tk[0];
+    const reqTo: string[] = Array.isArray(T.requested_to) ? T.requested_to : [];
+    const sur = staffName.split(" ")[0];
+    const offered = reqTo.some((n: string) => n === staffName || n.replace(/\s/g, "") === staffName.replace(/\s/g, "") || n === sur);
+    if (!offered) return json({ ok: false, error: "not_offered" }, 403);
+    // 既に他の人が引き受けていないか（先着）
+    if (T.assignee && T.assignee.trim() && T.assignee.replace(/\s/g, "") !== staffName.replace(/\s/g, "") && T.assignee !== sur) {
+      return json({ ok: false, error: "already_taken", taken_by: T.assignee });
+    }
+    await sbPatch(`tasks?_id=eq.${encodeURIComponent(task_id)}`, { assignee: staffName, requested_to: null });
+    // Slack通知
+    const TYPE: Record<string, string> = { DEL: "🚚お届け", COL: "🧭回収", "洗車": "🧽洗車", PU: "🚐送迎お迎え", PUB: "🚌バスお迎え", BD: "🚐お見送り", BDB: "🚌バスお見送り", "返却": "🔑返却", "来店": "🏠来店" };
+    const tlabel = TYPE[T.type] || T.type;
+    const cust = T.name ? `${T.name}様` : "";
+    const veh = T.assigned_vehicle ? `${T.assigned_vehicle}${T.plate_no ? " (" + T.plate_no + ")" : ""}` : "";
+    const tmv = T.time || T.return_time || "";
+    const md = (T.date || "").split("-"); const mdstr = md.length === 3 ? `${+md[1]}/${+md[2]}` : (T.date || "");
+    const SLACK = Deno.env.get("SLACK_BOT_TOKEN") || "", CH = Deno.env.get("STAFF_DONE_CHANNEL") || "";
+    let posted = false;
+    if (SLACK && CH) {
+      const blocks = [
+        { type: "header", text: { type: "plain_text", text: "🙋 タスク承認（引き受け）", emoji: true } },
+        { type: "section", fields: [
+          { type: "mrkdwn", text: `*👤 引き受け*\n${staffName}` },
+          { type: "mrkdwn", text: `*🗓 日時*\n${mdstr}${tmv ? " " + tmv : ""}` },
+          { type: "mrkdwn", text: `*📋 内容*\n${tlabel}　${cust}` },
+          { type: "mrkdwn", text: `*🚗 車両*\n${veh || "—"}` },
+        ] },
+      ];
+      try { const sr = await fetch("https://slack.com/api/chat.postMessage", { method: "POST", headers: { Authorization: `Bearer ${SLACK}`, "Content-Type": "application/json" }, body: JSON.stringify({ channel: CH, text: `🙋 ${staffName} が ${tlabel} ${cust} を引き受けました`, blocks }) }); const sj = await sr.json(); posted = !!sj.ok; } catch { /* noop */ }
+    }
+    return json({ ok: true, approved: true, posted, staff: staffName });
+  }
+
   // === 完了(done): タスクをdone化 + Slack通知 ===
   if (action === "done") {
     const task_id = String(body.task_id || "").trim();
