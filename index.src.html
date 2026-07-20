@@ -68,9 +68,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v988';
+var CV='spk-v989';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=875').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=876').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -20408,6 +20408,94 @@ function DamageSendList({sb,store}){
     </div>}
   </div>;
 }
+/* LicenseSendList — 2026-07-21: 免許証チェックリスト（当日〜3日先の出発・未完了）
+   完了判定=window._licenseMap(license_uploads由来)。📱OK=📤リマインド送信(line-send)、📱手動=[📋コピー]→[✅対応] */
+function LicenseSendList({sb,store}){
+  const [rows,setRows]=React.useState([]);
+  const [open,setOpen]=React.useState(true);
+  const [ver,setVer]=React.useState(0);
+  const isNha=store==="nha";
+  const days=React.useMemo(()=>{const a=[];for(let i=0;i<=3;i++){const d=new Date();d.setDate(d.getDate()+i);a.push(d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"));}return a;},[ver]);
+  const licBase=isNha?"https://nosh2318.github.io/naha-project/license.html":"https://nosh2318.github.io/spk-task/license.html";
+  const buildMsg=(r)=>{const cn=(r.name||"")+"様";const url=licBase+"?id="+encodeURIComponent(r.resv)+"&name="+encodeURIComponent(r.name||"");return "この度はHANDYMANをご利用頂きまして誠にありがとうございます。\n\n【HANDYMAN"+(isNha?"那覇":"札幌")+"】ご出発前に 運転免許証のご提出をお願いいたします。\n"+cn+"\n運転される方 全員分の運転免許証（表面）を、下記ページからご登録ください（アプリ不要・スマホで撮影→送信）。\n"+url+"\n※ご提出が確認できない場合、当日の貸渡ができないことがございます。ご協力をお願いいたします。";};
+  const load=React.useCallback(async()=>{
+    if(!sb)return;
+    try{
+      let tasks=[];
+      if(isNha){
+        const{data}=await sb.from("nha_tasks").select("date,時間,予約者,担当,予約番号,内容").in("date",days);
+        tasks=(data||[]).filter(t=>["PUB","DEL","来店"].includes(t["内容"])).map(t=>({date:t.date,time:t["時間"]||"",name:t["予約者"]||"",assignee:t["担当"]||"",resv:t["予約番号"]||"",type:t["内容"]}));
+      }else{
+        const{data}=await sb.from("tasks").select("date,time,name,assignee,reservation_id,type").in("date",days).eq("type","DEL").neq("deleted",true);
+        tasks=(data||[]).map(t=>({date:t.date,time:t.time||"",name:t.name||"",assignee:t.assignee||"",resv:t.reservation_id||"",type:t.type}));
+      }
+      tasks=tasks.filter(t=>t.resv);
+      const byResv={};
+      tasks.forEach(t=>{const k=t.resv;if(!byResv[k]||(t.date+" "+t.time)<(byResv[k].date+" "+byResv[k].time))byResv[k]=t;});
+      const uniq=Object.values(byResv);
+      const resvs=uniq.map(t=>t.resv);
+      const sendsTbl=isNha?"nha_line_sends":"spk_line_sends";
+      const sendMap={};
+      if(resvs.length){
+        const{data:sd}=await sb.from(sendsTbl).select("resv_no,status,sent_at").eq("action","license_reminder").in("resv_no",resvs).order("sent_at",{ascending:false});
+        (sd||[]).forEach(s=>{ if(!sendMap[s.resv_no])sendMap[s.resv_no]=s; });
+      }
+      const linkM=window._lineLinkMap||{}, licM=window._licenseMap||{};
+      const out=uniq.map(t=>{
+        const s=sendMap[t.resv];
+        let sendStatus="none";
+        if(s&&s.status==="sent")sendStatus="sent"; else if(s&&s.status==="manual_done")sendStatus="manual_done";
+        return {...t,done:!!licM[t.resv],ok:!!linkM[t.resv],sendStatus,at:s?s.sent_at:null};
+      }).sort((a,b)=>{ if(a.done!==b.done)return a.done?1:-1; return (a.date+" "+(a.time||"99")).localeCompare(b.date+" "+(b.time||"99")); });
+      setRows(out);
+    }catch(e){console.warn("[licSendList]",e.message);}
+  },[sb,store,isNha,days]);
+  React.useEffect(()=>{ load(); const u=()=>load(); window.addEventListener("licenseUpdate",u); const t=setInterval(()=>{if(document.visibilityState==="visible")setVer(v=>v+1);},120000); return ()=>{window.removeEventListener("licenseUpdate",u);clearInterval(t);}; },[load]);
+  const sendLine=async(r)=>{
+    if(!window.confirm((r.name||"")+" 様に「免許証ご提出のお願い」をLINE送信します。よろしいですか？"))return;
+    const msg=buildMsg(r);
+    try{
+      const{data:_s}=await sb.auth.getSession();const tk=_s&&_s.session&&_s.session.access_token;
+      const res=await fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/line-send",{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+tk},body:JSON.stringify({store,resv_no:r.resv,action:"license_reminder",message:msg})});
+      const j=await res.json();
+      if(j.ok){alert("✅ 免許証提出のお願いをLINE送信しました");load();}
+      else{await navigator.clipboard.writeText(msg);alert("⚠️自動送信できませんでした("+(j.reason||"")+")。\n案内文をコピーしました→LINE/エルメに貼り付けて送ってください。");}
+    }catch(e){try{await navigator.clipboard.writeText(msg);}catch(_){}alert("⚠️送信エラー。案内文をコピーしました→手動で送ってください。");}
+  };
+  const copyMsg=async(r)=>{const msg=buildMsg(r);try{await navigator.clipboard.writeText(msg);alert("📋 免許証案内をコピーしました。\nエルメ/LINEに貼り付けて送ってください。\n送信したら『✅対応』を押してください。");}catch(e){alert("コピーに失敗しました");}};
+  const markDone=async(r)=>{const tbl=isNha?"nha_line_sends":"spk_line_sends";try{await sb.from(tbl).insert({resv_no:r.resv,action:"license_reminder",status:"manual_done",message:"手動対応"});load();}catch(e){alert("記録に失敗:"+e.message);}};
+  const fmt=(iso)=>{try{const d=new Date(iso);return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");}catch(e){return"";}};
+  const md=(dt)=>{try{return String(dt).slice(5).replace("-","/");}catch(e){return dt;}};
+  const notDone=rows.filter(r=>!r.done).length;
+  if(!rows.length)return <div style={{padding:16,color:"#94a3b8",fontSize:13,textAlign:"center"}}>直近（当日〜3日先）の出発予約はありません。</div>;
+  return <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:12,margin:"8px 0",overflow:"hidden"}}>
+    <div onClick={()=>setOpen(o=>!o)} style={{padding:"10px 12px",background:"#eff6ff",cursor:"pointer",display:"flex",alignItems:"center",gap:8,borderBottom:open?"1px solid #bfdbfe":"none"}}>
+      <span style={{fontSize:14,fontWeight:800,color:"#0f172a"}}>🪪 免許証チェック（当日〜3日先 {rows.length}件）</span>
+      {notDone>0&&<span style={{fontSize:11,fontWeight:800,color:"#fff",background:"#dc2626",padding:"1px 8px",borderRadius:10}}>未提出 {notDone}</span>}
+      <span style={{marginLeft:"auto",fontSize:12,color:"#64748b"}}>{open?"▲":"▼"}</span>
+    </div>
+    {open&&<div>
+      {rows.map((r,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:6,padding:"7px 10px",borderBottom:"1px solid #f1f5f9",flexWrap:"wrap",fontSize:12,opacity:r.done?.55:1}}>
+        <span style={{fontFamily:"monospace",fontWeight:800,color:"#334155",width:78}}>{md(r.date)} {r.time||"--:--"}</span>
+        <span style={{fontSize:9,fontWeight:800,color:"#2563eb"}}>{r.type}</span>
+        <span style={{fontWeight:700,color:"#0f172a",maxWidth:110,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name||"名前なし"}</span>
+        {r.assignee&&<span style={{fontSize:10,background:"#dbeafe",color:"#1d4ed8",fontWeight:700,padding:"1px 6px",borderRadius:4}}>👤{r.assignee}</span>}
+        <LineStatusBadge resvNo={r.resv} size={9}/>
+        <span style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:5}}>
+          {r.done&&<span style={{fontSize:11,fontWeight:800,color:"#15803d"}}>✅提出済</span>}
+          {!r.done&&r.sendStatus==="sent"&&<span style={{fontSize:11,fontWeight:700,color:"#0284c7"}}>📤送信済{r.at?" "+fmt(r.at):""}</span>}
+          {!r.done&&r.sendStatus==="manual_done"&&<span style={{fontSize:11,fontWeight:700,color:"#15803d"}}>✅対応済{r.at?" "+fmt(r.at):""}</span>}
+          {!r.done&&r.sendStatus==="none"&&r.ok&&<button onClick={()=>sendLine(r)} style={{fontSize:10,fontWeight:800,padding:"4px 9px",borderRadius:6,background:"#2563eb",color:"#fff",border:"none",cursor:"pointer"}}>📤リマインド送信</button>}
+          {!r.done&&r.sendStatus==="none"&&!r.ok&&<span style={{display:"flex",gap:5}}>
+            <button onClick={()=>copyMsg(r)} style={{fontSize:10,fontWeight:800,padding:"4px 9px",borderRadius:6,background:"#64748b",color:"#fff",border:"none",cursor:"pointer"}}>📋コピー</button>
+            <button onClick={()=>markDone(r)} style={{fontSize:10,fontWeight:800,padding:"4px 9px",borderRadius:6,background:"#16a34a",color:"#fff",border:"none",cursor:"pointer"}}>✅対応</button>
+          </span>}
+          {!r.done&&r.sendStatus!=="none"&&<button onClick={()=>r.ok?sendLine(r):copyMsg(r)} style={{fontSize:9,fontWeight:700,padding:"3px 7px",borderRadius:5,background:"#f1f5f9",color:"#475569",border:"1px solid #cbd5e1",cursor:"pointer"}}>再送</button>}
+        </span>
+      </div>)}
+    </div>}
+  </div>;
+}
 const DMG_SHARE_BASE="https://nosh2318.github.io/handyman-damage/v.html";
 function DmgShareIcon({code,size}){
   const [info,setInfo]=React.useState(null);
@@ -22380,6 +22468,7 @@ function App(){
               {title:"日常業務",color:"#2563eb",items:[
                 {id:"mypage_admin",ico:"🃏",l:"マイページ管理",external:true,url:"my-admin.html",desc:"顧客マイページの変更・依頼・迷子・カルテを一元監視（カンバン）"},
                 {id:"dmg_send",ico:"🩹",l:"傷チェック送信",desc:"本日の傷チェック自動送信リスト・手動客の送信/対応"},
+                {id:"lic_send",ico:"🪪",l:"免許証チェック",desc:"当日〜3日先の出発で免許証未提出のリスト・リマインド送信/コピー"},
                 {id:"todo",ico:"✅",l:"タスク管理",desc:"目標・担当タスク・進捗・個人/チーム評価"},
                 {id:"fleet",ico:"🚗",l:"配車",desc:"予約の車両配車・タイムライン",badge:data.length>0?data.length+"件":null},
                 {id:"inventory",ico:"📦",l:"在庫管理",desc:"予約の在庫調整・取込・送信を一元管理",badge:invTodoCount>0?invTodoCount+"件未調整":null},
@@ -22802,6 +22891,7 @@ function App(){
           {tab==="accounting"&&<PASGuard label="会計管理" code="1121"><AccountingPanel staff={staff}/></PASGuard>}
           {tab==="recv_invoice"&&<ReceivedInvoicesTab sb={sb} store="spk" vehicles={vehicles}/>}
           {tab==="dmg_send"&&<div style={{padding:"12px",maxWidth:720,margin:"0 auto"}}><h2 style={{fontSize:16,fontWeight:800,margin:"4px 0 8px"}}>🩹 傷チェック送信リスト</h2><DamageSendList sb={sb} store="spk"/></div>}
+          {tab==="lic_send"&&<div style={{padding:"12px",maxWidth:720,margin:"0 auto"}}><h2 style={{fontSize:16,fontWeight:800,margin:"4px 0 8px"}}>🪪 免許証チェックリスト</h2><LicenseSendList sb={sb} store="spk"/></div>}
           {tab==="inventory"&&<InventoryTab data={data} sb={sb} store="spk" onCancel={cancelReservation}/>}
           {tab==="kdcancel"&&<div style={{height:"100%",overflowY:"auto",WebkitOverflowScrolling:"touch"}}><div style={{maxWidth:780,margin:"0 auto",padding:"4px 2px 40px"}}><KdHub/><KdTopPatternToggle/><KdActiveList/><KdChangeList/><KdCancelList/></div></div>}
           {tab==="jalanpay"&&<JalanPayment data={data} jalanPay={jalanPay} onJalanPayChange={(id,d)=>{setJalanPay(p=>({...p,[id]:d}));DB.saveJalanPayment(id,d);}}/>}
@@ -23168,7 +23258,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.443";
+const APP_VERSION="v4.7.444";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
