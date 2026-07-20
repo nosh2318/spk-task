@@ -587,8 +587,10 @@ Deno.serve(async (req) => {
     const chgP = sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&order=created_at.desc&limit=10&select=field,old_value,new_value,source,status,actor,created_at`);
     // エルメ受付フォーム回答（予約番号完全一致）＝reservations/OPが空でも顧客の回答済み場所を表示
     const linkP = sbGet("spk_line_links", `resv_no=eq.${encodeURIComponent(resId)}&select=del_place,col_place,del_time,col_time&limit=1`);
-    const [damageUrl, opTasks, chg, links] = await Promise.all([damageP, opTasksP, chgP, linkP]);
+    const licP = sbGet("license_uploads", `reservation_id=eq.${encodeURIComponent(resId)}&select=cnt,drivers`);
+    const [damageUrl, opTasks, chg, links, licRows] = await Promise.all([damageP, opTasksP, chgP, linkP, licP]);
     const link = links[0] || {};
+    const licCnt = (licRows[0] && licRows[0].cnt) || 0; const licDrivers = (licRows[0] && licRows[0].drivers) || 0;
     // 場所/時間/オプション/補償は OPタスク(d-/c-)も見て「実値のある方」を採用（reservations 側が空のことが多い）。
     const dTask = opTasks.find((t: any) => String(t._id || "").startsWith("d-"));
     const cTask = opTasks.find((t: any) => String(t._id || "").startsWith("c-"));
@@ -646,6 +648,7 @@ Deno.serve(async (req) => {
       },
       damage: { ready: damageReady, url: damageUrl },
       tracking: { active: r.kd_status === "delivering" || r.kd_status === "collecting", kd_status: r.kd_status || null, token: r.kd_track_token || null },
+      license: { cnt: licCnt, drivers: licDrivers },
       pendingCancel, readyPending, recentChanges: chg, history: historyTop,
     }, 200, origin);
   }

@@ -119,7 +119,10 @@ Deno.serve(async (req) => {
   // OPタスク（予約番号一致・墓標除外）＋直近の変更履歴を並列取得
   const opTasksP = sbGet("nha_tasks", `${encodeURIComponent("予約番号")}=eq.${encodeURIComponent(resId)}&deleted=not.is.true&select=_id,${encodeURIComponent("内容")},${encodeURIComponent("時間")},${encodeURIComponent("送迎場所")},${encodeURIComponent("集客")},${encodeURIComponent("返却")},${encodeURIComponent("送迎")},${encodeURIComponent("確定")},${encodeURIComponent("便名")},${encodeURIComponent("変更")},changed_json`);
   const chgP = sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.nha&order=created_at.desc&limit=10&select=field,old_value,new_value,source,status,actor,created_at`);
-  const [opTasksRaw, chg] = await Promise.all([opTasksP, chgP]);
+  const licP = sbGet("license_uploads", `reservation_id=eq.${encodeURIComponent(resId)}&select=cnt,drivers`);
+  const [opTasksRaw, chg, licRows] = await Promise.all([opTasksP, chgP, licP]);
+  const licCnt = (licRows[0] && licRows[0].cnt) || 0;
+  const licDrivers = (licRows[0] && licRows[0].drivers) || 0;
 
   // 日本語列を札幌名に正規化して resolve* を再利用
   const opTasks = (opTasksRaw || []).map((t: any) => ({
@@ -229,6 +232,7 @@ Deno.serve(async (req) => {
     },
     damage: { ready: damageReady, url: damageUrl },
     tracking: { active: r.kd_status === "delivering" || r.kd_status === "collecting", kd_status: r.kd_status || null, token: r.kd_track_token || null },
+    license: { cnt: licCnt, drivers: licDrivers },
     pendingCancel: false, readyPending: false,
     recentChanges: chg, history: historyTop,
     at: nowJst(),
