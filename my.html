@@ -193,8 +193,11 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 <div class="toast" id="toast"></div>
 
 <script>
-const VER = "v6.6 スタッフ閲覧=完全閲覧専用(編集ボタン非表示)";
+const VER = "v6.7 免許証セルフアップロード追加(保存先=Driveドライブ・license.htmlと同一)";
 const FN = "https://ckrxttbnawkclshczsia.supabase.co/functions/v1/handyman-mypage";
+// 免許証アップロードの保存先=GAS「HANDYMAN 免許証保存」→Googleドライブ（license.htmlと完全に同一・store='spk'）
+const GAS_LICENSE_URL = 'https://script.google.com/macros/s/AKfycbyR29DN3sCW2addxE8_Elg2tvCPaopPJPNLlc4JNbQTXemwwVQkbaDER-blieKdMy0P/exec';
+const GAS_LICENSE_SECRET = 'hdm-lic-7c3f9a21';
 const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const RO = new URLSearchParams(location.search).get("ro")==="1"; // スタッフ確認用=閲覧専用（編集・依頼を一切させない）
 const $ = s=>document.querySelector(s);
@@ -215,6 +218,20 @@ const TX={
  not_found:{ja:"予約が見つかりませんでした",en:"Reservation not found",zh:"找不到預約",ko:"예약을 찾을 수 없습니다"},
  your_page:{ja:"様 専用ページ",en:" — Your Reservation Page",zh:" 專屬頁面",ko:"님 전용 페이지"},
  guest:{ja:"お客",en:"Guest",zh:"貴賓",ko:"고객"},
+ lic_title:{ja:"免許証アップロード",en:"Driver's License Upload",zh:"駕照上傳",ko:"면허증 업로드"},
+ lic_desc:{ja:"ご出発をスムーズにするため、運転される方の運転免許証（表面）を事前にアップロードください。外国のお客様はパスポート＋国外運転免許証をお願いします。",en:"To speed up your pickup, please upload the driver's license (front) of the person driving. International customers: passport + international driving permit.",zh:"為使交車更順暢，請事先上傳駕駛人的駕照（正面）。外國旅客請上傳護照＋國際駕照。",ko:"원활한 출발을 위해 운전자의 운전면허증(앞면)을 미리 업로드해 주세요. 해외 고객은 여권＋국제운전면허증을 부탁드립니다."},
+ lic_front:{ja:"表面（必須）",en:"Front (required)",zh:"正面（必填）",ko:"앞면 (필수)"},
+ lic_back:{ja:"裏面（任意）",en:"Back (optional)",zh:"背面（選填）",ko:"뒷면 (선택)"},
+ lic_choose:{ja:"📷 画像を選ぶ／撮影",en:"📷 Choose / Take photo",zh:"📷 選擇／拍照",ko:"📷 이미지 선택／촬영"},
+ lic_change:{ja:"変更",en:"Change",zh:"變更",ko:"변경"},
+ lic_add:{ja:"＋ 別の運転者を追加",en:"+ Add another driver",zh:"＋ 新增其他駕駛人",ko:"＋ 다른 운전자 추가"},
+ lic_driver:{ja:"運転者",en:"Driver",zh:"駕駛人",ko:"운전자"},
+ lic_upload:{ja:"アップロードする",en:"Upload",zh:"上傳",ko:"업로드"},
+ lic_uploading:{ja:"アップロード中…",en:"Uploading…",zh:"上傳中…",ko:"업로드 중…"},
+ lic_need_front:{ja:"表面の画像を選んでください",en:"Please select the front image",zh:"請選擇正面影像",ko:"앞면 이미지를 선택해 주세요"},
+ lic_done:{ja:"✓ アップロードが完了しました。ありがとうございます。",en:"✓ Upload complete. Thank you.",zh:"✓ 上傳完成，謝謝。",ko:"✓ 업로드가 완료되었습니다. 감사합니다."},
+ lic_err:{ja:"アップロードに失敗しました。通信環境をご確認のうえ、再度お試しください。",en:"Upload failed. Please check your connection and try again.",zh:"上傳失敗，請確認網路後再試。",ko:"업로드에 실패했습니다. 통신 상태를 확인 후 다시 시도해 주세요."},
+ lic_note:{ja:"画像は本人確認・貸渡手続きのみに使用し、法令に基づき安全に保管します。",en:"Images are used only for identity verification and rental procedures, and stored securely per regulations.",zh:"影像僅用於身分確認及租賃手續，並依法規安全保管。",ko:"이미지는 본인 확인·대여 절차에만 사용되며 법령에 따라 안전하게 보관됩니다."},
  store:{ja:"店",en:" Store",zh:"店",ko:"점"},
  st_confirmed:{ja:"予約確定",en:"Confirmed",zh:"預約確認",ko:"예약 확정"},
  st_cancelled:{ja:"キャンセル済",en:"Cancelled",zh:"已取消",ko:"취소됨"},
@@ -461,6 +478,72 @@ function readyLatest(){const rc=((DATA&&DATA.recentChanges)||[]).filter(c=>c.fie
 function readyState(){const c=readyLatest();return c?c.status:"none"}
 // 希望時間の目安（new_value末尾の HH:MM を抽出）
 function readyTime(){const c=readyLatest();if(!c)return"";const m=String(c.new_value||"").match(/(\d{1,2}:\d{2})/);return m?m[1]:""}
+/* ===== 免許証セルフアップロード（保存先=GAS→Googleドライブ・license.htmlと同一） ===== */
+let LIC=[{front:null,back:null,fu:null,bu:null}];
+let LIC_BUSY=false;
+function licSlot(i,side){
+  const p=LIC[i], f=p[side], url=side==="front"?p.fu:p.bu, lab=side==="front"?t('lic_front'):t('lic_back');
+  const inputId="lic_"+i+"_"+side;
+  const inner=f
+    ? `<div style="position:relative"><img src="${url}" style="width:100%;height:96px;object-fit:cover;border-radius:10px;border:1.5px solid #cbd5e1"><button onclick="document.getElementById('${inputId}').click()" style="position:absolute;right:6px;bottom:6px;background:rgba(15,31,69,.85);color:#fff;border:none;border-radius:7px;padding:5px 10px;font-size:12px;font-weight:700;cursor:pointer">${t('lic_change')}</button></div>`
+    : `<button onclick="document.getElementById('${inputId}').click()" style="width:100%;height:96px;border:1.5px dashed #cbd5e1;border-radius:10px;background:#f8fafc;color:#64748b;font-size:13px;font-weight:700;cursor:pointer">${t('lic_choose')}</button>`;
+  return `<div style="flex:1;min-width:0">
+    <div style="font-size:12px;font-weight:700;color:#475569;margin-bottom:5px">${lab}</div>
+    ${inner}
+    <input type="file" id="${inputId}" accept="image/*" capture="environment" style="display:none" onchange="licPick(${i},'${side}',this)">
+  </div>`;
+}
+function licBody(){
+  const multi=LIC.length>1;
+  const drivers=LIC.map((p,i)=>`
+    <div style="border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin-bottom:10px;background:#fff">
+      ${multi?`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:13px;font-weight:800;color:#0F1F45">${t('lic_driver')}${i+1}</span>${i>0?`<button onclick="licDel(${i})" style="background:none;border:none;color:#dc2626;font-size:12px;font-weight:700;cursor:pointer">✕</button>`:""}</div>`:""}
+      <div style="display:flex;gap:10px">${licSlot(i,"front")}${licSlot(i,"back")}</div>
+    </div>`).join("");
+  const canUp=LIC.some(p=>p.front)&&!LIC_BUSY;
+  return drivers
+    +`<button onclick="licAdd()" style="width:100%;background:#f1f5f9;color:#334155;border:1px dashed #cbd5e1;border-radius:10px;padding:9px;font-size:13px;font-weight:700;cursor:pointer;margin-bottom:10px">${t('lic_add')}</button>`
+    +`<button id="licUpBtn" onclick="licUpload()" ${canUp?"":"disabled"} style="width:100%;background:${canUp?"#0F1F45":"#cbd5e1"};color:#fff;border:none;border-radius:11px;padding:13px;font-size:15px;font-weight:800;cursor:${canUp?"pointer":"default"}">${LIC_BUSY?t('lic_uploading'):t('lic_upload')}</button>`
+    +`<div id="licStatus" style="margin-top:8px;font-size:13px;font-weight:700"></div>`;
+}
+function licPaint(){const el=document.getElementById('licbody'); if(el)el.innerHTML=licBody();}
+function licPick(i,side,input){
+  const f=input.files&&input.files[0]; if(!f)return;
+  if(side==="front"){LIC[i].front=f; LIC[i].fu=URL.createObjectURL(f);}
+  else{LIC[i].back=f; LIC[i].bu=URL.createObjectURL(f);}
+  licPaint();
+}
+function licAdd(){ if(LIC.length>=5)return; LIC.push({front:null,back:null,fu:null,bu:null}); licPaint(); }
+function licDel(i){ LIC.splice(i,1); if(!LIC.length)LIC=[{front:null,back:null,fu:null,bu:null}]; licPaint(); }
+function _fileToB64(file){return new Promise((res,rej)=>{const rd=new FileReader();rd.onload=()=>res(String(rd.result).split(',')[1]);rd.onerror=rej;rd.readAsDataURL(file);});}
+async function licUpload(){
+  if(LIC_BUSY)return;
+  const r=DATA&&DATA.reservation; if(!r)return;
+  const jobs=[];
+  LIC.forEach((p,i)=>{ if(p.front)jobs.push({file:p.front,label:"person"+(i+1)+"_front"}); if(p.back)jobs.push({file:p.back,label:"person"+(i+1)+"_back"}); });
+  const st=document.getElementById('licStatus');
+  if(!jobs.length){ if(st){st.style.color="#dc2626";st.textContent=t('lic_need_front');} return; }
+  LIC_BUSY=true; licPaint();
+  const st2=document.getElementById('licStatus'); if(st2){st2.style.color="#475569";st2.textContent=t('lic_uploading')+" 0/"+jobs.length;}
+  let ok=0, err=0;
+  for(let i=0;i<jobs.length;i++){
+    const j=jobs[i];
+    try{
+      const b64=await _fileToB64(j.file);
+      const resp=await fetch(GAS_LICENSE_URL,{method:"POST",body:JSON.stringify({
+        secret:GAS_LICENSE_SECRET, store:"spk", resId:r.id, custName:r.name||"", label:j.label,
+        fileName:j.label+"_"+Date.now()+".jpg", mime:j.file.type||"image/jpeg", b64:b64
+      })});
+      let jr={}; try{jr=await resp.json();}catch(e){}
+      if(resp.ok&&jr.ok)ok++; else err++;
+    }catch(e){ err++; }
+    const s=document.getElementById('licStatus'); if(s)s.textContent=t('lic_uploading')+" "+(i+1)+"/"+jobs.length;
+  }
+  LIC_BUSY=false;
+  if(err===0){ LIC=[{front:null,back:null,fu:null,bu:null}]; licPaint(); const s=document.getElementById('licStatus'); if(s){s.style.color="#0e7a3b";s.textContent=t('lic_done');} }
+  else{ licPaint(); const s=document.getElementById('licStatus'); if(s){s.style.color="#dc2626";s.textContent=t('lic_err')+" ("+ok+"/"+jobs.length+")";} }
+}
+
 function render(){
   const d=DATA, r=d.reservation;
   const cls={A:"アルファード/ヴェルファイア",B:"ノア/デリカ",C:"ロッキー/CX-3",S:"ハリアー/CX-5",F:"ルーミー/ソリオ",H:"カローラ/アクセラ"}[r.vehicle]||r.vehicle;
@@ -535,6 +618,14 @@ function render(){
           : `<div class="dashed">${t('damage_prep')}</div>`)
       : `<div class="dashed"><span class="pill wait">${t('damage_locked')}</span><div style="margin-top:8px"><b>${t('damage_open8')}</b></div></div>`}
   </div>
+
+  ${(!RO&&!cancelled)?`
+  <div class="card" id="liccard">
+    <h2><span class="em">🪪</span>${t('lic_title')}</h2>
+    <div class="note" style="margin:0 0 12px">${t('lic_desc')}</div>
+    <div id="licbody">${licBody()}</div>
+    <div class="note" style="margin-top:10px">${t('lic_note')}</div>
+  </div>`:""}
 
   <div class="card">
     <h2><span class="em">🛰</span>${t('track_title')}</h2>
