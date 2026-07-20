@@ -53,6 +53,9 @@ a.myp{background:#065f46;color:#fff;font-size:11px;font-weight:800;border-radius
 .reqhd .cnt{margin-left:auto;font-size:12px;font-weight:700}
 .card.req{border-left-color:#f59e0b;background:#fffdf7}
 .abtn.appr{background:#f59e0b;color:#fff;width:100%;padding:11px;font-size:14px}
+.abtn.skip{background:#f8fafc;color:#64748b;border:1px solid #cbd5e1;width:100%;padding:9px;font-size:12px;margin-top:6px}
+.card.skipped{opacity:.72;background:#f8fafc}
+.lockbadge{display:inline-block;font-size:10px;font-weight:800;color:#64748b;background:#e2e8f0;border-radius:6px;padding:2px 8px}
 .empty{text-align:center;color:var(--slate);padding:20px;font-size:14px}
 .loading{text-align:center;padding:50px 20px;color:var(--slate)}
 .spin{width:34px;height:34px;border:4px solid #e2e8f0;border-top-color:var(--blue);border-radius:50%;animation:sp 1s linear infinite;margin:0 auto 12px}
@@ -67,7 +70,7 @@ a.myp{background:#065f46;color:#fff;font-size:11px;font-weight:800;border-radius
 <script>
 var SB="https://ckrxttbnawkclshczsia.supabase.co";
 var ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
-var VER="staff-v2.7";
+var VER="staff-v2.8";
 var TOKEN=new URLSearchParams(location.search).get("t")||"";
 var app=document.getElementById("app");
 
@@ -159,8 +162,33 @@ function requestCard(x){
     +'<div class="r1"><span class="badge '+esc(t)+'">'+esc(typeLabel(t))+'</span>'
     +(tm?'<span class="tm">'+esc(tm)+'</span>':'')+'<span style="font-size:11px;color:#b45309;font-weight:700">'+shortDate(x.date)+'</span>'+cust+mypLink(x)+'</div>'
     +'<div class="r2">'+veh+pl+'</div>'
-    +'<div class="r3"><button class="abtn appr" onclick="saApprove(\''+tid+'\')">🙋 承認して引き受ける</button></div></div>';
+    +'<div class="r3"><button class="abtn appr" onclick="saApprove(\''+tid+'\')">🙋 承認して引き受ける</button>'
+    +'<button class="abtn skip" onclick="saSkip(\''+tid+'\')">⏭ この依頼をスキップ（辞退）</button></div></div>';
 }
+function skipCard(x){
+  var t=x.type||"";var plate=x.plate?(" "+x.plate):"";
+  var veh=x.vehicle?('<span class="veh">🚗 '+esc(x.vehicle)+esc(plate)+'</span>'):'';
+  var tm=x.time||x.return_time||"";
+  var pl=x.place?('<a class="place" href="https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(x.place)+'" target="_blank" rel="noopener">📍 '+esc(x.place)+'</a>'):'';
+  var cust=x.customer?('<span class="cust">'+esc(x.customer)+'</span>'):'';
+  return '<div class="card skipped '+esc(t)+'">'
+    +'<div class="r1"><span class="badge '+esc(t)+'">'+esc(typeLabel(t))+'</span>'
+    +(tm?'<span class="tm">'+esc(tm)+'</span>':'')+'<span style="font-size:11px;color:#94a3b8;font-weight:700">'+shortDate(x.date)+'</span>'+cust
+    +'<span class="lockbadge" style="margin-left:auto">🔒 スキップ済</span></div>'
+    +'<div class="r2">'+veh+pl+'</div>'
+    +'<div class="r3" style="font-size:11px;color:#94a3b8;font-weight:600">この依頼は辞退済みです（閲覧のみ・操作できません）</div></div>';
+}
+window.saSkip=function(tid){
+  if(!confirm("この依頼をスキップ（辞退）しますか？\n・「スキップ」タブに移動します（閲覧のみ・操作不可）\n・他に候補がいなければOPシートの担当はブランクに戻ります\n・#sapporo_operation に通知が届きます"))return;
+  fetch(SAEF,{method:"POST",headers:{"apikey":ANON,"Authorization":"Bearer "+ANON,"Content-Type":"application/json"},body:JSON.stringify({token:TOKEN,action:"skip",task_id:tid})})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(!d||d.ok===false){alert("⚠️ スキップできませんでした（"+((d&&d.error)||"エラー")+"）");return;}
+      alert("⏭ スキップしました。"+(d.blanked?"\nOPシートの担当はブランクに戻りました。":""));
+      load();
+    })
+    .catch(function(){alert("⚠️ 通信エラー。電波を確認してください");});
+};
 window.saApprove=function(tid){
   if(!confirm("このタスクを引き受けますか？\n（承認するとあなたの担当になり、#sapporo_operationに通知が届きます）"))return;
   fetch(SAEF,{method:"POST",headers:{"apikey":ANON,"Authorization":"Bearer "+ANON,"Content-Type":"application/json"},body:JSON.stringify({token:TOKEN,action:"approve",task_id:tid})})
@@ -236,6 +264,7 @@ function render(d){
   var tdy=tk.filter(function(x){return x.date===today;});
   var fut=tk.filter(function(x){return x.date>today;});
   var reqs=(d.requests||[]);
+  var skips=(d.skips||[]);
   var name=esc(String(d.staff||"").replace(/\s*さん\s*$/,""));
   var h='<div class="hero"><div class="brand">HANDYMAN 札幌デリバリー</div>'
     +'<div class="name">'+name+' さん</div>'
@@ -246,6 +275,7 @@ function render(d){
     +tab("today","📋本日",tdy.length)
     +tab("future","🗓未来",fut.length)
     +tab("requests","📢依頼",reqs.length,reqs.length>0)
+    +tab("skips","⏭スキップ",skips.length)
     +tab("park","🅿️駐車場")
     +tab("history","📋履歴")
     +'</div>';
@@ -255,6 +285,10 @@ function render(d){
       h+='<div class="note" style="background:#fffbeb;border-color:#fde68a;color:#92400e">対応できるタスクの「🙋承認」を押すと、あなたの担当になります（先着1名）。</div>';
       h+=reqs.map(requestCard).join("");
     }else{ h+='<div class="empty">現在、依頼は来ていません</div>'; }
+  }else if(STAB==="skips"){
+    h+='<div class="sechd">⏭ スキップ（辞退）したタスク<span class="cnt">'+skips.length+'件</span></div>';
+    h+='<div class="note">辞退した依頼の記録です。閲覧のみで操作はできません（ロック）。</div>';
+    h+= skips.length?skips.map(skipCard).join(""):'<div class="empty">スキップした依頼はありません</div>';
   }else if(STAB==="future"){
     h+='<div class="sechd">🗓 未来の担当タスク（本日以外）<span class="cnt">'+fut.length+'件</span></div>';
     h+= fut.length?fut.map(taskCard).join(""):'<div class="empty">本日以外の担当タスクはありません</div>';
