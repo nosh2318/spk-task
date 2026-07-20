@@ -28,7 +28,8 @@ Deno.serve(async (req) => {
   const token = String(body.token || "").trim();
   const resv_no = String(body.resv_no || "").trim();
   const action = String(body.action || "").trim();
-  if (!token || !resv_no || !action) return json({ ok: false, error: "missing params" }, 400);
+  if (!token || !action) return json({ ok: false, error: "missing params" }, 400);
+  if (action !== "done" && !resv_no) return json({ ok: false, error: "missing resv_no" }, 400);
 
   // 1) staff token 検証
   const staff = await sbGet(`staff?share_token=eq.${encodeURIComponent(token)}&select=name,active&limit=1`);
@@ -116,6 +117,13 @@ Deno.serve(async (req) => {
   } else if (action === "col_arrival") {
     pushAction = "col_arrival";
     msg = `【ご返却場所到着のお知らせ】\n${cn}\n\n回収スタッフがご返却場所に到着致しました。\nご準備できましたら対応のほどお願い申しあげます。\n何卒よろしくお願いいたします。`;
+  } else if (action === "delay_del" || action === "delay_col") {
+    const t = String(body.time || "").trim() || "（　）";
+    const isCol = action === "delay_col";
+    pushAction = isCol ? "col_delay" : "del_delay";
+    const midMsg = isCol ? "お車の回収に向かうスタッフの到着が予定より遅れております" : "お車のお届けに向かうスタッフの到着が予定より遅れております";
+    const head = isCol ? "【回収時間について】" : "【お届け時間について】";
+    msg = `${head}\n${cn}\n\nこの度はHANDYMANをご利用いただき、誠にありがとうございます。\nただいま道路状況・混雑状況により、${midMsg}。\nご迷惑をおかけし誠に申し訳ございません。\n到着予定は「${t}」頃を見込んでおります。\nお手数をおかけいたしますが、もう暫しお待ちくださいませ。`;
   } else if (action === "dropoff") {
     pushAction = "dropoff";
     msg = `【乗り捨て対応のお願い】\n${cn}\n\nご返却時刻の混雑により、大変お手数ではございますが返却予定場所近隣駐車場に乗り捨て駐車いただきたく、ご連絡させていただきました。\nお待たせする時間回避の目的のためご協力の程何卒よろしくお願いいたします。\n\n✅駐車完了しましたら"鍵と駐車券"をダッシュボード内に格納し、鍵を開けた状態でそのままお降りくださいませ。\n✅燃料の給油とお忘れ物（ETCカード等）のないようご注意ください。\n✅駐車場所が確定しましたら詳細場所をご連絡いただけますと幸いです。\n例：駐車場看板写真/GoogleマップURL/住所/駐車場名/●階等\n\n駐車後の車両トラブルに関しては一切の責任は問いませんのでご安心くださいませ。\n万一の盗難等の際にも弊社セキュリティにて追跡可能となっております。`;
