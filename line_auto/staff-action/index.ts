@@ -1,12 +1,41 @@
 // staff-action — バイト個人ページ(staff.html)用のアクションEF
-// body: { token(staff share_token), resv_no, action }
-//   action: depart | collect | arrival | col_arrival | dropoff
+// body: { token(staff share_token), store?("spk"|"nha"), resv_no, action }
+//   action: depart | collect | arrival | col_arrival | dropoff | done | approve | skip | delay_del | delay_col
 // 認証: staff.share_token（ログイン不要）→ 内部でline-push(FUNC_SECRET)を呼びLINE自動送信
 // deploy: functions deploy staff-action --no-verify-jwt
-//   secrets: FUNC_SECRET（line-pushと共有）
+//   secrets: FUNC_SECRET（line-pushと共有）, SLACK_BOT_TOKEN, STAFF_DONE_CHANNEL, STAFF_DONE_CHANNEL_NHA
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
 const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const FUNC_SECRET = Deno.env.get("FUNC_SECRET")!;
+
+// === 店舗別コンフィグ（SPK既定＝従来動作を1文字も変えない） ===
+type Cfg = {
+  staffTbl: string; tasksTbl: string; resvTbl: string;
+  pushStore: string; mypageBase: string; slackChKey: string;
+  assigneeCol: string; donePatch: Record<string, unknown>;
+  // select別名（Japanese列→英語キーに正規化）
+  selApprove: string; selSkip: string; selDone: string; selPlate: string;
+};
+const CFGS: Record<string, Cfg> = {
+  spk: {
+    staffTbl: "staff", tasksTbl: "tasks", resvTbl: "reservations",
+    pushStore: "spk", mypageBase: "https://nosh2318.github.io/spk-task/my.html", slackChKey: "STAFF_DONE_CHANNEL",
+    assigneeCol: "assignee", donePatch: { done: true },
+    selApprove: "_id,type,name,assigned_vehicle,plate_no,time,return_time,date,requested_to,assignee",
+    selSkip: "_id,type,name,assigned_vehicle,plate_no,time,return_time,date,requested_to,assignee,skipped_by",
+    selDone: "_id,type,name,assigned_vehicle,plate_no,time,return_time,assignee,date,reservation_id",
+    selPlate: "plate_no,assigned_vehicle",
+  },
+  nha: {
+    staffTbl: "nha_staff", tasksTbl: "nha_tasks", resvTbl: "nha_reservations",
+    pushStore: "nha", mypageBase: "https://nosh2318.github.io/naha-project/my-nha.html", slackChKey: "STAFF_DONE_CHANNEL_NHA",
+    assigneeCol: "担当", donePatch: { "確認": "true" },
+    selApprove: "_id,type:内容,name:予約者,assigned_vehicle,plate_no:No,time:時間,return_time:変更,date,requested_to,assignee:担当",
+    selSkip: "_id,type:内容,name:予約者,assigned_vehicle,plate_no:No,time:時間,return_time:変更,date,requested_to,assignee:担当,skipped_by",
+    selDone: "_id,type:内容,name:予約者,assigned_vehicle,plate_no:No,time:時間,return_time:変更,assignee:担当,date,reservation_id:予約番号",
+    selPlate: "plate_no:No,assigned_vehicle",
+  },
+};
 
 function json(o: unknown, s = 200) {
   return new Response(JSON.stringify(o), { status: s, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*", "Access-Control-Allow-Methods": "POST,OPTIONS" } });
@@ -20,46 +49,49 @@ async function sbPatch(path: string, body: unknown) {
   return r.ok;
 }
 function uuid() { return (crypto.randomUUID ? crypto.randomUUID() : (Date.now() + "-" + Math.random())).replace(/-/g, ""); }
+const TYPE: Record<string, string> = { DEL: "🚚お届け", COL: "🧭回収", "洗車": "🧽洗車", PU: "🚐送迎お迎え", PUB: "🚌バスお迎え", BD: "🚐お見送り", BDB: "🚌バスお見送り", "返却": "🔑返却", "来店": "🏠来店" };
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return json({ ok: true });
   let body: any;
   try { body = await req.json(); } catch { return json({ ok: false, error: "bad json" }, 400); }
   const token = String(body.token || "").trim();
+  const store = (String(body.store || "spk").trim().toLowerCase() === "nha") ? "nha" : "spk";
+  const CFG = CFGS[store];
   const resv_no = String(body.resv_no || "").trim();
   const action = String(body.action || "").trim();
   if (!token || !action) return json({ ok: false, error: "missing params" }, 400);
   if (action !== "done" && action !== "approve" && action !== "skip" && !resv_no) return json({ ok: false, error: "missing resv_no" }, 400);
 
   // 1) staff token 検証
-  const staff = await sbGet(`staff?share_token=eq.${encodeURIComponent(token)}&select=name,active&limit=1`);
+  const staff = await sbGet(`${CFG.staffTbl}?share_token=eq.${encodeURIComponent(token)}&select=name,active&limit=1`);
   if (!staff[0] || staff[0].active === false) return json({ ok: false, error: "invalid_token" }, 401);
   const staffName = staff[0].name;
+  const SLACK = Deno.env.get("SLACK_BOT_TOKEN") || "";
+  const CH = Deno.env.get(CFG.slackChKey) || Deno.env.get("STAFF_DONE_CHANNEL") || "";
 
   // === 承認(approve): 依頼タスクを引き受け → assignee=自分 + requested_to クリア + Slack ===
   if (action === "approve") {
     const task_id = String(body.task_id || "").trim();
     if (!task_id) return json({ ok: false, error: "missing task_id" }, 400);
-    const tk = await sbGet(`tasks?_id=eq.${encodeURIComponent(task_id)}&select=_id,type,name,assigned_vehicle,plate_no,time,return_time,date,requested_to,assignee&limit=1`);
+    const tk = await sbGet(`${CFG.tasksTbl}?_id=eq.${encodeURIComponent(task_id)}&select=${encodeURIComponent(CFG.selApprove)}&limit=1`);
     if (!tk[0]) return json({ ok: false, error: "task_not_found" }, 404);
     const T = tk[0];
     const reqTo: string[] = Array.isArray(T.requested_to) ? T.requested_to : [];
     const sur = staffName.split(" ")[0];
     const offered = reqTo.some((n: string) => n === staffName || n.replace(/\s/g, "") === staffName.replace(/\s/g, "") || n === sur);
     if (!offered) return json({ ok: false, error: "not_offered" }, 403);
-    // 既に他の人が引き受けていないか（先着）
     if (T.assignee && T.assignee.trim() && T.assignee.replace(/\s/g, "") !== staffName.replace(/\s/g, "") && T.assignee !== sur) {
       return json({ ok: false, error: "already_taken", taken_by: T.assignee });
     }
-    await sbPatch(`tasks?_id=eq.${encodeURIComponent(task_id)}`, { assignee: staffName, requested_to: null, approved_at: new Date().toISOString(), approved_by: staffName });
-    // Slack通知
-    const TYPE: Record<string, string> = { DEL: "🚚お届け", COL: "🧭回収", "洗車": "🧽洗車", PU: "🚐送迎お迎え", PUB: "🚌バスお迎え", BD: "🚐お見送り", BDB: "🚌バスお見送り", "返却": "🔑返却", "来店": "🏠来店" };
+    const patch: Record<string, unknown> = { requested_to: null, approved_at: new Date().toISOString(), approved_by: staffName };
+    patch[CFG.assigneeCol] = staffName;
+    await sbPatch(`${CFG.tasksTbl}?_id=eq.${encodeURIComponent(task_id)}`, patch);
     const tlabel = TYPE[T.type] || T.type;
     const cust = T.name ? `${T.name}様` : "";
     const veh = T.assigned_vehicle ? `${T.assigned_vehicle}${T.plate_no ? " (" + T.plate_no + ")" : ""}` : "";
     const tmv = T.time || T.return_time || "";
     const md = (T.date || "").split("-"); const mdstr = md.length === 3 ? `${+md[1]}/${+md[2]}` : (T.date || "");
-    const SLACK = Deno.env.get("SLACK_BOT_TOKEN") || "", CH = Deno.env.get("STAFF_DONE_CHANNEL") || "";
     let posted = false;
     if (SLACK && CH) {
       const blocks = [
@@ -80,7 +112,7 @@ Deno.serve(async (req) => {
   if (action === "skip") {
     const task_id = String(body.task_id || "").trim();
     if (!task_id) return json({ ok: false, error: "missing task_id" }, 400);
-    const tk = await sbGet(`tasks?_id=eq.${encodeURIComponent(task_id)}&select=_id,type,name,assigned_vehicle,plate_no,time,return_time,date,requested_to,assignee,skipped_by&limit=1`);
+    const tk = await sbGet(`${CFG.tasksTbl}?_id=eq.${encodeURIComponent(task_id)}&select=${encodeURIComponent(CFG.selSkip)}&limit=1`);
     if (!tk[0]) return json({ ok: false, error: "task_not_found" }, 404);
     const T = tk[0];
     const sur = staffName.split(" ")[0];
@@ -94,18 +126,16 @@ Deno.serve(async (req) => {
       patch.requested_to = remain;
     } else {
       patch.requested_to = null;
-      patch.assignee = "";
+      patch[CFG.assigneeCol] = "";
       patch.approved_at = null; patch.approved_by = null;
       blanked = true;
     }
-    await sbPatch(`tasks?_id=eq.${encodeURIComponent(task_id)}`, patch);
-    const TYPE: Record<string, string> = { DEL: "🚚お届け", COL: "🧭回収", "洗車": "🧽洗車", PU: "🚐送迎お迎え", PUB: "🚌バスお迎え", BD: "🚐お見送り", BDB: "🚌バスお見送り", "返却": "🔑返却", "来店": "🏠来店" };
+    await sbPatch(`${CFG.tasksTbl}?_id=eq.${encodeURIComponent(task_id)}`, patch);
     const tlabel = TYPE[T.type] || T.type;
     const cust = T.name ? `${T.name}様` : "";
     const veh = T.assigned_vehicle ? `${T.assigned_vehicle}${T.plate_no ? " (" + T.plate_no + ")" : ""}` : "";
     const tmv = T.time || T.return_time || "";
     const md = (T.date || "").split("-"); const mdstr = md.length === 3 ? `${+md[1]}/${+md[2]}` : (T.date || "");
-    const SLACK = Deno.env.get("SLACK_BOT_TOKEN") || "", CH = Deno.env.get("STAFF_DONE_CHANNEL") || "";
     let posted = false;
     if (SLACK && CH) {
       const blocks = [
@@ -127,12 +157,10 @@ Deno.serve(async (req) => {
   if (action === "done") {
     const task_id = String(body.task_id || "").trim();
     if (!task_id) return json({ ok: false, error: "missing task_id" }, 400);
-    const tk = await sbGet(`tasks?_id=eq.${encodeURIComponent(task_id)}&select=_id,type,name,assigned_vehicle,plate_no,time,return_time,assignee,date,reservation_id&limit=1`);
+    const tk = await sbGet(`${CFG.tasksTbl}?_id=eq.${encodeURIComponent(task_id)}&select=${encodeURIComponent(CFG.selDone)}&limit=1`);
     if (!tk[0]) return json({ ok: false, error: "task_not_found" }, 404);
     const T = tk[0];
-    await sbPatch(`tasks?_id=eq.${encodeURIComponent(task_id)}`, { done: true });
-    // Slack通知（#sapporo_operation）
-    const TYPE: Record<string, string> = { DEL: "🚚お届け", COL: "🧭回収", "洗車": "🧽洗車", PU: "🚐送迎お迎え", PUB: "🚌バスお迎え", BD: "🚐お見送り", BDB: "🚌バスお見送り", "返却": "🔑返却", "来店": "🏠来店" };
+    await sbPatch(`${CFG.tasksTbl}?_id=eq.${encodeURIComponent(task_id)}`, CFG.donePatch);
     const tlabel = TYPE[T.type] || T.type;
     const cust = T.name ? `${T.name}様` : "";
     const veh = T.assigned_vehicle ? `${T.assigned_vehicle}${T.plate_no ? " (" + T.plate_no + ")" : ""}` : "未配車";
@@ -140,8 +168,6 @@ Deno.serve(async (req) => {
     const nowJ = new Date(Date.now() + 9 * 3600 * 1000);
     const hhmm = `${String(nowJ.getUTCHours()).padStart(2, "0")}:${String(nowJ.getUTCMinutes()).padStart(2, "0")}`;
     const md = (T.date || "").split("-"); const mdstr = md.length === 3 ? `${+md[1]}/${+md[2]}` : (T.date || "");
-    const SLACK = Deno.env.get("SLACK_BOT_TOKEN") || "";
-    const CH = Deno.env.get("STAFF_DONE_CHANNEL") || "";
     let posted = false;
     if (SLACK && CH) {
       const blocks = [
@@ -165,19 +191,19 @@ Deno.serve(async (req) => {
   }
 
   // 2) 予約取得
-  const resv = await sbGet(`reservations?id=eq.${encodeURIComponent(resv_no)}&select=id,name,ota,status,mypage_token`);
+  const resv = await sbGet(`${CFG.resvTbl}?id=eq.${encodeURIComponent(resv_no)}&select=id,name,ota,status,mypage_token`);
   if (!resv[0]) return json({ ok: false, error: "reservation_not_found" }, 404);
   const r = resv[0];
   const st = String(r.status || "").toLowerCase();
   if (st.includes("cancel") || st.includes("キャンセル")) return json({ ok: false, error: "cancelled" });
   const cn = (r.name || "") + "様";
-  const myUrl = r.mypage_token ? `https://nosh2318.github.io/spk-task/my.html?t=${r.mypage_token}` : "";
+  const myUrl = r.mypage_token ? `${CFG.mypageBase}?t=${r.mypage_token}` : "";
 
   // プレート（到着メッセージ用）
   let plate = "";
   try {
     const pref = action === "arrival" ? "d-" : "c-";
-    const tk = await sbGet(`tasks?_id=eq.${encodeURIComponent(pref + resv_no)}&select=plate_no,assigned_vehicle&limit=1`);
+    const tk = await sbGet(`${CFG.tasksTbl}?_id=eq.${encodeURIComponent(pref + resv_no)}&select=${encodeURIComponent(CFG.selPlate)}&limit=1`);
     plate = (tk[0] && (tk[0].plate_no || "")) || "";
   } catch { /* noop */ }
 
@@ -185,7 +211,7 @@ Deno.serve(async (req) => {
   let msg = "", pushAction = "", driverUrl = "";
   if (action === "depart" || action === "collect") {
     const tkTrack = uuid(), tkDrv = uuid();
-    await sbPatch(`reservations?id=eq.${encodeURIComponent(resv_no)}`, {
+    await sbPatch(`${CFG.resvTbl}?id=eq.${encodeURIComponent(resv_no)}`, {
       kd_status: action === "depart" ? "delivering" : "collecting",
       kd_status_at: new Date().toISOString(),
       kd_track_token: tkTrack, kd_driver_token: tkDrv,
@@ -223,7 +249,7 @@ Deno.serve(async (req) => {
   try {
     const pr = await fetch(`${SB_URL}/functions/v1/line-push`, {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${SB_KEY}` },
-      body: JSON.stringify({ secret: FUNC_SECRET, store: "spk", resv_no, action: pushAction, message: msg }),
+      body: JSON.stringify({ secret: FUNC_SECRET, store: CFG.pushStore, resv_no, action: pushAction, message: msg }),
     });
     const pj = await pr.json().catch(() => ({}));
     sent = !!pj.ok; reason = pj.reason || "";
