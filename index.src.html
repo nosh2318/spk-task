@@ -20417,7 +20417,9 @@ function LicenseSendList({sb,store}){
   const isNha=store==="nha";
   const days=React.useMemo(()=>{const a=[];for(let i=0;i<=3;i++){const d=new Date();d.setDate(d.getDate()+i);a.push(d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"));}return a;},[ver]);
   const licBase=isNha?"https://nosh2318.github.io/naha-project/license.html":"https://nosh2318.github.io/spk-task/license.html";
-  const buildMsg=(r)=>{const cn=(r.name||"")+"様";const url=licBase+"?id="+encodeURIComponent(r.resv)+"&name="+encodeURIComponent(r.name||"");return "この度はHANDYMANをご利用頂きまして誠にありがとうございます。\n\n【HANDYMAN"+(isNha?"那覇":"札幌")+"】ご出発前に 運転免許証のご提出をお願いいたします。\n"+cn+"\n運転される方 全員分の運転免許証（表面）を、下記ページからご登録ください（アプリ不要・スマホで撮影→送信）。\n"+url+"\n※ご提出が確認できない場合、当日の貸渡ができないことがございます。ご協力をお願いいたします。";};
+  const myBase=isNha?"https://nosh2318.github.io/naha-project/my-nha.html":"https://nosh2318.github.io/spk-task/my.html";
+  // 2026-07-21: 案内URLはマイページ経由(my.html?t=token)に統一(自動リマインドと同一導線)。token無しのみ従来license.html直リンクにフォールバック
+  const buildMsg=(r)=>{const cn=(r.name||"")+"様";const url=r.mytoken?(myBase+"?t="+encodeURIComponent(r.mytoken)):(licBase+"?id="+encodeURIComponent(r.resv)+"&name="+encodeURIComponent(r.name||""));return "この度はHANDYMANをご利用頂きまして誠にありがとうございます。\n\n【HANDYMAN"+(isNha?"那覇":"札幌")+"】ご出発前に 運転免許証のご提出をお願いいたします。\n"+cn+"\n運転される方 全員分の運転免許証（表面）を、下記マイページからご登録ください（アプリ不要・スマホで撮影→送信）。\n"+url+"\n※ご提出が確認できない場合、当日の貸渡ができないことがございます。ご協力をお願いいたします。";};
   const load=React.useCallback(async()=>{
     if(!sb)return;
     try{
@@ -20435,17 +20437,21 @@ function LicenseSendList({sb,store}){
       const uniq=Object.values(byResv);
       const resvs=uniq.map(t=>t.resv);
       const sendsTbl=isNha?"nha_line_sends":"spk_line_sends";
-      const sendMap={};
+      const resvTbl=isNha?"nha_reservations":"reservations";
+      const sendMap={},tokMap={};
       if(resvs.length){
-        const{data:sd}=await sb.from(sendsTbl).select("resv_no,status,sent_at").eq("action","license_reminder").in("resv_no",resvs).order("sent_at",{ascending:false});
+        // 手動(license_reminder)＋自動cron(license_auto_d1/d2/d3)の両方を見て二重送信を防ぐ
+        const{data:sd}=await sb.from(sendsTbl).select("resv_no,status,sent_at,action").in("action",["license_reminder","license_auto_d1","license_auto_d2","license_auto_d3"]).in("resv_no",resvs).order("sent_at",{ascending:false});
         (sd||[]).forEach(s=>{ if(!sendMap[s.resv_no])sendMap[s.resv_no]=s; });
+        try{const{data:rd}=await sb.from(resvTbl).select("id,mypage_token").in("id",resvs); (rd||[]).forEach(x=>{if(x&&x.mypage_token)tokMap[x.id]=x.mypage_token;});}catch(_){}
       }
       const linkM=window._lineLinkMap||{}, licM=window._licenseMap||{};
       const out=uniq.map(t=>{
         const s=sendMap[t.resv];
         let sendStatus="none";
         if(s&&s.status==="sent")sendStatus="sent"; else if(s&&s.status==="manual_done")sendStatus="manual_done";
-        return {...t,done:!!licM[t.resv],ok:!!linkM[t.resv],sendStatus,at:s?s.sent_at:null};
+        const auto=!!(s&&/^license_auto_/.test(s.action||""));
+        return {...t,done:!!licM[t.resv],ok:!!linkM[t.resv],sendStatus,auto,at:s?s.sent_at:null,mytoken:tokMap[t.resv]||""};
       }).sort((a,b)=>{ if(a.done!==b.done)return a.done?1:-1; return (a.date+" "+(a.time||"99")).localeCompare(b.date+" "+(b.time||"99")); });
       setRows(out);
     }catch(e){console.warn("[licSendList]",e.message);}
@@ -20483,7 +20489,7 @@ function LicenseSendList({sb,store}){
         <LineStatusBadge resvNo={r.resv} size={9}/>
         <span style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:5}}>
           {r.done&&<span style={{fontSize:11,fontWeight:800,color:"#15803d"}}>✅提出済</span>}
-          {!r.done&&r.sendStatus==="sent"&&<span style={{fontSize:11,fontWeight:700,color:"#0284c7"}}>📤送信済{r.at?" "+fmt(r.at):""}</span>}
+          {!r.done&&r.sendStatus==="sent"&&<span style={{fontSize:11,fontWeight:700,color:r.auto?"#7c3aed":"#0284c7"}}>{r.auto?"🤖自動送信済":"📤送信済"}{r.at?" "+fmt(r.at):""}</span>}
           {!r.done&&r.sendStatus==="manual_done"&&<span style={{fontSize:11,fontWeight:700,color:"#15803d"}}>✅対応済{r.at?" "+fmt(r.at):""}</span>}
           {!r.done&&r.sendStatus==="none"&&r.ok&&<button onClick={()=>sendLine(r)} style={{fontSize:10,fontWeight:800,padding:"4px 9px",borderRadius:6,background:"#2563eb",color:"#fff",border:"none",cursor:"pointer"}}>📤リマインド送信</button>}
           {!r.done&&r.sendStatus==="none"&&!r.ok&&<span style={{display:"flex",gap:5}}>
@@ -23258,7 +23264,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.444";
+const APP_VERSION="v4.7.445";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
