@@ -70,7 +70,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
 var CV='spk-v989';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=878').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=879').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -20438,21 +20438,20 @@ function LicenseSendList({sb,store}){
       const resvs=uniq.map(t=>t.resv);
       const sendsTbl=isNha?"nha_line_sends":"spk_line_sends";
       const resvTbl=isNha?"nha_reservations":"reservations";
-      const sendMap={},tokMap={};
+      const sendMap={},tokMap={},ackSet=new Set();
       if(resvs.length){
-        // 手動(license_reminder)＋自動cron(license_auto_d1/d2/d3)の両方を見て二重送信を防ぐ
-        const{data:sd}=await sb.from(sendsTbl).select("resv_no,status,sent_at,action").in("action",["license_reminder","license_auto_d1","license_auto_d2","license_auto_d3"]).in("resv_no",resvs).order("sent_at",{ascending:false});
-        (sd||[]).forEach(s=>{ if(!sendMap[s.resv_no])sendMap[s.resv_no]=s; });
+        // 送信(license_reminder/license_auto_d*)＋消し込み(license_ack)を取得。manual_done or license_ack=消し込み済(=対応済/確認済)。
+        const{data:sd}=await sb.from(sendsTbl).select("resv_no,status,sent_at,action").in("action",["license_reminder","license_auto_d1","license_auto_d2","license_auto_d3","license_ack"]).in("resv_no",resvs).order("sent_at",{ascending:false});
+        (sd||[]).forEach(s=>{ const isAck=(s.action==="license_ack"||s.status==="manual_done"); if(isAck)ackSet.add(s.resv_no); if(!isAck&&!sendMap[s.resv_no])sendMap[s.resv_no]=s; });
         try{const{data:rd}=await sb.from(resvTbl).select("id,mypage_token").in("id",resvs); (rd||[]).forEach(x=>{if(x&&x.mypage_token)tokMap[x.id]=x.mypage_token;});}catch(_){}
       }
       const linkM=window._lineLinkMap||{}, licM=window._licenseMap||{};
       const out=uniq.map(t=>{
         const s=sendMap[t.resv];
-        let sendStatus="none";
-        if(s&&s.status==="sent")sendStatus="sent"; else if(s&&s.status==="manual_done")sendStatus="manual_done";
+        const sendStatus=(s&&s.status==="sent")?"sent":"none";
         const auto=!!(s&&/^license_auto_/.test(s.action||""));
-        return {...t,done:!!licM[t.resv],ok:!!linkM[t.resv],sendStatus,auto,at:s?s.sent_at:null,mytoken:tokMap[t.resv]||""};
-      }).sort((a,b)=>{ if(a.done!==b.done)return a.done?1:-1; return (a.date+" "+(a.time||"99")).localeCompare(b.date+" "+(b.time||"99")); });
+        return {...t,done:!!licM[t.resv],ok:!!linkM[t.resv],ack:ackSet.has(t.resv),sendStatus,auto,at:s?s.sent_at:null,mytoken:tokMap[t.resv]||""};
+      }).sort((a,b)=>{ const ad=a.done||a.ack,bd=b.done||b.ack; if(ad!==bd)return ad?1:-1; return (a.date+" "+(a.time||"99")).localeCompare(b.date+" "+(b.time||"99")); });
       setRows(out);
     }catch(e){console.warn("[licSendList]",e.message);}
   },[sb,store,isNha,days]);
@@ -20469,34 +20468,38 @@ function LicenseSendList({sb,store}){
     }catch(e){try{await navigator.clipboard.writeText(msg);}catch(_){}alert("⚠️送信エラー。案内文をコピーしました→手動で送ってください。");}
   };
   const copyMsg=async(r)=>{const msg=buildMsg(r);try{await navigator.clipboard.writeText(msg);alert("📋 免許証案内をコピーしました。\nエルメ/LINEに貼り付けて送ってください。\n送信したら『✅対応』を押してください。");}catch(e){alert("コピーに失敗しました");}};
-  const markDone=async(r)=>{const tbl=isNha?"nha_line_sends":"spk_line_sends";try{await sb.from(tbl).insert({resv_no:r.resv,action:"license_reminder",status:"manual_done",message:"手動対応"});load();}catch(e){alert("記録に失敗:"+e.message);}};
+  const ackTbl=()=>isNha?"nha_line_sends":"spk_line_sends";
+  // 消し込み(対応済/確認済にする)。可逆。既存の手動対応(license_reminder manual_done)も消し込み扱い。
+  const markDone=async(r)=>{try{await sb.from(ackTbl()).insert({resv_no:r.resv,action:"license_ack",status:"manual_done",message:"消し込み(確認済)"});load();}catch(e){alert("記録に失敗:"+e.message);}};
+  const ackUndo=async(r)=>{if(!window.confirm((r.name||"")+" 様の消し込みを取り消しますか？"))return;try{await sb.from(ackTbl()).delete().eq("resv_no",r.resv).in("action",["license_ack","license_reminder"]).eq("status","manual_done");load();}catch(e){alert("取消に失敗:"+e.message);}};
   const fmt=(iso)=>{try{const d=new Date(iso);return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");}catch(e){return"";}};
   const md=(dt)=>{try{return String(dt).slice(5).replace("-","/");}catch(e){return dt;}};
   const notDone=rows.filter(r=>!r.done).length;
+  const needAct=rows.filter(r=>!r.done&&!r.ack).length;
   if(!rows.length)return <div style={{padding:16,color:"#94a3b8",fontSize:13,textAlign:"center"}}>直近（当日〜3日先）の出発予約はありません。</div>;
   return <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:12,margin:"8px 0",overflow:"hidden"}}>
-    <div onClick={()=>setOpen(o=>!o)} style={{padding:"10px 12px",background:"#eff6ff",cursor:"pointer",display:"flex",alignItems:"center",gap:8,borderBottom:open?"1px solid #bfdbfe":"none"}}>
+    <div onClick={()=>setOpen(o=>!o)} style={{padding:"10px 12px",background:"#eff6ff",cursor:"pointer",display:"flex",alignItems:"center",gap:8,borderBottom:open?"1px solid #bfdbfe":"none",flexWrap:"wrap"}}>
       <span style={{fontSize:14,fontWeight:800,color:"#0f172a"}}>🪪 免許証チェック（当日〜3日先 {rows.length}件）</span>
       {notDone>0&&<span style={{fontSize:11,fontWeight:800,color:"#fff",background:"#dc2626",padding:"1px 8px",borderRadius:10}}>未提出 {notDone}</span>}
+      {notDone>0&&(needAct>0?<span style={{fontSize:11,fontWeight:800,color:"#fff",background:"#d97706",padding:"1px 8px",borderRadius:10}}>要対応 {needAct}</span>:<span style={{fontSize:11,fontWeight:800,color:"#fff",background:"#16a34a",padding:"1px 8px",borderRadius:10}}>✅消し込み完了</span>)}
       <span style={{marginLeft:"auto",fontSize:12,color:"#64748b"}}>{open?"▲":"▼"}</span>
     </div>
     {open&&<div>
-      {rows.map((r,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:6,padding:"7px 10px",borderBottom:"1px solid #f1f5f9",flexWrap:"wrap",fontSize:12,opacity:r.done?.55:1}}>
+      {rows.map((r,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:6,padding:"7px 10px",borderBottom:"1px solid #f1f5f9",flexWrap:"wrap",fontSize:12,opacity:(r.done||r.ack)?.55:1}}>
         <span style={{fontFamily:"monospace",fontWeight:800,color:"#334155",width:78}}>{md(r.date)} {r.time||"--:--"}</span>
         <span style={{fontSize:9,fontWeight:800,color:"#2563eb"}}>{r.type}</span>
         <span style={{fontWeight:700,color:"#0f172a",maxWidth:110,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name||"名前なし"}</span>
         {r.assignee&&<span style={{fontSize:10,background:"#dbeafe",color:"#1d4ed8",fontWeight:700,padding:"1px 6px",borderRadius:4}}>👤{r.assignee}</span>}
         <LineStatusBadge resvNo={r.resv} size={9}/>
         <span style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:5}}>
-          {r.done&&<span style={{fontSize:11,fontWeight:800,color:"#15803d"}}>✅提出済</span>}
-          {!r.done&&r.sendStatus==="sent"&&<span style={{fontSize:11,fontWeight:700,color:r.auto?"#7c3aed":"#0284c7"}}>{r.auto?"🤖自動送信済":"📤送信済"}{r.at?" "+fmt(r.at):""}</span>}
-          {!r.done&&r.sendStatus==="manual_done"&&<span style={{fontSize:11,fontWeight:700,color:"#15803d"}}>✅対応済{r.at?" "+fmt(r.at):""}</span>}
-          {/* 傷チェックと同一仕様(2026-07-21): 連携済=毎朝10時cronで自動送信=⏳自動予定(手動ボタン無し)／未連携のみ手動コピー+対応 */}
-          {!r.done&&r.sendStatus==="none"&&r.ok&&<span style={{fontSize:11,fontWeight:700,color:"#0284c7"}}>⏳自動予定</span>}
-          {!r.done&&r.sendStatus==="none"&&!r.ok&&<span style={{display:"flex",gap:5}}>
-            <button onClick={()=>copyMsg(r)} style={{fontSize:10,fontWeight:800,padding:"4px 9px",borderRadius:6,background:"#2563eb",color:"#fff",border:"none",cursor:"pointer"}}>📋コピー</button>
-            <button onClick={()=>markDone(r)} style={{fontSize:10,fontWeight:800,padding:"4px 9px",borderRadius:6,background:"#16a34a",color:"#fff",border:"none",cursor:"pointer"}}>✅対応</button>
-          </span>}
+          {/* 提出済＝完了 ／ 消し込み済(ack)＝スタッフ確認済(取消可) ／ 未対応＝送信状況＋☑消し込み(連携済/未連携とも) */}
+          {r.done?<span style={{fontSize:11,fontWeight:800,color:"#15803d"}}>✅提出済</span>
+           :r.ack?<span style={{display:"flex",alignItems:"center",gap:5}}><span style={{fontSize:11,fontWeight:800,color:"#15803d"}}>✅確認済（消し込み）</span><button onClick={()=>ackUndo(r)} style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:5,background:"#f1f5f9",color:"#475569",border:"1px solid #cbd5e1",cursor:"pointer"}}>取消</button></span>
+           :<span style={{display:"flex",alignItems:"center",gap:5}}>
+             {r.sendStatus==="sent"?<span style={{fontSize:10,fontWeight:700,color:r.auto?"#7c3aed":"#0284c7"}}>{r.auto?"🤖自動送信済":"📤送信済"}</span>:r.ok?<span style={{fontSize:10,fontWeight:700,color:"#0284c7"}}>⏳自動予定</span>:null}
+             {!r.ok&&<button onClick={()=>copyMsg(r)} style={{fontSize:10,fontWeight:800,padding:"4px 9px",borderRadius:6,background:"#2563eb",color:"#fff",border:"none",cursor:"pointer"}}>📋コピー</button>}
+             <button onClick={()=>markDone(r)} title="対応済み(確認済)として消し込む" style={{fontSize:10,fontWeight:800,padding:"4px 9px",borderRadius:6,background:"#16a34a",color:"#fff",border:"none",cursor:"pointer"}}>☑消し込み</button>
+           </span>}
         </span>
       </div>)}
     </div>}
@@ -23264,7 +23267,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.446";
+const APP_VERSION="v4.7.447";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
