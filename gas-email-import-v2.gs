@@ -417,7 +417,19 @@ function processMessage_(message, dryRun) {
         if (+(existingRow.option_price||0) === 0 && +(reservation.option_price||0) > 0) patch.option_price = reservation.option_price;
         if (+(existingRow.discount||0) === 0 && +(reservation.discount||0) > 0) patch.discount = reservation.discount;
       }
-      if ((!existingRow.insurance || existingRow.insurance === 'なし') && reservation.insurance && reservation.insurance !== 'なし') patch.insurance = reservation.insurance;
+      // ★ 2026-07-15 insurance 上書きルール
+      //   スカイチケット(ota=S)は「標準装備」に必ず『免責補償』の文字が入るため、OTA自動登録GAS(30分)が
+      //   先に insurance='免責' で登録する。NOC購入者(オプション『NOC補償×N』)でも免責のまま固定されていた。
+      //   → 取込側 detectInsurance_ は NOC を正しく返す（NOC補償×N を最優先で判定）ので、ota=S は取込側を権威とし、
+      //     parser値(なし以外)で既存値と異なれば常に上書きする。detectInsurance_ はスカイチケット実メールで
+      //     必ず 免責/NOC を返す(なしにはならない)ため、標準の免責を消す事故もない。
+      if (reservation.ota === 'S' && reservation.insurance && reservation.insurance !== 'なし'
+          && reservation.insurance !== existingRow.insurance) {
+        patch.insurance = reservation.insurance;
+        Logger.log('[SkyInsFix] ' + reservation.id + ' insurance ' + (existingRow.insurance || '(空)') + '→' + reservation.insurance);
+      } else if ((!existingRow.insurance || existingRow.insurance === 'なし') && reservation.insurance && reservation.insurance !== 'なし') {
+        patch.insurance = reservation.insurance;
+      }
       if (!existingRow.del_place && reservation.del_place) patch.del_place = reservation.del_place;
       if (!existingRow.col_place && reservation.col_place) patch.col_place = reservation.col_place;
       if (!existingRow.visit_type && reservation.visit_type) patch.visit_type = reservation.visit_type;
@@ -435,6 +447,11 @@ function processMessage_(message, dryRun) {
           var finalC = (patch.opt_c !== undefined) ? patch.opt_c : (+(existingRow.opt_c) || 0);
           var finalJ = (patch.opt_j !== undefined) ? patch.opt_j : (+(existingRow.opt_j) || 0);
           patchTaskOpts_(reservation.id, finalB, finalC, finalJ);
+        }
+        // ★ 2026-07-15: insurance が変わったら tasks(DEL/COL) 側も同期（免責→NOC 誤登録の根治）
+        if (patch.insurance) {
+          supabaseUpdate_('tasks', 'reservation_id=eq.' + encodeURIComponent(reservation.id), { insurance: patch.insurance });
+          Logger.log('[SkyInsFix] tasks synced ' + reservation.id + ' → ' + patch.insurance);
         }
       } else {
         Logger.log('Reservation already exists (active, no patch needed): ' + reservation.id);
@@ -4714,6 +4731,47 @@ function backfillJalanInsurance(dryRun) {
 }
 function backfillJalanInsuranceDryRun() { backfillJalanInsurance(true); }
 function backfillJalanInsuranceApply()  { backfillJalanInsurance(false); }
+
+// ★ 2026-07-15 スカイチケット補償(insurance) 再突合バックフィル（一回限り手動実行）
+//   標準装備の「免責補償」を拾って insurance='免責' で固定された ota=S 予約を、実メールで再判定。
+//   detectInsurance_ が NOC(オプション NOC補償×N) を返すものだけ 免責→NOC に修正。
+//   reservations.insurance と tasks.insurance(DEL/COL) の両方を更新。
+//   対象: ota='S' & insurance='免責'（lend_date 制限なし＝過去分も洗い直す。件数は44件想定で軽い）
+//   まず backfillSkyticketInsuranceDryRun() で確認 → 問題なければ backfillSkyticketInsuranceApply()
+function backfillSkyticketInsurance(dryRun) {
+  var rows = supabaseGet_('reservations',
+    'ota=eq.S&insurance=eq.' + encodeURIComponent('免責') +
+    '&select=id,name,lend_date,insurance');
+  Logger.log('[SkyInsBackfill] 候補 ' + rows.length + ' 件 (dryRun=' + dryRun + ')');
+  var fixed = 0, notfound = 0, unchanged = 0;
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    // スカイチケット送信元: rentacar@skyticket.com（旧 adventure-inc も併用実績あり）
+    var threads = GmailApp.search('"' + r.id + '" (from:skyticket.com OR from:adventure-inc.co.jp)', 0, 5);
+    var body = '';
+    for (var t = 0; t < threads.length && !body; t++) {
+      var msgs = threads[t].getMessages();
+      for (var m = 0; m < msgs.length; m++) {
+        var b = msgs[m].getPlainBody();
+        if (b.indexOf(r.id) >= 0) { body = b; break; }
+      }
+    }
+    if (!body) { notfound++; Logger.log('  [未検出] ' + r.id + ' ' + r.name); Utilities.sleep(150); continue; }
+    var ins = detectInsurance_(body);
+    if (ins !== '免責' && ins !== 'なし') {
+      Logger.log('  [修正] ' + r.id + ' ' + r.name + ' 免責 → ' + ins);
+      if (!dryRun) {
+        supabaseUpdate_('reservations', 'id=eq.' + encodeURIComponent(r.id), { insurance: ins });
+        supabaseUpdate_('tasks', 'reservation_id=eq.' + encodeURIComponent(r.id), { insurance: ins });
+      }
+      fixed++;
+    } else { unchanged++; }
+    Utilities.sleep(200);
+  }
+  Logger.log('[SkyInsBackfill] 完了: 修正' + fixed + ' / 免責のまま正常' + unchanged + ' / メール未検出' + notfound);
+}
+function backfillSkyticketInsuranceDryRun() { backfillSkyticketInsurance(true); }
+function backfillSkyticketInsuranceApply()  { backfillSkyticketInsurance(false); }
 
 function backfillJalanPeople() {
   var resvs = supabaseGet_('reservations', 'ota=eq.J&people=eq.0&status=neq.cancelled&select=id,name,lend_date&order=lend_date.desc&limit=200');
