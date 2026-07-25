@@ -614,6 +614,7 @@ Deno.serve(async (req) => {
     const insR = String(r.insurance || "").trim() || String(dTask?.insurance || cTask?.insurance || "").trim();
     const pendingCancel = chg.some((c: any) => c.field === "cancel" && c.status === "requested");
     const readyPending = chg.some((c: any) => c.field === "ready" && c.status === "requested");
+    const receivedDone = chg.some((c: any) => c.field === "received" && c.status === "applied");
     // 履歴：mypage_changes（依頼/承認/マイページ即時）＋ OPタスク由来（フォーム回答・担当編集の場所/時間）を統合。
     const history: any[] = [];
     for (const c of chg) history.push({ field: c.field, value: c.new_value, old: c.old_value, at: c.created_at, source: c.source === "staff" ? "staff" : "customer_mypage", status: c.status, actor: c.actor });
@@ -649,12 +650,42 @@ Deno.serve(async (req) => {
       damage: { ready: damageReady, url: damageUrl },
       tracking: { active: r.kd_status === "delivering" || r.kd_status === "collecting", kd_status: r.kd_status || null, token: r.kd_track_token || null },
       license: { cnt: licCnt, drivers: licDrivers },
+      received: receivedDone,
       pendingCancel, readyPending, recentChanges: chg, history: historyTop,
     }, 200, origin);
   }
 
   const st = String(r.status || "");
   const cancelled = st === "cancelled" || st === "キャンセル" || st === "cancel";
+
+  // ---- receive_done: お客様が「受け取り完了」を報告 → お届け(DEL)タスクを済(完了)にしてSlack通知 ----
+  if (action === "receive_done") {
+    if (cancelled) return json({ error: "キャンセル済みの予約です" }, 409, origin);
+    const cAct = "customer:" + resId;
+    // 二重報告ガード（既に受取完了なら何もせず成功を返す）
+    const prev = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.received&status=eq.applied&select=id&limit=1`);
+    if (prev[0]) return json({ ok: true, received: true, already: true }, 200, origin);
+    // お届け(d-)タスクを済(完了)に。無ければ先頭タスク。
+    const tks = await sbGet(store.tasks, `reservation_id=eq.${encodeURIComponent(resId)}&deleted=not.is.true&select=_id,done`);
+    const delT = tks.find((t: any) => String(t._id || "").startsWith("d-")) || tks[0];
+    if (delT && delT.done !== true) await sbPatch(store.tasks, `_id=eq.${encodeURIComponent(String(delT._id))}`, { done: true }, cAct);
+    // 監査ログ（受取完了を正本記録）
+    await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field: "received", old_value: "", new_value: "受取完了", source: "customer", status: "applied", note: "お客様がマイページで受け取り完了を報告→お届けタスクを完了(済)化" }, cAct);
+    // Slack通知（#sapporo_user_action）
+    const blocks = [
+      { type: "header", text: { type: "plain_text", text: "✅ お客様 受け取り完了（札幌）", emoji: true } },
+      { type: "section", fields: [
+        { type: "mrkdwn", text: `*お客様:*\n${r.name || "-"}` },
+        { type: "mrkdwn", text: `*予約番号:*\n${resId}` },
+        { type: "mrkdwn", text: `*ご予約元:*\n${r.ota || "-"}` },
+        { type: "mrkdwn", text: `*利用期間:*\n${r.lend_date || "-"} 〜 ${r.return_date || "-"}` },
+        { type: "mrkdwn", text: `*車両クラス:*\n${r.vehicle || "-"}` },
+      ] },
+      { type: "context", elements: [ { type: "mrkdwn", text: "お客様が車両の受け取り完了を報告。OPシートのお届けタスクを完了(済)にしました。" } ] },
+    ];
+    await slackPost(`✅ 受け取り完了 [札幌] ${r.name || ""} / ${resId}`, blocks);
+    return json({ ok: true, received: true }, 200, origin);
+  }
 
   // ---- update: 場所/時間のみ 即時反映（顧客が自分で確定できる低制約項目）----
   if (action === "update") {
