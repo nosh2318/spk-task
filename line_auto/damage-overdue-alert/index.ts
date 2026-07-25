@@ -25,8 +25,8 @@ function json(o: unknown) { return new Response(JSON.stringify(o), { headers: { 
 const enc = encodeURIComponent;
 
 const STORES: Record<string, any> = {
-  spk: { label: "札幌", tasks: "tasks", typeCol: "type", typeVals: ["DEL"], timeCol: "time", nameCol: "name", resvCol: "reservation_id", assigneeCol: "assignee", links: "spk_line_links", sends: "spk_line_sends", doneCol: "done", resv: "reservations" },
-  nha: { label: "那覇", tasks: "nha_tasks", typeCol: "内容", typeVals: ["PUB", "DEL", "来店"], timeCol: "時間", nameCol: "予約者", resvCol: "予約番号", assigneeCol: "担当", links: "nha_line_links", sends: "nha_line_sends", doneCol: null, resv: "nha_reservations" },
+  spk: { label: "札幌", tasks: "tasks", typeCol: "type", typeVals: ["DEL"], timeCol: "time", nameCol: "name", resvCol: "reservation_id", assigneeCol: "assignee", links: "spk_line_links", sends: "spk_line_sends", doneCol: "done", resv: "reservations", depCols: "del_time,lend_time", depColsArr: ["del_time", "lend_time"] },
+  nha: { label: "那覇", tasks: "nha_tasks", typeCol: "内容", typeVals: ["PUB", "DEL", "来店"], timeCol: "時間", nameCol: "予約者", resvCol: "予約番号", assigneeCol: "担当", links: "nha_line_links", sends: "nha_line_sends", doneCol: null, resv: "nha_reservations", depCols: "del_time,start_time", depColsArr: ["del_time", "start_time"] },
 };
 
 async function slackPost(text: string, blocks?: unknown[]): Promise<boolean> {
@@ -70,25 +70,36 @@ Deno.serve(async (req) => {
   let q = `${S.tasks}?date=eq.${today}&${enc(S.typeCol)}=in.(${S.typeVals.map(enc).join(",")})&${enc(S.resvCol)}=not.is.null&select=${enc(S.resvCol)},${enc(S.timeCol)},${enc(S.nameCol)},${enc(S.assigneeCol)},${enc(S.typeCol)}`;
   if (S.doneCol) q += `&${enc(S.doneCol)}=eq.false`;
   const tasks = await sbGet(q);
-  const cands = (tasks as any[])
+  // ★2026-07-16 STEP3前提: タスク時間で時刻フィルタする前に予約の出発時刻を取り、タスク時間が空でも予約から判定できるようにする（書込stripでタスク時間が空でも未対応アラートを取りこぼさない・additive=現状は挙動不変）
+  const cands0 = (tasks as any[])
     .map((t) => ({ resv: t[S.resvCol], time: t[S.timeCol], name: t[S.nameCol] || "", asg: t[S.assigneeCol] || "", type: t[S.typeCol] }))
-    .filter((t) => {
-      if (!t.resv) return false;
-      if (!t.time || !/^\d{1,2}:\d{2}/.test(String(t.time))) return false; // 時間未定は判定不能→除外
-      const [h, m] = String(t.time).split(":").map(Number);
-      return (h * 60 + m) <= nowMin; // 出発時刻ちょうどを過ぎた（grace=0）
-    });
-  if (!cands.length) return json({ ok: true, store, overdue: 0, reason: "no_time_passed_tasks" });
+    .filter((t) => !!t.resv);
+  if (!cands0.length) return json({ ok: true, store, overdue: 0, reason: "no_tasks" });
 
-  const resvList = [...new Set(cands.map((t) => t.resv))];
+  const resvList = [...new Set(cands0.map((t) => t.resv))];
   const inList = resvList.map(enc).join(",");
 
-  // 予約状態（キャンセル除外）
-  const resvRows = await sbGet(`${S.resv}?id=in.(${inList})&select=id,status`);
+  // 予約状態（キャンセル除外）＋出発時刻フォールバック
+  const resvRows = await sbGet(`${S.resv}?id=in.(${inList})&select=id,status,${(S as any).depCols}`);
   const cancelled = new Set((resvRows as any[]).filter((r) => {
     const st = String(r.status || "").toLowerCase();
     return st.includes("cancel") || st.includes("キャンセル");
   }).map((r) => r.id));
+  const depMap: Record<string, string> = {};
+  (resvRows as any[]).forEach((r) => {
+    const dep = ((S as any).depColsArr as string[]).map((c) => r[c]).find((v: any) => v && /^\d{1,2}:\d{2}/.test(String(v)));
+    if (dep) depMap[r.id] = String(dep);
+  });
+
+  // 出発超過判定（タスク時間優先・空なら予約の出発時刻）
+  const cands = cands0.filter((t) => {
+    const eff = (t.time && /^\d{1,2}:\d{2}/.test(String(t.time))) ? String(t.time) : (depMap[t.resv] || "");
+    if (!eff || !/^\d{1,2}:\d{2}/.test(eff)) return false; // 出発時刻不明→判定不能で除外
+    (t as any).time = eff; // 表示/sortにも反映
+    const [h, m] = eff.split(":").map(Number);
+    return (h * 60 + m) <= nowMin; // 出発時刻ちょうどを過ぎた（grace=0）
+  });
+  if (!cands.length) return json({ ok: true, store, overdue: 0, reason: "no_time_passed_tasks" });
 
   // LINE連携済み（📱OK）= links に resv_no がある
   const links = await sbGet(`${S.links}?resv_no=in.(${inList})&select=resv_no`);
@@ -102,6 +113,11 @@ Deno.serve(async (req) => {
     if (s.action === "damage_check" && (s.status === "sent" || s.status === "manual_done")) doneSet.add(s.resv_no);
     if (s.action === "overdue_alert") alertedSet.add(s.resv_no);
   });
+
+  // ★2026-07-25 KEYDROP予約はLINE(spk/nha_line_sends)でなくメール(keydrop_notifications)経路で傷チェックが送られる。
+  //   そのため line_sends だけ見ると KEYDROP客が「no_userid=未対応」に誤検知される。メール送信済み(sent=true)なら対応済み扱いにする。
+  const kdSent = await sbGet(`keydrop_notifications?reservation_id=in.(${inList})&type=eq.damage_check&sent=eq.true&select=reservation_id`);
+  (kdSent as any[]).forEach((k: any) => doneSet.add(k.reservation_id));
 
   // 未対応アラート対象を確定
   const overdue = cands.filter((t) =>
