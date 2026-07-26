@@ -78,9 +78,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1005';
+var CV='spk-v1006';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=897').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=898').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -354,7 +354,7 @@ const DB = {
   _resLsLoad(){try{const s=localStorage.getItem(DB._resLsKey);const a=s?JSON.parse(s):[];if(a.length&&(!DB._resIdx||!Object.keys(DB._resIdx).length)){DB._resIdx={};a.forEach(r=>{if(r&&r.id)DB._resIdx[r.id]=r;});}return a;}catch(e){return[];}},
   _vehLsKey:"spk_vehicles_cache",
   _vehLsSave(a){try{localStorage.setItem(DB._vehLsKey,JSON.stringify(a));}catch(e){}},
-  _vehLsLoad(){try{const s=localStorage.getItem(DB._vehLsKey);return s?JSON.parse(s):null;}catch(e){return null;}},
+  _vehLsLoad(){try{const s=localStorage.getItem(DB._vehLsKey);const a=s?JSON.parse(s):null;return a?sortVehicles(a):null;}catch(e){return null;}},
   async fetchFleet(){if(!sb){return DB._fleetLsLoad();}const{data,error}=await sb.from("fleet").select("*");if(error){dbLog("fetchFleet",false,error.message);return DB._fleetLsLoad();}const f={};(data||[]).forEach(r=>f[r.reservation_id]=r.vehicle_code);dbLog("fetchFleet",true,Object.keys(f).length+"件");DB._fleetLsSave(f);return f;},
   async upsertFleet(fleet){DB._fleetLsSave(fleet);if(!sb)return;const rows=Object.entries(fleet).map(([k,v])=>({reservation_id:k,vehicle_code:v}));if(rows.length){await DB._retryOp(async()=>{const{error}=await sb.from("fleet").upsert(rows,{onConflict:"reservation_id"});if(error)throw new Error(error.message);dbLog("upsertFleet",true,rows.length+"件");},"upsertFleet");}},
   async updateFleetOne(resId,code){if(!sb)return;const{error}=await sb.from("fleet").upsert({reservation_id:resId,vehicle_code:code},{onConflict:"reservation_id"});if(error)dbLog("updateFleet1",false,error.message);},
@@ -599,8 +599,9 @@ const DB = {
     // code重複修正: 同じcodeがあればナンバーを付加してユニーク化
     const seen={};let needFix=false;const mapped=(data||[]).map(v=>{let c=v.code;if(seen[c]){const no=(v.plate_no||"").replace(/[^0-9a-zA-Z]/g,"");c=c+(no||v.id);needFix=true;}seen[c]=true;return{id:"v"+v.id,code:c,name:v.name,no:v.plate_no,type:v.type,grade:v.grade||"",seats:v.seats,insuranceVeh:!!v.insurance_veh,year:v.year||"",color:v.color||"",equip:v.equip||"",insPrice:v.ins_price||"",memo:v.memo||"",insuranceAnnual:Number(v.insurance_annual)||0,leaseMonthly:Number(v.lease_monthly)||0,shakenCost:Number(v.shaken_cost)||0,tenkenCost:Number(v.tenken_cost)||0,carTax:Number(v.car_tax)||0,oilIntervalKm:Number(v.oil_interval_km)||5000,inspectionDueDate:v.inspection_due_date||"",inspectionNextDate:v.inspection_next_date||"",tenkenDueDate:v.tenken_due_date||"",tenkenNextDate:v.tenken_next_date||"",active:v.active!==false,ownerCompany:v.owner_company||"HANDYMAN",ownerLabel:v.owner_label||"",partnerDailyCost:Number(v.partner_daily_cost)||0,specs:(v.specs&&typeof v.specs==="object")?v.specs:{}};});
     if(needFix){DB.saveVehicles(mapped);dbLog("fetchVehicles","fix","重複code修正");}
-    DB._vehLsSave(mapped);
-    return mapped;},
+    const sorted=sortVehicles(mapped);
+    DB._vehLsSave(sorted);
+    return sorted;},
   async saveVehicles(arr){if(!sb)return;const rows=arr.map(v=>{const _row={code:v.code,name:v.name,plate_no:v.no,type:v.type,grade:v.grade||"",seats:v.seats,insurance_veh:!!v.insuranceVeh,year:v.year||"",color:v.color||"",equip:v.equip||"",ins_price:v.insPrice||"",memo:v.memo||"",insurance_annual:Number(v.insuranceAnnual)||0,lease_monthly:Number(v.leaseMonthly)||0,shaken_cost:Number(v.shakenCost)||0,tenken_cost:Number(v.tenkenCost)||0,car_tax:Number(v.carTax)||0,oil_interval_km:Number(v.oilIntervalKm)||5000,inspection_due_date:v.inspectionDueDate||null,inspection_next_date:v.inspectionNextDate||null,tenken_due_date:v.tenkenDueDate||null,tenken_next_date:v.tenkenNextDate||null,active:v.active!==false,owner_company:v.ownerCompany||"HANDYMAN",owner_label:v.ownerLabel||"",specs:(v.specs&&typeof v.specs==="object")?v.specs:{}};if(v.partnerDailyCost!==undefined)_row.partner_daily_cost=Number(v.partnerDailyCost)||0;return _row;});const{error}=await sb.from("vehicles").upsert(rows,{onConflict:"code"});if(error)dbLog("saveVehicles",false,error.message);else dbLog("saveVehicles",true,arr.length+"件保存");
   },
   async fetchPartnerCompanies(activeOnly){if(!sb)return[];let q=sb.from("partner_companies").select("*").order("label");if(activeOnly!==false)q=q.eq("active",true);const{data,error}=await q;if(error){dbLog("fetchPartnerCompanies",false,error.message);return[];}return(data||[]);},
@@ -1173,6 +1174,22 @@ const INIT_VEHICLES=[
   {id:"v7",code:"CX5",name:"CX-5",no:"8065",type:"S",seats:5},
   {id:"v8",code:"SLO",name:"ソリオ",no:"8529",type:"F",seats:5},
 ];
+// 車両の統一並び順: クラス階層(A→A2→B→B2→C→S→F→H→未知)→車種名→ナンバー。
+// vehicles配列の入口で常にこの順に整列させ、アプリ全体のプルダウン/一覧/配車表に自動反映する。
+// 新規登録車両もクラスに応じて自動でこの位置に並ぶ(手動並べ替え不要)。
+const VEH_CLASS_ORDER=["A","A2","B","B2","C","S","F","H"];
+function sortVehicles(arr){
+  if(!Array.isArray(arr))return arr;
+  const ci=t=>{const i=VEH_CLASS_ORDER.indexOf(t);return i<0?VEH_CLASS_ORDER.length:i;};
+  return arr.slice().sort((a,b)=>{
+    const ca=ci(a&&a.type),cb=ci(b&&b.type);
+    if(ca!==cb)return ca-cb;
+    if(ca===VEH_CLASS_ORDER.length){const tr=String((a&&a.type)||"").localeCompare(String((b&&b.type)||""),"ja");if(tr!==0)return tr;}
+    const nr=String((a&&a.name)||"").localeCompare(String((b&&b.name)||""),"ja");
+    if(nr!==0)return nr;
+    return String((a&&a.no)||"").localeCompare(String((b&&b.no)||""),"ja");
+  });
+}
 const V_COLORS={VEL:"#7c3aed",NRH:"#0284c7",DLC:"#0891b2",RKY:"#059669",CX3:"#16a34a",HRI:"#d97706",CX5:"#ea580c",SLO:"#db2777"};
 
 function toLD(dt){return dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");}
@@ -22186,7 +22203,7 @@ function App(){
     DB.saveStaff(next).then(()=>markDbSync("staff")).catch(e=>console.error("saveStaff error:",e));
   },[staff]);
   const setVehiclesSync=useCallback((fn)=>{
-    const next=typeof fn==="function"?fn(vehicles):fn;
+    const next=sortVehicles(typeof fn==="function"?fn(vehicles):fn);
     // 全フィールドDB保存（localStorage不要）
     setVehicles(next);markLocalChange("vehicles");
     DB.saveVehicles(next).then(()=>markDbSync("vehicles")).catch(e=>console.error("saveVehicles error:",e));
@@ -23453,7 +23470,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.465";
+const APP_VERSION="v4.7.466";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
