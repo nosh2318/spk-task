@@ -80,7 +80,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
 var CV='spk-v1003';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=894').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=895').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -21296,8 +21296,61 @@ function _spkPartBudgetByMonth(staff,shifts){
   });
   return out;
 }
+/* ★2026-07-26 TOPタスクサマリー用 事前駐車(無人貸出)依頼モーダル（OPシートのParkModalと同等・自己完結）*/
+function ParkReqModal({task,onClose}){
+  const t=task;const rid=t.reservationId||t.reservation_id;
+  const _tk=(window._mypageTokenMap||{})[rid];
+  const myUrl=_tk?("https://nosh2318.github.io/spk-task/my.html?t="+_tk):"（マイページURL未取得）";
+  const plate=t.plateNo||t.plate_no||"";const name=t.name||"";const cn=name+"様";
+  const[mode,setMode]=useState("greet");const[lang,setLang]=useState("ja");
+  const[greet,setGreet]=useState(()=>msgParkGreet(name,myUrl,"ja"));
+  const[place,setPlace]=useState(()=>msgParkPlace(name,plate,"ja"));
+  const linked=!!(window._lineLinkMap||{})[rid];
+  const body=mode==="greet"?greet:place;
+  const setBody=(v)=>mode==="greet"?setGreet(v):setPlace(v);
+  const act=mode==="greet"?"advance_park":"advance_park_place";
+  const copy=async()=>{try{await navigator.clipboard.writeText(body);alert("📋 本文をコピーしました");}catch(_){alert("コピーに失敗しました");}};
+  const send=async()=>{
+    if(!body.trim()){alert("本文が空です");return;}
+    if(!linked){await copy();alert("📱 このお客様はLINE未登録です。本文をコピーしました→エルメ/LINEに貼り付けて送信してください");return;}
+    if(!window.confirm(cn+" に「事前駐車のご案内」をLINEで自動送信します。よろしいですか？"))return;
+    try{
+      const{data:_s}=await sb.auth.getSession();const _tk2=_s&&_s.session&&_s.session.access_token;
+      const _r=await fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/line-send",{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+_tk2},body:JSON.stringify({store:"spk",resv_no:rid,action:act,message:body})});
+      const _j=await _r.json();
+      if(_j.ok){markLineSent(rid,act);alert("✅ 事前駐車のご案内をLINEに自動送信しました");onClose();}
+      else{await navigator.clipboard.writeText(body);alert("⚠️自動送信できませんでした("+(_j.reason||"")+")。\n本文をコピーしました→手動で送信してください");}
+    }catch(_e){await navigator.clipboard.writeText(body);alert("⚠️送信エラー。本文をコピーしました→手動で送信してください");}
+  };
+  const tabS=(on)=>({flex:1,padding:"8px",borderRadius:8,fontSize:12,fontWeight:800,cursor:"pointer",border:on?"none":"1px solid #cbd5e1",background:on?"#0f766e":"#f8fafc",color:on?"#fff":"#475569"});
+  const changeLang=(v)=>{setLang(v);setGreet(msgParkGreet(name,myUrl,v));setPlace(msgParkPlace(name,plate,v));};
+  return <div onClick={onClose} style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,.5)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+    <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:16,padding:20,width:"100%",maxWidth:440,maxHeight:"92vh",overflowY:"auto",boxShadow:"0 20px 60px rgba(0,0,0,.25)"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <div style={{fontSize:15,fontWeight:800,color:"#1e293b"}}>🅿️ 事前駐車依頼</div>
+        <button onClick={onClose} style={{background:"none",border:"none",fontSize:20,color:"#94a3b8",cursor:"pointer",padding:"4px 8px"}}>✕</button>
+      </div>
+      <div style={{fontSize:12,color:"#64748b",marginBottom:10,padding:"6px 10px",background:"#f8fafc",borderRadius:8}}>
+        <b style={{color:"#1e293b"}}>{name}</b> 様{plate?<span>／{plate}</span>:null}　{linked?<span style={{color:"#16a34a",fontWeight:700}}>📱LINE連携あり</span>:<span style={{color:"#dc2626",fontWeight:700}}>📱LINE未登録（手動）</span>}
+      </div>
+      <LangPicker lang={lang} setLang={changeLang}/>
+      <div style={{fontSize:10,color:"#94a3b8",marginBottom:6}}>※言語を切り替えると本文が再生成されます（編集内容はリセットされます）</div>
+      <div style={{display:"flex",gap:6,marginBottom:8}}>
+        <div onClick={()=>setMode("greet")} style={tabS(mode==="greet")}>①挨拶文</div>
+        <div onClick={()=>setMode("place")} style={tabS(mode==="place")}>②停車場所（手動入力）</div>
+      </div>
+      <div style={{fontSize:10,color:"#94a3b8",marginBottom:6}}>{mode==="greet"?"※マイページURLは自動挿入済み。必要に応じて編集できます":"※（　）内に具体的な停車場所を入力してください"}</div>
+      <textarea value={body} onChange={e=>setBody(e.target.value)} style={{width:"100%",height:260,padding:10,borderRadius:8,border:"1px solid #cbd5e1",fontSize:12,lineHeight:1.5,color:"#1e293b",resize:"vertical",background:"#fff",boxSizing:"border-box"}}/>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:10}}>
+        <button onClick={copy} style={{padding:"12px",background:"#eff6ff",border:"2px solid #93c5fd",borderRadius:10,fontSize:14,fontWeight:800,color:"#1d4ed8",cursor:"pointer"}}>📋 コピー</button>
+        <button onClick={send} style={{padding:"12px",background:linked?"#16a34a":"#f1f5f9",border:linked?"none":"2px solid #cbd5e1",borderRadius:10,fontSize:14,fontWeight:800,color:linked?"#fff":"#64748b",cursor:"pointer"}}>📱 送信</button>
+      </div>
+      <div style={{fontSize:10,color:"#94a3b8",marginTop:6,textAlign:"center"}}>{linked?"「送信」でLINE連携ユーザーへ自動送信します":"LINE未登録のため「送信」はコピーのみ（手動で貼り付け）"}</div>
+    </div>
+  </div>;
+}
 function App(){
-  const[data,setData]=useState([]);const[tab,setTab_]=useState("top");const[tabHistory,setTabHistory]=useState([]);const[highlightVehicle,setHighlightVehicle]=useState(null);const[taskSumOpen,setTaskSumOpen]=useState(false);const[tomSumOpen,setTomSumOpen]=useState(false);const[topCalEvents,setTopCalEvents]=useState([]);const[delaySumTask,setDelaySumTask]=useState(null);
+  const[data,setData]=useState([]);const[tab,setTab_]=useState("top");const[tabHistory,setTabHistory]=useState([]);const[highlightVehicle,setHighlightVehicle]=useState(null);const[taskSumOpen,setTaskSumOpen]=useState(false);const[tomSumOpen,setTomSumOpen]=useState(false);const[topCalEvents,setTopCalEvents]=useState([]);const[delaySumTask,setDelaySumTask]=useState(null);const[parkSumTask,setParkSumTask]=useState(null);
   const setTab=useCallback((newTab)=>{setTab_(prev=>{if(prev&&prev!==newTab){setTabHistory(h=>[...h,prev].slice(-20));}return newTab;});try{window.scrollTo(0,0);}catch(e){}setTimeout(()=>{try{window.scrollTo(0,0);}catch(e){}},0);},[]);
   const goBack=useCallback(()=>{setTabHistory(h=>{if(h.length===0)return h;const prev=h[h.length-1];setTab_(prev);return h.slice(0,-1);});},[]);
   useEffect(()=>{const top=()=>{try{window.scrollTo(0,0);}catch(e){}try{document.documentElement.scrollTop=0;}catch(e){}try{document.body.scrollTop=0;}catch(e){}};top();requestAnimationFrame(top);const t1=setTimeout(top,80);const t2=setTimeout(top,250);return()=>{clearTimeout(t1);clearTimeout(t2);};},[tab]);
@@ -22537,6 +22590,7 @@ function App(){
     {!isOnline&&<div style={{background:"#dc2626",color:"#fff",padding:"6px 12px",fontSize:12,fontWeight:700,textAlign:"center",zIndex:9999}}>⚠️ オフライン — 変更は復帰後に自動保存されます</div>}
     {showOP&&<OPScreen reservations={data} today={today} shifts={shifts} fleet={fleet} onFleetChange={setFleetSync} onClose={()=>{setShowOP(false);refreshTopTasks();}} onGoFleet={()=>setShowFloatFleet(f=>!f)} vehicles={vehicles} staff={staff} resOpts={resOpts} sheetPlaces={sheetPlaces} onUpdateSheetPlaces={saveSheetPlaces} repeaterMap={repeaterInfo.isRepeater} jalanPay={jalanPay} isJPaidFn={isJPaidFn} extraPayFn={extraPayFn} cancelledIdsRef={cancelledIdsRef} onCancelReservation={cancelReservation} onTaskChange={refreshTopTasks}/>}
     {delaySumTask&&<ColDelayModal task={delaySumTask} onClose={()=>setDelaySumTask(null)}/>}
+    {parkSumTask&&<ParkReqModal task={parkSumTask} onClose={()=>setParkSumTask(null)}/>}
     {showSqFailed&&<SqFailedModal onClose={()=>setShowSqFailed(false)} onResolved={()=>setSqFailedRefreshKey(k=>k+1)} preloadedItems={sqfPreload}/>}
     {/* ★ フローティング配車表パネル */}
     {showFloatFleet&&<div style={{position:"fixed",bottom:0,right:0,width:floatFleetSize==="full"?"100%":"50%",height:floatFleetSize==="full"?"70vh":"45vh",zIndex:250,background:"#fff",borderTop:"3px solid #059669",borderLeft:floatFleetSize!=="full"?"3px solid #059669":"none",boxShadow:"0 -4px 20px rgba(0,0,0,.2)",display:"flex",flexDirection:"column",borderRadius:floatFleetSize==="full"?"12px 12px 0 0":"12px 0 0 0"}}>
@@ -22784,6 +22838,7 @@ function App(){
                                 {isDel&&(()=>{const _rid0=t.reservationId||t.reservation_id;const _done=actionDoneOf(_rid0,"arrival");return <button onClick={async(e)=>{e.stopPropagation();const rid=t.reservationId||t.reservation_id;if(!confirmRedo(actionDoneOf(rid,"arrival")))return;const cn=(t.name||"")+"様";const realP=(t._placeSource==="manual"?t.place:(t._ssPlace||t.place))||"";const cleanP=/(札幌デリバリー専門店|デリバリー専門店|★OTAデリバリー|空港受け渡し|HANDYMAN)/.test(realP)?"":realP;const _plate=(veh&&veh.no)?String(veh.no).trim():"";const msg=`【車両到着のお知らせ】\n${cn}\n\nお待たせいたしました。只今スタッフが到着いたしました。\nご準備整い次第、受け取り対応をお願いいたします。 引き続きどうぞ宜しくお願い申し上げます。`+(_plate?`\n\n対象車両のナンバーは ${_plate} でございます。`:"");const _reg=!!(window._lineLinkMap||{})[rid];const kd=(t.ota==="KEYDROP");let _sent=false;if(kd&&rid){if(!window.confirm(cn+" に「到着のお知らせ」メールを送信します。よろしいですか？"))return;try{const _rk=await sb.rpc("keydrop_enqueue_button",{p_resv:rid,p_kind:"arrive_del",p_plate:_plate});if(_rk.error||_rk.data!=="ok")throw new Error(String((_rk.data)||(_rk.error&&_rk.error.message)||"ng"));alert("✅ 到着をメールで送信しました（KEYDROP）");_sent=true;}catch(_ke){alert("⚠️メール送信失敗("+(_ke.message||"")+")。手動でご連絡ください");}}else if(_reg&&rid){if(!window.confirm(cn+" に「到着のお知らせ」LINEを送信します。よろしいですか？"))return;try{const{data:_s}=await sb.auth.getSession();const _tk=_s&&_s.session&&_s.session.access_token;const _r=await fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/line-send",{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+_tk},body:JSON.stringify({store:"spk",resv_no:rid,action:"arrival",message:msg})});const _j=await _r.json();if(_j.ok){alert("✅ 到着をLINEに自動送信しました");_sent=true;}else{await navigator.clipboard.writeText(msg);alert("⚠️自動送信不可("+(_j.reason||"")+")。コピーしました→手動で送信してください");_sent=true;}}catch(_e){await navigator.clipboard.writeText(msg);alert("⚠️送信エラー。コピーしました→手動で送信してください");_sent=true;}}else{await navigator.clipboard.writeText(msg);alert("📋 LINE未登録(📱手動)。コピーしました→エルメ/LINEに貼り付けて送信してください");_sent=true;}if(_sent&&rid){await recordActionDone(sb,rid,"arrival");refreshTopTasks();}}} style={{fontSize:8,fontWeight:600,padding:"3px 8px",borderRadius:6,background:_done?"#f1f5f9":"#dcfce7",color:_done?"#64748b":"#15803d",border:"1px solid "+(_done?"#cbd5e1":"#86efac"),cursor:"pointer"}}>📱到着{_done?actionDoneLabel(_done.at):""}</button>;})()}
                                 {isCOL&&(t.reservationId||t.reservation_id)&&(()=>{const _cd=actionDoneOf(t.reservationId||t.reservation_id,"col_delay");return <button onClick={e=>{e.stopPropagation();setDelaySumTask(t);}} title={_cd?"回収遅延のご案内：送信済 "+actionDoneLabel(_cd.at):"回収の遅延（到着予定時間）のご案内メッセージを作成"} style={{fontSize:8,fontWeight:600,padding:"3px 8px",borderRadius:6,background:_cd?"#dcfce7":"#fffbeb",color:_cd?"#15803d":"#b45309",border:"1px solid "+(_cd?"#86efac":"#fcd34d"),cursor:"pointer"}}>⏳遅延{_cd?actionDoneLabel(_cd.at):""}</button>;})()}
                                 {isDel&&(t.reservationId||t.reservation_id)&&(()=>{const _dd=actionDoneOf(t.reservationId||t.reservation_id,"del_delay");return <button onClick={e=>{e.stopPropagation();setDelaySumTask({...t,_delayKind:"del"});}} title={_dd?"お届け遅延のご案内：送信済 "+actionDoneLabel(_dd.at):"お届けの遅延（到着予定時間）のご案内"} style={{fontSize:8,fontWeight:600,padding:"3px 8px",borderRadius:6,background:_dd?"#dcfce7":"#fffbeb",color:_dd?"#15803d":"#b45309",border:"1px solid "+(_dd?"#86efac":"#fcd34d"),cursor:"pointer"}}>⏳遅延{_dd?actionDoneLabel(_dd.at):""}</button>;})()}
+                                {isDel&&(t.reservationId||t.reservation_id)&&(()=>{const _rid0=t.reservationId||t.reservation_id;const _pd=actionDoneOf(_rid0,"advance_park")||actionDoneOf(_rid0,"advance_park_place");return <button onClick={e=>{e.stopPropagation();setParkSumTask(t);}} title={_pd?"事前駐車(無人貸出)依頼：送信済 "+actionDoneLabel(_pd.at):"事前に停めてもらう案内（無人貸出）"} style={{fontSize:8,fontWeight:600,padding:"3px 8px",borderRadius:6,background:_pd?"#dcfce7":"#eef2ff",color:_pd?"#15803d":"#4338ca",border:"1px solid "+(_pd?"#86efac":"#c7d2fe"),cursor:"pointer"}}>🅿️無人貸出{_pd?actionDoneLabel(_pd.at):""}</button>;})()}
                                 {isCOL&&(()=>{const _rid0=t.reservationId||t.reservation_id;const _done=actionDoneOf(_rid0,"col_arrival");return <button onClick={async(e)=>{e.stopPropagation();const rid=t.reservationId||t.reservation_id;if(!confirmRedo(actionDoneOf(rid,"col_arrival")))return;const cn=(t.name||"")+"様";const msg=`【ご返却場所到着のお知らせ】\n${cn}\n\n回収スタッフがご返却場所に到着致しました。\nご準備できましたら対応のほどお願い申しあげます。\n何卒よろしくお願いいたします。`;const _reg=!!(window._lineLinkMap||{})[rid];const kd=(t.ota==="KEYDROP");let _sent=false;if(kd&&rid){if(!window.confirm(cn+" に「返却場所到着のお知らせ」メールを送信します。よろしいですか？"))return;try{const _rk=await sb.rpc("keydrop_enqueue_button",{p_resv:rid,p_kind:"arrive_col"});if(_rk.error||_rk.data!=="ok")throw new Error(String((_rk.data)||(_rk.error&&_rk.error.message)||"ng"));alert("✅ 回収到着をメールで送信しました（KEYDROP）");_sent=true;}catch(_ke){alert("⚠️メール送信失敗("+(_ke.message||"")+")。手動でご連絡ください");}}else if(_reg&&rid){if(!window.confirm(cn+" に「返却場所到着のお知らせ」LINEを送信します。よろしいですか？"))return;try{const{data:_s}=await sb.auth.getSession();const _tk=_s&&_s.session&&_s.session.access_token;const _r=await fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/line-send",{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+_tk},body:JSON.stringify({store:"spk",resv_no:rid,action:"col_arrival",message:msg})});const _j=await _r.json();if(_j.ok){alert("✅ 回収到着をLINEに自動送信しました");_sent=true;}else{await navigator.clipboard.writeText(msg);alert("⚠️自動送信不可("+(_j.reason||"")+")。コピーしました→手動で送信してください");_sent=true;}}catch(_e){await navigator.clipboard.writeText(msg);alert("⚠️送信エラー。コピーしました→手動で送信してください");_sent=true;}}else{await navigator.clipboard.writeText(msg);alert("📋 LINE未登録(📱手動)。コピーしました→エルメ/LINEに貼り付けて送信してください");_sent=true;}if(_sent&&rid){await recordActionDone(sb,rid,"col_arrival");refreshTopTasks();}}} style={{fontSize:8,fontWeight:600,padding:"3px 8px",borderRadius:6,background:_done?"#f1f5f9":"#dcfce7",color:_done?"#64748b":"#15803d",border:"1px solid "+(_done?"#cbd5e1":"#86efac"),cursor:"pointer"}}>📱到着{_done?actionDoneLabel(_done.at):""}</button>;})()}
                                 {isCOL&&(()=>{const _rid0=t.reservationId||t.reservation_id;const _done=actionDoneOf(_rid0,"dropoff");return <button onClick={async(e)=>{e.stopPropagation();const rid=t.reservationId||t.reservation_id;if(!confirmRedo(actionDoneOf(rid,"dropoff")))return;const cn=(t.name||"")+"様";const msg=`【乗り捨て対応のお願い】\n${cn}\n\nご返却時刻の混雑により、大変お手数ではございますが返却予定場所近隣駐車場に乗り捨て駐車いただきたく、ご連絡させていただきました。\nお待たせする時間回避の目的のためご協力の程何卒よろしくお願いいたします。\n\n✅駐車完了しましたら"鍵と駐車券"をダッシュボード内に格納し、鍵を開けた状態でそのままお降りくださいませ。\n✅燃料の給油とお忘れ物（ETCカード等）のないようご注意ください。\n✅駐車場所が確定しましたら詳細場所をご連絡いただけますと幸いです。\n例：駐車場看板写真/GoogleマップURL/住所/駐車場名/●階等\n\n駐車後の車両トラブルに関しては一切の責任は問いませんのでご安心くださいませ。\n万一の盗難等の際にも弊社セキュリティにて追跡可能となっております。`;const _reg=!!(window._lineLinkMap||{})[rid];const kd=(t.ota==="KEYDROP");let _sent=false;if(kd&&rid){if(!window.confirm(cn+" に「乗り捨て対応のお願い」メールを送信します。よろしいですか？"))return;try{const _rk=await sb.rpc("keydrop_enqueue_button",{p_resv:rid,p_kind:"dropoff"});if(_rk.error||_rk.data!=="ok")throw new Error(String((_rk.data)||(_rk.error&&_rk.error.message)||"ng"));alert("✅ 乗り捨て依頼をメールに送信しました（KEYDROP）");_sent=true;}catch(_ke){await navigator.clipboard.writeText(msg);alert("⚠️メール送信失敗("+(_ke.message||"")+")。コピーしました→手動で送信してください");_sent=true;}}else if(_reg&&rid){if(!window.confirm(cn+" に「乗り捨て対応のお願い」LINEを送信します。よろしいですか？"))return;try{const{data:_s}=await sb.auth.getSession();const _tk=_s&&_s.session&&_s.session.access_token;const _r=await fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/line-send",{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+_tk},body:JSON.stringify({store:"spk",resv_no:rid,action:"dropoff",message:msg})});const _j=await _r.json();if(_j.ok){alert("✅ 乗り捨て依頼をLINEに自動送信しました");_sent=true;}else{await navigator.clipboard.writeText(msg);alert("⚠️自動送信不可("+(_j.reason||"")+")。コピーしました→手動で送信してください");_sent=true;}}catch(_e){await navigator.clipboard.writeText(msg);alert("⚠️送信エラー。コピーしました→手動で送信してください");_sent=true;}}else{await navigator.clipboard.writeText(msg);alert("📋 LINE未登録(📱手動)。コピーしました→エルメ/LINEに貼り付けて送信してください");_sent=true;}if(_sent&&rid){await recordActionDone(sb,rid,"dropoff");refreshTopTasks();}}} style={{fontSize:8,fontWeight:600,padding:"3px 8px",borderRadius:6,background:_done?"#f1f5f9":"#fef2f2",color:_done?"#64748b":"#b91c1c",border:"1px solid "+(_done?"#cbd5e1":"#fca5a5"),cursor:"pointer"}}>📱乗捨{_done?actionDoneLabel(_done.at):""}</button>;})()}
                                 <button onClick={(e)=>{e.stopPropagation();window.open("https://web.carmon.alpine-srv.net/","_blank");}} style={{fontSize:8,fontWeight:600,padding:"3px 8px",borderRadius:6,background:"#f1f5f9",color:"#475569",border:"none",cursor:"pointer"}}>📍CARMON</button>
@@ -23374,7 +23429,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.462";
+const APP_VERSION="v4.7.463";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
