@@ -9,7 +9,7 @@
 //     - キャッシュ対象は app.js?v=<版> と 下記CDN のみ
 //
 //   ★ 更新手順: index.src.html の SW登録 ./sw.js?v=<版> を上げたら、この SW_V も同じ値に合わせる
-const SW_V = '898';
+const SW_V = '899';
 const CACHE = 'spk-precache-' + SW_V;
 
 // 現行版の app.js とCDNをプリキャッシュ対象にする(SW_V と同値)
