@@ -666,9 +666,12 @@ Deno.serve(async (req) => {
     const prev = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.received&status=eq.applied&select=id&limit=1`);
     if (prev[0]) return json({ ok: true, received: true, already: true }, 200, origin);
     // お届け(d-)タスクを済(完了)に。無ければ先頭タスク。
-    const tks = await sbGet(store.tasks, `reservation_id=eq.${encodeURIComponent(resId)}&deleted=not.is.true&select=_id,done`);
+    const tks = await sbGet(store.tasks, `reservation_id=eq.${encodeURIComponent(resId)}&deleted=not.is.true&select=_id,done,place,changed_json`);
     const delT = tks.find((t: any) => String(t._id || "").startsWith("d-")) || tks[0];
     if (delT && delT.done !== true) await sbPatch(store.tasks, `_id=eq.${encodeURIComponent(String(delT._id))}`, { done: true }, cAct);
+    // 受け取り場所（お届け場所）を解決：OPタスク→予約→受付フォーム(spk_line_links)の順
+    const linkRD = await sbGet("spk_line_links", `resv_no=eq.${encodeURIComponent(resId)}&select=del_place&limit=1`);
+    const recvPlace = resolveTaskPlace(delT) || String(r.del_place || "").trim() || String((linkRD[0] && linkRD[0].del_place) || "").trim() || "（未設定）";
     // 監査ログ（受取完了を正本記録）
     await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field: "received", old_value: "", new_value: "受取完了", source: "customer", status: "applied", note: "お客様がマイページで受け取り完了を報告→お届けタスクを完了(済)化" }, cAct);
     // Slack通知（#sapporo_user_action）
@@ -680,6 +683,7 @@ Deno.serve(async (req) => {
         { type: "mrkdwn", text: `*ご予約元:*\n${r.ota || "-"}` },
         { type: "mrkdwn", text: `*利用期間:*\n${r.lend_date || "-"} 〜 ${r.return_date || "-"}` },
         { type: "mrkdwn", text: `*車両クラス:*\n${r.vehicle || "-"}` },
+        { type: "mrkdwn", text: `*受け取り場所:*\n${recvPlace}` },
       ] },
       { type: "context", elements: [ { type: "mrkdwn", text: "お客様が車両の受け取り完了を報告。OPシートのお届けタスクを完了(済)にしました。" } ] },
     ];

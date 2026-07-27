@@ -1,5 +1,14 @@
 # SPK業務管理APP（札幌店）
 
+## 🆘 2026-07-27 オフラインOPエクスポート（障害時バックアップ・GAS→Googleスプレッドシート）
+Supabase障害(API層ハング)でアプリが開けない時に、**当日OP＋スタッフ別タスクをGoogleスプレッドで読める**避難所。正本＝`~/Desktop/HANDYMAN/offline_export/gas_offline_op_export.gs`＋`README_setup.md`。
+- **仕組み**：GAS(Google基盤)が**15分毎(setupTrigger)にManagement API(SQL `/database/query`)経由**で3店のタスクを取得→各店スプレッドに `当日OP`／`翌日OP`／`👤担当名`(個別URL相当) タブを上書き。**REST障害中もSQLは生きているので更新継続**・完全障害でも最後の書出しが残る＝当日OPは必ず読める。閲覧専用(DBには戻さない)。
+- **なぜSQL経由**：過去の障害は全て**REST(API層)ハング＝SQL(mgmt-api)は201で生存**。だから避難所はSQL経由が正。RESTポーリングだと障害中に一緒に死ぬ。
+- **スキーマ差(重要)**：SPK`tasks`=英語列(type/time/name/assignee/vehicle/plate_no/place/insurance/ota/done)。NHA`nha_tasks`/BT`bt_tasks`=**日本語列**(内容/時間/予約者/担当/車種/No/送迎場所/OTA)＋`reservation_id`無し(`予約番号`)＋**done boolなし**(確定列は補償値"NOC"が入る罠→doneは空にする)。→ 予約/車両JOINせず**タスク行の非正規化列を直接**書き出す(エラー源除去・OP表示と同じ)。
+- **設定**：`SB_PAT`(=`~/.config/keydrop/sb_token`のsbp_・3プロジェクト全部で201確認済)をスクリプトプロパティに。スプレッドID3つ(SPK=1xKx…/NHA=16Vq…/BT=1iFx…)はGAS埋込済。**GASデプロイはオーナー作業**(script.google.comで貼付→runExportAll手動実行で権限承認→setupTrigger)。PAT失効(〜30日)で更新停止(シートは最後の内容残る)。
+- **社内共有メモ**：平常時はアプリ使用(裏で自動更新・見なくてOK)／障害時はスプレッドURL(固定)を開く／SSは見るだけ・復旧後にスプレで対応した分をアプリ再入力しない(二重登録防止)。
+- 本命は単一クラウド依存の解消(PITR ON/東京レプリカ)。これは即効の避難所。
+
 ## 📧 2026-07-25 KEYDROP通知の全経路を整理＋当日オペ全ボタンをメール化＋2バグ修正（SPK v4.7.449）
 KEYDROP傷チェックのメール未達疑いから、KEYDROPの自動通知経路を全て確認し、穴を3つ塞いだ。**KEYDROP客はLINE未連携が多く、通知は「メール（Resend）」が正**。台帳(keydrop_notifications)＋cron実行履歴(cron.job_run_details)で稼働を検証するのが確実。
 
