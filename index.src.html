@@ -78,9 +78,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1010';
+var CV='spk-v1011';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=903').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=904').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -15596,7 +15596,7 @@ function BulkRequestModal({taskIds,tasks,staff,onClose,onDone}){
     </div>
   </div>;
 }
-function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFleet,vehicles,staff,resOpts,sheetPlaces,onUpdateSheetPlaces,repeaterMap,jalanPay,isJPaidFn,extraPayFn,cancelledIdsRef,onCancelReservation,onTaskChange}){
+function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFleet,vehicles,staff,resOpts,sheetPlaces,onUpdateSheetPlaces,repeaterMap,jalanPay,isJPaidFn,extraPayFn,cancelledIdsRef,onCancelReservation,onTaskChange,maintenance}){
   const[requestTask,setRequestTask]=useState(null);
   const[moreTask,setMoreTask]=useState(null);
   const[bulkMode,setBulkMode]=useState(false);const[bulkSel,setBulkSel]=useState([]);const[bulkReqOpen,setBulkReqOpen]=useState(false);
@@ -15626,6 +15626,48 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       return false;
     }).map(s=>s.name);
   },[shifts,selDate,staff]);
+  /* ★ 洗車/その他タスク追加プルダウンの「空車グループ」判定
+     既存の空車判定(VehicleAvailability 約4375-4411)を selDate 版で再利用＝配車表ベース。
+     その日 fleet に配車が無く、予約の貸出〜返却期間(中日含む)に含まれず、当日メンテ/洗車タスクも無い車両を空車とする保守的定義。 */
+  const vacantCodeSet=useMemo(()=>{
+    const occupied=new Set();
+    (reservations||[]).forEach(r=>{
+      if(!r||r.status==="cancelled")return;
+      const lend=r.lendDate||r.start_date;
+      const ret=r.returnDate||r.end_date;
+      if(!lend||!ret)return;
+      if(lend<=selDate&&selDate<=ret){
+        const code=fleet&&fleet[r.id];
+        if(code)occupied.add(code);
+      }
+    });
+    const mntCodes=new Set();
+    (maintenance||[]).forEach(m=>{
+      const sd=m.startDate||m.start_date,ed=m.endDate||m.end_date;
+      const vc=m.vehicleCode||m.vehicle_code;
+      if(!sd||!ed||!vc)return;
+      if(sd<=selDate&&selDate<=ed)mntCodes.add(vc);
+    });
+    // 当日メンテ/洗車タスク(state)に紐づく車両も稼働扱い(保守的)
+    (tasks||[]).forEach(t=>{
+      if(!t)return;
+      const code=t.assignedVehicle;
+      if(!code)return;
+      if(t.type==="洗車"||t.type==="車検"||t.type==="整備")mntCodes.add(code);
+    });
+    const vac=new Set();
+    (vehicles||[]).forEach(v=>{
+      if(!v||v.active===false)return;
+      if(occupied.has(v.code)||mntCodes.has(v.code))return;
+      vac.add(v.code);
+    });
+    return vac;
+  },[reservations,fleet,maintenance,tasks,vehicles,selDate]);
+  /* 空車→予約中に分けた車両option用リスト(active車両のみ・空車先頭) */
+  const vehSplit=useMemo(()=>{
+    const act=(vehicles||[]).filter(v=>v&&v.active!==false);
+    return {vacant:act.filter(v=>vacantCodeSet.has(v.code)),busy:act.filter(v=>!vacantCodeSet.has(v.code))};
+  },[vehicles,vacantCodeSet]);
   const fleetRef=React.useRef(fleet);fleetRef.current=fleet;
   const reservationsRef=React.useRef(reservations);reservationsRef.current=reservations;
   // ★ シート在庫管理
@@ -16430,7 +16472,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                 <select value={washAddVc} onChange={e=>setWashAddVc(e.target.value)} style={{border:"1px solid #D7CCC8",borderRadius:6,padding:"4px 8px",fontSize:isMob?12:11,fontWeight:700,color:"#1e40af",background:"#fff",flex:"1 1 120px"}}>
                   <option value="">🚗 車両を選択</option>
                   <option value="__ALL__">🚙 全車両</option>
-                  {vehicles.filter(v=>v.active!==false).map(v=><option key={v.code} value={v.code}>{v.name}{v.no?" ("+v.no+")":""}</option>)}
+                  {vehSplit.vacant.length>0&&<optgroup label={"🟢 空車 ("+vehSplit.vacant.length+")"}>{vehSplit.vacant.map(v=><option key={v.code} value={v.code}>{v.name}{v.no?" ("+v.no+")":""}</option>)}</optgroup>}
+                  {vehSplit.busy.length>0&&<optgroup label="予約中">{vehSplit.busy.map(v=><option key={v.code} value={v.code}>{v.name}{v.no?" ("+v.no+")":""}</option>)}</optgroup>}
                 </select>
                 <select value={washAddTime} onChange={e=>setWashAddTime(e.target.value)} style={{border:"1px solid #D7CCC8",borderRadius:6,padding:"4px 8px",fontSize:isMob?12:11,fontWeight:700,color:"#1e293b",background:"#fff",width:75,flexShrink:0}}>
                   <option value="">時間</option>
@@ -16526,7 +16569,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                 <select value={otherAddVc} onChange={e=>setOtherAddVc(e.target.value)} style={{border:"1px solid #c7d2fe",borderRadius:6,padding:"4px 8px",fontSize:isMob?12:11,fontWeight:700,color:"#1e40af",background:"#fff",flex:"1 1 120px"}}>
                   <option value="">🚗 車両（任意）</option>
                   <option value="__ALL__">🚙 全車両</option>
-                  {vehicles.filter(v=>v.active!==false).map(v=><option key={v.code} value={v.code}>{v.name}{v.no?" ("+v.no+")":""}</option>)}
+                  {vehSplit.vacant.length>0&&<optgroup label={"🟢 空車 ("+vehSplit.vacant.length+")"}>{vehSplit.vacant.map(v=><option key={v.code} value={v.code}>{v.name}{v.no?" ("+v.no+")":""}</option>)}</optgroup>}
+                  {vehSplit.busy.length>0&&<optgroup label="予約中">{vehSplit.busy.map(v=><option key={v.code} value={v.code}>{v.name}{v.no?" ("+v.no+")":""}</option>)}</optgroup>}
                 </select>
                 <select value={otherAddAssignee} onChange={e=>setOtherAddAssignee(e.target.value)} style={{border:"1px solid #c7d2fe",borderRadius:6,padding:"4px 8px",fontSize:isMob?12:11,fontWeight:700,color:"#7c3aed",background:"#fff",flex:"1 1 120px"}}>
                   <option value="">👤 担当（任意）</option>
@@ -22659,7 +22703,7 @@ function App(){
   return <div className="app-shell" style={{display:"flex",flexDirection:"column",overflow:"hidden"}}>
     {SB_ENABLED&&<div className="sync-desktop"><SyncBadge connected={sbConnected} online={isOnline}/></div>}
     {!isOnline&&<div style={{background:"#dc2626",color:"#fff",padding:"6px 12px",fontSize:12,fontWeight:700,textAlign:"center",zIndex:9999}}>⚠️ オフライン — 変更は復帰後に自動保存されます</div>}
-    {showOP&&<OPScreen reservations={data} today={today} shifts={shifts} fleet={fleet} onFleetChange={setFleetSync} onClose={()=>{setShowOP(false);refreshTopTasks();}} onGoFleet={()=>setShowFloatFleet(f=>!f)} vehicles={vehicles} staff={staff} resOpts={resOpts} sheetPlaces={sheetPlaces} onUpdateSheetPlaces={saveSheetPlaces} repeaterMap={repeaterInfo.isRepeater} jalanPay={jalanPay} isJPaidFn={isJPaidFn} extraPayFn={extraPayFn} cancelledIdsRef={cancelledIdsRef} onCancelReservation={cancelReservation} onTaskChange={refreshTopTasks}/>}
+    {showOP&&<OPScreen reservations={data} today={today} shifts={shifts} fleet={fleet} onFleetChange={setFleetSync} onClose={()=>{setShowOP(false);refreshTopTasks();}} onGoFleet={()=>setShowFloatFleet(f=>!f)} vehicles={vehicles} staff={staff} resOpts={resOpts} sheetPlaces={sheetPlaces} onUpdateSheetPlaces={saveSheetPlaces} repeaterMap={repeaterInfo.isRepeater} jalanPay={jalanPay} isJPaidFn={isJPaidFn} extraPayFn={extraPayFn} cancelledIdsRef={cancelledIdsRef} onCancelReservation={cancelReservation} onTaskChange={refreshTopTasks} maintenance={maintenance}/>}
     {delaySumTask&&<ColDelayModal task={delaySumTask} onClose={()=>setDelaySumTask(null)}/>}
     {parkSumTask&&<ParkReqModal task={parkSumTask} onClose={()=>setParkSumTask(null)}/>}
     {showSqFailed&&<SqFailedModal onClose={()=>setShowSqFailed(false)} onResolved={()=>setSqFailedRefreshKey(k=>k+1)} preloadedItems={sqfPreload}/>}
@@ -23501,7 +23545,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.471";
+const APP_VERSION="v4.7.472";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
