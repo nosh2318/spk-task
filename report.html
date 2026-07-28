@@ -53,7 +53,11 @@ tfoot td{font-weight:900;border-top:2px solid var(--ink);border-bottom:0}
   <div class="bar noprint">
     <h1>📋 札幌店 月次レポート</h1>
     <div class="ctl">
-      <select id="mSel"><option>読込中…</option></select>
+      <select id="mFrom"><option>…</option></select>
+      <span style="color:#6b7280;font-weight:800">〜</span>
+      <select id="mTo"><option>…</option></select>
+      <button class="btn sec" id="qAll" type="button">全期間</button>
+      <button class="btn sec" id="qYear" type="button">今年</button>
       <button class="btn" id="pdfBtn">📄 PDF出力</button>
     </div>
   </div>
@@ -70,53 +74,69 @@ const yen=n=>'¥'+Math.round(n||0).toLocaleString('ja-JP');
 const num=n=>Math.round(n||0).toLocaleString('ja-JP');
 let SNAPS=[];
 
+let YMS=[]; // 昇順の年月リスト
 async function boot(){
   const tok=_sbToken();
   const H={apikey:ANON,Authorization:'Bearer '+(tok||ANON)};
   try{
-    const r=await fetch(SB+'/rest/v1/monthly_snapshots?store=eq.spk&order=year_month.desc&select=*',{headers:H});
+    const r=await fetch(SB+'/rest/v1/monthly_snapshots?store=eq.spk&order=year_month.asc&select=*',{headers:H});
     SNAPS=await r.json();
     if(!Array.isArray(SNAPS)||!SNAPS.length){throw new Error('empty');}
   }catch(e){
     document.getElementById('msg').innerHTML='データを取得できませんでした。<br><br>本体アプリ（<b>札幌店APP</b>）でログインした状態で、TOPの「📋 月次レポート」から開いてください。';
-    document.getElementById('mSel').innerHTML='<option>—</option>';return;
+    document.getElementById('mFrom').innerHTML='<option>—</option>';document.getElementById('mTo').innerHTML='<option>—</option>';return;
   }
-  const sel=document.getElementById('mSel');
-  sel.innerHTML=SNAPS.map(s=>`<option value="${s.year_month}">${s.year_month.replace('-','年')}月</option>`).join('');
-  sel.onchange=()=>render(sel.value);
-  render(SNAPS[0].year_month);
+  YMS=SNAPS.map(s=>s.year_month);
+  const opts=YMS.map(m=>`<option value="${m}">${m.replace('-','年')}月</option>`).join('');
+  const fSel=document.getElementById('mFrom'),tSel=document.getElementById('mTo');
+  fSel.innerHTML=opts;tSel.innerHTML=opts;
+  const last=YMS[YMS.length-1];
+  fSel.value=last;tSel.value=last; // 既定=最新単月
+  const go=()=>{let a=fSel.value,b=tSel.value;if(a>b){const t=a;a=b;b=t;fSel.value=a;tSel.value=b;}render(a,b);};
+  fSel.onchange=go;tSel.onchange=go;
+  document.getElementById('qAll').onclick=()=>{fSel.value=YMS[0];tSel.value=YMS[YMS.length-1];go();};
+  document.getElementById('qYear').onclick=()=>{const y=(YMS[YMS.length-1]||'').slice(0,4);const ys=YMS.filter(m=>m.slice(0,4)===y);fSel.value=ys[0];tSel.value=ys[ys.length-1];go();};
+  render(last,last);
 }
 function pct(part,whole){return whole>0?Math.round(part/whole*1000)/10:0;}
-function render(ym){
-  const s=SNAPS.find(x=>x.year_month===ym);if(!s)return;
-  const rev=+s.total_revenue||0, cnt=+s.total_returns||0;
-  const uni=cnt>0?rev/cnt:0;                       // 客単価
-  const nights=cnt>0?(+s.total_rental_days||0)/cnt:0; // 平均泊数
-  const cd=Array.isArray(s.class_detail)?s.class_detail.slice():[];
-  const od=Array.isArray(s.ota_detail)?s.ota_detail.slice():[];
-  cd.sort((a,b)=>(b.revenue||0)-(a.revenue||0));
-  od.sort((a,b)=>(b.revenue||0)-(a.revenue||0));
-  const future=ym>=new Date().toISOString().slice(0,7);
-  // KPI
+// 期間内snapshotを合算（箱の値を足し上げ＝年間推移と同手法）
+function aggregate(rows){
+  let rev=0,cnt=0,rd=0,ad=0; const ota={},cls={};
+  rows.forEach(s=>{
+    rev+=+s.total_revenue||0; cnt+=+s.total_returns||0; rd+=+s.total_rental_days||0; ad+=+s.total_available_days||0;
+    (Array.isArray(s.ota_detail)?s.ota_detail:[]).forEach(o=>{const a=ota[o.ota]||(ota[o.ota]={ota:o.ota,count:0,revenue:0});a.count+=+o.count||0;a.revenue+=+o.revenue||0;});
+    (Array.isArray(s.class_detail)?s.class_detail:[]).forEach(c=>{const a=cls[c.type]||(cls[c.type]={type:c.type,count:0,revenue:0,rd:0,ad:0});a.revenue+=+c.revenue||0;a.rd+=+c.rental_days||0;a.ad+=+c.avail_days||0;a.count=Math.max(a.count,+c.count||0);});
+  });
+  return {rev,cnt,rd,ad,util:ad>0?rd/ad*100:0,adr:rd>0?rev/rd:0,ota:Object.values(ota),cls:Object.values(cls)};
+}
+function render(from,to){
+  const rows=SNAPS.filter(s=>s.year_month>=from&&s.year_month<=to);
+  if(!rows.length)return;
+  const g=aggregate(rows);
+  const uni=g.cnt>0?g.rev/g.cnt:0, nights=g.cnt>0?g.rd/g.cnt:0;
+  const nowYm=new Date().toISOString().slice(0,7);
+  const hasPartial=rows.some(s=>s.year_month>=nowYm); // 当月/未来を含む
+  const single=(from===to);
+  const period=single?from.replace('-','年')+'月':(from.replace('-','年')+'月〜'+to.replace('-','年')+'月');
+  const mnum=rows.length;
+  g.cls.sort((a,b)=>b.revenue-a.revenue); g.ota.sort((a,b)=>b.revenue-a.revenue);
   const kpi=[
-    ['合計売上',yen(rev)],
-    ['件数（予約）',num(cnt)+'<small> 件</small>'],
+    ['合計売上',yen(g.rev)],
+    ['件数（予約）',num(g.cnt)+'<small> 件</small>'],
     ['客単価',yen(uni)],
     ['平均泊数',(Math.round(nights*10)/10)+'<small> 泊</small>'],
-    ['稼働率グロス',(Math.round((+s.utilization_pct||0)*10)/10)+'<small> %</small>'],
+    ['稼働率グロス',(Math.round(g.util*10)/10)+'<small> %</small>'],
   ].map(k=>`<div class="kpi"><div class="l">${k[0]}</div><div class="v">${k[1]}</div></div>`).join('');
-  // チャンネル別（構成率＝件数ベースpct＋売上構成）
-  const otaRows=od.map(o=>{const rp=pct(o.revenue||0,rev);return `<tr><td>${OTA_NAME[o.ota]||o.ota}</td><td>${num(o.count)}</td><td>${o.pct!=null?o.pct:pct(o.count,cnt)}%</td><td>${yen(o.revenue)}</td><td><span class="bar2" style="width:80px"><i style="width:${rp}%"></i></span> ${rp}%</td></tr>`;}).join('');
-  // クラス別（売上構成比＋稼働率）
-  const clsRows=cd.map(c=>{const rp=pct(c.revenue||0,rev);const col=CLS_COLOR[c.type]||'#64748b';return `<tr><td><span class="clschip" style="background:${col}">${c.type}</span> <span style="color:#6b7280;font-size:12px">${num(c.count)}台</span></td><td>${yen(c.revenue)}</td><td><span class="bar2" style="width:90px"><i style="width:${rp}%;background:${col}"></i></span> ${rp}%</td><td>${Math.round((c.util_pct||0)*10)/10}%</td><td>${yen(c.adr)}</td></tr>`;}).join('');
+  const otaRows=g.ota.map(o=>{const cp=pct(o.count,g.cnt),rp=pct(o.revenue,g.rev);return `<tr><td>${OTA_NAME[o.ota]||o.ota}</td><td>${num(o.count)}</td><td>${cp}%</td><td>${yen(o.revenue)}</td><td><span class="bar2" style="width:80px"><i style="width:${rp}%"></i></span> ${rp}%</td></tr>`;}).join('');
+  const clsRows=g.cls.map(c=>{const rp=pct(c.revenue,g.rev);const u=c.ad>0?c.rd/c.ad*100:0;const adr=c.rd>0?c.revenue/c.rd:0;const col=CLS_COLOR[c.type]||'#64748b';return `<tr><td><span class="clschip" style="background:${col}">${c.type}</span> <span style="color:#6b7280;font-size:12px">${num(c.count)}台</span></td><td>${yen(c.revenue)}</td><td><span class="bar2" style="width:90px"><i style="width:${rp}%;background:${col}"></i></span> ${rp}%</td><td>${Math.round(u*10)/10}%</td><td>${yen(adr)}</td></tr>`;}).join('');
   document.getElementById('sheet').innerHTML=`
-    <div class="rhead"><div><div class="t">札幌店 月次レポート</div><div class="sub">HANDYMAN 札幌デリバリー店${future?'　※当月/未来月＝途中値（確定前）':'　※確定実績'}</div></div><div style="text-align:right"><div class="m">${ym.replace('-','年')}月</div><div class="sub">出力: ${new Date().toLocaleString('ja-JP')}</div></div></div>
+    <div class="rhead"><div><div class="t">札幌店 月次レポート</div><div class="sub">HANDYMAN 札幌デリバリー店${hasPartial?'　※当月/未来月を含む＝途中経過（確定前）':'　※確定実績'}${single?'':'　・'+mnum+'ヶ月合算'}</div></div><div style="text-align:right"><div class="m">${period}</div><div class="sub">出力: ${new Date().toLocaleString('ja-JP')}</div></div></div>
     <div class="kpis">${kpi}</div>
-    <h2 class="sec">📊 チャンネル別 構成率</h2>
-    <table><thead><tr><th>チャネル</th><th>件数</th><th>件数構成</th><th>売上</th><th>売上構成</th></tr></thead><tbody>${otaRows||'<tr><td colspan="5">データなし</td></tr>'}</tbody><tfoot><tr><td>合計</td><td>${num(cnt)}</td><td>100%</td><td>${yen(rev)}</td><td>100%</td></tr></tfoot></table>
-    <h2 class="sec">🚗 クラス別 売上構成比・稼働率</h2>
-    <table><thead><tr><th>クラス</th><th>売上</th><th>売上構成比</th><th>稼働率</th><th>ADR(泊単価)</th></tr></thead><tbody>${clsRows||'<tr><td colspan="5">データなし</td></tr>'}</tbody><tfoot><tr><td>合計</td><td>${yen(rev)}</td><td>100%</td><td>${Math.round((+s.utilization_pct||0)*10)/10}%</td><td>${yen(s.avg_daily_rate)}</td></tr></tfoot></table>
-    <div class="note">出所＝正本箱 monthly_snapshots（経営管理ダッシュボードと同一値・再集計なし）／客単価＝売上÷件数／平均泊数＝延べ稼働日数÷件数／稼働率グロス＝実稼働ベース。</div>`;
+    <h2 class="sec">📊 チャンネル別 構成率${single?'':'（期間合算）'}</h2>
+    <table><thead><tr><th>チャネル</th><th>件数</th><th>件数構成</th><th>売上</th><th>売上構成</th></tr></thead><tbody>${otaRows||'<tr><td colspan="5">データなし</td></tr>'}</tbody><tfoot><tr><td>合計</td><td>${num(g.cnt)}</td><td>100%</td><td>${yen(g.rev)}</td><td>100%</td></tr></tfoot></table>
+    <h2 class="sec">🚗 クラス別 売上構成比・稼働率${single?'':'（期間合算）'}</h2>
+    <table><thead><tr><th>クラス</th><th>売上</th><th>売上構成比</th><th>稼働率</th><th>ADR(泊単価)</th></tr></thead><tbody>${clsRows||'<tr><td colspan="5">データなし</td></tr>'}</tbody><tfoot><tr><td>合計</td><td>${yen(g.rev)}</td><td>100%</td><td>${Math.round(g.util*10)/10}%</td><td>${yen(g.adr)}</td></tr></tfoot></table>
+    <div class="note">出所＝正本箱 monthly_snapshots（経営管理ダッシュボードと同一値・${single?'再集計なし':'期間合算＝各月の箱の値を足し上げ'}）／客単価＝売上÷件数／平均泊数＝延べ稼働日数÷件数／稼働率グロス＝延べ稼働日数÷延べ稼働可能日数（実稼働ベース）。当月/未来月は途中経過。</div>`;
 }
 document.getElementById('pdfBtn').onclick=()=>window.print();
 boot();
