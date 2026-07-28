@@ -1,5 +1,11 @@
 # SPK業務管理APP（札幌店）
 
+## 📋 2026-07-28 札幌 月次レポート機能 追加（report.html・PDF出力可）
+TOP「データ・分析」→**📋月次レポート**＝`report.html`（独立HTML・vanilla・印刷最適化）。対象月選択→**合計売上/件数(予約)/客単価/平均泊数/稼働率グロス/チャンネル別構成率/クラス別売上構成比・稼働率**を表示、**📄PDF出力(window.print・@media print A4)**。
+- **正本箱`monthly_snapshots`(store=spk)の1行から全項目を読む＝再集計なし**(ドクトリン順守)。客単価=total_revenue÷total_returns／平均泊数=total_rental_days÷total_returns／稼働率=utilization_pct／チャンネル=ota_detail(ota/pct/count/revenue)／クラス=class_detail(type/revenue/util_pct/adr/count)。snapshot全フィールド＝active_vehicles/total_rental_days/total_available_days/utilization_pct/total_revenue/revpacd/avg_daily_rate/total_returns/same_month_bookings/booking_rate_pct/cancel_count/total_bookings/cancel_rate_pct/class_detail/ota_detail。
+- 認証＝本体アプリのログイントークン再利用(`_sbToken()`＝localStorage sb-*-auth-token・sim.html/gatekeeper.htmlと同方式)＋anon。未ログインは案内表示。当月/未来月は「途中値」注記。
+- v4.7.480 / spk-v1019 / SW_V=912。build.jsで index.src.html→app.js。**教訓：build.jsは`node build.js`単体で実行し出力(✅Build complete)を必ず確認**（tail -5でパイプすると出力が出ず未ビルドに気づけない・今回1回空振りした）。将来NHA/BTへ横展開する時は store値(nha/spk・BTはtkm)とクラス色/OTA名マップを合わせるだけ。
+
 ## 🆘 2026-07-27 オフラインOPエクスポート（障害時バックアップ・GAS→Googleスプレッドシート）
 Supabase障害(API層ハング)でアプリが開けない時に、**当日OP＋スタッフ別タスクをGoogleスプレッドで読める**避難所。正本＝`~/Desktop/HANDYMAN/offline_export/gas_offline_op_export.gs`＋`README_setup.md`。
 - **仕組み**：GAS(Google基盤)が**15分毎(setupTrigger)にManagement API(SQL `/database/query`)経由**で3店のタスクを取得→各店スプレッドに `当日OP`／`翌日OP`／`👤担当名`(個別URL相当) タブを上書き。**REST障害中もSQLは生きているので更新継続**・完全障害でも最後の書出しが残る＝当日OPは必ず読める。閲覧専用(DBには戻さない)。
