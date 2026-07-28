@@ -91,7 +91,7 @@ a.myp{background:#065f46;color:#fff;font-size:11px;font-weight:800;border-radius
 <script>
 var SB="https://ckrxttbnawkclshczsia.supabase.co";
 var ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
-var VER="staff-v3.2";
+var VER="staff-v3.3";
 var TOKEN=new URLSearchParams(location.search).get("t")||"";
 var app=document.getElementById("app");
 
@@ -369,15 +369,34 @@ window.openShift=function(ym){
     .then(function(d){ if(!d||d.ok===false){showErr("出勤簿の読み込みに失敗しました");return;} MODE="shift"; SHDATA=d; renderShift(d); })
     .catch(function(){showErr("通信エラー");});
 };
-window.toggleWish=function(date,on){
+window.sendWish=function(date,on,pattern){
+  var pk=document.getElementById("wishpick"); if(pk)pk.remove();
   var el=document.getElementById("cell-"+date); if(el){el.style.opacity=.5;el.style.pointerEvents="none";}
-  fetch(SB+"/rest/v1/rpc/spk_staff_wish",{method:"POST",headers:{"apikey":ANON,"Authorization":"Bearer "+ANON,"Content-Type":"application/json"},body:JSON.stringify({p_token:TOKEN,p_date:date,p_on:on})})
+  var body={p_token:TOKEN,p_date:date,p_on:on}; if(pattern)body.p_pattern=pattern;
+  fetch(SB+"/rest/v1/rpc/spk_staff_wish",{method:"POST",headers:{"apikey":ANON,"Authorization":"Bearer "+ANON,"Content-Type":"application/json"},body:JSON.stringify(body)})
     .then(function(r){return r.json();})
     .then(function(d){
       if(!d||d.ok===false){ alert("⚠️ "+((d&&d.msg)||"登録できませんでした")); }
       openShift((SHDATA&&SHDATA.ym)||date.slice(0,7));
     })
     .catch(function(){ alert("通信エラー。もう一度お試しください"); openShift((SHDATA&&SHDATA.ym)||date.slice(0,7)); });
+};
+// 休み希望のパターン選択シート（①午前のみ不可 ②午後のみ不可 ③終日不可 ＋取消）
+window.openWishPick=function(date,curPattern){
+  var old=document.getElementById("wishpick"); if(old)old.remove();
+  var md=String(+date.slice(5,7))+"/"+String(+date.slice(8,10));
+  var btn=function(pat,label,sub){var cur=(curPattern===pat);return '<button onclick="sendWish(\''+date+'\',true,\''+pat+'\')" style="display:block;width:100%;text-align:left;margin:0 0 8px;padding:12px 14px;border-radius:12px;border:2px solid '+(cur?'#f59e0b':'#e2e8f0')+';background:'+(cur?'#FFF3CD':'#fff')+';font-size:15px;font-weight:800;color:#334155">'+label+'<div style="font-size:11px;font-weight:600;color:#94a3b8;margin-top:2px">'+sub+(cur?'（選択中）':'')+'</div></button>';};
+  var h='<div id="wishpick" onclick="if(event.target===this)this.remove()" style="position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:9999;display:flex;align-items:flex-end;justify-content:center">'
+    +'<div style="background:#fff;width:100%;max-width:420px;border-radius:18px 18px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom))">'
+    +'<div style="text-align:center;font-weight:900;font-size:16px;color:#92400e;margin-bottom:4px">'+md+' の休み希望</div>'
+    +'<div style="text-align:center;font-size:11px;color:#94a3b8;margin-bottom:14px">出勤できない時間帯を選んでください</div>'
+    +btn('am','① 午前のみ出勤不可','午前だけ休み希望（午後は出勤可）')
+    +btn('pm','② 午後のみ出勤不可','午後だけ休み希望（午前は出勤可）')
+    +btn('full','③ 終日 出勤不可','1日まるごと休み希望')
+    +(curPattern!==null?'<button onclick="sendWish(\''+date+'\',false)" style="display:block;width:100%;margin:4px 0 8px;padding:11px;border-radius:12px;border:1px solid #fecaca;background:#fff;font-size:14px;font-weight:800;color:#dc2626">🗑 この日の希望を取消</button>':'')
+    +'<button onclick="var e=document.getElementById(\'wishpick\');if(e)e.remove()" style="display:block;width:100%;padding:11px;border-radius:12px;border:1px solid #e2e8f0;background:#f8fafc;font-size:14px;font-weight:700;color:#64748b">閉じる</button>'
+    +'</div></div>';
+  document.body.insertAdjacentHTML("beforeend",h);
 };
 function renderShift(d){
   var ym=d.ym||jstToday().slice(0,7);var today=d.today||jstToday();
@@ -401,7 +420,7 @@ function renderShift(d){
   Object.keys(SHSYM).forEach(function(k){var s=SHSYM[k];h+='<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;background:'+s.bg+';color:'+s.c+'">'+k+' '+s.l+'</span>';});
   h+='</div>';
   if(editable){
-    h+='<div class="note" style="background:#fffbeb;border-color:#fde68a;color:#92400e">✏️ <b>先の月です。</b>休みたい日をタップすると <b>希望休（'+SHSYM['希'].l+'）</b>を登録できます（もう一度タップで取消）。<br>すでに出勤・公休などの予定が入っている日は変更できません。</div>';
+    h+='<div class="note" style="background:#fffbeb;border-color:#fde68a;color:#92400e">✏️ <b>先の月です。</b>休みたい日をタップすると <b>①午前のみ不可／②午後のみ不可／③終日不可</b> から希望休を選べます（もう一度タップで変更・取消）。<br>すでに出勤・公休などの予定が入っている日は変更できません。</div>';
   }else{
     h+='<div class="note">👀 閲覧専用です。休み希望は<b>先の月</b>から入力できます（「翌月 ›」で移動）。</div>';
   }
@@ -416,12 +435,16 @@ function renderShift(d){
     var cfg=SHSYM[sym];var bg=cfg?cfg.bg:'#fff';var bd=isToday?'2px solid #059669':'1px solid #e2e8f0';
     var canTap=editable&&(sym===''||sym==='希');
     var inner='<div style="font-size:12px;font-weight:800;color:'+(dow===0?'#dc2626':dow===6?'#2563eb':'#334155')+'">'+day+'</div>';
+    var wmemo=(sym==='希'&&s)?String(s.memo||''):'';
+    var wlabel=wmemo==='AM'?'午前休':wmemo==='PM'?'午後休':'';
     if(cfg){inner+='<div style="font-size:11px;font-weight:800;color:'+cfg.c+';margin-top:2px">'+sym+'</div>';
+      if(sym==='希'&&wlabel){inner+='<div style="font-size:8px;font-weight:800;color:#b45309;line-height:1.1">'+wlabel+'</div>';}
       if(sym==='●'&&s.start){inner+='<div style="font-size:8px;color:#475569;line-height:1.15">'+esc((s.start||'').slice(0,5))+(s.end?'<br>〜'+esc((s.end||'').slice(0,5)):'')+'</div>';}
     }else if(!sym&&s&&s.start){inner+='<div style="font-size:8px;color:#94a3b8;margin-top:2px;line-height:1.15">'+esc((s.start||'').slice(0,5))+(s.end?'<br>〜'+esc((s.end||'').slice(0,5)):'')+'</div>';}
-    if(canTap&&sym==='希'){inner+='<div style="font-size:8px;color:#b45309;margin-top:1px">タップで取消</div>';}
+    if(canTap&&sym==='希'){inner+='<div style="font-size:8px;color:#b45309;margin-top:1px">タップで変更</div>';}
     else if(canTap){inner+='<div style="font-size:8px;color:#cbd5e1;margin-top:1px">＋休</div>';}
-    var tap=canTap?(' onclick="toggleWish(\''+ds+'\','+(sym==='希'?'false':'true')+')" style="cursor:pointer"'):'';
+    var curPat=(sym==='希')?(wmemo==='AM'?'am':wmemo==='PM'?'pm':'full'):null;
+    var tap=canTap?(' onclick="openWishPick(\''+ds+'\','+(curPat?'\''+curPat+'\'':'null')+')" style="cursor:pointer"'):'';
     h+='<div id="cell-'+ds+'"'+tap+' style="min-height:52px;border:'+bd+';border-radius:8px;background:'+bg+';padding:3px 2px 2px;text-align:center;'+(canTap?'':'opacity:'+(editable?'.75':'1'))+'">'+inner+'</div>';
   }
   h+='</div>';
