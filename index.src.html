@@ -78,9 +78,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1008';
+var CV='spk-v1010';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=901').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=903').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -1379,6 +1379,14 @@ async function fetchJalanPaySheetData(targetResIds){
 }
 
 /* ===== タスク生成 ===== */
+// ★2026-07-28 引取(p-)判定の唯一の関数。生成側(generateTasks)と除去側(loadTasks)がこれを共用する。
+//   預かり車 = 現配車先(fleet→vehicles)が A2/B2 または owner_company≠HANDYMAN。未配車時は予約クラス文字列で判定。
+//   生成と除去を同じ判定で対にする（片方だけ直すと残存/復活バグが再発する）。
+function _isPickupCar(veh,cls){
+  if(veh&&veh.ownerCompany&&veh.ownerCompany!=="HANDYMAN")return true;
+  const c=veh?veh.type:cls;
+  return c==="A2"||c==="B2";
+}
 function generateTasks(reservations,date,fleet,vehicles){
   const tasks=[];
   const tomorrow=dOff(date,1);
@@ -1396,7 +1404,7 @@ function generateTasks(reservations,date,fleet,vehicles){
     const fv=fleet[r.id];const veh=fv?vehicles.find(v=>v.code===fv):null;
     const _cls=veh?veh.type:r.vehicle;
     // ★ A2/B2 = 共立自動車の預かり車両。前日は「引取」→「洗車」の2タスク（別担当可のため分離）
-    if(_cls==="A2"||_cls==="B2"){
+    if(_isPickupCar(veh,_cls)){
       tasks.push({_id:"p-"+r.id,type:"引取",time:"",name:`翌日出発: ${r.name}`,people:0,place:"共立自動車",vehicle:_cls,insurance:"",flight:"",reservationId:r.id,ota:r.ota||"",tel:"",mail:"",done:false,assignee:"",memo:`${fmtD(tomorrow)} DEL ${r.delTime||r.lendTime||""} ${r.name}（共立自動車から引取）`,assignedVehicle:fv||"",plateNo:veh?veh.no:"",insuranceChange:"",opts:{b:+(r.optB||0),c:+(r.optC||0),j:+(r.optJ||0),usb:!!r.optUSB,parasol:!!r.optParasol},yakkan:false,line:false,payment:false,returnDate:"",returnTime:"",returnType:"",colPlace:"",_taskDate:norm(date)});
     }
     tasks.push({_id:"w-"+r.id,type:"洗車",time:"",name:`翌日出発: ${r.name}`,people:0,place:"",vehicle:_cls,insurance:"",flight:"",reservationId:r.id,ota:r.ota||"",tel:"",mail:"",done:false,assignee:"",memo:`${fmtD(tomorrow)} DEL ${r.delTime||r.lendTime||""} ${r.name}`,assignedVehicle:fv||"",plateNo:veh?veh.no:"",insuranceChange:"",opts:{b:+(r.optB||0),c:+(r.optC||0),j:+(r.optJ||0),usb:!!r.optUSB,parasol:!!r.optParasol},yakkan:false,line:false,payment:false,returnDate:"",returnTime:"",returnType:"",colPlace:"",_taskDate:norm(date)});
@@ -15745,6 +15753,21 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       const existingResIds=new Set(result.filter(t=>t.reservationId).map(t=>t.reservationId));
       const existingTaskIds=new Set(result.filter(t=>t.reservationId).map(t=>t._id));
       const gen=generateTasks(curRes,date,fl,vehicles);
+      // ★2026-07-28 引取(p-)残存の根治【クラス: 生成の逆=除去の片手落ち】
+      //   引取タスクの「あるべき集合」= 現配車先が預かり車(_isPickupCar)の翌日出発予約 = gen内の引取。
+      //   ①除去: 表示中のp-引取のうち あるべき集合に無いもの(=自社車へ戻した/キャンセル/翌日出発でなくなった)は墓標化。
+      //   ②復活: あるべき集合なのに墓標化(_tomb)されているものは deleted解除して再出現可能に(預かり車へ再度ずらした時)。
+      //   生成(generateTasks)と同じ_isPickupCar判定を対で使う。
+      const _genPickIds=new Set(gen.filter(g=>g.type==="引取").map(g=>g.reservationId));
+      const _pickTomb=[];
+      result=result.filter(t=>{
+        if(t._id&&t._id.indexOf("p-")===0&&t.type==="引取"&&!_genPickIds.has(t.reservationId)){_pickTomb.push(t._id);return false;}
+        return true;
+      });
+      if(_pickTomb.length){_pickTomb.forEach(id=>{existingTaskIds.delete(id);DB.deleteTask(id,date);});console.log("[loadTasks] 引取(p-)残存を墓標化(自社車へ戻し/対象外):",_pickTomb.length,_pickTomb);}
+      const _pickRevive=[];
+      _genPickIds.forEach(rid=>{const pid="p-"+rid;if(_tomb.has(pid)){_pickRevive.push(pid);_tomb.delete(pid);}});
+      if(_pickRevive.length){try{if(sb)sb.from("tasks").update({deleted:false}).in("_id",_pickRevive).then(()=>{});}catch(_e){}console.log("[loadTasks] 引取(p-)を復活(預かり車へ再配車):",_pickRevive.length,_pickRevive);}
       // 新規予約のタスク全体、または A2/B2 引取タスクが未生成の既存予約に引取だけ補完
       const newTasks=gen.filter(g=>g.reservationId&&!_tomb.has(g._id)&&(!existingResIds.has(g.reservationId)||(g.type==="引取"&&!existingTaskIds.has(g._id))));
       if(newTasks.length){
@@ -15764,6 +15787,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       if(sp&&!g.place){if(g.type==="DEL"&&sp.delPlace)g.place=sp.delPlace;if(g.type==="COL"&&sp.colPlace)g.place=sp.colPlace;}
       if(sp&&g.type==="DEL"&&!g.colPlace&&sp.colPlace)g.colPlace=sp.colPlace;
     });
+    // ★2026-07-28 引取(p-)復活: あるべき集合(現配車=預かり車)なのに墓標なら deleted解除して再出現可能に
+    gen.filter(g=>g.type==="引取").forEach(g=>{if(_tomb.has(g._id)){_tomb.delete(g._id);try{if(sb)sb.from("tasks").update({deleted:false}).eq("_id",g._id).then(()=>{});}catch(_e){}}});
     const gen2=gen.filter(g=>!_tomb.has(g._id));// ★2026-07-13 墓標ガード: 削除済みは再生成しない
     setTasks(gen2);
     // 🛡 protect=true: 万一DBに既存行があってもスタッフ入力(担当/場所/時間)を焼き戻して上書き事故を防止
@@ -22268,9 +22293,9 @@ function App(){
           await DB.updateTask(washTask,prevDay);
           console.log("[reassign] 前日洗車タスク追加:",newVc,res.name,prevDay);
         }
-        // ★ A2/B2(共立自動車 預かり)へ変更時は前日「引取」タスクも追加
+        // ★ 預かり車(A2/B2 or owner_company≠HANDYMAN)へ変更時は前日「引取」タスクも追加。自社車へ戻した場合の除去はloadTasksが一元的に行う（生成の逆=除去の片手落ち根治）。
         const hasPick=tasks3.find(t=>t.type==="引取"&&t.reservationId===resId);
-        if((vn.type==="A2"||vn.type==="B2")&&!hasPick){
+        if(_isPickupCar(vn,vn.type)&&!hasPick){
           const pickTask={_id:"p-"+resId,type:"引取",time:"",name:`翌日出発: ${res.name}`,people:0,place:"共立自動車",vehicle:vn.type,insurance:"",flight:"",reservationId:resId,ota:res.ota||"",tel:"",mail:"",done:false,assignee:"",memo:`${fmtD(ld)} DEL ${res.lendTime||""} ${res.name}（共立自動車から引取）`,assignedVehicle:newVc,plateNo:vn.no,insuranceChange:"",opts:{},yakkan:false,line:false,payment:false,returnDate:"",returnTime:"",returnType:"",colPlace:""};
           await DB.updateTask(pickTask,prevDay);
           console.log("[reassign] 前日引取タスク追加(共立):",newVc,res.name,prevDay);
@@ -22887,6 +22912,7 @@ function App(){
                                 {isDel&&(t.reservationId||t.reservation_id)&&(()=>{const _rid0=t.reservationId||t.reservation_id;const _pd=actionDoneOf(_rid0,"advance_park")||actionDoneOf(_rid0,"advance_park_place");return <button onClick={e=>{e.stopPropagation();setParkSumTask(t);}} title={_pd?"事前駐車(無人貸出)依頼：送信済 "+actionDoneLabel(_pd.at):"事前に停めてもらう案内（無人貸出）"} style={{fontSize:8,fontWeight:600,padding:"3px 8px",borderRadius:6,background:_pd?"#dcfce7":"#eef2ff",color:_pd?"#15803d":"#4338ca",border:"1px solid "+(_pd?"#86efac":"#c7d2fe"),cursor:"pointer"}}>🅿️無人貸出{_pd?actionDoneLabel(_pd.at):""}</button>;})()}
                                 {isCOL&&(()=>{const _rid0=t.reservationId||t.reservation_id;const _done=actionDoneOf(_rid0,"col_arrival");return <button onClick={async(e)=>{e.stopPropagation();const rid=t.reservationId||t.reservation_id;if(!confirmRedo(actionDoneOf(rid,"col_arrival")))return;const cn=(t.name||"")+"様";const msg=`【ご返却場所到着のお知らせ】\n${cn}\n\n回収スタッフがご返却場所に到着致しました。\nご準備できましたら対応のほどお願い申しあげます。\n何卒よろしくお願いいたします。`;const _reg=!!(window._lineLinkMap||{})[rid];const kd=(t.ota==="KEYDROP");let _sent=false;if(kd&&rid){if(!window.confirm(cn+" に「返却場所到着のお知らせ」メールを送信します。よろしいですか？"))return;try{const _rk=await sb.rpc("keydrop_enqueue_button",{p_resv:rid,p_kind:"arrive_col"});if(_rk.error||_rk.data!=="ok")throw new Error(String((_rk.data)||(_rk.error&&_rk.error.message)||"ng"));alert("✅ 回収到着をメールで送信しました（KEYDROP）");_sent=true;}catch(_ke){alert("⚠️メール送信失敗("+(_ke.message||"")+")。手動でご連絡ください");}}else if(_reg&&rid){if(!window.confirm(cn+" に「返却場所到着のお知らせ」LINEを送信します。よろしいですか？"))return;try{const{data:_s}=await sb.auth.getSession();const _tk=_s&&_s.session&&_s.session.access_token;const _r=await fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/line-send",{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+_tk},body:JSON.stringify({store:"spk",resv_no:rid,action:"col_arrival",message:msg})});const _j=await _r.json();if(_j.ok){alert("✅ 回収到着をLINEに自動送信しました");_sent=true;}else{await navigator.clipboard.writeText(msg);alert("⚠️自動送信不可("+(_j.reason||"")+")。コピーしました→手動で送信してください");_sent=true;}}catch(_e){await navigator.clipboard.writeText(msg);alert("⚠️送信エラー。コピーしました→手動で送信してください");_sent=true;}}else{await navigator.clipboard.writeText(msg);alert("📋 LINE未登録(📱手動)。コピーしました→エルメ/LINEに貼り付けて送信してください");_sent=true;}if(_sent&&rid){await recordActionDone(sb,rid,"col_arrival");refreshTopTasks();}}} style={{fontSize:8,fontWeight:600,padding:"3px 8px",borderRadius:6,background:_done?"#f1f5f9":"#dcfce7",color:_done?"#64748b":"#15803d",border:"1px solid "+(_done?"#cbd5e1":"#86efac"),cursor:"pointer"}}>📱到着{_done?actionDoneLabel(_done.at):""}</button>;})()}
                                 {isCOL&&(()=>{const _rid0=t.reservationId||t.reservation_id;const _done=actionDoneOf(_rid0,"dropoff");return <button onClick={async(e)=>{e.stopPropagation();const rid=t.reservationId||t.reservation_id;if(!confirmRedo(actionDoneOf(rid,"dropoff")))return;const cn=(t.name||"")+"様";const msg=`【乗り捨て対応のお願い】\n${cn}\n\nご返却時刻の混雑により、大変お手数ではございますが返却予定場所近隣駐車場に乗り捨て駐車いただきたく、ご連絡させていただきました。\nお待たせする時間回避の目的のためご協力の程何卒よろしくお願いいたします。\n\n✅駐車完了しましたら"鍵と駐車券"をダッシュボード内に格納し、鍵を開けた状態でそのままお降りくださいませ。\n✅燃料の給油とお忘れ物（ETCカード等）のないようご注意ください。\n✅駐車場所が確定しましたら詳細場所をご連絡いただけますと幸いです。\n例：駐車場看板写真/GoogleマップURL/住所/駐車場名/●階等\n\n駐車後の車両トラブルに関しては一切の責任は問いませんのでご安心くださいませ。\n万一の盗難等の際にも弊社セキュリティにて追跡可能となっております。`;const _reg=!!(window._lineLinkMap||{})[rid];const kd=(t.ota==="KEYDROP");let _sent=false;if(kd&&rid){if(!window.confirm(cn+" に「乗り捨て対応のお願い」メールを送信します。よろしいですか？"))return;try{const _rk=await sb.rpc("keydrop_enqueue_button",{p_resv:rid,p_kind:"dropoff"});if(_rk.error||_rk.data!=="ok")throw new Error(String((_rk.data)||(_rk.error&&_rk.error.message)||"ng"));alert("✅ 乗り捨て依頼をメールに送信しました（KEYDROP）");_sent=true;}catch(_ke){await navigator.clipboard.writeText(msg);alert("⚠️メール送信失敗("+(_ke.message||"")+")。コピーしました→手動で送信してください");_sent=true;}}else if(_reg&&rid){if(!window.confirm(cn+" に「乗り捨て対応のお願い」LINEを送信します。よろしいですか？"))return;try{const{data:_s}=await sb.auth.getSession();const _tk=_s&&_s.session&&_s.session.access_token;const _r=await fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/line-send",{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+_tk},body:JSON.stringify({store:"spk",resv_no:rid,action:"dropoff",message:msg})});const _j=await _r.json();if(_j.ok){alert("✅ 乗り捨て依頼をLINEに自動送信しました");_sent=true;}else{await navigator.clipboard.writeText(msg);alert("⚠️自動送信不可("+(_j.reason||"")+")。コピーしました→手動で送信してください");_sent=true;}}catch(_e){await navigator.clipboard.writeText(msg);alert("⚠️送信エラー。コピーしました→手動で送信してください");_sent=true;}}else{await navigator.clipboard.writeText(msg);alert("📋 LINE未登録(📱手動)。コピーしました→エルメ/LINEに貼り付けて送信してください");_sent=true;}if(_sent&&rid){await recordActionDone(sb,rid,"dropoff");refreshTopTasks();}}} style={{fontSize:8,fontWeight:600,padding:"3px 8px",borderRadius:6,background:_done?"#f1f5f9":"#fef2f2",color:_done?"#64748b":"#b91c1c",border:"1px solid "+(_done?"#cbd5e1":"#fca5a5"),cursor:"pointer"}}>📱乗捨{_done?actionDoneLabel(_done.at):""}</button>;})()}
+                                {(()=>{const rP=cleanPlace((t._placeSource==="manual"?t.place:(t._ssPlace||t.place))||"");if(!rP)return null;return <button onClick={(e)=>{e.stopPropagation();window.open(mapsUrl(rP),"_blank");}} title={"地図で開く: "+rP} style={{fontSize:8,fontWeight:800,padding:"3px 8px",borderRadius:6,background:"#ecfdf5",color:"#047857",border:"1px solid #6ee7b7",cursor:"pointer"}}>🗺️地図</button>;})()}
                                 <button onClick={(e)=>{e.stopPropagation();window.open("https://web.carmon.alpine-srv.net/","_blank");}} style={{fontSize:8,fontWeight:600,padding:"3px 8px",borderRadius:6,background:"#f1f5f9",color:"#475569",border:"none",cursor:"pointer"}}>📍CARMON</button>
                                 {(t.reservationId||t.reservation_id)&&<button onClick={(e)=>{e.stopPropagation();window.open("license.html?id="+encodeURIComponent(t.reservationId||t.reservation_id)+"&name="+encodeURIComponent(t.name||""),"_blank");}} style={{fontSize:8,fontWeight:600,padding:"3px 8px",borderRadius:6,background:"#f1f5f9",color:"#475569",border:"none",cursor:"pointer"}}>🪪免許証</button>}
                               </div>}
@@ -23475,7 +23501,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.469";
+const APP_VERSION="v4.7.471";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
