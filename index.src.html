@@ -78,9 +78,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1021';
+var CV='spk-v1022';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=914').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=915').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -615,7 +615,7 @@ const DB = {
   async deleteShift(date,staffName){if(!sb)return;const{error}=await sb.from("shifts").delete().eq("date",date).eq("staff_name",staffName);if(error)dbLog("deleteShift",false,error.message);else dbLog("deleteShift",true,date+"/"+staffName);},
   async deleteShiftsMonth(ym){if(!sb)return;const{error}=await sb.from("shifts").delete().like("date",ym+"-%");if(error)dbLog("deleteShiftsMonth",false,error.message);else dbLog("deleteShiftsMonth",true,ym);},
   // --- 勤怠 ---
-  async fetchAttendance(){if(!sb)return{};try{const{data,error}=await sb.from("spk_attendance").select("*");if(error){console.warn("[attendance] fetch error (テーブル未作成?):",error.message);return{};}const a={};(data||[]).forEach(r=>{const k=r.date+"_"+r.staff_name;a[k]={date:r.date,name:r.staff_name,start:r.start_time||"",end:r.end_time||"",approved:!!r.approved,memo:r.memo||"",absent:!!r.absent};});return a;}catch(e){console.warn("[attendance]",e);return{};}},
+  async fetchAttendance(){if(!sb)return{};try{const{data,error}=await sb.from("spk_attendance").select("*");if(error){console.warn("[attendance] fetch error (テーブル未作成?):",error.message);return{};}const a={};(data||[]).forEach(r=>{const k=r.date+"_"+r.staff_name;a[k]={date:r.date,name:r.staff_name,start:r.start_time||"",end:r.end_time||"",approved:!!r.approved,memo:r.memo||"",absent:!!r.absent,breaks:Array.isArray(r.breaks)?r.breaks:[]};});return a;}catch(e){console.warn("[attendance]",e);return{};}},
   async saveAttendance(rec){if(!sb)return;try{await sb.from("spk_attendance").upsert({date:rec.date,staff_name:rec.name,start_time:rec.start||"",end_time:rec.end||"",approved:rec.approved||false,memo:rec.memo||"",absent:!!rec.absent},{onConflict:"date,staff_name"});}catch(e){console.warn("[att save]",e);}},
   async saveAttendanceBatch(recs){if(!sb)return;try{const rows=recs.map(r=>({date:r.date,staff_name:r.name,start_time:r.start||"",end_time:r.end||"",approved:r.approved||false,memo:r.memo||"",absent:!!r.absent}));await sb.from("spk_attendance").upsert(rows,{onConflict:"date,staff_name"});}catch(e){console.warn("[att batch]",e);}},
   // --- 打刻 ---
@@ -624,6 +624,15 @@ const DB = {
   async punchIn(staffName,timeStr,isProvisional){if(!sb)return;try{const today=new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});const now=timeStr||new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Tokyo"});const{data}=await sb.from("spk_attendance").select("*").eq("date",today).eq("staff_name",staffName).maybeSingle();if(data&&data.start_time){throw new Error("既に出勤打刻済みです");}await sb.from("spk_attendance").upsert({date:today,staff_name:staffName,start_time:now,end_time:data?.end_time||"",approved:!isProvisional,memo:isProvisional?"仮申請":"打刻",absent:false},{onConflict:"date,staff_name"});}catch(e){throw e;}},
   async punchOut(staffName,timeStr,isProvisional){if(!sb)return;try{const today=new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});const now=timeStr||new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Tokyo"});const{data}=await sb.from("spk_attendance").select("*").eq("date",today).eq("staff_name",staffName).maybeSingle();if(data?.end_time){throw new Error("既に退勤打刻済みです");}await sb.from("spk_attendance").upsert({date:today,staff_name:staffName,start_time:data?.start_time||"",end_time:now,approved:!isProvisional,memo:isProvisional?"仮申請":"打刻",absent:false},{onConflict:"date,staff_name"});}catch(e){throw e;}},
   async getTodayPunch(staffName){if(!sb)return null;try{const today=new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});const{data}=await sb.from("spk_attendance").select("*").eq("date",today).eq("staff_name",staffName).maybeSingle();return data?{start:data.start_time||"",end:data.end_time||"",approved:!!data.approved}:null;}catch(e){return null;}},
+  // --- タイムカード: 休憩打刻（当日行の breaks 配列だけを1件更新・他列は触らない） ---
+  // ※ 出退勤(start/end)は既存 punchIn/punchOut を使用。ここは休憩のみ。
+  async breakStart(staffName,timeStr){if(!sb)return;const today=new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});const now=timeStr||new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Tokyo"});const{data}=await sb.from("spk_attendance").select("start_time,end_time,breaks").eq("date",today).eq("staff_name",staffName).maybeSingle();if(!data||!data.start_time)throw new Error("先に出勤打刻をしてください");if(data.end_time)throw new Error("退勤済みのため休憩できません");const br=Array.isArray(data.breaks)?data.breaks.slice():[];if(br.length&&!(br[br.length-1].end))throw new Error("既に休憩中です");br.push({start:now,end:""});await sb.from("spk_attendance").update({breaks:br}).eq("date",today).eq("staff_name",staffName);},
+  async breakEnd(staffName,timeStr){if(!sb)return;const today=new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});const now=timeStr||new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Tokyo"});const{data}=await sb.from("spk_attendance").select("breaks").eq("date",today).eq("staff_name",staffName).maybeSingle();const br=Array.isArray(data&&data.breaks)?data.breaks.slice():[];if(!br.length||br[br.length-1].end)throw new Error("休憩を開始していません");br[br.length-1]={...br[br.length-1],end:now};await sb.from("spk_attendance").update({breaks:br}).eq("date",today).eq("staff_name",staffName);},
+  // --- タイムカード: 時刻修正申請（給与ページ読込・承認/却下） ---
+  async fetchTimecardRequests(){if(!sb)return[];try{const{data,error}=await sb.from("spk_timecard_requests").select("*").order("created_at",{ascending:false});if(error){console.warn("[timecard req] fetch error (テーブル未作成?):",error.message);return[];}return data||[];}catch(e){console.warn("[timecard req]",e);return[];}},
+  // 承認: 申請の new_value を spk_attendance の該当列/休憩に反映（1件だけ・人間入力尊重）＋ status=approved
+  async approveTimecardRequest(req,decidedBy){if(!sb||!req)return;const{data:att}=await sb.from("spk_attendance").select("*").eq("date",req.date).eq("staff_name",req.staff_name).maybeSingle();const nv=req.new_value||"";if(req.field==="start"){await sb.from("spk_attendance").upsert({date:req.date,staff_name:req.staff_name,start_time:nv,end_time:att?.end_time||"",approved:true,memo:att?.memo||"打刻",absent:att?.absent||false,breaks:Array.isArray(att?.breaks)?att.breaks:[]},{onConflict:"date,staff_name"});}else if(req.field==="end"){await sb.from("spk_attendance").upsert({date:req.date,staff_name:req.staff_name,start_time:att?.start_time||"",end_time:nv,approved:true,memo:att?.memo||"打刻",absent:att?.absent||false,breaks:Array.isArray(att?.breaks)?att.breaks:[]},{onConflict:"date,staff_name"});}else if(req.field==="break"){const br=Array.isArray(att?.breaks)?att.breaks.slice():[];const idx=(req.break_index!=null)?req.break_index:br.length-1;if(idx>=0&&idx<br.length){if(req.sub==="break_end")br[idx]={...br[idx],end:nv};else br[idx]={...br[idx],start:nv};await sb.from("spk_attendance").update({breaks:br,approved:true}).eq("date",req.date).eq("staff_name",req.staff_name);}}await sb.from("spk_timecard_requests").update({status:"approved",decided_by:decidedBy||"",decided_at:new Date().toISOString()}).eq("id",req.id);},
+  async rejectTimecardRequest(req,decidedBy){if(!sb||!req)return;await sb.from("spk_timecard_requests").update({status:"rejected",decided_by:decidedBy||"",decided_at:new Date().toISOString()}).eq("id",req.id);},
   // --- 申し送りBOX ---
   async fetchMemos(fromDate){if(!sb)return[];try{const{data}=await sb.from("spk_memos").select("*").gte("target_date",fromDate).order("created_at",{ascending:true});return data||[];}catch(e){return[];}},
   async postMemo(content,targetDate,imageUrl){if(!sb||(!(content||"").trim()&&!imageUrl))return;const row={content:(content||"").trim(),target_date:targetDate,done:false};if(imageUrl)row.image_url=imageUrl;await sb.from("spk_memos").insert(row);},
@@ -13140,6 +13149,10 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
   // 残業イベント
   const[overtimeEvents,setOvertimeEvents]=useState([]);
   const[overtimeSel,setOvertimeSel]=useState("");
+  // タイムカード: 時刻修正申請
+  const[timecardReqs,setTimecardReqs]=useState([]);
+  const loadTimecardReqs=React.useCallback(async()=>{try{setTimecardReqs(await DB.fetchTimecardRequests());}catch(e){}},[]);
+  React.useEffect(()=>{loadTimecardReqs();},[loadTimecardReqs]);
 
   const[syncing,setSyncing]=useState(false);
   const[lastSync,setLastSync]=useState(null);
@@ -13186,6 +13199,19 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
     let diff=(eh*60+em)-(sh*60+sm);
     if(breakMin>0)diff-=breakMin;
     return diff>0?Math.round(diff/60*10)/10:0;
+  };
+  // タイムカード: 実績休憩の合計(分)。end 空(休憩中)は除外。
+  const sumBreakMin=(breaks)=>{
+    if(!Array.isArray(breaks))return 0;
+    let m=0;
+    breaks.forEach(b=>{const s=b&&b.start,e=b&&b.end;if(!s||!e)return;const[sh,sm]=s.split(":").map(Number),[eh,em]=e.split(":").map(Number);const d=(eh*60+em)-(sh*60+sm);if(d>0)m+=d;});
+    return m;
+  };
+  // タイムカード: 実績日の休憩控除分。実績休憩(打刻)があればそれを優先、無ければ計画休憩(break_minutes)。
+  const effBreakMin=(att,planBreakMin)=>{
+    const arr=att&&Array.isArray(att.breaks)?att.breaks:[];
+    const punched=arr.some(b=>b&&b.start&&b.end);
+    return punched?sumBreakMin(arr):(planBreakMin||0);
   };
   // 曜日名→曜日インデックス
   const DOW_NAMES=["日","月","火","水","木","金","土"];
@@ -13268,11 +13294,13 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
           if(d.att.absent){absentDays++;return;}
           if(d.att.memo&&d.att.memo.startsWith("協議中"))return;
           actualDays++;
-          const h=calcHours(d.att.start,d.att.end,breakMin);
+          // タイムカード: 実績休憩(打刻)があればそれを控除、無ければ計画休憩(breakMin)
+          const aBrk=effBreakMin(d.att,breakMin);
+          const h=calcHours(d.att.start,d.att.end,aBrk);
           actualHours+=h;
           if(d.fixed)actualFixedDays++;
           // 月給/時給複合の変動分（ヘルプ出勤）も休憩控除する。ただし短時間出勤（控除後0以下）は控除なし＝時給が消えるのを防ぐ
-          else if(monthlyHasHourly){const vA=calcHours(d.att.start,d.att.end,breakMin);actualVarHours+=(vA>0?vA:calcHours(d.att.start,d.att.end,0));}
+          else if(monthlyHasHourly){const vA=calcHours(d.att.start,d.att.end,aBrk);actualVarHours+=(vA>0?vA:calcHours(d.att.start,d.att.end,0));}
           else actualVarHours+=h;
           const ot=dayOtPay(h,d.fixed);actualOtH+=ot.ot;actualOtPay+=ot.pay;
         }
@@ -13360,6 +13388,20 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
       }
     });
     onAttendanceChange(next);if(batch.length)try{await DB.saveAttendanceBatch(batch);}catch(e){console.error("[approveAll] save error:",e);}
+  };
+  // タイムカード: 修正申請の承認/却下
+  const approveTcReq=async(req)=>{
+    if(!window.confirm("この修正申請を承認して実績に反映しますか？"))return;
+    try{
+      await DB.approveTimecardRequest(req,"店舗");
+      // spk_attendance を再取得して給与に即反映
+      const attDB=await DB.fetchAttendance();if(attDB)onAttendanceChange(attDB);
+      await loadTimecardReqs();
+    }catch(e){console.error("[approveTcReq]",e);alert("承認に失敗しました");}
+  };
+  const rejectTcReq=async(req)=>{
+    if(!window.confirm("この修正申請を却下しますか？（実績は変わりません）"))return;
+    try{await DB.rejectTimecardRequest(req,"店舗");await loadTimecardReqs();}catch(e){console.error("[rejectTcReq]",e);}
   };
   const saveEdit=async()=>{
     if(!editDay)return;
@@ -13496,6 +13538,11 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
       {(()=>{
         const sd=allStaffData[selStaff];if(!sd)return null;
         const unapproved=sd.days.filter(d=>d.shift&&d.att&&!d.att.approved).length;
+        // タイムカード: この月×このスタッフの pending 修正申請（日付→配列）
+        const myReqs=(timecardReqs||[]).filter(r=>r.staff_name===selStaff&&(r.date||"").slice(0,7)===viewYM);
+        const pendReqsByDate={};myReqs.filter(r=>r.status==="pending").forEach(r=>{(pendReqsByDate[r.date]=pendReqsByDate[r.date]||[]).push(r);});
+        const pendAll=myReqs.filter(r=>r.status==="pending");
+        const reqLabel=(r)=>r.field==="start"?"出勤":r.field==="end"?"退勤":(r.sub==="break_end"?"休憩終了":"休憩開始");
         return <>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
             <div style={{fontSize:13,fontWeight:700}}>{selStaff} ー {ymLabel(viewYM)}</div>
@@ -13504,6 +13551,18 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
               <span style={{padding:"5px 14px",borderRadius:8,background:"#f0fdf4",color:"#059669",fontSize:11,fontWeight:700}}>全受領済 ✅</span>
             }
           </div>
+          {/* ▼ タイムカード 時刻修正申請（本人が打刻漏れ/押し間違いを申請） */}
+          {pendAll.length>0&&<div style={{background:"#fffbeb",border:"2px solid #fde68a",borderRadius:12,padding:12,marginBottom:12}}>
+            <div style={{fontSize:12,fontWeight:800,color:"#92400e",marginBottom:8}}>✏️ 打刻の修正申請（{pendAll.length}件・承認すると実績に反映）</div>
+            {pendAll.map(r=><div key={r.id} style={{background:"#fff",border:"1px solid #fde68a",borderRadius:8,padding:"8px 10px",marginBottom:6}}>
+              <div style={{fontSize:12,fontWeight:700,color:"#334155"}}>{(r.date||"").slice(5).replace("-","/")}　{reqLabel(r)}　<span style={{color:"#94a3b8"}}>{r.old_value||"（未打刻）"}</span> → <span style={{color:"#b45309",fontWeight:800}}>{r.new_value}</span></div>
+              {r.reason&&<div style={{fontSize:11,color:"#92400e",marginTop:2}}>📝 {r.reason}</div>}
+              <div style={{display:"flex",gap:6,marginTop:8}}>
+                <button onClick={()=>approveTcReq(r)} style={{flex:1,padding:"7px 0",borderRadius:7,background:"#16a34a",color:"#fff",border:"none",fontSize:12,fontWeight:800,cursor:"pointer"}}>✅ 承認して反映</button>
+                <button onClick={()=>rejectTcReq(r)} style={{flex:1,padding:"7px 0",borderRadius:7,background:"#fff",color:"#dc2626",border:"1px solid #fca5a5",fontSize:12,fontWeight:700,cursor:"pointer"}}>却下</button>
+              </div>
+            </div>)}
+          </div>}
           {sd.days.map(d=>{
             const isHoliday=d.dow===0;const isSat=d.dow===6;
             const rowBg=isHoliday?"#fef2f2":isSat?"#eff6ff":"#fff";
@@ -13512,23 +13571,40 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
             const isKyogi=att&&att.memo&&att.memo.startsWith("協議中");
             const kyogiDetail=isKyogi?att.memo.replace(/^協議中:/,""):"";
             const timeStr=isAbsent?"欠勤":att?(att.start+"〜"+att.end):(hasShift?(d.shift.start+"〜"+d.shift.end):"ー");
-            return <div key={d.date} style={{borderBottom:"1px solid #f1f5f9",background:isKyogi?"#fffbeb":isAbsent?"#fef2f2":rowBg}}>
+            // タイムカード: 計画×実績×休憩照合（打刻がある日／シフトがある日で表示）
+            const brkArr=att&&Array.isArray(att.breaks)?att.breaks:[];
+            const actBrkMin=(()=>{let m=0;brkArr.forEach(b=>{if(!b||!b.start||!b.end)return;const[sh,sm]=b.start.split(":").map(Number),[eh,em]=b.end.split(":").map(Number);const dd=(eh*60+em)-(sh*60+sm);if(dd>0)m+=dd;});return m;})();
+            const planBrkMin=sd.breakMin||0;
+            const hasPunch=att&&!isAbsent&&(att.start||att.end||brkArr.length>0);
+            const hasReqToday=(pendReqsByDate[d.date]||[]).length>0;
+            return <div key={d.date} style={{borderBottom:"1px solid #f1f5f9",background:hasReqToday?"#fffbeb":isKyogi?"#fffbeb":isAbsent?"#fef2f2":rowBg}}>
               <div style={{display:"flex",alignItems:"center",padding:"8px 12px",gap:8}}>
                 <div style={{width:30,textAlign:"center"}}>
                   <div style={{fontSize:14,fontWeight:800,color:dayColor}}>{d.day}</div>
                   <div style={{fontSize:9,color:dayColor,fontWeight:600}}>{WK[d.dow]}</div>
                 </div>
-                <div style={{flex:1,fontSize:13,color:isKyogi?"#92400e":isAbsent?"#dc2626":hasShift?"#374151":"#d1d5db",fontWeight:hasShift?600:400}}>{timeStr}{hasShift&&sd.hasDailyWage&&<span style={{fontSize:8,fontWeight:700,marginLeft:4,padding:"1px 4px",borderRadius:3,background:d.fixed?"#dbeafe":"#fef3c7",color:d.fixed?"#1d4ed8":"#92400e"}}>{d.fixed?"日給":"時給"}</span>}</div>
-                {hasShift&&<div style={{display:"flex",gap:6}}>
+                <div style={{flex:1,fontSize:13,color:isKyogi?"#92400e":isAbsent?"#dc2626":hasShift?"#374151":"#d1d5db",fontWeight:hasShift?600:400}}>{timeStr}{hasShift&&sd.hasDailyWage&&<span style={{fontSize:8,fontWeight:700,marginLeft:4,padding:"1px 4px",borderRadius:3,background:d.fixed?"#dbeafe":"#fef3c7",color:d.fixed?"#1d4ed8":"#92400e"}}>{d.fixed?"日給":"時給"}</span>}{hasReqToday&&<span style={{fontSize:8,fontWeight:800,marginLeft:4,padding:"1px 5px",borderRadius:3,background:"#fef3c7",color:"#b45309"}}>✏️修正申請中</span>}</div>
+                {(hasShift||hasPunch)&&<div style={{display:"flex",gap:6}}>
                   {isKyogi&&<span style={{padding:"4px 8px",borderRadius:6,background:"#f59e0b",color:"#fff",fontSize:10,fontWeight:700}}>協議中</span>}
                   {!isKyogi&&isAbsent&&<span style={{padding:"4px 8px",borderRadius:6,background:"#dc2626",color:"#fff",fontSize:10,fontWeight:700}}>欠勤</span>}
                   {!isKyogi&&!isAbsent&&(isApproved?
                     <span style={{padding:"4px 10px",borderRadius:6,background:"#059669",color:"#fff",fontSize:10,fontWeight:700}}>{att&&att.memo==="打刻"?"🕐打刻":"受領済"}</span>:
                     <button onClick={()=>approve(d.date,selStaff)} style={{padding:"4px 10px",borderRadius:6,background:"#dcfce7",color:"#059669",border:"1px solid #bbf7d0",fontSize:10,fontWeight:700,cursor:"pointer"}}>受領</button>
                   )}
-                  <button onClick={()=>setEditDay({date:d.date,name:selStaff,start:att?.start||d.shift.start||"09:00",end:att?.end||d.shift.end||"18:00",memo:att?.memo||"",absent:att?.absent||false})} style={{padding:"4px 10px",borderRadius:6,background:isKyogi?"#f59e0b":"#f1f5f9",color:isKyogi?"#fff":"#64748b",border:isKyogi?"none":"1px solid #e2e8f0",fontSize:10,fontWeight:700,cursor:"pointer"}}>{isKyogi?"解決":"編集"}</button>
+                  <button onClick={()=>setEditDay({date:d.date,name:selStaff,start:att?.start||d.shift?.start||"09:00",end:att?.end||d.shift?.end||"18:00",memo:att?.memo||"",absent:att?.absent||false})} style={{padding:"4px 10px",borderRadius:6,background:isKyogi?"#f59e0b":"#f1f5f9",color:isKyogi?"#fff":"#64748b",border:isKyogi?"none":"1px solid #e2e8f0",fontSize:10,fontWeight:700,cursor:"pointer"}}>{isKyogi?"解決":"編集"}</button>
                 </div>}
               </div>
+              {/* 計画×実績×休憩の照合（打刻がある日のみ） */}
+              {hasPunch&&!isAbsent&&<div style={{padding:"0 12px 8px 52px",fontSize:11,color:"#475569"}}>
+                <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>
+                  <span>計画 <b style={{color:"#64748b"}}>{d.shift?(d.shift.start+"〜"+d.shift.end):"—"}</b></span>
+                  <span>実績 <b style={{color:"#1e293b"}}>{(att.start||"—")+"〜"+(att.end||"…")}</b></span>
+                </div>
+                <div style={{display:"flex",gap:14,flexWrap:"wrap",marginTop:2}}>
+                  <span>休憩 計画 <b style={{color:"#64748b"}}>{planBrkMin}分</b> / 実績 <b style={{color:actBrkMin<planBrkMin&&brkArr.length>0?"#dc2626":"#059669"}}>{actBrkMin}分{brkArr.length>1?"（"+brkArr.length+"回）":""}</b>{planBrkMin>0&&brkArr.length>0?<span style={{color:actBrkMin-planBrkMin>=0?"#059669":"#dc2626",marginLeft:4}}>{actBrkMin-planBrkMin>=0?"+":""}{actBrkMin-planBrkMin}分</span>:""}</span>
+                </div>
+                {brkArr.length>0&&<div style={{marginTop:2,color:"#94a3b8"}}>{brkArr.map((b,i)=>"休憩"+(i+1)+" "+(b.start||"—")+"-"+(b.end||"…")).join("　")}</div>}
+              </div>}
               {isKyogi&&<div style={{padding:"4px 12px 8px 52px",fontSize:11,color:"#92400e",fontWeight:600}}>📝 {kyogiDetail}</div>}
             </div>;
           })}
@@ -23517,7 +23593,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.482";
+const APP_VERSION="v4.7.483";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
