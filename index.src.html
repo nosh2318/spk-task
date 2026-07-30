@@ -78,9 +78,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1022';
+var CV='spk-v1023';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=915').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=916').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -616,8 +616,8 @@ const DB = {
   async deleteShiftsMonth(ym){if(!sb)return;const{error}=await sb.from("shifts").delete().like("date",ym+"-%");if(error)dbLog("deleteShiftsMonth",false,error.message);else dbLog("deleteShiftsMonth",true,ym);},
   // --- 勤怠 ---
   async fetchAttendance(){if(!sb)return{};try{const{data,error}=await sb.from("spk_attendance").select("*");if(error){console.warn("[attendance] fetch error (テーブル未作成?):",error.message);return{};}const a={};(data||[]).forEach(r=>{const k=r.date+"_"+r.staff_name;a[k]={date:r.date,name:r.staff_name,start:r.start_time||"",end:r.end_time||"",approved:!!r.approved,memo:r.memo||"",absent:!!r.absent,breaks:Array.isArray(r.breaks)?r.breaks:[]};});return a;}catch(e){console.warn("[attendance]",e);return{};}},
-  async saveAttendance(rec){if(!sb)return;try{await sb.from("spk_attendance").upsert({date:rec.date,staff_name:rec.name,start_time:rec.start||"",end_time:rec.end||"",approved:rec.approved||false,memo:rec.memo||"",absent:!!rec.absent},{onConflict:"date,staff_name"});}catch(e){console.warn("[att save]",e);}},
-  async saveAttendanceBatch(recs){if(!sb)return;try{const rows=recs.map(r=>({date:r.date,staff_name:r.name,start_time:r.start||"",end_time:r.end||"",approved:r.approved||false,memo:r.memo||"",absent:!!r.absent}));await sb.from("spk_attendance").upsert(rows,{onConflict:"date,staff_name"});}catch(e){console.warn("[att batch]",e);}},
+  async saveAttendance(rec){if(!sb)return;try{const row={date:rec.date,staff_name:rec.name,start_time:rec.start||"",end_time:rec.end||"",approved:rec.approved||false,memo:rec.memo||"",absent:!!rec.absent};if(Array.isArray(rec.breaks))row.breaks=rec.breaks;/* タイムカード: breaks列をupsertで消さない（打刻した休憩を承認/編集で失わない） */await sb.from("spk_attendance").upsert(row,{onConflict:"date,staff_name"});}catch(e){console.warn("[att save]",e);}},
+  async saveAttendanceBatch(recs){if(!sb)return;try{const rows=recs.map(r=>{const row={date:r.date,staff_name:r.name,start_time:r.start||"",end_time:r.end||"",approved:r.approved||false,memo:r.memo||"",absent:!!r.absent};if(Array.isArray(r.breaks))row.breaks=r.breaks;return row;});await sb.from("spk_attendance").upsert(rows,{onConflict:"date,staff_name"});}catch(e){console.warn("[att batch]",e);}},
   // --- 打刻 ---
   SLACK_PUNCH_WEBHOOK:"",// ← Slack Incoming Webhook URL を設定
   async sendPunchSlack(storeName,staffName,type,reqTime,nowTime){try{if(!DB.SLACK_PUNCH_WEBHOOK)return;await fetch(DB.SLACK_PUNCH_WEBHOOK,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:`⚠️ *打刻仮申請あり*\n店舗: ${storeName}　スタッフ: ${staffName}\n種別: ${type==="in"?"出勤":"退勤"}　申請時刻: *${reqTime}*（打刻時点: ${nowTime}）\n給与計算タブで確認・承認してください`})});}catch(e){}},
@@ -631,7 +631,7 @@ const DB = {
   // --- タイムカード: 時刻修正申請（給与ページ読込・承認/却下） ---
   async fetchTimecardRequests(){if(!sb)return[];try{const{data,error}=await sb.from("spk_timecard_requests").select("*").order("created_at",{ascending:false});if(error){console.warn("[timecard req] fetch error (テーブル未作成?):",error.message);return[];}return data||[];}catch(e){console.warn("[timecard req]",e);return[];}},
   // 承認: 申請の new_value を spk_attendance の該当列/休憩に反映（1件だけ・人間入力尊重）＋ status=approved
-  async approveTimecardRequest(req,decidedBy){if(!sb||!req)return;const{data:att}=await sb.from("spk_attendance").select("*").eq("date",req.date).eq("staff_name",req.staff_name).maybeSingle();const nv=req.new_value||"";if(req.field==="start"){await sb.from("spk_attendance").upsert({date:req.date,staff_name:req.staff_name,start_time:nv,end_time:att?.end_time||"",approved:true,memo:att?.memo||"打刻",absent:att?.absent||false,breaks:Array.isArray(att?.breaks)?att.breaks:[]},{onConflict:"date,staff_name"});}else if(req.field==="end"){await sb.from("spk_attendance").upsert({date:req.date,staff_name:req.staff_name,start_time:att?.start_time||"",end_time:nv,approved:true,memo:att?.memo||"打刻",absent:att?.absent||false,breaks:Array.isArray(att?.breaks)?att.breaks:[]},{onConflict:"date,staff_name"});}else if(req.field==="break"){const br=Array.isArray(att?.breaks)?att.breaks.slice():[];const idx=(req.break_index!=null)?req.break_index:br.length-1;if(idx>=0&&idx<br.length){if(req.sub==="break_end")br[idx]={...br[idx],end:nv};else br[idx]={...br[idx],start:nv};await sb.from("spk_attendance").update({breaks:br,approved:true}).eq("date",req.date).eq("staff_name",req.staff_name);}}await sb.from("spk_timecard_requests").update({status:"approved",decided_by:decidedBy||"",decided_at:new Date().toISOString()}).eq("id",req.id);},
+  async approveTimecardRequest(req,decidedBy){if(!sb||!req)return;const{data:att}=await sb.from("spk_attendance").select("*").eq("date",req.date).eq("staff_name",req.staff_name).maybeSingle();const nv=req.new_value||"";if(req.field==="start"){await sb.from("spk_attendance").upsert({date:req.date,staff_name:req.staff_name,start_time:nv,end_time:att?.end_time||"",approved:true,memo:att?.memo||"打刻",absent:att?.absent||false,breaks:Array.isArray(att?.breaks)?att.breaks:[]},{onConflict:"date,staff_name"});}else if(req.field==="end"){await sb.from("spk_attendance").upsert({date:req.date,staff_name:req.staff_name,start_time:att?.start_time||"",end_time:nv,approved:true,memo:att?.memo||"打刻",absent:att?.absent||false,breaks:Array.isArray(att?.breaks)?att.breaks:[]},{onConflict:"date,staff_name"});}else if(req.field==="break"){const br=Array.isArray(att?.breaks)?att.breaks.slice():[];let idx=(req.break_index!=null)?req.break_index:br.length-1;if(idx>=0&&idx<br.length){/* 既存休憩の開始/終了を修正（他要素は保持） */if(req.sub==="break_end")br[idx]={...br[idx],end:nv};else br[idx]={...br[idx],start:nv};}else if(idx>=br.length){/* 押し忘れ休憩の追加申請＝末尾に新規要素を足す（開始/終了で別々に来る）。飛び番なら詰めて末尾に追加 */if(req.sub==="break_end")br.push({start:"",end:nv});else br.push({start:nv,end:""});}if(att&&att.staff_name!=null){await sb.from("spk_attendance").update({breaks:br,approved:true}).eq("date",req.date).eq("staff_name",req.staff_name);}else{/* その日の勤怠行が無い（打刻ゼロ）→ 休憩だけの行をupsert */await sb.from("spk_attendance").upsert({date:req.date,staff_name:req.staff_name,start_time:"",end_time:"",approved:true,memo:"打刻",absent:false,breaks:br},{onConflict:"date,staff_name"});}}await sb.from("spk_timecard_requests").update({status:"approved",decided_by:decidedBy||"",decided_at:new Date().toISOString()}).eq("id",req.id);},
   async rejectTimecardRequest(req,decidedBy){if(!sb||!req)return;await sb.from("spk_timecard_requests").update({status:"rejected",decided_by:decidedBy||"",decided_at:new Date().toISOString()}).eq("id",req.id);},
   // --- 申し送りBOX ---
   async fetchMemos(fromDate){if(!sb)return[];try{const{data}=await sb.from("spk_memos").select("*").gte("target_date",fromDate).order("created_at",{ascending:true});return data||[];}catch(e){return[];}},
@@ -13411,7 +13411,9 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
     const isKyogi=origMemo.startsWith("協議中");
     const memo=isKyogi?"打刻":(editDay.memo||"");
     const approved=isKyogi?true:(attendance[key]?.approved||false);
-    const updated={date:editDay.date,name:editDay.name,start:editDay.start,end:editDay.end,approved,memo,absent:!!editDay.absent};
+    // タイムカード: 既存の休憩(breaks)を保持したまま出退勤時刻/メモ/欠勤だけを編集（休憩を消さない）
+    const prevBreaks=Array.isArray(attendance[key]?.breaks)?attendance[key].breaks:[];
+    const updated={date:editDay.date,name:editDay.name,start:editDay.start,end:editDay.end,approved,memo,absent:!!editDay.absent,breaks:prevBreaks};
     onAttendanceChange({...attendance,[key]:updated});
     try{await DB.saveAttendance(updated);}catch(e){console.error("[saveEdit] save error:",e);}
     setEditDay(null);
@@ -23593,7 +23595,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.483";
+const APP_VERSION="v4.7.484";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{

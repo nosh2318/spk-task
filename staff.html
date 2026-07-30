@@ -121,7 +121,7 @@ a.myp{background:#065f46;color:#fff;font-size:11px;font-weight:800;border-radius
 <script>
 var SB="https://ckrxttbnawkclshczsia.supabase.co";
 var ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
-var VER="staff-v3.6";
+var VER="staff-v3.7";
 var TOKEN=new URLSearchParams(location.search).get("t")||"";
 var app=document.getElementById("app");
 
@@ -579,7 +579,8 @@ function renderPunch(){
   if(reqs.length){
     h+='<div class="pc-reqbox"><div style="font-size:12px;font-weight:800;color:#92400e;margin-bottom:4px">✏️ 申請中（店舗の承認待ち）</div>';
     reqs.forEach(function(r){
-      var fl=r.field==="start"?"出勤":r.field==="end"?"退勤":(r.sub==="break_end"?"休憩終了":"休憩開始");
+      var bn=(r.break_index!=null)?("休憩"+(r.break_index+1)+" "):"休憩";
+      var fl=r.field==="start"?"出勤":r.field==="end"?"退勤":(r.field==="break"?(bn+(r.sub==="break_end"?"終了":"開始")):"");
       h+='<div class="pc-req">'+fl+'：'+(r.old_value||"（未打刻）")+' → <b>'+esc(r.new_value)+'</b>'+(r.reason?'　（'+esc(r.reason)+'）':'')+'</div>';
     });
     h+='</div>';
@@ -598,12 +599,16 @@ window.openFixReq=function(){
     opts+='<option value="bs'+i+'">☕ 休憩'+(i+1)+' 開始</option>';
     opts+='<option value="be'+i+'">☕ 休憩'+(i+1)+' 終了</option>';
   });
+  // ＋休憩を追加（押し忘れで休憩の打刻自体が無い場合）。break_index = 既存件数
+  opts+='<option value="addbs">➕ 休憩を追加 — 開始（押し忘れ）</option>';
+  opts+='<option value="addbe">➕ 休憩を追加 — 終了（押し忘れ）</option>';
   // 時刻プルダウン（00:00〜23:45 15分刻み）
   var tOpts='';for(var hh=0;hh<24;hh++){for(var mm=0;mm<60;mm+=15){var t=("0"+hh).slice(-2)+":"+("0"+mm).slice(-2);tOpts+='<option value="'+t+'">'+t+'</option>';}}
   var h='<div class="pc-modal" id="pcFix" onclick="if(event.target===this)this.remove()"><div class="pc-sheet">'
     +'<div style="text-align:center;font-weight:900;font-size:16px;color:#0f172a;margin-bottom:4px">✏️ 打刻の修正申請</div>'
     +'<div style="text-align:center;font-size:11px;color:#94a3b8;margin-bottom:8px">直したい打刻と、正しい時刻・理由を入力してください</div>'
-    +'<label>どの打刻を直しますか？</label><select id="fxTarget">'+opts+'</select>'
+    +'<label>どの打刻を直しますか？</label><select id="fxTarget" onchange="fxTargetChange()">'+opts+'</select>'
+    +'<div id="fxAddNote" style="display:none;font-size:11px;color:#0d9488;background:#f0fdfa;border:1px solid #99f6e4;border-radius:8px;padding:7px 9px;margin:2px 0 4px">押し忘れて休憩の打刻が無い場合に使います。開始・終了を別々に申請してください（両方承認されると休憩1回分になります）。</div>'
     +'<label>正しい時刻</label><select id="fxTime">'+tOpts+'</select>'
     +'<label>理由</label><input id="fxReason" type="text" placeholder="例：押し忘れ / 押し間違い" />'
     +'<button class="pc-submit" onclick="submitFixReq()">この内容で申請する</button>'
@@ -612,14 +617,24 @@ window.openFixReq=function(){
   document.body.insertAdjacentHTML("beforeend",h);
   var ft=document.getElementById("fxTime");if(ft)ft.value=jstNowHM().slice(0,4)+((+jstNowHM().slice(3,5)<15)?"00":(+jstNowHM().slice(3,5)<30)?"15":(+jstNowHM().slice(3,5)<45)?"30":"45");
 };
+// 「休憩を追加」を選んだ時だけ案内を表示
+window.fxTargetChange=function(){
+  var tgt=(document.getElementById("fxTarget")||{}).value||"";
+  var note=document.getElementById("fxAddNote");
+  if(note)note.style.display=(tgt.indexOf("add")===0)?"block":"none";
+};
 window.submitFixReq=function(){
   var d=PCDATA||{};var tgt=document.getElementById("fxTarget").value;
+  var brk=Array.isArray(d.breaks)?d.breaks:[];
   var tm=document.getElementById("fxTime").value;var reason=document.getElementById("fxReason").value||"";
   var body={p_token:TOKEN,p_date:d.date,p_new_value:tm,p_reason:reason};
   if(tgt==="start"){body.p_field="start";}
   else if(tgt==="end"){body.p_field="end";}
   else if(tgt.indexOf("bs")===0){body.p_field="break";body.p_sub="break_start";body.p_break_index=+tgt.slice(2);}
   else if(tgt.indexOf("be")===0){body.p_field="break";body.p_sub="break_end";body.p_break_index=+tgt.slice(2);}
+  // ＋休憩を追加：break_index = 既存件数（末尾に新規休憩を足す申請）
+  else if(tgt==="addbs"){body.p_field="break";body.p_sub="break_start";body.p_break_index=brk.length;}
+  else if(tgt==="addbe"){body.p_field="break";body.p_sub="break_end";body.p_break_index=brk.length;}
   var e=document.getElementById("pcFix");if(e)e.remove();
   pcRpc("spk_staff_timecard_request",body,function(r){
     if(!r||r.ok===false){ alert("⚠️ "+((r&&r.msg)||"申請できませんでした")); }
