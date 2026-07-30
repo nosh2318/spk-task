@@ -147,9 +147,14 @@ BEGIN
 END; $function$;
 
 -- --------------------------------------------------------------------
--- 3-2) 今日の打刻状態を返す RPC（打刻画面の状態表示用）
+-- 3-2) 打刻状態を返す RPC（打刻画面の状態表示用）
+--   p_date 省略 or NULL = 当日（従来互換）。
+--   p_date="YYYY-MM-DD" を渡すと過去日の記録を返す（過去日の修正申請用）。
+--   recent_dates = 直近30日で「打刻がある日 or シフトがある日」（対象日プルダウン用）。
 -- --------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION public.spk_staff_timecard(p_token text)
+-- 旧1引数版を削除（新2引数版とのオーバーロード衝突＝呼び出し曖昧を防ぐ）
+DROP FUNCTION IF EXISTS public.spk_staff_timecard(text);
+CREATE OR REPLACE FUNCTION public.spk_staff_timecard(p_token text, p_date text DEFAULT NULL)
  RETURNS jsonb
  LANGUAGE plpgsql
  SECURITY DEFINER
@@ -158,22 +163,40 @@ AS $function$
 DECLARE
   v_name text;
   v_today date := (now() at time zone 'Asia/Tokyo')::date;
+  v_date date;
   v_row spk_attendance%ROWTYPE;
   v_reqs jsonb;
+  v_recent jsonb;
 BEGIN
   SELECT name INTO v_name FROM staff WHERE share_token::text=p_token AND coalesce(active,true)=true;
   IF v_name IS NULL THEN RETURN jsonb_build_object('ok',false,'error','invalid_token'); END IF;
-  SELECT * INTO v_row FROM spk_attendance WHERE date=v_today AND staff_name=v_name;
+  -- 対象日（当日既定・不正な入力は当日にフォールバック）
+  IF p_date IS NOT NULL AND p_date ~ '^\d{4}-\d{2}-\d{2}$' THEN v_date := p_date::date; ELSE v_date := v_today; END IF;
+  SELECT * INTO v_row FROM spk_attendance WHERE date=v_date AND staff_name=v_name;
   SELECT coalesce(jsonb_agg(jsonb_build_object('id',id,'field',field,'sub',sub,'break_index',break_index,'old_value',old_value,'new_value',new_value,'reason',reason,'status',status) ORDER BY created_at DESC),'[]'::jsonb)
-    INTO v_reqs FROM spk_timecard_requests WHERE staff_name=v_name AND date=v_today;
+    INTO v_reqs FROM spk_timecard_requests WHERE staff_name=v_name AND date=v_date;
+  -- 直近30日で「打刻あり or シフトあり」の日付一覧（新しい順・重複排除）
+  -- ※ date列がtext型でも安全に比較できるよう書式ガード＋::date キャスト
+  SELECT coalesce(jsonb_agg(dd ORDER BY dd DESC),'[]'::jsonb) INTO v_recent FROM (
+    SELECT DISTINCT date::date AS dd FROM spk_attendance
+      WHERE staff_name=v_name AND date::text ~ '^\d{4}-\d{2}-\d{2}$'
+        AND date::date BETWEEN (v_today - 30) AND v_today
+    UNION
+    SELECT DISTINCT date::date AS dd FROM shifts
+      WHERE staff_name=v_name AND date::text ~ '^\d{4}-\d{2}-\d{2}$'
+        AND date::date BETWEEN (v_today - 30) AND v_today
+        AND (coalesce(symbol,'')='●' OR (coalesce(symbol,'')='' AND coalesce(start_time,'')<>''))
+  ) u;
   RETURN jsonb_build_object(
     'ok',true,
     'staff',v_name,
-    'date',v_today,
+    'date',v_date,
+    'today',v_today,
     'start',coalesce(v_row.start_time,''),
     'end',coalesce(v_row.end_time,''),
     'breaks',coalesce(v_row.breaks,'[]'::jsonb),
-    'requests',v_reqs
+    'requests',v_reqs,
+    'recent_dates',v_recent
   );
 END; $function$;
 
@@ -226,7 +249,7 @@ END; $function$;
 -- RPC 実行権限（anon/authenticated から呼べるように）
 -- --------------------------------------------------------------------
 GRANT EXECUTE ON FUNCTION public.spk_staff_punch(text,text,text) TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.spk_staff_timecard(text) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.spk_staff_timecard(text,text) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.spk_staff_timecard_request(text,text,text,text,text,text,int) TO anon, authenticated;
 
 -- 完了。アプリをリロードすると打刻・給与ページに反映されます。

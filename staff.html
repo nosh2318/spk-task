@@ -121,7 +121,7 @@ a.myp{background:#065f46;color:#fff;font-size:11px;font-weight:800;border-radius
 <script>
 var SB="https://ckrxttbnawkclshczsia.supabase.co";
 var ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
-var VER="staff-v3.7";
+var VER="staff-v3.8";
 var TOKEN=new URLSearchParams(location.search).get("t")||"";
 var app=document.getElementById("app");
 
@@ -591,31 +591,68 @@ function renderPunch(){
   if(PCCLK){clearInterval(PCCLK);}
   PCCLK=setInterval(function(){var el=document.getElementById("pcClock");if(el&&MODE==="punch"){el.textContent=jstClockStr();}else{clearInterval(PCCLK);PCCLK=null;}},1000);
 }
-// 修正申請シート
+// 修正申請シート（当日だけでなく過去の勤務日も選んで申請できる）
+var FXDATA=null; // 現在申請対象の日の打刻データ（当日 or 過去日）
 window.openFixReq=function(){
-  var d=PCDATA||{};var brk=Array.isArray(d.breaks)?d.breaks:[];
+  var d=PCDATA||{};
+  FXDATA=d; // 初期は当日
+  // 対象日プルダウン：直近30日で打刻/シフトがある日（recent_dates）＋当日を必ず含める
+  var today=d.today||jstToday();
+  var recent=Array.isArray(d.recent_dates)?d.recent_dates.slice():[];
+  if(recent.indexOf(today)<0)recent.unshift(today);
+  var dOpts='';recent.forEach(function(dt){
+    var lb=shortDate(dt)+'（'+jpWd(dt)+'）'+(dt===today?' — 本日':'');
+    dOpts+='<option value="'+dt+'"'+(dt===(d.date||today)?' selected':'')+'>'+lb+'</option>';
+  });
+  var minDate=addDays(today,-60);
+  var h='<div class="pc-modal" id="pcFix" onclick="if(event.target===this)this.remove()"><div class="pc-sheet">'
+    +'<div style="text-align:center;font-weight:900;font-size:16px;color:#0f172a;margin-bottom:4px">✏️ 打刻の修正申請</div>'
+    +'<div style="text-align:center;font-size:11px;color:#94a3b8;margin-bottom:8px">対象の勤務日を選び、直したい打刻と正しい時刻・理由を入力してください</div>'
+    +'<label>対象の勤務日</label><select id="fxDate" onchange="fxDateChange(this.value)">'+dOpts+'</select>'
+    +'<div style="font-size:11px;color:#94a3b8;margin:2px 0 6px">一覧に無い過去日（押し忘れで記録が無い日）はこちら → <input id="fxDatePick" type="date" max="'+today+'" min="'+minDate+'" onchange="if(this.value)fxDateChange(this.value)" style="font-size:14px;padding:4px 6px;border:1px solid #cbd5e1;border-radius:6px" /></div>'
+    +'<div id="fxBody">'+fxBodyHtml(FXDATA)+'</div>'
+    +'<button class="pc-submit" onclick="submitFixReq()">この内容で申請する</button>'
+    +'<button class="pc-cancel" onclick="var e=document.getElementById(\'pcFix\');if(e)e.remove()">キャンセル</button>'
+    +'</div></div>';
+  document.body.insertAdjacentHTML("beforeend",h);
+  fxSetDefaultTime();
+};
+// 対象日の打刻状態に応じた「どの打刻を直すか／正しい時刻」部分のHTML
+function fxBodyHtml(d){
+  d=d||{};var brk=Array.isArray(d.breaks)?d.breaks:[];
   var opts='<option value="start">🟢 出勤時刻</option><option value="end">🔴 退勤時刻</option>';
   brk.forEach(function(b,i){
     opts+='<option value="bs'+i+'">☕ 休憩'+(i+1)+' 開始</option>';
     opts+='<option value="be'+i+'">☕ 休憩'+(i+1)+' 終了</option>';
   });
-  // ＋休憩を追加（押し忘れで休憩の打刻自体が無い場合）。break_index = 既存件数
   opts+='<option value="addbs">➕ 休憩を追加 — 開始（押し忘れ）</option>';
   opts+='<option value="addbe">➕ 休憩を追加 — 終了（押し忘れ）</option>';
-  // 時刻プルダウン（00:00〜23:45 15分刻み）
   var tOpts='';for(var hh=0;hh<24;hh++){for(var mm=0;mm<60;mm+=15){var t=("0"+hh).slice(-2)+":"+("0"+mm).slice(-2);tOpts+='<option value="'+t+'">'+t+'</option>';}}
-  var h='<div class="pc-modal" id="pcFix" onclick="if(event.target===this)this.remove()"><div class="pc-sheet">'
-    +'<div style="text-align:center;font-weight:900;font-size:16px;color:#0f172a;margin-bottom:4px">✏️ 打刻の修正申請</div>'
-    +'<div style="text-align:center;font-size:11px;color:#94a3b8;margin-bottom:8px">直したい打刻と、正しい時刻・理由を入力してください</div>'
+  // 現在の打刻状況の要約（未打刻の日でも安心して申請できるよう見せる）
+  var sm='<div style="font-size:11px;color:#64748b;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:7px 9px;margin:2px 0 6px">'
+    +'現在の記録：出勤 <b>'+(d.start||'—')+'</b> ／ 退勤 <b>'+(d.end||'—')+'</b>'
+    +(brk.length?'　'+brk.map(function(b,i){return '休憩'+(i+1)+' '+(b.start||'—')+'-'+(b.end||'…');}).join('　'):'　休憩 なし')
+    +'</div>';
+  return sm
     +'<label>どの打刻を直しますか？</label><select id="fxTarget" onchange="fxTargetChange()">'+opts+'</select>'
     +'<div id="fxAddNote" style="display:none;font-size:11px;color:#0d9488;background:#f0fdfa;border:1px solid #99f6e4;border-radius:8px;padding:7px 9px;margin:2px 0 4px">押し忘れて休憩の打刻が無い場合に使います。開始・終了を別々に申請してください（両方承認されると休憩1回分になります）。</div>'
     +'<label>正しい時刻</label><select id="fxTime">'+tOpts+'</select>'
-    +'<label>理由</label><input id="fxReason" type="text" placeholder="例：押し忘れ / 押し間違い" />'
-    +'<button class="pc-submit" onclick="submitFixReq()">この内容で申請する</button>'
-    +'<button class="pc-cancel" onclick="var e=document.getElementById(\'pcFix\');if(e)e.remove()">キャンセル</button>'
-    +'</div></div>';
-  document.body.insertAdjacentHTML("beforeend",h);
-  var ft=document.getElementById("fxTime");if(ft)ft.value=jstNowHM().slice(0,4)+((+jstNowHM().slice(3,5)<15)?"00":(+jstNowHM().slice(3,5)<30)?"15":(+jstNowHM().slice(3,5)<45)?"30":"45");
+    +'<label>理由</label><input id="fxReason" type="text" placeholder="例：押し忘れ / 押し間違い" />';
+}
+function fxSetDefaultTime(){
+  var ft=document.getElementById("fxTime");if(!ft)return;
+  var n=jstNowHM();ft.value=n.slice(0,3)+((+n.slice(3,5)<15)?"00":(+n.slice(3,5)<30)?"15":(+n.slice(3,5)<45)?"30":"45");
+}
+// 対象日を変えたら、その日の打刻状態を取得して申請フォームを組み直す
+window.fxDateChange=function(date){
+  if(!date)return;
+  var body=document.getElementById("fxBody");if(body)body.innerHTML='<div style="text-align:center;color:#94a3b8;padding:14px">読み込み中…</div>';
+  // プルダウンとピッカーの表示を同期
+  var sel=document.getElementById("fxDate");if(sel){var found=false;for(var i=0;i<sel.options.length;i++){if(sel.options[i].value===date){sel.selectedIndex=i;found=true;break;}}if(!found){var o=document.createElement("option");o.value=date;o.textContent=shortDate(date)+'（'+jpWd(date)+'）';sel.insertBefore(o,sel.firstChild);sel.value=date;}}
+  pcRpc("spk_staff_timecard",{p_token:TOKEN,p_date:date},function(d){
+    if(!d||d.ok===false){var b=document.getElementById("fxBody");if(b)b.innerHTML='<div style="color:#dc2626;padding:10px">読み込みに失敗しました</div>';return;}
+    FXDATA=d;var b=document.getElementById("fxBody");if(b){b.innerHTML=fxBodyHtml(d);fxSetDefaultTime();}
+  });
 };
 // 「休憩を追加」を選んだ時だけ案内を表示
 window.fxTargetChange=function(){
@@ -624,7 +661,7 @@ window.fxTargetChange=function(){
   if(note)note.style.display=(tgt.indexOf("add")===0)?"block":"none";
 };
 window.submitFixReq=function(){
-  var d=PCDATA||{};var tgt=document.getElementById("fxTarget").value;
+  var d=FXDATA||PCDATA||{};var tgt=document.getElementById("fxTarget").value;
   var brk=Array.isArray(d.breaks)?d.breaks:[];
   var tm=document.getElementById("fxTime").value;var reason=document.getElementById("fxReason").value||"";
   var body={p_token:TOKEN,p_date:d.date,p_new_value:tm,p_reason:reason};
