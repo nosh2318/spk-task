@@ -354,6 +354,7 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
 
   <!-- 💰 コスト一覧タブ (2026-05-26 オーナー新規仕様: 協力会社名+日額コスト入り車両リスト) -->
   <div id="view-cost" style="display:none">
+    <div id="cost-monthly" style="margin-bottom:14px"></div>
     <div class="data-ctrl">
       <span style="font-size:11px;font-weight:700;color:#64748b" id="cost-count">—</span>
       <span style="margin-left:auto;font-size:12px;font-weight:900;color:#b91c1c" id="cost-total">—</span>
@@ -1770,6 +1771,8 @@ function renderCost(){
     });
     return total;
   };
+  // ★ 2026-07-31 月別支払い一覧: 月別の稼働実績(返却日ベース)から協力会社への支払額(日額×稼働日)を各月で算出
+  renderCostMonthly(targets,monthYm);
   let html='',totCost=0,totRev=0;
   sorted.forEach(v=>{
     const daily=Number(v.partner_daily_cost)||0;
@@ -1819,6 +1822,62 @@ function renderCost(){
   document.getElementById('cost-total').innerHTML=`<span style="color:#b91c1c">📉¥${totCost.toLocaleString()}</span> ／ <span style="color:#15803d">💰¥${totRev.toLocaleString()}</span> ／ <span style="color:${totProfit>=0?'#15803d':'#dc2626'}">📈${(totProfit>=0?'+':'')}¥${totProfit.toLocaleString()}</span>`;
 }
 
+// ★ 月別支払い一覧 (2026-07-31): 月別稼働実績→月別コスト。各月=Σ(日額×その月の稼働日数)。行タップでその月の明細に切替
+function _partnerMonthAgg(targets,monthYm){
+  const [yy,mm]=monthYm.split('-').map(Number);
+  const dim=new Date(yy,mm,0).getDate();
+  const ms=`${monthYm}-01`, me=`${monthYm}-${String(dim).padStart(2,'0')}`;
+  let cost=0,rev=0,days=0;
+  targets.forEach(v=>{
+    const daily=Number(v.partner_daily_cost)||0;
+    RESERVATIONS.forEach(r=>{
+      if(r.status==='cancelled')return;
+      const f=FLEET.find(x=>x.reservation_id===r.id);
+      if(!f||f.vehicle_code!==v.code)return;
+      const rd=(r.return_date||'').substring(0,10);
+      if(!rd||rd<ms||rd>me)return;
+      const ld=(r.lend_date||'').substring(0,10);
+      let d=0; if(ld){const d1=new Date(ld+'T00:00:00'),d2=new Date(rd+'T00:00:00');d=Math.max(1,Math.round((d2-d1)/86400000)+1);}
+      const bp=+(r.base_price||0),op=+(r.option_price||0),disc=+(r.discount||0);
+      days+=d; cost+=daily*d; rev+=(bp>0||op>0)?Math.max(0,bp+op-disc):+(r.price||0);
+    });
+  });
+  return {cost,rev,days};
+}
+function renderCostMonthly(targets,curYm){
+  const box=document.getElementById('cost-monthly'); if(!box)return;
+  // 月リスト: 運用開始(SERVICE_START)〜 max(返却月, 当月)
+  const startKey=SERVICE_START.substring(0,7);
+  const now=new Date(); let maxKey=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+  RESERVATIONS.forEach(r=>{const rk=(r.return_date||'').substring(0,7); if(rk&&rk>maxKey)maxKey=rk;});
+  if(curYm>maxKey)maxKey=curYm;
+  const months=[]; let [y,m]=startKey.split('-').map(Number);
+  while(months.length<60){const k=`${y}-${String(m).padStart(2,'0')}`; months.push(k); if(k>=maxKey)break; m++; if(m>12){m=1;y++;}}
+  months.reverse(); // 新しい月を上に
+  let gCost=0,gRev=0,gDays=0, rows='';
+  months.forEach(k=>{
+    const a=_partnerMonthAgg(targets,k);
+    gCost+=a.cost; gRev+=a.rev; gDays+=a.days;
+    const prof=a.rev-a.cost; const pc=prof>=0?'#15803d':'#dc2626';
+    const [yy,mm]=k.split('-'); const label=`${yy}年${+mm}月`;
+    const isCur=(k===curYm);
+    rows+=`<tr onclick="costGotoMonth('${k}')" title="タップでこの月の明細へ" style="cursor:pointer;border-bottom:1px solid #f1f5f9;${isCur?'background:#eff6ff':''}">`
+      +`<td style="padding:8px 12px;font-weight:800;white-space:nowrap">${label}${isCur?' <span style="font-size:9px;color:#2563eb">◀表示中</span>':''}</td>`
+      +`<td style="padding:8px 12px;text-align:right;font-weight:700">${a.days}日</td>`
+      +`<td style="padding:8px 12px;text-align:right;color:#b91c1c;font-weight:800;background:#fef2f2">${a.cost>0?'-¥'+a.cost.toLocaleString():'—'}</td>`
+      +`<td style="padding:8px 12px;text-align:right;color:#15803d;font-weight:700;background:#f0fdf4">${a.rev>0?'¥'+a.rev.toLocaleString():'—'}</td>`
+      +`<td style="padding:8px 12px;text-align:right;color:${pc};font-weight:800;background:#fffbeb">${(prof>=0?'+':'')}¥${prof.toLocaleString()}</td>`
+      +`</tr>`;
+  });
+  const gProf=gRev-gCost;
+  box.innerHTML=`<div style="font-size:13px;font-weight:900;color:#1e293b;margin-bottom:6px">📅 月別 協力会社お支払い一覧 <span style="font-size:11px;font-weight:600;color:#64748b">（月別の稼働実績＝日額×稼働日。行タップでその月の車両別明細へ）</span></div>`
+    +`<div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:10px"><table style="width:100%;border-collapse:collapse;background:#fff;min-width:520px">`
+    +`<thead><tr style="background:#f1f5f9">`+['月','稼働日','📉 お支払額','💰 売上','📈 粗利'].map(h=>`<th style="padding:8px 12px;text-align:${h==='月'?'left':'right'};font-size:12px;color:#475569;white-space:nowrap">${h}</th>`).join('')+`</tr></thead>`
+    +`<tbody>${rows}`
+    +`<tr style="background:#1e293b;color:#fff;font-weight:800;border-top:3px solid #475569"><td style="padding:8px 12px">合計 (${months.length}ヶ月)</td><td style="padding:8px 12px;text-align:right">${gDays}日</td><td style="padding:8px 12px;text-align:right;color:#fca5a5">-¥${gCost.toLocaleString()}</td><td style="padding:8px 12px;text-align:right;color:#86efac">¥${gRev.toLocaleString()}</td><td style="padding:8px 12px;text-align:right;color:${gProf>=0?'#fbbf24':'#fca5a5'}">${(gProf>=0?'+':'')}¥${gProf.toLocaleString()}</td></tr>`
+    +`</tbody></table></div>`;
+}
+function costGotoMonth(k){const [y,m]=k.split('-').map(Number);CURRENT_YM={y,m};renderCost();try{updateSummary();}catch(e){}}
 function changeMonth(delta){
   if(delta===0){const now=new Date();CURRENT_YM={y:now.getFullYear(),m:now.getMonth()+1};}
   else{let y=CURRENT_YM.y,m=CURRENT_YM.m+delta;if(m>12){y++;m=1;}if(m<1){y--;m=12;}CURRENT_YM={y,m};}
