@@ -29,6 +29,19 @@ function json(b: unknown, s: number, o: string | null) { return new Response(JSO
 
 async function sbGet(t: string, q: string): Promise<any[]> { const r = await fetch(`${SB_URL}/rest/v1/${t}?${q}`, { headers: H }); if (!r.ok) { console.error(`GET ${t}`, await r.text()); return []; } return await r.json(); }
 async function sbPost(t: string, b: unknown): Promise<void> { const r = await fetch(`${SB_URL}/rest/v1/${t}`, { method: "POST", headers: { ...H, Prefer: "return=minimal" }, body: JSON.stringify(b) }); if (!r.ok) console.error(`POST ${t}`, await r.text()); }
+async function sbPatch(t: string, q: string, b: unknown): Promise<void> { const r = await fetch(`${SB_URL}/rest/v1/${t}?${q}`, { method: "PATCH", headers: { ...H, Prefer: "return=minimal" }, body: JSON.stringify(b) }); if (!r.ok) console.error(`PATCH ${t}`, await r.text()); }
+// 顧客へLINE通知（line-push 経由・store=nha・mypage_decision＝日付ガード回避／誤送信ガードはline-push側）
+async function pushLine(resvNo: string, message: string): Promise<void> {
+  const secret = Deno.env.get("LINEPUSH_SECRET");
+  if (!secret) { console.log("[line skip] no LINEPUSH_SECRET", resvNo); return; }
+  try {
+    const r = await fetch(`${SB_URL}/functions/v1/line-push`, {
+      method: "POST", headers: { "content-type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` },
+      body: JSON.stringify({ secret, store: "nha", resv_no: resvNo, action: "mypage_decision", message }),
+    });
+    const d = await r.json().catch(() => ({})); if (!(d as any).ok) console.log("[line-push]", JSON.stringify(d));
+  } catch (e) { console.error("[line-push]", String(e)); }
+}
 // Slack通知（那覇のマイページ操作＝#okinawa_operations-team / 環境変数で上書き可）
 async function slackPost(text: string, blocks?: unknown): Promise<boolean> {
   const token = Deno.env.get("SLACK_BOT_TOKEN"); const ch = Deno.env.get("SLACK_NHA_USER_CHANNEL") || "C06L91W6T08";
@@ -79,7 +92,56 @@ Deno.serve(async (req) => {
   // ==== keep-warm ping（DB不使用・即応答）====
   if (action === "ping") return json({ ok: true, warm: true, store: "nha" }, 200, origin);
 
-  if (action !== "lookup" && action !== "license_uploaded") return json({ error: "unsupported action（このEFは閲覧専用=lookup/免許証通知のみ）" }, 400, origin);
+  // ==== 承認/却下（スタッフ操作・早め回収リクエスト等）＝📲マイページ利用状況から呼ぶ ====
+  if (action === "decide") {
+    const staffToken = String(p.staff_token || "").trim();
+    if (!staffToken) return json({ error: "スタッフ認証が必要です" }, 401, origin);
+    const who = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${staffToken}` } });
+    if (!who.ok) return json({ error: "認証に失敗しました" }, 401, origin);
+    const wj: any = await who.json().catch(() => ({}));
+    const actor = "staff:" + (wj?.email || wj?.id || "unknown");
+    const changeId = p.change_id;
+    const decision = String(p.decision || "").trim();
+    if (!changeId || (decision !== "approved" && decision !== "rejected")) return json({ error: "パラメータ不正" }, 400, origin);
+    const cRows = await sbGet("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}&store=eq.nha&select=id,reservation_id,field,new_value,status`);
+    const c = cRows[0];
+    if (!c) return json({ error: "対象が見つかりません" }, 404, origin);
+    if (c.status !== "requested") return json({ error: "処理済みです", status: c.status }, 409, origin);
+    const resId2 = String(c.reservation_id);
+    let msg: string;
+    if (decision === "approved") {
+      msg = c.field === "ready"
+        ? `【HANDYMAN 那覇】早めのご返却（回収）を承りました。\nスケジュールを調整し、回収時間が早まる場合は改めてご連絡いたします。`
+        : `【HANDYMAN 那覇】ご依頼を承り、反映いたしました。マイページよりご確認ください。`;
+    } else {
+      msg = c.field === "ready"
+        ? `【HANDYMAN 那覇】ご連絡ありがとうございます。今回は予定のお時間での回収を予定しております。何卒よろしくお願いいたします。`
+        : `【HANDYMAN 那覇】ご依頼につきまして、恐れ入りますが今回はお受けいたしかねます。詳細は公式LINEにてご連絡いたします。`;
+    }
+    await pushLine(resId2, msg);  // 予約有効なうちに先に送る
+    await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: decision, actor });
+    const dRows = await sbGet("nha_reservations", `id=eq.${encodeURIComponent(resId2)}&select=name,ota,col_time,end_time`);
+    const dr = dRows[0] || {};
+    const hopeM = String(c.new_value || "").match(/(\d{1,2}:\d{2})/);
+    const staffName = actor.replace(/^staff:/, "").replace(/@.*$/, "");
+    const ok2 = decision === "approved";
+    const dBlocks = [
+      { type: "header", text: { type: "plain_text", text: ok2 ? "✅ 早め回収を承認しました" : "🚫 早め回収を見送りました", emoji: true } },
+      { type: "section", fields: [
+        { type: "mrkdwn", text: `*👤 お客様*\n${dr.name || "-"} 様` },
+        { type: "mrkdwn", text: `*🎫 予約番号*\n${resId2}` },
+        { type: "mrkdwn", text: `*🏷 ご予約元*\n${otaJp(dr.ota)}` },
+        { type: "mrkdwn", text: `*🕐 予定の回収*\n${dr.col_time || dr.end_time || "-"}` },
+        { type: "mrkdwn", text: `*🟢 お客様の希望*\n${hopeM ? `${hopeM[1]}〜` : "指定なし"}` },
+        { type: "mrkdwn", text: `*🧑‍💼 対応者*\n${staffName}` },
+      ] },
+      { type: "context", elements: [ { type: "mrkdwn", text: ok2 ? "📩 お客様へ「早めの回収を承りました」とLINE送信済み" : "📩 お客様へ「予定のお時間で回収します」とLINE送信済み" } ] },
+    ];
+    await slackPost(`${ok2 ? "✅ 承認" : "🚫 見送り"} [那覇] 早め回収 / ${resId2}`, dBlocks);
+    return json({ ok: true, decided: decision }, 200, origin);
+  }
+
+  if (action !== "lookup" && action !== "license_uploaded" && action !== "ready") return json({ error: "unsupported action" }, 400, origin);
 
   const token = String(p.token || "").trim();
   if (!token || token.length < 20) return json({ error: "アクセスキーが不正です" }, 400, origin);
@@ -110,6 +172,31 @@ Deno.serve(async (req) => {
     // OPシート「🪪免許OK」表示用にDB記録（upsert）
     try { await fetch(`${SB_URL}/rest/v1/license_uploads?on_conflict=reservation_id`, { method: "POST", headers: { ...H, Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ reservation_id: resId, store: "nha", cnt, drivers, last_at: new Date().toISOString() }) }); } catch (_) { /* noop */ }
     await slackPost(`🪪 免許証アップロード完了 [那覇] ${r.name || ""} / ${resId} / ${cnt}枚`, blocks);
+    return json({ ok: true }, 200, origin);
+  }
+
+  // ---- ready: お客様が「返却準備完了(早め回収OK)」を申請（DEL/COL）→ 承認待ち ＋ Slack通知 ----
+  if (action === "ready") {
+    if (r.status === "キャンセル" || r.status === "cancelled" || r.status === "cancel") return json({ error: "キャンセル済みの予約です" }, 409, origin);
+    const already = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.nha&field=eq.ready&status=eq.requested&select=id&limit=1`);
+    if (already[0]) return json({ ok: true, alreadyRequested: true }, 200, origin);
+    const rdyTime = (typeof p.time === "string" && /^\d{1,2}:\d{2}$/.test(String(p.time).trim())) ? String(p.time).trim() : "";
+    const newVal = rdyTime ? `返却準備完了(早め回収OK) 希望時間 ${rdyTime}〜` : "返却準備完了(早め回収OK)";
+    await sbPost("mypage_changes", { reservation_id: resId, store: "nha", field: "ready", old_value: "", new_value: newVal, source: "customer", status: "requested", note: rdyTime ? `希望回収時間の目安 ${rdyTime}〜` : "予定時間より早い回収OK" });
+    const planned = r.col_time || r.end_time || "-";
+    const rBlocks = [
+      { type: "header", text: { type: "plain_text", text: "🟢 早め回収リクエスト（承認待ち）", emoji: true } },
+      { type: "section", fields: [
+        { type: "mrkdwn", text: `*👤 お客様*\n${r.name || "-"} 様` },
+        { type: "mrkdwn", text: `*🎫 予約番号*\n${resId}` },
+        { type: "mrkdwn", text: `*🏷 ご予約元*\n${otaJp(r.ota)}` },
+        { type: "mrkdwn", text: `*📅 利用期間*\n${r.start_date || "-"} 〜 ${r.end_date || "-"}` },
+        { type: "mrkdwn", text: `*🕐 予定の回収*\n${planned}` },
+        { type: "mrkdwn", text: `*🟢 お客様の希望*\n${rdyTime ? `*${rdyTime}〜*` : "指定なし"}` },
+      ] },
+      { type: "context", elements: [ { type: "mrkdwn", text: "👉 「📲 マイページ利用状況（那覇）」の *🟢承認待ち* で ✅承認 / 🚫却下（承認でお客様へLINE自動送信）" } ] },
+    ];
+    await slackPost(`🟢 早め回収リクエスト（承認待ち）[那覇] ${r.name || ""} / ${resId}`, rBlocks);
     return json({ ok: true }, 200, origin);
   }
 
@@ -233,7 +320,7 @@ Deno.serve(async (req) => {
     damage: { ready: damageReady, url: damageUrl },
     tracking: { active: r.kd_status === "delivering" || r.kd_status === "collecting", kd_status: r.kd_status || null, token: r.kd_track_token || null },
     license: { cnt: licCnt, drivers: licDrivers },
-    pendingCancel: false, readyPending: false,
+    pendingCancel: false, readyPending: chg.some((c: any) => c.field === "ready" && c.status === "requested"),
     recentChanges: chg, history: historyTop,
     at: nowJst(),
   }, 200, origin);

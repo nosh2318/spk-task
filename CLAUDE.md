@@ -1,5 +1,47 @@
 # SPK業務管理APP（札幌店）
 
+## 🔑 2026-08-02 KEYDROPマイページ 新カルテ化(kd2.0)＋📊通知管理ダッシュボードを各店TOPに（本番稼働）
+### KEYDROPマイページ = 那覇/札幌カルテ仕様に統一（`~/hdm-car-delivery/mypage.html` kd2.0・keydrop.jp）
+- **1ファイルで札幌/那覇 店舗切替**＝`DATA.store`(spk/nha・EF応答`json.store`)→`STORE_CFG`で KV(hero-sapporo-kv.jpg/hero-okinawa-kv.jpg)・都市名・天気座標・**地図中心**を出し分け(`storeCfg().center`)。EF=`keydrop-mypage`(FN)・ログイン(KDN-/KD-)・カタログ・約款・免許証(GAS)・変更/キャンセル/早く返すは既存保持。
+- **KEYDROP=配達/回収(DEL/COL)専門**＝送迎バス/PUB/BDB分岐を排除・見出し「お届け・回収」。**メール運用**(LINE表記全廃・4言語)。**白KEYDROPロゴ**(`keydrop-logo-white.png`)＝提供PNGから「KEYDROP」ワードマークだけ切出し→背景透過→黒字を白字化(金アクセント/ピン維持・PIL処理)。
+- **受け取りボタン**＝`receive_done`をkeydrop-mypage EFに移植(SPK handyman-mypage参照・`keydrop_mypage_changes` field=received applied＋lookup応答に`received`＋札幌のみd-タスク済化＋notifySlackCard)。
+- **🔴 店舗固有の誤作動に注意**：札幌用検証(地図中心SPK_CENTER/「※札幌市内のみ」注記/新千歳ブロック)は那覇で誤発火し得る→`storeCfg().center`・`(DATA.store!=="nha")`ゲートで店舗別化。**1ファイル多店舗ページは、店舗固有ロジックを必ず store で条件分岐**。
+
+### 🧪 ライブEF駆動ページの「デプロイ前」render検証（ブラウザ不要・超有用・再利用）
+CORSでfile://からEFを叩けない／Chrome拡張未接続でも、**Node+`vm`でDOMをスタブしrender()を実データで実行→例外捕捉**できる：
+1. 実EF応答を`curl`で取得→JSON保存(`kdresp_spk.json`等)。2. HTMLから`<script>`抽出→末尾の`load();`除去→`DATA=__RESP__;CATALOG={};render()`をVM内で実行。3. `document`は**寛容なProxy**(getで何でもelProxy返す/setで_v保持)、`$("#app")`はquerySelectorキーで`_v`回収→生成HTMLをgrep検証。**`let DATA`はVM外から差せない→VM内で代入する形にする**。→ render例外・店舗切替・受領カード表示(キャンセル予約は非表示が正)を全部事前確認できた。
+
+### 📊 通知トリガー一覧ダッシュボード（`dashboard.html`＋各店TOPアイコン）
+- **dashboard.html を `?scope=nha|spk|bt` 対応**：那覇=HDM那覇+KEYDROP／札幌=HDM札幌+KEYDROP／高松=BUDDICA。`SCOPE_STORES`で表示タブを絞り、店舗タブ1つで〔分析(セクション別滞在)＋お客様URL＋通知一覧〕が一括切替。カルテ(スタッフ ro=1)は分析・URLから除外(ユーザー動向用)。「全体」タブ廃止。
+- **各店APP TOP「データ・分析」に📊マイページ解析/通知管理**：SPK=`dashboard.html?scope=spk`(同リポ相対)／**NHA/BTは別リポ＝絶対URL**`https://nosh2318.github.io/spk-task/dashboard.html?scope=nha|bt`。SPK v4.7.491/NHA v3.5.333/BT v1.0.219。
+- **全通知トリガーの洗い出し方**＝cron(`select jobname,schedule from cron.job`・UTC→JST+9)＋EF送信タイプ(`line-push`のaction／`keydrop-send-mail`の`case "xxx"`/build関数)。HDM=LINE(mypage_initial/damage_check/license/thanks/returnday＋OP都度:depart/collect/track/time_adjust/advance_park/col_delay/dropoff/mypage_decision)／KEYDROP=メール18種(confirm/reminder_place/reminder/damage_check/license_reminder/reminder_return/returnday/thanks＋都度)／BUDDICA=bt-notifications.html(既存・全7)。
+
+### 🔑 恒久Tips（再確認）
+- **GitHub Pages＝HTMLだけpushでは参照画像が404**。新規アセット(ロゴ/KV)は必ず`git add`して別途push→ライブで`curl -o /dev/null -w %{http_code}`で200確認(初回は反映1〜2分)。
+- **並行編集**：別agentが自分の作業ファイルを先にコミットする事がある(`git diff HEAD`が空＝working==HEAD＝コミット済／`origin/main...HEAD`=0 0＝push済)。push前に必ず`git fetch`＋差分確認、**自分のファイルだけ`git add`**(他agentの未コミットEF等を巻き込まない)。
+- **Supabase PAT(`~/.config/keydrop/sb_token`)失効**→`https://supabase.com/dashboard/account/tokens`で再発行(GitHub 2FA必須化はSMS設定で通過可・パスワード不要)。deno無し環境は`curl -fsSL https://deno.land/install.sh|sh`→`~/.deno/bin/deno check`でEF構文検証。
+
+## 🟢 2026-08-01 那覇カルテ「早く返す(早め回収)」＝申請→承認→LINE自動送信（本番稼働・my-nha v9.0）
+札幌my.htmlの早め返却機能を**那覇カルテ(my-nha.html)のCOL(回収)ユーザー**に実装。承認制も同一。**EF正本=`~/spk-task/line_auto/handyman-mypage-nha/index.ts`**（deploy=`~/spk-task/supabase/functions/`にcp→`functions deploy handyman-mypage-nha --project-ref ckrxttbnawkclshczsia --no-verify-jwt`）。
+- **フロー**：お客様がカルテで「🟢早く返す」(希望回収時間プルダウン)→ EF `ready`が`mypage_changes`(field=ready,store=nha,status=requested)記録＋**Slackカード通知**(#okinawa_operations-team C06L91W6T08) → スタッフが**📲マイページ利用状況(mypage-usage-nha.html)上部の🟢承認待ち**で✅承認/🚫却下（EF `decide`・スタッフJWT認証）→ **お客様へLINE自動送信**（承認「承りました」/却下「予定のお時間で回収」）＋結果Slackカード。
+- **カルテ表示ゲート**＝`!RO && !cancelled && r.return_type==="COL"`（editable=false固定でも出る）。呼出は既存`call("ready",{time})`。
+- **承認UI**＝`decideReady(id,decision)`が`FN`(handyman-mypage-nha)へ`{action:"decide",staff_token:authTok(),change_id,decision}`。未ログイン(authTok=ANON)はalert中断。BUSYで二重防止。
+- **通知＝Block Kitカード型**（「タスク完了」通知と同型）：header＋fields(お客様/予約番号/ご予約元/利用期間/予定回収/お客様の希望)＋context。申請/承認/却下の3種。
+- **line-push経由の実送信条件**：action=`mypage_decision`は`noticeAct`(mypage_始まり)で**日付ガード回避**・`enabled`既定true・**test_mode=false**で実顧客へ（nha_line_config確認済）。未連携は`no_userid`で安全スキップ。LINEPUSH_SECRET(project共通)はEFにsecret設定済。
+- **検証済(2026-08-01)**：EF deploy＋ping OK、COL予約85件(全URL発行)・うちLINE連携48件、実ready発火→Slackカード投稿確認、test_mode=false。テスト行は全削除済(承認待ち0)。
+- **⚠️トークン運用**：Supabase PAT(`~/.config/keydrop/sb_token`)は失効する→`https://supabase.com/dashboard/account/tokens`で再発行。2026-08-01に`handyman3`(〜8/31)へ更新。GitHubは2FA(SMS)設定済。deno無しは`curl -fsSL https://deno.land/install.sh|sh`→`~/.deno/bin/deno check`でEF構文検証。
+
+## 📲 2026-07-30 札幌スタッフ タスク担当付け外し→本人LINE通知（本実装・稼働）
+アルバイトにタスク担当を付けた/外した時に公式LINEで本人へ通知。オーナー承認済み・SPKのみ。
+- **紐付け**：`spk_staff_line_links`(staff_id/staff_name/line_user_id/**notify_type**(instant|hourly)/release_notify)。エルメ受付フォーム回答CSVを取込(顧客と同方式・userIDはエルメCSVのみ)。5名紐付済(三國/武山瞳/三木/高橋/長谷川)・加藤/えりちゃん/小林は未回答・小林notify_type未設定。**紐付けキー=staff_name(さん付き正規化`regexp_replace(name,'さん$','')`で照合)**。
+- **検知**＝トリガー`trg_spk_staff_notify`(tasks・**AFTER INSERT/UPDATE・enqueueのみ・例外安全＝tasks書込を絶対止めない**)。`tasks.assignee`変更(付/外・墓標deleted=trueも外扱い)を対象スタッフだけ`spk_staff_task_notify`(キュー)へ記録。非対象(正社員=大下等)は拾わない。※audit_logはassignee差分を記録しない(2026-07-09)ので検知はトリガー必須。
+- **送信EF**＝`staff-task-notify`(正本`~/spk-task/line_auto/staff-task-notify/`→deploy実体`~/hdm-car-delivery/supabase/functions/`・`--no-verify-jwt`・secrets=LINE_CHANNEL_TOKEN/FUNC_SECRET再利用)。body`{secret,mode:'instant'|'hourly'|'test',staff?[]}`。
+  - **instant**(三國/高橋/長谷川)＝即時。付『M/D タスク依頼がありました🔗』／外『M/D タスク調整がありました』
+  - **hourly**(武山瞳/三木/加藤/えりちゃん)＝1h毎まとめ・最新状態のみ。付『M/D 出勤依頼 スタッフリンク確認ください🔗』／外『M/D 出勤不要になりました』／付↔外両方『M/D タスク調整がありました🔗』／同1h内で付→外(純ゼロ)は相殺で送らない
+- **cron**＝`spk-staff-notify-instant`(*/2)・`spk-staff-notify-hourly`(0 * * * *)・net.http_postでEF起動。
+- **検証済(2026-07-30)**：三國/武山瞳/三木へmode=testで送信ok:true(LINE着信)。トリガー照合SELECTで対象解決/さん正規化/非対象除外を確認。完了報告は元スレッド(CH=C0B66BVCSPM/TH=1785390573.007159)へCLIからdrop→号1が同一スレッドへ投稿(会話分断せず)。
+- 残：加藤/えりちゃん/小林のCSV追加取込／小林notify_type設定／🔗はSPK app TOP URL(専用スタッフページは将来)。
+
 ## 📋 2026-07-28 札幌 月次レポート機能 追加（report.html・PDF出力可）
 TOP「データ・分析」→**📋月次レポート**＝`report.html`（独立HTML・vanilla・印刷最適化）。対象月選択→**合計売上/件数(予約)/客単価/平均泊数/稼働率グロス/チャンネル別構成率/クラス別売上構成比・稼働率**を表示、**📄PDF出力(window.print・@media print A4)**。
 - **正本箱`monthly_snapshots`(store=spk)の1行から全項目を読む＝再集計なし**(ドクトリン順守)。客単価=total_revenue÷total_returns／平均泊数=total_rental_days÷total_returns／稼働率=utilization_pct／チャンネル=ota_detail(ota/pct/count/revenue)／クラス=class_detail(type/revenue/util_pct/adr/count)。snapshot全フィールド＝active_vehicles/total_rental_days/total_available_days/utilization_pct/total_revenue/revpacd/avg_daily_rate/total_returns/same_month_bookings/booking_rate_pct/cancel_count/total_bookings/cancel_rate_pct/class_detail/ota_detail。
