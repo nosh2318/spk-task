@@ -129,7 +129,7 @@ a.myp{background:#065f46;color:#fff;font-size:11px;font-weight:800;border-radius
 <script>
 var SB="https://ckrxttbnawkclshczsia.supabase.co";
 var ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
-var VER="staff-v3.10";
+var VER="staff-v3.11";
 var TOKEN=new URLSearchParams(location.search).get("t")||"";
 var app=document.getElementById("app");
 
@@ -191,7 +191,6 @@ function taskCard(x){
     btns+='<button class="abtn drp" onclick="saAction(\''+rid+'\',\'dropoff\')">🚗乗捨</button>';
   }
   if(rid&&(isDel||isCol)){
-    btns+='<button class="abtn car" onclick="openCarmon()">📍位置</button>';
     btns+='<button class="abtn lic" onclick="openLicense(\''+rid+'\',\''+esc(x.customer||"")+'\')">🪪免許証</button>';
   }
   if(tid&&!x.done){ btns+='<button class="abtn done" onclick="saDone(\''+tid+'\')">✅完了</button>'; }
@@ -211,21 +210,19 @@ function taskCard(x){
 }
 function ymShift(ym,delta){var p=(ym||jstToday().slice(0,7)).split("-");var y=+p[0],m=+p[1]-1+delta;var d=new Date(Date.UTC(y,m,1));return d.getUTCFullYear()+"-"+String(d.getUTCMonth()+1).padStart(2,"0");}
 window.openHistory=function(ym){
-  MODE="history";
+  MODE="history";STAB="history";
   ym=ym||jstToday().slice(0,7);
-  app.innerHTML='<div class="loading"><div class="spin"></div>対応履歴を読み込み中…</div>';
+  busy("対応履歴を読み込み中…");
   fetch(SB+"/rest/v1/rpc/spk_staff_history",{method:"POST",headers:{"apikey":ANON,"Authorization":"Bearer "+ANON,"Content-Type":"application/json"},body:JSON.stringify({p_token:TOKEN,p_ym:ym})})
     .then(function(r){return r.json();})
-    .then(function(d){ if(!d||d.ok===false){showErr("履歴の読み込みに失敗しました");return;} renderHistory(d); })
-    .catch(function(){showErr("通信エラー");});
+    .then(function(d){ if(!d||d.ok===false){setContent('<div class="err" style="margin:16px 0">⚠️ 履歴の読み込みに失敗しました<br><button onclick="openHistory(\''+ym+'\')">再読み込み</button></div>');return;} renderHistory(d); })
+    .catch(function(){setContent('<div class="err" style="margin:16px 0">⚠️ 通信エラー<br><button onclick="openHistory(\''+ym+'\')">再読み込み</button></div>');});
 };
 function renderHistory(d){
+  MODE="history";
   var ym=d.ym||jstToday().slice(0,7);var tk=(d.tasks||[]);
-  var name=String(d.staff||"").replace(/\s*さん\s*$/,"");
-  var h='<div class="hero" style="background:linear-gradient(135deg,#7c2d12,#b45309)"><div class="brand">対応履歴（給与の基礎）</div>'
-    +'<div class="name">'+esc(name)+' さん</div></div>';
-  h+='<div class="wrap">';
-  h+='<button class="parkbtn" style="border-color:#94a3b8;color:#475569" onclick="load()">← タスクに戻る</button>';
+  var h='';
+  h+='<div style="font-weight:800;font-size:15px;color:#b45309;margin:2px 2px 8px">📋 対応履歴（給与の基礎）</div>';
   h+='<div style="display:flex;align-items:center;gap:8px;margin:10px 0">'
     +'<button class="abtn" style="background:#e2e8f0;color:#334155" onclick="openHistory(\''+ymShift(ym,-1)+'\')">‹ 前月</button>'
     +'<div style="flex:1;text-align:center;font-weight:800;font-size:16px">'+ym.replace("-","年")+'月</div>'
@@ -243,8 +240,7 @@ function renderHistory(d){
       +(x.customer?'<span class="cust">'+esc(x.customer)+'</span>':'')+'</div>'
       +(x.vehicle?'<div class="r2"><span class="veh">🚗 '+esc(x.vehicle)+(x.plate?" "+esc(x.plate):"")+'</span></div>':'')+'</div>';
   }).join("");}
-  h+='<div class="ver">'+VER+'</div></div>';
-  app.innerHTML=h;
+  setContent(h);
 }
 function requestCard(x){
   var t=x.type||"";var plate=x.plate?(" "+x.plate):"";
@@ -357,14 +353,19 @@ window.saAction=function(rid,action){
 var STAB="today";var LASTD=null;var MODE="tasks";
 window.setTab=function(tab){
   if(tab==="park"){ location.href="parking-staff.html?t="+encodeURIComponent(TOKEN); return; }
-  if(tab==="history"){ openHistory(""); return; }
-  if(tab==="shift"){ openShift(""); return; }
+  STAB=tab;
   if(tab==="punch"){ openPunch(); return; }
-  STAB=tab;if(LASTD)render(LASTD);
-};
-function render(d){
+  if(tab==="shift"){ openShift(""); return; }
+  if(tab==="history"){ openHistory(""); return; }
   MODE="tasks";
-  LASTD=d;
+  if(LASTD)render(LASTD); else load();
+};
+// 🔁 ページ遷移せず、常設の枠（ヒーロー＋タブバー）の中身だけ差し替える（ヌルヌルのタブ切替）
+function setContent(html){var c=document.getElementById("content");if(c)c.innerHTML=html;else shell(html);}
+function busy(msg){shell('<div class="loading"><div class="spin"></div>'+esc(msg||"読み込み中…")+'</div>');}
+// 常設シェル：ヒーロー＋マニュアル導線＋タブバー＋#content（この中身だけ各タブが入れ替える）
+function shell(contentHtml){
+  var d=LASTD||{};
   var today=jstToday();
   var tk=(d.tasks||[]);
   var tdy=tk.filter(function(x){return x.date===today;});
@@ -373,11 +374,10 @@ function render(d){
   var skips=(d.skips||[]);
   var name=esc(String(d.staff||"").replace(/\s*さん\s*$/,""));
   var h='<div class="hero"><div class="brand">HANDYMAN 札幌デリバリー</div>'
-    +'<div class="name">'+name+' さん</div>'
+    +'<div class="name">'+(name||"スタッフ")+' さん</div>'
     +'<div class="sub">本日 '+tdy.length+'件 ／ 未来 '+fut.length+'件'+(reqs.length?'　／　📢依頼 '+reqs.length+'件':'')+'</div></div>';
   // 📗 スタッフ操作マニュアルへの目立つ導線
   h+='<a href="staff-manual.html" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;gap:8px;margin:12px 0 4px;padding:14px 16px;border-radius:14px;background:linear-gradient(135deg,#1e3a8a,#2563eb);color:#fff;font-weight:900;font-size:15px;text-decoration:none;box-shadow:0 4px 14px rgba(37,99,235,.3);">📗 スタッフ操作マニュアル <span style="font-weight:700;font-size:12px;opacity:.9;">（用語・ボタン・駐車場の使い方）</span></a>';
-  // 5タブ
   function tab(id,label,cnt,alert){return '<button class="tab'+(STAB===id?" on":"")+'" onclick="setTab(\''+id+'\')">'+label+(cnt!=null?'<span class="tb'+(alert?" alert":"")+'">'+cnt+'</span>':'')+'</button>';}
   h+='<div class="tabs">'
     +tab("punch","⏰打刻")
@@ -389,7 +389,18 @@ function render(d){
     +tab("shift","🗓出勤簿")
     +tab("history","📋履歴")
     +'</div>';
-  h+='<div class="wrap">';
+  h+='<div class="wrap"><div id="content">'+contentHtml+'</div><div class="ver">'+VER+'</div></div>';
+  app.innerHTML=h;
+}
+// 📋本日/🗓未来/📢依頼/⏭スキップ の中身（同期・LASTDから即描画）
+function tasksContent(d){
+  var today=jstToday();
+  var tk=(d.tasks||[]);
+  var tdy=tk.filter(function(x){return x.date===today;});
+  var fut=tk.filter(function(x){return x.date>today;});
+  var reqs=(d.requests||[]);
+  var skips=(d.skips||[]);
+  var h='';
   if(STAB==="requests"){
     if(reqs.length){
       h+='<div class="note" style="background:#fffbeb;border-color:#fde68a;color:#92400e">対応できるタスクの「🙋承認」を押すと、あなたの担当になります（先着1名）。日付ごとに確認できます。</div>';
@@ -407,8 +418,13 @@ function render(d){
     h+='<div class="sechd">📋 本日 <span style="color:#94a3b8;font-weight:600;font-size:12px">'+shortDate(today)+'</span><span class="cnt">'+tdy.length+'件</span></div>';
     h+= tdy.length?tdy.map(taskCard).join(""):'<div class="empty">本日の担当タスクはありません</div>';
   }
-  h+='<div class="ver">'+VER+'</div></div>';
-  app.innerHTML=h;
+  return h;
+}
+function render(d){
+  MODE="tasks";
+  LASTD=d;
+  if(STAB==="punch"||STAB==="shift"||STAB==="history"){ STAB="today"; }
+  shell(tasksContent(d));
 }
 
 function showErr(msg){
@@ -419,13 +435,13 @@ function showErr(msg){
 var SHSYM={'●':{l:'出勤',c:'#2563eb',bg:'#D4EBFA'},'公':{l:'公休',c:'#64748b',bg:'#E8E8E8'},'希':{l:'希望休',c:'#b45309',bg:'#FFF3CD'},'有':{l:'有休',c:'#15803d',bg:'#dcfce7'},'出':{l:'出張',c:'#6d28d9',bg:'#ede9fe'}};
 var SHDATA=null;
 window.openShift=function(ym){
-  MODE="shift";
+  MODE="shift";STAB="shift";
   ym=ym||jstToday().slice(0,7);
-  app.innerHTML='<div class="loading"><div class="spin"></div>出勤簿を読み込み中…</div>';
+  busy("出勤簿を読み込み中…");
   fetch(SB+"/rest/v1/rpc/spk_staff_shifts",{method:"POST",headers:{"apikey":ANON,"Authorization":"Bearer "+ANON,"Content-Type":"application/json"},body:JSON.stringify({p_token:TOKEN,p_ym:ym})})
     .then(function(r){return r.json();})
-    .then(function(d){ if(!d||d.ok===false){showErr("出勤簿の読み込みに失敗しました");return;} MODE="shift"; SHDATA=d; renderShift(d); })
-    .catch(function(){showErr("通信エラー");});
+    .then(function(d){ if(!d||d.ok===false){setContent('<div class="err" style="margin:16px 0">⚠️ 出勤簿の読み込みに失敗しました<br><button onclick="openShift(\''+ym+'\')">再読み込み</button></div>');return;} MODE="shift"; SHDATA=d; renderShift(d); })
+    .catch(function(){setContent('<div class="err" style="margin:16px 0">⚠️ 通信エラー<br><button onclick="openShift(\''+ym+'\')">再読み込み</button></div>');});
 };
 window.sendWish=function(date,on,pattern){
   var pk=document.getElementById("wishpick"); if(pk)pk.remove();
@@ -457,18 +473,15 @@ window.openWishPick=function(date,curPattern){
   document.body.insertAdjacentHTML("beforeend",h);
 };
 function renderShift(d){
+  MODE="shift";
   var ym=d.ym||jstToday().slice(0,7);var today=d.today||jstToday();
-  var name=esc(String(d.staff||"").replace(/\s*さん\s*$/,""));
   var editable=!!d.editable;
   var map={};(d.shifts||[]).forEach(function(s){map[s.date]=s;});
   var yy=+ym.slice(0,4),mm=+ym.slice(5,7);
   var first=new Date(yy,mm-1,1),ndays=new Date(yy,mm,0).getDate(),off=first.getDay();
   var work=(d.shifts||[]).filter(function(s){return s.symbol==='●'||(!s.symbol&&s.start);}).length;
   var wish=(d.shifts||[]).filter(function(s){return s.symbol==='希';}).length;
-  var h='<div class="hero" style="background:linear-gradient(135deg,#0f172a,#059669)"><div class="brand">🗓 出勤簿</div>'
-    +'<div class="name">'+name+' さん</div></div>';
-  h+='<div class="wrap">';
-  h+='<button class="parkbtn" style="border-color:#94a3b8;color:#475569" onclick="load()">← タスクに戻る</button>';
+  var h='<div style="font-weight:800;font-size:15px;color:#059669;margin:2px 2px 8px">🗓 出勤簿</div>';
   h+='<div style="display:flex;align-items:center;gap:8px;margin:10px 0">'
     +'<button class="abtn" style="background:#e2e8f0;color:#334155" onclick="openShift(\''+ymShift(ym,-1)+'\')">‹ 前月</button>'
     +'<div style="flex:1;text-align:center;font-weight:800;font-size:16px">'+ym.replace("-","年")+'月</div>'
@@ -510,8 +523,7 @@ function renderShift(d){
   h+='<div style="margin-top:12px;display:flex;gap:8px;text-align:center">'
     +'<div style="flex:1;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:8px"><div style="font-size:11px;color:#1d4ed8;font-weight:700">出勤予定</div><div style="font-size:22px;font-weight:900;color:#1d4ed8">'+work+'<span style="font-size:12px">日</span></div></div>'
     +'<div style="flex:1;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;padding:8px"><div style="font-size:11px;color:#b45309;font-weight:700">希望休</div><div style="font-size:22px;font-weight:900;color:#b45309">'+wish+'<span style="font-size:12px">日</span></div></div></div>';
-  h+='<div class="ver">'+VER+'</div></div>';
-  app.innerHTML=h;
+  setContent(h);
 }
 
 function load(){
@@ -551,9 +563,9 @@ function pcRpc(fn,body,cb){
 window.openPunch=function(){
   MODE="punch";STAB="punch";
   if(PCCLK){clearInterval(PCCLK);PCCLK=null;}
-  app.innerHTML='<div class="loading"><div class="spin"></div>読み込み中…</div>';
+  busy("読み込み中…");
   pcRpc("spk_staff_timecard",{p_token:TOKEN},function(d){
-    if(!d||d.ok===false){showErr(d&&d.error==="invalid_token"?"このURLは無効です":"読み込みに失敗しました");return;}
+    if(!d||d.ok===false){setContent('<div class="err" style="margin:16px 0">⚠️ '+esc(d&&d.error==="invalid_token"?"このURLは無効です":"読み込みに失敗しました")+'<br><button onclick="openPunch()">再読み込み</button></div>');return;}
     PCDATA=d;renderPunch();
   });
 };
@@ -568,21 +580,15 @@ window.doPunch=function(action,label){
   });
 };
 function renderPunch(){
-  var d=PCDATA||{};var name=esc(String(d.staff||"").replace(/\s*さん\s*$/,""));
+  MODE="punch";STAB="punch";
+  var d=PCDATA||{};
   var brk=Array.isArray(d.breaks)?d.breaks:[];
   var hasIn=!!(d.start);var hasOut=!!(d.end);
   var onBreak=brk.length>0 && !(brk[brk.length-1].end);
   // 状態: 未出勤 / 勤務中 / 休憩中 / 退勤済
   var st = hasOut?"done":(onBreak?"onbreak":(hasIn?"working":"none"));
   var stLabel={none:{t:"未出勤",bg:"#f1f5f9",c:"#64748b"},working:{t:"勤務中",bg:"#dcfce7",c:"#15803d"},onbreak:{t:"休憩中",bg:"#dbeafe",c:"#1d4ed8"},done:{t:"本日は退勤済み",bg:"#fee2e2",c:"#b91c1c"}}[st];
-  var h='<div class="hero" style="background:linear-gradient(135deg,#0f172a,#1e3a8a)"><div class="brand">⏰ タイムカード</div>'
-    +'<div class="name">'+name+' さん</div></div>';
-  h+='<div class="tabs">'
-    +'<button class="tab on">⏰打刻</button>'
-    +'<button class="tab" onclick="load()">📋本日</button>'
-    +'<button class="tab" onclick="openShift(\'\')">🗓出勤簿</button>'
-    +'</div>';
-  h+='<div class="wrap">';
+  var h='<div style="font-weight:800;font-size:15px;color:#1e3a8a;margin:2px 2px 6px">⏰ タイムカード打刻</div>';
   h+='<div class="pc-clock"><div class="pc-time" id="pcClock">'+jstClockStr()+'</div><div class="pc-date">'+shortDate(d.date||jstToday())+'（'+jpWd(d.date||jstToday())+'）</div></div>';
   h+='<div style="text-align:center;margin:4px 0 6px"><span class="pc-status-pill" style="background:'+stLabel.bg+';color:'+stLabel.c+'">'+stLabel.t+'</span></div>';
   // 4大ボタン
@@ -612,8 +618,7 @@ function renderPunch(){
     h+='</div>';
   }
   h+='<div class="note" style="margin-top:12px">打刻した時刻がそのまま勤務実績になります。シフトに入っていない日でも打刻できます。間違えたら「修正申請」から直してください（店舗が確認して確定します）。</div>';
-  h+='<div class="ver">'+VER+'</div></div>';
-  app.innerHTML=h;
+  setContent(h);
   if(PCCLK){clearInterval(PCCLK);}
   PCCLK=setInterval(function(){var el=document.getElementById("pcClock");if(el&&MODE==="punch"){el.textContent=jstClockStr();}else{clearInterval(PCCLK);PCCLK=null;}},1000);
 }
