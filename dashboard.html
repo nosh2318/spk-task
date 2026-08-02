@@ -105,6 +105,19 @@ h1{font-size:20px;margin:2px 0 2px;display:flex;align-items:center;gap:8px}
   <div class="note">※ 各お客様固有のマイページURLは、本体アプリのOPシート/タスクサマリ（🪪カルテ）から発行・確認できます。my-admin では発行状況・利用状況も見られます。</div>
 </div>
 
+<div class="card">
+  <div class="ch">📣 通知トリガー一覧（お客様への自動通知・全トリガー）</div>
+  <div class="csub">各店がお客様に自動送信する通知を一括管理。<b>🕒定期＝時刻トリガー(cron)</b> ／ <b>⚡都度＝イベント(決済・出発/回収・承認 等)</b>。時刻はJST。</div>
+  <div class="seg" id="notifSeg" style="margin-bottom:12px">
+    <button data-g="bt" class="on" onclick="setNotif('bt')">🚐 BUDDICA</button>
+    <button data-g="spk" onclick="setNotif('spk')">❄️ HDM札幌</button>
+    <button data-g="nha" onclick="setNotif('nha')">🏝 HDM那覇</button>
+    <button data-g="kd" onclick="setNotif('kd')">🔑 KEYDROP</button>
+  </div>
+  <div id="notifBody"></div>
+  <div class="note">※ 定期通知は Supabase pg_cron（PC非依存24h）で送信。HDM＝LINE連携済のお客様のみ／未連携はメール訴求 or スタッフ手動。KEYDROP＝メール（Resend）。都度通知はスタッフのOP操作・お客様の申請・決済に連動。</div>
+</div>
+
 <div class="note">※「人」＝ユニーク端末（session）。滞在秒＝ページを開いていた時間。スクロール到達＝最下部までの何%読んだか。セクション滞在＝そのアコーディオンが画面に見えていた秒数（長い＝必要／0や短い＝不要の判断材料）。デモ確認分は集計から除外。60秒ごとに自動更新。</div>
 </div>
 <script>
@@ -220,6 +233,81 @@ function load(){
     var dt=new Date();document.getElementById("upd").textContent="更新 "+dt.getHours()+":"+String(dt.getMinutes()).padStart(2,"0");
   });
 }
+/* ===== 📣 通知トリガー一覧（全店・全トリガー洗い出し） ===== */
+var NOTIF={
+ bt:{ch:"🚐 BUDDICA（ご利用ガイド）",note:"高松空港店・別ワークスペース",rows:[
+  {t:"配車確定の2h後（15分毎チェック）",k:"cron",n:"予約確認〜ご利用ガイド",tgt:"全員",body:"決済案内・お車の情報・当日決済スキップ・傷チェック・送迎/駐車場の総合案内"},
+  {t:"出発 4日前 18:00",k:"cron",n:"事前登録リマインド（新設）",tgt:"免許 or 約款 未入力のみ",body:"「あと4日・免許/約款のご登録はお済みですか」"},
+  {t:"出発当日 08:00",k:"cron",n:"事前登録リマインド",tgt:"免許 or 約款 未入力のみ",body:"「本日ご出発・免許/約款のご登録のお願い」"},
+  {t:"出発 3日前 18:00",k:"cron",n:"場所リマインド",tgt:"全員",body:"「あと3日・受け渡し場所のご確認」"},
+  {t:"出発当日 朝 08:00",k:"cron",n:"当日リマインド（新設）",tgt:"全員",body:"「ご利用ガイド公開・傷チェック開始のご案内」"},
+  {t:"返却 前日 18:00",k:"cron",n:"返却リマインド",tgt:"全員",body:"「あと1日・ご返却/回収のご案内」"},
+  {t:"返却 翌日",k:"cron",n:"サンクス",tgt:"全員",body:"「ご利用の御礼」"}
+ ]},
+ spk:{ch:"❄️ HDM札幌（公式LINE）",note:"LINE連携済のお客様に自動送信／未連携はメール訴求 or スタッフ手動",rows:[
+  {t:"予約後（15分毎・連携時）",k:"cron",n:"初回マイページURL",tgt:"全員（LINE連携済）",body:"「マイページのご案内URL」（mypage_initial）"},
+  {t:"出発当日 08:00",k:"cron",n:"傷チェック案内",tgt:"DEL（連携済）",body:"車両状態の確認URL（damage_check）"},
+  {t:"出発 3日前/2日前/前日 10:00",k:"cron",n:"免許証リマインド",tgt:"未提出＆連携済",body:"「運転免許証のご提出のお願い」（license_auto_d1/2/3）"},
+  {t:"返却 翌日 10:00",k:"cron",n:"サンクス",tgt:"全員（連携済）",body:"「ご利用の御礼」（thanks）"},
+  {t:"⚡ お届け出発ボタン",k:"event",n:"お届けに向かいました",tgt:"対象予約",body:"担当が向かった旨＋位置追跡（mypage_depart / track_del）"},
+  {t:"⚡ 回収出発ボタン",k:"event",n:"回収に向かいました",tgt:"対象予約",body:"回収に向かう旨＋位置追跡（mypage_collect / track_col）"},
+  {t:"⚡ 時間調整ボタン",k:"event",n:"到着時間の調整依頼",tgt:"対象（DEL）",body:"「到着希望時間の変更のお願い」（time_adjust）"},
+  {t:"⚡ 事前駐車ボタン",k:"event",n:"事前駐車（無人貸出）案内",tgt:"対象（DEL）",body:"停車場所・手順のご案内（advance_park / _place）"},
+  {t:"⚡ 回収遅延ボタン",k:"event",n:"回収遅延のご案内",tgt:"対象（COL）",body:"到着予定時間・お詫び（col_delay）"},
+  {t:"⚡ 乗り捨てボタン",k:"event",n:"乗り捨て手順",tgt:"対象",body:"乗り捨て場所・手順のご案内（dropoff）"},
+  {t:"⚡ 早め回収 承認/却下",k:"event",n:"早め回収の可否",tgt:"申請者",body:"「早めの回収を承りました／予定のお時間で回収」（mypage_decision）"}
+ ]},
+ nha:{ch:"🏝 HDM那覇（公式LINE）",note:"LINE連携済のお客様に自動送信／傷チェックはPUB・DEL・来店が対象",rows:[
+  {t:"予約後（15分毎・連携時）",k:"cron",n:"初回マイページURL",tgt:"全員（LINE連携済）",body:"「マイページのご案内URL」（mypage_initial）"},
+  {t:"出発当日 08:00",k:"cron",n:"傷チェック案内",tgt:"PUB/DEL/来店（連携済）",body:"車両状態の確認URL（damage_check）"},
+  {t:"出発 3日前/2日前/前日 10:00",k:"cron",n:"免許証リマインド",tgt:"未提出＆連携済",body:"「運転免許証のご提出のお願い」"},
+  {t:"返却日 09:00",k:"cron",n:"返却日リマインド",tgt:"全員（連携済）",body:"「本日ご返却・回収/返却のご案内」（returnday_reminder）"},
+  {t:"返却 翌日 10:05",k:"cron",n:"サンクス",tgt:"全員（連携済）",body:"「ご利用の御礼」（thanks）"},
+  {t:"⚡ お届け出発ボタン",k:"event",n:"お届けに向かいました",tgt:"対象予約",body:"担当が向かった旨＋位置追跡（mypage_depart / track_del）"},
+  {t:"⚡ 回収出発ボタン",k:"event",n:"回収に向かいました",tgt:"対象予約",body:"回収に向かう旨＋位置追跡（mypage_collect / track_col）"},
+  {t:"⚡ 時間調整ボタン",k:"event",n:"到着時間の調整依頼",tgt:"対象（DEL）",body:"「到着希望時間の変更のお願い」（time_adjust）"},
+  {t:"⚡ 事前駐車ボタン",k:"event",n:"事前駐車（無人貸出）案内",tgt:"対象（DEL）",body:"停車場所・手順のご案内（advance_park）"},
+  {t:"⚡ 回収遅延ボタン",k:"event",n:"回収遅延のご案内",tgt:"対象（COL）",body:"到着予定時間・お詫び（col_delay）"},
+  {t:"⚡ 乗り捨てボタン",k:"event",n:"乗り捨て手順",tgt:"対象",body:"乗り捨て場所・手順（dropoff）"},
+  {t:"⚡ 早め回収 承認/却下",k:"event",n:"早め回収の可否",tgt:"申請者",body:"「早めの回収を承りました／予定のお時間で回収」（mypage_decision）"}
+ ]},
+ kd:{ch:"🔑 KEYDROP（メール・Resend）",note:"直販・札幌/那覇共通。配達/回収(DEL/COL)専門・メール運用",rows:[
+  {t:"⚡ 決済完了 直後",k:"event",n:"ご予約確定",tgt:"全員",body:"予約内容の確認・マイページURLのご案内（confirm）"},
+  {t:"出発 3日前 10:00",k:"cron",n:"場所リマインド",tgt:"全員",body:"「お届け場所のご確認・ご入力のお願い」（reminder_place）"},
+  {t:"出発 前日 18:00",k:"cron",n:"前日リマインド",tgt:"全員",body:"「明日ご出発・当日の流れ」（reminder）"},
+  {t:"出発当日 08:00",k:"cron",n:"傷チェック案内",tgt:"全員",body:"車両状態の確認（damage_check）"},
+  {t:"出発 3日前〜前日",k:"cron",n:"免許証リマインド",tgt:"未提出",body:"「運転免許証のご提出のお願い」（license_reminder）"},
+  {t:"返却 前日 17:00",k:"cron",n:"返却前日リマインド",tgt:"全員",body:"「明日ご返却・回収場所/時間のご確認」（reminder_return）"},
+  {t:"返却日（9時以降）",k:"cron",n:"返却日リマインド",tgt:"全員",body:"「本日ご返却・回収のご案内」（returnday）"},
+  {t:"返却 翌日 10:00",k:"cron",n:"サンクス",tgt:"全員",body:"「ご利用の御礼・クチコミのお願い」（thanks）"},
+  {t:"⚡ 変更依頼 送信時",k:"event",n:"変更依頼 受付",tgt:"依頼者",body:"オプション/補償/受渡の変更依頼を受付（request_ack）"},
+  {t:"⚡ 変更 承認後",k:"event",n:"変更確定",tgt:"依頼者",body:"「ご依頼の変更を反映しました」（change_done）"},
+  {t:"⚡ 早め回収 承認/却下",k:"event",n:"早め回収の可否",tgt:"申請者",body:"承認/却下のご連絡（mypage_decision）"},
+  {t:"⚡ キャンセル申請/確定",k:"event",n:"キャンセル 受付/確定",tgt:"対象者",body:"キャンセル申請の受付・確定のご連絡（cancel_request/ack/done）"},
+  {t:"⚡ 配達開始（出発）",k:"event",n:"配達に向かっています",tgt:"全員",body:"担当が向かう旨＋位置追跡（track_delivering）"},
+  {t:"⚡ 到着直前",k:"event",n:"まもなく到着",tgt:"全員",body:"到着のご案内（arrival）"},
+  {t:"⚡ 遅延発生時",k:"event",n:"到着遅延",tgt:"全員",body:"到着が遅れている旨・予定時間（delay）"},
+  {t:"⚡ 回収開始",k:"event",n:"回収に向かっています",tgt:"全員",body:"回収に向かう旨＋位置追跡（track_collecting）"},
+  {t:"⚡ 乗り捨て",k:"event",n:"乗り捨て手順",tgt:"対象",body:"乗り捨て場所・手順のご案内（dropoff）"},
+  {t:"決済リンク発行 60分未決済",k:"cron",n:"お支払い期限切れ",tgt:"未決済者",body:"仮予約の失効のご案内（expire-pending・5分毎）"}
+ ]}
+};
+function setNotif(g){document.querySelectorAll("#notifSeg button").forEach(function(b){b.classList.toggle("on",b.getAttribute("data-g")===g);});renderNotif(g);}
+function renderNotif(g){
+ var d=NOTIF[g];if(!d){document.getElementById("notifBody").innerHTML='<div class="empty">データなし</div>';return;}
+ var nCron=d.rows.filter(function(r){return r.k==="cron";}).length, nEv=d.rows.length-nCron;
+ var rows=d.rows.map(function(r,i){
+   var kb=r.k==="cron"?'<span class="badge b-hot">🕒定期</span>':'<span class="badge" style="background:#dbeafe;color:#1d4ed8">⚡都度</span>';
+   return '<tr><td class="r" style="color:#94a3b8">'+(i+1)+'</td><td style="white-space:nowrap;font-weight:700">'+esc(r.t)+'</td><td>'+kb+'</td><td style="font-weight:700">'+esc(r.n)+'</td><td style="font-size:12px;color:#475569">'+esc(r.tgt)+'</td><td style="font-size:12px">'+esc(r.body)+'</td></tr>';
+ }).join("");
+ document.getElementById("notifBody").innerHTML=
+   '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">'+
+   '<span class="tot" style="font-size:12px">'+esc(d.ch)+'　全 <b>'+d.rows.length+'</b> 通</span>'+
+   '<span class="badge b-hot">🕒定期 '+nCron+'</span><span class="badge" style="background:#dbeafe;color:#1d4ed8">⚡都度 '+nEv+'</span>'+
+   '<span style="font-size:11px;color:#94a3b8">'+esc(d.note)+'</span></div>'+
+   '<div style="overflow-x:auto"><table class="tbl" style="min-width:640px"><tr><th class="r">#</th><th>タイミング（JST）</th><th>種類</th><th>通知名</th><th>対象</th><th>内容</th></tr>'+rows+'</table></div>';
+}
+renderNotif('bt');
 load();
 setInterval(load,60000);
 </script></body></html>
