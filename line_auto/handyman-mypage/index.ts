@@ -13,9 +13,12 @@ const SB_URL = Deno.env.get("SUPABASE_URL")!;
 const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const H = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "content-type": "application/json" };
 
+// 認証はbody内のmypage_token(推測不能UUID)のみ・Cookie/資格情報を一切使わない → CORSは全origin許可でよい。
+// 旧実装は非allowlist origin(例:Apple Notesアプリ内WebView=Origin:null / 各種アプリ内ブラウザ)に対し固定でnosh2318.github.ioを返し、
+// ブラウザ側でACAOミスマッチ→lookupがブロックされ「予約が見つかりません」になっていた(EF直叩きは成功するのに、が症状)。→ originをそのままエコー(無ければ*)。
 const ALLOWED = ["https://nosh2318.github.io", "https://keydrop.jp"];
 function cors(o: string | null) {
-  const allow = o && ALLOWED.includes(o) ? o : ALLOWED[0];
+  const allow = o || "*";
   return { "Access-Control-Allow-Origin": allow, "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "content-type, apikey, authorization", "Vary": "Origin" };
 }
 function json(b: unknown, s: number, o: string | null) { return new Response(JSON.stringify(b), { status: s, headers: { ...cors(o), "content-type": "application/json" } }); }

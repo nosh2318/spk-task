@@ -250,7 +250,7 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 <div class="toast" id="toast"></div>
 
 <script>
-const VER = "v4.9.6-mypage 免許証セクション4言語化＋国際免許案内";
+const VER = "v4.9.7-mypage CORS全origin許可(メモ/アプリ内WebView対応)＋lookup 15sタイムアウト+3回リトライ+再読込";
 const FN = "https://ckrxttbnawkclshczsia.supabase.co/functions/v1/handyman-mypage";
 // 免許証アップロードの保存先=GAS「HANDYMAN 免許証保存」→Googleドライブ（license.htmlと完全に同一・store='spk'）
 const GAS_LICENSE_URL = 'https://script.google.com/macros/s/AKfycbycpzE1RIu2LbIlYVeRYcXxfIgfDhY5y1Vtdh1Rj69S9uZEnmqFMDBHqq3y6pHS70_t7A/exec';
@@ -1329,12 +1329,27 @@ async function sendCancel(){
   else toast(json.error||t('send_fail'));
 }
 
+// lookupは15秒タイムアウト付きで叩き、失敗/タイムアウトは最大3回まで自動リトライ（詰まる端末の永久スピナー対策）
+async function lookupOnce(ms){
+  const ctrl=new AbortController(); const to=setTimeout(()=>ctrl.abort(),ms);
+  try{
+    const r=await fetch(FN,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"lookup",token:TOKEN}),signal:ctrl.signal});
+    const j=await r.json().catch(()=>({}));
+    return {ok:true,json:j};
+  }catch(e){ return {ok:false,err:String(e&&e.message||e)}; }
+  finally{ clearTimeout(to); }
+}
 async function load(){
   if(!TOKEN){$("#app").innerHTML=`<div class="center">${t('no_key')}</div>`;return}
-  const {status,json}=await call("lookup",{});
-  if(!json.ok){$("#app").innerHTML=`<div class="center">${esc(json.error||t('not_found'))}</div>`;return}
-  DATA=json;
-  try{document.title=(json.reservation.name||t('guest'))+" | HANDYMAN "+json.label}catch(e){}
+  let res=null;
+  for(let i=0;i<3;i++){ res=await lookupOnce(15000); if(res.ok&&res.json&&res.json.ok)break; if(i<2)await new Promise(r=>setTimeout(r,900)); }
+  if(!res||!res.ok||!res.json||!res.json.ok){
+    const msg=(res&&res.json&&res.json.error)?res.json.error:t('not_found');
+    $("#app").innerHTML=`<div class="center"><div style="margin-bottom:14px">${esc(msg)}</div><button onclick="location.reload()" style="background:#0F1F45;color:#fff;border:none;border-radius:8px;padding:11px 20px;font-size:15px;font-weight:800;cursor:pointer">🔄 再読み込み</button></div>`;
+    return;
+  }
+  DATA=res.json;
+  try{document.title=(DATA.reservation.name||t('guest'))+" | HANDYMAN "+DATA.label}catch(e){}
   render();
 }
 /* ★★ 総合計測テレメトリ（マイページ全ボタン+滞在秒+スクロール+セクション別滞在） __TELEMETRY_MARK__ */
