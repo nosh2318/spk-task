@@ -1,5 +1,11 @@
 # SPK業務管理APP（札幌店）
 
+## 🌐 2026-08-03 my.html「予約が見つかりません」根治＝EF CORSの固定origin (v4.9.7)
+症状＝EFをanon直叩き(curl)はok:trueなのに、ライブmy.html(iPhone・**メモ/アプリ内WebViewから起動**)だと「予約が見つかりません」。**真因＝handyman-mypage EFの`cors()`が非allowlist originに固定で`https://nosh2318.github.io`を返していた**（`allow = o && ALLOWED.includes(o) ? o : ALLOWED[0]`）。Apple Notesのアプリ内WebViewは`Origin: null`を送る→ACAO(`https://nosh2318.github.io`)と不一致→ブラウザがlookupをブロック→json空→`!json.ok`で not_found。**curlはCORS無なので通る＝「直叩きOK/ブラウザNG」は典型的CORSミスマッチのサイン**。
+- **修正**＝`allow = o || "*"`（origin全許可・エコー）。認証はbody内`mypage_token`(推測不能UUID)のみ・**Cookie/資格情報を一切使わない**ので全origin許可で安全（curlで既に取得可＝追加露出なし）。EF正本`~/spk-task/line_auto/handyman-mypage/`→`~/hdm-car-delivery/supabase/functions/`にcp→`functions deploy handyman-mypage --no-verify-jwt`。**keydrop-mypage/handyman-mypage-nha等 他マイページEFも同じ固定originパターンなら同症状**（Origin:null系で壊れる）→報告が出たら同修正。
+- 併せて my.html `load()`に**15sタイムアウト+3回リトライ+🔄再読込ボタン**（`lookupOnce`・永久スピナー対策）。my.htmlはstandalone(buildなし)。
+- **教訓＝「EF直叩きは成功するのにブラウザだけ失敗」はまずCORS(ACAO)を疑う**。`curl -i -X OPTIONS -H "Origin: null"`と`-H "Origin: https://example.com"`でACAOがエコーされるか確認（固定値が返れば当該origin以外は全部ブロックされている）。
+
 ## 🔑 2026-08-02 KEYDROPマイページ 新カルテ化(kd2.0)＋📊通知管理ダッシュボードを各店TOPに（本番稼働）
 ### KEYDROPマイページ = 那覇/札幌カルテ仕様に統一（`~/hdm-car-delivery/mypage.html` kd2.0・keydrop.jp）
 - **1ファイルで札幌/那覇 店舗切替**＝`DATA.store`(spk/nha・EF応答`json.store`)→`STORE_CFG`で KV(hero-sapporo-kv.jpg/hero-okinawa-kv.jpg)・都市名・天気座標・**地図中心**を出し分け(`storeCfg().center`)。EF=`keydrop-mypage`(FN)・ログイン(KDN-/KD-)・カタログ・約款・免許証(GAS)・変更/キャンセル/早く返すは既存保持。
