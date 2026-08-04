@@ -139,15 +139,23 @@ window.pettyTopup=function(name,id){
   if(!amt||amt<=0){alert("金額を入力してください");return;}
   var note=(((document.getElementById(id+"_note")||{}).value)||"").trim()||"現金支給・補充";
   var ym=PMONTH[id]||curYM();
-  var row={id:"petty_top_"+ym.replace("-","")+"_"+Date.now()+"_"+Math.floor(Math.random()*1000),staff_name:name,ym:ym,date:today10(),kind:"topup",description:note,amount:amt,receipt_url:"",receipt_name:""};
+  var pid="petty_top_"+ym.replace("-","")+"_"+Date.now()+"_"+Math.floor(Math.random()*1000);
+  var row={id:pid,staff_name:name,ym:ym,date:today10(),kind:"topup",description:note,amount:amt,receipt_url:"",receipt_name:""};
   fetch(SB+"/rest/v1/spk_petty_cash",{method:"POST",headers:{apikey:ANON,Authorization:"Bearer "+ANON,"Content-Type":"application/json","Prefer":"return=minimal"},body:JSON.stringify(row)})
-    .then(function(r){if(!r.ok)throw new Error();pettyLoad(name,id);})
+    .then(function(r){if(!r.ok)throw new Error();
+      // ★支給も本体会計(出納帳)へ現金出金として計上（id=pt_+小口id で紐付け→削除も同期）
+      var acc={id:"pt_"+pid,date:today10(),type:"cash_out",category:"旅費交通費",sub_category:"",description:"【小口現金 支給・補充】"+name+"："+note,amount:amt,input_by:name,staff_name:name,memo:"小口現金 支給",pay_method:"現金",resv_no:"",url:"",paid:false};
+      fetch(SB+"/rest/v1/spk_accounting",{method:"POST",headers:{apikey:ANON,Authorization:"Bearer "+ANON,"Content-Type":"application/json","Prefer":"return=minimal,resolution=merge-duplicates"},body:JSON.stringify(acc)}).catch(function(){});
+      pettyLoad(name,id);})
     .catch(function(){alert("支給の保存に失敗しました");});
 };
 window.pettyAdminDel=function(name,id,rid){
   if(!confirm("この記録を削除しますか？"))return;
   fetch(SB+"/rest/v1/spk_petty_cash?id=eq."+encodeURIComponent(rid),{method:"DELETE",headers:{apikey:ANON,Authorization:"Bearer "+ANON,"Prefer":"return=minimal"}})
-    .then(function(){pettyLoad(name,id);})
+    .then(function(){
+      // 会計ミラー(支給pt_ / 使用pc_)も同期削除
+      fetch(SB+"/rest/v1/spk_accounting?id=in.("+encodeURIComponent("pt_"+rid)+","+encodeURIComponent("pc_"+rid)+")",{method:"DELETE",headers:{apikey:ANON,Authorization:"Bearer "+ANON,"Prefer":"return=minimal"}}).catch(function(){});
+      pettyLoad(name,id);})
     .catch(function(){alert("削除に失敗しました");});
 };
 
