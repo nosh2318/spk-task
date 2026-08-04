@@ -43,8 +43,25 @@ function urlOf(tok){return location.origin+location.pathname.replace(/[^/]*$/,""
 function copy(id){var el=document.getElementById(id);el.select();try{navigator.clipboard.writeText(el.value);}catch(e){document.execCommand("copy");}var b=document.getElementById(id+"b");if(b){var o=b.textContent;b.textContent="✓";setTimeout(function(){b.textContent=o;},1200);}}
 window.copy=copy;
 
-function render(staff,taskCounts){
-  var h='<div class="wrap"><div class="note">各バイトの個別URL（ログイン不要・自分の担当タスク＋駐車場＋対応履歴）。コピーして本人に配布してください。出勤簿未登録でも依頼→承認で使えます。</div>';
+function render(staff,taskCounts,pbal){
+  pbal=pbal||{};
+  var h='<div class="wrap">';
+  // 💴 小口現金 残高一覧（当月・全バイト・オンタイム）
+  h+='<div style="background:#0f172a;border-radius:12px;padding:12px;margin-bottom:12px;color:#fff">'
+    +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="font-weight:900;font-size:14px">💴 小口現金 残高（'+curYM().replace("-","年")+'月）</span><button class="btn" style="background:#334155;color:#fff;margin-left:auto" onclick="load()">↻ 更新</button></div>'
+    +'<div style="display:grid;grid-template-columns:1fr auto auto auto;gap:2px 10px;font-size:12px">'
+    +'<div style="color:#94a3b8;font-weight:700">バイト</div><div style="color:#94a3b8;font-weight:700;text-align:right">支給</div><div style="color:#94a3b8;font-weight:700;text-align:right">使用</div><div style="color:#94a3b8;font-weight:700;text-align:right">残高</div>';
+  var ptStaff=staff.filter(function(s){return s.type==="アルバイト";});
+  var listStaff=ptStaff.length?ptStaff:staff;
+  listStaff.forEach(function(s){
+    var nm=String(s.name).replace(/\s*さん\s*$/,"");var b=pbal[nm]||{g:0,u:0};var bal=b.g-b.u;
+    h+='<div style="padding:4px 0;border-top:1px solid #1e293b;font-weight:700">'+esc(nm)+'</div>'
+      +'<div style="padding:4px 0;border-top:1px solid #1e293b;text-align:right;color:#34d399">¥'+b.g.toLocaleString()+'</div>'
+      +'<div style="padding:4px 0;border-top:1px solid #1e293b;text-align:right;color:#f87171">¥'+b.u.toLocaleString()+'</div>'
+      +'<div style="padding:4px 0;border-top:1px solid #1e293b;text-align:right;font-weight:900;color:'+(bal>=0?"#60a5fa":"#f87171")+'">¥'+bal.toLocaleString()+'</div>';
+  });
+  h+='</div></div>';
+  h+='<div class="note">各バイトの個別URL（ログイン不要・自分の担当タスク＋駐車場＋対応履歴）。コピーして本人に配布してください。出勤簿未登録でも依頼→承認で使えます。</div>';
   staff.forEach(function(s,i){
     var tok=s.share_token;var u=urlOf(tok);var id="u"+i;
     var c=taskCounts[s.name]||{t:0,r:0};
@@ -151,7 +168,13 @@ async function load(){
         if(Array.isArray(t.requested_to))t.requested_to.forEach(function(n){counts[n]=counts[n]||{t:0,r:0};counts[n].r++;});
       });}
     }catch(e){}
-    render(staff,counts);
+    // 💴 当月の小口現金 残高（全バイト・オンタイム）
+    var pbal={};
+    try{
+      var pr=await fetch(SB+"/rest/v1/spk_petty_cash?ym=eq."+curYM()+"&select=staff_name,kind,amount",{headers:{apikey:ANON,Authorization:"Bearer "+ANON}});
+      if(pr.ok){(await pr.json()).forEach(function(p){var n=p.staff_name||"";pbal[n]=pbal[n]||{g:0,u:0};if(p.kind==="topup")pbal[n].g+=(+p.amount||0);else pbal[n].u+=(+p.amount||0);});}
+    }catch(e){}
+    render(staff,counts,pbal);
   }catch(e){showErr("通信エラー");}
 }
 load();
