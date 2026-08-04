@@ -1,5 +1,8 @@
 # SPK業務管理APP（札幌店）
 
+## 🕒 2026-08-04(続) 洗車/引取 時刻ピッカーの保存をDEL/COLと統一＝timeChange付与（v4.7.500）
+v4.7.499(overlay根治)の追い込み。洗車(w-)/引取(p-)の時刻ピッカー2箇所（洗車専用セクション`renderWashRow` L16589・マスター表 L16987）が`_save(t._id,{...t,time:v})`＝**time単独保存**で、①`_mergeUserInput`(L427 `prev._timeChanged||prev.timeChange`時だけtime維持)に拾われず**mirror/SSパトロールで生成値に戻される** ②schedule等の表示resolver`timeChange||_ssTime||time`にも反映されない、余地があった。→両ピッカーを**`_save(t._id,mark({...t,time:v,timeChange:v},"timeChange"))`** に統一（DEL/COL L17157と同型）。**教訓：時刻を手動編集して保存する箇所は必ず`timeChange`(＋mark)を立てる＝time単独保存は再生成/ミラーで戻る**。洗車/引取はleg外→`_toDbTaskBare`のtime空化・STEP2/3導出の対象外で副作用なし（`←orig`変化バッジも time=timeChange=vで非表示）。
+
 ## 🧽 2026-08-04 OPシート洗車/引取タスクの時間変更が反映されない+予約破壊+JSエラー を根治（v4.7.499）
 症状＝マスター表で洗車(w-)/引取(p-)の時間プルダウンを選んでも時刻列に反映されない＋[JS Error] Script error(Line:0 Col:0)。**3つの独立バグを同時に根治**。
 - **①反映されない主因＝翌日対応洗車オーバーレイ(`_nextDayWashShown`)は`tasks` stateに存在しない**（実体は前日=`_srcDate`の行で、表示だけ当日に持ってくる=`loadNextDayWashOverlay`／`nextDayWashOverlay` state）。`_save`が`setTasks(ts=>ts.map(x=>x._id===id?t:x))`で探すが**tasksに無い→state変わらず画面に反映されない**。かつ`DB.updateTask(t,selDate)`で**別日(当日)にw-行を重複作成**していた。→根治＝`_save`を**オーバーレイ対応**に（`t._nextDayWashShown`なら`setNextDayWashOverlay(ov=>ov.map(...))`で即時反映＋DBは実日付`_srcDate`へ書く）。**教訓：`_save`/`updateOtherTask`等の`setTasks(map)`保存は、tasksに無い派生表示行(overlay)には効かない。overlay由来の行を編集する箇所は必ずoverlay stateを更新し実日付へ書く**（`toggleNextDayWash`が既に`realDate`/`setNextDayWashOverlay`でこれをやっていた=手本）。
