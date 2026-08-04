@@ -49,17 +49,90 @@ function render(staff,taskCounts){
     var tok=s.share_token;var u=urlOf(tok);var id="u"+i;
     var c=taskCounts[s.name]||{t:0,r:0};
     var isPt=(s.type==="アルバイト");
-    h+='<div class="card"><div class="nm">'+esc(String(s.name).replace(/\s*さん\s*$/,""))+' さん'
+    var nmClean=String(s.name).replace(/\s*さん\s*$/,"");
+    h+='<div class="card"><div class="nm">'+esc(nmClean)+' さん'
       +'<span class="tp'+(isPt?" pt":"")+'">'+esc(s.type||"")+'</span>'
       +'<span class="cnt">担当 <span class="badge t">'+c.t+'</span>'+(c.r?' 依頼 <span class="badge r">'+c.r+'</span>':'')+'</span></div>'
       +'<div class="urlrow"><input id="'+id+'" readonly value="'+esc(u)+'">'
       +'<button class="btn cp" id="'+id+'b" onclick="copy(\''+id+'\')">📋コピー</button>'
-      +'<a class="btn op" href="'+esc(u)+'" target="_blank">開く</a></div></div>';
+      +'<a class="btn op" href="'+esc(u)+'" target="_blank">開く</a></div>'
+      +'<div style="margin-top:8px"><button class="btn" style="background:#059669;color:#fff" onclick="pettyToggle(\''+esc(nmClean).replace(/'/g,"\\'")+'\',\''+id+'\')">💴 小口現金（支給・補充）</button>'
+      +'<div id="'+id+'p" style="display:none;margin-top:8px"></div></div></div>';
   });
   if(!staff.length)h+='<div class="err">アクティブなスタッフがいません</div>';
   h+='</div>';app.innerHTML=h;
 }
 function showErr(m){app.innerHTML='<div class="err">⚠️ '+esc(m)+'<br><span style="font-size:12px;font-weight:400">APPにログインした状態で開いてください</span></div>';}
+
+// ===== 💴 小口現金 管理（支給・補充を手動入力） =====
+function curYM(){return new Date(Date.now()+9*3600*1000).toISOString().slice(0,7);}
+function today10(){return new Date(Date.now()+9*3600*1000).toISOString().slice(0,10);}
+var PMONTH={}; // id → 表示中のym
+window.pettyToggle=function(name,id){
+  var box=document.getElementById(id+"p");if(!box)return;
+  if(box.style.display==="none"){box.style.display="block";if(!PMONTH[id])PMONTH[id]=curYM();pettyLoad(name,id);}
+  else{box.style.display="none";}
+};
+function pettyLoad(name,id){
+  var box=document.getElementById(id+"p");if(!box)return;
+  var ym=PMONTH[id]||curYM();
+  box.innerHTML='<div style="color:#94a3b8;font-size:12px;padding:6px">読み込み中…</div>';
+  fetch(SB+"/rest/v1/spk_petty_cash?staff_name=eq."+encodeURIComponent(name)+"&ym=eq."+encodeURIComponent(ym)+"&order=date.asc,created_at.asc&select=*",{headers:{apikey:ANON,Authorization:"Bearer "+ANON}})
+    .then(function(r){return r.json();})
+    .then(function(rows){pettyRender(name,id,Array.isArray(rows)?rows:[]);})
+    .catch(function(){box.innerHTML='<div class="err">通信エラー</div>';});
+}
+function pettyRender(name,id,rows){
+  var box=document.getElementById(id+"p");if(!box)return;
+  var ym=PMONTH[id]||curYM(),given=0,used=0;
+  rows.forEach(function(r){if(r.kind==="topup")given+=(+r.amount||0);else used+=(+r.amount||0);});
+  var bal=given-used;
+  var h='<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px">'
+    +'<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">'
+    +'<button class="btn" onclick="pettyNav(\''+esc(name).replace(/\x27/g,"\\x27")+'\',\''+id+'\',-1)">‹</button>'
+    +'<div style="flex:1;text-align:center;font-weight:800">'+ym.replace("-","年")+'月</div>'
+    +'<button class="btn" onclick="pettyNav(\''+esc(name).replace(/\x27/g,"\\x27")+'\',\''+id+'\',1)">›</button></div>'
+    +'<div style="display:flex;gap:6px;text-align:center;margin-bottom:10px;font-size:12px">'
+    +'<div style="flex:1;background:#f0fdf4;border-radius:8px;padding:6px"><div style="color:#64748b;font-size:10px">支給・補充</div><div style="font-weight:900;color:#059669">¥'+given.toLocaleString()+'</div></div>'
+    +'<div style="flex:1;background:#fef2f2;border-radius:8px;padding:6px"><div style="color:#64748b;font-size:10px">使用</div><div style="font-weight:900;color:#dc2626">¥'+used.toLocaleString()+'</div></div>'
+    +'<div style="flex:1;background:#eff6ff;border-radius:8px;padding:6px"><div style="color:#64748b;font-size:10px">残高</div><div style="font-weight:900;color:'+(bal>=0?"#1e40af":"#dc2626")+'">¥'+bal.toLocaleString()+'</div></div></div>';
+  // 支給/補充フォーム
+  h+='<div style="display:flex;gap:6px;margin-bottom:6px">'
+    +'<input id="'+id+'_amt" type="number" inputmode="numeric" placeholder="金額" style="width:90px;padding:8px;border:1px solid #cbd5e1;border-radius:8px">'
+    +'<input id="'+id+'_note" type="text" placeholder="メモ（例：月初配布 / 補充）" style="flex:1;padding:8px;border:1px solid #cbd5e1;border-radius:8px">'
+    +'<button class="btn" style="background:#059669;color:#fff" onclick="pettyTopup(\''+esc(name).replace(/\x27/g,"\\x27")+'\',\''+id+'\')">＋支給</button></div>';
+  // 一覧
+  if(rows.length){
+    h+='<div style="max-height:220px;overflow:auto">';
+    rows.forEach(function(r){
+      var isTop=(r.kind==="topup");
+      h+='<div style="display:flex;align-items:center;gap:6px;padding:5px 2px;border-bottom:1px solid #eef2f7;font-size:12px">'
+        +'<div style="flex:1"><b style="color:'+(isTop?"#166534":"#334155")+'">'+(isTop?"➕ ":"")+esc(r.description||(isTop?"支給・補充":"(用途なし)"))+'</b><span style="color:#94a3b8"> '+esc(r.date||"")+'</span>'+(r.receipt_url?' <a href="'+esc(r.receipt_url)+'" target="_blank">📎</a>':'')+'</div>'
+        +'<div style="font-weight:800;color:'+(isTop?"#059669":"#dc2626")+'">'+(isTop?"+":"−")+'¥'+(+r.amount||0).toLocaleString()+'</div>'
+        +'<button onclick="pettyAdminDel(\''+esc(name).replace(/\x27/g,"\\x27")+'\',\''+id+'\',\''+esc(r.id)+'\')" style="background:none;border:none;color:#cbd5e1;cursor:pointer">🗑</button></div>';
+    });
+    h+='</div>';
+  }else{h+='<div style="color:#94a3b8;font-size:12px;padding:4px">この月の記録はありません</div>';}
+  h+='</div>';
+  box.innerHTML=h;
+}
+window.pettyNav=function(name,id,d){var p=(PMONTH[id]||curYM()).split("-");var dt=new Date(Date.UTC(+p[0],+p[1]-1+d,1));PMONTH[id]=dt.getUTCFullYear()+"-"+String(dt.getUTCMonth()+1).padStart(2,"0");pettyLoad(name,id);};
+window.pettyTopup=function(name,id){
+  var amt=parseInt((((document.getElementById(id+"_amt")||{}).value)||"").replace(/[^0-9]/g,""),10);
+  if(!amt||amt<=0){alert("金額を入力してください");return;}
+  var note=(((document.getElementById(id+"_note")||{}).value)||"").trim()||"現金支給・補充";
+  var ym=PMONTH[id]||curYM();
+  var row={id:"petty_top_"+ym.replace("-","")+"_"+Date.now()+"_"+Math.floor(Math.random()*1000),staff_name:name,ym:ym,date:today10(),kind:"topup",description:note,amount:amt,receipt_url:"",receipt_name:""};
+  fetch(SB+"/rest/v1/spk_petty_cash",{method:"POST",headers:{apikey:ANON,Authorization:"Bearer "+ANON,"Content-Type":"application/json","Prefer":"return=minimal"},body:JSON.stringify(row)})
+    .then(function(r){if(!r.ok)throw new Error();pettyLoad(name,id);})
+    .catch(function(){alert("支給の保存に失敗しました");});
+};
+window.pettyAdminDel=function(name,id,rid){
+  if(!confirm("この記録を削除しますか？"))return;
+  fetch(SB+"/rest/v1/spk_petty_cash?id=eq."+encodeURIComponent(rid),{method:"DELETE",headers:{apikey:ANON,Authorization:"Bearer "+ANON,"Prefer":"return=minimal"}})
+    .then(function(){pettyLoad(name,id);})
+    .catch(function(){alert("削除に失敗しました");});
+};
 
 async function load(){
   if(!TK){showErr("ログイン情報が見つかりません");return;}
