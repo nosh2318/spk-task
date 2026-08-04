@@ -4,6 +4,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta http-equiv="Cache-Control" content="no-cache,no-store,must-revalidate">
 <title>駐車場 - HANDYMAN札幌</title>
+<!-- parking-staff v3.14 : 本体(index.src.html)の駐車場タブと機能/UI統一(入庫/メンテ/洗車/モビリティ/管理/設定) 2026-08-04 -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
@@ -19,6 +20,14 @@ body{margin:0;font-family:"Hiragino Sans","Hiragino Kaku Gothic ProN",sans-serif
 .pk-spin{width:34px;height:34px;border:4px solid #e2e8f0;border-top-color:#0d9488;border-radius:50%;animation:sp 1s linear infinite;margin:0 auto 12px}
 @keyframes sp{to{transform:rotate(360deg)}}
 .pk-err{background:#fef2f2;border:1px solid #fecaca;color:#991b1b;border-radius:12px;padding:20px;margin:20px;text-align:center;font-weight:700}
+/* 本体(index.src.html)の駐車場タブと同一のボタン/入力CSS */
+.fade-in{animation:fadeIn .25s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+.input-s{border:1px solid #d1d5db;border-radius:8px;padding:5px 8px;font-size:12px;width:100%}
+.btn-primary{background:#2563eb;color:#fff;border:none;border-radius:8px;padding:6px 16px;font-size:12px;font-weight:700;cursor:pointer}
+.btn-primary:hover{background:#1d4ed8}
+.btn-danger{background:#dc2626;color:#fff;border:none;border-radius:8px;padding:6px 16px;font-size:12px;font-weight:700;cursor:pointer}
+.btn-ghost{background:none;border:1px solid #d1d5db;border-radius:8px;padding:6px 16px;font-size:12px;cursor:pointer;color:#374151}
 </style></head>
 <body>
 <div id="root"><div class="pk-load"><div class="pk-spin"></div>駐車場を読み込み中…</div></div>
@@ -69,9 +78,17 @@ function fixSpotRestricted(spots){return spots;}
 function canParkInSpot(spot,carId){return !spot.restricted||spot.restricted.includes(carId);}
 function pCarLabel(c){return c.name+" ("+c.plate+")";}
 const PARKING_VENDORS=["オートバックス","イエローハット","ディーラー","板金工場","タイヤ館","車検場","その他"];
+const VEH_CLASS_ORDER=["A","A2","B","B2","C","S","F","H"];
+// 🛴 小型モビリティ（固定3種）: 駐車位置を場所選択(BYYARD/ビッグスロット/車両内)＋自由記入で管理
+const MOBILITY_ITEMS=[
+  {id:"bicycle",name:"自転車",icon:"🚲"},
+  {id:"ebike",name:"電動自転車",icon:"⚡"},
+  {id:"escooter",name:"電動キックボード",icon:"🛴"},
+];
+const MOBILITY_PLACES=["BYYARD","ビッグスロット","車両内"];
+const MOBILITY_DEFAULT={};MOBILITY_ITEMS.forEach(m=>{MOBILITY_DEFAULT[m.id]={place:"",vehicleId:"",note:""};});
 const WASH_STATUSES=["未洗車","内洗済","洗車済"];
 const washStyleLight=s=>({"未洗車":{bg:"#fef2f2",c:"#dc2626",icon:"❌"},"内洗済":{bg:"#fffbeb",c:"#d97706",icon:"🧹"},"洗車済":{bg:"#ecfdf5",c:"#059669",icon:"✨"}}[s]||{bg:"#f1f5f9",c:"#64748b",icon:"?"});
-
 
 function ParkingManager({masterVehicles}){
   const s0=useRef(DB.parking.lsLoad());
@@ -93,6 +110,8 @@ function ParkingManager({masterVehicles}){
   // 移動車: {carId: {staff:"名前", since:"日時"}}  倉庫車: {carId: {user:"名前", note:"備品内容"}}
   const[staffCarMap,setStaffCarMap]=useState(init?init.staffCarMap||{}:{});
   const[warehouseMap,setWarehouseMap]=useState(init?init.warehouseMap||{}:{});
+  // 🛴 小型モビリティ駐車位置: {bicycle/ebike/escooter: {place, vehicleId, note}}
+  const[mobilityMap,setMobilityMap]=useState(init&&init.mobilityMap?{...MOBILITY_DEFAULT,...init.mobilityMap}:{...MOBILITY_DEFAULT});
   const[syncStatus,setSyncStatus]=useState("loading");
   const isRemoteUpdate=useRef(false);
   // 🔴 シャッフル対策: ローカル変更の時刻を記録し、直近のRealtime/Pollingを無視する
@@ -144,6 +163,7 @@ function ParkingManager({masterVehicles}){
         if(ls.washMap)setWashMap(ls.washMap);if(ls.washTimeMap)setWashTimeMap(ls.washTimeMap);
         if(ls.maintMap)setMaintMap(ls.maintMap);if(ls.history)setHistory(ls.history);
         if(ls.staffCarMap)setStaffCarMap(ls.staffCarMap);if(ls.warehouseMap)setWarehouseMap(ls.warehouseMap);
+        if(ls.mobilityMap)setMobilityMap({...MOBILITY_DEFAULT,...ls.mobilityMap});
         // 🔴 復元はローカル表示のみ。DBへ丸ごと巻き戻さない (古いLSでの全上書き=戻りの一因を除去)。次のユーザー操作でマージ保存される
         lastSyncedRef.current=remote&&remote.spots?remote:null;
         setTimeout(()=>alert("🔄 駐車場データをバックアップから復元しました（車両"+lsCarsLen+"台・駐車中"+lsParked+"台）"),500);
@@ -152,6 +172,7 @@ function ParkingManager({masterVehicles}){
         if(remote.washMap)setWashMap(remote.washMap);if(remote.washTimeMap)setWashTimeMap(remote.washTimeMap);
         if(remote.maintMap)setMaintMap(remote.maintMap);if(remote.history)setHistory(remote.history);
         if(remote.staffCarMap)setStaffCarMap(remote.staffCarMap);if(remote.warehouseMap)setWarehouseMap(remote.warehouseMap);
+        if(remote.mobilityMap)setMobilityMap({...MOBILITY_DEFAULT,...remote.mobilityMap});
         lastSyncedRef.current=remote;
       }
       setSyncStatus("online");
@@ -170,6 +191,7 @@ function ParkingManager({masterVehicles}){
       if(d.spots)setSpots(fixSpotRestricted(d.spots));if(d.cars)setCars(d.cars);if(d.washMap)setWashMap(d.washMap);
       if(d.washTimeMap)setWashTimeMap(d.washTimeMap);if(d.maintMap)setMaintMap(d.maintMap);if(d.history)setHistory(d.history);
       if(d.staffCarMap)setStaffCarMap(d.staffCarMap);if(d.warehouseMap)setWarehouseMap(d.warehouseMap);
+      if(d.mobilityMap)setMobilityMap({...MOBILITY_DEFAULT,...d.mobilityMap});
       lastSyncedRef.current=d;
       setSyncStatus("online");setTimeout(()=>{isRemoteUpdate.current=false;},REMOTE_ECHO_MS);
     }).subscribe();
@@ -191,6 +213,7 @@ function ParkingManager({masterVehicles}){
         if(remote.washMap)setWashMap(remote.washMap);if(remote.washTimeMap)setWashTimeMap(remote.washTimeMap);
         if(remote.maintMap)setMaintMap(remote.maintMap);if(remote.history)setHistory(remote.history);
         if(remote.staffCarMap)setStaffCarMap(remote.staffCarMap);if(remote.warehouseMap)setWarehouseMap(remote.warehouseMap);
+        if(remote.mobilityMap)setMobilityMap({...MOBILITY_DEFAULT,...remote.mobilityMap});
         lastSyncedRef.current=remote;
         setSyncStatus("online");
         setTimeout(()=>{isRemoteUpdate.current=false;},REMOTE_ECHO_MS);
@@ -270,6 +293,7 @@ function ParkingManager({masterVehicles}){
       maintMap:mergeMaps(base.maintMap,sync&&sync.maintMap,local.maintMap),
       staffCarMap:mergeMaps(base.staffCarMap,sync&&sync.staffCarMap,local.staffCarMap),
       warehouseMap:mergeMaps(base.warehouseMap,sync&&sync.warehouseMap,local.warehouseMap),
+      mobilityMap:mergeMaps(base.mobilityMap,sync&&sync.mobilityMap,local.mobilityMap),
       history:(local.history||[]).slice(-300), // 履歴は自端末優先で直近300件
       savedAt:new Date().toISOString()
     };
@@ -288,10 +312,10 @@ function ParkingManager({masterVehicles}){
     },600);
   };
   // 🔴 同期スナップショットとの差分判定用シグネチャ (savedAt除外)
-  const parkSig=(o)=>o?JSON.stringify({spots:o.spots,cars:o.cars,washMap:o.washMap,washTimeMap:o.washTimeMap,maintMap:o.maintMap,staffCarMap:o.staffCarMap,warehouseMap:o.warehouseMap,history:o.history}):null;
+  const parkSig=(o)=>o?JSON.stringify({spots:o.spots,cars:o.cars,washMap:o.washMap,washTimeMap:o.washTimeMap,maintMap:o.maintMap,staffCarMap:o.staffCarMap,warehouseMap:o.warehouseMap,mobilityMap:o.mobilityMap,history:o.history}):null;
   // 自動保存
   useEffect(()=>{
-    const d={spots,cars,washMap,washTimeMap,maintMap,staffCarMap,warehouseMap,history,savedAt:new Date().toISOString()};
+    const d={spots,cars,washMap,washTimeMap,maintMap,staffCarMap,warehouseMap,mobilityMap,history,savedAt:new Date().toISOString()};
     DB.parking.lsSave(d);
     // 🔴 修正: isRemoteUpdateフラグ依存をやめ「同期点と実際に違うか」で保存判定。
     //   旧実装はリモート受信後3秒間isRemoteUpdate=trueでauto-saveをスキップ→
@@ -300,7 +324,10 @@ function ParkingManager({masterVehicles}){
       lastLocalChangeAt.current=Date.now();
       mergeSave(d); // 3wayマージ保存 (他端末の変更を保全しつつ自分の変更を必ず書く)
     }
-  },[spots,cars,washMap,washTimeMap,maintMap,staffCarMap,warehouseMap,history]);
+  },[spots,cars,washMap,washTimeMap,maintMap,staffCarMap,warehouseMap,mobilityMap,history]);
+
+  // 🛴 小型モビリティ駐車位置を更新
+  const setMobility=(mid,patch)=>{setMobilityMap(p=>{const cur=p[mid]||{place:"",vehicleId:"",note:""};return{...p,[mid]:{...cur,...patch}};});};
 
   // 関数群
   const addCar=(name,plate)=>{const id=name+"-"+plate;if(cars.find(c=>c.id===id)){alert("同じ車両が既に登録されています");return false;}setCars(p=>[...p,{id,name,plate}]);setWashMap(p=>({...p,[id]:"未洗車"}));setWashTimeMap(p=>({...p,[id]:null}));addLog("【車両登録】"+name+" ("+plate+")");return true;};
@@ -323,11 +350,14 @@ function ParkingManager({masterVehicles}){
   const removeSpot=(spotId)=>{const sp=spots.find(s=>s.id===spotId);if(!sp)return;if(sp.carId){alert("車両が入庫中の枠は削除できません");return;}setSpots(p=>p.filter(s=>s.id!==spotId));addLog("【枠削除】No."+sp.no);};
   const exportData=()=>{const d={spots,cars,washMap,washTimeMap,maintMap,history,exportedAt:new Date().toISOString()};const json=JSON.stringify(d,null,2);if(navigator.clipboard){navigator.clipboard.writeText(json).then(()=>alert("クリップボードにコピーしました")).catch(()=>{});}};
   const importData=()=>{const input=prompt("JSONデータを貼り付け:");if(!input)return;try{const d=JSON.parse(input);if(d.spots)setSpots(d.spots);if(d.cars)setCars(d.cars);if(d.washMap)setWashMap(d.washMap);if(d.washTimeMap)setWashTimeMap(d.washTimeMap);if(d.maintMap)setMaintMap(d.maintMap);if(d.history)setHistory(d.history);alert("インポートしました");}catch(e){alert("読み込み失敗");}};
-  const resetData=()=>{if(!confirm("全データを初期化しますか？"))return;setCars(PARKING_DEFAULT_CARS);setSpots(PARKING_INIT_SPOTS);const iw={};PARKING_DEFAULT_CARS.forEach(c=>{iw[c.id]="未洗車";});setWashMap(iw);const iwt={};PARKING_DEFAULT_CARS.forEach(c=>{iwt[c.id]=null;});setWashTimeMap(iwt);setMaintMap({});setHistory([]);localStorage.removeItem(DB.parking.LS_KEY);if(sbParking){sbParking.from("parking_state").update({data:{},updated_at:new Date().toISOString()}).eq("id",1).then(()=>{});}alert("初期化しました");};
+  const resetData=()=>{if(!confirm("全データを初期化しますか？"))return;setCars(PARKING_DEFAULT_CARS);setSpots(PARKING_INIT_SPOTS);const iw={};PARKING_DEFAULT_CARS.forEach(c=>{iw[c.id]="未洗車";});setWashMap(iw);const iwt={};PARKING_DEFAULT_CARS.forEach(c=>{iwt[c.id]=null;});setWashTimeMap(iwt);setMaintMap({});setMobilityMap({...MOBILITY_DEFAULT});setHistory([]);localStorage.removeItem(DB.parking.LS_KEY);if(sbParking){sbParking.from("parking_state").update({data:{},updated_at:new Date().toISOString()}).eq("id",1).then(()=>{});}alert("初期化しました");};
 
   // 計算
   const parkedCarIds=useMemo(()=>spots.filter(s=>s.carId).map(s=>s.carId),[spots]);
-  const outCars=useMemo(()=>cars.filter(c=>!parkedCarIds.includes(c.id)),[parkedCarIds,cars]);
+  // 🚗 駐車場の車両もクラス順（A→A2→B→B2→C→S→F→H）で並べる。マスター車両のナンバー→クラスで判定
+  const pClassIdx=useMemo(()=>{const m={};(masterVehicles||[]).forEach(v=>{if(!v)return;m[v.name+"-"+v.no]=v.type;m[String(v.no)]=v.type;});return c=>{if(c&&String(c.name||"").indexOf("スタッフ車両")>=0)return VEH_CLASS_ORDER.length+1;const t=(c&&m[c.id]!==undefined)?m[c.id]:(c?m[String(c.plate)]:undefined);const i=VEH_CLASS_ORDER.indexOf(t);return i<0?VEH_CLASS_ORDER.length:i;};},[masterVehicles]);
+  const pCarCmp=useCallback((a,b)=>{const d=pClassIdx(a)-pClassIdx(b);if(d)return d;const n=String((a&&a.name)||"").localeCompare(String((b&&b.name)||""),"ja");if(n)return n;return String((a&&a.plate)||"").localeCompare(String((b&&b.plate)||""),"ja");},[pClassIdx]);
+  const outCars=useMemo(()=>cars.filter(c=>!parkedCarIds.includes(c.id)).slice().sort(pCarCmp),[parkedCarIds,cars,pCarCmp]);
   const occupied=parkedCarIds.length;
   const empty=spots.length-occupied;
   const parkedCars=useMemo(()=>cars.filter(c=>parkedCarIds.includes(c.id)),[parkedCarIds,cars]);
@@ -390,7 +420,7 @@ function ParkingManager({masterVehicles}){
         <div style={{fontSize:40,marginBottom:8}}>🚨</div>
         <div style={{fontSize:18,fontWeight:900,color:"#dc2626",marginBottom:8}}>満　車</div>
         <div style={{fontSize:12,color:"#dc2626"}}>全{spots.length}枠が使用中です。</div>
-        <button onClick={()=>setPTab("spots")} style={{marginTop:12,padding:"10px 24px",borderRadius:10,border:"1px solid #dc2626",background:"transparent",color:"#dc2626",fontSize:12,fontWeight:700,cursor:"pointer"}}>🅿️ ステータスで出庫する</button>
+        <div style={{marginTop:12,fontSize:12,fontWeight:700,color:"#dc2626"}}>↓ 下の「駐車場の状況」から出庫してください</div>
       </div>
     :
       <div style={cardStyle}>
@@ -452,7 +482,8 @@ function ParkingManager({masterVehicles}){
         {car?<div style={{display:"flex",alignItems:"center",gap:4}}>
           <span style={{fontSize:11,fontWeight:700,color:"#059669"}}>{pCarLabel(car)}</span>
           <button onClick={()=>setModal({type:"moveSpot",spotId:sp.id,carId:sp.carId})} style={{padding:"2px 6px",borderRadius:4,border:"1px solid #bfdbfe",background:"transparent",color:"#2563eb",fontSize:8,cursor:"pointer"}}>変更</button>
-        </div>:<span style={{fontSize:10,color:"#94a3b8",fontStyle:"italic"}}>空き{sp.restricted?" 📌":""}</span>}
+          <button onClick={()=>setModal({type:"release",spotId:sp.id})} className="btn-danger" style={{padding:"3px 9px",fontSize:9}}>出庫</button>
+        </div>:<div style={{display:"flex",alignItems:"center",gap:6}}><span style={{fontSize:10,color:"#94a3b8",fontStyle:"italic"}}>空き{sp.restricted?" 📌":""}</span><button onClick={()=>setModal({type:"park",spotId:sp.id})} className="btn-primary" style={{padding:"3px 9px",fontSize:9}}>入庫</button></div>}
       </div>;})}
     </div>
 
@@ -488,13 +519,13 @@ function ParkingManager({masterVehicles}){
 
   // ===== ステータス(spots)タブ =====
   const spotsContent=<>
-    {spots.map((sp,idx)=>{const car=sp.carId?getCar(sp.carId):null;const borderC=!car?(sp.restricted?"#8b5cf6":"#e2e8f0"):"#10b981";
+    {spots.map((sp,idx)=>{const car=sp.carId?getCar(sp.carId):null;const borderC=!car?(sp.restricted?"#8b5cf6":"#e2e8f0"):"#10b981";const _noStr=String(sp.no||"");const _noFs=_noStr.length<=3?16:_noStr.length<=6?12:_noStr.length<=10?9:8;
       return <div key={sp.id} className="fade-in" style={{...cardStyle,borderLeft:"5px solid "+borderC,animationDelay:(idx*30)+"ms"}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
-            <div style={{width:48,height:44,borderRadius:10,background:car?"#ecfdf5":"#f8fafc",border:"2px solid "+(car?"#10b981":"#e2e8f0"),display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
+            <div style={{minWidth:48,maxWidth:100,minHeight:44,borderRadius:10,background:car?"#ecfdf5":"#f8fafc",border:"2px solid "+(car?"#10b981":"#e2e8f0"),display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"3px 4px",boxSizing:"border-box",flexShrink:0,overflow:"hidden"}}>
               <div style={{fontSize:6,color:"#94a3b8",fontWeight:700}}>SPOT</div>
-              <div style={{fontSize:16,fontWeight:800,color:car?"#1e293b":"#94a3b8"}}>{sp.no}</div>
+              <div style={{fontSize:_noFs,fontWeight:800,color:car?"#1e293b":"#94a3b8",textAlign:"center",lineHeight:1.15,wordBreak:"break-all",maxWidth:"100%"}}>{sp.no}</div>
               <div style={{fontSize:7,color:"#94a3b8"}}>Key:{sp.key}</div>
             </div>
             {car?<div><div style={{fontSize:14,fontWeight:700,color:"#1e293b"}}>{car.name}{sp.restricted&&<span style={{fontSize:8,color:"#7c3aed",marginLeft:4}}>📌専用枠</span>}</div><div style={{fontSize:11,color:"#64748b"}}>{car.plate}</div></div>
@@ -759,6 +790,40 @@ function ParkingManager({masterVehicles}){
   const[mgrStaff,setMgrStaff]=useState("");const[mgrCar,setMgrCar]=useState("");
   const[whCar,setWhCar]=useState("");const[whUser,setWhUser]=useState("");const[whNote,setWhNote]=useState("備品積載");
   const[newSpotNo,setNewSpotNo]=useState("");const[newSpotKey,setNewSpotKey]=useState("");
+  // ===== 🛴 小型モビリティ タブ =====
+  const mobilityContent=<>
+    <div style={{...cardStyle,borderLeft:"5px solid #0ea5e9",background:"#f0f9ff"}}>
+      <div style={subHdr}>🛴 小型モビリティ 駐車位置</div>
+      <div style={{fontSize:11,color:"#64748b",marginBottom:8}}>自転車・電動自転車・電動キックボードの駐車位置を管理します（場所を選択＋自由記入で補足）</div>
+    </div>
+    {MOBILITY_ITEMS.map(m=>{
+      const mv=mobilityMap[m.id]||{place:"",vehicleId:"",note:""};
+      const veh=mv.vehicleId?getCar(mv.vehicleId):null;
+      const locLabel=mv.place==="車両内"?("車両内"+(veh?"（"+pCarLabel(veh)+"）":"（車両未選択）")):(mv.place||"未設定");
+      return <div key={m.id} style={cardStyle}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+          <span style={{fontSize:22}}>{m.icon}</span>
+          <div style={{fontSize:15,fontWeight:800,color:"#1e293b"}}>{m.name}</div>
+          <span style={{marginLeft:"auto",fontSize:11,fontWeight:700,padding:"3px 10px",borderRadius:20,background:mv.place?"#e0f2fe":"#f1f5f9",color:mv.place?"#0369a1":"#94a3b8"}}>📍 {locLabel}</span>
+        </div>
+        <div style={{fontSize:11,fontWeight:700,color:"#475569",marginBottom:4}}>場所</div>
+        <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
+          {MOBILITY_PLACES.map(pl=><button key={pl} onClick={()=>setMobility(m.id,{place:pl,...(pl!=="車両内"?{vehicleId:""}:{})})} style={{flex:"1 1 auto",padding:"8px 6px",borderRadius:8,border:"1.5px solid "+(mv.place===pl?"#0ea5e9":"#e2e8f0"),background:mv.place===pl?"#0ea5e9":"#fff",color:mv.place===pl?"#fff":"#475569",fontSize:12,fontWeight:700,cursor:"pointer"}}>{pl}</button>)}
+        </div>
+        {mv.place==="車両内"&&<div style={{marginBottom:10}}>
+          <div style={{fontSize:11,fontWeight:700,color:"#475569",marginBottom:4}}>格納する車両を選択</div>
+          <select value={mv.vehicleId||""} onChange={e=>setMobility(m.id,{vehicleId:e.target.value})} className="input-s" style={{width:"100%",fontSize:13,padding:"9px 8px"}}>
+            <option value="">-- 車両を選択 --</option>
+            {cars.map(c=><option key={c.id} value={c.id}>{pCarLabel(c)}</option>)}
+          </select>
+        </div>}
+        <div style={{fontSize:11,fontWeight:700,color:"#475569",marginBottom:4}}>補足メモ（自由記入）</div>
+        <input value={mv.note||""} onChange={e=>setMobility(m.id,{note:e.target.value})} placeholder="例: BYYARD北側の壁際 / 施錠あり 等" className="input-s" style={{width:"100%",fontSize:13,padding:"9px 8px",marginBottom:8}}/>
+        {(mv.place||mv.note||mv.vehicleId)&&<button onClick={()=>setMobility(m.id,{place:"",vehicleId:"",note:""})} style={{fontSize:10,color:"#dc2626",background:"none",border:"none",cursor:"pointer"}}>クリア</button>}
+      </div>;
+    })}
+  </>;
+
   const manageContent=<>
     {/* スタッフ移動車 */}
     <div style={cardStyle}>
@@ -788,7 +853,7 @@ function ParkingManager({masterVehicles}){
       <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
         <select value={whCar} onChange={e=>setWhCar(e.target.value)} className="input-s" style={{flex:1,minWidth:120}}>
           <option value="">-- 車両を選択 --</option>
-          {cars.filter(c=>!warehouseMap[c.id]).map(c=><option key={c.id} value={c.id}>{pCarLabel(c)}</option>)}
+          {cars.filter(c=>!warehouseMap[c.id]).slice().sort(pCarCmp).map(c=><option key={c.id} value={c.id}>{pCarLabel(c)}</option>)}
         </select>
         <input value={whNote} onChange={e=>setWhNote(e.target.value)} placeholder="備品内容" className="input-s" style={{flex:1,minWidth:80}}/>
         <button onClick={()=>{if(whCar){setWarehouseCar(whCar,"倉庫車",whNote||"備品積載");setWhCar("");setWhNote("備品積載");}}} className="btn-primary" style={{padding:"6px 14px"}}>登録</button>
@@ -826,9 +891,9 @@ function ParkingManager({masterVehicles}){
 
   const pTabs=[
     {id:"home",icon:"🚗",label:"入庫"},
-    {id:"spots",icon:"🅿️",label:"ステータス"},
     {id:"maint",icon:"🔧",label:"メンテ",badge:maintCars.length},
     {id:"wash",icon:"🚿",label:"洗車",badge:washCounts["未洗車"]},
+    {id:"mobility",icon:"🛴",label:"モビリティ"},
     {id:"manage",icon:"📋",label:"管理",badge:staffCars.length+warehouseCars.length},
     {id:"settings",icon:"⚙️",label:"設定"},
   ];
@@ -847,6 +912,7 @@ function ParkingManager({masterVehicles}){
       {pTab==="spots"&&spotsContent}
       {pTab==="maint"&&maintContent}
       {pTab==="wash"&&washContent}
+      {pTab==="mobility"&&mobilityContent}
       {pTab==="manage"&&manageContent}
       {pTab==="settings"&&settingsContent}
     </div>
