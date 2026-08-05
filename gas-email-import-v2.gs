@@ -1412,7 +1412,7 @@ function sendSlackToSpk_(subject, body) {
 }
 
 function otaDispLbl_(c) {
-  return ({J:'JLN',R:'RKT',S:'SKT',O:'ART',A:'ART',HP:'HMD',RC:'RDC',G:'GOT',KEYDROP:'KEY'})[c] || c;
+  return ({J:'JLN',R:'RKT',S:'SKT',O:'ART',A:'ART',HP:'HDM',RC:'RDC',G:'GOO',KEYDROP:'KEY',SP:'SP',direct:'直接',DIRECT:'直接',TBR:'TBR','たびらい':'TBR'})[c] || c;
 }
 
 function sendSlackSuccess_(items) {
@@ -5596,7 +5596,7 @@ function watchPartnerCustomerReservations() {
     try { prev = JSON.parse(raw) || {}; } catch(e) {}
     var added = Object.keys(cur).filter(function(id){ return !(id in prev); });
     var removed = Object.keys(prev).filter(function(id){ return !(id in cur); });
-    var otaName = function(o){ return ({J:'じゃらん',R:'楽天',S:'スカイチケット',O:'エアトリ',HP:'HP',RC:'レンタカー.com',G:'GoGoOut',SP:'Slack',direct:'直接'})[o] || o || '-'; };
+    var otaName = function(o){ return otaDispLbl_(o) || o || '-'; };
     var fetchResv = function(id){
       var r = supabaseGet_('reservations', 'id=eq.' + encodeURIComponent(id) + '&select=id,name,ota,vehicle,lend_date,return_date,price,status');
       return (r && r.length) ? r[0] : null;
