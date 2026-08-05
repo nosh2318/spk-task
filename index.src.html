@@ -80,9 +80,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1036';
+var CV='spk-v1037';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=932').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=933').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -620,6 +620,8 @@ const DB = {
   // --- 勤怠 ---
   async fetchAttendance(){if(!sb)return{};try{const{data,error}=await sb.from("spk_attendance").select("*");if(error){console.warn("[attendance] fetch error (テーブル未作成?):",error.message);return{};}const a={};(data||[]).forEach(r=>{const k=r.date+"_"+r.staff_name;a[k]={date:r.date,name:r.staff_name,start:r.start_time||"",end:r.end_time||"",approved:!!r.approved,memo:r.memo||"",absent:!!r.absent,breaks:Array.isArray(r.breaks)?r.breaks:[]};});return a;}catch(e){console.warn("[attendance]",e);return{};}},
   async saveAttendance(rec){if(!sb)return;try{const row={date:rec.date,staff_name:rec.name,start_time:rec.start||"",end_time:rec.end||"",approved:rec.approved||false,memo:rec.memo||"",absent:!!rec.absent};if(Array.isArray(rec.breaks))row.breaks=rec.breaks;/* タイムカード: breaks列をupsertで消さない（打刻した休憩を承認/編集で失わない） */await sb.from("spk_attendance").upsert(row,{onConflict:"date,staff_name"});}catch(e){console.warn("[att save]",e);}},
+  // 出勤簿を非出勤(希/公/有/欠)にした日の「計画行」だけをspk_attendanceから除去。実打刻/承認済/欠勤は残す(memo空 かつ 未承認 かつ 欠勤でない のみ削除)
+  async deleteAttendancePlan(date,staffName){if(!sb)return;try{await sb.from("spk_attendance").delete().eq("date",date).eq("staff_name",staffName).eq("approved",false).eq("absent",false).or("memo.is.null,memo.eq.");}catch(e){console.warn("[att plan del]",e);}},
   async saveAttendanceBatch(recs){if(!sb)return;try{const rows=recs.map(r=>{const row={date:r.date,staff_name:r.name,start_time:r.start||"",end_time:r.end||"",approved:r.approved||false,memo:r.memo||"",absent:!!r.absent};if(Array.isArray(r.breaks))row.breaks=r.breaks;return row;});await sb.from("spk_attendance").upsert(rows,{onConflict:"date,staff_name"});}catch(e){console.warn("[att batch]",e);}},
   // --- 打刻 ---
   SLACK_PUNCH_WEBHOOK:"",// ← Slack Incoming Webhook URL を設定
@@ -13177,6 +13179,10 @@ function PunchClock({staff}){
 /* ==========================================
    勤怠管理
    ========================================== */
+// 出勤簿シンボルが「非出勤(希望休/公休/有給/欠勤/休)」か判定。●/出/空(アルバイト勤務)は出勤扱い＝false
+function spkIsNonWorkSym(sym){const s=String(sym||"").trim();if(!s)return false;return ["公","希","有","欠","休","×","✕","公休","有休","代休","休み"].some(x=>s.indexOf(x)>=0);}
+// spk_attendance行が「システム生成の計画行(実打刻でない)」か＝未承認 かつ 欠勤でない かつ 協議中でない かつ 打刻メモでない かつ 打刻休憩なし
+function spkIsBarePlanAtt(a){return !!a&&!a.approved&&!a.absent&&!(a.memo&&a.memo.startsWith("協議中"))&&!(a.memo&&["打刻","打刻中","仮申請"].includes(a.memo))&&!(Array.isArray(a.breaks)&&a.breaks.some(b=>b&&(b.start||b.end)));}
 function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
   const WK=["日","月","火","水","木","金","土"];
   const todayYM=toYM(today);
@@ -13382,15 +13388,20 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
   const genAttFromShifts=React.useCallback((curAtt)=>{
     const toCreate=[];
     const toUpdate=[];
+    const toDelete=[];
     staff.forEach(s=>{
       for(let d=1;d<=dim;d++){
         const ds=viewYM+"-"+String(d).padStart(2,"0");
         const sh=(shifts[ds]||[]).find(x=>x.name===s.name);
         const attKey=ds+"_"+s.name;
         const att=curAtt[attKey]||null;
-        if(sh&&!att){
+        if(sh&&spkIsNonWorkSym(sh.symbol)){
+          // 非出勤(希/公/有/欠)の日に計画行が残っていれば除去（実打刻/欠勤/協議中は残す）。計画行を作らない・更新もしない
+          if(spkIsBarePlanAtt(att))toDelete.push({date:ds,name:s.name,key:attKey});
+        }else if(sh&&!att){
           toCreate.push({date:ds,name:s.name,start:sh.start||"09:00",end:sh.end||"18:00",approved:false,memo:""});
-        }else if(sh&&att&&!att.approved){
+        }else if(sh&&att&&!att.approved&&spkIsBarePlanAtt(att)){
+          // 計画行のみシフト時刻に追従。実打刻/仮申請/欠勤/協議中はスタッフ入力なので上書きしない
           const newStart=sh.start||"09:00";const newEnd=sh.end||"18:00";
           if(att.start!==newStart||att.end!==newEnd){
             toUpdate.push({...att,start:newStart,end:newEnd});
@@ -13398,13 +13409,15 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
         }
       }
     });
-    if(toCreate.length>0||toUpdate.length>0){
+    if(toCreate.length>0||toUpdate.length>0||toDelete.length>0){
       const next={...curAtt};
       toCreate.forEach(r=>{next[r.date+"_"+r.name]=r;});
       toUpdate.forEach(r=>{next[r.date+"_"+r.name]=r;});
+      toDelete.forEach(r=>{delete next[r.key];});
       onAttendanceChange(next);
       if(toCreate.length>0)DB.saveAttendanceBatch(toCreate).catch(e=>console.error("[genAtt] create error:",e));
       if(toUpdate.length>0)DB.saveAttendanceBatch(toUpdate).catch(e=>console.error("[genAtt] update error:",e));
+      toDelete.forEach(r=>DB.deleteAttendancePlan(r.date,r.name).catch(e=>console.error("[genAtt] delete error:",e)));
     }
   },[shifts,staff,viewYM,dim,onAttendanceChange]);
   // shiftsが変わったら最新のattendanceで自動生成を実行
@@ -13587,7 +13600,8 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
       </div>
       {(()=>{
         const sd=allStaffData[selStaff];if(!sd)return null;
-        const unapproved=sd.days.filter(d=>d.shift&&d.att&&!d.att.approved).length;
+        // 非出勤(希/公/有/欠)の計画行は承認対象に含めない（v_real判定）
+        const unapproved=sd.days.filter(d=>d.shift&&d.att&&!d.att.approved&&!(spkIsNonWorkSym(d.shift.symbol)&&spkIsBarePlanAtt(d.att))).length;
         // タイムカード: この月×このスタッフの pending 修正申請（日付→配列）
         const myReqs=(timecardReqs||[]).filter(r=>r.staff_name===selStaff&&(r.date||"").slice(0,7)===viewYM);
         const pendReqsByDate={};myReqs.filter(r=>r.status==="pending").forEach(r=>{(pendReqsByDate[r.date]=pendReqsByDate[r.date]||[]).push(r);});
@@ -13617,10 +13631,14 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
             const isHoliday=d.dow===0;const isSat=d.dow===6;
             const rowBg=isHoliday?"#fef2f2":isSat?"#eff6ff":"#fff";
             const dayColor=isHoliday?"#dc2626":isSat?"#2563eb":"#374151";
-            const hasShift=!!d.shift;const att=d.att;const isApproved=att&&att.approved;const isAbsent=att&&att.absent;
+            // 非出勤(希/公/有/欠)の計画行は「休み」表示に倒し、承認/編集ボタン・計画時間を出さない（v_real判定）
+            const nonWork=spkIsNonWorkSym(d.shift&&d.shift.symbol);
+            const restDay=nonWork&&spkIsBarePlanAtt(d.att);
+            const symLabel=nonWork?(String(d.shift.symbol).indexOf("希")>=0?"希望休":String(d.shift.symbol).indexOf("有")>=0?"有給":String(d.shift.symbol).indexOf("公")>=0?"公休":String(d.shift.symbol).indexOf("欠")>=0?"欠勤":"休"):"";
+            const hasShift=!!d.shift&&!restDay;const att=restDay?null:d.att;const isApproved=att&&att.approved;const isAbsent=att&&att.absent;
             const isKyogi=att&&att.memo&&att.memo.startsWith("協議中");
             const kyogiDetail=isKyogi?att.memo.replace(/^協議中:/,""):"";
-            const timeStr=isAbsent?"欠勤":att?(att.start+"〜"+att.end):(hasShift?(d.shift.start+"〜"+d.shift.end):"ー");
+            const timeStr=isAbsent?"欠勤":att?(att.start+"〜"+att.end):(restDay?symLabel:(!!d.shift?(d.shift.start+"〜"+d.shift.end):"ー"));
             // タイムカード: 計画×実績×休憩照合（打刻がある日／シフトがある日で表示）
             const brkArr=att&&Array.isArray(att.breaks)?att.breaks:[];
             const actBrkMin=(()=>{let m=0;brkArr.forEach(b=>{if(!b||!b.start||!b.end)return;const[sh,sm]=b.start.split(":").map(Number),[eh,em]=b.end.split(":").map(Number);const dd=(eh*60+em)-(sh*60+sm);if(dd>0)m+=dd;});return m;})();
@@ -14098,6 +14116,8 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift,reservatio
     }else{
       _onSC({...shifts,[dateStr]:cur.map(s=>s.name===name?entry:s)});
     }
+    // 出勤→非出勤(希/公/有/欠)に変更したら、残っている計画行(spk_attendance)を除去（実打刻/承認済/欠勤は残す）
+    if(spkIsNonWorkSym(entry.symbol)&&DB.deleteAttendancePlan)DB.deleteAttendancePlan(dateStr,name).catch(e=>console.warn("[shift→rest] att del",e));
     setCellEdit(null);
   };
 
@@ -14109,6 +14129,8 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift,reservatio
     const cur=getShift(dateStr);
     _onSC({...shifts,[dateStr]:cur.filter(s=>s.name!==name)});
     DB.deleteShift(dateStr,name);
+    // シフト削除＝非出勤。残る計画行(spk_attendance)も除去（実打刻/承認済/欠勤は残す）
+    if(DB.deleteAttendancePlan)DB.deleteAttendancePlan(dateStr,name).catch(e=>console.warn("[shift del] att del",e));
     setCellEdit(null);
   };
 
@@ -23781,7 +23803,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.501";
+const APP_VERSION="v4.7.502";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
