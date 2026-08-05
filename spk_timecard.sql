@@ -76,6 +76,7 @@ DECLARE
   v_br   jsonb;
   v_len  int;
   v_last jsonb;
+  v_real boolean;
 BEGIN
   SELECT name INTO v_name FROM staff WHERE share_token::text=p_token AND coalesce(active,true)=true;
   IF v_name IS NULL THEN RETURN jsonb_build_object('ok',false,'error','invalid_token'); END IF;
@@ -85,16 +86,24 @@ BEGIN
 
   SELECT * INTO v_row FROM spk_attendance WHERE date=v_today AND staff_name=v_name;
 
+  -- ★ 実打刻(または協議中)の行かどうか。出勤簿の計画行(memo='')は「実打刻」ではない＝打刻をブロックしない。
+  --   これが無いと、管理者が出勤簿で入れた計画行(start/end埋め)が start_time を持つため
+  --   「既に出勤/退勤済み」と誤判定され、その日にシフトが入っている全スタッフが打刻できなくなる。
+  v_real := (coalesce(v_row.memo,'') IN ('打刻','打刻中','仮申請') OR coalesce(v_row.memo,'') LIKE '協議中%');
+
   IF p_action='in' THEN
-    IF v_row.staff_name IS NOT NULL AND coalesce(v_row.start_time,'')<>'' THEN
+    -- 実打刻済みのときだけブロック（計画行の start_time は無視して打刻を通す）
+    IF v_row.staff_name IS NOT NULL AND coalesce(v_row.start_time,'')<>'' AND v_real THEN
       RETURN jsonb_build_object('ok',false,'error','already_in','msg','既に出勤打刻済みです'); END IF;
+    -- 出勤打刻＝実績で上書き。計画の end_time はクリアして退勤打刻を可能にする
     INSERT INTO spk_attendance(date,staff_name,start_time,end_time,approved,memo,absent,breaks)
       VALUES(v_today,v_name,v_time,'',true,'打刻',false,'[]'::jsonb)
-      ON CONFLICT (date,staff_name) DO UPDATE SET start_time=v_time, approved=true, memo='打刻', absent=false;
+      ON CONFLICT (date,staff_name) DO UPDATE SET start_time=v_time, end_time='', approved=true, memo='打刻', absent=false;
     RETURN jsonb_build_object('ok',true,'action','in','time',v_time);
 
   ELSIF p_action='out' THEN
-    IF v_row.staff_name IS NULL OR coalesce(v_row.start_time,'')='' THEN
+    -- 実打刻の出勤が無ければ退勤不可（計画行だけでは退勤させない＝先に出勤打刻を促す）
+    IF v_row.staff_name IS NULL OR coalesce(v_row.start_time,'')='' OR NOT v_real THEN
       RETURN jsonb_build_object('ok',false,'error','no_in','msg','先に出勤打刻をしてください'); END IF;
     IF coalesce(v_row.end_time,'')<>'' THEN
       RETURN jsonb_build_object('ok',false,'error','already_out','msg','既に退勤打刻済みです'); END IF;
@@ -110,7 +119,7 @@ BEGIN
     RETURN jsonb_build_object('ok',true,'action','out','time',v_time);
 
   ELSIF p_action='break_start' THEN
-    IF v_row.staff_name IS NULL OR coalesce(v_row.start_time,'')='' THEN
+    IF v_row.staff_name IS NULL OR coalesce(v_row.start_time,'')='' OR NOT v_real THEN
       RETURN jsonb_build_object('ok',false,'error','no_in','msg','先に出勤打刻をしてください'); END IF;
     IF coalesce(v_row.end_time,'')<>'' THEN
       RETURN jsonb_build_object('ok',false,'error','already_out','msg','退勤済みのため休憩できません'); END IF;
@@ -128,7 +137,7 @@ BEGIN
     RETURN jsonb_build_object('ok',true,'action','break_start','time',v_time);
 
   ELSIF p_action='break_end' THEN
-    IF v_row.staff_name IS NULL THEN
+    IF v_row.staff_name IS NULL OR NOT v_real THEN
       RETURN jsonb_build_object('ok',false,'error','no_in','msg','出勤打刻がありません'); END IF;
     v_br := coalesce(v_row.breaks,'[]'::jsonb);
     v_len := jsonb_array_length(v_br);
