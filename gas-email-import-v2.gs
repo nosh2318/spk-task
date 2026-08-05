@@ -2537,10 +2537,18 @@ function checkUnpaidAlert() {
   var data = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
   var now = new Date();
   var alertsByCh = {}; alertsByCh[JALAN_PAY_CHANNEL] = []; alertsByCh[NAHA_PAY_CHANNEL] = [];
+  // ★ 2026-08-05: Square決済不要マーカー（振込/現金/現地払い等）を未入金アラートから除外
+  //   背景: 武山さんがステータス列/媒体列に「振込」と入れても、旧スキップ条件（入金済/キャンセル/発行取消）に
+  //   一致せず毎朝アラートが再発（例: R0QWRAMI イトウ リオ ¥19,000 8/3出発）。恒久対策として、
+  //   ステータス列(9)・媒体列(14)のいずれかに下記の「Square経由の決済が不要」を示す語があればスキップする。
+  var NO_SQUARE_RE = /振込|銀行振込|現金|現地払|現地決済|現地精算|窓口|決済不要|Square不要|口座/;
   for (var i = 0; i < data.length; i++) {
     var status = String(data[i][8]||'');
+    var media  = String(data[i][13]||'');
     // ★ 2026-05-08: '済' → '入金済' に厳密化（メール送信済の誤マッチ防止）
     if (status.indexOf('入金済')!==-1 || status.indexOf('キャンセル')!==-1 || status.indexOf('発行取消')!==-1) continue;
+    // ★ 2026-08-05: 振込・現金など Square決済不要はアラート対象外（ステータス列 or 媒体列で判定）
+    if (NO_SQUARE_RE.test(status) || NO_SQUARE_RE.test(media)) { Logger.log('[UnpaidAlert] skip(決済不要:'+status+'/'+media+') '+String(data[i][3]||'')); continue; }
     var store = String(data[i][2]||'').trim();
     var resvId = String(data[i][3]||'').trim(), name = String(data[i][4]||'').trim(), amount = Number(data[i][6])||0, url = String(data[i][7]||'').trim();
     if (!resvId || !url) continue;
