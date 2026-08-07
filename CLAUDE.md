@@ -18,6 +18,18 @@
 - アプリ側`saveAllSpots`(復元/初期化)は**1枠ずつ順次upsert**に変更(鉄壁トリガーを通しつつ一括書換不能を維持)。入出庫は元から1行=そのまま通る。
 - **教訓**：「勝手に変わる」を"絶対"止めるにはアプリのコード修正では不十分(経路を消し忘れる)。**正本側(DB)のドメイン制約＋台帳＋一括変更禁止トリガーで物理的に不能化**する(ドクトリン「正本側で防ぐ・台帳基軸」の実装)。別Supabaseのテーブルにも台帳(audit)を必ず載せる=載っていないと検知も追跡もできず再発が見えない。
 
+### 🔎🅿️ 2026-08-08(続2) 全経路 再監査で「未保存=次の同期で巻き戻る」経路を3件発見・根治(v4.7.509)
+オーナー「改めて見直して再発しないかチェック」で全setSpots/全DB書込を洗い出し、**画面(ローカルstate)だけ変えてDB(parking_spots=正本)へ保存しない経路**を3件発見（=同期で巻き戻る再発源。08-05の移行が拾えていなかった典型）：①**車両移動モーダルの「移動」ボタン**(setSpotCar未呼び=移動が未保存)②**removeCar(車両削除)**(枠の車をローカルで外すだけ)③**importData(JSON貼付)**(spotsをローカルに入れるだけ)。→全てDB.parking.setSpotCar/saveAllSpotsを追加。**教訓：`setSpots`する箇所は必ず対応するper-row DB書込(setSpotCar/setSpotMemo/addSpotRow/delSpotRow)を伴う。片方だけ=未保存=巻き戻り**。再監査の指針＝「全`setSpots(`をgrepし、各々がparking_spotsへ1件保存しているか照合」。
+- 併せてspotsをparking_stateから外した副作用の回帰も予防：定期ポーリング/初期ロードの早期return判定を`remote.spots`依存→`remote`/`remote.cars`依存に(spotsキーが消えてもcars/洗車/履歴の更新を止めない・誤"データ消失"復元を防止)。resetData(全リセット)は枠レイアウト(オーナー登録の20枠)を保持し入庫中の車だけ1枠ずつ出庫(孤立car_id/一括変更なし)。
+- 最終確認：占有=正しい配置維持/重複車0/鉄壁トリガー(audit+block_bulk)+ユニーク索引 稼働/台帳記録中。
+
+## 🧽 2026-08-08(続) staff.html＝OPシートの鏡：洗車の時間は「返却後洗車の返却時刻以降」＋種別絞り込み(staff-v3.22)
+オーナー指摘「このURLはOPシートの鏡＝OPと同じ値を個別に切り分けて出すだけ」。**洗車の"割り当てられた時間"の正体＝OPの「🔗返却後洗車 🕐◯◯以降」**（同日・同ナンバーの返却(COL/BD/BDB/返却)タスクの返却時刻＝`_retByPlate`/`_linkedPlates`）。例：デリカ6057=当日19:00返却→洗車は19:00以降。**出発時刻(DEL 09:00等)を洗車時間に出すのは誤り**（オーナー「違う」）。
+- **RPC `spk_staff_view`**：`wash_after`を追加＝洗車タスクのplate_noと同日返却タスクをJOINし返却時刻(`timeChange>_ssTime>col_time>return_time>time`のmax)を返す。※前ステップで一時入れた「洗車/引取に出発時刻を出す」eff_time分岐は撤去。洗車の`time`は手動設定値(timeChange)のみ＝OPと一致。**同日返却が無い車の洗車は時間なし(OP同様"-")＝全洗車に必ず時間が出るわけではない**（返却後洗車のみ）。
+- **staff.html taskCard**：洗車で`time`空かつ`wash_after`ありなら時間バッジに「🕐◯◯ 以降」を表示（`tmIsAfter`）。
+- **種別絞り込みタブ**：本日タスクを`_tcat`で **DEL(DEL/PU/PUB/来店)／COL(COL/BD/BDB/返却)／洗車／その他** に分類し、`.tfilt`のタブ(すべて/DEL/COL/洗車/その他・件数付)で`TFILT`絞り込み(`setTFilt`→`setContent(tasksContent)`で#contentのみ再描画)。
+- **教訓**：staff.htmlはOPシートの個別ミラー→**OPが表示する値をそのまま出すのが正**（勝手に別の時刻＝出発/memo由来を出さない）。洗車時間の正本ロジック＝返却後洗車(同日同ナンバーの返却時刻以降)。
+
 ## 🕒 2026-08-08 バイトURL(staff.html)に「洗車/引取」の時間が出ない→根治(staff-v3.21)
 症状＝札幌バイトURL(staff.html)でOPシートに入ってる時間が表示されない。**真因＝洗車/引取(翌日出発)タスクは時刻フィールド`time`が空で、目安時刻は`memo`に入る**（例`8/9(日) DEL 13:00 ホンマ ケイタ`）。OPシートはmemoを表示するが、staff.htmlは**memoを一切描画せず**、RPC`spk_staff_view`も**memoを返していなかった**→バイトに時間が出ない。DEL/COL/送迎/その他など`time`を持つタスクは元々正常（RPCの`eff_time`が`timeChange>_ssTime>手動>予約(del/col_time)>time`で解決＝legタスクはRPC空ゼロを実データ検証済）。
 - **修正**：①RPC`spk_staff_view`の各`jsonb_build_object`に`'memo',coalesce(t.memo,'')`追加（baseに`t.memo`）②staff.html taskCardに`memoLine`（memoの`\n##BCJ:`以降=オプションマーカーを除去して表示・**非legタスク=洗車/引取/送迎/その他のみ**表示`.tmemo`）。
