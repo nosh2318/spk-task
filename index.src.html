@@ -82,7 +82,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
 var CV='spk-v1044';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=938').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=939').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -18645,7 +18645,8 @@ function ParkingManager({masterVehicles}){
           ls=bk;
         }
       }
-      const useRemote=remote&&remote.spots;
+      /* ★2026-08-08 parking_stateはもうspotsを持たない=cars有無で判定(spots非依存)。位置は下のfetchSpotsで別途ロード */
+      const useRemote=remote&&((remote.cars&&remote.cars.length>0)||remote.spots);
       const remoteCarsLen=useRemote&&remote.cars?remote.cars.length:0;
       const lsCarsLen=ls&&ls.cars?ls.cars.length:0;
       const remoteParked=useRemote?remote.spots.filter(s=>s.carId).length:0;
@@ -18710,7 +18711,7 @@ function ParkingManager({masterVehicles}){
         // 🔴 シャッフル防止: 直近にローカル変更があればfetch自体をスキップ
         if(Date.now()-lastLocalChangeAt.current<LOCAL_DIRTY_MS)return;
         const remote=await DB.parking.fetch();
-        if(!remote||!remote.spots)return;
+        if(!remote)return;/* ★2026-08-08 spots非依存に(parking_stateはもうspotsを持たない)。cars/洗車/履歴のポーリングを止めない */
         // 🔴 非同期fetch完了後も再チェック (fetch中にローカル変更が起きた場合)
         if(Date.now()-lastLocalChangeAt.current<LOCAL_DIRTY_MS)return;
         isRemoteUpdate.current=true;
@@ -18837,7 +18838,7 @@ function ParkingManager({masterVehicles}){
 
   // 関数群
   const addCar=(name,plate)=>{const id=name+"-"+plate;if(cars.find(c=>c.id===id)){alert("同じ車両が既に登録されています");return false;}setCars(p=>[...p,{id,name,plate}]);setWashMap(p=>({...p,[id]:"未洗車"}));setWashTimeMap(p=>({...p,[id]:null}));addLog("【車両登録】"+name+" ("+plate+")");return true;};
-  const removeCar=(carId)=>{const sp=spots.find(s=>s.carId===carId);if(sp)setSpots(p=>p.map(s=>s.id===sp.id?{...s,carId:null}:s));if(maintMap[carId])setMaintMap(p=>{const n={...p};delete n[carId];return n;});setCars(p=>p.filter(c=>c.id!==carId));addLog("【車両削除】"+pCarLabel(getCar(carId)));};
+  const removeCar=(carId)=>{const sp=spots.find(s=>s.carId===carId);if(sp){setSpots(p=>p.map(s=>s.id===sp.id?{...s,carId:null}:s));DB.parking.setSpotCar(sp.id,null);/* ★2026-08-08 枠の車をDB(正本)からも外す=未保存で巻き戻るのを防止 */}if(maintMap[carId])setMaintMap(p=>{const n={...p};delete n[carId];return n;});setCars(p=>p.filter(c=>c.id!==carId));addLog("【車両削除】"+pCarLabel(getCar(carId)));};
   const setWashStatus=(carId,st)=>{const now=new Date();const stamp=(now.getMonth()+1)+"/"+now.getDate()+" "+String(now.getHours()).padStart(2,"0")+":"+String(now.getMinutes()).padStart(2,"0");setWashMap(p=>({...p,[carId]:st}));setWashTimeMap(p=>({...p,[carId]:stamp}));addLog("【洗車】"+pCarLabel(getCar(carId))+" → "+st);};
   const registerMaint=(carId,vendor,entryDate,pickupDate)=>{setMaintMap(p=>({...p,[carId]:{vendor,entryDate,pickupDate}}));addLog("【メンテ入庫】"+pCarLabel(getCar(carId))+" → "+vendor+" ("+entryDate+"〜"+pickupDate+")");};
   const clearMaint=(carId)=>{setMaintMap(p=>{const n={...p};delete n[carId];return n;});addLog("【メンテ回収】"+pCarLabel(getCar(carId)));};
@@ -18857,8 +18858,8 @@ function ParkingManager({masterVehicles}){
   const addSpot=(no,key)=>{if(!no)return;const newId=spots.length>0?Math.max(...spots.map(s=>s.id))+1:1;setSpots(p=>[...p,{id:newId,no:String(no),key:Number(key)||0,carId:null,memo:"",restricted:null}]);DB.parking.addSpotRow({id:newId,no:no,key:key,restricted:null});addLog("【枠追加】No."+no+" Key:"+key);};
   const removeSpot=(spotId)=>{const sp=spots.find(s=>s.id===spotId);if(!sp)return;if(sp.carId){alert("車両が入庫中の枠は削除できません");return;}setSpots(p=>p.filter(s=>s.id!==spotId));DB.parking.delSpotRow(spotId);addLog("【枠削除】No."+sp.no);};
   const exportData=()=>{const d={spots,cars,washMap,washTimeMap,maintMap,history,exportedAt:new Date().toISOString()};const json=JSON.stringify(d,null,2);if(navigator.clipboard){navigator.clipboard.writeText(json).then(()=>alert("クリップボードにコピーしました")).catch(()=>{});}};
-  const importData=()=>{const input=prompt("JSONデータを貼り付け:");if(!input)return;try{const d=JSON.parse(input);if(d.spots)setSpots(d.spots);if(d.cars)setCars(d.cars);if(d.washMap)setWashMap(d.washMap);if(d.washTimeMap)setWashTimeMap(d.washTimeMap);if(d.maintMap)setMaintMap(d.maintMap);if(d.history)setHistory(d.history);alert("インポートしました");}catch(e){alert("読み込み失敗");}};
-  const resetData=()=>{if(!confirm("全データを初期化しますか？"))return;setCars(PARKING_DEFAULT_CARS);setSpots(PARKING_INIT_SPOTS);const iw={};PARKING_DEFAULT_CARS.forEach(c=>{iw[c.id]="未洗車";});setWashMap(iw);const iwt={};PARKING_DEFAULT_CARS.forEach(c=>{iwt[c.id]=null;});setWashTimeMap(iwt);setMaintMap({});setMobilityMap({...MOBILITY_DEFAULT});setHistory([]);localStorage.removeItem(DB.parking.LS_KEY);if(sbParking){sbParking.from("parking_state").update({data:{},updated_at:new Date().toISOString()}).eq("id",1).then(()=>{});DB.parking.saveAllSpots(PARKING_INIT_SPOTS);/* ★2026-08-08 parking_spots(正本)も初期化 */}alert("初期化しました");};
+  const importData=()=>{const input=prompt("JSONデータを貼り付け:");if(!input)return;try{const d=JSON.parse(input);if(d.spots){setSpots(d.spots);DB.parking.saveAllSpots(d.spots);/* ★2026-08-08 spotsは正本parking_spotsへ1枠ずつ保存=未保存で巻き戻るのを防止 */}if(d.cars)setCars(d.cars);if(d.washMap)setWashMap(d.washMap);if(d.washTimeMap)setWashTimeMap(d.washTimeMap);if(d.maintMap)setMaintMap(d.maintMap);if(d.history)setHistory(d.history);alert("インポートしました");}catch(e){alert("読み込み失敗");}};
+  const resetData=()=>{if(!confirm("全データを初期化しますか？"))return;setCars(PARKING_DEFAULT_CARS);setSpots(PARKING_INIT_SPOTS);const iw={};PARKING_DEFAULT_CARS.forEach(c=>{iw[c.id]="未洗車";});setWashMap(iw);const iwt={};PARKING_DEFAULT_CARS.forEach(c=>{iwt[c.id]=null;});setWashTimeMap(iwt);setMaintMap({});setMobilityMap({...MOBILITY_DEFAULT});setHistory([]);localStorage.removeItem(DB.parking.LS_KEY);if(sbParking){sbParking.from("parking_state").update({data:{},updated_at:new Date().toISOString()}).eq("id",1).then(()=>{});/* ★2026-08-08 枠レイアウト(オーナー登録)は保持し、入庫中の車だけを1枠ずつ空ける=孤立なし・一括変更もしない */spots.forEach(s=>{if(s.carId)DB.parking.setSpotCar(s.id,null);});}alert("初期化しました（駐車中の車両をすべて出庫）");};
 
   // 計算
   const parkedCarIds=useMemo(()=>spots.filter(s=>s.carId).map(s=>s.carId),[spots]);
@@ -19222,7 +19223,7 @@ function ParkingManager({masterVehicles}){
         {closeBtn}
         <div style={{fontSize:15,fontWeight:800,marginBottom:4}}>🔄 駐車場所の変更</div>
         <div style={{fontSize:11,color:"#64748b",marginBottom:14}}>{car?pCarLabel(car):""} ・現在 No.{fromSpot?fromSpot.no:""}</div>
-        {freeSpots.map(sp2=><button key={sp2.id} onClick={()=>{setSpots(p=>p.map(s=>{if(s.id===modal.spotId)return{...s,carId:null};if(s.id===sp2.id)return{...s,carId:modal.carId};return s;}));addLog("【移動】"+pCarLabel(car)+" No."+(fromSpot?fromSpot.no:"")+" → No."+sp2.no);setModal(null);}} style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",padding:"10px 12px",borderRadius:10,border:"1px solid #e2e8f0",background:"#f8fafc",cursor:"pointer",marginBottom:6}}>
+        {freeSpots.map(sp2=><button key={sp2.id} onClick={()=>{setSpots(p=>p.map(s=>{if(s.id===modal.spotId)return{...s,carId:null};if(s.id===sp2.id)return{...s,carId:modal.carId};return s;}));DB.parking.setSpotCar(sp2.id,modal.carId);/* ★2026-08-08 移動をDB(正本)へ保存=未保存で巻き戻る再発源を根治。setSpotCarが旧枠を自動で空ける */addLog("【移動】"+pCarLabel(car)+" No."+(fromSpot?fromSpot.no:"")+" → No."+sp2.no);setModal(null);}} style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",padding:"10px 12px",borderRadius:10,border:"1px solid #e2e8f0",background:"#f8fafc",cursor:"pointer",marginBottom:6}}>
           <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:40,height:36,borderRadius:8,background:"#ecfdf5",border:"2px solid #10b981",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}><div style={{fontSize:6,color:"#94a3b8"}}>SPOT</div><div style={{fontSize:12,fontWeight:800}}>{sp2.no}</div></div><span style={{fontSize:10,color:"#64748b"}}>Key:{sp2.key}</span></div>
           <span style={{fontSize:11,color:"#059669",fontWeight:700}}>ここに移動</span>
         </button>)}
@@ -23855,7 +23856,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.508";
+const APP_VERSION="v4.7.509";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
