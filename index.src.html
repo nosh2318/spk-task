@@ -80,9 +80,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1042';
+var CV='spk-v1044';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=936').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=938').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -18842,7 +18842,9 @@ function ParkingManager({masterVehicles}){
   const clearMaint=(carId)=>{setMaintMap(p=>{const n={...p};delete n[carId];return n;});addLog("【メンテ回収】"+pCarLabel(getCar(carId)));};
   const pTs=()=>{const d=new Date();return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");};
   const addLog=(msg)=>setHistory(h=>[...h,{time:pTs(),msg}]);
-  const parkCar=(spotId,carId)=>{const sp=spots.find(s=>s.id===spotId);const car=getCar(carId);if(!sp||!car)return;if(sp.carId){alert("この枠は使用中です");return;}setSpots(p=>p.map(s=>s.id===spotId?{...s,carId}:s));DB.parking.setSpotCar(spotId,carId);/* ★その枠だけDB更新=シャッフル不可 */addLog("【入庫】"+pCarLabel(car)+" → No."+sp.no+" (Key:"+sp.key+")");setModal(null);};
+  // ★2026-08-08 BIGスロット/その他=区画番号が固定でない枠。駐車ナンバーを手入力(memoに保存)できる。
+  const isManualNo=(sp)=>{const n=String(sp&&sp.no||"");return n==="BIGスロット"||n==="その他";};
+  const parkCar=(spotId,carId,num)=>{const sp=spots.find(s=>s.id===spotId);const car=getCar(carId);if(!sp||!car)return;if(sp.carId){alert("この枠は使用中です");return;}const hasNum=(num!==undefined&&num!==null&&String(num).trim()!=="");const memo=hasNum?String(num).trim():sp.memo;setSpots(p=>p.map(s=>s.id===spotId?{...s,carId,memo}:s));DB.parking.setSpotCar(spotId,carId);if(hasNum)DB.parking.setSpotMemo(spotId,memo);/* ★その枠だけDB更新=シャッフル不可 */addLog("【入庫】"+pCarLabel(car)+" → No."+sp.no+(hasNum?" 駐車No."+String(num).trim():"")+" (Key:"+sp.key+")");setModal(null);};
   const releaseCar=(spotId)=>{const sp=spots.find(s=>s.id===spotId);if(!sp||!sp.carId)return;const car=getCar(sp.carId);setSpots(p=>p.map(s=>s.id===spotId?{...s,carId:null}:s));DB.parking.setSpotCar(spotId,null);addLog("【出庫】"+pCarLabel(car)+" ← No."+sp.no+" (Key:"+sp.key+")");setModal(null);};
   const swapCar=(spotId,newCarId)=>{const sp=spots.find(s=>s.id===spotId);if(!sp)return;const oldCar=getCar(sp.carId);const newCar=getCar(newCarId);setSpots(p=>p.map(s=>s.id===spotId?{...s,carId:newCarId}:s));DB.parking.setSpotCar(spotId,newCarId);addLog("【入替】No."+sp.no+": "+(oldCar?pCarLabel(oldCar):"空")+" → "+pCarLabel(newCar));setModal(null);};
   const updateMemo=(spotId,memo)=>{setSpots(p=>p.map(s=>s.id===spotId?{...s,memo}:s));DB.parking.setSpotMemo(spotId,memo);};
@@ -19042,7 +19044,8 @@ function ParkingManager({masterVehicles}){
             <button onClick={()=>setModal({type:"detail",spotId:sp.id})} className="btn-ghost" style={{padding:"6px 8px",fontSize:10}}>詳細</button>
           </div>
         </div>
-        {sp.memo&&<div style={{marginTop:6,fontSize:10,color:"#64748b"}}>📝 {sp.memo}</div>}
+        {isManualNo(sp)&&<div style={{marginTop:6,display:"flex",alignItems:"center",gap:6}}><span style={{fontSize:10,color:"#64748b",fontWeight:700,whiteSpace:"nowrap"}}>駐車No</span><input value={sp.memo||""} onChange={ev=>updateMemo(sp.id,ev.target.value)} placeholder="番号を手入力" style={{flex:1,fontSize:12,fontWeight:700,padding:"4px 8px",borderRadius:6,border:"1px solid #cbd5e1",background:"#fff",boxSizing:"border-box",minWidth:0}}/></div>}
+        {sp.memo&&!isManualNo(sp)&&<div style={{marginTop:6,fontSize:10,color:"#64748b"}}>📝 {sp.memo}</div>}
       </div>;
     })}
     {/* 駐車場外の車両 */}
@@ -19176,7 +19179,8 @@ function ParkingManager({masterVehicles}){
             <option value="" disabled>-- 車両を選択 --</option>
             {available.map(c=><option key={c.id} value={c.id}>{c.name} ({c.plate})</option>)}
           </select>
-          <button onClick={()=>{const sel=document.getElementById("park-select").value;if(!sel){alert("車両を選択してください");return;}parkCar(sp.id,sel);}} style={{width:"100%",padding:"12px 0",borderRadius:10,background:"#059669",color:"#fff",border:"none",fontSize:14,fontWeight:800,cursor:"pointer"}}>🚗 入庫する</button>
+          {isManualNo(sp)&&<div style={{marginBottom:12}}><div style={{fontSize:11,color:"#64748b",marginBottom:6,fontWeight:700}}>駐車ナンバー（この枠の区画番号を手入力）:</div><input id="park-num" defaultValue={sp.memo||""} placeholder="例: A-12 / 15番" style={{width:"100%",padding:"10px 12px",borderRadius:10,border:"2px solid #cbd5e1",fontSize:14,fontWeight:700,boxSizing:"border-box",background:"#fff"}}/></div>}
+          <button onClick={()=>{const sel=document.getElementById("park-select").value;if(!sel){alert("車両を選択してください");return;}const numEl=document.getElementById("park-num");parkCar(sp.id,sel,numEl?numEl.value:undefined);}} style={{width:"100%",padding:"12px 0",borderRadius:10,background:"#059669",color:"#fff",border:"none",fontSize:14,fontWeight:800,cursor:"pointer"}}>🚗 入庫する</button>
         </>:<div style={{textAlign:"center",padding:20,color:"#94a3b8"}}>入庫可能な車両なし</div>}
       </div></div>;
     }
@@ -19258,8 +19262,10 @@ function ParkingManager({masterVehicles}){
             <option value={sp.carId}>{pCarLabel(car)} (現在)</option>
             {outCars.filter(c=>canParkInSpot(sp,c.id)).map(c=><option key={c.id} value={c.id}>{pCarLabel(c)}</option>)}
           </select></div>}
-        <div style={{marginBottom:12}}><div style={{fontSize:11,color:"#64748b",marginBottom:4,fontWeight:600}}>📝 メモ</div>
-          <textarea value={sp.memo} onChange={ev=>updateMemo(sp.id,ev.target.value)} placeholder="メモ..." rows={3} className="input-s" style={{resize:"vertical",fontFamily:"inherit"}}/></div>
+        {isManualNo(sp)&&<div style={{marginBottom:12}}><div style={{fontSize:11,color:"#64748b",marginBottom:4,fontWeight:700}}>🔢 駐車ナンバー（区画番号を手入力）</div>
+          <input value={sp.memo||""} onChange={ev=>updateMemo(sp.id,ev.target.value)} placeholder="例: A-12 / 15番" className="input-s" style={{fontWeight:700}}/></div>}
+        {!isManualNo(sp)&&<div style={{marginBottom:12}}><div style={{fontSize:11,color:"#64748b",marginBottom:4,fontWeight:600}}>📝 メモ</div>
+          <textarea value={sp.memo} onChange={ev=>updateMemo(sp.id,ev.target.value)} placeholder="メモ..." rows={3} className="input-s" style={{resize:"vertical",fontFamily:"inherit"}}/></div>}
         <button onClick={()=>setModal(null)} className="btn-primary" style={{width:"100%",padding:12}}>閉じる</button>
       </div></div>;
     }
@@ -23848,7 +23854,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.507";
+const APP_VERSION="v4.7.508";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
