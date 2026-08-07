@@ -1,5 +1,28 @@
 # SPK業務管理APP（札幌店）
 
+
+## 🅿️🚨 2026-08-08 駐車場「登録が無断で巻き戻る/シャッフル」を根治=spotsをparking_spots唯一の正本化(v4.7.507)
+オーナー激怒「昨夜20時の登録が無断変更・またシャッフル・我慢の限界」。台帳(履歴)基軸で犯人=コードと断定→復元→構造変更。
+- **犯人=正本の二重化(クラス①複製ドリフト)**。08-05にspots(枠×車)を`parking_spots`(1枠1行)へ移行したが、**旧`parking_state`(jsonb全ドキュメント)へのspots読み書きが残存**。①定期ポーリング(15秒)が`parking_state.spots`を読んで`setSpots`で表示を上書き ②自動保存の`merge3`がspots込み全docを`parking_state`に書き戻し→古い端末の配置が復活。**8/7 18:33の配置が朝(07:55)の配置に巻き戻った**のが実害。人ではなくwhole-docの巻き戻し。
+- **犯人特定の手順(再利用)**：駐車DB=**別Supabase `rkrvjpipvpybkmqadmrb`**(3テーブル: parking_state=旧jsonb1行/parking_spots=新1枠1行/parking_integrity_log)。`parking_spots.updated_at/updated_by`で最終更新、`parking_state.data->'history'`(248件・time+msgのみ日付なし)を**全リプレイ**して正しい最終占有を算出。history時刻の単調増加/リセットで日境界を判定→昨夕18:33が最後=夜20時の正。**parking_spotsが昼で凍結(afternoon moveがhistoryにあるのにspots行に無い)=per-row書込が一部端末で起きていなかった証拠**。
+- **復元**：リプレイ結果でparking_spots＋parking_state.spotsを両方 昨夕18:33へ是正(221→CX-5-8065/234→CX-3-4576/200→アルファード-3411/トラスト→ロッキー-299)。
+- **構造変更(引き算=複製を消して統一)**：spotsを`parking_state`の**読み書き経路から全排除**し`parking_spots`を唯一の正本に。読=LS復元/useRemote/定期ポーリングの`setSpots(remote.spots)`を全撤去→位置は必ず`DB.parking.fetchSpots()`。書=`merge3`からspots除去＋`DB.parking.save()`で`const{spots,...rest}=stateData`で必ずstrip＋手動復元/全リセットは`saveAllSpots()`でparking_spotsへ直upsert。→spotsはwhole-docに存在しなくなり巻き戻し不能。入出庫(parkCar/releaseCar/swapCar/memo/add/remove)は元から`setSpotCar`等でper-row書込=正本1本に統一。
+- **🔴教訓**：①「勝手に変わる/戻る/シャッフル」は**正本が2箇所ある(whole-doc複製が残存)**を最優先で疑う。移行時は旧whole-docの読み書きを"全経路"消さないと定期ポーリング/merge/リアルタイムのどれかが複製を復活させる。②**全端末が新版(v4.7.507)を読むまで旧端末の巻き戻し経路は生きる**→根治後は必ず全デバイスをハード再読込。③駐車DBはmain/BTと別=`rkrvjpipvpybkmqadmrb`・audit_logは無くhistory配列とupdated_atで追う。
+
+### 🛡🅿️ 2026-08-08(続) 駐車場に台帳＋DB鉄壁ルール=システムの改ざん/シャッフルを物理的に不能化(v4.7.508)
+オーナー「一本化は以前(08-05)もやったが再発した・意味あるのか・台帳を有効活用しろ」への根本回答。**コード修正だけでは経路の消し忘れで再発する**(08-05は名ばかり一本化=旧whole-doc経路が残存＝証明済)。→ **駐車DB(別Supabase rkrvjpipvpybkmqadmrb・従来audit_logが無かった=再発を検知できなかった主因)にDBレベルの防御を敷き、全クライアント/旧版に関係なく効かせる**：
+1. **`parking_spots_car_uniq`**(部分ユニーク `unique(car_id) where car_id is not null`)＝1台は1枠だけ→同じ車が複数枠=二重駐車/シャッフルを**物理拒否**。
+2. **`parking_audit`＋`trg_parking_audit`**(全INSERT/UPDATE/DELETEをop/spot/旧→新/updated_by/app_nameで記録・例外安全=本処理を止めない)＝改ざん不能の台帳。**今後「変わった」報告は`select * from parking_audit where spot_id=X order by id desc`で誰/いつ/旧→新を即照会=履歴リプレイ不要**。
+3. **`trg_parking_block_bulk`**(文レベルAFTER UPDATE・transition table)＝**1回のUPDATEで複数枠(car_id)を変更するのを禁止**=システムの一括シャッフル/巻き戻しを物理拒否。人の1枠ずつの入庫/出庫/入替(setSpotCar=各1行)のみ通過。
+- **実証済**：テストA(2枠同時に車変更)→P0001で拒否・データ無傷／テストB(同じ車を2枠)→23505ユニーク拒否／テストC(1枠メモ更新)→通過＋台帳記録。
+- アプリ側`saveAllSpots`(復元/初期化)は**1枠ずつ順次upsert**に変更(鉄壁トリガーを通しつつ一括書換不能を維持)。入出庫は元から1行=そのまま通る。
+- **教訓**：「勝手に変わる」を"絶対"止めるにはアプリのコード修正では不十分(経路を消し忘れる)。**正本側(DB)のドメイン制約＋台帳＋一括変更禁止トリガーで物理的に不能化**する(ドクトリン「正本側で防ぐ・台帳基軸」の実装)。別Supabaseのテーブルにも台帳(audit)を必ず載せる=載っていないと検知も追跡もできず再発が見えない。
+
+## 🕒 2026-08-08 バイトURL(staff.html)に「洗車/引取」の時間が出ない→根治(staff-v3.21)
+症状＝札幌バイトURL(staff.html)でOPシートに入ってる時間が表示されない。**真因＝洗車/引取(翌日出発)タスクは時刻フィールド`time`が空で、目安時刻は`memo`に入る**（例`8/9(日) DEL 13:00 ホンマ ケイタ`）。OPシートはmemoを表示するが、staff.htmlは**memoを一切描画せず**、RPC`spk_staff_view`も**memoを返していなかった**→バイトに時間が出ない。DEL/COL/送迎/その他など`time`を持つタスクは元々正常（RPCの`eff_time`が`timeChange>_ssTime>手動>予約(del/col_time)>time`で解決＝legタスクはRPC空ゼロを実データ検証済）。
+- **修正**：①RPC`spk_staff_view`の各`jsonb_build_object`に`'memo',coalesce(t.memo,'')`追加（baseに`t.memo`）②staff.html taskCardに`memoLine`（memoの`\n##BCJ:`以降=オプションマーカーを除去して表示・**非legタスク=洗車/引取/送迎/その他のみ**表示`.tmemo`）。
+- **教訓**：staff.htmlはOPシートの個別ミラー。**洗車/引取(翌日出発)の時刻は`time`でなく`memo`に入る**（`w-`/`p-`+予約ID・generateTasksが`memo:「M/D DEL HH:MM 氏名」`で生成・`time:""`）。バイト向けに時刻文脈を出す時はmemo必須。RPCが返すフィールドを増やす時はstaff.html側の描画も対で直す（片方だけは無意味）。
+
 ## 🩹 2026-08-07 傷チェック送信リスト「自動予定と出るのに二度と送信されない」根治（v4.7.506 + damage-check-cron）
 症状＝当日DEL(例 ヤマモトDY00000000985/近藤XSU99176)がLINE連携済なのに傷チェック未送信のまま「⏳自動予定」表示＝嘘の自動予定。**実データ切り分け（台帳/DB）で真因は連携タイミングでなく別要因**：①XSU＝車両`アルフ7927`の`vehicle_twins.share_enabled=false`→傷トークン無し→cronは`no_dmg_token`でスキップ（送信行すら残らない）②DY＝DEL担当`無人`→cronの`UNATTENDED_RE`で意図的除外③両者`done=true`(出発済)→cron`done=eq.false`で除外。cronは`*/5`で終日稼働済（連携後の拾いは元々OK）。
 - **②表示修正(index.src.html DamageSendList SPK)**＝`autoSendable = 連携済 && 傷トークン有効 && 非無人/乗捨 && 未出発(done=false)`を計算。真ならだけ「⏳自動予定」、偽なら**赤「未送信・<理由:未連携/傷未発行/無人/出発済>」＋(トークン有れば)📋コピー＋✅対応**を表示。手動未対応バッジも`!autoSendable`基準に。→ 送信されない状況を「自動予定」と偽らずスタッフが手動対応できる。queryに`done`追加。
