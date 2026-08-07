@@ -1,5 +1,20 @@
 # SPK業務管理APP（札幌店）
 
+## 🩹 2026-08-07 傷チェック送信リスト「自動予定と出るのに二度と送信されない」根治（v4.7.506 + damage-check-cron）
+症状＝当日DEL(例 ヤマモトDY00000000985/近藤XSU99176)がLINE連携済なのに傷チェック未送信のまま「⏳自動予定」表示＝嘘の自動予定。**実データ切り分け（台帳/DB）で真因は連携タイミングでなく別要因**：①XSU＝車両`アルフ7927`の`vehicle_twins.share_enabled=false`→傷トークン無し→cronは`no_dmg_token`でスキップ（送信行すら残らない）②DY＝DEL担当`無人`→cronの`UNATTENDED_RE`で意図的除外③両者`done=true`(出発済)→cron`done=eq.false`で除外。cronは`*/5`で終日稼働済（連携後の拾いは元々OK）。
+- **②表示修正(index.src.html DamageSendList SPK)**＝`autoSendable = 連携済 && 傷トークン有効 && 非無人/乗捨 && 未出発(done=false)`を計算。真ならだけ「⏳自動予定」、偽なら**赤「未送信・<理由:未連携/傷未発行/無人/出発済>」＋(トークン有れば)📋コピー＋✅対応**を表示。手動未対応バッジも`!autoSendable`基準に。→ 送信されない状況を「自動予定」と偽らずスタッフが手動対応できる。queryに`done`追加。
+- **①cron改善(damage-check-cron)**＝`done=eq.false`のSQL除外を撤廃し、予約の出発時刻(タスク時刻→`reservations.lend_time`補完)でゲート。`done=true`は「出発時刻が判明かつ未出発の時だけ救済送信」、それ以外の出発済みは送らない(傷チェックは出発前案内)。→ 早めにdone化された未出発便の取りこぼしを解消・出発後の無駄送信は防止。deno check通過・デプロイ済・実起動`candidates:0`(誤送信なし)確認。
+- **教訓**：「自動予定」等の"予定"表示は、実際に自動処理が起きる全条件(連携+共有発行+担当種別+未出発)を満たす時だけ出す。連携有無だけで判定すると"送られない自動予定"を生む。傷チェックは車両の`vehicle_twins.share_enabled`が要る＝共有未発行の車両は自動送信不可（リストで「傷未発行」と明示）。
+
+## ⏰🕒 2026-08-06 OP時刻が予約とズレる根本＝"正本が複数"／正＝最後にお客様が入れた時刻（台帳基軸・オーナー確定・次回根治TODO）
+オーナー確定の顧客タイムライン＝**① 予約(OTA booking：lend/return_time) → ② 受付フォーム入力(`_ssTime`＝お届け/回収希望) → ③ LINE連携 → ④ マイページで変更可 → ⑤ スタッフがOPシートで直接編集**。**時系列で"後"が正＝①＜②＜④。そして⑤スタッフのOP直接編集＝最優先の正（現場が一番分かる・顧客値や自動整合で絶対に上書きしない＝`_manualTimeAt`/`_timeChange`で保護）**。一番最後の正当な書込が正本＝**台帳(audit_log)のタイムスタンプ＋actor(staff/customer)で確定できる**。優先順位＝**⑤スタッフ手動 ＞ ④マイページ ＞ ②フォーム ＞ ①予約**。
+- **通常はOP＝②フォーム(`_ssTime`)＝正**（予約booking時刻は名目）。→ 「OP表示≠予約(return/col_time)」は大半が正常（フォームが後で正）。**予約と単純比較するアラートは誤検知**（2026-08-06に作った`spk_task_time_check`/cron`spk-time-check-am/pm`は参照先が逆＝誤検知のため**即unschedule停止済**）。
+- **真のエラー＝④マイページで後から時刻変更したのに、タスクの`_ssTime`(②)が古いまま**＝OPだけ取り残される（例：イワタ様 DY00000001066＝マイページ14:30・OPの_ssTime14:00。手動でtask時間/_ssTime/_timeChange=14:30に是正済）。原因＝**マイページの時刻変更が予約(return/col_time)は更新するがタスクの`_ssTime`へ伝播していない**。
+- **次回根治(クォータ回復後・台帳検証必須のcritical箇所)**：①**判定**＝台帳で「予約側の時刻変更(=マイページ④)が タスク`_ssTimeAt`(②)より後か」→後なら**OPを最新(マイページ値)へ自動整合**②**元断ち**＝マイページ時刻変更時にタスク`_ssTime`(＋`_timeChange`)へ即伝播（handyman-mypage EF patchTasksSpk）。→ 「④が必ずOPに反映＝再発ゼロ・台帳基軸で自動判定/修正」。**教訓：判断できない時は台帳を見る＝軸。正本を1つ(=最後の顧客入力)に決めれば自動化できる**。
+
+## ⏰ 2026-08-05 タイムカード打刻不能＝計画行を"実打刻"と誤判定（書込RPCだけ直すと"直らない"）
+staff.html?t=token「⏰打刻」の出勤ボタンが押せない。真因＝**出勤簿で管理者が入れたシフト＝spk_attendanceの"計画行"(memo=''・start/end埋め)を打刻ロジックが"既に出勤済み"と誤判定**（計画と実績が同一1行を共有・クラス④派生）。**打刻は2RPCで動く**：①書込`spk_staff_punch`②表示`spk_staff_timecard`(staff.htmlの`renderPunch`が状態を組む＝ボタン出し分け)。**①だけ直すと"直ってない"**＝保存は通るが②が計画行のstart_time(09:00)を「出勤済み」で返し`hasIn=!!d.start`→st="working"→**出勤ボタンをdisabled**。根治＝**両RPCに`v_real`判定**(`memo IN('打刻','打刻中','仮申請') OR memo LIKE '協議中%'`＝実打刻のみ。計画行memo=''は未打刻)：①ブロックせず打刻で上書き＋end_timeクリア ②start/end/breaksを空で返す→出勤ボタン有効化。**両方サーバ側RPC＝アプリ/build不要・DB即反映**。**教訓：打刻など"書込＋表示"がペアのRPCは必ず両方直す。片方だけは"保存はできるがUIが古い状態で操作不能"＝"直ってない"報告になる。** 正本＝`~/spk-task/spk_timecard.sql`。
+
 ## 🕒 2026-08-04(続) 洗車/引取 時刻ピッカーの保存をDEL/COLと統一＝timeChange付与（v4.7.500）
 v4.7.499(overlay根治)の追い込み。洗車(w-)/引取(p-)の時刻ピッカー2箇所（洗車専用セクション`renderWashRow` L16589・マスター表 L16987）が`_save(t._id,{...t,time:v})`＝**time単独保存**で、①`_mergeUserInput`(L427 `prev._timeChanged||prev.timeChange`時だけtime維持)に拾われず**mirror/SSパトロールで生成値に戻される** ②schedule等の表示resolver`timeChange||_ssTime||time`にも反映されない、余地があった。→両ピッカーを**`_save(t._id,mark({...t,time:v,timeChange:v},"timeChange"))`** に統一（DEL/COL L17157と同型）。**教訓：時刻を手動編集して保存する箇所は必ず`timeChange`(＋mark)を立てる＝time単独保存は再生成/ミラーで戻る**。洗車/引取はleg外→`_toDbTaskBare`のtime空化・STEP2/3導出の対象外で副作用なし（`←orig`変化バッジも time=timeChange=vで非表示）。
 

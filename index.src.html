@@ -80,9 +80,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1039';
+var CV='spk-v1041';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=933').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=935').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -1443,6 +1443,18 @@ function _isPickupCar(veh,cls){
   if(veh&&veh.ownerCompany&&veh.ownerCompany!=="HANDYMAN")return true;
   const c=veh?veh.type:cls;
   return c==="A2"||c==="B2";
+}
+// ★2026-08-07 月末月初調整タスク(その他)を自動生成。
+//   仕様(オーナー確定): 期間=毎月25日〜翌月5日／担当=三國 玲音(全日)／各日1件。
+//   根治パターン厳守: ①固定ID(mmadj-<date>)=upsert冪等で重複しない ②墓標(deleted=true)は再生成しない(loadTasksの_tombガード) ③_taskDateで日付固定=別日へ移動不能。
+//   月に依存しない純関数: 日付の"日"が25〜末 or 1〜5なら対象(= 25日〜翌5日 と等価)。
+//   担当"三國 玲音"は初期値のみ(生成時=DBに未存在時のみ書く)。既存があればloadTasksが触らない=担当/済/メモの人間編集を上書きしない。
+function genMonthAdjTask(date){
+  const _s=String(date||"");
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(_s))return null;
+  const dd=parseInt(_s.slice(8,10),10);
+  if(!(dd>=25||dd<=5))return null;
+  return{_id:"mmadj-"+_s,type:"その他",time:"",name:"月末月初調整",memo:"",people:0,place:"",vehicle:"",assignedVehicle:"",plateNo:"",reservationId:"",ota:"",tel:"",mail:"",done:false,assignee:"三國 玲音",flight:"",returnDate:"",returnTime:"",returnType:"",colPlace:"",insurance:"",opts:{b:0,c:0,j:0},yakkan:false,line:false,payment:false,manual:true,_taskDate:_s,_mmAdj:true,timeChange:"",typeChange:"",_changed:{}};
 }
 function generateTasks(reservations,date,fleet,vehicles){
   const tasks=[];
@@ -15942,12 +15954,18 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       if(_pickRevive.length){try{if(sb)sb.from("tasks").update({deleted:false}).in("_id",_pickRevive).then(()=>{});}catch(_e){}console.log("[loadTasks] 引取(p-)を復活(預かり車へ再配車):",_pickRevive.length,_pickRevive);}
       // 新規予約のタスク全体、または A2/B2 引取タスクが未生成の既存予約に引取だけ補完
       const newTasks=gen.filter(g=>g.reservationId&&!_tomb.has(g._id)&&(!existingResIds.has(g.reservationId)||(g.type==="引取"&&!existingTaskIds.has(g._id))));
-      if(newTasks.length){
+      // ★2026-08-07 月末月初調整(その他)を補完: 期間内(25日〜翌5日)で、DBに未存在(全saved id照合)かつ墓標でない時だけ1件挿入。
+      //   固定IDなので存在すれば触らない=重複なし・担当/済/メモの人間編集を上書きしない。予約タスクと同じupdateTask(単一upsert)で書く。
+      const _mmAdj=genMonthAdjTask(date);
+      const _existAllIds=new Set(result.map(t=>t._id));
+      const _mmIns=(_mmAdj&&!_tomb.has(_mmAdj._id)&&!_existAllIds.has(_mmAdj._id))?_mmAdj:null;
+      const _toIns=_mmIns?[...newTasks,_mmIns]:newTasks;
+      if(_toIns.length){
         newTasks.forEach(g=>{const sp=sheetPlaces[g.reservationId];if(sp&&!g.place){if(g.type==="DEL"&&sp.delPlace)g.place=sp.delPlace;if(g.type==="COL"&&sp.colPlace)g.place=sp.colPlace;}});
-        const merged=[...result,...newTasks];
+        const merged=[...result,..._toIns];
         DB._lsSave(merged,date);
-        newTasks.forEach((nt,i)=>DB.updateTask(nt,date));
-        setTasks(prev=>{const sIds=new Set(saved.map(t=>t._id));const pm=_prevLoadedDate===date?(prev||[]).filter(t=>t.manual&&!t.reservationId&&!sIds.has(t._id)):[];return pm.length?[...merged,...pm]:merged;});return;
+        _toIns.forEach((nt,i)=>DB.updateTask(nt,date));
+        setTasks(prev=>{const sIds=new Set(saved.map(t=>t._id));const pm=_prevLoadedDate===date?(prev||[]).filter(t=>t.manual&&!t.reservationId&&!sIds.has(t._id)&&t._id!==(_mmIns&&_mmIns._id)):[];return pm.length?[...merged,...pm]:merged;});return;
       }
       setTasks(prev=>{const sIds=new Set(saved.map(t=>t._id));const pm=_prevLoadedDate===date?(prev||[]).filter(t=>t.manual&&!t.reservationId&&!sIds.has(t._id)):[];return pm.length?[...result,...pm]:result;});return;
     }
@@ -15962,6 +15980,9 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
     // ★2026-07-28 引取(p-)復活: あるべき集合(現配車=預かり車)なのに墓標なら deleted解除して再出現可能に
     gen.filter(g=>g.type==="引取").forEach(g=>{if(_tomb.has(g._id)){_tomb.delete(g._id);try{if(sb)sb.from("tasks").update({deleted:false}).eq("_id",g._id).then(()=>{});}catch(_e){}}});
     const gen2=gen.filter(g=>!_tomb.has(g._id));// ★2026-07-13 墓標ガード: 削除済みは再生成しない
+    // ★2026-08-07 月末月初調整(その他)を初回生成にも追加(期間内・墓標でない時のみ)。固定ID=upsert冪等・墓標尊重。
+    const _mmAdj0=genMonthAdjTask(date);
+    if(_mmAdj0&&!_tomb.has(_mmAdj0._id))gen2.push(_mmAdj0);
     setTasks(gen2);
     // 🛡 protect=true: 万一DBに既存行があってもスタッフ入力(担当/場所/時間)を焼き戻して上書き事故を防止
     if(gen2.length)DB.upsertTasks(gen2,date,{protect:true});
@@ -20853,8 +20874,8 @@ function DamageSendList({sb,store}){
         const{data}=await sb.from("nha_tasks").select("時間,予約者,担当,予約番号,assigned_vehicle,内容").eq("date",today);
         tasks=(data||[]).filter(t=>["PUB","DEL","来店"].includes(t["内容"])).map(t=>({time:t["時間"]||"",name:t["予約者"]||"",assignee:t["担当"]||"",resv:t["予約番号"]||"",veh:t.assigned_vehicle||"",type:t["内容"]}));
       }else{
-        const{data}=await sb.from("tasks").select("time,name,assignee,reservation_id,assigned_vehicle,type").eq("date",today).eq("type","DEL").neq("deleted",true);
-        tasks=(data||[]).map(t=>({time:t.time||"",name:t.name||"",assignee:t.assignee||"",resv:t.reservation_id||"",veh:t.assigned_vehicle||"",type:t.type}));
+        const{data}=await sb.from("tasks").select("time,name,assignee,reservation_id,assigned_vehicle,type,done").eq("date",today).eq("type","DEL").neq("deleted",true);
+        tasks=(data||[]).map(t=>({time:t.time||"",name:t.name||"",assignee:t.assignee||"",resv:t.reservation_id||"",veh:t.assigned_vehicle||"",type:t.type,done:!!t.done}));
       }
       tasks=tasks.filter(t=>t.resv);
       const sendsTbl=isNha?"nha_line_sends":"spk_line_sends";
@@ -20870,7 +20891,13 @@ function DamageSendList({sb,store}){
         const token=(dm&&dm.enabled&&dm.token)?dm.token:null;
         let status="pending";
         if(s&&s.status==="sent")status="sent"; else if(s&&s.status==="manual_done")status="manual_done";
-        return {...t,ok:!!linkM[t.resv],token,status,at:s?s.sent_at:null};
+        const ok=!!linkM[t.resv];
+        const unattended=/無人|乗り?捨/.test(t.assignee||"");
+        // cronが自動送信できる条件＝LINE連携済 & 傷チェック共有発行済(トークン有効) & 無人/乗捨でない & 未出発(done=false)
+        const autoSendable=ok&&!!token&&!unattended&&!t.done;
+        let reason="";
+        if(!autoSendable){ if(!ok)reason="未連携"; else if(!token)reason="傷未発行"; else if(unattended)reason="無人"; else if(t.done)reason="出発済"; }
+        return {...t,ok,token,status,at:s?s.sent_at:null,autoSendable,unattended,reason};
       }).sort((a,b)=>(a.time||"99").localeCompare(b.time||"99"));
       setRows(out);
     }catch(e){console.warn("[dmgSendList]",e.message);}
@@ -20887,7 +20914,7 @@ function DamageSendList({sb,store}){
     try{await sb.from(tbl).insert({resv_no:r.resv,action:"damage_check",status:"manual_done",message:"手動対応"});load();}catch(e){alert("記録に失敗:"+e.message);}
   };
   const fmt=(iso)=>{try{const d=new Date(iso);return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");}catch(e){return"";}};
-  const pending=rows.filter(r=>!r.ok&&r.status==="pending").length;
+  const pending=rows.filter(r=>r.status==="pending"&&!r.autoSendable).length;
   if(!rows.length)return <div style={{padding:16,color:"#94a3b8",fontSize:13,textAlign:"center"}}>本日の傷チェック対象（{isNha?"PUB/DEL/来店":"DEL"}）はありません。</div>;
   return <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:12,margin:"8px 0",overflow:"hidden"}}>
     <div onClick={()=>setOpen(o=>!o)} style={{padding:"10px 12px",background:"#fef2f2",cursor:"pointer",display:"flex",alignItems:"center",gap:8,borderBottom:open?"1px solid #fecaca":"none"}}>
@@ -20905,9 +20932,10 @@ function DamageSendList({sb,store}){
         <span style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:5}}>
           {r.status==="sent"&&<span style={{fontSize:11,fontWeight:700,color:"#15803d"}}>✅送信済{r.at?" "+fmt(r.at):""}</span>}
           {r.status==="manual_done"&&<span style={{fontSize:11,fontWeight:700,color:"#15803d"}}>✅対応済{r.at?" "+fmt(r.at):""}</span>}
-          {r.status==="pending"&&r.ok&&<span style={{fontSize:11,fontWeight:700,color:"#0284c7"}}>⏳自動予定</span>}
-          {r.status==="pending"&&!r.ok&&<span style={{display:"flex",gap:5}}>
-            <button onClick={()=>copyMsg(r)} style={{fontSize:10,fontWeight:800,padding:"4px 9px",borderRadius:6,background:"#2563eb",color:"#fff",border:"none",cursor:"pointer"}}>📋コピー</button>
+          {r.status==="pending"&&r.autoSendable&&<span style={{fontSize:11,fontWeight:700,color:"#0284c7"}}>⏳自動予定</span>}
+          {r.status==="pending"&&!r.autoSendable&&<span style={{display:"flex",gap:5,alignItems:"center"}}>
+            <span style={{fontSize:11,fontWeight:800,color:"#fff",background:"#dc2626",padding:"1px 7px",borderRadius:8}}>未送信{r.reason?"・"+r.reason:""}</span>
+            {r.token&&<button onClick={()=>copyMsg(r)} style={{fontSize:10,fontWeight:800,padding:"4px 9px",borderRadius:6,background:"#2563eb",color:"#fff",border:"none",cursor:"pointer"}}>📋コピー</button>}
             <button onClick={()=>markDone(r)} style={{fontSize:10,fontWeight:800,padding:"4px 9px",borderRadius:6,background:"#16a34a",color:"#fff",border:"none",cursor:"pointer"}}>✅対応</button>
           </span>}
         </span>
@@ -23817,7 +23845,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.504";
+const APP_VERSION="v4.7.506";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
