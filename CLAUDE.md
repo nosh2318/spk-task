@@ -35,6 +35,13 @@
 - **修正**：①RPC`spk_staff_view`の各`jsonb_build_object`に`'memo',coalesce(t.memo,'')`追加（baseに`t.memo`）②staff.html taskCardに`memoLine`（memoの`\n##BCJ:`以降=オプションマーカーを除去して表示・**非legタスク=洗車/引取/送迎/その他のみ**表示`.tmemo`）。
 - **教訓**：staff.htmlはOPシートの個別ミラー。**洗車/引取(翌日出発)の時刻は`time`でなく`memo`に入る**（`w-`/`p-`+予約ID・generateTasksが`memo:「M/D DEL HH:MM 氏名」`で生成・`time:""`）。バイト向けに時刻文脈を出す時はmemo必須。RPCが返すフィールドを増やす時はstaff.html側の描画も対で直す（片方だけは無意味）。
 
+## 🗑 2026-08-08 引取(p-)の恒久削除＝手動削除は自動復活させない(_pickDeletedフラグ・v4.7.512)
+オーナー「引取3件削除」。引取(p-)はA2/B2預かり車の翌日出発で自動生成(generateTasks)され、**2026-07-28の自動復活ロジック(_pickRevive)が単純な墓標(deleted=true)を『預かり車へ再配車』とみなして復活**させる＝消しても戻る。データ保全の唯一ルール「消したものは復活させない/人間の書込を保護」に反していた。
+- **根治**：手動削除に`changed_json._pickDeleted=true`フラグを立て、loadTasksの**全経路**で除外＝二度と出さない：①復活ガード`_pickRevive`(both spots)`&&!_pickPermaDel.has()` ②新規生成`newTasks`/初回`gen2`から除外 ③旧版で復活(deleted=false)していたら**自己修復で再削除**。`_pickPermaDel`は`changed_json like '%pickDeleted%'`で**deleted状態に関わらず全状態から収集**（revived分も拾う）。
+- **UI**：OPマスター表の⋯(moreTask)メニューに「🗑この引取を削除（復活しない）」を追加＝今後はオーナーが自分で恒久削除可。
+- **🔴revive競合の教訓**：単純にdeleted=trueにするだけだと、**旧版アプリを開いている別セッションが数十秒で復活(deleted=false)させる**＝「消したのに戻る」。切り分け＝SQLでdeleted=trueにした直後にrevived=3へ戻る＝旧版セッションのloadTasks(revive)が犯人。恒久削除は「フラグ付き墓標＋全経路除外＋復活検知→再削除」の3点セットが要る（フラグ無しの墓標は自動生成/復活ロジックに負ける）。新版ライブ後は revived=0/del=3 で安定を実データ監視で確認。
+- 該当3件＝p-FLZ66727(西﨑弘司/3382)・p-R01SOXRL(トヨタマユミ/7927)・p-RC12461254718835875(フクイトモキ/2383)。
+
 ## 🩹 2026-08-07 傷チェック送信リスト「自動予定と出るのに二度と送信されない」根治（v4.7.506 + damage-check-cron）
 症状＝当日DEL(例 ヤマモトDY00000000985/近藤XSU99176)がLINE連携済なのに傷チェック未送信のまま「⏳自動予定」表示＝嘘の自動予定。**実データ切り分け（台帳/DB）で真因は連携タイミングでなく別要因**：①XSU＝車両`アルフ7927`の`vehicle_twins.share_enabled=false`→傷トークン無し→cronは`no_dmg_token`でスキップ（送信行すら残らない）②DY＝DEL担当`無人`→cronの`UNATTENDED_RE`で意図的除外③両者`done=true`(出発済)→cron`done=eq.false`で除外。cronは`*/5`で終日稼働済（連携後の拾いは元々OK）。
 - **②表示修正(index.src.html DamageSendList SPK)**＝`autoSendable = 連携済 && 傷トークン有効 && 非無人/乗捨 && 未出発(done=false)`を計算。真ならだけ「⏳自動予定」、偽なら**赤「未送信・<理由:未連携/傷未発行/無人/出発済>」＋(トークン有れば)📋コピー＋✅対応**を表示。手動未対応バッジも`!autoSendable`基準に。→ 送信されない状況を「自動予定」と偽らずスタッフが手動対応できる。queryに`done`追加。
