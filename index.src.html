@@ -80,9 +80,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1049';
+var CV='spk-v1050';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=940').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=941').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -13801,21 +13801,26 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
                         const rWithBreak=calcHours(dy.att.start,dy.att.end,bm);
                         const real=(bm>0&&rWithBreak<=0)?gross:rWithBreak;// 短時間ガード(賃金ロジックと一致)
                         const brDeduct=Math.round((gross-real)*10)/10;// この行で実際に差し引いた休憩(h)
-                        // 賃金列: この行の実働×時給。月給複合の固定日は¥0(月給内包)
-                        let wage;
+                        // 賃金列: この行の実働×時給。月給複合の固定日は基本8h=¥0(月給内包)だが8h超の残業は表示する
+                        //  固定日残業=時給×1.25全額 / 変動日残業=基本(時給×実働)に割増分(時給×0.25×超過)を加算
+                        let wage,otH=0;
                         if(!isP)wage=null;
-                        else if(d.isMonthlyPart)wage=(d.monthlyHasHourly&&!dy.fixed)?Math.round((si.hourlyWage||0)*real):0;
+                        else if(d.isMonthlyPart){
+                          otH=real>8?Math.round((real-8)*10)/10:0;
+                          if(d.monthlyHasHourly&&!dy.fixed){wage=Math.round((si.hourlyWage||0)*real)+(otH>0?Math.round((si.hourlyWage||0)*0.25*otH):0);}
+                          else{wage=otH>0?Math.round((si.hourlyWage||0)*1.25*otH):0;}// 固定給曜日: 残業分のみ支給表示
+                        }
                         else wage=Math.round((dy._wage||si.hourlyWage||0)*real);
                         // 合計(実働)には賃金対象の実働だけ積む=サマリーと一致
                         //  ・月給複合: 変動日のみ / 日給複合・時給: 全日
                         const countReal=d.isMonthlyPart?(d.monthlyHasHourly&&!dy.fixed?real:0):real;
                         sumReal+=countReal;
-                        return {dy,gross,real,brDeduct,wage,isFixedIncl:d.isMonthlyPart&&dy.fixed};
+                        return {dy,gross,real,brDeduct,wage,otH,isFixedIncl:d.isMonthlyPart&&dy.fixed};
                       });
                       sumReal=Math.round(sumReal*10)/10;
                       const showGross=bm>0;// 休憩控除がある人だけ拘束を併記
                       return <>
-                        {rows.map(({dy,gross,real,brDeduct,wage,isFixedIncl})=>{
+                        {rows.map(({dy,gross,real,brDeduct,wage,otH,isFixedIncl})=>{
                           const isSun=dy.dow===0;const isSat=dy.dow===6;
                           const dc=isSun?"#dc2626":isSat?"#2563eb":"#374151";
                           return <tr key={dy.date} style={{borderBottom:"1px solid #f8fafc"}}>
@@ -13826,9 +13831,10 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
                               {real}h
                               {showGross&&brDeduct>0&&<div style={{fontSize:8,color:"#94a3b8",fontWeight:500,lineHeight:1.2}}>拘束{gross}h<br/>休憩-{brDeduct}h</div>}
                             </td>
-                            {isP&&<td style={{padding:"3px 6px",textAlign:"right",color:"#64748b"}}>
+                            {isP&&<td style={{padding:"3px 6px",textAlign:"right",color:(otH>0?"#f97316":"#64748b"),fontWeight:otH>0?700:400}}>
                               ¥{wage.toLocaleString()}
-                              {isFixedIncl&&<div style={{fontSize:8,color:"#1d4ed8",fontWeight:600,lineHeight:1.2}}>月給内包</div>}
+                              {isFixedIncl&&<div style={{fontSize:8,color:otH>0?"#c2410c":"#1d4ed8",fontWeight:600,lineHeight:1.2}}>{otH>0?"月給内包＋残業"+otH+"h":"月給内包"}</div>}
+                              {!isFixedIncl&&otH>0&&<div style={{fontSize:8,color:"#c2410c",fontWeight:600,lineHeight:1.2}}>内 残業{otH}h</div>}
                             </td>}
                           </tr>;
                         })}
@@ -13836,7 +13842,7 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
                           <td colSpan={2} style={{padding:"4px 6px",textAlign:"right",fontWeight:700,fontSize:11,color:"#374151"}}>合計{showGross?<div style={{fontSize:8,color:"#94a3b8",fontWeight:500}}>(実働)</div>:null}</td>
                           <td style={{padding:"4px 6px",textAlign:"center",fontSize:11,color:"#64748b"}}>{dayRows.length}日</td>
                           <td style={{padding:"4px 6px",textAlign:"right",fontWeight:900,color:"#059669"}}>{sumReal.toFixed(1)}h</td>
-                          {isP&&<td style={{padding:"4px 6px",textAlign:"right",fontWeight:700,color:"#1e40af"}}>¥{(d.isMonthlyPart?(d.monthlyHasHourly?Math.round((si.hourlyWage||0)*d.actualVarHours):0):d.actualWage).toLocaleString()}</td>}
+                          {isP&&<td style={{padding:"4px 6px",textAlign:"right",fontWeight:700,color:"#1e40af"}}>¥{(d.isMonthlyPart?(Math.round((si.hourlyWage||0)*(d.monthlyHasHourly?d.actualVarHours:0))+Math.round(d.actualOtPay||0)):d.actualWage).toLocaleString()}</td>}
                         </tr>
                       </>;
                     })()}
@@ -23871,7 +23877,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.514";
+const APP_VERSION="v4.7.515";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
