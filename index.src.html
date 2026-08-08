@@ -80,7 +80,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1044';
+var CV='spk-v1045';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=939').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -15900,8 +15900,10 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
     const validResIds=new Set(curRes.map(r=>r.id));
     // ★2026-07-13 墓標ガード: 削除済み(deleted=true)タスクは再生成しない（消した引取/洗車/予約タスクが復活する不具合の根治）
     //   fetchTasksはdeleted=trueを除外するため、generateTasksの補完(引取/新規予約)が墓標を無視して復活させていた。
-    let _tomb=new Set();
-    try{if(sb){const{data:_dd}=await sb.from("tasks").select("_id").eq("date",date).eq("deleted",true);(_dd||[]).forEach(x=>_tomb.add(x._id));}}catch(_e){}
+    let _tomb=new Set();let _pickPermaDel=new Set();
+    // ★2026-08-08 引取(p-)の恒久削除: changed_jsonに "_pickDeleted":true がある墓標は「人間が意図的に消した」印。
+    //   引取の自動復活(_pickRevive)対象から外す＝消したものは二度と復活させない（データ保全の唯一ルール）。
+    try{if(sb){const{data:_dd}=await sb.from("tasks").select("_id,changed_json").eq("date",date).eq("deleted",true);(_dd||[]).forEach(x=>{_tomb.add(x._id);if(x.changed_json&&/"_pickDeleted"\s*:\s*true/.test(x.changed_json))_pickPermaDel.add(x._id);});}}catch(_e){}
     if(saved&&saved.length>0){
       const fl=fleetRef.current;
       // ★2026-07-04 開くだけでDBを書かない: 孤立タスクはDB削除せず「表示から除外」のみ。
@@ -15953,7 +15955,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       });
       if(_pickTomb.length){_pickTomb.forEach(id=>{existingTaskIds.delete(id);DB.deleteTask(id,date);});console.log("[loadTasks] 引取(p-)残存を墓標化(自社車へ戻し/対象外):",_pickTomb.length,_pickTomb);}
       const _pickRevive=[];
-      _genPickIds.forEach(rid=>{const pid="p-"+rid;if(_tomb.has(pid)){_pickRevive.push(pid);_tomb.delete(pid);}});
+      _genPickIds.forEach(rid=>{const pid="p-"+rid;if(_tomb.has(pid)&&!_pickPermaDel.has(pid)){_pickRevive.push(pid);_tomb.delete(pid);}});
       if(_pickRevive.length){try{if(sb)sb.from("tasks").update({deleted:false}).in("_id",_pickRevive).then(()=>{});}catch(_e){}console.log("[loadTasks] 引取(p-)を復活(預かり車へ再配車):",_pickRevive.length,_pickRevive);}
       // 新規予約のタスク全体、または A2/B2 引取タスクが未生成の既存予約に引取だけ補完
       const newTasks=gen.filter(g=>g.reservationId&&!_tomb.has(g._id)&&(!existingResIds.has(g.reservationId)||(g.type==="引取"&&!existingTaskIds.has(g._id))));
@@ -15981,7 +15983,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       if(sp&&g.type==="DEL"&&!g.colPlace&&sp.colPlace)g.colPlace=sp.colPlace;
     });
     // ★2026-07-28 引取(p-)復活: あるべき集合(現配車=預かり車)なのに墓標なら deleted解除して再出現可能に
-    gen.filter(g=>g.type==="引取").forEach(g=>{if(_tomb.has(g._id)){_tomb.delete(g._id);try{if(sb)sb.from("tasks").update({deleted:false}).eq("_id",g._id).then(()=>{});}catch(_e){}}});
+    gen.filter(g=>g.type==="引取").forEach(g=>{if(_tomb.has(g._id)&&!_pickPermaDel.has(g._id)){_tomb.delete(g._id);try{if(sb)sb.from("tasks").update({deleted:false}).eq("_id",g._id).then(()=>{});}catch(_e){}}});
     const gen2=gen.filter(g=>!_tomb.has(g._id));// ★2026-07-13 墓標ガード: 削除済みは再生成しない
     // ★2026-08-07 月末月初調整(その他)を初回生成にも追加(期間内・墓標でない時のみ)。固定ID=upsert冪等・墓標尊重。
     const _mmAdj0=genMonthAdjTask(date);
@@ -17520,6 +17522,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
               {isDEL&&rid&&<Btn ico="🅿️" label="事前駐車（無人貸出）依頼" sub="事前に停めてもらう案内" active={!!(actionDoneOf(rid,"advance_park")||actionDoneOf(rid,"advance_park_place"))} onClick={()=>{const _tk=(window._mypageTokenMap||{})[rid];const myUrl=_tk?("https://nosh2318.github.io/spk-task/my.html?t="+_tk):"（マイページURL未取得）";const plate=t.plateNo||"";setParkParams({name:t.name||"",myUrl,plate});setParkLang("ja");setParkGreet(msgParkGreet(t.name,myUrl,"ja"));setParkPlace(msgParkPlace(t.name,plate,"ja"));setParkMode("greet");setParkTask(t);}}/>}
               {isDEL&&rid&&<Btn ico="⏳" label="お届け遅延のご案内" sub="到着予定時間をお客様へ" active={!!actionDoneOf(rid,"del_delay")} onClick={()=>setDelayTask({...t,_delayKind:"del"})}/>}
               {isCOL&&rid&&<Btn ico="⏳" label="回収遅延のご案内" sub="到着予定時間をお客様へ" active={!!actionDoneOf(rid,"col_delay")} onClick={()=>setDelayTask(t)}/>}
+              {t.type==="引取"&&t._id&&<Btn ico="🗑" label="この引取を削除" sub="共立自動車からの引取が不要な時（削除後は自動で復活しません）" onClick={()=>{if(!window.confirm("この引取タスクを削除しますか？\n（今後この予約の引取は自動生成されません）"))return;const cj=JSON.stringify({...(t._changed||{}),_optB:+(t.opts?.b||0),_optC:+(t.opts?.c||0),_optJ:+(t.opts?.j||0),_ssTime:t._ssTime||"",_ssTimeAt:t._ssTimeAt||"",_ssPlace:t._ssPlace||"",_ssPlaceAt:t._ssPlaceAt||"",_timeChange:t.timeChange||"",_placeSource:t._placeSource||"",_ssSeen:t._ssSeen||"",_ssAlert:t._ssAlert||"",_manualTimeAt:t._manualTimeAt||"",_manualPlaceAt:t._manualPlaceAt||"",_typeChange:t.typeChange||"",_manual:!!t.manual,_nextDayWash:!!t._nextDayWash,_nextDayWashAt:t._nextDayWashAt||"",_taskDate:(t._taskDate||selDate),_pickDeleted:true});selfUpdateRef.current[selDate]=Date.now();setTasks(ts=>ts.filter(x=>x._id!==t._id));try{if(sb)sb.from("tasks").update({deleted:true,changed_json:cj}).eq("_id",t._id).then(()=>{});}catch(_e){}}}/>}
             </div>
           </div>
         </div>;})()}
@@ -18733,25 +18736,29 @@ function ParkingManager({masterVehicles}){
   },[]);
 
   // 車両マスター同期: 車両タブで追加された車両を駐車場にも追加（削除は手動のみ）
-  // 🔴 修正: 初期fetch完了を待ち、1回だけ実行 (masterSyncedRefを正しく使う)
+  // ★2026-08-08 駐車場の車両リスト＝配車表(vehicles master)を正本にミラーする(車種名+ナンバーを同一表示)。
+  // 正本(master)に無い旧スナップショット(車種変更/削除された古い複製)は掃除し、スタッフ車両など"配車表に無い意図的な追加"と入庫中の車だけ残す＝複製ドリフト解消。
+  const _prkSpotsRef=useRef(spots);_prkSpotsRef.current=spots;
+  const _prkStaffRef=useRef(staffCarMap);_prkStaffRef.current=staffCarMap;
+  const _prkMaintRef=useRef(maintMap);_prkMaintRef.current=maintMap;
   useEffect(()=>{
     if(!initialLoaded)return; // 🔴 初期fetch完了まで待機 (LS上書きバグ防止)
-    if(!masterVehicles||masterVehicles.length===0)return;
-    if(masterSyncedRef.current)return; // 🔴 初回のみ実行
-    masterSyncedRef.current=true;
+    if(!masterVehicles||masterVehicles.length===0)return; // masterが空(RLS/オフライン)なら掃除しない=安全
     setCars(prev=>{
-      const existingIds=new Set(prev.map(c=>c.id));
-      let changed=false;let next=[...prev];
-      masterVehicles.forEach(v=>{
-        const id=v.name+"-"+v.no;
-        if(!existingIds.has(id)){
-          next.push({id,name:v.name,plate:v.no});
-          setWashMap(p=>({...p,[id]:"未洗車"}));
-          setWashTimeMap(p=>({...p,[id]:null}));
-          changed=true;
-        }
-      });
-      return changed?next:prev;
+      // 配車表の全車両を車種名+ナンバーでそのまま採用(正本)
+      const masterList=masterVehicles.map(v=>({id:v.name+"-"+v.no,name:v.name,plate:v.no}));
+      const masterIds=new Set(masterList.map(c=>c.id));
+      // 配車表に無いが残すべき車両: 入庫中 / スタッフ車両(移動車) / メンテ管理中 / 名前に"スタッフ車両"
+      const parkedIds=new Set((_prkSpotsRef.current||[]).filter(s=>s.carId).map(s=>s.carId));
+      const staffMap=_prkStaffRef.current||{};const mMap=_prkMaintRef.current||{};
+      const keepExtra=(prev||[]).filter(c=>c&&!masterIds.has(c.id)&&(parkedIds.has(c.id)||staffMap[c.id]||mMap[c.id]||String(c.name||"").indexOf("スタッフ車両")>=0||String(c.name||"").indexOf("移動")>=0));
+      const next=[...masterList,...keepExtra];
+      // washMap/washTimeMap は最新stateを見て未登録の車両だけ初期化(既存の洗車状態は絶対壊さない)
+      setWashMap(p=>{let ch=false;const n={...p};next.forEach(c=>{if(n[c.id]===undefined){n[c.id]="未洗車";ch=true;}});return ch?n:p;});
+      setWashTimeMap(p=>{let ch=false;const n={...p};next.forEach(c=>{if(n[c.id]===undefined){n[c.id]=null;ch=true;}});return ch?n:p;});
+      // 変化なし(同じid集合・同じname/plate)なら再セットしない
+      const sig=a=>a.map(c=>c.id+"|"+c.name+"|"+c.plate).join("§");
+      return sig(next)===sig(prev||[])?prev:next;
     });
   },[masterVehicles,initialLoaded]);
 
@@ -23856,7 +23863,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.509";
+const APP_VERSION="v4.7.510";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
