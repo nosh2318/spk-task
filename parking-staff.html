@@ -4,7 +4,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta http-equiv="Cache-Control" content="no-cache,no-store,must-revalidate">
 <title>駐車場 - HANDYMAN札幌</title>
-<!-- parking-staff v3.15 : 車両リストを配車表(vehicles)と連動＝本体と同じ(RPC spk_fleet_for_parkingでanon取得)。旧: masterVehicles={[]}固定で同期がスキップされ配車表車両が欠落していた。2026-08-09 -->
+<!-- parking-staff v3.16 : 車両リストを配車表(vehicles)と連動＝本体と同じ(RPC spk_fleet_for_parkingでanon取得)。配車表(RPC)でroster全体を置換＝入庫中以外の配車表車両が必ず出る(旧: 追加のみ/空配列で欠落)。2026-08-09 -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
@@ -230,23 +230,19 @@ function ParkingManager({masterVehicles}){
   useEffect(()=>{
     if(!initialLoaded)return; // 🔴 初期fetch完了まで待機 (LS上書きバグ防止)
     if(!masterVehicles||masterVehicles.length===0)return;
-    if(masterSyncedRef.current)return; // 🔴 初回のみ実行
-    masterSyncedRef.current=true;
+    // ★2026-08-09 配車表(RPC=正本)で車両リスト全体を置き換え＝配車表の車両は必ず出る/配車表から消えた車両は除く。入庫中/スタッフ/メンテ/倉庫の車は配車表外でも保持（＝入庫車以外の配車表車両が全部出る）。追加のみ(旧)だと欠落・旧版保存で消えるので置き換えに変更。
     setCars(prev=>{
-      const existingIds=new Set(prev.map(c=>c.id));
-      let changed=false;let next=[...prev];
-      masterVehicles.forEach(v=>{
-        const id=v.name+"-"+v.no;
-        if(!existingIds.has(id)){
-          next.push({id,name:v.name,plate:v.no});
-          setWashMap(p=>({...p,[id]:"未洗車"}));
-          setWashTimeMap(p=>({...p,[id]:null}));
-          changed=true;
-        }
-      });
-      return changed?next:prev;
+      const masterList=masterVehicles.map(v=>({id:v.name+"-"+v.no,name:v.name,plate:v.no}));
+      const masterIds=new Set(masterList.map(c=>c.id));
+      const parkedIds=new Set((spots||[]).filter(s=>s.carId).map(s=>s.carId));
+      const keepExtra=(prev||[]).filter(c=>c&&!masterIds.has(c.id)&&(parkedIds.has(c.id)||(staffCarMap||{})[c.id]||(maintMap||{})[c.id]||(warehouseMap||{})[c.id]||String(c.name||"").indexOf("スタッフ車両")>=0));
+      const next=[...masterList,...keepExtra];
+      setWashMap(p=>{let ch=false;const n={...p};next.forEach(c=>{if(n[c.id]===undefined){n[c.id]="未洗車";ch=true;}});return ch?n:p;});
+      setWashTimeMap(p=>{let ch=false;const n={...p};next.forEach(c=>{if(n[c.id]===undefined){n[c.id]=null;ch=true;}});return ch?n:p;});
+      const sig=a=>a.map(c=>c.id+"|"+c.name+"|"+c.plate).join("§");
+      return sig(next)===sig(prev||[])?prev:next;
     });
-  },[masterVehicles,initialLoaded]);
+  },[masterVehicles,initialLoaded,spots]);
 
   // 🔴 3wayマージ: 保存直前に最新リモートを読み、自分が触ったエンティティだけ反映 (他端末の変更を保全)
   const mergeMaps=(base,sync,local)=>{
