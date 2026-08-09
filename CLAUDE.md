@@ -44,6 +44,9 @@
 - 鉄則：自動生成/自動復活されるレコードを"消したまま"にするには、レコード自身のフラグでは不可(再生成で消える)。外部の永続キー表＋サーバ側トリガーで正本側から抑制する。クライアント側ガードだけだと旧版セッションに負ける(切り分け＝SQLでdeleted=true直後にvisibleが戻る＝別セッションの書込が犯人)。
 - 該当3件＝FLZ66727(西﨑弘司)・R01SOXRL(トヨタマユミ)・RC12461254718835875(フクイトモキ)。正本＝`spk_no_pickup`表。復活させたい時はこの表から予約IDを削除。
 
+## 🩹 2026-08-10 駐車場PCだけまた違う＝本体アプリに幽霊復元が残存しspots除去後にクラッシュ(v4.7.516)
+昨日スマホ用(parking-staff v3.17)をparking_spots統一したが、翌日「PCだけ全く違う/スマホ正常」再発。真因＝**本体アプリ(index.src.html)のparking load に幽霊復元(LS restore)ロジックが残っていた**。しかもparking_stateからspotsを除去した(v3.17)後は、その中の`remote.spots.filter(...)`が**undefined例外→loadが途中で死にfetchSpots(parking_spots)に到達できず位置が全く読めない**＝PCだけ壊れる。**教訓：あるテーブル/キー(parking_state.spots)を廃止する時は、そのキーを読む全クライアント/全箇所を洗い出して撤去する。片方(スマホ)だけ直して本体を残すと、除去したデータを読む側が例外で死ぬ。** 根治①本体v4.7.516でload幽霊復元を完全撤去=位置はfetchSpots(parking_spots)のみ。②橋渡し=`parking_spots→parking_state.spots`ミラー(AFTERトリガー`trg_mirror_spots`＋毎分cron`parking-spots-mirror`)で、旧キャッシュ版PC(parking_state.spotsを読む)も正しい表示に。※クライアントのsave()はparking_stateを丸ごと書き換えspotsキーを消すので、ミラーは毎分cronで再充填が必須(トリガーだけだとspot無変更時に消えたまま)。恒久的にはsave()をmerge(data||maps)化してspots/carsキーを消さないのが理想(未実施・cronで代替)。**駐車の「PC/スマホ違う」系は、両クライアントが本当にparking_spotsだけを読んでいるか(旧テーブル/LS復元の残骸が無いか)をgrepで確認するのが確実。**
+
 ## ✅ 2026-08-09(完) 駐車場をPC/スマホ完全1本化＝位置parking_spots統一＋roster配車表軸(サーバ動的)
 オーナー確定「配車表を軸に常に反映(増減)」「位置のparking_spots一本化は大前提」。2本立てで根治：
 - **位置(spots)統一**：スマホ用`parking-staff.html`をv3.17で本体アプリと同じ`parking_spots`(1枠1行=台帳正本)に統一。旧`parking_state.spots`＋**幽霊復元(localStorage restore)を廃止**(=remote空時にLSの古い駐車を復元し嘘の駐車台数を出すバグ源)。DB層にfetchSpots/setSpotCar/setSpotMemo/addSpotRow/delSpotRow追加、load/poll/realtimeをfetchSpots化、入出庫/移動/枠増減は1枠ずつparking_spotsへ、save()とmerge3からspots/cars除外、spots専用realtimeチャンネル追加。→PC/スマホが同一正本=食い違い構造的に消滅。
