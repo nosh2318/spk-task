@@ -44,6 +44,11 @@
 - 鉄則：自動生成/自動復活されるレコードを"消したまま"にするには、レコード自身のフラグでは不可(再生成で消える)。外部の永続キー表＋サーバ側トリガーで正本側から抑制する。クライアント側ガードだけだと旧版セッションに負ける(切り分け＝SQLでdeleted=true直後にvisibleが戻る＝別セッションの書込が犯人)。
 - 該当3件＝FLZ66727(西﨑弘司)・R01SOXRL(トヨタマユミ)・RC12461254718835875(フクイトモキ)。正本＝`spk_no_pickup`表。復活させたい時はこの表から予約IDを削除。
 
+## 🅿️ 2026-08-09 駐車場PC/スマホのズレ＝別テーブル＋スマホの配車表未連動（台帳基軸で確定）
+オーナー「PCとスマホで駐車状況が違う／車両リストが配車表と合ってない」。台帳(parking_audit)を基軸に確定した2件。
+- **①駐車状態のズレ**：本体アプリ(PC)＝`parking_spots`(1枠1行・唯一の正本・監査トリガー付)／スマホ用`parking-staff.html`＝旧`parking_state`(whole-doc)を読む＝別テーブルで不同期。真の状態は`parking_audit`をリプレイ(各spot_idの最新new_car)＝4台(260:アルファード7927/172:ノア3382/トラストパーク:ノア2383/ソリオ6260※監査前seed)で`parking_spots`と一致。PCの「9台」は古いキャッシュ版が空のparking_stateを読み→localStorageの幽霊9台を『データ消失復元』で表示していた偽物。教訓：駐車のズレ調査は必ず`parking_audit`をリプレイして正本を確定(画面/localStorage/whole-docは信用しない)。大失敗の教訓：スクショの見た目でPC/スマホどちらが正か推測して正本(parking_spots)を上書きするな→オーナーに現物一致を確認し台帳で裏取りしてから触る(今回スクショ9台を正と誤認し正しい4台を一時破壊→即復元)。parking_spotsは`parking_block_bulk_car`トリガーで1文の複数枠変更が禁止＝修正は1枠ずつUPDATE。
+- **②車両リストが配車表と未連動**：`parking-staff.html`が`<ParkingManager masterVehicles={[]}/>`＝空配列固定で配車表同期(`if(masterVehicles.length===0)return`)が毎回スキップ→ハードコードのまま(配車表のデミオ/ノート1111が欠落)。本体アプリは`masterVehicles={vehicles}`で連動済だった。根治(v3.15)：スマホ用が本体DBから配車表をSECURITY DEFINER RPC `spk_fleet_for_parking()`(anon grant・active車両のname/no/type)で取得→masterVehiclesに渡す(anon直読みはRLSで0件なのでRPC必須)。同期は追加のみ(スタッフ車両等は保持)。教訓：別DB(駐車rkrvjpipvpybkmqadmrb)のスタンドアロンから本体DB(ckrxttbnawkclshczsia)のvehiclesを読むにはSECURITY DEFINER RPC＋anon grant。「配車表と合わせて」は手修正でなく配車表から動的導出にしないと必ず再ドリフトする。
+
 ## 🩹 2026-08-07 傷チェック送信リスト「自動予定と出るのに二度と送信されない」根治（v4.7.506 + damage-check-cron）
 症状＝当日DEL(例 ヤマモトDY00000000985/近藤XSU99176)がLINE連携済なのに傷チェック未送信のまま「⏳自動予定」表示＝嘘の自動予定。**実データ切り分け（台帳/DB）で真因は連携タイミングでなく別要因**：①XSU＝車両`アルフ7927`の`vehicle_twins.share_enabled=false`→傷トークン無し→cronは`no_dmg_token`でスキップ（送信行すら残らない）②DY＝DEL担当`無人`→cronの`UNATTENDED_RE`で意図的除外③両者`done=true`(出発済)→cron`done=eq.false`で除外。cronは`*/5`で終日稼働済（連携後の拾いは元々OK）。
 - **②表示修正(index.src.html DamageSendList SPK)**＝`autoSendable = 連携済 && 傷トークン有効 && 非無人/乗捨 && 未出発(done=false)`を計算。真ならだけ「⏳自動予定」、偽なら**赤「未送信・<理由:未連携/傷未発行/無人/出発済>」＋(トークン有れば)📋コピー＋✅対応**を表示。手動未対応バッジも`!autoSendable`基準に。→ 送信されない状況を「自動予定」と偽らずスタッフが手動対応できる。queryに`done`追加。
