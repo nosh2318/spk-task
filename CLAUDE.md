@@ -44,6 +44,12 @@
 - 鉄則：自動生成/自動復活されるレコードを"消したまま"にするには、レコード自身のフラグでは不可(再生成で消える)。外部の永続キー表＋サーバ側トリガーで正本側から抑制する。クライアント側ガードだけだと旧版セッションに負ける(切り分け＝SQLでdeleted=true直後にvisibleが戻る＝別セッションの書込が犯人)。
 - 該当3件＝FLZ66727(西﨑弘司)・R01SOXRL(トヨタマユミ)・RC12461254718835875(フクイトモキ)。正本＝`spk_no_pickup`表。復活させたい時はこの表から予約IDを削除。
 
+## ✅ 2026-08-09(完) 駐車場をPC/スマホ完全1本化＝位置parking_spots統一＋roster配車表軸(サーバ動的)
+オーナー確定「配車表を軸に常に反映(増減)」「位置のparking_spots一本化は大前提」。2本立てで根治：
+- **位置(spots)統一**：スマホ用`parking-staff.html`をv3.17で本体アプリと同じ`parking_spots`(1枠1行=台帳正本)に統一。旧`parking_state.spots`＋**幽霊復元(localStorage restore)を廃止**(=remote空時にLSの古い駐車を復元し嘘の駐車台数を出すバグ源)。DB層にfetchSpots/setSpotCar/setSpotMemo/addSpotRow/delSpotRow追加、load/poll/realtimeをfetchSpots化、入出庫/移動/枠増減は1枠ずつparking_spotsへ、save()とmerge3からspots/cars除外、spots専用realtimeチャンネル追加。→PC/スマホが同一正本=食い違い構造的に消滅。
+- **roster(車両リスト)を配車表軸で動的**：静的スナップショットは増減に追従せず不可。**本体DB(pg_net+pg_cron)→駐車DBのクロスDB同期**：本体cron`push-fleet-to-parking`(5分毎)が配車表active→`net.http_post`で駐車DB RPC`sync_parking_fleet(jsonb)`(SECURITY DEFINER/anon)→`parking_fleet`表を配車表と一致(増減・スタッフ保持)。駐車DB cron`parking-roster-guard`(毎分)が`parking_state.cars=parking_fleet+入庫中`にid集合差分時のみ更新(realtime storm防止)。→配車表の増減が数分で駐車場に自動反映・旧セッション上書きもサーバが是正。
+- **教訓**：①「A軸に常に反映」は手修正や静的snapshotでなく、A(配車表)から動的導出(サーバcron or クライアントRPC)にする。②別DB(駐車rkrvj…)への動的同期は、本体DBのpg_net→相手DBのSECURITY DEFINER RPCで実現(相手DBにpg_net無くてもpush型でOK)。③whole-doc(parking_state)に位置と車両を混ぜたのが全ての元凶＝位置は1枠1行(parking_spots)、車両はサーバ維持、で分離。④「幽霊復元(LS restoreでデータ消失を補う)」は別テーブル/旧版と併存すると嘘データを蘇らせる＝正本1本化したら廃止する。cron確認=main:`push-fleet-to-parking`/parking:`parking-roster-guard`。
+
 ## 🔒 2026-08-09(続々) 駐車場rosterから車両が「また消える」＝旧セッション上書き→サーバ側cronで固定
 1111(デミオ)をroster正本に足しても数分でまた消える。原因＝**動作中の古いクライアントセッション（配車表stateが古い本体アプリ等）が、1111無しの旧roster(21台)を保存し続ける**。クライアント側修正(v3.16)は"新規セッション"にしか効かず、既に開いている旧セッションは止められない（＝引取のrevive競合と同型：走っている旧版が正本を上書き）。**サーバ側で固定**：駐車DB(rkrvjpipvpybkmqadmrb)に`parking_fleet`表(配車表19＋スタッフ3＝正しいroster)＋関数`parking_roster_guard()`＋**pg_cron `parking-roster-guard`(毎分)**。cronは`parking_state.data.cars`に`parking_fleet`の欠落分を毎分追記＝旧セッションが消しても60秒以内に自動復帰。cronはcars(roster)だけ触りspots(位置)は不触＝位置ズレは起こさない。**教訓：走っている旧版セッションによる正本上書きは、クライアント修正では止まらない→サーバ側の維持cron/トリガーで固定する(引取のspk_no_pickupトリガーと同じ発想)。** 注意：`parking_fleet`は配車表のスナップショット＝配車表に車を足したら`parking_fleet`も更新要(駐車DBにpg_net無くcross-DB自動同期不可・当面seed/手動。新規セッションはRPC spk_fleet_for_parkingで動的反映されるので表示は出る)。cron確認＝`select * from cron.job where jobname='parking-roster-guard'`(駐車DB)。
 
