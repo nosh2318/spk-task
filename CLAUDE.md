@@ -44,6 +44,9 @@
 - 鉄則：自動生成/自動復活されるレコードを"消したまま"にするには、レコード自身のフラグでは不可(再生成で消える)。外部の永続キー表＋サーバ側トリガーで正本側から抑制する。クライアント側ガードだけだと旧版セッションに負ける(切り分け＝SQLでdeleted=true直後にvisibleが戻る＝別セッションの書込が犯人)。
 - 該当3件＝FLZ66727(西﨑弘司)・R01SOXRL(トヨタマユミ)・RC12461254718835875(フクイトモキ)。正本＝`spk_no_pickup`表。復活させたい時はこの表から予約IDを削除。
 
+## 🚗 2026-08-09(続) 駐車場の車両リストを配車表(vehicles)と恒久連動＝入庫中以外は全部出す
+オーナー「配車表の車両が全部出ない(デミオ/ノート1111が無い)・入庫中以外は全部出るべき」。原因3つ：①スマホ用`parking-staff.html`が`masterVehicles={[]}`空固定で配車表同期がスキップ→ハードコードroster ②同期が"追加のみ"で、旧版クライアントの保存がrosterを上書きし1111を消す(私がSQLで足しても別クライアント保存で消えた) ③配車表の1111の`name`に**先頭スペース**があり`name+"-"+plate`のid生成がズレていた。根治：①`spk_fleet_for_parking()`(SECURITY DEFINER・anon)で配車表(active)を取得しmasterVehiclesに渡す(anon直readはRLSで0件) ②同期を**追加のみ→配車表で全置換**(masterList＝配車表, keepExtraで入庫中/スタッフ/メンテ/倉庫の車だけ保持)＝配車表に無い車は消え/ある車は必ず出る・旧保存でも次回loadで是正 ③`update vehicles set name=trim(name)`で表記是正。roster正本(parking_state.data.cars)を配車表19＋スタッフ3=22で再構築。本体アプリ(index.src.html)は元から`masterVehicles={vehicles}`で全置換連動済(active19=props.vehicles一致)。**教訓：「配車表と合わせて」は手でデータ修正でなく配車表から動的に全置換導出(active絞り)＝でないと再ドリフト。車両id=name+plateなので配車表nameのスペース等の表記ゆれがズレ元→trimで正規化。ドロップダウンは入庫中(parking_spots.car_id)を除外＝出ないのは正常。** parking-staff v3.16。
+
 ## 🅿️ 2026-08-09 駐車場PC/スマホのズレ＝別テーブル＋スマホの配車表未連動（台帳基軸で確定）
 オーナー「PCとスマホで駐車状況が違う／車両リストが配車表と合ってない」。台帳(parking_audit)を基軸に確定した2件。
 - **①駐車状態のズレ**：本体アプリ(PC)＝`parking_spots`(1枠1行・唯一の正本・監査トリガー付)／スマホ用`parking-staff.html`＝旧`parking_state`(whole-doc)を読む＝別テーブルで不同期。真の状態は`parking_audit`をリプレイ(各spot_idの最新new_car)＝4台(260:アルファード7927/172:ノア3382/トラストパーク:ノア2383/ソリオ6260※監査前seed)で`parking_spots`と一致。PCの「9台」は古いキャッシュ版が空のparking_stateを読み→localStorageの幽霊9台を『データ消失復元』で表示していた偽物。教訓：駐車のズレ調査は必ず`parking_audit`をリプレイして正本を確定(画面/localStorage/whole-docは信用しない)。大失敗の教訓：スクショの見た目でPC/スマホどちらが正か推測して正本(parking_spots)を上書きするな→オーナーに現物一致を確認し台帳で裏取りしてから触る(今回スクショ9台を正と誤認し正しい4台を一時破壊→即復元)。parking_spotsは`parking_block_bulk_car`トリガーで1文の複数枠変更が禁止＝修正は1枠ずつUPDATE。
