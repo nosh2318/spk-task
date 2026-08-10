@@ -15790,12 +15790,23 @@ class OPErrorBoundary extends React.Component{
   static getDerivedStateFromError(err){return {err:err};}
   componentDidCatch(err,info){try{console.error("[OPScreen crash]",err,info&&info.componentStack);if(typeof showErr==="function")showErr("[OPシート描画エラー] "+((err&&err.message)||err),((err&&err.stack)||"")+"\n"+((info&&info.componentStack)||""));}catch(e){}}
   render(){if(this.state.err){return React.createElement("div",{style:{padding:20,background:"#fff7ed",border:"1px solid #fdba74",borderRadius:8,margin:12,fontSize:13,color:"#9a3412"}},React.createElement("div",{style:{fontWeight:800,marginBottom:6}},"⚠️ OPシートの表示でエラーが発生しました"),React.createElement("div",{style:{fontSize:12,marginBottom:8,whiteSpace:"pre-wrap",fontFamily:"monospace"}},String((this.state.err&&this.state.err.message)||this.state.err)),React.createElement("button",{onClick:()=>this.setState({err:null}),style:{padding:"6px 14px",background:"#ea580c",color:"#fff",border:"none",borderRadius:6,fontWeight:700,cursor:"pointer"}},"🔄 再表示"));}return this.props.children;}}
+/* ★2026-08-10 場所→区+座標の裏解決(タスク自動振り分けPJ Phase1)。OPで当日DEL/COLの場所のうち"区がテキストに無い"もの(ホテル/駅名)だけGoogleでジオコーディングし spk_place_geo にキャッシュ。全try/catch・非同期・OPのstateに一切触れない=失敗してもOP無傷。同じ住所は1回だけ。 */
+const SPK_WARDS=["中央区","北区","東区","白石区","厚別区","豊平区","清田区","南区","西区","手稲区"];
+const SPK_WARD_RE=/中央区|北区|東区|白石区|厚別区|豊平区|清田区|南区|西区|手稲区/;
+const _GEO_KEY="AIzaSyCoX1EyEx-N5A0r4vRzC1KmVp3T29HILbI";
+let _gmapsLoadP=null,_geoBusy=false;const _placeGeoMem={};
+function _ensureGmaps(){if(_gmapsLoadP)return _gmapsLoadP;_gmapsLoadP=new Promise((res,rej)=>{try{if(window.google&&window.google.maps)return res();const s=document.createElement("script");s.src="https://maps.googleapis.com/maps/api/js?key="+_GEO_KEY+"&language=ja&region=JP";s.async=true;s.onload=()=>res();s.onerror=()=>rej(new Error("gmaps load fail"));document.head.appendChild(s);}catch(e){rej(e);}});return _gmapsLoadP;}
+function _wardFromComps(comps){try{for(const c of (comps||[])){if(SPK_WARDS.indexOf(c.long_name)>=0)return c.long_name;}}catch(_){}return null;}
+async function _geocodeOne(addr){await _ensureGmaps();return new Promise(res=>{try{const gc=new google.maps.Geocoder();gc.geocode({address:addr,region:"jp",componentRestrictions:{country:"jp"}},(r,st)=>{try{if(st==="OK"&&r&&r[0]){const loc=r[0].geometry.location;res({lat:loc.lat(),lng:loc.lng(),ward:_wardFromComps(r[0].address_components)});}else res(null);}catch(_){res(null);}});}catch(_){res(null);}});}
+async function _bgGeocodeWards(addrs){if(_geoBusy||typeof sb==="undefined"||!sb||!addrs||!addrs.length)return;_geoBusy=true;try{for(const addr of addrs.slice(0,8)){try{const g=await _geocodeOne(addr);if(g){_placeGeoMem[addr]=g.ward||"";try{await sb.from("spk_place_geo").upsert({address:addr,lat:g.lat,lng:g.lng,ward:g.ward||null,updated_at:new Date().toISOString()},{onConflict:"address"});}catch(_){}}await new Promise(r=>setTimeout(r,220));}catch(_){}}}catch(_){}finally{_geoBusy=false;}}
 function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFleet,vehicles,staff,resOpts,sheetPlaces,onUpdateSheetPlaces,repeaterMap,jalanPay,isJPaidFn,extraPayFn,cancelledIdsRef,onCancelReservation,onTaskChange}){
   const[requestTask,setRequestTask]=useState(null);
   const[moreTask,setMoreTask]=useState(null);
   const[bulkMode,setBulkMode]=useState(false);const[bulkSel,setBulkSel]=useState([]);const[bulkReqOpen,setBulkReqOpen]=useState(false);
   const bulkToggle=id=>setBulkSel(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id]);
   const[dayOff,setDayOff]=useState(0);const selDate=dOff(today,dayOff);const[tasks,setTasks]=useState([]);
+  /* ★2026-08-10 当日DEL/COLの場所→区の裏解決(タスク自動振り分けPJ)。区がテキストに無い場所(ホテル/駅名)だけをGoogleでジオコーディングしspk_place_geoにキャッシュ。全try/catch=OP無影響。 */
+  useEffect(()=>{try{if(typeof sb==="undefined"||!sb)return;(async()=>{try{const places=[...new Set((tasks||[]).filter(t=>t&&(t.type==="DEL"||t.type==="COL")).map(t=>taskPlaceResolved(t)).filter(p=>p&&!SPK_WARD_RE.test(p)&&!/未定|デモ/.test(p)))];if(!places.length)return;const{data}=await sb.from("spk_place_geo").select("address,ward").in("address",places);const have=new Set((data||[]).filter(x=>x.ward).map(x=>x.address));const todo=places.filter(p=>!have.has(p));if(todo.length)_bgGeocodeWards(todo);}catch(_){}})();}catch(_){}},[selDate,tasks.length]);
   /* ★2026-07-12 洗車「翌日対応(当日貸出洗車)」オーバーレイ: 前日(selDate-1)にある洗車で_nextDayWash=trueのものを、その貸出日=selDateに表示上だけ持ってくる(DB書込なし・日付不変)。 */
   const[nextDayWashOverlay,setNextDayWashOverlay]=useState([]);
   const[editResId,setEditResId]=useState(null);
