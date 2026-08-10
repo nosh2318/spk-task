@@ -80,9 +80,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1053';
+var CV='spk-v1054';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=942').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=944').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -15846,23 +15846,23 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       const legs=(tasks||[]).filter(t=>(t.type==="DEL"||t.type==="COL")&&!t.done&&!(t.assignee&&t.assignee.trim())).map(t=>({t,tm:_hm(_taskTime(t)),min:_taskMin(t),ward:_taskWard(t)})).filter(x=>x.tm!=null).sort((a,b)=>a.tm-b.tm);
       if(!legs.length){alert("担当が空いているDEL/COL（時間あり）がありません");return;}
       const mem=activeMembers.map(name=>{const sh=(shifts[selDate]||[]).find(s=>s.name===name);const st=_hm(sh&&sh.start),en=_hm(sh&&sh.end);return{name,free:st!=null?st:0,end:en!=null?en:24*60,cnt:0,lastWard:null};});
-      const result={};let conflictN=0;
+      const ASSIGN_TOL=10; // 指定時刻から この分まで遅れて空く人なら割当可。それ超＝物理的にリソースが居ない→担当ブランクのまま(無理に押し込まない=正解)。
+      const result={};let blankN=0;
       for(const leg of legs){
-        /* ジャストに空いてる人はほぼ出ないので「一番条件に近い人＝待ち時間(free-指定時刻)が最小の人」を選ぶ。同/近区優先→負荷少→早く空く。大きくズレる(20分超遅れ or 勤務外)時だけ要調整印。 */
-        let cands=mem.filter(m=>m.end>=leg.tm+leg.min);
-        if(!cands.length)cands=mem.slice();
+        /* 割当可能な人＝勤務内(end>=tm+min) かつ 指定時刻+許容(TOL)までに空く人。その中で「一番近い(待ち最小)→同/近区→負荷少→早く空く」。該当が居なければ物理的に無理→担当ブランクのまま(押し込まない)。 */
+        const cands=mem.filter(m=>m.end>=leg.tm+leg.min && m.free<=leg.tm+ASSIGN_TOL);
+        if(!cands.length){blankN++;continue;}
         cands.forEach(m=>{m._wait=Math.max(0,m.free-leg.tm);});
         cands.sort((a,b)=>(a._wait-b._wait)||((a.lastWard===leg.ward?-1:0)-(b.lastWard===leg.ward?-1:0))||(a.cnt-b.cnt)||(a.free-b.free));
-        const pick=cands[0];const over=(pick._wait>20)||(pick.end<leg.tm+leg.min);
-        result[leg.t._id]={name:pick.name,over};
+        const pick=cands[0];
+        result[leg.t._id]={name:pick.name};
         pick.free=Math.max(leg.tm,pick.free)+leg.min+AUTO_BUFFER;pick.cnt++;pick.lastWard=leg.ward;
-        if(over)conflictN++;
       }
       const n=Object.keys(result).length;
-      if(!window.confirm("🤖 自動仮組み\n担当が空いているDEL/COL "+n+"件に、区の所要（＋"+AUTO_BUFFER+"分バッファ）と出勤時間で担当を仮置きします。\n"+(conflictN?"⚠️ うち "+conflictN+"件は同時刻集中で空きが無く『要調整』（メモに印）\n":"")+"既にある担当はそのまま。洗車/その他は対象外。\nよろしいですか？"))return;
+      if(!window.confirm("🤖 自動仮組み\n担当が空いているDEL/COL "+legs.length+"件を、区の所要（＋"+AUTO_BUFFER+"分バッファ）と出勤メンバー/時間で仮置きします。\n"+(blankN?"⚠️ うち "+blankN+"件は出勤リソースが足りず割当不可＝担当ブランクのまま（人員追加/時間調整が必要）\n":"")+"既にある担当はそのまま。洗車/その他は対象外。\nよろしいですか？"))return;
       let applied=0;
-      (tasks||[]).forEach(t=>{const r=result[t._id];if(!r)return;const nx={...t,assignee:r.name,_assigneeCustom:false};if(r.over){const mm=(t.memo||"").indexOf("要調整")<0?((t.memo?t.memo+" ":"")+"⚠要調整"):(t.memo||"");nx.memo=mm;}try{_save(t._id,mark(nx,"assignee"));applied++;}catch(_){}});
-      alert("✅ 仮組み完了："+applied+"件に担当を仮置きしました"+(conflictN?"（要調整 "+conflictN+"件）":"")+"。\n内容を確認して調整してください。");
+      (tasks||[]).forEach(t=>{const r=result[t._id];if(!r)return;try{_save(t._id,mark({...t,assignee:r.name,_assigneeCustom:false},"assignee"));applied++;}catch(_){}});
+      alert("✅ 仮組み完了："+applied+"件に担当を仮置き"+(blankN?"／"+blankN+"件は割当不可でブランク（人員/時間の調整が必要）":"")+"。\n内容を確認して調整してください。");
     }catch(e){alert("自動仮組みでエラー: "+(e&&e.message||e));}
   };
   const fleetRef=React.useRef(fleet);fleetRef.current=fleet;
@@ -23892,7 +23892,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.518";
+const APP_VERSION="v4.7.519";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
