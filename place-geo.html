@@ -1,0 +1,116 @@
+<!doctype html><html lang="ja"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>札幌 配達先ジオコーディング（座標キャッシュ）</title>
+<!-- place-geo v1 : 住所→座標＋拠点(北5西16)からの車所要＋最寄駅 を spk_place_geo にキャッシュ。DEL/COL自動時間の土台(Phase1-A) 2026-08-10 -->
+<style>
+body{font-family:-apple-system,"Hiragino Kaku Gothic ProN",sans-serif;margin:0;background:#f1f5f9;color:#0f172a}
+.wrap{max-width:1000px;margin:0 auto;padding:16px}
+h1{font-size:18px;margin:8px 0}
+.card{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:14px;margin-bottom:12px}
+button{padding:10px 16px;border-radius:10px;border:none;background:#1e40af;color:#fff;font-weight:800;font-size:15px;cursor:pointer}
+button:disabled{background:#94a3b8;cursor:default}
+.bar{height:10px;background:#e2e8f0;border-radius:6px;overflow:hidden;margin:8px 0}
+.bar>i{display:block;height:100%;background:#2563eb;width:0}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{border-bottom:1px solid #f1f5f9;padding:5px 6px;text-align:left;white-space:nowrap}
+th{background:#f8fafc;position:sticky;top:0}
+.tbl{max-height:60vh;overflow:auto;border:1px solid #e2e8f0;border-radius:8px}
+.muted{color:#64748b;font-size:12px}
+.ok{color:#059669;font-weight:700}.ng{color:#dc2626;font-weight:700}
+.km{font-family:monospace;font-weight:700}
+#map{width:1px;height:1px;overflow:hidden}
+.stat{display:flex;gap:14px;flex-wrap:wrap;font-size:13px}
+.stat b{font-size:20px}
+</style></head>
+<body><div class="wrap">
+<h1>🗺 札幌 配達先ジオコーディング（DEL/COL自動時間の土台）</h1>
+<div class="card">
+  <div class="muted">拠点＝〒060-0005 札幌市中央区北5条西16丁目1-1。住所→座標＋拠点からの車の所要（分/km）＋最寄駅 を計算して <b>spk_place_geo</b> にキャッシュします（同じ住所は1回だけ）。</div>
+  <div class="stat" style="margin-top:8px">
+    <span>拠点：<b id="yard">…</b></span>
+    <span>対象住所：<b id="cntAll">…</b></span>
+    <span>未処理：<b id="cntTodo">…</b></span>
+    <span>処理済：<b id="cntDone" class="ok">0</b></span>
+    <span>失敗：<b id="cntErr" class="ng">0</b></span>
+  </div>
+  <div class="bar"><i id="prog"></i></div>
+  <div style="display:flex;gap:10px;align-items:center;margin-top:8px">
+    <button id="start" disabled>読み込み中…</button>
+    <label class="muted"><input type="checkbox" id="redo"> 既存キャッシュも再計算</label>
+    <span id="status" class="muted"></span>
+  </div>
+</div>
+<div class="card"><div class="tbl"><table id="rt"><thead><tr>
+  <th>住所</th><th>座標</th><th>拠点から</th><th>最寄駅</th><th>駅まで徒歩</th><th>状態</th>
+</tr></thead><tbody></tbody></table></div></div>
+</div>
+<div id="map"></div>
+<script>
+const SB="https://ckrxttbnawkclshczsia.supabase.co";
+const ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
+const GKEY="AIzaSyCoX1EyEx-N5A0r4vRzC1KmVp3T29HILbI";
+const YARD_ADDR="北海道札幌市中央区北5条西16丁目1-1";
+const $=s=>document.querySelector(s);
+function sbGet(path){return fetch(SB+"/rest/v1/"+path,{headers:{apikey:ANON,Authorization:"Bearer "+ANON}}).then(r=>r.json());}
+function sbUpsert(row){return fetch(SB+"/rest/v1/spk_place_geo",{method:"POST",headers:{apikey:ANON,Authorization:"Bearer "+ANON,"Content-Type":"application/json",Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(row)});}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+let geocoder,dmat,places,yard=null,queue=[],done=0,err=0;
+function badAddr(p){p=(p||"").trim();return !p||/未定|デモ|^-+$/.test(p);}
+function esc(s){return String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+function addRow(addr,coord,drive,st,walk,state,cls){
+  const tb=$("#rt tbody");const tr=document.createElement("tr");
+  tr.innerHTML="<td>"+esc(addr)+"</td><td>"+esc(coord)+"</td><td class='km'>"+esc(drive)+"</td><td>"+esc(st)+"</td><td>"+esc(walk)+"</td><td class='"+(cls||"")+"'>"+esc(state)+"</td>";
+  tb.insertBefore(tr,tb.firstChild);
+}
+function gGeocode(addr){return new Promise(res=>{geocoder.geocode({address:addr,region:"jp",componentRestrictions:{country:"jp"}},(r,s)=>res(s==="OK"&&r[0]?r[0].geometry.location:null));});}
+function gDrive(dest){return new Promise(res=>{dmat.getDistanceMatrix({origins:[yard],destinations:[dest],travelMode:google.maps.TravelMode.DRIVING},(r,s)=>{try{const e=r.rows[0].elements[0];if(e.status==="OK")res({min:Math.round(e.duration.value/60),km:+(e.distance.value/1000).toFixed(1)});else res(null);}catch(_){res(null);}});});}
+function gStation(loc){return new Promise(res=>{places.nearbySearch({location:loc,rankBy:google.maps.places.RankBy.DISTANCE,type:"train_station"},(r,s)=>{if(s==="OK"&&r&&r[0])res(r[0]);else res(null);});});}
+function gWalk(orig,dest){return new Promise(res=>{dmat.getDistanceMatrix({origins:[orig],destinations:[dest],travelMode:google.maps.TravelMode.WALKING},(r,s)=>{try{const e=r.rows[0].elements[0];res(e.status==="OK"?Math.round(e.duration.value/60):null);}catch(_){res(null);}});});}
+
+async function init(){
+  geocoder=new google.maps.Geocoder();
+  dmat=new google.maps.DistanceMatrixService();
+  places=new google.maps.places.PlacesService(new google.maps.Map($("#map"),{center:{lat:43.06,lng:141.33},zoom:12}));
+  const yl=await gGeocode(YARD_ADDR);
+  if(!yl){$("#status").textContent="拠点のジオコーディング失敗";return;}
+  yard={lat:yl.lat(),lng:yl.lng()};$("#yard").textContent=yard.lat.toFixed(4)+","+yard.lng.toFixed(4);
+  // 対象住所（直近60日のdel/col）とキャッシュ済みを取得
+  const rs=await sbGet("reservations?select=del_place,col_place&lend_date=gte."+new Date(Date.now()-60*864e5).toISOString().slice(0,10));
+  const cached=await sbGet("spk_place_geo?select=address");
+  const have=new Set((cached||[]).map(x=>x.address));
+  const set=new Set();
+  (rs||[]).forEach(r=>{[r.del_place,r.col_place].forEach(p=>{if(!badAddr(p))set.add(p.trim());});});
+  const all=[...set];
+  window._all=all;window._have=have;
+  $("#cntAll").textContent=all.length;
+  $("#cntTodo").textContent=all.filter(a=>!have.has(a)).length;
+  $("#start").disabled=false;$("#start").textContent="▶ 開始";
+}
+async function run(){
+  const redo=$("#redo").checked;
+  queue=window._all.filter(a=>redo||!window._have.has(a));
+  $("#start").disabled=true;$("#start").textContent="処理中…";done=0;err=0;
+  const total=queue.length;
+  for(let i=0;i<queue.length;i++){
+    const addr=queue[i];$("#status").textContent="("+(i+1)+"/"+total+") "+addr;
+    try{
+      const loc=await gGeocode(addr);await sleep(120);
+      if(!loc){err++;$("#cntErr").textContent=err;addRow(addr,"—","—","—","—","住所解決不可","ng");continue;}
+      const coord={lat:loc.lat(),lng:loc.lng()};
+      const dr=await gDrive(coord);await sleep(120);
+      const st=await gStation(coord);await sleep(120);
+      let stName="",walk=null;
+      if(st){stName=st.name;walk=await gWalk(coord,st.geometry.location);await sleep(120);}
+      await sbUpsert({address:addr,lat:coord.lat,lng:coord.lng,drive_min:dr?dr.min:null,drive_km:dr?dr.km:null,station_name:stName||null,station_walk_min:walk,updated_at:new Date().toISOString()});
+      done++;$("#cntDone").textContent=done;
+      addRow(addr,coord.lat.toFixed(4)+","+coord.lng.toFixed(4),dr?(dr.min+"分 "+dr.km+"km"):"—",stName||"—",walk!=null?(walk+"分"):"—","✓保存","ok");
+    }catch(e){err++;$("#cntErr").textContent=err;addRow(addr,"—","—","—","—","エラー:"+e.message,"ng");}
+    $("#prog").style.width=Math.round((i+1)/total*100)+"%";
+  }
+  $("#status").textContent="完了（保存"+done+"・失敗"+err+"）";$("#start").disabled=false;$("#start").textContent="▶ 再実行";
+}
+$("#start").addEventListener("click",run);
+window._gmapReady=init;
+</script>
+<script async src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCoX1EyEx-N5A0r4vRzC1KmVp3T29HILbI&libraries=places&callback=_gmapReady&language=ja&region=JP"></script>
+</body></html>
