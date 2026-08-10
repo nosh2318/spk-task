@@ -80,7 +80,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1052';
+var CV='spk-v1053';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=942').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -15807,6 +15807,9 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
   const[dayOff,setDayOff]=useState(0);const selDate=dOff(today,dayOff);const[tasks,setTasks]=useState([]);
   /* ★2026-08-10 当日DEL/COLの場所→区の裏解決(タスク自動振り分けPJ)。区がテキストに無い場所(ホテル/駅名)だけをGoogleでジオコーディングしspk_place_geoにキャッシュ。全try/catch=OP無影響。 */
   useEffect(()=>{try{if(typeof sb==="undefined"||!sb)return;(async()=>{try{const places=[...new Set((tasks||[]).filter(t=>t&&(t.type==="DEL"||t.type==="COL")).map(t=>taskPlaceResolved(t)).filter(p=>p&&!SPK_WARD_RE.test(p)&&!/未定|デモ/.test(p)))];if(!places.length)return;const{data}=await sb.from("spk_place_geo").select("address,ward").in("address",places);const have=new Set((data||[]).filter(x=>x.ward).map(x=>x.address));const todo=places.filter(p=>!have.has(p));if(todo.length)_bgGeocodeWards(todo);}catch(_){}})();}catch(_){}},[selDate,tasks.length]);
+  /* ★2026-08-10 自動仮組みの材料: 区→分(spk_ward_time)と 住所→区キャッシュ(spk_place_geo) を読み込む */
+  const[wardMin,setWardMin]=useState({});const[placeWard,setPlaceWard]=useState({});
+  useEffect(()=>{try{if(typeof sb==="undefined"||!sb)return;(async()=>{try{const{data:wt}=await sb.from("spk_ward_time").select("ward,minutes");const wm={};(wt||[]).forEach(x=>{wm[x.ward]=x.minutes;});setWardMin(wm);}catch(_){}try{const{data:pg}=await sb.from("spk_place_geo").select("address,ward");const pw={};(pg||[]).forEach(x=>{if(x.ward)pw[x.address]=x.ward;});setPlaceWard(pw);}catch(_){}})();}catch(_){}},[selDate,tasks.length]);
   /* ★2026-07-12 洗車「翌日対応(当日貸出洗車)」オーバーレイ: 前日(selDate-1)にある洗車で_nextDayWash=trueのものを、その貸出日=selDateに表示上だけ持ってくる(DB書込なし・日付不変)。 */
   const[nextDayWashOverlay,setNextDayWashOverlay]=useState([]);
   const[editResId,setEditResId]=useState(null);
@@ -15831,6 +15834,37 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       return false;
     }).map(s=>s.name);
   },[shifts,selDate,staff]);
+  /* ★2026-08-10 自動仮組み(タスク自動振り分けPJ): ブランクのDEL/COLを、区→分(spk_ward_time)＋出勤メンバー＋出勤時間で仮置き。各タスク後に+15分バッファ。空きが無い時刻は「要調整」印。エリアまとめ(同/近区を同じ人へ優先)。洗車/その他は対象外(管理者が手動)。既存担当は上書きしない=人の2割調整を守る。 */
+  const AUTO_BUFFER=15;
+  const _hm=(s)=>{const m=/^(\d{1,2}):(\d{2})$/.exec(String(s||"").trim());return m?((+m[1])*60+(+m[2])):null;};
+  const _taskWard=(t)=>{try{const p=taskPlaceResolved(t);if(!p)return null;const m=p.match(SPK_WARD_RE);if(m)return m[0];return placeWard[p]||null;}catch(_){return null;}};
+  const _taskMin=(t)=>{const w=_taskWard(t);return (w&&wardMin[w])||wardMin["(区なし)"]||45;};
+  const _taskTime=(t)=>t.timeChange||t._ssTime||t.time;
+  const autoAssign=()=>{
+    try{
+      if(!activeMembers.length){alert("出勤メンバーがいません（出勤簿を確認してください）");return;}
+      const legs=(tasks||[]).filter(t=>(t.type==="DEL"||t.type==="COL")&&!t.done&&!(t.assignee&&t.assignee.trim())).map(t=>({t,tm:_hm(_taskTime(t)),min:_taskMin(t),ward:_taskWard(t)})).filter(x=>x.tm!=null).sort((a,b)=>a.tm-b.tm);
+      if(!legs.length){alert("担当が空いているDEL/COL（時間あり）がありません");return;}
+      const mem=activeMembers.map(name=>{const sh=(shifts[selDate]||[]).find(s=>s.name===name);const st=_hm(sh&&sh.start),en=_hm(sh&&sh.end);return{name,free:st!=null?st:0,end:en!=null?en:24*60,cnt:0,lastWard:null};});
+      const result={};let conflictN=0;
+      for(const leg of legs){
+        /* ジャストに空いてる人はほぼ出ないので「一番条件に近い人＝待ち時間(free-指定時刻)が最小の人」を選ぶ。同/近区優先→負荷少→早く空く。大きくズレる(20分超遅れ or 勤務外)時だけ要調整印。 */
+        let cands=mem.filter(m=>m.end>=leg.tm+leg.min);
+        if(!cands.length)cands=mem.slice();
+        cands.forEach(m=>{m._wait=Math.max(0,m.free-leg.tm);});
+        cands.sort((a,b)=>(a._wait-b._wait)||((a.lastWard===leg.ward?-1:0)-(b.lastWard===leg.ward?-1:0))||(a.cnt-b.cnt)||(a.free-b.free));
+        const pick=cands[0];const over=(pick._wait>20)||(pick.end<leg.tm+leg.min);
+        result[leg.t._id]={name:pick.name,over};
+        pick.free=Math.max(leg.tm,pick.free)+leg.min+AUTO_BUFFER;pick.cnt++;pick.lastWard=leg.ward;
+        if(over)conflictN++;
+      }
+      const n=Object.keys(result).length;
+      if(!window.confirm("🤖 自動仮組み\n担当が空いているDEL/COL "+n+"件に、区の所要（＋"+AUTO_BUFFER+"分バッファ）と出勤時間で担当を仮置きします。\n"+(conflictN?"⚠️ うち "+conflictN+"件は同時刻集中で空きが無く『要調整』（メモに印）\n":"")+"既にある担当はそのまま。洗車/その他は対象外。\nよろしいですか？"))return;
+      let applied=0;
+      (tasks||[]).forEach(t=>{const r=result[t._id];if(!r)return;const nx={...t,assignee:r.name,_assigneeCustom:false};if(r.over){const mm=(t.memo||"").indexOf("要調整")<0?((t.memo?t.memo+" ":"")+"⚠要調整"):(t.memo||"");nx.memo=mm;}try{_save(t._id,mark(nx,"assignee"));applied++;}catch(_){}});
+      alert("✅ 仮組み完了："+applied+"件に担当を仮置きしました"+(conflictN?"（要調整 "+conflictN+"件）":"")+"。\n内容を確認して調整してください。");
+    }catch(e){alert("自動仮組みでエラー: "+(e&&e.message||e));}
+  };
   const fleetRef=React.useRef(fleet);fleetRef.current=fleet;
   const reservationsRef=React.useRef(reservations);reservationsRef.current=reservations;
   // ★ シート在庫管理
@@ -17014,6 +17048,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
         return <div>
         <div style={{padding:"6px 12px",background:"#eff6ff",borderBottom:"1px solid #bfdbfe",display:"flex",alignItems:"center",gap:8}}>
           <span style={{fontSize:11,color:"#1d4ed8",fontWeight:700}}>📋 マスター表</span>
+          <button onClick={autoAssign} title="担当が空いているDEL/COLを、区の所要＋出勤メンバー/時間で自動で仮置き（洗車/その他は対象外・既存担当は保持・要調整はメモに印）" style={{padding:"3px 10px",background:"#0e7490",color:"#fff",border:"none",borderRadius:6,fontSize:10,fontWeight:800,cursor:"pointer"}}>🤖 自動仮組み</button>
           <span style={{fontSize:10,color:"#64748b"}}>行タップで編集画面へ</span>
           <span style={{fontSize:9,color:"#64748b",background:"#fff",border:"1px solid #e2e8f0",borderRadius:6,padding:"2px 6px"}}>✅完了／⋯操作メニュー(🔖マーク・📢依頼・⏰時間調整・🅿️事前駐車・⏳遅延)※橙枠=実施済あり</span>
           <button onClick={()=>{setBulkMode(m=>{if(m)setBulkSel([]);return !m;});}} style={{marginLeft:"auto",padding:"3px 10px",background:bulkMode?"#f59e0b":"#fff7ed",color:bulkMode?"#fff":"#b45309",border:"1px solid #f59e0b",borderRadius:6,fontSize:10,fontWeight:800,cursor:"pointer"}}>{bulkMode?"✕ 選択終了":"📢 複数選択して依頼"}</button>
@@ -23857,7 +23892,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.517";
+const APP_VERSION="v4.7.518";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
