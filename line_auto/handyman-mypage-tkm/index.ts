@@ -27,6 +27,7 @@ function json(b: unknown, s: number, o: string | null) { return new Response(JSO
 
 async function sbGet(t: string, q: string): Promise<any[]> { const r = await fetch(`${SB_URL}/rest/v1/${t}?${q}`, { headers: H }); if (!r.ok) { console.error(`GET ${t}`, await r.text()); return []; } return await r.json(); }
 async function sbPost(t: string, b: unknown): Promise<void> { const r = await fetch(`${SB_URL}/rest/v1/${t}`, { method: "POST", headers: { ...H, Prefer: "return=minimal" }, body: JSON.stringify(b) }); if (!r.ok) console.error(`POST ${t}`, await r.text()); }
+async function sbPatch(t: string, q: string, b: unknown): Promise<void> { const r = await fetch(`${SB_URL}/rest/v1/${t}?${q}`, { method: "PATCH", headers: { ...H, Prefer: "return=minimal" }, body: JSON.stringify(b) }); if (!r.ok) console.error(`PATCH ${t}`, await r.text()); }
 // Slack通知（高松＝BUDDICAワークスペース #operation-高松空港店。SLACK_BOT_TOKEN=BUDDICA bot・未設定なら黙ってskip）
 async function slackPost(text: string, blocks?: unknown): Promise<boolean> {
   const token = Deno.env.get("SLACK_BOT_TOKEN"); const ch = Deno.env.get("SLACK_TKM_CHANNEL") || "C0BFMBLEJGZ";
@@ -75,13 +76,13 @@ Deno.serve(async (req) => {
   // ==== keep-warm ping（DB不使用・即応答）====
   if (action === "ping") return json({ ok: true, warm: true, store: "tkm" }, 200, origin);
 
-  if (action !== "lookup" && action !== "license_uploaded") return json({ error: "unsupported action" }, 400, origin);
+  if (action !== "lookup" && action !== "license_uploaded" && action !== "terms_signed" && action !== "set_pickup" && action !== "set_return") return json({ error: "unsupported action" }, 400, origin);
 
   const token = String(p.token || "").trim();
   if (!token || token.length < 20) return json({ error: "アクセスキーが不正です" }, 400, origin);
 
   // token で予約特定（高松 bt_reservations）
-  const SEL = "id,ota,name,start_date,start_time,end_date,end_time,vehicle_class,vehicle_name,insurance,people,price,status,visit_type,return_type,del_time,del_place,col_time,col_place,del_flight,opt_b,opt_c,opt_j,opt_usb,mypage_token";
+  const SEL = "id,ota,name,start_date,start_time,end_date,end_time,vehicle_class,vehicle_name,insurance,people,price,status,visit_type,return_type,del_time,del_place,col_time,col_place,del_flight,opt_b,opt_c,opt_j,opt_usb,mypage_token,pickup_time,dropoff_time,pay_url,paid";
   const rows = await sbGet("bt_reservations", `mypage_token=eq.${encodeURIComponent(token)}&select=${SEL}`);
   const r = rows[0];
   if (!r) return json({ error: "予約が見つかりません" }, 404, origin);
@@ -108,12 +109,126 @@ Deno.serve(async (req) => {
     return json({ ok: true }, 200, origin);
   }
 
+  // ---- terms_signed: お客様がマイページで貸渡約款に同意署名（じゃらんHDMは必須）→ OPシート反映 ＋ Slack通知 ----
+  if (action === "terms_signed") {
+    const signName = String(p.name || r.name || "").trim().slice(0, 60);
+    const at = nowJst();
+    // OPシート「約款」列に署名を反映（予約番号一致の全タスク・墓標除外）
+    try { await sbPatch("bt_tasks", `${encodeURIComponent("予約番号")}=eq.${encodeURIComponent(resId)}&deleted=not.is.true`, { [("約款")]: `同意(${signName}) ${at.slice(5, 16).replace("T", " ")}` }); } catch (_) { /* noop */ }
+    // ★2026-08-09 約款の正本 handover_signatures(terms_agree) にも記録＝OPシート約款バッジ(_signMap)・bt-mail-cron が読む正本。bt_tasks.約款 はアプリ再生成で boolean false に戻り得る(R0WGF9I8で発覚)→バッジに反映されなかった。handover_signatures は永続。
+    try { await sbPost("handover_signatures", { reservation_id: resId, sign_type: "terms_agree", signer_name: signName, signed_at: at, device: "mypage-tkm", signature_data: "(マイページ同意)" }); } catch (_) { /* noop */ }
+    const blocks = [
+      { type: "header", text: { type: "plain_text", text: "📄 貸渡約款に同意署名（お客様）", emoji: true } },
+      { type: "section", fields: [
+        { type: "mrkdwn", text: `*お客様:*\n${r.name || "-"}` },
+        { type: "mrkdwn", text: `*予約番号:*\n${resId}` },
+        { type: "mrkdwn", text: `*ご予約元:*\n${otaJp(r.ota)}` },
+        { type: "mrkdwn", text: `*利用期間:*\n${r.start_date || "-"} 〜 ${r.end_date || "-"}` },
+        { type: "mrkdwn", text: `*署名:*\n${signName || "-"}` },
+        { type: "mrkdwn", text: `*署名日時:*\n${at.slice(0, 16).replace("T", " ")}` },
+      ] },
+      { type: "context", elements: [ { type: "mrkdwn", text: "貸渡約款にご同意いただきました。OPシート「約款」欄に反映済み。" } ] },
+    ];
+    await slackPost(`📄 約款同意署名 [高松] ${r.name || ""} / ${resId}`, blocks);
+    return json({ ok: true, signed: true, at }, 200, origin);
+  }
+
+  // ---- set_pickup: 行き＝空港お迎え(PU)を希望 or 店舗へ行く(来店)。visit_type(PU/来店)＋お迎え時間＋OPシート d-タスクへ反映 ----
+  // 2026-08-12 omni: ガイド(BUDDICA)と同一の「行き選択」を移植。p.want!==false でお迎え希望（後方互換：want未指定＝お迎え）。
+  if (action === "set_pickup") {
+    const want = p.want !== false; // 既定 true（後方互換）
+    if (want) {
+      const tm = String(p.time || "").trim();
+      if (!/^\d{1,2}:\d{2}$/.test(tm)) return json({ error: "時間の形式が不正です" }, 400, origin);
+      // 予約：visit_type=PU / pickup_time / del_time（お迎え時間）を更新
+      try { await sbPatch("bt_reservations", `id=eq.${encodeURIComponent(resId)}`, { visit_type: "PU", pickup_time: tm, del_time: tm, updated_at: new Date().toISOString() }); } catch (_) { /* noop */ }
+      // OPシート：お届け(d-)タスクの「内容=PU」「時間」「変更」にも反映（OP表示と一致）
+      try { await sbPatch("bt_tasks", `${encodeURIComponent("予約番号")}=eq.${encodeURIComponent(resId)}&_id=like.d-*&deleted=not.is.true`, { [("内容")]: "PU", [("時間")]: tm, [("変更")]: tm }); } catch (_) { /* noop */ }
+      const puBlocks = [
+        { type: "header", text: { type: "plain_text", text: "🚐 空港お迎えを希望（お客様）", emoji: true } },
+        { type: "section", fields: [
+          { type: "mrkdwn", text: `*お客様:*\n${r.name || "-"} 様` },
+          { type: "mrkdwn", text: `*予約番号:*\n${resId}` },
+          { type: "mrkdwn", text: `*ご予約元:*\n${otaJp(r.ota)}` },
+          { type: "mrkdwn", text: `*利用期間:*\n${r.start_date || "-"} 〜 ${r.end_date || "-"}` },
+          { type: "mrkdwn", text: `*車両クラス:*\n${r.vehicle_class || r.vehicle_name || "-"}` },
+          { type: "mrkdwn", text: `*🕐 お迎え希望時間:*\n*${tm} 〜*` },
+        ] },
+        { type: "context", elements: [ { type: "mrkdwn", text: "行き＝空港お迎え(PU)。OPシート d-タスクの送迎時間に反映済み。当日の送迎手配にご確認ください。" } ] },
+      ];
+      await slackPost(`🚐 お迎え希望 [高松] ${r.name || ""} / ${resId} / ${tm}〜`, puBlocks);
+      return json({ ok: true, visit_type: "PU", pickup_time: tm }, 200, origin);
+    } else {
+      // 店舗へ行く（来店・送迎なし）
+      try { await sbPatch("bt_reservations", `id=eq.${encodeURIComponent(resId)}`, { visit_type: "来店", pickup_time: null, updated_at: new Date().toISOString() }); } catch (_) { /* noop */ }
+      try { await sbPatch("bt_tasks", `${encodeURIComponent("予約番号")}=eq.${encodeURIComponent(resId)}&_id=like.d-*&deleted=not.is.true`, { [("内容")]: "来店" }); } catch (_) { /* noop */ }
+      const puBlocks = [
+        { type: "header", text: { type: "plain_text", text: "🏬 店舗へ行く（来店・送迎なし）（お客様）", emoji: true } },
+        { type: "section", fields: [
+          { type: "mrkdwn", text: `*お客様:*\n${r.name || "-"} 様` },
+          { type: "mrkdwn", text: `*予約番号:*\n${resId}` },
+          { type: "mrkdwn", text: `*利用期間:*\n${r.start_date || "-"} 〜 ${r.end_date || "-"}` },
+        ] },
+        { type: "context", elements: [ { type: "mrkdwn", text: "行き＝ご来店(送迎なし)。OPシート d-タスクを来店に反映済み。" } ] },
+      ];
+      await slackPost(`🏬 来店（送迎なし）[高松] ${r.name || ""} / ${resId}`, puBlocks);
+      return json({ ok: true, visit_type: "来店", pickup_time: "" }, 200, origin);
+    }
+  }
+
+  // ---- set_return: 帰り＝店舗→高松空港の送迎(BD)を希望 or 店舗で返却。return_type(BD/返却)＋送迎時間＋OPシート c-タスクへ反映 ----
+  // 2026-08-12 omni: ガイド(BUDDICA)と同一の「帰り選択」を移植。p.want!==false で送迎希望。
+  if (action === "set_return") {
+    const want = p.want !== false;
+    if (want) {
+      const tm = String(p.time || "").trim();
+      if (!/^\d{1,2}:\d{2}$/.test(tm)) return json({ error: "時間の形式が不正です" }, 400, origin);
+      // 予約：return_type=BD / dropoff_time / col_time（送迎時間）を更新
+      try { await sbPatch("bt_reservations", `id=eq.${encodeURIComponent(resId)}`, { return_type: "BD", dropoff_time: tm, col_time: tm, updated_at: new Date().toISOString() }); } catch (_) { /* noop */ }
+      // OPシート：回収(c-)タスクの「内容=BD」「時間」「変更」「返却」にも反映（OP表示と一致）
+      try { await sbPatch("bt_tasks", `${encodeURIComponent("予約番号")}=eq.${encodeURIComponent(resId)}&_id=like.c-*&deleted=not.is.true`, { [("内容")]: "BD", [("時間")]: tm, [("変更")]: tm, [("返却")]: tm }); } catch (_) { /* noop */ }
+      const rtBlocks = [
+        { type: "header", text: { type: "plain_text", text: "🚙 返却送迎を希望（店舗→空港）（お客様）", emoji: true } },
+        { type: "section", fields: [
+          { type: "mrkdwn", text: `*お客様:*\n${r.name || "-"} 様` },
+          { type: "mrkdwn", text: `*予約番号:*\n${resId}` },
+          { type: "mrkdwn", text: `*ご予約元:*\n${otaJp(r.ota)}` },
+          { type: "mrkdwn", text: `*利用期間:*\n${r.start_date || "-"} 〜 ${r.end_date || "-"}` },
+          { type: "mrkdwn", text: `*車両クラス:*\n${r.vehicle_class || r.vehicle_name || "-"}` },
+          { type: "mrkdwn", text: `*🕐 送迎希望時間:*\n*${tm} 〜*` },
+        ] },
+        { type: "context", elements: [ { type: "mrkdwn", text: "帰り＝店舗→高松空港の送迎(BD)。OPシート c-タスクの送迎時間に反映済み。当日の送迎手配にご確認ください。" } ] },
+      ];
+      await slackPost(`🚙 返却送迎希望 [高松] ${r.name || ""} / ${resId} / ${tm}〜`, rtBlocks);
+      return json({ ok: true, return_type: "BD", dropoff_time: tm }, 200, origin);
+    } else {
+      // 店舗で返却（送迎なし）
+      try { await sbPatch("bt_reservations", `id=eq.${encodeURIComponent(resId)}`, { return_type: "返却", dropoff_time: null, updated_at: new Date().toISOString() }); } catch (_) { /* noop */ }
+      try { await sbPatch("bt_tasks", `${encodeURIComponent("予約番号")}=eq.${encodeURIComponent(resId)}&_id=like.c-*&deleted=not.is.true`, { [("内容")]: "返却" }); } catch (_) { /* noop */ }
+      const rtBlocks = [
+        { type: "header", text: { type: "plain_text", text: "🏬 店舗で返却（送迎なし）（お客様）", emoji: true } },
+        { type: "section", fields: [
+          { type: "mrkdwn", text: `*お客様:*\n${r.name || "-"} 様` },
+          { type: "mrkdwn", text: `*予約番号:*\n${resId}` },
+          { type: "mrkdwn", text: `*利用期間:*\n${r.start_date || "-"} 〜 ${r.end_date || "-"}` },
+        ] },
+        { type: "context", elements: [ { type: "mrkdwn", text: "帰り＝店舗でご返却(送迎なし)。OPシート c-タスクを返却に反映済み。" } ] },
+      ];
+      await slackPost(`🏬 店舗で返却（送迎なし）[高松] ${r.name || ""} / ${resId}`, rtBlocks);
+      return json({ ok: true, return_type: "返却", dropoff_time: "" }, 200, origin);
+    }
+  }
+
   // OPタスク（予約番号一致・墓標除外）＋免許アップ状態
-  const opTasksP = sbGet("bt_tasks", `${encodeURIComponent("予約番号")}=eq.${encodeURIComponent(resId)}&deleted=not.is.true&select=_id,${encodeURIComponent("内容")},${encodeURIComponent("時間")},${encodeURIComponent("送迎場所")},${encodeURIComponent("集客")},${encodeURIComponent("返却")},${encodeURIComponent("送迎")},${encodeURIComponent("確定")},${encodeURIComponent("便名")},${encodeURIComponent("変更")},changed_json`);
+  const opTasksP = sbGet("bt_tasks", `${encodeURIComponent("予約番号")}=eq.${encodeURIComponent(resId)}&deleted=not.is.true&select=_id,${encodeURIComponent("内容")},${encodeURIComponent("時間")},${encodeURIComponent("送迎場所")},${encodeURIComponent("集客")},${encodeURIComponent("返却")},${encodeURIComponent("送迎")},${encodeURIComponent("確定")},${encodeURIComponent("便名")},${encodeURIComponent("変更")},${encodeURIComponent("約款")},changed_json`);
   const licP = sbGet("license_uploads", `reservation_id=eq.${encodeURIComponent(resId)}&select=cnt,drivers`);
-  const [opTasksRaw, licRows] = await Promise.all([opTasksP, licP]);
+  const signP = sbGet("handover_signatures", `reservation_id=eq.${encodeURIComponent(resId)}&sign_type=eq.terms_agree&select=id`);
+  const [opTasksRaw, licRows, signRows] = await Promise.all([opTasksP, licP, signP]);
   const licCnt = (licRows[0] && licRows[0].cnt) || 0;
   const licDrivers = (licRows[0] && licRows[0].drivers) || 0;
+  // 約款署名状態：正本 handover_signatures(terms_agree) 優先。無ければ後方互換で bt_tasks「約款」列の「同意」も見る（bt_tasksは再生成でfalseに戻り得るのでhandover_signaturesが正）。
+  const termsRaw = (opTasksRaw || []).map((t: any) => String(t["約款"] || "")).find((v: string) => v.indexOf("同意") >= 0) || "";
+  const termsSigned = (Array.isArray(signRows) && signRows.length > 0) || !!termsRaw;
 
   // 日本語列を正規化して resolve* を再利用
   const opTasks = (opTasksRaw || []).map((t: any) => ({
@@ -167,12 +282,14 @@ Deno.serve(async (req) => {
       const fl = await sbGet("bt_fleet", `reservation_id=eq.${encodeURIComponent(resId)}&select=vehicle_code`);
       const code = fl[0]?.vehicle_code;
       if (code) {
-        const vs = await sbGet("bt_vehicles", `code=eq.${encodeURIComponent(code)}&select=plate_no`);
-        const plate = vs[0]?.plate_no;
-        if (plate) {
-          const tw = await sbGet("vehicle_twins", `display_label=ilike.*${encodeURIComponent(plate)}*&share_enabled=eq.true&select=share_token&limit=1`);
-          if (tw[0]?.share_token) damageUrl = `https://buddica-touring.github.io/damage/v.html?t=${tw[0].share_token}&v=v3`;
+        // ★BT: vehicle_twins.id = 車両コード(bt_fleet.vehicle_code) で厳密一致(display_labelはコード番号でplateと不一致のため)
+        let tw = await sbGet("vehicle_twins", `id=eq.${encodeURIComponent(code)}&share_enabled=eq.true&select=share_token&limit=1`);
+        if (!tw[0]) { // フォールバック: ナンバー(plate)で display_label 照合
+          const vs = await sbGet("bt_vehicles", `code=eq.${encodeURIComponent(code)}&select=plate_no`);
+          const plate = vs[0]?.plate_no;
+          if (plate) tw = await sbGet("vehicle_twins", `display_label=ilike.*${encodeURIComponent(plate)}*&share_enabled=eq.true&select=share_token&limit=1`);
         }
+        if (tw[0]?.share_token) damageUrl = `https://buddica-touring.github.io/damage/v.html?t=${tw[0].share_token}&v=v3`;
       }
     } catch (_) { /* best-effort */ }
   }
@@ -206,10 +323,14 @@ Deno.serve(async (req) => {
       opt_b: optBR, opt_c: optCR, opt_j: optJR, opt_usb: optUSBR,
       del_flight: r.del_flight || "",
       visit_type: r.visit_type || "", return_type: r.return_type || "",
+      pickup_time: r.pickup_time || "", dropoff_time: r.dropoff_time || "",
     },
     damage: { ready: damageReady, url: damageUrl },
     tracking: { active: false, kd_status: null, token: null },
     license: { cnt: licCnt, drivers: licDrivers },
+    terms: { required: true, signed: termsSigned, detail: termsRaw },
+    // ★2026-08-09 事前決済：マイページ内に請求欄＋Squareリンク（じゃらんHDMは事前決済）。入金は checkBtPayments が自動確認→paid反映。
+    payment: { required: !!r.pay_url, amount: Number(r.price || 0), pay_url: r.pay_url || "", paid: !!r.paid },
     pendingCancel: false, readyPending: false,
     recentChanges: [], history: historyTop,
     at: nowJst(),
