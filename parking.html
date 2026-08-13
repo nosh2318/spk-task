@@ -239,7 +239,7 @@ function renderExtra(){
     return `<div class="mobrow ${pl?'':'unset'}" onclick="editMob('${m.id}')"><span class="mi">${m.icon}</span><div><div class="mn">${m.name}</div>${st.note?`<div class="mnote">${st.note}</div>`:''}</div><span class="mp" style="margin-left:auto;background:${stl.bg};color:${stl.c};border-radius:7px;padding:3px 10px;font-weight:900">${pl||"⚠️未設定"}</span><span class="medit">✎</span></div>`;
   }).join("");
   const whIds=Object.keys(WAREHOUSE);
-  $("whList").innerHTML=whIds.length?whIds.map(id=>{const c=car(id);const w=WAREHOUSE[id]||{};return `<div class="whrow"><span class="mi">📦</span><div><div class="wc">${c.n} ${c.p}</div><div class="wn">${w.note||"荷物積載中"}</div></div><button class="wx" style="background:#334155;color:#7dd3fc" onclick="editWhNote('${id}')">📝</button><button class="wx" onclick="delWh('${id}')">解除</button></div>`;}).join(""):'<div class="emp">なし</div>';
+  $("whList").innerHTML=whIds.length?whIds.map(id=>{const c=car(id);const w=WAREHOUSE[id]||{};const seats=[];if(w.child)seats.push('🚼ﾁｬｲﾙﾄﾞ×'+w.child);if(w.junior)seats.push('🧒ｼﾞｭﾆｱ×'+w.junior);const seatStr=seats.length?`<div class="wn" style="color:#7dd3fc;font-weight:700">${seats.join('　')}</div>`:'';return `<div class="whrow"><span class="mi">📦</span><div><div class="wc">${c.n} ${c.p}</div>${seatStr}${w.note?`<div class="wn">${w.note}</div>`:(seats.length?'':'<div class="wn">荷物積載中</div>')}</div><button class="wx" style="background:#334155;color:#7dd3fc" onclick="editWh('${id}')">📝</button><button class="wx" onclick="delWh('${id}')">解除</button></div>`;}).join(""):'<div class="emp">なし</div>';
 }
 function editMob(id){
   const m=MOB_ITEMS.find(x=>x.id===id);const st=MOBILITY[id]||{};
@@ -259,23 +259,36 @@ async function saveMobNote(id){
   MOBILITY[id]={place:cur.place||"",note:note.trim()};closeSheet();renderExtra();
   await saveMeta("mobility",MOBILITY);toast("📝 メモを保存しました");
 }
+function seatOpts(cur){cur=+cur||0;let o='';for(let i=0;i<=6;i++)o+=`<option value="${i}"${i===cur?' selected':''}>${i}</option>`;return o;}
+function seatFields(child,junior){const bx="width:100%;padding:10px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;font-weight:700";return `<div style="display:flex;gap:8px;margin-top:8px">`+
+  `<div style="flex:1"><div class="sd" style="margin:0 0 4px">🚼 チャイルドシート</div><select id="whChild" style="${bx}">${seatOpts(child)}</select></div>`+
+  `<div style="flex:1"><div class="sd" style="margin:0 0 4px">🧒 ジュニアシート</div><select id="whJunior" style="${bx}">${seatOpts(junior)}</select></div></div>`;}
+function readSeats(){return{child:+((document.getElementById("whChild")||{}).value||0),junior:+((document.getElementById("whJunior")||{}).value||0)};}
 function addWh(){
   const list=allCars().filter(c=>!WAREHOUSE[c.id]);
   if(!list.length){openSheet(`<h3>倉庫車</h3><div class="sd">対象車両がありません。</div><div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button></div>`);return;}
   openSheet(`<h3>📦 倉庫車に追加</h3><div class="sd">車両を選択（プルダウン）</div>`+
     `<select id="whSel" style="width:100%;padding:11px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;font-weight:700">`+
     list.map(c=>`<option value="${c.id}">${c.n} ${c.p}</option>`).join("")+`</select>`+
+    seatFields(0,0)+
     `<input id="whNote" placeholder="積載内容メモ（任意）" style="width:100%;margin-top:8px;padding:10px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:13px"/>`+
     `<div class="btnrow"><button class="btn g" onclick="closeSheet()">キャンセル</button><button class="btn" style="background:#0d9488;color:#fff" onclick="confirmWh()">追加</button></div>`);
 }
 async function confirmWh(){
   const sel=document.getElementById("whSel");if(!sel||!sel.value)return;const id=sel.value;
-  const note=((document.getElementById("whNote")||{}).value||"").trim();
-  closeSheet();WAREHOUSE[id]={note};renderExtra();await saveMeta("warehouse",WAREHOUSE);toast("📦 "+car(id).n+" を倉庫車に");
+  const note=((document.getElementById("whNote")||{}).value||"").trim();const s=readSeats();
+  closeSheet();WAREHOUSE[id]={note,child:s.child,junior:s.junior};renderExtra();await saveMeta("warehouse",WAREHOUSE);toast("📦 "+car(id).n+" を倉庫車に");
 }
-async function editWhNote(id){
-  const cur=(WAREHOUSE[id]||{}).note||"";const note=(prompt("積載内容メモ",cur)||"").trim();
-  WAREHOUSE[id]={...(WAREHOUSE[id]||{}),note};renderExtra();await saveMeta("warehouse",WAREHOUSE);toast("📝 メモを保存しました");
+function editWh(id){
+  const w=WAREHOUSE[id]||{};const c=car(id);
+  openSheet(`<h3>📦 ${c.n} ${c.p}</h3><div class="sd">積載内容を編集</div>`+
+    seatFields(w.child||0,w.junior||0)+
+    `<input id="whNote" placeholder="積載内容メモ（任意）" value="${(w.note||'').replace(/"/g,'&quot;')}" style="width:100%;margin-top:8px;padding:10px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:13px"/>`+
+    `<div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button><button class="btn" style="background:#0d9488;color:#fff" onclick="saveWh('${id}')">💾 保存</button></div>`);
+}
+async function saveWh(id){
+  const note=((document.getElementById("whNote")||{}).value||"").trim();const s=readSeats();
+  WAREHOUSE[id]={...(WAREHOUSE[id]||{}),note,child:s.child,junior:s.junior};closeSheet();renderExtra();await saveMeta("warehouse",WAREHOUSE);toast("📝 保存しました");
 }
 async function delWh(id){delete WAREHOUSE[id];renderExtra();await saveMeta("warehouse",WAREHOUSE);toast("解除しました");}
 async function saveMeta(k,obj){try{await sb.from("parking_meta").upsert({k,v:obj,updated_at:new Date().toISOString()},{onConflict:"k"});}catch(e){console.log("saveMeta err",e);toast("⚠️保存失敗");}}
