@@ -179,7 +179,9 @@ const STAFF_CARS=[
   {id:"スタッフ車両-武山",n:"武山",p:"スタッフ車",c:"H"},
   {id:"スタッフ車両-その他",n:"その他",p:"スタッフ車",c:"H"},
 ];
-function allCars(){const seen=new Set();return [...ROSTER,...STAFF_CARS].filter(c=>{if(seen.has(c.id))return false;seen.add(c.id);return true;});}
+// 配車表に無いが常に選べる車（倉庫車等）
+const EXTRA_CARS=[{id:"プラド",n:"プラド",p:"",c:"S"}];
+function allCars(){const seen=new Set();return [...ROSTER,...STAFF_CARS,...EXTRA_CARS].filter(c=>{if(seen.has(c.id))return false;seen.add(c.id);return true;});}
 function car(id){return allCars().find(c=>c.id===id)||{id,n:id,p:"",c:"H"};}
 function placedIds(){const s=new Set();SPOTS.forEach(sp=>sp.carId&&s.add(sp.carId));return s;}
 function needCars(){const p=placedIds();return allCars().filter(c=>!p.has(c.id));}
@@ -237,22 +239,28 @@ function renderExtra(){
     return `<div class="mobrow ${pl?'':'unset'}" onclick="editMob('${m.id}')"><span class="mi">${m.icon}</span><div><div class="mn">${m.name}</div>${st.note?`<div class="mnote">${st.note}</div>`:''}</div><span class="mp" style="margin-left:auto;background:${stl.bg};color:${stl.c};border-radius:7px;padding:3px 10px;font-weight:900">${pl||"⚠️未設定"}</span><span class="medit">✎</span></div>`;
   }).join("");
   const whIds=Object.keys(WAREHOUSE);
-  $("whList").innerHTML=whIds.length?whIds.map(id=>{const c=car(id);const w=WAREHOUSE[id]||{};return `<div class="whrow"><span class="mi">📦</span><div><div class="wc">${c.n} ${c.p}</div><div class="wn">${w.note||"荷物積載中"}</div></div><button class="wx" onclick="delWh('${id}')">解除</button></div>`;}).join(""):'<div class="emp">なし</div>';
+  $("whList").innerHTML=whIds.length?whIds.map(id=>{const c=car(id);const w=WAREHOUSE[id]||{};return `<div class="whrow"><span class="mi">📦</span><div><div class="wc">${c.n} ${c.p}</div><div class="wn">${w.note||"荷物積載中"}</div></div><button class="wx" style="background:#334155;color:#7dd3fc" onclick="editWhNote('${id}')">📝</button><button class="wx" onclick="delWh('${id}')">解除</button></div>`;}).join(""):'<div class="emp">なし</div>';
 }
 function editMob(id){
   const m=MOB_ITEMS.find(x=>x.id===id);const st=MOBILITY[id]||{};
   openSheet(`<h3>${m.icon} ${m.name} の場所</h3><div class="sd">今どこにあるか選択</div>`+
     MOB_PLACES.map(p=>{const s=MOB_PLACE_STYLE[p];return `<button class="opt" onclick="setMob('${id}','${p}')"><span class="dot" style="background:${s.bg}"></span>${p}${st.place===p?' ✓':''}</button>`;}).join("")+
     `<div style="margin-top:6px"><input id="mobNote" placeholder="メモ（任意）" value="${(st.note||'').replace(/"/g,'&quot;')}" style="width:100%;padding:10px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:13px"/></div>`+
-    `<div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button></div>`);
+    `<div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button><button class="btn" style="background:#0d9488;color:#fff" onclick="saveMobNote('${id}')">💾 メモを保存</button></div>`);
 }
 async function setMob(id,place){
   const note=(document.getElementById("mobNote")||{}).value||"";
   MOBILITY[id]={place,note:note.trim()};closeSheet();renderExtra();
   await saveMeta("mobility",MOBILITY);toast("🛴 "+(MOB_ITEMS.find(x=>x.id===id).name)+" → "+place);
 }
+// メモだけ保存（場所は現状維持）＝「メモ残しても記録されない」の解消
+async function saveMobNote(id){
+  const note=(document.getElementById("mobNote")||{}).value||"";const cur=MOBILITY[id]||{};
+  MOBILITY[id]={place:cur.place||"",note:note.trim()};closeSheet();renderExtra();
+  await saveMeta("mobility",MOBILITY);toast("📝 メモを保存しました");
+}
 function addWh(){
-  const list=ROSTER.filter(c=>!WAREHOUSE[c.id]);
+  const list=allCars().filter(c=>!WAREHOUSE[c.id]);
   if(!list.length){openSheet(`<h3>倉庫車</h3><div class="sd">対象車両がありません。</div><div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button></div>`);return;}
   openSheet(`<h3>📦 倉庫車に追加</h3><div class="sd">車両を選択（プルダウン）</div>`+
     `<select id="whSel" style="width:100%;padding:11px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;font-weight:700">`+
@@ -264,6 +272,10 @@ async function confirmWh(){
   const sel=document.getElementById("whSel");if(!sel||!sel.value)return;const id=sel.value;
   const note=((document.getElementById("whNote")||{}).value||"").trim();
   closeSheet();WAREHOUSE[id]={note};renderExtra();await saveMeta("warehouse",WAREHOUSE);toast("📦 "+car(id).n+" を倉庫車に");
+}
+async function editWhNote(id){
+  const cur=(WAREHOUSE[id]||{}).note||"";const note=(prompt("積載内容メモ",cur)||"").trim();
+  WAREHOUSE[id]={...(WAREHOUSE[id]||{}),note};renderExtra();await saveMeta("warehouse",WAREHOUSE);toast("📝 メモを保存しました");
 }
 async function delWh(id){delete WAREHOUSE[id];renderExtra();await saveMeta("warehouse",WAREHOUSE);toast("解除しました");}
 async function saveMeta(k,obj){try{await sb.from("parking_meta").upsert({k,v:obj,updated_at:new Date().toISOString()},{onConflict:"k"});}catch(e){console.log("saveMeta err",e);toast("⚠️保存失敗");}}
