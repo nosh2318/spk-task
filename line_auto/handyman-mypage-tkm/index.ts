@@ -76,7 +76,7 @@ Deno.serve(async (req) => {
   // ==== keep-warm ping（DB不使用・即応答）====
   if (action === "ping") return json({ ok: true, warm: true, store: "tkm" }, 200, origin);
 
-  if (action !== "lookup" && action !== "license_uploaded" && action !== "terms_signed" && action !== "set_pickup" && action !== "set_return") return json({ error: "unsupported action" }, 400, origin);
+  if (action !== "lookup" && action !== "license_uploaded" && action !== "terms_signed" && action !== "damage_approved" && action !== "set_pickup" && action !== "set_return") return json({ error: "unsupported action" }, 400, origin);
 
   const token = String(p.token || "").trim();
   if (!token || token.length < 20) return json({ error: "アクセスキーが不正です" }, 400, origin);
@@ -131,6 +131,27 @@ Deno.serve(async (req) => {
     ];
     await slackPost(`📄 約款同意署名 [高松] ${r.name || ""} / ${resId}`, blocks);
     return json({ ok: true, signed: true, at }, 200, origin);
+  }
+
+  // ---- damage_approved: お客様が傷チェック（車両状態）を確認・承認署名 → 正本 handover_signatures ＋ Slack通知 ----
+  if (action === "damage_approved") {
+    const signName = String(p.name || r.name || "").trim().slice(0, 60);
+    const at = nowJst();
+    try { await sbPost("handover_signatures", { reservation_id: resId, sign_type: "damage_approve", signer_name: signName, signed_at: at, device: "mypage-tkm", signature_data: "(マイページ傷承認)" }); } catch (_) { /* noop */ }
+    const blocks = [
+      { type: "header", text: { type: "plain_text", text: "🩹 車両状態チェックを確認・承認（お客様）", emoji: true } },
+      { type: "section", fields: [
+        { type: "mrkdwn", text: `*お客様:*\n${r.name || "-"}` },
+        { type: "mrkdwn", text: `*予約番号:*\n${resId}` },
+        { type: "mrkdwn", text: `*ご予約元:*\n${otaJp(r.ota)}` },
+        { type: "mrkdwn", text: `*利用期間:*\n${r.start_date || "-"} 〜 ${r.end_date || "-"}` },
+        { type: "mrkdwn", text: `*署名:*\n${signName || "-"}` },
+        { type: "mrkdwn", text: `*承認日時:*\n${at.slice(0, 16).replace("T", " ")}` },
+      ] },
+      { type: "context", elements: [ { type: "mrkdwn", text: "車両状態（傷）をご確認・ご承認いただきました。" } ] },
+    ];
+    await slackPost(`🩹 傷チェック承認 [高松] ${r.name || ""} / ${resId}`, blocks);
+    return json({ ok: true, approved: true, at }, 200, origin);
   }
 
   // ---- set_pickup: 行き＝空港お迎え(PU)を希望 or 店舗へ行く(来店)。visit_type(PU/来店)＋お迎え時間＋OPシート d-タスクへ反映 ----
@@ -223,12 +244,16 @@ Deno.serve(async (req) => {
   const opTasksP = sbGet("bt_tasks", `${encodeURIComponent("予約番号")}=eq.${encodeURIComponent(resId)}&deleted=not.is.true&select=_id,${encodeURIComponent("内容")},${encodeURIComponent("時間")},${encodeURIComponent("送迎場所")},${encodeURIComponent("集客")},${encodeURIComponent("返却")},${encodeURIComponent("送迎")},${encodeURIComponent("確定")},${encodeURIComponent("便名")},${encodeURIComponent("変更")},${encodeURIComponent("約款")},changed_json`);
   const licP = sbGet("license_uploads", `reservation_id=eq.${encodeURIComponent(resId)}&select=cnt,drivers`);
   const signP = sbGet("handover_signatures", `reservation_id=eq.${encodeURIComponent(resId)}&sign_type=eq.terms_agree&select=id`);
-  const [opTasksRaw, licRows, signRows] = await Promise.all([opTasksP, licP, signP]);
+  // ★2026-08-13 傷チェック承認署名の正本 handover_signatures(damage_approve)。じゃらんHDMマイページで傷確認→承認署名を追加。
+  const dmgSignP = sbGet("handover_signatures", `reservation_id=eq.${encodeURIComponent(resId)}&sign_type=eq.damage_approve&select=signer_name,signed_at&order=signed_at.desc&limit=1`);
+  const [opTasksRaw, licRows, signRows, dmgSignRows] = await Promise.all([opTasksP, licP, signP, dmgSignP]);
   const licCnt = (licRows[0] && licRows[0].cnt) || 0;
   const licDrivers = (licRows[0] && licRows[0].drivers) || 0;
   // 約款署名状態：正本 handover_signatures(terms_agree) 優先。無ければ後方互換で bt_tasks「約款」列の「同意」も見る（bt_tasksは再生成でfalseに戻り得るのでhandover_signaturesが正）。
   const termsRaw = (opTasksRaw || []).map((t: any) => String(t["約款"] || "")).find((v: string) => v.indexOf("同意") >= 0) || "";
   const termsSigned = (Array.isArray(signRows) && signRows.length > 0) || !!termsRaw;
+  const damageApproved = Array.isArray(dmgSignRows) && dmgSignRows.length > 0;
+  const damageApprovedDetail = damageApproved ? `承認(${dmgSignRows[0].signer_name || ""}) ${String(dmgSignRows[0].signed_at || "").slice(5, 16).replace("T", " ")}` : "";
 
   // 日本語列を正規化して resolve* を再利用
   const opTasks = (opTasksRaw || []).map((t: any) => ({
@@ -326,7 +351,7 @@ Deno.serve(async (req) => {
       visit_type: r.visit_type || "", return_type: r.return_type || "",
       pickup_time: r.pickup_time || "", dropoff_time: r.dropoff_time || "",
     },
-    damage: { ready: damageReady, url: damageUrl },
+    damage: { ready: damageReady, url: damageUrl, approved: damageApproved, approved_detail: damageApprovedDetail },
     tracking: { active: false, kd_status: null, token: null },
     license: { cnt: licCnt, drivers: licDrivers },
     terms: { required: true, signed: termsSigned, detail: termsRaw },
