@@ -161,7 +161,7 @@ let SPOTS=[];   // {id,no,carId,memo}
 let ROSTER=[];  // {id,n,p,c}
 let RETURNS=[]; // {id,n,p,c,time} 本日返却予定(予約RPC)
 let OUT_NOW=new Set(); // 今 貸出中(出発済み・返却前)の車id
-let MOBILITY={}, WAREHOUSE={}; // parking_meta
+let MOBILITY={}, WAREHOUSE={}, PLAN={}; // parking_meta (PLAN=返却予定の手動割当 carId->spotId)
 const MOB_ITEMS=[{id:"bicycle",name:"自転車",icon:"🚲"},{id:"ebike",name:"電動自転車",icon:"⚡"},{id:"escooter",name:"キックボード",icon:"🛴"}];
 const MOB_PLACES=["使用中","オフィス","BIGスロット","充電中"];
 const MOB_PLACE_STYLE={"使用中":{bg:"#7c2d12",c:"#fdba74"},"オフィス":{bg:"#1e3a5f",c:"#93c5fd"},"BIGスロット":{bg:"#14532d",c:"#86efac"},"充電中":{bg:"#4c1d95",c:"#c4b5fd"}};
@@ -173,9 +173,15 @@ function baysOf(k){return SPOTS.filter(sp=>areaOf(sp.no)===k).sort((a,b)=>{const
 // 返却予定→空きマスへの予約割当（早い返却順に BIG空き→トラスト空き を割当）
 function plannedMap(){
   const placed=placedIds();
-  const empties=[...baysOf("BIG").filter(s=>!s.carId),...baysOf("TRUST").filter(s=>!s.carId)];
-  const m={};let ei=0;
-  RETURNS.filter(r=>!placed.has(r.id)).forEach(r=>{if(ei<empties.length){m[empties[ei].id]=r;ei++;}});
+  const rets=RETURNS.filter(r=>!placed.has(r.id));
+  const emptyIds=new Set(SPOTS.filter(s=>!s.carId).map(s=>s.id)); // 全空き(手動割当は任意エリアOK)
+  const m={};const used=new Set();const done=new Set();
+  // ① 手動オーバーライド優先
+  rets.forEach(r=>{const sid=PLAN[r.id];if(sid!=null&&emptyIds.has(sid)&&!used.has(sid)){m[sid]=r;used.add(sid);done.add(r.id);}});
+  // ② 残りを自動割当（BIG空き→トラスト空き・早い返却順）
+  const auto=[...baysOf("BIG").filter(s=>!s.carId),...baysOf("TRUST").filter(s=>!s.carId)].filter(s=>!used.has(s.id));
+  let ei=0;
+  rets.filter(r=>!done.has(r.id)).forEach(r=>{if(ei<auto.length){m[auto[ei].id]=r;used.add(auto[ei].id);ei++;}});
   return m;
 }
 // おすすめ: 誘導中の車が返却予定ならその予約マス、それ以外はBIG空き→トラスト空き
@@ -253,7 +259,7 @@ async function confirmWh(){
 }
 async function delWh(id){delete WAREHOUSE[id];renderExtra();await saveMeta("warehouse",WAREHOUSE);toast("解除しました");}
 async function saveMeta(k,obj){try{await sb.from("parking_meta").upsert({k,v:obj,updated_at:new Date().toISOString()},{onConflict:"k"});}catch(e){console.log("saveMeta err",e);toast("⚠️保存失敗");}}
-async function loadMeta(){try{const{data}=await sb.from("parking_meta").select("k,v");if(data){data.forEach(r=>{if(r.k==="mobility")MOBILITY=r.v||{};if(r.k==="warehouse")WAREHOUSE=r.v||{};});}}catch(e){console.log("loadMeta err",e);}}
+async function loadMeta(){try{const{data}=await sb.from("parking_meta").select("k,v");if(data){data.forEach(r=>{if(r.k==="mobility")MOBILITY=r.v||{};if(r.k==="warehouse")WAREHOUSE=r.v||{};if(r.k==="plan")PLAN=r.v||{};});}}catch(e){console.log("loadMeta err",e);}}
 function renderModal(){$("modalRoot").innerHTML=modal?`<div class="scrim" onclick="if(event.target===this)closeSheet()"><div class="sheet">${modal}</div></div>`:"";}
 function openSheet(h){modal=h;renderModal();}
 function closeSheet(){modal=null;renderModal();}
@@ -297,6 +303,7 @@ function driveInto(el,cb){
 }
 async function finishPark(spotId,id,memo){
   optimistic(spotId,id,memo);await dbSetCar(spotId,id,memo);
+  if(PLAN[id]!=null){delete PLAN[id];saveMeta("plan",PLAN);} // 入庫済み→返却予定の割当を解除
   const sp=SPOTS.find(s=>s.id===spotId);const aname=sp?areaDef(areaOf(sp.no)).name:"";
   const label=(sp&&areaOf(sp.no)==="BIG"?"No."+sp.no:aname)+(memo?" 駐車No."+memo:"");
   exitGuide();render();
@@ -307,8 +314,19 @@ async function finishPark(spotId,id,memo){
 function tapPlanned(spotId,carId){
   const sp=SPOTS.find(s=>s.id===spotId);if(!sp)return;const a=areaDef(areaOf(sp.no));
   const loc=a.mode==="numbered"?"No."+sp.no:a.name;
-  openSheet(`<h3>🕒 返却予定の入庫</h3><div class="sd">${car(carId).n} ${car(carId).p} を <b>${loc}</b> に入庫します</div><div class="btnrow"><button class="btn g" onclick="closeSheet()">キャンセル</button><button class="btn" style="background:#0d9488;color:#fff" onclick="doPlannedPark(${spotId},'${carId}')">🚗 入庫する</button></div>`);
+  openSheet(`<h3>🕒 返却予定（誘導）</h3><div class="sd">${car(carId).n} ${car(carId).p} の予定場所は <b>${loc}</b>（あくまで目安）。実際に停める場所は自由に変えられます。</div><div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button><button class="btn" style="background:#334155;color:#fbbf24" onclick="openPlanMove('${carId}')">🔄 場所を入れ替え</button><button class="btn" style="background:#0d9488;color:#fff" onclick="doPlannedPark(${spotId},'${carId}')">🚗 入庫</button></div>`);
 }
+// 返却予定の場所を入れ替え（誘導先の変更・全端末共有）
+function openPlanMove(carId){
+  const empties=SPOTS.filter(s=>!s.carId);
+  if(!empties.length){toast("空きマスがありません");return;}
+  const opt=empties.map(s=>{const a=areaDef(areaOf(s.no));const lbl=a.name+(a.mode==="numbered"?" No."+s.no:"");return `<option value="${s.id}" ${PLAN[carId]==s.id?'selected':''}>${lbl}</option>`;}).join("");
+  openSheet(`<h3>🔄 返却予定の入れ替え</h3><div class="sd">${car(carId).n} ${car(carId).p} を停める"予定"の場所（誘導先）を選択</div>`+
+    `<select id="plSel" style="width:100%;padding:11px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;font-weight:700">${opt}</select>`+
+    `<div class="btnrow"><button class="btn g" onclick="closeSheet()">キャンセル</button><button class="btn" style="background:#334155;color:#cbd5e1" onclick="clearPlan('${carId}')">自動に戻す</button><button class="btn" style="background:#0d9488;color:#fff" onclick="doPlanMove('${carId}')">変更</button></div>`);
+}
+async function doPlanMove(carId){const sel=document.getElementById("plSel");if(!sel||!sel.value)return;PLAN[carId]=parseInt(sel.value,10);closeSheet();render();await saveMeta("plan",PLAN);toast("🔄 "+car(carId).n+" の予定場所を変更");}
+async function clearPlan(carId){delete PLAN[carId];closeSheet();render();await saveMeta("plan",PLAN);toast("自動割当に戻しました");}
 function doPlannedPark(spotId,carId){
   closeSheet();guideCar=carId;
   const sp=SPOTS.find(s=>s.id===spotId);const a=areaDef(areaOf(sp.no));
@@ -350,16 +368,13 @@ function tapCar(spotId){
   const loc=(a.mode==="numbered"?"No."+sp.no:a.name)+(sp.memo?" 駐車No."+sp.memo:"");
   openSheet(`<h3>${loc}：${c.n} ${c.p}</h3><div class="sd">操作を選択</div><div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button><button class="btn" style="background:#334155;color:#7dd3fc" onclick="openSwap(${spotId})">🔄 入れ替え</button><button class="btn r" onclick="doOut(${spotId})">🚙 出庫</button></div>`);
 }
-// 入れ替え：この枠の車を別の車に差し替え（選択肢=全車両。他所に停まっていた車なら移動）
-function swapList(){
-  const extra=SPOTS.filter(s=>s.carId&&!ROSTER.some(r=>r.id===s.carId)).map(s=>({id:s.carId,n:car(s.carId).n,p:car(s.carId).p,c:car(s.carId).c}));
-  const seen=new Set();return [...ROSTER,...extra].filter(c=>{if(seen.has(c.id))return false;seen.add(c.id);return true;});
-}
+// 入れ替え：この枠の車を別の車に差し替え（選択肢=駐車中の車を除く=未駐車の車のみ）
 function openSwap(spotId){
-  const sp=SPOTS.find(s=>s.id===spotId);const cur=sp.carId;const list=swapList();
-  openSheet(`<h3>🔄 入れ替え</h3><div class="sd">この枠に停める車を選択（全車両）</div>`+
+  const list=needCars(); // 既に駐車中の車は非表示
+  if(!list.length){openSheet(`<h3>🔄 入れ替え</h3><div class="sd">入れ替えできる車がありません（他は全て駐車中）。</div><div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button></div>`);return;}
+  openSheet(`<h3>🔄 入れ替え</h3><div class="sd">この枠に停める車を選択（駐車中の車は除く）</div>`+
     `<select id="swSel" style="width:100%;padding:11px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;font-weight:700">`+
-    list.map(c=>`<option value="${c.id}" ${c.id===cur?'selected':''}>${c.n} ${c.p}${c.id===cur?'（現在）':''}</option>`).join("")+`</select>`+
+    list.map(c=>`<option value="${c.id}">${c.n} ${c.p}</option>`).join("")+`</select>`+
     `<div class="btnrow"><button class="btn g" onclick="closeSheet()">キャンセル</button><button class="btn" style="background:#0d9488;color:#fff" onclick="doSwap(${spotId})">入れ替える</button></div>`);
 }
 async function doSwap(spotId){
@@ -393,7 +408,7 @@ async function boot(){
   $("st").textContent="🟢 稼働中";render();
   // リアルタイム（他端末の入出庫・モビリティ/倉庫車ステータスを即共有）
   sb.channel("pk-rt").on("postgres_changes",{event:"*",schema:"public",table:"parking_spots"},async()=>{await loadSpots();render();}).subscribe();
-  sb.channel("pk-meta").on("postgres_changes",{event:"*",schema:"public",table:"parking_meta"},async()=>{await loadMeta();renderExtra();}).subscribe();
+  sb.channel("pk-meta").on("postgres_changes",{event:"*",schema:"public",table:"parking_meta"},async()=>{await loadMeta();render();}).subscribe();
   // 予備ポーリング（15秒）
   setInterval(async()=>{if(document.visibilityState==="visible"){await Promise.all([loadSpots(),loadReturns(),loadMeta(),loadOutNow()]);render();}},15000);
   document.addEventListener("visibilitychange",async()=>{if(document.visibilityState==="visible"){await loadSpots();render();}});
