@@ -80,7 +80,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1056';
+var CV='spk-v1057';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=946').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -18666,7 +18666,9 @@ function ParkingManager({masterVehicles}){
   const getCar=id=>cars.find(c=>c.id===id)||null;
   const initWash={};cars.forEach(c=>{initWash[c.id]="未洗車";});
   const initWashTime={};cars.forEach(c=>{initWashTime[c.id]=null;});
-  const[spots,setSpots]=useState(()=>fixSpotRestricted(init?init.spots:PARKING_INIT_SPOTS));
+  // ★2026-08-13 位置(spots)の唯一の正本は parking_spots(DB・1枠1行)。LS/whole-docからは一切読まない=幽霊復元・シャッフルを構造的に不可能化。初期値は空でマウント時にDBから取得。
+  const[spots,setSpots]=useState([]);
+  const[spotsLoaded,setSpotsLoaded]=useState(false);
   const[pTab,setPTab]=useState("home");
   const[selectedCar,setSelectedCar]=useState(null);
   const[parkStep,setParkStep]=useState("select");
@@ -18713,8 +18715,13 @@ function ParkingManager({masterVehicles}){
         if(remote.mobilityMap)setMobilityMap({...MOBILITY_DEFAULT,...remote.mobilityMap});
         lastSyncedRef.current=remote;
       }
-      // ★2026-08-05 位置(spots)は parking_spots(1枠1行)が正本＝分岐に関わらず必ずここで上書き。位置はもうmerge/復元を通さない=シャッフル根絶。
-      DB.parking.fetchSpots().then(rows=>{if(mounted&&rows&&rows.length)setSpots(fixSpotRestricted(rows));});
+      // ★2026-08-13 位置(spots)は parking_spots(1枠1行)が唯一の正本。空(初回)なら既定レイアウトを1枠ずつ投入して正本化。取得失敗(null)は現状維持。
+      DB.parking.fetchSpots().then(rows=>{
+        if(!mounted||rows===null)return;
+        if(rows.length){setSpots(fixSpotRestricted(rows));}
+        else{DB.parking.saveAllSpots(PARKING_INIT_SPOTS);setSpots(fixSpotRestricted(PARKING_INIT_SPOTS));}
+        setSpotsLoaded(true);
+      });
       setSyncStatus("online");
       setInitialLoaded(true);
       // 🔴 初期ロード完了後もしばらくフラグONを保つ (masterVehiclesの遅延同期によるエコー防止)
@@ -18861,10 +18868,12 @@ function ParkingManager({masterVehicles}){
     },600);
   };
   // 🔴 同期スナップショットとの差分判定用シグネチャ (savedAt除外)
-  const parkSig=(o)=>o?JSON.stringify({spots:o.spots,cars:o.cars,washMap:o.washMap,washTimeMap:o.washTimeMap,maintMap:o.maintMap,staffCarMap:o.staffCarMap,warehouseMap:o.warehouseMap,mobilityMap:o.mobilityMap,history:o.history}):null;
+  /* ★2026-08-13 spotsはwhole-doc署名に含めない=位置変更でwhole-doc保存機構(mergeSave/LS)を一切起動しない。位置はparking_spotsへ1枠ずつ直書きのみ。 */
+  const parkSig=(o)=>o?JSON.stringify({cars:o.cars,washMap:o.washMap,washTimeMap:o.washTimeMap,maintMap:o.maintMap,staffCarMap:o.staffCarMap,warehouseMap:o.warehouseMap,mobilityMap:o.mobilityMap,history:o.history}):null;
   // 自動保存
   useEffect(()=>{
-    const d={spots,cars,washMap,washTimeMap,maintMap,staffCarMap,warehouseMap,mobilityMap,history,savedAt:new Date().toISOString()};
+    /* ★2026-08-13 spotsをdocから除外＝LS/whole-docに位置を一切書かない。位置の永続化はparking_spotsへの1枠直書きが唯一。 */
+    const d={cars,washMap,washTimeMap,maintMap,staffCarMap,warehouseMap,mobilityMap,history,savedAt:new Date().toISOString()};
     DB.parking.lsSave(d);
     // 🔴 修正: isRemoteUpdateフラグ依存をやめ「同期点と実際に違うか」で保存判定。
     //   旧実装はリモート受信後3秒間isRemoteUpdate=trueでauto-saveをスキップ→
@@ -18873,7 +18882,7 @@ function ParkingManager({masterVehicles}){
       lastLocalChangeAt.current=Date.now();
       mergeSave(d); // 3wayマージ保存 (他端末の変更を保全しつつ自分の変更を必ず書く)
     }
-  },[spots,cars,washMap,washTimeMap,maintMap,staffCarMap,warehouseMap,mobilityMap,history]);
+  },[cars,washMap,washTimeMap,maintMap,staffCarMap,warehouseMap,mobilityMap,history]);
 
   // 🛴 小型モビリティ駐車位置を更新
   const setMobility=(mid,patch)=>{setMobilityMap(p=>{const cur=p[mid]||{place:"",vehicleId:"",note:""};return{...p,[mid]:{...cur,...patch}};});};
@@ -23898,7 +23907,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.521";
+const APP_VERSION="v4.7.522";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
