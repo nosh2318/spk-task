@@ -52,6 +52,11 @@
   @keyframes abBlink{0%,100%{opacity:1}50%{opacity:.45}}
   body.guiding .cbay.occ{opacity:.32}
   body.guiding .cbay.reco{animation:recoGlow .75s ease-in-out infinite;border-color:#fbbf24;border-style:solid}
+  /* 返却予定(空きマスへの予約割当) */
+  .cbay.planned{border:2px dashed #fbbf24 !important;border-top:none !important;animation:planBlink 1.1s ease-in-out infinite}
+  .cbay.planned .planghost{opacity:.5}
+  .cbay .planlbl{margin-top:3px;font-size:8.5px;font-weight:900;color:#78350f;background:#fbbf24;border-radius:5px;padding:1px 7px;white-space:nowrap}
+  @keyframes planBlink{0%,100%{box-shadow:0 0 0 0 rgba(251,191,36,.28);background:rgba(251,191,36,.07)}50%{box-shadow:0 0 0 5px rgba(251,191,36,.42);background:rgba(251,191,36,.20)}}
   .carwrap{width:26px;height:42px;position:relative;filter:drop-shadow(0 2px 3px rgba(0,0,0,.4));animation:parkin .5s ease both}
   .car-svg{display:block}
   /* 誘導バナー */
@@ -161,14 +166,25 @@ function car(id){return ROSTER.find(c=>c.id===id)||{id,n:id,p:"",c:"H"};}
 function placedIds(){const s=new Set();SPOTS.forEach(sp=>sp.carId&&s.add(sp.carId));return s;}
 function needCars(){const p=placedIds();return ROSTER.filter(c=>!p.has(c.id));}
 function baysOf(k){return SPOTS.filter(sp=>areaOf(sp.no)===k).sort((a,b)=>{const na=parseInt(a.no,10),nb=parseInt(b.no,10);if(!isNaN(na)&&!isNaN(nb))return na-nb;return a.id-b.id;});}
-// おすすめ: BIG空き最優先→無ければトラスト空き
-function recoSpotId(){const big=baysOf("BIG").find(sp=>!sp.carId);if(big)return{id:big.id,full:false};const tr=baysOf("TRUST").find(sp=>!sp.carId);if(tr)return{id:tr.id,full:true};return null;}
+// 返却予定→空きマスへの予約割当（早い返却順に BIG空き→トラスト空き を割当）
+function plannedMap(){
+  const placed=placedIds();
+  const empties=[...baysOf("BIG").filter(s=>!s.carId),...baysOf("TRUST").filter(s=>!s.carId)];
+  const m={};let ei=0;
+  RETURNS.filter(r=>!placed.has(r.id)).forEach(r=>{if(ei<empties.length){m[empties[ei].id]=r;ei++;}});
+  return m;
+}
+// おすすめ: 誘導中の車が返却予定ならその予約マス、それ以外はBIG空き→トラスト空き
+function recoSpotId(carId){
+  if(carId){const pm=plannedMap();const sid=Object.keys(pm).find(k=>pm[k].id===carId);if(sid){const sp=SPOTS.find(s=>String(s.id)===String(sid));return{id:parseInt(sid,10),full:sp?areaOf(sp.no)!=="BIG":false};}}
+  const big=baysOf("BIG").find(sp=>!sp.carId);if(big)return{id:big.id,full:false};const tr=baysOf("TRUST").find(sp=>!sp.carId);if(tr)return{id:tr.id,full:true};return null;}
 function carSVG(cls){const col=CLS[cls]||"#64748b";return `<svg class="car-svg" width="26" height="42" viewBox="0 0 44 72"><ellipse cx="23" cy="68" rx="18" ry="4.5" fill="#000" opacity=".16"/><rect x="3" y="15" width="6" height="13" rx="3" fill="#1f2937"/><rect x="35" y="15" width="6" height="13" rx="3" fill="#1f2937"/><rect x="3" y="44" width="6" height="13" rx="3" fill="#1f2937"/><rect x="35" y="44" width="6" height="13" rx="3" fill="#1f2937"/><rect x="6" y="4" width="32" height="64" rx="13" fill="${col}"/><rect x="6" y="4" width="32" height="22" rx="13" fill="#ffffff" opacity=".10"/><rect x="2" y="27" width="6" height="7" rx="2.5" fill="${col}"/><rect x="36" y="27" width="6" height="7" rx="2.5" fill="${col}"/><path d="M11 21 h22 l-3 11 h-16 z" fill="#d6ecf7" opacity=".95"/><rect x="12" y="33" width="20" height="15" rx="5" fill="#000" opacity=".16"/><path d="M13 49 h18 l-2.5 8 h-13 z" fill="#b9d4e6" opacity=".9"/><rect x="11" y="6" width="6" height="4" rx="2" fill="#fff3c4"/><rect x="27" y="6" width="6" height="4" rx="2" fill="#fff3c4"/><rect x="11" y="62" width="6" height="3" rx="1.5" fill="#ef4444"/><rect x="27" y="62" width="6" height="3" rx="1.5" fill="#ef4444"/></svg>`;}
 function carGraphic(id){return `<div class="carwrap">${carSVG(car(id).c)}</div>`;}
 const $=id=>document.getElementById(id);
 
 function render(){
-  const reco=guideCar?recoSpotId():null;
+  const reco=guideCar?recoSpotId(guideCar):null;
+  const planned=guideCar?{}:plannedMap();
   const total=SPOTS.length, parked=SPOTS.filter(s=>s.carId).length;
   const alertN=SPOTS.filter(s=>s.carId&&OUT_NOW.has(s.carId)).length;
   $("sum").innerHTML=`<div class="chip">空き <b>${total-parked}</b>/${total}</div><div class="chip">BIG空き <b>${baysOf("BIG").filter(s=>!s.carId).length}</b></div><div class="chip">本日返却 <b>${RETURNS.length}</b></div>`+(alertN?`<div class="chip" style="background:#dc2626;animation:abBlink .7s infinite">🚨貸出中なのに駐車 <b>${alertN}</b></div>`:"");
@@ -182,7 +198,10 @@ function render(){
     const bays=baysOf(a.key);const free=bays.filter(b=>!b.carId).length;
     const cells=bays.map(sp=>{
       const noBadge=(a.mode==="numbered"&&sp.no)?`<span class="bno">${sp.no}</span>`:"";
-      if(!sp.carId){const r=reco&&reco.id===sp.id;const lbl=a.mode==="numbered"?'<span class="freetag">空</span>':'<span class="addtag">＋入庫</span>';return `<div class="cbay free ${a.mode}${r?' reco':''}" data-sp="${sp.id}" onclick="tapEmpty(${sp.id})">${noBadge}${r?'<span class="crown">👑ここへ</span>':''}${lbl}</div>`;}
+      if(!sp.carId){
+        const plan=planned[sp.id];
+        if(plan)return `<div class="cbay planned ${a.mode}" data-sp="${sp.id}" onclick="tapPlanned(${sp.id},'${plan.id}')">${noBadge}<div class="planghost">${carGraphic(plan.id)}</div><div class="cname" style="color:#fde047">${plan.n} ${plan.p}<br>🕒${plan.time}</div><span class="planlbl">返却予定</span></div>`;
+        const r=reco&&reco.id===sp.id;const lbl=a.mode==="numbered"?'<span class="freetag">空</span>':'<span class="addtag">＋入庫</span>';return `<div class="cbay free ${a.mode}${r?' reco':''}" data-sp="${sp.id}" onclick="tapEmpty(${sp.id})">${noBadge}${r?'<span class="crown">👑ここへ</span>':''}${lbl}</div>`;}
       const cc=car(sp.carId);const cn=(a.mode==="manual"&&sp.memo)?`<span class="cn">駐車No.${sp.memo}</span>`:"";
       const alert=OUT_NOW.has(sp.carId)?'<span class="alertbadge">🚨貸出中では？</span>':"";
       return `<div class="cbay occ ${OUT_NOW.has(sp.carId)?'alert':''}" data-sp="${sp.id}" onclick="tapCar(${sp.id})">${noBadge}${carGraphic(sp.carId)}<div class="cname">${cc.n}${cc.p?'<br>'+cc.p:''}</div>${cn}${alert}</div>`;
@@ -253,7 +272,7 @@ function optimistic(spotId,carId,memo){SPOTS.forEach(s=>{if(s.carId===carId&&s.i
 // ===== 誘導・入庫 =====
 function pickCar(id){ // 返却チップから選択→誘導
   guideCar=id;document.body.classList.add("guiding");
-  const reco=recoSpotId();
+  const reco=recoSpotId(id);
   $("gName").textContent=car(id).n+" "+car(id).p+" をどこに停めますか？";
   const gb=$("guidebar");
   if(reco&&reco.full){gb.classList.add("full");$("gMsg").textContent="⚠️ BIG満車 → 光っている「トラストパーク」へ停めてください";}
@@ -279,6 +298,19 @@ async function finishPark(spotId,id,memo){
   exitGuide();render();
   const el=document.querySelector(`.cbay[data-sp="${spotId}"]`);if(el){el.classList.add("pop");burst(el);}
   goodJob(label+" に "+car(id).n);
+}
+// 返却予定マスをタップ→入庫確認→(入庫ボタン)で実際に停める
+function tapPlanned(spotId,carId){
+  const sp=SPOTS.find(s=>s.id===spotId);if(!sp)return;const a=areaDef(areaOf(sp.no));
+  const loc=a.mode==="numbered"?"No."+sp.no:a.name;
+  openSheet(`<h3>🕒 返却予定の入庫</h3><div class="sd">${car(carId).n} ${car(carId).p} を <b>${loc}</b> に入庫します</div><div class="btnrow"><button class="btn g" onclick="closeSheet()">キャンセル</button><button class="btn" style="background:#0d9488;color:#fff" onclick="doPlannedPark(${spotId},'${carId}')">🚗 入庫する</button></div>`);
+}
+function doPlannedPark(spotId,carId){
+  closeSheet();guideCar=carId;
+  const sp=SPOTS.find(s=>s.id===spotId);const a=areaDef(areaOf(sp.no));
+  const el=document.querySelector(`.cbay[data-sp="${spotId}"]`);
+  const done=()=>{const cn=a.mode==="manual"?(prompt("駐車No（このコインPのマス番号）","")||"").trim():undefined;finishPark(spotId,carId,cn);};
+  if(el)driveInto(el,done);else done();
 }
 function tapEmpty(spotId){
   const sp=SPOTS.find(s=>s.id===spotId);if(!sp)return;const a=areaDef(areaOf(sp.no));
