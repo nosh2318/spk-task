@@ -270,12 +270,13 @@ Deno.serve(async (req) => {
   const st = String(r.status || "");
   const cancelled = st === "cancelled" || st === "キャンセル" || st === "cancel";
 
-  // 車両状態チェック（傷）：出発日 8:00 以降のみ解禁。URLは bt_fleet→bt_vehicles.plate_no→vehicle_twins(BT)→share_token。
+  // 車両状態チェック（傷）：出発前日 20:00 以降に解禁（2026-08-13〜。旧=出発日8:00。直前すぎて未確認が多いため前倒し）。URLは bt_fleet→bt_vehicles.plate_no→vehicle_twins(BT)→share_token。
   // ★顧客に見せるURLはBUDDICAドメイン(handymanドメイン/文字列を顧客に出さない=BTブランド規約)。
   const jstIso = new Date(Date.now() + 9 * 3600 * 1000).toISOString();
   const today = jstIso.slice(0, 10);
+  const tomorrow = new Date(Date.now() + 9 * 3600 * 1000 + 86400000).toISOString().slice(0, 10);
   const hh = +jstIso.slice(11, 13);
-  const damageReady = !cancelled && !!r.start_date && (r.start_date < today || (r.start_date === today && hh >= 8));
+  const damageReady = !cancelled && !!r.start_date && (r.start_date <= today || (r.start_date === tomorrow && hh >= 20));
   let damageUrl: string | null = null;
   if (damageReady) {
     try {
