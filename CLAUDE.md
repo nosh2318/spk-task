@@ -1,5 +1,16 @@
 # SPK業務管理APP（札幌店）
 
+## 🚫 2026-08-13 配車表ダブルブッキング可能を根治＝全配車経路の集約点にハードガード(v4.7.530)
+症状＝配車表タイムラインで予約帯を既存予約に重ねられ、ダブルブッキング（例：VEL(7673)にフクイ8/17-20＋肥田8/18-20が同時割当）が作れてしまう。**真因＝重複判定`checkVehicleConflict`はあるが、ドラッグ(handleDrop)・編集モーダルのUI側でしか事前チェックしておらず、他の配車経路が素通り**：①配車リストの車両変更`<select>`プルダウン(onReassignVehicle直呼び・無チェック)②OPシート車両割当`assignVehicle`(fleetを直接書く・無チェック)。＝UI一つずつにチェックを足す設計は必ず漏れる(instance修正)。
+- **根治(ONE)＝全配車経路の集約点に最終防衛ガード**：①`reassignVehicle`(App L22658・ドラッグ/プルダウン/モーダルが全てここに集約)冒頭で`checkVehicleConflict(newVc,resId,data,fleetRefApp.current)`→重複なら`alert`して`return`(配車しない)②`assignVehicle`(OPシート L16327)冒頭にも同ガード(`checkVehicleConflict(vehicleCode,_tk0.reservationId,reservations,fleetRef.current)`)。→**どのUIが事前チェックを忘れても、書込の直前で必ず弾く**＝ダブルブッキングが構造的に不可能。自動配車(autoAssign)は元から取込後に重複検出→2台目を自動解除する機構あり(別経路・維持)。
+- **教訓**：`checkVehicleConflict`の重複条件は`r.lendDate<=rd && r.returnDate>=ld`(同日返却=貸出も重複扱い)。「重ねられる/ダブルブッキングできる」系は、判定関数の有無でなく**全書込経路がその判定を通っているか**を疑う→UIごとでなく集約点(fleetを書く関数)に1つ置くのが根治。今回フクイ+肥田のVEL重複は私のSQL手動insert(JS経由せず)が作った=手動DB操作はこのガードを通らないので、DB移送/手動配車時も重複を自分で確認する。
+
+## 🏬 2026-08-13 HP直販予約の店舗誤取込（札幌の客が那覇に入る）根治＝素の住所に札幌地名を追加
+症状＝肥田様(OPC87428・HP直販・S・8/18-20・北海道の客)が**那覇(nha_reservations)に誤取込**→札幌Appに出ず、8/20札幌Sクラスが肥田+イノウエ+渡辺=3件2台でオーバーブック。「またやった」。**真因＝HP直販メール(noreply@rent-handyman.jp)は店舗フィールドが無く(フッターに那覇店・札幌店の両方が載る店舗中立)、唯一の店舗手がかりは"お届け住所"だが「中央区大通西15-2-2」＝都道府県/市名(北海道/札幌市)を含まない素の住所**。両GASの店舗判定`isNahaReservation_`/`isSapporoReservation_`は`/北海道|札幌市/`でしか札幌判定せず→判定不能→**那覇GASのdefault(判定不能→那覇取込)に落ちた**(札幌GASも判定不能→skipなので那覇が拾う)。
+- **根治(両GAS)**：住所判定に**札幌特有の素の地番**追加＝`/大通(西|東)|[南北]?\d+条(西|東)|すすきの|札幌駅|新千歳|円山|白石区|手稲|厚別|清田区|豊平区/`→那覇GAS=false(弾く)/札幌GAS=true(拾う)＋沖縄側`/牧志|おもろまち|久茂地|国際通り|安里|松山|小禄|首里|泊|旭橋|美栄橋/`。両店に同地名＝両店で漏れない。ファイル=`~/spk-task/gas-email-import-v2.gs`(札幌)・`~/Desktop/AI/naha-project/gas-email-import.gs`(那覇)。構文OK。オーナーがGASエディタに両方貼付・再デプロイで再発防止。
+- **⚠️移送の教訓**：DB間移送は「挿入成功を確認してから削除」。今回 insert が **SPK reservations.opt_usb/opt_parasol=boolean(那覇はint)** で失敗した後に delete が走り一瞬データ消失→即再挿入で復旧。insert→成功確認→delete の順序厳守 or 1トランザクション。
+- **教訓**：HP直販(OP接頭辞)は店舗中立メール＝**住所で店舗を決める**（OTAは貸出営業所あり）。素の住所は都道府県/市名の正規表現を擦り抜ける→札幌/那覇の"素の地名"を両GASに必ず入れる。判定不能→那覇default は札幌の素住所を那覇に流す穴だった。
+
 ## 🚨🛡 2026-08-12 那覇 予約取込が5日間サイレント停止＝GAS全置換で41行に切詰め→取込停止監視を全店導入(再発防止)
 **事故**：8/8に那覇GAS「那覇店 予約取込」へ高松(BUDDICA/香川)除外の編集を**Write全置換**で行い、Code.gsが41行に切り詰められ**予約取込が全停止**（8/8〜8/12の5日間、UYT74340/BAB19352等が未取込）。誰も気づかず放置＝**サイレント障害**。→ グローバルCLAUDE.mdの鉄則「既存ファイルはWrite全置換禁止→Editで部分追加」の違反が原因。
 - **復旧**：6549行のバックアップ(`~/Documents/Codex/2026-05-04/.../fixed_gas/NHA_Code.gs`)を土台に`/tmp/NHA_Code_restore.gs`を作成（newer_than:2→14で遡り取込＋**anonキー→service_roleキー**＝anonはnha_reservations INSERT 401でRLS拒否＝これが無いと再取込失敗＋isNahaReservation_の「営業所＞お届け場所＞顧客住所」順序修正）。オーナーがGAS貼付→`processNewEmails`実行で**39件取込成功**。
