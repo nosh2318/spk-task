@@ -1,5 +1,23 @@
 # SPK業務管理APP（札幌店）
 
+## 🚨🛡 2026-08-12 那覇 予約取込が5日間サイレント停止＝GAS全置換で41行に切詰め→取込停止監視を全店導入(再発防止)
+**事故**：8/8に那覇GAS「那覇店 予約取込」へ高松(BUDDICA/香川)除外の編集を**Write全置換**で行い、Code.gsが41行に切り詰められ**予約取込が全停止**（8/8〜8/12の5日間、UYT74340/BAB19352等が未取込）。誰も気づかず放置＝**サイレント障害**。→ グローバルCLAUDE.mdの鉄則「既存ファイルはWrite全置換禁止→Editで部分追加」の違反が原因。
+- **復旧**：6549行のバックアップ(`~/Documents/Codex/2026-05-04/.../fixed_gas/NHA_Code.gs`)を土台に`/tmp/NHA_Code_restore.gs`を作成（newer_than:2→14で遡り取込＋**anonキー→service_roleキー**＝anonはnha_reservations INSERT 401でRLS拒否＝これが無いと再取込失敗＋isNahaReservation_の「営業所＞お届け場所＞顧客住所」順序修正）。オーナーがGAS貼付→`processNewEmails`実行で**39件取込成功**。
+- **🛡 再発防止＝取込停止監視(PC非依存・pg_cron・全3店)**：
+  - main DB(ckrxttbnawkclshczsia) `import_stall_monitor()`＝cron`import-stall-monitor`毎時。**13-22時JSTで最終取込(非KEYDROP)が8時間超**なら🚨をpg_net→Slack #handyman_development(C07B5G3PV7C)＋#sapporo_reservation(C08TDTPEB36)へ。NHA=nha_reservations/SPK=reservations両方監視。
+  - BT DB(ggqugvyskyiblxiycpci) `bt_import_stall_monitor()`＝cron`bt-import-stall-monitor`毎時。**13-22時JSTで12時間超**で🚨→#operation-高松空港店(C0BFMBLEJGZ・BUDDICA別WSトークンは`~/Library/LaunchAgents/com.buddica.*-bridge.plist`から取得)。
+  - **実証済**：`p_force=true`で強制発火→`net._http_response` status 200/slack_ok=true＝**cron本番経路(pg_net→Slack)が実際に届くことを検証**（curl到達確認だけでなくpg_net経路を必ず実証すること）。両cronは`p_force`既定false＝実障害時のみ発火（誤発火なし）。夜間の通常無取込で誤報しないよう窓を13-22時に限定。
+- **教訓**：①GAS編集は必ず差分(Edit)。全置換は切詰め事故を起こす。②取込は**「止まっても誰も気づかない」**のが最大リスク→**"最終書込からの経過時間"を監視する仕組み**が唯一の確実な防御（原因がGAS切詰め/トリガー削除/クォータ/RLS/認証のどれでも一律に検知）。③DB→Slack通知は必ず**pg_net経路を実発火で実証**（curlは別経路）。④anonはRLSでnha_reservations INSERT不可＝GASはservice_role必須。
+
+## 🗂 2026-08-11 立替(advance.html)の月合計 領収書ZIP DLが多件数で固まる＝順次fetch＋全メモリ保持
+症状＝advance.htmlで8月(3件)の領収書DLは動くが7月(99件)の月合計DLが「反応せず落ちない」。実測＝7月99件・全件Supabase Storage・平均~1.4MB＝**合計約140MB**。**真因＝`advDL`が全件を1件ずつ`await fetch`→arrayBufferで全部メモリに載せ→JSZip.generateAsyncで一括ZIP**。件数が多い月は①順次fetchで2〜3分無反応(進捗表示なし＝固まって見える)②~140MBをメモリ保持でZIP化＝低メモリ端末で失敗。修正＝共通`_advZip(view,filename)`に統一し**8並列fetch＋下部に進捗トースト(_advProg)＋無圧縮`compression:'STORE'`(画像/PDFは圧縮効かずCPU無駄)＋失敗の明示alert**。`advDL`(月/人別)と`advDownloadReceipts`(全体)両方が使用。advance.htmlはstandalone(build不要・push即反映)。**教訓＝ブラウザ内一括ZIP DLは「順次fetch＋無進捗」だと大量件数で固まって見える。並列取得＋進捗表示＋STOREを標準に。極端な件数はメモリ限界があるので提出者別など分割DL導線を残す**。
+
+## 💴 2026-08-11 小口現金 残高が個別ページと一覧で合わない＝カード払いの除外ルール不統一（複製集計ドリフト）
+症状＝バイトURL個別(staff.html)は高橋 使用¥5,270/残高¥4,730なのに、staff-admin.htmlの「💴小口現金 残高」一覧は 使用¥11,547/残高¥-1,547（マイナス化）。**真因＝小口現金の集計が2箇所にあり、カード払い(`spk_petty_cash.kind='card'`)の扱いが不一致**。カード払いは会計「カード」タブ(spk_accounting card_pay)へ回り**小口現金からは引かない**設計(staff-v3.20)。個別ページは`kind!=='card'`で使用から除外していたが、一覧(staff-admin.html L183)は`if kind==='topup'→支給/else→使用`で**カードも使用に加算**→小口から二重に引き残高がマイナスに化けていた。修正＝一覧も`else if(kind!=='card')`でカード除外（個別と統一）。staff-admin.htmlはstandalone(build不要・push即反映)。**教訓＝同じ値(使用/残高)を複数画面で別々に集計するとズレる。除外ルール(カード除外)は全集計箇所で必ず揃える。小口現金の正は「現金のtopup − 現金のout」＝カードは常に対象外**。
+
+
+## 🅿️🧱 2026-08-13 駐車場「何度直してもシャッフル/消え」を1から作り直し=spotsをDBのみ管理に完全分離(v4.7.522)
+オーナー「何度リクエストしても直らない・1から作り直せ・機能はそのまま・人が触らなくても動く仕様に」。何ヶ月も再発した真因＝**位置(spots)が"parking_spots(1枠1行)が正本"と言いながら、実際は旧機構(localStorage初期化・whole-doc自動保存・3wayマージ)に絡んだ二重管理のまま**だった。v4.7.507〜516の対処は経路を1本ずつ塞いだだけで、幽霊(LS seed)と自動保存の巻き戻し経路が残存＝instance修正の典型。→ **spotsを旧機構から"完全に"切り離す5点根治(index.src.html ParkingManager)**：①`useState([])`＝LSから初期化しない(幽霊復元の根絶・旧`init.spots`廃止) ②マウント時fetchSpotsのみが唯一の読み込み・空(初回)なら既定を1枠ずつ投入・取得失敗(null)は現状維持 ③parkSig(whole-doc署名)からspots除外 ④自動保存doc`d`からspots除外(LS/mergeSaveに位置を一切書かない) ⑤自動保存の依存配列からspots除外(位置変更でwhole-doc保存機構を起動しない)。→ **位置の永続化経路は`parking_spots`への1枠直書き(setSpotCar/setSpotMemo/addSpotRow/delSpotRow)だけ**に。読み書きとも旧機構を通らない＝**シャッフル・消え・巻き戻しが構造的に不可能**。cars/washMap等のroster/metadataは従来通りparking_state+merge(位置と無関係=シャッフル源でない)。DB鉄壁(unique car_id/audit/block_bulkトリガー・2026-08-08)は継続。**教訓：「正本を1本化した」と言っても、旧経路(LS初期化/自動保存/署名/依存配列)を"全て"外さないと二重管理が残り再発する。1つでも残れば幽霊が復活する。** 全端末が旧版を読む間は旧経路が生きるので根治後は必ずハード再読込。次段=人が触らない自動化(配達で自動出庫/返却で入庫提示/洗車タスク連動)は別途。
 
 ## 🅿️🚨 2026-08-08 駐車場「登録が無断で巻き戻る/シャッフル」を根治=spotsをparking_spots唯一の正本化(v4.7.507)
 オーナー激怒「昨夜20時の登録が無断変更・またシャッフル・我慢の限界」。台帳(履歴)基軸で犯人=コードと断定→復元→構造変更。
