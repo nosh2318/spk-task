@@ -96,7 +96,8 @@
   <div class="hd">
     <div class="row1"><h1>🅿️ 駐車場マップ</h1><span class="st" id="st">接続中…</span></div>
     <div class="sum" id="sum"></div>
-    <div class="retbar"><div class="rt">🔄 要駐車 / 返却（タップ→BIG空きへ誘導・満車ならトラスト）</div><div class="chips" id="retchips"></div></div>
+    <div class="retbar"><div class="rt">🕒 本日返却予定（到着→タップでBIG空きへ誘導・満車ならトラスト）</div><div class="chips" id="retToday"></div></div>
+    <div class="retbar" style="margin-top:6px"><div class="rt">🔄 要駐車（戻ってきた車）</div><div class="chips" id="retchips"></div></div>
   </div>
   <div class="lot-map" id="lotMap"></div>
 </div>
@@ -127,6 +128,7 @@ function areaOf(no){no=String(no||"");if(/^\d+$/.test(no.trim()))return "BIG";if
 function areaDef(k){return AREA_DEFS.find(a=>a.key===k);}
 let SPOTS=[];   // {id,no,carId,memo}
 let ROSTER=[];  // {id,n,p,c}
+let RETURNS=[]; // {id,n,p,c,time} 本日返却予定(予約RPC)
 let guideCar=null, modal=null, busy=false;
 function car(id){return ROSTER.find(c=>c.id===id)||{id,n:id,p:"",c:"H"};}
 function placedIds(){const s=new Set();SPOTS.forEach(sp=>sp.carId&&s.add(sp.carId));return s;}
@@ -142,9 +144,14 @@ function render(){
   const reco=guideCar?recoSpotId():null;
   const total=SPOTS.length, parked=SPOTS.filter(s=>s.carId).length;
   $("sum").innerHTML=`<div class="chip">空き <b>${total-parked}</b>/${total}</div><div class="chip">BIG空き <b>${baysOf("BIG").filter(s=>!s.carId).length}</b></div><div class="chip">要駐車 <b>${needCars().length}</b></div>`;
-  // 返却/要駐車チップ
-  const need=needCars();
-  $("retchips").innerHTML=need.length?need.map(c=>`<div class="retchip ${guideCar===c.id?'sel':''}" onclick="pickCar('${c.id}')"><span class="dot" style="background:${CLS[c.c]}"></span>${c.n} ${c.p}</div>`).join(""):'<span style="font-size:10.5px;color:#94a3b8">なし（全車 駐車済み）</span>';
+  // 🕒 本日返却予定（未駐車のみ・時刻付き）
+  const placed=placedIds();
+  const rtoday=RETURNS.filter(r=>!placed.has(r.id));
+  $("retToday").innerHTML=rtoday.length?rtoday.map(r=>`<div class="retchip ${guideCar===r.id?'sel':''}" onclick="pickCar('${r.id}')"><span class="dot" style="background:${CLS[r.c]}"></span>${r.n} ${r.p} <span style="color:#fde047">🕒${r.time} 到着→誘導▶</span></div>`).join(""):'<span style="font-size:10.5px;color:#94a3b8">本日の返却予定なし</span>';
+  // 🔄 要駐車（返却予定に無い未駐車の車）
+  const retIds=new Set(RETURNS.map(r=>r.id));
+  const need=needCars().filter(c=>!retIds.has(c.id));
+  $("retchips").innerHTML=need.length?need.map(c=>`<div class="retchip ${guideCar===c.id?'sel':''}" onclick="pickCar('${c.id}')"><span class="dot" style="background:${CLS[c.c]}"></span>${c.n} ${c.p}</div>`).join(""):'<span style="font-size:10.5px;color:#94a3b8">なし</span>';
   // マップ
   let html=`<div class="lane"><span class="gate">🚪 出入口</span></div>`;
   AREA_DEFS.forEach(a=>{
@@ -248,13 +255,17 @@ async function loadRoster(){
 async function loadSpots(){
   try{const{data,error}=await sb.from("parking_spots").select("*").order("id");if(!error&&data)SPOTS=data.map(r=>({id:r.id,no:r.no,carId:r.car_id,memo:r.memo||""}));}catch(e){console.log("spots err",e);}
 }
+async function loadReturns(){
+  try{const r=await fetch(MAIN_SB+"/rest/v1/rpc/spk_parking_returns_today",{method:"POST",headers:{"apikey":MAIN_ANON,"Authorization":"Bearer "+MAIN_ANON,"Content-Type":"application/json"},body:"{}"});
+    const d=await r.json();if(Array.isArray(d))RETURNS=d.map(x=>({id:x.name+"-"+x.no,n:x.name,p:String(x.no||""),c:x.type||"H",time:x.return_time||""}));}catch(e){console.log("returns err",e);}
+}
 async function boot(){
-  await Promise.all([loadRoster(),loadSpots()]);
+  await Promise.all([loadRoster(),loadSpots(),loadReturns()]);
   $("st").textContent="🟢 稼働中";render();
   // リアルタイム（他端末の入出庫を即反映）
   sb.channel("pk-rt").on("postgres_changes",{event:"*",schema:"public",table:"parking_spots"},async()=>{await loadSpots();render();}).subscribe();
   // 予備ポーリング（15秒）
-  setInterval(async()=>{if(document.visibilityState==="visible"){await loadSpots();render();}},15000);
+  setInterval(async()=>{if(document.visibilityState==="visible"){await Promise.all([loadSpots(),loadReturns()]);render();}},15000);
   document.addEventListener("visibilitychange",async()=>{if(document.visibilityState==="visible"){await loadSpots();render();}});
 }
 boot();
