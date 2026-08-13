@@ -58,6 +58,23 @@
   .guidebar .g1 .carico{font-size:18px;animation:drive 1s ease-in-out infinite}
   .guidebar .g2{font-size:11px;color:#fff;opacity:.95;margin-top:2px}
   .guidebar .gcancel{position:absolute;top:9px;right:12px;background:rgba(255,255,255,.22);border:none;color:#fff;border-radius:8px;padding:5px 11px;font-size:12px;font-weight:800;cursor:pointer}
+  /* モビリティ・倉庫車 */
+  .exsec{margin:12px;background:#0f172a;border:1px solid #334155;border-radius:14px;padding:11px 12px}
+  .exsec .exh{font-size:12.5px;font-weight:900;color:#e2e8f0;display:flex;align-items:center;gap:6px;margin-bottom:9px}
+  .exsec .exadd{margin-left:auto;background:#334155;border:none;color:#7dd3fc;border-radius:8px;padding:5px 11px;font-size:11px;font-weight:800;cursor:pointer}
+  .mobrow{display:flex;align-items:center;gap:9px;background:#1e293b;border-radius:10px;padding:9px 11px;margin-bottom:7px;cursor:pointer;transition:transform .12s}
+  .mobrow:active{transform:scale(.98)}
+  .mobrow .mi{font-size:22px;width:30px;text-align:center}
+  .mobrow .mn{font-size:12.5px;font-weight:800}
+  .mobrow .mp{font-size:11px;color:#93c5fd;font-weight:700}
+  .mobrow .mnote{font-size:10px;color:#94a3b8}
+  .mobrow .medit{margin-left:auto;font-size:10px;color:#64748b}
+  .mobrow.unset .mp{color:#f59e0b}
+  .whrow{display:flex;align-items:center;gap:9px;background:#1e293b;border-radius:10px;padding:9px 11px;margin-bottom:7px}
+  .whrow .wc{font-size:12.5px;font-weight:800;color:#fde68a}
+  .whrow .wn{font-size:10.5px;color:#cbd5e1}
+  .whrow .wx{margin-left:auto;background:#7f1d1d;border:none;color:#fecaca;border-radius:7px;padding:5px 10px;font-size:11px;font-weight:800;cursor:pointer}
+  .exsec .emp{font-size:11px;color:#94a3b8;padding:2px}
   .flycar{position:fixed;z-index:80;pointer-events:none;transition:transform .8s cubic-bezier(.4,.7,.3,1);will-change:transform}
   /* GOOD JOB */
   .goodjob{position:fixed;inset:0;z-index:95;display:flex;align-items:center;justify-content:center;pointer-events:none;opacity:0}
@@ -99,6 +116,8 @@
     <div class="retbar"><div class="rt">🕒 本日返却予定（到着→タップでBIG空きへ誘導・満車ならトラスト）</div><div class="chips" id="retToday"></div></div>
   </div>
   <div class="lot-map" id="lotMap"></div>
+  <div class="exsec"><div class="exh">🛴 モビリティ（置き場所）</div><div id="mobList"></div></div>
+  <div class="exsec"><div class="exh">📦 倉庫車（荷物積載中）<button class="exadd" onclick="addWh()">＋ 追加</button></div><div id="whList"></div></div>
 </div>
 <div class="guidebar" id="guidebar">
   <button class="gcancel" onclick="cancelGuide()">やめる</button>
@@ -128,6 +147,10 @@ function areaDef(k){return AREA_DEFS.find(a=>a.key===k);}
 let SPOTS=[];   // {id,no,carId,memo}
 let ROSTER=[];  // {id,n,p,c}
 let RETURNS=[]; // {id,n,p,c,time} 本日返却予定(予約RPC)
+let MOBILITY={}, WAREHOUSE={}; // parking_meta
+const MOB_ITEMS=[{id:"bicycle",name:"自転車",icon:"🚲"},{id:"ebike",name:"電動自転車",icon:"⚡"},{id:"escooter",name:"キックボード",icon:"🛴"}];
+const MOB_PLACES=["使用中","オフィス","BIGスロット","充電中"];
+const MOB_PLACE_STYLE={"使用中":{bg:"#7c2d12",c:"#fdba74"},"オフィス":{bg:"#1e3a5f",c:"#93c5fd"},"BIGスロット":{bg:"#14532d",c:"#86efac"},"充電中":{bg:"#4c1d95",c:"#c4b5fd"}};
 let guideCar=null, modal=null, busy=false;
 function car(id){return ROSTER.find(c=>c.id===id)||{id,n:id,p:"",c:"H"};}
 function placedIds(){const s=new Set();SPOTS.forEach(sp=>sp.carId&&s.add(sp.carId));return s;}
@@ -160,8 +183,44 @@ function render(){
     html+=`<div class="area ${a.paid?'paid':''}"><div class="atitle">${a.ico} ${a.name}${a.paid?'<span class="paidtag">有料</span>':''}<span class="cap">空き ${free}／${bays.length}台</span></div><div class="coinbays">${cells||'<div style="font-size:10px;color:#94a3b8;padding:6px">（マス未登録）</div>'}</div></div>`;
   });
   $("lotMap").innerHTML=html;
+  renderExtra();
   renderModal();
 }
+// 🛴 モビリティ ＋ 📦 倉庫車
+function renderExtra(){
+  $("mobList").innerHTML=MOB_ITEMS.map(m=>{
+    const st=MOBILITY[m.id]||{};const pl=st.place||"";const stl=MOB_PLACE_STYLE[pl]||{bg:"#334155",c:"#94a3b8"};
+    return `<div class="mobrow ${pl?'':'unset'}" onclick="editMob('${m.id}')"><span class="mi">${m.icon}</span><div><div class="mn">${m.name}</div>${st.note?`<div class="mnote">${st.note}</div>`:''}</div><span class="mp" style="margin-left:auto;background:${stl.bg};color:${stl.c};border-radius:7px;padding:3px 10px;font-weight:900">${pl||"⚠️未設定"}</span><span class="medit">✎</span></div>`;
+  }).join("");
+  const whIds=Object.keys(WAREHOUSE);
+  $("whList").innerHTML=whIds.length?whIds.map(id=>{const c=car(id);const w=WAREHOUSE[id]||{};return `<div class="whrow"><span class="mi">📦</span><div><div class="wc">${c.n} ${c.p}</div><div class="wn">${w.note||"荷物積載中"}</div></div><button class="wx" onclick="delWh('${id}')">解除</button></div>`;}).join(""):'<div class="emp">なし</div>';
+}
+function editMob(id){
+  const m=MOB_ITEMS.find(x=>x.id===id);const st=MOBILITY[id]||{};
+  openSheet(`<h3>${m.icon} ${m.name} の場所</h3><div class="sd">今どこにあるか選択</div>`+
+    MOB_PLACES.map(p=>{const s=MOB_PLACE_STYLE[p];return `<button class="opt" onclick="setMob('${id}','${p}')"><span class="dot" style="background:${s.bg}"></span>${p}${st.place===p?' ✓':''}</button>`;}).join("")+
+    `<div style="margin-top:6px"><input id="mobNote" placeholder="メモ（任意）" value="${(st.note||'').replace(/"/g,'&quot;')}" style="width:100%;padding:10px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:13px"/></div>`+
+    `<div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button></div>`);
+}
+async function setMob(id,place){
+  const note=(document.getElementById("mobNote")||{}).value||"";
+  MOBILITY[id]={place,note:note.trim()};closeSheet();renderExtra();
+  await saveMeta("mobility",MOBILITY);toast("🛴 "+(MOB_ITEMS.find(x=>x.id===id).name)+" → "+place);
+}
+function addWh(){
+  const placed=placedIds();const list=ROSTER.filter(c=>!WAREHOUSE[c.id]);
+  if(!list.length){openSheet(`<h3>倉庫車</h3><div class="sd">対象車両がありません。</div><div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button></div>`);return;}
+  openSheet(`<h3>📦 倉庫車に追加</h3><div class="sd">荷物を積載している車を選択</div>`+
+    list.map(c=>`<button class="opt" onclick="setWh('${c.id}')"><span class="dot" style="background:${CLS[c.c]}"></span>${c.n} ${c.p}</button>`).join("")+
+    `<div class="btnrow"><button class="btn g" onclick="closeSheet()">キャンセル</button></div>`);
+}
+async function setWh(id){
+  closeSheet();const note=(prompt("積載内容メモ（任意）","")||"").trim();
+  WAREHOUSE[id]={note};renderExtra();await saveMeta("warehouse",WAREHOUSE);toast("📦 "+car(id).n+" を倉庫車に");
+}
+async function delWh(id){delete WAREHOUSE[id];renderExtra();await saveMeta("warehouse",WAREHOUSE);toast("解除しました");}
+async function saveMeta(k,obj){try{await sb.from("parking_meta").upsert({k,v:obj,updated_at:new Date().toISOString()},{onConflict:"k"});}catch(e){console.log("saveMeta err",e);toast("⚠️保存失敗");}}
+async function loadMeta(){try{const{data}=await sb.from("parking_meta").select("k,v");if(data){data.forEach(r=>{if(r.k==="mobility")MOBILITY=r.v||{};if(r.k==="warehouse")WAREHOUSE=r.v||{};});}}catch(e){console.log("loadMeta err",e);}}
 function renderModal(){$("modalRoot").innerHTML=modal?`<div class="scrim" onclick="if(event.target===this)closeSheet()"><div class="sheet">${modal}</div></div>`:"";}
 function openSheet(h){modal=h;renderModal();}
 function closeSheet(){modal=null;renderModal();}
@@ -255,12 +314,13 @@ async function loadReturns(){
     const d=await r.json();if(Array.isArray(d))RETURNS=d.map(x=>({id:x.name+"-"+x.no,n:x.name,p:String(x.no||""),c:x.type||"H",time:x.return_time||""}));}catch(e){console.log("returns err",e);}
 }
 async function boot(){
-  await Promise.all([loadRoster(),loadSpots(),loadReturns()]);
+  await Promise.all([loadRoster(),loadSpots(),loadReturns(),loadMeta()]);
   $("st").textContent="🟢 稼働中";render();
-  // リアルタイム（他端末の入出庫を即反映）
+  // リアルタイム（他端末の入出庫・モビリティ/倉庫車ステータスを即共有）
   sb.channel("pk-rt").on("postgres_changes",{event:"*",schema:"public",table:"parking_spots"},async()=>{await loadSpots();render();}).subscribe();
+  sb.channel("pk-meta").on("postgres_changes",{event:"*",schema:"public",table:"parking_meta"},async()=>{await loadMeta();renderExtra();}).subscribe();
   // 予備ポーリング（15秒）
-  setInterval(async()=>{if(document.visibilityState==="visible"){await Promise.all([loadSpots(),loadReturns()]);render();}},15000);
+  setInterval(async()=>{if(document.visibilityState==="visible"){await Promise.all([loadSpots(),loadReturns(),loadMeta()]);render();}},15000);
   document.addEventListener("visibilitychange",async()=>{if(document.visibilityState==="visible"){await loadSpots();render();}});
 }
 boot();
