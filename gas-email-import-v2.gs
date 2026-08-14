@@ -111,7 +111,9 @@ function processNewEmails() {
     var fromClause = otaSenderList_().map(function(s) { return 'from:' + s; }).join(' OR ');
     // ★ 2026-04-30: 2d → 7d に拡張（HGU20355 / NUI44639 取り込み失敗障害対策）
     // GASダウン・ScriptProperties初期化等で2日以上空いた場合、newer_than:2d だと永久スキップになる
-    var query = '(' + fromClause + ') newer_than:7d';
+    // ★ 2026-08-14: Gmailクォータ枯渇対策で 7d→3d に短縮（取得スレッド数を減らしGmail読取を削減）。
+    //   ギャップ復旧は backfillSpecificReservations で対応。通常運用は3dで十分。
+    var query = '(' + fromClause + ') newer_than:3d';
 
     // ★ 2026-08-13: 上限 50→200 に拡張（取り込み停止障害の根治）
     // OTA送信元は販促/通知メールも大量に送るため、newer_than:7d で50通を超えると
@@ -135,12 +137,14 @@ function processNewEmails() {
     var nonReservation = 0;    // ★診断: 予約メールでなくnullで飛ばした数
     for (var i = 0; i < threads.length; i++) {
       var messages = threads[i].getMessages();
+      var threadHadNew = false;  // ★2026-08-14: このスレッドに新着(未処理)メッセージがあったか
       for (var j = 0; j < messages.length; j++) {
         var msgId = messages[j].getId();
         if (processedIds[msgId]) {
           skippedProcessed++;
           continue;
         }
+        threadHadNew = true;
         try {
           var result = processMessage_(messages[j], false);
           newProcessedIds.push(msgId);
@@ -158,7 +162,8 @@ function processNewEmails() {
           failures.push({id: '不明', ota: '?', name: '', reason: 'エラー: ' + e.message});
         }
       }
-      threads[i].addLabel(label);
+      // ★2026-08-14: ラベル付けは新着があった時だけ（毎回200件全部にラベル書込→Gmailクォータ枯渇の主因を解消）
+      if (threadHadNew) threads[i].addLabel(label);
     }
 
     // ★診断ログ: 「Found N だが success0」の原因が一目で分かる
