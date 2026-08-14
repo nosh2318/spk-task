@@ -80,7 +80,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1087';
+var CV='spk-v1088';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=970').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -12849,25 +12849,32 @@ function AutoNoticeBox({today}){
   React.useEffect(()=>{load();const iv=setInterval(load,300000);return()=>clearInterval(iv);},[load]);
   const ack=async(k)=>{setAcked(a=>({...a,[k]:1}));try{await sb.from("spk_notice_ack").upsert({k,ack_at:new Date().toISOString()});}catch(e){}};
   const[busy,setBusy]=React.useState("");
-  // 場所依頼メッセージ
-  const placeMsg=(x)=>{const cn=(x.title||"").replace(/\s*様$/,"")+"様";const lg=(x.sub&&x.sub.indexOf("回収")===0)?"ご返却":"お受け取り";return "【HANDYMAN カーデリバリー】\n"+cn+"\nご利用日が近づいております。"+lg+"場所がまだ未確定です。\nお手数ですが下記マイページより、"+lg+"場所のご入力をお願いいたします🙏\n"+(x.myp||"");};
-  // ① LINEで依頼（line-send・未連携は安全にスキップ）
-  const lineReq=async(x)=>{
-    if(!x.line){alert("このお客様はLINE未連携です。メール/電話でご連絡ください。");return;}
-    const cn=(x.title||"").replace(/\s*様$/,"")+"様";
-    if(!window.confirm(cn+" にLINEで「場所入力のお願い」を送信します。よろしいですか？"))return;
-    const msg=placeMsg(x);setBusy(x.k);
+  const[modal,setModal]=React.useState(null); // {x, ch:'line'|'mail'}
+  // 丁寧な依頼文（forMail=trueは冒頭のLINE見出しを付けない）
+  const _lg=(x)=>(x.sub&&x.sub.indexOf("回収")===0)?"ご返却":"お受け取り";
+  const _cn=(x)=>(x.title||"").replace(/\s*様$/,"")+"様";
+  const politeBody=(x,forMail)=>{const g=_lg(x);return (forMail?"":"【HANDYMAN カーデリバリー】\n")+_cn(x)+"\n\nこの度はHANDYMANをご利用いただき、誠にありがとうございます。\nご利用日が近づいてまいりました。現在、"+g+"場所が未確定となっております。\nお手数をおかけし恐れ入りますが、下記のお客様専用ページより、"+g+"場所のご入力をお願いできますでしょうか。\n\n▼お客様専用ページ\n"+(x.myp||"")+"\n\nご不明な点がございましたら、本メッセージへご返信ください。\n何卒よろしくお願い申し上げます。\n\nHANDYMAN カーデリバリー";};
+  const mailSubject=(x)=>"【HANDYMAN】"+_lg(x)+"場所のご入力のお願い";
+  // プレビュー→「はい」で送信（LINE=line-send / メール=notice-mail-send・reserve@rent-handyman.com）
+  const doSend=async()=>{
+    if(!modal)return;const{x,ch}=modal;setBusy(x.k);
     try{
       const{data:_s}=await sb.auth.getSession();const _tk=_s&&_s.session&&_s.session.access_token;
-      const r=await fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/line-send",{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+_tk},body:JSON.stringify({store:"spk",resv_no:x.rid,action:"place_request",message:msg})});
-      const j=await r.json();
-      if(j.ok){alert("✅ LINEで場所入力のお願いを送信しました");}
-      else{try{await navigator.clipboard.writeText(msg);}catch(_){}alert("⚠️自動送信できませんでした("+(j.reason||"")+")。\n文面をコピーしました→LINE/エルメに貼り付けて送信してください。");}
-    }catch(e){try{await navigator.clipboard.writeText(msg);}catch(_){}alert("⚠️送信エラー。文面をコピーしました→手動で送信してください。");}
-    setBusy("");
+      if(ch==="line"){
+        const msg=politeBody(x,false);
+        const r=await fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/line-send",{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+_tk},body:JSON.stringify({store:"spk",resv_no:x.rid,action:"place_request",message:msg})});
+        const j=await r.json();
+        if(j.ok){alert("✅ LINEを送信しました");}
+        else{try{await navigator.clipboard.writeText(msg);}catch(_){}alert("⚠️送信できませんでした("+(j.reason||"")+")。文面をコピーしました→手動送信してください。");}
+      }else{
+        const r=await fetch("https://ggqugvyskyiblxiycpci.supabase.co/functions/v1/notice-mail-send",{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+_tk},body:JSON.stringify({resv_no:x.rid,subject:mailSubject(x),text:politeBody(x,true)})});
+        const j=await r.json();
+        if(j.ok){alert("✅ メールを送信しました（"+(j.to||"")+"）");}
+        else{alert("⚠️メール送信できませんでした："+(j.reason||j.error||j.detail||"不明"));}
+      }
+    }catch(e){alert("⚠️送信エラー");}
+    setBusy("");setModal(null);
   };
-  // ② メールで依頼（mailtoで送信フォームを開く）
-  const mailHref=(x)=>{const subj=encodeURIComponent("【HANDYMAN】受け取り場所のご入力のお願い");const body=encodeURIComponent(placeMsg(x));return "mailto:"+(x.mail||"")+"?subject="+subj+"&body="+body;};
   const vis=items.filter(x=>!acked[x.k]);
   const CATS=[
     {cat:"place",icon:"📍",label:"お届け場所 未設定",color:"#0891b2",act:"➡️ マイページで場所を確認・入力する"},
@@ -12920,8 +12927,8 @@ function AutoNoticeBox({today}){
                       <button onClick={()=>ack(x.k)} style={{...bsty,color:"#fff",background:"#16a34a"}}>✓ 消し込み</button>
                     </div>
                     <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginTop:7}}>
-                      {x.cat==="place"&&x.line&&<button disabled={busy===x.k} onClick={()=>lineReq(x)} style={{...bsty,color:"#fff",background:busy===x.k?"#94a3b8":"#06842b"}}>📱 LINEで場所を依頼</button>}
-                      {x.cat==="place"&&x.mail&&<a href={mailHref(x)} style={{...bsty,color:"#fff",background:"#1d4ed8"}}>✉️ メールで依頼</a>}
+                      {x.cat==="place"&&x.line&&<button onClick={()=>setModal({x,ch:"line"})} style={{...bsty,color:"#fff",background:"#06842b"}}>📱 LINEで場所を依頼</button>}
+                      {x.cat==="place"&&x.mail&&<button onClick={()=>setModal({x,ch:"mail"})} style={{...bsty,color:"#fff",background:"#1d4ed8"}}>✉️ メールで依頼</button>}
                       {x.myp
                         ?<a href={x.myp} target="_blank" rel="noopener" style={{...bsty,color:"#fff",background:"#2563eb"}}>📄 マイページ</a>
                         :<span style={{fontSize:9,color:"#cbd5e1",fontWeight:700}}>マイページURL無</span>}
@@ -12934,6 +12941,23 @@ function AutoNoticeBox({today}){
           </div>
         );
       })}
+      {modal&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.45)",zIndex:99999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}} onClick={()=>!busy&&setModal(null)}>
+          <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:14,maxWidth:460,width:"100%",maxHeight:"85vh",overflow:"auto",padding:16,boxShadow:"0 10px 40px rgba(0,0,0,.3)"}}>
+            <div style={{fontSize:14,fontWeight:800,color:"#1e293b",marginBottom:10}}>{modal.ch==="line"?"📱 LINEで送信":"✉️ メールで送信"}<span style={{fontSize:10,fontWeight:700,color:"#64748b",marginLeft:8}}>この内容で送信します</span></div>
+            <div style={{fontSize:10,color:"#64748b",marginBottom:2}}>宛先</div>
+            <div style={{fontSize:12,fontWeight:700,color:"#0f172a",marginBottom:8,wordBreak:"break-all"}}>{modal.ch==="line"?(modal.x.title+"（LINE連携）"):(modal.x.mail||"")}</div>
+            {modal.ch==="mail"&&<React.Fragment><div style={{fontSize:10,color:"#64748b",marginBottom:2}}>件名</div><div style={{fontSize:12,fontWeight:700,color:"#0f172a",marginBottom:8}}>{mailSubject(modal.x)}</div></React.Fragment>}
+            {modal.ch==="mail"&&<div style={{fontSize:10,color:"#64748b",marginBottom:6}}>送信元：reserve@rent-handyman.com</div>}
+            <div style={{fontSize:10,color:"#64748b",marginBottom:2}}>本文</div>
+            <pre style={{fontSize:12,color:"#1e293b",background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:8,padding:10,whiteSpace:"pre-wrap",wordBreak:"break-word",fontFamily:"inherit",margin:0}}>{politeBody(modal.x,modal.ch==="mail")}</pre>
+            <div style={{display:"flex",gap:8,marginTop:14,justifyContent:"flex-end"}}>
+              <button disabled={!!busy} onClick={()=>setModal(null)} style={{fontSize:12,fontWeight:700,color:"#475569",background:"#e2e8f0",border:"none",borderRadius:8,padding:"9px 14px",cursor:"pointer"}}>キャンセル</button>
+              <button disabled={!!busy} onClick={doSend} style={{fontSize:12,fontWeight:800,color:"#fff",background:busy?"#94a3b8":"#16a34a",border:"none",borderRadius:8,padding:"9px 18px",cursor:"pointer"}}>{busy?"送信中…":"はい、送信する"}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -24052,7 +24076,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.554";
+const APP_VERSION="v4.7.555";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
