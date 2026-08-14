@@ -80,7 +80,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1083';
+var CV='spk-v1084';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=970').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -12814,7 +12814,7 @@ function AutoNoticeBox({today}){
       const td=today||new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});
       const past3=new Date(Date.now()-3*86400000).toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});
       const [rz,tz,az,ak]=await Promise.all([
-        sb.from("reservations").select("id,name,ota,lend_date,opt_b,opt_c,opt_j,status,mypage_token").neq("status","cancelled").gte("lend_date",td),
+        sb.from("reservations").select("id,name,ota,lend_date,opt_b,opt_c,opt_j,status,mypage_token,mail,tel").neq("status","cancelled").gte("lend_date",td),
         sb.from("tasks").select("_id,reservation_id,type,date,place,col_place,changed_json,opt_b,opt_c,opt_j,done,name,deleted").in("type",["DEL","COL"]).gte("date",td),
         sb.from("spk_accounting").select("id,resv_no,user_name,amount,date,category").eq("type","advance").eq("paid",false),
         sb.from("spk_notice_ack").select("k")
@@ -12824,6 +12824,9 @@ function AutoNoticeBox({today}){
       const active={};resv.forEach(r=>active[r.id]=r);
       const tokById={};resv.forEach(r=>{if(r.mypage_token)tokById[r.id]=r.mypage_token;});
       const mypOf=(rid)=>tokById[rid]?(_NOTICE_MYP+tokById[rid]):"";
+      const mailById={},telById={},otaById={};resv.forEach(r=>{if(r.mail&&String(r.mail).trim())mailById[r.id]=String(r.mail).trim();if(r.tel&&String(r.tel).trim())telById[r.id]=String(r.tel).trim();otaById[r.id]=r.ota||"";});
+      const LL=window._lineLinkMap||{};
+      const cont=(rid)=>({line:!!LL[rid],mail:mailById[rid]||"",tel:telById[rid]||"",ota:otaById[rid]||""});
       const taskByResv={};tasks.forEach(t=>{if(t.reservation_id)(taskByResv[t.reservation_id]=taskByResv[t.reservation_id]||[]).push(t);});
       const out=[];
       // ① オプションのズレ（予約opt ↔ タスクopt 不一致）
@@ -12834,7 +12837,7 @@ function AutoNoticeBox({today}){
         const tb=!!t.opt_b,tc=!!t.opt_c,tj=!!t.opt_j;
         if(rb!==tb||rc!==tc||rj!==tj){
           const d=[];if(rc!==tc)d.push("チャイルド");if(rj!==tj)d.push("ジュニア");if(rb!==tb)d.push("その他");
-          out.push({k:"opt:"+r.id,cat:"opt",color:"#7c3aed",title:(r.name||"—")+" 様",sub:d.join("・")+"（予約↔タスク不一致）",action:"予約とOPシートのオプションを一致させる",myp:mypOf(r.id),date:r.lend_date||"",rid:r.id});
+          out.push({k:"opt:"+r.id,cat:"opt",color:"#7c3aed",title:(r.name||"—")+" 様",sub:d.join("・")+"（予約↔タスク不一致）",action:"予約とOPシートのオプションを一致させる",myp:mypOf(r.id),date:r.lend_date||"",rid:r.id,...cont(r.id)});
         }
       });
       // ② お届け場所 未設定（DEL/COL・未来・未完了・非キャンセル）
@@ -12843,16 +12846,36 @@ function AutoNoticeBox({today}){
         let cj={};try{cj=t.changed_json?JSON.parse(t.changed_json):{}}catch(e){}
         const place=t.type==="COL"?(t.col_place||cj._ssPlace||""):((cj._placeSource==="manual"?t.place:(cj._ssPlace||t.place))||"");
         if(!String(place).trim())
-          out.push({k:"place:"+t._id,cat:"place",color:"#0891b2",title:(t.name||"—")+" 様",sub:(t.type==="COL"?"回収":"お届け")+"場所が空欄",action:"マイページで場所を確認/入力（未回答なら顧客へ案内）",myp:mypOf(t.reservation_id),date:t.date||"",rid:t.reservation_id||""});
+          out.push({k:"place:"+t._id,cat:"place",color:"#0891b2",title:(t.name||"—")+" 様",sub:(t.type==="COL"?"回収":"お届け")+"場所が空欄",action:"マイページで場所を確認/入力（未回答なら顧客へ案内）",myp:mypOf(t.reservation_id),date:t.date||"",rid:t.reservation_id||"",...cont(t.reservation_id||"")});
       });
       // ③ 立替 未回収（3日超）
       adv.forEach(a=>{if(a.date&&a.date<=past3)
-        out.push({k:"adv:"+a.id,cat:"adv",color:"#b45309",title:(a.user_name||"—"),sub:"¥"+(+a.amount||0).toLocaleString()+"（"+(a.category||"")+"）",action:"立替金を回収する",myp:mypOf(a.resv_no),date:a.date||"",rid:a.resv_no||""});});
+        out.push({k:"adv:"+a.id,cat:"adv",color:"#b45309",title:(a.user_name||"—"),sub:"¥"+(+a.amount||0).toLocaleString()+"（"+(a.category||"")+"）",action:"立替金を回収する",myp:mypOf(a.resv_no),date:a.date||"",rid:a.resv_no||"",...cont(a.resv_no||"")});});
       setAcked(ackset);setItems(out);
     }catch(e){}
   },[today]);
   React.useEffect(()=>{load();const iv=setInterval(load,300000);return()=>clearInterval(iv);},[load]);
   const ack=async(k)=>{setAcked(a=>({...a,[k]:1}));try{await sb.from("spk_notice_ack").upsert({k,ack_at:new Date().toISOString()});}catch(e){}};
+  const[busy,setBusy]=React.useState("");
+  // 場所依頼メッセージ
+  const placeMsg=(x)=>{const cn=(x.title||"").replace(/\s*様$/,"")+"様";const lg=(x.sub&&x.sub.indexOf("回収")===0)?"ご返却":"お受け取り";return "【HANDYMAN カーデリバリー】\n"+cn+"\nご利用日が近づいております。"+lg+"場所がまだ未確定です。\nお手数ですが下記マイページより、"+lg+"場所のご入力をお願いいたします🙏\n"+(x.myp||"");};
+  // ① LINEで依頼（line-send・未連携は安全にスキップ）
+  const lineReq=async(x)=>{
+    if(!x.line){alert("このお客様はLINE未連携です。メール/電話でご連絡ください。");return;}
+    const cn=(x.title||"").replace(/\s*様$/,"")+"様";
+    if(!window.confirm(cn+" にLINEで「場所入力のお願い」を送信します。よろしいですか？"))return;
+    const msg=placeMsg(x);setBusy(x.k);
+    try{
+      const{data:_s}=await sb.auth.getSession();const _tk=_s&&_s.session&&_s.session.access_token;
+      const r=await fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/line-send",{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+_tk},body:JSON.stringify({store:"spk",resv_no:x.rid,action:"place_request",message:msg})});
+      const j=await r.json();
+      if(j.ok){alert("✅ LINEで場所入力のお願いを送信しました");}
+      else{try{await navigator.clipboard.writeText(msg);}catch(_){}alert("⚠️自動送信できませんでした("+(j.reason||"")+")。\n文面をコピーしました→LINE/エルメに貼り付けて送信してください。");}
+    }catch(e){try{await navigator.clipboard.writeText(msg);}catch(_){}alert("⚠️送信エラー。文面をコピーしました→手動で送信してください。");}
+    setBusy("");
+  };
+  // ② メールで依頼（mailtoで送信フォームを開く）
+  const mailHref=(x)=>{const subj=encodeURIComponent("【HANDYMAN】受け取り場所のご入力のお願い");const body=encodeURIComponent(placeMsg(x));return "mailto:"+(x.mail||"")+"?subject="+subj+"&body="+body;};
   const vis=items.filter(x=>!acked[x.k]);
   const CATS=[
     {cat:"opt",icon:"🧷",label:"オプションのズレ",color:"#7c3aed",act:"➡️ 予約とOPシートのオプションを揃える"},
@@ -12880,22 +12903,40 @@ function AutoNoticeBox({today}){
             {op&&(
               <div style={{padding:"6px 8px",background:"#fff"}}>
                 <div style={{fontSize:10,fontWeight:800,color:c.color,margin:"2px 2px 6px"}}>{c.act}</div>
-                {list.map(x=>(
-                  <div key={x.k} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5,padding:"7px 9px",borderRadius:8,background:"#f8fafc",border:"1px solid #e2e8f0"}}>
-                    <div style={{flex:1,minWidth:0}}>
-                      <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-                        <span style={{fontSize:13,fontWeight:800,color:"#dc2626",background:"#fef2f2",border:"1px solid #fecaca",borderRadius:6,padding:"1px 7px"}}>📅 {x.date||"日付不明"}</span>
-                        <span style={{fontSize:12.5,fontWeight:800,color:"#1e293b"}}>{x.title}</span>
+                {list.map(x=>{
+                  const bsty={fontSize:10,fontWeight:800,padding:"6px 9px",borderRadius:6,textDecoration:"none",whiteSpace:"nowrap",border:"none",cursor:"pointer",display:"inline-flex",alignItems:"center"};
+                  return (
+                  <div key={x.k} style={{marginBottom:6,padding:"8px 9px",borderRadius:8,background:"#f8fafc",border:"1px solid #e2e8f0"}}>
+                    <div style={{display:"flex",alignItems:"flex-start",gap:8}}>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                          <span style={{fontSize:13,fontWeight:800,color:"#dc2626",background:"#fef2f2",border:"1px solid #fecaca",borderRadius:6,padding:"1px 7px"}}>📅 {x.date||"日付不明"}</span>
+                          <span style={{fontSize:12.5,fontWeight:800,color:"#1e293b"}}>{x.title}</span>
+                          {x.ota&&<span style={{fontSize:9,fontWeight:700,color:"#64748b",background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:4,padding:"1px 5px"}}>{x.ota}</span>}
+                        </div>
+                        <div style={{fontSize:11,color:x.color,marginTop:2,fontWeight:700}}>{x.sub}</div>
+                        <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap",marginTop:3}}>
+                          <span style={{fontSize:9,color:"#94a3b8",fontFamily:"monospace"}}>{x.rid}</span>
+                          {x.line
+                            ?<span style={{fontSize:9,fontWeight:800,color:"#06842b",background:"#dcfce7",border:"1px solid #86efac",borderRadius:4,padding:"1px 6px"}}>📱LINE連携</span>
+                            :<span style={{fontSize:9,fontWeight:800,color:"#b91c1c",background:"#fef2f2",border:"1px solid #fecaca",borderRadius:4,padding:"1px 6px"}}>LINE未連携</span>}
+                          {x.mail&&<span style={{fontSize:9,fontWeight:700,color:"#1d4ed8",background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:4,padding:"1px 6px"}}>✉️メール有</span>}
+                          {x.tel&&<span style={{fontSize:9,fontWeight:700,color:"#475569",background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:4,padding:"1px 6px"}}>📞{x.tel}</span>}
+                        </div>
                       </div>
-                      <div style={{fontSize:11,color:x.color,marginTop:2,fontWeight:700}}>{x.sub}</div>
-                      <div style={{fontSize:10,color:"#94a3b8",fontFamily:"monospace",marginTop:1}}>{x.rid}</div>
+                      <button onClick={()=>ack(x.k)} style={{...bsty,color:"#fff",background:"#16a34a"}}>✓ 消し込み</button>
                     </div>
-                    {x.myp
-                      ?<a href={x.myp} target="_blank" rel="noopener" style={{fontSize:10,fontWeight:800,color:"#fff",background:"#2563eb",padding:"6px 9px",borderRadius:6,textDecoration:"none",whiteSpace:"nowrap"}}>📄 マイページ</a>
-                      :<span style={{fontSize:9,color:"#cbd5e1",fontWeight:700,whiteSpace:"nowrap"}}>URL無</span>}
-                    <button onClick={()=>ack(x.k)} style={{fontSize:10,fontWeight:800,color:"#fff",background:"#16a34a",padding:"6px 10px",borderRadius:6,border:"none",cursor:"pointer",whiteSpace:"nowrap"}}>✓ 消し込み</button>
+                    <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginTop:7}}>
+                      {x.cat==="place"&&x.line&&<button disabled={busy===x.k} onClick={()=>lineReq(x)} style={{...bsty,color:"#fff",background:busy===x.k?"#94a3b8":"#06842b"}}>📱 LINEで場所を依頼</button>}
+                      {x.cat==="place"&&x.mail&&<a href={mailHref(x)} style={{...bsty,color:"#fff",background:"#1d4ed8"}}>✉️ メールで依頼</a>}
+                      {x.tel&&<a href={"tel:"+x.tel} style={{...bsty,color:"#334155",background:"#e2e8f0"}}>📞 電話</a>}
+                      {x.myp
+                        ?<a href={x.myp} target="_blank" rel="noopener" style={{...bsty,color:"#fff",background:"#2563eb"}}>📄 マイページ</a>
+                        :<span style={{fontSize:9,color:"#cbd5e1",fontWeight:700}}>マイページURL無</span>}
+                    </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -24019,7 +24060,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.550";
+const APP_VERSION="v4.7.551";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
