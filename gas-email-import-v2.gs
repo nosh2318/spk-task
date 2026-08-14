@@ -113,7 +113,12 @@ function processNewEmails() {
     // GASダウン・ScriptProperties初期化等で2日以上空いた場合、newer_than:2d だと永久スキップになる
     var query = '(' + fromClause + ') newer_than:7d';
 
-    var threads = GmailApp.search(query, 0, 50);
+    // ★ 2026-08-13: 上限 50→200 に拡張（取り込み停止障害の根治）
+    // OTA送信元は販促/通知メールも大量に送るため、newer_than:7d で50通を超えると
+    // 予約メールが「直近50スレッド」の枠から押し出され、永久に処理対象に入らない
+    // （渡辺様 RC52461265252343886 等が拾えなかった真因）。処理済み/非予約は即スキップ
+    // なので上限を上げても実処理コストは小さい。
+    var threads = GmailApp.search(query, 0, 200);
     if (threads.length === 0) {
       Logger.log('No new reservation emails found.');
       return;  // finally で heartbeat 更新される
@@ -126,11 +131,14 @@ function processNewEmails() {
 
     threads.reverse();
 
+    var skippedProcessed = 0;  // ★診断: 既に処理済みで飛ばした数
+    var nonReservation = 0;    // ★診断: 予約メールでなくnullで飛ばした数
     for (var i = 0; i < threads.length; i++) {
       var messages = threads[i].getMessages();
       for (var j = 0; j < messages.length; j++) {
         var msgId = messages[j].getId();
         if (processedIds[msgId]) {
+          skippedProcessed++;
           continue;
         }
         try {
@@ -141,6 +149,8 @@ function processNewEmails() {
             else if (result.type === 'failure') failures.push(result);
             else if (result.type === 'cancel') cancellations.push(result);
             else if (result.type === 'skip') skipped.push(result);
+          } else {
+            nonReservation++;  // ★診断: 予約メールでない(販促/通知など)
           }
         } catch (e) {
           Logger.log('ERROR processing message ID ' + msgId + ': ' + e.message + '\n' + e.stack);
@@ -150,6 +160,12 @@ function processNewEmails() {
       }
       threads[i].addLabel(label);
     }
+
+    // ★診断ログ: 「Found N だが success0」の原因が一目で分かる
+    // 既処理skip が大半 → 処理済みID肥大 / 非予約null が大半 → 検索窓が販促メールで飽和
+    Logger.log('[Diag] threads=' + threads.length + ' 既処理skip=' + skippedProcessed +
+      ' 非予約null=' + nonReservation + ' success=' + successes.length +
+      ' skip=' + skipped.length + ' fail=' + failures.length + ' cancel=' + cancellations.length);
 
     if (newProcessedIds.length > 0) {
       saveProcessedMsgIds_(processedIds, newProcessedIds);
@@ -530,6 +546,10 @@ function isSapporoReservation_(res) {
 
   if (/沖縄県|那覇市|沖縄/.test(address)) return false;
   if (/北海道|札幌市/.test(address)) return true;
+  // ★2026-08-13 再発防止(肥田様OPC87428): HP直販は都道府県/市名の無い"素の住所"(例「中央区大通西15-2-2」)が来る。
+  //   札幌特有の地番(大通西/東・[南北]○条西/東・すすきの・札幌駅・区名等)は札幌確定で"拾う"（那覇GASは同地名で弾く＝両店で漏れない）。
+  if (/大通(西|東)|[南北]?\d+条(西|東)|すすきの|ススキノ|札幌駅|新千歳|円山|白石区|手稲|厚別|清田区|豊平区/.test(address + places)) return true;
+  if (/牧志|おもろまち|久茂地|国際通り|安里|松山|小禄|首里|泊|旭橋|美栄橋/.test(address + places)) return false;  // 沖縄地名→那覇
 
   if (/那覇|沖縄/.test(store)) return false;
   if (/札幌/.test(store)) return true;
@@ -1502,8 +1522,8 @@ function sendSlackAlert_(message) {
 
 function setupMonitoring() {
   ScriptApp.getProjectTriggers().forEach(function(t) { if (t.getHandlerFunction()==='checkHeartbeats') ScriptApp.deleteTrigger(t); });
-  ScriptApp.newTrigger('checkHeartbeats').timeBased().everyMinutes(30).create();
-  Logger.log('Monitoring setup complete.');
+  // 2026-08-14 削除: checkHeartbeats(30分毎の自己監視)は無駄。UrlFetchクォータ節約のため再作成しない。
+  Logger.log('Monitoring: checkHeartbeats trigger removed (無駄削除).');
 }
 
 // ============================================================
@@ -5714,7 +5734,13 @@ function resolveTaskPlace_(t) {
   return placeIsPlaceholder_(p) ? '' : String(p).trim();
 }
 
+// ★2026-08-14 廃止：アプリ側TOP「お知らせ」カード(AutoNoticeBox)がDBから直接計算して表示＋消し込み共有に移行。
+//   GASのurlfetch削減のため本関数はno-op化（Slack投稿・supabaseGetを一切しない）。トリガーもGAS⏰画面で削除すること。
 function checkMissingPlaceAlert() {
+  Logger.log('[PlaceAlert] 廃止済み（アプリ「お知らせ」カードに移行）。何もしません。');
+  return;
+}
+function _checkMissingPlaceAlert_DISABLED() {
   try {
     var today = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd');
     var end = Utilities.formatDate(new Date(Date.now() + PLACE_ALERT_DAYS_AHEAD * 86400000), 'Asia/Tokyo', 'yyyy-MM-dd');
