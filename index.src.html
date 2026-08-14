@@ -80,7 +80,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1088';
+var CV='spk-v1089';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=970').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -12814,8 +12814,8 @@ function AutoNoticeBox({today}){
       const td=today||new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});
       const past3=new Date(Date.now()-3*86400000).toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});
       const [rz,tz,az,ak]=await Promise.all([
-        sb.from("reservations").select("id,name,ota,lend_date,opt_b,opt_c,opt_j,status,mypage_token,mail,tel").neq("status","cancelled").gte("lend_date",td),
-        sb.from("tasks").select("_id,reservation_id,type,date,place,col_place,changed_json,opt_b,opt_c,opt_j,done,name,deleted").in("type",["DEL","COL"]).gte("date",td),
+        sb.from("reservations").select("id,name,ota,lend_date,status,mypage_token,mail,tel,del_place,col_place").neq("status","cancelled").gte("lend_date",td),
+        sb.from("tasks").select("_id,reservation_id,type,date,place,col_place,changed_json,done,name,deleted").in("type",["DEL","COL"]).gte("date",td),
         sb.from("spk_accounting").select("id,resv_no,user_name,amount,date,category").eq("type","advance").eq("paid",false),
         sb.from("spk_notice_ack").select("k")
       ]);
@@ -12832,13 +12832,19 @@ function AutoNoticeBox({today}){
       // ① オプションのズレ ＝ 廃止（2026-08-14）。OPシートは2026-07-15の根治(STEP2)以降、
       //   オプションを予約(正本)から導出して表示している（_fromDbTaskのopts）。タスクのopt列は表示に使われない残骸で、
       //   予約↔旧列 を比べる旧チェックは誤検知(OPには正しく出ている)＝ノイズなので削除。
-      // ② お届け場所 未設定（DEL/COL・未来・未完了・非キャンセル）
+      // ② お届け/回収場所 未設定（DEL/COL・未来・未完了・非キャンセル）
+      //   ★2026-08-14 修正: 「場所が判明しているか」で判定。OP画面はタスクplace/_ssPlace/予約(del_place/col_place)から
+      //   場所を導出して表示するので、そのどれかに値があれば"未設定でない"。全部空のときだけ本当の未設定＝要フォロー。
+      //   （旧チェックはCOLでtask.col_place(常に空)を読む・予約の場所を見ない、で大量に誤検知していた）
       tasks.forEach(t=>{
         if(t.reservation_id&&!active[t.reservation_id])return; // キャンセル予約除外
+        const r=active[t.reservation_id]||{};
         let cj={};try{cj=t.changed_json?JSON.parse(t.changed_json):{}}catch(e){}
-        const place=t.type==="COL"?(t.col_place||cj._ssPlace||""):((cj._placeSource==="manual"?t.place:(cj._ssPlace||t.place))||"");
-        if(!String(place).trim())
-          out.push({k:"place:"+t._id,cat:"place",color:"#0891b2",title:(t.name||"—")+" 様",sub:(t.type==="COL"?"回収":"お届け")+"場所が空欄",action:"マイページで場所を確認/入力（未回答なら顧客へ案内）",myp:mypOf(t.reservation_id),date:t.date||"",rid:t.reservation_id||"",...cont(t.reservation_id||"")});
+        const isCol=(t.type==="COL");
+        const resvPlace=isCol?(r.col_place||""):(r.del_place||"");
+        const known=String(t.place||"").trim()||String(cj._ssPlace||"").trim()||String(resvPlace).trim();
+        if(!known)
+          out.push({k:"place:"+t._id,cat:"place",color:"#0891b2",title:(t.name||"—")+" 様",sub:(isCol?"回収":"お届け")+"場所が未設定（お客様のフォーム未入力）",action:"マイページで場所の入力を依頼",myp:mypOf(t.reservation_id),date:t.date||"",rid:t.reservation_id||"",...cont(t.reservation_id||"")});
       });
       // ③ 立替 未回収（3日超）
       adv.forEach(a=>{if(a.date&&a.date<=past3)
@@ -24076,7 +24082,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.555";
+const APP_VERSION="v4.7.556";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
