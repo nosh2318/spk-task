@@ -80,7 +80,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1081';
+var CV='spk-v1082';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=970').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -12804,22 +12804,26 @@ function NoContactAlert({sb,store}){
   );
 }
 // 🔔 お知らせ（自動チェック）＝GASパトロールをアプリ側でDBから計算(通信ゼロ)＋消し込み共有。オプションズレ/場所未設定/立替未回収。
+const _NOTICE_MYP="https://nosh2318.github.io/spk-task/my.html?t=";
 function AutoNoticeBox({today}){
   const[items,setItems]=React.useState([]);
   const[acked,setAcked]=React.useState({});
+  const[openCat,setOpenCat]=React.useState({});
   const load=React.useCallback(async()=>{
     try{
       const td=today||new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});
       const past3=new Date(Date.now()-3*86400000).toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});
       const [rz,tz,az,ak]=await Promise.all([
-        sb.from("reservations").select("id,name,ota,lend_date,opt_b,opt_c,opt_j,status").neq("status","cancelled").gte("lend_date",td),
+        sb.from("reservations").select("id,name,ota,lend_date,opt_b,opt_c,opt_j,status,mypage_token").neq("status","cancelled").gte("lend_date",td),
         sb.from("tasks").select("_id,reservation_id,type,date,place,col_place,changed_json,opt_b,opt_c,opt_j,done,name,deleted").in("type",["DEL","COL"]).gte("date",td),
         sb.from("spk_accounting").select("id,resv_no,user_name,amount,date,category").eq("type","advance").eq("paid",false),
         sb.from("spk_notice_ack").select("k")
       ]);
       const resv=(rz.data||[]), tasks=(tz.data||[]).filter(t=>!t.deleted&&!t.done), adv=(az.data||[]);
       const ackset={};(ak.data||[]).forEach(x=>ackset[x.k]=1);
-      const cxl={};resv.forEach(r=>{});const active={};resv.forEach(r=>active[r.id]=r);
+      const active={};resv.forEach(r=>active[r.id]=r);
+      const tokById={};resv.forEach(r=>{if(r.mypage_token)tokById[r.id]=r.mypage_token;});
+      const mypOf=(rid)=>tokById[rid]?(_NOTICE_MYP+tokById[rid]):"";
       const taskByResv={};tasks.forEach(t=>{if(t.reservation_id)(taskByResv[t.reservation_id]=taskByResv[t.reservation_id]||[]).push(t);});
       const out=[];
       // ① オプションのズレ（予約opt ↔ タスクopt 不一致）
@@ -12830,7 +12834,7 @@ function AutoNoticeBox({today}){
         const tb=!!t.opt_b,tc=!!t.opt_c,tj=!!t.opt_j;
         if(rb!==tb||rc!==tc||rj!==tj){
           const d=[];if(rc!==tc)d.push("チャイルド");if(rj!==tj)d.push("ジュニア");if(rb!==tb)d.push("その他");
-          out.push({k:"opt:"+r.id,icon:"🧷",color:"#7c3aed",title:(r.name||"—")+" 様",sub:"オプションのズレ："+d.join("・")+"（予約↔タスク）",meta:r.id+" / "+r.lend_date});
+          out.push({k:"opt:"+r.id,cat:"opt",color:"#7c3aed",title:(r.name||"—")+" 様",sub:d.join("・")+"（予約↔タスク不一致）",action:"予約とOPシートのオプションを一致させる",myp:mypOf(r.id),meta:r.id+" / "+r.lend_date});
         }
       });
       // ② お届け場所 未設定（DEL/COL・未来・未完了・非キャンセル）
@@ -12839,17 +12843,22 @@ function AutoNoticeBox({today}){
         let cj={};try{cj=t.changed_json?JSON.parse(t.changed_json):{}}catch(e){}
         const place=t.type==="COL"?(t.col_place||cj._ssPlace||""):((cj._placeSource==="manual"?t.place:(cj._ssPlace||t.place))||"");
         if(!String(place).trim())
-          out.push({k:"place:"+t._id,icon:"📍",color:"#0891b2",title:(t.name||"—")+" 様",sub:"お届け場所 未設定（"+t.type+"）",meta:(t.reservation_id||"")+" / "+t.date});
+          out.push({k:"place:"+t._id,cat:"place",color:"#0891b2",title:(t.name||"—")+" 様",sub:(t.type==="COL"?"回収":"お届け")+"場所が空欄",action:"マイページで場所を確認/入力（未回答なら顧客へ案内）",myp:mypOf(t.reservation_id),meta:(t.reservation_id||"")+" / "+t.date});
       });
       // ③ 立替 未回収（3日超）
       adv.forEach(a=>{if(a.date&&a.date<=past3)
-        out.push({k:"adv:"+a.id,icon:"💳",color:"#b45309",title:(a.user_name||"—"),sub:"立替 未回収 ¥"+(+a.amount||0).toLocaleString()+"（"+(a.category||"")+"）",meta:(a.resv_no||"")+" / "+a.date});});
+        out.push({k:"adv:"+a.id,cat:"adv",color:"#b45309",title:(a.user_name||"—"),sub:"¥"+(+a.amount||0).toLocaleString()+"（"+(a.category||"")+"）",action:"立替金を回収する",myp:mypOf(a.resv_no),meta:(a.resv_no||"")+" / "+a.date});});
       setAcked(ackset);setItems(out);
     }catch(e){}
   },[today]);
   React.useEffect(()=>{load();const iv=setInterval(load,300000);return()=>clearInterval(iv);},[load]);
   const ack=async(k)=>{setAcked(a=>({...a,[k]:1}));try{await sb.from("spk_notice_ack").upsert({k,ack_at:new Date().toISOString()});}catch(e){}};
   const vis=items.filter(x=>!acked[x.k]);
+  const CATS=[
+    {cat:"opt",icon:"🧷",label:"オプションのズレ",color:"#7c3aed",act:"➡️ 予約とOPシートのオプションを揃える"},
+    {cat:"place",icon:"📍",label:"お届け場所 未設定",color:"#0891b2",act:"➡️ マイページで場所を確認・入力する"},
+    {cat:"adv",icon:"💳",label:"立替 未回収",color:"#b45309",act:"➡️ 立替金を回収する"}
+  ];
   return (
     <div style={{marginBottom:8,padding:"10px 12px",borderRadius:12,background:"#fffbeb",border:"2px solid #fde68a"}}>
       <div style={{fontSize:10,fontWeight:800,color:"#92400e",marginBottom:6,display:"flex",alignItems:"center",gap:6}}>
@@ -12857,17 +12866,38 @@ function AutoNoticeBox({today}){
         <span style={{background:vis.length?"#d97706":"#16a34a",color:"#fff",borderRadius:99,fontSize:9,fontWeight:700,padding:"1px 7px"}}>{vis.length}件</span>
       </div>
       {vis.length===0&&<div style={{fontSize:11,color:"#16a34a",fontWeight:700,padding:"2px 2px"}}>✅ 要対応の項目はありません</div>}
-      {vis.map(x=>(
-        <div key={x.k} style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,padding:"7px 10px",borderRadius:8,background:"#fff",border:"1px solid #fde68a"}}>
-          <span style={{fontSize:13,flexShrink:0}}>{x.icon}</span>
-          <div style={{flex:1,minWidth:0}}>
-            <div style={{fontSize:12,fontWeight:700,color:"#1e293b",lineHeight:1.4}}>{x.title}</div>
-            <div style={{fontSize:10.5,color:x.color,marginTop:2,fontWeight:700}}>{x.sub}</div>
-            <div style={{fontSize:9,color:"#94a3b8",fontFamily:"monospace"}}>{x.meta}</div>
+      {CATS.map(c=>{
+        const list=vis.filter(x=>x.cat===c.cat);if(!list.length)return null;
+        const op=!!openCat[c.cat];
+        return (
+          <div key={c.cat} style={{marginBottom:6,borderRadius:8,overflow:"hidden",border:"1px solid "+c.color+"55"}}>
+            <div onClick={()=>setOpenCat(o=>({...o,[c.cat]:!o[c.cat]}))} style={{display:"flex",alignItems:"center",gap:6,padding:"8px 10px",background:c.color+"14",cursor:"pointer",userSelect:"none"}}>
+              <span style={{fontSize:14}}>{c.icon}</span>
+              <span style={{fontSize:12,fontWeight:800,color:c.color,flex:1}}>{c.label}</span>
+              <span style={{background:c.color,color:"#fff",borderRadius:99,fontSize:9,fontWeight:800,padding:"1px 7px"}}>{list.length}件</span>
+              <span style={{fontSize:11,color:c.color,fontWeight:800}}>{op?"▲":"▼"}</span>
+            </div>
+            {op&&(
+              <div style={{padding:"6px 8px",background:"#fff"}}>
+                <div style={{fontSize:10,fontWeight:800,color:c.color,margin:"2px 2px 6px"}}>{c.act}</div>
+                {list.map(x=>(
+                  <div key={x.k} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5,padding:"7px 9px",borderRadius:8,background:"#f8fafc",border:"1px solid #e2e8f0"}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:12,fontWeight:800,color:"#1e293b",lineHeight:1.4}}>{x.title}</div>
+                      <div style={{fontSize:10.5,color:x.color,marginTop:1,fontWeight:700}}>{x.sub}</div>
+                      <div style={{fontSize:9,color:"#94a3b8",fontFamily:"monospace"}}>{x.meta}</div>
+                    </div>
+                    {x.myp
+                      ?<a href={x.myp} target="_blank" rel="noopener" style={{fontSize:10,fontWeight:800,color:"#fff",background:"#2563eb",padding:"6px 9px",borderRadius:6,textDecoration:"none",whiteSpace:"nowrap"}}>📄 マイページ</a>
+                      :<span style={{fontSize:9,color:"#cbd5e1",fontWeight:700,whiteSpace:"nowrap"}}>URL無</span>}
+                    <button onClick={()=>ack(x.k)} style={{fontSize:10,fontWeight:800,color:"#fff",background:"#16a34a",padding:"6px 10px",borderRadius:6,border:"none",cursor:"pointer",whiteSpace:"nowrap"}}>✓ 消し込み</button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-          <button onClick={()=>ack(x.k)} style={{fontSize:10,fontWeight:800,color:"#fff",background:"#16a34a",padding:"5px 10px",borderRadius:6,border:"none",cursor:"pointer",whiteSpace:"nowrap"}}>✓ 消し込み</button>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -23986,7 +24016,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.548";
+const APP_VERSION="v4.7.549";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
