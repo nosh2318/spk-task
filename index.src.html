@@ -12803,6 +12803,74 @@ function NoContactAlert({sb,store}){
         React.createElement("span",{style:{fontSize:9,color:"#94a3b8",flexShrink:0}},r.id))))
   );
 }
+// 🔔 お知らせ（自動チェック）＝GASパトロールをアプリ側でDBから計算(通信ゼロ)＋消し込み共有。オプションズレ/場所未設定/立替未回収。
+function AutoNoticeBox({today}){
+  const[items,setItems]=React.useState([]);
+  const[acked,setAcked]=React.useState({});
+  const load=React.useCallback(async()=>{
+    try{
+      const td=today||new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});
+      const past3=new Date(Date.now()-3*86400000).toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});
+      const [rz,tz,az,ak]=await Promise.all([
+        sb.from("reservations").select("id,name,ota,lend_date,opt_b,opt_c,opt_j,status").neq("status","cancelled").gte("lend_date",td),
+        sb.from("tasks").select("_id,reservation_id,type,date,place,col_place,changed_json,opt_b,opt_c,opt_j,done,name,deleted").in("type",["DEL","COL"]).gte("date",td),
+        sb.from("spk_accounting").select("id,resv_no,user_name,amount,date,category").eq("type","advance").eq("paid",false),
+        sb.from("spk_notice_ack").select("k")
+      ]);
+      const resv=(rz.data||[]), tasks=(tz.data||[]).filter(t=>!t.deleted&&!t.done), adv=(az.data||[]);
+      const ackset={};(ak.data||[]).forEach(x=>ackset[x.k]=1);
+      const cxl={};resv.forEach(r=>{});const active={};resv.forEach(r=>active[r.id]=r);
+      const taskByResv={};tasks.forEach(t=>{if(t.reservation_id)(taskByResv[t.reservation_id]=taskByResv[t.reservation_id]||[]).push(t);});
+      const out=[];
+      // ① オプションのズレ（予約opt ↔ タスクopt 不一致）
+      resv.forEach(r=>{
+        const ts=taskByResv[r.id];if(!ts||!ts.length)return;
+        const rb=+(r.opt_b||0)>0,rc=+(r.opt_c||0)>0,rj=+(r.opt_j||0)>0;
+        const t=ts.find(x=>x.type==="DEL")||ts[0];
+        const tb=!!t.opt_b,tc=!!t.opt_c,tj=!!t.opt_j;
+        if(rb!==tb||rc!==tc||rj!==tj){
+          const d=[];if(rc!==tc)d.push("チャイルド");if(rj!==tj)d.push("ジュニア");if(rb!==tb)d.push("その他");
+          out.push({k:"opt:"+r.id,icon:"🧷",color:"#7c3aed",title:(r.name||"—")+" 様",sub:"オプションのズレ："+d.join("・")+"（予約↔タスク）",meta:r.id+" / "+r.lend_date});
+        }
+      });
+      // ② お届け場所 未設定（DEL/COL・未来・未完了・非キャンセル）
+      tasks.forEach(t=>{
+        if(t.reservation_id&&!active[t.reservation_id])return; // キャンセル予約除外
+        let cj={};try{cj=t.changed_json?JSON.parse(t.changed_json):{}}catch(e){}
+        const place=t.type==="COL"?(t.col_place||cj._ssPlace||""):((cj._placeSource==="manual"?t.place:(cj._ssPlace||t.place))||"");
+        if(!String(place).trim())
+          out.push({k:"place:"+t._id,icon:"📍",color:"#0891b2",title:(t.name||"—")+" 様",sub:"お届け場所 未設定（"+t.type+"）",meta:(t.reservation_id||"")+" / "+t.date});
+      });
+      // ③ 立替 未回収（3日超）
+      adv.forEach(a=>{if(a.date&&a.date<=past3)
+        out.push({k:"adv:"+a.id,icon:"💳",color:"#b45309",title:(a.user_name||"—"),sub:"立替 未回収 ¥"+(+a.amount||0).toLocaleString()+"（"+(a.category||"")+"）",meta:(a.resv_no||"")+" / "+a.date});});
+      setAcked(ackset);setItems(out);
+    }catch(e){}
+  },[today]);
+  React.useEffect(()=>{load();const iv=setInterval(load,300000);return()=>clearInterval(iv);},[load]);
+  const ack=async(k)=>{setAcked(a=>({...a,[k]:1}));try{await sb.from("spk_notice_ack").upsert({k,ack_at:new Date().toISOString()});}catch(e){}};
+  const vis=items.filter(x=>!acked[x.k]);
+  if(!vis.length)return null;
+  return (
+    <div style={{marginBottom:8,padding:"10px 12px",borderRadius:12,background:"#fffbeb",border:"2px solid #fde68a"}}>
+      <div style={{fontSize:10,fontWeight:800,color:"#92400e",marginBottom:6,display:"flex",alignItems:"center",gap:6}}>
+        🔔 お知らせ（自動チェック・要対応）
+        <span style={{background:"#d97706",color:"#fff",borderRadius:99,fontSize:9,fontWeight:700,padding:"1px 7px"}}>{vis.length}件</span>
+      </div>
+      {vis.map(x=>(
+        <div key={x.k} style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,padding:"7px 10px",borderRadius:8,background:"#fff",border:"1px solid #fde68a"}}>
+          <span style={{fontSize:13,flexShrink:0}}>{x.icon}</span>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:12,fontWeight:700,color:"#1e293b",lineHeight:1.4}}>{x.title}</div>
+            <div style={{fontSize:10.5,color:x.color,marginTop:2,fontWeight:700}}>{x.sub}</div>
+            <div style={{fontSize:9,color:"#94a3b8",fontFamily:"monospace"}}>{x.meta}</div>
+          </div>
+          <button onClick={()=>ack(x.k)} style={{fontSize:10,fontWeight:800,color:"#fff",background:"#16a34a",padding:"5px 10px",borderRadius:6,border:"none",cursor:"pointer",whiteSpace:"nowrap"}}>✓ 消し込み</button>
+        </div>
+      ))}
+    </div>
+  );
+}
 function MemoBox({today}){
   const tomorrow=dOff(today,1);
   const[memos,setMemos]=React.useState([]);
@@ -23205,6 +23273,7 @@ function App(){
                   })}
                 </div>;
               })()}
+              <AutoNoticeBox today={today}/>
               <MemoBox today={today}/>
               <NoContactAlert sb={sb} store="spk"/>
               <KdChangeAlert onGo={()=>setTab("kdcancel")}/>
@@ -23917,7 +23986,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.546";
+const APP_VERSION="v4.7.547";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
