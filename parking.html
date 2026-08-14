@@ -48,6 +48,8 @@
   .cbay .crown{position:absolute;top:-18px;left:50%;transform:translateX(-50%);font-size:9px;font-weight:900;color:#78350f;background:#fbbf24;border-radius:6px;padding:1px 6px;white-space:nowrap;z-index:5;box-shadow:0 2px 6px rgba(0,0,0,.35)}
   .cbay.alert{border:2px solid #ef4444 !important;border-top:none !important;animation:alertBlink .7s ease-in-out infinite}
   .cbay .alertbadge{margin-top:3px;font-size:8.5px;font-weight:900;color:#fff;background:#dc2626;border-radius:5px;padding:1px 6px;white-space:nowrap;animation:abBlink .7s ease-in-out infinite}
+  .cbay.depart{border:2px solid #f59e0b !important;border-top:none !important}
+  .cbay .departbadge{margin-top:3px;font-size:8.5px;font-weight:900;color:#7c2d12;background:#fde68a;border-radius:5px;padding:1px 6px;white-space:nowrap}
   @keyframes alertBlink{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.4);background:rgba(239,68,68,.10)}50%{box-shadow:0 0 0 6px rgba(239,68,68,.5);background:rgba(239,68,68,.30)}}
   @keyframes abBlink{0%,100%{opacity:1}50%{opacity:.45}}
   body.guiding .cbay.occ{opacity:.32}
@@ -165,6 +167,7 @@ let SPOTS=[];   // {id,no,carId,memo}
 let ROSTER=[];  // {id,n,p,c}
 let RETURNS=[]; // {id,n,p,c,time} 本日返却予定(予約RPC)
 let OUT_NOW=new Set(); // 今 貸出中(出発済み・返却前)の車id
+let DEPART_TODAY=new Set(); // 本日出発予定(貸出日=本日・予約データ参照)の車id ※当日貸出・当日返却の車もあるので注意
 let MOBILITY={}, WAREHOUSE={}, PLAN={}; // parking_meta (PLAN=返却予定の手動割当 carId->spotId)
 const MOB_ITEMS=[{id:"bicycle",name:"自転車",icon:"🚲"},{id:"ebike",name:"電動自転車",icon:"⚡"},{id:"escooter",name:"キックボード",icon:"🛴"}];
 const MOB_PLACES=["使用中","オフィス","BIGスロット","充電中"];
@@ -206,8 +209,8 @@ function render(){
   const reco=guideCar?recoSpotId(guideCar):null;
   const planned=guideCar?{}:plannedMap();
   const total=SPOTS.length, parked=SPOTS.filter(s=>s.carId).length;
-  const alertN=SPOTS.filter(s=>s.carId&&OUT_NOW.has(s.carId)).length;
-  $("sum").innerHTML=`<div class="chip">空き <b>${total-parked}</b>/${total}</div><div class="chip">BIG空き <b>${baysOf("BIG").filter(s=>!s.carId).length}</b></div><div class="chip">本日返却 <b>${RETURNS.length}</b></div>`+(alertN?`<div class="chip" style="background:#dc2626;animation:abBlink .7s infinite">🚨貸出中なのに駐車 <b>${alertN}</b></div>`:"");
+  const departN=SPOTS.filter(s=>s.carId&&DEPART_TODAY.has(s.carId)).length;
+  $("sum").innerHTML=`<div class="chip">空き <b>${total-parked}</b>/${total}</div><div class="chip">BIG空き <b>${baysOf("BIG").filter(s=>!s.carId).length}</b></div><div class="chip">本日返却 <b>${RETURNS.length}</b></div>`+(departN?`<div class="chip" style="background:#f59e0b;color:#111">🚗本日出発予定 <b>${departN}</b></div>`:"");
   // 🕒 本日返却予定（未駐車のみ・時刻付き）
   const placed=placedIds();
   const rtoday=RETURNS.filter(r=>!placed.has(r.id));
@@ -223,8 +226,8 @@ function render(){
         if(plan)return `<div class="cbay planned ${a.mode}" data-sp="${sp.id}" onclick="tapPlanned(${sp.id},'${plan.id}')">${noBadge}<div class="planghost">${carGraphic(plan.id)}</div><div class="cname" style="color:#fde047">${plan.n} ${plan.p}<br>🕒${plan.time}${plan.staff?' 👤'+plan.staff:''}</div><span class="planlbl">返却使用予定</span></div>`;
         const r=reco&&reco.id===sp.id;const lbl=a.mode==="numbered"?'<span class="freetag">空</span>':'<span class="addtag">＋入庫</span>';return `<div class="cbay free ${a.mode}${r?' reco':''}" data-sp="${sp.id}" onclick="tapEmpty(${sp.id})">${noBadge}${r?'<span class="crown">👑ここへ</span>':''}${lbl}</div>`;}
       const cc=car(sp.carId);const cn=(a.mode==="manual"&&sp.memo)?`<span class="cn">駐車No.${sp.memo}</span>`:"";
-      const alert=OUT_NOW.has(sp.carId)?'<span class="alertbadge">🚨貸出中では？</span>':"";
-      return `<div class="cbay occ ${OUT_NOW.has(sp.carId)?'alert':''}" data-sp="${sp.id}" onclick="tapCar(${sp.id})">${noBadge}${carGraphic(sp.carId)}<div class="cname">${cc.n}${cc.p?'<br>'+cc.p:''}</div>${cn}${alert}</div>`;
+      const dep=DEPART_TODAY.has(sp.carId)?'<span class="departbadge">🚗本日出発予定</span>':"";
+      return `<div class="cbay occ ${DEPART_TODAY.has(sp.carId)?'depart':''}" data-sp="${sp.id}" onclick="tapCar(${sp.id})">${noBadge}${carGraphic(sp.carId)}<div class="cname">${cc.n}${cc.p?'<br>'+cc.p:''}</div>${cn}${dep}</div>`;
     }).join("");
     html+=`<div class="area ${a.paid?'paid':''}"><div class="atitle">${a.ico} ${a.name}${a.paid?'<span class="paidtag">有料</span>':''}<span class="cap">空き ${free}／${bays.length}台</span></div><div class="coinbays">${cells||'<div style="font-size:10px;color:#94a3b8;padding:6px">（マス未登録）</div>'}</div></div>`;
   });
@@ -452,8 +455,12 @@ async function loadOutNow(){
   try{const r=await fetch(MAIN_SB+"/rest/v1/rpc/spk_parking_out_now",{method:"POST",headers:{"apikey":MAIN_ANON,"Authorization":"Bearer "+MAIN_ANON,"Content-Type":"application/json"},body:"{}"});
     const d=await r.json();if(Array.isArray(d))OUT_NOW=new Set(d.map(x=>x.name+"-"+x.no));}catch(e){console.log("outnow err",e);}
 }
+async function loadDeparts(){
+  try{const r=await fetch(MAIN_SB+"/rest/v1/rpc/spk_parking_departs_today",{method:"POST",headers:{"apikey":MAIN_ANON,"Authorization":"Bearer "+MAIN_ANON,"Content-Type":"application/json"},body:"{}"});
+    const d=await r.json();if(Array.isArray(d))DEPART_TODAY=new Set(d.map(x=>x.name+"-"+x.no));}catch(e){console.log("departs err",e);}
+}
 async function boot(){
-  await Promise.all([loadRoster(),loadSpots(),loadReturns(),loadMeta(),loadOutNow()]);
+  await Promise.all([loadRoster(),loadSpots(),loadReturns(),loadMeta(),loadOutNow(),loadDeparts()]);
   $("st").textContent="🟢 稼働中";render();
   // リアルタイム（他端末の入出庫・モビリティ/倉庫車ステータスを即共有）
   sb.channel("pk-rt").on("postgres_changes",{event:"*",schema:"public",table:"parking_spots"},async()=>{await loadSpots();render();}).subscribe();
