@@ -1,0 +1,151 @@
+<!doctype html><html lang="ja"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>🧷 シート貸出リスト（チャイルド/ジュニア）</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:#0f172a;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN",sans-serif;font-size:14px;padding-bottom:40px}
+  .top{position:sticky;top:0;z-index:10;background:#111c33;border-bottom:1px solid #1e293b;padding:10px 12px}
+  .ttl{font-size:16px;font-weight:900;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .sub{font-size:10.5px;color:#94a3b8;margin-top:3px}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  .chip{font-size:11px;font-weight:800;background:#1e293b;border-radius:99px;padding:3px 10px}
+  .chip b{color:#fde047}
+  .tabs{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+  .tab{font-size:12px;font-weight:800;padding:6px 12px;border-radius:8px;background:#1e293b;color:#94a3b8;border:1px solid #334155;cursor:pointer}
+  .tab.on{background:#f59e0b;color:#111;border-color:#f59e0b}
+  .wrap{padding:10px 12px;max-width:760px;margin:0 auto}
+  .card{background:#111c33;border:1px solid #1e293b;border-radius:12px;padding:10px 12px;margin-bottom:8px}
+  .card.out{border-color:#f59e0b55}
+  .card.parked{border-color:#0e9f5055}
+  .row1{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .date{font-size:14px;font-weight:900;color:#fca5a5;background:#3f1d1d;border:1px solid #7f1d1d;border-radius:6px;padding:1px 8px;white-space:nowrap}
+  .seatb{font-size:12px;font-weight:900;border-radius:6px;padding:2px 8px;white-space:nowrap}
+  .seatb.c{background:#fce7f3;color:#9d174d}
+  .seatb.j{background:#fef3c7;color:#92400e}
+  .cust{font-size:13px;font-weight:800;color:#f1f5f9}
+  .row2{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px}
+  .veh{font-size:12.5px;font-weight:800;color:#e2e8f0;background:#0b1424;border:1px solid #334155;border-radius:6px;padding:2px 9px}
+  .st{font-size:11.5px;font-weight:900;border-radius:6px;padding:3px 9px;white-space:nowrap}
+  .st.park{background:#052e1a;color:#6ee7b7;border:1px solid #0e9f50}
+  .st.out{background:#3a2606;color:#fbbf24;border:1px solid #b45309}
+  .st.plan{background:#0b1e3a;color:#93c5fd;border:1px solid #2563eb}
+  .st.done{background:#1e293b;color:#94a3b8}
+  .st.nofleet{background:#3f1d1d;color:#fca5a5;border:1px solid #7f1d1d}
+  .meta{font-size:9.5px;color:#64748b;font-family:monospace;margin-top:4px}
+  .card.collected{opacity:.5}
+  .row3{display:flex;align-items:center;gap:8px;margin-top:7px;flex-wrap:wrap}
+  .needb{font-size:11px;font-weight:900;color:#fff;background:#dc2626;border-radius:6px;padding:2px 9px;animation:blink 1s infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.5}}
+  .collbtn{font-size:12px;font-weight:900;border:none;border-radius:8px;padding:7px 12px;cursor:pointer;white-space:nowrap}
+  .collbtn.todo{background:#334155;color:#fbbf24}
+  .collbtn.done{background:#052e1a;color:#6ee7b7;border:1px solid #0e9f50}
+  .dgrp{font-size:11px;font-weight:900;color:#fbbf24;margin:14px 2px 6px;border-bottom:1px solid #334155;padding-bottom:3px}
+  .empty{color:#94a3b8;text-align:center;padding:30px;font-size:13px}
+  a.link{color:#93c5fd;text-decoration:none;font-size:12px;font-weight:800}
+</style></head>
+<body>
+<div class="top">
+  <div class="ttl">🧷 シート貸出リスト <span style="font-size:11px;font-weight:700;color:#94a3b8">チャイルド / ジュニア</span></div>
+  <div class="sub">OPシート(予約オプション)から自動生成 ／ どの車両に・貸出中か・どこの駐車場か を日付順に</div>
+  <div class="chips" id="sum"></div>
+  <div class="tabs" id="tabs">
+    <div class="tab on" data-f="all" onclick="setF('all')">すべて</div>
+    <div class="tab" data-f="c" onclick="setF('c')">🧒 チャイルド</div>
+    <div class="tab" data-f="j" onclick="setF('j')">🧑 ジュニア</div>
+    <div class="tab" data-f="active" onclick="setF('active')">🚗 貸出中のみ</div>
+    <div class="tab" data-f="need" onclick="setF('need')">🔴 要回収</div>
+  </div>
+  <div style="margin-top:8px"><a class="link" href="parking.html">🅿️ 駐車場マップへ</a> ・ <a class="link" href="#" onclick="load();return false">🔄 更新</a></div>
+</div>
+<div class="wrap" id="list"><div class="empty">読み込み中…</div></div>
+<script>
+const PARK_URL="https://rkrvjpipvpybkmqadmrb.supabase.co";
+const PARK_ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJrcnZqcGlwdnB5YmttcWFkbXJiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI4MjI4MjQsImV4cCI6MjA4ODM5ODgyNH0.Jq_yIfAp1gsXdOtigwEwMb43iPD188PRKKdwc0D4tU4";
+const MAIN_SB="https://ckrxttbnawkclshczsia.supabase.co";
+const MAIN_ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
+const psb=window.supabase.createClient(PARK_URL,PARK_ANON);
+const msb=window.supabase.createClient(MAIN_SB,MAIN_ANON);
+const $=id=>document.getElementById(id);
+const today=()=>new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});
+function areaName(no){no=String(no||"");if(/^\d+$/.test(no.trim()))return "BIGスロット";if(no.indexOf("トラスト")>=0)return "トラストパーク";if(no.indexOf("タイムズ")>=0)return "タイムズ";return "有料枠";}
+let ROWS=[], PARK={}, COLLECTED=new Set(), FILTER="all";
+
+async function load(){
+  $("list").innerHTML='<div class="empty">読み込み中…</div>';
+  // ① シート使用予約（メインDB RPC）
+  try{
+    const r=await fetch(MAIN_SB+"/rest/v1/rpc/spk_seat_lending_list",{method:"POST",headers:{apikey:MAIN_ANON,Authorization:"Bearer "+MAIN_ANON,"Content-Type":"application/json"},body:"{}"});
+    ROWS=await r.json(); if(!Array.isArray(ROWS))ROWS=[];
+  }catch(e){ROWS=[];console.log("seat err",e);}
+  // ② 駐車場(別DB)：car_id -> {no,area}
+  try{
+    const{data}=await psb.from("parking_spots").select("no,car_id");
+    PARK={}; (data||[]).forEach(s=>{if(s.car_id)PARK[s.car_id]={no:s.no,area:areaName(s.no)};});
+  }catch(e){PARK={};console.log("park err",e);}
+  // ③ 回収済み（倉庫車へ移動）チェック（全端末共有）
+  try{const{data}=await msb.from("spk_seat_collected").select("resv");COLLECTED=new Set((data||[]).map(x=>x.resv));}catch(e){console.log("collected err",e);}
+  render();
+}
+async function toggleCollect(resv,ev){
+  if(ev)ev.stopPropagation();
+  if(COLLECTED.has(resv)){
+    COLLECTED.delete(resv);
+    try{await msb.from("spk_seat_collected").delete().eq("resv",resv);}catch(e){}
+  }else{
+    COLLECTED.add(resv);
+    try{await msb.from("spk_seat_collected").upsert({resv,collected_at:new Date().toISOString()},{onConflict:"resv"});}catch(e){}
+  }
+  render();
+}
+function setF(f){FILTER=f;document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("on",t.dataset.f===f));render();}
+
+function stateOf(x){
+  const t=today();
+  const key=(x.veh_name||"")+"-"+(x.veh_plate||"");
+  const parked=(x.veh_name&&PARK[key])?PARK[key]:null;
+  const active=x.lend_date&&x.return_date&&x.lend_date<=t&&t<=x.return_date;
+  const future=x.lend_date&&x.lend_date>t;
+  if(!x.veh_name) return {cls:"nofleet",label:"⚠️ 未配車",kind:"none"};
+  if(parked) return {cls:"park",label:"🅿️ "+parked.area+(/^\d+$/.test(String(parked.no).trim())?" No."+parked.no:" "+parked.no),kind:"parked"};
+  if(active) return {cls:"out",label:"🚗 貸出中（外）",kind:"out"};
+  if(future) return {cls:"plan",label:"🗓 出発前",kind:"plan"};
+  return {cls:"done",label:"✓ 返却済",kind:"done"};
+}
+
+function render(){
+  const t0=today();
+  const needColl=x=>(x.return_date&&x.return_date<t0)&&!COLLECTED.has(x.resv); // 返却期日超過なのに未回収
+  let rows=ROWS.slice();
+  if(FILTER==="c") rows=rows.filter(x=>+x.child>0);
+  else if(FILTER==="j") rows=rows.filter(x=>+x.junior>0);
+  else if(FILTER==="active") rows=rows.filter(x=>{const t=today();return x.lend_date<=t&&t<=x.return_date;});
+  else if(FILTER==="need") rows=rows.filter(needColl);
+  // サマリー：本日時点で外に出ているシート数
+  const t=today();
+  let cAll=0,jAll=0,cOut=0,jOut=0;
+  ROWS.forEach(x=>{cAll+=+x.child;jAll+=+x.junior;const act=x.lend_date<=t&&t<=x.return_date;if(act){cOut+=+x.child;jOut+=+x.junior;}});
+  const needN=ROWS.filter(needColl).length;
+  $("sum").innerHTML=`<div class="chip">🧒チャイルド 使用中 <b>${cOut}</b></div><div class="chip">🧑ジュニア 使用中 <b>${jOut}</b></div><div class="chip">対象予約 <b>${ROWS.length}</b>件</div>`+(needN?`<div class="chip" style="background:#dc2626;color:#fff">🔴要回収 <b>${needN}</b></div>`:"");
+  if(!rows.length){$("list").innerHTML='<div class="empty">該当なし</div>';return;}
+  // 日付(貸出日)でグループ
+  let html="",curD="";
+  rows.forEach(x=>{
+    if(x.lend_date!==curD){curD=x.lend_date;const dt=new Date(curD+"T00:00:00+09:00");const wd=["日","月","火","水","木","金","土"][dt.getDay()];html+=`<div class="dgrp">📅 ${curD}（${wd}）${curD===t?' ・本日':''}</div>`;}
+    const st=stateOf(x);
+    const coll=COLLECTED.has(x.resv), need=needColl(x);
+    const seatBadges=(+x.child>0?`<span class="seatb c">🧒 チャイルド×${x.child}</span>`:"")+(+x.junior>0?`<span class="seatb j">🧑 ジュニア×${x.junior}</span>`:"");
+    const veh=x.veh_name?`<span class="veh">🚗 ${x.veh_name} ${x.veh_plate}${x.veh_type?' / '+x.veh_type:''}</span>`:`<span class="veh" style="color:#fca5a5">未配車</span>`;
+    const rid=String(x.resv).replace(/'/g,"\\'");
+    html+=`<div class="card ${coll?'collected':st.kind==='parked'?'parked':st.kind==='out'?'out':''}">
+      <div class="row1"><span class="date">${x.lend_date}〜${x.return_date}</span>${x.del_time?`<span style="font-size:11px;color:#fde047;font-weight:800">🕒${x.del_time}出発</span>`:""}${seatBadges}</div>
+      <div class="row2"><span class="cust">${x.cust||'—'} 様</span>${veh}<span class="st ${st.cls}">${st.label}</span></div>
+      <div class="row3">${need&&!coll?'<span class="needb">🔴 要回収</span>':''}<button class="collbtn ${coll?'done':'todo'}" onclick="toggleCollect('${rid}',event)">${coll?'✅ 倉庫車へ回収済（取消）':'☑ 回収して倉庫車へ'}</button></div>
+      <div class="meta">${x.resv}</div>
+    </div>`;
+  });
+  $("list").innerHTML=html;
+}
+load();
+setInterval(load,120000); // 2分ごと自動更新
+</script></body></html>
