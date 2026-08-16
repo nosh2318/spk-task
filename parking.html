@@ -50,6 +50,10 @@
   .cbay .alertbadge{margin-top:3px;font-size:8.5px;font-weight:900;color:#fff;background:#dc2626;border-radius:5px;padding:1px 6px;white-space:nowrap;animation:abBlink .7s ease-in-out infinite}
   .cbay.depart{border:2px solid #f59e0b !important;border-top:none !important}
   .cbay .departbadge{margin-top:3px;font-size:8.5px;font-weight:900;color:#7c2d12;background:#fde68a;border-radius:5px;padding:1px 6px;white-space:nowrap}
+  .cbay .keyb{margin-top:3px;font-size:8.5px;font-weight:900;border-radius:5px;padding:1px 6px;white-space:nowrap;border:1px solid}
+  .cbay .keyb.kin{color:#052e16;background:#34d399;border-color:#10b981}
+  .cbay .keyb.kout{color:#fff;background:#dc2626;border-color:#ef4444}
+  .cbay .keyb.kunk{color:#78350f;background:#fbbf24;border-color:#f59e0b}
   @keyframes alertBlink{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.4);background:rgba(239,68,68,.10)}50%{box-shadow:0 0 0 6px rgba(239,68,68,.5);background:rgba(239,68,68,.30)}}
   @keyframes abBlink{0%,100%{opacity:1}50%{opacity:.45}}
   body.guiding .cbay.occ{opacity:.32}
@@ -172,7 +176,7 @@ let MOBILITY={}, WAREHOUSE={}, PLAN={}; // parking_meta (PLAN=返却予定の手
 const MOB_ITEMS=[{id:"bicycle",name:"自転車",icon:"🚲"},{id:"ebike",name:"電動自転車",icon:"⚡"},{id:"escooter",name:"キックボード",icon:"🛴"}];
 const MOB_PLACES=["使用中","オフィス","BIGスロット","充電中"];
 const MOB_PLACE_STYLE={"使用中":{bg:"#7c2d12",c:"#fdba74"},"オフィス":{bg:"#1e3a5f",c:"#93c5fd"},"BIGスロット":{bg:"#14532d",c:"#86efac"},"充電中":{bg:"#4c1d95",c:"#c4b5fd"}};
-let guideCar=null, modal=null, busy=false;
+let guideCar=null, modal=null, busy=false, modalLock=false;
 // スタッフ車両は配車表RPCに無いので常に選択肢に含める（どのタイミングでも出る）
 const STAFF_CARS=[
   {id:"スタッフ車両-長谷川",n:"長谷川",p:"スタッフ車",c:"H"},
@@ -227,7 +231,7 @@ function render(){
         const r=reco&&reco.id===sp.id;const lbl=a.mode==="numbered"?'<span class="freetag">空</span>':'<span class="addtag">＋入庫</span>';return `<div class="cbay free ${a.mode}${r?' reco':''}" data-sp="${sp.id}" onclick="tapEmpty(${sp.id})">${noBadge}${r?'<span class="crown">👑ここへ</span>':''}${lbl}</div>`;}
       const cc=car(sp.carId);const cn=(a.mode==="manual"&&sp.memo)?`<span class="cn">駐車No.${sp.memo}</span>`:"";
       const dep=DEPART_TODAY.has(sp.carId)?'<span class="departbadge">🚗本日出発予定</span>':"";
-      return `<div class="cbay occ ${DEPART_TODAY.has(sp.carId)?'depart':''}" data-sp="${sp.id}" onclick="tapCar(${sp.id})">${noBadge}${carGraphic(sp.carId)}<div class="cname">${cc.n}${cc.p?'<br>'+cc.p:''}</div>${cn}${dep}</div>`;
+      return `<div class="cbay occ ${DEPART_TODAY.has(sp.carId)?'depart':''}" data-sp="${sp.id}" onclick="tapCar(${sp.id})">${noBadge}${carGraphic(sp.carId)}<div class="cname">${cc.n}${cc.p?'<br>'+cc.p:''}</div>${cn}${dep}${keyBadge(sp)}</div>`;
     }).join("");
     html+=`<div class="area ${a.paid?'paid':''}"><div class="atitle">${a.ico} ${a.name}${a.paid?'<span class="paidtag">有料</span>':''}<span class="cap">空き ${free}／${bays.length}台</span></div><div class="coinbays">${cells||'<div style="font-size:10px;color:#94a3b8;padding:6px">（マス未登録）</div>'}</div></div>`;
   });
@@ -296,7 +300,11 @@ async function saveWh(id){
 async function delWh(id){delete WAREHOUSE[id];renderExtra();await saveMeta("warehouse",WAREHOUSE);toast("解除しました");}
 async function saveMeta(k,obj){try{await sb.from("parking_meta").upsert({k,v:obj,updated_at:new Date().toISOString()},{onConflict:"k"});}catch(e){console.log("saveMeta err",e);toast("⚠️保存失敗");}}
 async function loadMeta(){try{const{data}=await sb.from("parking_meta").select("k,v");if(data){data.forEach(r=>{if(r.k==="mobility")MOBILITY=r.v||{};if(r.k==="warehouse")WAREHOUSE=r.v||{};if(r.k==="plan")PLAN=r.v||{};});}}catch(e){console.log("loadMeta err",e);}}
-function renderModal(){$("modalRoot").innerHTML=modal?`<div class="scrim" onclick="if(event.target===this)closeSheet()"><div class="sheet">${modal}</div></div>`:"";}
+function renderModal(){$("modalRoot").innerHTML=modal?`<div class="scrim" onclick="if(event.target===this&&!modalLock)closeSheet()"><div class="sheet">${modal}</div></div>`:"";}
+/* ★2026-08-16 入庫時の必須ステップ: 鍵を車内に置くか(車内鍵あり/なし)を必ず記録。背景タップで閉じられない(modalLock) */
+function keyBadge(sp){if(!sp||!sp.carId)return"";if(sp.keyInside===true)return'<span class="keyb kin">🔑車内鍵あり</span>';if(sp.keyInside===false)return'<span class="keyb kout">🚫車内鍵なし</span>';return'<span class="keyb kunk">❔鍵未確認</span>';}
+function askKeyInside(spotId,carId){const c=car(carId);modalLock=true;openSheet(`<h3>🔑 鍵を車内に置きますか？</h3><div class="sd">${c.n} ${c.p} の鍵の場所を記録します（必須）。</div><div class="btnrow"><button class="btn" style="flex:1;background:#059669;color:#fff;font-weight:900" onclick="setKeyInside(${spotId},true)">✅ はい<br><span style="font-size:10px;font-weight:700">車内に置く（車内鍵あり）</span></button><button class="btn" style="flex:1;background:#b91c1c;color:#fff;font-weight:900" onclick="setKeyInside(${spotId},false)">🚫 いいえ<br><span style="font-size:10px;font-weight:700">持ち出す（車内鍵なし）</span></button></div>`);}
+async function setKeyInside(spotId,val){modalLock=false;closeSheet();const sp=SPOTS.find(s=>s.id===spotId);if(sp)sp.keyInside=val;render();await dbSetKeyInside(spotId,val);toast(val?"🔑 車内鍵あり を記録":"🚫 車内鍵なし を記録");}
 function openSheet(h){modal=h;renderModal();}
 function closeSheet(){modal=null;renderModal();}
 function toast(m){const t=$("toast");t.textContent=m;t.classList.add("on");setTimeout(()=>t.classList.remove("on"),1700);}
@@ -307,13 +315,15 @@ function exitGuide(){guideCar=null;document.body.classList.remove("guiding");$("
 // ===== DB書き込み（1マス1行・他枠の同一車は先に空ける） =====
 async function dbSetCar(spotId,carId,memo){
   try{
-    if(carId){await sb.from("parking_spots").update({car_id:null,updated_at:new Date().toISOString(),updated_by:"spk"}).eq("car_id",carId).neq("id",spotId);}
+    if(carId){await sb.from("parking_spots").update({car_id:null,key_inside:null,updated_at:new Date().toISOString(),updated_by:"spk"}).eq("car_id",carId).neq("id",spotId);}
     const patch={car_id:carId||null,updated_at:new Date().toISOString(),updated_by:"spk"};
     if(memo!==undefined)patch.memo=memo||"";
+    if(!carId)patch.key_inside=null; /* 出庫時は車内鍵の記録をリセット */
     await sb.from("parking_spots").update(patch).eq("id",spotId);
   }catch(e){console.log("dbSetCar err",e);toast("⚠️ 保存失敗（通信）");}
 }
-function optimistic(spotId,carId,memo){SPOTS.forEach(s=>{if(s.carId===carId&&s.id!==spotId)s.carId=null;});const sp=SPOTS.find(s=>s.id===spotId);if(sp){sp.carId=carId||null;if(memo!==undefined)sp.memo=memo||"";}}
+async function dbSetKeyInside(spotId,val){try{await sb.from("parking_spots").update({key_inside:val,updated_at:new Date().toISOString(),updated_by:"spk"}).eq("id",spotId);}catch(e){console.log("dbSetKeyInside err",e);toast("⚠️ 鍵状態の保存失敗");}}
+function optimistic(spotId,carId,memo){SPOTS.forEach(s=>{if(s.carId===carId&&s.id!==spotId){s.carId=null;s.keyInside=null;}});const sp=SPOTS.find(s=>s.id===spotId);if(sp){sp.carId=carId||null;if(memo!==undefined)sp.memo=memo||"";if(!carId)sp.keyInside=null;}}
 
 // ===== 誘導・入庫 =====
 function pickCar(id){ // 返却チップから選択→誘導
@@ -355,6 +365,7 @@ async function finishPark(spotId,id,memo){
   exitGuide();render();
   const el=document.querySelector(`.cbay[data-sp="${spotId}"]`);if(el){el.classList.add("pop");burst(el);}
   goodJob(label+" に "+car(id).n);
+  askKeyInside(spotId,id); /* ★入庫の必須ステップ: 鍵を車内に置くか記録 */
 }
 // 返却予定マスをタップ→入庫確認→(入庫ボタン)で実際に停める
 function tapPlanned(spotId,carId){
@@ -415,7 +426,9 @@ function tapCar(spotId){
   const sp=SPOTS.find(s=>s.id===spotId);if(!sp||!sp.carId)return;const c=car(sp.carId);const a=areaDef(areaOf(sp.no));
   const loc=(a.mode==="numbered"?"No."+sp.no:a.name)+(sp.memo?" 駐車No."+sp.memo:"");
   const isRet=RETURNS.some(r=>r.id===sp.carId); // 本日返却予定の車＝元に戻せる
-  openSheet(`<h3>${loc}：${c.n} ${c.p}</h3><div class="sd">操作を選択</div>`+
+  const ki=sp.keyInside;const kiLabel=ki===true?"🔑 車内鍵あり":ki===false?"🚫 車内鍵なし":"❔ 鍵未確認";
+  openSheet(`<h3>${loc}：${c.n} ${c.p}</h3><div class="sd">現在の鍵：<b style="color:${ki===true?'#34d399':ki===false?'#f87171':'#fbbf24'}">${kiLabel}</b>　（下で変更可）</div>`+
+    `<div class="btnrow" style="margin-bottom:8px"><button class="btn" style="flex:1;background:${ki===true?'#059669':'#334155'};color:#fff" onclick="setKeyInside(${spotId},true)">🔑 車内鍵あり</button><button class="btn" style="flex:1;background:${ki===false?'#b91c1c':'#334155'};color:#fff" onclick="setKeyInside(${spotId},false)">🚫 車内鍵なし</button></div>`+
     (isRet?`<button class="btn" style="width:100%;background:#78350f;color:#fde68a;margin-bottom:8px" onclick="undoReturn(${spotId})">↩️ 返却予定に戻す（入庫を取り消し）</button>`:"")+
     `<div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button><button class="btn" style="background:#334155;color:#7dd3fc" onclick="openSwap(${spotId})">🔄 入れ替え</button><button class="btn r" onclick="doOut(${spotId})">🚙 出庫</button></div>`);
 }
@@ -445,7 +458,7 @@ async function loadRoster(){
   }catch(e){console.log("roster err",e);}
 }
 async function loadSpots(){
-  try{const{data,error}=await sb.from("parking_spots").select("*").order("id");if(!error&&data)SPOTS=data.map(r=>({id:r.id,no:r.no,carId:r.car_id,memo:r.memo||""}));}catch(e){console.log("spots err",e);}
+  try{const{data,error}=await sb.from("parking_spots").select("*").order("id");if(!error&&data)SPOTS=data.map(r=>({id:r.id,no:r.no,carId:r.car_id,memo:r.memo||"",keyInside:r.key_inside}));}catch(e){console.log("spots err",e);}
 }
 async function loadReturns(){
   try{const r=await fetch(MAIN_SB+"/rest/v1/rpc/spk_parking_returns_today",{method:"POST",headers:{"apikey":MAIN_ANON,"Authorization":"Bearer "+MAIN_ANON,"Content-Type":"application/json"},body:"{}"});
