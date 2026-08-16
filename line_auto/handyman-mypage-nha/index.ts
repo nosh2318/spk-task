@@ -120,6 +120,25 @@ Deno.serve(async (req) => {
     }
     await pushLine(resId2, msg);  // 予約有効なうちに先に送る
     await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: decision, actor });
+    // ★ 早め回収(ready)を承認し、希望時間(HH:MM)がある場合は諸々の表示へ自動反映
+    //   ①nha_reservations.col_time/end_time ②nha_tasks の c-<予約>「変更」(＋「時間」) ③mypage_changes field=return_time status=applied
+    if (decision === "approved" && c.field === "ready") {
+      const hopeR = String(c.new_value || "").match(/(\d{1,2}:\d{2})/);
+      if (hopeR) {
+        const hope = hopeR[1];
+        // ① 予約(正本)の回収時間
+        await sbPatch("nha_reservations", `id=eq.${encodeURIComponent(resId2)}`, { col_time: hope, end_time: hope });
+        // ② COLタスク c-<予約> の「変更」(＋「時間」)＝希望時間 → OP表示に反映
+        const cRows2 = await sbGet("nha_tasks", `${encodeURIComponent("予約番号")}=eq.${encodeURIComponent(resId2)}&deleted=not.is.true&select=_id`);
+        const cId = (cRows2 || []).map((t: any) => String(t._id || "")).find((id: string) => id.startsWith("c-"));
+        if (cId) {
+          const patch: Record<string, string> = {}; patch["変更"] = hope; patch["時間"] = hope;
+          await sbPatch("nha_tasks", `_id=eq.${encodeURIComponent(cId)}`, patch);
+        }
+        // ③ 適用済み変更としてマイページ回収時間へ反映（appliedChg("return_time")が最優先で拾う）
+        await sbPost("mypage_changes", { reservation_id: resId2, store: "nha", field: "return_time", old_value: "", new_value: hope, source: "staff", status: "applied", actor, note: "早め回収 承認による回収時間反映" });
+      }
+    }
     const dRows = await sbGet("nha_reservations", `id=eq.${encodeURIComponent(resId2)}&select=name,ota,col_time,end_time`);
     const dr = dRows[0] || {};
     const hopeM = String(c.new_value || "").match(/(\d{1,2}:\d{2})/);
