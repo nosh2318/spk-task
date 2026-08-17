@@ -80,9 +80,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1090';
+var CV='spk-v1091';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=971').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=972').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -2701,6 +2701,92 @@ function VehicleTab(props){
   );
 }
 
+// 🏭 SPK 入庫予定 登録/編集フォーム（配車表 maintenance へ登録＝該当期間は配車不可＋在庫管理に「全媒体 調整対象」で表示）
+function SpkIntakeAddForm({preset,edit,vehicles,maintenance,onMaintenanceChange,onClose}){
+  const today=new Date().toISOString().slice(0,10);
+  const e=edit||{};
+  const[vc,setVc]=useState(e.vehicleCode||preset.vehicleCode||"");
+  const[label,setLabel]=useState(e.label||preset.label||"車検");
+  const[fix,setFix]=useState((e.status||"")==="approved");
+  const[sd,setSd]=useState(e.startDate||preset.date||today);
+  const[ed,setEd]=useState(e.endDate||preset.date||today);
+  const[st,setSt]=useState(e.startTime||"");
+  const[et,setEt]=useState(e.endTime||"");
+  const[ws,setWs]=useState(e.workshop||"");
+  const[cost,setCost]=useState(e.cost?String(e.cost):"");
+  const[detail,setDetail]=useState(e.maintNotes||"");
+  const[saving,setSaving]=useState(false);
+  const vehName=(code)=>{const v=(vehicles||[]).find(x=>x&&x.code===code);return v?v.name:code;};
+  const LAB={display:"block",fontSize:11,fontWeight:700,color:"#475569",marginBottom:3};
+  const INP={width:"100%",border:"1px solid #cbd5e1",borderRadius:8,padding:"8px 10px",fontSize:13,boxSizing:"border-box"};
+  const TC={"車検":"#2563eb","半年点検":"#16a34a","修理":"#dc2626"};
+  const save=async()=>{
+    if(!vc){alert("車両を選択してください");return;}
+    if(!sd||!ed){alert("入庫日・引取日を入力してください");return;}
+    if(ed<sd){alert("引取日は入庫日以降にしてください");return;}
+    setSaving(true);
+    const id=edit?edit.id:("m"+Date.now());
+    const status=fix?"approved":"pending";
+    const ac=edit?(Number(edit.actualCost)||0):0; // 編集時は確定金額を保持
+    const rec={id,vehicleCode:vc,startDate:sd,endDate:ed,label,cost:Number(cost)||0,actualCost:ac,workshop:ws||"",invoiceNo:edit?(edit.invoiceNo||""):"",maintNotes:detail||"",status,workDetail:detail||"",startTime:st||"",endTime:et||"",blockType:"maintenance",ownerCompany:edit?(edit.ownerCompany||""):""};
+    try{
+      await DB.saveMaintenance([rec]);
+      if(onMaintenanceChange)onMaintenanceChange(edit?(maintenance||[]).map(m=>m.id===id?rec:m):[...(maintenance||[]),rec]);
+      onClose(true);
+    }catch(err){alert((edit?"更新":"登録")+"に失敗しました: "+(err.message||err));setSaving(false);}
+  };
+  const del=async()=>{
+    if(!edit)return;
+    if(!window.confirm("この入庫予定を削除しますか？\n配車表・在庫管理からも消えます。"))return;
+    setSaving(true);
+    try{
+      await DB.deleteMaintenance(edit.id);
+      try{if(typeof sb!=="undefined"&&sb)await sb.from("spk_inventory_status").delete().eq("id",edit.id);}catch(x){}
+      if(onMaintenanceChange)onMaintenanceChange((maintenance||[]).filter(m=>m.id!==edit.id));
+      onClose(true);
+    }catch(err){alert("削除に失敗しました: "+(err.message||err));setSaving(false);}
+  };
+  return <div onClick={()=>onClose()} style={{position:"fixed",inset:0,background:"rgba(15,23,42,.55)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+    <div onClick={ev=>ev.stopPropagation()} style={{background:"#fff",borderRadius:16,padding:20,width:"100%",maxWidth:460,maxHeight:"90vh",overflow:"auto",boxShadow:"0 20px 60px rgba(0,0,0,.3)"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
+        <span style={{fontSize:15,fontWeight:900}}>🏭 入庫予定を{edit?"編集":"登録"}</span>
+        <span style={{fontSize:10,color:"#94a3b8",marginLeft:"auto"}}>配車表・在庫管理に反映</span>
+      </div>
+      <div style={{display:"grid",gap:12}}>
+        <div><label style={LAB}>車両</label>
+          <select value={vc} onChange={ev=>setVc(ev.target.value)} style={INP}><option value="">選択…</option>{(vehicles||[]).filter(v=>v.active!==false).map(v=><option key={v.code} value={v.code}>{v.name}（{v.type}）{v.no?" / "+v.no:""}</option>)}</select>
+        </div>
+        <div><label style={LAB}>種別</label>
+          <div style={{display:"flex",gap:6}}>{["車検","半年点検","修理"].map(t=><button key={t} onClick={()=>setLabel(t)} style={{flex:1,padding:"8px 4px",borderRadius:8,border:"2px solid "+(label===t?TC[t]:"#e2e8f0"),background:label===t?TC[t]:"#fff",color:label===t?"#fff":"#64748b",fontWeight:800,fontSize:12,cursor:"pointer"}}>{t}</button>)}</div>
+        </div>
+        <div><label style={LAB}>状態</label>
+          <div style={{display:"flex",gap:6}}>
+            <button onClick={()=>setFix(false)} style={{flex:1,padding:"8px 4px",borderRadius:8,border:"2px solid "+(!fix?"#f59e0b":"#e2e8f0"),background:!fix?"#fef3c7":"#fff",color:!fix?"#92400e":"#64748b",fontWeight:800,fontSize:12,cursor:"pointer"}}>🟠 仮予定</button>
+            <button onClick={()=>setFix(true)} style={{flex:1,padding:"8px 4px",borderRadius:8,border:"2px solid "+(fix?"#16a34a":"#e2e8f0"),background:fix?"#dcfce7":"#fff",color:fix?"#166534":"#64748b",fontWeight:800,fontSize:12,cursor:"pointer"}}>🟢 FIX（確定）</button>
+          </div>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <div><label style={LAB}>入庫日</label><input type="date" value={sd} onChange={ev=>{setSd(ev.target.value);if(!ed||ed<ev.target.value)setEd(ev.target.value);}} style={INP}/></div>
+          <div><label style={LAB}>引取日</label><input type="date" value={ed} onChange={ev=>setEd(ev.target.value)} style={INP}/></div>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <div><label style={LAB}>入庫時刻（任意）</label><input type="time" value={st} onChange={ev=>setSt(ev.target.value)} style={INP}/></div>
+          <div><label style={LAB}>引取時刻（任意）</label><input type="time" value={et} onChange={ev=>setEt(ev.target.value)} style={INP}/></div>
+        </div>
+        <div><label style={LAB}>業者（任意）</label><input value={ws} onChange={ev=>setWs(ev.target.value)} placeholder="整備工場名" style={INP}/></div>
+        <div><label style={LAB}>概算費用（任意）</label><input type="number" value={cost} onChange={ev=>setCost(ev.target.value)} placeholder="¥" style={INP}/></div>
+        <div><label style={LAB}>作業内容（任意）</label><input value={detail} onChange={ev=>setDetail(ev.target.value)} style={INP}/></div>
+      </div>
+      <div style={{display:"flex",gap:8,marginTop:16}}>
+        <button onClick={()=>onClose()} style={{flex:1,padding:"11px",borderRadius:10,border:"1px solid #e2e8f0",background:"#fff",color:"#64748b",fontWeight:700,fontSize:13,cursor:"pointer"}}>キャンセル</button>
+        {edit&&<button onClick={del} disabled={saving} style={{flex:1,padding:"11px",borderRadius:10,border:"1px solid #fecaca",background:"#fff",color:"#dc2626",fontWeight:800,fontSize:13,cursor:"pointer",opacity:saving?.6:1}}>🗑 削除</button>}
+        <button onClick={save} disabled={saving} style={{flex:2,padding:"11px",borderRadius:10,border:"none",background:"#1d4ed8",color:"#fff",fontWeight:800,fontSize:13,cursor:"pointer",opacity:saving?.6:1}}>{saving?(edit?"更新中…":"登録中…"):(edit?"更新する":"登録する")}</button>
+      </div>
+      <div style={{fontSize:10,color:"#94a3b8",marginTop:10,lineHeight:1.5}}>登録すると<b>配車表</b>にメンテブロック（該当期間は配車不可）として反映され、<b>在庫管理</b>に「🏭入庫（全媒体 調整対象）」として表示されます（各媒体の在庫はスタッフが調整）。</div>
+    </div>
+  </div>;
+}
+
 /* ==========================================
    SPK 車検/点検カレンダー（簡易版）
    ========================================== */
@@ -2714,6 +2800,9 @@ function SpkInspectionCalendar({vehicles,maintenance,onMaintenanceChange,hmLogs}
   const[editId,setEditId]=useState(null);
   const[editVal,setEditVal]=useState("");
   const[saving,setSaving]=useState(false);
+  const[addForm,setAddForm]=useState(null); // 🏭 入庫予定 {preset:{vehicleCode?,label?}} または {edit:record}
+  const openAdd=(preset)=>setAddForm({preset:preset||{}});
+  const openEdit=(rec)=>{if(rec&&rec.id)setAddForm({edit:rec});};
   const today=new Date().toISOString().slice(0,10);
   const MONTHS=Array.from({length:12},(_,i)=>i+1);
   const TYPES=["車検","半年点検","修理"];
@@ -2766,6 +2855,7 @@ function SpkInspectionCalendar({vehicles,maintenance,onMaintenanceChange,hmLogs}
     <div style={{display:"flex",gap:4,marginBottom:16,borderBottom:"1px solid #e2e8f0",paddingBottom:8}}>
       {tabBtn2("master","📋","車両マスター")}{tabBtn2("budget","📅","予算スケジュール")}{tabBtn2("inspection","🚗","車検/点検/修理 スケジュール")}{tabBtn2("partners","🏢","協力会社マスター")}
     </div>
+    {addForm&&<SpkIntakeAddForm preset={addForm.preset||{}} edit={addForm.edit||null} vehicles={vehicles} maintenance={maintenance} onMaintenanceChange={onMaintenanceChange} onClose={()=>setAddForm(null)}/>}
     {icTab==="master"&&<div>
       <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
         <h3 style={{fontSize:14,fontWeight:800,margin:0}}>📋 車両マスター</h3>
@@ -2793,9 +2883,9 @@ function SpkInspectionCalendar({vehicles,maintenance,onMaintenanceChange,hmLogs}
               const ss=dateStatus(shakenDate);const ts=dateStatus(tenkenDate);
               return<tr key={v.code} style={{background:"#fff"}}>
                 <td style={tdS}><div style={{fontWeight:700,fontSize:12}}>{v.name}</div><div style={{fontSize:10,color:"#94a3b8"}}>{v.no}</div></td>
-                <td style={{...tdS,background:"#eff6ff"}}>{nextShaken?<div><div style={{display:"flex",alignItems:"center",gap:6}}><span style={{fontSize:11,fontWeight:700,color:"#1e40af"}}>{shakenDate||"-"}</span>{ss&&<span style={{fontSize:9,padding:"1px 6px",borderRadius:8,background:ss.bg,color:ss.color,fontWeight:700}}>{ss.label}</span>}</div></div>:<span style={{fontSize:10,color:"#cbd5e1"}}>未登録</span>}</td>
+                <td style={{...tdS,background:"#eff6ff"}}>{nextShaken?<div onClick={()=>openEdit(nextShaken)} title="タップで編集・削除" style={{cursor:"pointer"}}><div style={{display:"flex",alignItems:"center",gap:6}}><span style={{fontSize:11,fontWeight:700,color:"#1e40af"}}>{shakenDate||"-"}</span><span style={{fontSize:9,color:"#2563eb"}}>✏</span>{ss&&<span style={{fontSize:9,padding:"1px 6px",borderRadius:8,background:ss.bg,color:ss.color,fontWeight:700}}>{ss.label}</span>}</div></div>:<button onClick={()=>openAdd({vehicleCode:v.code,label:"車検"})} style={{fontSize:10,color:"#2563eb",fontWeight:700,background:"#eff6ff",border:"1px dashed #93c5fd",borderRadius:6,padding:"3px 8px",cursor:"pointer",whiteSpace:"nowrap"}}>＋ 登録</button>}</td>
                 <td style={{...tdS,background:"#eff6ff"}}>{editId===nextShaken?.id?<div style={{display:"flex",gap:4,alignItems:"center"}}><input type="number" value={editVal} onChange={e=>setEditVal(e.target.value)} style={{width:80,border:"1px solid #93c5fd",borderRadius:6,padding:"3px 6px",fontSize:11}} autoFocus/><button onClick={()=>saveActual(nextShaken)} disabled={saving} style={{fontSize:10,padding:"3px 8px",background:"#2563eb",color:"#fff",border:"none",borderRadius:6,cursor:"pointer"}}>{saving?"…":"保存"}</button><button onClick={()=>{setEditId(null);setEditVal("");}} style={{fontSize:10,padding:"3px 7px",background:"none",border:"1px solid #e2e8f0",borderRadius:6,cursor:"pointer"}}>✕</button></div>:<div style={{display:"flex",alignItems:"center",gap:6,justifyContent:"flex-end"}}>{costDisp(nextShaken)}{nextShaken&&<button onClick={()=>{setEditId(nextShaken.id);setEditVal(nextShaken.actualCost>0?String(nextShaken.actualCost):String(nextShaken.cost||""));}} style={{fontSize:9,padding:"2px 7px",background:"#eff6ff",border:"1px solid #93c5fd",borderRadius:5,cursor:"pointer",color:"#2563eb",fontWeight:700,whiteSpace:"nowrap"}}>確定入力</button>}</div>}</td>
-                <td style={{...tdS,background:"#f0fdf4"}}>{nextTenken?<div><div style={{display:"flex",alignItems:"center",gap:6}}><span style={{fontSize:11,fontWeight:700,color:"#166634"}}>{tenkenDate||"-"}</span>{ts&&<span style={{fontSize:9,padding:"1px 6px",borderRadius:8,background:ts.bg,color:ts.color,fontWeight:700}}>{ts.label}</span>}</div></div>:<span style={{fontSize:10,color:"#cbd5e1"}}>未登録</span>}</td>
+                <td style={{...tdS,background:"#f0fdf4"}}>{nextTenken?<div onClick={()=>openEdit(nextTenken)} title="タップで編集・削除" style={{cursor:"pointer"}}><div style={{display:"flex",alignItems:"center",gap:6}}><span style={{fontSize:11,fontWeight:700,color:"#166634"}}>{tenkenDate||"-"}</span><span style={{fontSize:9,color:"#16a34a"}}>✏</span>{ts&&<span style={{fontSize:9,padding:"1px 6px",borderRadius:8,background:ts.bg,color:ts.color,fontWeight:700}}>{ts.label}</span>}</div></div>:<button onClick={()=>openAdd({vehicleCode:v.code,label:"半年点検"})} style={{fontSize:10,color:"#16a34a",fontWeight:700,background:"#f0fdf4",border:"1px dashed #86efac",borderRadius:6,padding:"3px 8px",cursor:"pointer",whiteSpace:"nowrap"}}>＋ 登録</button>}</td>
                 <td style={{...tdS,background:"#f0fdf4"}}>{editId===nextTenken?.id?<div style={{display:"flex",gap:4,alignItems:"center"}}><input type="number" value={editVal} onChange={e=>setEditVal(e.target.value)} style={{width:80,border:"1px solid #86efac",borderRadius:6,padding:"3px 6px",fontSize:11}} autoFocus/><button onClick={()=>saveActual(nextTenken)} disabled={saving} style={{fontSize:10,padding:"3px 8px",background:"#16a34a",color:"#fff",border:"none",borderRadius:6,cursor:"pointer"}}>{saving?"…":"保存"}</button><button onClick={()=>{setEditId(null);setEditVal("");}} style={{fontSize:10,padding:"3px 7px",background:"none",border:"1px solid #e2e8f0",borderRadius:6,cursor:"pointer"}}>✕</button></div>:<div style={{display:"flex",alignItems:"center",gap:6,justifyContent:"flex-end"}}>{costDisp(nextTenken)}{nextTenken&&<button onClick={()=>{setEditId(nextTenken.id);setEditVal(nextTenken.actualCost>0?String(nextTenken.actualCost):String(nextTenken.cost||""));}} style={{fontSize:9,padding:"2px 7px",background:"#f0fdf4",border:"1px solid #86efac",borderRadius:5,cursor:"pointer",color:"#16a34a",fontWeight:700,whiteSpace:"nowrap"}}>確定入力</button>}</div>}</td>
               </tr>;})}
             </tbody>
@@ -2935,26 +3025,28 @@ function SpkInspectionCalendar({vehicles,maintenance,onMaintenanceChange,hmLogs}
           if(days<60)return{bg:"#fefce8",fg:"#ca8a04",label:"🟡近日",border:"#fde047"};
           return{bg:"#f0fdf4",fg:"#16a34a",label:"🟢余裕",border:"#bbf7d0"};
         };
-        const nextShakenMap={};const nextTenkenMap={};
+        const nextShakenMap={};const nextTenkenMap={};const nextShakenRec={};const nextTenkenRec={};
         (maintenance||[]).forEach(m=>{
           const sd=m.startDate||m.start_date;
           const vc=m.vehicleCode||m.vehicle_code;
           if(!sd||!vc||sd<todayStr)return;
-          if(m.label==="車検"){if(!nextShakenMap[vc]||sd<nextShakenMap[vc])nextShakenMap[vc]=sd;}
-          if(m.label==="半年点検"){if(!nextTenkenMap[vc]||sd<nextTenkenMap[vc])nextTenkenMap[vc]=sd;}
+          if(m.label==="車検"){if(!nextShakenMap[vc]||sd<nextShakenMap[vc]){nextShakenMap[vc]=sd;nextShakenRec[vc]=m;}}
+          if(m.label==="半年点検"){if(!nextTenkenMap[vc]||sd<nextTenkenMap[vc]){nextTenkenMap[vc]=sd;nextTenkenRec[vc]=m;}}
         });
         const rows=(vehicles||[]).filter(v=>v.active!==false).map(v=>{
           const insDueDate=v.inspectionDueDate||"";
           const tenDueDate=v.tenkenDueDate||"";
           const insNextDate=nextShakenMap[v.code]||"";
           const tenNextDate=nextTenkenMap[v.code]||"";
+          const insNextRec=nextShakenRec[v.code]||null;
+          const tenNextRec=nextTenkenRec[v.code]||null;
           const insDue=calcDays(insDueDate);
           const insNext=calcDays(insNextDate);
           const tenDue=calcDays(tenDueDate);
           const tenNext=calcDays(tenNextDate);
           const urgs=[insDue,insNext,tenDue,tenNext].filter(x=>x!==null);
           const urgency=urgs.length?Math.min(...urgs):999;
-          return{v,insDueDate,insNextDate,tenDueDate,tenNextDate,insDue,insNext,tenDue,tenNext,urgency};
+          return{v,insDueDate,insNextDate,tenDueDate,tenNextDate,insNextRec,tenNextRec,insDue,insNext,tenDue,tenNext,urgency};
         }).sort((a,b)=>a.urgency-b.urgency);
         const summary={expired:0,critical:0,warning:0,notRegistered:0};
         rows.forEach(r=>{
@@ -2963,11 +3055,13 @@ function SpkInspectionCalendar({vehicles,maintenance,onMaintenanceChange,hmLogs}
           else if([r.insDue,r.tenDue].some(d=>d!==null&&d<30))summary.warning++;
           if(r.insDue===null||r.tenDue===null)summary.notRegistered++;
         });
-        const Cell=({date,days})=>{
-          if(!date)return <div style={{color:"#cbd5e1",fontSize:11}}>未登録</div>;
+        const Cell=({date,days,addPreset,editRec})=>{
+          if(!date)return addPreset
+            ?<button onClick={()=>openAdd(addPreset)} style={{color:"#2563eb",fontSize:11,fontWeight:700,background:"#eff6ff",border:"1px dashed #93c5fd",borderRadius:6,padding:"4px 8px",cursor:"pointer",whiteSpace:"nowrap"}}>＋ 予定を登録</button>
+            :<div style={{color:"#cbd5e1",fontSize:11}}>未登録</div>;
           const s=sigStyle(days);
-          return <div style={{display:"flex",flexDirection:"column",gap:2}}>
-            <div style={{fontSize:11,fontWeight:700,color:"#1e293b"}}>{date}</div>
+          return <div onClick={editRec?()=>openEdit(editRec):undefined} title={editRec?"タップで編集・削除":undefined} style={{display:"flex",flexDirection:"column",gap:2,cursor:editRec?"pointer":"default"}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#1e293b"}}>{date}{editRec&&<span style={{fontSize:9,color:"#2563eb",marginLeft:4}}>✏</span>}</div>
             <span style={{fontSize:9,fontWeight:800,color:s.fg,background:s.bg,padding:"1px 6px",borderRadius:4,border:"1px solid "+s.border,alignSelf:"flex-start"}}>{s.label} {days>=0?"+":""}{days}日</span>
           </div>;
         };
@@ -3005,9 +3099,9 @@ function SpkInspectionCalendar({vehicles,maintenance,onMaintenanceChange,hmLogs}
                       <span style={{fontSize:10,fontWeight:700,padding:"2px 6px",background:"#e0e7ff",color:"#4338ca",borderRadius:4}}>{v.type}</span>
                     </td>
                     <td style={{padding:"10px",borderLeft:"3px solid #fee2e2"}}><Cell date={r.insDueDate} days={r.insDue}/></td>
-                    <td style={{padding:"10px"}}><Cell date={r.insNextDate} days={r.insNext}/></td>
+                    <td style={{padding:"10px"}}><Cell date={r.insNextDate} days={r.insNext} addPreset={{vehicleCode:r.v.code,label:"車検"}} editRec={r.insNextRec}/></td>
                     <td style={{padding:"10px",borderLeft:"3px solid #dcfce7"}}><Cell date={r.tenDueDate} days={r.tenDue}/></td>
-                    <td style={{padding:"10px"}}><Cell date={r.tenNextDate} days={r.tenNext}/></td>
+                    <td style={{padding:"10px"}}><Cell date={r.tenNextDate} days={r.tenNext} addPreset={{vehicleCode:r.v.code,label:"半年点検"}} editRec={r.tenNextRec}/></td>
                   </tr>;
                 })}
               </tbody>
@@ -21334,8 +21428,17 @@ function DmgShareIcon({code,size}){
 /* ==========================================
    InventoryTab 在庫管理（予約ごとの対応状況を一元管理）
    ========================================== */
-function InventoryTab({data,sb,store,onCancel}){
+function InventoryTab({data,sb,store,vehicles,maintenance,onCancel}){
   const today=new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});
+  // ★2026-08-17 車検/点検/修理の入庫予定を「全媒体 調整対象」の行として在庫管理に表示（発生元媒体が無い＝在庫調整のみ要）
+  const _vehName=(code)=>{const v=(vehicles||[]).find(x=>x&&x.code===code);return v?v.name:code;};
+  const intakeRows=React.useMemo(()=>{
+    const IL=["車検","半年点検","修理"];
+    return (maintenance||[]).filter(m=>m&&IL.includes(m.label)&&(m.endDate||m.startDate)&&(m.endDate||m.startDate)>=today&&m.deleted!==true)
+      .map(m=>({id:m.id,_intake:true,label:m.label,status:m.status||"pending",ota:"入庫",
+        name:_vehName(m.vehicleCode),vehicle:_vehName(m.vehicleCode),vehicleCode:m.vehicleCode,
+        lendDate:m.startDate,returnDate:m.endDate||m.startDate,createdAt:m.createdAt||m.startDate||""}));
+  },[maintenance,vehicles,today]);
   const OTA_L={J:"JLN",R:"RKT",S:"SKT",O:"ART",A:"ART",HP:"HDM",SP:"SP",RC:"RDC",G:"GOO",KEYDROP:"KEY",direct:"直接",TBR:"TBR"};
   const OTA_C={S:"#2563eb",J:"#16a34a",R:"#dc2626",O:"#ea580c",HP:"#1e3a8a",SP:"#1e3a8a",RC:"#eab308",G:"#0f766e",KEYDROP:"#0f766e",direct:"#64748b"};
   const [stat,setStat]=React.useState({});      // id -> {stock_adjusted,app_imported,mail_sent,stock_released}
@@ -21356,7 +21459,10 @@ function InventoryTab({data,sb,store,onCancel}){
   // キャンセルで在庫開放が要るのは「予約時に在庫調整(在庫を押さえた)済み」だった予約だけ。調整前のキャンセルは押さえてない＝開放不要
   const cxNeedRel=(r)=>isCxl(r)&&!!(stat[r.id]&&stat[r.id].stock_adjusted)&&!sOf(r).stock_released;
   // 表示対象：これからの貸出（通常）＋ 開放が必要なキャンセル。調整前キャンセル＝やることなし→非表示
-  const rows=React.useMemo(()=>(data||[]).filter(r=>{const d=r.returnDate||r.lendDate;if(!d||d<today)return false;return isCxl(r)?cxNeedRel(r):(r.lendDate&&r.lendDate>=today);}).sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||"")),[data,today,stat]);
+  const rows=React.useMemo(()=>{
+    const resv=(data||[]).filter(r=>{const d=r.returnDate||r.lendDate;if(!d||d<today)return false;return isCxl(r)?cxNeedRel(r):(r.lendDate&&r.lendDate>=today);});
+    return resv.concat(intakeRows).sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||""));
+  },[data,today,stat,intakeRows]);
   // 要対応：キャンセル→在庫開放が未／通常→在庫調整・取込・(楽天)メール送信のいずれか未
   const isTodo=(r)=>{const s=sOf(r);return isCxl(r)?!s.stock_released:(!s.stock_adjusted||!s.app_imported||(r.ota==="R"&&!s.mail_sent));};
   const isNew=(r)=>!stat[r.id]&&!isCxl(r); // まだ一度も触っていない＝新規（キャンセルは別扱い）
@@ -21404,21 +21510,21 @@ function InventoryTab({data,sb,store,onCancel}){
         const dim={opacity:.35};
         return(<tr key={r.id} style={{boxShadow:shadow}}>
           <td style={{...td,borderRadius:"10px 0 0 10px",whiteSpace:"nowrap"}}>{fmtDt(r.createdAt)}{nw&&<span style={{fontSize:9,fontWeight:700,color:"#dc2626",border:"1px solid #dc2626",borderRadius:4,padding:"0 4px",marginLeft:5}}>NEW</span>}{cx&&<span style={{fontSize:9,fontWeight:700,color:"#fff",background:"#7c3aed",borderRadius:4,padding:"1px 5px",marginLeft:5}}>キャンセル</span>}</td>
-          <td style={td}><span style={{fontSize:11,fontWeight:700,padding:"3px 8px",borderRadius:6,color:r.ota==="RC"?"#1f2937":"#fff",whiteSpace:"nowrap",background:OTA_C[r.ota]||"#94a3b8"}}>{OTA_L[r.ota]||r.ota}</span></td>
-          <td style={{...td,fontWeight:600,textDecoration:cx?"line-through":"none",color:cx?"#94a3b8":"inherit"}}>{r.name||"-"}</td>
-          <td style={{...td,fontSize:11,color:"#475569"}}>{r.id}{!cx&&onCancel&&<button onClick={()=>doCancel(r)} style={{marginLeft:6,fontSize:9,color:"#dc2626",border:"1px solid #fecaca",background:"#fff",borderRadius:5,padding:"1px 5px",cursor:"pointer"}}>✕取消</button>}</td>
+          <td style={td}>{r._intake?<span style={{fontSize:11,fontWeight:800,padding:"3px 8px",borderRadius:6,color:"#92400e",whiteSpace:"nowrap",background:"#fde68a"}}>🏭{r.label}</span>:<span style={{fontSize:11,fontWeight:700,padding:"3px 8px",borderRadius:6,color:r.ota==="RC"?"#1f2937":"#fff",whiteSpace:"nowrap",background:OTA_C[r.ota]||"#94a3b8"}}>{OTA_L[r.ota]||r.ota}</span>}</td>
+          <td style={{...td,fontWeight:600,textDecoration:cx?"line-through":"none",color:cx?"#94a3b8":"inherit"}}>{r.name||"-"}{r._intake&&<span style={{fontSize:9,fontWeight:800,color:"#92400e",background:"#fef3c7",borderRadius:4,padding:"1px 5px",marginLeft:5}}>入庫（全媒体）</span>}</td>
+          <td style={{...td,fontSize:11,color:"#475569"}}>{r._intake?"—":r.id}{!cx&&!r._intake&&onCancel&&<button onClick={()=>doCancel(r)} style={{marginLeft:6,fontSize:9,color:"#dc2626",border:"1px solid #fecaca",background:"#fff",borderRadius:5,padding:"1px 5px",cursor:"pointer"}}>✕取消</button>}</td>
           <td style={{...td,whiteSpace:"nowrap"}}>{fmtD(r.lendDate)}</td>
           <td style={{...td,whiteSpace:"nowrap"}}>{fmtD(r.returnDate)}</td>
           <td style={{...td,fontWeight:700}}>{r.vehicle||"-"}</td>
           <td style={td}>{cx?<div style={{textAlign:"center",color:"#cbd5e1"}}>—</div>:<Ck on={s.stock_adjusted} req={!s.stock_adjusted} onClick={()=>toggle(r,"stock_adjusted")}/>}</td>
-          <td style={td}>{cx?<div style={{textAlign:"center",color:"#cbd5e1"}}>—</div>:<Ck on={s.app_imported} req={!s.app_imported} auto="自動" onClick={()=>toggle(r,"app_imported")}/>}</td>
-          <td style={td}>{cx?<div style={{textAlign:"center",color:"#cbd5e1"}}>—</div>:<Ck on={s.mail_sent} req={r.ota==="R"&&!s.mail_sent} auto={r.ota==="R"?"楽天手動":"自動"} onClick={()=>toggle(r,"mail_sent")}/>}</td>
+          <td style={td}>{cx||r._intake?<div style={{textAlign:"center",color:"#cbd5e1"}}>—</div>:<Ck on={s.app_imported} req={!s.app_imported} auto="自動" onClick={()=>toggle(r,"app_imported")}/>}</td>
+          <td style={td}>{cx||r._intake?<div style={{textAlign:"center",color:"#cbd5e1"}}>—</div>:<Ck on={s.mail_sent} req={r.ota==="R"&&!s.mail_sent} auto={r.ota==="R"?"楽天手動":"自動"} onClick={()=>toggle(r,"mail_sent")}/>}</td>
           <td style={{...td,borderRadius:"0 10px 10px 0"}}>{cx?<div onClick={()=>toggle(r,"stock_released")} style={{textAlign:"center",cursor:"pointer",userSelect:"none"}}><div style={{width:24,height:24,margin:"0 auto",borderRadius:6,border:"2px solid "+(s.stock_released?"#7c3aed":"#dc2626"),background:s.stock_released?"#7c3aed":"#fff",color:"#fff",fontWeight:900,lineHeight:"20px",fontSize:15}}>{s.stock_released?"✓":""}</div>{!s.stock_released&&<div style={{fontSize:9,color:"#dc2626",fontWeight:700,marginTop:1}}>要開放</div>}</div>:<div style={{textAlign:"center",color:"#cbd5e1"}}>—</div>}</td>
         </tr>);})}
       </tbody>
     </table>
     </div>
-    <p style={{fontSize:11,color:"#94a3b8",marginTop:14,lineHeight:1.7}}>🔴赤=新規/未対応 ／ 🟣紫=キャンセル（在庫の開放が必要）／ 白=対応済み。<br/>キャンセルが入った予約は消えず「在庫開放」待ちで残ります。配車を空けたら「在庫開放」にチェック→消えます。</p>
+    <p style={{fontSize:11,color:"#94a3b8",marginTop:14,lineHeight:1.7}}>🔴赤=新規/未対応 ／ 🟣紫=キャンセル（在庫の開放が必要）／ 白=対応済み。<br/>キャンセルが入った予約は消えず「在庫開放」待ちで残ります。配車を空けたら「在庫開放」にチェック→消えます。<br/><span style={{color:"#92400e"}}>🏭入庫（車検/点検/修理）＝<b>全媒体 調整対象</b>。各媒体で在庫を絞って「在庫調整」にチェック。登録は「🔧車両→車検/点検/修理」または配車表から。</span></p>
   </div>);
 }
 
@@ -22173,6 +22279,8 @@ function App(){
     });
   },[]);
   const[maintenance,setMaintenance]=useState([]);const[shifts,setShifts]=useState({});const[showOP,setShowOP]=useState(false);const[showFloatFleet,setShowFloatFleet]=useState(false);const[floatFleetSize,setFloatFleetSize]=useState("half");
+  // ★2026-08-17 在庫管理TOPバッジ＝予約の未調整＋入庫(車検/点検/修理・全媒体調整対象)の未調整 を合算
+  const invTodoTotal=React.useMemo(()=>{const IL=["車検","半年点検","修理"];const it=(maintenance||[]).filter(m=>m&&IL.includes(m.label)&&(m.endDate||m.startDate)&&(m.endDate||m.startDate)>=today&&m.deleted!==true&&!invAdjSet.has(m.id)).length;return invTodoCount+it;},[invTodoCount,maintenance,invAdjSet,today]);
   const[showSqFailed,setShowSqFailed]=useState(false);
   const[sqFailedRefreshKey,setSqFailedRefreshKey]=useState(0);
   // ★ 2026-04-23: SpkPaymentSection 側で既に fetch 済みの sq_terminal_failed をモーダルに渡してダブルfetchを排除
@@ -23288,7 +23396,7 @@ function App(){
                 {id:"lic_send",ico:"🪪",l:"免許証チェック",desc:"当日〜3日先の出発で免許証未提出のリスト・リマインド送信/コピー"},
                 {id:"todo",ico:"✅",l:"タスク管理",desc:"目標・担当タスク・進捗・個人/チーム評価"},
                 {id:"fleet",ico:"🚗",l:"配車",desc:"予約の車両配車・タイムライン",badge:data.length>0?data.length+"件":null},
-                {id:"inventory",ico:"📦",l:"在庫管理",desc:"予約の在庫調整・取込・送信を一元管理",badge:invTodoCount>0?invTodoCount+"件未調整":null},
+                {id:"inventory",ico:"📦",l:"在庫管理",desc:"予約の在庫調整・取込・送信＋車検/点検/修理の入庫(全媒体調整対象)を一元管理",badge:invTodoTotal>0?invTodoTotal+"件未調整":null},
                 {id:"parking",ico:"🅿️",l:"駐車場",desc:"入出庫・洗車・メンテ管理"},
                 {id:"jalanpay",ico:"💳",l:"じゃらん決済",desc:"じゃらん予約の決済確認",badge:(()=>{const j=data.filter(r=>r.ota==="J");const undone=j.filter(r=>!jalanPay[r.id]||jalanPay[r.id].payStatus!=="完了").length;return undone>0?undone+"件未完了":null;})()},
                 {id:"import",ico:"📁",l:"CSV取込",desc:"OTA予約CSVインポート"},
@@ -23716,7 +23824,7 @@ function App(){
           {tab==="recv_invoice"&&<ReceivedInvoicesTab sb={sb} store="spk" vehicles={vehicles}/>}
           {tab==="dmg_send"&&<div style={{padding:"12px",maxWidth:720,margin:"0 auto"}}><h2 style={{fontSize:16,fontWeight:800,margin:"4px 0 8px"}}>🩹 傷チェック送信リスト</h2><DamageSendList sb={sb} store="spk"/></div>}
           {tab==="lic_send"&&<div style={{padding:"12px",maxWidth:720,margin:"0 auto"}}><h2 style={{fontSize:16,fontWeight:800,margin:"4px 0 8px"}}>🪪 免許証チェックリスト</h2><LicenseSendList sb={sb} store="spk"/></div>}
-          {tab==="inventory"&&<InventoryTab data={data} sb={sb} store="spk" onCancel={cancelReservation}/>}
+          {tab==="inventory"&&<InventoryTab data={data} sb={sb} store="spk" vehicles={vehicles} maintenance={maintenance} onCancel={cancelReservation}/>}
           {tab==="kdcancel"&&<div style={{height:"100%",overflowY:"auto",WebkitOverflowScrolling:"touch"}}><div style={{maxWidth:780,margin:"0 auto",padding:"4px 2px 40px"}}><KdHub/><KdTopPatternToggle/><KdActiveList/><KdChangeList/><KdCancelList/></div></div>}
           {tab==="jalanpay"&&<JalanPayment data={data} jalanPay={jalanPay} onJalanPayChange={(id,d)=>{setJalanPay(p=>({...p,[id]:d}));DB.saveJalanPayment(id,d);}}/>}
           {tab==="dashboard"&&data.length>0&&<>
@@ -24082,7 +24190,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.557";
+const APP_VERSION="v4.7.558";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
