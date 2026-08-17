@@ -1,5 +1,46 @@
 # SPK業務管理APP（札幌店）
 
+## 🕒 2026-08-17 マイページ「早め回収OK(ready)」承認してもOP時間が変わらない→根治（handyman-mypage EF）
+オーナー報告「時間変更リクエストを承認したのにOPの回収時間が変わらない」。**真因＝これは通常の時間変更(return_time)ではなく`ready`(早め回収OK/返却準備完了・承認制)で、EFの`decide`承認が希望時刻をOPへ書き込むコードが`ready`フィールドに無かった**（`del_place/col_place/lend_time/return_time`だけ`applyPlaceTime`で自動反映・`ready`はLINE送信＋status承認のみ＝OP時間は据え置き）。希望時刻17:30は`mypage_changes.note/new_value`にテキスト保持されるだけだった。
+- **根治**：`handyman-mypage`の`decide`に、`c.field==="ready"`かつ承認時、希望時刻(HH:MM)を`note+new_value`から正規表現抽出(`rdyHM`)→あれば`applyPlaceTime(...,returnTime=rdyHM,...)`で**COLタスク時間＋reservations.return_time/col_timeへ自動反映**（return_time承認と同じ経路＝`_timeChange`が立ちミラー/パトロールで戻らない）。承認LINE文も希望時刻ありなら「回収予定時間を HH:MM に調整いたしました」に。正本＝`~/spk-task/line_auto/handyman-mypage/index.ts`→`~/hdm-car-delivery/supabase/functions/`にcp→`functions deploy handyman-mypage --no-verify-jwt`。deno check通過・E2E検証済(ダミー予約でready承認→task/resv とも16:00反映・テストデータ削除済)。
+- **教訓**：①「時間変更を承認したのにOPが変わらない」は、まず`mypage_changes.field`を見る＝`ready`(早め回収・承認制)と`return_time`(直接の時間変更・即時/24h承認)は別物。`ready`は"合図"設計で従来OP時間を書かなかった。②承認で希望時刻をOPへ反映するのが正(オーナー確定)。③即時の1件対応＝COLタスクを`_timeChange`付きで手動修正すれば戻らない(time単独保存は再生成/ミラーで戻る)。④`decide`承認は`staff_token`(本体ログインJWT)必須＝`/auth/v1/token`でoshita@g-lines.jpログイン→取得。⑤**NHA(handyman-mypage-nha)は既にready承認→希望時刻自動反映を完備済**(L125-140＝①nha_reservations.col_time/end_time ②nha_tasks c-の「変更」＋「時間」列 ③mypage_changes return_time=applied。NHAの時間変更の正本は「変更」列＝2026-07-09の知見と一致)＝SPKが後追いした形。2026-08-17に那覇もライブE2E検証済(ready承認→時間15:30反映確認・テストデータ削除済)・再デプロイ済。
+
+## ⬜🩹 2026-08-17 OPシート「担当が消えて復活/ずっと動く」→ 白画面(総障害) → 根治＋再発防止の仕組み(v4.7.560〜562)
+オーナー報告「担当を入れても消えて復活を繰り返す・画面がずっと動く」→ 調査中に**全端末白画面(総障害)**。台帳(audit_log)基軸で2つの独立バグを切り分け・根治し、**再発防止をコード検査で機械化**した。
+
+### ① 白画面の真因＝TDZ(宣言前参照)。`node --check`は通るのに実行時にApp全体がクラッシュ
+- **原因**：`const invTodoTotal=React.useMemo(()=>..invTodoCount.., [invTodoCount,...])` が **`invTodoCount`(=後の行でconst宣言)を宣言前に参照** → App描画時に `ReferenceError: Cannot access 'te'(=invTodoCount) before initialization` → #root空＝白画面。v4.7.558「車検/点検/修理を在庫管理に表示」で在庫件数バッジ追加時に**宣言順を誤って**混入。
+- **なぜ"いきなり"**：皆その日まで**古いキャッシュ版**を使用→**ハード再読込で初めて壊れた版を読み**白画面に。SW(自己破棄型)がキャッシュを消して最新を読ませた瞬間に露呈。
+- **修正(v4.7.561)**：`invTodoTotal` を `invTodoCount` の**直後**へ移動（宣言順を正す）。
+- **切り分け手順(再利用)**：白画面はまず**ブラウザのコンソール(Chrome MCP read_console_messages)で実エラーを取る**→`Cannot access X before initialization at App`＝TDZ。app.jsのエラー位置(char offset)を `node -e 's.slice(p-400,p+200)'` で切り出し→minified変数(`te`)の周辺から `useMemo(...,[te,...])` を特定→ソースの日本語文字列(`["車検","半年点検","修理"]`)でgrepして該当useMemoを見つける。
+- **🔴🔴 再発防止＝`check_tdz.js`(静的検査)を`pre-push`に組込済**：`const X=useMemo/useCallback(...,[deps])` の依存に「**自分より後で束縛される変数**」があればFAILしpushを止める。束縛は const/let/var・分割代入・関数名・**関数引数(prop)**まで収集して誤検知ゼロ(VehicleManagerの`vehicleClasses`はprop=前方束縛で誤検知しない を確認)。正常版PASS・バグ順序でFAIL を実証済。**今後 useMemo/useCallback を足す時は、依存に使う変数の宣言より必ず後ろに置く**。`node --check`(構文)はTDZを検出しない＝この検査が必須。
+
+### ② 担当が消えて復活/ずっと動く＝v4.7.557「デフォルト時間ソート」が全行書込の綱引きを表面化
+- **台帳の決定的証拠**：`d-R0QSZXZG` の1書込diff＝`assignee:武山瞳→大下, sort_order:10→13`。10分で**sort_order 64回・assignee 8回**書換(actor=`oshita@nha.hdm`単一)。担当変更 L17356 `_save→updateTask→_toDbTask`＝**全行書込(assignee+sort_order)**。複数タブ/端末が並び順を奪い合い、担当まで巻き添え。
+- **引き金**：`v4.7.557`(8/16) が `useState(null)`→`useState("time")`＝**デフォルト時間ソート**に。保存のたび表示が時間順に並び替わり、裏で前からあった綱引き(8/14時点で既にsort_order 252/日)が「ずっと動く/担当が消えて復活」として**表面化**。
+- **修正(v4.7.562)**：**ソートを「表示専用」に**＝`handleSort`はDBに`sort_order`を書かない(`sortedTasks`/`filteredTasks`のuseMemoがsortKeyで並べる)。**デフォルトを固定順(`useState(null)`)に戻す**。永続並び替えは`moveRow`(sortKey=null時)のみ。**鉄則：ソートはビュー＝DBに書かない。並びの正本はsort_order、書換はmoveRow(手動)だけ**。※担当巻き戻りの深層(loadTasksの`upsertTasks(gen2,protect)`全行再保存)は残るが、表示安定＋1端末運用で実用回復。真の根治はNHA同様「純ミラー化」(2026-07-16)。
+
+### ③ デプロイ規律(このインシデントの教訓)
+- **白画面になったら即revert**(CLAUDE.md鉄則)。ただし今回はrevert先(v4.7.559)自体がTDZ持ち＝revertでは直らず→**コンソールで実エラーを取り根本(TDZ)を直す**のが正解だった。
+- **本番一斉配信の前にブラウザ(Chrome MCP)で実描画を確認**：v4.7.562はデプロイ後に実機でTOP+OPシート描画・エラーゼロを確認してからOKとした。`curl`のHTTP200/app.jsサイズだけでは実行時クラッシュは分からない。
+- **SW自己破棄型は「古いキャッシュ版で延命していた潜在バグ」を再読込の瞬間に一斉露呈させる**＝デプロイの度に上記検査(check_tdz＋ブラウザ描画)を通す。
+
+## 🔔 2026-08-14 TOP「お知らせ」カード(AutoNoticeBox)＝GASパトロールをアプリ側でDB計算(通信ゼロ)＋消し込み共有・要対応をワンボタン(v4.7.548〜556)
+GASのSlackパトロール(urlfetch枯渇要因)をアプリ側に移設。`index.src.html` `AutoNoticeBox({today})`(L12806〜・Handover領域`<AutoNoticeBox/>`で描画)が予約/tasks/spk_accountingをDBから直読みして要対応を表示。**消し込みは`spk_notice_ack`(k text PK・RLS全許可)で全端末共有**。未入金はSlackのまま(長いので)。
+- **UI確定形**：①**項目ごとにアコーディオン**(カテゴリ枠・件数バッジ・既定閉) ②**日程が近い順ソート**(`date`昇順) ③予約日を赤バッジで大きく＋氏名＋OTA、予約IDは小 ④**連絡手段バッジ**(📱LINE連携/LINE未連携・✉️メール有・📞番号＝`_lineLinkMap`＋reservations.mail/tel) ⑤**ワンボタン依頼**(場所未設定のみ)：📱LINEで依頼/✉️メールで依頼/📄マイページ→**押すとプレビューモーダル→「はい、送信する」で送信**。電話ボタンは削除(番号バッジのみ)。
+- **メール自動送信**＝新EF `notice-mail-send`(**BTプロジェクト`ggqugvyskyiblxiycpci`**・reserve@rent-handyman.comの鍵がそこに在るため)。札幌スタッフJWTをmain `/auth/v1/user`で検証→予約`mail`をサーバ側で引いて宛先固定(任意送信不可)→Resend送信。詳細は`~/Desktop/HANDYMAN/rent-handyman.com_メール送信_メモ.md`(2026-08-14項)。LINEは既存`line-send`(action=place_request・未連携は安全skip)。
+- **🔴 最重要教訓＝「OP表示は予約から導出(2026-07-15 STEP2)」なので、タスクの旧列を予約と比べる"パトロール的チェック"は誤検知になる**：
+  - **オプションのズレ通知＝廃止**。OPのオプションバッジ(`OptBadges` L1196)は`t.opts`＝`_fromDbTask`が`DB._resIdx`(予約)から導出。タスクの`opt_b/c/j`列は表示に使われない残骸。予約↔旧列を比べると「ズレ」と出るが**OPには正しく表示されている**＝誤検知。
+  - **場所未設定の誤検知も根治**：`COLタスクの回収場所は t.place に入る`(t.col_placeでなく)。旧チェックはCOLで`t.col_place`(常に空)を読み全COLを誤検知＋予約の`del_place/col_place`(正本)を見ていなかった。**正しい定義＝「場所がタスクplace・_ssPlace(フォーム回答)・予約del/col_placeの"どこにも"無い時だけ未設定」**(OP `_fromDbTask` place導出と一致)。実データで64件表示(大半誤検知)→本当に空の43件のみに。残43件はOTA予約でお客様フォーム未入力＝実際に要フォロー。
+  - **一般化**：TOP等で「予約とタスクの不一致」をパトロールする時は、まず**OPが実際に何を表示しているか(`_fromDbTask`の導出)を確認**する。導出後の値で比較しないと、使われない旧列との差分を誤検知する。判定前に必ず実データで裏取り(owner指摘で連続誤検知を是正した)。
+
+## 📱 2026-08-13 バイトURL(staff.html)から駐車場が「真っ白」＝端末側babel変換がスマホで重すぎ→事前コンパイルで根治(parking-staff v3.20)
+症状＝札幌バイトURLの🅿️駐車場(parking-staff.html)がスマホで真っ白。**切り分けの型が有効だった**：①staff.htmlの遷移(location.href=parking-staff.html?t=)・トークン検証RPC(spk_staff_view=ok:true)・駐車DB(parking_spots 20枠)を全て実データ確認→happy path正常 ②desktop Chrome(playwright)では完全描画→**端末固有**と確定 ③**画面に原因を出す診断を仕込む**(素JSのwindow.onerror＋4.5秒後フォールバックで React/ReactDOM/Babel/supabaseのCDN読込可否・optional chaining対応・JSエラー・UAを赤枠表示)→スタッフが撮影→**実機診断が決定打**：iPhone iOS18.7・全CDN OK・JSエラー無し・でも描画されず＝構文でもCDN欠落でもない。
+- **真因＝`<script type="text/babel">`の端末側babel-standalone変換**。parking-staff.htmlはReact+babel-standalone(2.8MB)で**73KBのJSXをブラウザ内で毎回変換**→スマホCPUでは重く時間内に描画が終わらない(desktopは速いので出る)。**staff.html(タスク側)は素JS＝babel不要で一瞬＝この非対称が「タスクは見えるが駐車場だけ真っ白」の正体**。※先に疑った optional chaining `?.`(v3.18で除去)はiOS18では対応なので無関係だった＝**憶測で直さず実機診断を取るのが正解**。
+- **根治＝JSXを"コミット時に"事前コンパイルして端末側babelを廃止**：`node`+babel-standalone(vm)でreact presetにより`<script type="text/babel">`ブロックを素JS(React.createElement)に変換→インライン`<script>`に置換、babel-standalone CDN行を削除。→端末は変換ゼロでstaff.html同様に即描画(モバイルUAで1.40s描画・警告0・エラー0を実測)。
+- **教訓**：①React+babel-standaloneのstandalone HTMLは、JSXが大きいと**スマホで描画停止/白画面**になる(desktopでは再現しない)。大きいものは**事前コンパイルして素JS配信**(staff.htmlのように)。②「白画面/描画されない」で端末が見えない時は、**素JSの診断フォールバック(onerror＋タイムアウトで原因＋UAを画面表示)を仕込んでスタッフに撮ってもらう**のが最速の切り分け。③デプロイ反映確認は`grep -o 'v3.20'`で版数＋`grep -c babel-standalone`が0を確認。cache対策でstaff.htmlの遷移に`&_=Date.now()`付与(v3.24)。※事前コンパイル方式は他のbabel使用standalone(license.html等が素JSなら該当なし・React系のみ)へ横展開可。
+- **⚠️追記(v3.21)＝babel廃止後も同端末で白のまま再発**。実機診断でReact/ReactDOM/supabase全OK・JSエラー無し・でも未描画＝**トークン検証fetch(spk_staff_view)が端末/回線で完了せずApp が st=loading のまま**(loading描画が全画面spinnerでpk-bar無し→白＋監視の誤発火)。サーバRPCは0.87s健全・Chromium/**WebKit(実Safariエンジン=playwright webkit)**両方1〜2sで描画＝**コードは正常＝その端末/回線の環境要因**(staff.htmlは15s+リトライで耐えるがparkingは無耐性だった)。**重要な検証教訓＝iPhoneはWebKitなのでChromiumだけで「再現しない」と判断しない→`playwright install webkit`で実Safariエンジン検証する**。対策(v3.21)＝検証fetchにAbortController(12s)+自動リトライ3回、**st=loading時もpk-barヘッダーを描画(白くしない・監視の誤発火防止)**、最終失敗は通信エラー+再読込、診断watchdogは14sに緩和+`window.__PKMOUNTED`でReact起動可否表示。WebKit実測で通常0.44s/RPC6s遅延でも1sでヘッダー・誤診断なし・8sで満載描画。→ **顧客向けの非同期fetchで初期表示を作る画面は必ず「タイムアウト+リトライ+読込中も枠(ヘッダー)を出す」**＝遅い/瞬断でも白画面にしない(staff.htmlの15s+リトライと同型)。
+
 ## 🚫 2026-08-13 配車表ダブルブッキング可能を根治＝全配車経路の集約点にハードガード(v4.7.530)
 症状＝配車表タイムラインで予約帯を既存予約に重ねられ、ダブルブッキング（例：VEL(7673)にフクイ8/17-20＋肥田8/18-20が同時割当）が作れてしまう。**真因＝重複判定`checkVehicleConflict`はあるが、ドラッグ(handleDrop)・編集モーダルのUI側でしか事前チェックしておらず、他の配車経路が素通り**：①配車リストの車両変更`<select>`プルダウン(onReassignVehicle直呼び・無チェック)②OPシート車両割当`assignVehicle`(fleetを直接書く・無チェック)。＝UI一つずつにチェックを足す設計は必ず漏れる(instance修正)。
 - **根治(ONE)＝全配車経路の集約点に最終防衛ガード**：①`reassignVehicle`(App L22658・ドラッグ/プルダウン/モーダルが全てここに集約)冒頭で`checkVehicleConflict(newVc,resId,data,fleetRefApp.current)`→重複なら`alert`して`return`(配車しない)②`assignVehicle`(OPシート L16327)冒頭にも同ガード(`checkVehicleConflict(vehicleCode,_tk0.reservationId,reservations,fleetRef.current)`)。→**どのUIが事前チェックを忘れても、書込の直前で必ず弾く**＝ダブルブッキングが構造的に不可能。自動配車(autoAssign)は元から取込後に重複検出→2台目を自動解除する機構あり(別経路・維持)。
