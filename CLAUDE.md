@@ -1,5 +1,10 @@
 # SPK業務管理APP（札幌店）
 
+## 🅿️🧽 2026-08-18 駐車の入庫時に洗車状態を必須選択＋駐車後も各車で変更可（parking.html）
+オーナー要望「駐車時に必ず洗車選択させる（内装済み/外装済み/フル/未洗車 の4択）・駐車後でも各車編集可能に」。**🔴 本体アプリTOPの「駐車場マップ」タブは iframe で `parking.html` を読む（index.src.html L23818 `parking.html?v=CV`）＝ライブの駐車画面は `parking.html`（standalone vanilla JS・別Supabase `rkrvjpipvpybkmqadmrb`・parking_spots/parking_meta）。index.src.html の `ParkingManager` コンポーネント(washMap/未洗車・内洗済・洗車済)は この駐車タブでは未使用の別物＝駐車の修正は必ず parking.html を触る**（最初 ParkingManager を直しかけて気付いた）。
+- **実装＝既存の「入庫時に鍵を車内に置くか必須記録(key_inside・2026-08-16)」と全く同じパターンを踏襲**：①parking DB `parking_spots` に `wash_status text` 列を追加 ②入庫確定 `finishPark` で `askWashStatus(spotId,carId,true)`(4択・modalLockで背景タップ不可)→選択後 `askKeyInside` へチェーン(洗車→鍵の順で両方必須) ③各マスに `washBadge`(✨フル/🧹内装済み/🚿外装済み/❌未洗車=赤点滅/🫧未選択) ④`tapCar` シート(駐車後の詳細)に洗車4ボタンを追加＝**駐車後も各車で変更可**（鍵の変更ボタンと同列） ⑤`dbSetCar`/`optimistic` で入庫・出庫・移動時に `wash_status` を未選択にリセット(前の車の状態を引き継がない=key_insideと同一)。
+- **教訓**：①駐車の「〜させる/記録させる」系は key_inside の型(askXxx→modalLock→setXxx→dbSetXxx＋badge＋tapCar編集)をコピーするのが最短・低リスク。②洗車状態は car でなく **spot(parking_spots)に持たせ、移動/出庫でリセット**＝doctrine「位置の正本=parking_spots・cars metadataは持たない」と整合。③parking DB(rkrvj…)の列追加も Management API(`~/.config/keydrop/sb_token`・sbp_)で通る。SPK v4.7.564/CV spk-v1097。ライブ反映確認済(askWashStatus 検出)。
+
 ## 🪪 2026-08-18 マイナ免許証で「撮影しかできず添付できない」→カメラ強制(capture)廃止（3店マイページ）
 スタッフ/顧客報告「マイナ免許証に切替→撮影する物理カードが無い。マイページで免許証を添付しようとしても撮影モードにしかならず添付できない。多発」。**真因＝マイページ(`my.html`/`my-nha.html`)の免許証`<input type="file">`だけ`capture="environment"`が付いていてカメラ起動が強制**され、スマホ内の画像/スクショ/PDFを選べなかった（`license.html`とBTは元々capture無し＝ファイル選択可）。→ **`capture`削除＋`accept="image/*,application/pdf"`＋アップ時のファイル名拡張子をmime準拠(pdf/png/jpg)に**。案内文`lic_note`にマイナ免許証の一言(画像/スクショ/PDF添付可・撮影不要)を追加。SPK my.html v4.9.10 / NHA my-nha.html v9.5-nha。**BT `guide/index.html`はcaptureは無いが表裏"両方必須"でマイナ免許証(1画像)を弾いていた→裏面を任意化(表面のみでUP可)＋PDF許可＋案内文**(guide-v 2026-08-18)。GAS(`license_drive_upload.gs`)は`Utilities.newBlob(bytes,mime,fileName)`で汎用保存＝PDF/PNGもそのまま可・変更不要。**教訓：`type=file`に`capture`を付けるとカメラ強制でギャラリー/ファイル選択不可＝マイナ免許証やPDFを弾く。本人確認系のアップは`capture`を付けない＋PDF許可。免許証アップ入口は3店で「license.html/マイページ/BTガイド」と複数あり仕様がバラける→免許証UI変更は必ず全入口を横串確認**。全て standalone(build不要・push即反映)・ライブ反映確認済。
 
