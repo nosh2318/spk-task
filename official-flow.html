@@ -129,6 +129,13 @@ select.fld:focus{box-shadow:0 0 0 3px rgba(250,190,0,.35)}
 .snum{display:inline-block;background:var(--y);color:#10203f;font-size:11.5px;font-weight:900;padding:2px 11px;border-radius:999px;margin-right:8px;vertical-align:middle}
 .lockmsg{background:#0e1c38;border:1px dashed #2c3f63;color:#9fb0cf;border-radius:12px;padding:18px 16px;text-align:center;font-size:13px;font-weight:700;line-height:1.6}
 #methodSec.locked h2{opacity:.7}
+/* 在庫（満車）表示 */
+.vc.soldout{opacity:.5;filter:grayscale(.7);pointer-events:auto}
+.vc.soldout .pic{position:relative}
+.vc .soldbadge{position:absolute;bottom:6px;right:8px;background:#c62828;color:#fff;font-size:10px;font-weight:900;padding:2px 8px;border-radius:6px}
+.vc .soldmsg{background:#f1f3f7;color:#8a97ad;border-radius:8px;padding:10px;font-size:11.5px;font-weight:800;text-align:center}
+.vempty{background:#fff4f4;border:1px solid #f3c2c2;color:#b3261e;border-radius:12px;padding:16px;font-size:13px;font-weight:700;line-height:1.6;margin-bottom:14px}
+.vempty a{color:var(--navy2)}
 /* バス運行時刻表（顧客向け・見るだけ） */
 .bussched{margin-top:14px;border:1px solid var(--line);border-radius:12px;padding:14px;background:#fff}
 .bushd{font-weight:900;color:#0a1f44;font-size:14px}.bushd small{font-weight:700;color:var(--mut);font-size:11px;margin-left:6px}
@@ -211,7 +218,9 @@ select.fld:focus{box-shadow:0 0 0 3px rgba(250,190,0,.35)}
 
   <!-- ===== STEP2：受取（送迎場所）＋ 車両選択 ===== -->
   <div id="stepSelect">
-    <div class="sec"><h2><span class="snum">STEP 1</span>🚙 ご利用日程の空車から選択</h2><div class="vgrid" id="vgrid"></div>
+    <div class="sec"><h2><span class="snum">STEP 1</span>🚙 ご利用日程の空車から選択</h2>
+      <div class="vempty" id="vEmpty" style="display:none">🈵 選択された日程は、あいにく全クラス満車です。日程を変更してお試しください（<a href="#" onclick="document.querySelector('.res-change,[onclick*=goBack]')?null:null;history.length>1&&history.back();return false;" style="color:var(--navy2);font-weight:800">条件を変更</a>）。</div>
+      <div class="vgrid" id="vgrid"></div>
       <div class="hint">車種・色・仕様はお選びいただけません（同クラス内からランダム）。全車禁煙・ペット同乗不可。料金は1日（24時間）あたりの目安です。</div></div>
     <div class="sec locked" id="methodSec"><h2><span class="snum">STEP 2</span><span id="methodTitle">🚗 受取の詳細</span></h2>
       <div class="lockmsg" id="methodLock">🔒 まず上で車両を選び「この車両に決める」を押すと、こちらをご指定いただけます。</div>
@@ -308,7 +317,31 @@ if(area==='sapporo')method='delivery'; // 札幌=デリバリー専門(KEYDROP)
 var METHOD={delivery:{t:'🚗 デリバリー（お届け）',label:'お届け先'},airport:{t:'✈️ 無料送迎（空港/駅）',label:'送迎場所'},store:{t:'🏠 来店',label:'来店店舗'}};
 var insPrice={basic:0,cdw:1100,noc:1650};
 var step=P.get('step')||'select';
-var state={cls:selCls&&CLS[selCls]?selCls:'',ins:P.get('ins')||'basic'};
+var state={cls:selCls&&CLS[selCls]?selCls:'',ins:P.get('ins')||'basic',avail:{},availLoaded:false};
+// ===== 在庫（選択日程で空車があるクラスのみ表示・KEYDROP公開ビュー準拠／anon）=====
+var SB_URL='https://ckrxttbnawkclshczsia.supabase.co';
+var SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8';
+function sbView(t){return (area==='naha'&&/^public_.*_v$/.test(t))?t.replace(/_v$/,'_nha_v'):t;}
+function sbGet(t,q){return fetch(SB_URL+'/rest/v1/'+sbView(t)+'?'+(q||'')+'&select=*',{headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY}}).then(function(r){return r.ok?r.json():[];}).catch(function(){return [];});}
+function ymList(a,b){var out=[];if(!a||!b)return out;var s=new Date(a.slice(0,7)+'-01'),e=new Date(b.slice(0,7)+'-01');var g=0;while(s<=e&&g<24){out.push(s.getFullYear()+'-'+('0'+(s.getMonth()+1)).slice(-2));s.setMonth(s.getMonth()+1);g++;}return out;}
+function fetchAvail(){
+  if(!pD||!rD){state.availLoaded=false;return;} // 日程未指定=全表示
+  var yms=ymList(pD,rD);var inEnc=yms.map(function(y){return '"'+y+'"';}).join(',');
+  Promise.all([
+    sbGet('public_vehicles_v','limit=2000'),
+    sbGet('public_busy_v','lend_date=lte.'+rD+'&return_date=gte.'+pD),
+    yms.length?sbGet('public_inactive_v','year_month=in.('+inEnc+')'):Promise.resolve([])
+  ]).then(function(res){
+    var veh=res[0]||[],busy=res[1]||[],inact=res[2]||[];
+    if(!veh.length){state.availLoaded=false;renderV();return;} // 取得失敗時は全表示(顧客を止めない)
+    var busySet={};(busy||[]).forEach(function(b){busySet[b.vehicle_code]=1;});(inact||[]).forEach(function(b){busySet[b.vehicle_code]=1;});
+    var cnt={};veh.forEach(function(v){if(busySet[v.code])return;cnt[v.type]=(cnt[v.type]||0)+1;});
+    state.avail=cnt;state.availLoaded=true;
+    if(state.cls&&!(cnt[state.cls]>0)){state.cls='';calc();} // 満車の初期選択は解除
+    renderV();
+  });
+}
+function classAvail(k){return state.availLoaded?((state.avail[k]||0)>0):true;}
 var loc={del:'',col:''},locTarget='del',pending='',colSame=false; // お届け先/回収先 決定フロー用（同じは既定OFF）
 var locType='station';
 var NHA_STATIONS=['赤嶺駅','小禄駅','奥武山公園駅','壺川駅','旭橋駅','県庁前駅','美栄橋駅','牧志駅','安里駅','おもろまち駅','古島駅','市立病院前駅','儀保駅','首里駅'];
@@ -437,13 +470,15 @@ function reverseGeo(lat,lng){
 function carImg(k){var base=(k==='A2')?'A':k;var common='official-assets/cars/class_'+base+'.png';var src=(area==='naha')?'official-assets/cars/class_'+base+'_nha.png':common;return '<img src="'+src+'" onerror="this.onerror=null;this.src=\''+common+'\'" alt="" style="width:100%;height:100%;object-fit:contain;background:#fff;padding:5px">';}
 // 車両グリッド
 function renderV(){
-  document.getElementById('vgrid').innerHTML=ORDER.map(function(k){var c=CLS[k];return (
-    '<div class="vc'+(state.cls===k?' on':'')+'" data-k="'+k+'"><div class="pic">'+carImg(k)+'<span class="clschip">'+c.l+'</span>'+(c.az?'<span class="azukari">預かり</span>':'')+'<span class="check">✓</span></div>'+
+  var visible=ORDER.filter(function(k){return classAvail(k);});
+  document.getElementById('vgrid').innerHTML=ORDER.map(function(k){var c=CLS[k];var av=classAvail(k);return (
+    '<div class="vc'+(state.cls===k?' on':'')+(av?'':' soldout')+'" data-k="'+k+'"><div class="pic">'+carImg(k)+'<span class="clschip">'+c.l+'</span>'+(c.az?'<span class="azukari">預かり</span>':'')+(av?'<span class="check">✓</span>':'<span class="soldbadge">満車</span>')+'</div>'+
     '<div class="bd"><div class="nm">'+c.v+'</div><div class="pr"><b>¥'+c.p.toLocaleString()+'</b><small>〜 / 1日</small></div><div class="sp">👥 '+c.s+'</div>'+
-    '<div class="vbtns"><button class="vpick" onclick="decideV(\''+k+'\')">'+(state.cls===k?'✓ この車両に決定':'この車両に決める')+'</button>'+
+    '<div class="vbtns">'+(av?'<button class="vpick" onclick="decideV(\''+k+'\')">'+(state.cls===k?'✓ この車両に決定':'この車両に決める')+'</button>':'<div class="soldmsg">この日程は空車なし</div>')+
     '<button class="vdetail" onclick="openDetail(\''+k+'\')">🔍 詳細をみる</button></div></div></div>');
   }).join('');
   document.getElementById('vgrid').className='vgrid '+(state.cls?'hassel':'nosel');
+  var em=document.getElementById('vEmpty');if(em)em.style.display=(state.availLoaded&&visible.length===0)?'block':'none';
 }
 // 車両を決定→受取(送迎/お届け/来店)をアンロックし、そこへスクロール
 function decideV(k){state.cls=k;renderV();calc();unlockMethod();var s=document.getElementById('methodSec');if(s)setTimeout(function(){s.scrollIntoView({behavior:'smooth',block:'start'});},70);}
@@ -457,7 +492,7 @@ function openDetail(k){var c=CLS[k];if(!c)return;
     '<div class="drow dprice"><span class="lb">料金</span><span class="vl"><b>¥'+c.p.toLocaleString()+'</b> 〜 / 1日</span></div>'+
     '<div class="drow"><span class="lb">標準装備</span><span class="vl" style="flex:1"><div class="dtags">'+STA.equip.map(function(e){return '<span class="dtag">'+e+'</span>';}).join('')+'</div></span></div>'+
     '<div class="dnote">'+STA.note+'</div>'+
-    '<button class="dpick" onclick="pickFromDetail(\''+k+'\')">このクラスを選択する</button>';
+    (classAvail(k)?'<button class="dpick" onclick="pickFromDetail(\''+k+'\')">このクラスを選択する</button>':'<div class="dpick" style="background:#e7ebf2;color:#8a97ad;text-align:center;cursor:default">この日程は空車がありません</div>');
   document.getElementById('dscrim').classList.add('on');
 }
 function closeDetail(){document.getElementById('dscrim').classList.remove('on');}
@@ -575,6 +610,6 @@ function renderDone(){
   var one=ADS.map(function(a){return '<span>'+a+'</span>';}).join('');
   el.innerHTML=one+one; // 2連結でシームレスループ
 })();
-renderV();calc();applyStep();
+renderV();calc();applyStep();fetchAvail();
 </script>
 </body></html>
