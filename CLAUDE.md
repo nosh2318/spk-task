@@ -1,5 +1,10 @@
 # SPK業務管理APP（札幌店）
 
+## 🧟 2026-08-18 「消しても復活するデモ予約(DEMOMYPAGE-SPK/KD-DEMO-KEYDROP)」＝配車表「未配車」に出る→除外で解消＋本体は削除
+オーナー報告「何回消しても未配車に復活する（デモ マイページ確認用／デモ KEYDROP確認用）」。**台帳(audit_log)で確定＝これはアプリ/cron/EFのバグではなく、私(OMNI)がマイページ/KEYDROPプレビューURLを動かすために作った"確認用デモ予約"**（`.jsonl`＝過去CLIセッションにのみ登場・アプリ本体には該当IDのコード無し）。過去に「削除依頼→mgmt-apiでDELETE→別セッションでプレビュー用に再INSERT(PostgREST/staff JWT)」を繰り返した足跡が台帳に残る＝これが「消しても復活」の正体（自動再生成の仕組みは無い）。本来2030-01日付でOP隔離していたが、**配車表の「未配車」アラート(`ua`フィルタ・index.src.html L15323)がキャンセル/配車済みは除くがデモ/テストを除外していなかった**→未来日なので出続けた。
+- **対策**：①`ua`フィルタに`_isTest`(id `^ZZ|DEMO|TEST`／氏名`テスト|デモ`)除外を追加(在庫管理は2026-08-17に`_isTestResv`で除外済＝**同じ除外を未配車にも横展開**)。v4.7.565。②デモ予約2件を実削除(依存tasks/fleet/mypage_changes/spk_line_links=0件・クリーン)。③**今後デモ予約を再seedしない**(プレビューが要る時はその場で作り、必ず`_isTest`で全運用リストから除外される形にする)。
+- **教訓**：①「消しても復活」系はまず`audit_log`でop(INSERT/DELETE)とapp_name(mgmt-api=手動SQL/PostgREST=アプリ・JWT)を時系列で見る→再生成の主体が即分かる。②テスト/デモ予約(DEMO/TEST/ZZ・氏名テスト/デモ)は**全運用リスト(在庫管理・未配車・OP等)で必ず除外**する。除外は1画面ずつ足すと漏れる→**共通ヘルパー化**すべき(現状 `_isTestResv`はInventoryManagerローカル・未配車は別インライン＝将来モジュールレベルに集約推奨)。③自作のデモ/確認用データは「作ったら消える運用リストから最初から除外」しておかないと現場を惑わせる。
+
 ## 🅿️🧽 2026-08-18 駐車の入庫時に洗車状態を必須選択＋駐車後も各車で変更可（parking.html）
 オーナー要望「駐車時に必ず洗車選択させる（内装済み/外装済み/フル/未洗車 の4択）・駐車後でも各車編集可能に」。**🔴 本体アプリTOPの「駐車場マップ」タブは iframe で `parking.html` を読む（index.src.html L23818 `parking.html?v=CV`）＝ライブの駐車画面は `parking.html`（standalone vanilla JS・別Supabase `rkrvjpipvpybkmqadmrb`・parking_spots/parking_meta）。index.src.html の `ParkingManager` コンポーネント(washMap/未洗車・内洗済・洗車済)は この駐車タブでは未使用の別物＝駐車の修正は必ず parking.html を触る**（最初 ParkingManager を直しかけて気付いた）。
 - **実装＝既存の「入庫時に鍵を車内に置くか必須記録(key_inside・2026-08-16)」と全く同じパターンを踏襲**：①parking DB `parking_spots` に `wash_status text` 列を追加 ②入庫確定 `finishPark` で `askWashStatus(spotId,carId,true)`(4択・modalLockで背景タップ不可)→選択後 `askKeyInside` へチェーン(洗車→鍵の順で両方必須) ③各マスに `washBadge`(✨フル/🧹内装済み/🚿外装済み/❌未洗車=赤点滅/🫧未選択) ④`tapCar` シート(駐車後の詳細)に洗車4ボタンを追加＝**駐車後も各車で変更可**（鍵の変更ボタンと同列） ⑤`dbSetCar`/`optimistic` で入庫・出庫・移動時に `wash_status` を未選択にリセット(前の車の状態を引き継がない=key_insideと同一)。
