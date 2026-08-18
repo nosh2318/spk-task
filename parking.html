@@ -135,6 +135,17 @@
   @keyframes gjshow{0%{opacity:0}15%{opacity:1}80%{opacity:1}100%{opacity:0}}
   @keyframes gjpop{0%{transform:scale(.4) rotate(-10deg)}25%{transform:scale(1.15) rotate(4deg)}45%{transform:scale(1) rotate(-2deg)}80%{transform:scale(1)}100%{transform:scale(1.05)}}
   @keyframes pburst{0%{opacity:1;transform:translate(0,0) scale(.6)}100%{opacity:0;transform:translate(var(--dx),var(--dy)) scale(1.3) rotate(var(--rot))}}
+  /* 車両ステータス一覧（貸出中・所在不明） */
+  .exsec .cnt{margin-left:auto;font-size:11px;font-weight:900;background:#334155;color:#e2e8f0;border-radius:8px;padding:2px 9px}
+  .stlist{display:flex;flex-wrap:wrap;gap:7px}
+  .stcell{display:flex;align-items:center;gap:8px;background:#1e293b;border-radius:10px;padding:8px 11px;font-size:12.5px;font-weight:800;border-left:4px solid #64748b}
+  .stcell .dot{width:11px;height:11px;border-radius:50%;flex-shrink:0}
+  .stcell .no{font-size:10.5px;color:#94a3b8;font-weight:700;margin-left:2px}
+  .stcell .rb{font-size:9px;font-weight:900;border-radius:5px;padding:1px 6px;margin-left:3px}
+  .stcell .rb.ret{color:#78350f;background:#fde68a}
+  .missh{color:#fca5a5}
+  .stcell.miss{border-left-color:#ef4444;background:#2a1416;animation:missBlink 1.4s ease-in-out infinite}
+  @keyframes missBlink{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.25)}50%{box-shadow:0 0 0 4px rgba(239,68,68,.32)}}
 </style>
 </head>
 <body>
@@ -145,6 +156,8 @@
     <div class="retbar"><div class="rt">🕒 本日返却予定（担当者・時刻の一覧）／入庫はマップの点滅マス「返却使用予定」から</div><div class="chips" id="retToday"></div></div>
   </div>
   <div class="lot-map" id="lotMap"></div>
+  <div class="exsec"><div class="exh">🚗 貸出中の車両（外に出ている）<span class="cnt" id="outCnt">0</span></div><div id="outList" class="stlist"></div></div>
+  <div class="exsec" id="missSec"><div class="exh missh">❓ 所在不明の車両<span style="font-size:10px;font-weight:800;color:#94a3b8;margin-left:6px">貸出なし・駐車場になし</span><span class="cnt" id="missCnt">0</span></div><div id="missList" class="stlist"></div></div>
   <div class="exsec"><div class="exh">🛴 モビリティ（置き場所）</div><div id="mobList"></div></div>
   <div class="exsec"><div class="exh">📦 倉庫車（荷物積載中）<button class="exadd" onclick="addWh()">＋ 追加</button></div><div id="whList"></div></div>
 </div>
@@ -178,6 +191,7 @@ let SPOTS=[];   // {id,no,carId,memo}
 let ROSTER=[];  // {id,n,p,c}
 let RETURNS=[]; // {id,n,p,c,time} 本日返却予定(予約RPC)
 let OUT_NOW=new Set(); // 今 貸出中(出発済み・返却前)の車id
+let OUT_LIST=[]; // 今 貸出中の車両 一覧(表示用) {id,n,p}
 let DEPART_TODAY=new Set(); // 本日出発予定(貸出日=本日・予約データ参照)の車id ※当日貸出・当日返却の車もあるので注意
 let MOBILITY={}, WAREHOUSE={}, PLAN={}; // parking_meta (PLAN=返却予定の手動割当 carId->spotId)
 const MOB_ITEMS=[{id:"bicycle",name:"自転車",icon:"🚲"},{id:"ebike",name:"電動自転車",icon:"⚡"},{id:"escooter",name:"キックボード",icon:"🛴"}];
@@ -199,6 +213,8 @@ function allCars(){const seen=new Set();return [...ROSTER,...STAFF_CARS,...EXTRA
 function car(id){return allCars().find(c=>c.id===id)||{id,n:id,p:"",c:"H"};}
 function placedIds(){const s=new Set();SPOTS.forEach(sp=>sp.carId&&s.add(sp.carId));return s;}
 function needCars(){const p=placedIds();return allCars().filter(c=>!p.has(c.id));}
+// 所在不明＝配車表の車で「貸出なし＆駐車場になし＆倉庫車でない」＝どこにあるか分からない車
+function missingCars(){const parked=placedIds();return ROSTER.filter(c=>!parked.has(c.id)&&!OUT_NOW.has(c.id)&&!WAREHOUSE[c.id]);}
 function baysOf(k){return SPOTS.filter(sp=>areaOf(sp.no)===k).sort((a,b)=>{const na=parseInt(a.no,10),nb=parseInt(b.no,10);if(!isNaN(na)&&!isNaN(nb))return na-nb;return a.id-b.id;});}
 // 誘導のおすすめ: BIG空き最優先→無ければトラスト空き
 function recoSpotId(carId){
@@ -221,7 +237,8 @@ function render(){
   const planned=guideCar?{}:plannedMap();
   const total=SPOTS.length, parked=SPOTS.filter(s=>s.carId).length;
   const departN=SPOTS.filter(s=>s.carId&&DEPART_TODAY.has(s.carId)).length;
-  $("sum").innerHTML=`<div class="chip">空き <b>${total-parked}</b>/${total}</div><div class="chip">BIG空き <b>${baysOf("BIG").filter(s=>!s.carId).length}</b></div><div class="chip">本日返却 <b>${RETURNS.length}</b></div>`+(departN?`<div class="chip" style="background:#f59e0b;color:#111">🚗本日出発予定 <b>${departN}</b></div>`:"");
+  const missN=missingCars().length;
+  $("sum").innerHTML=`<div class="chip">空き <b>${total-parked}</b>/${total}</div><div class="chip">BIG空き <b>${baysOf("BIG").filter(s=>!s.carId).length}</b></div><div class="chip">本日返却 <b>${RETURNS.length}</b></div><div class="chip">🚗貸出中 <b>${OUT_LIST.length}</b></div>`+(departN?`<div class="chip" style="background:#f59e0b;color:#111">🚗本日出発予定 <b>${departN}</b></div>`:"")+(missN?`<div class="chip" style="background:#7f1d1d;color:#fecaca">❓所在不明 <b>${missN}</b></div>`:"");
   // 🕒 本日返却予定（未駐車のみ・時刻付き）
   const placed=placedIds();
   const rtoday=RETURNS.filter(r=>!placed.has(r.id));
@@ -243,8 +260,22 @@ function render(){
     html+=`<div class="area ${a.paid?'paid':''}"><div class="atitle">${a.ico} ${a.name}${a.paid?'<span class="paidtag">有料</span>':''}<span class="cap">空き ${free}／${bays.length}台</span></div><div class="coinbays">${cells||'<div style="font-size:10px;color:#94a3b8;padding:6px">（マス未登録）</div>'}</div></div>`;
   });
   $("lotMap").innerHTML=html;
+  renderStatus();
   renderExtra();
   renderModal();
+}
+// 🚗 貸出中の車両 ＋ ❓ 所在不明の車両
+function renderStatus(){
+  // 貸出中（外に出ている＝出発済み・返却前）
+  const ret=new Set(RETURNS.map(r=>r.id));
+  $("outCnt").textContent=OUT_LIST.length;
+  $("outList").innerHTML=OUT_LIST.length?OUT_LIST.map(x=>{const c=car(x.id);const back=ret.has(x.id)?'<span class="rb ret">🕒本日返却</span>':'';return `<div class="stcell" style="border-left-color:${CLS[c.c]||'#64748b'}"><span class="dot" style="background:${CLS[c.c]||'#64748b'}"></span>${x.n}<span class="no">No.${x.p}</span>${back}</div>`;}).join(""):'<div class="emp">現在 貸出中の車両はありません</div>';
+  // 所在不明（貸出なし＆駐車場になし＆倉庫車でない）
+  const miss=missingCars();
+  $("missCnt").textContent=miss.length;
+  $("missCnt").style.background=miss.length?"#7f1d1d":"#334155";
+  $("missCnt").style.color=miss.length?"#fecaca":"#e2e8f0";
+  $("missList").innerHTML=miss.length?miss.map(c=>`<div class="stcell miss"><span class="dot" style="background:${CLS[c.c]||'#64748b'}"></span>${c.n}<span class="no">No.${c.p}</span></div>`).join(""):'<div class="emp" style="color:#6ee7b7">✅ 全車両の所在OK（貸出中・駐車場・倉庫のいずれか）</div>';
 }
 // 🛴 モビリティ ＋ 📦 倉庫車
 function renderExtra(){
@@ -491,7 +522,7 @@ async function loadReturns(){
 }
 async function loadOutNow(){
   try{const r=await fetch(MAIN_SB+"/rest/v1/rpc/spk_parking_out_now",{method:"POST",headers:{"apikey":MAIN_ANON,"Authorization":"Bearer "+MAIN_ANON,"Content-Type":"application/json"},body:"{}"});
-    const d=await r.json();if(Array.isArray(d))OUT_NOW=new Set(d.map(x=>x.name+"-"+x.no));}catch(e){console.log("outnow err",e);}
+    const d=await r.json();if(Array.isArray(d)){OUT_NOW=new Set(d.map(x=>x.name+"-"+x.no));OUT_LIST=d.map(x=>({id:x.name+"-"+x.no,n:x.name,p:String(x.no||"")}));}}catch(e){console.log("outnow err",e);}
 }
 async function loadDeparts(){
   try{const r=await fetch(MAIN_SB+"/rest/v1/rpc/spk_parking_departs_today",{method:"POST",headers:{"apikey":MAIN_ANON,"Authorization":"Bearer "+MAIN_ANON,"Content-Type":"application/json"},body:"{}"});
