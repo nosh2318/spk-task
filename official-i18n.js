@@ -214,16 +214,19 @@
   function build(){
     var st=document.createElement('style');
     st.textContent='.hdmlang{position:fixed;top:10px;right:12px;z-index:9999;font-family:inherit}'+
-      '.hdmlang-btn{display:flex;align-items:center;gap:6px;background:rgba(0,32,99,.92);color:#fff;border:1px solid rgba(255,255,255,.25);border-radius:999px;padding:7px 13px;font-size:12.5px;font-weight:800;cursor:pointer}'+
-      '.hdmlang-menu{position:absolute;top:calc(100% + 6px);right:0;background:#fff;border:1px solid #d8e0ee;border-radius:12px;box-shadow:0 10px 30px rgba(0,16,48,.18);overflow:hidden;display:none;min-width:150px}'+
+      '.hdmlang.inslot{position:static;top:auto;right:auto}'+  /* メニュー枠内に置く時 */
+      '.hdmlang-btn{display:flex;align-items:center;gap:6px;background:rgba(0,32,99,.92);color:#fff;border:1px solid rgba(255,255,255,.25);border-radius:999px;padding:7px 13px;font-size:12.5px;font-weight:800;cursor:pointer;font-family:inherit}'+
+      '.hdmlang-menu{position:absolute;top:calc(100% + 6px);right:0;background:#fff;border:1px solid #d8e0ee;border-radius:12px;box-shadow:0 10px 30px rgba(0,16,48,.18);overflow:hidden;display:none;min-width:150px;z-index:30}'+
       '.hdmlang.open .hdmlang-menu{display:block}'+
       '.hdmlang-menu button{display:block;width:100%;text-align:left;background:#fff;border:0;padding:11px 15px;font-size:13px;font-weight:700;color:#0a1f44;cursor:pointer;font-family:inherit}'+
       '.hdmlang-menu button:hover{background:#f2f6fc}.hdmlang-menu button.on{background:#002063;color:#fff}';
     document.head.appendChild(st);
-    wrap=document.createElement('div');wrap.className='hdmlang';
+    wrap=document.createElement('div');
     wrap.innerHTML='<button type="button" class="hdmlang-btn">🌐 <span class="hdmlang-cur"></span> ▾</button>'+
       '<div class="hdmlang-menu">'+['ja','en','zh','ko'].map(function(l){return '<button type="button" data-l="'+l+'">'+NAMES[l]+'</button>';}).join('')+'</div>';
-    document.body.appendChild(wrap);
+    var slot=document.getElementById('hdmlang-slot');
+    if(slot){wrap.className='hdmlang inslot';slot.appendChild(wrap);}
+    else{wrap.className='hdmlang';document.body.appendChild(wrap);}
     wrap.querySelector('.hdmlang-btn').addEventListener('click',function(e){e.stopPropagation();wrap.classList.toggle('open');});
     wrap.querySelectorAll('.hdmlang-menu button').forEach(function(b){b.addEventListener('click',function(){window.hdmSetLang(b.getAttribute('data-l'));wrap.classList.remove('open');});});
     document.addEventListener('click',function(){wrap.classList.remove('open');});
