@@ -4,8 +4,6 @@
 <title>KEYDROP お届け先を選ぶ（新UXモック・テスト）</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCoX1EyEx-N5A0r4vRzC1KmVp3T29HILbI&libraries=places&language=ja&region=JP" defer></script>
 <style>
 :root{--navy:#0F1F45;--navy2:#1b3163;--ink:#0a1836;--y:#FABE00;--gr:#0e9f50;--line:#2a3f6b;--mut:#8fa2c8;--bg:#eef2f8}
@@ -166,16 +164,24 @@ function inCity(comps,addr){function hit(s){if(!s)return false;for(var i=0;i<ARE
 function postState(){if(!_EMBED||window.parent===window)return;function o(k){return loc[k]?{label:locName[k]||loc[k],addr:loc[k],lat:_ll[k]?_ll[k][0]:null,lng:_ll[k]?_ll[k][1]:null}:null;}try{window.parent.postMessage({type:'hdmdeliv',del:o('del'),col:same?null:o('col'),same:same,height:document.body.scrollHeight+8},'*');}catch(e){}}
 
 function makeMap(id,which){
-  var m=L.map(id,{scrollWheelZoom:false,zoomControl:true}).setView(CENTER,13);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(m);
-  var area=id==='map'?'maparea':'maparea2';
-  m.on('movestart',function(){document.getElementById(area).classList.add('moving');});
-  m.on('moveend',function(){document.getElementById(area).classList.remove('moving');
-    if(Date.now()<suppress[id]){return;}
-    clearTimeout(moveTimer[id]);moveTimer[id]=setTimeout(function(){var c=m.getCenter();var kk=which===2?'col':'del';
-      if(_lastCommit[id]&&locName[kk]&&dist(c.lat,c.lng,_lastCommit[id][0],_lastCommit[id][1])<0.06){return;} // 選択直後の微小settleでは施設名を保持
-      reverseGeo(c.lat,c.lng,function(ad,comps){apply(which,'',ad,c.lat,c.lng,comps);});},650);});
-  setTimeout(function(){m.invalidateSize();},250);
+  // Google Maps（本番KEYDROPと同じGoogleマップ）＋中央ピン方式
+  var el=document.getElementById(id);
+  var m=new google.maps.Map(el,{center:{lat:CENTER[0],lng:CENTER[1]},zoom:14,disableDefaultUI:true,zoomControl:true,gestureHandling:'greedy',clickableIcons:false,keyboardShortcuts:false});
+  var areaEl=document.getElementById(id==='map'?'maparea':'maparea2');
+  var touched=false;
+  m.addListener('dragstart',function(){touched=true;areaEl.classList.add('moving');});
+  m.addListener('zoom_changed',function(){touched=true;});
+  m.addListener('idle',function(){
+    areaEl.classList.remove('moving');
+    if(!touched)return;                        // 初期表示のidleでは確定しない（ユーザー操作後のみ）
+    if(Date.now()<suppress[id]){return;}       // 検索選択直後の自動移動は無視
+    clearTimeout(moveTimer[id]);moveTimer[id]=setTimeout(function(){
+      var c=m.getCenter();var la=c.lat(),ln=c.lng();var kk=which===2?'col':'del';
+      if(_lastCommit[id]&&locName[kk]&&dist(la,ln,_lastCommit[id][0],_lastCommit[id][1])<0.06){return;} // 選択直後の微小settleでは施設名を保持
+      reverseGeo(la,ln,function(ad,comps){apply(which,'',ad,la,ln,comps);});
+    },500);
+  });
+  setTimeout(function(){google.maps.event.trigger(m,'resize');m.setCenter({lat:CENTER[0],lng:CENTER[1]});},300);
   return m;
 }
 /* ==== Google Places（Maps JS）で検索・座標化 ==== */
@@ -202,7 +208,7 @@ function apply(which,name,addr,lat,lng,comps){var k=which===2?'col':'del';var sc
   document.getElementById(vid).textContent=name||addr||'';
   document.getElementById(aid).textContent=(name&&addr&&addr!==name)?('📮 '+addr):'';
   renderCta();}
-function commit(which,name,addr,lat,lng,comps){var mid=which===2?'map2':'map';if(lat!=null&&maps[mid]){suppress[mid]=Date.now()+1800;_lastCommit[mid]=[lat,lng];maps[mid].setView([lat,lng],16,{animate:false});}apply(which,name,addr,lat,lng,comps);}
+function commit(which,name,addr,lat,lng,comps){var mid=which===2?'map2':'map';if(lat!=null&&maps[mid]){suppress[mid]=Date.now()+1800;_lastCommit[mid]=[lat,lng];maps[mid].setCenter({lat:lat,lng:lng});maps[mid].setZoom(16);}apply(which,name,addr,lat,lng,comps);}
 
 function renderCta(){var ok=!!loc.del&&(same||!!loc.col);var btn=document.getElementById('nextBtn');if(btn)btn.disabled=!ok;
   var s=document.getElementById('ctaSum');
@@ -233,14 +239,14 @@ function submitSearch(which){var inp=document.getElementById(which===2?'q2':'q')
 }
 function clearQ(which){document.getElementById(which===2?'q2':'q').value='';document.getElementById(which===2?'sugg2':'sugg').classList.remove('on');document.getElementById(which===2?'clr2':'clr').style.display='none';}
 function toggleSame(){same=!same;document.getElementById('sameSw').classList.toggle('off',!same);document.getElementById('retbody').classList.toggle('on',!same);
-  if(!same){if(!maps.map2){maps.map2=makeMap('map2',2);}setTimeout(function(){if(maps.map2)maps.map2.invalidateSize();},350);}renderCta();}
-function locateMe(){if(!navigator.geolocation)return;navigator.geolocation.getCurrentPosition(function(p){maps.map.setView([p.coords.latitude,p.coords.longitude],16,{animate:false});},function(){});}
+  if(!same){gWait(function(){if(!maps.map2){maps.map2=makeMap('map2',2);}setTimeout(function(){if(maps.map2){google.maps.event.trigger(maps.map2,'resize');maps.map2.setCenter({lat:CENTER[0],lng:CENTER[1]});}},350);});}renderCta();}
+function locateMe(){if(!navigator.geolocation||!maps.map)return;navigator.geolocation.getCurrentPosition(function(p){maps.map.setCenter({lat:p.coords.latitude,lng:p.coords.longitude});maps.map.setZoom(16);},function(){});}
 
 window.addEventListener('DOMContentLoaded',function(){
   if(_EMBED)document.documentElement.classList.add('embed');
   var sb=document.querySelector('#storeSw .stbtn[data-s="'+_AREA+'"]');if(sb)sb.classList.add('on');
   var an=document.getElementById('areaNote');if(an)an.textContent='お届け・回収は'+AREALABEL+'のみ';
-  maps.map=makeMap('map',1);
+  gWait(function(){maps.map=makeMap('map',1);}); // Googleマップ読込完了後に生成
   document.getElementById('sameSw').classList.remove('off'); // 既定ON
   postState(); // 初期状態(未選択)を親へ
   setInterval(postState,1200); // 高さ変化も定期通知
