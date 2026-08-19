@@ -181,8 +181,17 @@ function makeMap(id,which){
 var gAuto=null,gPlaces=null,gGeo=null,NAHA_LL=null,predTimer={},lastPreds={1:[],2:[]};
 function gInit(){if(window.google&&google.maps&&google.maps.places&&!gAuto){gAuto=new google.maps.places.AutocompleteService();gPlaces=new google.maps.places.PlacesService(document.createElement('div'));gGeo=new google.maps.Geocoder();NAHA_LL=new google.maps.LatLng(CENTER[0],CENTER[1]);}}
 function gWait(cb){gInit();if(gAuto){cb();return;}var t=0;var iv=setInterval(function(){gInit();if(gAuto||t++>40){clearInterval(iv);cb();}},150);}
-function predict(input,cb){gWait(function(){if(!gAuto){cb([]);return;}gAuto.getPlacePredictions({input:input,language:'ja',componentRestrictions:{country:'jp'},location:NAHA_LL,radius:25000},function(p,st){cb((st==='OK'&&p)?p:[]);});});}
-function details(placeId,cb){gWait(function(){if(!gPlaces){cb(null);return;}gPlaces.getDetails({placeId:placeId,fields:['geometry','name','formatted_address','address_components'],language:'ja'},function(pl,st){if(st==='OK'&&pl&&pl.geometry){cb(pl.geometry.location.lat(),pl.geometry.location.lng(),pl.name||'',gtidy(pl.formatted_address),pl.address_components||null);}else cb(null);});});}
+var _sessTok=null;
+function _tok(){if(!_sessTok&&window.google&&google.maps&&google.maps.places)_sessTok=new google.maps.places.AutocompleteSessionToken();return _sessTok;}
+function predict(input,cb){gWait(function(){if(!gAuto){cb([]);return;}
+  var req={input:input,language:'ja',componentRestrictions:{country:'jp'},location:NAHA_LL,radius:25000,sessionToken:_tok()};
+  gAuto.getPlacePredictions(req,function(p,st){
+    if(st==='OK'&&p){cb(p);return;}
+    if(window.google&&st===google.maps.places.PlacesServiceStatus.OVER_QUERY_LIMIT){setTimeout(function(){gAuto.getPlacePredictions(req,function(p2,st2){cb((st2==='OK'&&p2)?p2:[]);});},700);return;}
+    cb([]);
+  });
+});}
+function details(placeId,cb){gWait(function(){if(!gPlaces){cb(null);return;}gPlaces.getDetails({placeId:placeId,fields:['geometry','name','formatted_address','address_components'],language:'ja',sessionToken:_tok()},function(pl,st){_sessTok=null;if(st==='OK'&&pl&&pl.geometry){cb(pl.geometry.location.lat(),pl.geometry.location.lng(),pl.name||'',gtidy(pl.formatted_address),pl.address_components||null);}else cb(null);});});}
 function gtidy(a){return (a||'').replace(/^日本、?/,'').replace(/〒?\d{3}-?\d{4}\s*/,'').replace(/^沖縄県/,'').trim();}
 function reverseGeo(lat,lng,cb){gWait(function(){if(!gGeo){cb(lat.toFixed(4)+', '+lng.toFixed(4),null);return;}gGeo.geocode({location:{lat:lat,lng:lng},language:'ja'},function(res,st){if(st==='OK'&&res&&res[0])cb(gtidy(res[0].formatted_address),res[0].address_components);else cb(lat.toFixed(4)+', '+lng.toFixed(4),null);});});}
 function apply(which,name,addr,lat,lng,comps){var k=which===2?'col':'del';var sc=document.getElementById(which===2?'selcard2':'selcard');var vid=which===2?'selval2':'selval';var aid=which===2?'seladdr2':'seladdr';
@@ -204,11 +213,11 @@ function esc(s){return (s||'').replace(/[<>&]/g,'');}
 function renderSugg(which){var q=(document.getElementById(which===2?'q2':'q').value||'').trim();var box=document.getElementById(which===2?'sugg2':'sugg');
   if(!q){box.classList.remove('on');return;}
   clearTimeout(predTimer[which]);predTimer[which]=setTimeout(function(){predict(q,function(preds){lastPreds[which]=preds;
-    if(!preds.length){box.classList.remove('on');return;}
+    if(!preds.length){box.innerHTML='<div class="head" style="color:#8090ac;padding:11px 14px">該当する候補が見つかりません。地図を動かしてピンで指定できます。</div>';box.classList.add('on');return;}
     box.innerHTML=preds.slice(0,6).map(function(p,i){var m=p.structured_formatting||{};return '<div class="it" data-i="'+i+'"><span class="si">📍</span><div><div class="st">'+esc(m.main_text||p.description)+'</div><div class="ss">'+esc(m.secondary_text||'')+'</div></div></div>';}).join('');
     box.querySelectorAll('.it').forEach(function(el){el.onclick=function(){pick(preds[+el.getAttribute('data-i')],which);};});
     box.classList.add('on');
-  });},250);
+  });},350);
 }
 function pick(pred,which){var box=document.getElementById(which===2?'sugg2':'sugg');box.classList.remove('on');
   var inp=document.getElementById(which===2?'q2':'q');var label=(pred.structured_formatting&&pred.structured_formatting.main_text)||pred.description;inp.value=label;

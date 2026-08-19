@@ -133,7 +133,7 @@ html.embed .qsub{margin:0 2px 12px}
     </div>
   </div>
 
-  <div class="note"><b style="color:#3f8a3f">お届け・回収は那覇市内のみ</b>承ります（那覇空港・市外・県外は不可）。営業時間 9:00〜19:00。<br>市内のコインパーキング・自宅・ホテル・駅など、どこでもOK（地図で指定できます）。</div>
+  <div class="note"><b style="color:#3f8a3f" id="areaNote">対応エリア内のみお届け／回収</b>します（那覇空港は不可）。営業時間 9:00〜19:00。<br>コインパーキング・自宅・ホテル・駅など、どこでもOK（地図で指定できます）。</div>
 </div>
 
 <div class="cta">
@@ -147,12 +147,13 @@ var NHA_HOTELS=['ホテルコレクティブ','ホテルリソルトリニティ
 var _P=new URLSearchParams(location.search);
 var _AREA=(_P.get('area')==='sapporo')?'sapporo':'naha';
 var _EMBED=(_P.get('embed')==='1');
-var AREACFG={naha:{center:[26.2124,127.6809],city:'那覇市',airport:[26.1958,127.6459]},sapporo:{center:[43.0621,141.3544],city:'札幌市',airport:null}};
-var CENTER=AREACFG[_AREA].center, CITY=AREACFG[_AREA].city, AIRPORT=AREACFG[_AREA].airport;
+var AREACFG={naha:{center:[26.2124,127.6809],areas:['那覇市','豊見城市'],airport:[26.1958,127.6459],label:'那覇市・豊見城市'},sapporo:{center:[43.0621,141.3544],areas:['札幌市'],airport:null,label:'札幌市'}};
+var CENTER=AREACFG[_AREA].center, AREAS=AREACFG[_AREA].areas, AIRPORT=AREACFG[_AREA].airport, AREALABEL=AREACFG[_AREA].label;
 var loc={del:'',col:''},locName={del:'',col:''},_ll={del:null,col:null},_lastCommit={},same=true,maps={},moveTimer={},suppress={map:0,map2:0};
 function dist(a,b,c,d){var R=6371,dLat=(c-a)*Math.PI/180,dLng=(d-b)*Math.PI/180,x=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.sin(dLng/2)*Math.sin(dLng/2);return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));}
 function isAirport(lat,lng,name){if(AIRPORT){if(name&&/那覇空港/.test(name))return true;if(lat!=null&&dist(lat,lng,AIRPORT[0],AIRPORT[1])<1.1)return true;}return false;}
-function inCity(comps,addr){if(comps&&comps.length){for(var i=0;i<comps.length;i++){if(comps[i].long_name&&comps[i].long_name.indexOf(CITY)>=0)return true;}return false;}return !!(addr&&addr.indexOf(CITY)>=0);}
+function inCity(comps,addr){function hit(s){if(!s)return false;for(var i=0;i<AREAS.length;i++){if(s.indexOf(AREAS[i])>=0)return true;}return false;}
+  if(comps&&comps.length){for(var j=0;j<comps.length;j++){if(hit(comps[j].long_name))return true;}return false;}return hit(addr);}
 function postState(){if(!_EMBED||window.parent===window)return;function o(k){return loc[k]?{label:locName[k]||loc[k],addr:loc[k],lat:_ll[k]?_ll[k][0]:null,lng:_ll[k]?_ll[k][1]:null}:null;}try{window.parent.postMessage({type:'hdmdeliv',del:o('del'),col:same?null:o('col'),same:same,height:document.body.scrollHeight+8},'*');}catch(e){}}
 
 function makeMap(id,which){
@@ -172,13 +173,22 @@ function makeMap(id,which){
 var gAuto=null,gPlaces=null,gGeo=null,NAHA_LL=null,predTimer={},lastPreds={1:[],2:[]};
 function gInit(){if(window.google&&google.maps&&google.maps.places&&!gAuto){gAuto=new google.maps.places.AutocompleteService();gPlaces=new google.maps.places.PlacesService(document.createElement('div'));gGeo=new google.maps.Geocoder();NAHA_LL=new google.maps.LatLng(CENTER[0],CENTER[1]);}}
 function gWait(cb){gInit();if(gAuto){cb();return;}var t=0;var iv=setInterval(function(){gInit();if(gAuto||t++>40){clearInterval(iv);cb();}},150);}
-function predict(input,cb){gWait(function(){if(!gAuto){cb([]);return;}gAuto.getPlacePredictions({input:input,language:'ja',componentRestrictions:{country:'jp'},location:NAHA_LL,radius:25000},function(p,st){cb((st==='OK'&&p)?p:[]);});});}
-function details(placeId,cb){gWait(function(){if(!gPlaces){cb(null);return;}gPlaces.getDetails({placeId:placeId,fields:['geometry','name','formatted_address','address_components'],language:'ja'},function(pl,st){if(st==='OK'&&pl&&pl.geometry){cb(pl.geometry.location.lat(),pl.geometry.location.lng(),pl.name||'',gtidy(pl.formatted_address),pl.address_components||null);}else cb(null);});});}
+var _sessTok=null;
+function _tok(){if(!_sessTok&&window.google&&google.maps&&google.maps.places)_sessTok=new google.maps.places.AutocompleteSessionToken();return _sessTok;}
+function predict(input,cb){gWait(function(){if(!gAuto){cb([]);return;}
+  var req={input:input,language:'ja',componentRestrictions:{country:'jp'},location:NAHA_LL,radius:25000,sessionToken:_tok()};
+  gAuto.getPlacePredictions(req,function(p,st){
+    if(st==='OK'&&p){cb(p);return;}
+    if(window.google&&st===google.maps.places.PlacesServiceStatus.OVER_QUERY_LIMIT){setTimeout(function(){gAuto.getPlacePredictions(req,function(p2,st2){cb((st2==='OK'&&p2)?p2:[]);});},700);return;}
+    cb([]);
+  });
+});}
+function details(placeId,cb){gWait(function(){if(!gPlaces){cb(null);return;}gPlaces.getDetails({placeId:placeId,fields:['geometry','name','formatted_address','address_components'],language:'ja',sessionToken:_tok()},function(pl,st){_sessTok=null;if(st==='OK'&&pl&&pl.geometry){cb(pl.geometry.location.lat(),pl.geometry.location.lng(),pl.name||'',gtidy(pl.formatted_address),pl.address_components||null);}else cb(null);});});}
 function gtidy(a){return (a||'').replace(/^日本、?/,'').replace(/〒?\d{3}-?\d{4}\s*/,'').replace(/^沖縄県/,'').trim();}
 function reverseGeo(lat,lng,cb){gWait(function(){if(!gGeo){cb(lat.toFixed(4)+', '+lng.toFixed(4),null);return;}gGeo.geocode({location:{lat:lat,lng:lng},language:'ja'},function(res,st){if(st==='OK'&&res&&res[0])cb(gtidy(res[0].formatted_address),res[0].address_components);else cb(lat.toFixed(4)+', '+lng.toFixed(4),null);});});}
 function apply(which,name,addr,lat,lng,comps){var k=which===2?'col':'del';var sc=document.getElementById(which===2?'selcard2':'selcard');var vid=which===2?'selval2':'selval';var aid=which===2?'seladdr2':'seladdr';
   if(isAirport(lat,lng,(name||'')+' '+(addr||''))){loc[k]='';locName[k]='';_ll[k]=null;sc.className='selcard err';document.getElementById(vid).innerHTML='🚫 那覇空港はお届け対象外です。<br>空港でのお受け取りは「無料送迎（空港/駅）」をご利用ください。';document.getElementById(aid).textContent='';renderCta();return;}
-  if(!inCity(comps,addr)){loc[k]='';locName[k]='';_ll[k]=null;sc.className='selcard err';document.getElementById(vid).innerHTML='🚫 対応エリア外です。<br>お届け・回収は<b>'+CITY+'内</b>のみ承ります。';document.getElementById(aid).textContent='';renderCta();return;}
+  if(!inCity(comps,addr)){loc[k]='';locName[k]='';_ll[k]=null;sc.className='selcard err';document.getElementById(vid).innerHTML='🚫 対応エリア外です。<br>お届け・回収は<b>'+AREALABEL+'</b>のみ承ります。';document.getElementById(aid).textContent='';renderCta();return;}
   loc[k]=addr||name||'';locName[k]=name||'';if(lat!=null)_ll[k]=[lat,lng];sc.className='selcard';
   document.getElementById(vid).textContent=name||addr||'';
   document.getElementById(aid).textContent=(name&&addr&&addr!==name)?('📮 '+addr):'';
@@ -195,11 +205,11 @@ function esc(s){return (s||'').replace(/[<>&]/g,'');}
 function renderSugg(which){var q=(document.getElementById(which===2?'q2':'q').value||'').trim();var box=document.getElementById(which===2?'sugg2':'sugg');
   if(!q){box.classList.remove('on');return;}
   clearTimeout(predTimer[which]);predTimer[which]=setTimeout(function(){predict(q,function(preds){lastPreds[which]=preds;
-    if(!preds.length){box.classList.remove('on');return;}
+    if(!preds.length){box.innerHTML='<div class="head" style="color:#8090ac;padding:11px 14px">該当する候補が見つかりません。地図を動かしてピンで指定できます。</div>';box.classList.add('on');return;}
     box.innerHTML=preds.slice(0,6).map(function(p,i){var m=p.structured_formatting||{};return '<div class="it" data-i="'+i+'"><span class="si">📍</span><div><div class="st">'+esc(m.main_text||p.description)+'</div><div class="ss">'+esc(m.secondary_text||'')+'</div></div></div>';}).join('');
     box.querySelectorAll('.it').forEach(function(el){el.onclick=function(){pick(preds[+el.getAttribute('data-i')],which);};});
     box.classList.add('on');
-  });},250);
+  });},350);
 }
 function pick(pred,which){var box=document.getElementById(which===2?'sugg2':'sugg');box.classList.remove('on');
   var inp=document.getElementById(which===2?'q2':'q');var label=(pred.structured_formatting&&pred.structured_formatting.main_text)||pred.description;inp.value=label;
@@ -219,6 +229,7 @@ function locateMe(){if(!navigator.geolocation)return;navigator.geolocation.getCu
 
 window.addEventListener('DOMContentLoaded',function(){
   if(_EMBED)document.documentElement.classList.add('embed');
+  var an=document.getElementById('areaNote');if(an)an.textContent='お届け・回収は'+AREALABEL+'のみ';
   maps.map=makeMap('map',1);
   document.getElementById('sameSw').classList.remove('off'); // 既定ON
   postState(); // 初期状態(未選択)を親へ
