@@ -443,7 +443,12 @@ function fetchAvail(){
   });
 }
 function classAvail(k){return state.availLoaded?((state.avail[k]||0)>0):true;}
-var loc={del:'',col:''},locTarget='del',pending='',colSame=false; // お届け先/回収先 決定フロー用（同じは既定OFF）
+var loc={del:null,col:null},colSame=true; // お届け先/回収先(={label,addr,lat,lng}) ・回収同じは既定ON。値はデリバリー埋め込み(official-deliv-v2)からpostMessageで受信
+// デリバリー埋め込みからの選択結果を受信
+window.addEventListener('message',function(e){var d=e&&e.data;if(!d||d.type!=='hdmdeliv')return;
+  loc.del=d.del||null;loc.col=d.col||null;colSame=(d.same!==false);
+  var f=document.getElementById('delivFrame');if(f&&d.height){f.style.height=Math.max(560,Math.min(1400,d.height))+'px';}
+});
 var locType='station';
 var NHA_STATIONS=['赤嶺駅','小禄駅','奥武山公園駅','壺川駅','旭橋駅','県庁前駅','美栄橋駅','牧志駅','安里駅','おもろまち駅','古島駅','市立病院前駅','儀保駅','首里駅'];
 var NHA_HOTELS=['ホテルコレクティブ','ホテルリソルトリニティ那覇','THE NEST那覇','コンフォートホテル那覇県庁前','リーガロイヤルグラン沖縄','ロワジールホテル那覇','レンブラントスタイル那覇','パシフィックホテル沖縄','ホテルオーシャン那覇国際通り','ヒューイットリゾート那覇','ホテルJALシティ那覇','アパホテル那覇松山','那覇東急REIホテル','メルキュール沖縄那覇','ダブルツリーbyヒルトン那覇','ノボテル沖縄那覇','ハイアットリージェンシー那覇','沖縄ハーバービューホテル'];
@@ -463,29 +468,9 @@ document.getElementById('methodTitle').textContent=T('mt_'+MKEY[method]);
 document.getElementById('st2t').textContent=T('st_recv_'+MKEY[method]);
 var mc=document.getElementById('methodCard');
 if(method==='delivery'){
-  var common='<div class="loctarget"><button id="tgDel" class="tg on" onclick="setTarget(\'del\')">'+T('dl_target_del')+'</button><button id="tgCol" class="tg" onclick="setTarget(\'col\')">'+T('dl_target_col')+'</button></div>'+
-    '<label class="dchk" style="margin-top:0"><input type="checkbox" id="colSame" onchange="toggleColSame()"> '+T('dl_colsame')+'</label>';
-  if(area==='naha'){
-    // 那覇＝ハイブリッド（駅/ホテル=プルダウン、コインパーキング=地図）
-    mc.innerHTML='<label class="fl">'+T('dl_place_sel')+'</label>'+common+
-      '<div class="loctype"><button class="lt on" data-lt="station" onclick="setLocType(\'station\')">'+T('dl_lt_station')+'</button><button class="lt" data-lt="hotel" onclick="setLocType(\'hotel\')">'+T('dl_lt_hotel')+'</button><button class="lt" data-lt="park" onclick="setLocType(\'park\')">'+T('dl_lt_park')+'</button></div>'+
-      '<div id="pullWrap" style="margin-top:10px"><select class="fld" id="placeSel" onchange="onPlaceSel()"></select></div>'+
-      '<div id="mapWrap" style="display:none"><div class="mapsearch" style="margin-top:10px"><input id="addrInput" placeholder="'+T('dl_ph_park')+'"><button onclick="geocodeAddr()">'+T('dl_search')+'</button></div><div id="delMap"></div></div>'+
-      '<div class="pendbar" id="pendBar">'+T('dl_pend_sel')+'</div>'+
-      '<button class="decidebtn" id="decideBtn" onclick="decideLoc()" disabled>'+T('dl_decide_a')+T('lc_del')+T('dl_decide_b')+'</button>'+
-      '<div class="locsum" id="locSum"></div>'+
-      '<div class="hint">'+T('dl_hint_naha')+'</div>';
-    setLocType('station');renderLocSum();
-  }else{
-    // 札幌＝地図
-    mc.innerHTML='<label class="fl">'+T('dl_place_map')+'</label>'+common+
-      '<div class="mapsearch" style="margin-top:10px"><input id="addrInput" placeholder="'+T('dl_ph_addr')+'"><button onclick="geocodeAddr()">'+T('dl_search')+'</button></div>'+
-      '<div id="delMap"></div>'+
-      '<div class="pendbar" id="pendBar">'+T('dl_pend_map')+'</div>'+
-      '<button class="decidebtn" id="decideBtn" onclick="decideLoc()" disabled>'+T('dl_decide_a')+T('lc_del')+T('dl_decide_b')+'</button>'+
-      '<div class="locsum" id="locSum"></div>'+
-      '<div class="hint">'+T('dl_hint_spk')+'</div>';
-    initDelMap();renderLocSum();
+  // お届け/回収 場所の指定は検証済みの新UX(official-deliv-v2)を埋め込み。選択結果はpostMessageで受信。
+  if(!document.getElementById('delivFrame')){
+    mc.innerHTML='<iframe id="delivFrame" src="official-deliv-v2.html?embed=1&area='+area+'" style="width:100%;border:0;height:660px;display:block" title="お届け先の指定" scrolling="no"></iframe>';
   }
 }else if(method==='airport'){
   mc.innerHTML='<div class="row2"><div><label class="fl">'+T('air_go_place')+'<span style="color:#b8860b;font-weight:700">'+T('air_selectable')+'</span></label><select class="fld"><option value="">'+T('air_sel')+'</option><option>那覇空港</option><option>赤嶺駅</option></select></div><div><label class="fl">'+T('air_time_go')+'</label><input class="fld" value="'+fmtDT(pD,pT)+'" readonly style="background:#eef2f8;color:#5a6b85"></div></div>'+
@@ -740,7 +725,7 @@ function vForm(showErr){
 }
 function daysCount(){if(!pD||!rD)return 1;var a=new Date(pD),b=new Date(rD);var d=Math.round((b-a)/86400000);return d>0?d:1;}
 function methodDetail(){
-  if(method==='delivery'){var d=loc.del||T('md_unset');var c=colSame?T('md_same'):(loc.col||T('md_unset'));return T('md_del')+d+T('md_col')+c;}
+  if(method==='delivery'){var _fmt=function(o){if(!o)return T('md_unset');var lb=o.label||o.addr||'';var ad=(o.addr&&o.addr!==o.label)?('（'+o.addr+'）'):'';return lb+ad;};var d=_fmt(loc.del);var c=colSame?T('md_same'):_fmt(loc.col);return T('md_del')+d+T('md_col')+c;}
   if(method==='airport'){var s=document.querySelectorAll('#methodCard select');var go=s[0]?s[0].value:'',rt=s[1]?s[1].value:'';return T('md_air')+(go||'-')+T('md_air2')+(rt||'-');}
   return T('md_store_a')+SHOP+T('md_store_b');
 }
