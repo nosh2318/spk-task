@@ -192,6 +192,14 @@
      dl_decide_a:'이 장소를 「',dl_decide_b:'」(으)로 확정',dl_hint_naha:'역·호텔은 드롭다운, 코인주차장은 지도로 지정. 나하는 오키나와 본섬 대응 지역으로 배달/회수합니다.',dl_hint_spk:'삿포로는 삿포로시·기타히로시마시로 배달/회수합니다. 지역 외는 문의해 주세요.',
      dl_target_del:'📍 배달 장소',dl_target_col:'🏁 회수 장소',lc_undecided:'미정',lc_change:'변경',lc_del:'배달 장소',lc_col:'회수 장소',dl_selecting:'선택 중: ',dl_same_as:'배달과 동일',dl_next_col:'이어서 지도에서 <b>회수 장소</b>를 선택하고 「확정」을 누르세요(배달과 동일하면 위 체크).'}
   };
+  // ===== ハンバーガーメニュー項目（全ページ共通） =====
+  var MENU={
+   ja:{mn_guide_nha:'ご利用方法（沖縄那覇店）',mn_guide_spk:'ご利用方法（札幌店）',mn_cars:'車両と料金',mn_ins:'保険プラン一覧',mn_faq_nha:'よくある質問（沖縄那覇店）',mn_faq_spk:'よくある質問（札幌店）',mn_contact:'お問い合わせ',mn_bus:'沖縄那覇店 無料空港送迎バス時刻表'},
+   en:{mn_guide_nha:'How to use (Naha, Okinawa)',mn_guide_spk:'How to use (Sapporo)',mn_cars:'Cars & Rates',mn_ins:'Insurance plans',mn_faq_nha:'FAQ (Naha, Okinawa)',mn_faq_spk:'FAQ (Sapporo)',mn_contact:'Contact',mn_bus:'Naha: free airport shuttle timetable'},
+   zh:{mn_guide_nha:'使用方式（沖繩那覇店）',mn_guide_spk:'使用方式（札幌店）',mn_cars:'車輛與費用',mn_ins:'保險方案一覽',mn_faq_nha:'常見問題（沖繩那覇店）',mn_faq_spk:'常見問題（札幌店）',mn_contact:'聯絡我們',mn_bus:'那覇店 免費機場接送巴士時刻表'},
+   ko:{mn_guide_nha:'이용 방법(오키나와 나하점)',mn_guide_spk:'이용 방법(삿포로점)',mn_cars:'차량 및 요금',mn_ins:'보험 플랜 목록',mn_faq_nha:'자주 묻는 질문(오키나와 나하점)',mn_faq_spk:'자주 묻는 질문(삿포로점)',mn_contact:'문의',mn_bus:'나하점 무료 공항 셔틀 시각표'}
+  };
+  for(var _LM in MENU){if(DICT[_LM])for(var _kM in MENU[_LM])DICT[_LM][_kM]=MENU[_LM][_kM];}
   for(var _L2 in FLOW2){if(DICT[_L2])for(var _k2 in FLOW2[_L2])DICT[_L2][_k2]=FLOW2[_L2][_k2];}
   for(var _L in FLOW){if(DICT[_L])for(var _k in FLOW[_L])DICT[_L][_k]=FLOW[_L][_k];}
   var SHORT={ja:'日本語',en:'EN',zh:'繁中',ko:'한국어'};
