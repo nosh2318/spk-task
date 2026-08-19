@@ -6,6 +6,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCoX1EyEx-N5A0r4vRzC1KmVp3T29HILbI&libraries=places&language=ja&region=JP" defer></script>
 <style>
 :root{--navy:#002063;--navy2:#0a2e80;--ink:#00163f;--y:#FABE00;--line:#1b3a73;--mut:#8fa2c8;--bg:#eef2f8}
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -153,16 +154,14 @@ function makeMap(id,which){
   setTimeout(function(){m.invalidateSize();},250);
   return m;
 }
-function reverseGeo(lat,lng,cb){
-  fetch('https://nominatim.openstreetmap.org/reverse?format=json&accept-language=ja&lat='+lat+'&lon='+lng,{headers:{'Accept':'application/json'}})
-   .then(function(r){return r.json();}).then(function(d){cb((d&&d.display_name)?tidy(d.display_name):(lat.toFixed(4)+', '+lng.toFixed(4)));})
-   .catch(function(){cb(lat.toFixed(4)+', '+lng.toFixed(4));});
-}
-function tidy(dn){var p=dn.split(',').map(function(s){return s.trim();});p=p.filter(function(s){return !/^日本$|^\d{3}-?\d{4}$|沖縄県/.test(s);});return p.slice(0,3).reverse().join(' ');}
-function geocode(q,cb){
-  fetch('https://nominatim.openstreetmap.org/search?format=json&accept-language=ja&countrycodes=jp&limit=1&bounded=1&viewbox='+VB+'&q='+encodeURIComponent(q),{headers:{'Accept':'application/json'}})
-   .then(function(r){return r.json();}).then(function(d){if(d&&d[0])cb(+d[0].lat,+d[0].lon,tidy(d[0].display_name));else cb(null);}).catch(function(){cb(null);});
-}
+/* ==== Google Places（Maps JS）で検索・座標化 ==== */
+var gAuto=null,gPlaces=null,gGeo=null,NAHA_LL=null,predTimer={},lastPreds={1:[],2:[]};
+function gInit(){if(window.google&&google.maps&&google.maps.places&&!gAuto){gAuto=new google.maps.places.AutocompleteService();gPlaces=new google.maps.places.PlacesService(document.createElement('div'));gGeo=new google.maps.Geocoder();NAHA_LL=new google.maps.LatLng(26.2124,127.6809);}}
+function gWait(cb){gInit();if(gAuto){cb();return;}var t=0;var iv=setInterval(function(){gInit();if(gAuto||t++>40){clearInterval(iv);cb();}},150);}
+function predict(input,cb){gWait(function(){if(!gAuto){cb([]);return;}gAuto.getPlacePredictions({input:input,language:'ja',componentRestrictions:{country:'jp'},location:NAHA_LL,radius:25000},function(p,st){cb((st==='OK'&&p)?p:[]);});});}
+function details(placeId,cb){gWait(function(){if(!gPlaces){cb(null);return;}gPlaces.getDetails({placeId:placeId,fields:['geometry','name','formatted_address'],language:'ja'},function(pl,st){if(st==='OK'&&pl&&pl.geometry){cb(pl.geometry.location.lat(),pl.geometry.location.lng(),pl.name||gtidy(pl.formatted_address));}else cb(null);});});}
+function gtidy(a){return (a||'').replace(/^日本、?/,'').replace(/〒?\d{3}-?\d{4}\s*/,'').replace(/^沖縄県/,'').trim();}
+function reverseGeo(lat,lng,cb){gWait(function(){if(!gGeo){cb(lat.toFixed(4)+', '+lng.toFixed(4));return;}gGeo.geocode({location:{lat:lat,lng:lng},language:'ja'},function(res,st){cb((st==='OK'&&res&&res[0])?gtidy(res[0].formatted_address):(lat.toFixed(4)+', '+lng.toFixed(4)));});});}
 function apply(which,name,lat,lng){var sc=document.getElementById(which===2?'selcard2':'selcard');var vid=which===2?'selval2':'selval';
   if(isAirport(lat,lng,name)){if(which===2)loc.col='';else loc.del='';sc.className='selcard err';document.getElementById(vid).innerHTML='🚫 那覇空港はお届け対象外です。<br>空港でのお受け取りは「無料送迎（空港/駅）」をご利用ください。';renderCta();return;}
   if(which===2)loc.col=name;else loc.del=name;sc.className='selcard';document.getElementById(vid).textContent=name;renderCta();}
@@ -174,32 +173,26 @@ function renderCta(){var ok=!!loc.del&&(same||!!loc.col);var btn=document.getEle
   s.innerHTML='<b>お届け:</b> '+esc(loc.del)+(same?'　<b>回収:</b> 同じ場所':(loc.col?('　<b>回収:</b> '+esc(loc.col)):'　<b>回収先</b>を選んでください'));}
 function esc(s){return (s||'').replace(/[<>&]/g,'');}
 
-/* 検索サジェスト（ホテル/駅の即時候補＋住所検索） */
-function suggList(q){q=(q||'').trim();var out=[];
-  function match(list,ic,tag){list.forEach(function(x){if(!q||x.indexOf(q)>=0||x.toLowerCase().indexOf(q.toLowerCase())>=0)out.push({t:x,ss:tag,ic:ic});});}
-  if(q){out.push({t:'「'+q+'」で住所検索',ss:'住所・施設名',ic:'🔍',geo:q});}
-  match(NHA_HOTELS.filter(function(x){return !q||x.indexOf(q)>=0;}).slice(0,6),'🏨','ホテル');
-  match(NHA_STATIONS.filter(function(x){return !q||x.indexOf(q)>=0;}).slice(0,6),'🚉','ゆいレール');
-  return out.slice(0,10);
+/* 検索サジェスト（Google Places・那覇周辺を優先） */
+function renderSugg(which){var q=(document.getElementById(which===2?'q2':'q').value||'').trim();var box=document.getElementById(which===2?'sugg2':'sugg');
+  if(!q){box.classList.remove('on');return;}
+  clearTimeout(predTimer[which]);predTimer[which]=setTimeout(function(){predict(q,function(preds){lastPreds[which]=preds;
+    if(!preds.length){box.classList.remove('on');return;}
+    box.innerHTML=preds.slice(0,6).map(function(p,i){var m=p.structured_formatting||{};return '<div class="it" data-i="'+i+'"><span class="si">📍</span><div><div class="st">'+esc(m.main_text||p.description)+'</div><div class="ss">'+esc(m.secondary_text||'')+'</div></div></div>';}).join('');
+    box.querySelectorAll('.it').forEach(function(el){el.onclick=function(){pick(preds[+el.getAttribute('data-i')],which);};});
+    box.classList.add('on');
+  });},250);
 }
-function renderSugg(which){var q=document.getElementById(which===2?'q2':'q').value;var box=document.getElementById(which===2?'sugg2':'sugg');
-  var items=suggList(q);if(!items.length){box.classList.remove('on');return;}
-  box.innerHTML=items.map(function(it,i){return '<div class="it" data-i="'+i+'"><span class="si">'+it.ic+'</span><div><div class="st">'+esc(it.t)+'</div><div class="ss">'+it.ss+'</div></div></div>';}).join('');
-  box.querySelectorAll('.it').forEach(function(el){el.onclick=function(){pick(items[+el.getAttribute('data-i')],which);};});
-  box.classList.add('on');
-}
-function pick(it,which){var box=document.getElementById(which===2?'sugg2':'sugg');box.classList.remove('on');
-  var inp=document.getElementById(which===2?'q2':'q');
-  if(it.geo){inp.value=it.geo;geocode(it.geo,function(lat,lng,nm){commit(which,(lat==null?it.geo:(nm||it.geo)),lat,lng);});return;}
-  inp.value=it.t;
-  geocode(it.t+' 那覇',function(lat,lng,nm){ commit(which, it.t, lat, lng); });
+function pick(pred,which){var box=document.getElementById(which===2?'sugg2':'sugg');box.classList.remove('on');
+  var inp=document.getElementById(which===2?'q2':'q');var label=(pred.structured_formatting&&pred.structured_formatting.main_text)||pred.description;inp.value=label;
+  details(pred.place_id,function(lat,lng,nm){commit(which,nm||label,lat,lng);});
 }
 function submitSearch(which){var inp=document.getElementById(which===2?'q2':'q');var q=(inp.value||'').trim();
   document.getElementById(which===2?'sugg2':'sugg').classList.remove('on');
   if(!q)return;
-  var hs=suggList(q).filter(function(it){return !it.geo;})[0]; // 一致するホテル/駅を優先
-  if(hs){inp.value=hs.t;geocode(hs.t+' 那覇',function(lat,lng){commit(which,hs.t,lat,lng);});}
-  else{geocode(q,function(lat,lng,nm){commit(which,(lat==null?q:(nm||q)),lat,lng);});}
+  var preds=lastPreds[which];
+  if(preds&&preds.length){pick(preds[0],which);return;}
+  predict(q,function(p){if(p&&p[0])pick(p[0],which);});
 }
 function clearQ(which){document.getElementById(which===2?'q2':'q').value='';document.getElementById(which===2?'sugg2':'sugg').classList.remove('on');document.getElementById(which===2?'clr2':'clr').style.display='none';}
 function toggleSame(){same=!same;document.getElementById('sameSw').classList.toggle('off',!same);document.getElementById('retbody').classList.toggle('on',!same);
