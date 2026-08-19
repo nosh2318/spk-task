@@ -52,6 +52,8 @@ header .b{font-weight:900;font-size:15px}header .step{margin-left:auto;backgroun
 .selcard.empty .lb{color:#8090ac}
 .selcard .val{font-size:14px;font-weight:800;color:#0a1f44;line-height:1.5;margin-top:2px;word-break:keep-all}
 .selcard.empty .val{color:#9aa7bf;font-weight:600}
+.selcard.err{background:#fdecec;border-color:#f2b8b8}
+.selcard.err .lb{color:#c0392b}.selcard.err .val{color:#b03026;font-weight:800}
 /* 回収トグル */
 .rettoggle{margin-top:16px;background:#fff;border:1px solid #e2e8f2;border-radius:12px;padding:13px 14px}
 .rettoggle .row{display:flex;align-items:center;gap:11px}
@@ -84,13 +86,6 @@ header .b{font-weight:900;font-size:15px}header .step{margin-left:auto;backgroun
       <div class="inp" id="sInp"><span class="ic">🔍</span><input id="q" placeholder="ホテル名・住所・駅名で検索" autocomplete="off"><button class="clr" id="clr" onclick="clearQ()">×</button></div>
       <div class="sugg" id="sugg"></div>
     </div>
-    <div class="chips">
-      <span class="chip" onclick="quick('airport')">✈️ 那覇空港周辺</span>
-      <span class="chip" onclick="quick('kokusai')">🛍 国際通り</span>
-      <span class="chip" onclick="quick('hotels')">🏨 主要ホテル</span>
-      <span class="chip" onclick="quick('stations')">🚉 ゆいレールの駅</span>
-    </div>
-
     <div class="maparea" id="maparea">
       <div id="map"></div>
       <div class="pinshadow"></div>
@@ -115,11 +110,6 @@ header .b{font-weight:900;font-size:15px}header .step{margin-left:auto;backgroun
       <div class="searchbox">
         <div class="inp" id="sInp2"><span class="ic">🔍</span><input id="q2" placeholder="回収先を検索" autocomplete="off"><button class="clr" id="clr2" onclick="clearQ(2)">×</button></div>
         <div class="sugg" id="sugg2"></div>
-      </div>
-      <div class="chips">
-        <span class="chip" onclick="quick('airport',2)">✈️ 那覇空港周辺</span>
-        <span class="chip" onclick="quick('kokusai',2)">🛍 国際通り</span>
-        <span class="chip" onclick="quick('hotels',2)">🏨 主要ホテル</span>
       </div>
       <div class="maparea" id="maparea2">
         <div id="map2"></div>
@@ -147,14 +137,19 @@ var NHA_STATIONS=['赤嶺駅','小禄駅','奥武山公園駅','壺川駅','旭�
 var NHA_HOTELS=['ホテルコレクティブ','ホテルリソルトリニティ那覇','THE NEST那覇','コンフォートホテル那覇県庁前','リーガロイヤルグラン沖縄','ロワジールホテル那覇','レンブラントスタイル那覇','パシフィックホテル沖縄','ホテルオーシャン那覇国際通り','ヒューイットリゾート那覇','ホテルJALシティ那覇','アパホテル那覇松山','那覇東急REIホテル','メルキュール沖縄那覇','ダブルツリーbyヒルトン那覇','ノボテル沖縄那覇','ハイアットリージェンシー那覇','沖縄ハーバービューホテル'];
 var CENTER=[26.2124,127.6809],VB='127.0,26.0,128.5,26.9';
 var QUICK={airport:{c:[26.1958,127.6459],z:15,n:'那覇空港周辺'},kokusai:{c:[26.2141,127.6866],z:16,n:'国際通り周辺'}};
-var loc={del:'',col:''},same=true,maps={},markers={},moveTimer={};
+var loc={del:'',col:''},same=true,maps={},moveTimer={},suppress={map:0,map2:0};
+var AIRPORT=[26.1958,127.6459]; // 那覇空港ターミナル
+function dist(a,b,c,d){var R=6371,dLat=(c-a)*Math.PI/180,dLng=(d-b)*Math.PI/180,x=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.sin(dLng/2)*Math.sin(dLng/2);return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));}
+function isAirport(lat,lng,name){if(name&&/那覇空港/.test(name))return true;if(lat!=null&&dist(lat,lng,AIRPORT[0],AIRPORT[1])<1.1)return true;return false;}
 
-function makeMap(id,onSettle){
+function makeMap(id,which){
   var m=L.map(id,{scrollWheelZoom:false,zoomControl:true}).setView(CENTER,13);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(m);
   var area=id==='map'?'maparea':'maparea2';
   m.on('movestart',function(){document.getElementById(area).classList.add('moving');});
-  m.on('moveend',function(){document.getElementById(area).classList.remove('moving');clearTimeout(moveTimer[id]);moveTimer[id]=setTimeout(function(){var c=m.getCenter();onSettle(c.lat,c.lng);},650);});
+  m.on('moveend',function(){document.getElementById(area).classList.remove('moving');
+    if(Date.now()<suppress[id]){return;}
+    clearTimeout(moveTimer[id]);moveTimer[id]=setTimeout(function(){var c=m.getCenter();reverseGeo(c.lat,c.lng,function(nm){apply(which,nm,c.lat,c.lng);});},650);});
   setTimeout(function(){m.invalidateSize();},250);
   return m;
 }
@@ -168,11 +163,10 @@ function geocode(q,cb){
   fetch('https://nominatim.openstreetmap.org/search?format=json&accept-language=ja&countrycodes=jp&limit=1&bounded=1&viewbox='+VB+'&q='+encodeURIComponent(q),{headers:{'Accept':'application/json'}})
    .then(function(r){return r.json();}).then(function(d){if(d&&d[0])cb(+d[0].lat,+d[0].lon,tidy(d[0].display_name));else cb(null);}).catch(function(){cb(null);});
 }
-function setDel(name,lat,lng){loc.del=name;var sc=document.getElementById('selcard');sc.classList.remove('empty');document.getElementById('selval').textContent=name;
-  if(lat!=null&&maps.map){setMarker('map',lat,lng);maps.map.setView([lat,lng],16);}renderCta();}
-function setCol(name,lat,lng){loc.col=name;var sc=document.getElementById('selcard2');sc.classList.remove('empty');document.getElementById('selval2').textContent=name;
-  if(lat!=null&&maps.map2){setMarker('map2',lat,lng);maps.map2.setView([lat,lng],16);}renderCta();}
-function setMarker(id,lat,lng){if(markers[id])markers[id].setLatLng([lat,lng]);else markers[id]=L.marker([lat,lng]).addTo(maps[id]);}
+function apply(which,name,lat,lng){var sc=document.getElementById(which===2?'selcard2':'selcard');var vid=which===2?'selval2':'selval';
+  if(isAirport(lat,lng,name)){if(which===2)loc.col='';else loc.del='';sc.className='selcard err';document.getElementById(vid).innerHTML='🚫 那覇空港はお届け対象外です。<br>空港でのお受け取りは「無料送迎（空港/駅）」をご利用ください。';renderCta();return;}
+  if(which===2)loc.col=name;else loc.del=name;sc.className='selcard';document.getElementById(vid).textContent=name;renderCta();}
+function commit(which,name,lat,lng){var mid=which===2?'map2':'map';if(lat!=null&&maps[mid]){suppress[mid]=Date.now()+1400;maps[mid].setView([lat,lng],16);}apply(which,name,lat,lng);}
 
 function renderCta(){var ok=!!loc.del&&(same||!!loc.col);var btn=document.getElementById('nextBtn');btn.disabled=!ok;
   var s=document.getElementById('ctaSum');
@@ -196,27 +190,17 @@ function renderSugg(which){var q=document.getElementById(which===2?'q2':'q').val
 }
 function pick(it,which){var box=document.getElementById(which===2?'sugg2':'sugg');box.classList.remove('on');
   var inp=document.getElementById(which===2?'q2':'q');
-  if(it.geo){inp.value=it.geo;geocode(it.geo,function(lat,lng,nm){if(lat==null){(which===2?setCol:setDel)(it.geo,null,null);}else{(which===2?setCol:setDel)(nm||it.geo,lat,lng);}});return;}
+  if(it.geo){inp.value=it.geo;geocode(it.geo,function(lat,lng,nm){commit(which,(lat==null?it.geo:(nm||it.geo)),lat,lng);});return;}
   inp.value=it.t;
-  geocode(it.t+' 那覇',function(lat,lng,nm){ (which===2?setCol:setDel)(it.t, lat, lng); });
-}
-function quick(kind,which){var box=document.getElementById(which===2?'sugg2':'sugg');
-  if(kind==='hotels'||kind==='stations'){document.getElementById(which===2?'q2':'q').value='';renderSuggForced(kind,which);return;}
-  var qc=QUICK[kind];var mid=which===2?'map2':'map';if(maps[mid]){maps[mid].setView(qc.c,qc.z);}
-  var mt=document.getElementById(which===2?'maptip2':'maptip');if(mt)mt.textContent=qc.n+'まで移動しました。ピンを微調整してください';
-}
-function renderSuggForced(kind,which){var box=document.getElementById(which===2?'sugg2':'sugg');var list=kind==='hotels'?NHA_HOTELS:NHA_STATIONS;var ic=kind==='hotels'?'🏨':'🚉';var tag=kind==='hotels'?'ホテル':'ゆいレール';
-  box.innerHTML='<div class="head">'+(kind==='hotels'?'主要ホテル':'ゆいレールの駅')+'</div>'+list.map(function(x,i){return '<div class="it" data-x="'+esc(x)+'"><span class="si">'+ic+'</span><div><div class="st">'+esc(x)+'</div><div class="ss">'+tag+'</div></div></div>';}).join('');
-  box.querySelectorAll('.it').forEach(function(el){el.onclick=function(){var nm=el.getAttribute('data-x');document.getElementById(which===2?'q2':'q').value=nm;box.classList.remove('on');geocode(nm+' 那覇',function(lat,lng){ (which===2?setCol:setDel)(nm,lat,lng); });};});
-  box.classList.add('on');
+  geocode(it.t+' 那覇',function(lat,lng,nm){ commit(which, it.t, lat, lng); });
 }
 function clearQ(which){document.getElementById(which===2?'q2':'q').value='';document.getElementById(which===2?'sugg2':'sugg').classList.remove('on');document.getElementById(which===2?'clr2':'clr').style.display='none';}
 function toggleSame(){same=!same;document.getElementById('sameSw').classList.toggle('off',!same);document.getElementById('retbody').classList.toggle('on',!same);
-  if(!same&&!maps.map2){maps.map2=makeMap('map2',function(lat,lng){reverseGeo(lat,lng,function(nm){setCol(nm,null,null);});});}renderCta();}
+  if(!same&&!maps.map2){maps.map2=makeMap('map2',2);}renderCta();}
 function locateMe(){if(!navigator.geolocation)return;navigator.geolocation.getCurrentPosition(function(p){maps.map.setView([p.coords.latitude,p.coords.longitude],16);},function(){});}
 
 window.addEventListener('DOMContentLoaded',function(){
-  maps.map=makeMap('map',function(lat,lng){reverseGeo(lat,lng,function(nm){setDel(nm,null,null);});});
+  maps.map=makeMap('map',1);
   document.getElementById('sameSw').classList.remove('off'); // 既定ON
   ['q','q2'].forEach(function(id,idx){var el=document.getElementById(id);if(!el)return;var which=idx===0?1:2;
     el.addEventListener('input',function(){document.getElementById(which===2?'clr2':'clr').style.display=el.value?'flex':'none';document.getElementById(which===2?'sInp2':'sInp').classList.toggle('on',!!el.value);renderSugg(which);});
