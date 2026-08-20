@@ -4,7 +4,7 @@
 <title>KEYDROP お届け先を選ぶ（新UXモック・テスト）</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
-<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCoX1EyEx-N5A0r4vRzC1KmVp3T29HILbI&libraries=places&language=ja&region=JP" defer></script>
+<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCoX1EyEx-N5A0r4vRzC1KmVp3T29HILbI&libraries=places&language=ja&region=JP&loading=async" async></script>
 <style>
 :root{--navy:#111111;--navy2:#2b2b2b;--ink:#0a0a0a;--y:#FABE00;--gr:#0e9f50;--line:#333333;--mut:#9a9a9a;--bg:#eef2f8}
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -82,6 +82,9 @@ html.embed .devtag,html.embed header,html.embed .q,html.embed .cta{display:none}
 html.embed .wrap{padding:0}
 html.embed .card{border:0;box-shadow:none;padding:0}
 html.embed .qsub{margin:0 2px 12px}
+.mapph{position:absolute;inset:0;z-index:600;background:linear-gradient(180deg,#eef2f8,#e4eaf3);border:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;font-size:15px;font-weight:900;color:#1a1a1a;cursor:pointer;font-family:inherit}
+.mapph small{font-weight:700;color:#5a6b85;font-size:11.5px}
+.mapph .mi{font-size:30px}
 </style></head>
 <body>
 <div class="devtag">🛠 KEYDROP デリバリー 新UXモック（テスト環境・本番未接続）／PC・スマホ両対応</div>
@@ -209,7 +212,15 @@ function apply(which,name,addr,lat,lng,comps){var k=which===2?'col':'del';var sc
   document.getElementById(vid).textContent=name||addr||'';
   document.getElementById(aid).textContent=(name&&addr&&addr!==name)?('📮 '+addr):'';
   renderCta();}
-function commit(which,name,addr,lat,lng,comps){var mid=which===2?'map2':'map';if(lat!=null&&maps[mid]){suppress[mid]=Date.now()+1800;_lastCommit[mid]=[lat,lng];maps[mid].setCenter({lat:lat,lng:lng});maps[mid].setZoom(16);}apply(which,name,addr,lat,lng,comps);}
+function commit(which,name,addr,lat,lng,comps){var mid=which===2?'map2':'map';
+  if(lat!=null){
+    if(maps[mid]){suppress[mid]=Date.now()+1800;_lastCommit[mid]=[lat,lng];maps[mid].setCenter({lat:lat,lng:lng});maps[mid].setZoom(16);}
+    else{ // スマホ遅延: 検索確定時に地図を生成し、選択地点を確認表示
+      var ar=document.getElementById(which===2?'maparea2':'maparea');var ph=ar&&ar.querySelector('.mapph');if(ph)ph.remove();
+      gWait(function(){maps[mid]=makeMap(mid,which);suppress[mid]=Date.now()+2400;_lastCommit[mid]=[lat,lng];maps[mid].setCenter({lat:lat,lng:lng});maps[mid].setZoom(16);});
+    }
+  }
+  apply(which,name,addr,lat,lng,comps);}
 
 function renderCta(){var ok=!!loc.del&&(same||!!loc.col);var btn=document.getElementById('nextBtn');if(btn)btn.disabled=!ok;
   var s=document.getElementById('ctaSum');
@@ -240,14 +251,17 @@ function submitSearch(which){var inp=document.getElementById(which===2?'q2':'q')
 }
 function clearQ(which){document.getElementById(which===2?'q2':'q').value='';document.getElementById(which===2?'sugg2':'sugg').classList.remove('on');document.getElementById(which===2?'clr2':'clr').style.display='none';}
 function toggleSame(){same=!same;document.getElementById('sameSw').classList.toggle('off',!same);document.getElementById('retbody').classList.toggle('on',!same);
-  if(!same){gWait(function(){if(!maps.map2){maps.map2=makeMap('map2',2);}setTimeout(function(){if(maps.map2){google.maps.event.trigger(maps.map2,'resize');maps.map2.setCenter({lat:CENTER[0],lng:CENTER[1]});}},350);});}renderCta();}
+  if(!same){var mk=function(){gWait(function(){if(!maps.map2){maps.map2=makeMap('map2',2);}setTimeout(function(){if(maps.map2){google.maps.event.trigger(maps.map2,'resize');maps.map2.setCenter({lat:CENTER[0],lng:CENTER[1]});}},350);});};if(window.innerWidth>820||maps.map2){mk();}else{showMapPh('maparea2',mk);}}renderCta();}
 function locateMe(){if(!navigator.geolocation||!maps.map)return;navigator.geolocation.getCurrentPosition(function(p){maps.map.setCenter({lat:p.coords.latitude,lng:p.coords.longitude});maps.map.setZoom(16);},function(){});}
 
+function showMapPh(areaId,onload){var a=document.getElementById(areaId);if(!a||a.querySelector('.mapph'))return;var b=document.createElement('button');b.type='button';b.className='mapph';b.innerHTML='<span class="mi">🗺</span>地図で場所を指定する<small>タップして地図を開く</small>';b.onclick=function(){b.remove();onload();};a.appendChild(b);}
 window.addEventListener('DOMContentLoaded',function(){
   if(_EMBED)document.documentElement.classList.add('embed');
   var sb=document.querySelector('#storeSw .stbtn[data-s="'+_AREA+'"]');if(sb)sb.classList.add('on');
   var an=document.getElementById('areaNote');if(an)an.textContent='お届け・回収は'+AREALABEL+'のみ';
-  gWait(function(){maps.map=makeMap('map',1);}); // Googleマップ読込完了後に生成
+  // スマホは地図タイルを初期読込せず、タップで読み込む（検索優先UX・軽量化）。PCは自動表示
+  if(window.innerWidth>820){ gWait(function(){maps.map=makeMap('map',1);}); }
+  else { showMapPh('maparea',function(){gWait(function(){maps.map=makeMap('map',1);});}); }
   document.getElementById('sameSw').classList.remove('off'); // 既定ON
   postState(); // 初期状態(未選択)を親へ
   setInterval(postState,1200); // 高さ変化も定期通知
