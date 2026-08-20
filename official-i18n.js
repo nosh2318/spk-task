@@ -98,7 +98,7 @@
     dt_seats:'乗車定員',dt_price:'料金',dt_equip:'標準装備',dt_pick:'このクラスを選択する',
     al_pickfirst:'先に車両を選び「この車両に決める」を押してください',al_deldest:'お届け先を地図で選び「決定」してください',al_coldest:'回収先を地図で選び「決定」してください',
     sum_area:'エリア',sum_recv:'受取',sum_dep:'出発',sum_ret:'返却',sum_change:'変更',mock_note:'※これはデザインモックです。実際の予約・決済は行われていません。',
-    dn_resno:'予約番号',dn_sent1:'確認メールを',dn_sent2:'宛にお送りしました。予約内容の確認・変更は、メールアドレス＋予約番号でログインできるマイページから行えます。',dn_top:'トップへ戻る',
+    dn_resno:'予約番号',dn_sent1:'確認メールを',dn_sent2:'宛にお送りしました。予約内容の確認・変更は、メールアドレス＋予約番号でログインできるマイページから行えます。',dn_top:'トップへ戻る', dn_mypage:'予約を確認・変更する（マイページ）',
     cf_car:'車両',cf_opt:'オプション',cf_ins:'補償',cf_period:'利用期間',cf_recv:'受取',cf_contact:'ご連絡先',cf_driver:'運転者',cf_price:'料金',cf_days:'日'},
    en:{fl_change:'Change search',resv_jp:'Reservation',
     st_cond:'Conditions',st_opt:'Options &<br>Coverage',st_cust:'Your info',st_pay:'Confirm & Pay',
@@ -118,7 +118,7 @@
     dt_seats:'Seats',dt_price:'Price',dt_equip:'Standard equipment',dt_pick:'Select this class',
     al_pickfirst:'Please choose a car first and tap “Select this car”.',al_deldest:'Please set the delivery spot on the map and tap “Confirm”.',al_coldest:'Please set the collection spot on the map and tap “Confirm”.',
     sum_area:'Area',sum_recv:'Pickup',sum_dep:'Out',sum_ret:'Return',sum_change:'Change',mock_note:'※ This is a design mock. No real booking/payment is made.',
-    dn_resno:'Booking No.',dn_sent1:'A confirmation email was sent to',dn_sent2:'. You can view/change your booking on My Page by logging in with your email + booking number.',dn_top:'Back to top',
+    dn_resno:'Booking No.',dn_sent1:'A confirmation email was sent to',dn_sent2:'. You can view/change your booking on My Page by logging in with your email + booking number.',dn_top:'Back to top', dn_mypage:'View / change booking (My Page)',
     cf_car:'Car',cf_opt:'Options',cf_ins:'Coverage',cf_period:'Period',cf_recv:'Pickup',cf_contact:'Contact',cf_driver:'Driver',cf_price:'Total',cf_days:'day(s)'},
    zh:{fl_change:'變更條件',resv_jp:'預約',
     st_cond:'選擇條件',st_opt:'加購<br>與保障',st_cust:'顧客資料',st_pay:'確認・付款',
@@ -138,7 +138,7 @@
     dt_seats:'乘坐人數',dt_price:'費用',dt_equip:'標準配備',dt_pick:'選擇此車型',
     al_pickfirst:'請先選擇車輛並按「選擇此車」。',al_deldest:'請於地圖選擇送車地點並按「確定」。',al_coldest:'請於地圖選擇收車地點並按「確定」。',
     sum_area:'區域',sum_recv:'取車',sum_dep:'出發',sum_ret:'還車',sum_change:'變更',mock_note:'※ 這是設計樣稿，不會進行實際預約/付款。',
-    dn_resno:'預約編號',dn_sent1:'確認信已寄至',dn_sent2:'。可用電子郵件＋預約編號登入會員頁查詢/變更預約。',dn_top:'返回首頁',
+    dn_resno:'預約編號',dn_sent1:'確認信已寄至',dn_sent2:'。可用電子郵件＋預約編號登入會員頁查詢/變更預約。',dn_top:'返回首頁', dn_mypage:'查詢／變更預約（我的頁面）',
     cf_car:'車輛',cf_opt:'加購',cf_ins:'保障',cf_period:'租用期間',cf_recv:'取車',cf_contact:'聯絡方式',cf_driver:'駕駛人',cf_price:'費用',cf_days:'日'},
    ko:{fl_change:'조건 변경',resv_jp:'예약',
     st_cond:'조건 선택',st_opt:'옵션<br>·보장',st_cust:'고객 정보',st_pay:'확인·결제',
@@ -158,7 +158,7 @@
     dt_seats:'승차 정원',dt_price:'요금',dt_equip:'표준 장비',dt_pick:'이 클래스 선택',
     al_pickfirst:'먼저 차량을 고르고 「이 차량으로 결정」을 눌러 주세요.',al_deldest:'지도에서 배달 장소를 선택하고 「확정」을 눌러 주세요.',al_coldest:'지도에서 회수 장소를 선택하고 「확정」을 눌러 주세요.',
     sum_area:'지역',sum_recv:'수령',sum_dep:'출발',sum_ret:'반납',sum_change:'변경',mock_note:'※ 디자인 목업입니다. 실제 예약/결제는 이루어지지 않습니다.',
-    dn_resno:'예약번호',dn_sent1:'확인 메일을',dn_sent2:' 앞으로 보냈습니다. 이메일＋예약번호로 마이페이지에 로그인해 예약을 확인/변경할 수 있습니다.',dn_top:'처음으로',
+    dn_resno:'예약번호',dn_sent1:'확인 메일을',dn_sent2:' 앞으로 보냈습니다. 이메일＋예약번호로 마이페이지에 로그인해 예약을 확인/변경할 수 있습니다.',dn_top:'처음으로', dn_mypage:'예약 조회·변경(마이페이지)',
     cf_car:'차량',cf_opt:'옵션',cf_ins:'보장',cf_period:'이용 기간',cf_recv:'수령',cf_contact:'연락처',cf_driver:'운전자',cf_price:'요금',cf_days:'일'}
   };
   // ===== 確認明細 / 受取詳細 / 札幌デリバリー地図 =====
