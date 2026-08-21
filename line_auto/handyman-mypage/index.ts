@@ -332,15 +332,18 @@ Deno.serve(async (req) => {
     const kindJp: Record<string, string> = { option: "オプション", insurance: "補償", method: "受渡方法", cancel: "キャンセル", del_place: "お届け場所", col_place: "回収場所", lend_time: "お届け時間", return_time: "回収時間", ready: "早め回収(返却準備)" };
     const label = kindJp[c.field] || c.field;
     const pl = (c.payload && typeof c.payload === "object") ? c.payload : {};
+    // ready(早め回収)の希望回収時刻を note/new_value から抽出（HH:MM）
+    const rdyHM = c.field === "ready" ? ((String(c.note || "") + " " + String(c.new_value || "")).match(/(\d{1,2}:\d{2})/)?.[1] || "") : "";
 
     // 顧客へLINE通知は「予約が有効なうち」に先に送る（キャンセル確定で cancelled になる前）
     let msg: string;
     if (decision === "approved") {
       if (c.field === "cancel") msg = `【HANDYMAN 札幌デリバリー】ご予約 ${resId2} のキャンセルを承りました。\n担当より別途ご連絡いたします。ご利用ありがとうございました。`;
-      else if (c.field === "ready") msg = `【HANDYMAN 札幌デリバリー】早めのご返却（回収）を承りました。\nスケジュールを調整し、回収時間が早まる場合は改めてご連絡いたします。`;
+      else if (c.field === "ready") msg = rdyHM ? `【HANDYMAN 札幌デリバリー】早めのご返却（回収）を承りました。\n回収予定時間を ${rdyHM} に調整いたしました。マイページよりご確認ください。\n${myUrl}` : `【HANDYMAN 札幌デリバリー】早めのご返却（回収）を承りました。\nスケジュールを調整し、回収時間が早まる場合は改めてご連絡いたします。`;
       else msg = `【HANDYMAN 札幌デリバリー】ご依頼の${label}変更を承り、反映いたしました。\nマイページよりご確認ください。\n${myUrl}`;
     } else {
       if (c.field === "ready") msg = `【HANDYMAN 札幌デリバリー】ご連絡ありがとうございます。今回は予定のお時間での回収を予定しております。何卒よろしくお願いいたします。`;
+      else if (c.field === "del_place" || c.field === "col_place" || c.field === "lend_time" || c.field === "return_time") msg = `【HANDYMAN 札幌デリバリー】大変恐縮でございますが、当日のご予約状況および道路状況により、調整がいたしかねました。\n何卒ご容赦くださいますようお願い申し上げます。ご不明点は公式LINEにて承ります。`;
       else msg = `【HANDYMAN 札幌デリバリー】ご依頼いただいた${label}${c.field === "cancel" ? "申請" : "変更"}につきまして、恐れ入りますが今回はお受けいたしかねます。\n詳細は公式LINEにてご連絡いたします。`;
     }
     await pushLine(resId2, msg);
@@ -374,6 +377,9 @@ Deno.serve(async (req) => {
           c.field === "lend_time" ? (pl.lend_time ?? null) : null,
           c.field === "return_time" ? (pl.return_time ?? null) : null,
           pl.del_lat ?? null, pl.del_lng ?? null, pl.col_lat ?? null, pl.col_lng ?? null, sAct);
+      } else if (c.field === "ready") {
+        // 早め回収OK: 希望回収時刻があればOP回収時間へ自動反映（return_time承認と同じ経路）
+        if (rdyHM) await applyPlaceTime(st0, rr, resId2, null, null, null, rdyHM, null, null, null, null, sAct);
       } else if (c.field === "cancel") {
         await sbPatch(st0.resv, `id=eq.${encodeURIComponent(resId2)}`, { status: "cancelled" }, sAct);
         // 配車解除＋タスク墓標（1アクション=対象のみ・復活させない）
@@ -717,47 +723,32 @@ Deno.serve(async (req) => {
       if (delPlace !== null) { const e = placeError(delPlace, dLat0, dLng0); if (e) return json({ error: e }, 400, origin); }
       if (colPlace !== null) { const e = placeError(colPlace, cLat0, cLng0); if (e) return json({ error: e }, 400, origin); } }
 
-    // 受付ルール（ユーザー主導での時間・場所変更・オーナー確定）:
-    //  DEL(お届け): 24時間前まで即時。24時間以内は「承認制」(依頼→スタッフ承認で反映)。
-    //  COL(回収):   2時間前まで即時。2時間以内は受付終了(公式LINE)。
+    // 受付ルール（オーナー確定 2026-08-21）:
+    //  お届け/回収の【時間・場所変更は、時間制限に関係なく全て承認制】。
+    //  お客様は自由に申請でき、スタッフが管理コンソール →「🔔変更依頼」で承認すると
+    //  OPシート/タスク(applyPlaceTime)へ反映＋お客様へLINE通知。即時反映はしない。
     const num = (k: string) => (has(k) && p[k] != null && p[k] !== "") ? Number(p[k]) : null;
     const dLat = num("del_lat"), dLng = num("del_lng"), cLat = num("col_lat"), cLng = num("col_lng");
-    const delApproval = touchesDel && within24h(r.lend_date, r.lend_time || r.del_time || "");
-    if (touchesCol && withinHours(r.return_date, r.return_time || r.col_time || "", 2))
-      return json({ error: "回収の2時間前を過ぎているため、回収の変更は公式LINEにて承ります", lineOnly: true }, 409, origin);
-
-    // ---- DEL が24時間以内 → 承認制（依頼として記録・即反映しない）----
-    if (delApproval) {
-      const cAct = "customer:" + resId;
-      const mkReq = async (field: string, newV: string, payload: any) => {
-        const ex = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.${field}&status=eq.requested&select=id&limit=1`);
-        if (ex[0]) await sbPatch("mypage_changes", `id=eq.${ex[0].id}`, { new_value: newV, payload }, cAct);
-        else await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field, old_value: String((field === "del_place" ? r.del_place : r.lend_time) ?? ""), new_value: newV, source: "customer", status: "requested", note: field === "del_place" ? "お届け場所変更(24h以内)" : "お届け時間変更(24h以内)", payload }, cAct);
-      };
-      const reqLabels: string[] = [];
-      if (delPlace !== null) { await mkReq("del_place", delPlace, { del_place: delPlace, ...(dLat != null && dLng != null ? { del_lat: dLat, del_lng: dLng } : {}) }); reqLabels.push("お届け場所"); }
-      if (lendTime !== null) { await mkReq("lend_time", lendTime, { lend_time: lendTime }); reqLabels.push("お届け時間"); }
-      let colLabels: string[] = [];
-      if (touchesCol) colLabels = (await applyPlaceTime(store, r, resId, null, colPlace, null, returnTime, null, null, cLat, cLng, cAct)) || [];
-      const aLines: string[] = [];
-      if (delPlace !== null) aLines.push(`📍 *お届け先*（希望）　${r.del_place || "（未設定）"} → *${delPlace}*`);
-      if (lendTime !== null) aLines.push(`🕐 *お届け時間*（希望）　${r.lend_time || "（未設定）"} → *${lendTime}*`);
-      if (colLabels.length) aLines.push(`↳ 回収側（${colLabels.join("・")}）は即時反映済み`);
-      await notifySlackCard({ emoji: "🟡", title: "お届け変更の承認待ち（お届け24時間以内）", name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: aLines, action: "⚠️ *要承認*：管理コンソール →「🔔変更依頼」で承認（承認で反映＋顧客へLINE通知）" });
-      return json({ ok: true, pendingApproval: true, requested: reqLabels, updated: colLabels }, 200, origin);
-    }
-
-    // ---- 即時反映（DELは24h超 / COLは2h超）----
-    const labels = await applyPlaceTime(store, r, resId, delPlace, colPlace, lendTime, returnTime, dLat, dLng, cLat, cLng, "customer:" + resId);
-    if (labels === null) return json({ error: "変更の保存に失敗しました" }, 500, origin);
-    // 変更されたフィールドだけを 変更前→変更後 で表示（4項目まとめ表示のノイズを排除）
-    const chLines: string[] = [];
-    if (delPlace !== null) chLines.push(`📍 *お届け先*　${r.del_place || "（未設定）"} → *${delPlace}*`);
-    if (lendTime !== null) chLines.push(`🕐 *お届け時間*　${r.lend_time || "（未設定）"} → *${lendTime}*`);
-    if (colPlace !== null) chLines.push(`📍 *回収先*　${r.col_place || "（未設定）"} → *${colPlace}*`);
-    if (returnTime !== null) chLines.push(`🕐 *回収時間*　${r.return_time || "（未設定）"} → *${returnTime}*`);
-    await notifySlackCard({ emoji: "✏️", title: "マイページで変更（即時反映済）", name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: chLines, action: "✅ OPシートに反映済み・*対応不要*（内容をご確認ください／🕘履歴にも記録）" });
-    return json({ ok: true, updated: labels }, 200, origin);
+    const cAct = "customer:" + resId;
+    const oldOf = (f: string) => String((f === "del_place" ? r.del_place : f === "col_place" ? r.col_place : f === "lend_time" ? r.lend_time : r.return_time) ?? "");
+    const noteOf = (f: string) => f === "del_place" ? "お届け場所変更（承認制）" : f === "col_place" ? "回収場所変更（承認制）" : f === "lend_time" ? "お届け時間変更（承認制）" : "回収時間変更（承認制）";
+    const mkReq = async (field: string, newV: string, payload: any) => {
+      const ex = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.${field}&status=eq.requested&select=id&limit=1`);
+      if (ex[0]) await sbPatch("mypage_changes", `id=eq.${ex[0].id}`, { new_value: newV, payload }, cAct);
+      else await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field, old_value: oldOf(field), new_value: newV, source: "customer", status: "requested", note: noteOf(field), payload }, cAct);
+    };
+    const reqLabels: string[] = [];
+    if (delPlace !== null) { await mkReq("del_place", delPlace, { del_place: delPlace, ...(dLat != null && dLng != null ? { del_lat: dLat, del_lng: dLng } : {}) }); reqLabels.push("お届け場所"); }
+    if (lendTime !== null) { await mkReq("lend_time", lendTime, { lend_time: lendTime }); reqLabels.push("お届け時間"); }
+    if (colPlace !== null) { await mkReq("col_place", colPlace, { col_place: colPlace, ...(cLat != null && cLng != null ? { col_lat: cLat, col_lng: cLng } : {}) }); reqLabels.push("回収場所"); }
+    if (returnTime !== null) { await mkReq("return_time", returnTime, { return_time: returnTime }); reqLabels.push("回収時間"); }
+    const aLines: string[] = [];
+    if (delPlace !== null) aLines.push(`📍 *お届け先*（希望）　${r.del_place || "（未設定）"} → *${delPlace}*`);
+    if (lendTime !== null) aLines.push(`🕐 *お届け時間*（希望）　${r.lend_time || "（未設定）"} → *${lendTime}*`);
+    if (colPlace !== null) aLines.push(`📍 *回収先*（希望）　${r.col_place || "（未設定）"} → *${colPlace}*`);
+    if (returnTime !== null) aLines.push(`🕐 *回収時間*（希望）　${r.return_time || "（未設定）"} → *${returnTime}*`);
+    await notifySlackCard({ emoji: "🟡", title: "場所・時間変更の承認待ち", name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: aLines, action: "⚠️ *要承認*：管理コンソール →「🔔変更依頼」で承認（承認で反映＋顧客へLINE通知）" });
+    return json({ ok: true, pendingApproval: true, requested: reqLabels }, 200, origin);
   }
 
   // ---- request: 承認制の依頼（有料オプション/シート類・貸出返却方法(区分)変更）。即反映しない ----
