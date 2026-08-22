@@ -4,7 +4,7 @@
 //   fetch ハンドラは持たない = 全リクエストがネットワーク直 = キャッシュ由来の旧版が二度と出ない。
 //   ※ ループ防止: キャッシュが有った初回だけ reload。以降(キャッシュ空)は unregister のみで reload しない。
 //   ※ 全端末が最新化して落ち着いたら、必要なら cache-first 版に戻してよい。
-const SW_V = '988';
+const SW_V = '993';
 
 self.addEventListener('install', function(){ self.skipWaiting(); });
 

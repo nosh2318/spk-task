@@ -80,9 +80,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1111';
+var CV='spk-v1112';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=992').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=993').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -1208,21 +1208,24 @@ function OptBadges({opts,style}){
  * ★2026-08-23 オーナー要望「どの車に🚼×N/🧒×N が今 物理的に積んであるか」を本体OPでも見えるように連携。
  * ★予約側の必要数(OptBadges=opt_c/opt_j)とは別物＝"配車車両に実際に積載中のシート在庫"。色/アイコン/破線枠/「📦積載」ラベルで混同しないUIにする。
  * ★parking_meta の carId = "車名-ナンバー"（spk_fleet_for_parking の name+"-"+no）→ ナンバー(末尾)で本体タスクの配車ナンバーと突合。*/
-const SeatLoad={map:{},loaded:false,at:0,inflight:false,_timer:null,_rt:false};
+const SeatLoad={map:{},list:[],loaded:false,at:0,inflight:false,_timer:null,_rt:false};
 const _DELIV_LEGS=["DEL","PU","PUB","来店","PUB来店"];
 async function loadSeatLoad(){
   if(!sbParking||SeatLoad.inflight)return;SeatLoad.inflight=true;
   try{
     const{data}=await sbParking.from("parking_meta").select("k,v").eq("k","warehouse");
     const wh=(data&&data[0]&&data[0].v)||{};
-    const m={};
+    const m={};const list=[];
     Object.keys(wh).forEach(carId=>{
       const v=wh[carId]||{};const child=+(v.child||0),junior=+(v.junior||0);
-      if(child<=0&&junior<=0)return;/* シート0(荷物のみ)は在庫バッジ対象外 */
-      const plate=String(carId).split("-").pop().trim();/* carId="車名-ナンバー"→ナンバー */
-      if(plate)m[plate]={child,junior,note:v.note||""};
+      if(child<=0&&junior<=0)return;/* シート0(荷物のみ)は在庫対象外 */
+      /* carId="車名-ナンバー"（末尾がナンバー）。ナンバーが無い車(プラド等)は名前だけ */
+      const parts=String(carId).split("-");const plate=(parts.length>1?parts.pop():"").trim();const label=(parts.length?parts.join("-"):String(carId)).trim()||String(carId);
+      if(plate)m[plate]={child,junior,note:v.note||""};/* DEL行突合用(その車自体が配達される稀ケース) */
+      list.push({carId:String(carId),label,plate,child,junior,note:v.note||""});
     });
-    SeatLoad.map=m;SeatLoad.loaded=true;SeatLoad.at=Date.now();window._seatLoadMap=m;
+    list.sort((a,b)=>(b.child+b.junior)-(a.child+a.junior));
+    SeatLoad.map=m;SeatLoad.list=list;SeatLoad.loaded=true;SeatLoad.at=Date.now();window._seatLoadMap=m;window._seatLoadList=list;
     window.dispatchEvent(new Event("seatload-updated"));
   }catch(e){/* クロスDB読取失敗は無視(本体を絶対止めない) */}
   finally{SeatLoad.inflight=false;}
@@ -1245,6 +1248,29 @@ function SeatLoadBadge({plate,type,size,style}){
   if(!items.length)return null;
   const fs=size||9;
   return <span title={"📦 この配車車両に物理的に積んであるシート在庫（parking.html 倉庫車）。予約の必要数(C/J)とは別物です。"+(rec.note?"\n積載メモ: "+rec.note:"")} style={{display:"inline-flex",alignItems:"center",gap:3,fontSize:fs,fontWeight:800,padding:"1px 6px",borderRadius:4,background:"#ecfeff",color:"#0e7490",border:"1px dashed #06b6d4",whiteSpace:"nowrap",...(style||{})}}>📦積載 {items.join(" ")}</span>;
+}
+/* ===== シート積載在庫サマリー（どの車に何シートが今あるか＝配達車へ移し替える在庫の一覧） =====
+ * ★2026-08-23 オーナー指摘：倉庫車(=配車されていない保管車)にシートを積んで在庫している。
+ *   DEL配車車ナンバー突合ではその日ほぼ一致しない(倉庫車は配達に出ていない)＝バッジが出ない。
+ *   正しい表示＝「今どの車に何シートが積んであるか」の在庫一覧。ここから配達車へ移し替える。*/
+function SeatLoadSummary({style}){
+  const[,force]=useState(0);
+  useEffect(()=>{const h=()=>force(x=>x+1);window.addEventListener("seatload-updated",h);_seatLoadInit();return()=>window.removeEventListener("seatload-updated",h);},[]);
+  const list=SeatLoad.list||[];
+  if(!list.length)return null;
+  const totC=list.reduce((s,c)=>s+(c.child||0),0),totJ=list.reduce((s,c)=>s+(c.junior||0),0);
+  return <div style={{background:"#ecfeff",borderBottom:"1px solid #a5f3fc",padding:"6px 12px",...(style||{})}}>
+    <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+      <span title="parking.html「倉庫車（荷物積載中）」に記録されたシート在庫。ここに積んである物理シートを配達車へ移し替えます。予約の必要数(🪑シート在庫)とは別物です。" style={{fontSize:10,fontWeight:800,color:"#0e7490",flexShrink:0}}>📦 シート積載在庫（倉庫車→配達車へ移替）</span>
+      <span style={{fontSize:9,fontWeight:700,color:"#0891b2",background:"#cffafe",borderRadius:8,padding:"0 6px"}}>計 🚼×{totC} 🧒×{totJ}</span>
+      {list.map(c=>{
+        const items=[];if(c.child>0)items.push("🚼×"+c.child);if(c.junior>0)items.push("🧒×"+c.junior);
+        return <span key={c.carId} title={c.note?("積載メモ: "+c.note):""} style={{fontSize:10,padding:"1px 8px",borderRadius:10,fontWeight:700,background:"#fff",color:"#0e7490",border:"1px dashed #06b6d4",display:"inline-flex",alignItems:"center",gap:4,whiteSpace:"nowrap"}}>
+          <b style={{color:"#155e75"}}>{c.label}{c.plate?" ("+c.plate+")":""}</b> {items.join(" ")}
+        </span>;
+      })}
+    </div>
+  </div>;
 }
 
 const INIT_STAFF=[{name:"齊藤",type:"正社員",memo:"",hourlyWage:0,transportCost:0,monthlySalary:280000},{name:"伊江",type:"正社員",memo:"",hourlyWage:0,transportCost:0,monthlySalary:280000},{name:"廣瀬",type:"正社員",memo:"",hourlyWage:0,transportCost:0,monthlySalary:280000},{name:"武山",type:"正社員",memo:"",hourlyWage:0,transportCost:0,monthlySalary:280000},{name:"赤嶺",type:"アルバイト",memo:"",hourlyWage:1100,transportCost:500,monthlySalary:0},{name:"大城",type:"アルバイト",memo:"",hourlyWage:1100,transportCost:500,monthlySalary:0},{name:"渡名喜",type:"アルバイト",memo:"",hourlyWage:1100,transportCost:500,monthlySalary:0},{name:"西村",type:"アルバイト",memo:"",hourlyWage:1100,transportCost:500,monthlySalary:0},{name:"仲間",type:"アルバイト",memo:"",hourlyWage:1100,transportCost:500,monthlySalary:0}];
@@ -16917,6 +16943,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
           </div>}
         </div>;
       })()}
+      {/* ★2026-08-23 シート積載在庫サマリー（倉庫車に今どの車へ何シートが積んであるか＝配達車へ移し替える在庫）*/}
+      <SeatLoadSummary/>
       {/* ★ DEL/COL カード表示 */}
       {(sheetFilter==="del"||sheetFilter==="col")&&(()=>{
         const cardTasks=filteredTasks;
@@ -23548,6 +23576,7 @@ function App(){
                   <span style={{marginLeft:"auto",fontSize:10,fontWeight:700,color:"#94a3b8"}}>{todayTasks.filter(t=>t.type!=="CXL").length}件 {tomSumOpen?"▲":"▼"}</span>
                 </div>}
               </div>
+              {taskSumOpen&&<SeatLoadSummary style={{borderRadius:8,border:"1px solid #a5f3fc",borderBottom:"1px solid #a5f3fc",marginBottom:8}}/>}
               {taskSumOpen&&[{label:"本日",date:today,tasks:todayTasks,border:"#3b82f6"},{label:"翌日",date:dOff(today,1),tasks:tomorrowTasks,border:"#f59e0b"}].map(sec=>{
                 if(!sec.tasks.length)return null;
                 const byPerson={};
@@ -24684,7 +24713,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.578";
+const APP_VERSION="v4.7.579";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
