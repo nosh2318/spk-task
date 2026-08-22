@@ -1,0 +1,119 @@
+<!doctype html><html lang="ja"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>全社 年間実績（那覇＋札幌）</title>
+<style>
+:root{--nha:#0d9488;--spk:#2563eb;--all:#0f172a;--bg:#f1f5f9;--line:#e2e8f0}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif;background:var(--bg);color:#0f172a}
+.wrap{max-width:1180px;margin:0 auto;padding:14px}
+h1{font-size:19px;margin:4px 0 2px}
+.sub{color:#64748b;font-size:12px;margin-bottom:12px}
+.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+select{font-size:15px;padding:6px 10px;border:1px solid #cbd5e1;border-radius:8px}
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.card .t{font-size:12px;color:#64748b}
+.card .v{font-size:22px;font-weight:700;margin-top:2px}
+.card .d{font-size:11px;color:#64748b;margin-top:4px}
+.card.nha{border-top:3px solid var(--nha)}.card.spk{border-top:3px solid var(--spk)}.card.all{border-top:3px solid var(--all)}
+table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden;font-size:13px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+th,td{padding:7px 8px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+th{background:#f8fafc;font-size:11px;color:#475569;position:sticky;top:0}
+td.m,th.m{text-align:center;font-weight:600;background:#fafafa}
+.grp-nha{background:rgba(13,148,136,.06)}.grp-spk{background:rgba(37,99,235,.06)}.grp-all{background:rgba(15,23,42,.05);font-weight:600}
+.hnha{color:var(--nha)}.hspk{color:var(--spk)}.hall{color:var(--all)}
+tr.total td{border-top:2px solid #94a3b8;font-weight:700;background:#f1f5f9}
+.ub{display:inline-block;height:6px;border-radius:3px;background:#cbd5e1;vertical-align:middle;margin-left:4px}
+.money{font-variant-numeric:tabular-nums}
+.note{color:#64748b;font-size:11px;margin-top:10px;line-height:1.6}
+.err{color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;padding:10px;border-radius:8px;margin:10px 0;font-size:13px}
+.scroll{overflow-x:auto}
+@media(max-width:640px){.cards{grid-template-columns:1fr}h1{font-size:17px}}
+</style></head>
+<body><div class="wrap">
+<h1>🏢 全社 年間実績（那覇＋札幌 合体）</h1>
+<div class="sub">正本箱 <code>monthly_snapshots</code> をそのまま表示（再集計なし・経営管理ダッシュボードと同一値）</div>
+<div class="bar"><label>年 <select id="yr"></select></label>
+<span id="st" class="sub"></span></div>
+<div id="cards" class="cards"></div>
+<div class="scroll"><table id="tbl"></table></div>
+<div class="note" id="note"></div>
+</div>
+<script>
+const SB='https://ckrxttbnawkclshczsia.supabase.co';
+const ANON='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8';
+function _tok(){try{for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.indexOf('sb-')===0&&k.indexOf('auth-token')>=0){let v=null;try{v=JSON.parse(localStorage.getItem(k));}catch(e){continue;}const t=(v&&v.access_token)||(v&&v.currentSession&&v.currentSession.access_token)||(v&&v.session&&v.session.access_token)||(Array.isArray(v)&&typeof v[0]==='string'?v[0]:null);if(t)return t;}}}catch(e){}return null;}
+const man=v=>'¥'+Math.round((v||0)/10000).toLocaleString()+'万';
+const yen=v=>'¥'+Math.round(v||0).toLocaleString();
+const MON=['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+let ROWS=[];
+async function load(){
+  const H={apikey:ANON,Authorization:'Bearer '+(_tok()||ANON)};
+  try{
+    const r=await fetch(SB+"/rest/v1/monthly_snapshots?store=in.(nha,spk)&order=year_month.asc&select=store,year_month,total_revenue,total_returns,total_rental_days,total_available_days,utilization_pct",{headers:H});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    ROWS=await r.json();
+    if(!ROWS.length){document.getElementById('st').innerHTML='<span class="err">データが読めません。SPK/NHAアプリにログインしてから開いてください（RLS）。</span>';return;}
+    const yrs=[...new Set(ROWS.map(x=>x.year_month.slice(0,4)))].sort().reverse();
+    const sel=document.getElementById('yr');sel.innerHTML=yrs.map(y=>`<option>${y}</option>`).join('');
+    sel.onchange=render;render();
+  }catch(e){document.getElementById('st').innerHTML='<span class="err">読込エラー: '+e.message+'（要ログイン）</span>';}
+}
+function pick(store,ym){return ROWS.find(x=>x.store===store&&x.year_month===ym);}
+function render(){
+  const yr=document.getElementById('yr').value;
+  const maxUtil=100;
+  let months=[];
+  for(let m=1;m<=12;m++){
+    const ym=yr+'-'+String(m).padStart(2,'0');
+    const n=pick('nha',ym)||{},s=pick('spk',ym)||{};
+    const nrd=+n.total_rental_days||0,nad=+n.total_available_days||0;
+    const srd=+s.total_rental_days||0,sad=+s.total_available_days||0;
+    const arev=(+n.total_revenue||0)+(+s.total_revenue||0);
+    const aret=(+n.total_returns||0)+(+s.total_returns||0);
+    const autil=(nad+sad)?Math.round((nrd+srd)/(nad+sad)*100):0;
+    months.push({m,ym,n,s,nrd,nad,srd,sad,arev,aret,autil});
+  }
+  // 合計
+  const sum=(a,f)=>a.reduce((t,x)=>t+f(x),0);
+  const T={
+    nrev:sum(months,x=>+x.n.total_revenue||0),nret:sum(months,x=>+x.n.total_returns||0),nrd:sum(months,x=>x.nrd),nad:sum(months,x=>x.nad),
+    srev:sum(months,x=>+x.s.total_revenue||0),sret:sum(months,x=>+x.s.total_returns||0),srd:sum(months,x=>x.srd),sad:sum(months,x=>x.sad),
+  };
+  T.arev=T.nrev+T.srev;T.aret=T.nret+T.sret;
+  T.nutil=T.nad?Math.round(T.nrd/T.nad*100):0;T.sutil=T.sad?Math.round(T.srd/T.sad*100):0;T.autil=(T.nad+T.sad)?Math.round((T.nrd+T.srd)/(T.nad+T.sad)*100):0;
+  // cards
+  document.getElementById('cards').innerHTML=`
+   <div class="card all"><div class="t">全社 合計売上（${yr}）</div><div class="v money">${man(T.arev)}</div><div class="d">件数 ${T.aret.toLocaleString()}件 ／ 稼働率 ${T.autil}% ／ 客単価 ${T.aret?yen(T.arev/T.aret):'-'}</div></div>
+   <div class="card nha"><div class="t">🏝 那覇 合計売上</div><div class="v money hnha">${man(T.nrev)}</div><div class="d">件数 ${T.nret.toLocaleString()}件 ／ 稼働率 ${T.nutil}%</div></div>
+   <div class="card spk"><div class="t">❄️ 札幌 合計売上</div><div class="v money hspk">${man(T.srev)}</div><div class="d">件数 ${T.sret.toLocaleString()}件 ／ 稼働率 ${T.sutil}%</div></div>`;
+  // table
+  const ub=(p)=>`<span class="ub" style="width:${Math.max(2,p*.5)}px;background:${p>=50?'#16a34a':p>=25?'#f59e0b':'#cbd5e1'}"></span>`;
+  let h=`<thead><tr>
+    <th class="m" rowspan="2">月</th>
+    <th class="hnha grp-nha" colspan="3">🏝 那覇</th>
+    <th class="hspk grp-spk" colspan="3">❄️ 札幌</th>
+    <th class="hall grp-all" colspan="3">合計</th></tr>
+   <tr>
+    <th class="grp-nha">売上</th><th class="grp-nha">件数</th><th class="grp-nha">稼働率</th>
+    <th class="grp-spk">売上</th><th class="grp-spk">件数</th><th class="grp-spk">稼働率</th>
+    <th class="grp-all">売上</th><th class="grp-all">件数</th><th class="grp-all">稼働率</th></tr></thead><tbody>`;
+  months.forEach(x=>{
+    const nu=+x.n.utilization_pct||0,su=+x.s.utilization_pct||0;
+    h+=`<tr>
+     <td class="m">${MON[x.m-1]}</td>
+     <td class="grp-nha money">${x.n.total_revenue?man(x.n.total_revenue):'-'}</td><td class="grp-nha">${x.n.total_returns||'-'}</td><td class="grp-nha">${x.n.total_revenue?nu+'%'+ub(nu):'-'}</td>
+     <td class="grp-spk money">${x.s.total_revenue?man(x.s.total_revenue):'-'}</td><td class="grp-spk">${x.s.total_returns||'-'}</td><td class="grp-spk">${x.s.total_revenue?su+'%'+ub(su):'-'}</td>
+     <td class="grp-all money">${x.arev?man(x.arev):'-'}</td><td class="grp-all">${x.aret||'-'}</td><td class="grp-all">${x.arev?x.autil+'%'+ub(x.autil):'-'}</td></tr>`;
+  });
+  h+=`<tr class="total">
+     <td class="m">合計</td>
+     <td class="grp-nha money">${man(T.nrev)}</td><td class="grp-nha">${T.nret}</td><td class="grp-nha">${T.nutil}%</td>
+     <td class="grp-spk money">${man(T.srev)}</td><td class="grp-spk">${T.sret}</td><td class="grp-spk">${T.sutil}%</td>
+     <td class="grp-all money">${man(T.arev)}</td><td class="grp-all">${T.aret}</td><td class="grp-all">${T.autil}%</td></tr>`;
+  h+='</tbody>';
+  document.getElementById('tbl').innerHTML=h;
+  document.getElementById('note').innerHTML='出所＝正本箱 <code>monthly_snapshots</code>（store=nha/spk・再集計なし）。売上=合計売上／件数=返却件数／稼働率=延べ稼働日数÷延べ稼働可能日数（実稼働ベース）。<b>合計の稼働率は両店の稼働日・稼働可能日を合算した加重値</b>（単純平均ではない）。当月・未来月は先行予約ベースの途中経過。';
+}
+load();
+</script></body></html>
