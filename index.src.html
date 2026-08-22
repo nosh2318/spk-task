@@ -80,9 +80,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1110';
+var CV='spk-v1111';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=991').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=992').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -1202,6 +1202,49 @@ function OptBadges({opts,style}){
   return <span style={{display:"inline-flex",gap:3,flexWrap:"wrap",...(style||{})}}>
     {items.map(it=><span key={it.label} style={{fontSize:9,fontWeight:800,padding:"1px 5px",borderRadius:4,background:it.bg,color:it.c,whiteSpace:"nowrap",border:"1px solid "+it.c+"33"}}>{it.label}{it.showCount?"×"+it.count:""}</span>)}
   </span>;
+}
+
+/* ===== シート積載在庫バッジ（parking.html「倉庫車(荷物積載中)」= parking_meta.warehouse をクロスDB直読み） =====
+ * ★2026-08-23 オーナー要望「どの車に🚼×N/🧒×N が今 物理的に積んであるか」を本体OPでも見えるように連携。
+ * ★予約側の必要数(OptBadges=opt_c/opt_j)とは別物＝"配車車両に実際に積載中のシート在庫"。色/アイコン/破線枠/「📦積載」ラベルで混同しないUIにする。
+ * ★parking_meta の carId = "車名-ナンバー"（spk_fleet_for_parking の name+"-"+no）→ ナンバー(末尾)で本体タスクの配車ナンバーと突合。*/
+const SeatLoad={map:{},loaded:false,at:0,inflight:false,_timer:null,_rt:false};
+const _DELIV_LEGS=["DEL","PU","PUB","来店","PUB来店"];
+async function loadSeatLoad(){
+  if(!sbParking||SeatLoad.inflight)return;SeatLoad.inflight=true;
+  try{
+    const{data}=await sbParking.from("parking_meta").select("k,v").eq("k","warehouse");
+    const wh=(data&&data[0]&&data[0].v)||{};
+    const m={};
+    Object.keys(wh).forEach(carId=>{
+      const v=wh[carId]||{};const child=+(v.child||0),junior=+(v.junior||0);
+      if(child<=0&&junior<=0)return;/* シート0(荷物のみ)は在庫バッジ対象外 */
+      const plate=String(carId).split("-").pop().trim();/* carId="車名-ナンバー"→ナンバー */
+      if(plate)m[plate]={child,junior,note:v.note||""};
+    });
+    SeatLoad.map=m;SeatLoad.loaded=true;SeatLoad.at=Date.now();window._seatLoadMap=m;
+    window.dispatchEvent(new Event("seatload-updated"));
+  }catch(e){/* クロスDB読取失敗は無視(本体を絶対止めない) */}
+  finally{SeatLoad.inflight=false;}
+}
+function _seatLoadInit(){
+  if(SeatLoad._timer)return;
+  loadSeatLoad();
+  SeatLoad._timer=setInterval(loadSeatLoad,60000);
+  try{if(sbParking&&!SeatLoad._rt){SeatLoad._rt=true;sbParking.channel("seatload-rt").on("postgres_changes",{event:"*",schema:"public",table:"parking_meta"},()=>loadSeatLoad()).subscribe();}}catch(e){}
+}
+function SeatLoadBadge({plate,type,size,style}){
+  const[,force]=useState(0);
+  useEffect(()=>{const h=()=>force(x=>x+1);window.addEventListener("seatload-updated",h);_seatLoadInit();return()=>window.removeEventListener("seatload-updated",h);},[]);
+  if(type&&_DELIV_LEGS.indexOf(type)<0)return null;/* 配達(DEL系)行のみ表示 */
+  const p=plate?String(plate).trim():"";if(!p)return null;
+  const rec=SeatLoad.map[p];if(!rec)return null;
+  const items=[];
+  if(rec.child>0)items.push("🚼×"+rec.child);
+  if(rec.junior>0)items.push("🧒×"+rec.junior);
+  if(!items.length)return null;
+  const fs=size||9;
+  return <span title={"📦 この配車車両に物理的に積んであるシート在庫（parking.html 倉庫車）。予約の必要数(C/J)とは別物です。"+(rec.note?"\n積載メモ: "+rec.note:"")} style={{display:"inline-flex",alignItems:"center",gap:3,fontSize:fs,fontWeight:800,padding:"1px 6px",borderRadius:4,background:"#ecfeff",color:"#0e7490",border:"1px dashed #06b6d4",whiteSpace:"nowrap",...(style||{})}}>📦積載 {items.join(" ")}</span>;
 }
 
 const INIT_STAFF=[{name:"齊藤",type:"正社員",memo:"",hourlyWage:0,transportCost:0,monthlySalary:280000},{name:"伊江",type:"正社員",memo:"",hourlyWage:0,transportCost:0,monthlySalary:280000},{name:"廣瀬",type:"正社員",memo:"",hourlyWage:0,transportCost:0,monthlySalary:280000},{name:"武山",type:"正社員",memo:"",hourlyWage:0,transportCost:0,monthlySalary:280000},{name:"赤嶺",type:"アルバイト",memo:"",hourlyWage:1100,transportCost:500,monthlySalary:0},{name:"大城",type:"アルバイト",memo:"",hourlyWage:1100,transportCost:500,monthlySalary:0},{name:"渡名喜",type:"アルバイト",memo:"",hourlyWage:1100,transportCost:500,monthlySalary:0},{name:"西村",type:"アルバイト",memo:"",hourlyWage:1100,transportCost:500,monthlySalary:0},{name:"仲間",type:"アルバイト",memo:"",hourlyWage:1100,transportCost:500,monthlySalary:0}];
@@ -16916,6 +16959,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                 {(()=>{const rP=cleanPlace((t._placeSource==="manual"?t.place:(t._ssPlace||t.place))||"");if(!rP)return isPlaceMissing(t)?<PlaceAlert/>:null;const mu="https://www.google.com/maps/search/"+encodeURIComponent(rP);return <a href={mu} target="_blank" rel="noopener" style={{color:"#dc2626",textDecoration:"none",fontWeight:600}}>📍{rP}</a>;})()}
                 <ChgTag info={chgInfo(t,"place")}/>
                 <ChgTag info={chgInfo(t,"time")}/>
+                <SeatLoadBadge plate={(vh&&vh.no)||t.plateNo} type={t.type}/>
               </div>
               {(tOpts.b>0||tOpts.c>0||tOpts.j>0||tOpts.usb||tOpts.parasol)&&<div style={{marginTop:4}}><OptBadges opts={tOpts}/></div>}
               {t.memo&&<div style={{marginTop:4,fontSize:10,color:"#6b7280",background:"#f8fafc",padding:"3px 6px",borderRadius:4}}>{t.memo}</div>}
@@ -17230,6 +17274,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                   <span style={{fontWeight:700,fontSize:isMob?14:13,color:"#0f172a",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:0}}>{t.type==="洗車"?(t.name||"洗車"):(t.name||"名前なし")}</span>
                   {t.type==="洗車"&&t.memo&&<span style={{fontSize:isMob?10:9,color:"#795548",fontWeight:600}}>{t.memo}</span>}
                   {t.opts&&<OptBadges opts={t.opts}/>}
+                  <SeatLoadBadge plate={(dispVn&&dispVn.no)||t.plateNo} type={t.type} size={isMob?9:8}/>
                   {t.type!=="洗車"&&ppl>0&&<span style={{fontSize:isMob?11:10,fontWeight:700,color:"#7c3aed",flexShrink:0}}>👥{ppl}</span>}
                   {(t.type==="DEL"||t.type==="COL")&&(t.reservationId||t.reservation_id)&&<LineStatusBadge resvNo={t.reservationId||t.reservation_id} size={isMob?9:8}/>}
                   {(t.type==="DEL"||t.type==="COL")&&(t.reservationId||t.reservation_id)&&<LicenseBadge resvNo={t.reservationId||t.reservation_id} size={isMob?9:8}/>}{(t.type==="DEL"||t.type==="COL")&&t._changed&&<MoveMeansBadge v={t._changed._moveMeans} type={t.type} size={isMob?9:8}/>}
@@ -23575,6 +23620,7 @@ function App(){
                                 <span style={{fontSize:12,fontWeight:600,color:t.done?"#9ca3af":"#1e293b",textDecoration:t.done?"line-through":"none",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name}</span>
                                 {t.ota&&<OBadge ota={t.ota}/>}
                                 {t.opts&&<OptBadges opts={t.opts}/>}
+                                <SeatLoadBadge plate={(veh&&veh.no)||t.plateNo} type={t.type} size={8}/>
                                 {(isDel||isCOL)&&(()=>{const rid=t.reservationId||t.reservation_id;return <React.Fragment><LineStatusBadge resvNo={rid} size={8}/><LicenseBadge resvNo={rid} size={8}/></React.Fragment>;})()}
                                 <TaskMoveBadge t={t} size={12}/>
                                 {(isDel||isCOL)&&(()=>{const rid=t.reservationId||t.reservation_id;const _tk=(window._mypageTokenMap||{})[rid];if(!_tk)return null;return <><a href={"https://nosh2318.github.io/spk-task/my.html?t="+_tk+"&ro=1"} target="_blank" rel="noopener" onClick={e=>e.stopPropagation()} title="お客様マイページ（閲覧専用）" style={{fontSize:8,fontWeight:800,padding:"1px 5px",borderRadius:4,background:"#0e7a6b",color:"#fff",textDecoration:"none",whiteSpace:"nowrap",flexShrink:0}}>🪪MyP</a><button onClick={e=>{e.stopPropagation();navigator.clipboard.writeText("https://nosh2318.github.io/spk-task/my.html?t="+_tk);const b=e.currentTarget;const o=b.textContent;b.textContent="✓";setTimeout(()=>b.textContent=o,1000);}} title="お客様に送るマイページURLをコピー" style={{fontSize:8,fontWeight:800,padding:"1px 5px",borderRadius:4,background:"#e0f2fe",color:"#0369a1",border:"1px solid #7dd3fc",cursor:"pointer",whiteSpace:"nowrap",flexShrink:0}}>🔗URLコピー</button></>;})()}
@@ -23667,6 +23713,7 @@ function App(){
                           <span style={{fontWeight:700,fontSize:isMob?14:13,color:"#0f172a",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:0}}>{t.type==="洗車"?(t.name||"洗車"):(t.name||"名前なし")}</span>
                           {t.type==="洗車"&&t.memo&&<span style={{fontSize:isMob?10:9,color:"#795548",fontWeight:600}}>{t.memo}</span>}
                           {t.opts&&<OptBadges opts={t.opts}/>}
+                          <SeatLoadBadge plate={(dispVn&&dispVn.no)||t.plateNo} type={t.type} size={isMob?9:8}/>
                           {t.type!=="洗車"&&ppl>0&&<span style={{fontSize:isMob?11:10,fontWeight:700,color:"#7c3aed",flexShrink:0}}>👥{ppl}</span>}
                           {(t.type==="DEL"||t.type==="COL")&&(t.reservationId||t.reservation_id)&&<LineStatusBadge resvNo={t.reservationId||t.reservation_id} size={isMob?9:8}/>}
                   {(t.type==="DEL"||t.type==="COL")&&(t.reservationId||t.reservation_id)&&<LicenseBadge resvNo={t.reservationId||t.reservation_id} size={isMob?9:8}/>}{(t.type==="DEL"||t.type==="COL")&&t._changed&&<MoveMeansBadge v={t._changed._moveMeans} type={t.type} size={isMob?9:8}/>}
@@ -24637,7 +24684,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.577";
+const APP_VERSION="v4.7.578";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
