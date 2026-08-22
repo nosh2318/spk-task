@@ -80,7 +80,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1109';
+var CV='spk-v1110';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=991').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -23907,9 +23907,13 @@ function DailyReportTab({data,vehicles,fleet,maintenance}){
     const byM={},byY={},byCh={},curCh={},curOta={},curHp={},kdByM={};let total=0;
     let dNew={count:0,sales:0};const newBrk={};
     const curFlowCh={},curFlowOta={},curFlowHp={};let curFlowTotal=0;
+    const leadByM={}; // ★リードタイム(発生→利用開始・日数)を発生月×チャネル(HP/OTA)別に蓄積。負値/一括取込除外・2026-02以降。最後にグロス(合算)
     const _createdJst=(r)=>{const raw=r.createdAt||r.bookedAt||"";if(!raw)return"";const d=new Date(String(raw).replace(" ","T"));if(isNaN(d))return String(raw).slice(0,10);const j=new Date(d.getTime()+9*3600*1000);return j.getUTCFullYear()+"-"+String(j.getUTCMonth()+1).padStart(2,"0")+"-"+String(j.getUTCDate()).padStart(2,"0");};
     (data||[]).forEach(r=>{
       if(isCancel(r.status))return;
+      // ★リードタイム＝利用開始(lendDate)−予約発生(bookedAt優先／2026-03-29一括取込除外)。発生月×HP/OTA別。
+      {const _bk=r.bookedAt||(r.createdAt&&String(r.createdAt).slice(0,10)!=="2026-03-29"?r.createdAt:null);const _ld=norm(r.lendDate);
+        if(_bk&&_ld){const _om=String(_bk).slice(0,7);if(_om>="2026-02"){const _lt=Math.round((new Date(_ld.slice(0,10))-new Date(String(_bk).slice(0,10)))/86400000);if(_lt>=0&&_lt<=400){const _c=CHof(r);if(_c==="HP"||_c==="OTA"){if(!leadByM[_om])leadByM[_om]={hp:[],ota:[]};leadByM[_om][_c==="HP"?"hp":"ota"].push(_lt);}}}}}
       const _cj=_createdJst(r);
       if(r.ota==="KEYDROP"){const _kid=String(r.id||""),_knm=String(r.name||"");if(!/DEMO|TEST|^ZZ/i.test(_kid)&&!/テスト|デモ/.test(_knm)){const _klm=(norm(r.lendDate)||"").slice(0,7);if(_klm){if(!kdByM[_klm])kdByM[_klm]={count:0,sales:0};kdByM[_klm].count++;kdByM[_klm].sales+=revOf(r);}}}
       if(_cj===curDay){const _lb=labelOf(r),_rv=revOf(r);dNew.count++;dNew.sales+=_rv;if(!newBrk[_lb])newBrk[_lb]={count:0,sales:0};newBrk[_lb].count++;newBrk[_lb].sales+=_rv;}
@@ -23927,7 +23931,7 @@ function DailyReportTab({data,vehicles,fleet,maintenance}){
     Object.entries(extraSales.byM||{}).forEach(([ym,a])=>{if(!byM[ym])byM[ym]={count:0,sales:0};byM[ym].sales+=a;});
     Object.entries(extraSales.byY||{}).forEach(([y,a])=>{if(!byY[y])byY[y]={count:0,sales:0};byY[y].sales+=a;});
     if(extraSales.total){if(!byCh["その他"])byCh["その他"]={count:0,sales:0};byCh["その他"].sales+=extraSales.total;total+=extraSales.total;}
-    return {months:Object.keys(byM).sort(),byM,years:Object.keys(byY).sort(),byY,byCh,total,curYM,curCh,curOta,curHp,kdByM,newBrk,curFlowCh,curFlowOta,curFlowHp,curFlowTotal,dayCmp};
+    return {months:Object.keys(byM).sort(),byM,years:Object.keys(byY).sort(),byY,byCh,total,curYM,curCh,curOta,curHp,kdByM,newBrk,curFlowCh,curFlowOta,curFlowHp,curFlowTotal,dayCmp,leadByM};
   },[data,fleet,units,extraSales,date]);
   // ★ テキスト日報を生成（等幅前提・列を桁揃え）＝Slack/メールに貼れるプレーンテキスト
   const buildDailyText=()=>{
@@ -23995,6 +23999,15 @@ function DailyReportTab({data,vehicles,fleet,maintenance}){
     L.push("■ CVチャネル構成比（グロス）");
     ["OTA","HP","その他"].forEach(ch=>{const c=repSum.byCh[ch];if(!c||(!c.sales&&!c.count))return;const pct=repSum.total>0?Math.round(c.sales/repSum.total*100):0;L.push("・"+ch+"："+pct+"% ｜ "+c.count+"件 / "+yen(c.sales));});
     L.push("");
+    // リードタイム（発生月×HP/OTA/グロス・中央値）
+    {const LBM=repSum.leadByM||{};const yms=Object.keys(LBM).sort();
+     if(yms.length){L.push("■ リードタイム（発生月×チャネル・予約→利用開始／中央値・日）");
+      const _md=(a)=>{if(!a||!a.length)return null;const s=[...a].sort((x,y)=>x-y);const m=Math.floor(s.length/2);return s.length%2?s[m]:Math.round((s[m-1]+s[m])/2);};
+      const _c=(a)=>{const n=(a||[]).length;const v=_md(a);return n?(v+"日/"+n+"件"):"—";};
+      const aH=[],aO=[];
+      yms.forEach(m=>{const h=LBM[m].hp||[],o=LBM[m].ota||[],g=h.concat(o);aH.push(...h);aO.push(...o);L.push("・"+m+"：HP "+_c(h)+" ｜ OTA "+_c(o)+" ｜ グロス "+_c(g));});
+      L.push("・全期間：HP "+_c(aH)+" ｜ OTA "+_c(aO)+" ｜ グロス "+_c(aH.concat(aO)));
+      L.push("");}}
     const vr=computeVehicleRanking(vehicles,data,fleet,rankKpi,"spk","ALL",maintenance);
     L.push("■ 車両ランキング（累計・予約実績あり・稼働率=配車表ルール）");
     const vrows=(vr.rows||[]).filter(r=>(r.cnt||0)>0||(r.revTotal||0)>0);
@@ -24115,6 +24128,21 @@ function DailyReportTab({data,vehicles,fleet,maintenance}){
                 <tr style={{background:"#0F1F45",color:"#fff",fontWeight:900}}><td style={{padding:"6px"}}>合計</td><td style={{padding:"6px",textAlign:"right"}}>{["OTA","HP","その他"].reduce((s,ch)=>s+(((repSum.byCh&&repSum.byCh[ch])||{}).count||0),0)}件</td><td style={{padding:"6px",textAlign:"right"}}>{yen(repSum.total)}</td><td style={{padding:"6px",textAlign:"right"}}>100%</td></tr>
               </tbody></table>
             </div></div>
+            {/* ②-2 リードタイム（発生月×HP/OTA/グロス・月別） */}
+            {(()=>{const LBM=repSum.leadByM||{};const yms=Object.keys(LBM).sort();
+              if(!yms.length)return null;
+              const _med=(a)=>{if(!a||!a.length)return null;const s=[...a].sort((x,y)=>x-y);const m=Math.floor(s.length/2);return s.length%2?s[m]:Math.round((s[m-1]+s[m])/2);};
+              const cell=(a)=>{const n=(a||[]).length;const md=_med(a);return <td style={{padding:"5px 6px",textAlign:"right"}}>{n?<span><b>{md}日</b><span style={{color:"#94a3b8",fontWeight:600,fontSize:10}}> /{n}件</span></span>:<span style={{color:"#cbd5e1"}}>—</span>}</td>;};
+              const allHp=[],allOta=[];yms.forEach(m=>{allHp.push(...(LBM[m].hp||[]));allOta.push(...(LBM[m].ota||[]));});
+              return <div style={sec}><div style={secHd}>■ リードタイム（発生月×チャネル・予約→利用開始／中央値）</div><div style={secBd}>
+                <table style={{width:"100%",fontSize:12.5,borderCollapse:"collapse"}}><tbody>
+                  <tr style={{borderBottom:"2px solid #e2e8f0",color:"#64748b",fontSize:11}}><td style={{padding:"4px 6px"}}>発生月</td><td style={{padding:"4px 6px",textAlign:"right",color:"#1d4ed8"}}>🌐HP</td><td style={{padding:"4px 6px",textAlign:"right",color:"#7c3aed"}}>🏢OTA</td><td style={{padding:"4px 6px",textAlign:"right",color:"#92400e"}}>💰グロス</td></tr>
+                  {yms.map(m=>{const g=(LBM[m].hp||[]).concat(LBM[m].ota||[]);return <tr key={m} style={{borderBottom:"1px solid #f1f5f9"}}><td style={{padding:"5px 6px",fontWeight:700}}>{m}</td>{cell(LBM[m].hp)}{cell(LBM[m].ota)}{cell(g)}</tr>;})}
+                  <tr style={{background:"#fef9c3",fontWeight:900}}><td style={{padding:"6px"}}>全期間（合算）</td>{cell(allHp)}{cell(allOta)}{cell(allHp.concat(allOta))}</tr>
+                </tbody></table>
+                <div style={{fontSize:10,color:"#94a3b8",marginTop:4}}>※<b>発生月（予約が入った月）</b>の予約について、利用開始日−予約発生日の<b>中央値（日）</b>／件数。チャネル＝CV構成比と同一基準（HP=自社／OTA=OTA各社）。グロス＝HP＋OTA合算。負値(遡及取込)・一括取込(3/29)は除外。</div>
+              </div></div>;
+            })()}
             {/* ④ 車両ランキング */}
             <div style={sec}><div style={secHd}>■ 車両ランキング（累計・予約実績あり・稼働率=配車表ルール）</div><div style={secBd}>
               {vrows.length?<table style={{width:"100%",fontSize:12,borderCollapse:"collapse"}}><tbody>
@@ -24609,7 +24637,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.576";
+const APP_VERSION="v4.7.577";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
