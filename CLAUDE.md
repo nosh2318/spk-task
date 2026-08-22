@@ -1,5 +1,29 @@
 # SPK業務管理APP（札幌店）
 
+## 🧷📦 2026-08-23 OP DEL行に「シート積載在庫」バッジ＝parking.html倉庫車をクロスDB連携（v4.7.578）
+オーナー要望「parking.htmlの倉庫車で各車に記録した🚼チャイルド/🧒ジュニアの"物理積載在庫"を本体OPでも見えるように」。
+- **データの正本**＝駐車場DB `rkrvjpipvpybkmqadmrb` の `parking_meta`（k=`warehouse`・v=`{carId:{child,junior,note}}`）。**carId="車名-ナンバー"**（parking.htmlの`spk_fleet_for_parking`が`name+"-"+no`で生成）→ **ナンバー(末尾split)で本体タスクの配車ナンバー(veh.no/dispVn.no/t.plateNo)と突合**。別に`seats.html`(🧷シート貸出リスト)もあるが在庫の正本はparking_meta。
+- **本体側**＝既存`sbParking`(anon・L323)で`parking_meta`をクロスDB直読み（追加DB不要）。`SeatLoad`モジュール(60秒ポーリング+realtime `seatload-rt`)＋`SeatLoadBadge`(自己購読・window event `seatload-updated`で再描画)を`OptBadges`直後に定義。読取失敗は握り潰し（本体を絶対止めない）。
+- **表示**＝DEL系(DEL/PU/PUB/来店)行のみ「📦積載 🚼×N 🧒×N」。4サイト＝OP DEL/COLシート(`sheetFilter==="del"/"col"`)・TOPスタッフ別サマリ・本日スケジュール・スケジュールタブ。
+- **🔴混同禁止**：`OptBadges`(opt_c/opt_j＝予約側の"必要数"・実線ピンク/橙)と`SeatLoadBadge`("物理積載在庫"・**破線シアン枠＋📦積載ラベル**)は別物。色/枠/ラベルで必ず分ける。
+- コミット32ea899・ライブ検証済(app.jsに📦積載=1/seatload-updated=3/parking_meta=2)。
+- **🔴🔴 2026-08-23 続報＝DEL行ナンバー突合は"空振り"だった→在庫一覧表示に是正（v4.7.579・コミット3522125）**：オーナー「反映されてない」。真因＝**倉庫車(parking_meta.warehouse)は"配車されていない保管車"＝シートの物理在庫置き場**。一方 DEL行バッジは"配達に出た車のナンバー"と突合するので、**倉庫車は配達に出ていない＝どのDEL行とも一致せず0件＝バッジが1つも出ない**。実データ検証(2026-08-23)：倉庫車シート在庫=プラド🧒×3/ノア3382🚼×1/アクセラ8403🚼×1/ヴェルファイア3381🚼×3、本日DEL配車=4576/9047/2383/5512/8529→**一致0件**。倉庫車ナンバー(3382/8403/3381)は"別の日"にはDEL配車される事はある(＝設計が完全に無意味ではないが、その日の一致は稀)。**正しい表示＝「今どの車に何シートが積んであるか」の在庫一覧**（そこから配達車へ物理的に移し替える運用）。→ `SeatLoad`に`list`(carId/label/plate/child/junior/note)追加＋新コンポーネント`SeatLoadSummary`で在庫一覧を**OPシート(🪑シート在庫アラート直下)＋TOPタスクサマリー先頭**に表示。DEL行`SeatLoadBadge`は"倉庫車がたまたま配達される稀ケース"用に残置。**教訓＝「◯◯が反映されない」は、まず"突合キーが実データで一致し得るか"を実データで検証する。正本(倉庫車=非配車)と表示条件(DEL=配車)の意味論が食い違うと構造的に0件になる。この場合はバッジ突合でなく在庫一覧を出す。** ⚠️オーナーはparking.html(駐車マップ)を見ていた＝parking.htmlの📦倉庫車セクションに元から在庫表示あり。本体OP側にも同じ在庫が出るようにしたのが今回。
+
+## 💳🔴 2026-08-19 じゃらん/Square「入金済みなのに未入金アラート」対応＝【DB是正だけでは終わりでない・スプシ更新依頼までが1セット】（オーナー確定・恒久・毎回これに従う）
+オーナーに何度も同じ指摘を受けている。この対応は**DBを paid にしただけで「完了」と報告してはいけない**。アラートには**2系統**あり、駆動源が違う：
+- **9:06「未入金アラート」＝`checkUnpaidAlert`＝スプシ「支払い管理」駆動**（`1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc`・ステータス列I が「入金済」でない限り毎朝9時発火）。→ **DB是正では絶対に止まらない。スプシ行を「✅ 入金済み」にするまで翌朝また鳴る。**
+- **9:23「じゃらん未決済リマインダー再送」＝`resendSpkJalanUnpaidReminder`＝DB `jalan_payments.status=in.(email_sent,link_created)`駆動**。→ こちらはDBを `paid` にすれば止まる。
+- **✅ 対応の1セット（この順で必ず全部やる）**：①Squareで実入金確認（決済リンク注文は**tender付与後もstate=OPENのまま残る**＝`checkPaymentStatus`のCOMPLETEDのみ検索が拾えない穴）②DB `jalan_payments` を `status=paid`＋`paid_at`是正（authトークンでPATCH可）③**スプシ「支払い管理」の該当行ステータスを「✅ 入金済み」に更新**（私はSheets書込認証が手元に無い→GAS `updatePaymentSheetStatus_(resv,'✅ 入金済み',paid_atISO)` 用のワンタイム関数 `fix<予約番号>()` を `gas-email-import-v2.gs` に用意）④**返信に必ずスプシのリンク `https://docs.google.com/spreadsheets/d/1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc/edit` を添付し「該当行を支払い済みに更新してください」と依頼するまで**。④をやらないと「DB直した＝終わり」に見えてスプシが放置され翌朝再発＝これが繰り返しの正体。
+- **根本策（同型を全部潰す）**：`checkPaymentStatus`/予約番号突合の SearchOrders を `state_filter=COMPLETED` だけでなく **state不問でtender有りならpaidと判定**に直せば、OPEN残り注文も検知しスプシ・DBを自動更新する（GAS貼付が要る＝オーナー/CLI側）。
+- **🧠 学習の仕組み（オーナー質問への答え）**：Slack OMNI号機は会話記憶を持ち越さない＝毎回この正本MDだけを読んで動く。だから「学習して」は**会話でなく正本MDに書いて初めて永続する**。同種の対応・訂正を確定したら、その場でこのMD（必要ならグローバル/HOW_TO_SEE_DATA.md）に1行焼いてから完了報告する。
+
+## 🕒 2026-08-18 在庫調整/在庫管理の🏭入庫(車検/点検/修理)行が一覧最上部に固定される→「予約日時=登録日時」に（BT/SPK修正済・全店共通パターン＝他営業所も同型なら同修正を提案/適用）
+**現象（BT高松→SPK札幌で同一・オーナー報告）**：在庫調整/在庫管理の一覧に出る🏭入庫（車検/点検/修理）行が、予約日時の降順ソートで**いつまでも最上部を占領**する。
+- **根本原因（全店共通の構造）**：一覧`rows`は`.sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||""))`＝**createdAt降順**。入庫行の生成が`createdAt:m.createdAt||m.startDate||""`で、①`fetchMaintenance`がDBの`created_at`を写しておらず`m.createdAt`が常にundefined→②`m.startDate`(＝車検予定日＝**未来日**)にフォールバック→未来日は降順で全予約より上＝**永久固定**。
+- **根治3点（BT `index.html.bak`／SPK `index.src.html`・`maintenance`/`bt_maintenance`は`created_at default now()`保有済）**：①`fetchMaintenance`のmapperに`createdAt:m.created_at||""`を追加（永続ソース＝登録時刻）②入庫行の生成を`createdAt:m.createdAt||today`に（未来の車検予定日にフォールバックしない）③入庫を作る登録フォーム全経路の楽観更新recに`createdAt:new Date().toISOString()`（編集時は既存createdAtを保持）。→ 登録日時順で自然に流れ、新規登録時だけ上部＝正常。
+- **他営業所（NHA那覇 等）で同じ機能・同じ現象の報告が出たら、この3点をそのまま提案/適用**（NHAは`nha_maintenance`/`nha_tasks`・日本語列だが構造同型）。判定＝在庫調整/在庫管理のintake行が①未来日で最上部固定、②`fetchMaintenance`系がcreated_atを写していない、を確認。BT v1.0.334-BT / SPK v4.7.566。
+- **🆕 新規開発時の設計原則（全店・この現象を最初から作り込まない）**：一覧を「登録/発生の新しい順」で見せるためのソート・表示に使う日時は、**必ず"登録日時(created_at)"**にする。**車検予定日・貸出日・返却日など"業務上の未来/過去の日付"を並び順のキーに使わない**（未来日は降順で永久に最上部を占領する）。生成行/自動起票行（intake/タスク/派生行）を一覧に混ぜる時は、①DB fetchのmapperで必ず`created_at`を写す②生成行のソート用日時は`created_at||today`（業務日付にフォールバックしない）③楽観更新のオブジェクトにも`createdAt:new Date().toISOString()`を入れる。＝「並び順の日時」と「業務上の日時（予定日/利用日）」を必ず分離する。
+
 ## 🧟 2026-08-18 「消しても復活するデモ予約(DEMOMYPAGE-SPK/KD-DEMO-KEYDROP)」＝配車表「未配車」に出る→除外で解消＋本体は削除
 オーナー報告「何回消しても未配車に復活する（デモ マイページ確認用／デモ KEYDROP確認用）」。**台帳(audit_log)で確定＝これはアプリ/cron/EFのバグではなく、私(OMNI)がマイページ/KEYDROPプレビューURLを動かすために作った"確認用デモ予約"**（`.jsonl`＝過去CLIセッションにのみ登場・アプリ本体には該当IDのコード無し）。過去に「削除依頼→mgmt-apiでDELETE→別セッションでプレビュー用に再INSERT(PostgREST/staff JWT)」を繰り返した足跡が台帳に残る＝これが「消しても復活」の正体（自動再生成の仕組みは無い）。本来2030-01日付でOP隔離していたが、**配車表の「未配車」アラート(`ua`フィルタ・index.src.html L15323)がキャンセル/配車済みは除くがデモ/テストを除外していなかった**→未来日なので出続けた。
 - **対策**：①`ua`フィルタに`_isTest`(id `^ZZ|DEMO|TEST`／氏名`テスト|デモ`)除外を追加(在庫管理は2026-08-17に`_isTestResv`で除外済＝**同じ除外を未配車にも横展開**)。v4.7.565。②デモ予約2件を実削除(依存tasks/fleet/mypage_changes/spk_line_links=0件・クリーン)。③**今後デモ予約を再seedしない**(プレビューが要る時はその場で作り、必ず`_isTest`で全運用リストから除外される形にする)。
