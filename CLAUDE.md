@@ -1,5 +1,12 @@
 # SPK業務管理APP（札幌店）
 
+## 🔔 2026-08-23 承認待ちSlack通知に「承認管理ページを開く」ボタン追加（時間・場所変更の承認制・SPK/KEYDROP）
+オーナー要望「承認が必要なSlack通知から、その場で承認できるページへ飛べるように」。対象＝**時間・場所変更の承認待ち**（結果通知＝承認済みカードには付けない）。
+- **札幌HANDYMAN** `line_auto/handyman-mypage`（`mpCard`）：対応欄に「管理コンソール」を含む承認待ちカードに `actions` ボタン→`https://nosh2318.github.io/spk-task/my-admin.html`。定数`MGMT_URL`＋`/管理コンソール/`判定で自動付与（場所時間/オプション/補償/区分/キャンセルの承認待ち全部に付く）。
+- **KEYDROP** `keydrop-mypage`（`notifySlackCard`）：型に`mgmtUrl?`追加し、「マイページ変更申請（承認待ち）」カードに→`https://keydrop.jp/my-admin.html?store=<spk|nha>`（両店1画面・`?store=`で直リンク・`M.store`で自動判定）。KDN-=那覇/KD-=札幌。
+- 承認ページURL＝SPK:`nosh2318.github.io/spk-task/my-admin.html`(単店)／KEYDROP:`keydrop.jp/my-admin.html?store=`(hdm-car-delivery・両店対応・`?store=`/localStorage kd_admin_store)。my-admin.htmlは予約番号ディープリンク非対応(ページを開くだけ・該当予約は「🔔変更依頼」に出る)。
+- Slack Block Kit `actions`+`button`(url)でクリック遷移。deno check通過・両EFデプロイ済(ckrxttbnawkclshczsia --no-verify-jwt)。次の承認待ち通知から表示。
+
 ## 🧷📦 2026-08-23 OP DEL行に「シート積載在庫」バッジ＝parking.html倉庫車をクロスDB連携（v4.7.578）
 オーナー要望「parking.htmlの倉庫車で各車に記録した🚼チャイルド/🧒ジュニアの"物理積載在庫"を本体OPでも見えるように」。
 - **データの正本**＝駐車場DB `rkrvjpipvpybkmqadmrb` の `parking_meta`（k=`warehouse`・v=`{carId:{child,junior,note}}`）。**carId="車名-ナンバー"**（parking.htmlの`spk_fleet_for_parking`が`name+"-"+no`で生成）→ **ナンバー(末尾split)で本体タスクの配車ナンバー(veh.no/dispVn.no/t.plateNo)と突合**。別に`seats.html`(🧷シート貸出リスト)もあるが在庫の正本はparking_meta。
@@ -1547,3 +1554,13 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   - 旧データ救済: root `viewTasks` で `status==="相談必要"→"取り止め"` に表示移行。
 - **タイムライン帯のステータス表現（色は領域=エリアのまま維持）**: 帯背景は `areaColor` のまま、ステータスは**アイコン＋装飾**で表現（先頭に○/▶/✕/✓、取り止め=取消線+opacity.5、完了=opacity.82）。→ 色=領域・アイコン=ステータスの2軸表示。
 - バージョン: SPK v4.7.202 / NHA v3.5.105 / BT v1.0.67。全本番200。
+
+## 📋 2026-08-24 3店 日報 自動投稿（Edge Function daily-report＋pg_cron・毎朝9:00 JST）
+オーナー要望「那覇・札幌・高松の日報を毎朝9:00に前日フル(0:00〜23:59)で #日報_handyman に各店別投稿」。APPの「日報→テキストコピー(buildDailyText)」6セクションをEdge Functionに移植し値を完全一致で自動化。
+- **EF `daily-report`**（正本`~/spk-task/line_auto/daily-report/index.ts`→deploy実体`~/hdm-car-delivery/supabase/functions/`・main project ckrxttbnawkclshczsia・`--no-verify-jwt`）。3店ループ：NHA/SPK=main、**BT=別DB(BT_URL/BT_SERVICE_KEY secretsでクロスDB read)**。出力は**3セクション固定**（①件数・売上累計 ②本日の流通 ③KEYDROP月別）＝オーナー指定で簡潔化(2026-08-24)。チャネル別×2/リードタイム/月別推移/CV構成比/車両ランキングは除外。**高松はKEYDROPデータなし→③自動非表示**。ヘッダーは店舗絵文字＋太字(🌺那覇店/❄️札幌店/🍜高松店・Slack mrkdwn `*bold*`)。①内に**「📊売上見通し（返却月）」**を当月累計直下に追加＝Slack引用バー(`> `)＋絵文字＋金額太字で強調：当月=売上のみ／翌月・翌々月=予約数+売上(進捗)。各月に**稼働率**を付与＝**配車表(FleetTimeline)上段の値と同一のライブ計算**（`computeUtil`＝Σ配車日数÷(稼働台数×月日数)・active車のみ・月次KPI(vehicle_monthly_kpi)のactive上書き反映・メンテ減算なし＝配車表totalUtilと同式）。3店とも当月+翌月+翌々月をライブ算出（BTもbt_fleet/bt_vehicles/bt_vehicle_monthly_kpiで可）。**⚠️monthly_snapshots.utilization_pctは使わない**＝未来月がAPP起動時しか更新されず古く「配車表と違う」誤値になる（2026-08-24オーナー指摘で是正）。**検証済(2026-08-24 ブラウザで配車表を実確認)：SPK 8月58%(308/527)・9月21%(116/540)・10月8%(47/558)＝EF出力と完全一致**。オーナー指示＝「ルール(再計算)でなく配車表に既にある値を使え」。
+- **マッピング差**：SPK=`ota A→O`・`lend_date/return_date`／NHA・BT=`start_date/end_date`。extra_sales＝各店`{spk_/nha_/bt_}accounting type=extra_sales`。fleet=reservation_id→vehicle_code、返却月集計はvehicles.codeに在る車両のみ（配車済）。reservationsはRange paginationで全件（NHA2000超対策）。
+- **前日フル＝スナップショット**：reportDate=昨日JST、cutoff=昨日23:59:59 JST(=14:59:59 UTC)。createdAtがcutoff超の取込は除外（当日朝の取込を混ぜない）。`?dry=1&store=nha&date=YYYY-MM-DD`で検証可（投稿せずテキスト返す・cron secret不要）。
+- **cron**：pg_cron `daily-report-9am-jst`(jobid51・`0 0 * * *`UTC=9:00JST・active)→net.http_postでEF起動(x-cron-secret=CRON_SECRET)。
+- **投稿先**：#日報_handyman(**C0BSXE4TKLG**・HANDYMAN GLワークスペース)＝3店とも同chなのでbotトークン共通(SLACK_BOT_TOKEN)。bot(sns_auto)は在籍済。header="HANDYMAN{那覇/札幌/高松} 日報"。
+- **検証済(2026-08-23分)**：dry出力がAPP例と完全一致（那覇 当月246件/¥8,627,842・予約外¥162,602・計上返却月チャネル別・KEYDROP12本/¥127,495・リードタイム全一致／本日の流通は前日フルで+7→+8＝18時スクショ後の取込増で正常）。実投稿3店ok:true。
+- **教訓**：APPのReact計算(buildDailyText)をDeno EFに"そのまま移植"すれば「再集計するな＝値をブレさせない」を守れる。店舗差(列名/ota変換/別DB)はstore configで吸収。Management APIのcron登録はurllib=403(Cloudflare)→**curl --data-binary必須**。
