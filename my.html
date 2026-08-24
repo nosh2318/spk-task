@@ -250,7 +250,7 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 <div class="toast" id="toast"></div>
 
 <script>
-const VER = "v4.9.12-mypage 開いて確認したセクションは「未確認」を出さない(既読をlocalStorage保存・予約単位)";
+const VER = "v4.9.13-mypage 既読は内容指紋で管理：内容が変更されたセクションは「未確認」を再表示(不変カードは既読維持)";
 const FN = "https://ckrxttbnawkclshczsia.supabase.co/functions/v1/handyman-mypage";
 // 免許証アップロードの保存先=GAS「HANDYMAN 免許証保存」→Googleドライブ（license.htmlと完全に同一・store='spk'）
 const GAS_LICENSE_URL = 'https://script.google.com/macros/s/AKfycbycpzE1RIu2LbIlYVeRYcXxfIgfDhY5y1Vtdh1Rj69S9uZEnmqFMDBHqq3y6pHS70_t7A/exec';
@@ -1377,14 +1377,23 @@ async function load(){
     var secTime={}, secOpen={}, seen={};
     function secKey(el){ var s=el.querySelector("summary"); var tx=s?s.textContent:""; for(var e in EMO){ if(tx.indexOf(e)>=0)return EMO[e]; } return el.id||"sec"; }
     var io=new IntersectionObserver(function(ents){ ents.forEach(function(en){ var k=secKey(en.target); if(en.isIntersecting){ if(!secOpen[k]){ secOpen[k]=Date.now(); if(!seen[k]){ seen[k]=1; trk("acc_"+k,"section_view"); } } } else if(secOpen[k]){ secTime[k]=(secTime[k]||0)+(Date.now()-secOpen[k])/1000; secOpen[k]=0; } }); },{threshold:0.5});
-    /* 既読管理：一度開いたセクションは「未確認」を出さない（localStorage・予約トークン単位） */
+    /* 既読管理：一度開いたセクションは「未確認」を出さない（localStorage・予約トークン単位）
+       ★内容が変更されたら該当セクションの未確認を再表示：既読時の「内容指紋(ハッシュ)」を保存し、
+         render時の内容指紋が既読時と変われば .read を外して「未確認」を復活させる。不変カードは指紋一致で既読維持。 */
     var READ_KEY="hdm_mypage_read_"+(TK||"anon"), readSet={};
     try{ readSet=JSON.parse(localStorage.getItem(READ_KEY)||"{}")||{}; }catch(e){ readSet={}; }
     function saveRead(){ try{ localStorage.setItem(READ_KEY,JSON.stringify(readSet)); }catch(e){} }
-    function markRead(el){ var k=secKey(el); if(!readSet[k]){ readSet[k]=1; saveRead(); } el.classList.add("read"); }
+    function _fnv(s){ var h=0x811c9dc5>>>0; for(var i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,0x01000193)>>>0; } return h.toString(36); }
+    function fpOf(el){ try{ var s=el.querySelector("summary"), b=el.querySelector(".accb"); var tx=((s?s.textContent:"")+"|"+(b?b.textContent:"")).replace(/\s+/g," ").trim(); return _fnv(tx); }catch(e){ return ""; } }
+    function markRead(el){ var k=secKey(el); readSet[k]=fpOf(el); saveRead(); el.classList.add("read"); }
     function applyRead(){ try{ document.querySelectorAll("details.acc").forEach(function(el){
-      var k=secKey(el);
-      if(readSet[k]||el.hasAttribute("open")) el.classList.add("read");
+      var k=secKey(el), fp=fpOf(el), stored=readSet[k];
+      if(el.hasAttribute("open")){ el.classList.add("read"); if(stored!==fp){ readSet[k]=fp; saveRead(); } }
+      else if(stored!=null){
+        if(typeof stored!=="string"){ readSet[k]=fp; saveRead(); el.classList.add("read"); } /* 旧形式(1)は現在の内容を既読として引き継ぐ＝配信直後に全部未確認化しない */
+        else if(stored===fp){ el.classList.add("read"); }        /* 内容が既読時と同じ＝既読維持 */
+        else { el.classList.remove("read"); }                    /* 内容が変わった＝未確認を復活 */
+      }
       if(!el.__readBound){ el.__readBound=1; el.addEventListener("toggle",function(){ if(el.open) markRead(el); }); }
     }); }catch(e){} }
     function observeAll(){ try{ applyRead(); document.querySelectorAll("details.acc").forEach(function(el){ io.observe(el); }); }catch(e){} }
