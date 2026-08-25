@@ -579,16 +579,16 @@ function extractVehicleClass_(rawClass) {
   if (/[_](B2)(?:[_]|$)/i.test(rawClass)) return 'B2';
   if (/[_](A2)(?:[_]|$)/i.test(rawClass)) return 'A2';
   if (/[_](D)(?:[_]|$)/i.test(rawClass)) return 'D';
-  var m = rawClass.match(/[_]([ABCSFH])(?:[_]|$)/i);
+  var m = rawClass.match(/[_]([ABCSFHG])(?:[_]|$)/i);
   if (m) return m[1].toUpperCase();
-  var m2 = rawClass.match(/^([ABCSFH])[_]/i);
+  var m2 = rawClass.match(/^([ABCSFHG])[_]/i);
   if (m2) return m2[1].toUpperCase();
-  var m3 = rawClass.match(/\s([ABCSFH])[_]/i);
+  var m3 = rawClass.match(/\s([ABCSFHG])[_]/i);
   if (m3) return m3[1].toUpperCase();
-  var m4 = rawClass.match(/[_]([ABCSFH])$/i);
+  var m4 = rawClass.match(/[_]([ABCSFHG])$/i);
   if (m4) return m4[1].toUpperCase();
   // DP系: _C☆ / _C★ / _C+空白 等（クラス letter の後が _ でも末尾でもない区切り）
-  var m5 = rawClass.match(/[_]([ABCSFH])(?![A-Za-z0-9])/i);
+  var m5 = rawClass.match(/[_]([ABCSFHG])(?![A-Za-z0-9])/i);
   if (m5) return m5[1].toUpperCase();
   if (/B2/i.test(rawClass)) return 'B2';
   if (/A2/i.test(rawClass)) return 'A2';
@@ -811,7 +811,7 @@ function parseRakuten_(body) {
   var rawClass = detailClass;
   var vehicleClass = extractVehicleClass_(detailClass);
   if (!vehicleClass) {
-    var planMatch = detailClass.match(/プラン[_]([ABCSFH])/i);
+    var planMatch = detailClass.match(/プラン[_]([ABCSFHG])/i);
     if (planMatch) {
       vehicleClass = planMatch[1].toUpperCase();
       rawClass = planMatch[1] + '_SPK';
@@ -1043,7 +1043,7 @@ function parseOfficial_(body) {
     var classMatch2 = body.match(/ご予約車両クラス\s*\n\s*(A2|B2)クラス/i);
     if (classMatch2) vehicleClass = classMatch2[1].toUpperCase();
     else {
-      var classMatch = body.match(/ご予約車両クラス\s*\n\s*([ABCSFH])クラス/i);
+      var classMatch = body.match(/ご予約車両クラス\s*\n\s*([ABCSFHG])クラス/i);
       if (classMatch) vehicleClass = classMatch[1].toUpperCase();
     }
   }
@@ -2859,6 +2859,14 @@ function fixR0R8QVZR() {
 function fixR02ZLN4R() {
   updatePaymentSheetStatus_('R02ZLN4R', '✅ 入金済み', '2026-06-05T08:31:00Z');
   Logger.log('R02ZLN4R → SS-A 入金済みに更新。アラート停止。この関数は削除してOK。');
+}
+
+// ★ 2026-08-19 応急処置: R0B5KFO9(ミヤナガ クニヒコ様 ¥63400・8/20出発) はSquare決済リンクで8/17入金済だが
+//   Square注文がtender付与後もstate=OPENのまま残り checkPaymentStatus(COMPLETEDのみ検索)が拾えず、
+//   SS-A「支払い管理」が⏳未払いのまま→未入金アラート誤発火。1回実行してSS-A行を入金済みにする。実行後は削除OK。
+function fixR0B5KFO9() {
+  updatePaymentSheetStatus_('R0B5KFO9', '✅ 入金済み', '2026-08-17T01:55:48Z');
+  Logger.log('R0B5KFO9 → SS-A 入金済みに更新。未入金アラート停止。この関数は削除してOK。');
 }
 
 function updateSheetOtaColumn() {
