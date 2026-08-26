@@ -6,7 +6,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCoX1EyEx-N5A0r4vRzC1KmVp3T29HILbI&libraries=places&language=ja&region=JP" defer></script>
+<!-- 場所検索はキー不要のKEYDROP方式(Photon→GSI国土地理院→Nominatim)。Google Maps依存を廃止しどのドメインでも動作 -->
 <style>
 :root{--navy:#002063;--navy2:#0a2e80;--ink:#00163f;--y:#FABE00;--line:#1b3a73;--mut:#8fa2c8;--bg:#eef2f8}
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -196,7 +196,17 @@ function predict(input,cb){gWait(function(){if(!gAuto){cb([]);return;}
 });}
 function details(placeId,cb){gWait(function(){if(!gPlaces){cb(null);return;}gPlaces.getDetails({placeId:placeId,fields:['geometry','name','formatted_address','address_components'],language:'ja',sessionToken:_tok()},function(pl,st){_sessTok=null;if(st==='OK'&&pl&&pl.geometry){cb(pl.geometry.location.lat(),pl.geometry.location.lng(),pl.name||'',gtidy(pl.formatted_address),pl.address_components||null);}else cb(null);});});}
 function gtidy(a){return (a||'').replace(/^日本、?/,'').replace(/〒?\d{3}-?\d{4}\s*/,'').replace(/^沖縄県/,'').trim();}
-function reverseGeo(lat,lng,cb){gWait(function(){if(!gGeo){cb(lat.toFixed(4)+', '+lng.toFixed(4),null);return;}gGeo.geocode({location:{lat:lat,lng:lng},language:'ja'},function(res,st){if(st==='OK'&&res&&res[0])cb(gtidy(res[0].formatted_address),res[0].address_components);else cb(lat.toFixed(4)+', '+lng.toFixed(4),null);});});}
+// リバースジオコーディング＝Nominatim(キー不要)。ピン移動→住所表示。comps=nullでもinCityはaddr文字列で判定。
+function reverseGeo(lat,lng,cb){
+  fetch('https://nominatim.openstreetmap.org/reverse?format=json&lat='+lat+'&lon='+lng+'&accept-language=ja&zoom=18',{headers:{'Accept':'application/json'}})
+   .then(function(r){return r.json();})
+   .then(function(d){
+     var a='';
+     if(d&&d.display_name){a=d.display_name.replace(/^日本[、,]\s*/,'').replace(/〒?\s*\d{3}-?\d{4}\s*/,'').split(',').map(function(s){return s.trim();}).filter(Boolean).reverse().join('').trim();}
+     cb(a||(lat.toFixed(4)+', '+lng.toFixed(4)),null);
+   })
+   .catch(function(){cb(lat.toFixed(4)+', '+lng.toFixed(4),null);});
+}
 function apply(which,name,addr,lat,lng,comps){var k=which===2?'col':'del';var sc=document.getElementById(which===2?'selcard2':'selcard');var vid=which===2?'selval2':'selval';var aid=which===2?'seladdr2':'seladdr';
   if(isAirport(lat,lng,(name||'')+' '+(addr||''))){loc[k]='';locName[k]='';_ll[k]=null;sc.className='selcard err';document.getElementById(vid).innerHTML='🚫 禁止エリア（空港・基地敷地）はお届け／回収の対象外です。<br>空港でのお受け取りは「無料送迎（空港/駅）」をご利用ください。';document.getElementById(aid).textContent='';renderCta();return;}
   if(!inCity(comps,addr)){loc[k]='';locName[k]='';_ll[k]=null;sc.className='selcard err';document.getElementById(vid).innerHTML='🚫 対応エリア外です。<br>お届け・回収は<b>'+AREALABEL+'</b>のみ承ります。';document.getElementById(aid).textContent='';renderCta();return;}
@@ -212,26 +222,49 @@ function renderCta(){var ok=!!loc.del&&(same||!!loc.col);var btn=document.getEle
   postState();}
 function esc(s){return (s||'').replace(/[<>&]/g,'');}
 
-/* 検索サジェスト（Google Places・那覇周辺を優先） */
+/* 検索サジェスト＝KEYDROP方式（キー不要・Photon→GSI国土地理院→Nominatim 自動フォールバック・エリア中心にバイアス） */
+function searchChain(q,cb){photonS(q,cb);}
+function photonS(q,cb){
+  fetch('https://photon.komoot.io/api/?q='+encodeURIComponent(q)+'&lat='+CENTER[0]+'&lon='+CENTER[1]+'&limit=8')
+   .then(function(r){return r.json();}).then(function(d){
+     var fe=((d&&d.features)||[]).filter(function(f){var p=(f&&f.properties)||{};return (!p.countrycode||p.countrycode==='JP')&&f.geometry&&f.geometry.coordinates;});
+     if(!fe.length){gsiS(q,cb);return;}
+     cb(fe.slice(0,8).map(function(f){var p=f.properties||{},c=f.geometry.coordinates;var name=p.name||'';var adr=[p.state,p.city,p.district,p.street,p.housenumber].filter(Boolean).join(' ').trim();return {main:name||adr||'',sub:name?adr:'',addr:(name&&adr)?(name+' '+adr):(name||adr),lat:c[1],lng:c[0]};}));
+   }).catch(function(){gsiS(q,cb);});
+}
+function gsiS(q,cb){
+  fetch('https://msearch.gsi.go.jp/address-search/AddressSearch?q='+encodeURIComponent(q))
+   .then(function(r){return r.json();}).then(function(arr){
+     if(!Array.isArray(arr)||!arr.length){nomiS(q,cb);return;}
+     var items=arr.slice(0,7).map(function(r){var c=r.geometry&&r.geometry.coordinates;var t=(r.properties&&r.properties.title)||'';return (c&&t)?{main:t,sub:'',addr:t,lat:c[1],lng:c[0]}:null;}).filter(Boolean);
+     if(!items.length){nomiS(q,cb);return;}cb(items);
+   }).catch(function(){nomiS(q,cb);});
+}
+function nomiS(q,cb){
+  fetch('https://nominatim.openstreetmap.org/search?q='+encodeURIComponent(q)+'&format=json&limit=6&accept-language=ja&countrycodes=jp',{headers:{'Accept':'application/json'}})
+   .then(function(r){return r.json();}).then(function(res){
+     cb((res||[]).map(function(r){var dn=r.display_name||'';var parts=dn.split(',').map(function(s){return s.trim();}).filter(Boolean);return {main:parts.slice(0,2).join(' '),sub:parts.slice(2,4).join(' '),addr:dn,lat:+r.lat,lng:+r.lon};}));
+   }).catch(function(){cb([]);});
+}
 function renderSugg(which){var q=(document.getElementById(which===2?'q2':'q').value||'').trim();var box=document.getElementById(which===2?'sugg2':'sugg');
   if(!q){box.classList.remove('on');return;}
-  clearTimeout(predTimer[which]);predTimer[which]=setTimeout(function(){predict(q,function(preds){lastPreds[which]=preds;
-    if(!preds.length){box.innerHTML='<div class="head" style="color:#8090ac;padding:11px 14px">該当する候補が見つかりません。地図を動かしてピンで指定できます。</div>';box.classList.add('on');return;}
-    box.innerHTML=preds.slice(0,6).map(function(p,i){var m=p.structured_formatting||{};return '<div class="it" data-i="'+i+'"><span class="si">📍</span><div><div class="st">'+esc(m.main_text||p.description)+'</div><div class="ss">'+esc(m.secondary_text||'')+'</div></div></div>';}).join('');
-    box.querySelectorAll('.it').forEach(function(el){el.onclick=function(){pick(preds[+el.getAttribute('data-i')],which);};});
+  clearTimeout(predTimer[which]);predTimer[which]=setTimeout(function(){searchChain(q,function(items){lastPreds[which]=items;
+    if(!items||!items.length){box.innerHTML='<div class="head" style="color:#8090ac;padding:11px 14px">該当する候補が見つかりません。地図を動かしてピンで指定できます。</div>';box.classList.add('on');return;}
+    box.innerHTML=items.slice(0,7).map(function(it,i){return '<div class="it" data-i="'+i+'"><span class="si">📍</span><div><div class="st">'+esc(it.main)+'</div><div class="ss">'+esc(it.sub||'')+'</div></div></div>';}).join('');
+    box.querySelectorAll('.it').forEach(function(el){el.onclick=function(){pickItem(items[+el.getAttribute('data-i')],which);};});
     box.classList.add('on');
   });},350);
 }
-function pick(pred,which){var box=document.getElementById(which===2?'sugg2':'sugg');box.classList.remove('on');
-  var inp=document.getElementById(which===2?'q2':'q');var label=(pred.structured_formatting&&pred.structured_formatting.main_text)||pred.description;inp.value=label;
-  details(pred.place_id,function(lat,lng,nm,addr,comps){commit(which,nm||label,addr||pred.description||'',lat,lng,comps);});
+function pickItem(it,which){var box=document.getElementById(which===2?'sugg2':'sugg');box.classList.remove('on');
+  var inp=document.getElementById(which===2?'q2':'q');inp.value=it.main;
+  commit(which,it.main,it.addr||it.main,it.lat,it.lng,null);
 }
 function submitSearch(which){var inp=document.getElementById(which===2?'q2':'q');var q=(inp.value||'').trim();
   document.getElementById(which===2?'sugg2':'sugg').classList.remove('on');
   if(!q)return;
-  var preds=lastPreds[which];
-  if(preds&&preds.length){pick(preds[0],which);return;}
-  predict(q,function(p){if(p&&p[0])pick(p[0],which);});
+  var items=lastPreds[which];
+  if(items&&items.length){pickItem(items[0],which);return;}
+  searchChain(q,function(it){if(it&&it[0])pickItem(it[0],which);});
 }
 function clearQ(which){document.getElementById(which===2?'q2':'q').value='';document.getElementById(which===2?'sugg2':'sugg').classList.remove('on');document.getElementById(which===2?'clr2':'clr').style.display='none';}
 function toggleSame(){same=!same;document.getElementById('sameSw').classList.toggle('off',!same);document.getElementById('retbody').classList.toggle('on',!same);
