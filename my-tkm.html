@@ -300,7 +300,7 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 <div class="toast" id="toast"></div>
 
 <script>
-const VER = "v1.5-tkm HANDYMAN高松空港店マイページ(じゃらんHDM・傷チェック確認→承認サイン追加)";
+const VER = "v1.6-tkm HANDYMAN高松空港店マイページ(帰り送迎=返却時間で固定・時間ピッカー廃止)";
 const FN = "https://ggqugvyskyiblxiycpci.supabase.co/functions/v1/handyman-mypage-tkm";
 // 免許証アップロードの保存先=GAS「HANDYMAN 免許証保存」→Googleドライブ（license.htmlと完全に同一・store='nha'で那覇フォルダへ）
 const GAS_LICENSE_URL = 'https://script.google.com/macros/s/AKfycbycpzE1RIu2LbIlYVeRYcXxfIgfDhY5y1Vtdh1Rj69S9uZEnmqFMDBHqq3y6pHS70_t7A/exec';
@@ -730,11 +730,12 @@ function initTransfer(){
   else if(vt==="来店"){ _btnActive("puYes","puNo",false); if(puRow)puRow.style.display="none"; _showCur("puCur","go",false); }
   else { _btnActive("puYes","puNo",null); if(puRow)puRow.style.display="none"; _hideCur("puCur"); }
   // 帰り
-  const rt2=String(r.return_type||""), rtRow=document.getElementById("rtTimeRow"), rtSv=document.getElementById("rtSave");
-  if(r.dropoff_time){ _btnActive("rtYes","rtNo",true); if(rtRow)rtRow.style.display="flex"; if(rtSv)rtSv.textContent=t('pu_change'); _showCur("rtCur","rt",true,r.dropoff_time); }
-  else if(rt2==="BD"||rt2==="BDB"){ _btnActive("rtYes","rtNo",true); if(rtRow)rtRow.style.display="flex"; _hideCur("rtCur"); }
-  else if(rt2==="返却"){ _btnActive("rtYes","rtNo",false); if(rtRow)rtRow.style.display="none"; _showCur("rtCur","rt",false); }
-  else { _btnActive("rtYes","rtNo",null); if(rtRow)rtRow.style.display="none"; _hideCur("rtCur"); }
+  // ★帰り(BD)送迎は返却時間で固定＝時間ピッカーを出さない（返却→そのままお見送り送迎＝返却時刻）
+  const rt2=String(r.return_type||""), rtRow=document.getElementById("rtTimeRow"), rtime=r.return_time||"";
+  if(rtRow)rtRow.style.display="none";
+  if(r.dropoff_time||rt2==="BD"||rt2==="BDB"){ _btnActive("rtYes","rtNo",true); _showCur("rtCur","rt",true,rtime); }
+  else if(rt2==="返却"){ _btnActive("rtYes","rtNo",false); _showCur("rtCur","rt",false); }
+  else { _btnActive("rtYes","rtNo",null); _hideCur("rtCur"); }
 }
 // 行き：お迎え希望（時間欄を出す）/ 来店（即保存）
 function puChoose(want){
@@ -763,7 +764,8 @@ async function doPickup(want,tm){
 // 帰り：送迎希望（時間欄を出す）/ 店舗で返却（即保存）
 function rtChoose(want){
   if(RO)return;
-  if(want){ _btnActive("rtYes","rtNo",true); const row=document.getElementById("rtTimeRow"); if(row)row.style.display="flex"; _hideCur("rtCur"); const rs=document.getElementById("rtSel"); if(rs&&DATA&&DATA.reservation&&DATA.reservation.dropoff_time)rs.value=DATA.reservation.dropoff_time; }
+  // ★帰り送迎は返却時間で固定＝ピッカーを出さず即保存（送迎時刻＝予約の返却時刻）
+  if(want){ doReturn(true, (DATA&&DATA.reservation&&DATA.reservation.return_time)||""); }
   else { doReturn(false,null); }
 }
 async function saveReturn(){
@@ -773,13 +775,11 @@ async function saveReturn(){
   doReturn(true,tm);
 }
 async function doReturn(want,tm){
-  const btn=document.getElementById("rtSave"); if(btn)btn.disabled=true;
   const res=await call("set_return",{want:want, time:want?tm:null});
-  if(btn)btn.disabled=false;
   if(res&&res.json&&res.json.ok){
     if(DATA&&DATA.reservation){ DATA.reservation.return_type=res.json.return_type||DATA.reservation.return_type; DATA.reservation.dropoff_time=res.json.dropoff_time||""; }
-    if(want){ _btnActive("rtYes","rtNo",true); const row=document.getElementById("rtTimeRow"); if(row)row.style.display="flex"; if(btn)btn.textContent=t('pu_change'); _showCur("rtCur","rt",true,tm); toast(t('rt_done')); }
-    else { _btnActive("rtYes","rtNo",false); const row=document.getElementById("rtTimeRow"); if(row)row.style.display="none"; _showCur("rtCur","rt",false); toast(t('pu_saved')); }
+    if(want){ _btnActive("rtYes","rtNo",true); _showCur("rtCur","rt",true,tm); toast(t('rt_done')); }
+    else { _btnActive("rtYes","rtNo",false); _showCur("rtCur","rt",false); toast(t('pu_saved')); }
   } else if(res&&res.json&&res.json.dropped){ /* 多重/RO */ }
   else toast(t('pu_err'));
 }
@@ -1124,7 +1124,7 @@ function render(){
       <div id="rtCur" class="pu-cur" style="display:none"></div>
     </div>`:`
     ${r.pickup_time?`<div class="pu-cur">🚐 ${t('pu_cur')}：<b>${esc(r.pickup_time)}〜</b></div>`:(r.visit_type==="来店"?`<div class="pu-cur" style="background:#eef2f7;border-color:#cbd5e1;color:#334155">🏬 ${t('pu_none_go')}</div>`:"")}
-    ${r.dropoff_time?`<div class="pu-cur" style="margin-top:8px">🚙 ${t('rt_done')}：<b>${esc(r.dropoff_time)}〜</b></div>`:(r.return_type==="返却"?`<div class="pu-cur" style="margin-top:8px;background:#eef2f7;border-color:#cbd5e1;color:#334155">🏬 ${t('rt_none')}</div>`:"")}`}
+    ${(r.dropoff_time||r.return_type==="BD"||r.return_type==="BDB")?`<div class="pu-cur" style="margin-top:8px">🚙 ${t('rt_done')}：<b>${esc(r.return_time||"")}〜</b></div>`:(r.return_type==="返却"?`<div class="pu-cur" style="margin-top:8px;background:#eef2f7;border-color:#cbd5e1;color:#334155">🏬 ${t('rt_none')}</div>`:"")}`}
     <div class="pu-spot">📍 ${t('pu_spot')}</div>
     <img class="pu-map" src="https://buddica-touring.github.io/app/guide/airport-pickup-map.png" alt="高松空港 送迎待ち合わせ場所" loading="lazy">
     <img class="pu-map" src="https://buddica-touring.github.io/app/guide/pickup-spot.jpg" alt="レンタカー会社受付付近（待機場所）" style="margin-top:8px" loading="lazy">
