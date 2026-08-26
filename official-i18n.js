@@ -21,7 +21,7 @@
       f_news:'お知らせ', f_company:'会社概要', f_terms:'貸渡約款', f_privacy:'プライバシー', f_law:'特定商取引法',
       note_naha:'🌺 那覇店：デリバリー・無料送迎（空港/駅）・来店に対応。',
       note_sapporo:'❄️ 札幌店：デリバリー専門。札幌市・北広島市へお届け／回収します。',
-      seats:'名', perday:'〜 / 1日', azukari:'預かり'
+      seats:'名', perday:'〜 / 1日',ca_book:'この車で予約', azukari:'預かり'
     },
     en:{
       nav_cars:'Car Types', nav_price:'Cars & Rates', nav_news:'News', nav_book:'Book Now',
@@ -39,7 +39,7 @@
       f_news:'News', f_company:'Company', f_terms:'Rental Terms', f_privacy:'Privacy', f_law:'Legal Notice',
       note_naha:'🌺 Naha: delivery, free shuttle (airport/station) & in-store pickup.',
       note_sapporo:'❄️ Sapporo: delivery-only. We deliver/collect in Sapporo & Kitahiroshima.',
-      seats:'pax', perday:'~ / day', azukari:'Consignment'
+      seats:'pax', perday:'~ / day',ca_book:'Book this car', azukari:'Consignment'
     },
     zh:{
       nav_cars:'車型一覽', nav_price:'車輛與費用', nav_news:'公告', nav_book:'立即預約',
@@ -57,7 +57,7 @@
       f_news:'公告', f_company:'公司簡介', f_terms:'租賃條款', f_privacy:'隱私權', f_law:'特定商業交易法',
       note_naha:'🌺 那覇店：提供送車・免費接送（機場/車站）・到店取車。',
       note_sapporo:'❄️ 札幌店：僅送車。於札幌市・北廣島市送車／收車。',
-      seats:'人', perday:'～ / 每日', azukari:'寄放車'
+      seats:'人', perday:'～ / 每日', ca_book:'預約此車', azukari:'寄放車'
     },
     ko:{
       nav_cars:'차종 목록', nav_price:'차량 및 요금', nav_news:'공지', nav_book:'예약하기',
@@ -75,7 +75,7 @@
       f_news:'공지', f_company:'회사 소개', f_terms:'대여 약관', f_privacy:'개인정보', f_law:'특정상거래법',
       note_naha:'🌺 나하점: 배달·무료 셔틀(공항/역)·방문 수령 가능.',
       note_sapporo:'❄️ 삿포로점: 배달 전용. 삿포로시·기타히로시마시로 배달/회수.',
-      seats:'명', perday:'~ / 1일', azukari:'위탁'
+      seats:'명', perday:'~ / 1일', ca_book:'이 차량 예약', azukari:'위탁'
     }
   };
   // ===== 予約フロー(official-flow.html)用キー =====
@@ -163,28 +163,28 @@
   };
   // ===== 確認明細 / 受取詳細 / 札幌デリバリー地図 =====
   var FLOW2={
-   ja:{cf_edit:'✏️ 変更',cf_store:'店舗',cf_recvm:'受取方法',cf_use:'ご利用',cf_booker:'ご予約者',cf_none:'なし',cf_days_unit:'日間',cf_x:'×',
+   ja:{cf_edit:'✏️ 変更',cf_store:'店舗',cf_recvm:'受取方法',cf_rcv_dt:'受取日時',cf_rcv_pl:'受取場所',cf_col_dt:'回収日時',cf_col_pl:'回収場所',cf_use:'ご利用',cf_booker:'ご予約者',cf_none:'なし',cf_days_unit:'日間',cf_x:'×',
      md_del:'デリバリー／お届け：',md_col:'／回収：',md_same:'同じ',md_unset:'未指定',md_air:'無料送迎／行き：',md_air2:'・帰り：',md_store_a:'来店（',md_store_b:'）',
      dl_place_map:'受け取り・回収の場所を地図で決めてください',dl_place_sel:'受け取り・回収の場所を選んでください',dl_colsame:'回収先はお届け先と同じ',
      dl_ph_park:'駐車場名・住所で検索',dl_ph_addr:'住所・ホテル名で検索',dl_search:'🔍 検索',dl_lt_station:'🚉 駅',dl_lt_hotel:'🏨 ホテル',dl_lt_park:'🅿️ ｺｲﾝﾊﾟｰｷﾝｸﾞ',
      dl_pend_sel:'場所を選び、下の「決定」を押してください。',dl_pend_map:'地図をタップ、または住所で検索して場所を選び、下の「決定」を押してください。',
      dl_decide_a:'この場所を「',dl_decide_b:'」に決定',dl_hint_naha:'駅・ホテルはプルダウン、コインパーキングは地図で指定できます。那覇＝沖縄本島の対応エリアへお届け／回収します。',dl_hint_spk:'札幌＝札幌市・北広島市へお届け／回収します。エリア外はご相談ください。',
      dl_target_del:'📍 お届け先',dl_target_col:'🏁 回収先',lc_undecided:'未決定',lc_change:'変更',lc_del:'お届け先',lc_col:'回収先',dl_selecting:'選択中：',dl_same_as:'お届け先と同じ',dl_next_col:'続けて<b>回収先</b>を地図で選び「決定」してください（お届け先と同じ場合は上のチェック）。'},
-   en:{cf_edit:'✏️ Edit',cf_store:'Store',cf_recvm:'Pickup method',cf_use:'Duration',cf_booker:'Booker',cf_none:'None',cf_days_unit:'day(s)',cf_x:'×',
+   en:{cf_edit:'✏️ Edit',cf_store:'Store',cf_recvm:'Pickup method',cf_rcv_dt:'Pickup date',cf_rcv_pl:'Pickup place',cf_col_dt:'Return date',cf_col_pl:'Collect place',cf_use:'Duration',cf_booker:'Booker',cf_none:'None',cf_days_unit:'day(s)',cf_x:'×',
      md_del:'Delivery / Drop-off: ',md_col:' / Collect: ',md_same:'Same',md_unset:'Not set',md_air:'Free shuttle / Out: ',md_air2:' · Return: ',md_store_a:'In-store (',md_store_b:')',
      dl_place_map:'Set the pickup/collection spot on the map',dl_place_sel:'Choose the pickup/collection spot',dl_colsame:'Collection spot same as delivery',
      dl_ph_park:'Search by parking lot / address',dl_ph_addr:'Search by address / hotel',dl_search:'🔍 Search',dl_lt_station:'🚉 Station',dl_lt_hotel:'🏨 Hotel',dl_lt_park:'🅿️ Parking',
      dl_pend_sel:'Choose a spot, then tap “Confirm” below.',dl_pend_map:'Tap the map or search an address, then tap “Confirm” below.',
      dl_decide_a:'Set this spot as “',dl_decide_b:'”',dl_hint_naha:'Station/hotel via dropdown; parking via map. Naha delivers/collects across Okinawa main island.',dl_hint_spk:'Sapporo delivers/collects in Sapporo & Kitahiroshima. Outside the area, please ask.',
      dl_target_del:'📍 Delivery',dl_target_col:'🏁 Collection',lc_undecided:'Not set',lc_change:'Change',lc_del:'Delivery spot',lc_col:'Collection spot',dl_selecting:'Selected: ',dl_same_as:'Same as delivery',dl_next_col:'Now choose the <b>collection spot</b> on the map and tap “Confirm” (or tick the box above if same as delivery).'},
-   zh:{cf_edit:'✏️ 變更',cf_store:'門市',cf_recvm:'取車方式',cf_use:'租用',cf_booker:'預約人',cf_none:'無',cf_days_unit:'日',cf_x:'×',
+   zh:{cf_edit:'✏️ 變更',cf_store:'門市',cf_recvm:'取車方式',cf_rcv_dt:'取車時間',cf_rcv_pl:'取車地點',cf_col_dt:'還車時間',cf_col_pl:'收車地點',cf_use:'租用',cf_booker:'預約人',cf_none:'無',cf_days_unit:'日',cf_x:'×',
      md_del:'送車／送達：',md_col:'／收車：',md_same:'相同',md_unset:'未指定',md_air:'免費接送／去程：',md_air2:'・回程：',md_store_a:'到店（',md_store_b:'）',
      dl_place_map:'請於地圖指定取車・收車地點',dl_place_sel:'請選擇取車・收車地點',dl_colsame:'收車地點與送車相同',
      dl_ph_park:'以停車場名・地址搜尋',dl_ph_addr:'以地址・飯店名搜尋',dl_search:'🔍 搜尋',dl_lt_station:'🚉 車站',dl_lt_hotel:'🏨 飯店',dl_lt_park:'🅿️ 投幣停車場',
      dl_pend_sel:'請選擇地點後，按下方「確定」。',dl_pend_map:'點地圖或以地址搜尋選擇地點後，按下方「確定」。',
      dl_decide_a:'將此地點設為「',dl_decide_b:'」',dl_hint_naha:'車站・飯店用下拉，投幣停車場用地圖指定。那覇於沖繩本島對應區域送車／收車。',dl_hint_spk:'札幌於札幌市・北廣島市送車／收車。區域外請洽詢。',
      dl_target_del:'📍 送車地點',dl_target_col:'🏁 收車地點',lc_undecided:'未定',lc_change:'變更',lc_del:'送車地點',lc_col:'收車地點',dl_selecting:'選擇中：',dl_same_as:'與送車相同',dl_next_col:'請接著於地圖選擇<b>收車地點</b>並按「確定」（若與送車相同請勾選上方）。'},
-   ko:{cf_edit:'✏️ 변경',cf_store:'매장',cf_recvm:'수령 방법',cf_use:'이용',cf_booker:'예약자',cf_none:'없음',cf_days_unit:'일간',cf_x:'×',
+   ko:{cf_edit:'✏️ 변경',cf_store:'매장',cf_recvm:'수령 방법',cf_rcv_dt:'수령 일시',cf_rcv_pl:'수령 장소',cf_col_dt:'반납 일시',cf_col_pl:'수거 장소',cf_use:'이용',cf_booker:'예약자',cf_none:'없음',cf_days_unit:'일간',cf_x:'×',
      md_del:'배달／전달: ',md_col:' / 회수: ',md_same:'동일',md_unset:'미지정',md_air:'무료 셔틀 / 가는편: ',md_air2:' · 오는편: ',md_store_a:'방문(',md_store_b:')',
      dl_place_map:'지도에서 수령·회수 장소를 지정하세요',dl_place_sel:'수령·회수 장소를 선택하세요',dl_colsame:'회수 장소를 배달과 동일하게',
      dl_ph_park:'주차장명·주소로 검색',dl_ph_addr:'주소·호텔명으로 검색',dl_search:'🔍 검색',dl_lt_station:'🚉 역',dl_lt_hotel:'🏨 호텔',dl_lt_park:'🅿️ 코인주차장',
