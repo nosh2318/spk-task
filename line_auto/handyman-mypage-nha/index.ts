@@ -255,7 +255,7 @@ Deno.serve(async (req) => {
         { type: "mrkdwn", text: `*車両:*\n${r.vehicle_class || r.vehicle_name || "-"}` }, { type: "mrkdwn", text: `*金額:*\n¥${Number(r.price || 0).toLocaleString()}` },
       ] },
       { type: "section", text: { type: "mrkdwn", text: `*理由:*\n${reason || "（記載なし）"}` } },
-      { type: "actions", elements: [ { type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, style: "primary", url: "https://nosh2318.github.io/naha-project/mypage-usage-nha.html" } ] },
+      { type: "actions", elements: [ { type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, style: "primary", url: "https://rent-handyman.com/mypage-admin.html?bucket=hdm_nha" } ] },
       { type: "context", elements: [ { type: "mrkdwn", text: "⚠️ 承認制です。上のボタン（または「📲マイページ利用状況(那覇)」→承認待ち）で承認/却下（承認＝キャンセル確定＋配車解放。返金は規定に沿って手動Square返金）。" } ] },
     ]);
     return json({ ok: true, requested: true }, 200, origin);
@@ -280,7 +280,8 @@ Deno.serve(async (req) => {
         { type: "mrkdwn", text: `*🕐 予定の回収*\n${planned}` },
         { type: "mrkdwn", text: `*🟢 お客様の希望*\n${rdyTime ? `*${rdyTime}〜*` : "指定なし"}` },
       ] },
-      { type: "context", elements: [ { type: "mrkdwn", text: "👉 「📲 マイページ利用状況（那覇）」の *🟢承認待ち* で ✅承認 / 🚫却下（承認でお客様へLINE自動送信）" } ] },
+      { type: "actions", elements: [ { type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, style: "primary", url: "https://rent-handyman.com/mypage-admin.html?bucket=hdm_nha" } ] },
+      { type: "context", elements: [ { type: "mrkdwn", text: "👉 上のボタン（マイページ管理）で ✅承認 / 🚫却下（承認でお客様へメール通知）" } ] },
     ];
     await slackPost(`🟢 早め回収リクエスト（承認待ち）[那覇] ${r.name || ""} / ${resId}`, rBlocks);
     return json({ ok: true }, 200, origin);
