@@ -20,7 +20,7 @@ const SB_URL = Deno.env.get("SUPABASE_URL")!;
 const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const H = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "content-type": "application/json" };
 
-const ALLOWED = ["https://nosh2318.github.io", "https://keydrop.jp"];
+const ALLOWED = ["https://nosh2318.github.io", "https://keydrop.jp", "https://rent-handyman.com"];
 function cors(o: string | null) {
   const allow = o && ALLOWED.includes(o) ? o : ALLOWED[0];
   return { "Access-Control-Allow-Origin": allow, "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "content-type, apikey, authorization", "Vary": "Origin" };
