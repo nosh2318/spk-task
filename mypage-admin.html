@@ -59,7 +59,7 @@ input{font-family:inherit;font-size:15px;padding:9px 10px;border:1px solid var(-
 
 <!-- 未処理リスト -->
 <div class="card">
-  <div class="row"><b id="listTitle">🔴 未処理一覧（全店）</b><span class="sp" style="flex:1"></span>
+  <div class="row"><b id="listTitle">🔴 未処理一覧（店舗未選択）</b><span class="sp" style="flex:1"></span>
     <span class="chip on" data-t="all" onclick="setTF('all')">全種別</span>
     <span class="chip" data-t="cancel" onclick="setTF('cancel')">🚫 キャンセル</span>
     <span class="chip" data-t="change" onclick="setTF('change')">✏️ 変更</span>
@@ -90,7 +90,7 @@ const MAIN="https://ckrxttbnawkclshczsia.supabase.co";
 const MAIN_ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
 const BT="https://ggqugvyskyiblxiycpci.supabase.co";
 const BT_ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdncXVndnlza3lpYmx4aXljcGNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxMDc3NjksImV4cCI6MjA5MzY4Mzc2OX0.uNhWcBd_Dl5nzemZDQfJ8mQV6iY73MwystGGpTRPC18";
-let ITEMS=[], TF="all", BF="all";
+let ITEMS=[], TF="all", BF=localStorage.getItem('mpa_bucket')||"";
 const BUCK={
   hdm_spk:{n:"HDM / 札幌",c:"#0a58c2",ef:MAIN+"/functions/v1/handyman-mypage",anon:MAIN_ANON},
   hdm_nha:{n:"HDM / 那覇",c:"#166534",ef:MAIN+"/functions/v1/handyman-mypage-nha",anon:MAIN_ANON},
@@ -112,8 +112,9 @@ async function loadAll(){
   const [a,b]=await Promise.all([rpc(MAIN,MAIN_ANON,"mpadmin_pending"),rpc(BT,BT_ANON,"mpadmin_pending_bt")]);
   ITEMS=a.concat(b).map(x=>Object.assign({},x,{ty:typeOf(x.field)}));
   renderTiles();renderList();renderDone();
+  document.getElementById('listTitle').textContent="🔴 未処理一覧（"+(BF&&BUCK[BF]?BUCK[BF].n:"店舗未選択")+"）";
   const req=ITEMS.filter(x=>x.status==="requested").length;
-  document.getElementById('hdrPin').textContent="未処理 "+req+"件";
+  document.getElementById('hdrPin').textContent="未処理 合計 "+req+"件";
 }
 function reqBy(bk){return ITEMS.filter(x=>x.status==="requested"&&x.bucket===bk).length;}
 function renderTiles(){
@@ -127,16 +128,17 @@ function renderTiles(){
       <div class="lb">未処理</div></div>`;
   }).join("");
 }
-function setBF(bk){BF=(BF===bk)?"all":bk;renderTiles();renderList();
-  document.getElementById('listTitle').textContent="🔴 未処理一覧（"+(BF==="all"?"全店":BUCK[BF].n)+"）";}
+function setBF(bk){BF=bk;localStorage.setItem('mpa_bucket',bk);renderTiles();renderList();renderDone();
+  document.getElementById('listTitle').textContent="🔴 未処理一覧（"+(BF&&BUCK[BF]?BUCK[BF].n:"店舗未選択")+"）";}
 function setTF(t){TF=t;document.querySelectorAll('.chip[data-t]').forEach(c=>c.classList.toggle('on',c.dataset.t===t));renderList();}
 function itKey(x){return x.bucket+"-"+x.id;}
 function renderList(){
-  const prio={cancel:0,change:1,ready:2};
-  let arr=ITEMS.filter(x=>x.status==="requested"&&(BF==="all"||x.bucket===BF)&&(TF==="all"||x.ty===TF));
-  arr.sort((a,b)=>(prio[a.ty]-prio[b.ty])||String(b.at||"").localeCompare(String(a.at||"")));
   const el=document.getElementById('list');
-  if(!arr.length){el.innerHTML='<div class="empty">✅ 未処理はありません</div>';return;}
+  if(!BF||!BUCK[BF]){el.innerHTML='<div class="empty">↑ 上のタイルから店舗を選択してください</div>';return;}
+  const prio={cancel:0,change:1,ready:2};
+  let arr=ITEMS.filter(x=>x.status==="requested"&&x.bucket===BF&&(TF==="all"||x.ty===TF));
+  arr.sort((a,b)=>(prio[a.ty]-prio[b.ty])||String(b.at||"").localeCompare(String(a.at||"")));
+  if(!arr.length){el.innerHTML='<div class="empty">✅ この店舗の未処理はありません</div>';return;}
   el.innerHTML=arr.map(x=>{const B=BUCK[x.bucket];
     return `<div class="it ${x.ty}"><div class="top">
       <span class="bdg" style="background:${B.c}">${B.n}</span>
@@ -152,8 +154,8 @@ function renderList(){
   }).join("");
 }
 function renderDone(){
-  const arr=ITEMS.filter(x=>x.status!=="requested").sort((a,b)=>String(b.at||"").localeCompare(String(a.at||"")));
-  document.getElementById('doneCount').textContent=arr.length+"件";
+  const arr=ITEMS.filter(x=>x.status!=="requested"&&(!BF||!BUCK[BF]||x.bucket===BF)).sort((a,b)=>String(b.at||"").localeCompare(String(a.at||"")));
+  document.getElementById('doneCount').textContent=(BF&&BUCK[BF]?BUCK[BF].n+"・":"")+arr.length+"件";
   document.getElementById('doneBody').innerHTML=arr.length?arr.map(x=>{const B=BUCK[x.bucket];
     return `<div class="it ${x.ty}" style="opacity:.85"><div class="top"><span class="bdg" style="background:${B.c}">${B.n}</span>
     <span class="nm">${esc(x.name||'-')} 様</span><span class="mut">${tyLabel(x.ty,x.field)}</span>
