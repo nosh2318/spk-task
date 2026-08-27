@@ -30,6 +30,13 @@ function json(b: unknown, s: number, o: string | null) { return new Response(JSO
 async function sbGet(t: string, q: string): Promise<any[]> { const r = await fetch(`${SB_URL}/rest/v1/${t}?${q}`, { headers: H }); if (!r.ok) { console.error(`GET ${t}`, await r.text()); return []; } return await r.json(); }
 async function sbPost(t: string, b: unknown): Promise<void> { const r = await fetch(`${SB_URL}/rest/v1/${t}`, { method: "POST", headers: { ...H, Prefer: "return=minimal" }, body: JSON.stringify(b) }); if (!r.ok) console.error(`POST ${t}`, await r.text()); }
 async function sbPatch(t: string, q: string, b: unknown): Promise<void> { const r = await fetch(`${SB_URL}/rest/v1/${t}?${q}`, { method: "PATCH", headers: { ...H, Prefer: "return=minimal" }, body: JSON.stringify(b) }); if (!r.ok) console.error(`PATCH ${t}`, await r.text()); }
+async function sbDelete(t: string, q: string): Promise<void> { const r = await fetch(`${SB_URL}/rest/v1/${t}?${q}`, { method: "DELETE", headers: H }); if (!r.ok) console.error(`DELETE ${t}`, await r.text()); }
+// 予約完了・キャンセルは予約通知ch #okinawa_reservation_notification
+async function slackResv(text: string, blocks?: unknown): Promise<boolean> {
+  const token = Deno.env.get("SLACK_BOT_TOKEN"); const ch = Deno.env.get("SLACK_NHA_RESV_CHANNEL") || "C06KZ56NTDF";
+  if (!token) return false;
+  try { const r = await fetch("https://slack.com/api/chat.postMessage", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ channel: ch, text, blocks }) }); const j = await r.json(); return !!j.ok; } catch { return false; }
+}
 // 顧客へLINE通知（line-push 経由・store=nha・mypage_decision＝日付ガード回避／誤送信ガードはline-push側）
 async function pushLine(resvNo: string, message: string): Promise<void> {
   const secret = Deno.env.get("LINEPUSH_SECRET");
@@ -108,6 +115,28 @@ Deno.serve(async (req) => {
     if (!c) return json({ error: "対象が見つかりません" }, 404, origin);
     if (c.status !== "requested") return json({ error: "処理済みです", status: c.status }, 409, origin);
     const resId2 = String(c.reservation_id);
+    // ---- キャンセル承認/却下（HP直販・承認必須。返金は手動Square）----
+    if (c.field === "cancel") {
+      await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: decision, actor });
+      const cr = (await sbGet("nha_reservations", `id=eq.${encodeURIComponent(resId2)}&select=name,ota,start_date,end_date,vehicle_class,price`))[0] || {};
+      if (decision === "approved") {
+        await sbPatch("nha_reservations", `id=eq.${encodeURIComponent(resId2)}`, { status: "キャンセル" });
+        await sbDelete("nha_fleet", `reservation_id=eq.${encodeURIComponent(resId2)}`);
+        await pushLine(resId2, `【HANDYMAN 那覇】ご予約 ${resId2} のキャンセルを承りました。\n担当より別途ご連絡いたします。ご利用ありがとうございました。`);
+        await slackResv(`✅ キャンセル承認（確定）[那覇] ${cr.name || ""} / ${resId2}`, [
+          { type: "header", text: { type: "plain_text", text: "✅ キャンセル承認（確定）", emoji: true } },
+          { type: "section", fields: [
+            { type: "mrkdwn", text: `*お客様:*\n${cr.name || "-"} 様` }, { type: "mrkdwn", text: `*予約番号:*\n${resId2}` },
+            { type: "mrkdwn", text: `*利用期間:*\n${cr.start_date || "-"} 〜 ${cr.end_date || "-"}` }, { type: "mrkdwn", text: `*金額:*\n¥${Number(cr.price || 0).toLocaleString()}` },
+          ] },
+          { type: "context", elements: [ { type: "mrkdwn", text: `キャンセル確定・配車解放済み。⚠️ 返金は規定（7日前無料/6-3日20%/2日前・前日30%/当日50%）に沿って Square で手動返金してください。承認: ${actor.replace(/^staff:/, "")}` } ] },
+        ]);
+      } else {
+        await pushLine(resId2, `【HANDYMAN 那覇】キャンセル申請につきまして、恐れ入りますが今回はお受けいたしかねます。詳細は公式LINEにてご連絡いたします。`);
+        await slackResv(`🚫 キャンセル却下 [那覇] ${cr.name || ""} / ${resId2} ／ ${actor.replace(/^staff:/, "")}`);
+      }
+      return json({ ok: true, decided: decision }, 200, origin);
+    }
     let msg: string;
     if (decision === "approved") {
       msg = c.field === "ready"
@@ -160,7 +189,7 @@ Deno.serve(async (req) => {
     return json({ ok: true, decided: decision }, 200, origin);
   }
 
-  if (action !== "lookup" && action !== "license_uploaded" && action !== "ready") return json({ error: "unsupported action" }, 400, origin);
+  if (action !== "lookup" && action !== "license_uploaded" && action !== "ready" && action !== "cancel_request") return json({ error: "unsupported action" }, 400, origin);
 
   const token = String(p.token || "").trim();
   if (!token || token.length < 20) return json({ error: "アクセスキーが不正です" }, 400, origin);
@@ -192,6 +221,30 @@ Deno.serve(async (req) => {
     try { await fetch(`${SB_URL}/rest/v1/license_uploads?on_conflict=reservation_id`, { method: "POST", headers: { ...H, Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ reservation_id: resId, store: "nha", cnt, drivers, last_at: new Date().toISOString() }) }); } catch (_) { /* noop */ }
     await slackPost(`🪪 免許証アップロード完了 [那覇] ${r.name || ""} / ${resId} / ${cnt}枚`, blocks);
     return json({ ok: true }, 200, origin);
+  }
+
+  // ---- cancel_request: HP直販予約のキャンセル申請（承認必須）。OTA予約は各OTAから申請＝受け付けない ----
+  if (action === "cancel_request") {
+    const st0 = String(r.status || "");
+    if (st0 === "キャンセル" || st0 === "cancelled" || st0 === "cancel") return json({ ok: true, alreadyCancelled: true }, 200, origin);
+    const isHP = ["HANDYMAN", "KEYDROP", "HP", "SP", "direct"].includes(String(r.ota || "")) || resId.indexOf("HDMN") === 0;
+    if (!isHP) return json({ error: "OTAでご予約の場合は、ご予約された各OTAサイトからキャンセルをお申し込みください。", otaOnly: true }, 400, origin);
+    const reason = String(p.reason || "").trim().slice(0, 300);
+    const already = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.nha&field=eq.cancel&status=eq.requested&select=id&limit=1`);
+    if (already[0]) return json({ ok: true, alreadyRequested: true }, 200, origin);
+    await sbPost("mypage_changes", { reservation_id: resId, store: "nha", field: "cancel", old_value: st0, new_value: "キャンセル依頼", source: "customer", status: "requested", note: reason });
+    await slackResv(`🔴 キャンセル申請（承認待ち）[那覇] ${r.name || ""} / ${resId}`, [
+      { type: "header", text: { type: "plain_text", text: "🔴 キャンセル申請（承認待ち）", emoji: true } },
+      { type: "section", fields: [
+        { type: "mrkdwn", text: `*お客様:*\n${r.name || "-"} 様` }, { type: "mrkdwn", text: `*予約番号:*\n${resId}` },
+        { type: "mrkdwn", text: `*ご予約元:*\n${otaJp(r.ota)}` }, { type: "mrkdwn", text: `*利用期間:*\n${r.start_date || "-"} 〜 ${r.end_date || "-"}` },
+        { type: "mrkdwn", text: `*車両:*\n${r.vehicle_class || r.vehicle_name || "-"}` }, { type: "mrkdwn", text: `*金額:*\n¥${Number(r.price || 0).toLocaleString()}` },
+      ] },
+      { type: "section", text: { type: "mrkdwn", text: `*理由:*\n${reason || "（記載なし）"}` } },
+      { type: "actions", elements: [ { type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, style: "primary", url: "https://nosh2318.github.io/naha-project/mypage-usage-nha.html" } ] },
+      { type: "context", elements: [ { type: "mrkdwn", text: "⚠️ 承認制です。上のボタン（または「📲マイページ利用状況(那覇)」→承認待ち）で承認/却下（承認＝キャンセル確定＋配車解放。返金は規定に沿って手動Square返金）。" } ] },
+    ]);
+    return json({ ok: true, requested: true }, 200, origin);
   }
 
   // ---- ready: お客様が「返却準備完了(早め回収OK)」を申請（DEL/COL）→ 承認待ち ＋ Slack通知 ----
@@ -339,7 +392,7 @@ Deno.serve(async (req) => {
     damage: { ready: damageReady, url: damageUrl },
     tracking: { active: r.kd_status === "delivering" || r.kd_status === "collecting", kd_status: r.kd_status || null, token: r.kd_track_token || null },
     license: { cnt: licCnt, drivers: licDrivers },
-    pendingCancel: false, readyPending: chg.some((c: any) => c.field === "ready" && c.status === "requested"),
+    pendingCancel: chg.some((c: any) => c.field === "cancel" && c.status === "requested"), readyPending: chg.some((c: any) => c.field === "ready" && c.status === "requested"),
     recentChanges: chg, history: historyTop,
     at: nowJst(),
   }, 200, origin);
