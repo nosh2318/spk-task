@@ -104,12 +104,19 @@ Deno.serve(async (req) => {
 
   // ==== 承認/却下（スタッフ操作・早め回収リクエスト等）＝📲マイページ利用状況から呼ぶ ====
   if (action === "decide") {
-    const staffToken = String(p.staff_token || "").trim();
-    if (!staffToken) return json({ error: "スタッフ認証が必要です" }, 401, origin);
-    const who = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${staffToken}` } });
-    if (!who.ok) return json({ error: "認証に失敗しました" }, 401, origin);
-    const wj: any = await who.json().catch(() => ({}));
-    const actor = "staff:" + (wj?.email || wj?.id || "unknown");
+    // 認証: (a) 共通PIN（全店ダッシュボード・目視承認）／(b) スタッフJWT。どちらか一方でOK。
+    const ADMIN_PIN = Deno.env.get("ADMIN_PIN") || "";
+    const adminPin = String(p.admin_pin || "");
+    let actor = "";
+    if (ADMIN_PIN && adminPin && adminPin === ADMIN_PIN) { actor = "staff:admin_pin"; }
+    else {
+      const staffToken = String(p.staff_token || "").trim();
+      if (!staffToken) return json({ error: "スタッフ認証（PIN）が必要です" }, 401, origin);
+      const who = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${staffToken}` } });
+      if (!who.ok) return json({ error: "認証に失敗しました" }, 401, origin);
+      const wj: any = await who.json().catch(() => ({}));
+      actor = "staff:" + (wj?.email || wj?.id || "unknown");
+    }
     const changeId = p.change_id;
     const decision = String(p.decision || "").trim();
     if (!changeId || (decision !== "approved" && decision !== "rejected")) return json({ error: "パラメータ不正" }, 400, origin);
