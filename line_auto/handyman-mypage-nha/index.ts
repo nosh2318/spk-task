@@ -119,11 +119,13 @@ Deno.serve(async (req) => {
     }
     const changeId = p.change_id;
     const decision = String(p.decision || "").trim();
-    if (!changeId || (decision !== "approved" && decision !== "rejected")) return json({ error: "パラメータ不正" }, 400, origin);
+    if (!changeId || (decision !== "approved" && decision !== "rejected" && decision !== "acknowledged")) return json({ error: "パラメータ不正" }, 400, origin);
     const cRows = await sbGet("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}&store=eq.nha&select=id,reservation_id,field,new_value,status`);
     const c = cRows[0];
     if (!c) return json({ error: "対象が見つかりません" }, 404, origin);
     if (c.status !== "requested") return json({ error: "処理済みです", status: c.status }, 409, origin);
+    // 確認済み（対応不要・アーカイブのみ。反映も通知もしない）
+    if (decision === "acknowledged") { await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: "acknowledged", actor }); return json({ ok: true, decided: "acknowledged" }, 200, origin); }
     const resId2 = String(c.reservation_id);
     // ---- キャンセル承認/却下（HP直販・承認必須。返金は手動Square）----
     if (c.field === "cancel") {
