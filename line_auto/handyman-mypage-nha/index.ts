@@ -37,17 +37,20 @@ async function slackResv(text: string, blocks?: unknown): Promise<boolean> {
   if (!token) return false;
   try { const r = await fetch("https://slack.com/api/chat.postMessage", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ channel: ch, text, blocks }) }); const j = await r.json(); return !!j.ok; } catch { return false; }
 }
-// 顧客へLINE通知（line-push 経由・store=nha・mypage_decision＝日付ガード回避／誤送信ガードはline-push側）
-async function pushLine(resvNo: string, message: string): Promise<void> {
-  const secret = Deno.env.get("LINEPUSH_SECRET");
-  if (!secret) { console.log("[line skip] no LINEPUSH_SECRET", resvNo); return; }
+// 顧客へメール通知（LINEは当面使わずメールのみ・2026-08-27 オーナー指示）
+// rent-handyman.com は MAIN の Resend では送れないため BT project の notice-mail-send 経由で送る。
+const BT_NOTICE_URL = "https://ggqugvyskyiblxiycpci.supabase.co/functions/v1/notice-mail-send";
+const BT_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdncXVndnlza3lpYmx4aXljcGNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxMDc3NjksImV4cCI6MjA5MzY4Mzc2OX0.uNhWcBd_Dl5nzemZDQfJ8mQV6iY73MwystGGpTRPC18";
+async function mailCustomer(resvNo: string, subject: string, text: string): Promise<void> {
+  const secret = Deno.env.get("NOTICE_MAIL_SECRET");
+  if (!secret) { console.log("[mail skip] no NOTICE_MAIL_SECRET", resvNo); return; }
   try {
-    const r = await fetch(`${SB_URL}/functions/v1/line-push`, {
-      method: "POST", headers: { "content-type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` },
-      body: JSON.stringify({ secret, store: "nha", resv_no: resvNo, action: "mypage_decision", message }),
+    const r = await fetch(BT_NOTICE_URL, {
+      method: "POST", headers: { "content-type": "application/json", apikey: BT_ANON, Authorization: `Bearer ${BT_ANON}` },
+      body: JSON.stringify({ secret, store: "nha", resv_no: resvNo, subject, text, allow_cancel: true }),
     });
-    const d = await r.json().catch(() => ({})); if (!(d as any).ok) console.log("[line-push]", JSON.stringify(d));
-  } catch (e) { console.error("[line-push]", String(e)); }
+    const d = await r.json().catch(() => ({})); if (!(d as any).ok) console.log("[notice-mail]", JSON.stringify(d));
+  } catch (e) { console.error("[notice-mail]", String(e)); }
 }
 // Slack通知（那覇のマイページ操作＝#okinawa_operations-team / 環境変数で上書き可）
 async function slackPost(text: string, blocks?: unknown): Promise<boolean> {
@@ -122,7 +125,8 @@ Deno.serve(async (req) => {
       if (decision === "approved") {
         await sbPatch("nha_reservations", `id=eq.${encodeURIComponent(resId2)}`, { status: "キャンセル" });
         await sbDelete("nha_fleet", `reservation_id=eq.${encodeURIComponent(resId2)}`);
-        await pushLine(resId2, `【HANDYMAN 那覇】ご予約 ${resId2} のキャンセルを承りました。\n担当より別途ご連絡いたします。ご利用ありがとうございました。`);
+        await mailCustomer(resId2, `【HANDYMAN那覇空港店】ご予約 ${resId2} キャンセル受付のご連絡`,
+          `${cr.name || "お客様"} 様\n\nこの度はご連絡いただきありがとうございます。\nご予約 ${resId2}（${cr.start_date || ""}〜${cr.end_date || ""}）のキャンセルを承りました。\n\n返金がある場合は、規定に沿って別途手続きのうえご連絡いたします。\nまたのご利用を心よりお待ちしております。\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);
         await slackResv(`✅ キャンセル承認（確定）[那覇] ${cr.name || ""} / ${resId2}`, [
           { type: "header", text: { type: "plain_text", text: "✅ キャンセル承認（確定）", emoji: true } },
           { type: "section", fields: [
@@ -132,7 +136,8 @@ Deno.serve(async (req) => {
           { type: "context", elements: [ { type: "mrkdwn", text: `キャンセル確定・配車解放済み。⚠️ 返金は規定（7日前無料/6-3日20%/2日前・前日30%/当日50%）に沿って Square で手動返金してください。承認: ${actor.replace(/^staff:/, "")}` } ] },
         ]);
       } else {
-        await pushLine(resId2, `【HANDYMAN 那覇】キャンセル申請につきまして、恐れ入りますが今回はお受けいたしかねます。詳細は公式LINEにてご連絡いたします。`);
+        await mailCustomer(resId2, `【HANDYMAN那覇空港店】ご予約 ${resId2} キャンセルのご相談につきまして`,
+          `${cr.name || "お客様"} 様\n\nお問い合わせいただいたご予約 ${resId2} のキャンセルにつきまして、恐れ入りますが今回はお受けいたしかねます。\n詳細は担当より別途ご連絡いたします。\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);
         await slackResv(`🚫 キャンセル却下 [那覇] ${cr.name || ""} / ${resId2} ／ ${actor.replace(/^staff:/, "")}`);
       }
       return json({ ok: true, decided: decision }, 200, origin);
@@ -147,7 +152,7 @@ Deno.serve(async (req) => {
         ? `【HANDYMAN 那覇】ご連絡ありがとうございます。今回は予定のお時間での回収を予定しております。何卒よろしくお願いいたします。`
         : `【HANDYMAN 那覇】ご依頼につきまして、恐れ入りますが今回はお受けいたしかねます。詳細は公式LINEにてご連絡いたします。`;
     }
-    await pushLine(resId2, msg);  // 予約有効なうちに先に送る
+    await mailCustomer(resId2, `【HANDYMAN那覇空港店】ご予約 ${resId2} ご依頼の結果`, msg.replace(/公式LINE/g, "担当") + `\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);  // 予約有効なうちに先に送る
     await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: decision, actor });
     // ★ 早め回収(ready)を承認し、希望時間(HH:MM)がある場合は諸々の表示へ自動反映
     //   ①nha_reservations.col_time/end_time ②nha_tasks の c-<予約>「変更」(＋「時間」) ③mypage_changes field=return_time status=applied
