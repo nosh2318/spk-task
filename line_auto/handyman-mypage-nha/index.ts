@@ -62,8 +62,8 @@ async function pushLineNha(resvNo: string, message: string): Promise<void> {
 }
 // 通知の振り分け：LINE連携済み(nha_line_links)ならLINE、未連携ならメール
 async function notifyCust(resvNo: string, subject: string, text: string): Promise<void> {
-  const linked = (await sbGet("nha_line_links", `resv_no=eq.${encodeURIComponent(resvNo)}&select=resv_no&limit=1`))[0];
-  if (linked) await pushLineNha(resvNo, text.replace(/担当より別途/g, "担当より別途").replace(/reserve@rent-handyman\.com/g, ""));
+  const lk = (await sbGet("nha_line_links", `resv_no=eq.${encodeURIComponent(resvNo)}&select=line_user_id&limit=1`))[0];
+  if (lk && String((lk as any).line_user_id || "").trim()) await pushLineNha(resvNo, text.replace(/reserve@rent-handyman\.com/g, "").trim());
   else await mailCustomer(resvNo, subject, text);
 }
 // Slack通知（那覇のマイページ操作＝#okinawa_operations-team / 環境変数で上書き可）
