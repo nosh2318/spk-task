@@ -103,11 +103,11 @@
     <!-- 前提 -->
     <h2 class="sh">② 前提</h2>
     <div class="assump">
-      <span><label>付帯売上（通常期/月・手動）</label> <input id="aFutaiN" type="number" step="1000" value="524250" oninput="calc()"> 円</span>
-      <span><label>付帯売上（繁忙期/月・手動）</label> <input id="aFutaiB" type="number" step="1000" value="778275" oninput="calc()"> 円</span>
+      <span><label>付帯売上（低価格販売/月・手動）</label> <input id="aFutaiN" type="number" step="1000" value="524250" oninput="calc()"> 円</span>
+      <span><label>付帯売上（通常価格販売/月・手動）</label> <input id="aFutaiB" type="number" step="1000" value="778275" oninput="calc()"> 円</span>
       <span><label>OTA手数料率（自動連動）</label> <input id="aFee" type="number" step="0.5" value="18" oninput="calc()"> %</span>
-      <span><label>繁忙期の月数</label> <input id="aMonB" type="number" min="0" max="12" value="7" oninput="calc()"> ヶ月</span>
-      <span><label>通常期の月数</label> <input id="aMonN" type="number" min="0" max="12" value="5" oninput="calc()"> ヶ月</span>
+      <span><label>通常価格販売の月数</label> <input id="aMonB" type="number" min="0" max="12" value="7" oninput="calc()"> ヶ月</span>
+      <span><label>低価格販売の月数</label> <input id="aMonN" type="number" min="0" max="12" value="5" oninput="calc()"> ヶ月</span>
       <span style="color:var(--sub);font-size:11.5px;">（合計12ヶ月）</span>
     </div>
 
@@ -119,7 +119,7 @@
     <!-- P&L -->
     <h2 class="sh">④ 損益（P&L）</h2>
     <div class="pl">
-      <div class="hd lab">勘定科目</div><div class="hd">通常期／月</div><div class="hd">繁忙期／月</div><div class="hd col4">年間合計</div>
+      <div class="hd lab">勘定科目</div><div class="hd">低価格販売／月</div><div class="hd">通常価格販売／月</div><div class="hd col4">年間合計</div>
       <div class="lab">売上高（車両＋付帯）</div><div id="pl_sales_N"></div><div id="pl_sales_B"></div><div class="col4" id="pl_sales_Y"></div>
       <div class="lab">売上原価（車両固定費）</div><div id="pl_cost_N"></div><div id="pl_cost_B"></div><div class="col4" id="pl_cost_Y"></div>
       <div class="lab em">粗利</div><div class="em" id="pl_gp_N"></div><div class="em" id="pl_gp_B"></div><div class="em col4" id="pl_gp_Y"></div>
@@ -130,7 +130,17 @@
       <div class="lab" style="color:var(--sub);font-size:11px;">営業利益率</div><div id="pl_opr_N" style="font-size:11px;color:var(--sub)"></div><div id="pl_opr_B" style="font-size:11px;color:var(--sub)"></div><div class="col4" id="pl_opr_Y" style="font-size:11px;color:var(--sub)"></div>
     </div>
 
-    <div class="note">この「粗利」は売上高−車両固定費（リース／保険／車検／税）。年間＝繁忙期×繁忙月数＋通常期×通常月数。<b>台数構成・単価・稼働率・原価・前提・販管費すべて編集可</b>。特定プラン（例：PLAN A＝アルヴェル比率高）を再現したい時は台数構成と前提を調整してください。</div>
+    <div class="note">この「粗利」は売上高−車両固定費（リース／保険／車検／税）。年間＝通常価格販売×月数＋低価格販売×月数。<b>台数構成・単価・稼働率・原価・前提・販管費すべて編集可</b>。</div>
+
+    <!-- 台数別サマリ -->
+    <h2 class="sh">⑤ 台数別サマリ（30 / 40 / 50 / 60台）</h2>
+    <div class="tblwrap">
+      <table>
+        <thead><tr><th class="l">年間・営業利益ベース</th><th>30台</th><th>40台</th><th>50台</th><th>60台</th></tr></thead>
+        <tbody id="sumRows"></tbody>
+      </table>
+    </div>
+    <div class="note">上の車両構成を各台数へ<b>比例スケール</b>して試算（車両売上・車両原価・付帯・OTA手数料が台数に連動、<b>固定販管費は据え置き</b>）。40/50/60台の実バージョンは固定費（人件費・賃料等）も要調整のため、あくまで概算比較です。</div>
   </div>
 </div>
 
@@ -214,6 +224,35 @@ function calc(){
   document.getElementById('cGpY').textContent=yen(Y.gp);
   document.getElementById('cOpY').textContent=yen(Y.op);
   document.getElementById('cOpPct').textContent='営業利益率 '+Y.opr.toFixed(1)+'%';
+  renderSummary();
+}
+function annualForFleet(scale){
+  const futaiN=Number(document.getElementById('aFutaiN').value)||0;
+  const futaiB=Number(document.getElementById('aFutaiB').value)||0;
+  const feeR=Number(document.getElementById('aFee').value)/100||0;
+  const mB=Number(document.getElementById('aMonB').value)||0, mN=Number(document.getElementById('aMonN').value)||0;
+  const sgaFix=SGA.reduce((a,s)=>a+(Number(s.v)||0),0);
+  const cost=vCost()*scale;
+  function pnl(seas){const vs=vSales(seas)*scale;const futai=(seas==='N'?futaiN:futaiB)*scale;const sales=vs+futai;const gp=sales-cost;const fee=sales*feeR;const sga=sgaFix+fee;return{sales,gp,sga,op:gp-sga};}
+  const N=pnl('N'),B=pnl('B');
+  return{sales:N.sales*mN+B.sales*mB,gp:N.gp*mN+B.gp*mB,sga:N.sga*mN+B.sga*mB,op:N.op*mN+B.op*mB};
+}
+function renderSummary(){
+  const cur=S.reduce((a,r)=>a+(Number(r.n)||0),0)||1;
+  const sizes=[30,40,50,60];
+  const d=sizes.map(T=>({T,...annualForFleet(T/cur)}));
+  const rows=[
+    ['総台数',d.map(x=>x.T+'台')],
+    ['年間 売上高',d.map(x=>yen(x.sales))],
+    ['年間 粗利',d.map(x=>yen(x.gp))],
+    ['年間 販管費合計',d.map(x=>yen(x.sga))],
+    ['年間 営業利益',d.map(x=>({v:yen(x.op),neg:x.op<0}))],
+    ['営業利益率',d.map(x=>(x.sales>0?(x.op/x.sales*100).toFixed(1):'0')+'%')],
+  ];
+  const tb=document.getElementById('sumRows');tb.innerHTML='';
+  rows.forEach(r=>{const tr=document.createElement('tr');let h='<td class="l" style="font-weight:700">'+r[0]+'</td>';
+    r[1].forEach(c=>{if(typeof c==='object')h+='<td class="'+(c.neg?'pn':'pp')+'" style="font-weight:800">'+c.v+'</td>';else h+='<td>'+c+'</td>';});
+    tr.innerHTML=h;tb.appendChild(tr);});
 }
 function upd(i,k,v){S[i][k]=Number(v)||0;calc();}
 function updP(i,v){if(season==='N')S[i].pN=Number(v)||0;else S[i].pB=Number(v)||0;calc();}
