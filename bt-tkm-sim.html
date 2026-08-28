@@ -92,6 +92,12 @@
   </header>
   <div class="body">
 
+    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:#eef4fc;border:1px solid #bcd3ee;border-radius:12px;padding:12px 16px;margin-bottom:10px;">
+      <button class="btn" style="background:var(--navy);color:#fff;border-color:var(--navy);font-size:14px;padding:10px 20px;" onclick="dbSave()">💾 保存（全端末に反映）</button>
+      <button class="btn" onclick="dbLoad(true)">🔄 最新を読込</button>
+      <span id="syncStat" style="font-size:12px;color:var(--sub);">読込中…</span>
+    </div>
+
     <!-- TOP：台数別サマリ -->
     <h2 class="sh" style="margin-top:6px;">台数別サマリ（年間・営業利益ベース）</h2>
     <p style="font-size:12px;color:var(--sub);margin:-4px 0 10px;">台数の見出しをクリックすると、そのバージョンの詳細入力に移動します。</p>
@@ -295,6 +301,36 @@ function renderSizeBtns(){const el=document.getElementById('sizebtns');el.innerH
   SIZES.forEach(s=>{const b=document.createElement('button');b.textContent=s+'台';b.className=s===activeSize?'on':'';b.onclick=()=>selectSize(s);el.appendChild(b);});}
 function saveState(){try{localStorage.setItem('btTkmSim_v1',JSON.stringify(CONFIGS));}catch(e){}}
 function loadState(){try{const s=localStorage.getItem('btTkmSim_v1');if(s){const p=JSON.parse(s);SIZES.forEach(sz=>{if(p[sz]&&p[sz].S&&p[sz].S.length)CONFIGS[sz]=p[sz];});}}catch(e){}}
+/* ===== 共有DB（全端末連動）===== */
+const SB={url:'https://ggqugvyskyiblxiycpci.supabase.co',key:'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdncXVndnlza3lpYmx4aXljcGNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxMDc3NjksImV4cCI6MjA5MzY4Mzc2OX0.uNhWcBd_Dl5nzemZDQfJ8mQV6iY73MwystGGpTRPC18'};
+function sbStat(t,ok){const e=document.getElementById('syncStat');if(e){e.textContent=t;e.style.color=ok===false?'var(--red)':(ok===true?'var(--green)':'var(--sub)');}}
+async function dbLoad(manual){
+  try{
+    sbStat('読込中…');
+    const r=await fetch(SB.url+'/rest/v1/tkm_sim_state?id=eq.1&select=data,updated_at',{headers:{apikey:SB.key,Authorization:'Bearer '+SB.key}});
+    const j=await r.json();
+    if(Array.isArray(j)&&j[0]&&j[0].data){
+      const p=j[0].data;let n=0;SIZES.forEach(sz=>{if(p[sz]&&p[sz].S&&p[sz].S.length){CONFIGS[sz]=p[sz];n++;}});
+      saveState();renderSizeBtns();syncAssump();renderSga();calc();
+      const t=j[0].updated_at?new Date(j[0].updated_at).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';
+      sbStat('☁️ 共有データ読込（更新: '+t+'）',true);
+    }else{
+      sbStat(manual?'☁️ 共有データはまだありません（保存で作成）':'ローカル値を表示中');
+    }
+  }catch(e){sbStat('⚠️ オフライン（ローカル値を表示）',false);}
+}
+async function dbSave(){
+  try{
+    sbStat('保存中…');
+    const body=JSON.stringify({data:CONFIGS,updated_at:new Date().toISOString()});
+    let r=await fetch(SB.url+'/rest/v1/tkm_sim_state?id=eq.1',{method:'PATCH',headers:{apikey:SB.key,Authorization:'Bearer '+SB.key,'Content-Type':'application/json',Prefer:'return=minimal'},body});
+    if(r.status===404||r.status===406){
+      r=await fetch(SB.url+'/rest/v1/tkm_sim_state?on_conflict=id',{method:'POST',headers:{apikey:SB.key,Authorization:'Bearer '+SB.key,'Content-Type':'application/json',Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({id:1,data:CONFIGS,updated_at:new Date().toISOString()})});
+    }
+    if(r.ok){saveState();sbStat('✅ 保存しました（全端末に反映）',true);}
+    else{sbStat('⚠️ 保存に失敗（'+r.status+'）',false);}
+  }catch(e){sbStat('⚠️ 保存に失敗（通信エラー）',false);}
+}
 function calc(){renderVeh();renderDetail();renderSummary();saveState();}
 function upd(i,k,v){C().S[i][k]=Number(v)||0;calc();}
 function updP(i,v){if(season==='N')C().S[i].pN=Number(v)||0;else C().S[i].pB=Number(v)||0;calc();}
@@ -306,7 +342,7 @@ function pasteCost(i){if(!clip){alert('先に📋で原価をコピー');return;
 function setSeason(s){season=s;document.getElementById('segN').className=s==='N'?'on':'';document.getElementById('segB').className=s==='B'?'on':'';calc();}
 function selectSize(s){activeSize=s;renderSizeBtns();syncAssump();renderSga();document.querySelector('.detailhd').scrollIntoView({behavior:'smooth',block:'start'});calc();}
 function resetActive(){CONFIGS[activeSize]=makeConfig(activeSize);syncAssump();renderSga();calc();}
-loadState();renderSizeBtns();syncAssump();renderSga();setSeason('N');
+loadState();renderSizeBtns();syncAssump();renderSga();setSeason('N');dbLoad();
 </script>
 </body>
 </html>
