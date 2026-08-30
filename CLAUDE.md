@@ -1,5 +1,8 @@
 # SPK業務管理APP（札幌店）
 
+## 🚗 2026-08-30 公式サイト(rent-handyman.com)予約が「札幌だけ予約処理に失敗」＝RPCが存在しない`memo`列を参照（那覇/高松は成功）
+BUDDICA齋藤テスト報告：公式サイト予約フローで**那覇・高松はPC/スマホとも決済・確認メール・APP遷移まで成功、札幌だけ「予約処理に失敗しました」で決済完了できず**。真因＝`official_book_spk` RPC の insert が **`reservations` に存在しない `memo` 列を参照**→`ERROR: column "memo" of relation "reservations" does not exist`。**那覇は`nha_reservations`に`memo`列があるので成功、札幌`reservations`には無いので失敗**（同型RPCでもテーブル差で片方だけ落ちる）。→ 根治：`official_book_spk`のinsertから`memo,v_note`を除去（reservationsに顧客memo列なし・del_place/col_placeで場所は保持）。RPC適用はManagement API `/database/query`(token`~/.config/keydrop/sb_token`・curl `--data-binary @file`)。**切り分けの型＝RPCを直接テスト実行(`select official_book_spk(jsonb_build_object(...))`)すれば実際のSQLエラー(列不在等)が即出る**（EF越しの「予約処理に失敗」だけ見ても分からない→RPC直叩き）。実証：修正後A×2日+NOC+child=¥31,500で採番成功→テスト予約削除。反省＝**3店同型でもテーブルのカラム差(reservations vs nha_reservations)で"片方だけ動く"→新RPC/insertは対象テーブルの実カラムを必ず確認**。残(別件・非ブロッカー)＝齋藤指摘のシート料金(チャイルド1100/ジュニア550)と現地サイト表記の差異は要すり合わせ。
+
 ## 📧 2026-08-30 予約が取り込まれない＝取込GASの「失敗でもseen登録→二度と再取込されない」穴を根治（クラス根治・全店点検の型）
 オーナー報告「札幌 DY00000001108(skyticket)・高松 137068718(たびらい韓国語) が取込されてない・全店至急確認」。**真因は2系統・切り分けの型が有効**：
 - **SPK skyticket DY00000001108**：SPK GASは30分毎`processNewEmails`稼働・エラー率0%＝**停止ではなく単発取りこぼし**。根本＝`gas-email-import-v2.gs`の`processNewEmails`ループが**`processMessage_`の結果が失敗/エラーでも`newProcessedIds.push(msgId)`で一律seen登録**→**取込失敗した予約は"処理済み"扱いで二度と再取込されない**（transient insert失敗/parse差で1回落ちると永久消失）。→ **根治：失敗(type=failure)/catchはseen登録せず次回再取込（`FAILED_MSG_RETRIES`で最大`MAX_IMPORT_RETRY=4`回≒2時間リトライ、上限で諦めseen＋Slack通知）。成功/キャンセル/非予約は即seen。** これでtransient失敗は自己修復。**⚠️GASはApps Script貼付＝オーナー手動デプロイで初めて本番反映**（クリップボードにコピー済で渡す運用）。
