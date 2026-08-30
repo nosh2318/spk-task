@@ -50,12 +50,13 @@ begin
     exit when not exists (select 1 from reservations where id=v_id);
     v_try:=v_try+1; if v_try>20 then return jsonb_build_object('error','予約番号の採番に失敗しました'); end if;
   end loop;
+  -- ★2026-08-30 reservations には memo 列が無い（那覇 nha_reservations のみ memo あり）。札幌はmemoを入れない＝札幌のみ「予約処理に失敗」の根治。
   insert into reservations (id,ota,name,lend_date,lend_time,return_date,return_time,people,vehicle,insurance,tel,mail,
      price,status,visit_type,return_type,del_place,col_place,opt_c,opt_j,opt_usb,base_price,option_price,discount,
-     prefecture,memo,mypage_token,mypage_locked,created_at,updated_at)
+     prefecture,mypage_token,mypage_locked,created_at,updated_at)
   values (v_id,'HANDYMAN',v_name,v_lend,v_ltime,v_ret,v_rtime,v_ppl,v_cls,v_ins_txt,v_tel,v_mail,
      v_total,'pending_payment',v_vtype,v_rtype,v_delp,v_colp,v_child,v_junior,(v_usb>0),v_base_total,v_opt_total,0,
-     '北海道',v_note,gen_random_uuid(),'{}'::jsonb,now(),now());
+     '北海道',gen_random_uuid(),'{}'::jsonb,now(),now());
   insert into fleet (reservation_id,vehicle_code,updated_at) values (v_id,v_code,now());
   return jsonb_build_object('reservationId',v_id,'total',v_total,'classTotal',v_base_total,'vehicle',v_code);
 end;$$;
