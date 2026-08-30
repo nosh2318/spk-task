@@ -128,6 +128,7 @@ function processNewEmails() {
 
     var processedIds = getProcessedMsgIds_();
     var newProcessedIds = [];
+    var failedRetries = getFailedRetries_();  // ★2026-08-30 {msgId:失敗回数}
 
     Logger.log('Found ' + threads.length + ' thread(s) to check.');
 
@@ -147,19 +148,30 @@ function processNewEmails() {
         threadHadNew = true;
         try {
           var result = processMessage_(messages[j], false);
-          newProcessedIds.push(msgId);
+          // ★2026-08-30 失敗/エラーは seen 登録しない＝次回再取込（取込失敗が二度と拾われない穴を根治）。
+          //   上限(MAX_IMPORT_RETRY)到達で諦めて seen 登録（Slackで既に通知済）。成功/キャンセル/非予約は即 seen。
+          var markSeen = true;
           if (result) {
-            if (result.type === 'success') successes.push(result);
-            else if (result.type === 'failure') failures.push(result);
-            else if (result.type === 'cancel') cancellations.push(result);
+            if (result.type === 'success') { successes.push(result); delete failedRetries[msgId]; }
+            else if (result.type === 'cancel') { cancellations.push(result); delete failedRetries[msgId]; }
             else if (result.type === 'skip') skipped.push(result);
+            else if (result.type === 'failure') {
+              var rc = (failedRetries[msgId] || 0) + 1;
+              if (rc < MAX_IMPORT_RETRY) { markSeen = false; failedRetries[msgId] = rc; }  // 再試行のため未登録
+              else { delete failedRetries[msgId]; }  // 諦め→seen登録
+              result.reason = (result.reason || '') + '（再試行' + rc + '/' + MAX_IMPORT_RETRY + (markSeen ? '・打切り' : '') + '）';
+              failures.push(result);
+            }
           } else {
-            nonReservation++;  // ★診断: 予約メールでない(販促/通知など)
+            nonReservation++;  // ★診断: 予約メールでない(販促/通知など)＝seen登録
           }
+          if (markSeen) newProcessedIds.push(msgId);
         } catch (e) {
           Logger.log('ERROR processing message ID ' + msgId + ': ' + e.message + '\n' + e.stack);
-          newProcessedIds.push(msgId);
-          failures.push({id: '不明', ota: '?', name: '', reason: 'エラー: ' + e.message});
+          var rc2 = (failedRetries[msgId] || 0) + 1;
+          if (rc2 < MAX_IMPORT_RETRY) { failedRetries[msgId] = rc2; }  // seen登録せず次回再取込
+          else { newProcessedIds.push(msgId); delete failedRetries[msgId]; }  // 上限→諦めseen
+          failures.push({id: '不明', ota: '?', name: '', reason: 'エラー(再試行' + rc2 + '/' + MAX_IMPORT_RETRY + '): ' + e.message});
         }
       }
       // ★2026-08-14: ラベル付けは新着があった時だけ（毎回200件全部にラベル書込→Gmailクォータ枯渇の主因を解消）
@@ -175,6 +187,7 @@ function processNewEmails() {
     if (newProcessedIds.length > 0) {
       saveProcessedMsgIds_(processedIds, newProcessedIds);
     }
+    saveFailedRetries_(failedRetries);  // ★2026-08-30 再試行カウント保存
 
     if (successes.length > 0) sendSlackSuccess_(successes);
     if (failures.length > 0) sendSlackFailure_(failures);
@@ -220,8 +233,10 @@ function testProcessLatest() {
 // 関数を実行する前に TARGET_IDS を編集すること。
 // ============================================================
 function backfillSpecificReservations() {
-  var TARGET_IDS = ['RC12461198304067404'];   // 2026-06-07 Hクラス配車不可(アクセKPI除外フラグ)復旧。フラグは解除済み・行はDELETE済み→ネイティブ再取込
-  var SEARCH_DAYS = 30;  // 30日まで遡る
+  // 2026-08-25 ③Gクラス誤取込(F化)是正: G車(デミオ8/9・ノート8/24)登場以降のF×OTA(skyticket/airtrip)候補を再スキャン。
+  //   ②(クラス抽出にG追加)デプロイ後に本関数を1回実行→Gプランのみ自動F→G是正(真のFプラン=ソリオはFのまま)。候補5件は日付非重複でG車2台でも重複無し。
+  var TARGET_IDS = ['DY00000001078','DY00000001098','C260801053','C260801191','C260801032'];
+  var SEARCH_DAYS = 45;  // 45日まで遡る(候補の取込日8/10〜8/24をカバー)
 
   var processedIds = getProcessedMsgIds_();
   var newProcessedIds = [];
@@ -2904,6 +2919,11 @@ function setupJalanPaymentTriggers() {
 // ============================================================
 var PROCESSED_IDS_KEY = 'PROCESSED_MSG_IDS';
 var MAX_PROCESSED_IDS = 500;
+// ★2026-08-30 取込失敗の再試行回数（失敗/エラーはseen登録せず次回再取込。上限到達で諦めseen）
+var FAILED_RETRY_KEY = 'FAILED_MSG_RETRIES';
+var MAX_IMPORT_RETRY = 4;   // 30分毎トリガー×4 = 約2時間リトライ
+function getFailedRetries_() { try { return JSON.parse(PropertiesService.getScriptProperties().getProperty(FAILED_RETRY_KEY) || '{}'); } catch (e) { return {}; } }
+function saveFailedRetries_(m) { try { PropertiesService.getScriptProperties().setProperty(FAILED_RETRY_KEY, JSON.stringify(m || {})); } catch (e) {} }
 
 function getProcessedMsgIds_() {
   var raw = PropertiesService.getScriptProperties().getProperty(PROCESSED_IDS_KEY) || '';
