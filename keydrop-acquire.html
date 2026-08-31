@@ -52,7 +52,7 @@
   <div class="stbtn" id="stbtn"></div>
   <div class="note">
     <b>KEYDROP（自社直販 keydrop.jp）</b>の予約を<b>発生月ベース</b>（予約が<b>入った月</b>）で集計。ota=KEYDROP のみ対象。キャンセル（英/日）除外。<br>
-    ・獲得数/売上＝その月に発生したKEYDROP予約。CPA＝広告費÷獲得数。<br>
+    ・獲得数＝その月に発生したKEYDROP予約。<b>グロス売上＝割引/クーポン前（base+option）</b>／<b>実売上＝割引後（実際の入金額）</b>。CPA＝広告費÷獲得数。<b>グロスROAS＝グロス売上÷広告費</b>。<br>
     ・<b>効果</b>＝<b>売上−広告費</b>（＋緑／−赤）。<b>判定</b>：効果マイナス＝広告費を回収できず＝<b>🛑 停止</b>／プラス＝<b>✅ 継続</b>。<br>
     ・広告費は<b>手動入力</b>（保存で全端末共有）。※データのある月のみ表示。KEYDROPは札幌/那覇のみ。
   </div>
@@ -93,10 +93,12 @@ function H(){const t=_sbToken();return {apikey:C.anon,Authorization:'Bearer '+(t
 const yen=n=>'¥'+Math.round(+n||0).toLocaleString();
 const ym=s=>s?String(s).slice(0,7):'';
 function months(a,b){const out=[];let[y,m]=a.split('-').map(Number);const[Y,M]=b.split('-').map(Number);while(y<Y||(y===Y&&m<=M)){out.push(y+'-'+String(m).padStart(2,'0'));m++;if(m>12){m=1;y++;}}return out;}
-function revOf(r){const bp=+r.base_price||0,op=+r.option_price||0,d=+r.discount||0;return (bp>0||op>0)?Math.max(0,bp+op-d):(+r.price||0);}
+function revOf(r){const bp=+r.base_price||0,op=+r.option_price||0,d=+r.discount||0;return (bp>0||op>0)?Math.max(0,bp+op-d):(+r.price||0);}   // 実売上（割引後）
+function grossOf(r){const bp=+r.base_price||0,op=+r.option_price||0;return (bp>0||op>0)?(bp+op):(+r.price||0);}   // グロス売上（割引/クーポン前・定価ベース）
 function occYM(r){for(const col of C.occ){const v=r[col];if(v&&String(v).length>=7)return ym(v);}return '';}
 function nights(r){const a=r[C.lend],b=r[C.ret];if(!a||!b)return null;const d=Math.round((new Date(String(b).slice(0,10)+'T00:00:00')-new Date(String(a).slice(0,10)+'T00:00:00'))/86400000);return d>=0?d:null;}
 function isKD(r){return r.ota==='KEYDROP';}
+function isTest(r){return /DEMO|TEST|^ZZ/i.test(String(r.id||''));}   // デモ/テスト予約（KD-DEMO等）は集計から除外
 let AD={}, ROWS=[], BUILT=null;
 
 async function fetchAll(){
@@ -127,13 +129,13 @@ async function saveAd(){
 function build(resv){
   const now=new Date();const curYM=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
   const occMonths=months(START,curYM);
-  const M={};occMonths.forEach(m=>{M[m]={count:0,rev:0,dep:{},nSum:0,nCnt:0};});
+  const M={};occMonths.forEach(m=>{M[m]={count:0,rev:0,gross:0,dep:{},nSum:0,nCnt:0};});
   resv.forEach(r=>{
     if(/cancel|キャンセル/i.test(r.status||''))return;
-    if(!isKD(r))return;
+    if(!isKD(r)||isTest(r))return;
     const o=occYM(r);if(!o||o<START||!M[o])return;
-    const rev=revOf(r),dm=ym(r[C.lend])||'—',nt=nights(r);
-    M[o].count++;M[o].rev+=rev;if(nt!=null){M[o].nSum+=nt;M[o].nCnt++;}
+    const rev=revOf(r),gr=grossOf(r),dm=ym(r[C.lend])||'—',nt=nights(r);
+    M[o].count++;M[o].rev+=rev;M[o].gross+=gr;if(nt!=null){M[o].nSum+=nt;M[o].nCnt++;}
     if(!M[o].dep[dm])M[o].dep[dm]={count:0,rev:0};M[o].dep[dm].count++;M[o].dep[dm].rev+=rev;
   });
   return {occMonths,M};
@@ -145,29 +147,33 @@ function render(){
   const colP=v=>v===null?'#94a3b8':(v>=0?'#0e7a3b':'#dc2626');
   const judge=(pv,ad)=>ad>0?(pv<0?['🛑','#dc2626','#fef2f2']:['✅','#0e7a3b','#f0fdf4']):['—','#94a3b8','transparent'];
   const avgN=(s,c)=>c?(s/c).toFixed(1)+'泊':'—';
-  let hC=0,hR=0,hAd=0,hNS=0,hNC=0;occMonths.forEach(m=>{hC+=M[m].count;hR+=M[m].rev;hAd+=(+AD[m]||0);hNS+=M[m].nSum;hNC+=M[m].nCnt;});
-  const hEff=hAd>0?(hR-hAd):null;
+  let hC=0,hR=0,hG=0,hAd=0,hNS=0,hNC=0;occMonths.forEach(m=>{hC+=M[m].count;hR+=M[m].rev;hG+=M[m].gross;hAd+=(+AD[m]||0);hNS+=M[m].nSum;hNC+=M[m].nCnt;});
+  const hEff=hAd>0?(hR-hAd):null;          // 効果（実売上−広告費）
+  const hEffG=hAd>0?(hG-hAd):null;         // グロス効果（グロス売上−広告費）
+  const hRoasG=hAd>0?(hG/hAd):null;        // グロスROAS
   // KPI
   document.getElementById('kpis').innerHTML=
     `<div class="kpi"><div class="k">獲得数（累計）</div><div class="v">${hC}<span style="font-size:11px">件</span></div></div>`+
-    `<div class="kpi"><div class="k">売上（累計）</div><div class="v" style="color:#0f766e">${yen(hR)}</div></div>`+
+    `<div class="kpi"><div class="k">グロス売上（割引前）</div><div class="v" style="color:#0f766e">${yen(hG)}</div></div>`+
+    `<div class="kpi"><div class="k">実売上（割引後）</div><div class="v" style="color:#0f766e">${yen(hR)}</div></div>`+
     `<div class="kpi"><div class="k">広告費（累計）</div><div class="v" style="color:#dc2626">${yen(hAd)}</div></div>`+
     `<div class="kpi"><div class="k">CPA</div><div class="v" style="color:#b45309">${hAd&&hC?yen(hAd/hC):'—'}</div></div>`+
-    `<div class="kpi"><div class="k">効果（売上−広告費）</div><div class="v" style="color:${colP(hEff)}">${hEff==null?'—':fmtP(hEff)}</div></div>`;
+    `<div class="kpi"><div class="k">グロスROAS</div><div class="v" style="color:#1d4ed8">${hRoasG==null?'—':hRoasG.toFixed(2)+'x'}</div></div>`+
+    `<div class="kpi"><div class="k">効果（実売上−広告費）</div><div class="v" style="color:${colP(hEff)}">${hEff==null?'—':fmtP(hEff)}</div></div>`;
   // 空の過去月は隠す
   let fi=occMonths.findIndex(m=>M[m].count>0);if(fi<0)fi=occMonths.length-1;
   const vis=occMonths.slice(fi);
   // 月次
-  let mh='<thead><tr><th class="l">発生月</th><th>件数</th><th>売上</th><th>予約単価</th><th>平均泊</th><th>広告費(入力)</th><th>CPA</th><th>効果</th><th>判定</th></tr></thead><tbody>';
+  let mh='<thead><tr><th class="l">発生月</th><th>件数</th><th>グロス売上</th><th>実売上</th><th>予約単価</th><th>平均泊</th><th>広告費(入力)</th><th>CPA</th><th>グロスROAS</th><th>効果(実売上−広告費)</th><th>判定</th></tr></thead><tbody>';
   vis.forEach(m=>{
-    const h=M[m],ad=+AD[m]||0;const hcpa=h.count?ad/h.count:0;const hpv=ad>0?(h.rev-ad):null;const jd=judge(hpv,ad);
+    const h=M[m],ad=+AD[m]||0;const hcpa=h.count?ad/h.count:0;const hpv=ad>0?(h.rev-ad):null;const jd=judge(hpv,ad);const roasG=ad>0?(h.gross/ad):null;
     mh+='<tr><td class="l num">'+m+'</td>'
-      +'<td class="num">'+h.count+'件</td><td class="yen">'+yen(h.rev)+'</td><td>'+(h.count?yen(h.rev/h.count):'—')+'</td><td class="stay">'+avgN(h.nSum,h.nCnt)+'</td>'
+      +'<td class="num">'+h.count+'件</td><td class="yen">'+yen(h.gross)+'</td><td class="yen">'+yen(h.rev)+'</td><td>'+(h.count?yen(h.rev/h.count):'—')+'</td><td class="stay">'+avgN(h.nSum,h.nCnt)+'</td>'
       +'<td><input class="ad" type="number" min="0" step="1000" data-ym="'+m+'" value="'+(ad||'')+'" placeholder="0"></td>'
-      +'<td class="cpa">'+(ad&&h.count?yen(hcpa):'—')+'</td><td class="eff" style="color:'+colP(hpv)+'">'+fmtP(hpv)+'</td><td class="jd" style="color:'+jd[1]+';background:'+jd[2]+'">'+jd[0]+'</td></tr>';
+      +'<td class="cpa">'+(ad&&h.count?yen(hcpa):'—')+'</td><td class="roas" style="color:#1d4ed8;font-weight:800">'+(roasG==null?'—':roasG.toFixed(2)+'x')+'</td><td class="eff" style="color:'+colP(hpv)+'">'+fmtP(hpv)+'</td><td class="jd" style="color:'+jd[1]+';background:'+jd[2]+'">'+jd[0]+'</td></tr>';
   });
   const tHpv=hAd>0?(hR-hAd):null;const tJ=judge(tHpv,hAd);
-  mh+='</tbody><tfoot><tr><td class="l">合計</td><td>'+hC+'件</td><td>'+yen(hR)+'</td><td>'+(hC?yen(hR/hC):'—')+'</td><td class="stay">'+avgN(hNS,hNC)+'</td><td>'+yen(hAd)+'</td><td class="cpa">'+(hAd&&hC?yen(hAd/hC):'—')+'</td><td class="eff" style="color:'+colP(tHpv)+'">'+fmtP(tHpv)+'</td><td class="jd" style="color:'+tJ[1]+';background:'+tJ[2]+'">'+tJ[0]+'</td></tr></tfoot>';
+  mh+='</tbody><tfoot><tr><td class="l">合計</td><td>'+hC+'件</td><td>'+yen(hG)+'</td><td>'+yen(hR)+'</td><td>'+(hC?yen(hR/hC):'—')+'</td><td class="stay">'+avgN(hNS,hNC)+'</td><td>'+yen(hAd)+'</td><td class="cpa">'+(hAd&&hC?yen(hAd/hC):'—')+'</td><td class="roas" style="color:#1d4ed8">'+(hRoasG==null?'—':hRoasG.toFixed(2)+'x')+'</td><td class="eff" style="color:'+colP(tHpv)+'">'+fmtP(tHpv)+'</td><td class="jd" style="color:'+tJ[1]+';background:'+tJ[2]+'">'+tJ[0]+'</td></tr></tfoot>';
   document.getElementById('cmpMonth').innerHTML=mh;
   renderLT('lt',M,vis);
 }
