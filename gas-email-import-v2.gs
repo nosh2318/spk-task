@@ -1044,7 +1044,9 @@ function parseOfficial_(body) {
     {re:/ロッキー/,cls:'C'},{re:/CX-?3/i,cls:'C'},
     {re:/ハリアー/,cls:'S'},{re:/CX-?5/i,cls:'S'},
     {re:/ルーミー/,cls:'F'},{re:/ソリオ/,cls:'F'},{re:/ヴィッツ/,cls:'F'},{re:/パッソ/,cls:'F'},{re:/マーチ/,cls:'F'},
-    {re:/カローラ/,cls:'H'},{re:/アクセラ/,cls:'H'},{re:/プリウス(?!α)/,cls:'H'},{re:/インプレッサ/,cls:'H'}
+    {re:/カローラ/,cls:'H'},{re:/アクセラ/,cls:'H'},{re:/プリウス(?!α)/,cls:'H'},{re:/インプレッサ/,cls:'H'},
+    // G: デミオ/ノート（コンパクトカー・全媒体でGクラスあり 2026-09-01）
+    {re:/デミオ/,cls:'G'},{re:/ノート/,cls:'G'}
   ];
   for (var mi = 0; mi < MODEL_CLASS_MAP.length; mi++) {
     if (MODEL_CLASS_MAP[mi].re.test(rawClassLine)) {
@@ -3065,7 +3067,9 @@ var SPK_MODEL_TO_CLASS = {
   // F: ルーミー/ソリオ
   'ルーミー':'F','ROOMY':'F','ソリオ':'F','SOLIO':'F',
   // H: カローラ/アクセラ
-  'カローラ':'H','COROLLA':'H','アクセラ':'H','AXELA':'H','MAZDA3':'H','マツダ3':'H'
+  'カローラ':'H','COROLLA':'H','アクセラ':'H','AXELA':'H','MAZDA3':'H','マツダ3':'H',
+  // G: デミオ/ノート（コンパクトカー・全媒体でGクラスあり 2026-09-01）
+  'デミオ':'G','DEMIO':'G','ノート':'G','NOTE':'G','マツダ2':'G','MAZDA2':'G'
 };
 
 function modelToClass_(s) {
@@ -3117,7 +3121,7 @@ function parseSlackReservation_(text) {
   if (!returnRaw) errors.push('返却日時が未入力です（例: 返却: 2026-04-28 18:00）');
 
   // ★ クラス判定: クラス欄に車種名が入っていても自動でクラスに変換
-  var validClasses = ['A', 'B', 'C', 'S', 'F', 'H'];
+  var validClasses = ['A', 'B', 'C', 'S', 'F', 'H', 'G'];
   var cls = '';
   if (clsRaw) {
     var u = clsRaw.toUpperCase().trim();
