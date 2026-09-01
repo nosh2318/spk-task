@@ -564,6 +564,10 @@ function isSapporoReservation_(res) {
   var colPlace = res.col_place || '';
   var places = delPlace + colPlace;
 
+  // ★2026-09-02 高松(BUDDICA/HDM)除外＝崩壊根治: じゃらん等は全店共通アカウント→SPK GASにも高松予約が届く。
+  //   高松HDMのF/Hクラス予約が下部 spkOnlyClasses(F/H)→札幌 で誤取込されるのを防ぐ（那覇GASと同じ貸出営業所ガード）。
+  if (/高松|香川|BUDDICA|たびらい/.test(store + address + places) || /_TAK/i.test(rawClass)) return false;
+
   if (/沖縄県|那覇市|沖縄/.test(address)) return false;
   if (/北海道|札幌市/.test(address)) return true;
   // ★2026-08-13 再発防止(肥田様OPC87428): HP直販は都道府県/市名の無い"素の住所"(例「中央区大通西15-2-2」)が来る。
