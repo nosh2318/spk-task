@@ -21,7 +21,12 @@
   .bar input{flex:1;min-width:160px;border:1px solid #cbd5e1;border-radius:8px;padding:7px 12px;font-size:13px}
   .btn{border:none;background:#0f766e;color:#fff;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer}
   .card{background:#fff;border-radius:12px;box-shadow:0 1px 6px rgba(0,0,0,.08);margin-bottom:12px;overflow:hidden;border-left:5px solid #94a3b8}
-  .card.decided{border-left-color:#d97706}.card.in_progress{border-left-color:#2563eb}.card.done{border-left-color:#16a34a}.card.cancelled{border-left-color:#94a3b8;opacity:.75}
+  .card.decided{border-left-color:#d97706}.card.in_progress{border-left-color:#2563eb}.card.done{border-left-color:#16a34a}.card.cancelled{border-left-color:#94a3b8;opacity:.75}.card.requested{border-left-color:#9333ea}
+  .acts{display:flex;gap:8px;padding:2px 15px 13px;flex-wrap:wrap}
+  .abtn{border:none;border-radius:8px;padding:8px 14px;font-size:12.5px;font-weight:800;cursor:pointer}
+  .abtn.done{background:#16a34a;color:#fff}.abtn.run{background:#2563eb;color:#fff}.abtn.cancel{background:#f8fafc;color:#64748b;border:1px solid #cbd5e1}
+  .abtn:active{transform:translateY(1px)}
+  .waitb{font-size:11.5px;color:#7e22ce;background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;padding:7px 12px;font-weight:700}
   .chead{display:flex;align-items:center;gap:8px;padding:11px 15px;flex-wrap:wrap;background:#f8fafc;border-bottom:1px solid #eef2f7}
   .oid{font-family:ui-monospace,monospace;font-size:11px;color:#64748b}
   .st{font-size:11px;font-weight:800;border-radius:20px;padding:3px 11px;color:#fff}
@@ -67,7 +72,8 @@ const SB="https://ckrxttbnawkclshczsia.supabase.co";
 const ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
 let FILTER="open", ROWS=[], OPEN={};
 const esc=s=>(s==null?"":String(s)).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
-const stLabel={decided:"①決定",in_progress:"②実行中",done:"④完了",cancelled:"中止"};
+const stLabel={decided:"①決定",in_progress:"②実行中",requested:"▶ OMNI依頼",done:"④完了",cancelled:"中止"};
+let WD={}; // oid→{reason,action,target} 起源の元情報（消し込み/依頼のinsertに複写）
 function fmt(ts){if(!ts)return"";const d=new Date(ts);if(isNaN(d))return ts;const p=n=>String(n).padStart(2,"0");return `${d.getFullYear()}/${p(d.getMonth()+1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;}
 
 async function load(){
@@ -118,7 +124,14 @@ function render(){
   if(!list.length){el.innerHTML='<div class="empty">該当する起源がありません</div>';return;}
   el.innerHTML=list.map(o=>{
     const c=o.cur, f=o.first;
+    WD[o.oid]={reason:f.reason,action:f.action,target:f.target};
     const histRows=o.hist.map(h=>`<div class="h">${fmt(h.ts)} ・ ${esc(stLabel[h.progress]||h.progress)} ${h.result?"／ "+esc(h.result):""} <span style="color:#cbd5e1">(${esc(h.agent||"")})</span></div>`).join("");
+    let acts="";
+    if(c.progress==="decided"||c.progress==="in_progress"){
+      acts=`<div class="acts"><button class="abtn done" onclick="mark('${o.oid}','done')">✅ 消し込み（完了）</button><button class="abtn run" onclick="mark('${o.oid}','requested')">▶ 最後までやらせる</button></div>`;
+    }else if(c.progress==="requested"){
+      acts=`<div class="acts"><span class="waitb">▶ OMNIが実行中/待機（自動で完遂→結果を記録します）</span><button class="abtn cancel" onclick="mark('${o.oid}','cancelled')">取消</button></div>`;
+    }
     return `<div class="card ${c.progress}">
       <div class="chead">
         <span class="st ${c.progress}">${esc(stLabel[c.progress]||c.progress)}</span>
@@ -132,11 +145,30 @@ function render(){
         <div class="row"><div class="rl">③進捗</div><div class="rv">${esc(stLabel[c.progress]||c.progress)} <span style="color:#94a3b8">(${esc(c.agent||"")})</span></div></div>
         <div class="row"><div class="rl">④結果</div><div class="rv ${c.result?'':'dim'}">${esc(c.result)||"（未）"}</div></div>
       </div>
+      ${acts}
       ${o.hist.length>1?`<div class="more" onclick="tog('${o.oid}')">${OPEN[o.oid]?"▲ 履歴を閉じる":"▼ 履歴 "+o.hist.length+"件"}</div><div class="hist ${OPEN[o.oid]?'open':''}">${histRows}</div>`:""}
     </div>`;
   }).join("");
 }
 function tog(oid){OPEN[oid]=!OPEN[oid];render();}
+async function mark(oid,progress){
+  const meta=WD[oid]||{};
+  let who,result,confirmMsg;
+  if(progress==="done"){confirmMsg="この起源を「完了（消し込み）」にしますか？";who="オーナー(消し込み)";result="オーナーが完了確認（消し込み）";}
+  else if(progress==="requested"){confirmMsg="この起源をOMNIに「最後まで完遂」させますか？（自動で作業→結果を記録します）";who="オーナー(依頼)";result="オーナーがOMNIに完遂を依頼";}
+  else if(progress==="cancelled"){confirmMsg="この依頼を取り消しますか？";who="オーナー(取消)";result="オーナーが依頼を取消";}
+  if(!confirm(confirmMsg))return;
+  const r=(progress==="done")?prompt("完了メモ（任意・空でOK）",result)||result:result;
+  const row={origin_id:oid,ts:new Date().toISOString(),who,agent:"viewer",
+    reason:meta.reason||"",action:meta.action||"",target:meta.target||"",progress,result:r};
+  try{
+    const resp=await fetch(`${SB}/rest/v1/agent_task_ledger`,{method:"POST",
+      headers:{apikey:ANON,Authorization:"Bearer "+ANON,"Content-Type":"application/json","Prefer":"return=minimal"},
+      body:JSON.stringify(row)});
+    if(!resp.ok){alert("失敗: HTTP "+resp.status);return;}
+    await load();
+  }catch(e){alert("通信エラー: "+e.message);}
+}
 document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{document.querySelectorAll(".tab").forEach(x=>x.classList.remove("on"));t.classList.add("on");FILTER=t.dataset.f;render();});
 document.getElementById("q").addEventListener("input",render);
 load();
