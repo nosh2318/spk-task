@@ -52,6 +52,8 @@ async function slackPost(text: string, blocks?: unknown[]): Promise<void> {
 // 予約もと（OTA）ラベル
 const OTA_JP: Record<string, string> = { J: "じゃらん", R: "楽天", S: "skyticket", O: "エアトリ", RC: "レンタカーcom", G: "GoGoOut", HP: "オフィシャル(HP)", SP: "オフィシャル(HP)", direct: "直販", KEYDROP: "KEYDROP" };
 function otaJp(o?: string): string { const k = String(o || ""); return OTA_JP[k] || k || "—"; }
+// 承認管理ページ（マイページ管理コンソール）URL＝承認待ちカードのボタンから飛べるように
+const MGMT_URL = "https://nosh2318.github.io/spk-task/my-admin.html";
 // マイページ通知カード（統一フォーマット）＝ 見出し＋基本情報(お客様/予約番号/予約もと/利用/車両)＋内容＋対応の要否
 type MpCard = { emoji: string; title: string; name: string; resId: string; ota?: string; period?: string; vehicle?: string; lines?: string[]; action: string };
 function mpCard(c: MpCard): { text: string; blocks: unknown[] } {
@@ -68,6 +70,12 @@ function mpCard(c: MpCard): { text: string; blocks: unknown[] } {
   ];
   if (c.lines && c.lines.length) blocks.push({ type: "section", text: { type: "mrkdwn", text: c.lines.join("\n") } });
   blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: c.action }] });
+  // 承認/対応が要るカードには管理コンソール（承認管理ページ）へのボタンを付ける
+  if (/管理コンソール/.test(c.action)) {
+    blocks.push({ type: "actions", elements: [
+      { type: "button", text: { type: "plain_text", text: "🔔 承認管理ページを開く", emoji: true }, url: MGMT_URL, style: "primary" },
+    ] });
+  }
   blocks.push({ type: "divider" });
   const text = `${c.emoji} ${c.title}｜${c.name}様 ${c.resId}`; // 通知バナー/フォールバック用の一行
   return { text, blocks };
@@ -727,6 +735,12 @@ Deno.serve(async (req) => {
     //  お届け/回収の【時間・場所変更は、時間制限に関係なく全て承認制】。
     //  お客様は自由に申請でき、スタッフが管理コンソール →「🔔変更依頼」で承認すると
     //  OPシート/タスク(applyPlaceTime)へ反映＋お客様へLINE通知。即時反映はしない。
+    // 締切（オーナー確定 2026-09-01・SPK）:
+    //  お届け(DEL)の場所・時間変更は【貸出前日19:00（営業時間外）で受付終了】。
+    //  以降（＝翌営業日1発目のタスク直前の変更）は申請不可→公式LINEへ誘導。
+    //  ※回収(COL)は従来どおり承認制で時間制限なし。
+    if ((delPlace !== null || lendTime !== null) && pastOptionDeadline(r.lend_date))
+      return json({ error: "お届け場所・お届け時間の変更は、貸出日前日19:00までのご依頼を承っております。以降は当日のご準備の都合上、変更のご依頼は公式LINEにて承ります。", lineOnly: true }, 409, origin);
     const num = (k: string) => (has(k) && p[k] != null && p[k] !== "") ? Number(p[k]) : null;
     const dLat = num("del_lat"), dLng = num("del_lng"), cLat = num("col_lat"), cLng = num("col_lng");
     const cAct = "customer:" + resId;
@@ -794,7 +808,11 @@ Deno.serve(async (req) => {
     const rdyTime = (typeof p.time === "string" && /^\d{1,2}:\d{2}$/.test(p.time.trim())) ? p.time.trim() : "";
     const newVal = rdyTime ? `返却準備完了(早め回収OK) 希望時間 ${rdyTime}〜` : "返却準備完了(早め回収OK)";
     await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field: "ready", old_value: "", new_value: newVal, source: "customer", status: "requested", note: rdyTime ? `希望回収時間の目安 ${rdyTime}〜` : "予定時間より早い回収OK" }, "customer:" + resId);
-    await notifySlackCard({ emoji: "🟢", title: "早め回収OK（返却準備完了）", name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: [`🕐 *予定回収*　${r.return_time || r.col_time || "-"}`, `🕒 *お客様の希望*　${rdyTime ? `*${rdyTime}〜*` : "指定なし"}`], action: "💡 スケジュールに余裕があれば早めに回収をご検討ください（お客様には「確認中」と表示中）" });
+    // 予定回収はOP/マイページと同じ resolveTaskTime(回収タスク) 優先（予約生値 return_time/col_time 直読みだと食い違う）
+    const rdyTasks = await sbGet(store.tasks, `reservation_id=eq.${encodeURIComponent(resId)}&deleted=not.is.true&select=_id,place,time,insurance,changed_json`);
+    const rdyCTask = rdyTasks.find((t: any) => String(t._id || "").startsWith("c-"));
+    const schedCol = resolveTaskTime(rdyCTask) || r.return_time || r.col_time || "-";
+    await notifySlackCard({ emoji: "🟢", title: "早め回収OK（返却準備完了）", name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: [`🕐 *予定回収*　${schedCol}`, `🕒 *お客様の希望*　${rdyTime ? `*${rdyTime}〜*` : "指定なし"}`], action: "💡 スケジュールに余裕があれば早めに回収をご検討ください（お客様には「確認中」と表示中）" });
     return json({ ok: true, requested: true }, 200, origin);
   }
 
