@@ -1,5 +1,38 @@
 # SPK業務管理APP（札幌店）
 
+## 🪑 2026-09-04 シート表記を全画面 CS/JS/BS に統一（チャイルドシート=CS・ジュニアシート=JS・ベビーシート=BS／v4.7.599）
+オーナー指示「app上の全ての表記を統一」。過去の統一は積載在庫バッジ(📦 CS/JS)だけで止まっており、OP予約バッジと駐車マップが旧表記のままだった。**シート表記の"表示"箇所は7つ・6ファイルに散在**＝①`index.src.html` OptBadges L1199-1200(OP各所の主バッジ`C(チャイルド)`→`CS`)②🪑シート在庫サマリSEATS L16999③編集フォーム3箇所(L15681/L17797/L21189-91)④`parking.html` 倉庫車リストL288(旧`CS ﾁｬｲﾙﾄﾞ×`→`CS×`)+駐車マップ枠バッジL355(旧`チャイルド×`→`CS×`)⑤`my-admin.html` L766⑥`seats.html` L137⑦`staff-manual.html` L155。**⚠️`detectSeats`(L877)等のパーサーは`チャイルドシート`/`ジュニアシート`のフルワードでOTAデータを検出する＝表示でないので絶対に変えない**（変えると取込が壊れる）。表記変更依頼が来たら「表示バッジ7箇所」を全部直す＝1箇所だけ直すと"半分だけ統一"の再発になる（`grep -rn "C(チャイルド)\|J(ジュニア)\|チャイルド×\|ジュニア×" *.html`で残存確認）。
+
+## 🏢 2026-09-02 Global Lines 会社概要ページを rent-handyman.com/company/ に公開（静ページ・多言語）
+rent-handyman.com のfooter「会社概要」を **外部 g-lines.jp → 内部 `https://rent-handyman.com/company/`** に変更し、Global Lines刷新版コーポレートページ（単一HTML・多言語 日英繁韓）を公開。**ソース正本＝`~/Desktop/AI/g-lines-new/index.html`／本番実体＝`handyman-official`リポの`company/index.html`＋`company/assets/`**（編集は g-lines-new を直し→`company/`にcp→push）。BUSINESS4カード＝那覇店/札幌店/高松店/KEY（店舗3枚のリンク＝rent-handyman.com）。多言語＝各要素`data-i18n`＋`<script>`内`I18N`辞書(55キー×4言語)＋右上`#langsw`スイッチャー(localStorage`gl_lang`記憶・ブラウザ言語で自動初期)。翻訳追加＝HTMLに`data-i18n`付与＋`I18N`に4言語追加(キー数一致必須)。検証済(200・エラー0・4言語稼働)。**詳細手順メモ＝`~/Desktop/AI/g-lines-new/デプロイメモ_2026-09-02.md`**。⚠️旧`g-lines.jp`(Xserver)は別サイト＝本体差し替えはXserver情報が要る（今回未対応）。
+
+## 🚨 2026-09-02 じゃらん共有アカウント崩壊の3店根治＋BTブランド振り分け＋welcome60日窓撤廃＋HDMじゃらん決済フロー（このセッション・要記憶）
+オーナー報告「HDMじゃらん予約R0TWIKDOが高松(BT)と那覇(NHA)の両方に取り込まれた＝崩壊する」。根本原因と恒久対策・関連仕様を一括記録。
+
+### 崩壊の真因＝じゃらんは全店共通アカウント→各店GASが同じメールを受信→貸出営業所で振り分けるべきが穴があった
+- **NHA崩壊**：`gas-email-import.gs` `isNahaReservation_` が「Dクラス→那覇確定」ルール(那覇専用クラスのつもり)＋**高松除外が無かった**。高松にもDクラス(ハリアー)ができたので、高松HDMじゃらんが那覇に誤取込。根治＝冒頭に `if (/高松|香川|TAK|BUDDICA|たびらい/i.test(store)) return false;`（貸出営業所ガード）。commit eda0e26・貼付済。
+- **SPK同型の穴**：`gas-email-import-v2.gs` `isSapporoReservation_` は最後に「**F/Hクラス→札幌確定**」があり、高松HDMのF/Hじゃらんが札幌に誤取込され得た(D/A2/B2は除外済だがF/Hが抜け)。根治＝冒頭に `if (/高松|香川|BUDDICA|たびらい/.test(store + address + places) || /_TAK/i.test(rawClass)) return false;`。クリップボード渡し済(貼付はオーナー)。
+- **教訓**：じゃらん等の共有OTAアカウントは、各店GASが同一メールを受信する→「自店を積極判定(クラス/地名で拾う)」だけだと他店予約を誤取込する。**必ず"他店(特に高松)を先頭で除外"するガードを入れる**（貸出営業所＝store・住所・クラス末尾_TAK/_OKA/_SPK）。新店/新クラス追加時は3店GASの店舗判定を必ず横串確認。
+
+### BT高松のブランド振り分け＝混合配車禁止（HDM/BUDDICAは車両が物理的に別）
+- 高松は同一APP・同一`bt_reservations`にHDM(rent-handyman.com・じゃらん/楽天/スカイチケット/公式)とBUDDICA(buddica-tourism.jp・自社HP/たびらい/エアトリ/RDC)が混在。**ブランドの正本＝`bt_reservations.brand`（トリガー`bt_derive_brand`／じゃらん等→HDM・他→BUDDICA）**。
+- **配車ルール（オーナー確定）：予約brandと同ブランドの車両のみ配車。HDM予約→HDM車のみ／BUDDICA予約(HP直販含む)→BT車のみ。同ブランドの空き車が無ければ配車せず"未配車BOX"（HDM車に絶対落とさない）。**
+- 実装：`gas_bt_reservation_import.gs`(BUDDICA予約リレー・じゃらん/エアトリ/RDC/site直販)の`autoAssignVehicle_`にブランド絞込追加（予約brandをSELECT→同ブランド車のみfilter・空なら`return ''`）。たびらい`gas_bt_tabirai_import.gs`は共有ヘルパー依存だったので**専用`assignTabiraiVehicle_`(ブランド絞込込み・自己完結)に差し替え**（共有autoAssignVehicle_を触らず他ファイル無影響）。両方クリップボード渡し済(貼付はオーナー)。
+- **車両マスターに各車brand設定が必須**（未設定だとHDM予約が「同ブランド車ゼロ→未配車」）。現状HDMは**ハリアー(code=ハリア0000/plate要登録)1台のみ**、他は全てBUDDICA。フィルタは`BUDDICA予約→brand='BUDDICA'/'BT'/空 を許可`（未設定車はBUDDICA扱い）。
+- 既存の誤配車(GAS修正前取込)はGAS修正では直らない→手動付替え。R0TWIKDO(HDM)をBUDDICAハリアー(1729)→HDMハリアー(0000)に付替え済。過去日の混合(返却済)は運用影響なし＝放置(台帳汚さない)。「配車表が変わらない/BT車のまま」報告は、まず`bt_reservations.brand`と`bt_fleet`の車両brandを実データ照合。
+
+### welcome(予約完了メール=マイページ+お礼)の60日窓を撤廃＝日程無関係で送る（オーナー指示）
+- `hdm-tkm-enqueue`(BT project・pg_cron 15分)がじゃらんHDM予約に各通知をenqueue→`hdm-tkm-send-mail`(MODEゲート・現`live`)が実送信。**welcomeトリガーは`()=>true`だが、クエリ窓が`start_date<=今日+60日`で先の予約(例12/27)を対象外にしていた**（オーナー未承認のハードコード値）。→ `index.ts` L77を`+60日→+730日(実質無制限)`に拡張。他トリガー(reminder/remind/damage/thanks)は各自のd2s/d2e条件でゲートされるので窓拡張の影響はwelcome(()=>true)のみ。BT project(ggqugvyskyiblxiycpci)にデプロイ済＋手動起動でR0TWIKDO(12/27)にwelcome積載確認。**welcome=「ご予約ありがとうございます｜マイページのご案内」＝マイページ+お礼が1通**（別途thanksは返却後d2e1-3の利用後お礼で別物）。
+- **MODE確認法**：`hdm_tkm_notifications`のkind別sent集計＝welcome sent=true多数&実顧客メール宛→MODE=live稼働中と判定できる。テンプレは`hdm_tkm_templates`(単一ソース)。
+
+### HDMじゃらんの決済フロー（個別Squareリンク・カード事前決済・段階催促）
+- じゃらん取込時のみ`importOta_`→`sendOtaGuidePayment_`が**予約1件ごとに専用Square決済リンク(quick_pay・`square.link/u/…`)を発行**（品目に予約番号/氏名/期間/金額）＝共通リンクでなく1予約1リンク。カード事前決済。`bt_reservations.pay_url`＋`bt_jalan_payments`に記録。
+- **顧客への送信**＝welcome/reminderメールに`{payblock}`(決済案内文「【事前決済のお願い】…お支払い金額…出発2日前19:00まで」)で決済リンク同梱。未払いなら4日前/2日前/前日リマインドで再催促＝**段階的に事前決済を促すフロー**。出発3日以内未払いは毎朝9時`checkBtUnpaidAlert`が🚨を#operation-高松空港店(C0BFMBLEJGZ)へ。
+- **入金確認通知**＝`checkBtPayments`(10分毎)がSquare Orders APIを予約番号突合→入金検知→paid化＋「✅入金確認【じゃらん｜HANDYMAN高松空港店】」を**#operation-高松空港店(C0BFMBLEJGZ)**へ。実データで4件paid自動検知を確認＝稼働中。キャンセル時は入金済→🔴要返金確認/未入金→決済リンク停止。**決済/返金/入金通知はじゃらん(HDM)限定**（エアトリ/RDC/たびらいは決済対象外＝通知なし）。Square location=L8N7J9RKPN3WH。
+
+## 🕒 2026-09-02 マイページ お届け(DEL)場所・時間変更に締切追加＝貸出前日19:00で受付終了(EF handyman-mypage・SPK)
+オーナー(武山)要望「翌日のお届け場所・時間を前日の営業時間外以降に申請不可に（前日夜に翌営業日1発目のタスクを気軽に変更されると困る）」。**お届け(DEL=del_place/lend_time)の変更申請は貸出前日19:00で受付終了→以降は`lineOnly:true`(409)で「公式LINEにて承ります」誘導**。締切=既存`pastOptionDeadline(r.lend_date)`(貸出日0:00の5h前=前日19:00・シートオプション締切と同一ロジック)を流用。**回収(COL=col_place/return_time)は据え置き＝承認制・時間制限なし**(DELのみゲート・update handler L742)。フロント`my.html`は`lineOnly`対応済(closeSheet+toast・L1021/1146)。EF正本`~/spk-task/line_auto/handyman-mypage/index.ts`→`~/hdm-car-delivery/supabase/functions/`にcp→`functions deploy handyman-mypage --no-verify-jwt`。本番E2E検証済(貸出日=当日の予約でlend_time変更→lineOnly 409・DB書込前のreject経路)。my-admin.htmlマニュアルのUSER受付ルール表も現行仕様に更新済。⚠️Supabase PAT(`~/.config/keydrop/sb_token`)は失効する→`supabase.com/dashboard/account/tokens`でGenerate new token(GitHub 2FA=オーナーのみ)→保存で再開。**注意＝2026-08-21時点で「時間・場所変更は時間制限なく全て承認制」だったが、DELのみ2026-09-01/02に前日19:00締切を追加＝COLとDELで受付ルールが非対称**。
+
 ## 🚗 2026-08-30 公式サイト(rent-handyman.com)予約が「札幌だけ予約処理に失敗」＝RPCが存在しない`memo`列を参照（那覇/高松は成功）
 BUDDICA齋藤テスト報告：公式サイト予約フローで**那覇・高松はPC/スマホとも決済・確認メール・APP遷移まで成功、札幌だけ「予約処理に失敗しました」で決済完了できず**。真因＝`official_book_spk` RPC の insert が **`reservations` に存在しない `memo` 列を参照**→`ERROR: column "memo" of relation "reservations" does not exist`。**那覇は`nha_reservations`に`memo`列があるので成功、札幌`reservations`には無いので失敗**（同型RPCでもテーブル差で片方だけ落ちる）。→ 根治：`official_book_spk`のinsertから`memo,v_note`を除去（reservationsに顧客memo列なし・del_place/col_placeで場所は保持）。RPC適用はManagement API `/database/query`(token`~/.config/keydrop/sb_token`・curl `--data-binary @file`)。**切り分けの型＝RPCを直接テスト実行(`select official_book_spk(jsonb_build_object(...))`)すれば実際のSQLエラー(列不在等)が即出る**（EF越しの「予約処理に失敗」だけ見ても分からない→RPC直叩き）。実証：修正後A×2日+NOC+child=¥31,500で採番成功→テスト予約削除。反省＝**3店同型でもテーブルのカラム差(reservations vs nha_reservations)で"片方だけ動く"→新RPC/insertは対象テーブルの実カラムを必ず確認**。残(別件・非ブロッカー)＝齋藤指摘のシート料金(チャイルド1100/ジュニア550)と現地サイト表記の差異は要すり合わせ。
 

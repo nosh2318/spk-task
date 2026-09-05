@@ -64,7 +64,7 @@ Deno.serve(async (req) => {
       if (!alive.length) { results.push({ store: S.key, total: 0, unsub: [] }); continue; }
       const ids = alive.map((r) => r.id);
       const idIn = ids.map((x: string) => enc(x)).join(",");
-      const lu = await get(S.url, S.k, `license_uploads?store=eq.${S.lic}&reservation_id=in.(${idIn})&select=reservation_id,cnt`);
+      const lu = await get(S.url, S.k, `license_uploads?reservation_id=in.(${idIn})&select=reservation_id,cnt`);
       const doneSet = new Set((lu as any[]).filter((x) => (x.cnt || 0) > 0).map((x) => x.reservation_id));
       const ack = await get(S.url, S.k, `${S.sends}?action=eq.license_ack&resv_no=in.(${idIn})&select=resv_no,status`);
       const ackSet = new Set((ack as any[]).filter((x) => x.status === "manual_done").map((x) => x.resv_no));

@@ -1366,6 +1366,18 @@ function autoAssignVehicle_(reservation) {
     }
   }
 
+  // ★ 2026-09-03 車両優先順(オーナー指示): Gクラスはデミオ優先で埋める。
+  //   取得は登録順(≒ノートが先)で ORDER BY 無し → 空車を先頭から拾うためデミオが空いていてもノートに入る問題を是正。
+  //   name部分一致で優先車を先頭へ並べ替えてから空車探索する（HP車種指定=preferredModel時は既に絞込済みで無影響）。
+  var CLASS_ASSIGN_PRIORITY = { 'G': ['デミオ'] };
+  if (CLASS_ASSIGN_PRIORITY[vehicleClass]) {
+    var _prio = CLASS_ASSIGN_PRIORITY[vehicleClass];
+    vehicles.sort(function(a, b) {
+      function _rank(v) { for (var pi = 0; pi < _prio.length; pi++) { if ((v.name || '').indexOf(_prio[pi]) >= 0) return pi; } return _prio.length; }
+      return _rank(a) - _rank(b);
+    });
+  }
+
   var busyVehicleCodes = {};
   var overlappingFleet = getOverlappingFleetVehicles_(lendDate, returnDate);
   for (var i = 0; i < overlappingFleet.length; i++) busyVehicleCodes[overlappingFleet[i]] = true;
