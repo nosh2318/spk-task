@@ -466,7 +466,7 @@ function avatar(area){
   return g;
 }
 
-const clickable=[]; const labelDivs=[]; const movers=[]; let onc=0,stc=0,atc=0;
+const clickable=[]; const platforms=[]; const labelDivs=[]; const movers=[]; let onc=0,stc=0,atc=0;
 const PAD=6.4, PADSZ=5.2;
 // 出勤者は実際の出勤簿(shifts)からライブ取得（スクリプト下部）／本社はCLIのみ＝人の出勤者なし
 function mkLabel(html,cls){const d=document.createElement('div');d.className='tl '+cls;d.innerHTML=html;document.getElementById('labels').appendChild(d);return d;}
@@ -475,7 +475,7 @@ UNITS.forEach(u=>{
   const w=cols*PAD, d=rows*PAD;
   const G=new THREE.Group(); scene.add(G); u._grp=G;
   const plat=new THREE.Mesh(new THREE.BoxGeometry(w+2,0.3,d+2),new THREE.MeshStandardMaterial({color:u.color,roughness:.8,transparent:true,opacity:.35}));
-  plat.position.set(ux,0.15,uz); G.add(plat);
+  plat.position.set(ux,0.15,uz); G.add(plat); plat.userData={platUnit:u.key}; platforms.push(plat);
   const sign=makeSign(u.name.replace(/^[^ ]+ /,''),u.color); sign.position.set(ux,8.2,uz-d/2-1.5); G.add(sign);
   u.depts.forEach((dp,i)=>{
     const cx=ux-(w/2)+PAD/2+(i%cols)*PAD;
@@ -668,7 +668,7 @@ window.focusUnit=function(k,el){document.querySelectorAll('.nav button').forEach
   activeUnit=k; UNITS.forEach(u=>{if(u._grp)u._grp.visible=(k==='all'||u.key===k);});
   if(k==='all'){focus(-4,-2,82,0.62);theta=0.32;return;} const u=UNITS.find(u=>u.key===k); if(u)focus(u.pos[0],u.pos[1],26,0.72);};
 (function(){const nav=document.getElementById('nav');
-  nav.innerHTML='<button class="on" onclick="focusUnit(\'all\',this)">🗺 全体</button>'+UNITS.map(u=>`<button onclick="focusUnit('${u.key}',this)">${u.name}</button>`).join('');})();
+  nav.innerHTML='<button class="on" data-k="all" onclick="focusUnit(\'all\',this)">🗺 全体</button>'+UNITS.map(u=>`<button data-k="${u.key}" onclick="focusUnit('${u.key}',this)">${u.name}</button>`).join('');})();
 let drag=false,px=0,py=0,moved=0;
 cv.addEventListener('pointerdown',e=>{drag=true;px=e.clientX;py=e.clientY;moved=0;});
 addEventListener('pointerup',e=>{if(drag&&moved<5)pick(e);drag=false;});
@@ -676,15 +676,18 @@ addEventListener('pointermove',e=>{if(!drag)return;const dx=e.clientX-px,dy=e.cl
 window.zoomBy=function(d){rGoal=Math.max(12,Math.min(140,rGoal+d));};
 cv.addEventListener('wheel',e=>{e.preventDefault();rGoal=Math.max(12,Math.min(140,rGoal+e.deltaY*0.06));},{passive:false});
 // pinch
-let pd=0;cv.addEventListener('touchmove',e=>{if(e.touches.length===2){const a=e.touches[0],b=e.touches[1];const d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);if(pd)rGoal=Math.max(14,Math.min(140,rGoal-(d-pd)*0.12));pd=d;}},{passive:true});
-cv.addEventListener('touchend',()=>pd=0);
+let pd=0,pmx=0,pmy=0;cv.addEventListener('touchmove',e=>{if(e.touches.length===2){const a=e.touches[0],b=e.touches[1];const d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);const mx=(a.clientX+b.clientX)/2,my=(a.clientY+b.clientY)/2;if(pd)rGoal=Math.max(14,Math.min(140,rGoal-(d-pd)*0.12));if(pmx){const ddx=mx-pmx,ddy=my-pmy,s=radius*0.0016,ct=Math.cos(theta),st=Math.sin(theta);tGoal.x-=(ddx*ct+ddy*st)*s;tGoal.z-=(-ddx*st+ddy*ct)*s;target.x=tGoal.x;target.z=tGoal.z;}pd=d;pmx=mx;pmy=my;}},{passive:true});
+cv.addEventListener('touchend',()=>{pd=0;pmx=0;});
 
 // ===== PICK =====
 const ray=new THREE.Raycaster(),m=new THREE.Vector2();
 function pick(e){
   m.x=(e.clientX/innerWidth)*2-1; m.y=-(e.clientY/innerHeight)*2+1;
   ray.setFromCamera(m,camera); const hit=ray.intersectObjects(clickable)[0];
-  if(hit)openP(hit.object.userData.u,hit.object.userData.dp);
+  if(hit){openP(hit.object.userData.u,hit.object.userData.dp);return;}
+  // 部屋以外＝店の土台(スペース)クリック→その店にフォーカス移動
+  const ph=ray.intersectObjects(platforms.filter(p=>p.visible!==false&&p.parent&&p.parent.visible))[0];
+  if(ph&&ph.object.userData.platUnit){const k=ph.object.userData.platUnit;window.focusUnit(k,document.querySelector('.nav button[data-k="'+k+'"]'));}
 }
 function openP(u,dp){
   document.getElementById('pnm').textContent=`${AREA[dp.area]} ${dp.nm}`;
