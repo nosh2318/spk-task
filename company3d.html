@@ -44,6 +44,8 @@
   .tl.staff.done{border-color:#4ade80;background:rgba(8,40,20,.92);animation:blinkDone 1.1s ease-in-out infinite}
   .tl.count{background:rgba(37,99,235,.92);border-color:#3b82f6} .tl.count .t{font-weight:800}
   .tl.tasksum{background:rgba(10,16,32,.97);border-color:#38bdf8;border-width:1.5px;max-width:310px;white-space:normal;text-align:left;z-index:9;box-shadow:0 4px 16px rgba(0,0,0,.6)} .tl.tasksum .w{color:#93c5fd;font-size:11px} .tl.tasksum .t{font-size:10.5px;line-height:1.6;color:#dbe6f5} .tl.tasksum b{color:#fde68a;font-weight:800}
+  .tl.alert{background:rgba(60,10,10,.96);border-color:#ef4444;border-width:1.5px;max-width:300px;white-space:normal;text-align:left;z-index:9;box-shadow:0 0 14px rgba(239,68,68,.5)} .tl.alert .w{color:#fca5a5;font-size:11px;font-weight:800} .tl.alert .t{font-size:10.5px;line-height:1.6;color:#fecaca} .tl.alert b{color:#fde047;font-weight:900}
+  .tl.alertok{background:rgba(8,40,20,.9);border-color:#22c55e55} .tl.alertok .w{color:#86efac;font-size:10.5px}
   .tl.room{background:rgba(15,23,42,.88);border-color:rgba(96,165,250,.55);padding:5px 13px;border-width:1.5px;box-shadow:0 3px 14px rgba(0,0,0,.5)} .tl.room .rm{font-weight:900;font-size:16px;letter-spacing:.3px;color:#eaf2ff}
   .tl.on{border-color:#22c55e55} .tl::after{content:"";position:absolute;left:50%;top:100%;transform:translateX(-50%);
     border:5px solid transparent;border-top-color:rgba(15,23,42,.92)}
@@ -618,10 +620,29 @@ function fetchTaskCounts(){
       }).catch(()=>{});
   });
 }
-fetchTaskCounts();
+// ===== 各店の主要アラート（未配車/車検接近/点検接近/未入金） =====
+function fetchAlerts(){
+  const CFG=[
+    {keys:['nha'],url:MAIN_URL,anon:MAIN_ANON,fn:'company_alerts',body:{p_store:'nha'}},
+    {keys:['spk'],url:MAIN_URL,anon:MAIN_ANON,fn:'company_alerts',body:{p_store:'spk'}},
+    {keys:['bt'],url:BT_URL,anon:BT_ANON,fn:'bt_company_alerts',body:{}},
+  ];
+  const ICON={未配車:'🚗未配車',未入金:'💴未入金',車検接近:'🔧車検',点検接近:'🔩点検'};
+  CFG.forEach(c=>{
+    fetch(c.url+'/rest/v1/rpc/'+c.fn,{method:'POST',headers:{apikey:c.anon,'Authorization':'Bearer '+c.anon,'Content-Type':'application/json'},body:JSON.stringify(c.body)})
+      .then(r=>r.json()).then(o=>{
+        if(!o||typeof o!=='object')return;
+        const items=Object.keys(ICON).filter(k=>(o[k]||0)>0).map(k=>`${ICON[k]} <b>${o[k]}</b>`);
+        const html = items.length ? `<div class="w">🚨 主要アラート</div><div class="t">${items.join('　/　')}</div>` : `<div class="w">🟢 アラートなし</div>`;
+        const u1=uMap[c.keys[0]]; if(!u1||!u1._geo)return; const {ux,uz,d}=u1._geo;
+        labelDivs.push({div:mkLabel(html,'tasksum '+(items.length?'alert':'alertok')),pos:new THREE.Vector3(ux,4.4,uz-d/2-1.2),keys:c.keys.slice(),type:'tasksum'});
+      }).catch(()=>{});
+  });
+}
+fetchTaskCounts(); fetchAlerts();
 setInterval(()=>{
   for(let i=labelDivs.length-1;i>=0;i--){const L=labelDivs[i]; if(L.div&&L.div.classList&&L.div.classList.contains('tasksum')){L.div.remove();labelDivs.splice(i,1);}}
-  fetchTaskCounts();
+  fetchTaskCounts(); fetchAlerts();
 },120000);
 Promise.all([
   rpcO(MAIN_URL,MAIN_ANON,'company_staff_tasks',{p_store:'spk'}).then(a=>addStaff(uMap.spk,a)),
