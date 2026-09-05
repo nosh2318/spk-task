@@ -545,21 +545,26 @@ function pollCli(){
     .then(r=>r.json()).then(s=>{const secs=(s==null)?null:Number(s); setCliOnline(secs!==null&&!isNaN(secs)&&secs<=180);})
     .catch(()=>setCliOnline(false));
 }
-function addStaff(u,names){
-  if(!u||!u._geo||!names||!names.length)return;
+function addStaff(u,list){
+  if(!u||!u._geo||!list||!list.length)return;
+  // list=[{nm,cnt}]（cnt=本日の未消化タスク数＝バイトURLの残）。旧・名前配列も許容
+  list=list.map(x=>typeof x==='string'?{nm:x,cnt:0}:{nm:x.nm,cnt:Number(x.cnt)||0});
   const {ux,uz,w,d}=u._geo;
-  names.forEach((nm,j)=>{
-    const sx=ux-(names.length-1)/2*1.9+j*1.9, sz=uz+d/2-1.6;
+  list.forEach((it,j)=>{
+    const sx=ux-(list.length-1)/2*1.9+j*1.9, sz=uz+d/2-1.6;
     const sa=avatar('human'); sa.position.set(sx,0.45,sz); u._grp.add(sa);
     sa.userData={ux:ux,uz:uz,rx:Math.max(2,w/2-1),rz:Math.max(2,d/2-1),tx:sx,tz:sz,ph:Math.random()*6}; movers.push(sa);
-    labelDivs.push({div:mkLabel(`<div class="w">🧑 出勤</div><div class="t">${nm}</div>`,'staff'),follow:sa,pos:new THREE.Vector3(sx,2.5,sz),key:u.key,type:'staff'});
+    const badge = it.cnt>0?`<span style="color:#fde68a;font-weight:800">残 ${it.cnt}</span>`:`<span style="color:#4ade80">完了</span>`;
+    labelDivs.push({div:mkLabel(`<div class="w">🧑 ${it.nm}</div><div class="t">${badge}</div>`,'staff'),follow:sa,pos:new THREE.Vector3(sx,2.5,sz),key:u.key,type:'staff'});
   });
-  labelDivs.push({div:mkLabel(`<div class="t">👥 出勤 ${names.length}名</div>`,'count'),pos:new THREE.Vector3(ux,3.7,uz+d/2-1.6),key:u.key,type:'count'});
-  atLive+=names.length; const el=document.getElementById('atc'); if(el)el.textContent=atLive;
+  const rem=list.reduce((s,x)=>s+(x.cnt||0),0);
+  labelDivs.push({div:mkLabel(`<div class="t">👥 出勤 ${list.length}名　残タスク ${rem}</div>`,'count'),pos:new THREE.Vector3(ux,3.7,uz+d/2-1.6),key:u.key,type:'count'});
+  atLive+=list.length; const el=document.getElementById('atc'); if(el)el.textContent=atLive;
 }
 const MAIN_URL='https://ckrxttbnawkclshczsia.supabase.co',MAIN_ANON='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8';
 const BT_URL='https://ggqugvyskyiblxiycpci.supabase.co',BT_ANON='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdncXVndnlza3lpYmx4aXljcGNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxMDc3NjksImV4cCI6MjA5MzY4Mzc2OX0.uNhWcBd_Dl5nzemZDQfJ8mQV6iY73MwystGGpTRPC18';
 function rpc(url,anon,fn,body){return fetch(url+'/rest/v1/rpc/'+fn,{method:'POST',headers:{'apikey':anon,'Authorization':'Bearer '+anon,'Content-Type':'application/json'},body:JSON.stringify(body||{})}).then(r=>r.json()).then(a=>Array.isArray(a)?a.map(x=>x.nm).filter(Boolean):[]).catch(()=>[]);}
+function rpcO(url,anon,fn,body){return fetch(url+'/rest/v1/rpc/'+fn,{method:'POST',headers:{'apikey':anon,'Authorization':'Bearer '+anon,'Content-Type':'application/json'},body:JSON.stringify(body||{})}).then(r=>r.json()).then(a=>Array.isArray(a)?a.filter(x=>x&&x.nm):[]).catch(()=>[]);}
 pollCli(); setInterval(pollCli,30000); // MAIN_URL定義後に死活ポーリング開始(TDZ回避)
 // ===== 各店の本日タスクをライブ集計して表示 =====
 function fetchTaskCounts(){
@@ -588,9 +593,9 @@ setInterval(()=>{
   fetchTaskCounts();
 },120000);
 Promise.all([
-  rpc(MAIN_URL,MAIN_ANON,'company_roster',{p_store:'spk'}).then(n=>addStaff(uMap.spk,n)),
-  rpc(MAIN_URL,MAIN_ANON,'company_roster',{p_store:'nha'}).then(n=>addStaff(uMap.nha,n)),
-  rpc(BT_URL,BT_ANON,'bt_company_roster',{}).then(n=>{addStaff(uMap.bt,n);}),
+  rpcO(MAIN_URL,MAIN_ANON,'company_staff_tasks',{p_store:'spk'}).then(a=>addStaff(uMap.spk,a)),
+  rpcO(MAIN_URL,MAIN_ANON,'company_staff_tasks',{p_store:'nha'}).then(a=>addStaff(uMap.nha,a)),
+  rpcO(BT_URL,BT_ANON,'bt_company_staff_tasks',{}).then(a=>addStaff(uMap.bt,a)),
 ]).then(()=>{const el=document.getElementById('atc');if(el&&atLive===0)el.textContent='0';});
 
 // ===== ORBIT CAMERA (manual) =====
