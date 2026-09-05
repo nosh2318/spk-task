@@ -1,5 +1,31 @@
 # SPK業務管理APP（札幌店）
 
+## 🏙️ 2026-09-05 company3d.html＝3Dバーチャル本社（全社の稼働をリアルタイム可視化・新規構築中）
+オーナービジョン「AI×人の全領域を可視化したバーチャル本社」。**URL＝https://nosh2318.github.io/spk-task/company3d.html**（Three.js r128 単一HTML・GitHub Pages・**buildなしpush即反映**）。共有Supabaseの台帳/実データを**読むだけ**（既存APPとは別・書き込まない）。
+- **構造**：`UNITS`＝マネジメントチーム(hq・9部署)＋3店(nha/spk/bt)。店は共通8部署(`ST_STORE`＝①貸渡/返却オペ②予約/配車管理③顧客対応④出入金管理⑤車両管理⑥修理⑦スタッフ管理⑧イレギュラー対応)。各部署=部屋(room)、店=土台(platform)。
+- **操作（重要・オーナー確定）**：①**ナビボタン or 店の区画(部屋含む)をタップ→その店だけ表示＋ズーム**（`focusUnit`＝他店`_grp.visible=false`＋カメラ寄せ。全体表示では部屋タップも詳細でなくまず店にズーム＝pick()が`activeUnit==='all'`で分岐）②ズーム済みで部屋タップ→詳細パネル(`openP`)③スタッフ名札(🔗)タップ→個別URL(staff.html?t=token)。
+- **スマホ操作**：**1本指ドラッグ=中心移動(パン)／2本指=拡大縮小(ピンチ)**（PCマウス=回転・ホイール=ズーム）。pointerType判定＋activePtr Setで分岐。
+- **🔴 スマホでラベル(タスク/アラート)が崩れる根治**：HTMLオーバーレイ(project()で位置付け)は本来ズームでサイズ不変。だが**ブラウザ自体のピンチズーム(ページ拡大)でDOM全体が拡大し崩れる**→ ①viewport`user-scalable=no,maximum-scale=1` ②`canvas#c{touch-action:none}` ③touchmoveを`{passive:false}`+`e.preventDefault()`+`gesturestart/change`抑止、の3点で解決。**HTMLオーバーレイUIを持つThree.jsは必ずこの3点でページズームを殺す**（でないとモバイルで崩壊）。
+- **OMNI**：各店に1体、**②予約/配車管理の部屋に固定(動かない)**＝`addStoreOmni`が`dp._pos`に配置(moversに入れない)。アイコンは**シアン発光の目＋アンテナのロボット**(`avatar('omni')`・アンテナ明滅)。ラベル「🤖 OMNI／AI受付・配車」。※一度オーブ+リングにしたが「ロボットでいい」でロボットに。
+- **CLI/常駐**：hqにCLI(歩行・`cli_last_seen()`でPCオフライン検知→静止)＋常駐(大下・武山＝武山は運用部の部屋のみ)。各店OMNIとは別。
+- **リアルタイム/チーム状況ボタン**（旧「本日のチーム状況」から改称）：**個別URL(staff.html)のヘッダー直下にコンテンツ内バー**（固定配置はヘッダーと重なり押せない→renderのマニュアルボタン下にh+=で挿入）＋**各店アプリTOPの「OPシートを開く」横**（`.tbBlink`点滅）→クリックでcompany3d.htmlを開く。3店。
+- **RPC(SECURITY DEFINER・anon/authenticated grant)**：main=`company_roster/company_staff_tasks(nm,cnt,tok=share_token)/company_task_counts(OPサマリ集計:貸出計/返却計/洗車/その他)/company_vehicles/company_alerts(未配車/車検接近/点検接近/未入金・テスト/デモ除外`r.id !~ '^(ZZ|DEMO|KD-DEMO|TEST)'`)/cli_last_seen`。BT=`bt_company_*`(別DB)。タスク数は生DB件数でなく**各店OPシートのサマリ区分**に合わせる。
+- **落とし穴**：①**GitHub Pages CDNエッジは素URL(クエリ無し)をPOP毎に最大10分キャッシュ→シークレットでも直らない(エッジ由来)／`?cb=一意値`は別Fastlyオブジェクトで即fresh／curlは別POPでfreshに見え食い違う**。反映確認はエッジTTL経過を待つか一意クエリ。②**スタッフDOM名札が3D canvasのクリックを奪う**（focusのテストは名札の無い部屋/床をタップ）。③RPC戻り値型変更はDROP FUNCTION必須・Management APIはurllib403→curl。
+- 車両マスタ＝`fleet-master.html`(全店車両・ETC位置/装備/車検点検・vehicles-master.htmlは404キャッシュ回避で改名した経緯)。**`?store=nha|spk|bt`で初期店舗指定→その店の車両のみ表示**(2026-09-06追加・IIFEでcurS初期化+該当ボタンon)。**各店(nha/spk/bt)の⑤車両管理dept→`fleet-master.html?store=<key>`＝その店の車両データのみ**(オーナー指示「全店データでなく各店の車両のみに」)。`store(key,base)`が`ST_STORE`複製時に⑤車両管理itemのURLをkey別に差し替え(items配列を新規生成＝shallow cloneの共有参照を回避)。
+- **レイアウト＝地理配置(北海道北/沖縄南)は「立体感が難しい」でボツ→バランス十字配置に確定**：マネジメント(奥中央 pos[0,-30])／3店(中央横一列 nha[-27,0]/spk[0,0]/bt[27,0])／CS部[-15,30]・SNS部[15,30](手前2部屋)。全体カメラ`focus(0,-1,112,0.58)theta=0`。※将来案「地球儀(球体)で動く」はオーナー保留アイデア。
+- **CS部/SNS部＝storeでない独立ユニット**(UNITS配列に追加・build()が同じ仕組みで部屋描画・navボタン自動)：CS=①問い合わせ管理(handyman-inquiry.vercel.app)②マイページ管理(rent-handyman.com/mypage-admin.html?bucket=but_tkm)。SNS=①Instagram(@delivery_rentalcar_handyman)②投稿管理シート(GAS連動)。部屋詳細は`dp.items:[{t,d,u}]`形式でopenPがリンクカード描画。
+- **吹き出し(type:'bubble'・ラベルフィルタで全体＋その拠点表示・120秒更新・in-place更新)**：①マネジメント発「📥本日の新規予約(発生)」那覇/札幌/高松＝RPC`company_new_bookings()`(main jsonb{nha,spk})＋`bt_company_new_bookings()`(BT jsonb{bt})＝created_at JST今日・cancel/テスト除外。②CS発「📮未対応の問い合わせN件！〜店の皆さん対応してください！」赤点滅(`.inqblink`)＝RPC`company_inquiries()`(main jsonb{nha,spk,bt}・`inquiries`表 status∈new/in_progress・store=naha/sapporo/takamatsu)。0件は「対応済み」緑。
+- **🔴 情報ラベルは3D浮遊やめ→画面端の固定パネルに集約(オーナー確定「主役はエリアとスタッフ・タスク/アラート/予約をエリアに重ねるな」)**：`#storehud`(左固定・各店カード=貸出/返却/洗車/他＋主要アラート(クリックで該当APP)＋本日の新規予約＋出勤N名/残)＋`#inqbanner`(上部固定・未対応問い合わせを赤点滅「〜店の皆さん対応してください！」)。3Dには店/部署/OMNI/スタッフ名札/常駐だけ残す(主役)。fetch群は`_hud{tc,al,nb}`+`_att`に貯めて`renderStoreHud()`でDOM描画(3Dラベルを作らない)。スマホは`#storehud`をbottom固定(media 760px)・隠すトグル有。**💴現金残高＝那覇/札幌は常時固定表示**(2026-09-06オーナー指示「那覇・札幌の現金残高も固定で出す」)：`fetchPettyCash`が`spk_cash_balance`/`nha_cash_balance`RPC(出納帳の現金残高=hq-accounting.htmlと同式)を取得→`renderStoreHud`で`pt.total`が数値なら常に表示。**<¥2000=赤点滅`.shpetty`+要補充／通常=静かな`.shcash`(点滅なし)**。個別小口(札幌`company_petty_cash`<¥1000)は併記。検証済:那覇¥16,639/札幌¥201(赤点滅+小口高橋-¥1,000)。
+- デプロイ実測：company3d f57bfcc／SPK 695f9ac/NHA v3.5.365/BT v1.0.402。
+
+## 🏢 2026-09-05 本社会計 合算ハブ hq-accounting.html 新設（札幌+那覇の出納帳+カードを月次/年次で合算・GitHub Pages・閲覧専用）
+オーナー要望「各店会計タブの小口・カードを本社として合算管理・出納帳とカードを月別/年で・札幌と那覇・最終的にinvoice_manager+advanceと合体」。**URL＝https://nosh2318.github.io/spk-task/hq-accounting.html**（単一HTML・vanilla・anon・buildなし・push即反映／GH Pagesは1〜2分ビルド待ちで初回404→`?cb=`で確認）。
+- **表示**＝札幌+那覇の **出納帳(現金入金=cash_in/出金=cash_out/当月収支/月初残高/現金残高)＋カード払い(card_pay総額/入金済/未)** を **店別+合算** で。📅月次(年月選択)/📆年次(12ヶ月内訳+年計)切替＋CSV。**閲覧・集計専用**(登録/修正は各店APP)。
+- **計算式はアプリの会計タブと完全一致(再集計しない)**：現金残高=**月初+当月収支−回収済現金売上**(cashCollected=cash_in且つcategory='現金売上'且つpaid)。月初残高キー＝**SPK`app_settings.spk_opening_balance`(単数)／NHA`nha_app_settings.opening_balances`(複数)**＝キー名が店で違う(罠)。両方 `{YM:金額}` dict。前月現金残高→翌月月初に繰越(アプリが書込済)。
+- **各店会計の共通構造(main DB `{spk_/nha_}accounting`・同スキーマ)**：type=`cash_in`(出納帳入金)/`cash_out`(出金)/`card_pay`(カード)/`extra_sales`(予約外)/`advance`(立替)/`personal_adv`(個人立替)/`cash_in`のcategory=現金売上/小口現金追加/その他入金。列=date/type/category/amount/paid/description/resv_no/staff_name/payee等。**小口現金(petty_cash)はSPKのみ(`spk_petty_cash`)＝NHA/BTは未導入(404)**。BTは別DB(ggqugvyskyiblxiycpci)・リリース前で今回は札幌+那覇のみ(構造同じで後から追加可)。
+- **検証済**：那覇2026-09=月初16639/入金0/出金0/残高16639=アプリ画面(スクショ)完全一致・前月残高→翌月月初繰越も一致。
+- **残(オーナー『最後に合体』)**：この本社ハブに**受領請求書(invoice_manager.html=received_invoices・既に請求書+立替iframeの本社ビュー)/立替(advance.html=advance_reimbursements)をタブ統合**すれば、請求書+立替+出納帳+カードが1画面の本社ハブになる。invoice_managerはfile://ローカル、advanceはGH Pages。
+
 ## 🪑 2026-09-04 シート表記を全画面 CS/JS/BS に統一（チャイルドシート=CS・ジュニアシート=JS・ベビーシート=BS／v4.7.599）
 オーナー指示「app上の全ての表記を統一」。過去の統一は積載在庫バッジ(📦 CS/JS)だけで止まっており、OP予約バッジと駐車マップが旧表記のままだった。**シート表記の"表示"箇所は7つ・6ファイルに散在**＝①`index.src.html` OptBadges L1199-1200(OP各所の主バッジ`C(チャイルド)`→`CS`)②🪑シート在庫サマリSEATS L16999③編集フォーム3箇所(L15681/L17797/L21189-91)④`parking.html` 倉庫車リストL288(旧`CS ﾁｬｲﾙﾄﾞ×`→`CS×`)+駐車マップ枠バッジL355(旧`チャイルド×`→`CS×`)⑤`my-admin.html` L766⑥`seats.html` L137⑦`staff-manual.html` L155。**⚠️`detectSeats`(L877)等のパーサーは`チャイルドシート`/`ジュニアシート`のフルワードでOTAデータを検出する＝表示でないので絶対に変えない**（変えると取込が壊れる）。表記変更依頼が来たら「表示バッジ7箇所」を全部直す＝1箇所だけ直すと"半分だけ統一"の再発になる（`grep -rn "C(チャイルド)\|J(ジュニア)\|チャイルド×\|ジュニア×" *.html`で残存確認）。
 
