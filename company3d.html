@@ -656,6 +656,7 @@ function pollCli(){
     .catch(()=>setCliOnline(false));
 }
 const STAFF_URL={nha:'https://nosh2318.github.io/naha-project/staff.html?t=',spk:'https://nosh2318.github.io/spk-task/staff.html?t=',bt:'https://buddica-touring.github.io/app/staff.html?t='};
+var _staffRef={};
 function addStaff(u,list){
   if(!u||!u._geo||!list||!list.length)return;
   // list=[{nm,cnt,tok}]（cnt=本日の未消化タスク数＝バイトURLの残／tok=個別URLトークン）。旧・名前配列も許容
@@ -670,6 +671,7 @@ function addStaff(u,list){
     const div=mkLabel(`<div class="w">🧑 ${it.nm}${url?' 🔗':''}</div><div class="t">${badge}</div>`,'staff'+(it.cnt===0?' done':''));
     if(url){ div.style.pointerEvents='auto'; div.style.cursor='pointer'; div.title='個別URL（バイトURL）を開く'; div.onclick=(e)=>{e.stopPropagation(); window.open(url,'_blank','noopener');}; }
     labelDivs.push({div,follow:sa,pos:new THREE.Vector3(sx,2.5,sz),key:u.key,type:'staff'});
+    _staffRef[u.key+'|'+it.nm]={div:div,tok:it.tok};
   });
   const rem=list.reduce((s,x)=>s+(x.cnt||0),0);
   if(typeof _att!=='undefined'){_att[u.key]={n:list.length,rem:rem}; if(typeof renderStoreHud==='function')renderStoreHud();}
@@ -764,9 +766,20 @@ function fetchPettyCash(){
   P('company_petty_cash').then(o=>{if(o&&typeof o==='object'){_hud.petty.spk.low=o.low||[];renderStoreHud();}}).catch(()=>{}); // 札幌 個別＝小口現金<¥1000
   P('nha_cash_balance').then(v=>{if(typeof v==='number'){_hud.petty.nha={total:v,low:[]};renderStoreHud();}}).catch(()=>{}); // 那覇 店舗残＝出納帳の現金残高
 }
+// ===== スタッフの残タスクを定期更新（日付/タスク変化に自動追従・完了表示の陳腐化を防ぐ） =====
+function refreshStaffTasks(){
+  const CFG=[{k:'spk',u:MAIN_URL,a:MAIN_ANON,fn:'company_staff_tasks',b:'{"p_store":"spk"}'},{k:'nha',u:MAIN_URL,a:MAIN_ANON,fn:'company_staff_tasks',b:'{"p_store":"nha"}'},{k:'bt',u:BT_URL,a:BT_ANON,fn:'bt_company_staff_tasks',b:'{}'}];
+  CFG.forEach(c=>fetch(c.u+'/rest/v1/rpc/'+c.fn,{method:'POST',headers:{apikey:c.a,'Authorization':'Bearer '+c.a,'Content-Type':'application/json'},body:c.b}).then(r=>r.json()).then(list=>{
+    if(!Array.isArray(list))return; let rem=0,n=0;
+    list.forEach(it=>{const cnt=Number(it.cnt)||0; rem+=cnt; n++; const ref=_staffRef[c.k+'|'+it.nm]; if(!ref)return;
+      const badge=cnt>0?`<span style="color:#fde68a;font-weight:800">残 ${cnt}</span>`:`<span style="color:#4ade80">完了</span>`;
+      const t=ref.div.querySelector('.t'); if(t)t.innerHTML=badge; ref.div.classList.toggle('done',cnt===0);});
+    if(typeof _att!=='undefined'){_att[c.k]={n:n,rem:rem}; if(typeof renderStoreHud==='function')renderStoreHud();}
+  }).catch(()=>{}));
+}
 const _sht=document.getElementById('shtoggle'); if(_sht)_sht.onclick=(e)=>{e.stopPropagation();const h=document.getElementById('storehud');h.classList.toggle('min');_sht.textContent=h.classList.contains('min')?'表示':'隠す';};
 fetchTaskCounts(); fetchAlerts(); fetchNewBookings(); fetchInquiries(); fetchMypagePending(); fetchPettyCash();
-setInterval(()=>{ fetchTaskCounts(); fetchAlerts(); fetchNewBookings(); fetchInquiries(); fetchMypagePending(); fetchPettyCash(); },120000);
+setInterval(()=>{ fetchTaskCounts(); fetchAlerts(); fetchNewBookings(); fetchInquiries(); fetchMypagePending(); fetchPettyCash(); refreshStaffTasks(); },120000);
 Promise.all([
   rpcO(MAIN_URL,MAIN_ANON,'company_staff_tasks',{p_store:'spk'}).then(a=>addStaff(uMap.spk,a)),
   rpcO(MAIN_URL,MAIN_ANON,'company_staff_tasks',{p_store:'nha'}).then(a=>addStaff(uMap.nha,a)),
