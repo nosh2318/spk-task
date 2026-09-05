@@ -2,13 +2,14 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>HANDYMANカンパニー｜3Dバーチャル本社</title>
 <style>
-  html,body{margin:0;height:100%;overflow:hidden;background:#0b1222;font-family:-apple-system,"Hiragino Kaku Gothic ProN",sans-serif;color:#fff}
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b1222;font-family:-apple-system,"Hiragino Kaku Gothic ProN",sans-serif;color:#fff;-webkit-text-size-adjust:100%}
+canvas#c{touch-action:none;display:block}
   #c{display:block;width:100vw;height:100vh}
   /* HUD */
   .hud{position:fixed;top:0;left:0;right:0;display:flex;align-items:center;gap:12px;padding:9px 14px;z-index:10;
@@ -455,6 +456,15 @@ function avatar(area){
     head.position.y=1.55; g.add(head);
     const ant=new THREE.Mesh(new THREE.SphereGeometry(0.1,8,8),new THREE.MeshStandardMaterial({color:0x22d3ee,emissive:0x22d3ee,emissiveIntensity:1.2}));
     ant.position.y=2.05; g.add(ant);
+  }else if(area==='omni'){
+    // OMNI＝統括AI。ひと目で分かる発光オーブ＋周回リング(ハブ)
+    const base=new THREE.Mesh(new THREE.CylinderGeometry(0.42,0.6,0.5,14),new THREE.MeshStandardMaterial({color:0x0f172a,metalness:.6,roughness:.35,emissive:0x0891b2,emissiveIntensity:.5}));
+    base.position.y=0.25; g.add(base);
+    const core=new THREE.Mesh(new THREE.SphereGeometry(0.66,20,20),new THREE.MeshStandardMaterial({color:0x38bdf8,metalness:.35,roughness:.2,emissive:0x38bdf8,emissiveIntensity:1.0}));
+    core.position.y=1.25; g.add(core);
+    const ring=new THREE.Mesh(new THREE.TorusGeometry(1.0,0.1,12,36),new THREE.MeshStandardMaterial({color:0x22d3ee,emissive:0x22d3ee,emissiveIntensity:1.2,metalness:.3,roughness:.3}));
+    ring.position.y=1.25; ring.rotation.x=Math.PI/2.3; g.add(ring); g.userData.ring=ring;
+    return g;
   }else{
     const body=new THREE.Mesh(new THREE.BoxGeometry(0.95,1.1,0.7),new THREE.MeshStandardMaterial({color:c,metalness:.5,roughness:.35}));
     body.position.y=0.62; g.add(body);
@@ -546,14 +556,15 @@ function addRoomResident(u,deptNm,nm){
   labelDivs.push({div:mkLabel(`<div class="w">🧑 常駐</div><div class="t">${nm}</div>`,'staff'),follow:ra,pos:new THREE.Vector3(cx,2.5,cz),key:u.key,type:'staff'});
 }
 addRoomResident(uMap.hq,'運用部','武山');
-// ===== 各店にOMNIを1体ずつ常駐（シフト無関係で常に歩行） =====
+// ===== 各店にOMNIを1体ずつ＝②予約/配車管理の部屋に固定配置（動かない） =====
+const omnis=[];
 function addStoreOmni(u){
-  if(!u||!u._geo)return;
-  const {ux,uz,w,d}=u._geo;
-  const sx=ux-w/2+1.8, sz=uz-d/2+1.8;
-  const oa=avatar('cli'); oa.position.set(sx,0.45,sz); u._grp.add(oa);
-  oa.userData={ux:ux,uz:uz,rx:Math.max(2,w/2-1),rz:Math.max(2,d/2-1),tx:sx,tz:sz,ph:Math.random()*6}; movers.push(oa);
-  labelDivs.push({div:mkLabel(`<div class="w">🤖 OMNI</div><div class="t">稼働中</div>`,'staff'),follow:oa,pos:new THREE.Vector3(sx,2.5,sz),key:u.key,type:'staff'});
+  if(!u||!u._grp)return;
+  const dp=u.depts.find(d=>/予約\/配車|予約管理|配車/.test(d.nm))||u.depts[1]||u.depts[0];
+  const p=dp&&dp._pos; if(!p)return;
+  const ox=p.x+1.0, oz=p.z+0.3;
+  const oa=avatar('omni'); oa.position.set(ox,0.35,oz); u._grp.add(oa); omnis.push(oa);
+  labelDivs.push({div:mkLabel(`<div class="w">🛰️ OMNI</div><div class="t">AI受付・配車</div>`,'staff'),pos:new THREE.Vector3(ox,3.1,oz),key:u.key,type:'staff'});
 }
 ['nha','spk','bt'].forEach(k=>addStoreOmni(uMap[k]));
 // ===== CLI死活（PCオフライン検知）：cli_last_seen()が古い/取得不可ならオフライン表示 =====
@@ -682,8 +693,9 @@ addEventListener('pointermove',e=>{if(!drag)return;const dx=e.clientX-px,dy=e.cl
   }});
 window.zoomBy=function(d){rGoal=Math.max(12,Math.min(140,rGoal+d));};
 cv.addEventListener('wheel',e=>{e.preventDefault();rGoal=Math.max(12,Math.min(140,rGoal+e.deltaY*0.06));},{passive:false});
-// スマホ 2本指＝拡大縮小(ピンチ)
-let pd=0;cv.addEventListener('touchmove',e=>{if(e.touches.length===2){const a=e.touches[0],b=e.touches[1];const d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);if(pd)rGoal=Math.max(14,Math.min(140,rGoal-(d-pd)*0.12));pd=d;}},{passive:true});
+// スマホ 2本指＝拡大縮小(ピンチ)。ブラウザ自体のピンチズーム(ページ拡大でラベルが崩れる)を抑止
+let pd=0;cv.addEventListener('touchmove',e=>{if(e.touches.length===2){e.preventDefault();const a=e.touches[0],b=e.touches[1];const d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);if(pd)rGoal=Math.max(14,Math.min(140,rGoal-(d-pd)*0.12));pd=d;}},{passive:false});
+cv.addEventListener('gesturestart',e=>e.preventDefault());cv.addEventListener('gesturechange',e=>e.preventDefault());
 cv.addEventListener('touchend',()=>{pd=0;});
 
 // ===== PICK =====
@@ -691,8 +703,13 @@ const ray=new THREE.Raycaster(),m=new THREE.Vector2();
 function pick(e){
   m.x=(e.clientX/innerWidth)*2-1; m.y=-(e.clientY/innerHeight)*2+1;
   ray.setFromCamera(m,camera); const hit=ray.intersectObjects(clickable)[0];
-  if(hit){openP(hit.object.userData.u,hit.object.userData.dp);return;}
-  // 部屋以外＝店の土台(スペース)クリック→その店にズーム(部署が見える焦点ビュー)＝部屋の詳細ではなく店全体のアップ
+  if(hit){const u=hit.object.userData.u;
+    if(activeUnit==='all'){ // 全体表示中：店のどこ(部屋含む)を押しても、まずその店にズーム(アップ)
+      window.focusUnit(u.key,document.querySelector('.nav button[data-k="'+u.key+'"]'));
+    } else { openP(u,hit.object.userData.dp); } // ズーム済み：部屋の詳細を表示
+    return;
+  }
+  // 土台(スペース)クリック→その店にズーム(部署が見える焦点ビュー＝店全体のアップ)
   const ph=ray.intersectObjects(platforms.filter(p=>p.visible!==false&&p.parent&&p.parent.visible))[0];
   if(ph&&ph.object.userData.platUnit){const k=ph.object.userData.platUnit;window.focusUnit(k,document.querySelector('.nav button[data-k="'+k+'"]'));}
 }
@@ -750,6 +767,8 @@ function loop(ts){
     if(dd<0.3){q.tx=q.ux+(Math.random()-.5)*q.rx*2;q.tz=q.uz+(Math.random()-.5)*q.rz*2;}
     else{s.position.x+=dx/dd*0.035;s.position.z+=dz/dd*0.035;s.rotation.y=Math.atan2(dx,dz);}
     s.position.y=0.45+Math.abs(Math.sin(t*7+q.ph))*0.09;}
+  // OMNI＝固定だがリング回転＋わずかに浮遊(生きてる感)
+  for(const o of omnis){if(o.userData.ring)o.userData.ring.rotation.z=t*0.9;o.position.y=0.35+Math.sin(t*1.5)*0.05;}
   // labels（全体=タスク＋出勤数／店を選ぶと=その店のタスク＋出勤者名）
   for(const L of labelDivs){
     let show;
