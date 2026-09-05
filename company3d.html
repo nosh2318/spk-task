@@ -70,6 +70,7 @@
   <span class="st">🟢 出社中 <b id="onc">—</b></span>
   <span class="st">🔴 詰まり <b id="stc">—</b></span>
   <span class="st">👥 出勤 <b id="atc">—</b></span>
+  <span class="st">🤖 CLI <b id="cli">—</b></span>
   <span class="st">🕐 <span id="clk">--:--:--</span></span>
   <a href="company.html">▦ 2D一覧へ</a>
 </div>
@@ -227,17 +228,41 @@ const _atc=document.getElementById('atc'); if(_atc)_atc.textContent='…';
 const uMap={}; UNITS.forEach(u=>uMap[u.key]=u);
 let atLive=0;
 // ===== 本社は常にCLIが人間と同じように歩いて稼働（shiftsに依存せず常駐） =====
+const cliAv=[];
 function addCLI(u,n){
   if(!u||!u._geo)return;
   const {ux,uz,w,d}=u._geo;
   for(let j=0;j<n;j++){
     const sx=ux-(n-1)/2*2.4+j*2.4, sz=uz+d/2-2.0;
     const ca=avatar('cli'); ca.position.set(sx,0.45,sz); u._grp.add(ca);
-    ca.userData={ux:ux,uz:uz,rx:Math.max(2,w/2-1),rz:Math.max(2,d/2-1),tx:sx,tz:sz,ph:Math.random()*6}; movers.push(ca);
-    labelDivs.push({div:mkLabel(`<div class="w">🤖 CLI</div><div class="t">稼働中</div>`,'staff'),follow:ca,pos:new THREE.Vector3(sx,2.5,sz),key:u.key,type:'staff'});
+    ca.userData={ux:ux,uz:uz,rx:Math.max(2,w/2-1),rz:Math.max(2,d/2-1),tx:sx,tz:sz,ph:Math.random()*6,cli:true}; movers.push(ca);
+    // オンライン時の素の色/発光を記録（オフライン時にグレー化→復帰できるように）
+    ca.traverse(o=>{ if(o.material){ o.userData.onC=o.material.color.getHex(); o.userData.onE=o.material.emissive?o.material.emissive.getHex():null; o.userData.onEI=o.material.emissiveIntensity||0; }});
+    const lab={div:mkLabel(`<div class="w">🤖 CLI</div><div class="t">稼働中</div>`,'staff'),follow:ca,pos:new THREE.Vector3(sx,2.5,sz),key:u.key,type:'staff'};
+    labelDivs.push(lab); cliAv.push({av:ca,lab:lab});
   }
 }
 addCLI(uMap.hq,2);
+// ===== CLI死活（PCオフライン検知）：cli_last_seen()が古い/取得不可ならオフライン表示 =====
+let cliOnline=true;
+function setCliOnline(on){
+  cliOnline=on;
+  cliAv.forEach(c=>{
+    c.av.traverse(o=>{ if(!o.material)return;
+      o.material.color.setHex(on?o.userData.onC:0x475569);
+      if(o.material.emissive){ o.material.emissive.setHex(on?(o.userData.onE??0):0); o.material.emissiveIntensity=on?o.userData.onEI:0; }
+    });
+    c.lab.div.innerHTML = on?'<div class="w">🤖 CLI</div><div class="t">稼働中</div>':'<div class="w">🤖 CLI</div><div class="t">💤 オフライン</div>';
+    c.lab.div.style.opacity = on?'1':'0.5';
+  });
+  const el=document.getElementById('cli'); if(el){el.textContent=on?'稼働':'停止';el.style.color=on?'#22d3ee':'#94a3b8';}
+}
+function pollCli(){
+  fetch(MAIN_URL+'/rest/v1/rpc/cli_last_seen',{method:'POST',headers:{'apikey':MAIN_ANON,'Authorization':'Bearer '+MAIN_ANON,'Content-Type':'application/json'},body:'{}'})
+    .then(r=>r.json()).then(s=>{const secs=(s==null)?null:Number(s); setCliOnline(secs!==null&&!isNaN(secs)&&secs<=180);})
+    .catch(()=>setCliOnline(false));
+}
+pollCli(); setInterval(pollCli,30000);
 function addStaff(u,names){
   if(!u||!u._geo||!names||!names.length)return;
   const {ux,uz,w,d}=u._geo;
@@ -316,7 +341,9 @@ function loop(ts){
     if(dp._pil&&dp.st==='stuck')dp._pil.material.emissiveIntensity=0.6+Math.sin(t*6)*0.5;
   }));
   // 出勤者が歩き回る
-  for(const s of movers){const q=s.userData;let dx=q.tx-s.position.x,dz=q.tz-s.position.z;const dd=Math.hypot(dx,dz);
+  for(const s of movers){const q=s.userData;
+    if(q.cli&&!cliOnline){s.position.y=0.45;continue;} // オフラインCLIは歩かず静止
+    let dx=q.tx-s.position.x,dz=q.tz-s.position.z;const dd=Math.hypot(dx,dz);
     if(dd<0.3){q.tx=q.ux+(Math.random()-.5)*q.rx*2;q.tz=q.uz+(Math.random()-.5)*q.rz*2;}
     else{s.position.x+=dx/dd*0.035;s.position.z+=dz/dd*0.035;s.rotation.y=Math.atan2(dx,dz);}
     s.position.y=0.45+Math.abs(Math.sin(t*7+q.ph))*0.09;}
