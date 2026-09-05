@@ -41,6 +41,7 @@
   .tl.stuck{border-color:#ef4444;background:rgba(60,10,10,.92)} .tl.stuck .t{color:#fca5a5}
   .tl.staff{border-color:#f59e0b66;background:rgba(50,34,8,.9)} .tl.staff .t{color:#fde68a;font-weight:800}
   .tl.count{background:rgba(37,99,235,.92);border-color:#3b82f6} .tl.count .t{font-weight:800}
+  .tl.tasksum{background:rgba(10,16,32,.95);border-color:#3b82f6;max-width:300px;white-space:normal;text-align:left} .tl.tasksum .w{color:#93c5fd;font-size:11px} .tl.tasksum .t{font-size:10.5px;line-height:1.6;color:#dbe6f5} .tl.tasksum b{color:#fde68a;font-weight:800}
   .tl.room{background:rgba(15,23,42,.88);border-color:rgba(96,165,250,.55);padding:5px 13px;border-width:1.5px;box-shadow:0 3px 14px rgba(0,0,0,.5)} .tl.room .rm{font-weight:900;font-size:16px;letter-spacing:.3px;color:#eaf2ff}
   .tl.on{border-color:#22c55e55} .tl::after{content:"";position:absolute;left:50%;top:100%;transform:translateX(-50%);
     border:5px solid transparent;border-top-color:rgba(15,23,42,.92)}
@@ -561,6 +562,29 @@ const MAIN_URL='https://ckrxttbnawkclshczsia.supabase.co',MAIN_ANON='eyJhbGciOiJ
 const BT_URL='https://ggqugvyskyiblxiycpci.supabase.co',BT_ANON='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdncXVndnlza3lpYmx4aXljcGNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxMDc3NjksImV4cCI6MjA5MzY4Mzc2OX0.uNhWcBd_Dl5nzemZDQfJ8mQV6iY73MwystGGpTRPC18';
 function rpc(url,anon,fn,body){return fetch(url+'/rest/v1/rpc/'+fn,{method:'POST',headers:{'apikey':anon,'Authorization':'Bearer '+anon,'Content-Type':'application/json'},body:JSON.stringify(body||{})}).then(r=>r.json()).then(a=>Array.isArray(a)?a.map(x=>x.nm).filter(Boolean):[]).catch(()=>[]);}
 pollCli(); setInterval(pollCli,30000); // MAIN_URL定義後に死活ポーリング開始(TDZ回避)
+// ===== 各店の本日タスクをライブ集計して表示 =====
+function fetchTaskCounts(){
+  const CFG=[
+    {keys:['nha'],url:MAIN_URL,anon:MAIN_ANON,fn:'company_task_counts',body:{p_store:'nha'},order:['PUB','BDB','DEL','COL','来店','返却','送迎','洗車','事前洗車','当日洗車','その他']},
+    {keys:['spk'],url:MAIN_URL,anon:MAIN_ANON,fn:'company_task_counts',body:{p_store:'spk'},order:['DEL','COL','洗車','事前洗車','当日洗車','引取','その他']},
+    {keys:['bt','bd'],url:BT_URL,anon:BT_ANON,fn:'bt_company_task_counts',body:{},order:['貸出','返却','PU','BD','来店','翌日洗車','返却後洗車','その他']},
+  ];
+  CFG.forEach(c=>{
+    fetch(c.url+'/rest/v1/rpc/'+c.fn,{method:'POST',headers:{apikey:c.anon,'Authorization':'Bearer '+c.anon,'Content-Type':'application/json'},body:JSON.stringify(c.body)})
+      .then(r=>r.json()).then(o=>{
+        if(!o||typeof o!=='object')return;
+        const parts=c.order.filter(t=>o[t]!==undefined).map(t=>`${t} <b>${o[t]||0}</b>`).join('　/　');
+        const html=`<div class="w">📋 本日タスク　合算 <b>${o['合算']||0}</b></div><div class="t" style="font-weight:400">${parts}</div>`;
+        c.keys.forEach(k=>{const u=uMap[k]; if(!u||!u._geo)return; const {ux,uz,d}=u._geo;
+          labelDivs.push({div:mkLabel(html,'tasksum'),pos:new THREE.Vector3(ux,7.2,uz-d/2-1.0),key:u.key,type:'task'});});
+      }).catch(()=>{});
+  });
+}
+fetchTaskCounts();
+setInterval(()=>{
+  for(let i=labelDivs.length-1;i>=0;i--){const L=labelDivs[i]; if(L.div&&L.div.classList&&L.div.classList.contains('tasksum')){L.div.remove();labelDivs.splice(i,1);}}
+  fetchTaskCounts();
+},120000);
 Promise.all([
   rpc(MAIN_URL,MAIN_ANON,'company_roster',{p_store:'spk'}).then(n=>addStaff(uMap.spk,n)),
   rpc(MAIN_URL,MAIN_ANON,'company_roster',{p_store:'nha'}).then(n=>addStaff(uMap.nha,n)),
