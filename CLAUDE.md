@@ -1,5 +1,9 @@
 # SPK業務管理APP（札幌店）
 
+## 🧽 2026-09-06 洗車で選んだ時刻がマスター表で空表示になる根治（v4.7.602）＝手動洗車がSLOTS15セレクトに誤振り分け
+オーナー報告「洗車ページで選択した時間がマスターページに反映されない」。実DB確認＝手動洗車(wash_manual_・ソリオ8529)は`time='11:20'`が正しく保存済み（保存は正常＝表示側の分岐バグ）。真因＝マスター表の時刻セル(index.src.html L17552)の三項が`_isOM(t)`(=`manual===true||_id.startsWith("other_")`)を**洗車/引取より先に**判定していたため、手動洗車(manual:true)が「その他タスク」用セレクト(`SLOTS15`=15分刻み)に振り分けられる→`<select value="11:20">`に一致optionが無く**空表示**。洗車タブ(L17152)は`TIME_OPTS`(5分刻み)なので11:20が出る＝タブとマスターで見え方が食い違う。**根治＝判定順を「洗車/引取を先→その他は後」に変更**（色expr＋content三項の両方・`(_isOM(t)&&!isWash&&t.type!=="引取")`ガード）＝手動洗車/引取も`TIME_OPTS`セレクトに乗り正しく表示。
+- **教訓**：`_isOM(t)`(その他タスク=manual)判定は「洗車/引取もmanual:trueを持つ」ため、洗車/引取より先に置くと先取りしてしまう。時刻/内容/場所などmanualで分岐するセルは**必ず洗車/引取を先に判定**する。「反映されない/空表示」系はまず実DBで値が保存されているか確認→保存済みなら表示側の分岐(セレクトのoptions集合に値が含まれるか＝15分刻みvs5分刻み)を疑う。値はあるのにselectが空=value対応optionが無い典型。
+
 ## 🚨 2026-09-06 札幌予約取込が13h停止＝真因は「停止監視cronが未スケジュール(監視が死んでいた)」＋対応品質の是正（オーナー最重要指摘）
 オーナー『札幌 予約取込が動いてない』。実データ切り分け＝**SPK reservations最新取込9/5 21:52JST→約13h沈黙・NHAは10:26JSTまで正常＝SPK GASのみ停止**（SPKは普段この時間帯も取込あり＝異常）。未取込の実メール2件(楽天RC12461289352059586榊様9/14-15 B・じゃらんR0H6JTUF植田様9/7 G)を**手動取込**(reservations+fleet挿入・榊→ノア5398/植田→デミオ6864・#sapporo_reservation C08TDTPEB36通知)。
 - **🔴 真因＝停止監視 `import_stall_monitor()` 関数は在るのにcronが1つもスケジュールされていなかった＝監視が丸ごと死んでいた**（`select * from cron.job`に`import-stall-monitor`が不在）。だからオーナーが第一発見者になった。**恒久解**：①時間窓`13-22`→`7-23JST`に拡大(朝の停止も拾う)②`cron.schedule('import-stall-monitor','10 * * * *',...)`で毎時登録(jobid52)③`p_force=true`で**pg_net→Slack status_code 200×2ch(#handyman_development C07B5G3PV7C + #sapporo_reservation C08TDTPEB36)を実発火で実証**。閾値8h・SPK/NHA店別独立判定・KEYDROP除外。
