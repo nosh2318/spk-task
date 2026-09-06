@@ -262,7 +262,7 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 <div class="toast" id="toast"></div>
 
 <script>
-const VER = "v4.9.14-mypage 既読は内容指紋で管理：内容が変更されたセクションは「未確認」を再表示(不変カードは既読維持)";
+const VER = "v4.9.15-mypage 既読は内容指紋で管理：内容が変更されたセクションは「未確認」を再表示(不変カードは既読維持)";
 const FN = "https://ckrxttbnawkclshczsia.supabase.co/functions/v1/handyman-mypage";
 // 免許証アップロードの保存先=GAS「HANDYMAN 免許証保存」→Googleドライブ（license.htmlと完全に同一・store='spk'）
 const GAS_LICENSE_URL = 'https://script.google.com/macros/s/AKfycbycpzE1RIu2LbIlYVeRYcXxfIgfDhY5y1Vtdh1Rj69S9uZEnmqFMDBHqq3y6pHS70_t7A/exec';
@@ -1475,12 +1475,19 @@ load();
 #csInp{flex:1;padding:10px 12px;border:1px solid #cbd5e1;border-radius:10px;font-size:14px;resize:none;font-family:inherit;max-height:90px}
 #csSend{border:none;background:#0d9488;color:#fff;font-weight:900;border-radius:10px;padding:0 16px;cursor:pointer}
 #csSend:disabled{opacity:.4}
+#csMsgs .b img{max-width:180px;max-height:200px;border-radius:10px;display:block;margin-top:4px;cursor:pointer}
+#csImgBtn{display:flex;align-items:center;justify-content:center;width:44px;border:1px solid #cbd5e1;border-radius:10px;cursor:pointer;font-size:19px;background:#fff;flex-shrink:0}
+#csImgPrev{display:none;align-items:center;gap:8px;padding:6px 10px;font-size:11px;color:#64748b;border-top:1px solid #e2e8f0;background:#f6f8fb}
+#csImgPrev.show{display:flex}
+#csImgPrev img{height:36px;border-radius:5px}
+#csImgPrev .rm{color:#dc2626;font-weight:900;cursor:pointer;margin-left:auto}
 </style>
 <button id="csBtn" onclick="csToggle()">💬<span class="dot" id="csDot"></span></button>
 <div id="csPanel">
   <div class="h"><div><div class="t">CSへお問い合わせ</div><div class="sub" id="csSub">担当が順次お返事します</div></div><button class="x" onclick="csToggle()">×</button></div>
   <div id="csMsgs"><div id="csEmpty">ご予約に関するご質問・ご相談を<br>お気軽にどうぞ。<br>担当が順次お返事します。</div></div>
-  <div id="csForm"><textarea id="csInp" rows="1" placeholder="メッセージを入力…" oninput="csGrow(this)"></textarea><button id="csSend" onclick="csSendMsg()">送信</button></div>
+  <div id="csImgPrev"><img id="csImgPrevImg"><span>画像を添付</span><span class="rm" onclick="csClearImg()">✕ 取消</span></div>
+  <div id="csForm"><label id="csImgBtn">📎<input type="file" accept="image/*" style="display:none" onchange="csPickImg(this)"></label><textarea id="csInp" rows="1" placeholder="メッセージを入力…" oninput="csGrow(this)"></textarea><button id="csSend" onclick="csSendMsg()">送信</button></div>
 </div>
 <script>
 (function(){
@@ -1490,11 +1497,15 @@ load();
   function ef(body){return fetch(CSEF,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(Object.assign({store:"spk",mypage_token:TOKEN},body))}).then(function(r){return r.json();});}
   function esc(s){return String(s||"").replace(/[&<>]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;"}[c];});}
   function tfmt(s){try{var d=new Date(s),p=function(n){return String(n).padStart(2,"0");};return (d.getMonth()+1)+"/"+d.getDate()+" "+p(d.getHours())+":"+p(d.getMinutes());}catch(e){return "";}}
-  function render(list){var m=document.getElementById("csMsgs");if(!list||!list.length){m.innerHTML='<div id="csEmpty">ご予約に関するご質問・ご相談を<br>お気軽にどうぞ。<br>担当が順次お返事します。</div>';return;}m.innerHTML=list.map(function(x){return '<div class="b '+esc(x.sender)+'">'+esc(x.body)+'<span class="ts">'+tfmt(x.created_at)+'</span></div>';}).join("");m.scrollTop=m.scrollHeight;}
+  function render(list){var m=document.getElementById("csMsgs");if(!list||!list.length){m.innerHTML='<div id="csEmpty">ご予約に関するご質問・ご相談を<br>お気軽にどうぞ。<br>担当が順次お返事します。</div>';return;}m.innerHTML=list.map(function(x){return '<div class="b '+esc(x.sender)+'">'+(x.body?esc(x.body):'')+(x.image_url?'<img src="'+esc(x.image_url)+'" onclick="window.open(\''+esc(x.image_url)+'\',\'_blank\')">':'')+'<span class="ts">'+tfmt(x.created_at)+'</span></div>';}).join("");m.scrollTop=m.scrollHeight;}
+  var csPendingImg=null;
+  function csResize(file,max,cb){var r=new FileReader();r.onload=function(e){var im=new Image();im.onload=function(){var w=im.width,h=im.height;if(w>max||h>max){if(w>h){h=Math.round(h*max/w);w=max;}else{w=Math.round(w*max/h);h=max;}}var cv=document.createElement("canvas");cv.width=w;cv.height=h;cv.getContext("2d").drawImage(im,0,0,w,h);cb(cv.toDataURL("image/jpeg",0.82));};im.src=e.target.result;};r.readAsDataURL(file);}
+  window.csPickImg=function(input){var f=input.files&&input.files[0];input.value="";if(!f)return;if(!/^image\//.test(f.type)){alert("画像ファイルを選んでください");return;}csResize(f,1280,function(du){csPendingImg=du;document.getElementById("csImgPrevImg").src=du;document.getElementById("csImgPrev").className="show";});};
+  window.csClearImg=function(){csPendingImg=null;var p=document.getElementById("csImgPrev");if(p)p.className="";};
   window.csToggle=function(){opened=!opened;document.getElementById("csPanel").style.display=opened?"flex":"none";document.getElementById("csBtn").style.display=opened?"none":"flex";if(opened){document.getElementById("csDot").style.display="none";ef({action:"cust_open"}).then(function(r){if(r&&r.ok){render(r.messages);lastCount=(r.messages||[]).length;}});if(poll)clearInterval(poll);poll=setInterval(csPoll,10000);}else{if(poll)clearInterval(poll);}};
   function csPoll(){if(!opened||document.visibilityState!=="visible")return;ef({action:"cust_poll"}).then(function(r){if(r&&r.ok){render(r.messages);lastCount=(r.messages||[]).length;}});}
   window.csGrow=function(t){t.style.height="auto";t.style.height=Math.min(t.scrollHeight,90)+"px";};
-  window.csSendMsg=function(){var inp=document.getElementById("csInp"),body=inp.value.trim();if(!body||sending)return;sending=true;document.getElementById("csSend").disabled=true;ef({action:"cust_send",body:body}).then(function(r){sending=false;document.getElementById("csSend").disabled=false;if(r&&r.ok){inp.value="";csGrow(inp);render(r.messages);}else{alert((r&&r.error)||"送信できませんでした");}});};
+  window.csSendMsg=function(){var inp=document.getElementById("csInp"),body=inp.value.trim();if((!body&&!csPendingImg)||sending)return;sending=true;document.getElementById("csSend").disabled=true;var pl={action:"cust_send",body:body};if(csPendingImg)pl.image=csPendingImg;ef(pl).then(function(r){sending=false;document.getElementById("csSend").disabled=false;if(r&&r.ok){inp.value="";csGrow(inp);csClearImg();render(r.messages);}else{alert((r&&r.error)||"送信できませんでした");}});};
   // 新着バッジ（未オープン時に定期チェック）
   document.getElementById("csBtn").style.display="flex";
   function checkNew(){if(opened)return;ef({action:"cust_open"}).then(function(r){if(r&&r.ok){var n=(r.messages||[]).length;var lastStaff=(r.messages||[]).slice().reverse().find(function(x){return x.sender==="staff";});if(lastStaff&&n>lastCount&&lastCount>0){var d=document.getElementById("csDot");d.textContent="1";d.style.display="flex";}lastCount=Math.max(lastCount,0);}});}
