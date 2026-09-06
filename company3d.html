@@ -652,7 +652,7 @@ UNITS.forEach(u=>{
   const w=cols*PAD, d=rows*PAD;
   const G=new THREE.Group(); scene.add(G); u._grp=G;
   const plat=new THREE.Mesh(new THREE.BoxGeometry(w+2,0.3,d+2),new THREE.MeshStandardMaterial({color:u.color,roughness:.8,transparent:true,opacity:.35}));
-  plat.position.set(ux,0.15,uz); G.add(plat); plat.userData={platUnit:u.key}; platforms.push(plat);
+  plat.position.set(ux,0.15,uz); G.add(plat); plat.userData={platUnit:u.key}; platforms.push(plat); u._plat=plat;
   const sign=makeSign(u.name.replace(/^[^ ]+ /,''),u.color); sign.position.set(ux,8.2,uz-d/2-1.5); G.add(sign);
   u.depts.forEach((dp,i)=>{
     const cx=ux-(w/2)+PAD/2+(i%cols)*PAD;
@@ -838,11 +838,18 @@ function setAlert(key,cls,html,href){
   if(href){el.href=href;el.target='_blank';el.rel='noopener';}
   el.className='arow '+cls; el.innerHTML=html;
 }
+// 対応が必要な部の区画を点滅させる（アラート源ごとにフラグ→部単位でOR）
+const _alertState={inq:false,cschat:false,appr:false,unpunch:false};
+function refreshDeptAlerts(){
+  if(uMap.cs)uMap.cs._alert=(_alertState.inq||_alertState.cschat||_alertState.appr);
+  if(uMap.attend)uMap.attend._alert=_alertState.unpunch;
+}
 function fetchInquiries(){
   fetch(MAIN_URL+'/rest/v1/rpc/company_inquiries',{method:'POST',headers:{apikey:MAIN_ANON,'Authorization':'Bearer '+MAIN_ANON,'Content-Type':'application/json'},body:'{}'}).then(r=>r.json()).then(o=>{
     if(!o||typeof o!=='object')return;
     const tot=(o.nha||0)+(o.spk||0)+(o.bt||0); const NM={nha:'那覇',spk:'札幌',bt:'高松'};
     const who=['nha','spk','bt'].filter(k=>(o[k]||0)>0).map(k=>NM[k]).join('・');
+    _alertState.inq=tot>0; refreshDeptAlerts();
     if(tot>0)setAlert('inq','red blink',`<div class="w">📮 未対応の問い合わせ <b>${tot}</b>件</div><div class="t">${who} 対応してください</div>`,'https://handyman-inquiry.vercel.app/');
     else setAlert('inq','green','<div class="w">📮 問い合わせ 対応済み</div>',null);
   }).catch(()=>{});
@@ -853,6 +860,7 @@ function fetchCsChat(){
     if(!o||typeof o!=='object')return;
     const tot=(o.nha||0)+(o.spk||0); const NM={nha:'那覇',spk:'札幌'};
     const who=['nha','spk'].filter(k=>(o[k]||0)>0).map(k=>NM[k]).join('・');
+    _alertState.cschat=tot>0; refreshDeptAlerts();
     if(tot>0)setAlert('cschat','red blink',`<div class="w">💬 未対応チャット <b>${tot}</b>件</div><div class="t">${who} 返信してください</div>`,'https://nosh2318.github.io/spk-task/cs-chat-admin.html');
     else setAlert('cschat','green','<div class="w">💬 チャット 対応済み</div>',null);
   }).catch(()=>{});
@@ -866,6 +874,7 @@ function fetchMypagePending(){
     const o=Object.assign({},a||{},b||{});
     const tot=(o.nha||0)+(o.spk||0)+(o.bt||0); const NM={nha:'那覇',spk:'札幌',bt:'高松'};
     const who=['nha','spk','bt'].filter(k=>(o[k]||0)>0).map(k=>NM[k]).join('・');
+    _alertState.appr=tot>0; refreshDeptAlerts();
     if(tot>0)setAlert('appr','amber blink',`<div class="w">🪪 マイページ承認待ち <b>${tot}</b>件</div><div class="t">${who} 承認してください</div>`,'https://rent-handyman.com/mypage-admin.html?bucket=but_tkm');
     else setAlert('appr','green','<div class="w">🪪 マイページ 承認待ちなし</div>',null);
   });
@@ -879,6 +888,7 @@ function fetchUnpunched(){
     const o=Object.assign({},m||{},b||{});
     const spk=o.spk||0,nha=o.nha||0,bt=o.bt||0,tot=spk+nha+bt;
     const parts=[]; if(nha)parts.push('那覇 '+nha); if(spk)parts.push('札幌 '+spk); if(bt)parts.push('高松 '+bt);
+    _alertState.unpunch=tot>0; refreshDeptAlerts();
     if(tot>0)setAlert('unpunch','red blink',`<div class="w">⏰ 未打刻 <b>${tot}</b>人</div><div class="t">${parts.join('・')}（打刻を促してください）</div>`,'https://nosh2318.github.io/spk-task/attendance-log.html');
     else setAlert('unpunch','green','<div class="w">⏰ 未打刻なし ✅</div>',null);
   }).catch(()=>{});
@@ -1021,6 +1031,11 @@ function loop(ts){
     if(dp._av)dp._av.position.y=0.45+Math.sin(t*2+i)*0.06;
     if(dp._pil&&dp.st==='stuck')dp._pil.material.emissiveIntensity=0.6+Math.sin(t*6)*0.5;
   }));
+  // 対応が必要な部は区画(プラットフォーム)を赤く点滅させる
+  UNITS.forEach(u=>{ if(!u._plat)return; const m=u._plat.material;
+    if(u._alert){ const p=0.5+Math.sin(t*4)*0.5; m.emissive.setHex(0xff2d2d); m.emissiveIntensity=0.3+p*0.8; m.opacity=0.5+p*0.35; }
+    else if(m.emissiveIntensity>0){ m.emissive.setHex(0x000000); m.emissiveIntensity=0; m.opacity=0.35; }
+  });
   // 出勤者が歩き回る
   for(const s of movers){const q=s.userData;
     if(q.cli&&!cliOnline){s.position.y=0.45;if(s._walk){s._walk.legL.rotation.x=s._walk.legR.rotation.x=s._walk.armL.rotation.x=s._walk.armR.rotation.x=0;}continue;} // オフラインCLIは歩かず静止
