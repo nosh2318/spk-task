@@ -45,6 +45,27 @@
   .composer button:disabled{opacity:.4}
   .nopane{flex:1;display:flex;align-items:center;justify-content:center;color:#5f7ba0}
   .closebtn{font-size:11px;font-weight:700;padding:5px 10px;border-radius:8px;border:1px solid #24405e;background:#12233d;color:#a9c2e0;cursor:pointer;margin-left:8px}
+  /* 未対応アラート */
+  #alertBar{display:none;padding:11px 16px;background:#7f1d1d;color:#fff;font-weight:900;font-size:14px;text-align:center;cursor:pointer}
+  #alertBar.show{display:block;animation:alblink 1s infinite}
+  @keyframes alblink{50%{background:#dc2626}}
+  .tabbadge{background:#dc2626;color:#fff;font-size:10px;font-weight:900;border-radius:9px;padding:0 6px;margin-left:4px}
+  .backbtn{display:none;font-size:13px;font-weight:800;padding:6px 12px;border-radius:8px;border:1px solid #24405e;background:#12233d;color:#a9c2e0;cursor:pointer;margin-right:8px}
+  /* スマホ最適化 */
+  @media(max-width:720px){
+    body{height:100dvh}
+    .hd{padding:10px 12px;gap:7px}
+    .hd .t{font-size:14px}
+    .hd .who{width:100%;order:9;font-size:11px}
+    #main{position:relative}
+    .list{width:100%;border-right:none}
+    .pane{position:fixed;inset:0;background:#0b1220;z-index:100;display:none}
+    .pane.show{display:flex}
+    .backbtn{display:inline-block}
+    .bub{max-width:88%;font-size:15px}
+    .composer textarea{font-size:16px}
+    .th{padding:14px}
+  }
 </style></head>
 <body>
 <div class="hd">
@@ -56,6 +77,7 @@
   <div class="sp"></div>
   <div class="who" id="who"></div>
 </div>
+<div id="alertBar" onclick="jumpUnread()"></div>
 <div id="login">
   <h2>スタッフ ログイン</h2>
   <input id="lname" placeholder="名前（例: oshita）" autocomplete="username">
@@ -113,14 +135,31 @@ async function openThread(tid){
   const rv=r.reservation||{}, th=r.thread||{};
   const dates=rv.lend_date?`${rv.lend_date}〜${rv.return_date||''}`:(rv.start_date?`${rv.start_date}〜${rv.end_date||''}`:'');
   pane.innerHTML=`<div class="top">
-      <div class="n">${esc(th.cust_name||rv.name||'お客様')} 様 <button class="closebtn" onclick="closeThread('${tid}')">対応完了</button></div>
-      <div class="r">予約 <b>${esc(th.reservation_id||'-')}</b> ／ ${esc(rv.ota||'')} ／ ${esc(rv.vehicle||'')}<br>${esc(dates)} ／ お届け ${esc(rv.del_place||'-')} ／ 回収 ${esc(rv.col_place||'-')}</div>
+      <div class="n"><button class="backbtn" onclick="closePane()">← 一覧</button>${esc(th.cust_name||rv.name||'お客様')} 様 <button class="closebtn" onclick="closeThread('${tid}')">対応完了</button></div>
+      <div class="r">予約 <b>${esc(th.reservation_id||'-')}</b> ／ ${esc(rv.ota||'')} ／ ${esc(rv.vehicle||rv.vehicle_class||'')}<br>${esc(dates)} ／ お届け ${esc(rv.del_place||'-')} ／ 回収 ${esc(rv.col_place||'-')}</div>
     </div>
     <div class="msgs" id="msgs"></div>
     <div class="composer"><textarea id="inp" placeholder="返信を入力…" oninput="autoGrow(this)"></textarea><button id="sendBtn" onclick="send()">送信</button></div>`;
+  pane.classList.add('show'); // スマホ=全画面オーバーレイ表示
   renderMsgs(r.messages);
   loadList();
 }
+function closePane(){document.getElementById('pane').classList.remove('show');curTid='';document.getElementById('pane').innerHTML='<div class="nopane">← 左の一覧からお客様を選択</div>';loadList();}
+// ===== 未対応アラート（両店 cs_chat_pending を監視・未対応があれば赤バー点滅＋タイトル＋通知音） =====
+let _prevUnread=0,_ac=null;
+function beep(){try{_ac=_ac||new (window.AudioContext||window.webkitAudioContext)();const o=_ac.createOscillator(),g=_ac.createGain();o.connect(g);g.connect(_ac.destination);o.type='sine';o.frequency.value=880;g.gain.value=0.09;o.start();setTimeout(()=>{o.frequency.value=1180;},130);setTimeout(()=>{o.stop();},300);}catch(e){}}
+function setBadge(id,n){const b=document.getElementById(id);if(!b)return;let base=b.getAttribute('data-base');if(base==null){base=b.textContent.replace(/\s*\d+$/,'').trim();b.setAttribute('data-base',base);}b.innerHTML=base+(n>0?` <span class="tabbadge">${n}</span>`:'');}
+function refreshAlert(){
+  fetch(U+'/rest/v1/rpc/cs_chat_pending',{method:'POST',headers:{apikey:AK,'Authorization':'Bearer '+AK,'Content-Type':'application/json'},body:'{}'}).then(r=>r.json()).then(o=>{
+    if(!o||typeof o!=='object')return; const spk=o.spk||0,nha=o.nha||0,tot=spk+nha;
+    const bar=document.getElementById('alertBar');
+    if(tot>0){bar.className='show';bar.innerHTML=`🔴 未対応チャット <b>${tot}</b>件！ `+[spk?`札幌 ${spk}`:'',nha?`那覇 ${nha}`:''].filter(Boolean).join('・')+`　タップで表示→返信してください`;document.title=`🔴(${tot}) CSチャット管理`;if(tot>_prevUnread)beep();}
+    else{bar.className='';document.title='CSチャット管理';}
+    setBadge('st_spk',spk);setBadge('st_nha',nha);
+    _prevUnread=tot;
+  }).catch(()=>{});
+}
+function jumpUnread(){document.getElementById('unreadOnly').checked=true;loadList();}
 function renderMsgs(list){
   const m=document.getElementById('msgs'); if(!m)return;
   m.innerHTML=(list||[]).map(x=>`<div class="bub ${x.sender}">${esc(x.body)}<span class="ts">${tfmt(x.created_at)}</span></div>`).join('');
@@ -137,9 +176,9 @@ async function send(){
 async function closeThread(tid){
   if(!confirm('このチャットを「対応完了」にしますか？'))return;
   await ef({action:'staff_close',thread_id:tid});
-  curTid='';document.getElementById('pane').innerHTML='<div class="nopane">← 左の一覧からお客様を選択</div>';loadList();
+  curTid='';const pane=document.getElementById('pane');pane.classList.remove('show');pane.innerHTML='<div class="nopane">← 左の一覧からお客様を選択</div>';loadList();refreshAlert();
 }
-function startPoll(){if(poll)clearInterval(poll);poll=setInterval(()=>{if(document.visibilityState==='visible'){loadList();if(curTid){ef({action:'staff_thread',thread_id:curTid}).then(r=>{if(r&&r.ok)renderMsgs(r.messages);});}}},8000);loadList();}
+function startPoll(){if(poll)clearInterval(poll);poll=setInterval(()=>{if(document.visibilityState==='visible'){loadList();refreshAlert();if(curTid){ef({action:'staff_thread',thread_id:curTid}).then(r=>{if(r&&r.ok)renderMsgs(r.messages);});}}},8000);loadList();refreshAlert();}
 // 自動ログイン（保存JWT）
 (function(){const j=localStorage.getItem('cschat_jwt');if(j){JWT=j;fetch(U+'/auth/v1/user',{headers:{apikey:AK,'Authorization':'Bearer '+JWT}}).then(r=>r.ok?r.json():null).then(u=>{if(u){document.getElementById('login').style.display='none';document.getElementById('main').style.display='flex';document.getElementById('who').textContent=(u.email||'').split('@')[0]+' でログイン中';setStore(STORE);startPoll();if(curTid)openThread(curTid);}});}})();
 </script>
