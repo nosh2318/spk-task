@@ -74,6 +74,9 @@ canvas#c{touch-action:none;display:block}
   .tl.pinlbl .pw{color:#fff;font-weight:900;font-size:12px}
   .tl.pinlbl .pn{color:#fee2e2;font-size:11px;font-weight:800;margin-top:1px}
   @keyframes pinbob{0%,100%{margin-top:0}50%{margin-top:-5px}}
+  .tl.pinlbl.red{background:#dc2626;box-shadow:0 4px 14px rgba(220,38,38,.6)} .tl.pinlbl.red::after{border-top-color:#dc2626}
+  .tl.pinlbl.amber{background:#d97706;box-shadow:0 4px 14px rgba(217,119,6,.55)} .tl.pinlbl.amber::after{border-top-color:#d97706} .tl.pinlbl.amber .pn{color:#fff7ed}
+  .tl.pinlbl.green{background:#15803d;box-shadow:0 4px 14px rgba(21,128,61,.5);animation:none;border-color:#86efac} .tl.pinlbl.green::after{border-top-color:#15803d} .tl.pinlbl.green .pn{color:#dcfce7}
   @media(max-width:760px){ #alertPanel{top:46px;bottom:auto;right:6px;left:6px;width:auto;flex-direction:row;gap:6px;overflow-x:auto;padding-bottom:2px} #alertPanel .arow{flex:0 0 auto;min-width:150px;font-size:11px;padding:6px 9px} #alertPanel .arow .t{font-size:10px} }
   .apprblink{animation:blinkAppr 1s ease-in-out infinite} @keyframes blinkAppr{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,0)}50%{box-shadow:0 0 20px 4px rgba(245,158,11,.9)}}
   /* 各店の状況＝画面左の固定パネル（3Dエリアに重ならない） */
@@ -181,7 +184,6 @@ canvas#c{touch-action:none;display:block}
 <div class="nav" id="nav"></div>
 <button id="backbtn" onclick="focusUnit('all')">← 全体へ戻る</button>
 <div id="inqbanner"></div>
-<div id="alertPanel"></div>
 <div id="storehud"><div class="shhd">📋 各店 本日の状況<span id="shtoggle">隠す</span></div><div id="shbody"></div></div>
 <div class="legend">
   <div class="row"><b>領域</b> <span>🤖 AI</span><span>🧑 人</span><span>🤝 協働</span></div>
@@ -830,29 +832,22 @@ function fetchNewBookings(){
   ]).then(([a,b])=>{_hud.nb=Object.assign({},a||{},b||{});renderStoreHud();});
 }
 // ===== 未対応の問い合わせ → CS部の横に3D吹き出し（点滅で対応要請・エリアには重ねない） =====
-// ===== アラートは固定パネル(#alertPanel)に縦積み＝3D吹き出しの重なりを解消（ドクトリン:エリアに重ねない） =====
-const _alertOrder=['inq','cschat','appr','unpunch','clockin'];
-function setAlert(key,cls,html,href){
-  const panel=document.getElementById('alertPanel'); if(!panel)return;
-  let el=document.getElementById('al_'+key); const tag=href?'A':'DIV';
-  if(!el||el.tagName!==tag){ if(el)el.remove(); el=document.createElement(href?'a':'div'); el.id='al_'+key;
-    const idx=_alertOrder.indexOf(key); let next=null;
-    for(let i=idx+1;i<_alertOrder.length;i++){const n=document.getElementById('al_'+_alertOrder[i]);if(n){next=n;break;}}
-    panel.insertBefore(el,next);
-  }
-  if(href){el.href=href;el.target='_blank';el.rel='noopener';}
-  el.className='arow '+cls; el.innerHTML=html;
+// ===== アラートは「発信すべき区画(部屋)」の上にピン立て（固定パネル廃止・オーナー指示2026-09-06） =====
+const _alertState={inq:0,cschat:0,appr:0,unpunch:0}; const _apin={};
+function roomPos(unitKey,inc){ const u=uMap[unitKey]; if(!u)return null; const dp=(u.depts||[]).find(d=>d.nm&&d.nm.indexOf(inc)>=0); return (dp&&dp._pos)?dp._pos:(u._geo?new THREE.Vector3(u._geo.ux,2.6,u._geo.uz):null); }
+function setAlertPin(key,unitKey,inc,active,cls,html,href){
+  let rec=_apin[key];
+  if(!rec){ const pos=roomPos(unitKey,inc); if(!pos)return; const div=mkLabel('','pinlbl'); div.style.pointerEvents='auto';
+    const L={div,pos:pos.clone().setY(5.2),key:'apin_'+key,type:'apin',unitKey,active:false}; labelDivs.push(L); rec=_apin[key]={div,L}; }
+  rec.L.active=!!active; rec.L.unitKey=unitKey;
+  rec.div.onclick=(e)=>{e.stopPropagation(); if(href)window.open(href,'_blank'); else try{focusUnit(unitKey);}catch(_){}};
+  rec.div.className='tl pinlbl '+cls; rec.div.innerHTML=html;
 }
-// 対応が必要な部の区画を点滅＋「未対応タスクあり」ピンで見える化（件数・PC/スマホ両方）
-const _alertState={inq:0,cschat:0,appr:0,unpunch:0}; const _deptPin={};
-function ensurePin(key){ if(_deptPin[key])return _deptPin[key]; const u=uMap[key]; if(!u||!u._geo)return null;
-  const div=mkLabel('','pinlbl'); div.style.pointerEvents='auto'; div.onclick=(e)=>{e.stopPropagation();try{focusUnit(key);}catch(_){}};
-  const L={div,pos:new THREE.Vector3(u._geo.ux,7.4,u._geo.uz),key,type:'pin'}; labelDivs.push(L); _deptPin[key]={div,L}; return _deptPin[key]; }
-function setDeptPin(key,txt){ const p=ensurePin(key); if(p)p.div.innerHTML=txt; }
+// 部の区画点滅（アラート源のOR）
 function refreshDeptAlerts(){
   const csN=(_alertState.inq||0)+(_alertState.cschat||0)+(_alertState.appr||0), atN=(_alertState.unpunch||0);
-  if(uMap.cs){uMap.cs._alert=csN>0; if(csN>0)setDeptPin('cs',`<div class="pw">🚨 未対応タスクあり</div><div class="pn">${csN}件（タップで確認）</div>`);}
-  if(uMap.attend){uMap.attend._alert=atN>0; if(atN>0)setDeptPin('attend',`<div class="pw">🚨 未打刻あり</div><div class="pn">${atN}人</div>`);}
+  if(uMap.cs)uMap.cs._alert=csN>0;
+  if(uMap.attend)uMap.attend._alert=atN>0;
 }
 function fetchInquiries(){
   fetch(MAIN_URL+'/rest/v1/rpc/company_inquiries',{method:'POST',headers:{apikey:MAIN_ANON,'Authorization':'Bearer '+MAIN_ANON,'Content-Type':'application/json'},body:'{}'}).then(r=>r.json()).then(o=>{
@@ -860,8 +855,7 @@ function fetchInquiries(){
     const tot=(o.nha||0)+(o.spk||0)+(o.bt||0); const NM={nha:'那覇',spk:'札幌',bt:'高松'};
     const who=['nha','spk','bt'].filter(k=>(o[k]||0)>0).map(k=>NM[k]).join('・');
     _alertState.inq=tot; refreshDeptAlerts();
-    if(tot>0)setAlert('inq','red blink',`<div class="w">📮 未対応の問い合わせ <b>${tot}</b>件</div><div class="t">${who} 対応してください</div>`,'https://handyman-inquiry.vercel.app/');
-    else setAlert('inq','green','<div class="w">📮 問い合わせ 対応済み</div>',null);
+    setAlertPin('inq','cs','問い合わせ管理',tot>0,'red',`<div class="pw">📮 未対応の問い合わせ</div><div class="pn">${tot}件 ${who}</div>`,'https://handyman-inquiry.vercel.app/');
   }).catch(()=>{});
 }
 // ===== 未対応CSチャット → CS部の横に3D吹き出し（マイページ⇄CS直接対応・返信要請） =====
@@ -871,8 +865,7 @@ function fetchCsChat(){
     const tot=(o.nha||0)+(o.spk||0); const NM={nha:'那覇',spk:'札幌'};
     const who=['nha','spk'].filter(k=>(o[k]||0)>0).map(k=>NM[k]).join('・');
     _alertState.cschat=tot; refreshDeptAlerts();
-    if(tot>0)setAlert('cschat','red blink',`<div class="w">💬 未対応チャット <b>${tot}</b>件</div><div class="t">${who} 返信してください</div>`,'https://nosh2318.github.io/spk-task/cs-chat-admin.html');
-    else setAlert('cschat','green','<div class="w">💬 チャット 対応済み</div>',null);
+    setAlertPin('cschat','cs','チャット',tot>0,'red',`<div class="pw">💬 未対応チャット</div><div class="pn">${tot}件 ${who} 返信</div>`,'https://nosh2318.github.io/spk-task/cs-chat-admin.html');
   }).catch(()=>{});
 }
 // ===== マイページ承認待ち → CS部の横に3D吹き出し（どの店舗でも承認要請・オンタイム） =====
@@ -885,8 +878,7 @@ function fetchMypagePending(){
     const tot=(o.nha||0)+(o.spk||0)+(o.bt||0); const NM={nha:'那覇',spk:'札幌',bt:'高松'};
     const who=['nha','spk','bt'].filter(k=>(o[k]||0)>0).map(k=>NM[k]).join('・');
     _alertState.appr=tot; refreshDeptAlerts();
-    if(tot>0)setAlert('appr','amber blink',`<div class="w">🪪 マイページ承認待ち <b>${tot}</b>件</div><div class="t">${who} 承認してください</div>`,'https://rent-handyman.com/mypage-admin.html?bucket=but_tkm');
-    else setAlert('appr','green','<div class="w">🪪 マイページ 承認待ちなし</div>',null);
+    setAlertPin('appr','cs','マイページ管理',tot>0,'amber',`<div class="pw">🪪 マイページ承認待ち</div><div class="pn">${tot}件 ${who} 承認</div>`,'https://rent-handyman.com/mypage-admin.html?bucket=but_tkm');
   });
 }
 // ===== 未打刻アラート（本日出勤予定なのに未打刻）→ 出勤退勤管理部の吹き出し（店舗別人数・クリックで勤怠ログへ） =====
@@ -899,8 +891,7 @@ function fetchUnpunched(){
     const spk=o.spk||0,nha=o.nha||0,bt=o.bt||0,tot=spk+nha+bt;
     const parts=[]; if(nha)parts.push('那覇 '+nha); if(spk)parts.push('札幌 '+spk); if(bt)parts.push('高松 '+bt);
     _alertState.unpunch=tot; refreshDeptAlerts();
-    if(tot>0)setAlert('unpunch','red blink',`<div class="w">⏰ 未打刻 <b>${tot}</b>人</div><div class="t">${parts.join('・')}（打刻を促してください）</div>`,'https://nosh2318.github.io/spk-task/attendance-log.html');
-    else setAlert('unpunch','green','<div class="w">⏰ 未打刻なし ✅</div>',null);
+    setAlertPin('unpunch','attend','打刻',tot>0,'red',`<div class="pw">⏰ 未打刻</div><div class="pn">${tot}人 ${parts.join('・')}</div>`,'https://nosh2318.github.io/spk-task/attendance-log.html');
   }).catch(()=>{});
 }
 // ===== 🟢今 出勤中（実際に打刻して出勤中＝出勤打刻済・退勤まだ）→ 出勤退勤管理部の緑ラベル（店舗別・名前） =====
@@ -913,8 +904,7 @@ function fetchClockedIn(){
     const spk=(o.spk||[]),nha=(o.nha||[]),bt=(o.bt||[]); const tot=spk.length+nha.length+bt.length;
     const ln=(lbl,arr)=>arr.length?(lbl+' '+arr.map(x=>x.n).join('、')):'';
     const parts=[ln('那覇',nha),ln('札幌',spk),ln('高松',bt)].filter(Boolean);
-    if(tot>0)setAlert('clockin','green',`<div class="w">🟢 今 出勤中 <b>${tot}</b>人</div><div class="t">${parts.join(' ／ ')}</div>`,null);
-    else setAlert('clockin','green','<div class="w">🟢 現在 出勤中はいません</div>',null);
+    setAlertPin('clockin','attend','タスク受取',tot>0,'green',`<div class="pw">🟢 今 出勤中 ${tot}人</div><div class="pn">${parts.join(' ／ ')||'—'}</div>`,null);
   }).catch(()=>{});
 }
 // ===== 現金/小口 アラート（店舗残＝出納帳の現金残高<¥2000：那覇+札幌 / 個別＝札幌の小口現金<¥1000）→ 左パネルの店カード =====
@@ -1062,7 +1052,7 @@ function loop(ts){
   // labels（全体=タスク＋出勤数／店を選ぶと=その店のタスク＋出勤者名）
   for(const L of labelDivs){
     let show;
-    if(L.type==='pin'){ const uu=uMap[L.key]; show = !!(uu&&uu._alert)&&(activeUnit==='all'||L.key===activeUnit); } // 未対応タスクありピン=アラート時のみ・全体＋その部
+    if(L.type==='apin'){ show = !!L.active && (activeUnit==='all'||activeUnit===L.unitKey); } // アラートピン=該当時のみ・全体＋その部（担当区画の上）
     else if(L.type==='tasksum'){ show = (activeUnit==='all' || (L.keys&&L.keys.indexOf(activeUnit)>=0)); }
     else if(L.type==='bubble'){ show = (activeUnit==='all' || L.key===activeUnit); } // 吹き出し(新規予約/問い合わせ)は全体＋その拠点で表示
     else if(activeUnit==='all'){ show = (L.type==='staff'||L.type==='count') && innerWidth>760; } // 全体=人の名前＋出勤数(PCのみ)。スマホは密集回避で隠し区画/ピン/看板だけ。店タップで詳細
