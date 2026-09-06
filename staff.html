@@ -147,7 +147,7 @@ a.myp{background:#065f46;color:#fff;font-size:11px;font-weight:800;border-radius
 <script>
 var SB="https://ckrxttbnawkclshczsia.supabase.co";
 var ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
-var VER="staff-v3.25";
+var VER="staff-v3.26";
 var TOKEN=new URLSearchParams(location.search).get("t")||"";
 var app=document.getElementById("app");
 
@@ -470,7 +470,7 @@ function tasksContent(d){
 }
 // ===== 💴 小口現金（月初¥5,000配布・本人が使った分を記録→残高が減る・領収書を合わせる） =====
 var PETTY_FLOAT=5000;           // 月初配布額（各月ここからスタート）
-var PETTY_YM=null, PETTY_ROWS=[], PETTY_FILE=null, PETTY_METHOD="現金";  // ★現金/カード（カードは現金残高に影響せず会計カードタブへ）
+var PETTY_YM=null, PETTY_ROWS=[], PETTY_ALL=[], PETTY_FILE=null, PETTY_METHOD="現金";  // ★現金/カード（カードは現金残高に影響せず会計カードタブへ）・PETTY_ALL=全期間（前月繰越の導出用）
 function pettyName(){return String((LASTD&&LASTD.staff)||"").replace(/\s*さん\s*$/,"").trim();}
 window.openPetty=function(ym){
   MODE="petty";STAB="petty";
@@ -478,27 +478,35 @@ window.openPetty=function(ym){
   var nm=pettyName();
   if(!nm){setContent('<div class="empty">スタッフ情報の読み込み後にご利用ください</div>');return;}
   busy("小口現金を読み込み中…");
-  var q=SB+"/rest/v1/spk_petty_cash?staff_name=eq."+encodeURIComponent(nm)+"&ym=eq."+encodeURIComponent(PETTY_YM)+"&order=date.asc,created_at.asc&select=*";
+  // ★前月繰越を出すため全期間を取得（当月はym一致で抽出／前月繰越はym<当月から導出＝台帳から導出・繰越行は作らない）
+  var q=SB+"/rest/v1/spk_petty_cash?staff_name=eq."+encodeURIComponent(nm)+"&order=date.asc,created_at.asc&select=*";
   fetch(q,{headers:{"apikey":ANON,"Authorization":"Bearer "+ANON}})
     .then(function(r){return r.json();})
-    .then(function(rows){ PETTY_ROWS=Array.isArray(rows)?rows:[]; renderPetty(); })
+    .then(function(rows){ PETTY_ALL=Array.isArray(rows)?rows:[]; PETTY_ROWS=PETTY_ALL.filter(function(r){return (r.ym||String(r.date||"").slice(0,7))===PETTY_YM;}); renderPetty(); })
     .catch(function(){setContent('<div class="err" style="margin:16px 0">⚠️ 通信エラー<br><button onclick="openPetty(\''+PETTY_YM+'\')">再読み込み</button></div>');});
 };
 function renderPetty(){
   var ym=PETTY_YM, given=0, used=0;
   PETTY_ROWS.forEach(function(r){ if(r.kind==="topup"){given+=(+r.amount||0);} else if(r.kind!=="card"){used+=(+r.amount||0);} });  // ★カードは現金残高に含めない
-  var bal=given-used;
+  // ★前月繰越＝当月より前の全記録の（現金支給−現金使用）。カードは常に対象外
+  var carry=0;
+  (PETTY_ALL||[]).forEach(function(r){ var rym=(r.ym||String(r.date||"").slice(0,7)); if(rym<ym){ if(r.kind==="topup"){carry+=(+r.amount||0);} else if(r.kind!=="card"){carry-=(+r.amount||0);} } });
+  var bal=carry+given-used;
   var h='<div style="display:flex;gap:8px;align-items:center;margin:10px 0 6px">'
     +'<button class="abtn" style="background:#e2e8f0;color:#334155" onclick="openPetty(\''+ymShift(ym,-1)+'\')">‹ 前月</button>'
     +'<div style="flex:1;text-align:center;font-weight:800;font-size:16px">'+ym.replace("-","年")+'月</div>'
     +'<button class="abtn" style="background:#e2e8f0;color:#334155" onclick="openPetty(\''+ymShift(ym,1)+'\')">翌月 ›</button></div>';
-  // 残高カード（支給・補充 − 使用 ＝ 残高）
+  // 前月繰越（前月末の残高を自動で引き継ぎ）
+  h+='<div style="display:flex;justify-content:space-between;align-items:center;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:10px;padding:8px 12px;margin-bottom:8px">'
+    +'<span style="font-size:12px;font-weight:700;color:#475569">🔄 前月繰越</span>'
+    +'<span style="font-weight:800;font-size:15px;color:'+(carry>=0?"#1e40af":"#dc2626")+'">¥'+carry.toLocaleString()+'</span></div>';
+  // 残高カード（前月繰越 ＋ 当月補充 − 使用 ＝ 残高）
   h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px">'
-    +pettyCard("支給・補充","¥"+given.toLocaleString(),"#059669","#f0fdf4")
-    +pettyCard("使用","¥"+used.toLocaleString(),"#dc2626","#fef2f2")
+    +pettyCard("当月 支給・補充","¥"+given.toLocaleString(),"#059669","#f0fdf4")
+    +pettyCard("当月 使用","¥"+used.toLocaleString(),"#dc2626","#fef2f2")
     +pettyCard("残高","¥"+bal.toLocaleString(),bal>=0?"#1e40af":"#dc2626",bal>=0?"#eff6ff":"#fef2f2")
     +'</div>';
-  if(given===0){h+='<div class="note" style="background:#fffbeb;border-color:#fde68a;color:#92400e">まだ今月の現金が配布されていません。管理者が支給するとここに残高が表示されます。</div>';}
+  if(given===0&&carry===0){h+='<div class="note" style="background:#fffbeb;border-color:#fde68a;color:#92400e">まだ今月の現金が配布されていません。管理者が支給するとここに残高が表示されます。</div>';}
   // 入力フォーム
   h+='<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin-bottom:14px">'
     +'<div style="font-weight:800;font-size:13px;margin-bottom:8px">➕ 使った分を記録</div>'

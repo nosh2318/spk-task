@@ -94,24 +94,31 @@ function pettyLoad(name,id){
   var box=document.getElementById(id+"p");if(!box)return;
   var ym=PMONTH[id]||curYM();
   box.innerHTML='<div style="color:#94a3b8;font-size:12px;padding:6px">読み込み中…</div>';
-  fetch(SB+"/rest/v1/spk_petty_cash?staff_name=eq."+encodeURIComponent(name)+"&ym=eq."+encodeURIComponent(ym)+"&order=date.asc,created_at.asc&select=*",{headers:{apikey:ANON,Authorization:"Bearer "+ANON}})
+  // ★前月繰越を出すため全期間を取得（当月はym一致で抽出／前月繰越はym<当月から導出＝台帳から導出・繰越行は作らない）
+  fetch(SB+"/rest/v1/spk_petty_cash?staff_name=eq."+encodeURIComponent(name)+"&order=date.asc,created_at.asc&select=*",{headers:{apikey:ANON,Authorization:"Bearer "+ANON}})
     .then(function(r){return r.json();})
     .then(function(rows){pettyRender(name,id,Array.isArray(rows)?rows:[]);})
     .catch(function(){box.innerHTML='<div class="err">通信エラー</div>';});
 }
-function pettyRender(name,id,rows){
+function pettyRender(name,id,all){
   var box=document.getElementById(id+"p");if(!box)return;
-  var ym=PMONTH[id]||curYM(),given=0,used=0;
-  rows.forEach(function(r){if(r.kind==="topup")given+=(+r.amount||0);else used+=(+r.amount||0);});
-  var bal=given-used;
+  var ym=PMONTH[id]||curYM(),given=0,used=0,carry=0;
+  // 当月ぶんだけ抽出（表示用）
+  var rows=all.filter(function(r){return (r.ym||String(r.date||"").slice(0,7))===ym;});
+  // ★カード払い(kind=card)は会計カードへ回り小口現金から引かない＝使用から除外（旧実装はカードも使用に加算し残高がマイナスに化けていた）
+  rows.forEach(function(r){if(r.kind==="topup")given+=(+r.amount||0);else if(r.kind!=="card")used+=(+r.amount||0);});
+  // ★前月繰越＝当月より前の全記録の（現金支給−現金使用）
+  all.forEach(function(r){var rym=(r.ym||String(r.date||"").slice(0,7));if(rym<ym){if(r.kind==="topup")carry+=(+r.amount||0);else if(r.kind!=="card")carry-=(+r.amount||0);}});
+  var bal=carry+given-used;
   var h='<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px">'
     +'<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">'
     +'<button class="btn" onclick="pettyNav(\''+esc(name).replace(/\x27/g,"\\x27")+'\',\''+id+'\',-1)">‹</button>'
     +'<div style="flex:1;text-align:center;font-weight:800">'+ym.replace("-","年")+'月</div>'
     +'<button class="btn" onclick="pettyNav(\''+esc(name).replace(/\x27/g,"\\x27")+'\',\''+id+'\',1)">›</button></div>'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:8px;padding:6px 10px;margin-bottom:8px;font-size:12px"><span style="font-weight:700;color:#475569">🔄 前月繰越</span><span style="font-weight:900;color:'+(carry>=0?"#1e40af":"#dc2626")+'">¥'+carry.toLocaleString()+'</span></div>'
     +'<div style="display:flex;gap:6px;text-align:center;margin-bottom:10px;font-size:12px">'
-    +'<div style="flex:1;background:#f0fdf4;border-radius:8px;padding:6px"><div style="color:#64748b;font-size:10px">支給・補充</div><div style="font-weight:900;color:#059669">¥'+given.toLocaleString()+'</div></div>'
-    +'<div style="flex:1;background:#fef2f2;border-radius:8px;padding:6px"><div style="color:#64748b;font-size:10px">使用</div><div style="font-weight:900;color:#dc2626">¥'+used.toLocaleString()+'</div></div>'
+    +'<div style="flex:1;background:#f0fdf4;border-radius:8px;padding:6px"><div style="color:#64748b;font-size:10px">当月 支給・補充</div><div style="font-weight:900;color:#059669">¥'+given.toLocaleString()+'</div></div>'
+    +'<div style="flex:1;background:#fef2f2;border-radius:8px;padding:6px"><div style="color:#64748b;font-size:10px">当月 使用</div><div style="font-weight:900;color:#dc2626">¥'+used.toLocaleString()+'</div></div>'
     +'<div style="flex:1;background:#eff6ff;border-radius:8px;padding:6px"><div style="color:#64748b;font-size:10px">残高</div><div style="font-weight:900;color:'+(bal>=0?"#1e40af":"#dc2626")+'">¥'+bal.toLocaleString()+'</div></div></div>';
   // 支給/補充フォーム
   h+='<div style="display:flex;gap:6px;margin-bottom:6px">'
@@ -179,7 +186,8 @@ async function load(){
     // 💴 当月の小口現金 残高（全バイト・オンタイム）
     var pbal={};
     try{
-      var pr=await fetch(SB+"/rest/v1/spk_petty_cash?ym=eq."+curYM()+"&select=staff_name,kind,amount",{headers:{apikey:ANON,Authorization:"Bearer "+ANON}});
+      // ★2026-09-07 前月繰越込みの現在残高＝全期間の累計（現金支給−現金使用）。月フィルタを外し累計にすることで前月残が引き継がれる（毎月リセットしない）
+      var pr=await fetch(SB+"/rest/v1/spk_petty_cash?select=staff_name,kind,amount",{headers:{apikey:ANON,Authorization:"Bearer "+ANON}});
       // ★2026-08-11 カード払い(kind=card)は会計カードへ回り小口現金から引かない＝個別ページ(staff.html)と同じく使用から除外。旧実装はカードも使用に加算し残高がマイナスに化けていた
       if(pr.ok){(await pr.json()).forEach(function(p){var n=p.staff_name||"";pbal[n]=pbal[n]||{g:0,u:0};if(p.kind==="topup")pbal[n].g+=(+p.amount||0);else if(p.kind!=="card")pbal[n].u+=(+p.amount||0);});}
     }catch(e){}
