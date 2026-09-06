@@ -198,12 +198,28 @@ function predict(input,cb){gWait(function(){if(!gAuto){cb([]);return;}
 function details(placeId,cb){gWait(function(){if(!gPlaces){cb(null);return;}gPlaces.getDetails({placeId:placeId,fields:['geometry','name','formatted_address','address_components'],language:'ja',sessionToken:_tok()},function(pl,st){_sessTok=null;if(st==='OK'&&pl&&pl.geometry){cb(pl.geometry.location.lat(),pl.geometry.location.lng(),pl.name||'',gtidy(pl.formatted_address),pl.address_components||null);}else cb(null);});});}
 function gtidy(a){return (a||'').replace(/^日本、?/,'').replace(/〒?\d{3}-?\d{4}\s*/,'').replace(/^沖縄県/,'').trim();}
 // リバースジオコーディング＝Nominatim(キー不要)。ピン移動→住所表示。comps=nullでもinCityはaddr文字列で判定。
+// ★2026-09-06 住所オブジェクト(addressdetails)から組立＝「北海道地方」(region)「石狩振興局」(subprovince)等の行政ノイズを除去。
+// 旧版はdisplay_nameを丸ごと逆順連結し「北海道地方北海道石狩振興局…」が頭に固定されて「住所が変わらない」ように見えるバグだった。
+function _noise(s){return !s||/(地方|振興局|総合振興局)$/.test(s);}
 function reverseGeo(lat,lng,cb){
-  fetch('https://nominatim.openstreetmap.org/reverse?format=json&lat='+lat+'&lon='+lng+'&accept-language=ja&zoom=18',{headers:{'Accept':'application/json'}})
+  fetch('https://nominatim.openstreetmap.org/reverse?format=json&addressdetails=1&lat='+lat+'&lon='+lng+'&accept-language=ja&zoom=18',{headers:{'Accept':'application/json'}})
    .then(function(r){return r.json();})
    .then(function(d){
-     var a='';
-     if(d&&d.display_name){a=d.display_name.replace(/〒?\s*\d{3}-?\d{4}/g,'').split(',').map(function(s){return s.trim();}).filter(function(s){return s&&s!=='日本'&&s!=='日本国';}).reverse().join('').trim();}
+     var a='',A=d&&d.address;
+     if(A){
+       var pref=A.province||A.state||''; if(_noise(pref))pref='';       // 都道府県(北海道/沖縄県)。region(◯◯地方)は使わない
+       var city=A.city||A.town||A.village||A.municipality||'';           // 市町村(札幌市/那覇市)
+       var ward=A.city_district||A.suburb||A.borough||'';                // 区(中央区/北区)
+       var town=A.neighbourhood||A.quarter||A.hamlet||'';               // 町名(北8条西4 等)
+       var road=A.road||'', hn=A.house_number||'';
+       var raw=[pref,city,ward,town,road,hn],out=[];
+       for(var i=0;i<raw.length;i++){var p=raw[i];if(p&&!_noise(p)&&out.indexOf(p)<0)out.push(p);} // ノイズ除去＋重複除去
+       a=out.join('');
+     }
+     if(!a && d&&d.display_name){ // フォールバック(住所オブジェクト無し)＝display_nameから地方/振興局を除いて連結
+       a=d.display_name.replace(/〒?\s*\d{3}-?\d{4}/g,'').split(',').map(function(s){return s.trim();})
+          .filter(function(s){return s&&s!=='日本'&&s!=='日本国'&&!_noise(s);}).reverse().join('').trim();
+     }
      cb(a||(lat.toFixed(4)+', '+lng.toFixed(4)),null);
    })
    .catch(function(){cb(lat.toFixed(4)+', '+lng.toFixed(4),null);});
