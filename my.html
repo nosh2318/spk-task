@@ -262,7 +262,7 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 <div class="toast" id="toast"></div>
 
 <script>
-const VER = "v4.9.13-mypage 既読は内容指紋で管理：内容が変更されたセクションは「未確認」を再表示(不変カードは既読維持)";
+const VER = "v4.9.14-mypage 既読は内容指紋で管理：内容が変更されたセクションは「未確認」を再表示(不変カードは既読維持)";
 const FN = "https://ckrxttbnawkclshczsia.supabase.co/functions/v1/handyman-mypage";
 // 免許証アップロードの保存先=GAS「HANDYMAN 免許証保存」→Googleドライブ（license.htmlと完全に同一・store='spk'）
 const GAS_LICENSE_URL = 'https://script.google.com/macros/s/AKfycbycpzE1RIu2LbIlYVeRYcXxfIgfDhY5y1Vtdh1Rj69S9uZEnmqFMDBHqq3y6pHS70_t7A/exec';
@@ -1454,6 +1454,52 @@ async function load(){
 })();
 
 load();
+</script>
+<!-- 💬 CSチャット（お客様⇄CS部・予約に自動紐付け・追加のみ/既存に非干渉） -->
+<style>
+#csBtn{position:fixed;right:16px;bottom:18px;width:56px;height:56px;border-radius:50%;background:#0d9488;color:#fff;display:none;align-items:center;justify-content:center;font-size:26px;box-shadow:0 6px 18px rgba(0,0,0,.28);cursor:pointer;z-index:9998;border:none}
+#csBtn .dot{position:absolute;top:-2px;right:-2px;background:#dc2626;color:#fff;font-size:11px;font-weight:900;min-width:20px;height:20px;border-radius:10px;display:none;align-items:center;justify-content:center;padding:0 5px}
+#csPanel{position:fixed;right:16px;bottom:18px;width:min(360px,calc(100vw - 32px));height:min(520px,calc(100vh - 40px));background:#fff;border-radius:16px;box-shadow:0 10px 40px rgba(0,0,0,.35);display:none;flex-direction:column;z-index:9999;overflow:hidden}
+#csPanel .h{background:#0d9488;color:#fff;padding:12px 14px;display:flex;align-items:center;justify-content:space-between}
+#csPanel .h .t{font-weight:900;font-size:15px}
+#csPanel .h .x{cursor:pointer;font-size:20px;background:none;border:none;color:#fff}
+#csPanel .h .sub{font-size:11px;opacity:.9;margin-top:2px}
+#csMsgs{flex:1;overflow-y:auto;padding:14px;background:#f6f8fb;display:flex;flex-direction:column;gap:8px}
+#csMsgs .b{max-width:80%;padding:9px 12px;border-radius:14px;font-size:14px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+#csMsgs .b.staff{align-self:flex-start;background:#e6eef7;color:#1e293b;border-bottom-left-radius:4px}
+#csMsgs .b.system{align-self:center;background:#eef2f7;color:#64748b;font-size:12px}
+#csMsgs .b.customer{align-self:flex-end;background:#0d9488;color:#fff;border-bottom-right-radius:4px}
+#csMsgs .b .ts{display:block;font-size:9px;opacity:.6;margin-top:3px}
+#csEmpty{color:#94a3b8;font-size:13px;text-align:center;margin:auto;line-height:1.7}
+#csForm{display:flex;gap:6px;padding:10px;border-top:1px solid #e2e8f0;background:#fff}
+#csInp{flex:1;padding:10px 12px;border:1px solid #cbd5e1;border-radius:10px;font-size:14px;resize:none;font-family:inherit;max-height:90px}
+#csSend{border:none;background:#0d9488;color:#fff;font-weight:900;border-radius:10px;padding:0 16px;cursor:pointer}
+#csSend:disabled{opacity:.4}
+</style>
+<button id="csBtn" onclick="csToggle()">💬<span class="dot" id="csDot"></span></button>
+<div id="csPanel">
+  <div class="h"><div><div class="t">CSへお問い合わせ</div><div class="sub" id="csSub">担当が順次お返事します</div></div><button class="x" onclick="csToggle()">×</button></div>
+  <div id="csMsgs"><div id="csEmpty">ご予約に関するご質問・ご相談を<br>お気軽にどうぞ。<br>担当が順次お返事します。</div></div>
+  <div id="csForm"><textarea id="csInp" rows="1" placeholder="メッセージを入力…" oninput="csGrow(this)"></textarea><button id="csSend" onclick="csSendMsg()">送信</button></div>
+</div>
+<script>
+(function(){
+  if(!TOKEN||RO)return; // お客様のみ表示（スタッフ閲覧ro=1では出さない）
+  var CSEF="https://ckrxttbnawkclshczsia.supabase.co/functions/v1/cs-chat";
+  var opened=false, poll=null, sending=false, lastCount=0;
+  function ef(body){return fetch(CSEF,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(Object.assign({store:"spk",mypage_token:TOKEN},body))}).then(function(r){return r.json();});}
+  function esc(s){return String(s||"").replace(/[&<>]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;"}[c];});}
+  function tfmt(s){try{var d=new Date(s),p=function(n){return String(n).padStart(2,"0");};return (d.getMonth()+1)+"/"+d.getDate()+" "+p(d.getHours())+":"+p(d.getMinutes());}catch(e){return "";}}
+  function render(list){var m=document.getElementById("csMsgs");if(!list||!list.length){m.innerHTML='<div id="csEmpty">ご予約に関するご質問・ご相談を<br>お気軽にどうぞ。<br>担当が順次お返事します。</div>';return;}m.innerHTML=list.map(function(x){return '<div class="b '+esc(x.sender)+'">'+esc(x.body)+'<span class="ts">'+tfmt(x.created_at)+'</span></div>';}).join("");m.scrollTop=m.scrollHeight;}
+  window.csToggle=function(){opened=!opened;document.getElementById("csPanel").style.display=opened?"flex":"none";document.getElementById("csBtn").style.display=opened?"none":"flex";if(opened){document.getElementById("csDot").style.display="none";ef({action:"cust_open"}).then(function(r){if(r&&r.ok){render(r.messages);lastCount=(r.messages||[]).length;}});if(poll)clearInterval(poll);poll=setInterval(csPoll,10000);}else{if(poll)clearInterval(poll);}};
+  function csPoll(){if(!opened||document.visibilityState!=="visible")return;ef({action:"cust_poll"}).then(function(r){if(r&&r.ok){render(r.messages);lastCount=(r.messages||[]).length;}});}
+  window.csGrow=function(t){t.style.height="auto";t.style.height=Math.min(t.scrollHeight,90)+"px";};
+  window.csSendMsg=function(){var inp=document.getElementById("csInp"),body=inp.value.trim();if(!body||sending)return;sending=true;document.getElementById("csSend").disabled=true;ef({action:"cust_send",body:body}).then(function(r){sending=false;document.getElementById("csSend").disabled=false;if(r&&r.ok){inp.value="";csGrow(inp);render(r.messages);}else{alert((r&&r.error)||"送信できませんでした");}});};
+  // 新着バッジ（未オープン時に定期チェック）
+  document.getElementById("csBtn").style.display="flex";
+  function checkNew(){if(opened)return;ef({action:"cust_open"}).then(function(r){if(r&&r.ok){var n=(r.messages||[]).length;var lastStaff=(r.messages||[]).slice().reverse().find(function(x){return x.sender==="staff";});if(lastStaff&&n>lastCount&&lastCount>0){var d=document.getElementById("csDot");d.textContent="1";d.style.display="flex";}lastCount=Math.max(lastCount,0);}});}
+  setTimeout(checkNew,4000);setInterval(checkNew,60000);
+})();
 </script>
 </body>
 </html>
