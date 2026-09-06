@@ -105,6 +105,7 @@ function processNewEmails() {
   var failures = [];
   var cancellations = [];
   var skipped = [];
+  var unassigned = [];  // ★2026-09-06 取込成功だが空車なし＝手動配車が必要（取込失敗ではない）
 
   try {
     var label = getOrCreateLabel_(LABEL_NAME);
@@ -155,6 +156,7 @@ function processNewEmails() {
             if (result.type === 'success') { successes.push(result); delete failedRetries[msgId]; }
             else if (result.type === 'cancel') { cancellations.push(result); delete failedRetries[msgId]; }
             else if (result.type === 'skip') skipped.push(result);
+            else if (result.type === 'unassigned') { unassigned.push(result); delete failedRetries[msgId]; }  // ★2026-09-06 DB登録済み＝seen登録(リトライしない)。手動配車を別途通知。
             else if (result.type === 'failure') {
               var rc = (failedRetries[msgId] || 0) + 1;
               if (rc < MAX_IMPORT_RETRY) { markSeen = false; failedRetries[msgId] = rc; }  // 再試行のため未登録
@@ -182,7 +184,7 @@ function processNewEmails() {
     // 既処理skip が大半 → 処理済みID肥大 / 非予約null が大半 → 検索窓が販促メールで飽和
     Logger.log('[Diag] threads=' + threads.length + ' 既処理skip=' + skippedProcessed +
       ' 非予約null=' + nonReservation + ' success=' + successes.length +
-      ' skip=' + skipped.length + ' fail=' + failures.length + ' cancel=' + cancellations.length);
+      ' skip=' + skipped.length + ' unassigned=' + unassigned.length + ' fail=' + failures.length + ' cancel=' + cancellations.length);
 
     if (newProcessedIds.length > 0) {
       saveProcessedMsgIds_(processedIds, newProcessedIds);
@@ -190,6 +192,7 @@ function processNewEmails() {
     saveFailedRetries_(failedRetries);  // ★2026-08-30 再試行カウント保存
 
     if (successes.length > 0) sendSlackSuccess_(successes);
+    if (unassigned.length > 0) sendSlackUnassigned_(unassigned);  // ★2026-09-06 取込OK・未配車（手動配車が必要）
     if (failures.length > 0) sendSlackFailure_(failures);
     if (cancellations.length > 0) sendSlackCancel_(cancellations);
   } catch (e) {
@@ -282,7 +285,7 @@ function backfillSpecificReservations() {
 
           if (result) {
             Logger.log('[Backfill] ' + rid + ' result: ' + JSON.stringify(result));
-            if (result.type === 'success') successes.push(result);
+            if (result.type === 'success' || result.type === 'unassigned') successes.push(result);  // ★2026-09-06 unassigned=取込成功(未配車)
             else if (result.type === 'failure') failures.push(result);
             else if (result.type === 'skip') skipped.push(result);
           } else {
@@ -547,7 +550,10 @@ function processMessage_(message, dryRun) {
       dates:reservation.lend_date+'~'+reservation.return_date,
       vehicle:reservation.vehicle, assignedTo:assigned.name+' ('+assigned.plate_no+')'};
   } else {
-    return {type:'failure', id:reservation.id, ota:otaCode, name:reservation.name,
+    // ★2026-09-06 未配車は「取込失敗」ではない＝予約はDBに登録済み。空車が無いだけ＝手動配車が必要。
+    //   'failure' で返すと(1)誤った"取込失敗"通知(2)DB登録済みなのに最大4回リトライ、が起きるため 'unassigned' に分離。
+    //   これで 'failure' は"本当にDB未登録"だけを意味し、seen登録/リトライの安全不変条件が厳密になる。
+    return {type:'unassigned', id:reservation.id, ota:otaCode, name:reservation.name,
       reason:'配車不可（'+reservation.vehicle+'クラス空車なし）',
       dates:reservation.lend_date+'~'+reservation.return_date};
   }
@@ -1495,6 +1501,19 @@ function sendSlackFailure_(items) {
   });
   lines.push('合計: ' + items.length + '件 ※手動対応が必要です');
   sendSlackToSpk_('❌ 札幌店新規予約取込失敗通知 ' + items.length + '件', lines.join('\n'));
+}
+
+// ★2026-09-06 取込成功したが空車が無く未配車＝手動配車が必要（"取込失敗"ではない）。
+function sendSlackUnassigned_(items) {
+  var lines = ['⚠️ 札幌店 予約取込OK・未配車（手動配車が必要）', ''];
+  items.forEach(function(r) {
+    lines.push('【' + otaDispLbl_(r.ota) + '】' + (r.id || '不明'));
+    if (r.name) lines.push('  ' + r.name + (r.dates ? ' / ' + r.dates : ''));
+    lines.push('  ' + r.reason + ' → 配車表から手動で配車してください');
+    lines.push('');
+  });
+  lines.push('合計: ' + items.length + '件 ※予約は登録済みです（取込は成功）');
+  sendSlackToSpk_('⚠️ 札幌店 予約取込OK・未配車 ' + items.length + '件', lines.join('\n'));
 }
 
 function sendSlackCancel_(items) {
