@@ -842,7 +842,25 @@ function fetchNewBookings(){
 const _alertState={inq:0,cschat:0,appr:0,unpunch:0}; const _alertData={}; const _uPin={};
 function ensureUPin(unitKey){ if(_uPin[unitKey])return _uPin[unitKey]; const u=uMap[unitKey]; if(!u||!u._geo)return null;
   const div=mkLabel('','pinlbl multi'); div.style.pointerEvents='auto';
-  const L={div,pos:new THREE.Vector3(u._geo.ux,7.0,u._geo.uz),key:'upin_'+unitKey,type:'apin',unitKey,active:false}; labelDivs.push(L); _uPin[unitKey]={div,L}; return _uPin[unitKey]; }
+  const L={div,pos:new THREE.Vector3(u._geo.ux,11.5,u._geo.uz),key:'upin_'+unitKey,type:'apin',unitKey,active:false}; labelDivs.push(L); _uPin[unitKey]={div,L}; return _uPin[unitKey]; }
+// アラートピンの2D重なり回避＝方向を分散（重なる方向＝抵抗が小さい軸へ押し分けてファンアウト）
+function dodgePins(pins){
+  if(pins.length<2)return;
+  const rect=L=>{const w=L.div.offsetWidth||140,h=L.div.offsetHeight||40;return{l:L._px-w/2,r:L._px+w/2,t:L._py-h,b:L._py,w,h};};
+  for(let it=0;it<26;it++){let moved=false;
+    for(let i=0;i<pins.length;i++)for(let j=i+1;j<pins.length;j++){
+      const a=rect(pins[i]),b=rect(pins[j]);
+      const ox=Math.min(a.r,b.r)-Math.max(a.l,b.l), oy=Math.min(a.b,b.b)-Math.max(a.t,b.t);
+      if(ox>0&&oy>0){
+        if(ox<=oy){const p=ox/2+6; if(pins[i]._px<=pins[j]._px){pins[i]._px-=p;pins[j]._px+=p;}else{pins[i]._px+=p;pins[j]._px-=p;}}
+        else{const p=oy/2+6; if(pins[i]._py<=pins[j]._py){pins[i]._py-=p;pins[j]._py+=p;}else{pins[i]._py+=p;pins[j]._py-=p;}}
+        moved=true;
+      }
+    }
+    if(!moved)break;
+  }
+  for(const L of pins){L.div.style.left=L._px+'px';L.div.style.top=L._py+'px';}
+}
 function setAlert2(key,unitKey,n,color,line,href){ _alertData[key]={unitKey,n:n||0,color,line,href}; }
 // 担当部(区画)の上に1つのピン＝各アラートを色付きの1行リンクで集約（縦積み重なりを回避）
 function buildUnitPin(unitKey,keys){ const p=ensureUPin(unitKey); if(!p)return;
@@ -1051,6 +1069,7 @@ function loop(ts){
   // OMNI＝固定(動かない)。アンテナが明滅して稼働中を表現
   for(const o of omnis){if(o.userData.ant)o.userData.ant.material.emissiveIntensity=1.0+Math.sin(t*4)*0.6;}
   // labels（全体=タスク＋出勤数／店を選ぶと=その店のタスク＋出勤者名）
+  const _pins=[];
   for(const L of labelDivs){
     let show;
     if(L.type==='apin'){ show = !!L.active && (activeUnit==='all'||activeUnit===L.unitKey); } // アラートピン=該当時のみ・全体＋その部（担当区画の上）
@@ -1061,8 +1080,12 @@ function loop(ts){
     if(!show){L.div.style.display='none';continue;}
     if(L.follow)L.pos.set(L.follow.position.x,L.follow.position.y+2.1,L.follow.position.z);
     const s=project(L.pos); if(!s.vis){L.div.style.display='none';continue;}
-    L.div.style.display='block';L.div.style.left=s.x+'px';L.div.style.top=s.y+'px';
+    L.div.style.display='block';
+    if(L.type==='apin'){ L._px=s.x; L._py=s.y; L.div.style.left=s.x+'px'; L.div.style.top=s.y+'px'; _pins.push(L); continue; } // 位置は後でファンアウト
+    L.div.style.left=s.x+'px';L.div.style.top=s.y+'px';
   }
+  dodgePins(_pins); // アラートピンが重ならないよう方向を分散
+
   renderer.render(scene,camera); requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
