@@ -68,6 +68,12 @@ canvas#c{touch-action:none;display:block}
   #alertPanel .arow.amber{background:rgba(58,40,6,.95);border-color:#f59e0b} #alertPanel .arow.amber .w{color:#fde68a} #alertPanel .arow.amber b{color:#fff}
   #alertPanel .arow.green{background:rgba(8,40,20,.9);border-color:#22c55e88} #alertPanel .arow.green .w{color:#86efac}
   #alertPanel .arow.blink{animation:blinkInq 1.1s ease-in-out infinite}
+  /* 「未対応タスクあり」ピン（区画の上・アラート時のみ・PC/スマホ両方） */
+  .tl.pinlbl{background:#dc2626;border:2px solid #fff;border-radius:12px;padding:5px 11px;text-align:center;white-space:nowrap;box-shadow:0 4px 14px rgba(220,38,38,.6);z-index:20;cursor:pointer;transform:translate(-50%,-100%);animation:pinbob 1s ease-in-out infinite}
+  .tl.pinlbl::after{content:'';position:absolute;left:50%;bottom:-7px;transform:translateX(-50%);border:7px solid transparent;border-top-color:#dc2626}
+  .tl.pinlbl .pw{color:#fff;font-weight:900;font-size:12px}
+  .tl.pinlbl .pn{color:#fee2e2;font-size:11px;font-weight:800;margin-top:1px}
+  @keyframes pinbob{0%,100%{margin-top:0}50%{margin-top:-5px}}
   @media(max-width:760px){ #alertPanel{top:auto;bottom:8px;right:8px;left:8px;width:auto;flex-direction:row;overflow-x:auto} #alertPanel .arow{flex:0 0 auto;min-width:150px} }
   .apprblink{animation:blinkAppr 1s ease-in-out infinite} @keyframes blinkAppr{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,0)}50%{box-shadow:0 0 20px 4px rgba(245,158,11,.9)}}
   /* 各店の状況＝画面左の固定パネル（3Dエリアに重ならない） */
@@ -838,18 +844,23 @@ function setAlert(key,cls,html,href){
   if(href){el.href=href;el.target='_blank';el.rel='noopener';}
   el.className='arow '+cls; el.innerHTML=html;
 }
-// 対応が必要な部の区画を点滅させる（アラート源ごとにフラグ→部単位でOR）
-const _alertState={inq:false,cschat:false,appr:false,unpunch:false};
+// 対応が必要な部の区画を点滅＋「未対応タスクあり」ピンで見える化（件数・PC/スマホ両方）
+const _alertState={inq:0,cschat:0,appr:0,unpunch:0}; const _deptPin={};
+function ensurePin(key){ if(_deptPin[key])return _deptPin[key]; const u=uMap[key]; if(!u||!u._geo)return null;
+  const div=mkLabel('','pinlbl'); div.style.pointerEvents='auto'; div.onclick=(e)=>{e.stopPropagation();try{focusUnit(key);}catch(_){}};
+  const L={div,pos:new THREE.Vector3(u._geo.ux,7.4,u._geo.uz),key,type:'pin'}; labelDivs.push(L); _deptPin[key]={div,L}; return _deptPin[key]; }
+function setDeptPin(key,txt){ const p=ensurePin(key); if(p)p.div.innerHTML=txt; }
 function refreshDeptAlerts(){
-  if(uMap.cs)uMap.cs._alert=(_alertState.inq||_alertState.cschat||_alertState.appr);
-  if(uMap.attend)uMap.attend._alert=_alertState.unpunch;
+  const csN=(_alertState.inq||0)+(_alertState.cschat||0)+(_alertState.appr||0), atN=(_alertState.unpunch||0);
+  if(uMap.cs){uMap.cs._alert=csN>0; if(csN>0)setDeptPin('cs',`<div class="pw">🚨 未対応タスクあり</div><div class="pn">${csN}件（タップで確認）</div>`);}
+  if(uMap.attend){uMap.attend._alert=atN>0; if(atN>0)setDeptPin('attend',`<div class="pw">🚨 未打刻あり</div><div class="pn">${atN}人</div>`);}
 }
 function fetchInquiries(){
   fetch(MAIN_URL+'/rest/v1/rpc/company_inquiries',{method:'POST',headers:{apikey:MAIN_ANON,'Authorization':'Bearer '+MAIN_ANON,'Content-Type':'application/json'},body:'{}'}).then(r=>r.json()).then(o=>{
     if(!o||typeof o!=='object')return;
     const tot=(o.nha||0)+(o.spk||0)+(o.bt||0); const NM={nha:'那覇',spk:'札幌',bt:'高松'};
     const who=['nha','spk','bt'].filter(k=>(o[k]||0)>0).map(k=>NM[k]).join('・');
-    _alertState.inq=tot>0; refreshDeptAlerts();
+    _alertState.inq=tot; refreshDeptAlerts();
     if(tot>0)setAlert('inq','red blink',`<div class="w">📮 未対応の問い合わせ <b>${tot}</b>件</div><div class="t">${who} 対応してください</div>`,'https://handyman-inquiry.vercel.app/');
     else setAlert('inq','green','<div class="w">📮 問い合わせ 対応済み</div>',null);
   }).catch(()=>{});
@@ -860,7 +871,7 @@ function fetchCsChat(){
     if(!o||typeof o!=='object')return;
     const tot=(o.nha||0)+(o.spk||0); const NM={nha:'那覇',spk:'札幌'};
     const who=['nha','spk'].filter(k=>(o[k]||0)>0).map(k=>NM[k]).join('・');
-    _alertState.cschat=tot>0; refreshDeptAlerts();
+    _alertState.cschat=tot; refreshDeptAlerts();
     if(tot>0)setAlert('cschat','red blink',`<div class="w">💬 未対応チャット <b>${tot}</b>件</div><div class="t">${who} 返信してください</div>`,'https://nosh2318.github.io/spk-task/cs-chat-admin.html');
     else setAlert('cschat','green','<div class="w">💬 チャット 対応済み</div>',null);
   }).catch(()=>{});
@@ -874,7 +885,7 @@ function fetchMypagePending(){
     const o=Object.assign({},a||{},b||{});
     const tot=(o.nha||0)+(o.spk||0)+(o.bt||0); const NM={nha:'那覇',spk:'札幌',bt:'高松'};
     const who=['nha','spk','bt'].filter(k=>(o[k]||0)>0).map(k=>NM[k]).join('・');
-    _alertState.appr=tot>0; refreshDeptAlerts();
+    _alertState.appr=tot; refreshDeptAlerts();
     if(tot>0)setAlert('appr','amber blink',`<div class="w">🪪 マイページ承認待ち <b>${tot}</b>件</div><div class="t">${who} 承認してください</div>`,'https://rent-handyman.com/mypage-admin.html?bucket=but_tkm');
     else setAlert('appr','green','<div class="w">🪪 マイページ 承認待ちなし</div>',null);
   });
@@ -888,7 +899,7 @@ function fetchUnpunched(){
     const o=Object.assign({},m||{},b||{});
     const spk=o.spk||0,nha=o.nha||0,bt=o.bt||0,tot=spk+nha+bt;
     const parts=[]; if(nha)parts.push('那覇 '+nha); if(spk)parts.push('札幌 '+spk); if(bt)parts.push('高松 '+bt);
-    _alertState.unpunch=tot>0; refreshDeptAlerts();
+    _alertState.unpunch=tot; refreshDeptAlerts();
     if(tot>0)setAlert('unpunch','red blink',`<div class="w">⏰ 未打刻 <b>${tot}</b>人</div><div class="t">${parts.join('・')}（打刻を促してください）</div>`,'https://nosh2318.github.io/spk-task/attendance-log.html');
     else setAlert('unpunch','green','<div class="w">⏰ 未打刻なし ✅</div>',null);
   }).catch(()=>{});
@@ -1050,7 +1061,8 @@ function loop(ts){
   // labels（全体=タスク＋出勤数／店を選ぶと=その店のタスク＋出勤者名）
   for(const L of labelDivs){
     let show;
-    if(L.type==='tasksum'){ show = (activeUnit==='all' || (L.keys&&L.keys.indexOf(activeUnit)>=0)); }
+    if(L.type==='pin'){ const uu=uMap[L.key]; show = !!(uu&&uu._alert)&&(activeUnit==='all'||L.key===activeUnit); } // 未対応タスクありピン=アラート時のみ・全体＋その部
+    else if(L.type==='tasksum'){ show = (activeUnit==='all' || (L.keys&&L.keys.indexOf(activeUnit)>=0)); }
     else if(L.type==='bubble'){ show = (activeUnit==='all' || L.key===activeUnit); } // 吹き出し(新規予約/問い合わせ)は全体＋その拠点で表示
     else if(activeUnit==='all'){ show = (L.type==='staff'||L.type==='count'); } // 全体=人の名前(スタッフ/CLI/OMNI/常駐)＋出勤数＋📋集計。部署名/作業ラベルは隠す
     else { show = (L.key===activeUnit); } // 店選択=その店の全ラベル(部署名含む)
