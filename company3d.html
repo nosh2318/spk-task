@@ -470,7 +470,7 @@ const UNITS=[
    ]},
    {nm:'出勤簿・シフト／差分ログ',area:'both',st:'on',worker:'管理',items:[
      {t:'🗓 シフト一元管理（3店）',d:'那覇/札幌/高松のシフトを1画面で閲覧・試算',u:'https://nosh2318.github.io/spk-task/shift-hub.html'},
-     {t:'🕒 シフト↔打刻 差分ログ',d:'予定(シフト)と実(打刻)の差分＝遅刻/早退/残業の照合値。給与はシフト基準のまま維持。',note:'準備中'},
+     {t:'🕒 シフト↔打刻 差分ログ（上司判定）',d:'シフト予定 vs 実打刻を並べて表示。差分は参考、上司が確認済/要確認で判定。給与はシフト基準のまま。未打刻は出勤退勤管理部にアラート。',u:'https://nosh2318.github.io/spk-task/attendance-log.html'},
    ]},
  ]},
  {key:'resv',name:'🗂 予約管理部（AI/CLI）',color:0x0ea5e9,pos:[16,-30],cols:3,noAv:true,depts:[
@@ -862,6 +862,24 @@ function fetchMypagePending(){
     else{_apprLabel.div.className='tl '+cls;_apprLabel.div.innerHTML=html;}
   });
 }
+// ===== 未打刻アラート（本日出勤予定なのに未打刻）→ 出勤退勤管理部の吹き出し（店舗別人数・クリックで勤怠ログへ） =====
+let _upLabel=null;
+function fetchUnpunched(){
+  Promise.all([
+    fetch(MAIN_URL+'/rest/v1/rpc/company_unpunched',{method:'POST',headers:{apikey:MAIN_ANON,'Authorization':'Bearer '+MAIN_ANON,'Content-Type':'application/json'},body:'{}'}).then(r=>r.json()).catch(()=>({})),
+    fetch(BT_URL+'/rest/v1/rpc/bt_company_unpunched',{method:'POST',headers:{apikey:BT_ANON,'Authorization':'Bearer '+BT_ANON,'Content-Type':'application/json'},body:'{}'}).then(r=>r.json()).catch(()=>({})),
+  ]).then(([m,b])=>{
+    const o=Object.assign({},m||{},b||{}); const c=uMap.attend; if(!c||!c._geo)return;
+    const spk=o.spk||0,nha=o.nha||0,bt=o.bt||0,tot=spk+nha+bt;
+    const parts=[]; if(nha)parts.push('那覇 '+nha); if(spk)parts.push('札幌 '+spk); if(bt)parts.push('高松 '+bt);
+    let html,cls;
+    if(tot>0){html=`<a href="https://nosh2318.github.io/spk-task/attendance-log.html" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;display:block"><div class="w">⏰ 未打刻 <b>${tot}</b>人！</div><div class="t">${parts.join('・')} 人（打刻を促してください）</div></a>`;cls='inq inqblink';}
+    else{html=`<div class="w">⏰ 未打刻なし ✅</div>`;cls='inqok';}
+    const px=c._geo.ux, pz=c._geo.uz, py=6.2; // 出勤退勤管理部の上に浮かせる
+    if(!_upLabel){const div=mkLabel(html,cls);div.style.pointerEvents='auto';_upLabel={div};labelDivs.push({div,pos:new THREE.Vector3(px,py,pz),key:'attend',type:'bubble'});}
+    else{_upLabel.div.className='tl '+cls;_upLabel.div.innerHTML=html;}
+  }).catch(()=>{});
+}
 // ===== 現金/小口 アラート（店舗残＝出納帳の現金残高<¥2000：那覇+札幌 / 個別＝札幌の小口現金<¥1000）→ 左パネルの店カード =====
 function fetchPettyCash(){
   _hud.petty=_hud.petty||{}; _hud.petty.spk=_hud.petty.spk||{total:null,low:[]};
@@ -882,8 +900,8 @@ function refreshStaffTasks(){
   }).catch(()=>{}));
 }
 const _sht=document.getElementById('shtoggle'); if(_sht)_sht.onclick=(e)=>{e.stopPropagation();const h=document.getElementById('storehud');h.classList.toggle('min');_sht.textContent=h.classList.contains('min')?'表示':'隠す';};
-fetchTaskCounts(); fetchAlerts(); fetchNewBookings(); fetchInquiries(); fetchCsChat(); fetchMypagePending(); fetchPettyCash();
-setInterval(()=>{ fetchTaskCounts(); fetchAlerts(); fetchNewBookings(); fetchInquiries(); fetchCsChat(); fetchMypagePending(); fetchPettyCash(); refreshStaffTasks(); },120000);
+fetchTaskCounts(); fetchAlerts(); fetchNewBookings(); fetchInquiries(); fetchCsChat(); fetchMypagePending(); fetchUnpunched(); fetchPettyCash();
+setInterval(()=>{ fetchTaskCounts(); fetchAlerts(); fetchNewBookings(); fetchInquiries(); fetchCsChat(); fetchMypagePending(); fetchUnpunched(); fetchPettyCash(); refreshStaffTasks(); },120000);
 Promise.all([
   rpcO(MAIN_URL,MAIN_ANON,'company_staff_tasks',{p_store:'spk'}).then(a=>addStaff(uMap.spk,a)),
   rpcO(MAIN_URL,MAIN_ANON,'company_staff_tasks',{p_store:'nha'}).then(a=>addStaff(uMap.nha,a)),

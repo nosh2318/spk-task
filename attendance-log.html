@@ -1,0 +1,137 @@
+<!doctype html><html lang="ja"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>勤怠ログ（シフト↔打刻）｜HANDYMAN</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;background:#0b1220;color:#e8eef7;min-height:100vh}
+  .hd{padding:12px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #1c2c47;flex-wrap:wrap}
+  .hd .t{font-size:16px;font-weight:900}
+  .hd .sp{flex:1}
+  .hd .who{font-size:12px;color:#8fb0d8}
+  .stbtn{font-size:12px;font-weight:800;padding:6px 12px;border-radius:8px;border:1px solid #24405e;background:#12233d;color:#a9c2e0;cursor:pointer;text-decoration:none;display:inline-block}
+  .stbtn.on{background:#0d9488;border-color:#0d9488;color:#fff}
+  input[type=date]{padding:5px 8px;border-radius:8px;border:1px solid #24405e;background:#0b1524;color:#e8eef7;font-size:13px}
+  #login{max-width:340px;margin:60px auto;padding:24px;background:#0f1c31;border:1px solid #24405e;border-radius:16px}
+  #login h2{font-size:16px;margin:0 0 14px}
+  #login input{width:100%;padding:11px 12px;margin-bottom:10px;border-radius:8px;border:1px solid #24405e;background:#0b1524;color:#e8eef7;font-size:14px}
+  #login button{width:100%;padding:12px;border:none;border-radius:10px;background:#2563eb;color:#fff;font-weight:900;font-size:15px;cursor:pointer}
+  #login .e{color:#fca5a5;font-size:12px;font-weight:700;min-height:16px}
+  #main{padding:14px 16px;max-width:900px;margin:0 auto}
+  .note{font-size:12px;color:#7f9dc4;margin:2px 0 12px;line-height:1.6}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:9px 8px;border-bottom:1px solid #1c2c47;text-align:left;vertical-align:middle}
+  th{font-size:11px;color:#8fb0d8;font-weight:800;position:sticky;top:0;background:#0b1220}
+  .nm{font-weight:800}
+  .tm{font-variant-numeric:tabular-nums;font-weight:700}
+  .muted{color:#5f7ba0}
+  .chip{display:inline-block;font-size:10px;font-weight:900;border-radius:8px;padding:2px 7px;margin-left:4px}
+  .c-late{background:#7f1d1d;color:#fecaca}   /* 遅刻 */
+  .c-early{background:#3a2d0a;color:#fde68a}  /* 早退 */
+  .c-ot{background:#0c2d4a;color:#bfdbfe}     /* 残業 */
+  .c-pre{background:#1c2c47;color:#a9c2e0}    /* 早出 */
+  .c-none{background:#3a1414;color:#fca5a5}   /* 未打刻 */
+  .c-noshift{background:#2a1a3a;color:#e9d5ff}/* シフト外 */
+  .rev{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
+  .rbtn{font-size:11px;font-weight:800;padding:5px 9px;border-radius:8px;border:1px solid #24405e;background:#12233d;color:#a9c2e0;cursor:pointer}
+  .rbtn.ok{background:#166534;border-color:#166534;color:#fff}
+  .rbtn.flag{background:#9a3412;border-color:#9a3412;color:#fff}
+  .rnote{width:120px;padding:5px 7px;border-radius:7px;border:1px solid #24405e;background:#0b1524;color:#e8eef7;font-size:12px}
+  .empty{padding:30px;text-align:center;color:#5f7ba0}
+  .rby{font-size:9px;color:#5f7ba0}
+  @media(max-width:640px){ th:nth-child(4),td:nth-child(4){display:none} .rnote{width:80px} }
+</style></head>
+<body>
+<div class="hd">
+  <a href="company3d.html" class="stbtn">← 本社TOP</a>
+  <div class="t">🕒 勤怠ログ</div>
+  <button class="stbtn on" id="st_spk" onclick="setStore('spk')">❄️ 札幌</button>
+  <button class="stbtn" id="st_nha" onclick="setStore('nha')">🌺 那覇</button>
+  <button class="stbtn" id="st_bt" onclick="setStore('bt')">🍜 高松</button>
+  <input type="date" id="dt" onchange="loadLog()">
+  <div class="sp"></div>
+  <div class="who" id="who"></div>
+</div>
+<div id="login">
+  <h2>上司ログイン</h2>
+  <input id="lname" placeholder="名前（例: oshita）" autocomplete="username">
+  <input id="lpin" type="password" placeholder="番号（例: 0111）" autocomplete="current-password">
+  <button onclick="doLogin()">ログイン</button>
+  <div class="e" id="lerr"></div>
+</div>
+<div id="main" style="display:none">
+  <div class="note">シフトで仮決めした時間と、実際の打刻を並べています。差分は<b>参考</b>です（自動判定はしません）。内容を確認して「✔️確認済／⚠️要確認」で判定してください。</div>
+  <div id="tbl"><div class="empty">読み込み中…</div></div>
+</div>
+<script>
+const U='https://ckrxttbnawkclshczsia.supabase.co';
+const AK='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8';
+const BT_U='https://ggqugvyskyiblxiycpci.supabase.co';
+const BT_AK='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdncXVndnlza3lpYmx4aXljcGNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxMDc3NjksImV4cCI6MjA5MzY4Mzc2OX0.uNhWcBd_Dl5nzemZDQfJ8mQV6iY73MwystGGpTRPC18';
+let STORE='spk', JWT='', REV={};
+function jstToday(){var n=new Date(Date.now()+9*3600*1000);return n.toISOString().slice(0,10);}
+function esc(s){return String(s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function rpc(url,ak,fn,body,auth){const h={apikey:ak,'Authorization':'Bearer '+(auth||ak),'Content-Type':'application/json'};return fetch(url+'/rest/v1/rpc/'+fn,{method:'POST',headers:h,body:JSON.stringify(body||{})}).then(r=>r.json());}
+async function doLogin(){
+  const nm=document.getElementById('lname').value.trim(),pin=document.getElementById('lpin').value.trim(),em=document.getElementById('lerr');em.textContent='';
+  if(!nm||!pin){em.textContent='名前と番号を入力';return;}
+  const email=nm.indexOf('@')>=0?nm:(nm+'@'+STORE+'.hdm');
+  try{const r=await fetch(U+'/auth/v1/token?grant_type=password',{method:'POST',headers:{apikey:AK,'Content-Type':'application/json'},body:JSON.stringify({email,password:pin})}).then(r=>r.json());
+    if(!r.access_token){em.textContent='ログインできません（名前/番号を確認）';return;}
+    JWT=r.access_token;localStorage.setItem('attlog_jwt',JWT);
+    document.getElementById('login').style.display='none';document.getElementById('main').style.display='block';
+    document.getElementById('who').textContent=(r.user&&r.user.email||'').split('@')[0]+' でログイン中';
+    document.getElementById('dt').value=jstToday();loadLog();
+  }catch(e){em.textContent='通信エラー';}
+}
+function setStore(s){STORE=s;['spk','nha','bt'].forEach(k=>document.getElementById('st_'+k).classList.toggle('on',k===s));loadLog();}
+function hm(t){return /^\d{2}:\d{2}$/.test(t||'')?t:'';}
+function toMin(t){if(!hm(t))return null;const p=t.split(':');return +p[0]*60+ +p[1];}
+function diffChips(r){
+  const ss=toMin(r.shift_start),se=toMin(r.shift_end),ps=toMin(r.punch_start),pe=toMin(r.punch_end);
+  const hasShift=(r.shift_start||r.shift_end),hasPunch=(r.punch_start||r.punch_end);
+  if(hasShift&&!hasPunch)return '<span class="chip c-none">未打刻</span>';
+  if(!hasShift&&hasPunch)return '<span class="chip c-noshift">シフト外</span>';
+  let out='';
+  if(ss!=null&&ps!=null){const d=ps-ss;if(d>0)out+='<span class="chip c-late">遅刻 +'+d+'分</span>';else if(d<0)out+='<span class="chip c-pre">早出 '+d+'分</span>';}
+  if(se!=null&&pe!=null){const d=pe-se;if(d>0)out+='<span class="chip c-ot">残業 +'+d+'分</span>';else if(d<0)out+='<span class="chip c-early">早退 '+d+'分</span>';}
+  return out||'<span class="muted">—</span>';
+}
+async function loadLog(){
+  const date=document.getElementById('dt').value||jstToday();
+  const tbl=document.getElementById('tbl');tbl.innerHTML='<div class="empty">読み込み中…</div>';
+  let res;
+  try{
+    if(STORE==='bt')res=await rpc(BT_U,BT_AK,'bt_attendance_log',{p_date:date});
+    else res=await rpc(U,AK,'attendance_log',{p_store:STORE,p_date:date});
+  }catch(e){tbl.innerHTML='<div class="empty">読み込みに失敗しました</div>';return;}
+  // 判定（reviews）は main に集約
+  try{REV=await rpc(U,AK,'attendance_review_get',{p_store:STORE,p_date:date})||{};}catch(e){REV={};}
+  const rows=(res&&res.rows)||[];
+  if(!rows.length){tbl.innerHTML='<div class="empty">この日はシフト・打刻がありません</div>';return;}
+  tbl.innerHTML='<table><thead><tr><th>スタッフ</th><th>シフト予定</th><th>実打刻</th><th>差分（参考）</th><th>上司の判定</th></tr></thead><tbody>'+
+    rows.map(r=>{
+      const sh=(hm(r.shift_start)||'—')+' 〜 '+(hm(r.shift_end)||'—');
+      const pu=(hm(r.punch_start)||'—')+' 〜 '+(hm(r.punch_end)||'—');
+      const rv=REV[r.staff]||{};const st=rv.status||'';
+      const nid='n_'+btoa(unescape(encodeURIComponent(r.staff))).replace(/[^a-zA-Z0-9]/g,'');
+      return '<tr><td class="nm">'+esc(r.staff)+(r.symbol&&r.symbol!=='●'?' <span class="muted">('+esc(r.symbol)+')</span>':'')+'</td>'+
+        '<td class="tm">'+sh+'</td><td class="tm">'+pu+'</td><td>'+diffChips(r)+'</td>'+
+        '<td><div class="rev">'+
+          '<button class="rbtn'+(st==='ok'?' ok':'')+'" onclick="review(\''+esc(r.staff)+'\',\'ok\',\''+nid+'\')">✔️確認済</button>'+
+          '<button class="rbtn'+(st==='flag'?' flag':'')+'" onclick="review(\''+esc(r.staff)+'\',\'flag\',\''+nid+'\')">⚠️要確認</button>'+
+          '<input class="rnote" id="'+nid+'" placeholder="メモ" value="'+esc(rv.note||'')+'" onchange="review(\''+esc(r.staff)+'\',\''+(st||'ok')+'\',\''+nid+'\')">'+
+          (rv.by?'<span class="rby">'+esc(rv.by)+'</span>':'')+
+        '</div></td></tr>';
+    }).join('')+'</tbody></table>';
+}
+async function review(staff,status,nid){
+  const date=document.getElementById('dt').value||jstToday();
+  const note=(document.getElementById(nid)||{}).value||'';
+  const r=await rpc(U,AK,'attendance_review_set',{p_store:STORE,p_date:date,p_staff:staff,p_status:status,p_note:note},JWT);
+  if(r&&r.ok){REV[staff]={status:status,note:note,by:'あなた'};loadLog();}else alert('保存できませんでした（再ログインしてください）');
+}
+(function(){const j=localStorage.getItem('attlog_jwt');if(j){JWT=j;fetch(U+'/auth/v1/user',{headers:{apikey:AK,'Authorization':'Bearer '+JWT}}).then(r=>r.ok?r.json():null).then(u=>{if(u){document.getElementById('login').style.display='none';document.getElementById('main').style.display='block';document.getElementById('who').textContent=(u.email||'').split('@')[0]+' でログイン中';document.getElementById('dt').value=jstToday();loadLog();}});}})();
+</script>
+</body></html>
