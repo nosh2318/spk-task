@@ -82,7 +82,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1136';
+var CV='spk-v1137';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=1005').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -14197,6 +14197,7 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
                       <th style={{padding:"4px 6px",textAlign:"center",color:"#94a3b8",fontWeight:600,borderBottom:"1px solid #f1f5f9",width:24}}>曜</th>
                       <th style={{padding:"4px 6px",textAlign:"center",color:"#94a3b8",fontWeight:600,borderBottom:"1px solid #f1f5f9"}}>時間帯</th>
                       <th style={{padding:"4px 6px",textAlign:"right",color:"#94a3b8",fontWeight:600,borderBottom:"1px solid #f1f5f9",width:56}}>実働</th>
+                      <th style={{padding:"4px 6px",textAlign:"right",color:"#94a3b8",fontWeight:600,borderBottom:"1px solid #f1f5f9",width:50}}>休憩</th>
                       {isP&&<th style={{padding:"4px 6px",textAlign:"right",color:"#94a3b8",fontWeight:600,borderBottom:"1px solid #f1f5f9",width:60}}>賃金</th>}
                     </tr>
                   </thead>
@@ -14206,7 +14207,7 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
                       // 各行の実働時間(休憩控除後)を賃金計算と同一ロジックで求める
                       //  ・拘束(gross)=休憩控除なし / 実働(real)=休憩控除後(短時間で0以下なら控除しない=賃金ロジックと一致)
                       //  ・休憩は打刻休憩(effBreakMin)を優先して控除=合計賃金(actualWage)と完全一致(休憩は給与発生しない)
-                      let sumReal=0,anyBreak=false;
+                      let sumReal=0,anyBreak=false,sumBreak=0;
                       const rows=dayRows.map(dy=>{
                         const gross=calcHours(dy.att.start,dy.att.end,0);
                         // この行で実際に控除する休憩: 打刻休憩があればそれ・無ければ計画休憩(bm)=賃金ロジックと一致
@@ -14215,7 +14216,7 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
                         const rWithBreak=calcHours(dy.att.start,dy.att.end,rowBrk);
                         const real=(rowBrk>0&&rWithBreak<=0)?gross:rWithBreak;// 短時間ガード(賃金ロジックと一致)
                         const brDeduct=Math.round((gross-real)*10)/10;// この行で実際に差し引いた休憩(h)
-                        if(brDeduct>0)anyBreak=true;
+                        if(brDeduct>0){anyBreak=true;sumBreak+=brDeduct;}
                         // 賃金列: この行の実働×時給。月給複合の固定日は基本8h=¥0(月給内包)だが8h超の残業は表示する
                         //  固定日残業=時給×1.25全額 / 変動日残業=基本(時給×実働)に割増分(時給×0.25×超過)を加算
                         let wage,otH=0;
@@ -14233,6 +14234,7 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
                         return {dy,gross,real,brDeduct,wage,otH,isFixedIncl:d.isMonthlyPart&&dy.fixed};
                       });
                       sumReal=Math.round(sumReal*10)/10;
+                      sumBreak=Math.round(sumBreak*10)/10;
                       const showGross=anyBreak;// 休憩控除が実際にある行がある人だけ拘束を併記(打刻休憩含む)
                       return <>
                         {rows.map(({dy,gross,real,brDeduct,wage,otH,isFixedIncl})=>{
@@ -14244,8 +14246,8 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
                             <td style={{padding:"3px 6px",textAlign:"center",color:"#475569"}}>{dy.att.start}〜{dy.att.end}</td>
                             <td style={{padding:"3px 6px",textAlign:"right",fontWeight:700,color:"#059669"}}>
                               {real}h
-                              {showGross&&brDeduct>0&&<div style={{fontSize:8,color:"#94a3b8",fontWeight:500,lineHeight:1.2}}>拘束{gross}h<br/>休憩-{brDeduct}h</div>}
                             </td>
+                            <td style={{padding:"3px 6px",textAlign:"right",color:"#94a3b8",fontWeight:500}}>{brDeduct>0?"-"+brDeduct+"h":"-"}</td>
                             {isP&&<td style={{padding:"3px 6px",textAlign:"right",color:(otH>0?"#f97316":"#64748b"),fontWeight:otH>0?700:400}}>
                               ¥{wage.toLocaleString()}
                               {isFixedIncl&&<div style={{fontSize:8,color:otH>0?"#c2410c":"#1d4ed8",fontWeight:600,lineHeight:1.2}}>{otH>0?"月給内包＋残業"+otH+"h":"月給内包"}</div>}
@@ -14257,6 +14259,7 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
                           <td colSpan={2} style={{padding:"4px 6px",textAlign:"right",fontWeight:700,fontSize:11,color:"#374151"}}>合計{showGross?<div style={{fontSize:8,color:"#94a3b8",fontWeight:500}}>(実働)</div>:null}</td>
                           <td style={{padding:"4px 6px",textAlign:"center",fontSize:11,color:"#64748b"}}>{dayRows.length}日</td>
                           <td style={{padding:"4px 6px",textAlign:"right",fontWeight:900,color:"#059669"}}>{sumReal.toFixed(1)}h</td>
+                          <td style={{padding:"4px 6px",textAlign:"right",fontWeight:700,color:"#94a3b8"}}>{sumBreak>0?"-"+sumBreak.toFixed(1)+"h":"-"}</td>
                           {isP&&<td style={{padding:"4px 6px",textAlign:"right",fontWeight:700,color:"#1e40af"}}>¥{(d.isMonthlyPart?(Math.round((si.hourlyWage||0)*(d.monthlyHasHourly?d.actualVarHours:0))+Math.round(d.actualOtPay||0)):d.actualWage).toLocaleString()}</td>}
                         </tr>
                       </>;
@@ -24898,7 +24901,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.604";
+const APP_VERSION="v4.7.605";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
