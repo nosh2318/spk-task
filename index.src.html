@@ -82,7 +82,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1137';
+var CV='spk-v1138';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=1005').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -14480,7 +14480,7 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
 /* ==========================================
    出勤簿（月次カレンダー+ CSV取込）
    ========================================== */
-function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift,reservations}){
+function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift,reservations,onStaffReorder}){
   const todayYM=toYM(today);const[viewYM,setViewYM]=useState(todayYM);const WK=["日","月","火","水","木","金","土"];
   const SYMBOLS=["●","希","公","有","出",""];
   const SHIFT_OPTIONS=[
@@ -14493,21 +14493,22 @@ function ShiftCalendar({shifts,onShiftsChange,today,staff,sbSaveShift,reservatio
   const maxYM='2027-01';const dim=daysInMonth(viewYM);const[y,mo]=viewYM.split("-").map(Number);
   const getShift=(date)=>shifts[date]||[];
   const regularStaff=staff.filter(s=>s.type==="正社員");const partTimeStaff=staff.filter(s=>s.type==="アルバイト");
-  // 出勤簿だけの表示並び替え（端末ローカル保存＝給与/スタッフ管理の並び順には影響しない）
-  const SHIFT_ORDER_LS="spk_shift_staff_order";
-  const[staffOrder,setStaffOrder]=useState(()=>{try{return JSON.parse(localStorage.getItem(SHIFT_ORDER_LS)||"[]");}catch(e){return[];}});
+  // 出勤簿の並び替え＝staffテーブルのsort_orderに永続化（リロード/再描画で保持＋給与タブにも同じ順で反映）。
+  // 正本＝グローバルstaff配列の順。並び替えは「正社員ブロック→アルバイトブロック」に正規化して保存。
+  const regOrdered=regularStaff;const partOrdered=partTimeStaff;
   const[reorderMode,setReorderMode]=useState(false);
-  const _saveStaffOrder=(arr)=>{setStaffOrder(arr);try{localStorage.setItem(SHIFT_ORDER_LS,JSON.stringify(arr));}catch(e){}};
-  const _oidx=(n)=>{const i=staffOrder.indexOf(n);return i<0?9999:i;};
-  const _sortByOrder=(list)=>[...list].sort((a,b)=>_oidx(a.name)-_oidx(b.name));
-  const regOrdered=_sortByOrder(regularStaff);const partOrdered=_sortByOrder(partTimeStaff);
   const moveStaff=(name,dir)=>{
-    const inReg=regularStaff.some(s=>s.name===name);
-    const grp=(inReg?regOrdered:partOrdered).map(s=>s.name);
-    const i=grp.indexOf(name);const j=i+dir;
-    if(j<0||j>=grp.length)return;
+    if(!onStaffReorder)return;
+    const reg=staff.filter(s=>s.type==="正社員");
+    const part=staff.filter(s=>s.type==="アルバイト");
+    const other=staff.filter(s=>s.type!=="正社員"&&s.type!=="アルバイト");
+    const inReg=reg.some(s=>s.name===name);
+    const grp=inReg?reg:part;
+    const i=grp.findIndex(s=>s.name===name);const j=i+dir;
+    if(i<0||j<0||j>=grp.length)return;
     [grp[i],grp[j]]=[grp[j],grp[i]];
-    _saveStaffOrder(inReg?[...grp,...partOrdered.map(s=>s.name)]:[...regOrdered.map(s=>s.name),...grp]);
+    // 正社員→アルバイト→その他 の順で全体を組み直し、sort_orderとして保存（DB永続・給与タブ連動）
+    onStaffReorder([...reg,...part,...other]);
   };
   const _arrowBtns=(name,idx,len)=><span style={{display:"inline-flex",flexDirection:"column",gap:1,marginRight:3,verticalAlign:"middle"}}>
     <button onClick={(e)=>{e.stopPropagation();moveStaff(name,-1);}} disabled={idx===0} style={{fontSize:8,lineHeight:1,padding:"0 2px",border:"1px solid #cbd5e1",borderRadius:2,background:idx===0?"#f1f5f9":"#fff",color:"#475569",cursor:idx===0?"default":"pointer"}}>▲</button>
@@ -24029,7 +24030,7 @@ function App(){
           {tab==="todo"&&window.TodoTab&&React.createElement(window.TodoTab,{store:"spk",sb:sb,label:"札幌店",hostStaff:staff,hostShifts:shifts})}
           {tab==="import"&&<CSVPanel onImport={imp} onUpdatePlaces={updatePlaces} dataCount={data.length} pendingPlaces={pendingPlaces} onSetPendingPlaces={setPendingPlaces} files={csvFiles} setFiles={setCsvFiles} logs={csvLogs} setLogs={setCsvLogs} placeLogs={csvPlaceLogs} setPlaceLogs={setCsvPlaceLogs}/>}
           {tab==="staff"&&<PASGuard label="スタッフ情報"><StaffManager staff={staff} onStaffChange={setStaffSync} onDeleteStaff={async(name)=>{try{await DB.deleteStaff(name);/* 旧名シフト・勤怠を清掃 */if(sb){sb.from("shifts").delete().eq("staff_name",name).then(()=>console.log("[staff] shifts清掃:",name));sb.from("spk_attendance").delete().eq("staff_name",name).then(()=>console.log("[staff] attendance清掃:",name));}}catch(e){console.error("deleteStaff error:",e);}}}/></PASGuard>}
-          {tab==="shift"&&<ShiftCalendar shifts={shifts} onShiftsChange={setShiftsSync} today={today} staff={staff} sbSaveShift={DB.saveShift} reservations={data}/>}
+          {tab==="shift"&&<ShiftCalendar shifts={shifts} onShiftsChange={setShiftsSync} today={today} staff={staff} sbSaveShift={DB.saveShift} reservations={data} onStaffReorder={setStaffSync}/>}
           {tab==="attendance"&&<PASGuard label="給与計算"><AttendanceManager shifts={shifts} staff={staff} today={today} attendance={attendance} onAttendanceChange={setAttendance}/></PASGuard>}
           {tab==="fleet"&&<FleetTimeline data={data} fleet={fleet} onFleetChange={setFleetSync} today={today} maintenance={maintenance} onMaintenanceChange={setMaintenance} vehicles={vehicles} vehicleClasses={vehicleClasses} onAddReservation={addReservation} onBulkAddReservation={bulkAddReservation} onCancelReservation={cancelReservation} onReassignVehicle={reassignVehicle} onUpdateReservation={updateReservation} unassignedReasons={unassignedReasons} onVehicleDetail={(code)=>{setHighlightVehicle(code);setTab("vehicle");setTimeout(()=>setHighlightVehicle(null),3000);}}/>}
           {tab==="vehicle"&&<VehicleTab vehicles={vehicles} onVehiclesChange={setVehiclesSync} vehicleClasses={vehicleClasses} onDeleteVehicle={(code)=>{DB.deleteVehicle(code);const nf={...fleetRefApp.current};let cleaned=false;Object.entries(nf).forEach(([rid,vc])=>{if(vc===code){delete nf[rid];cleaned=true;}});if(cleaned){setFleet(nf);fleetRefApp.current=nf;markLocalChange("fleet");DB.upsertFleet(nf).catch(e=>console.error("fleet cleanup error:",e));}}} hmCars={hmCars} hmCarData={hmCarData} hmLogs={hmLogs} hmClasses={hmClasses} hmReload={hmReload} highlightVehicle={highlightVehicle} maintenance={maintenance} onMaintenanceChange={setMaintenance} data={data} fleet={fleet}/>}
@@ -24901,7 +24902,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.605";
+const APP_VERSION="v4.7.606";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
