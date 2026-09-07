@@ -82,9 +82,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1134';
+var CV='spk-v1135';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=1004').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=1005').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -14202,13 +14202,17 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
                       const bm=d.breakMin||0;
                       // 各行の実働時間(休憩控除後)を賃金計算と同一ロジックで求める
                       //  ・拘束(gross)=休憩控除なし / 実働(real)=休憩控除後(短時間で0以下なら控除しない=賃金ロジックと一致)
-                      let sumReal=0;
+                      //  ・休憩は打刻休憩(effBreakMin)を優先して控除=合計賃金(actualWage)と完全一致(休憩は給与発生しない)
+                      let sumReal=0,anyBreak=false;
                       const rows=dayRows.map(dy=>{
                         const gross=calcHours(dy.att.start,dy.att.end,0);
+                        // この行で実際に控除する休憩: 打刻休憩があればそれ・無ければ計画休憩(bm)=賃金ロジックと一致
+                        const rowBrk=effBreakMin(dy.att,bm);
                         // 賃金に使う実働時間: 月給複合の固定日は月給内包=¥0だが表記は実働で揃える
-                        const rWithBreak=calcHours(dy.att.start,dy.att.end,bm);
-                        const real=(bm>0&&rWithBreak<=0)?gross:rWithBreak;// 短時間ガード(賃金ロジックと一致)
+                        const rWithBreak=calcHours(dy.att.start,dy.att.end,rowBrk);
+                        const real=(rowBrk>0&&rWithBreak<=0)?gross:rWithBreak;// 短時間ガード(賃金ロジックと一致)
                         const brDeduct=Math.round((gross-real)*10)/10;// この行で実際に差し引いた休憩(h)
+                        if(brDeduct>0)anyBreak=true;
                         // 賃金列: この行の実働×時給。月給複合の固定日は基本8h=¥0(月給内包)だが8h超の残業は表示する
                         //  固定日残業=時給×1.25全額 / 変動日残業=基本(時給×実働)に割増分(時給×0.25×超過)を加算
                         let wage,otH=0;
@@ -14226,7 +14230,7 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
                         return {dy,gross,real,brDeduct,wage,otH,isFixedIncl:d.isMonthlyPart&&dy.fixed};
                       });
                       sumReal=Math.round(sumReal*10)/10;
-                      const showGross=bm>0;// 休憩控除がある人だけ拘束を併記
+                      const showGross=anyBreak;// 休憩控除が実際にある行がある人だけ拘束を併記(打刻休憩含む)
                       return <>
                         {rows.map(({dy,gross,real,brDeduct,wage,otH,isFixedIncl})=>{
                           const isSun=dy.dow===0;const isSat=dy.dow===6;
@@ -24891,7 +24895,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.602";
+const APP_VERSION="v4.7.603";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
