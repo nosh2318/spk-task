@@ -24,10 +24,18 @@ button{cursor:pointer;background:#22346a;font-weight:600}button.on{background:#F
 <div class="sub">いつ・誰が・何をしたか。勝手な編集の足跡は色付き、🛡️3号が戻した動きも同じ流れに出ます。</div>
 <div class="stat" id="stat"></div>
 <div class="bar">
-<input id="q" placeholder="予約番号 または 車番(例:8387) で追う" style="flex:1;min-width:150px">
+<input id="q" placeholder="予約番号 / 車番(例:8387) / 予約者名 で追う" style="flex:1;min-width:150px">
 <button id="fWarn">⚠️ 足跡だけ</button>
 <button id="fAll">🔧 全部(生ログ)</button>
 <button id="reload">↻ 更新</button>
+</div>
+<div class="bar" id="kindbar" style="margin-top:6px;flex-wrap:wrap">
+<span style="color:#94a3b8;font-size:12px;align-self:center">種別で絞る:</span>
+<button class="kbtn on" data-k="all">全部</button>
+<button class="kbtn" data-k="wash">🧽洗車</button>
+<button class="kbtn" data-k="del">🚚お届け</button>
+<button class="kbtn" data-k="col">📦回収</button>
+<button class="kbtn" data-k="other">📝その他</button>
 </div></header>
 <div class="wrap"><div id="feed"><div class="empty">読み込み中…（本体APPにログイン済みの端末で開いてください）</div></div></div>
 <script>
@@ -55,7 +63,9 @@ function human(r){ // 一文で「何をしたか」
  return tbl+'の '+(parts.join('、')||'更新');
 }
 function _sbToken(){try{for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.indexOf('sb-')===0&&k.indexOf('auth-token')>=0){let v=null;try{v=JSON.parse(localStorage.getItem(k));}catch(e){continue;}const t=(v&&v.access_token)||(v&&v.currentSession&&v.currentSession.access_token)||(v&&v.session&&v.session.access_token)||(Array.isArray(v)&&typeof v[0]==='string'?v[0]:null);if(t)return t;}}}catch(e){}return null;}
-let onlyWarn=false, showAll=false;
+let onlyWarn=false, showAll=false, taskKind='all';
+// タスクID(row_id)の接頭辞から種別を判定：w-=洗車 / d-=お届け(DEL/PU) / c-=回収(COL/BD) / other_・p-・wash_manual_=その他 / それ以外=予約等
+function ridKind(rid){rid=rid||'';if(rid.indexOf('w-')===0)return'wash';if(rid.indexOf('d-')===0)return'del';if(rid.indexOf('c-')===0)return'col';if(rid.indexOf('other_')===0||rid.indexOf('p-')===0||rid.indexOf('wash_manual_')===0)return'other';return'resv';}
 async function rpc(fn,args){const tok=_sbToken();const H={apikey:C.anon,'Content-Type':'application/json'};if(tok)H.Authorization='Bearer '+tok;const r=await fetch(C.sb+'/rest/v1/rpc/'+fn,{method:'POST',headers:H,body:JSON.stringify(args||{})});if(!r.ok)throw new Error(fn+' '+r.status);return r.json();}
 function whoClass(w){w=(w||'').toLowerCase();if(w.indexOf('gatekeeper')>=0)return'gk';if(w==='customer'||w.indexOf('mypage')>=0)return'cust';if(w.indexOf('staff')===0)return'staff';return'mach';}
 function whoLabel(w){const c=whoClass(w);if(c==='gk')return'🛡️ 3号';if(c==='cust')return'👤 顧客';if(c==='staff'){const p=(w||'').split(':')[1];return '🧑‍🔧 '+(p||'スタッフ');}return'⚙️ システム';}
@@ -72,13 +82,14 @@ async function load(){
   const q=document.getElementById('q').value.trim();
   let led,act;
   if(q){
-    // 予約番号 でも 車番(No) でも引ける（両RPCを呼んでマージ）
-    const [a1,a2]=await Promise.all([rpc('gk_reservation',{p_resv:q}),rpc('gk_by_vehicle',{p_no:q,p_store:C.store})]);
-    const _seen={};led=[];(a1||[]).concat(a2||[]).forEach(r=>{if(r&&!_seen[r.id]){_seen[r.id]=1;led.push(r);}});
-    act=[];
+    // 予約番号 / 車番(No) / 予約者名 のどれでも引ける（全RPCを並列で呼んでマージ）
+    const _rs=await Promise.allSettled([rpc('gk_reservation',{p_resv:q}),rpc('gk_by_vehicle',{p_no:q,p_store:C.store}),rpc('gk_by_name',{p_name:q,p_store:C.store})]);
+    const _seen={};led=[];_rs.forEach(x=>{((x.status==='fulfilled'&&x.value)||[]).forEach(r=>{if(r&&!_seen[r.id]){_seen[r.id]=1;led.push(r);}});});
+    led.sort((a,b)=>b.id-a.id);act=[];
   }
   else{[led,act]=await Promise.all([rpc('gk_ledger',{p_limit:300,p_store:C.store}),rpc('gk_activity',{p_limit:40})]);}
   led=(led||[]).filter(r=>showAll||!isNoise(r));
+  if(taskKind!=='all')led=led.filter(r=>ridKind(r.rid)===taskKind); // 種別で絞る（洗車/お届け/回収/その他）
   let items=led.map(r=>({kind:'led',at:r.at,r}));
   let patrolShown=false;
   (act||[]).forEach(a=>{const real=(a.fixed||0)+(a.reported||0)>0;if(real){items.push({kind:'act',at:a.at,a});}else if(a.note&&!patrolShown){patrolShown=true;items.push({kind:'act',at:a.at,a});}});
@@ -101,5 +112,6 @@ document.getElementById('reload').onclick=load;
 document.getElementById('q').addEventListener('keydown',e=>{if(e.key==='Enter')load();});
 document.getElementById('fWarn').onclick=function(){onlyWarn=!onlyWarn;this.classList.toggle('on',onlyWarn);load();};
 document.getElementById('fAll').onclick=function(){showAll=!showAll;this.classList.toggle('on',showAll);load();};
+document.querySelectorAll('#kindbar .kbtn').forEach(function(b){b.onclick=function(){taskKind=this.getAttribute('data-k');document.querySelectorAll('#kindbar .kbtn').forEach(function(x){x.classList.toggle('on',x===b);});load();};});
 load();setInterval(()=>{if(!document.getElementById('q').value)load();},30000);
 </script></body></html>
