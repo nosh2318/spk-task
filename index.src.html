@@ -82,9 +82,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1141';
+var CV='spk-v1142';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=1008').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=1009').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -13713,6 +13713,7 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
   // 残業イベント
   const[overtimeEvents,setOvertimeEvents]=useState([]);
   const[overtimeSel,setOvertimeSel]=useState("");
+  const[detailSel,setDetailSel]=useState({}); // 給与明細PDF: name→true
   // タイムカード: 時刻修正申請
   const[timecardReqs,setTimecardReqs]=useState([]);
   const loadTimecardReqs=React.useCallback(async()=>{try{setTimecardReqs(await DB.fetchTimecardRequests());}catch(e){}},[]);
@@ -13782,6 +13783,80 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
   const isFixedDay=(dow,fixedDays)=>{
     if(!fixedDays)return false;
     return fixedDays.includes(DOW_NAMES[dow]);
+  };
+
+  // 選択したスタッフの給与明細をまとめてPDF（印刷→PDF保存）
+  const printPayslips=(names)=>{
+    if(!names||!names.length){alert("PDFにするスタッフをチェックしてください");return;}
+    const STORE="札幌デリバリー専門店";
+    const MON=vy+"年"+vmo+"月";
+    const WK=["日","月","火","水","木","金","土"];
+    const esc=(s)=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+    const yen=(n)=>"¥"+Math.round(n||0).toLocaleString();
+    const buildBlock=(nm)=>{
+      const s=staff.find(x=>x.name===nm);if(!s)return"";
+      const d=allStaffData[nm];if(!d)return"";
+      const isP=d.isP;
+      const rows=d.days.filter(dy=>dy.att&&dy.att.approved&&!dy.att.absent&&!(dy.att.memo&&dy.att.memo.startsWith("協議中")));
+      const bm=d.breakMin||0;
+      let sum="";
+      if(isP&&!d.isMonthlyPart){
+        if(d.hasDailyWage){
+          sum+="<tr><td style='color:#1d4ed8'>固定日（日給）</td><td class=r>"+yen(d.dailyWage)+" × "+d.actualFixedDays+"日 = "+yen(d.dailyWage*d.actualFixedDays)+"</td></tr>";
+          sum+="<tr><td style='color:#92400e'>変動日（時給）</td><td class=r>"+yen(d.hourlyWage)+" × "+d.actualVarHours+"h = "+yen(d.hourlyWage*d.actualVarHours)+"</td></tr>";
+        }else{
+          sum+="<tr><td>時給</td><td class=r>"+yen(s.hourlyWage||0)+" × "+d.actualHours.toFixed(1)+"h</td></tr>";
+        }
+        sum+="<tr><td>基本給</td><td class=r><b>"+yen(d.actualWage)+"</b></td></tr>";
+      }else{
+        sum+="<tr><td>"+(d.monthlyHasHourly?"固定給（月給・"+esc(s.fixedDays||"")+"）":"月給")+"</td><td class=r><b>"+yen(s.monthlySalary||0)+"</b></td></tr>";
+        if(d.monthlyHasHourly){
+          sum+="<tr><td style='color:#92400e'>変動分（ヘルプ・時給）</td><td class=r>"+yen(s.hourlyWage||0)+" × "+d.actualVarHours+"h = "+yen((s.hourlyWage||0)*d.actualVarHours)+"</td></tr>";
+          sum+="<tr><td>基本給合計</td><td class=r><b>"+yen(d.actualWage)+"</b></td></tr>";
+        }
+      }
+      if(d.actualOtPay>0)sum+="<tr><td>早出/残業割増（8h超・基本給に含む）</td><td class=r>"+d.actualOtH.toFixed(1)+"h ＝ +"+yen(d.actualOtPay)+"</td></tr>";
+      if(d.otHours>0)sum+="<tr><td>残業（ログ）</td><td class=r>"+d.otEvents.length+"件 / "+d.otHours.toFixed(1)+"h</td></tr>";
+      if(d.hwHours>0)sum+="<tr><td>休日出勤（ログ）</td><td class=r>"+d.hwDays+"日 / "+d.hwEvents.length+"件 / "+d.hwHours.toFixed(1)+"h</td></tr>";
+      sum+="<tr><td>交通費 ("+yen(s.transportCost||0)+"×"+d.actualDays+"日)</td><td class=r>"+yen(d.actualTransport)+"</td></tr>";
+      let daily="";
+      rows.forEach(dy=>{
+        const gross=calcHours(dy.att.start,dy.att.end,0);
+        const rowBrk=effBreakMin(dy.att,bm);
+        const rWithBreak=calcHours(dy.att.start,dy.att.end,rowBrk);
+        const real=(rowBrk>0&&rWithBreak<=0)?gross:rWithBreak;
+        const dc=dy.dow===0?"#dc2626":dy.dow===6?"#2563eb":"#374151";
+        daily+="<tr><td style='color:"+dc+"'>"+dy.day+"</td><td style='color:"+dc+"'>"+WK[dy.dow]+"</td><td>"+esc(dy.att.start)+"〜"+esc(dy.att.end)+"</td><td class=r>"+real+"h</td></tr>";
+      });
+      const dailyFoot="<tr class=ft><td>合計</td><td>"+rows.length+"日</td><td></td><td class=r>"+d.actualHours.toFixed(1)+"h</td></tr>";
+      return "<section class=pay>"+
+        "<div class=hd><div class=ttl>給与明細</div><div class=meta>"+esc(STORE)+" ／ "+MON+"</div></div>"+
+        "<div class=nm><span class=n>"+esc(nm)+"</span><span class=tag>"+esc(s.type||"")+"</span>"+
+        "<span class=days>"+d.actualDays+"日 / "+d.actualHours.toFixed(1)+"h"+(d.absentDays>0?" (欠勤"+d.absentDays+")":"")+"</span></div>"+
+        "<table class=sum>"+sum+"</table>"+
+        "<div class=tot><span>支給額</span><span class=amt>"+yen(d.actualTotal)+"</span></div>"+
+        (daily?("<div class=sub>日別勤怠内訳（実働）</div><table class=grid><thead><tr><th>日</th><th>曜</th><th>時間帯</th><th class=r>実働</th></tr></thead><tbody>"+daily+dailyFoot+"</tbody></table>"):"")+
+        (isP?"<div class=note>※ 賃金は基本給合計をご確認ください（休憩控除後の実働で計算）</div>":"")+
+        "</section>";
+    };
+    const body=names.map(buildBlock).join("");
+    const html="<!doctype html><html><head><meta charset=utf-8><title>給与明細 "+MON+"</title><style>"+
+      "*{box-sizing:border-box}body{font-family:-apple-system,'Hiragino Sans',sans-serif;margin:0;color:#1e293b;background:#fff}"+
+      ".pay{padding:20px 24px;page-break-after:always}"+
+      ".hd{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #1e293b;padding-bottom:8px;margin-bottom:12px}"+
+      ".ttl{font-size:20px;font-weight:800}.meta{font-size:13px;color:#475569}"+
+      ".nm{display:flex;align-items:center;gap:10px;margin-bottom:10px}.nm .n{font-size:16px;font-weight:800}.nm .tag{font-size:11px;font-weight:700;padding:2px 10px;border-radius:12px;background:#fef3c7;color:#92400e}.nm .days{margin-left:auto;font-size:12px;color:#64748b}"+
+      "table{width:100%;border-collapse:collapse;font-size:13px}"+
+      ".sum td{padding:6px 2px;border-bottom:1px solid #f1f5f9}.sum td.r{text-align:right;font-weight:600}"+
+      ".tot{display:flex;justify-content:space-between;align-items:center;margin:8px 0 4px;padding-top:8px;border-top:2px solid #e2e8f0}.tot span{font-weight:900;font-size:15px}.tot .amt{font-size:20px;color:#1e40af}"+
+      ".sub{font-size:12px;font-weight:700;color:#64748b;margin:14px 0 6px}.note{font-size:10px;color:#94a3b8;margin-top:6px}"+
+      ".grid th{background:#f8fafc;color:#64748b;font-weight:600;padding:5px 6px;border-bottom:1px solid #e2e8f0;font-size:11px}.grid td{padding:4px 6px;border-bottom:1px solid #f8fafc;font-size:12px;text-align:center}.grid .r{text-align:right}.grid tr.ft td{background:#f0fdf4;font-weight:800;border-top:1px solid #bbf7d0;color:#059669}"+
+      "@media print{.pay{padding:12mm}}"+
+      "</style></head><body>"+body+"</body></html>";
+    const w=window.open("","_blank");
+    if(!w){alert("ポップアップがブロックされました。ブラウザでポップアップを許可してください。");return;}
+    w.document.write(html);w.document.close();w.focus();
+    setTimeout(()=>{try{w.print();}catch(e){}},500);
   };
 
   // 全スタッフの月間データ生成
@@ -14201,13 +14276,24 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
     </div>}
 
     {/* ====== 給与明細タブ ====== */}
-    {subTab==="detail"&&<div>
-      {staff.filter(s=>staffFilter==="all"?true:staffFilter==="part"?s.type==="アルバイト":s.type==="正社員").map(s=>{
+    {subTab==="detail"&&(()=>{
+      const detailStaff=staff.filter(s=>staffFilter==="all"?true:staffFilter==="part"?s.type==="アルバイト":s.type==="正社員").filter(s=>allStaffData[s.name]);
+      const selNames=detailStaff.filter(s=>detailSel[s.name]).map(s=>s.name);
+      const allOn=detailStaff.length>0&&selNames.length===detailStaff.length;
+      return <div>
+      {/* PDF出力ツールバー */}
+      <div style={{...cardS,padding:12,marginBottom:12,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+        <button onClick={()=>{const nx={};if(!allOn)detailStaff.forEach(s=>{nx[s.name]=true;});setDetailSel(nx);}} style={{padding:"7px 12px",fontSize:12,fontWeight:700,borderRadius:8,border:"1px solid #cbd5e1",background:allOn?"#e0e7ff":"#fff",color:"#334155",cursor:"pointer"}}>{allOn?"全解除":"全選択"}</button>
+        <span style={{fontSize:12,color:"#64748b"}}>選択 <b style={{color:"#1e40af"}}>{selNames.length}</b> 名</span>
+        <button onClick={()=>printPayslips(selNames)} disabled={!selNames.length} style={{marginLeft:"auto",padding:"8px 16px",fontSize:13,fontWeight:800,borderRadius:8,border:"none",background:selNames.length?"#1e40af":"#cbd5e1",color:"#fff",cursor:selNames.length?"pointer":"default"}}>📄 選択した明細をPDF</button>
+      </div>
+      {detailStaff.map(s=>{
         const d=allStaffData[s.name];if(!d)return null;
-        const si=s;const isP=d.isP;
-        return <div key={s.name} style={cardS}>
+        const si=s;const isP=d.isP;const checked=!!detailSel[s.name];
+        return <div key={s.name} style={{...cardS,border:checked?"2px solid #1e40af":cardS.border}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
             <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <input type="checkbox" checked={checked} onChange={e=>setDetailSel(p=>({...p,[s.name]:e.target.checked}))} style={{width:18,height:18,cursor:"pointer"}}/>
               <span style={{fontSize:14,fontWeight:800}}>{s.name}</span>
               <span style={{fontSize:10,fontWeight:700,padding:"2px 10px",borderRadius:12,background:isP?"#fef3c7":"#dbeafe",color:isP?"#92400e":"#1d4ed8"}}>{s.type}</span>
             </div>
@@ -14424,7 +14510,8 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
           </div>
         </div>;
       })}
-    </div>}
+    </div>;
+    })()}
 
     {/* ====== 残業・休日出勤 統合タブ ====== */}
     {subTab==="overtime"&&(()=>{
@@ -24995,7 +25082,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.609";
+const APP_VERSION="v4.7.610";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
