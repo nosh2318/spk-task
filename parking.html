@@ -161,6 +161,7 @@
   <div class="exsec" id="missSec"><div class="exh missh">❓ 所在不明の車両<span style="font-size:10px;font-weight:800;color:#94a3b8;margin-left:6px">貸出なし・駐車場になし</span><span class="cnt" id="missCnt">0</span></div><div id="missList" class="stlist"></div></div>
   <div class="exsec"><div class="exh">🛴 モビリティ（置き場所）</div><div id="mobList"></div></div>
   <div class="exsec"><div class="exh">📦 倉庫車（荷物積載中）<button class="exadd" onclick="addWh()">＋ 追加</button></div><div id="whList"></div></div>
+  <div class="exsec"><div class="exh">🪑 レンタルシート在庫（超過分・RCS/RJS）<button class="exadd" onclick="addRental()">＋ 追加</button></div><div id="rentalList"></div></div>
 </div>
 <div class="guidebar" id="guidebar">
   <button class="gcancel" onclick="cancelGuide()">やめる</button>
@@ -195,6 +196,7 @@ let OUT_NOW=new Set(); // 今 貸出中(出発済み・返却前)の車id
 let OUT_LIST=[]; // 今 貸出中の車両 一覧(表示用) {id,n,p}
 let DEPART_TODAY=new Set(); // 本日出発予定(貸出日=本日・予約データ参照)の車id ※当日貸出・当日返却の車もあるので注意
 let MOBILITY={}, WAREHOUSE={}, PLAN={}; // parking_meta (PLAN=返却予定の手動割当 carId->spotId)
+let RENTAL=[]; // rental_seats（レンタルシート在庫・期間レコード {id,start_date,end_date,type(RCS/RJS),qty,vehicle_id,note}）★OPシートと同一テーブル(単一ソース)・在庫アラートには含めない表示専用
 const MOB_ITEMS=[{id:"bicycle",name:"自転車",icon:"🚲"},{id:"ebike",name:"電動自転車",icon:"⚡"},{id:"escooter",name:"キックボード",icon:"🛴"}];
 const MOB_PLACES=["使用中","オフィス","BIGスロット","充電中"];
 const MOB_PLACE_STYLE={"使用中":{bg:"#7c2d12",c:"#fdba74"},"オフィス":{bg:"#1e3a5f",c:"#93c5fd"},"BIGスロット":{bg:"#14532d",c:"#86efac"},"充電中":{bg:"#4c1d95",c:"#c4b5fd"}};
@@ -263,6 +265,7 @@ function render(){
   $("lotMap").innerHTML=html;
   renderStatus();
   renderExtra();
+  renderRental();
   renderModal();
 }
 // 🚗 貸出中の車両 ＋ ❓ 所在不明の車両
@@ -285,7 +288,10 @@ function renderExtra(){
     return `<div class="mobrow ${pl?'':'unset'}" onclick="editMob('${m.id}')"><span class="mi">${m.icon}</span><div><div class="mn">${m.name}</div>${st.note?`<div class="mnote">${st.note}</div>`:''}</div><span class="mp" style="margin-left:auto;background:${stl.bg};color:${stl.c};border-radius:7px;padding:3px 10px;font-weight:900">${pl||"⚠️未設定"}</span><span class="medit">✎</span></div>`;
   }).join("");
   const whIds=Object.keys(WAREHOUSE);
-  $("whList").innerHTML=whIds.length?whIds.map(id=>{const c=car(id);const w=WAREHOUSE[id]||{};const seats=[];if(w.child)seats.push('CS×'+w.child);if(w.junior)seats.push('JS×'+w.junior);const seatStr=seats.length?`<div class="wn" style="color:#7dd3fc;font-weight:700">${seats.join('　')}</div>`:'';return `<div class="whrow"><span class="mi">📦</span><div><div class="wc">${c.n} ${c.p}</div>${seatStr}${w.note?`<div class="wn">${w.note}</div>`:(seats.length?'':'<div class="wn">荷物積載中</div>')}</div><button class="wx" style="background:#334155;color:#7dd3fc" onclick="editWh('${id}')">📝</button><button class="wx" onclick="delWh('${id}')">解除</button></div>`;}).join(""):'<div class="emp">なし</div>';
+  $("whList").innerHTML=whIds.length?whIds.map(id=>{const c=car(id);const w=WAREHOUSE[id]||{};const seats=[];if(w.child)seats.push('CS×'+w.child);if(w.junior)seats.push('JS×'+w.junior);const seatStr=seats.length?`<div class="wn" style="color:#7dd3fc;font-weight:700">${seats.join('　')}</div>`:'';
+    /* ★2026-09-10 A案：倉庫車のCS/JS隣に、この車に紐づく本日アクティブなレンタルシート(RCS/RJS)も並べて表示（別軸・表示専用） */
+    const rt=rentalForCarToday(id);const rentArr=[];if(rt.rcs)rentArr.push('RCS×'+rt.rcs);if(rt.rjs)rentArr.push('RJS×'+rt.rjs);const rentStr=rentArr.length?`<div class="wn" style="color:#fcd34d;font-weight:700">🪑 ${rentArr.join('　')}</div>`:'';
+    return `<div class="whrow"><span class="mi">📦</span><div><div class="wc">${c.n} ${c.p}</div>${seatStr}${rentStr}${w.note?`<div class="wn">${w.note}</div>`:(seats.length?'':'<div class="wn">荷物積載中</div>')}</div><button class="wx" style="background:#334155;color:#7dd3fc" onclick="editWh('${id}')">📝</button><button class="wx" onclick="delWh('${id}')">解除</button></div>`;}).join(""):'<div class="emp">なし</div>';
 }
 function editMob(id){
   const m=MOB_ITEMS.find(x=>x.id===id);const st=MOBILITY[id]||{};
@@ -339,6 +345,48 @@ async function saveWh(id){
 async function delWh(id){delete WAREHOUSE[id];renderExtra();await saveMeta("warehouse",WAREHOUSE);toast("解除しました");}
 async function saveMeta(k,obj){try{await sb.from("parking_meta").upsert({k,v:obj,updated_at:new Date().toISOString()},{onConflict:"k"});}catch(e){console.log("saveMeta err",e);toast("⚠️保存失敗");}}
 async function loadMeta(){try{const{data}=await sb.from("parking_meta").select("k,v");if(data){data.forEach(r=>{if(r.k==="mobility")MOBILITY=r.v||{};if(r.k==="warehouse")WAREHOUSE=r.v||{};if(r.k==="plan")PLAN=r.v||{};});}}catch(e){console.log("loadMeta err",e);}}
+
+/* ===== 🪑 レンタルシート在庫（RCS/RJS・OPシートと同一テーブル rental_seats） =====
+ * ★2026-09-10 予約超過時にレンタルするシートを日程ごとに在庫登録・見える化。常設でなくレンタル期間のみ表示。
+ * ★既存の倉庫車CS/JS(WAREHOUSE)とは別軸。在庫不足アラート判定には一切含めない＝表示専用。単一ソース=rental_seats。*/
+function todayStr(){const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");}
+async function loadRental(){try{const{data}=await sb.from("rental_seats").select("*").order("start_date");RENTAL=data||[];}catch(e){console.log("loadRental err",e);}}
+function rentalActiveToday(){const t=todayStr();return RENTAL.filter(r=>String(r.start_date)<=t&&String(r.end_date)>=t);}
+// 車IDに紐づく本日アクティブのRCS/RJS合計（A案：倉庫車バッジに並べる用）
+function rentalForCarToday(carId){const t=todayStr();let rcs=0,rjs=0;RENTAL.forEach(r=>{if(r.vehicle_id===carId&&String(r.start_date)<=t&&String(r.end_date)>=t){if(r.type==="RCS")rcs+=+(r.qty||0);else if(r.type==="RJS")rjs+=+(r.qty||0);}});return{rcs,rjs};}
+function renderRental(){
+  const t=todayStr();
+  const upcoming=RENTAL.filter(r=>String(r.end_date)>=t).slice().sort((a,b)=>String(a.start_date).localeCompare(String(b.start_date)));
+  if(!upcoming.length){$("rentalList").innerHTML='<div class="emp">なし（予約超過でレンタルするシートを「＋追加」で日程登録）</div>';return;}
+  const act=rentalActiveToday();const totRcs=act.filter(r=>r.type==="RCS").reduce((s,r)=>s+ +(r.qty||0),0),totRjs=act.filter(r=>r.type==="RJS").reduce((s,r)=>s+ +(r.qty||0),0);
+  let head=`<div class="wn" style="color:#fcd34d;font-weight:800;margin-bottom:4px">本日レンタル中 RCS×${totRcs} RJS×${totRjs}</div>`;
+  $("rentalList").innerHTML=head+upcoming.map(r=>{
+    const isAct=String(r.start_date)<=t&&String(r.end_date)>=t;
+    const c=r.vehicle_id?car(r.vehicle_id):null;const vstr=(c&&c.n)?`　🚗${c.n} ${c.p||''}`:(r.vehicle_id?`　🚗${r.vehicle_id}`:'');
+    return `<div class="whrow"${isAct?' style="border-left:3px solid #f59e0b"':''}><span class="mi">🪑</span><div><div class="wc" style="color:#fcd34d">${r.type}×${r.qty} ${isAct?'<span style="font-size:9px;color:#86efac;font-weight:800">●本日レンタル中</span>':''}</div><div class="wn">${r.start_date}〜${r.end_date}${vstr}${r.note?'　'+r.note:''}</div></div><button class="wx" onclick="delRental('${r.id}')">削除</button></div>`;
+  }).join("");
+}
+function rentalCarOpts(){const list=ROSTER.slice().sort((a,b)=>(a.n||'').localeCompare(b.n||''));return '<option value="">未指定（車両に紐づけない）</option>'+list.map(c=>`<option value="${c.n}-${c.p}">${c.n} ${c.p}</option>`).join("");}
+function addRental(){
+  const t=todayStr();
+  openSheet(`<h3>🪑 レンタルシート在庫を追加</h3><div class="sd">予約超過でレンタルするシートを日程ごとに登録します（在庫アラートには含めません＝表示専用）。</div>`+
+    `<div class="fm"><label>期間（開始〜終了）</label><div style="display:flex;gap:8px;align-items:center"><input type="date" id="rsStart" value="${t}" style="flex:1;padding:10px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px"/><span style="color:#94a3b8">〜</span><input type="date" id="rsEnd" value="${t}" style="flex:1;padding:10px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px"/></div>`+
+    `<div style="display:flex;gap:8px;margin-top:8px"><div style="flex:2"><label>種類</label><select id="rsType" style="width:100%;padding:10px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;font-weight:700"><option value="RCS">RCS レンタルチャイルドシート</option><option value="RJS">RJS レンタルジュニアシート</option></select></div><div style="flex:1"><label>台数</label><select id="rsQty" style="width:100%;padding:10px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;font-weight:700">${seatOpts(1)}</select></div></div>`+
+    `<label style="margin-top:8px;display:block">積載車両（任意）</label><select id="rsVeh" style="width:100%;padding:10px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px">${rentalCarOpts()}</select>`+
+    `<input id="rsNote" placeholder="メモ（任意）" style="width:100%;margin-top:8px;padding:10px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:13px"/></div>`+
+    `<div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button><button class="btn" style="background:#d97706;color:#fff;font-weight:900" onclick="saveRental()">登録</button></div>`);
+}
+async function saveRental(){
+  const start=(document.getElementById("rsStart")||{}).value||"",end=(document.getElementById("rsEnd")||{}).value||"";
+  const type=(document.getElementById("rsType")||{}).value||"RCS",qty=+((document.getElementById("rsQty")||{}).value||0);
+  const veh=(document.getElementById("rsVeh")||{}).value||"",note=((document.getElementById("rsNote")||{}).value||"").trim();
+  if(!start||!end){toast("⚠️期間を入力してください");return;}
+  if(end<start){toast("⚠️終了日は開始日以降に");return;}
+  try{const{error}=await sb.from("rental_seats").insert({start_date:start,end_date:end,type,qty:Math.max(0,qty),vehicle_id:veh||null,note:note||null});if(error)throw error;
+    closeSheet();await loadRental();renderRental();toast("🪑 "+type+"×"+qty+" を登録");
+  }catch(e){toast("⚠️登録失敗");console.log("saveRental err",e);}
+}
+async function delRental(id){if(!confirm("このレンタルシート在庫を削除しますか？"))return;try{await sb.from("rental_seats").delete().eq("id",id);await loadRental();renderRental();toast("削除しました");}catch(e){toast("⚠️削除失敗");console.log("delRental err",e);}}
 function renderModal(){$("modalRoot").innerHTML=modal?`<div class="scrim" onclick="if(event.target===this&&!modalLock)closeSheet()"><div class="sheet">${modal}</div></div>`:"";}
 /* ★2026-08-16 入庫時の必須ステップ: 鍵を車内に置くか(車内鍵あり/なし)を必ず記録。背景タップで閉じられない(modalLock) */
 function keyBadge(sp){if(!sp||!sp.carId)return"";if(sp.keyInside===true)return'<span class="keyb kin">🔑車内鍵あり</span>';if(sp.keyInside===false)return'<span class="keyb kout">🚫車内鍵なし</span>';return'<span class="keyb kunk">❔鍵未確認</span>';}
@@ -539,13 +587,14 @@ async function loadDeparts(){
     const d=await r.json();if(Array.isArray(d))DEPART_TODAY=new Set(d.map(x=>x.name+"-"+x.no));}catch(e){console.log("departs err",e);}
 }
 async function boot(){
-  await Promise.all([loadRoster(),loadSpots(),loadReturns(),loadMeta(),loadOutNow(),loadDeparts()]);
+  await Promise.all([loadRoster(),loadSpots(),loadReturns(),loadMeta(),loadRental(),loadOutNow(),loadDeparts()]);
   $("st").textContent="🟢 稼働中";render();
   // リアルタイム（他端末の入出庫・モビリティ/倉庫車ステータスを即共有）
   sb.channel("pk-rt").on("postgres_changes",{event:"*",schema:"public",table:"parking_spots"},async()=>{await loadSpots();render();}).subscribe();
   sb.channel("pk-meta").on("postgres_changes",{event:"*",schema:"public",table:"parking_meta"},async()=>{await loadMeta();render();}).subscribe();
+  sb.channel("pk-rental").on("postgres_changes",{event:"*",schema:"public",table:"rental_seats"},async()=>{await loadRental();render();}).subscribe();
   // 予備ポーリング（15秒）
-  setInterval(async()=>{if(document.visibilityState==="visible"){await Promise.all([loadSpots(),loadReturns(),loadMeta(),loadOutNow()]);render();}},15000);
+  setInterval(async()=>{if(document.visibilityState==="visible"){await Promise.all([loadSpots(),loadReturns(),loadMeta(),loadRental(),loadOutNow()]);render();}},15000);
   document.addEventListener("visibilitychange",async()=>{if(document.visibilityState==="visible"){await loadSpots();render();}});
 }
 boot();
