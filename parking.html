@@ -202,6 +202,11 @@ const MOB_ITEMS=[{id:"bicycle",name:"自転車",icon:"🚲"},{id:"ebike",name:"�
 const MOB_PLACES=["使用中","オフィス","BIGスロット","充電中"];
 const MOB_PLACE_STYLE={"使用中":{bg:"#7c2d12",c:"#fdba74"},"オフィス":{bg:"#1e3a5f",c:"#93c5fd"},"BIGスロット":{bg:"#14532d",c:"#86efac"},"充電中":{bg:"#4c1d95",c:"#c4b5fd"}};
 let guideCar=null, modal=null, busy=false, modalLock=false;
+/* ★2026-09-10 入庫の必須フロー(洗車→鍵→シート)や台数選択の入力中に、15秒ポーリング/リアルタイム更新のrender()が走ると
+   スマホの<select>ドロップダウンが閉じて選択が飛ぶ(＝入力リセット)。モーダル表示中は背景更新を保留し、閉じた時に一度だけ反映する */
+let _pendingReload=false;
+async function reloadAll(){await Promise.all([loadSpots(),loadReturns(),loadMeta(),loadRental(),loadOutNow()]);render();}
+function bgReload(){ if(modal){_pendingReload=true;return;} reloadAll(); }
 // スタッフ車両は配車表RPCに無いので常に選択肢に含める（どのタイミングでも出る）
 const STAFF_CARS=[
   {id:"スタッフ車両-長谷川",n:"長谷川",p:"スタッフ車",c:"H"},
@@ -415,7 +420,7 @@ async function dbSetWash(spotId,val){try{await sb.from("parking_spots").update({
 /* ★2026-08-16 管理者一括: 駐車中でまだ車内鍵ありでない車を一括で「鍵を車内に入れた(車内鍵あり)」に記録。1枠ずつ書込(DBトリガー安全) */
 async function bulkKeyIn(){const t=SPOTS.filter(s=>s.carId&&s.keyInside!==true);if(!t.length){toast("対象なし（駐車中は全て車内鍵あり）");return;}if(!confirm(`駐車中の ${t.length}台 すべての鍵を「車内に入れた（車内鍵あり）」に記録します。よろしいですか？`))return;t.forEach(s=>s.keyInside=true);render();for(const s of t){await dbSetKeyInside(s.id,true);}toast(`🔑 ${t.length}台を車内鍵ありに記録`);}
 function openSheet(h){modal=h;renderModal();}
-function closeSheet(){modal=null;renderModal();}
+function closeSheet(){modal=null;renderModal();if(_pendingReload){_pendingReload=false;/* 保存処理(dbSet/saveMeta)が確定するのを待ってから反映。連鎖モーダル(洗車→鍵→シート)中は再度開くのでスキップ */setTimeout(()=>{if(!modal)reloadAll();},1500);}}
 function toast(m){const t=$("toast");t.textContent=m;t.classList.add("on");setTimeout(()=>t.classList.remove("on"),1700);}
 function burst(el){const r=el.getBoundingClientRect();const cx=r.left+r.width/2,cy=r.top+r.height/2;const em=["✨","🎉","⭐","💫","🟡"];for(let k=0;k<14;k++){const p=document.createElement("div");p.className="particle";p.textContent=em[k%5];const a=Math.PI*2*k/14,d=50+Math.random()*70;p.style.left=cx+"px";p.style.top=cy+"px";p.style.setProperty("--dx",Math.cos(a)*d+"px");p.style.setProperty("--dy",Math.sin(a)*d-30+"px");p.style.setProperty("--rot",Math.random()*220-110+"deg");document.body.appendChild(p);setTimeout(()=>p.remove(),1000);}}
 function goodJob(sub){$("gjSub").textContent=sub||"";const g=$("goodjob");g.classList.remove("on");void g.offsetWidth;g.classList.add("on");setTimeout(()=>g.classList.remove("on"),1500);}
@@ -591,12 +596,13 @@ async function boot(){
   await Promise.all([loadRoster(),loadSpots(),loadReturns(),loadMeta(),loadRental(),loadOutNow(),loadDeparts()]);
   $("st").textContent="🟢 稼働中";render();
   // リアルタイム（他端末の入出庫・モビリティ/倉庫車ステータスを即共有）
-  sb.channel("pk-rt").on("postgres_changes",{event:"*",schema:"public",table:"parking_spots"},async()=>{await loadSpots();render();}).subscribe();
-  sb.channel("pk-meta").on("postgres_changes",{event:"*",schema:"public",table:"parking_meta"},async()=>{await loadMeta();render();}).subscribe();
-  sb.channel("pk-rental").on("postgres_changes",{event:"*",schema:"public",table:"rental_seats"},async()=>{await loadRental();render();}).subscribe();
+  // ★モーダル表示中(入庫フロー/台数選択の入力中)は更新を保留し、閉じた時に反映＝入力途中でリセットさせない
+  sb.channel("pk-rt").on("postgres_changes",{event:"*",schema:"public",table:"parking_spots"},async()=>{if(modal){_pendingReload=true;return;}await loadSpots();render();}).subscribe();
+  sb.channel("pk-meta").on("postgres_changes",{event:"*",schema:"public",table:"parking_meta"},async()=>{if(modal){_pendingReload=true;return;}await loadMeta();render();}).subscribe();
+  sb.channel("pk-rental").on("postgres_changes",{event:"*",schema:"public",table:"rental_seats"},async()=>{if(modal){_pendingReload=true;return;}await loadRental();render();}).subscribe();
   // 予備ポーリング（15秒）
-  setInterval(async()=>{if(document.visibilityState==="visible"){await Promise.all([loadSpots(),loadReturns(),loadMeta(),loadRental(),loadOutNow()]);render();}},15000);
-  document.addEventListener("visibilitychange",async()=>{if(document.visibilityState==="visible"){await loadSpots();render();}});
+  setInterval(async()=>{if(document.visibilityState!=="visible")return;if(modal){_pendingReload=true;return;}await Promise.all([loadSpots(),loadReturns(),loadMeta(),loadRental(),loadOutNow()]);render();},15000);
+  document.addEventListener("visibilitychange",async()=>{if(document.visibilityState==="visible"){if(modal){_pendingReload=true;return;}await loadSpots();render();}});
 }
 boot();
 </script>
