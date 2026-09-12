@@ -394,6 +394,9 @@ function processMessage_(message, dryRun) {
     return null;
   }
 
+  // ★2026-09-09 LEDGER-ONE(横展開): 取込時に生メールを台帳へ丸ごと保存(不変・解釈しない写し)。表示はここから導出。
+  saveRawEmailSpk_(reservation, message, body);
+
   var existingRow = reservationExists_(reservation.id);
   if (existingRow) {
     var existSt = existingRow.status || '';
@@ -408,6 +411,7 @@ function processMessage_(message, dryRun) {
         if (keys[ki].charAt(0) !== '_') updateData[keys[ki]] = reservation[keys[ki]];
       }
       updateData.status = 'confirmed';
+      updateData.changed_json = JSON.stringify({_src:'system'}); // ★LEDGER-ONE 出典タグ(再取込=system)
       var updated = supabaseUpdate_('reservations', 'id=eq.' + encodeURIComponent(reservation.id), updateData);
       if (!updated) {
         return {type:'failure', id:reservation.id, ota:otaCode, name:reservation.name, reason:'再予約DB更新失敗'};
@@ -1314,6 +1318,7 @@ function insertReservation_(reservation) {
   for (var i = 0; i < keys.length; i++) {
     if (keys[i].charAt(0) !== '_') row[keys[i]] = reservation[keys[i]];
   }
+  row.changed_json = JSON.stringify({_src:'system'}); // ★LEDGER-ONE 出典タグ(OTA取込=system)：予約側の戻り検知/関所用
   var result = supabasePost_('reservations', row);
   if (result) Logger.log('Inserted reservation: ' + reservation.id);
   return result;
@@ -4793,6 +4798,65 @@ function bulkReprocessPatternB() {
  * Gmail検索を伴うため CLAUDE.md ルール「1日1関数 / 100件以下」を遵守。今回対象は最大13件。
  * GASエディタで関数選択 → ▶️実行（1回のみ）
  */
+// ============================================================
+// ★2026-09-09 LEDGER-ONE(横展開): 札幌 生メール台帳(spk_reservation_emails)
+// メールを解釈せず丸ごと保存(不変)。取込のたびに保存＋既存は全コピ(backfill)。表示/監査はここから導出。
+// ============================================================
+function saveRawEmailSpk_(res, message, body) {
+  try {
+    if (!res || !res.id || !message) return;
+    var row = {
+      reservation_id: res.id, ota: res.ota || '', message_id: message.getId(),
+      subject: message.getSubject(), raw_body: body || message.getPlainBody(),
+      received_at: message.getDate().toISOString(), updated_at: new Date().toISOString()
+    };
+    UrlFetchApp.fetch(getSupabaseUrl_() + '/rest/v1/spk_reservation_emails', {
+      method: 'post',
+      headers: { 'apikey': getSupabaseKey_(), 'Authorization': 'Bearer ' + getSupabaseKey_(),
+        'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates' },
+      payload: JSON.stringify(row), muteHttpExceptions: true
+    });
+  } catch (e) { Logger.log('saveRawEmailSpk_ error: ' + e.message); }
+}
+
+// 既存(札幌)予約の生メールを台帳へ全コピ。台帳に既にあればスキップ・6分制限で切れても再実行で続き。
+function backfillRawEmailsSpk() {
+  var since = Utilities.formatDate(new Date(Date.now() - 14 * 86400000), 'Asia/Tokyo', 'yyyy-MM-dd');
+  var rows = supabaseGet_('reservations',
+    'return_date=gte.' + since + '&status=neq.cancelled&select=id,ota&order=return_date.asc&limit=2000') || [];
+  var saved = 0, already = 0, nf = 0, err = 0;
+  for (var i = 0; i < rows.length; i++) {
+    var rid = rows[i].id;
+    try {
+      var ex = null;
+      try { ex = supabaseGet_('spk_reservation_emails', 'reservation_id=eq.' + encodeURIComponent(rid) + '&select=reservation_id'); } catch (e2) { ex = null; }
+      if (ex && ex.length) { already++; continue; }
+      var fromClause = Object.values(OTA_SENDERS).map(function(s) { return 'from:' + s; }).join(' OR ');
+      var threads = GmailApp.search('(' + fromClause + ') "' + rid + '"', 0, 10);
+      if (!threads.length) threads = GmailApp.search('"' + rid + '"', 0, 10);
+      var msg = null;
+      for (var t = 0; t < threads.length && !msg; t++) {
+        var ms = threads[t].getMessages();
+        for (var j = 0; j < ms.length; j++) {
+          var b = ms[j].getPlainBody();
+          if (b.indexOf(rid) === -1) continue;
+          if (CANCEL_KEYWORDS.some(function(kw){ return ms[j].getSubject().indexOf(kw) !== -1; })) continue;
+          var frm = ms[j].getFrom(), okSender = false;
+          for (var k in OTA_SENDERS) { if (frm.indexOf(OTA_SENDERS[k]) !== -1) { okSender = true; break; } }
+          if (!okSender) continue;
+          msg = ms[j]; break;
+        }
+      }
+      if (!msg) { nf++; continue; }
+      saveRawEmailSpk_({ id: rid, ota: rows[i].ota || '' }, msg, msg.getPlainBody());
+      saved++;
+      Utilities.sleep(120);
+    } catch (e) { err++; Logger.log('spk backfill err (' + rid + '): ' + e.message); }
+  }
+  Logger.log('札幌 生メール台帳バックフィル: 保存' + saved + ' / 既存' + already + ' / メール未検出' + nf + ' / エラー' + err + ' / 対象' + rows.length);
+  return { saved: saved, already: already, notfound: nf };
+}
+
 // ★ 2026-06-25 じゃらん補償(insurance) バックフィル（一回限り手動実行）
 // 「ノンオペレーションチャージ補償」NOC加入なのに 免責 と誤保存された予約を再判定して修正。
 // reservations.insurance と tasks.insurance(DEL/COL) の両方を更新する。
