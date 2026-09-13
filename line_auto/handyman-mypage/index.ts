@@ -568,6 +568,21 @@ Deno.serve(async (req) => {
   if (!r) return json({ error: "予約が見つかりません" }, 404, origin);
   const resId = String(r.id);
 
+  // ---- guide_log: スタッフ代理(staff=1)/お客様 の 免許アップ・時間/場所変更・依頼・受取 を時刻付き監査ログへ（RPC spk_guide_log が予約時刻(lend_time/return_time)をサーバ側でキャプチャ→来店/返却との相違に後から気づける）----
+  if (action === "guide_log") {
+    try {
+      await fetch(`${SB_URL}/rest/v1/rpc/spk_guide_log`, { method: "POST", headers: H, body: JSON.stringify({
+        p_token: token,
+        p_action: String(p.gaction || "unknown").slice(0, 40),
+        p_staff: !!p.staff,
+        p_session: String(p.session || "").slice(0, 80),
+        p_meta: (p.meta && typeof p.meta === "object") ? p.meta : {},
+        p_device: String(p.device || "").slice(0, 120),
+      }) });
+    } catch (_) { /* ログ失敗で本処理を止めない */ }
+    return json({ ok: true }, 200, origin);
+  }
+
   // ---- license_uploaded: お客様がマイページから免許証をアップした完了通知（Slack） ----
   if (action === "license_uploaded") {
     const cnt = Math.max(1, Math.min(20, parseInt(String(p.count || 1), 10) || 1));

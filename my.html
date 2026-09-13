@@ -262,14 +262,26 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 <div class="toast" id="toast"></div>
 
 <script>
-const VER = "v4.9.15-mypage 既読は内容指紋で管理：内容が変更されたセクションは「未確認」を再表示(不変カードは既読維持)";
+const VER = "v4.9.16-mypage staff=1スタッフ代理モード(編集可・免許/変更をお客様に代わって登録)＋全書込を監査ログ(spk_guide_action_log・staff_proxyフラグ・来店/返却時刻キャプチャ)へ";
 const FN = "https://ckrxttbnawkclshczsia.supabase.co/functions/v1/handyman-mypage";
 // 免許証アップロードの保存先=GAS「HANDYMAN 免許証保存」→Googleドライブ（license.htmlと完全に同一・store='spk'）
 const GAS_LICENSE_URL = 'https://script.google.com/macros/s/AKfycbycpzE1RIu2LbIlYVeRYcXxfIgfDhY5y1Vtdh1Rj69S9uZEnmqFMDBHqq3y6pHS70_t7A/exec';
 const GAS_LICENSE_SECRET = 'hdm-lic-7c3f9a21';
 const TOKEN = (function(){var _t=new URLSearchParams(location.search).get("t")||"";var _m=_t.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/);return _m?_m[0]:_t.replace(/[^0-9a-fA-F-]/g,"");})(); // **やコピペ崩れが混入しても正しいUUIDだけ抽出
 const RO = new URLSearchParams(location.search).get("ro")==="1"; // スタッフ確認用=閲覧専用（編集・依頼を一切させない）
+const STAFF = new URLSearchParams(location.search).get("staff")==="1"; // ★スタッフ代理モード=お客様に代わって免許アップ・時間/場所変更を登録できる編集可(RO=falseなのでeditable)。操作は監査ログ(spk_guide_action_log)にstaff_proxy=trueで残る
 const $ = s=>document.querySelector(s);
+/* 🕵️ 監査ログ：スタッフ代理(staff=1)/お客様 からの 免許アップ・時間/場所変更・オプション/補償依頼・受取・早め返却 を時刻付きで記録（spk_guide_action_log）。
+   mypageはanon＝個人特定不可 → ts+session+resv+action+staff_proxyフラグで残し、来店時刻(lend_time)/返却時刻(return_time)との相違に後から気づけるようにする（予約時刻はEF/RPCがサーバ側でキャプチャ）。 */
+function logGuideAction(action,extraMeta){
+  try{
+    if(RO)return; // 閲覧専用/デモは実操作でないので記録しない
+    if(!TOKEN)return;
+    var meta=Object.assign({staff_proxy:!!STAFF,lang:(typeof L!=="undefined"?L:"ja")},extraMeta||{});
+    fetch(FN,{method:"POST",headers:{"Content-Type":"application/json"},keepalive:true,
+      body:JSON.stringify({action:"guide_log",token:TOKEN,gaction:action,staff:!!STAFF,session:_qsess,meta:meta,device:(navigator.userAgent||"").slice(0,120)})}).catch(function(){});
+  }catch(e){}
+}
 /* ★ 沖縄クイズ 計測＋起動（EF quiz-track・匿名可・予約token紐付け・store=spk） */
 const QEF="https://ckrxttbnawkclshczsia.supabase.co/functions/v1/quiz-track";
 let _qsess=""; try{_qsess=localStorage.getItem("hdm_quiz_sess")||"";if(!_qsess){_qsess="s"+Date.now().toString(36)+Math.floor(Math.random()*1e6).toString(36);localStorage.setItem("hdm_quiz_sess",_qsess);}}catch(e){}
@@ -549,13 +561,16 @@ $("#scrim").addEventListener("click",e=>{if(e.target.id==="scrim")closeSheet()})
 
 let SENDING=false; // 送信系(lookup以外)の多重実行ガード（モバイルのゴーストクリック/二重タップで2回叩かれるのを防ぐ）
 async function call(action, body){
-  const mut = action!=="lookup";
+  const mut = action!=="lookup" && action!=="guide_log"; // guide_log(監査ログ)自身は書込扱いにしない＝ROガード/SENDING/再ログの対象外
   if(mut && RO){ toast("スタッフ確認用（閲覧のみ）のため編集できません"); return {status:0, json:{dropped:true, ro:true}}; } // 閲覧専用は書込禁止
   if(mut){ if(SENDING) return {status:0, json:{dropped:true}}; SENDING=true; }
   try{
     const r = await fetch(FN,{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({action,token:TOKEN,...body})});
-    return {status:r.status, json: await r.json().catch(()=>({}))};
+    const j = await r.json().catch(()=>({}));
+    // ✅ 成功した書込(スタッフ代理/お客様の別なく)を監査ログへ。field付きは時間/場所/依頼の種別が分かる。license_uploaded は別途 licUpload 側で記録済みなので二重記録を避ける
+    if(mut && r.ok && j && !j.dropped && !j.error && action!=="license_uploaded"){ try{ logGuideAction(action, (body&&body.field)?{field:body.field}:{}); }catch(e){} }
+    return {status:r.status, json: j};
   } finally { if(mut) SENDING=false; }
 }
 
@@ -675,7 +690,7 @@ async function licUpload(){
   }
   LIC_BUSY=false;
   const drv=LIC.filter(p=>p.front).length||1;
-  if(err===0){ try{ await call("license_uploaded",{count:ok,drivers:drv}); }catch(e){} LIC=[{front:null,back:null,fu:null,bu:null}];
+  if(err===0){ try{ await call("license_uploaded",{count:ok,drivers:drv}); }catch(e){} try{ logGuideAction("license_upload",{count:ok,drivers:drv}); }catch(e){} LIC=[{front:null,back:null,fu:null,bu:null}];
     if(DATA)DATA.license={cnt:ok,drivers:drv}; // ★アップ後ローカルも登録済みに→上部の未提出アラートが消え、カードが登録済み表示に(リロード不要)
     try{toast(t('lic_done'));}catch(e){} render(); }
   else{ licPaint(); const s=document.getElementById('licStatus'); if(s){s.style.color="#dc2626";s.textContent=t('lic_err')+" ("+ok+"/"+jobs.length+")";} }
@@ -812,7 +827,7 @@ function render(){
   const canCancel = ["HANDYMAN","KEYDROP","HP","SP","direct"].includes(r.ota);  // ★キャンセル申請ボタンはオフィシャル(公式/直販)とKEYDROPのみ。OTA(楽天/じゃらん/skyticket/エアトリ/レンタカードットコム等)は各OTA側でキャンセル=表示しない
 
   $("#app").innerHTML = `
-  ${RO?`<div style="background:#0F1F45;color:#fff;display:flex;align-items:center;gap:8px;padding:9px 12px;font-size:13px;font-weight:700"><button onclick="try{window.close()}catch(e){};setTimeout(function(){history.length>1?history.back():(location.href='index.html')},120)" style="background:#fff;color:#0F1F45;border:none;border-radius:6px;padding:6px 12px;font-size:13px;font-weight:800;cursor:pointer;white-space:nowrap">← APPに戻る</button><span style="flex:1;text-align:center">🔒 スタッフ確認用（閲覧のみ）</span></div>`:""}
+  ${RO?`<div style="background:#0F1F45;color:#fff;display:flex;align-items:center;gap:8px;padding:9px 12px;font-size:13px;font-weight:700"><button onclick="try{window.close()}catch(e){};setTimeout(function(){history.length>1?history.back():(location.href='index.html')},120)" style="background:#fff;color:#0F1F45;border:none;border-radius:6px;padding:6px 12px;font-size:13px;font-weight:800;cursor:pointer;white-space:nowrap">← APPに戻る</button><span style="flex:1;text-align:center">🔒 スタッフ確認用（閲覧のみ）</span></div>`:(STAFF?`<div style="background:#0e7a6b;color:#fff;display:flex;align-items:center;gap:8px;padding:9px 12px;font-size:13px;font-weight:700"><button onclick="try{window.close()}catch(e){};setTimeout(function(){history.length>1?history.back():(location.href='index.html')},120)" style="background:#fff;color:#0e7a6b;border:none;border-radius:6px;padding:6px 12px;font-size:13px;font-weight:800;cursor:pointer;white-space:nowrap">← APPに戻る</button><span style="flex:1;text-align:center">🧑‍💼 スタッフ代理モード（お客様に代わって免許アップ・変更を登録できます／操作は記録されます）</span></div>`:"")}
   <div class="nhero">
     <img class="nh-logo" src="hdm-logo-of.png" alt="HANDYMAN">
     <div class="nh-lang">${LANGS.map(l=>`<button class="${L===l.k?'on':''}" onclick="setLang('${l.k}')">${l.k==='ja'?'日':l.n}</button>`).join("")}</div>
@@ -1387,7 +1402,7 @@ async function load(){
   DATA=res.json;
   // ★ KEYDROP予約はHANDYMANでなくKEYDROPブランドのマイページへ（別ブランド・同一mypage_tokenで開ける）
   try{var _rid=String((DATA.reservation&&DATA.reservation.id)||"");var _kd=(DATA.reservation&&DATA.reservation.ota==="KEYDROP")||/^(KDN|KD)-/i.test(_rid);
-    if(_kd){location.replace("https://keydrop.jp/mypage.html?t="+encodeURIComponent(TOKEN)+(RO?"&ro=1":""));return;}}catch(e){}
+    if(_kd){location.replace("https://keydrop.jp/mypage.html?t="+encodeURIComponent(TOKEN)+(RO?"&ro=1":"")+(STAFF?"&staff=1":""));return;}}catch(e){}
   try{document.title=(DATA.reservation.name||t('guest'))+" | HANDYMAN "+DATA.label}catch(e){}
   render();
 }
