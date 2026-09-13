@@ -157,6 +157,7 @@
     <div class="sum" id="sum"></div>
     <div class="retbar"><div class="rt">🕒 本日返却予定（担当者・時刻の一覧）／入庫はマップの点滅マス「返却使用予定」から</div><div class="chips" id="retToday"></div></div>
   </div>
+  <div style="margin:10px 12px 0"><button onclick="openPay()" style="width:100%;background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff;border:none;border-radius:12px;padding:13px;font-size:15px;font-weight:900;cursor:pointer;box-shadow:0 3px 12px rgba(37,99,235,.4)">💳 駐車場を精算（trustpark）</button></div>
   <div class="lot-map" id="lotMap"></div>
   <div class="exsec"><div class="exh">🚗 貸出中の車両（外に出ている）<span class="cnt" id="outCnt">0</span></div><div id="outList" class="stlist"></div></div>
   <div class="exsec" id="missSec"><div class="exh missh">❓ 所在不明の車両<span style="font-size:10px;font-weight:800;color:#94a3b8;margin-left:6px">貸出なし・駐車場になし</span><span class="cnt" id="missCnt">0</span></div><div id="missList" class="stlist"></div></div>
@@ -180,6 +181,82 @@ const PARK_ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsIn
 const MAIN_SB="https://ckrxttbnawkclshczsia.supabase.co";
 const MAIN_ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
 const sb=window.supabase.createClient(PARK_URL,PARK_ANON);
+
+/* ===== 💳 駐車場決済(trustpark) カードコピペ機能 ===== */
+/* カードはmain DBにAES-256-GCM暗号化保管。PIN認証でEF経由復号→コピー→trustparkに貼付。 */
+const TRUSTPARK_URL="https://trustpark-910.oneqr.io/shops/shp_2ae5f318559fecdf056c2bd";
+const PAYFN=MAIN_SB+"/functions/v1/parking-card";
+let _payTimer=null;
+async function payFn(payload){
+  try{
+    const r=await fetch(PAYFN,{method:"POST",headers:{"apikey":MAIN_ANON,"Authorization":"Bearer "+MAIN_ANON,"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    let j={};try{j=await r.json();}catch(e){}
+    return Object.assign({status:r.status},j);
+  }catch(e){return {status:0,ok:false,error:"network"};}
+}
+async function copyText(t,label){
+  try{await navigator.clipboard.writeText(t);toast("📋 "+label+" をコピー");}
+  catch(e){const ta=document.createElement("textarea");ta.value=t;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.focus();ta.select();try{document.execCommand("copy");toast("📋 "+label+" をコピー");}catch(_){toast("⚠️コピー失敗（手入力してください）");}document.body.removeChild(ta);}
+}
+function _esc(s){return String(s==null?"":s).replace(/\\/g,"\\\\").replace(/'/g,"\\'");}
+async function openPay(){
+  openSheet(`<h3>💳 駐車場を精算</h3><div class="sd">読み込み中…</div>`);
+  const st=await payFn({action:"status"});
+  if(!st.ok){openSheet(`<h3>⚠️ 接続エラー</h3><div class="sd">通信に失敗しました。電波の良い所で再試行してください。</div><div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button><button class="btn" style="background:#2563eb;color:#fff" onclick="openPay()">再試行</button></div>`);return;}
+  if(!st.registered){openSheet(`<h3>💳 駐車場を精算</h3><div class="sd">カードが未登録です。オーナーが「⚙️ カード登録」から登録してください。</div><div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button><button class="btn" style="background:#475569;color:#fff" onclick="openRegister()">⚙️ カード登録</button></div>`);return;}
+  const box='width:100%;padding:12px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:22px;font-weight:800;text-align:center;letter-spacing:6px';
+  openSheet(`<h3>🔒 決済PINを入力</h3><div class="sd">登録カード: <b>${st.label}</b></div><div class="fm"><input id="pay-pin" type="password" inputmode="numeric" maxlength="6" placeholder="••••" style="${box}" autocomplete="off"></div><div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button><button class="btn" style="background:#2563eb;color:#fff;font-weight:900" onclick="doReveal()">カードを表示</button></div><div style="text-align:center;margin-top:8px"><span onclick="openRegister()" style="font-size:11px;color:#64748b;cursor:pointer">⚙️ カード登録/変更（オーナー）</span></div>`);
+  setTimeout(function(){var el=$("pay-pin");if(el)el.focus();},120);
+}
+async function doReveal(){
+  var pin=($("pay-pin")||{}).value||"";
+  if(!/^\d{4,6}$/.test(pin)){toast("PINは4〜6桁の数字");return;}
+  openSheet(`<h3>🔒 照合中…</h3><div class="sd">少々お待ちください</div>`);
+  const r=await payFn({action:"reveal",pin:pin});
+  if(!r.ok){openSheet(`<h3>⚠️ ${r.error==="rate_limited"?"一時ロック":"エラー"}</h3><div class="sd">${r.msg||"PINが違います。"}</div><div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button><button class="btn" style="background:#2563eb;color:#fff" onclick="openPay()">やり直す</button></div>`);return;}
+  showCard(r.card,r.label);
+}
+function _fld(label,disp,copyVal){
+  return `<div style="margin-bottom:11px"><div style="font-size:11px;color:#94a3b8;font-weight:800;margin-bottom:3px">${label}</div><div style="display:flex;gap:6px;align-items:stretch"><div style="flex:1;background:#0f172a;border:1px solid #334155;border-radius:9px;padding:11px 12px;font-size:18px;font-weight:800;letter-spacing:1px;user-select:all;word-break:break-all">${disp}</div><button class="btn" style="background:#2563eb;color:#fff;font-weight:900;padding:0 15px" onclick="copyText('${_esc(copyVal)}','${label}')">📋</button></div></div>`;
+}
+function showCard(c,label){
+  modalLock=true;
+  var numSp=(c.number||"").replace(/(.{4})/g,"$1 ").trim();
+  openSheet(`<h3>💳 ${label}</h3>
+    <div class="sd" style="color:#fbbf24">各項目の📋でコピー→trustparkに貼付。90秒で自動的に隠れます。</div>
+    ${_fld("カード名義人",c.name,c.name)}
+    ${_fld("カード番号",numSp,c.number)}
+    <div style="display:flex;gap:8px"><div style="flex:1">${_fld("有効期限",c.exp,c.exp)}</div><div style="flex:1">${_fld("セキュリティコード",c.cvc,c.cvc)}</div></div>
+    <div style="background:#0b1220;border:1px solid #1e293b;border-radius:10px;padding:9px 11px;margin:4px 0 10px;font-size:11.5px;color:#cbd5e1;line-height:1.75">① trustparkを開く → ② 車室番号を入力 → ③ 料金確認 → ④ クレジットカード選択 → ⑤ 各項目を📋貼付 → ⑥ <b>ポイントはスキップ</b> → ⑦ <b style="color:#fca5a5">決済完了画面を必ず目視</b>してから出庫</div>
+    <div class="btnrow"><button class="btn" style="flex:1;background:#0d9488;color:#fff;font-weight:900" onclick="window.open('${TRUSTPARK_URL}','_blank')">🅿️ trustparkを開く</button></div>
+    <div class="btnrow"><button class="btn g" style="flex:1" onclick="hideCard()">🗑 閉じてカードを隠す</button></div>`);
+  if(_payTimer)clearTimeout(_payTimer);
+  _payTimer=setTimeout(function(){if(modal&&modal.indexOf("カード名義人")>=0){hideCard();toast("🔒 カード表示を自動で隠しました");}},90000);
+}
+function hideCard(){modalLock=false;if(_payTimer){clearTimeout(_payTimer);_payTimer=null;}closeSheet();}
+function openRegister(){
+  var box='width:100%;padding:10px;border-radius:9px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:15px;font-weight:700';
+  modalLock=true;
+  openSheet(`<h3>⚙️ カード登録/変更</h3><div class="sd">オーナー専用。管理キーが必要です。入力したカードは暗号化して保管され、以後スタッフはPINで呼び出せます。</div>
+    <div class="fm">
+      <label>管理キー</label><input id="rg-admin" type="password" style="${box}" autocomplete="off" placeholder="登録用の管理キー">
+      <label>カード名義人</label><input id="rg-name" style="${box}" placeholder="例: TARO YAMADA" autocomplete="off">
+      <label>カード番号</label><input id="rg-num" type="tel" inputmode="numeric" style="${box}" placeholder="半角数字（スペース可）" autocomplete="off">
+      <div style="display:flex;gap:8px"><div style="flex:1"><label>有効期限(MM/YY)</label><input id="rg-exp" style="${box}" placeholder="07/31" autocomplete="off"></div><div style="flex:1"><label>セキュリティコード</label><input id="rg-cvc" type="tel" inputmode="numeric" style="${box}" placeholder="CVC" autocomplete="off"></div></div>
+      <label>決済PIN（スタッフが精算で使う・4〜6桁）</label><input id="rg-pin" type="tel" inputmode="numeric" maxlength="6" style="${box}" placeholder="4〜6桁の数字" autocomplete="off">
+    </div>
+    <div class="btnrow"><button class="btn g" onclick="hideCard()">キャンセル</button><button class="btn" style="background:#dc2626;color:#fff;font-weight:900" onclick="doRegister()">🔐 登録する</button></div>`);
+}
+async function doRegister(){
+  var g=function(id){return ($(id)||{}).value||"";};
+  var admin_key=g("rg-admin").trim(),name=g("rg-name").trim(),number=g("rg-num").replace(/\s/g,""),exp=g("rg-exp").trim(),cvc=g("rg-cvc").trim(),pin=g("rg-pin").trim();
+  if(!admin_key||!name||!number||!exp||!cvc){toast("全項目を入力してください");return;}
+  if(!/^\d{4,6}$/.test(pin)){toast("決済PINは4〜6桁の数字");return;}
+  toast("登録中…");
+  const r=await payFn({action:"register",admin_key:admin_key,pin:pin,card:{name:name,number:number,exp:exp,cvc:cvc}});
+  if(!r.ok){toast(r.error==="bad_admin_key"?"⚠️管理キーが違います":("⚠️登録失敗: "+(r.error||"")));return;}
+  hideCard();toast("🔐 カードを登録しました ("+r.label+")");
+}
 const CLS={A:"#7c3aed",A2:"#9333ea",B:"#0284c7",B2:"#0369a1",C:"#059669",S:"#d97706",F:"#db2777",H:"#64748b",G:"#0891b2"};
 // エリア定義（noから判定）
 const AREA_DEFS=[
