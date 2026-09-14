@@ -771,7 +771,19 @@ Deno.serve(async (req) => {
     const num = (k: string) => (has(k) && p[k] != null && p[k] !== "") ? Number(p[k]) : null;
     const dLat = num("del_lat"), dLng = num("del_lng"), cLat = num("col_lat"), cLng = num("col_lng");
     const cAct = "customer:" + resId;
-    const oldOf = (f: string) => String((f === "del_place" ? r.del_place : f === "col_place" ? r.col_place : f === "lend_time" ? r.lend_time : r.return_time) ?? "");
+    // 🔴 変更前(old_value)＆Slack通知は「OPシート/マイページと同じ実効値」を使う。
+    //   予約の生値 r.return_time は当初値(例17:00)で古く、OP/マイページの実表示は resolveTaskTime(例16:00)。
+    //   lookup(649-652)と同じ解決順： applied変更 > OPタスク(resolveTask*) > 予約生値 > (未設定)。
+    const _uTasks = await sbGet(store.tasks, `reservation_id=eq.${encodeURIComponent(resId)}&deleted=not.is.true&select=_id,place,time,insurance,changed_json`);
+    const _uChg = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&status=eq.applied&order=created_at.desc&limit=10&select=field,new_value`);
+    const _uApplied = (f: string): string => { const c = _uChg.find((x: any) => x.field === f); return c && String(c.new_value || "").trim() ? String(c.new_value).trim() : ""; };
+    const _dT = _uTasks.find((t: any) => String(t._id || "").startsWith("d-"));
+    const _cT = _uTasks.find((t: any) => String(t._id || "").startsWith("c-"));
+    const curDelPlace = _uApplied("del_place") || resolveTaskPlace(_dT) || String(r.del_place || "").trim();
+    const curColPlace = _uApplied("col_place") || resolveTaskPlace(_cT) || String(r.col_place || "").trim();
+    const curLendTime = _uApplied("lend_time") || resolveTaskTime(_dT) || r.lend_time || r.del_time || "";
+    const curReturnTime = _uApplied("return_time") || resolveTaskTime(_cT) || r.return_time || r.col_time || "";
+    const oldOf = (f: string) => String((f === "del_place" ? curDelPlace : f === "col_place" ? curColPlace : f === "lend_time" ? curLendTime : curReturnTime) ?? "");
     const noteOf = (f: string) => f === "del_place" ? "お届け場所変更（承認制）" : f === "col_place" ? "回収場所変更（承認制）" : f === "lend_time" ? "お届け時間変更（承認制）" : "回収時間変更（承認制）";
     const mkReq = async (field: string, newV: string, payload: any) => {
       const ex = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.${field}&status=eq.requested&select=id&limit=1`);
@@ -784,10 +796,10 @@ Deno.serve(async (req) => {
     if (colPlace !== null) { await mkReq("col_place", colPlace, { col_place: colPlace, ...(cLat != null && cLng != null ? { col_lat: cLat, col_lng: cLng } : {}) }); reqLabels.push("回収場所"); }
     if (returnTime !== null) { await mkReq("return_time", returnTime, { return_time: returnTime }); reqLabels.push("回収時間"); }
     const aLines: string[] = [];
-    if (delPlace !== null) aLines.push(`📍 *お届け先*（希望）　${r.del_place || "（未設定）"} → *${delPlace}*`);
-    if (lendTime !== null) aLines.push(`🕐 *お届け時間*（希望）　${r.lend_time || "（未設定）"} → *${lendTime}*`);
-    if (colPlace !== null) aLines.push(`📍 *回収先*（希望）　${r.col_place || "（未設定）"} → *${colPlace}*`);
-    if (returnTime !== null) aLines.push(`🕐 *回収時間*（希望）　${r.return_time || "（未設定）"} → *${returnTime}*`);
+    if (delPlace !== null) aLines.push(`📍 *お届け先*（希望）　${curDelPlace || "（未設定）"} → *${delPlace}*`);
+    if (lendTime !== null) aLines.push(`🕐 *お届け時間*（希望）　${curLendTime || "（未設定）"} → *${lendTime}*`);
+    if (colPlace !== null) aLines.push(`📍 *回収先*（希望）　${curColPlace || "（未設定）"} → *${colPlace}*`);
+    if (returnTime !== null) aLines.push(`🕐 *回収時間*（希望）　${curReturnTime || "（未設定）"} → *${returnTime}*`);
     await notifySlackCard({ emoji: "🟡", title: "場所・時間変更の承認待ち", name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: aLines, action: "⚠️ *要承認*：管理コンソール →「🔔変更依頼」で承認（承認で反映＋顧客へLINE通知）" });
     return json({ ok: true, pendingApproval: true, requested: reqLabels }, 200, origin);
   }
