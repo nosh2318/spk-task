@@ -82,9 +82,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1156';
+var CV='spk-v1157';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=1023').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=1024').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -22685,13 +22685,19 @@ function App(){
   // ★ 在庫管理：在庫調整済み/在庫開放済みの予約番号Set（バッジ＝未対応件数の算出用）
   const[invAdjSet,setInvAdjSet]=useState(()=>new Set());
   const[invRelSet,setInvRelSet]=useState(()=>new Set());
+  const invBadgeReloadRef=React.useRef(null);
   useEffect(()=>{if(!sb)return;let on=true;
     const apply=(rows)=>{setInvAdjSet(new Set(rows.filter(r=>r.stock_adjusted).map(r=>r.id)));setInvRelSet(new Set(rows.filter(r=>r.stock_released).map(r=>r.id)));};
     const load=async()=>{try{const{data:rows}=await sb.from("spk_inventory_status").select("*");if(!on||!rows)return;apply(rows);}catch(e){}};
+    invBadgeReloadRef.current=load;
     load();
-    const ch=sb.channel("spk_inv_badge").on("postgres_changes",{event:"*",schema:"public",table:"spk_inventory_status"},p=>{const r=p.new;if(!r||!r.id)return;setInvAdjSet(s=>{const n=new Set(s);r.stock_adjusted?n.add(r.id):n.delete(r.id);return n;});setInvRelSet(s=>{const n=new Set(s);r.stock_released?n.add(r.id):n.delete(r.id);return n;});}).subscribe();
+    const upd=(r)=>{if(!r||!r.id)return;setInvAdjSet(s=>{const n=new Set(s);r.stock_adjusted?n.add(r.id):n.delete(r.id);return n;});setInvRelSet(s=>{const n=new Set(s);r.stock_released?n.add(r.id):n.delete(r.id);return n;});};
+    const del=(id)=>{if(!id)return;setInvAdjSet(s=>{const n=new Set(s);n.delete(id);return n;});setInvRelSet(s=>{const n=new Set(s);n.delete(id);return n;});};
+    const ch=sb.channel("spk_inv_badge").on("postgres_changes",{event:"*",schema:"public",table:"spk_inventory_status"},p=>{if((p.eventType||p.event)==="DELETE"){del(p.old&&p.old.id);}else{upd(p.new);}}).subscribe();
     return()=>{on=false;try{sb.removeChannel(ch);}catch(e){}};
   },[sb]);
+  // ★2026-09-15 TOPを開く度にDB再取得して正本へ自己修復（realtime取りこぼし/凍結でバッジが未対応0でも残るのを防ぐ・BT v1.0.376横展開）
+  useEffect(()=>{if(tab==="top"&&invBadgeReloadRef.current)invBadgeReloadRef.current();},[tab]);
   const invTodoCount=React.useMemo(()=>(data||[]).filter(r=>{const d=r.returnDate||r.lendDate;if(!d||d<today)return false;return r.status==="cancelled"?(invAdjSet.has(r.id)&&!invRelSet.has(r.id)):(r.lendDate>=today&&!invAdjSet.has(r.id));}).length,[data,today,invAdjSet,invRelSet]);
   const invTodoTotal=React.useMemo(()=>{const IL=["車検","半年点検","修理"];const it=(maintenance||[]).filter(m=>m&&IL.includes(m.label)&&(m.endDate||m.startDate)&&(m.endDate||m.startDate)>=today&&m.deleted!==true&&!invAdjSet.has(m.id)).length;return invTodoCount+it;},[invTodoCount,maintenance,invAdjSet,today]);
   // ★ じゃらん新システム(jalan_payments)の入金済みSet — localStorage キャッシュで即時復元
@@ -25109,7 +25115,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.624";
+const APP_VERSION="v4.7.625";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
