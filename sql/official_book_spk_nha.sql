@@ -130,13 +130,19 @@ begin
   v_noc:=coalesce((v_m->'insurance'->>'noc')::int,1650);
   v_cfee:=coalesce((v_m->'seat'->>'child')::int,1100);
   v_jfee:=coalesce((v_m->'seat'->>'junior')::int,550);
-  v_days:=(v_ret::date - v_lend::date); if v_days<1 then v_days:=1; end if;
+  v_days:=(v_ret::date - v_lend::date)+1; if v_days<1 then v_days:=1; end if; -- ★暦日カウント(+1・返却日も1日)
   v_base_total:=0;
-  for v_dd in select generate_series(v_lend::date, v_ret::date - 1, interval '1 day')::date loop
-    v_base_total:=v_base_total + (case when v_high ? to_char(v_dd,'YYYY-MM-DD') then v_b else v_a end);
+  for v_dd in select generate_series(v_lend::date, v_ret::date, interval '1 day')::date loop
+    v_mc:=v_months->to_char(v_dd,'YYYY-MM')->v_cls; -- その月・クラスの{a:通常,b:高}(未設定はデフォルトv_a)
+    if v_high ? to_char(v_dd,'YYYY-MM-DD') then -- カレンダーで「高い」に区切った日
+      v_base_total:=v_base_total + coalesce((v_mc->>'b')::int,(v_mc->>'a')::int,v_a);
+    else v_base_total:=v_base_total + coalesce((v_mc->>'a')::int,v_a); end if;
   end loop;
-  if v_base_total=0 then
-    v_base_total:=(case when v_high ? to_char(v_lend::date,'YYYY-MM-DD') then v_b else v_a end);
+  if v_base_total=0 then -- 同日(v_ret=v_lend)は貸出日で判定
+    v_mc:=v_months->to_char(v_lend::date,'YYYY-MM')->v_cls;
+    if v_high ? to_char(v_lend::date,'YYYY-MM-DD') then
+      v_base_total:=coalesce((v_mc->>'b')::int,(v_mc->>'a')::int,v_a);
+    else v_base_total:=coalesce((v_mc->>'a')::int,v_a); end if;
   end if;
   v_ins_daily:=case v_ins when 'cdw' then v_cdw when 'noc' then v_noc else 0 end;
   v_ins_txt:=case v_ins when 'cdw' then '免責' when 'noc' then 'NOC' else 'なし' end;
