@@ -33,11 +33,13 @@ input.pv.b{background:#fff7ed;border-color:#fdba74}
 .calnav{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
 .cal{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
 .cal .dow{font-size:11px;color:#94a3b8;text-align:center;padding:2px}
-.day{aspect-ratio:1;display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:8px;background:#f8fafc;cursor:pointer;font-size:13px;border:1px solid transparent;position:relative}
-.day.empty{background:transparent;cursor:default}
+.day{min-height:50px;display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:8px;background:#f8fafc;cursor:pointer;font-size:13px;border:1px solid transparent;position:relative;padding:2px 0}
+.day.empty{background:transparent;cursor:default;min-height:0}
 .day.hol{color:#e11d48}.day.sat{color:#0284c7}
 .day.B{background:#ea580c;color:#fff;font-weight:700}
 .day small{font-size:8px;line-height:1}
+.day .dp{font-size:10px;font-weight:800;line-height:1;margin-top:2px;color:#0f766e}
+.day.B .dp{color:#fff}
 .chip{display:inline-block;background:#fff7ed;border:1px solid #fdba74;color:#9a3412;border-radius:14px;padding:3px 9px;font-size:11px;margin:2px}
 #lov{position:fixed;inset:0;background:rgba(15,31,69,.94);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px}
 #lov .box{background:#fff;border-radius:14px;padding:22px;max-width:340px;width:100%}
@@ -67,7 +69,7 @@ var DBOF={spk:MAIN,nha:MAIN,tkm:BT};
 var TBLOF={spk:'app_settings',nha:'app_settings',tkm:'bt_app_settings'};
 var ACCT={spk:'oshita@g-lines.jp',nha:'oshita@g-lines.jp',tkm:'oshita.touring@buddica.co.jp'};
 var CLS_LABEL={A:'A',A2:'A2',B:'B',B2:'B2',C:'C',D:'D',E:'E',F:'F',G:'G',H:'H',S:'S'};
-var STORE='nha', PRICE={spk:null,nha:null,tkm:null}, calYM=null;
+var STORE='nha', PRICE={spk:null,nha:null,tkm:null}, calYM=null, calCls=null;
 
 function tok(db){try{var t=JSON.parse(localStorage.getItem(db.key));if(t&&t.access_token&&(!t.expires_at||t.expires_at>Math.floor(Date.now()/1000)))return t.access_token;}catch(e){}return null;}
 function authH(db){var t=tok(db);return 'Bearer '+(t||db.anon);}
@@ -130,18 +132,9 @@ function render(){
       :('🔒 保存にはログインが必要です（'+ACCT[STORE]+'） <button class="btn ghost sm" onclick="showLogin()">ログイン</button>'); }
   var P=PRICE[STORE];
   if(!P){document.getElementById('body').innerHTML='<div class="card">価格データが未設定です。</div>';return;}
-  if(!P.b_months)P.b_months={};
-  var classes=Object.keys(P.price);
-  var rows=classes.map(function(c){
-    var a=P.price[c].a;
-    return '<tr><td class="cls">'+(CLS_LABEL[c]||c)+'クラス</td>'
-      +'<td><input class="pv" type="number" step="100" value="'+a+'" onchange="setP(\''+c+'\',\'a\',this.value)"></td></tr>';
-  }).join('');
+  if(!P.months)P.months={};
   var ins=P.insurance||{cdw:1100,noc:1650},seat=P.seat||{child:1100,junior:550};
   var html=''
-   +'<div class="card"><h2>💴 基本料金（通常・1日あたり）</h2>'
-   +'<table><tr><th>クラス</th><th>通常料金</th></tr>'+rows+'</table>'
-   +'<div class="muted" style="margin-top:8px">連休など「高い日」の料金は下の「📅 月別 高設定」で月ごとに設定します（11月と12月で別の金額にできます）。</div></div>'
    +monthCard()
    +'<div class="card"><h2>🛡 補償（1日あたり）</h2><div class="sub2">'
    +'<div class="fld"><label>免責補償 CDW</label><input type="number" step="50" value="'+ins.cdw+'" onchange="setIns(\'cdw\',this.value)"></div>'
@@ -159,42 +152,53 @@ function calCard(){
   var P=PRICE[STORE],hd=P.high_dates||[];
   if(!calYM){var n=new Date();calYM=n.getFullYear()+'-'+('0'+(n.getMonth()+1)).slice(-2);}
   var y=+calYM.split('-')[0],mo=+calYM.split('-')[1],hol=jpHol(y);
+  // カレンダーに数字を出すクラス（選択・未選択は先頭）
+  var clsList=Object.keys(P.price),cls=(calCls&&P.price[calCls])?calCls:clsList[0];
+  var mm=(P.months[calYM]||{})[cls]||{},def=P.price[cls].a;
+  var aP=(mm.a!=null?mm.a:def),bP=(mm.b!=null?mm.b:aP);
+  var short=function(v){return v>=10000?((v/10000).toFixed(v%10000?1:0)+'万'):('¥'+v.toLocaleString());};
   var first=new Date(y,mo-1,1),start=first.getDay(),dim=new Date(y,mo,0).getDate();
   var cells='';for(var i=0;i<start;i++)cells+='<div class="day empty"></div>';
-  for(var d=1;d<=dim;d++){var dt=new Date(y,mo-1,d),k=fmt(dt),cl='day';
+  for(var d=1;d<=dim;d++){var dt=new Date(y,mo-1,d),k=fmt(dt),cl='day',high=hd.indexOf(k)>=0;
     if(dt.getDay()===0||hol[k])cl+=' hol';else if(dt.getDay()===6)cl+=' sat';
-    if(hd.indexOf(k)>=0)cl+=' B';
-    cells+='<div class="'+cl+'" onclick="togB(\''+k+'\')">'+d+(hol[k]?'<small>'+hol[k]+'</small>':'')+'</div>';}
-  var chips=hd.filter(function(x){return x>=(y+'-'+('0'+mo).slice(-2)) }).length;
-  return '<div class="card"><h2>📅 シーズンカレンダー（<span class="tagB">B</span>高設定の日）</h2>'
-   +'<div class="muted">オレンジの日がB(高設定)。連休・連休前日を自動でBにできます。日付タップで個別ON/OFF。</div>'
-   +'<div style="margin:8px 0"><button class="btn ghost sm" onclick="autoB()">🎌 連休・連休前日を自動でB設定（今年+来年）</button> '
-   +'<button class="btn ghost sm" onclick="clrB()">全解除</button></div>'
+    if(high)cl+=' B';
+    var price=high?bP:aP;
+    cells+='<div class="'+cl+'" onclick="togB(\''+k+'\')">'+d+(hol[k]?'<small>'+hol[k]+'</small>':'')+'<b class="dp">'+short(price)+'</b></div>';}
+  var clsSel=clsList.map(function(c){return '<option value="'+c+'"'+(c===cls?' selected':'')+'>'+(CLS_LABEL[c]||c)+'クラス</option>';}).join('');
+  return '<div class="card"><h2>📅 カレンダー（高い日を区切る）</h2>'
+   +'<div class="muted">オレンジの日が「高い」。日付タップで通常⇄高いを切替。各日にそのクラスの料金が出ます。</div>'
+   +'<div style="margin:8px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap">表示クラス：<select id="calcls" onchange="setCalCls(this.value)" style="padding:7px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px">'+clsSel+'</select>'
+   +'<button class="btn ghost sm" onclick="autoB()">🎌 連休を自動で高いに</button><button class="btn ghost sm" onclick="clrB()">全解除</button></div>'
    +'<div class="calnav"><button class="btn ghost sm" onclick="calMove(-1)">◀</button><b>'+y+'年'+mo+'月</b><button class="btn ghost sm" onclick="calMove(1)">▶</button></div>'
    +'<div class="cal"><div class="dow">日</div><div class="dow">月</div><div class="dow">火</div><div class="dow">水</div><div class="dow">木</div><div class="dow">金</div><div class="dow">土</div>'+cells+'</div>'
-   +'<div style="margin-top:8px">B設定日 計 '+(hd.length)+'日</div></div>';
+   +'<div style="margin-top:8px">高い日 計 '+(hd.length)+'日 ／ '+(CLS_LABEL[cls]||cls)+'クラス：通常 ¥'+aP.toLocaleString()+'・高い ¥'+bP.toLocaleString()+'</div></div>';
 }
 function calMove(n){var y=+calYM.split('-')[0],m=+calYM.split('-')[1]+n;if(m<1){m=12;y--}if(m>12){m=1;y++}calYM=y+'-'+('0'+m).slice(-2);render();}
 function setP(c,k,v){PRICE[STORE].price[c][k]=parseInt(v,10)||0;}
-// 月別 高設定（Bの日に適用する料金・月ごと）
+// 月別 料金（通常/高い を月ごとに入力）
 function monthCard(){
-  var P=PRICE[STORE];if(!P.b_months)P.b_months={};
+  var P=PRICE[STORE];if(!P.months)P.months={};
   if(!calYM){var n=new Date();calYM=n.getFullYear()+'-'+('0'+(n.getMonth()+1)).slice(-2);}
-  var y=+calYM.split('-')[0],mo=+calYM.split('-')[1],bm=P.b_months[calYM]||{};
+  var y=+calYM.split('-')[0],mo=+calYM.split('-')[1],mm=P.months[calYM]||{};
   var rows=Object.keys(P.price).map(function(c){
-    var a=P.price[c].a,bv=(bm[c]!=null?bm[c]:'');
-    return '<tr><td class="cls">'+(CLS_LABEL[c]||c)+'</td><td class="muted">¥'+a.toLocaleString()+'</td>'
-     +'<td><input class="pv b" type="number" step="100" placeholder="通常のまま" value="'+bv+'" onchange="setBP(\''+c+'\',this.value)"></td></tr>';
+    var def=P.price[c].a,mc=mm[c]||{},av=(mc.a!=null?mc.a:''),bv=(mc.b!=null?mc.b:'');
+    return '<tr><td class="cls">'+(CLS_LABEL[c]||c)+'</td>'
+     +'<td><input class="pv" type="number" step="100" placeholder="'+def.toLocaleString()+'" value="'+av+'" onchange="setMP(\''+c+'\',\'a\',this.value)"></td>'
+     +'<td><input class="pv b" type="number" step="100" placeholder="通常と同じ" value="'+bv+'" onchange="setMP(\''+c+'\',\'b\',this.value)"></td></tr>';
   }).join('');
-  return '<div class="card"><h2>📅 月別 高設定（<span class="tagB">B</span>の日の料金）</h2>'
-   +'<div class="muted">下のカレンダーで選んだ「Bの日（連休など）」に適用する料金を、月ごとに設定します。空欄なら通常料金のまま。月を切り替えて11月・12月を別の金額にできます。</div>'
-   +'<div class="calnav"><button class="btn ghost sm" onclick="monthMove(-1)">◀</button><b>'+y+'年'+mo+'月 の高料金</b><button class="btn ghost sm" onclick="monthMove(1)">▶</button></div>'
-   +'<table><tr><th>クラス</th><th>通常</th><th><span class="tagB">B</span> '+mo+'月の高料金</th></tr>'+rows+'</table></div>';
+  return '<div class="card"><h2>💴 月別料金（1日あたり・クラス別）</h2>'
+   +'<div class="muted">月を切り替えて、その月の<b>通常</b>と<span class="tagB">高い</span>をクラスごとに入力。通常が空欄なら既定料金（薄字）を使います。どの日を「高い」にするかは下のカレンダーで区切ります。</div>'
+   +'<div class="calnav"><button class="btn ghost sm" onclick="monthMove(-1)">◀</button><b>'+y+'年'+mo+'月</b><button class="btn ghost sm" onclick="monthMove(1)">▶</button></div>'
+   +'<table><tr><th>クラス</th><th><span class="tagA">通常</span></th><th><span class="tagB">高い</span></th></tr>'+rows+'</table></div>';
 }
 function monthMove(n){calMove(n);}
-function setBP(c,v){var P=PRICE[STORE];if(!P.b_months)P.b_months={};if(!P.b_months[calYM])P.b_months[calYM]={};var n=parseInt(v,10);
-  if(v===''||isNaN(n)){delete P.b_months[calYM][c];if(!Object.keys(P.b_months[calYM]).length)delete P.b_months[calYM];}
-  else P.b_months[calYM][c]=n;}
+function setMP(c,ab,v){var P=PRICE[STORE];if(!P.months)P.months={};if(!P.months[calYM])P.months[calYM]={};if(!P.months[calYM][c])P.months[calYM][c]={};
+  var n=parseInt(v,10);
+  if(v===''||isNaN(n)){delete P.months[calYM][c][ab];if(!Object.keys(P.months[calYM][c]).length)delete P.months[calYM][c];if(!Object.keys(P.months[calYM]).length)delete P.months[calYM];}
+  else P.months[calYM][c][ab]=n;
+  render(); // 入力した数字をカレンダーに即反映
+}
+function setCalCls(v){calCls=v;render();}
 function setIns(k,v){PRICE[STORE].insurance=PRICE[STORE].insurance||{};PRICE[STORE].insurance[k]=parseInt(v,10)||0;}
 function setSeat(k,v){PRICE[STORE].seat=PRICE[STORE].seat||{};PRICE[STORE].seat[k]=parseInt(v,10)||0;}
 function togB(k){var hd=PRICE[STORE].high_dates||[];var i=hd.indexOf(k);if(i>=0)hd.splice(i,1);else hd.push(k);hd.sort();PRICE[STORE].high_dates=hd;render();}
