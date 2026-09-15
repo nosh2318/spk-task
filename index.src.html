@@ -82,9 +82,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1155';
+var CV='spk-v1156';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=1022').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=1023').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -20366,11 +20366,12 @@ function AccountingPanel({staff}){
     // 集計タブ用
     const periodKey=viewPeriod==="monthly"?selectedYM:selectedYear;
     const periodRecords=records.filter(r=>r.date&&r.date.startsWith(periodKey));
-    let cashIn=0,cashOut=0,salesTotal=0,advanceTotal=0,advancePaid=0,advanceUnpaid=0,cardPayTotal=0,cardPayPaid=0,padvAllTotal=0,padvAllPaid=0;
+    let cashIn=0,cashOut=0,cashCollected=0,salesTotal=0,advanceTotal=0,advancePaid=0,advanceUnpaid=0,cardPayTotal=0,cardPayPaid=0,padvAllTotal=0,padvAllPaid=0;
     periodRecords.forEach(r=>{
       if(r.type==="cash_in"){
         cashIn+=r.amount;
         if(r.category==="現金売上"||r.category==="雑収入")salesTotal+=r.amount;
+        if(r.category==="現金売上"&&r.paid)cashCollected+=r.amount;// 回収済現金売上(hq-accounting同式)
       }
       else if(r.type==="cash_out")cashOut+=r.amount;
       else if(r.type==="extra_sales"){salesTotal+=r.amount;if(r.payMethod==="現金")cashIn+=r.amount;}
@@ -20379,16 +20380,16 @@ function AccountingPanel({staff}){
       else if(r.type==="personal_adv"){padvAllTotal+=r.amount;if(r.paid)padvAllPaid+=r.amount;}
     });
     const totalExpense=cashOut+cardPayTotal+padvAllTotal;
-    return{totalIn,totalOut,balance:totalIn-totalOut,count:filtered.length,cashIn,cashOut,cashBalance:cashIn-cashOut,salesTotal,advTotal,advPaid,advUnpaid,advanceTotal,advancePaid,advanceUnpaid,cardTotal,cardPaid,cardUnpaid,cardPayTotal,cardPayPaid,padvTotal,padvPaid,padvUnpaid,padvAllTotal,padvAllPaid,totalExpense};
-  },[filtered,acctTab,records,viewPeriod,selectedYM,selectedYear]);
+    return{totalIn,totalOut,balance:totalIn-totalOut,count:filtered.length,cashIn,cashOut,cashCollected,cashBalance:currentOB+cashIn-cashOut-cashCollected,salesTotal,advTotal,advPaid,advUnpaid,advanceTotal,advancePaid,advanceUnpaid,cardTotal,cardPaid,cardUnpaid,cardPayTotal,cardPayPaid,padvTotal,padvPaid,padvUnpaid,padvAllTotal,padvAllPaid,totalExpense};
+  },[filtered,acctTab,records,viewPeriod,selectedYM,selectedYear,currentOB]);
 
   // 年度集計
   const yearlySummary=useMemo(()=>{
     const ym={};
     records.filter(r=>r.date&&r.date.startsWith(selectedYear)).forEach(r=>{
       const m=r.date.substring(0,7);
-      if(!ym[m])ym[m]={cashIn:0,cashOut:0,salesTotal:0,advTotal:0,advPaid:0,cardTotal:0,cardPaid:0,padvTotal:0,padvPaid:0,count:0};
-      if(r.type==="cash_in"){ym[m].cashIn+=r.amount;if(r.category==="現金売上"||r.category==="雑収入")ym[m].salesTotal+=r.amount;}
+      if(!ym[m])ym[m]={cashIn:0,cashOut:0,cashCollected:0,salesTotal:0,advTotal:0,advPaid:0,cardTotal:0,cardPaid:0,padvTotal:0,padvPaid:0,count:0};
+      if(r.type==="cash_in"){ym[m].cashIn+=r.amount;if(r.category==="現金売上"||r.category==="雑収入")ym[m].salesTotal+=r.amount;if(r.category==="現金売上"&&r.paid)ym[m].cashCollected+=r.amount;}
       else if(r.type==="cash_out")ym[m].cashOut+=r.amount;
       else if(r.type==="extra_sales"){ym[m].salesTotal+=r.amount;if(r.payMethod==="現金")ym[m].cashIn+=r.amount;}
       else if(r.type==="advance"){ym[m].advTotal+=r.amount;if(r.paid)ym[m].advPaid+=r.amount;}
@@ -20445,8 +20446,8 @@ function AccountingPanel({staff}){
         </div>
         <div style={{padding:"10px 14px",borderRadius:10,background:"#eff6ff",border:"1px solid #bfdbfe"}}>
           <div style={{fontSize:9,color:"#1e40af",fontWeight:600}}>現金残高</div>
-          <div style={{fontSize:18,fontWeight:800,color:(currentOB+summary.balance)>=0?"#2563eb":"#dc2626"}}>¥{(currentOB+summary.balance).toLocaleString()}</div>
-          <div style={{fontSize:8,color:"#6b7280",marginTop:2}}>月初+当月収支</div>
+          <div style={{fontSize:18,fontWeight:800,color:(currentOB+summary.balance-summary.cashCollected)>=0?"#2563eb":"#dc2626"}}>¥{(currentOB+summary.balance-summary.cashCollected).toLocaleString()}</div>
+          <div style={{fontSize:8,color:"#6b7280",marginTop:2}}>月初+当月収支−回収済現金売上</div>
         </div>
       </div>
     </div>}
@@ -20738,7 +20739,7 @@ function AccountingPanel({staff}){
         {/* ========== 年次モード限定: 年間推移 (常時表示・視覚チャート+テーブル) ========== */}
         {viewPeriod==="yearly"&&yearlySummary.length>0&&(()=>{
           const maxVal=Math.max.apply(null,yearlySummary.map(([,d])=>Math.max(d.salesTotal,d.cashOut+d.cardTotal+d.padvTotal)))||1;
-          const t=yearlySummary.reduce((a,[,d])=>({ci:a.ci+d.cashIn,co:a.co+d.cashOut,st:a.st+d.salesTotal,at:a.at+d.advTotal,ap:a.ap+d.advPaid,ct:a.ct+d.cardTotal,pt:a.pt+d.padvTotal}),{ci:0,co:0,st:0,at:0,ap:0,ct:0,pt:0});
+          const t=yearlySummary.reduce((a,[ym,d])=>({ci:a.ci+d.cashIn,co:a.co+d.cashOut,cc:a.cc+d.cashCollected,ob:a.ob+(openingBalances[ym]||0),st:a.st+d.salesTotal,at:a.at+d.advTotal,ap:a.ap+d.advPaid,ct:a.ct+d.cardTotal,pt:a.pt+d.padvTotal}),{ci:0,co:0,cc:0,ob:0,st:0,at:0,ap:0,ct:0,pt:0});
           const teTotal=t.co+t.ct+t.pt;
           const netTotal=t.st-teTotal;
           return <div style={{marginBottom:16,padding:"14px 16px",background:"#fff",borderRadius:12,border:"1px solid #e2e8f0",boxShadow:"0 1px 3px rgba(0,0,0,.04)"}}>
@@ -20777,11 +20778,11 @@ function AccountingPanel({staff}){
             <table style={{width:"100%",fontSize:10,borderCollapse:"collapse"}}>
               <thead><tr style={{background:"#f8fafc"}}>{["月","現金入金","現金出金","現金残高","売上","支出合計","純収支","立替未回収"].map((h,i)=><th key={i} style={{padding:"6px 8px",textAlign:i===0?"left":"right",fontWeight:700,fontSize:9,borderBottom:"1px solid #e2e8f0",color:"#475569"}}>{h}</th>)}</tr></thead>
               <tbody>
-                {yearlySummary.map(([ym,d])=>{const te=d.cashOut+d.cardTotal+d.padvTotal;const net=d.salesTotal-te;return <tr key={ym} style={{borderBottom:"1px solid #f1f5f9"}}>
+                {yearlySummary.map(([ym,d])=>{const te=d.cashOut+d.cardTotal+d.padvTotal;const net=d.salesTotal-te;const cashBal=(openingBalances[ym]||0)+d.cashIn-d.cashOut-d.cashCollected;return <tr key={ym} style={{borderBottom:"1px solid #f1f5f9"}}>
                   <td style={{padding:"6px 8px",fontWeight:700}}>{ym}</td>
                   <td style={{padding:"6px 8px",textAlign:"right",color:"#059669",fontWeight:600}}>¥{d.cashIn.toLocaleString()}</td>
                   <td style={{padding:"6px 8px",textAlign:"right",color:"#dc2626",fontWeight:600}}>¥{d.cashOut.toLocaleString()}</td>
-                  <td style={{padding:"6px 8px",textAlign:"right",fontWeight:700,color:(d.cashIn-d.cashOut)>=0?"#2563eb":"#dc2626"}}>¥{(d.cashIn-d.cashOut).toLocaleString()}</td>
+                  <td style={{padding:"6px 8px",textAlign:"right",fontWeight:700,color:cashBal>=0?"#2563eb":"#dc2626"}}>¥{cashBal.toLocaleString()}</td>
                   <td style={{padding:"6px 8px",textAlign:"right",color:"#0f172a",fontWeight:700}}>¥{d.salesTotal.toLocaleString()}</td>
                   <td style={{padding:"6px 8px",textAlign:"right",color:"#dc2626",fontWeight:700}}>¥{te.toLocaleString()}</td>
                   <td style={{padding:"6px 8px",textAlign:"right",fontWeight:800,color:net>=0?"#059669":"#dc2626"}}>¥{net.toLocaleString()}</td>
@@ -20791,7 +20792,7 @@ function AccountingPanel({staff}){
                   <td style={{padding:"8px"}}>合計</td>
                   <td style={{padding:"8px",textAlign:"right"}}>¥{t.ci.toLocaleString()}</td>
                   <td style={{padding:"8px",textAlign:"right"}}>¥{t.co.toLocaleString()}</td>
-                  <td style={{padding:"8px",textAlign:"right"}}>¥{(t.ci-t.co).toLocaleString()}</td>
+                  <td style={{padding:"8px",textAlign:"right"}}>¥{(t.ob+t.ci-t.co-t.cc).toLocaleString()}</td>
                   <td style={{padding:"8px",textAlign:"right"}}>¥{t.st.toLocaleString()}</td>
                   <td style={{padding:"8px",textAlign:"right"}}>¥{teTotal.toLocaleString()}</td>
                   <td style={{padding:"8px",textAlign:"right",color:netTotal>=0?"#86efac":"#fca5a5"}}>¥{netTotal.toLocaleString()}</td>
@@ -25108,7 +25109,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.623";
+const APP_VERSION="v4.7.624";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
