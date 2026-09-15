@@ -29,7 +29,7 @@ declare
   v_base_total int; v_opt_total int; v_total int; v_code text; v_id text; v_try int:=0;
   -- ★マスター（app_settings.hdm_official_price の spk）
   v_m jsonb; v_pcls jsonb; v_high jsonb; v_a int; v_b int; v_dd date;
-  v_cdw int; v_noc int; v_cfee int; v_jfee int;
+  v_cdw int; v_noc int; v_cfee int; v_jfee int; v_bmonths jsonb; v_bp int;
   FALLBACK jsonb:='{"A":13000,"A2":12000,"B":11000,"B2":12000,"C":7000,"S":9000,"F":6000,"H":6000}';
 begin
   if v_lend !~ '^\d{4}-\d{2}-\d{2}$' or v_ret !~ '^\d{4}-\d{2}-\d{2}$' or v_ret<v_lend then return jsonb_build_object('error','日付エラー'); end if;
@@ -40,6 +40,7 @@ begin
   v_b:=coalesce((v_pcls->>'b')::int,v_a);
   if v_a is null then return jsonb_build_object('error','このクラスは現在オンライン予約を承れません'); end if;
   v_high:=coalesce(v_m->'high_dates','[]'::jsonb);
+  v_bmonths:=coalesce(v_m->'b_months','{}'::jsonb); -- 月別 高設定価格 {"YYYY-MM":{クラス:金額}}
   v_cdw:=coalesce((v_m->'insurance'->>'cdw')::int,1100);
   v_noc:=coalesce((v_m->'insurance'->>'noc')::int,1650);
   v_cfee:=coalesce((v_m->'seat'->>'child')::int,1100);
@@ -48,10 +49,15 @@ begin
   -- 日別 A(通常)/B(高) 合算：貸出日〜返却日の各暦日
   v_base_total:=0;
   for v_dd in select generate_series(v_lend::date, v_ret::date, interval '1 day')::date loop
-    v_base_total:=v_base_total + (case when v_high ? to_char(v_dd,'YYYY-MM-DD') then v_b else v_a end);
+    if v_high ? to_char(v_dd,'YYYY-MM-DD') then -- Bの日：その月の高価格(未設定なら通常A)
+      v_bp:=(v_bmonths->to_char(v_dd,'YYYY-MM')->>v_cls)::int;
+      v_base_total:=v_base_total + coalesce(v_bp, v_a);
+    else v_base_total:=v_base_total + v_a; end if;
   end loop;
   if v_base_total=0 then -- 同日(v_ret=v_lend)は貸出日で判定
-    v_base_total:=(case when v_high ? to_char(v_lend::date,'YYYY-MM-DD') then v_b else v_a end);
+    if v_high ? to_char(v_lend::date,'YYYY-MM-DD') then
+      v_base_total:=coalesce((v_bmonths->to_char(v_lend::date,'YYYY-MM')->>v_cls)::int, v_a);
+    else v_base_total:=v_a; end if;
   end if;
   v_ins_daily:=case v_ins when 'cdw' then v_cdw when 'noc' then v_noc else 0 end;
   v_ins_txt:=case v_ins when 'cdw' then '免責' when 'noc' then 'NOC' else 'なし' end;
@@ -106,7 +112,7 @@ declare
   v_days int; v_ins_daily int; v_ins_txt text;
   v_base_total int; v_opt_total int; v_total int; v_code text; v_plate text; v_id text; v_try int:=0;
   v_m jsonb; v_pcls jsonb; v_high jsonb; v_a int; v_b int; v_dd date;
-  v_cdw int; v_noc int; v_cfee int; v_jfee int;
+  v_cdw int; v_noc int; v_cfee int; v_jfee int; v_bmonths jsonb; v_bp int;
   FALLBACK jsonb:='{"A":12000,"B":9000,"C":7000,"D":7000,"F":3500,"H":4500,"S":5500}';
 begin
   if v_lend !~ '^\d{4}-\d{2}-\d{2}$' or v_ret !~ '^\d{4}-\d{2}-\d{2}$' or v_ret<v_lend then return jsonb_build_object('error','日付エラー'); end if;
@@ -118,6 +124,7 @@ begin
   v_b:=coalesce((v_pcls->>'b')::int,v_a);
   if v_a is null then return jsonb_build_object('error','このクラスは現在オンライン予約を承れません'); end if;
   v_high:=coalesce(v_m->'high_dates','[]'::jsonb);
+  v_bmonths:=coalesce(v_m->'b_months','{}'::jsonb); -- 月別 高設定価格 {"YYYY-MM":{クラス:金額}}
   v_cdw:=coalesce((v_m->'insurance'->>'cdw')::int,1100);
   v_noc:=coalesce((v_m->'insurance'->>'noc')::int,1650);
   v_cfee:=coalesce((v_m->'seat'->>'child')::int,1100);
