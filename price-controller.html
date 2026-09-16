@@ -263,8 +263,8 @@ function proposeFromResearch(){
   loadMarketProposal(STORE,calYM).then(function(res){
     if(!res||!res.props||!Object.keys(res.props).length){toast('価格調査データがまだありません（市場調査を実行してください）');return;}
     if(!P.proposals)P.proposals={};P.proposals[calYM]=res.props;P._market=P._market||{};P._market[calYM]=res.market;render();
-    var msg='提案を作成しました。内容を確認して「OK 採用」を押してください';
-    if(res.short&&res.short.length)msg='一部は提案不可：'+res.short.join('/')+'（高い日・通常日を各2日以上 調査が必要）';
+    var msg='提案を作成しました（クラス階層は維持）。内容を確認して「OK 採用」を押してください';
+    if(res.short&&res.short.length)msg='提案完了。※'+res.short.join('/')+'は自クラスの調査不足→全体の市場水準から算出';
     toast(msg);
   }).catch(function(e){toast('提案の作成に失敗しました');});
 }
@@ -281,14 +281,27 @@ function loadMarketProposal(store,ym){
      var props={},market={},short=[];
      var r100=function(v){return Math.round(v/100)*100;};
      var mref=function(t10,med){t10=t10||med;med=med||t10;return (t10&&med)?(t10+med)/2:(t10||med);};
+     var masterA=function(c){var m=((P.months[ym]||{})[c]||{}).a;return (m!=null?m:P.price[c].a)||0;};
+     // クラスの上下関係はマスター(運営設定=正)で固定。市場からは①水準(全体) ②連休プレミアム(高い/通常比)だけ取る＝逆転・潰れを防止
+     var sumMkt=0,sumMas=0,gaps=[];
      Object.keys(P.price).forEach(function(c){
        var s=stats[c];if(!s)return;
        var mn=mref(s.n_top10,s.n_med), mh=mref(s.h_top10,s.h_med);
        if(mn)market[c]={n:Math.round(mn),h:Math.round(mh||mn)};
-       // 提案は「高い日・通常日 各2日以上」必要
-       if((s.n_cnt||0)<MIN_DAYS||(s.h_cnt||0)<MIN_DAYS){short.push(CLS_LABEL[c]||c);return;}
-       var a=r100(mn), b=r100(Math.max(mh, a*1.05)); // 高い>通常を保証
-       props[c]={a:a,b:b};
+       // 水準/ギャップの算出に使うのは「高い日・通常日 各2日以上」揃ったクラスのみ
+       if((s.n_cnt||0)>=MIN_DAYS&&(s.h_cnt||0)>=MIN_DAYS&&mn&&mh&&masterA(c)){
+         sumMkt+=mn; sumMas+=masterA(c); gaps.push(mh/mn);
+       }else{short.push(CLS_LABEL[c]||c);}
+     });
+     if(!gaps.length||!sumMas)return {props:{},market:market,short:['データ不足（高い日/通常日 各2日以上が必要）']};
+     var level=sumMkt/sumMas; // 市場水準÷現行水準
+     gaps.sort(function(a,b){return a-b;});
+     var gap=Math.max(1.05, gaps[Math.floor(gaps.length/2)]); // 連休プレミアム(中央値・最低+5%でギャップ保証)
+     // 全クラスをマスター価格×水準で提案＝クラス階層を保ったまま市場連動。高い=通常×連休プレミアム
+     Object.keys(P.price).forEach(function(c){
+       if(!masterA(c))return;
+       var a=r100(masterA(c)*level);
+       props[c]={a:a, b:r100(a*gap)};
      });
      return {props:props,market:market,short:short};
    });
