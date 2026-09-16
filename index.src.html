@@ -82,9 +82,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1161';
+var CV='spk-v1162';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=1028').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=1029').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -4230,17 +4230,23 @@ function JalanPaymentNew(){
     const timer=setInterval(()=>{if(document.visibilityState==="visible")load();},30000);
     return()=>{document.removeEventListener("visibilitychange",onVis);clearInterval(timer);};
   },[]);
+  // 2026-09-16 未送信/未払い/支払い済み の3状態が一目で分かるように。new/link_created=リンク作成済でまだ客に未送信／email_sent/reminded=送信済で未入金／paid=入金済。
   const statusMeta={
-    new:{label:"新規",bg:"#f1f5f9",c:"#475569"},
-    link_created:{label:"リンク作成済",bg:"#dbeafe",c:"#1d4ed8"},
-    email_sent:{label:"メール送信済",bg:"#fef3c7",c:"#92400e"},
-    paid:{label:"入金済",bg:"#dcfce7",c:"#166534"},
-    cancelled:{label:"キャンセル",bg:"#fef2f2",c:"#dc2626"},
+    new:{label:"未送信",bg:"#ffedd5",c:"#c2410c"},
+    link_created:{label:"未送信",bg:"#ffedd5",c:"#c2410c"},
+    email_sent:{label:"未払い",bg:"#fef2f2",c:"#dc2626"},
+    reminded:{label:"未払い(催促済)",bg:"#fef2f2",c:"#dc2626"},
+    paid:{label:"支払い済み",bg:"#dcfce7",c:"#166534"},
+    cancelled:{label:"キャンセル",bg:"#f1f5f9",c:"#64748b"},
     refund:{label:"返金待ち",bg:"#ffedd5",c:"#c2410c"},
     refunded:{label:"返金済",bg:"#f3e8ff",c:"#7c3aed"}
   };
+  // 3状態グルーピング（未送信/未払い/支払い済み/その他）
+  const PAY3=(st)=>st==="paid"?"paid":(st==="email_sent"||st==="reminded")?"unpaid":(st==="new"||st==="link_created")?"unsent":"other";
+  const S3={unsent:{l:"未送信",bg:"#ffedd5",c:"#c2410c"},unpaid:{l:"未払い",bg:"#fef2f2",c:"#dc2626"},paid:{l:"支払い済み",bg:"#dcfce7",c:"#166534"},other:{l:"キャンセル/返金",bg:"#f1f5f9",c:"#64748b"}};
+  const g3={unsent:0,unpaid:0,paid:0,other:0};payments.forEach(p=>{g3[PAY3(p.status)]++;});
   const filtered=useMemo(()=>{
-    const base=filter==="all"?payments:payments.filter(p=>p.status===filter);
+    const base=filter==="all"?payments:(["unsent","unpaid","paid","other"].includes(filter)?payments.filter(p=>PAY3(p.status)===filter):payments.filter(p=>p.status===filter));
     return [...base].sort((a,b)=>{
       let va,vb;
       if(sortKey==="amount"){va=a.amount||0;vb=b.amount||0;}
@@ -4267,15 +4273,16 @@ function JalanPaymentNew(){
   return <div>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
       <h3 style={{fontSize:16,fontWeight:800,margin:0}}>じゃらん事前決済</h3>
-      <div style={{display:"flex",gap:6,fontSize:10,fontWeight:700}}>
-        <span style={{padding:"2px 8px",borderRadius:8,background:"#dcfce7",color:"#166534"}}>入金済 {counts.paid||0}</span>
-        <span style={{padding:"2px 8px",borderRadius:8,background:"#fef3c7",color:"#92400e"}}>処理中 {(counts.new||0)+(counts.link_created||0)+(counts.email_sent||0)}</span>
-        <span style={{padding:"2px 8px",borderRadius:8,background:"#fef2f2",color:"#dc2626"}}>CXL {(counts.cancelled||0)+(counts.refund||0)+(counts.refunded||0)}</span>
+      <div style={{display:"flex",gap:6,fontSize:11,fontWeight:800}}>
+        <span style={{padding:"3px 10px",borderRadius:8,background:"#ffedd5",color:"#c2410c"}}>未送信 {g3.unsent}</span>
+        <span style={{padding:"3px 10px",borderRadius:8,background:"#fef2f2",color:"#dc2626"}}>未払い {g3.unpaid}</span>
+        <span style={{padding:"3px 10px",borderRadius:8,background:"#dcfce7",color:"#166534"}}>支払い済み {g3.paid}</span>
+        <span style={{padding:"3px 10px",borderRadius:8,background:"#f1f5f9",color:"#64748b"}}>ｷｬﾝｾﾙ/返金 {g3.other}</span>
       </div>
     </div>
     <div style={{display:"flex",gap:4,marginBottom:10,flexWrap:"wrap"}}>
-      {[{k:"all",l:"全て("+payments.length+")"},...Object.entries(statusMeta).map(([k,v])=>({k,l:v.label+"("+(counts[k]||0)+")"}))].map(f=>
-        <button key={f.k} onClick={()=>setFilter(f.k)} style={{padding:"3px 10px",borderRadius:6,border:filter===f.k?"2px solid #2563eb":"1px solid #d1d5db",background:filter===f.k?"#eff6ff":"#fff",fontSize:10,fontWeight:600,cursor:"pointer",color:filter===f.k?"#1d4ed8":"#64748b"}}>{f.l}</button>
+      {[{k:"all",l:"全て("+payments.length+")"},{k:"unsent",l:"未送信("+g3.unsent+")"},{k:"unpaid",l:"未払い("+g3.unpaid+")"},{k:"paid",l:"支払い済み("+g3.paid+")"},{k:"other",l:"キャンセル/返金("+g3.other+")"}].map(f=>
+        <button key={f.k} onClick={()=>setFilter(f.k)} style={{padding:"4px 12px",borderRadius:6,border:filter===f.k?"2px solid #2563eb":"1px solid #d1d5db",background:filter===f.k?"#eff6ff":"#fff",fontSize:11,fontWeight:700,cursor:"pointer",color:filter===f.k?"#1d4ed8":"#64748b"}}>{f.l}</button>
       )}
     </div>
     {filtered.length===0?<div style={{...cardS,padding:24,textAlign:"center",color:"#94a3b8",fontSize:13}}>該当データなし</div>:
@@ -25111,7 +25118,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.629";
+const APP_VERSION="v4.7.630";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
