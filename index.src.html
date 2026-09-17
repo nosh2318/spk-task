@@ -82,9 +82,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1162';
+var CV='spk-v1163';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=1029').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=1030').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -21832,6 +21832,14 @@ function InventoryTab({data,sb,store,vehicles,maintenance,onCancel}){
         name:_vehName(m.vehicleCode),vehicle:_vehName(m.vehicleCode),vehicleCode:m.vehicleCode,
         lendDate:m.startDate,returnDate:m.endDate||m.startDate,createdAt:m.createdAt||today}));
   },[maintenance,vehicles,today]);
+  // ★2026-09-17 協力会社の自社予約(block_type=partner_reserved)を在庫管理に反映＝予約と同じ表示・媒体=協力会社名
+  const partnerRows=React.useMemo(()=>{
+    return (maintenance||[]).filter(m=>m&&(m.blockType||m.block_type)==="partner_reserved"&&(m.endDate||m.startDate)&&(m.endDate||m.startDate)>=today&&m.deleted!==true)
+      .map(m=>{const v=(vehicles||[]).find(x=>x&&x.code===m.vehicleCode);
+        return {id:m.id,_partner:true,partnerLabel:(v&&v.ownerLabel)||m.ownerCompany||"協力会社",ota:"_PARTNER",
+          name:m.maintNotes||"自社予約",vehicle:v?v.name:m.vehicleCode,vehicleCode:m.vehicleCode,
+          lendDate:m.startDate,returnDate:m.endDate||m.startDate,createdAt:m.createdAt||today};});
+  },[maintenance,vehicles,today]);
   const OTA_L={J:"JLN",R:"RKT",S:"SKT",O:"ART",A:"ART",HP:"HDM",SP:"SP",RC:"RDC",G:"GOO",KEYDROP:"KEY",direct:"直接",TBR:"TBR"};
   const OTA_C={S:"#2563eb",J:"#16a34a",R:"#dc2626",O:"#ea580c",HP:"#1e3a8a",SP:"#1e3a8a",RC:"#eab308",G:"#0f766e",KEYDROP:"#0f766e",direct:"#64748b"};
   const [stat,setStat]=React.useState({});      // id -> {stock_adjusted,app_imported,mail_sent,stock_released}
@@ -21856,8 +21864,8 @@ function InventoryTab({data,sb,store,vehicles,maintenance,onCancel}){
   // 表示対象：これからの貸出（通常）＋ 開放が必要なキャンセル。調整前キャンセル＝やることなし→非表示
   const rows=React.useMemo(()=>{
     const resv=(data||[]).filter(r=>{if(_isTestResv(r))return false;const d=r.returnDate||r.lendDate;if(!d||d<today)return false;return isCxl(r)?cxNeedRel(r):(r.lendDate&&r.lendDate>=today);});
-    return resv.concat(intakeRows).sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||""));
-  },[data,today,stat,intakeRows]);
+    return resv.concat(intakeRows).concat(partnerRows).sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||""));
+  },[data,today,stat,intakeRows,partnerRows]);
   // 要対応：キャンセル→在庫開放が未／通常→在庫調整・取込・(楽天)メール送信のいずれか未
   const isTodo=(r)=>{const s=sOf(r);return isCxl(r)?!s.stock_released:(!s.stock_adjusted||!s.app_imported||(r.ota==="R"&&!s.mail_sent));};
   const isNew=(r)=>!stat[r.id]&&!isCxl(r); // まだ一度も触っていない＝新規（キャンセルは別扱い）
@@ -21905,9 +21913,9 @@ function InventoryTab({data,sb,store,vehicles,maintenance,onCancel}){
         const dim={opacity:.35};
         return(<tr key={r.id} style={{boxShadow:shadow}}>
           <td style={{...td,borderRadius:"10px 0 0 10px",whiteSpace:"nowrap"}}>{fmtDt(r.createdAt)}{nw&&<span style={{fontSize:9,fontWeight:700,color:"#dc2626",border:"1px solid #dc2626",borderRadius:4,padding:"0 4px",marginLeft:5}}>NEW</span>}{cx&&<span style={{fontSize:9,fontWeight:700,color:"#fff",background:"#7c3aed",borderRadius:4,padding:"1px 5px",marginLeft:5}}>キャンセル</span>}</td>
-          <td style={td}>{r._intake?<span style={{fontSize:11,fontWeight:800,padding:"3px 8px",borderRadius:6,color:"#92400e",whiteSpace:"nowrap",background:"#fde68a"}}>🏭{r.label}</span>:<span style={{fontSize:11,fontWeight:700,padding:"3px 8px",borderRadius:6,color:r.ota==="RC"?"#1f2937":"#fff",whiteSpace:"nowrap",background:OTA_C[r.ota]||"#94a3b8"}}>{OTA_L[r.ota]||r.ota}</span>}</td>
-          <td style={{...td,fontWeight:600,textDecoration:cx?"line-through":"none",color:cx?"#94a3b8":"inherit"}}>{r.name||"-"}{r._intake&&<span style={{fontSize:9,fontWeight:800,color:"#92400e",background:"#fef3c7",borderRadius:4,padding:"1px 5px",marginLeft:5}}>入庫（全媒体）</span>}</td>
-          <td style={{...td,fontSize:11,color:"#475569"}}>{r._intake?"—":r.id}{!cx&&!r._intake&&onCancel&&<button onClick={()=>doCancel(r)} style={{marginLeft:6,fontSize:9,color:"#dc2626",border:"1px solid #fecaca",background:"#fff",borderRadius:5,padding:"1px 5px",cursor:"pointer"}}>✕取消</button>}</td>
+          <td style={td}>{r._partner?<span style={{fontSize:11,fontWeight:800,padding:"3px 8px",borderRadius:6,color:"#fff",whiteSpace:"nowrap",background:"#7c3aed"}}>🟣{r.partnerLabel}</span>:r._intake?<span style={{fontSize:11,fontWeight:800,padding:"3px 8px",borderRadius:6,color:"#92400e",whiteSpace:"nowrap",background:"#fde68a"}}>🏭{r.label}</span>:<span style={{fontSize:11,fontWeight:700,padding:"3px 8px",borderRadius:6,color:r.ota==="RC"?"#1f2937":"#fff",whiteSpace:"nowrap",background:OTA_C[r.ota]||"#94a3b8"}}>{OTA_L[r.ota]||r.ota}</span>}</td>
+          <td style={{...td,fontWeight:600,textDecoration:cx?"line-through":"none",color:cx?"#94a3b8":"inherit"}}>{r.name||"-"}{r._intake&&<span style={{fontSize:9,fontWeight:800,color:"#92400e",background:"#fef3c7",borderRadius:4,padding:"1px 5px",marginLeft:5}}>入庫（全媒体）</span>}{r._partner&&<span style={{fontSize:9,fontWeight:800,color:"#6d28d9",background:"#ede9fe",borderRadius:4,padding:"1px 5px",marginLeft:5}}>自社予約</span>}</td>
+          <td style={{...td,fontSize:11,color:"#475569"}}>{(r._intake||r._partner)?"—":r.id}{!cx&&!r._intake&&!r._partner&&onCancel&&<button onClick={()=>doCancel(r)} style={{marginLeft:6,fontSize:9,color:"#dc2626",border:"1px solid #fecaca",background:"#fff",borderRadius:5,padding:"1px 5px",cursor:"pointer"}}>✕取消</button>}</td>
           <td style={{...td,whiteSpace:"nowrap"}}>{fmtD(r.lendDate)}</td>
           <td style={{...td,whiteSpace:"nowrap"}}>{fmtD(r.returnDate)}</td>
           <td style={{...td,fontWeight:700}}>{r.vehicle||"-"}</td>
@@ -21919,7 +21927,7 @@ function InventoryTab({data,sb,store,vehicles,maintenance,onCancel}){
       </tbody>
     </table>
     </div>
-    <p style={{fontSize:11,color:"#94a3b8",marginTop:14,lineHeight:1.7}}>🔴赤=新規/未対応 ／ 🟣紫=キャンセル（在庫の開放が必要）／ 白=対応済み。<br/>キャンセルが入った予約は消えず「在庫開放」待ちで残ります。配車を空けたら「在庫開放」にチェック→消えます。<br/><span style={{color:"#92400e"}}>🏭入庫（車検/点検/修理）＝<b>全媒体 調整対象</b>。各媒体で在庫を絞って「在庫調整」にチェック。登録は「🔧車両→車検/点検/修理」または配車表から。</span></p>
+    <p style={{fontSize:11,color:"#94a3b8",marginTop:14,lineHeight:1.7}}>🔴赤=新規/未対応 ／ 🟣紫=キャンセル（在庫の開放が必要）／ 白=対応済み。<br/>キャンセルが入った予約は消えず「在庫開放」待ちで残ります。配車を空けたら「在庫開放」にチェック→消えます。<br/><span style={{color:"#92400e"}}>🏭入庫（車検/点検/修理）＝<b>全媒体 調整対象</b>。各媒体で在庫を絞って「在庫調整」にチェック。登録は「🔧車両→車検/点検/修理」または配車表から。</span><br/><span style={{color:"#6d28d9"}}>🟣自社予約＝協力会社が自社車両を予約でブロックした枠。媒体に協力会社名で表示され、予約と同じく在庫調整が必要（各媒体の在庫を絞る）。登録は配車表から。</span></p>
   </div>);
 }
 
@@ -22700,7 +22708,7 @@ function App(){
   // ★2026-09-15 TOPを開く度にDB再取得して正本へ自己修復（realtime取りこぼし/凍結でバッジが未対応0でも残るのを防ぐ・BT v1.0.376横展開）
   useEffect(()=>{if(tab==="top"&&invBadgeReloadRef.current)invBadgeReloadRef.current();},[tab]);
   const invTodoCount=React.useMemo(()=>(data||[]).filter(r=>{const d=r.returnDate||r.lendDate;if(!d||d<today)return false;return r.status==="cancelled"?(invAdjSet.has(r.id)&&!invRelSet.has(r.id)):(r.lendDate>=today&&!invAdjSet.has(r.id));}).length,[data,today,invAdjSet,invRelSet]);
-  const invTodoTotal=React.useMemo(()=>{const IL=["車検","半年点検","修理"];const it=(maintenance||[]).filter(m=>m&&IL.includes(m.label)&&(m.endDate||m.startDate)&&(m.endDate||m.startDate)>=today&&m.deleted!==true&&!invAdjSet.has(m.id)).length;return invTodoCount+it;},[invTodoCount,maintenance,invAdjSet,today]);
+  const invTodoTotal=React.useMemo(()=>{const IL=["車検","半年点検","修理"];const it=(maintenance||[]).filter(m=>m&&IL.includes(m.label)&&(m.endDate||m.startDate)&&(m.endDate||m.startDate)>=today&&m.deleted!==true&&!invAdjSet.has(m.id)).length;const pt=(maintenance||[]).filter(m=>m&&(m.blockType||m.block_type)==="partner_reserved"&&(m.endDate||m.startDate)&&(m.endDate||m.startDate)>=today&&m.deleted!==true&&!invAdjSet.has(m.id)).length;return invTodoCount+it+pt;},[invTodoCount,maintenance,invAdjSet,today]);
   // ★ じゃらん新システム(jalan_payments)の入金済みSet — localStorage キャッシュで即時復元
   const[jpNewPaidSet,setJpNewPaidSet]=useState(()=>{try{const s=localStorage.getItem("spk_jp_paid_ids");const arr=s?JSON.parse(s):[];return new Set(arr);}catch(e){return new Set();}});
   useEffect(()=>{
@@ -25118,7 +25126,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.630";
+const APP_VERSION="v4.7.631";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
