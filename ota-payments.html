@@ -47,11 +47,11 @@ tr.tot td{background:var(--nv);color:#fff;font-weight:800;font-size:13.5px}
 <div class="cards" id="cards"></div>
 
 <div style="margin-bottom:12px" id="otaViewWrap"><span class="seg" id="view">
- <button data-v="matrix" class="on">📅 月×OTA</button>
+ <button data-v="matrixSt" class="on">🏬 月×店舗</button>
+ <button data-v="quarterSt">🗓 四半期×店舗</button>
+ <button data-v="matrix">📅 月×OTA</button>
  <button data-v="quarter">🗓 四半期×OTA</button>
  <button data-v="otaMonth">🅾️ OTA×月</button>
- <button data-v="matrixSt">🏬 月×店舗</button>
- <button data-v="quarterSt">🗓 四半期×店舗</button>
  <button data-v="ota">🅾️ OTA別 合計</button>
  <button data-v="store">🏬 店舗別 合計</button>
  <button data-v="month">📋 月別くわしく</button>
@@ -83,6 +83,7 @@ const BT="https://ggqugvyskyiblxiycpci.supabase.co",BANON="eyJhbGciOiJIUzI1NiIsI
 const rpc=(b,a,f)=>fetch(b+"/rest/v1/rpc/"+f,{method:"POST",headers:{apikey:a,Authorization:"Bearer "+a,"Content-Type":"application/json"},body:"{}"}).then(r=>r.json()).catch(_=>[]);
 const STN={nha:"🌺那覇",spk:"❄️札幌",tkm:"🍜高松"};
 const OTAORD=["自社/HP","じゃらん","楽天","エアトリ","skyticket","RDドットコム","GoGoOut"];
+const OLD_UNTIL="2026-03"; // これ以前(2025-08〜2026-03)は折りたたむ
 const yen=n=>"¥"+Math.round(n).toLocaleString();
 const man=n=>n<5000?"–":Math.round(n/10000).toLocaleString()+"万";
 const cM=n=>"¥"+Math.round(n/10000).toLocaleString()+"万";
@@ -133,7 +134,7 @@ function viewGroup(keyfn,label,order){const f=filtered();const m=agg(f,keyfn);
  h+='</tbody></table></div></div>';document.getElementById("body").innerHTML=h;}
 const mrow=r=>({key:r.pay_month,lab:r.pay_month,sort:r.pay_month});
 function qrow(r){const p=r.pay_month.split("-"),y=+p[0],mo=+p[1];const q=mo>=10?"10-12":mo<=3?"1-3":mo<=6?"4-6":"7-9";const sm=mo>=10?"-10":mo<=3?"-01":mo<=6?"-04":"-07";return{key:y+" "+q,lab:y+"年 "+q+"月",sort:y+sm};}
-function matrixView(getCol,colOrder,lab,title,rowFn){rowFn=rowFn||mrow;const f=filtered().filter(r=>r.kind!=="未入金");
+function matrixView(getCol,colOrder,lab,title,rowFn,extra){rowFn=rowFn||mrow;extra=extra||[];const f=filtered().filter(r=>r.kind!=="未入金");
  const cols=colOrder.filter(c=>f.some(r=>getCol(r)===c));
  const rmeta={};f.forEach(r=>{const m=rowFn(r);if(!rmeta[m.key])rmeta[m.key]={lab:m.lab,sort:m.sort};});
  const rowsK=Object.keys(rmeta).sort((a,b)=>rmeta[a].sort<rmeta[b].sort?-1:rmeta[a].sort>rmeta[b].sort?1:0);
@@ -142,20 +143,30 @@ function matrixView(getCol,colOrder,lab,title,rowFn){rowFn=rowFn||mrow;const f=f
  const cur=rowFn({pay_month:new Date().toISOString().slice(0,7)}).key,hcol=(rowFn===qrow?"入金四半期":"入金月");
  let h='<div class="sec"><h2>'+title+' <span class="badge">単位:万円／OTA列=売上</span></h2><div class="ov"><table><thead><tr><th>'+hcol+'</th>';
  cols.forEach(c=>h+='<th>'+lab(c)+'</th>');
+ extra.forEach(e=>h+='<th style="background:'+(e.color||'#475569')+';color:#fff">'+e.lab+'</th>');
  h+='<th style="background:#1e3a8a;color:#fff">合計金額</th><th style="background:#b91c1c;color:#fff">手数料</th><th style="background:#166534;color:#fff">差引(手取り)</th></tr></thead><tbody>';
- rowsK.forEach(rk=>{const hi=rk===cur,g=rowG[rk]||0,n=rowN[rk]||0;h+='<tr'+(hi?' style="background:#fef9c3"':'')+'><td><b>'+rmeta[rk].lab+'</b>'+(hi?' <span class="badge" style="background:#facc15;color:#713f12">今</span>':'')+'</td>';
-  cols.forEach(c=>{const v=cell[rk+"|"+c]||0;h+='<td class="mono">'+(v?man(v):'<span style="color:#d1d5db">–</span>')+'</td>';});
-  h+='<td class="mono" style="font-weight:800;background:#eff6ff;color:#1e3a8a">'+man(g)+'</td><td class="mono" style="color:#b91c1c">-'+man(g-n)+'</td><td class="mono" style="font-weight:800;background:#f0fdf4;color:#166534">'+man(n)+'</td></tr>';});
+ const isMonth=(rowFn===mrow);
+ const oldKeys=isMonth?rowsK.filter(k=>k<=OLD_UNTIL):[];
+ const showKeys=isMonth?rowsK.filter(k=>k>OLD_UNTIL):rowsK;
+ const rowHtml=(rk,cls)=>{const hi=rk===cur,g=rowG[rk]||0,n=rowN[rk]||0;let x='<tr'+(cls?' class="'+cls+'" style="display:none"':(hi?' style="background:#fef9c3"':''))+'><td><b>'+rmeta[rk].lab+'</b>'+((hi&&!cls)?' <span class="badge" style="background:#facc15;color:#713f12">今</span>':'')+'</td>';
+  cols.forEach(c=>{const v=cell[rk+"|"+c]||0;x+='<td class="mono">'+(v?man(v):'<span style="color:#d1d5db">–</span>')+'</td>';});
+  extra.forEach(e=>{const ev=e.keys.reduce((a,k)=>a+(cell[rk+"|"+k]||0),0);x+='<td class="mono" style="font-weight:700;background:#f8fafc">'+(ev?man(ev):'·')+'</td>';});
+  x+='<td class="mono" style="font-weight:800;background:#eff6ff;color:#1e3a8a">'+man(g)+'</td><td class="mono" style="color:#b91c1c">-'+man(g-n)+'</td><td class="mono" style="font-weight:800;background:#f0fdf4;color:#166534">'+man(n)+'</td></tr>';return x;};
+ if(oldKeys.length){const og=oldKeys.reduce((a,k)=>a+(rowG[k]||0),0),on=oldKeys.reduce((a,k)=>a+(rowN[k]||0),0);
+  h+='<tr data-toggle-old style="cursor:pointer;background:#eef2f7"><td colspan="'+(cols.length+1+extra.length)+'"><span class="oldtri">▶</span> <b>過去 '+oldKeys[0]+'〜'+oldKeys[oldKeys.length-1]+'</b> <span class="badge">'+oldKeys.length+'ヶ月・タップで開閉</span></td><td class="mono" style="font-weight:800;background:#eff6ff;color:#1e3a8a">'+man(og)+'</td><td class="mono" style="color:#b91c1c">-'+man(og-on)+'</td><td class="mono" style="font-weight:800;background:#f0fdf4;color:#166534">'+man(on)+'</td></tr>';
+  oldKeys.forEach(rk=>h+=rowHtml(rk,"oldrow"));}
+ showKeys.forEach(rk=>h+=rowHtml(rk,""));
  const gT=Object.values(rowG).reduce((a,b)=>a+b,0),nT=Object.values(rowN).reduce((a,b)=>a+b,0);
- h+='<tr class="tot"><td>合計</td>';cols.forEach(c=>h+='<td class="mono">'+man(colG[c]||0)+'</td>');h+='<td class="mono">'+man(gT)+'</td><td class="mono">-'+man(gT-nT)+'</td><td class="mono">'+man(nT)+'</td></tr>';
+ h+='<tr class="tot"><td>合計</td>';cols.forEach(c=>h+='<td class="mono">'+man(colG[c]||0)+'</td>');extra.forEach(e=>{const et=rowsK.reduce((a,rk)=>a+e.keys.reduce((b,k)=>b+(cell[rk+"|"+k]||0),0),0);h+='<td class="mono">'+man(et)+'</td>';});h+='<td class="mono">'+man(gT)+'</td><td class="mono">-'+man(gT-nT)+'</td><td class="mono">'+man(nT)+'</td></tr>';
  h+='</tbody></table></div></div>';document.getElementById("body").innerHTML=h;}
 function viewMatrix(){matrixView(r=>r.ota,OTAORD,c=>c,"📅 月ごとの入金（OTA別・単位：万円）");}
 function viewQuarter(){matrixView(r=>r.ota,OTAORD,c=>c,"🗓 四半期ごとの入金（10-12/1-3/4-6/7-9・OTA別・単位：万円）",qrow);}
 const stSplit=r=>r.store+"|"+(r.ota==="自社/HP"?"HP":"OTA");
 const stSplitOrder=["nha|OTA","nha|HP","spk|OTA","spk|HP","tkm|OTA","tkm|HP"];
 const stSplitLab=c=>{const p=c.split("|");return STN[p[0]]+'<br><span style="font-size:10px;color:'+(p[1]==="HP"?"#0891b2":"#94a3b8")+'">'+(p[1]==="HP"?"自社HP":"OTA")+'</span>';};
-function viewMatrixSt(){matrixView(stSplit,stSplitOrder,stSplitLab,"🏬 月ごとの入金（店舗×OTA/自社HP・単位：万円）");}
-function viewQuarterSt(){matrixView(stSplit,stSplitOrder,stSplitLab,"🗓 四半期ごとの入金（店舗×OTA/自社HP・単位：万円）",qrow);}
+const stExtra=[{lab:"OTA合計",keys:["nha|OTA","spk|OTA","tkm|OTA"],color:"#475569"},{lab:"自社HP合計",keys:["nha|HP","spk|HP","tkm|HP"],color:"#0891b2"}];
+function viewMatrixSt(){matrixView(stSplit,stSplitOrder,stSplitLab,"🏬 月ごとの入金（店舗×OTA/自社HP・単位：万円）",mrow,stExtra);}
+function viewQuarterSt(){matrixView(stSplit,stSplitOrder,stSplitLab,"🗓 四半期ごとの入金（店舗×OTA/自社HP・単位：万円）",qrow,stExtra);}
 function otaMonthTable(rows,title){
  const otas=OTAORD.filter(o=>rows.some(r=>r.ota===o));const months=[...new Set(rows.map(r=>r.pay_month))].sort();
  const cell={},rowG={},rowN={},colG={};
@@ -172,7 +183,7 @@ function viewOtaMonth(){const f=filtered();const st=document.getElementById("fSt
  if(st){h=otaMonthTable(f,"🅾️ OTA別×月："+STN[st]+" ");}
  else{["nha","spk","tkm"].forEach(s=>{const rows=f.filter(r=>r.store===s);if(rows.length)h+=otaMonthTable(rows,"🅾️ OTA別×月："+STN[s]+" ");});h+=otaMonthTable(f,"🅾️ OTA別×月：3店合計 ");}
  document.getElementById("body").innerHTML=h;}
-let VIEW="matrix";
+let VIEW="matrixSt";
 function render(){cards();if(VIEW==="otaMonth")viewOtaMonth();else if(VIEW==="quarter")viewQuarter();else if(VIEW==="quarterSt")viewQuarterSt();else if(VIEW==="matrixSt")viewMatrixSt();else if(VIEW==="month")viewMonth();else if(VIEW==="store")viewGroup(r=>r.store,"🏬 店舗別",["nha","spk","tkm"]);else if(VIEW==="ota")viewGroup(r=>r.ota,"🅾️ OTA別",OTAORD);else viewMatrix();}
 async function load(){document.getElementById("sub").textContent="読み込み中…";
  const [m,b]=await Promise.all([rpc(MAIN,MANON,"ota_settlement_v2"),rpc(BT,BANON,"bt_ota_settlement_v2")]);
@@ -183,6 +194,7 @@ async function load(){document.getElementById("sub").textContent="読み込み�
  document.getElementById("sub").textContent="更新 "+new Date().toLocaleString("ja-JP")+"／全"+tot+"件（HDM・3店・全予約計上）";
  render();}
 document.querySelectorAll("#view button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#view button").forEach(x=>x.classList.remove("on"));b.classList.add("on");VIEW=b.dataset.v;render();});
+document.getElementById("body").addEventListener("click",e=>{const t=e.target.closest("[data-toggle-old]");if(!t)return;const tbl=t.closest("table"),open=t.dataset.open==="1";tbl.querySelectorAll(".oldrow").forEach(r=>r.style.display=open?"none":"");t.dataset.open=open?"":"1";const tri=t.querySelector(".oldtri");if(tri)tri.textContent=open?"▶":"▼";});
 ["fSt","fOta","fKind","fee"].forEach(id=>{const el=document.getElementById(id);el.addEventListener("input",render);el.addEventListener("change",render);});
 document.getElementById("rl").onclick=load;
 
