@@ -30,7 +30,12 @@ tr.tot td{background:var(--nv);color:#fff;font-weight:800;font-size:13.5px}
 <h1>💰 OTA入金表（HDM・那覇/札幌/高松）</h1>
 <div class="sub" id="sub">読み込み中…</div>
 
-<div class="bar">
+<div class="seg" id="topTab" style="margin-bottom:12px;font-size:14px">
+ <button data-m="ota" class="on" style="padding:8px 16px">📊 OTA入金</button>
+ <button data-m="cf" style="padding:8px 16px">💰 資金繰り</button>
+</div>
+
+<div class="bar" id="otaBar">
  <span style="font-weight:700;font-size:12px">絞込</span>
  店舗<select id="fSt"><option value="">全て</option><option value="nha">🌺那覇</option><option value="spk">❄️札幌</option><option value="tkm">🍜高松</option></select>
  OTA<select id="fOta"><option value="">全て</option></select>
@@ -41,7 +46,7 @@ tr.tot td{background:var(--nv);color:#fff;font-weight:800;font-size:13.5px}
 
 <div class="cards" id="cards"></div>
 
-<div style="margin-bottom:12px"><span class="seg" id="view">
+<div style="margin-bottom:12px" id="otaViewWrap"><span class="seg" id="view">
  <button data-v="matrix" class="on">📅 月×OTA</button>
  <button data-v="otaMonth">🅾️ OTA×月</button>
  <button data-v="matrixSt">🏬 月×店舗</button>
@@ -52,9 +57,23 @@ tr.tot td{background:var(--nv);color:#fff;font-weight:800;font-size:13.5px}
 
 <div id="body"></div>
 
-<div class="sec"><div class="note">
+<div class="sec" id="otaNote"><div class="note">
 💡 <b>お金が入る時期はOTAで違います</b>：自社HP＝予約受付月／じゃらん＝<b>返却月</b>（当店Square集金）／エアトリ・skyticket・RDドットコム・GoGoOut＝返却の<b>翌月末</b>／楽天＝返却の<b>3ヶ月後末</b>。<br>売上は「基本料金＋付帯−割引」＝出入金管理(expenditure)と同一。単位は万円。各表の右端に<b>合計金額・手数料・差引(手取り)を並記</b>。手数料%は上のバーで変更可（自社HPは0%）。高松はHANDYMANぶんのみ（BUDDICA/たびらいは対象外）。全予約を計上。
 </div></div>
+
+<div id="cfWrap" style="display:none">
+ <div class="bar">
+  <button id="cfPrev" style="border:1px solid #cbd5e1;background:#fff;border-radius:6px;padding:5px 10px;cursor:pointer;font-weight:700">◀</button>
+  <b id="cfMonth" style="font-size:16px;min-width:80px;text-align:center">—</b>
+  <button id="cfNext" style="border:1px solid #cbd5e1;background:#fff;border-radius:6px;padding:5px 10px;cursor:pointer;font-weight:700">▶</button>
+  <label style="font-size:12px;margin-left:8px">OTA入金 <select id="cfOtaMode"><option value="gross">売上グロス</option><option value="net">手取り(手数料引後)</option></select></label>
+  <button id="cfSave" style="margin-left:auto;background:#16a34a;color:#fff;border:none;border-radius:6px;padding:6px 16px;font-weight:700;cursor:pointer">💾 保存</button>
+  <span id="cfStatus" style="font-size:11px;color:#64748b"></span>
+ </div>
+ <div class="cards" id="cfCards"></div>
+ <div id="cfBody"></div>
+ <div class="sec"><div class="note">💡 <b>資金繰り表</b>＝実際に「入ってくるお金」と「出ていくお金」を月ごとに突き合わせ。<b>OTA入金は自動</b>（上のOTA入金表と同じ数字・入金月ベース）。それ以外（賃料/リース/返済/広告/給与/AMEX/税/借入・貸付/銀行残高）は手入力→<b>💾保存で翌月も残ります</b>。過不足＝収入−支出。</div></div>
+</div>
 </div>
 <script>
 const MAIN="https://ckrxttbnawkclshczsia.supabase.co",MANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
@@ -155,5 +174,87 @@ async function load(){document.getElementById("sub").textContent="読み込み�
 document.querySelectorAll("#view button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#view button").forEach(x=>x.classList.remove("on"));b.classList.add("on");VIEW=b.dataset.v;render();});
 ["fSt","fOta","fKind","fee"].forEach(id=>{const el=document.getElementById(id);el.addEventListener("input",render);el.addEventListener("change",render);});
 document.getElementById("rl").onclick=load;
+
+/* ===== 💰 資金繰り ===== */
+const CF_STORES=[["nha","🌺那覇"],["spk","❄️札幌"],["tkm","🍜高松"]];
+const CF_EXP_CATS=["賃料","リース・クレジット","返済","広告関連","外注費","手数料","保険料","クレジット(AMEX)","従業員(給与・社保)","修理・工事","その他"];
+let cfMonth=new Date().toISOString().slice(0,7),cfData=null;
+const cfnum=v=>{const n=parseInt(String(v==null?'':v).replace(/[^\d-]/g,''),10);return isNaN(n)?0:n;};
+const gid=id=>document.getElementById(id);
+const setT=(id,v)=>{const e=gid(id);if(e)e.textContent=v;};
+function cfDefault(){return{income:[],expense:{},banks:{"北海道銀行":0,"沖縄銀行":0,"北洋銀行":0},loans:[],otaMode:"gross"};}
+function cfShape(){cfData.income=cfData.income||[];cfData.expense=cfData.expense||{};cfData.banks=cfData.banks||{"北海道銀行":0,"沖縄銀行":0,"北洋銀行":0};cfData.loans=cfData.loans||[];cfData.otaMode=cfData.otaMode||"gross";CF_EXP_CATS.forEach(c=>{cfData.expense[c]=cfData.expense[c]||{rows:[]};});}
+function cfOtaMap(){const mode=cfData.otaMode||"gross",m={};RAW.filter(r=>r.pay_month===cfMonth&&r.kind!=="未入金").forEach(r=>{const v=mode==="net"?net(r):r.gross;(m[r.ota]=m[r.ota]||{nha:0,spk:0,tkm:0});m[r.ota][r.store]+=v;});return m;}
+function cfIncStore(s){let t=0;const o=cfOtaMap();Object.values(o).forEach(v=>t+=v[s]||0);cfData.income.forEach(r=>t+=cfnum(r[s]));return t;}
+function cfExpCat(c,s){let t=0;(cfData.expense[c].rows||[]).forEach(r=>t+=cfnum(r[s]));return t;}
+function cfExpStore(s){let t=0;CF_EXP_CATS.forEach(c=>t+=cfExpCat(c,s));return t;}
+function cfCards(){const ss=["nha","spk","tkm"],inc=ss.reduce((a,s)=>a+cfIncStore(s),0),exp=ss.reduce((a,s)=>a+cfExpStore(s),0),bal=inc-exp,bank=Object.values(cfData.banks).reduce((a,b)=>a+cfnum(b),0);
+ gid("cfCards").innerHTML=card("収入合計",yen(inc),cfMonth+"／入金予定","#16a34a")+card("支出合計",yen(exp),cfMonth+"／支払予定","#dc2626")+card("過不足",yen(bal),bal>=0?"黒字":"不足",bal>=0?"#16a34a":"#b91c1c")+card("銀行残高",yen(bank),"3行合計","#1e3a8a");}
+function cfRender(){cfShape();gid("cfMonth").textContent=cfMonth;const ss=["nha","spk","tkm"],o=cfOtaMap();
+ const ci=(t,attr,v)=>'<input class="mono" data-t="'+t+'" '+attr+' value="'+(v==null||v===0?'':v)+'" inputmode="numeric" style="width:92px;text-align:right;border:1px solid #e2e8f0;border-radius:4px;padding:3px 5px;font-size:12px">';
+ const li=(t,attr,v)=>'<input data-t="'+t+'" '+attr+' value="'+String(v||'').replace(/"/g,'&quot;')+'" placeholder="項目" style="border:1px solid #e2e8f0;border-radius:4px;padding:3px 6px;font-size:12px;width:150px">';
+ const del=attr=>'<button '+attr+' style="border:none;background:#fee2e2;color:#991b1b;border-radius:5px;padding:2px 7px;cursor:pointer">✕</button>';
+ const add=attr=>'<button '+attr+' style="border:none;background:#dcfce7;color:#166534;border-radius:5px;padding:2px 9px;cursor:pointer;font-weight:700">＋</button>';
+ // 収入
+ let h='<div class="sec"><h2>💰 収入の部（入金予定）</h2><div class="ov"><table><thead><tr><th>項目</th><th>🌺那覇</th><th>❄️札幌</th><th>🍜高松</th><th>計</th><th></th></tr></thead><tbody>';
+ h+='<tr class="grp"><td>OTA入金（自動）</td><td colspan=5 style="text-align:left;font-weight:400;color:#64748b">'+(cfData.otaMode==="net"?"手取り(手数料引後)":"売上グロス")+'</td></tr>';
+ OTAORD.filter(x=>o[x]).forEach(ot=>{const v=o[ot],rt=(v.nha||0)+(v.spk||0)+(v.tkm||0);h+='<tr><td>'+ot+'</td>'+ss.map(s=>'<td class="mono">'+(v[s]?yen(v[s]):'·')+'</td>').join('')+'<td class="mono" style="font-weight:700">'+yen(rt)+'</td><td></td></tr>';});
+ h+='<tr class="grp"><td colspan=5>その他収入（借入・貸付・develop等／手入力）</td><td>'+add('data-act="add-inc"')+'</td></tr>';
+ cfData.income.forEach((r,i)=>{const rt=cfnum(r.nha)+cfnum(r.spk)+cfnum(r.tkm);h+='<tr><td>'+li("incl",'data-i="'+i+'"',r.label)+'</td>'+ss.map(s=>'<td>'+ci("incv",'data-i="'+i+'" data-s="'+s+'"',r[s])+'</td>').join('')+'<td class="mono" id="cfIncR_'+i+'">'+yen(rt)+'</td><td>'+del('data-act="del-inc" data-i="'+i+'"')+'</td></tr>';});
+ h+='<tr class="tot"><td>収入合計</td>'+ss.map(s=>'<td class="mono" id="cfIncT_'+s+'">'+yen(cfIncStore(s))+'</td>').join('')+'<td class="mono" id="cfIncT_all">'+yen(ss.reduce((a,s)=>a+cfIncStore(s),0))+'</td><td></td></tr></tbody></table></div></div>';
+ // 支出
+ h+='<div class="sec"><h2>💸 支出の部</h2><div class="ov"><table><thead><tr><th>科目</th><th>🌺那覇</th><th>❄️札幌</th><th>🍜高松</th><th>計</th><th></th></tr></thead><tbody>';
+ CF_EXP_CATS.forEach((c,ci2)=>{h+='<tr class="grp"><td>'+c+'</td><td colspan=4></td><td>'+add('data-act="add-exp" data-c="'+ci2+'"')+'</td></tr>';
+  (cfData.expense[c].rows||[]).forEach((r,j)=>{const rt=cfnum(r.nha)+cfnum(r.spk)+cfnum(r.tkm);h+='<tr><td style="padding-left:18px">'+li("expl",'data-c="'+ci2+'" data-j="'+j+'"',r.label)+'</td>'+ss.map(s=>'<td>'+ci("expv",'data-c="'+ci2+'" data-j="'+j+'" data-s="'+s+'"',r[s])+'</td>').join('')+'<td class="mono">'+yen(rt)+'</td><td>'+del('data-act="del-exp" data-c="'+ci2+'" data-j="'+j+'"')+'</td></tr>';});
+  h+='<tr><td style="text-align:right;color:#94a3b8;font-size:11px">小計</td>'+ss.map(s=>'<td class="mono" id="cfExpS_'+ci2+'_'+s+'" style="color:#64748b">'+yen(cfExpCat(c,s))+'</td>').join('')+'<td></td><td></td></tr>';});
+ h+='<tr class="tot"><td>支出合計</td>'+ss.map(s=>'<td class="mono" id="cfExpT_'+s+'">'+yen(cfExpStore(s))+'</td>').join('')+'<td class="mono" id="cfExpT_all">'+yen(ss.reduce((a,s)=>a+cfExpStore(s),0))+'</td><td></td></tr></tbody></table></div></div>';
+ // 過不足
+ const iAll=ss.reduce((a,s)=>a+cfIncStore(s),0),eAll=ss.reduce((a,s)=>a+cfExpStore(s),0);
+ h+='<div class="sec"><h2>⚖️ 過不足（収入−支出）</h2><div class="ov"><table><tbody><tr class="grp"><td>店舗</td>'+CF_STORES.map(x=>'<td>'+x[1]+'</td>').join('')+'<td>計</td></tr>';
+ h+='<tr><td>収入</td>'+ss.map(s=>'<td class="mono" id="cfBalInc_'+s+'">'+yen(cfIncStore(s))+'</td>').join('')+'<td class="mono" id="cfBalInc_all">'+yen(iAll)+'</td></tr>';
+ h+='<tr><td>支出</td>'+ss.map(s=>'<td class="mono" id="cfBalExp_'+s+'">'+yen(cfExpStore(s))+'</td>').join('')+'<td class="mono" id="cfBalExp_all">'+yen(eAll)+'</td></tr>';
+ h+='<tr class="tot"><td>過不足</td>'+ss.map(s=>{const v=cfIncStore(s)-cfExpStore(s);return '<td class="mono" id="cfBal_'+s+'" style="color:'+(v<0?'#fca5a5':'#86efac')+'">'+yen(v)+'</td>';}).join('')+'<td class="mono" id="cfBal_all" style="color:'+((iAll-eAll)<0?'#fca5a5':'#86efac')+'">'+yen(iAll-eAll)+'</td></tr></tbody></table></div></div>';
+ // 銀行残高
+ h+='<div class="sec"><h2>🏦 銀行残高</h2><div class="ov"><table><tbody>';
+ Object.keys(cfData.banks).forEach(b=>{h+='<tr><td>'+b+'</td><td style="text-align:left">'+ci("bank",'data-b="'+b+'"',cfData.banks[b])+'</td></tr>';});
+ h+='<tr class="tot"><td>残高合計</td><td class="mono" id="cfBankT" style="text-align:left">'+yen(Object.values(cfData.banks).reduce((a,b)=>a+cfnum(b),0))+'</td></tr></tbody></table></div></div>';
+ // 貸付スケジュール
+ h+='<div class="sec"><h2>📅 貸付・返済スケジュール '+add('data-act="add-loan"')+'</h2><div class="ov"><table><thead><tr><th>内容（例 9/8 IMOMA）</th><th>金額</th><th></th></tr></thead><tbody>';
+ cfData.loans.forEach((r,i)=>{h+='<tr><td>'+li("loanl",'data-i="'+i+'"',r.label)+'</td><td style="text-align:left">'+ci("loana",'data-i="'+i+'"',r.amt)+'</td><td>'+del('data-act="del-loan" data-i="'+i+'"')+'</td></tr>';});
+ h+='<tr class="tot"><td>合計</td><td class="mono" id="cfLoanT" style="text-align:left">'+yen(cfData.loans.reduce((a,r)=>a+cfnum(r.amt),0))+'</td><td></td></tr></tbody></table></div></div>';
+ gid("cfBody").innerHTML=h;cfCards();}
+function cfRecalc(){const ss=["nha","spk","tkm"];
+ cfData.income.forEach((r,i)=>setT("cfIncR_"+i,yen(cfnum(r.nha)+cfnum(r.spk)+cfnum(r.tkm))));
+ let it=0,et=0;
+ ss.forEach(s=>{const iv=cfIncStore(s),ev=cfExpStore(s);it+=iv;et+=ev;
+  setT("cfIncT_"+s,yen(iv));setT("cfExpT_"+s,yen(ev));setT("cfBalInc_"+s,yen(iv));setT("cfBalExp_"+s,yen(ev));
+  const be=gid("cfBal_"+s);if(be){be.textContent=yen(iv-ev);be.style.color=(iv-ev)<0?'#fca5a5':'#86efac';}
+  CF_EXP_CATS.forEach((c,ci2)=>setT("cfExpS_"+ci2+"_"+s,yen(cfExpCat(c,s))));});
+ setT("cfIncT_all",yen(it));setT("cfExpT_all",yen(et));setT("cfBalInc_all",yen(it));setT("cfBalExp_all",yen(et));
+ const ba=gid("cfBal_all");if(ba){ba.textContent=yen(it-et);ba.style.color=(it-et)<0?'#fca5a5':'#86efac';}
+ setT("cfBankT",yen(Object.values(cfData.banks).reduce((a,b)=>a+cfnum(b),0)));
+ setT("cfLoanT",yen(cfData.loans.reduce((a,r)=>a+cfnum(r.amt),0)));cfCards();}
+function cfShift(d){const dt=new Date(cfMonth+"-01T00:00:00");dt.setMonth(dt.getMonth()+d);cfMonth=dt.toISOString().slice(0,7);cfLoad();}
+async function cfLoad(){gid("cfStatus").textContent="読込中…";
+ const r=await fetch(MAIN+"/rest/v1/cashflow_entries?month=eq."+cfMonth+"&select=data",{headers:{apikey:MANON,Authorization:"Bearer "+MANON}}).then(x=>x.json()).catch(_=>[]);
+ cfData=(r&&r[0]&&r[0].data)?r[0].data:cfDefault();cfShape();gid("cfOtaMode").value=cfData.otaMode;gid("cfStatus").textContent="";cfRender();}
+async function cfSave(){gid("cfStatus").textContent="保存中…";
+ const res=await fetch(MAIN+"/rest/v1/cashflow_entries?on_conflict=month",{method:"POST",headers:{apikey:MANON,Authorization:"Bearer "+MANON,"Content-Type":"application/json",Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({month:cfMonth,data:cfData,updated_at:new Date().toISOString()})}).catch(_=>({ok:false}));
+ gid("cfStatus").textContent=res.ok?("✅ 保存 "+new Date().toLocaleTimeString("ja-JP")):"⚠️ 保存失敗";}
+gid("cfPrev").onclick=()=>cfShift(-1);gid("cfNext").onclick=()=>cfShift(1);gid("cfSave").onclick=cfSave;
+gid("cfOtaMode").onchange=e=>{cfData.otaMode=e.target.value;cfRender();};
+gid("cfBody").addEventListener("input",e=>{const d=e.target.dataset;if(!d||!d.t)return;const v=e.target.value;
+ if(d.t==="incv")cfData.income[+d.i][d.s]=cfnum(v);else if(d.t==="incl")cfData.income[+d.i].label=v;
+ else if(d.t==="expv")cfData.expense[CF_EXP_CATS[+d.c]].rows[+d.j][d.s]=cfnum(v);else if(d.t==="expl")cfData.expense[CF_EXP_CATS[+d.c]].rows[+d.j].label=v;
+ else if(d.t==="bank")cfData.banks[d.b]=cfnum(v);else if(d.t==="loanl")cfData.loans[+d.i].label=v;else if(d.t==="loana")cfData.loans[+d.i].amt=cfnum(v);
+ cfRecalc();});
+gid("cfBody").addEventListener("click",e=>{const b=e.target.closest("[data-act]");if(!b)return;const a=b.dataset.act;
+ if(a==="add-inc")cfData.income.push({label:"",nha:0,spk:0,tkm:0});else if(a==="del-inc")cfData.income.splice(+b.dataset.i,1);
+ else if(a==="add-exp")cfData.expense[CF_EXP_CATS[+b.dataset.c]].rows.push({label:"",nha:0,spk:0,tkm:0});else if(a==="del-exp")cfData.expense[CF_EXP_CATS[+b.dataset.c]].rows.splice(+b.dataset.j,1);
+ else if(a==="add-loan")cfData.loans.push({label:"",amt:0});else if(a==="del-loan")cfData.loans.splice(+b.dataset.i,1);else return;cfRender();});
+document.querySelectorAll("#topTab button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#topTab button").forEach(x=>x.classList.remove("on"));b.classList.add("on");
+ const cf=b.dataset.m==="cf";["otaBar","cards","otaViewWrap","body","otaNote"].forEach(id=>{const e=gid(id);if(e)e.style.display=cf?"none":"";});
+ gid("cfWrap").style.display=cf?"":"none";if(cf&&!cfData)cfLoad();});
+
 load();
 </script></body></html>
