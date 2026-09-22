@@ -418,7 +418,7 @@ function renderPlan(){
  const add=attr=>'<button '+attr+' style="border:none;background:#dcfce7;color:#166534;border-radius:5px;padding:2px 9px;cursor:pointer;font-weight:700">＋ 行追加</button>';
  const pc=(sec,gi,ri,mi,v)=>'<input class="mono" data-t="pcell" data-sec="'+sec+'" data-gi="'+gi+'" data-ri="'+ri+'" data-mi="'+mi+'" value="'+(v||'')+'" inputmode="numeric" style="width:62px;text-align:right;border:1px solid #e2e8f0;border-radius:3px;padding:2px 3px;font-size:11px">';
  const pl=(sec,gi,ri,v)=>'<input data-t="plabel" data-sec="'+sec+'" data-gi="'+gi+'" data-ri="'+ri+'" value="'+String(v||'').replace(/"/g,'&quot;')+'" style="border:1px solid #e2e8f0;border-radius:3px;padding:2px 5px;font-size:11px;width:118px">';
- let h='<div class="sec"><div class="note">💡 <b>事業計画（2026/10〜2027/09）の支出</b>を<b>店舗別</b>に入力（handyman支出管理と同じ科目体系）。収入は自動（OTA入金表）。科目名は編集可・行追加可。</div></div>';
+ let h='<div class="sec"><div class="note">💡 <b>事業計画（2026/10〜2027/09）の支出</b>を<b>店舗別</b>に入力（handyman支出管理と同じ科目体系）。収入は自動（OTA入金表）。科目名は編集可・行追加可。<b style="color:#16a34a">入力は自動保存されます（全端末共有）。</b></div></div>';
  h+='<div class="seg" style="margin-bottom:8px">'+PS.map(x=>'<button data-pstore="'+x[0]+'"'+(cfPlanStore===x[0]?' class="on"':'')+' style="padding:6px 18px">'+x[1]+'</button>').join('')+'</div>';
  h+='<div class="sec"><h2>💸 支出計画（'+(PS.find(p=>p[0]===cfPlanStore)||["","?"])[1]+'）</h2><div class="ov"><table style="min-width:1120px"><thead><tr><th style="position:sticky;left:0;background:#f1f5f9;z-index:2">勘定科目</th>'+PLAN_YM.map((ym,i)=>'<th style="font-size:11px">'+PLAN_MONTHS[i]+'月</th>').join('')+'<th>計</th><th></th></tr></thead><tbody>';
  let monTot=planZ();
@@ -449,6 +449,7 @@ async function planLoadCF(){try{const r=await fetch(MAIN+"/rest/v1/ota_manual?k=
 async function planSaveCF(){gid("cfStatus").textContent="保存中…";
  const res=await fetch(MAIN+"/rest/v1/ota_manual?on_conflict=k",{method:"POST",headers:{apikey:MANON,Authorization:"Bearer "+MANON,"Content-Type":"application/json",Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({k:"cf_plan",data:cfPlan})}).catch(_=>({ok:false}));
  gid("cfStatus").textContent=res.ok?("✅ 保存 "+new Date().toLocaleTimeString("ja-JP")):"⚠️ 保存失敗";}
+let _planT=null;function planAutosave(){gid("cfStatus").textContent="…入力中(自動保存待ち)";clearTimeout(_planT);_planT=setTimeout(()=>{planSaveCF();},1000);}
 async function cfSave(){gid("cfStatus").textContent="保存中…";
  const res=await fetch(MAIN+"/rest/v1/cashflow_entries?on_conflict=month",{method:"POST",headers:{apikey:MANON,Authorization:"Bearer "+MANON,"Content-Type":"application/json",Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({month:cfMonth,data:cfData,updated_at:new Date().toISOString()})}).catch(_=>({ok:false}));
  if(res.ok){CF_ALL[cfMonth]=JSON.parse(JSON.stringify(cfData));cfRender();}
@@ -457,8 +458,8 @@ gid("cfPrev").onclick=()=>cfShift(-1);gid("cfNext").onclick=()=>cfShift(1);gid("
 document.querySelectorAll("#cfSubTab button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#cfSubTab button").forEach(x=>x.classList.remove("on"));b.classList.add("on");cfSub=b.dataset.cs;gid("cfMonthBar").style.display=cfSub==="expense"?"":"none";cfRender();});
 gid("cfBody").addEventListener("input",e=>{const d=e.target.dataset;if(!d||!d.t)return;const v=e.target.value;
  if(d.t==="incv")cfData.income[+d.i][d.s]=cfnum(v);else if(d.t==="incl")cfData.income[+d.i].label=v;
- else if(d.t==="pcell"){const st=cfPlan[cfPlanStore];const row=d.sec==="cogs"?st.cogs[+d.ri]:st.sga[+d.gi].rows[+d.ri];if(row){row.m[+d.mi]=cfnum(v);planRecalc();}return;}
- else if(d.t==="plabel"){const st=cfPlan[cfPlanStore];const row=d.sec==="cogs"?st.cogs[+d.ri]:st.sga[+d.gi].rows[+d.ri];if(row)row.l=v;return;}
+ else if(d.t==="pcell"){const st=cfPlan[cfPlanStore];const row=d.sec==="cogs"?st.cogs[+d.ri]:st.sga[+d.gi].rows[+d.ri];if(row){row.m[+d.mi]=cfnum(v);planRecalc();planAutosave();}return;}
+ else if(d.t==="plabel"){const st=cfPlan[cfPlanStore];const row=d.sec==="cogs"?st.cogs[+d.ri]:st.sga[+d.gi].rows[+d.ri];if(row)row.l=v;planAutosave();return;}
  else if(d.t==="bank")cfData.banks[d.b]=cfnum(v);else if(d.t==="loanl")cfData.loans[+d.i].label=v;else if(d.t==="loana")cfData.loans[+d.i].amt=cfnum(v);
  else return;});
 gid("cfBody").addEventListener("click",e=>{const b=e.target.closest("[data-act]");if(!b)return;const a=b.dataset.act;
@@ -466,10 +467,10 @@ gid("cfBody").addEventListener("click",e=>{const b=e.target.closest("[data-act]"
  else if(a==="add-loan")cfData.loans.push({label:"",amt:0});else if(a==="del-loan")cfData.loans.splice(+b.dataset.i,1);else return;cfRender();});
 gid("cfBody").addEventListener("click",e=>{const b=e.target.closest("[data-pstore]");if(b){cfPlanStore=b.dataset.pstore;renderPlan();return;}
  const a=e.target.closest("[data-act=padd],[data-act=pdel],[data-act=pcopy]");if(!a)return;const st=cfPlan[cfPlanStore],sec=a.dataset.sec,gi=+a.dataset.gi;
- if(a.dataset.act==="pcopy"){const row=sec==="cogs"?st.cogs[+a.dataset.ri]:st.sga[gi].rows[+a.dataset.ri];const base=row.m.find(x=>cfnum(x)>0);const val=cfnum(base!=null?base:row.m[0]);if(!val){alert("先に金額を1ヶ所入力してから📋全月を押してください");return;}row.m=row.m.map(_=>val);renderPlan();return;}
+ if(a.dataset.act==="pcopy"){const row=sec==="cogs"?st.cogs[+a.dataset.ri]:st.sga[gi].rows[+a.dataset.ri];const base=row.m.find(x=>cfnum(x)>0);const val=cfnum(base!=null?base:row.m[0]);if(!val){alert("先に金額を1ヶ所入力してから📋全月を押してください");return;}row.m=row.m.map(_=>val);renderPlan();planAutosave();return;}
  if(a.dataset.act==="padd"){const arr=sec==="cogs"?st.cogs:st.sga[gi].rows;arr.push(pRow(""));}
  else{const arr=sec==="cogs"?st.cogs:st.sga[gi].rows;arr.splice(+a.dataset.ri,1);}
- renderPlan();});
+ renderPlan();planAutosave();});
 document.querySelectorAll("#topTab button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#topTab button").forEach(x=>x.classList.remove("on"));b.classList.add("on");
  const cf=b.dataset.m==="cf";["otaBar","cards","otaViewWrap","body","otaNote"].forEach(id=>{const e=gid(id);if(e)e.style.display=cf?"none":"";});
  gid("cfWrap").style.display=cf?"":"none";if(cf&&!cfData)cfLoad();});
