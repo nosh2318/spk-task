@@ -47,6 +47,15 @@ input.pv.b{background:#fff7ed;border-color:#fdba74}
 .hrow{display:flex;gap:10px;padding:7px 2px;border-bottom:1px solid #f1f5f9;font-size:12px;align-items:baseline}
 .hrow .hts{color:#64748b;font-variant-numeric:tabular-nums;white-space:nowrap;font-weight:700}
 .hrow .hch{color:#0f172a}
+.histbl{font-size:11px;white-space:nowrap;border-collapse:collapse;min-width:100%}
+.histbl th,.histbl td{padding:3px 6px;border:1px solid #e5eaf1;text-align:right;font-variant-numeric:tabular-nums}
+.histbl td.cls{text-align:left;font-weight:800;background:#fbfdff}
+.histbl td.knd{text-align:left;white-space:nowrap}
+.histbl th{background:#f1f5f9;color:#334155;font-weight:800}
+.histbl th.rev{background:#0f1f45;color:#fff}
+.histbl th.rev.cur{background:#0f766e}
+.histbl tr.hi td{background:#fff7ed}
+.histbl td.chg{text-align:left;color:#64748b;white-space:normal;min-width:180px;max-width:260px;font-size:10px}
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#0f172a;color:#fff;padding:11px 18px;border-radius:10px;font-size:13px;z-index:200;opacity:0;transition:.3s}
 .toast.on{opacity:1}
 .authbar{font-size:11px;padding:6px 10px;border-radius:8px;margin-bottom:8px}
@@ -224,12 +233,43 @@ function diffChanges(oldS,P){
   if((os.junior||0)!==(ns.junior||0))ch.push('ｼﾞｭﾆｱ '+(os.junior||0)+'→'+(ns.junior||0));
   return ch;
 }
+// 📜 価格履歴＝クラス×泊数料金 を「改定日ごと」に横並び（左＝現在／右へ過去）
+var NIGHTS=[['日帰り',1],['1泊2日',2],['2泊3日',3],['3泊4日',4],['4泊5日',5]];
 function histView(){
-  var h=PRICE[STORE].history||[];
-  if(!h.length)return '<div class="card"><h2>📜 変更履歴</h2><div class="muted">まだ変更履歴はありません。価格を変えて保存すると、日付と変更内容が記録されます。</div></div>';
-  return '<div class="card"><h2>📜 変更履歴（新しい順）</h2>'
-   +h.slice(0,20).map(function(e){return '<div class="hrow"><span class="hts">'+e.ts+'</span><span class="hch">'+e.changes+'</span></div>';}).join('')
-   +'</div>';
+  var P=PRICE[STORE];
+  // 列＝現在＋各改定スナップショット（新しい順）
+  var cols=[{ts:'現在',changes:'',price:P.price}];
+  (P.history||[]).forEach(function(e){if(e.snap&&e.snap.price)cols.push({ts:e.ts,changes:e.changes||'',price:e.snap.price});});
+  var classes=Object.keys(P.price);
+  var yen=function(n){return '¥'+(n||0).toLocaleString();};
+  // ヘッダー2段（改定日→泊数）
+  var h1='<tr><th rowspan="2">クラス</th><th rowspan="2">種別</th>';
+  cols.forEach(function(c,i){h1+='<th class="rev'+(i===0?' cur':'')+'" colspan="'+NIGHTS.length+'">'+(i===0?'🟢 現在':c.ts)+'</th>';});
+  h1+='</tr><tr>';
+  cols.forEach(function(){NIGHTS.forEach(function(n){h1+='<th>'+n[0]+'</th>';});});
+  h1+='</tr>';
+  // 本体：クラス×(安い/高い)
+  var body=classes.map(function(cl){
+    var r='';
+    [['🔵 安い日','a',''],['🟧 高い日','b','hi']].forEach(function(t){
+      r+='<tr'+(t[2]?' class="hi"':'')+'><td class="cls">'+(CLS_LABEL[cl]||cl)+'</td><td class="knd">'+t[0]+'</td>';
+      cols.forEach(function(c){
+        var pc=(c.price||{})[cl]||{},u=+pc[t[1]]||+pc.a||0;
+        NIGHTS.forEach(function(n){r+='<td>'+yen(u*n[1])+'</td>';});
+      });
+      r+='</tr>';
+    });
+    return r;
+  }).join('');
+  // 改定メモ行（何を変えたか）
+  var memo='';
+  if(cols.length>1){
+    memo='<div class="muted" style="margin-top:8px">📝 改定メモ：'
+     +cols.slice(1).map(function(c){return '<b>'+c.ts+'</b> '+(c.changes||'');}).join('　／　')+'</div>';
+  }
+  return '<div class="card"><h2>📜 価格履歴（クラス×泊数・改定日ごと）</h2>'
+   +'<div class="muted">1日単価×泊数で表示。安い日＝全日通常、高い日＝全日高い設定の目安です。価格を保存するたび右側に履歴が積まれます。</div>'
+   +'<div style="overflow-x:auto;margin-top:8px"><table class="histbl">'+h1+body+'</table></div>'+memo+'</div>';
 }
 
 async function save(){
