@@ -89,6 +89,8 @@ let UNIT="yen"; // yen=円(正確・既定) / man1=万(小数1桁)
 function man(n){if(!n)return "–";if(UNIT==="yen")return "¥"+Math.round(n).toLocaleString();const v=n/10000;return (Math.abs(v)<100?v.toFixed(1):Math.round(v).toLocaleString())+"万";}
 const cM=n=>"¥"+Math.round(n/10000).toLocaleString()+"万";
 let RAW=[];
+let GYOMU={}; // {ym:{a:円,b:円}} 業務委託手動入力（自社と同じ手取り扱い＝差引に合算）
+function saveGyomu(){fetch(MAIN+"/rest/v1/ota_manual?on_conflict=k",{method:"POST",headers:{apikey:MANON,Authorization:"Bearer "+MANON,"Content-Type":"application/json",Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({k:"gyomu",data:GYOMU,updated_at:new Date().toISOString()})}).catch(_=>{});}
 function feeRate(ota){return SELF.includes(ota)?0:(Number(document.getElementById("fee").value)||0)/100;}
 function net(r){return r.gross*(1-feeRate(r.ota));}
 function val(r){return r.gross;}
@@ -147,6 +149,7 @@ function matrixView(getCol,colOrder,lab,title,rowFn,extra){rowFn=rowFn||mrow;ext
  let h='<div class="sec"><h2>'+title+' <span class="badge">単位:万円／OTA列=売上</span></h2><div class="ov"><table><thead><tr><th>'+hcol+'</th>';
  cols.forEach(c=>h+='<th>'+lab(c)+'</th>');
  extra.forEach(e=>h+='<th style="background:'+(e.color||'#475569')+';color:#fff">'+e.lab+'</th>');
+ if(rowFn===mrow)h+='<th style="background:#7c3aed;color:#fff">業務委託(B)</th><th style="background:#7c3aed;color:#fff">業務委託(A)</th>';
  h+='<th style="background:#166534;color:#fff">差引(手取り)</th></tr></thead><tbody>';
  const isMonth=(rowFn===mrow);
  const oldKeys=isMonth?rowsK.filter(k=>k<=OLD_UNTIL):[];
@@ -154,13 +157,18 @@ function matrixView(getCol,colOrder,lab,title,rowFn,extra){rowFn=rowFn||mrow;ext
  const rowHtml=(rk,cls)=>{const hi=rk===cur,g=rowG[rk]||0,n=rowN[rk]||0;let x='<tr'+(cls?' class="'+cls+'" style="display:none"':(hi?' style="background:#fef9c3"':''))+'><td><b>'+rmeta[rk].lab+'</b>'+((hi&&!cls)?' <span class="badge" style="background:#facc15;color:#713f12">今</span>':'')+'</td>';
   cols.forEach(c=>{const v=cell[rk+"|"+c]||0;x+='<td class="mono">'+(v?man(v):'<span style="color:#d1d5db">–</span>')+'</td>';});
   extra.forEach(e=>{const ev=e.calc?e.calc(rk,sumRow):e.keys.reduce((a,k)=>a+(cell[rk+"|"+k]||0),0);const _c=e.color?'color:'+e.color+';':'';x+='<td class="mono" style="font-weight:700;background:#f8fafc;'+_c+'">'+(ev?(e.neg?'-'+man(ev):man(ev)):'·')+'</td>';});
-  x+='<td class="mono" style="font-weight:800;background:#f0fdf4;color:#166534">'+man(n)+'</td></tr>';return x;};
+  let _ga=0,_gb=0;
+  if(rowFn===mrow){const gy=GYOMU[rk]||{};_gb=+gy.b||0;_ga=+gy.a||0;
+   x+='<td style="padding:2px;background:#faf5ff"><input data-gy="b" data-ym="'+rk+'" value="'+(gy.b||"")+'" inputmode="numeric" placeholder="円" style="width:80px;text-align:right;border:1px solid #ddd6fe;border-radius:4px;padding:2px 4px;font-size:11px"></td><td style="padding:2px;background:#faf5ff"><input data-gy="a" data-ym="'+rk+'" value="'+(gy.a||"")+'" inputmode="numeric" placeholder="円" style="width:80px;text-align:right;border:1px solid #ddd6fe;border-radius:4px;padding:2px 4px;font-size:11px"></td>';}
+  x+='<td class="mono" style="font-weight:800;background:#f0fdf4;color:#166534">'+man(n+_ga+_gb)+'</td></tr>';return x;};
  if(oldKeys.length){const og=oldKeys.reduce((a,k)=>a+(rowG[k]||0),0),on=oldKeys.reduce((a,k)=>a+(rowN[k]||0),0);
-  h+='<tr data-toggle-old style="cursor:pointer;background:#eef2f7"><td colspan="'+(cols.length+1+extra.length)+'"><span class="oldtri">▶</span> <b>過去 '+oldKeys[0]+'〜'+oldKeys[oldKeys.length-1]+'</b> <span class="badge">'+oldKeys.length+'ヶ月・タップで開閉</span></td><td class="mono" style="font-weight:800;background:#f0fdf4;color:#166534">'+man(on)+'</td></tr>';
+  const oga=oldKeys.reduce((a,k)=>a+(+(GYOMU[k]||{}).a||0),0),ogb=oldKeys.reduce((a,k)=>a+(+(GYOMU[k]||{}).b||0),0);
+  h+='<tr data-toggle-old style="cursor:pointer;background:#eef2f7"><td colspan="'+(cols.length+1+extra.length)+'"><span class="oldtri">▶</span> <b>過去 '+oldKeys[0]+'〜'+oldKeys[oldKeys.length-1]+'</b> <span class="badge">'+oldKeys.length+'ヶ月・タップで開閉</span></td><td class="mono">'+(ogb?man(ogb):'·')+'</td><td class="mono">'+(oga?man(oga):'·')+'</td><td class="mono" style="font-weight:800;background:#f0fdf4;color:#166534">'+man(on+oga+ogb)+'</td></tr>';
   oldKeys.forEach(rk=>h+=rowHtml(rk,"oldrow"));}
  showKeys.forEach(rk=>h+=rowHtml(rk,""));
  const gT=Object.values(rowG).reduce((a,b)=>a+b,0),nT=Object.values(rowN).reduce((a,b)=>a+b,0);
- h+='<tr class="tot"><td>合計</td>';cols.forEach(c=>h+='<td class="mono">'+man(colG[c]||0)+'</td>');extra.forEach(e=>{const et=e.calc?rowsK.reduce((a,rk)=>a+e.calc(rk,sumRow),0):rowsK.reduce((a,rk)=>a+e.keys.reduce((b,k)=>b+(cell[rk+"|"+k]||0),0),0);const _c=e.color?'color:'+e.color+';':'';h+='<td class="mono" style="'+_c+'">'+(et?(e.neg?'-'+man(et):man(et)):'·')+'</td>';});h+='<td class="mono">'+man(nT)+'</td></tr>';
+ const gyaT=isMonth?rowsK.reduce((a,rk)=>a+(+(GYOMU[rk]||{}).a||0),0):0,gybT=isMonth?rowsK.reduce((a,rk)=>a+(+(GYOMU[rk]||{}).b||0),0):0;
+ h+='<tr class="tot"><td>合計</td>';cols.forEach(c=>h+='<td class="mono">'+man(colG[c]||0)+'</td>');extra.forEach(e=>{const et=e.calc?rowsK.reduce((a,rk)=>a+e.calc(rk,sumRow),0):rowsK.reduce((a,rk)=>a+e.keys.reduce((b,k)=>b+(cell[rk+"|"+k]||0),0),0);const _c=e.color?'color:'+e.color+';':'';h+='<td class="mono" style="'+_c+'">'+(et?(e.neg?'-'+man(et):man(et)):'·')+'</td>';});if(isMonth)h+='<td class="mono">'+(gybT?man(gybT):'·')+'</td><td class="mono">'+(gyaT?man(gyaT):'·')+'</td>';h+='<td class="mono">'+man(nT+gyaT+gybT)+'</td></tr>';
  h+='</tbody></table></div></div>';document.getElementById("body").innerHTML=h;}
 const OTA_CH=OTAORD.filter(o=>!SELF.includes(o));
 const otaExtra=[{lab:"OTA合計",keys:OTA_CH,color:"#475569"},{lab:"OTA手数料",calc:(rk,sum)=>sum(rk,OTA_CH)*((Number(document.getElementById("fee").value)||0)/100),neg:true,color:"#b91c1c"},{lab:"OTA残高",calc:(rk,sum)=>sum(rk,OTA_CH)*(1-((Number(document.getElementById("fee").value)||0)/100)),color:"#166534"},{lab:"自社合計",keys:SELF,color:"#0891b2"}];
@@ -213,6 +221,8 @@ function render(){cards();if(VIEW==="otaMonth")viewOtaMonth();else if(VIEW==="mo
 async function load(){document.getElementById("sub").textContent="読み込み中…";
  const [m,b]=await Promise.all([rpc(MAIN,MANON,"ota_settlement_v2"),rpc(BT,BANON,"bt_ota_settlement_v2")]);
  RAW=[].concat(Array.isArray(m)?m:[],Array.isArray(b)?b:[]);
+ const gy=await fetch(MAIN+"/rest/v1/ota_manual?k=eq.gyomu&select=data",{headers:{apikey:MANON,Authorization:"Bearer "+MANON}}).then(r=>r.json()).catch(_=>[]);
+ GYOMU=(gy&&gy[0]&&gy[0].data)?gy[0].data:{};
  const otas=[...new Set(RAW.map(r=>r.ota))].sort((a,b)=>OTAORD.indexOf(a)-OTAORD.indexOf(b));
  document.getElementById("fOta").innerHTML='<option value="">全て</option>'+otas.map(o=>'<option>'+o+'</option>').join("");
  const tot=RAW.reduce((s,r)=>s+r.cnt,0);
@@ -220,6 +230,7 @@ async function load(){document.getElementById("sub").textContent="読み込み�
  render();}
 document.querySelectorAll("#view button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#view button").forEach(x=>x.classList.remove("on"));b.classList.add("on");VIEW=b.dataset.v;render();});
 document.getElementById("body").addEventListener("click",e=>{const t=e.target.closest("[data-toggle-old]");if(!t)return;const tbl=t.closest("table"),open=t.dataset.open==="1";tbl.querySelectorAll(".oldrow").forEach(r=>r.style.display=open?"none":"");t.dataset.open=open?"":"1";const tri=t.querySelector(".oldtri");if(tri)tri.textContent=open?"▶":"▼";});
+document.getElementById("body").addEventListener("change",e=>{const g=e.target.dataset&&e.target.dataset.gy;if(!g)return;const ym=e.target.dataset.ym;const v=parseInt(String(e.target.value).replace(/[^\d-]/g,''),10);GYOMU[ym]=GYOMU[ym]||{};GYOMU[ym][g]=isNaN(v)?0:v;saveGyomu();render();});
 ["fSt","fOta","fKind","fee"].forEach(id=>{const el=document.getElementById(id);el.addEventListener("input",render);el.addEventListener("change",render);});
 document.getElementById("unit").addEventListener("change",e=>{UNIT=e.target.value;render();});
 document.getElementById("rl").onclick=load;
