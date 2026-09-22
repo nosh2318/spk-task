@@ -1,5 +1,367 @@
 # SPK業務管理APP（札幌店）
 
+## 💹 2026-09-23 公式サイト価格コントローラーを3段階(基本/安い/高い)に刷新＋OMNI解放（price-controller.html・3店・175パターン実証済）
+オーナー指示：**価格に関連する修正・対応はOMNIが対応する（＝この項を読めば全号機が価格系を扱える。OMNI解放済）**。
+- **URL**: https://nosh2318.github.io/spk-task/price-controller.html（standalone・buildなし・push即反映・ログイン不要=anon保存）。スタッフ共有可＝画面上部「❓使い方」に操作説明を内蔵。
+- **3段階価格(オーナー確定)**：`price[cls]={base(基本=未登録日),a(安い日),b(高い日)}`。`high_dates`=高い日、`low_dates`=安い日、`months[ym][cls]={a,b}`=月別上書き。**日判定＝high_dates→月別b||基準b／low_dates→月別a||基準a／未登録→base**。「安い日・高い日は登録した日だけ、未登録は基本料金」が核心仕様。
+- **UI(Googleカレンダー風)**：店タブ(那覇/札幌/高松)→サブタブ[📅カレンダー/💴基本料金]。💴基本料金=クラス別base(全月共通)。📅カレンダー=1ヶ月大表示・◀▶月送り(START='2026-10')・クラス選択・各日に価格イベント(青=安/オレンジ=高/グレー=基本)・**日別登録**(日タップ togDay で基本→安→高循環)・**一括登録**(bulkSet 期間指定で安/高/基本)・🎌連休自動(autoB)・全クラス価格表(月別a/b・classPriceTbl)・📋登録日/価格を全店コピー(applyDaysToAll)。📜変更履歴(価格スナップショット付き)。
+- **正本データ**：main `app_settings` / BT `bt_app_settings` の `key='hdm_official_price'` = `{spk,nha,tkm}`。**anon SELECT/INSERT/UPDATE可(価格キー限定)**。保存=saveStore(anon POST→409→PATCH)。
+- **決済RPC(3帯対応済)**：`official_book_spk`/`official_book_nha`(main)・`bt_book_tkm`(BT)。`v_base=coalesce(price.base,a)`・`v_low=low_dates`。日別ループ：high→coalesce(months.b,months.a,v_b)／elsif low→coalesce(months.a,v_a)／else→v_base。暦日+1(返却日含む)。**`_dry`モード**=引数`'_dry':'1'`で価格計算のみ(classTotalを返し予約を作らない)＝検証用。引数キー=`vehicleClass/lend_date/return_date/insuranceType/name/mail/tel`。
+- **公式サイト表示(official-flow.html・handyman-officialリポ=rent-handyman.com本番)**：`loadPriceMaster()`がhdm_official_priceをanon取得→`CLS[c]._base/_a/_b`・`window._HIGH/_LOW/_MONTHS`。`baseSum()`が3帯計算(RPCと同一ロジック)。sql正本=`~/spk-task/sql/official_book_spk_nha.sql`(RPCはDB適用済・ファイルは追随要)。
+- **実証(2026-09-23・175パターン全一致)**：3店×全クラス×7日程(未登録=基本/安い/高い/混在/月別+混在/月跨ぎ/年跨ぎ)を`_dry`で検証→期待値(python同ロジック)と突合→175/175一致。anon保存も3店OK。検証スクリプト型=`/tmp/pv2.py`(現マスターbackup→テスト値set→**1店1SQL(cross join values)で全パターン_dry一括**→即復元→python期待値と突合)＝マスターのテスト値本番露出を最小化。
+- **教訓(横展開)**：①価格は**表示(baseSum)と決済(RPC)の両方を必ず同ロジックに**(片方だけだと過少請求/表示ズレ)。②RPC一括修正はbt(スペース有` := `)とmain(スペース無`:=`)で置換文字列を分ける(**bt_book_tkmはreplace漏れしやすい**＝v_base/v_low代入が入らずclassTotal=nullで全滅→スペース形式に合わせて個別修正)。③大量パターン検証は`_dry`(予約作らない)＋1店1SQLで高速化。④「未登録=基本・安い/高いは登録制」の3帯モデル。⑤RPC改修後は必ず`_dry`で数百パターン検証してから完了とする(過少請求防止)。
+
+## 🚙 2026-09-21 BTご利用ガイド送迎欄=①来店/店舗返却も選択時オレンジに統一 ②来店/店舗返却も時刻選択→OP反映（既存バグ根治・guide-v 2026-09-21）
+武山さん要望。①色＝`_puActive/_rtActive`が来店/店舗返却(false)選択時グレー`#475569`→オレンジ`#ee6a1c`に統一(未選択白)。②時刻＝**既存バグ発見**：`bt_mypage_set_pickup`が古い2引数`(p_token,p_time)`でp_want非対応→来店(p_time=null)が`bad_time`で保存失敗／`bt_mypage_set_dropoff`はp_want対応だが店舗返却時`col_time=null`。→ **RPC 2本をp_want対応で統一**(来店→visit_type=来店/`del_time=p_time`(貸出時刻=A)/del_place=店舗、店舗返却→return_type=返却/`col_time=p_time`(返却時刻)/col_place=店舗。お迎え=PU/高松空港・返却送迎=BD は温存)＋**古い2引数set_pickupをDROP FUNCTION**(オーバーロード曖昧回避)＋フロント(`_puWant/_rtWant`で選択保持・来店/店舗返却でもtimeRow表示・savePickup/doPickup/showPuCur/renderPickupが来店時刻を保存/再表示・来店は便情報非表示)。lookupは元からdel_time/col_time返す=改修不要。
+- **検証**：RPC E2E全4経路(通知トークン一時停止→テスト予約→来店del_time=10:00/店舗返却col_time=15:00/お迎えPU09:00/返却送迎BD18:00 確認→削除→トークン復元)＋フロント構文OK＋demo白画面なし＋色本番反映。commit 1c09a3d(時刻)/8cf662e(色)。
+- **教訓**：①**同種RPC(pickup/dropoff)は署名・挙動を揃える**(非対称=片方だけ古い版でバグが潜む。set_dropoffはp_want対応済なのにset_pickupが古いまま=来店保存失敗が放置されていた)。②**RPC署名変更(引数追加)は必ず古いオーバーロードをDROP**(PostgRESTがp_want無し呼び出しで古い方を呼ぶ・pg_procにproname複数=要DROP)。③**正本書込RPCのE2Eは`bt_config`のslack_bot_tokenを一時リネームで通知停止→テスト予約でRPC実行→予約削除→トークン必ず復元(try/finally)**=本番Slackにテスト通知を飛ばさず正本書込を検証できる。④「送迎不要でも時刻」系は来店=del_time(貸出)/店舗返却=col_time(返却)にOP反映が自然(オーナー確定A)。
+
+## 🩹 2026-09-20 高松(BT)傷チェックに「HDM車両がなく登録できない」根治＝マスター未登録クラスの車両が一覧から落ちる（bt_classes tkm にI/J/K追加＋renderVehicleList横展開・v2.7.1）
+武山雄人(BUDDICA)からSlack報告「高松 車両チェック内にHDM車両がなく登録できないので追加」(車両一覧スクショ=AA/A/C/D/E/F/G/HのみでI/J/Kが無い)。**現場が使う傷チェック＝`~/buddica-touring/damage/index.html`(別リポ buddica-touring/damage・standalone・buildなし・push即反映・BT DB直結)**。
+- **真因(実データで確定)**：①`loadVehicles`は`bt_vehicles active=true`を**brandフィルタなしで全38台読む**(HDM含む)＝データは取れている。②だが`renderVehicleList`が`classOrder.forEach(cid=>...)`で**classOrderに含まれるクラスだけ描画**し、classOrder=`CLASS_ORDER_DYNAMIC||[...]`＝**`bt_classes`(store_id='tkm')から動的生成**。③bt_classes(tkm)は**AA/A/B/C/D/E/F/G/H の9クラスのみで、HDM専用クラス I(タント)/J(パッソ)/K(シエンタ) が未登録**→`groups['I']/['J']/['K']`(HDM車計5台)が描画から落ちる＝「HDM車がない」。C〜HのHDM車は同クラス見出しに出るがI/J/Kが丸ごと欠落。**CLAUDE.md 2026-07-13でhandyman-damageの`renderVehicleList`未知クラス落ちバグは直したが、buddica-touring/damage側は未修正だった＝横展開漏れ**。
+- **2段で根治**：①**bt_classes(tkm)にI/J/K追加**(sort_order 10/11/12・name=軽自動車(タント等)/コンパクト(パッソ等)/コンパクトミニバン(シエンタ等)・暫定ラベル・オーナー/武山が正式名に後で直せる)→CLASS_ORDER_DYNAMICに入り描画。②**renderVehicleListを恒久修正**＝classOrder確定直後に`Object.keys(groups).forEach(cid=>{if(!classOrder.includes(cid))classOrder.push(cid);});`＝**マスター(bt_classes)登録漏れがあっても車両が絶対落ちない**(classDef無しは`{name:cid,label:''}`にフォールバック既存)。v2.7.1。
+- **検証**：本番(Chrome MCP実描画)で v2.7.1・**I/J/K表示・全12クラス・「23台が初期登録待ち」**を確認(HDM車を初期登録できる状態)。Bクラスは車両0台で非表示=正常(空クラスはL1402 return)。
+- **【続報 v2.7.2・2026-09-20】I/J/K(5台)だけでは不十分だった＝真因は2層**：武山さんスレッド返信「新クラス5台だけでなくHDM増台18台必要・3710(アクア)明日貸出で登録したい」。**第2層＝`loadVehicles`(L1233)が`.eq('active',true)`で読むため、稼働ON前の増台車(HDM inactive5台=3710含む全G・ナンバー空2除き実質18台)が傷チェックに出ず初期登録できない**。傷チェックは"納車前・稼働ON前の車を初期登録する"ツール→active=falseでも出すのが正(2026-09-18 SPK「タスク/登録系selectは全車両・未稼働は明示ラベル」と同型)。→ **BT分岐の`.eq('active',true)`撤去＋整形に`active:car.active`追加＋カードに`🅿️未稼働`バッジ(vInfo.active===false)**。SPK/NHA分岐(L1277 vehicles active=true)は要望外で不変。検証=v2.7.2本番実描画で全47台(未稼働9追加)・Gクラス9台・未稼働HDM車に🅿️未稼働バッジ+「初期登録する(必須)」ボタン・初期登録待ち32台。commit 9d24f29。
+- **教訓(横展開)**：①**クラスマスター駆動の車両一覧は必ず「マスター未登録クラスも末尾表示」にする**(でないと新クラス/別ブランド専用クラスの車が黙って消え「車両がない」報告になる)。②HDM/BUDDICA 2ブランド混在の高松は、片ブランド専用クラス(HDM=I/J/K)がマスターに漏れやすい→**ブランド追加/新クラス車両登録時はbt_classes(tkm)にそのクラスがあるか確認**。③傷チェックは`buddica-touring/damage`(現場の正)と`nosh2318/handyman-damage`(NHA/SPK+BT対応も追加した冗長版)の2つ→同型バグは両方に横展開確認(今回は現場が使うbuddica-touring/damageを修正)。④**「一覧に出ない」系は2層で疑う＝(a)描画のクラス/絞り込み(classOrder)＋(b)データ取得の`.eq('active',true)`等のフィルタ**。傷チェック/初期登録/タスク割当のような"全車が対象"の画面は`active=true`で絞ると増台車/整備中車/納車前車が消える→全車出して未稼働は明示バッジ。⑤現場報告は"最初の症状"より深い場合がある(「HDM車がない」→実は①未登録クラス落ち②未稼働フィルタ の2層)＝1層直して「完了」とせず、実データで台数(HDM 20台/active15/inactive5/ナンバー有18)まで突合して現場の数字(18台)と合わせる。
+
+## 🩹 2026-09-20 高松 傷チェック「前日20:00公開のはずが未公開・バッジが当日公開」根治＝ご利用ガイドのゲートが当日8:00のまま取り残されていた
+現場報告「BUDDICAご利用ガイドの傷チェックが貸出前日20:00公開のはずが未公開／バッジ表記が当日公開」。真因＝**傷チェック公開ゲートが2箇所にある**：①ご利用ガイド`~/buddica-touring/app/guide/index.html`＝**クライアント側の日付ゲート**(`_open`) ②HDMマイページ`my-tkm.html`＝**EF`handyman-mypage-tkm`のサーバ`damage.ready`フラグ**。**②のEFは2026-08-13に前日20:00解禁へ変更済みだったが、①ガイドのクライアントゲートが`当日朝8:00公開`のまま追随しておらず不一致**だった（コメントは「my-tkmと統一・2026-08-09」＝08-13のmy-tkm変更時にガイドを更新し忘れ）。
+- **根治**：ガイドの`_open`を「貸出前日20:00(JST)以降に公開（当日・貸出済は公開継続）」に変更＝`_prevStr`(start_date-1日)を算出し`_tday>=start_date || (_tday===_prevStr && _jstH>=20)`。バッジ`dmg_wait`を「🔒当日公開」→「🔒前日20:00公開」(日英繁韓4言語)。node実機ロジック検証済(前々日/前日19時=未公開・前日20時〜=公開)。ガイドはstandalone(build不要・push即反映)。
+- **教訓（横展開）**：同じ「傷チェック公開ゲート」がBUDDICAガイド(クライアント判定)とHDM my-tkm(EFのdamage.ready)の2実装に分かれている。片方(EF)の解禁タイミングを変えたら、もう片方(ガイドのクライアント`_open`)も必ず同じ値に揃える（"◯◯と統一"のコメントがあっても実装が2箇所なら両方直す）。公開/解禁タイミング系は「クライアント日付ゲート」と「サーバreadyフラグ」の両方を確認。
+
+## 🩹 2026-09-20 高松(BT)OP「担当/時間を更新しても一定時間で戻る・タスク抜け多発」根治＝定常更新をmirrorTasks(純ミラー)化（NHA v3.5.286横展開漏れ・v1.0.460-BT）
+現場緊急報告「高松で担当・時間等を更新しても一定時間でリセット・タスク抜けも出る（キャッシュ消去済）」。号機がA案(止血)/B案(夜間恒久)を提案→**A案(止血)実施**。
+- **真因＝2026-07-11 NHA v3.5.286と完全同一クラスの横展開漏れ**：BTのOP定常更新（**30秒ポーリング＋タブ復帰**・index.html.bak L17359付近）が`loadTasks(selDate)`＝`generateTasks`で再生成→`upsertTasks(全件,{protect:true})`を呼び、開いて放置しているだけで**人入力(担当/時間/場所)を予約由来値で上書き＋タスク抜け**。台帳(BT audit_log)で`bt_tasks 24h=76 UPDATE(無意味な再保存)`を確認＝定常再保存が犯人と確定。SPK/NHAは2026-07で`mirrorTasks`化済みだが**BTだけ未横展開だった**。
+- **根治(A案)**：NHAの`mirrorTasks`をBTに移植し、L17359-17365の定常ポーリング/タブ復帰を`loadTasks(selDate)`→`mirrorTasks(selDate)`に差し替え。mirrorTasks＝**DBを映すだけ**（①自入力直後3秒スキップ ②fetchエラー/DB空は現状維持＝行を消さない ③孤立/キャンセルのみ表示除外・再生成/並べ替え/追加はしない・DB書込なし ④手動protect＝DB`_changed`が権威+LSローカル変更のみ補完+place/colPlace補完 ⑤LSのmanualタスクがDBに無ければ復元 ⑥返却後洗車の重複除外はloadTasks/Realtimeと同一の表示のみ）。**生成が要るのは新規予約(reservations.length変化・L17272)/日付変更(selDate変化・L17255)だけ＝loadTasksが担当(残す)**。Realtime(L17281-17325)は元から`fetch→setTasks`のmirror的＝不変。
+- **検証**：`node build.js`(BTはterser未導入=非圧縮が正常)→APP_VERSION v1.0.460-BT/BASE_V 1829 bump→構文OK(node --check EXIT=0・React.createElement変換済)→**実ブラウザ(Chrome MCP)でv1.0.460-BT本番反映・白画面なし・console error 0・TOP全UI描画を確認**→commit 490e5d8 push(buddica-touring/app.git main)。
+- **教訓(横展開ドクトリンの実証)**：**「OP定常更新(ポーリング/タブ復帰)で毎回generateTasks再生成+upsertTasks」は3店共通の危険クラス**（人入力が戻る/タスク抜け）。SPK/NHAで直したら**必ずBTも同型か確認**（BTは横展開漏れていた＝2026-07の修正が届いていなかった）。定常リフレッシュはDBミラーに一本化し、生成は真に必要なトリガー(新規予約/日付変更)に限定する。「保存したのに戻る」系は台帳(audit_log)で"定常UPDATE件数の異常"を見れば犯人が定常再保存か即分かる。※残＝B案(恒久・loadTasksの生成自体を導出viewに寄せるLEDGER-ONE STEP4)は夜間閑散帯に別途。
+
+## 🗺 2026-09-19 KEYDROPお届け先検索が「英語になる」根治＝Google読込中の英語Photonフォールバック（index-classic.html）
+現場報告「代車のお届け先検索が英語（Sapporo Ekimae Dori 等ローマ字）になる」。切り分け＝**代車フローの位置ピッカー(keydrop-deliv-mock.html)はGoogle Places(language=ja)で日本語表示＝正常**。英語は**PC既定の旧TOP `index-classic.html`**（KEYDROP LP v2は`スマホ既定/PC旧維持`＝PCはindex-classic）の住所検索。真因＝`searchAddress`が`if(Google ready)gSearch(ja); else photonSearch()`で、**Google Places(async)の読込が終わる前に検索するとPhoton(komoot＝英語ローマ字)にフォールバック**。日本語のGSI(国土地理院)はPhotonが空振りした時しか呼ばれず、Photonは通常結果を返すのでGSIに到達せず英語が出る。
+- **根治**：`searchAddress`を①**Google読込中(!gReady)は英語Photonに落とさず最大~3秒待って再試行**②**キーレスのフォールバックを日本語のGSI(国土地理院)→Nominatim(accept-language=ja)に変更・Photonは使わない**。実機検証＝GSIが「札幌駅」で日本語(北海道札幌市/札幌駅…)を返す＋修正後searchAddressがphotonSearchを呼ばずgsiSearchを呼ぶことを確認。standalone HTML(build無・push即反映)。
+- **教訓**：①**Photon(photon.komoot.io)は日本語(ja)非対応＝英語ローマ字を返す**。キーレスの日本語ジオコーダは**GSI(msearch.gsi.go.jp・住所/駅に強い)とNominatim(accept-language=ja)**。日本向けの検索フォールバックはGSI→Nominatim(ja)を主にし、Photonは使わない(使うなら座標→Nominatim(ja)逆ジオで日本語化)。②Google Places等のasync読込に依存する検索は「読込前に叩くと別ジオコーダ(英語)に落ちる」レースがある→**読込中は待って再試行**する。③「英語になる」系はまず"どのファイル/どのジオコーダが返しているか"をライブ実機で確定してから直す(代車ピッカーは正常・旧TOPが原因だった＝推測で違うファイルを直さない)。
+
+## 🚗 2026-09-18 BT OP「洗車・その他タスクの車両選択に登録車が出ない」根治＝稼働中フィルタで未稼働車が非表示（v1.0.455-BT）
+現場報告「OPシートの洗車やその他タスク生成時の"車両を選択"に抜けている車両がある・例アクア3710」。真因＝BT OPの**タスク生成の車両select3箇所（洗車追加L18772・その他追加L18916・その他編集L18987）が全て`vehicles.filter(v=>v.active!==false)`＝稼働中の車両のみ表示**。アクア3710は当日登録した稼働OFF(active=False)の車両→ドロップダウンに出なかった。**洗車・その他タスクは未稼働車にも作れるべき**（納車前洗車・未稼働車の作業）なのに稼働中だけに絞っていたのが誤り。
+- **根治**：3箇所の`filter(v=>v.active!==false)`を撤去し**全車両表示**、未稼働は`{v.active===false?" ・未稼働":""}`で明示（例「アクア (3710) ・未稼働」）。稼働状態は不変（オーナー管理）。⚠️入庫予定モーダル(L5256・`（{v.type}）`形式で別文字列)は今回対象外＝報告どおり洗車/その他のみ。
+- **教訓**：①**タスク生成/割当のドロップダウンを「稼働中のみ」に絞ると、新規登録した未稼働車・整備中車・納車前車が選べず「車両が抜けている」報告になる**。運用タスク(洗車/その他/整備)の車両selectは全車両を出し、未稼働は明示ラベルで区別する（配車=稼働中のみが正・タスク=全車両が正、で使い分ける）。②新規車両を`active=False`で登録すると、サイト非表示だけでなくアプリ内の各種車両selectからも消える→登録直後に「選べない」系の報告が出やすい。同型のactiveフィルタ済selectが他店(NHA/SPK)にもあれば横展開確認。
+
+## 🚿 2026-09-18 BTバイト用ページ「返却後洗車を翌日に回しても翌日タスクに出ない」根治＝RPCの翌日繰越条件に返却後洗車が欠落
+現場報告「返却後洗車を翌日に回すと、当日タスクには残るのに翌日タスクに出ない（OPシートは正しく翌日表示）」。**真因＝バイト用ページ(`~/buddica-touring/app/staff.html`)が読む`bt_staff_view` RPCの「翌日繰越」条件が`t."内容"='洗車'`のみで、`返却後洗車`(別タイプ)が抜けていた**。「翌日に回す」＝`changed_json._nextDayWash=true`でDB日付は変えず表示だけ翌日にずらす仕組み（NHA/SPK/BT共通・OPシートは`nextDayWashOverlay`で処理）。RPCの`eff_date = (内容='洗車' and _nextDayWash) ? date+1 : date` が洗車のみ判定→**返却後洗車はDB日付(当日=返却日)のまま残り当日に表示・翌日に出ない**。実データでも`_nextDayWash=true`タスクはほぼ全て`内容=返却後洗車`(rw-)だった。
+- **根治**：RPC `bt_staff_view` の`eff_date`条件を `t."内容"='洗車'` → **`t."内容" in ('洗車','返却後洗車')`** に。→ 返却後洗車も当日から消え翌日に繰越表示。実データ検証済(返却後洗車 DB日付9/21→バイトURL表示日9/22)。**RPC修正のみ＝アプリ再デプロイ不要・ページ再読込で反映**。
+- **教訓（横展開）**：①BTの洗車判定は必ず**`洗車`と`返却後洗車`の両タイプ**を含める（アプリの`isW=t.type==="洗車"||t.type==="返却後洗車"`が正・2026-09-12の「返却待」欠落と同クラス＝タイプ判定の取りこぼし）。②「OPシートは正しいのに個別URL/staff.htmlでズレる」は、staff系RPC(`bt_staff_view`/`nha_staff_view`)がOPシートの導出ロジック(overlay/leg判定)を再現しきれていない典型→OPが使う全ロジック(nextDayWash繰越/leg導出)をRPC側にも揃える。③Management APIへのSQL投入はsedで`\"`混入が起きやすい→**pg_get_functiondefで新鮮に取得→Python内で文字列replace→そのまま投入**(ファイル/sed経由しない)が安全。
+
+## 📧 2026-09-18 高松HDM送信テンプレ「楽天予約が出ない」＝出発60日窓の外（楽天は事前決済済→全未来表示に拡張・v1.0.454-BT）
+現場報告「RKT(楽天)予約がHDM送信テンプレに反映されない・RC62461294750610526だけ出て他が出ない」。**真因＝取込ミスでなく表示窓**。`JalanTemplateList`(`~/buddica-touring/app/index.html.bak` L20706-708)は`ota in(じゃらん,楽天) and start_date between today-14 and today+60`＝**出発-14〜+60日のみ表示**。楽天予約は出発が11/19〜2027年＝60日窓の外で未表示（RC62461294750610526は11/7で窓内→表示）。楽天は事前決済済＝予約後すぐ初動メール(マイページ/送迎案内)を手動送信する運用(テンプレ説明「楽天は事前決済済/メール手動」)なのに、遠い予約が出発60日前まで送れなかった。
+- **根治(オーナーB選択)**：じゃらん=`-14〜+60日`維持／**楽天=`gte(start_date,today-14)`のみ＝上限なし(全未来表示)**に分離（`.eq("ota","じゃらん").gte.lte` と `.eq("ota","楽天").gte` を別fetchしてmerge）。→ 予約後すぐ手動メール送信可。
+- **教訓**：「テンプレ/リストに予約が出ない」はまず取込でなく**表示フィルタ(日付窓・ota・status・送信済dedup)**を疑う。事前決済OTA(楽天)は予約が遠い先でも早めに管理したい→日付窓を外す。じゃらん(未決済=決済催促が近づいてから)は近い出発のみで妥当＝OTA特性で窓を分ける。
+
+## 📉 2026-09-17 hq-monthly 那覇等の月次売上が過少表示＝PostgREST 1000行上限で切り捨て（RPC根治）
+オーナー「那覇店 8月売上 減ってる＝違う（¥7,724,334/220件）」。正しくは**¥8,371,411/278件**（予約233＋予約外45・snapshot/日報と一致）。
+- **切り分けの決定打＝同じRPCをmanagement API(postgres)とanon(ページ経路)で並べて比較**：mgmt=278件/¥8,371,411／anon=220件/¥7,724,334＋**予約外売上が丸ごと0件**。SECURITY DEFINER・OWNER=postgres(bypassrls)なのでRLSではない。→ **anonが返す総行数=ちょうど1000、真の総行数=1212**＝**PostgRESTのdb-max-rows(1000)で切り捨て**（mypage-notif dedup 2026-09-08と同クラス「1000行の壁」）。当月/未来を個別行で全店分返すと1000超→末尾の過去バケット全部＋当月の一部(那覇の予約外+予約13件)が欠落。
+- **根治＝`hq_monthly_rows`を「当月＝個別明細／未来・過去＝月次集計(store×brand×channel×返却月でsum(price)+count)」に変更**→総行数590に激減(1000未満保証)。anon再確認で那覇8月=278件/¥8,371,411/予約外込みに復旧。`bt_hq_monthly_rows`は114行で安全(変更不要)。ページ(hq-monthly.html)は未来ブロックの表示modeを`monthDetail`→`monthSummary`に統一。＋◀▶前月/翌月ボタン追加(Safariでmonthピッカー非対応対策)。
+- **教訓**：①**anonのPostgREST RPC/SELECTは1000行で無警告に切り捨て**られる(RPCの戻りTABLEも対象)。行数が1000超え得る集計RPCは必ずDB側で集計し行数を抑える。②「値が違う/過少」系はまず**同じRPCをservice_role(mgmt API)とanonで並べて数える**＝一致しなければRLSか1000行切り捨て。総行数がちょうど1000ならほぼ確定。③SECURITY DEFINER+OWNER=postgresならRLS無関係→行数上限を疑う。④財務/月次集計RPCは明細全件でなく集計行で返す(明細は選択月だけ)。
+
+## 🚨🔁 2026-09-17 GAS停止(Gmail1日上限)中の「手動 取込＋初動メール送信」フロー（GAS復旧まで毎回この作業・確立済）
+札幌/那覇GASが同一Googleアカウントで**Gmail 1日実行上限を共有し枯渇**(`Service invoked too many times for one day: gmail`)＝両店とも新規取込もキャンセルも初動メールも止まる。**日次リセットで翌日自動復旧・当日はGAS再実行しても無駄**。オーナーが予約メール本文を貼る→私が「①取込 ②初動メール送信」まで一括でやる。復旧まで継続。
+- **① 取込**（reservations/nha_reservations + fleet）：既存OTA行からスキーマ写経。**opt_usb=boolean(false)/opt_c/j/b=integer(0)**・じゃらん`ota='J'`/楽天`'R'`/skyticket`'S'`/HP`'HP'`・SPK`visit_type=''`/`return_type='COL'`・NHA楽天は`base/option='0',price=合計`・SPK楽天/じゃらんは`base/option`個別。**空車は「同クラス×期間重複なし×`vehicle_monthly_kpi.active`がその月Falseでない(稼働除外回避)」の3条件**。那覇A2予約は**Aクラス車両(アルファードALF)に配車**(GAS L970 A2→searchClass=A・那覇にA2車両なし)。日本語列(nha_tasks"予約番号")は`json.dumps`でcurl。
+- **② 初動メール送信**（`.com welcome`＝rent-handyman.comのwelcome。GAS停止で自動送信されない）：**一時EF `hdm-oneoff-mail`(BT project ggqugvyskyiblxiycpci・`--no-verify-jwt`・`RESEND_API_KEY`はBT secretなのでEF経由必須＝CLIから鍵は読めない)** で `reserve@rent-handyman.com` から送信。body=`{secret(=~/.config/keydrop/hdm_tkm_cron_secret),store(spk|naha),to,subject,text}`。呼出はBT anon(handyman_kpi.BT_ANON_KEY)。本文テンプレ＝gas `sendJalanPaymentEmail_`(L1800)準拠。
+  - **じゃらん札幌(未決済)**：Square決済リンクを**手動作成**→初動メールに同封。①Square API `connect.squareup.com/v2/online-checkout/payment-links`(quick_pay・**location L8N7J9RKPN3WH**・トークン=`~/outputs/handyman-receipt-bot/Code.gs`の`EAAA…`)で**金額＝利用者への請求額**(合計でなくポイント/クーポン利用後の請求額・過大請求回避)②`jalan_payments`に`status='link_created',square_payment_url,square_order_id`記録(webhook消し込み用)③初動メールに決済リンク+LINE(@730kyhwl)④送信後`jalan_payments status='email_sent'`。⚠️`price<=0`(ポイント全額充当)は決済リンク不要。
+  - **skyticket/エアトリ/楽天(事前決済・入金済み)**：決済リンク**不要**。初動メールはLINE誘導(那覇@466dbckq/札幌@730kyhwl)＋受渡方法案内のみ。
+  - **🔴 送信後は必ず記録を残す**：①`{store}_line_sends`に`(resv_no,action='mail_welcome',status='sent')`をinsert ②取込時に`mail`列を必ず埋める(手動取込でmail入れ忘れがち)。**この記録が無いと`mail-status.html`(RPC `mail_status` welcome cov)で「未処理」表示になる**(2026-09-17 トミザワDY00000001133で発生＝送信済なのに那覇6/7未処理表示→mail補完+mail_welcome記録で7/7解消)。mail-status.html＝https://nosh2318.github.io/spk-task/mail-status.html でGAS停止中のカバレッジ(初動メール送信済/対象・傷チェック)を確認できる。
+- **Slack可視化**：じゃらん決済は`#jalan_payment`(C0AQL6HGG3E)に決済リンク投稿(bot=sns_auto)。
+- **実施例(2026-09-17)**：寄谷R0CKHMG2(じゃらん札幌H・明日出発)→Square K3ZGlA6A ¥22,000(合計22,300-P300)+初動メール送信済/トミザワDY00000001133(skyticket那覇A2入金済→ALF02)+初動メール(決済なし)送信済。両Resend id発行成功。
+- **教訓**：①決済リンクの金額は**「利用者への請求額」**(合計でなくポイント/クーポン後)＝過大請求根治。②rent-handyman.comのResend鍵はEF secretでCLIから読めない→一時EF経由で送る(BUDDICAのbt_resend_keyは別ドメイン・混同禁止)。③GAS停止は「取込」だけでなく「初動メール・キャンセル処理・決済リンク発行」も全部止まる＝手動で全部代替する。
+
+## 📦 2026-09-17 協力会社の自社予約(partner_reserved)を在庫管理に反映（札幌・v4.7.631）
+オーナー要望「協力会社の自社予約でブロックされた際の在庫管理への反映（現在：反映なし→今後：反映）。基本の表示内容・方法は予約時と同じ・予約媒体に協力会社名」。
+- **現状**：協力会社の自社予約＝`maintenance`の`block_type='partner_reserved'`（label='自社予約'・owner_company=協力会社ID・maint_notes=顧客メモ・start/end_date=text）。配車表には🟣紫縞バーで出るが、**在庫管理タブ(InventoryTab)は`intakeRows`(車検/半年点検/修理のみ)しか拾わず反映なし**だった。
+- **実装(InventoryTab)**：新`partnerRows` useMemo＝partner_reserved・未来(coalesce(end,start)>=today)・非削除 を予約形に変換（`_partner:true`／ota="_PARTNER"／`partnerLabel`=車両の`ownerLabel`(共立自動車等)‖owner_company／name=maint_notes‖"自社予約"／vehicle=車名／lend/returnDate=start/end）。`rows=resv.concat(intakeRows).concat(partnerRows)`(depsに追加)。
+- **表示＝予約と同じ**：媒体セル=🟣紫バッジで協力会社名／予約者名=メモ+「自社予約」タグ／予約番号="—"(取消ボタンなし)／**在庫調整・APP取込・メール送信は予約と同じく有効(Ck)・在庫開放はダッシュ**(キャンセルのみ)。既定=app_imported/mail_sent(楽天以外)true・stock_adjusted false→**未対応の主タスク=在庫調整**（この車が協力会社に押さえられた→各媒体の在庫を絞る）。
+- **TOPバッジ(invTodoTotal)にも合算**：予約未調整＋入庫(車検/点検/修理)未調整＋**partner_reserved未調整(pt)**。invAdjSet(spk_inventory_status)で調整済み判定＝入庫と同じ仕組み。
+- 検証：実データ3件(アルファード/ノート/ノア・全て🟣共立自動車)が反映されることを確認。
+- **教訓**：在庫管理に出す"予約以外のブロック"は2系統になった＝①🏭入庫(車検/点検/修理・全媒体調整対象・APP取込/メール送信はダッシュ)②🟣自社予約(協力会社・予約と同じ全チェックボックス)。maintenanceの`block_type`で分岐（label依存でなく）。partner_reserved日付はtext→text比較。invTodoTotalはTDZ回避でinvTodoCount宣言後に置く鉄則を維持。
+
+## 📮 2026-09-17 通知・メール・LINE マスター台帳＋ライブ稼働ページ（オーナー「毎回確認が面倒→マスターデータを台帳に」）
+全自動コミュニケーション（初動から全て・メール/LINE/Slack・.com/KEYDROP/BUDDICA/高松HDM横断）の「何を・いつ・どのチャネルで・どの店に・正常稼働か」を1枚に集約。
+- **正本ドキュメント＝`~/Desktop/HANDYMAN/通知メールLINE_マスター台帳.md`**（タイミング表の正本・.comは実コードから抽出した正確な時刻ゲート）。
+- **ライブ台帳ページ＝`https://nosh2318.github.io/spk-task/mail-status.html`**（standalone・vanilla・60秒自動更新）＝送信スケジュール表＋全cron稼働(active/直近実行/成功)＋直近24h送信実績＋じゃらん未払件数。**毎回SQLで確認せずこのURLを開けば済む**。
+- **RPC 2本**：MAIN`mail_status()`（cron.job_run_details直近2日をDISTINCT ON(jobid)で1パス集計＝相関サブクエリだと8sタイムアウトするので必須）＋spk/nha_line_sends 24h集計＋jalan未払件数。BT`bt_mail_status()`（official-notify/hdm-tkm/bt-mail cron＋hdm_tkm_notifications/bt_mail_log 24h）。両方SECURITY DEFINER・anon grant。**新RPCはBT側で`NOTIFY pgrst,'reload schema'`しないとPGRST202**。
+- **.comトリガーの正確なタイミング（official-notify・毎時cron内で対象日×JST時刻ゲート）**：初動welcome=登録次第／場所=貸出3日前10時(場所未設定)／前日=貸出前日18時／返却前日17時／傷チェック=出発当日8時〜／返却日9時〜／御礼=返却翌日10時／じゃらん催促=毎日10時(貸出3日前〜当日・未払のみ)。**楽天(R)は全トリガー対象外**(WELCOME_OTA/otaInにR無し＝楽天メールに自社LINE誘導が含む＝二重回避)。
+- **⚠️発見した既知バグ（未修正）＝那覇 line-damage-check-nha の再送ループ**：dedupが`status='sent'`のみを既送信扱い→**LINE未連携客(no_userid)/skippedを毎5分リトライ**し1予約192回のゴミログ（48hで1381行・ユニーク予約17件）。顧客に実害なし（LINE未連携客は.comのmail_damageメールで傷チェックが届く）が、ログ汚染＋無駄サイクル。**根治＝damage-check-cronのdedup判定を`sent`だけでなく`no_userid`/`skipped`も「試行済み」に含める**（mypage-notifyの1000行dedup穴と同クラス）。
+- **教訓**：「何がいつ送られるか＋正常か」を毎回問われる系は、正本MD(タイミング)＋ライブHTML(稼働)の2点セットで自己解決化する。cron稼働は`active=true`でなく`cron.job_run_details`の直近statusで見る（activeでも中身のEFが常時エラーな場合がある）。「succeeded」は0件でも成功を返すので、実到達は`{store}_line_sends`/`bt_mail_log`/`hdm_tkm_notifications`の実送信件数で確認。
+
+## 🔑 2026-09-19 那覇GAS取込が全件「DB登録失敗」で30分毎スパム＝根本はScriptProperty名の不一致(SUPABASE_KEY vs コードのSUPABASE_SERVICE_KEY)→無言でanonフォールバック
+GAS「那覇店 予約取込」が新規予約すら取込めず（DB在の予約まで「DB登録失敗」）、失敗通知が30分毎に連発。**根本＝GASコード`var SUPABASE_KEY = getScriptProperties().getProperty('SUPABASE_SERVICE_KEY') || '<anonキー>'` が読むプロパティ名は`SUPABASE_SERVICE_KEY`なのに、実際のScriptProperty名が`SUPABASE_KEY`だった（値は正しいservice_role JWTが入っていた）**。→ getPropertyがnull→**無言でanonキーにフォールバック**→anonはnha_reservationsのSELECTがRLSで空・INSERTが401拒否→存在チェックが常に「無い」と誤判定し全件insert失敗＝「DB登録失敗」。
+- **切り分けの型（再利用）**：①失敗通知の予約が実は**DBに在る**のに「DB登録失敗」＝存在チェック(SELECT)が読めていない＝キーがanon/失効。②コードのフォールバックanonキーを取り出して実測（anon SELECT→`[]`空／INSERT→`401 code42501 RLS拒否`／service_role→200・201）＝症状がanonと一致すればキー問題確定。③**値を直しても直らない場合はプロパティ"名"を疑う**＝コードの`getProperty('◯◯')`の◯◯とScriptPropertyの名前が完全一致しているかブラウザで実査（GAS設定→スクリプトプロパティ）。名前が1文字違うと`|| anon`で無言に劣化する。
+- **修正**：ブラウザでGAS設定→スクリプトプロパティを「編集」モードにし、プロパティ名`SUPABASE_KEY`→`SUPABASE_SERVICE_KEY`に変更して保存（値=service_roleは不変・秘密は触らない）。手動即時実行はOAuth認証プロンプト（別アカウントoshita@mileshare.jp）が出るため実行せず＝認証済みトリガー(noritaka.oshita@gmail.com)の次サイクルで自動復旧。ScriptPropertyは project-level なので編集アカウントに関わらず全トリガーに効く。
+- **教訓**：①`getProperty('X') || fallback` パターンは名前不一致でも例外にならず**静かにfallbackに落ちる**＝最も気づきにくい。GAS認証失敗の調査は「値が正しいか」だけでなく「コードが読む名前とプロパティ名が一致するか」を必ず突合。②GASのservice_roleキーは`~/.config/keydrop/sb_service_main`（role=service_role・Legacy JWT・exp2036）。③新形式`sb_secret_`はGASで拒否＝Legacy JWT必須(2026-07-06)。④「値をクリップにコピー→貼付」で直らない時は貼付先のプロパティ名/保存の有無をブラウザで実査するのが最短(推測で往復しない)。⑤DB在の予約が「取込漏れ/DB登録失敗」で毎サイクル出るのは、多くが手動取込済でGASの存在チェックが読めていないサイン＝キー/名前を疑う。
+- **✅根治確認済(2026-09-19 15:10)**：実行ログで`processNewEmails`が14:56:33に「完了」＋以降❌失敗通知ゼロ（14:28が最後）＝以前失敗の16件が「登録済み」skipに転じ取込エラー消滅＝GAS復活を確認。名前修正後の初回トリガーで成功。
+
+## 🚨🚗 2026-09-19【再発・自戒】手動配車で「稼働除外(vehicle_monthly_kpi)」を見ずに配車＝2026-09-16ノア5398と同じミスを3日後に繰り返した
+那覇の未配車ムラカミ リョウジ[B2 9/18-21]に**セレナH①(2720)を配車したが同車は2026-09が稼働除外(vehicle_monthly_kpi.active=false)＝配車不可**（配車表に出ない車）。オーナー「セレナH①(2720)配車不可だろ 大至急戻せ 覚えろ」＝正しい。原因＝**空車探索でfleet×reservationsの期間重複だけ見て、稼働除外(vehicle_monthly_kpi)を見なかった**＝下の2026-09-16の教訓を自分で書いておきながら実装スクリプトに反映せず再発。
+- **撤回＋正しい再配車済**：セレナH①をムラカミから剥がす→正しい判定(重複なし＋稼働除外でない＋メンテなし)ではBに空車なし(セレナH①/②とも9月稼働除外)→**ムラカミは未配車が正**（無理に稼働除外車へ入れない・協力会社車手配等はオーナー判断）。キタヅメ[B2 10/13-17]→アルファードM②(2213)は稼働除外/メンテ無しを確認して配車OK。
+- **🔴 手動配車の空車判定は必ず4条件（1つでも飛ばすと誤配車）**：①同クラス/ブランド ②期間重複なし(fleet×reservations・status not in キャンセル/cancelled) ③**その予約が跨ぐ全year_monthで`nha_vehicle_monthly_kpi.active`がFalseでない**(設定なし=稼働/active=false=稼働除外=配車表に出ない=配車不可) ④`nha_maintenance`で期間重複するメンテがない。**①②だけで「空いてる」と判定するな**。判定スクリプトは必ず`kpi`(稼働除外set)と`maint`を組み込む。B2/A2で空車がB/Aにも無い時は稼働除外を無視して埋めず未配車のままオーナーに委ねる。
+- **一般化(自戒)**：教訓をCLAUDE.mdに書いても、実装スクリプトに反映しなければ再発する。手動配車の空車探索は「期間重複だけの簡易版」を二度と使わない。
+
+## 🚗 2026-09-16 手動配車の空車判定は「稼働除外(vehicle_monthly_kpi.active)」を必ず見る＋GAS停止(Gmail1日上限)時の手動取込/キャンセルの型
+オーナー叱責「ノア5398 配車表みろや」。GAS停止中の手動取込で橋本様(B・10/4)をノア5398(NRH)に配車しようとしたが、**ノア5398は2026-10で`vehicle_monthly_kpi.active=False`＝稼働除外＝配車表に出ない車**。fleet+reservationsの期間重複だけ見て「空き」と誤判定した（=配車表=稼働除外を見ていない）。
+- **鉄則＝手動配車の空車判定は3条件**：①同クラス/ブランド ②期間重複なし(fleet×reservations・status not in キャンセル/cancelled) ③**その月に稼働除外されていない**(`vehicle_monthly_kpi.active`が該当year_monthでFalseでない・**KPI設定なし=稼働扱い**)。①②だけだと稼働除外車に配車する（配車表に出ないのに）。「配車表みろ」＝稼働除外/メンテを見ろ。
+- **GAS停止(Gmail1日上限)時の手動対応の型**：札幌GASがGmailクォータ超過(`Service invoked too many times for one day: gmail`・`getOrCreateLabel_`で発生)で止まると**①新規取込②キャンセル処理の両方が停止**(配車残る/予約入らない)。クォータは**日次リセット=翌日自動復旧・当日はGAS再実行しても同エラーで無駄**。当日は手動：キャンセルは**実メール(じゃらん/楽天キャンセル通知)で予約番号裏取り**→`status=キャンセル`+fleet削除、新規は`reservations`+`fleet`挿入(**opt_usb=boolean→false / opt_c/j/b=integer→0**・じゃらん`ota='J'`・`visit_type=''`/`return_type='COL'`・base/option/discount=文字列/price=数値・楽天クーポンは楽天負担で売上に含める)→**稼働中の同クラス空車**へ配車。**取り直し予約**(旧キャンセル→同一人物同日程の新規=メール同一)は旧の同じ車枠に入れる(例R0EE48UL高山繁樹Gキャンセル→R0D0CLF1高山和江G新規=デミオ6666同枠)。恒久策=GASのGmail呼び出し削減。
+
+## 💳 2026-09-16 じゃらん事前決済を全店共有の新システムに統一＝Squareウェブフック消し込み・DB1本・スプシ廃止（オーナー確定「スプシやめて新システム・高松含め」）
+背景＝じゃらん事前決済が①正本バラバラ(スプシ+DB+Square)②ポーリング消し込みの見逃し(state=COMPLETEDのみ判定→リンクはtender付与後もOPEN残り→見逃し)で**「入金済みなのに催促」が再発**。③那覇のリンク発行が8/28停止(28件未発行)。オーナー指示で全店(那覇/札幌/高松)を1つの新システムに統一。
+- **新システムの芯**：**消し込み＝Squareウェブフック**（払った瞬間→DBを即paid）＝ポーリング廃止＝見逃しゼロ＝**誤催促を構造で根絶**。**正本＝DB `{store}_jalan_payments` 1本**（jalan/nha_jalan/bt_jalan）。**スプシは廃止**（立替/予約外だけ別管理で残す）。**催促＝DB読む**（status∈link_created/email_sent＝paidは自動除外・dedup・全店）。
+- **1つのwebhookで全店消し込み**＝`payment-webhook`(MAIN project・既存KEYDROP用を拡張)。Square入金→`square_order_id`で突合→jalan_payments(札幌)/nha_jalan_payments(那覇)/**bt_jalan_payments(高松=BT別DB・cross-DB書込・secret BT_URL/BT_SERVICE_KEY)**をpaid化。**じゃらんはreference_id付けない**(KEYDROP経路と衝突回避・square_order_idのみで突合)。冪等・HMAC署名検証あり。
+- **那覇リンク生成＝official-notify(.com)**：じゃらん(ota=J)welcomeでリンク未発行なら**Squareリンク生成→nha_jalan_payments記録(square_order_id保存)→welcome内包**(=.jp GAS停止の代替)。金額＝`nha_reservations.price`(過去実績で`nha_jalan_payments.amount`と完全一致=じゃらん利用者請求額)。催促も那覇/札幌両方をDB1本でループ。DRY/preview時はリンク生成しない。
+- **高松**＝hdm-tkmが元からsquare_order_id保存済→webhook接続のみで新システムに乗る。
+- **既存リンクの消し込み(オーナー指摘の穴)**：列追加前の既存リンクはsquare_order_id空→webhook突合不可。→ **Square payment-links LIST(url→order_id)で全既存にbackfill**(46件)＋**Squareで既払いなのにDB未払いの6件を検出しpaid化**(那覇・8/28停止で消し込み漏れ＝誤催促寸前だった)。突合キー`square_order_id`列を3テーブルに追加。
+- **未発行28→24件(未払い・出発これから)にリンク発行**：Squareリンク生成→nha_jalan_payments記録(把握・追跡・催促対象化)。**一斉送信はしない**＝各自の出発3日前に催促(Phase3)が自動でリンクを届け、払えばwebhook消し込み＝「把握し必要なユーザー(出発間近)に催促」に一致。
+- **新規のみ厳守**：既存welcomeはseed済(送信0確認)。**取り返しのつかない一斉送信をしない**(2026-09-16の47件backfillミスの教訓)。
+- **残(GAS貼替・急がない=札幌は今もcheckPaymentStatusでDB最新維持し誤催促なし)**：①札幌GAS`createSquarePaymentLink_`をURLのみ→`{url,orderId}`に変え`jalan_payments.square_order_id`保存(→札幌新規もwebhook消し込み) ②統合Bot`payment_bot_unified_v1.gs`のスプシ消し込み(syncPayments/checkOverdue)のじゃらん分を廃止(立替/予約外は残す)。
+- **立替/予約外も同じ新システムに作り直し完了(2026-09-16 オーナー「立替/予約外を作り直せ→その後じゃらんも」)**：`{store}_accounting`(nha/spk/bt・type=advance/extra_sales)に**square_order_id列追加**→統合Bot`payment_bot_unified_v1.gs`(GAS「HANDYMAN Payment Bot v1」・領収書/キャンセルも同居)が`postToSupabase_`でorder_id保存→**payment-webhookが`{store}_accounting`もpaid=true化**(高松cross-DB)。既存154件backfill(既払い隠れ0件)。**Bot GASの`recordToSheet_`(スプシ書込)と`syncPayments`(スプシ消し込みポーリング)を`return;`で撤去**＝スプシは処理ループから完全に外れた(立替/予約外/じゃらん全部)。**checkOverdueは2026-04-25に既に停止済**。閲覧＝決済タブ(DB)/会計タブ/advance.html。**スプシ「支払い管理」(1-QU8Jw…)はもう読まれない**(残骸として残るだけ)。
+- **決済タブ整理(SPK v4.7.629)**：`JalanPayment`の旧「スプシ(消し込み用)」ビュー(`JalanPaymentLegacy`/`fetchJalanPaySheetData`)を撤去→`JalanPaymentNew`(jalan_payments DB読み・webhook反映・30秒更新・手動ステータス変更)のみに。NHA/BTは元からDB版のみ。
+- **教訓**：①決済の消し込みはポーリング(state=COMPLETED)でなく**Squareウェブフック**(webhook)が正=見逃しゼロ=誤催促を仕組みで根絶。tender付与後もorderはOPEN残り→COMPLETEDのみ判定は見逃す。②正本を1つ(DB)にし複製(スプシ)を消す=LEDGER-ONE。③既存発行済リンクはSquare LIST(url→order_id)でbackfillできる+既払いはtender有無で検出(2026-08-19の予約番号突合と同型)。④「既存に送らない・新規のみ」=welcomeは既存seedで送らない/催促はリンク発行済の未払い(お金を払ってない)には送る=別物。⑤1つのwebhook(payment-webhook・MAIN)で全店全種別(KEYDROP/じゃらん/立替/予約外)をsquare_order_idで消し込み・高松(BT別DB)はcross-DB(BT_URL/BT_SERVICE_KEY secret)。⑥GASは`syncPayments`等の関数名でどのプロジェクトか記録から特定できる(incidents.md)＝統合Bot=「HANDYMAN Payment Bot v1」(領収書/キャンセル同居・手元payment_bot_unified_v1.gsが全文=Cmd+A貼付で安全)。
+
+## 💴🔴 2026-09-21 訂正確定：じゃらんは【全店とも当店がSquareで集金】＝2026-09-16の「那覇＝じゃらんが集金」は誤り（台帳で否定・恒久）
+**オーナー再訂正＋台帳(nha_jalan_payments)で確定：私の旧記述「那覇じゃらん＝じゃらん自体が集金・当店は決済リンク/入金確認/催促を行わない」は完全に誤りだった。** 実データ＝`nha_jalan_payments` **214件**（paid 85=paid_atあり実入金／square_order_id 52／email_sent 43・reminded 7＝**当店発のリンク・入金確認・催促が稼働**／local_payment 19＝現地例外／cancelled 60）。札幌`jalan_payments`(213件・paid145)とほぼ同構造。
+- **∴ じゃらんは3店とも「当店がSquareで集金」で統一**：那覇＝Squareリンク(official-notify/.com経由でnha_jalan_payments生成)／札幌＝checkSquareLinks／高松HDM＝hdm-tkm。**那覇も決済リンク送信・入金確認(paid_at)・未払い催促(email_sent/reminded)を行う**（「那覇は催促対象にならない」は誤り）。
+- **じゃらんの入金＝Square実入金(paid_at)ベース**が正確（顧客が当店Squareに全額支払→じゃらんは手数料を別途当店に請求）。未払い(email_sent/reminded)は未入金として別掲。
+- **教訓（出典なき断定・こじつけの禁止）**：①「0件だから現地決済/じゃらん集金」と決めつけない（実際は台帳に214件あった＝そもそも0件でなかった）。②"集金者が店で違う"という一見もっともらしい整理も、台帳を見ずに書けば誤りになる。**決済/集金の主張は必ず`{store}_jalan_payments`台帳(paid/square_order_id/status)を見てから書く。** 私はこの件で2回誤断定した＝台帳を先に見る鉄則の再徹底。
+
+## 💹 2026-09-15 公式サイト(rent-handyman.com)価格を1画面マスターに統一＝サイトコントローラー新設＋過少請求根治
+オーナー要望「3店の価格設定が色々な箇所に分散して忘れた→1つのマスター(サイトコントローラー)に統一・シーズナル価格」。**対象=公式サイト専用**(OTA/KEYDROPのhdm_price_master系は温存)。
+- **分散の正体**：公式サイトの予約価格は`official_book_spk`/`official_book_nha`(main)・`bt_book_tkm`(BT)の**3RPCに日額固定ハードコード**(シーズナルなし)＝変更に毎回SQL書換が必要だった。
+- **統一マスター`hdm_official_price`(jsonb・1キー)**：札幌/那覇=main`app_settings`／高松=BT`bt_app_settings`。構造=店別`{price:{クラス:{a:デフォルト通常}},months:{"YYYY-MM":{クラス:{a:通常,b:高い}}},insurance:{cdw,noc},seat:{child,junior},high_dates:[高い日]}`。**月別に「通常」と「高い」をクラス別入力(11月と12月で別金額)**。オーナー最終仕様(2026-09-15)＝①単一B→月別高設定b_months→**通常も高いも月別`months`**に拡張。`high_dates`の日=その月の高い(`months[ym][cls].b`)、他日=その月の通常(`.a`)、**月未設定はデフォルト`price[cls].a`にフォールバック**(全月入力不要・挙動不変)。RPC/official-flowとも日別ループ(暦日+1)で年月キーを引く。検証済(高松C:11月通常12000/高15000→39000、12月通常13000/高18000→44000)。
+- **UI最終形**：①`💴 月別料金`カード=月切替◀▶で その月のクラス×{通常,高い}を入力(通常空欄=デフォルト薄字) ②`📅 カレンダー`=高い日を日タップで区切る(🎌連休自動)＋**表示クラス選択で各日にその日の料金(通常/高い)を数字表示** ③補償/シート。「設定した数字がカレンダーに出る」実装。
+- **🐞 入力が飛ぶ/保存できない バグ根治(2026-09-15・オーナー『札幌高松 保存できない』)**：真因=`setMP`(数字入力onchange)が`render()`で**body全体を再描画**→入力欄が作り直され連続入力が確定せず、保存しても空だった(保存経路自体はJS/DBとも正常＝実証)。→ カレンダーを`<div id="calwrap">`で囲み、`setMP`/`setCalCls`/`togB`/`autoB`/`clrB`は**`refreshCal()`(calwrapのみ差し替え)**に変更＝入力欄のフォーカス/入力を保持。月切替(calMove)のみ全render()。Chrome MCPで連続入力→保存→リロード残存を実機検証済。**教訓＝入力欄onchangeハンドラで画面全体をrender()すると入力が飛ぶ→変更影響のある部分(カレンダー)だけ部分更新し、入力欄自体は再描画しない。「保存できない」報告はまず保存経路(POST409→PATCH200)が実際に通るかJS/curlで確認→通るなら入力が state に入っていない(再描画で消える)を疑う。**
+- **保存経路**：main(札幌/那覇)=POST insert→409既存→PATCH(authenticated必須＝本体ログイン要)。BT(高松)=同じPOST→PATCH(anon可＝ログイン不要)。⚠️札幌/那覇はmain app_settingsのUPDATEがauthenticated→未ログインだと`save()`冒頭の`showLogin()`。高松のみanon。
+- **全店ログイン不要(2026-09-15 オーナー要望)**：main`app_settings`とBT`bt_app_settings`とも`key='hdm_official_price'`限定のanon SELECT/INSERT/UPDATEポリシー追加＝**3店ともログイン不要で読み書き**(他キー=budget/cost/hdm_price_master等は保護)。price-controller `save()`のログインゲート撤廃・authbarは「🔓ログイン不要」。⚠️公開URLだが価格キーのみanon(オーナー判断)。**重要な副次効果＝main app_settingsは元々anon SELECTが無く(authenticatedのみ)、official-flow(顧客anon)も札幌/那覇マスターを読めていなかった→FALLBACK表示のまま。anon SELECT追加で顧客サイト表示にもマスター価格が反映。教訓＝顧客が読むanonページ+管理UIの両方で使うテーブルは、価格キー限定でanon SELECT/INSERT/UPDATEの3つが要る(SELECT欠落=「未設定」表示・書込ポリシー欠落=保存不可)。**
+- **🧪 176パターン日別検証(2026-09-15・全店合格)**：3店×全クラス×8日付パターン(通常/高い日含む/同日/月跨ぎ/年月跨ぎ/months未設定月=デフォルト/長期8日)を実RPC呼出→Python同一ロジック期待値と突合→即削除。`/tmp/price_test.py`(テスト用months/high設定→検証→マスター復元・ZZPTEST予約全削除)。**初回56件不一致=全て那覇**：`official_book_nha`の日別ループが暦日+1もmonthsも未反映(古い)。真因＝**Editのreplace_allが札幌と那覇でコメント文言差によりマッチ漏れ→札幌だけ修正・那覇は旧のまま**(「All occurrences replaced」は"マッチした箇所は全部"の意味で、那覇はそもそも未マッチ)。→那覇を札幌と同一に手修正→再検証168/168合格。**教訓＝spk/nha両関数を同一ファイルでreplace_all編集する時は、コメント/インデントを完全同一にするか、両関数を個別に確認する。「置換完了」を鵜呑みにせず、両方に反映されたかgrepで確認。大規模検証(N百パターン)は片方だけ古い等のマッチ漏れを確実に炙り出す。**
+- **マスターUI`price-controller.html`(新規・単一HTML・standalone)** ＝ https://nosh2318.github.io/spk-task/price-controller.html 。🌺那覇/❄️札幌/🍜高松タブ×クラス×A/B日額グリッド＋補償/シート単価＋**シーズンカレンダー(連休/連休前日を祝日計算から🎌自動B設定・日タップで個別ON/OFF)**。保存は札幌/那覇→main、高松→BTの各app_settingsへ自動振り分け(本体ログイントークン/BTログイン)。祝日計算はハッピーマンデー/春分秋分/振替/国民の休日＋3連休以上を連休判定。
+- **RPC 3本をマスター参照に書換**：ハードコード廃止→貸出日〜返却日を**1日ずつhigh_dates判定してA/B合算**(連休の各日が高くなる)。補償/シートもマスター参照。マスター欠損時は各RPC内`FALLBACK`(=旧ハードコード)で挙動不変。正本sql=`~/spk-task/sql/official_book_spk_nha.sql`／`~/buddica-touring/sql/bt_book_tkm.sql`(BTはremote無しローカル記録・RPCはDB適用済)。
+- **official-flow.html(本番handyman-official=rent-handyman.com)もマスター連動**：`loadPriceMaster()`でhdm_official_priceをanon取得→車種一覧¥/確認画面をマスター価格に上書き＋`baseSum()`で日別A/B合計表示(表示と決済が一致)。⚠️`~/spk-task/official-flow.html`は多言語なしの旧版で本番と乖離＝触らない(本番=handyman-officialが正)。
+- **🔴 過少請求を同時根治**：既存commit`841075b`が「利用日数を暦日+1に修正=全店」と謳いながら**official-flow.htmlのdaysCountだけ+1し、RPC(sqlファイル/DB)は+1未反映**だった＝サイト表示3日・決済2日の過少請求が発生していた。→ RPC3本の`v_days`を`(ret-lend)+1`、日別ループを`generate_series(lend,ret)`(返却日含む)に統一。検証:札幌A 11/10-11/12→total45600/base39000(13000×3)=official-flow表示と一致。**教訓＝commit messageで「RPCも修正」と書いても実際のsql/DB適用を必ず確認する(841075bはHTML1行のみ変更でRPC未反映)。日数定義は暦日+1(返却日も1日)がKEYDROP/公式の正。**
+- **初期値=現ハードコードと同額**(A=B)で投入→移行時点で挙動不変を検算(札幌A13000/那覇A12000/高松A15000…全一致・RPC実テストでtotal一致)。オーナーがUIでB価格・連休日を設定した時だけ差が出る。
+- **教訓**：①同種の価格が「表示(HTML)」と「決済(RPC)」の2箇所にある時は両方をマスター参照にしないと食い違う(過少請求/表示ズレ)。②公式サイト価格はhdm_price_master(OTA/KEYDROP用)と別に公式専用のhdm_official_priceに集約(混ぜると複雑化)。③決済RPC書換は初期値を現行と完全一致にしRPC直叩きで同額検証してからデプロイ(予約が止まらない)。
+
+## 💰 2026-09-21 OTA入金表 ota-payments.html＝3店HDMの入金を「入金月ベース」で集計（資金繰りタブ・自社チャネル内訳・テスト除外）
+オーナー要望で新設。**URL＝https://nosh2318.github.io/spk-task/ota-payments.html**（standalone・anon直叩き・RPC `ota_settlement_v2`(main)＋`bt_ota_settlement_v2`(BT)）。
+- **入金月ベース（お金がいつ入るか）**：自社(HP/KEYDROP/スタッフ登録)=受付月(created_at・前受け即決)／じゃらん=返却月(当店Square集金)／エアトリ/skyticket/RDドットコム/GoGoOut=返却+1M／楽天=返却+3M。**売上式＝base+option-discount||price**(日報/expenditureと同一)。手数料はOTAのみ15%(可変)・自社0%。「差引(手取り)=最終金額」が15%引後。
+- **🔴 自社チャネルは必ず内訳分割（オーナー確定 2026-09-21・CPAが変わるため）**：`自社/HP`とまとめず **HP(サイト決済＝ota HP/HANDYMAN公式/オフィシャル)／KEYDROP／スタッフ登録(SP/direct)** の3ラベルに分ける。最終合算は不変。理由＝HP(サイト決済)は広告費/CPA対象、スタッフ登録は対象外。**HANDYMAN(HDMS/HDMN=公式サイトofficial-pay Square決済)はサイト決済＝HP側**。RPCの`fin` CASEでota別にラベル付け。
+- **🔴 テスト/デモ予約を必ず除外**：`id !~ '^(ZZ|DEMO|KD-DEMO|TEST|DEMOMYPAGE)'` ＋ `name !~ '(テスト|デモ|test|ZZPTEST|大下|おおした|オオシタ)'`。**札幌9月「HANDYMAN ¥164,000」は全部テスト**(ZZPTEST=価格検証+オーナーのカードテスト)で、除外前は自社HP¥238,800→除外後¥74,800(hp-acquireの実データと一致)。日報`isTestResv`と同基準。
+- **hp-acquire.html(HP新規獲得サマリ)との違い**：hp-acquire=**発生月(受付月)ベース**のマーケ集計(獲得/CPA/効果・OTA手数料18%固定)。ota-payments=**入金月ベース**の資金繰り集計(OTA手数料15%可変)。**hp-acquireの`isHP`はHANDYMAN(公式サイト)を取りこぼす**(HP/OTAどちらにも入れず)＝公式サイト予約が抜ける穴あり。
+- **💰資金繰りタブ**：毎月の入金予定(OTA自動)と支出(手入力保存・`cashflow_entries` main anon full RLS)を店舗別に突合し過不足を算出。収入=OTA自動+その他収入(借入/貸付/develop/HANDYMAN/BUDDICA手入力)、支出=科目別手入力(賃料/リース/返済/広告/外注/手数料/保険/AMEX/従業員/修理/その他)、銀行残高、貸付スケジュール。入力→cfRecalcで合計のみ更新(フォーカス維持＝price-controllerの「onchange全render()で入力飛ぶ」を回避)。
+- **表示**：単位は**円(正確)が既定**・万(概算)に切替可(万は四捨五入で¥38,600→4万の誤差＝入金額は円が正)。ビュー=月×店舗(既定)/四半期×店舗/月×OTA/四半期×OTA(10-12・1-3・4-6・7-9)/OTA×月/OTA別合計/店舗別合計/月別。店舗ビューは店×OTA/自社＋OTA合計/自社合計列。2025-08〜2026-03は折りたたみ(タップ開閉)。カード=合計金額(グロス)→手数料→最終金額(手取り)→未入金。
+
+## 🔎 発言前に必ず台帳を見る＝「台帳→確認→発言」の順を崩さない（2026-09-15 オーナー最終確定・最上位・恒久）
+**「話す前にまず台帳をみる。台帳の事実だけ回答する。記憶・推測で話さない。全アクションを記録する。」** ①まず台帳を見る(`~/HANDYMAN_AGENT_LEDGER.jsonl`／`~/.claude/hooks/origin_ledger.py open|show`／`audit_log`)→②ts(いつ)/actor(誰)/target(何)を確認→③確認できた事実だけ話す。「いつの話か」は必ず台帳のtsで答える。該当が無ければ「台帳に該当なし」と言う(捏造・こじつけ禁止)。会話で決めたアクションは着手前に`origin_ledger.py add`。正本＝`~/.claude/CLAUDE.md`(全OMNI共通)。
+
+## 🔢 2026-09-15 SPK在庫管理TOPバッジ「未対応0なのにN件残る」根治＝BT自己修復を横展開(v4.7.625)
+オーナー「札幌 在庫管理 未対応ないのにバッジ3」。**真因＝複製ドリフト（BT 2026-08-27/09-01と同一クラス）**。在庫状態`spk_inventory_status`のライブ複製が2つ：①**在庫管理タブ**(`stat`・L21846)＝タブを開く度に再マウント→毎回DB再取得→常に正しい0 ②**TOPバッジ**(`invAdjSet`/`invRelSet`・L22688)＝App直下で**起動時1回ロードのみ**・realtimeは`p.new`しか見ず**DELETE無視**・取りこぼしで凍結→対応済みでも"未調整"を数え続けバッジ残存。タブは再取得で真実、バッジは古い＝食い違い。**⚠️2026-08-27台帳に「在庫調整はSPK/NHAに無い＝横展開不要」と誤記があったが、SPKは`InventoryTab`＋`invTodoTotal`バッジを持つ＝BTの自己修復(v1.0.376)がSPKに未展開だった。**
+- **根治(BT v1.0.376横展開・L22688)**：①realtimeに**DELETE処理**(`(p.eventType||p.event)==="DELETE"`→`p.old.id`で両Setから削除)②**TOPを開く度にDB再取得**(`invBadgeReloadRef`＋`useEffect(()=>{if(tab==="top")reload()},[tab])`)＝見た瞬間に正本(=タブ)へ自己修復。commit 56a45f7・本番app.js v4.7.625/loader v=1024 反映確認済。
+- **教訓(再掲・件数バッジの鉄則)**：件数バッジは「realtime購読を足す」だけでは複製ドリフトが消えない(2つのライブ複製が個別に漂流)。**"見る画面(TOP)を開く度にDB再取得"して正本へ自己修復させる**＋DELETEを必ず処理する。同じ数字をタブ(再マウント再取得)とバッジ(App直下1回ロード)で別々に持つと必ずズレる→独立計算せざるを得ないバッジは表示契機で再フェッチ。「未対応0なのにバッジN」系はまずDB実データからバッジ関数を再現し真値を出してどちらが嘘か確定してから直す。
+
+## 🚨 2026-09-15 高松じゃらん予約が那覇に誤取込【再発】＝GAS高松除外ガードが本番Apps Script未貼付（R0J84SGY）
+オーナー『高松予約なのに那覇APPに取り込まれ大惨事』。R0J84SGY(ヤマサキ リョウタ・じゃらん・貸出営業所=**高松空港店**・D・9/15本日出発)が**BTと那覇に二重取込**され、那覇車NOM02(ノアM)に誤配車＋PUB/BDB/洗車タスク生成。**CLAUDE.md 2026-09-02「NHA崩壊」パターンの再発**。
+- **切り分け**：①マイページtoken→nha_reservations特定 ②**生メール台帳`nha_reservation_emails.raw_body`で「貸出営業所：高松空港店」を確認**(誤取込の確証) ③**BTに正が既に存在**(R0J84SGY・HDM・ハリアgc90配車済)→BTは正常・触らない。
+- **対応**：那覇から削除 nha_fleet(NOM02解放)→nha_tasks(d-/c-/w-墓標deleted=true)→nha_reservations削除。BT側は不変。
+- **根本原因＝GAS未貼付**：那覇GAS`~/Desktop/AI/naha-project/gas-email-import.gs`の`isNahaReservation_`は**高松除外ガード(L342 `if(/高松|香川|TAK|BUDDICA|たびらい/i.test(store))return false;`・commit eda0e26)が正しく入っている**が、**本番Apps Scriptに貼られていなかった**＝R0J84SGYで再々発。生メールの貸出営業所は「高松空港店」なのでガードが本番にあれば必ず弾けた。
+- **🔴 恒久教訓（CLAUDE.md鉄則の実証）**：**GAS修正は「コード/commit済み＝根治」ではない。オーナーがApps Scriptに貼付し、次の実予約が正しく弾かれるまで完了と言わない。** 2026-09-02に「貼付済」と記録したが実際は未反映＝コミットだけで安心した。次のじゃらん高松Dクラス予約がまた那覇に入る→**オーナーが`gas-email-import.gs`を「那覇店 予約取込」に貼付するまで再発し続ける**。要オーナー貼付。
+- **✅根治完了(2026-09-15 同日)**：オーナーが本番GAS貼付→`testProcessLatest()`(dryRun)で実証。高松`RC22461297428015092`(store=高松空港店・G_TAK)/札幌`_G_SPK`/`_B_SPK`=`Skipping non-Naha`で弾き、那覇`_OKA`/HP予約は正常Parsed＝**他店は那覇に入らない・那覇分は今まで通り取込**を確認。「高松を弾く」＝那覇DBへの二重取込だけ止める(高松予約はBT側GASが拾う)＝高松の予約は消えない。検証は`testProcessLatest()`のログで「Skipping non-Naha: <id> (store=高松空港店...)」を見るのが確実。
+
+## 📥 2026-09-15 OTA取込漏れの根治＝那覇GAS processNewEmails の「seen穴」（失敗でもseen登録→永久漏れ）＋全OTA総点検の型
+オーナー『予約が取り込まれなかったのが最もインパクト大・台帳から根本改善』。RC(レンタカードットコム)取込漏れ調査で確定した恒久知見。
+- **真因＝seen穴（クラス根治対象・2026-08-30 SPKと同一）**：那覇GAS `processNewEmails`（本番相当＝`~/Desktop/AI/NHA_予約取込_完全版_復旧用.gs` 8043行版・RC対応`rentacar_dc/dc2`=info@rentacar.com/web-rentacar.com・`newer_than:7d`）が**L158-159「処理結果に関わらず`processedMsgIds[msgId]=now`」＝取込失敗(failure)・例外でも無条件でseen登録**→失敗したメールは7日窓内でも二度と再取込されず**永久漏れ**。根治＝`_ok`フラグで**success/cancel/skip/非予約(null)だけseen登録・failure/例外は`fail_<msgId>`カウンタで最大4回リトライ後に諦めseen**（実装済・構文OK・**本番Apps Script貼付は要オーナー**＝GASはコード修正だけでは本番反映されない）。
+- **なぜ低頻度OTAだけ漏れるか（構造）**：**RC=月数件の低頻度**→8/17に取込失敗すると次のRCメールが来る頃には7日窓を過ぎ永久漏れ（8/17クロダ ジュンイチロウ様2600003700が"手入力すらされずDB不在"の未検知漏れ・9/9貸出〜9/15返却で発覚→手動取込）。**高頻度OTA(じゃらん119/楽天195/skyticket/エアトリ 45日)はseen穴に当たっても翌サイクルで拾われ実害ゼロ**。∴漏れリスクは低頻度OTAに集中。
+- **全OTA取込漏れ総点検の型（再利用・台帳+Gmail照合）**：①`audit_log`で「OTA予約が手動INSERT(actor≠null)された＝自動取込が漏れて人が手入力」を洗う→②各OTAの予約メール(Gmail MCP `search_threads` `in:anywhere newer_than:Nd`)の予約番号 vs DB(`nha_reservations`/`reservations`両テーブル)を`with m(id) as (values ...) ... exists`で一括照合しMISSを抽出→③**手入力すらされない漏れ(クロダ型)はaudit_logに映らない**ので必ずGmailメール実物と照合する。skyticket件名`＜予約番号：DY…＞`/エアトリ`予約番号：C…`/RC`予約番号 ： 2600…`/GoGoOut subj末尾`_303216`(内部ID)で本文はJP47C…。結果=RC1件のみ漏れ・他OTA健全。
+- **再発防止cron**：`import-miss-monitor`(jobid58・main pg_cron・毎朝8:40JST・active)＝前日JSTに手動INSERT(actor≠null)されたOTA予約(J/R/S/O/RC/G等・SP/HP/HANDYMAN/KEYDROP/テスト除外)をSlack #handyman_development(C07B5G3PV7C)+店別へ通知。**ただし「手入力された漏れ」しか拾えない→手入力すらされない漏れ(クロダ型)にはGmailメールvsDB突合監視(GAS側)が別途必要**。
+- **教訓**：①「取り込まれない」は`OTA_SENDERS`未登録(silent skip)を疑う前に、まず**台帳で過去に自動取込されていたか**確認（RCは8/12まで自動取込＝『未登録が根本』は早合点だった＝audit_logで否定）。②seen登録は必ず「成功系だけ・失敗はリトライ上限付き」。③取込GASは複数版が手元に散在(1902行RC無し/8043行RC有り)→本番はどれかをオーナーがApps Scriptで確認。④GASは貼付＋実取込確認まで「完了」と言わない。
+
+## 🔗 2026-09-14 LINE紐付け(spk_line_links)は`line-links-import` EF経由で書く＝REST直INSERTはRLSで不可（「service_role必須・できない」と断定しない）
+スタッフ依頼「予約にLINE userIDを紐付け」で、私が`spk_line_links`にREST直INSERT(anon/authenticatedトークン)を叩き**42501 RLS拒否**→「service_role必須・できない」と誤って断定した（出典なき決めつけ＝ルール違反）。**真因＝`spk_line_links`はRLSにINSERT/UPDATEポリシーが無く、正規の書込経路は`line-links-import` Edge Function（ログイン済みスタッフJWTを`/auth/v1/user`で検証→service_role権限で`{store}_line_links`へupsert）**。過去の紐付けが全部成功しているのはこのEF（＋`import_erume_csv.py`のSB_SERVICE_ROLE経由CSV取込）でやっていたから。REST直で失敗しただけで「できない」ではない。
+- **正しい手順（手動でLINE紐付けする時）**：`POST {SB}/functions/v1/line-links-import`・headers=`apikey:<anon>`+`Authorization: Bearer <スタッフJWT>`・body=`{"store":"spk","rows":[{"resv_no":"...","line_user_id":"U...","cust_name":"..."}]}`。スタッフJWT＝`/auth/v1/token?grant_type=password`(oshita@g-lines.jp/nosh2318)で取得。反映は`spk_line_links?resv_no=eq.<id>`で確認。**NHA/BTも同型（nha/bt_line_links＝直INSERT不可・EF or CSV経由）**。
+- **教訓（出典なき主張の禁止の実例）**：RESTで書けない＝「できない/権限不足」と即断せず、必ず①既存データが実在するか(過去は書けている証拠)②正規の書込経路(EF/CSV)は何か を確認してから言う。EF経由なら書けた。「今まで何度もやってる」系の指摘が来たら、まず既存データを見て"経路を間違えただけ"を疑う。
+
+
+## 🚨🔴 2026-09-14 昨日追加したタスクゲートが顧客の変更を巻き戻していた（重大リグレッション・3店・自分の作り込み）
+オーナー「この問題は昨日で発生しないはずでは」＝**正しい。むしろ昨日(09-13)私が追加した`_spk/_nha/_bt_src_guard`(タスクの人間値をsystem上書きから守るゲート)が、お客様のmypage/フォーム変更を巻き戻していた**。実証＝`spk_guard_log`にスズキ様c-DY00000001119「time 18:00→17:30に巻き戻し」等13件、`nha_guard_log`に送迎場所47/時間8=**計55件の顧客変更を巻き戻し**。
+- **真因＝ゲートのnull-srcバグ(昨日reconcile_confirmで見つけたのと同型を放置)**：`if src <> 'system' then return new`は**src=null(顧客の書込＝patchTasksSpk/SSパトロールは`_src`未タグ)でNULL→偽→ブロック側に進む**。→ 顧客の place/time/送迎場所/集客の**列**を旧値へ巻き戻す(changed_jsonのマーカーは保護対象外で通るので、列だけ旧・マーカーは新＝列とマーカーが不一致になる)。
+- **なぜ気づきにくいか**：OP表示は`t.timeChange||t._ssTime||t.time`(マーカー優先＝実効値・line17284等)なので**OPは新値を表示し続けた**＝画面上は正常に見えた。ズレは①予約側(別コピー)②通知の変更前(applyPlaceTimeがr.return_time参照)③列を直接読む箇所、に出た。
+- **根治(2026-09-14)**：3ゲート全部を`if coalesce(src,'') <> 'system' then return new`に修正(main spk/nha＋BT別DB)。→ **systemタグの書込だけブロック・顧客/human/未タグは通す**。使い捨てタスクで実証：null-src書込→通る(NEW反映)／system-src書込→ブロック(旧値維持)＝両立OK。
+- **復元**：`{spk,nha}_guard_log`の最新`blocked_new`(顧客の意図値)を稼働予約のタスク列へ復元(`_src=customer`固定)。スズキ様c-task time=18:00に復元・NHA送迎場所ズレ0件。残27件のSPK「time列≠マーカー」はSSパトロール既存設計(フォーム時刻を_ssTimeに置き列は更新しない)＝OP表示に無害(マーカー優先)＝触らない。
+- **教訓(最重要)**：**src系ゲートを追加する時は「保護対象の正規writer全てが必ず`_src`をタグする」ことを先に保証してから有効化する**。1つでも未タグの正規writer(patchTasksSpk/SSパトロール)があると、そのゲートが顧客/人間の入力を巻き戻す＝守るはずが壊す。判定は必ず`coalesce(src,'')<>'system'`(nullを取りこぼさない)。ゲート追加後は**guard_logを必ず監視**し、正規の顧客/人間変更がblockedに出ていないか確認(出ていたら未タグ経路がある)。BUG_FIX_LEDGERクラス④(人間編集の上書き)＝今回は"守るための仕組み"自身がクラス④を起こした。
+
+## 🕒 2026-09-14 マイページ時間変更の「変更前(old_value)」が予約当初値になる再発＝承認反映経路(applyPlaceTime)の直し漏れ（札幌・EF handyman-mypage）
+オーナー2回目報告「時間変更のSlack通知/マイページ管理の"変更前"が予約時のもの(17:00)。ユーザーのマイページ/OPは実表示(16:00)」。号機が2回「直った」と言ったが再発＝**instance修正の典型**。
+- **真因＝時間が"予約"と"タスク"の2箇所にある(複製ドリフト・クラス①)**：お客様が受付フォームで16:00に設定するとタスクの`_ssTime/_timeChange`=16:00(OP/マイページ表示)になるが、**予約レコードの`return_time`は当初17:00のまま更新されない**。「変更前」を予約側から読むと古い17:00が出る。実データ:スズキ様DY00000001119=予約17:00/タスク16:00。札幌の未来予約65件中8件が『予約時間≠タスク実効時間』(=予約側が古い)。
+- **なぜ再発(直し漏れ)**：時間変更の経路が2つ。①依頼作成(update・line774-786)は`resolveTaskTime`(実効値)に修正済 ②**承認反映`applyPlaceTime`の`mark()`(line226-227)が`r.return_time`(予約当初値)をold_valueに使ったまま**＝承認時に17:00の履歴レコードを作る→マイページ管理の「変更前」に17:00が残る。号機は①だけ直し②を見ていなかった。
+- **根治(2026-09-14)**：`applyPlaceTime`冒頭でd-/c-タスクを取得し、old_valueを`resolveTaskPlace/resolveTaskTime`(実効表示値)から導出(場所も同型バグを同時修正)。→時間/場所変更の**全経路**が実表示値をold_valueに使う。deno check通過・デプロイ済(ckrxttbnawkclshczsia --no-verify-jwt)。
+- **昨日(09-13)の対応で防げなかった理由**：昨日はownershipゲート(systemが人の値を戻さない)/reconcile(OP↔マイページのズレをスタッフ確定)＝"データが戻る/ズレる"症状の対策。今回は"通知のold_valueが古いソースを読む"別経路のバグ＝別症状。同じ病気(時間2箇所)だが別コード。
+- **残る根っこ(要根治)**：予約レコードが時間の別コピーを持ち、フォーム入力時に同期されず古くなる構造(LEDGER-ONE STEP3/4未了)。全read経路を実効値に揃えたので症状は止まるが、真の恒久策は「予約側に時間コピーを持たない/フォーム入力時に予約側も同期」。**教訓：old_value/「変更前」等"現在値"を出す箇所は必ず実効表示値(resolveTaskTime/Place)から導出。予約生値(r.return_time/del_place)を直接使わない。時間変更は複数経路(依頼作成/承認反映/早め回収)→1つ直したら全経路をgrepで確認(applyPlaceTime/mark/update/decide)。**
+
+## 🔁 2026-09-13 情報照会 スタッフ確認クローズドループ（LEDGER-ONE・OMNI→Slack→スタッフ→OMNI自動処理）
+OP(配車表)とマイページ(予約)で**場所が食い違い、台帳の新旧では一意に決まらない**もの（表記ゆれ「ハーバービューホテル vs 沖縄ハーバービューホテル」・便名混入「FDA391便 vs 丘珠空港」等＝人しか正解を知らない）を、意味のない通知でなく**閉じたループで自律処理**する。オーナー指示「OMNI経由でスラック投稿→スタッフがスレ返信→OMNIが必要処理」。
+- **棲み分け**：**補償(insurance)＝cron auto-heal で自律修正済**（台帳+生メール台帳で裏取り）。**場所(お届け/回収)＝このスタッフ確認ループ**（正解が人依存）。時間は将来拡張。
+- **常駐daemon `~/Desktop/HANDYMAN/omni_bot/reconcile_staff_bot.py`**（launchd `com.handyman.reconcile-staff-bot`・60秒・KeepAlive・DNS wedge自己回復・heartbeat `.reconcile_bot_heartbeat`）。毎tick＝①`reconcile_pending_confirm()`(両側非空で食い違う場所相違・未来予約)を店舗別staffチャンネルへ①②選択式で投稿 ②open中スレッドの最新スタッフ返信を`conversations.replies`で拾い`parse_reply`(①/OP→op値・②/マイページ→mp値・自由文→その場所名・相槌/空→再案内) ③`reconcile_confirm(p_store,p_id,p_field,p_value)`で**配車表・マイページ両側に反映＋_src=human固定**(ownership gateで以後system上書き不可) ④スレへ✅返信＋台帳resolved記録。
+- **投稿先(OMNIブリッジのいない運用ch＝二重処理なし)**：NHA→#okinawa_operations-team(C06L91W6T08)／SPK→#sapporo_user_action(C0BER0YC6AK)。bot=sns_auto(両ch在籍確認済)。
+- **台帳 `reconcile_confirm_requests`**(main・service_roleのみ)＝store/resv_id/field/op_value/mp_value/slack_ts/status(posted→resolved)/resolved_value/resolved_by/last_reply_ts。unique index(store,resv_id,field where status=posted)＋Python側の6h/同値ガードで**重複投稿しない・反映待ちを再投稿しない**。
+- **検証済**：`reconcile_pending_confirm()`が実相違2件(FLG93350/CXU85999)を検出→両件を本番staffチャンネルへ投稿成功(posted記録)／parse_reply全パス／process_openをスタブE2E(①返信→reconcile_confirm(p_value=OP値)呼出→✅返信→resolved+resolved_by=staff)PASS／daemon常駐(heartbeat鮮度0s・err空・重複投稿なし)。
+- **教訓**：「意味のない通知は出さない・自律処理」＝検知だけの通知でなく、①人しか知らない事実(どの場所名が正か)だけをスタッフに聞き②返信を構造的にparseして③両側反映+人確定で固定、まで閉じる。numbered選択(①②)は決定的にparse可＝LLM不要。自由文は場所名として反映。相槌/曖昧は再案内でループしない(last_reply_tsで同一返信の再処理防止)。**全再稼働時のOMNIサービスにこのdaemonも追加**。
+- **📣目立つ書式(2026-09-13 オーナー「もっと目立つように」)**：投稿は**Block Kit＝赤い縦バー(#ff2d2d)＋🚨大見出し(header)＋①②をfieldsで大きく＋divider＋👇返信誘導＋context**。プッシュ通知(モバイル)用に`text`фフォールバック「🚨【要確認】店 予約 氏名 お届け先の食い違い→①/②」。NHA投稿先は**C06L91W6T08(#okinawa_operations-team)のみ**(devプレビュー投稿はしない＝混乱防止)。
+- **✅本番ライブE2E成功(2026-09-13)**：新書式でFLG93350/CXU85999を再投稿→オーナー(U06KG1P75FC)が実際に①(FLG→沖縄ハーバービューホテル)/②(CXU→丘珠空港)を返信→daemonがparse→両側反映→✅返信→resolved。pending 0件・両側一致を確認。
+- **🐞重要バグ根治(2026-09-13)＝reconcile_confirmのタスク更新に`_src=human`が無くSPKゲート`trg_spk_src_guard`が巻き戻していた**：SPKタスクの`place/col_place/time/insurance`更新を、changed_jsonに`_src=human`(＋場所は`_ssPlace/_placeSource=manual`・時間は`_timeChange`)を付けて書くよう全fieldで修正。**原因＝ゲートの`if src <> 'system' then return new`はsrc=null時にNULL→偽→ブロック側に進む**(nullは弾かれる landmine)。全正規writerは_srcをタグするので実害はこのRPCだけだった。NHAが偶然動いたのは「スタッフが①=task値を選び task変更が no-op だった」ため(ゲート未発火)＝②や新値でタスクが実際に変わる時だけ露見。**教訓：src系ゲートを通す書込は必ず`_src`をタグする。`src <> 'x'`はnullを取りこぼす→意図が"systemだけブロック"なら`coalesce(src,'')<>'system'`か、書込側で必ずタグ。**
+- **📱変更確定→お客様へマイページリンクを必ずセット送付(2026-09-13 オーナー指示「変更したらマイページリンクを必ずセットで送ってほしい」)**：process_openで`reconcile_confirm`成功直後に`send_mypage_link(store,rid,field)`＝予約の`mypage_token`→URL(SPK `nosh2318.github.io/spk-task/my.html?t=`／NHA `naha-project/my-nha.html?t=`)を`line-push`(action=`mypage_reconcile`＝mypage_*で日付ゲート回避・secret=`~/.config/keydrop/linepush_func_secret`・anonヘッダ)で送信。文面=「ご予約の{お届け先/回収先/時間/補償内容}を最新に更新しました。マイページからご確認ください👇 <url>」。LINE未連携=no_useridで安全skip・token無=no_token。Slackの✅返信にも送付結果を併記。実送信検証済(FLG93350→sent・nha_line_sends記録)。
+- **将来**：時間相違への拡張／BT用`bt_reconcile_confirm`(別DB)を作ればBTも対象化(現状BTは情報照会UIボタン・daemonともmain店舗=nha/spkのみ)。
+
+## 💳 2026-09-13 駐車場(trustpark)決済のカードコピペ機能（parking.html＋EF parking-card・v4.7.618）
+オーナー要望「駐車場ページから誰でも使える駐車場(trustpark)決済。会社カードをAPP内に安全格納、認証時のみ取得して決済」。**決済フロー実物(スクショ)を確認して確定した重要事実**：
+- **trustparkのカード欄は決済代行(KOMOJU系)のセキュアiframe(PCI hosted fields)＝当社アプリ/拡張から"自動入力"は原理的に不可**（「情報は決済事業者にのみ提供」と明記）。途中に**3Dセキュア(AMEX SafeKey)＋ポイント選択**もあり全自動決済は不可＆目視確認要件と相反。※ブラウザ(Chrome)のネイティブ自動入力(黄色ハイライト)は効くが、それはChrome本体が端末保存カードを埋めるもので**当社アプリからは発火できない**。→ **現実解＝半自動（アプリにカード暗号化保管→PINで表示→各項目1タップ📋コピー→trustparkに貼付）**。
+- **構成**：①**main DB `parking_card_vault`(単一行・enc=AES-256-GCM暗号文・label・pin_hash)＋`parking_card_access_log`(監査)＋`parking_payment_log`(完了記録用・RLS=全deny＝EF専用)** ②**EF `parking-card`**(正本`~/spk-task/line_auto/parking-card/`→deploy`~/hdm-car-delivery/supabase/functions/`・`--no-verify-jwt`)＝action:status/register/reveal/log_payment/payments_today。**暗号鍵はEF secret `PARKING_CARD_KEY`のみ・DBは暗号文だけ**(DB漏洩しても鍵なしで復号不可)。register=管理キー`PARKING_ADMIN_KEY`(`~/.config/keydrop/parking_admin_key`=05af998a54155606)でゲート＝オーナーのみ。reveal=決済PIN(sha256+salt照合・**直近10分でPIN失敗5回でレート制限**)。③**parking.html**：ヘッダー下に「💳駐車場を精算」ボタン→openPay(status)→PIN(doReveal)→showCard(名義/番号/期限/CVC を各📋コピー＋手順ガイド＋🅿️trustparkを開く＋**90秒自動消去**)＋openRegister(オーナー用)。`payFn()`が`MAIN_SB/functions/v1/parking-card`をMAIN_ANONで叩く(parking.htmlは別Supabase=parking DB接続だがEFはmainを直fetch)。
+- **カード登録は私(CLI)は入力不可**（規約=カード番号を入力しない）→オーナーがUIの⚙️カード登録で入力。実機E2Eはダミーのテストカード(4242…)で登録→PIN→復号表示→コピー 全経路確認後に消去済(金庫は空でオーナーの実登録待ち)。
+- **残タスク(オーナー選択)**：①オーナーが実カードを登録(管理キー＋決済PIN設定) ②「決済完了の目視→APP完了記録→未払い出庫ガード」(parking_payment_log+release時警告)は**要否未確定**(オーナーのフローは"完了画面を目視して出庫"まで・APP記録は次段)。③trustpark URLは北6西15固定(`TRUSTPARK_URL`)＝複数lot対応は将来。
+- **教訓**：①決済代行のhosted fields(iframe)は「情報は決済事業者にのみ提供」の文言＝PCI保護＝外部スクリプト自動入力不可。実画面のカード欄を見て判定する(推測で可否を断定しない)。②機微情報(カード)はEF側AES-GCM＋鍵はEF secret＋DBは暗号文＋PIN＋監査＋レート制限＋90秒自動消去、で多層防御。③parking.htmlは本体APPと同一オリジン(nosh2318.github.io/spk-task/)＝本体ログインJWTも読めるが、今回は"誰でも使える"優先でPINゲートに(全スタッフ共有の会社カード＝物理カードと同じ信頼レベル)。④iframe(本体駐車場タブは`parking.html?v=CV`)反映にCV/APP_VERSION/sw?v=を3点bump必須。
+
+## 💴 2026-09-11 給与明細を「チェックした人だけまとめてPDF」機能（3店・SPK v4.7.610/NHA v3.5.368-NHA）
+オーナー要望「アルバイト給与明細でチェックした人だけまとめてPDF取得・札幌も同様に」。給与→**給与明細タブ(subTab==="detail")**に実装。
+- **実装**：`AttendanceManager`(NHA/SPK同型)に`const[detailSel,setDetailSel]=useState({})`(name→bool)＋`printPayslips(names)`を追加。detailタブをIIFE化し上部にツールバー(全選択/全解除・選択N名・「📄 選択した明細をPDF」)＋各カードにチェックボックス(選択中は青枠)。
+- **PDF方式＝印刷→PDF保存**(外部ライブラリ不要・オフライン可)：`window.open("")`に明細HTMLを書き出し`w.print()`。1人1ページ(`page-break-after:always`)。内容＝店名/年月・氏名/雇用形態・支給内訳(時給/日給/月給・複合対応)・支給額・日別勤怠内訳表。**集計は既存`allStaffData[name]`(d)をそのまま使う**＝画面の給与明細と完全一致(再計算しない)。
+- **店差(重要)**：SPKは給与が複雑(月給/時給複合`d.isMonthlyPart`+`d.monthlyHasHourly`・日給複合`d.hasDailyWage`・休憩控除`effBreakMin`)→要約は3ケース分岐でd値を使い、日別は実働h(`effBreakMin`控除後)＋合計のみ(per-day賃金列は総額ズレ回避で出さない)。NHAは時給/月給のみで日別に賃金列あり。店名=NHA"那覇空港店"/SPK"札幌デリバリー専門店"。
+- **検証**：`node build.js`で構文確認＋app.jsに"選択した明細をPDF"含有を確認。JSXのIIFE化は`{subTab==="detail"&&(()=>{...return <div>...</div>;})()}`で閉じる。
+
+## 🗂 2026-09-11 問い合わせ管理APP(handyman-inquiry) 改修＋構造メモ（次回はまずここ）
+オーナー「使いづらい」修正。**実体＝Vercel(git remoteなし・`vercel deploy --prod --yes`でデプロイ)**。
+- **ファイル**：本番=`~/Desktop/HANDYMAN/inquiry_deploy/index.html`（Vercel配信・単一HTML・**React+babel-standalone=ビルドなし**・anon直叩き・main=`inquiries`/BT別DB=`bt_inquiries`統合）／ソース控え=`~/Desktop/HANDYMAN/inquiry_system/inquiry_manager.html`（同一内容・編集後は必ず両方`cp`同期）。
+- **デプロイ**：`cd ~/Desktop/HANDYMAN/inquiry_deploy && vercel deploy --prod --yes`（`vercel --prod`だけだと使い方表示で不発→`deploy`サブコマンド必須）。git remote無し(commitはローカル控え・pushは失敗して正常)。`.vercel/project.json`=handyman-inquiry。
+- **JSX構文検証(ビルドなしアプリ)**：`<script type="text/babel">`を抽出→`~/Desktop/AI/naha-project/node_modules/@babel/core`+preset-reactで`transformSync`→OK/NG判定(node --checkはJSX不可)。
+- **今回の修正**：①**「全て(全店)」廃止＝必ず店舗別**(storeF初期'naha'・storeScoped=常に`_inSt`絞り・タイルは切替専用でトグルoff無し)②**一括ステータス操作**(選択モードに✅完了/🟡対応中/⏸保留/🔴未対応＝`handleInboxBulkStatus(status,label)`・main/BT両更新)③**一括操作中(selectMode)は他店タイルをグレーアウト+ロック**(誤操作防止)④**開いただけで対応中に変えない**＝`selectItem`と詳細`acquireLock`/マウントeffectのstatus自動昇格(new→in_progress)を全廃、担当ロック(assigned_to/locked_at)のみ取得。対応中化は返信送信or手動ボタンのみ。
+- **教訓**：`storeScoped`/`_inSt`は`filtered`と件数バッジの前方に定義(TDZ回避)。「過去学習(知識ベース)」タブ内のstoreFは別コンポーネント(検索用・'all'保持)＝受信箱の店舗選択とは別物。
+
+## 🪑 2026-09-11 シート在庫「不足数」を当日物理占有ベースに統一＝翌日出発準備(洗車積込)を除外(3店+EF・SPK v4.7.611/NHA v3.5.369/BT v1.0.435)
+現場報告「シート在庫の不足数に洗車(時間未定)=翌日出発準備のシート数まで合算され当日足りるか一目で分からない」。原因＝`seatDemand`(OPScreen)の`act`フィルタが`norm(r.lendDate)<=tomorrow&&(returnDate>=selDate||lendDate>=selDate)`＝当日アクティブ＋**翌日出発分(洗車で前夜に積込む分)**を合算していた(旧2026-08-13仕様)。
+- **根治(オーナー要望・(B)物理占有を採用)**：`act=reservations.filter(r=>r.status!=="cancelled"&&norm(r.lendDate)<=selDate&&norm(r.returnDate)>=selDate)`＝**その日に物理的に出ているシートだけ**(当日貸出開始＋継続貸出中・返却当日も占有)。翌日出発分は当日在庫判定に含めない。
+- **(A)厳密「当日新規DELだけ」でなく(B)を選んだ理由**：継続貸出中(前日以前開始で今日も貸出中)のシートは物理的に出払っている→(A)`lendDate===selDate`だと総在庫との比較でこの出払い分を見落とし「足りてる」と誤表示(アラートが嘘)。数学的に (A需要 vs 実在庫) = (当日物理占有 vs 総在庫)＝(B)。分子(需要)・分母(在庫)とも安定し「当日足りるか」を正しく一目判定できる。
+- **3店同構造→横展開必須**：SPK`index.src.html`/NHA`index.html.bak`(~/Desktop/AI/naha-project)/BT`index.html.bak`(~/buddica-touring/app)の`seatDemand`は完全同一文字列＝`grep 'const seatDemand=useMemo'`で3店一括確認。全店同じ(B)に。
+- **EF `seat-overflow-alert`も整合(前方45日Slackアラート)**：in-appコメントが「EF seat-overflow-alert と一致」と明言→EFの各日D需要も`_lend<=D&&_ret>=D`(旧`<=D+1`除去)に統一しデプロイ(ckrxttbnawkclshczsia・dryRun検証OK)。正本=`line_auto/seat-overflow-alert/index.ts`→deploy実体`~/hdm-car-delivery/supabase/functions/`。**シート在庫ロジックを触る時はin-appバッジ(3店)とこのEFを必ずセットで揃える**。
+- 教訓＝「在庫が足りるか」系は"その日に物理的に出ている数 vs 総在庫"が正しい定義。翌日準備/前夜積込を当日在庫に混ぜると現場が誤判定する。継続貸出(複数日)を数え落とすと逆に不足を見逃す(false-OK=危険)。両方を満たすのが「当日物理占有(lend<=D<=return)」。
+
+## 🪑 2026-09-10 レンタルシート在庫(RCS/RJS)機能 新設＝予約超過時のレンタルシートを日程ごとに在庫管理(v4.7.609)
+オーナー要望「予約超過時にレンタルするシート類を日程ごとに在庫登録・見える化。常設でなくレンタル期間のみ表示。既存CS/JSと別軸・在庫不足アラートはCS/JS基準のみ・A案(倉庫車CS/JS隣に並べる)・OPシートと駐車場タブに同期」。
+- **命名**：RCS=レンタルチャイルドシート / RJS=レンタルジュニアシート（既存 CS/JS=倉庫車の物理積載在庫＝SeatLoad/WAREHOUSE とは**別軸**）。
+- **保存先＝駐車DB(rkrvjpipvpybkmqadmrb) `rental_seats`**（期間レコード：id/start_date/end_date/type(RCS|RJS)/qty/vehicle_id(積載先・任意)/note/updated_at・RLS anon full・既存parking系に準拠）。**OPシートと parking.html が同一テーブルを読む＝単一ソース(複製ドリフトなし)**。
+- **OPシート(index.src.html)**：`RentalSeat`モジュール(loadRentalSeats/realtime rental_seats/60秒polling・SeatLoadと同型)＋`RentalSeatPanel({selDate,vehicles})`。シート在庫行の`<SeatLoadSummary/>`直後に配置。選択日にアクティブな期間(start<=d && end>=d)の合計を「本日 RCS×N RJS×N」で表示(0なら「本日レンタルなし」＝レンタル期間のみ表示)。`＋レンタル在庫`ボタンで期間/種類/台数/積載車両(vehicles select)/メモを登録・一覧で削除。**色は amber(#fffbeb/#b45309) で CS/JS の cyan と区別**。
+- **駐車場(parking.html・standalone/buildなし)**：`RENTAL[]`＋`loadRental()`(boot Promise.all＋realtime `pk-rental`＋15秒polling)。独立パネル`#rentalList`(renderRental・本日レンタル中合計＋期間一覧＋追加/削除)＋**A案＝倉庫車whList のCS/JS隣に、その車に紐づく本日アクティブなRCS/RJS(`rentalForCarToday(carId)`・vehicle_id=「車名-ナンバー」で突合)を並べて表示**。todayStr()=ローカル日付。
+- **🔴 在庫不足アラート(seatDemand/seatStock=CS/JS=`SEATS`)は無改変**＝RCS/RJSは計算に一切含めない**表示専用**。OP側アラートは従来どおり `seatDemand[s.k]>seatStock[s.k]` のみ。
+- **検証**：anon CRUD OK・E2E(9/20-27 RCS×2挿入→9/23アクティブ/9/28期間外0件→削除→空)・ライブ(app.js rental_seats/v4.7.609、parking renderRental反映)。commit 8eadb7d。
+- **教訓**：期間ベースの在庫は「日程レコード＋アクティブ判定(start<=d<=end)」で"常設でなく期間のみ表示"を実現。OPシートと駐車場の同期は同一テーブル直読み(単一ソース)＝別複製を持たない(複製ドリフト根治の原則)。sw.jsは自己破棄型のため版数はAPP_VERSION+CV+`sw.js?v=`の3箇所(CACHE_NAME無し)。
+
+## 🌏 2026-09-09 rent-handyman.com は4言語対応済＝`official-i18n.js`（インバウンド直予約の受け皿・辞書追加手順）
+公式サイト(handyman-officialリポ)は**日/英/繁體中文(zh=繁体字)/한국어(ko)の4言語**対応済。実装＝`official-i18n.js`の`data-i18n`エンジン＋`hdmSetLang(l)`切替UI(`hdmlang-menu`)＋`hdm_lang`localStorage共有＋ブラウザ言語自動判定。**機械翻訳(Googleウィジェット)でなく作り込み訳**で予約導線/確認/保険/FAQ/マイページ/法務まで全訳＝繁体字(台湾香港67.9%)＋韓国語(22.7%)＋英語でインバウンド9割超をカバー＝広告→公式直予約(67%)のCVR土台。
+- **⚠️WebFetch(静的取得)はJS実行しないので言語切替を拾えない→「多言語なし」と誤判定する。実装確認はリポの`grep data-i18n`/`curl live.js|grep <key>`か実ブラウザで**。
+- **辞書追加の手順**：`official-i18n.js`の**各言語ブロック(ja/en/zh/ko の4箇所)にキーを追加**＋HTMLの要素に`data-i18n="<key>"`(select optionは`data-i18n-opt`)。⚠️ja/zhは文字列が同一の項目があり(例`札幌店（北海道）`)Edit重複でハマる→**行番号指定のpython編集が安全**。
+- 例(2026-09-09 commit 5f4f8f9・本番反映確認済)：店舗選択の「高松空港店」だけ`data-i18n-opt`欠落で外国語でも日本語固定→`s_takamatsu`を4言語追加(高松空港店/Takamatsu Airport/高松機場店/다카마쓰공항점)＋optionにキー付与で是正。
+- 📄高松インバウンド市場の母数試算・調査要点・広告提案書検証は `~/Desktop/香川マーケデータ/高松インバウンド戦略_メモ_2026-09-09.md`（国際線52.2万/台湾香港67.9%/母数 国内2.3万組・インバウンド1.4万組 等）。
+
+## 🔗 2026-09-09 「マイページ/ご利用ガイドのリンクを開くと空っぽ」根治＝号機のURL太字**混入＋2層防御（全店・要記憶）
+齊藤(BUDDICA)報告「OMNIが出したシナダ様(2608002676)のご利用ガイドリンクを開くと空っぽ」。**真因＝号機(Slack OMNI)がURLを`**太字**`で出力→クリック/コピー時に末尾の`**`がURLに混入→トークンが`…ba6**`になって無効化→`bt_mypage_lookup`等が空shellを返す→予約番号/氏名/車両すべて空欄表示**（補償も「基本プラン」に化ける）。**実機で`?t=…ba6**`を開いて再現確認**（トークン・RPC・データ自体は全て正常＝リンクは元々正しかった。壊すのは`**`だけ）。
+- **2層で根治（どちらか片方でも守る）**：
+  1. **ページ側＝トークンサニタイズ**：全顧客マイページの`get("t")`を「UUIDパターン`/[0-9a-fA-F]{8}-…-{12}/`だけ抽出」に変更（無ければ`replace(/[^0-9a-fA-F-]/g,"")`）。→ `**`やコピペ崩れが末尾に付いても正しいUUIDで開く。対象＝**BT `guide/index.html`（顧客マイページ本体・my-tkm.htmlは無い）／SPK `my.html`／NHA `my-nha.html`**。3リポjpush済。実機で`**`付きでもシナダ様予約が全表示を確認。
+  2. **号機側＝slack_bridge.py `post()`に`_clean_url_markdown()`追加**：URLにベタ付けされた`*`/`**`を除去（`\*+(?=https?://)`＋`(https?://[^\s*<>]+?)\*+`）。**通常の`**強調**`は温存**（URL隣接の`*`だけ除去）。全号機の投稿はpost()を通る（bot本体返信=L513）ので全機に効く。**全7機(HANDYMAN3+BUDDICA4)をクリーン再起動して反映**（heartbeat全機更新確認）。→ 今後号機のマイページリンクは`**`が付かず生URLで出る。
+- **BTガイドの追加堅牢化**：`boot()`の`bt_mypage_lookup`を通信瞬断でも空にしないよう最大3回リトライ＋失敗時「🔄再読み込み」ボタン（無リトライで即エラー表示だった件）。
+- **教訓（横展開）**：①**Slack/OMNI出力のURLは太字`**`で囲まない＝生URLで出す**（`**`はSlackで太字にならず末尾がURLに混入する）。②**`?t=<uuid>`等トークン受けページは、リンクにゴミ(`**`/空白/句点)が混入しても壊れないよう"UUIDだけ抽出"して受ける**（LINE/メール/コピペ経由でもゴミは付く）。③この種の「個別URLが空っぽ」は、まずトークンが汚れて(`**`等)無効化していないかを実データ+実機で確認（RPC/データは正常なことが多い＝壊すのはリンク整形）。号機出力の関所＝`~/Desktop/HANDYMAN/omni_bot/slack_bridge.py` `post()`。
+
+
+## 🚗 2026-09-07 公式サイト(rent-handyman.com)の在庫を「HDM車のみ＋配車表(予約+メンテ+その他)フル連動」に是正（全店・重要）
+オーナー連続指摘「①高松サイト在庫はどこと紐づく？②HDM+BUDDICA合算では？③HDMバッジ車だけに④配車表にメンテ/その他/自社予約が入ってても在庫ありで出る＝全店」。一連で根治。
+- **在庫の紐づけ先（コードで確定）**：rent-handyman.com **高松店在庫＝BUDDICA(BT)プロジェクト`ggqugvyskyiblxiycpci`の`bt_vehicles`**（HDM専用在庫を別に持っていなかった＝HDM+BUDDICA**合算**表示だった）。経路＝①車種一覧表示＝`public_bt_classes_v`（bt_vehiclesをクラス集計・anon）②予約時空車確保＝`bt_book_tkm` RPC（bt_vehicles/bt_fleet）。札幌＝`official_book_spk`(reservations/fleet/vehicles・表示は`public_busy_v`)、那覇＝`official_book_nha`(nha_*・表示は`public_busy_nha_v`)。全て**official-flow.html**が読む。
+- **① HDM高松の車両を仮登録**：`bt_vehicles`にHDM高松の**C/E/F/G/H/I/J/K を各1台仮登録**（code=`HDM-C01`…`HDM-K01`・brand='HDM'・plate空・名称=代表車種(仮)）。**D は既存`ハリア0000`(brand=HDM)があるのでHDM-D01は作らず削除**。ナンバー/車種名は後日オーナー入力。
+- **② HDMバッジ車だけに（brand='HDM'絞込を2箇所）**：`public_bt_classes_v`（表示）と`bt_book_tkm`（予約空車確保 L77 `where ... and coalesce(v.brand,'')='HDM'`）に追加→高松サイトはHDM車(C/D/E/F/G/H)のみ・BUDDICA車混在なし。**official-flow.html STORE.takamatsu から `A`(HDMに無い)を削除**（order=['C','D','E','F','G','H']）。
+- **③ 配車表フル連動＝メンテ/その他/自社予約を全店で在庫除外（最重要の学び）**：**「予約RPC(booking)」と「表示ビュー(availability)」は別物→両方直さないと"予約は弾くが画面は在庫ありで出す"**。
+  - **予約RPC**（bt_book_tkm/official_book_spk/official_book_nha）の空車確保に **メンテ`not exists`** を追加。札幌`maintenance`は`block_type<>'partner_reserved'`除外（協力会社枠は正当予約を通す）／那覇`nha_maintenance`・高松`bt_maintenance`は`block_type`列なし＝全ブロック対象。日付は`::text`キャスト＋`coalesce(nullif(end_date::text,''),start_date::text)`。
+  - **表示ビュー**：札幌`public_busy_v`・那覇`public_busy_nha_v`を **予約(fleet+reservations)に メンテ/その他を `UNION ALL`**（vehicle_code,start_date→lend_date,end_date→return_date）。高松は表示側が別DBで無かった→**新RPC`public_bt_avail(p_lend,p_ret)`**（SECURITY DEFINER・anon grant・HDM車で予約+メンテ重複を除外した`{class:空車数}`を返す）を新設し**official-flow.htmlのfetchAvailを高松対応**（日付選択後にBT_ANONで叩く・`if(area==='takamatsu')`で早期returnしていた穴を塞ぐ）。
+  - 自社予約＝reservationsに入る全予約＝元々`public_busy_v`が拾う（追加はメンテ/その他分）。
+- **④ official-flow.htmlの「変更」等が404**：`official-design.html`(本番handyman-officialに存在せず)を参照→**`index.html`に全置換**(#search/#cars アンカーは実在)。ドクトリン「official-*のTOP戻りは必ずindex.html」の再適用。
+- **検証済(実データ)**：札幌NRH(メンテ)→`public_busy_v`反映true／那覇SRH01(メンテ)→`public_busy_nha_v`反映true／高松`public_bt_avail`は楽天予約でHDM-H01が埋まる2027-01-20〜28にHを除外。official-flow live=order['C','D','E','F','G','H']＋public_bt_avail接続を確認。
+- **重要な仕様（現場/顧客案内）**：**在庫の絞り込み(満車/メンテ除外)は"日付を選んでから"効く。日付未選択は全クラス表示（正常）。** GH PagesはHTMLキャッシュ最大10分→反映確認は`?cb=時刻`かスーパーリロード。
+- **運用Tips**：Management API(curl必須・urllib=Cloudflare403)`/database/query`(token`~/.config/keydrop/sb_token`)。新RPC作成後は`NOTIFY pgrst,'reload schema'`しないとPostgREST 404(PGRST202)。RPC全文再デプロイはローカルsql正本(`~/buddica-touring/sql/bt_book_tkm.sql`／`~/spk-task/sql/official_book_spk_nha.sql`)をquery投入。
+- **教訓（横展開）**：①「サイトに在庫が出る」系はまず"表示ビュー(availability)"と"予約RPC(booking)"の両方を確認＝別ソースなので片方だけだと不整合。②ブランド混在サイト(高松HDM/BUDDICA)はbrand='HDM'で表示・予約の両方を絞る。③メンテ/入庫ブロックは予約テーブルと別表(maintenance系)→在庫判定に必ずUNION/not existsで合流させる。④公式サイトはビュー/RPCを直読み＝サイト再デプロイ不要で即反映（HTMLキャッシュのみ注意）。⑤楽天HDM高松の手動取込＝bt_reservations(ota=楽天→brandトリガーHDM)+bt_fleet(HDM車code)。
+
+## 📱 2026-09-07 高松BT配車表 スマホmonth表示で複数日が入らない→日セル幅縮小＋フロート配車表を全幅化（v1.0.406-BT）
+現場報告「スマホmonth表示で1日分の帯しか見えない・横スクロールしても複数日が出ない」。前回v1.0.405で左車両列を140→92pxに縮小したが日領域が広がらなかった。**コード構造はSPKと完全同一(viewport/media query/main-area/scroll container minWidth:0 とも一致)＝構造差では説明できず**（ブラウザ実機がなく根本の再現は未確定）。→ **確実に効く"日セル幅縮小＋幅制約の除去"を実施**（`FleetTimeline` L16415）：スマホ`COL_W`= month **60→38px**／week 100→64px／day 600→300px、`LEFT_W`= 92→**80px**（PCは不変80/140/600・260）。38px×31日=1178+80=1258で360pxスマホでも横スクロールで全日追える＋一度に約9日見える。**加えてフロート配車表(`showFloatFleet` L22458)がスマホで幅50%固定＝タイムラインが極端に狭くなる元凶候補→スマホ(innerWidth<=768)では常に全幅**（IIFE `_flMob/_flFull`でwidth/height/border/radiusを分岐）＋内側ラッパに`minWidth:0`追加。ライブ検証：index.html BASE_V=1778・app.js に`isMobile?38:80`/`_flFull`/`v1.0.406-BT`反映(size 2,201,177)。**教訓：①スマホ配車表で「複数日が入らない」は日セル幅(COL_W)を小さくするのが最短で確実（左列縮小だけでは可視日数≒スクロールviewport幅÷COL_W なので日領域は広がらない）。②フロート配車表(showFloatFleet)は幅50%だとタイムラインが半分＝スマホでは全幅にする。③BTのbuildはterser未導入でapp.js非圧縮(2.2MB)が既定＝prior HEADも同サイズで正常（圧縮欠如は不具合でない）。④SPK/BT同構造でも実機挙動差の根本はブラウザ計測が要る→計測不能時は"確実に効く方向(セル幅縮小)"に倒して実機確認を現場に委ねる。**
+
+## 🪧 2026-09-07 NHAバイトURL(staff.html)のお届け先が回収先に誤表示＝レグ横断参照を除去し正本導出に統一（再発しない根本）
+二宮様(ZCG28050)でバイトURL(staff.html)のお届け先が回収先『Mr.Kinjo栄町』に誤表示（社員OPシートは正しく沖縄ハーバービューホテル）。号機が`nha_staff_view` RPCをleg別に修正したが**DELの場所解決に`集客`(=回収先列)を最後尾フォールバックで残した**ため潜在再発リスクが残存。**根本＝表示は正本(予約)から導出し逆レグのタスク列を一切参照しない(LEDGER-ONE STEP2)**：`nha_staff_view`の`eff_place`を **DEL＝`送迎場所→del_place`(集客を見ない)／COL＝`集客→col_place`(送迎場所を見ない)** に修正(CREATE OR REPLACE)。→ DELタスクの`集客`に回収先が汚染で残っていても**表示に二度と出ない**（実データ検証:二宮様d-の集客に栄町が残ったままでもstaff_view=ハーバービュー・今後2週DEL汚染25件も全て正表示）。
+- **教訓**：①バイトURL(staff.html/nha_staff_view)と社員OPシートは**同じ正本(予約del_place/col_place)から導出させる**＝食い違いの元は「タスク列を優先し逆レグ列にフォールバックする」設計。②レグの場所解決は**そのレグの列だけ**(DEL=送迎場所/del_place・COL=集客/col_place)を見る。逆レグ列(DELで集客、COLで送迎場所)は**フォールバックにも入れない**(空表示の方が誤配達より安全)。③号機の「根本修正した/5件データ是正した」は実データで裏取り必須＝実態はRPCで表示是正・DELタスクの集客汚染データは残存(未クリーン)＝主張と実装が食い違う。④残(表示に無害)＝集客汚染の取込側発生源。RPC=Management API(`~/.config/keydrop/sb_token`)で`pg_get_functiondef`→編集→CREATE OR REPLACE。
+
+## 🗺 2026-09-07 NHAバイトURL(staff.html)でDELのお届け先に「回収先」が誤表示→nha_staff_view RPCをleg-guard根治（クレーム対策）
+現場報告「二宮夏美様(ZCG28050 9/7)のバイトURLはお届け=栄町Mr.Kinjo、社員(OPシート)はハーバービューホテル＝ズレてる」。**真因＝nha_staff_view RPC(`nha_staff_url_migration.sql`)の`eff_place`が`送迎場所→集客→予約`の順で、leg無視で「集客」を使っていた**。二宮のDELタスク(d-)は`集客='Mr. Kinjo in Sakaemachi'`（=回収先col_placeがDEL行に混入）を持つため、お届け(DEL)なのに回収先を表示。OPシートは予約から導出(DEL→del_place)するので正しく沖縄ハーバービューホテルを表示＝両者が別ロジックで食い違った。
+- **根治(leg-guard)**：`eff_place`を「DEL系(DEL/PU/PUB/来店/PUB来店)=`送迎場所→r.del_place→集客`／COL系(COL/BD/BDB/返却)=`集客→r.col_place→送迎場所`」に。**DEL系は集客(回収列)を先に使わない・COL系は送迎場所を使わない**＝OPシートと一致。空欄化させないため最後に反対列fallbackは残す。
+- **診断の型(Management API curl・urllib=403)**：新旧`eff_place`をSELECTで14日分diff→`became_blank=0`(空欄化ゼロ)と変化タスク全件を目視。二宮以外に前田/ヤマシタ/阿部/今井の**計5件が同じ集客混入バグ**(お届けに回収先)＝今日〜2週間の誤配達リスクを一掃。濱岡(`_ssPlace`＝顧客フォーム値と送迎場所が食い違う特殊ケース)はOPシート実挙動未確証のため**触らず不変**（最小変更＝混入バグだけ潰す）。
+- **教訓**：①staff.html等の個別URLが読むRPCは、OPシートの「予約から導出(2026-07-16 STEP2)」と**同じleg判定**にしないと食い違う。②NHA nha_tasksの`送迎場所`=お届け列/`集客`=回収列だが、**DEL行に集客(回収先)が混入する**取込データがある→leg-guardで「その脚に無関係な列」を使わないこと。③場所修正はデータを消さず**RPC(表示導出)だけ**直す(OPシート/取込に副作用ゼロ)＋必ずbecame_blank=0で空欄化しないことを診断してから反映。BUG_FIX_LEDGERクラス①(複製ドリフト/表示側)。
+
+## 📋 2026-09-08 じゃらん「配車サービス」運用ルール(2025/2版)への整合＝当社モデルは適法・回答済（PDF=~/Desktop/manual_rule.pdf・照会/監査の即答用）
+じゃらんVJサポートセンターから配車サービス運用ルールの照会。PDF(じゃらんnet レンタカーサービス運用ルール・無人店舗/配車サービス/事前チェックイン/事前決済・株式会社リクルート・関係者外秘)を精読し、当社モデルが適法であることを確認・回答した。
+- **ルールの核心＝約款第33条（配車サービス）**：じゃらん管理画面に**"貸出・返却場所（営業所＝配車ステーション）として登録する地点"は ①自社保有の土地 or ②土地所有者の許可・了承を得た場所 に限る**。趣旨＝公道/無許可の他人の土地を勝手に受け渡し拠点にする（違法駐車・不法占有）を防ぐ。許可取得は事業者責任。
+- **お届け先ごとの可否（第33条の当てはめ・確定整理）**：①**自宅(自分の敷地/駐車場)＝◎最もクリーン**（顧客本人＝土地使用権者の了承で条件成立・他人の許可不要）②**ホテル＝○条件付き**（土地所有者=ホテルの了承が前提・車寄せ/駐車場での受け渡しに了承があるか意識）③**マンション共用部＝△注意**（所有者は管理組合・契約駐車場なら可・来客共用部の長時間受け渡しは避ける）④**公道上＝✕**（誰の許可でも拠点化不可）⑤**空港(那覇/新千歳)＝✕条例で禁止**（土地許可以前に条例上不可＝別次元）。**重要な考え方＝「受け渡す地点の土地について誰かの適法な了承があるか」。顧客の自宅/正当に利用できる場所へのデリバリーは適法。**
+- **当社の適法な建て付け（じゃらんへの回答内容）**：札幌デリバリー専門店＝じゃらん登録拠点は**BYYARD(札幌市中央区北5条西11丁目15-4・賃貸借契約で利用許可済)**＝許可地。保管ヤード=**共立自動車(白石区米里1条2丁目1-7・マツダオートザム札幌インター内・賃貸借)**。実際のお届け/回収は**お客様が予約/滞在するホテル・お客様自身が正当に利用できる場所**へ配車。緊急窓口=電話050-1724-6197/公式LINE/メール365日常時。記録フロー=メール/LINE/電話の履歴＋予約ごとマイページ。**那覇デリバリー専門店の営業所コードは削除漏れ(実際は非営業)→削除**。
+- **🟢 弊社モデルは順守側＝掲載停止の対象ではない（オーナー確定 2026-09-08）**：PDFの「掲載停止」は**約款第33条が順守されていない場合の一般条項＝違反者向け**。弊社モデル（BYYARD＝許可を得た登録拠点＋顧客の正当に利用できる場所へ配車）は**第33条を順守しており該当しない**。表記整備は「順守を明確に示すための整備」であって違反是正ではない。じゃらん系の照会に対しては「弊社は適法・順守側」を前提に自信を持って回答する（"掲載停止リスク"等の過剰表現をしない）。
+- **掲載テキストの整備ルール(P9/P12/P14・順守を明確化するための書き方)**：①営業所名＝**【配車ステーション】○○営業所**／料金プラン名＝**【配車サービス】○○プラン**②営業所情報/プラン説明に「配車ステーションであること＋貸出/返却場所の詳細＋案内メールの@ドメイン明記＋受信設定のお願い」を記載③**競合誘導防止の観点から、公開欄(営業所情報/プラン説明)には自社HP・電話・LINE等の連絡先を書かない運用**（連絡はじゃらん経由の予約時メール/SMSで案内）。じゃらん宛の回答メールに連絡先を書くのは可。
+- **教訓（横展開）**：①「配車サービスは自宅/ホテルに届けてダメか」は"営業所として登録する固定拠点(自社地/許可地)"と"実際のデリバリー先(顧客の正当な場所)"を分けて考える＝登録拠点の縛りであって配送自体の禁止ではない。②空港受け渡し不可は"条例"、ホテル/自宅は"土地所有者(=顧客本人 or ホテル)の了承"＝根拠が別。③公開欄の連絡先非掲載は"順守のための書き方"であって、弊社モデルが違反という意味ではない（KEYDROP/BUDDICA等 他OTA配車プランでも同じ整備方針）。④本書記載外はVJサポートセンターへ照会（PDF明記）。
+
+## 🛬 2026-09-11 NHAマイページ「ホテル配車にしたのに空港配車に変わってる」根本＝SSパトロールfetchPlaceDataのleg取違え(1予約2行・予約番号は返却行のみ)を根治(v3.5.370-NHA)
+お客様石井様(SRM57879・那覇HP)『ホテル配車にしたのに空港配車に変わっている・変更していない』。**予約データは無事＝表示汚染だった**。切り分け〜根治の型（NHA場所系の再発時はこれ）：
+- **切り分け(台帳基軸)**：①`nha_reservations`の`visit_type=DEL`/`del_place=琉球オリオンホテル国際通り`は8/15取込から**一度も変わっていない**(audit_logで確認)＝予約は正しい。②マイページEF`handyman-mypage-nha`が`del_place=那覇空港`を返す＝**表示だけ空港**。③原因は**タスク`changed_json._ssPlace="那覇空港"`**(2026-09-07書込)。マイページEFの`resolveTaskPlace`は`_placeSource==="manual"以外は_ssPlace最優先`なので、汚染_ssPlaceを表示していた。
+- **class検査(他に同型は？)**：`nha_tasks 内容=DEL` join 予約で`_ssPlace≠del_place`(未来・非manual)を全スキャン→**計6件**(石井+ラグナガーデン/フィデールモリ/沖縄ハーバービュー/BiBi Hotel波之上/ソルヴィータ那覇)。予約del_place空の分は**生メール台帳`nha_reservation_emails`の「お届け場所名」から正本補完**。全て`_placeSource=manual`で保護し是正。DEL/COLとも残0確認。
+- **根本原因(確定・実データ)**：OPシート連携用スプレッドシート(PLACE_SHEET_CSV gid=914474197)は**「1予約=2行」＝貸出行(内容∈DEL/PU/PUB/来店)＋返却行(内容∈COL/BD/BDB/返却)**で、**新しい予約は予約番号が"返却行"にしか入っていない**(貸出行の予約番号は空)。`fetchPlaceData`(index.html.bak)は**予約番号のある行=返却行の「場所」列をそのままdelPlace(お届け先)として取込んでいた**→返却がBDB(返却空港送迎)で場所=那覇空港の予約は**お届け先が那覇空港に化ける**。実証：加藤様AMU43165＝DEL行「場所=ラグナガーデンホテル/予約番号空」＋BDB行「場所=那覇空港/予約番号=AMU43165」。
+- **🔴同型が時刻側で既修正だった＝場所側だけ未適用**：`fetchTimeData`は2026-08-16に同じ「1予約2行・予約番号は返却行のみ→返却行の時刻がdelTimeに化ける」を**leg判定+氏名+貸出日突合で修正済**。場所`fetchPlaceData`だけ未適用だった。→ **同型に修正**：貸出行(DEL_LEGS)の場所→delPlace／返却行(COL_LEGS)の場所→colPlace、予約番号が貸出行に無い新データは氏名+貸出日(resInfo)で突合。呼出3箇所にresInfo追加。v3.5.370-NHA/commit 25a51f7。
+- **教訓(横展開)**：①NHAの「1予約2行・予約番号は返却行のみ」スプレッドシートを読む処理は、必ず**内容(leg)で貸出行/返却行を判別し、貸出行を氏名+貸出日で突合**する(予約番号だけで拾うと返却行の値がお届け側に化ける)。fetchTimeData(時刻)/fetchPlaceData(場所)は同型＝**片方直したら必ずもう片方も確認**。②「予約が勝手に変わった」報告は、まず`audit_log`で予約(正本)が実際に変わったか確認→変わってなければ**タスクchanged_json._ssPlace等の表示汚染**を疑う(マイページEF/OP表示は_ssPlace優先)。③場所是正は`_placeSource=manual`で保護すれば5分パトロールが再汚染しない(auto-patrolはmanualをskip)。④予約del_placeが空でも捏造せず**生メール台帳nha_reservation_emailsの「お届け場所名」で正本補完**。
+
+## 🩹 2026-09-10 HDM高松マイページに事故故障パンクカード実装＋demoモード追加（前回「両方done」は虚偽＝実描画で検証する教訓）
+オーナー『高松ご利用ガイドとHDM高松マイページに追加コンテンツ・2つとも完成されてない・台帳みて再開』。台帳ORG-20260910-100241は「guide＋my-tkm 両方に事故故障パンクカード実装・実ブラウザ確認済」とdoneだったが、**実際はHDM my-tkm.htmlにtrbキー0個＝未実装**（guideだけ33キー実装）。だからHDMのURLは何も出なかった＝オーナー指摘どおり。さらにmy-tkm.htmlには**demoモードが無い**のに台帳は「プレビュー ?demo=1 確認済」＝二重の虚偽（前セッションが実描画せず"done"と書いた）。
+- **対応**：①`~/handyman-official/my-tkm.html`＋`~/spk-task/my-tkm.html`に、guide(line519-566 #trbCard)のカードを移植＝TXに trb_ 33キー×4言語＋renderのready〜cancel間に`<details class="acc">`挿入＋HDM緊急電話050-1724-6197常時表示。②`load()`冒頭に**demoモード**(`?demo`でサンプルDATA=EF応答14キー+reservation22キー形状を作りrender)。commit handyman-official 3a325aa/spk-task 410cd64。③**Chrome MCPでrent-handyman.com/my-tkm.html?demo=1の描画を目視確認**(🚨/最重要/緊急窓口050常時/110・119/流れ4step/費用/4点)。
+- **教訓（出典なき主張の禁止）**：①**「実装した/両方done/プレビュー確認済」を実描画で裏取りせず台帳に書くと虚偽**＝`grep -c trb_`が0で即バレる。画面系の完了は必ず①grepで対象ファイルにキー/要素が入ったか②実ブラウザ(live or ?demo)で描画目視、してからdoneと書く。②**guideとmy-tkm.htmlは別構造**(guide=data-t+I18N静的HTML/my-tkm=TX+t()+JS templateアコーディオン)＝移植は単純コピペ不可・各i18n方式に適合。③**顧客トークンページ(my-tkm.html?t=)にはdemoモード**を付けるとトークン無しで`?demo=1`プレビュー可(guideの`?demo=alphard`と同型)。DATA形状は実トークンでEF lookupして実取得してから作る。
+
+## ⏱ 2026-09-10 CS AI回答案が19時間遅延＝launchd python DNS wedge→cs_autoreply.pyに自己回復(exit(1)で新プロセス委譲)を実装
+村重様(RXU89918)の問い合わせは9/9 13:48 JST着信・自動受付返信は即時だが、**AI回答案(draft)生成が9/10 08:55(=約19時間遅延)**。現場「到着直後に案が出ないと困る＝まずい」。真因＝`cs_autoreply.out.log`に`URLError [Errno 8] nodename nor servname provided`(=DNS解決失敗)が多発＝**launchd配下のpython DNS wedge**（Wi-Fi切替/スリープ後にgetaddrinfoが固着・既知障害）でポーラーがSupabaseに到達できず未対応スレッドを拾えなかった→DNS復旧までdraft生成が止まっていた。既存の`tick()`は例外をcatch/logして**同じwedgeプロセスで回り続ける**ので19hも復旧しなかった。
+- **根治＝DNS wedge自己回復**：`cs_autoreply.py`の`tick()`にDNS wedge検知(`nodename nor servname`/`Errno 8`/`getaddrinfo`等の署名)＋連続カウント`_dns_streak`を追加。**4tick連続(=POLL25s×4≒100秒)でDNS固着したら`sys.exit(1)`→launchd KeepAlive=trueが新プロセスを再生成**（doctrine「fresh processはDNS解決OK＝wedgeはプロセス固有」）。成功tickでstreakリセット(単発ブリップで誤再起動しない)。→ 19h遅延が最大約2分の自動切替に。
+- **教訓（横展開）**：①**launchd常駐pythonの障害は「heartbeatが更新され続けても実処理が止まる」のが盲点**（out.logにURLError/getaddrinfoが並ぶ=DNS wedge・err.logは空でも起きる）。②例外をcatch/logで握るだけの常駐ループは、DNS wedge等の**プロセス固有の恒久障害から抜けられない**→「連続失敗でexit(1)して新プロセスに委ねる(KeepAliveで再生成)」自己回復を必ず入れる。③復旧の即応=`dscacheutil -flushcache`＋`launchctl bootout/bootstrap`＋mDNSResponder HUP。④この自己回復パターンは他のlaunchd常駐python(slack_bridge.py/omni_bot各機/cli_responder.py)にも同型リスク→DNS wedgeが疑われたら同じ`_dns_streak→exit(1)`を横展開。
+
+## 🚉 2026-09-10 CS AI回答案が札幌「北口に到着」を空港条例で断る誤り→札幌descに『北口＝札幌駅北口＝受け渡し場所』を焼込
+村重様(RXU89918・札幌HP)『北口に到着しました。受け取りと同じ場所です』にAI回答案が『新千歳空港では条例により…』と誤回答。**真因＝札幌descに「駅到着＝受け渡し場所」ルールが無く、AIが『北口』を空港北口と誤認**（那覇の『駐車場に着いた＝第二駐車場』2026-09-08と同型）。札幌店の『北口』は**札幌駅北口＝ご指定の受け渡し場所（del_place 北6条西4=札幌駅北側）＝対象エリア内・空港ではない**。→ `cs_autoreply.py` `CFG["spk"]["desc"]`に『★★北口/札幌駅北口/駅に着いた＝受け渡し場所への到着→空港案内をしない・“担当が向かうのでそのままお待ちください”＋予約のお届け/回収先と矛盾する空港案内を出さない』を追記＋再起動。正しい回答＝『かしこまりました。担当スタッフがそちらへお伺いいたしますので、お車を停めてそのまま少々お待ちくださいませ』。**教訓＝現場用語(『北口』『駐車場』)は店ごとに実体が違う（札幌＝札幌駅北口／那覇＝第二駐車場＝受け渡し場所）。空港条例ルールを機械的に当てず、お客様が“今どこにいるか(=既に受け渡し場所)”＋予約のお届け/回収先を優先して読む。cs_autoreply.pyは`omni_bot`のKeepAlive常駐＝コード変更後は`launchctl bootout/bootstrap com.handyman.cs-autoreply`で再起動が要る。**
+
+## 🏬 2026-09-06 3店の受け渡しモデル（オーナー確定・全エージェント厳守）＋CS AI回答案が那覇を「デリバリー専門」と誤回答→根治
+**店舗モデル（顧客対応・案内文で絶対に間違えない・CLI omniが2回取り違えた要注意）**：
+- **那覇店**＝①無料の空港送迎（那覇空港で"お客様＝人"をお迎え→お車のお渡し場所へご案内／返却時は空港へお送り）＋②デリバリー（ホテル/ご自宅等 指定場所へ"車"をお届け・回収）。★デリバリー専門ではない。
+- **🔴🔴 最重要の落とし穴**：**空港での「お車の引き渡し・貸渡・返却・回収」は一切できない（那覇空港／札幌の新千歳空港・千歳空港とも）。理由＝条例による（当店都合でなく条例で禁止）。** 顧客案内でも『◯◯空港では条例によりお車のお引き渡し・ご返却は承れません』と理由を明記してよい。**「無料空港送迎」＝"人"を空港で迎えて車の場所へ案内すること であって、"車"を空港で渡すことではない。** お客様の「空港に車を届けて/空港で受け取りたい/返したい」には**"はい"と言わず**『空港では条例によりお車の受け渡し不可→（那覇）無料空港送迎でお迎え→お渡し場所へ案内／（札幌）空港周辺の指定場所(ホテル等)へお届け・回収』と案内する。
+- **札幌店**＝デリバリー専門（店舗なし・お届け/回収のみ・空港カウンター無し・空港送迎も無し）。**新千歳/千歳空港での引き渡し・返却も条例で不可**→空港周辺の指定場所へデリバリー。**高松店**＝無料の空港送迎のみ（デリバリー無し）。
+- **事象**：CSチャットのAI回答案`cs_autoreply.py`が那覇の予約に『当店はデリバリー専門のため…』と誤回答（AIが"HANDYMAN=デリバリー専門(=札幌の実態)"を那覇へ一般化）。**真因＝プロンプトに店舗の実態(受け渡しモデル)が入っておらず`HANDYMAN{店名}`しか渡していなかった**。→ `CFG`に店舗別`desc`(受け渡しモデル)を追加し、`gen_draft`/`gen_revise`のプロンプトに**【店舗の特徴】を注入＋「店舗の特徴に反する説明をしない(那覇をデリバリー専門と言わない)」ルール**を追加。KeepAlive常駐なので`launchctl bootout/bootstrap com.handyman.cs-autoreply`で再起動して反映。**教訓：店舗横断のAI/テンプレは"店ごとに違う事実(受け渡し・送迎・専門性)"を必ず明示的に渡す。1店(札幌)の特徴を全店に一般化させない。cs_autoreply.pyは`omni_bot`のKeepAlive常駐＝コード変更後は再起動が要る。**
+- **🅿️ 2026-09-08 続報＝那覇で『駐車場に着いた』＝第二駐車場(受け渡し場所)であって空港ではない（オーナー『学べ』・cs_autoreply.py 那覇descに焼込）**：ヒラタ様(R01XFM0Q)『今駐車場につきました。どこでスタンバイ？09:30のバスに乗りたい』へAI回答案が『那覇空港では条例により受け渡し不可→無料空港送迎でお迎え』と誤回答。**真因＝那覇店ではお客様が言う『駐車場』は当店の出発・返却場所である"第二駐車場"（受け渡し場所そのもの）を指すのに、AIが空港送迎の文脈と誤認した**。正しい回答は『担当スタッフがそちらへ向かいますので、お車を停めてそのまま少々お待ちください』の趣旨だけで足りる（既に受け渡し場所に到着済＝空港送迎の案内をしない）。→ `CFG["nha"]["desc"]`に『駐車場に着いた／駐車場に到着＝第二駐車場（受け渡し場所）を指す・空港ではない・空港送迎の案内をしてはいけない・"担当が向かうのでそのままお待ちください"だけで足りる』を明記。**教訓＝現場用語(『駐車場』)は店ごとに実体が違う（那覇＝第二駐車場＝受け渡し場所）。条例ルール(空港受け渡し不可)を機械的に当てず、お客様が"今どこにいるか(=既に受け渡し場所)"を優先して読む。バス可否等は確約せず"担当がご案内"に留める(外すとクレーム)。**
+
+## 🚫 2026-09-06 たびらい高松キャンセルが処理されず配車が残る＝番号抽出regexがコロン必須で取りこぼし（BTたびらいGAS・根治＋手動復旧）
+オーナー『たびらい香川 佃勇一郎様(137068838)のキャンセル処理が動いてない』。**真因＝`gas_bt_tabirai_import.gs`の`cancelTabirai_`が番号を`/予約番号\s*[：:]\s*(\d+)/`＝コロン必須で抽出**するが、**たびらいのキャンセルメールは「`***ご予約番号***`(改行)`137068838`」＝コロン無し・番号が次行**なので`番号取得不可`→処理スキップ（＝新規取込メールは「予約番号：<数字>」コロン付きなので取込は成功していた＝取込OK/キャンセルNGの非対称）。→ regexを **`/(?:ご)?予約番号\D{0,12}(\d{6,})/`** に修正し両形式吸収（node検証：新旧両形式で137068838取得・電話番号は`予約番号`を含まず誤爆なし）。手動復旧＝BT DBで佃様を status=キャンセル・bt_fleet削除・bt_tasks墓標4件・#app予約取込-高松(C0BFDJ1HRC3)通知。**⚠️GASはApps Script貼付＝オーナー手動デプロイで次回キャンセルから自動化**（貼るまで同形式のキャンセルは手動）。返金はたびらい側（キャンセル料0円/13日前）。**教訓：OTAは"新規取込メール"と"キャンセルメール"でフォーマットが違う（コロン有無・番号位置）→取込が成功していてもキャンセルは別regexで取りこぼし得る。「◯◯のキャンセルが動かない」は、まず該当予約が`{store}_reservations`で`status='確定'`のまま＋fleet残存かを確認し、キャンセルハンドラの番号抽出regexが実メール形式に合っているかを実メールで検証する。番号抽出は`\D{0,N}(\d{6,})`でコロン有無・改行・***を吸収するのが堅牢。**
+
+## 💬 2026-09-06 CS自動回答アシスト新設＋NHAシート取りこぼし根治＋CSチャット3状態化（このセッション・要記憶）
+
+### ① CS自動回答アシスト（#omni_チャット C0B66BVCSPM・Phase1稼働）
+お客様のマイページCSチャット問い合わせに、**AIが回答案を作り→Slack #omni_チャットへ→スタッフが👍/OKで送信＋学習**する仕組み。オーナー確定フロー＝「AI起案→スタッフがリライト→スタッフのOKだけがトリガーで送信」。
+- **常駐サービス**＝`~/Desktop/HANDYMAN/omni_bot/cs_autoreply.py`（launchd `com.handyman.cs-autoreply`・25秒poll・KeepAlive）。DB=service_role REST(`~/.config/keydrop/sb_service_main`)、Slack=bot token(slack_bridge.py既定)、起案=`claude --print`(headless・要node PATH)。heartbeat=`.cs_autoreply_heartbeat`。
+- **DB(main)**：`cs_chat_qa`(学習=store/reservation_id/question/answer/source)＋`cs_chat_drafts`(回答案の状態=store/thread_id(**text=uuid**)/question/draft/slack_ts/status(pending/approved/corrected)/last_reply_ts)。
+- **フロー**：cust_send(未対応)→draft_new()が`work_status='未対応'`スレッドを検知→`claude --print`で回答案生成(予約情報+過去QA参照)→#omni_チャットへ**店舗別デザイン投稿**(🌺那覇=color#e11d48／❄️札幌=color#0284c7・attachment color bar+絵文字+【店名】)→process_pending()がスレ返信/👍を監視。
+- **スタッフ操作3つ**：①`OK`/👍返信=draftをそのまま送信 ②回答文を返信=下書き差し替え(未送信・`_clean_rewrite`で「これにリライトして」等の前置き＋ーーー罫線を自動除去＋プレビュー表示)→OKで送信 ③`AI: 指示`返信=`gen_revise`で作り直して再提案(未送信)。**送信は👍/OKのみがトリガー**(それ以外は絶対送信しない)。送信時に`cs_chat_qa`へ学習＋お客様スレッドへstaffメッセージ挿入(work_status='対応中')。
+- **通知はC0B66BVCSPM一本**：cs-chat EFの`CH`をspk/nha両方`C0B66BVCSPM`に変更(旧#sapporo_user_action/#okinawa_operations-team廃止)。
+- **社内マニュアル**＝`https://nosh2318.github.io/spk-task/omni-chat-manual.html`(シンプル版)。
+- **実証済**：可部様RUF39980「数時間延長?」→AI起案→齊藤さんリライト→OK→お客様へ送信＋学習(source=approved)を確認。**号1 bridgeとは衝突しない**(bot投稿は無視・draftスレは号1が追わない)。
+- **次の一手(任意)**：QA蓄積が増えたら参照を「直近15件」→類似度検索に／自動送信昇格(同一回答N回で承認スキップ・キャンセル/返金は常に承認制)。
+
+### ② NHA シートオプション取りこぼし 根治（3店非対称バグ）
+現場報告「オプション(シート/USB)がOP・マイページに反映されない予約多数」。**原因2つ(実コードで確定)**：①NHA予約取込GAS`gas-email-import.gs`の`parseJalan_`/`parseAirtrip_`/`parseSkyticket_`が**シート抽出コード自体を持たない**(楽天/公式/GoGoOutは有り＝SPKから未横展開)＋楽天は`optionsStr`(オプション欄1行目)のみ参照で取りこぼし ②書込`toDbRow_`が座席を`car_seat`/`junior_seat`列にのみ書き、**OP/マイページが読む`opt_c`/`opt_j`/`opt_b`/`opt_usb`列に書いていなかった**。→ 全6パーサーを`body.match(/チャイルドシート[^\d]*(\d*)/)`等の**本文全体マッチに統一**＋`toDbRow_`にopt列書込追加＋既存HP19件をDBのcar_seat→opt_c復元＋バックフィル関数`backfillSeatOptionsNha()`(じゃらん/エアトリ/スカイ/楽天のopt全0をGmail再取込・**座席列のみPATCH**・場所/時間/人間編集は不可侵)で42件復元。**教訓＝オプション/場所抽出は3店で非対称になりやすい→クラス追加時は3店GAS横串確認。「拾えてない」報告は①パーサーが抽出するか②書込が表示列(opt_c)に書くか の両方を疑う。**
+
+### ③ CSチャット 対応ステータス3状態化＋初動自動返信＋URLリンク化
+- **3状態(未対応/対応中/完了)**：`cs_chat_threads.work_status`列新設。**未対応・対応中がアラート対象**(`cs_chat_pending` RPC更新)。完了=status closed(一覧から外れる)。cs-chat EF `staff_mark`が4状態受け(VALID=未対応/対応中/完了)。cs-chat-admin.htmlは3ボタン化(後にオーナー/linterが対応中/完了BOXタブ追加)。
+- **初動自動返信**：cust_sendでスレッド最初のメッセージ時のみ「ご連絡ありがとうございます！AI・HANDYMANが対応させていただきますので暫しお待ちください！」を自動挿入(**work_status=未対応は維持**＝スタッフ対応を促す)。
+- **URLリンク化**：顧客側my-nha.html/my.htmlのCS吹き出しに`linkifyCS`追加(管理画面は既存)。緑(customer)吹き出しはリンク色が見えないので`#csMsgs .b.customer a{color:#eafff8}`で出し分け。
+- EF正本＝`~/hdm-car-delivery/supabase/functions/cs-chat/index.ts`(deploy=supabase functions deploy cs-chat --no-verify-jwt)。
+
 ## 🧽 2026-09-06 洗車で選んだ時刻がマスター表で空表示になる根治（v4.7.602）＝手動洗車がSLOTS15セレクトに誤振り分け
 オーナー報告「洗車ページで選択した時間がマスターページに反映されない」。実DB確認＝手動洗車(wash_manual_・ソリオ8529)は`time='11:20'`が正しく保存済み（保存は正常＝表示側の分岐バグ）。真因＝マスター表の時刻セル(index.src.html L17552)の三項が`_isOM(t)`(=`manual===true||_id.startsWith("other_")`)を**洗車/引取より先に**判定していたため、手動洗車(manual:true)が「その他タスク」用セレクト(`SLOTS15`=15分刻み)に振り分けられる→`<select value="11:20">`に一致optionが無く**空表示**。洗車タブ(L17152)は`TIME_OPTS`(5分刻み)なので11:20が出る＝タブとマスターで見え方が食い違う。**根治＝判定順を「洗車/引取を先→その他は後」に変更**（色expr＋content三項の両方・`(_isOM(t)&&!isWash&&t.type!=="引取")`ガード）＝手動洗車/引取も`TIME_OPTS`セレクトに乗り正しく表示。
 - **教訓**：`_isOM(t)`(その他タスク=manual)判定は「洗車/引取もmanual:trueを持つ」ため、洗車/引取より先に置くと先取りしてしまう。時刻/内容/場所などmanualで分岐するセルは**必ず洗車/引取を先に判定**する。「反映されない/空表示」系はまず実DBで値が保存されているか確認→保存済みなら表示側の分岐(セレクトのoptions集合に値が含まれるか＝15分刻みvs5分刻み)を疑う。値はあるのにselectが空=value対応optionが無い典型。
@@ -1813,3 +2175,150 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **根本の失敗＝コード(リポジトリ)を直して「直った」と断言し、動いている本番GASで実際に取り込んで裏を取らなかった**。CLAUDE.md鉄則「実データで裏を取ってから言う/実際に実行して確認してから言う」を自分で破った。**恒久ルール：GAS修正は「コードを直した」で完了報告しない。①オーナーがApps Scriptに貼付→②次の実予約が正しく取り込まれるのを本番DBで確認、まで見て初めて『直った』と言う。** 「根治」の語をコード段階で使わない（貼付まで再発し続ける）。
 - 未反映のまま残っているGAS修正＝`gas-email-import-v2.gs`(commit 8b06b82・Gクラス追加)。オーナー貼付待ち。貼るまでG予約(じゃらん/エアトリ _G_SPK)は毎回F誤配車。
 - **⚠️ Gクラスは「全媒体」にあり（2026-09-01 オーナー確定・じゃらん/エアトリ限定ではない）**：じゃらん/楽天/skyticket/エアトリのOTAメールは`extractVehicleClass_`(G∈`[ABCSFHG]`)でG対応済。だが**HP直販(parseOfficial_のMODEL_CLASS_MAP)とSlack手動予約(validClasses)とSPK_MODEL_TO_CLASSはGが漏れていた**→デミオ/ノート→G を3箇所に追加(commit・全媒体G対応)。**新クラス追加時は「文字クラス`[ABCSFHG]`」だけでなく、①車種名→クラスの全マップ(SPK_MODEL_TO_CLASS/HP MODEL_CLASS_MAP)②Slack手動のvalidClasses③各OTAパーサー、を全部横串で更新する**（1媒体だけ直すと"半分だけ直した"再発になる）。G車両＝ノート0000(plate6906)/デミオ6666(plate6864)。配車はデミオ優先(オーナー指示)。
+
+## 📌 2026-09-06 company3d アラートピンが重なって見えない→2Dファンアウト de-collision で根治
+オーナー「なんで方向を分散せず重ねるの 見えないだろ」。company3dのアラートピン(CS部=問い合わせ/チャット/マイページ承認・出勤退勤=未打刻/出勤中)は各ユニット中心(u._geo.ux/uz,y=7)にHTMLオーバーレイでアンカーするだけで、**2つの部署ピンが画面上で重なっても分離しなかった**（3D位置が離れていてもカメラ角度で投影先が近いと箱が重なる）。
+- **根治＝render loopで毎フレーム2D de-collision**：`dodgePins(pins)`＝可視apinピンの矩形(offsetWidth/Height・translate(-50%,-100%)前提でl=px-w/2..r,t=py-h..b)を総当たりで重なり判定し、**重なりが小さい軸(ox<=oy?横:縦)へ押し分けて分離**（抵抗最小方向へファンアウト・26回反復で収束）。loop内でapinは`L._px/_py`に投影値を貯めて`_pins.push`→ループ後に`dodgePins`が最終left/topを決める。ピンのアンカー高さも7.0→11.5に上げ区画から浮かす。
+- **教訓**：3Dシーン上のHTMLオーバーレイ・ラベル/ピンは「3D位置が離れている＝画面で重ならない」ではない（カメラ投影で近づく）。複数の情報ピンを重ねたくない時は**画面座標(2D)での矩形de-collision**が唯一確実（区画点滅→パネル→部署別集約ピン と対症を重ねたが、最終解はこの2D分離）。同種の吹き出し/名札が密集する箇所へ横展開可。
+
+## 📱 2026-09-06 company3d スマホ最適化=人が動かない/小さい/全体で情報が出ない を一括解消
+オーナー「スマホで人が動いてない・人が小さい・個人URLもタスク数も出ない(区画に入れば見れるが)・バランスはこれが限界か」。全体表示(activeUnit='all')はスマホで密集回避のため staff/count ラベルを`innerWidth>760`で隠していた=個別URL/タスク数が消える原因。
+- **①アバター拡大**：avatar()の全return直前で`g.scale.multiplyScalar(innerWidth<=760?1.7:1.3)`（スマホは引き画で小さいので大きめ）。②**歩行を速く**：moversループの移動速度を`SPD=innerWidth<=760?0.08:0.05`に（引き画で動きが見えにくいスマホを速く）。③**全体表示でも人の名前/個別URL(🔗)/タスク数を表示**＝`activeUnit==='all'`のstaff/count表示条件から`&&innerWidth>760`を撤去。④**重なりは2D de-collision(dodgePins)で分散**＝apinだけでなく全体表示のstaff/countも`_pins`に集めて毎フレームdodge（PC/スマホ共通）。実測overlap 14→0。
+- **教訓**：スマホで情報を「隠して密集回避」すると"区画に入らないと見れない"불편になる。隠すのでなく**2D de-collisionで分散表示**すれば全情報を出しつつ重なりゼロにできる（dodgePinsを人ラベルにも横展開）。「動いてない/小さい」はスマホの引き画(大radius)で world単位の動き・サイズが相対的に小さく見えるのが原因→スマホ時は速度・スケールを上げて体感を補正する。
+
+## 🔢 2026-09-06 company3d スタッフ残タスク数を個別URL(staff_view)と完全一致=同一ソース化
+オーナー「出勤メンバーの残タスク数とURLが合わない・アイコンと生成URLは同一人物・同じ以外の仕様はない・ここが崩れると全管理が崩壊」。真因＝**3Dとバイト個別URLで別々に数えていた（複製ドリフト）**：3D`company_staff_tasks`=「当日`tasks.date=today`の担当件数(完了込み・氏名フル一致)」／URL`staff_view`=「今日以降(today..+62)の未完タスク(氏名 or 姓一致)」。実測 武山=3D9 vs URL残16。
+- **根治＝別集計をやめ、3Dも個別URLと同じRPC`{store}_staff_view`から数える**。`company_staff_tasks`(spk/nha)・`bt_company_staff_tasks`を書き換え：出勤者ごとにshare_token解決→`(spk_staff_view(token))->'tasks'`のうち`done!=true`をcount＝URLの📋タスクタブ(`date>=today && !done`)と定義一致(staff_viewのtasksは既にeff_date>=today)。→武山 3D=16=URL。BTも斉藤1/橋坂1で一致。バッジ表記も「本日◯件」→「残◯件」に統一(company3d 2箇所)。
+- **教訓（ドクトリン「複製を作らず正本を導出」の実践）**：同じ数字を2つのRPCで別々に数えると必ずズレる。**表示は正本(=個別URLが読むstaff_view)から導出**する＝company_staff_tasksがstaff_viewを内部で呼んで数える＝1ソース。氏名一致(フル一致 vs 姓一致)・日付範囲(当日 vs today..+62)・完了フィルタ の3点が食い違うと数字がズレる→"個別URLと同じRPC"に寄せれば構造的に一致。件数バッジ全般に横展開すべき原則。
+
+### 🔒🔢 2026-09-06 確定ルール：company3d スタッフ「残タスク数」＝**当日 かつ 未完 のみ（未来日を合算しない）**
+オーナーに同日3回直させた（当日done込み9→URL丸写しで today+62合算16→当日未完2）。**確定＝残タスク数は「eff_date=今日(JST) かつ done≠true」だけを数える。未来日(明日以降)は絶対に合算しない。完了(done)は残に含めない。** company_staff_tasks/nha/bt の count に必ず両条件：`coalesce((e->>'done')::bool,false)=false AND (e->>'date')::date=(now() at time zone 'Asia/Tokyo')::date`。ソースは個別URLと同じ`{store}_staff_view`のtasks（同一人物・同一ソース）だが、URLのタブ(today..+62)ではなく**当日ぶんだけ**を数える。バッジ表記＝「残 N件」/0は「完了」。**この2条件(当日・未完)を外すと必ずズレて全管理が崩壊する＝件数系バッジの鉄則。**
+
+## 🛒 2026-09-06 高松HDM 楽天 予約取込を実装（BTは楽天パーサー未実装だった＝リリース前に先回りで構築）
+オーナー「高松HDM楽天をリリース・本日以降予約が入る可能性」。BT予約取込`gas_bt_reservation_import.gs`の`OTA_MAIL`は**RDC/エアトリ/じゃらんのみ＝楽天パーサー未実装**→このままだと高松楽天の予約メールが認識されず取込されない（=予約が消える）。**実予約を待たずに実装可**（楽天メール形式は全店標準＝札幌で実運用中の`parseRakuten_`を移植すれば予約前にテストできる）。
+- **実装3点**：①`parseRakuten_`をBTに移植（札幌 gas-email-import-v2.gs 準拠・BT importOta_ の返り値shape=`{id,name,kana,start_date..,cls,people,insurance,opt_b/c/j,base,op,disc,total,_totalExplicit,store,preferVc}`に整形。計上売上＝合計−事業者クーポン／楽天クーポン・ポイントは楽天負担で売上に含める＝札幌方針と同一）②`OTA_MAIL`に`{name:'楽天',from:/travel\.rakuten\.co\.jp/i,subj:/楽天トラベル|楽天レンタカー/,cancel:/キャンセル|取消/,parse:'parseRakuten_'}`③`SEARCH`に`楽天トラベル`件名＋`from:travel.rakuten.co.jp`を追加（メール取得漏れ防止）。
+- **ブランド/配車**：ota='楽天'→DBトリガー`bt_derive_brand`が**brand=HDM**（検証済`bt_derive_brand('楽天',..)='HDM'`）。共有アカウントなので高松以外は`importOta_`の`store`ガード（`/高松|TAK/`）で除外。高松の`貸渡営業所名`が"HANDYMAN高松空港店"等＝高松含むでガード通過。配車は`autoAssignVehicle_`のブランド絞込（HDM運用車0台の間は`_anyHdm`でOFF＝どの空車にも配車）。
+- **単体テスト済**（高松楽天サンプル：cls=G(_G_TAK)・NOC・チャイルド1/ジュニア2・base11000・op2750・クーポン1000差引・total12750・store=HANDYMAN高松空港店で高松ガード通過）。**⚠️GASはApps Script貼付まで本番未反映＝オーナー貼付＋初回実予約で「①取込されるか②cls/営業所名が想定どおりか③brand=HDM」を必ず確認するまで"完了"としない**（高松の楽天プラン名/営業所名の実文字列が札幌と違う場合はcls抽出の正規表現を微調整）。
+- **札幌/那覇への誤取込ガードは実装済**（`isSapporoReservation_`/`isNahaReservation_`が高松/香川/BUDDICA/たびらい/_TAK除外・2026-09-02）だが本番貼付の要確認。
+
+### 📣 高松(BT)予約系Slackチャンネルの役割分離（2026-09-06 オーナー「役割が違うのでしっかり確認」・実データ検証済）
+高松の予約系チャンネルは3つ・役割が明確に別。取込通知と予約速報を混同しない。
+- **C0BFDJ1HRC3 `#app予約取込-高松空港店`＝「取り込み＋自動配車のシステムログ」**：GAS `gas_bt_reservation_import.gs` の `notifyImport_`（`SLACK_IMPORT_CH`）が投げる。取込結果・配車先・未配車の運用ログ。
+- **C0BFKEL4D1Q `#reservation_notification-高松空港店`＝「お客様予約の速報＋Slack起点予約登録」**：cron `bt-notify-site-resv`(*/5)→`bt_notify_new_site_reservations()`（`_ch='C0BFKEL4D1Q'`・`source IN('site','ota')`＝全OTA＋HP直販の新規/キャンセルを『✅BUDDICA 予約』で通知・`bt_resv_notif_log`で重複防止）＋EF `bt-slack-resv`(*/5・staffが【新規予約】投稿→bt_reservations登録 source=slack)。official-pay-tkmの予約完了/キャンセルもここ。
+- **C0BFMBLEJGZ `#operation-高松空港店`＝入金/未入金**：`notifyPay_`（`SLACK_PAY_CH`）＝じゃらん(HDM)の入金確認・未入金アラート・要返金確認。
+- **楽天(高松HDM)は両方に自動で出る**：①取込ログ→`notifyImport_`→C0BFDJ1HRC3 ②予約速報→cronが`source='ota'`で拾いC0BFKEL4D1Qへ（楽天はimportOta_で`source='ota'`＝既にカバー・GAS側の追加通知不要）。
+- **教訓**：「通知先」を1つのIDだけで指示された時、取込ログ(システム用)と予約速報(スタッフ/お客様速報)は別チャンネル。GASの`notifyImport_`を予約速報CHに変えると役割が混ざる→取込ログはC0BFDJ1HRC3、予約速報はcron(C0BFKEL4D1Q)のまま。チャンネルの役割はDB cron/EFの実コード(`_ch=`)で裏取りしてから変更する。
+
+### 📧 rent-handyman.com 受信＝お名前.comメール転送で構築（2026-09-06・楽天HDM高松の受信箱）
+楽天HDM高松の予約通知を rent-handyman.com で受信→GASで拾う件。楽天は「buddica」を含むアドレスを弾く（HANDYMAN店なのに別ブランド名）→ 独自ドメインの受信が必要になった。**お名前.com(DNS=dnsv.jp)で構築**：
+- **DNS追加オプション（¥139/月・有料）**をrent-handyman.comに申込（メール転送/URL転送/DNSSEC等を有効化する前提サービス。お名前の「メール転送」は無料でなくこのオプション契約が必須）。
+- **メール転送設定**：`reserve@rent-handyman.com` → `buddicatourism@gmail.com`（BTのGAS `gas_bt_reservation_import.gs`=`runBtRelay`が読む受信箱）。MX `mailforward.dnsv.jp`(優先10)が自動追加。反映は数分〜1時間。
+- **残＝オーナー**：楽天の予約通知先を`reserve@rent-handyman.com`に設定。→ 楽天→転送→buddicatourism→GAS(parseRakuten_)で取込＋配車＋brand=HDM。
+- **✅受信テスト成功(2026-09-06 21:43)**：oshita@mileshare.jpから`reserve@rent-handyman.com`宛→`送信元 mailforward.dnsv.jp`経由でbuddicatourism@gmail.comに着信・From保持を確認＝転送稼働。MXは`10 mailforward.dnsv.jp`(Google DNSで反映確認)。転送は元From/件名を保持するのでGASの`from:travel.rakuten.co.jp`/`subject:楽天トラベル`で拾える。
+- **教訓**：OTAが特定ブランド名(buddica)のメールを弾く場合、①独自ドメイン受信(お名前メール転送=DNS追加オプション¥139/月) or ②buddica無しの新Gmail+Gmail無料転送→buddicatourism、の2択。今回はブランド整合(HANDYMAN)重視で①。お名前の「メール転送」は無料でなくDNS追加オプション(有料)が要る点に注意。Web操作(Chrome拡張)でお名前Navi→DNS追加オプション申込→メール転送設定まで実施可(購入は事前にオーナー承認を取る=¥139/月は明示合意済)。
+
+## 🩹 2026-09-07 company3d 各店⑤車両管理に「車両チェック（傷チェック）」直リンク＋handyman-damageに?store=対応
+オーナー構想「各店APP=基盤/マスターデータ、company3d(3D会社)=表面へ移行」の一環。車両管理の部屋から各店の傷チェックへ直接飛べるように。
+- **handyman-damage(`~/handyman-damage/index.html`)に`?store=`対応追加**：`initLogin()`でURLSearchParams `store`を読み、`{naha,nha→naha / sapporo,spk→sapporo / takamatsu,bt,tkm→takamatsu}`でマップ→`selectStore()`で店舗選択画面をスキップ。company3dのキー(nha/spk/bt)も傷チェック名(naha/sapporo/takamatsu)も両方受ける。実証：`?store=sapporo`で札幌店の車両一覧に直着地。takamatsu→sbBT(BT DB)。
+- **company3d ⑤車両管理(ST_STORE base＋store()のper-store override 両方)に item追加**：`{t:'🩹 車両チェック（傷チェック）',u:'handyman-damage/?store='+key}`。openPが`items`の`u`をクリック可能な`<a>`カードに描画（配車表リンクと同じ仕組み）。
+- **表面化パターン（この構想の実装形）**：APP機能を3D部屋の詳細パネルに「直リンク(items+u)」で載せる → 段階的に飛ぶ→埋め込み→ネイティブ操作へ深化。正本は常にDB(APP)、3Dは表面(導出して見せる/操作を渡す)。fleet-master/handyman-damage等のstandalone HTMLは`?store=`パラメータ対応にすると3Dから各店直リンクにできる（3アプリ本体は`?tab=fleet`等のURLパラメータ対応済）。
+
+## 📊 2026-09-07 月次会計レポート＋説明資料（まずBUDDICA/高松から・オーナー指示）
+オーナー構想「company3d=会社の表面／APP=基盤」の会計版。月次会計処理のデータをcompany3dから取得/生成＋PDF説明資料。**まずBUDDICA(BT)から**。
+- **RPC `bt_hq_monthly_rows(p_ym)`（BT DB・SECURITY DEFINER・anon grant）**：bt_reservationsから①当月売上=当月内返却(end_date in 当月) ②取扱高=翌月以降返却(end_date>当月末=未来ストック) を返す。チャンネルはSQLで正式名称化(site/ota空→自社HP・HANDYMAN→自社HP(HANDYMAN)・SP/slack→SP(スタッフ計上)・phone/直予約→電話/直予約・他はota名)。brand=HDM/BUDDICA列。キャンセル/テスト除外。日付はtext→`~'^\d{4}-\d{2}-\d{2}'`ガード後::date。料金=final_price||price(グロス)。検算2026-09=当月売上¥930,400。
+- **`hq-monthly.html`（spk-task・standalone・BT anon直叩き）**：当月売上/取扱高の2セクション、チャンネル別カード＋明細表(予約者名/予約日=created_at/貸出日/返却日/車種/配車=vehicle_name+plate/補償/料金/流入先=正式名称/ブランドHDM/BUDDICA)、全体/HDM/BUDDICAフィルタ、月選択、CSV、🖨PDF印刷(@media print)。
+- **`hq-accounting-guide.html`（説明資料・PDF化可）**：フロー図(予約→貸出→返却→当月売上/取扱高)・計上定義・入金フロー〔OTA(エアトリ/たびらい/RDC)=末締め翌末・手数料/広告費差引後の実売上／Square=週締め翌週金・売上+立替+預かり金の仕分け必要〕・会計基準判断事項(預かり計上/PL計上)。CSS製フロー図。
+- **入口**：company3d マネジメントチーム→会計部 items先頭に2リンク追加。
+- **計上定義（確定）**：売上=当月内返却実績／取扱高=翌月以降返却の未来ストック(当月+過去除く)。料金はグロス(手数料差引前)＝実入金は別(説明資料)。
+- **次段（未適用・SQL用意済 /tmp/hq_monthly_main.sql）**：NHA/SPK拡張用 `hq_monthly_rows(p_ym)`（reservations+nha_reservations・全HDM・fleet/nha_fleet join・ota code→正式名称はページ側で変換想定）。GOで適用しhq-monthlyを3店対応に。
+
+### 🔢 2026-09-07 月次会計レポートの売上を日報(buildDailyText)と完全一致に統一（値ブレ根絶）
+オーナー「日報の金額と合わないとおかしい」。hq-monthly(bt_hq_monthly_rows)が日報と¥5,500ズレた。原因2つ：①オーナーテスト予約(オオシタノリタカ¥7,500)を除外していない ②売上を`final_price`で計算(日報は`(base>0||option>0)?base+option-discount:price`)。→ **RPCを日報と同一定義に修正**：売上式＝base+option-discount||price／除外＝`isTestResv`同一（id ^ZZ|DEMO|TEST・name テスト/デモ/test・空名・**オーナー名 大下/おおした/オオシタ**）。結果 2026-09 sales=30件/¥924,900＝日報完全一致。**教訓：会計/売上レポートは必ず日報(buildDailyText)の売上式(revOf)とisTestResvを"そのまま"使う。final_priceでなくbase+option-discount。独自定義にすると必ずブレる（ドクトリン=再集計するな・値をブレさせない）。NHA/SPK拡張のhq_monthly_rows(/tmp/hq_monthly_main.sql)も同式・同除外に直してから適用すること。**
+
+### 💴 2026-09-07 月次会計レポートに予約外売上(extra_sales)を追加＝アプリ売上と完全一致
+オーナー「予約外売上が入ってない」（那覇8月 売上¥837.1万＝予約計¥813.5万+予約外¥23.6万）。hq-monthly RPCは予約のみで予約外売上が欠けていた。
+- **両RPC(hq_monthly_rows/bt_hq_monthly_rows)のbaseに予約外売上をUNION追加**：MAIN=spk_accounting/nha_accounting(date=text→`~'^\d{4}-\d{2}-\d{2}'`+::date)、BT=bt_accounting(date=date型→regex不可・`a.date>=date_trunc('year',ms.s)::date`)、`type='extra_sales'`。channel='予約外売上'・name=description||category・booked=ret=date(その月の売上に計上)・price=amount。paidフィルタ無し(アプリの予約外集計と同じ)。
+- **検証**：那覇2026-08=予約+予約外=¥8,371,411＝アプリ¥837.1万と完全一致(予約外¥236,302/45件込み)。ページ改修不要(RPCライブ読み・チャンネル『予約外売上』が自動表示)。今後の入力も自動反映。
+- **教訓**：会計/売上レポートの『売上』はアプリと同様「予約(基本+付帯=base+option-discount||price)＋予約外売上(extra_sales)」。予約テーブルだけでは予約外が抜ける→必ず{store}_accounting type=extra_sales をUNIONする。accounting.dateの型は店で違う(MAIN=text/BT=date)→regexガードの可否に注意。
+
+## 📊 2026-09-07 BT定例MTG「チャネル別」をブランド別(HDM/BUDDICA)内訳に（v1.0.407-BT）
+オーナー指摘「HANDYMAN 1件になってるが楽天もあるしCVもある。楽天はHDM。HDMの内訳(じゃらん/HP/楽天/skyticket等)を表示して」。高松は同一`bt_reservations`にHDM/BUDDICA 2ブランド混在→定例MTGレポート(mtgOpen/repSum)のチャネル別が全OTAを1リストにまとめ「HANDYMAN 1件」がOTA扱いで浮いていた。
+- **根治**：repSumに`curFlowBrand`(ブランド×チャネル名別)を追加。ブランド=`resBrand(r)`(`brand`列=bt_derive_brand・HDM/BUDDICA)。チャネル名=`_flowCh(r)`＝**ota空/HP/HANDYMAN/オフィシャル→「自社HP」に統一**(HDM公式HPのota='HANDYMAN'が「HANDYMAN」表記でOTAに混ざる問題を解消)・direct→直予約・OTAコードは正式名称(J→じゃらん等)。オンスクリーン表＋copyDailytext(テキスト)の両方を🔵HDM/🟢BUDDICAの2ブランド見出し+チャネル内訳(売上降順)に。
+- **教訓**：ブランド混在店(高松HDM/BUDDICA)のチャネル別集計は必ず`resBrand`(brand列)で分けてから内訳を出す。公式HPのota値が'HANDYMAN'/'HP'/''/'オフィシャル'とバラつく→表示前に「自社HP」へ正規化しないとチャネル名が割れる。楽天/じゃらん/skyticket=HDM側の販路。
+
+## 🕒 2026-09-07 NHAマイページ「PU(バス)等の送迎がお届け那覇空港と誤表示」根治＋回収場所未登録の安全網（my-nha v9.6-nha）
+現場報告「返却場所未登録・お届け那覇空港になってる・修正したのに入ってない?」。台帳(audit_log)で確定＝歌代様JKU84177は**9/2にvisit_type DEL→PU(バス)へ既にスタッフ対応済**だが、`my-nha.html`が`PU(バス)`(=空港送迎バスお迎え)を認識できず「お届け先＝那覇空港」と誤表示していた（データは正・表示が追従せず）。
+- **根本**：「那覇空港」は**空港送迎(お迎え)の集合場所であって、お車のお渡し/回収場所ではない**（空港での受け渡しは条例で不可）。my-nha.htmlのvisit_type判定が`==="PU"||"PUB"`の完全一致で、`PU(バス)`等の変種を拾えず`del_place`(那覇空港)表示にフォールバックしていた。
+- **修正**：visit_type判定を`/^PU/.test()`（PU/PUB/PU(バス)全て拾う）・バス判定を`==="PUB"||/バス/.test()`に（L929/930）。→ 送迎は「空港お迎え」表示に統一。my-nha.htmlはstandalone(buildなし・push即反映)・VER v9.6-nha。**教訓：visit_type/return_typeの分岐は完全一致でなく前方一致/含有で変種(PU(バス)/PUB来店等)を拾う。「修正したのに直らない」はデータ(台帳で確認)でなく表示側の判定漏れを疑う。**
+- **根幹の安全網（新設）**：`col_place_missing_monitor(p_notify,p_force)`（main・pg_cron `col-place-missing` jobid53・毎朝8:30JST=`30 23 * * *`UTC）＝**回収(COL)で`col_place`空欄かつ返却が今日〜3日以内**をNHA/SPK検知→pg_net→Slack #okinawa_operations-team(C06L91W6T08)+#handyman_development(C07B5G3PV7C)（SPKは#sapporo_user_action C0BER0YC6AK）。テスト/オーナー(大下/オオシタ)除外。日次=自然dedup。実発火でstatus200/ok:true確認。**回収場所は顧客未入力だと全ソース(予約DB/OP/エルメnha_line_links)空＝捏造で埋めず顧客確認が必須→前日に気づく事態をこのcronで構造的に防ぐ。**
+
+## 📱 2026-09-08 札幌マイページ通知が15分おきに再送(返却案内8回)根治＝dedupクエリが1000行上限で最新を取りこぼし(mypage-notify EF)
+現場natsuki報告「返却の案内が本日8回目・何か操作が要る?」。実データ確認＝`spk_line_sends`で`mypage_returnday`が2予約(RC12461282765401118/DY00000001091)に09:00〜10:45 JST **15分間隔で8回**送信(cron `mypage-notify-spk` jobid15=*/15)。
+- **真因**：mypage-notify EFの再送防止(dedup)は`sbGet(spk_line_sends, action=like.mypage_*&status=eq.sent&limit=20000)`で既送信Setを作るが、**`sbGet`は単発fetchでSupabase PostgRESTのmax-rows上限(1000行)に当たる**。`mypage_%`sent総数=1019行>1000→**並び順未指定で最古1000行が返り、最新19行(＝本日の返却案内)が取りこぼされる**→毎回「未送信」と誤判定→15分ごと再送(送るたび行が増え最新に積まれ永久に取りこぼす自己増殖)。
+- **根治**：dedupクエリに`&order=id.desc`を追加＝最新1000行が必ず返る→本日送信済みがSetに入りdedup成立。デプロイ後EF手動起動で`returnday results:[]`(再送なし)・件数8のまま増えず を検証済。
+- **NHAは影響なし**（mypage-notify-nhaは`mypage_initial`のみ＋`sbGetAll`ページネーション済）。**教訓：dedup/既存判定で`{store}_line_sends`等を読むクエリは、①`sbGetAll`(ページネーション)を使うか②最低でも`order=id.desc`で最新を必ず取得する。単発fetch+limitはPostgREST 1000行上限で最新を落とす→「送ったのに未送信扱い→無限再送」。件数バッジ/dedup系で行数が1000超えうる箇所は全て同型リスク。**
+
+## 📒 2026-09-09 生メール台帳(LEDGER-ONE)を全店横展開完了＋BT別GAS2本の新規取込hook
+「システムがデータを作る(解釈)から間違う→生メールを不変で台帳に丸写し、そこから導出して表示」の横展開。①`{nha,spk,bt}_reservation_emails`(reservation_id PK/ota/message_id/subject/raw_body/received_at・RLS authenticated all+anon select)を3DB(main+BT)に作成 ②各取込GASに保存hook＋backfill追加。**BTは取込GASが3プロジェクトに分散**＝reservation_import(RDC/エアトリ/楽天)・**jalan(じゃらん・独立プロジェクト＝自前BT_URL/btPost_)**・**tabirai(たびらい・reservation_importと同一プロジェクト＝共有ヘルパー)**。→ jalan=`saveRawEmailBt_`ヘルパーを自己完結で新設＋`importJalan_(key,body)`のbtPost_成功後にcall／tabirai=共有`saveRawEmailBt_`をcallのみ(`importTabirai_(key,body)`)。**教訓：BTのOTA取込は1ファイルでなく3プロジェクトに分かれている→横展開hookは`function btPost_`の有無(grep -c)で「独立(自前helper要)/共有(callのみ)」を判定してから入れる。call地点は必ず採番済`r.id`＋生`body`がスコープにある取込関数内(btPost_ insert直後)。GAS貼付はプロジェクト別に手動＝コード反映だけで完了と言わず実取込で台帳行増を確認。**
+
+## 🔎 2026-09-09 LEDGER-ONE台帳突合 第1弾＝保険(insurance)監査：稼働中 全店 誤情報ゼロを確認
+生メール台帳(`{nha,spk}_reservation_emails`)の`raw_body`に`detectInsurance_`ロジックをpython移植(否定先読み対応・PostgreSQL正規表現は先読み非対応で誤検出するのでSQLでやらない)して再判定→DBの`insurance`と突合。**稼働中(未返却)予約：NHA394件/SPK90件とも真の誤りゼロ**。過去の106件是正が効いている確認。監査スクリプト＝`~/spk-task/ledger_insurance_audit.py`(SPKは`sed`でテーブル/日付列を差替=`ins_audit_spk.py`)。
+- **不一致に見えるが正常な2パターン(今後の監査で再フラグしない)**：①**skyticket(ota=S)はDB=免責・メール=なし**＝skyticketは免責が標準含有で`parseSkyticket_`が`なし→免責`に下限設定(免責フロア)＝DB=免責が正。②**GoGoOut(ota=G)でメール=免責・DB=空**＝元メールの「免責金額がゼロの…保険の加入に**興味があります**」(営業文・実加入でない)を`detectInsurance_`末尾の汎用`免責`フォールバックが誤検出。DB(空/なし)が正＝GoGoOutパーサーはこの汎用フォールバックを使っておらず正しい。**⚠️GoGoOutをdetectInsurance_に統一する場合は「興味があります/現地で追加購入」の営業文を除外するガードが要る**(現状GoGoOutは別判定で正なので不要)。
+- **監査の型(横展開可)**：①台帳の`raw_body`をpythonに引く(Management APIをOFFSETバッチ・raw_bodyは大きいので70件ずつ)②GASの判定関数(detectInsurance_等)を**pythonに正確移植**して再判定③DBと突合し「格の上下(なし<免責<NOC<フル)」で過小(請求漏れリスク)/過大(要確認)に分類④不一致は必ず実メールのraw_bodyを目視で裏取り(SQLの雑なgrepやlike一致で断定しない＝BT監査で誤検出した教訓)。⑤保険の**下げ(格を下げる)は承認制で自動適用しない**・上げ(過小是正)は請求漏れ防止で優先。BTは`normInsurance_`(基本/免責/フル)・別DB・別ラベルで別途。
+
+## 🔎 2026-09-09 LEDGER-ONE台帳突合 第2弾＝送迎/受け渡し区分(visit_type/return_type)監査：NHA/SPK HP 稼働中を是正しゼロ化
+HP予約(メールに受け渡し区分あり)を対象に、台帳raw_bodyの4セクション判定(`parseOfficial_`境界regex `【デリバリー（お届け）】[^【]*?\n\s*希望する`等)をpython移植→DB突合。OTAはメールに区分なし(空=マイページで確定)なので対象外。監査script=`/tmp/vr_audit.py {nha|spk}`(HPマーカー`【デリバリー（お届け）】`を含む台帳行=HP予約で絞る)。
+- **NHA 4件是正(元メール=顧客実選択が正・DBが誤り)**：KTI88866 return COL→BDB／LJJ99786 return BDB→COL／SJE55024・UWM89151 visit PUB→DEL・return BDB→COL。**UWM89151/LJJ99786は過去に私が誤ってPUB/BDBに直したflip-flop箇所**＝今回は元メールの4セクション「希望する/しない」＋del_place(LJJ=沖縄ハーバービューホテル/UWM・SJE=空/KTI=那覇空港だがメールも送迎する)で裏取りし、DEL/COL(デリバリー希望する)が正と確定。予約+nha_tasks(d-/c- の「内容」)両方を更新。mypage_changes override無しを事前確認(NHAマイページは閲覧専用でvisit/return変更不可=メールが正本)。
+- **SPK 13件=visit_type空→DEL(正本補完・誤表示ではない)**：SPKはデリバリー専門でtask(d-)は既にtype=DEL・del_placeも実住所・return_type=COL・email=お届け希望する→OP表示は元々正。空だったのは予約レコードのvisit_typeだけ→DELで正本を完全化(DEL以外あり得ない)。
+- **教訓(flip-flop再発防止)**：①「PUB/BDBかDEL/COLか」は**元メールの4セクションの"希望する/しない"が唯一の正本**(場所が那覇空港でも、送迎を希望せずデリバリーを希望していればDEL)。②判断が割れたら必ず①のセクション＋del_place(ホテル/住所ならデリバリー確定)を実データで見る。憶測の"airport rule"で上書きしない。③修正前にmypage_changesでoverride有無を確認(顧客がマイページで変えていればそちらが正)。④OPの表示ソースはstore差=SPKはtask.type(既にDEL)・NHAはtask「内容」＋予約→予約visit_type空でも表示は正のことがある(=予約レコードの空は"誤情報"とは限らない・表示を必ず確認)。
+
+## 🔎 2026-09-09 LEDGER-ONE台帳突合 第3弾＝シート(opt_c/opt_j/opt_b)監査＋HP baby seat取りこぼしの根本修正
+台帳raw_bodyとDBのopt_c/opt_j/opt_bを突合。稼働中NHA394/SPK90。**HPメールは「チャイルドシート(チャイルド): N台」「チャイルドシート(ジュニア): N台」「チャイルドシート(ベビー): N台」表記＝"ジュニアシート"/"ベビーシート"という単独単語を使わない**。→単純単語一致監査は46件の誤検出を出した(「ジュニアシート」単語なし→幻カウント誤判定／「チャイルドシート」が3種すべてにマッチ→取りこぼし誤判定)。**実メールで裏取りしDBが正しいことを確認＝自動適用していたら正しいデータを破壊するところだった**(「変更前に必ず実メール裏取り」が機能)。監査script=`/tmp/seat_audit2.py {nha|spk}`(HP形式対応版・`チャイルドシート\(チャイルド|ジュニア|ベビー\):\s*(なし|\d+)\s*台`をパース／OTAは単語+明示台数×N・言及のみは判定保留)。
+- **根本バグ発見＝`parseOfficial_`(HPパーサー)はチャイルド/ジュニアのみ解析し「(ベビー)」を解析せず→HP予約のopt_b(ベビーシート)が全件0で取りこぼし**(KTD88797 ベビー1台・POX15366 ベビー2台がDB opt_b=0で発覚)。→gas-email-import.gs L709にベビー解析追加(チャイルド/ジュニアと同形`チャイルドシート\(ベビー\): N台`)。node構文OK・**GAS貼付待ち**。稼働中の取りこぼし2件はDB直接計上済(opt_b=1/2・元メール裏取り)。
+- **保留(承認制)=元メール「なし」なのにDBにシート有2件**(EWD17486 opt_j=2/opt_b=1・NKJ32674 opt_j=1)：電話/手動追加の可能性があり、シート除去(下げ)は保険同様に承認制で自動適用しない。運用上は「余分にシートを用意」side＝保持が安全。オーナー確認事項。
+- **教訓**：①シート監査は**OTA形式(単語+×N)とHP形式(チャイルドシート(種別):N台)を必ず区別**する。単純単語一致はHPで(ジュニア)/(ベビー)を誤検出する。②「幻カウントと取りこぼしが同一予約で対になっている」パターンはHP(種別)表記の誤検出サイン→実メールを見る。③シートの計上(取りこぼし追加)は安全に是正、除去(下げ)は承認制。④parseOfficial_のような「種別を()で列挙する」パーサーは全種別(チャイルド/ジュニア/ベビー)を網羅しているか確認(1種漏れると全件取りこぼし)。
+
+## 🧾🔒 2026-09-16 予約キャンセル台帳 新設＋「台帳が真実・台帳のみ信用」（オーナー最終確定・那覇札幌稼働）
+オーナー確定「台帳が真実です。台帳のみ信用する」。背景＝JTU03406(吉田千穂)を9/15に私(CLI)が"生きた予約"と気づかず誤キャンセル→9/16スタッフ報告で発覚。真因は①ゾンビ復活(GASメール再取込が古い予約受付メールでキャンセル済みをconfirmedに戻す・起点=8/12のnewer_than 2→14日拡大)②私が台帳を見ず記憶/推測で「復元済み」「CSVが原因」と誤断定(実際はCSV未使用・GAS取込・復元も現場タスク未確認)。
+- **`reservation_cancel_ledger`＝3店稼働（那覇/札幌=main `trg_log_res_cancel`＋高松=BT DB `trg_log_res_cancel_bt`(bt_reservations)）**。AFTER UPDATE status→キャンセル系(cancelled/キャンセル/canceled) / AFTER DELETE ＝**どの経路(GAS/スタッフ/system/直SQL)で消しても自動で1行残す**（BTはstatus=確定/キャンセル混在も網羅・別DBに同名テーブル）。列＝store/reservation_id/name/ota/event(cancel|delete)/prev_status/**actor_id(誰=スタッフJWT/システムnull)**/app_name(経路)/**had_cancel_email(生メール台帳に本物のキャンセルメールがあるか)**/**prev_row(消える直前の予約全データ=復元用)**。例外安全(台帳失敗でも本処理を止めない)・SECURITY DEFINER・anon/authenticated select可。検証済(テスト予約でcancel行+delete行が自動記録→後始末)。
+- **これが解決する核心**：今まで「予約受付は記録・キャンセルは未記録」＝勝手に消えても照合材料が無く気づけなかった。今後は**全キャンセル/削除が台帳に残る＝いつ誰がどの経路で消したか＋消える前の全データ(復元可)が必ず分かる**。
+- **次段(未実装)**：①**キャンセル方向の施錠**＝「生メール台帳に本物のキャンセルメールが無く actorも無い(=証跡なき自動/直SQL)キャンセルはDBが拒否・スタッフ手動(actor有り)/本物のキャンセルメール有りだけ通す」トリガー(復活方向trg_block_cancel_revivalの対)。②GAS改修＝キャンセルメールも生メール台帳に保存(had_cancel_email判定の前提)。③毎朝pg_cronで「DB status vs 台帳」食い違い自動通知(人が第一発見者にならない)。④高松(BT別DB)へ横展開。⑤`cancel-ledger`ビューア。
+- **鉄則(自戒)**：予約の生死・復元・原因は**必ず台帳(audit_log/reservation_cancel_ledger/生メール台帳/Gmail)を見てから話す・動く**。「復元済み」は予約statusだけでなく**現場表示(タスク/配車表)まで確認**して初めて言う。推測で「◯◯が原因」と断定しない(CSV誤断定の反省)。
+
+## 🚗 2026-09-16 BT手動配車＝`bt_fleet.vehicle_code`と`bt_reservations.assigned_vehicle`は「車両マスターのcode」（name+plateでない・電話予約YUJ50063で判明）
+電話予約YUJ50063(高松・イヴォーク/RANGE ROVER Evoque・plate1700)を手動配車したが**配車表に出なかった**。真因＝bt_fleetに`vehicle_code="イヴォーク1700"`(name+plate)を入れたが、**BTの配車表(FleetTimeline)は`bt_fleet.vehicle_code == bt_vehicles.code`で車両行にマッチさせる**。イヴォークのcodeは`イヴォs3sw`(short abbrev+ランダム接尾)なので"イヴォーク1700"はどの車両行にもマッチせず非表示。→ `bt_fleet.vehicle_code`と`bt_reservations.assigned_vehicle`を**codeの`イヴォs3sw`に修正**して表示解決。
+- **誤解の罠**：既存配車`assigned_vehicle="ヤリス1018"`を見て「name+plate形式」と誤認したが、**その車両のcodeが偶然"ヤリス1018"だっただけ**（コードが人間可読な車もある）。実際は`ﾙｰﾐb0bs`/`ヴォク1010`/`カブリrtbz`/`イヴォs3sw`のようにcode=abbrev+suffixが標準。
+- **BT手動配車の正しい書式**：①`bt_fleet` INSERT `{reservation_id, vehicle_code:<bt_vehicles.code>}` ②`bt_reservations` UPDATE `assigned_vehicle=<code>`・`plate_no=<実ナンバー>`・`vehicle_name=<表示名>`・`changed_json={"_src":"human"}`。**vehicle_codeとassigned_vehicleは必ずbt_vehicles.code**（表示名+plateでない）。plate_noは実ナンバー(1700)、vehicle_nameは表示名(イヴォーク)。
+- **重複チェック**：`bt_fleet?vehicle_code=eq.<code>`で既存配車の有無＋期間重複を確認してからINSERT。BTのブランドは`bt_derive_brand`＝直予約/電話→BUDDICA(RANGE ROVER等の高級車はBUDDICA fleet)。
+- **教訓**：手動配車で「配車表に出ない」はまず`bt_fleet.vehicle_code`が`bt_vehicles.code`と厳密一致するか確認。既存行1件の見た目でキー書式を推測せず、必ず`bt_vehicles`の当該車のcodeを引いて合わせる。NHAは`nha_fleet.vehicle_code`=`nha_vehicles.code`(NOM01等)で同様、SPKも`fleet.vehicle_code`=`vehicles.code`。
+
+## 🚗 2026-09-12 BT走行距離「返却メーター📏が出ない」根治＝返却レッグの実type`返却待`が返却判定から欠落(v1.0.438-BT)
+現場報告「返却後の距離測定が出てこない・貸出前の洗車時のみ打つ仕様?」。BT走行距離は**2点測定**設計＝①洗車タスク→📏出発(start_odo)②返却タスク→📏返却(end_odo)・driven_km=返却−出発を自動計算(`bt_reservations.start_odo/end_odo/driven_km`・`OdoSub`が各タスクの⬜横に📏バッジ)。**真因＝BTの返却レッグの実type=`返却待`(中立ラベル・`legTypeLabel`で"返却"と表示)なのに、`OdoSub`/`_btOdoCapture`の返却判定が`["COL","BD","BDB","返却"]`で"返却待"を落としていた**→返却タスクに📏バッジが一切出ず、出発(洗車)だけ出ていた。→両配列に`返却待`を追加(`["COL","BD","BDB","返却","返却待"]`)。**教訓＝BTの返却系機能の判定配列は必ず`返却待`を含める**(貸出レッグ中立ラベル=`貸出`と対。既に生成/レッグ判定コードL17096等は返却待込みだが、後付け機能(走行距離バッジ)が落としていた)。「◯◯がXタスクで出ない」系は、カード表示ラベル(legTypeLabel経由)でなく**実`t.type`を疑う**(表示"返却"≠type"返却"のことがある)。
+
+## 🩹 2026-09-16 【重大・自戒】9/15「復活ゾンビ一掃」で"生きた予約"を1件誤って殺していた(JTU03406 吉田千穂・HP)→復元。再キャンセル前は必ず"本物のキャンセル証跡"を確認する
+オーナー指摘「JTU03406はオフィシャルで生きているのにappはキャンセル・大事なところ」。台帳+生メール台帳+Gmailで確定＝**9/15に私(CLI)がHP予約を『HPキャンセル問合せ』と誤判定して再キャンセルしたが、実際は生きていた**（生メール台帳・Gmailともに**キャンセルメール無し**／9/1スタッフが顧客都合で手動キャンセル→**9/6スタッフが手動でconfirmed復活**→**9/14スタッフが車両変更**＝人が積極管理＝生きている）。→ status=confirmed復元・ALF06再配車(9/19-23空き確認)・cxl全解除で復旧。
+- **誤りの本質**：9/15の一掃で4件(吉田JTU03406/楽天オノRC72…831/ー ーRC12…438/ミヤケRC12…759)を再キャンセルしたが、**吉田(HP)だけ誤り**。楽天3件はGmailに『【楽天トラベル】予約キャンセル受付のお知らせ』＋GAS🔄キャンセル処理が実在＝本物のキャンセル→CSVゾンビ復活→正しく再キャンセル(cancelledのままが正)。**HPには CSVゾンビ復活の仕組みが無い**→HPの"cancelled→confirmed"は**スタッフの意図的な復活**であって、ゾンビではない。これを一律ゾンビ扱いして殺した。
+- **🔴 恒久ルール(再キャンセル/キャンセルの前に必ず)**：①**生メール台帳(`{store}_reservation_emails`)とGmailで"本物のキャンセルメール"の実在を確認**（無ければキャンセルしない）。②**status遷移の"actor"と"経路"を見る**＝cancel/reviveが**null-actor(CSV/GAS自動)**なら自動処理・**actor_id有り(スタッフ)＋車両変更等の能動管理**があれば生きている予約→絶対に殺さない。③**OTA別に判断を変える**＝楽天/OTA=CSVゾンビ復活があり得る/HP=無い(スタッフ復活は意図的)。④「推測でキャンセルしない＝逆に生きた予約を殺す危険」(2026-09-15自分で書いた警告)を破った＝**一括処理でこの警告を無視したのが原因**。まとめて潰さず1件ずつ証跡を取る。
+- **切り分けの型(再利用)**：`audit_log?row_id=eq.<id>&tbl=eq.{store}_reservations`でstatus遷移(old→new・actor_id・app_name・時刻)を時系列→null-actorのconfirmed→cancelled(=CSV/自動)を抽出→各々`{store}_reservation_emails`(キャンセルメール有無)＋Gmail(`【楽天トラベル】予約キャンセル受付`/`🔄...キャンセル処理`)で裏取り→本物のキャンセルのみcancelled維持・証跡無し(特にHP+スタッフ管理)は復元。復元はstatus=confirmed+fleet再配車(期間重複確認)+cxl解除+`changed_json _src=human`(cancel-revivalトリガーを通す)。
+
+## 🧟 2026-09-15 「キャンセルしたのに残る/確定で復活」根治＝CSV一括取込(imp)が既存キャンセルを丸ごと上書き(3店横展開)
+マツモト ユキ様(RC42461264782381954)が楽天キャンセル済みなのに那覇APPに確定で復活。**台帳(audit_log)で確定**：8/12 confirmed→cancelled(楽天キャンセル正常処理)→**8/14 20:31 cancelled→confirmed復活**(同3分に予約8件INSERT/UPDATE＝CSV一括取込impの指紋)。
+- **真因**＝NHA imp(index.html.bak `map.set(r.id,r)`)＋SPK imp(index.src.html)が既存予約をCSV行で**丸ごと置換**。各パーサーは`status:isCancel()?cancelled:confirmed`＝キャンセル反映前/古い楽天CSVに残る行はconfirmed→**メール取込のキャンセル(正本)をconfirmedで上書き＝ゾンビ復活**。
+- **根治(class・3店横展開)**＝impマージに「**キャンセルsticky**」：`if(ex&&_isCxl(ex.status)&&!_isCxl(r.status)){r.status=ex.status;}`＝既存cancelled×CSV非キャンセルはstatus保持(復活させない)。confirmed→cancelled(CSVがキャンセル)は通す・人間の「確定に戻す」はimp外の直接更新で影響なし。NHA v3.5.375/SPK v4.7.626。
+- **影響調査(事後状態照合)**＝audit_logで`diff->'status'`の`cancelled→confirmed`を全件scan：NHA15件・SPK0件(1件ずつ書込＝安全)。7件は再キャンセル済/過去gogoout2件は使用済(車受取通知あり＝正当)/**未来4件(ミヤケ/ー ー/オノ ケイタ/吉田千穂)はGmailで顧客の実キャンセル(楽天キャンセルメール・HPキャンセル問合せ)を裏取り→再キャンセル**(予約cancelled+nha_fleet解除+nha_tasks墓標)。
+- **教訓**：①「キャンセルしたのに残る/復活」は必ずaudit_logの`status`遷移を見る＝cancelled→confirmed復活が見えれば犯人はCSV/再取込。②OTA CSVは"キャンセル反映前のスナップショット"を含み得る→**取込は既存キャンセルを絶対に復活させない(sticky)**。③復活済みを再キャンセルする前は必ずGmailで顧客の実キャンセルを裏取り(推測でキャンセルしない＝逆に生きた予約を殺す危険)。過去日/使用済は対象外。
+
+### 🛡 2026-09-15(続) キャンセル復活を正本(DB)側で構造的に停止＝トリガー`_block_cancel_revival`(3店・恒久根治)
+オーナー「同じことを繰り返す＝また復活」を受け、検知でなく**正本側で復活を物理的に不能化**（ドクトリン「悪い書込は正本で止める」）。
+- **トリガー`trg_block_cancel_revival`(nha_reservations/reservations 両BEFORE UPDATE)**：`OLD.status=キャンセル系 かつ NEW.status=confirmed系 かつ NEW.changed_json._src='system'`なら`NEW.status:=OLD.status`で**復活を拒否**（他列=日付/価格の更新は通す）。CSV取込(imp)は`_toDbRes`で必ず`_src:'system'`を付けるので狙い撃ち＝**旧版タブが古いimpを走らせてもDB側で止まる**(クライアント修正だけでは旧セッションを止められない穴を塞ぐ)。例外安全。
+- **人間の確定戻しは通す**：`_src`が human/staff/customer 等system以外なら通過。NHA「確定に戻す」(index.html.bak)・SPK復元(index.src.html restore)の直接updateに`changed_json:{_src:'human'}`を付与(SPK updateReservationFieldは元からhuman付き)。検証済(system→cancelled維持／human→confirmed通過)。
+- **教訓**：クライアントのsticky保護は「その端末の新版」しか守れない→**復活/上書き系はDBトリガーで正本側から止める**のが恒久根治。取込系(imp)は必ず`_src:'system'`印を付けているので、それを判定キーにすればシステム書込だけを狙って拒否でき人間書込は通せる。system印を判定に使うため、人間の確定戻し経路は必ず`_src:'human'`を明示的に書く(印なし部分更新は前回のsystem印が残り誤ブロックされる)。
+
+## 📧 2026-09-22 高松BUDDICA「予約完了メールが届かない」＝実ログでDelivered確認＝受信側問題（迷惑メール振り分け）。送信・認証・配送は正常
+オーナー報告「高松 予約完了メールが届かない多発・FSL35496/ZVR75726/AEH53667/WWM79618・大至急要因確認」。4件とも**BUDDICA自社HP直予約(src=site/brand=BUDDICA)**の初動メール(bt_mail_log kind=guide)。
+- **切り分けの決定打＝Resendダッシュボード(ブラウザ)で実配信ログを直接確認**：①bt_mail_logは全件`status=sent`(=Resendへ投稿成功まで。deliveredは追跡していない)②cron(bt-mail-guide)正常③実from=`reserve@buddica-tourism.jp`(BT_MAIL_FROM secret・認証済み)④gmail.com宛に実運用fromでテスト送信→**受信箱着信・SPF/DKIM/DMARC全pass**(SPFはResend標準の`send.buddica-tourism.jp`サブドメインに設定・ルートドメインには無い)⑤4宛先ドメイン全てMX実在⑥**Resend Emails一覧=全Delivered／Bounced(15日)=別アドレス5件でBUDDICA4件は無し／Suppressions(全期間)=1件でBUDDICA4件は無し**。→ **4件はResend上Delivered=受信サーバまで届いている**。
+- **真因＝受信側**(迷惑メール/プロモタブ/キャリア(au ezweb)のフォルダ振り分け)。システム・送信・認証・配送は一度も壊れていない。「いきなり」ではなく複数問い合わせで顕在化。
+- **🔴自戒(出典なき主張の禁止・再犯)**：最初に`dig`でbuddica.jpのSPF/DKIM無しを見て「buddica.jp未認証で全滅」と**実fromを確認せず断定**→誤診。実fromはbuddica-tourism.jp(認証済み)だった。**「届かない」系は必ず①実from(BT_MAIL_FROM secretの実値・DEFAULT_FROMはfallback)②Resendの実配信ステータス(Delivered/Bounced/Suppressed)まで実測してから原因を言う。DNSのdig外形だけで断定しない。**
+- **確認手段の要点**：①BUDDICA/HANDYMAN全メール(.com/.jp/buddica-tourism.jp)は同一Resendアカウント(oshita@mileshare.jp・mileshareチーム・Log in with Google)から送信。Emails→Status「Bounced」フィルタ＋Suppressionsで未達を一発特定。②実fromの確定＝bt-mail-send EFに自分(noritaka.oshita@gmail.com=Gmail MCP読める)宛テスト送信(secret=`~/.config/keydrop/bt_mail_func_secret`)→受信ヘッダのAuthentication-Results。③from別にResendが通すか実測=`from=@buddica.jp`は403(未登録)/`@buddica-tourism.jp`はok=登録済み。テスト行はbt_mail_log log_key`diag:%`で後で削除。
+- **恒久改善(実装済)**：bounce/delivery可視化EF `bt-mail-webhook`(BT・`--no-verify-jwt`・resend webhookのdelivered/bounced/complainedをbt_mail_log.statusに反映)をデプロイ。**要オーナー1手**＝Resend管理画面→Webhooks→`https://ggqugvyskyiblxiycpci.supabase.co/functions/v1/bt-mail-webhook`登録→以降mail-status.htmlが「sent(投稿成功)」でなく実配信を映せる。⚠️現状mail-status.htmlは「cron稼働+Resend投稿成功」までしか見ず「実際に届いたか」は未追跡＝「正常表示なのに届かない」の盲点。
+- **一般化**：重要通知(予約完了等)はメールのみに頼らずLINE併用が確実(迷惑判定を受けにくい)。BUDDICAはメールのみ=リスク。
