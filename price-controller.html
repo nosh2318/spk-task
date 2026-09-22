@@ -81,6 +81,7 @@ var TBLOF={spk:'app_settings',nha:'app_settings',tkm:'bt_app_settings'};
 var CLS_LABEL={A:'A',A2:'A2',B:'B',B2:'B2',C:'C',D:'D',E:'E',F:'F',G:'G',H:'H',S:'S'};
 var STORE='nha', PRICE={spk:null,nha:null,tkm:null}, ORIG={spk:'',nha:'',tkm:''}, winStart=null;
 var START='2026-10'; // 販売開始月＝カレンダーはここから
+var selYM=null; // 価格表の選択月（null=基準/全月共通・'YYYY-MM'=その月だけ上書き）
 
 function curYM(){var n=new Date();return n.getFullYear()+'-'+('0'+(n.getMonth()+1)).slice(-2);}
 function ymShift(ym,n){var y=+ym.split('-')[0],m=+ym.split('-')[1]-1+n;y+=Math.floor(m/12);m=((m%12)+12)%12;return y+'-'+('0'+(m+1)).slice(-2);}
@@ -163,18 +164,42 @@ function render(){
 
 // 💴 クラス別 安い日/高い日
 function priceTable(){
-  var P=PRICE[STORE];
+  var P=PRICE[STORE];P.months=P.months||{};
+  var ym=selYM; // null=基準（全月共通）／'YYYY-MM'=その月だけ
+  var mm=ym?(P.months[ym]||{}):null;
   var rows=Object.keys(P.price).map(function(c){
-    var cv=P.price[c]||{};
+    var base=P.price[c]||{};
+    var aVal,bVal,aPh,bPh;
+    if(ym){var cur=mm[c]||{};aVal=(cur.a!=null?cur.a:'');bVal=(cur.b!=null?cur.b:'');aPh=(base.a||0);bPh=(base.b||0);}
+    else{aVal=(base.a||'');bVal=(base.b||'');aPh='';bPh='';}
     return '<tr><td class="cls"><b>'+(CLS_LABEL[c]||c)+'</b></td>'
-     +'<td><input class="pv" type="number" step="100" value="'+(cv.a||'')+'" onchange="setP(\''+c+'\',\'a\',this.value)"></td>'
-     +'<td><input class="pv b" type="number" step="100" value="'+(cv.b||'')+'" onchange="setP(\''+c+'\',\'b\',this.value)"></td></tr>';
+     +'<td><input class="pv" type="number" step="100" value="'+aVal+'" placeholder="'+aPh+'" onchange="setP(\''+c+'\',\'a\',this.value)"></td>'
+     +'<td><input class="pv b" type="number" step="100" value="'+bVal+'" placeholder="'+bPh+'" onchange="setP(\''+c+'\',\'b\',this.value)"></td></tr>';
   }).join('');
-  return '<div class="card"><h2>💴 クラス別 1日料金</h2>'
-   +'<div class="muted">安い日＝通常。高い日＝下のカレンダーで選んだ日（連休など）。</div>'
+  // 月セレクタ（基準＋4ヶ月）
+  var ms=months4();
+  var setCnt=function(m){return Object.keys(P.months[m]||{}).length;};
+  var sel='<div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">'
+   +'<button class="btn sm" style="'+(!ym?'background:#0f1f45;color:#fff':'background:#e2e8f0;color:#0f172a')+'" onclick="setYM(null)">📌 基準（全月）</button>'
+   +ms.map(function(m){var n=setCnt(m);return '<button class="btn sm" style="'+(ym===m?'background:#0f766e;color:#fff;border-color:#0f766e':'background:#e2e8f0;color:#0f172a')+'" onclick="setYM(\''+m+'\')">'+(+m.slice(5))+'月'+(n?' ●':'')+'</button>';}).join('')
+   +'</div>';
+  var note=ym
+    ?'<div class="muted">📅 <b>'+(+ym.slice(5))+'月だけ</b>の価格を入力（空欄は基準価格＝薄い数字を使用）。この月だけ安い/高いを変えられます。</div>'
+    :'<div class="muted">📌 <b>基準</b>＝全月の通常価格。特定の月だけ変えたい時は上の「◯月」を選んで入力。安い日＝通常、高い日＝カレンダーで選んだ日。</div>';
+  return '<div class="card"><h2>💴 クラス別 1日料金 '+(ym?'（'+(+ym.slice(5))+'月）':'（基準）')+'</h2>'
+   +sel+note
    +'<table><tr><th></th><th>🔵 安い日（¥）</th><th>🟧 高い日（¥）</th></tr>'+rows+'</table></div>';
 }
-function setP(c,k,v){PRICE[STORE].price[c]=PRICE[STORE].price[c]||{};PRICE[STORE].price[c][k]=parseInt(v,10)||0;}
+function setYM(ym){selYM=ym;render();}
+function setP(c,k,v){
+  var P=PRICE[STORE];
+  if(selYM){
+    P.months=P.months||{};P.months[selYM]=P.months[selYM]||{};P.months[selYM][c]=P.months[selYM][c]||{};
+    var n=parseInt(v,10);
+    if(v===''||isNaN(n)){delete P.months[selYM][c][k];if(!Object.keys(P.months[selYM][c]).length)delete P.months[selYM][c];if(!Object.keys(P.months[selYM]).length)delete P.months[selYM];}
+    else P.months[selYM][c][k]=n;
+  }else{P.price[c]=P.price[c]||{};P.price[c][k]=parseInt(v,10)||0;}
+}
 function setIns(k,v){PRICE[STORE].insurance=PRICE[STORE].insurance||{};PRICE[STORE].insurance[k]=parseInt(v,10)||0;}
 function setSeat(k,v){PRICE[STORE].seat=PRICE[STORE].seat||{};PRICE[STORE].seat[k]=parseInt(v,10)||0;}
 
@@ -216,13 +241,25 @@ function autoB(){var y=new Date().getFullYear();var set={};(PRICE[STORE].high_da
 function clrB(){PRICE[STORE].high_dates=[];refreshCal();}
 
 // 📜 変更履歴
-function snap(P){return JSON.stringify({price:P.price,high_dates:P.high_dates,insurance:P.insurance,seat:P.seat});}
+function snap(P){return JSON.stringify({price:P.price,months:P.months||{},high_dates:P.high_dates,insurance:P.insurance,seat:P.seat});}
 function diffChanges(oldS,P){
   var o={};try{o=JSON.parse(oldS)}catch(e){}var ch=[];
   Object.keys(P.price||{}).forEach(function(c){
     var np=P.price[c]||{},op=(o.price||{})[c]||{};
-    if((op.a||0)!==(np.a||0))ch.push((CLS_LABEL[c]||c)+' 安い '+(op.a||0).toLocaleString()+'→'+(np.a||0).toLocaleString());
-    if((op.b||0)!==(np.b||0))ch.push((CLS_LABEL[c]||c)+' 高い '+(op.b||0).toLocaleString()+'→'+(np.b||0).toLocaleString());
+    if((op.a||0)!==(np.a||0))ch.push((CLS_LABEL[c]||c)+' 基準安い '+(op.a||0).toLocaleString()+'→'+(np.a||0).toLocaleString());
+    if((op.b||0)!==(np.b||0))ch.push((CLS_LABEL[c]||c)+' 基準高い '+(op.b||0).toLocaleString()+'→'+(np.b||0).toLocaleString());
+  });
+  // 月別価格の差分
+  var om=o.months||{},nm=P.months||{},yms={};
+  Object.keys(om).concat(Object.keys(nm)).forEach(function(y){yms[y]=1;});
+  Object.keys(yms).sort().forEach(function(ym){
+    var omm=om[ym]||{},nmm=nm[ym]||{},cs={};
+    Object.keys(omm).concat(Object.keys(nmm)).forEach(function(c){cs[c]=1;});
+    Object.keys(cs).forEach(function(c){
+      var oc=omm[c]||{},nc=nmm[c]||{},mo=(+ym.slice(5))+'月';
+      if((oc.a||0)!==(nc.a||0))ch.push(mo+' '+(CLS_LABEL[c]||c)+' 安い '+(oc.a||'基準')+'→'+(nc.a||'基準'));
+      if((oc.b||0)!==(nc.b||0))ch.push(mo+' '+(CLS_LABEL[c]||c)+' 高い '+(oc.b||'基準')+'→'+(nc.b||'基準'));
+    });
   });
   var oh=(o.high_dates||[]).length,nh=(P.high_dates||[]).length;
   if(oh!==nh)ch.push('高い日 '+oh+'→'+nh+'日');
@@ -282,7 +319,7 @@ async function saveStore(s){
     PRICE[s].history.unshift({ts:nowStr(),changes:changes.join(' / '),snap:{price:JSON.parse(JSON.stringify(PRICE[s].price)),high:(PRICE[s].high_dates||[]).length}});
     PRICE[s].history=PRICE[s].history.slice(0,50);
   }
-  delete PRICE[s].months;delete PRICE[s].proposals;delete PRICE[s]._market;delete PRICE[s].research_dates;
+  delete PRICE[s].proposals;delete PRICE[s]._market;delete PRICE[s].research_dates;
   var payload;
   if(db===MAIN){
     var cur=await req(MAIN,'GET','app_settings?key=eq.hdm_official_price&select=value');
