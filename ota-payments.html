@@ -367,13 +367,16 @@ function defaultSga(){return [
  {g:"旅費・通信費",rows:["旅費交通費","通信費"].map(pRow)},
  {g:"その他経費",rows:["租税公課","減価償却費","消耗品費","その他販管費"].map(pRow)}
 ];}
-function planStoreDefault(){return {cogs:["外注委託費"].map(pRow),sga:defaultSga()};}
+function planStoreDefault(){return {cogs:["外注委託費"].map(pRow),sga:defaultSga(),rep:["借入金返済①","借入金返済②","借入金返済③"].map(pRow)};}
 function planDefault(){return {nha:planStoreDefault(),spk:planStoreDefault(),tkm:planStoreDefault(),hq:planStoreDefault()};}
 function _fixM(r){if(!r.m||!Array.isArray(r.m))r.m=planZ();while(r.m.length<12)r.m.push(0);return r;}
-function _normPStore(st){if(!st)return planStoreDefault();if(!Array.isArray(st.cogs))st.cogs=[];st.cogs.forEach(_fixM);if(!Array.isArray(st.sga))st.sga=defaultSga();st.sga.forEach(g=>{if(!Array.isArray(g.rows))g.rows=[];g.rows.forEach(_fixM);});return st;}
+function _normPStore(st){if(!st)return planStoreDefault();if(!Array.isArray(st.cogs))st.cogs=[];st.cogs.forEach(_fixM);if(!Array.isArray(st.sga))st.sga=defaultSga();st.sga.forEach(g=>{if(!Array.isArray(g.rows))g.rows=[];g.rows.forEach(_fixM);});if(!Array.isArray(st.rep))st.rep=["借入金返済①","借入金返済②","借入金返済③"].map(pRow);st.rep.forEach(_fixM);return st;}
 function _normPlan(p){p=p||{};["nha","spk","tkm","hq"].forEach(s=>{p[s]=_normPStore(p[s]);});return p;}
-function planMonthTotal(mi){let t=0;["nha","spk","tkm","hq"].forEach(s=>{const st=cfPlan&&cfPlan[s];if(!st)return;(st.cogs||[]).forEach(r=>t+=cfnum(r.m[mi]));(st.sga||[]).forEach(g=>(g.rows||[]).forEach(r=>t+=cfnum(r.m[mi])));});return t;}
+function planMonthTotal(mi){let t=0;["nha","spk","tkm","hq"].forEach(s=>{const st=cfPlan&&cfPlan[s];if(!st)return;(st.cogs||[]).forEach(r=>t+=cfnum(r.m[mi]));(st.sga||[]).forEach(g=>(g.rows||[]).forEach(r=>t+=cfnum(r.m[mi])));});return t;} /* 営業支出のみ(返済除く) */
+function planMonthRep(mi){let t=0;["nha","spk","tkm","hq"].forEach(s=>{const st=cfPlan&&cfPlan[s];if(!st)return;(st.rep||[]).forEach(r=>t+=cfnum(r.m[mi]));});return t;}
 function planYmExp(ym){const mi=PLAN_YM.indexOf(ym);return mi<0?0:planMonthTotal(mi);}
+function planYmRep(ym){const mi=PLAN_YM.indexOf(ym);return mi<0?0:planMonthRep(mi);}
+function cfMonthRep(m){return planYmRep(m);}
 function cfExpAll(){return planYmExp(cfMonth);}
 /* ===== 月×店舗サマリー（収入・支出・過不足・全月） ===== */
 let CF_ALL={}; // {month:data} 全月のcfデータ
@@ -388,25 +391,26 @@ function cfMonthInc(m){return ["nha","spk","tkm"].reduce((a,s)=>a+cfMIncStore(m,
 function cfMonthExp(m){return planYmExp(m);}
 /* === 📈 収支（月別・1画面）：月｜収入｜支出｜差引 === */
 function cfRenderBalance(){const MS=PLAN_YM,thisM=new Date().toISOString().slice(0,7);
- let TO=0,TH=0,TG=0,TI=0,TE=0,rows='';
- MS.forEach(m=>{const ota=cfIncOta(m),hp=cfIncHp(m),gy=cfMGyomu(m),inc=ota+hp+gy,exp=cfMonthExp(m),bal=inc-exp;
-  TO+=ota;TH+=hp;TG+=gy;TI+=inc;TE+=exp;
+ let TO=0,TH=0,TG=0,TI=0,TE=0,TR=0,rows='';
+ MS.forEach(m=>{const ota=cfIncOta(m),hp=cfIncHp(m),gy=cfMGyomu(m),inc=ota+hp+gy,exp=cfMonthExp(m),rp=cfMonthRep(m),bal=inc-exp-rp;
+  TO+=ota;TH+=hp;TG+=gy;TI+=inc;TE+=exp;TR+=rp;
   rows+='<tr'+(m===thisM?' style="background:#fef9c3"':'')+'><td><b>'+m+'</b></td>'
    +'<td class="mono" style="color:#0369a1">'+(ota?yen(ota):'·')+'</td>'
    +'<td class="mono" style="color:#7c3aed">'+(hp?yen(hp):'·')+'</td>'
    +'<td class="mono" style="color:#c026d3">'+(gy?yen(gy):'·')+'</td>'
    +'<td class="mono" style="color:#16a34a;font-weight:700">'+yen(inc)+'</td>'
    +'<td class="mono" style="color:#dc2626">'+(exp?yen(exp):'·')+'</td>'
+   +'<td class="mono" style="color:#9a3412">'+(rp?yen(rp):'·')+'</td>'
    +'<td class="mono" style="font-weight:800;color:'+(bal>=0?'#16a34a':'#dc2626')+'">'+yen(bal)+'</td></tr>';});
- const TB=TI-TE;
- let h='<div class="sec"><h2>📈 月別 収支（収入内訳・支出・差引）</h2>'
-  +'<div class="note"><b>収入＝OTA(合算)＋HP(合算)＋業務委託(合算)</b>（自動・確定＝OTA入金表の差引手取り）／<b>支出</b>＝「💸支出入力」／<b>差引＝収入−支出</b>。HP＝自社(HP/KEYDROP/スタッフ登録)。</div>'
-  +'<div class="ov"><table><thead><tr><th>月</th><th style="background:#0369a1;color:#fff">🅾️ OTA</th><th style="background:#7c3aed;color:#fff">🏠 HP</th><th style="background:#c026d3;color:#fff">🤝 業務委託</th><th style="background:#16a34a;color:#fff">💰 収入計</th><th style="background:#dc2626;color:#fff">💸 支出</th><th style="background:#1e3a8a;color:#fff">⚖️ 差引</th></tr></thead><tbody>'
+ const TB=TI-TE-TR;
+ let h='<div class="sec"><h2>📈 月別 収支（収入内訳・支出・返済・差引）</h2>'
+  +'<div class="note"><b>収入＝OTA(合算)＋HP(合算)＋業務委託(合算)</b>（自動・確定＝OTA入金表の差引手取り）／<b>支出</b>＝営業支出(返済を除く)／<b>返済</b>＝借入返済／<b>差引＝収入−支出−返済</b>。HP＝自社(HP/KEYDROP/スタッフ登録)。</div>'
+  +'<div class="ov"><table><thead><tr><th>月</th><th style="background:#0369a1;color:#fff">🅾️ OTA</th><th style="background:#7c3aed;color:#fff">🏠 HP</th><th style="background:#c026d3;color:#fff">🤝 業務委託</th><th style="background:#16a34a;color:#fff">💰 収入計</th><th style="background:#dc2626;color:#fff">💸 支出</th><th style="background:#9a3412;color:#fff">🟣 返済</th><th style="background:#1e3a8a;color:#fff">⚖️ 差引</th></tr></thead><tbody>'
   +rows
-  +'<tr class="tot"><td>合計</td><td class="mono" style="color:#0369a1">'+yen(TO)+'</td><td class="mono" style="color:#7c3aed">'+yen(TH)+'</td><td class="mono" style="color:#c026d3">'+yen(TG)+'</td><td class="mono" style="color:#16a34a">'+yen(TI)+'</td><td class="mono" style="color:#dc2626">'+yen(TE)+'</td><td class="mono" style="color:'+(TB>=0?'#16a34a':'#dc2626')+'">'+yen(TB)+'</td></tr>'
+  +'<tr class="tot"><td>合計</td><td class="mono" style="color:#0369a1">'+yen(TO)+'</td><td class="mono" style="color:#7c3aed">'+yen(TH)+'</td><td class="mono" style="color:#c026d3">'+yen(TG)+'</td><td class="mono" style="color:#16a34a">'+yen(TI)+'</td><td class="mono" style="color:#dc2626">'+yen(TE)+'</td><td class="mono" style="color:#9a3412">'+yen(TR)+'</td><td class="mono" style="color:'+(TB>=0?'#16a34a':'#dc2626')+'">'+yen(TB)+'</td></tr>'
   +'</tbody></table></div></div>';
  gid("cfBody").innerHTML=h;
- gid("cfCards").innerHTML=card("年間収入",yen(TI),"OTA"+yen(TO)+"+HP"+yen(TH)+"+委託"+yen(TG),"#16a34a")+card("年間支出",yen(TE),"入力済の合計","#dc2626")+card("年間差引",yen(TB),TB>=0?"黒字":"不足",TB>=0?"#16a34a":"#b91c1c")+card("入力月数",MS.filter(m=>cfMonthExp(m)>0).length+" / "+MS.length,"支出を入れた月","#1e3a8a");}
+ gid("cfCards").innerHTML=card("年間収入",yen(TI),"OTA"+yen(TO)+"+HP"+yen(TH)+"+委託"+yen(TG),"#16a34a")+card("年間支出",yen(TE),"営業(返済除く)","#dc2626")+card("年間返済",yen(TR),"借入返済","#9a3412")+card("年間差引",yen(TB),TB>=0?"黒字":"不足",TB>=0?"#16a34a":"#b91c1c");}
 function cfCards(){const ss=["nha","spk","tkm"],inc=ss.reduce((a,s)=>a+cfIncStore(s),0)+cfGyomu(),exp=cfExpAll(),bal=inc-exp,bank=Object.values(cfData.banks).reduce((a,b)=>a+cfnum(b),0);
  gid("cfCards").innerHTML=card("収入合計",yen(inc),cfMonth+"／自動(確定)","#16a34a")+card("支出合計",yen(exp),cfMonth+"／入力","#dc2626")+card("過不足",yen(bal),bal>=0?"黒字":"不足",bal>=0?"#16a34a":"#b91c1c")+card("銀行残高",yen(bank),"3行合計","#1e3a8a");}
 function cfRender(){cfShape();if(cfSub==="balance"){cfRenderBalance();return;}renderPlan();}
@@ -429,8 +433,13 @@ function renderPlan(){
  (st.sga||[]).forEach((g,gi)=>{h+='<tr><td colspan="15" style="padding-left:8px;font-size:11px;font-weight:700;color:#64748b;background:#f8fafc">'+g.g+'</td></tr>';
   (g.rows||[]).forEach((r,ri)=>{let rt=0;h+='<tr><td style="position:sticky;left:0;background:#fff;padding-left:12px">'+pl("sga",gi,ri,r.l)+'</td>'+r.m.map((v,mi)=>{rt+=cfnum(v);monTot[mi]+=cfnum(v);return '<td>'+pc("sga",gi,ri,mi,v)+'</td>';}).join('')+'<td class="mono" id="pRowT_sga_'+gi+'_'+ri+'">'+yen(rt)+'</td><td style="white-space:nowrap">'+cp('data-act="pcopy" data-sec="sga" data-gi="'+gi+'" data-ri="'+ri+'"')+del('data-act="pdel" data-sec="sga" data-gi="'+gi+'" data-ri="'+ri+'"')+'</td></tr>';});
   h+='<tr><td colspan="15" style="padding-left:12px">'+add('data-act="padd" data-sec="sga" data-gi="'+gi+'"')+'</td></tr>';});
- let grand=0;h+='<tr class="tot"><td style="position:sticky;left:0;background:#1e3a8a;color:#fff">支出合計</td>'+monTot.map((v,mi)=>{grand+=v;return '<td class="mono" id="pMonT_'+mi+'">'+yen(v)+'</td>';}).join('')+'<td class="mono" id="pGrand">'+yen(grand)+'</td><td></td></tr>';
- h+='</tbody></table></div><div class="note">この店舗の通年支出 <b>'+yen(grand)+'</b>。全店合計＝「📈収支（月別）」の支出に反映。</div></div>';
+ h+='<tr class="grp"><td colspan="15">🟣 返済（借入返済）</td></tr>';
+ let monTotR=planZ();
+ (st.rep||[]).forEach((r,ri)=>{let rt=0;h+='<tr><td style="position:sticky;left:0;background:#fff">'+pl("rep",0,ri,r.l)+'</td>'+r.m.map((v,mi)=>{rt+=cfnum(v);monTotR[mi]+=cfnum(v);return '<td>'+pc("rep",0,ri,mi,v)+'</td>';}).join('')+'<td class="mono" id="pRowT_rep_0_'+ri+'">'+yen(rt)+'</td><td style="white-space:nowrap">'+cp('data-act="pcopy" data-sec="rep" data-gi="0" data-ri="'+ri+'"')+del('data-act="pdel" data-sec="rep" data-gi="0" data-ri="'+ri+'"')+'</td></tr>';});
+ h+='<tr><td colspan="15" style="padding-left:6px">'+add('data-act="padd" data-sec="rep" data-gi="0"')+'</td></tr>';
+ let grand=0;h+='<tr class="tot"><td style="position:sticky;left:0;background:#1e3a8a;color:#fff">営業支出計</td>'+monTot.map((v,mi)=>{grand+=v;return '<td class="mono" id="pMonT_'+mi+'">'+yen(v)+'</td>';}).join('')+'<td class="mono" id="pGrand">'+yen(grand)+'</td><td></td></tr>';
+ let grandR=0;h+='<tr class="tot"><td style="position:sticky;left:0;background:#7c2d12;color:#fff">返済計</td>'+monTotR.map((v,mi)=>{grandR+=v;return '<td class="mono" id="pMonR_'+mi+'">'+yen(v)+'</td>';}).join('')+'<td class="mono" id="pGrandR">'+yen(grandR)+'</td><td></td></tr>';
+ h+='</tbody></table></div><div class="note">この店舗の通年 営業支出 <b>'+yen(grand)+'</b> ／ 返済 <b>'+yen(grandR)+'</b>。全店合計＝「📈収支（月別）」の支出・返済列に反映（差引＝収入−支出−返済）。</div></div>';
  gid("cfBody").innerHTML=h;
  planCards();
 }
@@ -439,7 +448,8 @@ function planCards(){let tInc=0,tExp=0;PLAN_YM.forEach(ym=>{tInc+=cfMonthInc(ym)
 function planRecalc(){const st=cfPlan[cfPlanStore];if(!st)return;let monTot=planZ(),grand=0;
  (st.cogs||[]).forEach((r,ri)=>{let rt=0;r.m.forEach((v,mi)=>{const n=cfnum(v);rt+=n;monTot[mi]+=n;});setT("pRowT_cogs_0_"+ri,yen(rt));});
  (st.sga||[]).forEach((g,gi)=>(g.rows||[]).forEach((r,ri)=>{let rt=0;r.m.forEach((v,mi)=>{const n=cfnum(v);rt+=n;monTot[mi]+=n;});setT("pRowT_sga_"+gi+"_"+ri,yen(rt));}));
- monTot.forEach((v,mi)=>{grand+=v;setT("pMonT_"+mi,yen(v));});setT("pGrand",yen(grand));planCards();}
+ monTot.forEach((v,mi)=>{grand+=v;setT("pMonT_"+mi,yen(v));});setT("pGrand",yen(grand));
+ let monTotR=planZ(),grandR=0;(st.rep||[]).forEach((r,ri)=>{let rt=0;r.m.forEach((v,mi)=>{const n=cfnum(v);rt+=n;monTotR[mi]+=n;});setT("pRowT_rep_0_"+ri,yen(rt));});monTotR.forEach((v,mi)=>{grandR+=v;setT("pMonR_"+mi,yen(v));});setT("pGrandR",yen(grandR));planCards();}
 function cfShift(d){const dt=new Date(cfMonth+"-01T00:00:00");dt.setMonth(dt.getMonth()+d);cfMonth=dt.toISOString().slice(0,7);cfLoad();}
 async function cfLoad(){gid("cfStatus").textContent="読込中…";
  const r=await fetch(MAIN+"/rest/v1/cashflow_entries?select=month,data",{headers:{apikey:MANON,Authorization:"Bearer "+MANON}}).then(x=>x.json()).catch(_=>[]);
@@ -458,8 +468,8 @@ gid("cfPrev").onclick=()=>cfShift(-1);gid("cfNext").onclick=()=>cfShift(1);gid("
 document.querySelectorAll("#cfSubTab button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#cfSubTab button").forEach(x=>x.classList.remove("on"));b.classList.add("on");cfSub=b.dataset.cs;gid("cfMonthBar").style.display=cfSub==="expense"?"":"none";cfRender();});
 gid("cfBody").addEventListener("input",e=>{const d=e.target.dataset;if(!d||!d.t)return;const v=e.target.value;
  if(d.t==="incv")cfData.income[+d.i][d.s]=cfnum(v);else if(d.t==="incl")cfData.income[+d.i].label=v;
- else if(d.t==="pcell"){const st=cfPlan[cfPlanStore];const row=d.sec==="cogs"?st.cogs[+d.ri]:st.sga[+d.gi].rows[+d.ri];if(row){row.m[+d.mi]=cfnum(v);planRecalc();planAutosave();}return;}
- else if(d.t==="plabel"){const st=cfPlan[cfPlanStore];const row=d.sec==="cogs"?st.cogs[+d.ri]:st.sga[+d.gi].rows[+d.ri];if(row)row.l=v;planAutosave();return;}
+ else if(d.t==="pcell"){const st=cfPlan[cfPlanStore];const row=d.sec==="sga"?st.sga[+d.gi].rows[+d.ri]:st[d.sec][+d.ri];if(row){row.m[+d.mi]=cfnum(v);planRecalc();planAutosave();}return;}
+ else if(d.t==="plabel"){const st=cfPlan[cfPlanStore];const row=d.sec==="sga"?st.sga[+d.gi].rows[+d.ri]:st[d.sec][+d.ri];if(row)row.l=v;planAutosave();return;}
  else if(d.t==="bank")cfData.banks[d.b]=cfnum(v);else if(d.t==="loanl")cfData.loans[+d.i].label=v;else if(d.t==="loana")cfData.loans[+d.i].amt=cfnum(v);
  else return;});
 gid("cfBody").addEventListener("click",e=>{const b=e.target.closest("[data-act]");if(!b)return;const a=b.dataset.act;
@@ -467,9 +477,9 @@ gid("cfBody").addEventListener("click",e=>{const b=e.target.closest("[data-act]"
  else if(a==="add-loan")cfData.loans.push({label:"",amt:0});else if(a==="del-loan")cfData.loans.splice(+b.dataset.i,1);else return;cfRender();});
 gid("cfBody").addEventListener("click",e=>{const b=e.target.closest("[data-pstore]");if(b){cfPlanStore=b.dataset.pstore;renderPlan();return;}
  const a=e.target.closest("[data-act=padd],[data-act=pdel],[data-act=pcopy]");if(!a)return;const st=cfPlan[cfPlanStore],sec=a.dataset.sec,gi=+a.dataset.gi;
- if(a.dataset.act==="pcopy"){const row=sec==="cogs"?st.cogs[+a.dataset.ri]:st.sga[gi].rows[+a.dataset.ri];const base=row.m.find(x=>cfnum(x)>0);const val=cfnum(base!=null?base:row.m[0]);if(!val){alert("先に金額を1ヶ所入力してから📋全月を押してください");return;}row.m=row.m.map(_=>val);renderPlan();planAutosave();return;}
- if(a.dataset.act==="padd"){const arr=sec==="cogs"?st.cogs:st.sga[gi].rows;arr.push(pRow(""));}
- else{const arr=sec==="cogs"?st.cogs:st.sga[gi].rows;arr.splice(+a.dataset.ri,1);}
+ if(a.dataset.act==="pcopy"){const row=sec==="sga"?st.sga[gi].rows[+a.dataset.ri]:st[sec][+a.dataset.ri];const base=row.m.find(x=>cfnum(x)>0);const val=cfnum(base!=null?base:row.m[0]);if(!val){alert("先に金額を1ヶ所入力してから📋全月を押してください");return;}row.m=row.m.map(_=>val);renderPlan();planAutosave();return;}
+ if(a.dataset.act==="padd"){const arr=sec==="sga"?st.sga[gi].rows:st[sec];arr.push(pRow(""));}
+ else{const arr=sec==="sga"?st.sga[gi].rows:st[sec];arr.splice(+a.dataset.ri,1);}
  renderPlan();planAutosave();});
 document.querySelectorAll("#topTab button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#topTab button").forEach(x=>x.classList.remove("on"));b.classList.add("on");
  const cf=b.dataset.m==="cf";["otaBar","cards","otaViewWrap","body","otaNote"].forEach(id=>{const e=gid(id);if(e)e.style.display=cf?"none":"";});
