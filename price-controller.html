@@ -200,6 +200,7 @@ function calMulti(){
    +'<div style="margin:8px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
    +'<button class="btn ghost sm" onclick="autoB()">🎌 連休を自動で高いに</button>'
    +'<button class="btn ghost sm" onclick="clrB()">全解除</button>'
+   +'<button class="btn sm" style="background:#0f766e;color:#fff;border-color:#0f766e" onclick="applyHighToAll()">📋 全店に同じ高い日を適用</button>'
    +'<span class="mbadge">高い '+hTot+'日</span></div>'
    +'<div class="m4grid">'+ms.map(calOne).join('')+'</div></div>';
 }
@@ -272,21 +273,21 @@ function histView(){
    +'<div style="overflow-x:auto;margin-top:8px"><table class="histbl">'+h1+body+'</table></div>'+memo+'</div>';
 }
 
-async function save(){
-  var db=DBOF[STORE],tbl=TBLOF[STORE];
-  var changes=diffChanges(ORIG[STORE],PRICE[STORE]);
+// 指定した1店を保存（履歴記録込み）
+async function saveStore(s){
+  var db=DBOF[s],tbl=TBLOF[s];
+  var changes=diffChanges(ORIG[s]||snap(PRICE[s]),PRICE[s]);
   if(changes.length){
-    PRICE[STORE].history=PRICE[STORE].history||[];
-    PRICE[STORE].history.unshift({ts:nowStr(),changes:changes.join(' / '),snap:{price:JSON.parse(JSON.stringify(PRICE[STORE].price)),high:(PRICE[STORE].high_dates||[]).length}});
-    PRICE[STORE].history=PRICE[STORE].history.slice(0,50);
+    PRICE[s].history=PRICE[s].history||[];
+    PRICE[s].history.unshift({ts:nowStr(),changes:changes.join(' / '),snap:{price:JSON.parse(JSON.stringify(PRICE[s].price)),high:(PRICE[s].high_dates||[]).length}});
+    PRICE[s].history=PRICE[s].history.slice(0,50);
   }
-  // 旧構造の名残(months/proposals/_market/research_dates)は保存時に除去してクリーンに
-  delete PRICE[STORE].months;delete PRICE[STORE].proposals;delete PRICE[STORE]._market;delete PRICE[STORE].research_dates;
+  delete PRICE[s].months;delete PRICE[s].proposals;delete PRICE[s]._market;delete PRICE[s].research_dates;
   var payload;
   if(db===MAIN){
     var cur=await req(MAIN,'GET','app_settings?key=eq.hdm_official_price&select=value');
     var obj=(cur.ok&&cur.data&&cur.data[0])?JSON.parse(cur.data[0].value):{};
-    obj[STORE]=PRICE[STORE];payload=obj;
+    obj[s]=PRICE[s];payload=obj;
   }else{
     var curb=await req(BT,'GET','bt_app_settings?key=eq.hdm_official_price&select=value');
     var objb=(curb.ok&&curb.data&&curb.data[0])?JSON.parse(curb.data[0].value):{};
@@ -294,8 +295,21 @@ async function save(){
   }
   var r=await req(db,'POST',tbl,{key:'hdm_official_price',value:JSON.stringify(payload)});
   if(!r.ok){r=await req(db,'PATCH',tbl+'?key=eq.hdm_official_price',{value:JSON.stringify(payload)});}
-  if(r.ok){ORIG[STORE]=snap(PRICE[STORE]);render();toast(changes.length?'✅ 保存しました（'+changes.length+'件の変更を履歴に記録）':'✅ 保存しました（変更なし）');}
-  else toast('⚠️ 保存失敗（'+r.status+'）');
+  if(r.ok)ORIG[s]=snap(PRICE[s]);
+  return {ok:r.ok,changes:changes.length,status:r.status};
+}
+async function save(){
+  var res=await saveStore(STORE);
+  if(res.ok){render();toast(res.changes?'✅ 保存しました（'+res.changes+'件を履歴に記録）':'✅ 保存しました（変更なし）');}
+  else toast('⚠️ 保存失敗（'+res.status+'）');
+}
+// 📋 現在の「高い日」を全店に同じ設定でコピー（価格は各店そのまま）
+async function applyHighToAll(){
+  var src=(PRICE[STORE].high_dates||[]).slice();
+  if(!confirm('「高い日」('+src.length+'日) を全店（那覇・札幌・高松）に同じ設定で反映します。\n各店の高い日は上書きされます。\n※価格は各店そのまま（変わりません）。\nよろしいですか？'))return;
+  var all=['spk','nha','tkm'].filter(function(x){return PRICE[x];});
+  for(var i=0;i<all.length;i++){PRICE[all[i]].high_dates=src.slice();await saveStore(all[i]);}
+  render();toast('✅ 全店に高い日（'+src.length+'日）を反映しました');
 }
 load();
 </script></body></html>
