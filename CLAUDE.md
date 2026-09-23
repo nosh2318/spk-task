@@ -16,6 +16,8 @@
 - **教訓**：①「reserve.comの受信が見えない」＝箱が無いのでなく"受信を映す仕組みが無い"だけ。転送先(noritaka)に実体があり読める→GAS(唯一のGmail読取)で台帳化＋ビューアで可視化＝盲点ゼロ。②取込済み判定はRLS回避のSECURITY DEFINER RPC必須(anon直selectは0件で誤判定)。③受信(inbound)の自然な置き場所は問い合わせAPP(受信メール管理)＝mail-status(送信/cron)とは用途別だが同一ソースなので両方に置いてもズレない。
 - **【2026-09-24 続・オーナー『札幌那覇のように.comのBOXを作ってメールの中身を見れるように』】問い合わせAPPのResvInboxViewを"BOX＋本文リーダー"に刷新**：①`reserve_inbox_mirror`に**`body`列追加**＋GAS `mirrorReserveInbox_`が`m.getPlainBody().substring(0,7000)`を保存(clasp push済・30分毎に全件本文取得／9/13楽天等の3日窓外はGmail MCPで手動backfill＝GASのnewer_than:3d外は自動では入らない点に注意) ②UI＝**BOXタイル3つ(📥.com高松/🟦.jp札幌那覇/📬すべて・件数＋未取込数)＝札幌那覇の店タイルと同じ体験**＋**2ペイン(左=メール一覧・クリック→右に本文全体<pre>表示)**。既定box=.com高松(要望の主役)。実ブラウザ検証済(R0CMD8L3クリック→本文全文表示・沓掛様2027/1/22-23高松空港店)。**教訓＝生メール台帳(reservation_emails)はMAIN未作成/BTは別経路で疎ら→本文を確実に見せるにはmirrorにbody列を持たせGASで保存が最クリーン。**
 - **⚠️Chrome MCPのタブ切替クリックはタイミング/ref依存で不発になる**＝ページ読込直後の座標クリックやref_9クリックがtab切替を起こさないことがある→**ページ完全描画後に座標再クリック**で確実に切替(検証時の落とし穴)。
+- **【2026-09-24 続々・オーナー『全て(全チャネル)につけるべき』】🚐BUDDICA（高松）BOXを追加＝全3チャネルを1画面に**：①📥.com（高松HDM：楽天/じゃらん）②🟦.jp（札幌・那覇：全OTA）③🚐**BUDDICA（高松：たびらい/エアトリ/RDC/自社HP）**。BUDDICAは**buddicatourism@gmail.com宛＝私(noritaka)からは読めない**が、**BUDDICA取込GAS(gas_torikomi_clasp=じゃらん/たびらい・gas_relay_clasp=エアトリ/RDC)が全て`bt_reservation_emails`(BT・列=reservation_id/ota/subject/raw_body/received_at・97行・anon SELECT可)に生メール保存済み(LEDGER-ONE 2026-09-09)**→**稼働中のBUDDICA GASを一切触らず**、ResvInboxViewが`sbBt.from('bt_reservation_emails')`を読んでBOX化(本文=raw_body・取込照合=bt_reserve_check)。実ブラウザ検証済(137069081たびらい本文全文表示・全125件✅取込済)。
+- **教訓（横展開・"全チャネル可視化"の型）**：受信メール本文の台帳は経路で2系統＝(a)HDM(.com/.jp)＝私が読む札幌GASが`reserve_inbox_mirror`(body列)に記録 (b)BUDDICA＝別Gmail(buddicatourism)を読むGASが既に`bt_reservation_emails`に保存済み。**新しい受信元を可視化に足す時は「その受信箱を読むGASが既に生メールをどこかのテーブルに保存していないか」を先に確認**＝あれば稼働GAS無改変でビューアから読むだけ(最小リスク)。無ければ受信元GASにmirror記録を足す。⚠️`bt_reservation_emails`は"取込成功後"に保存＝失敗分は載らない(BUDDICAの❌未取込=受信時ログが必要・現状は全て✅)。異なるチャネルは行に`chan`(com/jp/bud)を持たせBOX(タイル)で切替＝1画面統合。
 
 ## 💹 2026-09-23 公式サイト価格コントローラーを3段階(基本/安い/高い)に刷新＋OMNI解放（price-controller.html・3店・175パターン実証済）
 オーナー指示：**価格に関連する修正・対応はOMNIが対応する（＝この項を読めば全号機が価格系を扱える。OMNI解放済）**。
@@ -27,6 +29,14 @@
 - **公式サイト表示(official-flow.html・handyman-officialリポ=rent-handyman.com本番)**：`loadPriceMaster()`がhdm_official_priceをanon取得→`CLS[c]._base/_a/_b`・`window._HIGH/_LOW/_MONTHS`。`baseSum()`が3帯計算(RPCと同一ロジック)。sql正本=`~/spk-task/sql/official_book_spk_nha.sql`(RPCはDB適用済・ファイルは追随要)。
 - **実証(2026-09-23・175パターン全一致)**：3店×全クラス×7日程(未登録=基本/安い/高い/混在/月別+混在/月跨ぎ/年跨ぎ)を`_dry`で検証→期待値(python同ロジック)と突合→175/175一致。anon保存も3店OK。検証スクリプト型=`/tmp/pv2.py`(現マスターbackup→テスト値set→**1店1SQL(cross join values)で全パターン_dry一括**→即復元→python期待値と突合)＝マスターのテスト値本番露出を最小化。
 - **教訓(横展開)**：①価格は**表示(baseSum)と決済(RPC)の両方を必ず同ロジックに**(片方だけだと過少請求/表示ズレ)。②RPC一括修正はbt(スペース有` := `)とmain(スペース無`:=`)で置換文字列を分ける(**bt_book_tkmはreplace漏れしやすい**＝v_base/v_low代入が入らずclassTotal=nullで全滅→スペース形式に合わせて個別修正)。③大量パターン検証は`_dry`(予約作らない)＋1店1SQLで高速化。④「未登録=基本・安い/高いは登録制」の3帯モデル。⑤RPC改修後は必ず`_dry`で数百パターン検証してから完了とする(過少請求防止)。
+
+## 📌 2026-09-24 引き継ぎ・申し送り機能を高松→札幌/那覇に横展開（予約ごとのログ記録・武山さん要望）
+高松の「📌引継」機能（予約ごとに引き継ぎ/申し送りを記録・編集・削除）を札幌/那覇に同設計で展開。目的＝問い合わせ/要望/注意事項のログを保管する場所がなく引き継ぎ漏れが多発→予約単位で残す。
+- **DBテーブル（main ckrxttbnawkclshczsia）**：`spk_handover_notes`/`nha_handover_notes`（列＝id/reservation_id/rec_date/staff/note/created_at/updated_at・anon+authenticated full RLS）。**⚠️`nha_handover`は別機能で既存**（id/text/target_date/done）＝衝突回避で必ず`_notes`サフィックス。BTは`bt_handover`（既存）。
+- **アプリ（SPK index.src.html / NHA index.html.bak）**：`HandoverBtn`コンポーネント＋`{spk,nha}HoLoad`(件数map)/`{spk,nha}HoLoadStaff`(担当プルダウン=staff/nha_staff)＋`window._{spk,nha}HO.map`(rid→件数)＋`{spk,nha}-ho-changed`イベント。記録有=赤/無=グレー。対象＝`HO_TASK_TYPES_SPK=["DEL","COL","洗車","引取","入庫"]`／`HO_TASK_TYPES_NHA=["PUB","DEL","PU","来店","PUB来店","COL","返却","BD","BDB","洗車"]`(返却後洗車除く)。挿入=OPマスター/本日スケジュール/個人別サマリーのバッジ群(LicenseBadge隣)。
+- **バイトページ(staff.html・vanilla)**：`saLoadHO`/`window.saHandover`(モーダルCRUD)＋各タスクbtnsに📌引継(`window.HO_MAP`件数)。CUR_STAFF=d.staff。保存後load()再描画。
+- **E2E**：anon insert201/read200/delete204。SPK v4.7.636/staff-v3.31・NHA v3.5.380-NHA/staff-v1.18-nha。
+- **横展開の型**：BTのReact.createElement版→SPK/NHAはJSX化(同ロジック)。バイトはvanilla(BT staff.htmlのtable名だけ差替)。**terserがNHA app.jsの関数名をmangle**→反映確認はASCII識別子でなく`nha_handover_notes`等の文字列countで見る。新テーブル名は`information_schema.columns`で既存衝突を必ず確認(nha_handoverが既存だった)。
 
 ## 🚗 2026-09-23 高松(BT) 車検(仮)の車に予約が自動配車される＝GAS自動配車がメンテ(bt_maintenance)を見ていなかった（アプリ側の二重予定ガードの穴）
 武山さん報告「また車検（仮）のラインに配車してる」。陳志超(137069081・たびらい・11/25-12/02)がルーミー3576(ﾙｰﾐb0bs)に配車されたが、同車は車検(仮・pending)11/26-12/02＝期間重複。→ 空きのタンク3705(P0000054542)へ振り替え(bt_fleet+bt_reservations `_src=human`)。
