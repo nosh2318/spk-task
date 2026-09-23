@@ -244,7 +244,8 @@ function mirrorReserveInbox_() {
         subject: subj.substring(0, 200),
         ota: ota,
         reservation_no: rno,
-        store_guess: isTak ? '高松' : ((/_OKA|那覇|沖縄/.test(body)) ? '那覇' : '札幌')
+        store_guess: isTak ? '高松' : ((/_OKA|那覇|沖縄/.test(body)) ? '那覇' : '札幌'),
+        body: body.substring(0, 7000)
       });
     }
   }

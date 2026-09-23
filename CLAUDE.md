@@ -14,6 +14,8 @@
 - **取込済み判定の罠＝anon直selectはRLSで0件→全部❌誤判定**→必ず**SECURITY DEFINER RPC(anon grant)**で照合：`reserve_check(p_nos text[])`(MAIN=reservations∪nha_reservations)＋`bt_reserve_check(p_nos text[])`(BT=bt_reservations)。高松はBT別DBなのでBT側RPCを別途叩く(MAINからBTは引けない)。予約が実在すれば✅取込済/無ければ❌未取込。
 - **問い合わせAPP(handyman-inquiry)への追加手順**：source=`~/Desktop/HANDYMAN/inquiry_deploy/index.html`(Vercel本番・React+babel-standalone)＝タブ追加(tab==='resv'・ResvInboxView・sb/sbBtクライアントで`.from('reserve_inbox_mirror')`＋`.rpc('bt_reserve_check'/'reserve_check')`)→**JSX構文check(babel transformSync)→`inquiry_system/inquiry_manager.html`にcp同期→`cd inquiry_deploy && vercel deploy --prod --yes`**(git remote無し=commitはローカル控えのみ)。
 - **教訓**：①「reserve.comの受信が見えない」＝箱が無いのでなく"受信を映す仕組みが無い"だけ。転送先(noritaka)に実体があり読める→GAS(唯一のGmail読取)で台帳化＋ビューアで可視化＝盲点ゼロ。②取込済み判定はRLS回避のSECURITY DEFINER RPC必須(anon直selectは0件で誤判定)。③受信(inbound)の自然な置き場所は問い合わせAPP(受信メール管理)＝mail-status(送信/cron)とは用途別だが同一ソースなので両方に置いてもズレない。
+- **【2026-09-24 続・オーナー『札幌那覇のように.comのBOXを作ってメールの中身を見れるように』】問い合わせAPPのResvInboxViewを"BOX＋本文リーダー"に刷新**：①`reserve_inbox_mirror`に**`body`列追加**＋GAS `mirrorReserveInbox_`が`m.getPlainBody().substring(0,7000)`を保存(clasp push済・30分毎に全件本文取得／9/13楽天等の3日窓外はGmail MCPで手動backfill＝GASのnewer_than:3d外は自動では入らない点に注意) ②UI＝**BOXタイル3つ(📥.com高松/🟦.jp札幌那覇/📬すべて・件数＋未取込数)＝札幌那覇の店タイルと同じ体験**＋**2ペイン(左=メール一覧・クリック→右に本文全体<pre>表示)**。既定box=.com高松(要望の主役)。実ブラウザ検証済(R0CMD8L3クリック→本文全文表示・沓掛様2027/1/22-23高松空港店)。**教訓＝生メール台帳(reservation_emails)はMAIN未作成/BTは別経路で疎ら→本文を確実に見せるにはmirrorにbody列を持たせGASで保存が最クリーン。**
+- **⚠️Chrome MCPのタブ切替クリックはタイミング/ref依存で不発になる**＝ページ読込直後の座標クリックやref_9クリックがtab切替を起こさないことがある→**ページ完全描画後に座標再クリック**で確実に切替(検証時の落とし穴)。
 
 ## 💹 2026-09-23 公式サイト価格コントローラーを3段階(基本/安い/高い)に刷新＋OMNI解放（price-controller.html・3店・175パターン実証済）
 オーナー指示：**価格に関連する修正・対応はOMNIが対応する（＝この項を読めば全号機が価格系を扱える。OMNI解放済）**。
