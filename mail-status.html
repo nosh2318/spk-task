@@ -41,6 +41,8 @@ td.w{white-space:nowrap;color:#334155}
 
 <div class="cov" id="cov"></div>
 
+<div class="card" id="inbox"><div class="chd"><span style="font-size:17px">📥</span><span class="t">reserve 受信箱（.com=高松 / .jp=札幌那覇）</span><span class="st" id="inbox_st">読込中…</span></div><div id="inbox_body"><div class="foot" style="border:0">読込中…</div></div></div>
+
 <div class="kpi">
 <div class="kbox"><div class="sub">札幌 じゃらん未払</div><div class="n" id="up_spk">–</div></div>
 <div class="kbox"><div class="sub">那覇 じゃらん未払</div><div class="n" id="up_nha">–</div></div>
@@ -56,6 +58,34 @@ td.w{white-space:nowrap;color:#334155}
 const MAIN="https://ckrxttbnawkclshczsia.supabase.co",MANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
 const BT="https://ggqugvyskyiblxiycpci.supabase.co",BANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdncXVndnlza3lpYmx4aXljcGNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxMDc3NjksImV4cCI6MjA5MzY4Mzc2OX0.uNhWcBd_Dl5nzemZDQfJ8mQV6iY73MwystGGpTRPC18";
 function rpc(base,anon,fn){return fetch(base+"/rest/v1/rpc/"+fn,{method:"POST",headers:{apikey:anon,Authorization:"Bearer "+anon,"Content-Type":"application/json"},body:"{}"}).then(r=>r.json()).catch(e=>({ok:false}));}
+function rpcP(base,anon,fn,p){return fetch(base+"/rest/v1/rpc/"+fn,{method:"POST",headers:{apikey:anon,Authorization:"Bearer "+anon,"Content-Type":"application/json"},body:JSON.stringify(p)}).then(r=>r.ok?r.json():[]).catch(()=>[]);}
+function sbGet(base,anon,path){return fetch(base+"/rest/v1/"+path,{headers:{apikey:anon,Authorization:"Bearer "+anon}}).then(r=>r.ok?r.json():[]).catch(()=>[]);}
+async function loadInbox(){
+  const st=document.getElementById("inbox_st"),bd=document.getElementById("inbox_body");
+  const rows=await sbGet(MAIN,MANON,"reserve_inbox_mirror?select=*&order=gmail_date.desc&limit=60");
+  if(!rows.length){st.textContent="受信0";st.className="st warn";bd.innerHTML='<div class="foot" style="border:0">直近の受信記録なし（GASが30分毎に記録）</div>';return;}
+  const nos=[...new Set(rows.map(r=>r.reservation_no).filter(Boolean))];
+  let btSet=new Set(),mnSet=new Set();
+  if(nos.length){
+    const [bt,mn]=await Promise.all([rpcP(BT,BANON,"bt_reserve_check",{p_nos:nos}),rpcP(MAIN,MANON,"reserve_check",{p_nos:nos})]);
+    btSet=new Set(bt||[]);mnSet=new Set(mn||[]);
+  }
+  let miss=0;
+  const tr=rows.map(r=>{
+    const jst=new Date(r.gmail_date).toLocaleString("ja-JP",{timeZone:"Asia/Tokyo",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"});
+    const com=(r.to_addr||"").indexOf(".com")>=0;
+    const dst=com?'<span class="ch wh">.com 高松</span>':'<span class="ch mail">.jp 札幌那覇</span>';
+    const imp=r.reservation_no&&(btSet.has(r.reservation_no)||mnSet.has(r.reservation_no));
+    let impCell;
+    if(!r.reservation_no)impCell='<span style="color:#94a3b8">番号未取得</span>';
+    else if(imp)impCell='<span style="color:#16a34a;font-weight:700">✅取込済</span>';
+    else{impCell='<span style="color:#dc2626;font-weight:700">❌未取込</span>';miss++;}
+    return `<tr><td class="w">${jst}</td><td>${dst}</td><td class="w">${r.ota||"-"}</td><td class="w">${r.store_guess||"-"}</td><td class="w">${r.reservation_no||"-"}</td><td>${impCell}</td><td style="color:#64748b">${(r.subject||"").slice(0,30)}</td></tr>`;
+  }).join("");
+  st.textContent=miss?("⚠️未取込"+miss+"件"):("✅全"+rows.length+"件取込済");
+  st.className="st "+(miss?"off":"on");
+  bd.innerHTML=`<table><thead><tr><th>受信</th><th>宛先</th><th>OTA</th><th>店</th><th>予約番号</th><th>取込</th><th>件名</th></tr></thead><tbody>${tr}</tbody></table><div class="foot">reserve@rent-handyman.com(高松)/.jp(札幌那覇)宛の予約メール受信記録。取込＝BT/本DBに予約が実在するか照合。GASが30分毎に記録。</div>`;
+}
 
 // ===== 系統マスター（何を・いつ・どのcronが担当か）=====
 const M=(t)=>`<span class="ch mail">メール</span>`,L=(t)=>`<span class="ch line">LINE</span>`,SL=`<span class="ch slack">Slack</span>`,WH=`<span class="ch wh">Webhook</span>`;
@@ -142,5 +172,5 @@ async function loadAll(){
   document.getElementById("cards").innerHTML=html;
   document.getElementById("health").textContent=okg+"/"+GROUPS.length;
 }
-loadAll();setInterval(loadAll,60000);
+loadAll();loadInbox();setInterval(()=>{loadAll();loadInbox();},60000);
 </script></body></html>

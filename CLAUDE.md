@@ -1,5 +1,13 @@
 # SPK業務管理APP（札幌店）
 
+## 📧 2026-09-23 高松HDM楽天の取込/通知を恒久解決＝reserve.comをnoritaka.oshitaに転送し稼働中の札幌GASで直接取込（過去失敗経路の教訓つき）
+高松楽天が「Slackも出ない・APP取込もされない・何回直しても動かない」の恒久解決。**過去数回(9/6・9/11)の失敗の共通原因＝buddicatourism経路に賭け続けたこと**：reserve@rent-handyman.com→buddicatourism@gmail.com→リレーGAS(gas_bt_reservation_import.gs)。この経路は①**1分毎トリガーがGmailクォータ枯渇で9/10停止**(2026-09-17の札幌那覇と同型・無料Gmailは呼出上限が厳しい)②reserve_inbox台帳も9/10停止③GmailApp検索の穴、で一度も楽天をBTに取り込めていなかった(bt_reservations ota=楽天=0件)。
+- **正しい経路(オーナー確定A案・実装済)**：`楽天高松 → reserve@rent-handyman.com →(お名前転送)→ noritaka.oshita@gmail.com → 稼働中の札幌GAS(30分毎・実証済) → 本文の"_TAK"/"高松空港店"で高松判別 → bt-import EF → BT取込(HDM車自動配車)+#app予約取込-高松(C0BFDJ1HRC3)にSlack`。
+- **お名前.com メール転送**：reserve@rent-handyman.com の転送先を buddicatourism→**noritaka.oshita@gmail.com**に変更(Navi→ドメイン→ドメインDNS設定→メール転送設定・MX=mailforward.dnsv.jp)。お名前ID=50077351。**ログインだけオーナー(パスワード認証は私はできない)、以降の設定変更はChrome MCPで私が実施可**。
+- **札幌GASはclasp紐付き＝貼付不要で私が反映できる**：`~/spk-task/gas/`(.clasp.json scriptId=`1IriSCpu6L7y8OLkO54pcHZWmWnAnTLtEC9qUGPKl0sVsoe5jLOqfRVTU`)＝本番「札幌予約メール自動配車」。`clasp pull`で本番現行(Code.js・processMessage_ line383でgas-email-import-v2.gsと同構造)取得→編集→`clasp push`で本番反映。⚠️push前に古いstray `Code.gs`(4月版)を退避(二重定義回避)。高松ルーティングは`processMessage_`の`if(!isSapporoReservation_)`直前(新規)＋`if(isCancellation)`直後(キャンセル)に挿入済＝`/_TAK/i.test(body)||body.indexOf('高松空港店')`でbt-import EFへPOST。
+- **bt-import EF**(MAIN `ckrxttbnawkclshczsia`・`--no-verify-jwt`・正本`~/spk-task/line_auto/bt-import/index.ts`)：札幌GASからparse済みreservationを受け、E_TAK→E変換・HDM車自動配車(bt_vehicles brand=HDM active・bt_fleet重複回避)・bt_reservations/fleet/tasks挿入(brand=bt_derive_brandでHDM)・Slack。キャンセルはisCancel:true。secrets=BT_URL/BT_SERVICE_KEY/BT_SLACK_TOKEN/BT_IMPORT_SECRET(=hdm_tkm_cron_secret)。実データテスト合格済。
+- **教訓**：①**Gmail定期読取はGASのみ**(Supabase/EFからGmailは読めない)。②**無料Gmailの1分毎トリガーはGmailクォータで死ぬ→30分毎以下に**(9/10停止の主因・buddicatourism 1分毎リレーは停止スイッチをclasp pushで無効化済)。③**楽天メール宛先＝札幌那覇はreserve@rent-handyman.jp／高松はreserve@rent-handyman.com**(両方お名前転送でGmailに届く・実メールのTo:とmailforward.dnsv.jp送信元で確定)。④**"どの受信箱に実際に届くか"を実データ(Gmail MCPのTo:・お名前の転送設定画面)で必ず確定してから設計**(.jp/.comを推測で何度も誤った=台帳先確認の鉄則)。⑤ポーラー(Gmail読取GAS)を増やさず、既に安定稼働の札幌GAS(30分毎)に相乗りが最安・最確実。⑥札幌GASはclasp紐付き＝今後も私がclasp pull/pushで反映可(貼付不要)。
+
 ## 💹 2026-09-23 公式サイト価格コントローラーを3段階(基本/安い/高い)に刷新＋OMNI解放（price-controller.html・3店・175パターン実証済）
 オーナー指示：**価格に関連する修正・対応はOMNIが対応する（＝この項を読めば全号機が価格系を扱える。OMNI解放済）**。
 - **URL**: https://nosh2318.github.io/spk-task/price-controller.html（standalone・buildなし・push即反映・ログイン不要=anon保存）。スタッフ共有可＝画面上部「❓使い方」に操作説明を内蔵。
@@ -10,6 +18,18 @@
 - **公式サイト表示(official-flow.html・handyman-officialリポ=rent-handyman.com本番)**：`loadPriceMaster()`がhdm_official_priceをanon取得→`CLS[c]._base/_a/_b`・`window._HIGH/_LOW/_MONTHS`。`baseSum()`が3帯計算(RPCと同一ロジック)。sql正本=`~/spk-task/sql/official_book_spk_nha.sql`(RPCはDB適用済・ファイルは追随要)。
 - **実証(2026-09-23・175パターン全一致)**：3店×全クラス×7日程(未登録=基本/安い/高い/混在/月別+混在/月跨ぎ/年跨ぎ)を`_dry`で検証→期待値(python同ロジック)と突合→175/175一致。anon保存も3店OK。検証スクリプト型=`/tmp/pv2.py`(現マスターbackup→テスト値set→**1店1SQL(cross join values)で全パターン_dry一括**→即復元→python期待値と突合)＝マスターのテスト値本番露出を最小化。
 - **教訓(横展開)**：①価格は**表示(baseSum)と決済(RPC)の両方を必ず同ロジックに**(片方だけだと過少請求/表示ズレ)。②RPC一括修正はbt(スペース有` := `)とmain(スペース無`:=`)で置換文字列を分ける(**bt_book_tkmはreplace漏れしやすい**＝v_base/v_low代入が入らずclassTotal=nullで全滅→スペース形式に合わせて個別修正)。③大量パターン検証は`_dry`(予約作らない)＋1店1SQLで高速化。④「未登録=基本・安い/高いは登録制」の3帯モデル。⑤RPC改修後は必ず`_dry`で数百パターン検証してから完了とする(過少請求防止)。
+
+## 🚗 2026-09-23 高松(BT) 車検(仮)の車に予約が自動配車される＝GAS自動配車がメンテ(bt_maintenance)を見ていなかった（アプリ側の二重予定ガードの穴）
+武山さん報告「また車検（仮）のラインに配車してる」。陳志超(137069081・たびらい・11/25-12/02)がルーミー3576(ﾙｰﾐb0bs)に配車されたが、同車は車検(仮・pending)11/26-12/02＝期間重複。→ 空きのタンク3705(P0000054542)へ振り替え(bt_fleet+bt_reservations `_src=human`)。
+- **真因＝2026-09-01の「二重予定ガード(reservation×maintenance)」はアプリのUI経路(reassignVehicle/assignVehicle)だけ＝GASの自動配車(OTA/たびらい/じゃらん取込)は素通り**。GASの`autoAssignVehicle_`/`assignTabiraiVehicle_`は`bt_fleet`の予約重複(busy)しか見ず、`bt_maintenance`の入庫ブロックを無視して「空き」と判定→車検車へ配車。
+- **根治**：3GAS全部の空車判定に`bt_maintenance`重複チェックを追加＝`btGet_('bt_maintenance?select=vehicle_code,start_date,end_date&start_date=lte.<end>&end_date=gte.<start>')`で重複車を`busy[vehicle_code]=1`に。①`gas_relay_clasp/コード.js`(OTA relay=RDC/エアトリ/楽天・**clasp push済=LIVE反映**)②`gas_bt_tabirai_import.gs`(たびらい)③`gas_bt_jalan_import.gs`(じゃらん)＝**②③はオーナーのApps Script貼付待ち**（コード修正だけでは本番未反映＝貼付＋実取込で車検車を避けるまで完了と言わない）。
+- **教訓**：①「メンテ車に配車される」系はアプリUIガードでなく**GAS自動配車(取込時)**を疑う＝取込→auto-assignはReactアプリを通らずガードが効かない。②空車判定は必ず「予約重複＋メンテ重複」の両方を見る(3店・アプリ/GAS両方)。③BTのbt_maintenanceに`block_type`列は無い(main/nha_maintenanceにもnullで全ブロック対象)＝GASでは`block_type<>'partner_reserved'`除外はせず全メンテを配車不可扱い(協力会社の自社予約はブランド/他ロジックで別管理)。④end_date null のメンテは`gte`で拾えない穴が残る(大半はend_dateあり・許容)。
+
+## 🖼 2026-09-23 高松(BT)車両マスターのETC画像アップロード「画像アップロード失敗」根治＝BT Storageに`memo-images`バケット未作成
+武山さん報告「高松 車両→マスターにETC画像をアップすると"画像アップロード失敗"」。真因＝BTアプリの`DB.uploadMemoImage`(index.html.bak L630)が**BT DBのStorageバケット`memo-images`(fname=`tkm/<ts>.jpg`)へ**upload/getPublicUrlするが、**BT DB(ggqugvyskyiblxiycpci)にそのバケットが存在しなかった**（BTのバケットは`bt-invoices`(非公開)/`received-invoices`(公開)のみ）→uploadがerror→catchで「画像アップロード失敗」。ETC画像だけでなくBTメモ画像添付も同じ関数＝共倒れ。
+- **根治(DB側のみ・アプリ改修/デプロイ不要)**：①Storage APIで`memo-images`バケット作成(public・`file_size_limit:10MB`・`allowed_mime_types:jpeg/png/webp`)②`storage.objects`にanon/authenticatedの**insert/update/select**ポリシー(`bucket_id='memo-images'`限定)。→ スタッフは再アップするだけで保存可(アプリ更新不要)。
+- **E2E検証**：BT anonキーで`POST /storage/v1/object/memo-images/tkm/test.jpg`→Key返却成功／`/object/public/memo-images/..`→200／テスト後削除。
+- **教訓**：①「画像アップロード失敗」系はまず**アップ先バケットが対象DBに実在するか**確認(`GET /storage/v1/bucket`)。BTは別DB＝main(ckrxttbnawkclshczsia)にバケットがあってもBTには無い(横展開漏れ)。②`DB.uploadMemoImage`は**memoもETCも共用**＝1バケット欠落で複数機能が同時に壊れる。③バケット作成＝Storage API(`POST /storage/v1/bucket`・service_key)、objectポリシー＝Management API SQL(urllib403→curl `--data-binary`必須)。④アプリが新機能でStorageに書く時は「そのDBにバケット＋insertポリシーがあるか」を先に用意(main/BT両方確認)。
 
 ## 🚙 2026-09-21 BTご利用ガイド送迎欄=①来店/店舗返却も選択時オレンジに統一 ②来店/店舗返却も時刻選択→OP反映（既存バグ根治・guide-v 2026-09-21）
 武山さん要望。①色＝`_puActive/_rtActive`が来店/店舗返却(false)選択時グレー`#475569`→オレンジ`#ee6a1c`に統一(未選択白)。②時刻＝**既存バグ発見**：`bt_mypage_set_pickup`が古い2引数`(p_token,p_time)`でp_want非対応→来店(p_time=null)が`bad_time`で保存失敗／`bt_mypage_set_dropoff`はp_want対応だが店舗返却時`col_time=null`。→ **RPC 2本をp_want対応で統一**(来店→visit_type=来店/`del_time=p_time`(貸出時刻=A)/del_place=店舗、店舗返却→return_type=返却/`col_time=p_time`(返却時刻)/col_place=店舗。お迎え=PU/高松空港・返却送迎=BD は温存)＋**古い2引数set_pickupをDROP FUNCTION**(オーバーロード曖昧回避)＋フロント(`_puWant/_rtWant`で選択保持・来店/店舗返却でもtimeRow表示・savePickup/doPickup/showPuCur/renderPickupが来店時刻を保存/再表示・来店は便情報非表示)。lookupは元からdel_time/col_time返す=改修不要。
