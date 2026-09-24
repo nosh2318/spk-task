@@ -195,7 +195,7 @@ function processNewEmails() {
     if (unassigned.length > 0) sendSlackUnassigned_(unassigned);  // ★2026-09-06 取込OK・未配車（手動配車が必要）
     if (failures.length > 0) sendSlackFailure_(failures);
     if (cancellations.length > 0) sendSlackCancel_(cancellations);
-    try { mirrorReserveInbox_(); } catch (me) { Logger.log('[mirror] ' + me.message); }  // ★2026-09-24 reserve受信ミラー
+    // ★2026-09-24 撤去: mirrorReserveInbox_() は毎回GmailApp.search(150スレッド)を追加実行しGmailクォータを枯渇させた(札幌/那覇取込を停止させた原因)。可視化のためのミラーは取込本体のクォータを食うべきでない→呼び出し廃止。
   } catch (e) {
     Logger.log('[processNewEmails] FATAL: ' + e.message + '\n' + e.stack);
     failures.push({id:'-', ota:'?', name:'', reason:'processNewEmails fatal: '+e.message});
