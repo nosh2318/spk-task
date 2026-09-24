@@ -246,6 +246,43 @@ async function slackPost(text: string): Promise<any> {
   return await res.json();
 }
 
+// ★高松(BT)日報＝単一の正 RPC bt_mtg_h2 から生成（bt-mtgページの日報サマリーと同一定義：売上=返却月[予約+予約外]/流通=発生月/目標=11月〜500万）
+async function btDaishoReport(): Promise<string> {
+  const yen = (n: number) => "¥" + Number(n || 0).toLocaleString("en-US");
+  const TREV = 5000000, TCNT = 150;
+  const hasT = (ym: string) => ym >= "2026-11";
+  const MN = (ym: string) => String(Number(ym.slice(5, 7))) + "月";
+  const res = await fetch(`${BT_URL}/rest/v1/rpc/bt_mtg_h2`, { method: "POST", headers: { apikey: BT_KEY, Authorization: `Bearer ${BT_KEY}`, "Content-Type": "application/json" }, body: "{}" });
+  const D: any = await res.json();
+  const months: string[] = D.months, o: any = D.data;
+  const nowJst = new Date(Date.now() + 9 * 3600 * 1000);
+  const gm = nowJst.getUTCFullYear() + "-" + String(nowJst.getUTCMonth() + 1).padStart(2, "0");
+  let ci = months.indexOf(gm); if (ci < 0) ci = months.length - 1;
+  const cm = months[ci], C: any = o[cm] || {};
+  const per = C.nveh ? Math.round(C.tot_r / C.nveh) : 0;
+  const fb = (mo: any, br: string) => (mo.flow_brand || {})[br] || { c: 0, r: 0 };
+  const fclist = (mo: any, br: string) => { const a: any[] = []; Object.keys(mo.flow_chan || {}).forEach(k => { const p = k.split("|"); if (p[0] === br) a.push([p.slice(1).join("|"), mo.flow_chan[k].c, mo.flow_chan[k].r]); }); a.sort((x, y) => y[2] - x[2]); return a; };
+  const L: string[] = [];
+  L.push(`🍜 *BUDDICA TOURISM 高松空港店 日報* ｜ ${D.generated || ""}`);
+  L.push(`売上=返却月(予約+予約外) ／ 流通=発生月(取扱高) ／ 目標=11月〜 各月${Math.round(TREV / 10000)}万・${TCNT}件`);
+  L.push("");
+  L.push(`■ 当月売上（${MN(cm)}・返却月）：${yen(C.tot_r)}（${C.tot_c || 0}件）` + (C.ext_r ? `　※予約${yen(C.resv_r)}＋予約外${yen(C.ext_r)}` : ""));
+  if (hasT(cm)) { const d = C.tot_r - TREV; L.push(`　目標${yen(TREV)}・達成${Math.round(C.tot_r / TREV * 100)}%・差${d >= 0 ? "+" : "−"}${yen(Math.abs(d))}`); } else { L.push("　※当月は目標未設定（目標は11月〜）"); }
+  L.push(`　台あたり売上 ${yen(per)}`);
+  const fBd = fb(C, "BUDDICA"), fHd = fb(C, "HDM");
+  L.push(`■ 当月流通（${MN(cm)}・発生月/取扱高）：${C.flow_c || 0}件 / ${yen(C.flow_r)}`);
+  L.push(`　🟢BUDDICA ${fBd.c}件/${yen(fBd.r)} ｜ 🔵HANDYMAN ${fHd.c}件/${yen(fHd.r)}`);
+  const cB = fclist(C, "BUDDICA"), cH = fclist(C, "HDM");
+  L.push(`■ チャネル別内訳（${MN(cm)}・流通）`);
+  if (cB.length) L.push("　BT: " + cB.map((x: any) => `${x[0]} ${x[1]}件/${yen(x[2])}`).join("・"));
+  if (cH.length) L.push("　HDM: " + cH.map((x: any) => `${x[0]} ${x[1]}件/${yen(x[2])}`).join("・"));
+  const fut = months.slice(ci + 1);
+  if (fut.length) { L.push("■ 先行（返却月売上／目標）"); fut.forEach((m: string) => { const mo: any = o[m]; let s = `${MN(m)} ${yen(mo.tot_r)}・${mo.tot_c}件`; if (hasT(m)) { const d = mo.tot_r - TREV; s += `（目標${Math.round(mo.tot_r / TREV * 100)}%・差${d >= 0 ? "+" : "−"}${yen(Math.abs(d))}）`; } L.push("　" + s); }); }
+  L.push("");
+  L.push("詳細: https://nosh2318.github.io/spk-task/bt-mtg-2026h2.html");
+  return L.join("\n");
+}
+
 serve(async (req) => {
   try {
     const url = new URL(req.url);
@@ -279,7 +316,7 @@ serve(async (req) => {
     const targets = STORES.filter(s => !onlyStore || s.key === onlyStore);
     for (const store of targets) {
       try {
-        const text = await loadStore(store, cutoffMs, reportDate);
+        const text = store.key === "bt" ? await btDaishoReport() : await loadStore(store, cutoffMs, reportDate);
         if (dry) { results[store.key] = text; }
         else { const sr = await slackPost(text); results[store.key] = { ok: !!sr.ok, ts: sr.ts, error: sr.error }; }
       } catch (e) {
