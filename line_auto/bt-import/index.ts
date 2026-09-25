@@ -67,20 +67,19 @@ serve(async(req)=>{
   const s=r.lend_date, e=r.return_date;
   const car=await assign(cls,s,e);
   const price=N(r.price)||(N(r.base_price)+N(r.option_price)-N(r.discount));
-  // ★2026-09-25 高松=空港送迎モデル(デリバリー無し)。便あり→お迎え(PU)/お見送り(BD)、便なし・来店→来店/返却。
-  //   じゃらんは札幌GAS parseJalan_(札幌=デリバリー前提)経由でvisit_type=DELが付くのでここで上書き(楽天HDMは元からPU)。
-  const _fl=String(r.flight||"").trim();
-  const _hasFl=/[A-Za-z]{1,3}\s*\d{2,}/.test(_fl)&&!/利用なし|未定|来店|利用せず/.test(_fl);
+  // ★2026-09-25 訂正(武山さん): OTA予約(楽天/じゃらん等)は便名の有無に関わらず「貸出/返却」で統一(中立)。
+  //   PU/BDはオフィシャル/ご利用ガイドで"送迎あり"を選んだ時だけ(=マイページでpickup設定時)反映。
+  //   → visit_type/return_type/場所を空(中立)にする。deriveLendType/deriveRetTypeが空+場所空→"貸出"/"返却待"を導出。
   // ★2026-09-25 mail/tel を必ず書く（hdm-tkm-enqueueがmail必須＝空だと初動メール/決済リンクが発行されない致命バグの根治）。
   //   じゃらんはSquare事前決済(顧客が後で支払う)＝paid:false・payment=じゃらん事前決済。楽天/skyticket/エアトリはOTA事前カード決済済。
   const _isJalan = ota==="じゃらん";
   const row={id:rno,name:r.name||"",kana:r.kana||"",mail:r.mail||"",tel:r.tel||"",start_date:s,end_date:e,start_time:r.lend_time||"",end_time:r.return_time||"",
     vehicle_class:cls,vehicle_name:car?car.name:"",plate_no:car?car.plate_no:"",assigned_vehicle:car?car.code:"",
     source:"ota",status:"確定",ota,booking_no:rno,people:N(r.people)||1,insurance:r.insurance||"",
-    del_place:r.del_place||"高松空港",col_place:r.col_place||"高松空港",del_flight:r.flight||"",col_flight:"",
+    del_place:"",col_place:"",del_flight:r.flight||"",col_flight:"",
     car_seat:"0",junior_seat:"0",opt_b:N(r.opt_b),opt_c:N(r.opt_c),opt_j:N(r.opt_j),opt_usb:0,
     amount:price,price,base_price:N(r.base_price),option_price:N(r.option_price),discount:N(r.discount),final_price:price,
-    payment:_isJalan?"じゃらん事前決済(Square)":"事前カード決済(支払済)",paid:false,visit_type:_hasFl?"PU":"来店",return_type:_hasFl?"BD":"返却",
+    payment:_isJalan?"じゃらん事前決済(Square)":"事前カード決済(支払済)",paid:false,visit_type:"",return_type:"",
     changed_json:JSON.stringify({_src:"system"})};
   const ins=await bpost("bt_reservations",row);
   if(!ins.ok)return new Response(JSON.stringify({err:"insert "+ins.status+" "+(await ins.text()).slice(0,150),rno}),{status:500});
