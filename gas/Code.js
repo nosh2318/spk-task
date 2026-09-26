@@ -129,6 +129,7 @@ function processNewEmails() {
 
     var processedIds = getProcessedMsgIds_();
     var newProcessedIds = [];
+    var mirrorRows = [];  // ★2026-09-26 高松HDM(.com=楽天/じゃらん)だけの受信箱行。高松HDMはSlack通知が無く受信が見えない盲点→安全網。取込ループが既に読んだ本文を再利用＝新Gmail検索ゼロ。札幌/那覇(.jp)は元々Slack通知あり＝ミラーしない。
     var failedRetries = getFailedRetries_();  // ★2026-08-30 {msgId:失敗回数}
 
     Logger.log('Found ' + threads.length + ' thread(s) to check.');
@@ -147,9 +148,10 @@ function processNewEmails() {
           continue;
         }
         threadHadNew = true;
-        // ★2026-09-26 撤去: 受信箱ミラー(mirrorRowFor_)は getTo/getPlainBody/getSubject/getFrom を新着メッセージ全件に呼び、取込に利益ゼロの"閲覧用Gmail読取"で1日のGmailクォータを押し上げ両店取込を停止させた(9/24 e141bb3の無駄な仕様変更)。取込ループにGmail読取を足さない鉄則(CLAUDE.md)に従い撤去。可視化は取込を止めない別手段で。
         try {
           var result = processMessage_(messages[j], false);
+          // ★2026-09-26 高松HDM(.com=楽天/じゃらん)だけ受信箱ミラーに記録。高松HDMはSlack通知が無く受信が見えない盲点の安全網。★processMessage_の"後"に呼ぶ＝メッセージ本文は既に読込済でキャッシュ命中＝新Gmail読取ゼロ。.comでなければ即null＝札幌/那覇(.jp)は一切読まない/記録しない(共有Gmailクォータ非消費)。取込を絶対止めない(例外安全)。
+          try { var _mr = mirrorRowFor_(messages[j]); if (_mr) mirrorRows.push(_mr); } catch (_me) {}
           // ★2026-08-30 失敗/エラーは seen 登録しない＝次回再取込（取込失敗が二度と拾われない穴を根治）。
           //   上限(MAX_IMPORT_RETRY)到達で諦めて seen 登録（Slackで既に通知済）。成功/キャンセル/非予約は即 seen。
           var markSeen = true;
@@ -181,7 +183,16 @@ function processNewEmails() {
       if (threadHadNew) threads[i].addLabel(label);
     }
 
-    // ★2026-09-26 撤去: 受信箱ミラーの一括記録も廃止（可視化用・取込に利益ゼロ）。取込ループにGmail読取/可視化を相乗りさせない鉄則(CLAUDE.md)。
+    // ★2026-09-26 高松HDM(.com)だけの受信箱ミラーを一括記録（取込ループが既に読んだ本文を再利用＝新Gmail検索ゼロ・クォータ非消費）。高松HDM(楽天/じゃらん)はSlack通知が無いため受信可視化＝取りこぼし検知の安全網。取込を絶対止めない(例外安全)。
+    if (mirrorRows.length > 0) {
+      try {
+        var _mh = { 'apikey': getSupabaseKey_(), 'Authorization': 'Bearer ' + getSupabaseKey_(),
+                    'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' };
+        UrlFetchApp.fetch(getSupabaseUrl_() + '/rest/v1/reserve_inbox_mirror?on_conflict=message_id',
+          { method: 'POST', headers: _mh, payload: JSON.stringify(mirrorRows), muteHttpExceptions: true });
+        Logger.log('[mirror] ' + mirrorRows.length + ' 高松HDM rows (loop-reuse, no extra Gmail)');
+      } catch (_me2) { Logger.log('[mirror] upsert err: ' + _me2); }
+    }
 
     // ★診断ログ: 「Found N だが success0」の原因が一目で分かる
     // 既処理skip が大半 → 処理済みID肥大 / 非予約null が大半 → 検索窓が販促メールで飽和
@@ -217,9 +228,9 @@ function processNewEmails() {
 //   reserve@rent-handyman.com(高松HDM)→.com / reserve@rent-handyman.jp(札幌那覇)→.jp。予約/キャンセル通知でなければ null。取込を絶対止めない(呼び側で例外安全)。
 function mirrorRowFor_(m) {
   var to = (m.getTo() || '');
+  // ★2026-09-26 高松HDM(.com=楽天/じゃらん)だけ対象。高松HDMはSlack通知が無く受信が見えない→安全網。札幌/那覇(.jp)は元々Slack通知あり＝ミラーしない(共有Gmailクォータを食わない)。
   var isCom = to.indexOf('reserve@rent-handyman.com') >= 0;
-  var isJp  = to.indexOf('reserve@rent-handyman.jp') >= 0;
-  if (!isCom && !isJp) return null;
+  if (!isCom) return null;
   var body = ''; try { body = m.getPlainBody() || ''; } catch (e) {}
   var subj = m.getSubject() || '';
   var from = (m.getFrom() || '').toLowerCase();
