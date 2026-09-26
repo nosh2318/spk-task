@@ -147,6 +147,7 @@ function processNewEmails() {
           continue;
         }
         threadHadNew = true;
+        // ★2026-09-26 撤去: 受信箱ミラー(mirrorRowFor_)は getTo/getPlainBody/getSubject/getFrom を新着メッセージ全件に呼び、取込に利益ゼロの"閲覧用Gmail読取"で1日のGmailクォータを押し上げ両店取込を停止させた(9/24 e141bb3の無駄な仕様変更)。取込ループにGmail読取を足さない鉄則(CLAUDE.md)に従い撤去。可視化は取込を止めない別手段で。
         try {
           var result = processMessage_(messages[j], false);
           // ★2026-08-30 失敗/エラーは seen 登録しない＝次回再取込（取込失敗が二度と拾われない穴を根治）。
@@ -180,6 +181,8 @@ function processNewEmails() {
       if (threadHadNew) threads[i].addLabel(label);
     }
 
+    // ★2026-09-26 撤去: 受信箱ミラーの一括記録も廃止（可視化用・取込に利益ゼロ）。取込ループにGmail読取/可視化を相乗りさせない鉄則(CLAUDE.md)。
+
     // ★診断ログ: 「Found N だが success0」の原因が一目で分かる
     // 既処理skip が大半 → 処理済みID肥大 / 非予約null が大半 → 検索窓が販促メールで飽和
     Logger.log('[Diag] threads=' + threads.length + ' 既処理skip=' + skippedProcessed +
@@ -209,52 +212,37 @@ function processNewEmails() {
   }
 }
 
-// ★2026-09-24 reserve受信箱ミラー：reserve@rent-handyman.com(高松)/.jp(札幌那覇)宛のOTA予約メールをSupabase reserve_inbox_mirrorに記録→mail-status.htmlで受信を可視化。取込ロジックには一切触れず記録のみ（例外安全）。
-function mirrorReserveInbox_() {
-  var fromClause = otaSenderList_().map(function(s){ return 'from:' + s; }).join(' OR ');
-  var threads = GmailApp.search('(' + fromClause + ') newer_than:3d', 0, 150);
-  if (!threads.length) return;
-  var rows = [], seen = {};
-  for (var i = 0; i < threads.length; i++) {
-    var msgs = threads[i].getMessages();
-    for (var j = 0; j < msgs.length; j++) {
-      var m = msgs[j], mid = m.getId();
-      if (seen[mid]) continue; seen[mid] = 1;
-      var to = (m.getTo() || '');
-      var isCom = to.indexOf('reserve@rent-handyman.com') >= 0;
-      var isJp  = to.indexOf('reserve@rent-handyman.jp') >= 0;
-      if (!isCom && !isJp) continue;
-      var body = ''; try { body = m.getPlainBody() || ''; } catch (e) {}
-      var subj = m.getSubject() || '';
-      var from = (m.getFrom() || '').toLowerCase();
-      var ota = from.indexOf('rakuten') >= 0 ? '楽天'
-              : from.indexOf('jalan') >= 0 ? 'じゃらん'
-              : from.indexOf('skyticket') >= 0 ? 'skyticket'
-              : (from.indexOf('airtrip') >= 0 || from.indexOf('skygate') >= 0) ? 'エアトリ'
-              : from.indexOf('rent-handyman') >= 0 ? 'HP直販' : '';
-      var rno = (extractField_(body, '予約番号') || '').replace(/[^A-Za-z0-9\-]/g, '');
-      var isCancel = /キャンセル|取消/.test(subj) || /キャンセル|取消/.test(body.slice(0, 200));
-      if (!rno && !/予約受付|予約通知|予約確定|新規予約|ご予約完了/.test(subj) && !isCancel) continue;
-      var isTak = /_TAK/.test(body) || body.indexOf('高松空港店') >= 0 || isCom;
-      rows.push({
-        message_id: mid,
-        gmail_date: m.getDate().toISOString(),
-        from_addr: (m.getFrom() || '').substring(0, 120),
-        to_addr: isCom ? 'reserve@rent-handyman.com' : 'reserve@rent-handyman.jp',
-        subject: subj.substring(0, 200),
-        ota: ota,
-        reservation_no: rno,
-        store_guess: isTak ? '高松' : ((/_OKA|那覇|沖縄/.test(body)) ? '那覇' : '札幌'),
-        body: body.substring(0, 7000)
-      });
-    }
-  }
-  if (!rows.length) return;
-  var headers = { 'apikey': getSupabaseKey_(), 'Authorization': 'Bearer ' + getSupabaseKey_(),
-                  'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' };
-  UrlFetchApp.fetch(getSupabaseUrl_() + '/rest/v1/reserve_inbox_mirror?on_conflict=message_id',
-    { method: 'POST', headers: headers, payload: JSON.stringify(rows), muteHttpExceptions: true });
-  Logger.log('[mirror] logged ' + rows.length + ' reserve mails');
+// ★2026-09-25 reserve受信箱ミラー：取込ループが既に読み込んだ1メッセージから reserve_inbox_mirror 行を生成（新たなGmail検索ゼロ＝クォータ非消費）。
+//   旧 mirrorReserveInbox_() は別 GmailApp.search(150) を毎回実行しGmailクォータを枯渇させ札幌/那覇取込を停止させた(2026-09-24)→廃止。本関数を processNewEmails ループから呼び再利用する。
+//   reserve@rent-handyman.com(高松HDM)→.com / reserve@rent-handyman.jp(札幌那覇)→.jp。予約/キャンセル通知でなければ null。取込を絶対止めない(呼び側で例外安全)。
+function mirrorRowFor_(m) {
+  var to = (m.getTo() || '');
+  var isCom = to.indexOf('reserve@rent-handyman.com') >= 0;
+  var isJp  = to.indexOf('reserve@rent-handyman.jp') >= 0;
+  if (!isCom && !isJp) return null;
+  var body = ''; try { body = m.getPlainBody() || ''; } catch (e) {}
+  var subj = m.getSubject() || '';
+  var from = (m.getFrom() || '').toLowerCase();
+  var ota = from.indexOf('rakuten') >= 0 ? '楽天'
+          : from.indexOf('jalan') >= 0 ? 'じゃらん'
+          : from.indexOf('skyticket') >= 0 ? 'skyticket'
+          : (from.indexOf('airtrip') >= 0 || from.indexOf('skygate') >= 0) ? 'エアトリ'
+          : from.indexOf('rent-handyman') >= 0 ? 'HP直販' : '';
+  var rno = (extractField_(body, '予約番号') || '').replace(/[^A-Za-z0-9\-]/g, '');
+  var isCancel = /キャンセル|取消/.test(subj) || /キャンセル|取消/.test(body.slice(0, 200));
+  if (!rno && !/予約受付|予約通知|予約確定|新規予約|ご予約完了/.test(subj) && !isCancel) return null;
+  var isTak = /_TAK/.test(body) || body.indexOf('高松空港店') >= 0 || isCom;
+  return {
+    message_id: m.getId(),
+    gmail_date: m.getDate().toISOString(),
+    from_addr: (m.getFrom() || '').substring(0, 120),
+    to_addr: isCom ? 'reserve@rent-handyman.com' : 'reserve@rent-handyman.jp',
+    subject: subj.substring(0, 200),
+    ota: ota,
+    reservation_no: rno,
+    store_guess: isTak ? '高松' : ((/_OKA|那覇|沖縄/.test(body)) ? '那覇' : '札幌'),
+    body: body.substring(0, 7000)
+  };
 }
 
 function testProcessLatest() {
