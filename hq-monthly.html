@@ -65,6 +65,14 @@
     .bd.HDM{background:#dbeafe;color:#1e3a8a}.bd.BUDDICA{background:#d1fae5;color:#065f46}
     .ch{background:#eef2f8;color:#333}
   }
+  .vtabs{display:flex;gap:6px;padding:8px 16px 0}
+  .vtabs button{padding:7px 16px;border:none;border-radius:8px 8px 0 0;background:#16213a;color:#8fa2c4;font-weight:800;font-size:13px;cursor:pointer}
+  .vtabs button.on{background:#1e2b4a;color:#fff;box-shadow:0 -2px 0 #3b5bdb inset}
+  @media print{.vtabs{display:none}}
+  .mv2{font-weight:800}.mc2{font-size:11px;color:#8fa2c4}.z{color:#4a5a78}
+  .tag2{font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;background:#233}
+  .tag2.current{background:#1b3a2b;color:#4ade80}.tag2.future{background:#3a2f1b;color:#fbbf24}.tag2.past{background:#233149;color:#8fa2c4}
+  body.light .vtabs button{background:#e8edf5;color:#667}body.light .vtabs button.on{background:#fff;color:#333}
 </style></head>
 <body>
 <header>
@@ -84,12 +92,13 @@
   <button class="btn g noprint" onclick="dlCSV()">⬇ CSV</button>
   <button class="btn noprint" onclick="window.print()">🖨 PDF（印刷）</button>
 </header>
+<nav class="vtabs" id="vf"><button data-v="detail" class="on">📋 明細（全店・当月/取扱高）</button><button data-v="hdm3">🔵 HDM 3店・月別</button></nav>
 <main id="app"><div class="empty">読み込み中…</div></main>
 <script>
 const BT_URL='https://ggqugvyskyiblxiycpci.supabase.co',BT_ANON='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdncXVndnlza3lpYmx4aXljcGNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxMDc3NjksImV4cCI6MjA5MzY4Mzc2OX0.uNhWcBd_Dl5nzemZDQfJ8mQV6iY73MwystGGpTRPC18';
 const MAIN_URL='https://ckrxttbnawkclshczsia.supabase.co',MAIN_ANON='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8';
 const STORES={nha:'🌺 那覇',spk:'❄️ 札幌',bt:'🍜 高松'};
-let ROWS=[], STORE='all';
+let ROWS=[], STORE='all', VIEW='detail';
 const yen=n=>'¥'+Math.round(+n||0).toLocaleString();
 const esc=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 function ymNow(){const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');}
@@ -178,8 +187,29 @@ function topSummary(){
     +'<div class="m" style="min-width:180px;border-color:#3b5bdb"><span class="tag" style="background:#3b5bdb;color:#fff">当年累計</span><div class="mm">過去＋当月</div><div class="mv">'+yen(p.s+c.s)+'</div><div class="mc">'+(p.c+c.c)+'件</div></div>'
     +'</div>';
 }
+// 🔵 HDM(HANDYMAN) 3店舗を返却月×店舗で集計（那覇・札幌の全予約＋高松のHDM分／BUDDICA除外）
+function hdmMatrix(){
+  const rows=ROWS.filter(x=>String(x.brand||'').toUpperCase()==='HDM');
+  const byMS={}, months=new Set();
+  rows.forEach(x=>{const m=mkey(x);if(!m)return;months.add(m);const k=m+'|'+x.store;(byMS[k]=byMS[k]||{s:0,c:0});byMS[k].s+=(+x.price||0);byMS[k].c+=(+x.cnt||1);});
+  const ms=[...months].sort();
+  const cell=(m,st)=>{const o=byMS[m+'|'+st];return o?('<div class="mv2">'+yen(o.s)+'</div><div class="mc2">'+o.c+'件</div>'):'<span class="z">—</span>';};
+  const stTot=st=>{let s=0,c=0;rows.forEach(x=>{if(x.store===st){s+=(+x.price||0);c+=(+x.cnt||1);}});return{s,c};};
+  const rowTot=m=>{let s=0,c=0;['nha','spk','bt'].forEach(st=>{const o=byMS[m+'|'+st];if(o){s+=o.s;c+=o.c;}});return{s,c};};
+  const bucketOf=m=>{const any=rows.find(x=>mkey(x)===m);return any?any.bucket:'';};
+  const tag={past:'計上済',current:'当月 売上',future:'取扱高(未来)'};
+  let t='<div class="note">🔵 <b>HDM（HANDYMAN）3店舗</b>を返却月ごとに集計（🌺那覇・❄️札幌の全予約＋🍜高松のHDM分／BUDDICAは除外）。売上＝base+option−discount（日報と同一・グロス）。</div>';
+  t+='<table><thead><tr><th>返却月</th><th class="num">🌺 那覇</th><th class="num">❄️ 札幌</th><th class="num">🍜 高松HDM</th><th class="num">3店合計</th><th>区分</th></tr></thead><tbody>';
+  if(!ms.length)t+='<tr><td colspan="6" class="empty">該当なし</td></tr>';
+  ms.forEach(m=>{const rt=rowTot(m);
+    t+='<tr><td><b>'+esc(m)+'</b></td><td class="num">'+cell(m,'nha')+'</td><td class="num">'+cell(m,'spk')+'</td><td class="num">'+cell(m,'bt')+'</td><td class="num"><b>'+yen(rt.s)+'</b><div class="mc2">'+rt.c+'件</div></td><td><span class="tag2 '+bucketOf(m)+'">'+(tag[bucketOf(m)]||'')+'</span></td></tr>';});
+  const tn=stTot('nha'),tsp=stTot('spk'),tb=stTot('bt'),gt={s:tn.s+tsp.s+tb.s,c:tn.c+tsp.c+tb.c};
+  t+='<tr class="grp"><td><b>合計</b></td><td class="num"><b>'+yen(tn.s)+'</b><div class="mc2">'+tn.c+'件</div></td><td class="num"><b>'+yen(tsp.s)+'</b><div class="mc2">'+tsp.c+'件</div></td><td class="num"><b>'+yen(tb.s)+'</b><div class="mc2">'+tb.c+'件</div></td><td class="num"><b>'+yen(gt.s)+'</b><div class="mc2">'+gt.c+'件</div></td><td></td></tr>';
+  return t+'</tbody></table>';
+}
 function render(){
   const ym=document.getElementById('ym').value||ymNow();
+  if(VIEW==='hdm3'){document.getElementById('app').innerHTML=hdmMatrix();return;}
   const rows=fil();
   const sum=b=>rows.filter(x=>x.bucket===b).reduce((s,x)=>s+(+x.price||0),0);
   const cur=sum('current'),past=sum('past');
@@ -196,6 +226,7 @@ document.getElementById('ym').addEventListener('change',load);
 // ◀▶ 前月/翌月（Safari等でmonthピッカーが出なくても確実に月を変更できる）
 function shiftMonth(d){const el=document.getElementById('ym');let[y,m]=(el.value||ymNow()).split('-').map(Number);m+=d;if(m<1){m=12;y--;}if(m>12){m=1;y++;}el.value=y+'-'+String(m).padStart(2,'0');load();}
 document.getElementById('bf').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;STORE=b.dataset.b;[...document.querySelectorAll('#bf button')].forEach(x=>x.classList.toggle('on',x===b));render();});
+document.getElementById('vf').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;VIEW=b.dataset.v;[...document.querySelectorAll('#vf button')].forEach(x=>x.classList.toggle('on',x===b));document.getElementById('bf').style.display=(VIEW==='hdm3'?'none':'');render();});
 function dlCSV(){
   const rows=fil();const head=['区分','店舗','予約番号','ブランド','流入先','予約者名','予約日','貸出日','返却日','車種','配車','補償','料金'];
   const bmap={current:'当月売上',future:'取扱高(未来)',past:'過去(計上済)'};
