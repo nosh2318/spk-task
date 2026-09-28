@@ -82,9 +82,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1168';
+var CV='spk-v1169';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=1035').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=1036').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -22540,6 +22540,66 @@ function ParkReqModal({task,onClose}){
     </div>
   </div>;
 }
+// ===== 🛞 タイヤ交換 管理（車両マスター連動）=====
+function TireTab({vehicles,vehicleClasses}){
+  const [tire,setTire]=React.useState({});
+  const [msg,setMsg]=React.useState("");
+  const [filter,setFilter]=React.useState("all");
+  React.useEffect(()=>{ if(!sb)return; sb.from("spk_tire_status").select("*").then(({data})=>{const m={};(data||[]).forEach(r=>{m[r.vehicle_code]=r;});setTire(m);}); },[]);
+  const STATUS=["未対応","対応中","完了"];
+  const STCOL={"未対応":"#dc2626","対応中":"#b45309","完了":"#16a34a"};
+  const STBG={"未対応":"#fef2f2","対応中":"#fffbeb","完了":"#f0fdf4"};
+  const PUR=["","購入必要","購入済"];
+  const g=(code,f)=>{const r=tire[code]||{};return r[f]||"";};
+  const st=code=>g(code,"status")||"未対応";
+  const save=(code,field,val)=>{
+    setTire(t=>({...t,[code]:{...(t[code]||{vehicle_code:code}),[field]:val}}));
+    if(!sb)return;
+    sb.from("spk_tire_status").upsert({vehicle_code:code,[field]:val,updated_at:new Date().toISOString()},{onConflict:"vehicle_code"}).then(({error})=>{
+      setMsg(error?"⚠️保存失敗":"✅保存 "+new Date().toLocaleTimeString("ja-JP").slice(0,5));setTimeout(()=>setMsg(""),1800);
+    });
+  };
+  const CO=["A","A2","B","B2","C","S","F","H","G"];
+  const act=(vehicles||[]).filter(v=>v.active!==false);
+  const sorted=[...act].sort((a,b)=>{const ai=CO.indexOf(a.type),bi=CO.indexOf(b.type);const av=ai<0?99:ai,bv=bi<0?99:bi;if(av!==bv)return av-bv;return String(a.name||"").localeCompare(String(b.name||""),"ja");});
+  const shown=sorted.filter(v=>filter==="all"?true:(filter==="todo"?st(v.code)!=="完了":st(v.code)===filter));
+  const cnt={"未対応":0,"対応中":0,"完了":0,"購入":0};
+  act.forEach(v=>{cnt[st(v.code)]=(cnt[st(v.code)]||0)+1;if(g(v.code,"need_purchase")==="購入必要")cnt["購入"]++;});
+  const cell={padding:"6px 8px"};
+  return <div style={{padding:"4px 2px"}}>
+    <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:10,alignItems:"center"}}>
+      <div style={{fontSize:18,fontWeight:800}}>🛞 タイヤ交換 管理</div>
+      <span style={{fontSize:12,color:"#16a34a",fontWeight:800}}>{msg}</span>
+    </div>
+    <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:10}}>
+      {[["未対応",cnt["未対応"],"#dc2626"],["対応中",cnt["対応中"],"#b45309"],["完了",cnt["完了"],"#16a34a"],["購入必要",cnt["購入"],"#7c3aed"]].map(a=>
+        <div key={a[0]} style={{flex:"1",minWidth:110,background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"8px 12px"}}><div style={{fontSize:11,color:"#64748b",fontWeight:800}}>{a[0]}</div><div style={{fontSize:22,fontWeight:900,color:a[2]}}>{a[1]}<span style={{fontSize:11,color:"#94a3b8"}}>台</span></div></div>)}
+    </div>
+    <div style={{display:"flex",gap:6,marginBottom:8,flexWrap:"wrap"}}>
+      {[["all","全て"],["todo","未完了"],["未対応","未対応"],["対応中","対応中"],["完了","完了"]].map(a=>
+        <button key={a[0]} onClick={()=>setFilter(a[0])} style={{border:"1px solid "+(filter===a[0]?"#0f172a":"#cbd5e1"),background:filter===a[0]?"#0f172a":"#fff",color:filter===a[0]?"#fff":"#475569",borderRadius:999,padding:"5px 12px",fontSize:12,fontWeight:800,cursor:"pointer"}}>{a[1]}</button>)}
+    </div>
+    <div style={{overflowX:"auto",background:"#fff",border:"1px solid #e2e8f0",borderRadius:12}}>
+      <table style={{width:"100%",borderCollapse:"collapse",minWidth:660,fontSize:13}}>
+        <thead><tr style={{background:"#f8fafc"}}>
+          {["車種","ナンバー","クラス","対応日","状況","購入必要","メモ（別途対応など）"].map(h=><th key={h} style={{padding:"8px 8px",textAlign:"left",fontSize:11,color:"#475569",fontWeight:800,borderBottom:"2px solid #e2e8f0",whiteSpace:"nowrap"}}>{h}</th>)}
+        </tr></thead>
+        <tbody>
+          {shown.map(v=>{const s=st(v.code);const np=g(v.code,"need_purchase");return <tr key={v.code} style={{borderBottom:"1px solid #f1f5f9",background:STBG[s]||"#fff"}}>
+            <td style={{...cell,fontWeight:700}}>{v.name}</td>
+            <td style={{...cell,fontWeight:800}}>{v.no||""}</td>
+            <td style={cell}><span style={{fontWeight:800,color:"#1e3a8a"}}>{v.type}</span></td>
+            <td style={cell}><input type="date" value={g(v.code,"done_date")} onChange={e=>save(v.code,"done_date",e.target.value)} style={{border:"1px solid #cbd5e1",borderRadius:7,padding:"5px 7px",fontSize:12,fontFamily:"inherit"}}/></td>
+            <td style={cell}><select value={s} onChange={e=>save(v.code,"status",e.target.value)} style={{border:"1px solid #cbd5e1",borderRadius:8,padding:"5px 8px",fontSize:12.5,fontWeight:800,color:STCOL[s]}}>{STATUS.map(o=><option key={o} value={o}>{o}</option>)}</select></td>
+            <td style={cell}><select value={np} onChange={e=>save(v.code,"need_purchase",e.target.value)} style={{border:"1px solid #cbd5e1",borderRadius:8,padding:"5px 8px",fontSize:12.5,fontWeight:700,color:np==="購入必要"?"#7c3aed":"#334155"}}>{PUR.map(o=><option key={o} value={o}>{o||"—"}</option>)}</select></td>
+            <td style={{...cell,minWidth:190}}><input value={g(v.code,"memo")} onChange={e=>setTire(t=>({...t,[v.code]:{...(t[v.code]||{vehicle_code:v.code}),memo:e.target.value}}))} onBlur={e=>save(v.code,"memo",e.target.value)} placeholder="別途対応・補足メモ" style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:7,padding:"5px 8px",fontSize:12.5,fontFamily:"inherit"}}/></td>
+          </tr>;})}
+        </tbody>
+      </table>
+    </div>
+    <div style={{fontSize:11,color:"#94a3b8",marginTop:8}}>車両マスターの全車両を表示。対応日・状況(未対応/対応中/完了)・購入必要・メモ を選ぶと即保存（全端末リアルタイム共有）。</div>
+  </div>;
+}
 function App(){
   const[data,setData]=useState([]);const[tab,setTab_]=useState(()=>{try{return new URLSearchParams(location.search).get("tab")||"top";}catch(e){return "top";}});const[tabHistory,setTabHistory]=useState([]);const[highlightVehicle,setHighlightVehicle]=useState(null);const[taskSumOpen,setTaskSumOpen]=useState(false);const[tomSumOpen,setTomSumOpen]=useState(false);const[topCalEvents,setTopCalEvents]=useState([]);const[delaySumTask,setDelaySumTask]=useState(null);const[parkSumTask,setParkSumTask]=useState(null);
   const setTab=useCallback((newTab)=>{setTab_(prev=>{if(prev&&prev!==newTab){setTabHistory(h=>[...h,prev].slice(-20));}return newTab;});try{window.scrollTo(0,0);}catch(e){}setTimeout(()=>{try{window.scrollTo(0,0);}catch(e){}},0);},[]);
@@ -23808,7 +23868,7 @@ function App(){
   },[data]);
 
   const oc=useMemo(()=>{const c={};data.forEach(t=>{c[t.ota]=(c[t.ota]||0)+1;});return c;},[data]);
-  const navItems=[{id:"top",ico:"🏠",l:"TOP"},{id:"notices",ico:"📢",l:"お知らせ"},{id:"import",ico:"📁",l:"CSV"},{id:"budget_pl",ico:"📊",l:"予算実績"},{id:"cfcash",ico:"💵",l:"実入金CF",external:true,url:"cf-cash.html"},{id:"seasonal",ico:"💹",l:"価格",external:true,url:"price-optimizer.html?store=spk"},{id:"pricing_strategy",ico:"💰",l:"価格戦略",external:true,url:"price-hub.html"},{id:"staff",ico:"👥",l:"スタッフ"},{id:"shift",ico:"📅",l:"出勤簿"},{id:"attendance",ico:"⏰",l:"給与"},{id:"kintai",ico:"📋",l:"勤怠管理",external:true,url:"kintai.html"},{id:"fleet",ico:"🚗",l:"配車"},{id:"inventory",ico:"📦",l:"在庫管理"},{id:"jalanpay",ico:"💳",l:"決済"},{id:"kdcancel",ico:"🔑",l:"KEYDROP"},{id:"vehicle",ico:"🔧",l:"車両"},{id:"vehicle_rank",ico:"🏆",l:"車両ランキング"},{id:"daily_report",ico:"📋",l:"日報"},{id:"vehicle_pl",ico:"📊",l:"車両P&L",external:true,url:"vehicle-pl.html"},{id:"partner_pl",ico:"🚗",l:"協力会社P&L",external:true,url:"partner.html?owner=PARTNER_TEST"},{id:"parking",ico:"🅿️",l:"駐車場"},{id:"accounting",ico:"💰",l:"会計"},{id:"recv_invoice",ico:"📥",l:"受領請求書"},{id:"customer",ico:"👑",l:"顧客"},{id:"todo",ico:"✅",l:"タスク管理"},{id:"data",ico:"📋",l:"データ"},{id:"history",ico:"📜",l:"過去"},{id:"license",ico:"🪪",l:"免許証",external:true}];
+  const navItems=[{id:"top",ico:"🏠",l:"TOP"},{id:"notices",ico:"📢",l:"お知らせ"},{id:"import",ico:"📁",l:"CSV"},{id:"budget_pl",ico:"📊",l:"予算実績"},{id:"cfcash",ico:"💵",l:"実入金CF",external:true,url:"cf-cash.html"},{id:"seasonal",ico:"💹",l:"価格",external:true,url:"price-optimizer.html?store=spk"},{id:"pricing_strategy",ico:"💰",l:"価格戦略",external:true,url:"price-hub.html"},{id:"staff",ico:"👥",l:"スタッフ"},{id:"shift",ico:"📅",l:"出勤簿"},{id:"attendance",ico:"⏰",l:"給与"},{id:"kintai",ico:"📋",l:"勤怠管理",external:true,url:"kintai.html"},{id:"fleet",ico:"🚗",l:"配車"},{id:"inventory",ico:"📦",l:"在庫管理"},{id:"jalanpay",ico:"💳",l:"決済"},{id:"kdcancel",ico:"🔑",l:"KEYDROP"},{id:"vehicle",ico:"🔧",l:"車両"},{id:"vehicle_rank",ico:"🏆",l:"車両ランキング"},{id:"tire",ico:"🛞",l:"タイヤ交換"},{id:"daily_report",ico:"📋",l:"日報"},{id:"vehicle_pl",ico:"📊",l:"車両P&L",external:true,url:"vehicle-pl.html"},{id:"partner_pl",ico:"🚗",l:"協力会社P&L",external:true,url:"partner.html?owner=PARTNER_TEST"},{id:"parking",ico:"🅿️",l:"駐車場"},{id:"accounting",ico:"💰",l:"会計"},{id:"recv_invoice",ico:"📥",l:"受領請求書"},{id:"customer",ico:"👑",l:"顧客"},{id:"todo",ico:"✅",l:"タスク管理"},{id:"data",ico:"📋",l:"データ"},{id:"history",ico:"📜",l:"過去"},{id:"license",ico:"🪪",l:"免許証",external:true}];
 
   const repeaterInfo=useMemo(()=>buildRepeaterMap(data),[data]);
 
@@ -23834,7 +23894,7 @@ function App(){
     </div>}
     <div style={{display:showOP?"none":"flex",flex:1,overflow:"hidden",flexDirection:"column"}}>
       <div className={"top-nav"+(tab==="top"?" hide-on-top":"")}>
-        {navItems.filter(n=>{const always=["top","notices","import","vehicle","staff","shift","attendance","kintai","parking","accounting","fleet","jalanpay","kdcancel","history","customer","license","budget_pl","seasonal","pricing_strategy","vehicle_rank","daily_report","recv_invoice"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open(n.url||"license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
+        {navItems.filter(n=>{const always=["top","notices","import","vehicle","staff","shift","attendance","kintai","parking","accounting","fleet","jalanpay","kdcancel","history","customer","license","budget_pl","seasonal","pricing_strategy","vehicle_rank","tire","daily_report","recv_invoice"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open(n.url||"license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
         {data.length>0&&<button onClick={()=>setShowOP(true)} style={{color:"#60a5fa"}}><span className="ico">📋</span>OP</button>}
         {SB_ENABLED&&<button onClick={reloadAll} disabled={reloading===1} style={{background:reloading===2?"#d1fae5":"none",border:"none",cursor:reloading===1?"wait":"pointer",fontSize:14,padding:"2px 4px",borderRadius:6,opacity:reloading===1?0.5:1,transition:"background .3s"}}>{reloading===1?"⏳":reloading===2?"✅":"🔄"}</button>}
         {SB_ENABLED&&<SyncBadge connected={sbConnected} inline={true} online={isOnline}/>}
@@ -23842,7 +23902,7 @@ function App(){
       <div style={{display:"flex",flex:1,overflow:"hidden"}}>
       <div className={"sidebar"+(tab==="top"?" hide-on-top":"")}>
         <div style={{width:36,height:36,borderRadius:8,background:"linear-gradient(135deg,#3b82f6,#1d4ed8)",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:800,fontSize:14,marginBottom:8}}>S</div>
-        {navItems.filter(n=>{const always=["top","notices","import","vehicle","staff","shift","attendance","kintai","parking","accounting","fleet","jalanpay","kdcancel","history","customer","license","budget_pl","seasonal","pricing_strategy","vehicle_rank","daily_report","recv_invoice"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open(n.url||"license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
+        {navItems.filter(n=>{const always=["top","notices","import","vehicle","staff","shift","attendance","kintai","parking","accounting","fleet","jalanpay","kdcancel","history","customer","license","budget_pl","seasonal","pricing_strategy","vehicle_rank","tire","daily_report","recv_invoice"];return always.includes(n.id)||data.length>0;}).map(n=><button key={n.id} onClick={()=>{if(n.external){window.open(n.url||"license.html","_blank");}else{setTab(n.id);}}} className={tab===n.id?"active":""}><span className="ico">{n.ico}</span>{n.l}</button>)}
         {data.length>0&&<button onClick={()=>setShowOP(true)} style={{marginTop:4,background:"linear-gradient(135deg,#1e40af,#2563eb)",color:"#fff",borderRadius:10}}><span className="ico">📋</span><span style={{fontSize:8}}>OP</span></button>}
       </div>
       <div className="main-area" style={{flex:1,overflow:tab==="fleet"||tab==="parking"?"hidden":"auto",padding:tab==="fleet"||tab==="parking"?0:12,display:"flex",flexDirection:"column"}}>
@@ -23912,6 +23972,7 @@ function App(){
                 {id:"manual",ico:"📖",l:"運用マニュアル",external:true,url:"manual.html",desc:"APPの使い方 HOW TO 集（全機能・トラブル対応）"},
                 {id:"vehicle",ico:"🔧",l:"車両",desc:"車両マスタ・クラス管理"},
                 {id:"vehicle_rank",ico:"🏆",l:"車両ランキング",desc:"全車両の月粗利・稼働率を点数化"},
+                {id:"tire",ico:"🛞",l:"タイヤ交換",desc:"車両マスター連動＝各車のタイヤ交換 対応日/未対応・対応中・完了/購入必要/メモ"},
                 {id:"vehicle_pl",ico:"📊",l:"車両P&L",external:true,url:"vehicle-pl.html",desc:"車両×月別 売上/原価/粗利マトリクス"},
                 {id:"partner_pl",ico:"🚗",l:"協力会社P&L",external:true,url:"partner.html?owner=PARTNER_TEST",desc:"協力会社車両 月別 売上/コスト/粗利"},
                 {id:"kdcancel",ico:"🔑",l:"KEYDROP",desc:"KEYDROP（直販）価格・クーポン・配達範囲・キャンセル/変更承認"},
@@ -24301,6 +24362,7 @@ function App(){
           {tab==="shift"&&<ShiftCalendar shifts={shifts} onShiftsChange={setShiftsSync} today={today} staff={staff} sbSaveShift={DB.saveShift} reservations={data} onStaffReorder={setStaffSync}/>}
           {tab==="attendance"&&<PASGuard label="給与計算"><AttendanceManager shifts={shifts} staff={staff} today={today} attendance={attendance} onAttendanceChange={setAttendance}/></PASGuard>}
           {tab==="fleet"&&<FleetTimeline data={data} fleet={fleet} onFleetChange={setFleetSync} today={today} maintenance={maintenance} onMaintenanceChange={setMaintenance} vehicles={vehicles} vehicleClasses={vehicleClasses} onAddReservation={addReservation} onBulkAddReservation={bulkAddReservation} onCancelReservation={cancelReservation} onReassignVehicle={reassignVehicle} onUpdateReservation={updateReservation} unassignedReasons={unassignedReasons} onVehicleDetail={(code)=>{setHighlightVehicle(code);setTab("vehicle");setTimeout(()=>setHighlightVehicle(null),3000);}}/>}
+          {tab==="tire"&&<TireTab vehicles={vehicles} vehicleClasses={vehicleClasses}/>}
           {tab==="vehicle"&&<VehicleTab vehicles={vehicles} onVehiclesChange={setVehiclesSync} vehicleClasses={vehicleClasses} onDeleteVehicle={(code)=>{DB.deleteVehicle(code);const nf={...fleetRefApp.current};let cleaned=false;Object.entries(nf).forEach(([rid,vc])=>{if(vc===code){delete nf[rid];cleaned=true;}});if(cleaned){setFleet(nf);fleetRefApp.current=nf;markLocalChange("fleet");DB.upsertFleet(nf).catch(e=>console.error("fleet cleanup error:",e));}}} hmCars={hmCars} hmCarData={hmCarData} hmLogs={hmLogs} hmClasses={hmClasses} hmReload={hmReload} highlightVehicle={highlightVehicle} maintenance={maintenance} onMaintenanceChange={setMaintenance} data={data} fleet={fleet}/>}
           {tab==="parking"&&<iframe src={"parking.html?v="+CV} style={{width:"100%",height:"100%",border:"none",flex:1,minHeight:0}} title="駐車場マップ"/>}
           {tab==="accounting"&&<PASGuard label="会計管理" code="1121"><AccountingPanel staff={staff}/></PASGuard>}
@@ -25166,7 +25228,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.636";
+const APP_VERSION="v4.7.637";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
