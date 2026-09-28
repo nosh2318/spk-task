@@ -82,9 +82,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1169';
+var CV='spk-v1170';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=1036').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=1037').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -22540,24 +22540,45 @@ function ParkReqModal({task,onClose}){
     </div>
   </div>;
 }
-// ===== 🛞 タイヤ交換 管理（車両マスター連動）=====
+// ===== 🛞 タイヤ交換 管理（車両マスター連動・年度別）=====
 function TireTab({vehicles,vehicleClasses}){
+  const fy=d=>{const dt=d?new Date(d):new Date();if(isNaN(dt.getTime()))return new Date().getFullYear();const y=dt.getFullYear(),m=dt.getMonth()+1;return m>=4?y:y-1;};
+  const curFY=fy();
+  const [year,setYear]=React.useState(curFY);
   const [tire,setTire]=React.useState({});
   const [msg,setMsg]=React.useState("");
   const [filter,setFilter]=React.useState("all");
-  React.useEffect(()=>{ if(!sb)return; sb.from("spk_tire_status").select("*").then(({data})=>{const m={};(data||[]).forEach(r=>{m[r.vehicle_code]=r;});setTire(m);}); },[]);
+  const reload=()=>{ if(!sb)return; sb.from("spk_tire_status").select("*").then(({data})=>{const m={};(data||[]).forEach(r=>{m[r.vehicle_code+"|"+r.year]=r;});setTire(m);}); };
+  React.useEffect(()=>{reload();},[]);
   const STATUS=["未対応","対応中","完了"];
   const STCOL={"未対応":"#dc2626","対応中":"#b45309","完了":"#16a34a"};
-  const STBG={"未対応":"#fef2f2","対応中":"#fffbeb","完了":"#f0fdf4"};
   const PUR=["","購入必要","購入済"];
-  const g=(code,f)=>{const r=tire[code]||{};return r[f]||"";};
+  const K=code=>code+"|"+year;
+  const g=(code,f)=>{const r=tire[K(code)]||{};return r[f]||"";};
   const st=code=>g(code,"status")||"未対応";
+  const files=code=>{const r=tire[K(code)]||{};return Array.isArray(r.quote_files)?r.quote_files:[];};
   const save=(code,field,val)=>{
-    setTire(t=>({...t,[code]:{...(t[code]||{vehicle_code:code}),[field]:val}}));
+    setTire(t=>({...t,[K(code)]:{...(t[K(code)]||{vehicle_code:code,year}),[field]:val}}));
     if(!sb)return;
-    sb.from("spk_tire_status").upsert({vehicle_code:code,[field]:val,updated_at:new Date().toISOString()},{onConflict:"vehicle_code"}).then(({error})=>{
+    sb.from("spk_tire_status").upsert({vehicle_code:code,year,[field]:val,updated_at:new Date().toISOString()},{onConflict:"vehicle_code,year"}).then(({error})=>{
       setMsg(error?"⚠️保存失敗":"✅保存 "+new Date().toLocaleTimeString("ja-JP").slice(0,5));setTimeout(()=>setMsg(""),1800);
     });
+  };
+  const upload=async(code,file)=>{
+    if(!sb||!file)return; setMsg("アップロード中…");
+    const ext=(file.name.split(".").pop()||"dat").toLowerCase();
+    const path=code.replace(/[^0-9a-zA-Z]/g,"_")+"/"+year+"/"+Date.now()+"."+ext;
+    const up=await sb.storage.from("tire-quotes").upload(path,file,{contentType:file.type||undefined,upsert:true});
+    if(up.error){setMsg("⚠️アップ失敗");return;}
+    const pub=sb.storage.from("tire-quotes").getPublicUrl(path);
+    const url=pub&&pub.data?pub.data.publicUrl:"";
+    save(code,"quote_files",[...files(code),{url,name:file.name,type:file.type||"",path}]);
+    setMsg("✅見積もりを添付しました");
+  };
+  const removeFile=(code,idx)=>{
+    const cur=files(code); const f=cur[idx];
+    save(code,"quote_files",cur.filter((x,i)=>i!==idx));
+    if(f&&f.path&&sb)sb.storage.from("tire-quotes").remove([f.path]);
   };
   const CO=["A","A2","B","B2","C","S","F","H","G"];
   const act=(vehicles||[]).filter(v=>v.active!==false);
@@ -22565,39 +22586,58 @@ function TireTab({vehicles,vehicleClasses}){
   const shown=sorted.filter(v=>filter==="all"?true:(filter==="todo"?st(v.code)!=="完了":st(v.code)===filter));
   const cnt={"未対応":0,"対応中":0,"完了":0,"購入":0};
   act.forEach(v=>{cnt[st(v.code)]=(cnt[st(v.code)]||0)+1;if(g(v.code,"need_purchase")==="購入必要")cnt["購入"]++;});
-  const cell={padding:"6px 8px"};
+  const YEARS=[curFY,curFY-1,curFY-2];
+  const lbl=(s,c)=>({fontSize:11,color:"#64748b",fontWeight:800,flex:"0 0 58px"});
+  const selSt={flex:1,minWidth:0,border:"1px solid #cbd5e1",borderRadius:8,padding:"7px 8px",fontSize:13,fontWeight:700,fontFamily:"inherit"};
+  const isYogari=v=>v.ownerCompany&&v.ownerCompany!=="HANDYMAN";
   return <div style={{padding:"4px 2px"}}>
-    <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:10,alignItems:"center"}}>
+    <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:8,alignItems:"center"}}>
       <div style={{fontSize:18,fontWeight:800}}>🛞 タイヤ交換 管理</div>
       <span style={{fontSize:12,color:"#16a34a",fontWeight:800}}>{msg}</span>
     </div>
+    {/* 年度タブ */}
+    <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
+      {YEARS.map(y=><button key={y} onClick={()=>setYear(y)} style={{border:"1px solid "+(year===y?"#0f172a":"#cbd5e1"),background:year===y?"#0f172a":"#fff",color:year===y?"#fff":"#475569",borderRadius:10,padding:"7px 14px",fontSize:13,fontWeight:800,cursor:"pointer"}}>{y}年度{y===curFY?"（今年度）":""}</button>)}
+    </div>
     <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:10}}>
       {[["未対応",cnt["未対応"],"#dc2626"],["対応中",cnt["対応中"],"#b45309"],["完了",cnt["完了"],"#16a34a"],["購入必要",cnt["購入"],"#7c3aed"]].map(a=>
-        <div key={a[0]} style={{flex:"1",minWidth:110,background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"8px 12px"}}><div style={{fontSize:11,color:"#64748b",fontWeight:800}}>{a[0]}</div><div style={{fontSize:22,fontWeight:900,color:a[2]}}>{a[1]}<span style={{fontSize:11,color:"#94a3b8"}}>台</span></div></div>)}
+        <div key={a[0]} style={{flex:"1",minWidth:78,background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"7px 10px"}}><div style={{fontSize:10.5,color:"#64748b",fontWeight:800}}>{a[0]}</div><div style={{fontSize:20,fontWeight:900,color:a[2]}}>{a[1]}<span style={{fontSize:10,color:"#94a3b8"}}>台</span></div></div>)}
     </div>
-    <div style={{display:"flex",gap:6,marginBottom:8,flexWrap:"wrap"}}>
+    <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
       {[["all","全て"],["todo","未完了"],["未対応","未対応"],["対応中","対応中"],["完了","完了"]].map(a=>
         <button key={a[0]} onClick={()=>setFilter(a[0])} style={{border:"1px solid "+(filter===a[0]?"#0f172a":"#cbd5e1"),background:filter===a[0]?"#0f172a":"#fff",color:filter===a[0]?"#fff":"#475569",borderRadius:999,padding:"5px 12px",fontSize:12,fontWeight:800,cursor:"pointer"}}>{a[1]}</button>)}
     </div>
-    <div style={{overflowX:"auto",background:"#fff",border:"1px solid #e2e8f0",borderRadius:12}}>
-      <table style={{width:"100%",borderCollapse:"collapse",minWidth:660,fontSize:13}}>
-        <thead><tr style={{background:"#f8fafc"}}>
-          {["車種","ナンバー","クラス","対応日","状況","購入必要","メモ（別途対応など）"].map(h=><th key={h} style={{padding:"8px 8px",textAlign:"left",fontSize:11,color:"#475569",fontWeight:800,borderBottom:"2px solid #e2e8f0",whiteSpace:"nowrap"}}>{h}</th>)}
-        </tr></thead>
-        <tbody>
-          {shown.map(v=>{const s=st(v.code);const np=g(v.code,"need_purchase");return <tr key={v.code} style={{borderBottom:"1px solid #f1f5f9",background:STBG[s]||"#fff"}}>
-            <td style={{...cell,fontWeight:700}}>{v.name}</td>
-            <td style={{...cell,fontWeight:800}}>{v.no||""}</td>
-            <td style={cell}><span style={{fontWeight:800,color:"#1e3a8a"}}>{v.type}</span></td>
-            <td style={cell}><input type="date" value={g(v.code,"done_date")} onChange={e=>save(v.code,"done_date",e.target.value)} style={{border:"1px solid #cbd5e1",borderRadius:7,padding:"5px 7px",fontSize:12,fontFamily:"inherit"}}/></td>
-            <td style={cell}><select value={s} onChange={e=>save(v.code,"status",e.target.value)} style={{border:"1px solid #cbd5e1",borderRadius:8,padding:"5px 8px",fontSize:12.5,fontWeight:800,color:STCOL[s]}}>{STATUS.map(o=><option key={o} value={o}>{o}</option>)}</select></td>
-            <td style={cell}><select value={np} onChange={e=>save(v.code,"need_purchase",e.target.value)} style={{border:"1px solid #cbd5e1",borderRadius:8,padding:"5px 8px",fontSize:12.5,fontWeight:700,color:np==="購入必要"?"#7c3aed":"#334155"}}>{PUR.map(o=><option key={o} value={o}>{o||"—"}</option>)}</select></td>
-            <td style={{...cell,minWidth:190}}><input value={g(v.code,"memo")} onChange={e=>setTire(t=>({...t,[v.code]:{...(t[v.code]||{vehicle_code:v.code}),memo:e.target.value}}))} onBlur={e=>save(v.code,"memo",e.target.value)} placeholder="別途対応・補足メモ" style={{width:"100%",border:"1px solid #e2e8f0",borderRadius:7,padding:"5px 8px",fontSize:12.5,fontFamily:"inherit"}}/></td>
-          </tr>;})}
-        </tbody>
-      </table>
+    {/* カードグリッド（スマホ最適化） */}
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(288px,1fr))",gap:10}}>
+      {shown.map(v=>{const s=st(v.code);const np=g(v.code,"need_purchase");const fl=files(v.code);return (
+        <div key={v.code} style={{background:"#fff",border:"1px solid #e2e8f0",borderLeft:"5px solid "+STCOL[s],borderRadius:12,padding:"10px 12px",boxShadow:"0 1px 2px rgba(0,0,0,.04)"}}>
+          <div style={{display:"flex",alignItems:"center",gap:7,flexWrap:"wrap",borderBottom:"1px solid #f1f5f9",paddingBottom:7,marginBottom:6}}>
+            <span style={{fontWeight:800,fontSize:15}}>{v.name}</span>
+            <span style={{fontWeight:900,fontSize:14}}>{v.no||""}</span>
+            <span style={{fontWeight:800,color:"#fff",background:"#1e3a8a",borderRadius:5,padding:"1px 8px",fontSize:12}}>{v.type}</span>
+            {isYogari(v)&&<span style={{fontWeight:800,color:"#fff",background:"#7c3aed",borderRadius:999,padding:"1px 9px",fontSize:11}}>🏢 {v.ownerLabel||"預かり"}</span>}
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:8,padding:"3px 0"}}><span style={lbl()}>状況</span>
+            <select value={s} onChange={e=>save(v.code,"status",e.target.value)} style={{...selSt,color:STCOL[s],fontWeight:800}}>{STATUS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
+          <div style={{display:"flex",alignItems:"center",gap:8,padding:"3px 0"}}><span style={lbl()}>対応日</span>
+            <input type="date" value={g(v.code,"done_date")} onChange={e=>save(v.code,"done_date",e.target.value)} style={selSt}/></div>
+          <div style={{display:"flex",alignItems:"center",gap:8,padding:"3px 0"}}><span style={lbl()}>購入必要</span>
+            <select value={np} onChange={e=>save(v.code,"need_purchase",e.target.value)} style={{...selSt,color:np==="購入必要"?"#7c3aed":"#334155"}}>{PUR.map(o=><option key={o} value={o}>{o||"—"}</option>)}</select></div>
+          <div style={{display:"flex",alignItems:"center",gap:8,padding:"3px 0"}}><span style={lbl()}>メモ</span>
+            <input value={g(v.code,"memo")} onChange={e=>setTire(t=>({...t,[K(v.code)]:{...(t[K(v.code)]||{vehicle_code:v.code,year}),memo:e.target.value}}))} onBlur={e=>save(v.code,"memo",e.target.value)} placeholder="別途対応・補足" style={selSt}/></div>
+          <div style={{padding:"5px 0 1px"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}><span style={lbl()}>見積もり</span>
+              <label style={{border:"1px solid #93c5fd",background:"#eff6ff",color:"#1d4ed8",borderRadius:8,padding:"6px 12px",fontSize:12.5,fontWeight:800,cursor:"pointer"}}>📎 PDF/画像を追加
+                <input type="file" accept="image/*,application/pdf" style={{display:"none"}} onChange={e=>{if(e.target.files&&e.target.files[0])upload(v.code,e.target.files[0]);e.target.value="";}}/></label></div>
+            {fl.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:6}}>
+              {fl.map((f,i)=><span key={i} style={{display:"inline-flex",alignItems:"center",gap:5,background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:8,padding:"3px 8px",fontSize:11.5,fontWeight:700}}>
+                <a href={f.url} target="_blank" rel="noopener" style={{color:"#1d4ed8",textDecoration:"none"}}>{(f.type||"").indexOf("pdf")>=0?"📄":"🖼"} {String(f.name||"見積").length>16?String(f.name).slice(0,16)+"…":f.name}</a>
+                <span onClick={()=>removeFile(v.code,i)} style={{color:"#dc2626",cursor:"pointer",fontWeight:900}}>✕</span></span>)}
+            </div>}
+          </div>
+        </div>);})}
     </div>
-    <div style={{fontSize:11,color:"#94a3b8",marginTop:8}}>車両マスターの全車両を表示。対応日・状況(未対応/対応中/完了)・購入必要・メモ を選ぶと即保存（全端末リアルタイム共有）。</div>
+    <div style={{fontSize:11,color:"#94a3b8",marginTop:8}}>{year}年度・車両マスター全車両。状況/対応日/購入必要/メモ/見積もり(PDF・画像) を選ぶと即保存（全端末共有）。🏢＝預かり車両。</div>
   </div>;
 }
 function App(){
@@ -25228,7 +25268,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.637";
+const APP_VERSION="v4.7.638";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
