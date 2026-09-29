@@ -118,6 +118,8 @@ const cM=n=>"¥"+Math.round(n/10000).toLocaleString()+"万";
 let RAW=[];
 let GYOMU={}; // {ym:{a:円,b:円}} 業務委託手動入力（自社と同じ手取り扱い＝差引に合算）
 function saveGyomu(){fetch(MAIN+"/rest/v1/ota_manual?on_conflict=k",{method:"POST",headers:{apikey:MANON,Authorization:"Bearer "+MANON,"Content-Type":"application/json",Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({k:"gyomu",data:GYOMU,updated_at:new Date().toISOString()})}).catch(_=>{});}
+let RAK_ACT={}; // 楽天請求書の実績額(支払月別・請求書が来たら入力→その月はこの額を採用)
+function saveRakAct(){fetch(MAIN+"/rest/v1/ota_manual?on_conflict=k",{method:"POST",headers:{apikey:MANON,Authorization:"Bearer "+MANON,"Content-Type":"application/json",Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({k:"rak_actual",data:RAK_ACT,updated_at:new Date().toISOString()})}).catch(_=>{});}
 function feeRate(ota){return SELF.includes(ota)?0:(Number(document.getElementById("fee").value)||0)/100;}
 function net(r){return r.gross*(1-feeRate(r.ota));}
 function val(r){return r.gross;}
@@ -529,10 +531,13 @@ async function couponLoad(){
  const bd=gid("couponBody");bd.innerHTML='<div class="note">読み込み中…</div>';
  try{
   if(!RAW||!RAW.length){await load();}                       // 楽天gross(pay_month=返却+3ヶ月)はota_settlement_v2由来＝OTA入金と同じRAW
-  const [m,b]=await Promise.all([rpc(MAIN,MANON,"ota_event_coupon"),rpc(BT,BANON,"bt_ota_event_coupon").catch(_=>[])]);
+  const [m,b,ra]=await Promise.all([rpc(MAIN,MANON,"ota_event_coupon"),rpc(BT,BANON,"bt_ota_event_coupon").catch(_=>[]),
+    fetch(MAIN+"/rest/v1/ota_manual?k=eq.rak_actual&select=data",{headers:{apikey:MANON,Authorization:"Bearer "+MANON}}).then(r=>r.json()).catch(_=>[])]);
   COUPON=[...(m||[]),...(b||[])];
+  RAK_ACT=(ra&&ra[0]&&ra[0].data)?ra[0].data:{};
  }catch(e){bd.innerHTML='<div class="note">読み込み失敗</div>';return;}
  const el=gid("rakRate");if(el&&!el._wired){el._wired=1;el.addEventListener("input",()=>couponRender());}
+ if(!bd._wired){bd._wired=1;bd.addEventListener("change",e=>{const t=e.target.closest("[data-rakact]");if(!t)return;const pm=t.dataset.rakact;const v=parseInt(String(t.value).replace(/[^\d]/g,''),10);if(isNaN(v)||v<=0)delete RAK_ACT[pm];else RAK_ACT[pm]=v;saveRakAct();couponRender();});}
  couponRender();
 }
 function couponRender(){
@@ -542,18 +547,21 @@ function couponRender(){
  // ② 事業者クーポン(実データ)を返却月→支払月(+3ヶ月)へ整列
  const coup={};(COUPON||[]).forEach(r=>{if(!r.ret_month)return;const pm=_addMon(r.ret_month,3);coup[pm]=(coup[pm]||0)+(+r.coupon||0);});
  const rate=_rakRate()/100;
- const months=[...new Set([...Object.keys(gross),...Object.keys(coup)])].sort();
- let tG=0,tSys=0,tC=0,tT=0,past=0,future=0;
- let h='<div class="sec"><h2>🟥 楽天支払い予定（支払月＝返却月+3ヶ月・3店合算）</h2><div class="ov"><table><thead><tr><th>支払月(末)</th><th>対象返却月</th><th>楽天売上</th><th>①システム利用料<br><span style="font-size:10px;color:#94a3b8">概算 '+_rakRate()+'%</span></th><th>②事業者クーポン<br><span style="font-size:10px;color:#94a3b8">実データ</span></th><th style="background:#b91c1c;color:#fff">支払い予定 ①+②</th></tr></thead><tbody>';
- months.forEach(pm=>{const g=gross[pm]||0,sys=Math.round(g*rate),c=coup[pm]||0,tot=sys+c;tG+=g;tSys+=sys;tC+=c;tT+=tot;if(pm<cur)past+=tot;else future+=tot;
-  h+='<tr'+(pm>=cur?' style="background:#fffbeb"':'')+'><td>'+pm+'末'+(pm>=cur?' <span class="badge">これから</span>':'')+'</td><td style="color:#64748b">'+_addMon(pm,-3)+'</td><td class="mono">'+(g?yen(g):'·')+'</td><td class="mono">'+(sys?yen(sys):'·')+'</td><td class="mono">'+(c?yen(c):'·')+'</td><td class="mono" style="font-weight:700;color:#b91c1c">'+(tot?yen(tot):'·')+'</td></tr>';});
- h+='</tbody><tfoot><tr style="font-weight:700;border-top:2px solid #334155"><td colspan="2">累計</td><td class="mono">'+yen(tG)+'</td><td class="mono">'+yen(tSys)+'</td><td class="mono">'+yen(tC)+'</td><td class="mono" style="color:#b91c1c">'+yen(tT)+'</td></tr></tfoot></table></div>';
+ const months=[...new Set([...Object.keys(gross),...Object.keys(coup),...Object.keys(RAK_ACT||{})])].sort();
+ let tEst=0,tFinal=0,past=0,future=0;
+ let h='<div class="sec"><h2>🟥 楽天支払い予定（支払月＝返却月+3ヶ月・3店合算）</h2><div class="ov"><table><thead><tr><th>支払月(末)</th><th>対象返却月</th><th>楽天売上</th><th>①システム利用料<br><span style="font-size:10px;color:#94a3b8">概算 '+_rakRate()+'%</span></th><th>②事業者クーポン<br><span style="font-size:10px;color:#94a3b8">実データ</span></th><th>概算計 ①+②</th><th style="background:#166534;color:#fff">実績(請求書)</th><th style="background:#b91c1c;color:#fff">確定/予定</th></tr></thead><tbody>';
+ months.forEach(pm=>{const g=gross[pm]||0,sys=Math.round(g*rate),c=coup[pm]||0,est=sys+c;
+  const act=(RAK_ACT&&RAK_ACT[pm])?+RAK_ACT[pm]:0;const fin=act||est;tEst+=est;tFinal+=fin;if(pm<cur)past+=fin;else future+=fin;
+  h+='<tr'+(pm>=cur?' style="background:#fffbeb"':'')+'><td>'+pm+'末'+(pm>=cur?' <span class="badge">これから</span>':'')+'</td><td style="color:#64748b">'+_addMon(pm,-3)+'</td><td class="mono">'+(g?yen(g):'·')+'</td><td class="mono">'+(sys?yen(sys):'·')+'</td><td class="mono">'+(c?yen(c):'·')+'</td><td class="mono" style="color:#64748b">'+(est?yen(est):'·')+'</td>'
+   +'<td><input class="mono" data-rakact="'+pm+'" value="'+(act||'')+'" inputmode="numeric" placeholder="請求書額" style="width:96px;text-align:right;border:1px solid #86efac;border-radius:4px;padding:3px 5px;font-size:12px"></td>'
+   +'<td class="mono" style="font-weight:700;color:'+(act?'#166534':'#b91c1c')+'">'+(fin?yen(fin):'·')+(act?' <span style="font-size:9px;color:#16a34a">実績</span>':'')+'</td></tr>';});
+ h+='</tbody><tfoot><tr style="font-weight:700;border-top:2px solid #334155"><td colspan="5">累計（確定/予定）</td><td class="mono" style="color:#64748b">'+yen(tEst)+'</td><td></td><td class="mono" style="color:#b91c1c">'+yen(tFinal)+'</td></tr></tfoot></table></div>';
  h+='<div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">'
   +'<div class="card" style="background:#fff7ed;border-color:#fdba74"><div style="font-size:12px;color:#9a3412">支払い済（過去分）</div><div style="font-size:20px;font-weight:800;color:#9a3412">'+yen(past)+'</div></div>'
   +'<div class="card" style="background:#fffbeb;border-color:#fcd34d"><div style="font-size:12px;color:#b45309">これから支払い（当月以降）</div><div style="font-size:20px;font-weight:800;color:#b45309">'+yen(future)+'</div></div>'
-  +'<div class="card" style="background:#f8fafc;border-color:#cbd5e1"><div style="font-size:12px;color:#475569">累計</div><div style="font-size:20px;font-weight:800;color:#334155">'+yen(tT)+'</div></div>'
+  +'<div class="card" style="background:#f8fafc;border-color:#cbd5e1"><div style="font-size:12px;color:#475569">累計</div><div style="font-size:20px;font-weight:800;color:#334155">'+yen(tFinal)+'</div></div>'
   +'</div>'
-  +'<div class="note" style="margin-top:8px">※システム利用料は<b>概算（楽天売上×率）</b>。ポイント負担・キャンセル手数料は含みません。正確な確定額は毎月の楽天請求書でご確認ください。率は上の入力で調整＝全行が即再計算されます。</div></div>';
+  +'<div class="note" style="margin-top:8px">💡 <b>請求書が届いた月は「実績(請求書)」に合計額を入力</b>してください（自動保存＝確定額を採用）。未入力の月は<b>概算（システム利用料＝売上×率＋クーポン）</b>で予測します。概算にはポイント負担・キャンセル手数料は含みません。率は上の入力で調整＝概算行が即再計算。</div></div>';
  bd.innerHTML=h;
 }
 
