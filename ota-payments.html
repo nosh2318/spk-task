@@ -131,7 +131,9 @@ let GYOMU={}; // {ym:{a:円,b:円}} 業務委託手動入力（自社と同じ�
 function saveGyomu(){fetch(MAIN+"/rest/v1/ota_manual?on_conflict=k",{method:"POST",headers:{apikey:MANON,Authorization:"Bearer "+MANON,"Content-Type":"application/json",Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({k:"gyomu",data:GYOMU,updated_at:new Date().toISOString()})}).catch(_=>{});}
 let RAK_ACT={}; // 楽天請求書の実績額(支払月別・請求書が来たら入力→その月はこの額を採用)
 function saveRakAct(){fetch(MAIN+"/rest/v1/ota_manual?on_conflict=k",{method:"POST",headers:{apikey:MANON,Authorization:"Bearer "+MANON,"Content-Type":"application/json",Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({k:"rak_actual",data:RAK_ACT,updated_at:new Date().toISOString()})}).catch(_=>{});}
-function feeRate(ota){return SELF.includes(ota)?0:(Number(document.getElementById("fee").value)||0)/100;}
+// OTA別の実効手数料(入金額に対する控除率)。楽天/じゃらんは当店集金or満額入金=0%。他OTAは実績で判明した実効率。未設定は上部の一律入力(既定15%)。
+const OTA_FEE={"楽天":0,"じゃらん":0,"skyticket":0.155,"エアトリ":0.086,"RDドットコム":0.195};
+function feeRate(ota){if(SELF.includes(ota))return 0;if(OTA_FEE[ota]!==undefined)return OTA_FEE[ota];return (Number(document.getElementById("fee").value)||0)/100;}
 function net(r){return r.gross*(1-feeRate(r.ota));}
 function val(r){return r.gross;}
 function filtered(){const s=document.getElementById("fSt").value,o=document.getElementById("fOta").value,k=document.getElementById("fKind").value;
@@ -198,7 +200,7 @@ function matrixView(getCol,colOrder,lab,title,rowFn,extra,gy,compact){rowFn=rowF
  const showKeys=isMonth?rowsK.filter(k=>k>OLD_UNTIL):rowsK;
  const rowHtml=(rk,cls)=>{const hi=rk===cur,g=rowG[rk]||0,n=rowN[rk]||0;let x='<tr'+(cls?' class="'+cls+'" style="display:none"':(hi?' style="background:#fef9c3"':''))+'><td><b>'+rmeta[rk].lab+'</b>'+((hi&&!cls)?' <span class="badge" style="background:#facc15;color:#713f12">今</span>':'')+'</td>';
   cols.forEach(c=>{const v=cell[rk+"|"+c]||0;x+='<td class="mono">'+(v?_M(v):'<span style="color:#d1d5db">–</span>')+'</td>';});
-  extra.forEach(e=>{const ev=e.calc?e.calc(rk,sumRow):e.keys.reduce((a,k)=>a+(cell[rk+"|"+k]||0),0);const _c=e.color?'color:'+e.color+';':'';x+='<td class="mono" style="font-weight:700;background:#f8fafc;'+_c+'">'+(ev?(e.neg?'-'+_M(ev):_M(ev)):'·')+'</td>';});
+  extra.forEach(e=>{const ev=e.calc?e.calc(rk,sumRow,rowN[rk]||0):e.keys.reduce((a,k)=>a+(cell[rk+"|"+k]||0),0);const _c=e.color?'color:'+e.color+';':'';x+='<td class="mono" style="font-weight:700;background:#f8fafc;'+_c+'">'+(ev?(e.neg?'-'+_M(ev):_M(ev)):'·')+'</td>';});
   let _ga=0,_gb=0;
   if(gyOn){const gy=GYOMU[rk]||{};_gb=+gy.b||0;_ga=+gy.a||0;
    x+='<td style="padding:2px;background:#faf5ff"><input data-gy="b" data-ym="'+rk+'" value="'+(gy.b||"")+'" inputmode="numeric" placeholder="円" style="width:80px;text-align:right;border:1px solid #ddd6fe;border-radius:4px;padding:2px 4px;font-size:11px"></td><td style="padding:2px;background:#faf5ff"><input data-gy="a" data-ym="'+rk+'" value="'+(gy.a||"")+'" inputmode="numeric" placeholder="円" style="width:80px;text-align:right;border:1px solid #ddd6fe;border-radius:4px;padding:2px 4px;font-size:11px"></td>';}
@@ -215,7 +217,8 @@ function matrixView(getCol,colOrder,lab,title,rowFn,extra,gy,compact){rowFn=rowF
  window._MX=gyOn?{rowN:rowN,nT:nT,rowsK:rowsK,oldKeys:oldKeys}:null;
  h+='</tbody></table></div></div>';document.getElementById("body").innerHTML=h;}
 const OTA_CH=OTAORD.filter(o=>!SELF.includes(o));
-const otaExtra=[{lab:"OTA合計",keys:OTA_CH,color:"#475569"},{lab:"OTA手数料",calc:(rk,sum)=>sum(rk,OTA_CH)*((Number(document.getElementById("fee").value)||0)/100),neg:true,color:"#b91c1c"},{lab:"OTA残高",calc:(rk,sum)=>sum(rk,OTA_CH)*(1-((Number(document.getElementById("fee").value)||0)/100)),color:"#166534"},{lab:"自社合計",keys:SELF,color:"#0891b2"}];
+// OTA残高＝手取り合計(rn)−自社(自社は手数料0)＝OTA別実効率で控除後の実入金。OTA手数料＝OTAグロス−OTA残高。
+const otaExtra=[{lab:"OTA合計",keys:OTA_CH,color:"#475569"},{lab:"OTA手数料",calc:(rk,sum,rn)=>sum(rk,OTA_CH)-(rn-sum(rk,SELF)),neg:true,color:"#b91c1c"},{lab:"OTA残高",calc:(rk,sum,rn)=>rn-sum(rk,SELF),color:"#166534"},{lab:"自社合計",keys:SELF,color:"#0891b2"}];
 function viewMatrix(){matrixView(r=>r.ota,OTAORD,c=>c,"📅 月ごとの入金（OTA別・単位：万円）",mrow,otaExtra);}
 function viewQuarter(){matrixView(r=>r.ota,OTAORD,c=>c,"🗓 四半期ごとの入金（10-12/1-3/4-6/7-9・OTA別・単位：万円）",qrow);}
 const stSplit=r=>r.store+"|"+(SELF.includes(r.ota)?"HP":"OTA");
@@ -223,7 +226,7 @@ const stSplitOrder=["nha|OTA","nha|HP","spk|OTA","spk|HP","tkm|OTA","tkm|HP"];
 const stSplitLab=c=>{const p=c.split("|");return STN[p[0]]+'<br><span style="font-size:10px;color:'+(p[1]==="HP"?"#0891b2":"#94a3b8")+'">'+(p[1]==="HP"?"自社":"OTA")+'</span>';};
 const _feeR=()=>(Number(document.getElementById("fee").value)||0)/100;
 const OTA_K=["nha|OTA","spk|OTA","tkm|OTA"],SELF_K=["nha|HP","spk|HP","tkm|HP"];
-const stExtra=[{lab:"🌺那覇計",keys:["nha|OTA","nha|HP"],color:"#be185d"},{lab:"❄️札幌計",keys:["spk|OTA","spk|HP"],color:"#0369a1"},{lab:"🍜高松計",keys:["tkm|OTA","tkm|HP"],color:"#b45309"},{lab:"OTA合計",keys:OTA_K,color:"#475569"},{lab:"OTA手数料",calc:(rk,sum)=>sum(rk,OTA_K)*_feeR(),neg:true,color:"#b91c1c"},{lab:"OTA残高",calc:(rk,sum)=>sum(rk,OTA_K)*(1-_feeR()),color:"#166534"},{lab:"自社合計",keys:SELF_K,color:"#0891b2"}];
+const stExtra=[{lab:"🌺那覇計",keys:["nha|OTA","nha|HP"],color:"#be185d"},{lab:"❄️札幌計",keys:["spk|OTA","spk|HP"],color:"#0369a1"},{lab:"🍜高松計",keys:["tkm|OTA","tkm|HP"],color:"#b45309"},{lab:"OTA合計",keys:OTA_K,color:"#475569"},{lab:"OTA手数料",calc:(rk,sum,rn)=>sum(rk,OTA_K)-(rn-sum(rk,SELF_K)),neg:true,color:"#b91c1c"},{lab:"OTA残高",calc:(rk,sum,rn)=>rn-sum(rk,SELF_K),color:"#166534"},{lab:"自社合計",keys:SELF_K,color:"#0891b2"}];
 function viewMatrixSt(){matrixView(stSplit,stSplitOrder,stSplitLab,"🏬 月ごとの入金（店舗×OTA/自社・単位：万円・1画面）",mrow,stExtra,true,true);}
 function viewQuarterSt(){matrixView(stSplit,stSplitOrder,stSplitLab,"🗓 四半期ごとの入金（店舗×OTA/自社・単位：万円）",qrow,stExtra);}
 function otaMonthTable(rows,title){
