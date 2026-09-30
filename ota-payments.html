@@ -36,6 +36,7 @@ tr.tot td{background:var(--nv);color:#fff;font-weight:800;font-size:13.5px}
  <button data-m="cf" style="padding:8px 16px">💰 資金繰り</button>
  <button data-m="pay" style="padding:8px 16px">💳 支払い帳</button>
  <button data-m="coupon" style="padding:8px 16px">🟥 楽天支払い予定</button>
+ <button data-m="jalan" style="padding:8px 16px">🟩 じゃらん支払い予定</button>
 </div>
 
 <div class="bar" id="otaBar">
@@ -73,6 +74,16 @@ tr.tot td{background:var(--nv);color:#fff;font-weight:800;font-size:13.5px}
  <div style="margin-top:8px">システム利用料率 <input id="rakRate" type="number" value="14.3" min="0" max="40" step="0.1" style="width:64px">% <span style="font-size:11px;color:#94a3b8">（楽天売上に対する概算率・調整するとリストが即再計算）</span></div>
  </div></div>
  <div id="couponBody"></div>
+</div>
+
+<div id="jalanWrap" style="display:none">
+ <div class="sec"><div class="note">
+ 🟩 <b>じゃらん支払い予定＝当社がじゃらん(リクルート)に請求書で支払う費用</b>。<b>支払いは「返却月＋2ヶ月後末」</b>（例：7月返却分→9月末支払い）。<br>
+ 内訳＝<b>①レンタカー予約サービス（送客手数料＝じゃらん売上×率）</b>＋②販促プログラム・ポイント付与料・消費税。※②は概算に含めず（請求書で確定）。<b>じゃらんのみ・3店合算</b>。<br>
+ 📄 <b>2026/07請求書の実績</b>：予約サービス¥199,362／販促¥16,602／ポイント¥16,602／消費税¥21,596／<b>合計¥254,162</b>（数量61＝当社返却7月61件と一致・支払期日2026/09/30）。<b>送客手数料率＝12.4%</b>で較正済。
+ <div style="margin-top:8px">送客手数料率 <input id="jlnRate" type="number" value="12.4" min="0" max="40" step="0.1" style="width:64px">% <span style="font-size:11px;color:#94a3b8">（じゃらん売上に対する率・調整するとリストが即再計算）</span></div>
+ </div></div>
+ <div id="jalanBody"></div>
 </div>
 
 <div id="cfWrap" style="display:none">
@@ -520,8 +531,8 @@ gid("cfBody").addEventListener("click",e=>{const b=e.target.closest("[data-pstor
  renderPlan();planAutosave();});
 document.querySelectorAll("#topTab button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#topTab button").forEach(x=>x.classList.remove("on"));b.classList.add("on");
  const m=b.dataset.m,isOta=m==="ota";["otaBar","cards","otaViewWrap","body","otaNote"].forEach(id=>{const e=gid(id);if(e)e.style.display=isOta?"":"none";});
- gid("cfWrap").style.display=m==="cf"?"":"none";gid("payWrap").style.display=m==="pay"?"":"none";gid("couponWrap").style.display=m==="coupon"?"":"none";
- if(m==="cf"&&!cfData)cfLoad();if(m==="pay")payLoad();if(m==="coupon")couponLoad();});
+ gid("cfWrap").style.display=m==="cf"?"":"none";gid("payWrap").style.display=m==="pay"?"":"none";gid("couponWrap").style.display=m==="coupon"?"":"none";gid("jalanWrap").style.display=m==="jalan"?"":"none";
+ if(m==="cf"&&!cfData)cfLoad();if(m==="pay")payLoad();if(m==="coupon")couponLoad();if(m==="jalan")jalanLoad();});
 
 /* ===== 🎫 事業者クーポン支払い（楽天への費用・返却月別） ===== */
 let COUPON=null;
@@ -562,6 +573,44 @@ function couponRender(){
   +'<div class="card" style="background:#f8fafc;border-color:#cbd5e1"><div style="font-size:12px;color:#475569">累計</div><div style="font-size:20px;font-weight:800;color:#334155">'+yen(tFinal)+'</div></div>'
   +'</div>'
   +'<div class="note" style="margin-top:8px">💡 <b>請求書が届いた月は「実績(請求書)」に合計額を入力</b>してください（自動保存＝確定額を採用）。未入力の月は<b>概算（システム利用料＝売上×率＋クーポン）</b>で予測します。概算にはポイント負担・キャンセル手数料は含みません。率は上の入力で調整＝概算行が即再計算。</div></div>';
+ bd.innerHTML=h;
+}
+
+/* ===== 🟩 じゃらん支払い予定（支払月＝返却月+2ヶ月・楽天と同仕様） ===== */
+let JLN_ACT={}; // じゃらん請求書の実績額(支払月別)
+function saveJlnAct(){fetch(MAIN+"/rest/v1/ota_manual?on_conflict=k",{method:"POST",headers:{apikey:MANON,Authorization:"Bearer "+MANON,"Content-Type":"application/json",Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({k:"jln_actual",data:JLN_ACT,updated_at:new Date().toISOString()})}).catch(_=>{});}
+function _jlnRate(){const el=gid("jlnRate");const v=el?parseFloat(el.value):NaN;return isNaN(v)?12.4:v;}
+async function jalanLoad(){
+ const bd=gid("jalanBody");bd.innerHTML='<div class="note">読み込み中…</div>';
+ try{
+  if(!RAW||!RAW.length){await load();}                       // じゃらんgross(pay_month=返却月)はota_settlement_v2由来
+  const ja=await fetch(MAIN+"/rest/v1/ota_manual?k=eq.jln_actual&select=data",{headers:{apikey:MANON,Authorization:"Bearer "+MANON}}).then(r=>r.json()).catch(_=>[]);
+  JLN_ACT=(ja&&ja[0]&&ja[0].data)?ja[0].data:{};
+ }catch(e){bd.innerHTML='<div class="note">読み込み失敗</div>';return;}
+ const el=gid("jlnRate");if(el&&!el._wired){el._wired=1;el.addEventListener("input",()=>jalanRender());}
+ if(!bd._wired){bd._wired=1;bd.addEventListener("change",e=>{const t=e.target.closest("[data-jlnact]");if(!t)return;const pm=t.dataset.jlnact;const v=parseInt(String(t.value).replace(/[^\d]/g,''),10);if(isNaN(v)||v<=0)delete JLN_ACT[pm];else JLN_ACT[pm]=v;saveJlnAct();jalanRender();});}
+ jalanRender();
+}
+function jalanRender(){
+ const bd=gid("jalanBody");const cur=new Date().toISOString().slice(0,7);
+ // じゃらん売上(gross)を返却月別に集計（RAWのじゃらんpay_month=返却月・オフセット無し）→ 支払月=返却月+2ヶ月
+ const gross={};(RAW||[]).forEach(r=>{if(r.ota==="じゃらん"&&r.pay_month){const pm=_addMon(r.pay_month,2);gross[pm]=(gross[pm]||0)+(+r.gross||0);}});
+ const rate=_jlnRate()/100;
+ const months=[...new Set([...Object.keys(gross),...Object.keys(JLN_ACT||{})])].sort();
+ let tEst=0,tFinal=0,past=0,future=0;
+ let h='<div class="sec"><h2>🟩 じゃらん支払い予定（支払月＝返却月+2ヶ月・3店合算）</h2><div class="ov"><table><thead><tr><th>支払月(末)</th><th>対象返却月</th><th>じゃらん売上</th><th>①送客手数料<br><span style="font-size:10px;color:#94a3b8">概算 '+_jlnRate()+'%</span></th><th>概算計</th><th style="background:#166534;color:#fff">実績(請求書)</th><th style="background:#15803d;color:#fff">確定/予定</th></tr></thead><tbody>';
+ months.forEach(pm=>{const g=gross[pm]||0,fee=Math.round(g*rate),est=fee;
+  const act=(JLN_ACT&&JLN_ACT[pm])?+JLN_ACT[pm]:0;const fin=act||est;tEst+=est;tFinal+=fin;if(pm<cur)past+=fin;else future+=fin;
+  h+='<tr'+(pm>=cur?' style="background:#f0fdf4"':'')+'><td>'+pm+'末'+(pm>=cur?' <span class="badge">これから</span>':'')+'</td><td style="color:#64748b">'+_addMon(pm,-2)+'</td><td class="mono">'+(g?yen(g):'·')+'</td><td class="mono">'+(fee?yen(fee):'·')+'</td><td class="mono" style="color:#64748b">'+(est?yen(est):'·')+'</td>'
+   +'<td><input class="mono" data-jlnact="'+pm+'" value="'+(act||'')+'" inputmode="numeric" placeholder="請求書額" style="width:96px;text-align:right;border:1px solid #86efac;border-radius:4px;padding:3px 5px;font-size:12px"></td>'
+   +'<td class="mono" style="font-weight:700;color:'+(act?'#166534':'#15803d')+'">'+(fin?yen(fin):'·')+(act?' <span style="font-size:9px;color:#16a34a">実績</span>':'')+'</td></tr>';});
+ h+='</tbody><tfoot><tr style="font-weight:700;border-top:2px solid #334155"><td colspan="4">累計（確定/予定）</td><td class="mono" style="color:#64748b">'+yen(tEst)+'</td><td></td><td class="mono" style="color:#15803d">'+yen(tFinal)+'</td></tr></tfoot></table></div>';
+ h+='<div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">'
+  +'<div class="card" style="background:#f0fdf4;border-color:#86efac"><div style="font-size:12px;color:#166534">支払い済（過去分）</div><div style="font-size:20px;font-weight:800;color:#166534">'+yen(past)+'</div></div>'
+  +'<div class="card" style="background:#f0fdf4;border-color:#bbf7d0"><div style="font-size:12px;color:#15803d">これから支払い（当月以降）</div><div style="font-size:20px;font-weight:800;color:#15803d">'+yen(future)+'</div></div>'
+  +'<div class="card" style="background:#f8fafc;border-color:#cbd5e1"><div style="font-size:12px;color:#475569">累計</div><div style="font-size:20px;font-weight:800;color:#334155">'+yen(tFinal)+'</div></div>'
+  +'</div>'
+  +'<div class="note" style="margin-top:8px">💡 <b>請求書が届いた月は「実績(請求書)」に合計額を入力</b>（自動保存＝確定額を採用）。未入力の月は<b>概算（送客手数料＝売上×率）</b>で予測。概算には販促プログラム・ポイント付与料・消費税は含みません（請求書で確定）。率は上の入力で調整＝即再計算。</div></div>';
  bd.innerHTML=h;
 }
 
