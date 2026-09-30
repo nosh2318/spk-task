@@ -141,8 +141,10 @@ const JLN_FEE_R=0.158; // じゃらんall-in(送客+販促+ポイント+税)/gro
 function _otaGrossMon(ota,m){let t=0;(RAW||[]).forEach(r=>{if(r.ota===ota&&r.pay_month===m&&r.kind!=="未入金")t+=r.gross||0;});return t;}
 // CF: 楽天/じゃらんの手数料は「支払った月」に置く(現金主義)。実額(請求書)優先、無ければ概算。
 // 楽天: 支払月=返却+3=RAWのpay_month(入金月)と同一。じゃらん: 支払月=返却+2、RAWのpay_month(=返却月)より2ヶ月後。
-function rakFeeMon(rk){const a=(RAK_ACT||{})[rk];return (a!=null&&a!=="")?+a:_otaGrossMon("楽天",rk)*RAK_FEE_R;}
-function jlnFeeMon(rk){const a=(JLN_ACT||{})[rk];return (a!=null&&a!=="")?+a:_otaGrossMon("じゃらん",_addMon(rk,-2))*JLN_FEE_R;}
+// ★支払い予定タブと完全に同じ式で算出(実額優先・無ければ概算)。乖離防止のため単一の計算元に統一。
+function rakCouponMon(pm){const rm=_addMon(pm,-3);let t=0;(COUPON||[]).forEach(r=>{if(r.ret_month===rm)t+=+r.coupon||0;});return t;} // 楽天クーポンは返却月別→支払月(+3)へ
+function rakFeeMon(rk){const a=(RAK_ACT||{})[rk];if(a!=null&&a!=="")return +a;return Math.round(_otaGrossMon("楽天",rk)*(_rakRate()/100))+rakCouponMon(rk);} // =システム利用料(売上×14.3%)+事業者クーポン
+function jlnFeeMon(rk){const a=(JLN_ACT||{})[rk];if(a!=null&&a!=="")return +a;return Math.round(_otaGrossMon("じゃらん",_addMon(rk,-2))*(_jlnRate()/100));} // =送客手数料(売上×12.4%)
 function val(r){return r.gross;}
 function filtered(){const s=document.getElementById("fSt").value,o=document.getElementById("fOta").value,k=document.getElementById("fKind").value;
  return RAW.filter(r=>(!s||r.store===s)&&(!o||r.ota===o)&&(!k||r.kind===k)&&(r.kind==="未入金"||(r.pay_month&&r.pay_month>OLD_UNTIL)));}
@@ -274,8 +276,9 @@ function viewMonthOtaSt(){const f=filtered().filter(r=>r.kind!=="未入金");con
 let VIEW="matrixSt";
 function render(){cards();if(VIEW==="otaMonth")viewOtaMonth();else if(VIEW==="monthOtaSt")viewMonthOtaSt();else if(VIEW==="matrixSt")viewMatrixSt();else if(VIEW==="month")viewMonth();else if(VIEW==="ota")viewGroup(r=>r.ota,"🅾️ OTA別",OTAORD);else viewMatrix();}
 async function load(){document.getElementById("sub").textContent="読み込み中…";
- const [m,b]=await Promise.all([rpc(MAIN,MANON,"ota_settlement_v2"),rpc(BT,BANON,"bt_ota_settlement_v2")]);
+ const [m,b,cpM,cpB]=await Promise.all([rpc(MAIN,MANON,"ota_settlement_v2"),rpc(BT,BANON,"bt_ota_settlement_v2"),rpc(MAIN,MANON,"ota_event_coupon"),rpc(BT,BANON,"bt_ota_event_coupon").catch(_=>[])]);
  RAW=[].concat(Array.isArray(m)?m:[],Array.isArray(b)?b:[]);
+ COUPON=[...(Array.isArray(cpM)?cpM:[]),...(Array.isArray(cpB)?cpB:[])]; // 楽天手数料列の概算(=支払い予定タブと同一式)に必要
  const gy=await fetch(MAIN+"/rest/v1/ota_manual?k=eq.gyomu&select=data",{headers:{apikey:MANON,Authorization:"Bearer "+MANON}}).then(r=>r.json()).catch(_=>[]);
  GYOMU=(gy&&gy[0]&&gy[0].data)?gy[0].data:{};
  // 楽天/じゃらんの実額(請求書=支払月別)も読み、CFの手数料列を実支払額で並べる
