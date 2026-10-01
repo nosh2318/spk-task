@@ -34,6 +34,8 @@
   <div class="sub">rent-handyman.com の閲覧・クリック・離脱・端末・流入元（KEYDROPとは完全分離／off_* のみ集計）</div>
 </header>
 <div class="wrap">
+  <style>.areabar{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px}.ab{font-size:12px;padding:6px 13px;border-radius:9px;border:1px solid #334155;background:#13203a;color:#9fb3d4;cursor:pointer;font-weight:700}.ab.on{background:#2563eb;color:#fff;border-color:#2563eb}</style>
+  <div class="areabar" id="areabar"></div>
   <div class="kpis" id="kpis"></div>
   <div class="card"><h2>📄 ページ別（PV/滞在/離脱）</h2><div id="pages"><div class="empty">読み込み中…</div></div></div>
   <div class="card"><h2>🖱 クリックされた要素（上位30）</h2><div id="clicks"></div></div>
@@ -51,9 +53,22 @@ const PGN={off_top:"TOP",off_vehicles:"車両一覧",off_flow:"予約フロー",
 const pgLabel=p=>PGN[p]||p;
 async function get(v){try{const r=await fetch(`${SB}/rest/v1/${v}?select=*`,{headers:{apikey:ANON,Authorization:"Bearer "+ANON}});const d=await r.json();return Array.isArray(d)?d:[];}catch(e){return[];}}
 function barRows(rows,label,val,max){max=max||Math.max(1,...rows.map(val));return rows.map(r=>`<tr><td>${esc(label(r))}</td><td class="n">${val(r).toLocaleString()}<div class="bar"><i style="width:${Math.round(val(r)/max*100)}%"></i></div></td></tr>`).join("");}
+let RAW=null,AREA='all';
+const AREAS=[['all','合計(全エリア)'],['common','共通(未選択)'],['naha','🌺那覇'],['sapporo','❄️札幌'],['takamatsu','🍜高松']];
+const A2STORE={naha:'nha',sapporo:'spk',takamatsu:'tkm'};
+function fA(rows){return AREA==='all'?(rows||[]):(rows||[]).filter(r=>r.area===AREA);}
+function roll(rows,keyFn,fs){const m={},o=[];(rows||[]).forEach(r=>{const k=keyFn(r);if(!m[k]){m[k]=Object.assign({},r);o.push(k);}else{fs.forEach(f=>m[k][f]=(+m[k][f]||0)+(+r[f]||0));}});return o.map(k=>m[k]);}
+function renderBar(){document.getElementById("areabar").innerHTML=AREAS.map(a=>'<button class="ab'+(AREA===a[0]?' on':'')+'" onclick="setArea(\''+a[0]+'\')">'+a[1]+'</button>').join("");}
+function setArea(a){AREA=a;renderBar();render();}
 async function load(){
-  const [pages,clicks,devices,sources,daily]=await Promise.all([
-    get("public_hdm_ev_page_v"),get("public_hdm_ev_click_v"),get("public_hdm_ev_device_v"),get("public_hdm_ev_source_v"),get("public_hdm_ev_daily_v")]);
+  const [pg,ck,dv,sc,dl,tv]=await Promise.all([
+    get("public_hdm_ev_page_v"),get("public_hdm_ev_click_v"),get("public_hdm_ev_device_v"),get("public_hdm_ev_source_v"),get("public_hdm_ev_daily_v"),get("public_kd_travel_v")]);
+  RAW={pages:pg,clicks:ck,devices:dv,sources:sc,daily:dl,travel:tv};renderBar();render();
+}
+function render(){
+  let pages=fA(RAW.pages),clicks=fA(RAW.clicks),devices=fA(RAW.devices),sources=fA(RAW.sources),daily=fA(RAW.daily);
+  if(AREA==='all'){pages=roll(pages,r=>r.page,['pv','sessions','clicks','exits']);clicks=roll(clicks,r=>r.page+'|'+r.target,['clicks','sessions']);devices=roll(devices,r=>r.device,['sessions','pv']);sources=roll(sources,r=>r.source,['sessions','pv']);daily=roll(daily,r=>r.day,['pv','sessions','clicks','exits']);}
+  pages.sort((a,b)=>(+b.pv||0)-(+a.pv||0));clicks.sort((a,b)=>(+b.clicks||0)-(+a.clicks||0));devices.sort((a,b)=>(+b.sessions||0)-(+a.sessions||0));sources.sort((a,b)=>(+b.sessions||0)-(+a.sessions||0));daily.sort((a,b)=>String(a.day).localeCompare(String(b.day)));
   const totPv=pages.reduce((s,r)=>s+(+r.pv||0),0), totSes=devices.reduce((s,r)=>s+(+r.sessions||0),0);
   const totClk=pages.reduce((s,r)=>s+(+r.clicks||0),0);
   const avgSec=pages.length?Math.round(pages.reduce((s,r)=>s+(+r.avg_sec||0)*(+r.pv||0),0)/Math.max(1,totPv)):0;
@@ -67,7 +82,8 @@ async function load(){
   document.getElementById("devices").innerHTML=devices.length?`<table><tbody>${barRows(devices,r=>r.device,r=>+r.sessions)}</tbody></table>`:'<div class="empty">なし</div>';
   document.getElementById("sources").innerHTML=sources.length?`<table><tbody>${barRows(sources,r=>r.source,r=>+r.sessions)}</tbody></table>`:'<div class="empty">なし</div>';
   document.getElementById("daily").innerHTML=daily.length?`<table><thead><tr><th>日</th><th class="n">PV</th><th class="n">セッション</th><th class="n">クリック</th></tr></thead><tbody>${daily.slice(-30).reverse().map(r=>`<tr><td>${esc(r.day)}</td><td class="n">${(+r.pv).toLocaleString()}</td><td class="n">${(+r.sessions).toLocaleString()}</td><td class="n">${(+r.clicks).toLocaleString()}</td></tr>`).join("")}</tbody></table>`:'<div class="empty">なし</div>';
-  const travel=await get("public_kd_travel_v");
+  let travel=(RAW.travel||[]).slice();
+  if(AREA!=='all'){const st=A2STORE[AREA];travel=st?travel.filter(r=>r.store===st):[];}
   const STN={spk:"❄️北海道(札幌)",nha:"🌺沖縄(那覇)",tkm:"🍜香川・四国(高松)"};
   const CATN={exp:"🎫体験・アクティビティ",hotel:"🏨ホテル・宿",gourmet:"🍽グルメ・お店",spot:"🗺おすすめスポット"};
   const tvTot=travel.reduce((s,r)=>s+(+r.clicks||0),0);
@@ -76,7 +92,8 @@ async function load(){
     travel.sort((a,b)=>(+b.clicks)-(+a.clicks)).map(r=>`<tr><td>${esc(STN[r.store]||r.store)}</td><td>${esc(CATN[r.category]||r.category)}</td><td class="n">${(+r.clicks).toLocaleString()}<div class="bar"><i style="width:${Math.round((+r.clicks)/Math.max(1,tvTot)*100)}%"></i></div></td><td class="n">${(+r.users).toLocaleString()}</td></tr>`).join("")+
     `</tbody></table><div class="note" style="margin:8px 12px">計 ${tvTot.toLocaleString()} クリック／どのエリア・カテゴリが押されるか＝記事化・アフィリ差替の優先度に使う</div>`
     :'<div class="empty">まだクリックがありません（マイページ設置直後）。押されると エリア×カテゴリ で集計されます</div>';
-  document.getElementById("note").textContent="最終更新 "+new Date().toLocaleString("ja-JP")+" ／ HANDYMAN公式(off_*)＋マイページ旅クリック ／ KEYDROPは kd-analytics.html で別管理 ／ 自己テストは ?internal=1 で除外";
+  const aLbl=(AREAS.find(a=>a[0]===AREA)||[])[1]||AREA;
+  document.getElementById("note").textContent="最終更新 "+new Date().toLocaleString("ja-JP")+" ／ 表示エリア="+aLbl+" ／ common=サイト共通(店舗選択前) ／ HANDYMAN公式(off_*)＋マイページ旅クリック ／ KEYDROPは kd-analytics.html で別管理 ／ 自己テストは ?internal=1 で除外";
 }
 load(); setInterval(load,30000);
 </script>
