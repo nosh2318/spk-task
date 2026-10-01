@@ -25,12 +25,12 @@ const SLACK_TOKEN = Deno.env.get("SLACK_BOT_TOKEN") || "";
 type Store = {
   key: string; name: string; emoji: string;
   resT: string; fleetT: string; vehT: string; acctT: string; maintT: string; kpiT: string;
-  otaA2O: boolean; useMain: boolean;
+  otaA2O: boolean; useMain: boolean; breakEven: number;
 };
 const STORES: Store[] = [
-  { key: "nha", name: "那覇", emoji: "🌺", resT: "nha_reservations", fleetT: "nha_fleet", vehT: "nha_vehicles", acctT: "nha_accounting", maintT: "nha_maintenance", kpiT: "nha_vehicle_monthly_kpi", otaA2O: false, useMain: true },
-  { key: "spk", name: "札幌", emoji: "❄️", resT: "reservations",     fleetT: "fleet",     vehT: "vehicles",     acctT: "spk_accounting", maintT: "maintenance",     kpiT: "vehicle_monthly_kpi",     otaA2O: true,  useMain: true },
-  { key: "bt",  name: "高松", emoji: "🍜", resT: "bt_reservations",  fleetT: "bt_fleet",  vehT: "bt_vehicles",  acctT: "bt_accounting",  maintT: "bt_maintenance",  kpiT: "bt_vehicle_monthly_kpi",  otaA2O: false, useMain: false },
+  { key: "nha", name: "那覇", emoji: "🌺", resT: "nha_reservations", fleetT: "nha_fleet", vehT: "nha_vehicles", acctT: "nha_accounting", maintT: "nha_maintenance", kpiT: "nha_vehicle_monthly_kpi", otaA2O: false, useMain: true, breakEven: 5000000 },
+  { key: "spk", name: "札幌", emoji: "❄️", resT: "reservations",     fleetT: "fleet",     vehT: "vehicles",     acctT: "spk_accounting", maintT: "maintenance",     kpiT: "vehicle_monthly_kpi",     otaA2O: true,  useMain: true, breakEven: 2500000 },
+  { key: "bt",  name: "高松", emoji: "🍜", resT: "bt_reservations",  fleetT: "bt_fleet",  vehT: "bt_vehicles",  acctT: "bt_accounting",  maintT: "bt_maintenance",  kpiT: "bt_vehicle_monthly_kpi",  otaA2O: false, useMain: false, breakEven: 0 },
 ];
 
 // 稼働率＝【配車表(FleetTimeline)上段が表示している値】と同一のシンプル式（複雑な計算はしない）。
@@ -65,7 +65,7 @@ function computeUtil(ym: string, data: any[], vehicles: any[], fleet: Record<str
 // ---- helpers（APP index.src.html と同一ロジック）----
 const norm = (d: any): string => { if (!d) return ""; const s = String(d).replace(/\//g, "-"); return s.length <= 10 ? s : s.substring(0, 10); };
 const isCancel = (s: any): boolean => { const t = String(s || "").toLowerCase(); return t === "cancelled" || t.includes("キャンセル") || t === "cancel"; };
-const revOf = (r: any): number => { const bp = Number(r.basePrice) || 0, op = Number(r.optionPrice) || 0, dc = Number(r.discount) || 0; return (bp > 0 || op > 0) ? (bp + op - dc) : (Number(r.price) || 0); };
+const revOf = (r: any): number => { const bp = Number(r.basePrice) || 0, op = Number(r.optionPrice) || 0, dc = Number(r.discount) || 0; const _rak = (String(r.ota || "").trim() === "R" || String(r.ota || "").trim() === "楽天"); return (bp > 0 || op > 0) ? (bp + op - (_rak ? 0 : dc)) : (Number(r.price) || 0); };
 // 自社HP=HP/SP/KEYDROP/direct/空 / OTA=J,R,S,O,RC,G / 他=その他
 const CHof = (r: any): string => { const o = String(r.ota || "").trim(); return (o === "" || o === "HP" || o === "SP" || o === "KEYDROP" || o === "direct") ? "HP" : (["J", "R", "S", "O", "RC", "G"].indexOf(o) >= 0 ? "OTA" : "その他"); };
 const labelOf = (r: any): string => { const o = String(r.ota || "").trim(); return (o === "" || o === "HP" || o === "SP" || o === "KEYDROP" || o === "direct") ? "HP" : (["J", "R", "S", "O", "RC", "G"].indexOf(o) >= 0 ? o : "その他"); };
@@ -169,6 +169,11 @@ function buildReport(store: Store, data: any[], vehicles: any[], fleet: Record<s
   L.push("・" + curYr + "累計（返却月）：" + yrD.count + "件 / " + yen(yrD.sales));
   L.push("・当月累計（" + mm + "・返却月）：" + curM.count + "件 / " + yen(curM.sales));
   if (yogai > 0) L.push("　└ うち予約外売上（会計）：" + yen(yogai));
+  // 損益分岐額・差分（当月売上 − 損益分岐。店ごとに固定値）
+  if (store.breakEven > 0) {
+    const be = store.breakEven, diff = (curM.sales || 0) - be, pct = Math.round((curM.sales || 0) / be * 100);
+    L.push("・損益分岐額：" + yen(be) + "　差分 " + (diff >= 0 ? "+" : "−") + yen(Math.abs(diff)) + "（達成 " + pct + "%）");
+  }
   // 当月＋翌月＋翌々月 の売上（返却月ベース・売上のみ）
   {
     const addMonth = (ym: string, n: number) => { const [y, m] = ym.split("-").map(Number); const d = new Date(Date.UTC(y, m - 1 + n, 1)); return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0"); };
