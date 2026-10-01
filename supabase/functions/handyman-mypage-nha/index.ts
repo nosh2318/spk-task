@@ -150,18 +150,19 @@ Deno.serve(async (req) => {
         await sbDelete("nha_fleet", `reservation_id=eq.${encodeURIComponent(resId2)}`);
         await notifyCust(resId2, `【HANDYMAN那覇空港店】ご予約 ${resId2} キャンセル受付のご連絡`,
           `${cr.name || "お客様"} 様\n\nこの度はご連絡いただきありがとうございます。\nご予約 ${resId2}（${cr.start_date || ""}〜${cr.end_date || ""}）のキャンセルを承りました。\n\n返金がある場合は、規定に沿って別途手続きのうえご連絡いたします。\nまたのご利用を心よりお待ちしております。\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);
-        await slackResv(`✅ キャンセル承認（確定）[那覇] ${cr.name || ""} / ${resId2}`, [
-          { type: "header", text: { type: "plain_text", text: "✅ キャンセル承認（確定）", emoji: true } },
+        { const _nw = String(cr.ota||"")==="HANDYMAN"||/^HDMN/.test(resId2); const _nt = _nw?"（🆕NEW リニューアル公式サイト rent-handyman.com）":"";
+        await slackResv(`✅ キャンセル承認（確定）[那覇]${_nt} ${cr.name || ""} / ${resId2}`, [
+          { type: "header", text: { type: "plain_text", text: `✅ キャンセル承認（確定）${_nw?" 🆕NEW":""}`, emoji: true } },
           { type: "section", fields: [
             { type: "mrkdwn", text: `*お客様:*\n${cr.name || "-"} 様` }, { type: "mrkdwn", text: `*予約番号:*\n${resId2}` },
             { type: "mrkdwn", text: `*利用期間:*\n${cr.start_date || "-"} 〜 ${cr.end_date || "-"}` }, { type: "mrkdwn", text: `*金額:*\n¥${Number(cr.price || 0).toLocaleString()}` },
           ] },
           { type: "context", elements: [ { type: "mrkdwn", text: `キャンセル確定・配車解放済み。⚠️ 返金は規定（7日前無料/6-3日20%/2日前・前日30%/当日50%）に沿って Square で手動返金してください。承認: ${actor.replace(/^staff:/, "")}` } ] },
-        ]);
+        ]); }
       } else {
         await notifyCust(resId2, `【HANDYMAN那覇空港店】ご予約 ${resId2} キャンセルのご相談につきまして`,
           `${cr.name || "お客様"} 様\n\nお問い合わせいただいたご予約 ${resId2} のキャンセルにつきまして、恐れ入りますが今回はお受けいたしかねます。\n詳細は担当より別途ご連絡いたします。\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);
-        await slackResv(`🚫 キャンセル却下 [那覇] ${cr.name || ""} / ${resId2} ／ ${actor.replace(/^staff:/, "")}`);
+        await slackResv(`🚫 キャンセル却下 [那覇]${(String(cr.ota||"")==="HANDYMAN"||/^HDMN/.test(resId2))?"（🆕NEW リニューアル公式サイト）":""} ${cr.name || ""} / ${resId2} ／ ${actor.replace(/^staff:/, "")}`);
       }
       return json({ ok: true, decided: decision }, 200, origin);
     }
@@ -261,8 +262,9 @@ Deno.serve(async (req) => {
     const already = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.nha&field=eq.cancel&status=eq.requested&select=id&limit=1`);
     if (already[0]) return json({ ok: true, alreadyRequested: true }, 200, origin);
     await sbPost("mypage_changes", { reservation_id: resId, store: "nha", field: "cancel", old_value: st0, new_value: "キャンセル依頼", source: "customer", status: "requested", note: reason });
-    await slackResv(`🔴 キャンセル申請（承認待ち）[那覇] ${r.name || ""} / ${resId}`, [
-      { type: "header", text: { type: "plain_text", text: "🔴 キャンセル申請（承認待ち）", emoji: true } },
+    { const _nw = String(r.ota||"")==="HANDYMAN"||/^HDMN/.test(resId);
+    await slackResv(`🔴 キャンセル申請（承認待ち）[那覇]${_nw?"（🆕NEW リニューアル公式サイト rent-handyman.com）":""} ${r.name || ""} / ${resId}`, [
+      { type: "header", text: { type: "plain_text", text: `🔴 キャンセル申請（承認待ち）${_nw?" 🆕NEW":""}`, emoji: true } },
       { type: "section", fields: [
         { type: "mrkdwn", text: `*お客様:*\n${r.name || "-"} 様` }, { type: "mrkdwn", text: `*予約番号:*\n${resId}` },
         { type: "mrkdwn", text: `*ご予約元:*\n${otaJp(r.ota)}` }, { type: "mrkdwn", text: `*利用期間:*\n${r.start_date || "-"} 〜 ${r.end_date || "-"}` },
@@ -271,7 +273,7 @@ Deno.serve(async (req) => {
       { type: "section", text: { type: "mrkdwn", text: `*理由:*\n${reason || "（記載なし）"}` } },
       { type: "actions", elements: [ { type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, style: "primary", url: "https://rent-handyman.com/mypage-admin.html?bucket=hdm_nha" } ] },
       { type: "context", elements: [ { type: "mrkdwn", text: "⚠️ 承認制です。上のボタン（または「📲マイページ利用状況(那覇)」→承認待ち）で承認/却下（承認＝キャンセル確定＋配車解放。返金は規定に沿って手動Square返金）。" } ] },
-    ]);
+    ]); }
     return json({ ok: true, requested: true }, 200, origin);
   }
 
@@ -372,12 +374,17 @@ Deno.serve(async (req) => {
       const fl = await sbGet("nha_fleet", `reservation_id=eq.${encodeURIComponent(resId)}&select=vehicle_code`);
       const code = fl[0]?.vehicle_code;
       if (code) {
-        const vs = await sbGet("nha_vehicles", `code=eq.${encodeURIComponent(code)}&select=plate_no`);
-        const plate = vs[0]?.plate_no;
-        if (plate) {
-          const tw = await sbGet("vehicle_twins", `display_label=ilike.*${encodeURIComponent(plate)}*&share_enabled=eq.true&select=share_token&limit=1`);
-          if (tw[0]?.share_token) damageUrl = `https://nosh2318.github.io/handyman-damage/v.html?t=${tw[0].share_token}&v=v3`;
+        // 🔴 2026-09-28根治: vehicle_code=vehicle_twins.id 完全一致(那覇56台全一致)で確実に解決する。
+        //   旧: nha_vehicles.plate_no→display_label ilike は、plate_noが短い車(VTZ03=「8」)だと
+        //   「8を含む全twin(2878/8469…アルファード)」に誤ヒットしlimit1で別車を拾っていた(イマイ様C260801412→アルファード②2878誤表示)。
+        let tw = await sbGet("vehicle_twins", `id=eq.${encodeURIComponent(code)}&store=eq.naha&share_enabled=eq.true&select=share_token&limit=1`);
+        // fallback: id不一致の車のみ plate_no を「/ <plate>」末尾一致で照合(部分一致でなく末尾で誤爆防止)
+        if (!tw[0]) {
+          const vs = await sbGet("nha_vehicles", `code=eq.${encodeURIComponent(code)}&select=plate_no`);
+          const plate = vs[0]?.plate_no;
+          if (plate) tw = await sbGet("vehicle_twins", `display_label=ilike.*/ ${encodeURIComponent(plate)}&store=eq.naha&share_enabled=eq.true&select=share_token&limit=1`);
         }
+        if (tw[0]?.share_token) damageUrl = `https://nosh2318.github.io/handyman-damage/v.html?t=${tw[0].share_token}&v=v3`;
       }
     } catch (_) { /* best-effort */ }
   }
