@@ -107,32 +107,80 @@ function processNewEmails() {
   var skipped = [];
   var unassigned = [];  // ★2026-09-06 取込成功だが空車なし＝手動配車が必要（取込失敗ではない）
 
+  var runStartMs = Date.now();
   try {
-    var label = getOrCreateLabel_(LABEL_NAME);
+    var label = null;  // ★2026-10-02 遅延取得: addLabel が要る時だけ getUserLabelByName を呼ぶ(空振りrunのGmail読取削減)
     var fromClause = otaSenderList_().map(function(s) { return 'from:' + s; }).join(' OR ');
-    // ★ 2026-04-30: 2d → 7d に拡張（HGU20355 / NUI44639 取り込み失敗障害対策）
-    // GASダウン・ScriptProperties初期化等で2日以上空いた場合、newer_than:2d だと永久スキップになる
-    // ★ 2026-08-14: Gmailクォータ枯渇対策で 7d→3d に短縮（取得スレッド数を減らしGmail読取を削減）。
-    //   ギャップ復旧は backfillSpecificReservations で対応。通常運用は3dで十分。
-    var query = '(' + fromClause + ') newer_than:3d';
-
-    // ★ 2026-08-13: 上限 50→200 に拡張（取り込み停止障害の根治）
-    // OTA送信元は販促/通知メールも大量に送るため、newer_than:7d で50通を超えると
-    // 予約メールが「直近50スレッド」の枠から押し出され、永久に処理対象に入らない
-    // （渡辺様 RC52461265252343886 等が拾えなかった真因）。処理済み/非予約は即スキップ
-    // なので上限を上げても実処理コストは小さい。
-    var threads = GmailApp.search(query, 0, 200);
-    if (threads.length === 0) {
-      Logger.log('No new reservation emails found.');
-      return;  // finally で heartbeat 更新される
+    // ★2026-10-02 Gmailクォータ枯渇の根治: 毎回3日分を開き直すのをやめ、前回正常完了以降に届いたメールだけ読む。
+    //   - 正常完了したrunの開始時刻を pne_last_ok_ms に保存→次回は after:<その時刻-60分(転送遅延の余裕)> で検索。
+    //   - 保存値なし/未来/極端に古い(>30d)＝異常 → 従来どおり newer_than:3d で全件確認(フォールバック)。
+    //   - GAS停止中のメールも「最後の正常完了時刻」から読むので停止期間が自動で埋まる(2026-04-30対策を維持)。
+    //   - 安全網: 深夜帯(3時台JST)に1日1回だけ newer_than:3d の全件確認を必ず実行(pne_last_full_ms)。
+    var _p = PropertiesService.getScriptProperties();
+    var lastOk = Number(_p.getProperty('pne_last_ok_ms') || 0);
+    var lastFull = Number(_p.getProperty('pne_last_full_ms') || 0);
+    var _hourJst = Number(Utilities.formatDate(new Date(runStartMs), 'Asia/Tokyo', 'H'));
+    var wantFull = (_hourJst === 3) && (runStartMs - lastFull > 20 * 3600 * 1000);
+    var okValid = lastOk > 0 && lastOk <= runStartMs && (runStartMs - lastOk) < 30 * 86400000;
+    var query, scanMode;
+    if (wantFull || !okValid) {
+      query = '(' + fromClause + ') newer_than:3d';
+      scanMode = wantFull ? 'full(nightly)' : 'full(fallback)';
+      if (wantFull) _p.setProperty('pne_last_full_ms', String(runStartMs));
+    } else {
+      query = '(' + fromClause + ') after:' + Math.floor((lastOk - 60 * 60 * 1000) / 1000);  // Gmail検索はafter:にunix秒を受け付ける
+      scanMode = 'incremental';
     }
-
+    // 上限200: after:窓は通常数通だが、長期停止後の初回run は数日分を一括回収するため枠を確保。
+    var threads = GmailApp.search(query, 0, 200);
+    Logger.log('[Scan] mode=' + scanMode + ' query=' + query + ' hits=' + threads.length);
     var processedIds = getProcessedMsgIds_();
     var newProcessedIds = [];
     var mirrorRows = [];  // ★2026-09-26 高松HDM(.com=楽天/じゃらん)だけの受信箱行。高松HDMはSlack通知が無く受信が見えない盲点→安全網。取込ループが既に読んだ本文を再利用＝新Gmail検索ゼロ。札幌/那覇(.jp)は元々Slack通知あり＝ミラーしない。
     var failedRetries = getFailedRetries_();  // ★2026-08-30 {msgId:失敗回数}
+    var retriedIds = {};  // ★2026-10-02 getMessageByIdで再処理したid(主ループで二重処理しない)
 
-    Logger.log('Found ' + threads.length + ' thread(s) to check.');
+    // ★2026-10-02 失敗メールの再挑戦(2026-08-30対策を after: 増分窓でも維持):
+    //   失敗IDは seen 未登録で保持されている。after: の範囲外(60分より前)に流れても拾えるよう
+    //   GmailApp.getMessageById で直接開いて再処理する（失敗IDは通常少数＝Gmail読取は微小）。
+    var _frIds = Object.keys(failedRetries);
+    for (var fr = 0; fr < _frIds.length; fr++) {
+      var fid = _frIds[fr];
+      var fmsg = null;
+      try { fmsg = GmailApp.getMessageById(fid); } catch (e) { fmsg = null; }
+      if (!fmsg) continue;
+      retriedIds[fid] = true;
+      try {
+        var fres = processMessage_(fmsg, false);
+        var fSeen = true;
+        if (fres) {
+          if (fres.type === 'success') { successes.push(fres); delete failedRetries[fid]; }
+          else if (fres.type === 'cancel') { cancellations.push(fres); delete failedRetries[fid]; }
+          else if (fres.type === 'skip') skipped.push(fres);
+          else if (fres.type === 'unassigned') { unassigned.push(fres); delete failedRetries[fid]; }
+          else if (fres.type === 'failure') {
+            var frc = (failedRetries[fid] || 0) + 1;
+            if (frc < MAX_IMPORT_RETRY) { fSeen = false; failedRetries[fid] = frc; }
+            else { delete failedRetries[fid]; }
+            fres.reason = (fres.reason || '') + '（再試行' + frc + '/' + MAX_IMPORT_RETRY + (fSeen ? '' : '・打切り') + '・ID直接）';
+            failures.push(fres);
+          }
+        } else { delete failedRetries[fid]; }  // 非予約と判明→諦め
+        if (fSeen) newProcessedIds.push(fid);
+      } catch (e) {
+        var frc2 = (failedRetries[fid] || 0) + 1;
+        if (frc2 < MAX_IMPORT_RETRY) { failedRetries[fid] = frc2; }
+        else { newProcessedIds.push(fid); delete failedRetries[fid]; }
+        Logger.log('[RetryById] ERROR ' + fid + ': ' + e.message);
+      }
+    }
+
+    if (threads.length === 0) {
+      Logger.log('No new reservation emails found (scan=' + scanMode + ').');
+      // ★失敗メール再挑戦は上で実行済。finalize(保存・lastOk更新)は下の共通処理へ流す。
+    }
+
+    Logger.log('Found ' + threads.length + ' thread(s) to check (scan=' + scanMode + ').');
 
     threads.reverse();
 
@@ -143,7 +191,7 @@ function processNewEmails() {
       var threadHadNew = false;  // ★2026-08-14: このスレッドに新着(未処理)メッセージがあったか
       for (var j = 0; j < messages.length; j++) {
         var msgId = messages[j].getId();
-        if (processedIds[msgId]) {
+        if (processedIds[msgId] || retriedIds[msgId]) {
           skippedProcessed++;
           continue;
         }
@@ -180,7 +228,7 @@ function processNewEmails() {
         }
       }
       // ★2026-08-14: ラベル付けは新着があった時だけ（毎回200件全部にラベル書込→Gmailクォータ枯渇の主因を解消）
-      if (threadHadNew) threads[i].addLabel(label);
+      if (threadHadNew) { if (!label) label = getOrCreateLabel_(LABEL_NAME); threads[i].addLabel(label); }
     }
 
     // ★2026-09-26 高松HDM(.com)だけの受信箱ミラーを一括記録（取込ループが既に読んだ本文を再利用＝新Gmail検索ゼロ・クォータ非消費）。高松HDM(楽天/じゃらん)はSlack通知が無いため受信可視化＝取りこぼし検知の安全網。取込を絶対止めない(例外安全)。
@@ -204,6 +252,7 @@ function processNewEmails() {
       saveProcessedMsgIds_(processedIds, newProcessedIds);
     }
     saveFailedRetries_(failedRetries);  // ★2026-08-30 再試行カウント保存
+    _p.setProperty('pne_last_ok_ms', String(runStartMs));  // ★2026-10-02 正常完了したrunの開始時刻を保存→次回は after:この時刻-60分 で増分取得(FATAL時はcatchへ行き未保存=次回に取りこぼし分を再取得)
 
     if (successes.length > 0) sendSlackSuccess_(successes);
     if (unassigned.length > 0) sendSlackUnassigned_(unassigned);  // ★2026-09-06 取込OK・未配車（手動配車が必要）
@@ -683,16 +732,16 @@ function extractVehicleClass_(rawClass) {
   if (/[_](B2)(?:[_]|$)/i.test(rawClass)) return 'B2';
   if (/[_](A2)(?:[_]|$)/i.test(rawClass)) return 'A2';
   if (/[_](D)(?:[_]|$)/i.test(rawClass)) return 'D';
-  var m = rawClass.match(/[_]([ABCSFHG])(?:[_]|$)/i);
+  var m = rawClass.match(/[_]([ABCSFHGIJK])(?:[_]|$)/i);
   if (m) return m[1].toUpperCase();
-  var m2 = rawClass.match(/^([ABCSFHG])[_]/i);
+  var m2 = rawClass.match(/^([ABCSFHGIJK])[_]/i);
   if (m2) return m2[1].toUpperCase();
-  var m3 = rawClass.match(/\s([ABCSFHG])[_]/i);
+  var m3 = rawClass.match(/\s([ABCSFHGIJK])[_]/i);
   if (m3) return m3[1].toUpperCase();
-  var m4 = rawClass.match(/[_]([ABCSFHG])$/i);
+  var m4 = rawClass.match(/[_]([ABCSFHGIJK])$/i);
   if (m4) return m4[1].toUpperCase();
   // DP系: _C☆ / _C★ / _C+空白 等（クラス letter の後が _ でも末尾でもない区切り）
-  var m5 = rawClass.match(/[_]([ABCSFHG])(?![A-Za-z0-9])/i);
+  var m5 = rawClass.match(/[_]([ABCSFHGIJK])(?![A-Za-z0-9])/i);
   if (m5) return m5[1].toUpperCase();
   if (/B2/i.test(rawClass)) return 'B2';
   if (/A2/i.test(rawClass)) return 'A2';
@@ -915,7 +964,7 @@ function parseRakuten_(body) {
   var rawClass = detailClass;
   var vehicleClass = extractVehicleClass_(detailClass);
   if (!vehicleClass) {
-    var planMatch = detailClass.match(/プラン[_]([ABCSFHG])/i);
+    var planMatch = detailClass.match(/プラン[_]([ABCSFHGIJK])/i);
     if (planMatch) {
       vehicleClass = planMatch[1].toUpperCase();
       rawClass = planMatch[1] + '_SPK';
@@ -1149,7 +1198,7 @@ function parseOfficial_(body) {
     var classMatch2 = body.match(/ご予約車両クラス\s*\n\s*(A2|B2)クラス/i);
     if (classMatch2) vehicleClass = classMatch2[1].toUpperCase();
     else {
-      var classMatch = body.match(/ご予約車両クラス\s*\n\s*([ABCSFHG])クラス/i);
+      var classMatch = body.match(/ご予約車両クラス\s*\n\s*([ABCSFHGIJK])クラス/i);
       if (classMatch) vehicleClass = classMatch[1].toUpperCase();
     }
   }
