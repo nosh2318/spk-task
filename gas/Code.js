@@ -156,7 +156,7 @@ function processNewEmails() {
         if (fres) {
           if (fres.type === 'success') { successes.push(fres); delete failedRetries[fid]; }
           else if (fres.type === 'cancel') { cancellations.push(fres); delete failedRetries[fid]; }
-          else if (fres.type === 'skip') skipped.push(fres);
+          else if (fres.type === 'skip') { skipped.push(fres); delete failedRetries[fid]; }  // ★2026-10-03 skip(Reservation already exists/登録済み/キャンセル済み等)は解決済→再挑戦リストから削除(毎回getMessageByIdで蒸し返さない)
           else if (fres.type === 'unassigned') { unassigned.push(fres); delete failedRetries[fid]; }
           else if (fres.type === 'failure') {
             var frc = (failedRetries[fid] || 0) + 1;
@@ -206,7 +206,7 @@ function processNewEmails() {
           if (result) {
             if (result.type === 'success') { successes.push(result); delete failedRetries[msgId]; }
             else if (result.type === 'cancel') { cancellations.push(result); delete failedRetries[msgId]; }
-            else if (result.type === 'skip') skipped.push(result);
+            else if (result.type === 'skip') { skipped.push(result); delete failedRetries[msgId]; }  // ★2026-10-03 skip(登録済み等)も再挑戦リストから削除(解決済)
             else if (result.type === 'unassigned') { unassigned.push(result); delete failedRetries[msgId]; }  // ★2026-09-06 DB登録済み＝seen登録(リトライしない)。手動配車を別途通知。
             else if (result.type === 'failure') {
               var rc = (failedRetries[msgId] || 0) + 1;
@@ -262,6 +262,25 @@ function processNewEmails() {
   } catch (e) {
     Logger.log('[processNewEmails] FATAL: ' + e.message + '\n' + e.stack);
     failures.push({id:'-', ota:'?', name:'', reason:'processNewEmails fatal: '+e.message});
+    // ★2026-10-03 FATAL(Gmail日次上限など)をSlackへ即通知＝取込停止に気付けるように(heartbeatはfinallyで必ず更新されFATALを検知できない穴を補う)。
+    //   重複抑制: 前回アラートから3時間空いた時だけ通知(30分毎runの連投防止・新episodeは即通知)。
+    //   sendSlackToSpk_ はUrlFetch投稿＝Gmail読取枠を消費しない(失敗時のみメールfallback)。通知失敗でも取込処理は止めない(例外安全)。
+    try {
+      var _ap = PropertiesService.getScriptProperties();
+      var _lastAlert = Number(_ap.getProperty('fatal_alert_ms') || 0);
+      if (Date.now() - _lastAlert > 3 * 3600 * 1000) {
+        _ap.setProperty('fatal_alert_ms', String(Date.now()));
+        var _isQuota = /too many times for one day|Service invoked too many times|Limit Exceeded|quota|getOrCreateLabel_/i.test(String(e.message || ''));
+        var _body = (_isQuota
+            ? '🚨 札幌/那覇/高松HDM の予約取込が止まっている可能性があります（Gmail 1日の上限エラー）\n'
+            : '🚨 札幌の予約取込でエラーが出ました（processNewEmails が最後まで実行できていません）\n')
+          + 'エラー内容: ' + String(e.message).slice(0, 300) + '\n'
+          + '→ Apps Script「札幌予約メール自動配車」→実行数 でご確認ください。枠が戻るまで新規取込が止まります。';
+        sendSlackToSpk_('🚨 札幌 予約取込FATAL', _body);
+      } else {
+        Logger.log('[FATAL-alert] 抑制(前回アラートから3時間以内)');
+      }
+    } catch (_se) { Logger.log('[FATAL-alert] 通知失敗: ' + _se); }
   } finally {
     updateHeartbeat_('spk_gas_email', {
       success: successes.length,
