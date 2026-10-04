@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>札幌 車両別 収益ダッシュボード（ライブ）</title>
+<style>
+body{font-family:-apple-system,"Hiragino Kaku Gothic ProN",sans-serif;margin:18px;background:#f8fafc;color:#1f2937}
+h1{font-size:19px;margin:0 0 4px}
+.note{color:#64748b;font-size:12px;line-height:1.6;margin-bottom:10px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 14px}
+.tabs button{padding:8px 16px;border:1px solid #cbd5e1;background:#fff;border-radius:8px 8px 0 0;cursor:pointer;font-size:14px;font-weight:600;color:#475569}
+.tabs button.on{background:#0f172a;color:#fff;border-color:#0f172a}
+.panel{display:none}.panel.on{display:block}
+table{border-collapse:collapse;width:100%;background:#fff;font-size:12px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+th,td{border:1px solid #e2e8f0;padding:4px 6px;text-align:right;white-space:nowrap}
+th{background:#0f172a;color:#fff}th.l,td.l{text-align:left}
+.cls{color:#94a3b8;font-size:10px}.na{color:#cbd5e1}
+tr.ch td{background:#1e293b;color:#fff;font-weight:700}
+tr.sub td{background:#fef3c7;font-weight:700}
+tr.gt td{background:#0f172a;color:#fff;font-weight:700}
+#gate{max-width:320px;margin:60px auto;text-align:center}
+#gate input{font-size:18px;padding:8px;width:160px;text-align:center;border:1px solid #cbd5e1;border-radius:8px}
+#gate button{margin-left:8px;padding:9px 16px;border:0;background:#0f172a;color:#fff;border-radius:8px;cursor:pointer}
+#status{color:#64748b;font-size:12px;margin:8px 0}
+.reload{padding:6px 12px;border:1px solid #cbd5e1;background:#fff;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600}
+</style>
+</head>
+<body>
+<div id="gate">
+  <h1>札幌 収益ダッシュボード</h1>
+  <p class="note">パスコードを入力してください</p>
+  <input id="pin" type="password" inputmode="numeric" autofocus>
+  <button onclick="unlock()">開く</button>
+  <p id="gmsg" class="note"></p>
+</div>
+
+<div id="app" style="display:none">
+  <h1>札幌 車両別 収益ダッシュボード（ライブ）</h1>
+  <p class="note">
+    配車表(fleet)・キャンセル除外・配車表の稼働(vehicle_monthly_kpi)基準・就役補正・エクストレイル除外。
+    支出＝リース車(A=10万/B=7万/C=5万/ハリアー=5万・月)＋税保険車検(税5万/保険1万/車検10万・年＝¥13,333/月)／保有車(F/G/CX-5)=税保険車検のみ／手数料車(A2=¥6,000・B2=¥6,000・H=¥3,500/稼働日)=手数料のみ。
+    期間2026/2〜当月。<span id="status"></span>
+    <button class="reload" onclick="load()">🔄 今すぐ更新</button>
+  </p>
+  <div class="tabs">
+    <button class="on" onclick="sw(0)">⑤ サマリ</button>
+    <button onclick="sw(1)">① 利益</button>
+    <button onclick="sw(2)">② 売上</button>
+    <button onclick="sw(3)">③ 稼働率</button>
+    <button onclick="sw(4)">④ 支出</button>
+  </div>
+  <div class="panel on" id="p0"></div>
+  <div class="panel" id="p1"></div>
+  <div class="panel" id="p2"></div>
+  <div class="panel" id="p3"></div>
+  <div class="panel" id="p4"></div>
+</div>
+
+<script>
+const EF_URL="https://ckrxttbnawkclshczsia.supabase.co/functions/v1/spk-vehicle-report";
+const ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
+const PIN="2318";
+
+// ---- 原価モデル ----
+const EXCLUDE=new Set(["エクスト3900"]);
+const LEASE={A:100000,B:70000,C:50000};
+const LEASE_CODE={HRI:50000};
+const FEE={A2:6000,B2:6000,H:3500};
+const NOTE={A2:"(A仮)",B2:"(B仮)",H:"(リ不明)"};
+const FIX3=(50000+10000+100000)/12;
+const yen=v=>(v<0?"-¥":"¥")+Math.abs(Math.round(v)).toLocaleString();
+
+function unlock(){
+  if(document.getElementById("pin").value.trim()===PIN){
+    document.getElementById("gate").style.display="none";
+    document.getElementById("app").style.display="block";
+    load();
+  }else{document.getElementById("gmsg").textContent="パスコードが違います";}
+}
+document.getElementById("pin").addEventListener("keydown",e=>{if(e.key==="Enter")unlock();});
+function sw(i){document.querySelectorAll(".tabs button").forEach((b,j)=>b.classList.toggle("on",i==j));
+  document.querySelectorAll(".panel").forEach((p,j)=>p.classList.toggle("on",i==j));}
+
+function monthsList(){
+  const now=new Date(); const out=[]; let y=2026,m=2;
+  while(y<now.getFullYear()||(y===now.getFullYear()&&m<=now.getMonth()+1)){
+    out.push(y+"-"+String(m).padStart(2,"0")); m++; if(m>12){m=1;y++;}
+  } return out;
+}
+const daysIn=ym=>{const[y,m]=ym.split("-").map(Number);return new Date(y,m,0).getDate();};
+function datesOfRange(a,b){const out=[];let d=new Date(a+"T00:00:00");const e=new Date(b+"T00:00:00");
+  while(d<=e){out.push(d.toISOString().slice(0,10));d.setDate(d.getDate()+1);}return out;}
+
+let DATA=null;
+async function load(){
+  const st=document.getElementById("status");st.textContent="読込中…";
+  try{
+    const r=await fetch(EF_URL,{headers:{apikey:ANON,Authorization:"Bearer "+ANON}});
+    const j=await r.json();
+    if(j.error)throw new Error(j.error);
+    DATA=compute(j);
+    render();
+    st.textContent="最終更新 "+new Date().toLocaleString("ja-JP")+"（データ生成 "+new Date(j.generatedAt).toLocaleString("ja-JP")+"）";
+  }catch(e){st.textContent="エラー: "+e.message;}
+}
+
+function compute(j){
+  const months=monthsList();
+  const vbc={}; j.vehicles.forEach(v=>{if(!EXCLUDE.has(v.code))vbc[v.code]=v;});
+  const resv={}; j.reservations.forEach(r=>resv[r.id]=r);
+  const alive=r=>r&&!["キャンセル","cancel","cancelled"].includes(r.status||"");
+  const byveh={};
+  j.fleet.forEach(f=>{
+    if(EXCLUDE.has(f.vehicle_code))return;
+    const r=resv[f.reservation_id];
+    if(alive(r)&&r.lend_date&&r.return_date){(byveh[f.vehicle_code]=byveh[f.vehicle_code]||[]).push(r);}
+  });
+  const inactive=new Set(); j.kpi.forEach(x=>{if(x.active===false)inactive.add(x.vehicle_code+"|"+x.year_month);});
+  // 車両ごと 稼働日/ブロック日
+  const occDates={},blkDates={};
+  for(const vc in byveh){const s=new Set();byveh[vc].forEach(r=>datesOfRange(r.lend_date,r.return_date).forEach(d=>s.add(d)));occDates[vc]=s;}
+  j.maintenance.forEach(m=>{if(!m.start_date||!m.end_date)return;const s=blkDates[m.vehicle_code]=blkDates[m.vehicle_code]||new Set();datesOfRange(m.start_date,m.end_date).forEach(d=>s.add(d));});
+  const startm=vc=>{const ms=byveh[vc].filter(r=>months.includes(r.lend_date.slice(0,7))).map(r=>r.lend_date.slice(0,7));return ms.length?ms.sort()[0]:null;};
+  const occIn=(vc,ym)=>{let n=0;(occDates[vc]||new Set()).forEach(d=>{if(d.slice(0,7)===ym)n++;});return n;};
+  const blkIn=(vc,ym)=>{let n=0;(blkDates[vc]||new Set()).forEach(d=>{if(d.slice(0,7)===ym)n++;});return n;};
+  const revIn=(vc,ym)=>byveh[vc].filter(r=>r.lend_date.slice(0,7)===ym).reduce((a,r)=>a+(+r.price||0),0);
+  const leaseOf=vc=>LEASE_CODE[vc]??(LEASE[vbc[vc].type]||0);
+  const V={};
+  for(const vc in byveh){
+    const t=vbc[vc]?.type||"?"; const st=startm(vc); const mo={};
+    for(const ym of months){
+      const o=occIn(vc,ym);
+      const inSvc=(st!==null&&ym>=st)&&!inactive.has(vc+"|"+ym);
+      if(!inSvc&&o===0){mo[ym]=null;continue;}
+      const rv=revIn(vc,ym); const av=daysIn(ym)-blkIn(vc,ym);
+      const c=(t in FEE)?FEE[t]*o:leaseOf(vc)+FIX3;
+      mo[ym]={rev:rv,occ:o,av:av,util:av?o/av*100:0,cost:c,net:rv-c};
+    }
+    V[vc]={t,mo,v:vbc[vc]};
+  }
+  // クラス
+  const classes={}; Object.keys(V).forEach(vc=>{(classes[V[vc].t]=classes[V[vc].t]||[]).push(vc);});
+  const vnet=vc=>months.reduce((a,ym)=>a+(V[vc].mo[ym]?V[vc].mo[ym].net:0),0);
+  const vrev=vc=>months.reduce((a,ym)=>a+(V[vc].mo[ym]?V[vc].mo[ym].rev:0),0);
+  const corder=Object.keys(classes).sort((x,y)=>classes[y].reduce((a,vc)=>a+vnet(vc),0)-classes[x].reduce((a,vc)=>a+vnet(vc),0)
+    -0); // placeholder
+  corder.sort((x,y)=>(classes[y].reduce((a,vc)=>a+vnet(vc),0))-(classes[x].reduce((a,vc)=>a+vnet(vc),0)));
+  return {months,V,classes,corder,vnet,vrev,leaseOf};
+}
+
+function render(){
+  const {months,V,classes,corder,vnet,vrev,leaseOf}=DATA;
+  const mlab=months.map(m=>(+m.slice(5))+"月");
+  const nc=v=>v===null?'<td class=na>—</td>':`<td style="background:${v<0?"#fee2e2;color:#b91c1c":"#dcfce7;color:#065f46"}">${yen(v)}</td>`;
+  const rc=v=>v===null?'<td class=na>—</td>':`<td>${yen(v)}</td>`;
+  const uc=v=>{if(v===null)return '<td class=na>—</td>';const c=v>=60?"#dcfce7":(v>=30?"#fef9c3":"#fee2e2");return `<td style="background:${c};color:#1f2937">${v.toFixed(0)}%</td>`;};
+  const modeOf=vc=>{const t=V[vc].t;if(t in FEE)return["手数料","¥"+FEE[t].toLocaleString()+"/日"];if(leaseOf(vc)>0)return["リース","¥"+leaseOf(vc).toLocaleString()+"/月"];return["保有","税保険車検のみ"];};
+  const mh=mlab.map(l=>`<th>${l}</th>`).join("");
+
+  function matrix(kind){
+    let body="",coltot={},grand=0;months.forEach(m=>coltot[m]=0);
+    corder.forEach(t=>{
+      let rows="",cst={};months.forEach(m=>cst[m]=0);
+      classes[t].slice().sort((a,b)=>vnet(b)-vnet(a)).forEach(vc=>{
+        const v=V[vc].v;let cells="";
+        months.forEach(ym=>{const m=V[vc].mo[ym];
+          cells+= kind==="net"?nc(m?m.net:null):(kind==="rev"?rc(m?m.rev:null):uc(m?m.util:null));
+          if(m&&kind!=="util")cst[ym]+= kind==="net"?m.net:m.rev;});
+        const tc= kind==="net"?nc(vnet(vc)):(kind==="rev"?rc(vrev(vc)):'<td class=na>—</td>');
+        const md=modeOf(vc);
+        rows+=`<tr><td class=l>${v.name||""} <b>${v.plate_no||""}</b> <span class=cls>${vc}·${md[0]}${md[1]}</span></td>${cells}${tc}</tr>`;
+      });
+      let sub;
+      if(kind==="util"){let s="";months.forEach(ym=>{let oc=0,av=0;classes[t].forEach(vc=>{const m=V[vc].mo[ym];if(m){oc+=m.occ;av+=m.av;}});s+=uc(av?oc/av*100:null);});sub=`<tr class=sub><td class=l>${t} 小計</td>${s}<td class=na>—</td></tr>`;}
+      else{let s="",stot=0;months.forEach(ym=>{s+= kind==="net"?nc(cst[ym]):rc(cst[ym]);coltot[ym]+=cst[ym];stot+=cst[ym];});grand+=stot;sub=`<tr class=sub><td class=l>${t} 小計</td>${s}${kind==="net"?nc(stot):rc(stot)}</tr>`;}
+      body+=`<tr class=ch><td class=l colspan=${months.length+2}>${t}クラス（${classes[t].length}台）</td></tr>`+rows+sub;
+    });
+    let foot="";
+    if(kind!=="util"){foot=`<tr class=gt><td class=l>全クラス合計</td>`+months.map(ym=>kind==="net"?nc(coltot[ym]):rc(coltot[ym])).join("")+(kind==="net"?nc(grand):rc(grand))+`</tr>`;}
+    return `<table><thead><tr><th class=l>車両／クラス</th>${mh}<th>期間計</th></tr></thead><tbody>${body}${foot}</tbody></table>`;
+  }
+
+  // ④ 支出 項目別
+  const vopm=vc=>months.filter(ym=>V[vc].mo[ym]).length;
+  const vocc=vc=>months.reduce((a,ym)=>a+(V[vc].mo[ym]?V[vc].mo[ym].occ:0),0);
+  const vexp=vc=>months.reduce((a,ym)=>a+(V[vc].mo[ym]?V[vc].mo[ym].cost:0),0);
+  const cst_=v=>v===null?'<td class=na>—</td>':`<td style="color:#9a3412">−${yen(v)}</td>`;
+  let c4="";
+  corder.forEach(t=>{
+    classes[t].slice().sort((a,b)=>vnet(b)-vnet(a)).forEach(vc=>{
+      const op=vopm(vc);let lf,tax,ins,sha;
+      if(t in FEE){lf=FEE[t]*vocc(vc);tax=ins=sha=null;}
+      else{lf=leaseOf(vc)*op;tax=FIX3/3*op; /*分解用*/}
+      // 税/保険/車検を正しく分解
+      let TAXm=50000/12,INSm=10000/12,SHAm=100000/12;
+      if(!(t in FEE)){tax=TAXm*op;ins=INSm*op;sha=SHAm*op;}
+      const v=V[vc].v;const md=modeOf(vc);
+      c4+=`<tr><td class=l>${v.name||""} <b>${v.plate_no||""}</b> <span class=cls>${vc}·${t}·${md[0]}${md[1]}</span></td>${cst_(lf)}${cst_(tax)}${cst_(ins)}${cst_(sha)}<td style="color:#9a3412;font-weight:600">−${yen(vexp(vc))}</td></tr>`;
+    });
+    // 小計
+    let rl=0,rt=0,ri=0,rs=0,re=0;let TAXm=50000/12,INSm=10000/12,SHAm=100000/12;
+    classes[t].forEach(vc=>{if(t in FEE){rl+=FEE[t]*vocc(vc);}else{rl+=leaseOf(vc)*vopm(vc);rt+=TAXm*vopm(vc);ri+=INSm*vopm(vc);rs+=SHAm*vopm(vc);}re+=vexp(vc);});
+    c4+=`<tr class=sub><td class=l>${t} 小計</td><td style="color:#9a3412">−${yen(rl)}</td><td style="color:#9a3412">−${yen(rt)}</td><td style="color:#9a3412">−${yen(ri)}</td><td style="color:#9a3412">−${yen(rs)}</td><td style="color:#9a3412">−${yen(re)}</td></tr>`;
+  });
+  const c4tbl=`<h2 style="font-size:15px">④ 支出 項目別（車両別・期間／手数料車は税保険車検なし）</h2><table><thead><tr><th class=l>車両</th><th>リース/手数料</th><th>自動車税</th><th>保険</th><th>車検</th><th>支出計</th></tr></thead><tbody>${c4}</tbody></table>`;
+
+  // ⑤ サマリ
+  const clsOpm=t=>months.filter(ym=>classes[t].some(vc=>V[vc].mo[ym])).length;
+  const clsVm=t=>classes[t].reduce((a,vc)=>a+months.filter(ym=>V[vc].mo[ym]).length,0);
+  const clsOcc=t=>classes[t].reduce((a,vc)=>a+months.reduce((b,ym)=>b+(V[vc].mo[ym]?V[vc].mo[ym].occ:0),0),0);
+  const clsAv=t=>classes[t].reduce((a,vc)=>a+months.reduce((b,ym)=>b+(V[vc].mo[ym]?V[vc].mo[ym].av:0),0),0);
+  const gcal=months.filter(ym=>Object.keys(V).some(vc=>V[vc].mo[ym])).length;
+  const gvm=Object.keys(V).reduce((a,vc)=>a+months.filter(ym=>V[vc].mo[ym]).length,0);
+  let summ="",GT={rev:0,exp:0,net:0,occ:0,av:0};
+  const dprof=v=>`<td style="background:${v<0?"#fee2e2;color:#b91c1c":"#dcfce7;color:#065f46"}">${yen(v)}</td>`;
+  const dutil=v=>{const c=v>=60?"#dcfce7":(v>=30?"#fef9c3":"#fee2e2");return `<td style="background:${c};color:#1f2937">${v.toFixed(0)}%</td>`;};
+  const gc=v=>`<td style="color:#fff;font-weight:700">${v}</td>`;
+  corder.forEach(t=>{
+    const r=classes[t].reduce((a,vc)=>a+vrev(vc),0),n=classes[t].reduce((a,vc)=>a+vnet(vc),0),e=r-n;
+    const cal=clsOpm(t)||1,vm=clsVm(t)||1,oc=clsOcc(t),av=clsAv(t)||1,util=oc/av*100;
+    GT.rev+=r;GT.exp+=e;GT.net+=n;GT.occ+=oc;GT.av+=av;
+    summ+=`<tr><td class=l>${t}</td><td>${classes[t].length}</td><td>${clsOpm(t)}</td>${dutil(util)}<td>${yen(r)}</td><td style="color:#9a3412">-${yen(e)}</td>${dprof(n)}<td>${r?(n/r*100).toFixed(0):0}%</td><td>${yen(r/cal)}</td>${dprof(n/cal)}<td>${yen(r/vm)}</td>${dprof(n/vm)}</tr>`;
+  });
+  const gu=GT.av?GT.occ/GT.av*100:0;
+  summ+=`<tr class=gt><td class=l>全クラス合計</td><td>${corder.reduce((a,t)=>a+classes[t].length,0)}</td><td>${gcal}</td>${gc(gu.toFixed(0)+"%")}${gc(yen(GT.rev))}<td style="color:#fff;font-weight:700">-${yen(GT.exp)}</td>${gc(yen(GT.net))}${gc((GT.net/GT.rev*100).toFixed(0)+"%")}${gc(yen(GT.rev/gcal))}${gc(yen(GT.net/gcal))}${gc(yen(GT.rev/gvm))}${gc(yen(GT.net/gvm))}</tr>`;
+  const summtbl=`<h2 style="font-size:15px">⑤ サマリ（クラス別・2026/2〜当月）</h2><table><thead><tr><th class=l>クラス</th><th>台数</th><th>稼働月</th><th>稼働率</th><th>売上</th><th>支出</th><th>利益</th><th>利益率</th><th>月平均売上</th><th>月平均利益</th><th>1台月売上</th><th>1台月利益</th></tr></thead><tbody>${summ}</tbody></table>`;
+
+  document.getElementById("p0").innerHTML=summtbl;
+  document.getElementById("p1").innerHTML=matrix("net");
+  document.getElementById("p2").innerHTML=matrix("rev");
+  document.getElementById("p3").innerHTML=matrix("util");
+  document.getElementById("p4").innerHTML=c4tbl;
+}
+</script>
+</body>
+</html>
