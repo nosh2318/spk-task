@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex">
 <title>札幌 車両別 収益ダッシュボード（ライブ）</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 body{font-family:-apple-system,"Hiragino Kaku Gothic ProN",sans-serif;margin:18px;background:#f8fafc;color:#1f2937}
 h1{font-size:19px;margin:0 0 4px}
@@ -30,9 +31,10 @@ tr.gt td{background:#0f172a;color:#fff;font-weight:700}
 <body>
 <div id="gate">
   <h1>札幌 収益ダッシュボード</h1>
-  <p class="note">パスコードを入力してください</p>
-  <input id="pin" type="password" inputmode="numeric" autofocus>
-  <button onclick="unlock()">開く</button>
+  <p class="note">Supabaseアカウントでログイン</p>
+  <input id="email" type="email" placeholder="メール" autocomplete="username" style="width:220px;margin-bottom:8px"><br>
+  <input id="pass" type="password" placeholder="パスワード" autocomplete="current-password" style="width:220px">
+  <button onclick="unlock()">ログイン</button>
   <p id="gmsg" class="note"></p>
 </div>
 
@@ -59,9 +61,9 @@ tr.gt td{background:#0f172a;color:#fff;font-weight:700}
 </div>
 
 <script>
-const EF_URL="https://ckrxttbnawkclshczsia.supabase.co/functions/v1/spk-vehicle-report";
+const SUPABASE_URL="https://ckrxttbnawkclshczsia.supabase.co";
 const ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
-const PIN="2318";
+const sb=window.supabase.createClient(SUPABASE_URL,ANON);
 
 // ---- 原価モデル ----
 const EXCLUDE=new Set(["エクスト3900"]);
@@ -72,14 +74,17 @@ const NOTE={A2:"(A仮)",B2:"(B仮)",H:"(リ不明)"};
 const FIX3=(50000+10000+100000)/12;
 const yen=v=>(v<0?"-¥":"¥")+Math.abs(Math.round(v)).toLocaleString();
 
-function unlock(){
-  if(document.getElementById("pin").value.trim()===PIN){
-    document.getElementById("gate").style.display="none";
-    document.getElementById("app").style.display="block";
-    load();
-  }else{document.getElementById("gmsg").textContent="パスコードが違います";}
+async function unlock(){
+  const g=document.getElementById("gmsg");g.textContent="ログイン中…";
+  const email=document.getElementById("email").value.trim();
+  const pass=document.getElementById("pass").value;
+  const {error}=await sb.auth.signInWithPassword({email,password:pass});
+  if(error){g.textContent="ログイン失敗: "+error.message;return;}
+  document.getElementById("gate").style.display="none";
+  document.getElementById("app").style.display="block";
+  load();
 }
-document.getElementById("pin").addEventListener("keydown",e=>{if(e.key==="Enter")unlock();});
+document.getElementById("pass").addEventListener("keydown",e=>{if(e.key==="Enter")unlock();});
 function sw(i){document.querySelectorAll(".tabs button").forEach((b,j)=>b.classList.toggle("on",i==j));
   document.querySelectorAll(".panel").forEach((p,j)=>p.classList.toggle("on",i==j));}
 
@@ -94,16 +99,30 @@ function datesOfRange(a,b){const out=[];let d=new Date(a+"T00:00:00");const e=ne
   while(d<=e){out.push(d.toISOString().slice(0,10));d.setDate(d.getDate()+1);}return out;}
 
 let DATA=null;
+async function readAll(table,cols,apply){
+  const out=[];let from=0;const size=1000;
+  while(true){
+    let q=sb.from(table).select(cols).range(from,from+size-1);
+    if(apply)q=apply(q);
+    const {data,error}=await q;if(error)throw error;
+    out.push(...data);if(data.length<size)break;from+=size;
+  }
+  return out;
+}
 async function load(){
   const st=document.getElementById("status");st.textContent="読込中…";
   try{
-    const r=await fetch(EF_URL,{headers:{apikey:ANON,Authorization:"Bearer "+ANON}});
-    const j=await r.json();
-    if(j.error)throw new Error(j.error);
-    DATA=compute(j);
+    const [reservations,fleet,vehicles,maintenance,kpi]=await Promise.all([
+      readAll("reservations","id,lend_date,return_date,price,status",q=>q.gte("lend_date","2026-01-01")),
+      readAll("fleet","reservation_id,vehicle_code"),
+      readAll("vehicles","code,plate_no,name,type,active"),
+      readAll("maintenance","vehicle_code,start_date,end_date,block_type"),
+      readAll("vehicle_monthly_kpi","vehicle_code,year_month,active"),
+    ]);
+    DATA=compute({reservations,fleet,vehicles,maintenance,kpi});
     render();
-    st.textContent="最終更新 "+new Date().toLocaleString("ja-JP")+"（データ生成 "+new Date(j.generatedAt).toLocaleString("ja-JP")+"）";
-  }catch(e){st.textContent="エラー: "+e.message;}
+    st.textContent="最終更新 "+new Date().toLocaleString("ja-JP");
+  }catch(e){st.textContent="エラー: "+(e.message||e);}
 }
 
 function compute(j){
