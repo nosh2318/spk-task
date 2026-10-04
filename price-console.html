@@ -40,6 +40,9 @@ td.cell.low{background:#eff6ff}
 td.cell.high{background:#fff7ed}
 td.cell.changed{outline:2px solid #0f766e;outline-offset:-2px}
 td.cell.err{background:#fee2e2;color:#b91c1c}
+td.cell.linked{cursor:not-allowed;background:#f5f3ff}
+td.cell.linked .chg{color:#6d28d9}
+td.ro.err{background:#fee2e2;color:#b91c1c}
 td.cell .amt{font-variant-numeric:tabular-nums;font-size:14px;font-weight:700}
 td.cell .chg{display:block;font-size:9px;color:#0f766e;font-weight:700}
 td.ro{background:#f8fafc;color:#64748b;font-variant-numeric:tabular-nums}
@@ -104,8 +107,10 @@ label.inl{font-size:12px;color:#64748b;display:flex;flex-direction:column;gap:3p
 // ===== 接続（price-controller.html と同一の MAIN url/anon/localStorageキー） =====
 var MAIN={url:'https://ckrxttbnawkclshczsia.supabase.co',anon:'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8',key:'sb-ckrxttbnawkclshczsia-auth-token'};
 var STORE='nha';
-// クラス代表車種（price-controller.html の CLS_CAR.nha を補助表示に流用）
-var CLS_CAR_NHA={A:'アルファード',B:'アルファードM/セレナH/ノアH',C:'ライズ/ヤリスクロス',D:'ノアM/セレナM/エスクァイア',F:'アクア/ノート/ヴィッツ',H:'プリウス/プリウスα',S:'ハリアー',A2:'A2',B2:'B2'};
+// classes テーブルの store 識別子はフルネーム。STORE(短縮)→classesの store_id/store 値へ変換。
+var STORE_FULL={nha:'naha',spk:'sapporo',tkm:'takamatsu'};
+function storeFull(){return STORE_FULL[STORE]||STORE;}
+// 車種名はコードに直書きしない：classes から読めた時だけ補い、読めなければコードのみ表示。
 var NIGHTS=[['日帰り',1],['1泊2日',2],['2泊3日',3],['3泊4日',4],['4泊5日',5]];
 
 // ---- 認証トークン（localStorage）。無ければ書込無効 ----
@@ -142,22 +147,25 @@ function tiersSorted(){
   t.sort(function(a,b){var ka=kindOrder[a.kind]!=null?kindOrder[a.kind]:9,kb=kindOrder[b.kind]!=null?kindOrder[b.kind]:9;if(ka!==kb)return ka-kb;return (a.sort||0)-(b.sort||0);});
   return t;
 }
-// クラス一覧（正本=classes。無ければ pc_store_class）。pc_store_class.sort で並べる。
+// クラスの「コード一覧」は pc_store_class ＋ pc_price（と classes が読めた時）から構築。
+// classes はログイン必須（anonでは0件）→ 未ログイン時でもコードは pc_* から出す。pc_store_class.sort で並べる。
 function classList(){
   var scMap={};D.store_class.forEach(function(r){scMap[r.class]=r;});
   var codes={};
   D.classes.forEach(function(c){var code=clsCode(c);if(code)codes[code]=1;});
   D.store_class.forEach(function(r){codes[r.class]=1;});
+  Object.keys(D.price).forEach(function(k){var cl=k.split('|')[1];if(cl)codes[cl]=1;});
   var arr=Object.keys(codes);
   arr.sort(function(a,b){var sa=scMap[a]?(scMap[a].sort||0):999,sb=scMap[b]?(scMap[b].sort||0):999;if(sa!==sb)return sa-sb;return a<b?-1:1;});
   return arr;
 }
 // classes 行からクラスコードを取り出す（列名ゆれに耐える）
 function clsCode(c){return c.class||c.code||c.class_code||c.id||c.name||null;}
+// 表示名(車種)は classes から読めたときだけ。読めなければ空（コードだけ表示＝車種名を直書きしない）。
 function clsCarLabel(code){
-  var hit=null;
-  D.classes.forEach(function(c){if(clsCode(c)===code){hit=c.car||c.cars||c.vehicles||c.name||c.label||null;}});
-  return hit||CLS_CAR_NHA[code]||'';
+  var hit='';
+  D.classes.forEach(function(c){if(clsCode(c)===code){hit=c.car||c.cars||c.vehicles||c.name||c.label||'';}});
+  return hit||'';
 }
 
 function activeOtas(){
@@ -168,6 +176,41 @@ function otaName(id){var hit=D.ota.filter(function(o){return o.id===id;})[0];ret
 // price マップ: key=ota|class|tier -> row
 function pk(ota,cls,tier){return ota+'|'+cls+'|'+tier;}
 
+// ---- 連動（pc_rule method='link'）ヘルパ ----
+// ruleOf: クラスの決め方ルール行
+function ruleOf(cl){return D.rule.filter(function(r){return r.class===cl;})[0]||null;}
+// 連動先クラスか（＝手入力不可セル）。戻り {to,diff} または null
+function linkRuleOf(cl){var r=ruleOf(cl);if(r&&r.method==='link'&&r.link_to){return {to:r.link_to,diff:(r.link_diff==null?0:+r.link_diff)};}return null;}
+// あるクラスを連動元に持つ（下流）クラス一覧
+function linkDependents(srcCl){return D.rule.filter(function(r){return r.method==='link'&&r.link_to===srcCl;}).map(function(r){return r.class;});}
+// 連動元クラスの解決済みamount（連動の連動も再帰的に解決）。__all/空は null。
+// seen=ループ保護。pending={key:amount} 未保存の編集値を優先的に解決に使う。
+function resolveLinkedAmount(ota,cl,tierId,seen,pending){
+  seen=seen||{};
+  if(seen[cl])return null; // ループ
+  seen[cl]=1;
+  var link=linkRuleOf(cl);
+  var key=pk(ota,cl,tierId);
+  if(!link){ // 連動元：編集中→保存済みの順
+    if(pending&&pending.hasOwnProperty(key)){var pv=pending[key].amount;return (pv===''||pv==null)?null:+pv;}
+    var row=D.price[key];return (row&&row.amount!=null)?+row.amount:null;
+  }
+  var base=resolveLinkedAmount(ota,link.to,tierId,seen,pending);
+  if(base==null)return null;
+  return base+link.diff;
+}
+// 連動の表示ラベル（例「連動 B+1,500」）
+function linkCellLabel(cl){var link=linkRuleOf(cl);if(!link)return '';return '連動 '+link.to+(link.diff>=0?'+':'')+link.diff.toLocaleString();}
+// sell 判定：クラス×OTA を売るか（未指定=売る。A2/B2のOFFICIAL=false 等）
+function sellsOtaClass(ota,cl){
+  var r=D.store_class.filter(function(x){return x.class===cl;})[0];
+  if(!r)return true;
+  var sell=r.sell||{};if(typeof sell==='string'){try{sell=JSON.parse(sell);}catch(e){sell={};}}
+  return sell[ota]!==false;
+}
+// batch_id 生成（ブラウザ・Date.now()+乱数）
+function newBatchId(){return 'b'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);}
+
 // ===== 読込 =====
 async function reloadAll(){
   document.getElementById('body').innerHTML='<div class="phd">読み込み中…</div>';
@@ -177,11 +220,13 @@ async function reloadAll(){
     if(!r.ok){errs.push(tbl+': '+r.err);assign(null,r);return;}
     assign(r.data,r);
   }
-  // classes（列構成不明のため * 取得・store_id フィルタ。列が無ければ空でもフォールバック）
-  await g('classes','classes?select=*&or=(store_id.eq.'+STORE+',store.eq.'+STORE+')',function(d){ D.classes = d||[]; });
-  if(!D.classes.length){ // store_id/store 列が無い等でヒットしない時は全件→後でstore_classで絞る
+  // classes（店識別子はフルネーム：nha→naha）。ログイン必須（anonでは0件）。
+  // 読めた時だけ表示名(車種)を補う。読めない時はクラスのコード一覧を pc_store_class / pc_price から構築する。
+  var sf=storeFull();
+  await g('classes','classes?select=*&or=(store_id.eq.'+sf+',store.eq.'+sf+')',function(d){ D.classes = d||[]; });
+  if(!D.classes.length){ // store_id/store 列が無い等でヒットしない時は全件→フルネームで絞る
     var ra=await req('GET','classes?select=*&limit=1000');
-    if(ra.ok&&Array.isArray(ra.data))D.classes=ra.data.filter(function(c){return !c.store_id||c.store_id===STORE;}).filter(function(c){return !c.store||c.store===STORE;});
+    if(ra.ok&&Array.isArray(ra.data))D.classes=ra.data.filter(function(c){return !c.store_id||c.store_id===sf;}).filter(function(c){return !c.store||c.store===sf;});
   }
   await g('pc_store_class','pc_store_class?store=eq.'+STORE+'&select=*',function(d){D.store_class=d||[];});
   await g('pc_store_ota','pc_store_ota?store=eq.'+STORE+'&select=*',function(d){D.store_ota=d||[];});
@@ -240,8 +285,9 @@ function viewPrice(){
     +'<button class="otatab'+(OTA==='__all'?' on':'')+'" onclick="setOta(\'__all\')">全OTA比較</button></div>';
   if(OTA==='__all')return '<div class="card"><h2>💴 価格表 — 全OTA比較（基本単価）</h2>'+tabs+priceCompare(otas,classes)+'</div>';
   return '<div class="card"><h2>💴 価格表 — '+esc(otaName(OTA))+'</h2>'+tabs
-    +'<div class="legend"><span><b style="background:#fff;border:1px solid #cbd5e1"></b>基本</span><span><b style="background:#eff6ff"></b>安い日</span><span><b style="background:#fff7ed"></b>高い日</span><span class="warn">⚠要確認＝段逆転</span></div>'
-    +'<div class="muted">セルをクリックして「日帰り単価」を入力→Enter/Tab/矢印で移動。保存ボタンで確定。泊数列は単価×日数の表示です。目印欄は任意メモ（prev_amountには保存しません）。空欄＝基本で売る（0円にしない）。</div>'
+    +emptyTierWarnings(OTA,classes)
+    +'<div class="legend"><span><b style="background:#fff;border:1px solid #cbd5e1"></b>基本</span><span><b style="background:#eff6ff"></b>安い日</span><span><b style="background:#fff7ed"></b>高い日</span><span><b style="background:#f5f3ff"></b>連動(自動)</span><span class="warn">⚠要確認＝段逆転</span></div>'
+    +'<div class="muted">セルをクリックして「日帰り単価」を入力→Enter/Tab/矢印で移動。保存ボタンで確定。泊数列は単価×日数（赤＝泊数ごとの下限未満）。連動セルは元クラス＋差額で自動計算（手入力不可）。目印欄は任意メモ（prev_amountには保存しません）。安い日・高い日が空欄＝基本料金で売る目印（0円にしない）。前回値欄の📜でそのセルの価格ログ履歴を開けます。</div>'
     +'<div class="scroll" style="margin-top:8px">'+priceGrid(OTA,classes)+'</div>'
     +'<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn save" id="savebtn" onclick="savePrice()"'+(authed()?'':' disabled')+'>💾 変更を保存（'+changeCount()+'件）</button>'
     +'<button class="btn ghost sm" onclick="pasteHelp()">📋 貼り付けの使い方</button></div>'
@@ -253,6 +299,27 @@ function setOta(o){flushEditing();OTA=o;render();}
 var editMap={};
 function changeCount(){return Object.keys(editMap).length;}
 
+// #6 販売中の月で L/R/H が空欄なら警告（pc_month_tier が使う段のみ。売る class×ota が対象）。
+// 連動クラスは計算値が出れば空扱いしない。
+function emptyTierWarnings(ota,classes){
+  var usedTiers={};D.month_tier.forEach(function(r){usedTiers[r.tier]=1;}); // 実際に使われている L/R/H のみ
+  var tierIds=Object.keys(usedTiers);
+  if(!tierIds.length)return '';
+  var miss=[];
+  classes.forEach(function(cl){
+    if(!sellsOtaClass(ota,cl))return;
+    tierIds.forEach(function(ti){
+      var amt=linkRuleOf(cl)?resolveLinkedAmount(ota,cl,ti,{},editMap):(D.price[pk(ota,cl,ti)]?D.price[pk(ota,cl,ti)].amount:null);
+      if(amt==null||amt==='')miss.push(cl+'/'+ti);
+    });
+  });
+  if(!miss.length)return '';
+  // どの月がその段か（案内用）
+  var tierMonths={};D.month_tier.forEach(function(r){(tierMonths[r.tier]=tierMonths[r.tier]||[]).push(r.month+'月');});
+  var detail=miss.map(function(x){var ti=x.split('/')[1];return x+(tierMonths[ti]?'（'+tierMonths[ti].join('・')+'）':'');}).join('、');
+  return '<div class="err" style="background:#fffbeb;border:1px solid #fcd34d;color:#92400e;padding:8px 10px;border-radius:8px">⚠ 販売中の月に対応する基本段(L/R/H)の金額が空欄です：'+esc(detail)+'</div>';
+}
+
 function priceGrid(ota,classes){
   var tiers=tiersSorted();
   var head='<thead><tr><th class="cls">クラス</th><th>段</th><th>日帰り単価</th>'
@@ -260,27 +327,48 @@ function priceGrid(ota,classes){
     +'<th>目印</th><th>最終変更日</th><th>前回値</th></tr></thead>';
   var rows='';
   classes.forEach(function(cl){
+    // A2/B2 等：このOTAで売らないクラスは行ごと出さない（公式タブでA2/B2を出さない等）。
+    if(!sellsOtaClass(ota,cl))return;
     var car=clsCarLabel(cl);
+    var link=linkRuleOf(cl); // 連動先クラスなら手入力不可
     tiers.forEach(function(tr,ti){
       var key=pk(ota,cl,tr.id);
       var row=D.price[key];
       var edited=editMap.hasOwnProperty(key);
-      var amount=edited?editMap[key].amount:(row?row.amount:null);
       var prev=row?row.prev_amount:null;
-      var cellCls='cell '+(tr.kind||'base')+(edited?' changed':'');
-      var dev=amount===''||amount==null?null:checkDeviation(cl,tr,amount,prev);
-      var cellInner;
-      if(dev&&dev.block){cellCls+=' err';cellInner='<span class="amt">'+(amount===''?'空':yen(amount))+'</span><span class="chg" style="color:#b91c1c">'+esc(dev.msg)+'</span>';}
-      else{var dbBefore=row?row.amount:null;cellInner='<span class="amt">'+(amount===''||amount==null?'—':yen(amount))+'</span>'+(edited?'<span class="chg">'+chgLabel(dbBefore,amount)+'</span>':'');}
+      var cellCls='cell '+(tr.kind||'base');
+      var cellInner,dataAttr='data-cl="'+cl+'" data-tier="'+tr.id+'"',onClick='';
+      if(link){
+        // 連動セル：元クラスから自動計算した値を表示（手入力不可）
+        var calc=resolveLinkedAmount(ota,cl,tr.id,{},editMap);
+        cellCls+=' linked';
+        cellInner='<span class="amt">'+(calc==null?'—':yen(calc))+'</span><span class="chg">'+esc(linkCellLabel(cl))+'</span>';
+      } else {
+        var amount=edited?editMap[key].amount:(row?row.amount:null);
+        var dev=amount===''||amount==null?null:checkDeviation(cl,tr,amount,prev);
+        if(dev&&dev.block){cellCls+=' err';cellInner='<span class="amt">'+(amount===''?'空':yen(amount))+'</span><span class="chg" style="color:#b91c1c">'+esc(dev.msg)+'</span>';}
+        else{var dbBefore=row?row.amount:null;cellInner='<span class="amt">'+(amount===''||amount==null?'—':yen(amount))+'</span>'+(edited?'<span class="chg">'+chgLabel(dbBefore,amount)+'</span>':'');}
+        if(edited)cellCls+=' changed';
+        onClick=' onclick="editCell(this,\''+ota+'\',\''+cl+'\',\''+tr.id+'\')"';
+      }
+      // 泊数列・下限チェック用の単価
+      var dispAmt=link?resolveLinkedAmount(ota,cl,tr.id,{},editMap):(edited?editMap[key].amount:(row?row.amount:null));
       var revWarn=tierReversalWarn(ota,cl,tr);
-      var dataAttr='data-cl="'+cl+'" data-tier="'+tr.id+'"';
       var cells='<td class="cls">'+(ti===0?('<b>'+esc(cl)+'</b>'+(car?'<br><small style="font-weight:500;color:#64748b">'+esc(car)+'</small>':'')):'')+'</td>'
         +'<td class="tier">'+esc(tr.name)+' <small>('+tr.id+')</small>'+(revWarn?'<br><span class="warn">⚠要確認</span>':'')+'</td>'
-        +'<td class="'+cellCls+'" '+dataAttr+' onclick="editCell(this,\''+ota+'\',\''+cl+'\',\''+tr.id+'\')">'+cellInner+'</td>';
-      NIGHTS.slice(1).forEach(function(n){cells+='<td class="ro">'+(amount===''||amount==null?'—':yen((+amount)*n[1]))+'</td>';});
+        +'<td class="'+cellCls+'" '+dataAttr+onClick+' title="'+(link?'連動セル（手入力不可）':'クリックして入力')+'">'+cellInner+'</td>';
+      // 泊数列：0〜4泊の各合計を pc_floor.amount(その泊数)と比較、下回れば赤
+      NIGHTS.slice(1).forEach(function(n){
+        var nights=n[1]-1; // n[1]=日数, 泊数=日数-1
+        if(dispAmt===''||dispAmt==null){cells+='<td class="ro">—</td>';return;}
+        var total=(+dispAmt)*n[1];
+        var fl=floorOf(ota,cl,nights);
+        var bad=(fl!=null&&total<fl);
+        cells+='<td class="ro'+(bad?' err':'')+'"'+(bad?' title="下限'+fl.toLocaleString()+'未満"':'')+'>'+yen(total)+'</td>';
+      });
       cells+='<td class="meta"><input class="mark" value="'+esc(markOf(key))+'" onchange="setMark(\''+key+'\',this.value)" title="目印メモ（保存されません・この版）"></td>';
       cells+='<td class="meta">'+(row&&row.updated_at?esc(jst(row.updated_at).slice(0,10)):'—')+'</td>';
-      cells+='<td class="ro">'+(prev==null?'—':yen(prev))+'</td>';
+      cells+='<td class="ro" style="cursor:pointer" onclick="openCellHistory(\''+ota+'\',\''+cl+'\',\''+tr.id+'\')" title="このセルの価格ログ履歴を開く">'+(prev==null?'—':yen(prev))+' 📜</td>';
       rows+='<tr>'+cells+'</tr>';
     });
   });
@@ -332,26 +420,44 @@ function commitInput(inp,td){
   if((newVal===''&&(orig==null||orig===''))||newVal===orig){delete editMap[key];}
   else{editMap[key]={amount:newVal};}
 }
-// 貼り付け（タブ区切り複数セル）：縦=段、横は無視（単価1列のみ）。簡易実装＝行方向に埋める。
+// 貼り付け（2次元・行×列）：フォーカスセル起点に「行優先」で編集可能セルへ流し込む。
+// この版の価格表は編集可能列が「日帰り単価」1列のみ（泊数列は計算・連動行は読取専用）→
+// 貼り付けの各行の値は、起点セルから下方向の編集可能セルへ順に入れ、読取専用/計算/連動セルはスキップ。
+// 横に複数列が貼られた場合は、各行の先頭セル(cells[0])を単価として扱い、残りの列は無視（単価以外に入力可能列が無いため）。
 function pasteBlock(startTd,txt){
   commitInputSafe(startTd);
-  var rows=txt.replace(/\r/g,'').split('\n').filter(function(x){return x!=='';});
-  var td=startTd;
-  rows.forEach(function(line){
-    var cells=line.split('\t');
-    var v=cells[0].trim();
-    if(td){
-      var key=pk(td.dataset.ota,td.dataset.cl,td.dataset.tier);
-      var orig=D.price[key]?D.price[key].amount:null;
-      var nv;if(v===''){nv='';}else{var n=parseInt(v.replace(/[,，]/g,''),10);nv=isNaN(n)?v:n;}
-      if((nv===''&&(orig==null||orig===''))||nv===orig)delete editMap[key];else editMap[key]={amount:nv};
-      td=nextCellDown(td);
-    }
-  });
-  editingTd=null;render();toast('貼り付けました（'+rows.length+'セル）');
+  var lines=txt.replace(/\r/g,'').split('\n').filter(function(x){return x!=='';});
+  // 貼り付けの全値を行優先で1次元に展開（1行に複数列あれば先頭列を採用）
+  var vals=[];
+  lines.forEach(function(line){var cells=line.split('\t');vals.push((cells[0]||'').trim());});
+  var td=startTd,n=0;
+  for(var i=0;i<vals.length&&td;i++){
+    // 編集可能セルに当たるまで下へスキップ（連動/読取専用はスキップ）
+    while(td&&!isEditableCell(td))td=nextEditableDown(td);
+    if(!td)break;
+    var v=vals[i];
+    // data-ota はセルに無い（editCell時のみ dataset に入る）→ 現在表示中の OTA を使う
+    var ota=OTA,cl=td.getAttribute('data-cl'),tier=td.getAttribute('data-tier');
+    var key=pk(ota,cl,tier);
+    var orig=D.price[key]?D.price[key].amount:null;
+    var nv;if(v===''){nv='';}else{var num2=parseInt(v.replace(/[,，]/g,''),10);nv=isNaN(num2)?v:num2;}
+    if((nv===''&&(orig==null||orig===''))||nv===orig)delete editMap[key];else editMap[key]={amount:nv};
+    n++;
+    td=nextEditableDown(td);
+  }
+  editingTd=null;render();toast('貼り付けました（'+n+'セル）');
 }
 function commitInputSafe(td){var inp=td.querySelector('input');if(inp)commitInput(inp,td);}
-function nextCellDown(td){var tr=td.closest('tr');var nx=tr.nextElementSibling;if(!nx)return null;var idx=Array.prototype.indexOf.call(tr.children,td);return nx.children[idx]||null;}
+// 編集可能セル＝class 'cell' を持ち 'linked'/'ro' でない（＝日帰り単価列の手入力セル）
+function isEditableCell(td){return td&&td.classList&&td.classList.contains('cell')&&!td.classList.contains('linked');}
+// 同じ列インデックスで次の行の同列セルへ（連動/読取専用もそのまま返す＝呼び出し側でskip）
+function nextEditableDown(td){
+  var tr=td.closest('tr');var idx=Array.prototype.indexOf.call(tr.children,td);
+  var nx=tr.nextElementSibling;
+  while(nx){var c=nx.children[idx];if(c&&c.classList&&c.classList.contains('cell'))return c;nx=nx.nextElementSibling;}
+  return null;
+}
+function nextCellDown(td){return nextEditableDown(td);}
 function moveCell(td,dRow,dCol,horiz){
   var tr=td.closest('tr');var idx=Array.prototype.indexOf.call(tr.children,td);
   var target;
@@ -365,7 +471,7 @@ function moveCell(td,dRow,dCol,horiz){
   if(target&&target.classList.contains('cell')){target.click();}
   else render();
 }
-function pasteHelp(){alert('セルを編集状態にして、スプレッドシート等からコピーした縦1列（タブ/改行区切り）を貼り付けると、そのセルから下方向に順に入ります。横方向（OTA別）はこの版では未対応です。');}
+function pasteHelp(){alert('セルを編集状態にして、スプレッドシート等からコピーした値（複数行・タブ/改行区切り）を貼り付けると、そのセルを起点に行優先で編集可能セルへ順に入ります。連動セル・泊数の計算列・読取専用セルは自動でスキップします。1行に複数列ある場合は先頭列を単価として使います（この表で手入力できる列は「日帰り単価」1列のため）。');}
 
 // ---- 逸脱チェック（追加B / pc_setting.deviation）----
 function devCfg(){var d=D.setting.deviation;if(typeof d==='string'){try{d=JSON.parse(d);}catch(e){d={};}}return d||{};}
@@ -387,32 +493,108 @@ function checkDeviation(cl,tr,amount,prev){
   }
   return null;
 }
-// pc_floor 下限（nights=0=日帰り単価で判定）
-function floorOf(ota,cl){
-  var hit=D.floor.filter(function(f){return f.ota===ota&&f.class===cl&&f.nights===0;})[0];
+// pc_floor 下限（泊数ごと）。nights 省略時は0=日帰り。
+function floorOf(ota,cl,nights){
+  if(nights==null)nights=0;
+  var hit=D.floor.filter(function(f){return f.ota===ota&&f.class===cl&&(+f.nights)===(+nights);})[0];
   return hit?hit.amount:null;
 }
-// ④ 段逆転（高い日tier の単価 < その月L/R/H の基本、または 安い日tier > 基本）→ 要確認（保存は可）
-function tierReversalWarn(ota,cl,tr){
-  if(tr.kind==='base')return false;
-  var amt=currentAmount(ota,cl,tr.id);if(amt===''||amt==null)return false;
-  // 基本の代表＝R（通常）を基準に比較（L/R/H のうち存在するもの）
-  var baseAmt=currentAmount(ota,cl,'R');if(baseAmt===''||baseAmt==null)baseAmt=currentAmount(ota,cl,'H');if(baseAmt===''||baseAmt==null)baseAmt=currentAmount(ota,cl,'L');
-  if(baseAmt===''||baseAmt==null)return false;
-  if(tr.kind==='high'&&+amt<+baseAmt)return true;
-  if(tr.kind==='low'&&+amt>+baseAmt)return true;
-  return false;
+// 泊数ごとの下限違反チェック：単価 unit の 0〜4泊合計が1つでも下限未満なら {nights,total,floor} を返す
+function floorViolation(ota,cl,unit){
+  if(unit===''||unit==null)return null;
+  for(var ni=0;ni<NIGHTS.length;ni++){
+    var days=NIGHTS[ni][1],nights=days-1;
+    var fl=floorOf(ota,cl,nights);
+    if(fl!=null&&(+unit)*days<fl)return {nights:nights,total:(+unit)*days,floor:fl};
+  }
+  return null;
 }
-function currentAmount(ota,cl,tierId){var key=pk(ota,cl,tierId);if(editMap.hasOwnProperty(key))return editMap[key].amount;return D.price[key]?D.price[key].amount:null;}
+// ④ 段逆転（高い日tier の単価 < 基本、または 安い日tier > 基本）
+// ※ 今は「基本」＝R段の同OTA・同クラスのamount（L/R/Hのうち存在するもの）。
+//   フェーズ④以降（安い日/高い日に日付が入る）では、"その日付の月の L/R/H"（pc_month_tier→pc_price）
+//   と比較する設計に差し替える。今回は準備のみ（下の baseTierAmount をその場所に変える）。
+function baseTierAmount(ota,cl){
+  var b=currentAmount(ota,cl,'R');if(b!==''&&b!=null)return +b;
+  b=currentAmount(ota,cl,'H');if(b!==''&&b!=null)return +b;
+  b=currentAmount(ota,cl,'L');if(b!==''&&b!=null)return +b;
+  return null;
+}
+// 段逆転の判定。戻り null か {msg}
+function tierReversal(ota,cl,tr){
+  if(!tr||tr.kind==='base')return null;
+  var amt=currentAmount(ota,cl,tr.id);if(amt===''||amt==null)return null;
+  var baseAmt=baseTierAmount(ota,cl);if(baseAmt==null)return null;
+  if(tr.kind==='high'&&+amt<baseAmt)return {msg:'高い日が基本('+baseAmt.toLocaleString()+')より安い'};
+  if(tr.kind==='low'&&+amt>baseAmt)return {msg:'安い日が基本('+baseAmt.toLocaleString()+')より高い'};
+  return null;
+}
+function tierReversalWarn(ota,cl,tr){return !!tierReversal(ota,cl,tr);}
+function currentAmount(ota,cl,tierId){
+  if(linkRuleOf(cl)){var c=resolveLinkedAmount(ota,cl,tierId,{},editMap);return c==null?null:c;}
+  var key=pk(ota,cl,tierId);if(editMap.hasOwnProperty(key))return editMap[key].amount;return D.price[key]?D.price[key].amount:null;
+}
+
+// 1件を pc_price に保存＋pc_log＋pc_input_queue。戻り {ok,before,row,fails[]}（queue失敗も報告）
+async function writeOnePrice(ota,cl,tierId,amt,trigger,reason,batchId){
+  var fails=[];
+  var cur=await req('GET','pc_price?store=eq.'+STORE+'&ota=eq.'+ota+'&class=eq.'+cl+'&tier=eq.'+tierId+'&select=*');
+  if(!cur.ok)return {ok:false,fails:[otaName(ota)+' '+cl+'/'+tierId+': 読み直し失敗 '+cur.err]};
+  var existing=(cur.data&&cur.data[0])?cur.data[0]:null;
+  var before=existing?existing.amount:null;
+  if(before===amt)return {ok:true,skipped:true,before:before,row:existing};
+  var nowISO=new Date().toISOString();
+  var w;
+  if(existing)w=await req('PATCH','pc_price?store=eq.'+STORE+'&ota=eq.'+ota+'&class=eq.'+cl+'&tier=eq.'+tierId,{amount:amt,prev_amount:before,updated_at:nowISO},'return=representation');
+  else w=await req('POST','pc_price',{store:STORE,ota:ota,class:cl,tier:tierId,amount:amt,prev_amount:before,updated_at:nowISO},'return=representation');
+  if(!w.ok)return {ok:false,fails:[otaName(ota)+' '+cl+'/'+tierId+': '+w.err]};
+  var lg=await req('POST','pc_log',{store:STORE,ota:ota,class:cl,tier:tierId,before:before,after:amt,trigger:trigger,reason:reason||null,batch_id:batchId},'return=minimal');
+  if(!lg.ok)fails.push(otaName(ota)+' '+cl+'/'+tierId+': ログ記録失敗 '+lg.err);
+  // pc_input_queue：失敗は握りつぶさず報告
+  var q=await req('POST','pc_input_queue',{store:STORE,ota:ota,class:cl,tier:tierId,before:before,after:amt,status:'waiting'},'return=minimal');
+  if(!q.ok)fails.push(otaName(ota)+' '+cl+'/'+tierId+': 入力リスト記録失敗 '+q.err);
+  var row=(w.data&&w.data[0])?w.data[0]:{store:STORE,ota:ota,class:cl,tier:tierId,amount:amt,prev_amount:before,updated_at:nowISO};
+  D.price[pk(ota,cl,tierId)]=row;
+  return {ok:true,before:before,row:row,fails:fails};
+}
+// 連動カスケード：srcCl（連動元）の保存後、同OTA・同tier の下流クラスを再帰的に再計算して保存。
+// 逸脱①/pc_floor に当たる件は保存せず中止し blocked[] に理由を積む。batchId は手入力と同一。
+async function cascadeLink(ota,tierId,srcCl,batchId,okRef,failList,blocked,visited){
+  visited=visited||{};
+  var deps=linkDependents(srcCl);
+  for(var i=0;i<deps.length;i++){
+    var dep=deps[i];
+    var vkey=ota+'|'+dep+'|'+tierId;
+    if(visited[vkey])continue; visited[vkey]=1;
+    if(!sellsOtaClass(ota,dep))continue; // そのOTAで売らないクラスは反映しない
+    var calc=resolveLinkedAmount(ota,dep,tierId,{},editMap);
+    if(calc==null)continue; // 連動元が空なら連動先も空のまま
+    var tr=D.tier.filter(function(t){return t.id===tierId;})[0]||{id:tierId,kind:'base'};
+    var prev=D.price[vkey]?D.price[vkey].amount:null;
+    // 逸脱①
+    var dev=checkDeviation(dep,tr,calc,prev);
+    if(dev&&dev.block){blocked.push('連動 '+otaName(ota)+' '+dep+'/'+tierId+'（'+srcCl+'由来）：'+dev.msg+' → 保存せず中止');continue;}
+    // pc_floor（泊数ごと）
+    var fv=floorViolation(ota,dep,calc);
+    if(fv){blocked.push('連動 '+otaName(ota)+' '+dep+'/'+tierId+'（'+srcCl+'由来）：'+fv.nights+'泊合計'+fv.total.toLocaleString()+'が下限'+fv.floor.toLocaleString()+'未満 → 保存せず中止');continue;}
+    var r=await writeOnePrice(ota,dep,tierId,calc,'link','連動('+srcCl+')',batchId);
+    if(!r.ok){failList.push.apply(failList,r.fails);continue;}
+    if(r.fails&&r.fails.length)failList.push.apply(failList,r.fails);
+    okRef.n++;
+    // 連動の連動（dep を元に持つ下流）
+    await cascadeLink(ota,tierId,dep,batchId,okRef,failList,blocked,visited);
+  }
+}
 
 // ---- 保存（1件ずつ・保存直前に読み直し）----
 async function savePrice(){
   flushEditing();
   var errEl=document.getElementById('priceerr');errEl.textContent='';
   if(!authed()){errEl.textContent='ログインしていません。保存できません。';return;}
+  // 連動先クラスは手入力不可＝editMap から除外（念のため）
+  Object.keys(editMap).forEach(function(k){if(linkRuleOf(k.split('|')[1]))delete editMap[k];});
   var keys=Object.keys(editMap);
   if(!keys.length){toast('変更がありません');return;}
-  // ① ブロック判定を全件先に
+  // ① ブロック判定（入力ミス＋泊数ごとの下限）を全件先に
   var blocks=[];
   keys.forEach(function(key){
     var parts=key.split('|'),ota=parts[0],cl=parts[1],tierId=parts[2];
@@ -421,10 +603,24 @@ async function savePrice(){
     var prev=D.price[key]?D.price[key].amount:null;
     var dev=checkDeviation(cl,tr,amt,prev);
     if(dev&&dev.block)blocks.push(otaName(ota)+' '+cl+'/'+tierId+'：'+dev.msg);
-    // pc_floor
-    if(amt!==''){var fl=floorOf(ota,cl);if(fl!=null&&(+amt)<fl)blocks.push(otaName(ota)+' '+cl+'/'+tierId+'：下限'+fl.toLocaleString()+'未満');}
+    // pc_floor（0〜4泊の各合計）
+    if(amt!==''){var fv=floorViolation(ota,cl,amt);if(fv)blocks.push(otaName(ota)+' '+cl+'/'+tierId+'：'+fv.nights+'泊合計'+fv.total.toLocaleString()+'が下限'+fv.floor.toLocaleString()+'未満');}
   });
   if(blocks.length){errEl.textContent='保存不可（入力ミス/下限）:\n'+blocks.join('\n');render();return;}
+  // ④ 段逆転（高い日<基本 / 安い日>基本）→ 理由必須。未入力なら保存不可。
+  var revItems=[];
+  keys.forEach(function(key){
+    var parts=key.split('|'),ota=parts[0],cl=parts[1],tierId=parts[2];
+    var tr=D.tier.filter(function(t){return t.id===tierId;})[0];if(!tr)return;
+    var rv=tierReversal(ota,cl,tr);
+    if(rv)revItems.push({key:key,ota:ota,cl:cl,tier:tierId,msg:rv.msg});
+  });
+  var reasonByKey={};
+  if(revItems.length){
+    var rr=await confirmReversal(revItems);
+    if(rr===false){errEl.textContent='段逆転の理由が未入力のため保存を中止しました:\n'+revItems.map(function(x){return otaName(x.ota)+' '+x.cl+'/'+x.tier+'：'+x.msg;}).join('\n');render();return;}
+    reasonByKey=rr; // {key:reason}
+  }
   // ⑤ big_change 確認
   var cfg=devCfg();var big=num(cfg.big_change!=null?cfg.big_change:(D.setting.big_change),0.20);
   var bigList=keys.filter(function(key){var prev=D.price[key]?D.price[key].amount:null;var amt=editMap[key].amount;if(amt===''||prev==null||prev<=0)return false;return Math.abs((+amt)-prev)/prev>=big;});
@@ -433,38 +629,50 @@ async function savePrice(){
     reason=await confirmBig(bigList,big);
     if(reason===false){toast('保存を中止しました');return;}
   }
-  // 1件ずつ保存
-  var okCount=0,failList=[];
+  // 1回の保存（手入力＋連動カスケード）は同じ batch_id
+  var batchId=newBatchId();
+  var okRef={n:0},failList=[],blocked=[],cascadeSrc=[];
   for(var i=0;i<keys.length;i++){
     var key=keys[i],parts=key.split('|'),ota=parts[0],cl=parts[1],tierId=parts[2];
     var amtRaw=editMap[key].amount;var amt=(amtRaw===''?null:+amtRaw);
-    // 保存直前に対象行を読み直す（競合回避）
-    var cur=await req('GET','pc_price?store=eq.'+STORE+'&ota=eq.'+ota+'&class=eq.'+cl+'&tier=eq.'+tierId+'&select=*');
-    if(!cur.ok){failList.push(key+': 読み直し失敗 '+cur.err);continue;}
-    var existing=(cur.ok&&cur.data&&cur.data[0])?cur.data[0]:null;
-    var before=existing?existing.amount:null;
-    // 変化なし（他セッションで同値になっていた）ならスキップ
-    if(before===amt){okCount++;continue;}
-    var body={store:STORE,ota:ota,class:cl,tier:tierId,amount:amt,prev_amount:before,updated_at:new Date().toISOString()};
-    var w;
-    if(existing){w=await req('PATCH','pc_price?store=eq.'+STORE+'&ota=eq.'+ota+'&class=eq.'+cl+'&tier=eq.'+tierId,{amount:amt,prev_amount:before,updated_at:body.updated_at},'return=representation');}
-    else{w=await req('POST','pc_price',body,'return=representation');}
-    if(!w.ok){failList.push(otaName(ota)+' '+cl+'/'+tierId+': '+w.err);continue;}
-    // pc_log 追記
-    var lg=await req('POST','pc_log',{store:STORE,ota:ota,class:cl,tier:tierId,before:before,after:amt,trigger:'manual',reason:reason||null},'return=minimal');
-    if(!lg.ok)failList.push(otaName(ota)+' '+cl+'/'+tierId+': ログ記録失敗 '+lg.err);
-    // pc_input_queue 追加
-    await req('POST','pc_input_queue',{store:STORE,ota:ota,class:cl,tier:tierId,before:before,after:amt,status:'waiting'},'return=minimal');
-    // ローカル反映
-    var rowNow=(w.data&&w.data[0])?w.data[0]:body;
-    D.price[key]=rowNow;
+    var rsn=reasonByKey[key]||reason||null;
+    var r=await writeOnePrice(ota,cl,tierId,amt,'manual',rsn,batchId);
+    if(!r.ok){failList.push.apply(failList,r.fails);continue;}
+    if(r.fails&&r.fails.length)failList.push.apply(failList,r.fails);
     delete editMap[key];
-    okCount++;
+    okRef.n++;
+    cascadeSrc.push({ota:ota,tier:tierId,cl:cl});
+  }
+  // 連動カスケード（元の手入力分は保存済み。batchId 共通）
+  var visited={};
+  for(var j=0;j<cascadeSrc.length;j++){
+    await cascadeLink(cascadeSrc[j].ota,cascadeSrc[j].tier,cascadeSrc[j].cl,batchId,okRef,failList,blocked,visited);
   }
   await loadLog();
   render();
-  if(failList.length){document.getElementById('priceerr').textContent='一部失敗:\n'+failList.join('\n');toast(okCount+'件保存／'+failList.length+'件失敗',true);}
-  else toast('✅ '+okCount+'件保存しました');
+  var msg='';
+  if(blocked.length)msg+='⚠ 連動で止まった件:\n'+blocked.join('\n')+'\n（元の手入力分は保存済み）';
+  if(failList.length)msg+=(msg?'\n\n':'')+'一部失敗:\n'+failList.join('\n');
+  if(msg)document.getElementById('priceerr').textContent=msg;
+  if(failList.length||blocked.length)toast(okRef.n+'件保存／'+(failList.length+blocked.length)+'件 要確認',true);
+  else toast('✅ '+okRef.n+'件保存しました');
+}
+// 段逆転の理由入力（全件に理由が入るまで保存不可）。戻り {key:reason} または false（中止）
+function confirmReversal(items){
+  return new Promise(function(resolve){
+    var box=document.getElementById('diagbox');
+    box.innerHTML='<h3>⚠ 段の逆転（理由が必要）</h3><div class="muted">高い日が基本より安い／安い日が基本より高い設定です。保存するには各件の理由を入力してください（空欄があると保存できません）。</div>'
+      +'<div style="max-height:220px;overflow:auto;margin:8px 0">'+items.map(function(x,i){return '<div style="margin-bottom:6px;font-size:12px"><b>'+esc(otaName(x.ota)+' '+x.cl+'/'+x.tier)+'</b> <span class="warn">'+esc(x.msg)+'</span><br><input id="rev_'+i+'" style="width:100%;padding:6px;border:1px solid #cbd5e1;border-radius:6px;margin-top:3px" placeholder="理由"></div>';}).join('')+'</div>'
+      +'<div class="acts"><button class="btn ghost sm" onclick="__revRes(false)">中止</button><button class="btn save sm" onclick="__revRes(true)">保存する</button></div>';
+    document.getElementById('diag').classList.add('on');
+    window.__revRes=function(ok){
+      if(!ok){document.getElementById('diag').classList.remove('on');resolve(false);return;}
+      var map={},miss=false;
+      items.forEach(function(x,i){var v=(document.getElementById('rev_'+i).value||'').trim();if(!v)miss=true;map[x.key]=v;});
+      if(miss){alert('全ての理由を入力してください。');return;}
+      document.getElementById('diag').classList.remove('on');resolve(map);
+    };
+  });
 }
 function confirmBig(list,big){
   return new Promise(function(resolve){
@@ -478,6 +686,19 @@ function confirmBig(list,big){
   });
 }
 
+// セルの価格ログ履歴（pc_log を store/ota/class/tier で絞る）
+async function openCellHistory(ota,cl,tierId){
+  var box=document.getElementById('diagbox');
+  box.innerHTML='<h3>📜 価格ログ履歴</h3><div class="muted">'+esc(otaName(ota)+' / '+cl+' / '+tierId)+'</div><div id="cellhist" style="margin-top:8px">読み込み中…</div>'
+    +'<div class="acts"><button class="btn ghost sm" onclick="document.getElementById(\'diag\').classList.remove(\'on\')">閉じる</button></div>';
+  document.getElementById('diag').classList.add('on');
+  var r=await req('GET','pc_log?store=eq.'+STORE+'&ota=eq.'+ota+'&class=eq.'+cl+'&tier=eq.'+tierId+'&order=ts.desc&limit=100&select=*');
+  var el=document.getElementById('cellhist');if(!el)return;
+  if(!r.ok){el.innerHTML='<div class="err">読込失敗: '+esc(r.err)+'</div>';return;}
+  var rows=(r.data||[]).map(function(x){return '<tr><td style="white-space:nowrap">'+esc(jst(x.ts))+'</td><td style="text-align:right">'+(x.before==null?'—':yen(x.before))+'→'+(x.after==null?'—':yen(x.after))+'</td><td><span class="pill '+(x.trigger==='manual'?'manual':'other')+'">'+esc(x.trigger||'')+'</span></td><td>'+esc(x.reason||'')+'</td></tr>';}).join('');
+  el.innerHTML=rows?('<div style="max-height:260px;overflow:auto"><table class="ftable"><thead><tr><th>日時(JST)</th><th>前→後</th><th>きっかけ</th><th>理由</th></tr></thead><tbody>'+rows+'</tbody></table></div>'):'<div class="empty">このセルのログはありません。</div>';
+}
+
 // 全OTA比較（基本単価 L/R/H のみ・読み取り）
 function priceCompare(otas,classes){
   var baseTiers=tiersSorted().filter(function(t){return t.kind==='base';});
@@ -485,8 +706,12 @@ function priceCompare(otas,classes){
   var rows='';
   classes.forEach(function(cl){
     baseTiers.forEach(function(tr,i){
-      rows+='<tr><td class="l">'+(i===0?'<b>'+esc(cl)+'</b>':'')+'</td><td class="l">'+esc(tr.name)+'</td>'
-        +otas.map(function(o){var r=D.price[pk(o,cl,tr.id)];return '<td>'+(r&&r.amount!=null?yen(r.amount):'—')+'</td>';}).join('')+'</tr>';
+      rows+='<tr><td class="l">'+(i===0?'<b>'+esc(cl)+'</b>'+(linkRuleOf(cl)?'<br><small style="color:#6d28d9">'+esc(linkCellLabel(cl))+'</small>':''):'')+'</td><td class="l">'+esc(tr.name)+'</td>'
+        +otas.map(function(o){
+          if(!sellsOtaClass(o,cl))return '<td style="color:#cbd5e1">—</td>'; // 売らない
+          var v=linkRuleOf(cl)?resolveLinkedAmount(o,cl,tr.id,{},editMap):(D.price[pk(o,cl,tr.id)]?D.price[pk(o,cl,tr.id)].amount:null);
+          return '<td>'+(v!=null&&v!==''?yen(v):'—')+'</td>';
+        }).join('')+'</tr>';
     });
   });
   return '<div class="scroll"><table class="cmptbl">'+head+rows+'</table></div><div class="muted" style="margin-top:6px">基本段（L/R/H）の単価を横並び比較。編集は各OTAタブで。</div>';
@@ -560,9 +785,29 @@ async function saveRules(){
     ok++;
   }
   await req('GET','pc_rule?store=eq.'+STORE+'&select=*').then(function(r){if(r.ok)D.rule=r.data||[];});
+  // #1 決め方を保存したら、連動クラスを元クラスの現行amount（各OTA×各段）から再計算して反映。
+  var batchId=newBatchId();
+  var okRef={n:0},failList=[],blocked=[],visited={};
+  var otas=activeOtas();
+  var tierIds=D.tier.map(function(t){return t.id;});
+  // 連動元（link_to を持たない＝manual/market、または連動チェーンの先頭）から順にカスケード
+  var srcClasses=D.rule.filter(function(r){return r.method!=='link';}).map(function(r){return r.class;});
+  for(var oi=0;oi<otas.length;oi++){
+    for(var ti2=0;ti2<tierIds.length;ti2++){
+      for(var si=0;si<srcClasses.length;si++){
+        await cascadeLink(otas[oi],tierIds[ti2],srcClasses[si],batchId,okRef,failList,blocked,visited);
+      }
+    }
+  }
+  if(okRef.n)await loadLog();
   render();
-  if(fail.length){document.getElementById('ruleerr').textContent='一部失敗:\n'+fail.join('\n');toast(ok+'件保存／'+fail.length+'件失敗',true);}
-  else toast('✅ 決め方を保存しました（'+ok+'件）');
+  var msg='';
+  if(fail.length)msg+='決め方の保存で一部失敗:\n'+fail.join('\n');
+  if(blocked.length)msg+=(msg?'\n\n':'')+'⚠ 連動で止まった件:\n'+blocked.join('\n');
+  if(failList.length)msg+=(msg?'\n\n':'')+'連動反映で一部失敗:\n'+failList.join('\n');
+  if(msg)document.getElementById('ruleerr').textContent=msg;
+  if(fail.length||blocked.length||failList.length)toast(ok+'件保存／連動'+okRef.n+'件反映（要確認あり）',true);
+  else toast('✅ 決め方を保存（'+ok+'件）／連動'+okRef.n+'件を反映しました');
 }
 
 // =====================================================================

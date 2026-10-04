@@ -192,6 +192,7 @@ on conflict (id) do nothing;
 insert into pc_ota(id,name,sort) values
   ('SKT','スカイチケット',1),('JLN','じゃらん',2),('RKT','楽天トラベル',3),
   ('ART','エアトリ',4),('RDC','レンタカードットコム',5),('GGO','gogoout',6),
+  ('TBR','たびらい',7),   -- OTA一覧には登録。那覇の掲載(pc_store_ota)には初期では入れない
   ('OFFICIAL','公式HP',9)
 on conflict (id) do nothing;
 
@@ -201,10 +202,17 @@ insert into pc_store_ota(store,ota,sort) values
   ('nha','RDC',5),('nha','GGO',6),('nha','OFFICIAL',9)
 on conflict (store,ota) do nothing;
 
--- 那覇の店×クラス表示順（クラス正本=classes。ここは順と売否のみ）
-insert into pc_store_class(store,class,sort) values
-  ('nha','B',1),('nha','A',2),('nha','D',3),('nha','C',4),
-  ('nha','F',5),('nha','H',6),('nha','S',7)
+-- 那覇の店×クラス表示順（クラス正本=classes の store_id='naha'。ここは順と売否のみ）
+-- 決め方で使う A/A2/B/B2/D/F/H を必ず含める。A2・B2 は公式HPで売らない(sell.OFFICIAL=false)。
+-- 実際のクラス一覧は画面が classes(store_id='naha') から読む＝ここは初期の順/売否のみ。
+insert into pc_store_class(store,class,sort,sell) values
+  ('nha','B', 1,'{}'::jsonb),
+  ('nha','A', 2,'{}'::jsonb),
+  ('nha','A2',3,'{"OFFICIAL":false}'::jsonb),
+  ('nha','B2',4,'{"OFFICIAL":false}'::jsonb),
+  ('nha','D', 5,'{}'::jsonb),
+  ('nha','F', 6,'{}'::jsonb),
+  ('nha','H', 7,'{}'::jsonb)
 on conflict (store,class) do nothing;
 
 -- 段：基本 L/R/H
@@ -246,3 +254,16 @@ insert into pc_setting(key,value) values
   ('official_link_ota',    '{"nha":"JLN","spk":null,"tkm":null}'),  -- 公式HP連動先OTA
   ('deviation',            '{"min_amount":1000,"max_amount":100000,"ratio_low":0.3333,"ratio_high":3.0,"market_out":0.20,"other_ota":0.60,"prev_change":0.20}')
 on conflict (key) do nothing;
+
+-- =====================================================================
+-- 【#7 既に旧版を流してしまった場合の訂正】通常は不要（本スキーマ未適用を確認済 2026-10-05）。
+-- 旧版で C・S が入り A2・B2 が無い／TBR 無し のまま適用していた場合だけ、以下を実行。
+-- （人手入力のある本番では流さない。pc_* は新規のため人手値はまだ無い＝安全）
+-- --------------------------------------------------------------------
+-- insert into pc_ota(id,name,sort) values ('TBR','たびらい',7) on conflict (id) do nothing;
+-- delete from pc_store_class where store='nha' and class in ('C','S');  -- 誤初期値の除去（人手編集前のみ）
+-- insert into pc_store_class(store,class,sort,sell) values
+--   ('nha','B',1,'{}'::jsonb),('nha','A',2,'{}'::jsonb),
+--   ('nha','A2',3,'{"OFFICIAL":false}'::jsonb),('nha','B2',4,'{"OFFICIAL":false}'::jsonb),
+--   ('nha','D',5,'{}'::jsonb),('nha','F',6,'{}'::jsonb),('nha','H',7,'{}'::jsonb)
+-- on conflict (store,class) do update set sort=excluded.sort, sell=excluded.sell;
