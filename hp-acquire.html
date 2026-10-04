@@ -117,7 +117,24 @@ const START='2026-02';
 document.getElementById('storelbl').textContent=C.lbl;
 document.title='🌐 HP新規獲得 '+C.lbl;
 
-function _sbToken(){try{for(let i=0;i<localStorage.length;i++){const key=localStorage.key(i);if(key&&key.indexOf('sb-')===0&&key.indexOf('auth-token')>=0){let v=null;try{v=JSON.parse(localStorage.getItem(key));}catch(e){continue;}const t=(v&&v.access_token)||(v&&v.currentSession&&v.currentSession.access_token)||(v&&v.session&&v.session.access_token)||(Array.isArray(v)&&typeof v[0]==='string'?v[0]:null);if(t)return t;}}}catch(e){}return null;}
+function _sbRef(){try{return new URL(C.sb).host.split('.')[0]||'';}catch(e){return '';}}
+function _tokOf(v){return (v&&v.access_token)||(v&&v.currentSession&&v.currentSession.access_token)||(v&&v.session&&v.session.access_token)||(Array.isArray(v)&&typeof v[0]==='string'?v[0]:null)||null;}
+function _jwtExp(t){try{return JSON.parse(atob(t.split('.')[1])).exp||0;}catch(e){return 0;}}
+// 対象プロジェクト(C.sb)のトークンを優先、無ければ最初のsb認証を返す {key,blob,token}
+function _sbEntry(){try{const ref=_sbRef();let fb=null;for(let i=0;i<localStorage.length;i++){const key=localStorage.key(i);if(!key||key.indexOf('sb-')!==0||key.indexOf('auth-token')<0)continue;let v;try{v=JSON.parse(localStorage.getItem(key));}catch(e){continue;}const t=_tokOf(v);if(!t)continue;const e={key:key,blob:v,token:t};if(ref&&key.indexOf(ref)>=0)return e;if(!fb)fb=e;}return fb;}catch(e){return null;}}
+// 2026-10-05 失効したaccess_tokenはnullを返す=失効BearerをDBへ送って401になる事故を根絶(BT版と同対応)。
+function _sbToken(){const e=_sbEntry();if(!e)return null;const exp=_jwtExp(e.token);if(exp&&exp<=Math.floor(Date.now()/1000)+10)return null;return e.token;}
+// 2026-10-05 このページは生トークンを使うだけで自動更新しなかった=約1時間でトークン失効→開くと401。ロード前にrefresh_tokenで更新し書き戻す(BT版と同対応)。
+async function ensureFreshToken(){try{
+  const e=_sbEntry();if(!e)return;const exp=_jwtExp(e.token);if(exp&&exp>Math.floor(Date.now()/1000)+60)return; // まだ60秒以上有効なら何もしない
+  const v=e.blob;const sess=v.currentSession||v.session||v;const rt=sess&&sess.refresh_token;if(!rt)return;
+  const r=await fetch(C.sb+'/auth/v1/token?grant_type=refresh_token',{method:'POST',headers:{apikey:C.anon,'Content-Type':'application/json'},body:JSON.stringify({refresh_token:rt})});
+  if(!r.ok)return;const nd=await r.json();if(!nd||!nd.access_token)return;
+  if(v.currentSession)v.currentSession=Object.assign({},v.currentSession,nd);
+  else if(v.session)v.session=Object.assign({},v.session,nd);
+  else Object.assign(v,nd);
+  localStorage.setItem(e.key,JSON.stringify(v));
+}catch(e){}}
 function H(){const t=_sbToken();return {apikey:C.anon,Authorization:'Bearer '+(t||C.anon),'Content-Type':'application/json'};}
 const yen=n=>'¥'+Math.round(+n||0).toLocaleString();
 const ym=s=>s?String(s).slice(0,7):'';
@@ -257,6 +274,7 @@ function renderLT(elId,Md,occMonths){
 }
 (async function(){
   const st=document.getElementById('status');
+  await ensureFreshToken();
   if(!_sbToken()){st.style.display='block';st.textContent='⚠️ 管理APPにログインしてからこのページを開いてください（データはログイン必須）。';return;}
   try{await loadAd();const resv=await fetchAll();ROWS=resv;BUILT=build(resv);render();}
   catch(e){st.style.display='block';st.textContent='⚠️ 読み込みエラー: '+(e.message||e);}
