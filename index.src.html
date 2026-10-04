@@ -82,7 +82,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1178';
+var CV='spk-v1179';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=1038').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -21090,10 +21090,11 @@ function SpkPaymentHistoryPanel(){
 function PastTasksTable({today}){
   const[tasks,setTasks]=useState([]);const[loading,setLoading]=useState(false);
   const[search,setSearch]=useState("");const[typeFilter,setTypeFilter]=useState("all");
+  const[sortKey,setSortKey]=useState("order");// order(既定=OP順)/time(時間)/assignee(担当)
   // デフォルト: 過去7日
   const[fromDate,setFromDate]=useState(()=>{const d=new Date();d.setDate(d.getDate()-7);return toLD(d);});
   const[toDate,setToDate]=useState(()=>{const d=new Date();d.setDate(d.getDate()-1);return toLD(d);});
-  const loadPast=async()=>{setLoading(true);try{const t=await DB.fetchTasksRange(fromDate,toDate);setTasks(t);}catch(e){console.error(e);}setLoading(false);};
+  const loadPast=async()=>{setLoading(true);try{/* ★マスターと同じ場所を出すため、変換前に予約索引(_resIdx)を用意する＝del_place/col_placeが過去タスクにも補完される */if(!DB._resIdx||!Object.keys(DB._resIdx).length){try{await DB.fetchReservations();}catch(e){}}const t=await DB.fetchTasksRange(fromDate,toDate);setTasks(t);}catch(e){console.error(e);}setLoading(false);};
   useEffect(()=>{loadPast();},[fromDate,toDate]);
   const types=[...new Set(tasks.map(t=>t.type))].sort();
   const filtered=useMemo(()=>tasks.filter(t=>{
@@ -21102,7 +21103,14 @@ function PastTasksTable({today}){
     return true;
   }),[tasks,search,typeFilter]);
   // 日付ごとにグループ化
-  const grouped=useMemo(()=>{const m={};filtered.forEach(t=>{const d=t._date||"不明";if(!m[d])m[d]=[];m[d].push(t);});return Object.entries(m).sort((a,b)=>b[0].localeCompare(a[0]));},[filtered]);
+  const grouped=useMemo(()=>{const m={};filtered.forEach(t=>{const d=t._date||"不明";if(!m[d])m[d]=[];m[d].push(t);});
+    // 日ごとに並べ替え。order=OPシート保存順(既定) / time=時間 / assignee=担当
+    if(sortKey!=="order"){Object.values(m).forEach(items=>{items.sort((a,b)=>{
+      if(sortKey==="time"){const ta=(a.timeChange||a._ssTime||a.time||"99:99"),tb=(b.timeChange||b._ssTime||b.time||"99:99");if(ta!==tb)return ta.localeCompare(tb);}
+      if(sortKey==="assignee"){const aa=(a.assignee||"～"),ba=(b.assignee||"～");if(aa!==ba)return aa.localeCompare(ba,"ja");}
+      return (a._sortOrder||0)-(b._sortOrder||0);
+    });});}
+    return Object.entries(m).sort((a,b)=>b[0].localeCompare(a[0]));},[filtered,sortKey]);
   const WK=["日","月","火","水","木","金","土"];
   const fmtDate=(d)=>{const dt=new Date(d+"T00:00:00");return `${dt.getMonth()+1}/${dt.getDate()}(${WK[dt.getDay()]})`;};
   return <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
@@ -21113,6 +21121,7 @@ function PastTasksTable({today}){
       <input type="date" value={toDate} onChange={e=>setToDate(e.target.value)} style={{fontSize:11,padding:"2px 6px",borderRadius:6,border:"1px solid #d1d5db"}}/>
       <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="検索（名前/予約番号）" className="input-s" style={{width:140}}/>
       <div className="flex gap-1"><button onClick={()=>setTypeFilter("all")} className={`px-2 py-1 rounded text-xs font-semibold ${typeFilter==="all"?"bg-gray-800 text-white":"bg-gray-100 text-gray-600"}`}>All</button>{types.map(tp=><button key={tp} onClick={()=>setTypeFilter(tp)} className="px-2 py-1 rounded text-xs font-semibold" style={{background:typeFilter===tp?(TASK_META[tp]||{}).c||"#6b7280":"#f3f4f6",color:typeFilter===tp?"#fff":(TASK_META[tp]||{}).c||"#6b7280"}}>{tp}</button>)}</div>
+      <div className="flex items-center gap-1"><span style={{fontSize:11,color:"#9ca3af"}}>並び:</span>{[["order","既定"],["time","時間"],["assignee","担当"]].map(([k,l])=><button key={k} onClick={()=>setSortKey(k)} className="px-2 py-1 rounded text-xs font-semibold" style={{background:sortKey===k?"#2563eb":"#f3f4f6",color:sortKey===k?"#fff":"#6b7280"}}>{l}</button>)}</div>
       <span className="ml-auto text-xs text-gray-500">{loading?"読込中...":filtered.length+"件"}</span>
     </div>
     <div style={{overflowX:"auto",maxHeight:"70vh"}}>
@@ -21121,12 +21130,12 @@ function PastTasksTable({today}){
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}><thead className="bg-gray-50"><tr>{["種別","時間","予約者","車種","ナンバー","担当","場所","メモ","完了"].map(h=><th key={h} className="px-2 py-1 text-left font-semibold text-gray-600 border-b border-gray-200" style={{fontSize:10}}>{h}</th>)}</tr></thead><tbody>
           {items.map((t,i)=><tr key={t._id||i} className="border-b border-gray-100 hover:bg-blue-50" style={{opacity:t.done?0.5:1}}>
             <td className="px-2 py-1"><span style={{background:(TASK_META[t.type]||{}).bg||"#f3f4f6",color:(TASK_META[t.type]||{}).c||"#374151",padding:"1px 5px",borderRadius:4,fontSize:10,fontWeight:600}}>{t.type}</span></td>
-            <td className="px-2 py-1" style={{fontSize:10}}>{t.time||"-"}</td>
+            <td className="px-2 py-1" style={{fontSize:10}}>{(t.timeChange||t._ssTime||t.time)||"-"}</td>
             <td className="px-2 py-1 font-medium">{t.name||"-"}</td>
             <td className="px-2 py-1">{t.vehicle||"-"}</td>
             <td className="px-2 py-1 font-mono" style={{fontSize:9}}>{t.plateNo||"-"}</td>
             <td className="px-2 py-1">{t.assignee||"-"}</td>
-            <td className="px-2 py-1" style={{fontSize:9,maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{cleanPlace(t.place)||cleanPlace(t.colPlace)||"-"}</td>
+            <td className="px-2 py-1" style={{fontSize:9,maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{taskPlaceResolved(t)||cleanPlace(t.colPlace)||"-"}</td>
             <td className="px-2 py-1" style={{fontSize:9,color:"#6b7280",maxWidth:100,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.memo||"-"}</td>
             <td className="px-2 py-1 text-center">{t.done?"✅":"—"}</td>
           </tr>)}
@@ -25292,7 +25301,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.646";
+const APP_VERSION="v4.7.647";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
