@@ -82,9 +82,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1181';
+var CV='spk-v1182';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=1039').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=1040').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -384,7 +384,7 @@ const DB = {
     if(!sb){const ls=DB._lsLoad(date)||[];if(!ls.length){ls._fetchError=true;}return ls;}
     /* ★2026-09-13 時刻/場所が「消えたり表示したり」する根治: _fromDbTaskはDEL/COL時刻・場所を変換時点のDB._resIdx(予約索引)から導出する。索引が未構築のままタスク変換が先に走ると時刻が空(--:--)になり、その空値がキャッシュに固定される→予約が後ロードされた時だけ表示、で「消えたり出たり」。タスク変換前に予約索引を必ず用意する。 */
     if(!DB._resIdx||!Object.keys(DB._resIdx).length){try{await DB.fetchReservations();}catch(e){}}
-    const{data,error}=await sb.from("tasks").select("*").eq("date",date).neq("deleted",true).order("sort_order");
+    const{data,error}=await sb.from("tasks").select("*").eq("date",date).neq("deleted",true).order("sort_order").order("_id");/* ★2026-10-05 _id二次ソート: sort_order重複(旧バグの残存)でも固定順を毎回安定させ、表示の勝手な並び替えを防ぐ */
     if(error){dbLog("fetchTasks",false,error.message);const ls=DB._lsLoad(date)||[];ls._fetchError=true;return ls;}
     const tasks=(data||[]).map(DB._fromDbTask);
     // ★ 保存中の場合はlocalStorageを上書きしない（保存中のデータが消えるのを防ぐ）
@@ -17168,7 +17168,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
   };
   // ソート
   const[sheetFilter,setSheetFilter]=useState("all"); // "all"|"del"|"col"|"wash"|"master"|"edit"
-  const[sortKey,setSortKey]=useState("time");const[sortAsc,setSortAsc]=useState(true);/* ★2026-10-03 デフォルト=時間昇順(オーナー指示)。v4.7.557でこれを外した原因=全行書込(assignee+sort_order)の綱引き(担当が消えて復活/画面が動く)は、同日の修正でソートを「表示専用(DB非書込)」化して根治済み→再発せず。moveRowはUI未使用(dead)のため手動並び替えへの影響なし。ヘッダー3タップで固定順にもできる */
+  const[sortKey,setSortKey]=useState(null);const[sortAsc,setSortAsc]=useState(true);/* ★2026-10-05(ORG-20261005-121840) デフォルト=固定順(_sortOrder)に戻す。82f3766(10/3 既定時間昇順)は再描画(silentRefresh/realtime)の度に表示を時間順へ並べ直し→画面が勝手に切り替わる/ちらつく を再発させた(2026-08-17と同症状)。既定は固定順で安定・時間/担当で見たい時はヘッダータップ(表示専用・DB非書込)。※sort_order再採番の根治(updateTask)と_id二次ソートも同時に実施。 */
   const _sortVal=(t,key)=>{switch(key){case"time":return t.timeChange||t._ssTime||t.time||"99:99";case"csvTime":return t.csvTime||t.time||"99:99";case"type":return t.type||"";case"assignee":return t.assignee||"zzz";case"name":return t.name||"";case"vehicle":return t.assignedVehicle||"";case"done":return t.done?1:0;default:return"";}};
   const doSort=(arr,key,asc)=>{const dir=asc?1:-1;return[...arr].sort((a,b)=>{const va=_sortVal(a,key),vb=_sortVal(b,key);let r=typeof va==="number"?(va-vb)*dir:va.localeCompare(vb,"ja")*dir;if(r!==0)return r;/* 二次ソート: 時間順（同一値内の並び） */if(key!=="time"){const ta=a.timeChange||a._ssTime||a.time||"99:99",tb=b.timeChange||b._ssTime||b.time||"99:99";r=ta.localeCompare(tb);if(r!==0)return r;}/* 三次ソート: 内容順（DEL→COL→洗車→その他） */const typeOrder={"DEL":0,"COL":1,"洗車":2};const oa=typeOrder[a.type]??9,ob=typeOrder[b.type]??9;return oa-ob;});};
   const handleSort=(key)=>{
@@ -25306,7 +25306,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.649";
+const APP_VERSION="v4.7.650";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
