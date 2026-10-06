@@ -15,7 +15,7 @@ r as (
       else coalesce(res.price,0) end as rev,
     substr(coalesce(res.return_date,''),1,7) as ym,
     res.lend_date as start_date, res.return_date as end_date,
-    coalesce(nullif(v.type,''),'未配車') as cls,
+    coalesce(nullif(res.vehicle,''),'未配車') as cls,
     case upper(coalesce(res.ota,''))
       when 'J' then 'じゃらん' when 'R' then '楽天' when 'S' then 'skyticket'
       when 'HP' then '自社HP' when '' then '自社HP'
@@ -23,7 +23,6 @@ r as (
       when 'KEYDROP' then 'KEYDROP'
       else res.ota end as chan
   from reservations res
-  left join vehicles v on v.code=res.vehicle
   where substr(coalesce(res.return_date,''),1,7) between '2026-02' and (select end_ym from bounds)
     and coalesce(res.status,'') not in ('キャンセル','cancelled','canceled')
     and res.id !~ '^(ZZ|DEMO|KD-DEMO|TEST|DEMOMYPAGE)'
