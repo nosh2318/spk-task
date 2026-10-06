@@ -82,9 +82,9 @@ function roll(rows,keyFn,fs){const m={},o=[];(rows||[]).forEach(r=>{const k=keyF
 function renderBar(){document.getElementById("areabar").innerHTML=AREAS.map(a=>'<button class="ab'+(AREA===a[0]?' on':'')+'" onclick="setArea(\''+a[0]+'\')">'+a[1]+'</button>').join("");}
 function setArea(a){AREA=a;renderBar();render();}
 async function load(){
-  const [pg,ck,dv,sc,dl,tv,cvM,cvB]=await Promise.all([
-    get("public_hdm_ev_page_v"),get("public_hdm_ev_click_v"),get("public_hdm_ev_device_v"),get("public_hdm_ev_source_v"),get("public_hdm_ev_daily_v"),get("public_kd_travel_v"),get("public_hdm_cv_v"),getBT("public_bt_cv_v")]);
-  RAW={pages:pg,clicks:ck,devices:dv,sources:sc,daily:dl,travel:tv,cv:(cvM||[]).concat(cvB||[])};renderBar();render();
+  const [pg,ck,dv,sc,dl,tv,cvM,cvB,st]=await Promise.all([
+    get("public_hdm_ev_page_v"),get("public_hdm_ev_click_v"),get("public_hdm_ev_device_v"),get("public_hdm_ev_source_v"),get("public_hdm_ev_daily_v"),get("public_kd_travel_v"),get("public_hdm_cv_v"),getBT("public_bt_cv_v"),get("public_hdm_ev_step_v")]);
+  RAW={pages:pg,clicks:ck,devices:dv,sources:sc,daily:dl,travel:tv,cv:(cvM||[]).concat(cvB||[]),steps:st};renderBar();render();
 }
 function render(){
   let pages=fA(RAW.pages),clicks=fA(RAW.clicks),devices=fA(RAW.devices),sources=fA(RAW.sources),daily=fA(RAW.daily);
@@ -121,6 +121,26 @@ function render(){
     fh+=`<div class="fstep"><div class="fname">${s.name}</div><div class="fbarwrap"><div class="fbar" style="width:${Math.max(2,pct)}%;background:${s.cv?'linear-gradient(90deg,#16a34a,#15803d)':''}"></div></div><div class="fnum"><b>${(s.n||0).toLocaleString()}</b> <span style="color:#64748b">${pct.toFixed(1)}%</span></div></div>`;
     if(i<stages.length-1){const prev=s.n||0,next=stages[i+1].n||0;const dropN=Math.max(0,prev-next);const dp=prev?dropN/prev*100:0;const worst=(i+1===worstIdx);fh+=`<div class="drop${worst?' worst':''}">▼ ${esc(s.name.replace(/^[①②③]\s*/,''))} → ${esc(stages[i+1].name.replace(/^[①②③]\s*/,''))}：<b>${dp.toFixed(0)}% 離脱</b>（${dropN.toLocaleString()} が進まず）${worst?' ← 最大の離脱＝最優先':''}</div>`;}
   });
+  // ── 予約フロー内のステップ別離脱（off_flow / public_hdm_ev_step_v）──
+  (function(){
+    var smap={1:'空車選択',2:'オプション・補償',3:'お客様情報',4:'確認',5:'決済入力',6:'完了'};
+    var srows=(RAW.steps||[]).filter(function(r){return r.page==='off_flow';});
+    if(AREA!=='all'&&AREA!=='common'){var ac=A2STORE[AREA];srows=srows.filter(function(r){return r.area===ac;});}
+    var byNo={};srows.forEach(function(r){var n=+r.step_no;byNo[n]=(byNo[n]||0)+(+r.sessions||0);});
+    var nos=Object.keys(byNo).map(Number).sort(function(a,b){return a-b;});
+    if(nos.length){
+      var sbase=Math.max(1,byNo[nos[0]]||0),wIdx=-1,wDrop=-1;
+      for(var j=1;j<nos.length;j++){var pv=byNo[nos[j-1]]||0,c2=byNo[nos[j]]||0,dp2=pv?(1-c2/pv)*100:0;if(c2<=pv&&dp2>wDrop){wDrop=dp2;wIdx=j;}}
+      fh+='<div style="margin-top:16px;font-weight:800;color:#0a1f44;font-size:13px">🧭 予約フロー内のステップ別離脱（official-flow＝どの入力段階で諦めたか）</div>';
+      nos.forEach(function(n,idx){
+        var ses=byNo[n]||0,pct=ses/sbase*100;
+        fh+='<div class="fstep"><div class="fname">STEP'+n+' '+(smap[n]||'')+'</div><div class="fbarwrap"><div class="fbar" style="width:'+Math.max(2,pct)+'%"></div></div><div class="fnum"><b>'+ses.toLocaleString()+'</b> <span style="color:#64748b">'+pct.toFixed(0)+'%</span></div></div>';
+        if(idx<nos.length-1){var nx=byNo[nos[idx+1]]||0,dropN=Math.max(0,ses-nx),dp=ses?dropN/ses*100:0,worst=(idx+1===wIdx);fh+='<div class="drop'+(worst?' worst':'')+'">▼ '+(smap[n]||'')+' → '+(smap[nos[idx+1]]||'')+'：<b>'+dp.toFixed(0)+'% 離脱</b>（'+dropN.toLocaleString()+'）'+(worst?' ← このステップが最大の離脱':'')+'</div>';}
+      });
+    }else{
+      fh+='<div class="empty" style="margin-top:12px">予約フローのステップ計測はまだデータがありません（計測フック導入直後。お客様が予約フローに進むと蓄積されます）。</div>';
+    }
+  })();
   document.getElementById("funnel").innerHTML=(totSes>0)?fh:'<div class="empty">まだデータがありません（計測開始直後）</div>';
   // ── 🚪 離脱ポイント：離脱率=exits/pv、優先度=離脱率×流入量（影響度）──
   const EXITOK={off_contact:1,off_tkm_faq:1,off_tkm_airport:1,off_access:1,off_bus:1,off_mypage_find:1,off_mypage_guide:1};
