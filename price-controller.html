@@ -110,13 +110,36 @@ var CLS_CAR={
  nha:{A:'アルファード',B:'アルファードM/セレナH/ノアH',C:'ライズ/ヤリスクロス',D:'ノアM/セレナM/エスクァイア',F:'アクア/ノート/ヴィッツ',H:'プリウス/プリウスα',S:'ハリアー'}
 };
 function clsCar(c){return (CLS_CAR[STORE]&&CLS_CAR[STORE][c])?CLS_CAR[STORE][c]:'';}
-var STORE='nha', PRICE={spk:null,nha:null,tkm:null}, ORIG={spk:'',nha:'',tkm:''}, winStart=null;
+var STORE=(/[?&]store=(spk|nha|tkm)/.exec(location.search)||[0,'nha'])[1], PRICE={spk:null,nha:null,tkm:null}, ORIG={spk:'',nha:'',tkm:''}, winStart=null;
 var START='2026-10'; // 販売開始月＝カレンダーはここから
-var selYM=null,selCls=null,calYM=null,subtab='cal'; // selCls=選択クラス／calYM=表示月／subtab=cal(カレンダー)|base(基本料金)
+var selYM=null,selCls=null,calYM=null,subtab='cal'; // selCls=選択クラス／calYM=表示月／subtab=cal(カレンダー)|base(基本料金)|adj(価格調整)
+// ★2026-10-01 チャネル軸：公式＝サイト反映の正本／各OTA＝価格調整用。価格(price/months)はチャネル別、日付(low/high_dates)は全チャネル共通。
+var CHANS=[{k:'official',n:'🏠 公式'},{k:'jalan',n:'じゃらん'},{k:'rakuten',n:'楽天'},{k:'airtri',n:'エアトリ'},{k:'rentalcar',n:'レンタカーコム'},{k:'tabirai',n:'たびらい'},{k:'skyticket',n:'スカイチケット'}];
+var CHAN='official'; // 選択中チャネル
+function chanName(k){for(var i=0;i<CHANS.length;i++)if(CHANS[i].k===k)return CHANS[i].n;return k;}
+// 選択中チャネルの price/months を P.price/P.months に別名付け（既存の表・編集関数はそのまま動く）
+function bindChan(){var P=PRICE[STORE];if(!P)return;P.channels=P.channels||{};if(!P.channels[CHAN])P.channels[CHAN]={price:{},months:{}};var c=P.channels[CHAN];c.price=c.price||{};c.months=c.months||{};P.price=c.price;P.months=c.months;}
+function swChan(k){CHAN=k;render();}
 // 3段階価格：price[c].base=基本(未登録日)／a=安い日／b=高い日。low_dates=安い日、high_dates=高い日（登録した日だけ適用・未登録は基本）
 function normPrice(P){
   if(!P)return;P.low_dates=P.low_dates||[];P.high_dates=P.high_dates||[];P.months=P.months||{};
-  Object.keys(P.price||{}).forEach(function(c){var pc=P.price[c]||{};if(pc.base==null)pc.base=(pc.a!=null?pc.a:0);P.price[c]=pc;});
+  // 旧構造(price/months がトップ階層) → channels.official へ移行
+  P.channels=P.channels||{};
+  if(!P.channels.official)P.channels.official={price:P.price||{},months:P.months||{}};
+  // 全チャネルを用意。未作成のOTAは公式をコピーして初期化（以後は個別編集）。
+  CHANS.forEach(function(ch){
+    if(!P.channels[ch.k])P.channels[ch.k]={price:JSON.parse(JSON.stringify(P.channels.official.price||{})),months:JSON.parse(JSON.stringify(P.channels.official.months||{}))};
+    var pc=P.channels[ch.k];pc.price=pc.price||{};pc.months=pc.months||{};
+    Object.keys(pc.price).forEach(function(c){var x=pc.price[c]||{};if(x.base==null)x.base=(x.a!=null?x.a:0);pc.price[c]=x;});
+  });
+}
+// 📋 現在のチャネルの価格を他の全OTAへ上書きコピー（＝全OTAに一括反映。日付は元々共通）
+function applyPriceToAll(){
+  var P=PRICE[STORE],src=P.channels[CHAN];
+  var others=CHANS.filter(function(c){return c.k!==CHAN;});
+  if(!confirm('現在の「'+chanName(CHAN)+'」の価格（基本料金・安い日/高い日・月別）を、他の全チャネル（'+others.map(function(c){return c.n;}).join('・')+'）に上書きコピーします。\n※日付（高い日/安い日）は元々共通です。\n※この操作後「💾 保存」を押すと確定します。公式を含むため公式サイトにも反映されます。\nよろしいですか？'))return;
+  others.forEach(function(c){P.channels[c.k]={price:JSON.parse(JSON.stringify(src.price||{})),months:JSON.parse(JSON.stringify(src.months||{}))};});
+  bindChan();render();toast('✅ 「'+chanName(CHAN)+'」の価格を全チャネルにコピーしました（保存で確定）');
 }
 
 function curYM(){var n=new Date();return n.getFullYear()+'-'+('0'+(n.getMonth()+1)).slice(-2);}
@@ -182,8 +205,9 @@ function render(){
   var ab=document.getElementById('authbar');ab.className='authbar ok';ab.innerHTML='🔓 ログイン不要で保存できます（3店ともこの画面で設定OK）';
   var P=PRICE[STORE];
   if(!P){document.getElementById('body').innerHTML='<div class="card">価格データが未設定です。</div>';return;}
+  bindChan(); // 選択中チャネルの price/months を別名付け
   var ins=P.insurance||{cdw:1100,noc:1650},seat=P.seat||{child:1100,junior:550};
-  var html=helpBox()+subtabBar()
+  var html=helpBox()+chanBar()+subtabBar()
    +'<div id="calwrap">'+(subtab==='adj'?adjTab():subtab==='base'?baseTab():calMonth())+'</div>'
    +(subtab==='adj'?'':(
      '<div class="card"><h2>🛡 補償（1日あたり）</h2><div class="sub2">'
@@ -247,12 +271,24 @@ function y1000(n){n=+n||0;if(!n)return '';return '¥'+n.toLocaleString();}
 // サブタブ（カレンダー／基本料金）
 function subtabBar(){
   return '<div style="display:flex;gap:6px;margin-bottom:2px">'
-   +'<button class="btn sm" style="'+(subtab!=='base'?'background:#0f766e;color:#fff':'background:#e2e8f0;color:#0f172a')+'" onclick="setSub(\'cal\')">📅 カレンダー</button>'
+   +'<button class="btn sm" style="'+(subtab==='cal'?'background:#0f766e;color:#fff':'background:#e2e8f0;color:#0f172a')+'" onclick="setSub(\'cal\')">📅 カレンダー</button>'
    +'<button class="btn sm" style="'+(subtab==='base'?'background:#0f1f45;color:#fff':'background:#e2e8f0;color:#0f172a')+'" onclick="setSub(\'base\')">💴 基本料金</button>'
    +'<button class="btn sm" style="'+(subtab==='adj'?'background:#7c3aed;color:#fff':'background:#e2e8f0;color:#0f172a')+'" onclick="setSub(\'adj\')">💹 価格調整</button>'
    +'</div>';
 }
 function setSub(t){subtab=t;render();}
+// 🔀 チャネル切替バー（公式／各OTA）＋全OTA一括反映ボタン
+function chanBar(){
+  var chips=CHANS.map(function(c){return '<button class="clschip'+(CHAN===c.k?' on':'')+'" onclick="swChan(\''+c.k+'\')">'+c.n+'</button>';}).join('');
+  var note=CHAN==='official'
+    ?'<span style="font-size:11px;color:#0f766e;font-weight:700">保存で公式サイト(rent-handyman.com)に反映</span>'
+    :'<span style="font-size:11px;color:#7c3aed;font-weight:700">'+chanName(CHAN)+'＝OTA価格調整用（公式サイトには反映されません）</span>';
+  return '<div class="card" style="padding:10px 12px">'
+   +'<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center"><b style="font-size:12px;color:#64748b;margin-right:2px">チャネル</b>'+chips+'</div>'
+   +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">'+note
+   +'<button class="btn ghost sm" style="margin-left:auto" onclick="applyPriceToAll()">📋 この価格を全OTAに反映</button></div>'
+   +'</div>';
+}
 // ❓ 使い方（スタッフ共有用）
 function helpBox(){
   return '<details class="card" style="padding:11px 14px;background:#f0fdfa"><summary style="cursor:pointer;font-weight:800;font-size:14px;color:#0f766e">❓ 使い方（タップで開く）</summary>'
@@ -307,7 +343,7 @@ function adjTab(){
    +'<div class="gchead"><button class="gnav" onclick="adjMove(-1)"'+(canPrev?'':' disabled')+'>◀</button>'
    +'<span>'+y+'年 '+mo+'月</span>'
    +'<button class="gnav" onclick="adjMove(1)"'+(canNext?'':' disabled')+'>▶</button></div>'
-   +'<div class="muted">📊 OTA価格調整用。カレンダー／基本料金で決めた料金を自動で表示（この画面では編集しません）。1日単価×泊数。🔵安い日／⚪基本料金／🟧高い日・'+mo+'月の全クラス。</div>'
+   +'<div class="muted">📊 <b>'+chanName(CHAN)+'</b> の価格調整用。カレンダー／基本料金で決めた料金を自動で表示（この画面では編集しません）。1日単価×泊数。🔵安い日／⚪基本料金／🟧高い日・'+mo+'月の全クラス。</div>'
    +'<div style="overflow-x:auto;margin-top:8px"><table class="histbl">'+head+body+'</table></div>'
    +'</div>';
 }
@@ -400,25 +436,31 @@ async function applyDaysToAll(){
 }
 
 // 📜 変更履歴
-function snap(P){return JSON.stringify({price:P.price,months:P.months||{},high_dates:P.high_dates,low_dates:P.low_dates||[],insurance:P.insurance,seat:P.seat});}
+function snap(P){return JSON.stringify({channels:P.channels||{},high_dates:P.high_dates,low_dates:P.low_dates||[],insurance:P.insurance,seat:P.seat});}
 function diffChanges(oldS,P){
   var o={};try{o=JSON.parse(oldS)}catch(e){}var ch=[];
-  Object.keys(P.price||{}).forEach(function(c){
-    var np=P.price[c]||{},op=(o.price||{})[c]||{};
-    if((op.base||0)!==(np.base||0))ch.push((CLS_LABEL[c]||c)+' 基本 '+(op.base||0).toLocaleString()+'→'+(np.base||0).toLocaleString());
-    if((op.a||0)!==(np.a||0))ch.push((CLS_LABEL[c]||c)+' 基準安い '+(op.a||0).toLocaleString()+'→'+(np.a||0).toLocaleString());
-    if((op.b||0)!==(np.b||0))ch.push((CLS_LABEL[c]||c)+' 基準高い '+(op.b||0).toLocaleString()+'→'+(np.b||0).toLocaleString());
-  });
-  // 月別価格の差分
-  var om=o.months||{},nm=P.months||{},yms={};
-  Object.keys(om).concat(Object.keys(nm)).forEach(function(y){yms[y]=1;});
-  Object.keys(yms).sort().forEach(function(ym){
-    var omm=om[ym]||{},nmm=nm[ym]||{},cs={};
-    Object.keys(omm).concat(Object.keys(nmm)).forEach(function(c){cs[c]=1;});
-    Object.keys(cs).forEach(function(c){
-      var oc=omm[c]||{},nc=nmm[c]||{},mo=(+ym.slice(5))+'月';
-      if((oc.a||0)!==(nc.a||0))ch.push(mo+' '+(CLS_LABEL[c]||c)+' 安い '+(oc.a||'基準')+'→'+(nc.a||'基準'));
-      if((oc.b||0)!==(nc.b||0))ch.push(mo+' '+(CLS_LABEL[c]||c)+' 高い '+(oc.b||'基準')+'→'+(nc.b||'基準'));
+  var oc0=o.channels||{},nc0=P.channels||{};
+  CHANS.forEach(function(chn){
+    var pfx=chanName(chn.k).replace(/^[^ ]+ /,'')+' ';// 絵文字除去
+    var op0=(oc0[chn.k]||{}).price||{},np0=(nc0[chn.k]||{}).price||{};
+    var cs0={};Object.keys(op0).concat(Object.keys(np0)).forEach(function(c){cs0[c]=1;});
+    Object.keys(cs0).forEach(function(c){
+      var op=op0[c]||{},np=np0[c]||{};
+      if((op.base||0)!==(np.base||0))ch.push(pfx+(CLS_LABEL[c]||c)+' 基本 '+(op.base||0).toLocaleString()+'→'+(np.base||0).toLocaleString());
+      if((op.a||0)!==(np.a||0))ch.push(pfx+(CLS_LABEL[c]||c)+' 基準安い '+(op.a||0).toLocaleString()+'→'+(np.a||0).toLocaleString());
+      if((op.b||0)!==(np.b||0))ch.push(pfx+(CLS_LABEL[c]||c)+' 基準高い '+(op.b||0).toLocaleString()+'→'+(np.b||0).toLocaleString());
+    });
+    // 月別価格の差分
+    var om=(oc0[chn.k]||{}).months||{},nm=(nc0[chn.k]||{}).months||{},yms={};
+    Object.keys(om).concat(Object.keys(nm)).forEach(function(y){yms[y]=1;});
+    Object.keys(yms).sort().forEach(function(ym){
+      var omm=om[ym]||{},nmm=nm[ym]||{},cs={};
+      Object.keys(omm).concat(Object.keys(nmm)).forEach(function(c){cs[c]=1;});
+      Object.keys(cs).forEach(function(c){
+        var oc=omm[c]||{},nc=nmm[c]||{},mo=(+ym.slice(5))+'月';
+        if((oc.a||0)!==(nc.a||0))ch.push(pfx+mo+' '+(CLS_LABEL[c]||c)+' 安い '+(oc.a||'基準')+'→'+(nc.a||'基準'));
+        if((oc.b||0)!==(nc.b||0))ch.push(pfx+mo+' '+(CLS_LABEL[c]||c)+' 高い '+(oc.b||'基準')+'→'+(nc.b||'基準'));
+      });
     });
   });
   var oh=(o.high_dates||[]).length,nh=(P.high_dates||[]).length;
@@ -437,10 +479,11 @@ function diffChanges(oldS,P){
 var NIGHTS=[['日帰り',1],['1泊2日',2],['2泊3日',3],['3泊4日',4],['4泊5日',5]];
 function histView(){
   var P=PRICE[STORE];
-  // 列＝現在＋各改定スナップショット（新しい順）
-  var cols=[{ts:'現在',changes:'',price:P.price}];
-  (P.history||[]).forEach(function(e){if(e.snap&&e.snap.price)cols.push({ts:e.ts,changes:e.changes||'',price:e.snap.price});});
-  var classes=Object.keys(P.price);
+  var curP=(P.channels&&P.channels[CHAN]&&P.channels[CHAN].price)||P.price||{};
+  // 列＝現在＋各改定スナップショット（新しい順）／選択中チャネルの価格を表示
+  var cols=[{ts:'現在',changes:'',price:curP}];
+  (P.history||[]).forEach(function(e){if(!e.snap)return;var sp=(e.snap.channels&&e.snap.channels[CHAN]&&e.snap.channels[CHAN].price)||e.snap.price;if(sp)cols.push({ts:e.ts,changes:e.changes||'',price:sp});});
+  var classes=Object.keys(curP);
   var yen=function(n){return '¥'+(n||0).toLocaleString();};
   // ヘッダー2段（改定日→泊数）
   var h1='<tr><th rowspan="2">クラス</th><th rowspan="2">種別</th>';
@@ -467,7 +510,7 @@ function histView(){
     memo='<div class="muted" style="margin-top:8px">📝 改定メモ：'
      +cols.slice(1).map(function(c){return '<b>'+c.ts+'</b> '+(c.changes||'');}).join('　／　')+'</div>';
   }
-  return '<div class="card"><h2>📜 価格履歴（クラス×泊数・改定日ごと）</h2>'
+  return '<div class="card"><h2>📜 価格履歴（'+chanName(CHAN)+'・クラス×泊数・改定日ごと）</h2>'
    +'<div class="muted">1日単価×泊数で表示。安い日＝全日通常、高い日＝全日高い設定の目安です。価格を保存するたび右側に履歴が積まれます。</div>'
    +'<div style="overflow-x:auto;margin-top:8px"><table class="histbl">'+h1+body+'</table></div>'+memo+'</div>';
 }
@@ -478,10 +521,13 @@ async function saveStore(s){
   var changes=diffChanges(ORIG[s]||snap(PRICE[s]),PRICE[s]);
   if(changes.length){
     PRICE[s].history=PRICE[s].history||[];
-    PRICE[s].history.unshift({ts:nowStr(),changes:changes.join(' / '),snap:{price:JSON.parse(JSON.stringify(PRICE[s].price)),high:(PRICE[s].high_dates||[]).length}});
+    PRICE[s].history.unshift({ts:nowStr(),changes:changes.join(' / '),snap:{channels:JSON.parse(JSON.stringify(PRICE[s].channels||{})),high:(PRICE[s].high_dates||[]).length}});
     PRICE[s].history=PRICE[s].history.slice(0,50);
   }
   delete PRICE[s].proposals;delete PRICE[s]._market;delete PRICE[s].research_dates;
+  // 公式サイト後方互換：トップ階層 price/months = 公式チャネルのミラー（サイトは channels を読まない）
+  PRICE[s].channels=PRICE[s].channels||{};PRICE[s].channels.official=PRICE[s].channels.official||{price:{},months:{}};
+  PRICE[s].price=PRICE[s].channels.official.price;PRICE[s].months=PRICE[s].channels.official.months;
   var payload;
   if(db===MAIN){
     var cur=await req(MAIN,'GET','app_settings?key=eq.hdm_official_price&select=value');
@@ -513,5 +559,6 @@ async function applyHighToAll(){
   for(var i=0;i<all.length;i++){PRICE[all[i]].high_dates=src.slice();await saveStore(all[i]);}
   render();toast('✅ 全店に高い日（'+src.length+'日）を反映しました');
 }
+document.querySelectorAll('.tab').forEach(function(t){t.classList.toggle('on',t.dataset.s===STORE)});
 load();
 </script></body></html>
