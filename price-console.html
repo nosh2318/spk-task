@@ -82,6 +82,19 @@ label.inl{font-size:12px;color:#64748b;display:flex;flex-direction:column;gap:3p
 .pill.manual{background:#e0e7ff;color:#3730a3}
 .pill.other{background:#f1f5f9;color:#64748b}
 .warn{color:#b45309;font-weight:700}
+.subtabs{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px}
+.subtab{padding:7px 12px;border:1px solid #cbd5e1;border-radius:16px;background:#fff;font-weight:700;font-size:12px;cursor:pointer}
+.subtab.on{background:#7c3aed;color:#fff;border-color:#7c3aed}
+.calnav{display:flex;align-items:center;gap:10px;margin:6px 0 8px;flex-wrap:wrap}
+table.cal{border-collapse:collapse;width:100%;max-width:560px}
+table.cal th{background:#f1f5f9;color:#64748b;font-size:11px;padding:4px;border:1px solid #eef2f7}
+table.cal td{border:1px solid #eef2f7;height:52px;vertical-align:top;width:14.28%;cursor:pointer;padding:3px}
+td.calday.base{background:#fff}td.calday.low{background:#dbeafe}td.calday.high{background:#fed7aa}
+td.calday.cand{box-shadow:inset 0 0 0 2px #60a5fa}
+td.calday .dn{font-weight:700;font-size:12px}td.calday .dt{font-size:10px;font-weight:800;color:#334155}td.calday .dc{font-size:9px;color:#2563eb;font-weight:700}
+.sun{color:#dc2626}.sat{color:#2563eb}
+.proprow{border-bottom:1px solid #eef2f7}
+.cpperiod{display:flex;gap:6px;align-items:center;margin-bottom:4px}
 </style></head><body>
 <header>
   <h1>価格コンソール</h1>
@@ -136,7 +149,7 @@ function jst(ts){if(!ts)return '';var d=new Date(ts);if(isNaN(d))return ts;d=new
 function p2(n){return ('0'+n).slice(-2);}
 
 // ===== 全データ保持 =====
-var D={classes:[],store_class:[],store_ota:[],ota:[],tier:[],month_tier:[],price:{},rule:[],floor:[],setting:{},log:[]};
+var D={classes:[],store_class:[],store_ota:[],ota:[],tier:[],month_tier:[],price:{},rule:[],floor:[],setting:{},log:[],special_day:[],proposal:[],queue:[],campaign:[]};
 var TAB='price'; // price / rule / master / log / ph
 var OTA='__all'; // 価格表で選択中のOTA（__all=全OTA比較）
 
@@ -235,6 +248,10 @@ async function reloadAll(){
   await g('pc_month_tier','pc_month_tier?select=*&order=month',function(d){D.month_tier=d||[];});
   await g('pc_rule','pc_rule?store=eq.'+STORE+'&select=*',function(d){D.rule=d||[];});
   await g('pc_floor','pc_floor?store=eq.'+STORE+'&select=*',function(d){D.floor=d||[];});
+  await g('pc_special_day','pc_special_day?store=eq.'+STORE+'&select=*&order=date',function(d){D.special_day=d||[];});
+  await g('pc_proposal','pc_proposal?store=eq.'+STORE+'&status=eq.open&select=*&order=created_at.desc&limit=1000',function(d){D.proposal=d||[];});
+  await g('pc_queue','pc_input_queue?store=eq.'+STORE+'&select=*&order=created_at.desc&limit=1000',function(d){D.queue=d||[];});
+  await g('pc_campaign','pc_campaign?select=*&order=created_at.desc',function(d){D.campaign=d||[];});
   await g('pc_setting','pc_setting?select=*',function(d){D.setting={};(d||[]).forEach(function(r){D.setting[r.key]=r.value;});});
   // pc_price（店で絞る）
   D.price={};
@@ -268,7 +285,7 @@ function render(){
   else if(TAB==='rule')html=viewRule();
   else if(TAB==='master')html=viewMaster();
   else if(TAB==='log')html=viewLog();
-  else html=viewPlaceholder();
+  else html=viewPh();
   document.getElementById('body').innerHTML=errHtml+html;
 }
 
@@ -1046,12 +1063,222 @@ function exportLogCsv(){
 }
 
 // =====================================================================
-// 5) プレースホルダ（後続フェーズ）
+// ④カレンダー / ⑤案 / ⑥入力リスト / ⑦キャンペーン
 // =====================================================================
-function viewPlaceholder(){
-  return '<div class="card"><div class="phd">カレンダー / 案 / 入力リスト / キャンペーン<br><span style="font-size:13px;font-weight:500">— 後続フェーズ —</span></div>'
-    +'<div class="muted" style="text-align:center">pc_special_day（安い日/高い日カレンダー）、pc_proposal（案）、pc_input_queue（入力リスト反映管理）、pc_campaign（キャンペーン）は次フェーズで実装します。この版ではデータの参照・編集UIは用意していません。</div></div>';
+var calYM=null,SUBTAB='cal',candMap=null,candThresh=0.40;
+function ymNow(){var d=new Date();return d.getFullYear()+'-'+p2(d.getMonth()+1);}
+function todayISO(){var d=new Date();return d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate());}
+function viewPh(){
+  if(!calYM)calYM=ymNow();
+  var subs=[['cal','📅 カレンダー'],['prop','📋 案'+((D.proposal||[]).length?' ('+(D.proposal||[]).length+')':'')],['queue','⌨ 入力リスト'],['cp','🎁 キャンペーン']];
+  var bar='<div class="subtabs">'+subs.map(function(s){return '<button class="subtab'+(SUBTAB===s[0]?' on':'')+'" onclick="setSub(\''+s[0]+'\')">'+s[1]+'</button>';}).join('')+'</div>';
+  var body=SUBTAB==='cal'?viewCal():SUBTAB==='prop'?viewProp():SUBTAB==='queue'?viewQueue():viewCp();
+  return bar+body;
 }
+function setSub(s){SUBTAB=s;render();}
+
+// ---- ④ カレンダー ----
+function monthTierOf(ym){var m=+ym.split('-')[1];var h=D.month_tier.filter(function(r){return +r.month===m;})[0];return h?h.tier:'';}
+function lowTierOfMonth(m){return ({10:'LO',11:'LN',12:'LD'})[m]||('L'+m);}
+function highTiers(){return D.tier.filter(function(t){return t.kind==='high';});}
+function tierKind(tid){var t=D.tier.filter(function(x){return x.id===tid;})[0];return t?t.kind:'base';}
+function tierName(tid){var t=D.tier.filter(function(x){return x.id===tid;})[0];return t?t.name:tid;}
+function shiftYM(ym,d){var y=+ym.split('-')[0],m=+ym.split('-')[1]+d;while(m<1){m+=12;y--;}while(m>12){m-=12;y++;}return y+'-'+p2(m);}
+function viewCal(){
+  var ym=calYM,y=+ym.split('-')[0],m=+ym.split('-')[1],mt=monthTierOf(ym);
+  var sp={};(D.special_day||[]).forEach(function(r){sp[r.date]=r.tier;});
+  var start=new Date(y,m-1,1).getDay(),days=new Date(y,m,0).getDate();
+  var wd=['日','月','火','水','木','金','土'];
+  var head='<tr>'+wd.map(function(w,i){return '<th class="'+(i===0?'sun':i===6?'sat':'')+'">'+w+'</th>';}).join('')+'</tr>';
+  var cells='',col=0;
+  for(var i=0;i<start;i++){cells+='<td></td>';col++;}
+  for(var d=1;d<=days;d++){
+    var ds=ym+'-'+p2(d),tid=sp[ds],kind=tid?tierKind(tid):'base';
+    var kcls=kind==='high'?'high':(kind==='low'?'low':'base');
+    var cand=(candMap&&candMap[ds]!=null&&candMap[ds]<candThresh&&!tid);
+    var dow=col%7;
+    cells+='<td class="calday '+kcls+(cand?' cand':'')+'" onclick="dayMenu(\''+ds+'\')"><div class="dn '+(dow===0?'sun':dow===6?'sat':'')+'">'+d+'</div>'
+      +(tid?'<div class="dt">'+esc(tid)+'</div>':(cand?'<div class="dc">候補'+Math.round(candMap[ds]*100)+'%</div>':''))+'</td>';
+    col++; if(col%7===0)cells+='</tr><tr>';
+  }
+  var tbl='<table class="cal"><thead>'+head+'</thead><tbody><tr>'+cells+'</tr></tbody></table>';
+  var nav='<div class="calnav"><button class="btn ghost sm" onclick="calMove(-1)">←前</button><b>'+y+'年'+m+'月</b>'
+    +'<span class="pill other">基本段 '+(mt||'-')+'（'+(mt?tierName(mt):'')+'）</span>'
+    +'<button class="btn ghost sm" onclick="calMove(1)">次→</button>'
+    +'<button class="btn ghost sm" style="margin-left:auto" onclick="loadCandidates()">🔎 安い日候補（稼働率）</button></div>';
+  return '<div class="card"><h2>📅 カレンダー（安い日・高い日）</h2>'+nav
+    +'<div class="legend"><span><b style="background:#dbeafe"></b>安い日</span><span><b style="background:#fed7aa"></b>高い日</span><span><b style="background:#fff;border:1px solid #cbd5e1"></b>通常</span><span><b style="box-shadow:inset 0 0 0 2px #60a5fa;background:#fff"></b>安い日候補</span></div>'
+    +'<div class="scroll">'+tbl+'</div>'
+    +'<div class="muted">日をクリック→「安い日／高い日／解除」。安い日の段は月から自動（例 2月→L2）。高い日はHN/HG/HB/HSから選択。高い日と安い日は同日に重ねられません（1日1区分）。候補は印だけ（登録は人）。</div>'
+    +'<div id="calerr" class="err"></div></div>';
+}
+function calMove(d){calYM=shiftYM(calYM,d);render();}
+function dayMenu(ds){
+  var m=+ds.split('-')[1],lowT=lowTierOfMonth(m);
+  var sp={};(D.special_day||[]).forEach(function(r){sp[r.date]=r.tier;});var cur=sp[ds];
+  var box=document.getElementById('diagbox');
+  box.innerHTML='<h3>'+esc(ds)+'</h3><div class="muted">現在：'+(cur?esc(cur+'（'+tierName(cur)+'）'):'通常')+'</div>'
+    +'<div style="display:flex;flex-direction:column;gap:6px;margin:10px 0">'
+    +'<button class="btn ghost" onclick="setDay(\''+ds+'\',\''+lowT+'\')">🔵 安い日にする（'+lowT+'）</button>'
+    +'<div style="font-size:12px;color:#64748b">🟠 高い日にする：</div><div style="display:flex;gap:6px;flex-wrap:wrap">'
+    +highTiers().map(function(t){return '<button class="btn ghost sm" onclick="setDay(\''+ds+'\',\''+t.id+'\')">'+t.id+' '+esc(t.name)+'</button>';}).join('')+'</div>'
+    +(cur?'<button class="btn warn" onclick="setDay(\''+ds+'\',null)">✖ 解除（通常に戻す）</button>':'')+'</div>'
+    +'<div class="acts"><button class="btn ghost sm" onclick="document.getElementById(\'diag\').classList.remove(\'on\')">閉じる</button></div>';
+  document.getElementById('diag').classList.add('on');
+}
+async function setDay(ds,tid){
+  document.getElementById('diag').classList.remove('on');
+  if(!authed()){toast('ログインしていません',true);return;}
+  var cur=await req('GET','pc_special_day?store=eq.'+STORE+'&date=eq.'+ds+'&select=*');
+  var exists=cur.ok&&cur.data&&cur.data[0];var w;
+  if(tid===null){if(!exists){render();return;}w=await req('DELETE','pc_special_day?store=eq.'+STORE+'&date=eq.'+ds,undefined,'return=minimal');}
+  else if(exists)w=await req('PATCH','pc_special_day?store=eq.'+STORE+'&date=eq.'+ds,{tier:tid},'return=minimal');
+  else w=await req('POST','pc_special_day',{store:STORE,date:ds,tier:tid},'return=minimal');
+  if(!w.ok){toast('保存失敗: '+w.err,true);return;}
+  var r=await req('GET','pc_special_day?store=eq.'+STORE+'&select=*&order=date');if(r.ok)D.special_day=r.data||[];
+  toast('✅ '+ds+'：'+(tid||'通常'));render();
+}
+async function loadCandidates(){
+  var el=document.getElementById('calerr');if(el)el.textContent='稼働率を計算中…';
+  candThresh=+(D.setting.low_cand_util!=null?D.setting.low_cand_util:0.40)||0.40;
+  var ndays=+(D.setting.low_cand_days!=null?D.setting.low_cand_days:30)||30;
+  var t0=new Date(),s0=todayISO(),end=new Date(t0.getTime()+ndays*86400000).toISOString().slice(0,10);
+  var veh=await req('GET','nha_vehicles?select=code&active=eq.true');
+  if(!veh.ok){if(el)el.textContent='車両取得失敗: '+esc(veh.err);return;}
+  var total=(veh.data||[]).length;
+  var rv=await req('GET','nha_reservations?select=start_date,end_date,status&start_date=lte.'+end+'&end_date=gte.'+s0);
+  var mt=await req('GET','nha_maintenance?select=start_date,end_date,status&start_date=lte.'+end);
+  var rvs=(rv.ok&&rv.data)||[],mts=(mt.ok&&mt.data)||[];
+  candMap={};
+  for(var i=0;i<ndays;i++){
+    var day=new Date(t0.getTime()+i*86400000).toISOString().slice(0,10);
+    var booked=rvs.filter(function(r){return String(r.status||'').indexOf('ancel')<0&&r.status!=='キャンセル'&&String(r.start_date||'')<=day&&String(r.end_date||'')>=day;}).length;
+    var maint=mts.filter(function(r){return String(r.status||'').indexOf('ancel')<0&&String(r.start_date||'')<=day&&String(r.end_date||r.start_date||'')>=day;}).length;
+    var avail=Math.max(1,total-maint);
+    candMap[day]=booked/avail;
+  }
+  if(el)el.textContent='';
+  toast('安い日候補を表示（稼働率<'+Math.round(candThresh*100)+'%・店全体）');render();
+}
+
+// ---- ⑤ 案（pc_proposal）----
+function reviewTiming(){var cur=monthTierOf(ymNow()),nx=monthTierOf(shiftYM(ymNow(),1));if(cur&&nx&&cur!==nx)return '来月は基本段が「'+cur+'→'+nx+'」に変わります。価格の見直しをご検討ください。';return '';}
+function viewProp(){
+  var ps=(D.proposal||[]).filter(function(p){return p.status==='open'||!p.status;});
+  var rev=reviewTiming();
+  var head='<div class="card"><h2>📋 案（市場クラスへ届いた提案）</h2>';
+  if(rev)head+='<div class="err" style="background:#eff6ff;border:1px solid #93c5fd;color:#1e40af;padding:8px 10px;border-radius:8px">🔔 見直し時期：'+esc(rev)+'</div>';
+  if(!ps.length)return head+'<div class="empty">未採用の案はありません。週次プログラムが pc_proposal に書き込むと、ここに出ます。</div></div>';
+  var rows=ps.map(function(p){
+    var cur=currentAmount(p.ota,p.class,p.tier);
+    return '<tr class="proprow"><td><input type="checkbox" class="padopt" data-id="'+p.id+'"></td>'
+      +'<td class="l"><b>'+esc(p.ota)+'</b> '+esc(p.class)+'/'+esc(p.tier)+'</td>'
+      +'<td class="num">'+(cur!=null?yen(cur):'—')+'</td>'
+      +'<td class="num"><b>'+(p.amount!=null?yen(p.amount):'<span class="warn">データ不足</span>')+'</b></td>'
+      +'<td class="meta">'+esc(p.basis||'')+(p.flag?' <span class="pill other">'+esc(p.flag)+'</span>':'')+'</td>'
+      +'<td class="meta">'+[['最安',p.mk_min],['3位',p.mk_3],['5位',p.mk_5],['10位',p.mk_10],['20位',p.mk_20]].filter(function(x){return x[1]!=null;}).map(function(x){return x[0]+yen(x[1]);}).join(' ')+'</td>'
+      +'<td><button class="btn ghost sm" onclick="adoptOne('+p.id+')"'+(authed()&&p.amount!=null?'':' disabled')+'>採用</button> <button class="btn ghost sm" onclick="dismissProp('+p.id+')">却下</button></td></tr>';
+  }).join('');
+  return head+'<div class="scroll"><table class="ftable"><thead><tr><th></th><th>対象</th><th>今</th><th>案</th><th>根拠/目印</th><th>市場目安</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+    +'<div style="margin-top:10px"><button class="btn save" onclick="adoptBatch()"'+(authed()?'':' disabled')+'>✅ チェックした案をまとめて採用</button></div>'
+    +'<div id="properr" class="err"></div></div>';
+}
+async function adoptIds(ids){
+  var errEl=document.getElementById('properr');if(errEl)errEl.textContent='';
+  if(!authed()){if(errEl)errEl.textContent='ログインしていません。';return;}
+  var batchId=newBatchId(),ok=0,blocked=[],fail=[];var okRef={n:0},failList=[],bl=[],visited={};
+  for(var i=0;i<ids.length;i++){
+    var p=(D.proposal||[]).filter(function(x){return x.id===ids[i];})[0];if(!p||p.amount==null)continue;
+    var tr=D.tier.filter(function(t){return t.id===p.tier;})[0]||{id:p.tier,kind:'base'};
+    var prev=D.price[pk(p.ota,p.class,p.tier)]?D.price[pk(p.ota,p.class,p.tier)].amount:null;
+    var dev=checkDeviation(p.class,tr,p.amount,prev);
+    if(dev&&dev.block){blocked.push(otaName(p.ota)+' '+p.class+'/'+p.tier+'：'+dev.msg);continue;}
+    var fv=floorViolation(p.ota,p.class,p.amount);
+    if(fv){blocked.push(otaName(p.ota)+' '+p.class+'/'+p.tier+'：'+fv.nights+'泊合計が下限未満');continue;}
+    var r=await writeOnePrice(p.ota,p.class,p.tier,p.amount,'adopt','採用(案#'+p.id+')',batchId);
+    if(!r.ok){fail.push.apply(fail,r.fails);continue;}
+    if(r.fails&&r.fails.length)fail.push.apply(fail,r.fails);
+    await req('PATCH','pc_proposal?id=eq.'+p.id,{status:'adopted'},'return=minimal');
+    await cascadeLink(p.ota,p.tier,p.class,batchId,okRef,failList,bl,visited);
+    ok++;
+  }
+  await reloadAll();SUBTAB='prop';render();
+  var msg='';if(blocked.length)msg+='採用できない案（入力ミス/下限）:\n'+blocked.join('\n');
+  if(fail.length||failList.length)msg+=(msg?'\n\n':'')+'一部失敗:\n'+fail.concat(failList).join('\n');
+  var pe=document.getElementById('properr');if(msg&&pe)pe.textContent=msg;
+  toast(ok+'件採用'+(blocked.length?'／'+blocked.length+'件不可':''),blocked.length>0);
+}
+function adoptOne(id){adoptIds([id]);}
+function adoptBatch(){var ids=[];document.querySelectorAll('.padopt:checked').forEach(function(c){ids.push(+c.dataset.id);});if(!ids.length){toast('チェックがありません');return;}adoptIds(ids);}
+async function dismissProp(id){if(!authed()){toast('ログインしていません',true);return;}var w=await req('PATCH','pc_proposal?id=eq.'+id,{status:'dismissed'},'return=minimal');if(w.ok){D.proposal=(D.proposal||[]).filter(function(p){return p.id!==id;});render();toast('却下しました');}else toast('失敗',true);}
+
+// ---- ⑥ 入力リスト（pc_input_queue）----
+function viewQueue(){
+  var qs=(D.queue||[]),otas=activeOtas();
+  var waiting=qs.filter(function(q){return q.status==='waiting';});
+  var html='<div class="card"><h2>⌨ 入力リスト（OTAへの反映待ち）</h2><div class="muted">「入力済み」を押すと日時が記録されます（価格は変えられません）。公式は保存時点で反映済みです。</div>';
+  if(!waiting.length)html+='<div class="empty">入力待ちはありません。</div>';
+  else otas.forEach(function(o){
+    var ws=waiting.filter(function(q){return q.ota===o;});if(!ws.length)return;
+    html+='<h3 style="margin:10px 0 4px">'+esc(otaName(o))+'（'+ws.length+'件）</h3><div class="scroll"><table class="ftable"><thead><tr><th>クラス/段</th><th>前→後</th><th>泊/日付</th><th>作成(JST)</th><th></th></tr></thead><tbody>';
+    ws.forEach(function(q){html+='<tr><td><b>'+esc(q.class)+'/'+esc(q.tier)+'</b></td><td>'+(q.before==null?'—':yen(q.before))+'→'+(q.after==null?'空':yen(q.after))+'</td>'
+      +'<td class="meta">'+esc(q.nights_note||'')+' '+esc(q.date_note||'')+'</td><td class="meta">'+esc(jst(q.created_at))+'</td>'
+      +'<td><button class="btn save sm" onclick="markDone('+q.id+')"'+(authed()?'':' disabled')+'>入力済み</button></td></tr>';});
+    html+='</tbody></table></div>';
+  });
+  var done=qs.filter(function(q){return q.status==='done';}).slice(0,20);
+  if(done.length)html+='<h3 style="margin:14px 0 4px;color:#64748b">最近の入力済み</h3><div class="scroll"><table class="ftable"><thead><tr><th>OTA</th><th>クラス/段</th><th>前→後</th><th>入力日時(JST)</th></tr></thead><tbody>'
+    +done.map(function(q){return '<tr><td>'+esc(otaName(q.ota))+'</td><td>'+esc(q.class)+'/'+esc(q.tier)+'</td><td>'+(q.before==null?'—':yen(q.before))+'→'+(q.after==null?'空':yen(q.after))+'</td><td class="meta">'+esc(jst(q.done_at))+'</td></tr>';}).join('')+'</tbody></table></div>';
+  return html+'<div id="qerr" class="err"></div></div>';
+}
+async function markDone(id){
+  if(!authed()){toast('ログインしていません',true);return;}
+  var w=await req('PATCH','pc_input_queue?id=eq.'+id,{status:'done',done_at:new Date().toISOString()},'return=minimal');
+  if(!w.ok){toast('失敗: '+w.err,true);return;}
+  var r=await req('GET','pc_input_queue?store=eq.'+STORE+'&select=*&order=created_at.desc&limit=1000');if(r.ok)D.queue=r.data||[];
+  toast('✅ 入力済みにしました');render();
+}
+
+// ---- ⑦ キャンペーン（pc_campaign）----
+function floor100(x){return Math.floor(x/100)*100;}
+function viewCp(){
+  var cps=(D.campaign||[]),otas=activeOtas();
+  var def=+(D.setting.cp_default_rate!=null?D.setting.cp_default_rate:0.05)||0.05;
+  var form='<div class="card"><h2>🎁 キャンペーン新規</h2>'
+    +'<div class="muted">OTA（複数可）×期間（複数可）×割引率。CP価格＝その日の価格×(1−率)を100円未満切り捨て。1〜4泊＝×日数。例 5%：6,000→'+yen(floor100(6000*0.95))+'／5,500→'+yen(floor100(5500*0.95))+'／7,500→'+yen(floor100(7500*0.95))+'／11,500→'+yen(floor100(11500*0.95))+'</div>'
+    +'<div style="margin:8px 0"><b>OTA：</b> '+otas.map(function(o){return '<label style="margin-right:10px"><input type="checkbox" class="cpota" value="'+o+'"> '+esc(otaName(o))+'</label>';}).join('')+'</div>'
+    +'<div id="cpperiods"><div class="cpperiod"><input type="date" class="cpf"> 〜 <input type="date" class="cpt"></div></div>'
+    +'<button class="btn ghost sm" onclick="addCpPeriod()">＋期間を追加</button>'
+    +'<div style="margin:8px 0"><b>割引率：</b><input type="number" id="cprate" step="0.01" value="'+def+'" style="width:80px"> （例 0.05＝5%）　<b>メモ：</b><input id="cpmemo" style="width:200px;padding:6px;border:1px solid #cbd5e1;border-radius:6px"></div>'
+    +'<button class="btn save" onclick="saveCp()"'+(authed()?'':' disabled')+'>💾 保存</button><div id="cperr" class="err"></div></div>';
+  var list='<div class="card"><h2>一覧</h2>';
+  if(!cps.length)list+='<div class="empty">キャンペーンはありません。</div>';
+  else list+='<div class="scroll"><table class="ftable"><thead><tr><th>OTA</th><th>期間</th><th>率</th><th>メモ</th><th>状態</th><th></th></tr></thead><tbody>'
+    +cps.map(function(c){
+      var ov=(c.otas||[]);if(typeof ov==='string'){try{ov=JSON.parse(ov);}catch(e){ov=[];}}
+      var per=(c.periods||[]);if(typeof per==='string'){try{per=JSON.parse(per);}catch(e){per=[];}}
+      return '<tr><td>'+ov.map(function(o){return esc(otaName(o));}).join('<br>')+'</td><td class="meta">'+per.map(function(p){return esc((p.from||'')+'〜'+(p.to||''));}).join('<br>')+'</td>'
+        +'<td class="num">'+Math.round((+c.rate||0)*100)+'%</td><td class="meta">'+esc(c.memo||'')+'</td><td>'+(c.active?'<span class="pill manual">有効</span>':'<span class="pill other">停止</span>')+'</td>'
+        +'<td><button class="btn ghost sm" onclick="toggleCp('+c.id+',\''+(c.active?'off':'on')+'\')">'+(c.active?'停止':'再開')+'</button></td></tr>';
+    }).join('')+'</tbody></table></div>';
+  list+='<div class="muted">※CP価格の「入力リストへの反映」と「元価格が変わった時の自動再計算」は次の改良で追加します（この版は定義の作成・一覧・停止/再開まで）。</div></div>';
+  return form+list;
+}
+function addCpPeriod(){var d=document.getElementById('cpperiods');var div=document.createElement('div');div.className='cpperiod';div.innerHTML='<input type="date" class="cpf"> 〜 <input type="date" class="cpt"> <button class="btn ghost sm" onclick="this.parentNode.remove()">×</button>';d.appendChild(div);}
+async function saveCp(){
+  var errEl=document.getElementById('cperr');errEl.textContent='';
+  if(!authed()){errEl.textContent='ログインしていません。';return;}
+  var otas=[];document.querySelectorAll('.cpota:checked').forEach(function(c){otas.push(c.value);});
+  if(!otas.length){errEl.textContent='OTAを1つ以上選んでください。';return;}
+  var periods=[];document.querySelectorAll('#cpperiods .cpperiod').forEach(function(p){var f=p.querySelector('.cpf').value,t=p.querySelector('.cpt').value;if(f&&t)periods.push({from:f,to:t});});
+  if(!periods.length){errEl.textContent='期間を1つ以上入れてください。';return;}
+  var rate=+document.getElementById('cprate').value||0,memo=document.getElementById('cpmemo').value||'';
+  var w=await req('POST','pc_campaign',{otas:otas,periods:periods,rate:rate,memo:memo,active:true},'return=minimal');
+  if(!w.ok){errEl.textContent='保存失敗: '+w.err;return;}
+  var r=await req('GET','pc_campaign?select=*&order=created_at.desc');if(r.ok)D.campaign=r.data||[];
+  toast('✅ キャンペーンを保存');render();
+}
+async function toggleCp(id,act){if(!authed()){toast('ログインしていません',true);return;}var w=await req('PATCH','pc_campaign?id=eq.'+id,{active:(act==='on')},'return=minimal');if(w.ok){var r=await req('GET','pc_campaign?select=*&order=created_at.desc');if(r.ok)D.campaign=r.data||[];render();toast('更新しました');}else toast('失敗',true);}
 
 // ===== 起動 =====
 reloadAll();
