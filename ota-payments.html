@@ -432,7 +432,9 @@ function planMonthRep(mi){let t=0;["nha","spk","tkm"].forEach(s=>{const st=cfPla
 function planYmExp(ym){const mi=PLAN_YM.indexOf(ym);return mi<0?0:planMonthTotal(mi);}
 function planYmRep(ym){const mi=PLAN_YM.indexOf(ym);return mi<0?0:planMonthRep(mi);}
 function cfMonthRep(m){return planYmRep(m);}
-function cfExpAll(){return planYmExp(cfMonth);}
+// 楽天/じゃらん手数料(支払月ベース・全店合算)を支出に自動計上する
+function cfOtaFeeMon(m){return Math.round(rakFeeMon(m)+jlnFeeMon(m));}
+function cfExpAll(){return planYmExp(cfMonth)+cfOtaFeeMon(cfMonth);}
 /* ===== 月×店舗サマリー（収入・支出・過不足・全月） ===== */
 let CF_ALL={}; // {month:data} 全月のcfデータ
 function cfDataOf(m){return m===cfMonth?cfData:(CF_ALL[m]||null);}
@@ -469,6 +471,27 @@ function cfRenderBalance(){const MS=PLAN_YM,thisM=new Date().toISOString().slice
 function cfCards(){const ss=["nha","spk","tkm"],inc=ss.reduce((a,s)=>a+cfIncStore(s),0)+cfGyomu(),exp=cfExpAll(),bal=inc-exp,bank=Object.values(cfData.banks).reduce((a,b)=>a+cfnum(b),0);
  gid("cfCards").innerHTML=card("収入合計",yen(inc),cfMonth+"／自動(確定)","#16a34a")+card("支出合計",yen(exp),cfMonth+"／入力","#dc2626")+card("過不足",yen(bal),bal>=0?"黒字":"不足",bal>=0?"#16a34a":"#b91c1c")+card("銀行残高",yen(bank),"3行合計","#1e3a8a");}
 function cfRender(){cfShape();if(cfSub==="balance"){cfRenderBalance();return;}renderPlan();}
+/* ===== 📊 各店 支出サマリ（科目別・通年／合算） ===== */
+function planSummaryInner(){
+ const stores=[["nha","🌺 那覇"],["spk","❄️ 札幌"],["tkm","🍜 高松"]];
+ const sumRows=rows=>(rows||[]).reduce((a,r)=>a+((r.m||[]).reduce((x,v)=>x+cfnum(v),0)),0);
+ const groups=[];
+ stores.forEach(x=>{const st=(cfPlan&&cfPlan[x[0]])||{};(st.sga||[]).forEach(g=>{if(groups.indexOf(g.g)<0)groups.push(g.g);});});
+ const D={};
+ stores.forEach(x=>{const st=(cfPlan&&cfPlan[x[0]])||{};const sg={};let sgt=0;(st.sga||[]).forEach(g=>{const t=sumRows(g.rows);sg[g.g]=(sg[g.g]||0)+t;sgt+=t;});D[x[0]]={cogs:sumRows(st.cogs),sg:sg,sgt:sgt,rep:sumRows(st.rep)};});
+ const cells=(pick,fg)=>{let tot=0;const c=stores.map(x=>{const v=pick(D[x[0]])||0;tot+=v;return '<td class="mono"'+(fg?' style="color:'+fg+'"':'')+'>'+(v?yen(v):'·')+'</td>';}).join('');return c+'<td class="mono" style="font-weight:800'+(fg?';color:'+fg:'')+'">'+(tot?yen(tot):'·')+'</td>';};
+ const trow=(label,pick,o)=>{o=o||{};return '<tr'+(o.bg?' style="background:'+o.bg+'"':'')+'><td style="text-align:left;'+(o.bg?'background:'+o.bg+';':'')+(o.indent?'padding-left:16px;':'')+'font-weight:'+(o.bold?'800':'600')+(o.fg?';color:'+o.fg:'')+'">'+label+'</td>'+cells(pick,o.fg)+'</tr>';};
+ let h='<table><thead><tr><th style="text-align:left">勘定科目</th>'+stores.map(x=>'<th>'+x[1]+'</th>').join('')+'<th style="background:#1e3a8a;color:#fff">💰 合算(3店)</th></tr></thead><tbody>';
+ h+=trow("🟡 売上原価",d=>d.cogs,{bold:1,bg:"#fef9c3",fg:"#92400e"});
+ h+=trow("🔴 販管費",d=>d.sgt,{bold:1,bg:"#fee2e2",fg:"#991b1b"});
+ groups.forEach(g=>{h+=trow("　"+g,d=>d.sg[g]||0,{indent:1});});
+ h+=trow("🟣 返済（借入返済）",d=>d.rep,{bold:1,bg:"#f3e8ff",fg:"#6b21a8"});
+ h+=trow("営業支出計（原価＋販管）",d=>d.cogs+d.sgt,{bold:1,bg:"#e0e7ff",fg:"#1e3a8a"});
+ h+=trow("総支出（返済含む）",d=>d.cogs+d.sgt+d.rep,{bold:1,bg:"#1e3a8a",fg:"#fff"});
+ h+='</tbody></table>';
+ return h;
+}
+function planSummaryHtml(){return '<div class="sec"><h2>📊 各店 支出サマリ（科目別・通年 10月〜9月／合算）</h2><div class="ov" id="planSumInner">'+planSummaryInner()+'</div><div class="note">各店の通年(12ヶ月)支出を科目別に合計し、右端に<b>合算(3店計)</b>を表示。金額は下の「支出入力」各店タブで編集すると即反映されます。</div></div>';}
 function renderPlan(){_fixStore();
  const PS=[["nha","🌺 那覇"],["spk","❄️ 札幌"],["tkm","🍜 高松"]];
  const st=(cfPlan&&cfPlan[cfPlanStore])||planStoreDefault();
@@ -478,6 +501,7 @@ function renderPlan(){_fixStore();
  const pc=(sec,gi,ri,mi,v)=>'<input class="mono" data-t="pcell" data-sec="'+sec+'" data-gi="'+gi+'" data-ri="'+ri+'" data-mi="'+mi+'" value="'+(v||'')+'" inputmode="numeric" style="width:62px;text-align:right;border:1px solid #e2e8f0;border-radius:3px;padding:2px 3px;font-size:11px">';
  const pl=(sec,gi,ri,v)=>'<input data-t="plabel" data-sec="'+sec+'" data-gi="'+gi+'" data-ri="'+ri+'" value="'+String(v||'').replace(/"/g,'&quot;')+'" style="border:1px solid #e2e8f0;border-radius:3px;padding:2px 5px;font-size:11px;width:118px">';
  let h='<div class="sec"><div class="note">💡 <b>事業計画（2026/10〜2027/09）の支出</b>を<b>店舗別</b>に入力（handyman支出管理と同じ科目体系）。収入は自動（OTA入金表）。科目名は編集可・行追加可。<b style="color:#16a34a">入力は自動保存されます（全端末共有）。</b></div></div>';
+ h+=planSummaryHtml();
  h+='<div class="seg" style="margin-bottom:8px">'+PS.map(x=>'<button data-pstore="'+x[0]+'"'+(cfPlanStore===x[0]?' class="on"':'')+' style="padding:6px 18px">'+x[1]+'</button>').join('')+'</div>';
  h+='<div class="sec"><h2>💸 支出計画（'+(PS.find(p=>p[0]===cfPlanStore)||["","?"])[1]+'）</h2><div class="ov"><table style="min-width:1120px"><thead><tr><th style="position:sticky;left:0;background:#f1f5f9;z-index:2">勘定科目</th>'+PLAN_YM.map((ym,i)=>'<th style="font-size:11px">'+PLAN_MONTHS[i]+'月</th>').join('')+'<th>計</th><th></th></tr></thead><tbody>';
  const bandCell=(v,id)=>'<td class="mono" id="'+id+'" style="font-weight:700">'+(v?yen(v):'')+'</td>';
@@ -517,7 +541,7 @@ function planRecalc(){const st=cfPlan[cfPlanStore];if(!st)return;const setB=(idp
  (st.rep||[]).forEach((r,ri)=>{let rt=0;r.m.forEach((v,mi)=>{const n=cfnum(v);rt+=n;repSub[mi]+=n;});setT("pRowT_rep_0_"+ri,yen(rt));});
  setB("pSec_cogs",cogsSub);setB("pSec_sga",sgaSub);setB("pSec_rep",repSub);
  let monTot=cogsSub.map((v,i)=>v+sgaSub[i]),grand=0;monTot.forEach((v,mi)=>{grand+=v;setT("pMonT_"+mi,yen(v));});setT("pGrand",yen(grand));
- let grandR=0;repSub.forEach((v,mi)=>{grandR+=v;setT("pMonR_"+mi,yen(v));});setT("pGrandR",yen(grandR));planCards();}
+ let grandR=0;repSub.forEach((v,mi)=>{grandR+=v;setT("pMonR_"+mi,yen(v));});setT("pGrandR",yen(grandR));const _ps=gid("planSumInner");if(_ps)_ps.innerHTML=planSummaryInner();planCards();}
 function cfShift(d){const dt=new Date(cfMonth+"-01T00:00:00");dt.setMonth(dt.getMonth()+d);cfMonth=dt.toISOString().slice(0,7);cfLoad();}
 async function cfLoad(){gid("cfStatus").textContent="読込中…";
  const r=await fetch(MAIN+"/rest/v1/cashflow_entries?select=month,data",{headers:{apikey:MANON,Authorization:"Bearer "+MANON}}).then(x=>x.json()).catch(_=>[]);
