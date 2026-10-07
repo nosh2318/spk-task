@@ -519,14 +519,18 @@ function baseTierAmount(ota,cl){
   b=currentAmount(ota,cl,'L');if(b!==''&&b!=null)return +b;
   return null;
 }
-// 段逆転の判定。戻り null か {msg}
-function tierReversal(ota,cl,tr){
+// 段逆転の判定（任意の金額で）。戻り null か {msg}
+function reversalOf(ota,cl,tr,amt){
   if(!tr||tr.kind==='base')return null;
-  var amt=currentAmount(ota,cl,tr.id);if(amt===''||amt==null)return null;
+  if(amt===''||amt==null)return null;
   var baseAmt=baseTierAmount(ota,cl);if(baseAmt==null)return null;
   if(tr.kind==='high'&&+amt<baseAmt)return {msg:'高い日が基本('+baseAmt.toLocaleString()+')より安い'};
   if(tr.kind==='low'&&+amt>baseAmt)return {msg:'安い日が基本('+baseAmt.toLocaleString()+')より高い'};
   return null;
+}
+// 段逆転の判定（現在の表示値で）。戻り null か {msg}
+function tierReversal(ota,cl,tr){
+  return reversalOf(ota,cl,tr,currentAmount(ota,cl,tr.id));
 }
 function tierReversalWarn(ota,cl,tr){return !!tierReversal(ota,cl,tr);}
 function currentAmount(ota,cl,tierId){
@@ -566,9 +570,19 @@ async function cascadeLink(ota,tierId,srcCl,batchId,okRef,failList,blocked,visit
     var vkey=ota+'|'+dep+'|'+tierId;
     if(visited[vkey])continue; visited[vkey]=1;
     if(!sellsOtaClass(ota,dep))continue; // そのOTAで売らないクラスは反映しない
-    var calc=resolveLinkedAmount(ota,dep,tierId,{},editMap);
-    if(calc==null)continue; // 連動元が空なら連動先も空のまま
     var tr=D.tier.filter(function(t){return t.id===tierId;})[0]||{id:tierId,kind:'base'};
+    var calc=resolveLinkedAmount(ota,dep,tierId,{},editMap);
+    // (b) 連動元が空 → 連動先も空にそろえる（古い金額を残さない）。元が空でなければ通常処理。
+    if(calc==null){
+      var ex=D.price[vkey];
+      if(ex&&ex.amount!=null){
+        var r0=await writeOnePrice(ota,dep,tierId,null,'link','連動('+srcCl+')空欄化',batchId);
+        if(!r0.ok){failList.push.apply(failList,r0.fails);}
+        else{if(r0.fails&&r0.fails.length)failList.push.apply(failList,r0.fails);okRef.n++;
+          await cascadeLink(ota,tierId,dep,batchId,okRef,failList,blocked,visited);} // 連動の連動も空に
+      }
+      continue;
+    }
     var prev=D.price[vkey]?D.price[vkey].amount:null;
     // 逸脱①
     var dev=checkDeviation(dep,tr,calc,prev);
@@ -576,7 +590,10 @@ async function cascadeLink(ota,tierId,srcCl,batchId,okRef,failList,blocked,visit
     // pc_floor（泊数ごと）
     var fv=floorViolation(ota,dep,calc);
     if(fv){blocked.push('連動 '+otaName(ota)+' '+dep+'/'+tierId+'（'+srcCl+'由来）：'+fv.nights+'泊合計'+fv.total.toLocaleString()+'が下限'+fv.floor.toLocaleString()+'未満 → 保存せず中止');continue;}
-    var r=await writeOnePrice(ota,dep,tierId,calc,'link','連動('+srcCl+')',batchId);
+    // (a) 段逆転は止めず、目印(⚠要確認は表に自動表示)＋ログ理由に記録
+    var rev=reversalOf(ota,dep,tr,calc);
+    var reason='連動('+srcCl+')'+(rev?'｜⚠段逆転: '+rev.msg:'');
+    var r=await writeOnePrice(ota,dep,tierId,calc,'link',reason,batchId);
     if(!r.ok){failList.push.apply(failList,r.fails);continue;}
     if(r.fails&&r.fails.length)failList.push.apply(failList,r.fails);
     okRef.n++;
