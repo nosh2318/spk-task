@@ -1,17 +1,11 @@
--- ============================================================
--- official_book_spk / official_book_nha
--- HANDYMAN公式サイト(rent-handyman.com) 札幌/那覇 予約の「予約作成＋配車確保＋総額確定」RPC
--- 2026-08-26 / omni （bt_book_tkm の 札幌/那覇版・公式サイト価格で確定）
--- 2026-09-15 / omni サイトコントローラー統一：価格を app_settings.hdm_official_price(マスター)から読む。
---   基本料金は A(通常)/B(高設定) の2択。貸出日〜返却日を1日ずつ判定し、high_dates(連休/連休前日など)はB、他はA を合算。
---   補償[basic0/免責cdw/NOC noc]・シート[child/junior]の単価もマスター参照。マスター欠損時は下記FALLBACKで挙動不変。
---   perDay(補償/シート) = 補償[cdw/noc] + child_fee×child + junior_fee×junior （全日一律・現行と同じ）
---   金額はサーバ確定＝クライアント値を信用しない。配車は同クラスactive空車1台確保（満車=soldOut）。
--- ============================================================
-
--- ===== 札幌 (reservations / fleet / vehicles・class列=vehicle・日付=lend_date/return_date text) =====
-create or replace function official_book_spk(p jsonb)
-returns jsonb language plpgsql security definer set search_path=public as $$
+-- 正本(DB適用済の実定義をpg_get_functiondefで書き戻し)。2026-09-25更新: insurance_veh除外+_dry soldOut+FOR UPDATE SKIP LOCKED+kpi月優先。
+-- ⚠️再RUN前に必ずDBの最新pg_get_functiondefと照合すること。
+CREATE OR REPLACE FUNCTION public.official_book_spk(p jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
 declare
   v_cls text:=upper(trim(coalesce(p->>'vehicleClass','')));
   v_lend text:=trim(coalesce(p->>'lend_date','')); v_ret text:=trim(coalesce(p->>'return_date',''));
@@ -29,16 +23,18 @@ declare
   v_base_total int; v_opt_total int; v_total int; v_code text; v_id text; v_try int:=0;
   -- ★マスター（app_settings.hdm_official_price の spk）
   v_m jsonb; v_pcls jsonb; v_high jsonb; v_a int; v_b int; v_dd date;
-  v_cdw int; v_noc int; v_cfee int; v_jfee int; v_months jsonb; v_mc jsonb;
+  v_cdw int; v_noc int; v_cfee int; v_jfee int; v_months jsonb; v_low jsonb; v_base int; v_mc jsonb;
   FALLBACK jsonb:='{"A":13000,"A2":12000,"B":11000,"B2":12000,"C":7000,"S":9000,"F":6000,"H":6000}';
 begin
   if v_lend !~ '^\d{4}-\d{2}-\d{2}$' or v_ret !~ '^\d{4}-\d{2}-\d{2}$' or v_ret<v_lend then return jsonb_build_object('error','日付エラー'); end if;
   if v_name='' or v_mail='' or position('@' in v_mail)=0 or v_tel='' then return jsonb_build_object('error','予約者情報が不足しています'); end if;
   select value::jsonb->'spk' into v_m from app_settings where key='hdm_official_price';
   v_pcls:=v_m->'price'->v_cls;
-  v_a:=coalesce((v_pcls->>'a')::int,(FALLBACK->>v_cls)::int);
-  v_b:=coalesce((v_pcls->>'b')::int,v_a);
-  if v_a is null then return jsonb_build_object('error','このクラスは現在オンライン予約を承れません'); end if;
+  v_a:=(v_pcls->>'a')::int; v_b:=(v_pcls->>'b')::int; v_base:=(v_pcls->>'base')::int; v_low:=coalesce(v_m->'low_dates','[]'::jsonb);
+  -- FALLBACKはマスター全体欠損(v_m is null=DB未seed/到達不可)時のみ救済=サイトを止めない。マスターがあってクラス未設定(base/a/b全空)なら売り止め=空欄保存で0円請求を出さない(2026-09-23)
+  if v_m is null then v_base:=coalesce(v_base,(FALLBACK->>v_cls)::int); end if;
+  v_base:=coalesce(v_base,v_a,v_b); v_a:=coalesce(v_a,v_base); v_b:=coalesce(v_b,v_a);
+  if v_base is null then return jsonb_build_object('error','このクラスは現在オンライン予約を承れません'); end if;
   v_high:=coalesce(v_m->'high_dates','[]'::jsonb); -- 月別料金 {"YYYY-MM":{クラス:{a:通常,b:高}}}(未設定はデフォルトv_a)
   v_cdw:=coalesce((v_m->'insurance'->>'cdw')::int,1100);
   v_noc:=coalesce((v_m->'insurance'->>'noc')::int,1650);
@@ -49,13 +45,13 @@ begin
   v_base_total:=0;
   for v_dd in select generate_series(v_lend::date, v_ret::date, interval '1 day')::date loop -- その月・クラスの{a:通常,b:高}(未設定はデフォルトv_a)
     if v_high ? to_char(v_dd,'YYYY-MM-DD') then -- カレンダーで「高い」に区切った日
-      v_base_total:=v_base_total + v_b;
-    else v_base_total:=v_base_total + v_a; end if;
+      v_base_total:=v_base_total + coalesce((v_m->'months'->to_char(v_dd,'YYYY-MM')->v_cls->>'b')::int,(v_m->'months'->to_char(v_dd,'YYYY-MM')->v_cls->>'a')::int,v_b);
+    elsif v_low ? to_char(v_dd,'YYYY-MM-DD') then v_base_total:=v_base_total + coalesce((v_m->'months'->to_char(v_dd,'YYYY-MM')->v_cls->>'a')::int,v_a); else v_base_total:=v_base_total + coalesce((v_m->'months'->to_char(v_dd,'YYYY-MM')->v_cls->>'base')::int,v_base); end if;
   end loop;
   if v_base_total=0 then -- 同日(v_ret=v_lend)は貸出日で判定
     if v_high ? to_char(v_lend::date,'YYYY-MM-DD') then
-      v_base_total:=v_b;
-    else v_base_total:=v_a; end if;
+      v_base_total:=coalesce((v_m->'months'->to_char(v_lend::date,'YYYY-MM')->v_cls->>'b')::int,(v_m->'months'->to_char(v_lend::date,'YYYY-MM')->v_cls->>'a')::int,v_b);
+    elsif v_low ? to_char(v_lend::date,'YYYY-MM-DD') then v_base_total:=coalesce((v_m->'months'->to_char(v_lend::date,'YYYY-MM')->v_cls->>'a')::int,v_a); else v_base_total:=coalesce((v_m->'months'->to_char(v_lend::date,'YYYY-MM')->v_cls->>'base')::int,v_base); end if;
   end if;
   v_ins_daily:=case v_ins when 'cdw' then v_cdw when 'noc' then v_noc else 0 end;
   v_ins_txt:=case v_ins when 'cdw' then '免責' when 'noc' then 'NOC' else 'なし' end;
@@ -63,7 +59,7 @@ begin
   v_total:=v_base_total+v_opt_total;
   if v_base_total<=0 then return jsonb_build_object('error','この日程・クラスは価格未設定のためWeb予約を承れません'); end if;
   select v.code into v_code from vehicles v
-   where v.active=true and upper(v.type)=v_cls
+   where coalesce((select k.active from vehicle_monthly_kpi k where k.vehicle_code=v.code and k.year_month=substr(v_lend,1,7)),v.active)=true and upper(v.type)=v_cls and coalesce(v.insurance_veh,false)=false
      and not exists (select 1 from fleet f join reservations r on r.id=f.reservation_id
         where f.vehicle_code=v.code and coalesce(r.status,'') not in ('cancelled','canceled','キャンセル')
           and coalesce(r.lend_date,'')<=v_ret and coalesce(r.return_date,'')>=v_lend)
@@ -71,7 +67,8 @@ begin
         where m.vehicle_code=v.code and coalesce(m.block_type,'')<>'partner_reserved'
           and coalesce(m.status,'') not in ('cancelled','canceled','キャンセル')
           and coalesce(m.start_date::text,'')<=v_ret and coalesce(nullif(m.end_date::text,''),m.start_date::text)>=v_lend)
-   order by v.code limit 1;
+   order by v.code limit 1 for update of v skip locked;
+  if coalesce(p->>'_dry','')='1' then return jsonb_build_object('classTotal',v_base_total,'soldOut',(v_code is null)); end if;
   if v_code is null then return jsonb_build_object('error','ご希望の期間は満車です。日程・クラスをご変更ください。','soldOut',true); end if;
   loop
     v_id:='HDMS'||to_char(now() at time zone 'Asia/Tokyo','YYMMDD')||lpad((floor(random()*10000))::int::text,4,'0');
@@ -87,12 +84,15 @@ begin
      '北海道',gen_random_uuid(),'{}'::jsonb,now(),now());
   insert into fleet (reservation_id,vehicle_code,updated_at) values (v_id,v_code,now());
   return jsonb_build_object('reservationId',v_id,'total',v_total,'classTotal',v_base_total,'vehicle',v_code);
-end;$$;
-grant execute on function official_book_spk(jsonb) to service_role;
+end;$function$
+;
 
--- ===== 那覇 (nha_reservations / nha_fleet / nha_vehicles・class列=vehicle_class・日付=start_date/end_date text) =====
-create or replace function official_book_nha(p jsonb)
-returns jsonb language plpgsql security definer set search_path=public as $$
+CREATE OR REPLACE FUNCTION public.official_book_nha(p jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
 declare
   v_cls text:=upper(trim(coalesce(p->>'vehicleClass','')));
   v_lend text:=trim(coalesce(p->>'lend_date','')); v_ret text:=trim(coalesce(p->>'return_date',''));
@@ -110,7 +110,7 @@ declare
   v_days int; v_ins_daily int; v_ins_txt text;
   v_base_total int; v_opt_total int; v_total int; v_code text; v_plate text; v_id text; v_try int:=0;
   v_m jsonb; v_pcls jsonb; v_high jsonb; v_a int; v_b int; v_dd date;
-  v_cdw int; v_noc int; v_cfee int; v_jfee int; v_months jsonb; v_mc jsonb;
+  v_cdw int; v_noc int; v_cfee int; v_jfee int; v_months jsonb; v_low jsonb; v_base int; v_mc jsonb;
   FALLBACK jsonb:='{"A":12000,"B":9000,"C":7000,"D":7000,"F":3500,"H":4500,"S":5500}';
 begin
   if v_lend !~ '^\d{4}-\d{2}-\d{2}$' or v_ret !~ '^\d{4}-\d{2}-\d{2}$' or v_ret<v_lend then return jsonb_build_object('error','日付エラー'); end if;
@@ -118,9 +118,11 @@ begin
   select value::jsonb->'nha' into v_m from nha_app_settings where key='hdm_official_price';
   if v_m is null then select value::jsonb->'nha' into v_m from app_settings where key='hdm_official_price'; end if;
   v_pcls:=v_m->'price'->v_cls;
-  v_a:=coalesce((v_pcls->>'a')::int,(FALLBACK->>v_cls)::int);
-  v_b:=coalesce((v_pcls->>'b')::int,v_a);
-  if v_a is null then return jsonb_build_object('error','このクラスは現在オンライン予約を承れません'); end if;
+  v_a:=(v_pcls->>'a')::int; v_b:=(v_pcls->>'b')::int; v_base:=(v_pcls->>'base')::int; v_low:=coalesce(v_m->'low_dates','[]'::jsonb);
+  -- FALLBACKはマスター全体欠損(v_m is null=DB未seed/到達不可)時のみ救済=サイトを止めない。マスターがあってクラス未設定(base/a/b全空)なら売り止め=空欄保存で0円請求を出さない(2026-09-23)
+  if v_m is null then v_base:=coalesce(v_base,(FALLBACK->>v_cls)::int); end if;
+  v_base:=coalesce(v_base,v_a,v_b); v_a:=coalesce(v_a,v_base); v_b:=coalesce(v_b,v_a);
+  if v_base is null then return jsonb_build_object('error','このクラスは現在オンライン予約を承れません'); end if;
   v_high:=coalesce(v_m->'high_dates','[]'::jsonb); -- 月別料金 {"YYYY-MM":{クラス:{a:通常,b:高}}}(未設定はデフォルトv_a)
   v_cdw:=coalesce((v_m->'insurance'->>'cdw')::int,1100);
   v_noc:=coalesce((v_m->'insurance'->>'noc')::int,1650);
@@ -130,13 +132,13 @@ begin
   v_base_total:=0;
   for v_dd in select generate_series(v_lend::date, v_ret::date, interval '1 day')::date loop -- その月・クラスの{a:通常,b:高}(未設定はデフォルトv_a)
     if v_high ? to_char(v_dd,'YYYY-MM-DD') then -- カレンダーで「高い」に区切った日
-      v_base_total:=v_base_total + v_b;
-    else v_base_total:=v_base_total + v_a; end if;
+      v_base_total:=v_base_total + coalesce((v_m->'months'->to_char(v_dd,'YYYY-MM')->v_cls->>'b')::int,(v_m->'months'->to_char(v_dd,'YYYY-MM')->v_cls->>'a')::int,v_b);
+    elsif v_low ? to_char(v_dd,'YYYY-MM-DD') then v_base_total:=v_base_total + coalesce((v_m->'months'->to_char(v_dd,'YYYY-MM')->v_cls->>'a')::int,v_a); else v_base_total:=v_base_total + coalesce((v_m->'months'->to_char(v_dd,'YYYY-MM')->v_cls->>'base')::int,v_base); end if;
   end loop;
   if v_base_total=0 then -- 同日(v_ret=v_lend)は貸出日で判定
     if v_high ? to_char(v_lend::date,'YYYY-MM-DD') then
-      v_base_total:=v_b;
-    else v_base_total:=v_a; end if;
+      v_base_total:=coalesce((v_m->'months'->to_char(v_lend::date,'YYYY-MM')->v_cls->>'b')::int,(v_m->'months'->to_char(v_lend::date,'YYYY-MM')->v_cls->>'a')::int,v_b);
+    elsif v_low ? to_char(v_lend::date,'YYYY-MM-DD') then v_base_total:=coalesce((v_m->'months'->to_char(v_lend::date,'YYYY-MM')->v_cls->>'a')::int,v_a); else v_base_total:=coalesce((v_m->'months'->to_char(v_lend::date,'YYYY-MM')->v_cls->>'base')::int,v_base); end if;
   end if;
   v_ins_daily:=case v_ins when 'cdw' then v_cdw when 'noc' then v_noc else 0 end;
   v_ins_txt:=case v_ins when 'cdw' then '免責' when 'noc' then 'NOC' else 'なし' end;
@@ -144,7 +146,7 @@ begin
   v_total:=v_base_total+v_opt_total;
   if v_base_total<=0 then return jsonb_build_object('error','この日程・クラスは価格未設定のためWeb予約を承れません'); end if;
   select v.code,v.plate_no into v_code,v_plate from nha_vehicles v
-   where v.active=true and upper(v.type)=v_cls
+   where coalesce((select k.active from nha_vehicle_monthly_kpi k where k.vehicle_code=v.code and k.year_month=substr(v_lend,1,7)),v.active)=true and upper(v.type)=v_cls and coalesce(v.insurance_veh,false)=false
      and not exists (select 1 from nha_fleet f join nha_reservations r on r.id=f.reservation_id
         where f.vehicle_code=v.code and coalesce(r.status,'') not in ('cancelled','canceled','キャンセル')
           and coalesce(r.start_date,'')<=v_ret and coalesce(r.end_date,'')>=v_lend)
@@ -152,7 +154,8 @@ begin
         where m.vehicle_code=v.code
           and coalesce(m.status,'') not in ('cancelled','canceled','キャンセル')
           and coalesce(m.start_date::text,'')<=v_ret and coalesce(nullif(m.end_date::text,''),m.start_date::text)>=v_lend)
-   order by v.code limit 1;
+   order by v.code limit 1 for update of v skip locked;
+  if coalesce(p->>'_dry','')='1' then return jsonb_build_object('classTotal',v_base_total,'soldOut',(v_code is null)); end if;
   if v_code is null then return jsonb_build_object('error','ご希望の期間は満車です。日程・クラスをご変更ください。','soldOut',true); end if;
   loop
     v_id:='HDMN'||to_char(now() at time zone 'Asia/Tokyo','YYMMDD')||lpad((floor(random()*10000))::int::text,4,'0');
@@ -167,5 +170,5 @@ begin
      v_code,v_delp,v_colp,v_child,v_junior,v_usb,'沖縄県',v_note,gen_random_uuid(),'{}'::jsonb,now(),now(),now());
   insert into nha_fleet (reservation_id,vehicle_code) values (v_id,v_code);
   return jsonb_build_object('reservationId',v_id,'total',v_total,'classTotal',v_base_total,'vehicle',v_code);
-end;$$;
-grant execute on function official_book_nha(jsonb) to service_role;
+end;$function$
+;
