@@ -134,6 +134,8 @@ create table if not exists pc_input_queue (
   nights_note text,   -- 1〜4泊の変更内容
   date_note   text,   -- 日付の付け替え
   status     text not null default 'waiting',  -- waiting/done/superseded(上書き取消)
+  kind       text not null default 'manual',   -- manual(通常価格) / cp(キャンペーン)。通常とCPは互いに上書き取消しない(2026-10-08)
+  campaign_id bigint,                           -- kind='cp' のとき pc_campaign.id（同一キャンペーンの前行だけ取消す）
   done_at    timestamptz,
   created_at timestamptz not null default now()
 );

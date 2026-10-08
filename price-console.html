@@ -559,6 +559,8 @@ function currentAmount(ota,cl,tierId){
   var key=pk(ota,cl,tierId);if(editMap.hasOwnProperty(key))return editMap[key].amount;return D.price[key]?D.price[key].amount:null;
 }
 
+// CP再計算(C-11)用：savePrice実行中に保存された(通常/連動)価格のキーを溜める。null=収集しない。
+var _cpTouched=null;
 // 1件を pc_price に保存＋pc_log＋pc_input_queue。戻り {ok,before,row,fails[]}（queue失敗も報告）
 async function writeOnePrice(ota,cl,tierId,amt,trigger,reason,batchId){
   var fails=[];
@@ -574,13 +576,14 @@ async function writeOnePrice(ota,cl,tierId,amt,trigger,reason,batchId){
   if(!w.ok)return {ok:false,fails:[otaName(ota)+' '+cl+'/'+tierId+': '+w.err]};
   var lg=await req('POST','pc_log',{store:STORE,ota:ota,class:cl,tier:tierId,before:before,after:amt,trigger:trigger,reason:reason||null,batch_id:batchId},'return=minimal');
   if(!lg.ok)fails.push(otaName(ota)+' '+cl+'/'+tierId+': ログ記録失敗 '+lg.err);
-  // pc_input_queue：失敗は握りつぶさず報告。★2026-10-08 C-10 同一 店×OTA×クラス×段 の未入力(waiting)が残っていれば「上書き取消(superseded)」にしてから新規を積む(入力待ちの重複を残さない)
-  var sup=await req('PATCH','pc_input_queue?store=eq.'+STORE+'&ota=eq.'+ota+'&class=eq.'+cl+'&tier=eq.'+tierId+'&status=eq.waiting',{status:'superseded',done_at:nowISO},'return=minimal');
+  // pc_input_queue：失敗は握りつぶさず報告。★2026-10-08 C-10 同一 店×OTA×クラス×段 の【通常(kind=manual)】の未入力(waiting)だけ「上書き取消(superseded)」にしてから新規を積む。CP(kind=cp)の入力待ちには触れない＝通常とCPが互いを取り消さない。
+  var sup=await req('PATCH','pc_input_queue?store=eq.'+STORE+'&ota=eq.'+ota+'&class=eq.'+cl+'&tier=eq.'+tierId+'&status=eq.waiting&kind=eq.manual',{status:'superseded',done_at:nowISO},'return=minimal');
   if(!sup.ok)fails.push(otaName(ota)+' '+cl+'/'+tierId+': 旧入力待ちの上書き取消失敗 '+sup.err);
-  var q=await req('POST','pc_input_queue',{store:STORE,ota:ota,class:cl,tier:tierId,before:before,after:amt,status:'waiting'},'return=minimal');
+  var q=await req('POST','pc_input_queue',{store:STORE,ota:ota,class:cl,tier:tierId,before:before,after:amt,status:'waiting',kind:'manual'},'return=minimal');
   if(!q.ok)fails.push(otaName(ota)+' '+cl+'/'+tierId+': 入力リスト記録失敗 '+q.err);
   var row=(w.data&&w.data[0])?w.data[0]:{store:STORE,ota:ota,class:cl,tier:tierId,amount:amt,prev_amount:before,updated_at:nowISO};
   D.price[pk(ota,cl,tierId)]=row;
+  if(_cpTouched)_cpTouched.push({ota:ota,cl:cl,tier:tierId}); // C-11 CP再計算対象
   return {ok:true,before:before,row:row,fails:fails};
 }
 // 連動カスケード：srcCl（連動元）の保存後、同OTA・同tier の下流クラスを再帰的に再計算して保存。
@@ -671,6 +674,7 @@ async function savePrice(){
   }
   // 1回の保存（手入力＋連動カスケード）は同じ batch_id
   var batchId=newBatchId();
+  _cpTouched=[]; // C-11 この保存で変わった価格キーを集め、有効キャンペーンのCPを再計算する
   var okRef={n:0},failList=[],blocked=[],cascadeSrc=[];
   for(var i=0;i<keys.length;i++){
     var key=keys[i],parts=key.split('|'),ota=parts[0],cl=parts[1],tierId=parts[2];
@@ -688,10 +692,14 @@ async function savePrice(){
   for(var j=0;j<cascadeSrc.length;j++){
     await cascadeLink(cascadeSrc[j].ota,cascadeSrc[j].tier,cascadeSrc[j].cl,batchId,okRef,failList,blocked,visited);
   }
+  // ★2026-10-08 C-11 保存で変わった価格が有効キャンペーンの対象(OTA×段)なら、そのCPを再計算して入力リスト＋ログへ
+  var cpr=await recalcCampaignsFor(_cpTouched); _cpTouched=null;
+  if(cpr&&cpr.fails&&cpr.fails.length)failList.push.apply(failList,cpr.fails);
   await loadLog();
   render();
   var msg='';
-  if(blocked.length)msg+='⚠ 連動で止まった件:\n'+blocked.join('\n')+'\n（元の手入力分は保存済み）';
+  if(cpr&&cpr.n)msg+='🎁 キャンペーン再計算: '+cpr.n+'件を入力リストへ反映';
+  if(blocked.length)msg+=(msg?'\n\n':'')+'⚠ 連動で止まった件:\n'+blocked.join('\n')+'\n（元の手入力分は保存済み）';
   if(failList.length)msg+=(msg?'\n\n':'')+'一部失敗:\n'+failList.join('\n');
   if(msg)document.getElementById('priceerr').textContent=msg;
   if(failList.length||blocked.length)toast(okRef.n+'件保存／'+(failList.length+blocked.length)+'件 要確認',true);
@@ -1347,6 +1355,7 @@ function cpComputeCards(cps){
     ov.forEach(function(o){
       h+='<h3 style="margin:8px 0 4px">'+esc(otaName(o))+'</h3><div class="scroll"><table class="ftable"><thead><tr><th>クラス</th><th>段</th><th>通常</th><th>CP(1泊)</th><th>2泊</th><th>3泊</th><th>4泊</th></tr></thead><tbody>';
       classes.forEach(function(cl){
+        if(!sellsOtaClass(o,cl))return; // そのOTAで売らないクラスはCPを出さない
         tids.forEach(function(ti){
           var row=D.price[pk(o,cl,ti)],base=(row&&row.amount!=null)?row.amount:null,cp=cpInt(base,pct);
           h+='<tr><td><b>'+esc(cl)+'</b></td><td class="meta">'+esc(ti)+'</td><td>'+yen(base)+'</td>'
@@ -1358,26 +1367,57 @@ function cpComputeCards(cps){
     return h+'</div>';
   }).join('');
 }
-// CP価格を入力リスト(pc_input_queue)＋ログ(pc_log)へ反映。pc_price(基本価格)は変更しない＝CPはOTA入力用の期間限定値
+function cpParse(c){var ov=(c.otas||[]);if(typeof ov==='string'){try{ov=JSON.parse(ov);}catch(e){ov=[];}}var per=(c.periods||[]);if(typeof per==='string'){try{per=JSON.parse(per);}catch(e){per=[];}}return {ov:ov,per:per};}
+// CP価格1セルを入力リスト(pc_input_queue)＋ログ(pc_log)へ反映。pc_price(基本価格)は変更しない＝CPはOTA入力用の期間限定値。
+// 上書き取消は【このキャンペーン(kind=cp・campaign_id)の前のCP入力待ち】だけ＝通常価格(kind=manual)の入力待ちには触れない(C-10)。
+async function cpEnqueueOne(c,o,cl,tid,pct,dnote,nowISO){
+  if(!sellsOtaClass(o,cl))return {skipped:true,fails:[]}; // そのOTAで売らないクラスはCPを出さない
+  var row=D.price[pk(o,cl,tid)],base=(row&&row.amount!=null)?row.amount:null,cp=cpInt(base,pct),nnote='CP'+pct+'%',fails=[];
+  var sup=await req('PATCH','pc_input_queue?store=eq.'+STORE+'&ota=eq.'+o+'&class=eq.'+cl+'&tier=eq.'+tid+'&status=eq.waiting&kind=eq.cp&campaign_id=eq.'+c.id,{status:'superseded',done_at:nowISO},'return=minimal');
+  if(!sup.ok)fails.push(otaName(o)+' '+cl+'/'+tid+': 旧CPの上書き取消失敗 '+sup.err);
+  if(cp==null)return {skipped:true,fails:fails}; // 元価格が空＝CP出さない（古い行は上で取消済み）
+  var q=await req('POST','pc_input_queue',{store:STORE,ota:o,class:cl,tier:tid,before:base,after:cp,status:'waiting',kind:'cp',campaign_id:c.id,nights_note:nnote,date_note:dnote},'return=minimal');
+  if(!q.ok){fails.push(otaName(o)+' '+cl+'/'+tid+': 入力リスト記録失敗 '+q.err);return {ok:false,fails:fails};}
+  var lg=await req('POST','pc_log',{store:STORE,ota:o,class:cl,tier:tid,before:base,after:cp,trigger:'cp',reason:nnote},'return=minimal');
+  if(!lg.ok)fails.push(otaName(o)+' '+cl+'/'+tid+': ログ記録失敗 '+lg.err); // ★ログ書込失敗も画面に出す
+  return {ok:true,fails:fails};
+}
+// 「⌨ 入力リストへ反映」ボタン：キャンペーン全セルをCP反映
 async function enqueueCp(id){
   if(!authed()){toast('ログインしていません',true);return;}
   var c=(D.campaign||[]).filter(function(x){return x.id===id;})[0];if(!c){toast('対象なし',true);return;}
-  var ov=(c.otas||[]);if(typeof ov==='string'){try{ov=JSON.parse(ov);}catch(e){ov=[];}}
-  var per=(c.periods||[]);if(typeof per==='string'){try{per=JSON.parse(per);}catch(e){per=[];}}
+  var pr=cpParse(c),ov=pr.ov,per=pr.per;
   var pct=cpPct(c.rate),classes=(D.store_class||[]).map(function(r){return r.class;}),tiers=periodTiers(per),tids=Object.keys(tiers);
-  var dnote=per.map(function(p){return (p.from||'')+'〜'+(p.to||'');}).join(','),nnote='CP'+pct+'%',nowISO=new Date().toISOString(),n=0,fails=[];
+  var dnote=per.map(function(p){return (p.from||'')+'〜'+(p.to||'');}).join(','),nowISO=new Date().toISOString(),n=0,fails=[];
   for(var oi=0;oi<ov.length;oi++)for(var ci=0;ci<classes.length;ci++)for(var tj=0;tj<tids.length;tj++){
-    var o=ov[oi],cl=classes[ci],tid=tids[tj];
-    var row=D.price[pk(o,cl,tid)],base=(row&&row.amount!=null)?row.amount:null,cp=cpInt(base,pct);
-    if(cp==null)continue;
-    await req('PATCH','pc_input_queue?store=eq.'+STORE+'&ota=eq.'+o+'&class=eq.'+cl+'&tier=eq.'+tid+'&status=eq.waiting',{status:'superseded',done_at:nowISO},'return=minimal');
-    var q=await req('POST','pc_input_queue',{store:STORE,ota:o,class:cl,tier:tid,before:base,after:cp,status:'waiting',nights_note:nnote,date_note:dnote},'return=minimal');
-    if(!q.ok){fails.push(otaName(o)+' '+cl+'/'+tid+': '+q.err);continue;}
-    await req('POST','pc_log',{store:STORE,ota:o,class:cl,tier:tid,before:base,after:cp,trigger:'campaign',reason:nnote},'return=minimal');
-    n++;
+    var r=await cpEnqueueOne(c,ov[oi],classes[ci],tids[tj],pct,dnote,nowISO);
+    if(r.fails&&r.fails.length)fails.push.apply(fails,r.fails);
+    if(r.ok)n++;
   }
-  var r=await req('GET','pc_input_queue?store=eq.'+STORE+'&select=*&order=created_at.desc&limit=1000');if(r.ok)D.queue=r.data||[];
+  var g=await req('GET','pc_input_queue?store=eq.'+STORE+'&select=*&order=created_at.desc&limit=1000');if(g.ok)D.queue=g.data||[];
   toast(fails.length?('一部失敗：'+n+'件反映／'+fails.length+'件失敗'):('✅ '+n+'件を入力リストへ反映'),fails.length>0);render();
+}
+// C-11 価格保存後：変わった(OTA×段)が有効キャンペーンに該当すればそのCPを再計算（入力リスト＋ログ）。touched=[{ota,cl,tier}]
+async function recalcCampaignsFor(touched){
+  if(!touched||!touched.length)return {n:0,fails:[]};
+  var act=(D.campaign||[]).filter(function(c){return c.active;});
+  if(!act.length)return {n:0,fails:[]};
+  var nowISO=new Date().toISOString(),n=0,fails=[],did={};
+  for(var ai=0;ai<act.length;ai++){
+    var c=act[ai],pr=cpParse(c),ov=pr.ov,per=pr.per,pct=cpPct(c.rate),tiers=periodTiers(per);
+    var dnote=per.map(function(p){return (p.from||'')+'〜'+(p.to||'');}).join(',');
+    for(var ti=0;ti<touched.length;ti++){
+      var t=touched[ti];
+      if(ov.indexOf(t.ota)<0)continue;   // このCPのOTAでない
+      if(!tiers[t.tier])continue;        // このCPの期間に出ない段
+      var dk=c.id+'|'+t.ota+'|'+t.cl+'|'+t.tier; if(did[dk])continue; did[dk]=1;
+      var r=await cpEnqueueOne(c,t.ota,t.cl,t.tier,pct,dnote,nowISO);
+      if(r.fails&&r.fails.length)fails.push.apply(fails,r.fails);
+      if(r.ok)n++;
+    }
+  }
+  if(n){var g=await req('GET','pc_input_queue?store=eq.'+STORE+'&select=*&order=created_at.desc&limit=1000');if(g.ok)D.queue=g.data||[];}
+  return {n:n,fails:fails};
 }
 
 // ===== 起動 =====
