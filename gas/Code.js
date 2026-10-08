@@ -29,7 +29,8 @@ var OTA_SENDERS = {
   rakuten:   'travel@mail.travel.rakuten.co.jp',
   skyticket: 'rentacar@skyticket.com',
   airtrip:   ['rentacar-mail.airtrip.jp', 'skygate.co.jp'],  // 標準エアトリ＋エアトリプラスDP(Skygate運営 info@skygate.co.jp)
-  official:  'noreply@rent-handyman.jp'
+  official:  'noreply@rent-handyman.jp',
+  rentacar_dc: 'info@web-rentacar.com'  // ★2026-10-07 札幌がレンタカードットコム掲載開始。那覇で既稼働の送信元。決済明細(kamei@)は別localで非該当。
 };
 
 // OTA_SENDERS は文字列 or 配列。全送信元を平坦化して返す（Gmail検索/送信元判定で共用）
@@ -48,7 +49,8 @@ var OTA_RESERVE_SUBJECTS = {
   rakuten:   '【楽天トラベル】予約受付のお知らせ',
   skyticket: '【skyticket】 新規予約',
   airtrip:   '【予約確定】エアトリレンタカー',
-  official:  'ご予約完了のお知らせ'
+  official:  'ご予約完了のお知らせ',
+  rentacar_dc: '予約登録のお知らせ'  // ★2026-10-07 実件名「レンタカードットコム予約登録のお知らせ」にindexOfで一致
 };
 
 // --- Cancellation keywords in subject ---
@@ -456,7 +458,7 @@ function processMessage_(message, dryRun) {
   }
   if (!ota) return null;
 
-  var otaCode = {jalan:'J',rakuten:'R',skyticket:'S',airtrip:'O',official:'HP'}[ota] || ota;
+  var otaCode = {jalan:'J',rakuten:'R',skyticket:'S',airtrip:'O',official:'HP',rentacar_dc:'RC'}[ota] || ota;
 
   var isCancellation = CANCEL_KEYWORDS.some(function(kw) { return subject.indexOf(kw) !== -1; });
 
@@ -503,6 +505,7 @@ function processMessage_(message, dryRun) {
     case 'skyticket': reservation = parseSkyticket_(body); break;
     case 'airtrip':   reservation = parseAirtrip_(body); break;
     case 'official':  reservation = parseOfficial_(body); break;
+    case 'rentacar_dc': reservation = parseRentacarDC_(body); break;
   }
 
   if (!reservation) {
@@ -723,6 +726,11 @@ function isSapporoReservation_(res) {
 
   if (/沖縄県|那覇市|沖縄/.test(address)) return false;
   if (/北海道|札幌市/.test(address)) return true;
+  // ★2026-10-08 英語住所対応(外国のお客様): Google Maps由来の英語住所で漢字地名が無いと札幌/那覇判定が
+  //   どの条件にも当たらず "店undetermined→false" で取りこぼす(YZN22585 Cassinelli様・札幌宛英語住所)。
+  //   英語の道県/市名でも判定する。構造化された住所欄(_address/del_place/col_place)のみ参照＝ガイド脚注の誤爆なし。
+  if (/Okinawa|Naha/i.test(address + places)) return false;
+  if (/Hokkaido|Sapporo/i.test(address + places)) return true;
   // ★2026-08-13 再発防止(肥田様OPC87428): HP直販は都道府県/市名の無い"素の住所"(例「中央区大通西15-2-2」)が来る。
   //   札幌特有の地番(大通西/東・[南北]○条西/東・すすきの・札幌駅・区名等)は札幌確定で"拾う"（那覇GASは同地名で弾く＝両店で漏れない）。
   if (/大通(西|東)|[南北]?\d+条(西|東)|すすきの|ススキノ|札幌駅|新千歳|円山|白石区|手稲|厚別|清田区|豊平区/.test(address + places)) return true;
@@ -976,6 +984,11 @@ function parseRakuten_(body) {
   var id = extractField_(body, '・予約番号');
   if (!id) return null;
   var nameKana = cleanName_(extractField_(body, '・予約者氏名（カナ）'));
+  var nameKanji = cleanName_(extractField_(body, '・予約者氏名'));
+  // ★ 2026-10-05追加: 外国名のお客様はカナ欄が「ー ー」等で空になる(例 RC12461317766538349 KwaiLin Lam)。
+  //   カナ欄が空/ダッシュのみのときは氏名欄(漢字・英字)にフォールバックする。
+  var kanaBlank = !nameKana || /^[ー－—\-\s　]*$/.test(nameKana);
+  var name = kanaBlank ? (nameKanji || nameKana) : nameKana;
   var lend = parseDateTime_(extractField_(body, '□貸出日時'));
   var ret  = parseDateTime_(extractField_(body, '□返却日時'));
   var store = extractField_(body, '・貸渡営業所名');
@@ -1038,7 +1051,7 @@ function parseRakuten_(body) {
   var visitType = delPlace ? 'DEL' : '';
   var returnType = colPlace ? 'COL' : '';
   return {
-    id: id, ota: 'R', name: nameKana,
+    id: id, ota: 'R', name: name,
     lend_date: lend.date, lend_time: lend.time,
     return_date: ret.date, return_time: ret.time,
     vehicle: vehicleClass, people: 0, insurance: insurance,
@@ -1145,6 +1158,112 @@ function parseAirtrip_(body) {
     price: price, base_price: base_price_a, option_price: option_price_a, discount: 0,
     status: '確定', tel: tel, mail: mail,
     flight: flight, visit_type: visitType, del_place: delPlace, col_place: colPlace,
+    opt_b: optB, opt_c: optC, opt_j: optJ,
+    _store: store, _rawClass: rawClass
+  };
+}
+
+// ============================================================
+// レンタカードットコム Parser（札幌）
+// ★2026-10-07 札幌がレンタカードットコム掲載開始。那覇で既稼働(nha gas parseRentacarDC_)を札幌流に移植。
+//   送信元 info@web-rentacar.com / 件名「レンタカードットコム予約登録のお知らせ」。
+//   クラスは必ずプラン名の _<CLASS>_SPK マーカー最優先(例 ☆コンパクトカー_G_SPK☆→G)。
+//   ※車種名優先にすると「デミオ/ノート」が那覇=F/札幌=G で食い違う → マーカー優先が正。
+//   金額は ￥10.000 のドット千区切り → ドット除去(parsePrice_ はドット非対応のため個別パース)。
+//   場所: 札幌=デリバリー。OTAメールに届け先が無く店名は住所でない→空(顧客フォームで後入力)。
+// ============================================================
+function parseRentacarDC_(body) {
+  var id = extractField_(body, '予約番号');
+  if (!id) return null;
+  var nameKana = cleanName_(extractField_(body, '予約者カナ'));
+  var nameRaw = cleanName_(extractField_(body, '予約者名'));
+  var name = nameKana || nameRaw;
+  var tel = cleanPhone_(extractField_(body, '電話番号'));
+  var mail = extractField_(body, 'メールアドレス');
+
+  // 貸出・返却は日付と時間が別フィールド
+  var ldMatch = body.match(/貸出日[^時\n]*[：:]\s*(\d{4}\/\d{1,2}\/\d{1,2})/);
+  var ltMatch = body.match(/貸出時間\s*[：:]\s*(\d{1,2}:\d{2})/);
+  if (!ldMatch) return null;
+  var lendDate = ldMatch[1].replace(/\//g, '-');
+  var lendTime = ltMatch ? ltMatch[1] : '';
+  var rdMatch = body.match(/返却日\s*[：:]\s*(\d{4}\/\d{1,2}\/\d{1,2})/);
+  var rtMatch = body.match(/返却時間\s*[：:]\s*(\d{1,2}:\d{2})/);
+  if (!rdMatch) return null;
+  var returnDate = rdMatch[1].replace(/\//g, '-');
+  var returnTime = rtMatch ? rtMatch[1] : '';
+
+  var store = extractField_(body, '貸出店舗名');
+
+  // クラス: プラン名の _<CLASS>_SPK マーカー最優先
+  var rawPlan = extractField_(body, 'プラン名');
+  var rawCar = extractField_(body, '車種名');
+  var rawClass = (rawPlan + ' ' + (rawCar || '')).trim();
+  var vehicleClass = extractVehicleClass_(rawPlan);
+  if (!vehicleClass) vehicleClass = extractVehicleClass_(rawClass);
+  if (!vehicleClass) {
+    // マーカーが無い時のみ車種名フォールバック（札幌クラス体系）
+    if (/アルファード|ALPHARD|ヴェルファイア|VELLFIRE/i.test(rawClass)) vehicleClass = 'A';
+    else if (/ノア|NOAH|ヴォクシー|VOXY|デリカ|DELICA|セレナ|SERENA/i.test(rawClass)) vehicleClass = 'B';
+    else if (/ロッキー|ROCKY|CX[-‐]?3/i.test(rawClass)) vehicleClass = 'C';
+    else if (/ハリアー|HARRIER|CX[-‐]?5/i.test(rawClass)) vehicleClass = 'S';
+    else if (/ルーミー|ROOMY|ソリオ|SOLIO|タンク|TANK/i.test(rawClass)) vehicleClass = 'F';
+    else if (/カローラ|COROLLA|アクセラ|AXELA/i.test(rawClass)) vehicleClass = 'H';
+    else if (/デミオ|DEMIO|ノート|NOTE/i.test(rawClass)) vehicleClass = 'G';
+  }
+
+  // 人数（子供は複数区分の合計・8クランプ）
+  var adultMatch = body.match(/大人\s*[：:]\s*(\d+)\s*名/);
+  var people = adultMatch ? parseInt(adultMatch[1], 10) : 0;
+  var childLineMatch = body.match(/子供\s*[：:]([^\n]+)/);
+  if (childLineMatch) {
+    var childNums = childLineMatch[1].match(/(\d+)\s*名/g);
+    if (childNums) childNums.forEach(function(_n){ var _m=_n.match(/(\d+)/); if(_m) people += parseInt(_m[1],10); });
+  }
+  if (people > 8) { Logger.log('WARNING: RC people=' + people + ' > 8 → 8にクランプ'); people = 8; }
+  if (people < 0) people = 0;
+
+  // 金額（￥10.000 = ドット千区切り）
+  var price = 0;
+  var priceMatch = body.match(/合計料金\s*[：:]\s*[￥¥]?([\d.]+)/);
+  if (priceMatch) price = parseInt(priceMatch[1].replace(/\./g, ''), 10) || 0;
+  var baseMatch = body.match(/基本料金\s*[：:]\s*[￥¥]?([\d.]+)/);
+  var basePrice = baseMatch ? parseInt(baseMatch[1].replace(/\./g,''),10) : 0;
+  var cdwMatch = body.match(/免責料金\s*[：:]\s*[￥¥]?([\d.]+)/);
+  var cdwPrice = cdwMatch ? parseInt(cdwMatch[1].replace(/\./g,''),10) : 0;
+  var opMatch = body.match(/[ＯO][ＰP]?料金\s*[：:]\s*[￥¥]?([\d.]+)/);
+  var opPrice = opMatch ? parseInt(opMatch[1].replace(/\./g,''),10) : 0;
+  var insurance = detectInsurance_(body);
+  if (insurance === 'なし' && cdwPrice > 0) insurance = '免責';
+
+  // フライト（現地到着/現地出発に便名があれば）
+  var arrMatch = body.match(/現地到着[^：:]*[：:]+\s*.*?([A-Z]{2}\d{2,5})/i);
+  var depMatch = body.match(/現地出発[^：:]*[：:]+\s*.*?([A-Z]{2}\d{2,5})/i);
+  var flight = [arrMatch?arrMatch[1]:'', depMatch?depMatch[1]:''].filter(Boolean).join(' / ');
+
+  // オプション（シート類）
+  var optB = 0, optC = 0, optJ = 0;
+  var bM = body.match(/ベビーシート[^\d\n]*(\d+)/); if (bM) optB = parseInt(bM[1],10) || 1;
+  var cM = body.match(/チャイルドシート[^\d\n]*(\d+)/); if (cM) optC = parseInt(cM[1],10) || 1;
+  var jM = body.match(/ジュニアシート[^\d\n]*(\d+)/); if (jM) optJ = parseInt(jM[1],10) || 1;
+
+  // 場所（店名は住所でない→sanitizeで空。デリバリー届け先は顧客フォームで後入力）
+  var delPlace = extractDeliveryPlace_(body) || sanitizeOtaStoreName_(store);
+  var colPlace = extractCollectionPlace_(body) || sanitizeOtaStoreName_(store);
+  var visitType = delPlace ? 'DEL' : '';
+  var returnType = colPlace ? 'COL' : '';
+
+  Logger.log('[RC-PARSE] id=' + id + ' name=' + name + ' class=' + vehicleClass +
+    ' plan=' + rawPlan + ' car=' + rawCar + ' price=' + price + ' store=' + store);
+
+  return {
+    id: id, ota: 'RC', name: name,
+    lend_date: lendDate, lend_time: lendTime,
+    return_date: returnDate, return_time: returnTime,
+    vehicle: vehicleClass, people: people, insurance: insurance,
+    price: price, base_price: basePrice || price, option_price: cdwPrice + opPrice, discount: 0,
+    status: '確定', tel: tel, mail: mail,
+    flight: flight, visit_type: visitType, return_type: returnType, del_place: delPlace, col_place: colPlace,
     opt_b: optB, opt_c: optC, opt_j: optJ,
     _store: store, _rawClass: rawClass
   };
@@ -5357,6 +5476,10 @@ function sendApologyToTakusagawa() {
  * 対象: status=email_sent かつ 出発3日以内
  */
 function resendSpkJalanUnpaidReminder() {
+  // 2026-10-03 停止: じゃらん未払い催促はofficial-notify(.com)へ移行済み(2026-09-16)。
+  // 送信本体sendSpkJalanReminderEmail_は return false 固定のため、この再送は毎回「送信失敗」の誤アラートを出すだけ。用済みのため無効化。
+  Logger.log('[SpkJalanReminder] 停止済み(official-notifyへ移行)。何もしない。');
+  return;
   var now = new Date();
   var today = Utilities.formatDate(now, 'Asia/Tokyo', 'yyyy-MM-dd');
   var in3days = Utilities.formatDate(new Date(now.getTime() + 3 * 86400000), 'Asia/Tokyo', 'yyyy-MM-dd');
