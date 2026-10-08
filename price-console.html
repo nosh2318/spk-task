@@ -119,10 +119,15 @@ td.calday .dn{font-weight:700;font-size:12px}td.calday .dt{font-size:10px;font-w
 <script>
 // ===== 接続（price-controller.html と同一の MAIN url/anon/localStorageキー） =====
 var MAIN={url:'https://ckrxttbnawkclshczsia.supabase.co',anon:'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8',key:'sb-ckrxttbnawkclshczsia-auth-token'};
+// ★2026-10-08 高松(BT)の安い日候補用＝読み取り専用集計RPC bt_hdm_availability(anon可・集計のみ)を呼ぶBT接続(公開anon)
+var BT={url:'https://ggqugvyskyiblxiycpci.supabase.co',anon:'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdncXVndnlza3lpYmx4aXljcGNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxMDc3NjksImV4cCI6MjA5MzY4Mzc2OX0.uNhWcBd_Dl5nzemZDQfJ8mQV6iY73MwystGGpTRPC18'};
 var STORE='nha';
 // classes テーブルの store 識別子はフルネーム。STORE(短縮)→classesの store_id/store 値へ変換。
 var STORE_FULL={nha:'naha',spk:'sapporo',tkm:'takamatsu'};
 function storeFull(){return STORE_FULL[STORE]||STORE;}
+function addDaysISO(iso,n){var d=new Date(iso+'T00:00:00');d.setDate(d.getDate()+n);return d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate());}
+// 安い日候補の表示対象クラス（'_all'=店全体）
+var candCls='_all';
 // 車種名はコードに直書きしない：classes から読めた時だけ補い、読めなければコードのみ表示。
 var NIGHTS=[['日帰り',1],['1泊2日',2],['2泊3日',3],['3泊4日',4],['4泊5日',5]];
 
@@ -236,11 +241,9 @@ async function reloadAll(){
   // classes（店識別子はフルネーム：nha→naha）。ログイン必須（anonでは0件）。
   // 読めた時だけ表示名(車種)を補う。読めない時はクラスのコード一覧を pc_store_class / pc_price から構築する。
   var sf=storeFull();
-  await g('classes','classes?select=*&or=(store_id.eq.'+sf+',store.eq.'+sf+')',function(d){ D.classes = d||[]; });
-  if(!D.classes.length){ // store_id/store 列が無い等でヒットしない時は全件→フルネームで絞る
-    var ra=await req('GET','classes?select=*&limit=1000');
-    if(ra.ok&&Array.isArray(ra.data))D.classes=ra.data.filter(function(c){return !c.store_id||c.store_id===sf;}).filter(function(c){return !c.store||c.store===sf;});
-  }
+  // ★2026-10-08 classesは store 列が無い(id,store_id,name,rate)→旧コードの store.eq 参照が「column classes.store does not exist」を出していた。全件取得→store_id一致/未設定のみ採用(型差異でもエラーにしない。classesが空でもpc_store_classからコード構築で機能継続)
+  var ra=await req('GET','classes?select=*&limit=1000');
+  D.classes=(ra.ok&&Array.isArray(ra.data))?ra.data.filter(function(c){return c.store_id==null||String(c.store_id)===String(sf);}):[];
   await g('pc_store_class','pc_store_class?store=eq.'+STORE+'&select=*',function(d){D.store_class=d||[];});
   await g('pc_store_ota','pc_store_ota?store=eq.'+STORE+'&select=*',function(d){D.store_ota=d||[];});
   await g('pc_ota','pc_ota?select=*&order=sort',function(d){D.ota=d||[];});
@@ -252,6 +255,7 @@ async function reloadAll(){
   await g('pc_proposal','pc_proposal?store=eq.'+STORE+'&status=eq.open&select=*&order=created_at.desc&limit=1000',function(d){D.proposal=d||[];});
   await g('pc_queue','pc_input_queue?store=eq.'+STORE+'&select=*&order=created_at.desc&limit=1000',function(d){D.queue=d||[];});
   await g('pc_campaign','pc_campaign?select=*&order=created_at.desc',function(d){D.campaign=d||[];});
+  await g('pc_store','pc_store?select=*&order=sort',function(d){D.store_master=d||[];}); // 店マスター(bt_source等)＝候補のDB/テーブル解決に使用
   await g('pc_setting','pc_setting?select=*',function(d){D.setting={};(d||[]).forEach(function(r){D.setting[r.key]=r.value;});});
   // pc_price（店で絞る）
   D.price={};
@@ -570,7 +574,9 @@ async function writeOnePrice(ota,cl,tierId,amt,trigger,reason,batchId){
   if(!w.ok)return {ok:false,fails:[otaName(ota)+' '+cl+'/'+tierId+': '+w.err]};
   var lg=await req('POST','pc_log',{store:STORE,ota:ota,class:cl,tier:tierId,before:before,after:amt,trigger:trigger,reason:reason||null,batch_id:batchId},'return=minimal');
   if(!lg.ok)fails.push(otaName(ota)+' '+cl+'/'+tierId+': ログ記録失敗 '+lg.err);
-  // pc_input_queue：失敗は握りつぶさず報告
+  // pc_input_queue：失敗は握りつぶさず報告。★2026-10-08 C-10 同一 店×OTA×クラス×段 の未入力(waiting)が残っていれば「上書き取消(superseded)」にしてから新規を積む(入力待ちの重複を残さない)
+  var sup=await req('PATCH','pc_input_queue?store=eq.'+STORE+'&ota=eq.'+ota+'&class=eq.'+cl+'&tier=eq.'+tierId+'&status=eq.waiting',{status:'superseded',done_at:nowISO},'return=minimal');
+  if(!sup.ok)fails.push(otaName(ota)+' '+cl+'/'+tierId+': 旧入力待ちの上書き取消失敗 '+sup.err);
   var q=await req('POST','pc_input_queue',{store:STORE,ota:ota,class:cl,tier:tierId,before:before,after:amt,status:'waiting'},'return=minimal');
   if(!q.ok)fails.push(otaName(ota)+' '+cl+'/'+tierId+': 入力リスト記録失敗 '+q.err);
   var row=(w.data&&w.data[0])?w.data[0]:{store:STORE,ota:ota,class:cl,tier:tierId,amount:amt,prev_amount:before,updated_at:nowISO};
@@ -1090,15 +1096,15 @@ function viewCal(){
   var start=new Date(y,m-1,1).getDay(),days=new Date(y,m,0).getDate();
   var wd=['日','月','火','水','木','金','土'];
   var head='<tr>'+wd.map(function(w,i){return '<th class="'+(i===0?'sun':i===6?'sat':'')+'">'+w+'</th>';}).join('')+'</tr>';
-  var cells='',col=0;
+  var cells='',col=0,cm=(candMap&&candMap[candCls])?candMap[candCls]:null;
   for(var i=0;i<start;i++){cells+='<td></td>';col++;}
   for(var d=1;d<=days;d++){
     var ds=ym+'-'+p2(d),tid=sp[ds],kind=tid?tierKind(tid):'base';
     var kcls=kind==='high'?'high':(kind==='low'?'low':'base');
-    var cand=(candMap&&candMap[ds]!=null&&candMap[ds]<candThresh&&!tid);
+    var cand=(cm&&cm[ds]!=null&&cm[ds]<candThresh&&!tid);
     var dow=col%7;
     cells+='<td class="calday '+kcls+(cand?' cand':'')+'" onclick="dayMenu(\''+ds+'\')"><div class="dn '+(dow===0?'sun':dow===6?'sat':'')+'">'+d+'</div>'
-      +(tid?'<div class="dt">'+esc(tid)+'</div>':(cand?'<div class="dc">候補'+Math.round(candMap[ds]*100)+'%</div>':''))+'</td>';
+      +(tid?'<div class="dt">'+esc(tid)+'</div>':(cand?'<div class="dc">候補'+Math.round(cm[ds]*100)+'%</div>':''))+'</td>';
     col++; if(col%7===0)cells+='</tr><tr>';
   }
   var tbl='<table class="cal"><thead>'+head+'</thead><tbody><tr>'+cells+'</tr></tbody></table>';
@@ -1106,7 +1112,13 @@ function viewCal(){
     +'<span class="pill other">基本段 '+(mt||'-')+'（'+(mt?tierName(mt):'')+'）</span>'
     +'<button class="btn ghost sm" onclick="calMove(1)">次→</button>'
     +'<button class="btn ghost sm" style="margin-left:auto" onclick="loadCandidates()">🔎 安い日候補（稼働率）</button></div>';
-  return '<div class="card"><h2>📅 カレンダー（安い日・高い日）</h2>'+nav
+  var candSel='';
+  if(candMap){var cks=Object.keys(candMap).filter(function(k){return k!=='_all';}).sort();
+    candSel='<div class="calnav" style="flex-wrap:wrap;gap:4px"><span class="muted">候補の対象：</span>'
+      +'<button class="btn '+(candCls==='_all'?'save':'ghost')+' sm" onclick="setCandCls(\'_all\')">店全体</button>'
+      +cks.map(function(c){return '<button class="btn '+(candCls===c?'save':'ghost')+' sm" onclick="setCandCls(\''+c+'\')">'+esc(c)+'</button>';}).join('')
+      +'<span class="muted">（稼働率&lt;'+Math.round(candThresh*100)+'%・整備除外・'+(candCls==='_all'?'店全体':'クラス'+esc(candCls))+'）</span></div>';}
+  return '<div class="card"><h2>📅 カレンダー（安い日・高い日）</h2>'+nav+candSel
     +'<div class="legend"><span><b style="background:#dbeafe"></b>安い日</span><span><b style="background:#fed7aa"></b>高い日</span><span><b style="background:#fff;border:1px solid #cbd5e1"></b>通常</span><span><b style="box-shadow:inset 0 0 0 2px #60a5fa;background:#fff"></b>安い日候補</span></div>'
     +'<div class="scroll">'+tbl+'</div>'
     +'<div class="muted">日をクリック→「安い日／高い日／解除」。安い日の段は月から自動（例 2月→L2）。高い日はHN/HG/HB/HSから選択。高い日と安い日は同日に重ねられません（1日1区分）。候補は印だけ（登録は人）。</div>'
@@ -1142,24 +1154,57 @@ async function loadCandidates(){
   var el=document.getElementById('calerr');if(el)el.textContent='稼働率を計算中…';
   candThresh=+(D.setting.low_cand_util!=null?D.setting.low_cand_util:0.40)||0.40;
   var ndays=+(D.setting.low_cand_days!=null?D.setting.low_cand_days:30)||30;
-  var t0=new Date(),s0=todayISO(),end=new Date(t0.getTime()+ndays*86400000).toISOString().slice(0,10);
-  var veh=await req('GET','nha_vehicles?select=code&active=eq.true');
-  if(!veh.ok){if(el)el.textContent='車両取得失敗: '+esc(veh.err);return;}
-  var total=(veh.data||[]).length;
-  var rv=await req('GET','nha_reservations?select=start_date,end_date,status&start_date=lte.'+end+'&end_date=gte.'+s0);
-  var mt=await req('GET','nha_maintenance?select=start_date,end_date,status&start_date=lte.'+end);
-  var rvs=(rv.ok&&rv.data)||[],mts=(mt.ok&&mt.data)||[];
-  candMap={};
-  for(var i=0;i<ndays;i++){
-    var day=new Date(t0.getTime()+i*86400000).toISOString().slice(0,10);
-    var booked=rvs.filter(function(r){return String(r.status||'').indexOf('ancel')<0&&r.status!=='キャンセル'&&String(r.start_date||'')<=day&&String(r.end_date||'')>=day;}).length;
-    var maint=mts.filter(function(r){return String(r.status||'').indexOf('ancel')<0&&String(r.start_date||'')<=day&&String(r.end_date||r.start_date||'')>=day;}).length;
-    var avail=Math.max(1,total-maint);
-    candMap[day]=booked/avail;
-  }
-  if(el)el.textContent='';
-  toast('安い日候補を表示（稼働率<'+Math.round(candThresh*100)+'%・店全体）');render();
+  var t0=todayISO(),end=addDaysISO(t0,ndays-1);
+  // 店マスター(pc_store.bt_source)で読むDB/テーブルを決める。読み取りのみ・業務DBには書き込まない。
+  var sm=(D.store_master||[]).filter(function(s){return s.id===STORE;})[0]||{};
+  var okS=function(s){s=String(s||'');return s.indexOf('ancel')<0&&s.indexOf('キャンセル')<0;}; // 空欄statusは残す(予約として数える)
+  var d10=function(v){return String(v||'').slice(0,10);}; // 文字→日付(YYYY-MM-DD)で比較＝時刻付き貸出日も初日に数える
+  var perCls={_all:{}}, actByCls={};
+  try{
+    if(sm.bt_source){
+      // 高松＝BT集計RPC(anon・集計のみ・brand=HDMのみ・整備除外込)
+      var rr=await fetch(BT.url+'/rest/v1/rpc/bt_hdm_availability?d1='+t0+'&d2='+end,{headers:{apikey:BT.anon,Authorization:'Bearer '+BT.anon}});
+      if(!rr.ok){if(el)el.textContent='高松の集計取得に失敗(HTTP '+rr.status+')';return;}
+      var rows=await rr.json();
+      if(!Array.isArray(rows)){if(el)el.textContent='高松の集計RPC未作成/応答異常';return;}
+      var agg={};
+      rows.forEach(function(x){
+        var dt=d10(x.dt),av=Math.max(0,(x.active||0)-(x.maint||0));
+        perCls[x.cls]=perCls[x.cls]||{}; perCls[x.cls][dt]=av>0?(x.booked/av):0; actByCls[x.cls]=x.active;
+        agg[dt]=agg[dt]||{a:0,m:0,b:0}; agg[dt].a+=(x.active||0); agg[dt].m+=(x.maint||0); agg[dt].b+=(x.booked||0);
+      });
+      Object.keys(agg).forEach(function(dt){var av=Math.max(0,agg[dt].a-agg[dt].m);perCls._all[dt]=av>0?(agg[dt].b/av):0;});
+    } else {
+      // 札幌/那覇＝主DB。店マスターに無い列名規約: 札幌=無印/貸出lend_date・返却return_date・クラスvehicle、那覇=nha_/start_date・end_date・vehicle_class
+      var pfx=(STORE==='nha'?'nha_':''), isSpk=(STORE==='spk');
+      var sCol=isSpk?'lend_date':'start_date', eCol=isSpk?'return_date':'end_date', cCol=isSpk?'vehicle':'vehicle_class';
+      var veh=await req('GET',pfx+'vehicles?select=code,type&active=eq.true');
+      if(!veh.ok){if(el)el.textContent='車両取得失敗: '+esc(veh.err);return;}
+      var vtype={},totAct=0; (veh.data||[]).forEach(function(v){var c=String(v.type||'').toUpperCase();if(!c)return;vtype[v.code]=c;actByCls[c]=(actByCls[c]||0)+1;totAct++;});
+      var rv=await req('GET',pfx+'reservations?select='+sCol+','+eCol+','+cCol+',status&'+sCol+'=lte.'+end+'&'+eCol+'=gte.'+t0);
+      var rvs=(rv.ok&&rv.data)||[];
+      var mt=await req('GET',pfx+'maintenance?select=vehicle_code,start_date,end_date,status&start_date=lte.'+end);
+      var mts=(mt.ok&&mt.data)||[];
+      Object.keys(actByCls).forEach(function(c){perCls[c]={};});
+      for(var i=0;i<ndays;i++){
+        var day=addDaysISO(t0,i);
+        var mByCls={},mAll=0;
+        mts.forEach(function(m){if(!okS(m.status))return;if(d10(m.start_date)<=day&&d10(m.end_date||m.start_date)>=day){var c=vtype[m.vehicle_code];if(c){mByCls[c]=(mByCls[c]||0)+1;mAll++;}}});
+        var bAll=rvs.filter(function(r){return okS(r.status)&&d10(r[sCol])<=day&&d10(r[eCol])>=day;}).length;
+        var avAll=Math.max(0,totAct-mAll); perCls._all[day]=avAll>0?(bAll/avAll):0;
+        Object.keys(actByCls).forEach(function(c){
+          var bk=rvs.filter(function(r){return okS(r.status)&&String(r[cCol]||'').toUpperCase()===c&&d10(r[sCol])<=day&&d10(r[eCol])>=day;}).length;
+          var av=Math.max(0,actByCls[c]-(mByCls[c]||0)); perCls[c][day]=av>0?(bk/av):0;
+        });
+      }
+    }
+    candMap=perCls; if(!candMap[candCls])candCls='_all';
+    if(el)el.textContent='';
+    toast('安い日候補：'+(candCls==='_all'?'店全体':candCls)+'（稼働率<'+Math.round(candThresh*100)+'%・整備除外）');render();
+  }catch(e){if(el)el.textContent='計算エラー: '+esc(e.message);}
 }
+// 候補の表示クラスを切替（_all=店全体）
+function setCandCls(c){candCls=c;render();}
 
 // ---- ⑤ 案（pc_proposal）----
 function reviewTiming(){var cur=monthTierOf(ymNow()),nx=monthTierOf(shiftYM(ymNow(),1));if(cur&&nx&&cur!==nx)return '来月は基本段が「'+cur+'→'+nx+'」に変わります。価格の見直しをご検討ください。';return '';}
@@ -1241,6 +1286,13 @@ async function markDone(id){
 
 // ---- ⑦ キャンペーン（pc_campaign）----
 function floor100(x){return Math.floor(x/100)*100;}
+// ★2026-10-08 C-11 CP価格=割引後 価格×(100−%)÷100 を100円未満切り捨て。全て整数で計算（浮動小数の誤差なし）
+function cpPct(rate){return Math.round((+rate||0)*100);}
+function cpInt(base,pct){if(base==null||base==='')return null;return Math.floor((+base*(100-pct))/10000)*100;}
+// その日に適用される段＝特日(special_day)優先、無ければ月の基本段(monthTierOf)
+function dayTierPC(ds){var sp={};(D.special_day||[]).forEach(function(r){sp[r.date]=r.tier;});return sp[ds]||monthTierOf(ds.slice(0,7));}
+// 対象期間に出現する段の集合（{段:サンプル日}）。1日ずつ走査（上限400日）
+function periodTiers(periods){var out={},seen={};(periods||[]).forEach(function(p){if(!p.from||!p.to)return;var d=new Date(p.from),e=new Date(p.to),g=0;while(d<=e&&g<400){var ds=d.toISOString().slice(0,10),ti=dayTierPC(ds);if(ti&&!seen[ti]){seen[ti]=1;out[ti]=ds;}d.setDate(d.getDate()+1);g++;}});return out;}
 function viewCp(){
   var cps=(D.campaign||[]),otas=activeOtas();
   var def=+(D.setting.cp_default_rate!=null?D.setting.cp_default_rate:0.05)||0.05;
@@ -1261,8 +1313,8 @@ function viewCp(){
         +'<td class="num">'+Math.round((+c.rate||0)*100)+'%</td><td class="meta">'+esc(c.memo||'')+'</td><td>'+(c.active?'<span class="pill manual">有効</span>':'<span class="pill other">停止</span>')+'</td>'
         +'<td><button class="btn ghost sm" onclick="toggleCp('+c.id+',\''+(c.active?'off':'on')+'\')">'+(c.active?'停止':'再開')+'</button></td></tr>';
     }).join('')+'</tbody></table></div>';
-  list+='<div class="muted">※CP価格の「入力リストへの反映」と「元価格が変わった時の自動再計算」は次の改良で追加します（この版は定義の作成・一覧・停止/再開まで）。</div></div>';
-  return form+list;
+  list+='<div class="muted">※下の「CP価格（自動計算）」は現在の価格から毎回計算し直します（元価格が変われば自動で反映）。「⌨ 入力リストへ反映」でOTA入力担当へ渡ります（同一 店×OTA×クラス×段の入力待ちは上書き取消で重複なし）。</div></div>';
+  return form+cpComputeCards(cps)+list;
 }
 function addCpPeriod(){var d=document.getElementById('cpperiods');var div=document.createElement('div');div.className='cpperiod';div.innerHTML='<input type="date" class="cpf"> 〜 <input type="date" class="cpt"> <button class="btn ghost sm" onclick="this.parentNode.remove()">×</button>';d.appendChild(div);}
 async function saveCp(){
@@ -1279,6 +1331,54 @@ async function saveCp(){
   toast('✅ キャンペーンを保存');render();
 }
 async function toggleCp(id,act){if(!authed()){toast('ログインしていません',true);return;}var w=await req('PATCH','pc_campaign?id=eq.'+id,{active:(act==='on')},'return=minimal');if(w.ok){var r=await req('GET','pc_campaign?select=*&order=created_at.desc');if(r.ok)D.campaign=r.data||[];render();toast('更新しました');}else toast('失敗',true);}
+// CP価格の自動計算カード（有効キャンペーンごと・OTA×クラス×段）
+function cpComputeCards(cps){
+  var act=(cps||[]).filter(function(c){return c.active;});
+  if(!act.length)return '';
+  var classes=(D.store_class||[]).map(function(r){return r.class;});
+  return act.map(function(c){
+    var ov=(c.otas||[]);if(typeof ov==='string'){try{ov=JSON.parse(ov);}catch(e){ov=[];}}
+    var per=(c.periods||[]);if(typeof per==='string'){try{per=JSON.parse(per);}catch(e){per=[];}}
+    var pct=cpPct(c.rate),tiers=periodTiers(per),tids=Object.keys(tiers);
+    var h='<div class="card"><h2>🎁 CP価格（自動計算・率'+pct+'%）'+esc(c.memo?('　'+c.memo):'')+'</h2>'
+      +'<div class="muted">'+ov.map(otaName).map(esc).join('・')+'／'+per.map(function(p){return esc((p.from||'')+'〜'+(p.to||''));}).join('・')+'。その日の段の価格×(1−'+pct+'%)を100円未満切り捨て（整数）。1〜4泊＝×日数。</div>';
+    if(!tids.length){return h+'<div class="empty">対象期間に段がありません（カレンダーで安い日/高い日/月の基本段が未設定）。</div></div>';}
+    h+='<div style="margin:6px 0"><button class="btn save sm" onclick="enqueueCp('+c.id+')"'+(authed()?'':' disabled')+'>⌨ 入力リストへ反映</button></div>';
+    ov.forEach(function(o){
+      h+='<h3 style="margin:8px 0 4px">'+esc(otaName(o))+'</h3><div class="scroll"><table class="ftable"><thead><tr><th>クラス</th><th>段</th><th>通常</th><th>CP(1泊)</th><th>2泊</th><th>3泊</th><th>4泊</th></tr></thead><tbody>';
+      classes.forEach(function(cl){
+        tids.forEach(function(ti){
+          var row=D.price[pk(o,cl,ti)],base=(row&&row.amount!=null)?row.amount:null,cp=cpInt(base,pct);
+          h+='<tr><td><b>'+esc(cl)+'</b></td><td class="meta">'+esc(ti)+'</td><td>'+yen(base)+'</td>'
+            +'<td>'+(cp==null?'—':'<b>'+yen(cp)+'</b>')+'</td><td>'+(cp==null?'—':yen(cp*2))+'</td><td>'+(cp==null?'—':yen(cp*3))+'</td><td>'+(cp==null?'—':yen(cp*4))+'</td></tr>';
+        });
+      });
+      h+='</tbody></table></div>';
+    });
+    return h+'</div>';
+  }).join('');
+}
+// CP価格を入力リスト(pc_input_queue)＋ログ(pc_log)へ反映。pc_price(基本価格)は変更しない＝CPはOTA入力用の期間限定値
+async function enqueueCp(id){
+  if(!authed()){toast('ログインしていません',true);return;}
+  var c=(D.campaign||[]).filter(function(x){return x.id===id;})[0];if(!c){toast('対象なし',true);return;}
+  var ov=(c.otas||[]);if(typeof ov==='string'){try{ov=JSON.parse(ov);}catch(e){ov=[];}}
+  var per=(c.periods||[]);if(typeof per==='string'){try{per=JSON.parse(per);}catch(e){per=[];}}
+  var pct=cpPct(c.rate),classes=(D.store_class||[]).map(function(r){return r.class;}),tiers=periodTiers(per),tids=Object.keys(tiers);
+  var dnote=per.map(function(p){return (p.from||'')+'〜'+(p.to||'');}).join(','),nnote='CP'+pct+'%',nowISO=new Date().toISOString(),n=0,fails=[];
+  for(var oi=0;oi<ov.length;oi++)for(var ci=0;ci<classes.length;ci++)for(var tj=0;tj<tids.length;tj++){
+    var o=ov[oi],cl=classes[ci],tid=tids[tj];
+    var row=D.price[pk(o,cl,tid)],base=(row&&row.amount!=null)?row.amount:null,cp=cpInt(base,pct);
+    if(cp==null)continue;
+    await req('PATCH','pc_input_queue?store=eq.'+STORE+'&ota=eq.'+o+'&class=eq.'+cl+'&tier=eq.'+tid+'&status=eq.waiting',{status:'superseded',done_at:nowISO},'return=minimal');
+    var q=await req('POST','pc_input_queue',{store:STORE,ota:o,class:cl,tier:tid,before:base,after:cp,status:'waiting',nights_note:nnote,date_note:dnote},'return=minimal');
+    if(!q.ok){fails.push(otaName(o)+' '+cl+'/'+tid+': '+q.err);continue;}
+    await req('POST','pc_log',{store:STORE,ota:o,class:cl,tier:tid,before:base,after:cp,trigger:'campaign',reason:nnote},'return=minimal');
+    n++;
+  }
+  var r=await req('GET','pc_input_queue?store=eq.'+STORE+'&select=*&order=created_at.desc&limit=1000');if(r.ok)D.queue=r.data||[];
+  toast(fails.length?('一部失敗：'+n+'件反映／'+fails.length+'件失敗'):('✅ '+n+'件を入力リストへ反映'),fails.length>0);render();
+}
 
 // ===== 起動 =====
 reloadAll();
