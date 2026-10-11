@@ -1,7 +1,7 @@
 <!DOCTYPE html><html lang="ja"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
-<title>価格コンソール（那覇 初版）</title>
+<title>価格コンソール</title>
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;font-family:-apple-system,"Hiragino Kaku Gothic ProN",sans-serif;background:#f1f5f9;color:#0f172a;font-size:14px}
@@ -98,16 +98,12 @@ td.calday .dn{font-weight:700;font-size:12px}td.calday .dt{font-size:10px;font-w
 </style></head><body>
 <header>
   <h1>価格コンソール</h1>
-  <div class="sub">pc_* テーブル専用。フェーズ②＝那覇のみ初版（既存の価格設定・公式価格には触れません）</div>
+  <div class="sub">pc_* テーブル専用（公式HPの料金＝既存の価格設定には、まだ書き込みません）</div>
 </header>
 <div class="wrap">
   <div class="topbar">
-    <div class="storesel">
-      <button class="on" id="store_nha" onclick="void 0">🌺 那覇</button>
-      <button disabled title="後続フェーズ">❄️ 札幌</button>
-      <button disabled title="後続フェーズ">🍜 高松</button>
-    </div>
-    <span class="muted">店＝<b>nha 固定</b>（この版）</span>
+    <div class="storesel" id="storesel"></div>
+    <span class="muted" id="storenote"></span>
     <button class="btn ghost sm" style="margin-left:auto" onclick="reloadAll()">🔄 再読込</button>
   </div>
   <div id="authbar"></div>
@@ -121,11 +117,21 @@ td.calday .dn{font-weight:700;font-size:12px}td.calday .dt{font-size:10px;font-w
 var MAIN={url:'https://ckrxttbnawkclshczsia.supabase.co',anon:'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8',key:'sb-ckrxttbnawkclshczsia-auth-token'};
 // ★2026-10-08 高松(BT)の安い日候補用＝読み取り専用集計RPC bt_hdm_availability(anon可・集計のみ)を呼ぶBT接続(公開anon)
 var BT={url:'https://ggqugvyskyiblxiycpci.supabase.co',anon:'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdncXVndnlza3lpYmx4aXljcGNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxMDc3NjksImV4cCI6MjA5MzY4Mzc2OX0.uNhWcBd_Dl5nzemZDQfJ8mQV6iY73MwystGGpTRPC18'};
-var STORE='nha';
+// ★2026-10-11 店は pc_store から読む（コードに店一覧を書かない）。開く店は URL ?store=spk 等 → 無ければ pc_store の先頭(sort順)。
+var STORE=null;
+function urlStore(){try{return (new URLSearchParams(location.search).get('store')||'').trim().toLowerCase();}catch(e){return '';}}
+function activeStores(){return (D.store_master||[]).filter(function(s){return s.active!==false;}).sort(function(a,b){return (a.sort||0)-(b.sort||0);});}
+function storeRow(){return (D.store_master||[]).filter(function(s){return s.id===STORE;})[0]||null;}
+function isBtStore(){var s=storeRow();return !!(s&&s.bt_source);}
+function storeName(){var s=storeRow();return s?s.name:(STORE||'');}
 // classes テーブルの store 識別子はフルネーム。STORE(短縮)→classesの store_id/store 値へ変換。
 var STORE_FULL={nha:'naha',spk:'sapporo',tkm:'takamatsu'};
 function storeFull(){return STORE_FULL[STORE]||STORE;}
 function addDaysISO(iso,n){var d=new Date(iso+'T00:00:00');d.setDate(d.getDate()+n);return d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate());}
+// 安い日候補（稼働率）の読み先：札幌/那覇＝主DBの業務テーブル（店ごとに名前・列が違う）。高松は pc_store.bt_source=true → BT集計RPC。
+var CAND_SRC={nha:{pfx:'nha_',s:'start_date',e:'end_date',c:'vehicle_class'},spk:{pfx:'',s:'lend_date',e:'return_date',c:'vehicle'}};
+// 1000行上限対策：offset でページ送り（path に order を含めること）
+async function reqAll(path){var out=[],off=0;for(var i=0;i<50;i++){var r=await req('GET',path+'&limit=1000&offset='+off);if(!r.ok)return r;var d=Array.isArray(r.data)?r.data:[];out=out.concat(d);if(d.length<1000)break;off+=1000;}return {ok:true,data:out};}
 // 安い日候補の表示対象クラス（'_all'=店全体）
 var candCls='_all';
 // 車種名はコードに直書きしない：classes から読めた時だけ補い、読めなければコードのみ表示。
@@ -230,44 +236,89 @@ function sellsOtaClass(ota,cl){
 function newBatchId(){return 'b'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);}
 
 // ===== 読込 =====
+// ★2026-10-11 店切替：読込は一旦 N に集め、最新の読込(loadSeq一致)だけを D に反映＝素早く店を切り替えても古い店のデータが混ざらない。
+var loadSeq=0;
 async function reloadAll(){
+  var my=++loadSeq;
   document.getElementById('body').innerHTML='<div class="phd">読み込み中…</div>';
   var errs=[];
+  var N={classes:[],store_class:[],store_ota:[],ota:[],tier:[],month_tier:[],price:{},rule:[],floor:[],setting:{},log:[],special_day:[],proposal:[],queue:[],campaign:[],store_master:[]};
   async function g(tbl,path,assign){
     var r=await req('GET',path);
     if(!r.ok){errs.push(tbl+': '+r.err);assign(null,r);return;}
     assign(r.data,r);
   }
+  // 店マスター(pc_store)を最初に読み、開く店を決める（URL ?store= → 無ければ sort 先頭）
+  await g('pc_store','pc_store?select=*&order=sort',function(d){N.store_master=d||[];});
+  var ids=N.store_master.filter(function(s){return s.active!==false;}).map(function(s){return s.id;});
+  if(!STORE){
+    var u=urlStore();
+    if(u&&ids.indexOf(u)>=0)STORE=u;
+    else{if(u)errs.push('URLの店「'+u+'」は pc_store にありません（'+ids.join(' / ')+'）。先頭の店を開きました。');STORE=ids[0]||null;}
+  }
+  if(my!==loadSeq)return;
+  if(!STORE||ids.indexOf(STORE)<0){
+    D.store_master=N.store_master;window.__loadErrs=errs.concat(['開ける店がありません（pc_store が空か、未ログインで読めません）。']);
+    renderStoreBar();renderAuthbar();document.getElementById('maintabs').innerHTML='';
+    document.getElementById('body').innerHTML='<div class="card"><div class="err">'+esc(window.__loadErrs.join('\n'))+'</div></div>';
+    return;
+  }
+  var st=STORE; // 以降の読込はこの店で固定
+  var bt=!!(N.store_master.filter(function(s){return s.id===st;})[0]||{}).bt_source;
   // classes（店識別子はフルネーム：nha→naha）。ログイン必須（anonでは0件）。
   // 読めた時だけ表示名(車種)を補う。読めない時はクラスのコード一覧を pc_store_class / pc_price から構築する。
-  var sf=storeFull();
-  // ★2026-10-08 classesは store 列が無い(id,store_id,name,rate)→旧コードの store.eq 参照が「column classes.store does not exist」を出していた。全件取得→store_id一致/未設定のみ採用(型差異でもエラーにしない。classesが空でもpc_store_classからコード構築で機能継続)
-  var ra=await req('GET','classes?select=*&limit=1000');
-  D.classes=(ra.ok&&Array.isArray(ra.data))?ra.data.filter(function(c){return c.store_id==null||String(c.store_id)===String(sf);}):[];
-  await g('pc_store_class','pc_store_class?store=eq.'+STORE+'&select=*',function(d){D.store_class=d||[];});
-  await g('pc_store_ota','pc_store_ota?store=eq.'+STORE+'&select=*',function(d){D.store_ota=d||[];});
-  await g('pc_ota','pc_ota?select=*&order=sort',function(d){D.ota=d||[];});
-  await g('pc_tier','pc_tier?select=*&order=sort',function(d){D.tier=d||[];});
-  await g('pc_month_tier','pc_month_tier?select=*&order=month',function(d){D.month_tier=d||[];});
-  await g('pc_rule','pc_rule?store=eq.'+STORE+'&select=*',function(d){D.rule=d||[];});
-  await g('pc_floor','pc_floor?store=eq.'+STORE+'&select=*',function(d){D.floor=d||[];});
-  await g('pc_special_day','pc_special_day?store=eq.'+STORE+'&select=*&order=date',function(d){D.special_day=d||[];});
-  await g('pc_proposal','pc_proposal?store=eq.'+STORE+'&status=eq.open&select=*&order=created_at.desc&limit=1000',function(d){D.proposal=d||[];});
-  await g('pc_queue','pc_input_queue?store=eq.'+STORE+'&select=*&order=created_at.desc&limit=1000',function(d){D.queue=d||[];});
-  await g('pc_campaign','pc_campaign?select=*&order=created_at.desc',function(d){D.campaign=d||[];});
-  await g('pc_store','pc_store?select=*&order=sort',function(d){D.store_master=d||[];}); // 店マスター(bt_source等)＝候補のDB/テーブル解決に使用
-  await g('pc_setting','pc_setting?select=*',function(d){D.setting={};(d||[]).forEach(function(r){D.setting[r.key]=r.value;});});
+  // ★2026-10-08 classesは store 列が無い(id,store_id,name,rate)→全件取得→store_id一致/未設定のみ採用(classesが空でもpc_store_classからコード構築で機能継続)
+  // ★2026-10-11 高松(bt_source=true)のクラス正本は BT 側＝主DBの classes は読まない（BUDDICA を混ぜない・コードは pc_store_class）。
+  if(!bt){
+    var sf=STORE_FULL[st]||st;
+    var ra=await req('GET','classes?select=*&limit=1000');
+    N.classes=(ra.ok&&Array.isArray(ra.data))?ra.data.filter(function(c){return c.store_id==null||String(c.store_id)===String(sf);}):[];
+  }
+  await g('pc_store_class','pc_store_class?store=eq.'+st+'&select=*',function(d){N.store_class=d||[];});
+  await g('pc_store_ota','pc_store_ota?store=eq.'+st+'&select=*',function(d){N.store_ota=d||[];});
+  await g('pc_ota','pc_ota?select=*&order=sort',function(d){N.ota=d||[];});
+  await g('pc_tier','pc_tier?select=*&order=sort',function(d){N.tier=d||[];});
+  await g('pc_month_tier','pc_month_tier?select=*&order=month',function(d){N.month_tier=d||[];});
+  await g('pc_rule','pc_rule?store=eq.'+st+'&select=*',function(d){N.rule=d||[];});
+  await g('pc_floor','pc_floor?store=eq.'+st+'&select=*',function(d){N.floor=d||[];});
+  await g('pc_special_day','pc_special_day?store=eq.'+st+'&select=*&order=date',function(d){N.special_day=d||[];});
+  await g('pc_proposal','pc_proposal?store=eq.'+st+'&status=eq.open&select=*&order=created_at.desc&limit=1000',function(d){N.proposal=d||[];});
+  await g('pc_queue','pc_input_queue?store=eq.'+st+'&select=*&order=created_at.desc&limit=1000',function(d){N.queue=d||[];});
+  await g('pc_campaign',campaignPath(st),function(d){N.campaign=d||[];});
+  await g('pc_setting','pc_setting?select=*',function(d){N.setting={};(d||[]).forEach(function(r){N.setting[r.key]=r.value;});});
   // pc_price（店で絞る）
-  D.price={};
-  await g('pc_price','pc_price?store=eq.'+STORE+'&select=*',function(d){(d||[]).forEach(function(r){D.price[pk(r.ota,r.class,r.tier)]=r;});});
-  await loadLog();
+  await g('pc_price','pc_price?store=eq.'+st+'&select=*',function(d){(d||[]).forEach(function(r){N.price[pk(r.ota,r.class,r.tier)]=r;});});
+  N.log=await fetchLog(st);
+  if(my!==loadSeq||st!==STORE)return; // 読込中に店が切り替わった＝この結果は捨てる
+  D=N;
   window.__loadErrs=errs;
   render();
 }
-async function loadLog(){
-  var f='pc_log?store=eq.'+STORE+'&order=ts.desc&limit=500&select=*';
-  var r=await req('GET',f);
-  D.log=(r.ok&&Array.isArray(r.data))?r.data:[];
+// キャンペーンは店ごと（pc_campaign.store）。★2026-10-11 店列追加
+function campaignPath(st){return 'pc_campaign?store=eq.'+(st||STORE)+'&select=*&order=created_at.desc';}
+async function fetchLog(st){
+  var r=await req('GET','pc_log?store=eq.'+st+'&order=ts.desc&limit=500&select=*');
+  return (r.ok&&Array.isArray(r.data))?r.data:[];
+}
+async function loadLog(){D.log=await fetchLog(STORE);}
+
+// ===== 店の切替（pc_store から生成） =====
+function renderStoreBar(){
+  var el=document.getElementById('storesel');if(!el)return;
+  el.innerHTML=activeStores().map(function(s){return '<button class="'+(s.id===STORE?'on':'')+'" onclick="switchStore(\''+esc(s.id)+'\')" title="?store='+esc(s.id)+'">'+esc(s.name)+'</button>';}).join('');
+  var note=document.getElementById('storenote');
+  if(note)note.innerHTML=STORE?('表示中：<b>'+esc(storeName())+'</b>'+(isBtStore()?'（稼働率は BT 側・HANDYMAN の車のみ）':'')):'';
+}
+function switchStore(id){
+  if(id===STORE)return;
+  flushEditing();
+  var n=changeCount();
+  if(n&&!confirm('保存していない価格の変更が'+n+'件あります。\n破棄して店を切り替えますか？'))return;
+  editMap={};markMap={};candMap=null;candCls='_all';logF={ota:'',cls:'',tier:'',trigger:''};OTA='__all';
+  STORE=id;
+  try{var u=new URL(location.href);u.searchParams.set('store',id);history.replaceState(null,'',u.toString());}catch(e){}
+  renderStoreBar();
+  reloadAll();
 }
 
 // ===== 共通描画 =====
@@ -282,7 +333,7 @@ function renderTabs(){
 }
 function setTab(t){TAB=t;render();}
 function render(){
-  renderAuthbar();renderTabs();
+  renderStoreBar();renderAuthbar();renderTabs();
   var errHtml=(window.__loadErrs&&window.__loadErrs.length)?'<div class="card"><div class="err">読込エラー:\n'+esc(window.__loadErrs.join('\n'))+'\n（pc_* テーブルが未適用の可能性。sql/pc_schema.sql を Supabase SQL Editor で実行してください）</div></div>':'';
   var html;
   if(TAB==='price')html=viewPrice();
@@ -943,7 +994,7 @@ function masterMonthTier(){
       +opts.map(function(o){return '<option value="'+o.id+'"'+(cur===o.id?' selected':'')+'>'+o.id+'（'+esc(o.name)+'）</option>';}).join('')
       +'</select></td></tr>';
   }
-  return '<div class="muted warn">※ これは全店共通です。変更すると那覇以外にも影響します。</div>'
+  return '<div class="muted warn">※ これは全店共通です。変更すると全ての店に影響します。</div>'
     +'<div class="scroll" style="margin-top:8px"><table class="ftable"><thead><tr><th>月</th><th>段（L/R/H）</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
     +'<div style="margin-top:10px"><button class="btn save" onclick="saveMonthTier()"'+(authed()?'':' disabled')+'>💾 月→段を保存</button></div>'
     +'<div id="mterr" class="err"></div>';
@@ -981,7 +1032,7 @@ function masterSetting(){
     +'<tr><td>low_cand_days（安い日候補 何日以内）</td><td><input type="number" id="set_ld" value="'+esc(stripNum(v('low_cand_days',30)))+'"></td></tr>'
     +'<tr><td>cp_default_rate（CP初期割引率）</td><td><input type="number" step="0.01" id="set_cp" value="'+esc(stripNum(v('cp_default_rate',0.05)))+'"></td></tr>'
     +'<tr><td>big_change（大きな変更確認・±比率）</td><td><input type="number" step="0.01" id="set_big" value="'+esc(stripNum(v('big_change',0.20)))+'"></td></tr>'
-    +'<tr><td>official_link_ota（公式HP連動先・那覇）</td><td>'+olSel+'</td></tr>'
+    +'<tr><td>official_link_ota（公式HP連動先・'+esc(storeName())+'）</td><td>'+olSel+'</td></tr>'
     +'<tr><td colspan="2"><b>deviation（逸脱チェック）</b></td></tr>'
     +'<tr><td>min_amount</td><td><input type="number" id="dev_min" value="'+esc(num(dev.min_amount,1000))+'"></td></tr>'
     +'<tr><td>max_amount</td><td><input type="number" id="dev_max" value="'+esc(num(dev.max_amount,100000))+'"></td></tr>'
@@ -999,7 +1050,7 @@ async function saveSettings(){
   var errEl=document.getElementById('seterr');errEl.textContent='';
   if(!authed()){errEl.textContent='ログインしていません。';return;}
   function gv(id){return document.getElementById(id).value;}
-  // official_link_ota は全店共通JSON（那覇分だけ差し替え・他店は読み直して保持）
+  // official_link_ota は全店共通JSON（表示中の店の分だけ差し替え・他店は読み直して保持）
   var curOL=await req('GET','pc_setting?key=eq.official_link_ota&select=value');
   var olObj=(curOL.ok&&curOL.data&&curOL.data[0])?curOL.data[0].value:{};if(typeof olObj==='string'){try{olObj=JSON.parse(olObj);}catch(e){olObj={};}}
   olObj=olObj||{};olObj[STORE]=(gv('set_official_link')||null);
@@ -1164,7 +1215,7 @@ async function loadCandidates(){
   var ndays=+(D.setting.low_cand_days!=null?D.setting.low_cand_days:30)||30;
   var t0=todayISO(),end=addDaysISO(t0,ndays-1);
   // 店マスター(pc_store.bt_source)で読むDB/テーブルを決める。読み取りのみ・業務DBには書き込まない。
-  var sm=(D.store_master||[]).filter(function(s){return s.id===STORE;})[0]||{};
+  var st=STORE, sm=storeRow()||{};
   var okS=function(s){s=String(s||'');return s.indexOf('ancel')<0&&s.indexOf('キャンセル')<0;}; // 空欄statusは残す(予約として数える)
   var d10=function(v){return String(v||'').slice(0,10);}; // 文字→日付(YYYY-MM-DD)で比較＝時刻付き貸出日も初日に数える
   var perCls={_all:{}}, actByCls={};
@@ -1183,16 +1234,19 @@ async function loadCandidates(){
       });
       Object.keys(agg).forEach(function(dt){var av=Math.max(0,agg[dt].a-agg[dt].m);perCls._all[dt]=av>0?(agg[dt].b/av):0;});
     } else {
-      // 札幌/那覇＝主DB。店マスターに無い列名規約: 札幌=無印/貸出lend_date・返却return_date・クラスvehicle、那覇=nha_/start_date・end_date・vehicle_class
-      var pfx=(STORE==='nha'?'nha_':''), isSpk=(STORE==='spk');
-      var sCol=isSpk?'lend_date':'start_date', eCol=isSpk?'return_date':'end_date', cCol=isSpk?'vehicle':'vehicle_class';
-      var veh=await req('GET',pfx+'vehicles?select=code,type&active=eq.true');
-      if(!veh.ok){if(el)el.textContent='車両取得失敗: '+esc(veh.err);return;}
+      // 札幌/那覇＝主DB。テーブル名・列名は店ごとに違う（業務APPの既存テーブル）＝CAND_SRC で引く。無い店は計算しない。
+      var src=CAND_SRC[st];
+      if(!src){if(el)el.textContent='この店（'+esc(st)+'）の稼働率の読み先が未設定です。';return;}
+      var pfx=src.pfx, sCol=src.s, eCol=src.e, cCol=src.c;
+      var veh=await reqAll(pfx+'vehicles?select=code,type&active=eq.true&order=code');
+      if(!veh.ok){if(el)el.textContent='車両取得失敗: '+veh.err;return;}
       var vtype={},totAct=0; (veh.data||[]).forEach(function(v){var c=String(v.type||'').toUpperCase();if(!c)return;vtype[v.code]=c;actByCls[c]=(actByCls[c]||0)+1;totAct++;});
-      var rv=await req('GET',pfx+'reservations?select='+sCol+','+eCol+','+cCol+',status&'+sCol+'=lte.'+end+'&'+eCol+'=gte.'+t0);
-      var rvs=(rv.ok&&rv.data)||[];
-      var mt=await req('GET',pfx+'maintenance?select=vehicle_code,start_date,end_date,status&start_date=lte.'+end);
-      var mts=(mt.ok&&mt.data)||[];
+      var rv=await reqAll(pfx+'reservations?select=id,'+sCol+','+eCol+','+cCol+',status&'+sCol+'=lte.'+end+'&'+eCol+'=gte.'+t0+'&order=id');
+      if(!rv.ok){if(el)el.textContent='予約取得失敗: '+rv.err;return;}
+      var rvs=rv.data||[];
+      var mt=await reqAll(pfx+'maintenance?select=id,vehicle_code,start_date,end_date,status&start_date=lte.'+end+'&order=id');
+      if(!mt.ok){if(el)el.textContent='整備取得失敗: '+mt.err;return;}
+      var mts=mt.data||[];
       Object.keys(actByCls).forEach(function(c){perCls[c]={};});
       for(var i=0;i<ndays;i++){
         var day=addDaysISO(t0,i);
@@ -1206,6 +1260,7 @@ async function loadCandidates(){
         });
       }
     }
+    if(st!==STORE)return; // 計算中に店が切り替わった＝結果を捨てる
     candMap=perCls; if(!candMap[candCls])candCls='_all';
     if(el)el.textContent='';
     toast('安い日候補：'+(candCls==='_all'?'店全体':candCls)+'（稼働率<'+Math.round(candThresh*100)+'%・整備除外）');render();
@@ -1333,12 +1388,12 @@ async function saveCp(){
   var periods=[];document.querySelectorAll('#cpperiods .cpperiod').forEach(function(p){var f=p.querySelector('.cpf').value,t=p.querySelector('.cpt').value;if(f&&t)periods.push({from:f,to:t});});
   if(!periods.length){errEl.textContent='期間を1つ以上入れてください。';return;}
   var rate=+document.getElementById('cprate').value||0,memo=document.getElementById('cpmemo').value||'';
-  var w=await req('POST','pc_campaign',{otas:otas,periods:periods,rate:rate,memo:memo,active:true},'return=minimal');
+  var w=await req('POST','pc_campaign',{store:STORE,otas:otas,periods:periods,rate:rate,memo:memo,active:true},'return=minimal');
   if(!w.ok){errEl.textContent='保存失敗: '+w.err;return;}
-  var r=await req('GET','pc_campaign?select=*&order=created_at.desc');if(r.ok)D.campaign=r.data||[];
+  var r=await req('GET',campaignPath());if(r.ok)D.campaign=r.data||[];
   toast('✅ キャンペーンを保存');render();
 }
-async function toggleCp(id,act){if(!authed()){toast('ログインしていません',true);return;}var w=await req('PATCH','pc_campaign?id=eq.'+id,{active:(act==='on')},'return=minimal');if(w.ok){var r=await req('GET','pc_campaign?select=*&order=created_at.desc');if(r.ok)D.campaign=r.data||[];render();toast('更新しました');}else toast('失敗',true);}
+async function toggleCp(id,act){if(!authed()){toast('ログインしていません',true);return;}var w=await req('PATCH','pc_campaign?id=eq.'+id,{active:(act==='on')},'return=minimal');if(w.ok){var r=await req('GET',campaignPath());if(r.ok)D.campaign=r.data||[];render();toast('更新しました');}else toast('失敗',true);}
 // CP価格の自動計算カード（有効キャンペーンごと・OTA×クラス×段）
 function cpComputeCards(cps){
   var act=(cps||[]).filter(function(c){return c.active;});

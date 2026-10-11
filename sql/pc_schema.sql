@@ -143,6 +143,7 @@ create table if not exists pc_input_queue (
 -- ---------- 9. キャンペーン ----------
 create table if not exists pc_campaign (
   id         bigserial primary key,
+  store      text references pc_store(id),           -- 2026-10-11 追加（店ごとのキャンペーン。sql/pc_campaign_store_col_20261011.sql）
   otas       jsonb not null default '[]'::jsonb,     -- 複数OTA
   periods    jsonb not null default '[]'::jsonb,     -- 複数期間 [{from,to}]
   rate       numeric not null default 0.05,
