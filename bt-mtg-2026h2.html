@@ -43,6 +43,9 @@ th.mh.mcol{writing-mode:vertical-rl;text-orientation:upright;font-size:9px;line-
 }
 /* 埋め込み(?embed=1)時は大見出し/サブ説明を隠しKPI表の縦幅を最大化 */
 body.embed{padding:6px}body.embed>h1,body.embed>.sub{display:none}body.embed>.bar{margin-bottom:3px}
+/* 2026-10-11 受付期間の獲得比較(BT/HDM)：埋め込み・印刷では出さない(既存レイアウトを変えない) */
+body.embed #acq{display:none}@media print{#acq{display:none!important}}
+#acq table{max-width:720px}#acq td.l{width:190px}#acq .pi{font-size:11px;margin:0 0 4px;color:#334155}#acq input{font-size:12px;padding:2px 4px}
 /* PDF保存(印刷)：横向きA4・2枚割り(1枚目=売上/予約/台あたり/稼働率、2枚目=チャネル別/クラス別)・幅調整 */
 @media print{
   .bar,#dsum,.rb{display:none!important}
@@ -62,6 +65,7 @@ body.embed{padding:6px}body.embed>h1,body.embed>.sub{display:none}body.embed>.ba
 <h1>🍜 BUDDICA TOURISM KPI管理</h1>
 <div class="sub">BUDDICA / HANDYMAN高松空港店　｜　売上=返却月(予約+予約外)・キャンセル/テスト除外　｜　流通=発生月(取扱高)　｜　稼働台数＝月次フラグ優先(配車表と連動)</div>
 <div class="bar"><button class="rb" onclick="load()">🔄 最新に更新</button><button class="rb" onclick="window.print()" style="background:#1e40af">🖨 PDF保存</button><span class="upd" id="upd">読み込み中…</span></div>
+<div id="acq"></div>
 <div id="body"><div style="padding:30px;color:#94a3b8">📡 最新データを読み込み中…</div></div>
 <script>
 if(location.search.indexOf("embed=1")>=0)document.body.classList.add("embed");
@@ -223,7 +227,43 @@ function render(D){
   document.getElementById("body").innerHTML=H;
   setupMonthCollapse(months);
   document.getElementById("upd").textContent="最終更新 "+(D.generated||"")+"（DBライブ）";
+  ACQ_D=D;loadAcq();
 }
+/* 2026-10-11 受付(予約が入った日・JST)期間のBT/HDM獲得比較。RPC bt_mtg_acq＝bt_mtg_h2の流通と同じ定義(キャンセル/テスト除外)。在庫＝bt_mtg_h2の稼働台数(月次フラグ)。 */
+var ACQ_D=null,ACQ_KEY="btmtg_acq_range";
+function ymdJst(off){var d=new Date(Date.now()+9*3600000+(off||0)*86400000);return d.toISOString().slice(0,10);}
+function acqRange(){var f="2026-09-25",t=ymdJst(-1);try{var s=JSON.parse(localStorage.getItem(ACQ_KEY)||"null");if(s&&s.f)f=s.f;if(s&&s.t)t=s.t;}catch(e){}
+  var a=document.getElementById("acqF"),b=document.getElementById("acqT");if(a&&a.value)f=a.value;if(b&&b.value)t=b.value;return{f:f,t:t};}
+function acqSet(latest){var a=document.getElementById("acqF"),b=document.getElementById("acqT");if(latest&&b)b.value=ymdJst(-1);
+  try{localStorage.setItem(ACQ_KEY,JSON.stringify({f:a.value,t:latest?null:b.value}));}catch(e){}loadAcq();}
+function loadAcq(){var R=acqRange();var el=document.getElementById("acq");
+  if(!el.innerHTML)el.innerHTML='<div class="h2">🆚 獲得比較（受付日ベース）</div><div style="color:#94a3b8;font-size:11px">読み込み中…</div>';
+  fetch(SB+"/rest/v1/rpc/bt_mtg_acq",{method:"POST",headers:{apikey:ANON,Authorization:"Bearer "+ANON,"Content-Type":"application/json"},body:JSON.stringify({p_from:R.f,p_to:R.t})})
+    .then(function(r){return r.json();}).then(function(x){if(!x||x.code)throw 0;renderAcq(R,x);})
+    .catch(function(){el.innerHTML='<div class="h2">🆚 獲得比較（受付日ベース）</div><div style="color:#dc2626;font-size:11px">読み込みに失敗しました <button class="rb" onclick="loadAcq()">再読み込み</button></div>';});}
+function renderAcq(R,x){var D=ACQ_D,o=D.data,months=D.months;
+  var cm=(D.generated||"").slice(0,7);if(months.indexOf(cm)<0)cm=months[months.length-1];
+  var days=Math.round((new Date(R.t)-new Date(R.f))/86400000)+1;if(!(days>0))days=0;
+  var B=x.BUDDICA||{c:0,r:0},H=x.HDM||{c:0,r:0},G={c:B.c+H.c,r:B.r+H.r};
+  var iB=(o[cm]||{}).nbt||0,iH=(o[cm]||{}).nhd||0;
+  function rng(k){var a=months.filter(function(m){return m>cm;}).map(function(m){return o[m][k]||0;});if(!a.length)return null;var mn=Math.min.apply(null,a),mx=Math.max.apply(null,a);return[mn,mx];}
+  function rt(r){return r?(r[0]==r[1]?r[0]+"台":r[0]+"〜"+r[1]+"台"):"–";}
+  var fB=rng("nbt"),fH=rng("nhd"),fG=(fB&&fH)?[fB[0]+fH[0],fB[1]+fH[1]]:null;
+  function pc(a,t){return t?" <span style=\"color:#64748b\">("+Math.round(a/t*100)+"%)</span>":"";}
+  function av(s){return s.c?yen(s.r/s.c):"–";}
+  function pd(s){return days?(Math.round(s.c/days*10)/10).toFixed(1)+"件":"–";}
+  var rows=[
+    ["在庫数（"+MN[cm]+"）",iB+"台",iH+"台",(iB+iH)+"台"],
+    ["在庫数（"+MN[cm]+"の翌月以降）",rt(fB),rt(fH),rt(fG)],
+    ["<b>獲得件数</b>","<b>"+B.c+"件</b>"+pc(B.c,G.c),"<b>"+H.c+"件</b>"+pc(H.c,G.c),"<b>"+G.c+"件</b>"],
+    ["<b>流通額（売上）</b>","<b>"+yen(B.r)+"</b>"+pc(B.r,G.r),"<b>"+yen(H.r)+"</b>"+pc(H.r,G.r),"<b>"+yen(G.r)+"</b>"],
+    ["平均単価",av(B),av(H),av(G)],
+    ["<b>1日あたり獲得</b>","<b>"+pd(B)+"</b>","<b>"+pd(H)+"</b>","<b>"+pd(G)+"</b>"]];
+  var h='<div class="h2">🆚 獲得比較（受付日ベース・'+R.f.slice(5).replace("-","/")+"〜"+R.t.slice(5).replace("-","/")+" 受付分・"+days+'日間）</div>'
+    +'<div class="pi">期間 <input type="date" id="acqF" value="'+R.f+'" onchange="acqSet()"> 〜 <input type="date" id="acqT" value="'+R.t+'" onchange="acqSet()"> <button class="rb" onclick="acqSet(true)" style="padding:2px 8px;font-size:11px">終了を昨日に</button>　<span style="color:#64748b">キャンセル・テストを除いた件数／予約時点の確定金額(税込)</span></div>'
+    +'<div class="tw"><table><thead><tr><th class="l">項目</th><th>BT（BUDDICA）</th><th>HDM（HANDYMAN高松）</th><th>合計</th></tr></thead><tbody>'
+    +rows.map(function(r){return '<tr><td class="l">'+r[0]+"</td><td>"+r[1]+"</td><td>"+r[2]+"</td><td>"+r[3]+"</td></tr>";}).join("")+"</tbody></table></div>";
+  document.getElementById("acq").innerHTML=h;}
 function load(){
   document.getElementById("upd").textContent="更新中…";
   fetch(SB+"/rest/v1/rpc/bt_mtg_h2",{method:"POST",headers:{apikey:ANON,Authorization:"Bearer "+ANON,"Content-Type":"application/json"},body:"{}"})
