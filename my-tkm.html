@@ -919,7 +919,7 @@ function readyState(){const c=readyLatest();return c?c.status:"none"}
 function readyTime(){const c=readyLatest();if(!c)return"";const m=String(c.new_value||"").match(/(\d{1,2}:\d{2})/);return m?m[1]:""}
 
 /* ===== 免許証セルフアップロード（保存先=GAS→Googleドライブ・store='nha'・license.htmlと同一） ===== */
-let LIC=[{front:null,back:null,fu:null,bu:null}];
+let LIC=[{front:null,back:null,fu:null,bu:null,acq:""}];
 let LIC_BUSY=false;
 function licSlot(i,side){
   const p=LIC[i], f=p[side], url=side==="front"?p.fu:p.bu, lab=side==="front"?t('lic_front'):t('lic_back');
@@ -937,11 +937,12 @@ function licBody(){
   const multi=LIC.length>1;
   const drivers=LIC.map((p,i)=>`
     <div style="border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin-bottom:10px;background:#fff">
-      ${multi?`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:13px;font-weight:800;color:#0F1F45">${t('lic_driver')}${i+1}</span>${i>0?`<button onclick="licDel(${i})" style="background:none;border:none;color:#dc2626;font-size:12px;font-weight:700;cursor:pointer">✕</button>`:""}</div>`:""}
+      ${(multi||licRegBase())?`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:13px;font-weight:800;color:#0F1F45">${t('lic_driver')}${licRegBase()+i+1}</span>${i>0?`<button onclick="licDel(${i})" style="background:none;border:none;color:#dc2626;font-size:12px;font-weight:700;cursor:pointer">✕</button>`:""}</div>`:""}
       <div style="display:flex;gap:10px">${licSlot(i,"front")}${licSlot(i,"back")}</div>
+      ${licAcqField(i)}
     </div>`).join("");
   const canUp=LIC.some(p=>p.front)&&!LIC_BUSY;
-  return drivers
+  return licRegHTML()+drivers
     +`<button onclick="licAdd()" style="width:100%;background:#f1f5f9;color:#334155;border:1px dashed #cbd5e1;border-radius:10px;padding:9px;font-size:13px;font-weight:700;cursor:pointer;margin-bottom:10px">${t('lic_add')}</button>`
     +`<button id="licUpBtn" onclick="licUpload()" ${canUp?"":"disabled"} style="width:100%;background:${canUp?"#0F1F45":"#cbd5e1"};color:#fff;border:none;border-radius:11px;padding:13px;font-size:15px;font-weight:800;cursor:${canUp?"pointer":"default"}">${LIC_BUSY?t('lic_uploading'):t('lic_upload')}</button>`
     +`<div id="licStatus" style="margin-top:8px;font-size:13px;font-weight:700"></div>`;
@@ -954,8 +955,36 @@ function licPick(i,side,input){
   else{LIC[i].back=f; LIC[i].bu=URL.createObjectURL(f);}
   licPaint();
 }
-function licAdd(){ if(LIC.length>=5)return; LIC.push({front:null,back:null,fu:null,bu:null}); licPaint(); }
-function licDel(i){ LIC.splice(i,1); if(!LIC.length)LIC=[{front:null,back:null,fu:null,bu:null}]; licPaint(); }
+function licAdd(){ if(LIC.length>=5)return; LIC.push({front:null,back:null,fu:null,bu:null,acq:""}); licPaint(); }
+function licDel(i){ LIC.splice(i,1); if(!LIC.length)LIC=[{front:null,back:null,fu:null,bu:null,acq:""}]; licPaint(); }
+// ★2026-10-12 免許の取得年月日（免許証左下・普通免許は「他」欄）を運転者ごとに必須入力→取得6か月以内は各店オペへ通知（判定・記録・通知はDB関数 lic_report_acquired）
+const LIC_ACQ_RPC="https://ggqugvyskyiblxiycpci.supabase.co/rest/v1/rpc/lic_report_acquired", LIC_ACQ_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdncXVndnlza3lpYmx4aXljcGNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxMDc3NjksImV4cCI6MjA5MzY4Mzc2OX0.uNhWcBd_Dl5nzemZDQfJ8mQV6iY73MwystGGpTRPC18", LIC_ACQ_STORE="tkm";
+const LIC_ACQ_T={lab:{ja:"免許の取得年月日（必須）",en:"Date you obtained your license (required)",zh:"駕照取得日期（必填）",ko:"면허 취득일 (필수)"},
+  hint:{ja:"免許証の左下の日付です。普通免許は「他」の欄を入力してください。",en:"On a Japanese license: the date in the 「他」 box at the bottom left. Other licenses: the date first issued.",zh:"日本駕照左下「他」欄的日期；其他駕照請填首次發照日期。",ko:"일본 면허증 왼쪽 아래 「他」란의 날짜. 그 외 면허는 최초 발급일."},
+  fg:{ja:"外国の免許証・国際免許（取得日の欄がない）",en:"Foreign license / International Driving Permit (no license date on it)",zh:"外國駕照・國際駕照（沒有取得日期欄）",ko:"외국 면허증·국제운전면허증 (취득일 칸 없음)"},
+  fgs:{ja:"外国の免許証・国際免許",en:"Foreign license / IDP",zh:"外國駕照・國際駕照",ko:"외국 면허증·국제면허"},
+  need:{ja:"運転者全員の「免許の取得年月日」を入力してください",en:"Please enter the license date for every driver",zh:"請填寫每位駕駛人的駕照取得日期",ko:"모든 운전자의 면허 취득일을 입력해 주세요"}};
+function licAcqField(i){const p=LIC[i],d=new Date(),mx=d.getFullYear()+"-"+("0"+(d.getMonth()+1)).slice(-2)+"-"+("0"+d.getDate()).slice(-2);
+  return `<div style="margin-top:10px"><div style="font-size:12px;font-weight:700;color:#475569;margin-bottom:4px">${LIC_ACQ_T.lab[L]||LIC_ACQ_T.lab.ja}</div>
+    <input type="date" id="licacq${i}" max="${mx}" value="${p.acq&&p.acq!=="foreign"?p.acq:""}"${p.acq==="foreign"?" disabled":""} onchange="LIC[${i}].acq=this.value" style="width:100%;padding:10px;border:1.5px solid #cbd5e1;border-radius:10px;font-size:15px;background:#fff">
+    <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;font-weight:700;color:#334155;cursor:pointer;line-height:1.4"><input type="checkbox"${p.acq==="foreign"?" checked":""} onchange="licAcqForeign(${i},this.checked)" style="width:20px;height:20px;flex-shrink:0">${LIC_ACQ_T.fg[L]||LIC_ACQ_T.fg.ja}</label>
+    <div style="font-size:11.5px;color:#64748b;margin-top:4px;line-height:1.5">${LIC_ACQ_T.hint[L]||LIC_ACQ_T.hint.ja}</div></div>`;}
+// ★2026-10-12 外国の免許証・国際免許（取得日の欄がない）＝取得日の入力を省ける。記録は "foreign"（判定・通知の対象外・配車表は「要目視確認」）
+function licAcqForeign(i,on){ const el=document.getElementById("licacq"+i); if(el){ el.disabled=on; if(on)el.value=""; } if(LIC[i])LIC[i].acq=on?"foreign":((el&&el.value)||""); }
+// 運転者ごとの取得日 {"1":"YYYY-MM-DD",...}。新しくアップする人は登録済みの続きの番号、登録済みの人は一覧で訂正できる
+let LIC_REG=null, LIC_REG_LOADING=false;
+function licAcqCall(fn,body){return fetch(LIC_ACQ_RPC.replace("lic_report_acquired",fn),{method:"POST",headers:{apikey:LIC_ACQ_KEY,Authorization:"Bearer "+LIC_ACQ_KEY,"Content-Type":"application/json"},body:JSON.stringify(Object.assign({p_token:TOKEN,p_store:LIC_ACQ_STORE},body||{}))}).then(function(r){return r.json();});}
+function licLoadReg(){ if(LIC_REG_LOADING||LIC_REG!==null)return; LIC_REG_LOADING=true; licAcqCall("lic_get_acquired").then(function(j){LIC_REG=(j&&j.ok&&j.drivers)||{};}).catch(function(){LIC_REG={};}).finally(function(){LIC_REG_LOADING=false;licPaint();}); }
+function licRegBase(){let m=0;Object.keys(LIC_REG||{}).forEach(function(k){m=Math.max(m,parseInt(k,10)||0);});return m;}
+async function licReportAcq(dates){ if(LIC_REG===null){ try{ const j0=await licAcqCall("lic_get_acquired"); LIC_REG=(j0&&j0.ok&&j0.drivers)||{}; }catch(e){ LIC_REG={}; } } const base=licRegBase(), map={}; dates.forEach(function(d,i){map[String(base+i+1)]=d;}); try{licAcqCall("lic_report_acquired",{p_drivers:map}).then(function(j){if(j&&j.ok&&j.drivers){LIC_REG=j.drivers;licPaint();}}).catch(function(e){console.error("lic acq",e);});}catch(e){} }
+const LIC_REG_T={ttl:{ja:"登録済みの免許の取得年月日（間違いがあれば直して保存）",en:"Registered license dates (correct and save if wrong)",zh:"已登記的駕照取得日期（如有錯誤請修改後儲存）",ko:"등록된 면허 취득일 (틀렸으면 수정 후 저장)"},save:{ja:"取得日を保存",en:"Save dates",zh:"儲存日期",ko:"날짜 저장"},saved:{ja:"保存しました",en:"Saved",zh:"已儲存",ko:"저장했습니다"},drv:{ja:"運転者",en:"Driver ",zh:"駕駛人",ko:"운전자 "}};
+function licRegHTML(){ if(LIC_REG===null){licLoadReg();return "";} const ks=Object.keys(LIC_REG).sort(function(a,b){return a-b;}); if(!ks.length)return "";
+  const tt=function(o){return o[L]||o.ja;};
+  return `<div style="border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin-bottom:10px;background:#f8fafc"><div style="font-size:12px;font-weight:800;color:#0F1F45;margin-bottom:8px">${tt(LIC_REG_T.ttl)}</div>`
+    +ks.map(function(k){return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span style="font-size:12px;font-weight:700;color:#475569;min-width:64px">${tt(LIC_REG_T.drv)}${k}</span>${LIC_REG[k]==="foreign"?`<span style="font-size:11.5px;color:#475569">${tt(LIC_ACQ_T.fgs)}</span>`:""}<input type="date" class="licRegIn" data-k="${k}" value="${LIC_REG[k]==="foreign"?"":LIC_REG[k]}" style="flex:1;padding:8px;border:1.5px solid #cbd5e1;border-radius:9px;font-size:14px;background:#fff"></div>`;}).join("")
+    +`<button onclick="licRegSave()" style="width:100%;background:#fff;color:#0F1F45;border:1.5px solid #0F1F45;border-radius:10px;padding:9px;font-size:13px;font-weight:800;cursor:pointer">${tt(LIC_REG_T.save)}</button><div id="licRegMsg" style="font-size:12px;font-weight:700;margin-top:6px;color:#0e7a3b"></div></div>`; }
+function licRegSave(){ const map={}; document.querySelectorAll(".licRegIn").forEach(function(el){ const k=el.getAttribute("data-k"); if(el.value&&el.value!==LIC_REG[k])map[k]=el.value; }); if(!Object.keys(map).length)return;
+  licAcqCall("lic_report_acquired",{p_drivers:map}).then(function(j){ if(j&&j.ok&&j.drivers){LIC_REG=j.drivers;licPaint(); const m=document.getElementById("licRegMsg"); if(m)m.textContent=(LIC_REG_T.saved[L]||LIC_REG_T.saved.ja);} }).catch(function(e){console.error("lic reg save",e);}); }
 function _fileToB64(file){return new Promise((res,rej)=>{const rd=new FileReader();rd.onload=()=>res(String(rd.result).split(',')[1]);rd.onerror=rej;rd.readAsDataURL(file);});}
 async function licUpload(){
   if(LIC_BUSY)return;
@@ -964,6 +993,8 @@ async function licUpload(){
   LIC.forEach((p,i)=>{ if(p.front)jobs.push({file:p.front,label:"person"+(i+1)+"_front"}); if(p.back)jobs.push({file:p.back,label:"person"+(i+1)+"_back"}); });
   const st=document.getElementById('licStatus');
   if(!jobs.length){ if(st){st.style.color="#dc2626";st.textContent=t('lic_need_front');} return; }
+  if(LIC.some(p=>p.front&&!p.acq)){ if(st){st.style.color="#dc2626";st.textContent=LIC_ACQ_T.need[L]||LIC_ACQ_T.need.ja;} return; }
+  const _acq=LIC.filter(p=>p.front).map(p=>p.acq);
   LIC_BUSY=true; licPaint();
   const st2=document.getElementById('licStatus'); if(st2){st2.style.color="#475569";st2.textContent=t('lic_uploading')+" 0/"+jobs.length;}
   let ok=0, err=0;
@@ -982,7 +1013,7 @@ async function licUpload(){
   }
   LIC_BUSY=false;
   const drv=LIC.filter(p=>p.front).length||1;
-  if(err===0){ try{ call("license_uploaded",{count:ok,drivers:drv}); }catch(e){} LIC=[{front:null,back:null,fu:null,bu:null}]; licPaint(); const s=document.getElementById('licStatus'); if(s){s.style.color="#0e7a3b";s.textContent=t('lic_done');} }
+  if(err===0){ try{ call("license_uploaded",{count:ok,drivers:drv}); }catch(e){} licReportAcq(_acq); LIC=[{front:null,back:null,fu:null,bu:null,acq:""}]; licPaint(); const s=document.getElementById('licStatus'); if(s){s.style.color="#0e7a3b";s.textContent=t('lic_done');} }
   else{ licPaint(); const s=document.getElementById('licStatus'); if(s){s.style.color="#dc2626";s.textContent=t('lic_err')+" ("+ok+"/"+jobs.length+")";} }
 }
 

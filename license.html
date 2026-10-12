@@ -91,6 +91,7 @@ input[type="file"]{display:none}
     🌐 インバウンド（海外のお客様：パスポート／免許証）
   </label>
 
+  <div id="licRegBox"></div>
   <div id="personsContainer"></div>
 
   <div class="person-count" id="personCount">1 / 8 人</div>
@@ -114,6 +115,34 @@ var BUCKET = 'licenses';
 var GAS_LICENSE_URL = 'https://script.google.com/macros/s/AKfycbycpzE1RIu2LbIlYVeRYcXxfIgfDhY5y1Vtdh1Rj69S9uZEnmqFMDBHqq3y6pHS70_t7A/exec'; // GAS「HANDYMAN 免許証保存」
 var GAS_LICENSE_SECRET = 'hdm-lic-7c3f9a21'; // GAS側 SECRET と一致させる
 var MAX_PERSONS = 8;
+var LIC_TOKEN = new URLSearchParams(location.search).get('t') || '';
+// 運転者ごとの取得日 {"1":"YYYY-MM-DD",...}。新しくアップする人は登録済みの続きの番号、登録済みの人は一覧で訂正できる
+var LIC_REG = null;
+function licAcqCall(fn, body) {
+  return fetch(SUPABASE_URL + '/rest/v1/rpc/' + fn, { method: 'POST', headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify(Object.assign({ p_token: LIC_TOKEN, p_store: 'spk' }, body || {})) }).then(function(r){ return r.json(); });
+}
+function licRegBase() { var m = 0; Object.keys(LIC_REG || {}).forEach(function(k){ m = Math.max(m, parseInt(k, 10) || 0); }); return m; }
+function renderReg() {
+  var box = document.getElementById('licRegBox'); if (!box) return;
+  var ks = Object.keys(LIC_REG || {}).sort(function(a, b){ return a - b; });
+  if (!ks.length) { box.innerHTML = ''; return; }
+  box.innerHTML = '<div class="person-section" style="background:#f8fafc"><div class="side-label">登録済みの免許の取得年月日（間違いがあれば直して保存）</div>' +
+    ks.map(function(k){ return '<div style="display:flex;align-items:center;gap:8px;margin-top:6px"><span style="font-size:13px;font-weight:700;min-width:64px">運転者 ' + k + '</span>' + (LIC_REG[k] === 'foreign' ? '<span style="font-size:12px;color:#555">外国の免許証・国際免許</span>' : '') + '<input type="date" class="licRegIn" data-k="' + k + '" value="' + (LIC_REG[k] === 'foreign' ? '' : LIC_REG[k]) + '" style="flex:1;padding:8px;border:2px solid #e0e0e0;border-radius:10px;font-size:15px"></div>'; }).join('') +
+    '<button type="button" onclick="licRegSave()" style="width:100%;margin-top:8px;padding:9px;border:2px solid #333;border-radius:10px;background:#fff;font-weight:700;font-size:14px">取得日を保存</button><div id="licRegMsg" style="font-size:12px;color:#0e7a3b;font-weight:700;margin-top:6px"></div></div>';
+}
+function licRegSave() {
+  var map = {}; document.querySelectorAll('.licRegIn').forEach(function(el){ var k = el.getAttribute('data-k'); if (el.value && el.value !== LIC_REG[k]) map[k] = el.value; });
+  if (!Object.keys(map).length) return;
+  licAcqCall('lic_report_acquired', { p_drivers: map }).then(function(j){ if (j && j.ok && j.drivers) { LIC_REG = j.drivers; renderReg(); renderPersons(); var m = document.getElementById('licRegMsg'); if (m) m.textContent = '保存しました'; } }).catch(function(e){ console.error('lic reg save', e); });
+}
+if (LIC_TOKEN) { licAcqCall('lic_get_acquired').then(function(j){ LIC_REG = (j && j.ok && j.drivers) || {}; renderReg(); renderPersons(); }).catch(function(){ LIC_REG = {}; }); } // ★2026-10-12 予約のマイページトークン（OPのリンクから付く）＝取得年月日の記録の本人確認
+// ★2026-10-12 免許の取得年月日（免許証左下・普通免許は「他」欄）を運転者ごとに必須入力。
+//   記録・6か月以内の判定・各店オペへの通知は DB関数 lic_report_acquired が行う（失敗してもアップロードには影響しない）。
+function onAcq(idx, val) { var p = persons.find(function(x){ return x.idx === idx; }); if (p) p.acq = val; checkReady(); }
+// ★2026-10-12 外国の免許証・国際免許（取得日の欄がない）＝取得日の入力を省ける。記録は 'foreign'（判定・通知の対象外・配車表は「要目視確認」）
+function onAcqForeign(idx, on) { var p = persons.find(function(x){ return x.idx === idx; }); if (!p) return; var el = document.getElementById('acq' + idx); if (el) { el.disabled = on; if (on) el.value = ''; } p.acq = on ? 'foreign' : ((el && el.value) || ''); checkReady(); }
+function _todayYmd() { var d = new Date(); return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); }
 
 var persons = []; // [{front:File|null, back:File|null}]
 var personIdx = 0;
@@ -151,7 +180,7 @@ function compressImage(file) {
 function addPerson() {
   if (persons.length >= MAX_PERSONS) return;
   var idx = personIdx++;
-  persons.push({ idx: idx, front: null, back: null });
+  persons.push({ idx: idx, front: null, back: null, acq: '' });
   renderPersons();
   checkReady();
 }
@@ -172,7 +201,7 @@ function renderPersons() {
     div.className = 'person-section';
     div.innerHTML =
       '<div class="person-header">' +
-        '<span class="person-label">運転者 ' + (i + 1) + '</span>' +
+        '<span class="person-label">運転者 ' + (licRegBase() + i + 1) + '</span>' +
         (persons.length > 1 ? '<button class="remove-person" onclick="removePerson(' + p.idx + ')">✕</button>' : '') +
       '</div>' +
       '<div class="sides">' +
@@ -195,6 +224,13 @@ function renderPersons() {
           '</div>' +
         '</div>' +
       '</div>';
+    div.insertAdjacentHTML('beforeend',
+      '<div style="margin-top:12px">' +
+        '<div class="side-label">' + (inbound ? 'Date you obtained your driver\'s license (required)' : '免許の取得年月日（必須）') + '</div>' +
+        '<input type="date" id="acq' + p.idx + '" max="' + _todayYmd() + '" value="' + (p.acq && p.acq !== 'foreign' ? p.acq : '') + '"' + (p.acq === 'foreign' ? ' disabled' : '') + ' onchange="onAcq(' + p.idx + ',this.value)" style="width:100%;padding:10px;border:2px solid #e0e0e0;border-radius:10px;font-size:15px;background:#fff">' +
+        '<label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:14px;font-weight:600;cursor:pointer;line-height:1.4"><input type="checkbox" id="acqF' + p.idx + '"' + (p.acq === 'foreign' ? ' checked' : '') + ' onchange="onAcqForeign(' + p.idx + ',this.checked)" style="width:20px;height:20px;flex-shrink:0">' + (inbound ? 'Foreign license / International Driving Permit (no date box)' : '外国の免許証・国際免許（取得日の欄がない）<br><span style="font-size:12px;color:#888;font-weight:400">Foreign license / International Driving Permit</span>') + '</label>' +
+        '<div style="font-size:12px;color:#888;margin-top:4px;line-height:1.5">' + (inbound ? 'Japanese license: the date in the 「他」 box at the bottom left. Other licenses: the date first issued.' : '免許証の左下の日付です。普通免許は「他」の欄を入力してください。') + '</div>' +
+      '</div>');
     c.appendChild(div);
 
     // restore preview if file already selected
@@ -242,7 +278,8 @@ function checkReady() {
   var custName = document.getElementById('custName').value.trim();
   var pref = document.getElementById('prefSelect').value;
   var hasAnyFront = persons.some(function(p) { return !!p.front; });
-  document.getElementById('uploadBtn').disabled = !(resId && custName && pref && hasAnyFront);
+  var acqOk = persons.every(function(p) { return !p.front || !!p.acq; });
+  document.getElementById('uploadBtn').disabled = !(resId && custName && pref && hasAnyFront && acqOk);
 }
 
 document.getElementById('resId').addEventListener('input', checkReady);
@@ -280,6 +317,8 @@ async function uploadAll() {
   });
 
   if (toUpload.length === 0) return;
+  if (persons.some(function(p) { return p.front && !p.acq; })) { alert('運転者全員の「免許の取得年月日」を入力してください'); return; }
+  var acqDates = persons.filter(function(p) { return !!p.front; }).map(function(p) { return p.acq; });
 
   var btn = document.getElementById('uploadBtn');
   var st = document.getElementById('uploadStatus');
@@ -393,6 +432,10 @@ async function uploadAll() {
         console.error('license_uploads mark FAILED:', luResp.status, luErr);
       }
     } catch (e) { console.error('license_uploads mark error:', e); }
+    // ★2026-10-12 取得年月日を記録（6か月以内ならDB側から各店オペへ通知）
+    try {
+      (LIC_REG === null && LIC_TOKEN ? licAcqCall('lic_get_acquired').then(function(j0){ LIC_REG = (j0 && j0.ok && j0.drivers) || {}; }) : Promise.resolve()).then(function(){ var base = licRegBase(), map = {}; acqDates.forEach(function(d, i){ map[String(base + i + 1)] = d; }); return licAcqCall('lic_report_acquired', { p_drivers: map }); }).then(function(j){ if (j && j.ok && j.drivers) { LIC_REG = j.drivers; renderReg(); } return j; }).then(function(j){ if (!j || !j.ok) { st.innerHTML += '<div style="color:#b45309;font-weight:700;margin-top:6px">⚠️ 免許の取得年月日は記録されていません（OPの予約番号リンク、またはマイページから開き直してください）</div>'; } }).catch(function(e){ console.error('lic acq fail:', e); });
+    } catch (e) { console.error('lic acq error:', e); }
   }
 
   progInner.style.width = '100%';
