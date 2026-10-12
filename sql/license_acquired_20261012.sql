@@ -16,7 +16,7 @@ grant update (reservation_id, store, cnt, drivers, first_at, last_at) on public.
 -- ② 通知先の設定（店ごと）。RLS有効・ポリシーなし＝画面からは読めない（下の関数だけが読む）
 create table if not exists public.lic_alert_cfg (
   store   text primary key,       -- spk / nha
-  webhook text,                    -- 各店オペチャンネルの Slack Incoming Webhook URL
+  webhook text,                    -- （旧・未使用）2026-10-12 から channel ＋ Vault のボットトークンで投稿
   mention text                     -- 各店オペのグループ。例 <!subteam^S0123456789>
 );
 alter table public.lic_alert_cfg enable row level security;
@@ -37,7 +37,7 @@ declare
   v_today date := (now() at time zone 'Asia/Tokyo')::date;
   v_in jsonb := '{}'; v_prev jsonb; v_merged jsonb;
   v_was boolean; v_now boolean; v_recent text; v_at timestamptz;
-  k text; v text; v_cfg record; v_txt text;
+  k text; v text; v_cfg record; v_txt text; v_tok text;
 begin
   if p_store not in ('spk','nha') then return jsonb_build_object('ok',false,'error','store'); end if;
   if p_token is null or p_token !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
@@ -85,15 +85,21 @@ begin
 
   if v_now and not v_was then
     select * into v_cfg from lic_alert_cfg where store = p_store;
-    if v_cfg.webhook is not null and v_cfg.webhook <> '' then
-      v_txt := '⚠️ *免許取得6か月以内の可能性* [' || case p_store when 'spk' then '札幌' else '那覇' end || ']' || chr(10)
+    -- ★2026-10-12 Webhook → Slackボット（chat.postMessage）＋チャンネルID。トークンは Vault（slack_bot_token）
+    select decrypted_secret into v_tok from vault.decrypted_secrets where name = 'slack_bot_token' limit 1;
+    if coalesce(v_cfg.channel,'') <> '' and coalesce(v_tok,'') <> '' then
+      v_txt := case when v_res ilike 'LICTEST%' then '【テスト】' else '' end
+            || '⚠️ *免許取得6か月以内の可能性* [' || case p_store when 'spk' then '札幌' else '那覇' end || ']' || chr(10)
             || '予約番号: ' || v_res || ' / ' || coalesce(v_name,'') || ' 様（貸出日 ' || to_char(v_base,'YYYY-MM-DD') || '）' || chr(10)
             || '申告された取得日: ' || v_recent || chr(10)
             || '※お客様の自己申告です。*免許証の画像で取得日を要確認*。取得6か月未満なら貸出不可のため、来店前にご連絡ください。'
             || case when coalesce(v_cfg.mention,'') <> '' then chr(10) || v_cfg.mention else '' end;
-      perform net.http_post(url := v_cfg.webhook,
-                            body := jsonb_build_object('text', v_txt, 'link_names', 1),
-                            headers := '{"Content-Type":"application/json"}'::jsonb);
+      begin  -- 通知の失敗で記録（上の insert）を巻き戻さない
+        perform net.http_post(url := 'https://slack.com/api/chat.postMessage',
+                              body := jsonb_build_object('channel', v_cfg.channel, 'text', v_txt, 'link_names', true),
+                              headers := jsonb_build_object('Content-Type','application/json','Authorization','Bearer ' || v_tok));
+      exception when others then raise warning 'lic notify failed: %', sqlerrm;
+      end;
     end if;
   end if;
 
