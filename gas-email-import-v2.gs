@@ -18,7 +18,7 @@ function setupProperties() {
     'SUPABASE_URL': 'https://ckrxttbnawkclshczsia.supabase.co',
     'SUPABASE_KEY': '<SERVICE_ROLE_KEYをSupabase Dashboardから取得して入力>',
     'SLACK_EMAIL': 'x-aaaatppttzyrldnhjt5el4jj3i@gl-oke5175.slack.com',
-    'SQUARE_API_TOKEN': 'EAAAl0tQ2Ok8BDEwQw9LrZox4F2Q8I0GkRLiZAngMCjEQ3mfFv87X5Jxhut-nfS8'
+    'SQUARE_API_TOKEN': '<Square Developer Dashboard の本番アクセストークン（コードに書かず、スクリプトプロパティに直接入力）>'
   });
   Logger.log('Properties set successfully.');
 }
