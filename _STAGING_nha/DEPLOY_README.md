@@ -29,7 +29,7 @@ SUPABASE_ACCESS_TOKEN=$(cat ~/.config/keydrop/sb_token) ~/.local/share/supabase/
 ```
 curl -s "https://ckrxttbnawkclshczsia.supabase.co/functions/v1/handyman-mypage-nha" \
  -H "apikey: <NHA anon>" -H "Authorization: Bearer <NHA anon>" -H "Content-Type: application/json" \
- --data '{"action":"lookup","token":"57c5abbe-8c7a-4520-a1fd-03e1af3d6e39"}'
+ --data '{"action":"lookup","token":"<確認したい予約の mypage_token>"}'
 ```
 → reservation.delivery.place="赤嶺駅南口"、time="16:00" が返れば連動OK。
 `--data '{"action":"ping"}'` は `{"ok":true,"warm":true,"store":"nha"}`。
