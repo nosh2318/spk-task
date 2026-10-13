@@ -64,7 +64,7 @@ body.embed #acq{display:none}@media print{#acq{display:none!important}}
 </style></head><body>
 <h1>🍜 BUDDICA TOURISM KPI管理</h1>
 <div class="sub">BUDDICA / HANDYMAN高松空港店　｜　売上=返却月(予約+予約外)・キャンセル/テスト除外　｜　流通=発生月(取扱高)　｜　稼働台数＝月次フラグ優先(配車表と連動)</div>
-<div class="bar"><button class="rb" onclick="load()">🔄 最新に更新</button><button class="rb" onclick="window.print()" style="background:#1e40af">🖨 PDF保存</button><span class="upd" id="upd">読み込み中…</span></div>
+<div class="bar"><button class="rb" onclick="load()">🔄 最新に更新</button><button class="rb" onclick="window.print()" style="background:#1e40af">🖨 PDF保存</button><button class="rb" onclick="dlCsv()" style="background:#7c3aed">📥 CSV保存</button><span class="upd" id="upd">読み込み中…</span></div>
 <div id="acq"></div>
 <div id="body"><div style="padding:30px;color:#94a3b8">📡 最新データを読み込み中…</div></div>
 <script>
@@ -263,7 +263,69 @@ function renderAcq(R,x){var D=ACQ_D,o=D.data,months=D.months;
     +'<div class="pi">期間 <input type="date" id="acqF" value="'+R.f+'" onchange="acqSet()"> 〜 <input type="date" id="acqT" value="'+R.t+'" onchange="acqSet()"> <button class="rb" onclick="acqSet(true)" style="padding:2px 8px;font-size:11px">終了を昨日に</button>　<span style="color:#64748b">キャンセル・テストを除いた件数／予約時点の確定金額(税込)</span></div>'
     +'<div class="tw"><table><thead><tr><th class="l">項目</th><th>BT（BUDDICA）</th><th>HDM（HANDYMAN高松）</th><th>合計</th></tr></thead><tbody>'
     +rows.map(function(r){return '<tr><td class="l">'+r[0]+"</td><td>"+r[1]+"</td><td>"+r[2]+"</td><td>"+r[3]+"</td></tr>";}).join("")+"</tbody></table></div>";
-  document.getElementById("acq").innerHTML=h;}
+  document.getElementById("acq").innerHTML=h;ACQ_X={R:R,x:x,days:days};}
+/* 2026-10-14 主要KPIのCSV保存（画面と同じ並び・表記。日報サマリー・クラス/車両別は含めない。読込済みデータから作るだけ＝DBに書かない） */
+var ACQ_X=null;
+function dlCsv(){
+  var D=ACQ_D;if(!D){alert("データ読み込み中です。少し待ってから押してください");return;}
+  var M=D.months,o=D.data,rows=[];
+  function yn(n){n=Math.round(n);return (n<0?"-":"")+"¥"+Math.abs(n).toLocaleString();}
+  function pc(a,t){return t?Math.round(a/t*100)+"%":"";}
+  var MH=M.map(function(m){return m.slice(0,4)+"年"+(+m.slice(5,7))+"月";});
+  function sec(t,sub){rows.push([]);rows.push([t]);rows.push(["区分"].concat(sub?[].concat.apply([],MH.map(function(h){return sub.map(function(s){return h+" "+s;});})):MH));}
+  function row(l,f){rows.push([l].concat(M.map(f)));}
+  function row2(l,f){rows.push([l].concat([].concat.apply([],M.map(f))));}
+  function per(m){return o[m].nveh?Math.round(o[m].tot_r/o[m].nveh):0;}
+  function pt(m){return o[m].nveh?Math.round(revT(m)/o[m].nveh):0;}
+  sec("売上（返却月・予約+予約外）　目標＝10月400万円・11月以降500万円");
+  row("売上実績",function(m){return yn(o[m].tot_r);});
+  row("目標",function(m){return hasT(m)?yn(revT(m)):"";});
+  row("進捗",function(m){return hasT(m)?pc(o[m].tot_r,revT(m)):"";});
+  row("差分",function(m){return hasT(m)?yn(o[m].tot_r-revT(m)):"";});
+  sec("予約数　目標＝各月"+T_CNT+"件（11月以降）");
+  row("予約実績",function(m){return o[m].tot_c;});
+  row("目標",function(m){return hasCntT(m)?T_CNT:"";});
+  row("進捗",function(m){return hasCntT(m)?pc(o[m].tot_c,T_CNT):"";});
+  row("差分",function(m){return hasCntT(m)?o[m].tot_c-T_CNT:"";});
+  sec("台あたり売上　目標＝売上目標÷稼働台数");
+  row("台あたり実績",function(m){return yn(per(m));});
+  row("目標",function(m){return hasT(m)?yn(pt(m)):"";});
+  row("進捗",function(m){return hasT(m)?pc(per(m),pt(m)):"";});
+  row("差分",function(m){return hasT(m)?yn(per(m)-pt(m)):"";});
+  function ub(m,k){return (o[m].util_brand||{})[k]||{rd:0,ad:0};}
+  function cbx(m){var rd=0,ad=0,cb=o[m].util_cb||{};Object.keys(cb).forEach(function(k){if(k.indexOf("BT|")===0&&k!="BT|AA"){rd+=cb[k].rd;ad+=cb[k].ad;}});return pc(rd,ad)||"–";}
+  function ux(m){var rd=0,ad=0,u=o[m].util||{};Object.keys(u).forEach(function(c){if(c!="AA"){rd+=u[c].rd;ad+=u[c].ad;}});return pc(rd,ad)||"–";}
+  sec("稼働率（貸出日数÷稼働可能日数）");
+  row("BUDDICA（BT）",function(m){return pc(ub(m,"BT").rd,ub(m,"BT").ad)||"–";});
+  row("　└ AA除く",cbx);
+  row("HDM（HANDYMAN高松）",function(m){return pc(ub(m,"HDM").rd,ub(m,"HDM").ad)||"–";});
+  row("グロス（全体）",function(m){return pc((ub(m,"BT").rd||0)+(ub(m,"HDM").rd||0),(ub(m,"BT").ad||0)+(ub(m,"HDM").ad||0))||"–";});
+  row("　└ AA除く",ux);
+  row("稼働台数（合計）",function(m){return o[m].nveh||0;});
+  row("　BT",function(m){return o[m].nbt||0;});
+  row("　HDM",function(m){return o[m].nhd||0;});
+  sec("売上チャネル別（返却月）",["予約数","売上"]);
+  [["BUDDICA","BUDDICA（BT）計"],["HDM","HDM（HANDYMAN高松）計"]].forEach(function(bb){
+    var t={};M.forEach(function(m){Object.keys(o[m].chan||{}).forEach(function(k){var p=k.split("|");if(p[0]==bb[0]){var ch=p.slice(1).join("|");t[ch]=(t[ch]||0)+(o[m].chan[k].r||0);}});});
+    var chans=Object.keys(t).sort(function(a,b){return t[b]-t[a];});if(!chans.length)return;
+    row2(bb[1],function(m){var c=0,r=0;Object.keys(o[m].chan||{}).forEach(function(k){if(k.split("|")[0]==bb[0]){c+=o[m].chan[k].c;r+=o[m].chan[k].r;}});return c?[c,yn(r)]:["–","–"];});
+    chans.forEach(function(ch){row2("　"+ch,function(m){var v=(o[m].chan||{})[bb[0]+"|"+ch];return v?[v.c,yn(v.r)]:["–","–"];});});
+  });
+  row2("予約外売上（店舗）",function(m){return ["–",o[m].ext_r?yn(o[m].ext_r):"–"];});
+  row2("総合計（予約+予約外）",function(m){return [o[m].tot_c,yn(o[m].tot_r)];});
+  if(ACQ_X){var x=ACQ_X.x,R=ACQ_X.R,dy=ACQ_X.days,B=x.BUDDICA||{c:0,r:0},H=x.HDM||{c:0,r:0},G={c:B.c+H.c,r:B.r+H.r};
+    function av(s){return s.c?yn(s.r/s.c):"–";}function pd(s){return dy?(s.c/dy).toFixed(1):"–";}
+    rows.push([]);rows.push(["獲得比較（受付日ベース・"+R.f.replace(/-/g,"/")+"〜"+R.t.replace(/-/g,"/")+"受付分・"+dy+"日間）"]);
+    rows.push(["項目","BT（BUDDICA）","HDM（HANDYMAN高松）","合計"]);
+    rows.push(["獲得件数",B.c,H.c,G.c]);rows.push(["獲得シェア",pc(B.c,G.c),pc(H.c,G.c),"100%"]);
+    rows.push(["流通額（売上）",yn(B.r),yn(H.r),yn(G.r)]);rows.push(["流通額シェア",pc(B.r,G.r),pc(H.r,G.r),"100%"]);
+    rows.push(["平均単価",av(B),av(H),av(G)]);rows.push(["1日あたり獲得（件）",pd(B),pd(H),pd(G)]);}
+  rows=[["BUDDICA TOURISM KPI（高松）"],["データ時点 "+(D.generated||"")+" JST／売上＝返却月(予約+予約外)・キャンセル/テスト除外"]].concat(rows);
+  var csv=rows.map(function(r){return r.map(function(v){v=String(v==null?"":v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}).join(",");}).join("\r\n");
+  var a=document.createElement("a");a.href=URL.createObjectURL(new Blob(["﻿"+csv],{type:"text/csv;charset=utf-8"}));
+  a.download="BT_KPI_"+(D.generated||"").slice(0,10).replace(/-/g,"")+".csv";document.body.appendChild(a);a.click();
+  setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},1000);
+}
 function load(){
   document.getElementById("upd").textContent="更新中…";
   fetch(SB+"/rest/v1/rpc/bt_mtg_h2",{method:"POST",headers:{apikey:ANON,Authorization:"Bearer "+ANON,"Content-Type":"application/json"},body:"{}"})
