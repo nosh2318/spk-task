@@ -10,6 +10,8 @@ var LABEL_NAME = 'processed';
 function getSupabaseUrl_() { return PropertiesService.getScriptProperties().getProperty('SUPABASE_URL'); }
 function getSupabaseKey_() { return PropertiesService.getScriptProperties().getProperty('SUPABASE_KEY'); }
 function getSlackEmail_() { return PropertiesService.getScriptProperties().getProperty('SLACK_EMAIL'); }
+// ★ 2026-10-13: bt-import の共有シークレットはスクリプトプロパティ BT_IMPORT_SECRET から読む（コードに書かない）
+function getBtImportSecret_() { return PropertiesService.getScriptProperties().getProperty('BT_IMPORT_SECRET') || ''; }
 function getSquareToken_() { return PropertiesService.getScriptProperties().getProperty('SQUARE_API_TOKEN'); }
 
 // 初回セットアップ用（1回実行後、このコメントごと削除推奨）
@@ -471,7 +473,7 @@ function processMessage_(message, dryRun) {
         try {
           UrlFetchApp.fetch('https://ckrxttbnawkclshczsia.supabase.co/functions/v1/bt-import', {
             method:'post', contentType:'application/json', muteHttpExceptions:true,
-            payload: JSON.stringify({ secret:'ecc9095ee0900b7e27fb72007205bef67b2a735bd0149d2b', isCancel:true, otaCode:otaCode, reservation:{ id: tkmId } })
+            payload: JSON.stringify({ secret:getBtImportSecret_(), isCancel:true, otaCode:otaCode, reservation:{ id: tkmId } })
           });
         } catch(e) { Logger.log('BT cancel err: '+e); }
       }
@@ -519,7 +521,7 @@ function processMessage_(message, dryRun) {
       try {
         UrlFetchApp.fetch('https://ckrxttbnawkclshczsia.supabase.co/functions/v1/bt-import', {
           method:'post', contentType:'application/json', muteHttpExceptions:true,
-          payload: JSON.stringify({ secret:'ecc9095ee0900b7e27fb72007205bef67b2a735bd0149d2b', otaCode: otaCode, reservation: reservation })
+          payload: JSON.stringify({ secret:getBtImportSecret_(), otaCode: otaCode, reservation: reservation })
         });
       } catch(e) { Logger.log('BT import err: '+e); }
     }
