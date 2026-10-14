@@ -29,6 +29,13 @@ r as (
     and coalesce(res.name,'') !~ '(テスト|デモ|test|ZZPTEST|大下|おおした|オオシタ)'
     and coalesce(res.name,'') <> ''
 ),
+ex as (
+  select substr(a.date,1,7) ym, sum(coalesce(a.amount,0))::bigint amt
+  from spk_accounting a
+  where a.type='extra_sales' and coalesce(a.description,'') not like 'じゃらん事前決済%'
+    and substr(a.date,1,7) between '2026-02' and (select end_ym from bounds)
+  group by 1
+),
 f as (
   select res.id,
     case when coalesce(res.base_price,0)>0 or coalesce(res.option_price,0)>0
@@ -100,8 +107,8 @@ select jsonb_build_object(
       'chan', coalesce((select jsonb_object_agg(chan, jsonb_build_object('c',c,'r',rr)) from (select chan,count(*) c,sum(rev) rr from r where r.ym=m.ym group by chan) b),'{}'::jsonb),
       'tot_c', (select count(*) from r where r.ym=m.ym),
       'resv_r', (select coalesce(sum(rev),0) from r where r.ym=m.ym),
-      'ext_r', 0,
-      'tot_r', (select coalesce(sum(rev),0) from r where r.ym=m.ym),
+      'ext_r', coalesce((select amt from ex where ex.ym=m.ym),0),
+      'tot_r', (select coalesce(sum(rev),0) from r where r.ym=m.ym) + coalesce((select amt from ex where ex.ym=m.ym),0),
       'flow_c', (select count(*) from f where f.fym=m.ym),
       'flow_r', (select coalesce(sum(rev),0) from f where f.fym=m.ym),
       'flow_chan', coalesce((select jsonb_object_agg(chan, jsonb_build_object('c',c,'r',rr)) from (select chan,count(*) c,sum(rev) rr from f where f.fym=m.ym group by chan) fc),'{}'::jsonb),
