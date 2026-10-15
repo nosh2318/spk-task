@@ -92,9 +92,10 @@ async function assign(cls:string,s:string,e:string){
 
 // クラス解決（高松HDM C/D/E/F/G/H/I/J/K）: ①プラン内 _X_TAK ②単一コード(E_TAK→E) ③車種/クラス名キーワード
 function deriveCls(r:any):string{
-  const raw=[r._rawClass,r.vehicle,r.plan,r.plan_name,r.detail].map((x:any)=>String(x||"")).join(" ");
+  // ★2026-10-16 全角「＿」を半角に正規化（楽天プラン名「エコカー・ハイブリッド＿E_TAK」でクラス空→未配車 RC***************03）
+  const raw=[r._rawClass,r.vehicle,r.plan,r.plan_name,r.detail].map((x:any)=>String(x||"").replace(/＿/g,"_")).join(" ");
   const m=raw.match(/_([A-K])_TAK/i); if(m)return m[1].toUpperCase();
-  const v=String(r.vehicle||r._rawClass||"").replace(/[_].*$/,"").trim(); if(/^[A-K]$/i.test(v))return v.toUpperCase();
+  const v=String(r.vehicle||r._rawClass||"").replace(/＿/g,"_").replace(/[_].*$/,"").trim(); if(/^[A-K]$/i.test(v))return v.toUpperCase();
   if(/軽ハイトワゴン|タント/.test(raw))return "I";
   if(/パッソ/.test(raw))return "J";
   if(/シエンタ|コンパクトミニバン/.test(raw))return "K";
