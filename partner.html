@@ -1560,10 +1560,10 @@ async function loadSettle(){
   const{data,error}=await sb.from('partner_settlements').select('id,doc_no,issue_date,total_in,subtotal_ex,tax,item_count,confirmed_at,deleted').eq('owner_company',OWNER_COMPANY).eq('deleted',false).order('id',{ascending:false}).limit(100);
   if(error){if(box)box.innerHTML='<span style="color:#b91c1c">請求書を読み込めませんでした（'+error.message+'）</span>';return;}
   STLDOCS=data||[];
-  SETTLED_IDS=new Set();
+  SETTLED_IDS=new Map(); // reservation_id → settlement_id（請求済みバッジから請求書を開く）
   if(STLDOCS.length){
-    const{data:it,error:e2}=await sb.from('partner_settlement_items').select('reservation_id').eq('deleted',false).in('settlement_id',STLDOCS.map(d=>d.id));
-    if(!e2)(it||[]).forEach(x=>SETTLED_IDS.add(x.reservation_id));
+    const{data:it,error:e2}=await sb.from('partner_settlement_items').select('reservation_id,settlement_id').eq('deleted',false).in('settlement_id',STLDOCS.map(d=>d.id));
+    if(!e2)(it||[]).forEach(x=>SETTLED_IDS.set(x.reservation_id,x.settlement_id));
   }
   if(!box)return;
   if(!STLDOCS.length){box.innerHTML='まだありません';return;}
@@ -1859,7 +1859,7 @@ function renderCost(){
     BILL_ROWS[bk]=Object.assign(bi,{plate:plate,name:v.name||'',ym:monthYm,daily:daily});
     const pickCell=bi.ids.length&&daily>0
       ?`<input type="checkbox" ${INV_PICK[bk]?'checked':''} onclick="invPick('${bk}',this.checked)" style="width:16px;height:16px;cursor:pointer" title="この車両を請求書に入れる">`
-      :(bi.settled&&!bi.pending?'<span style="font-size:9px;font-weight:800;padding:1px 5px;border-radius:3px;background:#e0e7ff;color:#3730a3">請求済</span>'
+      :(bi.settled&&!bi.pending?'<a href="./settlement.html?id='+bi.docId+'" target="_blank" title="この請求書を開く" style="font-size:10px;font-weight:800;padding:2px 6px;border-radius:4px;background:#e0e7ff;color:#3730a3;text-decoration:none;white-space:nowrap">📄請求済</a>'
         :(bi.pending?'<span style="font-size:9px;font-weight:700;color:#94a3b8">返却待ち</span>':''));
     if(isMobile){
       html+=`<tr>`+
@@ -1906,20 +1906,20 @@ function renderCost(){
 function _exTax(n){return Math.floor((Number(n)||0)*10/11);}
 // ★ 2026-10-15 請求書作成（コスト一覧で車両を選ぶ→請求書）。金額・対象の確定はサーバー関数 partner_settlement_create。
 const ISSUER_BY_OWNER={PARTNER_TEST:'マツダオートザム札幌インター（株式会社共立自動車）'};
-let BILL_ROWS={},INV_PICK={},SETTLED_IDS=new Set();
+let BILL_ROWS={},INV_PICK={},SETTLED_IDS=new Map(),LAST_INV=null;
 function _todayJst(){return new Date(Date.now()+9*3600e3).toISOString().slice(0,10);}
 function _billInfo(v,ms,me){
-  const today=_todayJst();let ids=[],days=0,settled=0,pending=0;
+  const today=_todayJst();let ids=[],days=0,settled=0,pending=0,docId=null;
   RESERVATIONS.forEach(r=>{
     const st=r.status||'';if(st==='cancelled'||st==='キャンセル'||st==='canceled')return;
     const f=FLEET.find(x=>x.reservation_id===r.id);if(!f||f.vehicle_code!==v.code)return;
     const rd=(r.return_date||'').substring(0,10),ld=(r.lend_date||'').substring(0,10);
     if(!rd||rd<ms||rd>me||!ld)return;
-    if(SETTLED_IDS.has(r.id)){settled++;return;}
+    if(SETTLED_IDS.has(r.id)){settled++;docId=SETTLED_IDS.get(r.id);return;}
     if(rd>=today){pending++;return;}
     ids.push(r.id);days+=Math.max(1,Math.round((new Date(rd+'T00:00:00')-new Date(ld+'T00:00:00'))/86400000)+1);
   });
-  return {ids,days,amtIn:days*(Number(v.partner_daily_cost)||0),settled,pending};
+  return {ids,days,amtIn:days*(Number(v.partner_daily_cost)||0),settled,pending,docId};
 }
 function invPick(k,on){if(on)INV_PICK[k]=true;else delete INV_PICK[k];renderCost();}
 function invPickAll(on){INV_PICK={};if(on)Object.keys(BILL_ROWS).forEach(k=>{if(BILL_ROWS[k].ids.length&&BILL_ROWS[k].daily>0)INV_PICK[k]=true;});renderCost();}
@@ -1929,7 +1929,10 @@ function renderInvBar(){
   const ks=Object.keys(INV_PICK),tot=ks.reduce((s,k)=>s+BILL_ROWS[k].amtIn,0);
   const all=document.getElementById('inv-all');
   if(all){const can=Object.keys(BILL_ROWS).filter(k=>BILL_ROWS[k].ids.length&&BILL_ROWS[k].daily>0);all.checked=can.length>0&&ks.length===can.length;all.disabled=!can.length;}
-  bar.innerHTML='<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 16px;border-radius:10px;border:1px solid '+(ks.length?'#86efac':'#e2e8f0')+';background:'+(ks.length?'#f0fdf4':'#f8fafc')+'">'
+  const done=LAST_INV?'<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;margin-bottom:8px;border-radius:10px;background:#eef2ff;border:1px solid #a5b4fc">'
+    +'<span style="font-size:14px;font-weight:800;color:#3730a3">✅ 請求書 '+LAST_INV.doc_no+'（'+_yen(LAST_INV.total_in)+'）を作成しました</span>'
+    +'<a href="./settlement.html?id='+LAST_INV.id+'" target="_blank" style="margin-left:auto;padding:10px 22px;border-radius:8px;background:#4338ca;color:#fff;font-size:14px;font-weight:800;text-decoration:none">📄 請求書を開く</a></div>':'';
+  bar.innerHTML=done+'<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 16px;border-radius:10px;border:1px solid '+(ks.length?'#86efac':'#e2e8f0')+';background:'+(ks.length?'#f0fdf4':'#f8fafc')+'">'
     +'<span style="font-size:13px;font-weight:800;color:#1e293b">🧾 請求書</span>'
     +(ks.length
       ?'<span style="font-size:13px;color:#334155">選択 <b>'+ks.length+'台</b></span><span style="font-size:13px;color:#334155">税抜 '+_yen(_exTax(tot))+'・消費税 '+_yen(tot-_exTax(tot))+'</span><span style="font-size:17px;font-weight:900;color:#0f172a">請求額（税込） '+_yen(tot)+'</span>'
@@ -1941,12 +1944,12 @@ async function createInvoice(){
   const ids=ks.flatMap(k=>BILL_ROWS[k].ids),tot=ks.reduce((s,k)=>s+BILL_ROWS[k].amtIn,0);
   const issuer=ISSUER_BY_OWNER[OWNER_COMPANY]||OWNER_LABEL||OWNER_COMPANY;
   if(!confirm('請求書を作成します。\n\n請求者：'+issuer+'\n宛先：株式会社Global Lines\n'+ks.length+'台・請求額（税込）'+_yen(tot)+'\n\n作成した分は、取り消すまでもう一度選べません。'))return;
-  const w=window.open('about:blank','_blank');
+  // 作成後は「📄 請求書を開く」ボタンを表示（自動の新タブはブラウザにブロックされることがあるため使わない）
   const{data,error}=await sb.rpc('partner_settlement_create',{p_owner:OWNER_COMPANY,p_ids:ids,p_issuer:issuer});
-  if(error){if(w)w.close();showToast('請求書を作成できませんでした: '+error.message,'err');await loadSettle();renderCost();return;}
-  INV_PICK={};await loadSettle();renderCost();
+  if(error){showToast('請求書を作成できませんでした: '+error.message,'err');await loadSettle();renderCost();return;}
+  INV_PICK={};LAST_INV=data;await loadSettle();renderCost();
   showToast('✅ 請求書 '+data.doc_no+' を作成しました','ok');
-  const url='./settlement.html?id='+data.id;if(w)w.location.href=url;else location.href=url;
+  const bar=document.getElementById('inv-bar');if(bar)bar.scrollIntoView({behavior:'smooth',block:'center'});
 }
 function _sgnYen(n){return (n>=0?'+':'−')+'¥'+Math.abs(n).toLocaleString();}
 
