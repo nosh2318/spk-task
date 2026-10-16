@@ -84,7 +84,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1203';
+var CV='spk-v1204';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=1042').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -15409,6 +15409,10 @@ function TimeTable({tasks,staffCount}){
 /* ==========================================
    配車管理タイムライン（ガントチャート）
    ========================================== */
+// ★2026-10-16 0016 配車表の帯＝誰が配車したかで色分け（system紫/staff赤/direct青緑/unknown灰・文字白）＋先頭に OTA/HP（オーナー了承）
+const FLEET_ASSIGNER_BG={system:"#7c3aed",staff:"#dc2626",direct:"#0f766e",unknown:"#6b7280"};
+const FLEET_OTA_SET=new Set(["J","R","O","A","S","RC","G","TBR","たびらい","じゃらん","楽天","エアトリ","スカイチケット","レンタカードットコム","レンタカー.com","GOO"]);
+const fleetOtaTag=(ota)=>FLEET_OTA_SET.has(String(ota==null?"":ota).trim())?"OTA ":"HP ";
 function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenanceChange,vehicles,vehicleClasses,onAddReservation,onBulkAddReservation,onCancelReservation,onReassignVehicle,onUpdateReservation,unassignedReasons,onVehicleDetail}){
   const scrollRef=useRef(null);const[tooltip,setTooltip]=useState(null);const[viewMode,setViewMode]=useState("month");const[baseDate,setBaseDate]=useState(today);const[collapsed,setCollapsed]=useState(()=>window.innerWidth<=768?{unassignedAlert:true}:{});const[showMaintForm,setShowMaintForm]=useState(null);const[showResForm,setShowResForm]=useState(null);const[editMaint,setEditMaint]=useState(null);
   const[searchQuery,setSearchQuery]=useState("");const[searchResult,setSearchResult]=useState(null);const searchInputRef=useRef(null);const vehicleRowRefs=useRef({});
@@ -15485,6 +15489,12 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
     });
     return bars;
   },[data,fleet,dates,maintenance,vehicles]);
+  // ★2026-10-16 0016 表示中の予約の配車者(kind)を rpc で取得。fleet が変わったら約2秒後に読み直す。失敗しても表示は続ける(全部unknown=灰)。
+  const[assignerKinds,setAssignerKinds]=useState({});const assignerLoadedRef=useRef(false);
+  const visResIds=useMemo(()=>{const s=[];Object.values(vehicleBars).forEach(a=>a.forEach(b=>{if(b.type==="reservation"&&b.r&&b.r.id!=null)s.push(String(b.r.id));}));return s;},[vehicleBars]);
+  const visResKey=visResIds.slice().sort().join(",");
+  useEffect(()=>{if(!sb||!visResIds.length)return;let alive=true;const tm=setTimeout(async()=>{try{const{data:rows,error}=await sb.rpc("fleet_assigner_kinds",{p_tbl:"fleet",p_ids:visResIds});if(!alive||error)return;const m={};(rows||[]).forEach(x=>{if(x&&x.reservation_id!=null)m[String(x.reservation_id)]=x.kind;});assignerLoadedRef.current=true;setAssignerKinds(m);}catch(e){}},assignerLoadedRef.current?2000:0);return()=>{alive=false;clearTimeout(tm);};},[visResKey,fleet]);
+  const markStaffAssigned=(id)=>setAssignerKinds(p=>({...p,[String(id)]:"staff"}));
 
   // ★ 車両別売上 (2026-05-26 オーナー指示・返却日起算 確定):
   //   集計範囲: returnDate が表示中の月内の予約のみ (TOPサマリー / forecast.html と整合)
@@ -15684,6 +15694,7 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
     const conflict=checkVehicleConflict(vehicleCode,resId,data,fleet);
     if(conflict){alert((targetV?targetV.name:vehicleCode)+" は "+fmtD(conflict.lendDate)+"〜"+fmtD(conflict.returnDate)+" に「"+conflict.name+"」様の予約が入っているため変更できません。");return;}
     if(!window.confirm(res.name+" 様の配車を\n「"+(curV?curV.name:"未割当")+"」→「"+(targetV?targetV.name:vehicleCode)+"」\nに変更しますか？\n\n※OPシートの車両情報も同時に更新されます"))return;
+    markStaffAssigned(resId);
     if(onReassignVehicle)onReassignVehicle(resId,vehicleCode);
     else onFleetChange({...fleet,[resId]:vehicleCode});
   };
@@ -15781,7 +15792,7 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
               <td style={{padding:"4px 6px",border:"1px solid #fca5a5",textAlign:"center",fontSize:9}}>{fmtD(r.returnDate)}<br/>{r.returnTime}</td>
               <td style={{padding:"4px 6px",border:"1px solid #fca5a5",fontSize:8,color:"#b91c1c",maxWidth:180}}>{reason||"不明"}</td>
               <td style={{padding:"4px 6px",border:"1px solid #fca5a5",textAlign:"center"}}>
-                <select onChange={e=>{if(!e.target.value)return;if(onReassignVehicle)onReassignVehicle(r.id,e.target.value);else onFleetChange({...fleet,[r.id]:e.target.value});e.target.value="";}} style={{fontSize:9,border:"1px solid #d1d5db",borderRadius:4,padding:"2px 4px"}}>
+                <select onChange={e=>{if(!e.target.value)return;markStaffAssigned(r.id);if(onReassignVehicle)onReassignVehicle(r.id,e.target.value);else onFleetChange({...fleet,[r.id]:e.target.value});e.target.value="";}} style={{fontSize:9,border:"1px solid #d1d5db",borderRadius:4,padding:"2px 4px"}}>
                   <option value="">車両選択</option>
                   {vehicles.map(v=><option key={v.code} value={v.code}>{(v.name||v.code)+(v.no?" "+v.no:"")+"（"+v.type+"）"}</option>)}
                 </select>
@@ -15824,7 +15835,7 @@ function FleetTimeline({data,fleet,onFleetChange,today,maintenance,onMaintenance
                 {(()=>{const u=utilRates[v.code];if(!u)return null;const pc=u.pct;const cl=pc>=80?"#dc2626":pc>=50?"#f59e0b":"#22c55e";return <span style={{fontSize:8,fontWeight:700,color:cl,marginLeft:4,background:pc>=80?"#fef2f2":pc>=50?"#fffbeb":"#f0fdf4",padding:"0 3px",borderRadius:3}}>{u.days}日 {pc}%</span>;})()}
               </td>
               {dates.map((d,di)=>{const isToday=d===today;return <td key={d} style={{position:"relative",height:ROW_H,borderBottom:"1px solid #f1f5f9",borderRight:"1px solid #e2e8f0",cursor:dragInfo?"copy":"pointer",background:isDT?rowHL:(isToday?"#eff6ff":"transparent"),padding:0,transition:"background .15s"}} onClick={()=>{if(!dragInfo)handleCellClick(v.code,d);}}>
-                {di===0&&bars.map((b,bi)=>{const isRes=b.type==="reservation";const isMaint=b.type==="maintenance";const isPartnerResv=isMaint&&b.m?.blockType==="partner_reserved";const isDragging=dragInfo===b.r?.id;const isSearchHit=isRes&&searchResult&&searchResult.found&&searchResult.hitSet.has(b.r.id);return <div key={bi} className="tl-bar" draggable={isRes} onDragStart={isRes?e=>handleDragStart(e,b.r.id):undefined} onDragEnd={handleDragEnd} onClick={e=>handleBarClick(e,b)} style={{left:b.left,width:Math.max(b.width,20),background:isPartnerResv?"repeating-linear-gradient(45deg,#7c3aed,#7c3aed 4px,#a855f7 4px,#a855f7 8px)":(isMaint?(b.m?.status==="pending"?"repeating-linear-gradient(45deg,#d97706,#d97706 4px,#f59e0b 4px,#f59e0b 8px)":b.m?.status==="approved"?"repeating-linear-gradient(45deg,#15803d,#15803d 4px,#16a34a 4px,#16a34a 8px)":b.m?.status==="reschedule"?"repeating-linear-gradient(45deg,#be185d,#be185d 4px,#ec4899 4px,#ec4899 8px)":b.m?.status==="cancel_request"?"repeating-linear-gradient(45deg,#6d28d9,#6d28d9 4px,#8b5cf6 4px,#8b5cf6 8px)":"repeating-linear-gradient(45deg,#2563eb,#2563eb 4px,#3b82f6 4px,#3b82f6 8px)"):(isDragging?"#f87171":"#dc2626")),color:"#fff",fontSize:9,fontWeight:600,boxShadow:isSearchHit?"0 0 8px 3px rgba(250,204,21,.8),0 0 16px 6px rgba(250,204,21,.4)":(isDragging?"0 4px 12px rgba(0,0,0,.3)":"0 1px 3px rgba(0,0,0,.2)"),outline:isSearchHit?"3px solid #facc15":"none",position:"absolute",top:isMaint?1:3,bottom:isMaint?1:3,zIndex:isSearchHit?15:(isDragging?10:(isMaint?3:2)),opacity:isDragging?0.7:1,cursor:isRes?"grab":"pointer",transition:"opacity .15s, box-shadow .15s",border:isPartnerResv?"1px solid #6d28d9":(isMaint?"1px solid #1d4ed8":"none")}} title={isPartnerResv?("🟣 自社予約 ("+(b.m.ownerCompany||"協力会社")+")"):undefined}><span style={{overflow:"hidden",textOverflow:"ellipsis"}}>{isRes?`${b.r.ota==="HANDYMAN"?"🆕":""}${b.r.lendTime}-${b.r.returnTime} ${b.r.name} 様`:(isPartnerResv?("🟣"+(b.m.label||"自社予約")):("🔧"+b.m.label+(b.m.status==="pending"?"〔仮〕":b.m.status==="approved"?"〔FIX〕":b.m.status==="reschedule"?"〔変更依頼〕":b.m.status==="cancel_request"?"〔取消依頼〕":"")))}</span></div>;})}
+                {di===0&&bars.map((b,bi)=>{const isRes=b.type==="reservation";const isMaint=b.type==="maintenance";const isPartnerResv=isMaint&&b.m?.blockType==="partner_reserved";const isDragging=dragInfo===b.r?.id;const isSearchHit=isRes&&searchResult&&searchResult.found&&searchResult.hitSet.has(b.r.id);return <div key={bi} className="tl-bar" draggable={isRes} onDragStart={isRes?e=>handleDragStart(e,b.r.id):undefined} onDragEnd={handleDragEnd} onClick={e=>handleBarClick(e,b)} style={{left:b.left,width:Math.max(b.width,20),background:isPartnerResv?"repeating-linear-gradient(45deg,#7c3aed,#7c3aed 4px,#a855f7 4px,#a855f7 8px)":(isMaint?(b.m?.status==="pending"?"repeating-linear-gradient(45deg,#d97706,#d97706 4px,#f59e0b 4px,#f59e0b 8px)":b.m?.status==="approved"?"repeating-linear-gradient(45deg,#15803d,#15803d 4px,#16a34a 4px,#16a34a 8px)":b.m?.status==="reschedule"?"repeating-linear-gradient(45deg,#be185d,#be185d 4px,#ec4899 4px,#ec4899 8px)":b.m?.status==="cancel_request"?"repeating-linear-gradient(45deg,#6d28d9,#6d28d9 4px,#8b5cf6 4px,#8b5cf6 8px)":"repeating-linear-gradient(45deg,#2563eb,#2563eb 4px,#3b82f6 4px,#3b82f6 8px)"):(isRes?(isDragging?"#f87171":(FLEET_ASSIGNER_BG[assignerKinds[String(b.r.id)]]||FLEET_ASSIGNER_BG.unknown)):(isDragging?"#f87171":"#dc2626"))),color:"#fff",fontSize:9,fontWeight:600,boxShadow:isSearchHit?"0 0 8px 3px rgba(250,204,21,.8),0 0 16px 6px rgba(250,204,21,.4)":(isDragging?"0 4px 12px rgba(0,0,0,.3)":"0 1px 3px rgba(0,0,0,.2)"),outline:isSearchHit?"3px solid #facc15":"none",position:"absolute",top:isMaint?1:3,bottom:isMaint?1:3,zIndex:isSearchHit?15:(isDragging?10:(isMaint?3:2)),opacity:isDragging?0.7:1,cursor:isRes?"grab":"pointer",transition:"opacity .15s, box-shadow .15s",border:isPartnerResv?"1px solid #6d28d9":(isMaint?"1px solid #1d4ed8":"none")}} title={isPartnerResv?("🟣 自社予約 ("+(b.m.ownerCompany||"協力会社")+")"):undefined}><span style={{overflow:"hidden",textOverflow:"ellipsis"}}>{isRes?`${b.r.ota==="HANDYMAN"?"🆕":""}${fleetOtaTag(b.r.ota)}${b.r.lendTime}-${b.r.returnTime} ${b.r.name} 様`:(isPartnerResv?("🟣"+(b.m.label||"自社予約")):("🔧"+b.m.label+(b.m.status==="pending"?"〔仮〕":b.m.status==="approved"?"〔FIX〕":b.m.status==="reschedule"?"〔変更依頼〕":b.m.status==="cancel_request"?"〔取消依頼〕":"")))}</span></div>;})}
               </td>;})}
             </tr>;})}
           </React.Fragment>)}
@@ -25425,7 +25436,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.671";
+const APP_VERSION="v4.7.672";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
