@@ -84,7 +84,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1202';
+var CV='spk-v1203';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=1042').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -22668,11 +22668,22 @@ function TireTab({vehicles,vehicleClasses}){
   const [tire,setTire]=React.useState({});
   const [msg,setMsg]=React.useState("");
   const [filter,setFilter]=React.useState("all");
-  const reload=()=>{ if(!sb)return; sb.from("spk_tire_status").select("*").then(({data})=>{const m={};(data||[]).forEach(r=>{m[r.vehicle_code+"|"+r.year]=r;});setTire(m);}); };
+  const [tph,setTph]=React.useState({});   // 洗車タスクのタイヤ写真（スタッフ専用ページから入る・ここは見るだけ）
+  const [tpu,setTpu]=React.useState({});
+  const reload=()=>{ if(!sb)return; sb.from("spk_tire_status").select("*").then(({data})=>{const m={};(data||[]).forEach(r=>{m[r.vehicle_code+"|"+r.year]=r;});setTire(m);});
+    sb.from("spk_tire_photos").select("id,vehicle_code,year,path,uploaded_by,created_at").eq("deleted",false).order("created_at").then(async({data})=>{
+      const m={};(data||[]).forEach(r=>{const k=r.vehicle_code+"|"+r.year;(m[k]=m[k]||[]).push(r);});setTph(m);
+      const st=sb.storage.from("spk-tires"),paths=(data||[]).map(r=>r.path),u={};
+      if(!paths.length)return;
+      const {data:fu}=await st.createSignedUrls(paths,21600);(fu||[]).forEach(d=>{if(d.signedUrl)u[d.path]={full:d.signedUrl,thumb:d.signedUrl};});
+      await Promise.all(paths.map(async pa=>{try{const r=await st.createSignedUrl(pa,21600,{transform:{width:200,height:200,resize:"cover",quality:70}});if(r.data&&r.data.signedUrl&&u[pa])u[pa].thumb=r.data.signedUrl;}catch(e){}}));
+      setTpu(u);}); };
   React.useEffect(()=>{reload();},[]);
   const STATUS=["未対応","対応中","完了"];
   const STCOL={"未対応":"#dc2626","対応中":"#b45309","完了":"#16a34a"};
   const PUR=["","購入必要","購入済"];
+  const CKCOL={"未確認":"#64748b","確認済":"#166534","交換":"#b91c1c","相談":"#7e22ce"};
+  const ck=code=>g(code,"check_status")||"未確認";
   const K=code=>code+"|"+year;
   const g=(code,f)=>{const r=tire[K(code)]||{};return r[f]||"";};
   const st=code=>g(code,"status")||"未対応";
@@ -22703,7 +22714,7 @@ function TireTab({vehicles,vehicleClasses}){
   const CO=["A","A2","B","B2","C","S","F","H","G"];
   const act=(vehicles||[]).filter(v=>v.active!==false);
   const sorted=[...act].sort((a,b)=>{const ai=CO.indexOf(a.type),bi=CO.indexOf(b.type);const av=ai<0?99:ai,bv=bi<0?99:bi;if(av!==bv)return av-bv;return String(a.name||"").localeCompare(String(b.name||""),"ja");});
-  const shown=sorted.filter(v=>filter==="all"?true:(filter==="todo"?st(v.code)!=="完了":st(v.code)===filter));
+  const shown=sorted.filter(v=>filter==="all"?true:(filter==="todo"?st(v.code)!=="完了":(filter.indexOf("ck:")===0?ck(v.code)===filter.slice(3):st(v.code)===filter)));
   const cnt={"未対応":0,"対応中":0,"完了":0,"購入":0};
   act.forEach(v=>{cnt[st(v.code)]=(cnt[st(v.code)]||0)+1;if(g(v.code,"need_purchase")==="購入必要")cnt["購入"]++;});
   const YEARS=[curFY,curFY-1,curFY-2];
@@ -22712,7 +22723,7 @@ function TireTab({vehicles,vehicleClasses}){
   const isYogari=v=>v.ownerCompany&&v.ownerCompany!=="HANDYMAN";
   return <div style={{padding:"4px 2px",maxWidth:"100%",overflowX:"hidden"}}>
     <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:8,alignItems:"center"}}>
-      <div style={{fontSize:18,fontWeight:800}}>🛞 タイヤ交換 管理</div>
+      <div style={{fontSize:18,fontWeight:800}}>🛞 タイヤ（交換・洗車時チェック）</div>
       <span style={{fontSize:12,color:"#16a34a",fontWeight:800}}>{msg}</span>
     </div>
     {/* 年度タブ */}
@@ -22724,7 +22735,7 @@ function TireTab({vehicles,vehicleClasses}){
         <div key={a[0]} style={{flex:"1",minWidth:78,background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"7px 10px"}}><div style={{fontSize:10.5,color:"#64748b",fontWeight:800}}>{a[0]}</div><div style={{fontSize:20,fontWeight:900,color:a[2]}}>{a[1]}<span style={{fontSize:10,color:"#94a3b8"}}>台</span></div></div>)}
     </div>
     <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
-      {[["all","全て"],["todo","未完了"],["未対応","未対応"],["対応中","対応中"],["完了","完了"]].map(a=>
+      {[["all","全て"],["todo","未完了"],["未対応","未対応"],["対応中","対応中"],["完了","完了"],["ck:交換","🔍交換"],["ck:相談","🔍相談"],["ck:未確認","🔍未確認"]].map(a=>
         <button key={a[0]} onClick={()=>setFilter(a[0])} style={{border:"1px solid "+(filter===a[0]?"#0f172a":"#cbd5e1"),background:filter===a[0]?"#0f172a":"#fff",color:filter===a[0]?"#fff":"#475569",borderRadius:999,padding:"5px 12px",fontSize:12,fontWeight:800,cursor:"pointer"}}>{a[1]}</button>)}
     </div>
     {/* カードグリッド（スマホ最適化） */}
@@ -22737,6 +22748,13 @@ function TireTab({vehicles,vehicleClasses}){
             <span style={{fontWeight:800,color:"#fff",background:"#1e3a8a",borderRadius:5,padding:"1px 8px",fontSize:12}}>{v.type}</span>
             {isYogari(v)&&<span style={{fontWeight:800,color:"#fff",background:"#7c3aed",borderRadius:999,padding:"1px 9px",fontSize:11}}>🏢 {v.ownerLabel||"預かり"}</span>}
           </div>
+          {(()=>{const c=ck(v.code),ph=tph[K(v.code)]||[],by=g(v.code,"check_by"),at=g(v.code,"check_at"),pd=g(v.code,"plan_date"),ds=g(v.code,"dest");return <div style={{background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:9,padding:"6px 8px",margin:"2px 0 6px"}}>
+            <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontSize:11,color:"#64748b",fontWeight:800}}>🔍 洗車時チェック</span>
+              <span style={{fontSize:12,fontWeight:900,color:"#fff",background:CKCOL[c]||"#64748b",borderRadius:999,padding:"1px 9px"}}>{c}</span>
+              {at&&<span style={{fontSize:10.5,color:"#64748b",fontWeight:700}}>{(()=>{const d=new Date(at);return (d.getMonth()+1)+"/"+d.getDate()+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");})()} {by}</span>}</div>
+            {(pd||ds)&&<div style={{fontSize:11.5,color:"#334155",fontWeight:700,marginTop:3}}>{pd?"交換予定 "+pd:""}{pd&&ds?"・":""}{ds?"入庫先 "+ds:""}</div>}
+            {ph.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:5,marginTop:5}}>{ph.map(x=>{const u=tpu[x.path];return <a key={x.id} href={u?u.full:undefined} target="_blank" rel="noopener" style={{width:52,height:52,borderRadius:7,overflow:"hidden",background:"#e2e8f0",display:"block"}}>{u&&<img src={u.thumb} loading="lazy" style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}/>}</a>;})}</div>}
+          </div>;})()}
           <div style={{display:"flex",alignItems:"center",gap:8,padding:"3px 0"}}><span style={lbl()}>状況</span>
             <select value={s} onChange={e=>save(v.code,"status",e.target.value)} style={{...selSt,color:STCOL[s],fontWeight:800}}>{STATUS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
           <div style={{display:"flex",alignItems:"center",gap:8,padding:"3px 0"}}><span style={lbl()}>対応日</span>
@@ -22757,7 +22775,7 @@ function TireTab({vehicles,vehicleClasses}){
           </div>
         </div>);})}
     </div>
-    <div style={{fontSize:11,color:"#94a3b8",marginTop:8}}>{year}年度・車両マスター全車両。状況/対応日/購入必要/メモ/見積もり(PDF・画像) を選ぶと即保存（全端末共有）。🏢＝預かり車両。</div>
+    <div style={{fontSize:11,color:"#94a3b8",marginTop:8}}>{year}年度・車両マスター全車両。🔍洗車時チェック（状態・写真・交換予定日・入庫先）はスタッフ専用ページの洗車タスクから入ります（ここは見るだけ）。メモは共通。状況/対応日/購入必要/メモ/見積もり(PDF・画像) を選ぶと即保存（全端末共有）。🏢＝預かり車両。</div>
   </div>;
 }
 function App(){
@@ -24041,7 +24059,7 @@ function App(){
   },[data]);
 
   const oc=useMemo(()=>{const c={};data.forEach(t=>{c[t.ota]=(c[t.ota]||0)+1;});return c;},[data]);
-  const navItems=[{id:"top",ico:"🏠",l:"TOP"},{id:"notices",ico:"📢",l:"お知らせ"},{id:"import",ico:"📁",l:"CSV"},{id:"budget_pl",ico:"📊",l:"予算実績"},{id:"cfcash",ico:"💵",l:"実入金CF",external:true,url:"cf-cash.html"},{id:"seasonal",ico:"💹",l:"価格",external:true,url:"price-optimizer.html?store=spk"},{id:"pricing_strategy",ico:"💰",l:"価格戦略",external:true,url:"price-hub.html"},{id:"staff",ico:"👥",l:"スタッフ"},{id:"shift",ico:"📅",l:"出勤簿"},{id:"attendance",ico:"⏰",l:"給与"},{id:"kintai",ico:"📋",l:"勤怠管理",external:true,url:"kintai.html"},{id:"fleet",ico:"🚗",l:"配車"},{id:"inventory",ico:"📦",l:"在庫管理"},{id:"jalanpay",ico:"💳",l:"決済"},{id:"kdcancel",ico:"🔑",l:"KEYDROP"},{id:"vehicle",ico:"🔧",l:"車両"},{id:"vehicle_rank",ico:"🏆",l:"車両ランキング"},{id:"tire",ico:"🛞",l:"タイヤ交換"},{id:"daily_report",ico:"📋",l:"日報"},{id:"vehicle_pl",ico:"📊",l:"車両P&L",external:true,url:"vehicle-pl.html"},{id:"partner_pl",ico:"🚗",l:"協力会社P&L",external:true,url:"partner.html?owner=PARTNER_TEST"},{id:"parking",ico:"🅿️",l:"駐車場"},{id:"accounting",ico:"💰",l:"会計"},{id:"recv_invoice",ico:"📥",l:"受領請求書"},{id:"customer",ico:"👑",l:"顧客"},{id:"todo",ico:"✅",l:"タスク管理"},{id:"data",ico:"📋",l:"データ"},{id:"history",ico:"📜",l:"過去"},{id:"license",ico:"🪪",l:"免許証",external:true}];
+  const navItems=[{id:"top",ico:"🏠",l:"TOP"},{id:"notices",ico:"📢",l:"お知らせ"},{id:"import",ico:"📁",l:"CSV"},{id:"budget_pl",ico:"📊",l:"予算実績"},{id:"cfcash",ico:"💵",l:"実入金CF",external:true,url:"cf-cash.html"},{id:"seasonal",ico:"💹",l:"価格",external:true,url:"price-optimizer.html?store=spk"},{id:"pricing_strategy",ico:"💰",l:"価格戦略",external:true,url:"price-hub.html"},{id:"staff",ico:"👥",l:"スタッフ"},{id:"shift",ico:"📅",l:"出勤簿"},{id:"attendance",ico:"⏰",l:"給与"},{id:"kintai",ico:"📋",l:"勤怠管理",external:true,url:"kintai.html"},{id:"fleet",ico:"🚗",l:"配車"},{id:"inventory",ico:"📦",l:"在庫管理"},{id:"jalanpay",ico:"💳",l:"決済"},{id:"kdcancel",ico:"🔑",l:"KEYDROP"},{id:"vehicle",ico:"🔧",l:"車両"},{id:"vehicle_rank",ico:"🏆",l:"車両ランキング"},{id:"tire",ico:"🛞",l:"タイヤ"},{id:"daily_report",ico:"📋",l:"日報"},{id:"vehicle_pl",ico:"📊",l:"車両P&L",external:true,url:"vehicle-pl.html"},{id:"partner_pl",ico:"🚗",l:"協力会社P&L",external:true,url:"partner.html?owner=PARTNER_TEST"},{id:"parking",ico:"🅿️",l:"駐車場"},{id:"accounting",ico:"💰",l:"会計"},{id:"recv_invoice",ico:"📥",l:"受領請求書"},{id:"customer",ico:"👑",l:"顧客"},{id:"todo",ico:"✅",l:"タスク管理"},{id:"data",ico:"📋",l:"データ"},{id:"history",ico:"📜",l:"過去"},{id:"license",ico:"🪪",l:"免許証",external:true}];
 
   const repeaterInfo=useMemo(()=>buildRepeaterMap(data),[data]);
 
@@ -24103,6 +24121,7 @@ function App(){
                 {id:"mypage_admin",ico:"🃏",l:"マイページ管理",external:true,url:"https://rent-handyman.com/mypage-admin.html?bucket=hdm_spk",desc:"全店マイページ管理ダッシュボード（未処理/承認/却下/確認済み・共通PIN）"},
                 {id:"inbound",ico:"🌏",l:"インバウンド案内",external:true,url:"inbound-guide.html?store=spk",desc:"訪日客向けご利用ガイド（多言語・交通ルール/給油/事故対応/送迎/オプション）。お客様に共有するURL"},
                 {id:"dmg_send",ico:"🩹",l:"傷チェック送信",desc:"本日の傷チェック自動送信リスト・手動客の送信/対応"},
+                {id:"insp_log",ico:"🔧",l:"点検記録",external:true,url:"inspection-log.html",desc:"洗車タスクでスタッフがチェックした点検（返却後・出発前）の記録を見るだけの一覧（未チェック項目・メモ・写真・担当者）"},
                 {id:"lic_send",ico:"🪪",l:"免許証チェック",desc:"当日〜3日先の出発で免許証未提出のリスト・リマインド送信/コピー"},
                 {id:"todo",ico:"✅",l:"タスク管理",desc:"目標・担当タスク・進捗・個人/チーム評価"},
                 {id:"fleet",ico:"🚗",l:"配車",desc:"予約の車両配車・タイムライン",badge:data.length>0?data.length+"件":null},
@@ -24147,7 +24166,7 @@ function App(){
                 {id:"manual",ico:"📖",l:"運用マニュアル",external:true,url:"manual.html",desc:"APPの使い方 HOW TO 集（全機能・トラブル対応）"},
                 {id:"vehicle",ico:"🔧",l:"車両",desc:"車両マスタ・クラス管理"},
                 {id:"vehicle_rank",ico:"🏆",l:"車両ランキング",desc:"全車両の月粗利・稼働率を点数化"},
-                {id:"tire",ico:"🛞",l:"タイヤ交換",desc:"車両マスター連動＝各車のタイヤ交換 対応日/未対応・対応中・完了/購入必要/メモ"},
+                {id:"tire",ico:"🛞",l:"タイヤ",desc:"車両マスター連動＝各車のタイヤ交換 対応日/未対応・対応中・完了/購入必要/メモ＋洗車時チェック（状態・写真）"},
                 {id:"vehicle_pl",ico:"📊",l:"車両P&L",external:true,url:"vehicle-pl.html",desc:"車両×月別 売上/原価/粗利マトリクス"},
                 {id:"partner_pl",ico:"🚗",l:"協力会社P&L",external:true,url:"partner.html?owner=PARTNER_TEST",desc:"協力会社車両 月別 売上/コスト/粗利"},
                 {id:"kdcancel",ico:"🔑",l:"KEYDROP",desc:"KEYDROP（直販）価格・クーポン・配達範囲・キャンセル/変更承認"},
@@ -25406,7 +25425,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.670";
+const APP_VERSION="v4.7.671";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
