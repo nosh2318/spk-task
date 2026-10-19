@@ -29,6 +29,10 @@ td.mcol,td.mcol *{color:transparent!important}
 th.mcol:not(.mh){color:transparent!important}
 th.mh.mcol{writing-mode:vertical-rl;text-orientation:upright;font-size:9px;line-height:1.05;padding:3px 1px!important;color:#fff!important;background:#0f766e!important;white-space:nowrap;letter-spacing:-1px}
 @media print{.rb{display:none}}
+.tabs{display:flex;gap:6px;margin:0 0 8px}.tabs button{font-size:12px;font-weight:800;padding:6px 14px;border-radius:8px;border:1px solid #cbd5e1;background:#fff;color:#334155;cursor:pointer}.tabs button.on{background:#0f766e;color:#fff;border-color:#0f766e}
+@media print{.tabs{display:none}}
+/* 設計比較タブ：金額が枠からはみ出さないよう列幅を内容に合わせる(横スクロール)・区分列は左固定 */
+#dsg .tw{overflow-x:auto}#dsg table{table-layout:auto;width:max-content;min-width:100%}#dsg col{width:auto!important}#dsg th,#dsg td{padding:3px 7px;overflow:visible}#dsg td.l,#dsg th.l{min-width:150px;max-width:200px}
 /* 埋め込み(?embed=1)時は大見出し/サブ説明を隠しKPI表の縦幅を最大化 */
 body.embed{padding:6px}body.embed>h1,body.embed>.sub{display:none}body.embed>.bar{margin-bottom:3px}
 /* PDF保存(印刷)：横向きA4・2枚割り(1枚目=売上/予約/台あたり/稼働率、2枚目=チャネル別/クラス別)・幅調整 */
@@ -50,7 +54,9 @@ body.embed{padding:6px}body.embed>h1,body.embed>.sub{display:none}body.embed>.ba
 <h1>🌺 HANDYMAN 那覇店 KPI管理</h1>
 <div class="sub">HANDYMAN 那覇空港店（空港送迎＋デリバリー）　｜　売上=返却月(予約+予約外)・キャンセル/テスト除外　｜　流通=発生月(取扱高)　｜　稼働台数＝月次フラグ優先(配車表と連動)</div>
 <div class="bar"><button class="rb" onclick="load()">🔄 最新に更新</button><button class="rb" onclick="window.print()" style="background:#1e40af">🖨 PDF保存</button><span class="upd" id="upd">読み込み中…</span></div>
+<div class="tabs"><button data-t="kpi" class="on" onclick="showTab('kpi')">📊 KPI</button><button data-t="design" onclick="showTab('design')">🎯 設計比較</button></div>
 <div id="body"><div style="padding:30px;color:#94a3b8">📡 最新データを読み込み中…</div></div>
+<div id="dsg" style="display:none"></div>
 <script>
 if(location.search.indexOf("embed=1")>=0)document.body.classList.add("embed");
 var SB="https://ckrxttbnawkclshczsia.supabase.co",ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
@@ -175,7 +181,63 @@ function render(D){
   H+='<div class="sub" style="margin-top:7px">全期間 合計：予約 <b>'+tc+"件</b>／売上 <b>"+yen(tr)+"</b>　※売上目標＝各月550万円。稼働率＝貸出日数÷(稼働台数×日数−メンテ日)。稼働台数・稼働率は配車表フラグと連動。</div>";
   document.getElementById("body").innerHTML=H;
   setupMonthCollapse(months);
+  renderDesign(D);
   document.getElementById("upd").textContent="最終更新 "+(D.generated||"")+"（DBライブ）";
+}
+/* 2026-10-20 🎯 設計比較タブ（高松と同仕様・オーナー指示「札幌250万／那覇550万・各店3月からの実績で」）
+   設計＝3月〜9月の実績（クラス別 稼働率＝貸出日数÷稼働可能日数、単価＝返却月売上÷貸出日数）。
+   各月：全クラスの稼働率を同じ比率で上げ下げして月の目標(revT)に合わせる(上限95%)。目標日数＝稼働可能日数(配車表フラグ)×目標率、目標売上＝目標日数×設計単価。 */
+var DSB_FROM="2026-03",DSB_TO="2026-09",DSG_FROM="2026-10",DS_CAP=0.95,DSG_D=null;
+function showTab(t){var d=t=="design";try{localStorage.setItem(location.pathname+"_tab",d?"design":"kpi");}catch(e){}
+  document.getElementById("body").style.display=d?"none":"";var a=document.getElementById("acq");if(a)a.style.display=d?"none":"";document.getElementById("dsg").style.display=d?"":"none";
+  document.querySelectorAll(".tabs button").forEach(function(b){b.classList.toggle("on",b.getAttribute("data-t")==(d?"design":"kpi"));});}
+function renderDesign(D){
+  DSG_D=D;var el=document.getElementById("dsg");var o=D.data,CN=D.clsnames||{};
+  var ms=D.months.filter(function(m){return m>=DSG_FROM;});
+  if(!ms.length){el.innerHTML='<div class="sub">対象月がありません</div>';return;}
+  // 設計（3月〜9月の実績）
+  var brd={},bad={},brv={},sR=0,sD=0,sA=0;
+  D.months.forEach(function(m){if(m<DSB_FROM||m>DSB_TO)return;var u=o[m].util||{},c=o[m].cls||{};
+    Object.keys(u).forEach(function(k){brd[k]=(brd[k]||0)+u[k].rd;bad[k]=(bad[k]||0)+u[k].ad;if(c[k])brv[k]=(brv[k]||0)+c[k].r;});});
+  Object.keys(bad).forEach(function(k){sR+=brv[k]||0;sD+=brd[k];sA+=bad[k];});
+  var avgR=sA?sD/sA:0,avgP=sD?sR/sD:0;
+  var ck={};ms.forEach(function(m){Object.keys(o[m].util||{}).forEach(function(k){ck[k]=1;});});
+  var dcl=CORD.filter(function(c){return ck[c];}).concat(Object.keys(ck).filter(function(c){return CORD.indexOf(c)<0;}).sort());
+  var DS={};dcl.forEach(function(k){DS[k]=(bad[k]&&brd[k])?[brd[k]/bad[k],Math.round(brv[k]/brd[k])]:[avgR,Math.round(avgP)];});
+  var FC={};function F(m){if(FC[m]!=null)return FC[m];var f=1;for(var it=0;it<40;it++){var s=0;dcl.forEach(function(c){var u=(o[m].util||{})[c];if(u)s+=u.ad*Math.min(DS[c][0]*f,DS_CAP)*DS[c][1];});if(!s)break;f*=revT(m)/s;}return FC[m]=f;}
+  function rate(m,c){return Math.min(DS[c][0]*F(m),DS_CAP);}
+  function R(m,c){var u=(o[m].util||{})[c]||{rd:0,ad:0,n:0},v=(o[m].cls||{})[c]||{c:0,r:0},td=Math.round(u.ad*rate(m,c));return {n:u.n,ad:u.ad,td:td,rd:u.rd,tr:td*DS[c][1],ar:v.r};}
+  function S(m,list){var s={n:0,ad:0,td:0,rd:0,tr:0,ar:0};list.forEach(function(c){var x=R(m,c);for(var k in s)s[k]+=x[k];});return s;}
+  function pct(a,b){return b?Math.round(a/b*100):0;}
+  function up(r,d){return d?Math.round(r/d):0;}
+  var gs='<span style="color:#94a3b8;font-weight:500;font-size:9px">';
+  function dif(v,f,i){return '<td class="'+(v>=0?"pos":"neg")+mbnd(i)+'">'+(v>=0?"+":"−")+f(Math.abs(v))+"</td>";}
+  function lab(c){var nm=CN[c]||"";var u={},a=[];String(nm).split("/").forEach(function(x){x=x.replace(/(?:[①-⑳]+|\d{2,})$/,"").trim();if(x&&!u[x]){u[x]=1;a.push(x);}});nm=a.join("/");return esc(c)+(nm?' <span class="cn">'+esc(nm)+"</span>":"");}  /* 車両名の通し番号(①②・17等・2桁以上)を除いた車種名だけ表示 */
+  function head(title,sub){return '<div class="h2">'+title+'</div><div class="tw"><table><thead><tr><th class="l" rowspan="2">クラス</th>'+ms.map(function(m,i){return '<th class="mh'+mln(i)+'" colspan="'+sub.length+'">'+MN[m]+"</th>";}).join("")+"</tr><tr>"+ms.map(function(m,i){return sub.map(function(s,k){return '<th class="'+(k?"":mln(i))+'">'+s+"</th>";}).join("");}).join("")+"</tr></thead><tbody>";}
+  var rows=dcl.map(function(c){return [lab(c),function(m){return R(m,c);},c];});
+  var tots=[["<b>グロス 計</b>",function(m){return S(m,dcl);},null,"uf"]];
+  var H='<div class="sub" style="font-size:11px;color:#0f766e;font-weight:700">🎯 目標＝月'+Math.round(T_REV/10000)+'万円。設計＝3月〜9月の実績（クラス別の稼働率・1日単価）を土台に、各月 全クラスの稼働率を同じ比率で上げ下げして目標に合わせる（上限95%）。進捗＝DBライブ。台数・稼働可能日数＝配車表の月次フラグ。</div>';
+  H+='<div class="sub">設計の土台（3月〜9月の実績）：'+dcl.map(function(c){return esc(c)+" "+Math.round(DS[c][0]*100)+"%・"+yen(DS[c][1]);}).join("　")+"</div>";
+  // ① 単価
+  H+=head("💴 単価（1日あたり）　設計 / 進捗 / 差",["設計","進捗","差"]);
+  rows.concat(tots).forEach(function(r){H+='<tr class="'+(r[3]||"")+'"><td class="l">'+r[0]+"</td>"+ms.map(function(m,i){var x=r[1](m),t=r[2]?DS[r[2]][1]:up(x.tr,x.td),a=up(x.ar,x.rd);
+    return '<td class="'+mln(i)+'">'+yen(t)+'</td>'+(x.rd?'<td class="'+mbnd(i)+'"><b>'+yen(a)+"</b></td>"+dif(a-t,yen,i):'<td class="z'+mbnd(i)+'">–</td><td class="z'+mbnd(i)+'">–</td>');}).join("")+"</tr>";});
+  H+="</tbody></table></div>";
+  // ② 稼働率
+  H+=head("📊 稼働率　台数（配車表）/ 目標 / 進捗 / 差",["台数","目標","進捗","差"]);
+  rows.concat(tots).forEach(function(r){H+='<tr class="'+(r[3]||"")+'"><td class="l">'+r[0]+"</td>"+ms.map(function(m,i){var x=r[1](m);
+    return '<td class="'+mln(i)+'">'+x.n+"台</td>"+'<td class="'+mbnd(i)+'">'+pct(x.td,x.ad)+"% "+gs+x.td+"日</span></td>"+'<td class="'+mbnd(i)+'"><b>'+pct(x.rd,x.ad)+"%</b> "+gs+x.rd+"日</span></td>"+dif(x.rd-x.td,function(v){return v+"日";},i);}).join("")+"</tr>";});
+  H+='<tr class="act"><td class="l">稼働台数（配車表）</td>'+ms.map(function(m,i){return '<td class="'+mln(i)+'" colspan="4">'+o[m].nveh+"台</td>";}).join("")+"</tr>";
+  H+="</tbody></table></div>";
+  // ③ 売上
+  H+=head("💰 売上　目標 / 進捗 / 差 / 達成率",["目標","進捗","差","達成率"]);
+  rows.concat(tots).forEach(function(r){H+='<tr class="'+(r[3]||"")+'"><td class="l">'+r[0]+"</td>"+ms.map(function(m,i){var x=r[1](m),p=pct(x.ar,x.tr);
+    return '<td class="'+mln(i)+'">'+yen(x.tr)+'</td><td class="'+mbnd(i)+'"><b>'+yen(x.ar)+"</b></td>"+dif(x.ar-x.tr,yen,i)+'<td class="'+(p>=100?"pos":"")+mbnd(i)+'">'+p+"%</td>";}).join("")+"</tr>";});
+  H+='<tr><td class="l" style="font-weight:600">未配車・予約外・その他</td>'+ms.map(function(m,i){return '<td class="'+mln(i)+'"></td><td class="'+mbnd(i)+'">'+yen(o[m].tot_r-S(m,dcl).ar)+'</td><td class="'+mbnd(i)+'"></td><td class="'+mbnd(i)+'"></td>';}).join("")+"</tr>";
+  H+='<tr class="foot"><td class="l">総合計（目標'+Math.round(T_REV/10000)+'万）</td>'+ms.map(function(m,i){var t=revT(m),a=o[m].tot_r,p=pct(a,t);return '<td class="'+mln(i)+'">'+yen(t)+'</td><td class="'+mbnd(i)+'"><b>'+yen(a)+"</b></td>"+dif(a-t,yen,i)+'<td class="'+(p>=100?"pos":"")+mbnd(i)+'">'+p+"%</td>";}).join("")+"</tr>";
+  H+="</tbody></table></div>";
+  H+='<div class="sub" style="margin-top:7px">進捗：実績売上＝返却月の予約売上(キャンセル/テスト除外・KPIタブと同じ)／進捗単価＝実績売上÷実績貸出日数。総合計は月の目標と比較。</div>';
+  el.innerHTML=H;
 }
 function load(){
   document.getElementById("upd").textContent="更新中…";
@@ -184,4 +246,5 @@ function load(){
     .catch(function(){document.getElementById("body").innerHTML='<div style="padding:24px;color:#dc2626">読み込みに失敗しました。<button class="rb" onclick="load()">再読み込み</button></div>';});
 }
 load();
+(function(){var t="";try{t=localStorage.getItem(location.pathname+"_tab")||"";}catch(e){}if(location.search.indexOf("tab=design")>=0)t="design";if(t=="design")showTab("design");})();
 </script></body></html>
