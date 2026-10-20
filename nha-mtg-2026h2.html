@@ -220,20 +220,37 @@ function renderDesign(D){
   var tots=[["<b>グロス 計</b>",function(m){return S(m,dcl);},null,"uf"]];
   var H='<div class="sub" style="font-size:11px;color:#0f766e;font-weight:700">🎯 目標＝月'+Math.round(T_REV/10000)+'万円。設計＝3月〜9月の実績（クラス別の稼働率・1日単価）を土台に、各月 全クラスの稼働率を同じ比率で上げ下げして目標に合わせる（上限95%）。進捗＝DBライブ。台数・稼働可能日数＝配車表の月次フラグ。</div>';
   H+='<div class="sub">設計の土台（3月〜9月の実績）：'+dcl.map(function(c){return esc(c)+" "+Math.round(DS[c][0]*100)+"%・"+yen(DS[c][1]);}).join("　")+"</div>";
-  // 🧭 目標到達サマリー（2026-10-20 オーナー指示「どの数字をどう改善すれば目標到達するか」）
+  // 🧭 目標到達アクションプラン（2026-10-20 オーナー指示「何をどうすべきかのアクションプラン」「単価・稼働・台数のどれを調整すれば到達するか」）
+  // 不足額を ①空き日を売る(稼働) → ②これからの予約を設計単価に(単価) → ③目標以上に稼働 → ④車両追加(台数) の順に積み上げ、届くところまでを示す。開くたび・5分ごとに最新。
   (function(){
-    var cur=new Date(Date.now()+9*3600000).toISOString().slice(0,7);
-    H+='<div class="h2">🧭 目標到達サマリー（何をどれだけ改善すれば目標に届くか）</div><div class="tw"><table><thead><tr><th class="l">月</th><th>目標</th><th>進捗</th><th>不足</th><th>稼働で埋める</th><th>優先して埋めるクラス（不足の大きい順）</th><th>単価が設計を下回るクラス</th></tr></thead><tbody>';
+    var nw=new Date(Date.now()+9*3600000),cur=nw.toISOString().slice(0,7),CAP=0.95,isBT=typeof DS_FROM!=="undefined";
+    function dimOf(m){return new Date(+m.slice(0,4),+m.slice(5,7),0).getDate();}
+    function st(no,title,todo,items,gain){return '<div style="margin:3px 0 0 4px"><b>'+no+' '+title+'</b> '+gs+'（'+todo+'）</span><br><span style="margin-left:14px">'+items+'</span> → <b class="pos">+'+yen(gain)+'</b></div>';}
+    H+='<div class="h2">🧭 目標到達アクションプラン（不足額を何で・どれだけ埋めるか）</div>';
     ms.forEach(function(m){
-      var g=S(m,dcl),t=revT(m),a=o[m].tot_r,gap=t-a,ap=up(g.tr,g.td)||1,need=gap>0?Math.ceil(gap/ap):0;
-      var fill=gap<=0?'<span class="pos">達成</span>':'あと<b>'+need+'日</b> 貸出 '+gs+'稼働率 '+pct(g.rd,g.ad)+'% → '+pct(g.rd+need,g.ad)+'%（1日'+yen(ap)+'）</span>'+(m==cur&&gap>0?(function(){var n=new Date(Date.now()+9*3600000),dim=new Date(n.getUTCFullYear(),n.getUTCMonth()+1,0).getDate(),left=dim-n.getUTCDate()+1;return '<br>'+gs+'月末まで残り'+left+'日 → 1日あたり あと'+(Math.round(need/left*10)/10)+'台分の貸出</span>';})():'');
-      var cl=dcl.map(function(c){var x=R(m,c);return {c:c,gr:x.tr-x.ar,gd:x.td-x.rd};}).filter(function(z){return z.gr>0&&z.gd>0;}).sort(function(p,q){return q.gr-p.gr;}).slice(0,3)
-        .map(function(z){return '<b>'+esc(z.c)+'</b> +'+z.gd+'日 '+gs+'('+yen(z.gr)+')</span>';}).join('　');
-      var lp=dcl.map(function(c){var x=R(m,c);return {c:c,u:up(x.ar,x.rd),d:DS[c][1],rd:x.rd};}).filter(function(z){return z.rd>=5&&z.u<z.d*0.95;}).sort(function(p,q){return (p.u/p.d)-(q.u/q.d);}).slice(0,3)
-        .map(function(z){return '<b>'+esc(z.c)+'</b> '+yen(z.u)+' '+gs+'(設計'+yen(z.d)+')</span>';}).join('　');
-      H+='<tr'+(m==cur?' class="gp"':'')+'><td class="l">'+MN[m]+(m==cur?'（今月）':'')+'</td><td>'+yen(t)+'</td><td><b>'+yen(a)+'</b> '+gs+pct(a,t)+'%</span></td>'+(gap>0?'<td class="neg">−'+yen(gap)+'</td>':'<td class="pos">+'+yen(-gap)+'</td>')+'<td style="text-align:left">'+fill+'</td><td style="text-align:left">'+(cl||'–')+'</td><td style="text-align:left">'+(lp||'–')+'</td></tr>';
+      var t=revT(m),a=o[m].tot_r,gap=t-a,dim=dimOf(m),left=m==cur?dim-nw.getUTCDate()+1:dim,fr=left/dim;
+      var hd='<b>'+MN[m]+(m==cur?'（今月・残り'+left+'日）':'')+'</b>　目標 '+yen(t)+'／進捗 <b>'+yen(a)+'</b>（'+pct(a,t)+'%）／';
+      if(m<cur){H+='<div class="sub" style="margin-top:8px">'+hd+'確定済み</div>';return;}
+      if(gap<=0){H+='<div style="margin-top:8px;font-size:12px">'+hd+'<b class="pos">✅ 達成（+'+yen(-gap)+'）</b>　このまま維持</div>';return;}
+      var rest=gap,out='',C=dcl.map(function(c){var x=R(m,c),d=DS[c][1],u=x.rd>=3&&x.ar>0?Math.min(x.ar/x.rd,d):d,cap=isBT&&(c=="A"||c=="C")?x.td:Math.floor(x.ad*CAP),room=Math.max(0,Math.min(cap-x.rd,Math.floor(x.ad*fr*CAP)));return {c:c,x:x,d:d,u:u,room:room,to:Math.min(Math.max(x.td-x.rd,0),room),add:0};});
+      function perDay(n){return Math.round(n/left*10)/10;}
+      // ① 稼働：目標日数まで空き日を売る（売上の大きいクラスから）
+      var it=[],g1=0,dd=0;C.slice().sort(function(p,q){return q.to*q.u-p.to*p.u;}).forEach(function(z){if(rest<=0||z.to<=0)return;var n=Math.min(z.to,Math.ceil(rest/z.u)),v=n*z.u;z.add=n;rest-=v;g1+=v;dd+=n;it.push('<b>'+esc(z.c)+'</b> +'+n+'日');});
+      if(g1)out+=st('①','稼働を上げる','空いている日をOTA・HPで売る',it.join('・')+' '+gs+'(計'+dd+'日＝1日あたり'+perDay(dd)+'台)</span>',g1);
+      // ② 単価：これから入る予約を設計単価まで上げる
+      if(rest>0){it=[];var g2=0;C.forEach(function(z){if(z.u>=z.d*0.98)return;var n=z.add||Math.min(z.room,Math.max(z.x.td-z.x.rd,0));if(n<=0)return;var v=n*(z.d-z.u);if(v<1000)return;g2+=v;it.push('<b>'+esc(z.c)+'</b> '+yen(z.u)+'→'+yen(z.d));});
+        if(g2){g2=Math.min(g2,rest);rest-=g2;out+=st('②','単価を上げる','これから入る予約の料金を設計単価へ',it.join('・'),g2);}}
+      // ③ 目標日数を超えて稼働（空きの残るクラス）
+      if(rest>0){it=[];var g3=0;dd=0;C.slice().sort(function(p,q){return q.d-p.d;}).forEach(function(z){var r=z.room-z.to;if(rest<=0||r<=0)return;var p=Math.max(z.u,z.d),n=Math.min(r,Math.ceil(rest/p)),v=n*p;rest-=v;g3+=v;dd+=n;it.push('<b>'+esc(z.c)+'</b> +'+n+'日');});
+        if(g3)out+=st('③','目標以上に稼働','空きの残るクラスをさらに売る'+(isBT?'・A/Cは50%上限のため対象外':''),it.join('・')+' '+gs+'(計'+dd+'日)</span>',g3);}
+      // ④ 台数：それでも足りない分
+      var res;
+      if(rest<=0)res='<b class="pos">→ ✅ ここまでで目標到達</b>';
+      else{var g=S(m,dcl),ap=up(g.tr,g.td)||1,per=ap*left*0.65,k=Math.ceil(rest/per);
+        res=(m==cur?'<b class="neg">→ ⚠️ 今月の残り日数では −'+yen(rest)+' 届かない</b>':'<b class="neg">→ ⚠️ まだ −'+yen(rest)+'</b>　④ <b>車両を +'+k+'台</b> '+gs+'（1台＝'+yen(ap)+'×'+left+'日×稼働65%で約'+yen(per)+'）</span>');}
+      H+='<div style="margin-top:8px;font-size:12px;border-left:3px solid '+(m==cur?'#eab308':'#0f766e')+';padding-left:8px">'+hd+'不足 <b class="neg">−'+yen(gap)+'</b>'+out+'<div style="margin:3px 0 0 4px">'+res+'</div></div>';
     });
-    H+='</tbody></table></div><div class="sub">稼働で埋める＝不足額÷設計の平均単価＝あと何日貸し出せば届くか／優先して埋めるクラス＝目標売上との差が大きい順（＋日＝そのクラスの目標日数まで）／単価が設計を下回るクラス＝貸出5日以上で1日単価が設計より5%以上低い（料金・値引きの見直し候補）。</div>';
+    H+='<div class="sub" style="margin-top:6px">順番＝①空き日を売る（目標日数まで・今の単価・設計単価より高い分は見込まない）→②これから入る予約を設計単価へ→③目標日数を超えて売る（稼働率95%まで'+(isBT?'・A/Cは50%まで':'')+'）→④車両追加。今月は残り日数の分しか売れない前提。数字は今の予約から毎回計算し直す。</div>';
   })();
   // ① 単価
   H+=head("💴 単価（1日あたり）　設計 / 進捗 / 差 / 比率",["設計","進捗","差","比率"]);
