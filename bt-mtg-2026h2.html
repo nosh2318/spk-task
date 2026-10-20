@@ -379,10 +379,18 @@ function renderDesign(D){
   DSG_D=D;var el=document.getElementById("dsg");var o=D.data,CN=D.clsnames||{};
   var ms=D.months.filter(function(m){return m>=T_FROM;});
   if(!ms.length){el.innerHTML='<div class="sub">対象月がありません</div>';return;}
-  var dcl=CORD.filter(function(c){return DS[c];}),exA=dcl.filter(function(c){return c!="AA";});
+  /* 2026-10-20 オーナー指示「内訳は実績データから作るのが普通（B）」「3店舗同じ仕様」：固定設計(DS)をやめ、札幌・那覇と同じく3〜9月の実績（クラス別 稼働率＝貸出日数÷稼働可能日数、単価＝返却月売上÷貸出日数）を土台に、各月 全クラスの稼働率を同じ比率で上げ下げして月の目標に合わせる（上限95%） */
+  var DS={},brd={},bad={},brv={},sR=0,sD=0,sA=0;
+  D.months.forEach(function(m){if(m<"2026-03"||m>"2026-09")return;var u=o[m].util||{},c=o[m].cls||{};
+    Object.keys(u).forEach(function(k){brd[k]=(brd[k]||0)+u[k].rd;bad[k]=(bad[k]||0)+u[k].ad;if(c[k])brv[k]=(brv[k]||0)+c[k].r;});});
+  Object.keys(bad).forEach(function(k){sR+=brv[k]||0;sD+=brd[k];sA+=bad[k];});
+  var avgR=sA?sD/sA:0,avgP=sD?sR/sD:0,ck={};ms.forEach(function(m){Object.keys(o[m].util||{}).forEach(function(k){if(k!="送迎"&&k!="未配車")ck[k]=1;});});
+  Object.keys(ck).forEach(function(k){DS[k]=(bad[k]&&brd[k]&&brv[k])?[brd[k]/bad[k],Math.round(brv[k]/brd[k])]:[avgR,Math.round(avgP)];});
+  var dcl=CORD.filter(function(c){return DS[c];}).concat(Object.keys(DS).filter(function(c){return CORD.indexOf(c)<0;}).sort()),exA=dcl.filter(function(c){return c!="AA";});
   /* 10月(目標400万)は設計率を同じ比率で縮小して400万に合わせる(11月〜は設計そのまま) */
-  var FC={};function F(m){if(m>=DS_FROM)return 1;if(FC[m]==null){var t=0;dcl.forEach(function(c){var u=(o[m].util||{})[c];if(u)t+=u.ad*DS[c][0]*DS[c][1];});FC[m]=t?revT(m)/t:1;}return FC[m];}
-  function R(m,c){var u=(o[m].util||{})[c]||{rd:0,ad:0,n:0},v=(o[m].cls||{})[c]||{c:0,r:0},td=Math.round(u.ad*DS[c][0]*F(m));return {n:u.n,ad:u.ad,td:td,rd:u.rd,tr:td*DS[c][1],ar:v.r};}
+  var FC={};function F(m){if(FC[m]!=null)return FC[m];var f=1;for(var it=0;it<40;it++){var s=0;dcl.forEach(function(c){var u=(o[m].util||{})[c];if(u)s+=u.ad*Math.min(DS[c][0]*f,.95)*DS[c][1];});if(!s)break;f*=revT(m)/s;}return FC[m]=f;}
+  function rate(m,c){return Math.min(DS[c][0]*F(m),.95);}
+  function R(m,c){var u=(o[m].util||{})[c]||{rd:0,ad:0,n:0},v=(o[m].cls||{})[c]||{c:0,r:0},td=Math.round(u.ad*rate(m,c));return {n:u.n,ad:u.ad,td:td,rd:u.rd,tr:td*DS[c][1],ar:v.r};}
   function S(m,list){var s={n:0,ad:0,td:0,rd:0,tr:0,ar:0};list.forEach(function(c){var x=R(m,c);for(var k in s)s[k]+=x[k];});return s;}
   function pct(a,b){return b?Math.round(a/b*100):0;}
   function up(r,d){return d?Math.round(r/d):0;}
@@ -397,7 +405,7 @@ function renderDesign(D){
   /* 2026-10-20 オーナー指示「BUDDICAはBTとHDMブランド別に表示し合算まで」：台数・稼働＝車両ブランド(util_cb)／売上＝予約ブランド(chan・KPIタブと同じ) */
   var BR=[["BT","BUDDICA","🟢 BUDDICA（BT）","#047857"],["HDM","HDM","🔵 HDM（HANDYMAN高松）","#1d4ed8"]];
   function brev(m,k){var r=0,ch=o[m].chan||{};Object.keys(ch).forEach(function(q){if(q.split("|")[0]==k)r+=ch[q].r||0;});return r;}
-  function RB(m,b,c){var u=(o[m].util_cb||{})[b+"|"+c]||{rd:0,ad:0,n:0},td=Math.round(u.ad*DS[c][0]*F(m));return {n:u.n,ad:u.ad,td:td,rd:u.rd,tr:td*DS[c][1],ar:0};}
+  function RB(m,b,c){var u=(o[m].util_cb||{})[b+"|"+c]||{rd:0,ad:0,n:0},td=Math.round(u.ad*rate(m,c));return {n:u.n,ad:u.ad,td:td,rd:u.rd,tr:td*DS[c][1],ar:0};}
   function SB(m,bb){var s={n:0,ad:0,td:0,rd:0,tr:0,ar:brev(m,bb[1])};dcl.forEach(function(c){var x=RB(m,bb[0],c);s.n+=x.n;s.ad+=x.ad;s.td+=x.td;s.rd+=x.rd;s.tr+=x.tr;});return s;}
   function sec(t,col){return '<tr class="sec"><td class="l" colspan="'+(1+ms.length*4)+'" style="text-align:left;font-weight:900;color:'+col+';background:#f8fafc!important;border-top:2px solid '+col+'">'+t+'</td></tr>';}
   var bTot=BR.map(function(bb){return ['<b style="color:'+bb[3]+'">'+bb[2]+' 計</b>',function(m){return SB(m,bb);},null,""];});
@@ -405,7 +413,8 @@ function renderDesign(D){
   var L_U=bTot.concat([GSEC],rows,tots),L_S=bTot.concat([GSEC],rows,tots),L_O=[];
   BR.forEach(function(bb){L_O.push(sec(bb[2],bb[3]));dcl.forEach(function(c){if(ms.some(function(m){var u=(o[m].util_cb||{})[bb[0]+"|"+c];return u&&u.n>0;}))L_O.push([lab(c),function(m){return RB(m,bb[0],c);},DS[c],""]);});L_O.push(bTot[BR.indexOf(bb)]);});
   L_O=L_O.concat([GSEC],rows,tots);
-  var H='<div class="sub" style="font-size:11px;color:#0f766e;font-weight:700">🎯 目標＝10月400万円・11月〜500万円の設計（A・C 50%／AA 16%／他 65%・設計単価。10月は同じ比率で縮小＝A・C 44%／AA 14%／他 57%）と進捗（DBライブ）。台数・稼働可能日数＝配車表の月次フラグ。</div>';
+  var H='<div class="sub" style="font-size:11px;color:#0f766e;font-weight:700">🎯 目標＝10月400万円・11月〜500万円。内訳＝3月〜9月の実績（クラス別の稼働率・1日単価）を土台に、各月 全クラスの稼働率を同じ比率で上げ下げして目標に合わせる（上限95%）。進捗＝DBライブ。台数・稼働可能日数＝配車表の月次フラグ。</div>';
+  H+='<div class="sub">内訳の土台（3月〜9月の実績）：'+dcl.map(function(c){return esc(c)+" "+Math.round(DS[c][0]*100)+"%・"+yen(DS[c][1]);}).join("　")+"</div>";
   // 🔎 届かせ方は2つ（2026-10-20 オーナー指示「予約数/稼働・単価の2パターンだけ」「単価を上げて本数を減らして到達させるのか／予約数を上げて到達させるのか」→ 各クラス・店全体で、①単価は今のまま予約数だけで届く量 ②予約数は今のまま単価だけで届く量。推測なし＝今の実績と設計から計算）
   (function(){
     var nw=new Date(Date.now()+9*3600000),cur=nw.toISOString().slice(0,7);
