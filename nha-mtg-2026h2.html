@@ -220,7 +220,7 @@ function renderDesign(D){
   var tots=[["<b>グロス 計</b>",function(m){return S(m,dcl);},null,"uf"]];
   var H='<div class="sub" style="font-size:11px;color:#0f766e;font-weight:700">🎯 目標＝月'+Math.round(T_REV/10000)+'万円。設計＝3月〜9月の実績（クラス別の稼働率・1日単価）を土台に、各月 全クラスの稼働率を同じ比率で上げ下げして目標に合わせる（上限95%）。進捗＝DBライブ。台数・稼働可能日数＝配車表の月次フラグ。</div>';
   H+='<div class="sub">設計の土台（3月〜9月の実績）：'+dcl.map(function(c){return esc(c)+" "+Math.round(DS[c][0]*100)+"%・"+yen(DS[c][1]);}).join("　")+"</div>";
-  // 🔎 設計まであと（2026-10-20 オーナー指摘「予約6→45なら+39件」「稼働で＝+〜%」「縦割りか横割りか・連動か独立か」→ 横＝稼働率(+%)・予約日数(+日)・1日単価(+¥)→売上(+¥) が連動、縦＝クラスを足すと店の合計。推測なし）
+  // 🔎 届かせ方は2つ（2026-10-20 オーナー指示「予約数/稼働・単価の2パターンだけ」「単価を上げて本数を減らして到達させるのか／予約数を上げて到達させるのか」→ 各クラス・店全体で、①単価は今のまま予約数だけで届く量 ②予約数は今のまま単価だけで届く量。推測なし＝今の実績と設計から計算）
   (function(){
     var nw=new Date(Date.now()+9*3600000),cur=nw.toISOString().slice(0,7);
     function dimOf(m){return new Date(+m.slice(0,4),+m.slice(5,7),0).getDate();}
@@ -228,31 +228,35 @@ function renderDesign(D){
     var AN={};
     ms.forEach(function(m){
       if(m<cur)return;
-      var t=revT(m),a=o[m].tot_r,dim=dimOf(m),left=m==cur?dim-nw.getUTCDate()+1:dim,fr=left/dim,g=S(m,dcl),C={},cs=0;
-      dcl.forEach(function(c){var x=R(m,c),d=DS[c][1],u=x.rd?x.ar/x.rd:0,room=Math.max(0,Math.floor(x.ad*fr)-Math.max(0,x.rd-Math.round(x.ad*(1-fr))));
-        C[c]={x:x,d:d,u:u,room:room,need:x.td*d-x.ar};cs+=x.td*d-x.ar;});
-      AN[m]={t:t,a:a,gap:t-a,left:left,g:g,C:C,ot:(t-a)-cs};
+      var t=revT(m),a=o[m].tot_r,dim=dimOf(m),left=m==cur?dim-nw.getUTCDate()+1:dim,fr=left/dim,g=S(m,dcl),C={},RR=0,RD=0;
+      dcl.forEach(function(c){var x=R(m,c),d=DS[c][1],u=x.rd&&x.ar>0?x.ar/x.rd:0,room=Math.max(0,Math.floor(x.ad*fr)-Math.max(0,x.rd-Math.round(x.ad*(1-fr))));
+        C[c]={x:x,d:d,u:u,room:room,tg:x.td*d};if(u){RR+=x.ar;RD+=x.rd;}});
+      AN[m]={t:t,a:a,gap:t-a,left:left,g:g,C:C,RR:RR,RD:RD,oth:a-RR};
     });
     var vm=ms.filter(function(m){return AN[m];});if(!vm.length)return;
     function cell(i,v,cls,tip){return '<td class="'+(cls||"")+(i?mbnd(i):"")+'"'+(tip?' title="'+tip+'"':'')+'>'+v+'</td>';}
     function blank(m,i){return '<td class="z'+mln(i)+'" colspan="4">確定</td>';}
-    function okc(i,tip){return cell(i,'✅','pos',tip);}
-    function yn(v){return v>0?'+'+yen(v):'✅'+(v<0?' 超'+yen(-v):'');}
-    H+=head("🔎 設計まであと　2つだけ＝①予約数（＝稼働率）②単価。横に読む＝これだけ上げると→売上がこれだけ増えて設計に届く／縦に足す＝店の合計",["予約数","稼働率","単価","売上"]);
+    // 4セル＝①予約 +日／①稼働 +%／②単価 +¥／②単価 +%
+    function four(i,need,rd,ad,u,room,isCur,tipHead){
+      if(need<=0)return '<td class="pos'+mln(i)+'" colspan="4" title="'+tipHead+'">✅ 設計どおり以上（超 '+yen(-need)+'）</td>';
+      var h='';
+      if(u>0){var D=Math.ceil((rd*u+need)/u),dd=D-rd,over=D>ad,lim=isCur&&dd>room;
+        var tp1=tipHead+'。①単価は今のまま（¥'+k(u)+'/日）なら予約 '+rd+'→'+D+'日（+'+dd+'日）＝稼働 '+Math.round(rd/ad*100)+'→'+Math.round(D/ad*100)+'%'+(over?'。稼働可能'+ad+'日を超えるので予約数だけでは届かない':'')+(lim?'。今月の空きは残り'+room+'日':'');
+        h+='<td class="'+mln(i)+'" title="'+tp1+'"><b>'+D+'日</b><div style="font-size:9.5px;color:#64748b">今 '+rd+'日</div></td>'+'<td class="neg'+mbnd(i)+'" title="'+tp1+'"><b>+'+dd+'日</b>'+(over?'<div style="font-size:9.5px;color:#b91c1c">台数の上限超</div>':lim?'<div style="font-size:9.5px;color:#b91c1c">空き残り'+room+'日</div>':'')+'</td>';
+        var U=(rd*u+need)/rd,tp2=tipHead+'。②予約数は今のまま（'+rd+'日）なら1日単価 ¥'+k(u)+'→¥'+k(U)+'（+'+Math.round((U/u-1)*100)+'%）';
+        h+=cell(i,'<b>¥'+k(U)+'</b><div style="font-size:9.5px;color:#64748b">今 ¥'+k(u)+'</div>','',tp2)+cell(i,'<b>+¥'+k(U-u)+'</b>','neg',tp2);
+      }else{var tp3=tipHead+'。予約が0なので単価では届かない。設計単価なら予約が必要';
+        h+='<td class="neg'+mln(i)+'" colspan="2" title="'+tp3+'"><b>予約0</b></td>'+'<td class="z'+mbnd(i)+'" colspan="2" title="'+tp3+'">単価では届かない</td>';}
+      return h;}
+    H+=head("🔎 目標からの逆算　①目標÷今の単価＝必要な予約数　②目標÷今の予約数＝必要な単価（どちらか1つで届く）",["①必要予約数","あと","②必要単価","あと"]);
     function row(lab,cls,fn){H+='<tr class="'+(cls||"")+'"><td class="l">'+lab+'</td>'+ms.map(function(m,i){var X=AN[m];return X?fn(X,m,i):blank(m,i);}).join("")+"</tr>";}
-    row("<b>売上</b>（進捗／目標）","gp",function(X,m,i){return '<td class="'+mln(i)+'" colspan="3" style="text-align:left;white-space:nowrap">進捗 '+yen(X.a)+'　／　目標 '+yen(X.t)+'</td>'+cell(i,"<b>"+yn(X.gap)+"</b>",X.gap>0?"neg":"pos");});
+    row("<b>売上</b>（進捗／目標）","gp",function(X,m,i){return '<td class="'+mln(i)+'" colspan="3" style="text-align:left;white-space:nowrap">進捗 '+yen(X.a)+'　／　目標 '+yen(X.t)+'</td>'+cell(i,"<b>"+(X.gap>0?'あと'+yen(X.gap):'✅達成')+"</b>",X.gap>0?"neg":"pos");});
+    row("<b>店全体</b>","uf",function(X,m,i){var g=X.g,u=X.RD?X.RR/X.RD:0;return four(i,X.gap,X.RD,g.ad,u,1e9,false,'店全体：目標¥'+k(X.t)+'・進捗¥'+k(X.a)+'（予約外'+yen(X.oth)+'を含む）・予約'+X.RD+'日・平均¥'+k(u)+'/日');});
     dcl.forEach(function(c){
       row(lab(c),"",function(X,m,i){var q=X.C[c],x=q.x;
         if(!x.td&&!x.rd)return '<td class="z'+mln(i)+'" colspan="4">'+(x.n&&x.ad?'設計なし':'車両なし')+'</td>';
-        var dd=x.td-x.rd,dp=x.ad?dd/x.ad:0,du=x.rd&&x.ar>0&&q.d-q.u>q.d*0.005?q.d-q.u:0,tip=c+'：設計 '+x.td+'日・¥'+k(q.d)+'/日 ／ 進捗 '+x.rd+'日・'+(x.rd&&x.ar>0?'¥'+k(q.u)+'/日':'—')+'（台数'+x.n+'・稼働可能'+x.ad+'日'+(m==cur?'・今月の残りの空き'+q.room+'日':'')+'）。売上 '+yn(q.need)+' ＝ 日数'+(dd>=0?'+':'−')+Math.abs(dd)+'日×¥'+k(q.d)+'（稼働分）＋ 進捗'+x.rd+'日×'+(du>=0?'+':'−')+'¥'+k(Math.abs(du))+'（単価分）';
-        return '<td class="'+mln(i)+(dd>0?' neg':' pos')+'" title="'+tip+'">'+(dd>0?'<b>+'+dd+'日</b>'+(m==cur&&q.room<dd?'<div style="font-size:9.5px;color:#b91c1c">空き残り'+q.room+'日</div>':''):'✅'+(dd<0?' 超'+(-dd)+'日':''))+'</td>'
-          +cell(i,dd>0?'+'+Math.round(dp*100)+'%':'✅',dd>0?'neg':'pos',tip)
-          +cell(i,!(x.rd&&x.ar>0)?'—':du>0?'+¥'+k(du):'✅',!(x.rd&&x.ar>0)?'z':du>0?'neg':'pos',tip)
-          +cell(i,'<b>'+yn(q.need)+'</b>',q.need>0?'neg':'pos',tip);});});
-    row("予約外・その他","",function(X,m,i){return '<td class="'+mln(i)+'" colspan="3" style="text-align:left;font-size:10px;color:#475569;white-space:nowrap">クラス外の売上（オプション・予約外）・端数</td>'+cell(i,(X.ot>0?'+':'−')+yen(Math.abs(X.ot)),'');});
-    row("<b>合計</b>（店全体）","uf",function(X,m,i){var g=X.g,dd=g.td-g.rd,pn=0,pd=0;dcl.forEach(function(c){var q=X.C[c];if(q.x.rd&&q.x.ar>0){pn+=q.x.rd*q.d-q.x.ar;pd+=q.x.rd;}});var du=pd&&pn/pd>1?pn/pd:0;
-      return '<td class="'+mln(i)+(dd>0?' neg':' pos')+'"><b>'+(dd>0?'+'+dd+'日':'✅')+'</b></td>'+cell(i,'<b>'+(dd>0?'+'+Math.round(dd/(g.ad||1)*100)+'%':'✅')+'</b>',dd>0?'neg':'pos')+cell(i,'<b>'+(du>0?'+¥'+k(du):'✅')+'</b>',du>0?'neg':'pos')+cell(i,'<b>'+yn(X.gap)+'</b>',X.gap>0?'neg':'pos');});
-    H+='</tbody></table></div><div class="sub">設計（目標）に届くまで、あといくつ必要か。打ち手は2つだけ＝①予約数（予約日数。稼働率は同じことを%で表したもの）②単価（1日あたり）。横に読む＝そのクラスで予約数を+○日（稼働率+○%）、単価を+¥○にすると（合計の1日単価＝各クラスの単価の不足を予約日数で平均・車種構成の違いは含めない）、売上が+¥○増えて設計に届く（売上＝足りない日数×設計単価＋今の予約日数×単価の不足）。縦に足す＝各クラスの売上と「予約外・その他」を足すと一番上の不足額に一致。✅＝設計どおり以上（超＝設計を超えた分で、ほかのクラスの不足と相殺）。「空き残り○日」＝今月の残りの空きだけでは足りない時。数字の元は上の稼働率・単価・売上の表と同じ。セルに触れると計算の中身。</div>';
+        return four(i,q.tg-x.ar,x.rd,x.ad,q.u,q.room,m==cur,c+'：設計売上¥'+k(q.tg)+'（'+x.td+'日×¥'+k(q.d)+'）・進捗¥'+k(x.ar)+'（'+x.rd+'日）・台数'+x.n+'・稼働可能'+x.ad+'日');});});
+    H+='</tbody></table></div><div class="sub">目標からの逆算（クラスの目標＝設計売上）。①必要予約数＝目標÷今の1日単価（あと＝今の予約日数との差）。②必要単価＝目標÷今の予約日数（あと＝今の1日単価との差）。①と②はどちらか1つで届く量（両方を少しずつ上げてもよい）。店全体の行は予約外の売上を含めた目標まで・平均単価で計算。✅＝もう設計どおり以上。台数の上限超＝稼働可能日数を超えるので予約数だけでは届かない。空き残り＝今月の残りの空きより多く必要。予約0＝単価では届かない。今月以外の予約数はこれから増える途中の数字。セルに触れると計算の中身。</div>';
   })();
   // ① 単価
   H+=head("💴 単価（1日あたり）　設計 / 進捗 / 差 / 比率",["設計","進捗","差","比率"]);
