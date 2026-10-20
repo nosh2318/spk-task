@@ -369,12 +369,12 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku
       <table class="data-tbl" id="cost-tbl">
         <thead><tr>
           <th style="width:34px;text-align:center"><input type="checkbox" id="inv-all" onclick="invPickAll(this.checked)" title="請求できる車両をすべて選択" style="width:16px;height:16px;cursor:pointer"></th><th>クラス</th><th>ナンバー</th><th>車種名</th><th>協力会社</th>
-          <th style="background:#fef2f2;color:#991b1b">日額（税込）</th>
+          <th style="background:#fef2f2;color:#991b1b">日額</th>
           <th>稼働ステータス</th>
           <th>稼働日数</th>
-          <th style="background:#fef2f2;color:#991b1b">お支払額（税抜）</th>
-          <th style="background:#dcfce7;color:#15803d">売上（税抜）</th>
-          <th style="background:#fef3c7;color:#92400e">粗利（税抜）</th>
+          <th style="background:#fef2f2;color:#991b1b">お支払額</th>
+          <th style="background:#dcfce7;color:#15803d">売上</th>
+          <th style="background:#fef3c7;color:#92400e">粗利</th>
         </tr></thead>
         <tbody id="cost-body"><tr><td colspan="11" class="loading">読み込み中...</td></tr></tbody>
       </table>
@@ -1565,18 +1565,18 @@ async function loadSettle(){
     const{data:it,error:e2}=await sb.from('partner_settlement_items').select('reservation_id,settlement_id,vehicle_code,return_date,daily_cost,amount_in').eq('deleted',false).in('settlement_id',STLDOCS.map(d=>d.id));
     if(!e2){
       (it||[]).forEach(x=>SETTLED_IDS.set(x.reservation_id,x.settlement_id));
-      // ★ 請求額＝お支払い金額（税抜）＝コスト一覧と同じく「車両×返却月×単価」ごとに ÷1.1・円未満切捨てして合計（settlement.html と同じ計算）
+      // ★ 2026-10-21 請求額＝お支払い金額＝日額×稼働日（税抜換算は廃止・オーナー指示）
       const g={};(it||[]).forEach(x=>{const k=x.settlement_id+'|'+x.vehicle_code+'|'+(x.return_date||'').slice(0,7)+'|'+x.daily_cost;g[k]=(g[k]||0)+(x.amount_in||0);});
-      const ex={};Object.keys(g).forEach(k=>{const sid=k.split('|')[0];ex[sid]=(ex[sid]||0)+_exTax(g[k]);});
+      const ex={};Object.keys(g).forEach(k=>{const sid=k.split('|')[0];ex[sid]=(ex[sid]||0)+g[k];});
       // ★ 2026-10-16 送金済の額を返却月ごとに（コスト一覧の「残高＝お支払額−送金済」用）
-      PAID_YM={};Object.keys(g).forEach(k=>{const p=k.split('|'),d=STLDOCS.find(x=>String(x.id)===p[0]);if(d&&d.confirmed_at)PAID_YM[p[2]]=(PAID_YM[p[2]]||0)+_exTax(g[k]);});
+      PAID_YM={};Object.keys(g).forEach(k=>{const p=k.split('|'),d=STLDOCS.find(x=>String(x.id)===p[0]);if(d&&d.confirmed_at)PAID_YM[p[2]]=(PAID_YM[p[2]]||0)+g[k];});
       STLDOCS.forEach(d=>{d.ex=ex[d.id]||0;});
     }
   }
   if(!box)return;
   if(!STLDOCS.length){box.innerHTML='まだありません';return;}
   box.innerHTML='<div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:10px;background:#fff"><table style="width:100%;border-collapse:collapse;min-width:560px">'
-    +'<thead><tr style="background:#f1f5f9">'+['No.','発行日','請求額（税抜）','状態',''].map((h,i)=>'<th style="padding:9px 12px;font-size:12px;color:#475569;text-align:'+(i===2?'right':'left')+';white-space:nowrap">'+h+'</th>').join('')+'</tr></thead><tbody>'
+    +'<thead><tr style="background:#f1f5f9">'+['No.','発行日','請求額','状態',''].map((h,i)=>'<th style="padding:9px 12px;font-size:12px;color:#475569;text-align:'+(i===2?'right':'left')+';white-space:nowrap">'+h+'</th>').join('')+'</tr></thead><tbody>'
     +STLDOCS.map(d=>'<tr style="border-top:1px solid #f1f5f9">'
       +'<td style="padding:10px 12px;font-family:monospace;font-weight:700;color:#1e293b">'+d.doc_no+'</td>'
       +'<td style="padding:10px 12px;color:#334155">'+d.issue_date+'</td>'
@@ -1851,10 +1851,10 @@ function renderCost(){
     const usedDays=calcUsedDays(v.code);
     const days=usedDays;
     totDays+=days; if(days>0)activeCnt++;
-    // ★ 2026-10-15 金額は税抜表示（日額は税込入力のまま。お支払額・売上を ÷1.1・円未満切捨て、粗利＝税抜同士の差）
+    // ★ 2026-10-21 税抜換算は廃止（オーナー指示）：お支払額＝日額×稼働日、売上＝予約金額のまま
     const costIn=daily*days;
-    const cost=_exTax(costIn);
-    const rev=_exTax(calcRev(v.code));
+    const cost=costIn;
+    const rev=calcRev(v.code);
     const profit=rev-cost;
     totCost+=cost;totCostIn+=costIn;totRev+=rev;
     const plate=(v.plate_no||'').trim();
@@ -1877,7 +1877,7 @@ function renderCost(){
       html+=`<tr>`+
         `<td class="r1">${pickCell} <span style="font-weight:800;color:#0f172a;background:#f1f5f9;padding:2px 8px;border-radius:4px">${v.type||'?'}</span> ${isValidPlate?`<span style="color:#2563eb;font-weight:800">${plate}</span>`:'<span style="color:#dc2626">⚠️未登録</span>'} <span style="margin-left:auto">${statusBadge}</span></td>`+
         `<td class="r2">${v.name||'—'} <span style="font-size:10px;color:#7c3aed">🏢${v.owner_label||v.owner_company}</span></td>`+
-        `<td class="r3">日額 ¥${daily.toLocaleString()}（税込）× ${days}日 → お支払 ${cost>0?'<span style="color:#b91c1c;font-weight:800;font-size:14px">¥'+cost.toLocaleString()+'</span>（税抜）':'¥0'}</td>`+
+        `<td class="r3">日額 ¥${daily.toLocaleString()} × ${days}日 → お支払 ${cost>0?'<span style="color:#b91c1c;font-weight:800;font-size:14px">¥'+cost.toLocaleString()+'</span>':'¥0'}</td>`+
         `<td class="r4"><span style="font-size:10px;color:#15803d">売上 ${rev>0?'¥'+rev.toLocaleString():'¥0'}</span><span class="amt" style="color:${profitColor}">${profitStr}</span></td>`+
       `</tr>`;
     }else{
@@ -1905,17 +1905,14 @@ function renderCost(){
   if(bn){
     bn.innerHTML=`<div style="padding:14px 18px;border-radius:12px;background:linear-gradient(135deg,#fff7ed,#ffedd5);border:1px solid #fdba74">`
       +`<div style="font-size:13px;font-weight:800;color:#9a3412">🚗 ${ym.y}年${ym.m}月 の稼働詳細（車両別）</div>`
-      +`<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-top:4px"><span style="font-size:14px;color:#7c2d12;font-weight:800">協力会社へのお支払い額（税抜）</span><span style="font-size:30px;font-weight:900;color:#b91c1c">¥${totCost.toLocaleString()}</span>${(()=>{const pd=PAID_YM[`${ym.y}-${String(ym.m).padStart(2,'0')}`]||0;return pd?`<span style="font-size:14px;color:#166534;font-weight:800;margin-left:10px">送金済 ¥${pd.toLocaleString()}</span><span style="font-size:14px;color:#7c2d12;font-weight:800;margin-left:10px">残高</span><span style="font-size:24px;font-weight:900;color:#1e293b">¥${(totCost-pd).toLocaleString()}</span>`:'';})()}</div>`
-      +`<div style="font-size:13px;color:#57534e;margin-top:6px;display:flex;gap:14px;flex-wrap:wrap"><span>稼働 <b>${totDays}日</b>（稼働車 ${activeCnt}/${sorted.length}台）</span><span>売上（税抜） <b style="color:#15803d">¥${totRev.toLocaleString()}</b></span><span>粗利（税抜） <b style="color:${totProfit>=0?'#15803d':'#dc2626'}">${_sgnYen(totProfit)}</b></span></div>`
-      +`<div style="font-size:11px;color:#a8a29e;margin-top:4px">※ 金額は税抜（日額は税込で登録。車両ごとに ÷1.1 し円未満切捨て）。参考：お支払い額 税込 ¥${totCostIn.toLocaleString()}</div>`
+      +`<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-top:4px"><span style="font-size:14px;color:#7c2d12;font-weight:800">協力会社へのお支払い額</span><span style="font-size:30px;font-weight:900;color:#b91c1c">¥${totCost.toLocaleString()}</span>${(()=>{const pd=PAID_YM[`${ym.y}-${String(ym.m).padStart(2,'0')}`]||0;return pd?`<span style="font-size:14px;color:#166534;font-weight:800;margin-left:10px">送金済 ¥${pd.toLocaleString()}</span><span style="font-size:14px;color:#7c2d12;font-weight:800;margin-left:10px">残高</span><span style="font-size:24px;font-weight:900;color:#1e293b">¥${(totCost-pd).toLocaleString()}</span>`:'';})()}</div>`
+      +`<div style="font-size:13px;color:#57534e;margin-top:6px;display:flex;gap:14px;flex-wrap:wrap"><span>稼働 <b>${totDays}日</b>（稼働車 ${activeCnt}/${sorted.length}台）</span><span>売上 <b style="color:#15803d">¥${totRev.toLocaleString()}</b></span><span>粗利 <b style="color:${totProfit>=0?'#15803d':'#dc2626'}">${_sgnYen(totProfit)}</b></span></div>`
       +`</div>`;
   }
   renderInvBar();
   const cc=document.getElementById('cost-count'); if(cc)cc.textContent=`${sorted.length}台`;
   const ct=document.getElementById('cost-total'); if(ct)ct.innerHTML=`<span style="color:#b91c1c">📉¥${totCost.toLocaleString()}</span>`;
 }
-// ★ 2026-10-15 税抜換算（税込→税抜・円未満切捨て）。浮動小数の誤差を避けるため ×10÷11 で計算
-function _exTax(n){return Math.floor((Number(n)||0)*10/11);}
 // ★ 2026-10-15 請求書作成（コスト一覧で車両を選ぶ→請求書）。金額・対象の確定はサーバー関数 partner_settlement_create。
 const ISSUER_BY_OWNER={PARTNER_TEST:'マツダオートザム札幌インター（株式会社共立自動車）'};
 let BILL_ROWS={},INV_PICK={},SETTLED_IDS=new Map(),LAST_INV=null,PAID_YM={};
@@ -1944,7 +1941,7 @@ function invPickAll(on){INV_PICK={};if(on)Object.keys(BILL_ROWS).forEach(k=>{if(
 function renderInvBar(){
   const bar=document.getElementById('inv-bar');if(!bar)return;
   Object.keys(INV_PICK).forEach(k=>{if(!BILL_ROWS[k]||!BILL_ROWS[k].ids.length)delete INV_PICK[k];});
-  const ks=Object.keys(INV_PICK),tot=ks.reduce((s,k)=>s+_exTax(BILL_ROWS[k].amtIn),0);
+  const ks=Object.keys(INV_PICK),tot=ks.reduce((s,k)=>s+BILL_ROWS[k].amtIn,0);
   const all=document.getElementById('inv-all');
   if(all){const can=Object.keys(BILL_ROWS).filter(k=>BILL_ROWS[k].ids.length&&BILL_ROWS[k].daily>0);all.checked=can.length>0&&ks.length===can.length;all.disabled=!can.length;}
   const done=LAST_INV?'<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;margin-bottom:8px;border-radius:10px;background:#eef2ff;border:1px solid #a5b4fc">'
@@ -1953,15 +1950,15 @@ function renderInvBar(){
   bar.innerHTML=done+'<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 16px;border-radius:10px;border:1px solid '+(ks.length?'#86efac':'#e2e8f0')+';background:'+(ks.length?'#f0fdf4':'#f8fafc')+'">'
     +'<span style="font-size:13px;font-weight:800;color:#1e293b">🧾 請求書</span>'
     +(ks.length
-      ?'<span style="font-size:13px;color:#334155">選択 <b>'+ks.length+'台</b></span><span style="font-size:17px;font-weight:900;color:#0f172a">請求額（税抜） '+_yen(tot)+'</span>'
+      ?'<span style="font-size:13px;color:#334155">選択 <b>'+ks.length+'台</b></span><span style="font-size:17px;font-weight:900;color:#0f172a">請求額 '+_yen(tot)+'</span>'
       :'<span style="font-size:12px;color:#64748b">請求する車両の左の□にチェックを入れてください（返却済み・未請求の分が対象）</span>')
     +'<button onclick="createInvoice()" '+(ks.length?'':'disabled ')+'style="margin-left:auto;padding:10px 22px;border:none;border-radius:8px;font-size:14px;font-weight:800;color:#fff;background:'+(ks.length?'#047857':'#cbd5e1')+';cursor:'+(ks.length?'pointer':'not-allowed')+'">請求書を作成</button></div>';
 }
 async function createInvoice(){
   const ks=Object.keys(INV_PICK);if(!ks.length)return;
-  const ids=ks.flatMap(k=>BILL_ROWS[k].ids),tot=ks.reduce((s,k)=>s+_exTax(BILL_ROWS[k].amtIn),0);
+  const ids=ks.flatMap(k=>BILL_ROWS[k].ids),tot=ks.reduce((s,k)=>s+BILL_ROWS[k].amtIn,0);
   const issuer=ISSUER_BY_OWNER[OWNER_COMPANY]||OWNER_LABEL||OWNER_COMPANY;
-  if(!confirm('請求書を作成します。\n\n請求者：'+issuer+'\n宛先：株式会社Global Lines\n'+ks.length+'台・請求額（税抜）'+_yen(tot)+'\n\n作成した分は、取り消すまでもう一度選べません。'))return;
+  if(!confirm('請求書を作成します。\n\n請求者：'+issuer+'\n宛先：株式会社Global Lines\n'+ks.length+'台・請求額 '+_yen(tot)+'\n\n作成した分は、取り消すまでもう一度選べません。'))return;
   // 作成後は「📄 請求書を開く」ボタンを表示（自動の新タブはブラウザにブロックされることがあるため使わない）
   const{data,error}=await sb.rpc('partner_settlement_create',{p_owner:OWNER_COMPANY,p_ids:ids,p_issuer:issuer});
   if(error){showToast('請求書を作成できませんでした: '+error.message,'err');await loadSettle();renderCost();return;}
@@ -1979,7 +1976,7 @@ function _partnerMonthAgg(targets,monthYm){
   let cost=0,rev=0,days=0;
   targets.forEach(v=>{
     const daily=Number(v.partner_daily_cost)||0;
-    let vCost=0,vRev=0; // 車両ごとに税抜換算して合算（車両別明細の合計と1円単位で一致させる）
+    let vCost=0,vRev=0;
     RESERVATIONS.forEach(r=>{
       if(r.status==='cancelled')return;
       const f=FLEET.find(x=>x.reservation_id===r.id);
@@ -1991,7 +1988,7 @@ function _partnerMonthAgg(targets,monthYm){
       const bp=+(r.base_price||0),op=+(r.option_price||0),disc=+(r.discount||0);
       days+=d; vCost+=daily*d; vRev+=(bp>0||op>0)?Math.max(0,bp+op-disc):+(r.price||0);
     });
-    cost+=_exTax(vCost); rev+=_exTax(vRev);
+    cost+=vCost; rev+=vRev;
   });
   return {cost,rev,days};
 }
@@ -2028,13 +2025,13 @@ function renderCostMonthly(targets,curYm){
   });
   // 月セレクタ + 選択月ラベル
   const sel=document.getElementById('cost-month-sel');
-  if(sel){sel.innerHTML=aggs.map(a=>{const [yy,mm]=a.k.split('-');return `<option value="${a.k}"${a.k===curYm?' selected':''}>${yy}年${+mm}月（お支払 税抜 ${a.cost>0?'¥'+a.cost.toLocaleString():'¥0'}${PAID_YM[a.k]?'・残高 ¥'+(a.cost-PAID_YM[a.k]).toLocaleString():''}）</option>`;}).join('');}
+  if(sel){sel.innerHTML=aggs.map(a=>{const [yy,mm]=a.k.split('-');return `<option value="${a.k}"${a.k===curYm?' selected':''}>${yy}年${+mm}月（お支払 ${a.cost>0?'¥'+a.cost.toLocaleString():'¥0'}${PAID_YM[a.k]?'・残高 ¥'+(a.cost-PAID_YM[a.k]).toLocaleString():''}）</option>`;}).join('');}
   const lab=document.getElementById('cost-detail-label');
   if(lab){const p=curYm.split('-'); lab.textContent=`▼ ${p[0]}年${+p[1]}月 の稼働詳細（車両別）`;}
   const gProf=gRev-gCost;
-  box.innerHTML=`<div style="font-size:13px;font-weight:900;color:#1e293b;margin-bottom:6px">📅 月別 協力会社お支払い（年間推移） <span style="font-size:13px;font-weight:900;color:#1e293b;margin:0 6px">残高 ¥${(gCost-gPaid).toLocaleString()}</span><span style="font-size:11px;font-weight:600;color:#64748b">金額は税抜（日額×稼働日 ÷1.1）。行をタップするとその月の車両別明細へ</span></div>`
+  box.innerHTML=`<div style="font-size:13px;font-weight:900;color:#1e293b;margin-bottom:6px">📅 月別 協力会社お支払い（年間推移） <span style="font-size:13px;font-weight:900;color:#1e293b;margin:0 6px">残高 ¥${(gCost-gPaid).toLocaleString()}</span><span style="font-size:11px;font-weight:600;color:#64748b">お支払額＝日額×稼働日。行をタップするとその月の車両別明細へ</span></div>`
     +`<div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:10px"><table style="width:100%;border-collapse:collapse;background:#fff;min-width:720px">`
-    +`<thead><tr style="background:#f1f5f9">`+['月','稼働日','お支払額（税抜）','残高','送金済','推移','売上（税抜）','粗利（税抜）'].map(h=>`<th style="padding:8px 12px;text-align:${(h==='月'||h==='推移')?'left':'right'};font-size:12px;color:#475569;white-space:nowrap">${h}</th>`).join('')+`</tr></thead>`
+    +`<thead><tr style="background:#f1f5f9">`+['月','稼働日','お支払額','残高','送金済','推移','売上','粗利'].map(h=>`<th style="padding:8px 12px;text-align:${(h==='月'||h==='推移')?'left':'right'};font-size:12px;color:#475569;white-space:nowrap">${h}</th>`).join('')+`</tr></thead>`
     +`<tbody>${rows}`
     +`<tr style="background:#1e293b;color:#fff;font-weight:800;border-top:3px solid #475569"><td style="padding:8px 12px">合計 (${months.length}ヶ月)</td><td style="padding:8px 12px;text-align:right">${gDays}日</td><td style="padding:8px 12px;text-align:right;color:#fca5a5">¥${gCost.toLocaleString()}</td><td style="padding:8px 12px;text-align:right;font-size:15px">¥${(gCost-gPaid).toLocaleString()}</td><td style="padding:8px 12px;text-align:right;color:#86efac">¥${gPaid.toLocaleString()}</td><td></td><td style="padding:8px 12px;text-align:right;color:#86efac">¥${gRev.toLocaleString()}</td><td style="padding:8px 12px;text-align:right;color:${gProf>=0?'#fbbf24':'#fca5a5'}">${_sgnYen(gProf)}</td></tr>`
     +`</tbody></table></div>`;
