@@ -119,7 +119,7 @@ var SWP_WH=[];
 function mtgXRow(bk,tg,ar,man,wh){var e='<td></td>',d=ar-tg,cl=Math.round(d/1e3)==0?'':d>=0?' pos':' neg',sd=(d>=0?'+':'−')+man(Math.abs(d)),E=function(n){var s='';for(var i=0;i<n;i++)s+=e;return s;};
   var w=wh('<b>予約外・未配車（クラスなし）</b><br>店の実績（予約＋予約外）からクラス行の実績を引いた分＝予約外売上（店舗）と、まだ車に配車していない予約など<br>目標＝この月の予約外・未配車の実績 ¥'+Math.round(tg).toLocaleString()+'（見込み＝今の実績・クラス目標と足して店目標）<br>実績・着地 ¥'+Math.round(ar).toLocaleString());
   return '<tr class="kqx"'+w+'><td class="kqn" style="text-align:left">予約外・未配車<small class="nxg">（クラスなし）</small></td>'+E(2+(bk?1:0))
-    +'<td class="kq0">'+man(tg)+'</td><td class="kq1">'+man(ar)+'</td><td class="kq2'+cl+'">'+sd+'</td>'+E(1)+E(12)
+    +'<td class="kq0">'+man(tg)+'</td><td class="kq1">'+man(ar)+'</td><td class="kq2'+cl+'">'+sd+'</td>'+E(1)+E(8)
     +'<td class="kq0">'+man(tg)+'</td><td class="kq1">'+man(ar)+'</td><td class="kq2'+cl+'">'+sd+'</td>'+E(1)+E(1)+'</tr>';}
 function renderSwap(D,op){var el=document.getElementById("swp");if(!el)return;
   var o=D.data,CAP=0.70,MIN=0.50,SELL=0.60,DM=30,FR="2026-04",nw=new Date(Date.now()+9*3600000);nw.setUTCDate(1);nw.setUTCMonth(nw.getUTCMonth()-1);var TO=nw.toISOString().slice(0,7);var CM=new Date(Date.now()+9*3600000).toISOString().slice(0,7);
