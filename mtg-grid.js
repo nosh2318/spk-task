@@ -44,7 +44,9 @@ function signTone(t){
 /* 差・% の色（signTone）：マイナス赤・プラス青・ゼロ黒（まとめ・合算・BT・HDM・計・クラスの全行） */
 "#sum table.kqg tr td:is(.kq2,.kq3).pos{color:#1d4ed8!important}",
 "#sum table.kqg tr td:is(.kq2,.kq3).neg{color:#b91c1c!important}",
-"#sum table.kqg tr td:is(.kq2,.kq3).zr{color:#111827!important}"
+"#sum table.kqg tr td:is(.kq2,.kq3).zr{color:#111827!important}",
+/* 予約外・未配車の行（mtgXRow）：薄いグレー */
+"#sum table.kqg tr.kqx td{background:#f3f4f6!important}"
 ].join("\n");var st=document.createElement("style");st.id="mtgGridCss";st.textContent=css;document.head.appendChild(st);})();
 /* 2026-10-21 オーナー「スマホ全く見えない」：幅≤768px の時だけ、サマリの表（table.kqg）を読み取ってカードに組み直す（値は表のセルをそのまま使う＝計算しない）。PC は表のまま（.kqmob は PC では出さない）。
    まとめ＝大カード1枚（売上 実績／目標・達成率／着地見込み／目標・差／稼働率 実績／目標／単価 実績／あるべき／見込めない不足 or 余裕）。クラス＝1クラス1カード（見出し＝クラス名・型タグ・やること／本文＝ラベル｜実績／目標｜差%）。
@@ -101,8 +103,8 @@ function mobCard(tr,G,nmc){
   function rw(l,g,a,b,d){var v=mobV(G,g,a),u=mobV(G,g,b);if(!v&&!u)return '';
     var one=(G[g]&&G[g][a]&&(G[g][a].colSpan||1)>1);  /* 予約なし等 */
     return '<tr><th>'+l+'</th><td>'+(one?'<span class="mneg">'+v+'</span>':v+(u?' ／ '+u:''))+'</td><td class="'+(d?mobC(G,g,d):'')+'">'+(d&&!one?mobV(G,g,d):'')+'</td></tr>';}
-  var bk=G['目標予約件数']&&G['目標予約件数']['']?'<tr><th>目標予約件数</th><td>'+G['目標予約件数'][''].textContent+'</td><td></td></tr>':'';
-  return '<div class="mcd'+(tr.classList.contains('kqs')?' mcs':'')+'"'+mobW(tr)+'><div class="mch"><b>'+nmc+(tag?' <small>'+tag+'</small>':'')+'</b><span class="'+mobSg(act)+'">'+act+'</span></div>'
+  var bk=G['目標予約件数']&&G['目標予約件数']['']&&G['目標予約件数'][''].textContent?'<tr><th>目標予約件数</th><td>'+G['目標予約件数'][''].textContent+'</td><td></td></tr>':'';
+  return '<div class="mcd'+(tr.classList.contains('kqs')||tr.classList.contains('kqx')?' mcs':'')+'"'+mobW(tr)+'><div class="mch"><b>'+nmc+(tag?' <small>'+tag+'</small>':'')+'</b><span class="'+mobSg(act)+'">'+act+'</span></div>'
     +'<table class="mtb"><tbody>'
     +rw('売上','売上','実績','目標','%')+rw('着地','着地見込み','見込','目標','%')+rw('稼働率','稼働率','実績','目標','%')+rw('単価','単価（1日）','実績','目標','%')
     +rw('台数','台数','グロス','稼働','')+bk+'</tbody></table></div>';}
@@ -112,8 +114,15 @@ function mobCard(tr,G,nmc){
    稼働率＝Σmin(貸出, 稼働可能×70%)÷Σ稼働可能／単価＝Σ売上÷Σ貸出／月需要＝Σ貸出÷（稼働可能がある月数）／n＝直近の確定月の台数。
    入れる側の増分＝1台×30日×min(稼働率,70%)×単価（稼働率50%未満＝空きがあるクラスは0）。出す側の減少＝max(0, 月需要−(n−1)×30×70%)×単価。効果＝増分−減少（月あたり）。効果の大きい順に上位5件 */
 var SWP_WH=[];
+/* 2026-10-21 オーナー「全て足しても-88にならない」：サマリのまとめカードの最後のクラス行の下に「予約外・未配車（クラスなし）」の行（目標＝その月の予約外・未配車の実績＝見込み／実績／着地＝同じ実績）。
+   台数・台あたり・単価・稼働率の列は空欄。bk＝目標予約件数の列あり（高松）。クラス行＋この行＝まとめ（売上・着地） */
+function mtgXRow(bk,tg,ar,man,wh){var e='<td></td>',d=ar-tg,cl=Math.round(d/1e3)==0?'':d>=0?' pos':' neg',sd=(d>=0?'+':'−')+man(Math.abs(d)),E=function(n){var s='';for(var i=0;i<n;i++)s+=e;return s;};
+  var w=wh('<b>予約外・未配車（クラスなし）</b><br>店の実績（予約＋予約外）からクラス行の実績を引いた分＝予約外売上（店舗）と、まだ車に配車していない予約など<br>目標＝この月の予約外・未配車の実績 ¥'+Math.round(tg).toLocaleString()+'（見込み＝今の実績・クラス目標と足して店目標）<br>実績・着地 ¥'+Math.round(ar).toLocaleString());
+  return '<tr class="kqx"'+w+'><td class="kqn" style="text-align:left">予約外・未配車<small class="nxg">（クラスなし）</small></td>'+E(2+(bk?1:0))
+    +'<td class="kq0">'+man(tg)+'</td><td class="kq1">'+man(ar)+'</td><td class="kq2'+cl+'">'+sd+'</td>'+E(1)+E(12)
+    +'<td class="kq0">'+man(tg)+'</td><td class="kq1">'+man(ar)+'</td><td class="kq2'+cl+'">'+sd+'</td>'+E(1)+E(1)+'</tr>';}
 function renderSwap(D,op){var el=document.getElementById("swp");if(!el)return;
-  var o=D.data,CAP=0.70,MIN=0.50,SELL=0.60,DM=30,FR="2026-04",nw=new Date(Date.now()+9*3600000);nw.setUTCDate(1);nw.setUTCMonth(nw.getUTCMonth()-1);var TO=nw.toISOString().slice(0,7);
+  var o=D.data,CAP=0.70,MIN=0.50,SELL=0.60,DM=30,FR="2026-04",nw=new Date(Date.now()+9*3600000);nw.setUTCDate(1);nw.setUTCMonth(nw.getUTCMonth()-1);var TO=nw.toISOString().slice(0,7);var CM=new Date(Date.now()+9*3600000).toISOString().slice(0,7);
   var ms=D.months.filter(function(m){return m>=FR&&m<=TO&&o[m];});SWP_WH=[];
   function k(v){return Math.round(v).toLocaleString();}function P(v){return Math.round(v*100)+'%';}
   function man(v){var a=Math.abs(v);return (a>=1e6?Math.round(v/1e4):Math.round(v/1e3)/10).toLocaleString()+'万';}
@@ -122,11 +131,12 @@ function renderSwap(D,op){var el=document.getElementById("swp");if(!el)return;
      その月（n>0・ad>0）だけ 稼働可能・貸出・売上 を積む（未稼働の月は分母にも分子にも入れない）。n＝直近の確定月にフラグが立っている台数（無ければ0＝候補にしない） */
   function stat(uk,ck,ufield,cfield){var rd=0,ad=0,rc=0,rv=0,mn=0,n=0,m0='',m1='';ms.forEach(function(m){var u=(o[m][ufield]||{})[uk],v=(o[m][cfield]||{})[ck];
       if(!(u&&u.n>0&&u.ad>0))return;rd+=u.rd;ad+=u.ad;rc+=Math.min(u.rd,u.ad*CAP);mn++;if(v)rv+=v.r||0;if(!m0)m0=m;m1=m;if(m==TO)n=u.n;});
+    var uc=(o[CM]&&o[CM][ufield]||{})[uk];if(uc&&uc.n>0)n=uc.n;  /* 2026-10-21 台数＝今月のフラグ台数（高松は10月に13→34台へ増車＝9月の台数だと少なすぎる）。今月に行が無ければ直近の確定月 */
     if(!ad||!rd||!rv||!n)return null;var fr=rc/ad,pr=rv/rd,dm=rd/mn;
     return {rd:rd,ad:ad,rv:rv,mn:mn,n:n,m0:m0,m1:m1,fr:fr,pr:pr,dmd:dm,inc:fr>=MIN-1e-9?DM*Math.min(fr,CAP)*pr:0,dec:Math.max(0,dm-(n-1)*DM*CAP)*pr};}
   var ck={};ms.forEach(function(m){Object.keys(o[m].util||{}).forEach(function(c){if(c!="未配車"&&c!="送迎"&&c!="AA")ck[c]=1;});});
   var V={};Object.keys(ck).forEach(function(c){var s=stat(c,c,'util','cls');if(s)V[c]=s;});
-  function bs(l,v){return l+'：起算：配車表の稼働フラグ（'+(+v.m0.slice(5))+'月〜'+(+v.m1.slice(5))+'月・'+v.mn+'か月）・貸出 '+k(v.rd)+'日／稼働可能 '+k(v.ad)+'日・稼働率 '+P(v.fr)+'・単価 ¥'+k(v.pr)+'・売上 ¥'+k(v.rv)+'・月需要 '+(Math.round(v.dmd*10)/10)+'日・直近月（'+(+TO.slice(5))+'月）の稼働フラグ台数 '+v.n+'台';}
+  function bs(l,v){return l+'：起算：配車表の稼働フラグ（'+(+v.m0.slice(5))+'月〜'+(+v.m1.slice(5))+'月・'+v.mn+'か月）・貸出 '+k(v.rd)+'日／稼働可能 '+k(v.ad)+'日・稼働率 '+P(v.fr)+'・単価 ¥'+k(v.pr)+'・売上 ¥'+k(v.rv)+'・月需要 '+(Math.round(v.dmd*10)/10)+'日・今月の稼働フラグ台数 '+v.n+'台';}
   function why(t,lx,vx,ly,vy,e){return '<b>🔁 '+t+'</b><br>期間 '+PL+'（確定月の蓄積）<br>出す側 '+bs(lx,vx)+'<br>入れる側 '+bs(ly,vy)
     +'<br>減少 ＝ max(0, 月需要 '+(Math.round(vx.dmd*10)/10)+'日 − ('+vx.n+'−1)台×'+DM+'日×'+P(CAP)+') × ¥'+k(vx.pr)+' ＝ ¥'+k(vx.dec)
     +'<br>増分 ＝ 1台×'+DM+'日×min('+P(vy.fr)+','+P(CAP)+')×¥'+k(vy.pr)+' ＝ ¥'+k(vy.inc)+'（稼働率'+P(MIN)+'未満のクラスは0）'
