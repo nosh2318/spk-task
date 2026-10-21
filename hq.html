@@ -39,7 +39,7 @@ body{background:var(--bg);color:var(--ink);font:14px/1.6 -apple-system,BlinkMacS
 .muted{color:var(--sub);font-size:12px}
 .note{background:var(--chip);border-radius:10px;padding:12px 14px;margin-bottom:12px;font-size:13px}
 .note.warn{border-left:4px solid var(--warn)}
-.st{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums;margin-top:2px}.st th{font-size:11px;color:var(--sub);font-weight:600;text-align:right;padding:3px 4px}.st td{padding:4px;border-top:1px solid var(--line);text-align:right;white-space:nowrap}.st td:first-child,.st th:first-child{text-align:left}.st tr.sub td{color:var(--sub);font-size:12px;border-top:0;padding-top:0}.sec-h{font-weight:700;font-size:14px;margin:4px 0 8px}.td-h{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}.td-row{font-size:13px}.td-new{margin-top:6px;display:inline-block;padding:4px 10px;border-radius:8px;background:#e8f6ec;color:#17663a;font-weight:600}.td-new b{font-size:18px}.td-al{margin-top:6px;font-size:13px}.td-al a{color:#c0392b;text-decoration:underline;margin-right:6px}.td-cash{margin-top:6px;padding:4px 10px;border-radius:8px;background:var(--chip);font-size:13px}.td-cash.warn{background:#fff1d6;border:1px solid #f0b44c}.td-red{color:#c0392b;font-weight:700}.td-pos{color:#17663a}.td-amt{margin-top:4px;font-size:13px}@media (prefers-color-scheme:dark){.td-new{background:#163524;color:#7ee2a2}.td-cash.warn{background:#3a2a10}}
+.st{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums;margin-top:2px}.st th{font-size:11px;color:var(--sub);font-weight:600;text-align:right;padding:3px 4px}.st td{padding:4px;border-top:1px solid var(--line);text-align:right;white-space:nowrap}.st td:first-child,.st th:first-child{text-align:left}.st tr.sub td{color:var(--sub);font-size:12px;border-top:0;padding-top:0}.sec-h{font-weight:700;font-size:14px;margin:4px 0 8px}.td-h{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}.td-row{font-size:13px}.td-new{margin-top:6px;display:inline-block;padding:4px 10px;border-radius:8px;background:#e8f6ec;color:#17663a;font-weight:600}.td-new b{font-size:18px}.td-al{margin-top:6px;font-size:13px}.td-al a{color:#c0392b;text-decoration:underline;margin-right:6px}.td-cash{margin-top:6px;padding:4px 10px;border-radius:8px;background:var(--chip);font-size:13px}.td-cash.warn{background:#fff1d6;border:1px solid #f0b44c}.td-red{color:#c0392b;font-weight:700}.td-pos{color:#17663a}.td-amt{margin-top:4px;font-size:13px}.td-sh{margin:2px 0 6px;font-size:13px;line-height:1.7}@media (prefers-color-scheme:dark){.td-new{background:#163524;color:#7ee2a2}.td-cash.warn{background:#3a2a10}}
 @media (max-width:800px){
  /* スマホ：左メニューは隠し、上の「メニュー」選択で切り替える */
  .app{grid-template-columns:minmax(0,1fr)}
@@ -183,7 +183,19 @@ function pct(a,b){return b?Math.round(a/b*100)+'%':'—';}
 function addYm(ym,n){var y=+ym.slice(0,4),m=+ym.slice(5)-1+n;y+=Math.floor(m/12);m=((m%12)+12)%12;return y+'-'+String(m+1).padStart(2,'0');}
 // 各店 本日の状況（3Dバーチャル本社 company3d.html の左パネルと同じ関数・同じ表示）
 function rpcB(url,anon,fn,body){return fetch(url+'/rest/v1/rpc/'+fn,{method:'POST',headers:{apikey:anon,Authorization:'Bearer '+anon,'Content-Type':'application/json'},body:JSON.stringify(body||{})}).then(function(r){return r.json();}).catch(function(){return null;});}
-var TD={tc:{},al:{},nb:{},amt:{},att:{},cash:{}};
+var TD={tc:{},al:{},nb:{},amt:{},att:{},cash:{},sh:{}};
+// 今日の出勤者（シフト表 shifts / nha_shifts / bt_shifts から読むだけ）。ログイン情報はこの画面と同じ場所にある管理APP・シフト画面のものを使う
+function shTok(keys){for(var i=0;i<keys.length;i++){try{var v=JSON.parse(localStorage.getItem(keys[i])||'null');var s=v&&(v.currentSession||v.session||v);if(s&&s.access_token&&(!s.expires_at||s.expires_at*1000>Date.now()+30000))return s.access_token;}catch(e){}}return null;}
+function shLoad(){
+ var d=new Date(Date.now()+9*3600e3).toISOString().slice(0,10);
+ [['spk',MAIN_URL,MAIN_ANON,'shifts',['sb-ckrxttbnawkclshczsia-auth-token','shifthub_tokA']],['nha',MAIN_URL,MAIN_ANON,'nha_shifts',['sb-ckrxttbnawkclshczsia-auth-token','shifthub_tokA']],['bt',BT_URL,BT_ANON,'bt_shifts',['shifthub_tokB','sb-ggqugvyskyiblxiycpci-auth-token']]].forEach(function(c){
+  var tk=shTok(c[4]);if(!tk){TD.sh[c[0]]=null;return;}
+  fetch(c[1]+'/rest/v1/'+c[3]+'?select=staff_name,symbol,start_time,end_time&date=eq.'+d+'&order=start_time.asc',{headers:{apikey:c[2],Authorization:'Bearer '+tk}}).then(function(r){return r.ok?r.json():null;}).then(function(l){
+   if(!Array.isArray(l))return;
+   // シフト画面と同じ判定：記号が無く時間が入っていれば出勤（●）、公・希・有は休み
+   TD.sh[c[0]]=l.filter(function(r){var s=r.symbol||((r.start_time&&r.end_time)?'●':'');return s&&s!=='公'&&s!=='希'&&s!=='有';});todayRender();}).catch(function(){});
+ });
+}
 var TD_ST=[{k:'nha',ic:'🌺',nm:'那覇'},{k:'spk',ic:'❄️',nm:'札幌'},{k:'bt',ic:'🍜',nm:'高松'}];
 var TD_AL={未配車:'🚗未配車',未入金:'💴未入金',車検接近:'🔧車検',点検接近:'🔩点検'};
 var TD_APP={nha:'https://nosh2318.github.io/naha-project/',spk:'https://nosh2318.github.io/spk-task/',bt:'https://buddica-touring.github.io/app/'};
@@ -201,11 +213,13 @@ function todayRender(){
    cash='<div class="td-cash'+((low||(c.low||[]).length)?' warn':'')+'">💴 現金残高 <b>'+yen2(c.total)+'</b>'+(low?' <span class="td-red">要補充</span>':'')+(ls?' / '+ls:'')+'</div>';}
   return '<div class="card td"><div class="td-h"><b>'+s.ic+' '+s.nm+'店</b>'+(at?'<span class="muted">👥'+at.n+'名 残'+at.rem+'</span>':'')+'</div>'+
    '<div class="td-row">貸出 <b>'+(tc['貸出計']||0)+'</b> ／ 返却 <b>'+(tc['返却計']||0)+'</b> ／ 洗車 <b>'+(tc['洗車']||0)+'</b> ／ 他 <b>'+(tc['その他']||0)+'</b></div>'+
+   (Array.isArray(TD.sh[s.k])?'<div class="td-sh">🗓 出勤 '+(TD.sh[s.k].length?TD.sh[s.k].map(function(r){return '<b>'+esc(r.staff_name||'')+'</b>'+(r.start_time&&r.end_time?' <span class="muted">'+esc(r.start_time)+'-'+esc(r.end_time)+'</span>':'');}).join('　'):'<span class="muted">シフト登録なし</span>')+'</div>':'')+
    (nb!=null?'<div class="td-new">📥 本日の新規予約 <b>'+nb+'</b></div>':'')+amRow+
    (alerts.length?'<div class="td-al">🚨 '+alerts.join('　')+'</div>':'')+cash+'</div>';
  }).join('');
 }
 function todayLoad(){
+ shLoad();
  [['nha',MAIN_URL,MAIN_ANON,'company_task_counts',{p_store:'nha'}],['spk',MAIN_URL,MAIN_ANON,'company_task_counts',{p_store:'spk'}],['bt',BT_URL,BT_ANON,'bt_company_task_counts',{}]].forEach(function(c){
   rpcB(c[1],c[2],c[3],c[4]).then(function(o){if(o&&typeof o==='object'){TD.tc[c[0]]=o;todayRender();}});
   rpcB(c[1],c[2],c[0]==='bt'?'bt_company_alerts':'company_alerts',c[4]).then(function(o){if(o&&typeof o==='object'){TD.al[c[0]]=o;todayRender();}});
