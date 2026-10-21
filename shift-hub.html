@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta http-equiv="Cache-Control" content="no-cache,no-store,must-revalidate">
-<title>シフト一元管理ハブ（3店舗・6〜10月）</title>
+<title>シフト一元管理ハブ（3店舗）</title>
 <style>
 :root{--navy:#0e2a47;--ink:#1a2733;--gray:#5d6b7a;--line:#e3e9ef;--bg:#f3f6f9;--nha:#e8505b;--spk:#2c82c9;--bt:#1ec8b0;--accent:#5b6cf0}
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -162,7 +162,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","N
 <body>
 <div class="bar"><div class="wrap">
   <a href="company3d.html" style="display:inline-block;font-size:12px;font-weight:800;color:#fff;text-decoration:none;background:rgba(255,255,255,.18);padding:5px 11px;border-radius:14px;margin-bottom:8px">← 本社TOP</a>
-  <h1>🗓 シフト一元管理ハブ<span style="font-size:11px;font-weight:700;background:rgba(255,255,255,.16);padding:3px 9px;border-radius:14px">那覇 / 札幌 / 高松 ・ 6〜10月限定</span></h1>
+  <h1>🗓 シフト一元管理ハブ<span style="font-size:11px;font-weight:700;background:rgba(255,255,255,.16);padding:3px 9px;border-radius:14px">那覇 / 札幌 / 高松 ・ 4か月前〜2か月先</span></h1>
   <div class="sub">各店の出勤簿（実態＝マスター）を1画面で確認。編集タブはシミュレーション専用で、各店マスターには一切書き戻しません。</div>
   <div class="conn" id="conn"></div>
 </div></div>
@@ -215,7 +215,8 @@ const STORES=[
   {key:'spk',label:'札幌',color:'var(--spk)',proj:'A',staffTbl:'staff',shiftTbl:'shifts',resTbl:'reservations',sdCol:'lend_date',edCol:'return_date',settingsTbl:'app_settings',bpfx:'labor_budget_spk_'},
   {key:'bt', label:'高松',color:'var(--bt)', proj:'B',staffTbl:'bt_staff',shiftTbl:'bt_shifts',resTbl:'bt_reservations',sdCol:'start_date',edCol:'end_date'}
 ];
-const MONTHS=['2026-06','2026-07','2026-08','2026-09','2026-10'];
+// 2026-10-21 オーナー「シフトが反映されてない」＝6〜10月固定で11月以降が出なかった→当月の4か月前〜2か月先を毎回作る
+const MONTHS=(function(){const n=new Date(Date.now()+9*3600e3);const out=[];for(let i=-4;i<=2;i++){const d=new Date(Date.UTC(n.getUTCFullYear(),n.getUTCMonth()+i,1));out.push(d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0'));}return out;})();
 const SYM={'●':{l:'出勤',c:'#2563eb',bg:'#D4EBFA'},'公':{l:'公休',c:'#64748b',bg:'#E8E8E8'},'希':{l:'希望休',c:'#b45309',bg:'#FFF3CD'},'有':{l:'有休',c:'#15803d',bg:'#dcfce7'},'出':{l:'出張',c:'#6d28d9',bg:'#ede9fe'}};
 const CYCLE=['','●','公','希','有','出'];
 const WK=['日','月','火','水','木','金','土'];
@@ -271,6 +272,8 @@ async function ensureFreshB(){
 }
 function hdr(proj){const c=PROJ[proj];return {'apikey':c.key,'Authorization':'Bearer '+(tokenFor(proj)||c.key),'Content-Type':'application/json'};}
 async function sbGet(proj,path){const c=PROJ[proj];const r=await fetch(c.url+'/rest/v1/'+path,{headers:hdr(proj)});if(!r.ok)throw new Error(proj+' HTTP '+r.status);return r.json();}
+// 2026-10-21 PostgREST は1回1000行まで→1000行ずつ続けて読む（path に order を付けて呼ぶこと）
+async function sbGetAll(proj,path){let all=[];for(let off=0;off<50000;off+=1000){const rows=await sbGet(proj,path+'&limit=1000&offset='+off);all=all.concat(rows||[]);if(!rows||rows.length<1000)break;}return all;}
 async function sbPost(proj,path,body){const c=PROJ[proj];const r=await fetch(c.url+'/rest/v1/'+path,{method:'POST',headers:Object.assign({},hdr(proj),{'Prefer':'return=representation'}),body:JSON.stringify(body)});if(!r.ok)throw new Error(proj+' HTTP '+r.status);return r.json();}
 /* ===== パターン保存（チーム共有・固定スナップショット / projA: shifthub_patterns） ===== */
 let _patternMode=false,_patternName='';
@@ -361,10 +364,10 @@ async function loadStore(st){
       (rows||[]).forEach(r=>{const ym=String(r.key).replace(st.bpfx,'');const v=parseInt(String(r.value).replace(/[^\d-]/g,''),10);if(ym&&!isNaN(v))laborBudgetByStore[st.key][ym]=v;});
     }catch(e){laborBudgetByStore[st.key]={};}
   }
-  // shifts（全月 6〜10月をフル日付キーで一括読み込み）
-  const LO=MONTHS[0]+'-01', HI=MONTHS[MONTHS.length-1]+'-31';
+  // shifts（表示する全月をフル日付キーで一括読み込み）
+  const LO=MONTHS[0]+'-01', HI=MONTHS[MONTHS.length-1]+'-'+String(daysIn(MONTHS[MONTHS.length-1])).padStart(2,'0');
   let sh=[];
-  try{sh=await sbGet(st.proj,st.shiftTbl+'?select=date,staff_name,symbol,start_time,end_time&date=gte.'+LO+'&date=lte.'+HI);}catch(e){sh=[];}
+  try{sh=await sbGetAll(st.proj,st.shiftTbl+'?select=date,staff_name,symbol,start_time,end_time&date=gte.'+LO+'&date=lte.'+HI+'&order=date.asc,staff_name.asc');}catch(e){sh=[];}
   const m={};
   (sh||[]).forEach(r=>{const dt=String(r.date).slice(0,10);if(!dt)return;if(!m[r.staff_name])m[r.staff_name]={};const sym=r.symbol||((r.start_time&&r.end_time)?'●':'');m[r.staff_name][dt]={symbol:sym,start:r.start_time||'',end:r.end_time||''};});
   masterByStore[st.key]=m;
@@ -374,8 +377,8 @@ async function loadStore(st){
   const monthSet=new Set(MONTHS);
   const _prevDay=(s)=>{const a=s.split('-').map(Number);return new Date(Date.UTC(a[0],a[1]-1,a[2]-1)).toISOString().slice(0,10);};
   let rs=[];
-  try{rs=await sbGet(st.proj,st.resTbl+'?select='+st.sdCol+','+st.edCol+',status&or=('+st.sdCol+'.gte.'+LO+','+st.edCol+'.gte.'+LO+')&'+st.sdCol+'=lte.'+HI);}catch(e){
-    try{rs=await sbGet(st.proj,st.resTbl+'?select='+st.sdCol+','+st.edCol+',status&'+st.edCol+'=gte.'+LO+'&'+st.sdCol+'=lte.'+HI);}catch(e2){rs=[];}
+  try{rs=await sbGetAll(st.proj,st.resTbl+'?select=id,'+st.sdCol+','+st.edCol+',status&or=('+st.sdCol+'.gte.'+LO+','+st.edCol+'.gte.'+LO+')&'+st.sdCol+'=lte.'+HI+'&order=id.asc');}catch(e){
+    try{rs=await sbGetAll(st.proj,st.resTbl+'?select=id,'+st.sdCol+','+st.edCol+',status&'+st.edCol+'=gte.'+LO+'&'+st.sdCol+'=lte.'+HI+'&order=id.asc');}catch(e2){rs=[];}
   }
   const tc={};
   (rs||[]).forEach(r=>{
@@ -505,7 +508,7 @@ function gridHtml(stKey,editable){
   const data=editable?(simByStore[stKey]||{}):(masterByStore[stKey]||{});
   const staff=staffByStore[stKey]||[];
   const tc=taskCountByStore[stKey]||{};
-  // 全月（6〜10月）を連続表示。日付はフル日付キー。右スクロールで先の月まで見れる
+  // 表示する全月を連続表示。日付はフル日付キー。右スクロールで先の月まで見れる
   const COLS=[];MONTHS.forEach(ym=>{const di=daysIn(ym);for(let d=1;d<=di;d++)COLS.push({ym,d,key:ym+'-'+String(d).padStart(2,'0'),w:dow(ym,d)});});
   // 出勤者数を日ごとに集計（非表示は除外・編集タブの増減に都度追従）
   const dayCnt={};COLS.forEach(co=>dayCnt[co.key]=0);
