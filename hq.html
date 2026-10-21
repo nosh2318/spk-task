@@ -38,7 +38,7 @@ body{background:var(--bg);color:var(--ink);font:14px/1.6 -apple-system,BlinkMacS
 .muted{color:var(--sub);font-size:12px}
 .note{background:var(--chip);border-radius:10px;padding:12px 14px;margin-bottom:12px;font-size:13px}
 .note.warn{border-left:4px solid var(--warn)}
-.st{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums;margin-top:2px}.st th{font-size:11px;color:var(--sub);font-weight:600;text-align:right;padding:3px 4px}.st td{padding:4px;border-top:1px solid var(--line);text-align:right;white-space:nowrap}.st td:first-child,.st th:first-child{text-align:left}
+.st{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums;margin-top:2px}.st th{font-size:11px;color:var(--sub);font-weight:600;text-align:right;padding:3px 4px}.st td{padding:4px;border-top:1px solid var(--line);text-align:right;white-space:nowrap}.st td:first-child,.st th:first-child{text-align:left}.st tr.sub td{color:var(--sub);font-size:12px;border-top:0;padding-top:0}.sec-h{font-weight:700;font-size:14px;margin:4px 0 8px}
 @media (max-width:800px){
  .app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
  #side{display:flex;gap:4px;overflow-x:auto;padding:8px 12px;white-space:nowrap}
@@ -69,6 +69,9 @@ var SEC=[
   {k:'acct',l:'月次会計',tabs:[['全店','hq-monthly.html']]},
   {k:'fleet',l:'車両収益',sub:'札幌',tabs:[['札幌','fleet-report.html']]},
   {k:'ext',l:'外部レポート',tabs:[['札幌 月次レポート','report.html']]}
+ ]},
+ {g:'BUDDICA',items:[
+  {k:'buddica',l:'BUDDICA',tabs:[['調達',BTA+'procurement.html'],['進捗表','https://docs.google.com/spreadsheets/d/1XYx_aqJk-qm4mf8gW_p9BQiibsamC23t--BniNoB3a4/edit?rm=minimal#gid=1851333794'],['予算・原価','https://docs.google.com/spreadsheets/d/1L_mMMZv_3TbAeAGE2WrjzavddClxmpYecVP_lY3A5lY/edit?rm=minimal#gid=1584833199']]}
  ]},
  {g:'集客・販売',items:[
   {k:'mkt',l:'集客',tabs:[['集客ツール','https://claude.ai/artifact/7o98bxgmCGS9VjbxLcagg5']],ext:true,
@@ -135,40 +138,58 @@ function targetsOf(page){
 }
 function utilOf(m){var u=(m&&m.util)||{},rd=0,ad=0;Object.keys(u).forEach(function(c){rd+=u[c].rd||0;ad+=u[c].ad||0;});return {rd:rd,ad:ad,p:ad?rd/ad:null};}
 function pct(a,b){return b?Math.round(a/b*100)+'%':'—';}
+function addYm(ym,n){var y=+ym.slice(0,4),m=+ym.slice(5)-1+n;y+=Math.floor(m/12);m=((m%12)+12)%12;return y+'-'+String(m+1).padStart(2,'0');}
+// サマリ：上＝直近3か月（当月・翌月・翌々月）のカード／下＝年間（別枠）
 function home(){
  var el=document.getElementById('home'),ym=ymNow(),yr=ym.slice(0,4);
- var ST=[['nha','那覇',MAIN_URL,MAIN_ANON,'nha_mtg_h2','nha-mtg-2026h2.html'],['spk','札幌',MAIN_URL,MAIN_ANON,'spk_mtg_h2','spk-mtg-2026h2.html'],['bt','高松（HDM＋BUDDICA）',BT_URL,BT_ANON,'bt_mtg_h2','bt-mtg-2026h2.html']];
- el.innerHTML='<div class="muted" style="margin-bottom:10px">売上＝返却月（予約＋予約外）／件数＝返却月の予約数／稼働率＝貸出日数÷稼働可能日数（店舗KPIの「グロス」と同じ）。年間＝'+yr+'年1〜12月（仮）。</div><div class="grid">'+ST.map(function(s){return '<div class="card" id="c-'+s[0]+'"><h3>'+s[1]+'</h3><div class="muted">読み込み中…</div></div>';}).join('')+'</div>';
- ST.forEach(function(s){
-  Promise.all([rpc(s[2],s[3],s[4]),targetsOf(s[5])]).then(function(x){
-   var d=x[0],T=x[1],o=(d&&d.data)||{},m=o[ym],c=document.getElementById('c-'+s[0]);if(!c)return;
-   if(!m){c.innerHTML='<h3>'+s[1]+'</h3><div class="muted">今月のデータがありません</div>';return;}
-   var u=utilOf(m);
-   // 年間：今月までの実績＋先の月の予約済み
-   var ms=Object.keys(o).filter(function(k){return k.slice(0,4)===yr;}).sort();
-   var A={tR:0,aR:0,fR:0,tC:0,aC:0,rd:0,ad:0};
-   for(var i=1;i<=12;i++){var k=yr+'-'+String(i).padStart(2,'0');A.tR+=T.revT(k);A.tC+=T.cntT(k);}
-   // 目標がある指標は、目標を置いた月だけを実績に数える（目標の無い月の実績で進捗が膨らまないように）
-   ms.forEach(function(k){var mm=o[k];if(k<=ym){if(!A.tR||T.revT(k))A.aR+=mm.tot_r||0;if(!A.tC||T.cntT(k))A.aC+=mm.tot_c||0;var uu=utilOf(mm);A.rd+=uu.rd;A.ad+=uu.ad;}else{A.fR+=mm.tot_r||0;}});
-   var tR=T.revT(ym),tC=T.cntT(ym);
-   function row(l,t,a,p){return '<tr><td>'+l+'</td><td>'+t+'</td><td><b>'+a+'</b></td><td>'+(p||'')+'</td></tr>';}
-   c.innerHTML='<h3>'+s[1]+'</h3>'+
-    '<div class="muted">今月（'+(+ym.slice(5))+'月）</div>'+
-    '<table class="st"><tr><th></th><th>目標</th><th>実績</th><th>進捗</th></tr>'+
-     row('売上',tR?yen(tR):'未設定',yen(m.tot_r),tR?pct(m.tot_r,tR):'')+
-     row('稼働率','未設定',u.p==null?'—':Math.round(u.p*100)+'%','')+
-     row('予約件数',tC?tC+'件':'未設定',(m.tot_c||0)+'件',tC?pct(m.tot_c,tC):'')+
-     row('稼働台数','',(m.nveh||0)+'台','')+
-    '</table>'+
-    '<div class="muted" style="margin-top:10px">年間（'+yr+'年・実績は今月まで／目標のある指標は目標を置いた月の実績）</div>'+
-    '<table class="st"><tr><th></th><th>目標</th><th>実績</th><th>進捗</th></tr>'+
-     row('売上',A.tR?yen(A.tR):'未設定',yen(A.aR),A.tR?pct(A.aR,A.tR):'')+
-     row('稼働率','未設定',A.ad?Math.round(A.rd/A.ad*100)+'%':'—','')+
-     row('予約件数',A.tC?A.tC+'件':'未設定',A.aC+'件',A.tC?pct(A.aC,A.tC):'')+
-    '</table>'+
-    '<div class="muted" style="margin-top:4px">先の月の予約済み売上：'+yen(A.fR)+'（'+yr+'年内）</div>'+
-    '<div class="muted" style="margin-top:6px">出所：'+s[4]+'（'+esc(d.generated||'')+'）・目標＝'+s[5]+'</div>';
-  }).catch(function(e){var c=document.getElementById('c-'+s[0]);if(c)c.innerHTML='<h3>'+s[1]+'</h3><div class="muted">読めませんでした（'+esc(e.message)+'）</div>';});
+ var ST=[['nha','那覇',MAIN_URL,MAIN_ANON,'nha_mtg_h2','nha-mtg-2026h2.html'],['spk','札幌',MAIN_URL,MAIN_ANON,'spk_mtg_h2','spk-mtg-2026h2.html'],['bt','高松',BT_URL,BT_ANON,'bt_mtg_h2','bt-mtg-2026h2.html']];
+ var M3=[[ym,'当月'],[addYm(ym,1),'翌月'],[addYm(ym,2),'翌々月']];
+ el.innerHTML='<div class="muted" style="margin-bottom:10px">売上＝返却月（予約＋予約外）／件数＝返却月の予約数／稼働率＝貸出日数÷稼働可能日数（店舗KPIの「グロス」と同じ）。翌月以降の実績は、今日時点で入っている予約の分です。</div>'+
+  '<div class="sec-h">直近3か月</div><div class="grid" id="m3">'+M3.map(function(x){return '<div class="card"><h3>'+x[1]+'（'+(+x[0].slice(5))+'月）</h3><div class="muted">読み込み中…</div></div>';}).join('')+'</div>'+
+  '<div class="sec-h" style="margin-top:18px">年間（'+yr+'年1〜12月・仮）</div><div class="card" id="yr"><div class="muted">読み込み中…</div></div>'+
+  '<div class="muted" style="margin-top:8px" id="src"></div>';
+ Promise.all(ST.map(function(s){
+  return Promise.all([rpc(s[2],s[3],s[4]),targetsOf(s[5])]).then(function(x){return {s:s,o:(x[0]&&x[0].data)||{},gen:x[0]&&x[0].generated,T:x[1]};},function(e){return {s:s,err:e.message};});
+ })).then(function(R){
+  function cell(v){return '<td>'+v+'</td>';}
+  function head(){return '<tr><th></th>'+R.map(function(r){return '<th>'+r.s[1]+'</th>';}).join('')+'</tr>';}
+  function line(l,f,cls){return '<tr'+(cls?' class="'+cls+'"':'')+'><td>'+l+'</td>'+R.map(function(r){return r.err?cell('—'):cell(f(r));}).join('')+'</tr>';}
+  // 直近3か月
+  document.getElementById('m3').innerHTML=M3.map(function(x){
+   var k=x[0];
+   function m(r){return r.o[k]||{};}
+   return '<div class="card"><h3>'+x[1]+'（'+(+k.slice(5))+'月）</h3><table class="st">'+head()+
+    line('目標売上',function(r){var t=r.T.revT(k);return t?yen(t):'<span class="muted">未設定</span>';})+
+    line('実績売上',function(r){return '<b>'+yen(m(r).tot_r)+'</b>';})+
+    line('進捗',function(r){var t=r.T.revT(k);return t?pct(m(r).tot_r||0,t):'';},'sub')+
+    line('目標稼働率',function(){return '<span class="muted">未設定</span>';})+
+    line('実績稼働率',function(r){var u=utilOf(m(r));return '<b>'+(u.p==null?'—':Math.round(u.p*100)+'%')+'</b>';})+
+    line('目標予約件数',function(r){var t=r.T.cntT(k);return t?t+'件':'<span class="muted">未設定</span>';})+
+    line('予約件数',function(r){return '<b>'+(m(r).tot_c||0)+'件</b>';})+
+    line('稼働台数',function(r){return (m(r).nveh||0)+'台';})+
+    '</table></div>';
+  }).join('');
+  // 年間（目標がある指標は、目標を置いた月の実績だけで進捗を出す）
+  var A=R.map(function(r){
+   if(r.err)return null;var a={tR:0,aR:0,aRall:0,fR:0,tC:0,aC:0,aCall:0,rd:0,ad:0};
+   for(var i=1;i<=12;i++){var k=yr+'-'+String(i).padStart(2,'0');a.tR+=r.T.revT(k);a.tC+=r.T.cntT(k);}
+   Object.keys(r.o).filter(function(k){return k.slice(0,4)===yr;}).forEach(function(k){var mm=r.o[k];
+    if(k<=ym){a.aRall+=mm.tot_r||0;a.aCall+=mm.tot_c||0;if(r.T.revT(k))a.aR+=mm.tot_r||0;if(r.T.cntT(k))a.aC+=mm.tot_c||0;var u=utilOf(mm);a.rd+=u.rd;a.ad+=u.ad;}
+    else a.fR+=mm.tot_r||0;});
+   return a;});
+  function yl(l,f,cls){return '<tr'+(cls?' class="'+cls+'"':'')+'><td>'+l+'</td>'+A.map(function(a){return cell(a?f(a):'—');}).join('')+'</tr>';}
+  document.getElementById('yr').innerHTML='<table class="st">'+head()+
+   yl('目標売上（年）',function(a){return a.tR?yen(a.tR):'<span class="muted">未設定</span>';})+
+   yl('実績売上（1月〜今月）',function(a){return '<b>'+yen(a.aRall)+'</b>';})+
+   yl('進捗（目標を置いた月の実績÷年間目標）',function(a){return a.tR?pct(a.aR,a.tR):'';},'sub')+
+   yl('先の月の予約済み売上（年内）',function(a){return yen(a.fR);})+
+   yl('目標稼働率',function(){return '<span class="muted">未設定</span>';})+
+   yl('実績稼働率（1月〜今月）',function(a){return '<b>'+(a.ad?Math.round(a.rd/a.ad*100)+'%':'—')+'</b>';})+
+   yl('目標予約件数（年）',function(a){return a.tC?a.tC+'件':'<span class="muted">未設定</span>';})+
+   yl('予約件数（1月〜今月）',function(a){return '<b>'+a.aCall+'件</b>';})+
+   yl('進捗（目標を置いた月の件数÷年間目標）',function(a){return a.tC?pct(a.aC,a.tC):'';},'sub')+
+   '</table>';
+  document.getElementById('src').textContent='出所：'+R.map(function(r){return r.s[1]+'＝'+r.s[4]+(r.err?'（読めませんでした：'+r.err+'）':'（'+(r.gen||'')+'）')+'・目標＝'+r.s[5];}).join('／');
  });
 }
 // 管理APP（このサイト）のログイン状態。ログイン情報は管理APPと共有＝ここでログインし直す必要はない
