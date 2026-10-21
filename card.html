@@ -1,0 +1,132 @@
+<!doctype html><html lang="ja"><head>
+<meta name="robots" content="noindex,nofollow"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>カード支出 科目別レポート（振分け）</title><style>
+*{box-sizing:border-box}body{font-family:"Hiragino Sans",system-ui,sans-serif;margin:0;background:#f1f5f9;color:#0f172a;font-size:13px}
+header{background:#0f172a;color:#fff;padding:12px 16px;position:sticky;top:0;z-index:30}
+h1{font-size:16px;margin:0}.sub{font-size:11px;color:#94a3b8;margin-top:2px}
+.wrap{max-width:1500px;margin:0 auto;padding:14px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:12px}
+.kpi{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:9px 11px}.kpi .l{font-size:11px;color:#64748b}.kpi .v{font-size:15px;font-weight:900;margin-top:2px}
+.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.btn{background:#fff;border:1px solid #cbd5e1;border-radius:8px;padding:6px 12px;font-weight:700;cursor:pointer;font-size:12px}
+.btn.warn{color:#b91c1c;border-color:#fca5a5}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.tab{background:#e2e8f0;border:0;border-radius:999px;padding:6px 12px;font-weight:700;cursor:pointer;font-size:12px;color:#334155}
+.tab.on{background:#0f172a;color:#fff}.tab .a{font-size:10px;opacity:.7;margin-left:5px}
+.tab.alert{background:#fef3c7;color:#92400e}
+.card{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin-bottom:14px}
+.card h2{font-size:14px;margin:0 0 8px;border-left:4px solid #2563eb;padding-left:8px}
+.scroll{overflow:auto;max-height:80vh;border:1px solid #e2e8f0;border-radius:10px}
+table{border-collapse:collapse;font-size:12px;white-space:nowrap}th,td{border-bottom:1px solid #eef2f7;padding:5px 8px;text-align:right}
+th{background:#f8fafc;color:#475569;position:sticky;top:0;font-size:11px;z-index:5}
+td.l,th.l{text-align:left}.num{font-variant-numeric:tabular-nums}.muted{color:#cbd5e1}
+tr.sub{background:#eff6ff;font-weight:700}tr.tot{border-top:2px solid #0f172a;font-weight:900}
+.avg{color:#2563eb}.tag{font-size:10px;font-weight:800;border-radius:6px;padding:1px 7px}.fix{background:#dcfce7;color:#166534}.spot{background:#fef3c7;color:#92400e}
+select{font-size:11px;padding:2px 4px;border:1px solid #cbd5e1;border-radius:6px;max-width:130px}
+select.ov{border-color:#2563eb;background:#eff6ff;font-weight:700}
+.mn{max-width:220px;overflow:hidden;text-overflow:ellipsis;display:inline-block;vertical-align:middle}
+.cnt{color:#94a3b8;font-size:11px}
+.sticky-l{position:sticky;left:0;background:#fff;z-index:4}th.sticky-l{z-index:6}
+input.f{border:1px solid #cbd5e1;border-radius:8px;padding:5px 9px;font-size:12px;width:220px}
+#toast{position:fixed;right:16px;bottom:16px;background:#16a34a;color:#fff;font-weight:800;padding:10px 16px;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.2);opacity:0;transition:opacity .2s;z-index:50;pointer-events:none}
+#toast.show{opacity:1}
+</style></head><body>
+<header><h1>💳 カード支出 科目別レポート（振分け）</h1><div class="sub" id="sub"></div></header>
+<div class="wrap">
+<div class="cards" id="kpi"></div>
+<div class="bar">
+ <input class="f" id="filter" placeholder="加盟店名でしぼり込み…">
+ <span class="cnt" id="ovc"></span>
+ <button class="btn" id="exp">振分けを保存(書出)</button>
+ <label class="btn" style="cursor:pointer" id="impl" hidden>初回取込<input type="file" id="imp" accept=".json" style="display:none"></label>
+ 
+</div>
+<div class="tabs" id="tabs"></div>
+<div id="view"></div>
+</div>
+<div id="toast">✓ 保存しました</div>
+<script>
+
+// ===== 2026-10-21 本部ダッシュボード版：明細は DB（hq_card_snapshots の最新）、振分けは hq_card_overrides（1加盟店＝1行）=====
+const SB_URL='https://ckrxttbnawkclshczsia.supabase.co',SB_ANON='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8';
+function tok(){for(const k of Object.keys(localStorage)){if(k.indexOf('sb-ckrxttbnawkclshczsia-auth-token')===0){try{const v=JSON.parse(localStorage.getItem(k));const s=v.currentSession||v.session||v;if(s&&s.access_token&&(!s.expires_at||s.expires_at*1000>Date.now()+30000))return s.access_token;}catch(e){}}}return null;}
+async function sb(path,method,body,prefer){const t=tok();if(!t)throw new Error('ログインが必要です');const r=await fetch(SB_URL+'/rest/v1/'+path,{method:method||'GET',headers:{apikey:SB_ANON,Authorization:'Bearer '+t,'Content-Type':'application/json',Prefer:prefer||'return=representation'},body:body?JSON.stringify(body):undefined});if(!r.ok)throw new Error('HTTP '+r.status+' '+(await r.text()).slice(0,160));const ct=r.headers.get('content-type')||'';return ct.indexOf('json')>=0?r.json():null;}
+let D=null,OV={};
+function msg(h){document.getElementById('view').innerHTML='<div class="card" style="text-align:center;padding:30px">'+h+'</div>';}
+async function hqImport(f){if(!f)return;let j;try{j=JSON.parse(await f.text());}catch(e){alert('ファイルが読めません');return;}
+ if(!j.card||!j.card.merchants){alert('カード明細が入っていないファイルです');return;}
+ const ov=j.card_ov_v2||{},keys=Object.keys(ov);
+ if(!confirm('カード明細（加盟店 '+j.card.merchants.length+'件・'+j.card.months[0]+'〜'+j.card.months[j.card.months.length-1]+'）と振り分け '+keys.length+'件を取り込みます。よろしいですか？'))return;
+ try{await sb('hq_card_snapshots','POST',{period_from:j.card.months[0],period_to:j.card.months[j.card.months.length-1],data:j.card});}catch(e){alert('明細の取込に失敗: '+e.message);return;}
+ let ok=0,ng=0;for(const k of keys){try{await sb('hq_card_overrides','POST',{key:k,cat:ov[k].cat,sub:ov[k].sub});ok++;}catch(e){ng++;}}
+ alert('取込完了：明細1件・振り分け '+ok+'／'+keys.length+'件'+(ng?'（失敗 '+ng+'件＝既にあるもの）':''));location.reload();}
+async function boot(){
+ if(!tok()){msg('ログインが必要です。<a href="index.html" target="_blank">管理APP</a>に本社アカウントでログインしてから開き直してください。');return;}
+ let snap;try{snap=await sb('hq_card_snapshots?select=data,period_to,created_at&order=created_at.desc&limit=1');}catch(e){msg('読み込めませんでした（'+e.message+'）');return;}
+ if(!snap||!snap.length){document.getElementById('impl').hidden=false;msg('明細がありません。本社アカウントでない場合は表示されません。<br>初回の場合は、上の「初回取込」から hq_import.json を選んでください。');return;}
+ D=snap[0].data;
+ try{let all=[];for(let off=0;off<100000;off+=1000){const p=await sb('hq_card_overrides?select=key,cat,sub&order=key.asc&limit=1000&offset='+off);all=all.concat(p||[]);if(!p||p.length<1000)break;}all.forEach(r=>{OV[r.key]={cat:r.cat,sub:r.sub};});}catch(e){msg('振り分けを読み込めませんでした（'+e.message+'）');return;}
+const M=D.months,NM=M.length;const yen=n=>'¥'+Math.round(n).toLocaleString();
+const FIX=new Set(D.fixcats);
+const KEY='card_ov_v2';
+// OV は DB（hq_card_overrides）から読む
+let TAB='_sum',FILTER='',_tt=null;
+function toast(msg){const t=document.getElementById('toast');t.textContent=msg||'✓ 保存しました';t.classList.add('show');clearTimeout(_tt);_tt=setTimeout(()=>t.classList.remove('show'),1100);}
+function save(){}
+async function saveKey(k){try{const r=await sb('hq_card_overrides?on_conflict=key','POST',{key:k,cat:OV[k].cat,sub:OV[k].sub},'return=representation,resolution=merge-duplicates');if(!r||!r.length)throw new Error('保存の確認が取れません');toast('✓ 保存しました');}catch(e){alert('保存できませんでした: '+e.message);}}
+function ecat(m){return (OV[m.k]&&OV[m.k].cat)||m.cat;}
+function esub(m){return (OV[m.k]&&OV[m.k].sub)||m.sub;}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function subsOf(cat){return (D.subopts[cat]||['—']).slice();}
+function catTotals(){const o={};D.cats.forEach(c=>o[c]=0);D.merchants.forEach(m=>o[ecat(m)]+=m.tot);return o;}
+document.getElementById('sub').textContent='Amexビジネスゴールド ・ 引落/リボ除外の実支出 ・ 期間 '+M[0]+'〜'+M.at(-1)+'（'+NM+'ヶ月）・ 加盟店'+D.merchants.length+'件 ・ 変更は自動保存';
+function kpi(){const ct=catTotals();document.getElementById('kpi').innerHTML=[
+ ['実支出',yen(D.grand)],['取引',D.n+'件'],
+ ['固定費 月平均',yen(D.cats.filter(c=>FIX.has(c)).reduce((s,c)=>s+ct[c],0)/NM)],
+ ['スポット 月平均',yen(D.cats.filter(c=>!FIX.has(c)).reduce((s,c)=>s+ct[c],0)/NM)],
+ ['その他 残',yen(ct['その他'])],['引落(除外)',yen(D.payment)]
+].map(k=>`<div class="kpi"><div class="l">${k[0]}</div><div class="v num">${k[1]}</div></div>`).join('');
+ document.getElementById('ovc').textContent='手動振分け '+Object.keys(OV).length+'件（自動保存済）';}
+function tabs(){const ct=catTotals();const vis=D.cats.filter(c=>ct[c]>0);
+ document.getElementById('tabs').innerHTML=`<button class="tab ${TAB==='_sum'?'on':''}" data-t="_sum">📊 サマリ</button>`+
+ vis.map(c=>`<button class="tab ${TAB===c?'on':''} ${c==='その他'?'alert':''}" data-t="${esc(c)}">${esc(c)}<span class="a">${yen(ct[c])}</span></button>`).join('');
+ document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{TAB=b.dataset.t;render();});}
+function hrow(lbl){return '<tr><th class="l sticky-l">'+lbl+'</th>'+M.map(m=>`<th>${m.slice(2)}</th>`).join('')+'<th>合計</th><th>月平均</th><th class="l">区分/件</th></tr>';}
+function cell(v){return `<td class="num">${v?yen(v):'<span class=muted>-</span>'}</td>`;}
+function drow(lbl,mp,tot,c,extra,cls){return `<tr class="${cls||''}"><td class="l sticky-l">${lbl}</td>${M.map(m=>cell(mp[m]||0)).join('')}<td class="num"><b>${yen(tot)}</b></td><td class="num avg">${yen(tot/NM)}</td><td class="l">${extra||''}</td></tr>`;}
+function render(){kpi();tabs();const v=document.getElementById('view');
+ if(TAB==='_sum'){const ct=catTotals();const vis=D.cats.filter(c=>ct[c]>0);
+  let h='<div class="card"><h2>📊 カテゴリ別 × 月</h2><div class="scroll"><table><thead>'+hrow('科目')+'</thead><tbody>';
+  const tm={};M.forEach(m=>tm[m]=0);
+  vis.forEach(c=>{const mp={};M.forEach(m=>mp[m]=0);let tot=0,cc=0;D.merchants.forEach(x=>{if(ecat(x)===c){tot+=x.tot;cc+=x.c;M.forEach(m=>mp[m]+=x.m[m]||0);}});M.forEach(m=>tm[m]+=mp[m]);
+   h+=drow('<b>'+esc(c)+'</b>',mp,tot,cc,`<span class="tag ${FIX.has(c)?'fix':'spot'}">${FIX.has(c)?'固定':'スポット'}</span> ${cc}件`);});
+  h+=drow('月合計',tm,D.cats.reduce((s,c)=>s+ct[c],0),D.n,'','tot');
+  h+='</tbody></table></div><p class="cnt">各科目タブで加盟店の科目/中分類を変更できます。変更は即ブラウザに自動保存（右下に「✓保存しました」）。「書出」でファイルにバックアップできます。</p></div>';v.innerHTML=h;return;}
+ const cat=TAB;let list=D.merchants.filter(m=>ecat(m)===cat);
+ if(FILTER)list=list.filter(m=>m.name.toLowerCase().includes(FILTER));
+ const ctot=list.reduce((s,m)=>s+m.tot,0),ccnt=list.reduce((s,m)=>s+m.c,0);
+ let h=`<div class="cards"><div class="kpi"><div class="l">${esc(cat)} 合計</div><div class="v num">${yen(ctot)}</div></div><div class="kpi"><div class="l">月平均</div><div class="v num avg">${yen(ctot/NM)}</div></div><div class="kpi"><div class="l">区分</div><div class="v"><span class="tag ${FIX.has(cat)?'fix':'spot'}">${FIX.has(cat)?'固定':'スポット'}</span></div></div><div class="kpi"><div class="l">件数</div><div class="v num">${ccnt}件 / ${list.length}店</div></div></div>`;
+ const subs={};list.forEach(m=>{(subs[esub(m)]=subs[esub(m)]||[]).push(m);});
+ const subnames=Object.keys(subs).sort((a,b)=>subs[b].reduce((s,m)=>s+m.tot,0)-subs[a].reduce((s,m)=>s+m.tot,0));
+ h+='<div class="card"><h2>■ 中分類 × 月（小計）</h2><div class="scroll"><table><thead>'+hrow('中分類')+'</thead><tbody>';
+ subnames.forEach(sn=>{const mp={};M.forEach(m=>mp[m]=0);let t=0,c=0;subs[sn].forEach(m=>{t+=m.tot;c+=m.c;M.forEach(mm=>mp[mm]+=m.m[mm]||0);});h+=drow('<b>'+esc(sn)+'</b>',mp,t,c,c+'件');});
+ const cmp={};M.forEach(m=>cmp[m]=0);list.forEach(m=>M.forEach(mm=>cmp[mm]+=m.m[mm]||0));
+ h+=drow('小計',cmp,ctot,ccnt,ccnt+'件','tot')+'</tbody></table></div></div>';
+ h+='<div class="card"><h2>■ 加盟店 × 月（科目/中分類を変更できます）</h2><div class="scroll"><table><thead><tr><th class="l sticky-l">加盟店</th><th class="l">科目</th><th class="l">中分類</th>'+M.map(m=>`<th>${m.slice(2)}</th>`).join('')+'<th>合計</th><th>月平均</th><th>件</th></tr></thead><tbody>';
+ list.sort((a,b)=>b.tot-a.tot).forEach(m=>{const isov=!!OV[m.k];const subo=subsOf(cat);const cs=esub(m);const opts=subo.includes(cs)?subo:[cs].concat(subo);
+  h+=`<tr><td class="l sticky-l"><span class="mn" title="${esc(m.name)}">${esc(m.name)}</span></td>`+
+   `<td class="l"><select class="catsel ${isov?'ov':''}" data-k="${esc(m.k)}">${D.cats.map(c=>`<option ${c===cat?'selected':''}>${esc(c)}</option>`).join('')}</select></td>`+
+   `<td class="l"><select class="subsel ${isov?'ov':''}" data-k="${esc(m.k)}">${opts.map(s=>`<option ${s===cs?'selected':''}>${esc(s)}</option>`).join('')}</select></td>`+
+   M.map(mm=>cell(m.m[mm]||0)).join('')+`<td class="num"><b>${yen(m.tot)}</b></td><td class="num avg">${yen(m.tot/NM)}</td><td class="num">${m.c}</td></tr>`;});
+ h+='</tbody></table></div></div>';
+ v.innerHTML=h;
+ v.querySelectorAll('.catsel').forEach(s=>s.onchange=e=>{const k=e.target.dataset.k,nc=e.target.value;const so=subsOf(nc);OV[k]={cat:nc,sub:so[0]};saveKey(k);render();});
+ v.querySelectorAll('.subsel').forEach(s=>s.onchange=e=>{const k=e.target.dataset.k;const cur=OV[k]?OV[k].cat:cat;OV[k]={cat:cur,sub:e.target.value};saveKey(k);render();});
+}
+document.getElementById('filter').oninput=e=>{FILTER=e.target.value.toLowerCase();if(TAB!=='_sum')render();};
+
+document.getElementById('exp').onclick=()=>{const b=new Blob([JSON.stringify(OV,null,1)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='card_振分け.json';a.click();toast('ファイルに書き出しました');};
+document.getElementById('imp').onchange=e=>hqImport(e.target.files[0]);
+}
+boot();
+</script></body></html>
