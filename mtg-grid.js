@@ -113,7 +113,7 @@ function mobCard(tr,G,nmc){
    入れる側の増分＝1台×30日×min(稼働率,70%)×単価（稼働率50%未満＝空きがあるクラスは0）。出す側の減少＝max(0, 月需要−(n−1)×30×70%)×単価。効果＝増分−減少（月あたり）。効果の大きい順に上位5件 */
 var SWP_WH=[];
 function renderSwap(D,op){var el=document.getElementById("swp");if(!el)return;
-  var o=D.data,CAP=0.70,MIN=0.50,DM=30,FR="2026-04",nw=new Date(Date.now()+9*3600000);nw.setUTCDate(1);nw.setUTCMonth(nw.getUTCMonth()-1);var TO=nw.toISOString().slice(0,7);
+  var o=D.data,CAP=0.70,MIN=0.50,SELL=0.60,DM=30,FR="2026-04",nw=new Date(Date.now()+9*3600000);nw.setUTCDate(1);nw.setUTCMonth(nw.getUTCMonth()-1);var TO=nw.toISOString().slice(0,7);
   var ms=D.months.filter(function(m){return m>=FR&&m<=TO&&o[m];});SWP_WH=[];
   function k(v){return Math.round(v).toLocaleString();}function P(v){return Math.round(v*100)+'%';}
   function man(v){var a=Math.abs(v);return (a>=1e6?Math.round(v/1e4):Math.round(v/1e3)/10).toLocaleString()+'万';}
@@ -124,22 +124,30 @@ function renderSwap(D,op){var el=document.getElementById("swp");if(!el)return;
       if(!(u&&u.n>0&&u.ad>0))return;rd+=u.rd;ad+=u.ad;rc+=Math.min(u.rd,u.ad*CAP);mn++;if(v)rv+=v.r||0;if(!m0)m0=m;m1=m;if(m==TO)n=u.n;});
     if(!ad||!rd||!rv||!n)return null;var fr=rc/ad,pr=rv/rd,dm=rd/mn;
     return {rd:rd,ad:ad,rv:rv,mn:mn,n:n,m0:m0,m1:m1,fr:fr,pr:pr,dmd:dm,inc:fr>=MIN-1e-9?DM*Math.min(fr,CAP)*pr:0,dec:Math.max(0,dm-(n-1)*DM*CAP)*pr};}
-  var ck={};ms.forEach(function(m){Object.keys(o[m].util||{}).forEach(function(c){if(c!="未配車"&&c!="送迎")ck[c]=1;});});
+  var ck={};ms.forEach(function(m){Object.keys(o[m].util||{}).forEach(function(c){if(c!="未配車"&&c!="送迎"&&c!="AA")ck[c]=1;});});
   var V={};Object.keys(ck).forEach(function(c){var s=stat(c,c,'util','cls');if(s)V[c]=s;});
   function bs(l,v){return l+'：起算：配車表の稼働フラグ（'+(+v.m0.slice(5))+'月〜'+(+v.m1.slice(5))+'月・'+v.mn+'か月）・貸出 '+k(v.rd)+'日／稼働可能 '+k(v.ad)+'日・稼働率 '+P(v.fr)+'・単価 ¥'+k(v.pr)+'・売上 ¥'+k(v.rv)+'・月需要 '+(Math.round(v.dmd*10)/10)+'日・直近月（'+(+TO.slice(5))+'月）の稼働フラグ台数 '+v.n+'台';}
   function why(t,lx,vx,ly,vy,e){return '<b>🔁 '+t+'</b><br>期間 '+PL+'（確定月の蓄積）<br>出す側 '+bs(lx,vx)+'<br>入れる側 '+bs(ly,vy)
     +'<br>減少 ＝ max(0, 月需要 '+(Math.round(vx.dmd*10)/10)+'日 − ('+vx.n+'−1)台×'+DM+'日×'+P(CAP)+') × ¥'+k(vx.pr)+' ＝ ¥'+k(vx.dec)
     +'<br>増分 ＝ 1台×'+DM+'日×min('+P(vy.fr)+','+P(CAP)+')×¥'+k(vy.pr)+' ＝ ¥'+k(vy.inc)+'（稼働率'+P(MIN)+'未満のクラスは0）'
-    +'<br>効果 ＝ ¥'+k(vy.inc)+' − ¥'+k(vx.dec)+' ＝ <b>+¥'+k(e)+'/月</b>';}
+    +'<br>効果 ＝ ¥'+k(vy.inc)+' − ¥'+k(vx.dec)+' ＝ <b>+¥'+k(e)+'/月</b>'
+    +'<br>条件 入れる側：蓄積稼働'+P(vy.fr)+'≥'+P(SELL)+'、出す側：蓄積稼働'+P(vx.fr)+'&lt;'+P(MIN)+'・'+vx.n+'台（2台以上）';}
   var PL=ms.length?(+ms[0].slice(5))+'月〜'+(+ms[ms.length-1].slice(5))+'月':'';
-  var Z=[];Object.keys(V).forEach(function(x){var vx=V[x];Object.keys(V).forEach(function(y){if(x==y)return;var vy=V[y],e=vy.inc-vx.dec;if(e>0)Z.push([nm(x)+' → '+nm(y),e,why(nm(x)+' → '+nm(y)+' 1台入替の根拠',nm(x),vx,nm(y),vy,e),'クラス間']);});});
+  /* 2026-10-21 オーナー「最適解を見つける機能」：現実的な候補だけ。AA は対象外。入れる側＝蓄積稼働≥60%（売れている）／出す側＝蓄積稼働<50%（売れていない）かつ2台以上（0台にしない）＝逆向きのペアは出ない。
+     高松のブランド間＝同じクラスで片方≥60%・もう片方<50% の時だけ。効果の大きい順に貪欲法で組む（入れる側・出す側とも1回まで）・最大5件 */
+  function inY(v){return v.fr>=SELL-1e-9;}function outX(v){return v.fr<MIN-1e-9&&v.n>=2;}
+  var Z=[];Object.keys(V).forEach(function(x){var vx=V[x];if(!outX(vx))return;Object.keys(V).forEach(function(y){var vy=V[y];if(x==y||!inY(vy))return;var e=vy.inc-vx.dec;if(e>0)Z.push([nm(x)+' → '+nm(y),e,why(nm(x)+' → '+nm(y)+' 1台入替の根拠',nm(x),vx,nm(y),vy,e),'クラス間',x,y]);});});
+  var nY=Object.keys(V).filter(function(c){return inY(V[c]);}).length,nX=Object.keys(V).filter(function(c){return outX(V[c]);}).length;
   if(op.bt){var BR=["BT","HDM"];Object.keys(ck).forEach(function(c){var B={};BR.forEach(function(b){var s=stat(b+'|'+c,b+'|'+c,'util_cb','cls_cb');if(s)B[b]=s;});
-    [["HDM","BT"],["BT","HDM"]].forEach(function(p){var vx=B[p[0]],vy=B[p[1]];if(!vx||!vy)return;var e=vy.inc-vx.dec;if(e<=0)return;
-      var t=nm(c)+' '+p[0]+' → '+p[1];Z.push([t,e,why(t+' 1台移す根拠（同じクラス・ブランド間）',nm(c)+' '+p[0],vx,nm(c)+' '+p[1],vy,e),'ブランド間']);});});}
-  Z.sort(function(a,b){return b[1]-a[1];});Z=Z.slice(0,5);window.SWP_TOP=Z.map(function(z){return (op.bt?'['+z[3]+'] ':'')+z[0]+' 1台 +'+man(z[1])+'/月';});
+    [["HDM","BT"],["BT","HDM"]].forEach(function(p){var vx=B[p[0]],vy=B[p[1]];if(!vx||!vy)return;if(inY(vy))nY++;if(outX(vx))nX++;if(!inY(vy)||!outX(vx))return;var e=vy.inc-vx.dec;if(e<=0)return;
+      var t=nm(c)+' '+p[0]+' → '+p[1];Z.push([t,e,why(t+' 1台移す根拠（同じクラス・ブランド間）',nm(c)+' '+p[0],vx,nm(c)+' '+p[1],vy,e),'ブランド間',p[0]+'|'+c,p[1]+'|'+c]);});});}
+  Z.sort(function(a,b){return b[1]-a[1];});var UX={},UY={},Z2=[];Z.forEach(function(z){if(Z2.length>=5||UX[z[4]]||UY[z[5]])return;UX[z[4]]=1;UY[z[5]]=1;Z2.push(z);});Z=Z2;
+  window.SWP_RATES=Object.keys(V).map(function(c){return c+' '+P(V[c].fr)+' '+V[c].n+'台';});
+  window.SWP_TOP=Z.map(function(z){return (op.bt?'['+z[3]+'] ':'')+z[0]+' 1台 +'+man(z[1])+'/月';});
+  var why0=!nY&&!nX?'売れている'+P(SELL)+'以上のクラスも、売れていない'+P(MIN)+'未満（2台以上）のクラスもない':!nY?'売れている'+P(SELL)+'以上のクラスがない':!nX?'売れていない'+P(MIN)+'未満（2台以上）のクラスがない':'入れ替えても増えない';
   var h='<div class="swh">'+PL+'の実績の蓄積で判断（単月の良し悪しではない）</div><div class="swl">';
-  h+=Z.length?Z.map(function(z){SWP_WH.push(z[2]);return '<div class="swr" data-w="'+(SWP_WH.length-1)+'">'+(op.bt?'<small>［'+z[3]+'］</small>':'')+'<span>'+z[0]+' 1台</span><b class="mpos">+'+man(z[1])+'/月</b></div>';}).join(''):'<div class="swr">入替で増える組み合わせなし</div>';
-  el.innerHTML=h+'</div><div class="swn">行をタップで計算根拠。入れる側＝期間の稼働率（上限'+P(CAP)+'）で回る前提・稼働率'+P(MIN)+'未満（空きあり）は増分0。出す側＝期間平均の月需要のうち残りの台で吸収できない分だけ減る。</div>';}
+  h+=Z.length?Z.map(function(z){SWP_WH.push(z[2]);return '<div class="swr" data-w="'+(SWP_WH.length-1)+'">'+(op.bt?'<small>［'+z[3]+'］</small>':'')+'<span>'+z[0]+' 1台</span><b class="mpos">+'+man(z[1])+'/月</b></div>';}).join(''):'<div class="swr">入替で増える組み合わせなし（'+why0+'）</div>';
+  el.innerHTML=h+'</div><div class="swn">行をタップで計算根拠。候補＝入れる側 蓄積稼働'+P(SELL)+'以上（売れている）／出す側 蓄積稼働'+P(MIN)+'未満（売れていない）かつ2台以上。AAは対象外。1クラス1回まで。入れる側＝期間の稼働率（上限'+P(CAP)+'）で回る前提。出す側＝期間平均の月需要のうち残りの台で吸収できない分だけ減る。</div>';}
 document.addEventListener('click',function(e){var c=e.target.closest&&e.target.closest('#swp [data-w]');if(c&&typeof dsgWhyShow=="function")dsgWhyShow(SWP_WH[+c.getAttribute('data-w')]);});
 (function(){var css=[
 /* 車両入替タブ（PC・スマホ共通：1行1件のリスト） */
