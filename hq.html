@@ -154,6 +154,9 @@ function show(){
  if(it.none){nt.style.display='none';v.innerHTML='<div class="pad"><div class="note warn">'+esc(it.note)+'</div></div>';return;}
  var url=tabs[cur.t][1];nt.style.display='';nt.href=url;
  if(it.ext||tabs[cur.t][2]){v.innerHTML='<div class="pad"><div class="note">'+esc(it.ext?it.note:it.extNote)+'</div><a class="card" style="display:block;text-decoration:none;color:var(--acc)" href="'+esc(url)+'" target="_blank" rel="noopener">'+esc(tabs[cur.t][0])+' を開く ↗</a></div>';return;}
+ // スマホでは別サイト（高松APP＝buddica-touring.github.io など）を画面の中に入れるとログインを持ち込めず真っ白になるため、別タブで開くボタンにする
+ var xs=false;try{xs=new URL(url,location.href).hostname!==location.hostname;}catch(e){}
+ if(xs&&window.matchMedia&&window.matchMedia('(max-width:768px)').matches){v.innerHTML='<div class="pad"><div class="note">スマホでは、この画面は別のタブで開きます。</div><a class="card" style="display:block;text-decoration:none;color:var(--acc)" href="'+esc(url)+'" target="_blank" rel="noopener">'+esc(it.l+' '+tabs[cur.t][0])+' を開く ↗</a></div>';return;}
  v.innerHTML='<iframe src="'+esc(url)+'" title="'+esc(it.l+' '+tabs[cur.t][0])+'"></iframe>';
 }
 document.addEventListener('click',function(e){
@@ -182,17 +185,11 @@ function addYm(ym,n){var y=+ym.slice(0,4),m=+ym.slice(5)-1+n;y+=Math.floor(m/12)
 // 各店 本日の状況（3Dバーチャル本社 company3d.html の左パネルと同じ関数・同じ表示）
 function rpcB(url,anon,fn,body){return fetch(url+'/rest/v1/rpc/'+fn,{method:'POST',headers:{apikey:anon,Authorization:'Bearer '+anon,'Content-Type':'application/json'},body:JSON.stringify(body||{})}).then(function(r){return r.json();}).catch(function(){return null;});}
 var TD={tc:{},al:{},nb:{},amt:{},att:{},cash:{},sh:{}};
-// 今日の出勤者（シフト表 shifts / nha_shifts / bt_shifts から読むだけ）。ログイン情報はこの画面と同じ場所にある管理APP・シフト画面のものを使う
-function shTok(keys){for(var i=0;i<keys.length;i++){try{var v=JSON.parse(localStorage.getItem(keys[i])||'null');var s=v&&(v.currentSession||v.session||v);if(s&&s.access_token&&(!s.expires_at||s.expires_at*1000>Date.now()+30000))return s.access_token;}catch(e){}}return null;}
 function shLoad(){
- var d=new Date(Date.now()+9*3600e3).toISOString().slice(0,10);
- [['spk',MAIN_URL,MAIN_ANON,'shifts',['sb-ckrxttbnawkclshczsia-auth-token','shifthub_tokA']],['nha',MAIN_URL,MAIN_ANON,'nha_shifts',['sb-ckrxttbnawkclshczsia-auth-token','shifthub_tokA']],['bt',BT_URL,BT_ANON,'bt_shifts',['shifthub_tokB','sb-ggqugvyskyiblxiycpci-auth-token']]].forEach(function(c){
-  var tk=shTok(c[4]);if(!tk){TD.sh[c[0]]=null;return;}
-  fetch(c[1]+'/rest/v1/'+c[3]+'?select=staff_name,symbol,start_time,end_time&date=eq.'+d+'&order=start_time.asc',{headers:{apikey:c[2],Authorization:'Bearer '+tk}}).then(function(r){return r.ok?r.json():null;}).then(function(l){
-   if(!Array.isArray(l))return;
-   // 記号が無く時間が入っていれば出勤（●）、公・希・有は休み。札幌・那覇の「出」は出張＝その店の出勤ではない（オーナー確定 2026-10-21）
-   TD.sh[c[0]]=l.filter(function(r){var s=r.symbol||((r.start_time&&r.end_time)?'●':'');return s&&s!=='公'&&s!=='希'&&s!=='有'&&!(s==='出'&&c[0]!=='bt');});todayRender();}).catch(function(){});
- });
+ // 今日の出勤者はログイン不要の関数から読む（company_shift_today / bt_company_shift_today）。札幌・那覇の「出」（出張）は関数側で除外済み
+ Promise.all([rpcB(MAIN_URL,MAIN_ANON,'company_shift_today'),rpcB(BT_URL,BT_ANON,'bt_company_shift_today')]).then(function(x){
+  [x[0],x[1]].forEach(function(v){if(v&&typeof v==='object')['nha','spk','bt'].forEach(function(k){if(Array.isArray(v[k]))TD.sh[k]=v[k].map(function(r){return {staff_name:r.nm,start_time:r.st,end_time:r.en};});});});
+  todayRender();});
 }
 var TD_ST=[{k:'nha',ic:'🌺',nm:'那覇'},{k:'spk',ic:'❄️',nm:'札幌'},{k:'bt',ic:'🍜',nm:'高松'}];
 var TD_AL={未配車:'🚗未配車',未入金:'💴未入金',車検接近:'🔧車検',点検接近:'🔩点検'};
@@ -209,7 +206,7 @@ function todayRender(){
   var cash='';
   if(c&&typeof c.total==='number'){var low=c.total<2000,ls=(c.low||[]).map(function(x){return '小口 '+esc(x.n)+' <b>'+yen2(+x.b)+'</b>';}).join(' / ');
    cash='<div class="td-cash'+((low||(c.low||[]).length)?' warn':'')+'">💴 現金残高 <b>'+yen2(c.total)+'</b>'+(low?' <span class="td-red">要補充</span>':'')+(ls?' / '+ls:'')+'</div>';}
-  return '<div class="card td"><div class="td-h"><b>'+s.ic+' '+s.nm+'店</b>'+(at?'<span class="muted">👥'+at.n+'名 残'+at.rem+'</span>':'')+'</div>'+
+  return '<div class="card td"><div class="td-h"><b>'+s.ic+' '+s.nm+'店</b>'+(at?'<span class="muted">👥'+(Array.isArray(TD.sh[s.k])?TD.sh[s.k].length:at.n)+'名 残'+at.rem+'</span>':'')+'</div>'+
    '<div class="td-row">貸出 <b>'+(tc['貸出計']||0)+'</b> ／ 返却 <b>'+(tc['返却計']||0)+'</b> ／ 洗車 <b>'+(tc['洗車']||0)+'</b> ／ 他 <b>'+(tc['その他']||0)+'</b></div>'+
    (Array.isArray(TD.sh[s.k])?'<div class="td-sh">🗓 出勤 '+(TD.sh[s.k].length?TD.sh[s.k].map(function(r){return '<b>'+esc(r.staff_name||'')+'</b>'+(r.start_time&&r.end_time?' <span class="muted">'+esc(r.start_time)+'-'+esc(r.end_time)+'</span>':'');}).join('　'):'<span class="muted">シフト登録なし</span>')+'</div>':'')+
    (nb!=null?'<div class="td-new">📥 本日の新規予約 <b>'+nb+'</b></div>':'')+amRow+
