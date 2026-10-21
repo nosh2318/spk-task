@@ -123,33 +123,34 @@ var SWP_WH=[];
    総評（一語）：過去の稼働率 fr（貸出÷稼働可能）と今期の着地 vs 目標。過去なし＝新規。fr≥60%：届く→売れ筋／届かない→単価不足。fr<50%：届く→回復／届かない→不振。間：届く→順調／届かない→稼働不足 */
 function mtgLife(o,PM,FM,dcl,CARDS,LF,lab,man,wh){
   var P=function(v){return Math.round(v*100)+'%';},Y=function(v){return '¥'+Math.round(v).toLocaleString();},K=function(v){return Math.round(v).toLocaleString();};
-  var mn=function(m){return (+m.slice(5))+'月';},PL=PM.length?mn(PM[0])+'〜'+mn(PM[PM.length-1]):'',FL=FM.length?mn(FM[0])+'〜'+mn(FM[FM.length-1]):'',NM=PM.length+FM.length;
-  function ev(r){if(!r.pad)return '新規';var fr=r.prd/r.pad,ok=r.fL>=r.ft-0.5;return fr>=0.6?(ok?'売れ筋':'単価不足'):fr<0.5?(ok?'回復':'不振'):(ok?'順調':'稼働不足');}
+  var mn=function(m){return (+m.slice(5))+'月';},rg=function(a){return a.length?(+a[0].slice(5))+(a.length>1?'-'+(+a[a.length-1].slice(5)):'')+'月':'';},PL=rg(PM),FL=rg(FM),NM=FM.length||1;
+  /* 2026-10-21 総評＝全行同じ基準：今期 着地÷目標 ≥100%→達成見込み／≥90%→あと少し／実績なし→新規／実績の稼働率<50%→稼働不足／それ以外→単価不足。台数＝今期の配車台数の平均 */
+  function ev(r){var q=r.ft?r.fL/r.ft:1;return q>=1-1e-9?'達成見込み':q>=0.9-1e-9?'あと少し':!r.pad?'新規':r.prd/r.pad<0.5?'稼働不足':'単価不足';}
   function sg(v,f){return (v>=0?'+':'−')+f(Math.abs(v));}
   function row(r,cls,lb,ex){var d=r.fL-r.ft,c=Math.round(d/1e3)==0?'':d>=0?' pos':' neg',e='<td></td>';
     return '<tr'+(cls?' class="'+cls+'"':'')+wh(r.why)+'><td class="kqn"'+(cls=='kqx'?' style="text-align:left"':'')+'>'+lb+'</td>'
       +(ex?e:'<td class="kq1">'+(Math.round(r.n/NM*10)/10).toFixed(1)+'台</td>')
-      +'<td class="kq1">'+man(r.pr)+'</td>'+(ex||!r.prd?e+e:'<td class="kq1">'+Y(r.pr/r.prd)+'</td><td class="kq1">'+P(r.pad?r.prd/r.pad:0)+'</td>')
+      +'<td class="kq1">'+man(r.pr)+'</td>'+(ex||!r.prd?e:'<td class="kq1">'+Y(r.pr/r.prd)+'</td>')+(ex||!r.pad?e:'<td class="kq1">'+P(r.prd/r.pad)+'</td>')
       +'<td class="kq0">'+man(r.ft)+'</td><td class="kq1">'+man(r.fL)+'</td><td class="kq2'+c+'">'+sg(d,man)+'</td><td class="kq3'+c+'">'+(ex||!r.ft?'':sg(Math.round((r.fL/r.ft-1)*100),function(x){return x+'%';}))+'</td>'
-      +'<td class="kq1"><b>'+man(r.pr+r.fL)+'</b></td><td class="nxd"><b>'+(ex?'':cls=='kqs'?(r.fL>=r.ft-0.5?'達成見込み':'未達見込み'):ev(r))+'</b></td></tr>';}
+      +'<td class="kq1"><b>'+man(r.pr+r.fL)+'</b></td><td class="nxd"><b>'+(ex?'':ev(r))+'</b></td></tr>';}
   function mob(r,lb,ex,top){function ln(l,v,d,dc){return '<tr><th>'+l+'</th><td>'+v+'</td><td class="'+(dc||'')+'">'+(d||'')+'</td></tr>';}var d=r.fL-r.ft;
-    return '<div class="'+(top?'mbig':'mcd'+(ex?' mcs':''))+'"'+wh(r.why)+'><div class="mch"><b>'+lb+'</b><span class="'+(d>=0?'mpos':'mneg')+'">'+(ex?'':top?(d>=-0.5?'達成見込み':'未達見込み'):ev(r))+'</span></div><table class="mtb"><tbody>'
-      +ln('通期売上','<b>'+man(r.pr+r.fL)+'</b>')+ln('実績',man(r.pr),ex||!r.prd?'':P(r.pad?r.prd/r.pad:0))+(ex||!r.prd?'':ln('実績単価',Y(r.pr/r.prd)))
-      +ln('今期着地',man(r.fL)+' ／ '+man(r.ft),sg(d,man),d>=0?'mpos':'mneg')+(ex?'':ln('台数',(Math.round(r.n/NM*10)/10).toFixed(1)+'台'))+'</tbody></table></div>';}
-  var TH='<colgroup>'+[130,60,70,70,60,70,70,70,55,80,80].map(function(x){return '<col style="width:'+(x/815*100).toFixed(2)+'%">';}).join('')+'</colgroup><thead><tr><th rowspan="2">クラス</th><th rowspan="2" class="kqh">台数<br>（平均）</th><th colspan="3" class="kqh">実績（'+PL+'）</th><th colspan="4" class="kqh">今期（'+FL+'）</th><th rowspan="2" class="kqh">通期<br>売上</th><th rowspan="2" class="kqh">総評</th></tr><tr><th class="kqh">売上</th><th>単価</th><th>稼働率</th><th class="kqh">目標</th><th>着地</th><th>差</th><th>%</th></tr></thead>';
+    return '<div class="'+(top?'mbig':'mcd'+(ex?' mcs':''))+'"'+wh(r.why)+'><div class="mch"><b>'+lb+'</b><span class="'+(d>=0?'mpos':'mneg')+'">'+(ex?'':ev(r))+'</span></div><table class="mtb"><tbody>'
+      +ln('通期売上','<b>'+man(r.pr+r.fL)+'</b>')+ln('実績('+PL+')',man(r.pr),ex||!r.pad?'':P(r.prd/r.pad))+(ex||!r.prd?'':ln('実績単価',Y(r.pr/r.prd)))
+      +ln('今期('+FL+')着地',man(r.fL)+' ／ '+man(r.ft),sg(d,man),d>=0?'mpos':'mneg')+(ex?'':ln('台数（'+FL+'平均）',(Math.round(r.n/NM*10)/10).toFixed(1)+'台'))+'</tbody></table></div>';}
+  var TH='<colgroup>'+[130,60,70,70,60,70,70,70,55,80,80].map(function(x){return '<col style="width:'+(x/815*100).toFixed(2)+'%">';}).join('')+'</colgroup><thead><tr><th rowspan="2">クラス</th><th rowspan="2" class="kqh">台数<br>（'+FL+'平均）</th><th colspan="3" class="kqh">実績('+PL+')</th><th colspan="4" class="kqh">今期('+FL+')</th><th rowspan="2" class="kqh">通期<br>売上</th><th rowspan="2" class="kqh">総評</th></tr><tr><th class="kqh">売上</th><th>単価</th><th>稼働率</th><th class="kqh">目標</th><th>着地</th><th>差</th><th>%</th></tr></thead>';
   var H='',MB='',CHK=[];
   CARDS.forEach(function(cd,ci){var key=cd[0],br=cd[2],L=LF[key]||{cls:{},ext:null},S={n:0,pr:0,prd:0,pad:0,ft:0,fL:0},R='',M='',rows=[];
     dcl.forEach(function(c){var r={n:0,pr:0,prd:0,pad:0,ft:0,fL:0},ln=[];
-      PM.forEach(function(m){var u=(br?(o[m].util_cb||{})[br+'|'+c]:(o[m].util||{})[c]),v=(br?(o[m].cls_cb||{})[br+'|'+c]:(o[m].cls||{})[c]);var rv=v?v.r||0:0;if(u){r.n+=u.n||0;r.prd+=u.rd||0;r.pad+=u.ad||0;}r.pr+=rv;if(u||rv)ln.push(mn(m)+' 実績 ¥'+K(rv)+(u?'（貸出 '+K(u.rd)+'日／稼働可能 '+K(u.ad)+'日・'+(u.n||0)+'台）':''));});
+      PM.forEach(function(m){var u=(br?(o[m].util_cb||{})[br+'|'+c]:(o[m].util||{})[c]),v=(br?(o[m].cls_cb||{})[br+'|'+c]:(o[m].cls||{})[c]);var rv=v?v.r||0:0;if(u){r.prd+=u.rd||0;r.pad+=u.ad||0;}r.pr+=rv;if(u||rv)ln.push(mn(m)+' 実績 ¥'+K(rv)+(u?'（貸出 '+K(u.rd)+'日／稼働可能 '+K(u.ad)+'日・'+(u.n||0)+'台）':''));});
       var f=L.cls[c];if(f){r.n+=f.n;r.ft=f.tg;r.fL=f.L;FM.forEach(function(m){var x=f.mon[m];if(x)ln.push(mn(m)+' 着地 ¥'+K(x[1])+'（目標 ¥'+K(x[0])+'・'+x[2]+'台）');});}
       if(!r.pr&&!r.pad&&!r.ft&&!r.fL)return;
       r.why='<b>'+lab(c).replace(/<[^>]+>/g,'')+(br?'（'+br+'）':'')+' 通期の月別</b><br>'+ln.join('<br>')+'<br>通期売上 ¥'+K(r.pr)+' ＋ ¥'+K(r.fL)+' ＝ ¥'+K(r.pr+r.fL);
-      for(var k in S)S[k]+=r[k];rows.push(r);R+=row(r,'',lab(c));M+=mob(r,lab(c));});
+      for(var k in S)S[k]+=r[k];r.c=c;r.ev=ev(r);rows.push(r);R+=row(r,'',lab(c));M+=mob(r,lab(c));});
     var X=null;if(L.ext){X={n:0,pr:Math.max(0,cd[3]-S.pr),prd:0,pad:0,ft:L.ext.t,fL:L.ext.L};X.pr=cd[3]-S.pr;
       X.why='<b>予約外・未配車（クラスなし） 通期</b><br>実績＝店の実績（予約＋予約外）−クラス行の実績 ¥'+K(X.pr)+'<br>今期＝各月の予約外・未配車 目標 ¥'+K(X.ft)+'／着地 ¥'+K(X.fL);}
     var T={n:S.n,pr:S.pr+(X?X.pr:0),prd:S.prd,pad:S.pad,ft:S.ft+(X?X.ft:0),fL:S.fL+(X?X.fL:0)};
     T.why='<b>'+cd[1]+' 通期</b><br>＝クラス行の合計'+(X?'＋予約外・未配車':'')+'<br>実績 ¥'+K(T.pr)+'（'+PL+'）・単価 '+(T.prd?Y(S.pr/T.prd):'–')+'（Σクラス売上÷Σ貸出）・稼働率 '+(T.pad?P(T.prd/T.pad):'–')+'<br>今期 目標 ¥'+K(T.ft)+(X?'（＝各月の店目標の合計）':'')+'／着地 ¥'+K(T.fL)+'<br>通期売上 ¥'+K(T.pr+T.fL);
-    var T2={n:T.n,pr:T.pr,prd:T.prd,pad:T.pad,ft:T.ft,fL:T.fL,why:T.why};
+    var T2={n:T.n,pr:T.pr,prd:T.prd,pad:T.pad,ft:T.ft,fL:T.fL,why:T.why};T.ev=ev(T);
     var top=row(T2,'kqs',br?br+' 計':'まとめ').replace('<td class="kq1">'+(T.prd?Y(T.pr/T.prd):''),'<td class="kq1">'+(T.prd?Y(S.pr/T.prd):''));
     var tb=br?'<tbody>'+R+top+'</tbody>':'<tbody class="kqsm">'+top+R+(X?row(X,'kqx','予約外・未配車<small class="nxg">（クラスなし）</small>',1):'')+'</tbody>';
     H+='<div class="kqc kqc-t"><div class="kqch"><b>'+cd[1]+'</b><span>行をクリックで月別の内訳</span></div><div class="tw"><table class="kqg">'+TH+tb+'</table></div></div>';
