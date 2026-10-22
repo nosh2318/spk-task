@@ -19,6 +19,21 @@
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
 const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const H = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "content-type": "application/json" };
+// ★security 2026-10-23 スタッフ許可リスト：「ログインしていれば誰でも」→ 正規スタッフのメールドメインだけ通す。
+//   main(ckrxttbnawkclshczsia) の auth.users ドメイン＝spk.hdm/nha.hdm/g-lines.jp/partner.hdm（2026-10-23確認）。協力会社 partner.hdm は不可。新規登録は無効(disable_signup=true)のためドメインで判定できる。EF は個別デプロイなので各 EF に同じ小関数をコピー。
+const STAFF_EMAIL_RE = /@(spk\.hdm|nha\.hdm|g-lines\.jp)$/i;
+async function staffUser(token: string): Promise<{ id: string; email: string } | null> {
+  const t = String(token || "").replace(/^Bearer\s+/i, "").trim();
+  if (!t) return null;
+  try {
+    const r = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${t}` } });
+    if (!r.ok) return null;
+    const u: any = await r.json().catch(() => null);
+    const email = String(u?.email || "").trim();
+    if (!u?.id || !STAFF_EMAIL_RE.test(email)) return null;
+    return { id: String(u.id), email };
+  } catch (_) { return null; }
+}
 
 const ALLOWED = ["https://nosh2318.github.io", "https://keydrop.jp", "https://rent-handyman.com"];
 function cors(o: string | null) {
@@ -126,9 +141,9 @@ Deno.serve(async (req) => {
     else {
       const staffToken = String(p.staff_token || "").trim();
       if (!staffToken) return json({ error: "スタッフ認証（PIN）が必要です" }, 401, origin);
-      const who = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${staffToken}` } });
-      if (!who.ok) return json({ error: "認証に失敗しました" }, 401, origin);
-      const wj: any = await who.json().catch(() => ({}));
+      const who = await staffUser(staffToken);
+      if (!who) return json({ error: "認証に失敗しました" }, 401, origin);
+      const wj: any = who;
       actor = "staff:" + (wj?.email || wj?.id || "unknown");
     }
     const changeId = p.change_id;
