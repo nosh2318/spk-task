@@ -500,7 +500,7 @@ function calMonth(){
    +'<button class="btn sm" style="background:#b8714a;color:#fff;border-color:#b8714a" onclick="bulkSet(\'high\')"><i class="sq" style="background:#b0524b"></i> 高い日に</button> '
    +'<button class="btn ghost sm" onclick="bulkSet(\'base\')"><i class="sq" style="background:#4f8a5b"></i> 基本に戻す</button></div>'
    +'<div class="gcal"><div class="gdow">日</div><div class="gdow">月</div><div class="gdow">火</div><div class="gdow">水</div><div class="gdow">木</div><div class="gdow">金</div><div class="gdow">土</div>'+cells+'</div>'
-   +'<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn ghost sm" onclick="autoB()">🎌 連休を自動で高い日に</button><button class="btn ghost sm" onclick="clrDays()">全解除（すべて基本に）</button><button class="btn sm" style="background:#3f7a72;color:#fff;border-color:#3f7a72" onclick="applyDaysToAll()">📋 登録日を全店に</button></div>'
+   +'<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn ghost sm" onclick="autoB()">🎌 連休を自動で高い日に</button><button class="btn ghost sm" onclick="clrDays()">全解除（すべて基本に）</button></div>'
    +'</div>';
 }
 function calMove(n){calYM=ymShift(calYM||START,n);if(calYM<START)calYM=START;render();}
@@ -548,17 +548,6 @@ function bulkSet(mode){
 }
 function autoB(){var y=new Date().getFullYear();var set={};(PRICE[STORE].high_dates||[]).forEach(function(x){set[x]=1});longWeekends(y).forEach(function(x){set[x]=1});longWeekends(y+1).forEach(function(x){set[x]=1});PRICE[STORE].high_dates=Object.keys(set).sort();refreshCal();toast('連休・連休前日を高い日に設定しました');}
 function clrDays(){PRICE[STORE].high_dates=[];PRICE[STORE].low_dates=[];refreshCal();toast('全て基本料金に戻しました');}
-// 登録日（安い日/高い日）を全店にコピー
-async function applyDaysToAll(){
-  var P=PRICE[STORE];var h=(P.high_dates||[]).slice(),l=(P.low_dates||[]).slice();
-  if(!confirm('安い日('+l.length+'日)・高い日('+h.length+'日) の登録を全店（那覇・札幌・高松）に反映します。\n各店の登録日は上書きされます（価格は各店そのまま）。\nよろしいですか？'))return;
-  var all=['spk','nha','tkm'].filter(function(x){return PRICE[x];});
-  // ★2026-10-21 saveStore は差分計算だけで書かない→realSave で1店ずつ本番に保存（失敗した店は名前を出す）
-  var ng=[],nm={spk:'札幌',nha:'那覇',tkm:'高松'};
-  for(var i=0;i<all.length;i++){PRICE[all[i]].high_dates=h.slice();PRICE[all[i]].low_dates=l.slice();var w=WRITE_ENABLED?await realSave(all[i]):{ok:false};if(!w.ok)ng.push(nm[all[i]]);}
-  render();toast(ng.length?'⚠️ '+ng.join('・')+' は保存できませんでした。再読み込みしてやり直してください':'✅ 全店に登録日（安い'+l.length+'／高い'+h.length+'日）を保存しました');
-}
-
 // 📜 変更履歴
 function snap(P){return JSON.stringify({channels:P.channels||{},high_dates:P.high_dates,low_dates:P.low_dates||[],insurance:P.insurance,seat:P.seat});}
 function diffChanges(oldS,P){
@@ -686,7 +675,20 @@ async function save(){
 }
 // ===================== ①保存（ドッキング時に WRITE_ENABLED=true にする） =====================
 var WRITE_ENABLED=true; // 本番（ドッキング版）
+// ★2026-10-22 公式の基本料金（TL/TR/TH）が空のクラスがあれば保存しない（空だと公式HPで0円表示のおそれ）。
+//  販売していない月（INACTIVE / INACTIVE_FROM）は見ない＝那覇C・S、札幌11月以降のA2・B2・H は空でも止めない。
+function emptyBase(s){
+  var off=((PRICE[s]||{}).channels||{}).official||{},t=off.tiers||{},ym0=curYM(),out=[];
+  var ina=function(c,ym){var f=(INACTIVE_FROM[s]||{})[c];if(f)return ym>=f;return !!((INACTIVE[s]||{})[c]);};
+  clsKeys(off.price||{}).forEach(function(c){var need={};
+    for(var i=0;i<HORIZON;i++){var ym=ymShift(ym0,i);if(!ina(c,ym))need[tierOf(ym)]=1;}
+    var miss=['L','R','H'].filter(function(k){var v=(t[c]||{})[k];return need[k]&&(v==null||v===''||isNaN(+v));});
+    if(miss.length)out.push(c+'クラス（'+miss.map(TN).join('・')+'）');});
+  return out;
+}
 async function realSave(s){
+  var eb=emptyBase(s);
+  if(eb.length)return {ok:false,msg:'⚠️ '+eb.join('、')+'の基本料金が空です。入力してから保存してください（保存していません）'};
   var r=await saveStore(s);
   if(r.conflict)return {ok:false,msg:'この画面を開いた後に、他の人が価格を変更しています。再読み込みしてから、もう一度変更してください。'};
   var db=DBOF[s],tbl=TBLOF[s],P=r.payload;
@@ -773,14 +775,6 @@ function cmpTab(){
    +'<div style="overflow-x:auto;margin-top:8px"><table class="histbl"><tr><th>クラス</th><th>段</th>'+otas.map(function(o){return '<th>'+o.n.replace(/^[^ ]+ /,'')+'</th>';}).join('')+'</tr>'+body+'</table></div></div>';
 }
 
-// 📋 現在の「高い日」を全店に同じ設定でコピー（価格は各店そのまま）
-async function applyHighToAll(){
-  var src=(PRICE[STORE].high_dates||[]).slice();
-  if(!confirm('「高い日」('+src.length+'日) を全店（那覇・札幌・高松）に同じ設定で反映します。\n各店の高い日は上書きされます。\n※価格は各店そのまま（変わりません）。\nよろしいですか？'))return;
-  var all=['spk','nha','tkm'].filter(function(x){return PRICE[x];});
-  for(var i=0;i<all.length;i++){PRICE[all[i]].high_dates=src.slice();await saveStore(all[i]);}
-  render();toast('✅ 全店に高い日（'+src.length+'日）を反映しました');
-}
 document.querySelectorAll('.tab').forEach(function(t){t.classList.toggle('on',t.dataset.s===STORE)});
 load();
 </script></body></html>
