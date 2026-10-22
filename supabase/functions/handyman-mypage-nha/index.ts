@@ -424,6 +424,7 @@ Deno.serve(async (req) => {
       del_flight: r.del_flight || "",
       visit_type: r.visit_type || "", return_type: r.return_type || "",
       kd_status: r.kd_status || null,
+      price: Number(r.price || 0),  // 2026-10-21 オーナー指示: マイページのご予約内容に料金を表示
     },
     damage: { ready: damageReady, url: damageUrl },
     tracking: { active: r.kd_status === "delivering" || r.kd_status === "collecting", kd_status: r.kd_status || null, token: r.kd_track_token || null },
