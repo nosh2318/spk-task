@@ -23,6 +23,10 @@ td.nm{white-space:normal}
 td .b{font-size:11px;color:var(--sub);margin-right:4px}
 td.old{color:var(--old)}
 #list{overflow-x:auto}
+td.sv{padding:3px 6px}
+td.sv input{width:100%;min-width:130px;font:inherit;color:var(--ink);background:transparent;border:1px solid transparent;border-radius:6px;padding:4px 6px}
+td.sv input:hover,td.sv input:focus{border-color:var(--line);background:var(--bg);outline:none}
+td.sv input.ok{border-color:#2f9e44}td.sv input.ng{border-color:#e03131}
 .msg{padding:24px;text-align:center;color:var(--sub)}
 </style>
 </head>
@@ -32,7 +36,8 @@ td.old{color:var(--old)}
  <div id="list"><div class="msg">読み込み中…</div></div>
 </div>
 <script>
-// 走行距離リスト（店舗別）：表示だけ。DB には書かない。数字は各店の記録の中で日付が一番新しいもの。
+// 走行距離リスト（店舗別）：走行距離は表示だけ（各店の記録の中で日付が一番新しいもの）。
+// 売却目安だけ手入力：hq_vehicle_sale_targets（main・本部メンバーのみ）に1台＝1行で保存（変えた1台だけ書く）。
 var MAIN_URL='https://ckrxttbnawkclshczsia.supabase.co',MAIN_ANON='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8';
 var BT_URL='https://ggqugvyskyiblxiycpci.supabase.co',BT_ANON='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdncXVndnlza3lpYmx4aXljcGNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxMDc3NjksImV4cCI6MjA5MzY4Mzc2OX0.uNhWcBd_Dl5nzemZDQfJ8mQV6iY73MwystGGpTRPC18';
 var ST={nha:['那覇',MAIN_URL,MAIN_ANON,'company_mileage',{p_store:'nha'}],spk:['札幌',MAIN_URL,MAIN_ANON,'company_mileage',{p_store:'spk'}],bt:['高松',BT_URL,BT_ANON,'bt_company_mileage',{}]};
@@ -40,23 +45,36 @@ var cur=new URLSearchParams(location.search).get('store');if(!ST[cur])cur='nha';
 var one=!!new URLSearchParams(location.search).get('store');
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 function bar(n){document.getElementById('bar').innerHTML=(one?'':Object.keys(ST).map(function(k){return '<button data-s="'+k+'" class="'+(k===cur?'on':'')+'">'+ST[k][0]+'</button>';}).join(''))+'<span class="n">'+(n==null?'':n+'台')+'</span>';}
+function tok(){try{for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf('sb-ckrxttbnawkclshczsia-auth-token')===0){var v=JSON.parse(localStorage.getItem(k)||'null');var x=v&&(v.currentSession||v.session||v);if(x&&x.access_token&&(!x.expires_at||x.expires_at*1000>Date.now()+30000))return x.access_token;}}}catch(e){}return null;}
+function sv(path,method,body){var t=tok();if(!t)return Promise.reject(new Error('login'));return fetch(MAIN_URL+'/rest/v1/'+path,{method:method||'GET',headers:{apikey:MAIN_ANON,Authorization:'Bearer '+t,'Content-Type':'application/json',Prefer:'return=representation,resolution=merge-duplicates'},body:body?JSON.stringify(body):undefined}).then(function(r){if(!r.ok)throw new Error(r.status);return r.json();});}
 function load(){
  bar();document.getElementById('list').innerHTML='<div class="msg">読み込み中…</div>';
- var s=ST[cur];
- fetch(s[1]+'/rest/v1/rpc/'+s[3],{method:'POST',headers:{apikey:s[2],Authorization:'Bearer '+s[2],'Content-Type':'application/json'},body:JSON.stringify(s[4])})
- .then(function(r){if(!r.ok)throw new Error(r.status);return r.json();})
- .then(function(a){
+ var s=ST[cur],st=cur;
+ var pm=fetch(s[1]+'/rest/v1/rpc/'+s[3],{method:'POST',headers:{apikey:s[2],Authorization:'Bearer '+s[2],'Content-Type':'application/json'},body:JSON.stringify(s[4])}).then(function(r){if(!r.ok)throw new Error(r.status);return r.json();});
+ var pt=sv('rpc/hq_is_me','POST',{}).then(function(me){if(me!==true)return null;return sv('hq_vehicle_sale_targets?select=key,target&store=eq.'+st);}).catch(function(){return null;});
+ Promise.all([pm,pt]).then(function(x){
+  var a=x[0],T=null;if(Array.isArray(x[1])){T={};x[1].forEach(function(r){T[r.key]=r.target;});}
   if(!Array.isArray(a)||!a.length){document.getElementById('list').innerHTML='<div class="msg">車両がありません</div>';bar(0);return;}
   var today=new Date();
   var rows=a.map(function(v){
    var d=v.date?new Date(v.date+'T00:00:00+09:00'):null,old=d&&(today-d)/864e5>30;
    var ds=v.date?v.date.slice(0,4)+'/'+(+v.date.slice(5,7))+'/'+(+v.date.slice(8,10)):'—';
-   return '<tr><td>'+esc(v.cls||'—')+'</td><td class="nm">'+(v.brand?'<span class="b">'+esc(v.brand)+'</span>':'')+esc(v.name)+'</td><td>'+esc(v.plate||'')+'</td><td class="r">'+(v.km?Number(v.km).toLocaleString()+' km':'—')+'</td><td class="r'+(old||!v.date?' old':'')+'">'+ds+'</td></tr>';
+   var key=st+':'+(v.code||'');
+   return '<tr><td>'+esc(v.cls||'—')+'</td><td class="nm">'+(v.brand?'<span class="b">'+esc(v.brand)+'</span>':'')+esc(v.name)+'</td><td>'+esc(v.plate||'')+'</td><td class="r">'+(v.km?Number(v.km).toLocaleString()+' km':'—')+'</td><td class="r'+(old||!v.date?' old':'')+'">'+ds+'</td>'+(T&&v.code?'<td class="sv"><input data-k="'+esc(key)+'" data-c="'+esc(v.code)+'" value="'+esc(T[key]||'')+'" aria-label="売却目安 '+esc(v.name+' '+(v.plate||''))+'"></td>':(T?'<td></td>':''))+'</tr>';
   }).join('');
-  document.getElementById('list').innerHTML='<table><thead><tr><th>クラス</th><th>車両名</th><th>ナンバー</th><th class="r">走行距離</th><th class="r">更新日</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  document.getElementById('list').innerHTML='<table><thead><tr><th>クラス</th><th>車両名</th><th>ナンバー</th><th class="r">走行距離</th><th class="r">更新日</th>'+(T?'<th>売却目安</th>':'')+'</tr></thead><tbody>'+rows+'</tbody></table>';
   bar(a.length);
  }).catch(function(){document.getElementById('list').innerHTML='<div class="msg">読み込めませんでした。再読込してください。</div>';});
 }
+// 売却目安：欄を離れた時に、変えた1台だけ保存
+document.getElementById('list').addEventListener('change',function(e){
+ var i=e.target;if(!i.matches('td.sv input'))return;
+ var k=i.dataset.k,v=i.value.trim();i.classList.remove('ok','ng');
+ sv('hq_vehicle_sale_targets?on_conflict=key','POST',{key:k,store:k.split(':')[0],vehicle_code:i.dataset.c,target:v})
+ .then(function(r){if(!r||!r.length)throw new Error('none');i.value=r[0].target;i.classList.add('ok');setTimeout(function(){i.classList.remove('ok');},1500);})
+ .catch(function(){i.classList.add('ng');alert('保存できませんでした。本部メンバーで管理APPにログインしてから、もう一度入力してください。');});
+});
+document.getElementById('list').addEventListener('keydown',function(e){if(e.key==='Enter'&&e.target.matches('td.sv input'))e.target.blur();});
 document.getElementById('bar').addEventListener('click',function(e){var b=e.target.closest('[data-s]');if(b){cur=b.dataset.s;load();}});
 load();
 </script>
