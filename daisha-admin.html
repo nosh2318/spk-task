@@ -19,6 +19,10 @@
   .list{width:300px;max-width:42%;border-right:1px solid var(--line);background:#fff;overflow-y:auto;flex:none}
   .item{padding:12px 14px;border-bottom:1px solid #f1f3f5;cursor:pointer}
   .item.on{background:#fffbf0}
+  .item .ck{width:16px;height:16px;margin:0;cursor:pointer;accent-color:#00163f}
+  .bulk{display:flex;gap:5px;align-items:center;flex-wrap:wrap;padding:8px 10px;background:#00163f;color:#fff;font-size:12px;font-weight:800;position:sticky;top:47px;z-index:2}
+  .bulk button{font-size:11px;font-weight:800;border:0;border-radius:7px;padding:6px 9px;cursor:pointer;background:#fff;color:#00163f}
+  .bulk .x{background:transparent;color:#cbd5e1;margin-left:auto}
   .item .t{font-size:14px;font-weight:800;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
   .item .st{font-size:10px;font-weight:900;border-radius:999px;padding:2px 8px;background:#eef2f7;color:#475569}
   .item .st.new{background:#fef3c7;color:#a16207}.item .st.proposed{background:#dbeafe;color:#1d4ed8}.item .st.confirmed{background:#dcfce7;color:#15803d}
@@ -96,7 +100,7 @@ function tok(){try{const keys=["sb-ckrxttbnawkclshczsia-auth-token"];for(let i=0
 async function api(action,extra){const r=await fetch(FN,{method:"POST",headers:{apikey:ANON,Authorization:"Bearer "+ANON,"Content-Type":"application/json"},body:JSON.stringify(Object.assign({action,staff_token:tok()},extra||{}))});return await r.json();}
 const UC={accident:"事故の代車",repair:"車検・修理の代車",long:"長期のご利用",other:"その他"};
 const ST={new:"新規",proposed:"提案中",confirmed:"確定",closed:"クローズ"};
-let LIST=[],SEL=null,pollT=null,STORE_FILTER=localStorage.getItem("daisha_store")||"all";
+let LIST=[],SEL=null,pollT=null,PICK=new Set(),STORE_FILTER=localStorage.getItem("daisha_store")||"all";
 const AREAJP={spk:"札幌",nha:"那覇"};
 function fmtRecv(s){try{const d=new Date(s);if(isNaN(d))return"";return (d.getMonth()+1)+"/"+d.getDate()+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");}catch(e){return"";}}
 function brandBadge(b){const hdm=b==="hdm";return '<span style="font-size:9.5px;font-weight:900;border-radius:6px;padding:2px 6px;background:'+(hdm?'#002063':'#0e1116')+';color:#FABE00">'+(hdm?'HDM':'KEY')+'</span>';}
@@ -132,10 +136,26 @@ function renderList(){
   const items=LIST.length?LIST.map(q=>{
     const per=q.start_date?(q.start_date+"〜"+(q.end_date||"未定")):(q.period_note||"期間未定");
     const ab=q.store==="nha"?'#0e7490':'#7c3aed';
-    return `<div class="item${SEL&&SEL.id===q.id?' on':''}" onclick="open_('${q.id}')"><div class="t"><span class="st ${q.status}">${ST[q.status]||q.status}</span>${brandBadge(q.brand)}<span style="font-size:10px;font-weight:900;border-radius:6px;padding:2px 7px;background:${ab};color:#fff">${AREAJP[q.store]||q.store}</span>${esc(q.name)}様${q.company?"（"+esc(q.company)+"）":""}</div><div class="m"><span style="color:#94a3b8">🕐 受付 ${fmtRecv(q.created_at)}</span><br>${UC[q.use_case]||q.use_case||"用途-"} ／ ${esc(per)}<br>希望：${esc(q.choice1||"-")}</div></div>`;
+    return `<div class="item${SEL&&SEL.id===q.id?' on':''}" onclick="open_('${q.id}')"><div class="t"><input type="checkbox" class="ck" ${PICK.has(q.id)?'checked':''} onclick="event.stopPropagation();pick('${q.id}',this.checked)" aria-label="選択"><span class="st ${q.status}">${ST[q.status]||q.status}</span>${brandBadge(q.brand)}<span style="font-size:10px;font-weight:900;border-radius:6px;padding:2px 7px;background:${ab};color:#fff">${AREAJP[q.store]||q.store}</span>${esc(q.name)}様${q.company?"（"+esc(q.company)+"）":""}</div><div class="m"><span style="color:#94a3b8">🕐 受付 ${fmtRecv(q.created_at)}</span><br>${UC[q.use_case]||q.use_case||"用途-"} ／ ${esc(per)}<br>希望：${esc(q.choice1||"-")}</div></div>`;
   }).join(""):'<div class="empty" style="padding:24px;font-size:13px">リクエストはまだありません</div>';
-  $("#list").innerHTML=fbar()+items;
+  $("#list").innerHTML=fbar()+bulkBar()+items;
 }
+// ステータス一括変更：チェックした件だけ、1件ずつ既存の staff_status で変更（ステータス以外は変えない）
+function bulkBar(){
+  PICK.forEach(id=>{if(!LIST.some(q=>q.id===id))PICK.delete(id);});
+  if(!PICK.size)return "";
+  return `<div class="bulk"><span>${PICK.size}件を</span>`+["new","proposed","confirmed","closed"].map(s=>`<button onclick="bulkSet('${s}')">${ST[s]}</button>`).join("")+`<button onclick="pickAll()">全選択</button><button class="x" onclick="PICK.clear();renderList()">解除</button></div>`;
+}
+window.pick=(id,on)=>{if(on)PICK.add(id);else PICK.delete(id);renderList();};
+window.pickAll=()=>{LIST.forEach(q=>PICK.add(q.id));renderList();};
+window.bulkSet=async(s)=>{
+  const ids=[...PICK];if(!ids.length)return;
+  if(!confirm(ids.length+"件を「"+ST[s]+"」に変更します"))return;
+  let ng=0;for(const id of ids){try{const j=await api("staff_status",{id,status:s});if(!j.ok)ng++;}catch(e){ng++;}}
+  PICK.clear();
+  if(SEL&&ids.includes(SEL.id)&&!ng){SEL.status=s;await open_(SEL.id);}else await loadList();
+  if(ng)alert(ng+"件は変更できませんでした（ログインを確認して、もう一度お試しください）");
+};
 async function loadList(){const extra=STORE_FILTER!=="all"?{store:STORE_FILTER}:{};const j=await api("staff_list",extra);if(j.error){if(String(j.error).indexOf("unauth")>=0){showLogin("ログインの有効期限切れ。再ログインしてください。");return false;}}LIST=j.list||[];renderList();return true;}
 window.open_=async function(id){
   document.documentElement.style.setProperty('--ld','none');document.documentElement.style.setProperty('--pd','flex');
