@@ -97,6 +97,7 @@
     <div class="panel" id="panel"><div class="msg">マップのマス、または精算予定表の行を押すと明細が出ます</div></div>
   </div>
 </main>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script>
 // 2026-10-24 資金計画：正本＝配車表の整備ブロック（maintenance / nha_maintenance / bt_maintenance）を開くたびに読む。
 // 書くのは「カードで払う日」だけ（hq_maint_pay・1整備＝1行）。設計メモ docs/設計_資金計画_車検点検修理_2026-10-24.md
@@ -109,8 +110,10 @@ let ITEMS=[],PAY={},storeSel='all',sel=null;
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function yen(n){return '¥'+Math.round(n).toLocaleString();}
 function man(n){return n>=10000?(Math.round(n/1000)/10).toLocaleString()+'万':yen(n);}
-function tok(){for(const k of Object.keys(localStorage)){if(k.indexOf('sb-ckrxttbnawkclshczsia-auth-token')===0){try{const v=JSON.parse(localStorage.getItem(k));const s=v.currentSession||v.session||v;if(s&&s.access_token&&(!s.expires_at||s.expires_at*1000>Date.now()+30000))return s.access_token;}catch(e){}}}return null;}
-async function sb(path,method,body,prefer){const t=tok();if(!t)throw new Error('LOGIN');const r=await fetch(MAIN_URL+'/rest/v1/'+path,{method:method||'GET',headers:{apikey:MAIN_ANON,Authorization:'Bearer '+t,'Content-Type':'application/json',Prefer:prefer||'return=representation'},body:body?JSON.stringify(body):undefined});if(!r.ok)throw new Error('HTTP '+r.status+' '+(await r.text()).slice(0,160));const x=await r.text();return x?JSON.parse(x):null;}
+// ログインは管理APPと共有（同じ保存キー）。期限切れは supabase-js が自動更新（mkt.html と同じ方式）
+const SBC=window.supabase.createClient(MAIN_URL,MAIN_ANON);
+async function tok(){try{const {data}=await SBC.auth.getSession();return data&&data.session?data.session.access_token:null;}catch(e){return null;}}
+async function sb(path,method,body,prefer){const t=await tok();if(!t)throw new Error('LOGIN');const r=await fetch(MAIN_URL+'/rest/v1/'+path,{method:method||'GET',headers:{apikey:MAIN_ANON,Authorization:'Bearer '+t,'Content-Type':'application/json',Prefer:prefer||'return=representation'},body:body?JSON.stringify(body):undefined});if(!r.ok)throw new Error('HTTP '+r.status+' '+(await r.text()).slice(0,160));const x=await r.text();return x?JSON.parse(x):null;}
 async function sbAll(path){let all=[];for(let off=0;off<100000;off+=1000){const p=await sb(path+(path.includes('?')?'&':'?')+'limit=1000&offset='+off);all=all.concat(p||[]);if(!p||p.length<1000)break;}return all;}
 function today(){const d=new Date(Date.now()+9*3600e3);return d.toISOString().slice(0,10);}
 function ymAdd(ym,n){let y=+ym.slice(0,4),m=+ym.slice(5,7)-1+n;y+=Math.floor(m/12);m=((m%12)+12)%12;return y+'-'+String(m+1).padStart(2,'0');}
@@ -125,7 +128,7 @@ function norm(store,r,vn){const v=vn[r.vehicle_code]||{};const act=+r.actual_cos
 function withPay(it){const p=PAY[it.key];const pd=p&&p.pay_date?p.pay_date:null;const b=bill(pd||it.start);return Object.assign(it,{pay:pd,kari:!pd,close:b?b.close:'',wd:b?b.wd:''});}
 
 async function load(){
-  if(!tok()){document.getElementById('map').innerHTML='<div class="msg">ログインが必要です（ダッシュボードでログインしてから開いてください）</div>';return;}
+  if(!(await tok())){document.getElementById('map').innerHTML='<div class="msg">ログインが必要です（ダッシュボードでログインしてから開いてください）</div>';return;}
   const from=ymAdd(today().slice(0,7),-14)+'-01';
   const cols='id,vehicle_code,start_date,end_date,label,cost,actual_cost,workshop,status,work_detail';
   try{
