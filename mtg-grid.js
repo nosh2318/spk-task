@@ -49,7 +49,12 @@ function signTone(t){
 "#sum table.kqg tr.kqx td{background:#f3f4f6!important}",
 /* 🏁通期タブ：#sum の中の .kqlife を通期タブの時だけ出し、月別サマリ（.kqm-w・月タブ）は隠す */
 "body:not(.tab-life) #sum .kqlife{display:none}body.tab-life #sum .kqm-w,body.tab-life #sumMon{display:none!important}",
-"#sum .kqlife table.kqg td.nxd{text-align:left;font-weight:700}"
+"#sum .kqlife table.kqg td.nxd{text-align:left;font-weight:700}",
+/* アクションプラン（mtgPlan）：PC＝4列の表、スマホ＝.kqpm をまとめの直下にカードで（mtgMob） */
+"#sum table.kqpt td,#sum table.kqpt th{text-align:left!important}#sum table.kqpt td.kq2,#sum table.kqpt th:last-child{text-align:right!important}",
+"#sum table.kqpt{max-width:820px;width:100%;border-collapse:collapse;table-layout:fixed;font-size:13px}#sum table.kqpt th{font-size:12px;color:#4b5563;font-weight:600;text-align:left;padding:6px 8px;border-bottom:1px solid #9ca3af;background:#fff}#sum table.kqpt th:last-child{text-align:right}",
+"#sum table.kqpt td{padding:7px 8px;border-bottom:1px solid #ece8e1;color:#111827}#sum table.kqpt td.kq2{text-align:right;font-weight:700;font-variant-numeric:tabular-nums}#sum table.kqpt td.kq2.pos{color:#1d4ed8}#sum table.kqpt td.kq2.neg{color:#b91c1c}",
+"#sum table.kqpt tr.kqs td{background:#efebe5;font-weight:700}#sum table.kqpt tbody tr[data-w]{cursor:pointer}#sum .kqm-w>.kqpm{display:none}"
 ].join("\n");var st=document.createElement("style");st.id="mtgGridCss";st.textContent=css;document.head.appendChild(st);})();
 /* 2026-10-21 オーナー「スマホ全く見えない」：幅≤768px の時だけ、サマリの表（table.kqg）を読み取ってカードに組み直す（値は表のセルをそのまま使う＝計算しない）。PC は表のまま（.kqmob は PC では出さない）。
    まとめ＝大カード1枚（売上 実績／目標・達成率／着地見込み／目標・差／稼働率 実績／目標／単価 実績／あるべき／見込めない不足 or 余裕）。クラス＝1クラス1カード（見出し＝クラス名・型タグ・やること／本文＝ラベル｜実績／目標｜差%）。
@@ -70,6 +75,7 @@ function mtgMob(se){
       }
       var ttl=kc&&kc.querySelector(".kqch b")?kc.querySelector(".kqch b").textContent:'';
       h+=big;
+      if(ti==0){var pm=box.querySelector(".kqpm");if(pm)h+=pm.innerHTML;}  /* アクションプラン（まとめの直下） */
       if(multi)h+='<details class="mbsec"'+(ti==0?' open':'')+'><summary>'+(ti==0?'合算（BT＋HDM）クラス別':ttl)+'</summary>'+cards+'</details>';
       else h+=cards;
     }
@@ -117,6 +123,43 @@ function mobCard(tr,G,nmc){
    稼働率＝Σmin(貸出, 稼働可能×70%)÷Σ稼働可能／単価＝Σ売上÷Σ貸出／月需要＝Σ貸出÷（稼働可能がある月数）／n＝直近の確定月の台数。
    入れる側の増分＝1台×30日×min(稼働率,70%)×単価（稼働率50%未満＝空きがあるクラスは0）。出す側の減少＝max(0, 月需要−(n−1)×30×70%)×単価。効果＝増分−減少（月あたり）。効果の大きい順に上位5件 */
 var SWP_WH=[];
+/* 2026-10-23 オーナー「目標あります 見込み出ました → 目標未達予測の場合にはやはりアクションプランを出すべき」：サマリの月タブ（今月以降）で、まとめの着地見込みが目標未満の時だけ、まとめカードの直下に「アクションプラン」。
+   P＝クラス行（高松は合算）の {lb,aa,ad,rd,ar,pk,L,cap(見込み後の空き日数),d(目標単価),uA(実績単価),jb(目標稼働率),mx(実績最高単価)}。1クラス1行。
+   ①稼働を取る：着地稼働率<目標。今の単価のまま あと◯日（上限＝空き、かつ稼働率70%まで）。効果＝日数×実績単価（予約なしは目標単価）
+   ③単価を下げて稼働を取る：①の条件で実績単価＞目標単価（AA以外）。単価を目標単価まで（最大−20%）下げて あと◯日。効果＝日数×新単価−見込み日数×値下げ分
+   ②単価を上げる：着地稼働率≥目標で、見込み単価＜目標単価 または 売れ筋（着地稼働率≥60%）。残りの未予約（見込み日数）にだけ +¥◯（最大+20%・実績最高単価まで）。効果＝見込み日数×上げ幅
+   ①で空きがあり稼働率も目標以上のクラスも上乗せ候補（①）。効果の大きい順に不足を埋めるまで取り、最後の1行は不足ちょうどまでに絞る。効果は千円単位に丸めてから合計（合計＝行の和） */
+function mtgPlan(P,gap,o,wh,mk){
+  var R=function(v){return Math.round(v/1e3)*1e3;},g=R(gap);window.DSG_CHK_P=window.DSG_CHK_P||{};if(g<=0){window.DSG_CHK_P[mk]={m:mk,gap:g,none:1};return '';}
+  var Y=function(v){return '¥'+Math.round(v).toLocaleString();},M=function(v){return (v/1e4).toFixed(1)+'万';},C=[];
+  P.forEach(function(p){if(!p.ad)return;var f=p.rd+p.pk,fr=f/p.ad,p0=p.uA>0?p.uA:p.d,upf=p.pk?(p.L-p.ar)/p.pk:p0,lo=fr<p.jb-1e-9,E=Math.max(0,Math.min(Math.floor(p.cap),Math.floor(p.ad*(lo?Math.min(p.jb,o.CAP):o.CAP)+1e-9)-Math.ceil(f-1e-9))),z=null;
+    /* 追加日数の上限：目標未満のクラスは目標稼働率まで（AA 3%のクラスに70%までは現実的でない）、目標以上のクラスは稼働率70%まで。どちらも残りの空き日数以内 */
+    var bs='着地稼働率 '+Math.round(fr*100)+'%（目標 '+Math.round(p.jb*100)+'%）・追加できる日数 '+E+'日（'+(lo?'目標稼働率':'稼働率'+Math.round(o.CAP*100)+'%')+'まで・残りの空き以内）・実績単価 '+(p.uA>0?Y(p.uA):'予約なし')+'・目標単価 '+Y(p.d);
+    function one(){if(!E||!p0)return null;return {k:1,mx:E*p0,q:function(r){var n=Math.min(E,Math.ceil(r/p0-1e-9));return {n:n,e:n*p0,t:'あと'+n+'日の貸出',w:n+'日 × '+Y(p0)+' ＝ '+Y(n*p0)};}};}
+    if(fr<p.jb-1e-9){
+      if(!p.aa&&p.uA>p.d*1.005&&E>0){var np=Math.round(Math.max(p.d,p.uA*(1-o.PDN))),ls=p.pk*Math.max(0,upf-np),cut=Math.round(p.uA-np);
+        if(E*np-ls>0)z={k:3,mx:E*np-ls,q:function(r){var n=Math.min(E,Math.ceil((r+ls)/np-1e-9));return {n:n,e:n*np-ls,t:'単価 −¥'+cut.toLocaleString()+'で、あと'+n+'日',w:n+'日 × '+Y(np)+' − 見込み'+Math.round(p.pk)+'日の値下げ分 '+Y(ls)+' ＝ '+Y(n*np-ls)};}};}
+      if(!z)z=one();}
+    else if(p.pk>0&&(upf<p.d*0.995||fr>=o.SELL-1e-9)){var r=upf<p.d*0.995?Math.min(o.PUP,p.d/upf-1):o.PUP;if(p.mx)r=Math.min(r,p.mx/upf-1);var ad=Math.floor(upf*r);
+      if(ad>=1)z={k:2,mx:p.pk*ad,q:function(rm){var a2=Math.min(ad,Math.ceil(rm/p.pk-1e-9));return {n:a2,e:p.pk*a2,t:'単価 +¥'+a2.toLocaleString(),w:'残りの見込み '+Math.round(p.pk)+'日 × +'+Y(a2)+'（'+Y(upf)+'→'+Y(upf+a2)+'）＝ '+Y(p.pk*a2)};}};
+      else z=one();}
+    else if(!p.aa)z=one();  /* 目標以上のクラスの上乗せ（AA＝高級の別枠は目標以上なら出さない） */
+    if(z&&z.mx>=5e3){  /* 効果0.5万未満の行は出さない */z.p=p;z.bs=bs;C.push(z);}});
+  C.sort(function(a,b){return b.mx-a.mx;});
+  var rem=g,rows=[];C.forEach(function(z){if(rem<=0)return;var x=z.q(z.mx>rem?rem:z.mx),e=R(x.e);if(e<=0)return;rows.push({z:z,x:x,e:e});rem-=e;});
+  rows.sort(function(a,b){return b.e-a.e;});
+  var tot=rows.reduce(function(s,r){return s+r.e;},0),lf=g-tot,KN={1:'稼働を取る',2:'単価を上げる',3:'単価を下げて稼働を取る'};
+  (window.DSG_CHK_P=window.DSG_CHK_P||{})[mk]=({m:mk,gap:g,rows:rows.map(function(r){return r.e;}),tot:tot,left:lf});
+  var tr='',mb='';
+  rows.forEach(function(r){var w=wh('<b>'+r.z.p.lb.replace(/<[^>]+>/g,'')+' '+KN[r.z.k]+'</b><br>'+r.z.bs+'<br>効果 '+r.x.w+'（千円単位で表示）');
+    tr+='<tr'+w+'><td class="kqn">'+r.z.p.lb+'</td><td class="kpa">'+KN[r.z.k]+'</td><td class="kpn">'+r.x.t+'</td><td class="kq2 pos">+'+M(r.e)+'</td></tr>';
+    mb+='<div class="mcd"'+w+'><div class="mch"><b>'+r.z.p.lb+'</b><span class="mpos">+'+M(r.e)+'</span></div><table class="mtb"><tbody><tr><th>やること</th><td>'+KN[r.z.k]+'</td><td></td></tr><tr><th>必要量</th><td>'+r.x.t+'</td><td></td></tr></tbody></table></div>';});
+  if(!rows.length){tr+='<tr><td class="kqn" colspan="4">打ち手なし（空き・単価の余地がない）</td></tr>';}
+  var ft='<tr class="kqs"><td class="kqn">合計効果</td><td></td><td></td><td class="kq2 pos">+'+M(tot)+'</td></tr><tr><td class="kqn">店の不足（着地差）</td><td></td><td></td><td class="kq2 neg">−'+M(g)+'</td></tr>'
+    +'<tr class="kqs"><td class="kqn">'+(lf<=0?'届く':'残り不足')+'</td><td></td><td></td><td class="kq2 '+(lf<=0?'pos':'neg')+'">'+(lf<=0?'+'+M(-lf):'−'+M(lf))+'</td></tr>';
+  var mf='<div class="mbig"><div class="mbh"><b>アクションプラン</b><span class="'+(lf<=0?'mpos':'mneg')+'">'+(lf<=0?'届く':'残り不足 −'+M(lf))+'</span></div><div class="mbl"><span class="mlb">合計効果</span><span class="mvl">+'+M(tot)+'</span><span class="mex"></span></div><div class="mbl"><span class="mlb">不足</span><span class="mvl mneg">−'+M(g)+'</span><span class="mex"></span></div></div>';
+  return '<div class="kqc kqp"><div class="kqch"><b>アクションプラン（着地見込み −'+M(g)+' を埋める）</b><span>行をクリックで計算根拠</span></div><div class="tw"><table class="kqpt"><colgroup><col style="width:22%"><col style="width:26%"><col style="width:34%"><col style="width:18%"></colgroup><thead><tr><th>クラス</th><th>やること</th><th>必要量</th><th>効果(万)</th></tr></thead><tbody>'+tr+ft+'</tbody></table></div></div>'
+    +'<div class="kqpm">'+mf+mb+'</div>';}
 /* 2026-10-21 オーナー「サマリのサマリが必要。クラスごとの生涯成績。月別ではなく過去から未来までの総評」：サマリの「通期」タブ（3店共通）。
    過去＝確定月（PM・土台と同じ 3月〜前月）の実績：売上（cls/cls_cb）・貸出日数・稼働可能日数（util/util_cb）。今期＝今月〜最終月（FM）の目標・着地見込み（月別サマリのクラス行の値をそのまま積む＝LF）。
    通期売上＝過去の実績＋今期の着地。台数＝期間（PM＋FM）の月平均。まとめ＝クラス行＋予約外・未配車（過去＝店の実績−クラス行の実績／今期＝目標・着地とも月別の予約外・未配車の合計）。比率は合計から再計算。
@@ -216,7 +259,7 @@ document.addEventListener('click',function(e){var c=e.target.closest&&e.target.c
 " body{padding:8px}",
 " .bar{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap;scrollbar-width:none}.bar::-webkit-scrollbar{display:none}",
 " .bar>*{flex:0 0 auto}.bar .tabs,#sumMon .kqt{flex-wrap:nowrap}.bar .rb.r0{margin-left:0}.bar .rb .rbt{display:none}.bar .rb{padding:0 8px}.bar .upd{font-size:12px}",
-" #sum .kqc-t{display:none}#sum .kqmob{display:block}",
+" #sum .kqc-t,#sum .kqp{display:none}#sum .kqmob{display:block}",
 " #sum .mbig,#sum .mcd{background:#fff;border:1px solid #e7e3dc;border-radius:12px;padding:12px 14px;margin:0 0 10px;font-size:15px;color:#111827;cursor:pointer}",
 " #sum .mbig{border:2px solid #1d64d8}",
 " #sum .mbh,#sum .mch{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:6px}#sum .mbh b{font-size:18px}#sum .mbh span{font-size:15px;font-weight:700}",
