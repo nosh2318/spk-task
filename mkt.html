@@ -325,6 +325,7 @@ const H=(no,kind,title,lead)=>`<h2><span class="no">${no}</span>${title}<span cl
 function header(){
   const l=lastRun();
   $("#runline").innerHTML=l?`<span class="date">データの日付 <b>${esc(l.day)}</b>（この日にGoogleで表示されていたもの）・つないだ媒体 <b>${CHAN.filter(chanLive).length}</b>／${CHAN.length}</span>`:"まだ集計がありません。";
+  if(typeof LIVE!=="undefined"&&LIVE)$("#runline").innerHTML+=LIVE.err?` <span class="muted">・予約と来訪の最新を読めません（週1回の値を表示中）</span>`:` <span class="muted">・予約・来訪・売上は <b>${esc(LIVE.stamp)}</b> 時点（開くたびに計算）</span>`;
   const left=s=>K.filter(k=>k.store===s&&k.kind!=="big"&&!k.decision).length;
   if(false){$("#runline").innerHTML=`<span class="muted">毎週月曜に自動で集計・更新します${l?"（最新 "+esc(l.day)+"）":""}</span>`;$("#nav").innerHTML=Object.entries(AREAS).map(([k,a])=>`<button data-area="${k}" class="${ui.store===k?"on":""}">${a.name}</button>`).join("");return}
   $("#nav").innerHTML=Object.entries(AREAS).map(([k,a])=>`<button data-area="${k}" class="${ui.page==="area"&&ui.store===k?"on":""}">${a.name}<small>残り${left(k)}</small></button>`).join("")+`<span class="sp"></span>`+(dl?`<button data-export="area" style="font-weight:400">このエリアをExcelに</button><button data-export="all" style="font-weight:400">全エリアをExcelに</button>`:"");
@@ -601,7 +602,7 @@ function steps(k,c){
     sec("⑤","結果",resultCell(k,c));
 }
 // ゴールと進捗。goals は店×指標で1件。history に週1回の実績が足される
-const today=()=>new Date().toISOString().slice(0,10);
+const today=()=>new Date(Date.now()+9*3600e3).toISOString().slice(0,10); // 日本時間の日付
 const dnum=d=>Date.parse(d+"T00:00:00Z")/864e5;
 function goalState(g){
   const h=(g.history||[]).slice().sort((a,b)=>a.day.localeCompare(b.day));
@@ -1178,8 +1179,8 @@ async function deriveHP(){
   const s=sess(),t=s&&s.access_token,now=new Date(),stamp=(now.getMonth()+1)+'/'+now.getDate()+' '+String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0');
   const C='id,ota,base_price,option_price,discount,price,created_at,status';
   const jobs=[
-    getAll('reservations?select='+C,t).then(r=>putHP('sapporo',hpCount(r),'予約台帳から（獲得・OTA実績と同じ数え方・キャンセル除く）'+stamp+' 時点')),
-    getAll('nha_reservations?select='+C+',booked_at',t).then(r=>putHP('naha',hpCount(r),'予約台帳から（獲得・OTA実績と同じ数え方・キャンセル除く）'+stamp+' 時点')),
+    getAll('reservations?select='+C,t).then(r=>{RSV.sapporo=r;return r}).then(r=>putHP('sapporo',hpCount(r),'予約台帳から（獲得・OTA実績と同じ数え方・キャンセル除く）'+stamp+' 時点')),
+    getAll('nha_reservations?select='+C+',booked_at',t).then(r=>{RSV.naha=r;return r}).then(r=>putHP('naha',hpCount(r),'予約台帳から（獲得・OTA実績と同じ数え方・キャンセル除く）'+stamp+' 時点')),
     rpcAt(BTSB,BT_ANON,null,'bt_hp_brand_monthly',{}).then(rows=>{const M={takamatsu:{},buddica:{}};(rows||[]).forEach(r=>{if(!String(r.ym).startsWith('2026-'))return;const st=r.brand==='HDM'?'takamatsu':'buddica';M[st][String(+r.ym.slice(5,7))]=[+r.cnt||0,+r.rev||0]});
       putHP('takamatsu',M.takamatsu,'予約台帳から（高松の公式サイト予約のうち HANDYMAN 分・キャンセル除く）'+stamp+' 時点');putHP('buddica',M.buddica,'予約台帳から（高松の公式サイト予約のうち BUDDICA 分・キャンセル除く）'+stamp+' 時点')}),
     fetch(SB+'/rest/v1/app_settings?key=eq.hp_adspend_spk&select=value',{headers:HD(t)}).then(r=>r.json()).then(d=>putAd('sapporo',parseV(d[0]&&d[0].value))),
@@ -1187,6 +1188,27 @@ async function deriveHP(){
     fetch(BTSB+'/rest/v1/bt_app_settings?key=eq.hp_adspend_bt&select=value',{headers:HD(null,BT_ANON)}).then(r=>r.json()).then(d=>putAd('takamatsu',parseV(d[0]&&d[0].value)))
   ];
   await Promise.allSettled(jobs);
+}
+// --- 予約数・来訪（直近30日）と「来訪→予約画面→予約」を開くたびに計算する（写しを持たない・DBには書かない）
+// 設計メモ docs/設計_集客の週次データをSupabaseへ_2026-10-24.md 2-A／omni-review 条件11・12。来訪・予約画面＝kd_official_stats(30)。
+// 予約＝予約台帳の公式サイト（新）経由（HDMS/HDMN）・作成30日・キャンセル除く（kd_official_stats の cv はキャンセルも数えるので使わない）。高松の予約は週1回の値のまま。
+const RSV={};var LIVE=null; // var＝先に描画が走っても参照できるように
+async function deriveLive(){
+  const now=new Date(),stamp=(now.getMonth()+1)+'/'+now.getDate()+' '+String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0');
+  const since=Date.now()-30*864e5,PFX={sapporo:'HDMS',naha:'HDMN'},cv={};
+  Object.entries(PFX).forEach(([k,p])=>{const r=RSV[k];if(!r)return;cv[k]=r.filter(x=>String(x.id||'').startsWith(p)&&!/cancel|キャンセル/i.test(x.status||'')&&Date.parse(x.created_at)>=since).length});
+  let st=null;try{st=await rpc('kd_official_stats',{p_days:30})}catch(e){st=null}
+  if(!st||!Array.isArray(st.by_store)||Object.keys(cv).length<2){LIVE={err:true,stamp};return}
+  LIVE={stamp};const by={};st.by_store.forEach(x=>by[x.store]=x);const day=today();
+  const run=R.find(r=>r.funnel);
+  if(run){const F=run.funnel,wk=run.day||'';F.stores=F.stores||{};
+    ['naha','sapporo','takamatsu'].forEach(k=>{const b=by[k];if(!b)return;const o=F.stores[k]||{};F.stores[k]=Object.assign({},o,{sessions:+b.sessions||0,flow:+b.flow_sessions||0,cv:cv[k]!=null?cv[k]:o.cv})});
+    F.period='直近30日（'+stamp+' 時点）';F.src='来訪・予約画面＝公式サイトの自前解析／予約＝予約台帳（公式サイト経由・キャンセル除く）。高松の予約のみ週1回の値（'+wk+'）'}
+  GL.forEach(g=>{const k=g.store;let v=null;
+    if(g.metric==='visits'&&by[k])v=+by[k].sessions||0;else if(g.metric==='cv'&&cv[k]!=null)v=cv[k];
+    if(v==null){if(g.metric==='cv'&&k==='takamatsu'){const h=g.history||[];g.source='高松の予約記録（週1回の値・'+((h[h.length-1]||{}).day||'')+'）'}return}
+    g.history=(g.history||[]).filter(x=>x.day!==day).concat([{day,value:v}]);
+    g.source=(g.metric==='cv'?'予約台帳（公式サイト経由・キャンセル除く）':'公式サイトの自前解析')+'・'+stamp+' 時点'});
 }
 async function loadAll(force){
   if(loading)return;if(!force&&Date.now()-lastLoad<60000)return;loading=true;
@@ -1198,7 +1220,7 @@ async function loadAll(force){
     catch(e){$("#runline").innerHTML='データを読めませんでした（'+esc(e.message)+'）。<a href="index.html" target="_blank" rel="noopener">管理APP</a>でログインし直してから開き直してください。';return}
     cols.forEach((c,i)=>SET[c]((res[i]||[]).map(r=>{VER[c+'/'+r.doc_id]=r.version;return Object.assign({id:r.doc_id},r.data)})));
     db=MKT_DB;uid=(s.user&&s.user.id)||'';
-    await deriveHP();
+    await deriveHP();await deriveLive();
     lastLoad=Date.now();render();
   }finally{loading=false}
 }
