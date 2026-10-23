@@ -154,7 +154,9 @@ serve(async(req)=>{
     const payTag=await handleCancelPayment(rno,ota);  // ★2026-10-01 じゃらん=決済リンク停止/要返金+見える化。通知本文にも決済状況を載せる
     // ★2026-10-15 キャンセルで空いた車を、同クラス・期間重複の未配車HDM予約へ古い順に再配車（楽天の予約変更＝新番号取込→旧番号キャンセルの順で届き、新予約が未配車のまま残った RC***************76 の根治）
     const reTag=hadCar?await reassignFreed(ex[0].vehicle_class,ex[0].start_date,ex[0].end_date):"";
-    await slack(`🔴 ${ota}HDM キャンセル【${ota} | HANDYMAN高松空港店】${rno}\n${ex[0].name||""} 様の予約をキャンセルしました${payTag}${reTag}`);
+    // 2026-10-23 キャンセル通知はDB cron bt_notify_new_site_reservations の❌カード(両ch・新規と同じ5項目)に一本化＝ここの🔴汎用通知は撤去(新規通知 9-28 一本化と同型)。
+    //   決済(🚫決済リンク停止/🔴要返金確認)は handleCancelPayment が別途投稿済。再配車だけはここでしか分からないので、あった時だけ1行出す。
+    if(reTag)await slack(`🔁 キャンセル後の再配車【${ota} | HANDYMAN高松空港店】${rno}${reTag}`);
     return new Response(JSON.stringify({ok:true,cancelled:rno,pay:payTag,reassigned:reTag}));
   }
 
