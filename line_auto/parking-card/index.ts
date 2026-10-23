@@ -4,6 +4,7 @@ console.log("[keymig]", __newKey("SUPABASE_SECRET_KEYS", "edge") ? "secret" : "l
 // parking-card Edge Function
 // 駐車場(trustpark)決済用: 会社カードをAES-256-GCMで暗号化保管し、PIN認証で復号して返す。
 // 鍵はEF secret(PARKING_CARD_KEY)のみ・DBには暗号文だけ。全アクセスをparking_card_access_logに監査記録。
+// 2026-10-24 CVC(セキュリティコード)は保存も返却もしない（PCI DSS：保存自体が禁止・オーナー了承）。
 // 正本: ~/spk-task/line_auto/parking-card/index.ts → deploy実体 ~/hdm-car-delivery/supabase/functions/parking-card/
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
@@ -97,9 +98,9 @@ Deno.serve(async (req) => {
       const c = body.card || {};
       const num = String(c.number || "").replace(/\s/g, "");
       const pin = String(body.pin || "");
-      if (!num || !c.exp || !c.cvc || !c.name) return new Response(JSON.stringify({ ok: false, error: "missing_fields" }), { status: 400, headers: H });
+      if (!num || !c.exp || !c.name) return new Response(JSON.stringify({ ok: false, error: "missing_fields" }), { status: 400, headers: H });
       if (!/^\d{4,6}$/.test(pin)) return new Response(JSON.stringify({ ok: false, error: "pin_must_be_4_6_digits" }), { status: 400, headers: H });
-      const payload = JSON.stringify({ name: c.name, number: num, exp: c.exp, cvc: String(c.cvc) });
+      const payload = JSON.stringify({ name: c.name, number: num, exp: c.exp }); // CVC は受け取っても保存しない
       const encBlob = await enc(payload);
       const ph = await pinHash(pin);
       const { error } = await sb.from("parking_card_vault").upsert({ id: 1, enc: encBlob, label: labelOf(num), pin_hash: ph, updated_at: new Date().toISOString(), updated_by: "admin" }, { onConflict: "id" });
@@ -123,7 +124,8 @@ Deno.serve(async (req) => {
       if (!data || !data.enc) { await log("reveal", false, "no_card"); return new Response(JSON.stringify({ ok: false, error: "no_card", msg: "カードが未登録です。" }), { status: 404, headers: H }); }
       const ph = await pinHash(pin);
       if (!ctEq(ph, data.pin_hash || "")) { await log("reveal", false, "bad_pin", body.actor || ""); return new Response(JSON.stringify({ ok: false, error: "bad_pin", msg: "PINが違います。" }), { status: 403, headers: H }); }
-      const card = JSON.parse(await dec(data.enc));
+      const raw = JSON.parse(await dec(data.enc));
+      const card = { name: raw.name, number: raw.number, exp: raw.exp }; // 旧暗号文に CVC が残っていても返さない
       await log("reveal", true, data.label || "", body.actor || "");
       return new Response(JSON.stringify({ ok: true, card, label: data.label }), { headers: H });
     }
