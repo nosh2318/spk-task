@@ -1,3 +1,6 @@
+// 2026-10-23 新API鍵移行：新形式の鍵を優先し、無ければ旧鍵（移行期間の保険・旧鍵の無効化前に外す）
+function __newKey(env: string, name: string): string { try { return (JSON.parse(Deno.env.get(env) || "{}") as Record<string, string>)[name] || ""; } catch { return ""; } }
+console.log("[keymig]", __newKey("SUPABASE_SECRET_KEYS", "edge") ? "secret" : "legacy");
 // staff-action — バイト個人ページ(staff.html)用のアクションEF
 // body: { token(staff share_token), store?("spk"|"nha"), resv_no, action }
 //   action: depart | collect | arrival | col_arrival | dropoff | done | approve | skip | delay_del | delay_col
@@ -5,7 +8,7 @@
 // deploy: functions deploy staff-action --no-verify-jwt
 //   secrets: FUNC_SECRET（line-pushと共有）, SLACK_BOT_TOKEN, STAFF_DONE_CHANNEL, STAFF_DONE_CHANNEL_NHA
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
-const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SB_KEY = (__newKey("SUPABASE_SECRET_KEYS", "edge") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))!;
 const FUNC_SECRET = Deno.env.get("FUNC_SECRET")!;
 
 // === 店舗別コンフィグ（SPK既定＝従来動作を1文字も変えない） ===

@@ -1,3 +1,6 @@
+// 2026-10-23 新API鍵移行：新形式の鍵を優先し、無ければ旧鍵（移行期間の保険・旧鍵の無効化前に外す）
+function __newKey(env: string, name: string): string { try { return (JSON.parse(Deno.env.get(env) || "{}") as Record<string, string>)[name] || ""; } catch { return ""; } }
+console.log("[keymig]", __newKey("SUPABASE_SECRET_KEYS", "edge") ? "secret" : "legacy");
 // ============================================================
 // handyman-mypage-nha : HANDYMAN 統合マイページ 那覇（内部カルテ閲覧・lookup専用）
 // 2026-07-08 / omni  ※札幌 handyman-mypage を複製元に、那覇の日本語列・受け渡し区分へ作り替え。
@@ -17,7 +20,7 @@
 // ============================================================
 
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
-const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SB_KEY = (__newKey("SUPABASE_SECRET_KEYS", "edge") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))!;
 const H = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "content-type": "application/json" };
 // ★security 2026-10-23 スタッフ許可リスト：「ログインしていれば誰でも」→ 正規スタッフのメールドメインだけ通す。
 //   main(ckrxttbnawkclshczsia) の auth.users ドメイン＝spk.hdm/nha.hdm/g-lines.jp/partner.hdm（2026-10-23確認）。協力会社 partner.hdm は不可。新規登録は無効(disable_signup=true)のためドメインで判定できる。EF は個別デプロイなので各 EF に同じ小関数をコピー。
@@ -286,7 +289,7 @@ Deno.serve(async (req) => {
         { type: "mrkdwn", text: `*車両:*\n${r.vehicle_class || r.vehicle_name || "-"}` }, { type: "mrkdwn", text: `*金額:*\n¥${Number(r.price || 0).toLocaleString()}` },
       ] },
       { type: "section", text: { type: "mrkdwn", text: `*理由:*\n${reason || "（記載なし）"}` } },
-      { type: "actions", elements: [ { type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, style: "primary", url: "https://nosh2318.github.io/spk-task/mypage-admin.html?bucket=hdm_nha" } ] },
+      { type: "actions", elements: [ { type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, style: "primary", url: "https://rent-handyman.com/mypage-admin.html?bucket=hdm_nha" } ] },
       { type: "context", elements: [ { type: "mrkdwn", text: "⚠️ 承認制です。上のボタン（または「📲マイページ利用状況(那覇)」→承認待ち）で承認/却下（承認＝キャンセル確定＋配車解放。返金は規定に沿って手動Square返金）。" } ] },
     ]); }
     return json({ ok: true, requested: true }, 200, origin);
@@ -311,7 +314,7 @@ Deno.serve(async (req) => {
         { type: "mrkdwn", text: `*🕐 予定の回収*\n${planned}` },
         { type: "mrkdwn", text: `*🟢 お客様の希望*\n${rdyTime ? `*${rdyTime}〜*` : "指定なし"}` },
       ] },
-      { type: "actions", elements: [ { type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, style: "primary", url: "https://nosh2318.github.io/spk-task/mypage-admin.html?bucket=hdm_nha" } ] },
+      { type: "actions", elements: [ { type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, style: "primary", url: "https://rent-handyman.com/mypage-admin.html?bucket=hdm_nha" } ] },
       { type: "context", elements: [ { type: "mrkdwn", text: "👉 上のボタン（マイページ管理）で ✅承認 / 🚫却下（承認でお客様へメール通知）" } ] },
     ];
     await slackPost(`🟢 早め回収リクエスト（承認待ち）[那覇] ${r.name || ""} / ${resId}`, rBlocks);

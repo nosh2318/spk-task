@@ -1,3 +1,6 @@
+// 2026-10-23 新API鍵移行：新形式の鍵を優先し、無ければ旧鍵（移行期間の保険・旧鍵の無効化前に外す）
+function __newKey(env: string, name: string): string { try { return (JSON.parse(Deno.env.get(env) || "{}") as Record<string, string>)[name] || ""; } catch { return ""; } }
+console.log("[keymig]", __newKey("SUPABASE_SECRET_KEYS", "edge") ? "secret" : "legacy");
 // ============================================================
 // handyman-mypage : HANDYMAN 統合マイページ（全予約ユニークURL・token認証）
 // 2026-07-03 / omni  ※札幌(spk)先行。那覇(nha)は後追いで STORES に追加。
@@ -10,8 +13,23 @@
 // ============================================================
 
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
-const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SB_KEY = (__newKey("SUPABASE_SECRET_KEYS", "edge") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))!;
 const H = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "content-type": "application/json" };
+// ★security 2026-10-23 スタッフ許可リスト：「ログインしていれば誰でも」→ 正規スタッフのメールドメインだけ通す。
+//   main(ckrxttbnawkclshczsia) の auth.users ドメイン＝spk.hdm/nha.hdm/g-lines.jp/partner.hdm（2026-10-23確認）。協力会社 partner.hdm は不可。新規登録は無効(disable_signup=true)のためドメインで判定できる。EF は個別デプロイなので各 EF に同じ小関数をコピー。
+const STAFF_EMAIL_RE = /@(spk\.hdm|nha\.hdm|g-lines\.jp)$/i;
+async function staffUser(token: string): Promise<{ id: string; email: string } | null> {
+  const t = String(token || "").replace(/^Bearer\s+/i, "").trim();
+  if (!t) return null;
+  try {
+    const r = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${t}` } });
+    if (!r.ok) return null;
+    const u: any = await r.json().catch(() => null);
+    const email = String(u?.email || "").trim();
+    if (!u?.id || !STAFF_EMAIL_RE.test(email)) return null;
+    return { id: String(u.id), email };
+  } catch (_) { return null; }
+}
 
 // 認証はbody内のmypage_token(推測不能UUID)のみ・Cookie/資格情報を一切使わない → CORSは全origin許可でよい。
 // 旧実装は非allowlist origin(例:Apple Notesアプリ内WebView=Origin:null / 各種アプリ内ブラウザ)に対し固定でnosh2318.github.ioを返し、
@@ -49,11 +67,20 @@ async function slackPost(text: string, blocks?: unknown[]): Promise<void> {
   const body: any = { channel: ch, text }; if (blocks) body.blocks = blocks;
   try { const r = await fetch("https://slack.com/api/chat.postMessage", { method: "POST", headers: { Authorization: `Bearer ${token}`, "content-type": "application/json; charset=utf-8" }, body: JSON.stringify(body) }); const d = await r.json().catch(() => ({})); if (!d.ok) console.error("[slack]", JSON.stringify(d)); } catch (e) { console.error("[slack]", String(e)); }
 }
+// ★新規予約(official-pay)の逆パターン：キャンセルも予約取込ch #sapporo_reservation に出す（那覇と統一）
+async function slackResv(text: string): Promise<void> {
+  if (Deno.env.get("MYPAGE_SILENT") === "1") { console.log("[slackResv muted]", text); return; }
+  const token = Deno.env.get("SLACK_BOT_TOKEN"); const ch = Deno.env.get("SLACK_SPK_RESV_CHANNEL") || "C08TDTPEB36";
+  if (!token) { console.log("[slackResv skip]", text); return; }
+  try { const r = await fetch("https://slack.com/api/chat.postMessage", { method: "POST", headers: { Authorization: `Bearer ${token}`, "content-type": "application/json; charset=utf-8" }, body: JSON.stringify({ channel: ch, text }) }); const d = await r.json().catch(() => ({})); if (!d.ok) console.error("[slackResv]", JSON.stringify(d)); } catch (e) { console.error("[slackResv]", String(e)); }
+}
+// 新サイト(rent-handyman.com)判定＝ota'HANDYMAN' or id HDMS始まり
+const isNewSite = (o?: string, id?: string) => String(o || "") === "HANDYMAN" || /^HDMS/.test(String(id || ""));
 // 予約もと（OTA）ラベル
 const OTA_JP: Record<string, string> = { J: "じゃらん", R: "楽天", S: "skyticket", O: "エアトリ", RC: "レンタカーcom", G: "GoGoOut", HP: "オフィシャル(HP)", SP: "オフィシャル(HP)", direct: "直販", KEYDROP: "KEYDROP" };
 function otaJp(o?: string): string { const k = String(o || ""); return OTA_JP[k] || k || "—"; }
 // 承認管理ページ（マイページ管理コンソール）URL＝承認待ちカードのボタンから飛べるように
-const MGMT_URL = "https://nosh2318.github.io/spk-task/my-admin.html";
+const MGMT_URL = "https://rent-handyman.com/mypage-admin.html?bucket=but_tkm";
 // マイページ通知カード（統一フォーマット）＝ 見出し＋基本情報(お客様/予約番号/予約もと/利用/車両)＋内容＋対応の要否
 type MpCard = { emoji: string; title: string; name: string; resId: string; ota?: string; period?: string; vehicle?: string; lines?: string[]; action: string };
 function mpCard(c: MpCard): { text: string; blocks: unknown[] } {
@@ -220,11 +247,21 @@ async function applyPlaceTime(store: any, r: any, resId: string, delPlace: strin
   const rPatch: Record<string, unknown> = {};
   const locked = (r.mypage_locked && typeof r.mypage_locked === "object") ? { ...r.mypage_locked } : {};
   const changes: any[] = []; const labels: string[] = [];
+  // 🔴 2026-09-14 根治(複製ドリフト): 「変更前(old_value)」は予約の生値(r.return_time=当初17:00で古い)でなく、
+  //   OP/マイページの実表示値(タスクの resolveTaskTime/Place=16:00)を使う。update経路(774-786)と統一し、
+  //   承認反映(applyPlaceTime)経路でも古い当初値を履歴に書かない（マイページ管理の「変更前」が実表示と一致する）。
+  const _apTasks = await sbGet(store.tasks, `reservation_id=eq.${encodeURIComponent(resId)}&deleted=not.is.true&select=_id,place,time,changed_json`);
+  const _apD = _apTasks.find((t: any) => String(t._id || "").startsWith("d-"));
+  const _apC = _apTasks.find((t: any) => String(t._id || "").startsWith("c-"));
+  const oldDelPlace = resolveTaskPlace(_apD) || String(r.del_place || "").trim();
+  const oldColPlace = resolveTaskPlace(_apC) || String(r.col_place || "").trim();
+  const oldLendTime = resolveTaskTime(_apD) || String(r.lend_time || r.del_time || "").trim();
+  const oldReturnTime = resolveTaskTime(_apC) || String(r.return_time || r.col_time || "").trim();
   const mark = (f: string, oldV: any, newV: any) => { locked[f] = { at: nowJst(), by: "customer" }; changes.push({ reservation_id: resId, store: "spk", field: f, old_value: String(oldV ?? ""), new_value: String(newV ?? ""), source: "customer", status: "applied" }); };
-  if (delPlace != null) { rPatch.del_place = delPlace; if (dLat != null && dLng != null) { rPatch.del_lat = dLat; rPatch.del_lng = dLng; } mark("del_place", r.del_place, delPlace); labels.push("お届け場所"); }
-  if (colPlace != null) { rPatch.col_place = colPlace; if (cLat != null && cLng != null) { rPatch.col_lat = cLat; rPatch.col_lng = cLng; } mark("col_place", r.col_place, colPlace); labels.push("回収場所"); }
-  if (lendTime != null) { rPatch[store.lendTimeCol] = lendTime; rPatch.del_time = lendTime; mark("lend_time", r.lend_time, lendTime); labels.push("お届け時間"); }
-  if (returnTime != null) { rPatch[store.returnTimeCol] = returnTime; rPatch.col_time = returnTime; mark("return_time", r.return_time, returnTime); labels.push("回収時間"); }
+  if (delPlace != null) { rPatch.del_place = delPlace; if (dLat != null && dLng != null) { rPatch.del_lat = dLat; rPatch.del_lng = dLng; } mark("del_place", oldDelPlace, delPlace); labels.push("お届け場所"); }
+  if (colPlace != null) { rPatch.col_place = colPlace; if (cLat != null && cLng != null) { rPatch.col_lat = cLat; rPatch.col_lng = cLng; } mark("col_place", oldColPlace, colPlace); labels.push("回収場所"); }
+  if (lendTime != null) { rPatch[store.lendTimeCol] = lendTime; rPatch.del_time = lendTime; mark("lend_time", oldLendTime, lendTime); labels.push("お届け時間"); }
+  if (returnTime != null) { rPatch[store.returnTimeCol] = returnTime; rPatch.col_time = returnTime; mark("return_time", oldReturnTime, returnTime); labels.push("回収時間"); }
   if (!labels.length) return [];
   rPatch.mypage_locked = locked;
   const ok = await sbPatch(store.resv, `id=eq.${encodeURIComponent(resId)}`, rPatch, actor);
@@ -253,8 +290,8 @@ Deno.serve(async (req) => {
     if (!bySecret) {
       const staffToken = String(p.staff_token || "").trim();
       if (!staffToken) return json({ error: "認証がありません" }, 401, origin);
-      const who = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${staffToken}` } });
-      if (!who.ok) return json({ error: "認証に失敗しました" }, 401, origin);
+      const who = await staffUser(staffToken);
+      if (!who) return json({ error: "認証に失敗しました" }, 401, origin);
     }
     const token = Deno.env.get("SQUARE_ACCESS_TOKEN") || "";
     if (!token) return json({ error: "SQUARE未設定" }, 503, origin);
@@ -282,8 +319,8 @@ Deno.serve(async (req) => {
 
   // ==== notify_preview: 全通知パターンをサンプルデータでSlackへ（DB書込/LINEなし・リリース前確認用）====
   if (action === "notify_preview") {
-    const who = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${String(p.staff_token || "").trim()}` } });
-    if (!who.ok) return json({ error: "unauthorized" }, 401, origin);
+    const who = await staffUser(String(p.staff_token || "").trim());
+    if (!who) return json({ error: "unauthorized" }, 401, origin);
     const N = "山田 太郎", ID = "R0SAMPLE01", OT = "R", PD = "2026-07-10〜2026-07-12", V = "ノア（Bクラス）";
     const samples: MpCard[] = [
       { emoji: "✏️", title: "マイページで変更（即時反映済）", name: N, resId: ID, ota: OT, period: PD, vehicle: V,
@@ -327,9 +364,9 @@ Deno.serve(async (req) => {
     else {
       const staffToken = String(p.staff_token || "").trim();
       if (!staffToken) return json({ error: "スタッフ認証（PIN）が必要です" }, 401, origin);
-      const who = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${staffToken}` } });
-      if (!who.ok) return json({ error: "スタッフ認証に失敗しました" }, 401, origin);
-      const user = await who.json().catch(() => ({}));
+      const who = await staffUser(staffToken);
+      if (!who) return json({ error: "スタッフ認証に失敗しました" }, 401, origin);
+      const user = who;
       actor = String(user?.email || user?.id || "staff");
     }
     const sAct = "staff:" + actor; // 監査ログ用（誰が＝担当個人）
@@ -456,6 +493,13 @@ Deno.serve(async (req) => {
         ? `✅ 顧客へLINE通知済み${c.field === "cancel" ? "＋キャンセル確定・配車解除" : "・予約に反映済み"}`
         : "✅ 顧客へLINE通知済み（見送り）",
     });
+    // ★キャンセル(承認/却下)は予約取込chにも出す（新規予約の逆パターン・那覇と統一）
+    if (c.field === "cancel") {
+      const _nt = isNewSite(rr.ota, resId2) ? "（🆕NEW リニューアル公式サイト rent-handyman.com）" : "";
+      await slackResv(decision === "approved"
+        ? `✅ キャンセル承認（確定）[札幌]${_nt} ${rr.name || ""} / ${resId2} ／ 配車解放済・返金は規定に沿ってSquare手動返金`
+        : `🚫 キャンセル却下 [札幌]${_nt} ${rr.name || ""} / ${resId2} ／ ${actor}`);
+    }
     return json({ ok: true, decision, field: c.field }, 200, origin);
   }
 
@@ -469,8 +513,8 @@ Deno.serve(async (req) => {
     if (!bySecret) {
       const staffToken = String(p.staff_token || "").trim();
       if (!staffToken) return json({ error: "認証がありません" }, 401, origin);
-      const who = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${staffToken}` } });
-      if (!who.ok) return json({ error: "スタッフ認証に失敗しました" }, 401, origin);
+      const who = await staffUser(staffToken);
+      if (!who) return json({ error: "スタッフ認証に失敗しました" }, 401, origin);
     }
     const st0 = STORES.spk;
     const today = nowJst().slice(0, 10);
@@ -515,7 +559,7 @@ Deno.serve(async (req) => {
     // 監視アラートは MYPAGE_SILENT に関係なく必ず発報（slackPost で強制）
     if (conflicts.length > 0) {
       const lines = conflicts.slice(0, 15).map((c: any) => `・${c.name || ""}様 ${c.id}: ${c.fields.map((f: any) => `${f.field}[予約:${f.reservations}≠OP:${f.op}]`).join(" / ")}`).join("\n");
-      await slackPost(`🔍 *マイページ整合アラート* [札幌]\n照合${checked}件 → 一致${okCount} / *要対応 ${conflicts.length}件*\n${lines}${conflicts.length > 15 ? `\n…他${conflicts.length - 15}件` : ""}\n\n👉 *対応はこちら（1画面で確認→ボタンで統一）*\nhttps://nosh2318.github.io/spk-task/my-admin.html の「🛠 対応」タブ`);
+      await slackPost(`🔍 *マイページ整合アラート* [札幌]\n照合${checked}件 → 一致${okCount} / *要対応 ${conflicts.length}件*\n${lines}${conflicts.length > 15 ? `\n…他${conflicts.length - 15}件` : ""}\n\n👉 *対応はこちら（1画面で確認→ボタンで統一）*\nhttps://rent-handyman.com/mypage-admin.html?bucket=but_tkm の「🛠 対応」タブ`);
     } else if (bySecret) {
       await slackPost(`🟢 *マイページ整合パトロール* [札幌] 照合${checked}件すべて一致（予約情報＝マイページ＝OPシート）。`);
     }
@@ -526,9 +570,9 @@ Deno.serve(async (req) => {
   if (action === "resolve") {
     const staffToken = String(p.staff_token || "").trim();
     if (!staffToken) return json({ error: "スタッフ認証がありません" }, 401, origin);
-    const who = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${staffToken}` } });
-    if (!who.ok) return json({ error: "スタッフ認証に失敗しました" }, 401, origin);
-    const user = await who.json().catch(() => ({})); const actor = String(user?.email || "staff");
+    const who = await staffUser(staffToken);
+    if (!who) return json({ error: "スタッフ認証に失敗しました" }, 401, origin);
+    const user = who; const actor = String(user?.email || "staff");
     const sAct = "staff:" + actor;
     const st0 = STORES.spk;
     const rid = String(p.reservation_id || "");
@@ -620,10 +664,14 @@ Deno.serve(async (req) => {
         const fl = await sbGet(store.fleet, `reservation_id=eq.${encodeURIComponent(resId)}&select=vehicle_code`);
         const code = fl[0]?.vehicle_code;
         if (!code) return null;
-        const vs = await sbGet("vehicles", `code=eq.${encodeURIComponent(code)}&select=plate_no`);
-        const plate = vs[0]?.plate_no;
-        if (!plate) return null;
-        const tw = await sbGet("vehicle_twins", `display_label=ilike.*${encodeURIComponent(plate)}*&share_enabled=eq.true&select=share_token&limit=1`);
+        // 🔴 2026-09-28根治: vehicle_code=vehicle_twins.id 完全一致(札幌21台全一致)を最優先。
+        //   旧: plate_no→display_label ilike は、plate_noが短い車だと「その数字を含む全twin」に誤ヒットしlimit1で別車を拾う(那覇C260801412=ヴィッツ③plate"8"→アルファード②2878を誤表示した同型)。
+        let tw = await sbGet("vehicle_twins", `id=eq.${encodeURIComponent(code)}&store=eq.sapporo&share_enabled=eq.true&select=share_token&limit=1`);
+        if (!tw[0]) {
+          const vs = await sbGet("vehicles", `code=eq.${encodeURIComponent(code)}&select=plate_no`);
+          const plate = vs[0]?.plate_no;
+          if (plate) tw = await sbGet("vehicle_twins", `display_label=ilike.*/ ${encodeURIComponent(plate)}&store=eq.sapporo&share_enabled=eq.true&select=share_token&limit=1`);
+        }
         return tw[0]?.share_token ? `https://nosh2318.github.io/handyman-damage/v.html?t=${tw[0].share_token}&v=v3` : null;
       } catch (_) { return null; }
     })() : Promise.resolve(null);
@@ -648,8 +696,12 @@ Deno.serve(async (req) => {
     };
     const delPlaceR = appliedChg("del_place") ?? (resolveTaskPlace(dTask) || (r.del_place || "") || String(link.del_place || "").trim());
     const colPlaceR = appliedChg("col_place") ?? (resolveTaskPlace(cTask) || (r.col_place || "") || String(link.col_place || "").trim());
-    const lendTimeR = appliedChg("lend_time") ?? (resolveTaskTime(dTask) || r.lend_time || r.del_time || String(link.del_time || "").trim());
-    const returnTimeR = appliedChg("return_time") ?? (resolveTaskTime(cTask) || r.return_time || r.col_time || String(link.col_time || "").trim());
+    // 🔴 2026-10-05 再発根治(複製ドリフト): 時間はapplied変更履歴より先にタスク実効値(resolveTaskTime)を見る。
+    //   受付フォーム(spk_line_links)での時間変更はmypage_changesに行を作らずタスク_ssTimeだけ更新するため、
+    //   applied履歴(例9/8の17:00)が古いまま最新のフォーム値(17:30=OP実表示)を追い越していた。
+    //   タスクは承認反映時にも_timeChangeが入るのでappliedChg優先は冗長かつ有害→削除し実効値を正本に統一。
+    const lendTimeR = resolveTaskTime(dTask) || appliedChg("lend_time") || r.lend_time || r.del_time || String(link.del_time || "").trim();
+    const returnTimeR = resolveTaskTime(cTask) || appliedChg("return_time") || r.return_time || r.col_time || String(link.col_time || "").trim();
     // オプション：reservations と tasks の大きい方（どちらかにしか入っていないケースを両方拾う）
     const optBR = Math.max(Number(r.opt_b) || 0, taskOptNum(dTask, "_optB"), taskOptNum(cTask, "_optB"));
     const optCR = Math.max(Number(r.opt_c) || 0, taskOptNum(dTask, "_optC"), taskOptNum(cTask, "_optC"));
@@ -690,6 +742,7 @@ Deno.serve(async (req) => {
         del_lat: r.del_lat ?? null, del_lng: r.del_lng ?? null, col_lat: r.col_lat ?? null, col_lng: r.col_lng ?? null,
         opt_b: optBR, opt_c: optCR, opt_j: optJR, opt_usb: r.opt_usb || 0,
         kd_status: r.kd_status || null,
+        price: Number(r.price || 0),  // 2026-10-21 オーナー指示: マイページのご予約内容に料金を表示
       },
       damage: { ready: damageReady, url: damageUrl },
       tracking: { active: r.kd_status === "delivering" || r.kd_status === "collecting", kd_status: r.kd_status || null, token: r.kd_track_token || null },
@@ -781,8 +834,10 @@ Deno.serve(async (req) => {
     const _cT = _uTasks.find((t: any) => String(t._id || "").startsWith("c-"));
     const curDelPlace = _uApplied("del_place") || resolveTaskPlace(_dT) || String(r.del_place || "").trim();
     const curColPlace = _uApplied("col_place") || resolveTaskPlace(_cT) || String(r.col_place || "").trim();
-    const curLendTime = _uApplied("lend_time") || resolveTaskTime(_dT) || r.lend_time || r.del_time || "";
-    const curReturnTime = _uApplied("return_time") || resolveTaskTime(_cT) || r.return_time || r.col_time || "";
+    // 🔴 2026-10-05 再発根治(複製ドリフト): 時間はapplied変更履歴より先にタスク実効値を見る(lookupと統一)。
+    //   受付フォーム経由の時間変更はmypage_changesに残らずタスク_ssTimeだけ更新するため、古いapplied履歴が最新を追い越していた。
+    const curLendTime = resolveTaskTime(_dT) || _uApplied("lend_time") || r.lend_time || r.del_time || "";
+    const curReturnTime = resolveTaskTime(_cT) || _uApplied("return_time") || r.return_time || r.col_time || "";
     const oldOf = (f: string) => String((f === "del_place" ? curDelPlace : f === "col_place" ? curColPlace : f === "lend_time" ? curLendTime : curReturnTime) ?? "");
     const noteOf = (f: string) => f === "del_place" ? "お届け場所変更（承認制）" : f === "col_place" ? "回収場所変更（承認制）" : f === "lend_time" ? "お届け時間変更（承認制）" : "回収時間変更（承認制）";
     const mkReq = async (field: string, newV: string, payload: any) => {
@@ -836,6 +891,7 @@ Deno.serve(async (req) => {
     if (already[0]) return json({ ok: true, alreadyRequested: true }, 200, origin);
     await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field: "cancel", old_value: st, new_value: "キャンセル依頼", source: "customer", status: "requested", note: reason }, "customer:" + resId);
     await notifySlackCard({ emoji: "🔴", title: "キャンセル申請（承認待ち）", name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: [`📝 *理由*\n${reason || "（記載なし）"}`], action: "⚠️ *要対応*：管理コンソール →「🔔変更依頼」で承認/却下（承認でキャンセル確定＋配車解除＋顧客LINE）" });
+    await slackResv(`🔴 キャンセル申請（承認待ち）[札幌]${isNewSite(r.ota, resId) ? "（🆕NEW リニューアル公式サイト rent-handyman.com）" : ""} ${r.name || ""} / ${resId}`);
     return json({ ok: true, requested: true }, 200, origin);
   }
 

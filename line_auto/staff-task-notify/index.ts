@@ -1,3 +1,6 @@
+// 2026-10-23 新API鍵移行：新形式の鍵を優先し、無ければ旧鍵（移行期間の保険・旧鍵の無効化前に外す）
+function __newKey(env: string, name: string): string { try { return (JSON.parse(Deno.env.get(env) || "{}") as Record<string, string>)[name] || ""; } catch { return ""; } }
+console.log("[keymig]", __newKey("SUPABASE_SECRET_KEYS", "edge") ? "secret" : "legacy");
 // Supabase Edge Function: staff-task-notify (SPK専用)
 // 札幌スタッフのタスク担当付け外しを spk_staff_task_notify(キュー) から拾い、LINEで本人に通知。
 //  - instant型(三國/高橋/長谷川): 変更を即時push（付=タスク依頼 / 外=タスク調整）
@@ -7,7 +10,7 @@
 // body: { secret, mode:'instant'|'hourly'|'test'|'announce', staff?:string[], message?:string }
 // deploy: functions deploy staff-task-notify --no-verify-jwt   secrets: LINE_CHANNEL_TOKEN, FUNC_SECRET
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
-const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SB_KEY = (__newKey("SUPABASE_SECRET_KEYS", "edge") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))!;
 const FUNC_SECRET = Deno.env.get("FUNC_SECRET")!;
 const LINE_TOKEN = Deno.env.get("LINE_CHANNEL_TOKEN") || "";
 const APP_URL = "https://nosh2318.github.io/spk-task/";

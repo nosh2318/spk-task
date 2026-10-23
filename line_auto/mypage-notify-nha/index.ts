@@ -1,3 +1,6 @@
+// 2026-10-23 新API鍵移行：新形式の鍵を優先し、無ければ旧鍵（移行期間の保険・旧鍵の無効化前に外す）
+function __newKey(env: string, name: string): string { try { return (JSON.parse(Deno.env.get(env) || "{}") as Record<string, string>)[name] || ""; } catch { return ""; } }
+console.log("[keymig]", __newKey("SUPABASE_SECRET_KEYS", "edge") ? "secret" : "legacy");
 // ============================================================
 // mypage-notify-nha : 那覇 マイページURLを初回自動送信（cron）
 // 2026-07-08 / omni  ※札幌 mypage-notify を那覇(nha)へ移植。今回は【A 初回送付(mypage_initial)】のみ。
@@ -7,7 +10,7 @@
 //  KEYDROPは自前マイページ(keydrop.jp)を使うため対象外（札幌と同じ）。
 // ============================================================
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
-const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SB_KEY = (__newKey("SUPABASE_SECRET_KEYS", "edge") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))!;
 const H = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "content-type": "application/json" };
 const URLBASE = "https://nosh2318.github.io/naha-project/my-nha.html?t=";
 const STORE = "nha";

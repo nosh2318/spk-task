@@ -1,3 +1,6 @@
+// 2026-10-23 新API鍵移行：新形式の鍵を優先し、無ければ旧鍵（移行期間の保険・旧鍵の無効化前に外す）
+function __newKey(env: string, name: string): string { try { return (JSON.parse(Deno.env.get(env) || "{}") as Record<string, string>)[name] || ""; } catch { return ""; } }
+console.log("[keymig]", __newKey("SUPABASE_SECRET_KEYS", "edge") ? "secret" : "legacy");
 // Supabase Edge Function: license-overdue-alert (全店 免許証 未提出アラート)
 // 当日〜2日先に出発する予約のうち、免許証が「未提出(license_uploads cnt=0)」かつ「未対応(license_ack無し)」を全店集計してSlack通知。
 //   札幌(spk)/那覇(nha)=main DB、高松(bt)=BT DB。予約番号キーで license_uploads を照合（どの導線のアップも反映）。
@@ -5,7 +8,7 @@
 // deploy: functions deploy license-overdue-alert --no-verify-jwt  (secrets: CRON_SECRET, SLACK_BOT_TOKEN, BT_URL, BT_SERVICE_KEY)
 
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
-const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SB_KEY = (__newKey("SUPABASE_SECRET_KEYS", "edge") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))!;
 const CRON_SECRET = Deno.env.get("CRON_SECRET")!;
 const SLACK_TOKEN = Deno.env.get("SLACK_BOT_TOKEN") || "";
 const SLACK_CHANNEL = "C07B5G3PV7C"; // #handyman_development

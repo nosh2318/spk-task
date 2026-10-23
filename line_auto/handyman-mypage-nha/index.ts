@@ -1,3 +1,6 @@
+// 2026-10-23 新API鍵移行：新形式の鍵を優先し、無ければ旧鍵（移行期間の保険・旧鍵の無効化前に外す）
+function __newKey(env: string, name: string): string { try { return (JSON.parse(Deno.env.get(env) || "{}") as Record<string, string>)[name] || ""; } catch { return ""; } }
+console.log("[keymig]", __newKey("SUPABASE_SECRET_KEYS", "edge") ? "secret" : "legacy");
 // ============================================================
 // handyman-mypage-nha : HANDYMAN 統合マイページ 那覇（内部カルテ閲覧・lookup専用）
 // 2026-07-08 / omni  ※札幌 handyman-mypage を複製元に、那覇の日本語列・受け渡し区分へ作り替え。
@@ -17,8 +20,23 @@
 // ============================================================
 
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
-const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SB_KEY = (__newKey("SUPABASE_SECRET_KEYS", "edge") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))!;
 const H = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "content-type": "application/json" };
+// ★security 2026-10-23 スタッフ許可リスト：「ログインしていれば誰でも」→ 正規スタッフのメールドメインだけ通す。
+//   main(ckrxttbnawkclshczsia) の auth.users ドメイン＝spk.hdm/nha.hdm/g-lines.jp/partner.hdm（2026-10-23確認）。協力会社 partner.hdm は不可。新規登録は無効(disable_signup=true)のためドメインで判定できる。EF は個別デプロイなので各 EF に同じ小関数をコピー。
+const STAFF_EMAIL_RE = /@(spk\.hdm|nha\.hdm|g-lines\.jp)$/i;
+async function staffUser(token: string): Promise<{ id: string; email: string } | null> {
+  const t = String(token || "").replace(/^Bearer\s+/i, "").trim();
+  if (!t) return null;
+  try {
+    const r = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${t}` } });
+    if (!r.ok) return null;
+    const u: any = await r.json().catch(() => null);
+    const email = String(u?.email || "").trim();
+    if (!u?.id || !STAFF_EMAIL_RE.test(email)) return null;
+    return { id: String(u.id), email };
+  } catch (_) { return null; }
+}
 
 const ALLOWED = ["https://nosh2318.github.io", "https://keydrop.jp", "https://rent-handyman.com"];
 function cors(o: string | null) {
@@ -126,9 +144,9 @@ Deno.serve(async (req) => {
     else {
       const staffToken = String(p.staff_token || "").trim();
       if (!staffToken) return json({ error: "スタッフ認証（PIN）が必要です" }, 401, origin);
-      const who = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${staffToken}` } });
-      if (!who.ok) return json({ error: "認証に失敗しました" }, 401, origin);
-      const wj: any = await who.json().catch(() => ({}));
+      const who = await staffUser(staffToken);
+      if (!who) return json({ error: "認証に失敗しました" }, 401, origin);
+      const wj: any = who;
       actor = "staff:" + (wj?.email || wj?.id || "unknown");
     }
     const changeId = p.change_id;
@@ -150,18 +168,19 @@ Deno.serve(async (req) => {
         await sbDelete("nha_fleet", `reservation_id=eq.${encodeURIComponent(resId2)}`);
         await notifyCust(resId2, `【HANDYMAN那覇空港店】ご予約 ${resId2} キャンセル受付のご連絡`,
           `${cr.name || "お客様"} 様\n\nこの度はご連絡いただきありがとうございます。\nご予約 ${resId2}（${cr.start_date || ""}〜${cr.end_date || ""}）のキャンセルを承りました。\n\n返金がある場合は、規定に沿って別途手続きのうえご連絡いたします。\nまたのご利用を心よりお待ちしております。\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);
-        await slackResv(`✅ キャンセル承認（確定）[那覇] ${cr.name || ""} / ${resId2}`, [
-          { type: "header", text: { type: "plain_text", text: "✅ キャンセル承認（確定）", emoji: true } },
+        { const _nw = String(cr.ota||"")==="HANDYMAN"||/^HDMN/.test(resId2); const _nt = _nw?"（🆕NEW リニューアル公式サイト rent-handyman.com）":"";
+        await slackResv(`✅ キャンセル承認（確定）[那覇]${_nt} ${cr.name || ""} / ${resId2}`, [
+          { type: "header", text: { type: "plain_text", text: `✅ キャンセル承認（確定）${_nw?" 🆕NEW":""}`, emoji: true } },
           { type: "section", fields: [
             { type: "mrkdwn", text: `*お客様:*\n${cr.name || "-"} 様` }, { type: "mrkdwn", text: `*予約番号:*\n${resId2}` },
             { type: "mrkdwn", text: `*利用期間:*\n${cr.start_date || "-"} 〜 ${cr.end_date || "-"}` }, { type: "mrkdwn", text: `*金額:*\n¥${Number(cr.price || 0).toLocaleString()}` },
           ] },
           { type: "context", elements: [ { type: "mrkdwn", text: `キャンセル確定・配車解放済み。⚠️ 返金は規定（7日前無料/6-3日20%/2日前・前日30%/当日50%）に沿って Square で手動返金してください。承認: ${actor.replace(/^staff:/, "")}` } ] },
-        ]);
+        ]); }
       } else {
         await notifyCust(resId2, `【HANDYMAN那覇空港店】ご予約 ${resId2} キャンセルのご相談につきまして`,
           `${cr.name || "お客様"} 様\n\nお問い合わせいただいたご予約 ${resId2} のキャンセルにつきまして、恐れ入りますが今回はお受けいたしかねます。\n詳細は担当より別途ご連絡いたします。\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);
-        await slackResv(`🚫 キャンセル却下 [那覇] ${cr.name || ""} / ${resId2} ／ ${actor.replace(/^staff:/, "")}`);
+        await slackResv(`🚫 キャンセル却下 [那覇]${(String(cr.ota||"")==="HANDYMAN"||/^HDMN/.test(resId2))?"（🆕NEW リニューアル公式サイト）":""} ${cr.name || ""} / ${resId2} ／ ${actor.replace(/^staff:/, "")}`);
       }
       return json({ ok: true, decided: decision }, 200, origin);
     }
@@ -261,8 +280,9 @@ Deno.serve(async (req) => {
     const already = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.nha&field=eq.cancel&status=eq.requested&select=id&limit=1`);
     if (already[0]) return json({ ok: true, alreadyRequested: true }, 200, origin);
     await sbPost("mypage_changes", { reservation_id: resId, store: "nha", field: "cancel", old_value: st0, new_value: "キャンセル依頼", source: "customer", status: "requested", note: reason });
-    await slackResv(`🔴 キャンセル申請（承認待ち）[那覇] ${r.name || ""} / ${resId}`, [
-      { type: "header", text: { type: "plain_text", text: "🔴 キャンセル申請（承認待ち）", emoji: true } },
+    { const _nw = String(r.ota||"")==="HANDYMAN"||/^HDMN/.test(resId);
+    await slackResv(`🔴 キャンセル申請（承認待ち）[那覇]${_nw?"（🆕NEW リニューアル公式サイト rent-handyman.com）":""} ${r.name || ""} / ${resId}`, [
+      { type: "header", text: { type: "plain_text", text: `🔴 キャンセル申請（承認待ち）${_nw?" 🆕NEW":""}`, emoji: true } },
       { type: "section", fields: [
         { type: "mrkdwn", text: `*お客様:*\n${r.name || "-"} 様` }, { type: "mrkdwn", text: `*予約番号:*\n${resId}` },
         { type: "mrkdwn", text: `*ご予約元:*\n${otaJp(r.ota)}` }, { type: "mrkdwn", text: `*利用期間:*\n${r.start_date || "-"} 〜 ${r.end_date || "-"}` },
@@ -271,7 +291,7 @@ Deno.serve(async (req) => {
       { type: "section", text: { type: "mrkdwn", text: `*理由:*\n${reason || "（記載なし）"}` } },
       { type: "actions", elements: [ { type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, style: "primary", url: "https://rent-handyman.com/mypage-admin.html?bucket=hdm_nha" } ] },
       { type: "context", elements: [ { type: "mrkdwn", text: "⚠️ 承認制です。上のボタン（または「📲マイページ利用状況(那覇)」→承認待ち）で承認/却下（承認＝キャンセル確定＋配車解放。返金は規定に沿って手動Square返金）。" } ] },
-    ]);
+    ]); }
     return json({ ok: true, requested: true }, 200, origin);
   }
 
@@ -372,12 +392,17 @@ Deno.serve(async (req) => {
       const fl = await sbGet("nha_fleet", `reservation_id=eq.${encodeURIComponent(resId)}&select=vehicle_code`);
       const code = fl[0]?.vehicle_code;
       if (code) {
-        const vs = await sbGet("nha_vehicles", `code=eq.${encodeURIComponent(code)}&select=plate_no`);
-        const plate = vs[0]?.plate_no;
-        if (plate) {
-          const tw = await sbGet("vehicle_twins", `display_label=ilike.*${encodeURIComponent(plate)}*&share_enabled=eq.true&select=share_token&limit=1`);
-          if (tw[0]?.share_token) damageUrl = `https://nosh2318.github.io/handyman-damage/v.html?t=${tw[0].share_token}&v=v3`;
+        // 🔴 2026-09-28根治: vehicle_code=vehicle_twins.id 完全一致(那覇56台全一致)で確実に解決する。
+        //   旧: nha_vehicles.plate_no→display_label ilike は、plate_noが短い車(VTZ03=「8」)だと
+        //   「8を含む全twin(2878/8469…アルファード)」に誤ヒットしlimit1で別車を拾っていた(イマイ様C260801412→アルファード②2878誤表示)。
+        let tw = await sbGet("vehicle_twins", `id=eq.${encodeURIComponent(code)}&store=eq.naha&share_enabled=eq.true&select=share_token&limit=1`);
+        // fallback: id不一致の車のみ plate_no を「/ <plate>」末尾一致で照合(部分一致でなく末尾で誤爆防止)
+        if (!tw[0]) {
+          const vs = await sbGet("nha_vehicles", `code=eq.${encodeURIComponent(code)}&select=plate_no`);
+          const plate = vs[0]?.plate_no;
+          if (plate) tw = await sbGet("vehicle_twins", `display_label=ilike.*/ ${encodeURIComponent(plate)}&store=eq.naha&share_enabled=eq.true&select=share_token&limit=1`);
         }
+        if (tw[0]?.share_token) damageUrl = `https://nosh2318.github.io/handyman-damage/v.html?t=${tw[0].share_token}&v=v3`;
       }
     } catch (_) { /* best-effort */ }
   }
@@ -417,6 +442,7 @@ Deno.serve(async (req) => {
       del_flight: r.del_flight || "",
       visit_type: r.visit_type || "", return_type: r.return_type || "",
       kd_status: r.kd_status || null,
+      price: Number(r.price || 0),  // 2026-10-21 オーナー指示: マイページのご予約内容に料金を表示
     },
     damage: { ready: damageReady, url: damageUrl },
     tracking: { active: r.kd_status === "delivering" || r.kd_status === "collecting", kd_status: r.kd_status || null, token: r.kd_track_token || null },

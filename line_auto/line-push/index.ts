@@ -1,3 +1,6 @@
+// 2026-10-23 新API鍵移行：新形式の鍵を優先し、無ければ旧鍵（移行期間の保険・旧鍵の無効化前に外す）
+function __newKey(env: string, name: string): string { try { return (JSON.parse(Deno.env.get(env) || "{}") as Record<string, string>)[name] || ""; } catch { return ""; } }
+console.log("[keymig]", __newKey("SUPABASE_SECRET_KEYS", "edge") ? "secret" : "legacy");
 // Supabase Edge Function: line-push (店舗対応: spk / nha)
 // 予約番号→userId解決→LINE push→ログ。挨拶文付与・設定ON/OFF・テストモード・誤送信ガード。
 // body: { secret, store('spk'|'nha'), resv_no, action, message }
@@ -6,7 +9,7 @@
 //   secrets: LINE_CHANNEL_TOKEN(spk), NHA_LINE_CHANNEL_TOKEN(nha), FUNC_SECRET
 
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
-const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SB_KEY = (__newKey("SUPABASE_SECRET_KEYS", "edge") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))!;
 const FUNC_SECRET = Deno.env.get("FUNC_SECRET")!;
 const TOKENS: Record<string, string> = {
   spk: Deno.env.get("LINE_CHANNEL_TOKEN") || "",

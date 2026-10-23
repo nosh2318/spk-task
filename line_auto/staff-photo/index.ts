@@ -1,10 +1,13 @@
+// 2026-10-23 新API鍵移行：新形式の鍵を優先し、無ければ旧鍵（移行期間の保険・旧鍵の無効化前に外す）
+function __newKey(env: string, name: string): string { try { return (JSON.parse(Deno.env.get(env) || "{}") as Record<string, string>)[name] || ""; } catch { return ""; } }
+console.log("[keymig]", __newKey("SUPABASE_SECRET_KEYS", "edge") ? "secret" : "legacy");
 // staff-photo — スタッフ個人ページ(staff.html)の洗車タスク点検・タイヤ写真の「表示用URL」を出すだけのEF（2026-10-16 新設）
 // body: { token(staff share_token), store: "spk"|"nha" }
 // 返す: { ok, urls: { "<bucket>/<path>": { thumb, full } } }  ※本人担当の洗車タスク（今日-2〜+7日）に出ている写真だけ
 // 写真置き場は非公開（anon は読めない・一覧も不可）。パスの絞り込みは DB 関数 <store>_wash_photo_paths（service_role のみ実行可）
 // deploy: supabase functions deploy staff-photo --project-ref ckrxttbnawkclshczsia --no-verify-jwt
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
-const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SB_KEY = (__newKey("SUPABASE_SECRET_KEYS", "edge") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))!;
 const H = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json" };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TTL = 21600; // 6時間（画面は5時間で取り直す）

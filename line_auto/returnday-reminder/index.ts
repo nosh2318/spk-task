@@ -1,3 +1,6 @@
+// 2026-10-23 新API鍵移行：新形式の鍵を優先し、無ければ旧鍵（移行期間の保険・旧鍵の無効化前に外す）
+function __newKey(env: string, name: string): string { try { return (JSON.parse(Deno.env.get(env) || "{}") as Record<string, string>)[name] || ""; } catch { return ""; } }
+console.log("[keymig]", __newKey("SUPABASE_SECRET_KEYS", "edge") ? "secret" : "legacy");
 // Supabase Edge Function: returnday-reminder (店舗対応: 主に nha)
 // 返却日の朝9:00(JST)に、返却区分(BDB=送迎シャトル / 返却=店頭返却 / COL=デリバリー回収)ごとに
 // LINEリマインドを line-push 経由で送信（1予約1回・LINE連携客のみ）。
@@ -5,7 +8,7 @@
 // deploy: functions deploy returnday-reminder --no-verify-jwt （secrets: FUNC_SECRET, CRON_SECRET）
 
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
-const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SB_KEY = (__newKey("SUPABASE_SECRET_KEYS", "edge") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))!;
 const FUNC_SECRET = Deno.env.get("FUNC_SECRET")!;
 const CRON_SECRET = Deno.env.get("CRON_SECRET")!;
 const H = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json" };

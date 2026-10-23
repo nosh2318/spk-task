@@ -1,3 +1,6 @@
+// 2026-10-23 新API鍵移行：新形式の鍵を優先し、無ければ旧鍵（移行期間の保険・旧鍵の無効化前に外す）
+function __newKey(env: string, name: string): string { try { return (JSON.parse(Deno.env.get(env) || "{}") as Record<string, string>)[name] || ""; } catch { return ""; } }
+console.log("[keymig]", __newKey("SUPABASE_SECRET_KEYS", "edge") ? "secret" : "legacy");
 // parking-card Edge Function
 // 駐車場(trustpark)決済用: 会社カードをAES-256-GCMで暗号化保管し、PIN認証で復号して返す。
 // 鍵はEF secret(PARKING_CARD_KEY)のみ・DBには暗号文だけ。全アクセスをparking_card_access_logに監査記録。
@@ -5,7 +8,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SERVICE = (__newKey("SUPABASE_SECRET_KEYS", "edge") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))!;
 const ENC_KEY_B64 = Deno.env.get("PARKING_CARD_KEY") || "";
 const ADMIN_KEY = Deno.env.get("PARKING_ADMIN_KEY") || "";
 

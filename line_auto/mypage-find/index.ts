@@ -1,3 +1,6 @@
+// 2026-10-23 新API鍵移行：新形式の鍵を優先し、無ければ旧鍵（移行期間の保険・旧鍵の無効化前に外す）
+function __newKey(env: string, name: string): string { try { return (JSON.parse(Deno.env.get(env) || "{}") as Record<string, string>)[name] || ""; } catch { return ""; } }
+console.log("[keymig]", __newKey("SUPABASE_SECRET_KEYS", "edge") ? "secret" : "legacy");
 // ============================================================
 // mypage-find : 予約番号 ＋ 連絡先(メール/電話) の2点照合でマイページURLを返す
 // ------------------------------------------------------------
@@ -16,7 +19,7 @@
 //   要 secrets: BT_URL, BT_SERVICE_KEY (license-overdue-alert と同じ値でOK)
 // ============================================================
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
-const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SB_KEY = (__newKey("SUPABASE_SECRET_KEYS", "edge") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))!;
 const BT_URL = Deno.env.get("BT_URL") || "";
 const BT_KEY = Deno.env.get("BT_SERVICE_KEY") || "";
 
@@ -69,6 +72,8 @@ Deno.serve(async (req) => {
   const st = STORES.find((s) => s.code === storeCode);
   if (!st) return json({ ok: false, error: "store_required" }, 200, origin);
   if (q.length < 4) return json({ ok: false, error: "invalid_input" }, 200, origin);
+  // ★security 2026-10-23: PostgREST の or=/ilike に効く記号（ワイルドカード %,*,_／区切り ,()"\:）を拒否（空白は電話の表記ゆれで使うので許可）＝他人の予約に一致させない
+  if (/[%*,()"\\:]/.test(q)) return json({ ok: false, error: "invalid_input" }, 200, origin);
   const qd = digits(q);
   const isCancel = (s: string) => { const x = String(s || "").toLowerCase(); return x.indexOf("cancel") >= 0 || String(s || "").indexOf("キャンセル") >= 0; };
 
@@ -78,7 +83,7 @@ Deno.serve(async (req) => {
 
   const enc = encodeURIComponent(q);
   // id完全一致 / mail完全一致(大小無視=ilikeでワイルドカードなし) / tel(入力そのまま・数字のみ) のいずれか
-  let orFilt = `or=(id.eq.${enc},mail.ilike.${enc},tel.eq.${enc}`;
+  let orFilt = `or=(id.eq.${enc},mail.ilike.${encodeURIComponent(q.replace(/_/g, "\\_"))},tel.eq.${enc}`;
   if (qd.length >= 8) orFilt += `,tel.eq.${encodeURIComponent(qd)}`;
   orFilt += `)`;
   const sel = `select=id,mail,tel,name,mypage_token,status,${st.dateCol}&limit=20`;

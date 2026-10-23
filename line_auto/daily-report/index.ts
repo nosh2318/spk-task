@@ -1,3 +1,6 @@
+// 2026-10-23 新API鍵移行：新形式の鍵を優先し、無ければ旧鍵（移行期間の保険・旧鍵の無効化前に外す）
+function __newKey(env: string, name: string): string { try { return (JSON.parse(Deno.env.get(env) || "{}") as Record<string, string>)[name] || ""; } catch { return ""; } }
+console.log("[keymig]", __newKey("SUPABASE_SECRET_KEYS", "edge") ? "secret" : "legacy");
 // ================================================================
 // daily-report Edge Function（3店 日報 自動投稿）
 // 毎朝9:00 JST(pg_cron 0 0 * * * UTC) に前日フル(0:00〜23:59)の実績を
@@ -16,7 +19,7 @@ import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 const SLACK_CHANNEL = "C0BSXE4TKLG"; // #日報_handyman (HANDYMAN GL workspace)
 
 const MAIN_URL = Deno.env.get("SUPABASE_URL")!;
-const MAIN_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const MAIN_KEY = (__newKey("SUPABASE_SECRET_KEYS", "edge") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))!;
 const BT_URL = Deno.env.get("BT_URL") || "";
 const BT_KEY = Deno.env.get("BT_SERVICE_KEY") || "";
 const CRON_SECRET = Deno.env.get("CRON_SECRET") || "";
@@ -297,7 +300,8 @@ serve(async (req) => {
     const onlyStore = url.searchParams.get("store") || body.store || "";
     const secret = req.headers.get("x-cron-secret") || body.secret || "";
 
-    if (!dry && CRON_SECRET && secret !== CRON_SECRET) {
+    // ★security 2026-10-23: ?dry=1 での素通り（売上の閲覧）を廃止。dry も合言葉必須
+    if (!CRON_SECRET || secret !== CRON_SECRET) {
       return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), { status: 401, headers: { "Content-Type": "application/json" } });
     }
 
