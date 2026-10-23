@@ -308,7 +308,9 @@ function placedIds(){const s=new Set();SPOTS.forEach(sp=>sp.carId&&s.add(sp.carI
 function needCars(){const p=placedIds();return allCars().filter(c=>!p.has(c.id));}
 // 所在不明＝配車表の車で「貸出なし＆駐車場になし＆倉庫車でない＆共立自動車保管でない」＝どこにあるか分からない車
 // ★2026-10-23 貸出中＝RPC(返却日が明日以降)＋本日返却で未入庫の車。RPCは返却日>今日のため1日貸出・本日返却の車が漏れて所在不明に出ていた
-function outList(){const parked=placedIds();const m=new Map(OUT_LIST.map(x=>[x.id,x]));RETURNS.forEach(r=>{if(!parked.has(r.id)&&!m.has(r.id))m.set(r.id,{id:r.id,n:r.n,p:r.p});});return [...m.values()];}
+// ★本日返却の車でも、今日 共立保管に登録した車は返却後に共立へ入れた車＝共立保管に表示（以前から登録の車＝1日貸出中は貸出中のまま）
+function kyToday(id){const pl=PLACES[id];if(!pl||!pl.at)return false;const d=new Date(pl.at);return !isNaN(d)&&d.toDateString()===new Date().toDateString();}
+function outList(){const parked=placedIds();const m=new Map(OUT_LIST.map(x=>[x.id,x]));RETURNS.forEach(r=>{if(!parked.has(r.id)&&!m.has(r.id)&&!kyToday(r.id))m.set(r.id,{id:r.id,n:r.n,p:r.p});});return [...m.values()];}
 function outSet(){return new Set(outList().map(x=>x.id));}
 function missingCars(){const parked=placedIds();const out=outSet();return ROSTER.filter(c=>!parked.has(c.id)&&!out.has(c.id)&&!WAREHOUSE[c.id]&&!PLACES[c.id]);}
 // 共立自動車保管の車（表示の優先順位：駐車中＞貸出中＞共立保管。システムは書き換えず表示で振り分けるだけ）
@@ -370,7 +372,7 @@ function renderStatus(){
   const ret=new Set(RETURNS.map(r=>r.id));
   const OL=outList();
   $("outCnt").textContent=OL.length;
-  $("outList").innerHTML=OL.length?OL.map(x=>{const c=car(x.id);const back=ret.has(x.id)?'<span class="rb ret">🕒本日返却</span>':'';return `<div class="stcell" style="border-left-color:${CLS[c.c]||'#64748b'}"><span class="dot" style="background:${CLS[c.c]||'#64748b'}"></span>${x.n}<span class="no">No.${x.p}</span>${back}</div>`;}).join(""):'<div class="emp">現在 貸出中の車両はありません</div>';
+  $("outList").innerHTML=OL.length?OL.map(x=>{const c=car(x.id);const back=ret.has(x.id)?'<span class="rb ret">🕒本日返却</span>':'';const tapRet=ret.has(x.id)&&!OUT_NOW.has(x.id)?` tap" onclick="tapMiss('${x.id}')`:'';return `<div class="stcell${tapRet}" style="border-left-color:${CLS[c.c]||'#64748b'}"><span class="dot" style="background:${CLS[c.c]||'#64748b'}"></span>${x.n}<span class="no">No.${x.p}</span>${back}</div>`;}).join(""):'<div class="emp">現在 貸出中の車両はありません</div>';
   // 所在不明（貸出なし＆駐車場になし＆倉庫車でない）
   const miss=missingCars();
   $("missCnt").textContent=miss.length;
@@ -682,7 +684,7 @@ function tapMiss(id){
     `<div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button></div>`);
 }
 function askKy(id){
-  if(outSet().has(id)){toast("貸出中の車は共立保管にできません");return;}
+  if(OUT_NOW.has(id)){toast("貸出中の車は共立保管にできません");return;} // 本日返却の車は登録可（返却後に共立へ入れる場合）
   const c=car(id);let last="";try{last=localStorage.getItem("pk_ky_staff")||"";}catch(_e){}
   openSheet(`<h3>🏭 共立自動車保管</h3><div class="sd">${c.n} ${c.p} を共立自動車保管にします。確認した人を選んでください。</div>`+
     `<select id="kyStaff" style="width:100%;padding:11px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;font-weight:700"><option value="">（選択）</option>`+
