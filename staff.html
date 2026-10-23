@@ -147,7 +147,7 @@ a.myp{background:#065f46;color:#fff;font-size:11px;font-weight:800;border-radius
 <script>
 var SB="https://ckrxttbnawkclshczsia.supabase.co";
 var ANON="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcnh0dGJuYXdrY2xzaGN6c2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Nzg1NTAsImV4cCI6MjA4NzQ1NDU1MH0.kDC_UDVWvcrS97wzqQ3NXP79ewjgYwF4vSFdV7y06S8";
-var VER="staff-v3.34";
+var VER="staff-v3.35";
 var TOKEN=new URLSearchParams(location.search).get("t")||"";
 // ===== 📊 個別URL利用計測 (staff_url_events) — 前方記録・既存挙動に非干渉 =====
 var SUE=(function(){
@@ -240,8 +240,8 @@ function taskCard(x){
     btns+='<button class="abtn lic" onclick="openLicense(\''+rid+'\',\''+esc(x.customer||"")+'\')">🪪免許証</button>';
   }
   if(rid){ var _hc=(window.HO_MAP&&window.HO_MAP[x.resv])||0; btns+='<button class="abtn" style="'+(_hc>0?'background:#fee2e2;color:#b91c1c;border:1px solid #fca5a5':'background:#f1f5f9;color:#475569;border:1px solid #e2e8f0')+'" onclick="saHandover(\''+rid+'\')">📌引継'+(_hc>0?' '+_hc:'')+'</button>'; }
-  if(t==="洗車")btns+=wcBtns(x);   // 🔧点検・🛞タイヤ（本人担当の洗車タスク・車両ありだけ）
-  if(tid&&!x.done){ btns+='<button class="abtn done" onclick="saDone(\''+tid+'\')">✅完了</button>'; }
+  if(t==="洗車"||WC_POST_TYPES.indexOf(t)>=0)btns+=wcBtns(x);   // 🔧点検・🛞タイヤ（本人担当の洗車タスク・車両ありだけ）
+  if(tid&&!x.done){ btns+='<button class="abtn done" onclick="'+(t==="洗車"?'wcDone':'saDone')+'(\''+tid+'\')">✅完了</button>'; }   // ★2026-10-23 3店統一：洗車は出発前点検11/11まで完了不可（那覇と同じ）
   btns+='</div>';
   // 🪪 免許証 提出状況バッジ（お届け/回収のみ・license_uploads に予約番号の行があるか）
   var licB="";
@@ -984,13 +984,14 @@ var WC_ITEMS={
   post:[["damage","外装の新しい傷・へこみ"],["tire_tread","タイヤ溝（スリップサイン）"],["tire_damage","タイヤ損傷（パンク・亀裂）"],["lost","忘れ物なし"],["dirt","車内の汚れ・臭い（喫煙・ペット）"],["fuel","燃料（満タン返却）"],["warning","警告灯なし"],["etc_card","ETCカード抜き取り"],["key","鍵・付属品の返却"]],
   pre:[["exterior","外装の傷・へこみ確認"],["interior","車内清掃・ゴミなし"],["fuel","燃料 満タン"],["washer","ウォッシャー液"],["oil","エンジンオイル量"],["coolant","冷却水量"],["tire_air","タイヤ空気圧・外観（亀裂・釘）"],["lights","ライト類（前照灯・ブレーキ・ウインカー）"],["warning","警告灯なし（エンジン始動）"],["aircon","エアコン作動"],["docs","車検証・自賠責・取扱説明書"]]
 };
+var WC_POST_TYPES=["COL","乗捨回収","BD","BDB","返却"];   // ★2026-10-23 3店統一：返却系タスク＝返却後点検（9項目）。洗車＝出発前点検（11項目）
 var WC_TIRE_ST=["未確認","確認済","交換","相談"], WC_TIRE_COL={"未確認":"#64748b","確認済":"#166534","交換":"#b91c1c","相談":"#7e22ce"};
 var WC=null, WC_URL={}, WC_URLT=0, WC_OPEN=null, WC_PICK=null;
 function wcRpc(fn,body){
   return fetch(SB+"/rest/v1/rpc/"+WC_STORE+"_"+fn,{method:"POST",headers:{"apikey":ANON,"Authorization":"Bearer "+ANON,"Content-Type":"application/json"},body:JSON.stringify(body)})
     .then(function(r){return r.text().then(function(s){var j=null;try{j=s?JSON.parse(s):null;}catch(e){}if(!r.ok)throw new Error((j&&j.message)||("HTTP "+r.status));return j;});});
 }
-function wcProg(w){var n=0,t=0;["pre"].forEach(function(k){WC_ITEMS[k].forEach(function(it){t++;var c=(w.checks||{})[k+":"+it[0]];if(c&&c.checked)n++;});});return {n:n,t:t};}
+function wcProg(w){var n=0,t=0;[(w&&w.kind)||"pre"].forEach(function(k){WC_ITEMS[k].forEach(function(it){t++;var c=(w.checks||{})[k+":"+it[0]];if(c&&c.checked)n++;});});return {n:n,t:t};}
 function wcLoad(){
   return wcRpc("wash_checks",{p_token:TOKEN}).then(function(d){
     if(!d||d.ok===false)return;
@@ -1011,9 +1012,9 @@ function wcRedraw(){
 }
 function wcBtns(x){
   var w=WC&&x&&x._id?WC[x._id]:null; if(!w)return "";
-  var p=wcProg(w), st=(w.tire&&w.tire.check_status)||"未確認", tid=esc(x._id);
+  var p=wcProg(w), st=(w.tire&&w.tire.check_status)||"未確認", tid=esc(x._id), post=w.kind==="post";
   return '<button class="abtn" style="background:'+(p.n===p.t?'#dcfce7;color:#166534;border:1px solid #86efac':'#eff6ff;color:#1d4ed8;border:1px solid #93c5fd')+'" onclick="wcOpen(\''+tid+'\',\'insp\')">🔧点検 '+p.n+'/'+p.t+'</button>'+
-         '<button class="abtn" style="background:#fff;color:'+WC_TIRE_COL[st]+';border:1px solid #cbd5e1" onclick="wcOpen(\''+tid+'\',\'tire\')">🛞タイヤ '+esc(st)+'</button>';
+         (post?'':'<button class="abtn" style="background:#fff;color:'+WC_TIRE_COL[st]+';border:1px solid #cbd5e1" onclick="wcOpen(\''+tid+'\',\'tire\')">🛞タイヤ '+esc(st)+'</button>');
 }
 window.wcOpen=function(tid,mode){WC_OPEN={tid:tid,mode:mode};wcUrls(false).then(wcDraw);wcDraw();};
 window.wcClose=function(){var ov=document.getElementById("wcov");if(ov)ov.remove();WC_OPEN=null;wcRedraw();};
@@ -1031,10 +1032,11 @@ function wcDraw(){
   if(keepFocus)return;   // 入力中は描き直さない（打った文字が消えないように）
   var h='<div id="wcpanel" style="background:#f8fafc;width:100%;max-width:560px;max-height:92vh;overflow-y:auto;border-radius:16px 16px 0 0;padding:14px 14px 28px;box-sizing:border-box">';
   h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><div style="flex:1;min-width:0"><div style="font-size:17px;font-weight:900;color:#0f172a">'+esc(w.vehicle_name||"")+' <span style="font-size:18px">'+esc(w.plate_no||"")+'</span></div><div style="font-size:12px;color:#64748b;font-weight:700">🧽 洗車 '+esc(shortDate(w.task_date))+'（'+jpWd(w.task_date)+'）</div></div><button onclick="wcClose()" style="border:none;background:#e2e8f0;color:#0f172a;border-radius:10px;padding:9px 14px;font-size:14px;font-weight:900;cursor:pointer">閉じる</button></div>';
-  h+='<div style="display:flex;gap:6px;margin-bottom:12px">'+[["insp","🔧 点検"],["tire","🛞 タイヤ"]].map(function(a){var on=WC_OPEN.mode===a[0];return '<button onclick="WC_OPEN.mode=\''+a[0]+'\';wcDraw()" style="flex:1;border:1px solid '+(on?'#0f172a':'#cbd5e1')+';background:'+(on?'#0f172a':'#fff')+';color:'+(on?'#fff':'#334155')+';border-radius:10px;padding:10px;font-size:15px;font-weight:900;cursor:pointer">'+a[1]+'</button>';}).join("")+'</div>';
+  if(w.kind==="post")WC_OPEN.mode="insp";   // 返却後点検はタイヤ欄なし
+  if(w.kind!=="post")h+='<div style="display:flex;gap:6px;margin-bottom:12px">'+[["insp","🔧 点検"],["tire","🛞 タイヤ"]].map(function(a){var on=WC_OPEN.mode===a[0];return '<button onclick="WC_OPEN.mode=\''+a[0]+'\';wcDraw()" style="flex:1;border:1px solid '+(on?'#0f172a':'#cbd5e1')+';background:'+(on?'#0f172a':'#fff')+';color:'+(on?'#fff':'#334155')+';border-radius:10px;padding:10px;font-size:15px;font-weight:900;cursor:pointer">'+a[1]+'</button>';}).join("")+'</div>';
   var tid=esc(w.task_id);
   if(WC_OPEN.mode==="insp"){
-    [["pre","出発前の点検"]].forEach(function(kd){
+    [w.kind==="post"?["post","返却後の点検"]:["pre","出発前の点検"]].forEach(function(kd){
       var k=kd[0], items=WC_ITEMS[k], n=0; items.forEach(function(it){var c=(w.checks||{})[k+":"+it[0]];if(c&&c.checked)n++;});
       h+='<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;margin-bottom:10px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><b style="font-size:15px">'+kd[1]+'</b><span style="font-size:13px;font-weight:900;color:'+(n===items.length?'#166534':'#64748b')+'">'+n+' / '+items.length+'</span></div>';
       items.forEach(function(it){var c=(w.checks||{})[k+":"+it[0]],on=!!(c&&c.checked);
@@ -1102,6 +1104,18 @@ function wcFiles(e){
   }
   next();
 }
+/* ★2026-10-23 3店統一（那覇 staff.html と同じ）：洗車は出発前点検 全項目チェックまで完了不可・読めない時も完了させない */
+window.wcDone=function(tid){
+  wcRpc("wash_checks",{p_token:TOKEN}).then(function(d){
+    if(!d||d.ok===false)throw new Error("load");
+    WC={};(d.tasks||[]).forEach(function(t){WC[t.task_id]=t;});
+    var w=WC[tid];
+    if(!w){alert("⚠️ この洗車は点検を開けないため、完了にできません（車両が未設定など）。\n管理者に連絡してください。");wcRedraw();return;}
+    var p=wcProg(w);
+    if(p.n<p.t){alert("⚠️ 先に点検を行ってください（出発前の点検 "+p.n+"/"+p.t+"）。\n点検が終わるまで完了にできません。\n「🔧点検」から入力できます。");wcRedraw();return;}
+    saDone(tid);
+  }).catch(function(){alert("⚠️ 点検の状態を確認できませんでした。\n電波を確認して、もう一度押してください。");});
+};
 window.wcDelPh=function(tid,target,pid){
   if(!confirm("この写真を外しますか？"))return;
   var p=target==="tire"?wcRpc("tire_photo_del",{p_token:TOKEN,p_task:tid,p_photo:pid}):wcRpc("insp_photo_del",{p_token:TOKEN,p_photo:pid});

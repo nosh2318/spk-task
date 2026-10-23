@@ -84,7 +84,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1206';
+var CV='spk-v1207';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=1046').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -1224,6 +1224,79 @@ function crossScene(){var H=window.innerHeight;crossOne("🗻",H*0.60,6.5,110,0)
 function celebrateAssign(name){
   var nm=String(name||"").replace(/[<>&]/g,"");
   popCelebrate('<span class="ap-ic">🎉</span><span>'+nm+' さん 担当！</span><span class="ap-ic">🙌</span>');crossScene();
+}
+/* ★2026-10-23 那覇APPから移植（3店統一・オーナー確定）。元＝那覇 2026-10-16 洗車の出発前点検: タスクサマリーの洗車ごとに🔧点検ボタン＋点検11/11未満は完了不可。
+   個人ページ(staff.html)と同じ11項目・同じ表 spk_inspection_checks(kind='pre')。読む＝直接select／書く＝RPC spk_insp_app_set（1項目＝1件・記録者=ログインID）。
+   写真・タイヤは個人ページのみ。OPシートの完了は従来どおり（ガードしない・オーナー確定）。 */
+const SPK_INSP_PRE=[["exterior","外装の傷・へこみ確認"],["interior","車内清掃・ゴミなし"],["fuel","燃料 満タン"],["washer","ウォッシャー液"],["oil","エンジンオイル量"],["coolant","冷却水量"],["tire_air","タイヤ空気圧・外観（亀裂・釘）"],["lights","ライト類（前照灯・ブレーキ・ウインカー）"],["warning","警告灯なし（エンジン始動）"],["aircon","エアコン作動"],["docs","車検証・自賠責・取扱説明書"]];
+const SPK_INSP_KEYS=SPK_INSP_PRE.map(function(x){return x[0];});
+/* ★2026-10-23 3店統一（オーナー確定）：返却系タスク（COL・乗捨回収・BD・BDB・返却。担当「乗り捨て」のCOLは除く）＝返却後点検9項目（高松と同じ）。書く＝spk_insp_app_set（kind 付き5引数版） */
+const SPK_INSP_POST=[["damage","外装の新しい傷・へこみ"],["tire_tread","タイヤ溝（スリップサイン）"],["tire_damage","タイヤ損傷（パンク・亀裂）"],["lost","忘れ物なし"],["dirt","車内の汚れ・臭い（喫煙・ペット）"],["fuel","燃料（満タン返却）"],["warning","警告灯なし"],["etc_card","ETCカード抜き取り"],["key","鍵・付属品の返却"]];
+const SPK_INSP_POST_TYPES=["COL","乗捨回収","BD","BDB","返却"];
+function spkInspKind(t){if(!t)return null;if(t.type==="COL"&&String(t.assignee||"").replace(/\s/g,"")==="乗り捨て")return null;/* 乗り捨ては乗捨回収タスク側で点検（二重防止） */return t.type==="洗車"?"pre":SPK_INSP_POST_TYPES.indexOf(t.type)>=0?"post":null;}
+function spkInspItems(kind){return kind==="post"?SPK_INSP_POST:SPK_INSP_PRE;}
+async function spkInspRows(taskId,kind){await sbAuthPromise;if(!sb)throw new Error("DB未接続");const r=await sb.from("spk_inspection_checks").select("item_key,checked,note,checked_by,updated_at").eq("task_id",taskId).eq("kind",kind||"pre");if(r.error)throw r.error;return r.data||[];}
+function spkInspCount(rows,kind){const ks=spkInspItems(kind).map(function(x){return x[0];});return (rows||[]).filter(function(x){return x.checked&&ks.indexOf(x.item_key)>=0;}).length;}
+// 完了にしてよいか（洗車以外は常にOK）。読めなかった時は安全側＝完了させない
+async function spkWashInspGuard(t){
+  if(!t||t.type!=="洗車")return true;
+  let n=-1;try{n=spkInspCount(await spkInspRows(t._id));}catch(e){n=-1;}
+  if(n>=SPK_INSP_PRE.length)return true;
+  alert(n<0?"⚠️ 点検の状態を確認できませんでした。\n電波を確認して、もう一度押してください。":"⚠️ 先に点検を行ってください（出発前の点検 "+n+"/"+SPK_INSP_PRE.length+"）。\n点検が終わるまで完了にできません。\n洗車の「🔧点検」から入力できます。");
+  return false;
+}
+function SpkWashInspBtn({t}){
+  const [n,setN]=React.useState(null);
+  const [open,setOpen]=React.useState(false);
+  const kind=spkInspKind(t), its=spkInspItems(kind);
+  const load=React.useCallback(function(){if(!kind)return;spkInspRows(t._id,kind).then(function(rows){setN(spkInspCount(rows,kind));}).catch(function(){setN(null);});},[t._id,kind]);
+  React.useEffect(function(){load();const h=function(e){if(!e.detail||e.detail===t._id)load();};window.addEventListener("spk-insp-changed",h);return function(){window.removeEventListener("spk-insp-changed",h);};},[load]);
+  if(!t||!kind||!t._id)return null;
+  const full=n!==null&&n>=its.length;
+  return <>
+    <button onClick={function(e){e.preventDefault();e.stopPropagation();setOpen(true);}} title={kind==="post"?"返却後の点検を入力":"出発前の点検を入力"} style={{fontSize:11,fontWeight:800,padding:"3px 8px",borderRadius:6,background:full?"#dcfce7":"#eff6ff",color:full?"#166534":"#1d4ed8",border:"1px solid "+(full?"#86efac":"#93c5fd"),cursor:"pointer",flexShrink:0,whiteSpace:"nowrap"}}>🔧点検 {n===null?"-":n}/{its.length}</button>
+    {open&&<SpkWashInspModal t={t} kind={kind} onClose={function(){setOpen(false);load();try{window.dispatchEvent(new CustomEvent("spk-insp-changed",{detail:t._id}));}catch(_e){}}}/>}
+  </>;
+}
+function SpkWashInspModal({t,kind,onClose}){
+  kind=kind||"pre"; const its=spkInspItems(kind), ttl=kind==="post"?"返却後の点検":"出発前の点検";
+  const [rows,setRows]=React.useState(null);
+  const [err,setErr]=React.useState("");
+  const [busy,setBusy]=React.useState("");
+  const reload=function(){spkInspRows(t._id,kind).then(function(r){setRows(r);setErr("");}).catch(function(e){setErr("読み込めませんでした（"+((e&&e.message)||e)+"）");});};
+  React.useEffect(reload,[t._id]);
+  const map={};(rows||[]).forEach(function(r){map[r.item_key]=r;});
+  const save=async function(item,checked,note){
+    setBusy(item);
+    try{const r=await sb.rpc("spk_insp_app_set",{p_task:t._id,p_kind:kind,p_item:item,p_checked:checked,p_note:note});if(r.error)throw r.error;
+      const v=r.data||{};setRows(function(prev){const a=(prev||[]).filter(function(x){return x.item_key!==item;});a.push({item_key:item,checked:v.checked,note:v.note,checked_by:v.by,updated_at:v.at});return a;});
+    }catch(e){alert("保存できませんでした："+((e&&e.message)||e)+"\n車両が未設定のタスクは点検できません。");reload();}
+    setBusy("");
+  };
+  const n=spkInspCount(rows,kind);
+  const last=(rows||[]).slice().sort(function(a,b){return String(b.updated_at||"").localeCompare(String(a.updated_at||""));})[0];
+  const memo=map["_memo"]&&map["_memo"].note||"";
+  const fmt=function(at){if(!at)return "";const d=new Date(at);return (d.getMonth()+1)+"/"+d.getDate()+" "+("0"+d.getHours()).slice(-2)+":"+("0"+d.getMinutes()).slice(-2);};
+  return <div onClick={function(e){e.stopPropagation();if(e.target===e.currentTarget)onClose();}} style={{position:"fixed",inset:0,zIndex:10000,background:"rgba(15,23,42,.55)",display:"flex",alignItems:"flex-end",justifyContent:"center"}}>
+    <div style={{background:"#f8fafc",width:"100%",maxWidth:560,maxHeight:"92vh",overflowY:"auto",borderRadius:"16px 16px 0 0",padding:"14px 14px 28px",boxSizing:"border-box"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:17,fontWeight:900,color:"#0f172a"}}>🔧 {ttl} {t.plateNo?<span style={{fontFamily:"monospace"}}>{t.plateNo}</span>:null}</div>
+          <div style={{fontSize:12,color:"#64748b",fontWeight:700}}>{kind==="post"?"🔙":"🧽"} {t.name||t.type}{t.assignee?" ／ 担当 "+t.assignee:""}</div>
+        </div>
+        <button onClick={onClose} style={{border:"none",background:"#e2e8f0",color:"#0f172a",borderRadius:10,padding:"9px 14px",fontSize:14,fontWeight:900,cursor:"pointer"}}>閉じる</button>
+      </div>
+      {err?<div style={{color:"#b91c1c",fontWeight:800,fontSize:13,padding:10}}>{err}</div>:rows===null?<div style={{color:"#64748b",fontSize:13,padding:10}}>読み込み中…</div>:
+      <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:12,padding:"10px 12px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><b style={{fontSize:15}}>{ttl}</b><span style={{fontSize:13,fontWeight:900,color:n===its.length?"#166534":"#64748b"}}>{n} / {its.length}</span></div>
+        {its.map(function(it){const on=!!(map[it[0]]&&map[it[0]].checked);return <label key={it[0]} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 4px",borderTop:"1px solid #f1f5f9",fontSize:14,fontWeight:700,color:on?"#166534":"#0f172a",cursor:"pointer",opacity:busy===it[0]?.5:1}}>
+          <input type="checkbox" checked={on} disabled={!!busy} onChange={function(e){save(it[0],e.target.checked,null);}} style={{width:22,height:22,flex:"0 0 auto"}}/>{it[1]}</label>;})}
+        <textarea key={"m"+memo} rows={2} defaultValue={memo} placeholder="メモ（気づいた点など）" onBlur={function(e){if(String(e.target.value||"")!==String(memo))save("_memo",null,String(e.target.value||""));}} style={{width:"100%",boxSizing:"border-box",border:"1px solid #cbd5e1",borderRadius:8,padding:8,fontSize:14,fontFamily:"inherit",marginTop:8}}/>
+        {last&&<div style={{fontSize:11,color:"#64748b",fontWeight:700,marginTop:4}}>最終更新 {fmt(last.updated_at)} {last.checked_by||""}</div>}
+        <div style={{fontSize:11,color:"#94a3b8",marginTop:6}}>写真・タイヤは担当者の個人ページから入力できます</div>
+      </div>}
+    </div>
+  </div>;
 }
 function celebrateDone(){
   popCelebrate('<span class="ap-ic">✅</span><span>お疲れ様 Good Job !!!</span><span class="ap-ic">🎉</span>','linear-gradient(135deg,#10b981,#0891b2,#3b82f6)');crossScene();
@@ -24329,7 +24402,7 @@ function App(){
                             const isDel=t.type==="DEL";const isCOL=t.type==="COL";
                             const veh=(t.assignedVehicle||t.assigned_vehicle)?vehicles.find(v=>v.code===(t.assignedVehicle||t.assigned_vehicle)):null;
                             const vehName=veh?veh.name+" "+veh.no:"";
-                            const toggleDone=async(e)=>{e.stopPropagation();/* ★2026-09-13 最新doneをrefから読む＝stale closureで「解除したのにtrueを書き直す」を根治 */const _cur=(topDoneRef.current&&(t._id in topDoneRef.current))?!!topDoneRef.current[t._id]:!!t.done;const becomingDone=!_cur;recentToggleRef.current[t._id]={done:becomingDone,at:Date.now()};if(becomingDone)celebrateDone();/* 楽観更新: タップで即このリストのdoneを反転。refresh失敗でも画面は必ず反映＝完了↔解除が常に効く */const _flip=arr=>arr.map(x=>x._id===t._id?{...x,done:becomingDone}:x);setTodayTasks(_flip);setTomorrowTasks(_flip);try{if(sb){await sb.from("tasks").update({done:becomingDone}).eq("_id",t._id);const rid=t.reservationId||t.reservation_id;if(rid&&becomingDone&&(isDel||isCOL)){const ks=isDel?"active":"completed";try{await sb.from("reservations").update({kd_status:ks,kd_status_at:new Date().toISOString()}).eq("id",rid);}catch(_){}}}refreshTopTasks();}catch(err){console.error("[TOP toggleDone]",err);}};
+                            const toggleDone=async(e)=>{e.stopPropagation();/* ★2026-09-13 最新doneをrefから読む＝stale closureで「解除したのにtrueを書き直す」を根治 */const _cur=(topDoneRef.current&&(t._id in topDoneRef.current))?!!topDoneRef.current[t._id]:!!t.done;const becomingDone=!_cur;if(becomingDone&&t.type==="洗車"&&!(await spkWashInspGuard(t)))return;/* ★2026-10-23 3店統一：洗車は出発前点検11/11まで完了不可 */recentToggleRef.current[t._id]={done:becomingDone,at:Date.now()};if(becomingDone)celebrateDone();/* 楽観更新: タップで即このリストのdoneを反転。refresh失敗でも画面は必ず反映＝完了↔解除が常に効く */const _flip=arr=>arr.map(x=>x._id===t._id?{...x,done:becomingDone}:x);setTodayTasks(_flip);setTomorrowTasks(_flip);try{if(sb){await sb.from("tasks").update({done:becomingDone}).eq("_id",t._id);const rid=t.reservationId||t.reservation_id;if(rid&&becomingDone&&(isDel||isCOL)){const ks=isDel?"active":"completed";try{await sb.from("reservations").update({kd_status:ks,kd_status_at:new Date().toISOString()}).eq("id",rid);}catch(_){}}}refreshTopTasks();}catch(err){console.error("[TOP toggleDone]",err);}};
                             const isWashCard=t.type==="洗車";const _wLinked=!!(isWashCard&&t.plateNo&&_wLinkedPlates.has(t.plateNo));const _wRet=_wLinked?_wRetByPlate[t.plateNo]:null;
                             const _wGray=isNextDayType(t)&&t._nextDayWashGray;const _wToday=isNextDayType(t)&&t._nextDayWashShown;
                             return <div key={t._id} style={{padding:"7px 9px",border:"1px solid #e2e8f0",borderLeft:"4px solid "+(_wGray?"#cbd5e1":(tm.c||"#cbd5e1")),borderRadius:8,marginBottom:6,boxShadow:"0 1px 2px rgba(0,0,0,0.04)",background:_wGray?"#f1f5f9":_wToday?"#eff6ff":(_wLinked?"#ecfdf5":"#fff"),opacity:_wGray?.6:(t.done?.5:1)}}>
@@ -24349,6 +24422,7 @@ function App(){
                                 {(isDel||isCOL)&&(()=>{const rid=t.reservationId||t.reservation_id;return <React.Fragment><LineStatusBadge resvNo={rid} size={8}/><LicenseBadge resvNo={rid} size={8}/></React.Fragment>;})()}
                                 {HO_TASK_TYPES_SPK.includes(t.type)&&(t.reservationId||t.reservation_id)&&<HandoverBtn rid={t.reservationId||t.reservation_id} compact={true}/>}
                                 <TaskMoveBadge t={t} size={12}/>
+                                <SpkWashInspBtn t={t}/>
                                 {(isDel||isCOL)&&(()=>{const rid=t.reservationId||t.reservation_id;const _tk=(window._mypageTokenMap||{})[rid];if(!_tk)return null;return <><a href={"https://nosh2318.github.io/spk-task/my.html?t="+_tk+"&staff=1"} target="_blank" rel="noopener" onClick={e=>e.stopPropagation()} title="お客様マイページ（スタッフ代理＝免許アップ・変更を代理登録可）" style={{fontSize:8,fontWeight:800,padding:"1px 5px",borderRadius:4,background:"#0e7a6b",color:"#fff",textDecoration:"none",whiteSpace:"nowrap",flexShrink:0}}>🪪MyP</a><button onClick={e=>{e.stopPropagation();navigator.clipboard.writeText("https://nosh2318.github.io/spk-task/my.html?t="+_tk);const b=e.currentTarget;const o=b.textContent;b.textContent="✓";setTimeout(()=>b.textContent=o,1000);}} title="お客様に送るマイページURLをコピー" style={{fontSize:8,fontWeight:800,padding:"1px 5px",borderRadius:4,background:"#e0f2fe",color:"#0369a1",border:"1px solid #7dd3fc",cursor:"pointer",whiteSpace:"nowrap",flexShrink:0}}>🔗URLコピー</button></>;})()}
                                 {t.ota==="J"&&(()=>{const rid=t.reservationId||t.reservation_id;const done=isJPaidFn(rid);return <span style={{fontSize:8,fontWeight:700,padding:"1px 5px",borderRadius:4,background:done?"#dcfce7":"#fef2f2",color:done?"#16a34a":"#dc2626",flexShrink:0}}>{done?"💳決済":"💳未決済"}</span>;})()}{(()=>{const ep=extraPayFn&&extraPayFn(t.reservationId||t.reservation_id);if(!ep)return null;const pd=ep.status==="paid";return <span title="オプション/補償の追加分" style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:4,marginLeft:3,background:pd?"#dbeafe":"#fef9c3",color:pd?"#1d4ed8":"#a16207"}}>{pd?"追加済":"追加未"}</span>;})()}
                                 {isPlaceMissing(t)&&<PlaceAlert size={8}/>}
@@ -25457,7 +25531,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.678";
+const APP_VERSION="v4.7.679";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
