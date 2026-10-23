@@ -132,9 +132,10 @@ var SWP_WH=[];
 function mtgPlan(P,gap,o,wh,mk){
   var R=function(v){return Math.round(v/1e3)*1e3;},g=R(gap);window.DSG_CHK_P=window.DSG_CHK_P||{};if(g<=0){window.DSG_CHK_P[mk]={m:mk,gap:g,none:1};return '';}
   var Y=function(v){return '¥'+Math.round(v).toLocaleString();},M=function(v){return (v/1e4).toFixed(1)+'万';},C=[];
-  P.forEach(function(p){if(!p.ad)return;var f=p.rd+p.pk,fr=f/p.ad,p0=p.uA>0?p.uA:p.d,upf=p.pk?(p.L-p.ar)/p.pk:p0,lo=fr<p.jb-1e-9,E=Math.max(0,Math.min(Math.floor(p.cap),Math.floor(p.ad*(lo?Math.min(p.jb,o.CAP):o.CAP)+1e-9)-Math.ceil(f-1e-9))),z=null;
+  P.forEach(function(p){if(!p.ad)return;var f=p.rd+p.pk,fr=f/p.ad,p0=p.uA>0?p.uA:p.d,upf=p.pk?(p.L-p.ar)/p.pk:p0,lo=fr<p.jb-1e-9,pc=p.pc==null?Infinity:p.pc,E=Math.max(0,Math.min(Math.floor(p.cap),Math.floor(pc+1e-9),Math.floor(p.ad*(lo?Math.min(p.jb,o.CAP):o.CAP)+1e-9)-Math.ceil(f-1e-9))),z=null;
+    /* 2026-10-23 さらに 取込カーブの上限 pc（残りの各日の 空き台数×まだ入ってくる割合 の合計−見込み日数）以内＝直近の日ほど追加は小さい。単価の上げ下げは見込み日数（未予約分）にだけ効く */
     /* 追加日数の上限：目標未満のクラスは目標稼働率まで（AA 3%のクラスに70%までは現実的でない）、目標以上のクラスは稼働率70%まで。どちらも残りの空き日数以内 */
-    var bs='着地稼働率 '+Math.round(fr*100)+'%（目標 '+Math.round(p.jb*100)+'%）・追加できる日数 '+E+'日（'+(lo?'目標稼働率':'稼働率'+Math.round(o.CAP*100)+'%')+'まで・残りの空き以内）・実績単価 '+(p.uA>0?Y(p.uA):'予約なし')+'・目標単価 '+Y(p.d);
+    var bs='着地稼働率 '+Math.round(fr*100)+'%（目標 '+Math.round(p.jb*100)+'%）・追加できる日数 '+E+'日（'+(lo?'目標稼働率':'稼働率'+Math.round(o.CAP*100)+'%')+'まで・残りの空き以内・取込カーブで残りの日に普段これから入る分'+(isFinite(pc)?' '+(Math.round(pc*10)/10)+'日':'')+'以内）・実績単価 '+(p.uA>0?Y(p.uA):'予約なし')+'・目標単価 '+Y(p.d);
     function one(){if(!E||!p0)return null;return {k:1,mx:E*p0,q:function(r){var n=Math.min(E,Math.ceil(r/p0-1e-9));return {n:n,e:n*p0,t:'あと'+n+'日の貸出',w:n+'日 × '+Y(p0)+' ＝ '+Y(n*p0)};}};}
     if(fr<p.jb-1e-9){
       if(!p.aa&&p.uA>p.d*1.005&&E>0){var np=Math.round(Math.max(p.d,p.uA*(1-o.PDN))),ls=p.pk*Math.max(0,upf-np),cut=Math.round(p.uA-np);
