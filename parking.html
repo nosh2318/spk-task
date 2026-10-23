@@ -148,6 +148,11 @@
   .missh{color:#fca5a5}
   .stcell.miss{border-left-color:#ef4444;background:#2a1416;animation:missBlink 1.4s ease-in-out infinite}
   @keyframes missBlink{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.25)}50%{box-shadow:0 0 0 4px rgba(239,68,68,.32)}}
+  /* ★2026-10-23 共立自動車保管（マスを使わない・所在不明から除外） */
+  .stcell.tap{cursor:pointer}
+  .kyh{color:#c4b5fd}
+  .stcell.ky{border-left-color:#8b5cf6;background:#1e1b3a}
+  .stcell .kyby{font-size:9.5px;color:#a5b4fc;font-weight:700;margin-left:4px}
 </style>
 </head>
 <body>
@@ -161,6 +166,7 @@
   <div class="lot-map" id="lotMap"></div>
   <div class="exsec"><div class="exh">🚗 貸出中の車両（外に出ている）<span class="cnt" id="outCnt">0</span></div><div id="outList" class="stlist"></div></div>
   <div class="exsec" id="missSec"><div class="exh missh">❓ 所在不明の車両<span style="font-size:10px;font-weight:800;color:#94a3b8;margin-left:6px">貸出なし・駐車場になし</span><span class="cnt" id="missCnt">0</span></div><div id="missList" class="stlist"></div></div>
+  <div class="exsec"><div class="exh kyh">🏭 共立自動車保管<span style="font-size:10px;font-weight:800;color:#94a3b8;margin-left:6px">マスは使いません</span><span class="cnt" id="kyCnt">0</span></div><div id="kyList" class="stlist"></div></div>
   <div class="exsec"><div class="exh">🛴 モビリティ（置き場所）</div><div id="mobList"></div></div>
   <div class="exsec"><div class="exh">📦 倉庫車（荷物積載中）<button class="exadd" onclick="addWh()">＋ 追加</button></div><div id="whList"></div></div>
   <div class="exsec"><div class="exh">🪑 レンタルシート在庫（超過分・RCS/RJS）<button class="exadd" onclick="addRental()">＋ 追加</button></div><div id="rentalList"></div></div>
@@ -274,6 +280,7 @@ let OUT_NOW=new Set(); // 今 貸出中(出発済み・返却前)の車id
 let OUT_LIST=[]; // 今 貸出中の車両 一覧(表示用) {id,n,p}
 let DEPART_TODAY=new Set(); // 本日出発予定(貸出日=本日・予約データ参照)の車id ※当日貸出・当日返却の車もあるので注意
 let MOBILITY={}, WAREHOUSE={}, PLAN={}; // parking_meta (PLAN=返却予定の手動割当 carId->spotId)
+let PLACES={}; // ★2026-10-23 共立自動車保管 parking_car_place(1台1行・解除は墓標deleted) carId->{by,at}
 let RENTAL=[]; // rental_seats（レンタルシート在庫・期間レコード {id,start_date,end_date,type(RCS/RJS),qty,vehicle_id,note}）★OPシートと同一テーブル(単一ソース)・在庫アラートには含めない表示専用
 const MOB_ITEMS=[{id:"bicycle",name:"自転車",icon:"🚲"},{id:"ebike",name:"電動自転車",icon:"⚡"},{id:"escooter",name:"キックボード",icon:"🛴"}];
 const MOB_PLACES=["使用中","オフィス","BIGスロット","充電中"];
@@ -282,7 +289,7 @@ let guideCar=null, modal=null, busy=false, modalLock=false;
 /* ★2026-09-10 入庫の必須フロー(洗車→鍵→シート)や台数選択の入力中に、15秒ポーリング/リアルタイム更新のrender()が走ると
    スマホの<select>ドロップダウンが閉じて選択が飛ぶ(＝入力リセット)。モーダル表示中は背景更新を保留し、閉じた時に一度だけ反映する */
 let _pendingReload=false;
-async function reloadAll(){await Promise.all([loadSpots(),loadReturns(),loadMeta(),loadRental(),loadOutNow()]);render();}
+async function reloadAll(){await Promise.all([loadSpots(),loadReturns(),loadMeta(),loadRental(),loadOutNow(),loadPlaces()]);render();}
 function bgReload(){ if(modal){_pendingReload=true;return;} reloadAll(); }
 // スタッフ車両は配車表RPCに無いので常に選択肢に含める（どのタイミングでも出る）
 const STAFF_CARS=[
@@ -299,8 +306,10 @@ function allCars(){const seen=new Set();return [...ROSTER,...STAFF_CARS,...EXTRA
 function car(id){return allCars().find(c=>c.id===id)||{id,n:id,p:"",c:"H"};}
 function placedIds(){const s=new Set();SPOTS.forEach(sp=>sp.carId&&s.add(sp.carId));return s;}
 function needCars(){const p=placedIds();return allCars().filter(c=>!p.has(c.id));}
-// 所在不明＝配車表の車で「貸出なし＆駐車場になし＆倉庫車でない」＝どこにあるか分からない車
-function missingCars(){const parked=placedIds();return ROSTER.filter(c=>!parked.has(c.id)&&!OUT_NOW.has(c.id)&&!WAREHOUSE[c.id]);}
+// 所在不明＝配車表の車で「貸出なし＆駐車場になし＆倉庫車でない＆共立自動車保管でない」＝どこにあるか分からない車
+function missingCars(){const parked=placedIds();return ROSTER.filter(c=>!parked.has(c.id)&&!OUT_NOW.has(c.id)&&!WAREHOUSE[c.id]&&!PLACES[c.id]);}
+// 共立自動車保管の車（表示の優先順位：駐車中＞貸出中＞共立保管。システムは書き換えず表示で振り分けるだけ）
+function kyCars(){const parked=placedIds();return Object.keys(PLACES).filter(id=>!parked.has(id)&&!OUT_NOW.has(id)).map(id=>({...car(id),by:PLACES[id].by,at:PLACES[id].at}));}
 function baysOf(k){return SPOTS.filter(sp=>areaOf(sp.no)===k).sort((a,b)=>{const na=parseInt(a.no,10),nb=parseInt(b.no,10);if(!isNaN(na)&&!isNaN(nb))return na-nb;return a.id-b.id;});}
 // 誘導のおすすめ: BIG空き最優先→無ければトラスト空き
 function recoSpotId(carId){
@@ -324,7 +333,8 @@ function render(){
   const total=SPOTS.length, parked=SPOTS.filter(s=>s.carId).length;
   const departN=SPOTS.filter(s=>s.carId&&DEPART_TODAY.has(s.carId)).length;
   const missN=missingCars().length;
-  $("sum").innerHTML=`<div class="chip">空き <b>${total-parked}</b>/${total}</div><div class="chip">BIG空き <b>${baysOf("BIG").filter(s=>!s.carId).length}</b></div><div class="chip">本日返却 <b>${RETURNS.length}</b></div><div class="chip">🚗貸出中 <b>${OUT_LIST.length}</b></div>`+(departN?`<div class="chip" style="background:#f59e0b;color:#111">🚗本日出発予定 <b>${departN}</b></div>`:"")+(missN?`<div class="chip" style="background:#7f1d1d;color:#fecaca">❓所在不明 <b>${missN}</b></div>`:"");
+  const kyN=kyCars().length;
+  $("sum").innerHTML=`<div class="chip">空き <b>${total-parked}</b>/${total}</div><div class="chip">BIG空き <b>${baysOf("BIG").filter(s=>!s.carId).length}</b></div><div class="chip">本日返却 <b>${RETURNS.length}</b></div><div class="chip">🚗貸出中 <b>${OUT_LIST.length}</b></div>`+(departN?`<div class="chip" style="background:#f59e0b;color:#111">🚗本日出発予定 <b>${departN}</b></div>`:"")+(missN?`<div class="chip" style="background:#7f1d1d;color:#fecaca">❓所在不明 <b>${missN}</b></div>`:"")+(kyN?`<div class="chip" style="background:#3b2f7a;color:#ddd6fe">🏭共立保管 <b>${kyN}</b></div>`:"");
   // 🕒 本日返却予定（未駐車のみ・時刻付き）
   const placed=placedIds();
   const rtoday=RETURNS.filter(r=>!placed.has(r.id));
@@ -362,7 +372,11 @@ function renderStatus(){
   $("missCnt").textContent=miss.length;
   $("missCnt").style.background=miss.length?"#7f1d1d":"#334155";
   $("missCnt").style.color=miss.length?"#fecaca":"#e2e8f0";
-  $("missList").innerHTML=miss.length?miss.map(c=>`<div class="stcell miss"><span class="dot" style="background:${CLS[c.c]||'#64748b'}"></span>${c.n}<span class="no">No.${c.p}</span></div>`).join(""):'<div class="emp" style="color:#6ee7b7">✅ 全車両の所在OK（貸出中・駐車場・倉庫のいずれか）</div>';
+  $("missList").innerHTML=miss.length?miss.map(c=>`<div class="stcell miss tap" onclick="tapMiss('${c.id}')"><span class="dot" style="background:${CLS[c.c]||'#64748b'}"></span>${c.n}<span class="no">No.${c.p}</span></div>`).join(""):'<div class="emp" style="color:#6ee7b7">✅ 全車両の所在OK（貸出中・駐車場・倉庫・共立のいずれか）</div>';
+  // 🏭 共立自動車保管
+  const ky=kyCars();
+  $("kyCnt").textContent=ky.length;
+  $("kyList").innerHTML=ky.length?ky.map(c=>`<div class="stcell ky tap" onclick="tapKy('${c.id}')"><span class="dot" style="background:${CLS[c.c]||'#64748b'}"></span>${c.n}<span class="no">${c.p?'No.'+c.p:''}</span><span class="kyby">${fmtKyAt(c.at)}${c.by?' '+c.by:''}</span></div>`).join(""):'<div class="emp">なし（所在不明の車をタップ→「共立自動車保管」で登録）</div>';
 }
 // 🛴 モビリティ ＋ 📦 倉庫車
 function renderExtra(){
@@ -512,8 +526,10 @@ async function dbSetCar(spotId,carId,memo){
     patch.key_inside=null; /* ★入庫・出庫どちらでも車内鍵の記録は必ずデフォ(未確認)にリセット。入庫時は直後の必須プロンプトで新たに記録され、前の車の状態を引き継がない */
     patch.wash_status=null; /* ★2026-08-18 入庫・出庫で洗車状態もデフォ(未選択)にリセット。入庫直後の必須プロンプトで新たに記録 */
     /* ★2026-09-08 積載シートは車単位(WAREHOUSE[carId])に一本化＝spotのseat_loadは廃止。移動・入出庫でシートを消さない(車に積まれたまま保持) */
-    await sb.from("parking_spots").update(patch).eq("id",spotId);
-  }catch(e){console.log("dbSetCar err",e);toast("⚠️ 保存失敗（通信）");}
+    const{error}=await sb.from("parking_spots").update(patch).eq("id",spotId);
+    if(error)throw error;
+    return true; /* ★2026-10-23 成否を返す（共立保管の解除は入庫成功時だけ書くため） */
+  }catch(e){console.log("dbSetCar err",e);toast("⚠️ 保存失敗（通信）");return false;}
 }
 async function dbSetKeyInside(spotId,val){try{await sb.from("parking_spots").update({key_inside:val,updated_at:new Date().toISOString(),updated_by:"spk"}).eq("id",spotId);}catch(e){console.log("dbSetKeyInside err",e);toast("⚠️ 鍵状態の保存失敗");}}
 function optimistic(spotId,carId,memo){SPOTS.forEach(s=>{if(s.carId===carId&&s.id!==spotId){s.carId=null;s.keyInside=null;s.wash=null;}});const sp=SPOTS.find(s=>s.id===spotId);if(sp){sp.carId=carId||null;if(memo!==undefined)sp.memo=memo||"";sp.keyInside=null;sp.wash=null;/* ★入庫/出庫でデフォ(未確認/未選択)に。入庫は直後のプロンプトで記録。積載シートは車単位(WAREHOUSE)なので触らない */}}
@@ -551,8 +567,9 @@ function driveInto(el,cb){
   setTimeout(()=>{fc.remove();cb();},820);
 }
 async function finishPark(spotId,id,memo){
-  optimistic(spotId,id,memo);await dbSetCar(spotId,id,memo);
+  optimistic(spotId,id,memo);const parkedOk=await dbSetCar(spotId,id,memo);
   if(PLAN[id]!=null){delete PLAN[id];saveMeta("plan",PLAN);} // 入庫済み→返却予定の割当を解除
+  if(parkedOk)tombKy(id); // ★入庫に成功した＝車は駐車場にある→共立自動車保管を解除（スタッフの入庫操作に従う1行・失敗時は書かない）
   const sp=SPOTS.find(s=>s.id===spotId);const aname=sp?areaDef(areaOf(sp.no)).name:"";
   const label=(sp&&areaOf(sp.no)==="BIG"?"No."+sp.no:aname)+(memo?" 駐車No."+memo:"");
   exitGuide();render();
@@ -609,8 +626,9 @@ function openPickSheet(spotId){
   openSheet(`<h3>${a.ico} ${a.name} に入庫</h3><div class="sd">車を選択（停車中の車を除く）${a.mode==="manual"?"／次に駐車Noを入力":""}</div>`+
     `<select id="pkSel" style="width:100%;padding:11px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;font-weight:700">`+
     list.map(c=>`<option value="${c.id}">${c.n} ${c.p}</option>`).join("")+`</select>`+
-    `<div class="btnrow"><button class="btn g" onclick="closeSheet()">キャンセル</button><button class="btn" style="background:#0d9488;color:#fff" onclick="doPickSel(${spotId})">🚗 入庫</button></div>`);
+    `<div class="btnrow"><button class="btn g" onclick="closeSheet()">キャンセル</button><button class="btn" style="background:#4c1d95;color:#ddd6fe" onclick="doKySel()">🏭 共立保管</button><button class="btn" style="background:#0d9488;color:#fff" onclick="doPickSel(${spotId})">🚗 入庫</button></div>`);
 }
+function doKySel(){const sel=document.getElementById("pkSel");if(!sel||!sel.value)return;askKy(sel.value);}
 function doPickSel(spotId){const sel=document.getElementById("pkSel");if(!sel||!sel.value)return;doPick(spotId,sel.value);}
 function doPick(spotId,id){closeSheet();const sp=SPOTS.find(s=>s.id===spotId);const a=areaDef(areaOf(sp.no));const cn=a.mode==="manual"?(prompt("駐車No（このコインPのマス番号）","")||"").trim():"";finishPark(spotId,id,a.mode==="numbered"?undefined:cn);}
 // ===== 出庫 =====
@@ -627,6 +645,7 @@ function tapCar(spotId){
     `<div class="sd" style="margin-bottom:4px">🧽 洗車状態</div><div class="btnrow" style="margin-bottom:8px;flex-wrap:wrap;gap:6px">${washBtns}</div>`+
     `<div class="sd" style="margin-bottom:4px">積載シート（CS/JS／R＝レンタル RCS/RJS）${seatLabel(sp)}</div><div class="btnrow" style="margin-bottom:8px"><button class="btn" style="flex:1;background:#334155;color:#fbbf24;font-weight:800" onclick="askSeats(${spotId},'${sp.carId}')">シート台数を編集</button></div>`+
     (isRet?`<button class="btn" style="width:100%;background:#78350f;color:#fde68a;margin-bottom:8px" onclick="undoReturn(${spotId})">↩️ 返却予定に戻す（入庫を取り消し）</button>`:"")+
+    `<button class="btn" style="width:100%;background:#4c1d95;color:#ddd6fe;margin-bottom:8px" onclick="askKy('${sp.carId}')">🏭 共立自動車保管へ移す（このマスは空きます）</button>`+
     `<div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button><button class="btn" style="background:#334155;color:#7dd3fc" onclick="openSwap(${spotId})">🔄 入れ替え</button><button class="btn r" onclick="doOut(${spotId})">🚙 出庫</button></div>`);
 }
 async function undoReturn(spotId){const sp=SPOTS.find(s=>s.id===spotId);const nm=sp&&sp.carId?car(sp.carId).n:"";closeSheet();optimistic(spotId,null,"");await dbSetCar(spotId,null,"");render();toast("↩️ "+nm+" を返却予定に戻しました");}
@@ -642,11 +661,56 @@ function openSwap(spotId){
 async function doSwap(spotId){
   const sel=document.getElementById("swSel");if(!sel||!sel.value)return;const id=sel.value;const sp=SPOTS.find(s=>s.id===spotId);
   if(!sp||id===sp.carId){closeSheet();return;}
-  const old=sp.carId;closeSheet();optimistic(spotId,id,sp.memo);await dbSetCar(spotId,id,sp.memo);render();
+  const old=sp.carId;closeSheet();optimistic(spotId,id,sp.memo);const swOk=await dbSetCar(spotId,id,sp.memo);if(swOk)tombKy(id);render();
   const el=document.querySelector(`.cbay[data-sp="${spotId}"]`);if(el)el.classList.add("pop");
   toast("🔄 "+car(old).n+" → "+car(id).n+" に入れ替え");
 }
 async function doOut(spotId){const sp=SPOTS.find(s=>s.id===spotId);const nm=sp&&sp.carId?car(sp.carId).n:"";closeSheet();optimistic(spotId,null,"");await dbSetCar(spotId,null,"");render();toast("🚙 "+nm+" 出庫");}
+
+// ===== 🏭 共立自動車保管（2026-10-23・スタッフ手動のみ／1アクション=1行／解除は墓標） =====
+const KY_STAFF=["長谷川","高橋","三國","大下","武山","その他"];
+function fmtKyAt(at){if(!at)return "";const d=new Date(at);if(isNaN(d))return "";const z=n=>String(n).padStart(2,"0");return (d.getMonth()+1)+"/"+d.getDate()+" "+z(d.getHours())+":"+z(d.getMinutes());}
+function tapMiss(id){
+  if(guideCar)return;const c=car(id);
+  openSheet(`<h3>❓ ${c.n} ${c.p}</h3><div class="sd">この車は今どこにありますか？</div>`+
+    `<button class="btn" style="width:100%;background:#0d9488;color:#fff;margin-bottom:8px" onclick="closeSheet();pickCar('${id}')">🚗 駐車場に入庫</button>`+
+    `<button class="btn" style="width:100%;background:#4c1d95;color:#ddd6fe;margin-bottom:8px" onclick="askKy('${id}')">🏭 共立自動車保管</button>`+
+    `<div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button></div>`);
+}
+function askKy(id){
+  if(OUT_NOW.has(id)){toast("貸出中の車は共立保管にできません");return;}
+  const c=car(id);let last="";try{last=localStorage.getItem("pk_ky_staff")||"";}catch(_e){}
+  openSheet(`<h3>🏭 共立自動車保管</h3><div class="sd">${c.n} ${c.p} を共立自動車保管にします。確認した人を選んでください。</div>`+
+    `<select id="kyStaff" style="width:100%;padding:11px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;font-weight:700"><option value="">（選択）</option>`+
+    KY_STAFF.map(n=>`<option value="${n}"${n===last?' selected':''}>${n}</option>`).join("")+`</select>`+
+    `<div class="btnrow"><button class="btn g" onclick="closeSheet()">キャンセル</button><button class="btn" style="background:#4c1d95;color:#ddd6fe" onclick="setKy('${id}')">🏭 保管にする</button></div>`);
+}
+async function setKy(id){
+  const by=((document.getElementById("kyStaff")||{}).value||"").trim();
+  if(!by){toast("確認した人を選んでください");return;}
+  try{localStorage.setItem("pk_ky_staff",by);}catch(_e){}
+  closeSheet();
+  const sp=SPOTS.find(s=>s.carId===id);
+  if(sp){optimistic(sp.id,null,"");if(!(await dbSetCar(sp.id,null,""))){await loadSpots();render();return;}} // 駐車中なら元のマスを1枠だけ空ける（既存の出庫と同じ書込）・失敗なら共立にしない
+  const now=new Date().toISOString();
+  PLACES[id]={by,at:now};render();
+  try{const{error}=await sb.from("parking_car_place").upsert({car_id:id,place:"kyoritsu",deleted:false,set_by:by,set_at:now,updated_by:"spk",updated_at:now},{onConflict:"car_id"});if(error)throw error;toast("🏭 "+car(id).n+" を共立自動車保管にしました");}
+  catch(e){console.log("setKy err",e);delete PLACES[id];render();toast("⚠️ 保存失敗（通信）");}
+}
+function tapKy(id){
+  if(guideCar)return;const c=car(id);const pl=PLACES[id]||{};
+  openSheet(`<h3>🏭 ${c.n} ${c.p}</h3><div class="sd">共立自動車保管（${fmtKyAt(pl.at)}${pl.by?' '+pl.by:''}）</div>`+
+    `<button class="btn" style="width:100%;background:#0d9488;color:#fff;margin-bottom:8px" onclick="closeSheet();pickCar('${id}')">🚗 駐車場に戻す（入庫）</button>`+
+    `<div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button><button class="btn" style="background:#334155;color:#fca5a5" onclick="clearKy('${id}')">保管を解除</button></div>`);
+}
+// 解除＝墓標(deleted=true)。ローカルの有無で分岐せず常に投げる（他端末が直前に設定した場合も外す・0件更新は無害）
+async function tombKy(id){
+  const prev=PLACES[id];delete PLACES[id];
+  try{const{error}=await sb.from("parking_car_place").update({deleted:true,updated_by:"spk",updated_at:new Date().toISOString()}).eq("car_id",id).eq("deleted",false);if(error)throw error;return true;}
+  catch(e){console.log("tombKy err",e);if(prev)PLACES[id]=prev;render();toast("⚠️ 共立保管の解除に失敗（通信）");return false;}
+}
+async function clearKy(id){closeSheet();const ok=await tombKy(id);render();if(ok)toast("共立自動車保管を解除しました");}
+async function loadPlaces(){try{const{data,error}=await sb.from("parking_car_place").select("car_id,set_by,set_at").eq("deleted",false);if(!error&&data){const m={};data.forEach(r=>{m[r.car_id]={by:r.set_by||"",at:r.set_at};});PLACES=m;}}catch(e){console.log("places err",e);}}
 
 // ===== 読み込み・リアルタイム =====
 async function loadRoster(){
@@ -670,15 +734,16 @@ async function loadDeparts(){
     const d=await r.json();if(Array.isArray(d))DEPART_TODAY=new Set(d.map(x=>x.name+"-"+x.no));}catch(e){console.log("departs err",e);}
 }
 async function boot(){
-  await Promise.all([loadRoster(),loadSpots(),loadReturns(),loadMeta(),loadRental(),loadOutNow(),loadDeparts()]);
+  await Promise.all([loadRoster(),loadSpots(),loadReturns(),loadMeta(),loadRental(),loadOutNow(),loadDeparts(),loadPlaces()]);
   $("st").textContent="🟢 稼働中";render();
   // リアルタイム（他端末の入出庫・モビリティ/倉庫車ステータスを即共有）
   // ★モーダル表示中(入庫フロー/台数選択の入力中)は更新を保留し、閉じた時に反映＝入力途中でリセットさせない
   sb.channel("pk-rt").on("postgres_changes",{event:"*",schema:"public",table:"parking_spots"},async()=>{if(modal){_pendingReload=true;return;}await loadSpots();render();}).subscribe();
   sb.channel("pk-meta").on("postgres_changes",{event:"*",schema:"public",table:"parking_meta"},async()=>{if(modal){_pendingReload=true;return;}await loadMeta();render();}).subscribe();
+  sb.channel("pk-place").on("postgres_changes",{event:"*",schema:"public",table:"parking_car_place"},async()=>{if(modal){_pendingReload=true;return;}await loadPlaces();render();}).subscribe();
   sb.channel("pk-rental").on("postgres_changes",{event:"*",schema:"public",table:"rental_seats"},async()=>{if(modal){_pendingReload=true;return;}await loadRental();render();}).subscribe();
   // 予備ポーリング（15秒）
-  setInterval(async()=>{if(document.visibilityState!=="visible")return;if(modal){_pendingReload=true;return;}await Promise.all([loadSpots(),loadReturns(),loadMeta(),loadRental(),loadOutNow()]);render();},15000);
+  setInterval(async()=>{if(document.visibilityState!=="visible")return;if(modal){_pendingReload=true;return;}await Promise.all([loadSpots(),loadReturns(),loadMeta(),loadRental(),loadOutNow(),loadPlaces()]);render();},15000);
   document.addEventListener("visibilitychange",async()=>{if(document.visibilityState==="visible"){if(modal){_pendingReload=true;return;}await loadSpots();render();}});
 }
 boot();
