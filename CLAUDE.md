@@ -1,4 +1,5 @@
 # SPK業務管理APP（札幌店）— 入口
+- 【公開リポジトリ】お客様の氏名・メール・電話・予約番号・パスワードは記録に書かない（書くなら伏せ字：ab***@gmail.com・R0****12・氏名→「お客様」）。
 - ルール＝`~/.claude/CLAUDE.md`（核・自動読込）。札幌の運用手順＝スキル `handyman-spk-ops`。ビルド/デプロイ＝`handyman-app-deploy`。取込 GAS＝`handyman-gas-import`。じゃらん決済＝`handyman-jalan-payment`。
 - 着手前に `grep -rn "キーワード" docs/claude-log/ CLAUDE_ARCHIVE_2026H1.md`（見出し一覧 `docs/claude-log/INDEX.md`）。学び・対応記録は `docs/claude-log/YYYY-MM.md` 末尾へ。CLAUDE.md には書かない。
 - 本番 https://nosh2318.github.io/spk-task/（パスコード 2318）／リポ nosh2318/spk-task／構成 Single HTML React＋Supabase＋GitHub Pages＋GAS＋PWA(sw.js)。

@@ -1,5 +1,7 @@
 # SPK業務管理APP（札幌店）
 
+- 【公開リポジトリ】お客様の氏名・メール・電話・予約番号・パスワードは記録に書かない（書くなら伏せ字：ab***@gmail.com・R0****12・氏名→「お客様」）。
+
 ## 2026-06-30 KEYDROP 予約UI 再設計モック
 
 - 本番コードへ触れない独立モック: `keydrop-redesign-mock.html`
@@ -139,10 +141,10 @@
   3. `node build.js` で再生成 → commit & push
 
 ### 🔴 opts (B/C/J) 同期漏れ パトロール体制確立
-- **発端**: カンノショウキ様 (RC52461132684014347, 楽天5/2) のチャイルドシート1個が APP に表示されなかった
+- **発端**: お客様 (RC***************47, 楽天5/2) のチャイルドシート1個が APP に表示されなかった
 - **真因**: 過去（GASパーサー修正前）に取り込まれた予約で、reservations.opt_c は手動修正されていたが tasks.opt_c (boolean) と changed_json._optC が未同期。Pattern A 13予約 / 36 tasks で同種ズレ確認
 - **即時対応**:
-  1. カンノ様 reservations.opt_c=1 + tasks 3件を直接DB修正
+  1. お客様 reservations.opt_c=1 + tasks 3件を直接DB修正
   2. `~/spk-task/tools/spk_opts_patrol.py --fix` で全件パトロール → Pattern A 13予約 / 36 tasks 自動修正
 - **再発防止 4層**:
   1. **APP側**: `updateReservation` で opt_b/c/j 編集時に tasks も同期（既実装、index.src.html L15330）
@@ -283,7 +285,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   - 定数: `CANCEL_REFUND_CATEGORY = 'じゃらん返金'` / `CANCEL_FEE_CATEGORY = 'キャンセル料'`
 - **テスト関数**:
   - `testParseCancellation()` — 6パターン（正常4 / 異常2）パース確認 ✅ 動作確認済
-  - `testLookupReservation()` — R0DCXBRD で札幌じゃらん lookup 確認 ✅ 動作確認済
+  - `testLookupReservation()` — R0****RD で札幌じゃらん lookup 確認 ✅ 動作確認済
 - **エラーハンドリング**: Square Refund 失敗時は以降のDB更新を中断（部分書き込み防止）→ Slack に明示通知 → 手動対応へエスカレーション
 - **冪等性**: jalan_payments.status='refunded' なら 2回目投稿は ⚠️ 警告で停止
 - **マニュアル**: `~/spk-task/cancellation-manual.html`（A4・全8章・スタッフ配布用）→ ブラウザでCmd+P→PDF保存
@@ -293,7 +295,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   3. checkConfig で SLACK_BOT_TOKEN / SQUARE_API_TOKEN / SUPABASE_KEY 確認 ✅ 完了
   4. testParseCancellation / testLookupReservation 実行 ✅ 完了
   5. 新規キャンセル発生時にスタッフが #payment_sapporo / #payment_naha に投稿
-- **残課題（R0DCXBRD整合性）**: エノモト ハヤト様 (¥6,650・じゃらん事前決済) 「手動対応済み」と申告されたが DB状態は:
+- **残課題（R0****RD整合性）**: お客様 (¥6,650・じゃらん事前決済) 「手動対応済み」と申告されたが DB状態は:
   - reservations.status: cancelled ✅
   - jalan_payments.status: **paid のまま** ❌
   - jalan_payments.refunded_at: **null** ❌
@@ -333,9 +335,9 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 ## 2026-04-26 修正履歴
 
 ### 🔴 extractField_ 1行限定バグ - 全パーサー横断調査・統一修正 (GAS gas-email-import-v2.gs)
-- **背景**: RC22461157100261654 (ミヤケ マコト、楽天) の `opt_c=2` 修正で**チャイルドシートだけ直して `insurance="なし"` を見落とした** → ユーザー指摘 (補償なしになってる/なんで1つやると1つダメになるのか)
+- **背景**: RC***************54 (お客様、楽天) の `opt_c=2` 修正で**チャイルドシートだけ直して `insurance="なし"` を見落とした** → ユーザー指摘 (補償なしになってる/なんで1つやると1つダメになるのか)
 - **真因 (横断問題)**: `extractField_(body, label)` が `(.+)` で **現在行の続き1行のみ**しか返さない仕様。OTAメールの「オプション」「補償」欄は複数行に渡るため、`optionsStr` を引数にする検出系関数 (B/C/J/insurance) **すべてが**取りこぼしを起こす
-- **被害例 (RC22461157100261654 / 楽天メール本文)**:
+- **被害例 (RC***************54 / 楽天メール本文)**:
   ```
   ・オプション/車両の特徴　：カーナビ ※一部ミラーリングモニター   ← extractField_ で取れる1行目
   　　　　　　　　　　　　　ETC車載器 1                              ← 2行目以降は取れない
@@ -349,7 +351,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   - `parseRakuten_` の insurance を `optionsStr` → **`body`** に変更 (今回追加)
   - `parseJalan_` の insurance を `insuranceStr || body` に変更 (今回追加)
   - `parseAirtrip_` の insurance を `body` 優先 + `insuranceStr` フォールバックに変更 (今回追加)
-- **DB修正 (今回)**: RC22461157100261654 の `reservations.insurance` を「なし」→「NOC」、tasks.insurance も同期更新
+- **DB修正 (今回)**: RC***************54 の `reservations.insurance` を「なし」→「NOC」、tasks.insurance も同期更新
 - **🔴 今後の鉄則 (再発防止ルール)**:
   - `extractField_` で取得した文字列を**検出系関数 (detectInsurance_, detectOtaDelivery_, シート検出 etc.) に渡してはいけない**
   - 必ず **body全体** か、`extractField_` 結果 → fallback で **body全体** を検出する
@@ -364,7 +366,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **コミット**: 本コミット
 
 ### 🔴 自動配車が「除外フラグ」を見ていなかった致命バグ修正 (GAS gas-email-import-v2.gs)
-- **症状**: RC22461157100261654 (ミヤケ マコト、楽天Bクラス、5/26-5/27) が **配車表で除外フラグ立った車両「デリカ」(プレート未定、ID=27、H24年式)** に自動配車された
+- **症状**: RC***************54 (お客様、楽天Bクラス、5/26-5/27) が **配車表で除外フラグ立った車両「デリカ」(プレート未定、ID=27、H24年式)** に自動配車された
 - **影響**: 「絶対してはいけないミス」(オーナー指摘)。除外フラグ車両は事故・故障・廃車予定など何らかの理由で配車不可なのに、過去の予約が混入していた可能性
 - **真因**: `autoAssignVehicle_` (gas-email-import-v2.gs L1014) の vehicles 取得クエリ:
   - **`active=eq.true` フィルタが無い** (vehicles.active=false 永続除外も候補に入っていた)
@@ -375,7 +377,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   - 一方 `code=DLC` (デリカD5、6057) と `code=NRH` (ノア、5398) は記録なし → 稼働可能
 - **緊急DB修正 (実施済)**:
   - `fleet.vehicle_code`: `デリカ` → `DLC` (プレート 6057)
-  - `tasks` (d-RC22461157100261654): assigned_vehicle/plate_no/opt_c/memo/changed_json を一括更新
+  - `tasks` (d-RC***************54): assigned_vehicle/plate_no/opt_c/memo/changed_json を一括更新
   - `reservations.opt_c`: 0 → 2 (チャイルドシート2、楽天メール本文との一致)
 - **GAS恒久修正 (実施済・要GASエディタ貼付)**:
   - `autoAssignVehicle_`:
@@ -391,7 +393,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   3. ※トリガー管理型のためWeb Appデプロイ不要
 
 ### 🔴 楽天パーサーのチャイルドシート検出が1行目のみだったバグ修正 (GAS gas-email-import-v2.gs)
-- **症状**: RC22461157100261654 (上記同予約) で楽天メール本文に「チャイルドシート 2」と書かれていたのに DB は `opt_c=0`
+- **症状**: RC***************54 (上記同予約) で楽天メール本文に「チャイルドシート 2」と書かれていたのに DB は `opt_c=0`
 - **真因**: `parseRakuten_` (L607-613) が `optionsStr.match(...)` で検出していたが、`optionsStr` は `extractField_(body, '・オプション/車両の特徴')` が返す**1行目のみ** (`(.+)` は改行非マッチ)。楽天メールのオプション欄は複数行構造:
   ```
   ・オプション/車両の特徴　　　：カーナビ ※一部ミラーリングモニター   ← 1行目 (取得される)
@@ -423,7 +425,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   - `reservations` 18件: `del_place`/`col_place` を `★OTAデリバリー希望（場所未確定）` に置換 (GAS既存プレースホルダーと統一)
   - `tasks` 25件 (DEL/COL): `place`/`col_place` を同様に置換
   - `places` テーブルは汚染なし
-  - 対象: C260400997, DY00000000934-942(9件), R02AD7IX, R05I6TMD, R0C0PPHO, R0IPN7SD, R0MQCKQD, R0SDV841, RC22461150540961762, RC52461146677338304
+  - 対象: C2******97, DY*********34〜42(9件), R0****IX, R0****MD, R0****HO, R0****SD, R0***KQD, R0****41, RC**************762, RC***************04
 - **対応 B: APP UIフィルタ (保険)**:
   - `cleanPlace(p)` ユーティリティ追加 (`index.src.html` L752付近、`sD` の直後)
   - 正規表現: `/(札幌デリバリー専門店|デリバリー専門店|★ホテルや自宅|LINE完結|即出発)/`
@@ -456,7 +458,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 
 ### 到着スクリプトコピー時の「場所」欄バグ修正（SPK v4.7.14 / spk-v575）
 - **症状**: TOP/翌日スケジュールの「📱到着」「📱位置」ボタンでコピーすると、コピーされたメッセージの「場所:」欄が空欄になる、または「札幌デリバリー専門店」など誤った値で出る
-- **再現**: DY00000000946（オオイシ テイジ・skyticket・2026-04-26 DEL）の📱到着ボタン → 場所欄空欄
+- **再現**: DY*********46（お客様・skyticket・2026-04-26 DEL）の📱到着ボタン → 場所欄空欄
 - **真因**: コピー側ロジックが `t.place||""` のみ参照、表示側（`_ssPlace` 優先）とロジックがズレ
   - DB状態:
     - `tasks.place` = `""`（空）
@@ -517,8 +519,8 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   - SPK: `created_at` ベース（booked_at列なし、即時取込なので近似OK）
   - NHA: `booked_at || created_at`（24%のみ booked_at あり）
 
-### DY00000000946 GAS取りこぼし対応 + Watchdog実装
-- **症状**: skyticket予約 DY00000000946（オオイシ テイジ・2026-04-26）がGASで自動取込されず
+### DY*********46 GAS取りこぼし対応 + Watchdog実装
+- **症状**: skyticket予約 DY*********46（お客様・2026-04-26）がGASで自動取込されず
 - **OAUTH手動登録**: reservations / fleet（アクセラ8403/H・保険車両外） / places / tasks（洗車4/25・DEL4/26・COL4/29）すべてDB直INSERT
 - **GAS Recovery 関数追加** (`gas-email-import-v2.gs` 末尾):
   1. `forceReprocessByResvNo()`: ScriptProperty `FORCE_REPROCESS_RESV` に予約番号を設定→過去7日のメールから検索→再処理（PROCESSED_MSG_IDS bypass）
@@ -558,11 +560,11 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 
 ### 直近予約変動 CXL検出漏れ修正 + クリハラケイシOTA誤表示修正 (v4.6.83)
 - **症状①**: `直近予約変動` の CXL が常に 0件（実際にはキャンセルがある）
-- **症状②**: クリハラ ケイシ（DY00000000945）が `HP` バッジで表示されるが、スカイチケット予約
+- **症状②**: お客様（DY*********45）が `HP` バッジで表示されるが、スカイチケット予約
 - **根本原因①**: CXLクエリが `created_at >= cutoff` で検索 → 以前から登録されていた予約を後からキャンセルした場合を取りこぼし（created_at は登録時刻のため）
-- **根本原因②**: OTA自動登録GASが DY00000000945 を `ota="HP"` と誤登録（DYプレフィックス = スカイチケット = `ota="S"` が正しい）
+- **根本原因②**: OTA自動登録GASが DY*********45 を `ota="HP"` と誤登録（DYプレフィックス = スカイチケット = `ota="S"` が正しい）
 - **修正①（APP）**: `TopRecentWidget` のCXLクエリを `gte("created_at",cutoff)` → `gte("updated_at",cutoff)` に変更。select句に `updated_at` 追加。ソートも `updated_at` 優先に
-- **修正②（DB）**: Supabase REST API で `DY00000000945` の `ota` を `HP` → `S` に直接PATCH
+- **修正②（DB）**: Supabase REST API で `DY*********45` の `ota` を `HP` → `S` に直接PATCH
 - **バージョン**: v4.6.83 / spk-v544（その後他修正でv4.6.87 / spk-v548に到達）
 - **教訓**: CXLクエリは必ず `updated_at` ベース。`created_at` ベースでは後日キャンセルが拾えない
 
@@ -596,8 +598,8 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 
 ## 2026-04-23 修正履歴（続き4）
 
-### 🔴 DY00000000944 skyticket予約がSクラス誤配車 → OTA自動登録GAS `extractVehicleClass` バグ修正
-- **症状**: skyticket予約 DY00000000944（タカハシ ハルカ、2026-04-26、¥6,100）が Sクラス（CX-5 / 8065）に配車された。本来は **Cクラス（ロッキー 299 or CX-3 4576）**
+### 🔴 DY*********44 skyticket予約がSクラス誤配車 → OTA自動登録GAS `extractVehicleClass` バグ修正
+- **症状**: skyticket予約 DY*********44（お客様、2026-04-26、¥6,100）が Sクラス（CX-5 / 8065）に配車された。本来は **Cクラス（ロッキー 299 or CX-3 4576）**
 - **メール内容**:
   - `プラン名：コンパクトSUVプラン_C_SPK`
   - `車両タイプ / クラス：SUV  C_SPK`
@@ -626,7 +628,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **検証（`/tmp/test_fix.js`）**: 7/8 テストパス（SUV車種名フォールバック1件のみ旧挙動との差異、重要度低）
   - `コンパクトSUVプラン_C_SPK` + `クラス：SUV  C_SPK` → **"C"** ✅
   - `_F_OKA` → "F" ✅ / `_A_OKI★` → "A" ✅ / `B2クラス_B2_SPK` → "B2" ✅
-- **即時対応（DY00000000944 DB修正）**:
+- **即時対応（DY*********44 DB修正）**:
   - `reservations.vehicle`: S → **C** ✅
   - `fleet.vehicle_code`: CX5 → **CX3** ✅（2026-04-26 CX-3 空きを確認）
   - `tasks` (DEL/COL/洗車 3行): vehicle=CX-3 / assigned_vehicle=CX3 / plate_no=4576 ✅
@@ -638,11 +640,11 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **要注意リスト（今後目視確認推奨）**: 同じ誤判定で現在Sクラスに誤配車されている可能性のある skyticket(ota=S) / airtrip(ota=O) 予約:
   | ID | OTA | Lend | 名前 |
   |---|---|---|---|
-  | DY00000000939 | S | 2026-04-22 | オオハシ チエ |
-  | DY00000000942 | S | 2026-04-23 | コバヤシ モトユキ |
-  | DY00000000938 | S | 2026-04-24 | ワダ タイキ |
-  | KUI82098 | O | 2026-05-03 | 原田 奈津子 |
-  | DY00000000930 | S | 2026-07-29 | ヤシロ ユウイチ |
+  | DY*********39 | S | 2026-04-22 | お客様 |
+  | DY*********42 | S | 2026-04-23 | お客様 |
+  | DY*********38 | S | 2026-04-24 | お客様 |
+  | KU****98 | O | 2026-05-03 | お客様 |
+  | DY*********30 | S | 2026-07-29 | お客様 |
   ※ 実際にSクラス予約の可能性もあるので、元メール本文で `プラン名` / `車両タイプ / クラス` を確認のこと
 - **教訓**:
   - 汎用 `/クラス[:：]\w+/` パターンは OTAメール本文の構造上危険（「車両タイプ / クラス：SUV」のような複合ラベルに引っかかる）
@@ -865,12 +867,12 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **調査結果**: 全6件が `reservations.ota='J'` かつ `jalan_payments` にも存在する**二重登録**状態
   | resv_no | 名前 | jalan_payments status | spk_accounting |
   |---|---|---|---|
-  | R05I6TMD | タカタ シュンスケ | email_sent | extra_sales/paid=false |
-  | R0MQCKQD | シミズ ヨシヒロ | cancelled | extra_sales/paid=false |
-  | R0C0PPHO | イズミサワ ショウタ | **paid** | extra_sales/paid=false ← 入金済みなのに未収表示 |
-  | R0OB6RQD | 北上 将大 | email_sent | extra_sales/paid=false |
-  | R0GKNRZZ | ダイ チヨコ | email_sent | extra_sales/paid=false |
-  | R0SFCDMG | ヤナギダ ナオヤ | email_sent | extra_sales/paid=false |
+  | R0****MD | お客様 | email_sent | extra_sales/paid=false |
+  | R0***KQD | お客様 | cancelled | extra_sales/paid=false |
+  | R0****HO | お客様 | **paid** | extra_sales/paid=false ← 入金済みなのに未収表示 |
+  | R0***RQD | お客様 | email_sent | extra_sales/paid=false |
+  | R0****ZZ | お客様 | email_sent | extra_sales/paid=false |
+  | R0****MG | お客様 | email_sent | extra_sales/paid=false |
 - **原因**: **AIスタッフ_G**（Slackボット）がじゃらん決済のSquareリンクを `spk_accounting` に `type='extra_sales'` として誤登録。`description` は実際に `じゃらん事前決済(XX/XX-XX/XX)` となっていた。`memo='square_order=XXXXX'` もjalan_paymentsのorder_idと一致
 - **影響**:
   1. 予約外未収に表示されて UI ノイズ
@@ -881,8 +883,8 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   2. `SpkExtraUnpaidWidget`: 同じフィルタを適用。`jalan_payments` の `reservation_id` セットを並列フェッチして表示リストから除外
   3. select句に `resv_no` を追加（フィルタ用）
 - **DB クリーンアップ**: AIスタッフ_G が誤登録した **9件** を `spk_accounting` から削除
-  - 未収6件（¥202,200）: R05I6TMD / R0MQCKQD / R0C0PPHO / R0OB6RQD / R0GKNRZZ / R0SFCDMG
-  - 入金済3件（¥50,250）: R0IPN7SD / R0YNZ8NG / R06CBHRK ← 過去に二重計上されていた
+  - 未収6件（¥202,200）: R0****MD / R0***KQD / R0****HO / R0***RQD / R0****ZZ / R0****MG
+  - 入金済3件（¥50,250）: R0****SD / R0****NG / R0****RK ← 過去に二重計上されていた
 - **未解決の根本原因**: AIスタッフ_G の spk_accounting 誤登録挙動。おそらく Square Webhook 受信時の処理で、じゃらん事前決済のSquareリンクも拾って「予約外売上」として起票している。AIスタッフ_G 側で `jalan_payments` への存在チェックが必要
 - **バージョン**: `APP_VERSION=v4.6.66` / `sw.js CACHE_NAME=spk-v527` / `index.html CV=spk-v527` 同時更新
 
@@ -915,8 +917,8 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
      - Square請求タップ → `<SquareInvoiceWidget defaultOpen={true}/>` を展開（1タップで中身が見える）
 - **バージョン**: `APP_VERSION=v4.6.64` / `sw.js CACHE_NAME=spk-v525` / `index.html CV=spk-v525` 同時更新
 
-### DY00000000938 入金ステータス更新漏れ対応
-- **症状**: Slack通知「✅入金確認完了 DY00000000938 ワダタイキ ¥8,100 予約外売上 札幌店」が届いたが、APP上で `paid=false` のまま残っていた
+### DY*********38 入金ステータス更新漏れ対応
+- **症状**: Slack通知「✅入金確認完了 DY*********38 お客様 ¥8,100 予約外売上 札幌店」が届いたが、APP上で `paid=false` のまま残っていた
 - **即時対応**: DB直接UPDATEで `paid=true` に修正（id=9a60be43-9cf7-4b94-b3dc-3b2af81a2de0）
 - **残課題**: `syncPaidToAccounting` GASトリガー（HANDYMAN Payment）がこのレコードを更新しなかった原因調査。Slack通知は飛んでいるので検知はしているが、DB更新失敗（列名ズレ等）の可能性あり
 - **2026-04-23 追記**: ローカルの `payment_bot_unified_v1.gs` には `syncPaidToAccounting` 関数が存在しない → 別GASプロジェクト or 旧バージョンに格納されている可能性。次回インシデント発生時に GAS実行ログを目視し、必要なら `forceSyncAllPaidRecords()` を手動実行（過去分一括同期）
@@ -954,7 +956,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **バージョン**: `APP_VERSION=v4.6.62` / `sw.js CACHE_NAME=spk-v523` / `index.html CV=spk-v523` 同時更新
 
 ### 🛡️ tasks opts (B/C/J) 同期の根本修正（GAS gas-email-import-v2.gs）
-- **背景**: マキノリナ(R04OWZ6U)でじゃらん予約のチャイルドシート数量が OP画面/TOP で「×1」表示されるが実際は2個。DB確認すると `reservations.opt_c=1` / `tasks.opt_c=false`(boolean) / `tasks.changed_json._optC=1` / `tasks.memo` 末尾 `##BCJ:0,1,0` で全て 1 が保存されていた
+- **背景**: お客様(R0****6U)でじゃらん予約のチャイルドシート数量が OP画面/TOP で「×1」表示されるが実際は2個。DB確認すると `reservations.opt_c=1` / `tasks.opt_c=false`(boolean) / `tasks.changed_json._optC=1` / `tasks.memo` 末尾 `##BCJ:0,1,0` で全て 1 が保存されていた
 - **根本原因（構造上の欠陥）**:
   1. OTA自動登録GAS(30分)が先に `reservations` を作成（opt_c=0）→ APP側で `tasks` 生成（opt_c=false, memo ##BCJ:0,0,0）
   2. 札幌メール取込GAS(15分)が後追いで `parseJalan_` 実行 → `reservations.opt_c` パッチ
@@ -966,9 +968,9 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
      - `memo` 本文と `changed_json` の既存フィールド(_ssTime/_ssPlace等)を保持したまま opts だけ差し替え
   2. 既存予約パッチパス（line 269-287付近）に `patch.opt_b/opt_c/opt_j` のいずれかが含まれる場合 `patchTaskOpts_` を呼び出すロジックを追加
   3. 診断・遡及関数追加:
-     - `testPatchTaskOpts()` — R04OWZ6U で単体テスト（GASエディタ手動実行）
+     - `testPatchTaskOpts()` — R0****6U で単体テスト（GASエディタ手動実行）
      - `resyncAllTaskOpts()` — 今日以降の予約で tasks.opts ≠ reservations.opts のものを全件再同期（遡及バッチ）
-- **即時修正**: R04OWZ6U の 3タスク（w-/c-/d-）を DB 直接更新で `##BCJ:0,2,0` / `opt_c=true` / `_optC:2` に修正済
+- **即時修正**: R0****6U の 3タスク（w-/c-/d-）を DB 直接更新で `##BCJ:0,2,0` / `opt_c=true` / `_optC:2` に修正済
 - **再発防止レベル**: じゃらん/楽天/skyticket/エアトリ 全OTAで有効（`processMessage_` の共通パッチパスに入れたため）
 - **運用手順**:
   1. GAS エディタに `gas-email-import-v2.gs` を貼付（既に pbcopy 済み）
@@ -1019,15 +1021,15 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 
 
 ### オプション（チャイルド/ベビー/ジュニア/USB/日傘）表記を洗車・DEL・COLに拡張 + 数量常時表示（v4.6.54）
-- **要望**: 「洗車タスクにはオプションの種類だけ表記されているが、貸出(DEL)・返却(COL)にも表記してほしい。また数量も明示してほしい。マキノリナ様の予約はチャイルドシート2つなので、このままだと積み込みミスが起きる」
-- **発覚**: マキノリナ様(R04OWZ6U、じゃらん、4/23 DEL)で `opt_c=1` が DB に入っていたが、実態は2個だった。UI側は count=1 の時は `×` を出さない仕様だったため、数量不明のまま「C(チャイルド)」とだけ表示されていた
+- **要望**: 「洗車タスクにはオプションの種類だけ表記されているが、貸出(DEL)・返却(COL)にも表記してほしい。また数量も明示してほしい。お客様の予約はチャイルドシート2つなので、このままだと積み込みミスが起きる」
+- **発覚**: お客様(R0****6U、じゃらん、4/23 DEL)で `opt_c=1` が DB に入っていたが、実態は2個だった。UI側は count=1 の時は `×` を出さない仕様だったため、数量不明のまま「C(チャイルド)」とだけ表示されていた
 - **修正内容 (`index.src.html`)**:
   1. `OptBadges` ヘルパー: `count>1?"×"+count:""` → **常に `×N` 表示**（B/C/J は数量明示、USB/日傘は boolean なので数なし）。枠線・フォント強調追加
   2. OP画面スケジュールタブ (line 8284): `type==="洗車"` 条件を **洗車/DEL/COL** に拡張
   3. OP画面 DEL/COL カードタブ (line 8054): 既存の手書き `B:2 C:1 J:0` バッジを **`OptBadges` に統一**（USB/日傘も対応）
   4. TOP 本日スケジュール (line 12836): `OptBadges` を洗車/DEL/COL で表示
   5. TOP 時間未定洗車 (line 12861): `OptBadges` 追加
-- **DB直接修正**: R04OWZ6U の `opt_c` を 1→2 に UPDATE
+- **DB直接修正**: R0****6U の `opt_c` を 1→2 に UPDATE
 - **バージョン**: `APP_VERSION=v4.6.54` / `sw.js CACHE_NAME=spk-v515` / `index.html CV=spk-v515` 同時更新
 - **コミット**: `505b871`（コミットメッセージは別件の "fix(ClsRevCard): 売上表示を百万→万に統一" だが、差分には本修正も含まれている）
 - **残タスク**: じゃらんメール原文で「チャイルドシート×2」と書かれているなら `parseJalan_` の正規表現バグ → パーサー修正必要。元メールで「×1」しか書かれていないなら顧客追加連絡でDB修正のみ完結
@@ -1041,11 +1043,11 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   - **B群 5名（店舗名誤り＋価格誤り）**: 本セッションで対応完了
     | 予約番号 | 旧金額 | 新金額 | 差額 | 宛先 |
     |---|---:|---:|---:|---|
-    | R0Q7UEF3 | ¥19,300 | ¥16,300 | -¥3,000 | smhi4381@docomo.ne.jp |
-    | R0742RTL | ¥55,950 | ¥52,050 | -¥3,900 | itarian_barbar@yahoo.co.jp |
-    | R02XF89Q | ¥30,000 | ¥27,000 | -¥3,000 | zamasu44@icloud.com |
-    | R0CYV6NR | ¥21,300 | ¥17,000 | -¥4,300 | ryota.223@icloud.com |
-    | R0GRD083 | ¥78,600 | ¥78,200 | -¥400  | t.y.network29@docomo.ne.jp |
+    | R0****F3 | ¥19,300 | ¥16,300 | -¥3,000 | sm***@docomo.ne.jp |
+    | R0****TL | ¥55,950 | ¥52,050 | -¥3,900 | it***@yahoo.co.jp |
+    | R0****9Q | ¥30,000 | ¥27,000 | -¥3,000 | za***@icloud.com |
+    | R0****NR | ¥21,300 | ¥17,000 | -¥4,300 | ry***@icloud.com |
+    | R0****83 | ¥78,600 | ¥78,200 | -¥400  | t.***@docomo.ne.jp |
 - **B群 対応ステップ（gas-email-import-v2.gs に追加した関数）**:
   1. `diagnoseFiveAmountDiscrepancies()` — Gmail元メール＋DB状態＋parseJalan_再実行で正しい請求額を特定
   2. `reissueFivePaymentLinks()` — 旧Squareリンク DELETE → 新リンク CREATE → DB更新（amount/square_payment_url/status='link_created'/email_sent_at=null）→ 支払い管理シート更新。`checkSquareLinks` トリガーを自動停止（再送完了までメール誤送信防止）
@@ -1088,8 +1090,8 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 
 ## 2026-04-21 修正履歴（続き4）
 
-### R0XHDPI1 じゃらん事前決済が自動発行されなかった問題（GAS根本修正）
-- **症状**: R0XHDPI1（タカス トモコ、2026-05-04、¥12,850、メール m525tomo@gmail.com）のじゃらん予約メールから2時間経過しても Square請求書・メールが発行されなかった
+### R0****I1 じゃらん事前決済が自動発行されなかった問題（GAS根本修正）
+- **症状**: R0****I1（お客様、2026-05-04、¥12,850、メール m5***@gmail.com）のじゃらん予約メールから2時間経過しても Square請求書・メールが発行されなかった
 - **診断**:
   - `reservations` テーブルには予約が存在（OTA=J, price=12850, 通常通り）
   - `jalan_payments` テーブルには行が存在しない → 決済処理が一切走っていない
@@ -1099,8 +1101,8 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   - `reservationExists_()` が true → 「既存予約」分岐に入り、料金内訳や場所などをパッチして `return {type:'skip'}`
   - この分岐内では `handleJalanPayment_` が呼ばれない ← バグ
   - 新規INSERT分岐（line 280以降）でしか `handleJalanPayment_` が呼ばれないため、じゃらん決済が起票されない
-- **即時復旧（R0XHDPI1）**:
-  1. Square Payment Links API 直接呼び出しでリンク作成: `https://square.link/u/ZBEAoEek`
+- **即時復旧（R0****I1）**:
+  1. Square Payment Links API 直接呼び出しでリンク作成: `https://square.link/u/********`
   2. `jalan_payments` に `status=link_created` で INSERT
   3. `#jalan_payment` Slack通知（slack_ts=1776755285.056639、DBに保存済み）
   4. `checkSquareLinks`（5分間隔）トリガーで自動メール送信されることを確認
@@ -1128,7 +1130,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **トリガー**: 毎時実行。GASエディタで `setupWatchdogTrigger` を1回手動実行すれば設定完了
 - **新機能追加時のチェックリスト（第3層・運用ルール）**:
   1. 新規予約パス（INSERT分岐）✅
-  2. 既存予約パス（`type:'skip'` 分岐）✅ ← R0XHDPI1で漏れた箇所
+  2. 既存予約パス（`type:'skip'` 分岐）✅ ← R0****I1で漏れた箇所
   3. 競合パス（race分岐）✅ ← 同じく漏れた箇所
   4. キャンセルパス ✅
 
@@ -1186,8 +1188,8 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **根本原因**: APPの `data` state に保持された `basePrice/optionPrice/discount` が古い状態になる。OTA自動登録GAS(30分)が先に予約作成（`price`のみ）→ メール取込GAS(15分)が後から `bp/op/dc` をパッチするが、Realtimeイベントを取りこぼすと stale のまま → `basePrice=0` にフォールバックして旧`price`ベースで集計される
 - **具体的に検出した stale record**:
   - POPOPOPO 損保ジャパン: price=0, bp=200,000（200k乖離）
-  - RC12461121645759659 ニッコウ: price=0, bp+op-dc=20,540
-  - RC62461119691059583 シモムラ: discount=9,750無視（-9,750乖離）
+  - RC***************59 お客様: price=0, bp+op-dc=20,540
+  - RC***************83 お客様: discount=9,750無視（-9,750乖離）
 - **修正 (`index.src.html` LeadTimeWidget)**:
   1. `dbRevRows` state 追加: 選択月の予約を `reservations` から直接fetch（`id,status,return_date,price,base_price,option_price,discount`）
   2. 60秒間隔で自動リフレッシュ（常に最新DB値を参照）
@@ -1235,7 +1237,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **コミット**: `30909ce` (fix(経営DB): 売上・稼働率をTOPウィジェットと同一ロジックに統一)
 
 ### じゃらん決済: AIスタッフ_G依存を排除（GAS）
-- **問題**: R02AD7IX（ヤマモト ミヨコ、¥42,600）のSquareリンクがAIスタッフ_G未応答で作成されず、決済メールが送信されなかった（2回目の障害。前回はR0R8QVZR 4/4）
+- **問題**: R0****IX（お客様、¥42,600）のSquareリンクがAIスタッフ_G未応答で作成されず、決済メールが送信されなかった（2回目の障害。前回はR0****ZR 4/4）
 - **根本原因**: `handleJalanPayment_` がSlackに投稿 → AIスタッフ_Gがスレッド返信でSquareリンク作成 → `checkSquareLinks`がリンク検出、という間接的なフロー。AIスタッフ_Gが止まると全体が止まる
 - **修正**:
   1. `createSquarePaymentLink_(itemName, amount)` 新規関数 — Square Payment Links API直接呼び出し
@@ -1244,21 +1246,21 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   4. Square API失敗時はstatus='new'で保存 + Slack障害通知 → checkSquareLinks(5分)でリトライ
 - **新フロー**: GAS → Square API直接 → DB → Slack(リンク付き) → スプシ → [5分後] メール送信 → Slack(📧完了)
 - **定数**: `SQUARE_LOCATION_ID = 'L8N7J9RKPN3WH'`
-- **R02AD7IX即時復旧**: 手動でSquareリンク作成(`https://square.link/u/vB8i8hPN`) → DB更新 → トリガーでメール送信完了確認済み
+- **R0****IX即時復旧**: 手動でSquareリンク作成(`https://square.link/u/********`) → DB更新 → トリガーでメール送信完了確認済み
 - コミット: `df7e211`（gas-email-import-v2.gs、Slack予約登録改善とまとめて）
 
 ### 料金内訳パッチ条件修正（GAS・那覇障害再発防止）
 - **問題**: 那覇店で `toDbRow_` に `base_price`/`option_price`/`discount` が無く全予約が内訳0でDB保存される障害が発生（2026-04-20）
 - **札幌の現状**: パーサー・insertReservation_は正常だが、既存予約パッチの条件 `!existingRow.base_price` がnullと0を区別しない
 - **修正**: `+(existingRow.base_price||0) === 0 && +(reservation.base_price||0) > 0` に変更（明示的に0判定）
-- **HP予約DB修正**: NFJ19443(¥26,300), QAA71034(¥5,150) → `base_price = price` に更新（仕様書 2-5準拠）
+- **HP予約DB修正**: NF****43(¥26,300), QA****34(¥5,150) → `base_price = price` に更新（仕様書 2-5準拠）
 - **残存**: OTA予約7件のbase_price=0は放置（今後の新規予約は修正済みコードで正しく入る）
 - **仕様書**: `/private/tmp/price_breakdown_spec.md` — 全OTAの料金内訳パース仕様（7社）+ 高松店展開チェックリスト
 
 ## 2026-04-17 修正履歴
 
 ### 入金確認v3: Payment Links APIベースに全面書き直し（GAS）
-- **問題**: `checkPaymentStatus` v2 が 0/8 ヒット → IEI40399（¥13,800 入金済み）を検知できなかった
+- **問題**: `checkPaymentStatus` v2 が 0/8 ヒット → IE****99（¥13,800 入金済み）を検知できなかった
 - **根本原因**: Square Payment Linkで作成されたorderの `line_items[].name` は `"undefined"`（顧客名ではない）。v2の `matchSquareOrder_` は `nameMatch && amountMatch` の両方を要求 → nameMatchが絶対にtrue にならない
 - **v3の方式**: 名前マッチング完全廃止。スプシURL → Payment Links API → order_id直接解決 → BatchRetrieveOrders → tenders有無で入金判定
 - **新関数**: `fetchPaymentLinkMap_(token)` / `batchRetrieveOrders_(token, orderIds)` / `isOrderPaid_(order)` / `normalizeSquareUrl_(url)` / `debugPaymentV3()`
@@ -1373,7 +1375,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **出力**: `~/Desktop/HANDYMAN/analytics/charts/HANDYMAN_MTG統合_20260417.pdf` 更新済
 
 ### Slack通知を Bot API 直接投稿に変更（札幌GAS）
-- **問題**: 札幌店の予約（QAA71034 太田美佐子、HP札幌、Cクラス、4/25、クインテッサホテル札幌）が正しく札幌DBに登録されたが、Slack通知だけ那覇チャネルに届く事象が再発
+- **問題**: 札幌店の予約（QA****34 お客様、HP札幌、Cクラス、4/25、クインテッサホテル札幌）が正しく札幌DBに登録されたが、Slack通知だけ那覇チャネルに届く事象が再発
 - **原因**: email-to-Slack エイリアス（`x-aaaatppttzyrldnhjt5el4jj3i@gl-oke5175.slack.com`）経由だとルーティングが不透明で、宛先が那覇側に向くケースがあった
 - **修正（`gas-email-import-v2.gs`）**:
   1. 定数追加: `var SPK_RESV_CHANNEL = 'C08TDTPEB36';`（#sapporo_reservation）
@@ -1384,7 +1386,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - コミット: `c37d9bb`
 - **注意**: Bot が対象チャネルに参加している必要あり。`not_in_channel` エラー時は Slack で `/invite @<Bot名>` を実行
 
-### BQG34364 那覇予約の札幌誤取込 対応（復習）
+### BQ****64 那覇予約の札幌誤取込 対応（復習）
 - **問題**: HP那覇予約（棚澤光洋、Aクラス、8/15-18）が札幌店GASに取り込まれた
 - **修正（`gas-email-import-v2.gs`）**:
   1. `isSapporoReservation_` step 6: 全A/B/C/S許可 → **F/H のみ許可**（A/B/C/Sは両店舗に存在）
@@ -1394,7 +1396,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 ## 2026-04-15 修正履歴
 
 ### GAS場所抽出の根本修正（全OTAパーサー）
-- **問題**: KUI82098（原田奈津子、エアトリ、5/3-5/5）のDEL場所が「ジャスマックプラザホテル札幌」（誤）→正しくは「ベッセルイン札幌中島公園」、COL場所が空→正しくは「札幌駅」
+- **問題**: KU****98（お客様、エアトリ、5/3-5/5）のDEL場所が「ジャスマックプラザホテル札幌」（誤）→正しくは「ベッセルイン札幌中島公園」、COL場所が空→正しくは「札幌駅」
 - **根本原因（3層）**:
   1. **GASパーサー**: `parseAirtrip_`含む全4 OTAパーサー（J/R/S/O）が `del_place:'', col_place:''` をハードコード。HP以外で場所を一切抽出していなかった
   2. **重複パッチ**: OTA自動登録GAS(30分)が先に予約作成→メール取込GASの重複パッチに `del_place`/`col_place`/`visit_type`/`return_type` が含まれていない→補完されない
@@ -1406,7 +1408,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   4. `patchTaskPlaces_(reservationId, delPlace, colPlace)` 関数追加（場所パッチ時にtasks+placesテーブルも自動同期）
   5. `reservationExists_` のselect句に場所関連フィールドを追加
   - **GASエディタにも貼り付け済み**
-- **DB手動修正**: KUI82098の3テーブル（reservations/places/tasks）を正しい値に修正済み
+- **DB手動修正**: KU****98の3テーブル（reservations/places/tasks）を正しい値に修正済み
   - reservations: del_place=ベッセルイン札幌中島公園, col_place=札幌駅, visit_type=DEL, return_type=COL
   - places: 同上
   - tasks(DEL): place=ベッセルイン札幌中島公園, col_place=札幌駅
@@ -1419,7 +1421,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 ## 2026-04-14 修正履歴
 
 ### 補償種類（insurance）検出の根本修正（札幌・那覇両方）
-- **問題**: エアトリ予約 C260300013 の補償が「免責」なのに「NOC」と誤登録されていた
+- **問題**: エアトリ予約 C2******13 の補償が「免責」なのに「NOC」と誤登録されていた
 - **根本原因**:
   1. 全OTAパーサーが免責/なしの2値しか検出せず、フル・NOCを正しく判定できなかった
   2. OTA自動登録GAS(30分)が先に予約作成(insurance空)→メール取込GAS(15分)が重複パッチする際にinsuranceフィールドが含まれていなかった
@@ -1434,10 +1436,10 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   2. 全7パーサー（じゃらん/楽天/skyticket/エアトリ/HP/GoGoOut/レンタカードットコム）を統一
   - **GASエディタにも貼り付け済み**
 - **DB修正**: 誤った補償値の予約4件を修正済み
-  - C260300013: NOC→免責（tasks.insuranceも修正）
-  - DY00000000924: NOC→免責
-  - RC42461096461430490: NOC→免責
-  - DY00000000928: NOC→免責
+  - C2******13: NOC→免責（tasks.insuranceも修正）
+  - DY*********24: NOC→免責
+  - RC***************90: NOC→免責
+  - DY*********28: NOC→免責
 - **教訓**: 新OTA追加時は `detectInsurance_()` を必ず使用すること
 
 ### 車両損傷チェックAPP: 本日のみ予約表示修正
@@ -1453,7 +1455,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **問題**: スプレッドシートで場所を変更→場所CSV再取込しても、OPシートのタスクに反映されない
 - **原因**: `updatePlaces`がplacesテーブルのみ更新し、tasksテーブルのplaceは「既に値があればスキップ」していた
 - **修正**: 場所CSV取込時にtasksテーブルのDEL/COLのplaceも自動上書きするよう修正
-- **DB手動修正**: 8件の不一致タスクをスプレッドシートの値に修正済み（C260300013, R0C04G1Z, R0YNZ8NG, RC42461096461430490, R04OWZ6U, RC52461055442120662, R02XF89Q）
+- **DB手動修正**: 8件の不一致タスクをスプレッドシートの値に修正済み（C2******13, R0****1Z, R0****NG, RC***************90, R0****6U, RC**************662, R0****9Q）
 - **場所データの3テーブル構成**:
   - `reservations`: del_place/col_place（GAS取込時に書き込み）
   - `places`: del_place/col_place（APP場所CSV取込用）
@@ -1474,27 +1476,27 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **表示位置**: 「本日のHandover」赤ブロックの直前に「💳 Square未決済 Handover（出発4日前アラート）」専用ブロック
 - **優先度色分け**: ≤1日=🚨赤 / それ以外=⏳オレンジ。各行にSquare支払いリンクボタン付き
 - **自動更新**: 2分間隔
-- **検証**: R0C04G1Z（シマダトシユキ、lend_date 2026-04-12、daysLeft=3）で対象化を確認
+- **検証**: R0****1Z（お客様、lend_date 2026-04-12、daysLeft=3）で対象化を確認
 - ビルド: `node build.js` → index.html / index2.html 再生成
 
 ## 2026-04-06 修正履歴
 
 ### GAS SUPABASE_KEY 修正（根本原因）
-- **問題**: GASからのDB登録が全て失敗（DY00000000927, DY00000000928）
+- **問題**: GASからのDB登録が全て失敗（DY*********27, DY*********28）
 - **原因**: GASスクリプトプロパティの`SUPABASE_KEY`がプレースホルダー文字列のまま（`<SERVICE_ROLE_KEYをSupabase Dashboardから取得して入力>`）
 - **修正**: Supabase Dashboard → Settings → API → service_roleキーをGASスクリプトプロパティに設定
 - **教訓**: `setupProperties()`のコード内プレースホルダーも正しいキーに書き換えておくこと（誤実行でキー上書き防止）
 
-### DY00000000927 手動登録・配車
-- skyticket予約（カメダ マリコ、Aクラス、2026-08-01 10:00-17:00、¥19,100）
+### DY*********27 手動登録・配車
+- skyticket予約（お客様、Aクラス、2026-08-01 10:00-17:00、¥19,100）
 - GAS自動取込が動かなかったため手動登録 → ヴェルファイア(VEL/7673)に配車済み
 
-### DY00000000928 手動登録・配車
-- skyticket予約（タカマツ ココネ、Sクラス、2026-04-18 11:00〜04-19 19:00、¥13,200、WEB事前決済・入金済み）
+### DY*********28 手動登録・配車
+- skyticket予約（お客様、Sクラス、2026-04-18 11:00〜04-19 19:00、¥13,200、WEB事前決済・入金済み）
 - GAS SUPABASE_KEY不正により自動取込失敗 → 手動登録 → CX-5(CX5/8065)に配車済み
 
 ### skyticket予約取込失敗の根本修正（GAS 2件）
-- **問題**: DY00000000927がOTA自動登録GAS・札幌メール取込GASの両方で取り込まれなかった
+- **問題**: DY*********27がOTA自動登録GAS・札幌メール取込GASの両方で取り込まれなかった
 - **原因1（OTA自動登録GAS）**: skyticket送信元が旧アドレス(`skyticket-rentalcar@adventure-inc.co.jp`)のまま。現行は`rentacar@skyticket.com`
 - **原因2（OTA自動登録GAS）**: subject検索に「新規予約」が含まれていない（skyticket件名=「【skyticket】 新規予約」）
 - **原因3（OTA自動登録GAS）**: `-label:`フィルタ使用（絶対ルール違反）
@@ -1535,15 +1537,15 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   3. `-label:` フィルタ完全除去（ラベルは視覚目印のみ）
 
 ### GAS: じゃらん入金確認をSquare API直接確認に変更
-- **問題**: R0R8QVZR入金済みだが自動消し込みが動かない
+- **問題**: R0****ZR入金済みだが自動消し込みが動かない
 - **原因**: `checkPaymentStatus()` がSlackスレッドの文言依存（AIスタッフ_G経由）→AIスタッフ_G不安定で検知不能
 - **修正**: Square Orders Search APIで顧客名+金額照合→tenders有無で入金判定
 - `checkSquarePayment_(token, paymentUrl, customerName, amount)` 新規関数
 - `getSquareToken_()` + SQUARE_API_TOKEN追加（setupProperties実行済み）
-- R0R8QVZR: DB手動で`paid`に更新済み（入金日: 2026-04-04T11:23:48Z、Mastercard末尾8920）
+- R0****ZR: DB手動で`paid`に更新済み（入金日: 2026-04-04T11:23:48Z、Mastercard末尾****）
 
 ### GAS: スプレッドシート自動連動
-- **問題**: Square請求書ウィジェットにR0R8QVZRが表示されない
+- **問題**: Square請求書ウィジェットにR0****ZRが表示されない
 - **原因**: ウィジェットはGoogleスプレッドシート（支払い管理シート）をCSV取得して表示するが、GASがスプレッドシートに書き込んでいなかった
 - **修正**:
   - `appendToPaymentSheet_(pay, payUrl)` — Squareリンク取得時にスプレッドシートへ自動追加
@@ -1566,7 +1568,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   3. GAS: **`parseJalan_()` にチャイルドシート/ベビーシート/ジュニアシート検出を追加**（`オプション：`行からパース）
   4. APP: TOPタスク表示時にreservationsからopts値をフォールバック補完
 - **GAS本体**: 2026-04-04反映済み
-- **R0R8QVZR**: DB直接更新で opt_c=3 に修正済み
+- **R0****ZR**: DB直接更新で opt_c=3 に修正済み
 
 ### OPシート「その他」タブ追加（v4.6.5）
 - 新タスク種類: 車検🔍 / 整備🔧 / 送迎🚐 / 小タスク📝 / その他📌
@@ -1632,7 +1634,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 | ③ | APP: じゃらん決済タブ再構築（新旧分離） | ✅ 2026-04-03 |
 | ④ | APP: TOPウィジェット（決済状況サマリー） | ✅ 2026-04-03 |
 | ⑤ | APP: OPマスター表に決済列 | ✅ 2026-04-03 |
-| ⑥ | テスト（R0JQ20US実送信確認） | ✅ 2026-04-03 |
+| ⑥ | テスト（R0****US実送信確認） | ✅ 2026-04-03 |
 | ⑦ | リリース | ✅ 2026-04-03 |
 
 ### 既知の問題
@@ -1644,9 +1646,9 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
 - **新**: Square Orders Search APIで顧客名+金額照合→tenders有無で入金判定
 - `checkSquarePayment_(token, paymentUrl, customerName, amount)` 新規関数
 - `getSquareToken_()` + `setupProperties`にSQUARE_API_TOKEN追加（実行済み）
-- R0R8QVZR: DB手動で`paid`に更新済み（入金日: 2026-04-04T11:23:48Z、Mastercard末尾8920）
+- R0****ZR: DB手動で`paid`に更新済み（入金日: 2026-04-04T11:23:48Z、Mastercard末尾****）
 
-### 2026-04-04: AIスタッフ_G未応答 → Square手動作成で対応（R0R8QVZR）
+### 2026-04-04: AIスタッフ_G未応答 → Square手動作成で対応（R0****ZR）
 - **症状**: GASがSlack投稿→AIスタッフ_Gがスレッド返信せず→Squareリンク未作成→メール未送信
 - **原因**: AIスタッフ_Gの停止（原因不明）
 - **対応**: Square APIを直接呼び出してリンク作成→DB更新→GASトリガーでメール自動送信
@@ -1674,7 +1676,7 @@ TOP / CSV取込 / スタッフ / 出勤簿 / 給与 / 配車 / 決済 / 車両 /
   4. `checkPaymentStatus()` に入金時のステータス更新を追加
   5. `handleJalanPaymentCancel_()` にキャンセル時のステータス更新を追加
 - **スプレッドシート**: ID=`1-QU8JwrGgwp9CcZT6QieYQH0y112Hb4I5GoobrrM6tc` シート名=`支払い管理`
-- **注意**: AIスタッフ_G障害で手動Square作成した場合は`checkSquareLinks()`を経由しないため、スプレッドシートには手動追加が必要（`addR0R8QVZRtoSheet`のような一時関数を作って実行）
+- **注意**: AIスタッフ_G障害で手動Square作成した場合は`checkSquareLinks()`を経由しないため、スプレッドシートには手動追加が必要（`addR0****ZRtoSheet`のような一時関数を作って実行）
 
 ## GASプロジェクト一覧
 | プロジェクト名 | 用途 | 最終更新 |
