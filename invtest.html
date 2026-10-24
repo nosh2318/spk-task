@@ -190,13 +190,17 @@ async function load() {
   try {
     const [r, b] = await Promise.all([
       rpc(db, 'invctl_dashboard', { p_store: store, p_days: 92 }),
-      rpc(db, 'invctl_board', { p_store: store, p_days: 92 })]);
+      // 1回で返るのは1000行まで。高松BUDDICA は 11クラス×92日 を超えるので、前半と後半に分けて取る
+      (async () => { const mid = new Date(Date.now() + 9 * 3600e3 + 46 * 86400e3).toISOString().slice(0, 10);
+        const [x, y] = await Promise.all([rpc(db, 'invctl_board?dd=lt.' + mid, { p_store: store, p_days: 92 }), rpc(db, 'invctl_board?dd=gte.' + mid, { p_store: store, p_days: 92 })]);
+        return x.ok && y.ok ? { ok: true, json: async () => [...await x.json(), ...await y.json()] } : x; })()]);
     if (!r.ok) throw new Error(r.status + ' ' + await r.text());
     data = await r.json(); data.__store = store;
     // 高松：ロボが読んだOTAの数は那覇・札幌のDBに入るので、そちらから取って並べる（たびらいはクラス番号を配車表のクラスに直す。AAは手で合わせるので出さない）
-    if (s.db === 'bt') { const q = await rpc(DB.hd, 'invctl_snap', { p_store: store, p_days: 92 });
-      if (q.ok) { const on = {}; let last = null;
-        for (const x of await q.json()) { const c = x.ota === 'TAB' ? TABMAP[x.cls] : x.cls; if (!c) continue; on[c + '|' + x.dd + '|' + x.ota] = x.qty; if (!last || x.read_at > last) last = x.read_at; }
+    // 1回で返るのは1000行までなので、媒体ごとに取る
+    if (s.db === 'bt') { const qs = await Promise.all(s.otas.map(o => rpc(DB.hd, 'invctl_snap?ota=eq.' + o, { p_store: store, p_days: 92 })));
+      if (qs.every(q => q.ok)) { const on = {}; let last = null;
+        for (const x of (await Promise.all(qs.map(q => q.json()))).flat()) { const c = x.ota === 'TAB' ? TABMAP[x.cls] : x.cls; if (!c) continue; on[c + '|' + x.dd + '|' + x.ota] = x.qty; if (!last || x.read_at > last) last = x.read_at; }
         data.cells = data.cells.map(([c, d, o, sb, v]) => [c, d, o, sb, on[c + '|' + d + '|' + o] ?? v]); if (last) data.last_read = last; } }
     stops = [];
     { const t = await rpc(db, 'invctl_stop_sales', { p_store: store }); if (t.ok) stops = await t.json(); }
