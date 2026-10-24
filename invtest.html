@@ -91,6 +91,9 @@ body.embed header{display:none}
   <div class="card"><h2>売り逃しの候補 <span class="note" id="missedCnt"></span></h2>
     <div class="note">配車表に空きがあるのに、OTAで0が3日以上続いているところです。わざと止めているなら「売り止めにする」を押してください（ロボはそのマスを0のままにします）。わざとでなければ売り逃しです。</div>
     <div class="scroll"><table id="missedTbl"></table></div><div id="missedMsg"></div></div>
+  <div class="card"><h2>安全在庫（月×クラス）</h2>
+    <div class="note">配車表の空きから、ここで決めた台数を引いてOTAに出します。決めるのはスタッフです（ロボは自分で引きません）。0なら空きをそのまま出します。数を変えると、すぐ計算し直します。</div>
+    <div class="scroll"><table id="safeTbl"></table></div><div id="safeMsg"></div></div>
   <div class="card"><h2>売り止めの一覧</h2>
     <div class="note">ここに入っているマスは、配車表に空きがあってもロボが0で出します。決めるのは人です。</div>
     <div class="scroll"><table id="stopTbl"></table></div>
@@ -143,7 +146,7 @@ let data = null, stops = [];
 
 function tabs() {
   $('tabs').innerHTML = STORES.map(s => `<button class="tab ${s.id} ${s.id === store ? 'on' : ''}" data-s="${s.id}">${s.name}</button>`).join('');
-  $('tabs').querySelectorAll('button').forEach(b => b.onclick = () => { store = b.dataset.s; history.replaceState(null, '', '?store=' + store + (EMBED ? '&embed=1' : '')); tabs(); load(); loadModes(); loadStops(); });
+  $('tabs').querySelectorAll('button').forEach(b => b.onclick = () => { store = b.dataset.s; history.replaceState(null, '', '?store=' + store + (EMBED ? '&embed=1' : '')); tabs(); load().then(loadSafety); loadModes(); loadStops(); });
 }
 
 async function load() {
@@ -165,7 +168,7 @@ function render(s) {
   const today = days[0];
   const cell = {}; for (const [c, d, o, sb, on] of data.cells) if (s.otas.includes(o)) (cell[c + '|' + d] ||= {})[o] = [sb, on];
   const stock = {}; for (const x of data.stock) stock[x[0] + '|' + x[1]] = x;
-  const classes = [...new Set(data.stock.map(x => x[0]))].filter(c => days.some(d => (stock[c + '|' + d]?.[2] || 0) > 0 || cell[c + '|' + d])).sort();
+  const classes = window.__classes = [...new Set(data.stock.map(x => x[0]))].filter(c => days.some(d => (stock[c + '|' + d]?.[2] || 0) > 0 || cell[c + '|' + d])).sort();
   const read = !!data.last_read;
   let over = 0, under = 0, eq = 0, neg = 0;
   for (const k in cell) for (const o in cell[k]) { const [sb, on] = cell[k][o]; if (on == null) continue; if (on > sb) over++; else if (on < sb) under++; else eq++; }
@@ -303,6 +306,22 @@ function askMode(st, o, m) {
 }
 $('stopAll').onclick = () => askMode('ALL', 'ALL', 'stop');
 
+async function loadSafety() {
+  const s = STORES.find(x => x.id === store);
+  if (s.db !== 'hd') { $('safeTbl').innerHTML = '<tr><td class="l">高松は後で追加します。</td></tr>'; return; }
+  const r = await rpc(DB.hd, 'invctl_safety', { p_store: store }); if (!r.ok) { $('safeTbl').innerHTML = `<tr><td class="l">読み込めませんでした（${r.status}）</td></tr>`; return; }
+  const rows = await r.json(), v = {}; rows.forEach(x => v[x.cls + '|' + x.ym] = x);
+  const now = new Date(Date.now() + 9 * 3600e3), ms = [...Array(6)].map((_, i) => { const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + i, 1)); return d.toISOString().slice(0, 10); });
+  const cls = (window.__classes || []);
+  $('safeTbl').innerHTML = `<tr><th style="text-align:left">クラス</th>${ms.map(m => `<th>${+m.slice(5, 7)}月</th>`).join('')}</tr>` + cls.map(c => `<tr><td class="cls">${esc(c)}</td>${ms.map(m => { const x = v[c + '|' + m]; return `<td><input type="number" min="0" max="99" value="${x ? x.qty : 0}" data-c="${esc(c)}" data-m="${m}" title="${x ? esc(x.set_by) + ' ' + jst(x.set_at) : ''}" style="width:46px;padding:4px;border:1px solid #cbd5e1;border-radius:4px;text-align:center;${x ? 'background:#fef3c7;font-weight:700' : ''}"></td>`; }).join('')}</tr>`).join('');
+  $('safeTbl').querySelectorAll('input').forEach(i => i.onchange = async () => {
+    const who = $('who').value.trim(); if (!who) { $('safeMsg').innerHTML = '<div class="confirm">先に上の「あなたの名前」を入れてください。</div>'; loadSafety(); return; }
+    const q = Math.max(0, Math.min(99, +i.value || 0));
+    const r = await rpc(DB.hd, 'invctl_set_safety', { p_store: store, p_cls: i.dataset.c, p_ym: i.dataset.m, p_qty: q, p_by: who });
+    $('safeMsg').innerHTML = `<div class="confirm">${r.ok ? `${esc(i.dataset.c)} ${+i.dataset.m.slice(5, 7)}月の安全在庫を ${q} 台にしました。` : '変更できませんでした（' + r.status + '）。'}</div>`;
+    loadSafety(); load();
+  });
+}
 async function loadStops() {
   const s = STORES.find(x => x.id === store);
   $('missedMsg').innerHTML = ''; $('stopMsg').innerHTML = '';
@@ -340,6 +359,6 @@ async function addStop(cls, ota, from, to, why, msgId) {
 }
 $('ssAdd').onclick = () => addStop($('ssCls').value.trim().toUpperCase(), $('ssOta').value, $('ssFrom').value, $('ssTo').value, $('ssWhy').value.trim(), 'stopMsg');
 if (EMBED) document.body.classList.add('embed');
-tabs(); load(); loadProgress(); loadModes(); loadStops();
+tabs(); load().then(loadSafety); loadProgress(); loadModes(); loadStops();
 setInterval(() => { load(); loadProgress(); if (!pendingMode) loadModes(); loadStops(); }, 5 * 60e3);
 </script></body></html>
