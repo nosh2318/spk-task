@@ -233,16 +233,18 @@ async function load() {
 
 // クラス対応表：配車表のクラスごとに、各OTAのクラス（ID・画面の名前）。ロボが画面で見た名前と照合する
 async function loadClassMap(s) {
-  const q = await rpc(DB.hd, 'invctl_class_map', { p_store: store }); if (!q.ok) { $('cmapTbl').innerHTML = '<tr><td>読み込めませんでした</td></tr>'; return; }
+  const q = await rpc(DB.hd, 'invctl_class_map2', { p_store: store }); if (!q.ok) { $('cmapTbl').innerHTML = '<tr><td>読み込めませんでした</td></tr>'; return; }
   const rows = window.__cmap = await q.json(); const m = {}; for (const r of rows) m[r.cls + '|' + r.ota] = r;
   const man = rows.filter(r => r.manual);
   const cls = [...new Set([...(window.__classes || []), ...rows.filter(r => !r.manual).map(r => r.cls)])].filter(c => !(man.length && c === 'AA')).sort();
+  // 証拠：登録したOTAのクラス名と、ロボが書き込みのとき画面で実際に見たクラス名・マス数・時刻。一致＝緑、ちがう＝赤、まだ見ていない＝黄
   const cell = (c, o) => { const r = m[c + '|' + o]; if (!r) return '<td class="na">—</td>';
-    const nm = esc(r.ota_name || '（名前未取得）') + (r.ota_id && !/^row/.test(r.ota_id) ? `<br><span style="opacity:.6">ID ${esc(r.ota_id)}</span>` : '');
+    const nm = esc(r.ota_name || '（名前未登録）') + (r.ota_id && !/^row/.test(r.ota_id) ? ` <span style="opacity:.6">ID ${esc(r.ota_id)}</span>` : '');
     if (r.manual) return `<td class="gy">手動<br>${nm}</td>`;
-    const machine = r.ota_name && /_[A-Z]{2,}/.test(r.ota_name);
-    if (machine && !new RegExp('(^|[^A-Za-z0-9])' + c + '_').test(r.ota_name)) return `<td class="rd">ちがう<br>${nm}</td>`;
-    return `<td class="${machine && r.seen_at ? 'gr' : 'yl'}">${machine && r.seen_at ? '✓ ' : '確認 '}${nm}</td>`; };
+    const seen = r.seen_label ? `<br><span style="font-size:10px">画面：${esc(r.seen_label)}<br>${r.seen_n || 0}マス・${jst(r.seen_at)}・${r.seen_live ? '本番' : '練習'}</span>` : '';
+    if (r.seen_label && r.seen_match === false) return `<td class="rd">✕ ちがう<br>登録：${nm}${seen}</td>`;
+    if (r.seen_label && r.seen_match) return `<td class="gr">✓ 一致<br>登録：${nm}${seen}</td>`;
+    return `<td class="yl">未確認<br>登録：${nm}</td>`; };
   $('cmapTbl').innerHTML = `<tr><th></th>${s.otas.map(o => `<th>${OTA[o]}</th>`).join('')}</tr>` + cls.map(c => `<tr><td class="h">${esc(c)}</td>${s.otas.map(o => cell(c, o)).join('')}</tr>`).join('') +
     (man.length ? `<tr><td class="h">AA</td>${s.otas.map(o => { const a = man.filter(r => r.ota === o); return a.length ? `<td class="gy">手動 ${a.length}台<br>${a.map(r => esc(r.ota_name || r.ota_id)).join('・')}</td>` : '<td class="na">—</td>'; }).join('')}</tr>` : '');
 }
@@ -250,11 +252,12 @@ async function loadClassMap(s) {
 async function loadTop(s) {
   const q = await rpc(DB.hd, 'invctl_robot_state', { p_store: store }); const st = q.ok ? await q.json() : [];
   const cm = (window.__cmap || []).filter(r => !r.manual);
-  const clsBad = o => cm.filter(r => r.ota === o && (!r.ota_name || (/_[A-Z]{2,}/.test(r.ota_name) && !new RegExp('(^|[^A-Za-z0-9])' + r.cls + '_').test(r.ota_name))));
+  const clsBad = o => cm.filter(r => r.ota === o && (!r.ota_name || r.seen_match === false));
   const last = o => data.cells.filter(([, , oo, , on]) => oo === o && on != null).map(x => x[1]).sort().pop();
   const one = (o, k) => st.find(x => x.ota === o && x.kind === k);
   const T = (k, t) => `<td><span class="t ${k}" style="cursor:default;min-width:96px;height:auto;padding:4px 6px;display:inline-block;line-height:1.35">${t}</span></td>`;
-  const rowCls = o => { const b = clsBad(o), n = cm.filter(r => r.ota === o).length; return !n ? T('gy', 'まだ') : b.length ? T('rd', `異常あり<br><b>${b.length}</b>クラス（${b.map(r => esc(r.cls)).join('・')}）`) : T('gr', `異常なし<br><span style="font-size:10px">${n}クラス</span>`); };
+  const rowCls = o => { const b = clsBad(o), n = cm.filter(r => r.ota === o).length; const ok = cm.filter(r => r.ota === o && r.seen_match).length;
+    return !n ? T('gy', 'まだ') : b.length ? T('rd', `異常あり<br><b>${b.length}</b>クラス（${b.map(r => esc(r.cls)).join('・')}）`) : ok < n ? T('yl', `未確認あり<br><span style="font-size:10px">一致 ${ok}/${n}クラス</span>`) : T('gr', `異常なし<br><span style="font-size:10px">一致 ${ok}/${n}クラス</span>`); };
   const rowRead = o => { const x = one(o, 'read'); return !x ? T('gy', 'まだ') : x.ok ? T('gr', `成功<br><span style="font-size:10px">${jst(x.at)}</span>`) : T('rd', `失敗<br><span style="font-size:10px">${esc((x.info.error || '').slice(0, 40))}</span>`); };
   const rowWrite = o => { const e = one(o, 'write_exec'), l = one(o, 'live'), r = one(o, 'rehearsal');
     if (e && !e.ok) return T('rd', `失敗<br><span style="font-size:10px">${esc((e.info.error || '').slice(0, 40))}</span>`);
