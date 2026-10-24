@@ -325,6 +325,7 @@ const H=(no,kind,title,lead)=>`<h2><span class="no">${no}</span>${title}<span cl
 function header(){
   const l=lastRun();
   $("#runline").innerHTML=l?`<span class="date">データの日付 <b>${esc(l.day)}</b>（この日にGoogleで表示されていたもの）・つないだ媒体 <b>${CHAN.filter(chanLive).length}</b>／${CHAN.length}</span>`:"まだ集計がありません。";
+  if(typeof SCLIVE!=="undefined"){const w=(scRun()||{}).day||"";$("#runline").innerHTML+=SCLIVE&&!SCLIVE.err?` <span class="muted">・Google検索の位置は <b>${esc(SCLIVE.stamp)}</b> にGoogleから取得（Googleの集計は${esc(SCLIVE.period.split("〜")[1]||"")}まで）</span>`:SCLIVE&&SCLIVE.err?` <span class="muted">・Google検索の位置は最新を読めません（${esc(w)} の週1回の値を表示中）</span>`:` <span class="muted">・Google検索の位置を取得中（今は ${esc(w)} の週1回の値）</span>`}
   if(typeof LIVE!=="undefined"&&LIVE)$("#runline").innerHTML+=LIVE.err?` <span class="muted">・予約と来訪の最新を読めません（週1回の値を表示中）</span>`:` <span class="muted">・予約・来訪・売上は <b>${esc(LIVE.stamp)}</b> 時点（開くたびに計算）</span>`;
   const left=s=>K.filter(k=>k.store===s&&k.kind!=="big"&&!k.decision).length;
   if(false){$("#runline").innerHTML=`<span class="muted">毎週月曜に自動で集計・更新します${l?"（最新 "+esc(l.day)+"）":""}</span>`;$("#nav").innerHTML=Object.entries(AREAS).map(([k,a])=>`<button data-area="${k}" class="${ui.store===k?"on":""}">${a.name}</button>`).join("");return}
@@ -535,7 +536,7 @@ function steps(k,c){
         action:!g.related?(a.ads&&g.type==="他社名"?"広告の除外ワード候補":"見るだけ（ヒント）"):lang!=="ja"?`サイトの${LANGS.find(x=>x[0]===lang)[1]}ページの見出しと本文に「${top}」を入れる`:out?(a.ads?`広告の言葉に「${top}」を入れる＋店舗ページの見出しと本文に入れる`:`店舗ページの見出しと本文に「${top}」を入れる`):"今の順位を保つ",
         actKind:g.related&&out?"todo":"",score:(VC[g.top_vol]||0)*(!sp?0.3:sp.pos<=10?0.2:sp.pos<=20?1:sp.pos<=50?0.6:0.3),why:`月${g.top_vol}・今${sp?Math.ceil(sp.pos/10)+"ページ目・平均"+sp.pos+"位":"表示なし"}`}});
     extraActs=extraActs.concat(st.origins.map(o=>{const sp=scFind([o.word]);if(sp&&sp.pos<=3)return null;return {type:"起点",actKind:"todo",action:sp&&sp.pos<=20?`「${o.word}」をあと少しで${sp.pos<=10?"上位":"1ページ目"}へ：店舗ページのタイトルと見出しに「${o.word}」を入れる`:`「${o.word}」：店舗ページのタイトルと見出しに入れ、ページをGoogleに登録させる`,score:(VC[o.vol]||0)*(!sp?0.3:sp.pos<=10?0.2:sp.pos<=20?1:sp.pos<=50?0.6:0.3),why:`月${o.vol}・今${sp?Math.ceil(sp.pos/10)+"ページ目・平均"+sp.pos+"位":"表示なし"}`}}).filter(Boolean));
-    rows=rows.concat(entRows);const sr=scRun();two=(sr&&sr.sc.not_indexed?`<div class="alert-line">アラート：サイト${sr.sc.indexed+sr.sc.not_indexed}ページのうち、Googleに登録されているのは<b>${sr.sc.indexed}ページだけ</b>です（${sr.sc.not_indexed}ページは「検出 - インデックス未登録」）。登録されていないページは何位にも出ません。</div>`:"")+stepTable(rows,volHead,"③ 自社の位置（Search Console の平均順位）")+entForm;
+    rows=rows.concat(entRows);const sr=scRun();two=(sr&&sr.sc.not_indexed?`<div class="alert-line">アラート：サイト${sr.sc.indexed+sr.sc.not_indexed}ページのうち、Googleに登録されているのは<b>${sr.sc.indexed}ページだけ</b>です（${sr.sc.not_indexed}ページは「検出 - インデックス未登録」）。登録されていないページは何位にも出ません。<span class="muted">（${esc(sr.day||"")} の週1回の値）</span></div>`:"")+stepTable(rows,volHead,"③ 自社の位置（Search Console の平均順位）")+entForm;
     note=lang==="ja"?`量＝Google広告のキーワードプランナーの月間平均（${esc(run.patterns.period||"直近12か月")}、日本から・日本語、幅）。`
       :`量＝キーワードプランナーの月間平均（全世界から・${esc(LANGS.find(x=>x[0]===lang)[1])}、幅）。`+(lang==="ko"?"韓国はNAVERが中心なので、Googleの数字は小さく出ます。":"")+(lang==="zh-cn"?"中国本土はGoogleが使えないため、数字は小さく出ます。":"");
     note+=(lang==="ja"&&R.find(x=>x.trend_ratio)?`比率＝${esc(R.find(x=>x.trend_ratio).trend_ratio.source)}。同じ幅の中でどちらが大きいかを見るための数字で、回数ではありません。`:"");
@@ -1210,6 +1211,24 @@ async function deriveLive(){
     g.history=(g.history||[]).filter(x=>x.day!==day).concat([{day,value:v}]);
     g.source=(g.metric==='cv'?'予約台帳（公式サイト経由・キャンセル除く）':'公式サイトの自前解析')+'・'+stamp+' 時点'});
 }
+// --- Google検索の位置（Search Console）を開いた時に Google から取る（読むだけ・DBに書かない）
+// 設計メモ docs/設計_集客_Google検索の数字を開いた時に取る_2026-10-24.md／omni-review 条件C。取れない時は週1回の値＋その旨を表示
+const SC_URL='https://script.google.com/macros/s/AKfycbwXE4XrnFbEX30aHhXnpkfWTmuPG-AQVJB7RxbCitCWDomuent4RO8woC2FhxYCnHiK/exec';
+var SCLIVE=null;let scAt=0,scBusy=false;
+function applySc(){const r=scRun();if(!r||!SCLIVE||SCLIVE.err)return;r.sc=Object.assign({},r.sc,{rows:SCLIVE.rows,period:SCLIVE.period+'（'+SCLIVE.stamp+' 取得）',source:'Search Console（開いた時に取得）'})}
+async function loadSc(){
+  if(scBusy||Date.now()-scAt<600e3)return; // 10分以内は再取得しない
+  const s=sess(),t=s&&s.access_token;if(!t)return;
+  scBusy=true;const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),15000);
+  try{
+    const res=await fetch(SC_URL,{method:'POST',body:JSON.stringify({token:t}),signal:ac.signal}); // ヘッダを付けない（付けると事前確認で失敗する）
+    const j=await res.json();
+    if(j&&Array.isArray(j.rows)&&j.period){const d=new Date();SCLIVE={rows:j.rows,period:j.period,stamp:(d.getMonth()+1)+'/'+d.getDate()+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')};scAt=Date.now()}
+    else{SCLIVE={err:(j&&j.error)||'unknown'};scAt=Date.now()-480e3} // 失敗は2分後に再試行
+  }catch(e){SCLIVE={err:'fetch'};scAt=Date.now()-480e3}
+  finally{clearTimeout(tm);scBusy=false}
+  applySc();render();
+}
 async function loadAll(force){
   if(loading)return;if(!force&&Date.now()-lastLoad<60000)return;loading=true;
   try{
@@ -1220,8 +1239,8 @@ async function loadAll(force){
     catch(e){$("#runline").innerHTML='データを読めませんでした（'+esc(e.message)+'）。<a href="index.html" target="_blank" rel="noopener">管理APP</a>でログインし直してから開き直してください。';return}
     cols.forEach((c,i)=>SET[c]((res[i]||[]).map(r=>{VER[c+'/'+r.doc_id]=r.version;return Object.assign({id:r.doc_id},r.data)})));
     db=MKT_DB;uid=(s.user&&s.user.id)||'';
-    await deriveHP();await deriveLive();
-    lastLoad=Date.now();render();
+    await deriveHP();await deriveLive();applySc();
+    lastLoad=Date.now();render();loadSc();
   }finally{loading=false}
 }
 loadAll(true);
