@@ -91,6 +91,7 @@ body.embed header{display:none}
 .t.gr{background:#22c55e;color:#fff;font-size:20px}.t.rd{background:#dc2626;color:#fff;animation:blink 1.2s ease-in-out infinite}.t.yl{background:#facc15;color:#422006}.t.gy{background:#e2e8f0;color:#64748b}.t.na{background:transparent;color:#cbd5e1;cursor:default}
 .maplg{font-size:12px;color:#475569;margin-top:6px;line-height:2}.maplg .t{min-width:30px;height:20px;font-size:11px;vertical-align:middle;margin:0 4px 0 10px;animation:none;cursor:default;padding:0 6px}
 .sum table .t{min-width:46px;height:34px;font-size:10px}.sum table .t b{font-size:15px}.sum table .t.gr{font-size:15px}.sum th.oh{max-width:60px;line-height:1.2}.sum th.mh{font-size:14px;background:#f1f5f9;border-radius:6px}.sum th.oh{font-size:11px;color:#475569;font-weight:700}.sum td.gap,.sum th.gap{width:10px}.sum caption{text-align:left;font-weight:800;font-size:14px;padding:0 4px 4px}
+.cmap{border-collapse:separate;border-spacing:4px}.cmap th{font-size:13px;padding:2px 6px}.cmap td{font-size:11px;padding:4px 6px;border-radius:6px;text-align:center;white-space:nowrap}.cmap td.h{font-weight:800;font-size:14px;background:none}.cmap td.gr{background:#dcfce7;color:#14532d}.cmap td.yl{background:#fef9c3;color:#713f12}.cmap td.gy{background:#e2e8f0;color:#64748b}.cmap td.rd{background:#dc2626;color:#fff;font-weight:700}.cmap td.na{color:#cbd5e1}
 .board tr.flash td{background:#fef9c3!important;transition:background .3s}@media (prefers-reduced-motion:reduce){.t.rd{animation:none}}
 .todo2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0 0 10px}@media(max-width:800px){.todo2{grid-template-columns:1fr}}.todo.ai{border-color:#64748b;background:#f8fafc}.todo ul{margin:0;padding-left:18px}.todo .r{color:#dc2626}
 .todo{background:#fff;border:2px solid #2f3b55;border-radius:6px;padding:8px 12px;margin:0 0 10px}.todo h3{margin:0 0 6px;font-size:14px}.todo ol{margin:0;padding-left:20px}.todo li{margin:4px 0;font-size:13px;line-height:1.5}.todo li small{color:#64748b}.todo .ok{color:#166534;font-weight:800}
@@ -116,6 +117,9 @@ body.embed header{display:none}
     <div id="boardMsg"></div>
     <div class="note" style="margin-top:8px"><b>在庫合計</b>＝そのクラスの車すべて（稼働＋未稼働、保険代車は除く）　<b>稼働</b>＝その月に稼働の車　<b>予約</b>＝予約・整備・未配車の予約で使えない台数　<b>許可</b>＝稼働−予約（予約できる台数）　<b>調整</b>＝バッファ。オーバーブックを避けるため現場が決めて入れる台数（青い枠に＋の数を入れると、その分だけ解放残が減る。0で消す。小さな「+n」は売り止め・安全在庫の分）　<b>解放残</b>＝OTAに出す台数（許可−調整）<br><b>緊急停止</b>＝そのクラスを今日から全OTAで売り止め（解放残が0になる）。数字を押すとOTAごとの数を出します。</div>
   </div>
+  <div class="card"><h2>クラス対応表（配車表のクラス → 各OTAのクラス）</h2>
+    <div class="scroll"><table class="cmap" id="cmapTbl"></table></div>
+    <div class="note" style="margin-top:6px"><span class="t gr" style="min-width:30px;height:20px;font-size:11px;padding:0 6px;display:inline-block;line-height:20px">✓</span> ロボがOTAの画面で同じクラス名を見た　<span class="t yl" style="min-width:30px;height:20px;font-size:11px;padding:0 6px;display:inline-block;line-height:20px">確認</span> 名前にクラスの文字がないので人が確認　<span class="t gy" style="min-width:30px;height:20px;font-size:11px;padding:0 6px;display:inline-block;line-height:20px">手動</span> ロボは書かない（1台もの等）　<span class="t rd" style="min-width:30px;height:20px;font-size:11px;padding:0 6px;display:inline-block;line-height:20px;animation:none">ちがう</span> 画面の名前が配車表のクラスと合わない。ロボはこのクラスを書きません。<br>ロボが書く先は、この表だけで決めます。</div></div>
   <details class="more"><summary>詳しく見る（管理する人向け）</summary>
   <div class="card"><h2>自動・手動の切り替え（今どこ）</h2>
     <div class="who"><button class="stopall" id="stopAll">全店・全媒体を止める</button></div>
@@ -212,9 +216,26 @@ async function load() {
       board = data.stock.map(([c, d, fl, , , rem]) => ({ cls: c, dd: d, total: null, active: fl, booked: fl - rem, allow: rem, adjust: Math.max(0, rem) - (rel[c + '|' + d] ?? 0), release: rel[c + '|' + d] ?? 0, stopped: false }));
     }
     render(s);
+    loadClassMap(s);
   } catch (e) { $('board').innerHTML = `<tr><td class="cl">読み込めませんでした：${esc(e.message)}</td></tr>`; }
 }
 
+
+// クラス対応表：配車表のクラスごとに、各OTAのクラス（ID・画面の名前）。ロボが画面で見た名前と照合する
+async function loadClassMap(s) {
+  const q = await rpc(DB.hd, 'invctl_class_map', { p_store: store }); if (!q.ok) { $('cmapTbl').innerHTML = '<tr><td>読み込めませんでした</td></tr>'; return; }
+  const rows = await q.json(); const m = {}; for (const r of rows) m[r.cls + '|' + r.ota] = r;
+  const man = rows.filter(r => r.manual);
+  const cls = [...new Set([...(window.__classes || []), ...rows.filter(r => !r.manual).map(r => r.cls)])].filter(c => !(man.length && c === 'AA')).sort();
+  const cell = (c, o) => { const r = m[c + '|' + o]; if (!r) return '<td class="na">—</td>';
+    const nm = esc(r.ota_name || '（名前未取得）') + (r.ota_id && !/^row/.test(r.ota_id) ? `<br><span style="opacity:.6">ID ${esc(r.ota_id)}</span>` : '');
+    if (r.manual) return `<td class="gy">手動<br>${nm}</td>`;
+    const machine = r.ota_name && /_[A-Z]{2,}/.test(r.ota_name);
+    if (machine && !new RegExp('(^|[^A-Za-z0-9])' + c + '_').test(r.ota_name)) return `<td class="rd">ちがう<br>${nm}</td>`;
+    return `<td class="${machine && r.seen_at ? 'gr' : 'yl'}">${machine && r.seen_at ? '✓ ' : '確認 '}${nm}</td>`; };
+  $('cmapTbl').innerHTML = `<tr><th></th>${s.otas.map(o => `<th>${OTA[o]}</th>`).join('')}</tr>` + cls.map(c => `<tr><td class="h">${esc(c)}</td>${s.otas.map(o => cell(c, o)).join('')}</tr>`).join('') +
+    (man.length ? `<tr><td class="h">AA</td>${s.otas.map(o => { const a = man.filter(r => r.ota === o); return a.length ? `<td class="gy">手動 ${a.length}台<br>${a.map(r => esc(r.ota_name || r.ota_id)).join('・')}</td>` : '<td class="na">—</td>'; }).join('')}</tr>` : '');
+}
 const ROWS = [['total', '在庫合計', '稼働＋未稼働'], ['active', '稼働'], ['booked', '予約', '配車不可'], ['allow', '許可', '予約可能'], ['adjust', '調整', 'バッファ：現場で入力'], ['release', '解放残', 'OTAに出す台数']];
 function render(s) {
   const cell = {}; for (const [c, d, o, sb, on] of data.cells) if (s.otas.includes(o) && !MANUAL.includes(store + '|' + o + '|' + c)) (cell[c + '|' + d] ||= {})[o] = [sb, on];
