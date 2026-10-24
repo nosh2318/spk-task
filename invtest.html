@@ -51,12 +51,28 @@ td.cls{text-align:left;font-weight:800}
 .chip.done{background:#dcfce7;color:#166534}.chip.now{background:#dbeafe;color:#1e40af}.chip.todo{background:#f1f5f9;color:#94a3b8}.chip.ng{background:#fee2e2;color:#991b1b}
 #prog td{text-align:center}#prog td.s{text-align:left;font-weight:800}#prog tr.sep td{border-top:2px solid #cbd5e1}
 #prog .nt{display:block;font-size:10px;color:#64748b;font-weight:400;white-space:normal;max-width:150px;margin:2px auto 0}
+#modeTbl td{vertical-align:middle}#modeTbl td.l{text-align:left}
+.mp{display:inline-block;font-size:12px;font-weight:800;border-radius:99px;padding:2px 10px}
+.mp.auto{background:#dcfce7;color:#166534}.mp.manual{background:#fef3c7;color:#92400e}.mp.stop{background:#fee2e2;color:#991b1b}
+.mb{border:1px solid #cbd5e1;background:#fff;border-radius:4px;padding:6px 10px;font-weight:700;font-size:12px;cursor:pointer;margin:0 2px}
+.mb:disabled{opacity:.35;cursor:default}.mb.auto{border-color:#86efac}.mb.manual{border-color:#fcd34d}.mb.stop{border-color:#fca5a5}
+.stopall{background:#dc2626;color:#fff;border:none;border-radius:4px;padding:10px 14px;font-weight:800;cursor:pointer}
+.confirm{background:#fffbeb;border:1px solid #fcd34d;border-radius:4px;padding:10px;margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.who{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;font-size:12px}
+.who input{padding:7px 8px;border:1px solid #cbd5e1;border-radius:4px;font-size:14px;width:140px}
+#modeLog .ev{font-size:12px;padding:5px 0}
 body.embed header{display:none}
 </style></head><body>
 <header><h1>📦 在庫テスト（共通在庫コントローラー）</h1>
 <div class="sub">配車表から計算した「出すべき在庫」と、各OTAに今出ている在庫を並べて見る画面です。読むだけで、OTAには何も書き込みません。</div></header>
 <div class="wrap">
   <div class="tabs" id="tabs"></div>
+  <div class="card"><h2>自動・手動の切り替え（今どこ）</h2>
+    <div class="who"><label for="who">切り替える人の名前</label><input id="who" placeholder="例：山田"><button class="stopall" id="stopAll">全店・全媒体を止める</button></div>
+    <div class="scroll"><table id="modeTbl"></table></div>
+    <div id="modeConfirm"></div>
+    <div class="note" style="margin-top:6px"><b>自動</b>＝ロボが読んで、ずれていれば直す。<b>手動</b>＝ロボは読むだけ。人がOTAで直す（人の数を上書きしない）。<b>停止</b>＝ロボは開かない。手で触るときは先に手動にしてください。手動から自動に戻すと、ロボはまず全部読んで、今の配車表に合わせ直します。<br>今は本番前のため、自動にしてもロボは書き込みません（オーナーが本番を決めた媒体から有効になります）。自動にした媒体は、Metro Conductor の連動を同時に切ります。</div>
+    <div id="modeLog" style="margin-top:8px"></div></div>
   <div class="card"><h2>テストの進み具合</h2><div class="steps" id="steps"></div>
     <div class="note" style="margin-top:8px">ゴール：全店・全媒体で「OTAに出ている数」と「出すべき数」が同じになること。テストの合格は、ロボが最後に入れる数が出すべき数と合っていること。結果を見てオーナーが本番にするかを決めます。</div></div>
   <div class="card"><h2>要件ごとの進捗（全店）</h2><div class="scroll"><table id="prog"></table></div>
@@ -100,7 +116,7 @@ let data = null;
 
 function tabs() {
   $('tabs').innerHTML = STORES.map(s => `<button class="tab ${s.id} ${s.id === store ? 'on' : ''}" data-s="${s.id}">${s.name}</button>`).join('');
-  $('tabs').querySelectorAll('button').forEach(b => b.onclick = () => { store = b.dataset.s; history.replaceState(null, '', '?store=' + store + (EMBED ? '&embed=1' : '')); tabs(); load(); });
+  $('tabs').querySelectorAll('button').forEach(b => b.onclick = () => { store = b.dataset.s; history.replaceState(null, '', '?store=' + store + (EMBED ? '&embed=1' : '')); tabs(); load(); loadModes(); });
 }
 
 async function load() {
@@ -196,7 +212,51 @@ async function loadProgress() {
       `<tr class="sep"><td class="s" colspan="2">全体</td><td colspan="${ITEMS.length}" style="text-align:left"><b>${done} / ${all}</b> 済（${Math.round(done / all * 100)}%）</td></tr>`;
   } catch (e) { $('prog').innerHTML = `<tr><td>読み込めませんでした：${esc(e.message)}</td></tr>`; }
 }
+
+const MODE = { auto: '自動', manual: '手動', stop: '停止' };
+let pendingMode = null;
+const rpc = (db, fn, body) => fetch(`${db.url}/rest/v1/rpc/${fn}`, { method: 'POST', headers: { apikey: db.key, Authorization: `Bearer ${db.key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+try { $('who').value = localStorage.getItem('invctl_who') || ''; } catch (e) {}
+$('who').oninput = () => { try { localStorage.setItem('invctl_who', $('who').value); } catch (e) {} };
+async function loadModes() {
+  const s = STORES.find(x => x.id === store);
+  $('modeConfirm').innerHTML = ''; pendingMode = null;
+  if (s.db !== 'hd') { $('modeTbl').innerHTML = '<tr><td class="l">高松は後で追加します。</td></tr>'; $('modeLog').innerHTML = ''; return; }
+  try {
+    const [r, l] = await Promise.all([rpc(DB.hd, 'invctl_modes', { p_store: store }), rpc(DB.hd, 'invctl_mode_log', { p_store: store, p_limit: 8 })]);
+    if (!r.ok) throw new Error(r.status);
+    const rows = await r.json(), logs = l.ok ? await l.json() : [];
+    const by = Object.fromEntries(rows.map(x => [x.ota, x]));
+    $('modeTbl').innerHTML = '<tr><th style="text-align:left">媒体</th><th>状態</th><th>切り替え</th><th>最後に読んだ</th><th>ずれているマス</th><th style="text-align:left">最後に変えた人</th></tr>' +
+      s.otas.map(o => { const x = by[o]; if (!x) return `<tr><td class="l">${OTA[o]}</td><td colspan="5" class="c0">未登録</td></tr>`;
+        return `<tr><td class="l"><b>${OTA[o]}</b></td><td><span class="mp ${x.mode}">${MODE[x.mode]}</span></td><td>${['auto', 'manual', 'stop'].map(m => `<button class="mb ${m}" data-o="${o}" data-m="${m}" ${m === x.mode ? 'disabled' : ''}>${MODE[m]}</button>`).join('')}</td>
+          <td>${x.last_read ? jst(x.last_read) : '<span class="c0">まだ</span>'}</td><td>${x.last_read ? `<span class="mm ${x.diff_cells ? 'over' : 'eq'}">${x.diff_cells}</span>` : '—'}</td>
+          <td class="l">${esc(x.changed_by)} ${jst(x.changed_at)}${x.reason ? `<br><span class="note">${esc(x.reason)}</span>` : ''}</td></tr>`; }).join('');
+    $('modeTbl').querySelectorAll('button.mb').forEach(b => b.onclick = () => askMode(store, b.dataset.o, b.dataset.m));
+    $('modeLog').innerHTML = logs.length ? '<div class="note"><b>切り替えの記録</b></div>' + logs.map(g => `<div class="ev"><span class="t">${jst(g.at)}</span>　${OTA[g.ota] || esc(g.ota)}：${MODE[g.old_mode] || '—'} → <b>${MODE[g.new_mode]}</b>（${esc(g.changed_by)}）${g.reason ? '　' + esc(g.reason) : ''}</div>`).join('') : '';
+  } catch (e) { $('modeTbl').innerHTML = `<tr><td class="l">読み込めませんでした：${esc(e.message)}</td></tr>`; }
+}
+function askMode(st, o, m) {
+  const who = $('who').value.trim();
+  if (!who) { $('modeConfirm').innerHTML = '<div class="confirm">先に「切り替える人の名前」を入れてください。</div>'; $('who').focus(); return; }
+  pendingMode = { st, o, m, who };
+  const what = st === 'ALL' ? '全店・全媒体' : `${STORES.find(x => x.id === st).name} ${OTA[o]}`;
+  $('modeConfirm').innerHTML = `<div class="confirm"><span><b>${esc(what)}</b> を <span class="mp ${m}">${MODE[m]}</span> にします。</span>
+    <input id="modeWhy" placeholder="理由（任意）" style="padding:6px 8px;border:1px solid #cbd5e1;border-radius:4px;min-width:160px">
+    <button class="mb ${m}" id="modeYes">変更する</button><button class="mb" id="modeNo">やめる</button></div>`;
+  $('modeNo').onclick = () => { $('modeConfirm').innerHTML = ''; pendingMode = null; };
+  $('modeYes').onclick = async () => {
+    const p = pendingMode; if (!p) return;
+    $('modeYes').disabled = true;
+    const r = await rpc(DB.hd, 'invctl_set_mode', { p_store: p.st, p_ota: p.st === 'ALL' ? 'ALL' : p.o, p_mode: p.m, p_by: p.who, p_reason: $('modeWhy').value.trim() || null });
+    if (!r.ok) { $('modeConfirm').innerHTML = `<div class="confirm">変更できませんでした（${r.status}）。もう一度試してください。</div>`; return; }
+    const n = await r.json();
+    await loadModes();
+    $('modeConfirm').innerHTML = `<div class="confirm">${n}件を ${MODE[p.m]} にしました。</div>`;
+  };
+}
+$('stopAll').onclick = () => askMode('ALL', 'ALL', 'stop');
 if (EMBED) document.body.classList.add('embed');
-tabs(); load(); loadProgress();
-setInterval(() => { load(); loadProgress(); }, 5 * 60e3);
+tabs(); load(); loadProgress(); loadModes();
+setInterval(() => { load(); loadProgress(); if (!pendingMode) loadModes(); }, 5 * 60e3);
 </script></body></html>
