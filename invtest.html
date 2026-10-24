@@ -93,7 +93,7 @@ body.embed header{display:none}
 .maplg{font-size:12px;color:#475569;margin-top:6px;line-height:2}.maplg .t{min-width:30px;height:20px;font-size:11px;vertical-align:middle;margin:0 4px 0 10px;animation:none;cursor:default;padding:0 6px}
 .sum table .t{min-width:46px;height:34px;font-size:10px}.sum table .t b{font-size:15px}.sum table .t.gr{font-size:15px}.sum th.oh{max-width:60px;line-height:1.2}.sum th.mh{font-size:14px;background:#f1f5f9;border-radius:6px}.sum th.oh{font-size:11px;color:#475569;font-weight:700}.sum td.gap,.sum th.gap{width:10px}.sum caption{text-align:left;font-weight:800;font-size:14px;padding:0 4px 4px}
 .cmap{border-collapse:separate;border-spacing:4px}.cmap th{font-size:13px;padding:2px 6px}.cmap td{font-size:11px;padding:4px 6px;border-radius:6px;text-align:center;white-space:nowrap}.cmap td.h{font-weight:800;font-size:14px;background:none}.cmap td.gr{background:#dcfce7;color:#14532d}.cmap td.yl{background:#fef9c3;color:#713f12}.cmap td.gy{background:#e2e8f0;color:#64748b}.cmap td.rd{background:#dc2626;color:#fff;font-weight:700}.cmap td.na{color:#cbd5e1}
-.board tr.flash td{background:#fef9c3!important;transition:background .3s}@media (prefers-reduced-motion:reduce){.t.rd{animation:none}}
+.board tr.flash td{background:#fef9c3!important;transition:background .3s}.blink{animation:blink 1.2s ease-in-out infinite}@media (prefers-reduced-motion:reduce){.t.rd,.blink{animation:none}}
 .todo2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0 0 10px}@media(max-width:800px){.todo2{grid-template-columns:1fr}}.todo.ai{border-color:#64748b;background:#f8fafc}.todo ul{margin:0;padding-left:18px}.todo .r{color:#dc2626}
 .todo{background:#fff;border:2px solid #2f3b55;border-radius:6px;padding:8px 12px;margin:0 0 10px}.todo h3{margin:0 0 6px;font-size:14px}.todo ol{margin:0;padding-left:20px}.todo li{margin:4px 0;font-size:13px;line-height:1.5}.todo li small{color:#64748b}.todo .ok{color:#166534;font-weight:800}
 .alerts{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 8px}.al{flex:1;min-width:200px;border-radius:6px;padding:8px 12px;font-size:12px;cursor:pointer;border:none;text-align:left}
@@ -264,10 +264,19 @@ async function loadTop(s) {
     if (l) return l.ok ? T('gr', `本番 成功<br><span style="font-size:10px">${l.info.saved || 0}マス ${jst(l.at)}</span>`) : T('rd', `本番 異常<br><span style="font-size:10px">保存せず ${l.info.held || 0}・ちがう ${l.info.ng_after || 0}</span>`);
     if (r) return r.ok ? T('yl', `練習のみ 成功<br><span style="font-size:10px">${r.info.filled || 0}マス ${jst(r.at)}</span>`) : T('rd', `練習 異常<br><span style="font-size:10px">保存せず ${r.info.held || 0}・送信先 ${r.info.save_ng || 0}</span>`);
     return T('gy', 'まだ'); };
+  // 在庫調節：配車表の解放中とOTAがちがうマス。本番の媒体は、ロボの最後の本番保存から30分たってもちがえば赤（直っていない）
+  const gapN = o => data.cells.filter(([c, , oo, sb, on]) => oo === o && on != null && on !== sb && !MANUAL.includes(store + '|' + o + '|' + c)).length;
+  const isLive = o => LIVE.includes(store + '|' + o);
+  const adjBad = o => { if (!isLive(o) || !gapN(o)) return false; const l = one(o, 'live'); return !l || !l.ok || Date.now() - new Date(l.at).getTime() > 30 * 60e3; };
+  const rowAdj = o => { const n = gapN(o); if (!isLive(o)) return T('gy', `本番前<br><span style="font-size:10px">ずれ ${n}マス（人・MCが合わせる）</span>`);
+    return !n ? T('gr', '合っている') : adjBad(o) ? T('rd', `直っていない<br><b>${n}</b>マス`) : T('yl', `直している途中<br><b>${n}</b>マス`); };
+  // ロボが止まっていないか：一番新しい記録（読み取り・書き込み）が30分より前なら赤で点滅
+  const lastAt = [data.last_read, ...st.map(x => x.at)].filter(Boolean).map(t => new Date(t).getTime()).sort((a, b) => b - a)[0];
+  const stopped = !lastAt || Date.now() - lastAt > 30 * 60e3;
   const rowLast = o => { const d = last(o); return d ? T('gr', `${md(d)}<br><span style="font-size:10px">まで</span>`) : T('gy', 'まだ'); };
-  const R = [['配車表とのクラス連携', rowCls], ['ロボの見回り（読み取り）', rowRead], ['ロボの登録（書き込み）', rowWrite], ['OTAで販売している最終日', rowLast]];
-  const bad = s.otas.some(o => clsBad(o).length || (one(o, 'read') && !one(o, 'read').ok) || (one(o, 'write_exec') && !one(o, 'write_exec').ok) || (one(o, 'live') && !one(o, 'live').ok));
-  $('top').innerHTML = `<table><caption>サマリ：${bad ? '<span style="color:#dc2626">異常あり</span>' : '<span style="color:#16a34a">異常なし</span>'}</caption><tr><th></th>${s.otas.map(o => `<th class="oh">${OTA[o]}</th>`).join('')}</tr>` +
+  const R = [['配車表とのクラス連携', rowCls], ['ロボの見回り（読み取り）', rowRead], ['ロボの登録（書き込み）', rowWrite], ['在庫調節（配車表→OTA）', rowAdj], ['OTAで販売している最終日', rowLast]];
+  const bad = stopped || s.otas.some(o => adjBad(o) || clsBad(o).length || (one(o, 'read') && !one(o, 'read').ok) || (one(o, 'write_exec') && !one(o, 'write_exec').ok) || (one(o, 'live') && !one(o, 'live').ok));
+  $('top').innerHTML = (stopped ? `<div class="blink" style="background:#dc2626;color:#fff;font-weight:700;padding:10px 12px;border-radius:8px;margin-bottom:8px">ロボが止まっています：最後に動いたのは ${lastAt ? jst(new Date(lastAt).toISOString()) + `（${Math.round((Date.now() - lastAt) / 60e3)}分前）` : 'まだ'}。予約が増減してもOTAの在庫は変わりません。</div>` : '') + `<table><caption>サマリ：${bad ? '<span style="color:#dc2626">異常あり</span>' : '<span style="color:#16a34a">異常なし</span>'}</caption><tr><th></th>${s.otas.map(o => `<th class="oh">${OTA[o]}</th>`).join('')}</tr>` +
     R.map(([l, f]) => `<tr><td class="h">${l}</td>${s.otas.map(o => f(o)).join('')}</tr>`).join('') + '</table>' +
     '<div class="maplg">黄＝練習（保存の通信を止めたテスト）だけ成功で、まだ本番にしていない媒体です。</div>';
 }
