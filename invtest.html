@@ -159,11 +159,11 @@ async function load() {
   try {
     const [r, b] = await Promise.all([
       rpc(db, 'invctl_dashboard', { p_store: store, p_days: 92 }),
-      s.db === 'hd' ? rpc(DB.hd, 'invctl_board', { p_store: store, p_days: 92 }) : null]);
+      rpc(db, 'invctl_board', { p_store: store, p_days: 92 })]);
     if (!r.ok) throw new Error(r.status + ' ' + await r.text());
     data = await r.json(); data.__store = store;
     stops = [];
-    if (s.db === 'hd') { const t = await rpc(DB.hd, 'invctl_stop_sales', { p_store: store }); if (t.ok) stops = await t.json(); }
+    { const t = await rpc(db, 'invctl_stop_sales', { p_store: store }); if (t.ok) stops = await t.json(); }
     if (b && b.ok) board = await b.json();
     else {
       // 高松：配車表の稼働・残りから同じ6項目を作る（在庫合計は稼働で代用）
@@ -190,7 +190,7 @@ function render(s) {
   const emer = c => stops.find(x => x.cls === c && !x.ota && x.reason === '緊急停止' && today >= x.dd_from && (!x.dd_to || today <= x.dd_to));
   $('board').innerHTML = `<tr><td class="cl"></td>${md0.map(d => `<th class="${wd(d) === 6 ? 'sat' : wd(d) === 0 ? 'sun' : ''}">${md(d)}</th>`).join('')}</tr>` +
     classes.map(c => ROWS.map(([k, l, sub], i) => `<tr class="${i === 0 ? 'g1' : ''} ${k === 'release' ? 'rel' : ''}"><td class="cl">${i === 0
-      ? `<b style="font-size:15px">${esc(c)}</b> ${s.db === 'hd' ? (emer(c) ? `<button class="ebtn off" data-end="${emer(c).id}">緊急停止中・解除</button>` : `<button class="ebtn" data-c="${esc(c)}">緊急停止</button>`) : ''}<br>`
+      ? `<b style="font-size:15px">${esc(c)}</b> ${emer(c) ? `<button class="ebtn off" data-end="${emer(c).id}">緊急停止中・解除</button>` : `<button class="ebtn" data-c="${esc(c)}">緊急停止</button>`}<br>`
       : ''}<span class="${k === 'release' ? '' : 'k'}">${l}</span>${sub ? `<span class="note">（${sub}）</span>` : ''}</td>${md0.map(d => {
         const x = by[c + '|' + d]; const v = x ? x[k] : null;
         return `<td class="${k === 'release' || k === 'allow' ? 'c' : ''} ${v != null && v < 0 ? 'neg' : ''} ${k === 'release' && x && x.stopped ? 'st' : ''}" data-k="${c}|${d}">${v ?? '—'}</td>`;
@@ -205,7 +205,7 @@ async function emergency(b, c, today) {
   if (!who) { $('boardMsg').innerHTML = '<div class="confirm">先に「あなたの名前」を入れてください。</div>'; $('who').focus(); return; }
   if (b.dataset.sure !== '1') { b.dataset.sure = '1'; b.textContent = `もう一度押すと ${c} を全OTAで止めます`; return; }
   b.disabled = true;
-  const r = await rpc(DB.hd, 'invctl_add_stop_sale', { p_store: store, p_cls: c, p_ota: '', p_from: today, p_to: null, p_reason: '緊急停止', p_by: who });
+  const r = await rpc(sdb(), 'invctl_add_stop_sale', { p_store: store, p_cls: c, p_ota: '', p_from: today, p_to: null, p_reason: '緊急停止', p_by: who });
   await load(); loadStops();
   $('boardMsg').innerHTML = `<div class="confirm">${r.ok ? `${esc(c)} を今日から全OTAで売り止めにしました（解放残は0）。` : '止められませんでした（' + r.status + '）。'}</div>`;
 }
@@ -214,7 +214,7 @@ async function emergencyEnd(b) {
   if (!who) { $('boardMsg').innerHTML = '<div class="confirm">先に「あなたの名前」を入れてください。</div>'; $('who').focus(); return; }
   if (b.dataset.sure !== '1') { b.dataset.sure = '1'; b.textContent = 'もう一度押すと解除します'; return; }
   b.disabled = true;
-  const r = await rpc(DB.hd, 'invctl_end_stop_sale', { p_id: +b.dataset.end, p_by: who });
+  const r = await rpc(sdb(), 'invctl_end_stop_sale', { p_id: +b.dataset.end, p_by: who });
   await load(); loadStops();
   $('boardMsg').innerHTML = `<div class="confirm">${r.ok ? '緊急停止を解除しました。配車表どおりの数に戻します。' : '解除できませんでした（' + r.status + '）。'}</div>`;
 }
@@ -233,7 +233,7 @@ function detail(s, k, stock, cell) {
     <table style="margin-top:8px"><tr><th style="text-align:left">媒体</th><th>出すべき</th><th>出ている</th><th>ずれ</th></tr>
     ${s.otas.map(o => { const v = cell[k]?.[o]; if (!v) return `<tr><td class="cls">${OTA[o]}</td><td colspan="3" class="c0">対象外</td></tr>`; const [sb, on] = v;
       return `<tr><td class="cls">${OTA[o]}</td><td>${sb}</td><td>${on ?? '<span class="c0">未読</span>'}</td><td>${on == null ? '' : `<span class="mm ${on > sb ? 'over' : on < sb ? 'under' : 'eq'}">${on - sb > 0 ? '+' : ''}${on - sb}</span>`}</td></tr>`; }).join('')}</table>
-    ${s.db !== 'hd' ? '' : (() => { const st = stops.filter(x => x.cls === c && d >= x.dd_from && (!x.dd_to || d <= x.dd_to));
+    ${(() => { const st = stops.filter(x => x.cls === c && d >= x.dd_from && (!x.dd_to || d <= x.dd_to));
       return st.length ? `<div class="confirm">売り止め中（${esc(st[0].reason || '')}・${esc(st[0].created_by)}）<button class="mb auto" id="dEnd" data-id="${st[0].id}">売り止めをやめる</button></div>`
         : `<div class="confirm">わざと売っていないなら：<button class="mb stop" id="dOne">この日だけ売り止め</button><button class="mb stop" id="dOn">この日からずっと売り止め</button></div>`; })()}
     <div id="dMsg"></div></div>`;
@@ -241,7 +241,7 @@ function detail(s, k, stock, cell) {
   if (one) one.onclick = () => addStop(c, '', d, d, 'カレンダーから', 'dMsg');
   if (on) on.onclick = () => addStop(c, '', d, null, 'カレンダーから', 'dMsg');
   if (end) end.onclick = async () => { const who = $('who').value.trim(); if (!who) { $('dMsg').innerHTML = '<div class="confirm">「詳しく見る」の中の「切り替える人の名前」を先に入れてください。</div>'; return; }
-    const r = await rpc(DB.hd, 'invctl_end_stop_sale', { p_id: +end.dataset.id, p_by: who }); $('dMsg').innerHTML = `<div class="confirm">${r.ok ? '売り止めをやめました。' : '変更できませんでした。'}</div>`; loadStops(); load(); };
+    const r = await rpc(sdb(), 'invctl_end_stop_sale', { p_id: +end.dataset.id, p_by: who }); $('dMsg').innerHTML = `<div class="confirm">${r.ok ? '売り止めをやめました。' : '変更できませんでした。'}</div>`; loadStops(); load(); };
 }
 
 const ITEMS = [['ids', '画面の番号'], ['calc', '計算'], ['read', '読み取り'], ['rehearsal', '書く練習<br>（最後の数）'], ['live', '本番']];
@@ -267,6 +267,7 @@ async function loadProgress() {
 
 const MODE = { auto: '自動', manual: '手動', stop: '停止' };
 let pendingMode = null;
+const sdb = () => DB[STORES.find(x => x.id === store).db];
 const rpc = (db, fn, body) => fetch(`${db.url}/rest/v1/rpc/${fn}`, { method: 'POST', headers: { apikey: db.key, Authorization: `Bearer ${db.key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 try { $('who').value = localStorage.getItem('invctl_who') || ''; } catch (e) {}
 $('who').oninput = () => { try { localStorage.setItem('invctl_who', $('who').value); } catch (e) {} };
@@ -312,8 +313,7 @@ $('stopAll').onclick = () => askMode('ALL', 'ALL', 'stop');
 
 async function loadSafety() {
   const s = STORES.find(x => x.id === store);
-  if (s.db !== 'hd') { $('safeTbl').innerHTML = '<tr><td class="l">高松は後で追加します。</td></tr>'; return; }
-  const r = await rpc(DB.hd, 'invctl_safety', { p_store: store }); if (!r.ok) { $('safeTbl').innerHTML = `<tr><td class="l">読み込めませんでした（${r.status}）</td></tr>`; return; }
+  const r = await rpc(sdb(), 'invctl_safety', { p_store: store }); if (!r.ok) { $('safeTbl').innerHTML = `<tr><td class="l">読み込めませんでした（${r.status}）</td></tr>`; return; }
   const rows = await r.json(), v = {}; rows.forEach(x => v[x.cls + '|' + x.ym] = x);
   const now = new Date(Date.now() + 9 * 3600e3), ms = [...Array(6)].map((_, i) => { const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + i, 1)); return d.toISOString().slice(0, 10); });
   const cls = (window.__classes || []);
@@ -321,7 +321,7 @@ async function loadSafety() {
   $('safeTbl').querySelectorAll('input').forEach(i => i.onchange = async () => {
     const who = $('who').value.trim(); if (!who) { $('safeMsg').innerHTML = '<div class="confirm">先に上の「あなたの名前」を入れてください。</div>'; loadSafety(); return; }
     const q = Math.max(0, Math.min(99, +i.value || 0));
-    const r = await rpc(DB.hd, 'invctl_set_safety', { p_store: store, p_cls: i.dataset.c, p_ym: i.dataset.m, p_qty: q, p_by: who });
+    const r = await rpc(sdb(), 'invctl_set_safety', { p_store: store, p_cls: i.dataset.c, p_ym: i.dataset.m, p_qty: q, p_by: who });
     $('safeMsg').innerHTML = `<div class="confirm">${r.ok ? `${esc(i.dataset.c)} ${+i.dataset.m.slice(5, 7)}月の安全在庫を ${q} 台にしました。` : '変更できませんでした（' + r.status + '）。'}</div>`;
     loadSafety(); load();
   });
@@ -329,12 +329,12 @@ async function loadSafety() {
 async function loadStops() {
   const s = STORES.find(x => x.id === store);
   $('missedMsg').innerHTML = ''; $('stopMsg').innerHTML = '';
-  if (s.db !== 'hd') { $('missedTbl').innerHTML = '<tr><td class="l">高松は後で追加します。</td></tr>'; $('stopTbl').innerHTML = ''; $('missedCnt').textContent = ''; return; }
   $('ssOta').innerHTML = '<option value="">全部</option>' + s.otas.map(o => `<option value="${o}">${OTA[o]}</option>`).join('');
   try {
-    const [m, t] = await Promise.all([rpc(DB.hd, 'invctl_missed', { p_store: store, p_min_days: 3 }), rpc(DB.hd, 'invctl_stop_sales', { p_store: store })]);
-    if (!m.ok || !t.ok) throw new Error(m.status + '/' + t.status);
-    const miss = await m.json(), stops = await t.json();
+    // 売り逃しの候補は、OTAを読んだ数と並べられる那覇・札幌だけ（高松は読み取りを足したあと）
+    const [m, t] = await Promise.all([s.db === 'hd' ? rpc(DB.hd, 'invctl_missed', { p_store: store, p_min_days: 3 }) : null, rpc(sdb(), 'invctl_stop_sales', { p_store: store })]);
+    if ((m && !m.ok) || !t.ok) throw new Error((m ? m.status : '') + '/' + t.status);
+    const miss = m ? await m.json() : [], stops = await t.json();
     $('missedCnt').textContent = miss.length ? `（${miss.length}件・空き計${miss.reduce((a, x) => a + x.cars, 0)}台日）` : '（なし）';
     $('missedTbl').innerHTML = miss.length ? '<tr><th style="text-align:left">クラス</th><th style="text-align:left">媒体</th><th>期間</th><th>日数</th><th>空き（台日）</th><th></th></tr>' + miss.map((x, i) =>
       `<tr><td class="l"><b>${esc(x.cls)}</b></td><td class="l">${OTA[x.ota] || esc(x.ota)}</td><td>${md(x.dd_from)}〜${md(x.dd_to)}</td><td>${x.days}</td><td><span class="mm under">${x.cars}</span></td><td><button class="mb stop" data-i="${i}">売り止めにする</button></td></tr>`).join('')
@@ -347,7 +347,7 @@ async function loadStops() {
       const who = $('who').value.trim(); if (!who) { $('stopMsg').innerHTML = '<div class="confirm">先に「切り替える人の名前」を入れてください。</div>'; return; }
       if (b.dataset.sure !== '1') { b.dataset.sure = '1'; b.textContent = 'もう一度押すと、やめます'; return; }
       b.disabled = true;
-      const r = await rpc(DB.hd, 'invctl_end_stop_sale', { p_id: +b.dataset.id, p_by: who });
+      const r = await rpc(sdb(), 'invctl_end_stop_sale', { p_id: +b.dataset.id, p_by: who });
       await loadStops(); load();
       $('stopMsg').innerHTML = `<div class="confirm">${r.ok ? '売り止めをやめました。今日から配車表の空きどおりに出します。' : '変更できませんでした（' + r.status + '）。'}</div>`;
     });
@@ -357,7 +357,7 @@ async function addStop(cls, ota, from, to, why, msgId) {
   const who = $('who').value.trim();
   if (!who) { $(msgId).innerHTML = '<div class="confirm">先に名前を入れてください（「詳しく見る」の中の「切り替える人の名前」）。</div>'; return; }
   if (!cls || !from) { $(msgId).innerHTML = '<div class="confirm">クラスと開始日を入れてください。</div>'; return; }
-  const r = await rpc(DB.hd, 'invctl_add_stop_sale', { p_store: store, p_cls: cls, p_ota: ota || '', p_from: from, p_to: to || null, p_reason: why || null, p_by: who });
+  const r = await rpc(sdb(), 'invctl_add_stop_sale', { p_store: store, p_cls: cls, p_ota: ota || '', p_from: from, p_to: to || null, p_reason: why || null, p_by: who });
   await loadStops(); load();
   $(msgId).innerHTML = `<div class="confirm">${r.ok ? `${esc(cls)} ${ota ? OTA[ota] : '全媒体'} ${md(from)}〜${to ? md(to) : 'ずっと'} を売り止めにしました。` : '登録できませんでした（' + r.status + '）。'}</div>`;
 }
