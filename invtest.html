@@ -278,7 +278,31 @@ async function loadTop(s) {
   const bad = stopped || s.otas.some(o => adjBad(o) || clsBad(o).length || (one(o, 'read') && !one(o, 'read').ok) || (one(o, 'write_exec') && !one(o, 'write_exec').ok) || (one(o, 'live') && !one(o, 'live').ok));
   $('top').innerHTML = (stopped ? `<div class="blink" style="background:#dc2626;color:#fff;font-weight:700;padding:10px 12px;border-radius:8px;margin-bottom:8px">ロボが止まっています：最後に動いたのは ${lastAt ? jst(new Date(lastAt).toISOString()) + `（${Math.round((Date.now() - lastAt) / 60e3)}分前）` : 'まだ'}。予約が増減してもOTAの在庫は変わりません。</div>` : '') + `<table><caption>サマリ：${bad ? '<span style="color:#dc2626">異常あり</span>' : '<span style="color:#16a34a">異常なし</span>'}</caption><tr><th></th>${s.otas.map(o => `<th class="oh">${OTA[o]}</th>`).join('')}</tr>` +
     R.map(([l, f]) => `<tr><td class="h">${l}</td>${s.otas.map(o => f(o)).join('')}</tr>`).join('') + '</table>' +
-    '<div class="maplg">黄＝練習（保存の通信を止めたテスト）だけ成功で、まだ本番にしていない媒体です。</div>';
+    '<div class="maplg">黄＝練習（保存の通信を止めたテスト）だけ成功で、まだ本番にしていない媒体です。</div><div id="lease"></div>';
+  loadLease();
+}
+// ロボの当番：ロボを入れたMacのうち、動くのは1台だけ。ここで選ぶ／全台止める。当番が30分止まればほかのMacが自動で引き継ぐ
+async function loadLease() {
+  const q = await rpc(DB.hd, 'invctl_lease_state', {}); if (!q.ok) return; const L = await q.json(); const now = Date.now();
+  const alive = h => now - new Date(h.last_seen).getTime() < 30 * 60e3;
+  const mode = L.want === 'off' ? '<b style="color:#dc2626">全台停止中</b>' : L.want ? `指定：<b>${esc(L.want)}</b>` : 'おまかせ（動いているMacがそのまま。止まれば別のMacが引き継ぐ）';
+  $('lease').innerHTML = `<table style="margin-top:8px"><caption>ロボの当番（動くのは1台だけ）：${mode}${L.want_by ? `<span class="note">　${esc(L.want_by)} ${jst(L.want_at)}</span>` : ''}</caption>
+    <tr><th>Mac</th><th>状態</th><th>最後の連絡</th><th></th></tr>` +
+    (L.hosts.length ? L.hosts.map(h => { const on = L.holder === h.host && L.beat && now - new Date(L.beat).getTime() < 30 * 60e3;
+      return `<tr><td class="h">${esc(h.host)}</td><td>${on ? '<span class="t gr" style="cursor:default;min-width:80px">当番（動いている）</span>' : alive(h) ? '<span class="t yl" style="cursor:default;min-width:80px">待機</span>' : '<span class="t rd" style="cursor:default;min-width:80px">連絡なし</span>'}</td>
+        <td>${jst(h.last_seen)}</td><td>${on && L.want !== 'off' ? '' : `<button class="ebtn" data-host="${esc(h.host)}">このMacで動かす</button>`}</td></tr>`; }).join('') : '<tr><td colspan="4" class="c0">まだロボから連絡がありません</td></tr>') +
+    `</table><div style="margin-top:6px"><button class="ebtn" data-host="off">ロボを全台止める</button> <button class="ebtn" data-host="">おまかせに戻す</button></div>`;
+  $('lease').querySelectorAll('button[data-host]').forEach(b => b.onclick = () => leaseWant(b));
+}
+async function leaseWant(b) {
+  const who = $('who').value.trim();
+  if (!who) { $('boardMsg').innerHTML = '<div class="confirm">先に「あなたの名前」を入れてください。</div>'; $('who').focus(); return; }
+  const h = b.dataset.host, label = h === 'off' ? '全台止めます' : h ? `${h} で動かします` : 'おまかせに戻します';
+  if (b.dataset.sure !== '1') { b.dataset.sure = '1'; b.textContent = `もう一度押すと ${label}`; return; }
+  b.disabled = true;
+  const r = await rpc(DB.hd, 'invctl_lease_want', { p_host: h || null, p_by: who });
+  $('boardMsg').innerHTML = `<div class="confirm">${r.ok ? `${label}。次の見回り（15分以内）で切り替わります。` : '切り替えられませんでした（' + r.status + '）。'}</div>`;
+  loadLease();
 }
 const ROWS = [['total', '在庫合計', '稼働＋未稼働'], ['active', '稼働'], ['booked', '予約', '配車不可'], ['allow', '許可', '予約可能'], ['adjust', '調整', 'バッファ＝安全台数：手で入力'], ['release', '解放中', 'OTAに出す台数']];
 function render(s) {
