@@ -1100,7 +1100,7 @@ document.addEventListener("click",e=>{
   if(d.pdskip){if(!need())return;db.collection("pdca").doc(d.pdskip).update({stage:"a",verdict:"skip",a:{next:"見送り（"+new Date().toISOString().slice(0,10)+"）"},skipped_by:uid||""}).then(()=>toast("見送りにしました")).catch(()=>toast("保存できませんでした"));return}
   if(d.pc){ui.pc=ui.pc===d.pc?"":d.pc;render();return}
   if(d.pcdone){if(!need())return;const x=PD.find(y=>y.id===d.pcdone);db.collection("pdca").doc(d.pcdone).update({wait:null,wait_done:x&&x.wait||"",wait_done_at:new Date().toISOString(),done_by:uid||""}).then(()=>toast("済みにしました")).catch(()=>toast("保存できませんでした"));return}
-  if(d.adsave){if(!need())return;const v=$("#adin").value;const sk=ui.adst||ui.store,D=ADD.find(a=>a.store===sk);if(!D)return;const h={...(D.hpad||{})};if(v==="")delete h[d.adsave];else h[d.adsave]=Number(v);db.collection("adsdaily").doc(sk).update({hpad:h,hpad_by:uid||"",hpad_at:new Date().toISOString()}).then(()=>toast("総額を保存しました")).catch(()=>toast("保存できませんでした"));return}
+  if(d.adsave){const v=$("#adin").value.trim();saveAdTotal(ui.adst||ui.store,+d.adsave,v===""?null:Math.round(Number(v))).then(()=>toast("総額を保存しました")).catch(e=>toast(e&&e.msg||"保存できませんでした"));return}
   if(d.adm){ui.adm=+d.adm;save();render();return}
   if(d.adst!=null){ui.adst=d.adst;save();render();return}
   if(d.bdcsave){if(!need())return;const txt=$("#bdcin").value;const P=parseSheet(txt);if(!P){toast("表を読み取れませんでした（日にちの行ごと貼ってください）");return}const D=ADD.find(a=>a.store==="buddica")||{};const blk=mergeMap(D.blk,P.blk),parts=mergeMap(D.parts,P.parts);const rows=rowsFrom(blk);const days=rows.map(r=>r[0]);db.collection("adsdaily").doc("buddica").update({blk,parts,rows,to:"2026-"+days[days.length-1],from:"2026-"+days[0],checked:new Date().toISOString().slice(0,10),paste_by:uid||""}).then(()=>{toast(`登録しました（${P.n}日分）`);$("#bdcin").value=""}).catch(()=>toast("保存できませんでした"));return}
@@ -1175,6 +1175,20 @@ function hpCount(rows){const M={};rows.forEach(r=>{if(/cancel|キャンセル/i.
 function putHP(store,M,src){const D=ADD.find(a=>a.store===store);if(!D)return;const cur=new Date().getFullYear()===2026?new Date().getMonth()+1:12;D.hpm={};D.hpr={};
   for(let m=FIRST[store];m<=cur;m++){const a=M[String(m)]||[0,0];D.hpm[m]=a[0];D.hpr[m]=a[1]}D.hpsrc=src}
 function putAd(store,obj){const D=ADD.find(a=>a.store===store);if(!D||!obj)return;const h={};Object.keys(obj).forEach(k=>{if(/^2026-\d\d$/.test(k))h[+k.slice(5,7)]=+obj[k]||0});D.hpad=h}
+// 広告費の総額＝獲得・OTA実績（hp-acquire.html）と同じ置き場所 *_app_settings.hp_adspend_*。直前に読み直し、その月だけ変えて書く（ほかの月は触らない）
+const ADKEY={sapporo:[SB,'app_settings','hp_adspend_spk'],naha:[SB,'nha_app_settings','hp_adspend_nha'],takamatsu:[BTSB,'bt_app_settings','hp_adspend_bt']};
+async function saveAdTotal(store,m,val){
+  const K=ADKEY[store];if(!K)throw {msg:"この店の広告費はここでは保存できません"};
+  if(val!=null&&!(val>=0))throw {msg:"数字を入れてください"};
+  const [base,tbl,key]=K,bt=base===BTSB,s=sess(),t=s&&s.access_token;if(!bt&&!t)throw {msg:"保存できません（管理APPでログインしてください）"};
+  const h=bt?HD(null,BT_ANON):HD(t);
+  const r0=await fetch(base+'/rest/v1/'+tbl+'?key=eq.'+key+'&select=value',{headers:h});if(!r0.ok)throw {msg:"保存できませんでした（読み直しに失敗）"};
+  const d0=await r0.json();const cur=parseV(d0[0]&&d0[0].value)||{};const ym='2026-'+String(m).padStart(2,'0');
+  if(val==null||val===0)delete cur[ym];else cur[ym]=val;
+  const r=await fetch(base+'/rest/v1/'+tbl+'?on_conflict=key',{method:'POST',headers:Object.assign({Prefer:'resolution=merge-duplicates,return=minimal'},h),body:JSON.stringify([{key,value:JSON.stringify(cur)}])});
+  if(!r.ok)throw {msg:"保存できませんでした（"+r.status+"）"};
+  putAd(store,cur);render();
+}
 const parseV=v=>{try{return typeof v==='string'?JSON.parse(v):v}catch(e){return null}};
 async function deriveHP(){
   const s=sess(),t=s&&s.access_token,now=new Date(),stamp=(now.getMonth()+1)+'/'+now.getDate()+' '+String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0');
