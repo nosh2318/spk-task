@@ -1,0 +1,144 @@
+<!DOCTYPE html><html lang="ja"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>在庫チェック</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;font-family:-apple-system,"Hiragino Kaku Gothic ProN",sans-serif;background:#f6f7f9;color:#0f172a;font-size:14px}
+.wrap{max-width:1200px;margin:0 auto;padding:12px}
+.tabs,.months{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 10px}
+.tabs button,.months button{flex:1;min-width:90px;padding:10px;border:none;border-radius:6px;background:#e2e8f0;font-weight:800;font-size:15px;cursor:pointer;position:relative}
+.months button{font-size:14px;padding:8px}
+.tabs button.on,.months button.on{background:#2f3b55;color:#fff}
+.tabs .dot,.months .dot{position:absolute;top:4px;right:6px;width:10px;height:10px;border-radius:50%}
+.big{border-radius:8px;padding:16px;margin:0 0 10px;font-size:22px;font-weight:900;text-align:center}
+.big small{display:block;font-size:13px;font-weight:600;margin-top:4px}
+.big.ok{background:#dcfce7;color:#166534}.big.ng{background:#fee2e2;color:#991b1b;animation:blink 1s infinite}.big.warn{background:#fef9c3;color:#854d0e}
+@keyframes blink{50%{opacity:.55}}
+.rule{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 10px;font-size:13px}
+.rule span{display:flex;align-items:center;gap:6px;background:#fff;border-radius:6px;padding:6px 10px}
+.sw{width:18px;height:18px;border-radius:4px;display:inline-block}
+.card{background:#fff;border-radius:8px;padding:10px;box-shadow:0 1px 3px rgba(0,0,0,.08);margin:0 0 10px}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{border-collapse:separate;border-spacing:2px}
+th{font-size:11px;color:#64748b;font-weight:700;padding:2px}
+th.sat{color:#2563eb}th.sun{color:#dc2626}
+td{width:34px;height:34px;text-align:center;font-weight:800;font-size:14px;border-radius:5px;cursor:pointer;font-variant-numeric:tabular-nums}
+td.cls{position:sticky;left:0;background:#fff;z-index:1;text-align:left;padding-right:6px;cursor:default;font-size:15px}
+.g{background:#22c55e;color:#fff}.r{background:#dc2626;color:#fff;animation:blink 1s infinite}.y{background:#facc15;color:#422006}.n{background:#e2e8f0;color:#94a3b8}
+.foot{font-size:12px;color:#64748b;text-align:center;margin:6px 0 20px}
+#pop{position:fixed;inset:0;background:rgba(15,23,42,.45);display:none;align-items:center;justify-content:center;z-index:50;padding:16px}
+#pop .in{background:#fff;border-radius:10px;padding:16px;max-width:360px;width:100%}
+#pop h3{margin:0 0 10px;font-size:17px}
+#pop table{width:100%;border-spacing:0}
+#pop td{width:auto;height:auto;cursor:default;border-radius:0;padding:8px 6px;border-bottom:1px solid #eef2f7;text-align:left;font-size:15px}
+#pop td.v{text-align:right}
+#pop button{margin-top:12px;width:100%;padding:10px;border:none;border-radius:6px;background:#2f3b55;color:#fff;font-size:15px;font-weight:800}
+</style></head><body>
+<div class="wrap">
+  <div class="tabs" id="tabs"></div>
+  <div id="big"></div>
+  <div class="rule">
+    <span><i class="sw g"></i>OTA ＝ 配車表の残り − 安全在庫（正しい）</span>
+    <span><i class="sw r"></i>OTAが多い（売りすぎ・絶対ダメ）</span>
+    <span><i class="sw y"></i>OTAが少ない（売り逃し）</span>
+  </div>
+  <div class="months" id="months"></div>
+  <div class="card scroll"><table id="grid"></table></div>
+  <div class="foot" id="foot"></div>
+</div>
+<div id="pop"><div class="in"><h3 id="popT"></h3><table id="popTbl"></table><button onclick="document.getElementById('pop').style.display='none'">とじる</button></div></div>
+<script>
+// ルールは1つだけ（オーナー 2026-10-26）：OTAに出す数 ＝ 配車表の残り − 安全在庫。多いのは絶対ダメ、少ないのは売り逃し
+const DB = {
+  hd: { url: 'https://ckrxttbnawkclshczsia.supabase.co', key: 'sb_publishable_aTVhlY0YD-5BBfI03ZNnsg_MzO_vsIe' },
+  bt: { url: 'https://ggqugvyskyiblxiycpci.supabase.co', key: 'sb_publishable_fI8HYYDFn3Soa4kOMbNCAA_oOxGPPKV' },
+};
+const STORES = [
+  { id: 'nha', name: '那覇', db: 'hd', otas: ['RKT', 'JLN', 'SKT', 'ART', 'RDC'] },
+  { id: 'spk', name: '札幌', db: 'hd', otas: ['RKT', 'JLN', 'SKT', 'ART', 'RDC'] },
+  { id: 'takh', name: '高松 HDM', db: 'bt', otas: ['RKT', 'JLN'] },
+  { id: 'takb', name: '高松 BUDDICA', db: 'bt', otas: ['ART', 'TAB'] },
+];
+const OTA = { RKT: '楽天', JLN: 'じゃらん', SKT: 'skyticket', ART: 'エアトリ', RDC: 'レンタカードットコム', TAB: 'たびらい' };
+const TABMAP = { 7343: 'A', 7344: 'C', 7345: 'E', 7346: 'D', 7347: 'F', 7348: 'G', 7349: 'H', 7473: 'I', 7474: 'J', 7475: 'K' }; // たびらいのクラス番号→配車表のクラス
+const DAYS = 180;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const jst = t => t ? new Date(t).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+const wd = d => new Date(d + 'T12:00:00+09:00').getDay();
+const rpc = (db, fn, body) => fetch(`${db.url}/rest/v1/rpc/${fn}`, { method: 'POST', headers: { apikey: db.key, Authorization: `Bearer ${db.key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+async function chunks(db, fn, body, pre = '') { // 1回で返るのは1000行まで。30日ずつ取る
+  const d0 = new Date(Date.now() + 9 * 3600e3), day = k => new Date(d0.getTime() + k * 86400e3).toISOString().slice(0, 10);
+  const rs = await Promise.all([0, 1, 2, 3, 4, 5, 6].map(k => rpc(db, `${fn}?${pre}dd=gte.${day(k * 30)}&dd=lt.${day(k * 30 + 30)}`, body)));
+  if (rs.some(r => !r.ok)) return null;
+  return (await Promise.all(rs.map(r => r.json()))).flat();
+}
+
+const P = new URLSearchParams(location.search);
+let store = STORES.some(s => s.id === P.get('store')) ? P.get('store') : 'nha', month = null;
+const cache = {}; // store → { cells: {cls|dd: {...}}, last }
+
+// 1マス＝1クラス×1日。媒体ごとに OTAの数 と 正しい数（配車表の残り−安全在庫）を比べ、いちばん悪い色を付ける
+async function fetchStore(s) {
+  const r = await rpc(DB[s.db], 'invctl_dashboard', { p_store: s.id, p_days: DAYS });
+  if (!r.ok) throw new Error(r.status);
+  const d = await r.json(); let last = d.last_read, cells = d.cells;
+  if (s.db === 'bt') { // 高松：ロボが読んだOTAの数は那覇・札幌のDBにある
+    const on = {}; for (const o of s.otas) for (const x of (await chunks(DB.hd, 'invctl_snap', { p_store: s.id, p_days: DAYS }, 'ota=eq.' + o + '&')) || []) {
+      const c = x.ota === 'TAB' ? TABMAP[x.cls] : x.cls; if (!c) continue; on[c + '|' + x.dd + '|' + x.ota] = x.qty; if (!last || x.read_at > last) last = x.read_at; }
+    cells = cells.map(([c, dd, o, sb, v]) => [c, dd, o, sb, on[c + '|' + dd + '|' + o] ?? v]);
+  }
+  const rem = {}; for (const [c, dd, , , , re] of d.stock) rem[c + '|' + dd] = re;
+  const out = {};
+  for (const [c, dd, o, sb, v] of cells) {
+    if (!s.otas.includes(o) || (s.id === 'takb' && c === 'AA')) continue; // AA は手で合わせる
+    const k = c + '|' + dd, x = out[k] || (out[k] = { c, dd, rem: rem[k] ?? null, ok: sb, ota: {} });
+    x.ok = Math.min(x.ok, sb); x.ota[o] = v;
+  }
+  for (const x of Object.values(out)) {
+    const v = Object.entries(x.ota).filter(([, q]) => q != null);
+    x.st = !v.length ? 'n' : v.some(([o, q]) => q > x.ok) ? 'r' : v.some(([, q]) => q < x.ok) ? 'y' : 'g';
+  }
+  return { cells: out, last };
+}
+async function loadAll() {
+  await Promise.all(STORES.map(async s => { try { cache[s.id] = await fetchStore(s); } catch (e) { cache[s.id] = { err: e.message }; } }));
+  draw();
+}
+const count = (id, ym) => { const c = cache[id]; if (!c || !c.cells) return null; const a = Object.values(c.cells).filter(x => !ym || x.dd.startsWith(ym));
+  return { r: a.filter(x => x.st === 'r').length, y: a.filter(x => x.st === 'y').length, all: a.length }; };
+const dotColor = n => !n ? '' : n.r ? '#dc2626' : n.y ? '#eab308' : '#22c55e';
+
+function draw() {
+  $('tabs').innerHTML = STORES.map(s => { const n = count(s.id); return `<button class="${s.id === store ? 'on' : ''}" data-s="${s.id}">${s.name}${n ? `<i class="dot" style="background:${dotColor(n)}"></i>` : ''}</button>`; }).join('');
+  $('tabs').querySelectorAll('button').forEach(b => b.onclick = () => { store = b.dataset.s; history.replaceState(null, '', '?store=' + store + (P.get('embed') ? '&embed=1' : '')); draw(); });
+  const c = cache[store];
+  if (!c) { $('big').innerHTML = '<div class="big warn">読み込み中…</div>'; return; }
+  if (c.err) { $('big').innerHTML = `<div class="big warn">読み込めませんでした（${esc(c.err)}）</div>`; return; }
+  const n = count(store), name = STORES.find(s => s.id === store).name;
+  $('big').innerHTML = n.r ? `<div class="big ng">❌ ${name}：売りすぎ ${n.r}マス<small>OTAの方が多い日があります（少ない ${n.y}マス）</small></div>`
+    : n.y ? `<div class="big warn">⚠ ${name}：売りすぎ 0・少ない ${n.y}マス<small>多くはないので事故にはなりません。売り逃しです</small></div>`
+    : `<div class="big ok">✅ ${name}：全部OK<small>全クラス・全媒体が 配車表の残り − 安全在庫 と同じ数です</small></div>`;
+  const yms = [...new Set(Object.values(c.cells).map(x => x.dd.slice(0, 7)))].sort();
+  if (!yms.includes(month)) month = yms[0];
+  $('months').innerHTML = yms.map(ym => { const m = count(store, ym); return `<button class="${ym === month ? 'on' : ''}" data-m="${ym}">${+ym.slice(5)}月<i class="dot" style="background:${dotColor(m)}"></i></button>`; }).join('');
+  $('months').querySelectorAll('button').forEach(b => b.onclick = () => { month = b.dataset.m; draw(); });
+  const a = Object.values(c.cells).filter(x => x.dd.startsWith(month));
+  const days = [...new Set(a.map(x => x.dd))].sort(), cls = [...new Set(a.map(x => x.c))].sort();
+  $('grid').innerHTML = `<tr><th></th>${days.map(d => `<th class="${wd(d) === 6 ? 'sat' : wd(d) === 0 ? 'sun' : ''}">${+d.slice(8)}</th>`).join('')}</tr>` +
+    cls.map(k => `<tr><td class="cls">${esc(k)}</td>${days.map(d => { const x = c.cells[k + '|' + d]; return x ? `<td class="${x.st}" data-k="${esc(k + '|' + d)}">${x.ok}</td>` : '<td class="n"></td>'; }).join('')}</tr>`).join('');
+  $('grid').querySelectorAll('td[data-k]').forEach(t => t.onclick = () => pop(c.cells[t.dataset.k]));
+  $('foot').textContent = `マスの数字＝OTAに出す正しい数。ロボがOTAを読んだ時刻 ${jst(c.last)}・5分ごとに自動で更新`;
+}
+function pop(x) {
+  const s = STORES.find(z => z.id === store), rem = Math.max(0, x.rem ?? 0);
+  $('popT').textContent = `${s.name} ${x.c}クラス ${+x.dd.slice(5, 7)}/${+x.dd.slice(8)}`;
+  $('popTbl').innerHTML = `<tr><td>配車表の残り</td><td class="v">${x.rem ?? '—'}台</td></tr><tr><td>安全在庫など（引く数）</td><td class="v">−${Math.max(0, rem - x.ok)}台</td></tr>` +
+    `<tr><td><b>OTAに出す正しい数</b></td><td class="v"><b>${x.ok}台</b></td></tr>` +
+    s.otas.map(o => { const q = x.ota[o]; const st = q == null ? 'n' : q > x.ok ? 'r' : q < x.ok ? 'y' : 'g';
+      return `<tr><td>${OTA[o]}</td><td class="v"><span class="sw ${st}" style="vertical-align:middle;margin-right:6px;animation:none"></span>${q ?? '未読'}${q == null ? '' : '台'}</td></tr>`; }).join('');
+  $('pop').style.display = 'flex';
+}
+draw(); loadAll(); setInterval(loadAll, 5 * 60e3);
+</script>
+</body></html>
