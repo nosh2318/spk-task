@@ -258,18 +258,20 @@ async function loadTop(s) {
   const T = (k, t) => `<td><span class="t ${k}" style="cursor:default;min-width:96px;height:auto;padding:4px 6px;display:inline-block;line-height:1.35">${t}</span></td>`;
   const rowCls = o => { const b = clsBad(o), n = cm.filter(r => r.ota === o).length; const ok = cm.filter(r => r.ota === o && r.seen_match).length;
     return !n ? T('gy', 'まだ') : b.length ? T('rd', `異常あり<br><b>${b.length}</b>クラス（${b.map(r => esc(r.cls)).join('・')}）`) : ok < n ? T('yl', `未確認あり<br><span style="font-size:10px">一致 ${ok}/${n}クラス</span>`) : T('gr', `異常なし<br><span style="font-size:10px">一致 ${ok}/${n}クラス</span>`); };
-  const rowRead = o => { const x = one(o, 'read'); return !x ? T('gy', 'まだ') : x.ok ? T('gr', `成功<br><span style="font-size:10px">${jst(x.at)}</span>`) : T('rd', `失敗<br><span style="font-size:10px">${esc((x.info.error || '').slice(0, 40))}</span>`); };
+  // 失敗のときは、止まった時刻と最後に成功した時刻を必ず出す（オーナー 10/25）
+  const since = (k, o) => { const l = one(o, k); return `<br><span style="font-size:10px">最後に成功：${l ? jst(l.at) : 'なし'}</span>`; };
+  const rowRead = o => { const x = one(o, 'read'); return !x ? T('gy', 'まだ') : x.ok ? T('gr', `成功<br><span style="font-size:10px">${jst(x.at)}</span>`) : T('rd', `失敗 ${jst(x.at)}<br><span style="font-size:10px">${esc((x.info.error || '').slice(0, 40))}</span>${since('last_ok_read', o)}`); };
   const rowWrite = o => { const e = one(o, 'write_exec'), l = one(o, 'live'), r = one(o, 'rehearsal');
-    if (e && !e.ok) return T('rd', `失敗<br><span style="font-size:10px">${esc((e.info.error || '').slice(0, 40))}</span>`);
-    if (l) return l.ok ? T('gr', `本番 成功<br><span style="font-size:10px">${l.info.saved || 0}マス ${jst(l.at)}</span>`) : T('rd', `本番 異常<br><span style="font-size:10px">保存せず ${l.info.held || 0}・ちがう ${l.info.ng_after || 0}</span>`);
-    if (r) return r.ok ? T('yl', `練習のみ 成功<br><span style="font-size:10px">${r.info.filled || 0}マス ${jst(r.at)}</span>`) : T('rd', `練習 異常<br><span style="font-size:10px">保存せず ${r.info.held || 0}・送信先 ${r.info.save_ng || 0}</span>`);
+    if (e && !e.ok) return T('rd', `失敗 ${jst(e.at)}<br><span style="font-size:10px">${esc((e.info.error || '').slice(0, 40))}</span>${since('last_ok_write_exec', o)}`);
+    if (l) return l.ok ? T('gr', `本番 成功<br><span style="font-size:10px">${l.info.saved || 0}マス ${jst(l.at)}</span>`) : T('rd', `本番 異常 ${jst(l.at)}<br><span style="font-size:10px">保存せず ${l.info.held || 0}・ちがう ${l.info.ng_after || 0}</span>${since('last_ok_live', o)}`);
+    if (r) return r.ok ? T('yl', `練習のみ 成功<br><span style="font-size:10px">${r.info.filled || 0}マス ${jst(r.at)}</span>`) : T('rd', `練習 異常 ${jst(r.at)}<br><span style="font-size:10px">保存せず ${r.info.held || 0}・送信先 ${r.info.save_ng || 0}</span>${since('last_ok_rehearsal', o)}`);
     return T('gy', 'まだ'); };
   // 在庫調節：配車表の解放中とOTAがちがうマス。本番の媒体は、ロボの最後の本番保存から30分たってもちがえば赤（直っていない）
   const gapN = o => data.cells.filter(([c, , oo, sb, on]) => oo === o && on != null && on !== sb && !MANUAL.includes(store + '|' + o + '|' + c)).length;
   const isLive = o => LIVE.includes(store + '|' + o);
   const adjBad = o => { if (!isLive(o) || !gapN(o)) return false; const l = one(o, 'live'); return !l || !l.ok || Date.now() - new Date(l.at).getTime() > 30 * 60e3; };
   const rowAdj = o => { const n = gapN(o); if (!isLive(o)) return T('gy', `本番前<br><span style="font-size:10px">ずれ ${n}マス（人・MCが合わせる）</span>`);
-    return !n ? T('gr', '合っている') : adjBad(o) ? T('rd', `直っていない<br><b>${n}</b>マス`) : T('yl', `直している途中<br><b>${n}</b>マス`); };
+    return !n ? T('gr', '合っている') : adjBad(o) ? T('rd', `直っていない<br><b>${n}</b>マス${since('last_ok_live', o)}`) : T('yl', `直している途中<br><b>${n}</b>マス`); };
   // ロボが止まっていないか：一番新しい記録（読み取り・書き込み）が30分より前なら赤で点滅
   const lastAt = [data.last_read, ...st.map(x => x.at)].filter(Boolean).map(t => new Date(t).getTime()).sort((a, b) => b - a)[0];
   const stopped = !lastAt || Date.now() - lastAt > 30 * 60e3;
