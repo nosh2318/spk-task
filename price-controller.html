@@ -442,6 +442,17 @@ function togSeg(ym,cl,sg,on){var P=PRICE[STORE],ch=P.channels[CHAN],ns=segNames(
   P.input_log=(P.input_log||[]).slice(0,500);
   var y=window.scrollY;render();window.scrollTo(0,y);
   if(WRITE_ENABLED)saveDoneOnly(STORE,CHAN,cl,vals);}
+// その月・そのOTAの済を一括で付け外し（販売なし・参考クラスは除く）。保存はクラスごとに1か所ずつ（saveDoneOnly）
+function monthSegs(P,ym){var out=[];Object.keys(P.price||{}).forEach(function(cl){if(refOf(cl)||inactAt(cl,ym))return;
+  ['low','base','high'].forEach(function(sg){if(monthVals(P,CHAN,ym,cl)[sg]!=null&&segNames(P,CHAN,ym,cl,sg).length)out.push([cl,sg]);});});return out;}
+function monthAllDone(P,ym){var ss=monthSegs(P,ym);return ss.length>0&&ss.every(function(x){return !segPending(P,CHAN,ym,x[0],x[1]);});}
+async function togMonth(ym,on){var P=PRICE[STORE],ch=P.channels[CHAN],by={};
+  ch.done_tier=ch.done_tier||{};
+  monthSegs(P,ym).forEach(function(x){var cl=x[0],sg=x[1],v=monthVals(P,CHAN,ym,cl)[sg];ch.done_tier[cl]=ch.done_tier[cl]||{};by[cl]=by[cl]||{};
+    segNames(P,CHAN,ym,cl,sg).forEach(function(nm){if(on){ch.done_tier[cl][nm]={ts:nowStr(),v:v};P.input_log=P.input_log||[];P.input_log.unshift({ts:nowStr(),ota:CHAN,cls:cl,tier:nm});}else delete ch.done_tier[cl][nm];by[cl][nm]=on?ch.done_tier[cl][nm]:null;});});
+  P.input_log=(P.input_log||[]).slice(0,500);
+  var y=window.scrollY;render();window.scrollTo(0,y);
+  if(WRITE_ENABLED){var s=STORE,k=CHAN;for(var cl in by)await saveDoneOnly(s,k,cl,by[cl]);}}
 // チェック（入力済み）だけを本番に書く：ほかの未保存の価格変更は巻き込まない・最新を読み直して1か所だけ差し替え
 async function saveDoneOnly(s,k,cl,vals){
   var db=DBOF[s],tbl=TBLOF[s];
@@ -489,7 +500,7 @@ function adjTab(){
   var isOta=CHAN!=='official',pct=saleRate();
   var ent=isOta?(((P.channels||{})[CHAN]||{}).entered||null):null,eV=(ent&&ent.v)||{};
   var highKey=Object.keys(highNames)[0]||'高い日';
-  var head='<tr><th rowspan="2">クラス</th>'+(isOta?'<th rowspan="2" style="width:28px">済</th>':'')+'<th rowspan="2">種別</th><th colspan="5">通常</th>'+(isOta?'<th colspan="5" style="background:#f4e4e2;color:#a5524c">セール −<input type="number" min="0" max="50" step="1" value="'+pct+'" style="width:48px;padding:2px 4px;margin:0 2px;text-align:right;font-weight:800;color:#a5524c;border:1px solid #dfb3ae" onchange="PRICE[STORE].sale_rate=+this.value;var y=window.scrollY;render();window.scrollTo(0,y)">%</th>':'')+'</tr><tr>'
+  var head='<tr><th rowspan="2">クラス</th>'+(isOta?'<th rowspan="2" style="width:28px">済<br><input type="checkbox" style="width:16px;height:16px;margin:2px 0 0;accent-color:#4f8a5b"'+(monthAllDone(P,ym)?' checked':'')+' onchange="togMonth(\''+ym+'\',this.checked)"></th>':'')+'<th rowspan="2">種別</th><th colspan="5">通常</th>'+(isOta?'<th colspan="5" style="background:#f4e4e2;color:#a5524c">セール −<input type="number" min="0" max="50" step="1" value="'+pct+'" style="width:48px;padding:2px 4px;margin:0 2px;text-align:right;font-weight:800;color:#a5524c;border:1px solid #dfb3ae" onchange="PRICE[STORE].sale_rate=+this.value;var y=window.scrollY;render();window.scrollTo(0,y)">%</th>':'')+'</tr><tr>'
     +NIGHTS.map(function(n){return '<th>'+n[0]+'</th>';}).join('')+(isOta?NIGHTS.map(function(n){return '<th style="background:#f4e4e2;color:#a5524c">'+n[0]+'</th>';}).join(''):'')+'</tr>';
   // 入力待ち＝前回「入力済み」にした値と違う段（OTAのみ）
   var pend=function(cl,name,v,n0){if(!isOta||!n0)return null;var a=(eV[cl]||{})[name];return a===v?null:(a==null?'未登録':'¥'+(+a).toLocaleString());};
