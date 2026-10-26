@@ -43,11 +43,10 @@ table.l td{padding:7px 6px;border-bottom:1px solid #eef2f7;vertical-align:top}
   <div id="big"></div>
   <div class="nums" id="nums"></div>
   <div class="rule">
-    <span><i class="sw A"></i>たびらい・レンタカーコム・エアトリの予約（APPとadminを照合する）</span>
-    <span><i class="sw O"></i>公式HPなどの予約（照合しない・埋まっている印だけ）</span>
-    <span><i class="sw G"></i>admin の行：APP と同じ（正しい）</span>
-    <span><i class="sw R"></i>admin の行：APPは予約ありなのに空き（HPで二重に売れる・絶対ダメ）</span>
-    <span><i class="sw Y"></i>admin の行：APPは空きなのに埋まっている（HPの売り逃し）</span>
+    <span>数字＝その日に埋まっている予約の数（公式HPなども全部）。同じクラスなら、どの車に入っていてもよい</span>
+    <span><i class="sw G"></i>admin＝APP（正しい）</span>
+    <span><i class="sw R"></i>admin が APP より少ない（HPで二重に売れる・絶対ダメ）</span>
+    <span><i class="sw Y"></i>admin が APP より多い（HPの売り逃し）</span>
   </div>
   <div class="months" id="months"></div>
   <div class="card scroll"><table class="g" id="grid"></table></div>
@@ -63,7 +62,7 @@ const OTA = { 'たびらい': 'たびらい', 'レンタカードットコム': 
 // 予約ごとの状態 → 色と言葉
 const ST = {
   missing: ['R', 'adminに無い', 'HPで同じ車が売れてしまう。ロボが登録します'],
-  car: ['R', '車がちがう', 'APPで車を入れ替えた。ロボがadminの車を入れ替えます'],
+  car: ['R', 'クラスがちがう', 'APPとadminで車のクラスがちがう。人が確認'],
   time: ['Y', '時刻がちがう', 'ロボがAPPの時刻に直します'],
   cancel: ['Y', 'キャンセル漏れ', 'APPはキャンセル。ロボがadminもキャンセルにします'],
   dup: ['Y', 'adminに2行ある', 'APPと同じ方を残し、もう1行はスタッフが確認'],
@@ -96,7 +95,12 @@ function draw() {
   // 時刻のずれが30分以内は一致とみなす（丸め方のちがい）
   const near = x => x.state === 'time' && (x.rows || []).some(r => r.st !== 3 && Math.abs(new Date(r.f) - new Date(x.af)) <= 30 * 60e3 && Math.abs(new Date(r.t) - new Date(x.at)) <= 30 * 60e3);
   const nNear = (D.rows || []).filter(near).length;
-  const rows = (D.rows || []).map(x => near(x) ? { ...x, state: 'ok' } : x), bad = rows.filter(x => x.state !== 'ok');
+  // admin はクラスの空き数でブロックできればよい（オーナー 10/26）：同じクラスの別の車に入っているのは一致。AA は1台ずつ別クラス
+  const CLS = Object.fromEntries((D.cars || []).map(c => [c.plate, c.cls === 'AA' ? 'AA:' + c.plate : c.cls]));
+  const plateOf = x => ((x.rows || []).find(r => r.st !== 3) || {}).plate;
+  const sameCls = x => x.state === 'car' && x.ap && CLS[x.ap] && CLS[x.ap] === CLS[plateOf(x)];
+  const nSame = (D.rows || []).filter(sameCls).length;
+  const rows = (D.rows || []).map(x => near(x) || sameCls(x) ? { ...x, state: 'ok' } : x), bad = rows.filter(x => x.state !== 'ok');
   const n = k => rows.filter(x => ST[x.state] && ST[x.state][0] === k).length, nr = n('R'), ny = n('Y'), nw = n('W');
   const stale = !D.last_read || Date.now() - new Date(D.last_read) > 60 * 60e3;
   $('big').innerHTML = (stale ? `<div class="big ng">⏸ ロボが admin を ${D.last_read ? '1時間以上' : 'まだ'} 見ていません<small>最後に見た時刻 ${jst(D.last_read)}。mini のロボと admin のログインを確認</small></div>` : '') +
@@ -107,68 +111,69 @@ function draw() {
   $('nums').innerHTML = [[live, 'APPの予約（今日以降）'], [rows.filter(x => x.ast === 1 && x.state === 'ok').length, 'admin と同じ'], [nr, 'HPで二重に売れる', COLOR.R], [ny, '売り逃し・確認', COLOR.Y], [nw, '未配車で待ち', COLOR.W]]
     .map(([v, l, c]) => `<div><b style="color:${v && c ? c : '#0f172a'}">${v}</b><span>${l}</span></div>`).join('');
 
-  // 車×日。APP の行（正解）と admin の行を上下に並べ、admin の行だけに色を付ける（在庫チェックの OTA の行と同じ見方）
+  // クラス×日：その日に埋まっている予約の数を APP と admin で比べる（公式HPなども含む全予約）。色は admin の行だけ
   const app = {}, adm = {}, wait = {};
+  const put = (m, plate, f, t, rn) => { const c = CLS[plate]; if (!c) return; for (const d of days(f, t)) ((m[c + '|' + d] ||= new Set())).add(rn); };
+  const appB = []; // APP の全予約（同じ車に重なっていないかを見る）
   for (const x of rows) {
-    if (x.ast === 1 && x.ap) for (const d of days(x.af, x.at)) (app[x.ap + '|' + d] ||= []).push(x.rn);
+    if (x.ast === 1 && x.ap) { put(app, x.ap, x.af, x.at, x.rn); appB.push({ rn: x.rn, plate: x.ap, f: x.af, t: x.at }); }
     if (x.ast === 1 && !x.ap) for (const d of days(x.af, x.at)) (wait[d] ||= []).push(x.rn);
-    for (const r of (x.rows || [])) if (r.st !== 3) for (const d of days(r.f, r.t)) (adm[r.plate + '|' + d] ||= []).push(x.rn);
+    for (const r of (x.rows || [])) if (r.st !== 3) put(adm, r.plate, r.f, r.t, x.rn);
   }
-  // 照合しない予約（公式HPなど）は灰色で埋まっている印だけ
-  const appO = {}, admO = {};
-  for (const r of (D.app_other || [])) for (const d of days(r.f, r.t)) appO[r.plate + '|' + d] = 1;
-  for (const r of (D.adm_other || [])) for (const d of days(r.f, r.t)) admO[r.plate + '|' + d] = 1;
-  const col = k => app[k] && adm[k] ? 'G' : app[k] ? 'R' : adm[k] ? 'Y' : admO[k] ? 'O' : 'E';
+  (D.app_other || []).forEach((r, i) => { put(app, r.plate, r.f, r.t, r.rn || 'o' + i); appB.push(r); });
+  (D.adm_other || []).forEach((r, i) => put(adm, r.plate, r.f, r.t, r.rn || 'a' + i));
+  const na = k => app[k] ? app[k].size : 0, nd = k => adm[k] ? adm[k].size : 0;
+  const col = k => nd(k) < na(k) ? 'R' : nd(k) > na(k) ? 'Y' : na(k) ? 'G' : 'E';
   const today = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
-  const keys = [...new Set([...Object.keys(app), ...Object.keys(adm)])];
+  const keys = [...new Set([...Object.keys(app), ...Object.keys(adm)])].filter(k => k.split('|')[1] >= today);
   const yms = [...new Set([...keys.map(k => k.split('|')[1].slice(0, 7)), ...Object.keys(wait).map(d => d.slice(0, 7))].filter(m => m >= today.slice(0, 7)))].sort();
   if (!yms.length) yms.push(today.slice(0, 7));
   if (!yms.includes(month)) month = yms[0];
-  const mc = ym => { const v = keys.filter(k => k.split('|')[1].startsWith(ym) && k.split('|')[1] >= today).map(col); return v.includes('R') ? COLOR.R : v.includes('Y') ? COLOR.Y : v.length ? COLOR.G : ''; };
+  const mc = ym => { const v = keys.filter(k => k.split('|')[1].startsWith(ym)).map(col); return v.includes('R') ? COLOR.R : v.includes('Y') ? COLOR.Y : v.length ? COLOR.G : ''; };
   $('months').innerHTML = yms.map(ym => `<button class="${ym === month ? 'on' : ''}" data-m="${ym}">${+ym.slice(5)}月${mc(ym) ? `<i class="dot" style="background:${mc(ym)}"></i>` : ''}</button>`).join('');
   $('months').querySelectorAll('button').forEach(b => b.onclick = () => { month = b.dataset.m; draw(); });
   const last = new Date(Date.UTC(+month.slice(0, 4), +month.slice(5), 0)).getUTCDate();
   const ds = Array.from({ length: last }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`).filter(d => d >= today);
   const head = `<tr><th class="lbl"></th>${ds.map(d => `<th class="${wd(d) === 6 ? 'sat' : wd(d) === 0 ? 'sun' : ''}">${+d.slice(8)}</th>`).join('')}</tr>`;
+  const groups = [];
+  for (const c of (D.cars || [])) { const g = groups.find(g => g.k === CLS[c.plate]); g ? g.cars.push(c) : groups.push({ k: CLS[c.plate], cls: c.cls, cars: [c] }); }
   let html = '';
-  for (const c of (D.cars || [])) {
-    html += `<tr><td class="cls" colspan="${ds.length + 1}">${esc(c.plate)} ${esc(c.name)}<small>（${esc(c.cls)}クラス）</small></td></tr>` + head +
-      `<tr><td class="lbl">APP（正解）</td>${ds.map(d => `<td class="${app[c.plate + '|' + d] ? 'A' : appO[c.plate + '|' + d] ? 'O' : 'E'}"></td>`).join('')}</tr>` +
-      `<tr><td class="lbl">admin（HP）</td>${ds.map(d => `<td class="${col(c.plate + '|' + d)}"></td>`).join('')}</tr><tr class="gap"><td></td></tr>`;
+  for (const g of groups) {
+    const k = d => g.k + '|' + d;
+    html += `<tr><td class="cls" colspan="${ds.length + 1}">${esc(g.cls)}クラス ${g.cars.length}台<small>（${g.cars.map(c => esc(c.plate + ' ' + c.name)).join('・')}）</small></td></tr>` + head +
+      `<tr><td class="lbl">APP（正解）</td>${ds.map(d => `<td class="${na(k(d)) ? 'A' : 'E'}" style="color:#fff">${na(k(d)) || ''}</td>`).join('')}</tr>` +
+      `<tr><td class="lbl">admin（HP）</td>${ds.map(d => `<td class="${col(k(d))}">${nd(k(d)) || (col(k(d)) === 'R' ? 0 : '')}</td>`).join('')}</tr><tr class="gap"><td></td></tr>`;
   }
   if (ds.some(d => wait[d])) html += `<tr><td class="cls" colspan="${ds.length + 1}">APPで未配車（車が決まったら自動で入る）</td></tr>` + head +
     `<tr><td class="lbl">未配車の予約</td>${ds.map(d => `<td class="${wait[d] ? 'W' : 'E'}">${wait[d] ? wait[d].length : ''}</td>`).join('')}</tr>`;
   $('grid').innerHTML = html || `<tr><td>${+month.slice(5)}月はOTAの予約がありません</td></tr>`;
 
-  // 一覧：直すものだけを1行ずつ（予約番号／何がちがう／だれが）。入れ替えた2件は1行にまとめる
+  // 一覧：直すものだけを1行ずつ（予約番号／何がちがう／だれが）
   const wide = x => x.state === 'time' && x.bf <= x.af && x.bt >= x.at;
-  const plateOf = x => ((x.rows || []).find(r => r.st !== 3) || {}).plate;
-  const items = [], used = new Set(), cars = bad.filter(x => x.state === 'car');
-  for (const a of cars) {
-    if (used.has(a.rn)) continue;
-    const b = cars.find(y => y !== a && !used.has(y.rn) && y.ap === plateOf(a) && plateOf(y) === a.ap && y.af < a.at && a.af < y.at); // 期間が重なる2件だけ（片方だけ直すと車がぶつかる）
-    if (b) { used.add(a.rn); used.add(b.rn); items.push({ k: 'R', rn: `${a.rn}<br>${b.rn}`, what: `入れ替え（2件同時に直す）<br><small>${esc(plateOf(a))}⇔${esc(a.ap)}</small>`, who: 'ロボ', d: a.af }); }
-  }
+  const items = [], used = new Set();
   const nWide = bad.filter(wide).length;
+  // APP で同じ車に2件重なっている（配車のミス。APP で直す）
+  for (let i = 0; i < appB.length; i++) for (let j = i + 1; j < appB.length; j++) { const a = appB[i], b = appB[j];
+    if (a.plate === b.plate && a.f < b.t && b.f < a.t) items.push({ k: 'Y', rn: `${esc(a.rn || '公式')}<br>${esc(b.rn || '公式')}`, what: `APPで同じ車に2件：${esc(a.plate)} ${md(a.f > b.f ? a.f : b.f)}〜${md(a.t < b.t ? a.t : b.t)}<br><small>APPでどちらかを空いている車へ</small>`, who: '人', d: a.f }); }
   const short = t => t ? `${+t.slice(8, 10)}日${t.slice(11, 16)}` : '';
   for (const x of bad) {
     if (used.has(x.rn) || wide(x)) continue;
     const pa = plateOf(x), r0 = (x.rows || []).find(r => r.st !== 3) || {};
-    const what = x.state === 'car' ? `車：admin ${esc(pa)} → <b style="color:#dc2626">${esc(x.ap)}</b>`
+    const what = x.state === 'car' ? `クラスちがい：admin ${esc(pa)}（${esc(CLS[pa] || '?')}）→ APP <b style="color:#dc2626">${esc(x.ap)}（${esc(CLS[x.ap] || '?')}）</b><br><small>料金が変わるかもしれないので人が確認</small>`
       : x.state === 'time' ? `時刻：${r0.f !== x.af ? `貸出 ${short(r0.f)} → <b style="color:#dc2626">${short(x.af)}</b> ` : ''}${r0.t !== x.at ? `返却 ${short(r0.t)} → <b style="color:#dc2626">${short(x.at)}</b>` : ''}`
       : x.state === 'missing' ? `未登録：<b style="color:#dc2626">${esc(x.ap)} ${md(x.af)}〜${md(x.at)}</b>`
       : x.state === 'cancel' ? 'キャンセル：APPはキャンセル、adminは確定のまま'
       : x.state === 'dup' ? 'adminに2行ある（二重登録）'
       : x.state === 'extra' ? 'adminだけにある（番号ちがい？）'
       : `APPで未配車（${md(x.af)}〜）`;
-    const who = ['missing', 'car', 'time', 'cancel'].includes(x.state) ? 'ロボ' : '人';
+    const who = ['missing', 'time', 'cancel'].includes(x.state) ? 'ロボ' : '人';
     items.push({ k: ST[x.state][0], rn: esc(x.rn) + `<br><small style="color:#64748b">${esc(OTA[x.ota] || '')}</small>`, what, who, d: x.af || x.bf });
   }
   const order = { R: 0, Y: 1, W: 2 };
   items.sort((a, b) => order[a.k] - order[b.k] || String(a.d).localeCompare(String(b.d)));
   $('list').innerHTML = (items.length ? `<tr><th>予約番号</th><th>何がちがう</th><th>だれが</th></tr>` + items.map(i =>
     `<tr><td style="border-left:6px solid ${COLOR[i.k]}">${i.rn}</td><td>${i.what}</td><td>${i.who === 'ロボ' ? '<span class="pill" style="background:#2563eb;color:#fff">ロボが直す</span>' : '<span class="pill" style="background:#f97316;color:#fff">人が見る</span>'}</td></tr>`).join('') : '<tr><td>直すものはありません</td></tr>') +
-    (nNear + nWide ? `<tr><td colspan="3" style="color:#64748b">一覧から外したもの：時刻のずれが30分以内（丸め方のちがい）${nNear}件、admin が APP より長く押さえているだけ（売りすぎにはならない）${nWide}件。どちらもロボが APP の時刻に合わせます</td></tr>` : '');
+    (nNear + nWide + nSame ? `<tr><td colspan="3" style="color:#64748b">一覧から外したもの：同じクラスの別の車に入っているだけ ${nSame}件、時刻のずれが30分以内 ${nNear}件、admin が APP より長く押さえているだけ ${nWide}件（どれも売りすぎにはならない）</td></tr>` : '');
   const acts = D.actions || [];
   // 記録：いつ・どのOTA・予約番号・どの車・何をしたか（OTAと車は予約の情報から引く）
   const byRn = Object.fromEntries((D.rows || []).map(x => [x.rn, x]));
