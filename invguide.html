@@ -1,0 +1,242 @@
+<!DOCTYPE html><html lang="ja"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>在庫連動 仕様書・使い方｜HANDYMAN</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif;background:#eef2f7;color:#1a2230;line-height:1.65}
+.page{max-width:960px;margin:0 auto;background:#fff;padding:20px 30px 40px;box-shadow:0 2px 12px rgba(0,0,0,.08)}
+@media(max-width:640px){.page{padding:14px 14px 30px}}
+.tabs{display:flex;gap:6px;margin:0 0 14px;position:sticky;top:0;background:#fff;padding:6px 0;z-index:5}
+.tabs button{flex:1;padding:10px;border:none;border-radius:6px;background:#e2e8f0;font-weight:800;font-size:15px;cursor:pointer}
+.tabs button.on{background:#2f3b55;color:#fff}
+h1{font-size:22px;margin:4px 0 2px;font-weight:900}
+.lead{color:#556;font-size:13px;margin:0 0 14px}
+h2{font-size:16px;margin:26px 0 10px;padding:6px 12px;background:#2f3b55;color:#fff;border-radius:6px;font-weight:800}
+h3{font-size:14px;margin:16px 0 6px;color:#2f3b55;border-left:4px solid #2563eb;padding-left:8px;font-weight:800}
+p,li{font-size:14px}
+ul,ol{padding-left:22px;margin:6px 0}
+.rule{background:#dcfce7;color:#166534;border-radius:8px;padding:14px;font-size:18px;font-weight:900;text-align:center;margin:8px 0}
+.rule small{display:block;font-size:13px;font-weight:600;margin-top:4px}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;margin:6px 0 10px;font-size:13.5px}
+th,td{border:1px solid #dfe5ee;padding:7px 8px;text-align:left;vertical-align:top}
+th{background:#f1f5f9;font-weight:800;white-space:nowrap}
+td.n{text-align:right;font-variant-numeric:tabular-nums;font-weight:800}
+tr.sum td{background:#dcfce7;font-weight:900}
+tr.minus td{color:#475569}
+.flow{display:flex;flex-wrap:wrap;gap:6px;align-items:stretch;margin:10px 0}
+.fb{flex:1;min-width:120px;background:#eff6ff;border:2px solid #93c5fd;border-radius:8px;padding:8px;font-size:13px;text-align:center}
+.fb b{display:block;font-size:14px}
+.fb.out{background:#dcfce7;border-color:#86efac}.fb.al{background:#fee2e2;border-color:#fca5a5}
+.ar{align-self:center;font-weight:900;color:#64748b}
+.sw{display:inline-block;width:16px;height:16px;border-radius:4px;vertical-align:-3px;margin-right:4px}
+.g{background:#22c55e}.r{background:#dc2626}.y{background:#facc15}.gr{background:#cbd5e1}
+.ok{color:#166534;font-weight:900}
+.note{font-size:12px;color:#64748b}
+section{display:none}section.on{display:block}
+</style></head><body>
+<div class="page">
+<div class="tabs" id="tabs">
+  <button data-t="all" class="on">社内用（全部）</button>
+  <button data-t="staff">スタッフ用</button>
+  <button data-t="ext">外部用</button>
+</div>
+
+<!-- ===================== 社内用 ===================== -->
+<section id="all" class="on">
+<h1>OTA在庫 自動連動 仕様書</h1>
+<p class="lead">ここを見れば仕組みの全部が分かる。2026-10-26 版（テスト完了後に結果を更新）</p>
+
+<h2>1. ルール（1つだけ）</h2>
+<div class="rule">全OTAに出す数 ＝ 配車表の残り − 安全在庫<small>店 × クラス × 日付ごと。どの OTA にも同じ数。配車表より多くは絶対に出さない。少ないのは安全在庫の分だけ。</small></div>
+<ul>
+<li>配車表が正解。OTA ごとの振り分けはしない。スタッフが決めることはない。</li>
+<li>どの OTA で予約が入っても、配車表に入った時点で全 OTA の数がそろって減る。</li>
+<li>配車表で売れるのに OTA で売っていない／その逆は「ずれ」として検知する。</li>
+</ul>
+
+<h2>2. 計算定義</h2>
+<p>1 台ずつ、1 日ずつ数える。「台数」と「日付」はつながっていて、その日に空いている車の数がその日の残り。</p>
+<div class="scroll"><table>
+<tr><th></th><th>項目</th><th>中身</th><th>例</th></tr>
+<tr><td></td><td>稼働台数</td><td>車両の月別 KPI で「稼働」の車（保険用の車は除く）</td><td class="n">10</td></tr>
+<tr class="minus"><td>−</td><td>その日に何か入っている車</td><td>配車表の予約（貸出日〜返却日。返却日も含む）＋整備（車検・点検・修理）。中身は問わない</td><td class="n">2</td></tr>
+<tr class="minus"><td>−</td><td>未配車</td><td>車がまだ決まっていない予約</td><td class="n">1</td></tr>
+<tr class="sum"><td>＝</td><td>配車表の残り</td><td></td><td class="n">7</td></tr>
+<tr class="minus"><td>−</td><td>安全在庫</td><td>月 × クラスごと。本番スタートは 1</td><td class="n">1</td></tr>
+<tr class="minus"><td>−</td><td>売り止め</td><td>指定した日・クラスは 0</td><td class="n">−</td></tr>
+<tr class="sum"><td>＝</td><td>全 OTA に出す数</td><td></td><td class="n">6</td></tr>
+</table></div>
+<p>マイナスになるときは 0。計算は 5 分ごとに作り直す。</p>
+<h3>例外（2つ）</h3>
+<ul>
+<li><b>那覇の A2・B2</b>：配車表に専用の車がないので、A・B の残りから枠を分ける（A2 枠 3・B2 枠 3）。A2 に出す数 ＝ 3 − A2 予約数、A ＝ 残り − A2 に出す数。B も同じ。</li>
+<li><b>BUDDICA の AA</b>：手動（ロボは触らない）。</li>
+</ul>
+
+<h2>3. 情報の流れ</h2>
+<div class="flow">
+<div class="fb"><b>配車表</b>予約・整備を入れる（人が触るのはここだけ）</div><div class="ar">→</div>
+<div class="fb"><b>計算</b>5分ごとに出す数を作る</div><div class="ar">→</div>
+<div class="fb"><b>在庫ロボ（mini）</b>各 OTA を読んで、違う所だけ書く</div><div class="ar">→</div>
+<div class="fb"><b>OTA</b>保存したら読み直して確認</div><div class="ar">→</div>
+<div class="fb out"><b>在庫チェック画面</b>緑・赤・黄で表示</div><div class="ar">→</div>
+<div class="fb al"><b>Slack</b>ずれたら知らせる</div>
+</div>
+
+<h2>4. 対象（店 × OTA × クラス）</h2>
+<div class="scroll"><table>
+<tr><th>店</th><th>OTA</th><th>自動で合わせるクラス</th><th>手動</th></tr>
+<tr><td>那覇</td><td>楽天・じゃらん・スカイチケット・エアトリ</td><td>A・A2・B・B2・D・F・H</td><td>−</td></tr>
+<tr><td>那覇</td><td>レンタカードットコム</td><td>A・B・H（D・F・A2・B2 は売らない）</td><td>−</td></tr>
+<tr><td>札幌</td><td>楽天・じゃらん・スカイチケット・エアトリ・レンタカードットコム</td><td>A・A2・B・B2・C・F・G・H・S</td><td>−</td></tr>
+<tr><td>高松 HDM</td><td>楽天・じゃらん</td><td>C〜K</td><td>−</td></tr>
+<tr><td>高松 BUDDICA</td><td>エアトリ・たびらい・レンタカードットコム</td><td>A・C〜K</td><td>AA</td></tr>
+</table></div>
+<ul>
+<li>全部で 15 組（店 × OTA）。OTA の画面の名前と配車表のクラスの対応は 142 / 142 一致。</li>
+<li>高松は配車表が 2 段（HDM と BUDDICA）。車ごとに分けて計算し、混ざらないことを確認済み。</li>
+<li>対象外：GoGoOut。</li>
+</ul>
+
+<h2>5. 安全装置</h2>
+<div class="scroll"><table>
+<tr><th>装置</th><th>何をする</th><th>どこで変える</th></tr>
+<tr><td>安全在庫</td><td>月 × クラスごとに残りから引く台数。本番スタートは 1</td><td>在庫調整 &gt; 安全在庫</td></tr>
+<tr><td>売り止め</td><td>指定した店・クラス・日を 0 にする</td><td>在庫調整 &gt; 売り止め</td></tr>
+<tr><td>多く出さない</td><td>配車表の残りより多い数は計算上出ない</td><td>変更不可</td></tr>
+<tr><td>書いたら読み直す</td><td>保存後に OTA を読み直し、違えば Slack に知らせてその組を手動に戻す</td><td>自動</td></tr>
+<tr><td>ずれの見張り</td><td>本番の組で、続けて 2 回読んでずれていたら Slack（同じ組は 6 時間に 1 回）</td><td>自動</td></tr>
+<tr><td>書くのは 1 台だけ</td><td>書き込める Mac は常に 1 台（ふだんは mini）</td><td>自動</td></tr>
+<tr><td>自動・手動</td><td>組ごとに止められる。全部止めるボタンもある</td><td>在庫調整 &gt; 自動・手動</td></tr>
+<tr><td>読めない時は書かない</td><td>読み取りが 0 件・失敗の時は成功と扱わず、書かない</td><td>自動</td></tr>
+</table></div>
+
+<h2>6. 根拠とエビデンス</h2>
+<h3>テストの結果（10/26 午前時点）</h3>
+<div class="scroll"><table>
+<tr><th>テスト</th><th>範囲</th><th>結果</th></tr>
+<tr><td>計算の規模テスト</td><td>33 パターン・59,400 マス</td><td class="ok">ズレ 0</td></tr>
+<tr><td>クラスの対応</td><td>15 組の全クラス</td><td class="ok">142 / 142 一致</td></tr>
+<tr><td>書いて・保存して・読み直して・戻す（10/25）</td><td>14 組</td><td class="ok">2,146 マス 全部合格</td></tr>
+<tr><td>同（12 月分）</td><td>15 組</td><td class="ok">3,135 マス 全部一致</td></tr>
+<tr><td>同（1 月分）</td><td>9 組（残りは実行中）</td><td class="ok">1,956 マス 全部一致</td></tr>
+<tr><td>同（11 月・2 月・3 月、+1 して戻す）</td><td>15 組</td><td>実行中（午後完了予定）</td></tr>
+</table></div>
+<h3>テストで見つけて直したもの</h3>
+<ul>
+<li>楽天：12 月→1 月の変わり目で月を読み違え、1 月が抜けていた → 直した。</li>
+<li>楽天：読み取りが空のときに成功と扱っていた → 0 件は失敗として扱う。</li>
+<li>札幌：古い売り止め 3 件（A2・B2・H）が残っていた → 終了した。</li>
+<li>那覇レンタカードットコム：D・F・A2・B2 は売らない設定にした。</li>
+</ul>
+<h3>その他の事実</h3>
+<ul>
+<li>楽天は OTA 側で未登録の月がある（例：札幌 H は 12/31 まで）。ロボは書けないので、スタッフが登録する。</li>
+<li>今の OTA の過不足は、本番で自動的に配車表に合わせられる。</li>
+</ul>
+
+<h2>7. 運用ハウツー（どこで何を見るか）</h2>
+<p>場所はすべて「車両 &gt; 在庫調整」。</p>
+<div class="scroll"><table>
+<tr><th>タブ</th><th>見るもの</th><th>すること</th></tr>
+<tr><td>在庫チェック</td><td><span class="sw g"></span>合っている <span class="sw r"></span>売りすぎ（点滅） <span class="sw y"></span>少ない <span class="sw gr"></span>まだ読めていない</td><td>赤があれば Slack を確認。マスを押すと「配車表の残り・安全在庫・正しい数・各 OTA」が出る</td></tr>
+<tr><td>店ごとのタブ &gt; 安全在庫</td><td>月 × クラスの引く台数</td><td>繁忙期に増やす・減らす</td></tr>
+<tr><td>店ごとのタブ &gt; 売り止め</td><td>止めている店・クラス・日</td><td>追加・終了</td></tr>
+<tr><td>店ごとのタブ &gt; 自動・手動</td><td>組ごとに今どちらか</td><td>おかしい時は手動に戻す</td></tr>
+<tr><td>店ごとのタブ &gt; クラス対応表</td><td>OTA の名前と配車表のクラス</td><td>見るだけ</td></tr>
+<tr><td>仕様書・使い方</td><td>このページ</td><td>見るだけ</td></tr>
+</table></div>
+<h3>Slack に来るもの</h3>
+<div class="scroll"><table>
+<tr><th>知らせ</th><th>意味</th></tr>
+<tr><td>配車表とずれ N マス</td><td>ロボが直せていない。在庫チェックで赤・黄の場所を見る</td></tr>
+<tr><td>書いた後に不一致 → 手動に戻した</td><td>その組は止まっている。管理者が原因を見る</td></tr>
+<tr><td>ログインできない・読めない</td><td>OTA の画面かパスワードが変わった</td></tr>
+</table></div>
+<p>直してほしい時は、そのアラートのスレッドでオムニに頼む。少なく出す側（安全在庫・売り止め・手動に戻す）はすぐ実行。多く出す変更はできない。</p>
+
+<h2>8. 本番の段取りと役割</h2>
+<div class="scroll"><table>
+<tr><th>順</th><th>すること</th><th>だれ</th></tr>
+<tr><td>1</td><td>書き込みテスト（15 組 × 11 月〜3 月）を全部合格させる</td><td>Claude</td></tr>
+<tr><td>2</td><td>書き込む Mac を mini に切り替え、1 周読んで確認</td><td>Claude</td></tr>
+<tr><td>3</td><td>Slack の通知先とオムニ（mini で 24 時間）を確認</td><td>Claude</td></tr>
+<tr><td>4</td><td>15 組を自動にして書き込みを有効にする</td><td>Claude（オーナーの OK のあと）</td></tr>
+<tr><td>5</td><td>同じ時刻に Metro Conductor のじゃらん・楽天・スカイチケットを止める</td><td>オーナー・スタッフ</td></tr>
+<tr><td>6</td><td>最初の 1 周の結果を在庫チェックで確認（全部緑）</td><td>Claude・スタッフ</td></tr>
+</table></div>
+<h3>戻し方</h3>
+<p>在庫調整 &gt; 自動・手動 で全部手動にすれば、ロボは書き込まなくなる。必要なら Metro Conductor を再開する。</p>
+</section>
+
+<!-- ===================== スタッフ用 ===================== -->
+<section id="staff">
+<h1>OTA在庫の自動連動（スタッフ用）</h1>
+<p class="lead">配車表に入れるだけで、全 OTA の在庫が自動で合う。</p>
+<div class="scroll"><table>
+<tr><th>今まで</th><th>これから</th></tr>
+<tr><td>Metro Conductor＋エアトリは手で振り分け</td><td>全 OTA に同じ数を自動で出す</td></tr>
+<tr><td>OTA の画面で在庫を直す</td><td>直さない。配車表だけ触る</td></tr>
+</table></div>
+<h2>出す数の決まり方</h2>
+<div class="rule">出す数 ＝ 配車表のその日の空き − 安全在庫（ふつう 1）<small>例：A クラス 10 台のうち、2 台に予約・整備、未配車 1 件 → 空き 7 − 1 ＝ 全 OTA に 6 台</small></div>
+<h2>きまり（3 つだけ）</h2>
+<ol>
+<li>予約・車検・点検・修理・直予約は、すぐ配車表に入れる。配車表に何か入っている車は、中身を問わず貸し出せないと数える。</li>
+<li>OTA の在庫数を手で変えない。止めたい時は「売り止め」か「安全在庫」で。</li>
+<li>Slack にアラートが来たら、そのスレッドでオムニに頼む（例：「札幌の楽天を手動に戻して」）。</li>
+</ol>
+<h2>どこで見るか</h2>
+<p>「車両 &gt; 在庫調整 &gt; 在庫チェック」</p>
+<div class="scroll"><table>
+<tr><th>色</th><th>意味</th><th>すること</th></tr>
+<tr><td><span class="sw g"></span>緑</td><td>合っている</td><td>なし</td></tr>
+<tr><td><span class="sw r"></span>赤（点滅）</td><td>OTA の方が多い（売りすぎ）</td><td>Slack を確認。必要ならオムニに「手動に戻して」</td></tr>
+<tr><td><span class="sw y"></span>黄</td><td>OTA の方が少ない</td><td>次の周で直るのを待つ。続くなら Slack</td></tr>
+<tr><td><span class="sw gr"></span>灰</td><td>まだ読めていない</td><td>なし</td></tr>
+</table></div>
+<h2>お願い</h2>
+<ul>
+<li>楽天で未登録の月があるクラスを登録する（例：札幌 H は 12/31 まで）。</li>
+<li>本番の日に Metro Conductor のじゃらん・楽天・スカイチケットを止める（時刻は別に連絡）。</li>
+</ul>
+</section>
+
+<!-- ===================== 外部用 ===================== -->
+<section id="ext">
+<h1>HANDYMAN 在庫自動連動のご説明</h1>
+<h2>概要</h2>
+<p>HANDYMAN は、自社の配車表（車ごとの予約と整備の予定）を唯一の基準にして、掲載している全ての予約サイトに同じ在庫数を自動で反映します。</p>
+<h2>在庫数の考え方</h2>
+<ul>
+<li>店舗 × 車両クラス × 日付ごとに、「その日に貸し出せる台数 − 安全在庫」を出します。</li>
+<li>どの予約サイトにも同じ数を出し、貸し出せる台数より多くは出しません。</li>
+<li>どのサイトで予約が入っても、配車表に入った時点で全サイトの数がそろって減ります。</li>
+</ul>
+<h2>対象</h2>
+<div class="scroll"><table>
+<tr><th>店舗</th><th>予約サイト</th></tr>
+<tr><td>那覇空港店・札幌店</td><td>楽天トラベル、じゃらん、スカイチケット、エアトリ、レンタカードットコム</td></tr>
+<tr><td>高松店（HANDYMAN）</td><td>楽天トラベル、じゃらん</td></tr>
+<tr><td>高松店（BUDDICA）</td><td>エアトリ、たびらい、レンタカードットコム</td></tr>
+</table></div>
+<h2>過剰販売を防ぐ仕組み</h2>
+<ul>
+<li>反映後に各サイトの在庫を読み直し、配車表と照合します。ずれがあれば担当者に即時通知し、自動更新を止めます。</li>
+<li>各サイトの更新は、管理画面から運用担当者がいつでも停止できます。</li>
+<li>本番前に、全店舗・全サイト・全クラスで「書き込み・保存・読み直し・元に戻す」試験を行い、数千マス単位で一致を確認しています。</li>
+</ul>
+<h2>お問い合わせ</h2>
+<p>在庫の表示についてお気づきの点は、HANDYMAN の各店舗までご連絡ください。</p>
+</section>
+<p class="note">同じ内容の文書版：https://claude.ai/artifact/C9gtz46VhnhP6y7jZVSMYR</p>
+</div>
+<script>
+const P = new URLSearchParams(location.search);
+function show(t){ document.querySelectorAll('section').forEach(s => s.classList.toggle('on', s.id === t)); document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t)); }
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { show(b.dataset.t); history.replaceState(null, '', '?t=' + b.dataset.t + (P.get('embed') ? '&embed=1' : '')); });
+if (['all','staff','ext'].includes(P.get('t'))) show(P.get('t'));
+</script>
+</body></html>
