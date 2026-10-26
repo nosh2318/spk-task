@@ -50,7 +50,8 @@ table.l td{padding:7px 6px;border-bottom:1px solid #eef2f7;vertical-align:top}
   </div>
   <div class="months" id="months"></div>
   <div class="card scroll"><table class="g" id="grid"></table></div>
-  <div class="card"><h2>直すもの（ちがう所が赤字）</h2><div class="scroll"><table class="l" id="list"></table></div></div>
+  <div class="card"><h2>🖐 手動対応（スタッフがやること）</h2><div class="scroll"><table class="l" id="manual"></table></div></div>
+  <div class="card"><h2>🤖 ロボが直すもの</h2><div class="scroll"><table class="l" id="list"></table></div></div>
   <div class="card"><h2>ロボがadminにしたこと（新しい順）</h2><div class="scroll"><table class="l" id="acts"></table></div></div>
   <div class="foot" id="foot"></div>
 </div>
@@ -64,7 +65,7 @@ const ST = {
   missing: ['R', 'adminに無い', 'HPで同じ車が売れてしまう。ロボが登録します'],
   car: ['R', 'クラスがちがう', 'APPとadminで車のクラスがちがう。人が確認'],
   time: ['Y', '時刻がちがう', 'ロボがAPPの時刻に直します'],
-  cancel: ['Y', 'キャンセル漏れ', 'APPはキャンセル。ロボがadminもキャンセルにします'],
+  cancel: ['Y', 'キャンセル漏れ', 'APPはキャンセル。スタッフがadminでキャンセルと返金処理'],
   dup: ['Y', 'adminに2行ある', 'APPと同じ方を残し、もう1行はスタッフが確認'],
   extra: ['Y', 'adminだけにある', 'APPに無い予約。スタッフが確認'],
   wait: ['W', 'APPで未配車', '車が決まったら自動で入ります。出発3日前までに配車を'],
@@ -162,18 +163,19 @@ function draw() {
     const what = x.state === 'car' ? `クラスちがい：admin ${esc(pa)}（${esc(CLS[pa] || '?')}）→ APP <b style="color:#dc2626">${esc(x.ap)}（${esc(CLS[x.ap] || '?')}）</b><br><small>料金が変わるかもしれないので人が確認</small>`
       : x.state === 'time' ? `日付：${r0.f !== x.af ? `貸出 ${short(r0.f)} → <b style="color:#dc2626">${short(x.af)}</b> ` : ''}${r0.t !== x.at ? `返却 ${short(r0.t)} → <b style="color:#dc2626">${short(x.at)}</b>` : ''}`
       : x.state === 'missing' ? `未登録：<b style="color:#dc2626">${esc(x.ap)} ${md(x.af)}〜${md(x.at)}</b>`
-      : x.state === 'cancel' ? 'キャンセル：APPはキャンセル、adminは確定のまま'
+      : x.state === 'cancel' ? 'キャンセル：APPはキャンセル、adminは確定のまま<br><small>adminでキャンセルと返金処理を</small>'
       : x.state === 'dup' ? 'adminに2行ある（二重登録）'
       : x.state === 'extra' ? 'adminだけにある（番号ちがい？）'
       : `APPで未配車（${md(x.af)}〜）`;
-    const who = ['missing', 'time', 'cancel'].includes(x.state) ? 'ロボ' : '人';
+    const who = ['missing', 'time'].includes(x.state) ? 'ロボ' : '人'; // キャンセルは返金処理があるので人（オーナー 10/26）
     items.push({ k: ST[x.state][0], rn: esc(x.rn) + `<br><small style="color:#64748b">${esc(OTA[x.ota] || '')}</small>`, what, who, d: x.af || x.bf });
   }
   const order = { R: 0, Y: 1, W: 2 };
   items.sort((a, b) => order[a.k] - order[b.k] || String(a.d).localeCompare(String(b.d)));
-  $('list').innerHTML = (items.length ? `<tr><th>予約番号</th><th>何がちがう</th><th>だれが</th></tr>` + items.map(i =>
-    `<tr><td style="border-left:6px solid ${COLOR[i.k]}">${i.rn}</td><td>${i.what}</td><td>${i.who === 'ロボ' ? '<span class="pill" style="background:#2563eb;color:#fff">ロボが直す</span>' : '<span class="pill" style="background:#f97316;color:#fff">人が見る</span>'}</td></tr>`).join('') : '<tr><td>直すものはありません</td></tr>') +
-    (nNear + nSame ? `<tr><td colspan="3" style="color:#64748b">一覧から外したもの：同じクラスの別の車に入っているだけ ${nSame}件、日付は同じで時刻だけちがう ${nNear + nWide}件（どれも売りすぎにはならない）</td></tr>` : '');
+  const tbl = (xs, none) => xs.length ? `<tr><th>予約番号</th><th>何がちがう・何をする</th></tr>` + xs.map(i => `<tr><td style="border-left:6px solid ${COLOR[i.k]}">${i.rn}</td><td>${i.what}</td></tr>`).join('') : `<tr><td>${none}</td></tr>`;
+  $('manual').innerHTML = tbl(items.filter(i => i.who !== 'ロボ'), '手動対応はありません') + '<tr><td colspan="2" style="color:#64748b">直すと次の確認（5分ごと）で自動的に消えます</td></tr>';
+  $('list').innerHTML = tbl(items.filter(i => i.who === 'ロボ'), '直すものはありません') +
+    (nNear + nSame ? `<tr><td colspan="2" style="color:#64748b">一覧から外したもの：同じクラスの別の車に入っているだけ ${nSame}件、日付は同じで時刻だけちがう ${nNear + nWide}件（どれも売りすぎにはならない）</td></tr>` : '');
   const acts = D.actions || [];
   // 記録：いつ・どのOTA・予約番号・どの車・何をしたか（OTAと車は予約の情報から引く）
   const byRn = Object.fromEntries((D.rows || []).map(x => [x.rn, x]));
