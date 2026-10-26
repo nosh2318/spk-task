@@ -30,11 +30,12 @@ table.g td{width:34px;height:30px;text-align:center;font-weight:800;font-size:12
 td.cls{text-align:left;font-size:15px;font-weight:900;padding:8px 4px 2px;height:auto}
 .lbl{position:sticky;left:0;background:#fff;z-index:1;text-align:left!important;white-space:nowrap;padding:0 8px 0 2px;font-size:13px;font-weight:800;width:auto!important}
 .lbl small{color:#64748b;font-weight:600;margin-left:4px}
-.G{background:#22c55e;color:#fff}.R{background:#dc2626;color:#fff;animation:blink 1s infinite}.Y{background:#facc15;color:#422006}.E{background:#f1f5f9}.W{background:#cbd5e1;color:#334155}
+.A{background:#2f3b55}.G{background:#22c55e;color:#fff}.R{background:#dc2626;color:#fff;animation:blink 1s infinite}.Y{background:#facc15;color:#422006}.E{background:#f1f5f9}.W{background:#cbd5e1;color:#334155}
 table.l{width:100%;border-collapse:collapse;font-size:13px}
 table.l th{text-align:left;font-size:12px;color:#64748b;padding:6px;border-bottom:1px solid #e2e8f0;white-space:nowrap}
 table.l td{padding:7px 6px;border-bottom:1px solid #eef2f7;vertical-align:top}
 .pill{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;font-weight:800;white-space:nowrap}
+.gap td{height:10px}
 .foot{font-size:12px;color:#64748b;text-align:center;margin:6px 0 20px}
 </style></head><body>
 <div class="wrap">
@@ -42,14 +43,14 @@ table.l td{padding:7px 6px;border-bottom:1px solid #eef2f7;vertical-align:top}
   <div id="big"></div>
   <div class="nums" id="nums"></div>
   <div class="rule">
-    <span><i class="sw G"></i>APP と admin が同じ（正しい）</span>
-    <span><i class="sw R"></i>APPの予約が admin に無い（HPで二重に売れる・絶対ダメ）</span>
-    <span><i class="sw Y"></i>admin だけ埋まっている（HPの売り逃し）</span>
-    <span><i class="sw W"></i>APPで未配車（車が決まったら自動で入る）</span>
+    <span><i class="sw A"></i>APP の行：予約あり（正解）</span>
+    <span><i class="sw G"></i>admin の行：APP と同じ（正しい）</span>
+    <span><i class="sw R"></i>admin の行：APPは予約ありなのに空き（HPで二重に売れる・絶対ダメ）</span>
+    <span><i class="sw Y"></i>admin の行：APPは空きなのに埋まっている（HPの売り逃し）</span>
   </div>
   <div class="months" id="months"></div>
   <div class="card scroll"><table class="g" id="grid"></table></div>
-  <div class="card"><h2>直すもの・スタッフが見るもの</h2><div class="scroll"><table class="l" id="list"></table></div></div>
+  <div class="card"><h2>直すもの（ちがう所が赤字）</h2><div class="scroll"><table class="l" id="list"></table></div></div>
   <div class="card"><h2>ロボがadminにしたこと（新しい順）</h2><div class="scroll"><table class="l" id="acts"></table></div></div>
   <div class="foot" id="foot"></div>
 </div>
@@ -102,42 +103,47 @@ function draw() {
   $('nums').innerHTML = [[live, 'APPの予約（今日以降）'], [rows.filter(x => x.ast === 1 && x.state === 'ok').length, 'admin と同じ'], [nr, 'HPで二重に売れる', COLOR.R], [ny, '売り逃し・確認', COLOR.Y], [nw, '未配車で待ち', COLOR.W]]
     .map(([v, l, c]) => `<div><b style="color:${v && c ? c : '#0f172a'}">${v}</b><span>${l}</span></div>`).join('');
 
-  // 車×日の色。APPの予約（確定・配車済み）と admin の予約を同じ車・同じ日で重ねる
-  const cell = {}, put = (p, d, k) => { const key = p + '|' + d, o = cell[key] || (cell[key] = { app: [], adm: [] }); o[k].push(1); };
-  const st = {}; // 車|日 → 色
+  // 車×日。APP の行（正解）と admin の行を上下に並べ、admin の行だけに色を付ける（在庫チェックの OTA の行と同じ見方）
+  const app = {}, adm = {}, wait = {};
   for (const x of rows) {
-    const ok = x.ast === 1 && x.ap;
-    if (ok) for (const d of days(x.af, x.at)) { const k = x.ap + '|' + d; const hit = (x.rows || []).some(r => r.st !== 3 && r.plate === x.ap && r.f.slice(0, 10) <= d && r.t.slice(0, 10) >= d); if (!hit) st[k] = 'R'; else if (st[k] !== 'R') st[k] = 'G'; }
-    for (const r of (x.rows || [])) if (r.st !== 3) for (const d of days(r.f, r.t)) { const k = r.plate + '|' + d; const cover = ok && x.ap === r.plate && x.af.slice(0, 10) <= d && x.at.slice(0, 10) >= d; if (!cover && !st[k]) st[k] = 'Y'; }
-    if (x.ast === 1 && !x.ap) for (const d of days(x.af, x.at)) st['?' + x.ota + '|' + d] = 'W';
+    if (x.ast === 1 && x.ap) for (const d of days(x.af, x.at)) (app[x.ap + '|' + d] ||= []).push(x.rn);
+    if (x.ast === 1 && !x.ap) for (const d of days(x.af, x.at)) (wait[d] ||= []).push(x.rn);
+    for (const r of (x.rows || [])) if (r.st !== 3) for (const d of days(r.f, r.t)) (adm[r.plate + '|' + d] ||= []).push(x.rn);
   }
+  const col = k => app[k] && adm[k] ? 'G' : app[k] ? 'R' : adm[k] ? 'Y' : 'E';
   const today = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
-  const yms = [...new Set(Object.keys(st).map(k => k.split('|')[1].slice(0, 7)).filter(m => m >= today.slice(0, 7)))].sort();
+  const keys = [...new Set([...Object.keys(app), ...Object.keys(adm)])];
+  const yms = [...new Set([...keys.map(k => k.split('|')[1].slice(0, 7)), ...Object.keys(wait).map(d => d.slice(0, 7))].filter(m => m >= today.slice(0, 7)))].sort();
   if (!yms.length) yms.push(today.slice(0, 7));
   if (!yms.includes(month)) month = yms[0];
-  const mc = ym => { const v = Object.entries(st).filter(([k]) => k.split('|')[1].startsWith(ym)).map(([, c]) => c); return v.includes('R') ? COLOR.R : v.includes('Y') ? COLOR.Y : v.length ? COLOR.G : ''; };
+  const mc = ym => { const v = keys.filter(k => k.split('|')[1].startsWith(ym) && k.split('|')[1] >= today).map(col); return v.includes('R') ? COLOR.R : v.includes('Y') ? COLOR.Y : v.length ? COLOR.G : ''; };
   $('months').innerHTML = yms.map(ym => `<button class="${ym === month ? 'on' : ''}" data-m="${ym}">${+ym.slice(5)}月${mc(ym) ? `<i class="dot" style="background:${mc(ym)}"></i>` : ''}</button>`).join('');
   $('months').querySelectorAll('button').forEach(b => b.onclick = () => { month = b.dataset.m; draw(); });
   const last = new Date(Date.UTC(+month.slice(0, 4), +month.slice(5), 0)).getUTCDate();
   const ds = Array.from({ length: last }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`).filter(d => d >= today);
   const head = `<tr><th class="lbl"></th>${ds.map(d => `<th class="${wd(d) === 6 ? 'sat' : wd(d) === 0 ? 'sun' : ''}">${+d.slice(8)}</th>`).join('')}</tr>`;
-  const cars = D.cars || []; let html = head, prev = '';
-  for (const c of cars) {
-    if (c.cls !== prev) { html += `<tr><td class="cls" colspan="${ds.length + 1}">${esc(c.cls)} クラス</td></tr>`; prev = c.cls; }
-    html += `<tr><td class="lbl">${esc(c.plate)}<small>${esc(c.name)}</small></td>${ds.map(d => `<td class="${st[c.plate + '|' + d] || 'E'}"></td>`).join('')}</tr>`;
+  let html = '';
+  for (const c of (D.cars || [])) {
+    if (!ds.some(d => app[c.plate + '|' + d] || adm[c.plate + '|' + d])) continue; // その月に何も無い車は出さない
+    html += `<tr><td class="cls" colspan="${ds.length + 1}">${esc(c.plate)} ${esc(c.name)}<small>（${esc(c.cls)}クラス）</small></td></tr>` + head +
+      `<tr><td class="lbl">APP（正解）</td>${ds.map(d => `<td class="${app[c.plate + '|' + d] ? 'A' : 'E'}"></td>`).join('')}</tr>` +
+      `<tr><td class="lbl">admin（HP）</td>${ds.map(d => `<td class="${col(c.plate + '|' + d)}"></td>`).join('')}</tr><tr class="gap"><td></td></tr>`;
   }
-  const waitOtas = [...new Set(Object.keys(st).filter(k => k[0] === '?').map(k => k.slice(1).split('|')[0]))];
-  if (waitOtas.length) { html += `<tr><td class="cls" colspan="${ds.length + 1}">未配車（APPで車が決まっていない）</td></tr>`;
-    for (const o of waitOtas) html += `<tr><td class="lbl">${esc(OTA[o] || o)}</td>${ds.map(d => `<td class="${st['?' + o + '|' + d] || 'E'}"></td>`).join('')}</tr>`; }
-  $('grid').innerHTML = html;
+  if (ds.some(d => wait[d])) html += `<tr><td class="cls" colspan="${ds.length + 1}">APPで未配車（車が決まったら自動で入る）</td></tr>` + head +
+    `<tr><td class="lbl">未配車の予約</td>${ds.map(d => `<td class="${wait[d] ? 'W' : 'E'}">${wait[d] ? wait[d].length : ''}</td>`).join('')}</tr>`;
+  $('grid').innerHTML = html || `<tr><td>${+month.slice(5)}月はOTAの予約がありません</td></tr>`;
 
-  const order = { R: 0, Y: 1, W: 2 };
-  bad.sort((a, b) => order[ST[a.state][0]] - order[ST[b.state][0]] || String(a.af || a.bf).localeCompare(String(b.af || b.bf)));
-  $('list').innerHTML = bad.length ? `<tr><th>状態</th><th>予約番号</th><th>OTA</th><th>APP（正解）</th><th>admin</th><th>どうなる</th></tr>` + bad.map(x => { const [c, l, m] = ST[x.state];
-    return `<tr><td><span class="pill" style="background:${COLOR[c]};color:${c === 'Y' ? '#422006' : '#fff'}">${l}</span></td><td>${esc(x.rn)}</td><td>${esc(OTA[x.ota] || '—')}</td>` +
-      `<td>${x.ast ? (x.ast === 3 ? 'キャンセル' : `${esc(x.ap || '未配車')}<br>${md(x.af)}〜${md(x.at)}`) : '—'}</td>` +
-      `<td>${x.rows ? x.rows.map(r => `${r.st === 3 ? 'キャンセル ' : ''}${esc(r.plate)}<br>${md(r.f)}〜${md(r.t)}`).join('<hr style="border:0;border-top:1px dashed #cbd5e1">') : '無し'}</td><td>${m}</td></tr>`; }).join('')
-    : '<tr><td>ありません</td></tr>';
+  // 一覧：直すものだけ。ちがう所を赤字に。admin が APP より広く押さえているだけの時刻のずれは件数だけ
+  const wide = x => x.state === 'time' && x.bf <= x.af && x.bt >= x.at;
+  const list = bad.filter(x => !wide(x)), nWide = bad.filter(wide).length;
+  const order = { R: 0, Y: 1, W: 2 }, rd = (v, diff) => diff ? `<b style="color:#dc2626">${v}</b>` : v;
+  list.sort((a, b) => order[ST[a.state][0]] - order[ST[b.state][0]] || String(a.af || a.bf).localeCompare(String(b.af || b.bf)));
+  $('list').innerHTML = (list.length ? `<tr><th>何がちがう</th><th>予約番号</th><th>APP（正解）</th><th>admin（HP）</th></tr>` + list.map(x => { const [c, l] = ST[x.state];
+    const r0 = (x.rows || []).find(r => r.st !== 3) || (x.rows || [])[0];
+    const appTxt = !x.ast ? '無し' : x.ast === 3 ? 'キャンセル' : `${rd(esc(x.ap || '未配車'), r0 && r0.plate !== x.ap)} ${rd(md(x.af) + '〜' + md(x.at), r0 && (r0.f !== x.af || r0.t !== x.at))}`;
+    const admTxt = !x.rows ? rd('無し', x.state === 'missing') : x.rows.map(r => r.st === 3 ? 'キャンセル' : x.ast === 3 ? `${rd('確定のまま', true)} ${esc(r.plate)} ${md(r.f)}〜${md(r.t)}` : `${rd(esc(r.plate), x.ap && r.plate !== x.ap)} ${rd(md(r.f) + '〜' + md(r.t), x.af && (r.f !== x.af || r.t !== x.at))}`).join('<br>');
+    return `<tr><td><span class="pill" style="background:${COLOR[c]};color:${c === 'Y' ? '#422006' : '#fff'}">${l}</span></td><td>${esc(x.rn)}<br><small style="color:#64748b">${esc(OTA[x.ota] || '')}</small></td><td>${appTxt}</td><td>${admTxt}</td></tr>`; }).join('') : '<tr><td>直すものはありません</td></tr>') +
+    (nWide ? `<tr><td colspan="4" style="color:#64748b">ほかに、admin が APP より少し長く押さえているだけの予約が ${nWide}件（売りすぎにはならない。ロボが APP の時刻に合わせます）</td></tr>` : '');
   const acts = D.actions || [];
   $('acts').innerHTML = acts.length ? '<tr><th>時刻</th><th>予約番号</th><th>したこと</th><th>結果</th></tr>' + acts.map(a => `<tr><td>${jst(a.at)}</td><td>${esc(a.rn)}</td><td>${esc(a.action)}</td><td>${a.ok ? '✅' : '❌ ' + esc(a.msg)}</td></tr>`).join('') : '<tr><td>まだありません</td></tr>';
   $('foot').textContent = `ロボが admin を見た時刻 ${jst(D.last_read)}・この画面は5分ごとに自動で更新`;
