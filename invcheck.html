@@ -29,6 +29,8 @@ td.nv{background:#f1f5f9;color:#334155;cursor:default;font-weight:700}tr.sub td.
 td.nv.man,tr.sub td.nv.man{background:#dbeafe;color:#1d4ed8}
 .sf{margin-left:14px;font-size:14px;font-weight:700;color:#334155;display:inline-flex;align-items:center;gap:6px}.sf button{width:30px;height:30px;border:none;border-radius:6px;background:#2f3b55;color:#fff;font-size:18px;font-weight:900;cursor:pointer}.sf b{min-width:22px;text-align:center;font-size:18px}
 .g{background:#22c55e;color:#fff}.r{background:#dc2626;color:#fff;animation:blink 1s infinite}.y{background:#facc15;color:#422006}.n{background:#e2e8f0;color:#94a3b8}
+.off{background:repeating-linear-gradient(45deg,#e2e8f0 0 4px,#f8fafc 4px 8px);color:#94a3b8}
+#rel{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;font-size:14px;font-weight:700;color:#334155}#rel b{font-size:15px;color:#0f172a;margin-right:4px}#rel label{display:inline-flex;align-items:center;gap:6px}#rel input{font-size:15px;padding:4px 6px;border:1px solid #cbd5e1;border-radius:6px;background:#dbeafe;color:#1d4ed8;font-weight:800}
 .foot{font-size:12px;color:#64748b;text-align:center;margin:6px 0 20px}
 #pop{position:fixed;inset:0;background:rgba(15,23,42,.45);display:none;align-items:center;justify-content:center;z-index:50;padding:16px}
 #pop .in{background:#fff;border-radius:10px;padding:16px;max-width:360px;width:100%}
@@ -46,7 +48,9 @@ td.nv.man,tr.sub td.nv.man{background:#dbeafe;color:#1d4ed8}
     <span><i class="sw r"></i>OTAが残数より多い（売りすぎ・絶対ダメ）</span>
     <span><i class="sw y"></i>OTAが残数より少ない（売り逃し）</span>
     <span><i class="sw n"></i>ロボがまだ読めていない</span>
+    <span><i class="sw off"></i>まだ売り出していない（在庫解放期間の外＝0）</span>
   </div>
+  <div class="card" id="rel"></div>
   <div class="months" id="months"></div>
   <div class="card scroll"><table id="grid"></table></div>
   <div class="foot" id="foot"></div>
@@ -66,6 +70,9 @@ const STORES = [
 ];
 const OTA = { RKT: '楽天', JLN: 'じゃらん', SKT: 'skyticket', ART: 'エアトリ', RDC: 'レンタカードットコム', TAB: 'たびらい' };
 const TABMAP = { 7343: 'A', 7344: 'C', 7345: 'E', 7346: 'D', 7347: 'F', 7348: 'G', 7349: 'H', 7473: 'I', 7474: 'J', 7475: 'K' }; // たびらいのクラス番号→配車表のクラス
+// 高松BUDDICA の AA は1台ずつの欄（オーナー 10/26「AAもロジックに追加」）。OTAごとの欄 → 車
+const AAV = { 'AA:783': 'Gクラス G400d', 'AA:row13': 'Gクラス G400d', 'AA:7350': 'Gクラス G400d', 'AA:784': 'Eクラス カブリオレ', 'AA:row11': 'Eクラス カブリオレ', 'AA:7351': 'Eクラス カブリオレ',
+  'AA:785': 'イヴォーク', 'AA:row12': 'イヴォーク', 'AA:7352': 'イヴォーク', 'AA:786': 'ポルシェ 911', 'AA:row14': 'ポルシェ 911', 'AA:7354': 'ポルシェ 911', 'AA:787': 'ウルス', 'AA:row15': 'ウルス', 'AA:7353': 'ウルス' };
 const DAYS = 180;
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -90,13 +97,14 @@ async function fetchStore(s) {
   const d = await r.json(); let last = d.last_read, cells = d.cells;
   if (s.db === 'bt') { // 高松：ロボが読んだOTAの数は那覇・札幌のDBにある
     const on = {}; for (const o of s.otas) for (const x of (await chunks(DB.hd, 'invctl_snap', { p_store: s.id, p_days: DAYS }, 'ota=eq.' + o + '&')) || []) {
-      const c = x.ota === 'TAB' ? TABMAP[x.cls] : x.cls; if (!c) continue; on[c + '|' + x.dd + '|' + x.ota] = x.qty; if (!last || x.read_at > last) last = x.read_at; }
+      const c = x.ota === 'TAB' ? (TABMAP[x.cls] || (+x.cls >= 7350 && +x.cls <= 7354 ? 'AA:' + x.cls : null)) : x.cls; if (!c) continue; on[c + '|' + x.dd + '|' + x.ota] = x.qty; if (!last || x.read_at > last) last = x.read_at; }
     cells = cells.map(([c, dd, o, sb, v]) => [c, dd, o, sb, on[c + '|' + dd + '|' + o] ?? v]);
   }
   const rem = {}, fl = {}; for (const [c, dd, f, , , re] of d.stock) { rem[c + '|' + dd] = re; fl[c + '|' + dd] = f; }
   const out = {};
-  for (const [c, dd, o, sb, v] of cells) {
-    if (!s.otas.includes(o) || (s.id === 'takb' && c === 'AA')) continue; // AA は手で合わせる
+  for (const [c0, dd, o, sb, v] of cells) {
+    if (!s.otas.includes(o) || (s.id === 'takb' && c0 === 'AA')) continue; // AA はクラスでまとめず、車1台ごと（下）
+    const c = AAV[c0] ? 'AA・' + AAV[c0] : c0;
     const k = c + '|' + dd, x = out[k] || (out[k] = { c, dd, rem: rem[k] ?? null, fleet: fl[k] ?? null, ok: sb, sb: {}, ota: {} });
     x.ok = Math.max(x.ok, sb); x.sb[o] = sb; x.ota[o] = v; // 残数＝売っているOTAに出す数（売らないOTA は 0 なので max）
   }
@@ -108,7 +116,9 @@ async function fetchStore(s) {
   const safe = {}; try { const q = await rpc(DB[s.db], 'invctl_safety', { p_store: s.id }); if (q.ok) for (const y of await q.json()) safe[y.cls + '|' + String(y.ym).slice(0, 7)] = y.qty; } catch {}
   // 那覇の A2・B2：手入力の枠・その日の予約数・分ける数（invctl_dashboard の share）
   const share = {}, base = {}; for (const [c, src, dd, b, sold, n] of d.share || []) { share[c + '|' + dd] = { src, b, sold, n }; base[c] = b; }
-  return { cells: out, last, safe, share, base };
+  // 在庫解放期間（店×OTAの売り出す最終日。オーナー 10/26「ダッシュボードに設定を追加 そこで制限かける」）
+  const rel = {}; try { const q = await rpc(DB[s.db], 'invctl_release', { p_store: s.id }); if (q.ok) for (const y of await q.json()) rel[y.ota] = String(y.until).slice(0, 10); } catch {}
+  return { cells: out, last, safe, share, base, rel };
 }
 async function loadAll() {
   await Promise.all(STORES.map(async s => { try { cache[s.id] = await fetchStore(s); } catch (e) { cache[s.id] = { err: e.message }; } }));
@@ -147,12 +157,16 @@ function draw() {
   $('grid').innerHTML = cls.map(k => { k0 = k; const any = days.map(d => c.cells[k + '|' + d]).find(x => x && x.rem != null);
     const nv = v => `<td class="nv">${v ?? '—'}</td>`;
     const sf = c.safe[k + '|' + month] ?? 0, isSh = c.base[k] != null;
+    if (k.startsWith('AA・')) return `<tr><td class="cls" colspan="${days.length + 1}">AA クラス ${esc(k.slice(3))}<small>（1台ごと。空いていて稼働中なら1、予約・整備・未稼働なら0。安全在庫なし）</small></td></tr>` + head +
+      row('＝ 残数', 'eq', x => `<td class="nv">${x ? x.ok : '—'}</td>`) +
+      so.map(o => row(OTA[o], 'ota', (x, d) => { if (!x) return '<td class="n"></td>'; const q = x.ota[o], b = x.sb[o] ?? x.ok; const st = q == null ? 'n' : q > b ? 'r' : q < b ? 'y' : c.rel[o] && d > c.rel[o] ? 'off' : 'g';
+        return `<td class="${st}" data-k="${esc(k + '|' + d)}">${q ?? ''}</td>`; })).join('') + '<tr class="gap"><td></td></tr>';
     if (isSh) { const src = Object.keys(sh).find(z => sh[z] === k), sv = d => c.share[k + '|' + d];
       return `<tr><td class="cls" colspan="${days.length + 1}">${esc(k)} クラス<small>（${esc(src)} の残りから分ける）</small><span class="sf">${esc(k)}の枠（手入力） <button data-c="${esc(k)}" data-b="-1">−</button><b>${c.base[k]}</b><button data-c="${esc(k)}" data-b="1">＋</button></span></td></tr>` + head +
         row(`${esc(k)}の枠（手入力）`, 'sub', (x, d) => man(sv(d) ? sv(d).b : null)) +
         row(`− ${esc(k)}の予約台数`, 'sub', (x, d) => nv(sv(d) ? sv(d).sold : null)) +
         row('＝ 残数', 'eq', x => `<td class="nv">${x ? x.ok : '—'}</td>`) +
-        so.map(o => row(OTA[o], 'ota', (x, d) => { if (!x) return '<td class="n"></td>'; const q = x.ota[o], b = x.sb[o] ?? x.ok; const st = q == null ? 'n' : q > b ? 'r' : q < b ? 'y' : 'g';
+        so.map(o => row(OTA[o], 'ota', (x, d) => { if (!x) return '<td class="n"></td>'; const q = x.ota[o], b = x.sb[o] ?? x.ok; const st = q == null ? 'n' : q > b ? 'r' : q < b ? 'y' : c.rel[o] && d > c.rel[o] ? 'off' : 'g';
           return `<td class="${st}" data-k="${esc(k + '|' + d)}">${q ?? ''}</td>`; })).join('') + '<tr class="gap"><td></td></tr>'; }
     return `<tr><td class="cls" colspan="${days.length + 1}">${esc(k)} クラス${any ? `<span class="sf">${esc(+month.slice(5))}月の安全在庫（手入力） <button data-c="${esc(k)}" data-d="-1">−</button><b>${sf}</b><button data-c="${esc(k)}" data-d="1">＋</button></span>` : ''}</td></tr>` + head +
       row('稼働台数', '', x => nv(x && x.fleet)) +
@@ -160,8 +174,10 @@ function draw() {
       (sh[k] ? row(`− ${sh[k]}に回す分（${sh[k]}の枠 − ${sh[k]}の予約）`, 'sub', (x, d) => nv(share(k, d))) : '') +
       row('− 安全在庫（手入力）', 'sub', x => man(x && x.rem != null ? sf : null)) +
       row('＝ 残数', 'eq', x => `<td class="nv">${x ? x.ok : '—'}</td>`) +
-      so.map(o => row(OTA[o], 'ota', (x, d) => { if (!x) return '<td class="n"></td>'; const q = x.ota[o], b = x.sb[o] ?? x.ok; const st = q == null ? 'n' : q > b ? 'r' : q < b ? 'y' : 'g';
+      so.map(o => row(OTA[o], 'ota', (x, d) => { if (!x) return '<td class="n"></td>'; const q = x.ota[o], b = x.sb[o] ?? x.ok; const st = q == null ? 'n' : q > b ? 'r' : q < b ? 'y' : c.rel[o] && d > c.rel[o] ? 'off' : 'g';
         return `<td class="${st}" data-k="${esc(k + '|' + d)}">${q ?? ''}</td>`; })).join('') + '<tr class="gap"><td></td></tr>'; }).join('');
+  $('rel').innerHTML = '<b>在庫解放期間</b>ここまで売り出す（この先は全部0）：' + so.map(o => `<label>${esc(OTA[o])}<input type="date" data-o="${esc(o)}" value="${esc(c.rel[o] || '')}"></label>`).join('');
+  $('rel').querySelectorAll('input').forEach(i => i.onchange = () => setRel(i.dataset.o, i.value));
   $('grid').querySelectorAll('.sf button').forEach(b => b.onclick = () => b.dataset.b ? setBase(b.dataset.c, +b.dataset.b) : setSafe(b.dataset.c, +b.dataset.d));
   $('grid').querySelectorAll('td[data-k]').forEach(t => t.onclick = () => pop(c.cells[t.dataset.k]));
   $('foot').textContent = `OTAの行の数字＝いまOTAに出ている数（緑＝残数と同じ）。ロボがOTAを読んだ時刻 ${jst(c.last)}・5分ごとに自動で更新`;
@@ -173,6 +189,14 @@ async function setSafe(k, d) {
   if (!r.ok) { $('foot').textContent = `安全在庫を変えられませんでした（${r.status}）`; return; }
   try { cache[store] = await fetchStore(s); } catch (e) { cache[store] = { err: e.message }; } draw();
   $('foot').textContent = `${k}クラス ${+month.slice(5)}月の安全在庫を ${q} 台にしました。残数と色を出し直しました。`;
+}
+async function setRel(o, v) {
+  const s = STORES.find(z => z.id === store);
+  let who = ''; try { who = localStorage.getItem('inv_who') || ''; } catch {}
+  const r = await rpc(DB[s.db], 'invctl_set_release', { p_store: store, p_ota: o, p_until: v, p_by: (who || '在庫チェック画面') });
+  if (!r.ok) { $('foot').textContent = `${OTA[o]}の在庫解放期間を変えられませんでした（${r.status}）`; return; }
+  try { cache[store] = await fetchStore(s); } catch (e) { cache[store] = { err: e.message }; } draw();
+  $('foot').textContent = `${OTA[o]}は ${v} まで売り出します。残数と色を出し直しました。`;
 }
 async function setBase(k, d) {
   const s = STORES.find(z => z.id === store), c = cache[store], q = Math.max(0, Math.min(99, (c.base[k] ?? 0) + d));
