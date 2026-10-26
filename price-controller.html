@@ -129,10 +129,14 @@ CHANS.push({k:'gogoout',n:'GGO'});
 var STORE_CHANS={nha:['official','jalan','rakuten','airtri','rentalcar','skyticket','gogoout'],spk:['official','jalan','rakuten','airtri','rentalcar','skyticket'],tkm:['official','jalan','rakuten']};
 function chansOf(){return CHANS.filter(function(c){return (STORE_CHANS[STORE]||[]).indexOf(c.k)>=0;});}
 // ★見本：車両の無いクラス＝枠は残して販売なし
-var INACTIVE={nha:{C:'販売なし',S:'販売なし'},spk:{A2:'11月〜販売なし',B2:'11月〜販売なし',H:'11月〜販売なし'},tkm:{}};
-function inact(c){return (INACTIVE[STORE]||{})[c]||'';}
-var INACTIVE_FROM={spk:{A2:'2026-11',B2:'2026-11',H:'2026-11'}}; // 札幌A2・B2・Hは10月末まで販売
-function inactAt(c,ym){if(refOf(c))return true;var f=(INACTIVE_FROM[STORE]||{})[c];if(f)return ym>=f;return !!inact(c);}
+var INACTIVE={nha:{C:'販売なし',S:'販売なし'},spk:{H:'11月〜販売なし'},tkm:{}};
+// ★OTAごとの掲載クラス（書いてあるOTAだけ絞る・無ければ全クラス）：那覇RDC=A・B・H／GGO=A（10/25）
+var CHAN_CLS={nha:{rentalcar:['A','B','H'],gogoout:['A']}};
+function chanHas(k,c){var l=(CHAN_CLS[STORE]||{})[k];return k==='official'||!l||l.indexOf(c)>=0;}
+function inactS(c){return (INACTIVE[STORE]||{})[c]||'';} // 店として販売なし
+function inact(c){return inactS(c)||(chanHas(CHAN,c)?'':'掲載なし');} // 選択中のOTAで販売なし
+var INACTIVE_FROM={spk:{H:'2026-11'}}; // 札幌Hは10月末まで販売（A2・B2は11月以降も販売：10/22）
+function inactAt(c,ym){if(refOf(c))return true;if(!chanHas(CHAN,c))return true;var f=(INACTIVE_FROM[STORE]||{})[c];if(f)return ym>=f;return !!inact(c);}
 // ★見本：基本料金の3段（月→段は全店共通）
 var TIER_OF_MONTH={1:'L',2:'L',3:'R',4:'L',5:'R',6:'R',7:'H',8:'H',9:'H',10:'R',11:'R',12:'L'}; // 10/20 繁忙=7・8・9月のみ
 var TIER_NAME={L:'閑散 TL',R:'通常 TR',H:'繁忙 TH'};
@@ -181,11 +185,18 @@ function normPrice(P){
 }
 // 📋 現在のチャネルの価格を他の全OTAへ上書きコピー（＝全OTAに一括反映。日付は元々共通）
 function applyPriceToAll(){
-  var P=PRICE[STORE],src=P.channels[CHAN];
+  var P=PRICE[STORE],src=P.channels[CHAN],onlyBase=(subtab==='base');
   var others=chansOf().filter(function(c){return c.k!==CHAN&&c.k!=='official';});
-  if(!confirm('現在の「'+chanName(CHAN)+'」の価格（基本料金・安い日/高い日・月別）を、他の全チャネル（'+others.map(function(c){return c.n;}).join('・')+'）に上書きコピーします。\n※日付（高い日/安い日）は元々共通です。\n※この操作後「💾 保存」を押すと確定します。公式を含むため公式サイトにも反映されます。\nよろしいですか？'))return;
-  others.forEach(function(c){P.channels[c.k]={price:JSON.parse(JSON.stringify(src.price||{})),months:JSON.parse(JSON.stringify(src.months||{})),tiers:JSON.parse(JSON.stringify(src.tiers||{}))};});
-  bindChan();render();toast('✅ 「'+chanName(CHAN)+'」の価格を全チャネルにコピーしました（保存で確定）');
+  if(!confirm('「'+chanName(CHAN)+'」の'+(onlyBase?'基本料金（TL・TR・TH）':'価格（基本料金・安い日/高い日・月別）')+'を '+others.map(function(c){return c.n;}).join('・')+' に上書きコピーします。\n公式（HDM）は変わりません。保存で確定します。'))return;
+  var cp=function(o){return JSON.parse(JSON.stringify(o||{}));};
+  others.forEach(function(c){var d=P.channels[c.k]=P.channels[c.k]||{};
+    if(!onlyBase){d.price=cp(src.price);d.months=cp(src.months);d.tiers=cp(src.tiers);return;}
+    // 基本料金だけ：段の金額(tiers)と基本(price.base・months.base)。安い日/高い日・済チェックは残す
+    d.tiers=cp(src.tiers);d.price=d.price||{};d.months=d.months||{};
+    Object.keys(src.price||{}).forEach(function(cl){d.price[cl]=d.price[cl]||{};var v=(src.price[cl]||{}).base;if(v==null)delete d.price[cl].base;else d.price[cl].base=v;});
+    Object.keys(src.months||{}).forEach(function(ym){Object.keys(src.months[ym]||{}).forEach(function(cl){var v=(src.months[ym][cl]||{}).base;if(v==null)return;d.months[ym]=d.months[ym]||{};d.months[ym][cl]=d.months[ym][cl]||{};d.months[ym][cl].base=v;});});
+  });
+  bindChan();render();toast('✅ 「'+chanName(CHAN)+'」の'+(onlyBase?'基本料金':'価格')+'を全OTAにコピーしました（保存で確定）');
 }
 
 function curYM(){var n=new Date();return n.getFullYear()+'-'+('0'+(n.getMonth()+1)).slice(-2);}
@@ -435,6 +446,19 @@ function togSeg(ym,cl,sg,on){var P=PRICE[STORE],ch=P.channels[CHAN],ns=segNames(
   P.input_log=(P.input_log||[]).slice(0,500);
   var y=window.scrollY;render();window.scrollTo(0,y);
   if(WRITE_ENABLED)saveDoneOnly(STORE,CHAN,cl,vals);}
+// その月・そのOTAの済を一括で付け外し（販売なし・参考クラスは除く）。保存はクラスごとに1か所ずつ（saveDoneOnly）
+function monthSegs(P,ym){var out=[];Object.keys(P.price||{}).forEach(function(cl){if(refOf(cl)||inactAt(cl,ym))return;
+  ['low','base','high'].forEach(function(sg){if(monthVals(P,CHAN,ym,cl)[sg]!=null&&segNames(P,CHAN,ym,cl,sg).length)out.push([cl,sg]);});});return out;}
+function monthAllDone(P,ym){var ss=monthSegs(P,ym);return ss.length>0&&ss.every(function(x){return !segPending(P,CHAN,ym,x[0],x[1]);});}
+async function togMonth(ym,on){var P=PRICE[STORE],ch=P.channels[CHAN],by={};
+  ch.done_tier=ch.done_tier||{};
+  monthSegs(P,ym).forEach(function(x){var cl=x[0],sg=x[1],v=monthVals(P,CHAN,ym,cl)[sg];ch.done_tier[cl]=ch.done_tier[cl]||{};by[cl]=by[cl]||{};
+    segNames(P,CHAN,ym,cl,sg).forEach(function(nm){if(on){ch.done_tier[cl][nm]={ts:nowStr(),v:v};P.input_log=P.input_log||[];P.input_log.unshift({ts:nowStr(),ota:CHAN,cls:cl,tier:nm});}else delete ch.done_tier[cl][nm];by[cl][nm]=on?ch.done_tier[cl][nm]:null;});});
+  P.input_log=(P.input_log||[]).slice(0,500);
+  var y=window.scrollY;render();window.scrollTo(0,y);
+  if(WRITE_ENABLED){var s=STORE,k=CHAN;for(var cl in by)await saveDoneOnly(s,k,cl,by[cl]);}}
+// 変更履歴は消さない（10/25 ユーザー）。重い snap（その時点の全価格の写し）だけ新しい10件に残す
+function keepHist(P){(P.history||[]).forEach(function(h,i){if(i>=10&&h.snap)delete h.snap;});}
 // チェック（入力済み）だけを本番に書く：ほかの未保存の価格変更は巻き込まない・最新を読み直して1か所だけ差し替え
 async function saveDoneOnly(s,k,cl,vals){
   var db=DBOF[s],tbl=TBLOF[s];
@@ -482,7 +506,7 @@ function adjTab(){
   var isOta=CHAN!=='official',pct=saleRate();
   var ent=isOta?(((P.channels||{})[CHAN]||{}).entered||null):null,eV=(ent&&ent.v)||{};
   var highKey=Object.keys(highNames)[0]||'高い日';
-  var head='<tr><th rowspan="2">クラス</th>'+(isOta?'<th rowspan="2" style="width:28px">済</th>':'')+'<th rowspan="2">種別</th><th colspan="5">通常</th>'+(isOta?'<th colspan="5" style="background:#f4e4e2;color:#a5524c">セール −<input type="number" min="0" max="50" step="1" value="'+pct+'" style="width:48px;padding:2px 4px;margin:0 2px;text-align:right;font-weight:800;color:#a5524c;border:1px solid #dfb3ae" onchange="PRICE[STORE].sale_rate=+this.value;var y=window.scrollY;render();window.scrollTo(0,y)">%</th>':'')+'</tr><tr>'
+  var head='<tr><th rowspan="2">クラス</th>'+(isOta?'<th rowspan="2" style="width:28px">済<br><input type="checkbox" style="width:16px;height:16px;margin:2px 0 0;accent-color:#4f8a5b"'+(monthAllDone(P,ym)?' checked':'')+' onchange="togMonth(\''+ym+'\',this.checked)"></th>':'')+'<th rowspan="2">種別</th><th colspan="5">通常</th>'+(isOta?'<th colspan="5" style="background:#f4e4e2;color:#a5524c">セール −<input type="number" min="0" max="50" step="1" value="'+pct+'" style="width:48px;padding:2px 4px;margin:0 2px;text-align:right;font-weight:800;color:#a5524c;border:1px solid #dfb3ae" onchange="PRICE[STORE].sale_rate=+this.value;var y=window.scrollY;render();window.scrollTo(0,y)">%</th>':'')+'</tr><tr>'
     +NIGHTS.map(function(n){return '<th>'+n[0]+'</th>';}).join('')+(isOta?NIGHTS.map(function(n){return '<th style="background:#f4e4e2;color:#a5524c">'+n[0]+'</th>';}).join(''):'')+'</tr>';
   // 入力待ち＝前回「入力済み」にした値と違う段（OTAのみ）
   var pend=function(cl,name,v,n0){if(!isOta||!n0)return null;var a=(eV[cl]||{})[name];return a===v?null:(a==null?'未登録':'¥'+(+a).toLocaleString());};
@@ -728,7 +752,7 @@ async function save(){
 // ===================== ①保存（ドッキング時に WRITE_ENABLED=true にする） =====================
 var WRITE_ENABLED=true; // 本番（ドッキング版）
 // ★2026-10-22 公式の基本料金（TL/TR/TH）が空のクラスがあれば保存しない（空だと公式HPで0円表示のおそれ）。
-//  販売していない月（INACTIVE / INACTIVE_FROM）は見ない＝那覇C・S、札幌11月以降のA2・B2・H は空でも止めない。
+//  販売していない月（INACTIVE / INACTIVE_FROM）は見ない＝那覇C・S、札幌11月以降のH は空でも止めない。
 function emptyBase(s){
   var off=((PRICE[s]||{}).channels||{}).official||{},t=off.tiers||{},ym0=curYM(),out=[];
   var ina=function(c,ym){var f=(INACTIVE_FROM[s]||{})[c];if(f)return ym>=f;return !!((INACTIVE[s]||{})[c]);};
@@ -746,7 +770,7 @@ async function realSave(s){
   var db=DBOF[s],tbl=TBLOF[s],P=r.payload;
   var ch=r.site.concat(r.ota);
   var items=changeItems(normCopy(ORIG_RAW[s],s),PRICE[s]);
-  if(ch.length||items.length){P.history=P.history||[];P.history.unshift({ts:nowStr(),items:items,changes:ch.slice(0,30).join(' / ')+(ch.length>30?' ほか'+(ch.length-30)+'件':''),snap:{channels:JSON.parse(JSON.stringify(P.channels||{})),high:(P.high_dates||[]).length}});P.history=P.history.slice(0,50);}
+  if(ch.length||items.length){P.history=P.history||[];P.history.unshift({ts:nowStr(),items:items,changes:ch.slice(0,30).join(' / ')+(ch.length>30?' ほか'+(ch.length-30)+'件':''),snap:{channels:JSON.parse(JSON.stringify(P.channels||{})),high:(P.high_dates||[]).length}});keepHist(P);}
   var cur=await req(db,'GET',tbl+'?key=eq.hdm_official_price&select=value');
   var obj=(cur.ok&&cur.data&&cur.data[0])?JSON.parse(cur.data[0].value):{};
   if(JSON.stringify(obj[s])!==ORIG_RAW[s])return {ok:false,msg:'保存の直前に他の人が変更しました。再読み込みしてください。'};
@@ -768,7 +792,7 @@ function tierPrices(P,k){
     if((P.low_dates||[]).some(function(d){return d.slice(0,7)===ym;}))lows[ym]=1;
     (P.high_dates||[]).forEach(function(d){if(d.slice(0,7)===ym){var nm=highName(d);if(nm==='HX')nm='HX '+(+ym.slice(5))+'月';highs[nm]=highs[nm]||ym;}});}
   Object.keys(ch.price||{}).forEach(function(c){
-    if(inact(c))return;
+    if(inactS(c)||!chanHas(k,c))return;
     var t=(ch.tiers||{})[c]||{},p=(ch.price||{})[c]||{},row={};
     ['L','R','H'].forEach(function(x){if(t[x]!=null&&t[x]!=='')row[TN(x)]=+t[x];});
     Object.keys(lows).forEach(function(ym){var m=((ch.months||{})[ym]||{})[c]||{},v=(m.a!=null?m.a:p.a);if(v==null)v=t[tierOf(ym)];if(v!=null)row[LOW_NAME[+ym.slice(5)]]=+v;});
@@ -813,7 +837,7 @@ function markDone(k){
 function cmpTab(){
   var P=PRICE[STORE],otas=chansOf(),tp={};
   otas.forEach(function(o){tp[o.k]=tierPrices(P,o.k);});
-  var classes=clsKeys(P.price).filter(function(c){return !inact(c);});
+  var classes=clsKeys(P.price).filter(function(c){return !inactS(c);});
   var body=classes.map(function(c){
     var names={};otas.forEach(function(o){Object.keys(tp[o.k][c]||{}).forEach(function(t){names[t]=1;});});
     var ts=Object.keys(names).sort(tierSort);
