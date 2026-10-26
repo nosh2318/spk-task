@@ -25,10 +25,11 @@ body.embed header{display:none}
   <div class="card" id="form" hidden>
     <div class="row"><label>店<select id="store"></select></label><label>OTA<select id="ota"></select></label></div>
     <label>あなたの名前<input id="who" placeholder="例：山田" autocomplete="off"></label>
+    <label>ID（変わった時だけ）<input id="uid" autocomplete="off" spellcheck="false" placeholder="変わっていなければ空のまま"></label>
     <label>新しいパスワード<input id="pw" type="password" autocomplete="new-password" spellcheck="false"></label>
     <button id="send">登録する</button>
     <div id="msg"></div>
-    <div class="note" style="margin-top:10px">IDは変わりません。パスだけ入れてください。<br>パスはロボのMacだけが開ける形にして送ります。Slack の会話には書かないでください。</div>
+    <div class="note" style="margin-top:10px">IDが変わった時だけ、IDも入れてください。<br>パスはロボのMacだけが開ける形にして送ります。Slack の会話には書かないでください。</div>
   </div>
   <div class="card"><b>結果</b> <span class="note">（10秒ごとに更新）</span><table id="hist"></table></div>
 </div>
@@ -63,19 +64,21 @@ async function seal(pem, text) {
 function say(t, ok) { $('msg').innerHTML = `<div class="msg ${ok ? 'ok' : 'ng'}">${esc(t)}</div>`; }
 
 $('send').onclick = async () => {
-  const who = $('who').value.trim(), pw = $('pw').value;
+  const who = $('who').value.trim(), pw = $('pw').value, uid = $('uid').value.trim();
   if (!who) { say('名前を入れてください。'); $('who').focus(); return; }
   if (!pw) { say('新しいパスワードを入れてください。'); $('pw').focus(); return; }
+  if (uid.length > 64) { say('IDが長すぎます。'); $('uid').focus(); return; }
+  if ($('ota').value === 'RDC' && (uid.length > 10 || pw.length > 10)) { say('レンタカードットコムは IDもパスも10文字までです。'); return; }
   $('send').disabled = true;
   try {
     const k = await SB.rpc('invctl_cred_pubkeys'); if (k.error) throw k.error;
     if (!k.data.length) throw new Error('ロボの鍵がありません');
     const ciphers = [];
-    for (const r of k.data) ciphers.push({ host: r.host, cipher: await seal(r.pem, pw) });
+    for (const r of k.data) ciphers.push({ host: r.host, cipher: await seal(r.pem, uid ? JSON.stringify({ id: uid, pw }) : pw) });
     const s = await SB.rpc('invctl_cred_submit', { p_store: $('store').value, p_ota: $('ota').value, p_ciphers: ciphers, p_name: who });
     if (s.error) throw s.error;
-    $('pw').value = '';
-    say(`${STORES[$('store').value][0]} ${OTA[$('ota').value]} のパスを送りました。下の結果が ✅ になれば完了です。`, true);
+    $('pw').value = ''; $('uid').value = '';
+    say(`${STORES[$('store').value][0]} ${OTA[$('ota').value]} ${uid ? 'のIDとパス' : 'のパス'}を送りました。下の結果が ✅ になれば完了です。`, true);
     hist();
   } catch (e) { say('送れませんでした：' + (e.message || e)); }
   $('send').disabled = false;
