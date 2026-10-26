@@ -30,7 +30,7 @@ table.g td{width:34px;height:30px;text-align:center;font-weight:800;font-size:12
 td.cls{text-align:left;font-size:15px;font-weight:900;padding:8px 4px 2px;height:auto}
 .lbl{position:sticky;left:0;background:#fff;z-index:1;text-align:left!important;white-space:nowrap;padding:0 8px 0 2px;font-size:13px;font-weight:800;width:auto!important}
 .lbl small{color:#64748b;font-weight:600;margin-left:4px}
-.A{background:#2f3b55}.G{background:#22c55e;color:#fff}.R{background:#dc2626;color:#fff;animation:blink 1s infinite}.Y{background:#facc15;color:#422006}.E{background:#f1f5f9}.W{background:#cbd5e1;color:#334155}.O{background:#9ca3af}
+.A{background:#2f3b55}.G{background:#22c55e;color:#fff}.R{background:#dc2626;color:#fff;animation:blink 1s infinite}.Y{background:#facc15;color:#422006}.E{background:#f1f5f9}.W{background:#cbd5e1;color:#334155}.O{background:#9ca3af}.S{background:#bbf7d0;color:#166534}
 table.l{width:100%;border-collapse:collapse;font-size:13px}
 table.l th{text-align:left;font-size:12px;color:#64748b;padding:6px;border-bottom:1px solid #e2e8f0;white-space:nowrap}
 table.l td{padding:7px 6px;border-bottom:1px solid #eef2f7;vertical-align:top}
@@ -43,10 +43,11 @@ table.l td{padding:7px 6px;border-bottom:1px solid #eef2f7;vertical-align:top}
   <div id="big"></div>
   <div class="nums" id="nums"></div>
   <div class="rule">
-    <span>数字＝その日に埋まっている予約の数（公式HPなども全部）。同じクラスなら、どの車に入っていてもよい</span>
-    <span><i class="sw G"></i>admin＝APP（正しい）</span>
-    <span><i class="sw R"></i>admin が APP より少ない（HPで二重に売れる・絶対ダメ）</span>
-    <span><i class="sw Y"></i>admin が APP より多い（HPの売り逃し）</span>
+    <span><i class="sw A"></i>APP の行：予約あり（公式HPなども全部）</span>
+    <span><i class="sw G"></i>admin で埋まっている（正しい）</span>
+    <span><i class="sw S"></i>⇄ 同じクラスの別の車で埋まっている（正しい）</span>
+    <span><i class="sw R"></i>そのクラスが admin で足りない（HPで二重に売れる・絶対ダメ）</span>
+    <span><i class="sw Y"></i>admin だけ埋まっている（HPの売り逃し）</span>
   </div>
   <div class="months" id="months"></div>
   <div class="card scroll"><table class="g" id="grid"></table></div>
@@ -115,7 +116,8 @@ function draw() {
 
   // クラス×日：その日に埋まっている予約の数を APP と admin で比べる（公式HPなども含む全予約）。色は admin の行だけ
   const app = {}, adm = {}, wait = {};
-  const put = (m, plate, f, t, rn) => { const c = CLS[plate]; if (!c) return; for (const d of days(f, t)) ((m[c + '|' + d] ||= new Set())).add(rn); };
+  const carA = {}, carD = {}; // 車×日：APP・admin で埋まっているか（全予約）
+  const put = (m, plate, f, t, rn) => { const c = CLS[plate]; if (!c) return; const cm = m === app ? carA : carD; for (const d of days(f, t)) { ((m[c + '|' + d] ||= new Set())).add(rn); cm[plate + '|' + d] = 1; } };
   const appB = []; // APP の全予約（同じ車に重なっていないかを見る）
   for (const x of rows) {
     if (x.ast === 1 && x.ap) { put(app, x.ap, x.af, x.at, x.rn); appB.push({ rn: x.rn, plate: x.ap, f: x.af, t: x.at }); }
@@ -137,14 +139,17 @@ function draw() {
   const last = new Date(Date.UTC(+month.slice(0, 4), +month.slice(5), 0)).getUTCDate();
   const ds = Array.from({ length: last }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`).filter(d => d >= today);
   const head = `<tr><th class="lbl"></th>${ds.map(d => `<th class="${wd(d) === 6 ? 'sat' : wd(d) === 0 ? 'sun' : ''}">${+d.slice(8)}</th>`).join('')}</tr>`;
-  const groups = [];
-  for (const c of (D.cars || [])) { const g = groups.find(g => g.k === CLS[c.plate]); g ? g.cars.push(c) : groups.push({ k: CLS[c.plate], cls: c.cls, cars: [c] }); }
-  let html = '';
-  for (const g of groups) {
-    const k = d => g.k + '|' + d;
-    html += `<tr><td class="cls" colspan="${ds.length + 1}">${esc(g.cls)}クラス ${g.cars.length}台<small>（${g.cars.map(c => esc(c.plate + ' ' + c.name)).join('・')}）</small></td></tr>` + head +
-      `<tr><td class="lbl">APP（正解）</td>${ds.map(d => `<td class="${na(k(d)) ? 'A' : 'E'}" style="color:#fff">${na(k(d)) || ''}</td>`).join('')}</tr>` +
-      `<tr><td class="lbl">admin（HP）</td>${ds.map(d => `<td class="${col(k(d))}">${nd(k(d)) || (col(k(d)) === 'R' ? 0 : '')}</td>`).join('')}</tr><tr class="gap"><td></td></tr>`;
+  // 車1台ずつ。色はクラスの数で決める（同じクラスならどの車でもよい）
+  const cell = (plate, d) => { const k = CLS[plate] + '|' + d, c = col(k), a = carA[plate + '|' + d], m = carD[plate + '|' + d];
+    if (m) return c === 'Y' && !a ? 'Y' : 'G';           // admin で埋まっている
+    if (a) return c === 'R' ? 'R' : 'S';                  // APP だけ：クラスが足りなければ赤、足りていれば別の車に入っている
+    return 'E'; };
+  let html = '', prev = null;
+  for (const c of (D.cars || [])) {
+    if (CLS[c.plate] !== prev) { html += `<tr><td class="cls" colspan="${ds.length + 1}">${esc(c.cls)}クラス</td></tr>`; prev = CLS[c.plate]; }
+    html += `<tr><td class="lbl" colspan="${ds.length + 1}" style="padding-top:6px">${esc(c.plate)} ${esc(c.name)}</td></tr>` + head +
+      `<tr><td class="lbl">APP（正解）</td>${ds.map(d => `<td class="${carA[c.plate + '|' + d] ? 'A' : 'E'}"></td>`).join('')}</tr>` +
+      `<tr><td class="lbl">admin（HP）</td>${ds.map(d => { const v = cell(c.plate, d); return `<td class="${v}">${v === 'S' ? '⇄' : ''}</td>`; }).join('')}</tr><tr class="gap"><td></td></tr>`;
   }
   if (ds.some(d => wait[d])) html += `<tr><td class="cls" colspan="${ds.length + 1}">APPで未配車（車が決まったら自動で入る）</td></tr>` + head +
     `<tr><td class="lbl">未配車の予約</td>${ds.map(d => `<td class="${wait[d] ? 'W' : 'E'}">${wait[d] ? wait[d].length : ''}</td>`).join('')}</tr>`;
