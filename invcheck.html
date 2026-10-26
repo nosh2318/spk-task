@@ -32,6 +32,7 @@ td.nv.man,tr.sub td.nv.man{background:#dbeafe;color:#1d4ed8}
 .off{background:repeating-linear-gradient(45deg,#e2e8f0 0 4px,#f8fafc 4px 8px);color:#94a3b8}
 #rel{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;font-size:14px;font-weight:700;color:#334155}#rel b{font-size:15px;color:#0f172a;margin-right:4px}#rel label{display:inline-flex;align-items:center;gap:6px}#rel input{font-size:15px;padding:4px 6px;border:1px solid #cbd5e1;border-radius:6px;background:#dbeafe;color:#1d4ed8;font-weight:800}
 .foot{font-size:12px;color:#64748b;text-align:center;margin:6px 0 20px}
+#reg{display:none;background:#fee2e2;border-radius:8px;padding:10px 12px;margin:0 0 10px}#reg h3{margin:0 0 6px;font-size:16px;color:#991b1b}#reg table{border-spacing:0;width:100%}#reg td{width:auto;height:auto;cursor:default;border-radius:0;text-align:left;font-size:14px;padding:6px 8px;border-top:1px solid #fecaca;font-weight:700}#reg td.v{color:#991b1b;font-weight:900}
 #pop{position:fixed;inset:0;background:rgba(15,23,42,.45);display:none;align-items:center;justify-content:center;z-index:50;padding:16px}
 #pop .in{background:#fff;border-radius:10px;padding:16px;max-width:360px;width:100%}
 #pop h3{margin:0 0 10px;font-size:17px}
@@ -43,6 +44,7 @@ td.nv.man,tr.sub td.nv.man{background:#dbeafe;color:#1d4ed8}
 <div class="wrap">
   <div class="tabs" id="tabs"></div>
   <div id="big"></div>
+  <div id="reg"></div>
   <div class="rule">
     <span><i class="sw g"></i>OTA ＝ 残数（正しい）</span>
     <span><i class="sw r"></i>OTAが残数より多い（売りすぎ・絶対ダメ）</span>
@@ -119,7 +121,9 @@ async function fetchStore(s) {
   const share = {}, base = {}; for (const [c, src, dd, b, sold, n] of d.share || []) { share[c + '|' + dd] = { src, b, sold, n }; base[c] = b; }
   // 在庫解放期間（店×OTAの売り出す最終日。オーナー 10/26「ダッシュボードに設定を追加 そこで制限かける」）
   const rel = {}; try { const q = await rpc(DB[s.db], 'invctl_release', { p_store: s.id }); if (q.ok) for (const y of await q.json()) rel[y.ota] = String(y.until).slice(0, 10); } catch {}
-  return { cells: out, last, safe, share, base, rel };
+  // OTA側の在庫登録の最終日（ロボが読む。オーナー 10/26「在庫まで登録されています…そこの部分を出せよ。ダッシュボードに」）。売り出す最終日より手前で切れている所だけ
+  const reg = []; try { const q = await rpc(DB.hd, 'invctl_reg_end', { p_store: s.id }); if (q.ok) for (const y of await q.json()) { const u = rel[y.ota] || String(y.until).slice(0, 10); if (y.last_dd && y.last_dd < u) reg.push({ ota: y.ota, cls: y.cls, last: y.last_dd, u }); } } catch {}
+  return { cells: out, last, safe, share, base, rel, reg };
 }
 async function loadAll() {
   await Promise.all(STORES.map(async s => { try { cache[s.id] = await fetchStore(s); } catch (e) { cache[s.id] = { err: e.message }; } }));
@@ -127,10 +131,10 @@ async function loadAll() {
 }
 const count = (id, ym) => { const c = cache[id]; if (!c || !c.cells) return null; const a = Object.values(c.cells).filter(x => !ym || x.dd.startsWith(ym));
   return { r: a.filter(x => x.st === 'r').length, y: a.filter(x => x.st === 'y').length, all: a.length }; };
-const dotColor = n => !n ? '' : n.r ? '#dc2626' : n.y ? '#eab308' : '#22c55e';
+const dotColor = (n, g) => !n ? '' : n.r || g ? '#dc2626' : n.y ? '#eab308' : '#22c55e';
 
 function draw() {
-  $('tabs').innerHTML = STORES.map(s => { const n = count(s.id); return `<button class="${s.id === store ? 'on' : ''}" data-s="${s.id}">${s.name}${n ? `<i class="dot" style="background:${dotColor(n)}"></i>` : ''}</button>`; }).join('');
+  $('tabs').innerHTML = STORES.map(s => { const n = count(s.id); return `<button class="${s.id === store ? 'on' : ''}" data-s="${s.id}">${s.name}${n ? `<i class="dot" style="background:${dotColor(n, cache[s.id]?.reg?.length)}"></i>` : ''}</button>`; }).join('');
   $('tabs').innerHTML += `<button onclick="location.href='hpcheck.html'+(P.get('embed') ? '?embed=1' : '')">BUDDICA（HP）</button>`; // 公式HPの admin（hpcheck.html）
   $('tabs').querySelectorAll('button[data-s]').forEach(b => b.onclick = () => { store = b.dataset.s; history.replaceState(null, '', '?store=' + store + (P.get('embed') ? '&embed=1' : '')); draw(); });
   const c = cache[store];
@@ -141,6 +145,10 @@ function draw() {
   $('big').innerHTML = n.r ? `<div class="big ng">❌ ${name}：売りすぎ ${n.r}マス<small>OTAの方が多い日があります（少ない ${n.y}マス）</small></div>`
     : n.y ? `<div class="big warn">⚠ ${name}：売りすぎ 0・少ない ${n.y}マス<small>多くはないので事故にはなりません。売り逃しです</small></div>`
     : `<div class="big ok">✅ ${name}：全部OK<small>全クラス・全媒体が 配車表の残り − 安全在庫 と同じ数です</small></div>`;
+  const md = d => `${+d.slice(5, 7)}/${+d.slice(8, 10)}`;
+  $('reg').style.display = c.reg.length ? 'block' : 'none';
+  $('reg').innerHTML = c.reg.length ? `<h3>⚠ OTAの在庫登録が足りません（${c.reg.length}件）→ OTAの管理画面で登録を延ばしてください</h3><table>` +
+    c.reg.map(y => `<tr><td>${esc(OTA[y.ota] || y.ota)}</td><td>${esc(AAV[y.cls] ? 'AA・' + AAV[y.cls] : y.cls)} クラス</td><td class="v">${md(y.last)} まで</td><td>売り出すのは ${md(y.u)} まで</td></tr>`).join('') + '</table>' : '';
   if (un) $('big').innerHTML += `<div class="big warn" style="font-size:16px">読めていないマス ${un}（灰色）</div>`;
   const yms = [...new Set(Object.values(c.cells).map(x => x.dd.slice(0, 7)))].sort();
   if (!yms.includes(month)) month = yms[0];
