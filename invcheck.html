@@ -26,6 +26,7 @@ td{width:34px;height:34px;text-align:center;font-weight:800;font-size:14px;borde
 td.cls{text-align:left;cursor:default;font-size:17px;font-weight:900;padding:10px 4px 2px;height:auto}td.cls small{font-size:12px;color:#64748b;font-weight:600;margin-left:6px}
 .lbl{position:sticky;left:0;background:#fff;z-index:1;text-align:left;white-space:nowrap;padding:0 8px 0 2px;font-size:13px;font-weight:800;width:auto;cursor:default}
 td.nv{background:#f1f5f9;color:#334155;cursor:default;font-weight:700}tr.sub td.nv{color:#64748b}tr.eq td.nv{background:#2f3b55;color:#fff;font-weight:900}tr.eq .lbl{color:#2f3b55}tr.ota .lbl{font-weight:600;color:#475569}tr.gap td{height:12px;cursor:default}
+.sf{margin-left:14px;font-size:14px;font-weight:700;color:#334155;display:inline-flex;align-items:center;gap:6px}.sf button{width:30px;height:30px;border:none;border-radius:6px;background:#2f3b55;color:#fff;font-size:18px;font-weight:900;cursor:pointer}.sf b{min-width:22px;text-align:center;font-size:18px}
 .g{background:#22c55e;color:#fff}.r{background:#dc2626;color:#fff;animation:blink 1s infinite}.y{background:#facc15;color:#422006}.n{background:#e2e8f0;color:#94a3b8}
 .foot{font-size:12px;color:#64748b;text-align:center;margin:6px 0 20px}
 #pop{position:fixed;inset:0;background:rgba(15,23,42,.45);display:none;align-items:center;justify-content:center;z-index:50;padding:16px}
@@ -102,7 +103,9 @@ async function fetchStore(s) {
     const v = Object.entries(x.ota).filter(([, q]) => q != null);
     x.st = !v.length ? 'n' : v.some(([o, q]) => q > x.sb[o]) ? 'r' : v.some(([o, q]) => q < x.sb[o]) ? 'y' : 'g'; // OTAごとに、そのOTAに出すべき数と比べる
   }
-  return { cells: out, last };
+  // 安全在庫（月×クラス）。ここで変えられる（オーナー 10/26「在庫調整は安全在庫を設定して全体をチェックする箇所」）
+  const safe = {}; try { const q = await rpc(DB[s.db], 'invctl_safety', { p_store: s.id }); if (q.ok) for (const y of await q.json()) safe[y.cls + '|' + String(y.ym).slice(0, 7)] = y.qty; } catch {}
+  return { cells: out, last, safe };
 }
 async function loadAll() {
   await Promise.all(STORES.map(async s => { try { cache[s.id] = await fetchStore(s); } catch (e) { cache[s.id] = { err: e.message }; } }));
@@ -139,7 +142,7 @@ function draw() {
   const sh = store === 'nha' ? { A: 'A2', B: 'B2' } : {}, share = (k, d) => { const y = sh[k] && c.cells[sh[k] + '|' + d]; return y ? y.ok : null; };
   $('grid').innerHTML = cls.map(k => { k0 = k; const any = days.map(d => c.cells[k + '|' + d]).find(x => x && x.rem != null);
     const nv = v => `<td class="nv">${v ?? '—'}</td>`;
-    return `<tr><td class="cls" colspan="${days.length + 1}">${esc(k)} クラス${any ? '' : '<small>（A・B の残りから分けた枠）</small>'}</td></tr>` + head +
+    return `<tr><td class="cls" colspan="${days.length + 1}">${esc(k)} クラス${any ? `<span class="sf">${esc(+month.slice(5))}月の安全在庫 <button data-c="${esc(k)}" data-d="-1">−</button><b>${c.safe[k + '|' + month] ?? 0}</b><button data-c="${esc(k)}" data-d="1">＋</button></span>` : '<small>（A・B の残りから分けた枠）</small>'}</td></tr>` + head +
       row('稼働台数', '', x => nv(x && x.fleet)) +
       row('− 予約台数', 'sub', x => nv(x && x.fleet != null && x.rem != null ? x.fleet - Math.max(0, x.rem) : null)) +
       (sh[k] ? row(`− ${sh[k]}に回す分`, 'sub', (x, d) => nv(share(k, d))) : '') +
@@ -147,8 +150,17 @@ function draw() {
       row('＝ 残数', 'eq', x => `<td class="nv">${x ? x.ok : '—'}</td>`) +
       so.map(o => row(OTA[o], 'ota', (x, d) => { if (!x) return '<td class="n"></td>'; const q = x.ota[o], b = x.sb[o] ?? x.ok; const st = q == null ? 'n' : q > b ? 'r' : q < b ? 'y' : 'g';
         return `<td class="${st}" data-k="${esc(k + '|' + d)}">${q ?? ''}</td>`; })).join('') + '<tr class="gap"><td></td></tr>'; }).join('');
+  $('grid').querySelectorAll('.sf button').forEach(b => b.onclick = () => setSafe(b.dataset.c, +b.dataset.d));
   $('grid').querySelectorAll('td[data-k]').forEach(t => t.onclick = () => pop(c.cells[t.dataset.k]));
   $('foot').textContent = `OTAの行の数字＝いまOTAに出ている数（緑＝残数と同じ）。ロボがOTAを読んだ時刻 ${jst(c.last)}・5分ごとに自動で更新`;
+}
+async function setSafe(k, d) {
+  const s = STORES.find(z => z.id === store), c = cache[store], q = Math.max(0, Math.min(99, (c.safe[k + '|' + month] ?? 0) + d));
+  let who = ''; try { who = localStorage.getItem('inv_who') || ''; } catch {}
+  const r = await rpc(DB[s.db], 'invctl_set_safety', { p_store: store, p_cls: k, p_ym: month + '-01', p_qty: q, p_by: (who || '在庫チェック画面') });
+  if (!r.ok) { $('foot').textContent = `安全在庫を変えられませんでした（${r.status}）`; return; }
+  try { cache[store] = await fetchStore(s); } catch (e) { cache[store] = { err: e.message }; } draw();
+  $('foot').textContent = `${k}クラス ${+month.slice(5)}月の安全在庫を ${q} 台にしました。残数と色を出し直しました。`;
 }
 function pop(x) {
   const s = STORES.find(z => z.id === store), rem = Math.max(0, x.rem ?? 0);
