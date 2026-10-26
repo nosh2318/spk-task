@@ -29,6 +29,8 @@ td.nv{background:#f1f5f9;color:#334155;cursor:default;font-weight:700}tr.sub td.
 td.nv.man,tr.sub td.nv.man{background:#dbeafe;color:#1d4ed8}
 .sf{margin-left:14px;font-size:14px;font-weight:700;color:#334155;display:inline-flex;align-items:center;gap:6px}.sf button{width:30px;height:30px;border:none;border-radius:6px;background:#2f3b55;color:#fff;font-size:18px;font-weight:900;cursor:pointer}.sf b{min-width:22px;text-align:center;font-size:18px}
 .g{background:#22c55e;color:#fff}.r{background:#dc2626;color:#fff;animation:blink 1s infinite}.y{background:#facc15;color:#422006}.n{background:#e2e8f0;color:#94a3b8}
+.off{background:repeating-linear-gradient(45deg,#e2e8f0 0 4px,#f8fafc 4px 8px);color:#94a3b8}
+#rel{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;font-size:14px;font-weight:700;color:#334155}#rel b{font-size:15px;color:#0f172a;margin-right:4px}#rel label{display:inline-flex;align-items:center;gap:6px}#rel input{font-size:15px;padding:4px 6px;border:1px solid #cbd5e1;border-radius:6px;background:#dbeafe;color:#1d4ed8;font-weight:800}
 .foot{font-size:12px;color:#64748b;text-align:center;margin:6px 0 20px}
 #pop{position:fixed;inset:0;background:rgba(15,23,42,.45);display:none;align-items:center;justify-content:center;z-index:50;padding:16px}
 #pop .in{background:#fff;border-radius:10px;padding:16px;max-width:360px;width:100%}
@@ -46,7 +48,9 @@ td.nv.man,tr.sub td.nv.man{background:#dbeafe;color:#1d4ed8}
     <span><i class="sw r"></i>OTAが残数より多い（売りすぎ・絶対ダメ）</span>
     <span><i class="sw y"></i>OTAが残数より少ない（売り逃し）</span>
     <span><i class="sw n"></i>ロボがまだ読めていない</span>
+    <span><i class="sw off"></i>まだ売り出していない（在庫解放期間の外＝0）</span>
   </div>
+  <div class="card" id="rel"></div>
   <div class="months" id="months"></div>
   <div class="card scroll"><table id="grid"></table></div>
   <div class="foot" id="foot"></div>
@@ -108,7 +112,9 @@ async function fetchStore(s) {
   const safe = {}; try { const q = await rpc(DB[s.db], 'invctl_safety', { p_store: s.id }); if (q.ok) for (const y of await q.json()) safe[y.cls + '|' + String(y.ym).slice(0, 7)] = y.qty; } catch {}
   // 那覇の A2・B2：手入力の枠・その日の予約数・分ける数（invctl_dashboard の share）
   const share = {}, base = {}; for (const [c, src, dd, b, sold, n] of d.share || []) { share[c + '|' + dd] = { src, b, sold, n }; base[c] = b; }
-  return { cells: out, last, safe, share, base };
+  // 在庫解放期間（店×OTAの売り出す最終日。オーナー 10/26「ダッシュボードに設定を追加 そこで制限かける」）
+  const rel = {}; try { const q = await rpc(DB[s.db], 'invctl_release', { p_store: s.id }); if (q.ok) for (const y of await q.json()) rel[y.ota] = String(y.until).slice(0, 10); } catch {}
+  return { cells: out, last, safe, share, base, rel };
 }
 async function loadAll() {
   await Promise.all(STORES.map(async s => { try { cache[s.id] = await fetchStore(s); } catch (e) { cache[s.id] = { err: e.message }; } }));
@@ -152,7 +158,7 @@ function draw() {
         row(`${esc(k)}の枠（手入力）`, 'sub', (x, d) => man(sv(d) ? sv(d).b : null)) +
         row(`− ${esc(k)}の予約台数`, 'sub', (x, d) => nv(sv(d) ? sv(d).sold : null)) +
         row('＝ 残数', 'eq', x => `<td class="nv">${x ? x.ok : '—'}</td>`) +
-        so.map(o => row(OTA[o], 'ota', (x, d) => { if (!x) return '<td class="n"></td>'; const q = x.ota[o], b = x.sb[o] ?? x.ok; const st = q == null ? 'n' : q > b ? 'r' : q < b ? 'y' : 'g';
+        so.map(o => row(OTA[o], 'ota', (x, d) => { if (!x) return '<td class="n"></td>'; const q = x.ota[o], b = x.sb[o] ?? x.ok; const st = q == null ? 'n' : q > b ? 'r' : q < b ? 'y' : c.rel[o] && d > c.rel[o] ? 'off' : 'g';
           return `<td class="${st}" data-k="${esc(k + '|' + d)}">${q ?? ''}</td>`; })).join('') + '<tr class="gap"><td></td></tr>'; }
     return `<tr><td class="cls" colspan="${days.length + 1}">${esc(k)} クラス${any ? `<span class="sf">${esc(+month.slice(5))}月の安全在庫（手入力） <button data-c="${esc(k)}" data-d="-1">−</button><b>${sf}</b><button data-c="${esc(k)}" data-d="1">＋</button></span>` : ''}</td></tr>` + head +
       row('稼働台数', '', x => nv(x && x.fleet)) +
@@ -160,8 +166,10 @@ function draw() {
       (sh[k] ? row(`− ${sh[k]}に回す分（${sh[k]}の枠 − ${sh[k]}の予約）`, 'sub', (x, d) => nv(share(k, d))) : '') +
       row('− 安全在庫（手入力）', 'sub', x => man(x && x.rem != null ? sf : null)) +
       row('＝ 残数', 'eq', x => `<td class="nv">${x ? x.ok : '—'}</td>`) +
-      so.map(o => row(OTA[o], 'ota', (x, d) => { if (!x) return '<td class="n"></td>'; const q = x.ota[o], b = x.sb[o] ?? x.ok; const st = q == null ? 'n' : q > b ? 'r' : q < b ? 'y' : 'g';
+      so.map(o => row(OTA[o], 'ota', (x, d) => { if (!x) return '<td class="n"></td>'; const q = x.ota[o], b = x.sb[o] ?? x.ok; const st = q == null ? 'n' : q > b ? 'r' : q < b ? 'y' : c.rel[o] && d > c.rel[o] ? 'off' : 'g';
         return `<td class="${st}" data-k="${esc(k + '|' + d)}">${q ?? ''}</td>`; })).join('') + '<tr class="gap"><td></td></tr>'; }).join('');
+  $('rel').innerHTML = '<b>在庫解放期間</b>ここまで売り出す（この先は全部0）：' + so.map(o => `<label>${esc(OTA[o])}<input type="date" data-o="${esc(o)}" value="${esc(c.rel[o] || '')}"></label>`).join('');
+  $('rel').querySelectorAll('input').forEach(i => i.onchange = () => setRel(i.dataset.o, i.value));
   $('grid').querySelectorAll('.sf button').forEach(b => b.onclick = () => b.dataset.b ? setBase(b.dataset.c, +b.dataset.b) : setSafe(b.dataset.c, +b.dataset.d));
   $('grid').querySelectorAll('td[data-k]').forEach(t => t.onclick = () => pop(c.cells[t.dataset.k]));
   $('foot').textContent = `OTAの行の数字＝いまOTAに出ている数（緑＝残数と同じ）。ロボがOTAを読んだ時刻 ${jst(c.last)}・5分ごとに自動で更新`;
@@ -173,6 +181,14 @@ async function setSafe(k, d) {
   if (!r.ok) { $('foot').textContent = `安全在庫を変えられませんでした（${r.status}）`; return; }
   try { cache[store] = await fetchStore(s); } catch (e) { cache[store] = { err: e.message }; } draw();
   $('foot').textContent = `${k}クラス ${+month.slice(5)}月の安全在庫を ${q} 台にしました。残数と色を出し直しました。`;
+}
+async function setRel(o, v) {
+  const s = STORES.find(z => z.id === store);
+  let who = ''; try { who = localStorage.getItem('inv_who') || ''; } catch {}
+  const r = await rpc(DB[s.db], 'invctl_set_release', { p_store: store, p_ota: o, p_until: v, p_by: (who || '在庫チェック画面') });
+  if (!r.ok) { $('foot').textContent = `${OTA[o]}の在庫解放期間を変えられませんでした（${r.status}）`; return; }
+  try { cache[store] = await fetchStore(s); } catch (e) { cache[store] = { err: e.message }; } draw();
+  $('foot').textContent = `${OTA[o]}は ${v} まで売り出します。残数と色を出し直しました。`;
 }
 async function setBase(k, d) {
   const s = STORES.find(z => z.id === store), c = cache[store], q = Math.max(0, Math.min(99, (c.base[k] ?? 0) + d));
