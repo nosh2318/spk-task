@@ -92,7 +92,10 @@ function draw() {
   $('tabs').innerHTML = STORES.map(([id, n]) => `<a href="invcheck.html?store=${id}${EMB}">${n}</a>`).join('') + `<button class="on">BUDDICA（HP）</button>`;
   if (err) { $('big').innerHTML = `<div class="big warn">読み込めませんでした（${esc(err)}）</div>`; return; }
   if (!D) { $('big').innerHTML = '<div class="big warn">読み込み中…</div>'; return; }
-  const rows = D.rows || [], bad = rows.filter(x => x.state !== 'ok');
+  // 時刻のずれが30分以内は一致とみなす（丸め方のちがい）
+  const near = x => x.state === 'time' && (x.rows || []).some(r => r.st !== 3 && Math.abs(new Date(r.f) - new Date(x.af)) <= 30 * 60e3 && Math.abs(new Date(r.t) - new Date(x.at)) <= 30 * 60e3);
+  const nNear = (D.rows || []).filter(near).length;
+  const rows = (D.rows || []).map(x => near(x) ? { ...x, state: 'ok' } : x), bad = rows.filter(x => x.state !== 'ok');
   const n = k => rows.filter(x => ST[x.state] && ST[x.state][0] === k).length, nr = n('R'), ny = n('Y'), nw = n('W');
   const stale = !D.last_read || Date.now() - new Date(D.last_read) > 60 * 60e3;
   $('big').innerHTML = (stale ? `<div class="big ng">⏸ ロボが admin を ${D.last_read ? '1時間以上' : 'まだ'} 見ていません<small>最後に見た時刻 ${jst(D.last_read)}。mini のロボと admin のログインを確認</small></div>` : '') +
@@ -133,17 +136,35 @@ function draw() {
     `<tr><td class="lbl">未配車の予約</td>${ds.map(d => `<td class="${wait[d] ? 'W' : 'E'}">${wait[d] ? wait[d].length : ''}</td>`).join('')}</tr>`;
   $('grid').innerHTML = html || `<tr><td>${+month.slice(5)}月はOTAの予約がありません</td></tr>`;
 
-  // 一覧：直すものだけ。ちがう所を赤字に。admin が APP より広く押さえているだけの時刻のずれは件数だけ
+  // 一覧：直すものだけを1行ずつ（予約番号／何がちがう／だれが）。入れ替えた2件は1行にまとめる
   const wide = x => x.state === 'time' && x.bf <= x.af && x.bt >= x.at;
-  const list = bad.filter(x => !wide(x)), nWide = bad.filter(wide).length;
-  const order = { R: 0, Y: 1, W: 2 }, rd = (v, diff) => diff ? `<b style="color:#dc2626">${v}</b>` : v;
-  list.sort((a, b) => order[ST[a.state][0]] - order[ST[b.state][0]] || String(a.af || a.bf).localeCompare(String(b.af || b.bf)));
-  $('list').innerHTML = (list.length ? `<tr><th>何がちがう</th><th>予約番号</th><th>APP（正解）</th><th>admin（HP）</th></tr>` + list.map(x => { const [c, l] = ST[x.state];
-    const r0 = (x.rows || []).find(r => r.st !== 3) || (x.rows || [])[0];
-    const appTxt = !x.ast ? '無し' : x.ast === 3 ? 'キャンセル' : `${rd(esc(x.ap || '未配車'), r0 && r0.plate !== x.ap)} ${rd(md(x.af) + '〜' + md(x.at), r0 && (r0.f !== x.af || r0.t !== x.at))}`;
-    const admTxt = !x.rows ? rd('無し', x.state === 'missing') : x.rows.map(r => r.st === 3 ? 'キャンセル' : x.ast === 3 ? `${rd('確定のまま', true)} ${esc(r.plate)} ${md(r.f)}〜${md(r.t)}` : `${rd(esc(r.plate), x.ap && r.plate !== x.ap)} ${rd(md(r.f) + '〜' + md(r.t), x.af && (r.f !== x.af || r.t !== x.at))}`).join('<br>');
-    return `<tr><td><span class="pill" style="background:${COLOR[c]};color:${c === 'Y' ? '#422006' : '#fff'}">${l}</span></td><td>${esc(x.rn)}<br><small style="color:#64748b">${esc(OTA[x.ota] || '')}</small></td><td>${appTxt}</td><td>${admTxt}</td></tr>`; }).join('') : '<tr><td>直すものはありません</td></tr>') +
-    (nWide ? `<tr><td colspan="4" style="color:#64748b">ほかに、admin が APP より少し長く押さえているだけの予約が ${nWide}件（売りすぎにはならない。ロボが APP の時刻に合わせます）</td></tr>` : '');
+  const plateOf = x => ((x.rows || []).find(r => r.st !== 3) || {}).plate;
+  const items = [], used = new Set(), cars = bad.filter(x => x.state === 'car');
+  for (const a of cars) {
+    if (used.has(a.rn)) continue;
+    const b = cars.find(y => y !== a && !used.has(y.rn) && y.ap === plateOf(a) && plateOf(y) === a.ap && y.af < a.at && a.af < y.at); // 期間が重なる2件だけ（片方だけ直すと車がぶつかる）
+    if (b) { used.add(a.rn); used.add(b.rn); items.push({ k: 'R', rn: `${a.rn}<br>${b.rn}`, what: `入れ替え（2件同時に直す）<br><small>${esc(plateOf(a))}⇔${esc(a.ap)}</small>`, who: 'ロボ', d: a.af }); }
+  }
+  const nWide = bad.filter(wide).length;
+  const short = t => t ? `${+t.slice(8, 10)}日${t.slice(11, 16)}` : '';
+  for (const x of bad) {
+    if (used.has(x.rn) || wide(x)) continue;
+    const pa = plateOf(x), r0 = (x.rows || []).find(r => r.st !== 3) || {};
+    const what = x.state === 'car' ? `車：admin ${esc(pa)} → <b style="color:#dc2626">${esc(x.ap)}</b>`
+      : x.state === 'time' ? `時刻：${r0.f !== x.af ? `貸出 ${short(r0.f)} → <b style="color:#dc2626">${short(x.af)}</b> ` : ''}${r0.t !== x.at ? `返却 ${short(r0.t)} → <b style="color:#dc2626">${short(x.at)}</b>` : ''}`
+      : x.state === 'missing' ? `未登録：<b style="color:#dc2626">${esc(x.ap)} ${md(x.af)}〜${md(x.at)}</b>`
+      : x.state === 'cancel' ? 'キャンセル：APPはキャンセル、adminは確定のまま'
+      : x.state === 'dup' ? 'adminに2行ある（二重登録）'
+      : x.state === 'extra' ? 'adminだけにある（番号ちがい？）'
+      : `APPで未配車（${md(x.af)}〜）`;
+    const who = ['missing', 'car', 'time', 'cancel'].includes(x.state) ? 'ロボ' : '人';
+    items.push({ k: ST[x.state][0], rn: esc(x.rn) + `<br><small style="color:#64748b">${esc(OTA[x.ota] || '')}</small>`, what, who, d: x.af || x.bf });
+  }
+  const order = { R: 0, Y: 1, W: 2 };
+  items.sort((a, b) => order[a.k] - order[b.k] || String(a.d).localeCompare(String(b.d)));
+  $('list').innerHTML = (items.length ? `<tr><th>予約番号</th><th>何がちがう</th><th>だれが</th></tr>` + items.map(i =>
+    `<tr><td style="border-left:6px solid ${COLOR[i.k]}">${i.rn}</td><td>${i.what}</td><td>${i.who === 'ロボ' ? '<span class="pill" style="background:#2563eb;color:#fff">ロボが直す</span>' : '<span class="pill" style="background:#f97316;color:#fff">人が見る</span>'}</td></tr>`).join('') : '<tr><td>直すものはありません</td></tr>') +
+    (nNear + nWide ? `<tr><td colspan="3" style="color:#64748b">一覧から外したもの：時刻のずれが30分以内（丸め方のちがい）${nNear}件、admin が APP より長く押さえているだけ（売りすぎにはならない）${nWide}件。どちらもロボが APP の時刻に合わせます</td></tr>` : '');
   const acts = D.actions || [];
   $('acts').innerHTML = acts.length ? '<tr><th>時刻</th><th>予約番号</th><th>したこと</th><th>結果</th></tr>' + acts.map(a => `<tr><td>${jst(a.at)}</td><td>${esc(a.rn)}</td><td>${esc(a.action)}</td><td>${a.ok ? '✅' : '❌ ' + esc(a.msg)}</td></tr>`).join('') : '<tr><td>まだありません</td></tr>';
   $('foot').textContent = `ロボが admin を見た時刻 ${jst(D.last_read)}・この画面は5分ごとに自動で更新`;
