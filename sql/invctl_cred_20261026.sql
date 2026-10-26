@@ -54,7 +54,7 @@ declare e jsonb; first_id bigint; nid bigint;
 begin
   if auth.uid() is null or private.kyoritsu_is_me() then raise exception 'not allowed'; end if;
   if coalesce(trim(p_name),'') = '' then raise exception '名前を入れてください'; end if;
-  if not exists (select 1 from invctl.mode m where m.store = p_store and m.ota = p_ota) then raise exception '店とOTAが違います'; end if;
+  if not (p_store || '|' || p_ota = any (array['nha|RKT','nha|JLN','nha|SKT','nha|ART','nha|RDC','spk|RKT','spk|JLN','spk|SKT','spk|ART','spk|RDC','takh|RKT','takh|JLN','takb|ART','takb|TAB','takb|RDC'])) then raise exception '店とOTAが違います'; end if;
   if (select count(*) from invctl.cred_drop where by_uid = auth.uid() and created_at > now() - interval '1 hour') >= 20 then raise exception '回数が多すぎます'; end if;
   for e in select * from jsonb_array_elements(p_ciphers) loop
     if not exists (select 1 from invctl.cred_pubkey k where k.host = e->>'host' and k.revoked_at is null) then continue; end if;
