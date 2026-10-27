@@ -86,7 +86,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
 var CV='spk-v1212';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=1046').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=1047').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -16826,6 +16826,12 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
         });
         if(_gid.length){console.log("[loadTasks] 空港ゴースト場所 表示のみ非表示(★2026-07-04 DB書込なし):",_gid.length,_gid);}/* ★開くだけでDBを書かない: OTAゴースト場所は表示上だけ隠す。人間入力(_placeSource=manual)は上のガードで除外済。 */
       }catch(_e){console.error("[ghostPlaceHeal]",_e);}
+      // ★2026-10-27 車両一覧の読込待ちガード: vehicles が初期値(仮8台)のままだと預かり車を判定できず、
+      //   引取(p-)の墓標化/復活/生成を誤る。DBの車両一覧が届くまで表示のみ(DBに書かない)。届けば deps[vehicles] で再実行される。
+      if(vehicles===INIT_VEHICLES){
+        console.log("[loadTasks] 車両一覧の読込待ち→表示のみ(引取の削除/復活/生成をしない)",date);
+        setTasks(prev=>{const sIds=new Set(saved.map(t=>t._id));const pm=_prevLoadedDate===date?(prev||[]).filter(t=>t.manual&&!t.reservationId&&!sIds.has(t._id)):[];return pm.length?[...result,...pm]:result;});return;
+      }
       // ★ 新規予約のタスクを追加（DBにない予約IDのタスクを生成）
       const existingResIds=new Set(result.filter(t=>t.reservationId).map(t=>t.reservationId));
       const existingTaskIds=new Set(result.filter(t=>t.reservationId).map(t=>t._id));
@@ -16844,9 +16850,20 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       if(_pickTomb.length){_pickTomb.forEach(id=>{existingTaskIds.delete(id);DB.deleteTask(id,date);});console.log("[loadTasks] 引取(p-)残存を墓標化(自社車へ戻し/対象外):",_pickTomb.length,_pickTomb);}
       const _pickRevive=[];
       _genPickIds.forEach(rid=>{const pid="p-"+rid;if(_tomb.has(pid)&&!_pickPermaDel.has(pid)){_pickRevive.push(pid);_tomb.delete(pid);}});
-      if(_pickRevive.length){try{if(sb)sb.from("tasks").update({deleted:false}).in("_id",_pickRevive).then(()=>{});}catch(_e){}console.log("[loadTasks] 引取(p-)を復活(預かり車へ再配車):",_pickRevive.length,_pickRevive);}
-      // 新規予約のタスク全体、または A2/B2 引取タスクが未生成の既存予約に引取だけ補完
-      const newTasks=gen.filter(g=>g.reservationId&&!_tomb.has(g._id)&&!_pickPermaDel.has(g._id)&&(!existingResIds.has(g.reservationId)||(g.type==="引取"&&!existingTaskIds.has(g._id))));
+      // ★2026-10-27 復活は deleted 解除だけ。旧: 解除と同時に下の newTasks に入り、空の生成タスクを updateTask で upsert
+      //   → スタッフが入れた担当/時間/済を空で上書きしていた(p-HDMS…8631 10/27 11:24 高橋 真里/10:00/済 が消えた)。
+      //   解除後のDB行をそのまま読み直して表示し、newTasks からは除外する(=人間入力に触らない)。
+      const _revivedSet=new Set(_pickRevive);
+      if(_pickRevive.length){
+        try{if(sb){
+          await sb.from("tasks").update({deleted:false}).in("_id",_pickRevive);
+          const{data:_rv}=await sb.from("tasks").select("*").in("_id",_pickRevive).neq("deleted",true);
+          (_rv||[]).forEach(r=>{const t=DB._fromDbTask(r);if(!result.some(x=>x._id===t._id))result.push(t);});
+        }}catch(_e){console.error("[loadTasks] 引取(p-)復活",_e);}
+        console.log("[loadTasks] 引取(p-)を復活(預かり車へ再配車・DBの担当/時間/済をそのまま表示):",_pickRevive.length,_pickRevive);
+      }
+      // 新規予約のタスク全体、または A2/B2 引取タスクが未生成の既存予約に引取だけ補完（復活した引取は除外＝上書きしない）
+      const newTasks=gen.filter(g=>g.reservationId&&!_tomb.has(g._id)&&!_pickPermaDel.has(g._id)&&!_revivedSet.has(g._id)&&(!existingResIds.has(g.reservationId)||(g.type==="引取"&&!existingTaskIds.has(g._id))));
       // ★2026-08-07 月末月初調整(その他)を補完: 期間内(25日〜翌5日)で、DBに未存在(全saved id照合)かつ墓標でない時だけ1件挿入。
       //   固定IDなので存在すれば触らない=重複なし・担当/済/メモの人間編集を上書きしない。予約タスクと同じupdateTask(単一upsert)で書く。
       const _mmAdj=genMonthAdjTask(date);
@@ -16863,6 +16880,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       setTasks(prev=>{const sIds=new Set(saved.map(t=>t._id));const pm=_prevLoadedDate===date?(prev||[]).filter(t=>t.manual&&!t.reservationId&&!sIds.has(t._id)):[];return pm.length?[...result,...pm]:result;});return;
     }
     // 2. DBにタスクなし→初回のみ自動生成
+    // ★2026-10-27 車両一覧の読込待ちガード(上と同じ): 仮8台のままでは生成しない。届けば再実行される。
+    if(vehicles===INIT_VEHICLES){console.log("[loadTasks] 車両一覧の読込待ち→初回生成を保留",date);setTasks([]);return;}
     const gen=generateTasks(curRes,date,fleetRef.current,vehicles);
     gen.forEach(g=>{
       if(!g.reservationId)return;
@@ -23096,8 +23115,6 @@ function App(){
     });
   },[]);
   const[maintenance,setMaintenance]=useState([]);const[shifts,setShifts]=useState({});const[showOP,setShowOP]=useState(false);const[showFloatFleet,setShowFloatFleet]=useState(false);const[floatFleetSize,setFloatFleetSize]=useState("half");
-  /* ★2026-10-21 本部ダッシュボードから ?op=1 で開いたら、予約の読込後に OPシートを1回だけ開く（ボタンを押したのと同じ・?op 無しは従来どおり） */
-  useEffect(()=>{try{if(!window.__opAuto&&data.length>0&&new URLSearchParams(location.search).get("op")==="1"){window.__opAuto=true;setShowOP(true);}}catch(e){}},[data]);
   // ★2026-08-17 在庫管理TOPバッジ＝予約の未調整＋入庫(車検/点検/修理・全媒体調整対象)の未調整 を合算
   /* ★2026-10-04 invTodoTotal は下記（invStat 宣言後）で定義。ここで参照するとTDZ(Cannot access before initialization)で白画面になる。 */
   const[showSqFailed,setShowSqFailed]=useState(false);
@@ -23189,6 +23206,10 @@ function App(){
     if(rows.length){try{sb.from("app_settings").upsert(rows,{onConflict:"key"}).then(()=>{}).catch(()=>{});}catch(e){}}
   },[shifts,staff]);
   const[vehicles,setVehicles]=useState(INIT_VEHICLES);
+  /* ★2026-10-21 本部ダッシュボードから ?op=1 で開いたら、予約の読込後に OPシートを1回だけ開く（ボタンを押したのと同じ・?op 無しは従来どおり）
+     ★2026-10-27 車両一覧(vehicles)の読込も待つ。旧: 予約が届いた瞬間に開き、車両が仮8台(INIT_VEHICLES)のまま loadTasks が走る
+       → 預かり車(owner_company≠HANDYMAN)を判定できず引取(p-)を墓標化→数秒後に復活＋空タスク上書きで担当/時間/済が消えた(p-HDMS…8631 10/27 11:24)。 */
+  useEffect(()=>{try{if(!window.__opAuto&&data.length>0&&vehicles!==INIT_VEHICLES&&new URLSearchParams(location.search).get("op")==="1"){window.__opAuto=true;setShowOP(true);}}catch(e){}},[data,vehicles]);
   // ★ クラス管理 (2026-05-26 オーナー要望): 新クラス追加+既存編集対応
   //   保存先: localStorage (端末別) / バリデーション最小限
   const[customClasses,setCustomClasses]=useState(()=>{try{return JSON.parse(localStorage.getItem("spk_custom_classes_v1")||"[]");}catch(e){return [];}});
@@ -25558,7 +25579,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.684";
+const APP_VERSION="v4.7.685";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
