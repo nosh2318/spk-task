@@ -84,7 +84,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1214';
+var CV='spk-v1215';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=1048').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -451,6 +451,8 @@ const DB = {
     if(prev._manual)m.manual=prev._manual;
     // ★2026-07-12 洗車「翌日対応」フラグ(=当日貸出洗車への切替)を再生成でも維持（人が押した設定=手入力扱い）
     if(prev._nextDayWash){m._nextDayWash=true;m._nextDayWashAt=prev._nextDayWashAt||"";}
+    // ★2026-10-28 三國さんの通常/スポット区分(人が選んだ設定)を再生成でも維持
+    if(prev._changed&&prev._changed._billing){m._changed={...(m._changed||{}),_billing:prev._changed._billing};}
     // ユーザーが付けた済チェック・メモも維持
     if(prev.done)m.done=true;
     if(String(prev.memo||"").split("\n##BCJ:")[0].trim())m.memo=DB._mergeMemo(m.memo,prev.memo);
@@ -1331,6 +1333,17 @@ function TaskMoveBadge({t,size}){
   const st=MOVE_MEANS_STYLE[mm]||{g:"linear-gradient(135deg,#60a5fa,#1d4ed8)",short:mm};
   const ic=MOVE_MEANS_ICON[mm]||"🚗";
   return React.createElement("span",{title:_moveMeansLabel(t.type)+": "+mm,style:{...box,background:st.g,color:"#fff",border:"1px solid rgba(255,255,255,.35)"}},React.createElement("span",{style:{fontSize:fs+2}},ic),React.createElement("span",{style:{textShadow:"0 1px 1px rgba(0,0,0,.25)"}},st.short));
+}
+// ★2026-10-28 三國さん専用「通常／スポット」区分（オーナー指示）。スポット=固定給に含まれない課金タスク（1件¥600）。
+//   11/1以降に三國さんへ振られたタスクだけが対象。既定は通常＝スポットを選んだ時だけ changed_json._billing="spot"。
+//   OPシート（担当セル）とバイト個人URL(staff.html)の両方から切替可。集計は給与明細の「特別対応」欄。
+const SPOT_FROM="2026-11-01";const SPOT_RATE=600;
+function _isSpotStaff(n){var s=String(n||"").replace(/\s/g,"").replace("三国","三國");return s==="三國玲音"||s==="三國";}
+function _spotEligible(t,date){var d=String((t&&t._taskDate)||date||"");return !!t&&_isSpotStaff(t.assignee)&&d>=SPOT_FROM;}
+function _isSpot(t){return !!(t&&t._changed&&t._changed._billing==="spot");}
+function SpotBadge({t,date,size}){
+  if(!_spotEligible(t,date)||!_isSpot(t))return null;
+  return React.createElement("span",{title:"スポット（固定給外・1件¥"+SPOT_RATE+"）",style:{flexShrink:0,fontSize:size||9,fontWeight:800,color:"#fff",background:"#ea580c",borderRadius:4,padding:"1px 6px"}},"💴スポット");
 }
 // 旧バージョン（車検/整備/小タスク）で作成されたタスクの後方互換用（フィルタのみ、ドロップダウンには出さない）
 const OTHER_TASK_TYPES_LEGACY=["車検","整備","小タスク"];
@@ -13920,6 +13933,21 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
       });
   },[viewYM]);
 
+  // ★2026-10-28 三國さん専用「特別対応（スポット）」: 表示月の三國さん担当タスクのうちスポット(_billing=spot)を一覧化（1件¥600・11/1以降）
+  const[spotTasks,setSpotTasks]=useState([]);
+  React.useEffect(()=>{
+    setSpotTasks([]);
+    if(!sb||viewYM+"-31"<SPOT_FROM)return;
+    const from=viewYM+"-01";const to=viewYM+"-31";
+    sb.from("tasks").select("_id,date,type,name,time,return_time,assignee,changed_json,done,deleted").in("assignee",["三國 玲音","三國","三国 玲音","三国"])
+      .gte("date",from<SPOT_FROM?SPOT_FROM:from).lte("date",to).order("date",{ascending:true}).order("time",{ascending:true})
+      .then(({data:rows,error})=>{
+        if(error){console.warn("[spotTasks]",error.message);return;}
+        setSpotTasks((rows||[]).filter(r=>{if(r.deleted)return false;try{return JSON.parse(r.changed_json||"{}")._billing==="spot";}catch(e){return false;}}));
+      });
+  },[viewYM]);
+  const spotOf=(nm)=>_isSpotStaff(nm)?spotTasks:[];
+
   // 実働時間計算ヘルパー（休憩控除対応）
   const calcHours=(start,end,breakMin)=>{
     if(!start||!end)return 0;
@@ -13983,6 +14011,13 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
       if(d.otHours>0)sum+="<tr><td>残業（ログ）</td><td class=r>"+d.otEvents.length+"件 / "+d.otHours.toFixed(1)+"h</td></tr>";
       if(d.hwHours>0)sum+="<tr><td>休日出勤（ログ）</td><td class=r>"+d.hwDays+"日 / "+d.hwEvents.length+"件 / "+d.hwHours.toFixed(1)+"h</td></tr>";
       sum+="<tr><td>交通費 ("+yen(s.transportCost||0)+"×"+d.actualDays+"日)</td><td class=r>"+yen(d.actualTransport)+"</td></tr>";
+      const sp=spotOf(nm);const spAmt=sp.length*SPOT_RATE;
+      if(_isSpotStaff(nm))sum+="<tr><td style='color:#c2410c'>特別対応（スポット・固定給外）</td><td class=r>"+yen(SPOT_RATE)+" × "+sp.length+"件 = "+yen(spAmt)+"</td></tr>";
+      let spotTbl="";
+      if(sp.length){
+        sp.forEach(r=>{const p=String(r.date||"").split("-");spotTbl+="<tr><td>"+(+p[1])+"/"+(+p[2])+"</td><td>"+esc(r.type||"")+"</td><td>"+esc(r.time||r.return_time||"")+"</td><td>"+esc(r.name||"")+"</td><td class=r>"+yen(SPOT_RATE)+"</td></tr>";});
+        spotTbl="<div class=sub>特別対応（スポット）内訳</div><table class=grid><thead><tr><th>日</th><th>内容</th><th>時間</th><th>名前</th><th class=r>金額</th></tr></thead><tbody>"+spotTbl+"<tr class=ft><td>合計</td><td>"+sp.length+"件</td><td></td><td></td><td class=r>"+yen(spAmt)+"</td></tr></tbody></table>";
+      }
       let daily="";
       rows.forEach(dy=>{
         const gross=calcHours(dy.att.start,dy.att.end,0);
@@ -13998,7 +14033,8 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
         "<div class=nm><span class=n>"+esc(nm)+"</span><span class=tag>"+esc(s.type||"")+"</span>"+
         "<span class=days>"+d.actualDays+"日 / "+d.actualHours.toFixed(1)+"h"+(d.absentDays>0?" (欠勤"+d.absentDays+")":"")+"</span></div>"+
         "<table class=sum>"+sum+"</table>"+
-        "<div class=tot><span>支給額</span><span class=amt>"+yen(d.actualTotal)+"</span></div>"+
+        "<div class=tot><span>支給額"+(spAmt>0?"（特別対応込み）":"")+"</span><span class=amt>"+yen(d.actualTotal+spAmt)+"</span></div>"+
+        spotTbl+
         (daily?("<div class=sub>日別勤怠内訳（実働）</div><table class=grid><thead><tr><th>日</th><th>曜</th><th>時間帯</th><th class=r>実働</th></tr></thead><tbody>"+daily+dailyFoot+"</tbody></table>"):"")+
         (isP?"<div class=note>※ 賃金は基本給合計をご確認ください（休憩控除後の実働で計算）</div>":"")+
         "</section>";
@@ -14515,10 +14551,20 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
               <span style={{color:"#64748b"}}>交通費 (¥{(si.transportCost||0).toLocaleString()}×{d.actualDays}日)</span>
               <span style={{fontWeight:600,color:"#d97706"}}>¥{d.actualTransport.toLocaleString()}</span>
             </div>
-            <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",marginTop:4,borderTop:"2px solid #e2e8f0"}}>
-              <span style={{fontWeight:900,fontSize:14}}>支給額</span>
-              <span style={{fontWeight:900,fontSize:18,color:"#1e40af"}}>¥{d.actualTotal.toLocaleString()}</span>
-            </div>
+            {_isSpotStaff(s.name)&&(()=>{const sp=spotOf(s.name);return <div style={{borderBottom:"1px solid #fed7aa",background:"#fff7ed",margin:"4px -8px",padding:"7px 10px",borderRadius:6}}>
+              <div style={{display:"flex",justifyContent:"space-between"}}>
+                <span style={{color:"#c2410c",fontWeight:700,fontSize:12}}>💴 特別対応（スポット・固定給外）</span>
+                <span style={{fontWeight:800,color:"#ea580c"}}>¥{SPOT_RATE.toLocaleString()} × {sp.length}件 = ¥{(sp.length*SPOT_RATE).toLocaleString()}</span>
+              </div>
+              {sp.length>0?<table style={{width:"100%",borderCollapse:"collapse",fontSize:11,marginTop:6}}>
+                <thead><tr style={{color:"#9a3412"}}><th style={{textAlign:"left",padding:"2px 4px"}}>日</th><th style={{textAlign:"left",padding:"2px 4px"}}>内容</th><th style={{textAlign:"left",padding:"2px 4px"}}>時間</th><th style={{textAlign:"left",padding:"2px 4px"}}>名前</th><th style={{textAlign:"right",padding:"2px 4px"}}>金額</th></tr></thead>
+                <tbody>{sp.map(r=>{const p=String(r.date||"").split("-");return <tr key={r._id} style={{borderTop:"1px solid #fed7aa"}}><td style={{padding:"2px 4px"}}>{+p[1]}/{+p[2]}</td><td style={{padding:"2px 4px",fontWeight:700}}>{r.type}</td><td style={{padding:"2px 4px"}}>{r.time||r.return_time||""}</td><td style={{padding:"2px 4px"}}>{r.name||""}{r.done?"":<span style={{color:"#dc2626",fontSize:9,marginLeft:4}}>未完了</span>}</td><td style={{padding:"2px 4px",textAlign:"right"}}>¥{SPOT_RATE.toLocaleString()}</td></tr>;})}</tbody>
+              </table>:<div style={{fontSize:10,color:"#9a3412",marginTop:4}}>{viewYM+"-31"<SPOT_FROM?"11月分から集計します":"この月のスポットはまだありません"}</div>}
+            </div>;})()}
+            {(()=>{const spAmt=spotOf(s.name).length*SPOT_RATE;return <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",marginTop:4,borderTop:"2px solid #e2e8f0"}}>
+              <span style={{fontWeight:900,fontSize:14}}>支給額{spAmt>0?"（特別対応込み）":""}</span>
+              <span style={{fontWeight:900,fontSize:18,color:"#1e40af"}}>¥{(d.actualTotal+spAmt).toLocaleString()}</span>
+            </div>;})()}
             {/* 日別勤怠内訳 */}
             {(()=>{
               const WK=["日","月","火","水","木","金","土"];
@@ -17614,7 +17660,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                 {t.plateNo&&<span style={{background:"#eff6ff",color:"#1e40af",fontSize:isMob?10:8,padding:"1px 4px",borderRadius:3,fontWeight:700,flexShrink:0}}>{t.plateNo}</span>}
                 {t.vehicle&&!vn&&<span style={{color:"#64748b",fontSize:isMob?10:9,flexShrink:0}}>{t.vehicle}</span>}
               </React.Fragment>}
-              {t.assignee&&<span style={{color:"#7c3aed",fontWeight:700,fontSize:isMob?10:9,flexShrink:0}}>👤{t.assignee}</span>}
+              {t.assignee&&<span style={{color:"#7c3aed",fontWeight:700,fontSize:isMob?10:9,flexShrink:0}}>👤{t.assignee}</span>}<SpotBadge t={t} size={isMob?9:8}/>
             </div>
             {t.opts&&<div style={{marginTop:3,paddingLeft:22}}><OptBadges opts={t.opts}/></div>}
             <div style={{display:"flex",alignItems:"center",gap:4,marginTop:3,fontSize:isMob?10:8,flexWrap:"wrap"}}>
@@ -17778,7 +17824,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                     <span style={{fontWeight:700,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",textDecoration:_ndGray?"line-through":"none"}}>{t.name||""}</span>
                     {isNextDayType(t)&&<button onClick={()=>toggleNextDayWash(t)} title={t._nextDayWash?"元の日に戻す":"翌日対応に切り替え"} style={{fontSize:isMob?9:8,fontWeight:700,padding:"2px 6px",borderRadius:5,background:t._nextDayWash?"#dbeafe":"#f1f5f9",color:t._nextDayWash?"#1d4ed8":"#475569",border:"1px solid "+(t._nextDayWash?"#93c5fd":"#cbd5e1"),cursor:"pointer",flexShrink:0}}>{t._nextDayWash?"前日に戻す":"翌日対応"}</button>}
                     {vn?<span style={{color:"#059669",fontSize:isMob?10:9,fontWeight:600,flexShrink:0}}>🚗{vn.name}({vn.no})</span>:(vehLabelStr(t)?<span style={{color:"#059669",fontSize:isMob?10:9,fontWeight:600,flexShrink:0}}>🚗{vehLabelStr(t)}</span>:null)}
-                    {t.assignee&&<span style={{color:"#7c3aed",fontWeight:700,fontSize:isMob?10:9,flexShrink:0}}>👤{t.assignee}</span>}
+                    {t.assignee&&<span style={{color:"#7c3aed",fontWeight:700,fontSize:isMob?10:9,flexShrink:0}}>👤{t.assignee}</span>}<SpotBadge t={t} size={isMob?9:8}/>
                     <button onClick={()=>setOtherEditId(isEdit?null:t._id)} style={{background:isEdit?"#4338ca":"#f1f5f9",color:isEdit?"#fff":"#475569",border:"none",borderRadius:4,fontSize:8,fontWeight:700,padding:"2px 6px",cursor:"pointer",flexShrink:0}}>{isEdit?"閉":"✏️"}</button>
                   </div>
                   {cleanPlace(t.place)&&<div style={{marginTop:2,paddingLeft:22,fontSize:isMob?10:9,color:"#059669"}}>📍{cleanPlace(t.place)}</div>}
@@ -17896,7 +17942,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                   {t.flight&&<span style={{fontSize:isMob?10:9,color:"#1565c0",fontWeight:600}}>✈{t.flight}</span>}
                 </div>}
                 <div style={{display:"flex",alignItems:"center",gap:6,marginTop:3,flexWrap:"wrap"}}>
-                  {t.assignee?<span style={{fontSize:isMob?10:9,background:"#ede9fe",color:"#6d28d9",fontWeight:700,padding:"1px 6px",borderRadius:4}}>👤{t.assignee}</span>:(t.type!=="洗車"&&<span style={{fontSize:isMob?9:8,color:"#f59e0b",fontWeight:700}}>担当未定</span>)}
+                  {t.assignee?<span style={{fontSize:isMob?10:9,background:"#ede9fe",color:"#6d28d9",fontWeight:700,padding:"1px 6px",borderRadius:4}}>👤{t.assignee}</span>:(t.type!=="洗車"&&<span style={{fontSize:isMob?9:8,color:"#f59e0b",fontWeight:700}}>担当未定</span>)}<SpotBadge t={t} size={isMob?9:8}/>
                   {t.ota==="J"&&(()=>{const done=isJPaidFn?isJPaidFn(t.reservationId):((jalanPay&&jalanPay[t.reservationId]||{}).payStatus==="完了");return <span style={{fontSize:isMob?9:8,fontWeight:700,padding:"1px 5px",borderRadius:4,background:done?"#dcfce7":"#fef2f2",color:done?"#16a34a":"#dc2626"}}>{done?"💳決済":"💳未決済"}</span>;})()}{(()=>{const ep=extraPayFn&&extraPayFn(t.reservationId||t.reservation_id);if(!ep)return null;const pd=ep.status==="paid";return <span title="オプション/補償の追加分" style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:4,marginLeft:3,background:pd?"#dbeafe":"#fef9c3",color:pd?"#1d4ed8":"#a16207"}}>{pd?"追加済":"追加未"}</span>;})()}
                 </div>
               </div>;
@@ -18003,6 +18049,10 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                   <option value="">-</option>{activeMembers.map(m=><option key={m}>{m}</option>)}<option value="乗り捨て">乗り捨て</option><option value="無人">無人</option><option value="__other">その他...</option>{t.assignee&&!activeMembers.includes(t.assignee)&&!["乗り捨て","無人"].includes(t.assignee)&&<option value="__custom">{t.assignee}</option>}
                 </select>
                 {Array.isArray(t.requested_to)&&t.requested_to.length>0&&!t._approvedAt&&<div style={{fontSize:8,fontWeight:800,color:"#b45309",background:"#fff7ed",border:"1px solid #fed7aa",borderRadius:5,padding:"1px 4px",marginTop:2,lineHeight:1.3,whiteSpace:"normal"}}>📢 {t.requested_to.join("・")}さんに依頼中</div>}
+                {/* ★2026-10-28 三國さん専用 通常/スポット（11/1以降・既定=通常）。スポット=固定給外の課金タスク（給与明細「特別対応」で集計） */}
+                {_spotEligible(t,selDate)&&(()=>{const sp=_isSpot(t);return <select value={sp?"spot":""} onClick={e=>e.stopPropagation()} onChange={e=>{e.stopPropagation();const v=e.target.value;_save(t._id,{...t,_changed:{...(t._changed||{}),_billing:v==="spot"?"spot":""}});}} title="通常＝固定給に含む／スポット＝1件¥600" style={{marginTop:2,border:"1px solid "+(sp?"#ea580c":"#e2e8f0"),borderRadius:4,background:sp?"#ea580c":"#f8fafc",fontSize:8,width:"100%",padding:"1px 2px",color:sp?"#fff":"#64748b",fontWeight:800,cursor:"pointer"}}>
+                  <option value="">通常</option><option value="spot">💴スポット</option>
+                </select>;})()}
                 {/* ★2026-08-02 移動手段（担当セルの隣＝下）。DEL/COL/引取/入庫のみ。送迎選択時は送迎者(氏名)を指名→送迎タスク自動生成 */}
                 {_isMoveMeansTask(t)&&(()=>{const mm=(t._changed&&t._changed._moveMeans)||"";const md=(t._changed&&t._changed._moveDriver)||"";return <div onClick={e=>e.stopPropagation()} style={{marginTop:2,display:"flex",flexDirection:"column",gap:1}}>
                   <select value={mm} onClick={e=>e.stopPropagation()} onChange={e=>{e.stopPropagation();const v=e.target.value;saveMoveMeans(t,v,v==="送迎"?md:"");}} title={_moveMeansLabel(t.type)} style={{border:"1px solid "+(mm?"#93c5fd":"#e2e8f0"),borderRadius:4,background:mm?"#eff6ff":"#f8fafc",fontSize:8,width:"100%",padding:"1px 2px",color:mm?"#1e3a8a":"#94a3b8",fontWeight:700,cursor:"pointer"}}>
@@ -24578,7 +24628,7 @@ function App(){
                           {t.flight&&<span style={{fontSize:isMob?10:9,color:"#1565c0",fontWeight:600}}>✈{t.flight}</span>}
                         </div>}
                         <div style={{display:"flex",alignItems:"center",gap:6,marginTop:3,flexWrap:"wrap"}}>
-                          {t.assignee?<span style={{fontSize:isMob?10:9,background:"#ede9fe",color:"#6d28d9",fontWeight:700,padding:"1px 6px",borderRadius:4}}>👤{t.assignee}</span>:(t.type!=="洗車"&&<span style={{fontSize:isMob?9:8,color:"#f59e0b",fontWeight:700}}>担当未定</span>)}
+                          {t.assignee?<span style={{fontSize:isMob?10:9,background:"#ede9fe",color:"#6d28d9",fontWeight:700,padding:"1px 6px",borderRadius:4}}>👤{t.assignee}</span>:(t.type!=="洗車"&&<span style={{fontSize:isMob?9:8,color:"#f59e0b",fontWeight:700}}>担当未定</span>)}<SpotBadge t={t} size={isMob?9:8}/>
                           {t.ota==="J"&&(()=>{const rid=t.reservationId||t.reservation_id;const done=isJPaidFn(rid);return <span style={{fontSize:isMob?9:8,fontWeight:700,padding:"1px 5px",borderRadius:4,background:done?"#dcfce7":"#fef2f2",color:done?"#16a34a":"#dc2626"}}>{done?"💳決済":"💳未決済"}</span>;})()}{(()=>{const ep=extraPayFn&&extraPayFn(t.reservationId||t.reservation_id);if(!ep)return null;const pd=ep.status==="paid";return <span title="オプション/補償の追加分" style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:4,marginLeft:3,background:pd?"#dbeafe":"#fef9c3",color:pd?"#1d4ed8":"#a16207"}}>{pd?"追加済":"追加未"}</span>;})()}
                         </div>
                       </div>;
@@ -25584,7 +25634,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.688";
+const APP_VERSION="v4.7.689";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
