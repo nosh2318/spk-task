@@ -1343,6 +1343,7 @@ function _spotEligible(t,date){var d=String((t&&t._taskDate)||date||"");return !
 // ★2026-10-28 三國さんは2026年11月から「固定給15万＋交通費＋スポット」（時給上乗せ・残業割増なし）。給与計算に渡す前に月ごとに差し替える
 const SPOT_FIXED_SALARY=150000;
 function _payStaff(s,ym){if(!s||!_isSpotStaff(s.name)||String(ym||"")<SPOT_FROM.slice(0,7))return s;return{...s,monthlySalary:SPOT_FIXED_SALARY,hourlyWage:0,dailyWage:0,fixedDays:""};}
+function _payFixedOnly(name,ym){return _isSpotStaff(name)&&String(ym||"")>=SPOT_FROM.slice(0,7);} // 固定給のみ＝時間計算なし・日数だけ表示
 function _isSpot(t){return !!(t&&t._changed&&t._changed._billing==="spot");}
 function SpotBadge({t,date,size}){
   if(!_spotEligible(t,date)||!_isSpot(t))return null;
@@ -14030,16 +14031,17 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
         const dc=dy.dow===0?"#dc2626":dy.dow===6?"#2563eb":"#374151";
         daily+="<tr><td style='color:"+dc+"'>"+dy.day+"</td><td style='color:"+dc+"'>"+WK[dy.dow]+"</td><td>"+esc(dy.att.start)+"〜"+esc(dy.att.end)+"</td><td class=r>"+real+"h</td></tr>";
       });
+      const fo=_payFixedOnly(nm,viewYM);
       const dailyFoot="<tr class=ft><td>合計</td><td>"+rows.length+"日</td><td></td><td class=r>"+d.actualHours.toFixed(1)+"h</td></tr>";
       return "<section class=pay>"+
         "<div class=hd><div class=ttl>給与明細</div><div class=meta>"+esc(STORE)+" ／ "+MON+"</div></div>"+
         "<div class=nm><span class=n>"+esc(nm)+"</span><span class=tag>"+esc(s.type||"")+"</span>"+
-        "<span class=days>"+d.actualDays+"日 / "+d.actualHours.toFixed(1)+"h"+(d.absentDays>0?" (欠勤"+d.absentDays+")":"")+"</span></div>"+
+        "<span class=days>"+d.actualDays+"日"+(fo?"":" / "+d.actualHours.toFixed(1)+"h")+(d.absentDays>0?" (欠勤"+d.absentDays+")":"")+"</span></div>"+
         "<table class=sum>"+sum+"</table>"+
         "<div class=tot><span>支給額"+(spAmt>0?"（特別対応込み）":"")+"</span><span class=amt>"+yen(d.actualTotal+spAmt)+"</span></div>"+
         spotTbl+
-        (daily?("<div class=sub>日別勤怠内訳（実働）</div><table class=grid><thead><tr><th>日</th><th>曜</th><th>時間帯</th><th class=r>実働</th></tr></thead><tbody>"+daily+dailyFoot+"</tbody></table>"):"")+
-        (isP?"<div class=note>※ 賃金は基本給合計をご確認ください（休憩控除後の実働で計算）</div>":"")+
+        (daily?(fo?("<div class=sub>出勤日（"+rows.length+"日）</div><table class=grid><thead><tr><th>日</th><th>曜</th><th>時間帯</th></tr></thead><tbody>"+daily.replace(/<td class=r>[^<]*h<\/td>/g,"")+"<tr class=ft><td>合計</td><td>"+rows.length+"日</td><td></td></tr></tbody></table>"):("<div class=sub>日別勤怠内訳（実働）</div><table class=grid><thead><tr><th>日</th><th>曜</th><th>時間帯</th><th class=r>実働</th></tr></thead><tbody>"+daily+dailyFoot+"</tbody></table>")):"")+
+        (isP&&!fo?"<div class=note>※ 賃金は基本給合計をご確認ください（休憩控除後の実働で計算）</div>":"")+
         "</section>";
     };
     const body=names.map(buildBlock).join("");
@@ -14501,7 +14503,7 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
               <span style={{fontSize:14,fontWeight:800}}>{s.name}</span>
               <span style={{fontSize:10,fontWeight:700,padding:"2px 10px",borderRadius:12,background:isP?"#fef3c7":"#dbeafe",color:isP?"#92400e":"#1d4ed8"}}>{s.type}</span>
             </div>
-            <span style={{fontSize:11,color:"#64748b"}}>{d.actualDays}日 / {d.actualHours.toFixed(1)}h{d.absentDays>0?<span style={{color:"#dc2626",fontWeight:700}}> (欠勤{d.absentDays})</span>:""}</span>
+            <span style={{fontSize:11,color:"#64748b"}}>{d.actualDays}日{_payFixedOnly(s.name,viewYM)?"":" / "+d.actualHours.toFixed(1)+"h"}{d.absentDays>0?<span style={{color:"#dc2626",fontWeight:700}}> (欠勤{d.absentDays})</span>:""}</span>
           </div>
           <div style={{fontSize:13}}>
             {isP&&!d.isMonthlyPart?<>
@@ -14574,6 +14576,12 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
               const WK=["日","月","火","水","木","金","土"];
               const dayRows=d.days.filter(dy=>dy.att&&dy.att.approved&&!dy.att.absent&&!(dy.att.memo&&dy.att.memo.startsWith("協議中")));
               if(!dayRows.length)return null;
+              if(_payFixedOnly(s.name,viewYM))return <div style={{marginTop:10,borderTop:"1px dashed #e2e8f0",paddingTop:8}}>
+                <div style={{fontSize:11,fontWeight:700,color:"#64748b",marginBottom:6}}>📋 出勤日（{dayRows.length}日）</div>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}><tbody>
+                  {dayRows.map(dy=><tr key={dy.date} style={{borderTop:"1px solid #f1f5f9"}}><td style={{padding:"3px 6px",width:32,textAlign:"center",color:dy.dow===0?"#dc2626":dy.dow===6?"#2563eb":"#374151"}}>{dy.day}</td><td style={{padding:"3px 6px",width:24,textAlign:"center",color:dy.dow===0?"#dc2626":dy.dow===6?"#2563eb":"#374151"}}>{WK[dy.dow]}</td><td style={{padding:"3px 6px",color:"#64748b"}}>{dy.att.start}〜{dy.att.end}</td></tr>)}
+                </tbody></table>
+              </div>;
               return <div style={{marginTop:10,borderTop:"1px dashed #e2e8f0",paddingTop:8}}>
                 <div style={{fontSize:11,fontWeight:700,color:"#64748b",marginBottom:6}}>📋 日別勤怠内訳</div>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
