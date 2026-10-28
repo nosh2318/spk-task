@@ -84,7 +84,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1215';
+var CV='spk-v1216';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=1048').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -1340,6 +1340,10 @@ function TaskMoveBadge({t,size}){
 const SPOT_FROM="2026-11-01";const SPOT_RATE=600;
 function _isSpotStaff(n){var s=String(n||"").replace(/\s/g,"").replace("三国","三國");return s==="三國玲音"||s==="三國";}
 function _spotEligible(t,date){var d=String((t&&t._taskDate)||date||"");return !!t&&_isSpotStaff(t.assignee)&&d>=SPOT_FROM;}
+// ★2026-10-28 三國さんは2026年11月から「固定給15万＋交通費＋スポット」（時給上乗せ・残業割増なし）。給与計算に渡す前に月ごとに差し替える
+const SPOT_FIXED_SALARY=150000;
+function _payStaff(s,ym){if(!s||!_isSpotStaff(s.name)||String(ym||"")<SPOT_FROM.slice(0,7))return s;return{...s,monthlySalary:SPOT_FIXED_SALARY,hourlyWage:0,dailyWage:0,fixedDays:""};}
+function _payFixedOnly(name,ym){return _isSpotStaff(name)&&String(ym||"")>=SPOT_FROM.slice(0,7);} // 固定給のみ＝時間計算なし・日数だけ表示
 function _isSpot(t){return !!(t&&t._changed&&t._changed._billing==="spot");}
 function SpotBadge({t,date,size}){
   if(!_spotEligible(t,date)||!_isSpot(t))return null;
@@ -13986,7 +13990,7 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
     const esc=(s)=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
     const yen=(n)=>"¥"+Math.round(n||0).toLocaleString();
     const buildBlock=(nm)=>{
-      const s=staff.find(x=>x.name===nm);if(!s)return"";
+      const s=_payStaff(staff.find(x=>x.name===nm),viewYM);if(!s)return"";
       const d=allStaffData[nm];if(!d)return"";
       const isP=d.isP;
       const rows=d.days.filter(dy=>dy.att&&dy.att.approved&&!dy.att.absent&&!(dy.att.memo&&dy.att.memo.startsWith("協議中")));
@@ -14001,7 +14005,7 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
         }
         sum+="<tr><td>基本給</td><td class=r><b>"+yen(d.actualWage)+"</b></td></tr>";
       }else{
-        sum+="<tr><td>"+(d.monthlyHasHourly?"固定給（月給・"+esc(s.fixedDays||"")+"）":"月給")+"</td><td class=r><b>"+yen(s.monthlySalary||0)+"</b></td></tr>";
+        sum+="<tr><td>"+(d.monthlyHasHourly?"固定給（月給・"+esc(s.fixedDays||"")+"）":_isSpotStaff(nm)&&s.monthlySalary===SPOT_FIXED_SALARY?"固定給":"月給")+"</td><td class=r><b>"+yen(s.monthlySalary||0)+"</b></td></tr>";
         if(d.monthlyHasHourly){
           sum+="<tr><td style='color:#92400e'>変動分（ヘルプ・時給）</td><td class=r>"+yen(s.hourlyWage||0)+" × "+d.actualVarHours+"h = "+yen((s.hourlyWage||0)*d.actualVarHours)+"</td></tr>";
           sum+="<tr><td>基本給合計</td><td class=r><b>"+yen(d.actualWage)+"</b></td></tr>";
@@ -14027,16 +14031,17 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
         const dc=dy.dow===0?"#dc2626":dy.dow===6?"#2563eb":"#374151";
         daily+="<tr><td style='color:"+dc+"'>"+dy.day+"</td><td style='color:"+dc+"'>"+WK[dy.dow]+"</td><td>"+esc(dy.att.start)+"〜"+esc(dy.att.end)+"</td><td class=r>"+real+"h</td></tr>";
       });
+      const fo=_payFixedOnly(nm,viewYM);
       const dailyFoot="<tr class=ft><td>合計</td><td>"+rows.length+"日</td><td></td><td class=r>"+d.actualHours.toFixed(1)+"h</td></tr>";
       return "<section class=pay>"+
         "<div class=hd><div class=ttl>給与明細</div><div class=meta>"+esc(STORE)+" ／ "+MON+"</div></div>"+
         "<div class=nm><span class=n>"+esc(nm)+"</span><span class=tag>"+esc(s.type||"")+"</span>"+
-        "<span class=days>"+d.actualDays+"日 / "+d.actualHours.toFixed(1)+"h"+(d.absentDays>0?" (欠勤"+d.absentDays+")":"")+"</span></div>"+
+        "<span class=days>"+d.actualDays+"日"+(fo?"":" / "+d.actualHours.toFixed(1)+"h")+(d.absentDays>0?" (欠勤"+d.absentDays+")":"")+"</span></div>"+
         "<table class=sum>"+sum+"</table>"+
         "<div class=tot><span>支給額"+(spAmt>0?"（特別対応込み）":"")+"</span><span class=amt>"+yen(d.actualTotal+spAmt)+"</span></div>"+
         spotTbl+
-        (daily?("<div class=sub>日別勤怠内訳（実働）</div><table class=grid><thead><tr><th>日</th><th>曜</th><th>時間帯</th><th class=r>実働</th></tr></thead><tbody>"+daily+dailyFoot+"</tbody></table>"):"")+
-        (isP?"<div class=note>※ 賃金は基本給合計をご確認ください（休憩控除後の実働で計算）</div>":"")+
+        (daily?(fo?("<div class=sub>出勤日（"+rows.length+"日）</div><table class=grid><thead><tr><th>日</th><th>曜</th><th>時間帯</th></tr></thead><tbody>"+daily.replace(/<td class=r>[^<]*h<\/td>/g,"")+"<tr class=ft><td>合計</td><td>"+rows.length+"日</td><td></td></tr></tbody></table>"):("<div class=sub>日別勤怠内訳（実働）</div><table class=grid><thead><tr><th>日</th><th>曜</th><th>時間帯</th><th class=r>実働</th></tr></thead><tbody>"+daily+dailyFoot+"</tbody></table>")):"")+
+        (isP&&!fo?"<div class=note>※ 賃金は基本給合計をご確認ください（休憩控除後の実働で計算）</div>":"")+
         "</section>";
     };
     const body=names.map(buildBlock).join("");
@@ -14079,7 +14084,8 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
         }
       });
     });
-    staff.forEach(s=>{
+    staff.forEach(s0=>{
+      const s=_payStaff(s0,viewYM);
       const days=[];
       const hasDailyWage=s.dailyWage>0&&s.fixedDays;
       // 月給ベース（アルバイト月給）。時給+固定曜日があれば「月給/時給 複合」= 固定曜日は月給内包・変動曜日は時給上乗せ
@@ -14489,7 +14495,7 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
       </div>
       {detailStaff.map(s=>{
         const d=allStaffData[s.name];if(!d)return null;
-        const si=s;const isP=d.isP;const checked=!!detailSel[s.name];
+        const si=_payStaff(s,viewYM);const isP=d.isP;const checked=!!detailSel[s.name];
         return <div key={s.name} style={{...cardS,border:checked?"2px solid #1e40af":cardS.border}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
             <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -14497,7 +14503,7 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
               <span style={{fontSize:14,fontWeight:800}}>{s.name}</span>
               <span style={{fontSize:10,fontWeight:700,padding:"2px 10px",borderRadius:12,background:isP?"#fef3c7":"#dbeafe",color:isP?"#92400e":"#1d4ed8"}}>{s.type}</span>
             </div>
-            <span style={{fontSize:11,color:"#64748b"}}>{d.actualDays}日 / {d.actualHours.toFixed(1)}h{d.absentDays>0?<span style={{color:"#dc2626",fontWeight:700}}> (欠勤{d.absentDays})</span>:""}</span>
+            <span style={{fontSize:11,color:"#64748b"}}>{d.actualDays}日{_payFixedOnly(s.name,viewYM)?"":" / "+d.actualHours.toFixed(1)+"h"}{d.absentDays>0?<span style={{color:"#dc2626",fontWeight:700}}> (欠勤{d.absentDays})</span>:""}</span>
           </div>
           <div style={{fontSize:13}}>
             {isP&&!d.isMonthlyPart?<>
@@ -14521,7 +14527,7 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
               </div>
             </>:<>
               <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #f1f5f9"}}>
-                <span style={{color:"#64748b"}}>{d.monthlyHasHourly?"固定給（月給・"+si.fixedDays+"）":"月給"}</span><span style={{fontWeight:700}}>¥{(si.monthlySalary||0).toLocaleString()}</span>
+                <span style={{color:"#64748b"}}>{d.monthlyHasHourly?"固定給（月給・"+si.fixedDays+"）":_isSpotStaff(s.name)&&si.monthlySalary===SPOT_FIXED_SALARY?"固定給":"月給"}</span><span style={{fontWeight:700}}>¥{(si.monthlySalary||0).toLocaleString()}</span>
               </div>
               {d.monthlyHasHourly&&<>
                 <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #f1f5f9"}}>
@@ -14570,6 +14576,12 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
               const WK=["日","月","火","水","木","金","土"];
               const dayRows=d.days.filter(dy=>dy.att&&dy.att.approved&&!dy.att.absent&&!(dy.att.memo&&dy.att.memo.startsWith("協議中")));
               if(!dayRows.length)return null;
+              if(_payFixedOnly(s.name,viewYM))return <div style={{marginTop:10,borderTop:"1px dashed #e2e8f0",paddingTop:8}}>
+                <div style={{fontSize:11,fontWeight:700,color:"#64748b",marginBottom:6}}>📋 出勤日（{dayRows.length}日）</div>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}><tbody>
+                  {dayRows.map(dy=><tr key={dy.date} style={{borderTop:"1px solid #f1f5f9"}}><td style={{padding:"3px 6px",width:32,textAlign:"center",color:dy.dow===0?"#dc2626":dy.dow===6?"#2563eb":"#374151"}}>{dy.day}</td><td style={{padding:"3px 6px",width:24,textAlign:"center",color:dy.dow===0?"#dc2626":dy.dow===6?"#2563eb":"#374151"}}>{WK[dy.dow]}</td><td style={{padding:"3px 6px",color:"#64748b"}}>{dy.att.start}〜{dy.att.end}</td></tr>)}
+                </tbody></table>
+              </div>;
               return <div style={{marginTop:10,borderTop:"1px dashed #e2e8f0",paddingTop:8}}>
                 <div style={{fontSize:11,fontWeight:700,color:"#64748b",marginBottom:6}}>📋 日別勤怠内訳</div>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
@@ -18050,8 +18062,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                 </select>
                 {Array.isArray(t.requested_to)&&t.requested_to.length>0&&!t._approvedAt&&<div style={{fontSize:8,fontWeight:800,color:"#b45309",background:"#fff7ed",border:"1px solid #fed7aa",borderRadius:5,padding:"1px 4px",marginTop:2,lineHeight:1.3,whiteSpace:"normal"}}>📢 {t.requested_to.join("・")}さんに依頼中</div>}
                 {/* ★2026-10-28 三國さん専用 通常/スポット（11/1以降・既定=通常）。スポット=固定給外の課金タスク（給与明細「特別対応」で集計） */}
-                {_spotEligible(t,selDate)&&(()=>{const sp=_isSpot(t);return <select value={sp?"spot":""} onClick={e=>e.stopPropagation()} onChange={e=>{e.stopPropagation();const v=e.target.value;_save(t._id,{...t,_changed:{...(t._changed||{}),_billing:v==="spot"?"spot":""}});}} title="通常＝固定給に含む／スポット＝1件¥600" style={{marginTop:2,border:"1px solid "+(sp?"#ea580c":"#e2e8f0"),borderRadius:4,background:sp?"#ea580c":"#f8fafc",fontSize:8,width:"100%",padding:"1px 2px",color:sp?"#fff":"#64748b",fontWeight:800,cursor:"pointer"}}>
-                  <option value="">通常</option><option value="spot">💴スポット</option>
+                {_spotEligible(t,selDate)&&(()=>{const sp=_isSpot(t);return <select value={sp?"spot":""} onClick={e=>e.stopPropagation()} onChange={e=>{e.stopPropagation();const v=e.target.value;_save(t._id,{...t,_changed:{...(t._changed||{}),_billing:v==="spot"?"spot":""}});}} title="通常＝固定給に含む／スポット＝1件¥600" style={{display:"block",boxSizing:"border-box",marginTop:2,border:"1px solid "+(sp?"#ea580c":"#e2e8f0"),borderRadius:4,background:sp?"#ea580c":"#f8fafc",fontSize:8,width:"100%",maxWidth:"100%",minWidth:0,padding:"1px 0",color:sp?"#fff":"#64748b",fontWeight:800,cursor:"pointer",overflow:"hidden",textOverflow:"ellipsis"}}>
+                  <option value="">通常</option><option value="spot">スポット</option>
                 </select>;})()}
                 {/* ★2026-08-02 移動手段（担当セルの隣＝下）。DEL/COL/引取/入庫のみ。送迎選択時は送迎者(氏名)を指名→送迎タスク自動生成 */}
                 {_isMoveMeansTask(t)&&(()=>{const mm=(t._changed&&t._changed._moveMeans)||"";const md=(t._changed&&t._changed._moveDriver)||"";return <div onClick={e=>e.stopPropagation()} style={{marginTop:2,display:"flex",flexDirection:"column",gap:1}}>
@@ -22779,7 +22791,8 @@ function _spkPartBudgetByMonth(staff,shifts){
   months.forEach(ym=>{
     let monthTotal=0;
     part.forEach(s=>{
-      const hourly=s.hourlyWage||0,daily=s.dailyWage||0,monthly=s.monthlySalary||0,trans=s.transportCost||0,fixedDays=s.fixedDays||"",br=s.breakMinutes||0;
+      const ps=_payStaff(s,ym);
+      const hourly=ps.hourlyWage||0,daily=ps.dailyWage||0,monthly=ps.monthlySalary||0,trans=ps.transportCost||0,fixedDays=ps.fixedDays||"",br=ps.breakMinutes||0;
       const isMonthlyBase=monthly>0;
       const monthlyHasHourly=isMonthlyBase&&hourly>0&&!!fixedDays;
       const hasDailyWage=daily>0&&!!fixedDays;
@@ -25634,7 +25647,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.689";
+const APP_VERSION="v4.7.690";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
