@@ -83,12 +83,16 @@ const FIELDS = {
 };
 // 価格表（正解）＝価格コントローラー price-controller.html の channels（オーナー 10/28 回答）。
 // 計算をずらさないよう、コントローラーのページを裏で開き、その tierPrices()（クラス×段→日帰りの金額）と floorOf()（下限）をそのまま使う
-const PC_STORE = { nha: 'nha', spk: 'spk', takh: 'tkm' }, PC_CH = { RKT: 'rakuten', JLN: 'jalan', SKT: 'skyticket', ART: 'airtri', RDC: 'rentalcar' };
+const PC_STORE = { nha: 'nha', spk: 'spk', takh: 'tkm', takb: 'bdc' }, PC_CH = { RKT: 'rakuten', JLN: 'jalan', SKT: 'skyticket', ART: 'airtri', RDC: 'rentalcar', TAB: 'tabirai' };
 const SEG_RE = /(?:^|[\s｜])(TL|TR|TH|L[1-9]|LO|LN|LD|HN|HG|HB|HS|HX(?: \d+月)?)(?=[\s/]|$)/g;
 // skyticket のキャンペーン期間（CampaignTerms 一覧 10/27）。ID→段
 const SKT_CAMP = { 11781: 'LO', 12856: 'HN', 12935: 'LN', 13002: 'TL', 13003: 'TR', 13005: 'HG' };
 // レンタカードットコムの基本料金ランク（料金詳細の行の順 10/27）。_1〜_6
 const RDC_RANK = ['HN', 'LN', 'LO', 'TH', 'TL', 'TR'];
+// ロボが料金詳細のランクコードを label に入れるようになったら（｜ランク HN,LN,…）それを使う。無ければ那覇の並び（10/27 那覇で確認）
+const rdcRanks = (s, x) => { const m = String(x.label || '').match(/｜ランク ([A-Z0-9,]+)/); return m ? m[1].split(',') : (s === 'nha' ? RDC_RANK : null); };
+// BUDDICA のハイエンド（AA）は車種ごとに別の値段（オーナー 10/28）。プラン名・コードから車種のクラスにする
+const aaCls = l => /ECB|Eクラス/.test(l) ? 'ECB' : /EVQ|イヴォーク/.test(l) ? 'EVQ' : /G4D|G40_|G400d/.test(l) ? 'G4D' : /URS|ウルス/.test(l) ? 'URS' : null;
 const MULT = { RKT: { kin_01_06: 1, kin_07_12: 2, kin_13_24: 3, kin_tyoka_hour: 4, kin_tyoka_day: 1 }, JLN: { time_type_fee_1: 1, time_type_fee_2: 2, time_type_fee_3: 3, time_type_fee_4: 4, over_fee_day: 1 }, ART: { slot01_chgs: 1, slot02_chgs: 2, slot03_chgs: 3, slot04_chgs: 4, add_day_chgs: 1 } };
 const PC = { win: null, T: {} };
 async function loadPC() {
@@ -102,9 +106,8 @@ const floor = (s, o, cls, i) => { if (!PC.win || o !== 'SKT') return null; PC.wi
 const sale = v => Math.floor(v * 95 / 10000) * 100; // じゃらんのセール＝通常の5%引き・100円未満切り捨て（オーナー 10/28）
 // 1件の正しい値段。{ seg:段名, want:{欄:金額}, why:比べられない理由 }
 function wantOf(s, x, sub) {
-  if (!PC_STORE[s]) return { why: 'BUDDICA の価格表はまだつないでいません' };
   if (!PC.win) return { why: '価格コントローラーを読み込み中' };
-  const T = ((PC.T[s] || {})[x.ota] || {})[x.cls]; if (!x.cls) return { why: 'クラス不明' }; if (!T) return { why: 'この店・OTAでは販売なしのクラス' };
+  const cls = x.cls === 'AA' ? aaCls(x.label || '') : x.cls, T = ((PC.T[s] || {})[x.ota] || {})[cls]; if (!cls) return { why: 'クラス不明' }; if (!T) return { why: 'この店・OTAでは販売なしのクラス' };
   const one = (seg, f) => { const u = T[seg]; if (u == null) return { seg, why: `価格表に「${seg}」の金額がない` }; const want = {}; for (const [k, m] of f) want[k] = m(u); return { seg, want }; };
   if (x.ota === 'RKT' || x.ota === 'ART') {
     const seg = segOfLabel(x.label); if (!seg) return { why: x.ota === 'ART' ? '期間グループ名をロボがまだ読めていない（次の見回りから）' : '期間名が価格表の段（TL・LO・HN など）とちがう' };
@@ -122,7 +125,7 @@ function wantOf(s, x, sub) {
     for (let i = 0; i <= 5; i++) out.want['p' + i] = x.prices['p' + i]; // 通常料金は触らない（オーナー 10/28）
     out.seg = out.seg.join('・'); out.why = out.whys.join('・') || undefined; return out;
   }
-  if (x.ota === 'RDC') { const seg = RDC_RANK[+sub - 1]; if (!seg) return { why: 'ランク不明' }; return one(seg, Object.keys(x.prices).filter(k => k.endsWith('_' + sub)).map(k => [k, u => u])); }
+  if (x.ota === 'RDC') { const rk = rdcRanks(s, x); if (!rk) return { why: 'ランク名をロボがまだ読めていない（次の見回りから）' }; const seg = rk[+sub - 1]; if (!seg) return { why: 'ランク不明' }; return one(seg, Object.keys(x.prices).filter(k => k.endsWith('_' + sub)).map(k => [k, u => u])); }
   return { why: 'まだ比べられないOTA' };
 }
 const NOTE = { TAB: 'たびらいは管理画面で料金を変えられません（変更依頼書で先方が入力）', RDC_spk: '札幌の料金がRDCの管理画面に見当たりません（オーナーに確認中）' };
@@ -162,7 +165,7 @@ function drawSafe(s) {
 function lines(x) {
   if (x.ota === 'RDC') {
     const ns = [...new Set(Object.keys(x.prices).map(k => (k.match(/_(\d+)$/) || [])[1]).filter(Boolean))].sort((a, b) => a - b);
-    return ns.map(n => ({ x, n, sub: `ランク${RDC_RANK[n - 1] || n}`, vals: FIELDS.RDC.map(([k, l]) => [l, x.prices[`${k}_${n}`], `${k}_${n}`]) }));
+    return ns.map(n => ({ x, n, sub: `ランク${(rdcRanks(store, x) || [])[n - 1] || n}`, vals: FIELDS.RDC.map(([k, l]) => [l, x.prices[`${k}_${n}`], `${k}_${n}`]) }));
   }
   if (x.ota === 'SKT') {
     const ids = [...new Set(Object.keys(x.prices).filter(k => /^c\d+_/.test(k)).map(k => k.slice(1).split('_')[0]))];
