@@ -695,6 +695,8 @@ function licRegHTML(){ if(LIC_REG===null){licLoadReg();return "";} const ks=Obje
     +`<button onclick="licRegSave()" style="width:100%;background:#fff;color:#0F1F45;border:1.5px solid #0F1F45;border-radius:10px;padding:9px;font-size:13px;font-weight:800;cursor:pointer">${tt(LIC_REG_T.save)}</button><div id="licRegMsg" style="font-size:12px;font-weight:700;margin-top:6px;color:#0e7a3b"></div></div>`; }
 function licRegSave(){ const map={}; document.querySelectorAll(".licRegIn").forEach(function(el){ const k=el.getAttribute("data-k"); if(el.value&&el.value!==LIC_REG[k])map[k]=el.value; }); if(!Object.keys(map).length)return;
   licAcqCall("lic_report_acquired",{p_drivers:map}).then(function(j){ if(j&&j.ok&&j.drivers){LIC_REG=j.drivers;licPaint(); const m=document.getElementById("licRegMsg"); if(m)m.textContent=(LIC_REG_T.saved[L]||LIC_REG_T.saved.ja);} }).catch(function(e){console.error("lic reg save",e);}); }
+// ★2026-10-31 免許証写真は保存前に端末で縮小（長辺1600px・JPEG70%＝1枚約0.3MB、文字は読める）。Googleドライブ容量対策。PDF・失敗時・縮小で大きくなる時は元のまま送る
+function _licShrink(file){return new Promise(function(res){var done=false,u=null;function fin(x){if(done)return;done=true;try{if(u)URL.revokeObjectURL(u);}catch(e){}res(x);}try{if(!file||!/^image\//.test(file.type||"")||/pdf/i.test(file.type||"")){fin(file);return;}setTimeout(function(){fin(file);},15000);u=URL.createObjectURL(file);var im=new Image();im.onload=function(){try{var w=im.naturalWidth||im.width,h=im.naturalHeight||im.height;if(!w||!h){fin(file);return;}var s=Math.min(1,1600/Math.max(w,h));w=Math.round(w*s);h=Math.round(h*s);var c=document.createElement("canvas");c.width=w;c.height=h;var x=c.getContext("2d");x.fillStyle="#fff";x.fillRect(0,0,w,h);x.drawImage(im,0,0,w,h);c.toBlob(function(b){if(b&&b.size>0&&b.size<file.size)fin(b);else fin(file);},"image/jpeg",0.7);}catch(e){fin(file);}};im.onerror=function(){fin(file);};im.src=u;}catch(e){fin(file);}});}
 function _fileToB64(file){return new Promise((res,rej)=>{const rd=new FileReader();rd.onload=()=>res(String(rd.result).split(',')[1]);rd.onerror=rej;rd.readAsDataURL(file);});}
 async function licUpload(){
   if(LIC_BUSY)return;
@@ -711,7 +713,7 @@ async function licUpload(){
   for(let i=0;i<jobs.length;i++){
     const j=jobs[i];
     try{
-      const b64=await _fileToB64(j.file);
+      j.file=await _licShrink(j.file); const b64=await _fileToB64(j.file);
       const resp=await fetch(GAS_LICENSE_URL,{method:"POST",body:JSON.stringify({
         secret:GAS_LICENSE_SECRET, store:"spk", resId:r.id, custName:r.name||"", label:j.label,
         fileName:j.label+"_"+Date.now()+"."+((j.file.type==="application/pdf")?"pdf":(j.file.type==="image/png"?"png":"jpg")), mime:j.file.type||"image/jpeg", b64:b64
