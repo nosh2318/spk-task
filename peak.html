@@ -1,0 +1,154 @@
+<!DOCTYPE html><html lang="ja"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>繁忙期設定</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;font-family:-apple-system,"Hiragino Kaku Gothic ProN",sans-serif;background:#f6f7f9;color:#0f172a;font-size:14px}
+.wrap{max-width:1200px;margin:0 auto;padding:12px}
+h2{font-size:17px;margin:0 0 8px}
+.card{background:#fff;border-radius:8px;padding:12px;box-shadow:0 1px 3px rgba(0,0,0,.08);margin:0 0 12px}
+.lead{font-size:14px;line-height:1.7;color:#334155}
+.lead b{color:#0f172a}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{border-collapse:collapse}
+th,td{padding:6px 8px;border-bottom:1px solid #eef2f7;text-align:center;white-space:nowrap;font-variant-numeric:tabular-nums}
+th{font-size:12px;color:#64748b;font-weight:700}
+th small{display:block;font-weight:600}
+td.cls{text-align:left;font-weight:900;font-size:15px}
+td.cls small{font-weight:600;color:#64748b;font-size:12px;margin-left:4px}
+.q{display:inline-flex;align-items:center;gap:4px}
+.q button{width:28px;height:28px;border:none;border-radius:6px;background:#e2e8f0;font-size:16px;font-weight:900;cursor:pointer}
+.q b{min-width:22px;font-size:17px}
+.q.auto b{color:#64748b}
+.q.man b{color:#1d4ed8}
+.tag{font-size:10px;font-weight:700;border-radius:4px;padding:1px 4px}
+.tag.auto{background:#f1f5f9;color:#64748b}.tag.man{background:#dbeafe;color:#1d4ed8;cursor:pointer}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 10px}
+.tabs button{flex:1;min-width:90px;padding:10px;border:none;border-radius:6px;background:#e2e8f0;font-weight:800;font-size:15px;cursor:pointer}
+.tabs button.on{background:#2f3b55;color:#fff}
+#per td{text-align:left}
+#per input{font-size:14px;padding:4px 6px;border:1px solid #cbd5e1;border-radius:6px}
+#per input[type=text]{width:9em}
+.btn{padding:6px 12px;border:none;border-radius:6px;background:#2f3b55;color:#fff;font-weight:800;cursor:pointer;font-size:13px}
+.btn.sub{background:#e2e8f0;color:#334155}
+.btn.del{background:#fee2e2;color:#b91c1c}
+#msg{position:sticky;top:0;z-index:5;display:none;padding:10px 12px;border-radius:8px;margin:0 0 10px;font-weight:700}
+#msg.ok{display:block;background:#dcfce7;color:#166534}#msg.ng{display:block;background:#fee2e2;color:#991b1b}
+#who{font-size:14px;padding:4px 6px;border:1px solid #cbd5e1;border-radius:6px;width:9em}
+.muted{color:#64748b;font-size:12px}
+.err{color:#b91c1c;font-weight:700}
+#log td{text-align:left;font-size:12px}
+</style></head><body>
+<div class="wrap">
+  <div id="msg"></div>
+  <div class="card lead">
+    <b>繁忙期設定</b>：期間中は、配車表の残りから <b>クラスごとに下の台数を引いて</b> 全OTAに出します（那覇の A2・B2 は A・B から引いた後の数で分けます）。
+    在庫の計算は毎回この表を読みます。変えると次の計算（すぐ）から効きます。<br>
+    <span class="muted">台数は決まり（AA は0、それ以外は2・稼働台数が2台未満ならその台数）で自動。変えた所は<span class="tag man">手動</span>になり、押すと決まりに戻ります。</span>
+    <div style="margin-top:8px">変更する人の名前：<input id="who" placeholder="名前"></div>
+  </div>
+  <div class="tabs" id="tabs"></div>
+  <div class="card"><h2 id="ttl">台数</h2><div class="scroll"><table id="grid"></table></div><div class="muted" id="gfoot"></div></div>
+  <div class="card"><h2>期間（全店共通・毎年自動で翌年分ができます）</h2><div class="scroll"><table id="per"></table></div></div>
+  <div class="card"><h2>変更の記録</h2><div class="scroll"><table id="log"></table></div></div>
+</div>
+<script>
+const DB = {
+  hd: { url: 'https://ckrxttbnawkclshczsia.supabase.co', key: 'sb_publishable_aTVhlY0YD-5BBfI03ZNnsg_MzO_vsIe' },
+  bt: { url: 'https://ggqugvyskyiblxiycpci.supabase.co', key: 'sb_publishable_fI8HYYDFn3Soa4kOMbNCAA_oOxGPPKV' },
+};
+const STORES = [
+  { id: 'nha', name: '那覇', db: 'hd' },
+  { id: 'spk', name: '札幌', db: 'hd' },
+  { id: 'takh', name: '高松 HDM', db: 'bt' },
+  { id: 'takb', name: '高松 BUDDICA', db: 'bt' },
+];
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const md = d => { const x = String(d).slice(0, 10); return +x.slice(5, 7) + '/' + +x.slice(8); };
+const jst = t => t ? new Date(t).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+async function rpc(db, fn, body) {
+  const r = await fetch(`${db.url}/rest/v1/rpc/${fn}`, { method: 'POST', headers: { apikey: db.key, Authorization: `Bearer ${db.key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch {}
+  if (!r.ok) throw new Error((j && (j.message || j.hint)) || ('HTTP ' + r.status));
+  return j;
+}
+const P = new URLSearchParams(location.search);
+let store = STORES.some(s => s.id === P.get('store')) ? P.get('store') : 'nha';
+const cache = {};
+try { $('who').value = localStorage.getItem('inv_who') || ''; } catch {}
+$('who').onchange = () => { try { localStorage.setItem('inv_who', $('who').value.trim()); } catch {} };
+const who = () => $('who').value.trim();
+function say(t, ok) { const m = $('msg'); m.textContent = t; m.className = ok ? 'ok' : 'ng'; clearTimeout(say.t); say.t = setTimeout(() => { m.className = ''; }, 6000); }
+
+async function load(id) {
+  const s = STORES.find(z => z.id === id);
+  try { cache[id] = await rpc(DB[s.db], 'invctl_peak_board', { p_store: id }); } catch (e) { cache[id] = { err: e.message }; }
+}
+function draw() {
+  $('tabs').innerHTML = STORES.map(s => `<button class="${s.id === store ? 'on' : ''}" data-s="${s.id}">${s.name}</button>`).join('');
+  $('tabs').querySelectorAll('button').forEach(b => b.onclick = () => { store = b.dataset.s; history.replaceState(null, '', '?store=' + store + (P.get('embed') ? '&embed=1' : '')); draw(); if (!cache[store]) load(store).then(draw); });
+  const s = STORES.find(z => z.id === store), c = cache[store];
+  $('ttl').textContent = s.name + '：期間中に引く台数';
+  if (!c) { $('grid').innerHTML = '<tr><td>読み込み中…</td></tr>'; return; }
+  if (c.err) { $('grid').innerHTML = `<tr><td class="err">読み込めませんでした（${esc(c.err)}）</td></tr>`; return; }
+  const ps = c.periods || [];
+  const classes = [...new Set(ps.flatMap(p => p.cls.map(x => x.cls)))].sort();
+  let h = '<tr><th style="text-align:left">クラス</th>' + ps.map(p => `<th>${esc(p.name)}<small>${md(p.from)}〜${md(p.to)}</small></th>`).join('') + '</tr>';
+  for (const k of classes) {
+    h += `<tr><td class="cls">${esc(k)}</td>`;
+    for (const p of ps) {
+      const x = p.cls.find(y => y.cls === k);
+      if (!x) { h += '<td class="muted">—</td>'; continue; }
+      const man = x.qty != null, q = man ? x.qty : x.rule;
+      const fl = x.fmin === x.fmax ? `${x.fmin}台中` : `${x.fmin}〜${x.fmax}台中`;
+      h += `<td><span class="q ${man ? 'man' : 'auto'}"><button data-p="${esc(p.id)}" data-c="${esc(k)}" data-v="${q - 1}" aria-label="減らす">−</button><b>${q}</b><button data-p="${esc(p.id)}" data-c="${esc(k)}" data-v="${q + 1}" aria-label="増やす">＋</button></span>`
+        + `<div class="muted">${fl} ${man ? `<span class="tag man" data-p="${esc(p.id)}" data-c="${esc(k)}" title="押すと決まり（${x.rule}台）に戻す">手動</span>` : '<span class="tag auto">決まり</span>'}</div></td>`;
+    }
+    h += '</tr>';
+  }
+  $('grid').innerHTML = ps.length ? h : '<tr><td>これからの繁忙期がありません。下で期間を足してください。</td></tr>';
+  $('grid').querySelectorAll('button[data-v]').forEach(b => b.onclick = () => setQty(b.dataset.p, b.dataset.c, Math.max(0, Math.min(99, +b.dataset.v))));
+  $('grid').querySelectorAll('.tag.man').forEach(b => b.onclick = () => setQty(b.dataset.p, b.dataset.c, null));
+  $('gfoot').textContent = 'その日の残りが台数より少ない時は、その日は0（売り止め）になります。';
+  // 期間
+  $('per').innerHTML = '<tr><th style="text-align:left">名前</th><th style="text-align:left">から</th><th style="text-align:left">まで</th><th></th></tr>'
+    + ps.map(p => `<tr data-id="${esc(p.id)}"><td><input type="text" value="${esc(p.name)}" aria-label="名前"></td><td><input type="date" value="${esc(p.from)}" aria-label="から"></td><td><input type="date" value="${esc(p.to)}" aria-label="まで"></td>`
+      + `<td><button class="btn sub" data-a="save">保存</button> <button class="btn del" data-a="del">削除</button> <span class="muted">${esc(p.set_by || '')}</span></td></tr>`).join('')
+    + `<tr data-id=""><td><input type="text" placeholder="例：年末年始" aria-label="新しい期間の名前"></td><td><input type="date" aria-label="から"></td><td><input type="date" aria-label="まで"></td><td><button class="btn" data-a="save">期間を足す</button></td></tr>`;
+  $('per').querySelectorAll('button').forEach(b => b.onclick = () => { const tr = b.closest('tr'), i = tr.querySelectorAll('input');
+    b.dataset.a === 'del' ? delPeriod(tr.dataset.id, i[0].value, b) : savePeriod(tr.dataset.id, i[0].value.trim(), i[1].value, i[2].value); });
+  // 記録
+  $('log').innerHTML = (c.log || []).map(l => { const d = l.detail || {};
+    const t = l.what === 'qty' ? `${STORES.find(z => z.id === d.store)?.name || d.store} ${d.cls}クラス ${(ps.find(p => p.id === d.period) || {}).name || d.period}：${d.old ?? '決まり'} → ${d.new ?? '決まり'}`
+      : l.what === 'period' ? `期間「${d.name}」${md(d.from)}〜${md(d.to)}` : `期間「${d.name || ''}」を削除`;
+    return `<tr><td>${jst(l.at)}</td><td>${esc(l.set_by)}</td><td>${esc(t)}</td></tr>`; }).join('') || '<tr><td class="muted">まだありません</td></tr>';
+}
+async function setQty(pid, k, q) {
+  if (!who()) { say('先に「変更する人の名前」を入れてください', false); $('who').focus(); return; }
+  const s = STORES.find(z => z.id === store);
+  try { await rpc(DB[s.db], 'invctl_peak_set_qty', { p_store: store, p_cls: k, p_period: pid, p_qty: q, p_by: who() }); }
+  catch (e) { say(`${k}クラスの台数を変えられませんでした（${e.message}）`, false); return; }
+  await load(store); draw(); say(q == null ? `${k}クラスを決まりの台数に戻しました。在庫の数も出し直しました。` : `${k}クラスを ${q} 台にしました。在庫の数も出し直しました。`, true);
+}
+const pidOf = (name, from) => from.slice(0, 4) + '-' + Array.from(name).map(ch => ch.charCodeAt(0).toString(36)).join('').slice(0, 24);
+async function savePeriod(id, name, from, to) {
+  if (!who()) { say('先に「変更する人の名前」を入れてください', false); $('who').focus(); return; }
+  if (!name || !from || !to || to < from) { say('期間の名前と、から・までの日付を入れてください', false); return; }
+  const pid = id || pidOf(name, from);
+  // 期間は全店共通：那覇・札幌のDBと高松のDBの両方に同じ id で入れる
+  const res = await Promise.allSettled(['hd', 'bt'].map(d => rpc(DB[d], 'invctl_peak_set_period', { p_id: pid, p_name: name, p_from: from, p_to: to, p_by: who() })));
+  const bad = res.filter(r => r.status === 'rejected');
+  Object.keys(cache).forEach(k => delete cache[k]); await load(store); draw();
+  bad.length ? say(`期間を一部保存できませんでした（${bad[0].reason.message}）。もう一度押してください。`, false) : say(`期間「${name}」${md(from)}〜${md(to)} を保存しました（全店）。`, true);
+}
+async function delPeriod(id, name, b) {
+  if (!who()) { say('先に「変更する人の名前」を入れてください', false); $('who').focus(); return; }
+  if (b && b.dataset.sure !== '1') { b.dataset.sure = '1'; b.textContent = 'もう一度押すと削除'; return; }
+  const res = await Promise.allSettled(['hd', 'bt'].map(d => rpc(DB[d], 'invctl_peak_del_period', { p_id: id, p_by: who() })));
+  Object.keys(cache).forEach(k => delete cache[k]); await load(store); draw();
+  res.some(r => r.status === 'rejected') ? say('期間を一部削除できませんでした。もう一度押してください。', false) : say(`期間「${name}」を削除しました（全店）。`, true);
+}
+draw(); load(store).then(draw); STORES.filter(s => s.id !== store).forEach(s => load(s.id));
+</script>
+</body></html>
