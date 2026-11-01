@@ -175,13 +175,19 @@ function drawLink(s) {
     if (r.test_done) return `<span class="off">${OTA[o]} 連携OFF<small>テスト済み</small><button class="go sm" data-link="${o}" data-on="1">ONにする</button></span>`;
     return `<span class="tst">${OTA[o]} テスト中<small>${t.length ? `10回済み ${done}/${t.length}クラス` : 'まだ結果なし'}</small></span>`; }).join('') + `</div>`;
   const on = s.otas.filter(o => { const r = L.find(z => z.ota === o) || {}; return !na(o) && r.enabled && r.test_done; });
-  h += `<button class="go" id="linkGo" ${on.length && PC.win ? '' : 'disabled'}>${on.length ? `連携ONの ${on.map(o => OTA[o]).join('・')} に価格表を反映` : 'OTAに反映（連携ONの組がまだありません）'}</button><div class="msg" id="linkMsg">在庫の書き込みが先です。ロボは在庫の後、次の見回りで書き、読み直して確かめます。1回に変えるのは1組20マスまでです。</div><div class="msg">操作キー：${opKey() ? 'この端末に入っています <button class="go sm" id="keyDel">消す</button>' : '<input id="keyIn" type="password" placeholder="操作キー" style="padding:6px;border:1px solid #cbd5e1;border-radius:6px"> <button class="go sm" id="keySet">この端末に入れる</button>'}（切り替え・反映に使います。1回入れれば次から不要）</div>`;
+  h += `<button class="go" id="linkGo" ${on.length && PC.win ? '' : 'disabled'}>${on.length ? `連携ONの ${on.map(o => OTA[o]).join('・')} に価格表を反映` : 'OTAに反映（連携ONの組がまだありません）'}</button><div class="msg" id="linkMsg">在庫の書き込みが先です。ロボは在庫の後、次の見回りで書き、読み直して確かめます。1回に変えるのは1組20マスまでです。</div><div class="msg">操作キー：${opKey() ? 'この端末に入っています <button class="go sm" id="keyDel">消す</button>' : '<input id="keyIn" type="password" placeholder="操作キー" style="padding:6px;border:1px solid #cbd5e1;border-radius:6px"> <button class="go sm" id="keySet">この端末に入れる</button> <button class="go sm" id="keyNew">この端末でキーを作る</button>'}（切り替え・反映に使います。1回入れれば次から不要）</div><div class="msg" id="keyCode"></div>`;
   $('link').innerHTML = h;
   $('link').querySelectorAll('[data-link]').forEach(b => b.onclick = async () => { const o = b.dataset.link, v = b.dataset.on === '1';
     if (!confirm(`${s.name}・${OTA[o]}の連携を${v ? 'ON' : 'OFF'}にします。よろしいですか？`)) return; b.disabled = true;
     try { links[store] = await rpcKey('invctl_price_link', { p_store: store, p_ota: o, p_on: v }); drawLink(s); } catch (e) { drawLink(s); $('linkMsg').textContent = /bad_key|400/.test(e.message) && !opKey() ? '先に操作キーを入れてください' : '切り替えられませんでした（操作キーちがい、またはテストが済んでいない組）'; } });
   const ks = $('keySet'); if (ks) ks.onclick = async () => { const v = ($('keyIn').value || '').trim(); if (!v) return; let ok = false; try { ok = await rpc('invctl_price_key_check', { p_key: v }); } catch {} if (!ok) { $('linkMsg').textContent = '操作キーがちがいます'; return; } try { localStorage.setItem(KEY_LS, v); } catch {} drawLink(s); };
   const kd = $('keyDel'); if (kd) kd.onclick = () => { try { localStorage.removeItem(KEY_LS); } catch {} drawLink(s); };
+  /* 11/1 キーを人に渡さない作り方：この端末でキーを作って覚え、照合用の値（塩＋sha256）だけを表示する。キーそのものは画面にも外にも出さない。値を Claude に送ると DB に登録される */
+  const kn = $('keyNew'); if (kn) kn.onclick = async () => {
+    const hex = n => [...crypto.getRandomValues(new Uint8Array(n))].map(b => b.toString(16).padStart(2, '0')).join('');
+    const key = hex(20), salt = hex(16), h = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(salt + key)))].map(b => b.toString(16).padStart(2, '0')).join('');
+    try { localStorage.setItem(KEY_LS, key); } catch { $('linkMsg').textContent = 'この端末に覚えられませんでした（ブラウザの設定）'; return; }
+    drawLink(s); $('keyCode').innerHTML = `この端末にキーを作りました。下の「登録コード」を Claude に送ってください（キーそのものではありません。登録されるとこの端末で切り替え・反映ができます）<br><code style="user-select:all;word-break:break-all">${salt}:${h}</code>`; };
   const go = $('linkGo'); if (go) go.onclick = async () => {
     const plan = on.map(o => [o, wantsFor(o)]);
     if (!confirm(`${s.name}：${plan.map(([o, w]) => `${OTA[o]} ${w.length}件`).join('・')} を価格表どおりにします（ロボが次の見回りで書きます）。よろしいですか？`)) return; go.disabled = true;
