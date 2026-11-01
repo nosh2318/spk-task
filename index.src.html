@@ -1153,9 +1153,24 @@ function HandoverBtn({rid,compact}){
 function _moveMeansLabel(type){return (type==="DEL"||type==="入庫"?"目的地から":"目的地まで")+"の移動手段";}
 // ★2026-10-11 タスク名は「送迎: 送迎される側(元タスク担当) → 顧客名」（担当別表示で誰を送るか分かるように。担当=driverは不変）
 // ★送迎(氏名)指名で自動生成する「送迎」タスクを作る（元タスクのスナップショット）。_id=s-+元_id で一意（重複生成しない）
-function _makeEscortTask(src,driver,date){
+// ★2026-11-01 送迎の車両（オーナー指示）。元タスク changed_json._moveVehicle＝車両コード or「その他」。紐づく送迎タスクには乗捨回収と同じくクラス/車種/No.を入れる（行と個別URLにそのまま出る）。「その他」はクラス欄に「その他」。
+const MOVE_VEHICLE_OTHER="その他";
+function _moveVehLabel(code,vehicles){
+  if(!code||code===MOVE_VEHICLE_OTHER)return code||"";
+  const v=(vehicles||[]).find(x=>x.code===code);
+  return v?((v.name||"")+" "+(v.no||"")).trim():code;
+}
+function _moveVehList(vehicles){
+  return (vehicles||[]).filter(v=>v.active!==false).slice().sort((a,b)=>String(a.type||"").localeCompare(String(b.type||""))||String(a.name||"").localeCompare(String(b.name||""))||String(a.no||"").localeCompare(String(b.no||"")));
+}
+function _moveVehFields(code,vehicles){
+  if(!code||code===MOVE_VEHICLE_OTHER)return{vehicle:code||"",assignedVehicle:"",plateNo:""};
+  const v=(vehicles||[]).find(x=>x.code===code);
+  return v?{vehicle:v.type||"",assignedVehicle:v.code,plateNo:v.no||""}:{vehicle:"",assignedVehicle:code,plateNo:""};
+}
+function _makeEscortTask(src,driver,date,veh){
   const pl=src.place||src.colPlace||"";
-  return {_id:"s-"+src._id,type:"送迎",time:src.time||"",name:"送迎: "+(src.assignee||"")+" → "+(src.name||"")+(pl?("（"+pl+"）"):""),people:0,place:pl,vehicle:"",assignedVehicle:"",plateNo:"",reservationId:"",ota:"",tel:"",mail:"",done:false,assignee:driver||"",flight:"",returnDate:"",returnTime:"",returnType:"",colPlace:"",insurance:"",opts:{b:0,c:0,j:0},yakkan:false,line:false,payment:false,manual:true,_taskDate:norm(date),timeChange:"",typeChange:"",_changed:{_escortOf:src._id,_escortMeans:"送迎"}};
+  return {_id:"s-"+src._id,type:"送迎",time:src.time||"",name:"送迎: "+(src.assignee||"")+" → "+(src.name||"")+(pl?("（"+pl+"）"):""),people:0,place:pl,vehicle:(veh&&veh.vehicle)||"",assignedVehicle:(veh&&veh.assignedVehicle)||"",plateNo:(veh&&veh.plateNo)||"",reservationId:"",ota:"",tel:"",mail:"",done:false,assignee:driver||"",flight:"",returnDate:"",returnTime:"",returnType:"",colPlace:"",insurance:"",opts:{b:0,c:0,j:0},yakkan:false,line:false,payment:false,manual:true,_taskDate:norm(date),timeChange:"",typeChange:"",_changed:{_escortOf:src._id,_escortMeans:"送迎"}};
 }
 // ★2026-10-11 担当「乗り捨て」選択で自動生成する「乗捨回収」タスク（送迎タスク自動生成と同じ流れ）。_id=dr-+元_id で一意（重複生成しない）
 // 内容＝場所:元タスクと同じ場所＋「付近」／タイトル:顧客名／時間:空／担当:空（スタッフが後で割当）／車両・ナンバー:元タスクと同じ(v4.7.662)
@@ -17133,18 +17148,31 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
      ①元タスクの changed_json に _moveMeans / _moveDriver を保存（_save＝1件だけ書く・既存の担当/場所/時間ロジックに非干渉）。
      ②means=送迎 かつ 送迎者(driver)指名時→ その指名者担当の「送迎」タスク(s-+元_id)をマスターに自動生成/更新。
        送迎者の変更/解除・別手段への変更・手段クリア時→ その送迎タスクを自動削除(墓標)。 */
-  const saveMoveMeans=async(t,means,driver)=>{
+  const saveMoveMeans=async(t,means,driver,vehicle)=>{
     means=means||"";
     const useDriver=means==="送迎"?(driver||""):"";
     const prevMeans=(t._changed&&t._changed._moveMeans)||"";
-    const nt={...t,_changed:{...(t._changed||{}),_moveMeans:means,_moveDriver:useDriver}};
+    // ★2026-11-01 車両：第4引数を省略した時は今の値を保つ（人だけ変えても車両は消えない）。送迎以外にしたら消す。
+    const useVehicle=means==="送迎"?(vehicle!==undefined?(vehicle||""):((t._changed&&t._changed._moveVehicle)||"")):"";
+    const nt={...t,_changed:{...(t._changed||{}),_moveMeans:means,_moveDriver:useDriver,_moveVehicle:useVehicle}};
     _save(t._id,nt);                       // 元タスク1件だけ書く
     if(means&&means!==prevMeans){try{celebrateMove(means);}catch(e){}}
     const escortId="s-"+t._id;
     try{
       if(means==="送迎"&&useDriver){
-        const et=_makeEscortTask(nt,useDriver,selDate);
+        const vehF=_moveVehFields(useVehicle,vehicles);
+        const exEt=tasks.find(x=>x._id===escortId);
         selfUpdateRef.current[selDate]=Date.now();
+        if(exEt&&exEt.assignee===useDriver&&sb){
+          // 同じ送迎者のまま＝車両の3列だけ書く（画面の写しを丸ごと保存すると、個別URLで付けた完了などを戻してしまう）
+          setTasks(ts=>{const next=ts.map(x=>x._id===escortId?{...x,...vehF}:x);DB._lsSave(next,selDate);return next;});
+          const{error:_mvErr}=await sb.from("tasks").update({vehicle:vehF.vehicle,assigned_vehicle:vehF.assignedVehicle,plate_no:vehF.plateNo}).eq("_id",escortId);
+          if(_mvErr)console.error("[saveMoveMeans vehicle]",_mvErr);
+          selfUpdateRef.current[selDate]=Date.now();
+          _notifyTopChange();
+          return;
+        }
+        const et=_makeEscortTask(nt,useDriver,selDate,vehF);
         setTasks(ts=>{const ex=ts.find(x=>x._id===escortId);const next=ex?ts.map(x=>x._id===escortId?et:x):[...ts,et].sort((a,b)=>(a.time||"").localeCompare(b.time||""));DB._lsSave(next,selDate);return next;});
         await DB.updateTask(et,selDate);
         // 過去に削除(墓標deleted=true)された送迎タスクを復活させる（_toDbTaskはdeleted列を書かないため明示的に戻す）
@@ -18067,12 +18095,15 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                   <option value="">通常</option><option value="spot">スポット</option>
                 </select>;})()}
                 {/* ★2026-08-02 移動手段（担当セルの隣＝下）。DEL/COL/引取/入庫のみ。送迎選択時は送迎者(氏名)を指名→送迎タスク自動生成 */}
-                {_isMoveMeansTask(t)&&(()=>{const mm=(t._changed&&t._changed._moveMeans)||"";const md=(t._changed&&t._changed._moveDriver)||"";return <div onClick={e=>e.stopPropagation()} style={{marginTop:2,display:"flex",flexDirection:"column",gap:1}}>
+                {_isMoveMeansTask(t)&&(()=>{const mm=(t._changed&&t._changed._moveMeans)||"";const md=(t._changed&&t._changed._moveDriver)||"";const mv=(t._changed&&t._changed._moveVehicle)||"";const mvList=_moveVehList(vehicles);return <div onClick={e=>e.stopPropagation()} style={{marginTop:2,display:"flex",flexDirection:"column",gap:1}}>
                   <select value={mm} onClick={e=>e.stopPropagation()} onChange={e=>{e.stopPropagation();const v=e.target.value;saveMoveMeans(t,v,v==="送迎"?md:"");}} title={_moveMeansLabel(t.type)} style={{border:"1px solid "+(mm?"#93c5fd":"#e2e8f0"),borderRadius:4,background:mm?"#eff6ff":"#f8fafc",fontSize:8,width:"100%",padding:"1px 2px",color:mm?"#1e3a8a":"#94a3b8",fontWeight:700,cursor:"pointer"}}>
                     <option value="">🚶手段</option>{MOVE_MEANS.map(m=><option key={m} value={m}>{(MOVE_MEANS_ICON[m]||"")+m}</option>)}
                   </select>
                   {mm==="送迎"&&<select value={activeMembers.includes(md)?md:(md?"__c":"")} onClick={e=>e.stopPropagation()} onChange={e=>{e.stopPropagation();const v=e.target.value;if(v==="__c")return;saveMoveMeans(t,"送迎",v);}} title="送迎者（氏名）" style={{border:"1px solid "+(md?"#93c5fd":"#fca5a5"),borderRadius:4,background:md?"#eff6ff":"#fef2f2",fontSize:8,width:"100%",padding:"1px 2px",color:md?"#1e3a8a":"#dc2626",fontWeight:700,cursor:"pointer"}}>
                     <option value="">🚗送迎者？</option>{activeMembers.map(m=><option key={m}>{m}</option>)}{md&&!activeMembers.includes(md)&&<option value="__c">{md}</option>}
+                  </select>}
+                  {mm==="送迎"&&<select value={mv} onClick={e=>e.stopPropagation()} onChange={e=>{e.stopPropagation();saveMoveMeans(t,"送迎",md,e.target.value);}} title="送迎の車両" style={{border:"1px solid "+(mv?"#93c5fd":"#fca5a5"),borderRadius:4,background:mv?"#eff6ff":"#fef2f2",fontSize:8,width:"100%",padding:"1px 2px",color:mv?"#1e3a8a":"#dc2626",fontWeight:700,cursor:"pointer"}}>
+                    <option value="">🚙車両？</option>{mvList.map(v=><option key={v.code} value={v.code}>{_moveVehLabel(v.code,vehicles)}</option>)}<option value={MOVE_VEHICLE_OTHER}>{MOVE_VEHICLE_OTHER}</option>{mv&&mv!==MOVE_VEHICLE_OTHER&&!mvList.some(v=>v.code===mv)&&<option value={mv}>{_moveVehLabel(mv,vehicles)}</option>}
                   </select>}
                 </div>;})()}
               </td>
@@ -18081,7 +18112,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
               <td style={{...cellS,fontWeight:600,color:"#0f172a"}}>{_wToday&&<span title="翌日対応に切り替えた洗車（当日貸出洗車）" style={{display:"inline-block",fontSize:7,fontWeight:800,color:"#fff",background:"#2563eb",borderRadius:3,padding:"1px 4px",marginRight:3}}>{nextDayShownLabel(t)}</span>}{_wGray&&<span title="翌日（貸出当日）に切り替え済み・当日は行いません" style={{display:"inline-block",fontSize:7,fontWeight:800,color:"#fff",background:"#94a3b8",borderRadius:3,padding:"1px 4px",marginRight:3}}>→翌日対応</span>}{_isLinked&&!_wGray&&<span title="同日・同ナンバーで返却と洗車あり（洗車は返却後）" style={{display:"inline-block",fontSize:7,fontWeight:800,color:"#fff",background:"#0d9488",borderRadius:3,padding:"1px 4px",marginRight:3}}>🔗返却後洗車</span>}{isCxl&&<span style={{display:"inline-block",fontSize:7,fontWeight:800,color:"#fff",background:"#dc2626",borderRadius:3,padding:"1px 4px",marginRight:3}}>CXL依頼</span>}{isChgReq&&<span style={{display:"inline-block",fontSize:7,fontWeight:800,color:"#fff",background:"#d97706",borderRadius:3,padding:"1px 4px",marginRight:3}}>変更申請中</span>}{!isChgReq&&isChgDone&&<span style={{display:"inline-block",fontSize:7,fontWeight:800,color:"#fff",background:"#2563eb",borderRadius:3,padding:"1px 4px",marginRight:3}}>変更済</span>}{t.ota==="KEYDROP"&&<span title="KEY-DROP（連絡はメール）" style={{display:"inline-block",fontSize:7,fontWeight:800,color:"#fff",background:"#111827",borderRadius:3,padding:"1px 4px",marginRight:3}}>KEY</span>}{_isOM(t)?<span style={{display:"flex",alignItems:"center",gap:4,width:"100%"}}><input key={t._id+"onm"+(t.name||"")} defaultValue={t.name||""} onClick={e=>e.stopPropagation()} onBlur={e=>{const v=e.target.value;if(v!==(t.name||""))updateOtherTask(t._id,{name:v});}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();if(e.key==="Escape"){e.target.value=t.name||"";e.target.blur();}}} placeholder="内容（例: 山田太郎/ロッキー回送）" title="内容を編集（その他タスク）" style={{border:"none",borderBottom:"1px dotted #cbd5e1",background:"transparent",fontSize:10,fontWeight:600,flex:1,minWidth:0,width:"auto",padding:0,color:t.name?"#0f172a":"#94a3b8",cursor:"text",outline:"none"}}/>{_isND&&<button onClick={e=>{e.stopPropagation();toggleNextDayWash(t);}} title={t._nextDayWash?"前日対応に戻す":"翌日（貸出当日）対応に切り替え＝当日貸出洗車"} style={{display:"inline-block",marginLeft:0,flexShrink:0,fontSize:7,fontWeight:700,padding:"1px 5px",borderRadius:4,background:t._nextDayWash?"#dbeafe":"#f1f5f9",color:t._nextDayWash?"#1d4ed8":"#475569",border:"1px solid "+(t._nextDayWash?"#93c5fd":"#cbd5e1"),cursor:"pointer",pointerEvents:"auto"}}>{t._nextDayWash?"前日に戻す":"翌日対応"}</button>}</span>:(t.type!=="洗車"&&t.reservationId)?<input key={t._id+"nm"+(t.name||"")} defaultValue={t.name||""} onClick={e=>e.stopPropagation()} onBlur={e=>{const v=e.target.value.trim();if(v&&v!==(t.name||""))saveNameEdit(t,v);else if(!v)e.target.value=t.name||"";}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();if(e.key==="Escape"){e.target.value=t.name||"";e.target.blur();}}} title="タップで予約者名を編集（LINE照合用）" style={{border:"none",borderBottom:"1px dotted #cbd5e1",background:"transparent",fontSize:10,fontWeight:600,width:"100%",padding:0,color:"#0f172a",cursor:"text",outline:"none"}}/>:(t.name||"")}{_isND&&!_isOM(t)&&<button onClick={e=>{e.stopPropagation();toggleNextDayWash(t);}} title={t._nextDayWash?"前日対応に戻す":"翌日（貸出当日）対応に切り替え＝当日貸出洗車"} style={{display:"inline-block",marginLeft:4,fontSize:7,fontWeight:700,padding:"1px 5px",borderRadius:4,background:t._nextDayWash?"#dbeafe":"#f1f5f9",color:t._nextDayWash?"#1d4ed8":"#475569",border:"1px solid "+(t._nextDayWash?"#93c5fd":"#cbd5e1"),cursor:"pointer",pointerEvents:"auto"}}>{t._nextDayWash?"前日に戻す":"翌日対応"}</button>}{t.reservationId&&<div style={{marginTop:1,lineHeight:1,display:"flex",gap:3,flexWrap:"wrap",alignItems:"center"}}><LineStatusBadge resvNo={t.reservationId} size={7}/><LicenseBadge resvNo={t.reservationId} size={7}/>{(t.type==="DEL"||t.type==="COL")&&t._changed&&<MoveMeansBadge v={t._changed._moveMeans} type={t.type} size={8}/>}{HO_TASK_TYPES_SPK.includes(t.type)&&<HandoverBtn rid={t.reservationId} compact={true}/>}</div>}</td>
               <td style={{...cellS,fontSize:9,color:(_isOM(t)?(t.place?"#111":"#94a3b8"):rPlace?"#111":"#ef4444")}} onClick={e=>{if(_isOM(t))e.stopPropagation();}}>{_isOM(t)?<input key={t._id+"opl"+(t.place||"")} defaultValue={t.place||""} onClick={e=>e.stopPropagation()} onBlur={e=>{const v=e.target.value;if(v!==(t.place||""))updateOtherTask(t._id,{place:v});}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();if(e.key==="Escape"){e.target.value=t.place||"";e.target.blur();}}} placeholder="場所" style={{border:"none",borderBottom:"1px dotted #cbd5e1",background:"transparent",fontSize:9,width:"100%",padding:0,color:t.place?"#111":"#94a3b8",cursor:"text",outline:"none"}}/>:rPlace?<a href={"https://www.google.com/maps/search/?api=1&query="+encodeURIComponent(rPlace)} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{color:"#2563eb",textDecoration:"underline"}} title="Googleマップで開く">{rPlace}</a>:(isPlaceMissing(t)?<PlaceAlert size={8}/>:"-")}{rPlace&&(()=>{const origP=cleanPlace(t.place||"");if(origP&&origP!==rPlace)return <div style={{fontSize:7,color:"#dc2626",fontWeight:600,lineHeight:1}}>←{origP}</div>;return null;})()}</td>
               <td style={{...cellS,fontSize:9,fontWeight:700,color:"#64748b",textAlign:"center"}}>{(t.vehicle==="空いてる車両"||t.vehicle==="全車両")?"-":(t.vehicle||"-")}</td>
-              <td style={{...cellS,fontSize:9,fontWeight:700,color:vn?"#1e40af":((t.vehicle==="空いてる車両"||t.vehicle==="全車両")?"#64748b":"#ccc")}}>{_isOM(t)?<select value={t.vehicle==="空いてる車両"?"__VACANT__":(t.vehicle==="全車両"?"__ALL__":(t.assignedVehicle||""))} onClick={e=>e.stopPropagation()} onChange={e=>{e.stopPropagation();const vcCode=e.target.value;if(vcCode==="__VACANT__"){updateOtherTask(t._id,{assignedVehicle:"",vehicle:"空いてる車両",plateNo:""});return;}if(vcCode==="__ALL__"){updateOtherTask(t._id,{assignedVehicle:"",vehicle:"全車両",plateNo:""});return;}const veh=vcCode?vehicles.find(v=>v.code===vcCode):null;updateOtherTask(t._id,{assignedVehicle:vcCode,vehicle:veh?veh.type:"",plateNo:veh?veh.no:""});}} style={{border:"none",background:"transparent",fontSize:9,fontWeight:700,color:vn?"#1e40af":"#64748b",width:"100%",padding:0,cursor:"pointer"}}><option value="">車両なし</option><option value="__ALL__">全車両</option><option value="__VACANT__">空いてる車両</option>{vehicles.filter(v=>v.active!==false).map(v=><option key={v.code} value={v.code}>{v.name}{v.no?" ("+v.no+")":""}</option>)}</select>:vn?<span style={{display:"inline-flex",alignItems:"center",gap:2}}>{vn.name}{t.assignedVehicle&&<DmgShareIcon code={t.assignedVehicle} size={11}/>}</span>:((t.vehicle==="空いてる車両"||t.vehicle==="全車両")?t.vehicle:"-")}{t.assignedVehicle&&(window._vehCautionMap||{})[t.assignedVehicle]&&<div className="vcpop" style={{marginTop:2,padding:"2px 5px",border:"1.5px solid #f59e0b",borderRadius:5,fontSize:8,fontWeight:800,color:"#b45309",lineHeight:1.25,whiteSpace:"normal"}}>⚠️{(window._vehCautionMap||{})[t.assignedVehicle]}</div>}</td>
+              <td style={{...cellS,fontSize:9,fontWeight:700,color:vn?"#1e40af":((t.vehicle==="空いてる車両"||t.vehicle==="全車両")?"#64748b":"#ccc")}}>{_isOM(t)?<select value={t.vehicle==="空いてる車両"?"__VACANT__":(t.vehicle==="全車両"?"__ALL__":(t.assignedVehicle||""))} onClick={e=>e.stopPropagation()} onChange={e=>{e.stopPropagation();const vcCode=e.target.value;if(vcCode==="__VACANT__"){updateOtherTask(t._id,{assignedVehicle:"",vehicle:"空いてる車両",plateNo:""});return;}if(vcCode==="__ALL__"){updateOtherTask(t._id,{assignedVehicle:"",vehicle:"全車両",plateNo:""});return;}const veh=vcCode?vehicles.find(v=>v.code===vcCode):null;updateOtherTask(t._id,{assignedVehicle:vcCode,vehicle:veh?veh.type:"",plateNo:veh?veh.no:""});}} style={{border:"none",background:"transparent",fontSize:9,fontWeight:700,color:vn?"#1e40af":"#64748b",width:"100%",padding:0,cursor:"pointer"}}><option value="">{t.vehicle==="その他"?"その他":"車両なし"}</option><option value="__ALL__">全車両</option><option value="__VACANT__">空いてる車両</option>{vehicles.filter(v=>v.active!==false).map(v=><option key={v.code} value={v.code}>{v.name}{v.no?" ("+v.no+")":""}</option>)}</select>:vn?<span style={{display:"inline-flex",alignItems:"center",gap:2}}>{vn.name}{t.assignedVehicle&&<DmgShareIcon code={t.assignedVehicle} size={11}/>}</span>:((t.vehicle==="空いてる車両"||t.vehicle==="全車両")?t.vehicle:"-")}{t.assignedVehicle&&(window._vehCautionMap||{})[t.assignedVehicle]&&<div className="vcpop" style={{marginTop:2,padding:"2px 5px",border:"1.5px solid #f59e0b",borderRadius:5,fontSize:8,fontWeight:800,color:"#b45309",lineHeight:1.25,whiteSpace:"normal"}}>⚠️{(window._vehCautionMap||{})[t.assignedVehicle]}</div>}</td>
               {(()=>{/* ★2026-10-13 現場要望: 洗車行のNo.を翌日の貸出時間で色分け(〜12時=赤/12〜15時=黄/15時〜=緑)＝午前出発の車から優先洗車。表示のみ・DB書込なし。時刻は予約(del_time||lend_time)から導出 */const _wr=isWash&&t.reservationId?reservations.find(r=>r.id===t.reservationId):null;const _lt=isWash&&_wr?String(_wr.delTime||_wr.lendTime||"").trim():"";const _m=_lt.match(/^(\d{1,2})[:：]?(\d{2})?/);const _h=_m?(+_m[1])+((+(_m[2]||0))/60):null;const _wc=_h==null?null:_h<12?{bg:"#fecaca",fg:"#991b1b"}:_h<15?{bg:"#fef08a",fg:"#854d0e"}:{bg:"#bbf7d0",fg:"#166534"};return <td title={_wc?("翌日貸出 "+_lt):undefined} style={{...cellS,fontFamily:"monospace",fontSize:9,fontWeight:700,color:_wc?_wc.fg:(t.plateNo?"#2563eb":"#ccc"),...(_wc?{background:_wc.bg}:{})}}>{t.plateNo||"-"}</td>;})()}
               {["b","c","j"].map((k,ki)=><td key={k} style={{...cellS,textAlign:"center"}}><span style={{fontSize:9,fontWeight:700,color:liveOpts[k]>0?"#dc2626":"#ccc"}}>{liveOpts[k]||"-"}</span></td>)}
               <td style={{...cellS,fontWeight:600,color:t.insurance==="NOC"?"#b45309":"#64748b",fontSize:9,cursor:"pointer",textDecoration:"underline"}} onClick={e=>{e.stopPropagation();if(t.reservationId){setEditResId(t.reservationId);setEditBlock(null);setSheetFilter("edit");}}}>{t.insurance||"-"}</td>
@@ -18526,13 +18557,13 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       })()}
       {delayTask&&<ColDelayModal task={delayTask} onClose={()=>setDelayTask(null)}/>}
       {requestTask&&<RequestModal task={requestTask} staff={staff} onClose={()=>{setRequestTask(null);loadTasks(selDate);}}/>}
-      {moreTask&&(()=>{const t=moreTask;const rid=t.reservationId;const isDEL=t.type==="DEL";const isCOL=t.type==="COL";const _mk=!!(t._changed&&t._changed._mark);
+      {moreTask&&(()=>{const _liveT=tasks.find(x=>x._id===moreTask._id);const t=_liveT?{...moreTask,_changed:_liveT._changed}:moreTask;/* ★2026-11-01 開いた時点の写しだと「送迎」を選んでも人・車両の欄が出ないので、_changed は今の値を読む */const rid=t.reservationId;const isDEL=t.type==="DEL";const isCOL=t.type==="COL";const _mk=!!(t._changed&&t._changed._mark);
         const Btn=({ico,label,sub,onClick,active})=><button onClick={()=>{setMoreTask(null);onClick();}} style={{display:"flex",alignItems:"center",gap:11,width:"100%",padding:"14px 14px",background:active?"#fef3c7":"#f8fafc",border:"1px solid "+(active?"#f59e0b":"#e2e8f0"),borderRadius:12,cursor:"pointer",textAlign:"left"}}><span style={{fontSize:22,flexShrink:0}}>{ico}</span><span style={{flex:1,minWidth:0}}><span style={{fontSize:14,fontWeight:800,color:"#1e293b"}}>{label}</span><br/><span style={{fontSize:10,color:"#94a3b8",fontWeight:500}}>{sub}</span></span>{active?<span style={{fontSize:12,color:"#16a34a",fontWeight:900,flexShrink:0}}>✓済</span>:null}</button>;
         return <div onClick={()=>setMoreTask(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,.42)",zIndex:9999,display:"flex",alignItems:"flex-end",justifyContent:"center"}}>
           <div onClick={e=>e.stopPropagation()} style={{background:"#fff",width:"100%",maxWidth:460,borderRadius:"18px 18px 0 0",padding:"14px 16px 28px",maxHeight:"84vh",overflowY:"auto"}}>
             <div style={{display:"flex",alignItems:"center",marginBottom:12}}><div style={{fontSize:15,fontWeight:800,color:"#1e293b"}}>{t.type||""} {t.name||""}　操作</div><button onClick={()=>setMoreTask(null)} style={{marginLeft:"auto",fontSize:22,background:"none",border:"none",cursor:"pointer",color:"#94a3b8",lineHeight:1}}>✕</button></div>
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
-              {_isMoveMeansTask(t)&&(()=>{const cur=(t._changed&&t._changed._moveMeans)||"";const md=(t._changed&&t._changed._moveDriver)||"";return <div style={{display:"flex",flexDirection:"column",gap:8,width:"100%",padding:"12px 14px",background:cur?"#eff6ff":"#f8fafc",border:"1px solid "+(cur?"#93c5fd":"#e2e8f0"),borderRadius:12}}>
+              {_isMoveMeansTask(t)&&(()=>{const cur=(t._changed&&t._changed._moveMeans)||"";const md=(t._changed&&t._changed._moveDriver)||"";const mv=(t._changed&&t._changed._moveVehicle)||"";const mvList=_moveVehList(vehicles);return <div style={{display:"flex",flexDirection:"column",gap:8,width:"100%",padding:"12px 14px",background:cur?"#eff6ff":"#f8fafc",border:"1px solid "+(cur?"#93c5fd":"#e2e8f0"),borderRadius:12}}>
                 <div style={{display:"flex",alignItems:"center",gap:11,width:"100%"}}>
                   <span style={{fontSize:22,flexShrink:0}}>🚗</span>
                   <span style={{flex:1,minWidth:0}}><span style={{fontSize:14,fontWeight:800,color:"#1e293b"}}>{_moveMeansLabel(t.type)}</span><br/><span style={{fontSize:10,color:"#94a3b8",fontWeight:500}}>DEL/入庫＝目的地から／COL/引取＝目的地まで の移動手段</span></span>
@@ -18544,9 +18575,17 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                 {cur==="送迎"&&<div style={{display:"flex",alignItems:"center",gap:11,width:"100%"}}>
                   <span style={{fontSize:20,flexShrink:0}}>🙋</span>
                   <span style={{flex:1,minWidth:0}}><span style={{fontSize:13,fontWeight:800,color:md?"#1e293b":"#dc2626"}}>送迎者（氏名）</span><br/><span style={{fontSize:10,color:"#94a3b8",fontWeight:500}}>指名するとその人の「送迎」タスクを自動生成</span></span>
-                  <select value={activeMembers.includes(md)?md:(md?"__c":"")} onChange={e=>{const v=e.target.value;if(v==="__c")return;saveMoveMeans(t,"送迎",v);setMoreTask(null);}} style={{flexShrink:0,padding:"8px 10px",borderRadius:8,border:"1px solid "+(md?"#cbd5e1":"#fca5a5"),fontSize:14,fontWeight:700,color:md?"#1e293b":"#dc2626",background:"#fff"}}>
+                  <select value={activeMembers.includes(md)?md:(md?"__c":"")} onChange={e=>{const v=e.target.value;if(v==="__c")return;saveMoveMeans(t,"送迎",v);if(v&&mv)setMoreTask(null);}} style={{flexShrink:0,padding:"8px 10px",borderRadius:8,border:"1px solid "+(md?"#cbd5e1":"#fca5a5"),fontSize:14,fontWeight:700,color:md?"#1e293b":"#dc2626",background:"#fff"}}>
                     <option value="">-- 送迎者 --</option>
                     {activeMembers.map(m=><option key={m}>{m}</option>)}{md&&!activeMembers.includes(md)&&<option value="__c">{md}</option>}
+                  </select>
+                </div>}
+                {cur==="送迎"&&<div style={{display:"flex",alignItems:"center",gap:11,width:"100%"}}>
+                  <span style={{fontSize:20,flexShrink:0}}>🚙</span>
+                  <span style={{flex:1,minWidth:0}}><span style={{fontSize:13,fontWeight:800,color:mv?"#1e293b":"#dc2626"}}>送迎の車両</span></span>
+                  <select value={mv} onChange={e=>{const v=e.target.value;saveMoveMeans(t,"送迎",md,v);if(v&&md)setMoreTask(null);}} style={{flexShrink:0,maxWidth:"58%",padding:"8px 10px",borderRadius:8,border:"1px solid "+(mv?"#cbd5e1":"#fca5a5"),fontSize:14,fontWeight:700,color:mv?"#1e293b":"#dc2626",background:"#fff"}}>
+                    <option value="">-- 車両 --</option>
+                    {mvList.map(v=><option key={v.code} value={v.code}>{_moveVehLabel(v.code,vehicles)}</option>)}<option value={MOVE_VEHICLE_OTHER}>{MOVE_VEHICLE_OTHER}</option>{mv&&mv!==MOVE_VEHICLE_OTHER&&!mvList.some(v=>v.code===mv)&&<option value={mv}>{_moveVehLabel(mv,vehicles)}</option>}
                   </select>
                 </div>}
               </div>;})()}
@@ -25648,7 +25687,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.692";
+const APP_VERSION="v4.7.693";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
