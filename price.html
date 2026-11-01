@@ -152,6 +152,9 @@ async function load(st) {
 // ON にできるのは書いて戻すテスト（各クラス10回）が済んだ組だけ（DB 側でも止める）。「OTAに反映」＝連携ONの組だけ、価格表どおりの値段を invctl_price_want_set に入れる→ロボが在庫の後・次の見回りで書く（安全策はロボ側 priceguard）
 const LINK_NA = { TAB: 'たびらいは依頼書で手配', RDC_spk: '札幌は料金なし（準備中）', RKT_spk: '読み取りを直し中', JLN: 'じゃらんは比べ方が仮（特別料金を読めてから）' };
 const PT_NEED = 10;
+// 切り替え・反映はログインしたスタッフだけ（DB 側でも確かめる）。管理APP（同じ github.io）のログインを使う
+const staffTok = () => { try { const t = JSON.parse(localStorage.getItem('sb-ckrxttbnawkclshczsia-auth-token') || 'null'); if (t && t.access_token && (!t.expires_at || t.expires_at > Date.now() / 1000)) return t.access_token; } catch {} return null; };
+const rpcStaff = async (fn, body) => { const tk = staffTok(); if (!tk) throw new Error('login'); const r = await fetch(`${HD.url}/rest/v1/rpc/${fn}`, { method: 'POST', headers: { apikey: HD.key, Authorization: `Bearer ${tk}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); if (!r.ok) throw new Error(fn + ' ' + r.status + ' ' + (await r.text()).slice(0, 80)); return r.json(); };
 function wantsFor(o) {
   const out = {};
   for (const x of (data[store] || []).filter(r => r.ota === o)) for (const ln of lines(x)) {
@@ -166,19 +169,20 @@ function drawLink(s) {
   let h = `<h3>🔗 OTA連携（価格表 → OTA）</h3><div class="lk">` + s.otas.map(o => {
     const r = L.find(z => z.ota === o) || {}, t = Object.entries(r.test || {}), done = t.filter(([, c]) => (c.ok || 0) >= PT_NEED).length;
     if (na(o)) return `<span class="na">${OTA[o]}<small>${esc(na(o))}</small></span>`;
-    if (r.enabled) return `<span class="on">${OTA[o]} 連携ON<small>テスト済み</small><button class="go sm" data-link="${o}" data-on="0">OFFにする</button></span>`;
+    if (r.enabled && r.test_done) return `<span class="on">${OTA[o]} 連携ON<small>テスト済み</small><button class="go sm" data-link="${o}" data-on="0">OFFにする</button></span>`;
+    if (r.enabled) return `<span class="tst">${OTA[o]} 連携ON・テストやり直し中<small>済むまでロボは書かない（10回済み ${done}/${t.length}クラス）</small><button class="go sm" data-link="${o}" data-on="0">OFFにする</button></span>`;
     if (r.test_done) return `<span class="off">${OTA[o]} 連携OFF<small>テスト済み</small><button class="go sm" data-link="${o}" data-on="1">ONにする</button></span>`;
     return `<span class="tst">${OTA[o]} テスト中<small>${t.length ? `10回済み ${done}/${t.length}クラス` : 'まだ結果なし'}</small></span>`; }).join('') + `</div>`;
-  const on = s.otas.filter(o => !na(o) && (L.find(z => z.ota === o) || {}).enabled);
-  h += `<button class="go" id="linkGo" ${on.length && PC.win ? '' : 'disabled'}>${on.length ? `連携ONの ${on.map(o => OTA[o]).join('・')} に価格表を反映` : 'OTAに反映（連携ONの組がまだありません）'}</button><div class="msg" id="linkMsg">在庫の書き込みが先です。ロボは在庫の後、次の見回りで書き、読み直して確かめます。1回に変えるのは1組20マスまでです。</div>`;
+  const on = s.otas.filter(o => { const r = L.find(z => z.ota === o) || {}; return !na(o) && r.enabled && r.test_done; });
+  h += `<button class="go" id="linkGo" ${on.length && PC.win ? '' : 'disabled'}>${on.length ? `連携ONの ${on.map(o => OTA[o]).join('・')} に価格表を反映` : 'OTAに反映（連携ONの組がまだありません）'}</button><div class="msg" id="linkMsg">在庫の書き込みが先です。ロボは在庫の後、次の見回りで書き、読み直して確かめます。1回に変えるのは1組20マスまでです。${staffTok() ? '' : '<br>切り替え・反映は、管理APPでログインしてから使えます。'}</div>`;
   $('link').innerHTML = h;
   $('link').querySelectorAll('[data-link]').forEach(b => b.onclick = async () => { const o = b.dataset.link, v = b.dataset.on === '1';
     if (!confirm(`${s.name}・${OTA[o]}の連携を${v ? 'ON' : 'OFF'}にします。よろしいですか？`)) return; b.disabled = true;
-    try { links[store] = await rpc('invctl_price_link', { p_store: store, p_ota: o, p_on: v }); } catch { $('linkMsg').textContent = '切り替えられませんでした（テストが済んでいない組は ON にできません）'; } drawLink(s); });
+    try { links[store] = await rpcStaff('invctl_price_link', { p_store: store, p_ota: o, p_on: v }); drawLink(s); } catch (e) { drawLink(s); $('linkMsg').textContent = /login|not_allowed/.test(e.message) ? '管理APPでログインしてから押してください' : '切り替えられませんでした（テストが済んでいない組は ON にできません）'; } });
   const go = $('linkGo'); if (go) go.onclick = async () => {
     const plan = on.map(o => [o, wantsFor(o)]);
     if (!confirm(`${s.name}：${plan.map(([o, w]) => `${OTA[o]} ${w.length}件`).join('・')} を価格表どおりにします（ロボが次の見回りで書きます）。よろしいですか？`)) return; go.disabled = true;
-    const res = []; for (const [o, w] of plan) { try { res.push(`${OTA[o]} ${await rpc('invctl_price_want_set', { p_store: store, p_ota: o, p_rows: w })}件`); } catch { res.push(`${OTA[o]} 失敗`); } }
+    const res = []; for (const [o, w] of plan) { try { res.push(`${OTA[o]} ${await rpcStaff('invctl_price_want_set', { p_store: store, p_ota: o, p_rows: w })}件`); } catch (e) { res.push(`${OTA[o]} 失敗${/login|not_allowed/.test(e.message) ? '（ログインが要ります）' : ''}`); } }
     $('linkMsg').textContent = `入れました：${res.join('・')}。ロボが次の見回りで書き、下の「ロボの書き込みと安全策」に記録が出ます。`; };
 }
 // 安全策（オーナー 10/28「間違った数字を入れない・防げる・即修正」）：ロボの書き込み記録・止めたマスの OK・元に戻す・再開
