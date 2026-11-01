@@ -37,6 +37,9 @@ td.st{text-align:center;font-size:12px}
 .ota-act{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 10px}.ota-act span{display:flex;gap:6px;align-items:center;background:#f1f5f9;border-radius:6px;padding:6px 8px;font-size:13px;font-weight:800}
 td.pic{text-align:center;cursor:pointer;font-size:18px}
 td.pic.no{background:#fee2e2;color:#991b1b;font-size:12px;cursor:default}
+#link h3{margin:0 0 8px;font-size:16px}#link .lk{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 10px}#link .lk span{display:flex;flex-direction:column;gap:4px;min-width:130px;border-radius:6px;padding:8px 10px;font-size:13px;font-weight:800}
+#link .lk small{font-size:11px;font-weight:700}#link .lk .on{background:#22c55e;color:#fff}#link .lk .off{background:#f1f5f9;color:#0f172a}#link .lk .tst{background:#fef3c7;color:#92400e}#link .lk .na{background:#e2e8f0;color:#64748b}
+#link .msg{font-size:13px;font-weight:700;color:#64748b;margin-top:6px}
 .foot{font-size:12px;color:#64748b;text-align:center;margin:6px 0 20px}
 #pop{position:fixed;inset:0;background:rgba(15,23,42,.45);display:none;align-items:center;justify-content:center;z-index:50;padding:16px}
 #pop .in{background:#fff;border-radius:10px;padding:16px;max-width:380px;width:100%}
@@ -55,6 +58,7 @@ td.pic.no{background:#fee2e2;color:#991b1b;font-size:12px;cursor:default}
     <span><i class="sw y"></i>比べられない（理由を表示）</span>
     <span><i class="sw n"></i>ロボがまだ読めていない</span>
   </div>
+  <div class="card" id="link"></div>
   <div class="act"><button class="go off" id="goAll" disabled></button><span class="muted" id="lastw"></span></div>
   <div class="card scroll"><table id="grid"></table></div>
   <iframe id="pcf" src="price-controller.html" style="display:none" title="価格コントローラー（比べるために読むだけ）"></iframe>
@@ -132,7 +136,7 @@ const NOTE = { TAB: 'たびらいは管理画面で料金を変えられませ�
 const $ = id => document.getElementById(id);
 const P = new URLSearchParams(location.search);
 let store = STORES.some(s => s.id === P.get('store')) ? P.get('store') : 'nha';
-const data = {}, logs = {}, pauses = {};
+const data = {}, logs = {}, pauses = {}, links = {};
 const yen = v => v == null ? '—' : Number(v).toLocaleString('ja-JP');
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const ago = t => { if (!t) return ''; const m = Math.round((Date.now() - Date.parse(t)) / 60000); return m < 60 ? `${m}分前` : m < 1440 ? `${Math.round(m / 60)}時間前` : new Date(t).toLocaleDateString('ja-JP'); };
@@ -142,6 +146,53 @@ async function load(st) {
   try { data[st] = await rpc('invctl_price_list', { p_store: st }); } catch { data[st] = []; }
   try { logs[st] = await rpc('invctl_price_log_list', { p_store: st, p_limit: 300 }); } catch { logs[st] = []; }
   try { pauses[st] = await rpc('invctl_price_pause_list', { p_store: st }); } catch { pauses[st] = []; }
+  try { links[st] = await rpc('invctl_price_link', { p_store: st }); } catch { links[st] = []; }
+}
+// OTA連携（オーナー 11/1「OTA連携ボタンがあるべき」「マスターが変わるとOTAとadminも変わる連結最終型」）：店×OTAのスイッチ（invctl.price_link）。
+// ON にできるのは書いて戻すテスト（各クラス10回）が済んだ組だけ（DB 側でも止める）。「OTAに反映」＝連携ONの組だけ、価格表どおりの値段を invctl_price_want_set に入れる→ロボが在庫の後・次の見回りで書く（安全策はロボ側 priceguard）
+const LINK_NA = { TAB: 'たびらいは依頼書で手配', RDC_spk: '札幌は料金なし（準備中）', RKT_spk: '読み取りを直し中', JLN: 'じゃらんは比べ方が仮（特別料金を読めてから）' };
+const PT_NEED = 10;
+// 切り替え・反映は「操作キー」を入れたこの端末だけ（オーナー 11/1「ログインしなくていいです」）。キーは初回に1回入れ、この端末に覚える（DB 側でも確かめる）
+const KEY_LS = 'invctl_price_opkey';
+const opKey = () => { try { return localStorage.getItem(KEY_LS) || ''; } catch { return ''; } };
+const rpcKey = (fn, body) => { const k = opKey(); if (!k) return Promise.reject(new Error('bad_key')); return rpc(fn, { ...body, p_key: k }); };
+function wantsFor(o) {
+  const out = {};
+  for (const x of (data[store] || []).filter(r => r.ota === o)) for (const ln of lines(x)) {
+    if (x.ota === 'SKT' && ln.sub.startsWith('通常（')) continue;
+    const w = wantOf(store, x, ln.n); if (w.why || !w.want) continue; const it = out[x.item] || (out[x.item] = {});
+    for (const [, , k] of ln.vals) { const t = w.want[k]; if (Number.isInteger(t) && t >= 1000) it[k] = t; }
+  }
+  return Object.entries(out).filter(([, w]) => Object.keys(w).length).map(([item, want]) => ({ item, want }));
+}
+function drawLink(s) {
+  const L = links[store] || [], na = o => LINK_NA[o + '_' + store] || LINK_NA[o];
+  let h = `<h3>🔗 OTA連携（価格表 → OTA）</h3><div class="lk">` + s.otas.map(o => {
+    const r = L.find(z => z.ota === o) || {}, t = Object.entries(r.test || {}), done = t.filter(([, c]) => (c.ok || 0) >= PT_NEED).length;
+    if (na(o)) return `<span class="na">${OTA[o]}<small>${esc(na(o))}</small></span>`;
+    if (r.enabled && r.test_done) return `<span class="on">${OTA[o]} 連携ON<small>テスト済み</small><button class="go sm" data-link="${o}" data-on="0">OFFにする</button></span>`;
+    if (r.enabled) return `<span class="tst">${OTA[o]} 連携ON・テストやり直し中<small>済むまでロボは書かない（10回済み ${done}/${t.length}クラス）</small><button class="go sm" data-link="${o}" data-on="0">OFFにする</button></span>`;
+    if (r.test_done) return `<span class="off">${OTA[o]} 連携OFF<small>テスト済み</small><button class="go sm" data-link="${o}" data-on="1">ONにする</button></span>`;
+    return `<span class="tst">${OTA[o]} テスト中<small>${t.length ? `10回済み ${done}/${t.length}クラス` : 'まだ結果なし'}</small></span>`; }).join('') + `</div>`;
+  const on = s.otas.filter(o => { const r = L.find(z => z.ota === o) || {}; return !na(o) && r.enabled && r.test_done; });
+  h += `<button class="go" id="linkGo" ${on.length && PC.win ? '' : 'disabled'}>${on.length ? `連携ONの ${on.map(o => OTA[o]).join('・')} に価格表を反映` : 'OTAに反映（連携ONの組がまだありません）'}</button><div class="msg" id="linkMsg">在庫の書き込みが先です。ロボは在庫の後、次の見回りで書き、読み直して確かめます。1回に変えるのは1組20マスまでです。</div><div class="msg">操作キー：${opKey() ? 'この端末に入っています <button class="go sm" id="keyDel">消す</button>' : '<input id="keyIn" type="password" placeholder="操作キー" style="padding:6px;border:1px solid #cbd5e1;border-radius:6px"> <button class="go sm" id="keySet">この端末に入れる</button> <button class="go sm" id="keyNew">この端末でキーを作る</button>'}（切り替え・反映に使います。1回入れれば次から不要）</div><div class="msg" id="keyCode"></div>`;
+  $('link').innerHTML = h;
+  $('link').querySelectorAll('[data-link]').forEach(b => b.onclick = async () => { const o = b.dataset.link, v = b.dataset.on === '1';
+    if (!confirm(`${s.name}・${OTA[o]}の連携を${v ? 'ON' : 'OFF'}にします。よろしいですか？`)) return; b.disabled = true;
+    try { links[store] = await rpcKey('invctl_price_link', { p_store: store, p_ota: o, p_on: v }); drawLink(s); } catch (e) { drawLink(s); $('linkMsg').textContent = /bad_key|400/.test(e.message) && !opKey() ? '先に操作キーを入れてください' : '切り替えられませんでした（操作キーちがい、またはテストが済んでいない組）'; } });
+  const ks = $('keySet'); if (ks) ks.onclick = async () => { const v = ($('keyIn').value || '').trim(); if (!v) return; let ok = false; try { ok = await rpc('invctl_price_key_check', { p_key: v }); } catch {} if (!ok) { $('linkMsg').textContent = '操作キーがちがいます'; return; } try { localStorage.setItem(KEY_LS, v); } catch {} drawLink(s); };
+  const kd = $('keyDel'); if (kd) kd.onclick = () => { try { localStorage.removeItem(KEY_LS); } catch {} drawLink(s); };
+  /* 11/1 キーを人に渡さない作り方：この端末でキーを作って覚え、照合用の値（塩＋sha256）だけを表示する。キーそのものは画面にも外にも出さない。値を Claude に送ると DB に登録される */
+  const kn = $('keyNew'); if (kn) kn.onclick = async () => {
+    const hex = n => [...crypto.getRandomValues(new Uint8Array(n))].map(b => b.toString(16).padStart(2, '0')).join('');
+    const key = hex(20), salt = hex(16), h = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(salt + key)))].map(b => b.toString(16).padStart(2, '0')).join('');
+    try { localStorage.setItem(KEY_LS, key); } catch { $('linkMsg').textContent = 'この端末に覚えられませんでした（ブラウザの設定）'; return; }
+    drawLink(s); $('keyCode').innerHTML = `この端末にキーを作りました。下の「登録コード」を Claude に送ってください（キーそのものではありません。登録されるとこの端末で切り替え・反映ができます）<br><code style="user-select:all;word-break:break-all">${salt}:${h}</code>`; };
+  const go = $('linkGo'); if (go) go.onclick = async () => {
+    const plan = on.map(o => [o, wantsFor(o)]);
+    if (!confirm(`${s.name}：${plan.map(([o, w]) => `${OTA[o]} ${w.length}件`).join('・')} を価格表どおりにします（ロボが次の見回りで書きます）。よろしいですか？`)) return; go.disabled = true;
+    const res = []; for (const [o, w] of plan) { try { res.push(`${OTA[o]} ${await rpcKey('invctl_price_want_set', { p_store: store, p_ota: o, p_rows: w })}件`); } catch (e) { res.push(`${OTA[o]} 失敗${opKey() ? '' : '（操作キーが要ります）'}`); } }
+    $('linkMsg').textContent = `入れました：${res.join('・')}。ロボが次の見回りで書き、下の「ロボの書き込みと安全策」に記録が出ます。`; };
 }
 // 安全策（オーナー 10/28「間違った数字を入れない・防げる・即修正」）：ロボの書き込み記録・止めたマスの OK・元に戻す・再開
 const ST = { written: ['g', '✅ 書いて読み直し一致'], hold: ['y', '🟡 止めた（確認待ち）'], reject: ['x', '⛔ 書かなかった'], failed: ['r', '🔴 読み直しが合わない'], stopall: ['y', '🟡 全部止めた'] };
@@ -220,6 +271,7 @@ function draw() {
   $('grid').innerHTML = h;
   if (PC.win && PC_STORE[store]) $('big').innerHTML = `<div class="big ${CNT.ng ? 'ng' : 'ok'}">${s.name}：価格表とちがう ${CNT.ng} 件／一致 ${CNT.ok} 件<small>比べられない ${CNT.na} 件（理由は各行に表示）・OTAの料金 ${rows.length} 件を${last ? ago(last) : ''}に読みました</small></div>`;
   drawSafe(s);
+  drawLink(s);
 }
 (async () => { await Promise.all(STORES.map(x => load(x.id))); draw(); await loadPC(); draw(); })();
 </script>
