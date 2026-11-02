@@ -13,3 +13,8 @@ insert into private.ota_account(grp, label, url, sort) values
  ('BUDDICA','エアトリ','https://airtrip-rentacar-br-admin.airtrip.jp/login',110),
  ('BUDDICA','たびらい','https://car-cloud.tabirai.net/App_Supplier/SupplierLogin.aspx',120),
  ('BUDDICA','レンタカードットコム','https://www2.web-rentacar.com/admin2/index.asp',130);
+
+-- 追加（11/02 オーナー指示）：旧オフィシャルの行名変更とBUDDICAの2行
+update private.ota_account set label='HDM/customer(旧オフィシャル)' where label='オフィシャル_新：予約';
+update private.ota_account set label='HDM/admin(旧オフィシャル)' where label='オフィシャル_新：管理';
+insert into private.ota_account(grp,label,url,sort) values ('BUDDICA','BUDDICA/customer','',101),('BUDDICA','BUDDICA/admin','',102);
