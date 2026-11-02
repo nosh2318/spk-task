@@ -84,9 +84,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1216';
+var CV='spk-v1217';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=1048').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=1049').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -364,7 +364,8 @@ const DB = {
   _vehLsSave(a){try{localStorage.setItem(DB._vehLsKey,JSON.stringify(a));}catch(e){}},
   _vehLsLoad(){try{const s=localStorage.getItem(DB._vehLsKey);const a=s?JSON.parse(s):null;return a?sortVehicles(a):null;}catch(e){return null;}},
   async fetchFleet(){if(!sb){return DB._fleetLsLoad();}const{data,error}=await sb.from("fleet").select("*");if(error){dbLog("fetchFleet",false,error.message);return DB._fleetLsLoad();}const f={};(data||[]).forEach(r=>f[r.reservation_id]=r.vehicle_code);dbLog("fetchFleet",true,Object.keys(f).length+"件");DB._fleetLsSave(f);return f;},
-  async upsertFleet(fleet){DB._fleetLsSave(fleet);if(!sb)return;const rows=Object.entries(fleet).map(([k,v])=>({reservation_id:k,vehicle_code:v}));if(rows.length){await DB._retryOp(async()=>{const{error}=await sb.from("fleet").upsert(rows,{onConflict:"reservation_id"});if(error)throw new Error(error.message);dbLog("upsertFleet",true,rows.length+"件");},"upsertFleet");}},
+  /* ★2026-11-02 prev（変更前の画面の配車）を渡すと「変えた予約だけ」保存。画面が古くても、触っていない予約を古い車で上書きしない（自動組み替えの移動が戻る対策） */
+  async upsertFleet(fleet,prev){DB._fleetLsSave(fleet);if(!sb)return;const rows=Object.entries(fleet).filter(([k,v])=>!prev||prev[k]!==v).map(([k,v])=>({reservation_id:k,vehicle_code:v}));if(rows.length){await DB._retryOp(async()=>{const{error}=await sb.from("fleet").upsert(rows,{onConflict:"reservation_id"});if(error)throw new Error(error.message);dbLog("upsertFleet",true,rows.length+"件");},"upsertFleet");}},
   async updateFleetOne(resId,code){if(!sb)return;const{error}=await sb.from("fleet").upsert({reservation_id:resId,vehicle_code:code},{onConflict:"reservation_id"});if(error)dbLog("updateFleet1",false,error.message);},
   async deleteFleetOne(resId){if(!sb)return;const{error}=await sb.from("fleet").delete().eq("reservation_id",resId);if(error)dbLog("deleteFleet1",false,error.message);},
   // --- タスク（localStorage併用で確実に保存） ---
@@ -23929,9 +23930,10 @@ function App(){
   window.__spkForceShifts=setShifts;
   const fleetRefApp=React.useRef(fleet);fleetRefApp.current=fleet;
   const setFleetSync=useCallback((nextFleet)=>{
-    const resolved=typeof nextFleet==="function"?nextFleet(fleetRefApp.current):nextFleet;
+    const prevFleet=fleetRefApp.current;
+    const resolved=typeof nextFleet==="function"?nextFleet(prevFleet):nextFleet;
     setFleet(resolved);fleetRefApp.current=resolved;markLocalChange("fleet");
-    DB.upsertFleet(resolved).then(()=>markDbSync("fleet")).catch(e=>console.error("upsertFleet error:",e));
+    DB.upsertFleet(resolved,prevFleet).then(()=>markDbSync("fleet")).catch(e=>console.error("upsertFleet error:",e));
   },[]);
 
   // 配車変更 + OPシートタスク同時更新
@@ -23953,10 +23955,11 @@ function App(){
         return;
       }
     }
-    const nextFleet={...fleetRefApp.current,[resId]:newVc};
+    const prevFleet=fleetRefApp.current;
+    const nextFleet={...prevFleet,[resId]:newVc};
     fleetRefApp.current=nextFleet;
     setFleet(nextFleet);markLocalChange("fleet");
-    try{await DB.upsertFleet(nextFleet);markDbSync("fleet");}catch(e){console.error("upsertFleet error:",e);}
+    try{await DB.upsertFleet(nextFleet,prevFleet);markDbSync("fleet");}catch(e){console.error("upsertFleet error:",e);}
     const vn=vehicles.find(x=>x.code===newVc);
     // ★ reservations.vehicleも同期（クラス変更を反映）
     if(vn)try{await DB.syncToReservation(resId,{vehicle:vn.type});}catch(e){console.error("syncToRes error:",e);}
@@ -24238,7 +24241,7 @@ function App(){
       setFleet(newFleet);
       markLocalChange("fleet");
       // ★ fleet DB保存（newFleetは確実に存在）
-      try{await DB.upsertFleet(newFleet);markDbSync("fleet");console.log("[addRes] fleet DB保存成功, 配車:",newFleet[r.id]||"未配車");}catch(e){console.error("[addRes] fleet DB保存失敗:",e);}
+      try{await DB.upsertFleet(newFleet,currentFleet);markDbSync("fleet");console.log("[addRes] fleet DB保存成功, 配車:",newFleet[r.id]||"未配車");}catch(e){console.error("[addRes] fleet DB保存失敗:",e);}
     }
   },[vehicles,maintenance,fleet]);
 
@@ -24855,7 +24858,7 @@ function App(){
           {tab==="attendance"&&<PASGuard label="給与計算"><AttendanceManager shifts={shifts} staff={staff} today={today} attendance={attendance} onAttendanceChange={setAttendance}/></PASGuard>}
           {tab==="fleet"&&<FleetTimeline data={data} fleet={fleet} onFleetChange={setFleetSync} today={today} maintenance={maintenance} onMaintenanceChange={setMaintenance} vehicles={vehicles} vehicleClasses={vehicleClasses} onAddReservation={addReservation} onBulkAddReservation={bulkAddReservation} onCancelReservation={cancelReservation} onReassignVehicle={reassignVehicle} onUpdateReservation={updateReservation} unassignedReasons={unassignedReasons} onVehicleDetail={(code)=>{setHighlightVehicle(code);setTab("vehicle");setTimeout(()=>setHighlightVehicle(null),3000);}}/>}
           {tab==="tire"&&<TireTab vehicles={vehicles} vehicleClasses={vehicleClasses}/>}
-          {tab==="vehicle"&&<VehicleTab vehicles={vehicles} onVehiclesChange={setVehiclesSync} vehicleClasses={vehicleClasses} onDeleteVehicle={(code)=>{DB.deleteVehicle(code);const nf={...fleetRefApp.current};let cleaned=false;Object.entries(nf).forEach(([rid,vc])=>{if(vc===code){delete nf[rid];cleaned=true;}});if(cleaned){setFleet(nf);fleetRefApp.current=nf;markLocalChange("fleet");DB.upsertFleet(nf).catch(e=>console.error("fleet cleanup error:",e));}}} hmCars={hmCars} hmCarData={hmCarData} hmLogs={hmLogs} hmClasses={hmClasses} hmReload={hmReload} highlightVehicle={highlightVehicle} maintenance={maintenance} onMaintenanceChange={setMaintenance} data={data} fleet={fleet}/>}
+          {tab==="vehicle"&&<VehicleTab vehicles={vehicles} onVehiclesChange={setVehiclesSync} vehicleClasses={vehicleClasses} onDeleteVehicle={(code)=>{DB.deleteVehicle(code);const nf={...fleetRefApp.current};let cleaned=false;Object.entries(nf).forEach(([rid,vc])=>{if(vc===code){delete nf[rid];cleaned=true;}});if(cleaned){setFleet(nf);fleetRefApp.current=nf;markLocalChange("fleet");DB.upsertFleet(nf,fleetRefApp.current).catch(e=>console.error("fleet cleanup error:",e));}}} hmCars={hmCars} hmCarData={hmCarData} hmLogs={hmLogs} hmClasses={hmClasses} hmReload={hmReload} highlightVehicle={highlightVehicle} maintenance={maintenance} onMaintenanceChange={setMaintenance} data={data} fleet={fleet}/>}
           {tab==="parking"&&<iframe src={"parking.html?v="+CV} style={{width:"100%",height:"100%",border:"none",flex:1,minHeight:0}} title="駐車場マップ"/>}
           {tab==="accounting"&&<PASGuard label="会計管理" code="1121"><AccountingPanel staff={staff}/></PASGuard>}
           {tab==="recv_invoice"&&<ReceivedInvoicesTab sb={sb} store="spk" vehicles={vehicles}/>}
@@ -25721,7 +25724,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.695";
+const APP_VERSION="v4.7.696";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
