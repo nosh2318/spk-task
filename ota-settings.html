@@ -20,28 +20,39 @@ button{border:none;background:#2563eb;color:#fff;border-radius:6px;padding:10px 
 .st{display:inline-block;border-radius:4px;padding:1px 6px;font-weight:800;font-size:12px}.st.ok{background:var(--okbg);color:var(--ok)}.st.ng{background:var(--ngbg);color:var(--ng)}.st.wait{background:var(--waitbg);color:var(--wait)}
 .msg{grid-column:1/-1;padding:8px 10px;border-radius:6px;font-size:13px}.msg.ok{background:var(--okbg);color:var(--ok)}.msg.ng{background:var(--ngbg);color:var(--ng)}
 .note{font-size:12px;color:var(--mut);line-height:1.6;margin:6px 0 0}
-.links{width:100%;border-collapse:collapse;font-size:14px}.links td{padding:8px 4px;border-top:1px solid #e2e8f0;overflow-wrap:anywhere}.links td:first-child{font-weight:700;white-space:nowrap;padding-right:16px}
-@media(max-width:720px){.row{grid-template-columns:1fr}.who{max-width:none}button{width:100%}}
+.arow{display:grid;grid-template-columns:170px 1fr 1fr 1.4fr auto;gap:10px;align-items:end;padding:12px 0;border-top:1px solid #e2e8f0}
+.arow .open{font-size:12px;font-weight:400}
+@media(max-width:720px){.row,.arow{grid-template-columns:1fr}.who{max-width:none}button{width:100%}}
 </style></head><body>
 <header><h1>OTA設定</h1></header>
 <div class="wrap">
   <div class="card" id="login" hidden><div class="msg ng">業務アプリでログインしてから、もう一度開いてください。</div>
     <p class="note"><a href="./">業務アプリを開く</a></p></div>
+  <div class="card" id="lock" hidden>
+    <label class="who" style="display:block">暗証番号<input id="pin" type="password" inputmode="numeric" autocomplete="off"></label>
+    <div style="margin-top:10px"><button id="unlock">解除</button></div>
+    <div id="lockmsg" style="margin-top:10px"></div>
+  </div>
   <div id="main" hidden>
     <div class="card"><label class="who" style="display:block">あなたの名前<input id="who" placeholder="例：山田" autocomplete="off"></label>
-      <p class="note">パスは毎月変更します。登録した ID・パスは在庫ロボのMacだけが開ける形で送るため、この画面には表示されません。</p></div>
-    <div class="card"><h2>OTA</h2><table class="links"><tbody id="links"></tbody></table></div>
-    <div id="list"></div>
+      <p class="note">パスは毎月変更します。ここに保存しても在庫ロボには届きません。ロボが使うパスを変えた時は「在庫調整 → パス更新」からも送ってください。</p></div>
+    <div id="acct"></div>
+    <div class="card"><button id="addrow">行を追加</button></div>
   </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script>
 const SB = window.supabase.createClient('https://ckrxttbnawkclshczsia.supabase.co', 'sb_publishable_aTVhlY0YD-5BBfI03ZNnsg_MzO_vsIe',
   { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false } });
-// 店とOTAの組は DB の invctl_cred_submit が受け付ける15組と同じ
-const STORES = [['nha', '那覇', ['RKT', 'JLN', 'SKT', 'ART', 'RDC']], ['spk', '札幌', ['RKT', 'JLN', 'SKT', 'ART', 'RDC']],
-  ['takh', '高松 HDM', ['RKT', 'JLN']], ['takb', '高松 BUDDICA', ['ART', 'TAB', 'RDC']]];
-const OTA = { RKT: '楽天', JLN: 'じゃらん', SKT: 'skyticket', ART: 'エアトリ', RDC: 'レンタカードットコム', TAB: 'たびらい' };
+// 同じアカウントを使う店をまとめる。t は DB の invctl_cred_submit が受け付ける組
+const HDM3 = o => ({ shops: '那覇・札幌・高松HDM', t: [['nha', o], ['spk', o], ['takh', o]] });
+const HDM2 = o => ({ shops: '那覇・札幌', t: [['nha', o], ['spk', o]] });
+const BDC = o => ({ shops: '高松BUDDICA', t: [['takb', o]] });
+const ROBOT = { 'HANDYMAN|楽天': HDM3('RKT'), 'HANDYMAN|じゃらん': HDM3('JLN'), 'HANDYMAN|スカイチケット': HDM2('SKT'),
+  'HANDYMAN|エアトリ': HDM2('ART'), 'HANDYMAN|レンタカードットコム': HDM2('RDC'), 'HANDYMAN|GoGoout': { shops: '那覇のみ', t: [] },
+  'BUDDICA|エアトリ': BDC('ART'), 'BUDDICA|たびらい': BDC('TAB'), 'BUDDICA|レンタカードットコム': BDC('RDC') };
+// 在庫ロボが複数店分の連続送信を受けられると確認できるまで、保存時の自動送信は止める
+const ROBOT_SEND = false;
 const DONE = ['ok', 'saved', 'saved_unverified'];
 const DUE_DAYS = 30;
 const $ = id => document.getElementById(id);
@@ -49,21 +60,79 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '
 const md = t => new Date(t).toLocaleDateString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric' });
 if (new URLSearchParams(location.search).get('embed')) document.body.classList.add('embed');
 
-// 公開リポジトリのため、ID・パスの値はこのファイルに書かない
-const LINKS = [['オフィシャル_新：予約', 'https://rent-handyman.jp/'], ['オフィシャル_新：管理', 'https://admin.rent-handyman.jp/'],
-  ['スカイチケット', 'https://skyticket.jp/rentacar/client/users/login'], ['じゃらん', 'https://admin.rentacar.jalan.net/'],
-  ['楽天', 'https://admin.cars.travel.rakuten.co.jp/rax/loginForm.do'], ['レンタカードットコム', 'https://www2.web-rentacar.com/admin2/index.asp'],
-  ['エアトリ', 'https://airtrip-rentacar-br-admin.airtrip.jp/login'], ['GoGoout', 'https://gogoout.com/ja/storeAdmin/login']];
-$('links').innerHTML = LINKS.map(([n, u]) => `<tr><td>${esc(n)}</td><td><a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)}</a></td></tr>`).join('');
 
-$('list').innerHTML = STORES.map(([s, name, otas]) => `<div class="card"><h2>${esc(name)}</h2>` + otas.map(o => `
-  <div class="row" data-s="${s}" data-o="${o}">
-    <div class="name">${esc(OTA[o])}<div class="state" id="st-${s}-${o}">確認中</div></div>
-    <label>ID（変わった時だけ）<input class="uid" autocomplete="off" spellcheck="false"></label>
-    <label>新しいパスワード<input class="pw" type="password" autocomplete="new-password" spellcheck="false"></label>
-    <button class="send">更新</button>
+// ID・パスと暗証はこのファイルに書かない。暗証の照合と復号はDB側で行い、暗証は開いている間だけメモリに持つ
+let PIN = '';
+const PIN_ERR = { bad_pin: '暗証番号が違います。', locked: '5回間違えたため、15分後にもう一度お試しください。', not_allowed: 'このログインでは開けません。', not_ready: '準備中です。' };
+function acctRow(a) {
+  const open = a.url ? `<a class="open" href="${esc(a.url)}" target="_blank" rel="noopener noreferrer">開く</a>` : '';
+  const when = a.updated_at ? `${md(a.updated_at)} ${esc(a.updated_by || '')}` : '未入力';
+  const r = ROBOT[a.grp + '|' + a.label] || {};
+  return `<div class="arow" data-id="${a.id ?? ''}" data-grp="${esc(a.grp)}" data-lid="${esc(a.login_id)}" data-lpw="${esc(a.password)}" data-ts="${esc(a.updated_at || '')}">
+    <label>OTA<input class="label" value="${esc(a.label)}" autocomplete="off"${r.t ? ' readonly' : ''}><div class="state">${esc(r.shops || '')}<br>${when}<br><span class="robot"></span></div></label>
+    <label>ID<input class="lid" value="${esc(a.login_id)}" autocomplete="off" spellcheck="false"></label>
+    <label>PAS<input class="lpw" value="${esc(a.password)}" autocomplete="off" spellcheck="false"></label>
+    <label>URL ${open}<input class="lurl" value="${esc(a.url)}" autocomplete="off" spellcheck="false"></label>
+    <button class="save">保存</button>
     <div class="out" style="display:contents"></div>
-  </div>`).join('') + '</div>').join('');
+  </div>`;
+}
+function bindRow(row) { row.querySelector('.save').onclick = () => saveRow(row); }
+function renderAcct(rows) {
+  const grps = [...new Set(rows.map(a => a.grp))];
+  $('acct').innerHTML = grps.map(g => `<div class="card"><h2>${esc(g)}</h2>${rows.filter(a => a.grp === g).map(acctRow).join('')}</div>`).join('');
+  document.querySelectorAll('.arow').forEach(bindRow);
+}
+async function toRobot(targets, lid, lpw) {
+  const k = await SB.rpc('invctl_cred_pubkeys'); if (k.error) throw k.error;
+  if (!k.data.length) throw new Error('ロボの鍵がありません');
+  const ciphers = [];
+  for (const r of k.data) ciphers.push({ host: r.host, cipher: await seal(r.pem, lid ? JSON.stringify({ id: lid, pw: lpw }) : lpw) });
+  for (const [s, o] of targets) {
+    const r = await SB.rpc('invctl_cred_submit', { p_store: s, p_ota: o, p_ciphers: ciphers, p_name: $('who').value.trim() });
+    if (r.error) throw r.error;
+  }
+}
+async function saveRow(row) {
+  const who = $('who').value.trim(), btn = row.querySelector('.save');
+  if (!who) { say(row, '上の欄に名前を入れてください。'); $('who').focus(); return; }
+  if (row.querySelector('.label').value.includes('レンタカードットコム') && (row.querySelector('.lid').value.trim().length > 10 || row.querySelector('.lpw').value.length > 10)) { say(row, 'レンタカードットコムは IDもパスも10文字までです。'); return; }
+  btn.disabled = true;
+  try {
+    const r = await SB.rpc('ota_cfg_save', { p_pin: PIN, p_id: row.dataset.id ? Number(row.dataset.id) : null, p_grp: row.dataset.grp,
+      p_label: row.querySelector('.label').value, p_url: row.querySelector('.lurl').value, p_login_id: row.querySelector('.lid').value,
+      p_password: row.querySelector('.lpw').value, p_name: who, p_expected: row.dataset.ts || null });
+    if (r.error) throw r.error;
+    if (!r.data.ok) throw new Error(PIN_ERR[r.data.error] || (r.data.error === 'stale' ? '他の人が先に更新しました。開き直してください。' : r.data.error === 'bad_value' ? '入力内容を確認してください（URLは https:// から）。' : r.data.error));
+    row.dataset.id = r.data.id; row.dataset.ts = r.data.updated_at;
+    const lid = row.querySelector('.lid').value.trim(), lpw = row.querySelector('.lpw').value;
+    const t = (ROBOT[row.dataset.grp + '|' + row.querySelector('.label').value] || {}).t || [];
+    const changed = lpw !== row.dataset.lpw || lid !== row.dataset.lid;
+    row.dataset.lid = lid; row.dataset.lpw = lpw;
+    if (ROBOT_SEND && t.length && changed && lpw) { await toRobot(t, lid, lpw); say(row, `保存して、${t.length}店分をロボへ送りました。`, true); refresh(); }
+    else say(row, '保存しました。', true);
+  } catch (e) { say(row, '保存できませんでした：' + (e.message || e)); }
+  btn.disabled = false;
+}
+async function unlock() {
+  const pin = $('pin').value; $('unlock').disabled = true; $('lockmsg').innerHTML = '';
+  try {
+    const r = await SB.rpc('ota_cfg_list', { p_pin: pin });
+    if (r.error) throw r.error;
+    if (!r.data.ok) throw new Error(PIN_ERR[r.data.error] || r.data.error);
+    PIN = pin; $('pin').value = ''; renderAcct(r.data.rows);
+    $('lock').hidden = true; $('main').hidden = false; refresh(); setInterval(refresh, 10e3);
+  } catch (e) { $('lockmsg').innerHTML = `<div class="msg ng">${esc(e.message || e)}</div>`; }
+  $('unlock').disabled = false;
+}
+$('unlock').onclick = unlock;
+$('pin').onkeydown = e => { if (e.key === 'Enter') unlock(); };
+$('addrow').onclick = () => {
+  const box = $('acct').querySelector('.card') || $('acct');
+  box.insertAdjacentHTML('beforeend', acctRow({ id: null, grp: 'HANDYMAN', label: '', url: '', login_id: '', password: '' }));
+  bindRow(box.lastElementChild);
+};
+
 
 try { $('who').value = localStorage.getItem('invctl_who') || ''; } catch (e) {}
 $('who').oninput = () => { try { localStorage.setItem('invctl_who', $('who').value); } catch (e) {} };
@@ -76,54 +145,35 @@ async function seal(pem, text) {
 }
 function say(row, t, ok) { row.querySelector('.out').innerHTML = `<div class="msg ${ok ? 'ok' : 'ng'}">${esc(t)}</div>`; }
 
-async function send(row) {
-  const s = row.dataset.s, o = row.dataset.o, who = $('who').value.trim();
-  const uidEl = row.querySelector('.uid'), pwEl = row.querySelector('.pw'), btn = row.querySelector('.send');
-  const uid = uidEl.value.trim(), pw = pwEl.value;
-  if (!who) { say(row, '上の欄に名前を入れてください。'); $('who').focus(); return; }
-  if (!pw) { say(row, '新しいパスワードを入れてください。'); pwEl.focus(); return; }
-  if (uid.length > 64) { say(row, 'IDが長すぎます。'); uidEl.focus(); return; }
-  if (o === 'RDC' && (uid.length > 10 || pw.length > 10)) { say(row, 'レンタカードットコムは IDもパスも10文字までです。'); return; }
-  btn.disabled = true;
-  try {
-    const k = await SB.rpc('invctl_cred_pubkeys'); if (k.error) throw k.error;
-    if (!k.data.length) throw new Error('ロボの鍵がありません');
-    const ciphers = [];
-    for (const r of k.data) ciphers.push({ host: r.host, cipher: await seal(r.pem, uid ? JSON.stringify({ id: uid, pw }) : pw) });
-    const r = await SB.rpc('invctl_cred_submit', { p_store: s, p_ota: o, p_ciphers: ciphers, p_name: who });
-    if (r.error) throw r.error;
-    pwEl.value = ''; uidEl.value = '';
-    say(row, '送りました。左の表示が「更新済み」になれば完了です。', true);
-    refresh();
-  } catch (e) { say(row, '送れませんでした：' + (e.message || e)); }
-  btn.disabled = false;
-}
-document.querySelectorAll('.row').forEach(row => { row.querySelector('.send').onclick = () => send(row); });
 
-function label(rows) {
-  const live = rows.filter(x => x.result !== 'replaced');
-  const last = live[0], okRow = live.find(x => DONE.includes(x.result));
-  const line = [];
-  if (last && !last.result) line.push(`<span class="st wait">${last.taken_at ? 'ログイン確認中' : 'ロボ待ち'}</span>`);
-  else if (last && !DONE.includes(last.result)) line.push(`<span class="st ng">❌ ${esc(last.result === 'ng' ? 'パスが違います' : last.result === 'bad_value' ? '値が不正' : last.result)}</span>`);
-  if (okRow) {
-    const days = Math.floor((Date.now() - new Date(okRow.created_at).getTime()) / 864e5);
-    line.push(days >= DUE_DAYS ? '<span class="st ng">要更新</span>' : '<span class="st ok">更新済み</span>');
-    line.push(`${md(okRow.created_at)}（${days}日前）${esc(okRow.by_name)}`);
-  } else if (!last) line.push('<span class="st ng">要更新</span> 40日以内の記録なし');
-  return line.join(' ');
+// 在庫ロボの状況を1行にまとめる（対象店のうち一番悪い状態を出す）
+function robotLabel(rows, targets) {
+  let parts = [], dates = [];
+  for (const [s, o] of targets) {
+    const live = rows.filter(x => x.store === s && x.ota === o && x.result !== 'replaced');
+    const last = live[0], okRow = live.find(x => DONE.includes(x.result));
+    if (last && !last.result) parts.push('wait');
+    else if (last && !DONE.includes(last.result)) parts.push('ng');
+    else if (!okRow) parts.push('none');
+    if (okRow) dates.push(new Date(okRow.created_at).getTime());
+  }
+  if (parts.includes('ng')) return '<span class="st ng">❌ ロボがログイン失敗</span>';
+  if (parts.includes('wait')) return '<span class="st wait">ロボ確認中</span>';
+  if (parts.includes('none')) return '<span class="st ng">要更新</span>';
+  const days = Math.floor((Date.now() - Math.min(...dates)) / 864e5);
+  return days >= DUE_DAYS ? '<span class="st ng">要更新</span>' : `<span class="st ok">ロボ反映済み</span> ${days}日前`;
 }
 async function refresh() {
   const r = await SB.rpc('invctl_cred_status', { p_store: null }); if (r.error) return;
-  document.querySelectorAll('.row').forEach(row => {
-    const rows = r.data.filter(x => x.store === row.dataset.s && x.ota === row.dataset.o);
-    $(`st-${row.dataset.s}-${row.dataset.o}`).innerHTML = label(rows);
+  document.querySelectorAll('.arow').forEach(row => {
+    const t = (ROBOT[row.dataset.grp + '|' + row.querySelector('.label').value] || {}).t || [];
+    const el = row.querySelector('.robot'); if (el && t.length) el.innerHTML = robotLabel(r.data, t);
   });
 }
 
 (async () => {
   const { data } = await SB.auth.getSession();
   if (!data.session) { $('login').hidden = false; return; }
-  $('main').hidden = false; refresh(); setInterval(refresh, 10e3);
+  $('lock').hidden = false; $('pin').focus();
 })();
 </script></body></html>
