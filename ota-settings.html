@@ -36,7 +36,7 @@ button{border:none;background:#2563eb;color:#fff;border-radius:6px;padding:10px 
   </div>
   <div id="main" hidden>
     <div class="card"><label class="who" style="display:block">あなたの名前<input id="who" placeholder="例：山田" autocomplete="off"></label>
-      <p class="note">パスは毎月変更します。ここに保存しても在庫ロボには届きません。ロボが使うパスを変えた時は「在庫調整 → パス更新」からも送ってください。</p></div>
+      <p class="note">楽天・じゃらん・エアトリ・スカイチケットは毎月初めにパス変更が必要です。ID・PASを変えて保存すると、在庫ロボへ自動で送ります。</p></div>
     <div id="acct"></div>
     <div class="card"><button id="addrow">行を追加</button></div>
   </div>
@@ -46,16 +46,17 @@ button{border:none;background:#2563eb;color:#fff;border-radius:6px;padding:10px 
 const SB = window.supabase.createClient('https://ckrxttbnawkclshczsia.supabase.co', 'sb_publishable_aTVhlY0YD-5BBfI03ZNnsg_MzO_vsIe',
   { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false } });
 // 同じアカウントを使う店をまとめる。t は DB の invctl_cred_submit が受け付ける組
-const HDM3 = o => ({ shops: '那覇・札幌・高松HDM', t: [['nha', o], ['spk', o], ['takh', o]] });
-const HDM2 = o => ({ shops: '那覇・札幌', t: [['nha', o], ['spk', o]] });
+// 在庫ロボのキーチェーンは那覇・札幌・高松HDMで1項目を共有するので、HDMは nha へ1回送れば全店に効く
+const HDM3 = o => ({ shops: '那覇・札幌・高松HDM', t: [['nha', o]] });
+const HDM2 = o => ({ shops: '那覇・札幌', t: [['nha', o]] });
 const BDC = o => ({ shops: '高松BUDDICA', t: [['takb', o]] });
 const ROBOT = { 'HANDYMAN|楽天': HDM3('RKT'), 'HANDYMAN|じゃらん': HDM3('JLN'), 'HANDYMAN|スカイチケット': HDM2('SKT'),
   'HANDYMAN|エアトリ': HDM2('ART'), 'HANDYMAN|レンタカードットコム': HDM2('RDC'), 'HANDYMAN|GoGoout': { shops: '那覇のみ', t: [] },
   'BUDDICA|エアトリ': BDC('ART'), 'BUDDICA|たびらい': BDC('TAB'), 'BUDDICA|レンタカードットコム': BDC('RDC') };
-// 在庫ロボが複数店分の連続送信を受けられると確認できるまで、保存時の自動送信は止める
-const ROBOT_SEND = false;
+// 月初にパス変更が必要なOTA
+const MONTHLY = ['楽天', 'じゃらん', 'エアトリ', 'スカイチケット'];
+const ym = t => new Date(t).toLocaleDateString('ja-JP', { timeZone: 'Asia/Tokyo', year: 'numeric', month: 'numeric' });
 const DONE = ['ok', 'saved', 'saved_unverified'];
-const DUE_DAYS = 30;
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const md = t => new Date(t).toLocaleDateString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric' });
@@ -122,7 +123,7 @@ async function saveRow(row) {
     const t = (ROBOT[row.dataset.grp + '|' + row.querySelector('.label').value] || {}).t || [];
     const changed = lpw !== row.dataset.lpw || lid !== row.dataset.lid;
     row.dataset.lid = lid; row.dataset.lpw = lpw;
-    if (ROBOT_SEND && t.length && changed && lpw) { await toRobot(t, lid, lpw); say(row, `保存して、${t.length}店分をロボへ送りました。`, true); refresh(); }
+    if (t.length && changed && lpw) { await toRobot(t, lid, lpw); say(row, '保存して、在庫ロボへ送りました。', true); refresh(); }
     else say(row, '保存しました。', true);
   } catch (e) { say(row, '保存できませんでした：' + (e.message || e)); }
   btn.disabled = false;
@@ -160,7 +161,7 @@ function say(row, t, ok) { row.querySelector('.out').innerHTML = `<div class="ms
 
 
 // 在庫ロボの状況を1行にまとめる（対象店のうち一番悪い状態を出す）
-function robotLabel(rows, targets) {
+function robotLabel(rows, targets, monthly) {
   let parts = [], dates = [];
   for (const [s, o] of targets) {
     const live = rows.filter(x => x.store === s && x.ota === o && x.result !== 'replaced');
@@ -172,15 +173,16 @@ function robotLabel(rows, targets) {
   }
   if (parts.includes('ng')) return '<span class="st ng">❌ ロボがログイン失敗</span>';
   if (parts.includes('wait')) return '<span class="st wait">ロボ確認中</span>';
-  if (parts.includes('none')) return '<span class="st ng">要更新</span>';
-  const days = Math.floor((Date.now() - Math.min(...dates)) / 864e5);
-  return days >= DUE_DAYS ? '<span class="st ng">要更新</span>' : `<span class="st ok">ロボ反映済み</span> ${days}日前`;
+  if (parts.includes('none')) return monthly ? '<span class="st ng">今月未更新</span>' : '';
+  const first = Math.min(...dates);
+  if (monthly && ym(first) !== ym(Date.now())) return `<span class="st ng">今月未更新</span> 前回 ${md(first)}`;
+  return `<span class="st ok">ロボ反映済み</span> ${md(first)}`;
 }
 async function refresh() {
   const r = await SB.rpc('invctl_cred_status', { p_store: null }); if (r.error) return;
   document.querySelectorAll('.arow').forEach(row => {
-    const t = (ROBOT[row.dataset.grp + '|' + row.querySelector('.label').value] || {}).t || [];
-    const el = row.querySelector('.robot'); if (el && t.length) el.innerHTML = robotLabel(r.data, t);
+    const name = row.querySelector('.label').value, t = (ROBOT[row.dataset.grp + '|' + name] || {}).t || [];
+    const el = row.querySelector('.robot'); if (el && t.length) el.innerHTML = robotLabel(r.data, t, MONTHLY.includes(name));
   });
 }
 
