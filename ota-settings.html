@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>OTA設定</title>
+<style>
+:root{--bg:#f5f7fb;--fg:#0f172a;--mut:#64748b;--line:#cbd5e1;--ok:#166534;--okbg:#dcfce7;--ng:#991b1b;--ngbg:#fee2e2;--wait:#92400e;--waitbg:#fef3c7}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif}
+header{background:#2f3b55;color:#fff;padding:12px 16px}header h1{margin:0;font-size:18px}
+body.embed header{display:none}
+.wrap{max-width:980px;margin:0 auto;padding:12px 16px}
+.card{background:#fff;border:1px solid var(--line);border-radius:8px;padding:14px;margin:0 0 12px}
+h2{font-size:15px;margin:0 0 4px}
+label{font-size:12px;font-weight:700;color:var(--mut)}
+input{display:block;width:100%;margin-top:3px;padding:9px;border:1px solid var(--line);border-radius:6px;font-size:16px;color:var(--fg)}
+button{border:none;background:#2563eb;color:#fff;border-radius:6px;padding:10px 16px;font-size:14px;font-weight:800;cursor:pointer;white-space:nowrap}button:disabled{background:#94a3b8;cursor:default}
+.who{max-width:260px}
+.row{display:grid;grid-template-columns:170px 1fr 1fr auto;gap:10px;align-items:end;padding:12px 0;border-top:1px solid #e2e8f0}
+.name{font-weight:800;font-size:14px;align-self:center}
+.state{margin-top:4px;font-size:12px;font-weight:400;color:var(--mut);line-height:1.5}
+.st{display:inline-block;border-radius:4px;padding:1px 6px;font-weight:800;font-size:12px}.st.ok{background:var(--okbg);color:var(--ok)}.st.ng{background:var(--ngbg);color:var(--ng)}.st.wait{background:var(--waitbg);color:var(--wait)}
+.msg{grid-column:1/-1;padding:8px 10px;border-radius:6px;font-size:13px}.msg.ok{background:var(--okbg);color:var(--ok)}.msg.ng{background:var(--ngbg);color:var(--ng)}
+.note{font-size:12px;color:var(--mut);line-height:1.6;margin:6px 0 0}
+.links{width:100%;border-collapse:collapse;font-size:14px}.links td{padding:8px 4px;border-top:1px solid #e2e8f0;overflow-wrap:anywhere}.links td:first-child{font-weight:700;white-space:nowrap;padding-right:16px}
+@media(max-width:720px){.row{grid-template-columns:1fr}.who{max-width:none}button{width:100%}}
+</style></head><body>
+<header><h1>OTA設定</h1></header>
+<div class="wrap">
+  <div class="card" id="login" hidden><div class="msg ng">業務アプリでログインしてから、もう一度開いてください。</div>
+    <p class="note"><a href="./">業務アプリを開く</a></p></div>
+  <div id="main" hidden>
+    <div class="card"><label class="who" style="display:block">あなたの名前<input id="who" placeholder="例：山田" autocomplete="off"></label>
+      <p class="note">パスは毎月変更します。登録した ID・パスは在庫ロボのMacだけが開ける形で送るため、この画面には表示されません。</p></div>
+    <div class="card"><h2>OTA</h2><table class="links"><tbody id="links"></tbody></table></div>
+    <div id="list"></div>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script>
+const SB = window.supabase.createClient('https://ckrxttbnawkclshczsia.supabase.co', 'sb_publishable_aTVhlY0YD-5BBfI03ZNnsg_MzO_vsIe',
+  { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false } });
+// 店とOTAの組は DB の invctl_cred_submit が受け付ける15組と同じ
+const STORES = [['nha', '那覇', ['RKT', 'JLN', 'SKT', 'ART', 'RDC']], ['spk', '札幌', ['RKT', 'JLN', 'SKT', 'ART', 'RDC']],
+  ['takh', '高松 HDM', ['RKT', 'JLN']], ['takb', '高松 BUDDICA', ['ART', 'TAB', 'RDC']]];
+const OTA = { RKT: '楽天', JLN: 'じゃらん', SKT: 'skyticket', ART: 'エアトリ', RDC: 'レンタカードットコム', TAB: 'たびらい' };
+const DONE = ['ok', 'saved', 'saved_unverified'];
+const DUE_DAYS = 30;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const md = t => new Date(t).toLocaleDateString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric' });
+if (new URLSearchParams(location.search).get('embed')) document.body.classList.add('embed');
+
+// 公開リポジトリのため、ID・パスの値はこのファイルに書かない
+const LINKS = [['オフィシャル_新：予約', 'https://rent-handyman.jp/'], ['オフィシャル_新：管理', 'https://admin.rent-handyman.jp/'],
+  ['スカイチケット', 'https://skyticket.jp/rentacar/client/users/login'], ['じゃらん', 'https://admin.rentacar.jalan.net/'],
+  ['楽天', 'https://admin.cars.travel.rakuten.co.jp/rax/loginForm.do'], ['レンタカードットコム', 'https://www2.web-rentacar.com/admin2/index.asp'],
+  ['エアトリ', 'https://airtrip-rentacar-br-admin.airtrip.jp/login'], ['GoGoout', 'https://gogoout.com/ja/storeAdmin/login']];
+$('links').innerHTML = LINKS.map(([n, u]) => `<tr><td>${esc(n)}</td><td><a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)}</a></td></tr>`).join('');
+
+$('list').innerHTML = STORES.map(([s, name, otas]) => `<div class="card"><h2>${esc(name)}</h2>` + otas.map(o => `
+  <div class="row" data-s="${s}" data-o="${o}">
+    <div class="name">${esc(OTA[o])}<div class="state" id="st-${s}-${o}">確認中</div></div>
+    <label>ID（変わった時だけ）<input class="uid" autocomplete="off" spellcheck="false"></label>
+    <label>新しいパスワード<input class="pw" type="password" autocomplete="new-password" spellcheck="false"></label>
+    <button class="send">更新</button>
+    <div class="out" style="display:contents"></div>
+  </div>`).join('') + '</div>').join('');
+
+try { $('who').value = localStorage.getItem('invctl_who') || ''; } catch (e) {}
+$('who').oninput = () => { try { localStorage.setItem('invctl_who', $('who').value); } catch (e) {} };
+
+const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
+async function seal(pem, text) {
+  const der = Uint8Array.from(atob(pem.replace(/-----[^-]+-----|\s/g, '')), c => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey('spki', der, { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['encrypt']);
+  return b64(await crypto.subtle.encrypt({ name: 'RSA-OAEP' }, key, new TextEncoder().encode(text)));
+}
+function say(row, t, ok) { row.querySelector('.out').innerHTML = `<div class="msg ${ok ? 'ok' : 'ng'}">${esc(t)}</div>`; }
+
+async function send(row) {
+  const s = row.dataset.s, o = row.dataset.o, who = $('who').value.trim();
+  const uidEl = row.querySelector('.uid'), pwEl = row.querySelector('.pw'), btn = row.querySelector('.send');
+  const uid = uidEl.value.trim(), pw = pwEl.value;
+  if (!who) { say(row, '上の欄に名前を入れてください。'); $('who').focus(); return; }
+  if (!pw) { say(row, '新しいパスワードを入れてください。'); pwEl.focus(); return; }
+  if (uid.length > 64) { say(row, 'IDが長すぎます。'); uidEl.focus(); return; }
+  if (o === 'RDC' && (uid.length > 10 || pw.length > 10)) { say(row, 'レンタカードットコムは IDもパスも10文字までです。'); return; }
+  btn.disabled = true;
+  try {
+    const k = await SB.rpc('invctl_cred_pubkeys'); if (k.error) throw k.error;
+    if (!k.data.length) throw new Error('ロボの鍵がありません');
+    const ciphers = [];
+    for (const r of k.data) ciphers.push({ host: r.host, cipher: await seal(r.pem, uid ? JSON.stringify({ id: uid, pw }) : pw) });
+    const r = await SB.rpc('invctl_cred_submit', { p_store: s, p_ota: o, p_ciphers: ciphers, p_name: who });
+    if (r.error) throw r.error;
+    pwEl.value = ''; uidEl.value = '';
+    say(row, '送りました。左の表示が「更新済み」になれば完了です。', true);
+    refresh();
+  } catch (e) { say(row, '送れませんでした：' + (e.message || e)); }
+  btn.disabled = false;
+}
+document.querySelectorAll('.row').forEach(row => { row.querySelector('.send').onclick = () => send(row); });
+
+function label(rows) {
+  const live = rows.filter(x => x.result !== 'replaced');
+  const last = live[0], okRow = live.find(x => DONE.includes(x.result));
+  const line = [];
+  if (last && !last.result) line.push(`<span class="st wait">${last.taken_at ? 'ログイン確認中' : 'ロボ待ち'}</span>`);
+  else if (last && !DONE.includes(last.result)) line.push(`<span class="st ng">❌ ${esc(last.result === 'ng' ? 'パスが違います' : last.result === 'bad_value' ? '値が不正' : last.result)}</span>`);
+  if (okRow) {
+    const days = Math.floor((Date.now() - new Date(okRow.created_at).getTime()) / 864e5);
+    line.push(days >= DUE_DAYS ? '<span class="st ng">要更新</span>' : '<span class="st ok">更新済み</span>');
+    line.push(`${md(okRow.created_at)}（${days}日前）${esc(okRow.by_name)}`);
+  } else if (!last) line.push('<span class="st ng">要更新</span> 40日以内の記録なし');
+  return line.join(' ');
+}
+async function refresh() {
+  const r = await SB.rpc('invctl_cred_status', { p_store: null }); if (r.error) return;
+  document.querySelectorAll('.row').forEach(row => {
+    const rows = r.data.filter(x => x.store === row.dataset.s && x.ota === row.dataset.o);
+    $(`st-${row.dataset.s}-${row.dataset.o}`).innerHTML = label(rows);
+  });
+}
+
+(async () => {
+  const { data } = await SB.auth.getSession();
+  if (!data.session) { $('login').hidden = false; return; }
+  $('main').hidden = false; refresh(); setInterval(refresh, 10e3);
+})();
+</script></body></html>
