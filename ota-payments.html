@@ -44,7 +44,7 @@ tr.tot td{background:var(--nv);color:#fff;font-weight:800;font-size:13.5px}
  店舗<select id="fSt"><option value="">全て</option><option value="nha">🌺那覇</option><option value="spk">❄️札幌</option><option value="tkm">🍜高松</option></select>
  OTA<select id="fOta"><option value="">全て</option></select>
  状態<select id="fKind"><option value="">全て</option><option value="入金済">入金済</option><option value="予定">予定(OTA精算)</option></select>
- <span style="border-left:1px solid #e2e8f0;padding-left:8px">OTA手数料<input id="fee" type="number" value="15" style="width:50px" min="0" max="50">% <span style="font-size:11px;color:#94a3b8">(自社0%)</span></span>
+ <span style="border-left:1px solid #e2e8f0;padding-left:8px">率が未登録のOTAの手数料<input id="fee" type="number" value="15" style="width:50px" min="0" max="50">%</span>
  <span style="border-left:1px solid #e2e8f0;padding-left:8px">単位<select id="unit"><option value="yen">円(正確)</option><option value="man1">万(概算)</option></select></span>
  <button id="rl" style="margin-left:auto;background:var(--ac);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-weight:700;cursor:pointer">🔄更新</button>
 </div>
@@ -146,19 +146,32 @@ function rakCouponMon(pm){const rm=_addMon(pm,-3);let t=0;(COUPON||[]).forEach(r
 function rakFeeMon(rk){const a=(RAK_ACT||{})[rk];if(a!=null&&a!=="")return +a;return Math.round(_otaGrossMon("楽天",rk)*(_rakRate()/100))+rakCouponMon(rk);} // =システム利用料(売上×14.3%)+事業者クーポン
 function jlnFeeMon(rk){const a=(JLN_ACT||{})[rk];if(a!=null&&a!=="")return +a;return Math.round(_otaGrossMon("じゃらん",_addMon(rk,-2))*(_jlnRate()/100));} // =送客手数料(売上×12.4%)
 function val(r){return r.gross;}
+// 2026-11-04 表の定義を統一：予約金額＝予約の合計／入金額＝口座に入る額（楽天・じゃらん満額、他OTAは振込前の手数料を引いた額）
+// 請求で払う手数料＝楽天・じゃらんの請求書（支払月・店別。請求書の実額があればそれを店の予約金額で按分）／手元に残る額＝入金額−請求で払う手数料
+function _keyMonths(rk){if(/^\d{4}-\d{2}$/.test(rk))return [rk];const m=String(rk).match(/^(\d{4}) (\d+)-(\d+)$/);if(!m)return [];const y=+m[1],a=+m[2];return [0,1,2].map(i=>y+"-"+String(a+i).padStart(2,"0"));}
+function _grossMonS(ota,m,ss){let t=0;(RAW||[]).forEach(r=>{if(r.ota===ota&&r.pay_month===m&&r.kind!=="未入金"&&(!ss||ss.includes(r.store)))t+=r.gross||0;});return t;}
+function rakFeeMonS(m,ss){if(!ss)return rakFeeMon(m);const a=(RAK_ACT||{})[m];if(a!=null&&a!==""){const all=_grossMonS("楽天",m,null);return all?(+a)*_grossMonS("楽天",m,ss)/all:0;}
+ const rm=_addMon(m,-3);let cp=0;(COUPON||[]).forEach(r=>{if(r.ret_month===rm&&ss.includes(r.store))cp+=+r.coupon||0;});return Math.round(_grossMonS("楽天",m,ss)*(_rakRate()/100))+cp;}
+function jlnFeeMonS(m,ss){if(!ss)return jlnFeeMon(m);const sm=_addMon(m,-2),a=(JLN_ACT||{})[m];if(a!=null&&a!==""){const all=_grossMonS("じゃらん",sm,null);return all?(+a)*_grossMonS("じゃらん",sm,ss)/all:0;}return Math.round(_grossMonS("じゃらん",sm,ss)*(_jlnRate()/100));}
+function _ssSel(){const s=document.getElementById("fSt").value;return s?[s]:null;}
+function _ssOf(rows){const u=[...new Set(rows.map(r=>r.store))];return u.length>=3?null:u;}
+// rk=月 or 四半期。ss=店(null=3店)。otas省略時は上の「OTA」絞り込みに従う
+function billFee(rk,ss,otas){const fo=document.getElementById("fOta").value;const want=o=>otas?otas.includes(o):(!fo||fo===o);let t=0;_keyMonths(rk).forEach(m=>{if(want("楽天"))t+=rakFeeMonS(m,ss);if(want("じゃらん"))t+=jlnFeeMonS(m,ss);});return t;}
+// 期間全体の請求手数料（じゃらんは返却+2ヶ月に払うので、表の月＋2ヶ月先まで数える）
+function billFeeAll(months,ss,otas){const ms=new Set();months.forEach(m=>{if(/^\d{4}-\d{2}$/.test(m)){ms.add(m);ms.add(_addMon(m,1));ms.add(_addMon(m,2));}});let t=0;ms.forEach(m=>t+=billFee(m,ss,otas));return t;}
 function filtered(){const s=document.getElementById("fSt").value,o=document.getElementById("fOta").value,k=document.getElementById("fKind").value;
  return RAW.filter(r=>(!s||r.store===s)&&(!o||r.ota===o)&&(!k||r.kind===k)&&(r.kind==="未入金"||(r.pay_month&&r.pay_month>OLD_UNTIL)));}
 function kchip(k){const c=k==="入金済"?"k-in":k==="予定"?"k-yo":"k-mi";return '<span class="chip '+c+'">'+k+'</span>';}
 function agg(rows,keyfn){const m={};rows.forEach(r=>{const k=keyfn(r);(m[k]=m[k]||{cnt:0,gross:0,net:0,mi:0});m[k].cnt+=r.cnt;if(r.kind==="未入金"){m[k].mi+=r.gross;}else{m[k].gross+=r.gross;m[k].net+=net(r);}});return m;}
-function cards(){const f=filtered();let g=0,nt=0,mi=0,c=0,cm=0;
+function cards(){const f=filtered();let g=0,nt=0,mi=0,c=0,cm=0;const _ms=[...new Set(f.filter(r=>r.kind!=="未入金").map(r=>r.pay_month))];const bfT=billFeeAll(_ms,_ssSel());
  f.forEach(r=>{c+=r.cnt;if(r.kind==="未入金"){mi+=r.gross;}else{g+=r.gross;nt+=net(r);}});cm=g-nt;
  let gy=0;Object.keys(GYOMU||{}).forEach(k=>{const o=GYOMU[k]||{};gy+=(+o.a||0)+(+o.b||0);});
  const cU=n=>UNIT==="yen"?yen(n):cM(n);
  document.getElementById("cards").innerHTML=
- card("合計金額(グロス)",cU(g),c+"件・15%引く前","#1e3a8a")+
- card("手数料",cU(cm),"OTA "+document.getElementById("fee").value+"%控除・HP0%","#dc2626")+
- card("最終金額(手取り)",cU(nt),"OTA＋自社の手取り","#16a34a")+
- card("総合計(業務委託込)",cU(nt+gy),"手取り＋業務委託"+(gy?"("+cU(gy)+")":""),"#7c3aed")+
+ card("予約金額",cU(g),c+"件（OTA＋自社）","#1e3a8a")+
+ card("入金額",cU(nt),"口座に入る額（エアトリ等は振込前の手数料"+cU(cm)+"を引いた額）","#2563eb")+
+ card("請求で払う手数料",cU(bfT),"楽天・じゃらんの請求書","#dc2626")+
+ card("手元に残る額",cU(nt-bfT),"入金額−請求で払う手数料"+(gy?"／業務委託を足すと"+cU(nt-bfT+gy):""),"#16a34a")+
  card("🔴未入金",cU(mi),"じゃらん未払い","#b45309");}
 const card=(l,v,s,c)=>'<div class="card" style="border-top-color:'+c+'"><div class="l">'+l+'</div><div class="v mono">'+v+'</div><div class="s">'+s+'</div></div>';
 function viewMonth(){const f=filtered().filter(r=>r.kind!=="未入金");
@@ -171,13 +184,13 @@ function viewMonth(){const f=filtered().filter(r=>r.kind!=="未入金");
   h+='<div class="sec" style="border:1px solid #fecaca"><h2 style="background:#fef2f2;color:#991b1b">🔴 未入金（じゃらん未払い） 合計 '+yen(g)+' <span class=badge>'+c+'件</span></h2><div class="note" style="background:#fff;border:none">'+stores.filter(s=>st[s]).map(s=>STN[s]+' '+yen(st[s])).join('　／　')+'</div></div>';}
  // 全月グロス
  const gTot=f.reduce((s,r)=>s+val(r),0);
- h+='<div class="sec"><div class="note" style="background:#eff6ff;border:none;font-size:12.5px"><b>総額 '+yen(gTot)+'</b>（'+months.length+'ヶ月分・売上グロス）</div></div>';
+ h+='<div class="sec"><div class="note" style="background:#eff6ff;border:none;font-size:12.5px"><b>予約金額 '+yen(gTot)+'</b>（'+months.length+'ヶ月分）</div></div>';
  months.forEach(mn=>{
   const rows=f.filter(r=>r.pay_month===mn);
-  const total=rows.reduce((s,r)=>s+val(r),0),cnt=rows.reduce((s,r)=>s+r.cnt,0);
-  const om={};rows.forEach(r=>{(om[r.ota]=om[r.ota]||{cnt:0,net:0,kind:r.kind,st:{}});om[r.ota].cnt+=r.cnt;om[r.ota].net+=val(r);om[r.ota].st[r.store]=(om[r.ota].st[r.store]||0)+val(r);});
+  const total=rows.reduce((s,r)=>s+net(r),0),cnt=rows.reduce((s,r)=>s+r.cnt,0),bfM=billFee(mn,_ssSel());
+  const om={};rows.forEach(r=>{(om[r.ota]=om[r.ota]||{cnt:0,net:0,kind:r.kind,st:{}});om[r.ota].cnt+=r.cnt;om[r.ota].net+=net(r);om[r.ota].st[r.store]=(om[r.ota].st[r.store]||0)+net(r);});
   const otas=OTAORD.filter(o=>om[o]);
-  h+='<div class="sec"><h2>📅 '+mn+' ｜ 入金 <b style="color:#16a34a">'+yen(total)+'</b> <span class=badge>'+cnt+'件</span></h2><div class="ov"><table><thead><tr><th>どこから（OTA）</th><th>種別</th><th>件数</th><th>🌺那覇</th><th>❄️札幌</th><th>🍜高松</th><th>実入金</th></tr></thead><tbody>';
+  h+='<div class="sec"><h2>📅 '+mn+' ｜ 入金額 <b style="color:#1d4ed8">'+yen(total)+'</b>'+(bfM?'　請求で払う手数料 <b style="color:#dc2626">-'+yen(bfM)+'</b>　手元に残る額 <b style="color:#16a34a">'+yen(total-bfM)+'</b>':'')+' <span class=badge>'+cnt+'件</span></h2><div class="ov"><table><thead><tr><th>どこから（OTA）</th><th>種別</th><th>件数</th><th>🌺那覇</th><th>❄️札幌</th><th>🍜高松</th><th>入金額</th></tr></thead><tbody>';
   otas.forEach(o=>{const v=om[o];h+='<tr><td>'+o+'</td><td>'+kchip(v.kind)+'</td><td class="mono">'+v.cnt+'</td><td class="mono">'+(v.st.nha?yen(v.st.nha):'·')+'</td><td class="mono">'+(v.st.spk?yen(v.st.spk):'·')+'</td><td class="mono">'+(v.st.tkm?yen(v.st.tkm):'·')+'</td><td class="mono" style="font-weight:700">'+yen(v.net)+'</td></tr>';});
   h+='<tr class="tot"><td>総額</td><td></td><td class="mono">'+cnt+'</td>';
   stores.forEach(s=>{const sv=rows.filter(r=>r.store===s).reduce((a,r)=>a+net(r),0);h+='<td class="mono">'+(sv?yen(sv):'·')+'</td>';});
@@ -185,10 +198,12 @@ function viewMonth(){const f=filtered().filter(r=>r.kind!=="未入金");
  document.getElementById("body").innerHTML=h;}
 function viewGroup(keyfn,label,order){const f=filtered();const m=agg(f,keyfn);
  let ks=Object.keys(m);if(order)ks=order.filter(k=>m[k]);else ks.sort();
- let h='<div class="sec"><h2>'+label+'</h2><div class="ov"><table><thead><tr><th>'+label.replace(/^.. /,'')+'</th><th>件数</th><th>グロス売上</th><th>手数料</th><th>実入金</th><th>🔴未入金</th></tr></thead><tbody>';
- let tg=0,tn=0,tc=0,tm=0;ks.forEach(k=>{const v=m[k];tg+=v.gross;tn+=v.net;tc+=v.cnt;tm+=v.mi;
-  h+='<tr><td>'+(STN[k]||k)+'</td><td class="mono">'+v.cnt+'</td><td class="mono">'+yen(v.gross)+'</td><td class="mono" style="color:#dc2626">-'+yen(v.gross-v.net)+'</td><td class="mono" style="font-weight:700">'+yen(v.net)+'</td><td class="mono" style="color:#b45309">'+(v.mi?yen(v.mi):"—")+'</td></tr>';});
- h+='<tr class="tot"><td>グロス合計</td><td class="mono">'+tc+'</td><td class="mono">'+yen(tg)+'</td><td class="mono">-'+yen(tg-tn)+'</td><td class="mono">'+yen(tn)+'</td><td class="mono">'+(tm?yen(tm):"—")+'</td></tr>';
+ let h='<div class="sec"><h2>'+label+'</h2><div class="ov"><table><thead><tr><th>'+label.replace(/^.. /,'')+'</th><th>件数</th><th>予約金額</th><th>入金額</th><th>請求で払う手数料<br><span style="font-size:9px">楽天・じゃらん</span></th><th>手元に残る額</th><th>🔴未入金</th></tr></thead><tbody>';
+ const _ms=[...new Set(f.filter(r=>r.kind!=="未入金").map(r=>r.pay_month))],_ss=_ssSel();
+ const bfOf=k=>(k==="楽天"||k==="じゃらん")?billFeeAll(_ms,_ss,[k]):(STN[k]?billFeeAll(_ms,[k]):0);
+ let tg=0,tn=0,tc=0,tm=0,tb=0;ks.forEach(k=>{const v=m[k],bf=bfOf(k);tg+=v.gross;tn+=v.net;tc+=v.cnt;tm+=v.mi;tb+=bf;
+  h+='<tr><td>'+(STN[k]||k)+'</td><td class="mono">'+v.cnt+'</td><td class="mono">'+yen(v.gross)+'</td><td class="mono" style="font-weight:700;color:#1d4ed8">'+yen(v.net)+'</td><td class="mono" style="color:#dc2626">'+(bf?'-'+yen(bf):'·')+'</td><td class="mono" style="font-weight:700;color:#166534">'+yen(v.net-bf)+'</td><td class="mono" style="color:#b45309">'+(v.mi?yen(v.mi):"—")+'</td></tr>';});
+ h+='<tr class="tot"><td>合計</td><td class="mono">'+tc+'</td><td class="mono">'+yen(tg)+'</td><td class="mono">'+yen(tn)+'</td><td class="mono">'+(tb?'-'+yen(tb):'·')+'</td><td class="mono">'+yen(tn-tb)+'</td><td class="mono">'+(tm?yen(tm):"—")+'</td></tr>';
  h+='</tbody></table></div></div>';document.getElementById("body").innerHTML=h;}
 const mrow=r=>({key:r.pay_month,lab:r.pay_month,sort:r.pay_month});
 function qrow(r){const p=r.pay_month.split("-"),y=+p[0],mo=+p[1];const q=mo>=10?"10-12":mo<=3?"1-3":mo<=6?"4-6":"7-9";const sm=mo>=10?"-10":mo<=3?"-01":mo<=6?"-04":"-07";return{key:y+" "+q,lab:y+"年 "+q+"月",sort:y+sm};}
@@ -198,37 +213,39 @@ function matrixView(getCol,colOrder,lab,title,rowFn,extra,gy,compact){rowFn=rowF
  const rowsK=Object.keys(rmeta).sort((a,b)=>rmeta[a].sort<rmeta[b].sort?-1:rmeta[a].sort>rmeta[b].sort?1:0);
  const cell={},rowG={},rowN={},colG={};
  f.forEach(r=>{const rk=rowFn(r).key,c=getCol(r);cell[rk+"|"+c]=(cell[rk+"|"+c]||0)+r.gross;rowG[rk]=(rowG[rk]||0)+r.gross;rowN[rk]=(rowN[rk]||0)+net(r);colG[c]=(colG[c]||0)+r.gross;});
+ const rowK={};Object.keys(rowN).forEach(rk=>{rowK[rk]=rowN[rk]-billFee(rk,_ssSel());}); // 差引用＝入金額−請求で払う手数料
  const sumRow=(rk,keys)=>keys.reduce((a,k)=>a+(cell[rk+"|"+k]||0),0);
  const cur=rowFn({pay_month:new Date().toISOString().slice(0,7)}).key,hcol=(rowFn===qrow?"入金四半期":"入金月");
- let h='<div class="sec"><h2>'+title+' <span class="badge">単位:万円／OTA列=売上</span></h2><div class="ov'+(compact?' cmp':'')+'"><table><thead><tr><th>'+hcol+'</th>';
+ let h='<div class="sec"><h2>'+title+' <span class="badge">単位:万円／OTA列=予約金額</span></h2><div class="ov'+(compact?' cmp':'')+'"><table><thead><tr><th>'+hcol+'</th>';
  cols.forEach(c=>h+='<th>'+lab(c)+'</th>');
  extra.forEach(e=>h+='<th style="background:'+(e.color||'#475569')+';color:#fff">'+e.lab+'</th>');
  if(gyOn)h+='<th style="background:#7c3aed;color:#fff">業務委託(B)</th><th style="background:#7c3aed;color:#fff">業務委託(A)</th>';
- h+='<th style="background:#166534;color:#fff">差引(手取り)</th></tr></thead><tbody>';
+ h+='<th style="background:#166534;color:#fff">差引(手元)</th></tr></thead><tbody>';
  const isMonth=(rowFn===mrow);
  const oldKeys=isMonth?rowsK.filter(k=>k<=OLD_UNTIL):[];
  const showKeys=isMonth?rowsK.filter(k=>k>OLD_UNTIL):rowsK;
- const rowHtml=(rk,cls)=>{const hi=rk===cur,g=rowG[rk]||0,n=rowN[rk]||0;let x='<tr'+(cls?' class="'+cls+'" style="display:none"':(hi?' style="background:#fef9c3"':''))+'><td><b>'+rmeta[rk].lab+'</b>'+((hi&&!cls)?' <span class="badge" style="background:#facc15;color:#713f12">今</span>':'')+'</td>';
+ const rowHtml=(rk,cls)=>{const hi=rk===cur,g=rowG[rk]||0,n=rowK[rk]||0;let x='<tr'+(cls?' class="'+cls+'" style="display:none"':(hi?' style="background:#fef9c3"':''))+'><td><b>'+rmeta[rk].lab+'</b>'+((hi&&!cls)?' <span class="badge" style="background:#facc15;color:#713f12">今</span>':'')+'</td>';
   cols.forEach(c=>{const v=cell[rk+"|"+c]||0;x+='<td class="mono">'+(v?_M(v):'<span style="color:#d1d5db">–</span>')+'</td>';});
   extra.forEach(e=>{const ev=e.calc?e.calc(rk,sumRow,rowN[rk]||0):e.keys.reduce((a,k)=>a+(cell[rk+"|"+k]||0),0);const _c=e.color?'color:'+e.color+';':'';x+='<td class="mono" style="font-weight:700;background:#f8fafc;'+_c+'">'+(ev?(e.neg?'-'+_M(ev):_M(ev)):'·')+'</td>';});
   let _ga=0,_gb=0;
   if(gyOn){const gy=GYOMU[rk]||{};_gb=+gy.b||0;_ga=+gy.a||0;
    x+='<td style="padding:2px;background:#faf5ff"><input data-gy="b" data-ym="'+rk+'" value="'+(gy.b||"")+'" inputmode="numeric" placeholder="円" style="width:80px;text-align:right;border:1px solid #ddd6fe;border-radius:4px;padding:2px 4px;font-size:11px"></td><td style="padding:2px;background:#faf5ff"><input data-gy="a" data-ym="'+rk+'" value="'+(gy.a||"")+'" inputmode="numeric" placeholder="円" style="width:80px;text-align:right;border:1px solid #ddd6fe;border-radius:4px;padding:2px 4px;font-size:11px"></td>';}
   x+='<td class="mono" id="dr_'+rk+'" style="font-weight:800;background:#f0fdf4;color:#166534">'+_M(n+_ga+_gb)+'</td></tr>';return x;};
- if(oldKeys.length){const og=oldKeys.reduce((a,k)=>a+(rowG[k]||0),0),on=oldKeys.reduce((a,k)=>a+(rowN[k]||0),0);
+ if(oldKeys.length){const og=oldKeys.reduce((a,k)=>a+(rowG[k]||0),0),on=oldKeys.reduce((a,k)=>a+(rowK[k]||0),0);
   const oga=gyOn?oldKeys.reduce((a,k)=>a+(+(GYOMU[k]||{}).a||0),0):0,ogb=gyOn?oldKeys.reduce((a,k)=>a+(+(GYOMU[k]||{}).b||0),0):0;
   const _gyOld=gyOn?('<td class="mono" id="gyb_old">'+(ogb?_M(ogb):'·')+'</td><td class="mono" id="gya_old">'+(oga?_M(oga):'·')+'</td>'):'';
   h+='<tr data-toggle-old style="cursor:pointer;background:#eef2f7"><td colspan="'+(cols.length+1+extra.length)+'"><span class="oldtri">▶</span> <b>過去 '+oldKeys[0]+'〜'+oldKeys[oldKeys.length-1]+'</b> <span class="badge">'+oldKeys.length+'ヶ月・タップで開閉</span></td>'+_gyOld+'<td class="mono" id="dr_old" style="font-weight:800;background:#f0fdf4;color:#166534">'+_M(on+oga+ogb)+'</td></tr>';
   oldKeys.forEach(rk=>h+=rowHtml(rk,"oldrow"));}
  showKeys.forEach(rk=>h+=rowHtml(rk,""));
- const gT=Object.values(rowG).reduce((a,b)=>a+b,0),nT=Object.values(rowN).reduce((a,b)=>a+b,0);
+ const gT=Object.values(rowG).reduce((a,b)=>a+b,0),nT=Object.values(rowK).reduce((a,b)=>a+b,0);
  const gyaT=gyOn?rowsK.reduce((a,rk)=>a+(+(GYOMU[rk]||{}).a||0),0):0,gybT=gyOn?rowsK.reduce((a,rk)=>a+(+(GYOMU[rk]||{}).b||0),0):0;
- h+='<tr class="tot"><td>合計</td>';cols.forEach(c=>h+='<td class="mono">'+_M(colG[c]||0)+'</td>');extra.forEach(e=>{const et=e.calc?rowsK.reduce((a,rk)=>a+e.calc(rk,sumRow),0):rowsK.reduce((a,rk)=>a+e.keys.reduce((b,k)=>b+(cell[rk+"|"+k]||0),0),0);const _c=e.color?'color:'+e.color+';':'';h+='<td class="mono" style="'+_c+'">'+(et?(e.neg?'-'+_M(et):_M(et)):'·')+'</td>';});if(gyOn)h+='<td class="mono" id="gyb_tot">'+(gybT?_M(gybT):'·')+'</td><td class="mono" id="gya_tot">'+(gyaT?_M(gyaT):'·')+'</td>';h+='<td class="mono" id="dr_tot">'+_M(nT+gyaT+gybT)+'</td></tr>';
- window._MX=gyOn?{rowN:rowN,nT:nT,rowsK:rowsK,oldKeys:oldKeys}:null;
+ h+='<tr class="tot"><td>合計</td>';cols.forEach(c=>h+='<td class="mono">'+_M(colG[c]||0)+'</td>');extra.forEach(e=>{const et=e.calc?rowsK.reduce((a,rk)=>a+e.calc(rk,sumRow,rowN[rk]||0),0):rowsK.reduce((a,rk)=>a+e.keys.reduce((b,k)=>b+(cell[rk+"|"+k]||0),0),0);const _c=e.color?'color:'+e.color+';':'';h+='<td class="mono" style="'+_c+'">'+(et?(e.neg?'-'+_M(et):_M(et)):'·')+'</td>';});if(gyOn)h+='<td class="mono" id="gyb_tot">'+(gybT?_M(gybT):'·')+'</td><td class="mono" id="gya_tot">'+(gyaT?_M(gyaT):'·')+'</td>';h+='<td class="mono" id="dr_tot">'+_M(nT+gyaT+gybT)+'</td></tr>';
+ window._MX=gyOn?{rowN:rowK,nT:nT,rowsK:rowsK,oldKeys:oldKeys}:null;
  h+='</tbody></table></div></div>';document.getElementById("body").innerHTML=h;}
 const OTA_CH=OTAORD.filter(o=>!SELF.includes(o));
-// OTA残高＝手取り合計(rn)−自社(自社は手数料0)＝OTA別実効率で控除後の実入金。OTA手数料＝OTAグロス−OTA残高。
-const otaExtra=[{lab:"OTA合計",keys:OTA_CH,color:"#475569"},{lab:"OTA手数料",calc:(rk,sum,rn)=>sum(rk,OTA_CH)-(rn-sum(rk,SELF)),neg:true,color:"#b91c1c"},{lab:"🟥楽天手数料<br><span style='font-size:9px'>支払月/別払</span>",calc:(rk)=>rakFeeMon(rk),neg:true,color:"#be123c"},{lab:"🟩じゃらん手数料<br><span style='font-size:9px'>支払月/別払</span>",calc:(rk)=>jlnFeeMon(rk),neg:true,color:"#15803d"},{lab:"OTA残高",calc:(rk,sum,rn)=>rn-sum(rk,SELF),color:"#166534"},{lab:"自社合計",keys:SELF,color:"#0891b2"}];
+// 右側の列（全表共通の定義）：予約金額／入金額（口座に入る額）／請求で払う手数料（楽天・じゃらん）／手元に残る額
+const _BF_LAB="請求で払う手数料<br><span style='font-size:9px'>楽天・じゃらん</span>";
+const otaExtra=[{lab:"予約金額",keys:OTA_CH,color:"#475569"},{lab:"入金額",calc:(rk,sum,rn)=>rn-sum(rk,SELF),color:"#1d4ed8"},{lab:_BF_LAB,calc:(rk)=>billFee(rk,_ssSel()),neg:true,color:"#b91c1c"},{lab:"手元に残る額",calc:(rk,sum,rn)=>rn-sum(rk,SELF)-billFee(rk,_ssSel()),color:"#166534"},{lab:"自社合計",keys:SELF,color:"#0891b2"}];
 function viewMatrix(){matrixView(r=>r.ota,OTAORD,c=>c,"📅 月ごとの入金（OTA別・単位：万円）",mrow,otaExtra);}
 function viewQuarter(){matrixView(r=>r.ota,OTAORD,c=>c,"🗓 四半期ごとの入金（10-12/1-3/4-6/7-9・OTA別・単位：万円）",qrow);}
 const stSplit=r=>r.store+"|"+(SELF.includes(r.ota)?"HP":"OTA");
@@ -236,7 +253,7 @@ const stSplitOrder=["nha|OTA","nha|HP","spk|OTA","spk|HP","tkm|OTA","tkm|HP"];
 const stSplitLab=c=>{const p=c.split("|");return STN[p[0]]+'<br><span style="font-size:10px;color:'+(p[1]==="HP"?"#0891b2":"#94a3b8")+'">'+(p[1]==="HP"?"自社":"OTA")+'</span>';};
 const _feeR=()=>(Number(document.getElementById("fee").value)||0)/100;
 const OTA_K=["nha|OTA","spk|OTA","tkm|OTA"],SELF_K=["nha|HP","spk|HP","tkm|HP"];
-const stExtra=[{lab:"🌺那覇計",keys:["nha|OTA","nha|HP"],color:"#be185d"},{lab:"❄️札幌計",keys:["spk|OTA","spk|HP"],color:"#0369a1"},{lab:"🍜高松計",keys:["tkm|OTA","tkm|HP"],color:"#b45309"},{lab:"OTA合計",keys:OTA_K,color:"#475569"},{lab:"OTA手数料",calc:(rk,sum,rn)=>sum(rk,OTA_K)-(rn-sum(rk,SELF_K)),neg:true,color:"#b91c1c"},{lab:"🟥楽天手数料<br><span style='font-size:9px'>支払月/別払</span>",calc:(rk)=>rakFeeMon(rk),neg:true,color:"#be123c"},{lab:"🟩じゃらん手数料<br><span style='font-size:9px'>支払月/別払</span>",calc:(rk)=>jlnFeeMon(rk),neg:true,color:"#15803d"},{lab:"OTA残高",calc:(rk,sum,rn)=>rn-sum(rk,SELF_K),color:"#166534"},{lab:"自社合計",keys:SELF_K,color:"#0891b2"}];
+const stExtra=[{lab:"🌺那覇計",keys:["nha|OTA","nha|HP"],color:"#be185d"},{lab:"❄️札幌計",keys:["spk|OTA","spk|HP"],color:"#0369a1"},{lab:"🍜高松計",keys:["tkm|OTA","tkm|HP"],color:"#b45309"},{lab:"予約金額",keys:OTA_K,color:"#475569"},{lab:"入金額",calc:(rk,sum,rn)=>rn-sum(rk,SELF_K),color:"#1d4ed8"},{lab:_BF_LAB,calc:(rk)=>billFee(rk,_ssSel()),neg:true,color:"#b91c1c"},{lab:"手元に残る額",calc:(rk,sum,rn)=>rn-sum(rk,SELF_K)-billFee(rk,_ssSel()),color:"#166534"},{lab:"自社合計",keys:SELF_K,color:"#0891b2"}];
 function viewMatrixSt(){matrixView(stSplit,stSplitOrder,stSplitLab,"🏬 月ごとの入金（店舗×OTA/自社・単位：万円・1画面）",mrow,stExtra,true,true);}
 function viewQuarterSt(){matrixView(stSplit,stSplitOrder,stSplitLab,"🗓 四半期ごとの入金（店舗×OTA/自社・単位：万円）",qrow,stExtra);}
 function otaMonthTable(rows,title){
@@ -244,12 +261,13 @@ function otaMonthTable(rows,title){
  const cell={},rowG={},rowN={},colG={};
  rows.forEach(r=>{cell[r.ota+"|"+r.pay_month]=(cell[r.ota+"|"+r.pay_month]||0)+r.gross;rowG[r.ota]=(rowG[r.ota]||0)+r.gross;rowN[r.ota]=(rowN[r.ota]||0)+net(r);colG[r.pay_month]=(colG[r.pay_month]||0)+r.gross;});
  const thisM=new Date().toISOString().slice(0,7);
- let h='<div class="sec"><h2>'+title+'<span class="badge">万円／月列=売上</span></h2><div class="ov"><table><thead><tr><th>OTA＼入金月</th>';
+ let h='<div class="sec"><h2>'+title+'<span class="badge">万円／月列=予約金額</span></h2><div class="ov"><table><thead><tr><th>OTA＼入金月</th>';
  months.forEach(m=>h+='<th'+(m===thisM?' style="background:#fef9c3"':'')+'>'+m.slice(2)+'</th>');
- h+='<th style="background:#1e3a8a;color:#fff">合計金額</th><th style="background:#b91c1c;color:#fff">手数料</th><th style="background:#166534;color:#fff">最終金額(手取り)</th></tr></thead><tbody>';
- otas.forEach(o=>{const g=rowG[o]||0,n=rowN[o]||0;h+='<tr><td><b>'+o+'</b></td>';months.forEach(m=>{const v=cell[o+"|"+m]||0;h+='<td class="mono">'+(v?man(v):'<span style="color:#e2e8f0">–</span>')+'</td>';});h+='<td class="mono" style="font-weight:800;background:#eff6ff;color:#1e3a8a">'+man(g)+'</td><td class="mono" style="color:#b91c1c">-'+man(g-n)+'</td><td class="mono" style="font-weight:800;background:#f0fdf4;color:#166534">'+man(n)+'</td></tr>';});
- const gT=Object.values(rowG).reduce((a,b)=>a+b,0),nT=Object.values(rowN).reduce((a,b)=>a+b,0);
- h+='<tr class="tot"><td>計</td>';months.forEach(m=>h+='<td class="mono">'+man(colG[m]||0)+'</td>');h+='<td class="mono">'+man(gT)+'</td><td class="mono">-'+man(gT-nT)+'</td><td class="mono">'+man(nT)+'</td></tr>';
+ h+='<th style="background:#475569;color:#fff">予約金額</th><th style="background:#1d4ed8;color:#fff">入金額</th><th style="background:#b91c1c;color:#fff">'+_BF_LAB+'</th><th style="background:#166534;color:#fff">手元に残る額</th></tr></thead><tbody>';
+ const _ss=_ssOf(rows),bfO={};otas.forEach(o=>{bfO[o]=(o==="楽天"||o==="じゃらん")?billFeeAll(months,_ss,[o]):0;});
+ otas.forEach(o=>{const g=rowG[o]||0,n=rowN[o]||0,bf=bfO[o];h+='<tr><td><b>'+o+'</b></td>';months.forEach(m=>{const v=cell[o+"|"+m]||0;h+='<td class="mono">'+(v?man(v):'<span style="color:#e2e8f0">–</span>')+'</td>';});h+='<td class="mono" style="font-weight:700;color:#475569">'+man(g)+'</td><td class="mono" style="font-weight:700;color:#1d4ed8">'+man(n)+'</td><td class="mono" style="color:#b91c1c">'+(bf?'-'+man(bf):'·')+'</td><td class="mono" style="font-weight:800;background:#f0fdf4;color:#166534">'+man(n-bf)+'</td></tr>';});
+ const gT=Object.values(rowG).reduce((a,b)=>a+b,0),nT=Object.values(rowN).reduce((a,b)=>a+b,0),bT=Object.values(bfO).reduce((a,b)=>a+b,0);
+ h+='<tr class="tot"><td>計</td>';months.forEach(m=>h+='<td class="mono">'+man(colG[m]||0)+'</td>');h+='<td class="mono">'+man(gT)+'</td><td class="mono">'+man(nT)+'</td><td class="mono">'+(bT?'-'+man(bT):'·')+'</td><td class="mono">'+man(nT-bT)+'</td></tr>';
  h+='</tbody></table></div></div>';return h;}
 function viewOtaMonth(){const f=filtered();const st=document.getElementById("fSt").value;let h="";
  if(st){h=otaMonthTable(f,"🅾️ OTA別×月："+STN[st]+" ");}
@@ -258,16 +276,17 @@ function viewOtaMonth(){const f=filtered();const st=document.getElementById("fSt
 // 📊 月(行)×OTA(列)×店舗別（店舗ごとにマトリクス＋3店合計）
 function monthOtaTable(rows,title){
  const otas=OTAORD.filter(o=>rows.some(r=>r.ota===o));const months=[...new Set(rows.map(r=>r.pay_month))].sort();
- const fr=(Number(document.getElementById("fee").value)||0)/100;
+ const _ss=_ssOf(rows);
  const cell={},rowG={},rowN={},colG={};
  rows.forEach(r=>{cell[r.pay_month+"|"+r.ota]=(cell[r.pay_month+"|"+r.ota]||0)+r.gross;rowG[r.pay_month]=(rowG[r.pay_month]||0)+r.gross;rowN[r.pay_month]=(rowN[r.pay_month]||0)+net(r);colG[r.ota]=(colG[r.ota]||0)+r.gross;});
  const thisM=new Date().toISOString().slice(0,7);
- let h='<div class="sec"><h2>'+title+'<span class="badge">万円／OTA列=売上</span></h2><div class="ov"><table><thead><tr><th>入金月＼OTA</th>';
+ let h='<div class="sec"><h2>'+title+'<span class="badge">万円／OTA列=予約金額</span></h2><div class="ov"><table><thead><tr><th>入金月＼OTA</th>';
  otas.forEach(o=>h+='<th>'+o+'</th>');
- h+='<th style="background:#475569;color:#fff">OTA合計</th><th style="background:#b91c1c;color:#fff">OTA手数料</th><th style="background:#166534;color:#fff">OTA残高</th><th style="background:#0891b2;color:#fff">自社合計</th><th style="background:#166534;color:#fff">差引(手取り)</th></tr></thead><tbody>';
- months.forEach(m=>{const g=rowG[m]||0,n=rowN[m]||0,hi=m===thisM;const oG=OTA_CH.reduce((a,o)=>a+(cell[m+"|"+o]||0),0),sG=SELF.reduce((a,o)=>a+(cell[m+"|"+o]||0),0);h+='<tr'+(hi?' style="background:#fef9c3"':'')+'><td><b>'+m.slice(2)+'</b></td>';otas.forEach(o=>{const v=cell[m+"|"+o]||0;h+='<td class="mono">'+(v?man(v):'<span style="color:#e2e8f0">–</span>')+'</td>';});h+='<td class="mono" style="font-weight:700;background:#f8fafc;color:#475569">'+(oG?man(oG):'·')+'</td><td class="mono" style="color:#b91c1c">'+(oG?'-'+man(oG*fr):'·')+'</td><td class="mono" style="color:#166534">'+(oG?man(oG*(1-fr)):'·')+'</td><td class="mono" style="color:#0891b2">'+(sG?man(sG):'·')+'</td><td class="mono" style="font-weight:800;background:#f0fdf4;color:#166534">'+man(n)+'</td></tr>';});
+ h+='<th style="background:#475569;color:#fff">予約金額</th><th style="background:#1d4ed8;color:#fff">入金額</th><th style="background:#b91c1c;color:#fff">'+_BF_LAB+'</th><th style="background:#166534;color:#fff">手元に残る額</th><th style="background:#0891b2;color:#fff">自社合計</th><th style="background:#166534;color:#fff">差引(手元)</th></tr></thead><tbody>';
+ let oNT=0,bfT=0;
+ months.forEach(m=>{const g=rowG[m]||0,n=rowN[m]||0,hi=m===thisM;const oG=OTA_CH.reduce((a,o)=>a+(cell[m+"|"+o]||0),0),sG=SELF.reduce((a,o)=>a+(cell[m+"|"+o]||0),0);h+='<tr'+(hi?' style="background:#fef9c3"':'')+'><td><b>'+m.slice(2)+'</b></td>';otas.forEach(o=>{const v=cell[m+"|"+o]||0;h+='<td class="mono">'+(v?man(v):'<span style="color:#e2e8f0">–</span>')+'</td>';});const oN=n-sG,bf=billFee(m,_ss);oNT+=oN;bfT+=bf;h+='<td class="mono" style="font-weight:700;background:#f8fafc;color:#475569">'+(oG?man(oG):'·')+'</td><td class="mono" style="font-weight:700;color:#1d4ed8">'+(oN?man(oN):'·')+'</td><td class="mono" style="color:#b91c1c">'+(bf?'-'+man(bf):'·')+'</td><td class="mono" style="font-weight:700;color:#166534">'+(oN||bf?man(oN-bf):'·')+'</td><td class="mono" style="color:#0891b2">'+(sG?man(sG):'·')+'</td><td class="mono" style="font-weight:800;background:#f0fdf4;color:#166534">'+man(n-bf)+'</td></tr>';});
  const gT=Object.values(rowG).reduce((a,b)=>a+b,0),nT=Object.values(rowN).reduce((a,b)=>a+b,0),oGT=OTA_CH.reduce((a,o)=>a+(colG[o]||0),0),sGT=SELF.reduce((a,o)=>a+(colG[o]||0),0);
- h+='<tr class="tot"><td>計</td>';otas.forEach(o=>h+='<td class="mono">'+man(colG[o]||0)+'</td>');h+='<td class="mono">'+man(oGT)+'</td><td class="mono">-'+man(oGT*fr)+'</td><td class="mono">'+man(oGT*(1-fr))+'</td><td class="mono">'+man(sGT)+'</td><td class="mono">'+man(nT)+'</td></tr>';
+ h+='<tr class="tot"><td>計</td>';otas.forEach(o=>h+='<td class="mono">'+man(colG[o]||0)+'</td>');h+='<td class="mono">'+man(oGT)+'</td><td class="mono">'+man(oNT)+'</td><td class="mono">'+(bfT?'-'+man(bfT):'·')+'</td><td class="mono">'+man(oNT-bfT)+'</td><td class="mono">'+man(sGT)+'</td><td class="mono">'+man(nT-bfT)+'</td></tr>';
  h+='</tbody></table></div></div>';return h;}
 function viewMonthOtaSt(){const f=filtered().filter(r=>r.kind!=="未入金");const st=document.getElementById("fSt").value;let h="";
  if(st){h=monthOtaTable(f,"📊 月×OTA："+STN[st]+" ");}
