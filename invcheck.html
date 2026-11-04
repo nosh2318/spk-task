@@ -39,6 +39,10 @@ td.nv.man,tr.sub td.nv.man{background:#dbeafe;color:#1d4ed8}
 #pop table{width:100%;border-spacing:0}
 #pop td{width:auto;height:auto;cursor:default;border-radius:0;padding:8px 6px;border-bottom:1px solid #eef2f7;text-align:left;font-size:15px}
 #pop td.v{text-align:right}
+#shot img{width:100%;margin-top:10px;border:1px solid #cbd5e1;border-radius:6px}
+#shot p{margin:8px 0 0;font-size:13px;color:#475569}
+#pop td .cam{margin:0 0 0 8px;width:auto;padding:2px 8px;font-size:13px;background:#e2e8f0;color:#1e293b}
+#pop .in{max-height:92vh;overflow:auto}
 #pop button{margin-top:12px;width:100%;padding:10px;border:none;border-radius:6px;background:#2f3b55;color:#fff;font-size:15px;font-weight:800}
 </style></head><body>
 <div class="wrap">
@@ -57,7 +61,7 @@ td.nv.man,tr.sub td.nv.man{background:#dbeafe;color:#1d4ed8}
   <div class="card scroll"><table id="grid"></table></div>
   <div class="foot" id="foot"></div>
 </div>
-<div id="pop"><div class="in"><h3 id="popT"></h3><table id="popTbl"></table><button onclick="document.getElementById('pop').style.display='none'">とじる</button></div></div>
+<div id="pop"><div class="in"><h3 id="popT"></h3><table id="popTbl"></table><div id="shot"></div><button onclick="document.getElementById('pop').style.display='none'">とじる</button></div></div>
 <script>
 // ルールは1つだけ（オーナー 2026-10-26）：OTAに出す数 ＝ 配車表の残り − 安全在庫。多いのは絶対ダメ、少ないのは売り逃し
 const DB = {
@@ -123,7 +127,9 @@ async function fetchStore(s) {
   const rel = {}; try { const q = await rpc(DB[s.db], 'invctl_release', { p_store: s.id }); if (q.ok) for (const y of await q.json()) rel[y.ota] = String(y.until).slice(0, 10); } catch {}
   // OTA側の在庫登録の最終日（ロボが読む。オーナー 10/26「在庫まで登録されています…そこの部分を出せよ。ダッシュボードに」）。売り出す最終日より手前で切れている所だけ
   const reg = []; try { const q = await rpc(DB.hd, 'invctl_reg_end', { p_store: s.id }); if (q.ok) for (const y of await q.json()) { const u = rel[y.ota] || String(y.until).slice(0, 10); if (y.last_dd && y.last_dd < u) reg.push({ ota: y.ota, cls: y.cls, last: y.last_dd, u }); } } catch {}
-  return { cells: out, last, safe, share, base, rel, reg };
+  // 証拠写真（ロボが読んだ OTA の画面。店×OTA×クラス×月で最新1枚。オーナー 10/26「残数＝OTA登録の証拠」）
+  const shots = {}; try { const q = await rpc(DB.hd, 'invctl_shot_list', { p_store: s.id }); if (q.ok) for (const y of await q.json()) shots[y.ota + '|' + y.cls + '|' + y.ym] = y.taken_at; } catch {}
+  return { cells: out, last, safe, share, base, rel, reg, shots };
 }
 async function loadAll() {
   await Promise.all(STORES.map(async s => { try { cache[s.id] = await fetchStore(s); } catch (e) { cache[s.id] = { err: e.message }; } }));
@@ -223,8 +229,23 @@ function pop(x) {
   $('popTbl').innerHTML = `<tr><td>稼働台数</td><td class="v">${x.fleet ?? '—'}台</td></tr><tr><td>− 予約台数（整備・未配車も）</td><td class="v">${x.fleet != null && x.rem != null ? x.fleet - rem : '—'}台</td></tr><tr><td>− 安全在庫など</td><td class="v">${x.rem != null ? Math.max(0, rem - x.ok) : '—'}台</td></tr>` +
     `<tr><td><b>＝ 残数（全OTAに出す数）</b></td><td class="v"><b>${x.ok}台</b></td></tr>` +
     s.otas.map(o => { const q = x.ota[o], b = x.sb[o] ?? x.ok; const st = q == null ? 'n' : q > b ? 'r' : q < b ? 'y' : 'g';
-      return `<tr><td>${OTA[o]}</td><td class="v"><span class="sw ${st}" style="vertical-align:middle;margin-right:6px;animation:none"></span>${q ?? '未読'}${q == null ? '' : '台'}</td></tr>`; }).join('');
+      const sc = shotCls(o, x.c, x.dd.slice(0, 7));
+      return `<tr><td>${OTA[o]}</td><td class="v"><span class="sw ${st}" style="vertical-align:middle;margin-right:6px;animation:none"></span>${q ?? '未読'}${q == null ? '' : '台'}${sc ? `<button class="cam" onclick="shot('${o}','${sc}','${x.dd.slice(0, 7)}')">📷</button>` : ''}</td></tr>`; }).join('');
+  $('shot').innerHTML = '';
   $('pop').style.display = 'flex';
+}
+// 写真があるクラスの名前（たびらいはクラス番号、1ページに全クラスなら *）
+function shotCls(o, c, ym) {
+  const h = cache[store]?.shots || {}, tc = o === 'TAB' ? Object.keys(TABMAP).find(k => TABMAP[k] === c) : c;
+  return tc && h[o + '|' + tc + '|' + ym] ? tc : h[o + '|*|' + ym] ? '*' : null;
+}
+async function shot(o, c, ym) {
+  $('shot').innerHTML = '<p>写真を読み込み中…</p>';
+  try {
+    const r = await fetch(`${DB.hd.url}/functions/v1/invctl-shot`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'url', store, ota: o, cls: c, ym }) });
+    const d = await r.json();
+    $('shot').innerHTML = d.url ? `<p>${OTA[o]}の画面（${jst(d.taken_at)} にロボが撮影）</p><a href="${esc(d.url)}" target="_blank"><img src="${esc(d.url)}" alt=""></a>` : '<p>写真はまだありません</p>';
+  } catch (e) { $('shot').innerHTML = '<p>写真を読めませんでした</p>'; }
 }
 draw(); loadAll(); setInterval(loadAll, 5 * 60e3);
 </script>
