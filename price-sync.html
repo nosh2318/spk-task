@@ -1,0 +1,87 @@
+<!DOCTYPE html><html lang="ja"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>価格の連動チェック</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;font-family:-apple-system,"Hiragino Kaku Gothic ProN",sans-serif;background:#f6f7f9;color:#0f172a;font-size:14px}
+.wrap{max-width:1100px;margin:0 auto;padding:12px}
+h1{font-size:18px;margin:4px 0 10px}
+.big{border-radius:8px;padding:14px;margin:0 0 10px;font-size:20px;font-weight:900;text-align:center}
+.big small{display:block;font-size:13px;font-weight:600;margin-top:4px}
+.big.ok{background:#dcfce7;color:#166534}.big.ng{background:#fee2e2;color:#991b1b}.big.wait{background:#e2e8f0;color:#475569}
+.card{background:#fff;border-radius:8px;padding:10px;box-shadow:0 1px 3px rgba(0,0,0,.08);margin:0 0 10px}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{border-collapse:separate;border-spacing:3px;width:100%}
+th{font-size:12px;color:#64748b;font-weight:700;padding:4px;white-space:nowrap}
+td{height:40px;text-align:center;font-weight:800;font-size:14px;border-radius:6px;padding:0 8px;white-space:nowrap}
+td.st{text-align:left;font-size:15px;font-weight:900;background:none}
+.g{background:#22c55e;color:#fff}.r{background:#dc2626;color:#fff;cursor:pointer}.n{background:#e2e8f0;color:#94a3b8;font-size:12px}.y{background:#fef3c7;color:#92400e;font-size:12px}
+.off{display:block;font-size:10px;font-weight:700;opacity:.85}
+.muted{font-size:12px;color:#64748b}
+#det h3{margin:0 0 8px;font-size:15px}
+#det table td{text-align:left;font-weight:600;font-size:13px;height:30px;background:#f8fafc;white-space:normal}
+#det table td.v{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+button.re{padding:8px 14px;border:none;border-radius:6px;background:#2f3b55;color:#fff;font-weight:800;cursor:pointer}
+</style></head><body><div class="wrap">
+<h1>価格の連動チェック（マスター ⇔ 公式サイト・KEYDROP・OTA）</h1>
+<div id="big" class="big wait">読み込み中…</div>
+<div class="card scroll"><table id="mx"></table>
+<div class="muted" id="seen" style="margin-top:6px"></div></div>
+<div class="card" id="det" hidden></div>
+<div class="muted">赤い欄を押すと、どの日・どの欄がマスターと違うかが出ます。OTA は「連動OFF」の組も比べます（通知は ON の組だけ）。<button class="re" onclick="load()">読み直す</button></div>
+</div>
+<script>
+const HD = { url: 'https://ckrxttbnawkclshczsia.supabase.co', key: 'sb_publishable_aTVhlY0YD-5BBfI03ZNnsg_MzO_vsIe' };
+const COLS = [['公式サイト', '公式サイト'], ['KEYDROP', 'KEYDROP'], ['RKT', '楽天'], ['JLN', 'じゃらん'], ['SKT', 'skyticket'], ['ART', 'エアトリ'], ['RDC', 'RDC']];
+// 店ごとの対象（たびらい・札幌RDC の価格はオーナー判断で対象外）
+const ROWS = [
+  { name: '那覇', keys: { 公式サイト: 'nha', KEYDROP: 'nha', RKT: 'nha', JLN: 'nha', SKT: 'nha', ART: 'nha', RDC: 'nha' } },
+  { name: '札幌', keys: { 公式サイト: 'spk', KEYDROP: 'spk', RKT: 'spk', JLN: 'spk', SKT: 'spk', ART: 'spk' } },
+  { name: '高松', keys: { 公式サイト: 'tkm', RKT: 'takh', JLN: 'takh' } },
+  { name: 'BUDDICA', keys: { ART: 'takb', RDC: 'takb' } },
+];
+let S = null;
+const yen = v => v == null ? '—' : '¥' + Number(v).toLocaleString();
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function cell(row, col) {
+  const st = row.keys[col]; if (!st) return '<td class="n">対象外</td>';
+  const rs = S.rows.filter(r => r.store === st && r.site === col && r.per !== 'skip' && !(r.note || '').startsWith('マスターと照らせない'));
+  const sk = S.rows.filter(r => r.store === st && r.site === col && (r.note || '').startsWith('マスターと照らせない'));
+  const isOta = !['公式サイト', 'KEYDROP'].includes(col);
+  const off = isOta && S.links && S.links[st + '|' + col] === false ? '<span class="off">連動OFF</span>' : '';
+  const src = isOta ? 'ota' : (st === 'tkm' ? 'tkm' : null);
+  if (src && !(S.seen || {})[src]) return `<td class="y">未確認${off}</td>`;
+  if (rs.length) return `<td class="r" onclick="det('${st}','${col}')">🔴 ${rs.length}件${off}</td>`;
+  if (sk.length) return `<td class="y" onclick="det('${st}','${col}')" style="cursor:pointer">✅ 照らせない欄あり${off}</td>`;
+  return `<td class="g">✅${off}</td>`;
+}
+function render() {
+  let h = '<tr><th></th>' + COLS.map(c => `<th>${c[1]}</th>`).join('') + '</tr>';
+  for (const r of ROWS) h += `<tr><td class="st">${r.name}</td>` + COLS.map(c => cell(r, c[0])).join('') + '</tr>';
+  document.getElementById('mx').innerHTML = h;
+  const bad = S.rows.filter(r => r.site === 'チェッカー' || (r.want !== r.got && r.want != null)).length;
+  const offBad = S.rows.filter(r => r.want != null && r.want !== r.got && S.links && S.links[r.store + '|' + r.site] === false).length;
+  const big = document.getElementById('big');
+  const on = bad - offBad;
+  big.className = 'big ' + (on ? 'ng' : 'ok');
+  big.innerHTML = (on ? `🔴 マスターと違う値段 ${on}件` : '✅ 公式サイト・KEYDROP・連動ONのOTAはマスターと同じ') + `<small>${S.at} 時点${offBad ? `／連動OFFのOTAで違う値段 ${offBad}件` : ''}</small>`;
+  const sn = S.seen || {};
+  document.getElementById('seen').textContent = `ロボの最後の確認：OTA ${sn.ota ? new Date(sn.ota).toLocaleString('ja-JP') : 'まだ'}／高松公式 ${sn.tkm ? new Date(sn.tkm).toLocaleString('ja-JP') : 'まだ'}（公式サイト・KEYDROP はこの画面を開いた時点で計算）`;
+}
+function det(st, col) {
+  const rs = S.rows.filter(r => r.store === st && r.site === col);
+  const d = document.getElementById('det'); d.hidden = false;
+  d.innerHTML = `<h3>${esc(ROWS.find(r => Object.values(r.keys).includes(st))?.name)} ${esc(COLS.find(c => c[0] === col)[1])}</h3><div class="scroll"><table><tr><th>クラス</th><th>期間・欄</th><th>マスター</th><th>売っている値段</th></tr>` +
+    rs.map(r => `<tr><td>${esc(r.cls)}</td><td>${r.a ? esc(r.a.slice(5) + (r.b > r.a ? '〜' + r.b.slice(5) : '') + `（${r.n}日）`) : esc(r.note || '')}</td><td class="v">${yen(r.want)}</td><td class="v">${yen(r.got)}</td></tr>`).join('') + '</table></div>';
+  d.scrollIntoView({ behavior: 'smooth' });
+}
+async function load() {
+  const big = document.getElementById('big'); big.className = 'big wait'; big.textContent = '読み込み中…';
+  try {
+    const r = await fetch(HD.url + '/rest/v1/rpc/price_sync_status', { method: 'POST', headers: { apikey: HD.key, Authorization: 'Bearer ' + HD.key, 'Content-Type': 'application/json' }, body: '{}' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    S = await r.json(); S.rows = S.rows || []; render();
+  } catch (e) { big.className = 'big ng'; big.textContent = '読み込めませんでした（' + e.message + '）'; }
+}
+load();
+</script></body></html>
