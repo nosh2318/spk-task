@@ -153,6 +153,13 @@
   .kyh{color:#c4b5fd}
   .stcell.ky{border-left-color:#8b5cf6;background:#1e1b3a}
   .stcell .kyby{font-size:9.5px;color:#a5b4fc;font-weight:700;margin-left:4px}
+  /* ★2026-11-05 車両メモ（任意・独立。入庫フローには出さない） */
+  .cbay .memob{margin-top:3px;font-size:8.5px;font-weight:900;border-radius:5px;padding:1px 6px;white-space:nowrap;background:#fef9c3;color:#713f12;border:1px solid #facc15}
+  .memorow{display:flex;align-items:flex-start;gap:9px;background:#1e293b;border-radius:10px;padding:9px 11px;margin-bottom:7px;cursor:pointer}
+  .memorow:active{transform:scale(.98)}
+  .memorow .mc{font-size:12.5px;font-weight:800;color:#fde68a}
+  .memorow .mt{font-size:11.5px;color:#e2e8f0;white-space:pre-wrap;word-break:break-all;margin-top:2px}
+  .memorow .mat{font-size:9.5px;color:#94a3b8;margin-top:2px}
 </style>
 </head>
 <body>
@@ -170,6 +177,7 @@
   <div class="exsec"><div class="exh">🛴 モビリティ（置き場所）</div><div id="mobList"></div></div>
   <div class="exsec"><div class="exh">📦 倉庫車（荷物積載中）<button class="exadd" onclick="addWh()">＋ 追加</button></div><div id="whList"></div></div>
   <div class="exsec"><div class="exh">🪑 レンタルシート在庫（超過分・RCS/RJS）<button class="exadd" onclick="addRental()">＋ 追加</button></div><div id="rentalList"></div></div>
+  <div class="exsec"><div class="exh">📝 車両メモ<button class="exadd" onclick="addMemo()">＋ 追加</button></div><div id="memoList"></div></div>
 </div>
 <div class="guidebar" id="guidebar">
   <button class="gcancel" onclick="cancelGuide()">やめる</button>
@@ -282,6 +290,7 @@ let OUT_LIST=[]; // 今 貸出中の車両 一覧(表示用) {id,n,p}
 let DEPART_TODAY=new Set(); // 本日出発予定(貸出日=本日・予約データ参照)の車id ※当日貸出・当日返却の車もあるので注意
 let MOBILITY={}, WAREHOUSE={}, PLAN={}; // parking_meta (PLAN=返却予定の手動割当 carId->spotId)
 let PLACES={}; // ★2026-10-23 共立自動車保管 parking_car_place(1台1行・解除は墓標deleted) carId->{by,at}
+let MEMOS={}; // ★2026-11-05 車両メモ parking_car_memo(1台1行・削除は墓標deleted) carId->{memo,at}
 let RENTAL=[]; // rental_seats（レンタルシート在庫・期間レコード {id,start_date,end_date,type(RCS/RJS),qty,vehicle_id,note}）★OPシートと同一テーブル(単一ソース)・在庫アラートには含めない表示専用
 const MOB_ITEMS=[{id:"bicycle",name:"自転車",icon:"🚲"},{id:"ebike",name:"電動自転車",icon:"⚡"},{id:"escooter",name:"キックボード",icon:"🛴"}];
 const MOB_PLACES=["使用中","オフィス","BIGスロット","充電中"];
@@ -290,7 +299,7 @@ let guideCar=null, modal=null, busy=false, modalLock=false;
 /* ★2026-09-10 入庫の必須フロー(洗車→鍵→シート)や台数選択の入力中に、15秒ポーリング/リアルタイム更新のrender()が走ると
    スマホの<select>ドロップダウンが閉じて選択が飛ぶ(＝入力リセット)。モーダル表示中は背景更新を保留し、閉じた時に一度だけ反映する */
 let _pendingReload=false;
-async function reloadAll(){await Promise.all([loadSpots(),loadReturns(),loadMeta(),loadRental(),loadOutNow(),loadPlaces()]);render();}
+async function reloadAll(){await Promise.all([loadSpots(),loadReturns(),loadMeta(),loadRental(),loadOutNow(),loadPlaces(),loadMemos()]);render();}
 function bgReload(){ if(modal){_pendingReload=true;return;} reloadAll(); }
 // スタッフ車両は配車表RPCに無いので常に選択肢に含める（どのタイミングでも出る）
 const STAFF_CARS=[
@@ -357,7 +366,7 @@ function render(){
         const r=reco&&reco.id===sp.id;const lbl=a.mode==="numbered"?'<span class="freetag">空</span>':'<span class="addtag">＋入庫</span>';return `<div class="cbay free ${a.mode}${r?' reco':''}" data-sp="${sp.id}" onclick="tapEmpty(${sp.id})">${noBadge}${r?'<span class="crown">👑ここへ</span>':''}${lbl}</div>`;}
       const cc=car(sp.carId);const cn=(a.mode==="manual"&&sp.memo)?`<span class="cn">駐車No.${sp.memo}</span>`:"";
       const dep=DEPART_TODAY.has(sp.carId)?'<span class="departbadge">🚗本日出発予定</span>':"";
-      return `<div class="cbay occ ${DEPART_TODAY.has(sp.carId)?'depart':''}" data-sp="${sp.id}" onclick="tapCar(${sp.id})">${noBadge}${carGraphic(sp.carId)}<div class="cname">${cc.n}${cc.p?'<br>'+cc.p:''}</div>${cn}${dep}${keyBadge(sp)}${washBadge(sp)}${seatBadge(sp)}</div>`;
+      return `<div class="cbay occ ${DEPART_TODAY.has(sp.carId)?'depart':''}" data-sp="${sp.id}" onclick="tapCar(${sp.id})">${noBadge}${carGraphic(sp.carId)}<div class="cname">${cc.n}${cc.p?'<br>'+cc.p:''}</div>${cn}${dep}${keyBadge(sp)}${washBadge(sp)}${seatBadge(sp)}${memoBadge(sp.carId)}</div>`;
     }).join("");
     html+=`<div class="area ${a.paid?'paid':''}"><div class="atitle">${a.ico} ${a.name}${a.paid?'<span class="paidtag">有料</span>':''}<span class="cap">空き ${free}／${bays.length}台</span></div><div class="coinbays">${cells||'<div style="font-size:10px;color:#94a3b8;padding:6px">（マス未登録）</div>'}</div></div>`;
   });
@@ -365,6 +374,7 @@ function render(){
   renderStatus();
   renderExtra();
   renderRental();
+  renderMemos();
   renderModal();
 }
 // 🚗 貸出中の車両 ＋ ❓ 所在不明の車両
@@ -652,6 +662,7 @@ function tapCar(spotId){
     `<div class="sd" style="margin-bottom:4px">🧽 洗車状態</div><div class="btnrow" style="margin-bottom:8px;flex-wrap:wrap;gap:6px">${washBtns}</div>`+
     `<div class="sd" style="margin-bottom:4px">積載シート（CS/JS／R＝レンタル RCS/RJS）${seatLabel(sp)}</div><div class="btnrow" style="margin-bottom:8px"><button class="btn" style="flex:1;background:#334155;color:#fbbf24;font-weight:800" onclick="askSeats(${spotId},'${sp.carId}')">シート台数を編集</button></div>`+
     (isRet?`<button class="btn" style="width:100%;background:#78350f;color:#fde68a;margin-bottom:8px" onclick="undoReturn(${spotId})">↩️ 返却予定に戻す（入庫を取り消し）</button>`:"")+
+    memoBtn(sp.carId)+
     `<button class="btn" style="width:100%;background:#4c1d95;color:#ddd6fe;margin-bottom:8px" onclick="askKy('${sp.carId}')">🏭 共立自動車保管へ移す（このマスは空きます）</button>`+
     `<div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button><button class="btn" style="background:#334155;color:#7dd3fc" onclick="openSwap(${spotId})">🔄 入れ替え</button><button class="btn r" onclick="doOut(${spotId})">🚙 出庫</button></div>`);
 }
@@ -719,6 +730,75 @@ async function tombKy(id){
 async function clearKy(id){closeSheet();const ok=await tombKy(id);render();if(ok)toast("共立自動車保管を解除しました");}
 async function loadPlaces(){try{const{data,error}=await sb.from("parking_car_place").select("car_id,set_by,set_at").eq("deleted",false);if(!error&&data){const m={};data.forEach(r=>{m[r.car_id]={by:r.set_by||"",at:r.set_at};});PLACES=m;}}catch(e){console.log("places err",e);}}
 
+// ===== 📝 車両メモ（2026-11-05・任意／スタッフが必要な時だけ／1アクション=1行／削除は墓標） =====
+// ★入庫・出庫・入替・洗車・鍵・積載シート・共立の処理からは一切呼ばない（独立）。書くのは保存/削除ボタンだけ。
+const MEMO_MAX=1000;
+let _memoOpen=null; // {carId, at} シートを開いた時点のメモ更新時刻（他端末の更新を保存前に検知する）
+function _h(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
+function _ja(s){return _h(_esc(s));} // onclick="f('…')" に入れる車ID用
+function memoBadge(carId){return carId&&MEMOS[carId]?'<span class="memob">📝メモ</span>':"";}
+function memoBtn(carId){const m=MEMOS[carId];const pv=m?m.memo.replace(/\s+/g," ").slice(0,40)+(m.memo.length>40?"…":""):"";
+  return `<button class="btn" style="width:100%;background:#334155;color:#fde68a;margin-bottom:8px;text-align:left" onclick="openMemo('${_ja(carId)}')">📝 メモ${m?'：<span style="color:#e2e8f0;font-weight:700">'+_h(pv)+'</span>':'（なし・タップで追加）'}</button>`;}
+function renderMemos(){
+  const ids=Object.keys(MEMOS).sort((a,b)=>String(MEMOS[b].at||"").localeCompare(String(MEMOS[a].at||"")));
+  $("memoList").innerHTML=ids.length?ids.map(id=>{const c=car(id);const m=MEMOS[id];return `<div class="memorow" onclick="openMemo('${_ja(id)}')"><span class="mi">📝</span><div style="min-width:0;flex:1"><div class="mc">${_h(c.n)} ${_h(c.p)}</div><div class="mt">${_h(m.memo)}</div><div class="mat">${fmtKyAt(m.at)} 更新</div></div><span class="medit" style="font-size:10px;color:#64748b">✎</span></div>`;}).join(""):'<div class="emp">なし（「＋ 追加」で車を選んでメモを書けます）</div>';
+}
+function addMemo(){
+  const list=allCars().slice().sort((a,b)=>(MEMOS[a.id]?1:0)-(MEMOS[b.id]?1:0)||String(a.n).localeCompare(String(b.n),"ja"));
+  openSheet(`<h3>📝 車両メモを追加</h3><div class="sd">メモを書く車を選択</div>`+
+    `<select id="memoSel" style="width:100%;padding:11px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;font-weight:700">`+
+    list.map(c=>`<option value="${_h(c.id)}">${_h(c.n)} ${_h(c.p)}${MEMOS[c.id]?'（メモあり）':''}</option>`).join("")+`</select>`+
+    `<div class="btnrow"><button class="btn g" onclick="closeSheet()">キャンセル</button><button class="btn" style="background:#0d9488;color:#fff" onclick="const s=document.getElementById('memoSel');if(s&&s.value)openMemo(s.value)">次へ</button></div>`);
+}
+// draft＝他端末と競合した時に、自分の入力を捨てずに入れ直して開く／latest＝その時の他端末の最新本文（表示だけ）
+function openMemo(carId,draft,latest){
+  const c=car(carId);const m=MEMOS[carId];
+  _memoOpen={carId,at:m?m.at:null,text:m?m.memo:""};
+  const conflict=draft!==undefined?`<div class="sd" style="color:#fbbf24;margin-bottom:6px">⚠️ 他の端末で先に変更されました。最新の内容：<br><span style="color:#e2e8f0;white-space:pre-wrap">${_h(latest||"（削除済み）")}</span><br>下はあなたが書いた内容です。直してから保存してください。</div>`:"";
+  openSheet(`<h3>📝 ${_h(c.n)} ${_h(c.p)}</h3><div class="sd">${m?fmtKyAt(m.at)+' 更新':'メモはまだありません'}</div>`+conflict+
+    `<textarea id="memoTxt" maxlength="${MEMO_MAX}" rows="6" placeholder="自由にメモ（任意）" style="width:100%;padding:10px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;line-height:1.5;resize:vertical;font-family:inherit">${_h(draft!==undefined?draft:(m?m.memo:""))}</textarea>`+
+    `<div class="btnrow"><button class="btn g" onclick="closeSheet()">閉じる</button>`+(m?`<button class="btn r" onclick="delMemo('${_ja(carId)}')">🗑 削除</button>`:"")+`<button class="btn" style="background:#0d9488;color:#fff" onclick="saveMemo('${_ja(carId)}')">💾 保存</button></div>`);
+}
+// 条件付き書込＝開いた時から誰も変えていない時だけ1行書く（既存行は updated_at 一致・新規は insert）。書けなければ null＝他端末と競合
+const MEMO_T="parking_car_memo";
+async function writeMemoIfUnchanged(carId,txt,openAt){
+  const row={memo:txt,deleted:false,updated_by:"spk",updated_at:new Date().toISOString()};
+  if(openAt){const{data,error}=await sb.from(MEMO_T).update(row).eq("car_id",carId).eq("deleted",false).eq("updated_at",openAt).select("updated_at");if(error)throw error;return data&&data.length?data[0].updated_at:null;}
+  const ins=await sb.from(MEMO_T).insert({car_id:carId,...row}).select("updated_at");
+  if(!ins.error)return ins.data&&ins.data[0]?ins.data[0].updated_at:row.updated_at;
+  if(ins.error.code!=="23505")throw ins.error;
+  // 行はあるが削除済み（墓標）なら、その墓標の時だけ書き戻す。生きていれば競合
+  const{data,error}=await sb.from(MEMO_T).update(row).eq("car_id",carId).eq("deleted",true).select("updated_at");if(error)throw error;
+  return data&&data.length?data[0].updated_at:null;
+}
+async function saveMemo(carId){
+  const txt=(((document.getElementById("memoTxt")||{}).value)||"").replace(/\s+$/,"");
+  if(txt.length>MEMO_MAX){toast("⚠️ "+MEMO_MAX+"文字までです");return;}
+  const op=_memoOpen&&_memoOpen.carId===carId?_memoOpen:{at:null,text:""};
+  if(!txt.trim()){if(MEMOS[carId]){delMemo(carId);}else{closeSheet();}return;}
+  if(txt===op.text&&op.at&&MEMOS[carId]&&MEMOS[carId].at===op.at){closeSheet();return;} // 変更なし＝書かない（他端末に偽の競合を出さない）
+  try{
+    let at=await writeMemoIfUnchanged(carId,txt,op.at);
+    if(!at){
+      const{data,error}=await sb.from(MEMO_T).select("memo,deleted,updated_at").eq("car_id",carId).maybeSingle();if(error)throw error;
+      const latest=data&&!data.deleted?data.memo:"";
+      if(!confirm("このメモは他の端末で変更されています。\n\n最新の内容: "+(latest||"（削除済み）")+"\n\nあなたの内容で上書きしますか？")){await loadMemos();render();openMemo(carId,txt,latest);return;}
+      const{data:d2,error:e2}=await sb.from(MEMO_T).upsert({car_id:carId,memo:txt,deleted:false,updated_by:"spk",updated_at:new Date().toISOString()},{onConflict:"car_id"}).select("updated_at");if(e2)throw e2;
+      at=d2&&d2[0]?d2[0].updated_at:new Date().toISOString();
+    }
+    MEMOS[carId]={memo:txt,at};_memoOpen=null;closeSheet();render();toast("📝 メモを保存しました");
+  }catch(e){console.log("saveMemo err",e);toast("⚠️ 保存失敗（通信）・入力は残っています");}
+}
+async function delMemo(carId){
+  if(!confirm(car(carId).n+" "+car(carId).p+" のメモを削除しますか？"))return;
+  try{
+    const{error}=await sb.from("parking_car_memo").update({deleted:true,updated_by:"spk",updated_at:new Date().toISOString()}).eq("car_id",carId).eq("deleted",false);
+    if(error)throw error;
+    delete MEMOS[carId];_memoOpen=null;closeSheet();render();toast("🗑 メモを削除しました");
+  }catch(e){console.log("delMemo err",e);toast("⚠️ 削除失敗（通信）");}
+}
+async function loadMemos(){try{const{data,error}=await sb.from("parking_car_memo").select("car_id,memo,updated_at").eq("deleted",false);if(!error&&data){const m={};data.forEach(r=>{if(r.memo)m[r.car_id]={memo:r.memo,at:r.updated_at};});MEMOS=m;}}catch(e){console.log("memos err",e);}}
+
 // ===== 読み込み・リアルタイム =====
 async function loadRoster(){
   try{const r=await fetch(MAIN_SB+"/rest/v1/rpc/spk_fleet_for_parking",{method:"POST",headers:{"apikey":MAIN_ANON,"Authorization":"Bearer "+MAIN_ANON,"Content-Type":"application/json"},body:"{}"});
@@ -741,16 +821,17 @@ async function loadDeparts(){
     const d=await r.json();if(Array.isArray(d))DEPART_TODAY=new Set(d.map(x=>x.name+"-"+x.no));}catch(e){console.log("departs err",e);}
 }
 async function boot(){
-  await Promise.all([loadRoster(),loadSpots(),loadReturns(),loadMeta(),loadRental(),loadOutNow(),loadDeparts(),loadPlaces()]);
+  await Promise.all([loadRoster(),loadSpots(),loadReturns(),loadMeta(),loadRental(),loadOutNow(),loadDeparts(),loadPlaces(),loadMemos()]);
   $("st").textContent="🟢 稼働中";render();
   // リアルタイム（他端末の入出庫・モビリティ/倉庫車ステータスを即共有）
   // ★モーダル表示中(入庫フロー/台数選択の入力中)は更新を保留し、閉じた時に反映＝入力途中でリセットさせない
   sb.channel("pk-rt").on("postgres_changes",{event:"*",schema:"public",table:"parking_spots"},async()=>{if(modal){_pendingReload=true;return;}await loadSpots();render();}).subscribe();
   sb.channel("pk-meta").on("postgres_changes",{event:"*",schema:"public",table:"parking_meta"},async()=>{if(modal){_pendingReload=true;return;}await loadMeta();render();}).subscribe();
   sb.channel("pk-place").on("postgres_changes",{event:"*",schema:"public",table:"parking_car_place"},async()=>{if(modal){_pendingReload=true;return;}await loadPlaces();render();}).subscribe();
+  sb.channel("pk-memo").on("postgres_changes",{event:"*",schema:"public",table:"parking_car_memo"},async()=>{if(modal){_pendingReload=true;return;}await loadMemos();render();}).subscribe();
   sb.channel("pk-rental").on("postgres_changes",{event:"*",schema:"public",table:"rental_seats"},async()=>{if(modal){_pendingReload=true;return;}await loadRental();render();}).subscribe();
   // 予備ポーリング（15秒）
-  setInterval(async()=>{if(document.visibilityState!=="visible")return;if(modal){_pendingReload=true;return;}await Promise.all([loadSpots(),loadReturns(),loadMeta(),loadRental(),loadOutNow(),loadPlaces()]);render();},15000);
+  setInterval(async()=>{if(document.visibilityState!=="visible")return;if(modal){_pendingReload=true;return;}await Promise.all([loadSpots(),loadReturns(),loadMeta(),loadRental(),loadOutNow(),loadPlaces(),loadMemos()]);render();},15000);
   document.addEventListener("visibilitychange",async()=>{if(document.visibilityState==="visible"){if(modal){_pendingReload=true;return;}await loadSpots();render();}});
 }
 boot();
