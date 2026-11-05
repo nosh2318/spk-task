@@ -11,26 +11,32 @@ const SECRET = Deno.env.get("ERUME_SYNC_SECRET") || "";
 
 function j(o: unknown, s = 200) { return new Response(JSON.stringify(o), { status: s, headers: { "Content-Type": "application/json" } }); }
 
-// 全 key を含む最初の列
-function find(h: string[], ...keys: string[]): number | null {
-  for (let i = 0; i < h.length; i++) if (keys.every((k) => (h[i] || "").includes(k))) return i;
-  return null;
+// 全 key を含む列（全部）。シート連携ではタブごとに同じ質問の見出しが少し違う（例 *お届け*希望日／”お届け”希望日）ため、
+// 候補の列を順に見て、その行で最初に値が入っている列を使う。
+type Cols = number[];
+function find(h: string[], ...keys: string[]): Cols {
+  const out: number[] = [];
+  for (let i = 0; i < h.length; i++) if (keys.every((k) => (h[i] || "").includes(k))) out.push(i);
+  return out;
 }
-const or = (...xs: (number | null)[]) => { for (const x of xs) if (x !== null) return x; return null; };
+const or = (...xs: Cols[]): Cols => xs.flat();
 function colMap(h: string[]) {
   return {
     uid: find(h, "ユーザーID"), aid: find(h, "回答ID"), aat: find(h, "回答日時"),
     lname: find(h, "LINE名"), name: find(h, "予約者名"), resv: find(h, "予約番号"), media: find(h, "予約媒体"),
     del_place: find(h, "お届け", "場所"),
-    del_time: or(find(h, "お届け", "希望時刻"), find(h, "お届け", "時刻")),
+    del_time: or(find(h, "お届け", "希望時刻"), find(h, "お届け", "時刻"), find(h, "お届け", "時間")),
     col_place: or(find(h, "返却", "場所"), find(h, "回収", "場所")),
-    col_time: or(find(h, "返却", "希望時刻"), find(h, "返却", "時刻"), find(h, "回収", "希望時刻"), find(h, "回収", "時刻")),
-    del_date: or(find(h, "お届け", "希望日"), find(h, "貸出開始日")),
+    col_time: or(find(h, "返却", "希望時刻"), find(h, "返却", "時刻"), find(h, "回収", "希望時刻"), find(h, "回収", "時刻"), find(h, "返却", "時間"), find(h, "回収", "時間")),
+    del_date: or(find(h, "お届け", "希望日"), find(h, "お届け日"), find(h, "貸出開始日")),
     col_date: or(find(h, "返却", "希望日"), find(h, "返却日")),
   };
 }
 function storeOf(h: string[]) { const s = h.join(""); return (s.includes("無料送迎") || s.includes("営業所")) ? "nha" : "spk"; }
-const g = (r: unknown[], i: number | null) => (i === null || r[i] == null) ? "" : String(r[i]).trim();
+function g(r: unknown[], cols: Cols): string {
+  for (const i of cols) { const v = r[i] == null ? "" : String(r[i]).trim(); if (v) return v; }
+  return "";
+}
 
 // "2026/11/05 12:34:56" → "2026-11-05T12:34:56+09:00"（タイムゾーンが無ければ日本時間とみなす）
 function toTs(s: string): string | null {
@@ -48,7 +54,7 @@ Deno.serve(async (req) => {
   const rows: unknown[][] = Array.isArray(body?.rows) ? body.rows : [];
   if (!header.length) return j({ error: "header がありません" }, 400);
   const cm = colMap(header);
-  if (cm.uid === null || cm.resv === null) return j({ error: "ユーザーID/予約番号 列が見つかりません", header }, 400);
+  if (!cm.uid.length || !cm.resv.length) return j({ error: "ユーザーID/予約番号 列が見つかりません", header }, 400);
   const store = (body?.store === "nha" || body?.store === "spk") ? body.store : storeOf(header);
 
   // 予約番号ごとに最新回答を採用し、空欄は古い回答の値で埋める（import_erume_auto.py と同じ）
