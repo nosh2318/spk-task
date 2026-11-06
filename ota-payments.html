@@ -734,29 +734,32 @@ async function buddicaLoad(){
 function buddicaRender(){
  const bd=gid("buddicaBody");const cur=new Date().toISOString().slice(0,7);
  // RAWのpay_month＝当社への入金月（楽天＝返却+3、じゃらん＝返却月、HP＝予約受付月）→ 売上月(om)を出し、BUDDICAへの支払月＝売上月の翌々月(BD_LAG)
- const g={},occ={},inc={};(RAW||[]).forEach(r=>{if(r.store!=="tkm"||!r.pay_month||r.kind==="未入金")return;if(!BD_CH.some(c=>c[0]===r.ota))return;inc[r.pay_month]=(inc[r.pay_month]||0)+(+r.gross||0);const om=_addMon(r.pay_month,BD_OCC[r.ota]||0),pm=_addMon(om,BD_LAG);(g[pm]=g[pm]||{})[r.ota]=(g[pm][r.ota]||0)+(+r.gross||0);(occ[om]=occ[om]||{})[r.ota]=(occ[om][r.ota]||0)+(+r.gross||0);});
- const months=[...new Set([...Object.keys(g),...Object.keys(inc),...Object.keys(BD_ACT||{})])].sort();
- let cum=0,tInc=0;const rt={};BD_CH.forEach(c=>rt[c[0]]=_bdRate(c[1]));
+ const g={},occ={},inc={},IT=[];(RAW||[]).forEach(r=>{if(r.store!=="tkm"||!r.pay_month||r.kind==="未入金")return;if(!BD_CH.some(c=>c[0]===r.ota))return;inc[r.pay_month]=(inc[r.pay_month]||0)+(+r.gross||0);const om=_addMon(r.pay_month,BD_OCC[r.ota]||0),pm=_addMon(om,BD_LAG);(g[pm]=g[pm]||{})[r.ota]=(g[pm][r.ota]||0)+(+r.gross||0);(occ[om]=occ[om]||{})[r.ota]=(occ[om][r.ota]||0)+(+r.gross||0);IT.push({ota:r.ota,inM:r.pay_month,payM:pm,g:+r.gross||0});});
+ const _ks=[...new Set([...Object.keys(g),...Object.keys(inc),...Object.keys(BD_ACT||{})])].sort();const months=[];if(_ks.length){for(let m=_ks[0];m<=_ks[_ks.length-1];m=_addMon(m,1))months.push(m);} // 連続月（フリーキャッシュが残る月も出す）
+ let tInc=0;const rt={};BD_CH.forEach(c=>rt[c[0]]=_bdRate(c[1]));
+ // フリーキャッシュ＝月末時点で「当社に入金済み（入金月≦m）だがBUDDICAへ未払い（支払月＞m）」のBUDDICA支払額。楽天は入金より先に払うので発生しない
+ const freeCash=m=>IT.reduce((a,x)=>a+((x.inM<=m&&x.payM>m)?Math.round(x.g*(1-rt[x.ota])):0),0);
  const T={};BD_CH.forEach(c=>T[c[0]]={g:0,p:0});
  let tEst=0,tFin=0,past=0,future=0;
  let h='<div class="sec"><h2>🚙 BUDDICA支払い予定（🍜高松HDM・支払月＝売上月の翌々月末）</h2><div class="ov"><table><thead><tr><th>支払月(末)</th><th>対象の売上月</th>';
  BD_CH.forEach(c=>{const lb=c[0]==="HP(サイト決済)"?"HP":c[0];h+='<th>'+lb+' 売上</th><th style="background:'+c[2]+';color:#fff">'+lb+' 支払額<br><span style="font-size:9px">売上−'+(Math.round(rt[c[0]]*1000)/10)+'%</span></th>';});
- h+='<th style="background:#475569;color:#fff">支払額 計</th><th style="background:#166534;color:#fff">実績(実際に払った額)</th><th style="background:#1e3a8a;color:#fff">確定/予定</th><th style="background:#0369a1;color:#fff">高松の入金<br><span style="font-size:9px">楽天・じゃらん・HP</span></th><th style="background:#16a34a;color:#fff">フリーCF<br><span style="font-size:9px">入金−BUDDICA支払</span></th><th style="background:#166534;color:#fff">FCF累計<br><span style="font-size:9px">手元に残る資金</span></th></tr></thead><tbody>';
+ h+='<th style="background:#475569;color:#fff">支払額 計</th><th style="background:#166534;color:#fff">実績(実際に払った額)</th><th style="background:#1e3a8a;color:#fff">確定/予定</th><th style="background:#0369a1;color:#fff">高松の入金<br><span style="font-size:9px">楽天・じゃらん・HP</span></th><th style="background:#16a34a;color:#fff">フリーキャッシュ<br><span style="font-size:9px">月末時点・入金済でBUDDICA未払い</span></th></tr></thead><tbody>';
  months.forEach(pm=>{const row=g[pm]||{};let est=0;
   h+='<tr'+(pm>=cur?' style="background:#eff6ff"':'')+'><td>'+pm+'末'+(pm>=cur?' <span class="badge">これから</span>':'')+'</td><td style="color:#64748b">'+_addMon(pm,-BD_LAG)+'</td>';
   BD_CH.forEach(c=>{const gv=row[c[0]]||0,pv=Math.round(gv*(1-rt[c[0]]));est+=pv;T[c[0]].g+=gv;T[c[0]].p+=pv;h+='<td class="mono" style="color:#64748b">'+(gv?yen(gv):'·')+'</td><td class="mono" style="font-weight:700;color:'+c[2]+'">'+(pv?yen(pv):'·')+'</td>';});
   const act=(BD_ACT&&BD_ACT[pm])?+BD_ACT[pm]:0,fin=act||est;tEst+=est;tFin+=fin;if(pm<cur)past+=fin;else future+=fin;
   h+='<td class="mono" style="font-weight:700">'+(est?yen(est):'·')+'</td><td><input class="mono" data-bdact="'+pm+'" value="'+(act||'')+'" inputmode="numeric" placeholder="支払額" style="width:96px;text-align:right;border:1px solid #86efac;border-radius:4px;padding:3px 5px;font-size:12px"></td><td class="mono" style="font-weight:800;color:'+(act?'#166534':'#1e3a8a')+'">'+(fin?yen(fin):'·')+(act?' <span style="font-size:9px;color:#16a34a">実績</span>':'')+'</td>';
-  const iv=inc[pm]||0,fcf=iv-fin;cum+=fcf;tInc+=iv;const fc=v=>v>=0?'#15803d':'#b91c1c';const ys=v=>(v<0?'−':'')+yen(Math.abs(v));
-  h+='<td class="mono" style="color:#0369a1">'+(iv?yen(iv):'·')+'</td><td class="mono" style="font-weight:700;color:'+fc(fcf)+'">'+ys(fcf)+'</td><td class="mono" style="font-weight:800;background:#f0fdf4;color:'+fc(cum)+'">'+ys(cum)+'</td></tr>';});
- h+='<tr class="tot"><td>合計</td><td></td>';BD_CH.forEach(c=>{h+='<td class="mono">'+yen(T[c[0]].g)+'</td><td class="mono">'+yen(T[c[0]].p)+'</td>';});h+='<td class="mono">'+yen(tEst)+'</td><td></td><td class="mono">'+yen(tFin)+'</td><td class="mono">'+yen(tInc)+'</td><td class="mono">'+yen(tInc-tFin)+'</td><td class="mono">'+yen(cum)+'</td></tr>';
+  const iv=inc[pm]||0,fc=freeCash(pm);tInc+=iv;
+  h+='<td class="mono" style="color:#0369a1">'+(iv?yen(iv):'·')+'</td><td class="mono" style="font-weight:800;background:#f0fdf4;color:#15803d">'+(fc?yen(fc):'·')+'</td></tr>';});
+ h+='<tr class="tot"><td>合計</td><td></td>';BD_CH.forEach(c=>{h+='<td class="mono">'+yen(T[c[0]].g)+'</td><td class="mono">'+yen(T[c[0]].p)+'</td>';});h+='<td class="mono">'+yen(tEst)+'</td><td></td><td class="mono">'+yen(tFin)+'</td><td class="mono">'+yen(tInc)+'</td><td class="mono">·</td></tr>';
  h+='</tbody></table></div>';
  h+='<div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;padding:0 14px 10px">'
   +'<div class="card" style="background:#f8fafc;border-color:#cbd5e1"><div style="font-size:12px;color:#475569">支払い済（過去分）</div><div style="font-size:20px;font-weight:800;color:#334155">'+yen(past)+'</div></div>'
   +'<div class="card" style="background:#eff6ff;border-color:#93c5fd"><div style="font-size:12px;color:#1d4ed8">これから支払い（当月以降）</div><div style="font-size:20px;font-weight:800;color:#1d4ed8">'+yen(future)+'</div></div>'
+  +'<div class="card" style="background:#f0fdf4;border-color:#86efac"><div style="font-size:12px;color:#166534">フリーキャッシュ（'+cur+'末時点）</div><div style="font-size:20px;font-weight:800;color:#15803d">'+yen(freeCash(cur))+'</div></div>'
   +'<div class="card" style="background:#f8fafc;border-color:#cbd5e1"><div style="font-size:12px;color:#475569">累計</div><div style="font-size:20px;font-weight:800;color:#334155">'+yen(tFin)+'</div></div>'
   +'</div>'
-  +'<div class="note">💡 売上は「OTA入金」タブの🍜高松と同じ数字（HANDYMANブランド分・キャンセル/テスト除外）。<b>実際に支払った月は「実績」に金額を入力</b>すると確定額として採用（自動保存）。楽天の売上はクーポン割引前の額（OTA入金タブと同じ）。<br><b>フリーCF＝その月に高松分として入ってきたお金−その月にBUDDICAへ払うお金</b>（FCF累計＝BUDDICAに払う前で手元にある資金）。入金は売上額のまま（楽天・じゃらんの請求書やSquare手数料は当社負担で別途）。</div></div>';
+  +'<div class="note">💡 売上は「OTA入金」タブの🍜高松と同じ数字（HANDYMANブランド分・キャンセル/テスト除外）。<b>実際に支払った月は「実績」に金額を入力</b>すると確定額として採用（自動保存）。楽天の売上はクーポン割引前の額（OTA入金タブと同じ）。<br><b>フリーキャッシュ＝その月末時点で、当社に入金済みだがBUDDICAへまだ払っていない額</b>（BUDDICA支払額ベース）。じゃらん・HPは入金から支払いまで約2ヶ月分たまる。楽天は入金より先に払うので含まれない。</div></div>';
  h+=buddicaOccTable(occ,rt);
  bd.innerHTML=h;
 }
