@@ -65,7 +65,7 @@ begin
         where f.vehicle_code=v.code and coalesce(r.status,'') not in ('cancelled','canceled','キャンセル')
           and coalesce(r.lend_date,'')<=v_ret and coalesce(r.return_date,'')>=v_lend)
      and not exists (select 1 from maintenance m
-        where m.vehicle_code=v.code and coalesce(m.block_type,'')<>'partner_reserved'
+        where m.vehicle_code=v.code   -- 2026-11-06 協力会社の自社予約(partner_reserved)も埋まりに数える（配車表・在庫ロボと同じ）
           and coalesce(m.status,'') not in ('cancelled','canceled','キャンセル')
           and coalesce(m.start_date::text,'')<=v_ret and coalesce(nullif(m.end_date::text,''),m.start_date::text)>=v_lend)
    order by v.code limit 1 for update of v skip locked;
