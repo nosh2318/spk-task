@@ -714,6 +714,7 @@ function jalanRender(){
 // 2026-11-06 オーナー指示：楽天・じゃらん＝売上−23%(当社18%＋運用代行5%)、HP＝売上−8%(Square手数料＋5%)をBUDDICAへ。入金サイクルの翌月に支払う→同日「翌々月に変更・売上発生金額も出して」。
 const BD_LAG=2; // 当社入金月→BUDDICA支払月のずれ(ヶ月)。同日オーナー確定「全部同じ・入金後から翌々月」
 const BD_OCC={"楽天":-3}; // 入金月→売上発生月(返却/受付月)のずれ。楽天は返却+3ヶ月入金、じゃらん・HPは発生月=入金月
+const BD_NET=0.05; // 純利益＝売上×運用代行5%（2026-11-06 オーナー「5%計算＝純利益」）
 let BD_INV={},BD_INVM=null; // 請求書依頼文用（支払月×OTA×売上月）
 const BD_CH=[["楽天","bdRak","#be123c"],["じゃらん","bdJln","#15803d"],["HP(サイト決済)","bdHp","#0891b2"]];
 function _bdRate(id){const el=gid(id);const v=el?parseFloat(el.value):NaN;return isNaN(v)?0:v/100;}
@@ -730,10 +731,10 @@ function buddicaRender(){
  const bd=gid("buddicaBody");const cur=new Date().toISOString().slice(0,7);
  const rt={};BD_CH.forEach(c=>rt[c[0]]=_bdRate(c[1]));
  // RAWのpay_month＝当社への入金月（楽天＝返却+3、じゃらん＝返却月、HP＝予約受付月）。売上月＝入金月+BD_OCC、BUDDICA支払月＝入金月+BD_LAG
- const INV={},sal={},fee={},inc={},incO={},pay={},payD={},IT=[];
+ const INV={},net={},sal={},fee={},inc={},incO={},pay={},payD={},IT=[];
  (RAW||[]).forEach(r=>{if(r.store!=="tkm"||!r.pay_month||r.kind==="未入金")return;if(!BD_CH.some(c=>c[0]===r.ota))return;const gv=+r.gross||0;if(!gv)return;
   const inM=r.pay_month,om=_addMon(inM,BD_OCC[r.ota]||0),pm=_addMon(inM,BD_LAG),pv=Math.round(gv*(1-rt[r.ota]));
-  (sal[om]=sal[om]||{})[r.ota]=(sal[om][r.ota]||0)+gv;fee[om]=(fee[om]||0)+(gv-pv);
+  (sal[om]=sal[om]||{})[r.ota]=(sal[om][r.ota]||0)+gv;fee[om]=(fee[om]||0)+(gv-pv);net[om]=(net[om]||0)+Math.round(gv*BD_NET);
   inc[inM]=(inc[inM]||0)+gv;(incO[inM]=incO[inM]||{})[r.ota]=(incO[inM][r.ota]||0)+gv;pay[pm]=(pay[pm]||0)+pv;(payD[pm]=payD[pm]||[]).push((r.ota==="HP(サイト決済)"?"HP":r.ota)+" "+om+"売上分 "+yen(pv));
   IT.push({inM:inM,payM:pm,pv:pv});
   const k=pm+'|'+r.ota+'|'+om;const o=(INV[k]=INV[k]||{pm:pm,ota:r.ota,om:om,inM:inM,g:0,n:0});o.g+=gv;o.n+=+r.cnt||0;});
@@ -741,14 +742,14 @@ function buddicaRender(){
  const freeCash=m=>IT.reduce((a,x)=>a+((x.inM<=m&&x.payM>m)?x.pv:0),0); // 月末時点で入金済み・BUDDICA未払い
  const ks=[...new Set([...Object.keys(sal),...Object.keys(inc),...Object.keys(pay)])].sort();const months=[];if(ks.length){for(let m=ks[0];m<=ks[ks.length-1];m=_addMon(m,1))months.push(m);}
  const d=v=>v?yen(v):'<span style="color:#cbd5e1">–</span>';
- const T={s:{},io:{},sa:0,i:0,p:0,f:0};BD_CH.forEach(c=>{T.s[c[0]]=0;T.io[c[0]]=0;});
+ const T={s:{},io:{},sa:0,i:0,p:0,f:0,n:0};BD_CH.forEach(c=>{T.s[c[0]]=0;T.io[c[0]]=0;});
  const H=(t,bg,n)=>'<th '+(n?'colspan="'+n+'"':'rowspan="2"')+' style="background:'+bg+';color:#fff;text-align:center">'+t+'</th>';
  let h='<div class="sec"><h2>🚙 BUDDICA支払い（月別・左から商流順）</h2><div class="ov"><table style="table-layout:fixed;width:100%"><thead>'
-  +'<tr><th rowspan="2" style="width:76px">月</th>'+H('① 売上（発生月）','#475569',4)+H('② 入金（予定・入金月）','#0369a1',4)+H('③ BUDDICA<br>支払総額(予定)','#1e3a8a')+H('④ 差分<br>②−③','#334155')+H('⑤ フリーキャッシュ<br><span style="font-size:9px">月末・入金済で未払い</span>','#16a34a')+H('⑥ 手数料売上<br><span style="font-size:9px">売上月ベース</span>','#a16207')+'</tr><tr>';
+  +'<tr><th rowspan="2" style="width:76px">月</th>'+H('① 売上（発生月）','#475569',4)+H('② 入金（予定・入金月）','#0369a1',4)+H('③ BUDDICA<br>支払総額(予定)','#1e3a8a')+H('④ 差分<br>②−③','#334155')+H('⑤ フリー<br>キャッシュ<br><span style="font-size:9px">月末・入金済で未払い</span>','#16a34a')+H('⑥ グロス<br>手数料<br><span style="font-size:9px">23%/8%・売上月</span>','#a16207')+H('⑦ 純利益<br><span style="font-size:9px">売上×5%・売上月</span>','#7c3aed')+'</tr><tr>';
  const sub=()=>{BD_CH.forEach(c=>h+='<th style="color:'+c[2]+'">'+(c[0]==="HP(サイト決済)"?"HP":c[0])+'</th>');h+='<th>計</th>';};sub();sub();
  h+='</tr></thead><tbody>';
- months.forEach(m=>{const sr=sal[m]||{},st=BD_CH.reduce((a,c)=>a+(sr[c[0]]||0),0),iv=inc[m]||0,pv=pay[m]||0,df=iv-pv,fc=freeCash(m),fe=fee[m]||0,hi=m===cur;
-  BD_CH.forEach(c=>{T.s[c[0]]+=sr[c[0]]||0;T.io[c[0]]+=(incO[m]||{})[c[0]]||0;});T.sa+=st;T.i+=iv;T.p+=pv;T.f+=fe;
+ months.forEach(m=>{const sr=sal[m]||{},st=BD_CH.reduce((a,c)=>a+(sr[c[0]]||0),0),iv=inc[m]||0,pv=pay[m]||0,df=iv-pv,fc=freeCash(m),fe=fee[m]||0,ne=net[m]||0,hi=m===cur;
+  BD_CH.forEach(c=>{T.s[c[0]]+=sr[c[0]]||0;T.io[c[0]]+=(incO[m]||{})[c[0]]||0;});T.sa+=st;T.i+=iv;T.p+=pv;T.f+=fe;T.n+=ne;
   h+='<tr'+(hi?' style="background:#fef9c3"':'')+'><td><b>'+m+'</b>'+(hi?' <span class="badge" style="background:#facc15;color:#713f12">今</span>':'')+'</td>';
   BD_CH.forEach(c=>h+='<td class="mono" style="color:'+c[2]+'">'+d(sr[c[0]]||0)+'</td>');
   h+='<td class="mono" style="font-weight:700;background:#f8fafc">'+d(st)+'</td>'
@@ -757,16 +758,18 @@ function buddicaRender(){
    +'<td class="mono" '+(pv?'data-bdinv="'+m+'" ':'')+'style="color:#1e3a8a;font-weight:700;'+(pv?'cursor:pointer;text-decoration:underline dotted':'')+'"'+(payD[m]?' title="'+payD[m].join('\n')+'"':'')+'>'+d(pv)+(payD[m]?' <span style="font-size:9px;color:#64748b">ⓘ</span>':'')+'</td>'
    +'<td class="mono" style="font-weight:700;color:'+(df<0?'#b91c1c':'#15803d')+'">'+(df?(df<0?'−':'+')+yen(Math.abs(df)):d(0))+'</td>'
    +'<td class="mono" style="font-weight:800;background:#f0fdf4;color:#15803d">'+d(fc)+'</td>'
-   +'<td class="mono" style="font-weight:700;color:#a16207;background:#fefce8">'+d(fe)+'</td></tr>';});
+   +'<td class="mono" style="font-weight:700;color:#a16207;background:#fefce8">'+d(fe)+'</td>'
+   +'<td class="mono" style="font-weight:800;color:#7c3aed;background:#faf5ff">'+d(ne)+'</td></tr>';});
  h+='<tr class="tot"><td>合計</td>';BD_CH.forEach(c=>h+='<td class="mono">'+yen(T.s[c[0]])+'</td>');
- h+='<td class="mono">'+yen(T.sa)+'</td>'+BD_CH.map(c=>'<td class="mono">'+yen(T.io[c[0]])+'</td>').join('')+'<td class="mono">'+yen(T.i)+'</td><td class="mono">'+yen(T.p)+'</td><td class="mono">'+(T.i-T.p<0?'−':'+')+yen(Math.abs(T.i-T.p))+'</td><td class="mono">·</td><td class="mono">'+yen(T.f)+'</td></tr>';
+ h+='<td class="mono">'+yen(T.sa)+'</td>'+BD_CH.map(c=>'<td class="mono">'+yen(T.io[c[0]])+'</td>').join('')+'<td class="mono">'+yen(T.i)+'</td><td class="mono">'+yen(T.p)+'</td><td class="mono">'+(T.i-T.p<0?'−':'+')+yen(Math.abs(T.i-T.p))+'</td><td class="mono">·</td><td class="mono">'+yen(T.f)+'</td><td class="mono">'+yen(T.n)+'</td></tr>';
  h+='</tbody></table></div>';
  const fut=months.filter(m=>m>=cur).reduce((a,m)=>a+(pay[m]||0),0);
  h+='<div style="display:flex;gap:10px;flex-wrap:wrap;padding:10px 14px">'
   +card("⑤ フリーキャッシュ（"+cur+"末）",yen(freeCash(cur)),"入金済みでBUDDICAへ未払いの額","#16a34a")
   +card("③ これから支払う総額",yen(fut),cur+"末以降のBUDDICA支払い","#1e3a8a")
-  +card("⑥ 手数料売上（累計）",yen(T.f),"楽天・じゃらん23%／HP8%","#a16207")
-  +'</div><div class="note">③の金額にカーソルを当てると内訳（どのOTA・いつの売上分か）が出ます。②入金＝楽天は返却3ヶ月後末、じゃらん・HPは売上月。③支払い＝入金月の翌々月末。⑥手数料売上＝売上×手数料率（楽天・じゃらん23%＝当社18%＋運用代行5%／HP8%）。売上はOTA入金タブの🍜高松と同じ（HANDYMAN分・キャンセル/テスト除外・楽天はクーポン割引前）。</div></div>';
+  +card("⑥ 手数料売上 グロス（累計）",yen(T.f),"楽天・じゃらん23%／HP8%","#a16207")
+  +card("⑦ 純利益（累計）",yen(T.n),"売上×運用代行5%","#7c3aed")
+  +'</div><div class="note">③の金額にカーソルを当てると内訳（どのOTA・いつの売上分か）が出ます。②入金＝楽天は返却3ヶ月後末、じゃらん・HPは売上月。③支払い＝入金月の翌々月末。⑥手数料売上＝売上×手数料率（楽天・じゃらん23%＝当社18%＋運用代行5%／HP8%）。⑦純利益＝売上×5%（運用代行分。18%とSquare手数料3%は手数料負担分として除く）。売上はOTA入金タブの🍜高松と同じ（HANDYMAN分・キャンセル/テスト除外・楽天はクーポン割引前）。</div></div>';
  const pms=Object.keys(pay).sort();if(!BD_INVM||!pay[BD_INVM])BD_INVM=pms.find(m=>m>=cur)||pms[pms.length-1]||cur;
  h+='<div class="sec"><h2>📋 BUDDICAへの請求書作成依頼（支払月を選んでコピー）</h2><div style="padding:10px 14px">支払月 <select id="bdInvM">'+pms.map(m=>'<option'+(m===BD_INVM?' selected':'')+'>'+m+'</option>').join('')+'</select> <button id="bdInvCopy" style="margin-left:6px;background:#1e3a8a;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-weight:700;cursor:pointer">📋 コピー</button> <span id="bdInvMsg" style="font-size:12px;color:#16a34a"></span> <span style="font-size:11px;color:#94a3b8">（表の③の金額をクリックしてもその月に切替）</span>'
   +'<textarea id="bdInvTxt" readonly style="display:block;width:100%;height:300px;margin-top:8px;font-family:ui-monospace,Menlo,monospace;font-size:12px;border:1px solid #cbd5e1;border-radius:8px;padding:10px;white-space:pre">'+buddicaInvText(BD_INVM,rt).replace(/</g,'&lt;')+'</textarea></div></div>';
