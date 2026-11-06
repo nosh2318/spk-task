@@ -37,6 +37,7 @@ tr.tot td{background:var(--nv);color:#fff;font-weight:800;font-size:13.5px}
  <button data-m="pay" style="padding:8px 16px">💳 支払い帳</button>
  <button data-m="coupon" style="padding:8px 16px">🟥 楽天支払い予定</button>
  <button data-m="jalan" style="padding:8px 16px">🟩 じゃらん支払い予定</button>
+ <button data-m="buddica" style="padding:8px 16px">🚙 BUDDICA支払い</button>
  <button data-m="sim" style="padding:8px 16px">🧮 入金シミュレーター</button>
 </div>
 
@@ -85,6 +86,16 @@ tr.tot td{background:var(--nv);color:#fff;font-weight:800;font-size:13.5px}
  <div style="margin-top:8px">送客手数料率 <input id="jlnRate" type="number" value="12.4" min="0" max="40" step="0.1" style="width:64px">% <span style="font-size:11px;color:#94a3b8">（じゃらん売上に対する率・調整するとリストが即再計算）</span></div>
  </div></div>
  <div id="jalanBody"></div>
+</div>
+
+<div id="buddicaWrap" style="display:none">
+ <div class="sec"><div class="note">
+ 🚙 <b>BUDDICA支払い予定＝高松HDMの売上から当社取り分を引いてBUDDICA社に支払う額</b>。対象＝<b>高松の楽天・じゃらん・HP(サイト決済)</b>のみ。<br>
+ <b>支払額＝売上×(1−率)</b>。楽天・じゃらん＝<b>23%</b>（当社18%＋運用代行5%）／HP＝<b>8%</b>（Square手数料＋5%）。<br>
+ <b>支払月＝当社への入金月の翌月末</b>：楽天＝返却3ヶ月後末に入金→その翌月末／じゃらん＝返却月に入金(当店Square集金)→翌月末／HP＝予約受付月に入金(Square)→翌月末。
+ <div style="margin-top:8px">楽天 <input id="bdRak" type="number" value="23" min="0" max="100" step="0.1" style="width:60px">%　じゃらん <input id="bdJln" type="number" value="23" min="0" max="100" step="0.1" style="width:60px">%　HP <input id="bdHp" type="number" value="8" min="0" max="100" step="0.1" style="width:60px">% <span style="font-size:11px;color:#94a3b8">（当社が差し引く率・変えると即再計算）</span></div>
+ </div></div>
+ <div id="buddicaBody"></div>
 </div>
 
 <div id="cfWrap" style="display:none">
@@ -616,7 +627,8 @@ gid("cfBody").addEventListener("click",e=>{const b=e.target.closest("[data-pstor
  renderPlan();planAutosave();});
 document.querySelectorAll("#topTab button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#topTab button").forEach(x=>x.classList.remove("on"));b.classList.add("on");
  const m=b.dataset.m,isOta=m==="ota";["otaBar","cards","otaViewWrap","body","otaNote"].forEach(id=>{const e=gid(id);if(e)e.style.display=isOta?"":"none";});
- gid("cfWrap").style.display=m==="cf"?"":"none";gid("payWrap").style.display=m==="pay"?"":"none";gid("couponWrap").style.display=m==="coupon"?"":"none";gid("jalanWrap").style.display=m==="jalan"?"":"none";gid("simWrap").style.display=m==="sim"?"":"none";
+ gid("cfWrap").style.display=m==="cf"?"":"none";gid("payWrap").style.display=m==="pay"?"":"none";gid("couponWrap").style.display=m==="coupon"?"":"none";gid("jalanWrap").style.display=m==="jalan"?"":"none";gid("simWrap").style.display=m==="sim"?"":"none";gid("buddicaWrap").style.display=m==="buddica"?"":"none";
+ if(m==="buddica")buddicaLoad();
  if(m==="sim")simOpen();
  if(m==="cf"){if(!cfData)cfLoad();else cfRender();} /* 2026-11-04 開くたびに描き直す（OTA入金で入れた業務委託が戻っても出なかった） */if(m==="pay")payLoad();if(m==="coupon")couponLoad();if(m==="jalan")jalanLoad();});
 
@@ -697,6 +709,50 @@ function jalanRender(){
   +'<div class="card" style="background:#f8fafc;border-color:#cbd5e1"><div style="font-size:12px;color:#475569">累計</div><div style="font-size:20px;font-weight:800;color:#334155">'+yen(tFinal)+'</div></div>'
   +'</div>'
   +'<div class="note" style="margin-top:8px">💡 <b>請求書が届いた月は「実績(請求書)」に合計額を入力</b>（自動保存＝確定額を採用）。未入力の月は<b>概算（送客手数料＝売上×率）</b>で予測。概算には販促プログラム・ポイント付与料・消費税は含みません（請求書で確定）。率は上の入力で調整＝即再計算。</div></div>';
+ bd.innerHTML=h;
+}
+
+/* ===== 🚙 BUDDICA支払い予定（高松HDM 楽天/じゃらん/HP・入金月の翌月末に支払い） ===== */
+// 2026-11-06 オーナー指示：楽天・じゃらん＝売上−23%(当社18%＋運用代行5%)、HP＝売上−8%(Square手数料＋5%)をBUDDICAへ。入金サイクルの翌月に支払う。
+const BD_CH=[["楽天","bdRak","#be123c"],["じゃらん","bdJln","#15803d"],["HP(サイト決済)","bdHp","#0891b2"]];
+let BD_ACT={}; // BUDDICAへの実支払額(支払月別・手入力)
+function saveBdAct(){fetch(MAIN+"/rest/v1/ota_manual?on_conflict=k",{method:"POST",headers:{apikey:MANON,Authorization:"Bearer "+MANON,"Content-Type":"application/json",Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({k:"buddica_actual",data:BD_ACT,updated_at:new Date().toISOString()})}).catch(_=>{});}
+function _bdRate(id){const el=gid(id);const v=el?parseFloat(el.value):NaN;return isNaN(v)?0:v/100;}
+async function buddicaLoad(){
+ const bd=gid("buddicaBody");bd.innerHTML='<div class="note">読み込み中…</div>';
+ try{
+  if(!RAW||!RAW.length){await load();}
+  const a=await fetch(MAIN+"/rest/v1/ota_manual?k=eq.buddica_actual&select=data",{headers:{apikey:MANON,Authorization:"Bearer "+MANON}}).then(r=>r.json()).catch(_=>[]);
+  BD_ACT=(a&&a[0]&&a[0].data)?a[0].data:{};
+ }catch(e){bd.innerHTML='<div class="note">読み込み失敗</div>';return;}
+ BD_CH.forEach(c=>{const el=gid(c[1]);if(el&&!el._wired){el._wired=1;el.addEventListener("input",()=>buddicaRender());}});
+ if(!bd._wired){bd._wired=1;bd.addEventListener("change",e=>{const t=e.target.closest("[data-bdact]");if(!t)return;const pm=t.dataset.bdact;const v=parseInt(String(t.value).replace(/[^\d]/g,''),10);if(isNaN(v)||v<=0)delete BD_ACT[pm];else BD_ACT[pm]=v;saveBdAct();buddicaRender();});}
+ buddicaRender();
+}
+function buddicaRender(){
+ const bd=gid("buddicaBody");const cur=new Date().toISOString().slice(0,7);
+ // RAWのpay_month＝当社への入金月（楽天＝返却+3、じゃらん＝返却月、HP＝予約受付月）→ BUDDICAへの支払月＝その翌月
+ const g={};(RAW||[]).forEach(r=>{if(r.store!=="tkm"||!r.pay_month||r.kind==="未入金")return;if(!BD_CH.some(c=>c[0]===r.ota))return;const pm=_addMon(r.pay_month,1);(g[pm]=g[pm]||{})[r.ota]=(g[pm][r.ota]||0)+(+r.gross||0);});
+ const months=[...new Set([...Object.keys(g),...Object.keys(BD_ACT||{})])].sort();
+ const rt={};BD_CH.forEach(c=>rt[c[0]]=_bdRate(c[1]));
+ const T={};BD_CH.forEach(c=>T[c[0]]={g:0,p:0});
+ let tEst=0,tFin=0,past=0,future=0;
+ let h='<div class="sec"><h2>🚙 BUDDICA支払い予定（🍜高松HDM・支払月＝入金月の翌月末）</h2><div class="ov"><table><thead><tr><th>支払月(末)</th><th>対象入金月</th>';
+ BD_CH.forEach(c=>{const lb=c[0]==="HP(サイト決済)"?"HP":c[0];h+='<th>'+lb+' 売上</th><th style="background:'+c[2]+';color:#fff">'+lb+' 支払額<br><span style="font-size:9px">売上−'+(Math.round(rt[c[0]]*1000)/10)+'%</span></th>';});
+ h+='<th style="background:#475569;color:#fff">支払額 計</th><th style="background:#166534;color:#fff">実績(実際に払った額)</th><th style="background:#1e3a8a;color:#fff">確定/予定</th></tr></thead><tbody>';
+ months.forEach(pm=>{const row=g[pm]||{};let est=0;
+  h+='<tr'+(pm>=cur?' style="background:#eff6ff"':'')+'><td>'+pm+'末'+(pm>=cur?' <span class="badge">これから</span>':'')+'</td><td style="color:#64748b">'+_addMon(pm,-1)+'</td>';
+  BD_CH.forEach(c=>{const gv=row[c[0]]||0,pv=Math.round(gv*(1-rt[c[0]]));est+=pv;T[c[0]].g+=gv;T[c[0]].p+=pv;h+='<td class="mono" style="color:#64748b">'+(gv?yen(gv):'·')+'</td><td class="mono" style="font-weight:700;color:'+c[2]+'">'+(pv?yen(pv):'·')+'</td>';});
+  const act=(BD_ACT&&BD_ACT[pm])?+BD_ACT[pm]:0,fin=act||est;tEst+=est;tFin+=fin;if(pm<cur)past+=fin;else future+=fin;
+  h+='<td class="mono" style="font-weight:700">'+(est?yen(est):'·')+'</td><td><input class="mono" data-bdact="'+pm+'" value="'+(act||'')+'" inputmode="numeric" placeholder="支払額" style="width:96px;text-align:right;border:1px solid #86efac;border-radius:4px;padding:3px 5px;font-size:12px"></td><td class="mono" style="font-weight:800;color:'+(act?'#166534':'#1e3a8a')+'">'+(fin?yen(fin):'·')+(act?' <span style="font-size:9px;color:#16a34a">実績</span>':'')+'</td></tr>';});
+ h+='<tr class="tot"><td>合計</td><td></td>';BD_CH.forEach(c=>{h+='<td class="mono">'+yen(T[c[0]].g)+'</td><td class="mono">'+yen(T[c[0]].p)+'</td>';});h+='<td class="mono">'+yen(tEst)+'</td><td></td><td class="mono">'+yen(tFin)+'</td></tr>';
+ h+='</tbody></table></div>';
+ h+='<div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;padding:0 14px 10px">'
+  +'<div class="card" style="background:#f8fafc;border-color:#cbd5e1"><div style="font-size:12px;color:#475569">支払い済（過去分）</div><div style="font-size:20px;font-weight:800;color:#334155">'+yen(past)+'</div></div>'
+  +'<div class="card" style="background:#eff6ff;border-color:#93c5fd"><div style="font-size:12px;color:#1d4ed8">これから支払い（当月以降）</div><div style="font-size:20px;font-weight:800;color:#1d4ed8">'+yen(future)+'</div></div>'
+  +'<div class="card" style="background:#f8fafc;border-color:#cbd5e1"><div style="font-size:12px;color:#475569">累計</div><div style="font-size:20px;font-weight:800;color:#334155">'+yen(tFin)+'</div></div>'
+  +'</div>'
+  +'<div class="note">💡 売上は「OTA入金」タブの🍜高松と同じ数字（HANDYMANブランド分・キャンセル/テスト除外）。<b>実際に支払った月は「実績」に金額を入力</b>すると確定額として採用（自動保存）。楽天の売上はクーポン割引前の額（OTA入金タブと同じ）。</div></div>';
  bd.innerHTML=h;
 }
 
