@@ -153,7 +153,7 @@ a.myp{background:#065f46;color:#fff;font-size:11px;font-weight:800;border-radius
 <script>
 var SB="https://ckrxttbnawkclshczsia.supabase.co";
 var ANON="sb_publishable_aTVhlY0YD-5BBfI03ZNnsg_MzO_vsIe";
-var VER="staff-v3.45";
+var VER="staff-v3.46";
 var TOKEN=new URLSearchParams(location.search).get("t")||"";
 // ===== 📊 個別URL利用計測 (staff_url_events) — 前方記録・既存挙動に非干渉 =====
 var SUE=(function(){
@@ -332,6 +332,30 @@ window.openHistory=function(ym){
     .then(function(d){ if(!d||d.ok===false){setContent('<div class="err" style="margin:16px 0">⚠️ 履歴の読み込みに失敗しました<br><button onclick="openHistory(\''+ym+'\')">再読み込み</button></div>');return;} renderHistory(d); })
     .catch(function(){setContent('<div class="err" style="margin:16px 0">⚠️ 通信エラー<br><button onclick="openHistory(\''+ym+'\')">再読み込み</button></div>');});
 };
+// 今月の出勤日数（出勤簿ベース：今日までの出勤＝実績、明日以降＝予定）と概算給与（spk_staff_month_pay があれば）
+var HPAY=null,HPAY_AT=0;
+function heroPayHtml(){
+  if(!HPAY)return '';
+  var h='<div class="hp-row"><div class="hp-box"><div class="hp-l">今月の出勤（実績）</div><div class="hp-v">'+HPAY.done+'<small>日</small></div></div>'
+    +'<div class="hp-box"><div class="hp-l">このあとの予定</div><div class="hp-v">'+HPAY.left+'<small>日</small></div></div>';
+  if(HPAY.total!=null)h+='<div class="hp-box hp-y"><div class="hp-l">今月の給与（概算）</div><div class="hp-v"><small>¥</small>'+Number(HPAY.total).toLocaleString()+'</div></div>';
+  return h+'</div>';
+}
+function loadHeroPay(){
+  if(HPAY&&Date.now()-HPAY_AT<300000){var e0=document.getElementById("heroPay");if(e0)e0.innerHTML=heroPayHtml();return;}
+  HPAY_AT=Date.now();
+  var H={"apikey":ANON,"Authorization":"Bearer "+ANON,"Content-Type":"application/json"};
+  var ym=jstToday().slice(0,7),today=jstToday();
+  var p1=fetch(SB+"/rest/v1/rpc/spk_staff_shifts",{method:"POST",headers:H,body:JSON.stringify({p_token:TOKEN,p_ym:ym})}).then(function(r){return r.json();}).catch(function(){return null;});
+  var p2=fetch(SB+"/rest/v1/rpc/spk_staff_month_pay",{method:"POST",headers:H,body:JSON.stringify({p_token:TOKEN})}).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;});
+  Promise.all([p1,p2]).then(function(a){
+    var d=a[0],pay=a[1];if(!d||d.ok===false)return;
+    var NW=/(公|希|有|欠|休|×|✕)/;var done=0,left=0;
+    (d.shifts||[]).forEach(function(x){var sym=String(x.symbol||"").trim();if(NW.test(sym))return;if(!sym&&!x.start)return;if(x.date<=today)done++;else left++;});
+    HPAY={done:done,left:left,total:(pay&&pay.ok)?pay.total:null};
+    var e=document.getElementById("heroPay");if(e)e.innerHTML=heroPayHtml();
+  });
+}
 function renderHistory(d){
   MODE="history";
   var ym=d.ym||jstToday().slice(0,7);var tk=(d.tasks||[]);
@@ -558,7 +582,9 @@ function shell(contentHtml){
   var name=esc(String(d.staff||"").replace(/\s*さん\s*$/,""));
   var h='<div class="hero"><img class="hero-logo" src="hdm-logo-of.png" alt="HANDYMAN RENTCAR"><div class="hero-stores"><span>那覇店</span><span class="on">札幌店</span><span>高松店</span><span>BUDDICA高松店</span></div><div class="brand">HANDYMAN 札幌デリバリー</div>'
     +'<div class="name">'+(name||"スタッフ")+' さん</div>'
-    +'<div class="sub">本日 '+tdy.length+'件 ／ 未来 '+fut.length+'件'+(reqs.length?'　／　📢依頼 '+reqs.length+'件':'')+'</div></div>';
+    +'<div class="sub">本日 '+tdy.length+'件 ／ 未来 '+fut.length+'件'+(reqs.length?'　／　📢依頼 '+reqs.length+'件':'')+'</div>'
+    +'<div class="hero-pay" id="heroPay">'+heroPayHtml()+'</div></div>';
+  setTimeout(loadHeroPay,0);
   // 📗 スタッフ操作マニュアルへの目立つ導線
   h+='<div class="c-links"><a class="y" href="staff-manual.html" target="_blank" rel="noopener">スタッフ操作<br>マニュアル</a><a href="https://nosh2318.github.io/spk-task/fleet-check.html?store=spk" target="_blank" rel="noopener">車両管理<br>チェック</a><a href="https://rent-handyman.com/official-data-protection.html" target="_blank">個人情報の<br>統一回答</a></div>';   // ★2026-11-07 C案：リンクを小さく1段に・リアルタイム状況(3D本社)は削除（オーナー指示）
   var TIC={"today":'<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4h6v3H9zM9 12h6M9 16h4"/></svg>',"punch":'<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2M9 2h6"/></svg>',"kintai":'<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2M9 2h6"/></svg>',"park":'<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="3"/><path d="M10 17V7h3a3 3 0 0 1 0 6h-3"/></svg>',"petty":'<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="3"/><path d="M6 10v4M18 10v4"/></svg>',"kshift":'<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>',"future":'<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6"/></svg>'};function tab(id,label,cnt,alert){return '<button class="tab'+(STAB===id?" on":"")+'" onclick="setTab(\''+id+'\')">'+(TIC[id]||"")+label+(cnt!=null?'<span class="tb'+(alert?" alert":"")+'">'+cnt+'</span>':'')+'</button>';}
@@ -1202,6 +1228,12 @@ body{font-family:"Noto Sans JP","Hiragino Sans","Hiragino Kaku Gothic ProN",sans
 .hero-logo{display:block;height:24px;width:auto;margin:0 0 10px}
 .hero-stores{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;margin:0 0 12px;padding:6px;background:#001548;border-radius:999px}
 .hero-stores span{min-height:30px;display:flex;align-items:center;justify-content:center;text-align:center;border-radius:999px;color:rgba(255,255,255,.45);font-size:11px;line-height:1.2;padding:0 2px;white-space:nowrap;letter-spacing:-.02em}
+.hero-pay .hp-row{display:flex;gap:6px;margin-top:12px}
+.hero-pay .hp-box{flex:1 1 0;min-width:0;background:rgba(255,255,255,.08);border-radius:12px;padding:8px 6px;text-align:center}
+.hero-pay .hp-y{background:#FABE00;color:#002063}
+.hero-pay .hp-l{font-size:11px;opacity:.85;white-space:nowrap}
+.hero-pay .hp-v{font-size:22px;font-weight:700;line-height:1.2}
+.hero-pay .hp-v small{font-size:12px;font-weight:700;margin:0 1px}
 .hero-stores span.on{background:#FABE00;color:#002063;font-weight:700;animation:hdmPulse 1.6s ease-in-out infinite}
 @keyframes hdmPulse{0%,100%{box-shadow:0 0 0 0 rgba(250,190,0,.9);opacity:1}50%{box-shadow:0 0 0 6px rgba(250,190,0,0);opacity:.75}}
 .hero .name{font-size:24px;font-weight:700}
