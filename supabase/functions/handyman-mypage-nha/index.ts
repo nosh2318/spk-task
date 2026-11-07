@@ -283,6 +283,16 @@ Deno.serve(async (req) => {
   const r = rows[0];
   if (!r) return json({ error: "予約が見つかりません" }, 404, origin);
   const resId = String(r.id);
+  // ★CANCELLED_ONLY_1030 キャンセル済みは「M月D日にキャンセル済みです」だけを返す（予約の中身は一切返さない／全アクション共通）
+  { const _cs = String(r.status || ""); if (/cancel/i.test(_cs) || _cs.indexOf("キャンセル") >= 0) {
+    let _at = "";
+    try { const _lg = await sbGet("reservation_cancel_ledger", `reservation_id=eq.${encodeURIComponent(resId)}&event=eq.cancel&order=changed_at.desc&limit=1&select=changed_at`); _at = String((_lg[0] && _lg[0].changed_at) || ""); } catch (_) { /* noop */ }
+    if (!_at) { try { const _u = await sbGet("nha_reservations", `id=eq.${encodeURIComponent(resId)}&select=updated_at`); _at = String((_u[0] && _u[0].updated_at) || ""); } catch (_) { /* noop */ } }
+    const _t = _at ? new Date(_at).getTime() : NaN;
+    const _cd = isNaN(_t) ? "" : new Date(_t + 9 * 3600 * 1000).toISOString().slice(0, 10);
+    const _msg = _cd ? `${+_cd.slice(5, 7)}月${+_cd.slice(8, 10)}日にキャンセル済みです` : "キャンセル済みです";
+    return json({ ok: false, cancelled: true, cancel_date: _cd, error: _msg }, 200, origin);
+  } }
 
   // ---- license_uploaded: お客様がマイページから免許証をアップした完了通知（Slack・那覇） ----
   if (action === "license_uploaded") {
@@ -354,7 +364,7 @@ Deno.serve(async (req) => {
         { type: "mrkdwn", text: `*車両:*\n${r.vehicle_class || r.vehicle_name || "-"}` }, { type: "mrkdwn", text: `*金額:*\n¥${Number(r.price || 0).toLocaleString()}` },
       ] },
       { type: "section", text: { type: "mrkdwn", text: `*理由:*\n${reason || "（記載なし）"}` } },
-      { type: "actions", elements: [ { type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, style: "primary", url: "https://rent-handyman.com/mypage-admin.html?bucket=hdm_nha" } ] },
+      { type: "actions", elements: [ { type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, style: "primary", url: "https://nosh2318.github.io/spk-task/mypage-admin.html?bucket=hdm_nha" } ] },
       { type: "context", elements: [ { type: "mrkdwn", text: "⚠️ 承認制です。上のボタン（または「📲マイページ利用状況(那覇)」→承認待ち）で承認/却下（承認＝キャンセル確定＋配車解放。返金は規定に沿って手動Square返金）。" } ] },
     ]); }
     return json({ ok: true, requested: true }, 200, origin);
@@ -379,7 +389,7 @@ Deno.serve(async (req) => {
         { type: "mrkdwn", text: `*🕐 予定の回収*\n${planned}` },
         { type: "mrkdwn", text: `*🟢 お客様の希望*\n${rdyTime ? `*${rdyTime}〜*` : "指定なし"}` },
       ] },
-      { type: "actions", elements: [ { type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, style: "primary", url: "https://rent-handyman.com/mypage-admin.html?bucket=hdm_nha" } ] },
+      { type: "actions", elements: [ { type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, style: "primary", url: "https://nosh2318.github.io/spk-task/mypage-admin.html?bucket=hdm_nha" } ] },
       { type: "context", elements: [ { type: "mrkdwn", text: "👉 上のボタン（マイページ管理）で ✅承認 / 🚫却下（承認でお客様へメール通知）" } ] },
     ];
     await slackPost(`🟢 早め回収リクエスト（承認待ち）[那覇] ${r.name || ""} / ${resId}`, rBlocks);
