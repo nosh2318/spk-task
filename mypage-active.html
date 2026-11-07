@@ -67,6 +67,10 @@ details.defs summary{cursor:pointer;font-weight:800;font-size:13px}
 .dt{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}
 .dt th,.dt td{text-align:left;vertical-align:top;padding:6px 6px;border-top:1px solid var(--line)}
 .dt th{white-space:nowrap}
+.due0{background:#dc2626;color:#fff}.due1{background:var(--tmpb);color:var(--tmp)}.due2{background:var(--nab);color:var(--na)}
+.ty{font-size:14.5px}.chg{margin:6px 0 4px;font-size:15px;line-height:1.5}.chg .bf{color:var(--mut);text-decoration:line-through;margin-right:6px}.chg .ar{margin-right:6px;color:var(--mut)}
+.hot{margin-top:10px;background:#dc2626;color:#fff;font-weight:800;border-radius:10px;padding:10px 12px;font-size:13.5px}
+.lnk{border:0;background:none;color:var(--mut);text-decoration:underline;font-family:inherit;font-size:12px;cursor:pointer;padding:4px 0}
 .todo{display:flex;gap:10px;align-items:center;border-radius:10px;padding:10px 11px;margin-top:8px;border-left:6px solid}
 .todo .ti{font-size:22px;line-height:1}.todo .tt{font-weight:900;font-size:15.5px;line-height:1.35}.todo .td{font-size:12px;margin-top:2px;opacity:.85}
 .todo .tb2{margin-left:auto;flex-shrink:0}
@@ -119,13 +123,13 @@ details.defs summary{cursor:pointer;font-weight:800;font-size:13px}
 </section>
 <section id="tab-action" hidden>
 <div class="card">
-  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b>未処理の依頼（全店）</b><span class="mut">変更・キャンセル・早め回収</span></div>
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b>返事待ちの依頼（全店）</b><span class="mut">返事の目安：受付から30分（9:00〜19:00）、夜間は翌9:30</span></div><div id="aHot"></div>
   <div class="tiles" id="aTiles" style="margin-top:10px"></div>
   <div class="filt" id="aFilt"></div>
   <div id="aList"><div class="empty">読み込み中…</div></div>
 </div>
 <div class="card">
-  <details><summary style="cursor:pointer;font-weight:800">処理済み（直近30日）<span class="mut" id="aArchN"></span></summary><div id="aArch" style="margin-top:8px"></div></details>
+  <details><summary style="cursor:pointer;font-weight:800">返事済み・アーカイブ（直近30日）<span class="mut" id="aArchN"></span></summary><div id="aArch" style="margin-top:8px"></div></details>
 </div>
 </section>
 </div>
@@ -167,8 +171,24 @@ const STG={1:"未達",2:"未開封",3:"開封・未完了",4:"準備完了",5:"�
 let ROWS=[],BF="",FL="now",OPEN={},REQ={},REQ_OUT=0,ARM="",TAB="list",AF="all",ABF="",FOCUS="",Q="",HL="",SCR={list:0,action:0},BACK=null,FOCUSB="";
 const hitQ=(name,rid)=>!Q||String(name||"").includes(Q)||String(rid||"").toLowerCase().includes(Q.toLowerCase());
 /* ---- 依頼（mypage-admin と同じデータ・同じ処理） ---- */
-function typeOf(f){f=String(f||"");if(/cancel|キャンセル/.test(f))return"cancel";if(f==="ready")return"ready";return"change";}
-function tyLabel(x){const t=typeOf(x.field);return t==="cancel"?"🚫 キャンセル申請":t==="ready"?"🕒 早め回収OK":"✏️ 変更（"+esc(x.field)+"）";}
+/* 依頼の種類（マイページの「できること一覧」の名前にそろえる） */
+const FLD={del_place:"届け先の場所",col_place:"回収の場所",lend_time:"貸出の時間",return_time:"返却の時間",ready:"早めの回収",option:"オプション",cancel:"キャンセル",
+  date:"日程・延長",extend:"日程・延長",lend_date:"日程・延長",return_date:"日程・延長",method:"受け取り・返却の方法",del_method:"受け取り・返却の方法",col_method:"受け取り・返却の方法",
+  car_class:"車種の変更",cls:"車種の変更",flight_trouble:"欠航・大幅な遅れ",lost_item:"忘れ物",ask:"スタッフに聞く",people:"人数",driver:"運転者"};
+const KIND=[["date","日程・延長",/date|extend/],["place","届け先・回収の場所",/place/],["method","受け取り・返却の方法",/method/],["class","車種の変更",/class|cls/],["ready","早めの回収",/^ready$/],
+  ["flight","欠航・大幅な遅れ",/flight/],["lost","忘れ物",/lost/],["cancel","キャンセル",/cancel|キャンセル/],["ask","スタッフに聞く",/ask/],["other","その他（時間など）",/./]];
+function typeOf(f){f=String(f||"");return (KIND.find(k=>k[2].test(f))||KIND[KIND.length-1])[0];}
+const IC={date:"📅",place:"📍",method:"🚗",class:"🚙",ready:"🕒",flight:"✈️",lost:"🧳",cancel:"🚫",ask:"💬",other:"✏️"};
+function tyLabel(x){const f=String(x.field||"");return (IC[typeOf(f)]||"✏️")+" "+esc(FLD[f]||f)+(typeOf(f)==="cancel"||f==="ready"?"":"の変更").replace("の変更の変更","の変更");}
+/* 返事の目安：9:00〜19:00 は受付から30分、それ以外は次の 9:30（JST） */
+function dueOf(at){const t=new Date(at||Date.now());if(isNaN(t))return null;const j=new Date(t.getTime()+9*3600e3),h=j.getUTCHours()+j.getUTCMinutes()/60,day=ymd(j);
+  if(h>=9&&h<19)return new Date(t.getTime()+30*60e3);return jstAt(h<9?day:addDays(day,1),9).getTime()+30*60e3;}
+function dueMs(x){const d=dueOf(x.at);return d==null?Infinity:+d;}
+function leftHtml(x){const d=dueMs(x);if(d===Infinity)return"";const m=Math.round((d-Date.now())/60e3);
+  if(m<0)return `<span class="pl due0">目安を${-m}分過ぎ</span>`;if(m<=15)return `<span class="pl due0">あと${m}分</span>`;
+  if(m<=60)return `<span class="pl due1">あと${m}分</span>`;const j=new Date(d+9*3600e3);return `<span class="pl due2">目安 ${md(ymd(j))} ${j.getUTCHours()}:${String(j.getUTCMinutes()).padStart(2,"0")}</span>`;}
+function beforeOf(x){const r=rowOf(x.bucket,x.rid);if(!r)return"";const f=String(x.field||"");
+  return f==="del_place"?(r.del_place||""):f==="col_place"?(r.col_place||""):f==="lend_time"?(md(r.sd)+" "+(r.st||"")):f==="return_time"?(md(r.ed)+" "+(r.et||"")):"";}
 async function rpc(base,anon,fn){try{const r=await fetch(base+"/rest/v1/rpc/"+fn,{method:"POST",headers:{apikey:anon,Authorization:"Bearer "+anon,"Content-Type":"application/json"},body:"{}"});if(!r.ok)return[];const j=await r.json();return Array.isArray(j)?j:[];}catch(e){return[];}}
 async function loadReq(){const [a,b]=await Promise.all([rpc(MAIN,MAIN_ANON,"mpadmin_pending"),rpc(BT,BT_ANON,"mpadmin_pending_bt")]);REQ={};a.concat(b).forEach(x=>{const k=x.bucket+"|"+x.rid;(REQ[k]=REQ[k]||[]).push(x);});}
 const reqOf=r=>REQ[r.bucket+"|"+r.rid]||[];
@@ -179,7 +199,7 @@ async function decide(key,decision){
   ARM="";const bk=key.split("|")[0],id=key.slice(bk.length+1),B=BUCK[bk];let x=null;Object.values(REQ).forEach(l=>l.forEach(i=>{if(i.bucket===bk&&String(i.id)===id)x=i;}));if(!x||!B)return;
   try{const r=await fetch(B.ef,{method:"POST",headers:{apikey:B.anon,Authorization:"Bearer "+B.anon,"Content-Type":"application/json"},body:JSON.stringify({action:"decide",admin_pin:getPin(),change_id:isNaN(+x.id)?x.id:+x.id,decision})});
     const j=await r.json().catch(()=>({}));
-    if(r.ok&&j.ok){x.status=decision;x.at=new Date().toISOString();toast(decision==="approved"?"承認しました（反映・通知済）":decision==="rejected"?"却下しました":"確認済みにしました");render();if(decision==="approved")setTimeout(loadAll,1500);}
+    if(r.ok&&j.ok){x.status=decision;x.at=new Date().toISOString();toast(decision==="approved"?"承認しました（反映・通知済）":decision==="rejected"?"お断りしました":"アーカイブしました");render();if(decision==="approved")setTimeout(loadAll,1500);}
     else if(r.status===401)toast("PINが違います");else toast("失敗: "+(j.error||("http "+r.status)));
   }catch(e){toast("通信エラー");}
 }
@@ -333,27 +353,32 @@ function todoHtml(r,a,B){
     :a.go==="karte"&&r.token&&B.my?`<a class="btn sm tb2" href="${B.my}${encodeURIComponent(r.token)}&ro=1" target="_blank" rel="noopener" onclick="event.stopPropagation()">カルテ</a>`:"";
   return `<div class="todo lv${a.lv}"><span class="ti" aria-hidden="true">${a.ic}</span><div><div class="tt">${esc(a.t)}</div>${a.d?`<div class="td">${esc(a.d)}</div>`:""}</div>${btn}</div>`;}
 /* ---- アクションタブ ---- */
-const ATY=[["all","全種別"],["cancel","🚫 キャンセル"],["change","✏️ 変更"],["ready","🕒 早め回収"]];
 function rowOf(bk,rid){return ROWS.find(r=>r.bucket===bk&&String(r.rid)===String(rid));}
 function actCard(x,pend){const B=BUCK[x.bucket]||{n:x.bucket,c:"#334155"},r=rowOf(x.bucket,x.rid),foc=FOCUS===x.bucket+"|"+x.rid;if(!hitQ(x.name,x.rid))return"";
-  const dots=r?`<div class="dots">${ITEMS.map(([k,l])=>`<span class="d ${r.j.it[k]}">${l}</span>`).join("")}</div>`:'<div class="mut" style="margin-top:4px">（リストの期間外の予約）</div>';
   return `<div class="it ${foc?"hl":""}" data-a="${esc(x.bucket+"|"+x.rid)}" style="cursor:default${ABF&&x.bucket!==ABF?";opacity:.3":""}">
-    <div class="top">${r?`<span class="pl s${r.j.stage}">${STG[r.j.stage]}</span>`:""}<span class="nm">${esc(x.name||"-")} 様</span><span style="flex:1"></span>${r?`<button class="jump" onclick="goList('${x.bucket}','${esc(x.rid)}')">← リストで見る</button>`:""}</div>
-    <div class="l2">${otaBadge(x.ota)}<span class="bk" style="background:${B.c}">${B.n}</span><span class="mut">${esc(x.rid)} ・ ${md(x.sd)}〜${md(x.ed)}</span></div>
-    ${dots}${reqItem(x,pend)}</div>`;}
-function reqItem(x,act){const k=x.bucket+"|"+x.id,p=x.status==="requested";
-  const st=p?'<span class="pl s2">未処理</span>':x.status==="approved"?'<span class="pl s4">承認済</span>':x.status==="rejected"?'<span class="pl s1">却下</span>':'<span class="pl" style="background:var(--nab);color:var(--na)">確認済み</span>';
-  const btn=(d,l,cls)=>`<button class="btn sm ${cls}" onclick="decide('${esc(k)}','${d}')">${ARM===k+"|"+d?"もう一度押すと確定":l}</button>`;
-  return `<div class="rq ${p?"pend":""}"><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b>${tyLabel(x)}</b>${st}<span class="mut">${esc((x.at||"").slice(5,16).replace("T"," "))}</span></div>
-    ${x.newv?`<div>希望内容: <b>${esc(x.newv)}</b></div>`:""}${x.note?`<div class="mut">📝 ${esc(x.note)}</div>`:""}
-    ${p&&act?`<div class="acts">${btn("approved","✅ 承認（反映＋"+(x.line?"LINE":"メール")+"通知）","ok")}${btn("rejected","🚫 却下","dang")}${btn("acknowledged","✔ 確認済み（対応不要）","")}</div>`:""}</div>`;}
+    <div class="top">${pend?leftHtml(x):""}<b class="ty">${tyLabel(x)}</b><span style="flex:1"></span><span class="bk" style="background:${B.c}">${B.n}</span></div>
+    <div class="l2"><span class="nm">${esc(x.name||"-")} 様</span>${otaBadge(x.ota)}<span class="mut">${md(x.sd)}〜${md(x.ed)}${r?" ・ "+MLB[r.j.m]:""}</span></div>
+    ${reqItem(x,pend)}
+    <div class="acts" style="justify-content:space-between">${r?`<button class="jump" onclick="goList('${x.bucket}','${esc(x.rid)}')">← リストで見る</button>`:'<span class="mut">（リストの期間外の予約）</span>'}<span class="mut">${esc(x.rid)}</span></div></div>`;}
+function reqItem(x,act){const k=x.bucket+"|"+x.id,p=x.status==="requested",bf=beforeOf(x);
+  const st=p?"":x.status==="approved"?'<span class="pl s4">承認</span>':x.status==="rejected"?'<span class="pl s1">お断り</span>':'<span class="pl" style="background:var(--nab);color:var(--na)">アーカイブ</span>';
+  const btn=(d,l,cls)=>`<button class="btn ${cls}" onclick="decide('${esc(k)}','${d}')">${ARM===k+"|"+d?"もう一度押すと確定":l}</button>`;
+  const ch=typeOf(x.field)==="cancel"?'<div class="chg"><b>キャンセルしたい</b></div>':x.field==="ready"?`<div class="chg"><b>早めに回収してOK</b>${x.newv?`<div class="mut">目安：${esc(x.newv)}</div>`:""}</div>`
+    :`<div class="chg">${bf?`<span class="bf">${esc(bf)}</span><span class="ar">→</span>`:""}<b>${esc(x.newv||"（内容なし）")}</b></div>`;
+  return `<div class="rq ${p?"pend":""}">${st?`<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${st}<span class="mut">${act?"":tyLabel(x)} ${esc((x.at||"").slice(5,16).replace("T"," "))}</span></div>`:""}
+    ${ch}${x.note?`<div class="mut">📝 ${esc(x.note)}</div>`:""}
+    ${p&&act?`<div class="acts">${btn("approved","✅ 承認（反映＋"+(x.line?"LINE":"メール")+"で通知）","ok")}${btn("rejected","お断り","dang")}</div>
+      <div style="margin-top:6px"><button class="lnk" onclick="decide('${esc(k)}','acknowledged')">${ARM===k+"|acknowledged"?"もう一度押すとアーカイブ":"アーカイブ（反映・通知なし。重複や取り下げ用）"}</button></div>`:""}</div>`;}
 function renderAct(){
   const all=[].concat(...Object.values(REQ));const pend=all.filter(x=>x.status==="requested");
   document.getElementById("actCnt").textContent=pend.length||"";
   document.getElementById("aTiles").innerHTML=BORD.map(bk=>{const n=pend.filter(x=>x.bucket===bk).length,B=BUCK[bk];return `<button class="tile ${ABF===bk?"on":""}" onclick="ABF=ABF==='${bk}'?'':'${bk}';renderAct()"><div class="bn" style="color:${B.c}">${B.n}</div><div class="num">${n}<small> 件</small></div></button>`;}).join("");
-  document.getElementById("aFilt").innerHTML=ATY.map(([k,l])=>`<button class="chip ${AF===k?"on":""}" onclick="AF='${k}';renderAct()">${l} ${pend.filter(x=>k==="all"||typeOf(x.field)===k).length}</button>`).join("");
-  const PR={cancel:0,change:1,ready:2},fo=x=>FOCUS&&x.bucket+"|"+x.rid===FOCUS?0:FOCUSB&&x.bucket===FOCUSB?1:2;
-  const L=pend.filter(x=>AF==="all"||typeOf(x.field)===AF).sort((a,b)=>fo(a)-fo(b)||PR[typeOf(a.field)]-PR[typeOf(b.field)]||String(b.at||"").localeCompare(String(a.at||"")));
+  const kinds=[["all","すべて"]].concat(KIND.filter(k=>pend.some(x=>typeOf(x.field)===k[0])).map(k=>[k[0],IC[k[0]]+" "+k[1]]));if(!kinds.some(k=>k[0]===AF))AF="all";
+  document.getElementById("aFilt").innerHTML=kinds.map(([k,l])=>`<button class="chip ${AF===k?"on":""}" onclick="AF='${k}';renderAct()">${l} ${pend.filter(x=>k==="all"||typeOf(x.field)===k).length}</button>`).join("");
+  const fo=x=>FOCUS&&x.bucket+"|"+x.rid===FOCUS?0:FOCUSB&&x.bucket===FOCUSB?1:2;
+  const L=pend.filter(x=>AF==="all"||typeOf(x.field)===AF).sort((a,b)=>fo(a)-fo(b)||dueMs(a)-dueMs(b));
+  const hot=pend.filter(x=>dueMs(x)-Date.now()<=15*60e3).length;
+  document.getElementById("aHot").innerHTML=hot?`<div class="hot">⏰ 返事の目安まで15分を切った依頼が ${hot} 件あります。先に返事してください。</div>`:"";
   document.getElementById("aList").innerHTML=L.length?L.map(x=>actCard(x,true)).join(""):'<div class="empty">✅ 未処理の依頼はありません</div>';
   const A=all.filter(x=>x.status!=="requested").sort((a,b)=>String(b.at||"").localeCompare(String(a.at||"")));
   document.getElementById("aArchN").textContent=" "+A.length+"件";
