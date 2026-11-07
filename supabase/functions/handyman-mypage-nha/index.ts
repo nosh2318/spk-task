@@ -123,6 +123,24 @@ function taskOptNum(t: any, key: string): number {
   return Number(cj[key]) || 0;
 }
 
+// ==== 2026-11-07 別の案・お断り理由（アクションタブ仕様。マイページ側の「この案でOK／やめる」と対） ====
+// decide: decision=proposed（proposal_text 必須・proposal_value 任意）→ status=proposed, payload.proposal
+//         decision=rejected（reject_reason / reject_text 任意）→ 通知文に理由、payload.reject
+// proposal_reply（お客様・token）: accept→その値で承認と同じ処理 / decline→declined_by_guest / 期限切れ→expired
+const REJ_JP: Record<string, string> = { no_vehicle: "ご希望の日時は、空いているお車がございません。", out_of_area: "ご希望の場所は、お届け・回収の対象エリア外です。", past_deadline: "変更の受付締切を過ぎております。", other: "" };
+function rejectLine(code: string, text: string): string { const a = REJ_JP[code] || ""; const t = String(text || "").trim().slice(0, 200); return [a, t].filter(Boolean).join("\n"); }
+const PROP_FIELDS_END = ["col_place", "return_time", "ready"];
+// 期限：今から24時間、ただし受け渡しの2時間前まで（最短30分）
+function proposalExpires(field: string, sd: string, st: string, ed: string, et: string): string {
+  const now = Date.now(); let exp = now + 24 * 3600e3;
+  const d = PROP_FIELDS_END.includes(field) ? ed : sd, t = PROP_FIELDS_END.includes(field) ? et : st;
+  if (d) { const hm = String(t || "09:00").match(/(\d{1,2}):(\d{2})/); const h = hm ? +hm[1] : 9, m = hm ? +hm[2] : 0;
+    const hand = Date.parse(`${d}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00+09:00`); if (!isNaN(hand)) exp = Math.min(exp, hand - 2 * 3600e3); }
+  return new Date(Math.max(exp, now + 30 * 60e3)).toISOString();
+}
+function jstMdHm(iso: string): string { const j = new Date(Date.parse(iso) + 9 * 3600e3); return `${j.getUTCMonth() + 1}/${j.getUTCDate()} ${String(j.getUTCHours()).padStart(2, "0")}:${String(j.getUTCMinutes()).padStart(2, "0")}`; }
+const FLD_JP: Record<string, string> = { del_place: "お届け場所", col_place: "回収場所", lend_time: "貸出の時間", return_time: "返却の時間", ready: "早めの回収", option: "オプション", cancel: "キャンセル", method: "受け取り・返却の方法" };
+
 Deno.serve(async (req) => {
   const origin = req.headers.get("origin");
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors(origin) });
@@ -151,17 +169,34 @@ Deno.serve(async (req) => {
     }
     const changeId = p.change_id;
     const decision = String(p.decision || "").trim();
-    if (!changeId || (decision !== "approved" && decision !== "rejected" && decision !== "acknowledged")) return json({ error: "パラメータ不正" }, 400, origin);
-    const cRows = await sbGet("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}&store=eq.nha&select=id,reservation_id,field,new_value,status`);
+    if (!changeId || (decision !== "approved" && decision !== "rejected" && decision !== "acknowledged" && decision !== "proposed")) return json({ error: "パラメータ不正" }, 400, origin);
+    const cRows = await sbGet("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}&store=eq.nha&select=id,reservation_id,field,new_value,status,payload`);
     const c = cRows[0];
     if (!c) return json({ error: "対象が見つかりません" }, 404, origin);
     if (c.status !== "requested") return json({ error: "処理済みです", status: c.status }, 409, origin);
     // 確認済み（対応不要・アーカイブのみ。反映も通知もしない）
     if (decision === "acknowledged") { await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: "acknowledged", actor }); return json({ ok: true, decided: "acknowledged" }, 200, origin); }
     const resId2 = String(c.reservation_id);
+    const pl0: any = (c.payload && typeof c.payload === "object") ? c.payload : {};
+    const rejCode = String(p.reject_reason || ""), rejText = String(p.reject_text || "").trim().slice(0, 200);
+    const rejLine = decision === "rejected" ? rejectLine(rejCode, rejText) : "";
+    const rejPayload = decision === "rejected" && (rejCode || rejText) ? { payload: { ...pl0, reject: { reason: rejCode || "other", text: rejText, by: actor, at: new Date().toISOString() } } } : {};
+    // ---- 別の案（お客様がマイページで「この案でOK」を押すと承認と同じ処理で確定）----
+    if (decision === "proposed") {
+      const ptext = String(p.proposal_text || "").trim().slice(0, 300); const pval = String(p.proposal_value || "").trim().slice(0, 100);
+      if (!ptext) return json({ error: "別の案の内容を書いてください" }, 400, origin);
+      const rv = (await sbGet("nha_reservations", `id=eq.${encodeURIComponent(resId2)}&select=name,ota,start_date,start_time,end_date,end_time,mypage_token`))[0] || {};
+      const exp = proposalExpires(String(c.field), rv.start_date, rv.start_time, rv.end_date, rv.end_time);
+      await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: "proposed", actor, payload: { ...pl0, proposal: { text: ptext, value: pval, expires_at: exp, by: actor, at: new Date().toISOString() } } });
+      const url = rv.mypage_token ? `https://nosh2318.github.io/naha-project/my-nha.html?t=${rv.mypage_token}` : "";
+      await notifyCust(resId2, `【HANDYMAN那覇空港店】ご予約 ${resId2} ご依頼について別の案のご提案`,
+        `【HANDYMAN 那覇】ご依頼（${FLD_JP[c.field] || c.field}）について、別の案のご提案です。\n${ptext}\n\nマイページで「この案でOK」を押していただくと確定します（${jstMdHm(exp)}まで）。ご都合が合わない場合は「やめる」を押してください。今のご予約はそのままです。${url ? "\n" + url : ""}\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);
+      await slackPost(`💬 別の案を送りました [那覇] ${FLD_JP[c.field] || c.field} / ${resId2}：${ptext}（お客様の返事待ち・${jstMdHm(exp)}まで）／ ${actor.replace(/^staff:/, "")}`);
+      return json({ ok: true, decided: "proposed", expires_at: exp }, 200, origin);
+    }
     // ---- キャンセル承認/却下（HP直販・承認必須。返金は手動Square）----
     if (c.field === "cancel") {
-      await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: decision, actor });
+      await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: decision, actor, ...rejPayload });
       const cr = (await sbGet("nha_reservations", `id=eq.${encodeURIComponent(resId2)}&select=name,ota,start_date,end_date,vehicle_class,price`))[0] || {};
       if (decision === "approved") {
         await sbPatch("nha_reservations", `id=eq.${encodeURIComponent(resId2)}`, { status: "キャンセル" });
@@ -179,7 +214,7 @@ Deno.serve(async (req) => {
         ]); }
       } else {
         await notifyCust(resId2, `【HANDYMAN那覇空港店】ご予約 ${resId2} キャンセルのご相談につきまして`,
-          `${cr.name || "お客様"} 様\n\nお問い合わせいただいたご予約 ${resId2} のキャンセルにつきまして、恐れ入りますが今回はお受けいたしかねます。\n詳細は担当より別途ご連絡いたします。\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);
+          `${cr.name || "お客様"} 様\n\nお問い合わせいただいたご予約 ${resId2} のキャンセルにつきまして、恐れ入りますが今回はお受けいたしかねます。\n${rejLine ? rejLine + "\n" : ""}詳細は担当より別途ご連絡いたします。\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);
         await slackResv(`🚫 キャンセル却下 [那覇]${(String(cr.ota||"")==="HANDYMAN"||/^HDMN/.test(resId2))?"（🆕NEW リニューアル公式サイト）":""} ${cr.name || ""} / ${resId2} ／ ${actor.replace(/^staff:/, "")}`);
       }
       return json({ ok: true, decided: decision }, 200, origin);
@@ -194,8 +229,9 @@ Deno.serve(async (req) => {
         ? `【HANDYMAN 那覇】ご連絡ありがとうございます。今回は予定のお時間での回収を予定しております。何卒よろしくお願いいたします。`
         : `【HANDYMAN 那覇】ご依頼につきまして、恐れ入りますが今回はお受けいたしかねます。詳細は公式LINEにてご連絡いたします。`;
     }
+    if (rejLine) msg = msg.replace(/詳細は公式LINEにてご連絡いたします。/, "").trim() + "\n" + rejLine;
     await notifyCust(resId2, `【HANDYMAN那覇空港店】ご予約 ${resId2} ご依頼の結果`, msg.replace(/公式LINE/g, "担当") + `\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);  // 予約有効なうちに先に送る
-    await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: decision, actor });
+    await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: decision, actor, ...rejPayload });
     // ★ 早め回収(ready)を承認し、希望時間(HH:MM)がある場合は諸々の表示へ自動反映
     //   ①nha_reservations.col_time/end_time ②nha_tasks の c-<予約>「変更」(＋「時間」) ③mypage_changes field=return_time status=applied
     if (decision === "approved" && c.field === "ready") {
@@ -236,7 +272,7 @@ Deno.serve(async (req) => {
     return json({ ok: true, decided: decision }, 200, origin);
   }
 
-  if (action !== "lookup" && action !== "license_uploaded" && action !== "ready" && action !== "cancel_request") return json({ error: "unsupported action" }, 400, origin);
+  if (action !== "lookup" && action !== "license_uploaded" && action !== "ready" && action !== "cancel_request" && action !== "proposal_reply") return json({ error: "unsupported action" }, 400, origin);
 
   const token = String(p.token || "").trim();
   if (!token || token.length < 20) return json({ error: "アクセスキーが不正です" }, 400, origin);
@@ -268,6 +304,35 @@ Deno.serve(async (req) => {
     try { await fetch(`${SB_URL}/rest/v1/license_uploads?on_conflict=reservation_id`, { method: "POST", headers: { ...H, Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ reservation_id: resId, store: "nha", cnt, drivers, last_at: new Date().toISOString() }) }); } catch (_) { /* noop */ }
     await slackPost(`🪪 免許証アップロード完了 [那覇] ${r.name || ""} / ${resId} / ${cnt}枚`, blocks);
     return json({ ok: true }, 200, origin);
+  }
+
+  // ---- proposal_reply: お客様が別の案に返事（accept=この案でOK / decline=やめる）----
+  if (action === "proposal_reply") {
+    const cid = String(p.change_id || ""); const ans = String(p.answer || "");
+    if (!cid || (ans !== "accept" && ans !== "decline")) return json({ error: "パラメータ不正" }, 400, origin);
+    const pc = (await sbGet("mypage_changes", `id=eq.${encodeURIComponent(cid)}&store=eq.nha&reservation_id=eq.${encodeURIComponent(resId)}&select=id,field,new_value,status,payload`))[0];
+    if (!pc) return json({ error: "ご提案が見つかりません" }, 404, origin);
+    if (pc.status !== "proposed") return json({ ok: true, already: pc.status }, 200, origin);
+    const ppl: any = (pc.payload && typeof pc.payload === "object") ? pc.payload : {}; const pr: any = ppl.proposal || {};
+    const fj = FLD_JP[pc.field] || pc.field;
+    if (pr.expires_at && Date.parse(pr.expires_at) < Date.now()) {
+      await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(cid)}`, { status: "expired", payload: { ...ppl, proposal: { ...pr, answer: "expired", answered_at: new Date().toISOString() } } });
+      return json({ ok: false, expired: true, error: "ご提案の期限が過ぎました。今のご予約のままです。" }, 200, origin);
+    }
+    if (ans === "decline") {
+      await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(cid)}`, { status: "declined_by_guest", payload: { ...ppl, proposal: { ...pr, answer: "decline", answered_at: new Date().toISOString() } } });
+      await slackPost(`↩️ お客様が別の案を見送りました [那覇] ${fj} / ${resId}（今の予約のまま）`);
+      return json({ ok: true, answered: "decline" }, 200, origin);
+    }
+    // accept：値を差し替えて requested に戻し、スタッフ承認と同じ decide を内部で呼ぶ（反映＋承認通知）
+    const nv = String(pr.value || "").trim();
+    await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(cid)}`, { status: "requested", ...(nv ? { new_value: pc.field === "ready" ? `返却準備完了(早め回収OK) 希望時間 ${nv}〜` : nv } : {}), payload: { ...ppl, ...(nv && pc.field !== "ready" ? { [pc.field]: nv } : {}), proposal: { ...pr, answer: "accept", answered_at: new Date().toISOString() } } });
+    const ADMIN_PIN2 = Deno.env.get("ADMIN_PIN") || "";
+    const dr2 = await fetch(`${SB_URL}/functions/v1/handyman-mypage-nha`, { method: "POST", headers: { "content-type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` }, body: JSON.stringify({ action: "decide", admin_pin: ADMIN_PIN2, change_id: Number(cid) || cid, decision: "approved" }) });
+    const dj: any = await dr2.json().catch(() => ({}));
+    if (!dr2.ok || !dj.ok) { console.error("[proposal accept]", dr2.status, JSON.stringify(dj)); await slackPost(`⚠️ お客様が別の案にOKしましたが自動反映に失敗 [那覇] ${fj} / ${resId}（アクションタブで承認してください）`); return json({ ok: true, answered: "accept", pending: true }, 200, origin); }
+    await slackPost(`✅ お客様が別の案にOK → 確定しました [那覇] ${fj} / ${resId}：${pr.text || nv}`);
+    return json({ ok: true, answered: "accept" }, 200, origin);
   }
 
   // ---- cancel_request: HP直販予約のキャンセル申請（承認必須）。OTA予約は各OTAから申請＝受け付けない ----
@@ -326,7 +391,7 @@ Deno.serve(async (req) => {
 
   // OPタスク（予約番号一致・墓標除外）＋直近の変更履歴を並列取得
   const opTasksP = sbGet("nha_tasks", `${encodeURIComponent("予約番号")}=eq.${encodeURIComponent(resId)}&deleted=not.is.true&select=_id,${encodeURIComponent("内容")},${encodeURIComponent("時間")},${encodeURIComponent("送迎場所")},${encodeURIComponent("集客")},${encodeURIComponent("返却")},${encodeURIComponent("送迎")},${encodeURIComponent("確定")},${encodeURIComponent("便名")},${encodeURIComponent("変更")},changed_json`);
-  const chgP = sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.nha&order=created_at.desc&limit=10&select=field,old_value,new_value,source,status,actor,created_at`);
+  const chgP = sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.nha&order=created_at.desc&limit=10&select=id,field,old_value,new_value,source,status,actor,created_at,payload`);
   const licP = sbGet("license_uploads", `reservation_id=eq.${encodeURIComponent(resId)}&select=cnt,drivers`);
   const [opTasksRaw, chg, licRows] = await Promise.all([opTasksP, chgP, licP]);
   const licCnt = (licRows[0] && licRows[0].cnt) || 0;
