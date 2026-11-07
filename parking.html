@@ -32,6 +32,11 @@
   .area.paid{background:linear-gradient(180deg,#475569,#374151)}
   .area .atitle{font-size:12px;font-weight:900;color:#fff;display:flex;align-items:center;gap:6px;margin-bottom:9px;text-shadow:0 1px 2px rgba(0,0,0,.4)}
   .area .atitle .cap{margin-left:auto;font-size:10px;font-weight:800;color:#cbd5e1;background:rgba(0,0,0,.25);border-radius:6px;padding:2px 8px}
+  .lotinfo{font-size:10.5px;color:#cbd5e1;background:rgba(0,0,0,.22);border-radius:8px;padding:6px 9px;margin:-3px 0 9px;line-height:1.6}
+  .lotinfo .fee{white-space:pre-line;color:#fde68a}
+  .lotbtns{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+  .lotbtns button{border:none;border-radius:8px;padding:7px 10px;font-size:11px;font-weight:800;cursor:pointer;background:#334155;color:#e2e8f0}
+  .lotbtns button.map{background:#0d9488;color:#fff}
   .area .atitle .paidtag{font-size:9px;font-weight:800;color:#fecaca;background:rgba(127,29,29,.6);border-radius:5px;padding:1px 6px}
   .coinbays{display:grid;grid-template-columns:repeat(5,1fr);gap:7px}
   @media(max-width:560px){.coinbays{grid-template-columns:repeat(3,1fr);gap:6px}}
@@ -278,9 +283,10 @@ const AREA_DEFS=[
   {key:"BIG",name:"BIGスロット駐車場",ico:"🅿️",mode:"numbered"},
   {key:"TRUST",name:"トラストパーク 北6西15",ico:"🅿️",mode:"manual",paid:true},
   {key:"TIMES",name:"タイムズ 北13西16",ico:"🅿️",mode:"manual",paid:true},
+  {key:"AWF",name:"タイムズエア・ウォーターの森",ico:"🅿️",mode:"manual",paid:true,lotEdit:true}, // ★2026-11-07 追加。料金/収容/地図は parking_meta「lot:AWF」(編集可)・マスは＋/−で増減
   {key:"PAID",name:"BIGスロット 有料枠",ico:"💰",mode:"plain",paid:true},
 ];
-function areaOf(no){no=String(no||"");if(/^\d+$/.test(no.trim()))return "BIG";if(no.indexOf("トラスト")>=0)return "TRUST";if(no.indexOf("タイムズ")>=0)return "TIMES";return "PAID";}
+function areaOf(no){no=String(no||"");if(/^\d+$/.test(no.trim()))return "BIG";if(no.indexOf("トラスト")>=0)return "TRUST";if(no.indexOf("エア・ウォーター")>=0)return "AWF";/* ↑名前に「タイムズ」を含むので先に判定 */if(no.indexOf("タイムズ")>=0)return "TIMES";return "PAID";}
 function areaDef(k){return AREA_DEFS.find(a=>a.key===k);}
 let SPOTS=[];   // {id,no,carId,memo}
 let ROSTER=[];  // {id,n,p,c}
@@ -288,6 +294,7 @@ let RETURNS=[]; // {id,n,p,c,time} 本日返却予定(予約RPC)
 let OUT_NOW=new Set(); // 今 貸出中(出発済み・返却前)の車id
 let OUT_LIST=[]; // 今 貸出中の車両 一覧(表示用) {id,n,p}
 let DEPART_TODAY=new Set(); // 本日出発予定(貸出日=本日・予約データ参照)の車id ※当日貸出・当日返却の車もあるので注意
+let LOTINFO={}; // parking_meta「lot:<エリアkey>」= 駐車場情報(区分/収容/営業時間/料金/住所/地図URL)・1駐車場1行
 let MOBILITY={}, WAREHOUSE={}, PLAN={}; // parking_meta (PLAN=返却予定の手動割当 carId->spotId)
 let PLACES={}; // ★2026-10-23 共立自動車保管 parking_car_place(1台1行・解除は墓標deleted) carId->{by,at}
 let MEMOS={}; // ★2026-11-05 車両メモ parking_car_memo(1台1行・削除は墓標deleted) carId->{memo,at}
@@ -368,7 +375,8 @@ function render(){
       const dep=DEPART_TODAY.has(sp.carId)?'<span class="departbadge">🚗本日出発予定</span>':"";
       return `<div class="cbay occ ${DEPART_TODAY.has(sp.carId)?'depart':''}" data-sp="${sp.id}" onclick="tapCar(${sp.id})">${noBadge}${carGraphic(sp.carId)}<div class="cname">${cc.n}${cc.p?'<br>'+cc.p:''}</div>${cn}${dep}${keyBadge(sp)}${washBadge(sp)}${seatBadge(sp)}${memoBadge(sp.carId)}</div>`;
     }).join("");
-    html+=`<div class="area ${a.paid?'paid':''}"><div class="atitle">${a.ico} ${a.name}${a.paid?'<span class="paidtag">有料</span>':''}<span class="cap">空き ${free}／${bays.length}台</span></div><div class="coinbays">${cells||'<div style="font-size:10px;color:#94a3b8;padding:6px">（マス未登録）</div>'}</div></div>`;
+    const li=LOTINFO[a.key];const isPaid=(li&&typeof li.paid==="boolean")?li.paid:a.paid;
+    html+=`<div class="area ${isPaid?'paid':''}"><div class="atitle">${a.ico} ${a.name}${isPaid?'<span class="paidtag">有料</span>':(li?'<span class="paidtag" style="color:#bbf7d0;background:rgba(20,83,45,.7)">無料</span>':'')}<span class="cap">空き ${free}／${bays.length}台</span></div>${lotInfoHtml(a)}<div class="coinbays">${cells||'<div style="font-size:10px;color:#94a3b8;padding:6px">（マス未登録）</div>'}</div></div>`;
   });
   $("lotMap").innerHTML=html;
   renderStatus();
@@ -457,8 +465,54 @@ async function saveWh(id){
   WAREHOUSE[id]={...(WAREHOUSE[id]||{}),note,child:s.child,junior:s.junior};closeSheet();renderExtra();await saveMeta("warehouse",WAREHOUSE);toast("📝 保存しました");
 }
 async function delWh(id){delete WAREHOUSE[id];renderExtra();await saveMeta("warehouse",WAREHOUSE);toast("解除しました");}
+/* ===== 🅿️ 駐車場情報（区分・収容・営業時間・料金・住所・地図）と マス増減 ===== */
+function escH(v){return String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);}
+function lotInfoHtml(a){
+  const li=LOTINFO[a.key];if(!li&&!a.lotEdit)return "";const o=li||{};
+  const head=[o.capacity?`収容 <b>${escH(o.capacity)}</b>台（駐車場全体）`:"",o.hours?escH(o.hours):""].filter(Boolean).join("　・　");
+  const url=/^https:\/\//.test(o.map_url||"")?o.map_url:"";
+  return `<div class="lotinfo">${head?`<div>${head}</div>`:""}${o.fee?`<div class="fee">${escH(o.fee)}</div>`:""}${o.address?`<div style="color:#94a3b8">${escH(o.address)}</div>`:""}`+
+    `<div class="lotbtns">${url?`<button class="map" onclick="window.open('${escH(url)}','_blank')">📍 Googleマップ</button>`:""}${a.lotEdit?`<button onclick="editLot('${a.key}')">✏️ 情報を編集</button><button onclick="addBay('${a.key}')">＋ マス追加</button><button onclick="removeBay('${a.key}')">− 空きマスを減らす</button>`:""}</div></div>`;
+}
+function editLot(key){
+  const a=areaDef(key);const o=LOTINFO[key]||{};const isPaid=typeof o.paid==="boolean"?o.paid:!!a.paid;
+  const box="width:100%;margin-top:4px;padding:10px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:13px";
+  const lb=t=>`<div style="font-size:11px;color:#94a3b8;font-weight:800;margin-top:9px">${t}</div>`;
+  openSheet(`<h3>✏️ ${escH(a.name)}</h3><div class="sd">駐車場の情報を編集</div>`+
+    lb("区分")+`<select id="lt-paid" style="${box}"><option value="1" ${isPaid?"selected":""}>有料</option><option value="0" ${isPaid?"":"selected"}>無料</option></select>`+
+    lb("収容台数（駐車場全体）")+`<input id="lt-cap" type="number" inputmode="numeric" min="0" value="${escH(o.capacity||"")}" style="${box}"/>`+
+    lb("営業時間")+`<input id="lt-hours" value="${escH(o.hours||"")}" style="${box}"/>`+
+    lb("料金（1行に1項目）")+`<textarea id="lt-fee" rows="4" style="${box};resize:vertical">${escH(o.fee||"")}</textarea>`+
+    lb("住所")+`<input id="lt-addr" value="${escH(o.address||"")}" style="${box}"/>`+
+    lb("Googleマップのリンク")+`<input id="lt-url" value="${escH(o.map_url||"")}" placeholder="https://maps.app.goo.gl/..." style="${box}"/>`+
+    `<div class="btnrow" style="margin-top:12px"><button class="btn g" onclick="closeSheet()">閉じる</button><button class="btn" style="background:#0d9488;color:#fff" onclick="saveLot('${key}')">💾 保存</button></div>`);
+}
+async function saveLot(key){
+  const v=id=>((document.getElementById(id)||{}).value||"").trim();
+  const url=v("lt-url");if(url&&!/^https:\/\//.test(url)){toast("⚠️ リンクは https:// で始まるURLを入れてください");return;}
+  const cap=v("lt-cap");const obj={paid:v("lt-paid")==="1",capacity:cap?Math.max(0,parseInt(cap,10)||0):null,hours:v("lt-hours"),fee:v("lt-fee"),address:v("lt-addr"),map_url:url};
+  closeSheet();LOTINFO[key]=obj;render();await saveMeta("lot:"+key,obj);toast("💾 保存しました");
+}
+// マス追加: 1行だけINSERT（idは採番なし→現在の最大+1。衝突時は1回だけ取り直し）
+async function addBay(key){
+  if(busy)return;const a=areaDef(key);if(!a||!confirm(a.name+" にマスを1つ追加しますか？"))return;busy=true;
+  try{for(let t=0;t<2;t++){const{data}=await sb.from("parking_spots").select("id").order("id",{ascending:false}).limit(1);const nid=((data&&data[0]&&data[0].id)||0)+1;
+      const{error}=await sb.from("parking_spots").insert({id:nid,no:a.name,key:0,car_id:null,memo:"",updated_by:"spk"});if(!error){toast("＋ マスを追加しました");break;}if(t===1)throw error;}}
+  catch(e){console.log("addBay err",e);toast("⚠️ 追加失敗");}
+  busy=false;await reloadAll();
+}
+// マス削減: 車が無く・返却予定も入っていない空きマスを1つだけ外す（車のあるマスは絶対に消さない＝DB側でも car_id is null を条件にする）
+async function removeBay(key){
+  if(busy)return;const a=areaDef(key);const used=new Set(Object.values(PLAN||{}).map(String));
+  const cand=baysOf(key).filter(s=>!s.carId&&!used.has(String(s.id))).sort((x,y)=>y.id-x.id)[0];
+  if(!cand){toast("減らせる空きマスがありません");return;}
+  if(!confirm(a.name+" の空きマスを1つ減らしますか？"))return;busy=true;
+  try{const{error}=await sb.from("parking_spots").delete().eq("id",cand.id).is("car_id",null);if(error)throw error;toast("− 空きマスを1つ減らしました");}
+  catch(e){console.log("removeBay err",e);toast("⚠️ 失敗");}
+  busy=false;await reloadAll();
+}
 async function saveMeta(k,obj){try{await sb.from("parking_meta").upsert({k,v:obj,updated_at:new Date().toISOString()},{onConflict:"k"});}catch(e){console.log("saveMeta err",e);toast("⚠️保存失敗");}}
-async function loadMeta(){try{const{data}=await sb.from("parking_meta").select("k,v");if(data){data.forEach(r=>{if(r.k==="mobility")MOBILITY=r.v||{};if(r.k==="warehouse")WAREHOUSE=r.v||{};if(r.k==="plan")PLAN=r.v||{};});}}catch(e){console.log("loadMeta err",e);}}
+async function loadMeta(){try{const{data}=await sb.from("parking_meta").select("k,v");if(data){data.forEach(r=>{if(r.k==="mobility")MOBILITY=r.v||{};if(r.k==="warehouse")WAREHOUSE=r.v||{};if(r.k==="plan")PLAN=r.v||{};});const li={};data.forEach(r=>{if(String(r.k).indexOf("lot:")===0)li[r.k.slice(4)]=r.v||{};});LOTINFO=li;}}catch(e){console.log("loadMeta err",e);}}
 
 /* ===== 🪑 レンタルシート在庫（RCS/RJS・OPシートと同一テーブル rental_seats） =====
  * ★2026-09-10 予約超過時にレンタルするシートを日程ごとに在庫登録・見える化。常設でなくレンタル期間のみ表示。
