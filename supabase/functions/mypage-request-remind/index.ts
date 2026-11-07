@@ -1,7 +1,7 @@
 // Supabase Edge Function: mypage-request-remind（main / ckrxttbnawkclshczsia）
 // マイページの依頼（変更・キャンセル・早め回収など）を「返事の目安」を過ぎないように Slack で再通知する。
-//   返事の目安 = 受付から30分（JST 9:00〜19:00）。夜間（19:00〜翌9:00）の受付は次の 9:30。
-//   目安まで15分を切った「未処理」の依頼を、店ごとの Slack チャンネルに1回だけ再通知する（mypage_request_reminders で重複防止）。
+//   経過時間は受付から数える（JST 9:00〜19:00）。夜間（19:00〜翌9:00）の受付は次の 9:00 から数える。
+//   未処理のまま 30分経過で1回目、90分経過で2回目を店ごとの Slack に出す（2026-11-07 nosh 指示。mypage_request_reminders で重複防止）。
 //   依頼の一覧は mypage-active.html のアクションタブと同じ RPC（main: mpadmin_pending / BT: mpadmin_pending_bt）。
 // 起動: pg_cron が 5分ごとに x-cron-secret 付きで POST。
 // deploy: functions deploy mypage-request-remind --no-verify-jwt（secrets: CRON_SECRET, SLACK_BOT_TOKEN は既存）
@@ -30,14 +30,15 @@ const FLD: Record<string, string> = { del_place: "届け先の場所の変更", 
 
 function json(o: unknown, s = 200) { return new Response(JSON.stringify(o), { status: s, headers: { "Content-Type": "application/json" } }); }
 
-// 返事の目安（mypage-active.html の dueOf と同じ規則）
-function dueOf(at: string): number | null {
+// 経過を数え始める時刻：営業時間内の受付はその時刻、夜間の受付は次の 9:00 JST
+function baseOf(at: string): number | null {
   const t = new Date(at); if (isNaN(+t)) return null;
   const j = new Date(+t + 9 * 3600e3), h = j.getUTCHours() + j.getUTCMinutes() / 60;
-  if (h >= 9 && h < 19) return +t + 30 * 60e3;
-  const day = new Date(Date.UTC(j.getUTCFullYear(), j.getUTCMonth(), j.getUTCDate() + (h < 9 ? 0 : 1)));
-  return +day + 9.5 * 3600e3 - 9 * 3600e3; // その日の 9:30 JST
+  if (h >= 9 && h < 19) return +t;
+  const day = Date.UTC(j.getUTCFullYear(), j.getUTCMonth(), j.getUTCDate() + (h < 9 ? 0 : 1));
+  return day + 9 * 3600e3 - 9 * 3600e3; // その日の 9:00 JST
 }
+const STAGES = [{ n: 1, min: 30 }, { n: 2, min: 90 }];
 
 async function rpc(base: string, key: string, fn: string): Promise<any[]> {
   try {
@@ -61,27 +62,33 @@ Deno.serve(async (req) => {
 
   const [a, b] = await Promise.all([rpc(SB_URL, SB_KEY, "mpadmin_pending"), rpc(BT_URL, BT_ANON, "mpadmin_pending_bt")]);
   const now = Date.now();
-  const hot = a.concat(b).filter((x) => x && x.status === "requested").map((x) => ({ x, due: dueOf(String(x.at || "")) }))
-    .filter((o) => o.due != null && (o.due as number) - now <= 15 * 60e3);
+  const hot: { x: any; st: number; el: number }[] = [];
+  for (const x of a.concat(b)) {
+    if (!x || x.status !== "requested") continue;
+    const base = baseOf(String(x.at || "")); if (base == null) continue;
+    const el = Math.floor((now - base) / 60e3);
+    const st = STAGES.filter((s) => el >= s.min).pop(); if (st) hot.push({ x, st: st.n, el });
+  }
   if (!hot.length) return json({ ok: true, hot: 0, sent: 0 });
 
-  // 既に再通知したもの
   const done = new Set<string>();
-  const r0 = await fetch(`${SB_URL}/rest/v1/mypage_request_reminders?select=bucket,change_id&reminded_at=gte.${encodeURIComponent(new Date(now - 7 * 864e5).toISOString())}`, { headers: H });
-  if (r0.ok) for (const r of await r0.json()) done.add(r.bucket + "|" + r.change_id);
+  const r0 = await fetch(`${SB_URL}/rest/v1/mypage_request_reminders?select=bucket,change_id,stage&reminded_at=gte.${encodeURIComponent(new Date(now - 14 * 864e5).toISOString())}`, { headers: H });
+  if (r0.ok) for (const r of await r0.json()) done.add(r.bucket + "|" + r.change_id + "|" + r.stage);
 
   let sent = 0; const out: unknown[] = [];
-  for (const { x, due } of hot) {
-    const key = x.bucket + "|" + x.id; if (done.has(key)) continue;
-    const m = Math.round(((due as number) - now) / 60e3);
-    const left = m >= 0 ? `残り${m}分` : `目安を${-m}分過ぎています`;
+  for (const { x, st, el } of hot) {
+    const key = x.bucket + "|" + x.id + "|" + st; if (done.has(key)) continue;
+    // 2回目の時点で1回目が未送信なら、2回目だけ出す（1回目は記録だけ）
+    const elTxt = el >= 120 ? `${Math.floor(el / 60)}時間${el % 60 ? (el % 60) + "分" : ""}` : `${el}分`;
     const link = `${PAGE}?tab=action&bucket=${encodeURIComponent(x.bucket)}&rid=${encodeURIComponent(x.rid)}`;
-    const text = `⏰ *返事の目安まで${left}*（${STORE_JP[x.bucket] || x.bucket}）\n${x.name || "お客様"} 様・${FLD[x.field] || x.field}${x.newv ? `：${x.newv}` : ""}\n👉 <${link}|アクションタブで返事する>`;
+    const head = st === 1 ? "⏰ *返事がまだの依頼（受付から" + elTxt + "）*" : "🚨 *2回目：返事がまだの依頼（受付から" + elTxt + "）*";
+    const text = `${head}（${STORE_JP[x.bucket] || x.bucket}）\n${x.name || "お客様"} 様・${FLD[x.field] || x.field}${x.newv ? `：${x.newv}` : ""}\n👉 <${link}|アクションタブで返事する>`;
     if (dry) { out.push({ key, channel: CH[x.bucket], text }); continue; }
     const ok = await slack(CH[x.bucket] || CH.hdm_spk, text);
     if (ok) {
       sent++;
-      await fetch(`${SB_URL}/rest/v1/mypage_request_reminders`, { method: "POST", headers: { ...H, Prefer: "resolution=ignore-duplicates" }, body: JSON.stringify({ bucket: x.bucket, change_id: String(x.id) }) });
+      const recs = [{ bucket: x.bucket, change_id: String(x.id), stage: st }]; if (st === 2) recs.push({ bucket: x.bucket, change_id: String(x.id), stage: 1 });
+      await fetch(`${SB_URL}/rest/v1/mypage_request_reminders`, { method: "POST", headers: { ...H, Prefer: "resolution=ignore-duplicates" }, body: JSON.stringify(recs) });
     }
   }
   return json({ ok: true, hot: hot.length, sent, dry: dry ? out : undefined });
