@@ -129,7 +129,7 @@ function taskOptNum(t: any, key: string): number {
 // decide: decision=proposed（proposal_text 必須・proposal_value 任意）→ status=proposed, payload.proposal
 //         decision=rejected（reject_reason / reject_text 任意）→ 通知文に理由、payload.reject
 // proposal_reply（お客様・token）: accept→その値で承認と同じ処理 / decline→declined_by_guest / 期限切れ→expired
-const REJ_JP: Record<string, string> = { no_vehicle: "ご希望の日時は、空いているお車がございません。", out_of_area: "ご希望の場所は、お届け・回収の対象エリア外です。", past_deadline: "変更の受付締切を過ぎております。", other: "" };
+const REJ_JP: Record<string, string> = { no_vehicle: "ご希望の日時は、空いているお車がございません。", out_of_area: "ご希望の場所は、お届け・回収の対象エリア外です。", past_deadline: "変更の受付締切を過ぎております。", full_slot: "ご希望のお時間は、お届け・回収の予定が埋まっております。", out_of_stock: "ご希望のオプションは、ご用意できる数がございません。", other: "" };
 function rejectLine(code: string, text: string): string { const a = REJ_JP[code] || ""; const t = String(text || "").trim().slice(0, 200); return [a, t].filter(Boolean).join("\n"); }
 const PROP_FIELDS_END = ["col_place", "return_time", "ready"];
 // 期限：今から24時間、ただし受け渡しの2時間前まで（最短30分）
@@ -142,12 +142,14 @@ function proposalExpires(field: string, sd: string, st: string, ed: string, et: 
 }
 // お断り＝「できない理由＋代わりにできること＋今のご予約はそのまま」の1通（別の案・お断り共通の文面）
 function declineMsg(head: string, label: string, field: string, newV: string, oldV: string, why: string, alt: string, next: string, url: string): string {
-  const want = field === "cancel" ? "ご予約のキャンセル" : `ご希望の${label}${newV && field !== "ready" ? `（${newV}）` : ""}`;
-  const lines = [`${head}${want}は、お受けできませんでした。`];
+  // 11/7 nosh「返信の内容には気を付ける 丁寧な内容で」
+  const want = field === "cancel" ? "ご予約のキャンセル" : field === "ready" ? "早めの回収" : `${label}の変更${newV ? `（${newV}）` : ""}`;
+  const lines = [`${head}ご依頼いただいた${want}につきまして、誠に申し訳ございませんが、今回はお受けいたしかねます。`];
   if (why) lines.push(why);
   if (alt) lines.push(`代わりに、${alt}${/[。！？!?]$/.test(alt) ? "" : "。"}`);
   if (next) lines.push(next);
   lines.push(field === "cancel" || !oldV ? "今のご予約はそのままです。" : `今のご予約（${label}：${oldV}）はそのままです。`);
+  lines.push("ご不便をおかけいたしますが、何卒よろしくお願いいたします。");
   if (url) lines.push(url);
   return lines.join("\n");
 }
@@ -194,9 +196,10 @@ Deno.serve(async (req) => {
     const rejCode = String(p.reject_reason || ""), rejText = String(p.reject_text || "").trim().slice(0, 200);
     const rejLine = decision === "rejected" ? rejectLine(rejCode, rejText) : "";
     const altText = String(p.alt_text || "").trim().slice(0, 300);
+    const keep = p.keep_as_is === true || p.keep_as_is === "true";  // 11/7 nosh「NGだけもあり得る＝既存予約のままでお願いします」
     // 2026-11-07 nosh決定「お断り＝できないが〜ならできます」：代わりの案なしのお断りは受け付けない（早め回収＝予定通り回収 は例外）
-    if (decision === "rejected" && !altText) return json({ error: "代わりにできること（〜ならできます）を書いてください" }, 400, origin);
-    const rejPayload = decision === "rejected" ? { payload: { ...pl0, reject: { reason: rejCode || "other", text: rejText, alt: altText, by: actor, at: new Date().toISOString() } } } : {};
+    if (decision === "rejected" && !altText && !keep) return json({ error: "代わりにできること（〜ならできます）を書いてください" }, 400, origin);
+    const rejPayload = decision === "rejected" ? { payload: { ...pl0, reject: { reason: rejCode || "other", text: rejText, alt: altText, ...(keep ? { keep: true } : {}), by: actor, at: new Date().toISOString() } } } : {};
     const lbl = FLD_JP[c.field] || c.field;
     // ---- 別の案（お客様がマイページで「この案でOK」を押すと承認と同じ処理で確定）----
     if (decision === "proposed") {
@@ -233,7 +236,7 @@ Deno.serve(async (req) => {
         ]); }
       } else {
         await notifyCust(resId2, `【HANDYMAN那覇空港店】ご予約 ${resId2} キャンセルのご相談につきまして`,
-          `${cr.name || "お客様"} 様\n\n` + declineMsg("", "キャンセル", "cancel", "", "", rejLine, altText, "", "") + `\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);
+          `${cr.name || "お客様"} 様\n\n` + (keep ? declineMsg("", "キャンセル", "cancel", "", "", rejLine, "", "", "").replace(/はそのままです。/, "のままでのご利用をお願いできますでしょうか。") : declineMsg("", "キャンセル", "cancel", "", "", rejLine, altText, "", "")) + `\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);
         await slackResv(`🚫 キャンセル却下 [那覇]${(String(cr.ota||"")==="HANDYMAN"||/^HDMN/.test(resId2))?"（🆕NEW リニューアル公式サイト）":""} ${cr.name || ""} / ${resId2} ／ ${actor.replace(/^staff:/, "")}`);
       }
       return json({ ok: true, decided: decision }, 200, origin);
@@ -244,8 +247,8 @@ Deno.serve(async (req) => {
         ? `【HANDYMAN 那覇】早めのご返却（回収）を承りました。\nスケジュールを調整し、回収時間が早まる場合は改めてご連絡いたします。`
         : `【HANDYMAN 那覇】ご依頼を承り、反映いたしました。マイページよりご確認ください。`;
     } else {
-      if (c.field === "ready" && !altText) msg = `【HANDYMAN 那覇】ご連絡ありがとうございます。今回は予定のお時間での回収とさせていただきます。${rejLine ? "\n" + rejLine : ""}`;
-      else { const rv2 = (await sbGet("nha_reservations", `id=eq.${encodeURIComponent(resId2)}&select=mypage_token`))[0] || {}; msg = declineMsg("【HANDYMAN 那覇】", lbl, String(c.field), String(c.new_value || ""), String(c.old_value || ""), rejLine, altText, "こちらでよろしければ、マイページから改めてご依頼ください。", rv2.mypage_token ? `https://nosh2318.github.io/naha-project/my-nha.html?t=${rv2.mypage_token}` : ""); }
+      if (c.field === "ready" && (keep || !altText)) msg = `【HANDYMAN 那覇】ご連絡ありがとうございます。誠に申し訳ございませんが、今回は予定のお時間での回収とさせていただきます。${rejLine ? "\n" + rejLine : ""}\n何卒ご理解いただけますと幸いです。`;
+      else { const rv2 = (await sbGet("nha_reservations", `id=eq.${encodeURIComponent(resId2)}&select=mypage_token`))[0] || {}; msg = declineMsg("【HANDYMAN 那覇】", lbl, String(c.field), String(c.new_value || ""), String(c.old_value || ""), rejLine, keep ? "" : altText, keep ? "" : "こちらでよろしければ、マイページから改めてご依頼ください。", rv2.mypage_token ? `https://nosh2318.github.io/naha-project/my-nha.html?t=${rv2.mypage_token}` : ""); if (keep) msg = msg.replace(/はそのままです。/, "のままでのご利用をお願いできますでしょうか。"); }
     }
     await notifyCust(resId2, `【HANDYMAN那覇空港店】ご予約 ${resId2} ご依頼の結果`, msg.replace(/公式LINE/g, "担当") + `\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);  // 予約有効なうちに先に送る
     await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: decision, actor, ...rejPayload });
