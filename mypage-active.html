@@ -79,6 +79,7 @@ details.defs summary{cursor:pointer;font-weight:800;font-size:13px}
 .it.k0{border-color:#f3b4b8}.it.k3 .todo{padding:7px 11px}.it.k3 .todo .tt{font-size:13.5px}
 .miss{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px;align-items:center}.miss .d{padding:2px 8px}
 .tile .sub{font-size:10.5px;color:var(--mut);font-weight:700}
+.rsn{margin-top:8px;padding:8px;border:1px solid #fecaca;background:#fff7f7;border-radius:10px}.rsnT{width:100%;box-sizing:border-box;margin-top:6px;padding:8px;border:1px solid #cbd5e1;border-radius:8px;font-size:15px}
 </style></head>
 <body>
 <header><span class="t">📲 マイページ管理</span><span class="pin" id="hdr">読み込み中…</span><span class="sp"></span>
@@ -194,12 +195,19 @@ async function loadReq(){const [a,b]=await Promise.all([rpc(MAIN,MAIN_ANON,"mpad
 const reqOf=r=>REQ[r.bucket+"|"+r.rid]||[];
 const pendOf=r=>reqOf(r).filter(x=>x.status==="requested");
 function reqHtml(r,act){const L=reqOf(r).slice().sort((a,b)=>String(b.at||"").localeCompare(String(a.at||"")));if(!L.length)return'<div class="mut">依頼はありません</div>';return L.map(x=>reqItem(x,act)).join("");}
+// お断り理由（2026-11-07 仕様合意：no_vehicle / out_of_area / past_deadline / other ＋一言。お客様への通知文に入る）
+const RSN_L=[["no_vehicle","空車がない"],["out_of_area","エリア外"],["past_deadline","締切を過ぎている"],["other","その他"]];let RSN=null;
+function rsnOpen(key){RSN=RSN&&RSN.key===key?null:{key,code:"",text:""};render();}
+function rsnSet(c){if(RSN){RSN.code=c;RSN.text=(document.getElementById("rsnT")||{}).value||RSN.text;render();}}
+function rsnSend(){if(!RSN||!RSN.code)return toast("理由を選んでください");RSN.text=((document.getElementById("rsnT")||{}).value||"").trim();if(RSN.code==="other"&&!RSN.text)return toast("「その他」は一言を書いてください");const k=RSN.key;ARM=k+"|rejected";decide(k,"rejected");}
+function rsnHtml(k){if(!RSN||RSN.key!==k)return"";return `<div class="rsn"><div class="mut" style="margin-bottom:4px">お断りの理由（お客様への通知に入ります）</div><div style="display:flex;gap:6px;flex-wrap:wrap">${RSN_L.map(([c,l])=>`<button class="chip ${RSN.code===c?"on":""}" onclick="rsnSet('${c}')">${l}</button>`).join("")}</div>
+  <input id="rsnT" class="rsnT" maxlength="200" placeholder="一言（任意。その他は必須）" value="${esc(RSN.text)}"><div class="acts"><button class="btn dang" onclick="rsnSend()">この理由でお断りする</button><button class="lnk" onclick="RSN=null;render()">やめる</button></div></div>`;}
 async function decide(key,decision){
   if(ARM!==key+"|"+decision){ARM=key+"|"+decision;render();setTimeout(()=>{if(ARM===key+"|"+decision){ARM="";render();}},6000);return;}
   ARM="";const bk=key.split("|")[0],id=key.slice(bk.length+1),B=BUCK[bk];let x=null;Object.values(REQ).forEach(l=>l.forEach(i=>{if(i.bucket===bk&&String(i.id)===id)x=i;}));if(!x||!B)return;
-  try{const r=await fetch(B.ef,{method:"POST",headers:{apikey:B.anon,Authorization:"Bearer "+B.anon,"Content-Type":"application/json"},body:JSON.stringify({action:"decide",admin_pin:getPin(),change_id:isNaN(+x.id)?x.id:+x.id,decision})});
+  try{const r=await fetch(B.ef,{method:"POST",headers:{apikey:B.anon,Authorization:"Bearer "+B.anon,"Content-Type":"application/json"},body:JSON.stringify(Object.assign({action:"decide",admin_pin:getPin(),change_id:isNaN(+x.id)?x.id:+x.id,decision},decision==="rejected"&&RSN&&RSN.key===key?{reject_reason:RSN.code,reject_text:RSN.text}:{}))});
     const j=await r.json().catch(()=>({}));
-    if(r.ok&&j.ok){x.status=decision;x.at=new Date().toISOString();toast(decision==="approved"?"承認しました（反映・通知済）":decision==="rejected"?"お断りしました":"アーカイブしました");render();if(decision==="approved")setTimeout(loadAll,1500);}
+    if(r.ok&&j.ok){if(decision==="rejected"&&RSN&&RSN.key===key){x.reject_reason=RSN.code;RSN=null;}x.status=decision;x.at=new Date().toISOString();toast(decision==="approved"?"承認しました（反映・通知済）":decision==="rejected"?"お断りしました":"アーカイブしました");render();if(decision==="approved")setTimeout(loadAll,1500);}
     else if(r.status===401)toast("PINが違います");else toast("失敗: "+(j.error||("http "+r.status)));
   }catch(e){toast("通信エラー");}
 }
@@ -367,7 +375,7 @@ function reqItem(x,act){const k=x.bucket+"|"+x.id,p=x.status==="requested",bf=be
     :`<div class="chg">${bf?`<span class="bf">${esc(bf)}</span><span class="ar">→</span>`:""}<b>${esc(x.newv||"（内容なし）")}</b></div>`;
   return `<div class="rq ${p?"pend":""}">${st?`<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${st}<span class="mut">${act?"":tyLabel(x)} ${esc((x.at||"").slice(5,16).replace("T"," "))}</span></div>`:""}
     ${ch}${x.note?`<div class="mut">📝 ${esc(x.note)}</div>`:""}
-    ${p&&act?`<div class="acts">${btn("approved","✅ 承認（反映＋"+(x.line?"LINE":"メール")+"で通知）","ok")}${btn("rejected","お断り","dang")}</div>
+    ${p&&act?`<div class="acts">${btn("approved","✅ 承認（反映＋"+(x.line?"LINE":"メール")+"で通知）","ok")}<button class="btn dang" onclick="rsnOpen('${esc(k)}')">お断り…</button></div>${rsnHtml(k)}
       <div style="margin-top:6px"><button class="lnk" onclick="decide('${esc(k)}','acknowledged')">${ARM===k+"|acknowledged"?"もう一度押すとアーカイブ":"アーカイブ（反映・通知なし。重複や取り下げ用）"}</button></div>`:""}</div>`;}
 function renderAct(){
   const all=[].concat(...Object.values(REQ));const pend=all.filter(x=>x.status==="requested");
