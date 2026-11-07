@@ -56,9 +56,24 @@ async function slack(channel: string, text: string): Promise<boolean> {
   } catch (e) { console.error("[slack]", String(e)); return false; }
 }
 
+async function slackBuddica(channel: string, text: string): Promise<boolean> {
+  try {
+    const r = await fetch(`${SB_URL}/rest/v1/rpc/mpremind_slack_post_buddica`, { method: "POST", headers: H, body: JSON.stringify({ p_channel: channel, p_text: text }) });
+    const j = await r.json().catch(() => null); if (!r.ok || j == null) console.error("[slack-buddica]", r.status, j); return r.ok && j != null;
+  } catch (e) { console.error("[slack-buddica]", String(e)); return false; }
+}
+
 Deno.serve(async (req) => {
   if (req.headers.get("x-cron-secret") !== CRON_SECRET) return new Response("unauthorized", { status: 401 });
-  let dry = false; try { const b = await req.json(); dry = !!(b && b.dry); } catch { /* none */ }
+  let dry = false, check = false; try { const b = await req.json(); dry = !!(b && b.dry); check = !!(b && b.check); } catch { /* none */ }
+  // check: 各店チャンネルにボットが入っているかだけ調べる（投稿しない）
+  if (check) {
+    const token = Deno.env.get("SLACK_BOT_TOKEN") || ""; const res: Record<string, unknown> = {};
+    for (const ch of [...new Set(Object.values(CH))]) {
+      try { const r = await fetch(`https://slack.com/api/conversations.info?channel=${ch}`, { headers: { Authorization: `Bearer ${token}` } }); const d = await r.json(); res[ch] = d.ok ? { name: d.channel?.name, is_member: d.channel?.is_member, private: d.channel?.is_private } : { error: d.error }; } catch (e) { res[ch] = { error: String(e) }; }
+    }
+    return json({ ok: true, channels: res });
+  }
 
   const [a, b] = await Promise.all([rpc(SB_URL, SB_KEY, "mpadmin_pending"), rpc(BT_URL, BT_ANON, "mpadmin_pending_bt")]);
   const now = Date.now();
@@ -85,7 +100,8 @@ Deno.serve(async (req) => {
     const head = st === 1 ? "⏰ *返事がまだの依頼（受付から" + elTxt + "）*" : "🚨 *2回目：返事がまだの依頼（受付から" + elTxt + "）*";
     const text = `${head}（${STORE_JP[x.bucket] || x.bucket}）\n${x.name || "お客様"} 様・${FLD[x.field] || x.field}${x.newv ? `：${x.newv}` : ""}\n👉 <${link}|アクションタブで返事する>`;
     if (dry) { out.push({ key, channel: CH[x.bucket], text }); continue; }
-    const ok = await slack(CH[x.bucket] || CH.hdm_spk, text);
+    // 高松は別ワークスペース（buddica-tourism）。DB関数が Vault のボットトークンで pg_net 送信する
+    const ok = /_tkm$/.test(x.bucket) ? await slackBuddica(CH[x.bucket], text) : await slack(CH[x.bucket] || CH.hdm_spk, text);
     if (ok) {
       sent++;
       const recs = [{ bucket: x.bucket, change_id: String(x.id), stage: st }]; if (st === 2) recs.push({ bucket: x.bucket, change_id: String(x.id), stage: 1 });
