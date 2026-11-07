@@ -94,6 +94,8 @@ async function slackPost(text: string, blocks?: unknown): Promise<boolean> {
 // 予約もと（OTA）ラベル
 const OTA_JP: Record<string, string> = { J: "じゃらん", R: "楽天", S: "skyticket", O: "エアトリ", RC: "レンタカーcom", G: "GoGoOut", HP: "オフィシャル(HP)", SP: "オフィシャル(HP)", direct: "直販", KEYDROP: "KEYDROP" };
 function otaJp(o?: string): string { const k = String(o || ""); return OTA_JP[k] || k || "—"; }
+// 2026-11-07 キャンセル申請などは該当予約をアクションタブで直接開く（那覇=hdm_nha）
+const actUrl = (rid: string) => `https://nosh2318.github.io/spk-task/mypage-active.html?tab=action&bucket=hdm_nha&rid=${encodeURIComponent(rid)}`;
 
 function nowJst(slice = false): string { const s = new Date(Date.now() + 9 * 3600 * 1000).toISOString(); return slice ? s.slice(5, 16).replace("T", " ") : s.replace("Z", "+09:00"); }
 
@@ -371,15 +373,15 @@ Deno.serve(async (req) => {
     await sbPost("mypage_changes", { reservation_id: resId, store: "nha", field: "cancel", old_value: st0, new_value: "キャンセル依頼", source: "customer", status: "requested", note: reason });
     { const _nw = String(r.ota||"")==="HANDYMAN"||/^HDMN/.test(resId);
     await slackResv(`🔴 キャンセル申請（承認待ち）[那覇]${_nw?"（🆕NEW リニューアル公式サイト rent-handyman.com）":""} ${r.name || ""} / ${resId}`, [
-      { type: "header", text: { type: "plain_text", text: `🔴 キャンセル申請（承認待ち）${_nw?" 🆕NEW":""}`, emoji: true } },
+      { type: "header", text: { type: "plain_text", text: `🔴 キャンセル申請（承認待ち）[那覇]${_nw?" 🆕NEW":""}`, emoji: true } },
       { type: "section", fields: [
         { type: "mrkdwn", text: `*お客様:*\n${r.name || "-"} 様` }, { type: "mrkdwn", text: `*予約番号:*\n${resId}` },
         { type: "mrkdwn", text: `*ご予約元:*\n${otaJp(r.ota)}` }, { type: "mrkdwn", text: `*利用期間:*\n${r.start_date || "-"} 〜 ${r.end_date || "-"}` },
         { type: "mrkdwn", text: `*車両:*\n${r.vehicle_class || r.vehicle_name || "-"}` }, { type: "mrkdwn", text: `*金額:*\n¥${Number(r.price || 0).toLocaleString()}` },
       ] },
       { type: "section", text: { type: "mrkdwn", text: `*理由:*\n${reason || "（記載なし）"}` } },
-      { type: "actions", elements: [ { type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, style: "primary", url: "https://nosh2318.github.io/spk-task/mypage-admin.html?bucket=hdm_nha" } ] },
-      { type: "context", elements: [ { type: "mrkdwn", text: "⚠️ 承認制です。上のボタン（または「📲マイページ利用状況(那覇)」→承認待ち）で承認/却下（承認＝キャンセル確定＋配車解放。返金は規定に沿って手動Square返金）。" } ] },
+      { type: "actions", elements: [ { type: "button", text: { type: "plain_text", text: "✅ キャンセル処理を開く", emoji: true }, style: "primary", url: actUrl(resId) } ] },
+      { type: "context", elements: [ { type: "mrkdwn", text: "⚠️ 承認制です。上のボタンでこの予約の承認/却下画面が開きます（承認＝キャンセル確定＋配車解放＋お客様へ連絡。返金は規定に沿って手動Square返金）。" } ] },
     ]); }
     return json({ ok: true, requested: true }, 200, origin);
   }
@@ -403,7 +405,7 @@ Deno.serve(async (req) => {
         { type: "mrkdwn", text: `*🕐 予定の回収*\n${planned}` },
         { type: "mrkdwn", text: `*🟢 お客様の希望*\n${rdyTime ? `*${rdyTime}〜*` : "指定なし"}` },
       ] },
-      { type: "actions", elements: [ { type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, style: "primary", url: "https://nosh2318.github.io/spk-task/mypage-admin.html?bucket=hdm_nha" } ] },
+      { type: "actions", elements: [ { type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, style: "primary", url: actUrl(resId) } ] },
       { type: "context", elements: [ { type: "mrkdwn", text: "👉 上のボタン（マイページ管理）で ✅承認 / 🚫却下（承認でお客様へメール通知）" } ] },
     ];
     await slackPost(`🟢 早め回収リクエスト（承認待ち）[那覇] ${r.name || ""} / ${resId}`, rBlocks);
