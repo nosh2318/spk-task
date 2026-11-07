@@ -129,8 +129,16 @@ function taskOptNum(t: any, key: string): number {
 // decide: decision=proposed（proposal_text 必須・proposal_value 任意）→ status=proposed, payload.proposal
 //         decision=rejected（reject_reason / reject_text 任意）→ 通知文に理由、payload.reject
 // proposal_reply（お客様・token）: accept→その値で承認と同じ処理 / decline→declined_by_guest / 期限切れ→expired
-const REJ_JP: Record<string, string> = { no_vehicle: "ご希望の日時は、空いているお車がございません。", out_of_area: "ご希望の場所は、お届け・回収の対象エリア外です。", past_deadline: "変更の受付締切を過ぎております。", full_slot: "ご希望のお時間は、お届け・回収の予定が埋まっております。", out_of_stock: "ご希望のオプションは、ご用意できる数がございません。", other: "" };
-function rejectLine(code: string, text: string): string { const a = REJ_JP[code] || ""; const t = String(text || "").trim().slice(0, 200); return [a, t].filter(Boolean).join("\n"); }
+const REJ_JP: Record<string, string> = {  // 11/7 nosh「理由は明確に（予約状況の兼ね合いにて・回収スタッフ状況など）」
+  no_vehicle: "誠に恐れ入りますが、予約状況の兼ね合いにより、ご希望の日時にご用意できるお車がございません。",
+  full_slot: "誠に恐れ入りますが、{staff}の状況により、ご希望のお時間に伺うことができません。",
+  out_of_area: "ご希望の場所は、お届け・回収の対象エリア外のため、伺うことができません。",
+  out_of_stock: "誠に恐れ入りますが、在庫状況により、ご希望のオプションをご用意できる数がございません。",
+  past_deadline: "変更の受付締切を過ぎているため、ご変更を承ることができません。",
+  other: "",
+};
+function staffOf(field: string): string { return ["del_place", "lend_time"].includes(field) ? "お届けスタッフ" : ["col_place", "return_time", "ready"].includes(field) ? "回収スタッフ" : "担当スタッフ"; }
+function rejectLine(code: string, text: string, field = ""): string { const a = (REJ_JP[code] || "").replace("{staff}", staffOf(field)); const t = String(text || "").trim().slice(0, 200); return [a, t].filter(Boolean).join("\n"); }
 const PROP_FIELDS_END = ["col_place", "return_time", "ready"];
 // 期限：今から24時間、ただし受け渡しの2時間前まで（最短30分）
 function proposalExpires(field: string, sd: string, st: string, ed: string, et: string): string {
@@ -194,7 +202,7 @@ Deno.serve(async (req) => {
     const resId2 = String(c.reservation_id);
     const pl0: any = (c.payload && typeof c.payload === "object") ? c.payload : {};
     const rejCode = String(p.reject_reason || ""), rejText = String(p.reject_text || "").trim().slice(0, 200);
-    const rejLine = decision === "rejected" ? rejectLine(rejCode, rejText) : "";
+    const rejLine = decision === "rejected" ? rejectLine(rejCode, rejText, String(c.field)) : "";
     const altText = String(p.alt_text || "").trim().slice(0, 300);
     const keep = p.keep_as_is === true || p.keep_as_is === "true";  // 11/7 nosh「NGだけもあり得る＝既存予約のままでお願いします」
     // 2026-11-07 nosh決定「お断り＝できないが〜ならできます」：代わりの案なしのお断りは受け付けない（早め回収＝予定通り回収 は例外）
@@ -212,7 +220,7 @@ Deno.serve(async (req) => {
       await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: "proposed", actor, payload: { ...pl0, proposal: { text: ptext, value: pval, reason: rejCode || "", reason_text: rejText, expires_at: exp, by: actor, at: new Date().toISOString() } } });
       const url = rv.mypage_token ? `https://nosh2318.github.io/naha-project/my-nha.html?t=${rv.mypage_token}` : "";
       await notifyCust(resId2, `【HANDYMAN那覇空港店】ご予約 ${resId2} ご依頼について別の案のご提案`,
-        declineMsg("【HANDYMAN 那覇】", lbl, String(c.field), String(c.new_value || ""), String(c.old_value || ""), rejectLine(rejCode, rejText), ptext, `マイページで「この案でOK」を押すと確定します（${jstMdHm(exp)}まで）。ご都合が合わなければ「やめる」を押してください。`, url) + `\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);
+        declineMsg("【HANDYMAN 那覇】", lbl, String(c.field), String(c.new_value || ""), String(c.old_value || ""), rejectLine(rejCode, rejText, String(c.field)), ptext, `マイページで「この案でOK」を押すと確定します（${jstMdHm(exp)}まで）。ご都合が合わなければ「やめる」を押してください。`, url) + `\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);
       await slackPost(`💬 別の案を送りました [那覇] ${FLD_JP[c.field] || c.field} / ${resId2}：${ptext}（お客様の返事待ち・${jstMdHm(exp)}まで）／ ${actor.replace(/^staff:/, "")}`);
       return json({ ok: true, decided: "proposed", expires_at: exp }, 200, origin);
     }
