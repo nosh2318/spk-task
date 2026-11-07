@@ -79,6 +79,7 @@ details.defs summary{cursor:pointer;font-weight:800;font-size:13px}
 .it.k0{border-color:#f3b4b8}.it.k3 .todo{padding:7px 11px}.it.k3 .todo .tt{font-size:13.5px}
 .miss{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px;align-items:center}.miss .d{padding:2px 8px}
 .tile .sub{font-size:10.5px;color:var(--mut);font-weight:700}
+.rsn{margin-top:8px;padding:8px;border:1px solid #fecaca;background:#fff7f7;border-radius:10px}.rsnT{width:100%;box-sizing:border-box;margin-top:6px;padding:8px;border:1px solid #cbd5e1;border-radius:8px;font-size:15px}
 </style></head>
 <body>
 <header><span class="t">📲 マイページ管理</span><span class="pin" id="hdr">読み込み中…</span><span class="sp"></span>
@@ -127,6 +128,11 @@ details.defs summary{cursor:pointer;font-weight:800;font-size:13px}
   <div class="tiles" id="aTiles" style="margin-top:10px"></div>
   <div class="filt" id="aFilt"></div>
   <div id="aList"><div class="empty">読み込み中…</div></div>
+</div>
+<div class="card" id="aPropC" hidden>
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b>💬 別の案を送った依頼（お客様の返事待ち）</b><span class="mut" id="aPropN"></span></div>
+  <div class="mut" style="margin-top:2px">お客様がマイページで「この案でOK」を押すと自動で確定・反映します。期限を過ぎると今の予約のままになります。</div>
+  <div id="aProp" style="margin-top:8px"></div>
 </div>
 <div class="card">
   <details><summary style="cursor:pointer;font-weight:800">返事済み・アーカイブ（直近30日）<span class="mut" id="aArchN"></span></summary><div id="aArch" style="margin-top:8px"></div></details>
@@ -194,12 +200,32 @@ async function loadReq(){const [a,b]=await Promise.all([rpc(MAIN,MAIN_ANON,"mpad
 const reqOf=r=>REQ[r.bucket+"|"+r.rid]||[];
 const pendOf=r=>reqOf(r).filter(x=>x.status==="requested");
 function reqHtml(r,act){const L=reqOf(r).slice().sort((a,b)=>String(b.at||"").localeCompare(String(a.at||"")));if(!L.length)return'<div class="mut">依頼はありません</div>';return L.map(x=>reqItem(x,act)).join("");}
+// お断り理由（2026-11-07 仕様合意：no_vehicle / out_of_area / past_deadline / other ＋一言。お客様への通知文に入る）
+const RSN_L=[["no_vehicle","空車がない"],["out_of_area","エリア外"],["past_deadline","締切を過ぎている"],["other","その他"]];let RSN=null;
+function rsnOpen(key){PRP=null;RSN=RSN&&RSN.key===key?null:{key,code:"",text:""};render();}
+function rsnSet(c){if(RSN){RSN.code=c;RSN.text=(document.getElementById("rsnT")||{}).value||RSN.text;render();}}
+function rsnSend(){if(!RSN||!RSN.code)return toast("理由を選んでください");RSN.text=((document.getElementById("rsnT")||{}).value||"").trim();if(RSN.code==="other"&&!RSN.text)return toast("「その他」は一言を書いてください");const k=RSN.key;ARM=k+"|rejected";decide(k,"rejected");}
+function rsnHtml(k){if(!RSN||RSN.key!==k)return"";return `<div class="rsn"><div class="mut" style="margin-bottom:4px">お断りの理由（お客様への通知に入ります）</div><div style="display:flex;gap:6px;flex-wrap:wrap">${RSN_L.map(([c,l])=>`<button class="chip ${RSN.code===c?"on":""}" onclick="rsnSet('${c}')">${l}</button>`).join("")}</div>
+  <input id="rsnT" class="rsnT" maxlength="200" placeholder="一言（任意。その他は必須）" value="${esc(RSN.text)}"><div class="acts"><button class="btn dang" onclick="rsnSend()">この理由でお断りする</button><button class="lnk" onclick="RSN=null;render()">やめる</button></div></div>`;}
+// 別の案（2026-11-07）：お客様がマイページで「この案でOK」→承認と同じ処理で確定。キャンセル・高松・KEYDROPは対象外（マイページ側のボタンが札幌・那覇のみ）
+let PRP=null;
+const canProp=x=>typeOf(x.field)!=="cancel"&&/^hdm_(spk|nha)$/.test(x.bucket);
+const PRP_PH={del_place:"例：札幌駅北口なら可能です",col_place:"例：大通公園前なら可能です",lend_time:"例：11:00でしたら可能です",return_time:"例：15:00でしたら可能です",ready:"例：15:00以降でしたら伺えます"};
+const PRP_VPH={del_place:"お届け場所（OKで反映）",col_place:"回収場所（OKで反映）",lend_time:"例 11:00（OKで反映）",return_time:"例 15:00（OKで反映）",ready:"例 15:00（OKで反映）"};
+function prpOpen(key){RSN=null;PRP=PRP&&PRP.key===key?null:{key,text:"",val:""};render();}
+function prpRead(){if(!PRP)return;PRP.text=((document.getElementById("prpT")||{}).value||"").trim();PRP.val=((document.getElementById("prpV")||{}).value||"").trim();}
+function prpSend(){prpRead();if(!PRP||!PRP.text)return toast("お客様に見せる文を書いてください");const k=PRP.key;ARM=k+"|proposed";decide(k,"proposed");}
+function prpHtml(x,k){if(!PRP||PRP.key!==k)return"";const f=x.field,needV=["del_place","col_place","lend_time","return_time","ready"].includes(f);
+  return `<div class="rsn" style="border-color:#bfdbfe;background:#f5f9ff"><div class="mut" style="margin-bottom:4px">別の案（お客様に${x.line?"LINE":"メール"}で届き、マイページで「この案でOK／やめる」を選びます）</div>
+  <textarea id="prpT" class="rsnT" rows="2" maxlength="300" placeholder="${esc(PRP_PH[f]||"例：〇〇でしたら可能です")}">${esc(PRP.text)}</textarea>
+  ${needV?`<input id="prpV" class="rsnT" maxlength="100" placeholder="${esc(PRP_VPH[f])}" value="${esc(PRP.val)}"><div class="mut" style="font-size:12px">↑OKされたらこの値で反映します。空なら文だけ送り、反映は手で行います。</div>`:'<div class="mut" style="font-size:12px">OKされたら、お客様の依頼どおりの内容で承認と同じ処理をします。</div>'}
+  <div class="acts"><button class="btn ok" style="background:#1d4ed8" onclick="prpSend()">この案を送る</button><button class="lnk" onclick="PRP=null;render()">やめる</button></div></div>`;}
 async function decide(key,decision){
   if(ARM!==key+"|"+decision){ARM=key+"|"+decision;render();setTimeout(()=>{if(ARM===key+"|"+decision){ARM="";render();}},6000);return;}
   ARM="";const bk=key.split("|")[0],id=key.slice(bk.length+1),B=BUCK[bk];let x=null;Object.values(REQ).forEach(l=>l.forEach(i=>{if(i.bucket===bk&&String(i.id)===id)x=i;}));if(!x||!B)return;
-  try{const r=await fetch(B.ef,{method:"POST",headers:{apikey:B.anon,Authorization:"Bearer "+B.anon,"Content-Type":"application/json"},body:JSON.stringify({action:"decide",admin_pin:getPin(),change_id:isNaN(+x.id)?x.id:+x.id,decision})});
+  try{const r=await fetch(B.ef,{method:"POST",headers:{apikey:B.anon,Authorization:"Bearer "+B.anon,"Content-Type":"application/json"},body:JSON.stringify(Object.assign({action:"decide",admin_pin:getPin(),change_id:isNaN(+x.id)?x.id:+x.id,decision},decision==="rejected"&&RSN&&RSN.key===key?{reject_reason:RSN.code,reject_text:RSN.text}:decision==="proposed"&&PRP&&PRP.key===key?{proposal_text:PRP.text,proposal_value:PRP.val}:{}))});
     const j=await r.json().catch(()=>({}));
-    if(r.ok&&j.ok){x.status=decision;x.at=new Date().toISOString();toast(decision==="approved"?"承認しました（反映・通知済）":decision==="rejected"?"お断りしました":"アーカイブしました");render();if(decision==="approved")setTimeout(loadAll,1500);}
+    if(r.ok&&j.ok){if(decision==="rejected"&&RSN&&RSN.key===key){x.reject={reason:RSN.code,text:RSN.text};RSN=null;}if(decision==="proposed"&&PRP&&PRP.key===key){x.proposal={text:PRP.text,value:PRP.val,expires_at:j.expires_at||""};PRP=null;}x.status=decision;x.at=new Date().toISOString();toast(decision==="approved"?"承認しました（反映・通知済）":decision==="rejected"?"お断りしました":decision==="proposed"?"別の案を送りました":"アーカイブしました");render();if(decision==="approved")setTimeout(loadAll,1500);}
     else if(r.status===401)toast("PINが違います");else toast("失敗: "+(j.error||("http "+r.status)));
   }catch(e){toast("通信エラー");}
 }
@@ -361,13 +387,17 @@ function actCard(x,pend){const B=BUCK[x.bucket]||{n:x.bucket,c:"#334155"},r=rowO
     ${reqItem(x,pend)}
     <div class="acts" style="justify-content:space-between">${r?`<button class="jump" onclick="goList('${x.bucket}','${esc(x.rid)}')">← リストで見る</button>`:'<span class="mut">（リストの期間外の予約）</span>'}<span class="mut">${esc(x.rid)}</span></div></div>`;}
 function reqItem(x,act){const k=x.bucket+"|"+x.id,p=x.status==="requested",bf=beforeOf(x);
-  const st=p?"":x.status==="approved"?'<span class="pl s4">承認</span>':x.status==="rejected"?'<span class="pl s1">お断り</span>':'<span class="pl" style="background:var(--nab);color:var(--na)">アーカイブ</span>';
+  const ST={approved:'<span class="pl s4">承認</span>',rejected:'<span class="pl s1">お断り</span>',proposed:'<span class="pl" style="background:#dbeafe;color:#1d4ed8">別の案・返事待ち</span>',declined_by_guest:'<span class="pl s1">別の案をお客様が見送り</span>',expired:'<span class="pl" style="background:#f1f5f9;color:#475569">別の案・期限切れ</span>'};
+  const st=p?"":ST[x.status]||'<span class="pl" style="background:var(--nab);color:var(--na)">アーカイブ</span>';
+  const RJ={no_vehicle:"空車がない",out_of_area:"エリア外",past_deadline:"締切を過ぎている",other:"その他"};
+  const extra=(x.proposal&&x.proposal.text?`<div class="mut" style="color:#1d4ed8">💬 別の案：${esc(x.proposal.text)}${x.proposal.value?`（OKで「${esc(x.proposal.value)}」に反映）`:""}${x.proposal.expires_at&&x.status==="proposed"?` ・ 期限 ${esc(new Date(Date.parse(x.proposal.expires_at)+9*3600e3).toISOString().slice(5,16).replace("T"," ").replace("-","/"))}`:""}</div>`:"")
+    +(x.reject&&(x.reject.reason||x.reject.text)?`<div class="mut" style="color:#b91c1c">理由：${esc([RJ[x.reject.reason]||"",x.reject.text||""].filter(Boolean).join("・"))}</div>`:"");
   const btn=(d,l,cls)=>`<button class="btn ${cls}" onclick="decide('${esc(k)}','${d}')">${ARM===k+"|"+d?"もう一度押すと確定":l}</button>`;
   const ch=typeOf(x.field)==="cancel"?'<div class="chg"><b>キャンセルしたい</b></div>':x.field==="ready"?`<div class="chg"><b>早めに回収してOK</b>${x.newv?`<div class="mut">目安：${esc(x.newv)}</div>`:""}</div>`
     :`<div class="chg">${bf?`<span class="bf">${esc(bf)}</span><span class="ar">→</span>`:""}<b>${esc(x.newv||"（内容なし）")}</b></div>`;
   return `<div class="rq ${p?"pend":""}">${st?`<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${st}<span class="mut">${act?"":tyLabel(x)} ${esc((x.at||"").slice(5,16).replace("T"," "))}</span></div>`:""}
-    ${ch}${x.note?`<div class="mut">📝 ${esc(x.note)}</div>`:""}
-    ${p&&act?`<div class="acts">${btn("approved","✅ 承認（反映＋"+(x.line?"LINE":"メール")+"で通知）","ok")}${btn("rejected","お断り","dang")}</div>
+    ${ch}${x.note?`<div class="mut">📝 ${esc(x.note)}</div>`:""}${extra}
+    ${p&&act?`<div class="acts">${btn("approved","✅ 承認（反映＋"+(x.line?"LINE":"メール")+"で通知）","ok")}${canProp(x)?`<button class="btn" style="background:#dbeafe;color:#1d4ed8" onclick="prpOpen('${esc(k)}')">別の案…</button>`:""}${/_tkm$/.test(x.bucket)?btn("rejected","お断り","dang"):`<button class="btn dang" onclick="rsnOpen('${esc(k)}')">お断り…</button>`}</div>${rsnHtml(k)}${prpHtml(x,k)}
       <div style="margin-top:6px"><button class="lnk" onclick="decide('${esc(k)}','acknowledged')">${ARM===k+"|acknowledged"?"もう一度押すとアーカイブ":"アーカイブ（反映・通知なし。重複や取り下げ用）"}</button></div>`:""}</div>`;}
 function renderAct(){
   const all=[].concat(...Object.values(REQ));const pend=all.filter(x=>x.status==="requested");
@@ -380,7 +410,10 @@ function renderAct(){
   const hot=pend.filter(x=>dueMs(x)-Date.now()<=15*60e3).length;
   document.getElementById("aHot").innerHTML=hot?`<div class="hot">⏰ 返事の目安まで15分を切った依頼が ${hot} 件あります。先に返事してください。</div>`:"";
   document.getElementById("aList").innerHTML=L.length?L.map(x=>actCard(x,true)).join(""):'<div class="empty">✅ 未処理の依頼はありません</div>';
-  const A=all.filter(x=>x.status!=="requested").sort((a,b)=>String(b.at||"").localeCompare(String(a.at||"")));
+  const P=all.filter(x=>x.status==="proposed").sort((a,b)=>String((a.proposal||{}).expires_at||"").localeCompare(String((b.proposal||{}).expires_at||"")));
+  document.getElementById("aPropC").hidden=!P.length;document.getElementById("aPropN").textContent=P.length+"件";
+  document.getElementById("aProp").innerHTML=P.map(x=>actCard(x,false)).join("");
+  const A=all.filter(x=>x.status!=="requested"&&x.status!=="proposed").sort((a,b)=>String(b.at||"").localeCompare(String(a.at||"")));
   document.getElementById("aArchN").textContent=" "+A.length+"件";
   document.getElementById("aArch").innerHTML=A.length?A.slice(0,200).map(x=>actCard(x,false)).join(""):'<div class="empty">なし</div>';
 }
