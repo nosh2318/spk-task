@@ -67,6 +67,7 @@ Deno.serve(async (req) => {
     if (!x || x.status !== "requested") continue;
     const base = baseOf(String(x.at || "")); if (base == null) continue;
     const el = Math.floor((now - base) / 60e3);
+    if (el > 3 * 24 * 60) continue; // 3日より前の放置分は対象外（初回起動時の一斉通知を防ぐ）
     const st = STAGES.filter((s) => el >= s.min).pop(); if (st) hot.push({ x, st: st.n, el });
   }
   if (!hot.length) return json({ ok: true, hot: 0, sent: 0 });
