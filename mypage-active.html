@@ -204,18 +204,37 @@ function reqHtml(r,act){const L=reqOf(r).slice().sort((a,b)=>String(b.at||"").lo
 //   できない理由（no_vehicle / out_of_area / past_deadline / other＋一言）＋代わりにできること（必須）＋値（任意・OKで反映）。
 //   札幌・那覇HDMの変更依頼 → decide=proposed（お客様がマイページで「この案でOK／やめる」）。キャンセル・KEYDROP → decide=rejected＋alt_text（文で届く）。
 //   早め回収も例外なし（nosh 11/7「早め回収も〜時ならOK パターンを」）：札幌・那覇は時間の入力を必須にし、OKでその時間に反映。
-const RSN_L=[["no_vehicle","予約状況（空車なし）"],["full_slot","スタッフ状況（手配できない）"],["out_of_area","エリア外"],["out_of_stock","在庫状況"],["past_deadline","締切を過ぎている"],["other","その他（ひとことに書く）"]];
-// 提案の型（タップで②に入る。〔 〕を書き換える）。「今のご予約のまま」は別ボタン（nosh 11/7「NGだけもあり得る」）
-const ALT_TPL={del_place:["〔場所〕でしたらお届けできます","〔エリア〕内の場所でしたらお届けできます"],col_place:["〔場所〕でしたら回収に伺えます","お届けと同じ場所でしたら回収に伺えます"],lend_time:["〔時間〕でしたらお届けできます","〔時間〕〜〔時間〕の間でしたらお届けできます"],return_time:["〔時間〕でしたら回収に伺えます","〔時間〕〜〔時間〕の間でしたら回収に伺えます"],ready:["〔時間〕以降でしたら回収に伺えます","〔時間〕〜〔時間〕の間でしたら回収に伺えます"],option:["〔別のオプション〕でしたらご用意できます","〔個数〕つまででしたらご用意できます","当日お渡しの際に在庫を確認し、空きがあればご用意できます"],insurance:["お渡しの際に、その場で補償のご変更を承れます"],method:["〔方法〕でしたら承れます"],cancel:["日程のご変更でしたら承れます"]};
-function altTpl(t){altRead();ALT.alt=t;ALT.cf="";render();setTimeout(()=>{const e=document.getElementById("altT");if(e){e.focus();const i=t.indexOf("〔");if(i>=0)e.setSelectionRange(i,t.indexOf("〕")+1);}},0);}
-function altKeep(k){altRead();if(!ALT.code)return toast("できない理由を選んでください");if(ALT.code==="other"&&!ALT.text)return toast("「その他」のときは理由のひとことを書いてください");if(ALT.cf!=="keep"){ALT.cf="keep";render();return;}ALT.keep=1;ALT.alt="";ARM=k+"|rejected";decide(k,"rejected");}
+// 11/7 nosh「時間はプルダウン」「テキスト全てはなくしたい」「場所やその他の変更のパターンも必要」：スタッフは文字を打たない。理由・提案の型・時間／個数をタップと選択だけで選び、文は自動で組み立てる。
+const RSN_L=[["no_vehicle","予約状況（空車なし）"],["full_slot","スタッフ状況（手配できない）"],["out_of_area","エリア外"],["out_of_stock","在庫状況"],["past_deadline","締切を過ぎている"]];
+const RSN_OF=f=>{const c=["lend_time","return_time","ready"].includes(f)?["full_slot","no_vehicle","past_deadline"]:["del_place","col_place"].includes(f)?["out_of_area","full_slot","past_deadline"]:f==="option"?["out_of_stock","past_deadline"]:["no_vehicle","past_deadline"];return RSN_L.filter(r=>c.includes(r[0]));};
+const TIMES=(()=>{const a=[];for(let h=6;h<=23;h++)for(const m of["00","30"])a.push(h+":"+m);return a;})();
+// 提案の型：s＝選ぶもの（time 時間／n 個数／なし）、v＝お客様がOKしたときに反映する値（time＝選んだ時間、del＝お届けと同じ場所）
+const ALT_TPL={
+  lend_time:[{t:"{x}でしたらお届けできます",s:"time",v:"time"}],
+  return_time:[{t:"{x}でしたら回収に伺えます",s:"time",v:"time"}],
+  ready:[{t:"{x}以降でしたら回収に伺えます",s:"time",v:"time"}],
+  del_place:[{t:"対象エリア内の別の場所でしたらお届けできます"},{t:"店舗でのお受け取りでしたら承れます"}],
+  col_place:[{t:"お届けと同じ場所でしたら回収に伺えます",v:"del"},{t:"対象エリア内の別の場所でしたら回収に伺えます"},{t:"店舗へのご返却でしたら承れます"}],
+  option:[{t:"{x}つまででしたらご用意できます",s:"n"},{t:"当日お渡しの際に在庫を確認し、空きがあればご用意できます"}],
+  insurance:[{t:"お渡しの際に、その場で補償のご変更を承れます"}],
+  method:[{t:"店舗でのお受け取り・ご返却でしたら承れます"},{t:"今の受け取り方法のままでしたら承れます"}],
+  date:[{t:"空き状況を確認のうえ、別の日程でしたら承れます"},{t:"ご返却の時間を早めていただけましたら承れます"}],
+  car_class:[{t:"同じクラスの別の車種でしたらご用意できます"},{t:"空きのある別のクラスでしたらご用意できます（料金が変わる場合がございます）"}],
+  cancel:[{t:"日程のご変更でしたら承れます"}],
+  _:[{t:"お受け渡しの際にご相談いただけましたら承れます"}]};
+const tplKey=f=>ALT_TPL[f]?f:/^(extend|lend_date|return_date)$/.test(f)?"date":f==="cls"?"car_class":/method$/.test(f)?"method":"_";
+const tplsOf=f=>ALT_TPL[tplKey(f)];
+function altFill(){if(!ALT||!ALT.x)return;const f=typeOf(ALT.x.field)==="cancel"?"cancel":ALT.x.field,T=tplsOf(f)[ALT.ti];if(!T){ALT.alt="";ALT.val="";return;}
+  ALT.alt=T.s?(ALT.sv?T.t.replace("{x}",ALT.sv):""):T.t;
+  const r=rowOf(ALT.x.bucket,ALT.x.rid);ALT.val=T.v==="time"?(ALT.sv||""):T.v==="del"?((r&&r.del_place)||""):"";}
+function altTpl(i){if(!ALT)return;ALT.ti=i;ALT.sv="";ALT.cf="";altFill();render();}
+function altSv(v){if(!ALT)return;ALT.sv=v;ALT.cf="";altFill();render();}
+function altSet(c){if(!ALT)return;ALT.code=c;ALT.cf="";if(ALT.ti<0&&ALT.x){const f=typeOf(ALT.x.field)==="cancel"?"cancel":ALT.x.field;if(tplsOf(f).length===1)ALT.ti=0;altFill();}render();}
+function altKeep(k){if(!ALT.code)return toast("できない理由を選んでください");if(ALT.cf!=="keep"){ALT.cf="keep";render();return;}ALT.keep=1;ALT.alt="";ALT.val="";ARM=k+"|rejected";decide(k,"rejected");}
 let ALT=null;
 const canProp=x=>["del_place","col_place","lend_time","return_time","ready"].includes(x.field)&&/^hdm_(spk|nha)$/.test(x.bucket);
-const ALT_PH={del_place:"例：札幌駅北口でしたらお届けできます",col_place:"例：大通公園前でしたら回収できます",lend_time:"例：11:00でしたらお届けできます",return_time:"例：15:00でしたら回収できます",ready:"例：15:00以降でしたら伺えます",cancel:"例：日程の変更でしたら承れます",option:"例：チャイルドシート1台でしたらご用意できます",insurance:"例：免責補償でしたらお付けできます",method:"例：来店でのお受け取りでしたら可能です"};
-const ALT_VPH={del_place:"お届け場所（OKで反映）",col_place:"回収場所（OKで反映）",lend_time:"例 11:00（OKで反映）",return_time:"例 15:00（OKで反映）",ready:"回収できる時間 例 15:00（必須・OKで反映）"};
-function altOpen(key){ALT=ALT&&ALT.key===key?null:{key,code:"",text:"",alt:"",val:"",cf:""};render();}
-function altRead(){if(!ALT)return;const g=(id,o)=>{const e=document.getElementById(id);return e?String(e.value||"").trim():o;};ALT.text=g("altR",ALT.text);ALT.alt=g("altT",ALT.alt);ALT.val=g("altV",ALT.val);}
-function altSet(c){if(ALT){altRead();ALT.code=c;ALT.cf="";if(!ALT.alt&&ALT.x){const f=typeOf(ALT.x.field)==="cancel"?"cancel":ALT.x.field;ALT.alt=(ALT_TPL[f]||[])[0]||"";}render();}}
+function altOpen(key){ALT=ALT&&ALT.key===key?null:{key,code:"",text:"",alt:"",val:"",ti:-1,sv:"",cf:""};render();}
+function altRead(){}
 // 11/7 nosh「どんな内容が送信されるか目視確認できるべき」：お客様に届く文をそのまま見せ、確認してから送る（EF の declineMsg と同じ組み立て）
 const PV_KIND={del_place:"お届け場所",col_place:"回収場所",lend_time:"お届け時間",return_time:"回収時間",ready:"早めの回収",option:"オプション",insurance:"補償",method:"受け取り・返却の方法",cancel:"キャンセル"};
 const PV_REJ={no_vehicle:"誠に恐れ入りますが、予約状況の兼ね合いにより、ご希望の日時にご用意できるお車がございません。",full_slot:"誠に恐れ入りますが、{staff}の状況により、ご希望のお時間に伺うことができません。",out_of_area:"ご希望の場所は、お届け・回収の対象エリア外のため、伺うことができません。",out_of_stock:"誠に恐れ入りますが、在庫状況により、ご希望のオプションをご用意できる数がございません。",past_deadline:"変更の受付締切を過ぎているため、ご変更を承ることができません。",other:""};
@@ -233,20 +252,16 @@ function pvMsg(x,mode){const f=typeOf(x.field)==="cancel"?"cancel":x.field,bk=x.
   else if(mode==="rej"&&f!=="cancel")L.push("こちらでよろしければ、マイページから改めてご依頼ください。");
   let tail=f==="cancel"||!ov?"今のご予約はそのままです。":"今のご予約（"+label+"："+ov+"）はそのままです。";if(mode==="keep")tail=tail.replace(/はそのままです。/,"のままでのご利用をお願いできますでしょうか。");
   L.push(tail);L.push("ご不便をおかけいたしますが、何卒よろしくお願いいたします。");L.push(url);return L.join("\n");}
-function altPv(){const e=document.getElementById("altPv");if(!e||!ALT)return;altRead();const x=ALT.x;e.textContent=x?pvMsg(x,canProp(x)?"prop":"rej"):"";}
-function altSend(x){altRead();if(!ALT.code)return toast("できない理由を選んでください");if(ALT.code==="other"&&!ALT.text)return toast("「その他」のときは理由のひとことを書いてください");if(!ALT.alt)return toast("代わりにできること（〜ならできます）を書くか、「今のご予約のままでお願いする」を押してください");if(/〔|〕/.test(ALT.alt))return toast("〔 〕の中を書き換えてください");if(x.field==="ready"&&canProp(x)&&!/^\d{1,2}:\d{2}$/.test(ALT.val))return toast("回収できる時間を 15:00 の形で入れてください");if(ALT.cf!=="send"){ALT.cf="send";render();return;}const k=ALT.key;const d=canProp(x)?"proposed":"rejected";ARM=k+"|"+d;decide(k,d);}
-function altHtml(x,k){if(!ALT||ALT.key!==k)return"";const f=typeOf(x.field)==="cancel"?"cancel":x.field,prop=canProp(x),needV=prop&&["del_place","col_place","lend_time","return_time","ready"].includes(f);ALT.x={field:x.field,bucket:x.bucket,newv:x.newv,rid:x.rid};
-  const xs=JSON.stringify({field:x.field,bucket:x.bucket}).replace(/'/g,"&#39;");
-  if(ALT.cf)return `<div class="rsn" style="border-color:#f59e0b;background:#fffbeb"><div style="font-weight:700;margin-bottom:4px">この文がお客様に${/^key_/.test(x.bucket)?"メール":x.line?"LINE":"メール"}で届きます。よろしいですか？</div><pre style="white-space:pre-wrap;font:inherit;background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:8px;margin:0">${esc(pvMsg(ALT.x,ALT.cf==="keep"?"keep":prop?"prop":"rej"))}</pre><div class="acts"><button class="btn ok" style="background:#1d4ed8" onclick='${ALT.cf==="keep"?`altKeep("${esc(k)}")`:`altSend(${xs})`}'>この内容で送信する</button><button class="btn" onclick="ALT.cf='';render()">戻って直す</button></div></div>`;
-  return `<div class="rsn" style="border-color:#bfdbfe;background:#f5f9ff"><div class="mut" style="margin-bottom:4px">① できない理由</div><div style="display:flex;gap:6px;flex-wrap:wrap">${RSN_L.map(([c,l])=>`<button class="chip ${ALT.code===c?"on":""}" onclick="altSet('${c}')">${l}</button>`).join("")}</div>
-  <input id="altR" class="rsnT" oninput="altPv()" maxlength="200" placeholder="理由のひとこと（その他のときは必須）例：当日は道路規制のため" value="${esc(ALT.text)}">
-  <div class="mut" style="margin:8px 0 2px">② 代わりにできること（必須）</div>
-  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">${(ALT_TPL[f]||[]).map(t=>`<button class="chip" onclick='altTpl(${JSON.stringify(t).replace(/'/g,"&#39;")})'>${esc(t)}</button>`).join("")}</div>
-  <textarea id="altT" class="rsnT" oninput="altPv()" rows="2" maxlength="300" placeholder="${esc(ALT_PH[f]||"例：〇〇でしたら可能です")}">${esc(ALT.alt)}</textarea>
-  ${needV?`<input id="altV" class="rsnT" maxlength="100" placeholder="${esc(ALT_VPH[f])}" value="${esc(ALT.val)}"><div class="mut" style="font-size:12px">↑お客様が「この案でOK」を押したらこの値で反映します。空なら文だけ送り、反映は手で行います。</div>`:""}
-  <div class="mut" style="font-size:12px;margin-top:4px">${prop?`お客様に${x.line?"LINE":"メール"}で届き、マイページで「この案でOK／やめる」を選びます。`:`お客様に${x.line?"LINE":"メール"}で文として届きます（マイページのボタンはありません）。`}どちらの場合も「今のご予約はそのまま」と添えます。</div>
-  <div class="mut" style="margin:8px 0 2px">③ お客様に届く文（見本・自動で作られます）</div><pre id="altPv" style="white-space:pre-wrap;font:inherit;font-size:13px;background:#fff;border:1px dashed #93c5fd;border-radius:8px;padding:8px;margin:0">${esc(ALT.code||ALT.alt?pvMsg(ALT.x,prop?"prop":"rej"):"① 理由を選ぶと、ここに文が出ます")}</pre>
-  <div class="acts"><button class="btn ok" style="background:#1d4ed8" onclick='altSend(${xs})'>この案を送る（文を確認）</button><button class="btn" onclick="altKeep('${esc(k)}')">今のご予約のままでお願いする（文を確認）</button><button class="lnk" onclick="ALT=null;render()">やめる</button></div><div class="mut" style="font-size:12px">「今のご予約のままでお願いする」は、無理な時間帯・無理なご依頼のときだけ。丁寧なお詫びの文で届きます。</div></div>`;}
+function altSend(x){if(!ALT.code)return toast("できない理由を選んでください");if(ALT.ti<0)return toast("代わりにできることを選ぶか、「今のご予約のままでお願いする」を押してください");if(!ALT.alt)return toast("時間（または個数）を選んでください");if(x.field==="ready"&&canProp(x)&&!/^\d{1,2}:\d{2}$/.test(ALT.val))return toast("回収できる時間を選んでください");if(ALT.cf!=="send"){ALT.cf="send";render();return;}const k=ALT.key;const d=canProp(x)?"proposed":"rejected";ARM=k+"|"+d;decide(k,d);}
+function altHtml(x,k){if(!ALT||ALT.key!==k)return"";const f=typeOf(x.field)==="cancel"?"cancel":x.field,prop=canProp(x),T=tplsOf(f);ALT.x={field:x.field,bucket:x.bucket,newv:x.newv,rid:x.rid};
+  const xs=JSON.stringify({field:x.field,bucket:x.bucket}).replace(/'/g,"&#39;"),via=/^key_/.test(x.bucket)?"メール":x.line?"LINE":"メール";
+  if(ALT.cf)return `<div class="rsn" style="border-color:#f59e0b;background:#fffbeb"><div style="font-weight:700;margin-bottom:4px">この文がお客様に${via}で届きます。よろしいですか？</div><pre style="white-space:pre-wrap;font:inherit;background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:8px;margin:0">${esc(pvMsg(ALT.x,ALT.cf==="keep"?"keep":prop?"prop":"rej"))}</pre><div class="acts"><button class="btn ok" style="background:#1d4ed8" onclick='${ALT.cf==="keep"?`altKeep("${esc(k)}")`:`altSend(${xs})`}'>この内容で送信する</button><button class="btn" onclick="ALT.cf='';render()">戻って直す</button></div></div>`;
+  const cur=T[ALT.ti],sel=cur&&cur.s?`<select class="rsnT" onchange="altSv(this.value)"><option value="">${cur.s==="time"?"時間を選ぶ":"個数を選ぶ"}</option>${(cur.s==="time"?TIMES:["1","2","3"]).map(v=>`<option ${ALT.sv===v?"selected":""}>${v}</option>`).join("")}</select>`:"";
+  return `<div class="rsn" style="border-color:#bfdbfe;background:#f5f9ff"><div class="mut" style="margin-bottom:4px">① できない理由</div><div style="display:flex;gap:6px;flex-wrap:wrap">${RSN_OF(tplKey(f)).map(([c,l])=>`<button class="chip ${ALT.code===c?"on":""}" onclick="altSet('${c}')">${l}</button>`).join("")}</div>
+  <div class="mut" style="margin:8px 0 2px">② 代わりにできること</div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">${T.map((t,i)=>`<button class="chip ${ALT.ti===i?"on":""}" onclick="altTpl(${i})">${esc(t.t.replace("{x}",t.s==="time"?"〇時":"〇"))}</button>`).join("")}</div>${sel}
+  <div class="mut" style="margin:8px 0 2px">③ お客様に届く文</div><pre style="white-space:pre-wrap;font:inherit;font-size:13px;background:#fff;border:1px dashed #93c5fd;border-radius:8px;padding:8px;margin:0">${ALT.code?esc(pvMsg(ALT.x,prop?"prop":"rej")):"① 理由を選ぶと、ここに文が出ます"}</pre>
+  <div class="acts"><button class="btn ok" style="background:#1d4ed8" onclick='altSend(${xs})'>この案を送る</button><button class="btn" onclick="altKeep('${esc(k)}')">今のご予約のままでお願いする</button><button class="lnk" onclick="ALT=null;render()">やめる</button></div></div>`;}
 async function decide(key,decision){
   if(ARM!==key+"|"+decision){ARM=key+"|"+decision;render();setTimeout(()=>{if(ARM===key+"|"+decision){ARM="";render();}},6000);return;}
   ARM="";const bk=key.split("|")[0],id=key.slice(bk.length+1),B=BUCK[bk];let x=null;Object.values(REQ).forEach(l=>l.forEach(i=>{if(i.bucket===bk&&String(i.id)===id)x=i;}));if(!x||!B)return;
