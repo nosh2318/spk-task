@@ -86,7 +86,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
 var CV='spk-v1218';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=1049').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=1050').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -1940,6 +1940,22 @@ function autoAssign(reservations,vehicles,existingFleet,maintenance){
 const OTA_ABBR={S:"SKT",J:"JLN",R:"RKT",O:"ART",A:"ART",RC:"RDC",G:"GOO",HP:"HDM",KEYDROP:"KEY",SP:"SP",direct:"直接",DIRECT:"直接",TBR:"TBR","たびらい":"TBR"};
 function otaAbbr(o){if(o==null||o==="")return "-";const k=String(o).trim();return OTA_ABBR[k]||OTA_ABBR[k.toUpperCase()]||k;}
 /* ★2026-11-03 新オフィシャル直販(ota=HANDYMAN)の決済額・決済日時＝Square で取引を探す手掛かり。正本 keydrop_payments(official-pay が決済時に記録)を開くたびに読むだけ・書込なし */
+// ★2026-11-07 楽天・じゃらんの決済状況バッジ（OPシートのタスクサマリ／TOPタスク共通・楽天/じゃらんは必ず表示）
+//   楽天＝台帳 ota_pay_method（ミニのロボが楽天の予約メールの「(オンラインカード決済)/(現地決済)」を5分ごとに読んで記録）
+//   じゃらん＝isJPaidFn（Square事前決済の入金済み）
+window._rktPayMap=window._rktPayMap||(()=>{try{return JSON.parse(localStorage.getItem("spk_rkt_pay")||"{}");}catch(e){return {};}})();
+function OtaPayBadge({ota,rid,isJPaidFn,size,style}){
+  const[,force]=useState(0);
+  useEffect(()=>{const u=()=>force(x=>x+1);window.addEventListener("rktPayUpdate",u);return()=>window.removeEventListener("rktPayUpdate",u);},[]);
+  if(!rid||(ota!=="J"&&ota!=="R"))return null;
+  let label,bg,fg,title;
+  if(ota==="J"){const done=isJPaidFn?isJPaidFn(rid):false;label=done?"💳決済":"💳未決済";bg=done?"#dcfce7":"#fef2f2";fg=done?"#16a34a":"#dc2626";title="じゃらん（Square事前決済）";}
+  else{const m=(window._rktPayMap||{})[rid];
+    if(m==="card"){label="💳決済";bg="#dcfce7";fg="#16a34a";title="楽天：オンラインカード決済（楽天が事前に徴収済み）";}
+    else if(m==="onsite"){label="💳未決済(現地)";bg="#fef2f2";fg="#dc2626";title="楽天：現地決済＝店舗で代金を受け取る";}
+    else{label="💳確認中";bg="#fef9c3";fg="#a16207";title="楽天の決済方法をメールから確認中";}}
+  return <span title={title} style={{fontSize:size||9,fontWeight:700,padding:"1px 5px",borderRadius:4,background:bg,color:fg,flexShrink:0,whiteSpace:"nowrap",...(style||{})}}>{label}</span>;
+}
 function HpPayLine({rid}){const[p,setP]=useState(null);useEffect(()=>{let live=true;setP(null);if(!rid)return;sb.from("keydrop_payments").select("amount,paid_at,status").eq("reservation_id",rid).not("paid_at","is",null).order("paid_at",{ascending:true}).limit(1).then(({data})=>{if(live)setP(data&&data[0]?data[0]:null);});return()=>{live=false;};},[rid]);if(!p)return null;return <span>💳 決済: <b style={{color:"#0f172a"}}>¥{Number(p.amount||0).toLocaleString()}</b>（{new Date(p.paid_at).toLocaleString("ja-JP",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"})}）{p.status==="refunded"&&<span style={{color:"#dc2626",fontWeight:700}}> 返金済</span>}</span>;}
 function OBadge({ota,rid,site}){/* ★2026-10-28 新サイト hdm-rentacar.jp の予約は ota=HANDYMAN のまま site=hdm2 で区別＝表示だけ HDM2（集計・判定は ota のまま） */if(ota==="HANDYMAN"&&(site||(rid&&DB._resIdx&&DB._resIdx[rid]&&DB._resIdx[rid].site))==="hdm2")return <span title="hdm-rentacar.jp(新サイト)からの予約" style={{background:"#0891b2",color:"#fff",padding:"1px 6px",borderRadius:4,fontSize:10,fontWeight:800,whiteSpace:"nowrap"}}>🆕HDM2</span>;if(ota==="HANDYMAN")return <span title="rent-handyman.com(新公式サイト)からの予約" style={{background:"#16a34a",color:"#fff",padding:"1px 6px",borderRadius:4,fontSize:10,fontWeight:800,whiteSpace:"nowrap"}}>🆕NEW</span>;const k=ota==="A"?"O":ota;const o=OTA[k];const lbl=otaAbbr(ota);if(!o&&(!lbl||lbl==="-"))return null;const bg=o?o.bg:"#f1f5f9",c=o?o.c:"#475569";return <span style={{background:bg,color:c,padding:"1px 6px",borderRadius:4,fontSize:10,fontWeight:700,border:`1px solid ${c}22`}}>{lbl}</span>;}
 
@@ -17662,7 +17678,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                 {vh.no&&<span style={{fontWeight:700,color:"#2563eb"}}>{vh.no}</span>}
                 {t.vehicle&&<span>{t.vehicle}</span>}
                 {t.insurance&&<span style={{color:t.insurance==="NOC"?"#dc2626":"#059669",fontWeight:600}}>{t.insurance}</span>}
-                {t.ota==="J"&&(()=>{const done=isJPaidFn?isJPaidFn(t.reservationId):((jalanPay&&jalanPay[t.reservationId]||{}).payStatus==="完了");return <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:4,background:done?"#dcfce7":"#fef2f2",color:done?"#16a34a":"#dc2626"}}>{done?"💳決済":"💳未決済"}</span>;})()}{(()=>{const ep=extraPayFn&&extraPayFn(t.reservationId||t.reservation_id);if(!ep)return null;const pd=ep.status==="paid";return <span title="オプション/補償の追加分" style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:4,marginLeft:3,background:pd?"#dbeafe":"#fef9c3",color:pd?"#1d4ed8":"#a16207"}}>{pd?"追加済":"追加未"}</span>;})()}
+                <OtaPayBadge ota={t.ota} rid={t.reservationId||t.reservation_id} isJPaidFn={(isJPaidFn||((id)=>((jalanPay&&jalanPay[id]||{}).payStatus==="完了")))} size={9}/>{(()=>{const ep=extraPayFn&&extraPayFn(t.reservationId||t.reservation_id);if(!ep)return null;const pd=ep.status==="paid";return <span title="オプション/補償の追加分" style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:4,marginLeft:3,background:pd?"#dbeafe":"#fef9c3",color:pd?"#1d4ed8":"#a16207"}}>{pd?"追加済":"追加未"}</span>;})()}
                 {(()=>{const rP=cleanPlace((t._placeSource==="manual"?t.place:(t._ssPlace||t.place))||"");if(!rP)return isPlaceMissing(t)?<PlaceAlert/>:null;const mu="https://www.google.com/maps/search/"+encodeURIComponent(rP);return <a href={mu} target="_blank" rel="noopener" style={{color:"#dc2626",textDecoration:"none",fontWeight:600}}>📍{rP}</a>;})()}
                 <ChgTag info={chgInfo(t,"place")}/>
                 <ChgTag info={chgInfo(t,"time")}/>
@@ -18009,7 +18025,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                 </div>}
                 <div style={{display:"flex",alignItems:"center",gap:6,marginTop:3,flexWrap:"wrap"}}>
                   {t.assignee?<span style={{fontSize:isMob?10:9,background:"#ede9fe",color:"#6d28d9",fontWeight:700,padding:"1px 6px",borderRadius:4}}>👤{t.assignee}</span>:(t.type!=="洗車"&&<span style={{fontSize:isMob?9:8,color:"#f59e0b",fontWeight:700}}>担当未定</span>)}<SpotBadge t={t} size={isMob?9:8}/>
-                  {t.ota==="J"&&(()=>{const done=isJPaidFn?isJPaidFn(t.reservationId):((jalanPay&&jalanPay[t.reservationId]||{}).payStatus==="完了");return <span style={{fontSize:isMob?9:8,fontWeight:700,padding:"1px 5px",borderRadius:4,background:done?"#dcfce7":"#fef2f2",color:done?"#16a34a":"#dc2626"}}>{done?"💳決済":"💳未決済"}</span>;})()}{(()=>{const ep=extraPayFn&&extraPayFn(t.reservationId||t.reservation_id);if(!ep)return null;const pd=ep.status==="paid";return <span title="オプション/補償の追加分" style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:4,marginLeft:3,background:pd?"#dbeafe":"#fef9c3",color:pd?"#1d4ed8":"#a16207"}}>{pd?"追加済":"追加未"}</span>;})()}
+                  <OtaPayBadge ota={t.ota} rid={t.reservationId||t.reservation_id} isJPaidFn={(isJPaidFn||((id)=>((jalanPay&&jalanPay[id]||{}).payStatus==="完了")))} size={isMob?9:8}/>{(()=>{const ep=extraPayFn&&extraPayFn(t.reservationId||t.reservation_id);if(!ep)return null;const pd=ep.status==="paid";return <span title="オプション/補償の追加分" style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:4,marginLeft:3,background:pd?"#dbeafe":"#fef9c3",color:pd?"#1d4ed8":"#a16207"}}>{pd?"追加済":"追加未"}</span>;})()}
                 </div>
               </div>;
             })}
@@ -23325,6 +23341,21 @@ function App(){
     const lp=jalanPay&&jalanPay[resvId];
     return!!(lp&&lp.payStatus==="完了");
   },[jpNewPaidSet,jalanPay]);
+  // ★2026-11-07 楽天の決済方法（ota_pay_method）を読み込み → OtaPayBadge が表示。60秒ごとに更新
+  useEffect(()=>{
+    if(!sb)return;let alive=true;
+    const load=async()=>{
+      try{
+        const m={};let from=0;
+        for(;;){const{data,error}=await sb.from("ota_pay_method").select("reservation_id,method").range(from,from+999);if(error||!data)return;data.forEach(r=>{m[r.reservation_id]=r.method;});if(data.length<1000)break;from+=1000;}
+        if(!alive)return;
+        window._rktPayMap=m;try{localStorage.setItem("spk_rkt_pay",JSON.stringify(m));}catch(e){}
+        window.dispatchEvent(new Event("rktPayUpdate"));
+      }catch(e){}
+    };
+    load();const tm=setInterval(load,60000);
+    return()=>{alive=false;clearInterval(tm);};
+  },[]);
   // ★ マイページ追加決済(mypage_extra_payments)：オプション/補償の差額。通常決済(JLN)と別枠で表示・督促用
   const[extraPayMap,setExtraPayMap]=useState(()=>{try{return JSON.parse(localStorage.getItem("spk_extra_pay")||"{}");}catch(e){return {};}});
   useEffect(()=>{
@@ -24622,7 +24653,7 @@ function App(){
                                 <TaskMoveBadge t={t} size={12}/>
                                 <SpkWashInspBtn t={t}/>
                                 {(isDel||isCOL)&&(()=>{const rid=t.reservationId||t.reservation_id;const _tk=(window._mypageTokenMap||{})[rid];if(!_tk)return null;return <><a href={"https://nosh2318.github.io/spk-task/my.html?t="+_tk+"&staff=1"} target="_blank" rel="noopener" onClick={e=>e.stopPropagation()} title="お客様マイページ（スタッフ代理＝免許アップ・変更を代理登録可）" style={{fontSize:8,fontWeight:800,padding:"1px 5px",borderRadius:4,background:"#0e7a6b",color:"#fff",textDecoration:"none",whiteSpace:"nowrap",flexShrink:0}}>🪪MyP</a><button onClick={e=>{e.stopPropagation();navigator.clipboard.writeText("https://nosh2318.github.io/spk-task/my.html?t="+_tk);const b=e.currentTarget;const o=b.textContent;b.textContent="✓";setTimeout(()=>b.textContent=o,1000);}} title="お客様に送るマイページURLをコピー" style={{fontSize:8,fontWeight:800,padding:"1px 5px",borderRadius:4,background:"#e0f2fe",color:"#0369a1",border:"1px solid #7dd3fc",cursor:"pointer",whiteSpace:"nowrap",flexShrink:0}}>🔗URLコピー</button></>;})()}
-                                {t.ota==="J"&&(()=>{const rid=t.reservationId||t.reservation_id;const done=isJPaidFn(rid);return <span style={{fontSize:8,fontWeight:700,padding:"1px 5px",borderRadius:4,background:done?"#dcfce7":"#fef2f2",color:done?"#16a34a":"#dc2626",flexShrink:0}}>{done?"💳決済":"💳未決済"}</span>;})()}{(()=>{const ep=extraPayFn&&extraPayFn(t.reservationId||t.reservation_id);if(!ep)return null;const pd=ep.status==="paid";return <span title="オプション/補償の追加分" style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:4,marginLeft:3,background:pd?"#dbeafe":"#fef9c3",color:pd?"#1d4ed8":"#a16207"}}>{pd?"追加済":"追加未"}</span>;})()}
+                                <OtaPayBadge ota={t.ota} rid={t.reservationId||t.reservation_id} isJPaidFn={isJPaidFn} size={8}/>{(()=>{const ep=extraPayFn&&extraPayFn(t.reservationId||t.reservation_id);if(!ep)return null;const pd=ep.status==="paid";return <span title="オプション/補償の追加分" style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:4,marginLeft:3,background:pd?"#dbeafe":"#fef9c3",color:pd?"#1d4ed8":"#a16207"}}>{pd?"追加済":"追加未"}</span>;})()}
                                 {isPlaceMissing(t)&&<PlaceAlert size={8}/>}
                               </div>
                               {/* サブ情報: 車両 + 場所（1行にまとめる） */}
@@ -24724,7 +24755,7 @@ function App(){
                         </div>}
                         <div style={{display:"flex",alignItems:"center",gap:6,marginTop:3,flexWrap:"wrap"}}>
                           {t.assignee?<span style={{fontSize:isMob?10:9,background:"#ede9fe",color:"#6d28d9",fontWeight:700,padding:"1px 6px",borderRadius:4}}>👤{t.assignee}</span>:(t.type!=="洗車"&&<span style={{fontSize:isMob?9:8,color:"#f59e0b",fontWeight:700}}>担当未定</span>)}<SpotBadge t={t} size={isMob?9:8}/>
-                          {t.ota==="J"&&(()=>{const rid=t.reservationId||t.reservation_id;const done=isJPaidFn(rid);return <span style={{fontSize:isMob?9:8,fontWeight:700,padding:"1px 5px",borderRadius:4,background:done?"#dcfce7":"#fef2f2",color:done?"#16a34a":"#dc2626"}}>{done?"💳決済":"💳未決済"}</span>;})()}{(()=>{const ep=extraPayFn&&extraPayFn(t.reservationId||t.reservation_id);if(!ep)return null;const pd=ep.status==="paid";return <span title="オプション/補償の追加分" style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:4,marginLeft:3,background:pd?"#dbeafe":"#fef9c3",color:pd?"#1d4ed8":"#a16207"}}>{pd?"追加済":"追加未"}</span>;})()}
+                          <OtaPayBadge ota={t.ota} rid={t.reservationId||t.reservation_id} isJPaidFn={isJPaidFn} size={isMob?9:8}/>{(()=>{const ep=extraPayFn&&extraPayFn(t.reservationId||t.reservation_id);if(!ep)return null;const pd=ep.status==="paid";return <span title="オプション/補償の追加分" style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:4,marginLeft:3,background:pd?"#dbeafe":"#fef9c3",color:pd?"#1d4ed8":"#a16207"}}>{pd?"追加済":"追加未"}</span>;})()}
                         </div>
                       </div>;
                     })}
@@ -25729,7 +25760,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.698";
+const APP_VERSION="v4.7.699";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
