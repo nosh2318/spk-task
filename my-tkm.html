@@ -1233,6 +1233,7 @@ function render(){
     </div>
     <div class="nh-st">${esc(stLabel)}</div>
   </div>
+  ${!cancelled?`<div id="shCard"></div>`:""}
 
   ${!cancelled?fuelBox():""}
   ${!cancelled?`<div class="tvbox">
@@ -1847,7 +1848,59 @@ async function load(){
   DATA=json;
   try{document.title=(json.reservation.name||t('guest'))+" | HANDYMAN "+json.label}catch(e){}
   render();
+  shLoad();
 }
+/* ★2026-11-08 空港送迎（PU/BD）の「今」：スタッフが送迎ボタンを押すだけで進む（那覇と同じ・3店統一。お客様には何も求めない）
+   お迎え：空港へ向かっています → 乗り場に着きました → 合流しました（お店へ向かっています）
+   お見送り：空港へ向かっています → 空港に着きました。完了したタスクは出さない。 */
+const SHTX={
+  pu_depart:{ja:"送迎車が空港へ向かっています",en:"The shuttle is on its way to the airport",zh:"接駁車正前往機場",ko:"셔틀이 공항으로 가고 있습니다"},
+  pu_at_stop:{ja:"送迎車が乗り場に着きました",en:"The shuttle has arrived at the pickup point",zh:"接駁車已抵達上車處",ko:"셔틀이 승차장에 도착했습니다"},
+  pu_at_stop_sub:{ja:"お手荷物を受け取ったら、乗り場へお越しください",en:"Please come to the pickup point after collecting your baggage",zh:"領取行李後請前往上車處",ko:"짐을 찾으신 후 승차장으로 와 주세요"},
+  pu_met:{ja:"合流しました。お店へ向かっています",en:"Picked up. Heading to our shop",zh:"已會合，正前往門市",ko:"합류했습니다. 매장으로 가고 있습니다"},
+  bd_depart:{ja:"空港へ向かっています",en:"Heading to the airport",zh:"正前往機場",ko:"공항으로 가고 있습니다"},
+  bd_at_airport:{ja:"空港に着きました。ご利用ありがとうございました",en:"Arrived at the airport. Thank you!",zh:"已抵達機場，感謝您的使用",ko:"공항에 도착했습니다. 이용해 주셔서 감사합니다"},
+  pu:{ja:"空港お迎え",en:"Airport pickup",zh:"機場接送",ko:"공항 픽업"},
+  bd:{ja:"空港お見送り",en:"Airport drop-off",zh:"機場送機",ko:"공항 샌딩"}
+};
+function sht(k){const e=SHTX[k];return e?(e[L]||e.ja):k;}
+function shHm(iso){try{const d=new Date(new Date(iso).getTime()+9*3600e3);return String(d.getUTCHours()).padStart(2,"0")+":"+String(d.getUTCMinutes()).padStart(2,"0");}catch(e){return "";}}
+const SH_ORDER={pu_depart:1,pu_at_stop:2,pu_met:3,bd_depart:1,bd_at_airport:2};
+let SH=null,shTimer=null,shSig="";
+async function shLoad(){
+  if(!TOKEN)return;
+  try{
+    const r=await fetch(LIC_ACQ_RPC.replace("lic_report_acquired","bt_shuttle_status"),{method:"POST",headers:{apikey:LIC_ACQ_KEY,Authorization:"Bearer "+LIC_ACQ_KEY,"Content-Type":"application/json"},body:JSON.stringify({p_token:TOKEN})});
+    const j=r.ok?await r.json().catch(()=>null):null;
+    SH=Array.isArray(j)?j:null;
+  }catch(e){SH=null;}
+  const cur=shRender();
+  clearTimeout(shTimer);
+  if(cur&&cur.a!=="bd_at_airport")shTimer=setTimeout(shLoad,30000);  // 動いている間は30秒ごとに自動で更新
+}
+document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&SH&&SH.length)shLoad();});
+function shRender(){
+  const box=document.getElementById("shCard"); if(!box)return null;
+  if(!box.innerHTML)shSig="";  // 画面を描き直した直後は必ず出し直す
+  const today=new Date(Date.now()+9*3600e3).toISOString().slice(0,10);
+  let cur=null;
+  (SH||[]).forEach(x=>{
+    if(String(x.date||"").slice(0,10)!==today||x.done)return;
+    (x.log||[]).forEach(e=>{if(!SH_ORDER[e.a])return;if(!cur||String(e.at)>String(cur.at)||(e.at===cur.at&&SH_ORDER[e.a]>SH_ORDER[cur.a]))cur={a:e.a,at:e.at,type:x.type};});
+  });
+  if(!cur){box.innerHTML="";shSig="";return null;}
+  const sig=JSON.stringify(cur)+"|"+L; if(sig===shSig)return cur; shSig=sig;
+  const pill={pu_depart:"#FABE00;color:#002063",pu_at_stop:"#15803d;color:#fff",pu_met:"#e2e8f0;color:#0F1F45",bd_depart:"#FABE00;color:#002063",bd_at_airport:"#e2e8f0;color:#0F1F45"}[cur.a];
+  const kind=sht(/^bd_/.test(cur.a)?"bd":"pu");
+  box.innerHTML=`<div style="background:#fff;border:1.5px solid #dbe2ef;border-radius:16px;margin:0 0 14px;padding:14px 16px;display:flex;flex-direction:column;gap:4px">
+    <span style="align-self:flex-start;font-size:12px;font-weight:800;border-radius:99px;padding:3px 12px;background:${pill}">${esc(kind)} ${esc(shHm(cur.at))}</span>
+    <div style="font-size:22px;font-weight:900;color:#0F1F45;line-height:1.35">${esc(sht(cur.a))}</div>
+    ${cur.a==="pu_at_stop"?`<div style="font-size:13px;color:#5b6480">${esc(sht("pu_at_stop_sub"))}</div>`:""}
+  </div>`;
+  return cur;
+}
+/* 画面を描き直したとき（言語切替など）も送迎カードを出し直す */
+(function(){const _r=render;render=function(){const v=_r.apply(this,arguments);try{shRender();}catch(e){}return v;};})();
 /* ★★ 総合計測テレメトリ（マイページ全ボタン+滞在秒+スクロール+セクション別滞在） __TELEMETRY_MARK__ */
 (function(){
   try{
