@@ -181,6 +181,8 @@ function todayStr(){return jstNow().toISOString().slice(0,10);}
 function addDays(d,n){const x=new Date(d+"T00:00:00Z");x.setUTCDate(x.getUTCDate()+n);return x.toISOString().slice(0,10);}
 function hm(s){const m=String(s||"").match(/(\d{1,2}):(\d{2})/);return m?String(+m[1]).padStart(2,"0")+":"+m[2]:"";}
 function at(d,t){const h=hm(t)||"09:00";return Date.parse(d+"T"+h+":00+09:00");}
+/* ★2026-11-08 出発後（貸出時刻を過ぎたら）お届け・お迎えの時間と場所は変えられない（現場「出発済みの変更は意味がない」）。来店はお届け場所なし */
+function goLocked(r){return !r||Date.now()>=at(r.lend_date,r.lend_time);}
 function md(d){if(!d)return"";const p=d.split("-");return (+p[1])+"/"+(+p[2]);}
 const WD="日月火水木金土";
 function mdw(d){if(!d)return"";return md(d)+"("+WD[new Date(d+"T00:00:00Z").getUTCDay()]+")";}
@@ -219,8 +221,8 @@ const STAGE_LABEL={prep:"準備中",eve:"前日",go_day:"本日",go_soon:"まも
 function musts(d){const r=d.reservation,L=d.license||{},out=[];
   out.push({k:"lic",n:"運転者の免許証",ok:(L.cnt||0)>0,v:(L.cnt||0)>0?`${L.drivers||1}人分・${L.cnt}枚 登録済`:"未登録"});
   if(PAY&&PAY.state)out.push({k:"pay",n:"お支払い",ok:PAY.state!=="unpaid"&&!payUnpaidExtra(PAY).length,v:PAY.state==="unpaid"?payV(PAY):payUnpaidExtra(PAY).length?"追加のお支払いがあります":payV(PAY)});
-  out.push({k:"time",n:goWord(r)+"の時間",ok:!!hm(r.lend_time),v:hm(r.lend_time)||"未定"});
-  if(isDel(r.visit_type))out.push({k:"del_place",n:"お届け場所",ok:String(r.del_place||"").trim().length>1,v:r.del_place||"未登録"});
+  if(!goLocked(r))out.push({k:"time",n:goWord(r)+"の時間",ok:!!hm(r.lend_time),v:hm(r.lend_time)||"未定"});
+  if(isDel(r.visit_type)&&!goLocked(r))out.push({k:"del_place",n:"お届け場所",ok:String(r.del_place||"").trim().length>1,v:r.del_place||"未登録"});
   else out.push({k:"flight",n:"到着便",ok:!!String(r.del_flight||"").trim(),v:r.del_flight||"未登録"});
   if(isCol(r.return_type))out.push({k:"col_place",n:"回収場所",ok:String(r.col_place||"").trim().length>1,v:r.col_place||"未登録"});
   // ★2026-11-08 nosh「フォームをなくす＝入力の頻度と精度」：人数・帰りの便・前日の確認を必須に（3店共通・mypage_info）
@@ -390,8 +392,8 @@ function viewChg(d,st){
    <div style="display:grid;grid-template-columns:auto 1fr;gap:8px 10px;align-items:center;font-size:12px;line-height:1.5"><span class="pill p-o" style="text-align:center">確認あり</span><span>スタッフが確認して<b style="color:var(--yel)">30分以内</b>にお返事（9:00〜19:00）。19時以降は<b style="color:var(--yel)">翌朝9:30まで</b></span>
    <span class="pill p-b" style="text-align:center">登録</span><span>その場で登録されます</span><span class="pill p-r" style="text-align:center">電話</span><span>今すぐ話す必要があるものだけ</span></div></section>`;
   h+=`<section class="card"><div class="h">${g}・${b}</div>`+
-    row(g+"の時間",hm(r.lend_time)||"未定","2時間前まで","確認あり","p-o","openReq('lend_time')",!before||lendSoon)+
-    (isDel(r.visit_type)?row("お届け場所",r.del_place||"未登録","2時間前まで","確認あり","p-o","openReq('del_place')",!before||lendSoon):"")+
+    (goLocked(r)?"":row(g+"の時間",hm(r.lend_time)||"未定","2時間前まで","確認あり","p-o","openReq('lend_time')",!before||lendSoon))+
+    (isDel(r.visit_type)&&!goLocked(r)?row("お届け場所",r.del_place||"未登録","2時間前まで","確認あり","p-o","openReq('del_place')",!before||lendSoon):"")+
     row(b+"の時間",hm(r.return_time)||"未定","2時間前まで","確認あり","p-o","openReq('return_time')",st==="after"||retSoon)+
     (isCol(r.return_type)?row("回収場所",r.col_place||"未登録","2時間前まで","確認あり","p-o","openReq('col_place')",st==="after"||retSoon):"")+
     (isCol(r.return_type)?row("早めの回収","","ご利用中に・確約ではありません","確認あり","p-o","openReady()",!["using","back_day"].includes(st)):"")+`</section>`;
@@ -537,7 +539,7 @@ async function sendNotify(k){if(NUDGE_BUSY)return;let x=String(($("#nfx")||{}).v
   catch(_){toast("送れませんでした。電波の良いところでもう一度押してください");}finally{NUDGE_BUSY=false;}}
 function saveHelp(){const ios=/iPhone|iPad|iPod/.test(navigator.userAgent);
   sheet(`<h3>ホーム画面に保存する</h3><div class="txt">${ios?"1. 画面下の <b>共有ボタン</b>（四角から矢印）を押す<br>2. <b>ホーム画面に追加</b> を押す<br>3. 右上の <b>追加</b> を押す":"1. 右上の <b>︙</b> を押す<br>2. <b>ホーム画面に追加</b>（またはアプリをインストール）を押す"}</div><div class="sub">保存すると、スタッフの出発・到着やご依頼のお返事が通知で届きます。返却が終わるまでお使いください。</div><button class="btn" onclick="closeSheet()">わかりました</button>`);}
-function openReq(f){if(!DATA)return;const r=DATA.reservation,isT=/time/.test(f),cur=f==="lend_time"?hm(r.lend_time):f==="return_time"?hm(r.return_time):f==="del_place"?r.del_place:r.col_place;
+function openReq(f){if(!DATA)return;if((f==="lend_time"||f==="del_place")&&goLocked(DATA.reservation))return;if(f==="del_place"&&!isDel(DATA.reservation.visit_type))return;const r=DATA.reservation,isT=/time/.test(f),cur=f==="lend_time"?hm(r.lend_time):f==="return_time"?hm(r.return_time):f==="del_place"?r.del_place:r.col_place;
   const opts=isT?Array.from({length:23},(_,i)=>{const m=7*60+i*30;return String(Math.floor(m/60)).padStart(2,"0")+":"+String(m%60).padStart(2,"0");}).filter(x=>x<="19:00"):[];
   sheet(`<h3>${esc(FLD[f])}を変える</h3><div class="sub">スタッフが確認して、30分以内（19時以降は翌朝9:30まで）にお返事します。確定するまでは今のご予約（${esc(cur||"未設定")}）のままです。</div>
    <label>新しい${isT?"時間":"場所"}</label>${isT?`<select id="nv">${opts.map(o=>`<option ${o===cur?"selected":""}>${o}</option>`).join("")}</select>`:`<input id="nv" placeholder="ホテル名・住所など" value="${esc(cur||"")}">`}
