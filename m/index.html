@@ -209,7 +209,7 @@ function stageOf(d){
   const r=d.reservation, today=todayStr(), now=Date.now(), kd=(d.tracking&&d.tracking.kd_status)||"";
   const lendAt=at(r.lend_date,r.lend_time), retAt=at(r.return_date,r.return_time);
   if(DV&&(DV.state==="onway"||DV.state==="late"||DV.state==="arrived"))return DV.leg==="col"?"back_live":"go_live";
-  if(!DVEF){if(kd==="delivering")return"go_live";if(kd==="collecting")return"back_live";}
+  if(!DVEF){/* ★11/8 札幌：kd_status が残ったままの予約で止まらないよう、当日の時間内だけ使う */if(kd==="delivering"&&today===r.lend_date&&now<lendAt+3*3600e3)return"go_live";if(kd==="collecting"&&today===r.return_date&&now<retAt+3*3600e3)return"back_live";}
   {const c=shCur();if(c&&c.a!=="bd_at_airport"&&c.a!=="pu_met")return /^bd_/.test(c.a)?"back_live":"go_live";}
   if(now>retAt+60*60e3)return"after";
   if(today===r.return_date&&now>=lendAt+60*60e3)return"back_day";
@@ -389,7 +389,7 @@ function carCard(d){const r=d.reservation,c=d.car||{};
 
 function row(n,v,rule,tag,cls,onclick,dim){return `<button class="row${dim?" dim":""}" ${onclick&&!dim?`onclick="${onclick}"`:"disabled"}><span class="l"><span class="n">${n}</span>${v?`<span class="v">${esc(v)}</span>`:""}<span class="r">${rule}</span></span><span style="display:flex;align-items:center;gap:6px"><span class="pill ${cls}">${tag}</span><span class="chev">›</span></span></button>`;}
 function viewChg(d,st){
-  const r=d.reservation,g=goWord(r),b=backWord(r),before=["prep","eve","go_day"].includes(st),lendSoon=Date.now()>=at(r.lend_date,r.lend_time)-2*3600e3,retSoon=Date.now()>=at(r.return_date,r.return_time)-2*3600e3;
+  const r=d.reservation,g=goWord(r),b=backWord(r),before=["prep","eve","go_day"].includes(st),goH=isPub(r.visit_type)?2:24,lendSoon=Date.now()>=at(r.lend_date,r.lend_time)-goH*3600e3,retSoon=Date.now()>=at(r.return_date,r.return_time)-2*3600e3;
   const isHP=["HANDYMAN","KEYDROP","HP","SP","direct"].includes(String(r.ota||""))||String(r.id).indexOf("HDMN")===0;
   let h=proposalCards(d);
   const R=reqs(d);
@@ -398,8 +398,8 @@ function viewChg(d,st){
    <div style="display:grid;grid-template-columns:auto 1fr;gap:8px 10px;align-items:center;font-size:12px;line-height:1.5"><span class="pill p-o" style="text-align:center">確認あり</span><span>スタッフが確認して<b style="color:var(--yel)">30分以内</b>にお返事（9:00〜19:00）。19時以降は<b style="color:var(--yel)">翌朝9:30まで</b></span>
    <span class="pill p-b" style="text-align:center">登録</span><span>その場で登録されます</span><span class="pill p-r" style="text-align:center">電話</span><span>今すぐ話す必要があるものだけ</span></div></section>`;
   h+=`<section class="card"><div class="h">${g}・${b}</div>`+
-    (goLocked(r)?"":row(g+"の時間",hm(r.lend_time)||"未定","2時間前まで","確認あり","p-o","openReq('lend_time')",!before||lendSoon))+
-    (isDel(r.visit_type)&&!goLocked(r)?row("お届け場所",r.del_place||"未登録","2時間前まで","確認あり","p-o","openReq('del_place')",!before||lendSoon):"")+
+    (goLocked(r)?"":row(g+"の時間",hm(r.lend_time)||"未定",goH+"時間前まで","確認あり","p-o","openReq('lend_time')",!before||lendSoon))+
+    (isDel(r.visit_type)&&!goLocked(r)?row("お届け場所",r.del_place||"未登録",goH+"時間前まで","確認あり","p-o","openReq('del_place')",!before||lendSoon):"")+
     row(b+"の時間",hm(r.return_time)||"未定","2時間前まで","確認あり","p-o","openReq('return_time')",st==="after"||retSoon)+
     (isCol(r.return_type)?row("回収場所",r.col_place||"未登録","2時間前まで","確認あり","p-o","openReq('col_place')",st==="after"||retSoon):"")+
     (isCol(r.return_type)?row("早めの回収","","ご利用中に・確約ではありません","確認あり","p-o","openReady()",!["using","back_day"].includes(st)):"")+`</section>`;
@@ -408,7 +408,7 @@ function viewChg(d,st){
   h+=`<section class="card"><div class="h">そのほかのご依頼</div><div class="sub">次の項目は「スタッフに聞く」から送ってください。依頼として受け付けます。</div>`+
     ["日程の変更・延長","車種の変更","オプション・補償の追加","欠航・大幅な遅れ","忘れ物"].map(x=>row(x,"","","確認あり","p-o",x==="オプション・補償の追加"?"openOpt()":"go('ask')")).join("")+
     (isHP?row("キャンセル","","キャンセル料はお申し込み後にご案内","確認あり","p-o","openCancel()",st!=="prep"&&st!=="eve"):row("キャンセル","","OTA（じゃらん等）のご予約は、ご予約したサイトから","OTAで","p-x","",true))+`</section>`;
-  h+=`<section class="card"><div class="h" style="color:var(--r)">マイページではできないこと</div><div class="txt"><b>事故・故障・鍵のトラブル</b>：すぐお電話ください。<br><b>2時間前を切ってからの変更</b>：「予約・変更」から依頼として送れます。<br><b>新しいご予約</b>：公式サイトからどうぞ。</div><a class="btn red" href="tel:05017246197">050-1724-6197 に電話する</a></section>`;
+  h+=`<section class="card"><div class="h" style="color:var(--r)">マイページではできないこと</div><div class="txt"><b>事故・故障・鍵のトラブル</b>：すぐお電話ください。<br><b>締切を過ぎてからの変更</b>：「予約・変更」から依頼として送れます。<br><b>新しいご予約</b>：公式サイトからどうぞ。</div><a class="btn red" href="tel:05017246197">050-1724-6197 に電話する</a></section>`;
   return h;
 }
 function reqCard(c){
@@ -1126,6 +1126,7 @@ const D={
 "送迎車が出発すると、この画面が自動で切り替わります。":["This screen updates automatically when the shuttle leaves.", "接送車出發後，此畫面會自動切換。", "셔틀이 출발하면 이 화면이 자동으로 바뀝니다."],
 "「予約・変更」から依頼として送れます。":["You can still send it as a request from \"Booking / Change\".", "仍可從「預約・變更」以申請方式送出。", "「예약・변경」에서 요청으로 보낼 수 있습니다."],
 "ご依頼のお返事が通知で届きます。返却まで使います。":["You'll be notified of replies to your requests. Use it until you return the car.", "申請回覆會以通知送達。使用至還車為止。", "요청 답변이 알림으로 옵니다. 반납까지 사용합니다."],
+"締切を過ぎてからの変更":["Changes after the deadline", "超過截止時間後的變更", "마감 후 변경"],
 "まで":[" until","前","까지"],
 "済":["Done","完成","완료"],
 "車":["Car","車輛","차량"]
