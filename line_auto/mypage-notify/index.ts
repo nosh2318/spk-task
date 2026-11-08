@@ -31,7 +31,8 @@ const TPL: Record<string, (u: string, r: any) => string> = {
   mypage_daybefore: (u) => `【HANDYMAN 札幌デリバリー】明日がご利用日です。日時・お届け場所を今一度ご確認ください👇\nYour rental starts tomorrow. Please review the date/time & location 👇\n${u}`,
   mypage_return3h: (u) => `【HANDYMAN 札幌デリバリー】まもなくご返却のお時間です（約3時間後）。回収の場所・時間をご確認ください👇\nPickup is in about 3 hours. Please review the pickup place & time 👇\n${u}`,
   // 返却日の朝に送る（返却案内＋早め回収ボタンの使い方・訴求）
-  mypage_returnday: (u, r) => `【HANDYMAN 札幌デリバリー】\nこの度はHANDYMANをご利用いただきまして誠にありがとうございます。\n本日がご返却日です🚗（回収予定 ${((r && (r._colTimeResolved || r.return_time || r.col_time)) || "")}）\n\nもし予定より早くご返却の準備ができましたら、マイページの【🟢 返却の準備ができました（早めの回収OK）】ボタンを押してください。スケジュールに余裕があれば早めに回収へ伺います（確約ではありません）。\nご返却場所・時間のご確認、早め回収のご希望はこちらから👇\nIf you're ready to return early, tap the green "Ready for pickup" button on your page. Check return details here 👇\n${u}`,
+  // 返却日の朝に送る（早め回収ボタンの訴求）。2026-11-08 時刻は書かない＝送信後に早め回収等で変わると文面が古くなるため（答えはマイページ1か所）
+  mypage_returnday: (u) => `【HANDYMAN 札幌デリバリー】本日がご返却日です🚗\n予定より早く返却の準備ができたら、マイページの【🟢 返却の準備ができました（早めの回収OK）】を押してください（空きがあれば早めに伺います）。\n回収の場所・時間はマイページでご確認ください👇\nToday is your return day. If you're ready early, tap the green "Ready for pickup" button. Check details here 👇\n${u}`,
 };
 
 // 無人貸出・乗り捨ての担当が付いた予約は、貸出/返却リマインドを自動送信しない（スタッフ手動運用）。

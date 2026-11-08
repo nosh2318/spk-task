@@ -102,7 +102,7 @@ Deno.serve(async (req) => {
     const place = (trk && trk[0] && trk[0].del_place) ? String(trk[0].del_place).trim() : "";
     if (place) placeLine = "\n" + (action === "track_col" ? "回収先" : "お届け先") + "：" + place;
   } catch (_) { /* 取得失敗時は場所行なし（誤った場所は出さない） */ }
-  const message = "【HANDYMAN " + (store === "nha" ? "那覇" : "札幌") + "】" + head + placeLine + "\n" + url + "\n※「今いる場所を共有」を押していただくとスムーズに合流できます。";
+  const message = "【HANDYMAN " + (store === "nha" ? "那覇" : "札幌") + "】" + head + placeLine + "\n" + url;
 
   const pr = await fetch(`${SB_URL}/functions/v1/line-push`, {
     method: "POST", headers: { "Content-Type": "application/json" },

@@ -69,16 +69,17 @@ function minsToReturn(r: any, nowMs: number, today: string): number | null {
 const anyPending = (r: any) => !r.licensed || !r.termsSigned || (r.hasPickup && !r.pickupSet) || (!!r.pay_url && !r.paid);
 const DUE: Record<string, (r: any) => boolean> = {
   welcome: () => true,
-  reminder: (r) => (r.d2s === 4 || r.d2s === 2) && anyPending(r),
-  remind: (r) => r.d2s === 1 && anyPending(r),
+  // 2026-11-08 自動の案内は JST 9〜21時だけ（深夜0時に届いていた）
+  reminder: (r) => (r.d2s === 4 || r.d2s === 2) && r.jh >= 9 && r.jh < 21 && anyPending(r),
+  remind: (r) => r.d2s === 1 && r.jh >= 9 && r.jh < 21 && anyPending(r),
   // 前日：未了がある人は remind が行くので、未了なしの人にだけ送る（1人1通）
   daybefore: (r) => r.d2s === 1 && r.jh >= 9 && r.jh < 21 && !anyPending(r),
   damage: (r) => r.d2s === 0 && r.jh >= 8,
   // 返却日の朝（9時以降・1回）
-  returnday: (r) => r.d2e === 0 && r.jh >= 9,
+  returnday: (r) => r.d2e === 0 && r.jh >= 9 && r.jh < 21,
   // 返却3時間前（3時間前〜2時間半前の間に1回）
   return3h: (r) => r.m2r != null && r.m2r <= 180 && r.m2r > 150,
-  thanks: (r) => r.d2e >= 1 && r.d2e <= 3,
+  thanks: (r) => r.d2e >= 1 && r.d2e <= 3 && r.jh >= 10 && r.jh < 21,
 };
 
 function buildItems(r: any): string {
