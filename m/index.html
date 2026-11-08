@@ -211,6 +211,7 @@ const STAGE_LABEL={prep:"準備中",eve:"前日",go_day:"本日",go_soon:"まも
 /* ---- 必須項目 ---- */
 function musts(d){const r=d.reservation,L=d.license||{},out=[];
   out.push({k:"lic",n:"運転者の免許証",ok:(L.cnt||0)>0,v:(L.cnt||0)>0?`${L.drivers||1}人分・${L.cnt}枚 登録済`:"未登録"});
+  if(PAY&&PAY.state)out.push({k:"pay",n:"お支払い",ok:PAY.state!=="unpaid"&&!payUnpaidExtra(PAY).length,v:PAY.state==="unpaid"?payV(PAY):payUnpaidExtra(PAY).length?"追加のお支払いがあります":payV(PAY)});
   out.push({k:"time",n:goWord(r)+"の時間",ok:!!hm(r.lend_time),v:hm(r.lend_time)||"未定"});
   if(isDel(r.visit_type))out.push({k:"del_place",n:"お届け場所",ok:String(r.del_place||"").trim().length>1,v:r.del_place||"未登録"});
   else out.push({k:"flight",n:"到着便",ok:!!String(r.del_flight||"").trim(),v:r.del_flight||"未登録"});
@@ -239,13 +240,19 @@ async function load(quiet){
     const j=await r.json().catch(()=>({}));
     if(j.cancelled){$("#ttl").textContent="キャンセル済み";$("#app").innerHTML=`<div class="center">${esc(j.error||"キャンセル済みです")}</div>`;return;}
     if(!j.ok){if(!quiet){$("#ttl").textContent="マイページ";$("#app").innerHTML=`<div class="center">${esc(j.error||"読み込めませんでした")}<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}return;}
-    DATA=j;await Promise.all([loadDV(),loadSH(),loadChat()]);render();
+    DATA=j;await Promise.all([loadDV(),loadSH(),loadChat(),loadPay()]);render();
   }catch(e){if(!quiet)$("#app").innerHTML=`<div class="center">通信できませんでした。<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}
 }
 const SH_TX={pu_depart:["送迎車が空港へ向かっています","p-o"],pu_at_stop:["送迎車が乗り場に着きました","p-g","お手荷物を受け取ったら、乗り場へお越しください"],pu_met:["合流しました。お店へ向かっています","p-x"],bd_depart:["空港へ向かっています","p-o"],bd_at_airport:["空港に着きました。ご利用ありがとうございました","p-x"]};
 const SH_ORD={pu_depart:1,pu_at_stop:2,pu_met:3,bd_depart:1,bd_at_airport:2};
 function shCur(){let cur=null;const today=todayStr();(SH||[]).forEach(x=>{if(String(x.date||"").slice(0,10)!==today||x.done)return;(x.log||[]).forEach(e=>{if(!SH_ORD[e.a])return;if(!cur||String(e.at)>String(cur.at)||(e.at===cur.at&&SH_ORD[e.a]>SH_ORD[cur.a]))cur={a:e.a,at:e.at};});});return cur;}
 function shCard(){const c=shCur();if(!c)return"";const t=SH_TX[c.a];return `<section class="card" style="border:2px solid var(--yel)"><span class="pill ${t[1]}" style="align-self:flex-start">${/^bd_/.test(c.a)?"空港お見送り":"空港お迎え"} ・ ${clock(c.at).split(" ")[1]||""}</span><div class="big">${t[0]}</div>${t[2]?`<div class="sub">${t[2]}</div>`:""}</section>`;}
+const PAYEF="https://ckrxttbnawkclshczsia.supabase.co/functions/v1/mypage-pay";
+let PAY=null; // お支払い状況（unpaid/paid/onsite/ota）。null＝分からない→出さない
+async function loadPay(){if(DEMO||!TOKEN)return;try{const r=await fetch(PAYEF,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({store:SID,token:TOKEN})});const j=await r.json().catch(()=>null);PAY=(j&&j.ok&&j.pay)?j.pay:null;}catch(_){}}
+const yen=n=>n==null?"":"¥"+Number(n).toLocaleString();
+function payV(p){if(!p)return"";if(p.state==="unpaid")return `${yen(p.amount)}${p.due?" ・ "+clock(p.due)+" まで":""}`;return {paid:"お支払い済み",ota:"ご予約サイトで決済済み",onsite:"当日お支払い"}[p.state]||"";}
+function payUnpaidExtra(p){return ((p&&p.extra)||[]).filter(x=>x&&x.state!=="paid"&&x.url);}
 async function loadSH(){if(DEMO||!TOKEN||!SHRPC)return;try{const r=await fetch(SHRPC,{method:"POST",headers:{apikey:PUBKEY,Authorization:"Bearer "+PUBKEY,"Content-Type":"application/json"},body:JSON.stringify({p_token:TOKEN})});const j=r.ok?await r.json().catch(()=>null):null;SH=Array.isArray(j)?j:null;}catch(_){SH=null;}}
 async function loadDV(){if(DEMO||!TOKEN||!DVEF)return;try{const r=await fetch(DVEF,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"lookup",token:TOKEN})});const j=await r.json().catch(()=>null);DV=(j&&j.ok&&j.delivery)?j.delivery:null;}catch(_){DV=null;}}
 function hav(a,b){const R=6371,q=x=>x*Math.PI/180;const dl=q(b.lat-a.lat),dg=q(b.lng-a.lng);const h=Math.sin(dl/2)**2+Math.cos(q(a.lat))*Math.cos(q(b.lat))*Math.sin(dg/2)**2;return 2*R*Math.asin(Math.sqrt(h));}
@@ -295,7 +302,7 @@ function viewNow(d,st){
   if(st==="prep"||st==="eve"){
     h+=`<section class="card hero"><div class="h">${st==="eve"?"明日の"+g:g+"の予定"}</div><div class="big">${mdw(r.lend_date)} ${hm(r.lend_time)||"時間未定"}</div><div class="sub">${esc(goPlace)}</div></section>`;
     h+=`<section class="card"><div style="display:flex;justify-content:space-between;align-items:center"><div class="h">必須</div>${left.length?`<span class="pill p-r">残り ${left.length}つ</span>`:`<span class="pill p-g">そろっています</span>`}</div>`+
-      M.map(x=>`<div class="must"><span>${esc(x.n)}<br><span class="sub">${esc(x.v)}</span></span>${x.ok?`<span class="pill p-g">済</span>`:x.k==="save"?`<button class="pill p-o" style="border:0;cursor:pointer" onclick="saveHelp()">保存する</button>`:`<button class="pill p-r" style="border:0;cursor:pointer" onclick="fixMust('${x.k}')">登録する</button>`}</div>`).join("")+
+      M.map(x=>`<div class="must"><span>${esc(x.n)}<br><span class="sub">${esc(x.v)}</span></span>${x.ok?`<span class="pill p-g">済</span>`:x.k==="save"?`<button class="pill p-o" style="border:0;cursor:pointer" onclick="saveHelp()">保存する</button>`:`<button class="pill p-r" style="border:0;cursor:pointer" onclick="fixMust('${x.k}')">${x.k==="pay"?"支払う":"登録する"}</button>`}</div>`).join("")+
       `<div class="sub">${left.length?"足りない項目があるあいだ、お知らせが届きます。3日前の19:00を過ぎるとスタッフからお電話します。":"当日はこの画面に、スタッフの出発・到着が出ます。"}</div></section>`;
     if(isPub(r.visit_type))h+=busCard("go");
     if(st==="eve"&&isDel(r.visit_type))h+=`<section class="card"><div class="h">当日の流れ</div><div class="tl"><div><b>1</b>スタッフが出発すると、ここに到着予定が出ます</div><div><b>2</b>着いたら、車のナンバーと停めた場所が出ます</div><div><b>3</b>免許証を見せて、鍵を受け取って出発</div></div><div class="sub">持ち物：運転する人の免許証</div></section>`;
@@ -392,11 +399,16 @@ function viewAsk(d){return `<section class="card"><div class="h">よくある質
 /* ---- 操作 ---- */
 function openBooking(){if(!DATA)return;const r=DATA.reservation;
   sheet(`<h3>ご予約内容</h3><dl class="kv"><dt>予約番号</dt><dd>${esc(r.id)}</dd><dt>ご予約元</dt><dd>${esc(r.ota||"-")}</dd><dt>${goWord(r)}</dt><dd>${mdw(r.lend_date)} ${hm(r.lend_time)}<br><span class="sub">${esc(isDel(r.visit_type)?r.del_place||"":"空港送迎・来店")}</span></dd><dt>${backWord(r)}</dt><dd>${mdw(r.return_date)} ${hm(r.return_time)}<br><span class="sub">${esc(isCol(r.return_type)?r.col_place||"":"店舗")}</span></dd><dt>車両クラス</dt><dd>${esc(r.vehicle||"-")}</dd><dt>人数</dt><dd>${esc(r.people||"-")}名</dd><dt>補償</dt><dd>${esc(r.insurance||"-")}</dd><dt>オプション</dt><dd>${[["ベビー",r.opt_b],["チャイルド",r.opt_c],["ジュニア",r.opt_j],["USB",r.opt_usb]].filter(x=>+x[1]).map(x=>x[0]+" "+x[1]).join("・")||"なし"}</dd>${r.price?`<dt>料金</dt><dd>¥${Number(r.price).toLocaleString()}</dd>`:""}</dl><button class="btn g" onclick="closeSheet()">閉じる</button>`);}
-function fixMust(k){if(k==="lic")return openLicense();if(k==="time")return openReq("lend_time");if(k==="del_place"||k==="col_place")return openReq(k);if(k==="flight")return go("ask");}
+function fixMust(k){if(k==="pay")return openPay();if(k==="lic")return openLicense();if(k==="time")return openReq("lend_time");if(k==="del_place"||k==="col_place")return openReq(k);if(k==="flight")return go("ask");}
 /* ---- 免許証の登録（ページ内・保存先は今までと同じ＝Googleドライブ） ---- */
 const GAS_LIC="https://script.google.com/macros/s/AKfycbycpzE1RIu2LbIlYVeRYcXxfIgfDhY5y1Vtdh1Rj69S9uZEnmqFMDBHqq3y6pHS70_t7A/exec", GAS_LIC_SECRET="hdm-lic-7c3f9a21";
 let LIC=[], LIC_BUSY=false;
 function licNew(){return{front:null,back:null,fu:"",bu:"",acq:""};}
+function openPay(){const p=PAY;if(!p)return;const ex=((p.extra)||[]);
+  sheet(`<h3>お支払い</h3><dl class="kv"><dt>ご予約料金</dt><dd>${p.amount!=null?yen(p.amount):"-"}<br><span class="sub">${p.state==="unpaid"?(p.due?clock(p.due)+" までにお支払いください":"お支払い前です"):esc(payV(p))}</span></dd>${ex.map(x=>`<dt>${esc(x.label||x.name||x.item||"追加料金")}</dt><dd>${x.amount!=null?yen(x.amount):""}<br><span class="sub">${x.state==="paid"?"お支払い済み":x.due?clock(x.due)+" まで":""}</span></dd>`).join("")}</dl>
+   ${p.state==="unpaid"&&p.url?`<a class="btn y" href="${esc(p.url)}" target="_blank" rel="noopener">今すぐ支払う</a>`:""}
+   ${payUnpaidExtra(p).map(x=>`<a class="btn y" href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.label||x.name||"追加料金")}を支払う</a>`).join("")}
+   <button class="btn g" onclick="closeSheet()">閉じる</button>`);}
 function openLicense(){if(!DATA)return;if(!LIC.length)LIC=[licNew()];licPaint();}
 function licPaint(){const L=DATA.license||{},can=LIC.some(p=>p.front)&&!LIC_BUSY,mx=new Date().toISOString().slice(0,10);
   const slot=(i,side)=>{const p=LIC[i],u=side==="front"?p.fu:p.bu;return `<label style="flex:1;display:flex;flex-direction:column;gap:4px;cursor:pointer"><span>${side==="front"?"表（必須）":"裏（あれば）"}</span>${u?`<img src="${u}" style="width:100%;height:92px;object-fit:cover;border-radius:10px;border:1px solid #C9CED6">`:`<span style="height:92px;border:1px dashed #C9CED6;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--sub)">写真を選ぶ</span>`}<input type="file" accept="image/*,application/pdf" style="display:none" onchange="licPick(${i},'${side}',this)"></label>`;};
@@ -490,7 +502,7 @@ async function propReply(id,ans){if(!confirm(ans==="accept"?"この案で確定�
 /* ---- お試し表示（?demo=prep|eve|go|live|using|back|after） ---- */
 function demoData(s){const PUB=Q.get("m")==="pub",VIS=Q.get("m")==="visit";SH=null;if(PUB){const ago=m=>new Date(Date.now()-m*60e3).toISOString();if(s==="live")SH=[{date:todayStr(),done:false,log:[{a:"pu_depart",at:ago(12)},{a:"pu_at_stop",at:ago(2)}]}];if(s==="back")SH=[{date:todayStr(),done:false,log:[{a:"bd_depart",at:ago(5)}]}];}
   const _d=demoData0(s);if(VIS){_d.reservation.visit_type="来店";_d.reservation.return_type="返却";DV=null;}if(PUB){_d.reservation.visit_type="PUB";_d.reservation.return_type="BDB";_d.reservation.del_flight="JAL000";DV=null;}return _d;}
-function demoData0(s){DV=s==="live"?{leg:"del",state:"onway",depart_at:new Date(Date.now()-6*60e3).toISOString(),driver:{lat:26.2,lng:127.68,at:new Date(Date.now()-6*60e3).toISOString()},mode:"car",place:"[ホテル名] 正面入口",car:"ノア",color:"白",plate:"わ 12-34"}:null;const T=todayStr(),off={prep:5,eve:1,go:0,live:0,using:-1,back:-2,after:-3}[s]??5;
+function demoData0(s){PAY=s==="prep"?{state:"unpaid",amount:24800,url:"https://example.com/pay",due:new Date(Date.now()+2*864e5).toISOString().slice(0,10)+"T10:00:00Z",extra:[]}:{state:"paid",amount:24800,url:null,due:null,extra:[]};DV=s==="live"?{leg:"del",state:"onway",depart_at:new Date(Date.now()-6*60e3).toISOString(),driver:{lat:26.2,lng:127.68,at:new Date(Date.now()-6*60e3).toISOString()},mode:"car",place:"[ホテル名] 正面入口",car:"ノア",color:"白",plate:"わ 12-34"}:null;const T=todayStr(),off={prep:5,eve:1,go:0,live:0,using:-1,back:-2,after:-3}[s]??5;
   const lend=addDays(T,off),ret=addDays(lend,2),now=nowHM();
   const lt=s==="go"||s==="live"?String(Math.min(23,+now.slice(0,2)+1)).padStart(2,"0")+":00":"10:00";
   const rt=s==="back"?String(Math.min(23,+now.slice(0,2)+2)).padStart(2,"0")+":00":s==="after"?"00:30":"17:00";
