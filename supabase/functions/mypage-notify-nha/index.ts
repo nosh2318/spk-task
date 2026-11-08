@@ -8,6 +8,8 @@ console.log("[keymig]", __newKey("SUPABASE_SECRET_KEYS", "edge") ? "secret" : "l
 //  重複防止: nha_line_sends に (resv_no, action='mypage_initial', status='sent') があれば再送しない。
 //  認証: x-cron-secret = CRON_SECRET（cron）。line-push へ委譲（mypage_ は日付ガード迂回）。
 //  KEYDROPは自前マイページ(keydrop.jp)を使うため対象外（札幌と同じ）。
+// 2026-11-08 札幌と同じ3本を追加（全店統一）：前日(mypage_daybefore)・返却日朝(mypage_returnday)・返却3時間前(mypage_return3h)。
+//  文面に時間・場所は書かない（変更が承認されても食い違わないよう、答えはマイページ1か所）。旧 returnday-reminder(那覇) は停止。
 // ============================================================
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
 const SB_KEY = (__newKey("SUPABASE_SECRET_KEYS", "edge") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))!;
@@ -31,8 +33,12 @@ function jstNow(): Date { return new Date(Date.now() + 9 * 3600 * 1000); }
 function dstr(off: number): string { const d = jstNow(); d.setUTCDate(d.getUTCDate() + off); return d.toISOString().slice(0, 10); }
 
 // テンプレ（日本語＋English）＋ URL
-const TPL_INITIAL = (u: string) =>
-  `【HANDYMAN 那覇空港店】\nご予約ありがとうございます。専用マイページで、ご予約内容・受け渡し／送迎・車両状態(傷)チェックをご確認いただけます👇\nThank you for your booking! Check your reservation, transfer details & vehicle condition here 👇\n${u}`;
+const TPL: Record<string, (u: string) => string> = {
+  mypage_initial: (u) => `【HANDYMAN 那覇空港店】\nご予約ありがとうございます。専用マイページで、ご予約内容・受け渡し／送迎・車両状態(傷)チェックをご確認いただけます👇\nThank you for your booking! Check your reservation, transfer details & vehicle condition here 👇\n${u}`,
+  mypage_daybefore: (u) => `【HANDYMAN 那覇空港店】明日がご利用日です。受け取りの流れはマイページでご確認ください👇\nYour rental starts tomorrow. Check the details here 👇\n${u}`,
+  mypage_returnday: (u) => `【HANDYMAN 那覇空港店】本日がご返却日です。返却の場所・時間・給油はマイページでご確認ください👇\nToday is your return day. Check the return details here 👇\n${u}`,
+  mypage_return3h: (u) => `【HANDYMAN 那覇空港店】まもなくご返却のお時間です（約3時間後）。返却の流れはマイページでご確認ください👇\nReturn is in about 3 hours. Check the details here 👇\n${u}`,
+};
 
 async function callLinePush(resvNo: string, action: string, message: string): Promise<any> {
   const secret = Deno.env.get("LINEPUSH_SECRET");
@@ -61,26 +67,52 @@ Deno.serve(async (req) => {
   // 1回の実行で送る最大件数。テスト時=1(誤爆防止)／本番=40(EFタイムアウト回避＋緩やかなロールアウト。残りは次のcronで送信)
   const cap = testMode ? Number(body?.limit ?? 1) : Number(body?.limit ?? 40);
 
-  const today = dstr(0);
+  const today = dstr(0), d1 = dstr(1);
   // 対象＝返却(end_date)が今日以降・未キャンセル・KEYDROP除外
-  const resvsAll = await sbGetAll("nha_reservations", `end_date=gte.${today}&status=not.in.("キャンセル",cancelled,cancel)&select=id,name,ota,start_date,end_date,mypage_token`);
+  const resvsAll = await sbGetAll("nha_reservations", `end_date=gte.${today}&status=not.in.("キャンセル",cancelled,cancel)&select=id,ota,start_date,end_date,end_time,col_time,mypage_token`);
   const resvs = resvsAll.filter((r: any) => String(r.ota || "").toUpperCase() !== "KEYDROP");
   // LINE連携済み（userIdあり）だけが対象
   const links = await sbGetAll(`${STORE}_line_links`, `select=resv_no,line_user_id`);
   const linked = new Set(links.filter((l: any) => l.resv_no && l.line_user_id).map((l: any) => l.resv_no));
-  // 既送信（mypage_initial=sent）マップ
-  const sends = await sbGetAll(`${STORE}_line_sends`, `action=eq.mypage_initial&status=eq.sent&select=resv_no`);
-  const sentSet = new Set(sends.map((s: any) => s.resv_no));
+  // 既送信（mypage_*=sent）マップ
+  const sends = await sbGetAll(`${STORE}_line_sends`, `action=like.mypage_*&status=eq.sent&select=resv_no,action`);
+  const sentSet = new Set(sends.map((s: any) => s.resv_no + "|" + s.action));
+  // 切替日の二重送信防止：旧「本日ご返却のご案内」(returnday_reminder)を今日すでに受け取った予約には返却日案内を送らない
+  const oldRd = await sbGetAll(`${STORE}_line_sends`, `action=eq.returnday_reminder&status=eq.sent&sent_at=gte.${today}T00:00:00%2B09:00&select=resv_no`);
+  for (const o of oldRd) sentSet.add(o.resv_no + "|mypage_returnday");
 
+  const nowMs = Date.now();
+  const jstHour = jstNow().getUTCHours();
+  const daytime = jstHour >= 9 && jstHour < 21; // 深夜送信防止（JST 9〜21時）
+  const win = Math.max((cfg.window_min || 30) * 60000, 30 * 60000);
   const results: any[] = [];
+  const okCount = () => results.filter((x) => x.ok).length;
+  const push = async (r: any, action: string) => {
+    if (okCount() >= cap) return;
+    const key = r.id + "|" + action;
+    if (sentSet.has(key)) return;
+    const res = await callLinePush(r.id, action, TPL[action](URLBASE + r.mypage_token));
+    results.push({ id: r.id, action, ok: !!res.ok, reason: res.reason || null });
+    if (res.ok) sentSet.add(key);
+  };
+
   for (const r of resvs) {
-    if (results.filter((x) => x.ok).length >= cap) break;
+    if (okCount() >= cap) break;
     if (!linked.has(r.id) || !r.mypage_token) continue;
-    if (sentSet.has(r.id)) continue;
-    const url = URLBASE + r.mypage_token;
-    const res = await callLinePush(r.id, "mypage_initial", TPL_INITIAL(url));
-    results.push({ id: r.id, ok: !!res.ok, reason: res.reason || null });
-    if (res.ok) sentSet.add(r.id);
+    // ① 初動
+    await push(r, "mypage_initial");
+    // ② 前日（JST 9〜21時）
+    if (r.start_date === d1 && daytime) await push(r, "mypage_daybefore");
+    // ③ 返却日の朝（9時以降・1回）
+    if (r.end_date === today && jstHour >= 9) await push(r, "mypage_returnday");
+    // ④ 返却3時間前（返却時刻の3時間前〜その30分後の間に1回）
+    if (r.end_date === today) {
+      const rt = String(r.col_time || r.end_time || "").trim();
+      if (/^\d{1,2}:\d{2}$/.test(rt)) {
+        const dep = new Date(`${r.end_date}T${rt.padStart(5, "0")}:00+09:00`).getTime();
+        if (dep - nowMs <= 3 * 3600000 && dep - nowMs > 3 * 3600000 - win) await push(r, "mypage_return3h");
+      }
+    }
   }
-  return new Response(JSON.stringify({ ok: true, enabled, testMode, cap, candidates: resvs.filter((r: any) => linked.has(r.id) && r.mypage_token && !sentSet.has(r.id)).length, sent: results.filter((x) => x.ok).length, results: results.slice(0, 20) }), { headers: { "content-type": "application/json" } });
+  return new Response(JSON.stringify({ ok: true, enabled, testMode, cap, sent: okCount(), results: results.slice(0, 30) }), { headers: { "content-type": "application/json" } });
 });
