@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>領収書の出し直し</title>
+<style>
+:root{--navy:#14284B;--line:#E2E5EA;--sub:#667085;--bg:#F5F6F8;--red:#C0262D}
+body{margin:0;background:var(--bg);color:#1a1a1a;font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif}
+main{max-width:520px;margin:0 auto;padding:16px}
+h1{font-size:19px;margin:8px 0 14px}
+.card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px;display:flex;flex-direction:column;gap:10px}
+label{font-size:13px;color:var(--sub)}
+input,select{font:inherit;font-size:16px;padding:11px;border:1px solid #C9CED6;border-radius:10px;width:100%;box-sizing:border-box}
+.btn{min-height:46px;border-radius:12px;border:0;background:var(--navy);color:#fff;font-size:15px;font-weight:700;cursor:pointer;width:100%}
+.btn.o{background:#fff;border:1px solid var(--navy);color:var(--navy)}
+.row{display:flex;justify-content:space-between;gap:8px;font-size:14px;border-top:1px solid var(--line);padding-top:8px}
+.void{color:var(--sub);text-decoration:line-through}
+.msg{font-size:14px;color:var(--red)}
+.sub{font-size:12px;color:var(--sub)}
+</style></head><body><main>
+<h1>領収書の出し直し</h1>
+<div class="card">
+  <label>店舗</label><select id="store"><option value="nha">那覇</option><option value="spk">札幌</option><option value="tkm">高松</option></select>
+  <label>予約番号</label><input id="rid" placeholder="例：R0C3Q400／HDMN2611…">
+  <label>PIN</label><input id="pin" type="password" inputmode="numeric">
+  <button class="btn o" onclick="list()">発行の記録を見る</button>
+</div>
+<div id="out"></div>
+<script>
+"use strict";
+// マイページ領収書（EF mypage-receipt）のスタッフ用。お客様からの「領収書の修正」依頼を受けたら、正しい宛名で出し直す。
+// 出し直すと古い番号は無効になり、お客様のマイページには新しい領収書が出る。PIN はアクティブ管理と共通（mpa_pin）。
+const EF="https://ckrxttbnawkclshczsia.supabase.co/functions/v1/mypage-receipt";
+const $=s=>document.querySelector(s);const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const q=new URLSearchParams(location.search);if(q.get("store"))$("#store").value=q.get("store");if(q.get("rid"))$("#rid").value=q.get("rid");
+try{$("#pin").value=localStorage.getItem("mpa_pin")||"";}catch(_){}
+async function call(b){try{localStorage.setItem("mpa_pin",$("#pin").value);}catch(_){}
+  const r=await fetch(EF,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...b,store:$("#store").value,pin:$("#pin").value})});return r.json().catch(()=>({error:"読み込めませんでした"}));}
+const jst=t=>{const d=new Date(+new Date(t)+9*3600e3);return `${d.getUTCMonth()+1}/${d.getUTCDate()} ${String(d.getUTCHours()).padStart(2,"0")}:${String(d.getUTCMinutes()).padStart(2,"0")}`;};
+async function list(){const rid=$("#rid").value.trim();if(!rid){$("#out").innerHTML=`<div class="msg">予約番号を入れてください</div>`;return;}
+  const j=await call({action:"admin_list",reservation_id:rid});if(!j.ok){$("#out").innerHTML=`<div class="msg">${esc(j.error)}</div>`;return;}
+  const L=j.list||[],cur=L.find(x=>x.status==="issued");
+  $("#out").innerHTML=`<div class="card"><b>発行の記録</b>${L.length?L.map(x=>`<div class="row ${x.status==="void"?"void":""}"><span>No.${esc(x.receipt_no)}<br><span class="sub">${jst(x.issued_at)}・${x.issued_by==="staff"?"スタッフ":"お客様"}${x.void_reason?"・"+esc(x.void_reason):""}</span></span><span style="text-align:right">${esc(x.addressee)}<br>¥${Number(x.amount).toLocaleString()}</span></div>`).join(""):`<div class="sub">まだ発行されていません</div>`}</div>`+
+  (cur?`<div class="card"><b>正しい内容で出し直す</b><label>宛名</label><input id="na" value="${esc(cur.addressee)}"><label>金額（変えるときだけ）</label><input id="am" inputmode="numeric" placeholder="${cur.amount}"><label>理由</label><input id="rs" value="宛名の修正"><button class="btn" onclick="reissue()">出し直す（No.${esc(cur.receipt_no)} は無効）</button><div class="sub">お客様のマイページには新しい領収書が出ます。</div></div>`:"");}
+async function reissue(){const b=event.target;b.disabled=true;
+  const j=await call({action:"admin_reissue",reservation_id:$("#rid").value.trim(),addressee:$("#na").value,amount:Number(String($("#am").value).replace(/[^\d]/g,""))||undefined,reason:$("#rs").value});
+  if(!j.ok){b.disabled=false;$("#out").insertAdjacentHTML("afterbegin",`<div class="msg">${esc(j.error)}</div>`);return;}await list();
+  $("#out").insertAdjacentHTML("afterbegin",`<div class="card"><b>No.${esc(j.receipt.no)} を発行しました</b><div class="sub">お客様にはマイページの「領収書を開く」から見ていただけます。</div></div>`);}
+if(q.get("rid"))list();
+</script></main></body></html>
