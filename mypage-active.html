@@ -68,6 +68,7 @@ details.defs summary{cursor:pointer;font-weight:800;font-size:13px}
 .dt th,.dt td{text-align:left;vertical-align:top;padding:6px 6px;border-top:1px solid var(--line)}
 .dt th{white-space:nowrap}
 .due0{background:#dc2626;color:#fff}.due1{background:var(--tmpb);color:var(--tmp)}.due2{background:var(--nab);color:var(--na)}
+.df{border-collapse:collapse;margin:6px 0 4px;font-size:14px}.df th{text-align:left;font-weight:600;color:var(--mut);padding:4px 8px 4px 0;white-space:nowrap;width:1%}.df td{padding:4px 6px;vertical-align:top}.df td.ar{color:var(--mut);width:1%}.df tr.hd td{font-size:11px;color:var(--mut);padding-bottom:0}.df tr.on{background:#fff4d6}.df tr.on b{color:#b45309}
 .ty{font-size:14.5px}.chg{margin:6px 0 4px;font-size:15px;line-height:1.5}.chg .bf{color:var(--mut);text-decoration:line-through;margin-right:6px}.chg .ar{margin-right:6px;color:var(--mut)}
 .hot{margin-top:10px;background:#dc2626;color:#fff;font-weight:800;border-radius:10px;padding:10px 12px;font-size:13.5px}
 .lnk{border:0;background:none;color:var(--mut);text-decoration:underline;font-family:inherit;font-size:12px;cursor:pointer;padding:4px 0}
@@ -468,7 +469,7 @@ function rowOf(bk,rid){return ROWS.find(r=>r.bucket===bk&&String(r.rid)===String
 function actCard(x,pend){const B=BUCK[x.bucket]||{n:x.bucket,c:"#334155"},r=rowOf(x.bucket,x.rid),foc=FOCUS===x.bucket+"|"+x.rid;if(!hitQ(x.name,x.rid))return"";
   return `<div class="it ${foc?"hl":""}" data-a="${esc(x.bucket+"|"+x.rid)}" style="cursor:default${ABF&&x.bucket!==ABF?";opacity:.3":""}">
     <div class="top">${pend?leftHtml(x):""}<b class="ty">${tyLabel(x)}</b><span style="flex:1"></span><span class="bk" style="background:${B.c}">${B.n}</span></div>
-    <div class="l2"><span class="nm">${esc(x.name||"-")} 様</span>${otaBadge(x.ota)}<span class="mut">${md(x.sd)}〜${md(x.ed)}${r?" ・ "+MLB[r.j.m]:""}</span></div>
+    <div class="l2"><span class="nm">${esc(x.name||"-")} 様</span>${otaBadge(x.ota)}<span class="mut">${md(x.sd)}〜${md(x.ed)}${r?" ・ "+(String(r.vt||"").trim()?MLB[r.j.m]:"受け取り方法 未設定"):""}</span></div>
     ${reqItem(x,pend)}
     <div class="acts" style="justify-content:space-between">${r?`<button class="jump" onclick="goList('${x.bucket}','${esc(x.rid)}')">← リストで見る</button>`:'<span class="mut">（リストの期間外の予約）</span>'}<span class="mut">${esc(x.rid)}</span></div></div>`;}
 // 11/7 nosh 確定の変更締切（3店共通・目安）。期限後でも依頼は受け付け、カードに「期限後」と出す。
@@ -479,6 +480,31 @@ function dlOf(x){const r=rowOf(x.bucket,x.rid);if(!r)return 0;const f=String(x.f
   if(f==="option")return r.sd?Date.parse(r.sd+"T00:00:00+09:00")-18e6:0;
   if(f==="insurance")return L;return 0;}
 function lateHtml(x){const d=dlOf(x),t=Date.parse(x.at||"")||Date.now();if(!d||t<d)return"";const j=new Date(d+324e5);return `<span class="pl" style="background:#fdf3e7;color:#b45309">期限後の依頼（期限 ${j.getUTCMonth()+1}/${j.getUTCDate()} ${j.getUTCHours()}:${String(j.getUTCMinutes()).padStart(2,"0")}）</span>`;}
+/* ★2026-11-08 nosh「何からどうなったのか」「何を判断すべきかわからん」：未処理の依頼は項目ごとに「今 → 希望」を並べ、変わる行に色を付ける（3店共通） */
+function vtName(v){v=String(v||"").trim();if(!v)return"未設定";if(/PUB|^PU$|airport|送迎|お迎え/i.test(v))return"空港お迎え";if(/DEL|delivery|デリ/i.test(v))return"お届け";if(/来店|visit|store/i.test(v))return"店舗で受け取り";return v;}
+function rtName(v){v=String(v||"").trim();if(!v)return"未設定";if(/BDB|^BD$|airport|送迎/i.test(v))return"空港へ送迎";if(/COL|回収/i.test(v))return"回収";if(/返却|store|来店/i.test(v))return"店舗へ返却";return v;}
+function diffRows(x){const r=rowOf(x.bucket,x.rid)||{},f=String(x.field||""),pl=x.payload||{},nv=String(x.newv||"").trim(),ov=String(x.oldv||"").trim(),tm=pl.time||(nv.match(/(\d{1,2}:\d{2})/)||[])[1]||"";
+  const p=x.status==="requested",sd=md(x.sd||r.sd),ed=md(x.ed||r.ed),R=[],add=(k,a,b)=>R.push([k,String(a||"").trim()||"未設定",String(b||"").trim()]);
+  const arrow=nv.match(/^(.*?)\s*(\S+?)\s*→\s*(\S+?)(（.*）)?$/);/* 例「ジュニアシート 0個→1個（概算＋¥500）」 */
+  if(!p){/* 処理済み：依頼した時点の値 → 依頼の内容 */add(FLD[f]||f,beforeOf(x)||ov,nv||"（内容なし）");}
+  else if(f==="mp_pickup"){add("受け取り方法",vtName(r.vt),"空港お迎え");add("日時",sd+" "+(r.st||""),sd+" "+(tm||r.st||""));add("便",r.del_flight,pl.flight||r.del_flight);}
+  else if(f==="mp_visit"){add("受け取り方法",vtName(r.vt),"店舗で受け取り");add("日時",sd+" "+(r.st||""),sd+" "+(tm||r.st||""));}
+  else if(f==="mp_dropoff"){add("返却方法",rtName(r.rt),"空港へ送迎");add("日時",ed+" "+(r.et||""),ed+" "+(tm||r.et||""));add("便",r.col_flight,pl.flight||r.col_flight);}
+  else if(f==="mp_store_return"){add("返却方法",rtName(r.rt),"店舗へ返却");add("日時",ed+" "+(r.et||""),ed+" "+(tm||r.et||""));}
+  else if(f==="del_place")add("お届け場所",beforeOf(x),nv);
+  else if(f==="col_place")add("回収場所",beforeOf(x),nv);
+  else if(f==="lend_time")add("貸出の日時",beforeOf(x),sd+" "+nv);
+  else if(f==="return_time")add("返却の日時",beforeOf(x),ed+" "+nv);
+  else if(f==="ready")add("回収の日時",ed+" "+(r.et||""),tm?ed+" "+tm+"〜（早め・目安）":"早めの回収OK（時間はおまかせ）");
+  else if(typeOf(f)==="cancel")add("ご予約",`確定（${sd}〜${ed}）`,"キャンセル");
+  else if(/^(method|del_method)$/.test(f))add("受け取り方法",vtName(r.vt),nv);
+  else if(f==="col_method")add("返却方法",rtName(r.rt),nv);
+  else if(/^(date|extend|lend_date|return_date)$/.test(f))add("日程",`${sd} ${r.st||""}〜${ed} ${r.et||""}`,nv);
+  else if(/^(car_class|cls)$/.test(f))add("車種",x.cls||ov,nv);
+  else if(arrow)add(arrow[1]||FLD[f]||f,arrow[2],arrow[3]+(arrow[4]||""));
+  else if(/^(ask|lost_item|flight_trouble)$/.test(f))add(FLD[f]||f,"—",nv||"（内容なし）");
+  else add(FLD[f]||f,ov,nv||"（内容なし）");
+  return `<table class="df"><tr class="hd"><th></th><td>現状</td><td class="ar"></td><td>希望</td></tr>${R.map(([k,a,b])=>{const ch=!!b&&a!==b;return `<tr class="${ch?"on":""}"><th>${esc(k)}</th><td>${esc(a)}</td><td class="ar">→</td><td>${ch?"<b>"+esc(b)+"</b>":'<span class="mut">変わらず</span>'}</td></tr>`;}).join("")}</table>`;}
 function reqItem(x,act){const k=x.bucket+"|"+x.id,p=x.status==="requested",bf=beforeOf(x);
   const ST={approved:'<span class="pl s4">承認</span>',rejected:'<span class="pl s1">お断り</span>',proposed:'<span class="pl" style="background:#dbeafe;color:#1d4ed8">代わりの案・返事待ち</span>',declined_by_guest:'<span class="pl s1">代わりの案をお客様が見送り</span>',expired:'<span class="pl" style="background:#f1f5f9;color:#475569">代わりの案・期限切れ</span>'};
   const st=p?"":ST[x.status]||'<span class="pl" style="background:var(--nab);color:var(--na)">アーカイブ</span>';
@@ -486,7 +512,8 @@ function reqItem(x,act){const k=x.bucket+"|"+x.id,p=x.status==="requested",bf=be
   const late=x.status==="requested"?lateHtml(x):"";const extra=(x.proposal&&x.proposal.text?`<div class="mut" style="color:#1d4ed8">💬 代わりの案：${esc(x.proposal.text)}${x.proposal.value?`（OKで「${esc(x.proposal.value)}」に反映）`:""}${x.proposal.expires_at&&x.status==="proposed"?` ・ 期限 ${esc(new Date(Date.parse(x.proposal.expires_at)+9*3600e3).toISOString().slice(5,16).replace("T"," ").replace("-","/"))}`:""}</div>`:"")
     +(x.reject&&(x.reject.reason||x.reject.text)?`<div class="mut" style="color:#b91c1c">理由：${esc([RJ[x.reject.reason]||"",x.reject.text||""].filter(Boolean).join("・"))}${x.reject.alt?` → 代わりに：${esc(x.reject.alt)}`:x.reject.keep?" → 今のご予約のまま":""}</div>`:"");
   const btn=(d,l,cls)=>`<button class="btn ${cls}" onclick="decide('${esc(k)}','${d}')">${ARM===k+"|"+d?"もう一度押すと確定":l}</button>`;
-  const ch=typeOf(x.field)==="cancel"?'<div class="chg"><b>キャンセルしたい</b></div>':x.field==="ready"?`<div class="chg"><b>早めに回収してOK</b>${x.newv?`<div class="mut">目安：${esc(x.newv)}</div>`:""}</div>`
+  const dfh=diffRows(x);
+  const ch=dfh?dfh:typeOf(x.field)==="cancel"?'<div class="chg"><b>キャンセルしたい</b></div>':x.field==="ready"?`<div class="chg"><b>早めに回収してOK</b>${x.newv?`<div class="mut">目安：${esc(x.newv)}</div>`:""}</div>`
     :`<div class="chg">${bf?`<span class="bf">${esc(bf)}</span><span class="ar">→</span>`:""}<b>${esc(x.newv||"（内容なし）")}</b></div>`;
   return `<div class="rq ${p?"pend":""}">${st?`<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${st}<span class="mut">${act?"":tyLabel(x)} ${esc(x.at&&!isNaN(Date.parse(x.at))?new Date(Date.parse(x.at)+9*3600e3).toISOString().slice(5,16).replace("T"," "):"")}</span></div>`:""}
     ${late?`<div>${late}</div>`:""}${ch}${x.note?`<div class="mut">📝 ${esc(x.note)}</div>`:""}${extra}
