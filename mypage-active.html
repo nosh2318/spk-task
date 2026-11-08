@@ -227,9 +227,9 @@ const tplsOf=f=>ALT_TPL[tplKey(f)];
 function altFill(){if(!ALT||!ALT.x)return;const f=typeOf(ALT.x.field)==="cancel"?"cancel":ALT.x.field,T=tplsOf(f)[ALT.ti];if(!T){ALT.alt="";ALT.val="";return;}
   ALT.alt=T.s?(ALT.sv?T.t.replace("{x}",ALT.sv):""):T.t;
   const r=rowOf(ALT.x.bucket,ALT.x.rid);ALT.val=T.v==="time"?(ALT.sv||""):T.v==="del"?((r&&r.del_place)||""):"";}
-function altTpl(i){if(!ALT)return;ALT.ti=i;ALT.sv="";altFill();render();}
-function altSv(v){if(!ALT)return;ALT.sv=v;ALT.cf="";altFill();render();}
-function altSet(c){if(!ALT)return;ALT.code=c;render();}
+function altTpl(i){if(!ALT)return;altMsgReset();ALT.ti=i;ALT.sv="";altFill();render();}
+function altSv(v){if(!ALT)return;altMsgReset();ALT.sv=v;ALT.cf="";altFill();render();}
+function altSet(c){if(!ALT)return;altMsgReset();ALT.code=c;render();}
 function altKeep(k){if(!ALT.code)return toast("できない理由を選んでください");ALT.keep=1;ALT.alt="";ALT.val="";ARM=k+"|rejected";decide(k,"rejected");}
 let ALT=null;
 const canProp=x=>["del_place","col_place","lend_time","return_time","ready"].includes(x.field)&&/^hdm_(spk|nha)$/.test(x.bucket);
@@ -238,6 +238,15 @@ function altRead(){}
 // 11/7 nosh「どんな内容が送信されるか目視確認できるべき」：お客様に届く文をそのまま見せ、確認してから送る（EF の declineMsg と同じ組み立て）
 const PV_KIND={del_place:"お届け場所",col_place:"回収場所",lend_time:"お届け時間",return_time:"回収時間",ready:"早めの回収",option:"オプション",insurance:"補償",method:"受け取り・返却の方法",cancel:"キャンセル"};
 const PV_REJ={no_vehicle:"誠に恐れ入りますが、予約状況の兼ね合いにより、ご希望の日時にご用意できるお車がございません。",full_slot:"誠に恐れ入りますが、{staff}の状況により、ご希望のお時間に伺うことができません。",out_of_area:"ご希望の場所は、お届け・回収の対象エリア外のため、伺うことができません。",out_of_stock:"誠に恐れ入りますが、在庫状況により、ご希望のオプションをご用意できる数がございません。",past_deadline:"変更の受付締切を過ぎているため、ご変更を承ることができません。",other:""};
+// 11/8 別の案の期限（EF proposalExpires と同じ式）。送信時に expires_at として渡し、文中の日時と実際の期限を必ず一致させる
+function altExp(x){if(ALT&&ALT.exp)return ALT.exp;const r=rowOf(x.bucket,x.rid)||{},end=["col_place","return_time","ready"].includes(x.field),d=end?r.ed:r.sd,t=end?r.et:r.st,now=Date.now();let e=now+864e5;
+  if(d){const m=String(t||"09:00").match(/(\d{1,2}):(\d{2})/),h=Date.parse(d+"T"+String(m?+m[1]:9).padStart(2,"0")+":"+(m?m[2]:"00")+":00+09:00");if(!isNaN(h))e=Math.min(e,h-72e5);}
+  const iso=new Date(Math.max(e,now+18e5)).toISOString();if(ALT)ALT.exp=iso;return iso;}
+function pvMd(iso){const j=new Date(Date.parse(iso)+324e5);return (j.getUTCMonth()+1)+"/"+j.getUTCDate()+" "+String(j.getUTCHours()).padStart(2,"0")+":"+String(j.getUTCMinutes()).padStart(2,"0");}
+// 11/8 nosh「スタッフ編集できるように」：札幌・那覇HDMは確認画面の文を直せる。直した文がそのまま届く（EF の message_text）
+const EDITABLE=bk=>bk==="hdm_spk"||bk==="hdm_nha";
+function altMsgNow(){if(!ALT||!ALT.x)return"";const keep=ALT.ti==="keep";return ALT.msg!=null?ALT.msg:pvMsg(ALT.x,keep?"keep":canProp(ALT.x)?"prop":"rej");}
+function altMsgReset(){if(ALT){ALT.msg=null;ALT.exp="";}}
 function pvMsg(x,mode){const f=typeOf(x.field)==="cancel"?"cancel":x.field,bk=x.bucket,key=/^key_/.test(bk);
   const head=bk==="hdm_spk"?"【HANDYMAN 札幌デリバリー】":bk==="hdm_nha"?"【HANDYMAN 那覇】":"";
   const staff=["del_place","lend_time"].includes(f)?"お届けスタッフ":["col_place","return_time","ready"].includes(f)?"回収スタッフ":"担当スタッフ";
@@ -248,7 +257,7 @@ function pvMsg(x,mode){const f=typeOf(x.field)==="cancel"?"cancel":x.field,bk=x.
   const want=f==="cancel"?"ご予約のキャンセル":f==="ready"?"早めの回収":label+"の変更"+(nv?"（"+nv+"）":"");
   const L=[head+"ご依頼いただいた"+want+"につきまして、ご連絡いたします。"];if(why)L.push(why);
   if(mode!=="keep"&&alt)L.push("代わりに、"+alt+(/[。！？!?]$/.test(alt)?"":"。"));
-  if(mode==="prop")L.push("マイページで「この案でOK」を押すと確定します（期限：お受け渡しの2時間前／最長24時間）。ご都合が合わなければ「やめる」を押してください。");
+  if(mode==="prop")L.push("マイページで「この案でOK」を押すと確定します（"+pvMd(altExp(x))+"まで）。ご都合が合わなければ「やめる」を押してください。");
   else if(mode==="rej"&&f!=="cancel")L.push("こちらでよろしければ、マイページから改めてご依頼ください。");
   let tail=f==="cancel"||!ov?"今のご予約はそのままです。":"今のご予約（"+label+"："+ov+"）はそのままです。";if(mode==="keep")tail=tail.replace(/はそのままです。/,"のままでのご利用をお願いできますでしょうか。");
   L.push(tail);L.push("ご不便をおかけいたしますが、何卒よろしくお願いいたします。");L.push(url);return L.join("\n");}
@@ -265,15 +274,15 @@ function altHtml(x,k){if(!ALT||ALT.key!==k)return"";const f=typeOf(x.field)==="c
   const circ=(i,s)=>`<span style="display:inline-flex;width:24px;height:24px;border-radius:50%;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex:none;${s.done?"background:#16a34a;color:#fff":i===now?"background:#1d4ed8;color:#fff":"background:#e5e7eb;color:#9ca3af"}">${s.done?"✓":i+1}</span>`;
   const body=(i,s)=>{if(i===0)return`<div style="display:flex;gap:6px;flex-wrap:wrap">${RSN_OF(tplKey(f)).map(([c,l])=>`<button class="chip ${ALT.code===c?"on":""}" onclick="altSet('${c}')">${l}</button>`).join("")}</div>`;
     if(s.slot)return`<select class="rsnT" style="font-size:16px" onchange="altSv(this.value)"><option value="">▼ ${cur.s==="time"?"時間":"個数"}をタップして選ぶ</option>${(cur.s==="time"?TIMES:["1","2","3"]).map(v=>`<option ${ALT.sv===v?"selected":""}>${v}</option>`).join("")}</select>`;
-    if(s.last)return`<pre style="white-space:pre-wrap;font:inherit;font-size:13px;background:#fff;border:1px solid #93c5fd;border-radius:8px;padding:8px;margin:0">${esc(pvMsg(ALT.x,keep?"keep":prop?"prop":"rej"))}</pre><div class="mut" style="font-size:12px;margin:4px 0">↑この文がそのままお客様に${via}で届きます</div><button class="btn ok" style="background:#1d4ed8;width:100%" onclick='${keep?`altKeep("${esc(k)}")`:`altSend(${xs})`}'>この内容で送信する</button>`;
+    if(s.last)return(EDITABLE(x.bucket)?`<textarea id="altMsg" rows="${Math.min(30,Math.max(10,Math.ceil(altMsgNow().length/17)+altMsgNow().split("\n").length))}" style="width:100%;box-sizing:border-box;font:inherit;font-size:16px;line-height:1.5;background:#fff;border:1px solid #93c5fd;border-radius:8px;padding:8px;margin:0" oninput="ALT.msg=this.value">${esc(altMsgNow())}</textarea><div class="mut" style="font-size:12px;margin:4px 0">↑この文がそのままお客様に${via}で届きます。タップして直せます${ALT.msg!=null?` ／ <button class="lnk" style="font-size:12px" onclick="altMsgReset();render()">元の文に戻す</button>`:""}${/（マイページのURL）/.test(altMsgNow())?"。「（マイページのURL）」は送信時に本物のURLに置き換わります":""}</div>`:`<pre style="white-space:pre-wrap;font:inherit;font-size:13px;background:#fff;border:1px solid #93c5fd;border-radius:8px;padding:8px;margin:0">${esc(pvMsg(ALT.x,keep?"keep":prop?"prop":"rej"))}</pre><div class="mut" style="font-size:12px;margin:4px 0">↑この文がそのままお客様に${via}で届きます</div>`)+`<button class="btn ok" style="background:#1d4ed8;width:100%" onclick='${keep?`altKeep("${esc(k)}")`:`altSend(${xs})`}'>この内容で送信する</button>`;
     return`<div style="display:flex;gap:6px;flex-wrap:wrap">${T.map((t,j)=>`<button class="chip ${ALT.ti===j?"on":""}" onclick="altTpl(${j})">${esc(t.t.replace("{x}",t.s==="time"?"〇時":"〇"))}</button>`).join("")}<button class="chip ${keep?"on":""}" onclick="altTpl('keep')">代わりの案なし（今のご予約のままでお願いする）</button></div><div class="mut" style="font-size:12px;margin-top:2px">「代わりの案なし」は無理な時間帯・無理なご依頼のときだけ</div>`;};
   const step=(s,i)=>{const open=i===now,fut=now>=0&&i>now;return `<div style="display:flex;gap:8px;padding:8px 0;border-top:${i?"1px solid #e5e7eb":"0"};${fut?"opacity:.45":""}">${circ(i,s)}<div style="flex:1;min-width:0"><div style="font-weight:${open?700:500};color:${open?"#1d4ed8":"inherit"}">${esc(s.t)}${s.done&&!open?` <span class="mut">：${esc(s.v)}</span>`:""}</div>${open?`<div style="margin-top:6px">${body(i,s)}</div>`:s.done&&i<now?`<button class="lnk" style="font-size:12px" onclick="altBack(${i})">変える</button>`:""}</div></div>`;};
   return `<div class="rsn" style="border-color:#bfdbfe;background:#f5f9ff"><div style="background:#1d4ed8;color:#fff;border-radius:8px;padding:6px 10px;font-weight:700;margin-bottom:4px">次：${esc(S[now].t)}（${now+1}/${S.length}）</div>${S.map(step).join("")}<div style="text-align:right"><button class="lnk" onclick="ALT=null;render()">やめる</button></div></div>`;}
-function altBack(i){if(!ALT)return;if(i===0)ALT.code="";else if(i===1){ALT.ti=-1;ALT.sv="";altFill();}else{ALT.sv="";altFill();}render();}
+function altBack(i){if(!ALT)return;altMsgReset();if(i===0)ALT.code="";else if(i===1){ALT.ti=-1;ALT.sv="";altFill();}else{ALT.sv="";altFill();}render();}
 async function decide(key,decision){
   if(ARM!==key+"|"+decision){ARM=key+"|"+decision;render();setTimeout(()=>{if(ARM===key+"|"+decision){ARM="";render();}},6000);return;}
   ARM="";const bk=key.split("|")[0],id=key.slice(bk.length+1),B=BUCK[bk];let x=null;Object.values(REQ).forEach(l=>l.forEach(i=>{if(i.bucket===bk&&String(i.id)===id)x=i;}));if(!x||!B)return;
-  try{const r=await fetch(B.ef,{method:"POST",headers:{apikey:B.anon,Authorization:"Bearer "+B.anon,"Content-Type":"application/json"},body:JSON.stringify(Object.assign({action:"decide",admin_pin:getPin(),change_id:isNaN(+x.id)?x.id:+x.id,decision},ALT&&ALT.key===key&&decision==="rejected"?{reject_reason:ALT.code,reject_text:ALT.text,alt_text:ALT.alt,keep_as_is:!!ALT.keep}:ALT&&ALT.key===key&&decision==="proposed"?{reject_reason:ALT.code,reject_text:ALT.text,proposal_text:ALT.alt,proposal_value:ALT.val}:{}))});
+  try{const r=await fetch(B.ef,{method:"POST",headers:{apikey:B.anon,Authorization:"Bearer "+B.anon,"Content-Type":"application/json"},body:JSON.stringify(Object.assign({action:"decide",admin_pin:getPin(),change_id:isNaN(+x.id)?x.id:+x.id,decision},ALT&&ALT.key===key&&decision==="rejected"?{reject_reason:ALT.code,reject_text:ALT.text,alt_text:ALT.alt,keep_as_is:!!ALT.keep}:ALT&&ALT.key===key&&decision==="proposed"?{reject_reason:ALT.code,reject_text:ALT.text,proposal_text:ALT.alt,proposal_value:ALT.val}:{},ALT&&ALT.key===key&&EDITABLE(bk)&&(decision==="rejected"||decision==="proposed")?{message_text:String(altMsgNow()).trim(),expires_at:decision==="proposed"?ALT.exp:""}:{}))});
     const j=await r.json().catch(()=>({}));
     if(r.ok&&j.ok){if(ALT&&ALT.key===key){if(decision==="rejected")x.reject={reason:ALT.code,text:ALT.text,alt:ALT.alt,keep:!!ALT.keep};if(decision==="proposed")x.proposal={text:ALT.alt,value:ALT.val,reason:ALT.code,reason_text:ALT.text,expires_at:j.expires_at||""};ALT=null;}x.status=decision;x.at=new Date().toISOString();toast(decision==="approved"?"承認しました（反映・通知済）":decision==="rejected"?"代わりの案を添えて返事しました":decision==="proposed"?"代わりの案を送りました":"アーカイブしました");render();if(decision==="approved")setTimeout(loadAll,1500);}
     else if(r.status===401)toast("PINが違います");else toast("失敗: "+(j.error||("http "+r.status)));
