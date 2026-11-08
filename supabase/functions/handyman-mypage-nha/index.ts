@@ -5,7 +5,7 @@ console.log("[keymig]", __newKey("SUPABASE_SECRET_KEYS", "edge") ? "secret" : "l
 // handyman-mypage-nha : HANDYMAN 統合マイページ 那覇（内部カルテ閲覧・lookup専用）
 // 2026-07-08 / omni  ※札幌 handyman-mypage を複製元に、那覇の日本語列・受け渡し区分へ作り替え。
 // 一旦のゴール（オーナー確定 2026-07-08）＝内部カルテ閲覧まで。顧客への開示/通知は範囲外。
-// このEFは lookup / ping のみ（読み取り専用）。update/request/decide/cancel 等の書込系は今回は作らない。
+// ※当初は lookup / ping のみ。以後 decide・cancel_request・ready・proposal_reply を追加し、2026-11-07 に update（場所・時間の依頼・承認制）を追加。
 // 設計思想:
 //  ・token(=mypage_token) 所持＝本人。URLはスタッフが ro=1 で閲覧専用に開く前提。
 //  ・場所/時間は「nha_reservations と nha_tasks の実値ある方」を採る（札幌 resolveTaskPlace/Time と同思想）。
@@ -161,6 +161,24 @@ function declineMsg(head: string, label: string, field: string, newV: string, ol
   if (url) lines.push(url);
   return lines.join("\n");
 }
+// ==== 2026-11-07 nosh「全てマイページから申請し運営が可否→ユーザーに戻る」：那覇の場所・時間の変更（承認時に反映） ====
+const PT_FIELDS = ["del_place", "col_place", "lend_time", "return_time"];
+// OPシート(nha_tasks)の手入力と同じ形で書く（場所＝_placeSource:manual、時間＝「変更」列）。SSパトロールで戻されないため。
+async function nhaApplyChange(resId: string, field: string, val: string, actor: string): Promise<void> {
+  const v = String(val || "").trim(); if (!v || !PT_FIELDS.includes(field)) return;
+  const rp: Record<string, string> = field === "del_place" ? { del_place: v } : field === "col_place" ? { col_place: v } : field === "lend_time" ? { del_time: v, start_time: v } : { col_time: v, end_time: v };
+  await sbPatch("nha_reservations", `id=eq.${encodeURIComponent(resId)}`, rp);
+  const ts = await sbGet("nha_tasks", `${encodeURIComponent("予約番号")}=eq.${encodeURIComponent(resId)}&deleted=not.is.true&select=_id,changed_json`);
+  const dT = ts.find((t: any) => String(t._id || "").startsWith("d-")), cT = ts.find((t: any) => String(t._id || "").startsWith("c-"));
+  const cjOf = (t: any) => { let cj: any = t?.changed_json; if (typeof cj === "string") { try { cj = JSON.parse(cj); } catch { cj = {}; } } return cj && typeof cj === "object" ? cj : {}; };
+  const put = async (t: any, patch: Record<string, unknown>, cjAdd: Record<string, unknown>) => { if (!t) return; await sbPatch("nha_tasks", `_id=eq.${encodeURIComponent(String(t._id))}`, { ...patch, changed_json: { ...cjOf(t), ...cjAdd, mypage_changed_at: new Date().toISOString() } }); };
+  if (field === "del_place") await put(dT, { "送迎場所": v }, { place: true, _placeSource: "manual" });
+  if (field === "col_place") { await put(dT, { "集客": v }, { colPlace: true }); await put(cT, { "送迎場所": v }, { place: true, _placeSource: "manual" }); }
+  if (field === "lend_time") await put(dT, { "変更": v }, { timeChange: true, _timeChangeSource: "manual" });
+  if (field === "return_time") { await put(cT, { "変更": v }, { timeChange: true, _timeChangeSource: "manual" }); await put(dT, { "返却": v }, {}); }
+  // マイページ表示の正本（appliedChg が最優先で拾う）
+  await sbPost("mypage_changes", { reservation_id: resId, store: "nha", field, old_value: "", new_value: v, source: "staff", status: "applied", actor, note: "マイページ依頼の承認による反映" });
+}
 function jstMdHm(iso: string): string { const j = new Date(Date.parse(iso) + 9 * 3600e3); return `${j.getUTCMonth() + 1}/${j.getUTCDate()} ${String(j.getUTCHours()).padStart(2, "0")}:${String(j.getUTCMinutes()).padStart(2, "0")}`; }
 const FLD_JP: Record<string, string> = { del_place: "お届け場所", col_place: "回収場所", lend_time: "貸出の時間", return_time: "返却の時間", ready: "早めの回収", option: "オプション", cancel: "キャンセル", method: "受け取り・返却の方法" };
 
@@ -249,6 +267,11 @@ Deno.serve(async (req) => {
       }
       return json({ ok: true, decided: decision }, 200, origin);
     }
+    // 場所・時間の依頼を承認 → 予約・OPタスク・マイページ表示へ反映（お客様の「この案でOK」も同じ道を通る）
+    if (decision === "approved" && PT_FIELDS.includes(String(c.field))) {
+      const pl1: any = (c.payload && typeof c.payload === "object") ? c.payload : {};
+      await nhaApplyChange(resId2, String(c.field), String(pl1[c.field] || c.new_value || ""), actor);
+    }
     let msg: string;
     if (decision === "approved") {
       msg = c.field === "ready"
@@ -300,7 +323,7 @@ Deno.serve(async (req) => {
     return json({ ok: true, decided: decision }, 200, origin);
   }
 
-  if (action !== "lookup" && action !== "license_uploaded" && action !== "ready" && action !== "cancel_request" && action !== "proposal_reply") return json({ error: "unsupported action" }, 400, origin);
+  if (action !== "lookup" && action !== "license_uploaded" && action !== "ready" && action !== "cancel_request" && action !== "proposal_reply" && action !== "update") return json({ error: "unsupported action" }, 400, origin);
 
   const token = String(p.token || "").trim();
   if (!token || token.length < 20) return json({ error: "アクセスキーが不正です" }, 400, origin);
@@ -371,6 +394,38 @@ Deno.serve(async (req) => {
     if (!dr2.ok || !dj.ok) { console.error("[proposal accept]", dr2.status, JSON.stringify(dj)); await slackPost(`⚠️ お客様が別の案にOKしましたが自動反映に失敗 [那覇] ${fj} / ${resId}（アクションタブで承認してください）`); return json({ ok: true, answered: "accept", pending: true }, 200, origin); }
     await slackPost(`✅ お客様が別の案にOK → 確定しました [那覇] ${fj} / ${resId}：${pr.text || nv}`);
     return json({ ok: true, answered: "accept" }, 200, origin);
+  }
+
+  // ---- update: 場所・時間の変更依頼（即反映しない。アクションタブで承認→反映＋お客様へ通知）----
+  //   2026-11-07 nosh：3店とも全て承認制。期限（お届け系＝出発24時間前／回収系＝返却2時間前）は目安で、期限後も受け付ける。
+  if (action === "update") {
+    const has = (k: string) => Object.prototype.hasOwnProperty.call(p, k);
+    const vals: Record<string, string> = {};
+    for (const f of PT_FIELDS) if (has(f)) vals[f] = String(p[f] || "").trim().slice(0, 200);
+    if (!Object.keys(vals).length) return json({ error: "変更内容がありません" }, 400, origin);
+    for (const f of ["del_place", "col_place"]) if (vals[f] !== undefined && vals[f].length < 2) return json({ error: "場所を入力してください" }, 400, origin);
+    for (const f of ["lend_time", "return_time"]) if (vals[f] !== undefined && !/^\d{1,2}:\d{2}$/.test(vals[f])) return json({ error: "時間は 10:00 の形で指定してください" }, 400, origin);
+    const oldOf = (f: string) => String((f === "del_place" ? r.del_place : f === "col_place" ? r.col_place : f === "lend_time" ? (r.del_time || r.start_time) : (r.col_time || r.end_time)) || "");
+    const lines: string[] = [];
+    for (const [f, v] of Object.entries(vals)) {
+      const pay: Record<string, unknown> = { [f]: v };
+      if (f === "del_place" && p.del_lat != null && p.del_lng != null) { pay.del_lat = Number(p.del_lat); pay.del_lng = Number(p.del_lng); }
+      if (f === "col_place" && p.col_lat != null && p.col_lng != null) { pay.col_lat = Number(p.col_lat); pay.col_lng = Number(p.col_lng); }
+      const ex = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.nha&field=eq.${f}&status=eq.requested&select=id&limit=1`);
+      if (ex[0]) await sbPatch("mypage_changes", `id=eq.${ex[0].id}`, { new_value: v, payload: pay });
+      else await sbPost("mypage_changes", { reservation_id: resId, store: "nha", field: f, old_value: oldOf(f), new_value: v, source: "customer", status: "requested", note: `${FLD_JP[f] || f}の変更（承認制）`, payload: pay });
+      lines.push(`*${FLD_JP[f] || f}*　${oldOf(f) || "（未設定）"} → *${v}*`);
+    }
+    await slackResv(`🟡 場所・時間の変更依頼（承認待ち）[那覇] ${r.name || ""} / ${resId}`, [
+      { type: "header", text: { type: "plain_text", text: "🟡 場所・時間の変更依頼（承認待ち）[那覇]", emoji: true } },
+      { type: "section", fields: [
+        { type: "mrkdwn", text: `*お客様:*\n${r.name || "-"} 様` }, { type: "mrkdwn", text: `*予約番号:*\n${resId}` },
+        { type: "mrkdwn", text: `*ご予約元:*\n${otaJp(r.ota)}` }, { type: "mrkdwn", text: `*利用期間:*\n${r.start_date || "-"} 〜 ${r.end_date || "-"}` },
+      ] },
+      { type: "section", text: { type: "mrkdwn", text: lines.join("\n") } },
+      { type: "actions", elements: [ { type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, style: "primary", url: actUrl(resId) } ] },
+    ]);
+    return json({ ok: true, pendingApproval: true, requested: Object.keys(vals) }, 200, origin);
   }
 
   // ---- cancel_request: HP直販予約のキャンセル申請（承認必須）。OTA予約は各OTAから申請＝受け付けない ----
