@@ -174,6 +174,9 @@ async function nhaApplyChange(resId: string, field: string, val: string, actor: 
   if (!r.ok) { const tx = await r.text(); console.error("apply", tx); let m = tx; try { m = JSON.parse(tx).message || tx; } catch { /* noop */ } return { ok: false, error: String(m).slice(0, 300) }; }
   return { ok: true };
 }
+// 2026-11-08 nosh「スタッフ編集できるように」：アクションタブの確認画面でスタッフが直した文（message_text）があれば、その文をそのまま送る
+function staffText(p: any, url: string): string { const s = String(p?.message_text || "").replace(/\r\n/g, "\n").trim().slice(0, 2000); if (!s) return ""; return s.replace(/（マイページのURL）/g, url || "").replace(/\n{3,}/g, "\n\n").trim(); }
+function expOverride(p: any, fallback: string): string { const e = Date.parse(String(p?.expires_at || "")), now = Date.now(); return (!isNaN(e) && e >= now + 25 * 60e3 && e <= now + 24 * 3600e3 + 10 * 60e3) ? new Date(e).toISOString() : fallback; }
 function jstMdHm(iso: string): string { const j = new Date(Date.parse(iso) + 9 * 3600e3); return `${j.getUTCMonth() + 1}/${j.getUTCDate()} ${String(j.getUTCHours()).padStart(2, "0")}:${String(j.getUTCMinutes()).padStart(2, "0")}`; }
 const FLD_JP: Record<string, string> = { del_place: "お届け場所", col_place: "回収場所", lend_time: "貸出の時間", return_time: "返却の時間", ready: "早めの回収", option: "オプション", cancel: "キャンセル", method: "受け取り・返却の方法" };
 
@@ -229,11 +232,11 @@ Deno.serve(async (req) => {
       if (c.field === "ready" && !/^\d{1,2}:\d{2}$/.test(pval)) return json({ error: "回収できる時間を 15:00 の形で入れてください" }, 400, origin);  // 11/7 nosh「早め回収も〜時ならOK」
       if (!["del_place", "col_place", "lend_time", "return_time", "ready"].includes(String(c.field))) return json({ error: "この種類の依頼は、マイページのボタンではなく文でお返事します（decision=rejected＋alt_text）" }, 400, origin);
       const rv = (await sbGet("nha_reservations", `id=eq.${encodeURIComponent(resId2)}&select=name,ota,start_date,start_time,end_date,end_time,mypage_token`))[0] || {};
-      const exp = proposalExpires(String(c.field), rv.start_date, rv.start_time, rv.end_date, rv.end_time);
+      const exp = expOverride(p, proposalExpires(String(c.field), rv.start_date, rv.start_time, rv.end_date, rv.end_time));
       await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: "proposed", actor, payload: { ...pl0, proposal: { text: ptext, value: pval, reason: rejCode || "", reason_text: rejText, expires_at: exp, by: actor, at: new Date().toISOString() } } });
       const url = rv.mypage_token ? `https://nosh2318.github.io/naha-project/my-nha.html?t=${rv.mypage_token}` : "";
       await notifyCust(resId2, `【HANDYMAN那覇空港店】ご予約 ${resId2} ご依頼について別の案のご提案`,
-        declineMsg("【HANDYMAN 那覇】", lbl, String(c.field), String(c.new_value || ""), String(c.old_value || ""), rejectLine(rejCode, rejText, String(c.field)), ptext, `マイページで「この案でOK」を押すと確定します（${jstMdHm(exp)}まで）。ご都合が合わなければ「やめる」を押してください。`, url) + `\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);
+        (staffText(p, url) || declineMsg("【HANDYMAN 那覇】", lbl, String(c.field), String(c.new_value || ""), String(c.old_value || ""), rejectLine(rejCode, rejText, String(c.field)), ptext, `マイページで「この案でOK」を押すと確定します（${jstMdHm(exp)}まで）。ご都合が合わなければ「やめる」を押してください。`, url)) + `\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);
       await slackPost(`💬 別の案を送りました [那覇] ${FLD_JP[c.field] || c.field} / ${resId2}：${ptext}（お客様の返事待ち・${jstMdHm(exp)}まで）／ ${actor.replace(/^staff:/, "")}`);
       return json({ ok: true, decided: "proposed", expires_at: exp }, 200, origin);
     }
@@ -257,7 +260,7 @@ Deno.serve(async (req) => {
         ]); }
       } else {
         await notifyCust(resId2, `【HANDYMAN那覇空港店】ご予約 ${resId2} キャンセルのご相談につきまして`,
-          `${cr.name || "お客様"} 様\n\n` + (keep ? declineMsg("", "キャンセル", "cancel", "", "", rejLine, "", "", "").replace(/はそのままです。/, "のままでのご利用をお願いできますでしょうか。") : declineMsg("", "キャンセル", "cancel", "", "", rejLine, altText, "", "")) + `\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);
+          `${cr.name || "お客様"} 様\n\n` + (staffText(p, "") || (keep ? declineMsg("", "キャンセル", "cancel", "", "", rejLine, "", "", "").replace(/はそのままです。/, "のままでのご利用をお願いできますでしょうか。") : declineMsg("", "キャンセル", "cancel", "", "", rejLine, altText, "", ""))) + `\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);
         await slackResv(`🚫 キャンセル却下 [那覇]${(String(cr.ota||"")==="HANDYMAN"||/^HDMN/.test(resId2))?"（🆕NEW リニューアル公式サイト）":""} ${cr.name || ""} / ${resId2} ／ ${actor.replace(/^staff:/, "")}`);
       }
       return json({ ok: true, decided: decision }, 200, origin);
@@ -289,6 +292,7 @@ Deno.serve(async (req) => {
       if (c.field === "ready" && (keep || !altText)) msg = `【HANDYMAN 那覇】ご連絡ありがとうございます。誠に申し訳ございませんが、今回は予定のお時間での回収とさせていただきます。${rejLine ? "\n" + rejLine : ""}\n何卒ご理解いただけますと幸いです。`;
       else { const rv2 = (await sbGet("nha_reservations", `id=eq.${encodeURIComponent(resId2)}&select=mypage_token`))[0] || {}; msg = declineMsg("【HANDYMAN 那覇】", lbl, String(c.field), String(c.new_value || ""), String(c.old_value || ""), rejLine, keep ? "" : altText, keep ? "" : "こちらでよろしければ、マイページから改めてご依頼ください。", rv2.mypage_token ? `https://nosh2318.github.io/naha-project/my-nha.html?t=${rv2.mypage_token}` : ""); if (keep) msg = msg.replace(/はそのままです。/, "のままでのご利用をお願いできますでしょうか。"); }
     }
+    if (decision === "rejected") { const rv3 = (await sbGet("nha_reservations", `id=eq.${encodeURIComponent(resId2)}&select=mypage_token`))[0] || {}; const st3 = staffText(p, rv3.mypage_token ? `https://nosh2318.github.io/naha-project/my-nha.html?t=${rv3.mypage_token}` : ""); if (st3) msg = st3; }
     await notifyCust(resId2, `【HANDYMAN那覇空港店】ご予約 ${resId2} ご依頼の結果`, msg.replace(/公式LINE/g, "担当") + `\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);  // 予約有効なうちに先に送る
     await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: decision, actor, ...rejPayload });
     const dRows = await sbGet("nha_reservations", `id=eq.${encodeURIComponent(resId2)}&select=name,ota,col_time,end_time`);
