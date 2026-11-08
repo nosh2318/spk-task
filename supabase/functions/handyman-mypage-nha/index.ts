@@ -164,20 +164,15 @@ function declineMsg(head: string, label: string, field: string, newV: string, ol
 // ==== 2026-11-07 nosh「全てマイページから申請し運営が可否→ユーザーに戻る」：那覇の場所・時間の変更（承認時に反映） ====
 const PT_FIELDS = ["del_place", "col_place", "lend_time", "return_time"];
 // OPシート(nha_tasks)の手入力と同じ形で書く（場所＝_placeSource:manual、時間＝「変更」列）。SSパトロールで戻されないため。
-async function nhaApplyChange(resId: string, field: string, val: string, actor: string): Promise<void> {
-  const v = String(val || "").trim(); if (!v || !PT_FIELDS.includes(field)) return;
-  const rp: Record<string, string> = field === "del_place" ? { del_place: v } : field === "col_place" ? { col_place: v } : field === "lend_time" ? { del_time: v, start_time: v } : { col_time: v, end_time: v };
-  await sbPatch("nha_reservations", `id=eq.${encodeURIComponent(resId)}`, rp);
-  const ts = await sbGet("nha_tasks", `${encodeURIComponent("予約番号")}=eq.${encodeURIComponent(resId)}&deleted=not.is.true&select=_id,changed_json`);
-  const dT = ts.find((t: any) => String(t._id || "").startsWith("d-")), cT = ts.find((t: any) => String(t._id || "").startsWith("c-"));
-  const cjOf = (t: any) => { let cj: any = t?.changed_json; if (typeof cj === "string") { try { cj = JSON.parse(cj); } catch { cj = {}; } } return cj && typeof cj === "object" ? cj : {}; };
-  const put = async (t: any, patch: Record<string, unknown>, cjAdd: Record<string, unknown>) => { if (!t) return; await sbPatch("nha_tasks", `_id=eq.${encodeURIComponent(String(t._id))}`, { ...patch, changed_json: { ...cjOf(t), ...cjAdd, mypage_changed_at: new Date().toISOString() } }); };
-  if (field === "del_place") await put(dT, { "送迎場所": v }, { place: true, _placeSource: "manual" });
-  if (field === "col_place") { await put(dT, { "集客": v }, { colPlace: true }); await put(cT, { "送迎場所": v }, { place: true, _placeSource: "manual" }); }
-  if (field === "lend_time") await put(dT, { "変更": v }, { timeChange: true, _timeChangeSource: "manual" });
-  if (field === "return_time") { await put(cT, { "変更": v }, { timeChange: true, _timeChangeSource: "manual" }); await put(dT, { "返却": v }, {}); }
-  // マイページ表示の正本（appliedChg が最優先で拾う）
-  await sbPost("mypage_changes", { reservation_id: resId, store: "nha", field, old_value: "", new_value: v, source: "staff", status: "applied", actor, note: "マイページ依頼の承認による反映" });
+// 2026-11-08 反映は DB 関数 nha_apply_mypage_change に一本化（予約・OPタスク・記録を1トランザクションで書き、
+//   OPシート/タスクサマリー/個別URLと同じ読み方で読み直して一致しなければ全部取り消す。承認値は取込・自動取得・古い画面の保存で戻らないようロック）
+async function nhaApplyChange(resId: string, field: string, val: string, actor: string, changeId?: unknown): Promise<{ ok: boolean; error?: string }> {
+  const v = String(val || "").trim(); if (!PT_FIELDS.includes(field)) return { ok: true };
+  if (!v) return { ok: false, error: "反映する値が空です" };
+  const r = await fetch(`${SB_URL}/rest/v1/rpc/nha_apply_mypage_change`, { method: "POST", headers: H,
+    body: JSON.stringify({ p_res: resId, p_field: field, p_val: v, p_actor: actor, p_change_id: Number(changeId) || null }) });
+  if (!r.ok) { const tx = await r.text(); console.error("apply", tx); let m = tx; try { m = JSON.parse(tx).message || tx; } catch { /* noop */ } return { ok: false, error: String(m).slice(0, 300) }; }
+  return { ok: true };
 }
 function jstMdHm(iso: string): string { const j = new Date(Date.parse(iso) + 9 * 3600e3); return `${j.getUTCMonth() + 1}/${j.getUTCDate()} ${String(j.getUTCHours()).padStart(2, "0")}:${String(j.getUTCMinutes()).padStart(2, "0")}`; }
 const FLD_JP: Record<string, string> = { del_place: "お届け場所", col_place: "回収場所", lend_time: "貸出の時間", return_time: "返却の時間", ready: "早めの回収", option: "オプション", cancel: "キャンセル", method: "受け取り・返却の方法" };
@@ -270,7 +265,20 @@ Deno.serve(async (req) => {
     // 場所・時間の依頼を承認 → 予約・OPタスク・マイページ表示へ反映（お客様の「この案でOK」も同じ道を通る）
     if (decision === "approved" && PT_FIELDS.includes(String(c.field))) {
       const pl1: any = (c.payload && typeof c.payload === "object") ? c.payload : {};
-      await nhaApplyChange(resId2, String(c.field), String(pl1[c.field] || c.new_value || ""), actor);
+      const ap = await nhaApplyChange(resId2, String(c.field), String(pl1[c.field] || c.new_value || ""), actor, changeId);
+      // 反映できなければ承認しない（お客様へも送らない・依頼は「受付」のまま残す）
+      if (!ap.ok) return json({ error: "反映できませんでした（何も変更していません）：" + (ap.error || ""), apply_failed: true }, 500, origin);
+    }
+    // ★ 早め回収(ready)を承認し、希望時間(HH:MM)がある場合は諸々の表示へ自動反映
+    //   ①nha_reservations.col_time/end_time ②nha_tasks の c-<予約>「変更」(＋「時間」) ③mypage_changes field=return_time status=applied
+    if (decision === "approved" && c.field === "ready") {
+      const hopeR = String(c.new_value || "").match(/(\d{1,2}:\d{2})/);
+      if (hopeR) {
+        const hope = hopeR[1];
+        // 2026-11-08 早め回収の承認も「返却の時間」と同じ反映処理（1トランザクション・読み直し確認・戻し防止ロック）を通す
+        const apR = await nhaApplyChange(resId2, "return_time", hope, actor, changeId);
+        if (!apR.ok) return json({ error: "反映できませんでした（何も変更していません）：" + (apR.error || ""), apply_failed: true }, 500, origin);
+      }
     }
     let msg: string;
     if (decision === "approved") {
@@ -283,25 +291,6 @@ Deno.serve(async (req) => {
     }
     await notifyCust(resId2, `【HANDYMAN那覇空港店】ご予約 ${resId2} ご依頼の結果`, msg.replace(/公式LINE/g, "担当") + `\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);  // 予約有効なうちに先に送る
     await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: decision, actor, ...rejPayload });
-    // ★ 早め回収(ready)を承認し、希望時間(HH:MM)がある場合は諸々の表示へ自動反映
-    //   ①nha_reservations.col_time/end_time ②nha_tasks の c-<予約>「変更」(＋「時間」) ③mypage_changes field=return_time status=applied
-    if (decision === "approved" && c.field === "ready") {
-      const hopeR = String(c.new_value || "").match(/(\d{1,2}:\d{2})/);
-      if (hopeR) {
-        const hope = hopeR[1];
-        // ① 予約(正本)の回収時間
-        await sbPatch("nha_reservations", `id=eq.${encodeURIComponent(resId2)}`, { col_time: hope, end_time: hope });
-        // ② COLタスク c-<予約> の「変更」(＋「時間」)＝希望時間 → OP表示に反映
-        const cRows2 = await sbGet("nha_tasks", `${encodeURIComponent("予約番号")}=eq.${encodeURIComponent(resId2)}&deleted=not.is.true&select=_id`);
-        const cId = (cRows2 || []).map((t: any) => String(t._id || "")).find((id: string) => id.startsWith("c-"));
-        if (cId) {
-          const patch: Record<string, string> = {}; patch["変更"] = hope; patch["時間"] = hope;
-          await sbPatch("nha_tasks", `_id=eq.${encodeURIComponent(cId)}`, patch);
-        }
-        // ③ 適用済み変更としてマイページ回収時間へ反映（appliedChg("return_time")が最優先で拾う）
-        await sbPost("mypage_changes", { reservation_id: resId2, store: "nha", field: "return_time", old_value: "", new_value: hope, source: "staff", status: "applied", actor, note: "早め回収 承認による回収時間反映" });
-      }
-    }
     const dRows = await sbGet("nha_reservations", `id=eq.${encodeURIComponent(resId2)}&select=name,ota,col_time,end_time`);
     const dr = dRows[0] || {};
     const hopeM = String(c.new_value || "").match(/(\d{1,2}:\d{2})/);
@@ -486,7 +475,10 @@ Deno.serve(async (req) => {
   const opTasksP = sbGet("nha_tasks", `${encodeURIComponent("予約番号")}=eq.${encodeURIComponent(resId)}&deleted=not.is.true&select=_id,${encodeURIComponent("内容")},${encodeURIComponent("時間")},${encodeURIComponent("送迎場所")},${encodeURIComponent("集客")},${encodeURIComponent("返却")},${encodeURIComponent("送迎")},${encodeURIComponent("確定")},${encodeURIComponent("便名")},${encodeURIComponent("変更")},changed_json`);
   const chgP = sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.nha&order=created_at.desc&limit=10&select=id,field,old_value,new_value,source,status,actor,created_at,payload`);
   const licP = sbGet("license_uploads", `reservation_id=eq.${encodeURIComponent(resId)}&select=cnt,drivers`);
-  const [opTasksRaw, chg, licRows] = await Promise.all([opTasksP, chgP, licP]);
+  // 2026-11-08 OPシート/タスクサマリー/個別URLと同じ読み方の現在値（承認後にスタッフがOPで直した値もここに出る）
+  const effP = fetch(`${SB_URL}/rest/v1/rpc/nha_res_effective`, { method: "POST", headers: H, body: JSON.stringify({ p_res: resId }) }).then((x) => x.ok ? x.json() : null).catch(() => null);
+  const [opTasksRaw, chg, licRows, effRaw] = await Promise.all([opTasksP, chgP, licP, effP]);
+  const eff: any = (effRaw && typeof effRaw === "object") ? effRaw : {};
   const licCnt = (licRows[0] && licRows[0].cnt) || 0;
   const licDrivers = (licRows[0] && licRows[0].drivers) || 0;
 
@@ -505,9 +497,13 @@ Deno.serve(async (req) => {
   const cTask = opTasks.find((t: any) => String(t._id || "").startsWith("c-"));
 
   // 適用済み変更(applied)を最優先（マイページ変更ログの正本）
+  //   承認済みの項目は、承認時の値ではなく「今OPシートに出ている値」を出す（承認後のスタッフ修正とズレない）
   const appliedChg = (field: string): string | null => {
     const c = chg.find((x: any) => x.field === field && x.status === "applied");
-    return c && String(c.new_value || "").trim() ? String(c.new_value).trim() : null;
+    if (!c) return null;
+    const now = String(eff[field] || "").trim();
+    if (now) return now;
+    return String(c.new_value || "").trim() ? String(c.new_value).trim() : null;
   };
 
   // お届け(d-)：送迎場所＝place / 時間＝time。回収(c-)：回収場所は集客(colPlace) or _ssPlace、時間＝返却(returnTime) or time。
