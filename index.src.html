@@ -473,7 +473,8 @@ const DB = {
     if(String(prev.assignee||"").trim())m.assignee=prev.assignee;
     if(prev._assigneeCustom)m._assigneeCustom=true;
     // place / colPlace: 手入力(_placeSource==="manual" or 既存値あり)を維持
-    if(prev._placeSource==="manual"){m.place=prev.place;m._placeSource="manual";}
+    // ★2026-11-08 customer(マイページ承認で反映した場所)も manual と同じく維持。手入力/承認の時刻(_manualPlaceAt/_manualTimeAt)も引き継ぐ
+    if(prev._placeSource==="manual"||prev._placeSource==="customer"){m.place=prev.place;m._placeSource=prev._placeSource;}
     else if(String(prev.place||"").trim()&&!String(m.place||"").trim())m.place=prev.place;
     if(prev._manualColPlace){m.colPlace=prev.colPlace;m._manualColPlace=true;}
     else if(String(prev.colPlace||"").trim()&&!String(m.colPlace||"").trim())m.colPlace=prev.colPlace;
@@ -481,6 +482,8 @@ const DB = {
     if(prev._timeChanged||prev.timeChange){m.time=prev.time;m._timeChanged=prev._timeChanged;m.timeChange=prev.timeChange;}
     else if(String(prev.time||"").trim()&&!String(m.time||"").trim())m.time=prev.time;
     if(String(prev.returnTime||"").trim()&&!String(m.returnTime||"").trim())m.returnTime=prev.returnTime;
+    if(prev._manualPlaceAt)m._manualPlaceAt=prev._manualPlaceAt;
+    if(prev._manualTimeAt)m._manualTimeAt=prev._manualTimeAt;
     // SS自動取得痕跡（場所/時間）を維持
     if(prev._ssPlace){m._ssPlace=prev._ssPlace;m._ssPlaceAt=prev._ssPlaceAt;}
     if(prev._ssTime){m._ssTime=prev._ssTime;m._ssTimeAt=prev._ssTimeAt;}
@@ -559,13 +562,23 @@ const DB = {
   },
   // ★2026-07-09 SSパトロール専用の部分更新: changed_json(SS痕跡)だけを書く。担当(assignee)/済(done)/時間/場所/メモ等の人間入力列は絶対に触らない
   //   → 別端末のパトロールが「最初の担当」を書き戻して復活させる事故を根絶（機械は人間入力を上書きしない=唯一ルール）。
-  async updateTaskCJ(t,date){
+  // ★2026-11-08 変わったSSキーだけを書く(DBの今の changed_json に差分だけ重ねる)。丸ごと書き戻すと、承認ロック(_mpLock)や他端末/EFが書いたキーを古い画面の値で消すため。
+  //   prev=変更前のタスク(必須)。差分が無ければ書かない。_src は "ss"（承認ロックのトリガーが機械書込みとして扱う）。
+  _SS_CJ_KEYS:[["_ssTime","_ssTime"],["_ssTimeAt","_ssTimeAt"],["_ssPlace","_ssPlace"],["_ssPlaceAt","_ssPlaceAt"],["_ssSeen","_ssSeen"],["_ssAlert","_ssAlert"],["_placeSource","_placeSource"],["timeChange","_timeChange"]],
+  async updateTaskCJ(t,date,prev){
     try{const ls=DB._lsLoad(date);if(ls){const i=ls.findIndex(x=>x._id===t._id);if(i>=0){ls[i]=t;DB._lsSave(ls,date);}}}catch(e){}
     if(!sb)return;
     try{
-      const cj=JSON.stringify({...(t._changed||{}),_optB:+(t.opts?.b||0),_optC:+(t.opts?.c||0),_optJ:+(t.opts?.j||0),_ssTime:t._ssTime||"",_ssTimeAt:t._ssTimeAt||"",_ssPlace:t._ssPlace||"",_ssPlaceAt:t._ssPlaceAt||"",_timeChange:t.timeChange||"",_placeSource:t._placeSource||"",_ssSeen:t._ssSeen||"",_ssAlert:t._ssAlert||"",_manualTimeAt:t._manualTimeAt||"",_manualPlaceAt:t._manualPlaceAt||"",_typeChange:t.typeChange||"",_manual:!!t.manual,_nextDayWash:!!t._nextDayWash,_nextDayWashAt:t._nextDayWashAt||"",_taskDate:(t._taskDate||date)});
+      const p=prev||{};const diff={};
+      DB._SS_CJ_KEYS.forEach(([tk,ck])=>{const nv=t[tk]||"",ov=p[tk]||"";if(nv!==ov)diff[ck]=nv;});
+      if(!Object.keys(diff).length)return;
+      const{data:cur,error:e1}=await sb.from("tasks").select("changed_json").eq("_id",t._id).maybeSingle();
+      if(e1){dbLog("updateTaskCJ",false,"read:"+e1.message);return;}
+      if(!cur)return;
+      let dbNow={};try{const o=JSON.parse(cur.changed_json||"{}");if(o&&typeof o==="object"&&!Array.isArray(o))dbNow=o;}catch(e){}
+      const cj=JSON.stringify({...dbNow,...diff,_src:"ss"});
       const{error}=await sb.from("tasks").update({changed_json:cj}).eq("_id",t._id);
-      if(error)dbLog("updateTaskCJ",false,error.message);else dbLog("updateTaskCJ",true,t._id);
+      if(error)dbLog("updateTaskCJ",false,error.message);else dbLog("updateTaskCJ",true,t._id+" "+Object.keys(diff).join(","));
     }catch(e){dbLog("updateTaskCJ",false,e.message);}
   },
   // ★2026-07-12 洗車「翌日対応」トグル専用の部分更新: changed_json(_nextDayWash)だけを書く。
@@ -17126,7 +17139,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
             });
             DB._lsSave(upd,selDate);
             // ★ SS更新されたタスクをDBに保存。★2026-07-09 changed_jsonのみ部分更新(updateTaskCJ)=担当等の人間入力列を触らない→別端末の書き戻しで担当が復活する事故を根絶。
-            upd.forEach((t,i)=>{if(t!==prev[i])DB.updateTaskCJ(t,selDate);});
+            upd.forEach((t,i)=>{if(t!==prev[i])DB.updateTaskCJ(t,selDate,prev[i]);});
             return upd;
           });
           // 場所をplacesテーブルにも保存
@@ -17479,8 +17492,9 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       const matched=Object.keys(timeMap).length;
       if(!matched){setTimeLoading(false);alert("該当する予約番号がスプレッドシートに見つかりませんでした");return;}
       selfUpdateRef.current[selDate]=Date.now();
-      let updatedTasks;let updCount=0;
+      let updatedTasks;let prevSnap=[];let updCount=0;
       setTasks(prev=>{
+        prevSnap=prev;
         updatedTasks=prev.map(t=>{
           if(!t.reservationId||!timeMap[t.reservationId])return t;
           const tm=timeMap[t.reservationId];
@@ -17501,8 +17515,9 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       });
       pendingSaves.current++;setSaveStatus("saving");
       // ★ 変更タスクのみ個別にDB保存
-      const changedTasks=updatedTasks.filter(t=>t._ssTime);
-      try{await Promise.all(changedTasks.map(t=>DB.updateTask(t,selDate)));}catch(e){console.error("[updateTimes]",e);}
+      // ★2026-11-08 変わったタスクだけ・変わったSSキーだけ（updateTaskCJ）。丸ごと保存(updateTask)は場所/時間/担当や承認ロックを古い画面の値で上書きするためやめた
+      const changedPairs=updatedTasks.map((t,i)=>[t,prevSnap[i]]).filter(([t,p])=>p&&t!==p);
+      try{await Promise.all(changedPairs.map(([t,p])=>DB.updateTaskCJ(t,selDate,p)));}catch(e){console.error("[updateTimes]",e);}
       pendingSaves.current--;
       setSaveStatus(pendingSaves.current>0?"saving":"ok");
       alert(`${matched}件中 ${updCount}件の時間を更新しました`);
@@ -17531,8 +17546,9 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       if(!matched){setPlaceLoading(false);alert("該当する予約番号がスプレッドシートに見つかりませんでした");return;}
       selfUpdateRef.current[selDate]=Date.now();
       // ★ setState内ではLS保存のみ、DB保存は外で行う
-      let updatedTasks;
+      let updatedTasks;let prevSnap=[];
       setTasks(prev=>{
+        prevSnap=prev;
         updatedTasks=prev.map(t=>{
           if(!t.reservationId||!placeMap[t.reservationId])return t;
           const p=placeMap[t.reservationId];
@@ -17559,8 +17575,12 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       });
       // ★ 変更タスクのみ個別にDB保存
       pendingSaves.current++;setSaveStatus("saving");
-      const changedPlaceTasks=updatedTasks.filter(t=>t._ssPlace||t.colPlace);
-      try{await Promise.all(changedPlaceTasks.map(t=>DB.updateTask(t,selDate)));}catch(e){console.error("[updatePlaces]",e);}
+      // ★2026-11-08 変わったタスクだけ。SSキーは updateTaskCJ（差分だけ）、列は col_place（DELの返却場所ミラー）が変わった時だけその1列を書く
+      const changedPairs=updatedTasks.map((t,i)=>[t,prevSnap[i]]).filter(([t,p])=>p&&t!==p);
+      try{await Promise.all(changedPairs.map(async([t,p])=>{
+        await DB.updateTaskCJ(t,selDate,p);
+        if(sb&&(t.colPlace||"")!==(p.colPlace||"")){const{error}=await sb.from("tasks").update({col_place:t.colPlace||""}).eq("_id",t._id);if(error)dbLog("updatePlaces-col",false,error.message);}
+      }));}catch(e){console.error("[updatePlaces]",e);}
       pendingSaves.current--;
       setSaveStatus(DB._dbSaveOk?(pendingSaves.current>0?"saving":"ok"):"error");
       if(onUpdateSheetPlaces)onUpdateSheetPlaces({...sheetPlaces,...placeMap});
@@ -18403,11 +18423,11 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                 </div>
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
                   <span style={{fontSize:10,fontWeight:600,color:"#475569"}}>③ 手動変更:</span>
-                  <select value={t.timeChange||""} onChange={e=>{const v=e.target.value;setTimeout(()=>{if(!window.confirm("時間を「"+(v||"取消")+"」に変更しますか？"))return;_save(t._id,mark({...t,timeChange:v},"timeChange"));},50);}} style={{flex:1,padding:"6px 10px",borderRadius:8,border:"1px solid #cbd5e1",fontSize:12,fontWeight:700,color:"#1d4ed8"}}>
+                  <select value={t.timeChange||""} onChange={e=>{const v=e.target.value;setTimeout(()=>{if(!window.confirm("時間を「"+(v||"取消")+"」に変更しますか？"))return;_save(t._id,mark({...t,timeChange:v,_manualTimeAt:new Date().toISOString()},"timeChange"));},50);}} style={{flex:1,padding:"6px 10px",borderRadius:8,border:"1px solid #cbd5e1",fontSize:12,fontWeight:700,color:"#1d4ed8"}}>
                     <option value="">-- 変更なし --</option>
                     {TIME_OPTS.filter(o=>o).map(o=><option key={o} value={o}>{o}</option>)}
                   </select>
-                  {t.timeChange&&<button onClick={()=>{setTimeout(()=>{if(!window.confirm("手動時間変更を取り消しますか？"))return;_save(t._id,mark({...t,timeChange:""},"timeChange"));},50);}} style={{padding:"4px 10px",background:"#fef2f2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:6,fontSize:10,fontWeight:700,cursor:"pointer"}}>取消</button>}
+                  {t.timeChange&&<button onClick={()=>{setTimeout(()=>{if(!window.confirm("手動時間変更を取り消しますか？"))return;const _rv=(t.reservationId&&DB._resIdx)?DB._resIdx[t.reservationId]:null;/* ★2026-11-08 _manualTimeAt を付けると _fromDbTask は列の time を使う＝取消後の時間を列に入れておく */_save(t._id,mark({...t,timeChange:"",time:(t._ssTime||(_rv&&(_rv.delTime||_rv.lendTime))||t.time||""),_manualTimeAt:new Date().toISOString()},"timeChange"));},50);}} style={{padding:"4px 10px",background:"#fef2f2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:6,fontSize:10,fontWeight:700,cursor:"pointer"}}>取消</button>}
                 </div>
                 <div style={{marginTop:4,fontSize:11,fontWeight:700,color:"#1e40af"}}>確定時間: {resolvedT(t)||"-"}</div>
               </div>
@@ -18420,8 +18440,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                 </div>
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
                   <span style={{fontSize:10,fontWeight:600,color:"#475569"}}>③ 手動変更:</span>
-                  <input defaultValue={t._placeSource==="manual"?t.place:""} onBlur={e=>{const v=e.target.value.trim();if(!v)return;setTimeout(()=>{if(!window.confirm("場所を「"+v+"」に変更しますか？"))return;_save(t._id,mark({...t,place:v,_placeSource:"manual"},"place"));},50);}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{flex:1,padding:"6px 10px",borderRadius:8,border:"1px solid #cbd5e1",fontSize:12}} placeholder="場所を入力"/>
-                  {t._placeSource==="manual"&&<button onClick={()=>{setTimeout(()=>{if(!window.confirm("手動場所変更を取り消しますか？"))return;_save(t._id,mark({...t,_placeSource:""},"place"));},50);}} style={{padding:"4px 10px",background:"#fef2f2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:6,fontSize:10,fontWeight:700,cursor:"pointer"}}>取消</button>}
+                  <input defaultValue={t._placeSource==="manual"?t.place:""} onBlur={e=>{const v=e.target.value.trim();if(!v)return;setTimeout(()=>{if(!window.confirm("場所を「"+v+"」に変更しますか？"))return;_save(t._id,mark({...t,place:v,_placeSource:"manual",_manualPlaceAt:new Date().toISOString()},"place"));},50);}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{flex:1,padding:"6px 10px",borderRadius:8,border:"1px solid #cbd5e1",fontSize:12}} placeholder="場所を入力"/>
+                  {t._placeSource==="manual"&&<button onClick={()=>{setTimeout(()=>{if(!window.confirm("手動場所変更を取り消しますか？"))return;_save(t._id,mark({...t,_placeSource:"",_manualPlaceAt:new Date().toISOString()},"place"));},50);}} style={{padding:"4px 10px",background:"#fef2f2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:6,fontSize:10,fontWeight:700,cursor:"pointer"}}>取消</button>}
                 </div>
                 <div style={{marginTop:4,fontSize:11,fontWeight:700,color:"#1e40af"}}>確定場所: {resolvedP(t)||"-"}</div>
               </div>
@@ -18457,11 +18477,11 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                 </div>
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
                   <span style={{fontSize:10,fontWeight:600,color:"#475569"}}>③ 手動変更:</span>
-                  <select value={t.timeChange||""} onChange={e=>{const v=e.target.value;setTimeout(()=>{if(!window.confirm("時間を「"+(v||"取消")+"」に変更しますか？"))return;_save(t._id,mark({...t,timeChange:v},"timeChange"));},50);}} style={{flex:1,padding:"6px 10px",borderRadius:8,border:"1px solid #cbd5e1",fontSize:12,fontWeight:700,color:"#dc2626"}}>
+                  <select value={t.timeChange||""} onChange={e=>{const v=e.target.value;setTimeout(()=>{if(!window.confirm("時間を「"+(v||"取消")+"」に変更しますか？"))return;_save(t._id,mark({...t,timeChange:v,_manualTimeAt:new Date().toISOString()},"timeChange"));},50);}} style={{flex:1,padding:"6px 10px",borderRadius:8,border:"1px solid #cbd5e1",fontSize:12,fontWeight:700,color:"#dc2626"}}>
                     <option value="">-- 変更なし --</option>
                     {TIME_OPTS.filter(o=>o).map(o=><option key={o} value={o}>{o}</option>)}
                   </select>
-                  {t.timeChange&&<button onClick={()=>{setTimeout(()=>{if(!window.confirm("手動時間変更を取り消しますか？"))return;_save(t._id,mark({...t,timeChange:""},"timeChange"));},50);}} style={{padding:"4px 10px",background:"#fef2f2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:6,fontSize:10,fontWeight:700,cursor:"pointer"}}>取消</button>}
+                  {t.timeChange&&<button onClick={()=>{setTimeout(()=>{if(!window.confirm("手動時間変更を取り消しますか？"))return;const _rv=(t.reservationId&&DB._resIdx)?DB._resIdx[t.reservationId]:null;/* ★2026-11-08 _manualTimeAt を付けると _fromDbTask は列の time を使う＝取消後の時間を列に入れておく */_save(t._id,mark({...t,timeChange:"",time:(t._ssTime||(_rv&&(_rv.colTime||_rv.returnTime))||t.time||""),_manualTimeAt:new Date().toISOString()},"timeChange"));},50);}} style={{padding:"4px 10px",background:"#fef2f2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:6,fontSize:10,fontWeight:700,cursor:"pointer"}}>取消</button>}
                 </div>
                 <div style={{marginTop:4,fontSize:11,fontWeight:700,color:"#dc2626"}}>確定時間: {resolvedT(t)||"-"}</div>
               </div>
@@ -18474,8 +18494,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                 </div>
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
                   <span style={{fontSize:10,fontWeight:600,color:"#475569"}}>③ 手動変更:</span>
-                  <input defaultValue={t._placeSource==="manual"?t.place:""} onBlur={e=>{const v=e.target.value.trim();if(!v)return;setTimeout(()=>{if(!window.confirm("場所を「"+v+"」に変更しますか？"))return;_save(t._id,mark({...t,place:v,_placeSource:"manual"},"place"));},50);}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{flex:1,padding:"6px 10px",borderRadius:8,border:"1px solid #cbd5e1",fontSize:12}} placeholder="場所を入力"/>
-                  {t._placeSource==="manual"&&<button onClick={()=>{setTimeout(()=>{if(!window.confirm("手動場所変更を取り消しますか？"))return;_save(t._id,mark({...t,_placeSource:""},"place"));},50);}} style={{padding:"4px 10px",background:"#fef2f2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:6,fontSize:10,fontWeight:700,cursor:"pointer"}}>取消</button>}
+                  <input defaultValue={t._placeSource==="manual"?t.place:""} onBlur={e=>{const v=e.target.value.trim();if(!v)return;setTimeout(()=>{if(!window.confirm("場所を「"+v+"」に変更しますか？"))return;_save(t._id,mark({...t,place:v,_placeSource:"manual",_manualPlaceAt:new Date().toISOString()},"place"));},50);}} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}} style={{flex:1,padding:"6px 10px",borderRadius:8,border:"1px solid #cbd5e1",fontSize:12}} placeholder="場所を入力"/>
+                  {t._placeSource==="manual"&&<button onClick={()=>{setTimeout(()=>{if(!window.confirm("手動場所変更を取り消しますか？"))return;_save(t._id,mark({...t,_placeSource:"",_manualPlaceAt:new Date().toISOString()},"place"));},50);}} style={{padding:"4px 10px",background:"#fef2f2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:6,fontSize:10,fontWeight:700,cursor:"pointer"}}>取消</button>}
                 </div>
                 <div style={{marginTop:4,fontSize:11,fontWeight:700,color:"#dc2626"}}>確定場所: {resolvedP(t)||"-"}</div>
               </div>
@@ -25861,7 +25881,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.704";
+const APP_VERSION="v4.7.705";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
