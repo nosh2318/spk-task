@@ -4,7 +4,9 @@
 //   関係性: BUDDICA高松APPが物理・DBを持つ / じゃらん予約は「HANDYMAN 高松空港店」ブランド(HDM)で同一在庫を共有
 //           = HDM↔KEYDROP と同じ構造。じゃらん(HDM)客にはHANDYMANブランドのマイページを"メール"で案内。
 //   方針(オーナー確定 2026-08-08): 那覇マイページと同じ・閲覧専用・デリバリー無し(送迎/来店のみ)・メール(LINE無し)。
-//   このEFは ping / lookup / license_uploaded のみ(読み取り＋免許アップ通知)。書込系(変更/承認)は作らない。
+//   ※当初は ping / lookup / license_uploaded のみ。以後 decide(キャンセル)・cancel_request・terms_signed・damage_approved・set_pickup/set_return を追加。
+//   2026-11-08 HDMブランド：set_pickup/set_return は依頼（承認制）に。decide に送迎依頼の approved/rejected/proposed/acknowledged、proposal_reply を追加。
+//     承認の反映は DB 関数 bt_apply_mypage_change（app リポ sql/bt_mypage_apply_lock.sql）1回。通知はメールのみ（高松は LINE 無し）。
 //   deploy: BTプロジェクト(ggqugvyskyiblxiycpci)へ  supabase functions deploy handyman-mypage-tkm --no-verify-jwt
 //   BTの箱:
 //     bt_reservations : id,ota,name,start_date,start_time,end_date,end_time,vehicle_class,vehicle_name,
@@ -122,6 +124,72 @@ function taskOptNum(t: any, key: string): number {
   return Number(cj[key]) || 0;
 }
 
+// ==== 2026-11-08 HDM高松：送迎の変更は「依頼 → アクションタブで承認 → DB関数1回で反映」（那覇 handyman-mypage-nha と同じ設計） ====
+//   依頼行 = bt_reservation_changes（source='mypage'・change_type=下の4種）。承認で bt_apply_mypage_change を1回呼ぶ
+//   （予約・OPタスク・依頼行を1トランザクションで書き、OPシートと同じ読み方で読み直し、不一致なら全部取り消し。承認値は戻し防止ロック）。
+//   BUDDICAブランドはこの流れに乗らない（従来どおり即反映のまま）。
+const MP_TYPES: Record<string, string> = { mp_pickup: "pickup", mp_visit: "visit", mp_dropoff: "dropoff", mp_store_return: "store_return" };
+const MP_GO = ["mp_pickup", "mp_visit"], MP_RT = ["mp_dropoff", "mp_store_return"], MP_TIME = ["mp_pickup", "mp_dropoff"];
+const MP_LIST = Object.keys(MP_TYPES).join(",");
+const FLD_JP: Record<string, string> = { mp_pickup: "行き（空港お迎え）", mp_visit: "行きの方法", mp_dropoff: "帰り（空港へ送迎）", mp_store_return: "帰りの方法", cancel: "キャンセル" };
+const isHdm = (r: any) => String(r?.brand || "") === "HDM";
+const myUrl = (tk: string) => tk ? `https://nosh2318.github.io/spk-task/my-tkm.html?t=${tk}` : "";
+const FOOT = `\n\nHANDYMAN高松空港店\nreserve@rent-handyman.com`;
+// マイページの時間プルダウンと同じ：9:00〜18:45 の15分刻み＋18:50
+function okTime(tm: string): string {
+  const m = String(tm || "").trim().match(/^(\d{1,2}):(\d{2})$/); if (!m) return "";
+  const v = +m[1] * 60 + +m[2]; if (!((v >= 540 && v <= 1125 && v % 15 === 0) || v === 1130)) return "";
+  return `${m[1].padStart(2, "0")}:${m[2]}`;
+}
+// お断り理由（アクションタブ RSN_L と同じ code）
+const REJ_JP: Record<string, string> = {
+  no_vehicle: "誠に恐れ入りますが、予約状況の兼ね合いにより、ご希望の日時にご用意できるお車がございません。",
+  full_slot: "誠に恐れ入りますが、{staff}の状況により、ご希望のお時間に伺うことができません。",
+  out_of_area: "ご希望の場所は、送迎の対象エリア外のため、伺うことができません。",
+  out_of_stock: "誠に恐れ入りますが、在庫状況により、ご希望のオプションをご用意できる数がございません。",
+  past_deadline: "変更の受付締切を過ぎているため、ご変更を承ることができません。",
+  other: "",
+};
+function staffOf(f: string): string { return MP_TIME.includes(f) ? "送迎スタッフ" : "担当スタッフ"; }
+function rejectLine(code: string, text: string, f = ""): string { const a = (REJ_JP[code] || "").replace("{staff}", staffOf(f)); const t = String(text || "").trim().slice(0, 200); return [a, t].filter(Boolean).join("\n"); }
+// 代わりの案の期限：今から24時間、ただし受け渡しの2時間前まで（最短30分）
+function proposalExpires(f: string, r: any): string {
+  const now = Date.now(); let exp = now + 24 * 3600e3;
+  const rt = MP_RT.includes(f); const d = rt ? r.end_date : r.start_date; const t = rt ? (r.dropoff_time || r.end_time) : (r.pickup_time || r.start_time);
+  if (d) { const hm = String(t || "09:00").match(/(\d{1,2}):(\d{2})/); const h = hm ? +hm[1] : 9, m = hm ? +hm[2] : 0;
+    const hand = Date.parse(`${d}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00+09:00`); if (!isNaN(hand)) exp = Math.min(exp, hand - 2 * 3600e3); }
+  return new Date(Math.max(exp, now + 30 * 60e3)).toISOString();
+}
+// アクションタブ pvMsg と同じ組み立て（スタッフが文を直さなかった時の既定文）
+function declineMsg(head: string, label: string, f: string, newV: string, oldV: string, why: string, alt: string, next: string, url: string): string {
+  const want = f === "cancel" ? "ご予約のキャンセル" : `${label}の変更${newV ? `（${newV}）` : ""}`;
+  const lines = [`${head}ご依頼いただいた${want}につきまして、ご連絡いたします。`];
+  if (why) lines.push(why);
+  if (alt) lines.push(`代わりに、${alt}${/[。！？!?]$/.test(alt) ? "" : "。"}`);
+  if (next) lines.push(next);
+  lines.push(f === "cancel" || !oldV ? "今のご予約はそのままです。" : `今のご予約（${label}：${oldV}）はそのままです。`);
+  lines.push("ご不便をおかけいたしますが、何卒よろしくお願いいたします。");
+  if (url) lines.push(url);
+  return lines.join("\n");
+}
+// アクションタブでスタッフが直した文（message_text）があれば、その文をそのまま送る
+function staffText(p: any, url: string): string { const s = String(p?.message_text || "").replace(/\r\n/g, "\n").trim().slice(0, 2000); if (!s) return ""; return s.replace(/（マイページのURL）/g, url || "").replace(/\n{3,}/g, "\n\n").trim(); }
+// 代わりの案の期限は画面に出した値（expires_at）を使う（25分後〜24時間10分後の範囲だけ受け付け）
+function expOverride(p: any, fallback: string): string { const e = Date.parse(String(p?.expires_at || "")), now = Date.now(); return (!isNaN(e) && e >= now + 25 * 60e3 && e <= now + 24 * 3600e3 + 10 * 60e3) ? new Date(e).toISOString() : fallback; }
+function jstMdHm(iso: string): string { const j = new Date(Date.parse(iso) + 9 * 3600e3); return `${j.getUTCMonth() + 1}/${j.getUTCDate()} ${String(j.getUTCHours()).padStart(2, "0")}:${String(j.getUTCMinutes()).padStart(2, "0")}`; }
+function md(d: string): string { const m = String(d || "").match(/^\d{4}-(\d{2})-(\d{2})/); return m ? `${+m[1]}/${+m[2]}` : ""; }
+// 今の状態（依頼の「変更前」・お断り文の「今のご予約」）
+function curGo(r: any): string { return r.pickup_time ? `空港お迎え ${r.pickup_time}〜` : String(r.visit_type || "") === "来店" ? "店舗へ来店" : ""; }
+function curRt(r: any): string { return r.dropoff_time ? `空港へ送迎 ${r.dropoff_time}〜` : String(r.return_type || "") === "返却" ? "店舗で返却" : ""; }
+// 反映＝DB関数1回。失敗したら何も変わっていない（承認しない・お客様にも送らない）
+async function tkmApply(resId: string, ctype: string, val: string, flight: string, actor: string, changeId: unknown): Promise<{ ok: boolean; error?: string }> {
+  const f = MP_TYPES[ctype]; if (!f) return { ok: false, error: "反映できない種類です" };
+  const r = await fetch(`${SB_URL}/rest/v1/rpc/bt_apply_mypage_change`, { method: "POST", headers: H,
+    body: JSON.stringify({ p_res: resId, p_field: f, p_val: val, p_actor: actor, p_change_id: Number(changeId) || null, p_flight: flight || null }) });
+  if (!r.ok) { const tx = await r.text(); console.error("[apply]", tx); let m = tx; try { m = JSON.parse(tx).message || tx; } catch { /* noop */ } return { ok: false, error: String(m).slice(0, 300) }; }
+  return { ok: true };
+}
+
 Deno.serve(async (req) => {
   const origin = req.headers.get("origin");
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors(origin) });
@@ -150,15 +218,68 @@ Deno.serve(async (req) => {
     }
     const changeId = p.change_id;
     const decision = String(p.decision || "").trim();
-    if (!changeId || (decision !== "approved" && decision !== "rejected" && decision !== "acknowledged")) return json({ error: "パラメータ不正" }, 400, origin);
-    const cRows = await sbGet("bt_reservation_changes", `id=eq.${encodeURIComponent(String(changeId))}&select=id,reservation_id,status`);
+    if (!changeId || !["approved", "rejected", "acknowledged", "proposed"].includes(decision)) return json({ error: "パラメータ不正" }, 400, origin);
+    const cRows = await sbGet("bt_reservation_changes", `id=eq.${encodeURIComponent(String(changeId))}&select=id,reservation_id,status,change_type,old_value,new_value,payload`);
     const c = cRows[0];
     if (!c) return json({ error: "対象が見つかりません" }, 404, origin);
     if (c.status !== "requested") return json({ error: "処理済みです", status: c.status }, 409, origin);
     const rid = String(c.reservation_id);
+    const cid = encodeURIComponent(String(changeId));
     // 確認済み（対応不要・アーカイブのみ。反映も通知もしない）
-    if (decision === "acknowledged") { await sbPatch("bt_reservation_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: "acknowledged", decided_by: actor, decided_at: new Date().toISOString() }); return json({ ok: true, decided: "acknowledged" }, 200, origin); }
-    await sbPatch("bt_reservation_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: decision, decided_by: actor, decided_at: new Date().toISOString() });
+    if (decision === "acknowledged") { await sbPatch("bt_reservation_changes", `id=eq.${cid}`, { status: "acknowledged", decided_by: actor, decided_at: new Date().toISOString() }); return json({ ok: true, decided: "acknowledged" }, 200, origin); }
+    const ctype = String(c.change_type || "");
+    const pl0: any = (c.payload && typeof c.payload === "object") ? c.payload : {};
+    const rejCode = String(p.reject_reason || ""), rejText = String(p.reject_text || "").trim().slice(0, 200);
+    const altText = String(p.alt_text || "").trim().slice(0, 300);
+    const keep = p.keep_as_is === true || p.keep_as_is === "true";
+    // ==== 2026-11-08 HDM高松 送迎の依頼（mp_*）：承認＝DB関数で反映 / 代わりの案 / お断り ====
+    if (MP_TYPES[ctype]) {
+      const rv = (await sbGet("bt_reservations", `id=eq.${encodeURIComponent(rid)}&select=id,name,brand,start_date,start_time,end_date,end_time,pickup_time,dropoff_time,visit_type,return_type,del_flight,mail,site,mypage_token`))[0];
+      if (!rv) return json({ error: "予約が見つかりません" }, 404, origin);
+      if (!isHdm(rv)) return json({ error: "HDMブランドの予約だけが対象です" }, 400, origin);
+      const lbl = FLD_JP[ctype] || ctype, url = myUrl(String(rv.mypage_token || "")), nm = `${rv.name || "お客様"} 様\n\n`;
+      const oldV = String(c.old_value || "") || (MP_GO.includes(ctype) ? curGo(rv) : curRt(rv));
+      if (decision === "proposed") {
+        if (!MP_TIME.includes(ctype)) return json({ error: "この種類の依頼は「この案でOK」ではなく文でお返事します（decision=rejected＋alt_text）" }, 400, origin);
+        const ptext = String(p.proposal_text || "").trim().slice(0, 300); const pval = okTime(String(p.proposal_value || ""));
+        if (!ptext) return json({ error: "代わりの案の内容を書いてください" }, 400, origin);
+        if (!pval) return json({ error: "時間を 9:00〜18:50（15分刻み）から選んでください" }, 400, origin);
+        const exp = expOverride(p, proposalExpires(ctype, rv));
+        const body = staffText(p, url) || declineMsg("【HANDYMAN 高松】", lbl, ctype, String(c.new_value || ""), oldV, rejectLine(rejCode, rejText, ctype), ptext, `マイページで「この案でOK」を押すと確定します（${jstMdHm(exp)}まで）。ご都合が合わなければ「やめる」を押してください。`, url);
+        await sbPatch("bt_reservation_changes", `id=eq.${cid}`, { status: "proposed", decided_by: actor, decided_at: new Date().toISOString(),
+          payload: { ...pl0, proposal: { text: ptext, value: pval, reason: rejCode || "", reason_text: rejText, expires_at: exp, by: actor, at: new Date().toISOString(), sent: body.slice(0, 2000) } } });
+        await mailCustomer(rv.mail, `【HANDYMAN高松空港店】ご予約 ${rid} ご依頼について代わりの案のご提案`, nm + body + FOOT, rv.site);
+        await slackPost(`💬 代わりの案を送りました [高松] ${lbl} / ${rid}：${ptext}（お客様の返事待ち・${jstMdHm(exp)}まで）／ ${actor.replace(/^staff:/, "")}`);
+        return json({ ok: true, decided: "proposed", expires_at: exp }, 200, origin);
+      }
+      if (decision === "rejected") {
+        if (!altText && !keep) return json({ error: "代わりにできること（〜ならできます）を書いてください" }, 400, origin);
+        const rl = rejectLine(rejCode, rejText, ctype);
+        let body = staffText(p, url);
+        if (!body) { body = declineMsg("【HANDYMAN 高松】", lbl, ctype, String(c.new_value || ""), oldV, rl, keep ? "" : altText, keep ? "" : "こちらでよろしければ、マイページから改めてご依頼ください。", url); if (keep) body = body.replace(/はそのままです。/, "のままでのご利用をお願いできますでしょうか。"); }
+        await mailCustomer(rv.mail, `【HANDYMAN高松空港店】ご予約 ${rid} ご依頼の結果`, nm + body + FOOT, rv.site);
+        await sbPatch("bt_reservation_changes", `id=eq.${cid}`, { status: "rejected", decided_by: actor, decided_at: new Date().toISOString(),
+          payload: { ...pl0, reject: { reason: rejCode || "other", text: rejText, alt: altText, ...(keep ? { keep: true } : {}), by: actor, at: new Date().toISOString(), sent: body.slice(0, 2000) } } });
+        await slackPost(`🚫 送迎の依頼をお断り [高松] ${lbl} / ${rid} ／ ${actor.replace(/^staff:/, "")}`);
+        return json({ ok: true, decided: "rejected" }, 200, origin);
+      }
+      // 承認：DB関数で反映（依頼行も同じトランザクションで approved）。失敗なら 500・メールしない・依頼は受付のまま
+      const val = MP_TIME.includes(ctype) ? String(pl0.time || "") : (ctype === "mp_visit" ? "来店" : "返却");
+      const ap = await tkmApply(rid, ctype, val, ctype === "mp_pickup" ? String(pl0.flight || "") : "", actor, changeId);
+      if (!ap.ok) return json({ error: "反映できませんでした（何も変更していません）：" + (ap.error || ""), apply_failed: true }, 500, origin);
+      const tmv = okTime(val);
+      const what = ctype === "mp_pickup" ? `行き：空港へのお迎え ${md(rv.start_date)} ${tmv}〜${pl0.flight ? `（ご搭乗便 ${pl0.flight}）` : ""}`
+        : ctype === "mp_visit" ? "行き：店舗へご来店"
+        : ctype === "mp_dropoff" ? `帰り：店舗から空港へのお送り ${md(rv.end_date)} ${tmv}〜` : "帰り：店舗でご返却";
+      await mailCustomer(rv.mail, `【HANDYMAN高松空港店】ご予約 ${rid} ご依頼の結果`,
+        nm + `【HANDYMAN 高松】ご依頼を承り、反映いたしました。\n${what}\n\nマイページでご確認いただけます。\n${url}` + FOOT, rv.site);
+      await slackPost(`✅ 送迎の依頼を承認・反映 [高松] ${lbl} / ${rid}：${what} ／ ${actor.replace(/^staff:/, "")}`);
+      return json({ ok: true, decided: "approved" }, 200, origin);
+    }
+    // ---- 以下キャンセル（従来どおり）。代わりの案の「文で返す」お断り（alt_text／message_text）にも対応 ----
+    if (decision === "proposed") return json({ error: "キャンセルは「この案でOK」ではなく文でお返事します（decision=rejected＋alt_text）" }, 400, origin);
+    const rejPl = decision === "rejected" && (rejCode || altText || keep || p.message_text) ? { payload: { ...pl0, reject: { reason: rejCode || "other", text: rejText, alt: altText, ...(keep ? { keep: true } : {}), by: actor, at: new Date().toISOString() } } } : {};
+    await sbPatch("bt_reservation_changes", `id=eq.${encodeURIComponent(String(changeId))}`, { status: decision, decided_by: actor, decided_at: new Date().toISOString(), ...rejPl });
     const rr = (await sbGet("bt_reservations", `id=eq.${encodeURIComponent(rid)}&select=id,name,ota,start_date,end_date,vehicle_class,price,mail,site,square_order_id`))[0] || { id: rid };
     const _nt = String(rr.ota || "") === "HANDYMAN" ? "（🆕NEW リニューアル公式サイト rent-handyman.com）" : "";  // 新サイト(.com)判定
     if (decision === "approved") {
@@ -179,14 +300,20 @@ Deno.serve(async (req) => {
         { type: "context", elements: [ { type: "mrkdwn", text: `キャンセル確定・配車解放済み。⚠️ 返金は規定（7日前無料/6-3日20%/2日前・前日30%/当日50%）に沿って Square で手動返金してください。承認: ${actor}` } ] },
       ]);
     } else {
+      // 2026-11-08 アクションタブの「代わりの案」から来たお断りは、スタッフの文（message_text）か理由＋代わりの案の文で送る。無ければ従来の文
+      const rl = rejectLine(rejCode, rejText, "cancel");
+      let body = staffText(p, "");
+      if (!body && (altText || keep)) { body = declineMsg("", "キャンセル", "cancel", "", "", rl, keep ? "" : altText, "", ""); if (keep) body = body.replace(/はそのままです。/, "のままでのご利用をお願いできますでしょうか。"); }
+      if (!body) body = `お問い合わせいただいたご予約 ${rid} のキャンセルにつきまして、恐れ入りますが今回はお受けいたしかねます。\n詳細は担当より別途ご連絡いたします。`;
       await mailCustomer(rr.mail, `【HANDYMAN高松空港店】ご予約 ${rid} キャンセルのご相談につきまして`,
-        `${rr.name || "お客様"} 様\n\nお問い合わせいただいたご予約 ${rid} のキャンセルにつきまして、恐れ入りますが今回はお受けいたしかねます。\n詳細は担当より別途ご連絡いたします。\n\nHANDYMAN高松空港店\nreserve@rent-handyman.com`, rr.site);
+        `${rr.name || "お客様"} 様\n\n${body}\n\nHANDYMAN高松空港店\nreserve@rent-handyman.com`, rr.site);
+      if ((rejPl as any).payload) await sbPatch("bt_reservation_changes", `id=eq.${cid}`, { payload: { ...(rejPl as any).payload, reject: { ...(rejPl as any).payload.reject, sent: body.slice(0, 2000) } } });
       await slackResv(`🚫 キャンセル却下 [高松]${_nt} ${rr.name || ""} / ${rid} ／ ${actor}`);
     }
     return json({ ok: true, decision }, 200, origin);
   }
 
-  if (action !== "lookup" && action !== "license_uploaded" && action !== "terms_signed" && action !== "damage_approved" && action !== "set_pickup" && action !== "set_return" && action !== "cancel_request") return json({ error: "unsupported action" }, 400, origin);
+  if (action !== "lookup" && action !== "license_uploaded" && action !== "terms_signed" && action !== "damage_approved" && action !== "set_pickup" && action !== "set_return" && action !== "cancel_request" && action !== "proposal_reply") return json({ error: "unsupported action" }, 400, origin);
 
   const token = String(p.token || "").trim();
   if (!token || token.length < 20) return json({ error: "アクセスキーが不正です" }, 400, origin);
@@ -305,6 +432,79 @@ Deno.serve(async (req) => {
     ];
     await slackPost(`🩹 傷チェック承認 [高松] ${r.name || ""} / ${resId}`, blocks);
     return json({ ok: true, approved: true, at }, 200, origin);
+  }
+
+  // ---- proposal_reply: お客様が代わりの案に返事（accept=この案でOK / decline=やめる）。HDM高松の送迎依頼だけ ----
+  if (action === "proposal_reply") {
+    if (!isHdm(r)) return json({ error: "unsupported action" }, 400, origin);
+    const pcid = String(p.change_id || ""); const ans = String(p.answer || "");
+    if (!pcid || (ans !== "accept" && ans !== "decline")) return json({ error: "パラメータ不正" }, 400, origin);
+    const pc = (await sbGet("bt_reservation_changes", `id=eq.${encodeURIComponent(pcid)}&reservation_id=eq.${encodeURIComponent(resId)}&source=eq.mypage&change_type=in.(${MP_LIST})&select=id,change_type,new_value,status,payload`))[0];
+    if (!pc) return json({ error: "ご提案が見つかりません" }, 404, origin);
+    if (pc.status !== "proposed") return json({ ok: true, already: pc.status }, 200, origin);
+    const ppl: any = (pc.payload && typeof pc.payload === "object") ? pc.payload : {}; const pr: any = ppl.proposal || {};
+    const fj = FLD_JP[pc.change_type] || pc.change_type, nowIso = new Date().toISOString();
+    if (pr.expires_at && Date.parse(pr.expires_at) < Date.now()) {
+      await sbPatch("bt_reservation_changes", `id=eq.${encodeURIComponent(pcid)}`, { status: "expired", decided_at: nowIso, payload: { ...ppl, proposal: { ...pr, answer: "expired", answered_at: nowIso } } });
+      return json({ ok: false, expired: true, error: "ご提案の期限が過ぎました。今のご予約のままです。" }, 200, origin);
+    }
+    if (ans === "decline") {
+      await sbPatch("bt_reservation_changes", `id=eq.${encodeURIComponent(pcid)}`, { status: "declined_by_guest", decided_at: nowIso, payload: { ...ppl, proposal: { ...pr, answer: "decline", answered_at: nowIso } } });
+      await slackPost(`↩️ お客様が代わりの案を見送りました [高松] ${fj} / ${resId}（今の予約のまま）`);
+      return json({ ok: true, answered: "decline" }, 200, origin);
+    }
+    // accept：案の時間に差し替えて requested に戻し、スタッフ承認と同じ decide を内部で呼ぶ（DB関数で反映＋メール）
+    const nv = okTime(String(pr.value || ""));
+    if (!nv) return json({ error: "ご提案の時間が読めませんでした。お手数ですが店舗へご連絡ください。" }, 400, origin);
+    await sbPatch("bt_reservation_changes", `id=eq.${encodeURIComponent(pcid)}`, { status: "requested", new_value: `${nv}〜`, payload: { ...ppl, time: nv, proposal: { ...pr, answer: "accept", answered_at: nowIso } } });
+    const dr2 = await fetch(`${SB_URL}/functions/v1/handyman-mypage-tkm`, { method: "POST", headers: { "content-type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` },
+      body: JSON.stringify({ action: "decide", admin_pin: Deno.env.get("ADMIN_PIN") || "", change_id: Number(pcid) || pcid, decision: "approved" }) });
+    const dj: any = await dr2.json().catch(() => ({}));
+    if (!dr2.ok || !dj.ok) { console.error("[proposal accept]", dr2.status, JSON.stringify(dj)); await slackPost(`⚠️ お客様が代わりの案にOKしましたが自動反映に失敗 [高松] ${fj} / ${resId}（アクションタブで承認してください）：${String(dj.error || "").slice(0, 200)}`); return json({ ok: true, answered: "accept", pending: true }, 200, origin); }
+    await slackPost(`✅ お客様が代わりの案にOK → 確定しました [高松] ${fj} / ${resId}：${pr.text || nv}`);
+    return json({ ok: true, answered: "accept" }, 200, origin);
+  }
+
+  // ---- 2026-11-08 HDM高松：set_pickup / set_return は「依頼」として受け付ける（即反映しない）。アクションタブで承認→DB関数で反映→メール ----
+  //   BUDDICAブランド（このEFでは上の越境ガードで止まる）・ブランド未確定は下の従来処理（即反映）のまま。
+  if ((action === "set_pickup" || action === "set_return") && isHdm(r)) {
+    const go = action === "set_pickup", want = p.want !== false;
+    const ctype = go ? (want ? "mp_pickup" : "mp_visit") : (want ? "mp_dropoff" : "mp_store_return");
+    const tm = want ? okTime(String(p.time || "")) : "";
+    if (want && !tm) return json({ error: "時間は 9:00〜18:50（15分刻み）から選んでください" }, 400, origin);
+    const flight = go && want ? String(p.flight || "").trim().slice(0, 40) : "";
+    // 今と同じなら依頼にしない
+    const same = ctype === "mp_pickup" ? (r.visit_type === "PU" && r.pickup_time === tm && (!flight || r.del_flight === flight))
+      : ctype === "mp_visit" ? (r.visit_type === "来店" && !r.pickup_time)
+      : ctype === "mp_dropoff" ? (r.return_type === "BD" && r.dropoff_time === tm) : (r.return_type === "返却" && !r.dropoff_time);
+    if (same) return json({ ok: true, noChange: true }, 200, origin);
+    const legs = go ? MP_GO : MP_RT;
+    const newV = want ? `${tm}〜` : (ctype === "mp_visit" ? "店舗へ来店" : "店舗で返却");
+    const pay: Record<string, unknown> = { want, ...(want ? { time: tm } : {}), ...(flight ? { flight } : {}), note: `${FLD_JP[ctype]}（承認制）` };
+    const nowIso = new Date().toISOString();
+    // 同じ「行き／帰り」の受付中の依頼は最新の内容に置き換え、返事待ちの代わりの案は取り下げ扱い
+    const ex = await sbGet("bt_reservation_changes", `reservation_id=eq.${encodeURIComponent(resId)}&source=eq.mypage&change_type=in.(${legs.join(",")})&status=in.(requested,proposed)&select=id,status,payload&order=id.desc`);
+    for (const e of ex.filter((x: any) => x.status === "proposed")) {
+      const epl: any = (e.payload && typeof e.payload === "object") ? e.payload : {};
+      await sbPatch("bt_reservation_changes", `id=eq.${e.id}`, { status: "declined_by_guest", decided_at: nowIso, payload: { ...epl, proposal: { ...(epl.proposal || {}), answer: "superseded", answered_at: nowIso } } });
+    }
+    const req0 = ex.find((x: any) => x.status === "requested");
+    const oldV = go ? curGo(r) : curRt(r);
+    const row = { change_type: ctype, field_name: go ? "visit_type" : "return_type", old_value: oldV, new_value: newV, payload: pay, changed_at: nowIso };
+    if (req0) await sbPatch("bt_reservation_changes", `id=eq.${req0.id}`, row);
+    else await sbPost("bt_reservation_changes", { reservation_id: resId, ...row, status: "requested", changed_by: "customer", source: "mypage" });
+    const lbl = FLD_JP[ctype];
+    await slackPost(`🟡 送迎の変更依頼（承認待ち）[高松] ${r.name || ""} / ${resId} / ${lbl}：${newV}`, [
+      { type: "header", text: { type: "plain_text", text: "🟡 送迎の変更依頼（承認待ち）[高松]", emoji: true } },
+      { type: "section", fields: [
+        { type: "mrkdwn", text: `*お客様:*\n${r.name || "-"} 様` }, { type: "mrkdwn", text: `*予約番号:*\n${resId}` },
+        { type: "mrkdwn", text: `*ご予約元:*\n${otaJp(r.ota)}` }, { type: "mrkdwn", text: `*利用期間:*\n${r.start_date || "-"} 〜 ${r.end_date || "-"}` },
+      ] },
+      { type: "section", text: { type: "mrkdwn", text: `*${lbl}*　${oldV || "（未選択）"} → *${newV}*${flight ? `\n✈️ ご搭乗便：${flight}` : ""}` } },
+      { type: "actions", elements: [ { type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, style: "primary", url: actUrl(resId) } ] },
+      { type: "context", elements: [ { type: "mrkdwn", text: "まだ反映していません。承認＝予約・OPシートへ反映＋お客様へメール／できない時は「代わりの案」。" } ] },
+    ]);
+    return json({ ok: true, pendingApproval: true, requested: ctype }, 200, origin);
   }
 
   // ---- set_pickup: 行き＝空港お迎え(PU)を希望 or 店舗へ行く(来店)。visit_type(PU/来店)＋お迎え時間＋OPシート d-タスクへ反映 ----
@@ -453,10 +653,13 @@ Deno.serve(async (req) => {
     return String(cTask.timeChange || cj._timeChange || cj._ssTime || cTask.returnTime || cTask.time || "");
   })();
 
-  const delPlaceR = resolveTaskPlace(dTask) || String(r.del_place || "").trim();
-  const colPlaceR = cColResolve || String(r.col_place || "").trim();
-  const lendTimeR = resolveTaskTime(dTask) || r.start_time || r.del_time || "";
-  const returnTimeR = cTimeResolve || r.end_time || r.col_time || "";
+  // 2026-11-08 HDM高松：OPシート/タスクサマリー/個別URLと同じ読み方の現在値（DB関数 bt_res_effective）を優先。取れなければ従来の解決式
+  const effRaw = isHdm(r) ? await fetch(`${SB_URL}/rest/v1/rpc/bt_res_effective`, { method: "POST", headers: H, body: JSON.stringify({ p_res: resId }) }).then((x) => x.ok ? x.json() : null).catch(() => null) : null;
+  const eff: any = (effRaw && typeof effRaw === "object") ? effRaw : {};
+  const delPlaceR = String(eff.del_place || "").trim() || resolveTaskPlace(dTask) || String(r.del_place || "").trim();
+  const colPlaceR = String(eff.col_place || "").trim() || cColResolve || String(r.col_place || "").trim();
+  const lendTimeR = String(eff.lend_time || "").trim() || resolveTaskTime(dTask) || r.start_time || r.del_time || "";
+  const returnTimeR = String(eff.return_time || "").trim() || cTimeResolve || r.end_time || r.col_time || "";
 
   const optBR = Math.max(Number(r.opt_b) || 0, taskOptNum(dTask, "_optB"), taskOptNum(cTask, "_optB"));
   const optCR = Math.max(Number(r.opt_c) || 0, taskOptNum(dTask, "_optC"), taskOptNum(cTask, "_optC"));
@@ -513,6 +716,11 @@ Deno.serve(async (req) => {
   // キャンセル申請中か（承認待ち＝bt_reservation_changes change_type=cancel status=requested）
   const pcRows = await sbGet("bt_reservation_changes", `reservation_id=eq.${encodeURIComponent(resId)}&change_type=eq.cancel&status=eq.requested&select=id&limit=1`);
   const pendingCancel = !!pcRows[0];
+  // 2026-11-08 HDM高松：送迎の依頼（承認待ち・代わりの案・お断り）をマイページに返す（my-tkm.html reqReplyCard / 承認待ち表示）
+  const mpRows = isHdm(r) ? await sbGet("bt_reservation_changes", `reservation_id=eq.${encodeURIComponent(resId)}&source=eq.mypage&change_type=in.(${MP_LIST})&order=id.desc&limit=10&select=id,change_type,old_value,new_value,status,payload,changed_at,decided_at`) : [];
+  const recentChanges = mpRows.map((x: any) => ({ id: x.id, field: x.change_type, old_value: x.old_value, new_value: x.new_value, status: x.status, payload: x.payload || {}, created_at: x.changed_at || null, decided_at: x.decided_at || null }));
+  const pendOf = (legs: string[]) => { const x = mpRows.find((y: any) => legs.includes(y.change_type) && y.status === "requested"); return x ? { type: x.change_type, value: x.new_value, time: (x.payload || {}).time || "", flight: (x.payload || {}).flight || "" } : null; };
+  const pendingTransfer = { go: pendOf(MP_GO), rt: pendOf(MP_RT) };
 
   // 那覇 my-nha.html と同一の応答形（flat reservation）＝同一レンダラで表示統一。
   return json({
@@ -533,8 +741,8 @@ Deno.serve(async (req) => {
     terms: { required: true, signed: termsSigned, detail: termsRaw },
     // ★2026-08-09 事前決済：マイページ内に請求欄＋Squareリンク（じゃらんHDMは事前決済）。入金は checkBtPayments が自動確認→paid反映。
     payment: { required: !!r.pay_url, amount: Number(r.price || 0), pay_url: r.pay_url || "", paid: !!r.paid },
-    pendingCancel: pendingCancel, readyPending: false,
-    recentChanges: [], history: historyTop,
+    pendingCancel: pendingCancel, readyPending: false, pendingTransfer,
+    recentChanges, history: historyTop,
     at: nowJst(),
   }, 200, origin);
 });
