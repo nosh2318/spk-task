@@ -482,7 +482,17 @@ Deno.serve(async (req) => {
   const licP = sbGet("license_uploads", `reservation_id=eq.${encodeURIComponent(resId)}&select=cnt,drivers`);
   // 2026-11-08 OPシート/タスクサマリー/個別URLと同じ読み方の現在値（承認後にスタッフがOPで直した値もここに出る）
   const effP = fetch(`${SB_URL}/rest/v1/rpc/nha_res_effective`, { method: "POST", headers: H, body: JSON.stringify({ p_res: resId }) }).then((x) => x.ok ? x.json() : null).catch(() => null);
-  const [opTasksRaw, chg, licRows, effRaw] = await Promise.all([opTasksP, chgP, licP, effP]);
+  // 2026-11-08 NOWCARD: 貸出直後カード用に車両のETC車載器位置・写真（nha_vehicles.specs、管理APP車両編集で登録）。読むだけ・失敗はnull
+  const carP: Promise<any> = (async () => {
+    try {
+      const fl = await sbGet("nha_fleet", `reservation_id=eq.${encodeURIComponent(resId)}&select=vehicle_code`);
+      const code = fl[0]?.vehicle_code; if (!code) return null;
+      const vs = await sbGet("nha_vehicles", `code=eq.${encodeURIComponent(code)}&select=specs&limit=1`);
+      const sp = (vs[0] && vs[0].specs) || {};
+      return { etc_location: sp.etc_location || null, etc_image: sp.etc_image || null, fuel: sp.fuel || null };
+    } catch (_) { return null; }
+  })();
+  const [opTasksRaw, chg, licRows, effRaw, carInfo] = await Promise.all([opTasksP, chgP, licP, effP, carP]);
   const eff: any = (effRaw && typeof effRaw === "object") ? effRaw : {};
   const licCnt = (licRows[0] && licRows[0].cnt) || 0;
   const licDrivers = (licRows[0] && licRows[0].drivers) || 0;
@@ -606,6 +616,7 @@ Deno.serve(async (req) => {
     damage: { ready: damageReady, url: damageUrl },
     tracking: { active: r.kd_status === "delivering" || r.kd_status === "collecting", kd_status: r.kd_status || null, token: r.kd_track_token || null },
     license: { cnt: licCnt, drivers: licDrivers },
+    car: carInfo,
     pendingCancel: chg.some((c: any) => c.field === "cancel" && c.status === "requested"), readyPending: chg.some((c: any) => c.field === "ready" && c.status === "requested"),
     recentChanges: chg, history: historyTop,
     at: nowJst(),
