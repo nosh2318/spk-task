@@ -181,7 +181,8 @@ const hitQ=(name,rid)=>!Q||String(name||"").includes(Q)||String(rid||"").toLower
 /* 依頼の種類（マイページの「できること一覧」の名前にそろえる） */
 const FLD={del_place:"届け先の場所",col_place:"回収の場所",lend_time:"貸出の時間",return_time:"返却の時間",ready:"早めの回収",option:"オプション",cancel:"キャンセル",
   date:"日程・延長",extend:"日程・延長",lend_date:"日程・延長",return_date:"日程・延長",method:"受け取り・返却の方法",del_method:"受け取り・返却の方法",col_method:"受け取り・返却の方法",
-  car_class:"車種の変更",cls:"車種の変更",flight_trouble:"欠航・大幅な遅れ",lost_item:"忘れ物",ask:"スタッフに聞く",people:"人数",driver:"運転者"};
+  car_class:"車種の変更",cls:"車種の変更",flight_trouble:"欠航・大幅な遅れ",lost_item:"忘れ物",ask:"スタッフに聞く",people:"人数",driver:"運転者",
+  /* 11/8 高松HDMの送迎依頼（handyman-mypage-tkm・承認でDB関数 bt_apply_mypage_change が反映） */mp_pickup:"行き（空港お迎え）",mp_visit:"行きの方法（店舗へ来店）",mp_dropoff:"帰り（空港へ送迎）",mp_store_return:"帰りの方法（店舗で返却）"};
 const KIND=[["date","日程・延長",/date|extend/],["place","届け先・回収の場所",/place/],["method","受け取り・返却の方法",/method/],["class","車種の変更",/class|cls/],["ready","早めの回収",/^ready$/],
   ["flight","欠航・大幅な遅れ",/flight/],["lost","忘れ物",/lost/],["cancel","キャンセル",/cancel|キャンセル/],["ask","スタッフに聞く",/ask/],["other","その他（時間など）",/./]];
 function typeOf(f){f=String(f||"");return (KIND.find(k=>k[2].test(f))||KIND[KIND.length-1])[0];}
@@ -194,7 +195,7 @@ function dueMs(x){const d=dueOf(x.at);return d==null?Infinity:+d;}
 function leftHtml(x){const d=dueMs(x);if(d===Infinity)return"";const m=Math.round((d-Date.now())/60e3);
   if(m<0)return `<span class="pl due0">目安を${-m}分過ぎ</span>`;if(m<=15)return `<span class="pl due0">あと${m}分</span>`;
   if(m<=60)return `<span class="pl due1">あと${m}分</span>`;const j=new Date(d+9*3600e3);return `<span class="pl due2">目安 ${md(ymd(j))} ${j.getUTCHours()}:${String(j.getUTCMinutes()).padStart(2,"0")}</span>`;}
-function beforeOf(x){const r=rowOf(x.bucket,x.rid);if(!r)return"";const f=String(x.field||"");
+function beforeOf(x){if(/^mp_/.test(String(x.field||"")))return x.oldv||"";const r=rowOf(x.bucket,x.rid);if(!r)return"";const f=String(x.field||"");
   return f==="del_place"?(r.del_place||""):f==="col_place"?(r.col_place||""):f==="lend_time"?(md(r.sd)+" "+(r.st||"")):f==="return_time"?(md(r.ed)+" "+(r.et||"")):"";}
 async function rpc(base,anon,fn){try{const r=await fetch(base+"/rest/v1/rpc/"+fn,{method:"POST",headers:{apikey:anon,Authorization:"Bearer "+anon,"Content-Type":"application/json"},body:"{}"});if(!r.ok)return[];const j=await r.json();return Array.isArray(j)?j:[];}catch(e){return[];}}
 async function loadReq(){const [a,b]=await Promise.all([rpc(MAIN,MAIN_ANON,"mpadmin_pending"),rpc(BT,BT_ANON,"mpadmin_pending_bt")]);REQ={};a.concat(b).forEach(x=>{const k=x.bucket+"|"+x.rid;(REQ[k]=REQ[k]||[]).push(x);});}
@@ -207,8 +208,11 @@ function reqHtml(r,act){const L=reqOf(r).slice().sort((a,b)=>String(b.at||"").lo
 //   早め回収も例外なし（nosh 11/7「早め回収も〜時ならOK パターンを」）：札幌・那覇は時間の入力を必須にし、OKでその時間に反映。
 // 11/7 nosh「時間はプルダウン」「テキスト全てはなくしたい」「場所やその他の変更のパターンも必要」：スタッフは文字を打たない。理由・提案の型・時間／個数をタップと選択だけで選び、文は自動で組み立てる。
 const RSN_L=[["no_vehicle","予約状況（空車なし）"],["full_slot","スタッフ状況（手配できない）"],["out_of_area","エリア外"],["out_of_stock","在庫状況"],["past_deadline","締切を過ぎている"]];
-const RSN_OF=f=>{const c=["lend_time","return_time","ready"].includes(f)?["full_slot","no_vehicle","past_deadline"]:["del_place","col_place"].includes(f)?["out_of_area","full_slot","past_deadline"]:f==="option"?["out_of_stock","past_deadline"]:["no_vehicle","past_deadline"];return RSN_L.filter(r=>c.includes(r[0]));};
+const RSN_OF=f=>{const c=["lend_time","return_time","ready","mp_pickup","mp_dropoff"].includes(f)?["full_slot","no_vehicle","past_deadline"]:["del_place","col_place"].includes(f)?["out_of_area","full_slot","past_deadline"]:f==="option"?["out_of_stock","past_deadline"]:["no_vehicle","past_deadline"];return RSN_L.filter(r=>c.includes(r[0]));};
 const TIMES=(()=>{const a=[];for(let h=6;h<=23;h++)for(const m of["00","30"])a.push(h+":"+m);return a;})();
+// 11/8 高松の送迎はマイページと同じ 9:00〜18:45 の15分刻み＋18:50
+const TIMES_TKM=(()=>{const a=[];for(let h=9;h<=18;h++)for(const m of["00","15","30","45"])a.push(String(h).padStart(2,"0")+":"+m);a.push("18:50");return a;})();
+const TIMES_OF=bk=>bk==="hdm_tkm"?TIMES_TKM:TIMES;
 // 提案の型：s＝選ぶもの（time 時間／n 個数／なし）、v＝お客様がOKしたときに反映する値（time＝選んだ時間、del＝お届けと同じ場所）
 const ALT_TPL={
   lend_time:[{t:"{x}でしたらお届けできます",s:"time",v:"time"}],
@@ -222,6 +226,10 @@ const ALT_TPL={
   date:[{t:"空き状況を確認のうえ、別の日程でしたら承れます"},{t:"ご返却の時間を早めていただけましたら承れます"}],
   car_class:[{t:"同じクラスの別の車種でしたらご用意できます"},{t:"空きのある別のクラスでしたらご用意できます（料金が変わる場合がございます）"}],
   cancel:[{t:"日程のご変更でしたら承れます"}],
+  mp_pickup:[{t:"{x}でしたら空港へお迎えに伺えます",s:"time",v:"time"}],
+  mp_dropoff:[{t:"{x}でしたら空港までお送りできます",s:"time",v:"time"}],
+  mp_visit:[{t:"空港でのお迎えでしたら承れます"},{t:"今の受け取り方法のままでしたら承れます"}],
+  mp_store_return:[{t:"空港までのお送りでしたら承れます"},{t:"今の返却方法のままでしたら承れます"}],
   _:[{t:"お受け渡しの際にご相談いただけましたら承れます"}]};
 const tplKey=f=>ALT_TPL[f]?f:/^(extend|lend_date|return_date)$/.test(f)?"date":f==="cls"?"car_class":/method$/.test(f)?"method":"_";
 const tplsOf=f=>ALT_TPL[tplKey(f)];
@@ -233,24 +241,24 @@ function altSv(v){if(!ALT)return;altMsgReset();ALT.sv=v;ALT.cf="";altFill();rend
 function altSet(c){if(!ALT)return;altMsgReset();ALT.code=c;render();}
 function altKeep(k){if(!ALT.code)return toast("できない理由を選んでください");ALT.keep=1;ALT.alt="";ALT.val="";ARM=k+"|rejected";decide(k,"rejected");}
 let ALT=null;
-const canProp=x=>["del_place","col_place","lend_time","return_time","ready"].includes(x.field)&&/^hdm_(spk|nha)$/.test(x.bucket);
+const canProp=x=>(["del_place","col_place","lend_time","return_time","ready"].includes(x.field)&&/^hdm_(spk|nha)$/.test(x.bucket))||(["mp_pickup","mp_dropoff"].includes(x.field)&&x.bucket==="hdm_tkm");
 function altOpen(key){ALT=ALT&&ALT.key===key?null:{key,code:"",text:"",alt:"",val:"",ti:-1,sv:"",cf:""};render();}
 function altRead(){}
 // 11/7 nosh「どんな内容が送信されるか目視確認できるべき」：お客様に届く文をそのまま見せ、確認してから送る（EF の declineMsg と同じ組み立て）
-const PV_KIND={del_place:"お届け場所",col_place:"回収場所",lend_time:"お届け時間",return_time:"回収時間",ready:"早めの回収",option:"オプション",insurance:"補償",method:"受け取り・返却の方法",cancel:"キャンセル"};
+const PV_KIND={mp_pickup:"行き（空港お迎え）",mp_visit:"行きの方法",mp_dropoff:"帰り（空港へ送迎）",mp_store_return:"帰りの方法",del_place:"お届け場所",col_place:"回収場所",lend_time:"お届け時間",return_time:"回収時間",ready:"早めの回収",option:"オプション",insurance:"補償",method:"受け取り・返却の方法",cancel:"キャンセル"};
 const PV_REJ={no_vehicle:"誠に恐れ入りますが、予約状況の兼ね合いにより、ご希望の日時にご用意できるお車がございません。",full_slot:"誠に恐れ入りますが、{staff}の状況により、ご希望のお時間に伺うことができません。",out_of_area:"ご希望の場所は、お届け・回収の対象エリア外のため、伺うことができません。",out_of_stock:"誠に恐れ入りますが、在庫状況により、ご希望のオプションをご用意できる数がございません。",past_deadline:"変更の受付締切を過ぎているため、ご変更を承ることができません。",other:""};
 // 11/8 別の案の期限（EF proposalExpires と同じ式）。送信時に expires_at として渡し、文中の日時と実際の期限を必ず一致させる
-function altExp(x){if(ALT&&ALT.exp)return ALT.exp;const r=rowOf(x.bucket,x.rid)||{},end=["col_place","return_time","ready"].includes(x.field),d=end?r.ed:r.sd,t=end?r.et:r.st,now=Date.now();let e=now+864e5;
+function altExp(x){if(ALT&&ALT.exp)return ALT.exp;const r=rowOf(x.bucket,x.rid)||{},end=["col_place","return_time","ready","mp_dropoff","mp_store_return"].includes(x.field),d=end?r.ed:r.sd,t=end?r.et:r.st,now=Date.now();let e=now+864e5;
   if(d){const m=String(t||"09:00").match(/(\d{1,2}):(\d{2})/),h=Date.parse(d+"T"+String(m?+m[1]:9).padStart(2,"0")+":"+(m?m[2]:"00")+":00+09:00");if(!isNaN(h))e=Math.min(e,h-72e5);}
   const iso=new Date(Math.max(e,now+18e5)).toISOString();if(ALT)ALT.exp=iso;return iso;}
 function pvMd(iso){const j=new Date(Date.parse(iso)+324e5);return (j.getUTCMonth()+1)+"/"+j.getUTCDate()+" "+String(j.getUTCHours()).padStart(2,"0")+":"+String(j.getUTCMinutes()).padStart(2,"0");}
 // 11/8 nosh「スタッフ編集できるように」：札幌・那覇HDMは確認画面の文を直せる。直した文がそのまま届く（EF の message_text）
-const EDITABLE=bk=>bk==="hdm_spk"||bk==="hdm_nha";
+const EDITABLE=bk=>bk==="hdm_spk"||bk==="hdm_nha"||bk==="hdm_tkm";
 function altMsgNow(){if(!ALT||!ALT.x)return"";const keep=ALT.ti==="keep";return ALT.msg!=null?ALT.msg:pvMsg(ALT.x,keep?"keep":canProp(ALT.x)?"prop":"rej");}
 function altMsgReset(){if(ALT){ALT.msg=null;ALT.exp="";}}
 function pvMsg(x,mode){const f=typeOf(x.field)==="cancel"?"cancel":x.field,bk=x.bucket,key=/^key_/.test(bk);
-  const head=bk==="hdm_spk"?"【HANDYMAN 札幌デリバリー】":bk==="hdm_nha"?"【HANDYMAN 那覇】":"";
-  const staff=["del_place","lend_time"].includes(f)?"お届けスタッフ":["col_place","return_time","ready"].includes(f)?"回収スタッフ":"担当スタッフ";
+  const head=bk==="hdm_spk"?"【HANDYMAN 札幌デリバリー】":bk==="hdm_nha"?"【HANDYMAN 那覇】":bk==="hdm_tkm"?"【HANDYMAN 高松】":"";
+  const staff=["mp_pickup","mp_dropoff"].includes(f)?"送迎スタッフ":["del_place","lend_time"].includes(f)?"お届けスタッフ":["col_place","return_time","ready"].includes(f)?"回収スタッフ":"担当スタッフ";
   const why=[(PV_REJ[ALT.code]||"").replace("{staff}",staff),ALT.text].filter(Boolean).join("\n");
   const label=(bk==="hdm_nha"?{lend_time:"貸出の時間",return_time:"返却の時間"}[f]:"")||PV_KIND[f]||FLD[f]||f,nv=x.newv||"",ov=beforeOf(x),alt=ALT.alt,url="（マイページのURL）";
   if(key){return "（KEYDROPはメールで届きます）\n件名・宛名はいつもの決定メールの形\n内容："+label+"（"+nv+"）"+(why?"／理由："+why.replace(/\n/g," "):"")+(mode==="keep"?"／誠に申し訳ございませんが、今のご予約のままでのご利用をお願いできますでしょうか":"／代わりに："+alt+"（今のご予約はそのままです。こちらでよろしければマイページから改めてご依頼ください）");}
@@ -274,7 +282,7 @@ function altHtml(x,k){if(!ALT||ALT.key!==k)return"";const f=typeOf(x.field)==="c
   const now=S.findIndex(s=>!s.done);
   const circ=(i,s)=>`<span style="display:inline-flex;width:24px;height:24px;border-radius:50%;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex:none;${s.done?"background:#16a34a;color:#fff":i===now?"background:#1d4ed8;color:#fff":"background:#e5e7eb;color:#9ca3af"}">${s.done?"✓":i+1}</span>`;
   const body=(i,s)=>{if(i===0)return`<div style="display:flex;gap:6px;flex-wrap:wrap">${RSN_OF(tplKey(f)).map(([c,l])=>`<button class="chip ${ALT.code===c?"on":""}" onclick="altSet('${c}')">${l}</button>`).join("")}</div>`;
-    if(s.slot)return`<select class="rsnT" style="font-size:16px" onchange="altSv(this.value)"><option value="">▼ ${cur.s==="time"?"時間":"個数"}をタップして選ぶ</option>${(cur.s==="time"?TIMES:["1","2","3"]).map(v=>`<option ${ALT.sv===v?"selected":""}>${v}</option>`).join("")}</select>`;
+    if(s.slot)return`<select class="rsnT" style="font-size:16px" onchange="altSv(this.value)"><option value="">▼ ${cur.s==="time"?"時間":"個数"}をタップして選ぶ</option>${(cur.s==="time"?TIMES_OF(x.bucket):["1","2","3"]).map(v=>`<option ${ALT.sv===v?"selected":""}>${v}</option>`).join("")}</select>`;
     if(s.last)return(EDITABLE(x.bucket)?`<textarea id="altMsg" rows="${Math.min(30,Math.max(10,Math.ceil(altMsgNow().length/17)+altMsgNow().split("\n").length))}" style="width:100%;box-sizing:border-box;font:inherit;font-size:16px;line-height:1.5;background:#fff;border:1px solid #93c5fd;border-radius:8px;padding:8px;margin:0" oninput="ALT.msg=this.value">${esc(altMsgNow())}</textarea><div class="mut" style="font-size:12px;margin:4px 0">↑この文がそのままお客様に${via}で届きます。タップして直せます${ALT.msg!=null?` ／ <button class="lnk" style="font-size:12px" onclick="altMsgReset();render()">元の文に戻す</button>`:""}${/（マイページのURL）/.test(altMsgNow())?"。「（マイページのURL）」は送信時に本物のURLに置き換わります":""}</div>`:`<pre style="white-space:pre-wrap;font:inherit;font-size:13px;background:#fff;border:1px solid #93c5fd;border-radius:8px;padding:8px;margin:0">${esc(pvMsg(ALT.x,keep?"keep":prop?"prop":"rej"))}</pre><div class="mut" style="font-size:12px;margin:4px 0">↑この文がそのままお客様に${via}で届きます</div>`)+`<button class="btn ok" style="background:#1d4ed8;width:100%" onclick='${keep?`altKeep("${esc(k)}")`:`altSend(${xs})`}'>この内容で送信する</button>`;
     return`<div style="display:flex;gap:6px;flex-wrap:wrap">${T.map((t,j)=>`<button class="chip ${ALT.ti===j?"on":""}" onclick="altTpl(${j})">${esc(t.t.replace("{x}",t.s==="time"?"〇時":"〇"))}</button>`).join("")}<button class="chip ${keep?"on":""}" onclick="altTpl('keep')">代わりの案なし（今のご予約のままでお願いする）</button></div><div class="mut" style="font-size:12px;margin-top:2px">「代わりの案なし」は無理な時間帯・無理なご依頼のときだけ</div>`;};
   const step=(s,i)=>{const open=i===now,fut=now>=0&&i>now;return `<div style="display:flex;gap:8px;padding:8px 0;border-top:${i?"1px solid #e5e7eb":"0"};${fut?"opacity:.45":""}">${circ(i,s)}<div style="flex:1;min-width:0"><div style="font-weight:${open?700:500};color:${open?"#1d4ed8":"inherit"}">${esc(s.t)}${s.done&&!open?` <span class="mut">：${esc(s.v)}</span>`:""}</div>${open?`<div style="margin-top:6px">${body(i,s)}</div>`:s.done&&i<now?`<button class="lnk" style="font-size:12px" onclick="altBack(${i})">変える</button>`:""}</div></div>`;};
@@ -479,7 +487,7 @@ function reqItem(x,act){const k=x.bucket+"|"+x.id,p=x.status==="requested",bf=be
     :`<div class="chg">${bf?`<span class="bf">${esc(bf)}</span><span class="ar">→</span>`:""}<b>${esc(x.newv||"（内容なし）")}</b></div>`;
   return `<div class="rq ${p?"pend":""}">${st?`<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${st}<span class="mut">${act?"":tyLabel(x)} ${esc((x.at||"").slice(5,16).replace("T"," "))}</span></div>`:""}
     ${late?`<div>${late}</div>`:""}${ch}${x.note?`<div class="mut">📝 ${esc(x.note)}</div>`:""}${extra}
-    ${p&&act?`<div class="acts">${btn("approved","✅ 承認（反映＋"+(x.line?"LINE":"メール")+"で通知）","ok")}${/_tkm$/.test(x.bucket)?"":`<button class="btn" style="background:#dbeafe;color:#1d4ed8" onclick="altOpen('${esc(k)}')">できない → 代わりの案…</button>`}</div>${altHtml(x,k)}
+    ${p&&act?`<div class="acts">${btn("approved","✅ 承認（反映＋"+(x.line?"LINE":"メール")+"で通知）","ok")}${x.bucket==="but_tkm"?"":`<button class="btn" style="background:#dbeafe;color:#1d4ed8" onclick="altOpen('${esc(k)}')">できない → 代わりの案…</button>`}</div>${altHtml(x,k)}
       <div style="margin-top:6px"><button class="lnk" onclick="decide('${esc(k)}','acknowledged')">${ARM===k+"|acknowledged"?"もう一度押すとアーカイブ":"アーカイブ（反映・通知なし。重複や取り下げ用）"}</button></div>`:""}</div>`;}
 function renderAct(){
   const all=[].concat(...Object.values(REQ));const pend=all.filter(x=>x.status==="requested");

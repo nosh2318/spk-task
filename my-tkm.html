@@ -640,6 +640,8 @@ const TX={
  no_change:{ja:"変更がありません",en:"No changes",zh:"沒有變更",ko:"변경 사항 없음"},
  min2:{ja:"2文字以上で入力してください",en:"Please enter at least 2 characters",zh:"請輸入至少2個字",ko:"2자 이상 입력하세요"},
  saved:{ja:"変更を反映しました",en:"Change applied",zh:"變更已套用",ko:"변경이 반영되었습니다"},
+ mp_req:{ja:"リクエストを受け付けました（承認後メールでお知らせします）",en:"Request received. We will email you once approved.",zh:"已受理您的申請，核准後將以電子郵件通知。",ko:"요청을 접수했습니다. 승인 후 이메일로 알려드립니다."},
+ mp_wait:{ja:"承認待ち",en:"Awaiting approval",zh:"等待核准",ko:"승인 대기"},
  pending_appr:{ja:"承認待ちで受け付けました（担当確認後に反映）",en:"Received — pending staff approval",zh:"已受理，待專員審核",ko:"접수됨 — 담당자 승인 대기"},
  save_fail:{ja:"変更に失敗しました",en:"Failed to save",zh:"變更失敗",ko:"변경 실패"},
  apply_this:{ja:"この内容で変更する",en:"Apply this change",zh:"確認變更",ko:"이 내용으로 변경"},
@@ -785,6 +787,7 @@ const RQ_T={h:{ja:"依頼へのお返事",en:"Reply to your request",zh:"對您�
  done_ok:{ja:"確定しました",en:"Confirmed",zh:"已確定",ko:"확정되었습니다"},done_no:{ja:"お断りを伝えました",en:"Declined",zh:"已婉拒",ko:"거절했습니다"},
  r_no_vehicle:{ja:"ご希望の内容で空いているお車がありませんでした",en:"No vehicle available for that request",zh:"沒有符合條件的空車",ko:"해당 조건의 빈 차량이 없습니다"},
  r_out_of_area:{ja:"お届け・回収の範囲外でした",en:"Outside our delivery area",zh:"超出送取車範圍",ko:"배달·회수 범위 밖입니다"},
+ r_full_slot:{ja:"ご希望の時間に送迎スタッフの都合がつきませんでした",en:"No shuttle staff available at that time",zh:"該時段無法安排接送人員",ko:"해당 시간에 셔틀 직원 배정이 어렵습니다"},
  r_past_deadline:{ja:"変更の締切を過ぎていました",en:"Past the change deadline",zh:"已超過變更期限",ko:"변경 마감이 지났습니다"},
  r_other:{ja:"",en:"",zh:"",ko:""}};
 function rqt(k){const e=RQ_T[k];return e?(e[L]||e.ja):"";}
@@ -929,6 +932,8 @@ function _showCur(id,kind,want,time){
     c.innerHTML='🏬 '+(kind==="go"?t('pu_none_go'):t('rt_none')); }
 }
 function _hideCur(id){const c=document.getElementById(id); if(c)c.style.display="none";}
+// 2026-11-08 承認待ちの依頼があれば、今の内容の下に1行（反映はスタッフ承認後）
+function _showPend(id,pd){ if(!pd)return; const c=document.getElementById(id); if(!c)return; c.style.display="block"; c.insertAdjacentHTML("beforeend",'<div style="margin-top:4px;color:#b45309;font-weight:700">⏳ '+t('mp_wait')+'：'+esc(fldName(pd.type))+(pd.time?' '+esc(pd.time)+'〜':'')+'</div>'); }
 // render後：両セレクトを埋め、現在の予約状態をボタン/時間欄に反映
 function initTransfer(){
   const r=(DATA&&DATA.reservation)||{};
@@ -940,12 +945,14 @@ function initTransfer(){
   else if(vt==="来店"){ _btnActive("puYes","puNo",false); if(puRow)puRow.style.display="none"; _showCur("puCur","go",false); }
   // ★2026-09-25 便あり(PU/PUB)でもお迎え時間が未確定なら「未選択」にする（デフォルト選択だとお客様が時間/便名を入力しないため・武山要望）
   else { _btnActive("puYes","puNo",null); if(puRow)puRow.style.display="none"; _hideCur("puCur"); }
+  _showPend("puCur",DATA&&DATA.pendingTransfer&&DATA.pendingTransfer.go);
   // 帰り
   const rt2=String(r.return_type||""), rtRow=document.getElementById("rtTimeRow"), rtSv=document.getElementById("rtSave");
   if(r.dropoff_time){ _btnActive("rtYes","rtNo",true); if(rtRow)rtRow.style.display="flex"; if(rtSv)rtSv.textContent=t('pu_change'); _showCur("rtCur","rt",true,r.dropoff_time); }
   else if(rt2==="返却"){ _btnActive("rtYes","rtNo",false); if(rtRow)rtRow.style.display="none"; _showCur("rtCur","rt",false); }
   // ★2026-09-25 便あり(BD/BDB)でも送迎時間が未確定なら「未選択」にする（デフォルト選択回避・武山要望）
   else { _btnActive("rtYes","rtNo",null); if(rtRow)rtRow.style.display="none"; _hideCur("rtCur"); }
+  _showPend("rtCur",DATA&&DATA.pendingTransfer&&DATA.pendingTransfer.rt);
 }
 // 行き：お迎え希望（時間欄を出す）/ 来店（即保存）
 function puChoose(want){
@@ -964,6 +971,7 @@ async function doPickup(want,tm){
   const _pf=document.getElementById("puFlight"); const _flt=(_pf&&_pf.value||"").trim();
   const res=await call("set_pickup",{want:want, time:want?tm:null, flight:want?_flt:null});
   if(btn)btn.disabled=false;
+  if(res&&res.json&&res.json.ok&&(res.json.pendingApproval||res.json.noChange)){ toast(res.json.pendingApproval?t('mp_req'):t('pu_saved')); await load(); return; }
   if(res&&res.json&&res.json.ok){
     if(DATA&&DATA.reservation){ DATA.reservation.visit_type=res.json.visit_type||DATA.reservation.visit_type; DATA.reservation.pickup_time=res.json.pickup_time||""; if(res.json.del_flight!==undefined)DATA.reservation.del_flight=res.json.del_flight; }
     if(want){ _btnActive("puYes","puNo",true); const row=document.getElementById("puTimeRow"); if(row)row.style.display="flex"; if(btn)btn.textContent=t('pu_change'); _showCur("puCur","go",true,tm); toast(t('pu_done_go')); }
@@ -988,6 +996,7 @@ async function doReturn(want,tm){
   const btn=document.getElementById("rtSave"); if(btn)btn.disabled=true;
   const res=await call("set_return",{want:want, time:want?tm:null});
   if(btn)btn.disabled=false;
+  if(res&&res.json&&res.json.ok&&(res.json.pendingApproval||res.json.noChange)){ toast(res.json.pendingApproval?t('mp_req'):t('pu_saved')); await load(); return; }
   if(res&&res.json&&res.json.ok){
     if(DATA&&DATA.reservation){ DATA.reservation.return_type=res.json.return_type||DATA.reservation.return_type; DATA.reservation.dropoff_time=res.json.dropoff_time||""; }
     if(want){ _btnActive("rtYes","rtNo",true); const row=document.getElementById("rtTimeRow"); if(row)row.style.display="flex"; if(btn)btn.textContent=t('pu_change'); _showCur("rtCur","rt",true,tm); toast(t('rt_done')); }
@@ -998,6 +1007,7 @@ async function doReturn(want,tm){
 
 // 履歴1行を自然文で生成（日単位・多言語）。mode:"you"=お客様ページ視点。対象外はnull。
 const HFLD_L={del_place:{ja:"お届け場所",en:"delivery location",zh:"送車地點",ko:"배달 장소"},col_place:{ja:"回収場所",en:"pickup location",zh:"取車地點",ko:"회수 장소"},lend_time:{ja:"お届け時間",en:"delivery time",zh:"送車時間",ko:"배달 시간"},return_time:{ja:"回収時間",en:"pickup time",zh:"取車時間",ko:"회수 시간"},option:{ja:"オプション",en:"option",zh:"選配",ko:"옵션"},insurance:{ja:"補償",en:"insurance",zh:"保障",ko:"보장"},method:{ja:"受渡方法",en:"handover method",zh:"交車方式",ko:"인수 방법"},cancel:{ja:"キャンセル",en:"cancellation",zh:"取消",ko:"취소"}};
+Object.assign(HFLD_L,{mp_pickup:{ja:"行き（空港お迎え）",en:"Airport pick-up",zh:"機場接機",ko:"공항 픽업"},mp_visit:{ja:"行き（店舗へ来店）",en:"Visit the store",zh:"到店取車",ko:"매장 방문"},mp_dropoff:{ja:"帰り（空港へ送迎）",en:"Airport drop-off",zh:"送往機場",ko:"공항 샌딩"},mp_store_return:{ja:"帰り（店舗で返却）",en:"Return at the store",zh:"到店還車",ko:"매장 반납"}});
 function fldName(f){const e=HFLD_L[f];return e?(e[L]||e.ja):f;}
 function hDate(iso){if(!iso)return"";const d=new Date(iso);if(isNaN(d))return"";const j=new Date(d.getTime()+9*3600*1000);return(j.getUTCMonth()+1)+"/"+j.getUTCDate();}
 function histLine(c,mode){
