@@ -248,13 +248,13 @@ async function call(action,body){
     return await r.json().catch(()=>({}));}catch(e){return{error:"通信できませんでした。電波の良い場所でもう一度お試しください。"};}finally{SENDING=false;}
 }
 async function load(quiet){
-  if(DEMO){DATA=demoData(DEMO);render();return;}
+  if(DEMO){DATA=demoData(DEMO);loadRcpt();render();return;}
   if(!TOKEN){$("#app").innerHTML=`<div class="center">ご予約のURLから開いてください。<br>URLが分からないときは <a href="${ST.site}" target="_blank">公式サイト</a> の「マイページを開く」から探せます。</div>`;$("#ttl").textContent="マイページ";return;}
   try{const r=await fetch(FN,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"lookup",token:TOKEN,...(RO?{ro:1}:{})})});
     const j=await r.json().catch(()=>({}));
     if(j.cancelled){$("#ttl").textContent="キャンセル済み";$("#app").innerHTML=`<div class="center">${esc(j.error||"キャンセル済みです")}</div>`;return;}
     if(!j.ok){if(!quiet){$("#ttl").textContent="マイページ";$("#app").innerHTML=`<div class="center">${esc(j.error||"読み込めませんでした")}<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}return;}
-    DATA=j;await Promise.all([loadDV(),loadSH(),loadChat(),loadPay(),loadNG(),loadINFO()]);render();
+    DATA=j;await Promise.all([loadDV(),loadSH(),loadChat(),loadPay(),loadNG(),loadINFO(),loadRcpt()]);render();
   }catch(e){if(!quiet)$("#app").innerHTML=`<div class="center">通信できませんでした。<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}
 }
 const SH_TX={pu_depart:["送迎車が空港へ向かっています","p-o"],pu_at_stop:["送迎車が乗り場に着きました","p-g","お手荷物を受け取ったら、乗り場へお越しください"],pu_met:["合流しました。お店へ向かっています","p-x"],bd_depart:["空港へ向かっています","p-o"],bd_at_airport:["空港に着きました。ご利用ありがとうございました","p-x"]};
@@ -420,10 +420,31 @@ function reqCard(c){
   return `<div style="border:1px solid ${c.status==="requested"?"var(--yel)":"var(--line)"};border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:8px"><div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:14px">${esc(n)}</b><span class="pill ${S[1]}">${S[0]}</span></div>${steps}<div class="txt" style="font-size:13px">${body}</div></div>`;
 }
 /* ★2026-11-08 nosh：領収書はじゃらん・公式サイトのご予約のみ。そのほかの予約にはボタンを出さず、注釈だけ出す（3店共通） */
+/* ★2026-11-08 nosh「本番に入れてOK」：領収書はマイページでPDF発行（3店共通・EF mypage-receipt）
+   じゃらん・公式サイトのご予約／お支払い済みだけ。お客様が入れるのは宛名だけ（金額・但し書きは予約データで固定）。発行は1回だけ、2回目からは同じPDFを開くだけ。修正は運営へ依頼。 */
+const RCEF="https://ckrxttbnawkclshczsia.supabase.co/functions/v1/mypage-receipt";
+let RCPT=null,RCSTEP=null; // RCPT＝{eligible,reason,amount,receipt}（null＝読めない→従来どおりスタッフへ依頼）／RCSTEP＝確認中の宛名
+async function loadRcpt(){if(DEMO){RCPT=RCPT||{eligible:true,reason:null,amount:33000,receipt:null};return;}if(!TOKEN)return;try{const r=await fetch(RCEF,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"status",store:SID,token:TOKEN})});const j=await r.json().catch(()=>null);RCPT=(j&&j.ok)?j:null;}catch(_){RCPT=null;}}
+function rcUrl(){return RCEF+"?action=pdf&store="+encodeURIComponent(SID)+"&token="+encodeURIComponent(TOKEN);}
+function rcAsk(){const v=(($("#rcname")||{}).value||"").trim().replace(/\s*(様|御中)\s*$/,"");if(!v){toast("宛名を入れてください");return;}RCSTEP=v;render();}
+const rcHon=n=>/(株式会社|有限会社|合同会社|法人|組合|Inc\.|LLC|Ltd\.|Corp\.)/.test(n)?"御中":"様";
+function rcBack(){RCSTEP=null;render();}
+async function rcIssue(b){if(!RCSTEP)return;if(b){b.disabled=true;b.textContent="発行しています…";}
+  if(DEMO){RCPT={...RCPT,receipt:{no:"NHA-000001",addressee:RCSTEP,honorific:rcHon(RCSTEP),amount:RCPT.amount,issued_at:new Date().toISOString()}};RCSTEP=null;render();return;}
+  try{const r=await fetch(RCEF,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"issue",store:SID,token:TOKEN,addressee:RCSTEP})});const j=await r.json().catch(()=>({}));
+    if(j.receipt){RCPT={...(RCPT||{}),receipt:j.receipt};RCSTEP=null;render();if(j.ok)toast("発行しました。「領収書を開く」からPDFを保存できます");return;}
+    toast(j.error||"発行できませんでした");if(b){b.disabled=false;b.textContent="この内容で発行する";}}
+  catch(_){toast("通信できませんでした");if(b){b.disabled=false;b.textContent="この内容で発行する";}}}
 function canReceipt(r){const o=String((r&&r.ota)||"");return ["J","じゃらん","HANDYMAN","HP","SP","direct","直予約","KEYDROP"].includes(o)||String((r&&r.id)||"").indexOf("HDMN")===0;}
 function receiptCard(r){if(!r)return"";const note=`<div class="sub">領収書の発行は、じゃらん・公式サイトのご予約のみです。</div>`;
   if(!canReceipt(r))return `<section class="card"><div class="h">領収書</div>${note}<div class="txt">このご予約の領収書は、ご予約したサイトで発行されます。</div></section>`;
-  return `<section class="card"><div class="h">領収書をご希望の方は</div>${note}<div class="txt">宛名を送ってください。スタッフが発行してお送りします。</div><button class="btn o" onclick="openChat('領収書の発行をお願いします。\\n宛名：')">宛名を送る</button></section>`;}
+  const c=RCPT;
+  if(!c)return `<section class="card"><div class="h">領収書をご希望の方は</div>${note}<div class="txt">宛名を送ってください。スタッフが発行してお送りします。</div><button class="btn o" onclick="openChat('領収書の発行をお願いします。\\n宛名：')">宛名を送る</button></section>`;
+  if(c.receipt){const x=c.receipt;return `<section class="card"><div class="h">領収書</div><div class="txt">${esc(x.addressee)} ${esc(x.honorific||"様")}・${yen(x.amount)}<br><span class="sub" style="margin:0">No.${esc(x.no)}・発行済み</span></div><a class="btn" href="${DEMO?"#":esc(rcUrl())}" target="_blank" rel="noopener">領収書を開く（PDF）</a><div class="sub">宛名の修正は <a href="javascript:void(0)" onclick="openChat('領収書の修正をお願いします（No.${esc(x.no)}）\\n正しい宛名：')">運営に依頼</a> してください。</div></section>`;}
+  if(!c.eligible){const t={unpaid:"お支払いの確認後に、ここから発行できます。",onsite:"現地でお支払いの方は、お支払いのあとにスタッフが発行します。",cancel:"キャンセル済みのご予約は、ここからは発行できません。"}[c.reason]||"このご予約の領収書は、ご予約したサイトで発行されます。";
+    return `<section class="card"><div class="h">領収書</div>${note}<div class="txt">${t}</div>${c.reason==="onsite"?`<button class="btn o" onclick="openChat('領収書の発行をお願いします。\\n宛名：')">宛名を送る</button>`:""}</section>`;}
+  if(RCSTEP)return `<section class="card" style="border:2px solid var(--yel)"><div class="h">この内容で発行しますか？</div><div class="txt" style="font-size:17px;font-weight:700">${esc(RCSTEP)} ${rcHon(RCSTEP)}</div><div class="txt">${yen(c.amount)}（税込）・但し レンタカーご利用料金として</div><div class="sub">発行は1回だけです。発行後は変更できません。</div><button class="btn" onclick="rcIssue(this)">この内容で発行する</button><button class="btn o" onclick="rcBack()">戻る</button></section>`;
+  return `<section class="card"><div class="h">領収書</div><div class="txt">宛名を入れると、PDFですぐに発行できます（${yen(c.amount)}）。</div><input id="rcname" maxlength="40" placeholder="例：株式会社〇〇／山田 太郎" autocomplete="organization"><button class="btn" onclick="rcAsk()">発行する</button><div class="sub">発行は1回だけです。</div></section>`;}
 function viewAsk(d){return `<section class="card"><div class="h">よくある質問</div>
   ${[["ガソリンは？","レギュラー・満タンでお返しください。レシートは不要です。"],...ST.faqs].map(q=>`<details style="border-bottom:1px solid #EEF0F3;padding:10px 0"><summary style="font-weight:700;font-size:14px;cursor:pointer">${q[0]}</summary><div class="txt" style="margin-top:6px">${q[1]}</div></details>`).join("")}
   <a class="btn o" href="${ST.faq}" target="_blank" rel="noopener">すべての質問を見る</a></section>
