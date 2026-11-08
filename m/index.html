@@ -243,7 +243,7 @@ async function load(quiet){
     const j=await r.json().catch(()=>({}));
     if(j.cancelled){$("#ttl").textContent="キャンセル済み";$("#app").innerHTML=`<div class="center">${esc(j.error||"キャンセル済みです")}</div>`;return;}
     if(!j.ok){if(!quiet){$("#ttl").textContent="マイページ";$("#app").innerHTML=`<div class="center">${esc(j.error||"読み込めませんでした")}<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}return;}
-    DATA=j;await Promise.all([loadDV(),loadSH(),loadChat(),loadPay()]);render();
+    DATA=j;await Promise.all([loadDV(),loadSH(),loadChat(),loadPay(),loadNG()]);render();
   }catch(e){if(!quiet)$("#app").innerHTML=`<div class="center">通信できませんでした。<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}
 }
 const SH_TX={pu_depart:["送迎車が空港へ向かっています","p-o"],pu_at_stop:["送迎車が乗り場に着きました","p-g","お手荷物を受け取ったら、乗り場へお越しください"],pu_met:["合流しました。お店へ向かっています","p-x"],bd_depart:["空港へ向かっています","p-o"],bd_at_airport:["空港に着きました。ご利用ありがとうございました","p-x"]};
@@ -347,7 +347,7 @@ function tailCards(d){const st=stageOf(d);let h="";
 function nudge(kind){const back=kind==="back",r=DATA&&DATA.reservation,col=back&&r&&isCol(r.return_type);
   const items=back?(col?[["parked","車を停めました"],["late","少し遅れます"],["lost","スタッフが見つからない"]]:[["arrived","着きました"],["late","少し遅れます"],["lost","場所が分からない"]])
     :[["arrived","着きました"],["late","少し遅れます"],["lost","スタッフが見つからない"]];
-  return `<section class="card"><div class="h">スタッフに知らせる</div><div class="grid2">${items.map(x=>`<button class="btn o" onclick="openNotify('${x[0]}')">${x[1]}</button>`).join("")}</div></section>`;}
+  return `<section class="card"><div class="h">スタッフに知らせる</div>${ngLine(back)}<div class="grid2">${items.map(x=>`<button class="btn o" onclick="openNotify('${x[0]}')">${x[1]}</button>`).join("")}</div></section>`;}
 function readyRow(d){const rd=reqs(d).find(c=>c.field==="ready"&&["requested","approved","rejected"].includes(c.status));
   if(rd&&rd.status==="requested")return `<div class="row"><span class="l"><span class="n">早めの回収</span><span class="v">確認中です</span></span><span class="pill p-o">確認中</span></div>`;
   if(rd&&rd.status==="approved")return `<div class="row"><span class="l"><span class="n">早めの回収</span><span class="v">承りました</span></span><span class="pill p-g">確定</span></div>`;
@@ -450,14 +450,25 @@ async function licUpload(){if(LIC_BUSY||!DATA)return;const r=DATA.reservation,pp
 const CSEF="https://ckrxttbnawkclshczsia.supabase.co/functions/v1/cs-chat";
 let CHAT=null, CHAT_POLL=null, CHAT_IMG=null, CHAT_BUSY=false;
 function cs(body){return fetch(CSEF,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({store:ST.CHAT,mypage_token:TOKEN,...body})}).then(r=>r.json());}
-async function loadChat(){if(DEMO||!TOKEN||RO||!ST.CHAT)return;try{const j=await cs({action:"cust_poll"});if(j&&j.ok)CHAT=j.messages||[];}catch(_){}}
+async function loadChat(){if(DEMO||!TOKEN||RO||!ST.CHAT)return;try{const j=await cs({action:"cust_poll"});if(j&&j.ok){CHAT=j.messages||[];CHAT_SEEN=j.staff_seen_at||null;}}catch(_){}}
+// ★2026-11-08 nosh：お客様がした→運営がリアクション。押したら「受け付けました」、スタッフが見たら「スタッフが確認しました（時刻）」
+let NG=null,CHAT_SEEN=null;
+const NUDGEEF="https://ckrxttbnawkclshczsia.supabase.co/functions/v1/mypage-nudge";
+async function loadNG(){if(DEMO||!TOKEN||RO)return;try{const r=await fetch(NUDGEEF,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({store:SID,token:TOKEN,action:"status"})});const j=await r.json().catch(()=>null);NG=(j&&j.ok)?(j.nudge||null):NG;}catch(_){}}
+const NGW={arrived:"着きました",late:"少し遅れます",lost:"スタッフが見つからない",parked:"車を停めました"};
+function ngLine(back){const n=NG;if(!n||(n.leg==="back")!==back||!NGW[n.kind])return"";const t=x=>clock(x).split(" ")[1]||"";
+  return n.acked_at?`<div class="must" style="border:0;padding:0 0 6px"><span><b>「${NGW[n.kind]}」</b> ${t(n.created_at)}</span><span class="pill p-g">✓ スタッフが確認しました ${t(n.acked_at)}</span></div>`
+    :`<div class="must" style="border:0;padding:0 0 6px"><span><b>「${NGW[n.kind]}」</b> ${t(n.created_at)}</span><span class="pill p-o">受け付けました</span></div>`;}
+function chatSeenLine(){const m=CHAT||[];let lc=null;for(let i=m.length-1;i>=0;i--){if(m[i].sender==="customer"){lc=m[i];break;}if(m[i].sender==="staff")return"";}
+  if(!lc)return"";const seen=CHAT_SEEN&&String(CHAT_SEEN)>=String(lc.created_at);
+  return `<div style="align-self:flex-end;font-size:11px;font-weight:700;color:${seen?"var(--g)":"var(--o)"}">${seen?"✓ スタッフが確認しました "+(clock(CHAT_SEEN).split(" ")[1]||""):"受け付けました。スタッフが確認すると、ここに出ます"}</div>`;}
 function lastStaff(){return (CHAT||[]).slice().reverse().find(m=>m.sender==="staff");}
 function askCard(){
   if(!ST.CHAT)return `<section class="card"><div class="h">スタッフに聞く</div><div class="sub">ご依頼やご質問はお電話でどうぞ（9:00〜19:00）。</div><a class="btn" href="tel:05017246197">050-1724-6197 に電話する</a></section>`;
   const ls=lastStaff(),n=(CHAT||[]).length;
   return `<section class="card"><div class="h">スタッフに聞く</div><div class="sub">ご依頼やご質問をここから送れます。写真も送れます。お返事はこのページに届きます（9:00〜19:00）。</div>${ls&&n>1?`<div style="background:#F3F5F8;border-radius:12px;padding:10px 12px;font-size:13px"><b>最新のお返事</b>（${clock(ls.created_at)}）<br>${esc(ls.body||"写真")}</div>`:""}<button class="btn" onclick="openChat()">${n?"やりとりを開く":"メッセージを送る"}</button></section>`;}
 function chatList(){const m=CHAT||[];if(!m.length)return `<div class="sub" style="text-align:center;padding:16px 0">ご予約に関するご質問・ご依頼をどうぞ。<br>スタッフが順番にお返事します。</div>`;
-  return m.map(x=>{const me=x.sender==="customer";return `<div style="align-self:${me?"flex-end":"flex-start"};max-width:85%;background:${me?"var(--navy)":"#F3F5F8"};color:${me?"#fff":"var(--ink)"};border-radius:14px;padding:9px 12px;font-size:14px;line-height:1.6;white-space:pre-wrap;word-break:break-word">${esc(x.body||"")}${x.image_url?`<img src="${esc(x.image_url)}" style="display:block;max-width:100%;border-radius:8px;margin-top:6px">`:""}<div style="font-size:10px;opacity:.7;margin-top:2px;text-align:right">${clock(x.created_at)}</div></div>`;}).join("");}
+  return m.map(x=>{const me=x.sender==="customer";return `<div style="align-self:${me?"flex-end":"flex-start"};max-width:85%;background:${me?"var(--navy)":"#F3F5F8"};color:${me?"#fff":"var(--ink)"};border-radius:14px;padding:9px 12px;font-size:14px;line-height:1.6;white-space:pre-wrap;word-break:break-word">${esc(x.body||"")}${x.image_url?`<img src="${esc(x.image_url)}" style="display:block;max-width:100%;border-radius:8px;margin-top:6px">`:""}<div style="font-size:10px;opacity:.7;margin-top:2px;text-align:right">${clock(x.created_at)}</div></div>`;}).join("")+chatSeenLine();}
 function chatPaintList(){const el=$("#chatList");if(el){el.innerHTML=chatList();el.scrollTop=el.scrollHeight;}}
 function openChat(pre){if(DEMO){CHAT=CHAT||[{sender:"staff",body:"ご連絡ありがとうございます！スタッフが順番にお返事します。",created_at:new Date().toISOString()}];}
   sheet(`<h3>スタッフに聞く</h3><div id="chatList" style="display:flex;flex-direction:column;gap:8px;max-height:46vh;overflow:auto;padding:4px 0">${chatList()}</div>
@@ -486,7 +497,7 @@ let NUDGE_BUSY=false;
 async function sendNotify(k){if(NUDGE_BUSY)return;const x=String(($("#nfx")||{}).value||"").trim(),back=stageOf(DATA).indexOf("back")===0;
   if(DEMO){CHAT_IMG=null;closeSheet();toast("お試し表示のため送信しません");return;}
   NUDGE_BUSY=true;try{const r=await fetch(NUDGE,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({store:SID,token:TOKEN,kind:k,note:x,leg:back?"back":"go",...(CHAT_IMG?{image:CHAT_IMG}:{})})});const j=await r.json().catch(()=>null);
-    if(j&&j.ok){CHAT_IMG=null;closeSheet();toast(k==="late"?"大丈夫です。安全運転でお越しください":k==="parked"?"返却完了です。このままお帰りいただけます":"スタッフに知らせました");loadChat();}else toast((j&&j.error)||"送れませんでした。もう一度押してください");}
+    if(j&&j.ok){CHAT_IMG=null;closeSheet();toast(k==="late"?"大丈夫です。安全運転でお越しください":k==="parked"?"返却完了です。このままお帰りいただけます":"受け付けました");NG={kind:k,leg:back?"back":"go",created_at:new Date().toISOString(),acked_at:null};render();loadChat();}else toast((j&&j.error)||"送れませんでした。もう一度押してください");}
   catch(_){toast("送れませんでした。電波の良いところでもう一度押してください");}finally{NUDGE_BUSY=false;}}
 function saveHelp(){const ios=/iPhone|iPad|iPod/.test(navigator.userAgent);
   sheet(`<h3>ホーム画面に保存する</h3><div class="txt">${ios?"1. 画面下の <b>共有ボタン</b>（四角から矢印）を押す<br>2. <b>ホーム画面に追加</b> を押す<br>3. 右上の <b>追加</b> を押す":"1. 右上の <b>︙</b> を押す<br>2. <b>ホーム画面に追加</b>（またはアプリをインストール）を押す"}</div><div class="sub">保存すると、スタッフの出発・到着やご依頼のお返事が通知で届きます。返却が終わるまでお使いください。</div><button class="btn" onclick="closeSheet()">わかりました</button>`);}
