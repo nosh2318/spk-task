@@ -195,7 +195,10 @@ function dueMs(x){const d=dueOf(x.at);return d==null?Infinity:+d;}
 function leftHtml(x){const d=dueMs(x);if(d===Infinity)return"";const m=Math.round((d-Date.now())/60e3);
   if(m<0)return `<span class="pl due0">目安を${-m}分過ぎ</span>`;if(m<=15)return `<span class="pl due0">あと${m}分</span>`;
   if(m<=60)return `<span class="pl due1">あと${m}分</span>`;const j=new Date(d+9*3600e3);return `<span class="pl due2">目安 ${md(ymd(j))} ${j.getUTCHours()}:${String(j.getUTCMinutes()).padStart(2,"0")}</span>`;}
-function beforeOf(x){if(/^mp_/.test(String(x.field||"")))return x.oldv||"";const r=rowOf(x.bucket,x.rid);if(!r)return"";const f=String(x.field||"");
+function beforeOf(x){if(/^mp_/.test(String(x.field||"")))return x.oldv||"";const r=rowOf(x.bucket,x.rid);const f=String(x.field||"");
+  /* 2026-11-08 処理済みの依頼は「依頼した時点の値」(old_value)を出す。今の値を出すと承認後は「19:00→19:00」に見える */
+  if(x.status!=="requested"&&typeof x.oldv==="string"){if(!x.oldv)return"";return (f==="lend_time"&&r)?(md(r.sd)+" "+x.oldv):(f==="return_time"&&r)?(md(r.ed)+" "+x.oldv):x.oldv;}
+  if(!r)return"";
   return f==="del_place"?(r.del_place||""):f==="col_place"?(r.col_place||""):f==="lend_time"?(md(r.sd)+" "+(r.st||"")):f==="return_time"?(md(r.ed)+" "+(r.et||"")):"";}
 async function rpc(base,anon,fn){try{const r=await fetch(base+"/rest/v1/rpc/"+fn,{method:"POST",headers:{apikey:anon,Authorization:"Bearer "+anon,"Content-Type":"application/json"},body:"{}"});if(!r.ok)return[];const j=await r.json();return Array.isArray(j)?j:[];}catch(e){return[];}}
 async function loadReq(){const [a,b]=await Promise.all([rpc(MAIN,MAIN_ANON,"mpadmin_pending"),rpc(BT,BT_ANON,"mpadmin_pending_bt")]);REQ={};a.concat(b).forEach(x=>{const k=x.bucket+"|"+x.rid;(REQ[k]=REQ[k]||[]).push(x);});}
@@ -485,7 +488,7 @@ function reqItem(x,act){const k=x.bucket+"|"+x.id,p=x.status==="requested",bf=be
   const btn=(d,l,cls)=>`<button class="btn ${cls}" onclick="decide('${esc(k)}','${d}')">${ARM===k+"|"+d?"もう一度押すと確定":l}</button>`;
   const ch=typeOf(x.field)==="cancel"?'<div class="chg"><b>キャンセルしたい</b></div>':x.field==="ready"?`<div class="chg"><b>早めに回収してOK</b>${x.newv?`<div class="mut">目安：${esc(x.newv)}</div>`:""}</div>`
     :`<div class="chg">${bf?`<span class="bf">${esc(bf)}</span><span class="ar">→</span>`:""}<b>${esc(x.newv||"（内容なし）")}</b></div>`;
-  return `<div class="rq ${p?"pend":""}">${st?`<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${st}<span class="mut">${act?"":tyLabel(x)} ${esc((x.at||"").slice(5,16).replace("T"," "))}</span></div>`:""}
+  return `<div class="rq ${p?"pend":""}">${st?`<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${st}<span class="mut">${act?"":tyLabel(x)} ${esc(x.at&&!isNaN(Date.parse(x.at))?new Date(Date.parse(x.at)+9*3600e3).toISOString().slice(5,16).replace("T"," "):"")}</span></div>`:""}
     ${late?`<div>${late}</div>`:""}${ch}${x.note?`<div class="mut">📝 ${esc(x.note)}</div>`:""}${extra}
     ${p&&act?`<div class="acts">${btn("approved","✅ 承認（反映＋"+(x.line?"LINE":"メール")+"で通知）","ok")}${x.bucket==="but_tkm"?"":`<button class="btn" style="background:#dbeafe;color:#1d4ed8" onclick="altOpen('${esc(k)}')">できない → 代わりの案…</button>`}</div>${altHtml(x,k)}
       <div style="margin-top:6px"><button class="lnk" onclick="decide('${esc(k)}','acknowledged')">${ARM===k+"|acknowledged"?"もう一度押すとアーカイブ":"アーカイブ（反映・通知なし。重複や取り下げ用）"}</button></div>`:""}</div>`;}
