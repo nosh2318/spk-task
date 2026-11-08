@@ -233,6 +233,14 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 .setbanner .sb-tx b{display:block;font-size:14px;color:#8a4b00;margin-bottom:1px}
 .setbanner .sb-go{flex:none;font-weight:900;color:#8a4b00;background:#fff;border-radius:999px;padding:6px 12px;font-size:13px}
 @keyframes licpulse{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.55)}50%{box-shadow:0 0 0 7px rgba(220,38,38,0)}}
+.nowcard{background:#0F1F45;color:#fff;border-radius:16px;padding:16px 16px 14px;margin:0 0 14px;box-shadow:0 6px 18px rgba(15,31,69,.22)}
+.nowcard .nc-h{font-size:20px;font-weight:900;line-height:1.3}
+.nowcard .nc-l{font-size:14px;margin-top:4px;opacity:.92}
+.nowcard .nc-due{font-size:12px;margin-top:10px;color:#FABE00;font-weight:800}
+.nowcard .ncbtn{display:block;width:100%;margin-top:10px;background:#FABE00;color:#0F1F45;border:none;border-radius:12px;padding:13px;font-size:15px;font-weight:900;text-align:center;text-decoration:none;cursor:pointer}
+.nowcard .ncbtn.sub{background:rgba(255,255,255,.14);color:#fff;border:1.5px solid rgba(255,255,255,.4)}
+.nowcard .fuelbox{margin:12px 0 0!important}
+.nowcard .nc-img{display:block;width:100%;max-height:220px;object-fit:cover;border-radius:12px;margin-top:12px;background:#1e2d55}
 .licalert{display:flex;align-items:center;gap:11px;background:#fef2f2;border:2px solid #dc2626;border-radius:14px;padding:13px 15px;margin-bottom:14px;cursor:pointer;animation:licpulse 1.15s ease-in-out infinite}
 .licalert .la-ic{font-size:26px;flex:none}
 .licalert .la-tx{flex:1;min-width:0}
@@ -254,7 +262,8 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 <div class="toast" id="toast"></div>
 
 <script>
-const VER = "v4.9.16-mypage staff=1スタッフ代理モード(編集可・免許/変更をお客様に代わって登録)＋全書込を監査ログ(spk_guide_action_log・staff_proxyフラグ・来店/返却時刻キャプチャ)へ";
+const VER = "v4.9.18-mypage 今の状態1行＋今やることカード(NOWCARD_1108・時刻で自動切替・給油は返却日だけ・貸出後3hはETC車載器の場所＋ETCカード貸出なし)";
+var NC_NOW=(function(){try{var q=new URLSearchParams(location.search);if(!q.get("demo"))return 0;var v=Date.parse(q.get("now")||"");return isNaN(v)?0:v;}catch(e){return 0}})(); // デモ専用：?demo=1&now=2026-11-10T09:00:00%2B09:00 で段階を確認
 const FN = "https://ckrxttbnawkclshczsia.supabase.co/functions/v1/handyman-mypage";
 // 免許証アップロードの保存先=GAS「HANDYMAN 免許証保存」→Googleドライブ（license.htmlと完全に同一・store='spk'）
 const GAS_LICENSE_URL = 'https://script.google.com/macros/s/AKfycbycpzE1RIu2LbIlYVeRYcXxfIgfDhY5y1Vtdh1Rj69S9uZEnmqFMDBHqq3y6pHS70_t7A/exec';
@@ -289,6 +298,79 @@ window.TRAVEL_LINKS={
 window.tvClick=function(cat){ try{qtrack('travel_'+cat,{cat:cat});}catch(e){} var u=(window.TRAVEL_LINKS||{})[cat]; if(u)window.open(u,'_blank','noopener'); };
 /* ★2026-11-03 オーナー指示：満タン返却のお願いを常に目立つ場所に表示（4言語・キャンセル済みは非表示） */
 function fuelBox(){var M={ja:["⛽ 給油してからのご返却をお願いします","満タンでのご返却がルールです。ご返却前に、返却場所の近くのガソリンスタンドで指定の燃料を満タンにしてください。"],en:["⛽ Please refuel before returning the car","Returning the car with a full tank is our rule. Before returning, please fill up with the specified fuel at a gas station near your return location."],zh:["⛽ 請加滿油後再還車","還車時須加滿油。還車前，請在還車地點附近的加油站加滿指定燃料。"],ko:["⛽ 주유 후 반납해 주세요","만탱크 반납이 원칙입니다. 반납 전 반납 장소 근처 주유소에서 지정 연료를 가득 채워 주세요."]};var m=M[(typeof L!=="undefined"&&M[L])?L:"ja"];return '<div class="fuelbox" role="note" style="display:flex;gap:10px;align-items:flex-start;background:#fff7e6;border:2px solid #f59e0b;border-radius:14px;padding:12px 14px;margin:12px 0 14px;color:#7c2d12;box-shadow:0 4px 14px rgba(245,158,11,.18)"><div style="flex:1;min-width:0"><b style="display:block;font-size:15.5px;font-weight:900;line-height:1.35;color:#9a3412">'+m[0]+'</b><span style="display:block;font-size:12.5px;line-height:1.55;margin-top:3px">'+m[1]+'</span></div></div>';}
+/* NOWCARD_1108 今の状態1行＋今やること1枚（誘導型マイページ）。過去問い合わせの時系列分析に基づき、時刻とデータだけで自動で切り替わる。
+   段階：準備中(未登録あり)→準備完了→前日→当日(お届け中)→利用中→返却日(給油)→返却直前(回収中)→返却後。文字は最小限・1枚1訴求。 */
+var NC={
+ todo:{ja:function(n){return "あと"+n+"つで準備完了"},en:function(n){return n+" step"+(n>1?"s":"")+" left"},zh:function(n){return "還差"+n+"項即可完成準備"},ko:function(n){return "준비 완료까지 "+n+"개 남음"}},
+ due:{ja:"締切",en:"Due",zh:"截止",ko:"마감"},
+ lic:{ja:"免許証を登録",en:"Upload license",zh:"上傳駕照",ko:"면허증 등록"},
+ delp:{ja:"お届け場所を設定",en:"Set delivery place",zh:"設定送車地點",ko:"배차 장소 설정"},
+ colp:{ja:"回収場所を設定",en:"Set pickup place",zh:"設定取車地點",ko:"회수 장소 설정"},
+ ready:{ja:"準備完了",en:"All set",zh:"準備完成",ko:"준비 완료"},
+ tomorrow:{ja:"明日",en:"Tomorrow",zh:"明天",ko:"내일"},
+ today:{ja:"本日",en:"Today",zh:"今天",ko:"오늘"},
+ coming:{ja:"スタッフがお届けに向かっています",en:"Our staff is on the way",zh:"工作人員正在送車途中",ko:"직원이 배차하러 가고 있습니다"},
+ coming_col:{ja:"スタッフが回収に向かっています",en:"Our staff is coming to pick up",zh:"工作人員正在前往取車",ko:"직원이 회수하러 가고 있습니다"},
+ track:{ja:"現在地を見る",en:"See location",zh:"查看位置",ko:"위치 보기"},
+ ret:{ja:"返却",en:"Return",zh:"還車",ko:"반납"},
+ chg:{ja:"変更を申請",en:"Request a change",zh:"申請變更",ko:"변경 신청"},
+ left:{ja:function(h,m){return "返却まであと"+(h>0?h+"時間":"")+m+"分"},en:function(h,m){return (h>0?h+"h ":"")+m+"m until return"},zh:function(h,m){return "距離還車還有"+(h>0?h+"小時":"")+m+"分鐘"},ko:function(h,m){return "반납까지 "+(h>0?h+"시간 ":"")+m+"분"}},
+ thanks:{ja:"ご利用ありがとうございました",en:"Thank you for riding with us",zh:"感謝您的使用",ko:"이용해 주셔서 감사합니다"},
+ lost:{ja:"忘れ物のご連絡",en:"Report a lost item",zh:"遺失物聯絡",ko:"분실물 문의"},
+ unset:{ja:"場所未設定",en:"Place not set",zh:"地點未設定",ko:"장소 미설정"},
+ etc:{ja:function(x){return "ETC車載器は"+x},en:function(x){return "ETC unit: "+x},zh:function(x){return "ETC車載機位置："+x},ko:function(x){return "ETC 단말기: "+x}},
+ noetc:{ja:"ETCカードの貸出はありません",en:"ETC cards are not available for rent",zh:"不提供ETC卡租借",ko:"ETC 카드 대여는 없습니다"}
+};
+function nc(k){var e=NC[k];if(!e)return k;var f=e[L]||e.ja;return typeof f==="function"?f.apply(null,[].slice.call(arguments,1)):f;}
+function ncMs(ds,ts,def){if(!ds)return NaN;return Date.parse(String(ds).slice(0,10)+"T"+(/^\d{1,2}:\d{2}/.test(ts||"")?String(ts).padStart(5,"0").slice(0,5):def)+":00+09:00");}
+function ncMD(ms){var j=new Date(ms+9*3600000);return (j.getUTCMonth()+1)+"/"+j.getUTCDate()+" "+String(j.getUTCHours()).padStart(2,"0")+":"+String(j.getUTCMinutes()).padStart(2,"0");}
+function ncDay(ms){return Math.floor((ms+9*3600000)/86400000);}
+function ncOpen(id){var el=document.getElementById(id);if(!el)return;el.open=true;el.scrollIntoView({behavior:'smooth',block:'start'});}
+function ncLic(){ncOpen('liccard');scrollLic();}
+/* 返り値 {k:段階, html}。キャンセル・申請中はカードなし（既存バナーが出る） */
+function nowCard(d,r,editable,now){
+  if(!r||d.pendingCancel||r.status==="キャンセル"||r.status==="cancelled")return {k:"none",html:""};
+  now=now||Date.now();
+  var lend=ncMs(r.lend_date,r.lend_time,"10:00"), ret=ncMs(r.return_date,r.return_time,"17:00");
+  if(isNaN(lend)||isNaN(ret))return {k:"none",html:""};
+  var trk=d.tracking||{}, ks=trk.kd_status||"";
+  var place=function(p){return p?esc(p):'<span style="color:#dc2626;font-weight:800">'+nc('unset')+'</span>';};
+  var btn=function(label,on,href,sub){return href?'<a class="ncbtn'+(sub?' sub':'')+'" href="'+href+'" target="_blank" rel="noopener">'+label+'</a>':'<button class="ncbtn'+(sub?' sub':'')+'" onclick="'+on+'">'+label+'</button>';};
+  var card=function(k,head,line,btns,extra){return {k:k,html:'<div class="nowcard" data-ph="'+k+'"><div class="nc-h">'+head+'</div>'+(line?'<div class="nc-l">'+line+'</div>':'')+(btns||'')+(extra||'')+'</div>'};};
+  var dayDiff=ncDay(lend)-ncDay(now);
+  if(now<lend){
+    if(ks==="delivering")return card("coming",nc('coming'),ncMD(lend)+'・'+place(r.del_place),btn(nc('track'),"",trackUrl(r.id,trk,"del")));
+    var miss=[];
+    if(editable){
+      if(!(d.license&&d.license.cnt>0))miss.push(btn(nc('lic'),"ncLic()"));
+      if(!r.del_place)miss.push(btn(nc('delp'),"mapPicker('del_place')"));
+      if(!r.col_place)miss.push(btn(nc('colp'),"mapPicker('col_place')"));
+    }
+    var line=(dayDiff===0?nc('today')+' '+ncMD(lend).split(' ')[1]:dayDiff===1?nc('tomorrow')+' '+ncMD(lend).split(' ')[1]:ncMD(lend))+'・'+place(r.del_place);
+    if(miss.length){
+      var due=(!r.del_place||!r.col_place)?'<div class="nc-due">'+nc('due')+' '+ncMD(lend-86400000)+'</div>':'';
+      return card("todo",nc('todo',miss.length),line,miss.join(''),due);
+    }
+    return card(dayDiff<=0?"today":dayDiff===1?"tomorrow":"ready",dayDiff<=1?line:nc('ready'),dayDiff<=1?"":line,"");
+  }
+  if(now<lend+10800000&&now<ret-7200000){ /* 貸出後3時間＝使い方の問い合わせが集中→ETC車載器の場所(車両マスタspecs)＋ETCカード貸出なし */
+    if(ks==="delivering")return card("coming",nc('coming'),place(r.del_place),btn(nc('track'),"",trackUrl(r.id,trk,"del")));
+    var car=d.car||{};
+    var img=car.etc_image?'<img class="nc-img" src="'+esc(car.etc_image)+'" alt="ETC" loading="lazy">':'';
+    if(car.etc_location)return card("pickup",nc('etc',esc(car.etc_location)),nc('noetc'),"",img);
+    return card("pickup",nc('noetc'),nc('ret')+' '+ncMD(ret),"");
+  }
+  if(now<ret-7200000){
+    if(ncDay(ret)===ncDay(now))return card("retday",nc('today')+' '+ncMD(ret).split(' ')[1]+' '+nc('ret'),place(r.col_place),"",fuelBox());
+    return card("inuse",nc('ret')+' '+ncMD(ret),place(r.col_place),editable?btn(nc('chg'),"ncOpen('dpacc')",null,true):"");
+  }
+  if(now<ret+3600000){
+    if(ks==="collecting")return card("collecting",nc('coming_col'),place(r.col_place),btn(nc('track'),"",trackUrl(r.id,trk,"col")));
+    var mins=Math.max(0,Math.round((ret-now)/60000));
+    return card("returning",mins>0?nc('left',Math.floor(mins/60),mins%60):nc('today')+' '+ncMD(ret).split(' ')[1]+' '+nc('ret'),place(r.col_place),"",fuelBox());
+  }
+  return card("after",nc('thanks'),"",(!RO&&typeof csToggle==="function")?btn(nc('lost'),"csToggle()",null,true):"");
+}
 let DATA = null;
 
 /* ================= 多言語 i18n（日本語/English/繁體中文/한국어）================= */
@@ -900,6 +982,7 @@ function render(){
   const editable = !RO && !d.pendingCancel && !cancelled;  // ★スタッフ閲覧(ro=1)は編集ボタンを一切表示しない=完全閲覧専用。call()のROガードは二重防御として維持
   const canCancel = ["HANDYMAN","KEYDROP","HP","SP","direct"].includes(r.ota);  // ★キャンセル申請ボタンはオフィシャル(公式/直販)とKEYDROPのみ。OTA(楽天/じゃらん/skyticket/エアトリ/レンタカードットコム等)は各OTA側でキャンセル=表示しない
 
+  const NCX=nowCard(d,r,editable,NC_NOW);  // NOWCARD_1108 未登録(免許/場所)はカードに集約→下の赤バナー2つは出さない
   $("#app").innerHTML = `
   ${RO?`<div style="background:#0F1F45;color:#fff;display:flex;align-items:center;gap:8px;padding:9px 12px;font-size:13px;font-weight:700"><button onclick="try{window.close()}catch(e){};setTimeout(function(){history.length>1?history.back():(location.href='index.html')},120)" style="background:#fff;color:#0F1F45;border:none;border-radius:6px;padding:6px 12px;font-size:13px;font-weight:800;cursor:pointer;white-space:nowrap">← APPに戻る</button><span style="flex:1;text-align:center">🔒 スタッフ確認用（閲覧のみ）</span></div>`:(STAFF?`<div style="background:#0e7a6b;color:#fff;display:flex;align-items:center;gap:8px;padding:9px 12px;font-size:13px;font-weight:700"><button onclick="try{window.close()}catch(e){};setTimeout(function(){history.length>1?history.back():(location.href='index.html')},120)" style="background:#fff;color:#0e7a6b;border:none;border-radius:6px;padding:6px 12px;font-size:13px;font-weight:800;cursor:pointer;white-space:nowrap">← APPに戻る</button><span style="flex:1;text-align:center">🧑‍💼 スタッフ代理モード（お客様に代わって免許アップ・変更を登録できます／操作は記録されます）</span></div>`:"")}
   <div class="nhero">
@@ -915,7 +998,7 @@ function render(){
     <div class="nh-st">${esc(stLabel)}</div>
   </div>
 
-  ${!cancelled?fuelBox():""}
+  ${NCX.html}
   ${!cancelled?`<div class="tvbox">
     <div class="tv-h"><span class="ic">🎁</span><b>${t('tv_hd')}</b></div>
     <div class="tv-sub">${t('tv_sub')}</div>
@@ -927,7 +1010,7 @@ function render(){
     </div>
   </div>`:""}
 
-  ${(!RO&&!cancelled&&!(d.license&&d.license.cnt>0))?`<div class="licalert" onclick="scrollLic()">
+  ${(!RO&&!cancelled&&NCX.k!=="todo"&&!(d.license&&d.license.cnt>0))?`<div class="licalert" onclick="scrollLic()">
     <div class="la-ic">🪪</div>
     <div class="la-tx"><b>⚠️ ${t('lic_alert_title')}</b><span>${t('lic_alert_body')}</span></div>
     <div class="la-go">${t('lic_alert_btn')}</div>
@@ -936,7 +1019,7 @@ function render(){
   ${d.pendingCancel?`<div class="banner">${t('banner_cancel')}</div>`:""}
   ${reqReplyCard(d)}
 
-  ${(editable&&(!r.del_place||!r.col_place))?`<div class="setbanner" onclick="mapPicker('${!r.del_place?"del_place":"col_place"}')">
+  ${(editable&&NCX.k!=="todo"&&(!r.del_place||!r.col_place))?`<div class="setbanner" onclick="mapPicker('${!r.del_place?"del_place":"col_place"}')">
     <div class="sb-ic">📍</div>
     <div class="sb-tx"><b>${(!r.del_place&&!r.col_place?t('unset_both'):!r.del_place?t('unset_del'):t('unset_col'))+t('not_set_suffix')}</b>
     <span>${t('set_tap')}</span></div>
@@ -972,7 +1055,7 @@ function render(){
     </div>
   </details>
 
-  <details class="acc">
+  <details class="acc" id="dpacc">
     <summary><span class="ic">📍</span>${t('deliver_pickup')}<span class="chev">▾</span></summary>
     <div class="accb">
     <div class="row"><div class="k">${t('del_place')}</div><div class="v">${r.del_place?esc(r.del_place):`<span class="unset">${t('unset')}</span>`}${chgBadge('del_place')}
