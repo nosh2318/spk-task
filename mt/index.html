@@ -223,6 +223,11 @@ function musts(d){const r=d.reservation,L=d.license||{},out=[];
   if(isDel(r.visit_type))out.push({k:"del_place",n:"お届け場所",ok:String(r.del_place||"").trim().length>1,v:r.del_place||"未登録"});
   else out.push({k:"flight",n:"到着便",ok:!!String(r.del_flight||"").trim(),v:r.del_flight||"未登録"});
   if(isCol(r.return_type))out.push({k:"col_place",n:"回収場所",ok:String(r.col_place||"").trim().length>1,v:r.col_place||"未登録"});
+  // ★2026-11-08 nosh「フォームをなくす＝入力の頻度と精度」：人数・帰りの便・前日の確認を必須に（3店共通・mypage_info）
+  const I=INFO||{},ppl=+(I.people||r.people||0);
+  out.push({k:"people",n:"ご利用人数",ok:ppl>0,v:ppl>0?ppl+"名":"未登録"});
+  if(/^BD/i.test(r.return_type||"")&&SID!=="spk")out.push({k:"fout",n:"帰りの便",ok:!!I.flight_out,v:I.flight_out||"未登録"});
+  {const st=stageOf(d);if(["eve","go_day","go_soon"].includes(st))out.push({k:"conf",n:"前日の確認（時間・場所）",ok:!!I.confirmed_at,v:I.confirmed_at?"確認済":"1タップで確認"});}
   out.push({k:"save",n:"このページをホーム画面に保存",ok:STANDALONE,v:STANDALONE?"保存済":"通知が届きます"});
   return out;}
 
@@ -247,7 +252,7 @@ async function load(quiet){
     const j=await r.json().catch(()=>({}));
     if(j.cancelled){$("#ttl").textContent="キャンセル済み";$("#app").innerHTML=`<div class="center">${esc(j.error||"キャンセル済みです")}</div>`;return;}
     if(!j.ok){if(!quiet){$("#ttl").textContent="マイページ";$("#app").innerHTML=`<div class="center">${esc(j.error||"読み込めませんでした")}<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}return;}
-    DATA=j;await Promise.all([loadDV(),loadSH(),loadChat(),loadPay(),loadNG()]);render();
+    DATA=j;await Promise.all([loadDV(),loadSH(),loadChat(),loadPay(),loadNG(),loadINFO()]);render();
   }catch(e){if(!quiet)$("#app").innerHTML=`<div class="center">通信できませんでした。<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}
 }
 const SH_TX={pu_depart:["送迎車が空港へ向かっています","p-o"],pu_at_stop:["送迎車が乗り場に着きました","p-g","お手荷物を受け取ったら、乗り場へお越しください"],pu_met:["合流しました。お店へ向かっています","p-x"],bd_depart:["空港へ向かっています","p-o"],bd_at_airport:["空港に着きました。ご利用ありがとうございました","p-x"]};
@@ -316,7 +321,7 @@ function viewNow(d,st){
   if(st==="prep"||st==="eve"){
     h+=`<section class="card hero"><div class="h">${st==="eve"?"明日の"+g:g+"の予定"}</div><div class="big">${mdw(r.lend_date)} ${hm(r.lend_time)||"時間未定"}</div><div class="sub">${esc(goPlace)}</div></section>`;
     h+=`<section class="card"><div style="display:flex;justify-content:space-between;align-items:center"><div class="h">必須</div>${left.length?`<span class="pill p-r">残り ${left.length}つ</span>`:`<span class="pill p-g">そろっています</span>`}</div>`+
-      M.map(x=>`<div class="must"><span>${esc(x.n)}<br><span class="sub">${esc(x.v)}</span></span>${x.ok?`<span class="pill p-g">済</span>`:x.k==="save"?`<button class="pill p-o" style="border:0;cursor:pointer" onclick="saveHelp()">保存する</button>`:`<button class="pill p-r" style="border:0;cursor:pointer" onclick="fixMust('${x.k}')">${x.k==="pay"?"支払う":"登録する"}</button>`}</div>`).join("")+
+      M.map(x=>`<div class="must"><span>${esc(x.n)}<br><span class="sub">${esc(x.v)}</span></span>${x.ok?`<span class="pill p-g">済</span>`:x.k==="save"?`<button class="pill p-o" style="border:0;cursor:pointer" onclick="saveHelp()">保存する</button>`:`<button class="pill p-r" style="border:0;cursor:pointer" onclick="fixMust('${x.k}')">${x.k==="pay"?"支払う":x.k==="conf"?"確認する":"登録する"}</button>`}</div>`).join("")+
       `<div class="sub">${left.length?"足りない項目があるあいだ、お知らせが届きます。3日前の19:00を過ぎるとスタッフからお電話します。":"当日はこの画面に、スタッフの出発・到着が出ます。"}</div></section>`;
     if(isPub(r.visit_type))h+=busCard("go");
     if(st==="eve"&&isDel(r.visit_type))h+=`<section class="card"><div class="h">当日の流れ</div><div class="tl"><div><b>1</b>スタッフが出発すると、ここに到着予定が出ます</div><div><b>2</b>着いたら、車のナンバーと停めた場所が出ます</div><div><b>3</b>免許証を見せて、鍵を受け取って出発</div></div><div class="sub">持ち物：運転する人の免許証</div></section>`;
@@ -416,9 +421,19 @@ function viewAsk(d){return `<section class="card"><div class="h">よくある質
 /* ---- 操作 ---- */
 function openBooking(){if(!DATA)return;const r=DATA.reservation;
   sheet(`<h3>ご予約内容</h3><dl class="kv"><dt>予約番号</dt><dd>${esc(r.id)}</dd><dt>ご予約元</dt><dd>${esc(r.ota||"-")}</dd><dt>${goWord(r)}</dt><dd>${mdw(r.lend_date)} ${hm(r.lend_time)}<br><span class="sub">${esc(isDel(r.visit_type)?r.del_place||"":"空港送迎・来店")}</span></dd><dt>${backWord(r)}</dt><dd>${mdw(r.return_date)} ${hm(r.return_time)}<br><span class="sub">${esc(isCol(r.return_type)?r.col_place||"":"店舗")}</span></dd><dt>車両クラス</dt><dd>${esc(r.vehicle||"-")}</dd><dt>人数</dt><dd>${esc(r.people||"-")}名</dd><dt>補償</dt><dd>${esc(r.insurance||"-")}</dd><dt>オプション</dt><dd>${[["ベビー",r.opt_b],["チャイルド",r.opt_c],["ジュニア",r.opt_j],["USB",r.opt_usb]].filter(x=>+x[1]).map(x=>x[0]+" "+x[1]).join("・")||"なし"}</dd>${r.price?`<dt>料金</dt><dd>¥${Number(r.price).toLocaleString()}</dd>`:""}</dl><button class="btn g" onclick="closeSheet()">閉じる</button>`);}
+// ★2026-11-08 必須の入力（人数・帰りの便・前日の確認）
+const INFOEF="https://ckrxttbnawkclshczsia.supabase.co/functions/v1/mypage-info";let INFO=null;
+async function infoCall(action,extra){const r=await fetch(INFOEF,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({store:SID,token:TOKEN,action,...(extra||{})})});return await r.json().catch(()=>null);}
+async function loadINFO(){if(DEMO||!TOKEN)return;try{const j=await infoCall("get");if(j&&j.ok)INFO=j.info||{};}catch(_){}}
+function openPeople(){const n=+((INFO&&INFO.people)||(DATA.reservation.people)||0);sheet(`<h3>ご利用人数</h3><div class="sub">お子様も含めた人数です。送迎・車の準備に使います。</div><select id="ipp">${Array.from({length:12},(_,i)=>i+1).map(i=>`<option ${i===(n||2)?"selected":""}>${i}</option>`).join("")}</select><button class="btn" onclick="saveInfo({people:+$('#ipp').value})">登録する</button><button class="btn g" onclick="closeSheet()">閉じる</button>`);}
+function openFout(){sheet(`<h3>帰りの便</h3><div class="sub">便名を入れてください（例：JL911）。出発時間に合わせて空港までお送りします。</div><input id="ifo" placeholder="例：JL911" autocapitalize="characters" value="${esc((INFO&&INFO.flight_out)||"")}"><button class="btn" onclick="saveInfo({flight_out:$('#ifo').value})">登録する</button><button class="btn g" onclick="closeSheet()">閉じる</button>`);}
+function openConf(){const r=DATA.reservation,g=goWord(r),b=backWord(r);const gp=isDel(r.visit_type)?(r.del_place||"未登録"):isPub(r.visit_type)?ST.pickup:ST.shop,bp=isCol(r.return_type)?(r.col_place||"未登録"):ST.shop;
+  sheet(`<h3>この内容で合っていますか？</h3><dl class="kv"><dt>${g}</dt><dd>${mdw(r.lend_date)} ${hm(r.lend_time)||"未定"}<br><span class="sub">${esc(gp)}</span></dd><dt>${b}</dt><dd>${mdw(r.return_date)} ${hm(r.return_time)||"未定"}<br><span class="sub">${esc(bp)}</span></dd>${(INFO&&INFO.people)||r.people?`<dt>人数</dt><dd>${esc((INFO&&INFO.people)||r.people)}名</dd>`:""}</dl><button class="btn" onclick="sendConf()">はい、この内容でOK</button><button class="btn o" onclick="closeSheet();go('chg')">変える</button>`);}
+async function saveInfo(v){if(DEMO){closeSheet();toast("お試し表示のため送信しません");return;}try{const j=await infoCall("set",v);if(j&&j.ok){INFO=j.info||INFO;closeSheet();toast("受け付けました");render();}else toast((j&&j.error)||"送れませんでした");}catch(_){toast("送れませんでした。電波の良いところでもう一度お試しください");}}
+async function sendConf(){if(DEMO){closeSheet();toast("お試し表示のため送信しません");return;}try{const j=await infoCall("confirm");if(j&&j.ok){INFO=j.info||INFO;closeSheet();toast("ありがとうございます。この内容でお待ちしています");render();}else toast((j&&j.error)||"送れませんでした");}catch(_){toast("送れませんでした");}}
 // ★2026-11-08 nosh：チャイルドシートの年齢の目安（3店共通）。選ぶ前に見せる
 function openOpt(){sheet(`<h3>オプション・補償の追加</h3><div class="sub" style="margin-bottom:8px">シートの目安</div><dl class="kv"><dt>ベビーシート</dt><dd>0〜1歳ごろ（約10kgまで）</dd><dt>チャイルドシート</dt><dd>1〜4歳ごろ（約9〜18kg）</dd><dt>ジュニアシート</dt><dd>4〜10歳ごろ（約15〜36kg）</dd></dl><div class="sub" style="margin:8px 0 12px">目安です。お子様の体格に合わせてお選びください。</div><button class="btn o" onclick="closeSheet();go('ask')">スタッフに頼む</button><button class="btn g" onclick="closeSheet()">閉じる</button>`);}
-function fixMust(k){if(k==="pay")return openPay();if(k==="lic")return openLicense();if(k==="time")return openReq("lend_time");if(k==="del_place"||k==="col_place")return openReq(k);if(k==="flight")return go("ask");}
+function fixMust(k){if(k==="people")return openPeople();if(k==="fout")return openFout();if(k==="conf")return openConf();if(k==="pay")return openPay();if(k==="lic")return openLicense();if(k==="time")return openReq("lend_time");if(k==="del_place"||k==="col_place")return openReq(k);if(k==="flight")return go("ask");}
 /* ---- 免許証の登録（ページ内・保存先は今までと同じ＝Googleドライブ） ---- */
 const GAS_LIC="https://script.google.com/macros/s/AKfycbycpzE1RIu2LbIlYVeRYcXxfIgfDhY5y1Vtdh1Rj69S9uZEnmqFMDBHqq3y6pHS70_t7A/exec", GAS_LIC_SECRET="hdm-lic-7c3f9a21";
 let LIC=[], LIC_BUSY=false;
