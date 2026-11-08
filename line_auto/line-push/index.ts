@@ -7,6 +7,7 @@ console.log("[keymig]", __newKey("SUPABASE_SECRET_KEYS", "edge") ? "secret" : "l
 //   action: damage_check | track_del | track_col | test/owner_test
 // deploy: functions deploy line-push --no-verify-jwt
 //   secrets: LINE_CHANNEL_TOKEN(spk), NHA_LINE_CHANNEL_TOKEN(nha), FUNC_SECRET
+// 2026-11-08 同じ通知の二重送信を止める（ボタンの二重押し等）：下の DEDUP_MIN の時間内に同じ予約・同じ通知を送っていたら送らない。
 
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
 const SB_KEY = (__newKey("SUPABASE_SECRET_KEYS", "edge") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"))!;
@@ -18,6 +19,12 @@ const TOKENS: Record<string, string> = {
 const H = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json" };
 async function sbGet(p: string) { const r = await fetch(`${SB_URL}/rest/v1/${p}`, { headers: H }); return r.ok ? await r.json() : []; }
 function json(o: unknown, s = 200) { return new Response(JSON.stringify(o), { status: s, headers: { "Content-Type": "application/json" } }); }
+
+// 同じ予約・同じ通知を、この分数の間は2回送らない（スタッフのボタン系＝出発/到着/回収、場所更新の案内）
+const DEDUP_MIN: Record<string, number> = {
+  depart_mypage: 60, mypage_depart: 60, arrival: 60, collect_mypage: 60, mypage_collect: 60, col_arrival: 60,
+  mypage_reconcile: 24 * 60,
+};
 
 Deno.serve(async (req) => {
   if (req.method !== "POST") return new Response("POST only", { status: 405 });
@@ -65,12 +72,29 @@ Deno.serve(async (req) => {
       if (!rd || rd < todayJST) { await logSend({ resv_no, action, status: "skipped", error: "past_or_no_date:" + rd }); return json({ ok: false, reason: "past_or_no_date" }); }
     }
     }
+    // 二重送信ガード（2026-11-08）
+    const dm = DEDUP_MIN[action];
+    if (dm) {
+      const since = new Date(Date.now() - dm * 60000).toISOString();
+      const recent = await sbGet(`${SENDS}?resv_no=eq.${encodeURIComponent(resv_no)}&action=eq.${encodeURIComponent(action)}&status=in.(sent,mailed)&sent_at=gte.${encodeURIComponent(since)}&select=id&limit=1`);
+      if (recent[0]) { await logSend({ resv_no, action, status: "skipped", error: "duplicate_within_" + dm + "min" }); return json({ ok: true, reason: "duplicate_skipped" }); }
+    }
   }
 
   // 予約番号 → userId（完全一致）
   const link = await sbGet(`${LINKS}?resv_no=eq.${encodeURIComponent(resv_no)}&select=line_user_id`);
   const realUserId = link[0]?.line_user_id;
-  if (!realUserId) { await logSend({ resv_no, action, status: "no_userid", message }); return json({ ok: false, reason: "no_userid" }); }
+  if (!realUserId) {
+    // 2026-11-08 LINE未連携→メール（店舗スイッチ mail_fallback_enabled。OFF時は従来どおり no_userid＝手動。テスト宛先があればテスト宛先だけに送る）
+    let mail = "";
+    try {
+      const mr = await fetch(`${SB_URL}/rest/v1/rpc/hdm_enqueue_guest_mail`, { method: "POST", headers: H, body: JSON.stringify({ p_store: store, p_resv: resv_no, p_action: action, p_body: message }) });
+      mail = mr.ok ? String(await mr.json()) : "rpc_error:" + mr.status;
+    } catch { mail = "rpc_error"; }
+    if (mail === "ok") { await logSend({ resv_no, action, status: "mailed", message }); return json({ ok: true, channel: "mail", store }); }
+    await logSend({ resv_no, action, status: "no_userid", message, error: (mail && mail !== "off" && mail !== "bad_action") ? "mail:" + mail : null });
+    return json({ ok: false, reason: "no_userid", mail });
+  }
 
   // 安全スイッチ
   const cfg = (await sbGet(`${CFG}?id=eq.1&select=*`))[0] || {};

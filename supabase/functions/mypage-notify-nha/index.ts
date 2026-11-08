@@ -99,8 +99,8 @@ Deno.serve(async (req) => {
   for (const r of resvs) {
     if (okCount() >= cap) break;
     if (!linked.has(r.id) || !r.mypage_token) continue;
-    // ① 初動
-    await push(r, "mypage_initial");
+    // ① 初動（2026-11-08 深夜は送らない＝札幌と同じ JST 9〜21時）
+    if (daytime) await push(r, "mypage_initial");
     // ② 前日（JST 9〜21時）
     if (r.start_date === d1 && daytime) await push(r, "mypage_daybefore");
     // ③ 返却日の朝（9時以降・1回）
