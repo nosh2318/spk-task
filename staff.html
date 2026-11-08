@@ -153,7 +153,7 @@ a.myp{background:#065f46;color:#fff;font-size:11px;font-weight:800;border-radius
 <script>
 var SB="https://ckrxttbnawkclshczsia.supabase.co";
 var ANON="sb_publishable_aTVhlY0YD-5BBfI03ZNnsg_MzO_vsIe";
-var VER="staff-v3.58";
+var VER="staff-v3.59";
 var TOKEN=new URLSearchParams(location.search).get("t")||"";
 // ===== 📊 個別URL利用計測 (staff_url_events) — 前方記録・既存挙動に非干渉 =====
 var SUE=(function(){
@@ -282,10 +282,12 @@ function taskCard(x){
     btns+=_ab('dep',rid,'depart',"saAction('"+rid+"','depart')",'🚚出発');
     btns+=_ab('arr',rid,'arrival',"saAction('"+rid+"','arrival')",'📱到着');
     btns+=_ab('dly',rid,'delay_del',"saDelay('"+rid+"','delay_del','"+etm+"')",'⏳遅延');
+    btns+='<button class="abtn" style="background:#fff7ed;color:#c2410c;border:1px solid #fdba74;font-weight:800" onclick="saJamDel(\''+rid+'\',\'delay_del\',\''+etm+'\')">🚦渋滞</button>';
   }else if(rid&&isCol){
     btns+=_ab('col',rid,'collect',"saAction('"+rid+"','collect')",'🧭回収に向かう');
     btns+=_ab('arr',rid,'col_arrival',"saAction('"+rid+"','col_arrival')",'📱到着');
     btns+=_ab('dly',rid,'delay_col',"saDelay('"+rid+"','delay_col','"+etm+"')",'⏳遅延');
+    btns+='<button class="abtn" style="background:#fff7ed;color:#c2410c;border:1px solid #fdba74;font-weight:800" onclick="saJamDel(\''+rid+'\',\'delay_col\',\''+etm+'\')">🚦渋滞</button>';
     btns+=_ab('drp',rid,'dropoff',"saAction('"+rid+"','dropoff')",'🚗乗捨');
   }
   if(rid&&(isDel||isCol)){
@@ -496,11 +498,14 @@ window.saHandover=function(resv){
   document.body.appendChild(ov);
   fetchRecs(draw);
 };
-window.saDelay=function(rid,action,defTm){
+window.saDelay=function(rid,action,defTm,presetTm){
   var kind=(action==="delay_col")?"回収":"お届け";
-  var tm=prompt(kind+"の到着予定時間を入力してください（例 18:30）",defTm||"");
+  var tm=presetTm||"";   // 🚦渋滞（+10/+20分）から来たときは時刻を自動で入れ、聞き直さない
+  if(!presetTm){
+  tm=prompt(kind+"の到着予定時間を入力してください（例 18:30）",defTm||"");
   if(tm===null)return; tm=String(tm).trim(); if(!tm){alert("時間が未入力です");return;}
   if(!confirm(kind+"遅延のご案内を送信しますか？\n到着予定：「"+tm+"」\n（お客様LINEに自動送信します）"))return;
+  }
   fetch(SAEF,{method:"POST",headers:{"apikey":ANON,"Authorization":"Bearer "+ANON,"Content-Type":"application/json"},body:JSON.stringify({token:TOKEN,resv_no:rid,action:action,time:tm})})
     .then(function(r){return r.json();})
     .then(function(d){
@@ -510,6 +515,29 @@ window.saDelay=function(rid,action,defTm){
       else{var m=d.message||"";try{navigator.clipboard.writeText(m);}catch(e){}alert("⚠️ LINE未登録（"+(d.reason||"")+"）。案内文をコピーしました→手動で送ってください。");}
     })
     .catch(function(){alert("⚠️ 通信エラー。電波を確認してください");});
+};
+/* ★2026-11-08 デリバリーの「🚦渋滞」（nosh：送迎と同じく +10分／+20分 を選ぶだけ）。
+   中身は今の「⏳遅延」と同じ送信（お客様LINE・マイページ・OP の遅延表示がそのまま動く）。到着予定は「予定時刻と今の遅い方 + 選んだ分」で自動計算。 */
+function jamSheet(title,items,cb){
+  var ov=document.createElement("div");
+  ov.style.cssText="position:fixed;inset:0;background:rgba(15,31,69,.55);z-index:9999;display:flex;align-items:flex-end;justify-content:center";
+  var h='<div style="background:#fff;width:100%;max-width:520px;border-radius:16px 16px 0 0;padding:16px 16px 22px">'
+    +'<div style="font-size:17px;font-weight:900;color:#002063;margin-bottom:10px">'+esc(title)+'</div>';
+  items.forEach(function(it,i){h+='<button data-i="'+i+'" style="display:block;width:100%;text-align:left;padding:14px;margin-bottom:8px;border:2px solid #fdba74;border-radius:12px;background:#fff7ed;font-size:18px;font-weight:900;color:#c2410c">🚦 '+esc(it.label)+(it.sub?'<br><span style="font-size:13px;color:#64748b;font-weight:700">'+esc(it.sub)+'</span>':'')+'</button>';});
+  h+='<button data-x="1" style="width:100%;padding:12px;border:none;border-radius:12px;background:#f1f5f9;color:#475569;font-size:15px;font-weight:800">やめる</button></div>';
+  ov.innerHTML=h;
+  ov.addEventListener("click",function(e){var b=e.target.closest?e.target.closest("button"):null;if(e.target===ov||(b&&b.getAttribute("data-x"))){ov.remove();return;}if(b&&b.getAttribute("data-i")!=null){var it=items[+b.getAttribute("data-i")];ov.remove();cb(it);}});
+  document.body.appendChild(ov);
+}
+function jamEta(defTm,min){
+  var now=new Date(Date.now()+9*3600e3), base=now.getUTCHours()*60+now.getUTCMinutes();
+  var m=String(defTm||"").match(/(\d{1,2}):(\d{2})/); if(m){var s=(+m[1])*60+(+m[2]); if(s>base)base=s;}
+  var t=(base+min)%1440; return ("0"+Math.floor(t/60)).slice(-2)+":"+("0"+(t%60)).slice(-2);
+}
+window.saJamDel=function(rid,action,defTm){
+  jamSheet("渋滞で遅れますか？",[{min:10,label:"+10分",sub:"到着予定 "+jamEta(defTm,10)+" をお客様へ"},{min:20,label:"+20分",sub:"到着予定 "+jamEta(defTm,20)+" をお客様へ"}],function(it){
+    saDelay(rid,action,defTm,jamEta(defTm,it.min));
+  });
 };
 window.saBilling=function(tid,spot){
   if(!confirm(spot?"このタスクを「スポット」（固定給外・1件¥600）にしますか？":"このタスクを「通常」に戻しますか？"))return;
