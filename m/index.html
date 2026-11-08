@@ -219,6 +219,8 @@ const STAGE_LABEL={prep:"準備中",eve:"前日",go_day:"本日",go_soon:"まも
 
 /* ---- 必須項目 ---- */
 function musts(d){const r=d.reservation,L=d.license||{},out=[];
+  // ★2026-11-08 楽天などメールが無い予約：通知用メールを必須に（3店共通・mypage-mail）
+  if(MAILST&&!MAILST.has_mail)out.push({k:"mail",n:"通知を受け取るメールアドレス",ok:false,v:"未登録"});
   out.push({k:"lic",n:"運転者の免許証",ok:(L.cnt||0)>0,v:(L.cnt||0)>0?`${L.drivers||1}人分・${L.cnt}枚 登録済`:"未登録"});
   if(PAY&&PAY.state)out.push({k:"pay",n:"お支払い",ok:PAY.state!=="unpaid"&&!payUnpaidExtra(PAY).length,v:PAY.state==="unpaid"?payV(PAY):payUnpaidExtra(PAY).length?"追加のお支払いがあります":payV(PAY)});
   if(!goLocked(r))out.push({k:"time",n:goWord(r)+"の時間",ok:!!hm(r.lend_time),v:hm(r.lend_time)||"未定"});
@@ -254,7 +256,7 @@ async function load(quiet){
     const j=await r.json().catch(()=>({}));
     if(j.cancelled){$("#ttl").textContent="キャンセル済み";$("#app").innerHTML=`<div class="center">${esc(j.error||"キャンセル済みです")}</div>`;return;}
     if(!j.ok){if(!quiet){$("#ttl").textContent="マイページ";$("#app").innerHTML=`<div class="center">${esc(j.error||"読み込めませんでした")}<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}return;}
-    DATA=j;await Promise.all([loadDV(),loadSH(),loadChat(),loadPay(),loadNG(),loadINFO()]);render();
+    DATA=j;await Promise.all([loadDV(),loadSH(),loadChat(),loadPay(),loadNG(),loadINFO(),loadMAIL()]);render();
   }catch(e){if(!quiet)$("#app").innerHTML=`<div class="center">通信できませんでした。<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}
 }
 const SH_TX={pu_depart:["送迎車が空港へ向かっています","p-o"],pu_at_stop:["送迎車が乗り場に着きました","p-g","お手荷物を受け取ったら、乗り場へお越しください"],pu_met:["合流しました。お店へ向かっています","p-x"],bd_depart:["空港へ向かっています","p-o"],bd_at_airport:["空港に着きました。ご利用ありがとうございました","p-x"]};
@@ -321,7 +323,7 @@ function proposalCards(d){
 
 function viewNow(d,st){
   const r=d.reservation,g=goWord(r),b=backWord(r),M=musts(d),left=M.filter(x=>!x.ok&&x.k!=="save");
-  let h=proposalCards(d);
+  let h=proposalCards(d)+mailCard(st);
   const goPlace=isDel(r.visit_type)?(r.del_place||"（お届け場所 未登録）"):isPub(r.visit_type)?ST.pickup:ST.shop;
   const backPlace=isCol(r.return_type)?(r.col_place||"（回収場所 未登録）"):ST.shop+(isBdb(r.return_type)?"（空港までお送りします）":"");
   const trk=(type)=>`https://keydrop.jp/${type==="col"?"handyman-collection-guide.html":"handyman-delivery-guide.html"}?r=${encodeURIComponent(r.id)}${d.tracking&&d.tracking.token?"&t="+encodeURIComponent(d.tracking.token):""}`;
@@ -432,6 +434,15 @@ function openBooking(){if(!DATA)return;const r=DATA.reservation;
 const INFOEF="https://ckrxttbnawkclshczsia.supabase.co/functions/v1/mypage-info";let INFO=null;
 async function infoCall(action,extra){const r=await fetch(INFOEF,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({store:SID,token:TOKEN,action,...(extra||{})})});return await r.json().catch(()=>null);}
 async function loadINFO(){if(DEMO||!TOKEN)return;try{const j=await infoCall("get");if(j&&j.ok)INFO=j.info||{};}catch(_){}}
+// ★2026-11-08 通知用メールの登録（楽天のお客様はメールが届かないため）。高松は高松のサーバーに保存
+const MAILEF=SID==="tkm"?"https://ggqugvyskyiblxiycpci.supabase.co/functions/v1/mypage-mail":"https://ckrxttbnawkclshczsia.supabase.co/functions/v1/mypage-mail";let MAILST=null;
+async function mailCall(action,extra){const r=await fetch(MAILEF,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({store:SID,token:TOKEN,action,...(extra||{})})});return await r.json().catch(()=>null);}
+async function loadMAIL(){if(DEMO||!TOKEN||RO)return;try{const j=await mailCall("get");if(j&&j.ok)MAILST=j;}catch(_){}}
+function mailCard(st){if(!MAILST||MAILST.has_mail||["after","prep","eve"].includes(st))return"";return `<section class="card" style="border:2px solid var(--yel)"><div class="h">通知を受け取るメールアドレスを登録してください</div><div class="sub">スタッフの出発・到着や、ご依頼のお返事がメールで届きます。</div><button class="btn y" onclick="openMail()">登録する</button></section>`;}
+function openMail(){sheet(`<h3>通知を受け取るメールアドレス</h3><div class="sub">ふだんお使いのアドレスを入れてください。</div><input id="iml" type="email" inputmode="email" autocomplete="email" autocapitalize="off" placeholder="例：taro@example.com"><input id="iml2" type="email" inputmode="email" autocomplete="off" autocapitalize="off" placeholder="もう一度入れてください" style="margin-top:8px"><button class="btn" onclick="saveMail()">登録する</button><button class="btn g" onclick="closeSheet()">閉じる</button>`);}
+async function saveMail(){const a=($("#iml").value||"").trim(),b=($("#iml2").value||"").trim();if(!a){toast("メールアドレスを入れてください");return;}if(a!==b){toast("2つのアドレスが違います");return;}
+  if(DEMO){closeSheet();toast("お試し表示のため送信しません");return;}
+  try{const j=await mailCall("set",{mail:a});if(j&&j.ok){MAILST=j;closeSheet();toast("登録しました。これからの通知はメールで届きます");render();}else toast((j&&j.error)||"送れませんでした");}catch(_){toast("送れませんでした。電波の良いところでもう一度お試しください");}}
 function openPeople(){const n=+((INFO&&INFO.people)||(DATA.reservation.people)||0);sheet(`<h3>ご利用人数</h3><div class="sub">お子様も含めた人数です。送迎・車の準備に使います。</div><select id="ipp">${Array.from({length:12},(_,i)=>i+1).map(i=>`<option ${i===(n||2)?"selected":""}>${i}</option>`).join("")}</select><button class="btn" onclick="saveInfo({people:+$('#ipp').value})">登録する</button><button class="btn g" onclick="closeSheet()">閉じる</button>`);}
 function openFout(){sheet(`<h3>帰りの便</h3><div class="sub">便名を入れてください（例：JL911）。出発時間に合わせて空港までお送りします。</div><input id="ifo" placeholder="例：JL911" autocapitalize="characters" value="${esc((INFO&&INFO.flight_out)||"")}"><button class="btn" onclick="saveInfo({flight_out:$('#ifo').value})">登録する</button><button class="btn g" onclick="closeSheet()">閉じる</button>`);}
 function openConf(){const r=DATA.reservation,g=goWord(r),b=backWord(r);const gp=isDel(r.visit_type)?(r.del_place||"未登録"):isPub(r.visit_type)?ST.pickup:ST.shop,bp=isCol(r.return_type)?(r.col_place||"未登録"):ST.shop;
@@ -440,7 +451,7 @@ async function saveInfo(v){if(DEMO){closeSheet();toast("お試し表示のため
 async function sendConf(){if(DEMO){closeSheet();toast("お試し表示のため送信しません");return;}try{const j=await infoCall("confirm");if(j&&j.ok){INFO=j.info||INFO;closeSheet();toast("ありがとうございます。この内容でお待ちしています");render();}else toast((j&&j.error)||"送れませんでした");}catch(_){toast("送れませんでした");}}
 // ★2026-11-08 nosh：チャイルドシートの年齢の目安（3店共通）。選ぶ前に見せる
 function openOpt(){sheet(`<h3>オプション・補償の追加</h3><div class="sub" style="margin-bottom:8px">シートの目安</div><dl class="kv"><dt>ベビーシート</dt><dd>0〜1歳ごろ（約10kgまで）</dd><dt>チャイルドシート</dt><dd>1〜4歳ごろ（約9〜18kg）</dd><dt>ジュニアシート</dt><dd>4〜10歳ごろ（約15〜36kg）</dd></dl><div class="sub" style="margin:8px 0 12px">目安です。お子様の体格に合わせてお選びください。</div><button class="btn o" onclick="closeSheet();go('ask')">スタッフに頼む</button><button class="btn g" onclick="closeSheet()">閉じる</button>`);}
-function fixMust(k){if(k==="people")return openPeople();if(k==="fout")return openFout();if(k==="conf")return openConf();if(k==="pay")return openPay();if(k==="lic")return openLicense();if(k==="time")return openReq("lend_time");if(k==="del_place"||k==="col_place")return openReq(k);if(k==="flight")return go("ask");}
+function fixMust(k){if(k==="mail")return openMail();if(k==="people")return openPeople();if(k==="fout")return openFout();if(k==="conf")return openConf();if(k==="pay")return openPay();if(k==="lic")return openLicense();if(k==="time")return openReq("lend_time");if(k==="del_place"||k==="col_place")return openReq(k);if(k==="flight")return go("ask");}
 /* ---- 免許証の登録（ページ内・保存先は今までと同じ＝Googleドライブ） ---- */
 const GAS_LIC="https://script.google.com/macros/s/AKfycbycpzE1RIu2LbIlYVeRYcXxfIgfDhY5y1Vtdh1Rj69S9uZEnmqFMDBHqq3y6pHS70_t7A/exec", GAS_LIC_SECRET="hdm-lic-7c3f9a21";
 let LIC=[], LIC_BUSY=false;
