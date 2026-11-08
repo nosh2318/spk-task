@@ -113,23 +113,35 @@ function legIn(store: string, r: any): { del: boolean; label: string } {
   if (v === "返却") return { del: false, label: "店舗へご返却（送迎なし・お客様ご自身で店舗へ／那覇空港店）" };
   return { del: true, label: "" };
 }
-// 初動メール(welcome)本文：予約を承った直後にマイページ（先頭）＋公式LINE(友だち追加)へ誘導。OTA(じゃらん/skyticket/エアトリ/RDC/GoGoOut)向け。
-// 2026-11-08 マイページを先頭に。廃止済みの受付フォームの記載を削除（LINEの案内そのものは残す＝11/8決定）。
+// 初動メール(welcome)本文
+// 2026-11-08 nosh：楽天と同じ形にそろえる（3店共通）＝「マイページとは」「まずお願いしたいこと」「大事なこと」＋LINEは連絡用に残す。
+//   「公式LINEに必ず登録」はやめる（マイページが唯一の窓口・LINEは任意の連絡手段）。
+const OTA_NAME: Record<string, string> = { J: "じゃらん", S: "スカイチケット", O: "エアトリ", RC: "レンタカードットコム", G: "GoGoOut" };
 function buildWelcome(r: any, url: string, S: any, payUrl?: string, payAmt?: number): { s: string; b: string } {
+  const ota = String(r.ota || "");
+  const isHP = ota === "HP" || ota === "HANDYMAN";
+  const site = OTA_NAME[ota] || "";
+  const lo = legOut(S.store, r), li = legIn(S.store, r);
+  const shuttle = !lo.del || !li.del; // 那覇の送迎・来店
   const pay = (payUrl && payUrl.indexOf("http") === 0)
-    ? `──────────\n【事前決済のお願い（じゃらん）】\n当店ではお待ち時間・待機時間の解消のため事前決済をお願いしております。\nお支払い金額：¥${Number(payAmt || 0).toLocaleString()}\n下記より ご出発3日前19:00まで にお支払いをお願いいたします。\n${payUrl}\n※現金決済をご希望の場合は、お手数ですが事前にお問い合わせください。\n──────────\n\n`
+    ? `■事前決済のお願い（じゃらん）\nお支払い金額：¥${Number(payAmt || 0).toLocaleString()}\nご出発3日前19:00までに、下記またはマイページからお支払いください。\n${payUrl}\n\n`
     : "";
-  const what = legOut(S.store, r).del ? "お届け場所・お時間・免許証" : "お時間・免許証";
-  const b = `${r.name || "お客様"} 様\n\nこの度はHANDYMAN RENTCAR ${S.shop}をご予約いただきありがとうございます。\nご予約を承りましたのでお知らせいたします。\n\n` +
-    `━━━━━━━━━━━━━━━━━━\n■ マイページ（ご予約の確認・${what}のご登録・変更/キャンセルのご依頼）\n${url}\n━━━━━━━━━━━━━━━━━━\n\n` +
-    `──────────\n【予約番号】${r.id}\n【車両クラス】${r.vehicle || ""}\n【ご出発】${r.lend_date || ""} ${r.lend_time || ""}\n【ご返却】${r.return_date || ""} ${r.return_time || ""}\n【オプション】${optLine(r)}\n【補償プラン】${insName(r.insurance)}\n──────────\n\n` +
+  const b = `${r.name || "お客様"} 様（${site ? site + "でのご予約 " : "予約番号 "}${r.id}）\n\n` +
+    `HANDYMAN ${S.shop}です。ご予約ありがとうございます。\n\n` +
+    `■マイページとは\nお客様のご予約専用のページです。ご予約から返却まで、必要なことはすべてここに出ます。\n` +
+    `・今の状態と、次にしていただくこと\n` +
+    (shuttle ? `・空港送迎の乗り場・時間（当日は送迎車の出発・到着がここに出ます）\n` : "") +
+    (lo.del || li.del ? `・デリバリーのお届け・回収の時間と場所\n` : "") +
+    `・時間・場所・オプションの変更、キャンセル（締切もここに出ます）\n` +
+    `・スタッフへのご連絡（チャット）\n` +
+    (isHP ? `・お支払いの状況（ご予約時にお支払い済みです）\n` : `・お支払いの状況（お支払いが必要な場合は、ここからお支払いいただけます）\n`) +
+    `\n▼マイページ\n${url}\n\n` +
     pay +
-    `━━━━━━━━━━━━━━━━━━\n■【必ずご登録ください】公式LINE\n━━━━━━━━━━━━━━━━━━\n` +
-    `ご出発前のご準備・当日のお受け渡しのご連絡は、原則すべて公式LINEで行います。\n下記から友だち追加のうえ、上のマイページで【${what}】をご登録ください。\n` +
-    `⚠️ ご登録がない場合、当日のご連絡ができず、お受け渡し・ご出発に間に合わないことがございます。必ずお早めにご登録をお願いいたします。\n\n` +
-    `▶ 公式LINE 友だち追加はこちら\n${S.lineForm}` +
-    foot0(S.shop);
-  return { s: `【HANDYMAN RENTCAR ${S.shop}】ご予約を承りました（マイページのご案内）`, b };
+    `■まずお願いしたいこと\n1. 運転する方の免許証・ご利用人数などの登録\n　足りない項目はマイページの「必須」に出ます。\n2. ホーム画面に保存\n　返却まで、すぐに開けます。\n通知はこのメールアドレスに届きます。\n\n` +
+    `■大事なこと\n・ご予約の変更は、${site ? site + "ではなく" : ""}マイページからだけ受け付けます。\n・当日は運転する方の免許証をお持ちください。\n\n` +
+    `■ご予約内容\n予約番号：${r.id}\n車両クラス：${r.vehicle || ""}\nご出発：${r.lend_date || ""} ${r.lend_time || ""}\nご返却：${r.return_date || ""} ${r.return_time || ""}\n\n` +
+    `LINEでもご連絡いただけます\n${S.lineForm}\n\nHANDYMAN ${S.shop}`;
+  return { s: `【HANDYMAN ${S.shop}】ご予約ありがとうございます／マイページのご案内`, b };
 }
 // 初動メール対象OTA（楽天=アドレス取得不可→スタッフが楽天管理画面から手動）。
 //   HP=rent-handyman.jp直販(GAS取込・那覇/札幌)＝.com初動メールに移行するので対象に含める。
