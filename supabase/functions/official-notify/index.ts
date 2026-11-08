@@ -10,6 +10,7 @@
 //   ① LINEをつないだ人には、同じ時期にLINEで届く案内（前日・返却日・傷チェック・御礼・札幌の場所未設定）のメールを送らない（2通防止）
 //   ② 初動/確定メール：マイページを先頭に出す。廃止済みの「受付フォーム」の記載を消す（LINEの案内は残す）
 //   ③ 「ご不明点はお問い合わせください」「ご返信いただくと担当に届きます」を外し、マイページへ誘導
+// 2026-11-09 開封の計測：全メールにHTML版（開封の印＋リンク計測 mail-track）を付ける。本文・送る条件は変えない。確定メールも送信記録(mail_confirm)を残す。
 // ============================================================
 // ★BTプロジェクトにデプロイ（RESEND_API_KEYがrent-handyman.comを送れるのはBT側だけ）。
 //   那覇/札幌の予約(reservations/nha_reservations)はMAINにあるので MAIN_SERVICE でクロスDB読み書き。
@@ -68,12 +69,23 @@ async function createSquareLink(name: string, amountYen: number, note: string): 
     return { url: d.payment_link.url, orderId: d.payment_link.order_id };
   } catch (e) { console.error("[square]", e); return null; }
 }
-async function sendMail(to: string, subject: string, body: string, site = ""): Promise<boolean> {
+// ===== 2026-11-09 開封の計測（mail-track）：本文はそのまま、同じ内容のHTML版に「開封の印」と「リンクの計測」を付ける =====
+const TRK = "https://ckrxttbnawkclshczsia.supabase.co/functions/v1/mail-track";
+const midOf = (store: string, kind: string, resv: string) => btoa(unescape(encodeURIComponent(`${store}|${kind}|${resv}`))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+function htmlOf(text: string, mid: string): string {
+  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const body = esc(text).replace(/https:\/\/[^\s<>"）」、。]+/g, (u) => {
+    const raw = u.replace(/&amp;/g, "&");
+    return `<a href="${TRK}?c=${mid}&amp;u=${encodeURIComponent(raw)}" style="color:#0a58c2">${u}</a>`;
+  }).replace(/\n/g, "<br>");
+  return `<div style="font-family:-apple-system,'Hiragino Sans',sans-serif;font-size:15px;line-height:1.7;color:#111">${body}</div><img src="${TRK}?o=${mid}" width="1" height="1" alt="" style="display:block;border:0;width:1px;height:1px">`;
+}
+async function sendMail(to: string, subject: string, body: string, site = "", mid = ""): Promise<boolean> {
   if (!RESEND_KEY || !to) return false;
   try {
     const r = await fetch("https://api.resend.com/emails", { method: "POST",
       headers: { Authorization: `Bearer ${RESEND_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ from: site === "hdm2" ? MAIL_FROM_HDM2 : MAIL_FROM, to: [to], reply_to: replyOf(site), subject, text: body }) });
+      body: JSON.stringify({ from: site === "hdm2" ? MAIL_FROM_HDM2 : MAIL_FROM, to: [to], reply_to: replyOf(site), subject, text: body, ...(mid ? { html: htmlOf(body, mid) } : {}) }) });
     return r.ok;
   } catch (_) { return false; }
 }
@@ -181,7 +193,8 @@ Deno.serve(async (req) => {
       `──────────\n【予約番号】${rv.id}\n【車両クラス】${rv.vehicle || ""}\n【ご出発】${rv.lend_date || ""} ${rv.lend_time || ""}\n【ご返却】${rv.return_date || ""} ${rv.return_time || ""}\n` +
       placeLines + `【オプション】${optLine(rv)}\n【補償プラン】${insName(rv.insurance)}\n【お支払い金額】¥${Number(rv.price || 0).toLocaleString()}（決済済み）\n──────────\n\n` +
       `▼ 📱 当日のご連絡・各種通知をLINEで受け取る（おすすめ）\n公式LINEを友だち追加いただくと、お迎え・傷チェック・前日/返却リマインド等をLINEでお届けします（マイページからも登録できます）。\n${st.lineForm}${foot0(st.shop, csite)}`;
-    const ok = await sendMail(rv.mail, `【HANDYMAN RENTCAR ${st.shop}】ご予約が確定しました`, body, csite);
+    const ok = await sendMail(rv.mail, `【HANDYMAN RENTCAR ${st.shop}】ご予約が確定しました`, body, csite, midOf(st.store, "mail_confirm", String(rv.id)));
+    if (ok) await sbPost(st.sends, { resv_no: rv.id, action: "mail_confirm", status: "mailed", message: "official-pay confirm" }); // 2026-11-09 開封率の分母
     return new Response(JSON.stringify({ ok }), { headers: { "content-type": "application/json" } });
   }
 
@@ -248,7 +261,7 @@ Deno.serve(async (req) => {
         const url = S.mypage + encodeURIComponent(r.mypage_token || "");
         const m = t.build(r, url, S.shop);
         if (DRY) { enq++; console.log(`[dry] ${S.store} ${t.action} ${r.id} → ${r.mail}`); continue; }
-        const ok = await sendMail(r.mail, m.s, m.b, r.site);
+        const ok = await sendMail(r.mail, m.s, m.b, r.site, midOf(S.store, t.action, String(r.id)));
         if (ok) { await sbPost(S.sends, { resv_no: r.id, action: t.action, status: "mailed", message: "official-notify" }); enq++; }
       }
     }
@@ -304,7 +317,7 @@ Deno.serve(async (req) => {
         const m = buildWelcome(r, url, S, payUrl, payAmt);
         if (p.welcomePreview) { previews.push({ store: S.store, ota: r.ota, id: r.id, subject: m.s, body: m.b }); continue; }
         if (DRY) { wsent++; console.log(`[dry-welcome] ${S.store} ${r.ota} ${r.id} → ${r.mail}`); continue; }
-        const ok = await sendMail(r.mail, m.s, m.b);
+        const ok = await sendMail(r.mail, m.s, m.b, "", midOf(S.store, "mail_welcome", String(r.id)));
         if (ok) {
           await sbPost(S.sends, { resv_no: r.id, action: "mail_welcome", status: "mailed", message: "welcome" }); wsent++;
           // じゃらん：決済リンクを客に送ったので link_created→email_sent(未送信→未払い)。決済タブの3状態を正確に。
@@ -332,7 +345,7 @@ Deno.serve(async (req) => {
           if (done[0]) continue;
           const b = `${pay.customer_name || "お客様"} 様\n\n【リマインド】HANDYMAN RENTCAR ${R.shop}です。\nご予約 ${pay.reservation_id} の事前決済がまだお済みでないようです。\n当店ではお待ち時間・待機時間の解消のため事前決済をお願いしております。\n\nお支払い金額：¥${Number(pay.amount || 0).toLocaleString()}\n下記より ご出発3日前19:00まで にお支払いをお願いいたします。\n${pay.square_payment_url}\n※現金決済をご希望の場合は、お手数ですが事前にお問い合わせください。${foot(R.shop)}`;
           if (DRY) { wsent++; continue; }
-          const ok = await sendMail(pay.customer_email, `【リマインド】【HANDYMAN RENTCAR ${R.shop}】事前決済のお願い（予約番号: ${pay.reservation_id}）`, b);
+          const ok = await sendMail(pay.customer_email, `【リマインド】【HANDYMAN RENTCAR ${R.shop}】事前決済のお願い（予約番号: ${pay.reservation_id}）`, b, "", midOf(R.store, "mail_jalan_remind", String(pay.reservation_id)));
           if (ok) {
             await sbPost(R.sends, { resv_no: pay.reservation_id, action: act, status: "mailed", message: "jalan-remind" }); wsent++;
             // 催促でリンクを送ったので link_created→email_sent(未送信→未払い)
