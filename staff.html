@@ -153,7 +153,7 @@ a.myp{background:#065f46;color:#fff;font-size:11px;font-weight:800;border-radius
 <script>
 var SB="https://ckrxttbnawkclshczsia.supabase.co";
 var ANON="sb_publishable_aTVhlY0YD-5BBfI03ZNnsg_MzO_vsIe";
-var VER="staff-v3.57";
+var VER="staff-v3.58";
 var TOKEN=new URLSearchParams(location.search).get("t")||"";
 // ===== 📊 個別URL利用計測 (staff_url_events) — 前方記録・既存挙動に非干渉 =====
 var SUE=(function(){
@@ -279,14 +279,14 @@ function taskCard(x){
   var btns='<div class="r3">';
   var etm=esc(tm||"");
   if(rid&&isDel){
-    btns+='<button class="abtn dep" onclick="saAction(\''+rid+'\',\'depart\')">🚚出発</button>';
-    btns+='<button class="abtn arr" onclick="saAction(\''+rid+'\',\'arrival\')">📱到着</button>';
-    btns+='<button class="abtn dly" onclick="saDelay(\''+rid+'\',\'delay_del\',\''+etm+'\')">⏳遅延</button>';
+    btns+=_ab('dep',rid,'depart',"saAction('"+rid+"','depart')",'🚚出発');
+    btns+=_ab('arr',rid,'arrival',"saAction('"+rid+"','arrival')",'📱到着');
+    btns+=_ab('dly',rid,'delay_del',"saDelay('"+rid+"','delay_del','"+etm+"')",'⏳遅延');
   }else if(rid&&isCol){
-    btns+='<button class="abtn col" onclick="saAction(\''+rid+'\',\'collect\')">🧭回収に向かう</button>';
-    btns+='<button class="abtn arr" onclick="saAction(\''+rid+'\',\'col_arrival\')">📱到着</button>';
-    btns+='<button class="abtn dly" onclick="saDelay(\''+rid+'\',\'delay_col\',\''+etm+'\')">⏳遅延</button>';
-    btns+='<button class="abtn drp" onclick="saAction(\''+rid+'\',\'dropoff\')">🚗乗捨</button>';
+    btns+=_ab('col',rid,'collect',"saAction('"+rid+"','collect')",'🧭回収に向かう');
+    btns+=_ab('arr',rid,'col_arrival',"saAction('"+rid+"','col_arrival')",'📱到着');
+    btns+=_ab('dly',rid,'delay_col',"saDelay('"+rid+"','delay_col','"+etm+"')",'⏳遅延');
+    btns+=_ab('drp',rid,'dropoff',"saAction('"+rid+"','dropoff')",'🚗乗捨');
   }
   if(rid&&(isDel||isCol)){
     btns+='<button class="abtn lic" onclick="openLicense(\''+rid+'\',\''+esc(x.customer||"")+'\')">🪪免許証</button>';
@@ -505,6 +505,7 @@ window.saDelay=function(rid,action,defTm){
     .then(function(r){return r.json();})
     .then(function(d){
       if(!d||d.ok===false){alert("⚠️ 実行できませんでした（"+((d&&d.error)||"エラー")+"）");return;}
+      actedMark(rid,action);
       if(d.sent){alert("✅ "+kind+"遅延のご案内をLINEに自動送信しました");}
       else{var m=d.message||"";try{navigator.clipboard.writeText(m);}catch(e){}alert("⚠️ LINE未登録（"+(d.reason||"")+"）。案内文をコピーしました→手動で送ってください。");}
     })
@@ -528,6 +529,24 @@ window.saDone=function(tid){
     })
     .catch(function(){alert("⚠️ 通信エラー。電波を確認してください");});
 };
+/* ★2026-11-08 押した ✓時刻（那覇と同じ・3店統一）。正本はサーバー（spk_line_sends＝OP・タスクサマリーと同じ表）。
+   どの端末で開いても同じ時刻が出る。押した直後はこの画面にもすぐ出す（次の読み込みでサーバーの値に置き換わる）。 */
+var ACTED={};
+function actedOf(rid,a){return (rid&&a&&ACTED[rid+"|"+a])?ACTED[rid+"|"+a]:null;}
+function actedMark(rid,a){if(rid&&a)ACTED[rid+"|"+a]={at:new Date().toISOString()};}
+function actedLabel(at){try{var d=new Date(at);return "✓"+("0"+d.getHours()).slice(-2)+":"+("0"+d.getMinutes()).slice(-2);}catch(e){return "✓済";}}
+function _ab(cls,rid,actKey,oc,label){
+  var d=actedOf(rid,actKey);
+  return '<button class="abtn '+cls+(d?' acted':'')+'" onclick="'+oc+'">'+label+(d?(' '+actedLabel(d.at)):'')+'</button>';
+}
+function pressLoad(cb){
+  var done=false;function fin(){if(done)return;done=true;cb&&cb();}
+  setTimeout(fin,4000);
+  fetch(SB+"/rest/v1/rpc/staff_press_log",{method:"POST",headers:{"apikey":ANON,"Authorization":"Bearer "+ANON,"Content-Type":"application/json"},body:JSON.stringify({p_token:TOKEN,p_store:"spk"})})
+    .then(function(r){return r.ok?r.json():null;})
+    .then(function(d){try{if(d&&d.ok&&d.acts){var nx={};Object.keys(d.acts).forEach(function(rid){var m=d.acts[rid]||{};Object.keys(m).forEach(function(k){if(m[k]&&m[k].at)nx[rid+"|"+k]={at:m[k].at};});});Object.keys(ACTED).forEach(function(k){if(!nx[k])nx[k]=ACTED[k];});ACTED=nx;}}catch(e){}fin();})
+    .catch(fin);
+}
 window.saAction=function(rid,action){
   var lbl={depart:"出発",collect:"回収に向かう",arrival:"到着",col_arrival:"到着",dropoff:"乗り捨て依頼"}[action]||action;
   var isDrv=(action==="depart"||action==="collect");
@@ -536,6 +555,7 @@ window.saAction=function(rid,action){
     .then(function(r){return r.json();})
     .then(function(d){
       if(!d||d.ok===false){alert("⚠️ 実行できませんでした（"+((d&&d.error)||"エラー")+"）");return;}
+      actedMark(rid,action);
       if(d.sent){alert("✅ "+lbl+"を記録し、お客様LINEに自動送信しました");}
       else{
         var m=d.message||"";
@@ -892,7 +912,7 @@ function load(){
     if(!d||d.ok===false){showErr(d&&d.error==="invalid_token"?"このURLは無効です（担当者へ連絡してください）":"読み込みに失敗しました");return;}
     try{SUE.ready(d.staff);}catch(e){}
     window.CUR_STAFF=d.staff||"";
-    fetchLic(d); wcLoad();})
+    pressLoad(function(){fetchLic(d);}); wcLoad();})
   .catch(function(e){clearTimeout(to);showErr("通信エラー。電波を確認して再読み込みしてください");});
 }
 // 🪪 免許証提出状況を license_uploads からバッチ取得（お届け/回収の予約番号のみ・anon読取OK）→ 取得後に描画
