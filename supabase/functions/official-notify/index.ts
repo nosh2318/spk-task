@@ -115,6 +115,7 @@ function legIn(store: string, r: any): { del: boolean; label: string } {
 }
 // 初動メール(welcome)本文
 // 2026-11-08 nosh：楽天と同じ形にそろえる（3店共通）＝「マイページとは」「まずお願いしたいこと」「大事なこと」＋LINEは連絡用に残す。
+//   予約内容は予約サイトの完了メールに任せ、ここはマイページの訴求だけ（nosh「予約詳細とマイページ訴求」の2通）。
 //   「公式LINEに必ず登録」はやめる（マイページが唯一の窓口・LINEは任意の連絡手段）。
 const OTA_NAME: Record<string, string> = { J: "じゃらん", S: "スカイチケット", O: "エアトリ", RC: "レンタカードットコム", G: "GoGoOut" };
 function buildWelcome(r: any, url: string, S: any, payUrl?: string, payAmt?: number): { s: string; b: string } {
@@ -139,7 +140,6 @@ function buildWelcome(r: any, url: string, S: any, payUrl?: string, payAmt?: num
     pay +
     `■まずお願いしたいこと\n1. 運転する方の免許証・ご利用人数などの登録\n　足りない項目はマイページの「必須」に出ます。\n2. ホーム画面に保存\n　返却まで、すぐに開けます。\n通知はこのメールアドレスに届きます。\n\n` +
     `■大事なこと\n・ご予約の変更は、${site ? site + "ではなく" : ""}マイページからだけ受け付けます。\n・当日は運転する方の免許証をお持ちください。\n\n` +
-    `■ご予約内容\n予約番号：${r.id}\n車両クラス：${r.vehicle || ""}\nご出発：${r.lend_date || ""} ${r.lend_time || ""}\nご返却：${r.return_date || ""} ${r.return_time || ""}\n\n` +
     `LINEでもご連絡いただけます\n${S.lineForm}\n\nHANDYMAN ${S.shop}`;
   return { s: `【HANDYMAN ${S.shop}】ご予約ありがとうございます／マイページのご案内`, b };
 }
