@@ -422,10 +422,14 @@ async function loadAll(){
   document.getElementById("range").textContent=md(from)+"〜"+md(to)+" に貸出";
   document.getElementById("hdr").textContent="読み込み中…";
   try{
-    const [a,b]=await Promise.all([ef(MAIN,MAIN_ANON,"mypage-active",{admin_pin:pin,action:"list",from,to}),ef(BT,BT_ANON,"mypage-active-bt",{admin_pin:pin,from,to}).catch(e=>{if(e.message==="pin")throw e;console.warn(e);return {rows:[]};})]);
-    const tk=b.rows.map(r=>r.token).filter(Boolean);
-    if(tk.length){const g=await ef(MAIN,MAIN_ANON,"mypage-active",{admin_pin:pin,action:"agg",tokens:tk});b.rows.forEach(r=>{r.ev=r.token&&g.agg[r.token]||null;});}
-    await loadReq();
+    /* 2026-11-09 速度：依頼一覧・高松の閲覧集計を、那覇/札幌の一覧と同時に取る（以前は順番待ちで3往復） */
+    const reqP=loadReq();
+    const btP=ef(BT,BT_ANON,"mypage-active-bt",{admin_pin:pin,from,to}).catch(e=>{if(e.message==="pin")throw e;console.warn(e);return {rows:[]};}).then(async b=>{
+      const tk=b.rows.map(r=>r.token).filter(Boolean);
+      if(tk.length){const g=await ef(MAIN,MAIN_ANON,"mypage-active",{admin_pin:pin,action:"agg",tokens:tk});b.rows.forEach(r=>{r.ev=r.token&&g.agg[r.token]||null;});}
+      return b;});
+    const [a,b]=await Promise.all([ef(MAIN,MAIN_ANON,"mypage-active",{admin_pin:pin,action:"list",from,to}),btP]);
+    await reqP;
     ROWS=a.rows.concat(b.rows).map(r=>Object.assign(r,{j:judge(r)}));
     const seen=new Set(ROWS.map(r=>r.bucket+"|"+r.rid));REQ_OUT=Object.entries(REQ).filter(([k,l])=>!seen.has(k)&&l.some(x=>x.status==="requested")).length;
     render();loadHO();
