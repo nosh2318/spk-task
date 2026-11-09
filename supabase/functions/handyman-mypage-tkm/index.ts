@@ -60,12 +60,36 @@ async function slackResv(text: string, blocks?: unknown): Promise<boolean> {
 }
 async function sbDelete(t: string, q: string): Promise<void> { const r = await fetch(`${SB_URL}/rest/v1/${t}?${q}`, { method: "DELETE", headers: H }); if (!r.ok) console.error(`DELETE ${t}`, await r.text()); }
 
+// ===== 楽天の画面から送る（2026-11-09 nosh「楽天でLINEもメールもない人には、通知もその他の連絡も楽天経由で出す」） =====
+//   楽天の予約はメール・電話がこちらに来ない。LINEもメール登録もない人への通知は main の rax_outbox に積み、
+//   Mac mini（rax_line_mail.py）が楽天RAXの「予約者へメール送信」から送る。dkey が同じものは二度積まない。
+const RAX_URL = "https://ckrxttbnawkclshczsia.supabase.co";
+async function raxQueue(key: string, o: { store: string; resv_no: string; kind: string; subject: string; body: string; dkey?: string | null }): Promise<boolean> {
+  if (!key) { console.log("[rax] no main key"); return false; }
+  try {
+    const r = await fetch(`${RAX_URL}/rest/v1/rax_outbox?on_conflict=dkey`, {
+      method: "POST",
+      headers: { apikey: key, Authorization: `Bearer ${key}`, "content-type": "application/json", Prefer: "return=minimal,resolution=ignore-duplicates" },
+      body: JSON.stringify({ store: o.store, resv_no: o.resv_no, kind: o.kind, subject: o.subject, body: o.body, dkey: o.dkey || null }),
+    });
+    if (!r.ok) console.error("[rax]", r.status, await r.text());
+    return r.ok;
+  } catch (e) { console.error("[rax]", String(e)); return false; }
+}
 // 顧客へメール通知（reserve@rent-handyman.com・BTプロジェクトのRESEND_API_KEYで送信）
 // 2026-10-28 HDM2: site='hdm2'（新サイト予約）だけ送り元・返信先・本文の旧アドレスを reserve@hdm-rentacar.jp に。それ以外は従来どおり。
 async function mailCustomer(to: string, subject: string, text: string, site?: string): Promise<boolean> {
   const key = Deno.env.get("RESEND_API_KEY"); if (!key) { console.log("[mail skip] no RESEND_API_KEY"); return false; }
   const t = String(to || "").trim();
-  if (!t || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(t)) { console.log("[mail skip] no valid email", to); return false; }
+  if (!t || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(t)) {
+    // 2026-11-09 楽天でメールがない予約は楽天の画面から送る（rax_outbox → Mac mini）。予約番号は件名「ご予約 {番号} …」から取る（呼び出し5か所とも同じ形）
+    const rid = (String(subject).match(/ご予約 (\S+) /) || [])[1];
+    if (rid) {
+      const rv = (await sbGet("bt_reservations", `id=eq.${encodeURIComponent(rid)}&select=ota&limit=1`))[0];
+      if (rv && String(rv.ota || "") === "楽天") return await raxQueue(Deno.env.get("MAIN_SERVICE") || "", { store: "tkm", resv_no: rid, kind: "mypage_decision", subject, body: text, dkey: null });
+    }
+    console.log("[mail skip] no valid email", to); return false;
+  }
   const isHdm2 = String(site || "") === "hdm2";
   const from = isHdm2 ? "HANDYMAN高松空港店 <reserve@hdm-rentacar.jp>" : "HANDYMAN高松空港店 <reserve@rent-handyman.com>";
   const replyTo = isHdm2 ? "reserve@hdm-rentacar.jp" : "reserve@rent-handyman.com";
@@ -467,6 +491,9 @@ Deno.serve(async (req) => {
 
   // ---- 2026-11-08 HDM高松：set_pickup / set_return は「依頼」として受け付ける（即反映しない）。アクションタブで承認→DB関数で反映→メール ----
   //   BUDDICAブランド（このEFでは上の越境ガードで止まる）・ブランド未確定は下の従来処理（即反映）のまま。
+  // 2026-11-08 出発（貸出日時 JST）を過ぎたら、行き（空港お迎え／来店）の変更は受け付けない。依頼（HDM）と即反映（ブランド未確定）の両方。帰り（set_return）はこれまでどおり
+  if (action === "set_pickup" && r.start_date) { const _hm = String(r.pickup_time || r.start_time || r.del_time || "").match(/(\d{1,2}):(\d{2})/); const _go = Date.parse(`${r.start_date}T${_hm ? _hm[1].padStart(2, "0") + ":" + _hm[2] : "09:00"}:00+09:00`);
+    if (!isNaN(_go) && Date.now() >= _go) return json({ error: "出発後はお届け・お迎えの時間と場所は変更できません" }, 409, origin); }
   if ((action === "set_pickup" || action === "set_return") && isHdm(r)) {
     const go = action === "set_pickup", want = p.want !== false;
     const ctype = go ? (want ? "mp_pickup" : "mp_visit") : (want ? "mp_dropoff" : "mp_store_return");
@@ -483,12 +510,15 @@ Deno.serve(async (req) => {
     const pay: Record<string, unknown> = { want, ...(want ? { time: tm } : {}), ...(flight ? { flight } : {}), note: `${FLD_JP[ctype]}（承認制）` };
     const nowIso = new Date().toISOString();
     // 同じ「行き／帰り」の受付中の依頼は最新の内容に置き換え、返事待ちの代わりの案は取り下げ扱い
-    const ex = await sbGet("bt_reservation_changes", `reservation_id=eq.${encodeURIComponent(resId)}&source=eq.mypage&change_type=in.(${legs.join(",")})&status=in.(requested,proposed)&select=id,status,payload&order=id.desc`);
+    const ex = await sbGet("bt_reservation_changes", `reservation_id=eq.${encodeURIComponent(resId)}&source=eq.mypage&change_type=in.(${legs.join(",")})&status=in.(requested,proposed)&select=id,status,payload,change_type,new_value&order=id.desc`);
     for (const e of ex.filter((x: any) => x.status === "proposed")) {
       const epl: any = (e.payload && typeof e.payload === "object") ? e.payload : {};
       await sbPatch("bt_reservation_changes", `id=eq.${e.id}`, { status: "declined_by_guest", decided_at: nowIso, payload: { ...epl, proposal: { ...(epl.proposal || {}), answer: "superseded", answered_at: nowIso } } });
     }
     const req0 = ex.find((x: any) => x.status === "requested");
+    // 2026-11-09 連打・再送対策: 受付中の依頼と同じ内容なら何もしない（Slackも出さない）
+    if (req0 && !ex.some((x: any) => x.status === "proposed") && req0.change_type === ctype && String(req0.new_value || "") === newV && String((req0.payload || {}).flight || "") === flight)
+      return json({ ok: true, pendingApproval: true, already: true, requested: ctype }, 200, origin);
     const oldV = go ? curGo(r) : curRt(r);
     const row = { change_type: ctype, field_name: go ? "visit_type" : "return_type", old_value: oldV, new_value: newV, payload: pay, changed_at: nowIso };
     if (req0) await sbPatch("bt_reservation_changes", `id=eq.${req0.id}`, row);

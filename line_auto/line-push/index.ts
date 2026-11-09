@@ -76,7 +76,7 @@ Deno.serve(async (req) => {
     const dm = DEDUP_MIN[action];
     if (dm) {
       const since = new Date(Date.now() - dm * 60000).toISOString();
-      const recent = await sbGet(`${SENDS}?resv_no=eq.${encodeURIComponent(resv_no)}&action=eq.${encodeURIComponent(action)}&status=in.(sent,mailed)&sent_at=gte.${encodeURIComponent(since)}&select=id&limit=1`);
+      const recent = await sbGet(`${SENDS}?resv_no=eq.${encodeURIComponent(resv_no)}&action=eq.${encodeURIComponent(action)}&status=in.(sent,mailed,rax)&sent_at=gte.${encodeURIComponent(since)}&select=id&limit=1`);
       if (recent[0]) { await logSend({ resv_no, action, status: "skipped", error: "duplicate_within_" + dm + "min" }); return json({ ok: true, reason: "duplicate_skipped" }); }
     }
   }
@@ -92,6 +92,8 @@ Deno.serve(async (req) => {
       mail = mr.ok ? String(await mr.json()) : "rpc_error:" + mr.status;
     } catch { mail = "rpc_error"; }
     if (mail === "ok") { await logSend({ resv_no, action, status: "mailed", message }); return json({ ok: true, channel: "mail", store }); }
+    // 2026-11-09 楽天でメールがない予約は楽天の画面から送る（rax_outbox → Mac mini）。積めたら成功扱い（現場が手で二重に送らないように）
+    if (mail === "rakuten") { await logSend({ resv_no, action, status: "rax", message }); return json({ ok: true, channel: "rakuten", store }); }
     await logSend({ resv_no, action, status: "no_userid", message, error: (mail && mail !== "off" && mail !== "bad_action") ? "mail:" + mail : null });
     return json({ ok: false, reason: "no_userid", mail });
   }
