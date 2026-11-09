@@ -702,6 +702,7 @@ function openReq(f){if(!DATA)return;if((f==="lend_time"||f==="del_place")&&goLoc
    <label>新しい${isT?"時間":"場所"}</label>${isT?`<select id="nv">${opts.map(o=>`<option ${o===cur?"selected":""}>${o}</option>`).join("")}</select>`:`<input id="nv" placeholder="ホテル名・住所など" value="${esc(cur||"")}">`}
    <button class="btn" onclick="sendReq('${f}')">この内容で依頼する</button><button class="btn g" onclick="closeSheet()">やめる</button>`);}
 async function sendReq(f){const v=String($("#nv").value||"").trim();if(!v){toast("入力してください");return;}
+  if(reqs(DATA).some(c=>c.field===f&&c.status==="requested"&&String(c.new_value||"").trim()===v)){closeSheet();toast("同じ内容で受け付け済みです。お返事をお待ちください");go("chg");return;}
   const j=await call("update",{[f]:v});if(j.dropped)return;if(j.ok){closeSheet();toast("依頼を送りました。お返事をお待ちください");await load();go("chg");}else toast(j.error||"送れませんでした");}
 function openReady(){if(!DATA)return;const r=DATA.reservation;const opts=Array.from({length:23},(_,i)=>{const m=7*60+i*30;return String(Math.floor(m/60)).padStart(2,"0")+":"+String(m%60).padStart(2,"0");}).filter(x=>x<="19:00");
   sheet(`<h3>早めの回収</h3><div class="sub">この時間以降なら回収OK、という目安を選んでください。スタッフの予定が合えば早めに伺います（確約ではありません）。今の予定：${mdw(r.return_date)} ${hm(r.return_time)}</div><label>回収OKの目安</label><select id="rt">${opts.map(o=>`<option>${o}</option>`).join("")}</select><button class="btn" onclick="sendReady()">知らせる</button><button class="btn g" onclick="closeSheet()">やめる</button>`);}
@@ -1407,5 +1408,50 @@ if(document.body)start();else document.addEventListener("DOMContentLoaded",start
 </script>
 
 <script>/* 2026-11-09 開封率：マイページを開いた記録（通知の開封率タブ用・表示には影響なし） */(function(){try{var q=new URLSearchParams(location.search);if(q.get("demo"))return;var t=q.get("t")||"";if(!t||/^DEMO/.test(t))return;var v=(q.get("via")||"").replace(/[^a-z_]/g,"").slice(0,12),sa=false;try{sa=!!(window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches)||window.navigator.standalone===true;}catch(e){}if(!v&&sa)v="home";fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/ux-track",{method:"POST",headers:{"Content-Type":"application/json"},keepalive:true,body:JSON.stringify({store:"spk",page:"mypage",action:"page",event:"page_view",token:t,meta:{via:v||null,standalone:sa,ui:"new"}})}).catch(function(){});}catch(e){}})();</script>
+<script>
+/* 2026-11-11 全ボタン共通（nosh「アクションが完了したことがわからない＝問題。ユーザーアクション全てに適用」）
+   ① お客様が押して送る通信の間は、画面全体に「送信中…」を出して他を押せなくする（連打・二重送信を止める）
+   ② 送れたら、小さく消える表示ではなく「✅ 受け付けました」を画面の真ん中に、OKを押すまで出す
+   ※ 裏で自動で読む通信（表示の読み込み・記録）は対象外。押してから2秒以内に始まった送信だけを対象にする */
+(function(){
+  var lastTap=0;
+  ["pointerdown","touchstart","click"].forEach(function(ev){document.addEventListener(ev,function(){lastTap=Date.now();},true);});
+  var SKIP_URL=/ux-track|quiz-track|mail-track|mypage-events|mypage_events|line-track|bt_shuttle_status|mpadmin_handoff|mypage-pay|\/rpc\/[a-z_]*(status|get|list|lookup)/;
+  var SKIP_ACT={lookup:1,ping:1,guide_log:1,track:1,log:1,view:1,list:1,get:1,status:1,history:1,poll:1,cust_poll:1,read:1,mark_read:1,seen:1};
+  var busyN=0,okAt=0,busy=null,done=null;
+  function css(){if(document.getElementById("hdmAckCss"))return;var st=document.createElement("style");st.id="hdmAckCss";
+    st.textContent="@keyframes hdmspin{to{transform:rotate(360deg)}}"+
+    "#hdmBusy,#hdmDone{position:fixed;inset:0;z-index:2147483646;display:none;align-items:center;justify-content:center;padding:24px;background:rgba(15,23,42,.38)}"+
+    "#hdmDone{z-index:2147483647}#hdmBusy .b,#hdmDone .b{background:#fff;color:#0f172a;border-radius:18px;box-shadow:0 12px 36px rgba(0,0,0,.28);font:700 17px/1.5 system-ui,-apple-system,sans-serif;text-align:center}"+
+    "#hdmBusy .b{display:flex;align-items:center;gap:12px;padding:20px 26px}"+
+    "#hdmBusy .s{width:22px;height:22px;border:3px solid #cbd5e1;border-top-color:#2563eb;border-radius:50%;animation:hdmspin .8s linear infinite}"+
+    "#hdmDone .b{width:100%;max-width:340px;padding:26px 22px 20px}#hdmDone .i{font-size:52px;line-height:1.1;margin-bottom:6px}"+
+    "#hdmDone .m{font-size:17px;margin:4px 0 18px;white-space:pre-line}#hdmDone button{width:100%;border:0;border-radius:12px;padding:14px;font:700 17px system-ui,sans-serif;background:#16a34a;color:#fff}";
+    document.head.appendChild(st);}
+  function lang(){try{return (typeof L!=="undefined"&&L)||"ja";}catch(e){return "ja";}}
+  function T(o){return o[lang()]||o.ja;}
+  function busyEl(){if(busy)return busy;css();busy=document.createElement("div");busy.id="hdmBusy";
+    busy.innerHTML='<div class="b"><span class="s"></span><span>'+T({ja:"送信中…",en:"Sending…",zh:"傳送中…",ko:"전송 중…"})+'</span></div>';document.body.appendChild(busy);return busy;}
+  function doneEl(){if(done)return done;css();done=document.createElement("div");done.id="hdmDone";
+    done.innerHTML='<div class="b"><div class="i">✅</div><div class="m"></div><button type="button">OK</button></div>';
+    done.querySelector("button").addEventListener("click",function(){done.style.display="none";});
+    document.body.appendChild(done);return done;}
+  function show(){busyN++;busyEl().style.display="flex";}
+  function hide(){busyN=Math.max(0,busyN-1);if(!busyN&&busy)busy.style.display="none";}
+  var of=window.fetch.bind(window);
+  window.fetch=function(u,o){
+    var url=String((u&&u.url)||u||""),m=String((o&&o.method)||"GET").toUpperCase(),act="";
+    try{if(o&&typeof o.body==="string"&&o.body.charAt(0)==="{")act=String((JSON.parse(o.body)||{}).action||"");}catch(e){}
+    var user=m!=="GET"&&!SKIP_URL.test(url)&&!SKIP_ACT[act]&&(Date.now()-lastTap<2000);
+    if(!user)return of(u,o);
+    show();
+    return of(u,o).then(function(r){if(r&&r.ok)okAt=Date.now();return r;}).finally(hide);
+  };
+  var NG=/でき(ません|なかった)|失敗|エラー|送れ|入力して|選んで|不正|お試し|閲覧のみ|通信|電波|もう一度|fail|error|could not|unable|invalid/i;
+  window.hdmDone=function(msg){var d=doneEl();d.querySelector(".m").textContent=String(msg||T({ja:"受け付けました",en:"Received",zh:"已受理",ko:"접수되었습니다"}));d.style.display="flex";};
+  if(typeof toast==="function"){var _t=toast;
+    toast=function(msg){if(Date.now()-okAt<4000&&!NG.test(String(msg||""))){okAt=0;return window.hdmDone(msg);}return _t.apply(this,arguments);};}
+})();
+</script>
 </body>
 </html>
