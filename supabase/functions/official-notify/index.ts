@@ -238,11 +238,12 @@ Deno.serve(async (req) => {
       (li.del ? `【回収場所】${rv.col_place ? rv.col_place : (rv.del_place ? "お届け場所と同じ" : "（マイページでご登録ください）")}\n` : `【ご返却方法】${li.label}\n`);
     const mpNote = (lo.del || li.del) ? "ご予約内容の確認・お届け場所/時間のご連絡・免許証のご登録・変更/キャンセルのご依頼など" : "ご予約内容の確認・お時間のご連絡・免許証のご登録・変更/キャンセルのご依頼など";
     // 2026-11-08 マイページを先頭に。受付フォームの記載を削除（LINEの案内は残す）
+    // 2026-11-09 新マイページ切替：LINEは「おすすめ」でなく任意の受け取り手段に（主役はマイページ）
     const body = `${rv.name || "お客様"} 様\n\nこの度はHANDYMAN RENTCAR ${st.shop}をご利用いただきありがとうございます。\nご予約・お支払いが確定いたしましたのでお知らせします。\n\n` +
       `━━━━━━━━━━━━━━━━━━\n■ マイページ（${mpNote}）\n${url}\n━━━━━━━━━━━━━━━━━━\n\n` +
       `──────────\n【予約番号】${rv.id}\n【車両クラス】${rv.vehicle || ""}\n【ご出発】${rv.lend_date || ""} ${rv.lend_time || ""}\n【ご返却】${rv.return_date || ""} ${rv.return_time || ""}\n` +
       placeLines + `【オプション】${optLine(rv)}\n【補償プラン】${insName(rv.insurance)}\n【お支払い金額】¥${Number(rv.price || 0).toLocaleString()}（決済済み）\n──────────\n\n` +
-      `▼ 📱 当日のご連絡・各種通知をLINEで受け取る（おすすめ）\n公式LINEを友だち追加いただくと、お迎え・傷チェック・前日/返却リマインド等をLINEでお届けします（マイページからも登録できます）。\n${st.lineForm}${foot0(st.shop, csite)}`;
+      `お知らせはこのメールアドレスに届きます。LINEでも受け取れます（任意）\n${st.lineForm}${foot0(st.shop, csite)}`;
     const ok = await sendMail(rv.mail, `【HANDYMAN RENTCAR ${st.shop}】ご予約が確定しました`, body, csite, midOf(st.store, "mail_confirm", String(rv.id)));
     if (ok) await sbPost(st.sends, { resv_no: rv.id, action: "mail_confirm", status: "mailed", message: "official-pay confirm" }); // 2026-11-09 開封率の分母
     return new Response(JSON.stringify({ ok }), { headers: { "content-type": "application/json" } });
@@ -410,7 +411,7 @@ Deno.serve(async (req) => {
           const act = `mail_jalan_remind_${dayTag}`;
           const done = await sbGet(R.sends, `resv_no=eq.${encodeURIComponent(pay.reservation_id)}&action=eq.${act}&select=resv_no&limit=1`);
           if (done[0]) continue;
-          const b = `${pay.customer_name || "お客様"} 様\n\n【リマインド】HANDYMAN RENTCAR ${R.shop}です。\nご予約 ${pay.reservation_id} の事前決済がまだお済みでないようです。\n当店ではお待ち時間・待機時間の解消のため事前決済をお願いしております。\n\nお支払い金額：¥${Number(pay.amount || 0).toLocaleString()}\n下記より ご出発3日前19:00まで にお支払いをお願いいたします。\n${pay.square_payment_url}\n※現金決済をご希望の場合は、お手数ですが事前にお問い合わせください。${foot(R.shop)}`;
+          const b = `${pay.customer_name || "お客様"} 様\n\n【リマインド】HANDYMAN RENTCAR ${R.shop}です。\nご予約 ${pay.reservation_id} の事前決済がまだお済みでないようです。\n当店ではお待ち時間・待機時間の解消のため事前決済をお願いしております。\n\nお支払い金額：¥${Number(pay.amount || 0).toLocaleString()}\n下記より ご出発3日前19:00まで にお支払いをお願いいたします。\n${pay.square_payment_url}\n※現金決済をご希望の場合は、マイページの「聞く」からお知らせください。${foot(R.shop)}`;
           if (DRY) { wsent++; continue; }
           const ok = await sendMail(pay.customer_email, `【リマインド】【HANDYMAN RENTCAR ${R.shop}】事前決済のお願い（予約番号: ${pay.reservation_id}）`, b, "", midOf(R.store, "mail_jalan_remind", String(pay.reservation_id)));
           if (ok) {
