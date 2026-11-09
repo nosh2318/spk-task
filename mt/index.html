@@ -341,14 +341,17 @@ function tkGo(r){if(hm(r.pickup_time))return"pu";const v=String(r.visit_type||""
 function tkRt(r){if(hm(r.dropoff_time))return"bd";const v=String(r.return_type||"").trim();if(v==="返却")return"store";if(isBdb(v))return"bd0";return"";}
 function tkPend(leg){const p=DATA&&DATA.pendingTransfer;return p?p[leg]||null:null;}
 function tkPendTx(pd){return pd?`確認中：${{mp_pickup:"空港お迎え",mp_visit:"ご来店",mp_dropoff:"空港までお送り",mp_store_return:"店舗で返却"}[pd.type]||""}${pd.time?" "+pd.time+"〜":""}`:"";}
-function tkGoV(r){const k=tkGo(r),pd=tkPend("go");if(pd)return tkPendTx(pd);return k==="pu"?`空港お迎え ${hm(r.pickup_time)}〜`:k==="visit"?"ご来店（送迎なし）":k==="pu0"?"空港お迎え・時間 未登録":"未選択";}
+/* ★2026-11-09 nosh「送迎はフライトを目安」：時間未登録でも到着便があれば「到着便に合わせてお迎え」 */
+function tkFlt(r){const k=tkGo(r);return (k==="pu0"||k==="")&&fltParts(r.del_flight).goOk?fltParts(r.del_flight).go:"";}
+function tkGoV(r){const k=tkGo(r),pd=tkPend("go"),f=tkFlt(r);if(pd)return tkPendTx(pd);if(f)return `空港お迎え（到着便 ${f} に合わせて）`;return k==="pu"?`空港お迎え ${hm(r.pickup_time)}〜`:k==="visit"?"ご来店（送迎なし）":k==="pu0"?"空港お迎え・時間 未登録":"未選択";}
 function tkRtV(r){const k=tkRt(r),pd=tkPend("rt");if(pd)return tkPendTx(pd);return k==="bd"?`空港までお送り ${hm(r.dropoff_time)}〜`:k==="store"?"店舗で返却（送迎なし）":k==="bd0"?"空港までお送り・時間 未登録":"未選択";}
-function goPl(r){if(SID==="tkm"){const k=tkGo(r);return k==="visit"?ST.shop:k===""?"空港お迎え／ご来店 未選択":k==="pu0"?ST.pickup+"（お迎えの時間 未登録）":ST.pickup;}return isPub(r.visit_type)?ST.pickup:ST.shop;}
+function goPl(r){if(SID==="tkm"){const k=tkGo(r);if(tkFlt(r))return ST.pickup+"（到着便に合わせてお迎え）";return k==="visit"?ST.shop:k===""?"空港お迎え／ご来店 未選択":k==="pu0"?ST.pickup+"（お迎えの時間 未登録）":ST.pickup;}return isPub(r.visit_type)?ST.pickup:ST.shop;}
 function backPl(r){if(SID!=="tkm")return ST.shop+(isBdb(r.return_type)?"（空港までお送りします）":"");const k=tkRt(r);return ST.shop+(k==="bd"?`（空港までお送りします ${hm(r.dropoff_time)}〜）`:k==="bd0"?"（空港までお送りします・時間 未登録）":k===""?"（空港までのお送り 未選択）":"");}
 function howGo(r){if(SID!=="tkm")return isPub(r.visit_type)?ST.pickHow:"ご予約の時間に"+ST.shop+"へお越しください。運転する方の免許証をお持ちください。";
   const k=tkGo(r),pd=tkPend("go"),pre=pd?esc(tkPendTx(pd))+"（スタッフが確認してお返事します。確定までは今のご予約のままです）<br>":"";
   if(k==="pu")return pre+`空港お迎え ${esc(hm(r.pickup_time))}〜 で承っています。<br>`+ST.pickHow;
   if(k==="visit")return pre+"ご来店（送迎なし）で承っています。ご予約の時間に"+ST.shop+"へお越しください。運転する方の免許証をお持ちください。";
+  if(tkFlt(r))return pre+`到着便（${esc(tkFlt(r))}）の到着に合わせて、空港へお迎えにまいります。<br>`+ST.pickHow+(k===""?"<br>店舗へご来店の場合や、お迎えの時間を決めたい場合は、下のボタンから登録してください。":"<br>お迎えの時間を決めたい場合は、下のボタンから登録できます。");
   if(k==="pu0")return pre+"空港お迎え（無料）のご予約です。お迎えの時間がまだ登録されていません。下のボタンから、お迎えの時間と到着便を登録してください。";
   return pre+"空港お迎え（無料）か、店舗へのご来店か、まだ選ばれていません。下のボタンから選んでください。空港お迎えの場合は、お迎えの時間と到着便も登録してください。";}
 function tkBtn(r){if(SID!=="tkm"||goLocked(r))return"";const k=tkGo(r);return `<button class="btn${k==="pu"||k==="visit"?" o":""}" onclick="openTk('go')">${k===""?"お迎え・ご来店を選ぶ":k==="pu0"?"お迎えの時間を登録する":"お迎え・ご来店を変更する"}</button>`;}
@@ -371,7 +374,7 @@ async function sendTk(){if(!DATA)return;const go=TKLEG==="go",r=DATA.reservation
   const j=await call(go?"set_pickup":"set_return",{want,time:want?tm:null,flight:go&&want&&fl&&fl!==f0?fl:null});
   if(j.dropped)return;
   if(j.ok){closeSheet();toast(j.noChange?"今のご予約と同じです":j.pendingApproval?"受け付けました。スタッフが確認してお返事します":"確定しました");await load();}else toast(j.error||"送れませんでした");}
-function goWord(r){if(SID==="tkm"){const k=tkGo(r);return k==="visit"?"ご来店":k===""?"ご出発":"お迎え";}return isDel(r.visit_type)?"お届け":isPub(r.visit_type)?"お迎え":"受け取り";}
+function goWord(r){if(SID==="tkm"){const k=tkGo(r);return k==="visit"?"ご来店":k===""&&!tkFlt(r)?"ご出発":"お迎え";}return isDel(r.visit_type)?"お届け":isPub(r.visit_type)?"お迎え":"受け取り";}
 function backWord(r){return isCol(r.return_type)?"回収":"返却";}
 
 /* ---- 段階：準備中→前日→当日（出発前/向かっています）→利用中→返却当日→返却済 ---- */
@@ -400,7 +403,7 @@ function musts(d){const r=d.reservation,L=d.license||{},out=[];
   if(MAILST&&!MAILST.has_mail)out.push({k:"mail",n:"通知を受け取るメールアドレス",ok:false,v:"未登録"});
   out.push({k:"lic",n:"運転者の免許証",ok:(L.cnt||0)>0,v:(L.cnt||0)>0?`${L.drivers||1}人分・${L.cnt}枚 登録済`:"未登録"});
   if(PAY&&PAY.state)out.push({k:"pay",n:"お支払い",ok:PAY.state!=="unpaid"&&!payUnpaidExtra(PAY).length,v:PAY.state==="unpaid"?payV(PAY):payUnpaidExtra(PAY).length?"追加のお支払いがあります":payV(PAY)});
-  if(SID==="tkm"){if(!goLocked(r))out.push({k:"tgo",n:"行き：空港お迎え／ご来店",ok:!!tkPend("go")||tkGo(r)==="pu"||tkGo(r)==="visit",v:tkGoV(r)});
+  if(SID==="tkm"){if(!goLocked(r))out.push({k:"tgo",n:"行き：空港お迎え／ご来店",ok:!!tkPend("go")||tkGo(r)==="pu"||tkGo(r)==="visit"||!!tkFlt(r),v:tkGoV(r)});
     if(stageOf(d)!=="after")out.push({k:"trt",n:"帰り：空港までお送り／店舗で返却",ok:!!tkPend("rt")||tkRt(r)==="bd"||tkRt(r)==="store",v:tkRtV(r)});}
   else if(!goLocked(r))out.push({k:"time",n:goWord(r)+"の時間",ok:!!hm(r.lend_time),v:hm(r.lend_time)||"未定"});
   if(isDel(r.visit_type)&&!goLocked(r))out.push({k:"del_place",n:"お届け場所",ok:placeSet(r.del_place),v:placeSet(r.del_place)?r.del_place:"未登録"});
@@ -1370,6 +1373,8 @@ const D={
 "送迎車が空港へ出発すると、ここに出て、通知も届きます。":["When the shuttle leaves for the airport, it shows here and you'll be notified.","接送車出發前往機場後，這裡會顯示並通知您。","셔틀이 공항으로 출발하면 여기에 표시되고 알림도 갑니다."],
 "受け取り方":["How to pick up","取車方式","수령 방법"],
 "空港お迎え・ご来店":["Airport pickup / store visit","機場接機・到店","공항 픽업 / 매장 방문"],
+"店舗へご来店の場合や、お迎えの時間を決めたい場合は、下のボタンから登録してください。":["If you will come to the store, or want to set a pickup time, please use the button below.","若要自行到店或指定接機時間，請使用下方按鈕登錄。","매장 방문 또는 픽업 시간을 정하려면 아래 버튼으로 등록해 주세요."],
+"お迎えの時間を決めたい場合は、下のボタンから登録できます。":["You can set a pickup time with the button below.","可使用下方按鈕指定接機時間。","아래 버튼으로 픽업 시간을 등록할 수 있습니다."],
 "24時間前まではその場で確定":["Confirmed instantly until 24h before","24小時前即時確定","24시간 전까지 즉시 확정"],
 "確認のあと確定":["Confirmed after staff check","工作人員確認後確定","직원 확인 후 확정"],
 "確定しました":["Confirmed","已確定","확정했습니다"],
