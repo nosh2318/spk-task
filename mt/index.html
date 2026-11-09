@@ -380,11 +380,11 @@ async function call(action,body){
     return await r.json().catch(()=>({}));}catch(e){return{error:"通信できませんでした。電波の良い場所でもう一度お試しください。"};}finally{SENDING=false;}
 }
 async function load(quiet){
-  if(DEMO){DATA=demoData(DEMO);loadRcpt();render();return;}
+  if(DEMO){DATA=demoData(DEMO);loadRcpt();loadCN();render();return;}
   if(!TOKEN){$("#app").innerHTML=`<div class="center">ご予約のURLから開いてください。<br>URLが分からないときは <a href="${ST.site}" target="_blank">公式サイト</a> の「マイページを開く」から探せます。</div>`;$("#ttl").textContent="マイページ";return;}
   /* ★2026-11-09 速く（nosh「読み込みが遅い 重い」）：予約の読み込みと同時にほかの読み込みも始める（前は予約→ほか8つを順番待ち）。
      最初の画面に要る支払い・登録内容・メールは必ず待つ。ほかは1.2秒まで待ち、遅れた分は届いたら描き直す */
-  let gotD;const dP=new Promise(res=>gotD=res);const need=[loadPay(),loadINFO(),loadMAIL()],rest=Promise.all([loadDV(dP),loadSH(),loadChat(),loadNG(),loadRcpt()]);
+  let gotD;const dP=new Promise(res=>gotD=res);const need=[loadPay(),loadINFO(),loadMAIL()],rest=Promise.all([loadDV(dP),loadSH(),loadCN(),loadChat(),loadNG(),loadRcpt()]);
   try{const r=await fetch(FN,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"lookup",token:TOKEN,...(RO?{ro:1}:{})})});
     const j=await r.json().catch(()=>({}));gotD(j&&j.ok?j:null);
     if(j.cancelled){$("#ttl").textContent="キャンセル済み";$("#app").innerHTML=`<div class="center">${esc(j.error||"キャンセル済みです")}</div>`;return;}
@@ -500,11 +500,19 @@ function mapBtn(r,col){const la=col?r.col_lat:r.del_lat,lo=col?r.col_lng:r.del_l
   return q?`<a class="btn o" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}" target="_blank" rel="noopener">${col?"回収場所を地図で見る":"お届け場所を地図で見る"}</a>`:"";}
 /* ★2026-11-09 声「車種は？」「8人乗り？」「指定できる？」：クラスの記号（F など）ではなく車種と定員を出す（スタッフの答え＝クラス内のどれか・8名のご予約は8人乗り・指定はできないが希望はできる限り合わせる） */
 const CLS={"nha": {"A": "アルファード", "A2": "アルファード", "B": "ヴェルファイア・セレナ・ヴォクシー・ノア・アルファード", "B2": "ミニバン", "C": "ヤリスクロス・ライズ", "D": "セレナ・ノア・エスクァイア", "F": "ヴィッツ・ノート・アクア", "H": "プリウス・プリウスα", "S": "ハリアー"}, "spk": {"A": "アルファード・ヴェルファイア", "A2": "アルファード・ヴェルファイア", "B": "ノア・デリカD:5", "B2": "ノア", "C": "ロッキー・CX-3", "S": "ハリアー・CX-5", "F": "ルーミー・ソリオ", "H": "カローラフィールダー・アクセラ", "G": "デミオ"}},SEAT={"A": 8, "A2": 8, "B": 8, "B2": 8, "C": 5, "D": 8, "F": 5, "H": 5, "S": 5, "G": 5};
+/* ★2026-11-09 nosh「車種ではありません ご予約クラスです」「クラス名は正確な名称を」「媒体ごとです」：
+   ご予約クラスの名前＝予約した媒体での名前（予約確認メールの名前→なければ店×媒体の対応表。DB 関数 mp_class_name）。取れなければ車名を出す */
+let CLSNM=null;
+async function loadCN(){if(DEMO){CLSNM=Q.get("cn")||{nha:"Bクラス（ミニバン）",spk:"Bクラス（トヨタ ノア/三菱 デリカD5）",tkm:"ラグジュアリーミニバン"}[SID]||null;return;}
+  if(!TOKEN||!ST.ACQ)return;try{const r=await fetch(ST.ACQ[0]+"mp_class_name",{method:"POST",headers:{apikey:ST.ACQ[1],Authorization:"Bearer "+ST.ACQ[1],"Content-Type":"application/json"},body:JSON.stringify({p_store:SID,p_token:TOKEN})});
+  const j=r.ok?await r.json().catch(()=>null):null;CLSNM=typeof j==="string"&&j.trim()?j.trim():null;}catch(_){CLSNM=null;}}
 function clsOf(r){const c=String(r.vehicle||"").trim().toUpperCase(),t=(CLS[SID]||{})[c];if(!t)return null;const n=SEAT[c]||0,ppl=+((INFO&&INFO.people)||r.people||0);
   const seat=SID==="nha"&&/^(A|A2|B|B2)$/.test(c)?(ppl>=8?"8人乗りをご用意します":"7人乗りか8人乗り（8名でのご予約は8人乗り）"):n+"人乗り";return {names:t,seat};}
-function clsRows(r){const k=clsOf(r);if(!k)return `<dt>クラス</dt><dd>${esc(r.vehicle||"-")}</dd>`;
-  return `<dt>車種</dt><dd>${esc(k.names)}<br><span class="sub">${k.names.indexOf("・")>0?"このうちどれか1台です。車種・色は選べません。":"色は選べません。"}</span></dd><dt>定員</dt><dd>${esc(k.seat)}</dd>`;}
-function clsCard(r){if(!clsOf(r))return"";return `<section class="card"><div class="h">ご予約のお車</div><dl class="kv">${clsRows(r)}</dl><div class="sub">ご希望の車種があれば「聞く」からお伝えください。できる限り合わせます。</div></section>`;}
+function clsRows(r){const k=clsOf(r),nm=CLSNM;
+  if(!k)return `<dt>ご予約クラス</dt><dd>${nm?`<span translate="no">${esc(nm)}</span>`:esc(r.vehicle?String(r.vehicle).trim()+"クラス":"-")}</dd>`;
+  const many=k.names.indexOf("・")>0,note=many?"このうちどれか1台です。車種・色は選べません。":"色は選べません。";
+  return `<dt>ご予約クラス</dt><dd>${nm?`<span translate="no">${esc(nm)}</span><br><span class="sub">${esc(k.names)}</span><br>`:`${esc(k.names)}<br>`}<span class="sub">${note}</span></dd><dt>定員</dt><dd>${esc(k.seat)}</dd>`;}
+function clsCard(r){if(!clsOf(r)&&!CLSNM)return"";return `<section class="card"><div class="h">ご予約のお車</div><dl class="kv">${clsRows(r)}</dl><div class="sub">ご希望の車種があれば「聞く」からお伝えください。できる限り合わせます。</div></section>`;}
 /* ★2026-11-09 案1：ウォレットの入口（未登録の件数つき）を「今の状態」に常に出す */
 function walLeft(d){try{return musts(d).filter(x=>!x.ok&&x.k!=="pay").length;}catch(_){return 0;}}
 function walletEntry(d){const n=walLeft(d);return `<button class="card wentry" onclick="go('wal')"><span class="wi"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="20" height="14" rx="3"/><path d="M2 10h20M16 15h2"/></svg></span><span class="wt"><b>ウォレット</b><span>登録内容・お支払い・領収書・免許証・返却場所</span></span>${n?`<span class="wn">未登録 ${n}件</span>`:`<span class="chev">›</span>`}</button>`;}
@@ -659,7 +667,7 @@ function viewChg(d,st){
   h+=`<section class="card"><div class="h">運転者・書類</div>`+
     row("免許証の登録",(d.license&&d.license.cnt)?`${d.license.drivers||1}人分・${d.license.cnt}枚 登録済`:"未登録","受け渡しまで","登録","p-b","openLicense()",st==="after")+`</section>`;
   h+=`<section class="card"><div class="h">そのほかのご依頼</div><div class="sub">次の項目は「スタッフに聞く」から送ってください。依頼として受け付けます。</div>`+
-    ["日程の変更・延長","車種の変更","欠航・大幅な遅れ","忘れ物"].map(x=>row(x,"","","確認あり","p-o","go('ask')")).join("")+
+    ["日程の変更・延長","クラスの変更","欠航・大幅な遅れ","忘れ物"].map(x=>row(x,"","","確認あり","p-o","go('ask')")).join("")+
     (isHP?row("キャンセル","","キャンセル料はお申し込み後にご案内","確認あり","p-o","openCancel()",st!=="prep"&&st!=="eve"):row("キャンセル","","OTA（じゃらん等）のご予約は、ご予約したサイトから","OTAで","p-x","",true))+`</section>`;
   h+=`<section class="card"><div class="h" style="color:var(--r)">マイページではできないこと</div><div class="txt"><b>事故・故障・鍵のトラブル</b>：すぐお電話ください。<br><b>締切を過ぎてからの変更</b>：「予約・変更」から依頼として送れます。<br><b>新しいご予約</b>：公式サイトからどうぞ。</div><a class="btn red" href="tel:05017246197">050-1724-6197 に電話する</a></section>`;
   return h;
@@ -1279,6 +1287,8 @@ const D={
 "ドラレコ":["Dashcam","行車記錄器","블랙박스"],
 "ご予約のお車":["Your car","您預約的車","예약하신 차"],
 "クラス":["Class","車型等級","클래스"],
+"ご予約クラス":["Booked class","預約車型等級","예약 클래스"],
+"クラスの変更":["Change class","變更車型等級","클래스 변경"],
 "給油":["Fuel","加油","주유"],
 "レギュラー":["Regular","92無鉛汽油","일반 휘발유"],
 "・満タンで返却":[" · return with a full tank","・加滿油還車","・만탱크로 반납"],
