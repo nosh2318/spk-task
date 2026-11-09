@@ -141,6 +141,8 @@ a.myp{background:#065f46;color:#fff;font-size:11px;font-weight:800;border-radius
 .pc-sheet .pc-cancel{width:100%;margin-top:8px;padding:12px;border-radius:12px;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;font-weight:700;font-size:14px;cursor:pointer}
 .pc-reqbox{background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:10px 12px;margin-top:12px}
 .pc-reqbox .pc-req{font-size:12px;color:#92400e;padding:4px 0}
+/* ★2026-11-09 未来の日のボタン（押せない） */
+.abtn[data-fut]{opacity:.35;filter:grayscale(1)}
 </style></head>
 <body>
 <style>@keyframes tbBlink{0%,100%{box-shadow:0 0 0 0 rgba(34,211,238,0)}50%{box-shadow:0 0 16px 2px rgba(34,211,238,.9)}}.tbBlinkBtn{animation:tbBlink 1.1s ease-in-out infinite;box-shadow:0 4px 14px rgba(8,145,178,.35)}
@@ -178,6 +180,18 @@ var app=document.getElementById("app");
 function esc(s){return String(s==null?"":s).replace(/[&<>]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;"}[c];});}
 function shortDate(d){var p=(d||"").split("-");return p.length===3?(+p[1])+"/"+(+p[2]):d;}
 function jstToday(){var n=new Date(Date.now()+9*3600*1000);return n.toISOString().slice(0,10);}
+/* ★2026-11-09 nosh「押し間違い防止」「全店」：お客様に届くボタンは、タスクの時刻の2時間より前は押せない */
+function saTooEarly(x){try{
+  var jd=new Date(Date.now()+9*3600e3),today=jd.toISOString().slice(0,10),d=String(x&&x.date||"").slice(0,10);
+  if(d&&d!==today)return false;
+  var t=x.type,tm=x.time||((t==="COL"||t==="BD"||t==="BDB"||t==="返却")?(x.return_time||""):"");
+  var m=String(tm||"").match(/(\d{1,2}):(\d{2})/);if(!m)return false;
+  var mins=(+m[1])*60+(+m[2]),now=jd.getUTCHours()*60+jd.getUTCMinutes();
+  if(mins-now<=120)return false;
+  var ok=mins-120;alert("⏰ "+("0"+m[1]).slice(-2)+":"+m[2]+" のタスクです。\nこのボタンは "+("0"+Math.floor(ok/60)).slice(-2)+":"+("0"+(ok%60)).slice(-2)+" ごろから押せます。\n（早く押すと、お客様に「向かっています」などが早く届いてしまいます）");return true;
+}catch(e){return false;}}
+function saFuture(d){d=String(d||"").slice(0,10);return /^\d{4}-\d{2}-\d{2}$/.test(d)&&d>jstToday();}
+window.saFut=function(d){var m=String(d||"").split("-");alert("📅 "+(m.length===3?(+m[1])+"/"+(+m[2]):d)+" のタスクです。\nボタンは当日に押せます。");};
 function jpWd(d){var p=(d||"").split("-");if(p.length!==3)return"";return "日月火水木金土"[new Date(+p[0],+p[1]-1,+p[2]).getDay()];}
 function addDays(d,n){var p=(d||"").split("-");if(p.length!==3)return d;var dt=new Date(+p[0],+p[1]-1,+p[2]+n);return dt.getFullYear()+"-"+("0"+(dt.getMonth()+1)).slice(-2)+"-"+("0"+dt.getDate()).slice(-2);}
 function dayHead(d,today){var tag=(d===today)?'<span class="ttag">本日</span>':(d===addDays(today,1))?'<span class="ttag" style="background:#0284c7">明日</span>':'';return '<div class="dayhd">📅 '+shortDate(d)+'（'+jpWd(d)+'）'+tag+'</div>';}
@@ -279,17 +293,21 @@ function taskCard(x){
   var btns='<div class="r3">';
   var etm=esc(tm||"");
   if(rid&&isDel){
-    btns+=_ab('dep',rid,'depart',"saAction('"+rid+"','depart')",'🚚出発');
-    btns+=_ab('arr',rid,'arrival',"saAction('"+rid+"','arrival')",'📱到着');
+    var _dn=!actedOf(rid,'depart')?'depart':(!actedOf(rid,'arrival')?'arrival':'');
+    btns+=_ab('dep',rid,'depart',"saAction('"+rid+"','depart')",'出発',1,_dn==='depart');
+    btns+=_ab('arr',rid,'arrival',"saAction('"+rid+"','arrival')",'到着',2,_dn==='arrival');
     btns+=_ab('dly',rid,'delay_del',"saDelay('"+rid+"','delay_del','"+etm+"')",'⏳遅延');
-    btns+='<button class="abtn" style="background:#fff7ed;color:#c2410c;border:1px solid #fdba74;font-weight:800" onclick="saJamDel(\''+rid+'\',\'delay_del\',\''+etm+'\')">🚦渋滞</button>';
+    btns+=saJamBtn(rid,'delay_del',etm);
   }else if(rid&&isCol){
-    btns+=_ab('col',rid,'collect',"saAction('"+rid+"','collect')",'🧭回収に向かう');
-    btns+=_ab('arr',rid,'col_arrival',"saAction('"+rid+"','col_arrival')",'📱到着');
+    var _cn=actedOf(rid,'dropoff')?'':(!actedOf(rid,'collect')?'collect':(!actedOf(rid,'col_arrival')?'col_arrival':''));
+    btns+=_ab('col',rid,'collect',"saAction('"+rid+"','collect')",'回収に向かう',1,_cn==='collect');
+    btns+=_ab('arr',rid,'col_arrival',"saAction('"+rid+"','col_arrival')",'到着',2,_cn==='col_arrival');
     btns+=_ab('dly',rid,'delay_col',"saDelay('"+rid+"','delay_col','"+etm+"')",'⏳遅延');
-    btns+='<button class="abtn" style="background:#fff7ed;color:#c2410c;border:1px solid #fdba74;font-weight:800" onclick="saJamDel(\''+rid+'\',\'delay_col\',\''+etm+'\')">🚦渋滞</button>';
+    btns+=saJamBtn(rid,'delay_col',etm);
     btns+=_ab('drp',rid,'dropoff',"saAction('"+rid+"','dropoff')",'🚗乗捨');
   }
+  // ★2026-11-09 nosh「全店」（那覇 naha-project#91 と同じ）：未来の日のタスクは、お届け・回収のボタンを押せない（うすく表示・押すと案内）。サーバー（staff-action）も止める
+  if(saFuture(x.date)){var _fd=esc(String(x.date||"").slice(0,10));btns=btns.replace(/onclick="/g,'data-fut="1" onclick="saFut(\''+_fd+'\');return false;');}
   if(rid&&(isDel||isCol)){
     btns+='<button class="abtn lic" onclick="openLicense(\''+rid+'\',\''+esc(x.customer||"")+'\')">🪪免許証</button>';
   }
@@ -504,14 +522,14 @@ window.saDelay=function(rid,action,defTm,presetTm){
   if(!presetTm){
   tm=prompt(kind+"の到着予定時間を入力してください（例 18:30）",defTm||"");
   if(tm===null)return; tm=String(tm).trim(); if(!tm){alert("時間が未入力です");return;}
-  if(!confirm(kind+"遅延のご案内を送信しますか？\n到着予定：「"+tm+"」\n（お客様LINEに自動送信します）"))return;
+  if(!confirm(kind+"遅延のご案内を送信しますか？\n到着予定：「"+tm+"」\n（お客様へ送ります：LINE／なければメール／楽天の方は楽天から）"))return;
   }
   fetch(SAEF,{method:"POST",headers:{"apikey":ANON,"Authorization":"Bearer "+ANON,"Content-Type":"application/json"},body:JSON.stringify({token:TOKEN,resv_no:rid,action:action,time:tm})})
     .then(function(r){return r.json();})
     .then(function(d){
       if(!d||d.ok===false){alert("⚠️ 実行できませんでした（"+((d&&d.error)||"エラー")+"）");return;}
       actedMark(rid,action);
-      if(d.sent){alert("✅ "+kind+"遅延のご案内をLINEに自動送信しました");}
+      if(d.sent){saDonePop(kind+"遅延 完了・"+saSentMsg(d));}
       else{var m=d.message||"";try{navigator.clipboard.writeText(m);}catch(e){}alert("⚠️ LINE未登録（"+(d.reason||"")+"）。案内文をコピーしました→手動で送ってください。");}
     })
     .catch(function(){alert("⚠️ 通信エラー。電波を確認してください");});
@@ -538,6 +556,12 @@ function jamEta(defTm,min){
   var m=String(defTm||"").match(/(\d{1,2}):(\d{2})/); if(m){var s=(+m[1])*60+(+m[2]); if(s>base)base=s;}
   var t=(base+min)%1440; return ("0"+Math.floor(t/60)).slice(-2)+":"+("0"+(t%60)).slice(-2);
 }
+/* ★2026-11-09 nosh「スタッフも押したことがわかるように 完了など 視覚的にも必須 全てのボタン」：渋滞も押したら緑＋✓時刻（記録は遅延と同じ） */
+function saJamBtn(rid,act,etm){var d=actedOf(rid,act);
+  return '<button class="abtn'+(d?' acted':'')+'"'+(d?STEP_DONE:' style="background:#fff7ed;color:#c2410c;border:1px solid #fdba74;font-weight:800"')+' onclick="saJamDel(\''+rid+'\',\''+act+'\',\''+etm+'\')">🚦渋滞'+(d?('<br><span style="font-size:11px">'+actedLabel(d.at)+'</span>'):'')+'</button>';}
+/* 実際に届けた方法（LINE／メール／楽天）で「完了」を画面中央に大きく出す */
+function saSentMsg(d){var c=(d&&d.channel)||"";return c==="mail"?"メールで送りました":c==="rakuten"?"楽天の画面から送ります":"LINEで送りました";}
+function saDonePop(t){try{var el=document.createElement("div");var _i=String(t).indexOf("・"),_m=_i>0?String(t).slice(0,_i):String(t),_s=_i>0?String(t).slice(_i+1):"";el.className="sa-pop";el.style.flexDirection="column";el.style.textAlign="center";el.innerHTML='<span>✅ '+esc(_m)+'</span>'+(_s?'<span style="font-size:15px;font-weight:800">'+esc(_s)+'</span>':'');document.body.appendChild(el);setTimeout(function(){el.remove();},2200);}catch(e){}}
 window.saJamDel=function(rid,action,defTm){
   jamSheet("🚦 渋滞で遅れますか？",jamItems(function(m){return "着 "+jamEta(defTm,m);}),function(it){
     saDelay(rid,action,defTm,jamEta(defTm,it.min));
@@ -567,9 +591,15 @@ var ACTED={};
 function actedOf(rid,a){return (rid&&a&&ACTED[rid+"|"+a])?ACTED[rid+"|"+a]:null;}
 function actedMark(rid,a){if(rid&&a)ACTED[rid+"|"+a]={at:new Date().toISOString()};}
 function actedLabel(at){try{var d=new Date(at);return "✓"+("0"+d.getHours()).slice(-2)+":"+("0"+d.getMinutes()).slice(-2);}catch(e){return "✓済";}}
-function _ab(cls,rid,actKey,oc,label){
+/* ★2026-11-09 nosh「ステップわかるようにして」「全店」：①②の番号（那覇と同じ）。次に押すボタンは紺＋黄色の枠、押したものは緑＋✓時刻 */
+var STEP_NO=["","①","②","③","④","⑤"];
+var STEP_NEXT=' style="background:#002063;color:#fff;border:none;box-shadow:0 0 0 3px #FABE00;font-weight:900"';
+var STEP_LATER=' style="background:#fff;color:#002063;border:1px solid #C9CED6;font-weight:700"';
+var STEP_DONE=' style="background:#dcfce7;color:#15803d;border:1px solid #86efac;font-weight:800"';
+function _ab(cls,rid,actKey,oc,label,step,isNext){
   var d=actedOf(rid,actKey);
-  return '<button class="abtn '+cls+(d?' acted':'')+'" onclick="'+oc+'">'+label+(d?(' '+actedLabel(d.at)):'')+'</button>';
+  var st=d?STEP_DONE:(step?(isNext?STEP_NEXT:STEP_LATER):'');
+  return '<button class="abtn '+cls+(d?' acted':'')+'" onclick="'+oc+'"'+st+'>'+(step?STEP_NO[step]:'')+label+(d?((step?'<br><span style="font-size:11px">':' ')+actedLabel(d.at)+(step?'</span>':'')):'')+'</button>';
 }
 function pressLoad(cb){
   var done=false;function fin(){if(done)return;done=true;cb&&cb();}
@@ -582,13 +612,14 @@ function pressLoad(cb){
 window.saAction=function(rid,action){
   var lbl={depart:"出発",collect:"回収に向かう",arrival:"到着",col_arrival:"到着",dropoff:"乗り捨て依頼"}[action]||action;
   var isDrv=(action==="depart"||action==="collect");
-  if(!confirm(lbl+"しますか？\n"+(isDrv?"（お客様へマイページ案内をLINE自動送信し、位置送信ページを開きます）":"（お客様へ「"+lbl+"」をLINE自動送信します）")))return;
+  if(action!=="dropoff"){var _tt=((action==="depart"||action==="arrival")?"DEL":"COL"),_tk=((LASTD&&LASTD.tasks)||[]).filter(function(y){return String(y.resv||"")===String(rid)&&y.type===_tt;})[0];if(_tk&&saTooEarly(_tk))return;}
+  if(!confirm(lbl+"しますか？\n"+(isDrv?"（お客様へマイページ案内を送ります：LINE／なければメール／楽天の方は楽天から）":"（お客様へ「"+lbl+"」を送ります：LINE／なければメール／楽天の方は楽天から）")))return;
   fetch(SAEF,{method:"POST",headers:{"apikey":ANON,"Authorization":"Bearer "+ANON,"Content-Type":"application/json"},body:JSON.stringify({token:TOKEN,resv_no:rid,action:action})})
     .then(function(r){return r.json();})
     .then(function(d){
       if(!d||d.ok===false){alert("⚠️ 実行できませんでした（"+((d&&d.error)||"エラー")+"）");return;}
       actedMark(rid,action);
-      if(d.sent){alert("✅ "+lbl+"を記録し、お客様LINEに自動送信しました");}
+      if(d.sent){saDonePop(lbl+" 完了・"+saSentMsg(d));}
       else{
         var m=d.message||"";
         try{navigator.clipboard.writeText(m);}catch(e){}
