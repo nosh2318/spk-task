@@ -123,6 +123,9 @@ Deno.serve(async (req) => {
         const minsLeft = (at - now) / 60e3;
         const slot = (minsLeft > 10 && minsLeft <= 15) ? "pre" : (minsLeft > -5 && minsLeft <= 0) ? "late" : "";
         if (!slot) continue;
+        // ★2026-11-09 担当「乗り捨て」「無人」や、乗り捨てボタンを押した回収は「回収に向かう」を押さないので警告しない
+        if (/無人|乗り?捨/.test(String(t.assignee || ""))) continue;
+        if (!isDel && r.kd_status === "dropoff" && !!r.kd_status_at && Date.parse(r.kd_status_at) >= Date.parse(t0) - 24 * 3600e3) continue;
         const departed = !!r.kd_status_at && Date.parse(r.kd_status_at) >= Date.parse(t0) && r.kd_status === (isDel ? "delivering" : "collecting");
         if (departed) continue;
         const arrived = (await sbGet(`spk_line_sends?resv_no=eq.${enc(rid)}&sent_at=gte.${enc(t0)}&action=eq.${isDel ? "arrival" : "col_arrival"}&select=id&limit=1`))[0];
@@ -150,6 +153,7 @@ Deno.serve(async (req) => {
       // 5分毎の実行で1回ずつ：15分前（10〜15分前の枠）と、時刻ちょうど（0〜5分過ぎの枠）
       const slot = (minsLeft > 10 && minsLeft <= 15) ? "pre" : (minsLeft > -5 && minsLeft <= 0) ? "late" : "";
       if (!slot) continue;
+      if (/無人|乗り?捨/.test(String(t["担当"] || ""))) continue; // ★2026-11-09 無人・乗り捨ては「出発」を押さないので警告しない
       const t0 = todayStartIso();
       const departed = !!r.kd_status_at && Date.parse(r.kd_status_at) >= Date.parse(t0) && r.kd_status === (isDel ? "delivering" : "collecting");
       if (departed) continue;
