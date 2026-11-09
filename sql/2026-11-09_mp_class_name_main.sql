@@ -77,8 +77,9 @@ returns text language plpgsql stable security definer set search_path = public a
 declare rid text;
 begin
   if coalesce(p_token,'') = '' then return null; end if;
-  if p_store = 'nha' then select id into rid from nha_reservations where mypage_token = p_token limit 1;
-  elsif p_store = 'spk' then select id into rid from reservations where mypage_token = p_token limit 1;
+  if p_token !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then return null; end if;  -- mypage_token は uuid 型
+  if p_store = 'nha' then select id into rid from nha_reservations where mypage_token = p_token::uuid limit 1;
+  elsif p_store = 'spk' then select id into rid from reservations where mypage_token = p_token::uuid limit 1;
   end if;
   if rid is null then return null; end if;
   return hdm_class_name_of(p_store, rid);
