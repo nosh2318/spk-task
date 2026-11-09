@@ -10,6 +10,7 @@
 //   ① LINEをつないだ人には、同じ時期にLINEで届く案内（前日・返却日・傷チェック・御礼・札幌の場所未設定）のメールを送らない（2通防止）
 //   ② 初動/確定メール：マイページを先頭に出す。廃止済みの「受付フォーム」の記載を消す（LINEの案内は残す）
 //   ③ 「ご不明点はお問い合わせください」「ご返信いただくと担当に届きます」を外し、マイページへ誘導
+// 2026-11-09 出発前は1日1通：3日前・2日前＝足りない物の一覧（足りない人だけ）、前日＝一覧か短い1通（全店統一 3/2/1・高松と同じ形）。
 // 2026-11-09 開封の計測：全メールにHTML版（開封の印＋リンク計測 mail-track）を付ける。本文・送る条件は変えない。確定メールも送信記録(mail_confirm)を残す。
 // ============================================================
 // ★BTプロジェクトにデプロイ（RESEND_API_KEYがrent-handyman.comを送れるのはBT側だけ）。
@@ -48,6 +49,38 @@ async function sbPost(t: string, b: unknown): Promise<boolean> {
 async function sbPatch(t: string, q: string, b: unknown): Promise<void> {
   const r = await fetch(`${SB_URL}/rest/v1/${t}?${q}`, { method: "PATCH", headers: { ...H, Prefer: "return=minimal" }, body: JSON.stringify(b) });
   if (!r.ok) console.error(`PATCH ${t}`, await r.text());
+}
+// ===== 出発前の「足りない物」（2026-11-09 nosh「全店統一 3/2/1」） =====
+//   3日前・2日前＝足りない物がある人にだけ一覧を1通／前日＝一覧、なければ短い1通（高松 hdm-tkm-enqueue と同じ形）。
+//   旧：免許証の催促(license-reminder-cron)・場所の催促(mypage_place/mail_place)・前日案内 → この1通にまとめた。
+//   見方は新マイページの「必須」と同じ（免許証・時間・お届け場所/到着便・回収場所・人数・帰りの便・お支払い）。
+async function prepMissing(store: string, r: any): Promise<string[]> {
+  const id = encodeURIComponent(String(r.id));
+  let e: any = {};
+  try {
+    const x = await fetch(`${SB_URL}/rest/v1/rpc/${store}_res_effective`, { method: "POST", headers: H, body: JSON.stringify({ p_res: String(r.id) }) });
+    if (x.ok) e = (await x.json()) || {};
+  } catch { /* 予約の値で見る */ }
+  const [lic, info, pay] = await Promise.all([
+    sbGet("license_uploads", `store=eq.${store}&reservation_id=eq.${id}&select=cnt`),
+    sbGet("mypage_info", `store=eq.${store}&reservation_id=eq.${id}&select=people,flight_out`),
+    sbGet(store === "nha" ? "nha_jalan_payments" : "jalan_payments", `reservation_id=eq.${id}&select=status${store === "nha" ? ",local_paid_at" : ""}`),
+  ]);
+  const I = info[0] || {};
+  const vt = String(r.visit_type || ""), rt = String(r.return_type || "");
+  const del = store !== "nha" || !/^(PUB|PU\(バス\)|airport|PU|来店)$/.test(vt);
+  const col = store !== "nha" || !/^(BDB|BD\(バス\)|BD|返却)$/.test(rt);
+  const has = (v: any) => String(v || "").trim().length > 1;
+  const m: string[] = [];
+  if (!lic.some((x: any) => Number(x.cnt) > 0)) m.push("運転する方の免許証");
+  if (!/\d{1,2}:\d{2}/.test(String(e.lend_time || r.lend_time || r.start_time || ""))) m.push(del ? "お届けの時間" : /PUB/.test(vt) ? "お迎えの時間" : "受け取りの時間");
+  if (del) { if (!has(e.del_place) && !has(r.del_place)) m.push("お届け場所"); }
+  else if (vt !== "来店" && !has(r.del_flight)) m.push("到着便");
+  if (col && !has(e.col_place) && !has(r.col_place)) m.push("回収場所");
+  if (!(Number(I.people || r.people || 0) > 0)) m.push("ご利用人数");
+  if (store === "nha" && /^BD/.test(rt) && !String(I.flight_out || "").trim()) m.push("帰りの便");
+  if (pay.some((p: any) => ["link_created", "email_sent", "reminded"].includes(String(p.status)) && !p.local_paid_at)) m.push("事前決済のお支払い");
+  return m;
 }
 const SQUARE_TOKEN = Deno.env.get("SQUARE_ACCESS_TOKEN") || "";
 const SQUARE_LOCATION = Deno.env.get("SQUARE_LOCATION_ID") || "L8N7J9RKPN3WH";
@@ -162,7 +195,7 @@ const WELCOME_OTA = new Set(["J", "S", "O", "RC", "G", "HP"]);
 // 2026-11-08 LINEで同じ時期の案内が届く通知（LINEをつないだ人にはメールを送らない）
 //   前日=mypage_daybefore / 返却日=mypage_returnday(札幌)・mypage_returnday(那覇) / 傷チェック=damage_check / 御礼=thanks / 場所未設定=mypage_place(札幌のみ)
 const LINE_TWIN: Record<string, string[]> = {
-  mail_daybefore: ["spk", "nha"], mail_returnday: ["spk", "nha"], mail_damage: ["spk", "nha"], mail_thanks: ["spk", "nha"], mail_place: ["spk"],
+  mail_daybefore: ["spk", "nha"], mail_prep_d3: ["spk", "nha"], mail_prep_d2: ["spk", "nha"], mail_returnday: ["spk", "nha"], mail_damage: ["spk", "nha"], mail_thanks: ["spk", "nha"], mail_place: ["spk"],
 };
 
 Deno.serve(async (req) => {
@@ -208,14 +241,18 @@ Deno.serve(async (req) => {
 
   // 各トリガー：条件が満たされる日付だけ対象を引く（毎時cron・時刻ゲート）
   // {action, dateField目標(相対), hourGate, subject/body生成}
-  type Trig = { action: string; targetDate: string; hourGate: (h: number) => boolean; needPlaceEmpty?: boolean; onReturn?: boolean; otaIn?: string[]; build: (r: any, url: string, shop: string) => { s: string; b: string } };
+  type Trig = { action: string; targetDate: string; hourGate: (h: number) => boolean; needPlaceEmpty?: boolean; prep?: number; onReturn?: boolean; otaIn?: string[]; build: (r: any, url: string, shop: string) => { s: string; b: string } };
   const trigs: Trig[] = [
-    { action: "mail_place", targetDate: dstr(3), hourGate: (h) => h === 10, needPlaceEmpty: true, otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP"],
-      build: (r, url, shop) => ({ s: `【HANDYMAN ${shop}】お届け場所のご登録のお願い（予約番号 ${r.id}）`,
-        b: `${r.name || "お客様"} 様\n\nご出発が近づいてまいりました。スムーズなお受け渡しのため、お届け先（ご住所・ホテル名等）のご登録をお願いいたします。\n\n▼ マイページ（お届け場所・時間のご登録）\n${url}${foot(shop, r.site)}` }) },
-    { action: "mail_daybefore", targetDate: dstr(1), hourGate: (h) => h === 18, otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP"],
-      build: (r, url, shop) => ({ s: `【HANDYMAN ${shop}】明日はご出発日です（予約番号 ${r.id}）`,
-        b: `${r.name || "お客様"} 様\n\n明日 ${r.__d} はご出発日です。${r.__del ? "お届け場所・お時間・免許証" : "お時間・免許証"}のご登録がお済みかご確認ください。${r.__del ? "" : `\nお受け取り：${r.__olabel}`}\n\n▼ マイページ\n${url}${foot(shop, r.site)}` }) },
+    // ★2026-11-09 出発前は1日1通（3日前・2日前＝足りない人だけ／前日＝全員）。旧 mail_place(3日前・場所)と前日案内をまとめた（action名 mail_daybefore は前日のまま）。
+    ...[3, 2, 1].map((n): Trig => ({ action: n === 1 ? "mail_daybefore" : `mail_prep_d${n}`, targetDate: dstr(n), hourGate: (h) => h === (n === 1 ? 18 : 10), prep: n, // 前日は今までどおり18時、3日前・2日前は10時 otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP"],
+      build: (r, url, shop) => {
+        const miss: string[] = r.__miss || [];
+        const when = n === 1 ? "明日" : `あと${n}日`;
+        if (!miss.length) return { s: `【HANDYMAN ${shop}】明日はご出発日です（予約番号 ${r.id}）`,
+          b: `${r.name || "お客様"} 様\n\n明日 ${r.__d} はご出発日です。ご準備はすべて整っています。${r.__del ? "" : `\nお受け取り：${r.__olabel}`}\n当日の流れはマイページでご確認ください。\n\n▼ マイページ\n${url}${foot(shop, r.site)}` };
+        return { s: `【HANDYMAN ${shop}】ご出発まで${when}：ご登録をお願いします（予約番号 ${r.id}）`,
+          b: `${r.name || "お客様"} 様\n\nご出発は ${r.__d}（${when}）です。\nまだ登録されていないものがあります。マイページからご登録ください。\n\n${miss.map((x) => "・" + x).join("\n")}\n\n▼ マイページ\n${url}${foot(shop, r.site)}` };
+      } })),
     { action: "mail_returnbefore", targetDate: dstr(1), hourGate: (h) => h === 17, onReturn: true, otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP"],
       build: (r, url, shop) => ({ s: `【HANDYMAN ${shop}】明日はご返却日です（予約番号 ${r.id}）`,
         b: `${r.name || "お客様"} 様\n\n明日 ${r.__r} はご返却日です。ご返却場所・お時間をご確認ください。\n\n▼ マイページ\n${url}${foot(shop, r.site)}` }) },
@@ -240,7 +277,7 @@ Deno.serve(async (req) => {
       if (!t.hourGate(hh)) continue;
       const col = t.onReturn ? S.rCol : S.dCol;
       const otaClause = t.otaIn ? `ota=in.(${t.otaIn.join(",")})` : "ota=eq.HANDYMAN";
-      const rows = await sbGet(S.resv, `${otaClause}&${col}=eq.${t.targetDate}&status=not.in.(%22キャンセル%22,cancelled,cancel)&select=id,name,mail,${S.dCol},${S.rCol},del_place,mypage_token,site,visit_type,return_type`);
+      const rows = await sbGet(S.resv, `${otaClause}&${col}=eq.${t.targetDate}&status=not.in.(%22キャンセル%22,cancelled,cancel)&select=id,name,mail,${S.dCol},${S.rCol},del_place,col_place,people,${S.store === "nha" ? "start_time,del_flight" : "lend_time"},mypage_token,site,visit_type,return_type`);
       for (const r of rows) {
         if (!validMail(r.mail)) continue;
         if (pendingCancel.has(String(r.id))) continue; // ★キャンセル申請中→リマインド送らない
@@ -258,6 +295,7 @@ Deno.serve(async (req) => {
           if (lk[0]) { lineSkip++; continue; }
         }
         r.__d = r[S.dCol]; r.__r = r[S.rCol];
+        if (t.prep) { r.__miss = await prepMissing(S.store, r); if (t.prep > 1 && !r.__miss.length) continue; } // 3日前・2日前は足りない人だけ
         const url = S.mypage + encodeURIComponent(r.mypage_token || "");
         const m = t.build(r, url, S.shop);
         if (DRY) { enq++; console.log(`[dry] ${S.store} ${t.action} ${r.id} → ${r.mail}`); continue; }

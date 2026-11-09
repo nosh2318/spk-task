@@ -70,7 +70,8 @@ const anyPending = (r: any) => !r.licensed || !r.termsSigned || (r.hasPickup && 
 const DUE: Record<string, (r: any) => boolean> = {
   welcome: () => true,
   // 2026-11-08 自動の案内は JST 9〜21時だけ（深夜0時に届いていた）
-  reminder: (r) => (r.d2s === 4 || r.d2s === 2) && r.jh >= 9 && r.jh < 21 && anyPending(r),
+  // 2026-11-09 nosh「全店統一 3/2/1」：4日前→3日前（札幌・那覇と同じ 3日前・2日前・前日）
+  reminder: (r) => (r.d2s === 3 || r.d2s === 2) && r.jh >= 9 && r.jh < 21 && anyPending(r),
   remind: (r) => r.d2s === 1 && r.jh >= 9 && r.jh < 21 && anyPending(r),
   // 前日：未了がある人は remind が行くので、未了なしの人にだけ送る（1人1通）
   daybefore: (r) => r.d2s === 1 && r.jh >= 9 && r.jh < 21 && !anyPending(r),
@@ -87,7 +88,7 @@ function buildItems(r: any): string {
   if (r.hasPickup && !r.pickupSet) it.push("　・ご希望の送迎時間のご登録");
   if (!r.termsSigned) it.push("　・貸渡約款へのご同意・ご署名");
   if (!r.licensed) it.push("　・運転免許証のご登録（運転される方 全員分）");
-  if (r.pay_url && !r.paid) it.push("　・事前決済（" + yen(r.price) + "／ご出発2日前19:00まで）");
+  if (r.pay_url && !r.paid) it.push("　・事前決済（" + yen(r.price) + "／ご出発3日前19:00まで）");
   return it.join("\n");
 }
 function fill(body: string, r: any, payblock: string, footer: string): string {
