@@ -363,6 +363,7 @@ function musts(d){const r=d.reservation,L=d.license||{},out=[];
   // 帰りの便は必須にしない（2026-11-09 nosh「帰りの便は予約に必須ではない」）。マイページで入れた便→予約の帰りの便の順で表示、なければ「未定」
   if(/^BD/i.test(r.return_type||"")&&SID!=="spk"){const fo=String(I.flight_out||"").trim()||fltParts(r.del_flight).back;out.push({k:"fout",n:"帰りの便",ok:true,v:fo||"未定"});}
   {const st=stageOf(d);if(["eve","go_day","go_soon"].includes(st))out.push({k:"conf",n:"前日の確認（時間・場所）",ok:!!I.confirmed_at,v:I.confirmed_at?"確認済":"1タップで確認"});}
+  {const g=d.damage||{};if(g.url&&stageOf(d)!=="after"){const ok=dmgApproved(d);out.push({k:"dmg",n:"傷の確認・承認",ok,v:ok?"確認・承認済み":"写真を見て承認"});}}
   out.push({k:"save",n:"このページをホーム画面に保存",ok:STANDALONE,v:STANDALONE?"保存済":"ホーム画面からすぐ開けます"});
   return out;}
 
@@ -631,21 +632,27 @@ function gasLink(place){return "https://www.google.com/maps/search/"+encodeURICo
    高松は旧画面の承認サイン（damage_approved→handover_signatures）と承認済みの表示を引き継ぐ */
 function dmgOpenAt(){return SID==="tkm"?"ご出発前日の20:00から見られます。":"ご出発日の8:00から見られます。";}
 function dmgGone(d){return ["using","back_day","back_live","after"].includes(stageOf(d));}
-function dmgCanSign(d){const g=(d&&d.damage)||{};return SID==="tkm"&&!!g.url&&!g.approved&&!RO&&stageOf(d)!=="after";}
-function dmgSignedRow(g){return `<div class="must"><span>確認・承認済み${g.approved_detail?`<br><span class="sub">${esc(g.approved_detail)}</span>`:""}</span><span class="pill p-g">済</span></div>`;}
+/* ★2026-11-09 nosh「傷チェック確認は必須」「3店舗で同じ導線に」：承認は3店とも。高松＝lookup の damage.approved（BT handover_signatures）、
+   札幌・那覇＝mypage-info の damage_ok（main handover_signatures）。写真が公開されたら「必須」に入る（返却後は除く） */
+function dmgApproved(d){const g=(d&&d.damage)||{};return SID==="tkm"?!!g.approved:!!(INFO&&INFO.damage_ok);}
+function dmgDetail(d){const g=(d&&d.damage)||{};if(SID==="tkm")return g.approved_detail||"";const o=INFO&&INFO.damage_ok;if(!o)return "";let t="";try{t=new Date(Date.parse(o.at)+9*3600e3).toISOString().slice(5,16).replace("T"," ");}catch(_){}return `承認(${o.name||""}) ${t}`.trim();}
+function dmgCanSign(d){const g=(d&&d.damage)||{};return !!g.url&&!dmgApproved(d)&&!RO&&stageOf(d)!=="after";}
+function dmgSignedRow(d){const t=dmgDetail(d);return `<div class="must"><span>確認・承認済み${t?`<br><span class="sub">${esc(t)}</span>`:""}</span><span class="pill p-g">済</span></div>`;}
 function dmgCard(d){const g=d.damage||{},gone=dmgGone(d);
   if(!g.ready)return `<section class="card"><div class="h">お車の傷の確認</div><div class="sub">${dmgOpenAt()}</div><div class="sub">お車の準備ができると、ここで傷・へこみの写真が見られます。</div></section>`;
   if(!g.url)return `<section class="card"><div class="h">お車の傷の確認</div><div class="sub">お車の準備ができると、ここで傷・へこみの写真が見られます。</div></section>`;
   let h=`<section class="card"><div class="h">お車の傷の確認</div><div class="txt">${gone?"お貸し出しのときの傷・へこみの写真です。":"ご出発前に、傷・へこみの写真をご確認ください。気になる点は受け取りのときにスタッフへお伝えください。"}</div><a class="btn o" href="${esc(g.url)}" target="_blank" rel="noopener">${gone?"貸出時の傷の写真を見る":"傷の写真を見る"}</a>`;
-  if(SID==="tkm"&&g.approved)h+=dmgSignedRow(g);
+  if(dmgApproved(d))h+=dmgSignedRow(d);
   else if(dmgCanSign(d))h+=`<div class="sub">写真をご確認のうえ、承認をお願いします。</div><button class="btn" onclick="openDmgSign()">確認・承認する</button>`;
   return h+`</section>`;}
-/* 予約・変更の1行から開く：高松で未承認なら承認の画面、それ以外は写真を開く */
+/* 予約・変更・ウォレット・必須から開く：未承認なら承認の画面、それ以外は写真を開く */
 function openDmg(){const g=(DATA&&DATA.damage)||{};if(!g.url)return;if(dmgCanSign(DATA))return openDmgSign();window.open(g.url,"_blank","noopener");}
 function openDmgSign(){const g=(DATA&&DATA.damage)||{},r=(DATA&&DATA.reservation)||{};
   sheet(`<h3>車両状態の確認・承認</h3><div class="sub">傷・へこみの写真をご確認のうえ、承認してください。気になる点は受け取りのときにスタッフへお伝えください。</div>${g.url?`<a class="btn o" href="${esc(g.url)}" target="_blank" rel="noopener">傷の写真を見る</a>`:""}<label>ご署名（お名前）</label><input id="dmgnm" maxlength="60" autocomplete="name" value="${esc(r.name||"")}"><button class="btn" onclick="sendDmgSign()">確認・承認する</button><button class="btn g" onclick="closeSheet()">やめる</button>`);}
 async function sendDmgSign(){const nm=String(($("#dmgnm")&&$("#dmgnm").value)||"").trim();if(!nm){toast("お名前を入力してください");return;}
-  const j=await call("damage_approved",{name:nm});if(j.dropped)return;if(j.ok){closeSheet();toast("承認しました。ありがとうございます。");await load();}else toast(j.error||"送れませんでした");}
+  if(SID==="tkm"){const j=await call("damage_approved",{name:nm});if(j.dropped)return;if(j.ok){closeSheet();toast("承認しました。ありがとうございます。");await load();}else toast(j.error||"送れませんでした");return;}
+  if(RO){toast("スタッフ確認用（閲覧のみ）です");return;}if(DEMO){closeSheet();toast("お試し表示のため送信しません");return;}if(SENDING)return;SENDING=true;
+  try{const j=await infoCall("damage_ok",{name:nm});if(j&&j.ok){INFO=Object.assign({},INFO||{},{damage_ok:j.damage_ok});closeSheet();toast("承認しました。ありがとうございます。");render();}else toast((j&&j.error)||"送れませんでした");}catch(_){toast("送れませんでした");}finally{SENDING=false;}}
 function carCard(d){const r=d.reservation,c=d.car||{};
   // ★2026-11-08 LINEの「声」：給油の種類・ETCの位置・充電・Bluetooth（車の情報があれば実車の値、なければ共通）
   const eq=[["usb","USB"],["bluetooth","Bluetooth"],["backcam","バックカメラ"],["dashcam","ドラレコ"]].filter(x=>c[x[0]]===true).map(x=>x[1]);
@@ -659,7 +666,7 @@ function dmgOpenWhen(r){const d=SID==="tkm"?addDays(r.lend_date,-1):r.lend_date;
 function wDmg(d){const g=d.damage||{},r=d.reservation||{};
   if(!g.ready)return wCard("🔍","お車の傷の確認",`公開前（${esc(dmgOpenWhen(r))}に公開）`,"","");
   if(!g.url)return wCard("🔍","お車の傷の確認","お車の準備ができると、ここで傷・へこみの写真が見られます。","","");
-  if(SID==="tkm"&&g.approved)return wCard("🔍","お車の傷の確認","確認・承認済み"+(g.approved_detail?`<br><span class="sub">${esc(g.approved_detail)}</span>`:""),"写真を見る","openDmg()");
+  if(dmgApproved(d))return wCard("🔍","お車の傷の確認","確認・承認済み"+(dmgDetail(d)?`<br><span class="sub">${esc(dmgDetail(d))}</span>`:""),"写真を見る","openDmg()");
   if(dmgCanSign(d))return wCard("🔍","お車の傷の確認","写真をご確認のうえ、承認をお願いします。","確認・承認する","openDmg()",true);
   return wCard("🔍","お車の傷の確認",dmgGone(d)?"お貸し出しのときの傷・へこみの写真です。":"写真が見られます","写真を見る","openDmg()");}
 function wCard(icon,title,val,btn,act,warn){return `<section class="card wcard${warn?" warn":""}"><div class="wtop"><span class="wic">${icon}</span><div style="min-width:0"><div class="h" style="margin:0">${title}</div><div class="wv">${val}</div></div></div>${btn?`<button class="btn ${warn?"y":"o"}" onclick="${act}">${btn}</button>`:""}</section>`;}
@@ -668,7 +675,7 @@ function wSetLang(v){try{localStorage.setItem("mp_lang",v);}catch(_){}try{const 
 function wCurLang(){const h=(document.documentElement.lang||"ja").slice(0,2);return ["en","zh","ko"].includes(h)?h:"ja";}
 /* 登録内容（初期設定）：必須項目を1枚に。未登録は上・黄色で「登録する」、登録済みは「✓ 登録済み」＋「変更」（nosh 11/9「変える＝謎。登録済み/変更だろ」） */
 function wSetup(d){const M=musts(d).filter(x=>x.k!=="pay"),ng=M.filter(x=>!x.ok),ok=M.filter(x=>x.ok);if(!M.length)return"";
-  const rowH=(x)=>`<button class="row" onclick="fixMust('${x.k}')"><span class="l"><span class="n">${esc(x.n)}</span><span class="v">${esc(x.v)}</span></span>${x.ok?'<span style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0"><span class="pill p-g">✓ 登録済み</span><span class="pill p-x">変更</span></span>':'<span class="pill p-o">登録する</span>'}</button>`;
+  const rowH=(x)=>`<button class="row" onclick="fixMust('${x.k}')"><span class="l"><span class="n">${esc(x.n)}</span><span class="v">${esc(x.v)}</span></span>${x.ok&&x.k==="dmg"?'<span class="pill p-g">✓ 承認済み</span>':x.ok?'<span style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0"><span class="pill p-g">✓ 登録済み</span><span class="pill p-x">変更</span></span>':x.k==="dmg"?'<span class="pill p-o">承認する</span>':'<span class="pill p-o">登録する</span>'}</button>`;
   return `<section class="card wcard${ng.length?" warn":""}"><div class="wtop"><span class="wic">📝</span><div style="min-width:0"><div class="h" style="margin:0">登録内容（初期設定）</div><div class="wv">${ng.length?`未登録 ${ng.length}件`:"すべて登録済み"}</div></div></div>${ng.map(rowH).join("")}${ok.map(rowH).join("")}</section>`;}
 function wLang(){const c=wCurLang();return `<section class="card wcard"><div class="wtop"><span class="wic">🌐</span><div><div class="h" style="margin:0">言語 / Language</div></div></div><div class="grid2" translate="no">${[["ja","日本語"],["en","English"],["zh","中文"],["ko","한국어"]].map(([v,t])=>`<button class="btn ${v===c?"":"o"}" onclick="wSetLang('${v}')">${t}</button>`).join("")}</div></section>`;}
 function viewWallet(d,st){const r=d.reservation,M=musts(d),mp=M.find(x=>x.k==="pay"),ml=M.find(x=>x.k==="lic");let h=`<div class="sub" style="margin:0 2px 4px">いつでもここから使えます。中身はご予約の状況に合わせて自動で変わります。</div>`;
@@ -702,7 +709,7 @@ function viewChg(d,st){
   
   h+=`<section class="card"><div class="h">運転者・書類</div>`+
     row("免許証の登録",(d.license&&d.license.cnt)?`${d.license.drivers||1}人分・${d.license.cnt}枚 登録済`:"未登録","受け渡しまで","登録","p-b","openLicense()",st==="after")+
-    (()=>{const g=d.damage||{};return row("傷の確認",SID==="tkm"&&g.approved?"確認・承認済み":g.url?"写真が見られます":"準備中",SID==="tkm"?"ご出発前日の20:00から":"ご出発日の8:00から",dmgCanSign(d)?"承認する":"写真を見る","p-b","openDmg()",!g.url);})()+`</section>`;
+    (()=>{const g=d.damage||{};return row("傷の確認",dmgApproved(d)?"確認・承認済み":g.url?"写真が見られます":"準備中",SID==="tkm"?"ご出発前日の20:00から":"ご出発日の8:00から",dmgCanSign(d)?"承認する":"写真を見る","p-b","openDmg()",!g.url);})()+`</section>`;
   h+=`<section class="card"><div class="h">そのほかのご依頼</div><div class="sub">次の項目は「スタッフに聞く」から送ってください。依頼として受け付けます。</div>`+
     ["日程の変更・延長","クラスの変更","欠航・大幅な遅れ","忘れ物"].map(x=>row(x,"","","確認あり","p-o","go('ask')")).join("")+
     (isHP?row("キャンセル","","キャンセル料はお申し込み後にご案内","確認あり","p-o","openCancel()",st!=="prep"&&st!=="eve"):row("キャンセル","","OTA（じゃらん等）のご予約は、ご予約したサイトから","OTAで","p-x","",true))+`</section>`;
@@ -845,7 +852,7 @@ async function sendIns(){const r=DATA.reservation,cur=insKey(r.insurance),days=r
   const j=await call("request",{req_type:"insurance",detail,target:{insurance:INSQ}});if(j.dropped)return;
   if(j.ok){closeSheet();await load();go("chg");}else toast(j.error||"送れませんでした");}
 function openOpt(){sheet(`<h3>オプション・補償の追加</h3><div class="sub" style="margin-bottom:8px">シートの目安</div><dl class="kv"><dt>ベビーシート</dt><dd>0〜1歳ごろ（約10kgまで）</dd><dt>チャイルドシート</dt><dd>1〜4歳ごろ（約9〜18kg）</dd><dt>ジュニアシート</dt><dd>4〜10歳ごろ（約15〜36kg）</dd></dl><div class="sub" style="margin:8px 0 12px">目安です。お子様の体格に合わせてお選びください。</div><button class="btn o" onclick="closeSheet();go('ask')">スタッフに頼む</button><button class="btn g" onclick="closeSheet()">閉じる</button>`);}
-function fixMust(k){if(k==="mail")return openMail();if(k==="people")return openPeople();if(k==="fout")return openFout();if(k==="conf")return openConf();if(k==="pay")return openPay();if(k==="lic")return openLicense();if(k==="time")return openReq("lend_time");if(k==="del_place"||k==="col_place")return openReq(k);if(k==="flight")return go("ask");}
+function fixMust(k){if(k==="dmg")return openDmg();if(k==="mail")return openMail();if(k==="people")return openPeople();if(k==="fout")return openFout();if(k==="conf")return openConf();if(k==="pay")return openPay();if(k==="lic")return openLicense();if(k==="time")return openReq("lend_time");if(k==="del_place"||k==="col_place")return openReq(k);if(k==="flight")return go("ask");}
 /* ---- 免許証の登録（ページ内・保存先は今までと同じ＝Googleドライブ） ---- */
 const GAS_LIC="https://script.google.com/macros/s/AKfycbycpzE1RIu2LbIlYVeRYcXxfIgfDhY5y1Vtdh1Rj69S9uZEnmqFMDBHqq3y6pHS70_t7A/exec", GAS_LIC_SECRET="hdm-lic-7c3f9a21";
 let LIC=[], LIC_BUSY=false;
@@ -1351,6 +1358,9 @@ const D={
 "ご出発日の8:00から":["From 8:00 on departure day","出發日8:00起","출발일 8:00부터"],
 "ご出発前日の20:00から":["From 20:00 the day before","出發前一天20:00起","출발 전날 20:00부터"],
 "お貸し出しのときの傷・へこみの写真です。":["Photos of scratches and dents taken when the car was handed over.","這是交車時的刮痕與凹痕照片。","대여 시 촬영한 흠집·찌그러짐 사진입니다."],
+"傷の確認・承認":["Damage check & approval","車損確認・核准","흠집 확인·승인"],
+"写真を見て承認":["View photos and approve","查看照片並核准","사진 확인 후 승인"],
+"✓ 承認済み":["✓ Approved","✓ 已核准","✓ 승인 완료"],
 "確認・承認済み":["Checked & approved","已確認並核准","확인·승인 완료"],
 "写真をご確認のうえ、承認をお願いします。":["Please check the photos and approve.","請確認照片後核准。","사진을 확인하신 후 승인해 주세요."],
 "確認・承認する":["Check & approve","確認並核准","확인·승인"],
