@@ -11,7 +11,8 @@ begin
       url := 'https://ckrxttbnawkclshczsia.supabase.co/functions/v1/cs-chat',
       headers := jsonb_build_object('Content-Type','application/json','x-cron-secret',
                    (select substring(command from 'x-cron-secret'',''([0-9a-f]+)''') from cron.job where jobname='hdm-send-mail' limit 1)),
-      body := jsonb_build_object('action','notify_reply','message_id',new.id));
+      body := jsonb_build_object('action','notify_reply','message_id',new.id),
+      timeout_milliseconds := 15000);
   end if;
   return new;
 exception when others then
@@ -73,7 +74,7 @@ begin
   pb := replace(p_body, '&via=line', '&via=mail');
   -- 2026-11-08 電話番号は載せない（お客様に電話を求めない方針）
   body := pb || E'\n\n――――――――\n' ||
-          case when url <> '' and position('github.io' in pb) = 0 then E'最新の状況はマイページでご確認いただけます。\n' || url || E'\n\n' else '' end ||
+          case when url <> '' and (p_action <> 'mypage_chat_reply' or position('github.io' in pb) = 0) then E'最新の状況はマイページでご確認いただけます。\n' || url || E'\n\n' else '' end ||
           shop || E'\n※このメールは送信専用です。ご質問はマイページの「聞く」からどうぞ。';
   if coalesce(enabled, false) then
     if em is null or em not like '%@%' then
