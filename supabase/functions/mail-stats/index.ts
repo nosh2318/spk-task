@@ -36,7 +36,9 @@ Deno.serve(async (req) => {
     const PIN = Deno.env.get("ADMIN_PIN") || "";
     if (!PIN || String(p.admin_pin || "") !== PIN) return J({ ok: false, error: "pin" }, 401);
     const days = Math.min(Math.max(Number(p.days) || 14, 1), 60);
-    const since = new Date(Date.now() - days * DAY).toISOString();
+    const fetchDays = Math.max(days, 28); // KPI は直近4週を見る
+    const since = new Date(Date.now() - fetchDays * DAY).toISOString();
+    const rowsFrom = Date.now() - days * DAY;
     const sends: Send[] = [];
     const views: Record<string, number[]> = {};   // store|rid → 開いた時刻
     const addView = (k: string, t: number) => { (views[k] = views[k] || []).push(t); };
@@ -85,7 +87,7 @@ Deno.serve(async (req) => {
 
     const agg: Record<string, any> = {};
     for (const s of sends) {
-      if (!isFinite(s.at)) continue;
+      if (!isFinite(s.at) || s.at < rowsFrom) continue;
       const key = `${s.store}|${s.ch}|${s.kind}`;
       const a = agg[key] || (agg[key] = { store: s.store, ch: s.ch, kind: s.kind, sent: 0, tracked: 0, open: 0, click: 0, mp24: 0, last: 0 });
       a.sent++; a.last = Math.max(a.last, s.at);
@@ -111,7 +113,85 @@ Deno.serve(async (req) => {
       const vs = views[k] || [];
       if (!vs.some((t) => t >= firstSend[k] - 60000)) { u.n++; if (!lineRid.has(k)) u.mailOnly++; }
     }
-    return J({ ok: true, days, rows: Object.values(agg), unopened, people: Object.keys(lastSend).length, track_since: isFinite(trackSince) ? new Date(trackSince).toISOString() : null });
+
+    // ===== KPI（PDCA用・2026-11-09 nosh「主要KPIをまとめてTODOに」「PDCA」） =====
+    // K1 初回の案内 → 24時間以内にマイページ（週ごと）／K2 出発前日までにマイページを開いた予約（週ごと）／K3 出発3日以内で一度も開いていない＝今日やること
+    const jstToday = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
+    const addD = (d: string, n: number) => new Date(Date.parse(d + "T00:00:00Z") + n * DAY).toISOString().slice(0, 10);
+    const wins = [0, 1, 2, 3].map((k) => ({ from: addD(jstToday, -7 * k - 6), to: addD(jstToday, -7 * k) })); // 0=今週(直近7日) 1=先週…
+    const FIRST = new Set(["mail_welcome", "mail_confirm", "welcome", "mypage_initial"]);
+    const k1: Record<string, { n: number; ok: number }[]> = {};
+    for (const st of stores) k1[st] = wins.map(() => ({ n: 0, ok: 0 }));
+    for (const s of sends) {
+      if (!FIRST.has(s.kind) || !k1[s.store]) continue;
+      const d = new Date(s.at + 9 * 3600000).toISOString().slice(0, 10);
+      const wi = wins.findIndex((w) => d >= w.from && d <= w.to); if (wi < 0) continue;
+      k1[s.store][wi].n++;
+      const vs = views[`${s.store}|${s.rid}`] || [];
+      if (vs.some((t) => t >= s.at - 60000 && t <= s.at + DAY)) k1[s.store][wi].ok++;
+    }
+    // 予約（出発が4週前〜3日後）
+    type R = { store: string; rid: string; name: string; d: string; t: string; ota: string; tel: boolean; mail: boolean; token: string };
+    const resv: R[] = [];
+    const dFrom = wins[3].from, dTo = addD(jstToday, 3);
+    const live = (x: any) => !/cancel|キャンセル/i.test(String(x.status || ""));
+    if (!IS_BT) {
+      for (const [st, tb, dc, tc] of [["spk", "reservations", "lend_date", "lend_time"], ["nha", "nha_reservations", "start_date", "start_time"]]) {
+        const rs = await getAll(SB_URL, SB_KEY, `${tb}?${dc}=gte.${dFrom}&${dc}=lte.${dTo}&select=id,name,${dc},${tc},ota,tel,mail,status,mypage_token`);
+        for (const x of rs) if (live(x)) resv.push({ store: st, rid: String(x.id), name: String(x.name || ""), d: String(x[dc] || "").slice(0, 10), t: String(x[tc] || ""), ota: String(x.ota || ""), tel: !!x.tel, mail: !!(x.mail && String(x.mail).includes("@")), token: String(x.mypage_token || "") });
+      }
+    } else {
+      const rs = await getAll(SB_URL, SB_KEY, `bt_reservations?brand=eq.HDM&start_date=gte.${dFrom}&start_date=lte.${dTo}&select=id,name,start_date,start_time,pickup_time,ota,tel,mail,status,mypage_token`);
+      for (const x of rs) if (live(x)) resv.push({ store: "tkm", rid: String(x.id), name: String(x.name || ""), d: String(x.start_date || "").slice(0, 10), t: String(x.pickup_time || x.start_time || ""), ota: String(x.ota || ""), tel: !!x.tel, mail: !!(x.mail && String(x.mail).includes("@")), token: String(x.mypage_token || "") });
+    }
+    // その予約のマイページ閲覧（期間を区切らず）
+    const everV: Record<string, number[]> = {};
+    if (!IS_BT) {
+      for (const st of ["spk", "nha"]) {
+        const ids = resv.filter((r) => r.store === st).map((r) => r.rid);
+        for (let i = 0; i < ids.length; i += 150) {
+          const part = ids.slice(i, i + 150).map((x) => `"${x.replace(/"/g, "")}"`).join(",");
+          const ev = await getAll(SB_URL, SB_KEY, `mypage_events?event=eq.page_view&page=eq.mypage&store=eq.${st}&reservation_id=in.(${encodeURIComponent(part)})&select=reservation_id,created_at`);
+          for (const e of ev) (everV[`${st}|${e.reservation_id}`] = everV[`${st}|${e.reservation_id}`] || []).push(Date.parse(e.created_at));
+        }
+      }
+    } else if (MAIN_KEY) {
+      const t2r: Record<string, string> = {}; for (const r of resv) if (r.token) t2r[r.token] = r.rid;
+      const toks = Object.keys(t2r);
+      for (let i = 0; i < toks.length; i += 150) {
+        const part = toks.slice(i, i + 150).map((x) => `"${x.replace(/"/g, "")}"`).join(",");
+        const ev = await getAll(MAIN_URL, MAIN_KEY, `mypage_events?event=eq.page_view&page=eq.mypage&store=eq.tkm&token=in.(${encodeURIComponent(part)})&select=token,created_at`);
+        for (const e of ev) { const rid = t2r[String(e.token)]; if (rid) (everV[`tkm|${rid}`] = everV[`tkm|${rid}`] || []).push(Date.parse(e.created_at)); }
+      }
+    }
+    const k2: Record<string, { n: number; ok: number }[]> = {};
+    for (const st of stores) k2[st] = wins.map(() => ({ n: 0, ok: 0 }));
+    const todo: any[] = [];
+    const lineSet = new Set(sends.filter((s) => s.ch === "line").map((s) => `${s.store}|${s.rid}`));
+    if (!IS_BT) { // LINEをつないでいる人（line_links）
+      for (const st of ["spk", "nha"]) {
+        const ids = resv.filter((r) => r.store === st && r.d >= jstToday).map((r) => `"${r.rid.replace(/"/g, "")}"`);
+        for (let i = 0; i < ids.length; i += 150) {
+          const lk = await getAll(SB_URL, SB_KEY, `${st}_line_links?resv_no=in.(${encodeURIComponent(ids.slice(i, i + 150).join(","))})&line_user_id=not.is.null&select=resv_no`).catch(() => []);
+          for (const x of lk) lineSet.add(`${st}|${x.resv_no}`);
+        }
+      }
+    }
+    for (const r of resv) {
+      const vs = everV[`${r.store}|${r.rid}`] || [];
+      const wi = wins.findIndex((w) => r.d >= w.from && r.d <= w.to);
+      if (wi >= 0 && k2[r.store]) {
+        k2[r.store][wi].n++;
+        const dep = Date.parse(r.d + "T00:00:00+09:00");
+        if (vs.some((t) => t < dep)) k2[r.store][wi].ok++;
+      }
+      if (r.d >= jstToday && r.d <= dTo && !vs.length) {
+        const ls = sends.filter((s) => s.store === r.store && s.rid === r.rid).sort((a, b) => b.at - a.at);
+        todo.push({ store: r.store, rid: r.rid, name: r.name, d: r.d, t: r.t, ota: r.ota, tel: r.tel, mail: r.mail, line: lineSet.has(`${r.store}|${r.rid}`), sent: ls.length, last: ls[0] ? ls[0].kind : null });
+      }
+    }
+    todo.sort((a, b) => (a.d + a.t).localeCompare(b.d + b.t));
+    return J({ ok: true, days, kpi: { wins, k1, k2 }, todo, rows: Object.values(agg), unopened, people: Object.keys(lastSend).length, track_since: isFinite(trackSince) ? new Date(trackSince).toISOString() : null });
   } catch (e) {
     return J({ ok: false, error: String(e) }, 500);
   }
