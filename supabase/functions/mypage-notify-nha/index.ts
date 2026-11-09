@@ -36,6 +36,7 @@ function dstr(off: number): string { const d = jstNow(); d.setUTCDate(d.getUTCDa
 //   3日前・2日前＝足りない物がある人にだけ一覧を1通／前日＝一覧、なければ短い1通（高松 hdm-tkm-enqueue と同じ形）。
 //   旧：免許証の催促(license-reminder-cron)・場所の催促(mypage_place/mail_place)・前日案内 → この1通にまとめた。
 //   見方は新マイページの「必須」と同じ（免許証・時間・お届け場所/到着便・回収場所・人数・お支払い）。帰りの便は催促しない。
+const arrOk = (v: any) => { const p = String(v || "").replace(/／/g, "/").split("/").map((x) => x.trim()); return p.length > 1 ? /[A-Za-z]{2,3}\s*\d{1,4}|\d[A-Za-z]\d{3,4}/.test(p[0]) : p[0].length > 1; };
 async function prepMissing(store: string, r: any): Promise<string[]> {
   const id = encodeURIComponent(String(r.id));
   let e: any = {};
@@ -57,7 +58,8 @@ async function prepMissing(store: string, r: any): Promise<string[]> {
   if (!lic.some((x: any) => Number(x.cnt) > 0)) m.push("運転する方の免許証");
   if (!/\d{1,2}:\d{2}/.test(String(e.lend_time || r.lend_time || r.start_time || ""))) m.push(del ? "お届けの時間" : /PUB/.test(vt) ? "お迎えの時間" : "受け取りの時間");
   if (del) { if (!has(e.del_place) && !has(r.del_place)) m.push("お届け場所"); }
-  else if (vt !== "来店" && !has(r.del_flight)) m.push("到着便");
+  // 2026-11-09 便欄が「行き / 帰り」のとき、行きが便名でなければ（例「出発便: / ご確認の程を…」）到着便は未登録
+  else if (vt !== "来店" && !arrOk(r.del_flight)) m.push("到着便");
   if (col && !has(e.col_place) && !has(r.col_place)) m.push("回収場所");
   if (!(Number(I.people || r.people || 0) > 0)) m.push("ご利用人数");
   // 帰りの便は催促しない（2026-11-09 nosh「帰りの便は予約に必須ではない。来る便がわからない時だけ確認」）
