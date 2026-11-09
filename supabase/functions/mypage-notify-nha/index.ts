@@ -32,10 +32,48 @@ async function sbGetAll(t: string, q: string): Promise<any[]> {
 function jstNow(): Date { return new Date(Date.now() + 9 * 3600 * 1000); }
 function dstr(off: number): string { const d = jstNow(); d.setUTCDate(d.getUTCDate() + off); return d.toISOString().slice(0, 10); }
 
+// ===== 出発前の「足りない物」（2026-11-09 nosh「全店統一 3/2/1」） =====
+//   3日前・2日前＝足りない物がある人にだけ一覧を1通／前日＝一覧、なければ短い1通（高松 hdm-tkm-enqueue と同じ形）。
+//   旧：免許証の催促(license-reminder-cron)・場所の催促(mypage_place/mail_place)・前日案内 → この1通にまとめた。
+//   見方は新マイページの「必須」と同じ（免許証・時間・お届け場所/到着便・回収場所・人数・帰りの便・お支払い）。
+async function prepMissing(store: string, r: any): Promise<string[]> {
+  const id = encodeURIComponent(String(r.id));
+  let e: any = {};
+  try {
+    const x = await fetch(`${SB_URL}/rest/v1/rpc/${store}_res_effective`, { method: "POST", headers: H, body: JSON.stringify({ p_res: String(r.id) }) });
+    if (x.ok) e = (await x.json()) || {};
+  } catch { /* 予約の値で見る */ }
+  const [lic, info, pay] = await Promise.all([
+    sbGet("license_uploads", `store=eq.${store}&reservation_id=eq.${id}&select=cnt`),
+    sbGet("mypage_info", `store=eq.${store}&reservation_id=eq.${id}&select=people,flight_out`),
+    sbGet(store === "nha" ? "nha_jalan_payments" : "jalan_payments", `reservation_id=eq.${id}&select=status${store === "nha" ? ",local_paid_at" : ""}`),
+  ]);
+  const I = info[0] || {};
+  const vt = String(r.visit_type || ""), rt = String(r.return_type || "");
+  const del = store !== "nha" || !/^(PUB|PU\(バス\)|airport|PU|来店)$/.test(vt);
+  const col = store !== "nha" || !/^(BDB|BD\(バス\)|BD|返却)$/.test(rt);
+  const has = (v: any) => String(v || "").trim().length > 1;
+  const m: string[] = [];
+  if (!lic.some((x: any) => Number(x.cnt) > 0)) m.push("運転する方の免許証");
+  if (!/\d{1,2}:\d{2}/.test(String(e.lend_time || r.lend_time || r.start_time || ""))) m.push(del ? "お届けの時間" : /PUB/.test(vt) ? "お迎えの時間" : "受け取りの時間");
+  if (del) { if (!has(e.del_place) && !has(r.del_place)) m.push("お届け場所"); }
+  else if (vt !== "来店" && !has(r.del_flight)) m.push("到着便");
+  if (col && !has(e.col_place) && !has(r.col_place)) m.push("回収場所");
+  if (!(Number(I.people || r.people || 0) > 0)) m.push("ご利用人数");
+  if (store === "nha" && /^BD/.test(rt) && !String(I.flight_out || "").trim()) m.push("帰りの便");
+  if (pay.some((p: any) => ["link_created", "email_sent", "reminded"].includes(String(p.status)) && !p.local_paid_at)) m.push("事前決済のお支払い");
+  return m;
+}
+const prepLine = (shop: string, n: number, u: string, miss: string[]) => miss.length
+  ? `【HANDYMAN ${shop}】ご出発まで${n === 1 ? "明日" : "あと" + n + "日"}です。まだ登録されていないものがあります👇\n${miss.map((x) => "・" + x).join("\n")}\nマイページからご登録ください。\nSome details are still missing. Please complete them here 👇\n${u}`
+  : `【HANDYMAN ${shop}】明日がご利用日です。ご準備はすべて整っています。受け取りの流れはマイページでご確認ください👇\nYour rental starts tomorrow. You're all set. Check the details here 👇\n${u}`;
 // テンプレ（日本語＋English）＋ URL
-const TPL: Record<string, (u: string) => string> = {
+const TPL: Record<string, (u: string, r?: any) => string> = {
+  // 2026-11-09 出発前は1日1通（3日前・2日前＝足りない人だけ／前日＝一覧か短い1通）。免許証の催促はここにまとめた
+  mypage_prep_d3: (u, r) => prepLine("那覇空港店", 3, u, (r && r.__miss) || []),
+  mypage_prep_d2: (u, r) => prepLine("那覇空港店", 2, u, (r && r.__miss) || []),
   mypage_initial: (u) => `【HANDYMAN 那覇空港店】\nご予約ありがとうございます。専用マイページで、ご予約内容・受け渡し／送迎・車両状態(傷)チェックをご確認いただけます👇\nThank you for your booking! Check your reservation, transfer details & vehicle condition here 👇\n${u}`,
-  mypage_daybefore: (u) => `【HANDYMAN 那覇空港店】明日がご利用日です。受け取りの流れはマイページでご確認ください👇\nYour rental starts tomorrow. Check the details here 👇\n${u}`,
+  mypage_daybefore: (u, r) => prepLine("那覇空港店", 1, u, (r && r.__miss) || []),
   mypage_returnday: (u) => `【HANDYMAN 那覇空港店】本日がご返却日です。返却の場所・時間・給油はマイページでご確認ください👇\nToday is your return day. Check the return details here 👇\n${u}`,
   mypage_return3h: (u) => `【HANDYMAN 那覇空港店】まもなくご返却のお時間です（約3時間後）。返却の流れはマイページでご確認ください👇\nReturn is in about 3 hours. Check the details here 👇\n${u}`,
 };
@@ -67,9 +105,9 @@ Deno.serve(async (req) => {
   // 1回の実行で送る最大件数。テスト時=1(誤爆防止)／本番=40(EFタイムアウト回避＋緩やかなロールアウト。残りは次のcronで送信)
   const cap = testMode ? Number(body?.limit ?? 1) : Number(body?.limit ?? 40);
 
-  const today = dstr(0), d1 = dstr(1);
+  const today = dstr(0), d1 = dstr(1), d2 = dstr(2), d3 = dstr(3);
   // 対象＝返却(end_date)が今日以降・未キャンセル・KEYDROP除外
-  const resvsAll = await sbGetAll("nha_reservations", `end_date=gte.${today}&status=not.in.("キャンセル",cancelled,cancel)&select=id,ota,start_date,end_date,end_time,col_time,mypage_token`);
+  const resvsAll = await sbGetAll("nha_reservations", `end_date=gte.${today}&status=not.in.("キャンセル",cancelled,cancel)&select=id,ota,start_date,start_time,end_date,end_time,col_time,del_place,col_place,del_flight,people,visit_type,return_type,mypage_token`);
   const resvs = resvsAll.filter((r: any) => String(r.ota || "").toUpperCase() !== "KEYDROP");
   // LINE連携済み（userIdあり）だけが対象
   const links = await sbGetAll(`${STORE}_line_links`, `select=resv_no,line_user_id`);
@@ -91,7 +129,7 @@ Deno.serve(async (req) => {
     if (okCount() >= cap) return;
     const key = r.id + "|" + action;
     if (sentSet.has(key)) return;
-    const res = await callLinePush(r.id, action, TPL[action](URLBASE + r.mypage_token));
+    const res = await callLinePush(r.id, action, TPL[action](URLBASE + r.mypage_token, r));
     results.push({ id: r.id, action, ok: !!res.ok, reason: res.reason || null });
     if (res.ok) sentSet.add(key);
   };
@@ -101,8 +139,13 @@ Deno.serve(async (req) => {
     if (!linked.has(r.id) || !r.mypage_token) continue;
     // ① 初動（2026-11-08 深夜は送らない＝札幌と同じ JST 9〜21時）
     if (daytime) await push(r, "mypage_initial");
-    // ② 前日（JST 9〜21時）
-    if (r.start_date === d1 && daytime) await push(r, "mypage_daybefore");
+    // ② 出発前（2026-11-09 全店統一 3/2/1）：3日前・2日前＝足りない物がある人だけ、前日＝一覧か短い1通（JST 9〜21時）
+    for (const [n, dd, act] of [[3, d3, "mypage_prep_d3"], [2, d2, "mypage_prep_d2"], [1, d1, "mypage_daybefore"]] as [number, string, string][]) {
+      if (r.start_date !== dd || !daytime || sentSet.has(r.id + "|" + act) || okCount() >= cap) continue;
+      r.__miss = await prepMissing("nha", r);
+      if (n > 1 && !r.__miss.length) continue;
+      await push(r, act);
+    }
     // ③ 返却日の朝（9時以降・1回）
     if (r.end_date === today && jstHour >= 9) await push(r, "mypage_returnday");
     // ④ 返却3時間前（返却時刻の3時間前〜その30分後の間に1回）

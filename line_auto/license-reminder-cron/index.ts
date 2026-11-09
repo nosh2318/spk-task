@@ -69,8 +69,10 @@ Deno.serve(async (req) => {
     let attempted = 0, ok = 0, mailed = 0;
     for (const r of alive) {
       if (doneSet.has(r.id) || sentSet.has(r.id)) continue;
-      attempted++;
       const isKD = String(r.ota || "").toUpperCase() === "KEYDROP";
+      // ★2026-11-09 nosh「全店統一 3/2/1」：HANDYMAN の免許証の催促は、出発前の「足りない物の一覧」1通（mypage-notify / mypage-notify-nha / official-notify）にまとめたので、ここでは送らない。KEYDROP（別ブランド）だけ残す。
+      if (!isKD) continue;
+      attempted++;
       if (isKD) {
         // KEYDROP＝メール（Resend）。keydrop_notifications にキュー投入→keydrop-send-mailワーカーが送信。
         if (!r.mail || String(r.mail).indexOf("@") < 0) continue;
