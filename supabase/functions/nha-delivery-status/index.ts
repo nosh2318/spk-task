@@ -37,14 +37,19 @@ async function build(r: any): Promise<any> {
   const hasDel = r.visit_type === "DEL" && r.start_date === today;
   const hasCol = r.return_type === "COL" && r.end_date === today;
   if (!hasDel && !hasCol) return { leg: null };
+  // OPタスク（完了＝受け渡し済みならカードは出さない）
+  const tks = await sbGet(`nha_tasks?_id=in.(${enc("d-" + r.id)},${enc("c-" + r.id)})&deleted=not.is.true&select=_id,${enc("担当")},No,${enc("確認")}`);
+  const tk = (pre: string) => tks.find((x) => String(x._id).startsWith(pre)) || {};
+  const done = (pre: string) => String(tk(pre)["確認"]) === "true";
   const sends = await sbGet(`nha_line_sends?resv_no=eq.${enc(r.id)}&sent_at=gte.${enc(t0)}&action=in.(arrival,col_arrival,del_delay,col_delay,depart_mypage,collect_mypage)&select=action,message,sent_at&order=sent_at.asc`);
   const statusToday = !!r.kd_status_at && Date.parse(r.kd_status_at) >= Date.parse(t0);
   // 同じ日にお届けと回収がある場合：お届けが到着済み、または回収に向かうが押されたら回収の区間
   let leg: "del" | "col" = hasDel ? "del" : "col";
   if (hasDel && hasCol) {
     const delArrived = sends.some((x) => x.action === "arrival");
-    if (delArrived || (r.kd_status === "collecting" && statusToday)) leg = "col";
+    if (delArrived || done("d-") || (r.kd_status === "collecting" && statusToday)) leg = "col";
   }
+  if (done(leg === "del" ? "d-" : "c-")) return { leg: null };
   const isDel = leg === "del";
   const departed = statusToday && r.kd_status === (isDel ? "delivering" : "collecting");
   const since = departed ? r.kd_status_at : t0;
@@ -61,7 +66,7 @@ async function build(r: any): Promise<any> {
   const place = String((isDel ? (eff.del_place || r.del_place) : (eff.col_place || r.col_place)) || "");
 
   // 担当（OPタスク）と車（配車＝nha_fleet → 車両マスタ）
-  const task = (await sbGet(`nha_tasks?_id=eq.${enc((isDel ? "d-" : "c-") + r.id)}&deleted=not.is.true&select=${enc("担当")},No&limit=1`))[0] || {};
+  const task: any = tk(isDel ? "d-" : "c-");
   const fl = (await sbGet(`nha_fleet?reservation_id=eq.${enc(r.id)}&select=vehicle_code&limit=1`))[0];
   let car: any = {};
   if (fl && fl.vehicle_code) car = (await sbGet(`nha_vehicles?code=eq.${enc(fl.vehicle_code)}&select=plate_no,name,color&limit=1`))[0] || {};
