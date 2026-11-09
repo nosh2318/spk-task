@@ -26,7 +26,7 @@ begin
   v := regexp_replace(v, '【[^】]*】', '', 'g');
   v := regexp_replace(v, '[☆★"”“]', '', 'g');
   v := regexp_replace(v, '\s*デリバリーコミコミ価格\s*$', '');
-  v := regexp_replace(v, '^\((.*)\)$', '\1');          -- たびらい「(ミニバン (ノア/ヴォクシー))」
+  v := regexp_replace(v, '^\s*\((.*)\)\s*$', '\1');          -- たびらい「(ミニバン (ノア/ヴォクシー))」
   v := btrim(regexp_replace(v, '\s+', ' ', 'g'));
   if v = '' then return null; end if;
   return v;
@@ -50,7 +50,8 @@ returns text language plpgsql stable security definer set search_path = public a
 declare rid text;
 begin
   if coalesce(p_token,'') = '' or p_store <> 'tkm' then return null; end if;
-  select id::text into rid from bt_reservations where mypage_token = p_token limit 1;
+  if p_token !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then return null; end if;  -- mypage_token は uuid 型
+  select id::text into rid from bt_reservations where mypage_token = p_token::uuid limit 1;
   if rid is null then return null; end if;
   return hdm_class_name_of('tkm', rid);
 end $$;
