@@ -102,9 +102,11 @@ Deno.serve(async (req) => {
     const sec = req.headers.get("x-cron-secret") || "";
     if (!sec || sec !== (Deno.env.get("CRON_SECRET") || "")) return json({ error: "unauthorized" }, 401, origin);
     const today = jstToday(), now = Date.now();
-    // ★2026-11-09 nosh「押されてない＝スタッフが動いてない可能性として通知は必須」：札幌も同じ見張り（store:"spk"）
-    if (String(p.store || "") === "spk") {
-      const t0 = todayStartIso(), out: string[] = [];
+    // ★2026-11-09 nosh「押されてない＝スタッフが動いてない可能性として通知は必須」：札幌も同じ見張り。
+    //   新しい定期実行は作らず、那覇の見張り（同じ5分毎の1本）の中で札幌も見る。
+    const spkOut: string[] = [];
+    try {
+      const t0 = todayStartIso(), out = spkOut;
       const tks = await sbGet(`tasks?date=eq.${today}&deleted=not.is.true&done=not.is.true&type=in.(DEL,COL)&select=_id,type,assignee,reservation_id`);
       for (const t of tks) {
         const rid = String(t.reservation_id || ""); if (!rid) continue;
@@ -127,8 +129,7 @@ Deno.serve(async (req) => {
           : `🔴 ${hm} ${kind}（${r.name || ""}様）時刻を過ぎても「${btn}」が押されていません。お客様のマイページは「準備中」のままです。担当：${who}`;
         await slack(msg, "spk"); out.push(rid + ":" + slot);
       }
-      return json({ ok: true, store: "spk", alerted: out }, 200, origin);
-    }
+    } catch (e) { console.error("spk watch", e); }
     const tasks = await sbGet(`nha_tasks?date=eq.${today}&deleted=not.is.true&${enc("内容")}=in.(DEL,COL)&select=_id,${enc("内容")},${enc("担当")},${enc("予約番号")},${enc("予約者")},${enc("確認")}`);
     const out: string[] = [];
     for (const t of tasks) {
@@ -157,7 +158,7 @@ Deno.serve(async (req) => {
         : `🔴 ${hm} ${kind}（${r.name || ""}様）時刻を過ぎても「${btn}」が押されていません。お客様のマイページは「準備中」のままです。担当：${who}`;
       await slack(msg); out.push(rid + ":" + slot);
     }
-    return json({ ok: true, alerted: out }, 200, origin);
+    return json({ ok: true, alerted: out, spk_alerted: spkOut }, 200, origin);
   }
 
   if (action !== "lookup") return json({ error: "unsupported action" }, 400, origin);
