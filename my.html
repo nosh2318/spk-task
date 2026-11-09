@@ -737,12 +737,23 @@ function histLine(c,mode){
 }
 // その項目の「変更前の値」（適用済みの最新変更のold_value）＝行に「🔄変更前 〇〇」を出す
 function origOf(field){const rc=((DATA&&DATA.recentChanges)||[]).filter(c=>c.field===field&&c.status==="applied");if(!rc.length)return"";const c=rc[0];const ov=String(c.old_value||"").trim(),nv=String(c.new_value||"").trim();return(ov&&ov!==nv)?ov:"";}
-function chgBadge(field){const ov=origOf(field);return ov?`<span style="display:inline-block;margin-left:8px;font-size:11px;font-weight:700;color:#b45309;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;padding:1px 7px;white-space:nowrap">🔄 ${t('changed_from')} ${esc(ov)}</span>`:"";}
+function chgBadge(field){const ov=origOf(field);return (ov?`<span style="display:inline-block;margin-left:8px;font-size:11px;font-weight:700;color:#b45309;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;padding:1px 7px;white-space:nowrap">🔄 ${t('changed_from')} ${esc(ov)}</span>`:"")+pendBadge(field);}
 const TIMES=(()=>{let a=[];for(let h=9;h<=19;h++){a.push(("0"+h).slice(-2)+":00");if(h<19)a.push(("0"+h).slice(-2)+":30")}return a})();
 function timeSel(id,val){return `<select id="${id}"><option value="">${{ja:"指定なし",en:"Not specified",zh:"未指定",ko:"미지정"}[L]}</option>`+
   TIMES.map(x=>`<option ${x===val?"selected":""}>${x}</option>`).join("")+`</select>`}
 
 function pendReq(f){return ((DATA&&DATA.recentChanges)||[]).some(c=>c.field===f&&c.status==="requested")}
+// 2026-11-09 再送対策: 受付中（承認待ち）の時間・場所の依頼を、項目の横に「🕓 確認中：新しい値」で見せる＋同じ内容は送らない
+function pendVal(f){const c=((DATA&&DATA.recentChanges)||[]).find(c=>c&&c.field===f&&c.status==="requested");return c?String(c.new_value||"").trim():"";}
+function pendBadge(f){const v=pendVal(f);return v?`<span style="display:inline-block;margin-left:8px;font-size:11px;font-weight:700;color:#1d4ed8;background:#dbeafe;border:1px solid #bfdbfe;border-radius:6px;padding:1px 7px;white-space:nowrap">🕓 ${({ja:"確認中",en:"Reviewing",zh:"確認中",ko:"확인 중"})[L]||"確認中"}：${esc(v)}</span>`:"";}
+function doneSheet(f,v){const lb={del_place:t('del_place'),col_place:t('col_place'),lend_time:t('del_dt'),return_time:t('col_dt')}[f]||"";const T=o=>o[L]||o.ja;
+  $("#sheet").innerHTML=`<div style="text-align:center;font-size:48px;line-height:1.2">✅</div>
+    <h3 style="text-align:center">${T({ja:"受け付けました",en:"Request received",zh:"已受理",ko:"접수되었습니다"})}</h3>
+    <div style="text-align:center;font-size:17px;margin:6px 0 12px">${esc(lb)}<br><b>${esc(v)}</b></div>
+    <p class="sub">${T({ja:"スタッフが確認してお返事します。もう一度送る必要はありません。確定するまでは今のご予約のままです。",en:"Staff will review it and reply. No need to send it again. Your current booking stays as is until confirmed.",zh:"專員確認後會回覆您，無需再次傳送。確定前維持目前的預約內容。",ko:"담당자가 확인 후 답변드립니다. 다시 보내실 필요는 없습니다. 확정 전까지는 현재 예약 그대로입니다."})}</p>
+    <div class="acts"><button class="btn-ok" onclick="closeSheet()">OK</button></div>`;
+  $("#scrim").classList.add("show");}
+function samePend(f,v){if(pendVal(f)&&pendVal(f)===String(v||"").trim()){doneSheet(f,String(v).trim());return true}return false}
 // 返却準備(ready)の最新状態: none/requested/approved/rejected（recentChangesは新しい順）
 function readyLatest(){const rc=((DATA&&DATA.recentChanges)||[]).filter(c=>c.field==="ready");return rc.length?rc[0]:null}
 function readyState(){const c=readyLatest();return c?c.status:"none"}
@@ -1218,13 +1229,14 @@ async function saveField(field){
   const r=DATA.reservation, cur={del_place:r.del_place,col_place:r.col_place,lend_time:r.lend_time,return_time:r.return_time}[field]||"";
   const v=$("#fv").value.trim();
   if(v===cur){toast(t('no_change'));return}
+  if(samePend(field,v))return;
   if((field==="del_place"||field==="col_place")&&v.length<2){toast(t('min2'));return}
   if(field==="del_place"||field==="col_place"){const pe=placeErrJs(v,null,null);if(pe){toast(pe);return}}
   const _lb={del_place:t('del_place'),col_place:t('col_place'),lend_time:t('del_dt'),return_time:t('col_dt')}[field]||"";
   if(!confirm(tf('reg_confirm',_lb,v)))return;
   const {json}=await call("update",{[field]:v});
   if(json.dropped)return;
-  if(json.ok){closeSheet();toast(json.pendingApproval?t('pending_appr'):t('saved'));await load()}
+  if(json.ok){if(json.pendingApproval)doneSheet(field,v);else{closeSheet();toast(t('saved'))}await load()}
   else if(json.lineOnly){closeSheet();toast(json.error)}
   else toast(json.error||t('save_fail'));
 }
@@ -1343,13 +1355,14 @@ async function mpSave(){
   const place=(document.getElementById("mpSearch").value||mpPicked.place||"").trim();
   if(place.length<2){toast(t('enter_place'));return}
   if(place===cur){toast(t('no_change'));return}
+  if(samePend(mpField,place))return;
   {const pe=placeErrJs(place,mpPicked.lat,mpPicked.lng);if(pe){toast(pe);return}}
   if(!confirm(tf('reg_confirm',isDel?t('del_place'):t('col_place'),place)))return;
   const body={[mpField]:place};
   if(mpPicked.lat&&mpPicked.lng){body[isDel?"del_lat":"col_lat"]=mpPicked.lat;body[isDel?"del_lng":"col_lng"]=mpPicked.lng}
   const {json}=await call("update",body);
   if(json.dropped)return;
-  if(json.ok){closeSheet();toast(json.pendingApproval?t('pending_appr'):t('saved'));await load()}
+  if(json.ok){if(json.pendingApproval)doneSheet(mpField,place);else{closeSheet();toast(t('saved'))}await load()}
   else if(json.lineOnly){closeSheet();toast(json.error)}
   else toast(json.error||t('save_fail'));
 }
@@ -1711,6 +1724,51 @@ load();
   document.getElementById("csBtn").style.display="flex";
   function checkNew(){if(opened)return;ef({action:"cust_open"}).then(function(r){if(r&&r.ok){var n=(r.messages||[]).length;var lastStaff=(r.messages||[]).slice().reverse().find(function(x){return x.sender==="staff";});if(lastStaff&&n>lastCount&&lastCount>0){var d=document.getElementById("csDot");d.textContent="1";d.style.display="flex";}lastCount=Math.max(lastCount,0);}});}
   setTimeout(checkNew,4000);setInterval(checkNew,60000);
+})();
+</script>
+<script>
+/* 2026-11-09 全ボタン共通（nosh「アクションが完了したことがわからない＝問題。ユーザーアクション全てに適用」）
+   ① お客様が押して送る通信の間は、画面全体に「送信中…」を出して他を押せなくする（連打・二重送信を止める）
+   ② 送れたら、小さく消える表示ではなく「✅ 受け付けました」を画面の真ん中に、OKを押すまで出す
+   ※ 裏で自動で読む通信（表示の読み込み・記録）は対象外。押してから2秒以内に始まった送信だけを対象にする */
+(function(){
+  var lastTap=0;
+  ["pointerdown","touchstart","click"].forEach(function(ev){document.addEventListener(ev,function(){lastTap=Date.now();},true);});
+  var SKIP_URL=/ux-track|quiz-track|mail-track|mypage-events|mypage_events|line-track|bt_shuttle_status|mpadmin_handoff|mypage-pay|\/rpc\/[a-z_]*(status|get|list|lookup)/;
+  var SKIP_ACT={lookup:1,ping:1,guide_log:1,track:1,log:1,view:1,list:1,get:1,status:1,history:1,poll:1,cust_poll:1,read:1,mark_read:1,seen:1};
+  var busyN=0,okAt=0,busy=null,done=null;
+  function css(){if(document.getElementById("hdmAckCss"))return;var st=document.createElement("style");st.id="hdmAckCss";
+    st.textContent="@keyframes hdmspin{to{transform:rotate(360deg)}}"+
+    "#hdmBusy,#hdmDone{position:fixed;inset:0;z-index:2147483646;display:none;align-items:center;justify-content:center;padding:24px;background:rgba(15,23,42,.38)}"+
+    "#hdmDone{z-index:2147483647}#hdmBusy .b,#hdmDone .b{background:#fff;color:#0f172a;border-radius:18px;box-shadow:0 12px 36px rgba(0,0,0,.28);font:700 17px/1.5 system-ui,-apple-system,sans-serif;text-align:center}"+
+    "#hdmBusy .b{display:flex;align-items:center;gap:12px;padding:20px 26px}"+
+    "#hdmBusy .s{width:22px;height:22px;border:3px solid #cbd5e1;border-top-color:#2563eb;border-radius:50%;animation:hdmspin .8s linear infinite}"+
+    "#hdmDone .b{width:100%;max-width:340px;padding:26px 22px 20px}#hdmDone .i{font-size:52px;line-height:1.1;margin-bottom:6px}"+
+    "#hdmDone .m{font-size:17px;margin:4px 0 18px;white-space:pre-line}#hdmDone button{width:100%;border:0;border-radius:12px;padding:14px;font:700 17px system-ui,sans-serif;background:#16a34a;color:#fff}";
+    document.head.appendChild(st);}
+  function lang(){try{return (typeof L!=="undefined"&&L)||"ja";}catch(e){return "ja";}}
+  function T(o){return o[lang()]||o.ja;}
+  function busyEl(){if(busy)return busy;css();busy=document.createElement("div");busy.id="hdmBusy";
+    busy.innerHTML='<div class="b"><span class="s"></span><span>'+T({ja:"送信中…",en:"Sending…",zh:"傳送中…",ko:"전송 중…"})+'</span></div>';document.body.appendChild(busy);return busy;}
+  function doneEl(){if(done)return done;css();done=document.createElement("div");done.id="hdmDone";
+    done.innerHTML='<div class="b"><div class="i">✅</div><div class="m"></div><button type="button">OK</button></div>';
+    done.querySelector("button").addEventListener("click",function(){done.style.display="none";});
+    document.body.appendChild(done);return done;}
+  function show(){busyN++;busyEl().style.display="flex";}
+  function hide(){busyN=Math.max(0,busyN-1);if(!busyN&&busy)busy.style.display="none";}
+  var of=window.fetch.bind(window);
+  window.fetch=function(u,o){
+    var url=String((u&&u.url)||u||""),m=String((o&&o.method)||"GET").toUpperCase(),act="";
+    try{if(o&&typeof o.body==="string"&&o.body.charAt(0)==="{")act=String((JSON.parse(o.body)||{}).action||"");}catch(e){}
+    var user=m!=="GET"&&!SKIP_URL.test(url)&&!SKIP_ACT[act]&&(Date.now()-lastTap<2000);
+    if(!user)return of(u,o);
+    show();
+    return of(u,o).then(function(r){if(r&&r.ok)okAt=Date.now();return r;}).finally(hide);
+  };
+  var NG=/でき(ません|なかった)|失敗|エラー|送れ|入力して|選んで|不正|お試し|閲覧のみ|通信|電波|もう一度|fail|error|could not|unable|invalid/i;
+  window.hdmDone=function(msg){var d=doneEl();d.querySelector(".m").textContent=String(msg||T({ja:"受け付けました",en:"Received",zh:"已受理",ko:"접수되었습니다"}));d.style.display="flex";};
+  if(typeof toast==="function"){var _t=toast;
+    toast=function(msg){if(Date.now()-okAt<4000&&!NG.test(String(msg||""))){okAt=0;return window.hdmDone(msg);}return _t.apply(this,arguments);};}
 })();
 </script>
 </body>
