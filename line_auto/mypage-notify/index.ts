@@ -27,7 +27,7 @@ function resolveTaskTime(t: any): string {
 // ===== 出発前の「足りない物」（2026-11-09 nosh「全店統一 3/2/1」） =====
 //   3日前・2日前＝足りない物がある人にだけ一覧を1通／前日＝一覧、なければ短い1通（高松 hdm-tkm-enqueue と同じ形）。
 //   旧：免許証の催促(license-reminder-cron)・場所の催促(mypage_place/mail_place)・前日案内 → この1通にまとめた。
-//   見方は新マイページの「必須」と同じ（免許証・時間・お届け場所/到着便・回収場所・人数・帰りの便・お支払い）。
+//   見方は新マイページの「必須」と同じ（免許証・時間・お届け場所/到着便・回収場所・人数・お支払い）。帰りの便は催促しない。
 async function prepMissing(store: string, r: any): Promise<string[]> {
   const id = encodeURIComponent(String(r.id));
   let e: any = {};
@@ -52,7 +52,7 @@ async function prepMissing(store: string, r: any): Promise<string[]> {
   else if (vt !== "来店" && !has(r.del_flight)) m.push("到着便");
   if (col && !has(e.col_place) && !has(r.col_place)) m.push("回収場所");
   if (!(Number(I.people || r.people || 0) > 0)) m.push("ご利用人数");
-  if (store === "nha" && /^BD/.test(rt) && !String(I.flight_out || "").trim()) m.push("帰りの便");
+  // 帰りの便は催促しない（2026-11-09 nosh「帰りの便は予約に必須ではない。来る便がわからない時だけ確認」）
   if (pay.some((p: any) => ["link_created", "email_sent", "reminded"].includes(String(p.status)) && !p.local_paid_at)) m.push("事前決済のお支払い");
   return m;
 }
