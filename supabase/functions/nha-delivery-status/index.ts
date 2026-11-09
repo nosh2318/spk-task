@@ -85,8 +85,8 @@ async function build(r: any): Promise<any> {
   };
 }
 
-async function slack(text: string): Promise<boolean> {
-  const token = Deno.env.get("SLACK_BOT_TOKEN"); const ch = Deno.env.get("STAFF_DONE_CHANNEL_NHA") || Deno.env.get("SLACK_NHA_USER_CHANNEL") || "C06L91W6T08";
+async function slack(text: string, store = "nha"): Promise<boolean> {
+  const token = Deno.env.get("SLACK_BOT_TOKEN"); const ch = store === "spk" ? (Deno.env.get("STAFF_DONE_CHANNEL") || "") : (Deno.env.get("STAFF_DONE_CHANNEL_NHA") || Deno.env.get("SLACK_NHA_USER_CHANNEL") || "C06L91W6T08");
   if (!token || !ch) { console.log("[slack skip]", text); return false; }
   try { const r = await fetch("https://slack.com/api/chat.postMessage", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json; charset=utf-8" }, body: JSON.stringify({ channel: ch, text }) }); const d = await r.json().catch(() => ({})); return !!d.ok; } catch { return false; }
 }
@@ -102,6 +102,33 @@ Deno.serve(async (req) => {
     const sec = req.headers.get("x-cron-secret") || "";
     if (!sec || sec !== (Deno.env.get("CRON_SECRET") || "")) return json({ error: "unauthorized" }, 401, origin);
     const today = jstToday(), now = Date.now();
+    // ★2026-11-09 nosh「押されてない＝スタッフが動いてない可能性として通知は必須」：札幌も同じ見張り（store:"spk"）
+    if (String(p.store || "") === "spk") {
+      const t0 = todayStartIso(), out: string[] = [];
+      const tks = await sbGet(`tasks?date=eq.${today}&deleted=not.is.true&done=not.is.true&type=in.(DEL,COL)&select=_id,type,assignee,reservation_id`);
+      for (const t of tks) {
+        const rid = String(t.reservation_id || ""); if (!rid) continue;
+        const r = (await sbGet(`reservations?id=eq.${enc(rid)}&select=id,name,status,lend_time,return_time,del_time,col_time,kd_status,kd_status_at`))[0];
+        if (!r || isCancelled(r.status)) continue;
+        const isDel = t.type === "DEL";
+        const hm = String((isDel ? (r.del_time || r.lend_time) : (r.col_time || r.return_time)) || "");
+        const at = hmToMs(today, hm); if (at == null) continue;
+        const minsLeft = (at - now) / 60e3;
+        const slot = (minsLeft > 10 && minsLeft <= 15) ? "pre" : (minsLeft > -5 && minsLeft <= 0) ? "late" : "";
+        if (!slot) continue;
+        const departed = !!r.kd_status_at && Date.parse(r.kd_status_at) >= Date.parse(t0) && r.kd_status === (isDel ? "delivering" : "collecting");
+        if (departed) continue;
+        const arrived = (await sbGet(`spk_line_sends?resv_no=eq.${enc(rid)}&sent_at=gte.${enc(t0)}&action=eq.${isDel ? "arrival" : "col_arrival"}&select=id&limit=1`))[0];
+        if (arrived) continue;
+        const who = String(t.assignee || "").trim() || "担当未定";
+        const kind = isDel ? "お届け" : "回収", btn = isDel ? "出発" : "回収に向かう";
+        const msg = slot === "pre"
+          ? `⏰ ${hm} ${kind}（${r.name || ""}様）の「${btn}」がまだ押されていません。担当：${who}`
+          : `🔴 ${hm} ${kind}（${r.name || ""}様）時刻を過ぎても「${btn}」が押されていません。お客様のマイページは「準備中」のままです。担当：${who}`;
+        await slack(msg, "spk"); out.push(rid + ":" + slot);
+      }
+      return json({ ok: true, store: "spk", alerted: out }, 200, origin);
+    }
     const tasks = await sbGet(`nha_tasks?date=eq.${today}&deleted=not.is.true&${enc("内容")}=in.(DEL,COL)&select=_id,${enc("内容")},${enc("担当")},${enc("予約番号")},${enc("予約者")},${enc("確認")}`);
     const out: string[] = [];
     for (const t of tasks) {
