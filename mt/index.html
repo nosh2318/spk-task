@@ -343,6 +343,8 @@ const STAGE_LABEL={prep:"準備中",eve:"前日",go_day:"本日",go_soon:"まも
 /* ---- 必須項目 ---- */
 /* ★2026-11-09 nosh「予約完了時点ではまだ情報確定してないはず HP以外」：OTA取込の仮の値「場所未確定」などは未登録として扱う */
 function placeSet(p){const x=String(p||"").trim();return x.length>1&&!/^(場所)?未(確定|定|登録)|^未定$|^TBD$/i.test(x);}
+// ★2026-11-09 予約の便欄は「行き / 帰り」（例 MM209 / MM220）。帰りが便名なら帰りの便として扱う（二重の催促を止める）
+function fltParts(s){const p=String(s||"").replace(/／/g,"/").split("/").map(x=>x.trim());const fl=x=>/[A-Za-z]{2,3}\s*\d{1,4}|\d[A-Za-z]\d{3,4}/.test(x||"");return{go:p[0]||"",back:p.length>1&&fl(p[1])?p[1]:""};}
 function musts(d){const r=d.reservation,L=d.license||{},out=[];
   // ★2026-11-08 楽天などメールが無い予約：通知用メールを必須に（3店共通・mypage-mail）
   if(MAILST&&!MAILST.has_mail)out.push({k:"mail",n:"通知を受け取るメールアドレス",ok:false,v:"未登録"});
@@ -350,12 +352,13 @@ function musts(d){const r=d.reservation,L=d.license||{},out=[];
   if(PAY&&PAY.state)out.push({k:"pay",n:"お支払い",ok:PAY.state!=="unpaid"&&!payUnpaidExtra(PAY).length,v:PAY.state==="unpaid"?payV(PAY):payUnpaidExtra(PAY).length?"追加のお支払いがあります":payV(PAY)});
   if(!goLocked(r))out.push({k:"time",n:goWord(r)+"の時間",ok:!!hm(r.lend_time),v:hm(r.lend_time)||"未定"});
   if(isDel(r.visit_type)&&!goLocked(r))out.push({k:"del_place",n:"お届け場所",ok:placeSet(r.del_place),v:placeSet(r.del_place)?r.del_place:"未登録"});
-  else out.push({k:"flight",n:"到着便",ok:!!String(r.del_flight||"").trim(),v:r.del_flight||"未登録"});
+  else out.push({k:"flight",n:"到着便",ok:!!String(r.del_flight||"").trim(),v:fltParts(r.del_flight).go||r.del_flight||"未登録"});
   if(isCol(r.return_type))out.push({k:"col_place",n:"回収場所",ok:placeSet(r.col_place),v:placeSet(r.col_place)?r.col_place:"未登録"});
   // ★2026-11-08 nosh「フォームをなくす＝入力の頻度と精度」：人数・帰りの便・前日の確認を必須に（3店共通・mypage_info）
   const I=INFO||{},ppl=+(I.people||r.people||0);
   out.push({k:"people",n:"ご利用人数",ok:ppl>0,v:ppl>0?ppl+"名":"未登録"});
-  if(/^BD/i.test(r.return_type||"")&&SID!=="spk")out.push({k:"fout",n:"帰りの便",ok:!!I.flight_out,v:I.flight_out||"未登録"});
+  // 帰りの便は必須にしない（2026-11-09 nosh「帰りの便は予約に必須ではない」）。マイページで入れた便→予約の帰りの便の順で表示、なければ「未定」
+  if(/^BD/i.test(r.return_type||"")&&SID!=="spk"){const fo=String(I.flight_out||"").trim()||fltParts(r.del_flight).back;out.push({k:"fout",n:"帰りの便",ok:true,v:fo||"未定"});}
   {const st=stageOf(d);if(["eve","go_day","go_soon"].includes(st))out.push({k:"conf",n:"前日の確認（時間・場所）",ok:!!I.confirmed_at,v:I.confirmed_at?"確認済":"1タップで確認"});}
   out.push({k:"save",n:"このページをホーム画面に保存",ok:STANDALONE,v:STANDALONE?"保存済":"ホーム画面からすぐ開けます"});
   return out;}
@@ -720,7 +723,7 @@ async function saveMail(){const a=($("#iml").value||"").trim(),b=($("#iml2").val
   if(DEMO){closeSheet();toast("お試し表示のため送信しません");return;}
   try{const j=await mailCall("set",{mail:a});if(j&&j.ok){MAILST=j;closeSheet();toast("登録しました。これからの通知はメールで届きます");render();}else toast((j&&j.error)||"送れませんでした");}catch(_){toast("送れませんでした。電波の良いところでもう一度お試しください");}}
 function openPeople(){const n=+((INFO&&INFO.people)||(DATA.reservation.people)||0);sheet(`<h3>ご利用人数</h3><div class="sub">お子様も含めた人数です。送迎・車の準備に使います。</div><select id="ipp">${Array.from({length:12},(_,i)=>i+1).map(i=>`<option ${i===(n||2)?"selected":""}>${i}</option>`).join("")}</select><button class="btn" onclick="saveInfo({people:+$('#ipp').value})">登録する</button><button class="btn g" onclick="closeSheet()">閉じる</button>`);}
-function openFout(){sheet(`<h3>帰りの便</h3><div class="sub">便名を入れてください（例：JL911）。出発時間に合わせて空港までお送りします。</div><input id="ifo" placeholder="例：JL911" autocapitalize="characters" value="${esc((INFO&&INFO.flight_out)||"")}"><button class="btn" onclick="saveInfo({flight_out:$('#ifo').value})">登録する</button><button class="btn g" onclick="closeSheet()">閉じる</button>`);}
+function openFout(){sheet(`<h3>帰りの便</h3><div class="sub">便名を入れてください（例：JL911）。出発時間に合わせて空港までお送りします。</div><input id="ifo" placeholder="例：JL911" autocapitalize="characters" value="${esc((INFO&&INFO.flight_out)||(DATA&&DATA.reservation?fltParts(DATA.reservation.del_flight).back:"")||"")}"><button class="btn" onclick="saveInfo({flight_out:$('#ifo').value})">登録する</button><button class="btn g" onclick="closeSheet()">閉じる</button>`);}
 function openConf(){const r=DATA.reservation,g=goWord(r),b=backWord(r);const gp=isDel(r.visit_type)?(placeSet(r.del_place)?r.del_place:"未登録"):isPub(r.visit_type)?ST.pickup:ST.shop,bp=isCol(r.return_type)?(r.col_place||"未登録"):ST.shop;
   sheet(`<h3>この内容で合っていますか？</h3><dl class="kv"><dt>${g}</dt><dd>${mdw(r.lend_date)} ${hm(r.lend_time)||"未定"}<br><span class="sub">${esc(gp)}</span></dd><dt>${b}</dt><dd>${mdw(r.return_date)} ${hm(r.return_time)||"未定"}<br><span class="sub">${esc(bp)}</span></dd>${(INFO&&INFO.people)||r.people?`<dt>人数</dt><dd>${esc((INFO&&INFO.people)||r.people)}名</dd>`:""}</dl><button class="btn" onclick="sendConf()">はい、この内容でOK</button><button class="btn o" onclick="closeSheet();go('chg')">変える</button>`);}
 async function saveInfo(v){if(DEMO){closeSheet();toast("お試し表示のため送信しません");return;}try{const j=await infoCall("set",v);if(j&&j.ok){INFO=j.info||INFO;closeSheet();toast("受け付けました");render();}else toast((j&&j.error)||"送れませんでした");}catch(_){toast("送れませんでした。電波の良いところでもう一度お試しください");}}
