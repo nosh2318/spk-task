@@ -60,12 +60,36 @@ async function slackResv(text: string, blocks?: unknown): Promise<boolean> {
 }
 async function sbDelete(t: string, q: string): Promise<void> { const r = await fetch(`${SB_URL}/rest/v1/${t}?${q}`, { method: "DELETE", headers: H }); if (!r.ok) console.error(`DELETE ${t}`, await r.text()); }
 
+// ===== 楽天の画面から送る（2026-11-09 nosh「楽天でLINEもメールもない人には、通知もその他の連絡も楽天経由で出す」） =====
+//   楽天の予約はメール・電話がこちらに来ない。LINEもメール登録もない人への通知は main の rax_outbox に積み、
+//   Mac mini（rax_line_mail.py）が楽天RAXの「予約者へメール送信」から送る。dkey が同じものは二度積まない。
+const RAX_URL = "https://ckrxttbnawkclshczsia.supabase.co";
+async function raxQueue(key: string, o: { store: string; resv_no: string; kind: string; subject: string; body: string; dkey?: string | null }): Promise<boolean> {
+  if (!key) { console.log("[rax] no main key"); return false; }
+  try {
+    const r = await fetch(`${RAX_URL}/rest/v1/rax_outbox?on_conflict=dkey`, {
+      method: "POST",
+      headers: { apikey: key, Authorization: `Bearer ${key}`, "content-type": "application/json", Prefer: "return=minimal,resolution=ignore-duplicates" },
+      body: JSON.stringify({ store: o.store, resv_no: o.resv_no, kind: o.kind, subject: o.subject, body: o.body, dkey: o.dkey || null }),
+    });
+    if (!r.ok) console.error("[rax]", r.status, await r.text());
+    return r.ok;
+  } catch (e) { console.error("[rax]", String(e)); return false; }
+}
 // 顧客へメール通知（reserve@rent-handyman.com・BTプロジェクトのRESEND_API_KEYで送信）
 // 2026-10-28 HDM2: site='hdm2'（新サイト予約）だけ送り元・返信先・本文の旧アドレスを reserve@hdm-rentacar.jp に。それ以外は従来どおり。
 async function mailCustomer(to: string, subject: string, text: string, site?: string): Promise<boolean> {
   const key = Deno.env.get("RESEND_API_KEY"); if (!key) { console.log("[mail skip] no RESEND_API_KEY"); return false; }
   const t = String(to || "").trim();
-  if (!t || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(t)) { console.log("[mail skip] no valid email", to); return false; }
+  if (!t || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(t)) {
+    // 2026-11-09 楽天でメールがない予約は楽天の画面から送る（rax_outbox → Mac mini）。予約番号は件名「ご予約 {番号} …」から取る（呼び出し5か所とも同じ形）
+    const rid = (String(subject).match(/ご予約 (\S+) /) || [])[1];
+    if (rid) {
+      const rv = (await sbGet("bt_reservations", `id=eq.${encodeURIComponent(rid)}&select=ota&limit=1`))[0];
+      if (rv && String(rv.ota || "") === "楽天") return await raxQueue(Deno.env.get("MAIN_SERVICE") || "", { store: "tkm", resv_no: rid, kind: "mypage_decision", subject, body: text, dkey: null });
+    }
+    console.log("[mail skip] no valid email", to); return false;
+  }
   const isHdm2 = String(site || "") === "hdm2";
   const from = isHdm2 ? "HANDYMAN高松空港店 <reserve@hdm-rentacar.jp>" : "HANDYMAN高松空港店 <reserve@rent-handyman.com>";
   const replyTo = isHdm2 ? "reserve@hdm-rentacar.jp" : "reserve@rent-handyman.com";

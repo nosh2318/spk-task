@@ -10,6 +10,7 @@
 //   ① LINEをつないだ人には、同じ時期にLINEで届く案内（前日・返却日・傷チェック・御礼・札幌の場所未設定）のメールを送らない（2通防止）
 //   ② 初動/確定メール：マイページを先頭に出す。廃止済みの「受付フォーム」の記載を消す（LINEの案内は残す）
 //   ③ 「ご不明点はお問い合わせください」「ご返信いただくと担当に届きます」を外し、マイページへ誘導
+// 2026-11-09 楽天でLINEもメールもない人は、同じ通知を楽天の画面から送る（rax_outbox → Mac mini）。
 // 2026-11-09 出発前は1日1通：3日前・2日前＝足りない物の一覧（足りない人だけ）、前日＝一覧か短い1通（全店統一 3/2/1・高松と同じ形）。
 // 2026-11-09 開封の計測：全メールにHTML版（開封の印＋リンク計測 mail-track）を付ける。本文・送る条件は変えない。確定メールも送信記録(mail_confirm)を残す。
 // ============================================================
@@ -81,6 +82,22 @@ async function prepMissing(store: string, r: any): Promise<string[]> {
   if (store === "nha" && /^BD/.test(rt) && !String(I.flight_out || "").trim()) m.push("帰りの便");
   if (pay.some((p: any) => ["link_created", "email_sent", "reminded"].includes(String(p.status)) && !p.local_paid_at)) m.push("事前決済のお支払い");
   return m;
+}
+// ===== 楽天の画面から送る（2026-11-09 nosh「楽天でLINEもメールもない人には、通知もその他の連絡も楽天経由で出す」） =====
+//   楽天の予約はメール・電話がこちらに来ない。LINEもメール登録もない人への通知は main の rax_outbox に積み、
+//   Mac mini（rax_line_mail.py）が楽天RAXの「予約者へメール送信」から送る。dkey が同じものは二度積まない。
+const RAX_URL = "https://ckrxttbnawkclshczsia.supabase.co";
+async function raxQueue(key: string, o: { store: string; resv_no: string; kind: string; subject: string; body: string; dkey?: string | null }): Promise<boolean> {
+  if (!key) { console.log("[rax] no main key"); return false; }
+  try {
+    const r = await fetch(`${RAX_URL}/rest/v1/rax_outbox?on_conflict=dkey`, {
+      method: "POST",
+      headers: { apikey: key, Authorization: `Bearer ${key}`, "content-type": "application/json", Prefer: "return=minimal,resolution=ignore-duplicates" },
+      body: JSON.stringify({ store: o.store, resv_no: o.resv_no, kind: o.kind, subject: o.subject, body: o.body, dkey: o.dkey || null }),
+    });
+    if (!r.ok) console.error("[rax]", r.status, await r.text());
+    return r.ok;
+  } catch (e) { console.error("[rax]", String(e)); return false; }
 }
 const SQUARE_TOKEN = Deno.env.get("SQUARE_ACCESS_TOKEN") || "";
 const SQUARE_LOCATION = Deno.env.get("SQUARE_LOCATION_ID") || "L8N7J9RKPN3WH";
@@ -244,7 +261,7 @@ Deno.serve(async (req) => {
   type Trig = { action: string; targetDate: string; hourGate: (h: number) => boolean; needPlaceEmpty?: boolean; prep?: number; onReturn?: boolean; otaIn?: string[]; build: (r: any, url: string, shop: string) => { s: string; b: string } };
   const trigs: Trig[] = [
     // ★2026-11-09 出発前は1日1通（3日前・2日前＝足りない人だけ／前日＝全員）。旧 mail_place(3日前・場所)と前日案内をまとめた（action名 mail_daybefore は前日のまま）。
-    ...[3, 2, 1].map((n): Trig => ({ action: n === 1 ? "mail_daybefore" : `mail_prep_d${n}`, targetDate: dstr(n), hourGate: (h) => h === (n === 1 ? 18 : 10), prep: n, /* 前日は今までどおり18時、3日前・2日前は10時 */ otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP"],
+    ...[3, 2, 1].map((n): Trig => ({ action: n === 1 ? "mail_daybefore" : `mail_prep_d${n}`, targetDate: dstr(n), hourGate: (h) => h === (n === 1 ? 18 : 10), prep: n, /* 前日は今までどおり18時、3日前・2日前は10時 */ otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP", "R"],
       build: (r, url, shop) => {
         const miss: string[] = r.__miss || [];
         const when = n === 1 ? "明日" : `あと${n}日`;
@@ -253,16 +270,16 @@ Deno.serve(async (req) => {
         return { s: `【HANDYMAN ${shop}】ご出発まで${when}：ご登録をお願いします（予約番号 ${r.id}）`,
           b: `${r.name || "お客様"} 様\n\nご出発は ${r.__d}（${when}）です。\nまだ登録されていないものがあります。マイページからご登録ください。\n\n${miss.map((x) => "・" + x).join("\n")}\n\n▼ マイページ\n${url}${foot(shop, r.site)}` };
       } })),
-    { action: "mail_returnbefore", targetDate: dstr(1), hourGate: (h) => h === 17, onReturn: true, otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP"],
+    { action: "mail_returnbefore", targetDate: dstr(1), hourGate: (h) => h === 17, onReturn: true, otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP", "R"],
       build: (r, url, shop) => ({ s: `【HANDYMAN ${shop}】明日はご返却日です（予約番号 ${r.id}）`,
         b: `${r.name || "お客様"} 様\n\n明日 ${r.__r} はご返却日です。ご返却場所・お時間をご確認ください。\n\n▼ マイページ\n${url}${foot(shop, r.site)}` }) },
-    { action: "mail_damage", targetDate: today, hourGate: (h) => h >= 8, otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP"], // 出発当日8時以降
+    { action: "mail_damage", targetDate: today, hourGate: (h) => h >= 8, otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP", "R"], // 出発当日8時以降
       build: (r, url, shop) => ({ s: `【HANDYMAN ${shop}】ご出発前 車両の状態チェックのお願い（予約番号 ${r.id}）`,
         b: `${r.name || "お客様"} 様\n\n本日はご出発日です。トラブル防止のため、ご出発前に車両の状態チェック（傷の確認）をお願いいたします。マイページよりご確認いただけます。\n\n▼ マイページ（車両の状態チェック）\n${url}${foot(shop, r.site)}` }) },
-    { action: "mail_returnday", targetDate: today, hourGate: (h) => h >= 9, onReturn: true, otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP"],
+    { action: "mail_returnday", targetDate: today, hourGate: (h) => h >= 9, onReturn: true, otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP", "R"],
       build: (r, url, shop) => ({ s: `【HANDYMAN ${shop}】本日はご返却日です（予約番号 ${r.id}）`,
         b: `${r.name || "お客様"} 様\n\n本日 ${r.__r} はご返却日です。ご返却場所・お時間はマイページでご確認ください。\n\n▼ マイページ\n${url}${foot(shop, r.site)}` }) },
-    { action: "mail_thanks", targetDate: dstr(-1), hourGate: (h) => h === 10, onReturn: true, otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP"],
+    { action: "mail_thanks", targetDate: dstr(-1), hourGate: (h) => h === 10, onReturn: true, otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP", "R"],
       build: (r, url, shop) => ({ s: `【HANDYMAN ${shop}】ご利用ありがとうございました（予約番号 ${r.id}）`,
         b: `${r.name || "お客様"} 様\n\nこの度はHANDYMAN RENTCAR ${shop}をご利用いただき誠にありがとうございました。またのご利用を心よりお待ちしております。\n\nHANDYMAN RENTCAR ${shop}` }) },
   ];
@@ -277,9 +294,16 @@ Deno.serve(async (req) => {
       if (!t.hourGate(hh)) continue;
       const col = t.onReturn ? S.rCol : S.dCol;
       const otaClause = t.otaIn ? `ota=in.(${t.otaIn.join(",")})` : "ota=eq.HANDYMAN";
-      const rows = await sbGet(S.resv, `${otaClause}&${col}=eq.${t.targetDate}&status=not.in.(%22キャンセル%22,cancelled,cancel)&select=id,name,mail,${S.dCol},${S.rCol},del_place,col_place,people,${S.store === "nha" ? "start_time,del_flight" : "lend_time"},mypage_token,site,visit_type,return_type`);
+      const rows = await sbGet(S.resv, `${otaClause}&${col}=eq.${t.targetDate}&status=not.in.(%22キャンセル%22,cancelled,cancel)&select=id,name,mail,ota,${S.dCol},${S.rCol},del_place,col_place,people,${S.store === "nha" ? "start_time,del_flight" : "lend_time"},mypage_token,site,visit_type,return_type`);
       for (const r of rows) {
-        if (!validMail(r.mail)) continue;
+        // 2026-11-09 楽天でメールがない人は、LINEをつないでいなければ楽天の画面から送る（rax_outbox）
+        r.__rax = false;
+        if (!validMail(r.mail)) {
+          if (String(r.ota || "") !== "R") continue;
+          const lk0 = await sbGet(`${S.store}_line_links`, `resv_no=eq.${encodeURIComponent(r.id)}&line_user_id=not.is.null&select=resv_no&limit=1`);
+          if (lk0[0]) continue; // LINEで届く
+          r.__rax = true;
+        }
         if (pendingCancel.has(String(r.id))) continue; // ★キャンセル申請中→リマインド送らない
         if (t.needPlaceEmpty && String(r.del_place || "").trim()) continue; // 場所登録済みは場所リマインド不要
         const _lo = legOut(S.store, r);
@@ -298,7 +322,12 @@ Deno.serve(async (req) => {
         if (t.prep) { r.__miss = await prepMissing(S.store, r); if (t.prep > 1 && !r.__miss.length) continue; } // 3日前・2日前は足りない人だけ
         const url = S.mypage + encodeURIComponent(r.mypage_token || "");
         const m = t.build(r, url, S.shop);
-        if (DRY) { enq++; console.log(`[dry] ${S.store} ${t.action} ${r.id} → ${r.mail}`); continue; }
+        if (DRY) { enq++; console.log(`[dry] ${S.store} ${t.action} ${r.id} → ${r.__rax ? "楽天の画面" : r.mail}`); continue; }
+        if (r.__rax) {
+          const qok = await raxQueue(SB_KEY, { store: S.store, resv_no: String(r.id), kind: t.action, subject: m.s, body: m.b, dkey: `${S.store}|${r.id}|${t.action}` });
+          if (qok) { await sbPost(S.sends, { resv_no: r.id, action: t.action, status: "rax", message: "official-notify→楽天" }); enq++; }
+          continue;
+        }
         const ok = await sendMail(r.mail, m.s, m.b, r.site, midOf(S.store, t.action, String(r.id)));
         if (ok) { await sbPost(S.sends, { resv_no: r.id, action: t.action, status: "mailed", message: "official-notify" }); enq++; }
       }

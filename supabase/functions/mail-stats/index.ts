@@ -54,8 +54,8 @@ Deno.serve(async (req) => {
       }
       const hn = await getAll(SB_URL, SB_KEY, `hdm_notifications?created_at=gte.${since}&sent=eq.true&is_test=is.false&select=store,resv_no,action,sent_at`);
       for (const r of hn) sends.push({ store: String(r.store), ch: "mail", kind: "btn_" + String(r.action || ""), rid: String(r.resv_no), at: Date.parse(r.sent_at) });
-      // 2026-11-09 楽天の画面から送ったメール（Mac mini rax_line_mail.py が記録）
-      const rx = await getAll(SB_URL, SB_KEY, `rax_mail_log?sent_at=gte.${since}&store=in.(spk,nha)&select=store,resv_no,kind,sent_at`);
+      // 2026-11-09 楽天の画面から送ったメール（rax_outbox の送信済み。Mac mini rax_line_mail.py が送る）
+      const rx = await getAll(SB_URL, SB_KEY, `rax_outbox?sent_at=gte.${since}&status=eq.sent&store=in.(spk,nha)&select=store,resv_no,kind,sent_at`);
       for (const r of rx) sends.push({ store: String(r.store), ch: "mail", kind: String(r.kind || ""), rid: String(r.resv_no), at: Date.parse(r.sent_at) });
       const ev = await getAll(SB_URL, SB_KEY, `mypage_events?created_at=gte.${since}&event=eq.page_view&page=eq.mypage&store=in.(spk,nha)&reservation_id=not.is.null&select=store,reservation_id,created_at`);
       for (const e of ev) addView(`${e.store}|${e.reservation_id}`, Date.parse(e.created_at));
@@ -63,7 +63,7 @@ Deno.serve(async (req) => {
       const tn = await getAll(SB_URL, SB_KEY, `hdm_tkm_notifications?created_at=gte.${since}&sent=eq.true&select=reservation_id,kind,sent_at`);
       for (const r of tn) sends.push({ store: "tkm", ch: "mail", kind: String(r.kind || ""), rid: String(r.reservation_id), at: Date.parse(r.sent_at) });
       if (MAIN_KEY) { // 2026-11-09 楽天の画面から送ったメール（記録は main）
-        const rx = await getAll(MAIN_URL, MAIN_KEY, `rax_mail_log?sent_at=gte.${since}&store=eq.tkm&select=resv_no,kind,sent_at`);
+        const rx = await getAll(MAIN_URL, MAIN_KEY, `rax_outbox?sent_at=gte.${since}&status=eq.sent&store=eq.tkm&select=resv_no,kind,sent_at`);
         for (const r of rx) sends.push({ store: "tkm", ch: "mail", kind: String(r.kind || ""), rid: String(r.resv_no), at: Date.parse(r.sent_at) });
       }
       // 高松の閲覧記録は予約番号が空 → トークンで予約へ戻す
