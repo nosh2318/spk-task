@@ -149,6 +149,11 @@ details.defs summary{cursor:pointer;font-weight:800;font-size:13px}
 <section id="tab-open" hidden>
 <!-- ★2026-11-09 nosh「通知別の開封率を店舗別に」→「主要KPIをまとめてTODOに」「PDCA」→「店舗別で出して」 -->
 <div id="oSel" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:8px 0"></div>
+<!-- ★2026-11-10 nosh「アクティブ率は今後の指標」「LINE問い合わせ数を検証すべき LINEを下げるために」「チャット利用率も追加」 -->
+<div class="card" style="border:2px solid #0a58c2">
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-size:15px">LINEを減らす指標</b><span class="mut">日ごと・昨日までの14日。赤い線＝新マイページに切り替えた日（11/9）。大きい数字＝昨日</span></div>
+  <div id="oShift" style="margin-top:6px"><div class="empty">読み込み中…</div></div>
+</div>
 <div class="card">
   <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-size:15px">主要KPI</b><span class="mut">今週＝直近7日。目標に届かなければ赤</span></div>
   <div id="oKpi" style="margin-top:6px"></div>
@@ -615,7 +620,7 @@ async function loadOpen(force){
   try{
     const [a,b]=await Promise.all([ef(MAIN,MAIN_ANON,"mail-stats",{admin_pin:pin,days:ODAYS}),ef(BT,BT_ANON,"mail-stats",{admin_pin:pin,days:ODAYS}).catch(e=>({rows:[],unopened:{},err:String(e.message||e)}))]);
     const ka=a.kpi||{},kb=b.kpi||{};ODATA={rows:a.rows.concat(b.rows),unopened:Object.assign({},a.unopened,b.unopened),since:[a.track_since,b.track_since].filter(Boolean).sort()[0]||null,err:b.err,
-      wins:ka.wins||kb.wins||[],k1:Object.assign({},ka.k1,kb.k1),k2:Object.assign({},ka.k2,kb.k2),todo:(a.todo||[]).concat(b.todo||[]).sort((x,y)=>(x.d+x.t).localeCompare(y.d+y.t))};OLOAD=Date.now();renderOpen();
+      wins:ka.wins||kb.wins||[],k1:Object.assign({},ka.k1,kb.k1),k2:Object.assign({},ka.k2,kb.k2),shift:{days:(a.shift||b.shift||{}).days||[],stores:Object.assign({},(a.shift||{}).stores,(b.shift||{}).stores)},todo:(a.todo||[]).concat(b.todo||[]).sort((x,y)=>(x.d+x.t).localeCompare(y.d+y.t))};OLOAD=Date.now();renderOpen();
   }catch(e){document.getElementById("oTodo").innerHTML=`<div class="card"><div class="empty">読み込めませんでした（${esc(String(e.message||e))}）</div></div>`;}
 }
 function renderOpen(){
@@ -626,7 +631,7 @@ function renderOpen(){
   const TT=D.todo||[];
   document.getElementById("oSel").innerHTML=OST.map(([st,n,c])=>{const k=TT.filter(x=>x.store===st).length,on=st===OSEL;
     return `<button onclick="oSel('${st}')" style="padding:10px 4px;border-radius:10px;border:2px solid ${c};background:${on?c:"#fff"};color:${on?"#fff":c};font-weight:800;font-size:15px;cursor:pointer">${n}${k?` <span style="display:inline-block;min-width:20px;padding:0 5px;border-radius:10px;background:#b4232c;color:#fff;font-size:12px">${k}</span>`:""}</button>`;}).join("");
-  renderKpi();
+  renderKpi();renderShift();
   document.getElementById("oStores").innerHTML=oST().map(([st,n,c])=>{
     const rows=D.rows.filter(r=>r.store===st); if(!rows.length)return `<div style="margin-top:14px"><b style="color:${c}">${n}</b><div class="mut">この期間の通知はありません</div></div>`;
     const tb=ch=>{const R=rows.filter(r=>r.ch===ch).sort((a,b)=>b.sent-a.sent);if(!R.length)return "";
@@ -675,6 +680,43 @@ function renderKpi(){
   document.getElementById("oAct").innerHTML=KPIS.map(K=>{const bad=SO.some(([st])=>{const v=kpc(((D[K.k]||{})[st]||[])[0]);return v!=null&&v<K.goal;});
     return `<div style="margin-top:6px"><div style="font-weight:800">${K.name}${bad?' <span class="pl" style="background:#fde6e7;color:#b4232c">未達</span>':' <span class="pl" style="background:#e3f4ea;color:#137a43">達成</span>'}</div>`+
     ACTS.filter(x=>x.kpi===K.k).map(x=>`<div style="display:flex;gap:8px;padding:6px 0;border-top:1px solid #eef1f6"><span class="pl" style="white-space:nowrap;background:${x.since?"#e3f4ea":"#eceef2"};color:${x.since?"#137a43":"#4b5563"}">${x.since?md(x.since)+"〜実施中":"未着手"}</span><span>${esc(x.text)}</span></div>`).join("")+"</div>";}).join("");
+}
+/* ---- LINEを減らす指標（2026-11-10） ----
+  アクティブ率＝出発3日前〜返却日の予約のうち、その日マイページを開いた割合（目標は仮）
+  チャット利用率＝その日の問い合わせ人数のうち「スタッフに聞く」を使った割合＝チャット÷（チャット＋LINE）。高松はLINEがないので出さない
+  LINE問い合わせ＝その日エルメでお客様から発言があった人数（切替前の平均 那覇17人・札幌8人） */
+var SHIFT_FROM="2026-11-09",SHIFT_BASE={nha:17,spk:8};
+var SHIFTS=[
+ {k:"active",name:"アクティブ率",unit:"%",goal:80,up:true,desc:"出発3日前〜返却日のお客様のうち、その日マイページを開いた人"},
+ {k:"chatr",name:"チャット利用率",unit:"%",goal:50,up:true,desc:"その日の問い合わせのうち「スタッフに聞く」（チャット）で来た割合。LINE→チャットへ移った度合い"},
+ {k:"line",name:"LINE問い合わせ",unit:"人",goal:0,up:false,desc:"その日LINEで話しかけてきたお客様の人数。下がれば成功"}];
+function shiftVals(S,k){const n=S.active.length;return Array.from({length:n},(_,i)=>{
+  if(k==="active"){const o=S.active[i];return o.n?Math.round(o.ok*100/o.n):null;}
+  if(k==="line")return S.line[i];
+  if(k==="chatr"){const c=S.chat[i],l=S.line[i];if(l==null)return null;return c+l?Math.round(c*100/(c+l)):null;}
+  return null;});}
+function avg(a){const v=a.filter(x=>x!=null);return v.length?Math.round(v.reduce((p,x)=>p+x,0)/v.length):null;}
+function renderShift(){
+  const D=ODATA,el=document.getElementById("oShift");if(!D||!el)return;
+  const days=(D.shift||{}).days||[],S=((D.shift||{}).stores||{})[OSEL];
+  if(!S||!days.length){el.innerHTML='<div class="empty">まだ数字がありません（集計の更新待ち）</div>';return;}
+  const st=OST.find(z=>z[0]===OSEL);
+  el.innerHTML=SHIFTS.filter(K=>!(OSEL==="tkm"&&K.k!=="active")).map(K=>{
+    const v=shiftVals(S,K.k),cut=days.indexOf(SHIFT_FROM);
+    const before=avg(v.slice(0,cut<0?v.length:cut)),after=cut<0?null:avg(v.slice(cut));
+    const last=[...v].reverse().find(x=>x!=null);
+    const mx=Math.max(1,...v.filter(x=>x!=null),K.unit==="%"?100:0);
+    const good=x=>x==null?null:K.up?x>=K.goal:(SHIFT_BASE[OSEL]==null?null:x<SHIFT_BASE[OSEL]);
+    const bars=v.map((x,i)=>`<span title="${md(days[i])} ${x==null?"未取込":x+K.unit}" style="display:inline-block;width:calc((100% - 30px)/${v.length});max-width:16px;height:${x==null?2:Math.max(3,Math.round(x*34/mx))}px;background:${x==null?"#dbe3ef":(i>=cut&&cut>=0)?st[2]:"#b8c2d3"};margin-right:2px;vertical-align:bottom;${i===cut?"border-left:2px dashed #b4232c;":""}"></span>`).join("");
+    const base=K.k==="line"&&SHIFT_BASE[OSEL]!=null?`　切替前の基準 ${SHIFT_BASE[OSEL]}人/日`:"";
+    const lt=K.k!=="active"&&S.line_through?`<span class="mut">LINEは ${md(S.line_through)} の取り込みまで</span>`:"";
+    return `<div style="margin-top:10px"><div style="display:flex;gap:6px;align-items:baseline;flex-wrap:wrap"><b>${K.name}</b>${K.k==="line"?'<span class="pl" style="background:#e5edfc;color:#1d4fb8">下げる</span>':`<span class="pl" style="background:#e5edfc;color:#1d4fb8">目標 ${K.goal}%（仮）</span>`}${lt}</div>
+      <div class="mut" style="margin:2px 0 4px">${K.desc}</div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <b style="font-size:20px;min-width:58px;color:${last==null?"#9aa":good(last)===false?"#b4232c":"#137a43"}">${last==null?"－":last+K.unit}</b>
+        <span class="mut" style="flex:1">切替前 ${before==null?"－":before+K.unit} → 切替後 ${after==null?"－":after+K.unit}${base}</span></div>
+      <div style="height:36px;display:flex;align-items:flex-end;margin-top:4px" aria-label="14日の推移">${bars}</div></div>`;}).join("")+
+    (OSEL==="tkm"?'<div class="mut" style="margin-top:8px">高松はLINEがないので、チャット利用率とLINE問い合わせは出しません。</div>':"");
 }
 loadAll();
 </script>
