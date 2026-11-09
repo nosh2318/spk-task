@@ -329,6 +329,14 @@ function isBdb(v){return /^\s*BDB?\s*$/i.test(v||"");}
    元の高松ページ（my-tkm.html initTransfer）と同じ判定。行き＝お迎え時間あり→空港お迎え／来店→ご来店／PU で時間なし→お迎えの時間 未登録／空欄→未選択。
    帰り＝送迎時間あり→空港までお送り／返却→店舗で返却／BD で時間なし→送迎の時間 未登録／空欄→未選択。
    送ると handyman-mypage-tkm の set_pickup / set_return（HANDYMAN ブランドは承認制＝スタッフ確認後に確定）。 */
+/* ★2026-11-09 nosh「最初は必ず確定、変更は24時間前まで申請なし、それ以降は申請あり必ず」：EF handyman-mypage-tkm と同じ判定（最終判断は EF） */
+function tkFirst(r,leg){return leg==="go"?(!hm(r.pickup_time)&&String(r.visit_type||"").trim()!=="来店"):(!hm(r.dropoff_time)&&String(r.return_type||"").trim()!=="返却");}
+function tkDirect(r,leg){const go=leg==="go",t=go?at(r.lend_date,r.pickup_time||r.lend_time):at(r.return_date,r.dropoff_time||r.return_time);return tkFirst(r,leg)||Date.now()<t-24*3600e3;}
+function tkRule(r,leg){return tkFirst(r,leg)?"最初の登録はその場で確定":tkDirect(r,leg)?"24時間前まではその場で確定":"確認のあと確定";}
+/* ★2026-11-09 nosh：高松のお見送りは「空港着」だけ（出発ボタンなし）。待ち表示は時間と待つ場所だけ */
+function tkBackWait(t,isToday){const msg="車を返したら、お店の前でお待ちください。スタッフが空港までお送りします。";
+  if(!t||!isToday)return `<div class="card"><div class="sub">${msg}</div></div>`;
+  return `<section class="card"><span class="pill p-x" style="align-self:flex-start">空港へのお送りの予定</span><div class="big">${t} 前後にお店を出発（目安）</div><div class="meyasu">時間は目安です。道路の状況で前後します。</div><div class="txt">${msg}</div></section>`;}
 function tkGo(r){if(hm(r.pickup_time))return"pu";const v=String(r.visit_type||"").trim();if(v==="来店")return"visit";if(isPub(v))return"pu0";return"";}
 function tkRt(r){if(hm(r.dropoff_time))return"bd";const v=String(r.return_type||"").trim();if(v==="返却")return"store";if(isBdb(v))return"bd0";return"";}
 function tkPend(leg){const p=DATA&&DATA.pendingTransfer;return p?p[leg]||null:null;}
@@ -354,7 +362,7 @@ function openTk(leg){if(!DATA)return;const r=DATA.reservation,go=leg==="go";if(g
    <label>ご希望</label><select id="tkw" onchange="$('#tkt').hidden=this.value!=='1'"><option value="1" ${want?"selected":""}>${go?"空港お迎えを希望する（無料）":"空港までの送迎を希望する（無料）"}</option><option value="0" ${want?"":"selected"}>${go?"店舗へ行く（ご来店・送迎なし）":"店舗で返却する（送迎なし）"}</option></select>
    <div id="tkt" ${want?"":"hidden"}><label>${go?"お迎えの時間（到着便の到着後）":"空港までお送りする時間"}</label><select id="tktm"><option value="">時間を選んでください</option>${tkTimes().map(o=>`<option ${o===tm?"selected":""}>${o}</option>`).join("")}</select>
    ${go?`<label>到着便（例 JL481）</label><input id="tkfl" maxlength="40" autocomplete="off" placeholder="JL481" value="${esc(fl)}">`:""}</div>
-   <div class="sub">スタッフが確認して、30分以内（19時以降は翌朝9:30まで）にお返事します。確定するまでは今のご予約のままです。</div>
+   <div class="sub">${tkDirect(r,leg)?(tkFirst(r,leg)?"最初の登録は、送るとその場で確定します。":"送ると、その場で確定します。")+"変更はご"+(go?"出発":"返却")+"の24時間前までその場ででき、それ以降はスタッフの確認のあと確定します。":"ご"+(go?"出発":"返却")+"まで24時間を切っているため、スタッフが確認して30分以内（19時以降は翌朝9:30まで）にお返事します。確定するまでは今のご予約のままです。"}</div>
    <button class="btn" onclick="sendTk()">この内容で送る</button><button class="btn g" onclick="closeSheet()">やめる</button>`);}
 async function sendTk(){if(!DATA)return;const go=TKLEG==="go",r=DATA.reservation,want=($("#tkw")||{}).value!=="0",tm=want?String(($("#tktm")||{}).value||""):"";
   if(want&&!tm){toast("時間を選んでください");return;}
@@ -362,7 +370,7 @@ async function sendTk(){if(!DATA)return;const go=TKLEG==="go",r=DATA.reservation
   /* 便は書き換えたときだけ送る（「行き / 帰り」の形の便欄を、行きだけで上書きしないため） */
   const j=await call(go?"set_pickup":"set_return",{want,time:want?tm:null,flight:go&&want&&fl&&fl!==f0?fl:null});
   if(j.dropped)return;
-  if(j.ok){closeSheet();toast(j.noChange?"今のご予約と同じです":j.pendingApproval?"受け付けました。スタッフが確認してお返事します":"登録しました");await load();}else toast(j.error||"送れませんでした");}
+  if(j.ok){closeSheet();toast(j.noChange?"今のご予約と同じです":j.pendingApproval?"受け付けました。スタッフが確認してお返事します":"確定しました");await load();}else toast(j.error||"送れませんでした");}
 function goWord(r){if(SID==="tkm"){const k=tkGo(r);return k==="visit"?"ご来店":k===""?"ご出発":"お迎え";}return isDel(r.visit_type)?"お届け":isPub(r.visit_type)?"お迎え":"受け取り";}
 function backWord(r){return isCol(r.return_type)?"回収":"返却";}
 
@@ -372,7 +380,7 @@ function stageOf(d){
   const lendAt=at(r.lend_date,r.lend_time), retAt=at(r.return_date,r.return_time);
   if(DV&&(DV.state==="onway"||DV.state==="late"||DV.state==="arrived"))return DV.leg==="col"?"back_live":"go_live";
   if(!DVEF){/* ★11/8 札幌：kd_status が残ったままの予約で止まらないよう、当日の時間内だけ使う */if(kd==="delivering"&&today===r.lend_date&&now<lendAt+3*3600e3)return"go_live";if(kd==="collecting"&&today===r.return_date&&now<retAt+3*3600e3)return"back_live";}
-  {const c=shCur();if(c&&c.a!=="bd_at_airport"&&c.a!=="pu_met")return /^bd_/.test(c.a)?"back_live":"go_live";}
+  {const c=shCur();if(SID==="tkm"&&c&&c.a==="bd_at_airport")return"after";if(c&&c.a!=="bd_at_airport"&&c.a!=="pu_met")return /^bd_/.test(c.a)?"back_live":"go_live";}
   if(now>retAt+60*60e3)return"after";
   if(today===r.return_date&&now>=lendAt+60*60e3)return"back_day";
   if(now>=lendAt+60*60e3)return"using";
@@ -437,7 +445,7 @@ async function load(quiet){
     if(late)rest.then(()=>{if(DATA===j)render();});
   }catch(e){gotD(null);if(!quiet)$("#app").innerHTML=`<div class="center">通信できませんでした。<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}
 }
-const SH_TX={pu_depart:["送迎車が空港へ向かっています","p-o"],pu_at_stop:SID==="tkm"?["スタッフが待ち合わせ場所に着きました","p-g","お手荷物を受け取ったら、到着口を出た「レンタカー会社受付」付近へお越しください"]:["送迎車が乗り場に着きました","p-g","お手荷物を受け取ったら、乗り場へお越しください"],pu_met:["合流しました。お店へ向かっています","p-x"],bd_depart:["空港へ向かっています","p-o"],bd_at_airport:["空港に着きました。ご利用ありがとうございました","p-x"]};
+const SH_TX={pu_depart:SID==="tkm"?["スタッフが空港へ向かっています","p-o","到着口を出た「レンタカー会社受付」付近でお待ちください。スタッフがお迎えにまいります"]:["送迎車が空港へ向かっています","p-o"],pu_at_stop:SID==="tkm"?["スタッフが待ち合わせ場所に着きました","p-g","お手荷物を受け取ったら、到着口を出た「レンタカー会社受付」付近へお越しください"]:["送迎車が乗り場に着きました","p-g","お手荷物を受け取ったら、乗り場へお越しください"],pu_met:["合流しました。お店へ向かっています","p-x"],bd_depart:["空港へ向かっています","p-o"],bd_at_airport:["空港に着きました。ご利用ありがとうございました","p-x"]};
 const SH_ORD={pu_depart:1,pu_at_stop:2,pu_met:3,bd_depart:1,bd_at_airport:2};
 function shCur(){let cur=null;const today=todayStr();(SH||[]).forEach(x=>{if(String(x.date||"").slice(0,10)!==today||x.done)return;(x.log||[]).forEach(e=>{if(!SH_ORD[e.a])return;if(!cur||String(e.at)>String(cur.at)||(e.at===cur.at&&SH_ORD[e.a]>SH_ORD[cur.a]))cur={a:e.a,at:e.at,x:x};});});return cur;}
 /* ★2026-11-08 送迎車（nosh「どのバス？」「まだ来ない・いつ来る」）：送迎車の写真と「白のハイエース・1713」、出発後は到着見込み、渋滞は「約◯分遅れています」 */
@@ -653,12 +661,13 @@ const BUSGUIDE={
 };
 /* ★2026-11-09 nosh「押されてない画面がない」「その画面必須」：送迎で「出発」がまだ押されていない時の画面。ご予約の時刻を目安のまま出し、「向かっています」にはしない（押し忘れはスタッフにだけ通知） */
 function shWait(dir){const r=DATA&&DATA.reservation;if(!r)return"";const b=busOf(r,dir),t=b.t,today=todayStr();const veh=shVehRow(shTodayVeh());
-  const back=dir==="back",sub=back?"送迎車が出発すると、ここが「空港へ向かっています」に変わり、通知も届きます。":"送迎車が出発すると、ここが「送迎車が空港へ向かっています」に変わり、通知も届きます。";
+  if(SID==="tkm"&&dir==="back")return tkBackWait(t,b.day===today);
+  const back=dir==="back",sub=back?"送迎車が出発すると、ここが「空港へ向かっています」に変わり、通知も届きます。":SID==="tkm"?"スタッフが出発すると、ここが「スタッフが空港へ向かっています」に変わり、通知も届きます。":"送迎車が出発すると、ここが「送迎車が空港へ向かっています」に変わり、通知も届きます。";
   if(!t||b.day!==today)return `<div class="card"><div class="sub">${sub}</div></div>`;
   const a=at(today,t),now=Date.now(),due=a&&now>=a-15*60e3,over=a&&now>=a;
   const big=back?`${t} 前後にお店を出発（目安）`:`${t} 前後に${SID==="tkm"?"待ち合わせ場所":"乗り場"}でお迎え（目安）`;
   if(!due)return `<section class="card"><span class="pill p-x" style="align-self:flex-start">${back?"空港へのお送りの予定":"空港お迎えの予定"}</span><div class="big">${big}</div><div class="meyasu">時間は目安です。道路の状況で前後します。</div>${veh}<div class="sub">${sub}</div></section>`;
-  return `<section class="card" style="border:2px solid var(--yel)"><span class="pill p-o" style="align-self:flex-start">${over?(back?"お送りの時間です":"お迎えの時間です"):(back?"まもなくお送りの時間です":"まもなくお迎えの時間です")}</span><div class="big">${big}</div><div class="meyasu">時間は目安です。道路の状況で前後します。</div>${veh}<div class="txt">${back?"車を返したら、お店の前でお待ちください。":(SID==="tkm"?"到着口を出た「レンタカー会社受付」付近でお待ちください。スタッフが着くと、この画面と通知でお知らせします。":"乗り場でお待ちください。送迎車が着くと、この画面と通知でお知らせします。")}</div><div class="sub">${over?(SID==="nha"?"出発のお知らせがまだ届いていません。スタッフが確認しています。この画面は自動で切り替わります。":"出発のお知らせがまだ届いていません。この画面は自動で切り替わります。"):sub}</div></section>`;}
+  return `<section class="card" style="border:2px solid var(--yel)"><span class="pill p-o" style="align-self:flex-start">${over?(back?"お送りの時間です":"お迎えの時間です"):(back?"まもなくお送りの時間です":"まもなくお迎えの時間です")}</span><div class="big">${big}</div><div class="meyasu">時間は目安です。道路の状況で前後します。</div>${veh}<div class="txt">${back?"車を返したら、お店の前でお待ちください。":(SID==="tkm"?"到着口を出た「レンタカー会社受付」付近でお待ちください。スタッフがHANDYMANのプラカードを持ってお迎えにまいります。":"乗り場でお待ちください。送迎車が着くと、この画面と通知でお知らせします。")}</div><div class="sub">${over?(SID==="nha"?"出発のお知らせがまだ届いていません。スタッフが確認しています。この画面は自動で切り替わります。":"出発のお知らせがまだ届いていません。この画面は自動で切り替わります。"):sub}</div></section>`;}
 function busLink(){return (BUSGUIDE[SID]||ST.busGuide)?`<button class="hlink" onclick="openBusGuide()">${SID==="tkm"?"待ち合わせ場所（写真つき）":"乗り場への行き方（写真つき）"} ›</button>`:"";}
 function openBusGuide(){const G=BUSGUIDE[SID];if(!G){if(ST.busGuide)window.open(ST.busGuide,"_blank");return;}
   const st=(x)=>`<div style="display:flex;flex-direction:column;gap:6px;margin:10px 0">${x[0]?`<img src="${G.img}${x[0]}" alt="" loading="lazy" style="width:100%;border-radius:12px" onerror="this.remove()">`:""}<div class="txt">${x[1]}</div></div>`;
@@ -757,7 +766,7 @@ function viewChg(d,st){
    <div style="display:grid;grid-template-columns:auto 1fr;gap:8px 10px;align-items:center;font-size:12px;line-height:1.5"><span class="pill p-o" style="text-align:center">確認あり</span><span>スタッフが確認して<b style="color:var(--yel)">30分以内</b>にお返事（9:00〜19:00）。19時以降は<b style="color:var(--yel)">翌朝9:30まで</b></span>
    <span class="pill p-b" style="text-align:center">登録</span><span>その場で登録されます</span><span class="pill p-r" style="text-align:center">電話</span><span>今すぐ話す必要があるものだけ</span></div></section>`;
   h+=`<section class="card"><div class="h">${g}・${b}</div>`+
-    (SID==="tkm"?(goLocked(r)?"":row("行き：空港お迎え／ご来店",tkGoV(r),"ご出発まで","確認あり","p-o","openTk('go')",false))+row("帰り：空港までお送り／店舗で返却",tkRtV(r),"ご返却まで","確認あり","p-o","openTk('rt')",st==="after"):
+    (SID==="tkm"?(goLocked(r)?"":row("行き：空港お迎え／ご来店",tkGoV(r),tkRule(r,"go"),tkDirect(r,"go")?"登録":"確認あり",tkDirect(r,"go")?"p-b":"p-o","openTk('go')",false))+row("帰り：空港までお送り／店舗で返却",tkRtV(r),tkRule(r,"rt"),tkDirect(r,"rt")?"登録":"確認あり",tkDirect(r,"rt")?"p-b":"p-o","openTk('rt')",st==="after"):
     (goLocked(r)?"":row(g+"の時間",hm(r.lend_time)||"未定",goH+"時間前まで","確認あり","p-o","openReq('lend_time')",!before||lendSoon)))+
     (isDel(r.visit_type)&&!goLocked(r)?row("お届け場所",placeSet(r.del_place)?r.del_place:"未登録",goH+"時間前まで","確認あり","p-o","openReq('del_place')",!before||lendSoon):"")+
     row(b+"の時間",hm(r.return_time)||"未定","2時間前まで","確認あり","p-o","openReq('return_time')",st==="after"||retSoon)+
@@ -1361,6 +1370,14 @@ const D={
 "送迎車が空港へ出発すると、ここに出て、通知も届きます。":["When the shuttle leaves for the airport, it shows here and you'll be notified.","接送車出發前往機場後，這裡會顯示並通知您。","셔틀이 공항으로 출발하면 여기에 표시되고 알림도 갑니다."],
 "受け取り方":["How to pick up","取車方式","수령 방법"],
 "空港お迎え・ご来店":["Airport pickup / store visit","機場接機・到店","공항 픽업 / 매장 방문"],
+"24時間前まではその場で確定":["Confirmed instantly until 24h before","24小時前即時確定","24시간 전까지 즉시 확정"],
+"確認のあと確定":["Confirmed after staff check","工作人員確認後確定","직원 확인 후 확정"],
+"確定しました":["Confirmed","已確定","확정했습니다"],
+"最初の登録はその場で確定":["First entry is confirmed instantly","首次登錄即時確定","첫 등록은 즉시 확정"],
+"スタッフが空港へ向かっています":["Our staff is on the way to the airport","工作人員正前往機場","직원이 공항으로 가고 있습니다"],
+"到着口を出た「レンタカー会社受付」付近でお待ちください。スタッフがお迎えにまいります":["Please wait near the rental car counter outside arrivals. Our staff will meet you.","請在抵達口外的「租車公司櫃台」附近等候，工作人員將前來迎接","도착구를 나와 렌터카 접수처 부근에서 기다려 주세요. 직원이 마중 나갑니다"],
+"車を返したら、お店の前でお待ちください。スタッフが空港までお送りします。":["After returning the car, please wait in front of the store. We will take you to the airport.","還車後請在店門前等候，工作人員將送您到機場。","차를 반납한 후 매장 앞에서 기다려 주세요. 공항까지 모셔다 드립니다."],
+"空港へのお送りの予定":["Ride to the airport","送往機場預定","공항 송영 예정"],
 "行き：空港お迎え／ご来店":["Arrival: airport pickup / store visit","去程：機場接機／到店","가는 길: 공항 픽업 / 매장 방문"],
 "帰り：空港までお送り／店舗で返却":["Return: ride to the airport / return at store","回程：送往機場／門市還車","돌아가는 길: 공항까지 송영 / 매장 반납"],
 "未選択":["Not chosen","未選擇","미선택"],
