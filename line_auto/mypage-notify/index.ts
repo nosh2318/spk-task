@@ -4,7 +4,7 @@ console.log("[keymig]", __newKey("SUPABASE_SECRET_KEYS", "edge") ? "secret" : "l
 // ============================================================
 // mypage-notify : マイページURLを最適タイミングで自動送信（cron）
 // 2026-07-05 / omni  ※札幌(spk)先行。テンプレ＋マイページURLを line-push で送る。
-//  タイミング: ①初動(LINE ID取得後) ②場所未設定リマインド(貸出3日前) ③前日 ④返却3時間前
+//  タイミング: ①初動(LINE ID取得後) ②出発3日前・2日前(足りない物がある人だけ) ③前日(一覧か短い1通) ④返却3時間前  ※2026-11-09 全店統一 3/2/1
 //  安全: spk_line_config.mypage_notify_enabled=true の時のみ本番送信。test_mode時は test_user_id のみ。
 //  重複防止: {store}_line_sends に (resv_no, action, status='sent') があれば再送しない。
 //  認証: x-cron-secret = CRON_SECRET（cron）。
@@ -24,11 +24,49 @@ function resolveTaskTime(t: any): string {
   return String(cj._timeChange || cj._ssTime || t.time || "");
 }
 
+// ===== 出発前の「足りない物」（2026-11-09 nosh「全店統一 3/2/1」） =====
+//   3日前・2日前＝足りない物がある人にだけ一覧を1通／前日＝一覧、なければ短い1通（高松 hdm-tkm-enqueue と同じ形）。
+//   旧：免許証の催促(license-reminder-cron)・場所の催促(mypage_place/mail_place)・前日案内 → この1通にまとめた。
+//   見方は新マイページの「必須」と同じ（免許証・時間・お届け場所/到着便・回収場所・人数・帰りの便・お支払い）。
+async function prepMissing(store: string, r: any): Promise<string[]> {
+  const id = encodeURIComponent(String(r.id));
+  let e: any = {};
+  try {
+    const x = await fetch(`${SB_URL}/rest/v1/rpc/${store}_res_effective`, { method: "POST", headers: H, body: JSON.stringify({ p_res: String(r.id) }) });
+    if (x.ok) e = (await x.json()) || {};
+  } catch { /* 予約の値で見る */ }
+  const [lic, info, pay] = await Promise.all([
+    sbGet("license_uploads", `store=eq.${store}&reservation_id=eq.${id}&select=cnt`),
+    sbGet("mypage_info", `store=eq.${store}&reservation_id=eq.${id}&select=people,flight_out`),
+    sbGet(store === "nha" ? "nha_jalan_payments" : "jalan_payments", `reservation_id=eq.${id}&select=status${store === "nha" ? ",local_paid_at" : ""}`),
+  ]);
+  const I = info[0] || {};
+  const vt = String(r.visit_type || ""), rt = String(r.return_type || "");
+  const del = store !== "nha" || !/^(PUB|PU\(バス\)|airport|PU|来店)$/.test(vt);
+  const col = store !== "nha" || !/^(BDB|BD\(バス\)|BD|返却)$/.test(rt);
+  const has = (v: any) => String(v || "").trim().length > 1;
+  const m: string[] = [];
+  if (!lic.some((x: any) => Number(x.cnt) > 0)) m.push("運転する方の免許証");
+  if (!/\d{1,2}:\d{2}/.test(String(e.lend_time || r.lend_time || r.start_time || ""))) m.push(del ? "お届けの時間" : /PUB/.test(vt) ? "お迎えの時間" : "受け取りの時間");
+  if (del) { if (!has(e.del_place) && !has(r.del_place)) m.push("お届け場所"); }
+  else if (vt !== "来店" && !has(r.del_flight)) m.push("到着便");
+  if (col && !has(e.col_place) && !has(r.col_place)) m.push("回収場所");
+  if (!(Number(I.people || r.people || 0) > 0)) m.push("ご利用人数");
+  if (store === "nha" && /^BD/.test(rt) && !String(I.flight_out || "").trim()) m.push("帰りの便");
+  if (pay.some((p: any) => ["link_created", "email_sent", "reminded"].includes(String(p.status)) && !p.local_paid_at)) m.push("事前決済のお支払い");
+  return m;
+}
+const prepLine = (shop: string, n: number, u: string, miss: string[]) => miss.length
+  ? `【HANDYMAN ${shop}】ご出発まで${n === 1 ? "明日" : "あと" + n + "日"}です。まだ登録されていないものがあります👇\n${miss.map((x) => "・" + x).join("\n")}\nマイページからご登録ください。\nSome details are still missing. Please complete them here 👇\n${u}`
+  : `【HANDYMAN ${shop}】明日がご利用日です。ご準備はすべて整っています。当日の流れはマイページでご確認ください👇\nYour rental starts tomorrow. You're all set. Check the details here 👇\n${u}`;
 // テンプレ（日本語＋English）＋ URL
 const TPL: Record<string, (u: string, r: any) => string> = {
   mypage_initial: (u) => `【HANDYMAN 札幌デリバリー】\nご予約ありがとうございます。専用マイページで、お届け／回収の日時・場所の確認・変更ができます👇\nThank you for your booking! Check & edit your delivery/pickup details here 👇\n${u}`,
   mypage_place: (u) => `【HANDYMAN 札幌デリバリー】お届け／回収の場所がまだ未設定です。スムーズなお引き渡しのため、マイページからご登録をお願いします👇\nYour delivery/pickup location is not set yet. Please set it from your page 👇\n${u}`,
-  mypage_daybefore: (u) => `【HANDYMAN 札幌デリバリー】明日がご利用日です。日時・お届け場所を今一度ご確認ください👇\nYour rental starts tomorrow. Please review the date/time & location 👇\n${u}`,
+  // 2026-11-09 出発前は1日1通（3日前・2日前＝足りない人だけ／前日＝一覧か短い1通）。旧 mypage_place と免許証の催促はここにまとめた
+  mypage_prep_d3: (u, r) => prepLine("札幌デリバリー", 3, u, r.__miss || []),
+  mypage_prep_d2: (u, r) => prepLine("札幌デリバリー", 2, u, r.__miss || []),
+  mypage_daybefore: (u, r) => prepLine("札幌デリバリー", 1, u, r.__miss || []),
   mypage_return3h: (u) => `【HANDYMAN 札幌デリバリー】まもなくご返却のお時間です（約3時間後）。回収の場所・時間をご確認ください👇\nPickup is in about 3 hours. Please review the pickup place & time 👇\n${u}`,
   // 返却日の朝に送る（返却案内＋早め回収ボタンの使い方・訴求）
   // 返却日の朝に送る（早め回収ボタンの訴求）。2026-11-08 時刻は書かない＝送信後に早め回収等で変わると文面が古くなるため（答えはマイページ1か所）
@@ -66,10 +104,10 @@ Deno.serve(async (req) => {
   const testMode = cfg.test_mode === true;
   if (!enabled && !testMode) return new Response(JSON.stringify({ ok: true, skipped: "disabled" }), { headers: { "content-type": "application/json" } });
 
-  const today = dstr(0), d1 = dstr(1), d3 = dstr(3);
+  const today = dstr(0), d1 = dstr(1), d2 = dstr(2), d3 = dstr(3);
   const RESV = "reservations";
   // 対象＝返却が今日以降・未キャンセル
-  const resvsAll = await sbGet(RESV, `return_date=gte.${today}&status=not.in.("キャンセル",cancelled,cancel)&select=id,name,ota,lend_date,lend_time,return_date,return_time,del_time,col_time,del_place,col_place,mypage_token&limit=1000`);
+  const resvsAll = await sbGet(RESV, `return_date=gte.${today}&status=not.in.("キャンセル",cancelled,cancel)&select=id,name,ota,lend_date,lend_time,return_date,return_time,del_time,col_time,del_place,col_place,visit_type,return_type,people,mypage_token&limit=1000`);
   // KEYDROPは独自マイページ(keydrop.jp)を使うため、HANDYMANマイページの送信対象から除外
   const resvs = resvsAll.filter((r: any) => String(r.ota || "").toUpperCase() !== "KEYDROP");
   // LINE連携済み（userIdあり）だけが対象
@@ -79,26 +117,10 @@ Deno.serve(async (req) => {
   const sends = await sbGet(`${store}_line_sends`, `action=like.mypage_*&status=eq.sent&select=resv_no,action&order=id.desc&limit=20000`);
   const sentSet = new Set(sends.map((s: any) => s.resv_no + "|" + s.action));
 
-  // 場所リマインド判定用: 貸出3日後の予約の d- タスク解決場所
-  const d3ids = resvs.filter((r: any) => r.lend_date === d3 && linked.has(r.id)).map((r: any) => r.id);
-  const placeByRes: Record<string, string> = {};
-  if (d3ids.length) {
-    for (let i = 0; i < d3ids.length; i += 60) {
-      const chunk = d3ids.slice(i, i + 60).map((x: string) => encodeURIComponent(x)).join(",");
-      const ts = await sbGet("tasks", `reservation_id=in.(${chunk})&deleted=not.is.true&select=reservation_id,_id,place,changed_json`);
-      for (const t of ts) {
-        if (!String(t._id || "").startsWith("d-")) continue;
-        let cj: any = t.changed_json; if (typeof cj === "string") { try { cj = JSON.parse(cj); } catch { cj = {}; } } cj = cj || {};
-        const p = cj._placeSource === "manual" ? (t.place || "") : (cj._ssPlace || t.place || "");
-        placeByRes[t.reservation_id] = String(p || "").trim();
-      }
-    }
-  }
-
   // 無人貸出・乗り捨て判定用: リマインド候補予約の d-(貸出) / c-(返却) タスク担当を取得
   const remIds = resvs
     .filter((r: any) => linked.has(r.id) && r.mypage_token &&
-      (r.lend_date === d1 || r.lend_date === d3 || r.return_date === today || r.return_date === d1))
+      (r.lend_date === d1 || r.lend_date === d2 || r.lend_date === d3 || r.return_date === today || r.return_date === d1))
     .map((r: any) => r.id);
   const lendAsg: Record<string, string> = {};
   const colAsg: Record<string, string> = {};
@@ -136,13 +158,13 @@ Deno.serve(async (req) => {
     r._colTimeResolved = colTimeByRes[r.id] || "";
     // ① 初動（LINE ID取得後、まだ送っていなければ）※深夜は送らない
     if (daytime) await push(r, "mypage_initial");
-    // ② 場所未設定リマインド（貸出3日前・OP解決場所が空）※無人貸出は除外
-    // 場所は OPタスク解決値(placeByRes) だけでなく 予約(del_place/col_place) も見る。
-    // HP直販予約は場所が予約側にのみ入りOPタスクのplace列は空のため、予約を見ないと誤って未設定判定になる。
-    const hasPlace = !!(String(placeByRes[r.id] || "").trim() || String(r.del_place || "").trim() || String(r.col_place || "").trim());
-    if (r.lend_date === d3 && !hasPlace && !unLend(r.id) && daytime) await push(r, "mypage_place");
-    // ③ 前日 ※無人貸出は除外・深夜は送らない
-    if (r.lend_date === d1 && !unLend(r.id) && daytime) await push(r, "mypage_daybefore");
+    // ②③ 出発前（2026-11-09 全店統一 3/2/1）：3日前・2日前＝足りない物がある人だけ、前日＝一覧か短い1通 ※無人貸出は除外・深夜は送らない
+    for (const [n, dd, act] of [[3, d3, "mypage_prep_d3"], [2, d2, "mypage_prep_d2"], [1, d1, "mypage_daybefore"]] as [number, string, string][]) {
+      if (r.lend_date !== dd || unLend(r.id) || !daytime || sentSet.has(r.id + "|" + act)) continue;
+      r.__miss = await prepMissing("spk", r);
+      if (n > 1 && !r.__miss.length) continue;
+      await push(r, act);
+    }
     // ③' 返却日の朝(9時以降)に「本日返却日＋早め回収ボタンの使い方・訴求」を1回（札幌のみ・乗り捨て/無人返却は除外）※8時=傷チェックと被らせないため9時
     if (r.return_date === today && new Date(Date.now() + 9 * 3600 * 1000).getUTCHours() >= 9 && !unCol(r.id)) await push(r, "mypage_returnday");
     // ④ 返却3時間前（返却日時が now〜now+3h+window内）※乗り捨て/無人返却は除外
