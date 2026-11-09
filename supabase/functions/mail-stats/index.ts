@@ -198,7 +198,76 @@ Deno.serve(async (req) => {
       }
     }
     todo.sort((a, b) => (a.d + a.t).localeCompare(b.d + b.t));
-    return J({ ok: true, days, kpi: { wins, k1, k2 }, todo, rows: Object.values(agg), unopened, people: Object.keys(lastSend).length, track_since: isFinite(trackSince) ? new Date(trackSince).toISOString() : null });
+
+    // ===== LINE脱却KPI（2026-11-10 nosh「アクティブ率は今後の指標」「LINE問い合わせ数を検証」「チャット利用率も追加」） =====
+    // 日ごと（JST・直近14日）：
+    //   active … 出発3日前〜返却日の予約のうち、その日マイページを開いた予約（スタッフ閲覧 ro=1 は除く）
+    //   chat   … その日「スタッフに聞く」で自分から書いたお客様の人数（【〜】で始まるボタン送信は除く）
+    //   line   … その日エルメでお客様から発言があった人数（erume_chat_log。取り込んだ日まで）
+    //   チャット利用率＝chat ÷ (chat＋line)（画面で計算）
+    const SD = Math.min(Math.max(Number(p.kpi_days) || 14, 7), 30); // 画面から 7〜30日
+    const sDays = Array.from({ length: SD }, (_, i) => addD(jstToday, i - SD)); // 昨日まで（今日は途中なので入れない）
+    const sFrom = sDays[0];
+    const shift: Record<string, any> = {};
+    for (const st of stores) shift[st] = { active: sDays.map(() => ({ n: 0, ok: 0 })), chat: sDays.map(() => 0), line: sDays.map(() => null as number | null), line_b: sDays.map(() => null as number | null), line_n: sDays.map(() => null as number | null) };
+    const jd = (t: string) => new Date(Date.parse(t) + 9 * 3600000).toISOString().slice(0, 10);
+    const evSince = new Date(Date.parse(sFrom + "T00:00:00+09:00")).toISOString();
+    type W = { store: string; key: string; sd: string; ed: string };
+    const wr: W[] = [];
+    if (!IS_BT) {
+      for (const [st, tb, sc, ec] of [["spk", "reservations", "lend_date", "return_date"], ["nha", "nha_reservations", "start_date", "end_date"]]) {
+        const rs = await getAll(SB_URL, SB_KEY, `${tb}?${ec}=gte.${sFrom}&${sc}=lte.${addD(jstToday, 3)}&select=id,${sc},${ec},status,mypage_token`);
+        for (const x of rs) if (live(x)) wr.push({ store: st, key: String(x.id), sd: String(x[sc] || "").slice(0, 10), ed: String(x[ec] || "").slice(0, 10) });
+      }
+      const ev = await getAll(SB_URL, SB_KEY, `mypage_events?created_at=gte.${evSince}&event=eq.page_view&store=in.(spk,nha)&reservation_id=not.is.null&select=store,reservation_id,created_at,meta`);
+      const seen = new Set<string>();
+      for (const e of ev) { if (e.meta && String(e.meta.ro || "") === "1") continue; seen.add(`${e.store}|${e.reservation_id}|${jd(e.created_at)}`); }
+      for (const w of wr) sDays.forEach((d, i) => { if (d >= addD(w.sd, -3) && d <= w.ed) { shift[w.store].active[i].n++; if (seen.has(`${w.store}|${w.key}|${d}`)) shift[w.store].active[i].ok++; } });
+      // LINE（エルメ）：沖縄＝那覇、札幌＝札幌
+      const el = await getAll(SB_URL, SB_KEY, `erume_chat_log?sent_at=gte.${evSince}&sender_type=eq.${encodeURIComponent("友だち")}&account=in.(okinawa,sapporo)&select=account,friend_id,friend_name,sent_at,body`).catch(() => []);
+      const lmax = await getAll(SB_URL, SB_KEY, `erume_chat_log?account=in.(okinawa,sapporo)&select=sent_at&order=sent_at.desc&limit=1`, 1).catch(() => []);
+      const lineThrough = lmax[0] ? jd(lmax[0].sent_at) : null;
+      const lp: Record<string, Set<string>> = {};
+      // 2026-11-10 予約済みのお客様／予約前の新規の方 を分ける（nosh「LINE問い合わせ数を検証」・11/9 台湾からの新規が急増したため）
+      //   エルメの友だち名（お客様の登録名）が、LINEをつないだ予約の名前（*_line_links.cust_name）か予約の名前と同じなら「予約済み」。空白は無視
+      const nz = (x: unknown) => String(x || "").replace(/\s/g, "");
+      const booked: Record<string, Set<string>> = { nha: new Set(), spk: new Set() };
+      const fname: Record<string, string> = {};
+      for (const x of el) fname[`${x.account}|${x.friend_id}`] = nz(x.friend_name);
+      if (el.length) {
+        for (const [st, lk, tb, nc, ec] of [["nha", "nha_line_links", "nha_reservations", "name", "end_date"], ["spk", "spk_line_links", "reservations", "name", "return_date"]]) {
+          for (const r of await getAll(SB_URL, SB_KEY, `${lk}?select=cust_name`).catch(() => [])) if (nz(r.cust_name)) booked[st].add(nz(r.cust_name));
+          for (const r of await getAll(SB_URL, SB_KEY, `${tb}?${ec}=gte.${addD(sFrom, -60)}&select=${nc}`).catch(() => [])) if (nz(r[nc])) booked[st].add(nz(r[nc]));
+        }
+      }
+      const lpB: Record<string, Set<string>> = {};
+      // メニューのボタン（【新規予約】等）・言語えらび・スタンプ・4文字未満は「問い合わせ」に数えない（11/9 新しい友だち117人のボタン押しで膨らんだため）
+      const NOTQ = /^\s*[（(【]?\s*(【|🇹🇼|中文|繁體|English|한국어|你好|スタンプを送信)/;
+      for (const x of el) { if (NOTQ.test(String(x.body || "")) || String(x.body || "").length < 4) continue; const st = x.account === "okinawa" ? "nha" : "spk"; const k = `${st}|${jd(x.sent_at)}`; (lp[k] = lp[k] || new Set()).add(String(x.friend_id)); if (booked[st].has(fname[`${x.account}|${x.friend_id}`] || "-")) (lpB[k] = lpB[k] || new Set()).add(String(x.friend_id)); }
+      for (const st of ["spk", "nha"]) sDays.forEach((d, i) => { if (lineThrough && d < lineThrough) { const all = (lp[`${st}|${d}`] || new Set()).size, b = (lpB[`${st}|${d}`] || new Set()).size; shift[st].line[i] = all; shift[st].line_b[i] = b; shift[st].line_n[i] = all - b; } });
+      for (const st of stores) shift[st].line_through = lineThrough;
+    } else if (MAIN_KEY) {
+      const rs = await getAll(SB_URL, SB_KEY, `bt_reservations?brand=eq.HDM&end_date=gte.${sFrom}&start_date=lte.${addD(jstToday, 3)}&select=id,start_date,end_date,status,mypage_token`);
+      for (const x of rs) if (live(x) && x.mypage_token) wr.push({ store: "tkm", key: String(x.mypage_token), sd: String(x.start_date || "").slice(0, 10), ed: String(x.end_date || "").slice(0, 10) });
+      const ev = await getAll(MAIN_URL, MAIN_KEY, `mypage_events?created_at=gte.${evSince}&event=eq.page_view&store=eq.tkm&select=token,created_at,meta`);
+      const seen = new Set<string>();
+      for (const e of ev) { if (e.meta && String(e.meta.ro || "") === "1") continue; seen.add(`${e.token}|${jd(e.created_at)}`); }
+      for (const w of wr) sDays.forEach((d, i) => { if (d >= addD(w.sd, -3) && d <= w.ed) { shift.tkm.active[i].n++; if (seen.has(`${w.key}|${d}`)) shift.tkm.active[i].ok++; } });
+      shift.tkm.line_through = null; // 高松はLINEなし
+    }
+    // チャット（cs_chat は main にある）
+    if (MAIN_KEY) {
+      const th = await getAll(MAIN_URL, MAIN_KEY, `cs_chat_threads?store=in.(${stores.join(",")})&last_msg_at=gte.${evSince}&select=id,store`).catch(() => []);
+      const t2s: Record<string, string> = {}; for (const t of th) t2s[String(t.id)] = String(t.store);
+      const ids = Object.keys(t2s);
+      const cp: Record<string, Set<string>> = {};
+      for (let i = 0; i < ids.length; i += 150) {
+        const ms = await getAll(MAIN_URL, MAIN_KEY, `cs_chat_messages?thread_id=in.(${encodeURIComponent(ids.slice(i, i + 150).join(","))})&sender=eq.customer&created_at=gte.${evSince}&select=thread_id,body,created_at`).catch(() => []);
+        for (const m of ms) { if (/^【/.test(String(m.body || ""))) continue; const st = t2s[String(m.thread_id)]; const k = `${st}|${jd(m.created_at)}`; (cp[k] = cp[k] || new Set()).add(String(m.thread_id)); }
+      }
+      for (const st of stores) sDays.forEach((d, i) => { shift[st].chat[i] = (cp[`${st}|${d}`] || new Set()).size; });
+    }
+    return J({ ok: true, days, kpi: { wins, k1, k2 }, shift: { days: sDays, stores: shift }, todo, rows: Object.values(agg), unopened, people: Object.keys(lastSend).length, track_since: isFinite(trackSince) ? new Date(trackSince).toISOString() : null });
   } catch (e) {
     return J({ ok: false, error: String(e) }, 500);
   }
