@@ -18,7 +18,32 @@ const TARGETS = [
   { name: 'old-tkm', store: 'takh', site: 'OFFICIAL_OLD', db: BT, page: 'https://rent-handyman.com/official-flow.html', area: 'takamatsu', method: 'airport', unit: 'avg100' },
   { name: 'kd-nha', store: 'nha', site: 'KEYDROP', db: MAIN, page: 'https://keydrop.jp/v3/keydrop-flow.html', area: 'naha', method: 'delivery', unit: 'first' },
   { name: 'kd-spk', store: 'spk', site: 'KEYDROP', db: MAIN, page: 'https://keydrop.jp/v3/keydrop-flow.html', area: 'sapporo', method: 'delivery', unit: 'first' },
+  // 11/9 BUDDICA 公式（tourism.buddica.jp）：検索（POST /reserve_class）の結果ページの「基本料金（期間の合計）」を読む。予約に進むは押さない。
+  // 当日・翌日は全車でエラーページ（422）を返すことがあるので読まない（far=2 から）。一覧に無いクラス＝その日は予約できない
+  { name: 'bdc-tkb', store: 'takb', site: 'OFFICIAL', db: BT, page: 'https://tourism.buddica.jp/', kind: 'bdc', unit: 'total', from: 2, par: 1 },  // 同時に開くと検索の鍵（_token）が合わず 419 になるので1つずつ
 ];
+const BDC_CODE = n => { const m = n.match(/_\(([A-Z]{1,2})\)\s*$/); if (m) return m[1];
+  return /G400d/i.test(n) ? 'G4D' : /Cabriolet/i.test(n) ? 'ECB' : /Evoque/i.test(n) ? 'EVQ' : /Urus/i.test(n) ? 'URS' : /911/.test(n) ? '911' : null; };
+async function readBdc(ctx, t, pd, days, want) {
+  const rd = addDays(pd, days - 1), p = await ctx.newPage();
+  try {
+    await p.goto(t.page, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    const r = await p.evaluate(async ([pd, rd]) => { const f = document.form_index; if (!f) return { err: '検索の欄が無い' }; const fd = new FormData(f);
+      fd.set('borrowing_date', pd); fd.set('return_date', rd); fd.set('borrowing_time', '10:00'); fd.set('return_time', pd === rd ? '18:00' : '10:00');  // 2日物は readPage と同じく返却10:00
+      const res = await fetch(f.action, { method: 'POST', body: fd }); return { s: res.status, h: await res.text() }; }, [pd.replace(/-/g, '/'), rd.replace(/-/g, '/')]);
+    if (r.err || r.s !== 200) throw new Error(r.err || 'HTTP ' + r.s);
+    const tx = r.h.replace(/<script[\s\S]*?<\/script>/g, '').replace(/<[^>]+>/g, ' ').replace(/&[a-z]+;/g, ' ').replace(/\s+/g, ' ');
+    const n = +((tx.match(/検索結果：\s*(\d+)\s*件/) || [])[1]); if (!Number.isInteger(n)) throw new Error('検索結果の件数が読めない');
+    const cards = [], segs = tx.split(/ ?乗車人数 /);
+    for (let i = 1; i < segs.length; i++) { const name = segs[i - 1].split(/予約に進む|再検索|満車/).pop().trim().slice(-45), code = BDC_CODE(name), pm = segs[i].match(/基本料金 ([\d,]+) 円/);
+      const ri = segs[i].indexOf('予約に進む'), fi = segs[i].indexOf('満車'), ok = ri >= 0 && (fi < 0 || ri < fi);  // 満車のカードは予約できない
+      if (code) cards.push({ cls: code, shown: pm ? +pm[1].replace(/,/g, '') : null, bookable: ok, raw: (name + ' ' + (pm ? pm[0] : '')).slice(0, 60) }); }
+    if (cards.length !== n) throw new Error(`件数 ${n} とカード ${cards.length} が合わない`);
+    const seen = new Set(cards.map(c => c.cls));
+    for (const c of want) if (!seen.has(c)) cards.push({ cls: c, shown: null, bookable: false, raw: '一覧に無い（予約できない）' });
+    return cards;
+  } finally { await p.close(); }
+}
 const TOKEN = (process.env.CHK_TOKEN || '').trim();
 const OUT = process.env.CHK_OUT || '';
 if (!TOKEN && !OUT) { console.error('CHK_OUT（ファイルに書く）か CHK_TOKEN（DB へ送る）のどちらかが要ります'); process.exit(2); }
@@ -66,18 +91,18 @@ async function runTarget(browser, t) {
   const want = new Set(plan.classes.map(c => c.cls));
   const today = plan.today, slot = Math.floor(Date.now() / 1800000);
   const dates = [];
-  for (let i = 0; i < NEAR; i++) dates.push(addDays(today, i));
+  for (let i = t.from || 0; i < NEAR; i++) dates.push(addDays(today, i));
   dates.push(addDays(today, NEAR + (slot % (FAR - NEAR))));
   const canary = plan.canary; if (canary && !dates.includes(canary.dd)) dates.push(canary.dd);
   const jobs = []; for (const d of dates) for (const days of [1, 2]) jobs.push({ d, days });
   const ctx = await browser.newContext({ locale: 'ja-JP', timezoneId: 'Asia/Tokyo', userAgent: undefined });
   await ctx.route('**/*', r => BLOCK.test(r.request().url()) ? r.abort() : r.continue());
   const obs = [], errs = []; let i = 0;
-  await Promise.all(Array.from({ length: PAR }, async () => {
+  await Promise.all(Array.from({ length: t.par || PAR }, async () => {
     while (i < jobs.length) {
       const j = jobs[i++];
       try {
-        const cards = await readPage(ctx, t, j.d, j.days);
+        const cards = t.kind === 'bdc' ? await readBdc(ctx, t, j.d, j.days, want) : await readPage(ctx, t, j.d, j.days);
         for (const c of cards) if (want.has(c.cls)) obs.push({ cls: c.cls, dd: j.d, days: j.days, shown: c.shown, bookable: c.bookable, raw: c.raw, unit: t.unit });
         const seen = new Set(cards.map(c => c.cls));
         for (const c of want) if (!seen.has(c)) obs.push({ cls: c, dd: j.d, days: j.days, shown: null, bookable: null, raw: 'カードなし', unit: t.unit });
