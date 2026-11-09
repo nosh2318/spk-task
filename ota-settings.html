@@ -58,7 +58,7 @@ const BDC = o => ({ shops: '高松BUDDICA', t: [['takb', o]] });
 const ROBOT = { 'HANDYMAN|楽天': HDM3('RKT'), 'HANDYMAN|じゃらん': HDM3('JLN'), 'HANDYMAN|スカイチケット': HDM2('SKT'),
   'HANDYMAN|エアトリ': HDM2('ART'), 'HANDYMAN|レンタカードットコム': { shops: '那覇', t: [['nha', 'RDC']] },
   'HANDYMAN|レンタカードットコム（札幌）': { shops: '札幌（HD02）', t: [['spk', 'RDC']] }, 'HANDYMAN|GoGoout': { shops: '那覇のみ', t: [] },
-  'BUDDICA|BUDDICA/admin 入口': BDC('ADM'), 'BUDDICA|エアトリ': BDC('ART'), 'BUDDICA|たびらい': BDC('TAB'), 'BUDDICA|レンタカードットコム': BDC('RDC') };
+  'BUDDICA|BUDDICA/admin 入口': BDC('ADM'), 'BUDDICA|BUDDICA/admin': { ...BDC('ADM'), app: true }, 'BUDDICA|エアトリ': BDC('ART'), 'BUDDICA|たびらい': BDC('TAB'), 'BUDDICA|レンタカードットコム': BDC('RDC') };
 // 月初にパス変更が必要なOTA
 const MONTHLY = ['楽天', 'じゃらん', 'エアトリ', 'スカイチケット'];
 const ym = t => new Date(t).toLocaleDateString('ja-JP', { timeZone: 'Asia/Tokyo', year: 'numeric', month: 'numeric' });
@@ -114,11 +114,11 @@ function renderAcct(rows) {
   $('acct').innerHTML = grps.map(g => `<div class="card"><h2>${esc(g)}</h2>${rows.filter(a => a.grp === g).map(acctRow).join('')}</div>`).join('');
   document.querySelectorAll('.arow').forEach(bindRow);
 }
-async function toRobot(targets, lid, lpw) {
+async function toRobot(targets, lid, lpw, app) {
   const k = await SB.rpc('invctl_cred_pubkeys'); if (k.error) throw k.error;
   if (!k.data.length) throw new Error('ロボの鍵がありません');
   const ciphers = [];
-  for (const r of k.data) ciphers.push({ host: r.host, cipher: await seal(r.pem, lid ? JSON.stringify({ id: lid, pw: lpw }) : lpw) });
+  for (const r of k.data) ciphers.push({ host: r.host, cipher: await seal(r.pem, app ? JSON.stringify({ kind: 'app', id: lid, pw: lpw }) : lid ? JSON.stringify({ id: lid, pw: lpw }) : lpw) });
   for (const [s, o] of targets) {
     const r = await SB.rpc('invctl_cred_submit', { p_store: s, p_ota: o, p_ciphers: ciphers, p_name: $('who').value.trim() });
     if (r.error) throw r.error;
@@ -137,11 +137,11 @@ async function saveRow(row) {
     if (!r.data.ok) throw new Error(PIN_ERR[r.data.error] || (r.data.error === 'stale' ? '他の人が先に更新しました。開き直してください。' : r.data.error === 'bad_value' ? '入力内容を確認してください（URLは https:// から）。' : r.data.error));
     row.dataset.id = r.data.id; row.dataset.ts = r.data.updated_at;
     const lid = row.querySelector('.lid').value.trim(), lpw = row.querySelector('.lpw').value;
-    const t = (ROBOT[row.dataset.grp + '|' + row.querySelector('.label').value] || {}).t || [];
+    const rb = ROBOT[row.dataset.grp + '|' + row.querySelector('.label').value] || {}, t = rb.t || [];   // 11/10 BUDDICA/admin（中のログイン）も管理画面ロボへ（kind:'app'）
     const changed = lpw !== row.dataset.lpw || lid !== row.dataset.lid;
     row.dataset.lid = lid; row.dataset.lpw = lpw;
     // BUDDICA 管理画面の入口（最初に出る小さなログイン窓）は 11/4 まで送り先が無かったので、変更が無くても保存のたびに送る（管理画面ロボが入口で使う）
-    if (t.length && lpw && (changed || t.some(x => x[1] === 'ADM'))) { await toRobot(t, lid, lpw); say(row, t.some(x => x[1] === 'ADM') ? '保存して、管理画面ロボへ送りました。' : '保存して、在庫ロボへ送りました。', true); refresh(); }
+    if (t.length && lpw && (changed || t.some(x => x[1] === 'ADM'))) { await toRobot(t, lid, lpw, rb.app); say(row, t.some(x => x[1] === 'ADM') ? '保存して、管理画面ロボへ送りました。' : '保存して、在庫ロボへ送りました。', true); refresh(); }
     else say(row, '保存しました。', true);
   } catch (e) { say(row, '保存できませんでした：' + (e.message || e)); }
   btn.disabled = false;
