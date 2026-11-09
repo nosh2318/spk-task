@@ -10,7 +10,9 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-180.png">
 <title>HANDYMAN マイページ</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="preconnect" href="https://ckrxttbnawkclshczsia.supabase.co" crossorigin>
+<!-- 2026-11-09 速く：文字の読み込みを待たずに画面を出す（届いたら同じ文字に切り替わる） -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap" media="print" onload="this.media='all'"><noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap"></noscript>
 <style>
 :root{--navy:#002063;--navy2:#001548;--yel:#FABE00;--bg:#F4F5F7;--ink:#14181F;--sub:#5A6270;--mute:#7A818C;--line:#E3E6EA;--card:#fff;
 --g:#1E7B4F;--gb:#E8F5EE;--o:#B45309;--ob:#FDF3E7;--b:#002063;--bb:#E8ECF5;--r:#B42318;--rb:#FDECEC}
@@ -377,12 +379,16 @@ async function call(action,body){
 async function load(quiet){
   if(DEMO){DATA=demoData(DEMO);loadRcpt();render();return;}
   if(!TOKEN){$("#app").innerHTML=`<div class="center">ご予約のURLから開いてください。<br>URLが分からないときは <a href="${ST.site}" target="_blank">公式サイト</a> の「マイページを開く」から探せます。</div>`;$("#ttl").textContent="マイページ";return;}
+  /* ★2026-11-09 速く（nosh「読み込みが遅い 重い」）：予約の読み込みと同時にほかの読み込みも始める（前は予約→ほか8つを順番待ち）。
+     最初の画面に要る支払い・登録内容・メールは必ず待つ。ほかは1.2秒まで待ち、遅れた分は届いたら描き直す */
+  let gotD;const dP=new Promise(res=>gotD=res);const need=[loadPay(),loadINFO(),loadMAIL()],rest=Promise.all([loadDV(dP),loadSH(),loadChat(),loadNG(),loadRcpt()]);
   try{const r=await fetch(FN,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"lookup",token:TOKEN,...(RO?{ro:1}:{})})});
-    const j=await r.json().catch(()=>({}));
+    const j=await r.json().catch(()=>({}));gotD(j&&j.ok?j:null);
     if(j.cancelled){$("#ttl").textContent="キャンセル済み";$("#app").innerHTML=`<div class="center">${esc(j.error||"キャンセル済みです")}</div>`;return;}
     if(!j.ok){if(!quiet){$("#ttl").textContent="マイページ";$("#app").innerHTML=`<div class="center">${esc(j.error||"読み込めませんでした")}<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}return;}
-    DATA=j;await Promise.all([loadDV(),loadSH(),loadChat(),loadPay(),loadNG(),loadINFO(),loadMAIL(),loadRcpt()]);render();
-  }catch(e){if(!quiet)$("#app").innerHTML=`<div class="center">通信できませんでした。<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}
+    DATA=j;let late=false;await Promise.all([...need,Promise.race([rest,new Promise(res=>setTimeout(()=>{late=true;res();},1200))])]);render();
+    if(late)rest.then(()=>{if(DATA===j)render();});
+  }catch(e){gotD(null);if(!quiet)$("#app").innerHTML=`<div class="center">通信できませんでした。<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}
 }
 const SH_TX={pu_depart:["送迎車が空港へ向かっています","p-o"],pu_at_stop:["送迎車が乗り場に着きました","p-g","お手荷物を受け取ったら、乗り場へお越しください"],pu_met:["合流しました。お店へ向かっています","p-x"],bd_depart:["空港へ向かっています","p-o"],bd_at_airport:["空港に着きました。ご利用ありがとうございました","p-x"]};
 const SH_ORD={pu_depart:1,pu_at_stop:2,pu_met:3,bd_depart:1,bd_at_airport:2};
@@ -401,7 +407,7 @@ function payV(p){if(!p)return"";if(p.state==="unpaid")return `${yen(p.amount)}${
 const xpaid=x=>(x.state||x.status)==="paid";
 function payUnpaidExtra(p){return ((p&&p.extra)||[]).filter(x=>x&&!xpaid(x)&&x.url);}
 async function loadSH(){if(DEMO||!TOKEN||!SHRPC)return;try{const r=await fetch(SHRPC,{method:"POST",headers:{apikey:PUBKEY,Authorization:"Bearer "+PUBKEY,"Content-Type":"application/json"},body:JSON.stringify({p_token:TOKEN})});const j=r.ok?await r.json().catch(()=>null):null;SH=Array.isArray(j)?j:null;}catch(_){SH=null;}}
-async function loadHOF(){if(DEMO||!TOKEN||!ST.HOFRPC)return;try{const r=await fetch(ST.HOFRPC,{method:"POST",headers:{apikey:PUBKEY,Authorization:"Bearer "+PUBKEY,"Content-Type":"application/json"},body:JSON.stringify({p_tokens:[TOKEN]})});const j=r.ok?await r.json().catch(()=>null):null;const h=j&&j[TOKEN];const rv=DATA&&DATA.reservation||{};
+async function loadHOF(dp){if(DEMO||!TOKEN||!ST.HOFRPC)return;try{const r=await fetch(ST.HOFRPC,{method:"POST",headers:{apikey:PUBKEY,Authorization:"Bearer "+PUBKEY,"Content-Type":"application/json"},body:JSON.stringify({p_tokens:[TOKEN]})});const j=r.ok?await r.json().catch(()=>null):null;const h=j&&j[TOKEN];const _d=dp?await dp:DATA;const rv=_d&&_d.reservation||{};
   const fresh=x=>x&&Date.now()-Date.parse(x)<60*60e3;const live3=x=>x&&Date.now()-Date.parse(x)<3*3600e3;DV=null;if(!h)return;
   if(h.col_arrival){if(fresh(h.col_arrival))DV={leg:"col",state:"arrived",place:rv.col_place};}
   else if(h.col_delay&&(!h.collect||h.col_delay>=h.collect)){if(live3(h.col_delay))DV={leg:"col",state:"late",delay_to:h.col_delay_to||"",place:rv.col_place};}
@@ -409,7 +415,7 @@ async function loadHOF(){if(DEMO||!TOKEN||!ST.HOFRPC)return;try{const r=await fe
   else if(h.arrival){if(fresh(h.arrival))DV={leg:"del",state:"arrived",place:rv.del_place};}
   else if(h.del_delay&&(!h.depart||h.del_delay>=h.depart)){if(live3(h.del_delay))DV={leg:"del",state:"late",delay_to:h.del_delay_to||"",place:rv.del_place};}
   else if(h.depart){if(live3(h.depart))DV={leg:"del",state:"onway",depart_at:h.depart,place:rv.del_place};}}catch(_){}}
-async function loadDV(){if(ST.HOFRPC)return loadHOF();if(DEMO||!TOKEN||!DVEF)return;try{const r=await fetch(DVEF,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"lookup",token:TOKEN})});const j=await r.json().catch(()=>null);DV=(j&&j.ok&&j.delivery)?j.delivery:null;}catch(_){DV=null;}}
+async function loadDV(dp){if(ST.HOFRPC)return loadHOF(dp);if(DEMO||!TOKEN||!DVEF)return;try{const r=await fetch(DVEF,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"lookup",token:TOKEN})});const j=await r.json().catch(()=>null);DV=(j&&j.ok&&j.delivery)?j.delivery:null;}catch(_){DV=null;}}
 function hav(a,b){const R=6371,q=x=>x*Math.PI/180;const dl=q(b.lat-a.lat),dg=q(b.lng-a.lng);const h=Math.sin(dl/2)**2+Math.cos(q(a.lat))*Math.cos(q(b.lat))*Math.sin(dg/2)**2;return 2*R*Math.asin(Math.sqrt(h));}
 function dvCard(d){const v=DV||(!DVEF&&d.tracking&&d.tracking.kd_status?{leg:d.tracking.kd_status==="collecting"?"col":"del",state:"onway",place:d.tracking.kd_status==="collecting"?d.reservation.col_place:d.reservation.del_place}:null);if(!v)return"";const r=d.reservation,col=v.leg==="col",kind=col?"回収":"お届け";
   const to=col?(r.col_lat!=null?{lat:+r.col_lat,lng:+r.col_lng}:null):(r.del_lat!=null?{lat:+r.del_lat,lng:+r.del_lng}:null);
