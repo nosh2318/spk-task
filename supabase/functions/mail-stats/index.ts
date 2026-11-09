@@ -266,6 +266,27 @@ Deno.serve(async (req) => {
         for (const m of ms) { if (/^【/.test(String(m.body || ""))) continue; const st = t2s[String(m.thread_id)]; const k = `${st}|${jd(m.created_at)}`; (cp[k] = cp[k] || new Set()).add(String(m.thread_id)); }
       }
       for (const st of stores) sDays.forEach((d, i) => { shift[st].chat[i] = (cp[`${st}|${d}`] || new Set()).size; });
+      // 2026-11-10 AI案をそのまま使えた割合（AI回答スレッドの依頼。nosh「次のアクションはAI回答自動化」）
+      //   cs_chat_drafts の案ごとに：status=approved か、案のあとチャットで最初にスタッフが送った文が案と同じ→そのまま(ai_same)
+      //   違う文を送った→直して送信(ai_edit)／スタッフのチャット返信なし→ai_none。【〜】で始まる質問・40字未満のお礼/了解/画像だけ は返事不要として数えない
+      for (const st of stores) { shift[st].ai_same = sDays.map(() => 0); shift[st].ai_edit = sDays.map(() => 0); shift[st].ai_none = sDays.map(() => 0); }
+      const dr = await getAll(MAIN_URL, MAIN_KEY, `cs_chat_drafts?store=in.(${stores.join(",")})&created_at=gte.${evSince}&select=store,thread_id,question,draft,status,created_at`).catch(() => []);
+      const NOREPLY = /(ありがと|有難|了解|承知|わかりました|分かりました|OK|ok|thank|謝謝|感謝|好的|画像|写真|スタンプ|📷|🙏|👍)/i;
+      const want = dr.filter((x) => { const q = String(x.question || "").trim(); if (/^【/.test(q)) return false; if (q.length < 40 && (NOREPLY.test(q) || !q)) return false; return true; });
+      const tids = [...new Set(want.map((x) => String(x.thread_id || "")).filter(Boolean))];
+      const staff: Record<string, { at: number; body: string }[]> = {};
+      for (let i = 0; i < tids.length; i += 150) {
+        const ms = await getAll(MAIN_URL, MAIN_KEY, `cs_chat_messages?thread_id=in.(${encodeURIComponent(tids.slice(i, i + 150).join(","))})&sender=eq.staff&created_at=gte.${evSince}&select=thread_id,body,created_at&order=created_at.asc`).catch(() => []);
+        for (const m of ms) (staff[String(m.thread_id)] = staff[String(m.thread_id)] || []).push({ at: Date.parse(m.created_at), body: String(m.body || "") });
+      }
+      const nb = (x: string) => x.replace(/\s/g, "");
+      for (const x of want) {
+        const i = sDays.indexOf(jd(x.created_at)); if (i < 0 || !shift[x.store]) continue;
+        const t0 = Date.parse(x.created_at), first = (staff[String(x.thread_id)] || []).find((m) => m.at >= t0);
+        if (x.status === "approved" || (first && nb(first.body) === nb(String(x.draft || "")))) shift[x.store].ai_same[i]++;
+        else if (first) shift[x.store].ai_edit[i]++;
+        else shift[x.store].ai_none[i]++;
+      }
     }
     return J({ ok: true, days, kpi: { wins, k1, k2 }, shift: { days: sDays, stores: shift }, todo, rows: Object.values(agg), unopened, people: Object.keys(lastSend).length, track_since: isFinite(trackSince) ? new Date(trackSince).toISOString() : null });
   } catch (e) {
