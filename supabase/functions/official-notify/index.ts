@@ -244,7 +244,7 @@ Deno.serve(async (req) => {
   type Trig = { action: string; targetDate: string; hourGate: (h: number) => boolean; needPlaceEmpty?: boolean; prep?: number; onReturn?: boolean; otaIn?: string[]; build: (r: any, url: string, shop: string) => { s: string; b: string } };
   const trigs: Trig[] = [
     // ★2026-11-09 出発前は1日1通（3日前・2日前＝足りない人だけ／前日＝全員）。旧 mail_place(3日前・場所)と前日案内をまとめた（action名 mail_daybefore は前日のまま）。
-    ...[3, 2, 1].map((n): Trig => ({ action: n === 1 ? "mail_daybefore" : `mail_prep_d${n}`, targetDate: dstr(n), hourGate: (h) => h === (n === 1 ? 18 : 10), prep: n, // 前日は今までどおり18時、3日前・2日前は10時 otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP"],
+    ...[3, 2, 1].map((n): Trig => ({ action: n === 1 ? "mail_daybefore" : `mail_prep_d${n}`, targetDate: dstr(n), hourGate: (h) => h === (n === 1 ? 18 : 10), prep: n, /* 前日は今までどおり18時、3日前・2日前は10時 */ otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP"],
       build: (r, url, shop) => {
         const miss: string[] = r.__miss || [];
         const when = n === 1 ? "明日" : `あと${n}日`;
