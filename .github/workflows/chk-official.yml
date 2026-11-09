@@ -1,0 +1,55 @@
+name: 独立チェッカー（公式サイトの表示を読む）
+# お客様と同じ画面（ログインなし）で公式サイト・KEYDROP の表示金額と空き表示を読み、latest.json にして
+# ブランチ chk-results（main とは別・Pages に出ない）に積む。秘密の値は使わない。強制上書きはしない。
+# DB（main・BT）が10分ごとに raw.githubusercontent.com から取りに来て判定する（invctl.chk_ingest / chk_judge / chk_watch）。
+# 中身はクラス×日付×日数×表示金額×予約できるか だけ。書き込みロボとは別の機械・別プログラム。予約・決済ボタンは押さない。
+on:
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+concurrency:
+  group: chk-official
+  cancel-in-progress: false
+permissions: {}
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # chk-results への push だけに使う（main へは書かない）
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Playwright を入れる
+        run: |
+          mkdir -p /tmp/chk && cp .github/scripts/chk_official.mjs /tmp/chk/ && cd /tmp/chk
+          npm init -y >/dev/null && npm i --no-audit --no-fund playwright@1.49.1 >/dev/null
+          npx playwright install --with-deps chromium >/dev/null
+      - name: 読む
+        run: |
+          set -euo pipefail
+          cd /tmp/chk && CHK_OUT=/tmp/chk/latest.json node chk_official.mjs
+      - name: chk-results に置く
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # main とは別の作業ディレクトリで chk-results だけを扱う。--force は使わない（履歴に積むだけ）
+          REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          rm -rf /tmp/pub
+          if git ls-remote --exit-code --heads "$REMOTE" chk-results >/dev/null; then
+            git clone -q --depth 1 --single-branch --branch chk-results "$REMOTE" /tmp/pub
+          else
+            git init -q -b chk-results /tmp/pub && git -C /tmp/pub remote add origin "$REMOTE"
+          fi
+          cp /tmp/chk/latest.json /tmp/pub/latest.json && cd /tmp/pub
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add latest.json && git commit -qm "chk $(date -u +%Y-%m-%dT%H:%MZ)"
+          # 宛先の確認：今いるブランチが chk-results でなければ止める（main へは絶対に書かない）
+          [ "$(git symbolic-ref HEAD)" = "refs/heads/chk-results" ] || { echo "宛先が chk-results ではないので止めます"; exit 1; }
+          git push -q origin HEAD:refs/heads/chk-results
