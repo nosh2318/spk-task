@@ -54,11 +54,18 @@ Deno.serve(async (req) => {
       }
       const hn = await getAll(SB_URL, SB_KEY, `hdm_notifications?created_at=gte.${since}&sent=eq.true&is_test=is.false&select=store,resv_no,action,sent_at`);
       for (const r of hn) sends.push({ store: String(r.store), ch: "mail", kind: "btn_" + String(r.action || ""), rid: String(r.resv_no), at: Date.parse(r.sent_at) });
+      // 2026-11-09 楽天の画面から送ったメール（rax_outbox の送信済み。Mac mini rax_line_mail.py が送る）
+      const rx = await getAll(SB_URL, SB_KEY, `rax_outbox?sent_at=gte.${since}&status=eq.sent&store=in.(spk,nha)&select=store,resv_no,kind,sent_at`);
+      for (const r of rx) sends.push({ store: String(r.store), ch: "mail", kind: String(r.kind || ""), rid: String(r.resv_no), at: Date.parse(r.sent_at) });
       const ev = await getAll(SB_URL, SB_KEY, `mypage_events?created_at=gte.${since}&event=eq.page_view&page=eq.mypage&store=in.(spk,nha)&reservation_id=not.is.null&select=store,reservation_id,created_at`);
       for (const e of ev) addView(`${e.store}|${e.reservation_id}`, Date.parse(e.created_at));
     } else {
       const tn = await getAll(SB_URL, SB_KEY, `hdm_tkm_notifications?created_at=gte.${since}&sent=eq.true&select=reservation_id,kind,sent_at`);
       for (const r of tn) sends.push({ store: "tkm", ch: "mail", kind: String(r.kind || ""), rid: String(r.reservation_id), at: Date.parse(r.sent_at) });
+      if (MAIN_KEY) { // 2026-11-09 楽天の画面から送ったメール（記録は main）
+        const rx = await getAll(MAIN_URL, MAIN_KEY, `rax_outbox?sent_at=gte.${since}&status=eq.sent&store=eq.tkm&select=resv_no,kind,sent_at`);
+        for (const r of rx) sends.push({ store: "tkm", ch: "mail", kind: String(r.kind || ""), rid: String(r.resv_no), at: Date.parse(r.sent_at) });
+      }
       // 高松の閲覧記録は予約番号が空 → トークンで予約へ戻す
       const rids = [...new Set(sends.map((s) => s.rid))];
       const tok2rid: Record<string, string> = {};
@@ -119,7 +126,7 @@ Deno.serve(async (req) => {
     const jstToday = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
     const addD = (d: string, n: number) => new Date(Date.parse(d + "T00:00:00Z") + n * DAY).toISOString().slice(0, 10);
     const wins = [0, 1, 2, 3].map((k) => ({ from: addD(jstToday, -7 * k - 6), to: addD(jstToday, -7 * k) })); // 0=今週(直近7日) 1=先週…
-    const FIRST = new Set(["mail_welcome", "mail_confirm", "welcome", "mypage_initial"]);
+    const FIRST = new Set(["mail_welcome", "mail_confirm", "welcome", "mypage_initial", "rax_welcome"]);
     const k1: Record<string, { n: number; ok: number }[]> = {};
     for (const st of stores) k1[st] = wins.map(() => ({ n: 0, ok: 0 }));
     for (const s of sends) {

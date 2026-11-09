@@ -200,6 +200,7 @@ Deno.serve(async (req) => {
   const st = String(r.status || "").toLowerCase();
   if (st.includes("cancel") || st.includes("キャンセル")) return json({ ok: false, error: "cancelled" });
   const cn = (r.name || "") + "様";
+  // ★2026-11-09 nosh「自動送信メールの内容も問題ないか」：位置の表示はやめたので「スタッフの現在地」を消す・時刻は前後（目安）・乗り捨ての連絡はマイページへ（メールは返信できないため）
   const myUrl = r.mypage_token ? `${CFG.mypageBase}?t=${r.mypage_token}` : "";
 
   // プレート（到着メッセージ用）
@@ -233,10 +234,10 @@ Deno.serve(async (req) => {
     driverUrl = `https://keydrop.jp/handyman-driver.html?r=${encodeURIComponent(resv_no)}&d=${tkDrv}`;
     if (action === "depart") {
       pushAction = "depart_mypage";
-      msg = `【HANDYMAN カーデリバリー】\n${cn}\nお届けに出発しました🚚\nお客様専用マイページから、スタッフの現在地・受け取り場所・車両情報をご確認いただけます（アプリ不要）。\n${myUrl}`;
+      msg = `【HANDYMAN カーデリバリー】\n${cn}\nお届けに出発しました🚚\nご予約の時間前後（目安）にお伺いします。道路の状況で前後することがあります。\n受け取り場所・お車の情報はマイページでご確認いただけます（アプリ不要）。\n${myUrl}`;
     } else {
       pushAction = "collect_mypage";
-      msg = `【HANDYMAN カーデリバリー】\n${cn}\nお車の回収に向かっています🧭\nお客様専用マイページから、スタッフの現在地・待ち合わせ場所をご確認いただけます（アプリ不要）。\n${myUrl}`;
+      msg = `【HANDYMAN カーデリバリー】\n${cn}\nお車の回収に向かっています🧭\nご予約の時間前後（目安）にお伺いします。道路の状況で前後することがあります。\n待ち合わせ場所はマイページでご確認いただけます（アプリ不要）。\n${myUrl}`;
     }
   } else if (action === "arrival") {
     if (hasPos) await sbPatch(`${CFG.resvTbl}?id=eq.${encodeURIComponent(resv_no)}`, posPatch);
@@ -253,10 +254,12 @@ Deno.serve(async (req) => {
     pushAction = isCol ? "col_delay" : "del_delay";
     const midMsg = isCol ? "お車の回収に向かうスタッフの到着が予定より遅れております" : "お車のお届けに向かうスタッフの到着が予定より遅れております";
     const head = isCol ? "【回収時間について】" : "【お届け時間について】";
-    msg = `${head}\n${cn}\n\nこの度はHANDYMANをご利用いただき、誠にありがとうございます。\nただいま道路状況・混雑状況により、${midMsg}。\nご迷惑をおかけし誠に申し訳ございません。\n到着予定は「${t}」頃を見込んでおります。\nお手数をおかけいたしますが、もう暫しお待ちくださいませ。`;
+    msg = `${head}\n${cn}\n\nこの度はHANDYMANをご利用いただき、誠にありがとうございます。\nただいま道路状況・混雑状況により、${midMsg}。\nご迷惑をおかけし誠に申し訳ございません。\n到着は「${t}」前後（目安）を見込んでおります。\nお手数をおかけいたしますが、もう暫しお待ちくださいませ。`;
   } else if (action === "dropoff") {
     pushAction = "dropoff";
-    msg = `【乗り捨て対応のお願い】\n${cn}\n\nご返却時刻の混雑により、大変お手数ではございますが返却予定場所近隣駐車場に乗り捨て駐車いただきたく、ご連絡させていただきました。\nお待たせする時間回避の目的のためご協力の程何卒よろしくお願いいたします。\n\n✅駐車完了しましたら"鍵と駐車券"をダッシュボード内に格納し、鍵を開けた状態でそのままお降りくださいませ。\n✅燃料の給油とお忘れ物（ETCカード等）のないようご注意ください。\n✅駐車場所が確定しましたら詳細場所をご連絡いただけますと幸いです。\n例：駐車場看板写真/GoogleマップURL/住所/駐車場名/●階等\n\n駐車後の車両トラブルに関しては一切の責任は問いませんのでご安心くださいませ。\n万一の盗難等の際にも弊社セキュリティにて追跡可能となっております。`;
+    // ★2026-11-09 nosh「乗り捨てボタン発動から何が送信されどうなるのか 画面も」：マイページを「乗り捨てでのご返却」に切り替える目印
+    await sbPatch(`${CFG.resvTbl}?id=eq.${encodeURIComponent(resv_no)}`, { kd_status: "dropoff", kd_status_at: new Date().toISOString() });
+    msg = `【乗り捨て対応のお願い】\n${cn}\n\nご返却時刻の混雑により、大変お手数ではございますが返却予定場所近隣駐車場に乗り捨て駐車いただきたく、ご連絡させていただきました。\nお待たせする時間回避の目的のためご協力の程何卒よろしくお願いいたします。\n\n✅駐車完了しましたら"鍵と駐車券"をダッシュボード内に格納し、鍵を開けた状態でそのままお降りくださいませ。\n✅燃料の給油とお忘れ物（ETCカード等）のないようご注意ください。\n✅停めたら、マイページの「車を停めました」から駐車場の名前か写真をお送りください。\n例：駐車場の看板の写真／駐車場名／●階など\n\n駐車後の車両トラブルに関しては一切の責任は問いませんのでご安心くださいませ。\n万一の盗難等の際にも弊社セキュリティにて追跡可能となっております。`;
   } else {
     return json({ ok: false, error: "unknown_action" }, 400);
   }

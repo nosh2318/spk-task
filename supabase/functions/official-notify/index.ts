@@ -10,6 +10,7 @@
 //   ① LINEをつないだ人には、同じ時期にLINEで届く案内（前日・返却日・傷チェック・御礼・札幌の場所未設定）のメールを送らない（2通防止）
 //   ② 初動/確定メール：マイページを先頭に出す。廃止済みの「受付フォーム」の記載を消す（LINEの案内は残す）
 //   ③ 「ご不明点はお問い合わせください」「ご返信いただくと担当に届きます」を外し、マイページへ誘導
+// 2026-11-09 楽天でLINEもメールもない人は、同じ通知を楽天の画面から送る（rax_outbox → Mac mini）。
 // 2026-11-09 出発前は1日1通：3日前・2日前＝足りない物の一覧（足りない人だけ）、前日＝一覧か短い1通（全店統一 3/2/1・高松と同じ形）。
 // 2026-11-09 開封の計測：全メールにHTML版（開封の印＋リンク計測 mail-track）を付ける。本文・送る条件は変えない。確定メールも送信記録(mail_confirm)を残す。
 // ============================================================
@@ -53,7 +54,7 @@ async function sbPatch(t: string, q: string, b: unknown): Promise<void> {
 // ===== 出発前の「足りない物」（2026-11-09 nosh「全店統一 3/2/1」） =====
 //   3日前・2日前＝足りない物がある人にだけ一覧を1通／前日＝一覧、なければ短い1通（高松 hdm-tkm-enqueue と同じ形）。
 //   旧：免許証の催促(license-reminder-cron)・場所の催促(mypage_place/mail_place)・前日案内 → この1通にまとめた。
-//   見方は新マイページの「必須」と同じ（免許証・時間・お届け場所/到着便・回収場所・人数・帰りの便・お支払い）。
+//   見方は新マイページの「必須」と同じ（免許証・時間・お届け場所/到着便・回収場所・人数・お支払い）。帰りの便は催促しない。
 async function prepMissing(store: string, r: any): Promise<string[]> {
   const id = encodeURIComponent(String(r.id));
   let e: any = {};
@@ -78,9 +79,25 @@ async function prepMissing(store: string, r: any): Promise<string[]> {
   else if (vt !== "来店" && !has(r.del_flight)) m.push("到着便");
   if (col && !has(e.col_place) && !has(r.col_place)) m.push("回収場所");
   if (!(Number(I.people || r.people || 0) > 0)) m.push("ご利用人数");
-  if (store === "nha" && /^BD/.test(rt) && !String(I.flight_out || "").trim()) m.push("帰りの便");
+  // 帰りの便は催促しない（2026-11-09 nosh「帰りの便は予約に必須ではない。来る便がわからない時だけ確認」）
   if (pay.some((p: any) => ["link_created", "email_sent", "reminded"].includes(String(p.status)) && !p.local_paid_at)) m.push("事前決済のお支払い");
   return m;
+}
+// ===== 楽天の画面から送る（2026-11-09 nosh「楽天でLINEもメールもない人には、通知もその他の連絡も楽天経由で出す」） =====
+//   楽天の予約はメール・電話がこちらに来ない。LINEもメール登録もない人への通知は main の rax_outbox に積み、
+//   Mac mini（rax_line_mail.py）が楽天RAXの「予約者へメール送信」から送る。dkey が同じものは二度積まない。
+const RAX_URL = "https://ckrxttbnawkclshczsia.supabase.co";
+async function raxQueue(key: string, o: { store: string; resv_no: string; kind: string; subject: string; body: string; dkey?: string | null }): Promise<boolean> {
+  if (!key) { console.log("[rax] no main key"); return false; }
+  try {
+    const r = await fetch(`${RAX_URL}/rest/v1/rax_outbox?on_conflict=dkey`, {
+      method: "POST",
+      headers: { apikey: key, Authorization: `Bearer ${key}`, "content-type": "application/json", Prefer: "return=minimal,resolution=ignore-duplicates" },
+      body: JSON.stringify({ store: o.store, resv_no: o.resv_no, kind: o.kind, subject: o.subject, body: o.body, dkey: o.dkey || null }),
+    });
+    if (!r.ok) console.error("[rax]", r.status, await r.text());
+    return r.ok;
+  } catch (e) { console.error("[rax]", String(e)); return false; }
 }
 const SQUARE_TOKEN = Deno.env.get("SQUARE_ACCESS_TOKEN") || "";
 const SQUARE_LOCATION = Deno.env.get("SQUARE_LOCATION_ID") || "L8N7J9RKPN3WH";
@@ -221,11 +238,12 @@ Deno.serve(async (req) => {
       (li.del ? `【回収場所】${rv.col_place ? rv.col_place : (rv.del_place ? "お届け場所と同じ" : "（マイページでご登録ください）")}\n` : `【ご返却方法】${li.label}\n`);
     const mpNote = (lo.del || li.del) ? "ご予約内容の確認・お届け場所/時間のご連絡・免許証のご登録・変更/キャンセルのご依頼など" : "ご予約内容の確認・お時間のご連絡・免許証のご登録・変更/キャンセルのご依頼など";
     // 2026-11-08 マイページを先頭に。受付フォームの記載を削除（LINEの案内は残す）
+    // 2026-11-09 新マイページ切替：LINEは「おすすめ」でなく任意の受け取り手段に（主役はマイページ）
     const body = `${rv.name || "お客様"} 様\n\nこの度はHANDYMAN RENTCAR ${st.shop}をご利用いただきありがとうございます。\nご予約・お支払いが確定いたしましたのでお知らせします。\n\n` +
       `━━━━━━━━━━━━━━━━━━\n■ マイページ（${mpNote}）\n${url}\n━━━━━━━━━━━━━━━━━━\n\n` +
       `──────────\n【予約番号】${rv.id}\n【車両クラス】${rv.vehicle || ""}\n【ご出発】${rv.lend_date || ""} ${rv.lend_time || ""}\n【ご返却】${rv.return_date || ""} ${rv.return_time || ""}\n` +
       placeLines + `【オプション】${optLine(rv)}\n【補償プラン】${insName(rv.insurance)}\n【お支払い金額】¥${Number(rv.price || 0).toLocaleString()}（決済済み）\n──────────\n\n` +
-      `▼ 📱 当日のご連絡・各種通知をLINEで受け取る（おすすめ）\n公式LINEを友だち追加いただくと、お迎え・傷チェック・前日/返却リマインド等をLINEでお届けします（マイページからも登録できます）。\n${st.lineForm}${foot0(st.shop, csite)}`;
+      `お知らせはこのメールアドレスに届きます。LINEでも受け取れます（任意）\n${st.lineForm}${foot0(st.shop, csite)}`;
     const ok = await sendMail(rv.mail, `【HANDYMAN RENTCAR ${st.shop}】ご予約が確定しました`, body, csite, midOf(st.store, "mail_confirm", String(rv.id)));
     if (ok) await sbPost(st.sends, { resv_no: rv.id, action: "mail_confirm", status: "mailed", message: "official-pay confirm" }); // 2026-11-09 開封率の分母
     return new Response(JSON.stringify({ ok }), { headers: { "content-type": "application/json" } });
@@ -244,7 +262,7 @@ Deno.serve(async (req) => {
   type Trig = { action: string; targetDate: string; hourGate: (h: number) => boolean; needPlaceEmpty?: boolean; prep?: number; onReturn?: boolean; otaIn?: string[]; build: (r: any, url: string, shop: string) => { s: string; b: string } };
   const trigs: Trig[] = [
     // ★2026-11-09 出発前は1日1通（3日前・2日前＝足りない人だけ／前日＝全員）。旧 mail_place(3日前・場所)と前日案内をまとめた（action名 mail_daybefore は前日のまま）。
-    ...[3, 2, 1].map((n): Trig => ({ action: n === 1 ? "mail_daybefore" : `mail_prep_d${n}`, targetDate: dstr(n), hourGate: (h) => h === (n === 1 ? 18 : 10), prep: n, /* 前日は今までどおり18時、3日前・2日前は10時 */ otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP"],
+    ...[3, 2, 1].map((n): Trig => ({ action: n === 1 ? "mail_daybefore" : `mail_prep_d${n}`, targetDate: dstr(n), hourGate: (h) => h === (n === 1 ? 18 : 10), prep: n, /* 前日は今までどおり18時、3日前・2日前は10時 */ otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP", "R"],
       build: (r, url, shop) => {
         const miss: string[] = r.__miss || [];
         const when = n === 1 ? "明日" : `あと${n}日`;
@@ -253,16 +271,16 @@ Deno.serve(async (req) => {
         return { s: `【HANDYMAN ${shop}】ご出発まで${when}：ご登録をお願いします（予約番号 ${r.id}）`,
           b: `${r.name || "お客様"} 様\n\nご出発は ${r.__d}（${when}）です。\nまだ登録されていないものがあります。マイページからご登録ください。\n\n${miss.map((x) => "・" + x).join("\n")}\n\n▼ マイページ\n${url}${foot(shop, r.site)}` };
       } })),
-    { action: "mail_returnbefore", targetDate: dstr(1), hourGate: (h) => h === 17, onReturn: true, otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP"],
+    { action: "mail_returnbefore", targetDate: dstr(1), hourGate: (h) => h === 17, onReturn: true, otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP", "R"],
       build: (r, url, shop) => ({ s: `【HANDYMAN ${shop}】明日はご返却日です（予約番号 ${r.id}）`,
         b: `${r.name || "お客様"} 様\n\n明日 ${r.__r} はご返却日です。ご返却場所・お時間をご確認ください。\n\n▼ マイページ\n${url}${foot(shop, r.site)}` }) },
-    { action: "mail_damage", targetDate: today, hourGate: (h) => h >= 8, otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP"], // 出発当日8時以降
+    { action: "mail_damage", targetDate: today, hourGate: (h) => h >= 8, otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP", "R"], // 出発当日8時以降
       build: (r, url, shop) => ({ s: `【HANDYMAN ${shop}】ご出発前 車両の状態チェックのお願い（予約番号 ${r.id}）`,
         b: `${r.name || "お客様"} 様\n\n本日はご出発日です。トラブル防止のため、ご出発前に車両の状態チェック（傷の確認）をお願いいたします。マイページよりご確認いただけます。\n\n▼ マイページ（車両の状態チェック）\n${url}${foot(shop, r.site)}` }) },
-    { action: "mail_returnday", targetDate: today, hourGate: (h) => h >= 9, onReturn: true, otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP"],
+    { action: "mail_returnday", targetDate: today, hourGate: (h) => h >= 9, onReturn: true, otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP", "R"],
       build: (r, url, shop) => ({ s: `【HANDYMAN ${shop}】本日はご返却日です（予約番号 ${r.id}）`,
         b: `${r.name || "お客様"} 様\n\n本日 ${r.__r} はご返却日です。ご返却場所・お時間はマイページでご確認ください。\n\n▼ マイページ\n${url}${foot(shop, r.site)}` }) },
-    { action: "mail_thanks", targetDate: dstr(-1), hourGate: (h) => h === 10, onReturn: true, otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP"],
+    { action: "mail_thanks", targetDate: dstr(-1), hourGate: (h) => h === 10, onReturn: true, otaIn: ["HANDYMAN", "J", "S", "O", "RC", "G", "HP", "R"],
       build: (r, url, shop) => ({ s: `【HANDYMAN ${shop}】ご利用ありがとうございました（予約番号 ${r.id}）`,
         b: `${r.name || "お客様"} 様\n\nこの度はHANDYMAN RENTCAR ${shop}をご利用いただき誠にありがとうございました。またのご利用を心よりお待ちしております。\n\nHANDYMAN RENTCAR ${shop}` }) },
   ];
@@ -277,9 +295,16 @@ Deno.serve(async (req) => {
       if (!t.hourGate(hh)) continue;
       const col = t.onReturn ? S.rCol : S.dCol;
       const otaClause = t.otaIn ? `ota=in.(${t.otaIn.join(",")})` : "ota=eq.HANDYMAN";
-      const rows = await sbGet(S.resv, `${otaClause}&${col}=eq.${t.targetDate}&status=not.in.(%22キャンセル%22,cancelled,cancel)&select=id,name,mail,${S.dCol},${S.rCol},del_place,col_place,people,${S.store === "nha" ? "start_time,del_flight" : "lend_time"},mypage_token,site,visit_type,return_type`);
+      const rows = await sbGet(S.resv, `${otaClause}&${col}=eq.${t.targetDate}&status=not.in.(%22キャンセル%22,cancelled,cancel)&select=id,name,mail,ota,${S.dCol},${S.rCol},del_place,col_place,people,${S.store === "nha" ? "start_time,del_flight" : "lend_time"},mypage_token,site,visit_type,return_type`);
       for (const r of rows) {
-        if (!validMail(r.mail)) continue;
+        // 2026-11-09 楽天でメールがない人は、LINEをつないでいなければ楽天の画面から送る（rax_outbox）
+        r.__rax = false;
+        if (!validMail(r.mail)) {
+          if (String(r.ota || "") !== "R") continue;
+          const lk0 = await sbGet(`${S.store}_line_links`, `resv_no=eq.${encodeURIComponent(r.id)}&line_user_id=not.is.null&select=resv_no&limit=1`);
+          if (lk0[0]) continue; // LINEで届く
+          r.__rax = true;
+        }
         if (pendingCancel.has(String(r.id))) continue; // ★キャンセル申請中→リマインド送らない
         if (t.needPlaceEmpty && String(r.del_place || "").trim()) continue; // 場所登録済みは場所リマインド不要
         const _lo = legOut(S.store, r);
@@ -298,7 +323,12 @@ Deno.serve(async (req) => {
         if (t.prep) { r.__miss = await prepMissing(S.store, r); if (t.prep > 1 && !r.__miss.length) continue; } // 3日前・2日前は足りない人だけ
         const url = S.mypage + encodeURIComponent(r.mypage_token || "");
         const m = t.build(r, url, S.shop);
-        if (DRY) { enq++; console.log(`[dry] ${S.store} ${t.action} ${r.id} → ${r.mail}`); continue; }
+        if (DRY) { enq++; console.log(`[dry] ${S.store} ${t.action} ${r.id} → ${r.__rax ? "楽天の画面" : r.mail}`); continue; }
+        if (r.__rax) {
+          const qok = await raxQueue(SB_KEY, { store: S.store, resv_no: String(r.id), kind: t.action, subject: m.s, body: m.b, dkey: `${S.store}|${r.id}|${t.action}` });
+          if (qok) { await sbPost(S.sends, { resv_no: r.id, action: t.action, status: "rax", message: "official-notify→楽天" }); enq++; }
+          continue;
+        }
         const ok = await sendMail(r.mail, m.s, m.b, r.site, midOf(S.store, t.action, String(r.id)));
         if (ok) { await sbPost(S.sends, { resv_no: r.id, action: t.action, status: "mailed", message: "official-notify" }); enq++; }
       }
@@ -381,7 +411,7 @@ Deno.serve(async (req) => {
           const act = `mail_jalan_remind_${dayTag}`;
           const done = await sbGet(R.sends, `resv_no=eq.${encodeURIComponent(pay.reservation_id)}&action=eq.${act}&select=resv_no&limit=1`);
           if (done[0]) continue;
-          const b = `${pay.customer_name || "お客様"} 様\n\n【リマインド】HANDYMAN RENTCAR ${R.shop}です。\nご予約 ${pay.reservation_id} の事前決済がまだお済みでないようです。\n当店ではお待ち時間・待機時間の解消のため事前決済をお願いしております。\n\nお支払い金額：¥${Number(pay.amount || 0).toLocaleString()}\n下記より ご出発3日前19:00まで にお支払いをお願いいたします。\n${pay.square_payment_url}\n※現金決済をご希望の場合は、お手数ですが事前にお問い合わせください。${foot(R.shop)}`;
+          const b = `${pay.customer_name || "お客様"} 様\n\n【リマインド】HANDYMAN RENTCAR ${R.shop}です。\nご予約 ${pay.reservation_id} の事前決済がまだお済みでないようです。\n当店ではお待ち時間・待機時間の解消のため事前決済をお願いしております。\n\nお支払い金額：¥${Number(pay.amount || 0).toLocaleString()}\n下記より ご出発3日前19:00まで にお支払いをお願いいたします。\n${pay.square_payment_url}\n※現金決済をご希望の場合は、マイページの「聞く」からお知らせください。${foot(R.shop)}`;
           if (DRY) { wsent++; continue; }
           const ok = await sendMail(pay.customer_email, `【リマインド】【HANDYMAN RENTCAR ${R.shop}】事前決済のお願い（予約番号: ${pay.reservation_id}）`, b, "", midOf(R.store, "mail_jalan_remind", String(pay.reservation_id)));
           if (ok) {

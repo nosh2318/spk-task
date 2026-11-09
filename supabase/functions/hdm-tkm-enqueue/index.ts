@@ -24,6 +24,23 @@ async function enqueue(row: Record<string, unknown>): Promise<boolean> {
   });
   return r.ok;
 }
+// ===== 楽天の画面から送る（2026-11-09 nosh「楽天でLINEもメールもない人には、通知もその他の連絡も楽天経由で出す」） =====
+//   楽天の予約はメール・電話がこちらに来ない。LINEもメール登録もない人への通知は main の rax_outbox に積み、
+//   Mac mini（rax_line_mail.py）が楽天RAXの「予約者へメール送信」から送る。dkey が同じものは二度積まない。
+const RAX_URL = "https://ckrxttbnawkclshczsia.supabase.co";
+async function raxQueue(key: string, o: { store: string; resv_no: string; kind: string; subject: string; body: string; dkey?: string | null }): Promise<boolean> {
+  if (!key) { console.log("[rax] no main key"); return false; }
+  try {
+    const r = await fetch(`${RAX_URL}/rest/v1/rax_outbox?on_conflict=dkey`, {
+      method: "POST",
+      headers: { apikey: key, Authorization: `Bearer ${key}`, "content-type": "application/json", Prefer: "return=minimal,resolution=ignore-duplicates" },
+      body: JSON.stringify({ store: o.store, resv_no: o.resv_no, kind: o.kind, subject: o.subject, body: o.body, dkey: o.dkey || null }),
+    });
+    if (!r.ok) console.error("[rax]", r.status, await r.text());
+    return r.ok;
+  } catch (e) { console.error("[rax]", String(e)); return false; }
+}
+const MAIN_SERVICE = Deno.env.get("MAIN_SERVICE") || "";
 const yen = (n: number) => "¥" + Number(n || 0).toLocaleString();
 const MY = (tok: string) => MYPAGE_BASE + encodeURIComponent(tok || "");
 
@@ -129,7 +146,7 @@ Deno.serve(async (req) => {
 
   // ★対象=HDMブランドの高松予約(brand=HDM＝HANDYMAN公式/じゃらん/楽天/スカイチケット・単一正本trg_bt_set_brand)。
   //   公式(ota=HANDYMAN)は確定メールをofficial-pay-tkmが送信済→welcomeは重複回避(下でskip)。BUDDICA予約は絶対に拾わない。
-  const resv = await sbGet(`bt_reservations?brand=eq.HDM&start_date=gte.${from}&start_date=lte.${to}&mail=not.is.null&mail=neq.&select=id,name,mail,ota,start_date,end_date,end_time,dropoff_time,price,pay_url,paid,mypage_token,visit_type,return_type,pickup_time,status,vehicle_class`);
+  const resv = await sbGet(`bt_reservations?brand=eq.HDM&start_date=gte.${from}&start_date=lte.${to}&or=(and(mail.not.is.null,mail.neq.),ota.eq.${encodeURIComponent("楽天")})&select=id,name,mail,ota,start_date,end_date,end_time,dropoff_time,price,pay_url,paid,mypage_token,visit_type,return_type,pickup_time,status,vehicle_class`);
   const alive = resv.filter((r) => !/cancel|キャンセル/i.test(String(r.status || "")));
   if (!alive.length) return new Response(JSON.stringify({ ok: true, reservations: 0, enqueued: 0 }), { headers: { "content-type": "application/json" } });
   const ids = alive.map((r) => r.id);
@@ -149,9 +166,15 @@ Deno.serve(async (req) => {
     for (const key of keys) {
       if (!DUE[key] || !DUE[key](rr)) continue;
       if (key === "welcome" && String(r.ota) === "HANDYMAN") continue; // 公式は確定メール(official-pay-tkm)送信済→welcome重複回避
+      const noMail = !String(r.mail || "").includes("@");
+      if (noMail && key === "welcome") continue; // 楽天の予約直後の案内は Mac mini（楽天の画面）が別に送っている
       cand++;
       const t = tmap[key];
-      const lk = key === "reminder" ? (key + ":" + r.id + ":" + rr.d2s) : (key + ":" + r.id); // 統合リマインドは4日前/2日前で別
+      const lk = key === "reminder" ? (key + ":" + r.id + ":" + rr.d2s) : (key + ":" + r.id); // 統合リマインドは3日前/2日前で別
+      if (noMail) { // 2026-11-09 楽天でメールがない人 → 楽天の画面から送る（rax_outbox → Mac mini）
+        if (await raxQueue(MAIN_SERVICE, { store: "tkm", resv_no: String(r.id), kind: key, subject: t.subject, body: fill(t.body, rr, payblock, footer), dkey: "tkm|" + lk })) enq++;
+        continue;
+      }
       const ok = await enqueue({ reservation_id: r.id, kind: key, to_email: r.mail, subject: t.subject, body: fill(t.body, rr, payblock, footer), log_key: lk });
       if (ok) enq++;
     }
