@@ -163,7 +163,42 @@ Deno.serve(async (req) => {
         : `🔴 ${hm} ${kind}（${r.name || ""}様）時刻を過ぎても「${btn}」が押されていません。お客様のマイページは「準備中」のままです。担当：${who}`;
       await slack(msg); out.push(rid + ":" + slot);
     }
-    return json({ ok: true, alerted: out, spk_alerted: spkOut }, 200, origin);
+    // ★2026-11-09 nosh「押されてない画面がない」「その画面必須」：那覇の送迎（PUB/BDB）も「出発」の押し忘れを同じ枠で警告。
+    //   同じ時刻・同じ便のお客様はまとめて1通（人数つき）。
+    const shOut: string[] = [];
+    try {
+      const sts = await sbGet(`nha_tasks?date=eq.${today}&deleted=not.is.true&${enc("内容")}=in.(PUB,BDB)&select=_id,${enc("内容")},${enc("担当")},${enc("予約番号")},${enc("確認")},${enc("時間")},${enc("変更")},sa_log`);
+      const grp = new Map<string, { kind: string; hm: string; who: Set<string>; n: number; slot: string }>();
+      for (const t of sts) {
+        if (String(t["確認"]) === "true") continue;
+        const isPu = t["内容"] === "PUB";
+        const log = Array.isArray(t.sa_log) ? t.sa_log : [];
+        if (log.some((e: any) => e && e.a === (isPu ? "pu_depart" : "bd_depart"))) continue;
+        const rid = String(t["予約番号"] || ""); if (!rid) continue;
+        let hm = String(t["変更"] || t["時間"] || "");
+        if (!/\d{1,2}:\d{2}/.test(hm)) {
+          const r = (await sbGet(`nha_reservations?id=eq.${enc(rid)}&select=${SEL}`))[0];
+          if (!r || isCancelled(r.status)) continue;
+          const eff = (await rpc("nha_res_effective", { p_res: rid })) || {};
+          hm = String((isPu ? (eff.lend_time || r.start_time) : (eff.return_time || r.end_time)) || "");
+        }
+        const at = hmToMs(today, hm); if (at == null) continue;
+        const minsLeft = (at - now) / 60e3;
+        const slot = (minsLeft > 10 && minsLeft <= 15) ? "pre" : (minsLeft > -5 && minsLeft <= 0) ? "late" : "";
+        if (!slot) continue;
+        const key = `${t["内容"]}|${hm}|${slot}`;
+        const g = grp.get(key) || { kind: isPu ? "空港お迎え（PUB）" : "空港お送り（BDB）", hm, who: new Set<string>(), n: 0, slot };
+        g.n++; g.who.add(String(t["担当"] || "").trim() || "担当未定"); grp.set(key, g);
+      }
+      for (const [key, g] of grp) {
+        const who = [...g.who].join("・");
+        const msg = g.slot === "pre"
+          ? `⏰ ${g.hm} ${g.kind}（${g.n}名）の「出発」がまだ押されていません。担当：${who}`
+          : `🔴 ${g.hm} ${g.kind}（${g.n}名）時刻を過ぎても「出発」が押されていません。お客様のマイページは「出発のお知らせがまだ」のままです。担当：${who}`;
+        await slack(msg); shOut.push(key);
+      }
+    } catch (e) { console.error("nha shuttle watch", e); }
+    return json({ ok: true, alerted: out, spk_alerted: spkOut, shuttle_alerted: shOut }, 200, origin);
   }
 
   if (action !== "lookup") return json({ error: "unsupported action" }, 400, origin);
