@@ -37,14 +37,19 @@ async function build(r: any): Promise<any> {
   const hasDel = r.visit_type === "DEL" && r.start_date === today;
   const hasCol = r.return_type === "COL" && r.end_date === today;
   if (!hasDel && !hasCol) return { leg: null };
+  // OPタスク（完了＝受け渡し済みならカードは出さない）
+  const tks = await sbGet(`nha_tasks?_id=in.(${enc("d-" + r.id)},${enc("c-" + r.id)})&deleted=not.is.true&select=_id,${enc("担当")},No,${enc("確認")}`);
+  const tk = (pre: string) => tks.find((x) => String(x._id).startsWith(pre)) || {};
+  const done = (pre: string) => String(tk(pre)["確認"]) === "true";
   const sends = await sbGet(`nha_line_sends?resv_no=eq.${enc(r.id)}&sent_at=gte.${enc(t0)}&action=in.(arrival,col_arrival,del_delay,col_delay,depart_mypage,collect_mypage)&select=action,message,sent_at&order=sent_at.asc`);
   const statusToday = !!r.kd_status_at && Date.parse(r.kd_status_at) >= Date.parse(t0);
   // 同じ日にお届けと回収がある場合：お届けが到着済み、または回収に向かうが押されたら回収の区間
   let leg: "del" | "col" = hasDel ? "del" : "col";
   if (hasDel && hasCol) {
     const delArrived = sends.some((x) => x.action === "arrival");
-    if (delArrived || (r.kd_status === "collecting" && statusToday)) leg = "col";
+    if (delArrived || done("d-") || (r.kd_status === "collecting" && statusToday)) leg = "col";
   }
+  if (done(leg === "del" ? "d-" : "c-")) return { leg: null };
   const isDel = leg === "del";
   const departed = statusToday && r.kd_status === (isDel ? "delivering" : "collecting");
   const since = departed ? r.kd_status_at : t0;
@@ -61,7 +66,7 @@ async function build(r: any): Promise<any> {
   const place = String((isDel ? (eff.del_place || r.del_place) : (eff.col_place || r.col_place)) || "");
 
   // 担当（OPタスク）と車（配車＝nha_fleet → 車両マスタ）
-  const task = (await sbGet(`nha_tasks?_id=eq.${enc((isDel ? "d-" : "c-") + r.id)}&deleted=not.is.true&select=${enc("担当")},No&limit=1`))[0] || {};
+  const task: any = tk(isDel ? "d-" : "c-");
   const fl = (await sbGet(`nha_fleet?reservation_id=eq.${enc(r.id)}&select=vehicle_code&limit=1`))[0];
   let car: any = {};
   if (fl && fl.vehicle_code) car = (await sbGet(`nha_vehicles?code=eq.${enc(fl.vehicle_code)}&select=plate_no,name,color&limit=1`))[0] || {};
@@ -85,8 +90,8 @@ async function build(r: any): Promise<any> {
   };
 }
 
-async function slack(text: string): Promise<boolean> {
-  const token = Deno.env.get("SLACK_BOT_TOKEN"); const ch = Deno.env.get("STAFF_DONE_CHANNEL_NHA") || Deno.env.get("SLACK_NHA_USER_CHANNEL") || "C06L91W6T08";
+async function slack(text: string, store = "nha"): Promise<boolean> {
+  const token = Deno.env.get("SLACK_BOT_TOKEN"); const ch = store === "spk" ? (Deno.env.get("STAFF_DONE_CHANNEL") || "") : (Deno.env.get("STAFF_DONE_CHANNEL_NHA") || Deno.env.get("SLACK_NHA_USER_CHANNEL") || "C06L91W6T08");
   if (!token || !ch) { console.log("[slack skip]", text); return false; }
   try { const r = await fetch("https://slack.com/api/chat.postMessage", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json; charset=utf-8" }, body: JSON.stringify({ channel: ch, text }) }); const d = await r.json().catch(() => ({})); return !!d.ok; } catch { return false; }
 }
@@ -102,6 +107,34 @@ Deno.serve(async (req) => {
     const sec = req.headers.get("x-cron-secret") || "";
     if (!sec || sec !== (Deno.env.get("CRON_SECRET") || "")) return json({ error: "unauthorized" }, 401, origin);
     const today = jstToday(), now = Date.now();
+    // ★2026-11-09 nosh「押されてない＝スタッフが動いてない可能性として通知は必須」：札幌も同じ見張り。
+    //   新しい定期実行は作らず、那覇の見張り（同じ5分毎の1本）の中で札幌も見る。
+    const spkOut: string[] = [];
+    try {
+      const t0 = todayStartIso(), out = spkOut;
+      const tks = await sbGet(`tasks?date=eq.${today}&deleted=not.is.true&done=not.is.true&type=in.(DEL,COL)&select=_id,type,assignee,reservation_id`);
+      for (const t of tks) {
+        const rid = String(t.reservation_id || ""); if (!rid) continue;
+        const r = (await sbGet(`reservations?id=eq.${enc(rid)}&select=id,name,status,lend_time,return_time,del_time,col_time,kd_status,kd_status_at`))[0];
+        if (!r || isCancelled(r.status)) continue;
+        const isDel = t.type === "DEL";
+        const hm = String((isDel ? (r.del_time || r.lend_time) : (r.col_time || r.return_time)) || "");
+        const at = hmToMs(today, hm); if (at == null) continue;
+        const minsLeft = (at - now) / 60e3;
+        const slot = (minsLeft > 10 && minsLeft <= 15) ? "pre" : (minsLeft > -5 && minsLeft <= 0) ? "late" : "";
+        if (!slot) continue;
+        const departed = !!r.kd_status_at && Date.parse(r.kd_status_at) >= Date.parse(t0) && r.kd_status === (isDel ? "delivering" : "collecting");
+        if (departed) continue;
+        const arrived = (await sbGet(`spk_line_sends?resv_no=eq.${enc(rid)}&sent_at=gte.${enc(t0)}&action=eq.${isDel ? "arrival" : "col_arrival"}&select=id&limit=1`))[0];
+        if (arrived) continue;
+        const who = String(t.assignee || "").trim() || "担当未定";
+        const kind = isDel ? "お届け" : "回収", btn = isDel ? "出発" : "回収に向かう";
+        const msg = slot === "pre"
+          ? `⏰ ${hm} ${kind}（${r.name || ""}様）の「${btn}」がまだ押されていません。担当：${who}`
+          : `🔴 ${hm} ${kind}（${r.name || ""}様）時刻を過ぎても「${btn}」が押されていません。お客様のマイページは「準備中」のままです。担当：${who}`;
+        await slack(msg, "spk"); out.push(rid + ":" + slot);
+      }
+    } catch (e) { console.error("spk watch", e); }
     const tasks = await sbGet(`nha_tasks?date=eq.${today}&deleted=not.is.true&${enc("内容")}=in.(DEL,COL)&select=_id,${enc("内容")},${enc("担当")},${enc("予約番号")},${enc("予約者")},${enc("確認")}`);
     const out: string[] = [];
     for (const t of tasks) {
@@ -130,7 +163,7 @@ Deno.serve(async (req) => {
         : `🔴 ${hm} ${kind}（${r.name || ""}様）時刻を過ぎても「${btn}」が押されていません。お客様のマイページは「準備中」のままです。担当：${who}`;
       await slack(msg); out.push(rid + ":" + slot);
     }
-    return json({ ok: true, alerted: out }, 200, origin);
+    return json({ ok: true, alerted: out, spk_alerted: spkOut }, 200, origin);
   }
 
   if (action !== "lookup") return json({ error: "unsupported action" }, 400, origin);
