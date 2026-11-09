@@ -260,6 +260,8 @@ Deno.serve(async (req) => {
     await sbPatch("cs_chat_threads", `id=eq.${tid}`, { staff_seen_at: new Date().toISOString() });
     let resv: any = null;
     if (th.reservation_id && RESV[th.store]) { const rows = await sbGet(RESV[th.store], `id=eq.${encodeURIComponent(th.reservation_id)}&select=*&limit=1`); resv = rows[0] || null; }
+    // ★2026-11-09 高松は予約がBTのDB → 管理画面に予約内容（日付・車・送迎）を出す
+    if (th.reservation_id && th.store === "tkm") { const b = (await btGet(`bt_reservations?id=eq.${encodeURIComponent(th.reservation_id)}&select=id,name,ota,vehicle_class,start_date,end_date,start_time,end_time,visit_type,return_type,pickup_time,dropoff_time,del_flight&limit=1`))[0]; if (b) resv = { ...b, lend_date: b.start_date, return_date: b.end_date, del_place: b.visit_type === "PU" ? "空港送迎（行き）" + (b.pickup_time ? " " + b.pickup_time : "") : "来店", col_place: b.return_type === "BD" ? "空港送迎（帰り）" + (b.dropoff_time ? " " + b.dropoff_time : "") : "来店" }; }
     return json({ ok: true, thread: th, reservation: resv, messages: await msgs(tid) }, 200, origin);
   }
 
@@ -274,8 +276,8 @@ Deno.serve(async (req) => {
     const imgUrl = hasImg ? await uploadImage(tid, p.image) : null;
     if (hasImg && !imgUrl) return json({ ok: false, error: "画像の送信に失敗しました" }, 200, origin);
     await sbInsert("cs_chat_messages", { thread_id: tid, sender: "staff", body, image_url: imgUrl });
-    // ★返信しても自動で「対応済」にしない（未対応のまま・対応済はチェックボックスのみ）
-    await sbPatch("cs_chat_threads", `id=eq.${tid}`, { unread_cust: (th.unread_cust || 0) + 1, last_msg: body ? body.slice(0, 120) : "📷 画像", last_msg_at: new Date().toISOString() });
+    // ★2026-11-09 nosh「管理画面を直せ」：返信したら「未対応」→「対応中」（Slack #omni の OK と同じ）。返信済みが赤い未対応に残らないように。完了はボタンのみ。
+    await sbPatch("cs_chat_threads", `id=eq.${tid}`, { unread_cust: (th.unread_cust || 0) + 1, last_msg: body ? body.slice(0, 120) : "📷 画像", last_msg_at: new Date().toISOString(), ...(th.work_status === "完了" ? {} : { work_status: "対応中" }) });
     return json({ ok: true, messages: await msgs(tid) }, 200, origin);
   }
 

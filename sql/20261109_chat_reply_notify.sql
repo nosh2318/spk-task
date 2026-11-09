@@ -95,3 +95,11 @@ begin
   end if;
   return 'off';
 end $function$;
+
+-- ④ 2026-11-09 管理画面：赤い「未対応」は返事待ち（未対応）だけを数える。高松も数える。
+--   （返信すると cs-chat が「対応中」にする。お客様が送ると「未対応」に戻る）
+CREATE OR REPLACE FUNCTION public.cs_chat_pending() RETURNS jsonb LANGUAGE sql SECURITY DEFINER SET search_path TO 'public'
+AS $function$ select jsonb_build_object(
+  'spk',(select count(*) from cs_chat_threads where store='spk' and status='open' and work_status='未対応'),
+  'nha',(select count(*) from cs_chat_threads where store='nha' and status='open' and work_status='未対応'),
+  'tkm',(select count(*) from cs_chat_threads where store='tkm' and status='open' and work_status='未対応')) $function$;
