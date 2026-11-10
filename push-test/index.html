@@ -1,5 +1,5 @@
 <!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>通知テスト</title><link rel="manifest" href="manifest.json"><meta name="theme-color" content="#002063">
+<title>通知テスト</title><script>(function(){var s=(new URLSearchParams(location.search).get("s")||"").replace(/[^a-z]/g,"");document.write('<link rel="manifest" href="'+(/^(spk|nha|tkm)$/.test(s)?"manifest-"+s+".json":"manifest.json")+'">');})();</script><meta name="theme-color" content="#002063">
 <meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="通知テスト"><link rel="apple-touch-icon" href="icon.png">
 <style>
 body{margin:0;background:#f4f6fa;font-family:"Hiragino Sans","Noto Sans JP",sans-serif;color:#1f2937}
@@ -19,6 +19,8 @@ const EF="https://ckrxttbnawkclshczsia.supabase.co/functions/v1/push-test";
 const VAPID="BIxO6xrQ9U3IH8A1k4_cUMmbzPl5N9JN4f1k081w2jKVDg4UTdLZV3dPbuiYAr-lUmzScFd46-_JZVUx-NIY3Ag";
 const ua=navigator.userAgent, ios=/iPhone|iPad|iPod/.test(ua), inLine=/ Line\//.test(ua), android=/Android/.test(ua);
 const standalone=window.matchMedia("(display-mode: standalone)").matches||navigator.standalone===true;
+const STORE=(new URLSearchParams(location.search).get("s")||(()=>{try{return localStorage.getItem("pt_store")||"";}catch(e){return "";}})()).replace(/[^a-z]/g,"");try{if(STORE)localStorage.setItem("pt_store",STORE);}catch(e){}
+const SN={spk:"札幌",nha:"那覇",tkm:"高松"}[STORE]||"全店";
 const $=id=>document.getElementById(id);
 function b64(s){s=s.replace(/-/g,"+").replace(/_/g,"/");const p="=".repeat((4-s.length%4)%4);const r=atob(s+p);return Uint8Array.from([...r].map(c=>c.charCodeAt(0)));}
 let SUB=null;
@@ -26,7 +28,7 @@ function nm(){try{return localStorage.getItem("pt_name")||"";}catch(e){return ""
 async function post(o){const r=await fetch(EF,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(o)});return r.json();}
 async function render(){
   const m=$("main");
-  $("info").textContent=(ios?"iPhone":android?"Android":"PC")+"／"+(standalone?"ホーム画面から起動":"ブラウザで表示")+(inLine?"（LINEの中）":"")+"／通知の許可："+(("Notification" in window)?Notification.permission:"非対応");
+  $("info").textContent=SN+"／"+(ios?"iPhone":android?"Android":"PC")+"／"+(standalone?"ホーム画面から起動":"ブラウザで表示")+(inLine?"（LINEの中）":"")+"／通知の許可："+(("Notification" in window)?Notification.permission:"非対応");
   if(inLine){m.innerHTML='<p class="st ng">LINEの中では使えません</p><ol><li>右上の「︙」または共有ボタンを押す</li><li>「'+(ios?"Safari":"ブラウザ")+'で開く」を選ぶ</li></ol>';return;}
   if(ios&&!standalone){m.innerHTML='<p class="st wait">まずホーム画面に保存してください</p><ol><li>下の共有ボタン（□に↑）を押す</li><li>「ホーム画面に追加」を押す</li><li>ホーム画面の「通知テスト」アイコンから開き直す</li></ol>';return;}
   if(!("serviceWorker" in navigator)||!("PushManager" in window)){m.innerHTML='<p class="st ng">この端末・ブラウザは通知に対応していません</p>';return;}
@@ -34,11 +36,14 @@ async function render(){
   SUB=await reg.pushManager.getSubscription();
   if(!SUB||Notification.permission!=="granted"){
     m.innerHTML='<p class="st wait">通知はまだOFFです</p><p>お名前</p><input id="nm" value="'+nm().replace(/"/g,"")+'" placeholder="例：大下"><button class="b y" onclick="on()">通知をONにする</button>'+(Notification.permission==="denied"?'<p class="ng">通知が拒否されています。設定アプリ→通知→「通知テスト」で許可してください。</p>':'');return;}
-  await post({action:"save",name:nm(),sub:SUB.toJSON(),ua,standalone});
-  m.innerHTML='<p class="st ok">✅ 通知はONです</p><p>このあと、お客様からの変更依頼・「スタッフに知らせる」・チャットが届くたびに、この端末に通知が来ます（テスト中だけ）。</p>'
+  await post({action:"save",name:nm(),sub:SUB.toJSON(),ua,standalone,store:STORE});
+  const stt=await post({action:"state",endpoint:SUB.endpoint});
+  if(stt.paused){m.innerHTML='<p class="st ng">🌙 退勤中：通知は止まっています</p><p>出勤したら下のボタンを押してください。</p><button class="b y" onclick="pause(false)">出勤：通知を受ける</button>';return;}
+  m.innerHTML='<p class="st ok">✅ 勤務中：通知を受けています</p><p>このあと、<b>'+SN+'</b>のお客様からの変更依頼・「スタッフに知らせる」・チャットが届くたびに、この端末に通知が来ます（テスト中だけ）。</p>'
    +'<button class="b" onclick="send(0)">今すぐテスト通知を送る</button>'
    +'<button class="b g" onclick="send(30)">30秒後に送る（画面を閉じて待つ）</button>'
-   +'<p class="m" id="msg"></p>';
+   +'<p class="m" id="msg"></p>'
+   +'<button class="b" style="background:#475569;margin-top:22px" onclick="pause(true)">退勤：通知を止める</button>';
 }
 async function on(){
   const n=($("nm").value||"").trim();if(!n){alert("お名前を入れてください");return;}
@@ -48,6 +53,7 @@ async function on(){
   SUB=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64(VAPID)});
   render();
 }
+async function pause(p){await post({action:"pause",endpoint:SUB.endpoint,paused:p});render();}
 async function send(d){const r=await post({action:"send",endpoint:SUB.endpoint,delay:d});$("msg").textContent=r.ok?(d?"30秒後に届きます。今すぐ画面を閉じるか、スマホをロックしてください。アイコンに数字も付きます。":"送りました。数秒で届きます。"):"送れませんでした："+(r.error||"");}
 try{navigator.clearAppBadge&&navigator.clearAppBadge();}catch(e){}
 document.addEventListener("visibilitychange",()=>{if(!document.hidden){try{navigator.clearAppBadge&&navigator.clearAppBadge();}catch(e){}}});
