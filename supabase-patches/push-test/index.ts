@@ -31,7 +31,13 @@ async function onDuty(): Promise<Set<string>> {
   const rows = await get(`spk_attendance?date=eq.${d}&select=staff_name,start_time,end_time,memo`);
   return new Set(rows.filter((r: any) => (r.start_time || "") !== "" && (r.end_time || "") === "" && /^(打刻|打刻中|仮申請|協議中)/.test(r.memo || "")).map((r: any) => r.staff_name));
 }
-async function toAll(msgs: { title: string; body: string; store?: string }[]) {
+// 札幌：依頼・「知らせる」は、その予約の担当（DEL=お届け／COL=回収）だけへ。担当なしは勤務中の全員へ
+async function assignee(resv: string, tt: string) {
+  const ts = await get(`tasks?reservation_id=eq.${encodeURIComponent(resv)}&select=type,assignee&order=date.desc`);
+  const t = ts.find((x: any) => String(x.type || "").toUpperCase().startsWith(tt));
+  return String(t?.assignee || "").trim();
+}
+async function toAll(msgs: { title: string; body: string; store?: string; target?: string }[]) {
   if (!msgs.length) return 0;
   await init();
   const subs = await get("push_test_subs?select=endpoint,sub,store,staff_name&paused=eq.false");
@@ -40,6 +46,7 @@ async function toAll(msgs: { title: string; body: string; store?: string }[]) {
   for (const m of msgs.slice(0, 10)) for (const s of subs) {
     if (s.store && m.store && s.store !== m.store) continue;
     if (s.staff_name && !duty.has(s.staff_name)) continue; // 札幌：出勤打刻〜退勤打刻の間だけ受ける
+    if (s.staff_name && m.target && m.target !== s.staff_name) continue; // 担当者だけ
     let res = "ok";
     try { await webpush.sendNotification(s.sub, JSON.stringify({ title: m.title, body: m.body, url: "./" }), { TTL: 3600, urgency: "high" }); n++; }
     catch (e: any) { res = `err ${e?.statusCode || ""} ${String(e?.body || e?.message || e).slice(0, 120)}`; }
@@ -98,11 +105,13 @@ Deno.serve(async (req) => {
   }
   if (b.action === "scan") {
     const c = await cfg(); if (!c.scan_secret || b.secret !== c.scan_secret) return j({ ok: false }, 401);
-    const msgs: { title: string; body: string; store?: string }[] = [];
+    const msgs: { title: string; body: string; store?: string; target?: string }[] = [];
     const ch = await get(`mypage_changes?id=gt.${+c.last_chg || 0}&select=id,store,reservation_id,field,old_value,new_value&order=id.asc&limit=50`);
-    for (const x of ch) msgs.push({ title: `【${ST[x.store] || x.store}】お客様から変更の依頼`, body: `${FLD[x.field] || x.field}：${cut(x.old_value) || "（なし）"} → ${cut(x.new_value)}\n予約 ${x.reservation_id}`, store: x.store });
+    for (const x of ch) { const tt = /^(lend_time|del_place)$/.test(x.field) ? "DEL" : "COL"; const tg = x.store === "spk" ? await assignee(x.reservation_id, tt) : "";
+      msgs.push({ title: `【${ST[x.store] || x.store}】お客様から変更の依頼`, body: `${FLD[x.field] || x.field}：${cut(x.old_value) || "（なし）"} → ${cut(x.new_value)}\n予約 ${x.reservation_id}${tg ? `（担当 ${tg}）` : ""}`, store: x.store, target: tg }); }
     const nd = await get(`mypage_nudges?id=gt.${+c.last_nudge || 0}&select=id,store,reservation_id,kind,leg,note&order=id.asc&limit=50`);
-    for (const x of nd) msgs.push({ title: `【${ST[x.store] || x.store}】お客様から「${NUD[x.kind] || x.kind}」`, body: `${x.leg === "back" ? "返却・回収" : "受け取り"}${x.note ? "　" + cut(x.note) : ""}\n予約 ${x.reservation_id}`, store: x.store });
+    for (const x of nd) { const tg = x.store === "spk" ? await assignee(x.reservation_id, x.leg === "back" ? "COL" : "DEL") : "";
+      msgs.push({ title: `【${ST[x.store] || x.store}】お客様から「${NUD[x.kind] || x.kind}」`, body: `${x.leg === "back" ? "返却・回収" : "受け取り"}${x.note ? "　" + cut(x.note) : ""}\n予約 ${x.reservation_id}`, store: x.store, target: tg }); }
     const cm = await get(`cs_chat_messages?id=gt.${+c.last_chat || 0}&sender=eq.customer&select=id,thread_id,body&order=id.asc&limit=50`);
     const cmax = (await get(`cs_chat_messages?select=id&order=id.desc&limit=1`))[0]?.id;
     for (const x of cm) { const t = (await get(`cs_chat_threads?id=eq.${x.thread_id}&select=store,cust_name,reservation_id`))[0] || {}; msgs.push({ title: `【${ST[t.store] || t.store || ""}】チャット：${t.cust_name || "お客様"}`, body: cut(x.body, 60) || "（画像）", store: t.store }); }
