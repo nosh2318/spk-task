@@ -53,6 +53,12 @@ Deno.serve(async (req) => {
   let b: any; try { b = await req.json(); } catch { return j({ ok: false, error: "bad json" }, 400); }
   if (b.action === "save") {
     const sub = b.sub; if (!sub?.endpoint) return j({ ok: false, error: "no sub" }, 400);
+    // 個別URL（staff.html?t=）から来た時は、トークンで本人を特定する（名前を選ばせない）
+    if (b.token) {
+      const st = (await get(`staff?share_token=eq.${encodeURIComponent(String(b.token))}&select=name,active`))[0];
+      if (!st || st.active === false) return j({ ok: false, error: "invalid token" }, 403);
+      b.name = st.name; b.staff = st.name; b.store = "spk";
+    }
     const r = await fetch(`${SB}/rest/v1/push_test_subs?on_conflict=endpoint`, { method: "POST", headers: { ...H, Prefer: "resolution=merge-duplicates,return=minimal" },
       body: JSON.stringify({ name: String(b.name || "").slice(0, 40), endpoint: sub.endpoint, sub, ua: String(b.ua || "").slice(0, 200), standalone: !!b.standalone, store: /^(spk|nha|tkm)$/.test(b.store) ? b.store : null, staff_name: b.store === "spk" && b.staff ? String(b.staff).slice(0, 40) : null }) });
     return j({ ok: r.ok });
