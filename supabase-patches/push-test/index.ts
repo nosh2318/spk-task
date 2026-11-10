@@ -44,7 +44,7 @@ async function assignee(resv: string, tt: string) {
   return names.includes(a) ? a : ""; // 「無人」「乗り捨て」など人でない担当は担当なし扱い
 }
 // 未確認のお知らせを札幌スタッフ別にためる（担当あり＝担当者へ・勤務外でも残す／担当なし＝勤務中の全員へ）
-async function stock(msgs: { title: string; body: string; store?: string; target?: string; kind?: string; resv?: string; ref?: string }[]) {
+async function stock(msgs: { title: string; body: string; store?: string; target?: string; kind?: string; resv?: string | null; ref?: string }[]) {
   const sp = msgs.filter((m) => m.store === "spk" && m.ref); if (!sp.length) return;
   const duty = [...(await onDuty())];
   const rows: any[] = [];
@@ -99,11 +99,11 @@ async function chase() {
     const a = list.filter((r) => r.age >= 10 && !r.repush_at);
     if (a.length) { out.repush += await toAll([{ title: `【札幌】未確認のお知らせ ${list.length}件`, body: `${a[0].title}\n個別URLを開いて「確認しました」を押してください`, store: "spk", target: nm, only: true }]); await mark(a.map((r) => r.id), "repush_at"); }
     // LINE・Slack は「依頼」「知らせる」だけ（チャットは今のSlackの流れのまま）
-    const b = list.filter((r) => r.kind !== "chat" && r.age >= 20 && !r.line_at);
+    const b = list.filter((r) => r.kind !== "chat" && r.kind !== "task" && r.age >= 20 && !r.line_at);
     if (b.length) { const l = links.find((x: any) => nz(nm).startsWith(nz(x.staff_name)));
       if (l && await linePush(l.line_user_id, `【HANDYMAN札幌】${nm}さん、お客様からのお知らせが ${b.length}件 未確認です。\n${b.slice(0, 3).map((r) => "・" + r.title.replace(/^【札幌】/, "")).join("\n")}\n個別URLを開いて確認してください。`)) out.line++;
       await mark(b.map((r) => r.id), "line_at"); }
-    late.push(...list.filter((r) => r.kind !== "chat" && r.age >= 30 && !r.slack_at));
+    late.push(...list.filter((r) => r.kind !== "chat" && r.kind !== "task" && r.age >= 30 && !r.slack_at));
   }
   if (late.length) {
     // 同じお知らせを複数人に配った場合は、だれか1人でも確認済みなら社員へは回さない。1回のまとめ投稿にする
@@ -114,6 +114,50 @@ async function chase() {
       lines.push(`・${rs[0].title.replace(/^【札幌】/, "")}　${String(rs[0].body).split("\n")[0]}　（未確認：${rs.map((r) => r.staff_name + "さん").join("・")}）`); }
     if (lines.length && await slackPost(`⏰ 個別URLで30分以上 未確認のお知らせがあります → 社員で確認・対応をお願いします\n${lines.slice(0, 10).join("\n")}`)) out.slack++;
     await mark(late.map((r) => r.id), "slack_at");
+  }
+  return out;
+}
+// 2026-11-10 nosh「時間や場所や担当など本部が変更したら通知」：OPシート等で本部（スタッフ操作）がタスクを変えたら担当者へ
+//   audit_log（tasks）を読むだけ。付いた・外れた・時間・場所・日付・車・取り消し。1回の見張りの間の同じタスクの変更は1通にまとめる。
+const TF: Record<string, string> = { date: "日付", time: "時間", place: "場所", return_date: "返却日", return_time: "返却時間", col_place: "回収場所", assigned_vehicle: "車" };
+const md = (d: string) => { const m = String(d || "").match(/^\d{4}-(\d{2})-(\d{2})/); return m ? `${+m[1]}/${+m[2]}` : String(d || ""); };
+async function taskChanges(c: Record<string, string>) {
+  const out: any[] = [];
+  if (!c.last_audit) { const mx = (await get(`audit_log?tbl=eq.tasks&select=id&order=id.desc&limit=1`))[0]?.id; if (mx) await setCfg("last_audit", String(mx)); return out; }
+  const rows = await get(`audit_log?tbl=eq.tasks&id=gt.${+c.last_audit}&select=id,row_id,op,diff,actor&order=id.asc&limit=300`);
+  if (!rows.length) return out;
+  await setCfg("last_audit", String(rows[rows.length - 1].id));
+  const human = rows.filter((r: any) => r.actor === "staff" || String(r.actor || "").startsWith("staff:"));
+  if (!human.length) return out;
+  const names = new Set((await get(`staff?select=name&active=not.is.false`)).map((x: any) => String(x.name)));
+  const by = new Map<string, any>();
+  for (const r of human) {
+    const g = by.get(r.row_id) || { id: r.id, ins: false, ch: {} as Record<string, { o: any; n: any }>, approve: false };
+    g.id = r.id; if (String(r.actor).includes("admin_pin")) g.approve = true;
+    const d = r.diff || {};
+    if (r.op === "INSERT") { g.ins = true; g.ch.assignee = { o: "", n: d.assignee || "" }; }
+    else if (r.op === "UPDATE") for (const k of ["assignee", "deleted", "type", ...Object.keys(TF)]) if (d[k] && typeof d[k] === "object" && "new" in d[k]) { if (g.ch[k]) g.ch[k].n = d[k].new; else g.ch[k] = { o: d[k].old, n: d[k].new }; }
+    by.set(r.row_id, g);
+  }
+  const today = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+  for (const [tid, g] of by) {
+    const ch = Object.fromEntries(Object.entries(g.ch as Record<string, any>).filter(([, v]) => String(v.o ?? "") !== String(v.n ?? "")));
+    if (!Object.keys(ch).length) continue;
+    const t = (await get(`tasks?_id=eq.${encodeURIComponent(tid)}&select=date,type,time,name,assignee,place,col_place,return_time,reservation_id,deleted`))[0]; if (!t) continue;
+    if (String(t.date || "") < today && !(ch.date && String(ch.date.n || "") >= today)) continue;
+    const head = `${md(t.date)} ${t.type || ""} ${t.name || ""}`.trim(), when = [t.time, t.place].filter(Boolean).join("　");
+    const kind = String(t.date || "") === today ? "task_today" : "task";
+    const add = (who: string, title: string, body: string) => { if (names.has(who)) out.push({ title: `【札幌】${title}`, body, store: "spk", target: who, kind, resv: t.reservation_id || null, ref: `task:${g.id}:${who}`, only: true }); };
+    const gone = (ch.deleted && ch.deleted.n === true) || (ch.type && /CXL/i.test(String(ch.type.n || "")));
+    const cur = String(t.assignee || "").trim();
+    if (ch.assignee) {
+      const o = String(ch.assignee.o || "").trim(), n = String(ch.assignee.n || "").trim();
+      if (n && n !== o && !gone) add(n, "タスクが付きました", `${head}${when ? "\n" + when : ""}`);
+      if (o && o !== n) add(o, "タスクが外れました", head);
+    }
+    if (gone) { add(cur, "タスクがなくなりました（取り消し）", head); continue; }
+    const lines = Object.keys(TF).filter((k) => ch[k]).map((k) => `${TF[k]}：${cut(ch[k].o) || "（なし）"} → ${cut(ch[k].n) || "（なし）"}`);
+    if (lines.length && !(ch.assignee && String(ch.assignee.n || "").trim() === cur && !String(ch.assignee.o || "").trim())) add(cur, g.approve ? "変更が反映されました" : "本部がタスクを変更しました", `${head}\n${lines.join("\n")}`);
   }
   return out;
 }
@@ -167,7 +211,7 @@ Deno.serve(async (req) => {
   }
   if (b.action === "scan") {
     const c = await cfg(); if (!c.scan_secret || b.secret !== c.scan_secret) return j({ ok: false }, 401);
-    const msgs: { title: string; body: string; store?: string; target?: string; kind?: string; resv?: string; ref?: string }[] = [];
+    const msgs: { title: string; body: string; store?: string; target?: string; kind?: string; resv?: string | null; ref?: string; only?: boolean }[] = [];
     const ch = await get(`mypage_changes?id=gt.${+c.last_chg || 0}&select=id,store,reservation_id,field,old_value,new_value,status,source,actor&order=id.asc&limit=50`);
     for (const x of ch) {
       if (x.source === "staff" || (x.status === "applied" && x.actor)) continue; // スタッフ側の記録・承認後の反映記録は通知しない
@@ -182,6 +226,7 @@ Deno.serve(async (req) => {
     if (ch.length) await setCfg("last_chg", String(ch[ch.length - 1].id));
     if (nd.length) await setCfg("last_nudge", String(nd[nd.length - 1].id));
     if (cmax) await setCfg("last_chat", String(cmax));
+    msgs.push(...await taskChanges(c));
     await stock(msgs);
     const sent = await toAll(msgs);
     const ch2 = await chase();
