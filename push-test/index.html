@@ -1,0 +1,53 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>通知テスト</title><link rel="manifest" href="manifest.json"><meta name="theme-color" content="#002063">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="通知テスト"><link rel="apple-touch-icon" href="icon.png">
+<style>
+body{margin:0;background:#f4f6fa;font-family:"Hiragino Sans","Noto Sans JP",sans-serif;color:#1f2937}
+.hd{background:#002063;color:#fff;padding:16px;font-weight:800;font-size:18px}.hd small{display:block;font-weight:500;font-size:12px;opacity:.8}
+.box{margin:14px;background:#fff;border-radius:14px;padding:16px}
+.st{font-size:20px;font-weight:800;margin:0 0 6px}.ok{color:#137a43}.ng{color:#b4232c}.wait{color:#b45309}
+.b{display:block;width:100%;border:0;border-radius:12px;padding:16px;font-size:18px;font-weight:800;margin-top:10px;background:#002063;color:#fff}
+.b.y{background:#FABE00;color:#002063}.b.g{background:#fff;color:#002063;border:2px solid #002063}
+input{width:100%;box-sizing:border-box;font-size:18px;padding:12px;border:2px solid #cbd5e1;border-radius:10px}
+ol{padding-left:22px;line-height:1.9;font-size:16px}.m{font-size:13px;color:#64748b}
+</style></head><body>
+<div class="hd">通知テスト<small>テスト専用・お客様には関係しません</small></div>
+<div class="box" id="main">読み込み中…</div>
+<div class="box m" id="info"></div>
+<script>
+const EF="https://ckrxttbnawkclshczsia.supabase.co/functions/v1/push-test";
+const VAPID="BIxO6xrQ9U3IH8A1k4_cUMmbzPl5N9JN4f1k081w2jKVDg4UTdLZV3dPbuiYAr-lUmzScFd46-_JZVUx-NIY3Ag";
+const ua=navigator.userAgent, ios=/iPhone|iPad|iPod/.test(ua), inLine=/ Line\//.test(ua), android=/Android/.test(ua);
+const standalone=window.matchMedia("(display-mode: standalone)").matches||navigator.standalone===true;
+const $=id=>document.getElementById(id);
+function b64(s){s=s.replace(/-/g,"+").replace(/_/g,"/");const p="=".repeat((4-s.length%4)%4);const r=atob(s+p);return Uint8Array.from([...r].map(c=>c.charCodeAt(0)));}
+let SUB=null;
+function nm(){try{return localStorage.getItem("pt_name")||"";}catch(e){return "";}}
+async function post(o){const r=await fetch(EF,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(o)});return r.json();}
+async function render(){
+  const m=$("main");
+  $("info").textContent=(ios?"iPhone":android?"Android":"PC")+"／"+(standalone?"ホーム画面から起動":"ブラウザで表示")+(inLine?"（LINEの中）":"")+"／通知の許可："+(("Notification" in window)?Notification.permission:"非対応");
+  if(inLine){m.innerHTML='<p class="st ng">LINEの中では使えません</p><ol><li>右上の「︙」または共有ボタンを押す</li><li>「'+(ios?"Safari":"ブラウザ")+'で開く」を選ぶ</li></ol>';return;}
+  if(ios&&!standalone){m.innerHTML='<p class="st wait">まずホーム画面に保存してください</p><ol><li>下の共有ボタン（□に↑）を押す</li><li>「ホーム画面に追加」を押す</li><li>ホーム画面の「通知テスト」アイコンから開き直す</li></ol>';return;}
+  if(!("serviceWorker" in navigator)||!("PushManager" in window)){m.innerHTML='<p class="st ng">この端末・ブラウザは通知に対応していません</p>';return;}
+  const reg=await navigator.serviceWorker.register("sw.js",{scope:"./"});await navigator.serviceWorker.ready;
+  SUB=await reg.pushManager.getSubscription();
+  if(!SUB||Notification.permission!=="granted"){
+    m.innerHTML='<p class="st wait">通知はまだOFFです</p><p>お名前</p><input id="nm" value="'+nm().replace(/"/g,"")+'" placeholder="例：大下"><button class="b y" onclick="on()">通知をONにする</button>'+(Notification.permission==="denied"?'<p class="ng">通知が拒否されています。設定アプリ→通知→「通知テスト」で許可してください。</p>':'');return;}
+  await post({action:"save",name:nm(),sub:SUB.toJSON(),ua,standalone});
+  m.innerHTML='<p class="st ok">✅ 通知はONです</p><p>このあと、お客様からの変更依頼・「スタッフに知らせる」・チャットが届くたびに、この端末に通知が来ます（テスト中だけ）。</p>'
+   +'<button class="b" onclick="send(0)">今すぐテスト通知を送る</button>'
+   +'<button class="b g" onclick="send(30)">30秒後に送る（画面を閉じて待つ）</button>'
+   +'<p class="m" id="msg"></p>';
+}
+async function on(){
+  const n=($("nm").value||"").trim();if(!n){alert("お名前を入れてください");return;}
+  try{localStorage.setItem("pt_name",n);}catch(e){}
+  const p=await Notification.requestPermission();if(p!=="granted"){render();return;}
+  const reg=await navigator.serviceWorker.ready;
+  SUB=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64(VAPID)});
+  render();
+}
+async function send(d){const r=await post({action:"send",endpoint:SUB.endpoint,delay:d});$("msg").textContent=r.ok?(d?"30秒後に届きます。今すぐ画面を閉じるか、スマホをロックしてください。":"送りました。数秒で届きます。"):"送れませんでした："+(r.error||"");}
+render().catch(e=>{$("main").innerHTML='<p class="st ng">エラー</p><p class="m">'+String(e)+'</p>';});
+</script></body></html>
