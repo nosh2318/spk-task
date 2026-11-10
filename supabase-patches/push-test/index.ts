@@ -37,6 +37,14 @@ async function assignee(resv: string, tt: string) {
   const t = ts.find((x: any) => String(x.type || "").toUpperCase().startsWith(tt));
   return String(t?.assignee || "").trim();
 }
+// 未確認のお知らせを札幌スタッフ別にためる（担当あり＝担当者へ・勤務外でも残す／担当なし＝勤務中の全員へ）
+async function stock(msgs: { title: string; body: string; store?: string; target?: string; kind?: string; resv?: string; ref?: string }[]) {
+  const sp = msgs.filter((m) => m.store === "spk" && m.ref); if (!sp.length) return;
+  const duty = [...(await onDuty())];
+  const rows: any[] = [];
+  for (const m of sp) for (const nm of (m.target ? [m.target] : duty)) rows.push({ store: "spk", staff_name: nm, kind: m.kind || "", title: m.title, body: m.body, reservation_id: m.resv || null, ref: m.ref });
+  if (rows.length) await fetch(`${SB}/rest/v1/staff_inbox?on_conflict=staff_name,ref`, { method: "POST", headers: { ...H, Prefer: "resolution=ignore-duplicates,return=minimal" }, body: JSON.stringify(rows) });
+}
 async function toAll(msgs: { title: string; body: string; store?: string; target?: string }[]) {
   if (!msgs.length) return 0;
   await init();
@@ -105,19 +113,22 @@ Deno.serve(async (req) => {
   }
   if (b.action === "scan") {
     const c = await cfg(); if (!c.scan_secret || b.secret !== c.scan_secret) return j({ ok: false }, 401);
-    const msgs: { title: string; body: string; store?: string; target?: string }[] = [];
-    const ch = await get(`mypage_changes?id=gt.${+c.last_chg || 0}&select=id,store,reservation_id,field,old_value,new_value&order=id.asc&limit=50`);
-    for (const x of ch) { const tt = /^(lend_time|del_place)$/.test(x.field) ? "DEL" : "COL"; const tg = x.store === "spk" ? await assignee(x.reservation_id, tt) : "";
-      msgs.push({ title: `【${ST[x.store] || x.store}】お客様から変更の依頼`, body: `${FLD[x.field] || x.field}：${cut(x.old_value) || "（なし）"} → ${cut(x.new_value)}\n予約 ${x.reservation_id}${tg ? `（担当 ${tg}）` : ""}`, store: x.store, target: tg }); }
+    const msgs: { title: string; body: string; store?: string; target?: string; kind?: string; resv?: string; ref?: string }[] = [];
+    const ch = await get(`mypage_changes?id=gt.${+c.last_chg || 0}&select=id,store,reservation_id,field,old_value,new_value,status,source,actor&order=id.asc&limit=50`);
+    for (const x of ch) {
+      if (x.source === "staff" || (x.status === "applied" && x.actor)) continue; // スタッフ側の記録・承認後の反映記録は通知しない
+      const direct = x.status === "applied"; const tt = /^(lend_time|del_place)$/.test(x.field) ? "DEL" : "COL"; const tg = x.store === "spk" ? await assignee(x.reservation_id, tt) : "";
+      msgs.push({ title: `【${ST[x.store] || x.store}】${direct ? "お客様が変更しました（反映済み）" : "お客様から変更の依頼"}`, body: `${FLD[x.field] || x.field}：${cut(x.old_value) || "（なし）"} → ${cut(x.new_value)}\n予約 ${x.reservation_id}${tg ? `（担当 ${tg}）` : ""}`, store: x.store, target: tg, kind: "change", resv: x.reservation_id, ref: `chg:${x.id}` }); }
     const nd = await get(`mypage_nudges?id=gt.${+c.last_nudge || 0}&select=id,store,reservation_id,kind,leg,note&order=id.asc&limit=50`);
     for (const x of nd) { const tg = x.store === "spk" ? await assignee(x.reservation_id, x.leg === "back" ? "COL" : "DEL") : "";
-      msgs.push({ title: `【${ST[x.store] || x.store}】お客様から「${NUD[x.kind] || x.kind}」`, body: `${x.leg === "back" ? "返却・回収" : "受け取り"}${x.note ? "　" + cut(x.note) : ""}\n予約 ${x.reservation_id}`, store: x.store, target: tg }); }
+      msgs.push({ title: `【${ST[x.store] || x.store}】お客様から「${NUD[x.kind] || x.kind}」`, body: `${x.leg === "back" ? "返却・回収" : "受け取り"}${x.note ? "　" + cut(x.note) : ""}\n予約 ${x.reservation_id}`, store: x.store, target: tg, kind: "nudge", resv: x.reservation_id, ref: `nud:${x.id}` }); }
     const cm = await get(`cs_chat_messages?id=gt.${+c.last_chat || 0}&sender=eq.customer&select=id,thread_id,body&order=id.asc&limit=50`);
     const cmax = (await get(`cs_chat_messages?select=id&order=id.desc&limit=1`))[0]?.id;
-    for (const x of cm) { const t = (await get(`cs_chat_threads?id=eq.${x.thread_id}&select=store,cust_name,reservation_id`))[0] || {}; msgs.push({ title: `【${ST[t.store] || t.store || ""}】チャット：${t.cust_name || "お客様"}`, body: cut(x.body, 60) || "（画像）", store: t.store }); }
+    for (const x of cm) { const t = (await get(`cs_chat_threads?id=eq.${x.thread_id}&select=store,cust_name,reservation_id`))[0] || {}; msgs.push({ title: `【${ST[t.store] || t.store || ""}】チャット：${t.cust_name || "お客様"}`, body: cut(x.body, 60) || "（画像）", store: t.store, kind: "chat", resv: t.reservation_id, ref: `chat:${x.id}` }); }
     if (ch.length) await setCfg("last_chg", String(ch[ch.length - 1].id));
     if (nd.length) await setCfg("last_nudge", String(nd[nd.length - 1].id));
     if (cmax) await setCfg("last_chat", String(cmax));
+    await stock(msgs);
     const sent = await toAll(msgs);
     return j({ ok: true, events: msgs.length, sent });
   }

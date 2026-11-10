@@ -45,7 +45,15 @@ Deno.serve(async (req) => {
     const rows = await get(`mypage_changes?store=eq.spk&status=eq.requested&field=in.(${FIELDS.join(",")})&select=id,reservation_id,field,old_value,new_value,created_at&order=id.asc&limit=40`);
     const out = [];
     for (const c of rows) { const e = await enrich(c); if (!e.assignee || e.assignee === name) out.push({ ...e, mine: e.assignee === name }); }
-    return j({ ok: true, me: name, items: out });
+    const inbox = await get(`staff_inbox?staff_name=eq.${encodeURIComponent(name)}&seen_at=is.null&select=id,kind,title,body,reservation_id,created_at&order=id.asc&limit=100`);
+    return j({ ok: true, me: name, items: out, inbox });
+  }
+  // 未確認のお知らせを「確認しました」にする（本人の分だけ）
+  if (b.action === "seen") {
+    const ids = (Array.isArray(b.ids) ? b.ids : [b.id]).map((x: any) => Number(x)).filter((x: number) => x > 0).slice(0, 100);
+    if (!ids.length) return j({ ok: false }, 400);
+    const r = await fetch(`${SB}/rest/v1/staff_inbox?id=in.(${ids.join(",")})&staff_name=eq.${encodeURIComponent(name)}&seen_at=is.null`, { method: "PATCH", headers: { ...H, Prefer: "return=minimal" }, body: JSON.stringify({ seen_at: new Date().toISOString() }) });
+    return j({ ok: r.ok });
   }
   if (b.action === "decide") {
     const cid = Number(b.change_id);
