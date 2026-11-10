@@ -155,7 +155,7 @@ a.myp{background:#065f46;color:#fff;font-size:11px;font-weight:800;border-radius
 <script>
 var SB="https://ckrxttbnawkclshczsia.supabase.co";
 var ANON="sb_publishable_aTVhlY0YD-5BBfI03ZNnsg_MzO_vsIe";
-var VER="staff-v3.63";
+var VER="staff-v3.64";
 var TOKEN=new URLSearchParams(location.search).get("t")||"";
 // ===== 📊 個別URL利用計測 (staff_url_events) — 前方記録・既存挙動に非干渉 =====
 var SUE=(function(){
@@ -1703,15 +1703,84 @@ a.myp{font-size:12px !important;padding:4px 9px !important;border-radius:8px !im
         +'<div class="who">'+esc(md(x.date))+' '+esc(x.kind)+'　'+esc(x.cust||"お客様")+'様'+(x.mine?'':'　<b>（担当なし）</b>')+'</div>'
         +'<div class="chg">'+esc(x.label)+'<br><span class="old">'+esc(x.old||"（なし）")+'</span> → <span class="new">'+esc(x.new)+'</span></div>'
         +'<button class="bt ok" data-a="approved" data-id="'+x.id+'">受けられる（承認）</button>'
-        +'<button class="bt ng" data-a="consult" data-id="'+x.id+'">難しい（社員に相談）</button>'
-        +'<div class="mut" style="margin-top:6px">承認すると、お客様への通知とOPシートの変更まで自動で行います。</div></div>';
+        +'<button class="bt ng" data-alt="'+x.id+'">できない → 代わりの案…</button>'
+        +(ALT&&ALT.id===x.id?altHtml(x):'')
+        +'<div class="mut" style="margin-top:6px">承認すると、お客様への通知とOPシートの変更まで自動で行います。迷う時は <a href="#" data-a="consult" data-id="'+x.id+'" style="color:#002063;font-weight:700">社員に相談</a></div></div>';
     });
     b.innerHTML=h;
-    Array.prototype.forEach.call(b.querySelectorAll("button[data-a]"),function(btn){btn.onclick=function(){act(btn.getAttribute("data-a"),+btn.getAttribute("data-id"));};});
+    Array.prototype.forEach.call(b.querySelectorAll("[data-a]"),function(btn){btn.onclick=function(e){e.preventDefault();act(btn.getAttribute("data-a"),+btn.getAttribute("data-id"));};});
+    Array.prototype.forEach.call(b.querySelectorAll("[data-alt]"),function(btn){btn.onclick=function(){var id=+btn.getAttribute("data-alt");ALT=ALT&&ALT.id===id?null:{id:id,code:"",ti:-1,sv:"",msg:null,exp:""};draw();};});
+    Array.prototype.forEach.call(b.querySelectorAll("[data-rsn]"),function(c){c.onclick=function(){ALT.code=c.getAttribute("data-rsn");ALT.msg=null;draw();};});
+    Array.prototype.forEach.call(b.querySelectorAll("[data-tpl]"),function(c){c.onclick=function(){var v=c.getAttribute("data-tpl");ALT.ti=v==="keep"?"keep":+v;ALT.sv="";ALT.msg=null;ALT.exp="";draw();};});
+    Array.prototype.forEach.call(b.querySelectorAll("[data-back]"),function(c){c.onclick=function(){var i=+c.getAttribute("data-back");if(i===0)ALT.code="";else if(i===1){ALT.ti=-1;ALT.sv="";}else ALT.sv="";ALT.msg=null;ALT.exp="";draw();};});
+    var sv=b.querySelector("select[data-sv]");if(sv)sv.onchange=function(){ALT.sv=sv.value;ALT.msg=null;ALT.exp="";draw();};
+    var ta=b.querySelector("textarea[data-msg]");if(ta)ta.oninput=function(){ALT.msg=ta.value;};
+    var rs=b.querySelector("[data-reset]");if(rs)rs.onclick=function(e){e.preventDefault();ALT.msg=null;draw();};
+    var sd=b.querySelector("[data-send]");if(sd)sd.onclick=function(){altSend();};
+    var cl=b.querySelector("[data-altclose]");if(cl)cl.onclick=function(e){e.preventDefault();ALT=null;draw();};
     Array.prototype.forEach.call(b.querySelectorAll("button[data-seen]"),function(btn){btn.onclick=function(){var id=+btn.getAttribute("data-seen");btn.disabled=true;btn.textContent="…";post({action:"seen",id:id}).then(function(){INBOX=INBOX.filter(function(n){return n.id!==id;});draw();}).catch(function(){btn.disabled=false;btn.textContent="確認しました";});};});
     try{var c=INBOX.length+ITEMS.length;if(navigator.setAppBadge){if(c)navigator.setAppBadge(c);else navigator.clearAppBadge();}}catch(e){}
   }
-  function load(){if(!TOKEN)return;post({action:"list"}).then(function(d){if(d&&d.ok){ITEMS=d.items||[];INBOX=d.inbox||[];draw();}}).catch(function(){});}
+  function load(){if(!TOKEN)return;post({action:"list"}).then(function(d){if(d&&d.ok){ITEMS=d.items||[];INBOX=d.inbox||[];if(ALT&&!curX())ALT=null;var ta=document.querySelector("#mpReq textarea[data-msg]");if(ALT&&ta&&document.activeElement===ta)return;draw();}}).catch(function(){});}
+  /* ★2026-11-10 nosh「代わりの案も個別URLに」：アクションタブと同じ「できない → 代わりの案」。
+     理由・案・時間はタップで選ぶだけ。お客様に届く文を見せて、直せる。お客様がマイページで「この案でOK／やめる」 */
+  var ALT=null;
+  var RSN_L=[["no_vehicle","予約状況（空車なし）"],["full_slot","スタッフ状況（手配できない）"],["out_of_area","エリア外"],["past_deadline","締切を過ぎている"]];
+  function rsnOf(f){var c=/^(lend_time|return_time)$/.test(f)?["full_slot","no_vehicle","past_deadline"]:["out_of_area","full_slot","past_deadline"];return RSN_L.filter(function(r){return c.indexOf(r[0])>=0;});}
+  var TPL={lend_time:[{t:"{x}でしたらお届けできます",s:"time",v:"time"}],return_time:[{t:"{x}でしたら回収に伺えます",s:"time",v:"time"}],
+    del_place:[{t:"対象エリア内の別の場所でしたらお届けできます"},{t:"店舗でのお受け取りでしたら承れます"}],
+    col_place:[{t:"お届けと同じ場所でしたら回収に伺えます",v:"del"},{t:"対象エリア内の別の場所でしたら回収に伺えます"},{t:"店舗へのご返却でしたら承れます"}]};
+  var TIMES=(function(){var a=[];for(var h=6;h<=23;h++)["00","15","30","45"].forEach(function(m){a.push(h+":"+m);});return a;})();
+  var KIND={lend_time:"お届け時間",return_time:"回収時間",del_place:"お届け場所",col_place:"回収場所"};
+  var WHY={no_vehicle:"誠に恐れ入りますが、予約状況の兼ね合いにより、ご希望の日時にご用意できるお車がございません。",full_slot:"誠に恐れ入りますが、{staff}の状況により、ご希望のお時間に伺うことができません。",out_of_area:"ご希望の場所は、お届け・回収の対象エリア外のため、伺うことができません。",past_deadline:"変更の受付締切を過ぎているため、ご変更を承ることができません。"};
+  function curX(){return ITEMS.filter(function(i){return ALT&&i.id===ALT.id;})[0];}
+  function altText(x){var T=(TPL[x.field]||[])[ALT.ti];if(!T)return "";return T.s?(ALT.sv?T.t.replace("{x}",ALT.sv):""):T.t;}
+  function altVal(x){var T=(TPL[x.field]||[])[ALT.ti];if(!T)return "";return T.v==="time"?(ALT.sv||""):T.v==="del"?(x.delp||""):"";}
+  function altExp(x){if(ALT.exp)return ALT.exp;var end=/^(col_place|return_time)$/.test(x.field),d=end?x.ed:x.sd,t=end?x.et:x.st,now=Date.now(),e=now+864e5;
+    if(d){var m=String(t||"09:00").match(/(\d{1,2}):(\d{2})/),h=Date.parse(String(d).slice(0,10)+"T"+("0"+(m?+m[1]:9)).slice(-2)+":"+(m?m[2]:"00")+":00+09:00");if(!isNaN(h))e=Math.min(e,h-72e5);}
+    ALT.exp=new Date(Math.max(e,now+18e5)).toISOString();return ALT.exp;}
+  function pvMd(iso){var j=new Date(Date.parse(iso)+324e5);return (j.getUTCMonth()+1)+"/"+j.getUTCDate()+" "+("0"+j.getUTCHours()).slice(-2)+":"+("0"+j.getUTCMinutes()).slice(-2);}
+  function pvMsg(x){var keep=ALT.ti==="keep",f=x.field,label=KIND[f]||x.label;
+    var staff=/^(del_place|lend_time)$/.test(f)?"お届けスタッフ":"回収スタッフ";
+    var why=(WHY[ALT.code]||"").replace("{staff}",staff),alt=altText(x);
+    var L=["【HANDYMAN 札幌デリバリー】ご依頼いただいた"+label+"の変更"+(x.new?"（"+x.new+"）":"")+"につきまして、ご連絡いたします。"];if(why)L.push(why);
+    if(!keep&&alt)L.push("代わりに、"+alt+(/[。！？!?]$/.test(alt)?"":"。"));
+    if(!keep)L.push("マイページで「この案でOK」を押すと確定します（"+pvMd(altExp(x))+"まで）。ご都合が合わなければ「やめる」を押してください。");
+    var tail=x.old?"今のご予約（"+label+"："+x.old+"）はそのままです。":"今のご予約はそのままです。";if(keep)tail=tail.replace(/はそのままです。/,"のままでのご利用をお願いできますでしょうか。");
+    L.push(tail);L.push("ご不便をおかけいたしますが、何卒よろしくお願いいたします。");L.push("（マイページのURL）");return L.join("\n");}
+  function altHtml(x){var T=TPL[x.field]||[],keep=ALT.ti==="keep",cur=keep?null:T[ALT.ti],slot=cur&&cur.s;
+    var S=[{t:"できない理由を選ぶ",done:!!ALT.code,v:((RSN_L.filter(function(r){return r[0]===ALT.code;})[0])||[])[1]||""},
+      {t:"代わりの案を選ぶ",done:keep||!!cur,v:keep?"代わりの案なし（今のご予約のままでお願いする）":cur?cur.t.replace("{x}","〇時"):""}];
+    if(slot)S.push({t:"時間を選ぶ",done:!!ALT.sv,v:ALT.sv,slot:1});
+    S.push({t:"お客様に届く文を確認して送信",done:false,last:1});
+    var now=-1;for(var i=0;i<S.length;i++)if(!S[i].done){now=i;break;}
+    var chip=function(on){return 'style="border:1px solid '+(on?'#1d4ed8':'#C9CED6')+';background:'+(on?'#1d4ed8':'#fff')+';color:'+(on?'#fff':'#002063')+';border-radius:18px;padding:7px 10px;font-size:13px;font-weight:700;margin:3px 4px 3px 0"';};
+    var body=function(i,st){
+      if(i===0)return rsnOf(x.field).map(function(r){return '<button type="button" data-rsn="'+r[0]+'" '+chip(ALT.code===r[0])+'>'+esc(r[1])+'</button>';}).join("");
+      if(st.slot)return '<select data-sv style="font-size:16px;width:100%;padding:8px;border-radius:8px"><option value="">▼ 時間をタップして選ぶ</option>'+TIMES.map(function(v){return '<option'+(ALT.sv===v?' selected':'')+'>'+v+'</option>';}).join("")+'</select>';
+      if(st.last){var m=ALT.msg!=null?ALT.msg:pvMsg(x);return '<textarea data-msg rows="'+Math.min(20,Math.max(8,Math.ceil(m.length/24)+2))+'" style="width:100%;box-sizing:border-box;font:inherit;font-size:15px;line-height:1.5;border:1px solid #93c5fd;border-radius:8px;padding:8px">'+esc(m)+'</textarea>'
+        +'<div class="mut" style="margin:4px 0">↑この文がそのままお客様に届きます（LINEまたはメール）。タップして直せます'+(ALT.msg!=null?' ／ <a href="#" data-reset style="color:#1d4ed8">元の文に戻す</a>':'')+'。「（マイページのURL）」は送信時に本物のURLになります。</div>'
+        +'<button type="button" class="bt" data-send style="background:#1d4ed8;color:#fff">この内容で送信する</button>';}
+      return T.map(function(t,j){return '<button type="button" data-tpl="'+j+'" '+chip(ALT.ti===j)+'>'+esc(t.t.replace("{x}","〇時"))+'</button>';}).join("")
+        +'<button type="button" data-tpl="keep" '+chip(keep)+'>代わりの案なし（今のご予約のままでお願いする）</button><div class="mut">「代わりの案なし」は無理な時間帯・無理なご依頼のときだけ</div>';};
+    var h='<div style="margin-top:8px;border:1px solid #bfdbfe;background:#f5f9ff;border-radius:12px;padding:8px 10px"><div style="background:#1d4ed8;color:#fff;border-radius:8px;padding:6px 10px;font-weight:700;font-size:14px">次：'+esc(S[now].t)+'（'+(now+1)+'/'+S.length+'）</div>';
+    S.forEach(function(st,i){var open=i===now,fut=i>now;
+      h+='<div style="display:flex;gap:8px;padding:8px 0;'+(i?'border-top:1px solid #e5e7eb;':'')+(fut?'opacity:.45':'')+'"><span style="display:inline-flex;width:24px;height:24px;border-radius:50%;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex:none;'+(st.done?'background:#16a34a;color:#fff':open?'background:#1d4ed8;color:#fff':'background:#e5e7eb;color:#9ca3af')+'">'+(st.done?'✓':(i+1))+'</span>'
+        +'<div style="flex:1;min-width:0"><div style="font-weight:'+(open?800:500)+';color:'+(open?'#1d4ed8':'inherit')+'">'+esc(st.t)+(st.done&&!open?' <span class="mut">：'+esc(st.v)+'</span>':'')+'</div>'
+        +(open?'<div style="margin-top:6px">'+body(i,st)+'</div>':st.done&&i<now?'<a href="#" data-back="'+i+'" style="font-size:12px;color:#1d4ed8">変える</a>':'')+'</div></div>';});
+    return h+'<div style="text-align:right"><a href="#" data-altclose style="font-size:13px;color:#64748b">やめる</a></div></div>';}
+  function altSend(){var x=curX();if(!x)return;var keep=ALT.ti==="keep";
+    if(!ALT.code)return alert("できない理由を選んでください");if(ALT.ti===-1)return alert("代わりの案を選んでください");if(!keep&&!altText(x))return alert("時間を選んでください");
+    var msg=String(ALT.msg!=null?ALT.msg:pvMsg(x)).trim();
+    if(!confirm(keep?"今のご予約のままでお願いする返事を送りますか？\n（お客様に届きます）":"この代わりの案を送りますか？\n「"+altText(x)+"」\n（お客様に届きます）"))return;
+    var o={action:"decide",change_id:x.id,decision:keep?"rejected":"proposed",reject_reason:ALT.code,message_text:msg};
+    if(keep)o.keep_as_is=true;else{o.proposal_text=altText(x);o.proposal_value=altVal(x);o.expires_at=altExp(x);}
+    busy=true;var b=document.getElementById("mpReq");if(b)b.innerHTML='<div class="done" style="background:#fff;color:#002063;border-color:#C9CED6">送信中…</div>';
+    post(o).then(function(d){busy=false;
+      if(d&&d.ok){DONE=keep?"📨 今のご予約のままでお願いする返事を送りました":"📨 代わりの案を送りました<br><span class=\"mut\">お客様がマイページで「この案でOK」を押すと確定し、OPシート・タスクも変わります。</span>";ALT=null;}
+      else DONE="⚠️ "+esc((d&&d.error)||"送れませんでした");
+      load();setTimeout(function(){DONE=null;draw();},15000);
+    }).catch(function(){busy=false;DONE="⚠️ 通信できませんでした。もう一度押してください";draw();});}
   function act(a,id){
     if(busy)return;var x=ITEMS.filter(function(i){return i.id===id;})[0];if(!x)return;
     var q=a==="approved"?("この変更を承認しますか？\n"+x.label+"："+(x.old||"（なし）")+" → "+x.new+"\n（お客様に通知されます）"):"社員に相談しますか？\n（Slackに「難しい」と流れ、社員が返事します）";

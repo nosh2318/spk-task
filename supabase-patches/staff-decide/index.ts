@@ -3,7 +3,7 @@
 //   承認＝アクションタブと同じ handyman-mypage の decide を呼ぶ（反映・お客様通知・OPシートまで同じ処理）
 //   難しい＝Slack（マイページ依頼チャンネル）に相談を出す。依頼はそのまま残り、社員がアクションタブで返す。
 // 担当が決まっていない依頼は、だれでも対応できる。
-// action: list {token} / decide {token, change_id, decision: "approved"|"consult", note?}
+// action: list {token} / decide {token, change_id, decision: "approved"|"consult"|"proposed"|"rejected", note?, reject_reason?, proposal_text?, proposal_value?, message_text?, expires_at?}
 const SB = Deno.env.get("SUPABASE_URL")!;
 const KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const H = { apikey: KEY, Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" };
@@ -36,7 +36,8 @@ async function enrich(c: any) {
   const r = (await get(`reservations?id=eq.${encodeURIComponent(c.reservation_id)}&select=name,lend_date,lend_time,return_date,return_time,del_place,col_place`))[0] || {};
   return { id: c.id, field: c.field, label: LABEL[c.field] || c.field, old: c.old_value || "", new: c.new_value || "", at: c.created_at, resv: c.reservation_id,
     cust: r.name || "", date: tt === "DEL" ? (r.lend_date || t?.date || "") : (r.return_date || t?.date || ""), kind: tt === "DEL" ? "お届け" : "回収",
-    assignee: await realStaff(String(t?.assignee || "").trim()) };
+    assignee: await realStaff(String(t?.assignee || "").trim()),
+    sd: r.lend_date || "", st: r.lend_time || "", ed: r.return_date || "", et: r.return_time || "", delp: r.del_place || "" };
 }
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -77,6 +78,22 @@ Deno.serve(async (req) => {
       const note = String(b.note || "").trim().slice(0, 200);
       const ok = await slack(`🆘 ${name}さん「この変更は難しい」→ 社員の対応をお願いします（アクションタブで返事）\n${lb}\n${chg}${note ? `\nひとこと：${note}` : ""}`);
       return j({ ok, decision: "consult" });
+    }
+    // 2026-11-10 nosh「代わりの案も個別URLに」：アクションタブと同じ「代わりの案」（proposed）／「今のご予約のまま」（rejected＋keep）
+    if (b.decision === "proposed" || b.decision === "rejected") {
+      const RS = ["no_vehicle", "full_slot", "out_of_area", "past_deadline"];
+      const reason = String(b.reject_reason || ""); if (!RS.includes(reason)) return j({ ok: false, error: "できない理由を選んでください" }, 400);
+      const msg = String(b.message_text || "").trim().slice(0, 2000); if (!msg) return j({ ok: false, error: "お客様に届く文が空です" }, 400);
+      const prop = b.decision === "proposed";
+      const ptext = String(b.proposal_text || "").trim().slice(0, 200); if (prop && !ptext) return j({ ok: false, error: "代わりの案を選んでください" }, 400);
+      const body: any = { action: "decide", admin_pin: Deno.env.get("ADMIN_PIN") || "", change_id: cid, decision: b.decision, reject_reason: reason, reject_text: "", message_text: msg };
+      if (prop) Object.assign(body, { proposal_text: ptext, proposal_value: String(b.proposal_value || "").slice(0, 200), expires_at: String(b.expires_at || "") });
+      else Object.assign(body, { alt_text: "", keep_as_is: true, expires_at: "" });
+      const r = await fetch(`${SB}/functions/v1/handyman-mypage`, { method: "POST", headers: H, body: JSON.stringify(body) });
+      const jr = await r.json().catch(() => ({}));
+      if (!r.ok || !jr.ok) return j({ ok: false, error: jr.error || `送れませんでした（${r.status}）` }, 500);
+      await slack(prop ? `💬 ${name}さんが個別URLで代わりの案を送りました（${e.kind}）\n${lb}\n${chg}\n代わりの案：${ptext}（お客様の返事待ち）` : `💬 ${name}さんが個別URLで「今のご予約のままで」と返事しました（${e.kind}）\n${lb}\n${chg}`);
+      return j({ ok: true, decision: b.decision });
     }
     return j({ ok: false, error: "decision 不正" }, 400);
   }
