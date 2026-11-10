@@ -571,15 +571,24 @@ async function refDone(fn,id){const x=REF.find(r=>r.fn===fn&&String(r.id)===id);
   try{await ef(x.base,x.anon,fn,{admin_pin:getPin(),action:"refund_done",id});x.status="refunded";renderRef();toast("返金済みにしました");}catch(e){toast("できませんでした："+e.message);}}
 /* ★2026-11-10 未払いのお届け（那覇）：お客様が選んだお届け・回収はそのまま。予約時に払っていない分を一覧に。入金は10分おきに自動で確認 */
 let UNP=[],UNP_OPEN=false;
+/* ★2026-11-10 nosh「アラートとしてはしっかり出して 未払いのお届け 他の未払いも」「折りたたみデフォで」：
+   3店の未払い（お届け・シート・補償・受け取り方の追加分／じゃらん事前決済の期限切れ・期限まで24時間）を赤い帯1本に。押すと一覧 */
 async function loadUnp(){const pin=getPin();if(!pin){UNP=[];renderUnp();return;}
-  try{const j=await ef(MAIN,MAIN_ANON,"handyman-mypage-nha",{admin_pin:pin,action:"unpaid"});UNP=j.rows||[];}catch(e){UNP=[];}renderUnp();}
-function renderUnp(){const el=document.getElementById("aUnp");if(!el)return;const P=UNP.filter(x=>x.status!=="paid"),D=UNP.filter(x=>x.status==="paid");
-  if(!UNP.length){el.innerHTML=getPin()?`<div class="mut" style="padding:6px 2px">💳 未払いのお届け：なし</div>`:"";return;}
-  const md=d=>d?`${+String(d).slice(5,7)}/${+String(d).slice(8,10)}`:"";
-  const row=x=>{const r=x.res||{};return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid #c7d7f0"><div style="flex:1"><b>那覇</b> ${esc(x.reservation_id)} ${esc(r.name||"")}様 <span class="mut">${esc(md(r.start_date))}出発</span><br><span class="mut">${esc(x.detail||"")}</span></div><b>¥${(+x.amount||0).toLocaleString()}</b><span class="mut" style="min-width:52px;text-align:right">${x.status==="paid"?"✅ 入金済み":x.status==="link_failed"?"⚠️ リンクなし":"未入金"}</span></div>`;};
-  /* 11/10 nosh「折りたたみデフォで スペース的に」：見出しと件数だけ。押すと開く（開いた状態はその画面の間だけ覚える） */
-  el.innerHTML=`<details class="it" style="border:2px solid #1d4ed8;background:#eef4fd" ${UNP_OPEN?"open":""} ontoggle="UNP_OPEN=this.open"><summary style="cursor:pointer"><b class="ty">💳 未払いのお届け ${P.length}件</b>${D.length?` <span class="mut">（入金済み ${D.length}件）</span>`:""}</summary><div class="mut" style="margin:4px 0 8px">お客様が選んだお届け・回収はそのままです。マイページに「支払う」ボタンが出ています。入金は自動で確認します。</div>`+
-    P.map(row).join("")+(D.length?`<div class="mut" style="margin-top:6px">入金済み（14日以内）</div>`+D.map(row).join(""):"")+`</details>`;}
+  const g=async(base,anon,fn)=>{try{const j=await ef(base,anon,fn,{admin_pin:pin,action:"unpaid"});return j.rows||[];}catch(e){return [];}};
+  const [a,b]=await Promise.all([g(MAIN,MAIN_ANON,"handyman-mypage-nha"),g(BT,BT_ANON,"handyman-mypage-tkm")]);UNP=a.concat(b);renderUnp();}
+function renderUnp(){const el=document.getElementById("aUnp");if(!el)return;
+  const P=UNP.filter(x=>x.status!=="paid"),D=UNP.filter(x=>x.status==="paid");
+  if(!P.length&&!D.length){el.innerHTML=getPin()?`<div class="mut" style="padding:6px 2px">💳 未払い：なし</div>`:"";return;}
+  const SN={nha:"那覇",spk:"札幌",tkm:"高松"},md=d=>d?`${+String(d).slice(5,7)}/${+String(d).slice(8,10)}`:"";
+  const sum=P.reduce((t,x)=>t+(+x.amount||0),0);
+  const by={};P.forEach(x=>{by[x.kind_jp||"追加"]=(by[x.kind_jp||"追加"]||0)+1;});
+  const brk=Object.keys(by).map(k=>`${k} ${by[k]}`).join("・");
+  const st=x=>x.status==="paid"?"✅ 入金済み":x.status==="overdue"?"🔴 期限切れ":x.status==="due_soon"?"🟠 期限まで24時間":x.status==="link_failed"?"⚠️ リンクなし":"未入金";
+  const row=x=>{const r=x.res||{};return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid #f3c4c4"><div style="flex:1"><b>${esc(SN[x.store]||x.store)}</b> <span class="pill" style="background:#fff;border:1px solid #e3a5a5;border-radius:8px;padding:0 6px;font-size:12px">${esc(x.kind_jp||"追加")}</span> ${esc(x.reservation_id)} ${esc(r.name||"")}${r.name?"様":""} <span class="mut">${esc(md(r.start_date))}出発</span><br><span class="mut">${esc(x.detail||"")}</span></div><b>¥${(+x.amount||0).toLocaleString()}</b><span class="mut" style="min-width:64px;text-align:right">${st(x)}</span></div>`;};
+  const ord={overdue:0,link_failed:1,due_soon:2,unpaid:3};const PS=P.slice().sort((a,b)=>(ord[a.status]??9)-(ord[b.status]??9)||String((a.res||{}).start_date||"").localeCompare(String((b.res||{}).start_date||"")));
+  el.innerHTML=P.length?`<details class="it" style="border:2px solid #b91c1c;background:#fdecec" ${UNP_OPEN?"open":""} ontoggle="UNP_OPEN=this.open"><summary style="cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="color:#b91c1c;font-size:17px">⚠️ 未払い ${P.length}件　¥${sum.toLocaleString()}</b><span class="mut">${esc(brk)}</span><span class="mut" style="margin-left:auto">▼ 開く</span></summary><div class="mut" style="margin:6px 0 8px">お客様のマイページに「支払う」ボタンが出ています。入金は自動で確認します。受け渡しや電話のときに「マイページからお支払いください」とご案内ください。</div>`+
+    PS.map(row).join("")+(D.length?`<div class="mut" style="margin-top:6px">入金済み（14日以内）</div>`+D.map(row).join(""):"")+`</details>`
+    :`<div class="mut" style="padding:6px 2px">💳 未払い：なし（入金済み ${D.length}件）</div>`;}
 function renderAct(){
   const all=[].concat(...Object.values(REQ));const pend=all.filter(x=>x.status==="requested");
   document.getElementById("actCnt").textContent=pend.length||"";
