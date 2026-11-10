@@ -400,8 +400,8 @@ Deno.serve(async (req) => {
     if (hh === 10) {
       const dayTag = today.replace(/-/g, "");
       const REMIND = [
-        { store: "spk", jt: "jalan_payments", sends: "spk_line_sends", shop: "札幌デリバリー専門店" },
-        { store: "nha", jt: "nha_jalan_payments", sends: "nha_line_sends", shop: "那覇空港店" },
+        { store: "spk", jt: "jalan_payments", sends: "spk_line_sends", shop: "札幌デリバリー専門店", S: STORES[0] },
+        { store: "nha", jt: "nha_jalan_payments", sends: "nha_line_sends", shop: "那覇空港店", S: STORES[1] },
       ];
       for (const R of REMIND) {
         if (Array.isArray(p.welcomeStores) && !p.welcomeStores.includes(R.store)) continue;
@@ -413,7 +413,10 @@ Deno.serve(async (req) => {
           const act = `mail_jalan_remind_${dayTag}`;
           const done = await sbGet(R.sends, `resv_no=eq.${encodeURIComponent(pay.reservation_id)}&action=eq.${act}&select=resv_no&limit=1`);
           if (done[0]) continue;
-          const b = `${pay.customer_name || "お客様"} 様\n\n【リマインド】HANDYMAN RENTCAR ${R.shop}です。\nご予約 ${pay.reservation_id} の事前決済がまだお済みでないようです。\n当店ではお待ち時間・待機時間の解消のため事前決済をお願いしております。\n\nお支払い金額：¥${Number(pay.amount || 0).toLocaleString()}\n下記より ご出発3日前19:00まで にお支払いをお願いいたします。\n${pay.square_payment_url}\n※現金決済をご希望の場合は、マイページの「聞く」からお知らせください。${foot(R.shop)}`;
+          // マイページの「お支払い」からも払えるので、リンクを添える（トークンが無い予約は載せない）
+          const rv = await sbGet(R.S.resv, `id=eq.${encodeURIComponent(pay.reservation_id)}&select=mypage_token&limit=1`);
+          const myLine = rv[0] && rv[0].mypage_token ? `\n\nマイページの「お支払い」からもお支払いいただけます。\n▼ マイページ\n${R.S.mypage}${encodeURIComponent(rv[0].mypage_token)}` : "";
+          const b = `${pay.customer_name || "お客様"} 様\n\n【リマインド】HANDYMAN RENTCAR ${R.shop}です。\nご予約 ${pay.reservation_id} の事前決済がまだお済みでないようです。\n当店ではお待ち時間・待機時間の解消のため事前決済をお願いしております。\n\nお支払い金額：¥${Number(pay.amount || 0).toLocaleString()}\n下記より ご出発3日前19:00まで にお支払いをお願いいたします。\n${pay.square_payment_url}${myLine}\n※現金決済をご希望の場合は、マイページの「聞く」からお知らせください。${foot(R.shop)}`;
           if (DRY) { wsent++; continue; }
           const ok = await sendMail(pay.customer_email, `【リマインド】【HANDYMAN RENTCAR ${R.shop}】事前決済のお願い（予約番号: ${pay.reservation_id}）`, b, "", midOf(R.store, "mail_jalan_remind", String(pay.reservation_id)));
           if (ok) {
