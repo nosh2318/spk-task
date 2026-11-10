@@ -25,17 +25,23 @@ const cut = (v: unknown, n = 40) => { const s = String(v ?? "").replace(/\s*\(.*
 async function get(path: string) { const r = await fetch(`${SB}/rest/v1/${path}`, { headers: H }); return r.ok ? await r.json() : []; }
 async function cfg() { const m: Record<string, string> = {}; for (const x of await get("push_test_config?select=k,v")) m[x.k] = x.v; return m; }
 async function setCfg(k: string, v: string) { await fetch(`${SB}/rest/v1/push_test_config?on_conflict=k`, { method: "POST", headers: { ...H, Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ k, v }) }); }
-// 札幌の勤務中（出勤打刻あり・退勤打刻なし）の名前
-async function onDuty(): Promise<Set<string>> {
+// 札幌の勤務中（出勤打刻あり・退勤打刻なし）の名前→出勤時刻(ms)
+async function dutyMap(): Promise<Map<string, number>> {
   const d = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
   const rows = await get(`spk_attendance?date=eq.${d}&select=staff_name,start_time,end_time,memo`);
-  return new Set(rows.filter((r: any) => (r.start_time || "") !== "" && (r.end_time || "") === "" && /^(打刻|打刻中|仮申請|協議中)/.test(r.memo || "")).map((r: any) => r.staff_name));
+  const m = new Map<string, number>();
+  for (const r of rows) if ((r.start_time || "") !== "" && (r.end_time || "") === "" && /^(打刻|打刻中|仮申請|協議中)/.test(r.memo || "")) {
+    const t = Date.parse(`${d}T${String(r.start_time).slice(0, 5)}:00+09:00`); m.set(r.staff_name, isNaN(t) ? 0 : t); }
+  return m;
 }
+async function onDuty(): Promise<Set<string>> { return new Set((await dutyMap()).keys()); }
 // 札幌：依頼・「知らせる」は、その予約の担当（DEL=お届け／COL=回収）だけへ。担当なしは勤務中の全員へ
 async function assignee(resv: string, tt: string) {
   const ts = await get(`tasks?reservation_id=eq.${encodeURIComponent(resv)}&select=type,assignee&order=date.desc`);
   const t = ts.find((x: any) => String(x.type || "").toUpperCase().startsWith(tt));
-  return String(t?.assignee || "").trim();
+  const a = String(t?.assignee || "").trim(); if (!a) return "";
+  const names = (await get(`staff?select=name&active=not.is.false`)).map((x: any) => String(x.name));
+  return names.includes(a) ? a : ""; // 「無人」「乗り捨て」など人でない担当は担当なし扱い
 }
 // 未確認のお知らせを札幌スタッフ別にためる（担当あり＝担当者へ・勤務外でも残す／担当なし＝勤務中の全員へ）
 async function stock(msgs: { title: string; body: string; store?: string; target?: string; kind?: string; resv?: string; ref?: string }[]) {
@@ -45,7 +51,7 @@ async function stock(msgs: { title: string; body: string; store?: string; target
   for (const m of sp) for (const nm of (m.target ? [m.target] : duty)) rows.push({ store: "spk", staff_name: nm, kind: m.kind || "", title: m.title, body: m.body, reservation_id: m.resv || null, ref: m.ref });
   if (rows.length) await fetch(`${SB}/rest/v1/staff_inbox?on_conflict=staff_name,ref`, { method: "POST", headers: { ...H, Prefer: "resolution=ignore-duplicates,return=minimal" }, body: JSON.stringify(rows) });
 }
-async function toAll(msgs: { title: string; body: string; store?: string; target?: string }[]) {
+async function toAll(msgs: { title: string; body: string; store?: string; target?: string; only?: boolean }[]) {
   if (!msgs.length) return 0;
   await init();
   const subs = await get("push_test_subs?select=endpoint,sub,store,staff_name&paused=eq.false");
@@ -55,6 +61,7 @@ async function toAll(msgs: { title: string; body: string; store?: string; target
     if (s.store && m.store && s.store !== m.store) continue;
     if (s.staff_name && !duty.has(s.staff_name)) continue; // 札幌：出勤打刻〜退勤打刻の間だけ受ける
     if (s.staff_name && m.target && m.target !== s.staff_name) continue; // 担当者だけ
+    if (m.only && !s.staff_name) continue; // 再通知は本人の端末だけ
     let res = "ok";
     try { await webpush.sendNotification(s.sub, JSON.stringify({ title: m.title, body: m.body, url: "./" }), { TTL: 3600, urgency: "high" }); n++; }
     catch (e: any) { res = `err ${e?.statusCode || ""} ${String(e?.body || e?.message || e).slice(0, 120)}`; }
@@ -62,6 +69,53 @@ async function toAll(msgs: { title: string; body: string; store?: string; target
     else await patch(s.endpoint, { last_sent_at: new Date().toISOString(), last_result: res });
   }
   return n;
+}
+// 押されるまで追いかける（札幌・勤務中の人だけ。時間は「届いた時刻」と「出勤打刻」の遅い方から数える）
+//  10分：もう一度プッシュ／20分：本人LINE（登録者のみ）／30分：Slack（マイページ依頼チャンネル）で社員へ
+const nz = (s: string) => String(s || "").replace(/\s|さん$/g, "");
+async function linePush(to: string, text: string) {
+  const tk = Deno.env.get("LINE_CHANNEL_TOKEN"); if (!tk) return false;
+  const r = await fetch("https://api.line.me/v2/bot/message/push", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${tk}` }, body: JSON.stringify({ to, messages: [{ type: "text", text }] }) });
+  return r.ok;
+}
+async function slackPost(text: string) {
+  const tk = Deno.env.get("SLACK_BOT_TOKEN"); if (!tk) return false;
+  const r = await fetch("https://slack.com/api/chat.postMessage", { method: "POST", headers: { Authorization: `Bearer ${tk}`, "Content-Type": "application/json" }, body: JSON.stringify({ channel: Deno.env.get("SLACK_MYPAGE_CHANNEL") || "C0BER0YC6AK", text }) });
+  return (await r.json().catch(() => ({}))).ok === true;
+}
+async function mark(ids: number[], col: string) {
+  if (ids.length) await fetch(`${SB}/rest/v1/staff_inbox?id=in.(${ids.join(",")})`, { method: "PATCH", headers: { ...H, Prefer: "return=minimal" }, body: JSON.stringify({ [col]: new Date().toISOString() }) });
+}
+async function chase() {
+  const rows = await get(`staff_inbox?store=eq.spk&seen_at=is.null&created_at=gt.${new Date(Date.now() - 24 * 3600e3).toISOString()}&select=id,staff_name,kind,ref,title,body,created_at,repush_at,line_at,slack_at&order=id.asc&limit=300`);
+  if (!rows.length) return { repush: 0, line: 0, slack: 0 };
+  const duty = await dutyMap(); const now = Date.now();
+  const by = new Map<string, any[]>();
+  for (const r of rows) { if (!duty.has(r.staff_name)) continue; const age = (now - Math.max(Date.parse(r.created_at), duty.get(r.staff_name) || 0)) / 60000; (by.get(r.staff_name) || by.set(r.staff_name, []).get(r.staff_name)!).push({ ...r, age }); }
+  const links = by.size ? await get(`spk_staff_line_links?select=staff_name,line_user_id&line_user_id=not.is.null`) : [];
+  const out = { repush: 0, line: 0, slack: 0 };
+  const late: any[] = [];
+  for (const [nm, list] of by) {
+    const a = list.filter((r) => r.age >= 10 && !r.repush_at);
+    if (a.length) { out.repush += await toAll([{ title: `【札幌】未確認のお知らせ ${list.length}件`, body: `${a[0].title}\n個別URLを開いて「確認しました」を押してください`, store: "spk", target: nm, only: true }]); await mark(a.map((r) => r.id), "repush_at"); }
+    // LINE・Slack は「依頼」「知らせる」だけ（チャットは今のSlackの流れのまま）
+    const b = list.filter((r) => r.kind !== "chat" && r.age >= 20 && !r.line_at);
+    if (b.length) { const l = links.find((x: any) => nz(nm).startsWith(nz(x.staff_name)));
+      if (l && await linePush(l.line_user_id, `【HANDYMAN札幌】${nm}さん、お客様からのお知らせが ${b.length}件 未確認です。\n${b.slice(0, 3).map((r) => "・" + r.title.replace(/^【札幌】/, "")).join("\n")}\n個別URLを開いて確認してください。`)) out.line++;
+      await mark(b.map((r) => r.id), "line_at"); }
+    late.push(...list.filter((r) => r.kind !== "chat" && r.age >= 30 && !r.slack_at));
+  }
+  if (late.length) {
+    // 同じお知らせを複数人に配った場合は、だれか1人でも確認済みなら社員へは回さない。1回のまとめ投稿にする
+    const refs = [...new Set(late.map((r) => r.ref))];
+    const done = new Set((await get(`staff_inbox?ref=in.(${refs.map((x) => `"${x}"`).join(",")})&seen_at=not.is.null&select=ref`)).map((x: any) => x.ref));
+    const lines: string[] = [];
+    for (const ref of refs) { if (done.has(ref)) continue; const rs = late.filter((r) => r.ref === ref);
+      lines.push(`・${rs[0].title.replace(/^【札幌】/, "")}　${String(rs[0].body).split("\n")[0]}　（未確認：${rs.map((r) => r.staff_name + "さん").join("・")}）`); }
+    if (lines.length && await slackPost(`⏰ 個別URLで30分以上 未確認のお知らせがあります → 社員で確認・対応をお願いします\n${lines.slice(0, 10).join("\n")}`)) out.slack++;
+    await mark(late.map((r) => r.id), "slack_at");
+  }
+  return out;
 }
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -130,7 +184,8 @@ Deno.serve(async (req) => {
     if (cmax) await setCfg("last_chat", String(cmax));
     await stock(msgs);
     const sent = await toAll(msgs);
-    return j({ ok: true, events: msgs.length, sent });
+    const ch2 = await chase();
+    return j({ ok: true, events: msgs.length, sent, chase: ch2 });
   }
   return j({ ok: false, error: "unknown action" }, 400);
 });

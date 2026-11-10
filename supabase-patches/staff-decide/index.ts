@@ -26,6 +26,8 @@ async function slack(text: string) {
 async function label(resv: string) {
   try { const r = await fetch(`${SB}/rest/v1/rpc/hdm_resv_label`, { method: "POST", headers: H, body: JSON.stringify({ p_store: "spk", p_resv: resv }) }); return r.ok ? String(await r.json()) : resv; } catch { return resv; }
 }
+// 「無人」「乗り捨て」など人でない担当は担当なし扱い
+async function realStaff(a: string) { if (!a) return ""; const n = await get(`staff?name=eq.${encodeURIComponent(a)}&select=name`); return n.length ? a : ""; }
 // 依頼1件に、担当（DEL/COLタスクの担当者）と予約の情報を付ける
 async function enrich(c: any) {
   const tt = TT(c.field);
@@ -34,7 +36,7 @@ async function enrich(c: any) {
   const r = (await get(`reservations?id=eq.${encodeURIComponent(c.reservation_id)}&select=name,lend_date,lend_time,return_date,return_time,del_place,col_place`))[0] || {};
   return { id: c.id, field: c.field, label: LABEL[c.field] || c.field, old: c.old_value || "", new: c.new_value || "", at: c.created_at, resv: c.reservation_id,
     cust: r.name || "", date: tt === "DEL" ? (r.lend_date || t?.date || "") : (r.return_date || t?.date || ""), kind: tt === "DEL" ? "お届け" : "回収",
-    assignee: String(t?.assignee || "").trim() };
+    assignee: await realStaff(String(t?.assignee || "").trim()) };
 }
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
