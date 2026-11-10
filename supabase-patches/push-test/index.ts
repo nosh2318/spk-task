@@ -25,14 +25,15 @@ const cut = (v: unknown, n = 40) => { const s = String(v ?? "").replace(/\s*\(.*
 async function get(path: string) { const r = await fetch(`${SB}/rest/v1/${path}`, { headers: H }); return r.ok ? await r.json() : []; }
 async function cfg() { const m: Record<string, string> = {}; for (const x of await get("push_test_config?select=k,v")) m[x.k] = x.v; return m; }
 async function setCfg(k: string, v: string) { await fetch(`${SB}/rest/v1/push_test_config?on_conflict=k`, { method: "POST", headers: { ...H, Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ k, v }) }); }
-async function toAll(msgs: { title: string; body: string }[]) {
+async function toAll(msgs: { title: string; body: string; store?: string }[]) {
   if (!msgs.length) return 0;
   await init();
-  const subs = await get("push_test_subs?select=endpoint,sub");
+  const subs = await get("push_test_subs?select=endpoint,sub,store&paused=eq.false");
   let n = 0;
   for (const m of msgs.slice(0, 10)) for (const s of subs) {
+    if (s.store && m.store && s.store !== m.store) continue;
     let res = "ok";
-    try { await webpush.sendNotification(s.sub, JSON.stringify({ ...m, url: "./" }), { TTL: 3600, urgency: "high" }); n++; }
+    try { await webpush.sendNotification(s.sub, JSON.stringify({ title: m.title, body: m.body, url: "./" }), { TTL: 3600, urgency: "high" }); n++; }
     catch (e: any) { res = `err ${e?.statusCode || ""} ${String(e?.body || e?.message || e).slice(0, 120)}`; }
     if (/^err (404|410)/.test(res)) await fetch(`${SB}/rest/v1/push_test_subs?endpoint=eq.${encodeURIComponent(s.endpoint)}`, { method: "DELETE", headers: H });
     else await patch(s.endpoint, { last_sent_at: new Date().toISOString(), last_result: res });
@@ -45,8 +46,17 @@ Deno.serve(async (req) => {
   if (b.action === "save") {
     const sub = b.sub; if (!sub?.endpoint) return j({ ok: false, error: "no sub" }, 400);
     const r = await fetch(`${SB}/rest/v1/push_test_subs?on_conflict=endpoint`, { method: "POST", headers: { ...H, Prefer: "resolution=merge-duplicates,return=minimal" },
-      body: JSON.stringify({ name: String(b.name || "").slice(0, 40), endpoint: sub.endpoint, sub, ua: String(b.ua || "").slice(0, 200), standalone: !!b.standalone }) });
+      body: JSON.stringify({ name: String(b.name || "").slice(0, 40), endpoint: sub.endpoint, sub, ua: String(b.ua || "").slice(0, 200), standalone: !!b.standalone, store: /^(spk|nha|tkm)$/.test(b.store) ? b.store : null }) });
     return j({ ok: r.ok });
+  }
+  if (b.action === "pause") {
+    const ep = String(b.endpoint || ""); if (!ep) return j({ ok: false }, 400);
+    await patch(ep, { paused: !!b.paused });
+    return j({ ok: true, paused: !!b.paused });
+  }
+  if (b.action === "state") {
+    const row = (await get(`push_test_subs?endpoint=eq.${encodeURIComponent(String(b.endpoint || ""))}&select=paused`))[0];
+    return j({ ok: !!row, paused: row ? row.paused : false });
   }
   if (b.action === "send") {
     const ep = String(b.endpoint || "");
@@ -69,14 +79,14 @@ Deno.serve(async (req) => {
   }
   if (b.action === "scan") {
     const c = await cfg(); if (!c.scan_secret || b.secret !== c.scan_secret) return j({ ok: false }, 401);
-    const msgs: { title: string; body: string }[] = [];
+    const msgs: { title: string; body: string; store?: string }[] = [];
     const ch = await get(`mypage_changes?id=gt.${+c.last_chg || 0}&select=id,store,reservation_id,field,old_value,new_value&order=id.asc&limit=50`);
-    for (const x of ch) msgs.push({ title: `【${ST[x.store] || x.store}】お客様から変更の依頼`, body: `${FLD[x.field] || x.field}：${cut(x.old_value) || "（なし）"} → ${cut(x.new_value)}\n予約 ${x.reservation_id}` });
+    for (const x of ch) msgs.push({ title: `【${ST[x.store] || x.store}】お客様から変更の依頼`, body: `${FLD[x.field] || x.field}：${cut(x.old_value) || "（なし）"} → ${cut(x.new_value)}\n予約 ${x.reservation_id}`, store: x.store });
     const nd = await get(`mypage_nudges?id=gt.${+c.last_nudge || 0}&select=id,store,reservation_id,kind,leg,note&order=id.asc&limit=50`);
-    for (const x of nd) msgs.push({ title: `【${ST[x.store] || x.store}】お客様から「${NUD[x.kind] || x.kind}」`, body: `${x.leg === "back" ? "返却・回収" : "受け取り"}${x.note ? "　" + cut(x.note) : ""}\n予約 ${x.reservation_id}` });
+    for (const x of nd) msgs.push({ title: `【${ST[x.store] || x.store}】お客様から「${NUD[x.kind] || x.kind}」`, body: `${x.leg === "back" ? "返却・回収" : "受け取り"}${x.note ? "　" + cut(x.note) : ""}\n予約 ${x.reservation_id}`, store: x.store });
     const cm = await get(`cs_chat_messages?id=gt.${+c.last_chat || 0}&sender=eq.customer&select=id,thread_id,body&order=id.asc&limit=50`);
     const cmax = (await get(`cs_chat_messages?select=id&order=id.desc&limit=1`))[0]?.id;
-    for (const x of cm) { const t = (await get(`cs_chat_threads?id=eq.${x.thread_id}&select=store,cust_name,reservation_id`))[0] || {}; msgs.push({ title: `【${ST[t.store] || t.store || ""}】チャット：${t.cust_name || "お客様"}`, body: cut(x.body, 60) || "（画像）" }); }
+    for (const x of cm) { const t = (await get(`cs_chat_threads?id=eq.${x.thread_id}&select=store,cust_name,reservation_id`))[0] || {}; msgs.push({ title: `【${ST[t.store] || t.store || ""}】チャット：${t.cust_name || "お客様"}`, body: cut(x.body, 60) || "（画像）", store: t.store }); }
     if (ch.length) await setCfg("last_chg", String(ch[ch.length - 1].id));
     if (nd.length) await setCfg("last_nudge", String(nd[nd.length - 1].id));
     if (cmax) await setCfg("last_chat", String(cmax));
