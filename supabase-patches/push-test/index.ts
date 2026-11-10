@@ -25,13 +25,21 @@ const cut = (v: unknown, n = 40) => { const s = String(v ?? "").replace(/\s*\(.*
 async function get(path: string) { const r = await fetch(`${SB}/rest/v1/${path}`, { headers: H }); return r.ok ? await r.json() : []; }
 async function cfg() { const m: Record<string, string> = {}; for (const x of await get("push_test_config?select=k,v")) m[x.k] = x.v; return m; }
 async function setCfg(k: string, v: string) { await fetch(`${SB}/rest/v1/push_test_config?on_conflict=k`, { method: "POST", headers: { ...H, Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ k, v }) }); }
+// 札幌の勤務中（出勤打刻あり・退勤打刻なし）の名前
+async function onDuty(): Promise<Set<string>> {
+  const d = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+  const rows = await get(`spk_attendance?date=eq.${d}&select=staff_name,start_time,end_time,memo`);
+  return new Set(rows.filter((r: any) => (r.start_time || "") !== "" && (r.end_time || "") === "" && /^(打刻|打刻中|仮申請|協議中)/.test(r.memo || "")).map((r: any) => r.staff_name));
+}
 async function toAll(msgs: { title: string; body: string; store?: string }[]) {
   if (!msgs.length) return 0;
   await init();
-  const subs = await get("push_test_subs?select=endpoint,sub,store&paused=eq.false");
+  const subs = await get("push_test_subs?select=endpoint,sub,store,staff_name&paused=eq.false");
+  const duty = await onDuty();
   let n = 0;
   for (const m of msgs.slice(0, 10)) for (const s of subs) {
     if (s.store && m.store && s.store !== m.store) continue;
+    if (s.staff_name && !duty.has(s.staff_name)) continue; // 札幌：出勤打刻〜退勤打刻の間だけ受ける
     let res = "ok";
     try { await webpush.sendNotification(s.sub, JSON.stringify({ title: m.title, body: m.body, url: "./" }), { TTL: 3600, urgency: "high" }); n++; }
     catch (e: any) { res = `err ${e?.statusCode || ""} ${String(e?.body || e?.message || e).slice(0, 120)}`; }
@@ -46,8 +54,12 @@ Deno.serve(async (req) => {
   if (b.action === "save") {
     const sub = b.sub; if (!sub?.endpoint) return j({ ok: false, error: "no sub" }, 400);
     const r = await fetch(`${SB}/rest/v1/push_test_subs?on_conflict=endpoint`, { method: "POST", headers: { ...H, Prefer: "resolution=merge-duplicates,return=minimal" },
-      body: JSON.stringify({ name: String(b.name || "").slice(0, 40), endpoint: sub.endpoint, sub, ua: String(b.ua || "").slice(0, 200), standalone: !!b.standalone, store: /^(spk|nha|tkm)$/.test(b.store) ? b.store : null }) });
+      body: JSON.stringify({ name: String(b.name || "").slice(0, 40), endpoint: sub.endpoint, sub, ua: String(b.ua || "").slice(0, 200), standalone: !!b.standalone, store: /^(spk|nha|tkm)$/.test(b.store) ? b.store : null, staff_name: b.store === "spk" && b.staff ? String(b.staff).slice(0, 40) : null }) });
     return j({ ok: r.ok });
+  }
+  if (b.action === "staff") {
+    const rows = await get(`staff?select=name,active&order=name.asc`);
+    return j({ ok: true, names: rows.filter((r: any) => r.active !== false).map((r: any) => r.name) });
   }
   if (b.action === "pause") {
     const ep = String(b.endpoint || ""); if (!ep) return j({ ok: false }, 400);
@@ -55,8 +67,9 @@ Deno.serve(async (req) => {
     return j({ ok: true, paused: !!b.paused });
   }
   if (b.action === "state") {
-    const row = (await get(`push_test_subs?endpoint=eq.${encodeURIComponent(String(b.endpoint || ""))}&select=paused`))[0];
-    return j({ ok: !!row, paused: row ? row.paused : false });
+    const row = (await get(`push_test_subs?endpoint=eq.${encodeURIComponent(String(b.endpoint || ""))}&select=paused,staff_name`))[0];
+    const duty = row?.staff_name ? (await onDuty()).has(row.staff_name) : null;
+    return j({ ok: !!row, paused: row ? row.paused : false, staff: row?.staff_name || null, on_duty: duty });
   }
   if (b.action === "send") {
     const ep = String(b.endpoint || "");
