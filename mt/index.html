@@ -1044,8 +1044,14 @@ async function loadNG(poll){if(DEMO||!TOKEN||RO)return;try{const r=await fetch(N
 const NGW={arrived:"着きました",late:"少し遅れます",lost:"スタッフが見つからない",parked:"車を停めました"};
 // ★2026-11-11 nosh「押したらユーザー側はどんなアクションになるのか」：受付の下に「次にすること」を常に出す。確認待ちの間は20秒ごとに読み直し、確認されたらその場で「スタッフが確認しました」に変える（画面が見えている時だけ）
 const NGNEXT={arrived:"スタッフに伝えました。この場所でお待ちください。スタッフが向かいます",lost:"いまの場所をスタッフに伝えました。その場でお待ちください。スタッフから声をかけます",late:"お伝えしました。安全運転でお越しください。スタッフはお待ちしています",parked:"返却完了です。このままお帰りいただけます"};
+/* ★2026-11-11 nosh：予定の時刻より前に「着きました」「見つからない」を押した時、「もう来る」と思わないように予定の時刻（承認後の値・送迎はご案内のバス）を添える。過ぎたら今の文 */
+function ngDue(back){const r=DATA&&DATA.reservation;if(!r)return null;let t,day,bus=false;if(back){t=hm(r.return_time);day=String(r.return_date||"").slice(0,10);}else{bus=!!(SH||[]).find(y=>y&&y.type==="PUB"&&/^\d{1,2}:\d{2}/.test(String(y.time||"")));const b=busOf(r,"go");t=b.t;day=b.day;}if(!t||!day)return null;const ms=Date.parse(day+"T"+t+":00+09:00");return isNaN(ms)?null:{t,ms,bus,w:back?backWord(r):goWord(r)};}
+const NGCOME={"お届け":1,"お迎え":1,"回収":1};
+function ngEarly(n,back){if(!n||(n.kind!=="arrived"&&n.kind!=="lost"))return"";const d=ngDue(back);if(!d||!(Date.parse(n.created_at)<d.ms)||Date.now()>=d.ms)return"";const tt=`<b translate="no">${d.t}</b>`,here=n.kind==="lost"?"その場で":"この場所で";
+  if(n.acked_at)return `<span>${tt}<span>${NGCOME[d.w]?"前後に伺います。":"前後にご案内します。"}${here}お待ちください</span></span>`;
+  return `<span>${n.kind==="lost"?"<span>いまの場所をスタッフに伝えました。</span>":""}<span>${d.w}は${d.bus?"ご案内のバスの時刻":"ご予約の時刻"}（</span>${tt}<span>前後）です。それまで${here}お待ちください</span></span>`;}
 function ngLine(back){const n=NG;if(!n||(n.leg==="back")!==back||!NGW[n.kind])return"";const t=x=>clock(x).split(" ")[1]||"";
-  return `<div class="ack" data-ng="${back?1:0}"><div><i>✓</i><span><b>「${NGW[n.kind]}」</b> 受け付けました</span><time translate="no">${t(n.created_at)}</time></div>${n.acked_at?`<div><i class="g">✓</i><span>スタッフが確認しました</span><time translate="no">${t(n.acked_at)}</time></div>`:`<div><i class="w"></i><span class="sub">スタッフの確認を待っています</span></div>`}${NGNEXT[n.kind]?`<div class="ngnext"><span>${NGNEXT[n.kind]}</span></div>`:""}</div>`;}
+  return `<div class="ack" data-ng="${back?1:0}"><div><i>✓</i><span><b>「${NGW[n.kind]}」</b> 受け付けました</span><time translate="no">${t(n.created_at)}</time></div>${n.acked_at?`<div><i class="g">✓</i><span>スタッフが確認しました</span><time translate="no">${t(n.acked_at)}</time></div>`:`<div><i class="w"></i><span class="sub">スタッフの確認を待っています</span></div>`}${(e=>e?`<div class="ngnext">${e}</div>`:NGNEXT[n.kind]?`<div class="ngnext"><span>${NGNEXT[n.kind]}</span></div>`:"")(ngEarly(n,back))}</div>`;}
 let NG_POLL=null;
 function ngWatch(){clearInterval(NG_POLL);NG_POLL=null;if(DEMO||!TOKEN||RO||!NG||NG.acked_at)return;
   NG_POLL=setInterval(async()=>{if(document.visibilityState!=="visible")return;const was=NG;await loadNG(true);
@@ -2005,6 +2011,21 @@ const D={
 "スタッフに伝えました。この場所でお待ちください。スタッフが向かいます":["We've told the staff. Please wait here — staff are on their way","已通知工作人員。請在此處稍候，工作人員正在前往","직원에게 전달했습니다. 이 장소에서 기다려 주세요. 직원이 가고 있습니다"],
 "いまの場所をスタッフに伝えました。その場でお待ちください。スタッフから声をかけます":["We've told the staff where you are. Please wait there — staff will come and find you","已將您目前的位置告知工作人員。請在原地稍候，工作人員會主動與您聯繫","현재 위치를 직원에게 전달했습니다. 그 자리에서 기다려 주세요. 직원이 말을 걸어 드립니다"],
 "お伝えしました。安全運転でお越しください。スタッフはお待ちしています":["We've let the staff know. Please drive safely — staff will be waiting for you","已為您轉達。請注意行車安全，工作人員會等候您","전달했습니다. 안전 운전으로 와 주세요. 직원이 기다리고 있습니다"],
+"お迎えはご案内のバスの時刻（":["Pickup is at your bus time (", "接送時間為您預約的巴士時刻（", "픽업은 안내된 버스 시간("],
+"お迎えはご予約の時刻（":["Pickup is at your booked time (", "接送時間為您預約的時間（", "픽업은 예약 시간("],
+"お届けはご予約の時刻（":["Delivery is at your booked time (", "送車時間為您預約的時間（", "배달은 예약 시간("],
+"回収はご予約の時刻（":["Collection is at your booked time (", "取車時間為您預約的時間（", "회수는 예약 시간("],
+"返却はご予約の時刻（":["Return is at your booked time (", "還車時間為您預約的時間（", "반납은 예약 시간("],
+"受け取りはご予約の時刻（":["Pick-up of the car is at your booked time (", "取車時間為您預約的時間（", "차량 인수는 예약 시간("],
+"ご来店はご予約の時刻（":["Your visit is at your booked time (", "到店時間為您預約的時間（", "방문은 예약 시간("],
+"ご出発はご予約の時刻（":["Departure is at your booked time (", "出發時間為您預約的時間（", "출발은 예약 시간("],
+"前後）です。それまでこの場所でお待ちください":["or so). Please wait here until then", "前後）。在那之前請在此處稍候", "전후)입니다. 그때까지 이 장소에서 기다려 주세요"],
+"前後）です。それまでその場でお待ちください":["or so). Please wait where you are until then", "前後）。在那之前請在原地稍候", "전후)입니다. 그때까지 그 자리에서 기다려 주세요"],
+"いまの場所をスタッフに伝えました。":["We've told the staff where you are.", "已將您目前的位置告知工作人員。", "현재 위치를 직원에게 전달했습니다."],
+"前後に伺います。この場所でお待ちください":["or so — we'll come to you then. Please wait here", "前後前往。請在此處稍候", "전후에 찾아뵙겠습니다. 이 장소에서 기다려 주세요"],
+"前後に伺います。その場でお待ちください":["or so — we'll come to you then. Please wait where you are", "前後前往。請在原地稍候", "전후에 찾아뵙겠습니다. 그 자리에서 기다려 주세요"],
+"前後にご案内します。この場所でお待ちください":["or so — we'll take care of you then. Please wait here", "前後為您辦理。請在此處稍候", "전후에 안내해 드립니다. 이 장소에서 기다려 주세요"],
+"前後にご案内します。その場でお待ちください":["or so — we'll take care of you then. Please wait where you are", "前後為您辦理。請在原地稍候", "전후에 안내해 드립니다. 그 자리에서 기다려 주세요"],
 "返却完了です。このままお帰りいただけます":["Return complete. You're free to go","還車完成。您可以直接離開","반납이 완료되었습니다. 이대로 돌아가셔도 됩니다"],
 "渋滞で遅れることがあります。遅れるときはこの画面でお知らせします":["Traffic jams can cause delays. If we're running late, we'll show it on this page","可能因塞車而延誤。延誤時會在此頁面通知您","교통 체증으로 늦어질 수 있습니다. 늦어지면 이 화면에서 알려드립니다"],
 "どうしますか":["What will you do?", "您要怎麼做？", "어떻게 하시겠습니까?"],
