@@ -121,7 +121,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1221';
+var CV='spk-v1222';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=1055').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -2322,9 +2322,19 @@ function VehicleManager({vehicles,onVehiclesChange,vehicleClasses,onDeleteVehicl
             setPartnerCompanies(pcList||[]);
           }catch(e){console.warn("[partnerCompany sync]",e);}
         }
-        const row={code:vToSave.code,name:vToSave.name,plate_no:vToSave.no,type:vToSave.type,grade:vToSave.grade||"",seats:vToSave.seats,insurance_veh:!!vToSave.insuranceVeh,year:vToSave.year||"",color:vToSave.color||"",equip:vToSave.equip||"",ins_price:vToSave.insPrice||"",memo:vToSave.memo||"",insurance_annual:Number(vToSave.insuranceAnnual)||0,lease_monthly:Number(vToSave.leaseMonthly)||0,shaken_cost:Number(vToSave.shakenCost)||0,tenken_cost:Number(vToSave.tenkenCost)||0,car_tax:Number(vToSave.carTax)||0,oil_interval_km:Number(vToSave.oilIntervalKm)||5000,inspection_due_date:vToSave.inspectionDueDate||null,inspection_next_date:vToSave.inspectionNextDate||null,tenken_due_date:vToSave.tenkenDueDate||null,tenken_next_date:vToSave.tenkenNextDate||null,active:vToSave.active!==false,caution_note:vToSave.cautionNote||null,owner_company:vToSave.ownerCompany||"HANDYMAN",owner_label:vToSave.ownerLabel||"",partner_daily_cost:Number(vToSave.partnerDailyCost)||0,specs:(vToSave.specs&&typeof vToSave.specs==="object")?vToSave.specs:{}};
-        const{error}=await sb.from("vehicles").upsert(row,{onConflict:"code"});
-        if(error)throw new Error(error.message);
+        const vRow=(vToSave)=>({code:vToSave.code,name:vToSave.name,plate_no:vToSave.no,type:vToSave.type,grade:vToSave.grade||"",seats:vToSave.seats,insurance_veh:!!vToSave.insuranceVeh,year:vToSave.year||"",color:vToSave.color||"",equip:vToSave.equip||"",ins_price:vToSave.insPrice||"",memo:vToSave.memo||"",insurance_annual:Number(vToSave.insuranceAnnual)||0,lease_monthly:Number(vToSave.leaseMonthly)||0,shaken_cost:Number(vToSave.shakenCost)||0,tenken_cost:Number(vToSave.tenkenCost)||0,car_tax:Number(vToSave.carTax)||0,oil_interval_km:Number(vToSave.oilIntervalKm)||5000,inspection_due_date:vToSave.inspectionDueDate||null,inspection_next_date:vToSave.inspectionNextDate||null,tenken_due_date:vToSave.tenkenDueDate||null,tenken_next_date:vToSave.tenkenNextDate||null,active:vToSave.active!==false,caution_note:vToSave.cautionNote||null,owner_company:vToSave.ownerCompany||"HANDYMAN",owner_label:vToSave.ownerLabel||"",partner_daily_cost:Number(vToSave.partnerDailyCost)||0,specs:(vToSave.specs&&typeof vToSave.specs==="object")?vToSave.specs:{}});
+        const row=vRow(vToSave);
+        if(modal.mode==="edit"){
+          // ★2026-11-11 その1台の「変えた欄だけ」を update。specs はキー単位で、DBの最新 specs に変えたキーだけ重ねる（他の人・他画面の値を戻さない）
+          const before=vRow(modal.v),diff={};
+          Object.keys(row).forEach(k=>{if(k==="code"||k==="specs")return;if(JSON.stringify(row[k])!==JSON.stringify(before[k]))diff[k]=row[k];});
+          const s0=before.specs||{},s1=row.specs||{};const sk=[...new Set([...Object.keys(s0),...Object.keys(s1)])].filter(k=>JSON.stringify(s0[k])!==JSON.stringify(s1[k]));
+          if(sk.length){const{data:cur,error:e0}=await sb.from("vehicles").select("specs").eq("code",row.code).maybeSingle();if(e0)throw new Error(e0.message);const ns={...((cur&&cur.specs)||{})};sk.forEach(k=>{if(s1[k]===undefined)delete ns[k];else ns[k]=s1[k];});diff.specs=ns;}
+          if(Object.keys(diff).length){const{error}=await sb.from("vehicles").update(diff).eq("code",row.code);if(error)throw new Error(error.message);}
+        }else{
+          const{error}=await sb.from("vehicles").upsert(row,{onConflict:"code"});
+          if(error)throw new Error(error.message);
+        }
         const refreshed=await DB.fetchVehicles();
         if(refreshed&&refreshed.length>0)onVehiclesChange(refreshed);
       }
@@ -24212,9 +24222,8 @@ function App(){
   },[staff]);
   const setVehiclesSync=useCallback((fn)=>{
     const next=sortVehicles(typeof fn==="function"?fn(vehicles):fn);
-    // 全フィールドDB保存（localStorage不要）
-    setVehicles(next);markLocalChange("vehicles");
-    DB.saveVehicles(next).then(()=>markDbSync("vehicles")).catch(e=>console.error("saveVehicles error:",e));
+    // ★2026-11-11 LEDGER-ONE：全車一括 upsert を廃止（開きっぱなしの古い画面が他の人の変更を戻すため）。DBへは車両マスターの保存が「その1台・変えた欄だけ」書く
+    setVehicles(next);markLocalChange("vehicles");markDbSync("vehicles");
   },[vehicles]);
   const setShiftsSync=useCallback((fn)=>{
     const next=typeof fn==="function"?fn(shifts):fn;
@@ -26023,7 +26032,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.717";
+const APP_VERSION="v4.7.718";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
