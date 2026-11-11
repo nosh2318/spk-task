@@ -55,7 +55,7 @@ input.pv.b{background:#fbf5ee;border-color:#e0bf9c}
 .histbl th.rev{background:#2f3b55;color:#fff}
 .histbl th.rev.cur{background:#3f7a72}
 .histbl tr.hi td{background:#fbf5ee}
-.histbl tr.cgtop td{border-top:2px solid #64748b} /* クラスの境目（10/31 OTA入力中に分からなくなる） */
+.histbl tr.cgtop td{box-shadow:inset 0 2px 0 #64748b} /* クラスの境目（10/31 OTA入力中に分からなくなる）。11/11 線の重なりで消える画面があったので内側の影で描く */
 .histbl td.chg{text-align:left;color:#64748b;white-space:normal;min-width:180px;max-width:260px;font-size:10px}
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#0f172a;color:#fff;padding:11px 18px;border-radius:4px;font-size:13px;z-index:200;opacity:0;transition:.3s}
 .toast.on{opacity:1}
@@ -140,10 +140,15 @@ var INACTIVE={bdc:{},nha:{C:'販売なし',S:'販売なし'},spk:{},tkm:{}};
 // ★OTAごとの掲載クラス（書いてあるOTAだけ絞る・無ければ全クラス）：那覇RDC=A・B・H／GGO=A（10/25）
 var CHAN_CLS={nha:{rentalcar:['A','B','H'],gogoout:['A']}};
 function chanHas(k,c){var l=(CHAN_CLS[STORE]||{})[k];return k==='official'||!l||l.indexOf(c)>=0;}
-function inactS(c){return (INACTIVE[STORE]||{})[c]||'';} // 店として販売なし
+var INACTIVE_FROM={}; // ◯月から販売なし（例 {spk:{H:'2027-04'}}）。11/11 札幌Hも含め全クラス6/30までリリース→なし
+// ★2026-11-11 販売（クラスごと）はデータ側に持つ＝各店の sale {クラス:'販売なし' または 'YYYY-MM'(その月から販売なし)}。
+//   「📏 ルール」タブの「🛒 販売」で直して保存（PR不要）。sale がまだ無い店だけ、上の INACTIVE / INACTIVE_FROM を使う。
+function saleOf(s){var P=PRICE[s];if(P&&P.sale)return P.sale;var o={};
+  Object.keys(INACTIVE[s]||{}).forEach(function(c){o[c]='販売なし';});Object.keys(INACTIVE_FROM[s]||{}).forEach(function(c){o[c]=INACTIVE_FROM[s][c];});return o;}
+function saleStop(s,c,ym){var v=saleOf(s)[c];if(!v)return false;if(v==='販売なし')return true;return !!ym&&ym>=v;}
+function inactS(c){return saleOf(STORE)[c]==='販売なし'?'販売なし':'';} // 店として販売なし
 function inact(c){return inactS(c)||(chanHas(CHAN,c)?'':'掲載なし');} // 選択中のOTAで販売なし
-var INACTIVE_FROM={spk:{H:'2027-04'}}; // 札幌Hは3/31まで販売（11/3 オーナー：10月末まで→3/31まで。A2・B2は11月以降も販売：10/22）
-function inactAt(c,ym){if(refOf(c))return true;if(!chanHas(CHAN,c))return true;var f=(INACTIVE_FROM[STORE]||{})[c];if(f)return ym>=f;return !!inact(c);}
+function inactAt(c,ym){if(refOf(c))return true;if(!chanHas(CHAN,c))return true;return saleStop(STORE,c,ym)||!!inact(c);}
 // ★見本：基本料金の3段（月→段は全店共通）
 var TIER_OF_MONTH={1:'L',2:'L',3:'R',4:'L',5:'R',6:'R',7:'H',8:'H',9:'H',10:'R',11:'R',12:'L'}; // 10/20 繁忙=7・8・9月のみ
 var TIER_NAME={L:'閑散 TL',R:'通常 TR',H:'繁忙 TH'};
@@ -297,7 +302,11 @@ function render(){
 // ルール＝狙い順位と、クラスごとの決め方（市場に合わせる／基準クラス＋差額）と下限。高松は2ブランド共通で「🍜 高松」に1つだけ持つ。
 // 確認待ち＝ロボが「人の確認が要る」とした値段（掲載が少ない・30%以上動く・逸脱など）。「採用」を押して保存すると、次の決定の回でロボが書く。
 // 固定＝ロボが変えない所（人が手で決めた値段）。窓口・段が空欄なら全部。
-var RANK_OPTS=['最安','2位','3位','5位'];
+var RANK_OPTS=['最安','2位','3位','5位','10位','15位','20位'];
+// ★2026-11-11 市場のクラスはクラスごとに狙い順位を選ぶ（店の狙い順位の欄はやめた）。データ＝rules.classes[クラス].rank {base,low,high}。
+//   クラスにまだ入っていないときは rules.rank（旧・店の狙い順位）を表示・使用する
+function setCRank(c,k,v){var R=ruleObj();R.classes[c]=R.classes[c]||{};var r=R.classes[c].rank||{};if(v)r[k]=v;else delete r[k];
+  if(Object.keys(r).length)R.classes[c].rank=r;else delete R.classes[c].rank;}
 function escH(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function ruleObj(){var P=(STORE==='bdc')?null:PRICE[STORE];if(!P)return null;
   P.rules=P.rules||{rank:{},classes:{}};P.rules.rank=P.rules.rank||{};P.rules.classes=P.rules.classes||{};return P.rules;}
@@ -311,6 +320,9 @@ function addFixed(){var P=PRICE[STORE],g=function(id){return document.getElement
   if(!g('fx_ota')&&!g('fx_cls')){toast('窓口かクラスを選んでください');return;}
   P.fixed=P.fixed||[];P.fixed.push({ota:g('fx_ota'),cls:g('fx_cls'),seg:g('fx_seg').trim(),memo:g('fx_memo').trim()});render();}
 function delFixed(i){PRICE[STORE].fixed.splice(i,1);render();}
+function saleEdit(){var P=PRICE[STORE];if(!P.sale)P.sale=JSON.parse(JSON.stringify(saleOf(STORE)));return P.sale;}
+function setSale(c,v){var S=saleEdit();if(!v)delete S[c];else if(v==='月')S[c]=S[c]&&S[c]!=='販売なし'?S[c]:ymShift(curYM(),1);else S[c]=v;render();}
+function setSaleFrom(c,ym){if(!ym)return;saleEdit()[c]=ym;render();}
 function ruleTab(){
   var P=PRICE[STORE],R=ruleObj(),html='',td='padding:3px 4px;border-bottom:1px solid #eef1f5;text-align:right',th='padding:3px 4px;border-bottom:2px solid #d5dbe5;text-align:left;font-size:12px;white-space:nowrap';
   var num=function(c,k,v,dis){return '<td style="'+td+'"><input type="number" step="100" style="width:72px" value="'+(v==null?'':v)+'"'+(dis?' disabled':'')+' onchange="setRule(\''+c+'\',\''+k+'\',this.value)"></td>';};
@@ -318,19 +330,22 @@ function ruleTab(){
   else{
     var rk=R.rank,sel=function(k){return '<select onchange="setRank(\''+k+'\',this.value)">'+['<option value=""></option>'].concat(RANK_OPTS.map(function(o){return '<option'+(rk[k]===o?' selected':'')+'>'+o+'</option>';})).join('')+'</select>';};
     html+='<div class="card"><h2>📏 価格ルール（'+({nha:'那覇',spk:'札幌',tkm:'高松（HANDYMAN・BUDDICA共通）'})[STORE]+'）</h2>'
-      +'<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;font-size:13px;margin:4px 0">狙い順位<span>基本 '+sel('base')+'</span><span>安い日 '+sel('low')+'</span><span>高い日 '+sel('high')+'</span></div>';
+      +''; // 11/11 店の狙い順位の欄はやめた（クラスごとの「狙い」だけ）。rules.rank は、クラスに無いときの予備として残す
     var fd=(FLOOR_DEF[STORE]||{}).skyticket;
     if(fd)html+='<div style="margin:6px 0;padding:6px 8px;background:#fde8e8;border-radius:4px;font-size:12px"><b>スカイの下限ライン（固定・最優先・下回ると掲載停止）</b>：'
-      +Object.keys(fd).map(function(c){return c+' '+fd[c][0].toLocaleString();}).join('／')+'（日帰り・免責別）。下限価格をいくつにしても、スカイはこれより下げません。</div>';
+      +Object.keys(fd).map(function(c){return c+' '+fd[c].map(function(v){return v.toLocaleString();}).join('・');}).join('／')
+      +'（'+NIGHTS.map(function(n){return n[0];}).join('・')+'の合計・免責別）。下限価格をいくつにしても、スカイはこれより下げません。</div>';
     var classes=clsKeys(Object.assign({},P.price,R.classes)).filter(function(c){return !inactS(c)||R.classes[c];}); // 高松A(BUDDICAだけ)もルールにあれば出す
-    html+='<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px;min-width:900px"><tr>'
-      +['クラス','決め方','基準クラス','差額・閑散(TL)','差額・通常(TR)','差額・繁忙(TH)','差額・安い日','差額・高い日','下限価格','メモ'].map(function(h){return '<th style="'+th+'">'+h+'</th>';}).join('')+'</tr>';
+    html+='<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px;min-width:1150px"><tr>'
+      +['クラス','決め方','基準クラス','狙い・基本','狙い・安い日','狙い・高い日','差額・閑散(TL)','差額・通常(TR)','差額・繁忙(TH)','差額・安い日','差額・高い日','下限価格','メモ'].map(function(h){return '<th style="'+th+'">'+h+'</th>';}).join('')+'</tr>';
     classes.forEach(function(c){
       var r=R.classes[c]||{},mk=(r.how||'市場')==='市場';
       html+='<tr><td style="'+td+';text-align:left;white-space:nowrap" title="'+escH(clsCar(c))+'"><b>'+c+'</b></td>'
         +'<td style="'+td+';text-align:left"><select onchange="setRule(\''+c+'\',\'how\',this.value)"><option'+(mk?' selected':'')+'>市場</option><option'+(!mk?' selected':'')+'>連動</option></select></td>'
         +'<td style="'+td+';text-align:left"><select'+(mk?' disabled':'')+' onchange="setRule(\''+c+'\',\'base\',this.value)"><option value=""></option>'
         +classes.filter(function(x){return x!==c;}).map(function(x){return '<option'+(r.base===x?' selected':'')+'>'+x+'</option>';}).join('')+'</select></td>'
+        +['base','low','high'].map(function(k){var cr=(r.rank||{})[k]||'';return '<td style="'+td+';text-align:left"><select'+(mk?'':' disabled')+' onchange="setCRank(\''+c+'\',\''+k+'\',this.value)">'
+          +(mk?'':'<option></option>')+RANK_OPTS.map(function(o){return '<option'+(mk&&(cr||rk[k])===o?' selected':'')+'>'+o+'</option>';}).join('')+'</select></td>';}).join('')
         +num(c,'TL',r.TL,mk)+num(c,'TR',r.TR,mk)+num(c,'TH',r.TH,mk)+num(c,'low',r.low,mk)+num(c,'high',r.high,mk)+num(c,'floor',r.floor,false)
         +'<td style="'+td+';text-align:left"><input style="width:180px" value="'+escH(r.memo)+'" onchange="setRule(\''+c+'\',\'memo\',this.value)"></td></tr>';
     });
@@ -357,6 +372,15 @@ function ruleTab(){
     +done.slice(-30).reverse().map(function(t){var x=t[0];return escH(x.date)+' '+escH(chanName(x.ota))+' '+escH(x.cls)+' '+escH(x.seg)+' '+(x.cur==null?'空':x.cur)+'→'+x.new+'：<b>'+escH(x.status)+'</b>'+(x.applied?'（反映 '+escH(x.applied)+'）':'')
       +(x.applied?'':' <a href="#" onclick="setQueue('+t[1]+',\'\');return false">戻す</a>');}).join('<br>')+'</div></details>';}
   html+='</div>';
+  // 販売（クラスごと）
+  var sl=saleOf(STORE);
+  html+='<div class="card"><h2>🛒 販売</h2><table style="border-collapse:collapse;font-size:13px">'
+    +clsKeys(P.price).filter(function(c){return !refOf(c);}).map(function(c){var v=sl[c]||'',md=v&&v!=='販売なし';
+      return '<tr><td style="'+td+';text-align:left;white-space:nowrap"><b>'+c+'</b> <span style="font-size:11px;color:#64748b">'+escH(clsCar(c))+'</span></td>'
+        +'<td style="'+td+';text-align:left"><select onchange="setSale(\''+c+'\',this.value)">'
+        +[['','販売中'],['販売なし','販売なし'],['月','◯月から販売なし']].map(function(o){return '<option value="'+o[0]+'"'+((o[0]===''&&!v)||(o[0]==='販売なし'&&v==='販売なし')||(o[0]==='月'&&md)?' selected':'')+'>'+o[1]+'</option>';}).join('')
+        +'</select>'+(md?' <input type="month" value="'+escH(v)+'" onchange="setSaleFrom(\''+c+'\',this.value)">':'')+'</td></tr>';}).join('')
+    +'</table></div>';
   // 固定
   var fx=P.fixed||[],chs=chansOf().map(function(c){return c.k;});
   html+='<div class="card"><h2>🔒 固定（ロボが変えない所）</h2>'
@@ -366,7 +390,7 @@ function ruleTab(){
     +'<select id="fx_cls"><option value="">全クラス</option>'+clsKeys(P.price).map(function(c){return '<option>'+c+'</option>';}).join('')+'</select>'
     +'<input id="fx_seg" placeholder="段（空欄＝全部・例 TL / LD / HN）" style="width:200px"><input id="fx_memo" placeholder="メモ" style="width:160px">'
     +'<button class="btn sm" onclick="addFixed()">追加</button></div></div>';
-  html+='<button class="btn save" onclick="save()">💾 保存（ルール・確認待ち・固定：'+({spk:'札幌',nha:'那覇',tkm:'高松',bdc:'BUDDICA高松'})[STORE]+'）</button>';
+  html+='<button class="btn save" onclick="save()">💾 保存（ルール・確認待ち・販売・固定：'+({spk:'札幌',nha:'那覇',tkm:'高松',bdc:'BUDDICA高松'})[STORE]+'）</button>';
   return html;
 }
 
@@ -767,18 +791,40 @@ function changeItems(oldP,newP){var out=[];
       Object.keys(ns).sort(tierSort).forEach(function(t){var x=(a[c]||{})[t],y=(b[c]||{})[t];if(x!==y)out.push({ch:o.k,c:c,t:t,a:x,b:y});});});});
   return out;}
 var histAll=false;
+// ★2026-11-11 変更履歴を人が読みやすく：保存1回ごとにまとめ（日時・何の変更か・何か所・上げ/下げ）、
+//   中は「期間（日本語）→ クラス × 窓口 の 前→後（差）」の表。新しい2回分は開いた状態、古いものは閉じる（ユーザー）
+var SEG_JP={TL:'閑散',TR:'通常',TH:'繁忙',HN:'年末年始',HG:'GW',HB:'お盆',HS:'SW',HX:'臨時の高い日',LO:'10月の安い日',LN:'11月の安い日',LD:'12月の安い日'};
+function segJp(t){if(SEG_JP[t])return SEG_JP[t];var m=/^L([1-9])$/.exec(t||'');return m?m[1]+'月の安い日':String(t||'');}
 function histView(){
   var P=PRICE[STORE],old=normCopy(ORIG_RAW[STORE],STORE),pend=old?changeItems(old,P):[];
-  var rows=[];
-  pend.forEach(function(x){rows.push({ts:'未保存',x:x,pend:true});});
-  (P.history||[]).forEach(function(h){(h.items||[]).forEach(function(x){rows.push({ts:h.ts,x:x});});});
-  if(!histAll)rows=rows.filter(function(r){return r.x.ch===CHAN;});
-  var y=function(v){return v==null?'—':'¥'+(+v).toLocaleString();};
-  var body=rows.map(function(r){var x=r.x,d=(x.a!=null&&x.b!=null)?x.b-x.a:null;
-    return '<tr'+(r.pend?' style="background:#fefce8"':'')+'><td style="text-align:left">'+r.ts+'</td>'+(histAll?'<td style="text-align:left">'+chanName(x.ch).replace(/^[^ ]+ /,'')+'</td>':'')+'<td class="cls">'+clsName(x.c)+'</td><td class="knd">'+x.t+'</td><td>'+y(x.a)+'</td><td><b>'+y(x.b)+'</b></td><td style="color:'+(d>0?'#b0524b':d<0?'#4a6fa5':'#94a3b8')+'">'+(d==null?'':(d>0?'+':'')+d.toLocaleString())+'</td></tr>';}).join('');
+  var ents=[];
+  if(pend.length)ents.push({ts:'未保存',note:'まだ保存していない変更',items:pend,pend:true});
+  (P.history||[]).forEach(function(h){if(h.items)ents.push({ts:h.ts,note:h.changes||'',items:h.items});});
+  var yen=function(v){return v==null||isNaN(+v)?'—':(+v).toLocaleString();};
+  var shown=0;
+  var body=ents.map(function(e){
+    var its=e.items.filter(function(x){return histAll||x.ch===CHAN;});
+    if(!its.length&&e.items.length)return '';
+    var up=0,dn=0;its.forEach(function(x){if(x.a!=null&&x.b!=null){if(+x.b>+x.a)up++;else if(+x.b<+x.a)dn++;}});
+    var head='<b>'+escH(e.ts)+'</b>　'+escH(e.note)+(its.length?'　<span style="color:#64748b">'+its.length+'か所（上げ'+up+'・下げ'+dn+'）</span>':'');
+    if(!its.length)return '<div class="hrow" style="padding:6px 2px">'+head+'</div>';
+    var segs={},order=[];
+    its.forEach(function(x){if(!segs[x.t]){segs[x.t]={};order.push(x.t);}(segs[x.t][x.c]=segs[x.t][x.c]||{})[x.ch]=x;});
+    order.sort(tierSort);
+    var chs=histAll?chansOf().map(function(o){return o.k;}).filter(function(k){return its.some(function(x){return x.ch===k;});}):[CHAN];
+    var tbl=order.map(function(t){
+      return '<tr><td colspan="'+(chs.length+1)+'" style="text-align:left;background:#f1f5f9;font-weight:800">'+escH(segJp(t))+'</td></tr>'
+        +Object.keys(segs[t]).sort(clsSort).map(function(c){return '<tr><td class="cls">'+clsName(c)+'</td>'+chs.map(function(k){var x=segs[t][c][k];if(!x)return '<td></td>';
+          var d=(x.a!=null&&x.b!=null&&!isNaN(+x.a)&&!isNaN(+x.b))?(+x.b)-(+x.a):null;
+          return '<td style="white-space:nowrap">'+yen(x.a)+' → <b>'+yen(x.b)+'</b>'+(d?' <span style="color:'+(d>0?'#b0524b':'#4a6fa5')+'">（'+(d>0?'+':'')+d.toLocaleString()+'）</span>':'')+'</td>';}).join('')+'</tr>';}).join('');
+    }).join('');
+    shown++;
+    return '<details'+(shown<=2?' open':'')+' style="margin:6px 0;border:1px solid #e5eaf1;border-radius:4px;padding:6px 8px'+(e.pend?';background:#fefce8':'')+'"><summary style="cursor:pointer">'+head+'</summary>'
+      +'<div style="overflow-x:auto;margin-top:6px"><table class="histbl"><tr><th>クラス</th>'+chs.map(function(k){return '<th>'+chanName(k).replace(/^[^ ]+ /,'')+'</th>';}).join('')+'</tr>'+tbl+'</table></div></details>';
+  }).join('');
   var oldTxt=(P.history||[]).filter(function(h){return !h.items;});
   return '<div class="card"><h2>📜 変更履歴 <span style="margin-left:auto"><button class="clschip'+(histAll?'':' on')+'" onclick="histAll=false;render()">'+chanName(CHAN).replace(/^[^ ]+ /,'')+'</button> <button class="clschip'+(histAll?' on':'')+'" onclick="histAll=true;render()">全チャネル</button></span></h2>'
-   +(rows.length?'<div style="overflow-x:auto;max-height:420px;overflow-y:auto"><table class="histbl"><tr><th>日時</th>'+(histAll?'<th>チャネル</th>':'')+'<th>クラス</th><th>段</th><th>前</th><th>後</th><th>差</th></tr>'+body+'</table></div>':'<div class="muted">記録なし</div>')
+   +(body?'<div style="max-height:560px;overflow-y:auto">'+body+'</div>':'<div class="muted">記録なし</div>')
    +(oldTxt.length?'<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:#64748b">以前の記録（'+oldTxt.length+'件）</summary>'+oldTxt.map(function(h){return '<div class="hrow"><span class="hts">'+h.ts+'</span><span class="hch">'+(h.changes||'')+'</span></div>';}).join('')+'</details>':'')
    +'</div>';
 }
@@ -846,10 +892,10 @@ async function save(){
 // ===================== ①保存（ドッキング時に WRITE_ENABLED=true にする） =====================
 var WRITE_ENABLED=true; // 本番（ドッキング版）
 // ★2026-10-22 公式の基本料金（TL/TR/TH）が空のクラスがあれば保存しない（空だと公式HPで0円表示のおそれ）。
-//  販売していない月（INACTIVE / INACTIVE_FROM）は見ない＝那覇C・S、札幌4月以降のH は空でも止めない。
+//  販売していない月（各店の sale／無ければ INACTIVE / INACTIVE_FROM）は見ない＝那覇C・S、札幌4月以降のH は空でも止めない。
 function emptyBase(s){
   var off=((PRICE[s]||{}).channels||{}).official||{},t=off.tiers||{},ym0=curYM(),out=[];
-  var ina=function(c,ym){var f=(INACTIVE_FROM[s]||{})[c];if(f)return ym>=f;return !!((INACTIVE[s]||{})[c]);};
+  var ina=function(c,ym){return saleStop(s,c,ym);};
   clsKeys(off.price||{}).forEach(function(c){var need={};
     for(var i=0;i<HORIZON;i++){var ym=ymShift(ym0,i);if(!ina(c,ym))need[tierOf(ym)]=1;}
     var miss=['L','R','H'].filter(function(k){var v=(t[c]||{})[k];return need[k]&&(v==null||v===''||isNaN(+v));});
@@ -865,8 +911,10 @@ async function realSave(s){
   var ch=r.site.concat(r.ota);
   var items=changeItems(normCopy(ORIG_RAW[s],s),PRICE[s]);
   if(ch.length||items.length){P.history=P.history||[];P.history.unshift({ts:nowStr(),items:items,changes:ch.slice(0,30).join(' / ')+(ch.length>30?' ほか'+(ch.length-30)+'件':''),snap:{channels:JSON.parse(JSON.stringify(P.channels||{})),high:(P.high_dates||[]).length}});keepHist(P);}
-  // ★2026-11-11 ルール・確認待ち・固定だけを変えた保存も変更履歴に残す
+  // ★2026-11-11 ルール・確認待ち・固定・販売だけを変えた保存も変更履歴に残す
   var o0=JSON.parse(ORIG_RAW[s]||'{}'),rk=function(x){return JSON.stringify([x.rules||null,x.decide_queue||null,x.fixed||null]);};
+  var sk=function(x){return JSON.stringify(x.sale||null);};
+  if(sk(o0)!==sk(P)){var sv=P.sale||{};ch.push('販売：'+(Object.keys(sv).length?Object.keys(sv).sort(clsSort).map(function(c){return c+' '+(sv[c]==='販売なし'?'販売なし':sv[c].replace('-','/')+'から販売なし');}).join('・'):'全クラス販売中'));}
   if(!ch.length&&!items.length&&rk(o0)!==rk(P)){P.history=P.history||[];P.history.unshift({ts:nowStr(),items:[],changes:'ルール・確認待ち・固定を変更'});}
   var cur=await req(db,'GET',tbl+'?key=eq.'+KEYOF[s]+'&select=value');
   var obj=(cur.ok&&cur.data&&cur.data[0])?JSON.parse(cur.data[0].value):{};
