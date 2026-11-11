@@ -159,6 +159,7 @@ html.cvopen,html.cvopen body{overflow:hidden}
 .ack i{width:20px;height:20px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-style:normal;font-size:11px;color:#fff;background:var(--navy)}
 .ack i.g{background:var(--g)}
 .ack .ngnext{margin-top:2px;padding:9px 11px;border-radius:10px;background:#F3F5F8;font-size:13px;font-weight:700;line-height:1.5}
+.ack .ngplan{display:flex;flex-direction:column;align-items:stretch;text-align:left;gap:7px;margin-top:2px;padding:10px 11px;border-radius:10px;background:#F3F5F8;font-size:13px;line-height:1.5}.ngplan .ngp{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:flex-start;gap:4px 8px}.ngplan .k{color:#5b6472;font-weight:700}.ngplan b{font-size:18px}.ngplan s{text-decoration:none;color:#8a93a0;font-weight:700}.ngplan .s{color:#5b6472}.ngplan .a{font-weight:700;font-size:14px}.ngplan .rp{background:#E8F6EE;border-radius:8px;padding:6px 8px;font-weight:700;color:#11683A}.ngplan .rp i{font-style:normal}
 .ack i.w{background:#fff;border:2px dashed var(--o)}
 .ack time{margin-left:auto;font-weight:700;color:var(--sub);font-variant-numeric:tabular-nums}
 @keyframes ackIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
@@ -978,8 +979,42 @@ async function loadNG(poll){if(DEMO||!TOKEN||RO)return;try{const r=await fetch(N
 const NGW={arrived:"着きました",late:"少し遅れます",lost:"スタッフが見つからない",parked:"車を停めました"};
 // ★2026-11-11 nosh「押したらユーザー側はどんなアクションになるのか」：受付の下に「次にすること」を常に出す。確認待ちの間は20秒ごとに読み直し、確認されたらその場で「スタッフが確認しました」に変える（画面が見えている時だけ）
 const NGNEXT={arrived:"スタッフに伝えました。この場所でお待ちください。スタッフが向かいます",lost:"いまの場所をスタッフに伝えました。その場でお待ちください。スタッフから声をかけます",late:"お伝えしました。安全運転でお越しください。スタッフはお待ちしています",parked:"返却完了です。このままお帰りいただけます"};
+/* ★2026-11-11 nosh「まず予約時間の事実を出すのが必須 1確認しました 2送迎予定時間 3時刻表の確認 4必要なアクション」「時間を早められる場合のアクションも」「おくれます や他のパターンも」：
+   「スタッフに知らせる」を押したあと、①（上の確認の行）の下に ②予定の時刻（承認後の値）と担当の返事 ③時刻表 または 出発のお知らせ ④その時にすること を出す。
+   表のとおり：前＝予定の15分より前／ちょうど＝前後15分／後＝15分過ぎ。那覇のバスは定刻出発・待たない・次の便は1時間後・タクシー可（自己負担）。返事は担当の個別URLで押したもの（mypage_nudges.reply） */
+function ngMeans(r,back){const tk=SID==="tkm";
+  if(back){if(!tk&&ST.BUS&&isBdb(r.return_type))return"bus";if(tk&&/^bd/.test(tkRt(r)))return"shuttle";return isCol(r.return_type)?"col":"visit";}
+  if(!tk&&ST.BUS&&isPub(r.visit_type))return"bus";if(tk&&tkGo(r)==="pu")return"shuttle";return isDel(r.visit_type)?"del":"visit";}
+function ngPlan(n,back){if(!n||!NGW[n.kind]||n.kind==="parked")return"";const r=DATA&&DATA.reservation;if(!r)return"";
+  const tk=SID==="tkm",mn=ngMeans(r,back);if(n.kind==="late"&&mn!=="bus"&&!n.reply)return""; // 遅れます は那覇のバスだけ表で変える（ほかは今の文。担当が「◯時◯分までお待ちします」を返した時だけ出す）
+  let t,day;if(back){t=hm(r.return_time);day=r.return_date;}else if(tk){t=hm(r.pickup_time||r.lend_time);day=r.lend_date;}else{const b=busOf(r,"go");t=b.t;day=b.day;}
+  day=String(day||"").slice(0,10);if(!t||!day)return"";const due=Date.parse(day+"T"+t+":00+09:00");if(isNaN(due))return"";
+  const now=Date.now(),ph=now<due-15*60e3?"pre":now<=due+15*60e3?"just":"post";
+  const B=mn==="bus"?ST.BUS[back?"back":"go"]:null,P=x=>String(x).padStart(2,"0")+":"+String(B.m).padStart(2,"0"),bm=h=>Date.parse(day+"T"+P(h)+":00+09:00");
+  const my=B?Math.min(B.last,Math.max(B.first,+String((back?busOf(r,"back").t:t)||t).split(":")[0])):-1,nextAfter=ms=>{if(B)for(let h=B.first;h<=B.last;h++)if(bm(h)>ms)return h;return -1;};
+  const T=x=>`<b translate="no">${x}</b>`,S=x=>`<span>${x}</span>`,K=x=>`<span class="k">${x}</span>`;
+  const lab=mn==="bus"&&!back?"ご案内のバス":back?(mn==="col"?"回収の予定":"ご返却の予定"):mn==="del"?"お届けの予定":mn==="shuttle"?"お迎えの予定":"ご来店の予定";
+  let h=`<div class="ngp">${K(lab)}${T(t)}${S(mn==="bus"&&!back?"発（11-B）":"前後")}</div>`;
+  if(mn==="bus"&&back)h+=`<div class="ngp">${K("空港行きのバス")}${T(P(my))}${S("発")}</div>`;
+  const RP={early_bus:["前の便でお送りします","発（目安）"],early_go:[back&&mn==="shuttle"?"スタッフが早めにお送りします":"スタッフが早めに伺います","前後（目安）"],lost_go:["スタッフが声をかけに向かっています",""],late_bus:["次の便でご案内します","発"],late_wait:["スタッフは","までお待ちします"]}[n.reply];
+  if(RP)h+=`<div class="ngp rp"><i>✓</i>${S(RP[0])}${n.reply==="lost_go"?"":T(esc(n.reply_time||""))}${RP[1]?S(RP[1]):""}</div>`;
+  if(B){const mk=(n.reply==="early_bus"||n.reply==="late_bus")&&/^\d{1,2}:/.test(n.reply_time||"")?+String(n.reply_time).split(":")[0]:my;
+    h+=`<div class="ngp ttl">${[mk-1,mk,mk+1].filter(x=>x>=B.first&&x<=B.last).map(x=>x===mk?`<b translate="no">${P(x)}</b>${K("ご案内")}`:`<s translate="no">${P(x)}</s>`).join("")}</div><div class="ngp s">${S("バスは時刻どおりに出発します。乗り遅れたら次のバスへ（追加料金なし）")}</div>`;}
+  else if(mn==="del"||mn==="col"||(mn==="shuttle"&&!back))h+=`<div class="ngp s">${S(tk?"出発したら、この画面とメールでお知らせします":"出発したら、この画面とLINE（メール）でお知らせします")}</div>`;
+  const WAITCAR="車を停め、お忘れ物（ETCカードなど）を確かめて、車内でエアコンをかけたままお待ちください。担当が伺います";let a,btn="";
+  if(n.kind==="lost"){a=S("いまの場所をスタッフに伝えました。その場でお待ちください。スタッフから声をかけます");if(!back&&(mn==="bus"||mn==="shuttle"))btn=busLink();}
+  else if(n.kind==="late"&&mn!=="bus")a=S(NGNEXT.late);
+  else if(n.kind==="late"){const nx=nextAfter(bm(my));a=nx<0?S(back?"本日のバスは終了しました。タクシーで空港へお向かいください（代金はお客様のご負担）":"本日のバスは終了しました。タクシーでお越しください（代金はお客様のご負担）"):back?S("間に合わない時は次のバス")+T(P(nx))+S("発へ。お急ぎの時はタクシーで空港へ（代金はお客様のご負担）"):S("乗れなかったら、次のバス")+T(P(nx))+S("発へ（追加料金なし）。タクシーでも大丈夫です（代金はお客様のご負担）");}
+  else if(mn==="bus"&&!back){if(ph==="pre"){a=S("ご案内のバスの時刻まで、11-B乗り場の近くでお待ちください");btn=busLink();}else if(now<bm(my)+60e3)a=S("まもなく出発です。11-B乗り場でお待ちください");else{const nx=nextAfter(now);a=nx<0?S("本日のバスは終了しました。タクシーでお越しください（代金はお客様のご負担）"):S("ご案内のバスは出発しました。次のバスは")+T(P(nx))+S("発です（追加料金なし）。お急ぎの時はタクシーでも大丈夫です（代金はお客様のご負担）");}}
+  else if(mn==="bus"){if(n.reply!=="early_bus"&&now>bm(my)+60e3){const nx=nextAfter(now);a=nx<0?S("本日のバスは終了しました。タクシーで空港へお向かいください（代金はお客様のご負担）"):S("空港行きのバスは出発しました。次のバスは")+T(P(nx))+S("発です。お急ぎの時はタクシーで空港へ（代金はお客様のご負担）");}else a=S(WAITCAR);}
+  else if(mn==="shuttle"&&back)a=S(WAITCAR);
+  else if(mn==="shuttle"){if(ph==="pre"){a=S("お迎えの時刻まで、到着口を出てインフォメーションとレンタカーカウンターの間でお待ちください");btn=busLink();}else a=S("スタッフが向かっています。その場でお待ちください");}
+  else if(mn==="del")a=S(ph==="pre"?"それまでお部屋などでお待ちください":"スタッフが向かっています。その場でお待ちください");
+  else if(mn==="col")a=S(ph==="pre"?"それまで車内かお部屋でお待ちください":"スタッフが向かっています。車の近くでお待ちください。お忘れ物（ETCカードなど）をご確認ください");
+  else a=S("スタッフが順番にご案内します。少しお待ちください");
+  return `<div class="ngplan">${h}<div class="ngp a">${a}</div>${btn}</div>`;}
 function ngLine(back){const n=NG;if(!n||(n.leg==="back")!==back||!NGW[n.kind])return"";const t=x=>clock(x).split(" ")[1]||"";
-  return `<div class="ack" data-ng="${back?1:0}"><div><i>✓</i><span><b>「${NGW[n.kind]}」</b> 受け付けました</span><time translate="no">${t(n.created_at)}</time></div>${n.acked_at?`<div><i class="g">✓</i><span>スタッフが確認しました</span><time translate="no">${t(n.acked_at)}</time></div>`:`<div><i class="w"></i><span class="sub">スタッフの確認を待っています</span></div>`}${NGNEXT[n.kind]?`<div class="ngnext"><span>${NGNEXT[n.kind]}</span></div>`:""}</div>`;}
+  return `<div class="ack" data-ng="${back?1:0}"><div><i>✓</i><span><b>「${NGW[n.kind]}」</b> 受け付けました</span><time translate="no">${t(n.created_at)}</time></div>${n.acked_at?`<div><i class="g">✓</i><span>スタッフが確認しました</span><time translate="no">${t(n.acked_at)}</time></div>`:`<div><i class="w"></i><span class="sub">スタッフの確認を待っています</span></div>`}${(e=>e||(NGNEXT[n.kind]?`<div class="ngnext"><span>${NGNEXT[n.kind]}</span></div>`:""))(ngPlan(n,back))}</div>`;}
 let NG_POLL=null;
 function ngWatch(){clearInterval(NG_POLL);NG_POLL=null;if(DEMO||!TOKEN||RO||!NG||NG.acked_at)return;
   NG_POLL=setInterval(async()=>{if(document.visibilityState!=="visible")return;const was=NG;await loadNG(true);
@@ -1882,6 +1917,44 @@ const D={
 "スタッフに伝えました。この場所でお待ちください。スタッフが向かいます":["We've told the staff. Please wait here — staff are on their way","已通知工作人員。請在此處稍候，工作人員正在前往","직원에게 전달했습니다. 이 장소에서 기다려 주세요. 직원이 가고 있습니다"],
 "いまの場所をスタッフに伝えました。その場でお待ちください。スタッフから声をかけます":["We've told the staff where you are. Please wait there — staff will come and find you","已將您目前的位置告知工作人員。請在原地稍候，工作人員會主動與您聯繫","현재 위치를 직원에게 전달했습니다. 그 자리에서 기다려 주세요. 직원이 말을 걸어 드립니다"],
 "お伝えしました。安全運転でお越しください。スタッフはお待ちしています":["We've let the staff know. Please drive safely — staff will be waiting for you","已為您轉達。請注意行車安全，工作人員會等候您","전달했습니다. 안전 운전으로 와 주세요. 직원이 기다리고 있습니다"],
+"ご返却の予定":["Return time", "還車時間", "반납 예정"],
+"お迎えの予定":["Pickup time", "接送時間", "픽업 예정"],
+"ご来店の予定":["Visit time", "到店時間", "방문 예정"],
+"空港行きのバス":["Bus to the airport", "往機場的巴士", "공항행 버스"],
+"発（11-B）":["departs (stop 11-B)", "出發（11-B）", "출발(11-B)"],
+"前後":["approx.", "左右", "전후"],
+"発":["departs", "出發", "출발"],
+"前の便でお送りします":["We'll take you on an earlier bus:", "將以前一班為您接送：", "이전 편으로 모셔다 드립니다:"],
+"発（目安）":["departs (approx.)", "出發（預計）", "출발(예정)"],
+"スタッフが早めにお送りします":["Staff will take you earlier:", "工作人員將提早送您：", "직원이 조금 일찍 모셔다 드립니다:"],
+"スタッフが早めに伺います":["Staff will come earlier:", "工作人員將提早前往：", "직원이 조금 일찍 찾아갑니다:"],
+"前後（目安）":["approx.", "左右（預計）", "전후(예정)"],
+"スタッフが声をかけに向かっています":["Staff are on their way to find you", "工作人員正前往找您", "직원이 찾으러 가고 있습니다"],
+"次の便でご案内します":["We'll take you on the next bus:", "將以下一班為您接送：", "다음 편으로 안내해 드립니다:"],
+"スタッフは":["Staff will wait until", "工作人員會等到", "직원이"],
+"までお待ちします":["", "", "까지 기다립니다"],
+"バスは時刻どおりに出発します。乗り遅れたら次のバスへ（追加料金なし）":["The bus leaves on time. If you miss it, take the next one (no extra charge)", "巴士準時出發。錯過的話請搭下一班（不另收費）", "버스는 정시에 출발합니다. 놓치면 다음 버스를 타세요(추가 요금 없음)"],
+"出発したら、この画面とメールでお知らせします":["We'll let you know on this page and by email when we set off", "出發時會在此頁面和電子郵件通知您", "출발하면 이 화면과 이메일로 알려 드립니다"],
+"出発したら、この画面とLINE（メール）でお知らせします":["We'll let you know on this page and by LINE (or email) when we set off", "出發時會在此頁面和LINE（電子郵件）通知您", "출발하면 이 화면과 LINE(이메일)으로 알려 드립니다"],
+"本日のバスは終了しました。タクシーで空港へお向かいください（代金はお客様のご負担）":["Today's buses have finished. Please take a taxi to the airport (at your own cost)", "今日的巴士已結束。請搭計程車前往機場（費用自理）", "오늘 버스는 종료되었습니다. 택시로 공항에 가 주세요(요금은 고객 부담)"],
+"本日のバスは終了しました。タクシーでお越しください（代金はお客様のご負担）":["Today's buses have finished. Please come by taxi (at your own cost)", "今日的巴士已結束。請搭計程車前來（費用自理）", "오늘 버스는 종료되었습니다. 택시로 와 주세요(요금은 고객 부담)"],
+"間に合わない時は次のバス":["If you can't make it, take the next bus at", "趕不上的話請搭下一班", "늦으면 다음 버스"],
+"発へ。お急ぎの時はタクシーで空港へ（代金はお客様のご負担）":[". If you're in a hurry, take a taxi to the airport (at your own cost)", "。趕時間的話請搭計程車前往機場（費用自理）", "를 타세요. 급하시면 택시로 공항에 가 주세요(요금은 고객 부담)"],
+"乗れなかったら、次のバス":["If you miss it, take the next bus at", "搭不上的話請搭下一班", "못 타시면 다음 버스"],
+"発へ（追加料金なし）。タクシーでも大丈夫です（代金はお客様のご負担）":["(no extra charge). A taxi is also fine (at your own cost)", "（不另收費）。也可以搭計程車（費用自理）", "를 타세요(추가 요금 없음). 택시도 괜찮습니다(요금은 고객 부담)"],
+"ご案内のバスの時刻まで、11-B乗り場の近くでお待ちください":["Please wait near stop 11-B until your bus time", "請在您的巴士時間前於11-B乘車處附近等候", "안내 버스 시간까지 11-B 승차장 근처에서 기다려 주세요"],
+"まもなく出発です。11-B乗り場でお待ちください":["The bus leaves soon. Please wait at stop 11-B", "即將出發。請在11-B乘車處等候", "곧 출발합니다. 11-B 승차장에서 기다려 주세요"],
+"ご案内のバスは出発しました。次のバスは":["Your bus has left. The next bus departs at", "您的巴士已出發。下一班", "안내 버스는 출발했습니다. 다음 버스는"],
+"発です（追加料金なし）。お急ぎの時はタクシーでも大丈夫です（代金はお客様のご負担）":["(no extra charge). If you're in a hurry, a taxi is also fine (at your own cost)", "出發（不另收費）。趕時間的話也可以搭計程車（費用自理）", "출발입니다(추가 요금 없음). 급하시면 택시도 괜찮습니다(요금은 고객 부담)"],
+"空港行きのバスは出発しました。次のバスは":["The bus to the airport has left. The next one departs at", "往機場的巴士已出發。下一班", "공항행 버스는 출발했습니다. 다음 버스는"],
+"発です。お急ぎの時はタクシーで空港へ（代金はお客様のご負担）":[". If you're in a hurry, take a taxi to the airport (at your own cost)", "出發。趕時間的話請搭計程車前往機場（費用自理）", "출발입니다. 급하시면 택시로 공항에 가 주세요(요금은 고객 부담)"],
+"車を停め、お忘れ物（ETCカードなど）を確かめて、車内でエアコンをかけたままお待ちください。担当が伺います":["Please park, check for belongings (ETC card etc.), and wait in the car with the air conditioning on. Staff will come to you", "請停好車，確認是否有遺留物品（ETC卡等），開著空調在車內稍候。工作人員會前來", "차를 세우고 두고 내린 물건(ETC 카드 등)이 없는지 확인한 뒤, 에어컨을 켠 채 차 안에서 기다려 주세요. 직원이 찾아갑니다"],
+"お迎えの時刻まで、到着口を出てインフォメーションとレンタカーカウンターの間でお待ちください":["Until your pickup time, please wait outside arrivals, between the information desk and the car rental counters", "接送時間前，請出入境大廳後在服務台與租車櫃台之間等候", "픽업 시간까지 도착 출구를 나와 안내 데스크와 렌터카 카운터 사이에서 기다려 주세요"],
+"スタッフが向かっています。その場でお待ちください":["Staff are on their way. Please wait where you are", "工作人員正在前往。請在原地稍候", "직원이 가고 있습니다. 그 자리에서 기다려 주세요"],
+"それまでお部屋などでお待ちください":["Until then, please wait in your room or elsewhere", "在那之前請在房間等處稍候", "그때까지 객실 등에서 기다려 주세요"],
+"それまで車内かお部屋でお待ちください":["Until then, please wait in the car or your room", "在那之前請在車內或房間稍候", "그때까지 차 안이나 객실에서 기다려 주세요"],
+"スタッフが向かっています。車の近くでお待ちください。お忘れ物（ETCカードなど）をご確認ください":["Staff are on their way. Please wait near the car and check for belongings (ETC card etc.)", "工作人員正在前往。請在車子附近稍候，並確認是否有遺留物品（ETC卡等）", "직원이 가고 있습니다. 차 근처에서 기다려 주시고 두고 내린 물건(ETC 카드 등)을 확인해 주세요"],
+"スタッフが順番にご案内します。少しお待ちください":["Staff will help you in turn. Please wait a moment", "工作人員會依序為您服務。請稍候", "직원이 순서대로 안내해 드립니다. 잠시 기다려 주세요"],
 "返却完了です。このままお帰りいただけます":["Return complete. You're free to go","還車完成。您可以直接離開","반납이 완료되었습니다. 이대로 돌아가셔도 됩니다"],
 "渋滞で遅れることがあります。遅れるときはこの画面でお知らせします":["Traffic jams can cause delays. If we're running late, we'll show it on this page","可能因塞車而延誤。延誤時會在此頁面通知您","교통 체증으로 늦어질 수 있습니다. 늦어지면 이 화면에서 알려드립니다"],
 "どうしますか":["What will you do?", "您要怎麼做？", "어떻게 하시겠습니까?"],
