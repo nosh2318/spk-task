@@ -123,7 +123,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
 var CV='spk-v1223';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=1055').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=1056').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -20712,6 +20712,10 @@ const ACCT_CASH_CATEGORIES={
   income:["現金売上","小口現金追加","前受金入金","預り金入金","雑収入","その他入金"],
   expense:["燃料費","車両整備費","車検費","点検費","修理費","保険料","駐車場代","消耗品費","広告宣伝費","通信費","水道光熱費","旅費交通費","給与手当","外注費","支払手数料","租税公課","雑費","その他出金"]
 };
+// 💴 2026-11-11 スタッフ個別URL（staff.html 小口現金）の現金支出ミラー行（id=pc_・cash_out）は札幌APPの現金残高に含めない（スタッフの手元現金から出たお金）
+const isStaffPettyCashOut=r=>r&&r.type==="cash_out"&&String(r.id||"").startsWith("pc_");
+// スタッフ小口の残高合計（staff_petty_balance と同じ式：支給＋／カード対象外／それ以外の使用−・指定月まで累計）
+const pettyStaffTotal=(rows,uptoYM)=>{let t=0;const st={};(rows||[]).forEach(p=>{const ym=p.ym||String(p.date||"").slice(0,7);if(ym>uptoYM)return;const a=+p.amount||0;const v=p.kind==="topup"?a:p.kind==="card"?0:-a;t+=v;const n=p.staff_name||"";st[n]=(st[n]||0)+v;});return{total:t,staffCount:Object.keys(st).filter(n=>st[n]!==0).length};};
 const ACCT_EXTRA_CATEGORIES=["延長料金","追加オプション","免責補償","サイト外紹介","現地飛込み","法人直接","電話予約","その他"];
 const ACCT_CARD_CATEGORIES=["燃料費","車両整備費","車検費","点検費","修理費","保険料","駐車場代","消耗品費","広告宣伝費","通信費","水道光熱費","旅費交通費","外注費","支払手数料","租税公課","雑費","その他"];
 const ACCT_PAYMENT_METHODS=["現金","クレジットカード","電子マネー","QRコード決済","銀行振込","決済リンク","その他"];
@@ -20797,9 +20801,13 @@ function AccountingPanel({staff}){
   const currentOBKey=viewPeriod==="monthly"?selectedYM:selectedYear;
   const currentOB=openingBalances[currentOBKey]||0;
   useEffect(()=>{(async()=>{setLoading(true);const d=await DB.fetchAccounting();setRecords(d||[]);setLoading(false);})();},[]);
+  // 💴 スタッフ小口現金（spk_petty_cash＝個別URLの正本）を開くたびに読む（読取のみ・1000行ページング）
+  const[pettyRows,setPettyRows]=useState(null);
+  const loadPetty=async()=>{if(!sb)return;try{let all=[];for(let from=0;;from+=1000){const{data,error}=await sb.from("spk_petty_cash").select("id,staff_name,kind,amount,ym,date").order("id",{ascending:true}).range(from,from+999);if(error)throw error;all=all.concat(data||[]);if(!data||data.length<1000)break;}setPettyRows(all);}catch(e){dbLog("fetchPetty",false,String(e&&e.message||e));}};
+  useEffect(()=>{loadPetty();},[]);
   // FIX-3: 他端末の会計変更を反映（タブ復帰+30秒ポーリング）
   useEffect(()=>{
-    const refresh=async()=>{try{const d=await DB.fetchAccounting();if(d&&d.length)setRecords(d);}catch(e){}};
+    const refresh=async()=>{try{const d=await DB.fetchAccounting();if(d&&d.length)setRecords(d);}catch(e){}loadPetty();};
     const onVis=()=>{if(document.visibilityState==="visible")refresh();};
     document.addEventListener("visibilitychange",onVis);
     const timer=setInterval(()=>{if(document.visibilityState==="visible")refresh();},30000);
@@ -20918,7 +20926,7 @@ function AccountingPanel({staff}){
   const summary=useMemo(()=>{
     let totalIn=0,totalOut=0;
     if(acctTab==="cash"){
-      filtered.forEach(r=>{if(r.type==="cash_in")totalIn+=r.amount;else if(r.type==="cash_out")totalOut+=r.amount;});
+      filtered.forEach(r=>{if(r.type==="cash_in")totalIn+=r.amount;else if(r.type==="cash_out"&&!isStaffPettyCashOut(r))totalOut+=r.amount;});
     } else if(acctTab==="extra"){
       filtered.forEach(r=>{if(r.type==="extra_sales")totalIn+=r.amount;});
     } else if(acctTab==="advance"||acctTab==="card_pay"||acctTab==="personal_adv"){
@@ -20936,21 +20944,21 @@ function AccountingPanel({staff}){
     // 集計タブ用
     const periodKey=viewPeriod==="monthly"?selectedYM:selectedYear;
     const periodRecords=records.filter(r=>r.date&&r.date.startsWith(periodKey));
-    let cashIn=0,cashOut=0,cashCollected=0,salesTotal=0,advanceTotal=0,advancePaid=0,advanceUnpaid=0,cardPayTotal=0,cardPayPaid=0,padvAllTotal=0,padvAllPaid=0;
+    let pettyCashOut=0,cashIn=0,cashOut=0,cashCollected=0,salesTotal=0,advanceTotal=0,advancePaid=0,advanceUnpaid=0,cardPayTotal=0,cardPayPaid=0,padvAllTotal=0,padvAllPaid=0;
     periodRecords.forEach(r=>{
       if(r.type==="cash_in"){
         cashIn+=r.amount;
         if(r.category==="現金売上"||r.category==="雑収入")salesTotal+=r.amount;
         if(r.category==="現金売上"&&r.paid)cashCollected+=r.amount;// 回収済現金売上(hq-accounting同式)
       }
-      else if(r.type==="cash_out")cashOut+=r.amount;
+      else if(r.type==="cash_out"){cashOut+=r.amount;if(isStaffPettyCashOut(r))pettyCashOut+=r.amount;}
       else if(r.type==="extra_sales"){salesTotal+=r.amount;if(r.payMethod==="現金")cashIn+=r.amount;}
       else if(r.type==="advance"){advanceTotal+=r.amount;if(r.paid)advancePaid+=r.amount;else advanceUnpaid+=r.amount;}
       else if(r.type==="card_pay"){cardPayTotal+=r.amount;if(r.paid)cardPayPaid+=r.amount;}
       else if(r.type==="personal_adv"){padvAllTotal+=r.amount;if(r.paid)padvAllPaid+=r.amount;}
     });
     const totalExpense=cashOut+cardPayTotal+padvAllTotal;
-    return{totalIn,totalOut,balance:totalIn-totalOut,count:filtered.length,cashIn,cashOut,cashCollected,cashBalance:currentOB+cashIn-cashOut-cashCollected,salesTotal,advTotal,advPaid,advUnpaid,advanceTotal,advancePaid,advanceUnpaid,cardTotal,cardPaid,cardUnpaid,cardPayTotal,cardPayPaid,padvTotal,padvPaid,padvUnpaid,padvAllTotal,padvAllPaid,totalExpense};
+    return{totalIn,totalOut,balance:totalIn-totalOut,count:filtered.length,cashIn,cashOut,cashCollected,cashBalance:currentOB+cashIn-(cashOut-pettyCashOut)-cashCollected,pettyCashOut,salesTotal,advTotal,advPaid,advUnpaid,advanceTotal,advancePaid,advanceUnpaid,cardTotal,cardPaid,cardUnpaid,cardPayTotal,cardPayPaid,padvTotal,padvPaid,padvUnpaid,padvAllTotal,padvAllPaid,totalExpense};
   },[filtered,acctTab,records,viewPeriod,selectedYM,selectedYear,currentOB]);
 
   // 年度集計
@@ -20958,9 +20966,9 @@ function AccountingPanel({staff}){
     const ym={};
     records.filter(r=>r.date&&r.date.startsWith(selectedYear)).forEach(r=>{
       const m=r.date.substring(0,7);
-      if(!ym[m])ym[m]={cashIn:0,cashOut:0,cashCollected:0,salesTotal:0,advTotal:0,advPaid:0,cardTotal:0,cardPaid:0,padvTotal:0,padvPaid:0,count:0};
+      if(!ym[m])ym[m]={pettyCashOut:0,cashIn:0,cashOut:0,cashCollected:0,salesTotal:0,advTotal:0,advPaid:0,cardTotal:0,cardPaid:0,padvTotal:0,padvPaid:0,count:0};
       if(r.type==="cash_in"){ym[m].cashIn+=r.amount;if(r.category==="現金売上"||r.category==="雑収入")ym[m].salesTotal+=r.amount;if(r.category==="現金売上"&&r.paid)ym[m].cashCollected+=r.amount;}
-      else if(r.type==="cash_out")ym[m].cashOut+=r.amount;
+      else if(r.type==="cash_out"){ym[m].cashOut+=r.amount;if(isStaffPettyCashOut(r))ym[m].pettyCashOut+=r.amount;}
       else if(r.type==="extra_sales"){ym[m].salesTotal+=r.amount;if(r.payMethod==="現金")ym[m].cashIn+=r.amount;}
       else if(r.type==="advance"){ym[m].advTotal+=r.amount;if(r.paid)ym[m].advPaid+=r.amount;}
       else if(r.type==="card_pay"){ym[m].cardTotal+=r.amount;if(r.paid)ym[m].cardPaid+=r.amount;}
@@ -21020,6 +21028,12 @@ function AccountingPanel({staff}){
           <div style={{fontSize:8,color:"#6b7280",marginTop:2}}>月初+当月収支−回収済現金売上</div>
         </div>
       </div>
+      {(()=>{const appBal=currentOB+summary.balance-summary.cashCollected;const ps=pettyRows?pettyStaffTotal(pettyRows,viewPeriod==="monthly"?selectedYM:selectedYear+"-12"):null;const card=(l,v,sub,bg,bd,c)=><div style={{padding:"10px 14px",borderRadius:10,background:bg,border:"1px solid "+bd}}><div style={{fontSize:9,color:c,fontWeight:700}}>{l}</div><div style={{fontSize:18,fontWeight:800,color:v==null?"#94a3b8":v>=0?c:"#dc2626"}}>{v==null?"読込中…":"¥"+v.toLocaleString()}</div>{sub&&<div style={{fontSize:8,color:"#6b7280",marginTop:2}}>{sub}</div>}</div>;
+        return <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginTop:8}}>
+          {card("札幌APPの残高",appBal,"上の現金残高（スタッフの小口支出は含めない）","#eff6ff","#bfdbfe","#1e40af")}
+          {card("スタッフ小口の残高合計",ps?ps.total:null,ps?ps.staffCount+"名分・各スタッフ画面の残高の合計":"","#f0fdf4","#bbf7d0","#166534")}
+          {card("会社全体の現金残高",ps?appBal+ps.total:null,"APP＋スタッフ小口","#fefce8","#fde68a","#92400e")}
+        </div>;})()}
     </div>}
     {/* 集計バー — 予約外売上 */}
     {acctTab==="extra"&&<div style={{display:"grid",gridTemplateColumns:"1fr",gap:8,marginBottom:12,maxWidth:300}}>
@@ -21147,8 +21161,8 @@ function AccountingPanel({staff}){
           <td style={{padding:"4px 6px",fontWeight:600}}>{r.category}{r.subCategory?" / "+r.subCategory:""}</td>
           <td style={{padding:"4px 6px",fontSize:9}}>{r.resvNo||"-"}</td>
           <td style={{padding:"4px 6px",fontSize:9}}>{r.userName||"-"}</td>
-          <td style={{padding:"4px 6px",color:"#64748b",maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.description||"-"}</td>
-          <td style={{padding:"4px 6px",textAlign:"right",fontWeight:700,color:r.type==="cash_out"?"#dc2626":"#059669"}}>¥{(r.amount||0).toLocaleString()}</td>
+          <td style={{padding:"4px 6px",color:"#64748b",maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{isStaffPettyCashOut(r)&&<span title="スタッフ個別URLの小口現金から支出（札幌APPの残高には含めない）" style={{fontSize:8,fontWeight:700,color:"#166534",background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:4,padding:"0 4px",marginRight:4}}>小口</span>}{r.description||"-"}</td>
+          <td style={{padding:"4px 6px",textAlign:"right",fontWeight:700,color:isStaffPettyCashOut(r)?"#94a3b8":r.type==="cash_out"?"#dc2626":"#059669"}}>¥{(r.amount||0).toLocaleString()}</td>
           <td style={{padding:"4px 6px",fontSize:9}}>{r.inputBy||"-"}</td>
           {editDel}
         </tr>;
@@ -21309,7 +21323,7 @@ function AccountingPanel({staff}){
         {/* ========== 年次モード限定: 年間推移 (常時表示・視覚チャート+テーブル) ========== */}
         {viewPeriod==="yearly"&&yearlySummary.length>0&&(()=>{
           const maxVal=Math.max.apply(null,yearlySummary.map(([,d])=>Math.max(d.salesTotal,d.cashOut+d.cardTotal+d.padvTotal)))||1;
-          const t=yearlySummary.reduce((a,[ym,d])=>({ci:a.ci+d.cashIn,co:a.co+d.cashOut,cc:a.cc+d.cashCollected,ob:a.ob+(openingBalances[ym]||0),st:a.st+d.salesTotal,at:a.at+d.advTotal,ap:a.ap+d.advPaid,ct:a.ct+d.cardTotal,pt:a.pt+d.padvTotal}),{ci:0,co:0,cc:0,ob:0,st:0,at:0,ap:0,ct:0,pt:0});
+          const t=yearlySummary.reduce((a,[ym,d])=>({ci:a.ci+d.cashIn,co:a.co+d.cashOut,pc:a.pc+d.pettyCashOut,cc:a.cc+d.cashCollected,ob:a.ob+(openingBalances[ym]||0),st:a.st+d.salesTotal,at:a.at+d.advTotal,ap:a.ap+d.advPaid,ct:a.ct+d.cardTotal,pt:a.pt+d.padvTotal}),{ci:0,co:0,pc:0,cc:0,ob:0,st:0,at:0,ap:0,ct:0,pt:0});
           const teTotal=t.co+t.ct+t.pt;
           const netTotal=t.st-teTotal;
           return <div style={{marginBottom:16,padding:"14px 16px",background:"#fff",borderRadius:12,border:"1px solid #e2e8f0",boxShadow:"0 1px 3px rgba(0,0,0,.04)"}}>
@@ -21348,7 +21362,7 @@ function AccountingPanel({staff}){
             <table style={{width:"100%",fontSize:10,borderCollapse:"collapse"}}>
               <thead><tr style={{background:"#f8fafc"}}>{["月","現金入金","現金出金","現金残高","売上","支出合計","純収支","立替未回収"].map((h,i)=><th key={i} style={{padding:"6px 8px",textAlign:i===0?"left":"right",fontWeight:700,fontSize:9,borderBottom:"1px solid #e2e8f0",color:"#475569"}}>{h}</th>)}</tr></thead>
               <tbody>
-                {yearlySummary.map(([ym,d])=>{const te=d.cashOut+d.cardTotal+d.padvTotal;const net=d.salesTotal-te;const cashBal=(openingBalances[ym]||0)+d.cashIn-d.cashOut-d.cashCollected;return <tr key={ym} style={{borderBottom:"1px solid #f1f5f9"}}>
+                {yearlySummary.map(([ym,d])=>{const te=d.cashOut+d.cardTotal+d.padvTotal;const net=d.salesTotal-te;const cashBal=(openingBalances[ym]||0)+d.cashIn-(d.cashOut-d.pettyCashOut)-d.cashCollected;return <tr key={ym} style={{borderBottom:"1px solid #f1f5f9"}}>
                   <td style={{padding:"6px 8px",fontWeight:700}}>{ym}</td>
                   <td style={{padding:"6px 8px",textAlign:"right",color:"#059669",fontWeight:600}}>¥{d.cashIn.toLocaleString()}</td>
                   <td style={{padding:"6px 8px",textAlign:"right",color:"#dc2626",fontWeight:600}}>¥{d.cashOut.toLocaleString()}</td>
@@ -21362,7 +21376,7 @@ function AccountingPanel({staff}){
                   <td style={{padding:"8px"}}>合計</td>
                   <td style={{padding:"8px",textAlign:"right"}}>¥{t.ci.toLocaleString()}</td>
                   <td style={{padding:"8px",textAlign:"right"}}>¥{t.co.toLocaleString()}</td>
-                  <td style={{padding:"8px",textAlign:"right"}}>¥{(t.ob+t.ci-t.co-t.cc).toLocaleString()}</td>
+                  <td style={{padding:"8px",textAlign:"right"}}>¥{(t.ob+t.ci-(t.co-t.pc)-t.cc).toLocaleString()}</td>
                   <td style={{padding:"8px",textAlign:"right"}}>¥{t.st.toLocaleString()}</td>
                   <td style={{padding:"8px",textAlign:"right"}}>¥{teTotal.toLocaleString()}</td>
                   <td style={{padding:"8px",textAlign:"right",color:netTotal>=0?"#86efac":"#fca5a5"}}>¥{netTotal.toLocaleString()}</td>
@@ -26047,7 +26061,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.719";
+const APP_VERSION="v4.7.720";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
