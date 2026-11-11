@@ -22,6 +22,7 @@
 .ev.reschedule{background:#ede9fe;color:#6b21a8;border-color:#a855f7}
 .ev.reqmoved{background:#f8fafc;color:#94a3b8;border-color:#cbd5e1;text-decoration:line-through}
 .ev.prop{background:#f3e8ff;color:#6b21a8;border-color:#7c3aed;box-shadow:0 1px 3px rgba(124,58,237,.25)}
+.ev.cont{padding:2px 5px;font-size:10px;opacity:.85;border-left-style:dashed}
 .ev .s{display:block;font-size:9px;opacity:.9;font-weight:700;text-decoration:none}
 .ev .mm{display:block;font-size:9px;font-weight:600;opacity:.95;margin-top:1px;padding-top:1px;border-top:1px dashed rgba(0,0,0,.15)}
 .empty{padding:16px;color:#94a3b8;text-align:center;font-size:13px}
@@ -41,7 +42,7 @@
 <h1>🔧 高松 車検・点検カレンダー</h1>
 <div class="sub" id="sub">読み込み中…</div>
 <div class="bar"><span class="seg"><button data-r="year" class="on">年内</button><button data-r="all">今後すべて</button></span></div>
-<div class="note">📅 表示日は<b>リクエスト日付</b>。予定をタップ→<b>この日で確定／別日を提案／メモ</b>。別日を提案すると<b>提案日のマスに🟣提案チップ</b>が表示されます。<br>🟡リクエスト中　🟢確定　🟣整備が別日提案　／　配車表と連動（配車表で日付を変えると自動反映）</div>
+<div class="note">📅 <b>入庫予定の全日</b>を表示（初日に詳細、2日目以降は「入庫中 n/N日目」）。予定をタップ→<b>この日で確定／別日を提案／メモ</b>。別日を提案すると<b>提案日のマスに🟣提案チップ</b>が表示されます。<br>🟡リクエスト中　🟢確定　🟣整備が別日提案　／　配車表と連動（配車表で日付を変えると自動反映）</div>
 <div id="body"></div>
 <div class="foot">配車表（メンテナンス予定）と同じデータ・自動更新／共有用</div>
 </div>
@@ -53,16 +54,21 @@ const now=new Date(),todayS=now.getFullYear()+"-"+String(now.getMonth()+1).padSt
 function inR(r){return RANGE==="all"||r.start_date<=yEnd;}
 function stJp(s){return{pending:"リクエスト中",approved:"確定",reschedule:"整備が別日提案"}[s]||s;}
 function fmt(d){if(!d)return"";const[y,m,dd]=d.split("-");return `${+m}/${+dd}(${WD[new Date(d+"T00:00:00+09:00").getDay()]})`;}
-// kindの全チップ(リクエスト日+提案日)を日付ごとに
+function nextDay(ds){const d=new Date(ds+"T00:00:00Z");d.setUTCDate(d.getUTCDate()+1);return d.toISOString().slice(0,10);}
+// 入庫予定の全日(start_date〜end_date・終了日含む＝配車表と同じ)。終了日なし/不正は開始日のみ
+function spanDays(e){const out=[e.start_date];if(!e.end_date||e.end_date<=e.start_date)return out;let d=e.start_date;while(out.length<62){d=nextDay(d);if(d>e.end_date)break;out.push(d);}return out;}
+// kindの全チップ(入庫予定の全日+提案日)を日付ごとに
 function chipsByDate(kind){const by={};const push=(ds,c)=>{(by[ds]=by[ds]||[]).push(c);};
  DATA.filter(e=>e.kind===kind&&inR(e)).forEach(e=>{const rs=e.status==="reschedule"&&e.proposed_date;
-  push(e.start_date,{e,role:rs?"reqmoved":e.status});
-  if(rs)push(e.proposed_date,{e,role:"prop"});});
+  const days=spanDays(e);days.forEach((ds,i)=>push(ds,{e,role:rs?"reqmoved":e.status,i,n:days.length}));
+  if(rs)push(e.proposed_date,{e,role:"prop",i:0,n:1});});
  return by;}
 function chipHtml(c){const e=c.e,b=e.brand==="HDM"?"HDM":"BUD";const mm=e.memo?'<span class="mm">📝 '+e.memo+'</span>':"";
+ if(c.i>0)return '<span class="ev cont '+c.role+'" onclick="openSheet(\''+e.id+'\')">'+e.name+'<span class="s">'+(c.i===c.n-1?"最終日 ":"入庫中 ")+(c.i+1)+'/'+c.n+'日目</span></span>';
+ const rng=c.n>1?'〜'+fmt(e.end_date):"";
  if(c.role==="prop")return '<span class="ev prop" onclick="openSheet(\''+e.id+'\')">🟣提案 '+e.name+'<span class="s">'+(e.plate_no||"")+' '+b+'／元:'+fmt(e.start_date)+'</span>'+mm+'</span>';
- if(c.role==="reqmoved")return '<span class="ev reqmoved" onclick="openSheet(\''+e.id+'\')">'+e.name+'<span class="s">→ '+fmt(e.proposed_date)+'へ提案</span></span>';
- return '<span class="ev '+c.role+'" onclick="openSheet(\''+e.id+'\')">'+e.name+'<span class="s">'+(e.plate_no||"")+' '+b+(c.role==="approved"?"／確定":"")+'</span>'+mm+'</span>';}
+ if(c.role==="reqmoved")return '<span class="ev reqmoved" onclick="openSheet(\''+e.id+'\')">'+e.name+'<span class="s">'+rng+' → '+fmt(e.proposed_date)+'へ提案</span></span>';
+ return '<span class="ev '+c.role+'" onclick="openSheet(\''+e.id+'\')">'+e.name+'<span class="s">'+(e.plate_no||"")+' '+b+(c.role==="approved"?"／確定":"")+(rng?'<br>入庫'+rng:"")+'</span>'+mm+'</span>';}
 function monthCal(ym,by){const[y,m]=ym.split("-").map(Number),days=new Date(y,m,0).getDate(),lead=new Date(y,m-1,1).getDay();
  const cnt=Object.keys(by).filter(d=>d.slice(0,7)===ym).reduce((a,d)=>a+by[d].length,0);
  let h='<div class="mon"><h3>'+y+'年'+m+'月</h3><table class="cal"><thead><tr>';
@@ -85,7 +91,7 @@ function render(){document.getElementById("body").innerHTML=calFor("車検")+cal
 window.openSheet=function(id){const e=DATA.find(x=>x.id===id);if(!e)return;CUR=e;const st=e.status;const by=e.responded_by?'（回答: '+e.responded_by+'）':"";
  document.getElementById("sheet").innerHTML=
   '<h3>'+e.kind+'　'+e.name+'（'+(e.plate_no||"—")+'）</h3>'+
-  '<div class="meta">'+(e.brand==="HDM"?"HANDYMAN":"BUDDICA")+'　項目: '+e.label+'<br>リクエスト日付: <b>'+fmt(e.start_date)+'</b>　<span class="badge '+st+'">'+stJp(st)+by+'</span>'+(st==="reschedule"&&e.proposed_date?'<br>🟣整備提案日: <b>'+fmt(e.proposed_date)+'</b>':"")+'</div>'+
+  '<div class="meta">'+(e.brand==="HDM"?"HANDYMAN":"BUDDICA")+'　項目: '+e.label+'<br>リクエスト日付: <b>'+fmt(e.start_date)+(e.end_date&&e.end_date>e.start_date?'〜'+fmt(e.end_date):"")+'</b>　<span class="badge '+st+'">'+stJp(st)+by+'</span>'+(st==="reschedule"&&e.proposed_date?'<br>🟣整備提案日: <b>'+fmt(e.proposed_date)+'</b>':"")+'</div>'+
   '<label>整備会社名（任意）</label><input id="rBy" placeholder="例: ◯◯自動車" value="'+(e.responded_by||"")+'">'+
   '<button class="btn ok" onclick="respond(\'approve\')">✅ この日（'+fmt(e.start_date)+'）で確定</button>'+
   '<label>別日を提案する日付</label><input id="rDate" type="date" value="'+(e.proposed_date||"")+'">'+
