@@ -158,6 +158,7 @@ html.cvopen,html.cvopen body{overflow:hidden}
 .ack div+div{animation-delay:.25s}
 .ack i{width:20px;height:20px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-style:normal;font-size:11px;color:#fff;background:var(--navy)}
 .ack i.g{background:var(--g)}
+.ack .ngnext{margin-top:2px;padding:9px 11px;border-radius:10px;background:#F3F5F8;font-size:13px;font-weight:700;line-height:1.5}
 .ack i.w{background:#fff;border:2px dashed var(--o)}
 .ack time{margin-left:auto;font-weight:700;color:var(--sub);font-variant-numeric:tabular-nums}
 @keyframes ackIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
@@ -1039,10 +1040,17 @@ async function loadChat(){if(DEMO||!TOKEN||RO||!ST.CHAT)return;try{const j=await
 // ★2026-11-08 nosh：お客様がした→運営がリアクション。押したら「受け付けました」、スタッフが見たら「スタッフが確認しました（時刻）」
 let NG=null,CHAT_SEEN=null;
 const NUDGEEF="https://ckrxttbnawkclshczsia.supabase.co/functions/v1/mypage-nudge";
-async function loadNG(){if(DEMO||!TOKEN||RO)return;try{const r=await fetch(NUDGEEF,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({store:SID,token:TOKEN,action:"status"})});const j=await r.json().catch(()=>null);NG=(j&&j.ok)?(j.nudge||null):NG;}catch(_){}}
+async function loadNG(poll){if(DEMO||!TOKEN||RO)return;try{const r=await fetch(NUDGEEF,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({store:SID,token:TOKEN,action:"status"})});const j=await r.json().catch(()=>null);NG=(j&&j.ok)?(j.nudge||null):NG;}catch(_){}if(!poll)ngWatch();}
 const NGW={arrived:"着きました",late:"少し遅れます",lost:"スタッフが見つからない",parked:"車を停めました"};
+// ★2026-11-11 nosh「押したらユーザー側はどんなアクションになるのか」：受付の下に「次にすること」を常に出す。確認待ちの間は20秒ごとに読み直し、確認されたらその場で「スタッフが確認しました」に変える（画面が見えている時だけ）
+const NGNEXT={arrived:"スタッフに伝えました。この場所でお待ちください。スタッフが向かいます",lost:"いまの場所をスタッフに伝えました。その場でお待ちください。スタッフから声をかけます",late:"お伝えしました。安全運転でお越しください。スタッフはお待ちしています",parked:"返却完了です。このままお帰りいただけます"};
 function ngLine(back){const n=NG;if(!n||(n.leg==="back")!==back||!NGW[n.kind])return"";const t=x=>clock(x).split(" ")[1]||"";
-  return `<div class="ack"><div><i>✓</i><span><b>「${NGW[n.kind]}」</b> 受け付けました</span><time translate="no">${t(n.created_at)}</time></div>${n.acked_at?`<div><i class="g">✓</i><span>スタッフが確認しました</span><time translate="no">${t(n.acked_at)}</time></div>`:`<div><i class="w"></i><span class="sub">スタッフの確認を待っています</span></div>`}</div>`;}
+  return `<div class="ack" data-ng="${back?1:0}"><div><i>✓</i><span><b>「${NGW[n.kind]}」</b> 受け付けました</span><time translate="no">${t(n.created_at)}</time></div>${n.acked_at?`<div><i class="g">✓</i><span>スタッフが確認しました</span><time translate="no">${t(n.acked_at)}</time></div>`:`<div><i class="w"></i><span class="sub">スタッフの確認を待っています</span></div>`}${NGNEXT[n.kind]?`<div class="ngnext"><span>${NGNEXT[n.kind]}</span></div>`:""}</div>`;}
+let NG_POLL=null;
+function ngWatch(){clearInterval(NG_POLL);NG_POLL=null;if(DEMO||!TOKEN||RO||!NG||NG.acked_at)return;
+  NG_POLL=setInterval(async()=>{if(document.visibilityState!=="visible")return;const was=NG;await loadNG(true);
+    if(NG!==was)document.querySelectorAll(".ack[data-ng]").forEach(el=>{const h=ngLine(el.dataset.ng==="1");if(h)el.outerHTML=h;});
+    if(!NG||NG.acked_at){clearInterval(NG_POLL);NG_POLL=null;}},20000);}
 function chatSeenLine(){const m=CHAT||[];let lc=null;for(let i=m.length-1;i>=0;i--){if(m[i].sender==="customer"){lc=m[i];break;}if(m[i].sender==="staff")return"";}
   if(!lc)return"";const seen=CHAT_SEEN&&String(CHAT_SEEN)>=String(lc.created_at);
   return `<div style="align-self:flex-end;font-size:11px;font-weight:700;color:${seen?"var(--g)":"var(--o)"}">${seen?"✓ スタッフが確認しました "+(clock(CHAT_SEEN).split(" ")[1]||""):"受け付けました。スタッフが確認すると、ここに出ます"}</div>`;}
@@ -1096,7 +1104,7 @@ async function sendNotify(k){if(NUDGE_BUSY)return;let x=String(($("#nfx")||{}).v
   if(k==="parked"){const cs=[...document.querySelectorAll(".pchk")];if(cs.some(c=>!c.checked)){toast("チェックしていない項目があります");return;}const pn=String(($("#nfp")||{}).value||"").trim();if(!pn&&!x&&!CHAT_IMG){toast("駐車場の名前か写真を入れてください");return;}x=`駐車場：${pn||"-"} / 階・番号：${x||"-"} / 降車点検：${PCHK().length}項目すべてOK`;}
   if(DEMO){CHAT_IMG=null;closeSheet();toast("お試し表示のため送信しません");return;}
   NUDGE_BUSY=true;try{const r=await fetch(NUDGE,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({store:SID,token:TOKEN,kind:k,note:x,leg:back?"back":"go",...(CHAT_IMG?{image:CHAT_IMG}:{})})});const j=await r.json().catch(()=>null);
-    if(j&&j.ok){CHAT_IMG=null;closeSheet();toast(k==="late"?"大丈夫です。安全運転でお越しください":k==="parked"?"返却完了です。このままお帰りいただけます":"受け付けました");NG={kind:k,leg:back?"back":"go",created_at:new Date().toISOString(),acked_at:null};render();loadChat();}else toast((j&&j.error)||"送れませんでした。もう一度押してください");}
+    if(j&&j.ok){CHAT_IMG=null;closeSheet();toast(k==="late"?"大丈夫です。安全運転でお越しください":k==="parked"?"返却完了です。このままお帰りいただけます":"受け付けました");NG={kind:k,leg:back?"back":"go",created_at:new Date().toISOString(),acked_at:null};render();loadChat();ngWatch();}else toast((j&&j.error)||"送れませんでした。もう一度押してください");}
   catch(_){toast("送れませんでした。電波の良いところでもう一度押してください");}finally{NUDGE_BUSY=false;}}
 function saveHelp(){const ios=/iPhone|iPad|iPod/.test(navigator.userAgent);
   sheet(`<h3>ホーム画面に保存する</h3><div class="txt">${ios?"1. 画面下の <b>共有ボタン</b>（四角から矢印）を押す<br>2. <b>ホーム画面に追加</b> を押す<br>3. 右上の <b>追加</b> を押す":"1. 右上の <b>︙</b> を押す<br>2. <b>ホーム画面に追加</b>（またはアプリをインストール）を押す"}</div><div class="sub">保存すると、ホーム画面からすぐ開けます。返却が終わるまでお使いください。</div><button class="btn" onclick="closeSheet()">わかりました</button>`);}
@@ -1994,6 +2002,10 @@ const D={
 "お知らせを受け取る":["Get notifications","接收通知","알림 받기"],
 "スタッフが確認しました":["Staff have seen it","工作人員已確認","직원이 확인했습니다"],
 "スタッフの確認を待っています":["Waiting for staff to check","等待工作人員確認","직원 확인을 기다리는 중"],
+"スタッフに伝えました。この場所でお待ちください。スタッフが向かいます":["We've told the staff. Please wait here — staff are on their way","已通知工作人員。請在此處稍候，工作人員正在前往","직원에게 전달했습니다. 이 장소에서 기다려 주세요. 직원이 가고 있습니다"],
+"いまの場所をスタッフに伝えました。その場でお待ちください。スタッフから声をかけます":["We've told the staff where you are. Please wait there — staff will come and find you","已將您目前的位置告知工作人員。請在原地稍候，工作人員會主動與您聯繫","현재 위치를 직원에게 전달했습니다. 그 자리에서 기다려 주세요. 직원이 말을 걸어 드립니다"],
+"お伝えしました。安全運転でお越しください。スタッフはお待ちしています":["We've let the staff know. Please drive safely — staff will be waiting for you","已為您轉達。請注意行車安全，工作人員會等候您","전달했습니다. 안전 운전으로 와 주세요. 직원이 기다리고 있습니다"],
+"返却完了です。このままお帰りいただけます":["Return complete. You're free to go","還車完成。您可以直接離開","반납이 완료되었습니다. 이대로 돌아가셔도 됩니다"],
 "渋滞で遅れることがあります。遅れるときはこの画面でお知らせします":["Traffic jams can cause delays. If we're running late, we'll show it on this page","可能因塞車而延誤。延誤時會在此頁面通知您","교통 체증으로 늦어질 수 있습니다. 늦어지면 이 화면에서 알려드립니다"],
 "どうしますか":["What will you do?", "您要怎麼做？", "어떻게 하시겠습니까?"],
 "バスは時刻どおり出発します。次のバスは追加料金なし・予約の変更もいりません。":["The bus leaves on time. The next bus is free, and you don't need to change your booking.", "巴士準時出發。下一班不另收費，也不需要變更預約。", "버스는 정시에 출발합니다. 다음 버스는 추가 요금 없이, 예약 변경도 필요 없습니다."],
