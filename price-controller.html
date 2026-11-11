@@ -791,18 +791,40 @@ function changeItems(oldP,newP){var out=[];
       Object.keys(ns).sort(tierSort).forEach(function(t){var x=(a[c]||{})[t],y=(b[c]||{})[t];if(x!==y)out.push({ch:o.k,c:c,t:t,a:x,b:y});});});});
   return out;}
 var histAll=false;
+// ★2026-11-11 変更履歴を人が読みやすく：保存1回ごとにまとめ（日時・何の変更か・何か所・上げ/下げ）、
+//   中は「期間（日本語）→ クラス × 窓口 の 前→後（差）」の表。新しい2回分は開いた状態、古いものは閉じる（ユーザー）
+var SEG_JP={TL:'閑散',TR:'通常',TH:'繁忙',HN:'年末年始',HG:'GW',HB:'お盆',HS:'SW',HX:'臨時の高い日',LO:'10月の安い日',LN:'11月の安い日',LD:'12月の安い日'};
+function segJp(t){if(SEG_JP[t])return SEG_JP[t];var m=/^L([1-9])$/.exec(t||'');return m?m[1]+'月の安い日':String(t||'');}
 function histView(){
   var P=PRICE[STORE],old=normCopy(ORIG_RAW[STORE],STORE),pend=old?changeItems(old,P):[];
-  var rows=[];
-  pend.forEach(function(x){rows.push({ts:'未保存',x:x,pend:true});});
-  (P.history||[]).forEach(function(h){(h.items||[]).forEach(function(x){rows.push({ts:h.ts,x:x});});});
-  if(!histAll)rows=rows.filter(function(r){return r.x.ch===CHAN;});
-  var y=function(v){return v==null?'—':'¥'+(+v).toLocaleString();};
-  var body=rows.map(function(r){var x=r.x,d=(x.a!=null&&x.b!=null)?x.b-x.a:null;
-    return '<tr'+(r.pend?' style="background:#fefce8"':'')+'><td style="text-align:left">'+r.ts+'</td>'+(histAll?'<td style="text-align:left">'+chanName(x.ch).replace(/^[^ ]+ /,'')+'</td>':'')+'<td class="cls">'+clsName(x.c)+'</td><td class="knd">'+x.t+'</td><td>'+y(x.a)+'</td><td><b>'+y(x.b)+'</b></td><td style="color:'+(d>0?'#b0524b':d<0?'#4a6fa5':'#94a3b8')+'">'+(d==null?'':(d>0?'+':'')+d.toLocaleString())+'</td></tr>';}).join('');
+  var ents=[];
+  if(pend.length)ents.push({ts:'未保存',note:'まだ保存していない変更',items:pend,pend:true});
+  (P.history||[]).forEach(function(h){if(h.items)ents.push({ts:h.ts,note:h.changes||'',items:h.items});});
+  var yen=function(v){return v==null||isNaN(+v)?'—':(+v).toLocaleString();};
+  var shown=0;
+  var body=ents.map(function(e){
+    var its=e.items.filter(function(x){return histAll||x.ch===CHAN;});
+    if(!its.length&&e.items.length)return '';
+    var up=0,dn=0;its.forEach(function(x){if(x.a!=null&&x.b!=null){if(+x.b>+x.a)up++;else if(+x.b<+x.a)dn++;}});
+    var head='<b>'+escH(e.ts)+'</b>　'+escH(e.note)+(its.length?'　<span style="color:#64748b">'+its.length+'か所（上げ'+up+'・下げ'+dn+'）</span>':'');
+    if(!its.length)return '<div class="hrow" style="padding:6px 2px">'+head+'</div>';
+    var segs={},order=[];
+    its.forEach(function(x){if(!segs[x.t]){segs[x.t]={};order.push(x.t);}(segs[x.t][x.c]=segs[x.t][x.c]||{})[x.ch]=x;});
+    order.sort(tierSort);
+    var chs=histAll?chansOf().map(function(o){return o.k;}).filter(function(k){return its.some(function(x){return x.ch===k;});}):[CHAN];
+    var tbl=order.map(function(t){
+      return '<tr><td colspan="'+(chs.length+1)+'" style="text-align:left;background:#f1f5f9;font-weight:800">'+escH(segJp(t))+'</td></tr>'
+        +Object.keys(segs[t]).sort(clsSort).map(function(c){return '<tr><td class="cls">'+clsName(c)+'</td>'+chs.map(function(k){var x=segs[t][c][k];if(!x)return '<td></td>';
+          var d=(x.a!=null&&x.b!=null&&!isNaN(+x.a)&&!isNaN(+x.b))?(+x.b)-(+x.a):null;
+          return '<td style="white-space:nowrap">'+yen(x.a)+' → <b>'+yen(x.b)+'</b>'+(d?' <span style="color:'+(d>0?'#b0524b':'#4a6fa5')+'">（'+(d>0?'+':'')+d.toLocaleString()+'）</span>':'')+'</td>';}).join('')+'</tr>';}).join('');
+    }).join('');
+    shown++;
+    return '<details'+(shown<=2?' open':'')+' style="margin:6px 0;border:1px solid #e5eaf1;border-radius:4px;padding:6px 8px'+(e.pend?';background:#fefce8':'')+'"><summary style="cursor:pointer">'+head+'</summary>'
+      +'<div style="overflow-x:auto;margin-top:6px"><table class="histbl"><tr><th>クラス</th>'+chs.map(function(k){return '<th>'+chanName(k).replace(/^[^ ]+ /,'')+'</th>';}).join('')+'</tr>'+tbl+'</table></div></details>';
+  }).join('');
   var oldTxt=(P.history||[]).filter(function(h){return !h.items;});
   return '<div class="card"><h2>📜 変更履歴 <span style="margin-left:auto"><button class="clschip'+(histAll?'':' on')+'" onclick="histAll=false;render()">'+chanName(CHAN).replace(/^[^ ]+ /,'')+'</button> <button class="clschip'+(histAll?' on':'')+'" onclick="histAll=true;render()">全チャネル</button></span></h2>'
-   +(rows.length?'<div style="overflow-x:auto;max-height:420px;overflow-y:auto"><table class="histbl"><tr><th>日時</th>'+(histAll?'<th>チャネル</th>':'')+'<th>クラス</th><th>段</th><th>前</th><th>後</th><th>差</th></tr>'+body+'</table></div>':'<div class="muted">記録なし</div>')
+   +(body?'<div style="max-height:560px;overflow-y:auto">'+body+'</div>':'<div class="muted">記録なし</div>')
    +(oldTxt.length?'<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:#64748b">以前の記録（'+oldTxt.length+'件）</summary>'+oldTxt.map(function(h){return '<div class="hrow"><span class="hts">'+h.ts+'</span><span class="hch">'+(h.changes||'')+'</span></div>';}).join('')+'</details>':'')
    +'</div>';
 }
