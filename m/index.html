@@ -352,6 +352,10 @@ const STAGE_LABEL={prep:"準備中",eve:"前日",go_day:"本日",go_soon:"まも
 
 /* ---- 必須項目 ---- */
 /* ★2026-11-09 nosh「予約完了時点ではまだ情報確定してないはず HP以外」：OTA取込の仮の値「場所未確定」などは未登録として扱う */
+/* ★2026-11-12 nosh「返却場所『同じ』は困る」→ 回収場所が「同じ」「お届け場所と同じ」等（数字なし20字以内）なら、画面ではお届け場所の住所に読み替える（地図も住所で開く）。表示だけ＝DBは書き換えない。APP のタスク表示と同じ判定 */
+function isSamePlaceText(p){const s=String(p||"").trim();return !!s&&s.length<=20&&!/[0-9０-９]/.test(s)&&/(同じ|同上|おなじ|^同$|same)/i.test(s);}
+function sameColFix(j){try{const r=j&&j.reservation;if(!r||!isSamePlaceText(r.col_place))return;const d=String(r.del_place||"").trim();if(!d||isSamePlaceText(d))return;r.col_place=d;if(r.col_lat==null||r.col_lat===""){r.col_lat=r.del_lat;r.col_lng=r.del_lng;}}catch(e){}}
+function sameAsDel(){const r=DATA&&DATA.reservation,el=$("#nv");if(!r||!el)return;el.value=String(r.del_place||"").trim();chkPlace("col_place");}
 function placeSet(p){const x=String(p||"").trim();return x.length>1&&!/^(場所)?未(確定|定|登録)|^未定$|^TBD$/i.test(x);}
 // ★2026-11-09 予約の便欄は「行き / 帰り」（例 MM209 / MM220）。帰りが便名なら帰りの便として扱う（二重の催促を止める）
 function fltParts(s){const p=String(s||"").replace(/／/g,"/").split("/").map(x=>x.trim());const fl=x=>/[A-Za-z]{2,3}\s*\d{1,4}|\d[A-Za-z]\d{3,4}/.test(x||"");return{go:p[0]||"",back:p.length>1&&fl(p[1])?p[1]:"",goOk:p.length>1?fl(p[0]):!!(p[0]||"")};}
@@ -399,7 +403,7 @@ async function load(quiet){
      最初の画面に要る支払い・登録内容・メールは必ず待つ。ほかは1.2秒まで待ち、遅れた分は届いたら描き直す */
   let gotD;const dP=new Promise(res=>gotD=res);const need=[loadPay(),loadINFO(),loadMAIL()],rest=Promise.all([loadDV(dP),loadSH(),loadCN(),loadChat(),loadNG(),loadRcpt()]);
   try{const r=await fetch(FN,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"lookup",token:TOKEN,...(RO?{ro:1}:{})})});
-    const j=await r.json().catch(()=>({}));spkMethod(j);gotD(j&&j.ok?j:null);
+    const j=await r.json().catch(()=>({}));spkMethod(j);sameColFix(j);gotD(j&&j.ok?j:null);
     if(j.cancelled){$("#ttl").textContent="キャンセル済み";$("#app").innerHTML=`<div class="center">${esc(j.error||"キャンセル済みです")}</div>`;return;}
     if(!j.ok){if(!quiet){$("#ttl").textContent="マイページ";$("#app").innerHTML=`<div class="center">${esc(j.error||"読み込めませんでした")}<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}return;}
     DATA=j;let late=false;await Promise.all([...need,Promise.race([rest,new Promise(res=>setTimeout(()=>{late=true;res();},1200))])]);render();
@@ -1080,7 +1084,7 @@ function saveHelp(){const ios=/iPhone|iPad|iPod/.test(navigator.userAgent);
 function openReq(f){if(!DATA)return;if((f==="lend_time"||f==="del_place")&&goLocked(DATA.reservation))return;if(f==="del_place"&&!isDel(DATA.reservation.visit_type))return;const r=DATA.reservation,isT=/time/.test(f),cur=f==="lend_time"?hm(r.lend_time):f==="return_time"?hm(r.return_time):f==="del_place"?(placeSet(r.del_place)?r.del_place:""):(placeSet(r.col_place)?r.col_place:"");
   const opts=isT?(f==="lend_time"&&isPub(r.visit_type)?mTimes(9,19,60):(SID==="spk"?mTimes(9,19,30):mTimes(9,19,15))):[]; /* ★2026-11-12 札幌は受付が30分刻み（サーバーと同じ）。15分の時刻を選ぶと「送れませんでした」で止まっていた（DY00000001209 11:15/11:45 が2回失敗） */ /* ★2026-11-12 nosh「PUは毎時1時間おき（9時〜19時）。お客様が送迎時間外へ変更できないように」→ 空港送迎のお迎えは毎時00分だけ（受け取り方シートと同じ） */
   sheet(`<h3>${esc(FLD[f])}${cur?"の変更":"を登録する"}</h3><div class="sub">スタッフが確認して、30分以内（19時以降は翌朝9:30まで）にお返事します。${cur?`確定するまでは今のご予約（${esc(cur)}）のままです。`:""}</div>
-   <label>新しい${isT?"時間":"場所"}</label>${isT?`<select id="nv">${opts.map(o=>`<option ${o===cur?"selected":""}>${o}</option>`).join("")}</select>`:`<input id="nv" placeholder="ホテル名・住所など" value="${esc(cur||"")}" oninput="chkPlace('${f}')"><div class="sub">${PLACE_RULES[SID]?"お届け・回収ができるのは"+PLACE_RULES[SID].area+"です。空港の中は指定できません。":""}</div><div id="ngmsg" class="ngmsg" hidden></div>`}
+   <label>新しい${isT?"時間":"場所"}</label>${isT?`<select id="nv">${opts.map(o=>`<option ${o===cur?"selected":""}>${o}</option>`).join("")}</select>`:`<input id="nv" placeholder="ホテル名・住所など" value="${esc(cur||"")}" oninput="chkPlace('${f}')">${f==="col_place"&&placeSet(r.del_place)&&String(r.del_place).trim()!==cur?`<button class="btn g" style="margin-top:8px" onclick="sameAsDel()">お届け場所と同じ</button>`:""}<div class="sub">${PLACE_RULES[SID]?"お届け・回収ができるのは"+PLACE_RULES[SID].area+"です。空港の中は指定できません。":""}</div><div id="ngmsg" class="ngmsg" hidden></div>`}
    <button class="btn" onclick="sendReq('${f}')">この内容で依頼する</button><button class="btn g" onclick="closeSheet()">やめる</button>`);}
 /* ★2026-11-09 nosh「そこで弾く必要がある条件は必須 那覇空港や新千歳空港など 各店のレギュレーションに沿って ここが一番大事」
    公式サイトの規定どおり、受け付けられない場所はスタッフに送る前にその場で止め、代わりの方法を出す。営業時間（9:00〜19:00）は時間の選択肢で制限。 */
