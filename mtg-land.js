@@ -31,12 +31,12 @@ function ensureIframes(reload){STORES.forEach(function(s){if(s.k==selfKey())retu
   if(!f){f=document.createElement("iframe");f.style.cssText="position:absolute;width:1200px;height:800px;left:-99999px;top:0;border:0;visibility:hidden";f.setAttribute("aria-hidden","true");f.tabIndex=-1;IF[s.k]=f;f._t0=Date.now();f.src=(window.LAND_PG&&LAND_PG[s.k])||s.pg+"?embed=1&landsrc=1&t="+Date.now();f.onload=function(){landSoon();};document.body.appendChild(f);}
   else if(reload){f._t0=Date.now();try{f.contentWindow.load();}catch(e){f.src=s.pg+"?embed=1&landsrc=1&t="+Date.now();}}});}
 function sbOf(k){var w=k==selfKey()?window:(IF[k]&&IF[k].contentWindow);try{return w&&w.SB?[w.SB,w.ANON]:null;}catch(e){return null;}}
-function loadTrend(){STORES.forEach(function(s){var c=sbOf(s.k);if(!c){setTimeout(loadTrend,1500);return;}
+function loadTrend(){STORES.filter(function(s){return s.k==(selfKey()||"spk");}).forEach(function(s){var c=sbOf(s.k);if(!c){setTimeout(loadTrend,1500);return;}
   fetch(c[0]+"/rest/v1/rpc/"+s.rpc,{method:"POST",headers:{apikey:c[1],Authorization:"Bearer "+c[1],"Content-Type":"application/json"},body:"{}"}).then(function(r){return r.ok?r.json():null;}).then(function(j){TR[s.k]=j&&j.mon?j:{err:1};landSoon();}).catch(function(){TR[s.k]={err:1};landSoon();});});}
 var started=0,poll=null;
-window.landOpen=function(){if(!started){started=1;ensureIframes(false);setTimeout(loadTrend,600);}
-  clearInterval(poll);poll=setInterval(function(){draw();if(STORES.every(function(s){return ready(s.k);})&&STORES.every(function(s){return TR[s.k];}))clearInterval(poll);},700);draw();};
-window.landRefresh=function(){ensureIframes(true);TR={};setTimeout(loadTrend,800);clearInterval(poll);poll=setInterval(function(){draw();if(STORES.every(function(s){return ready(s.k);})&&STORES.every(function(s){return TR[s.k];}))clearInterval(poll);},700);};
+window.landOpen=function(){if(!started){started=1;setTimeout(loadTrend,300);}
+  clearInterval(poll);poll=setInterval(function(){draw();var sk=selfKey()||"spk";if(ready(sk)&&TR[sk])clearInterval(poll);},700);draw();};
+window.landRefresh=function(){TR={};setTimeout(loadTrend,800);clearInterval(poll);poll=setInterval(function(){draw();var sk=selfKey()||"spk";if(ready(sk)&&TR[sk])clearInterval(poll);},700);};
 /* ── 表示 ── */
 function k(v){return Math.round(v||0).toLocaleString();}
 function y(v){return "¥"+k(v);}
@@ -65,53 +65,37 @@ function mv(x,m){if(!x)return null;var cur=x.cur;if(m<cur){var h=x.hist[m];if(!h
   var z=x.mon[m];if(!z)return null;return {st:m==cur?1:2,t:z.t,a:z.a,L:z.L,rd:z.rd,ad:z.ad,f:z.f,n:z.n,z:z};}
 function allMonths(){var s={};STORES.forEach(function(st){var x=getX(st.k);if(!x)return;Object.keys(x.hist).forEach(function(m){s[m]=1;});Object.keys(x.mon).forEach(function(m){s[m]=1;});});return Object.keys(s).sort();}
 function stl(st){return st==0?'<span class="st st0">確定</span>':st==1?'<span class="st st1">進行中</span>':'<span class="st st2">受付中</span>';}
+/* 2026-11-12 オーナー「店舗別」：各店のページではその店の着地見込みだけを出す（他店の iframe は開かない） */
 function draw(){var el=document.getElementById("land");if(!el||!landVisible())return;css();
-  var X={},miss=[];STORES.forEach(function(s){X[s.k]=getX(s.k);if(!ready(s.k))miss.push(s.nm);});
+  var sk=selfKey()||"spk",S0=STORES.filter(function(s){return s.k==sk;})[0]||STORES[0],x=getX(S0.k),rdy=ready(S0.k);
   var cur=jstNow().toISOString().slice(0,7),today=jstNow().toISOString().slice(0,10),day=+today.slice(8),dim=dimOf(cur);
-  var H='<div class="lh">📈 着地見込み（全店：札幌・那覇・高松）</div>';
-  H+='<div class="lsub">現在実績＝今入っている予約の売上（返却月で計上・キャンセル/テスト除外）＋予約外売上。着地見込み＝現在実績＋これから入る見込みの売上（各店サマリの「まとめ 着地」と同じ値）。確定月は実績＝着地。DBライブ（開いている間は5分ごとに更新）。'+(miss.length?'':' 最終取得 '+STORES.map(function(s){var x=X[s.k];return s.nm+' '+(x&&x.gen?x.gen.slice(5):'–');}).join('・'))+'</div>';
-  if(miss.length)H+='<div class="wait">⏳ '+miss.join('・')+' の計算を読み込み中…（各店ページの設計・ペースを読み込んで計算しています）</div>';
-  // ① 今月のカード
-  var tot={t:0,a:0,L:0,rd:0,ad:0,f:0,cap:0,pk:0},cards='';
-  STORES.forEach(function(s){var v=mv(X[s.k],cur);if(!v){cards+='<div class="lc" style="--c:'+s.col+'"><h4>'+s.nm+'</h4><div class="muted">読み込み中…</div></div>';return;}
-    var z=v.z,cap=0,pk=0;(z.cls||[]).forEach(function(c){cap+=c.cap;pk+=c.pk;});tot.t+=v.t;tot.a+=v.a;tot.L+=v.L;tot.rd+=v.rd;tot.ad+=v.ad;tot.f+=v.f;tot.cap+=cap;tot.pk+=pk;
-    cards+=card(s.nm,s.col,v.t,v.a,v.L,v.rd,v.f,v.ad,cap,"");});
-  H+='<div class="lh">🗓 今月（'+MN(cur)+'）　'+day+'日目／'+dim+'日・経過 '+(day-1)+'日・残り '+(dim-day+1)+'日（今日を含む）</div><div class="lcards">'+card("全店",'#0f766e',tot.t,tot.a,tot.L,tot.rd,tot.f,tot.ad,tot.cap,"all")+cards+'</div>';
-  // ② 今月の進み具合（日数・空き）
-  H+='<div class="lh">📋 今月の進み具合（日数・進捗・空き）</div><div class="lw"><table><thead><tr><th class="l">店</th><th>台数</th><th>稼働可能<br>日数</th><th>予約済み<br>日数</th><th>予約<br>稼働率</th><th>残りの<br>空き日数</th><th>これから入る<br>見込み日数</th><th>着地<br>稼働率</th><th class="g">目標</th><th class="g">現在実績</th><th class="g">見込み<br>追加</th><th class="g">着地見込み</th><th class="g">着地−目標</th><th class="g">達成<br>見込み</th><th>目標まで<br>あと</th><th>あと1日<br>あたり</th></tr></thead><tbody>';
-  var T2={n:0,ad:0,rd:0,cap:0,pk:0,f:0,t:0,a:0,L:0};
-  STORES.forEach(function(s){var v=mv(X[s.k],cur);if(!v)return;var z=v.z,cap=0,pk=0;z.cls.forEach(function(c){cap+=c.cap;pk+=c.pk;});
-    T2.n+=v.n;T2.ad+=v.ad;T2.rd+=v.rd;T2.cap+=cap;T2.pk+=pk;T2.f+=v.f;T2.t+=v.t;T2.a+=v.a;T2.L+=v.L;H+=prow(s.nm,v.n,v.ad,v.rd,cap,pk,v.f,v.t,v.a,v.L,z.left,s.k);});
-  H+=prow("全店",T2.n,T2.ad,T2.rd,T2.cap,T2.pk,T2.f,T2.t,T2.a,T2.L,dim-day+1,"",1)+'</tbody></table></div>';
-  H+='<div class="lsub">予約済み日数＝今月の貸出日数（今日より前の分を含む）／残りの空き日数＝今日以降の空き（台数×残り日数−今日以降の予約）／見込み日数＝残りの各日の「今の予約÷例年その日までに入っている割合」から今の予約を引いた分（空きが上限）／あと1日あたり＝（目標−現在実績）÷残り日数。行をクリックで店のクラス別根拠。</div>';
-  // ③ 月別一覧（全店）
-  var ms=allMonths();
-  H+='<div class="lh">📊 月別 現在実績／着地見込み（全店）</div><div class="lw"><table><thead><tr><th class="l" rowspan="2">月</th><th class="l" rowspan="2">状態</th>'+STORES.map(function(s){return '<th colspan="3" class="g">'+s.nm+'</th>';}).join('')+'<th colspan="5">全店</th></tr><tr>'+STORES.map(function(){return '<th class="g">目標</th><th class="g">実績</th><th class="g">着地</th>';}).join('')+'<th>目標</th><th>現在実績</th><th>着地見込み</th><th>差</th><th>達成</th></tr></thead><tbody>';
-  var GT={t:0,a:0,L:0};
-  ms.forEach(function(m){var st=m<cur?0:m==cur?1:2,s3={t:0,a:0,L:0},ok=1,cells='';
-    STORES.forEach(function(s){var v=mv(X[s.k],m);if(!v){cells+='<td class="muted" colspan="3">–</td>';if(X[s.k]&&!(m<X[s.k].cur))ok=0;return;}s3.t+=v.t;s3.a+=v.a;s3.L+=v.L;
-      cells+='<td>'+(v.t?man(v.t):'<span class="muted">–</span>')+'</td><td>'+man(v.a)+'</td><td><b>'+man(v.L)+'</b>'+(v.t?' <small class="'+(v.L>=v.t?'lpos':'lneg')+'">'+P(v.L,v.t)+'</small>':'')+'</td>';});
-    GT.t+=s3.t;GT.a+=s3.a;GT.L+=s3.L;
-    H+='<tr class="clk'+(st==1?' cur':'')+(MSEL==m?' sel':'')+'" onclick="landMon(\''+m+'\')"><td class="l"><b>'+MNy(m)+'</b></td><td class="l">'+stl(st)+'</td>'+cells+'<td>'+man(s3.t)+'</td><td>'+man(s3.a)+'</td><td><b>'+man(s3.L)+'</b></td><td>'+sg(s3.L-s3.t,man)+'</td><td class="'+(s3.L>=s3.t?'lpos':'lneg')+'">'+P(s3.L,s3.t)+'</td></tr>';});
-  H+='<tr class="tot"><td class="l" colspan="2">計（表示月）</td>'+STORES.map(function(s){var a=0,L=0,t=0;ms.forEach(function(m){var v=mv(X[s.k],m);if(v){a+=v.a;L+=v.L;t+=v.t;}});return '<td>'+man(t)+'</td><td>'+man(a)+'</td><td>'+man(L)+'</td>';}).join('')+'<td>'+man(GT.t)+'</td><td>'+man(GT.a)+'</td><td>'+man(GT.L)+'</td><td>'+sg(GT.L-GT.t,man)+'</td><td>'+P(GT.L,GT.t)+'</td></tr></tbody></table></div>';
-  H+='<div class="lsub">目標＝各店ページの月目標（高松は10月から）。確定＝過去の月（実績で確定）／進行中＝今月／受付中＝来月以降（今の予約＋これから入る見込み）。月の行をクリックで店別の詳細。</div>';
-  // ④ 店別の詳細（月別推移＋根拠）
-  var sk=SEL||selfKey()||"spk",S0=STORES.filter(function(s){return s.k==sk;})[0]||STORES[0],x=X[S0.k];
-  H+='<div class="lh" id="landDet">🔎 店別の月別推移と試算根拠</div><div class="chips">'+STORES.map(function(s){return '<button class="'+(s.k==S0.k?'on':'')+'" onclick="landSel(\''+s.k+'\')">'+s.nm+'</button>';}).join('')+'</div>';
-  if(!x)H+='<div class="muted">読み込み中…</div>';
-  else{H+='<div class="lw"><table><thead><tr><th class="l">月</th><th class="l">状態</th><th>台数</th><th>稼働可能日数</th><th>予約済み日数</th><th>稼働率</th><th>見込み日数</th><th>着地稼働率</th><th>1日単価</th><th class="g">目標</th><th class="g">現在実績</th><th class="g">着地見込み</th><th class="g">差</th><th class="g">達成</th></tr></thead><tbody>';
-    ms.forEach(function(m){var v=mv(x,m);if(!v)return;var pk=v.st?v.f-v.rd:0,ur=v.st?(v.z.ar&&v.rd?v.z.ar/v.rd:0):(v.h.r&&v.rd?v.h.r/v.rd:0);
-      H+='<tr class="clk'+(v.st==1?' cur':'')+(MSEL==m?' sel':'')+'" onclick="landMon(\''+m+'\')"><td class="l"><b>'+MNy(m)+'</b></td><td class="l">'+stl(v.st)+'</td><td>'+v.n+'台</td><td>'+k(v.ad)+'</td><td>'+k(v.rd)+'</td><td>'+P(v.rd,v.ad)+'</td><td>'+(v.st?'+'+k(pk):'<span class="muted">–</span>')+'</td><td>'+P(v.f,v.ad)+'</td><td>'+(ur?y(ur):'–')+'</td><td>'+(v.t?y(v.t):'–')+'</td><td>'+y(v.a)+'</td><td><b>'+y(v.L)+'</b></td><td>'+(v.t?sg(v.L-v.t,y):'')+'</td><td class="'+(v.L>=v.t?'lpos':'lneg')+'">'+(v.t?P(v.L,v.t):'–')+'</td></tr>';});
-    H+='</tbody></table></div>';
-    var mm=MSEL&&mv(x,MSEL)?MSEL:cur;H+=why(S0,x,mm);
+  var H='<div class="lh">📈 着地見込み（'+S0.nm+'）</div>';
+  H+='<div class="lsub">現在実績＝今入っている予約の売上（返却月で計上・キャンセル/テスト除外）＋予約外売上。着地見込み＝現在実績＋これから入る見込みの売上（サマリの「まとめ 着地」と同じ値）。確定月は実績＝着地。DBライブ（開いている間は5分ごとに更新）。'+(x&&x.gen?' 最終取得 '+x.gen.slice(5):'')+'</div>';
+  if(!rdy)H+='<div class="wait">⏳ 計算を読み込み中…（設計・予約ペースを読み込んで計算しています）</div>';
+  var v=mv(x,cur);
+  // ① 今月
+  H+='<div class="lh">🗓 今月（'+MN(cur)+'）　'+day+'日目／'+dim+'日・経過 '+(day-1)+'日・残り '+(dim-day+1)+'日（今日を含む）</div>';
+  if(v){var z=v.z,cap=0,pk=0;z.cls.forEach(function(c){cap+=c.cap;pk+=c.pk;});
+    H+='<div class="lcards" style="grid-template-columns:minmax(0,320px)">'+card(S0.nm,S0.col,v.t,v.a,v.L,v.rd,v.f,v.ad,cap,"")+'</div>';
+    H+='<div class="lh">📋 今月の進み具合（日数・進捗・空き）</div><div class="lw"><table><thead><tr><th class="l">店</th><th>台数</th><th>稼働可能<br>日数</th><th>予約済み<br>日数</th><th>予約<br>稼働率</th><th>残りの<br>空き日数</th><th>これから入る<br>見込み日数</th><th>着地<br>稼働率</th><th class="g">目標</th><th class="g">現在実績</th><th class="g">見込み<br>追加</th><th class="g">着地見込み</th><th class="g">着地−目標</th><th class="g">達成<br>見込み</th><th>目標まで<br>あと</th><th>あと1日<br>あたり</th></tr></thead><tbody>'
+      +prow(S0.nm,v.n,v.ad,v.rd,cap,pk,v.f,v.t,v.a,v.L,z.left,"")+'</tbody></table></div>';
+    H+='<div class="lsub">予約済み日数＝今月の貸出日数（今日より前の分を含む）／残りの空き日数＝今日以降の空き（台数×残り日数−今日以降の予約）／見込み日数＝残りの各日の「今の予約÷例年その日までに入っている割合」から今の予約を引いた分（空きが上限）／あと1日あたり＝（目標−現在実績）÷残り日数。</div>';}
+  else H+='<div class="muted">読み込み中…</div>';
+  // ② 月別推移
+  if(x){var ms=Object.keys(x.hist).concat(Object.keys(x.mon)).sort();
+    H+='<div class="lh">📊 月別 現在実績／着地見込み</div><div class="lw"><table><thead><tr><th class="l">月</th><th class="l">状態</th><th>台数</th><th>稼働可能日数</th><th>予約済み日数</th><th>稼働率</th><th>見込み日数</th><th>着地稼働率</th><th>1日単価</th><th class="g">目標</th><th class="g">現在実績</th><th class="g">着地見込み</th><th class="g">差</th><th class="g">達成</th></tr></thead><tbody>';
+    ms.forEach(function(m){var w=mv(x,m);if(!w)return;var pk=w.st?w.f-w.rd:0,ur=w.st?(w.z.ar&&w.rd?w.z.ar/w.rd:0):(w.h.r&&w.rd?w.h.r/w.rd:0);
+      H+='<tr class="clk'+(w.st==1?' cur':'')+(MSEL==m?' sel':'')+'" onclick="landMon(\''+m+'\')"><td class="l"><b>'+MNy(m)+'</b></td><td class="l">'+stl(w.st)+'</td><td>'+w.n+'台</td><td>'+k(w.ad)+'</td><td>'+k(w.rd)+'</td><td>'+P(w.rd,w.ad)+'</td><td>'+(w.st?'+'+k(pk):'<span class="muted">–</span>')+'</td><td>'+P(w.f,w.ad)+'</td><td>'+(ur?y(ur):'–')+'</td><td>'+(w.t?y(w.t):'–')+'</td><td>'+y(w.a)+'</td><td><b>'+y(w.L)+'</b></td><td>'+(w.t?sg(w.L-w.t,y):'')+'</td><td class="'+(w.L>=w.t?'lpos':'lneg')+'">'+(w.t?P(w.L,w.t):'–')+'</td></tr>';});
+    H+='</tbody></table></div><div class="lsub">確定＝過去の月（実績で確定）／進行中＝今月／受付中＝来月以降（今の予約＋これから入る見込み）。月の行をクリックで、その月の試算根拠（クラス別）。</div>';
+    var mm=MSEL&&mv(x,MSEL)?MSEL:cur;H+='<div id="landDet"></div>'+why(S0,x,mm);
     H+=trend(S0,x);}
   // ⑤ 計算方法
-  H+='<div class="lh">📐 計算方法（全店共通）</div><div class="lsub" style="font-size:12px;color:#334155">'
+  H+='<div class="lh">📐 計算方法（3店共通）</div><div class="lsub" style="font-size:12px;color:#334155">'
    +'<b>現在実績</b>＝返却日がその月の予約の売上合計（基本料金＋オプション−割引。キャンセル・テスト除外）＋予約外売上（会計の予約外）。KPIタブ・サマリと同じ。<br>'
    +'<b>着地見込み</b>＝Σクラス別着地＋予約外・未配車（その月の実績）。クラス別着地＝今の予約売上＋これから入る見込み日数×見込み単価。<br>'
    +'<b>これから入る見込み日数</b>＝今日〜月末の各日について「その日の今の予約台数 ÷ 過去（3〜9月）の予約で、貸出日の◯日前までに入っていた割合」で最終予約台数を推計し、今の予約を引いたもの（空き台数が上限）。まだ半分も入っていない遠い日は、今の予約＋（まだ入っていない割合×目標稼働率）で控えめに見込む。<br>'
    +'<b>見込み単価</b>＝予約済みの1日単価と内訳（目標）単価を、予約済み日数：見込み日数で加重平均。<br>'
-   +'<b>目標</b>＝各店ページの月目標（札幌・那覇・高松の各ページの定数。高松は10月から）。全店の目標＝目標のある店の合計。クラス別の目標は🎯設計比較タブと同じ配分。<br>'
+   +'<b>目標</b>＝このページの月目標（高松は10月から）。クラス別の目標は🎯設計比較タブと同じ配分。<br>'
    +'<b>当月推移</b>＝今入っている予約を受付日の順に積み上げた売上（キャンセル済みは除く）。前の月と同じ日付時点の比較で、今月の予約の入り方が早いか遅いかを見る。</div>';
   el.innerHTML=H;}
 function card(nm,col,t,a,L,rd,f,ad,cap,cls){var pa=t?Math.min(100,a/t*100):0,pl=t?Math.min(100,L/t*100):0;
