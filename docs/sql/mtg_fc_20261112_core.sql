@@ -90,15 +90,15 @@ select jsonb_build_object(
   'methods', coalesce((select jsonb_agg(jsonb_build_object('k',k,'n',n,'mae',round(mae,4),'bias',round(bias,4),'mx',round(mx,4)) order by o) from sc),'[]'::jsonb),
   'months', coalesce((select jsonb_object_agg(b.ym, jsonb_build_object(
       'cur', b.cur, 'rest', b.rest, 'days', b.days, 'n', b.n, 'cap', b.cap, 'free', b.free, 'occ', jsonb_build_array(b.ba, b.bf, b.n*b.days, b.br),
-      'tr', jsonb_build_array(b.ta, b.tb, b.tv),
+      'ext', coalesce((select e.amt from mtg_fc_ext(p_store) e where e.ym=b.ym),0), 'tr', jsonb_build_array(b.ta, b.tb, b.tv),
       'all', jsonb_build_array(b.an, round(b.a), b.cn, round(b.c), b.pn, round(b.p), b.fn, round(b.f), b.lt),
       'as', (select jsonb_build_object('hn',s.hn,'chat',round(s.chat,4),'rate',round(s.rate,5),'u',round(s.u),'rr',round(s.rr,1),'tm',round(s.tm,3),'sh',round(1/nullif(s.sh,0),4),'nhat',round(s.rate*s.cap,2)) from s where s.ym=b.ym),
       'seg', (select jsonb_object_agg(z.dim, z.o) from (select q.dim, jsonb_object_agg(q.key, jsonb_build_array(q.an, round(q.a), q.cn, round(q.c), q.pn, round(q.p), q.fn, round(q.f), q.n, round(coalesce(g.nhat,0),2), round(coalesce(g.phat,0)), q.ta, q.tb, q.ba, q.bf, q.lt)) o
           from b q left join sg g on g.ym=q.ym and g.dim=q.dim and g.key=q.key where q.ym=b.ym and q.dim<>'all' group by q.dim) z),
       'fc', coalesce((select jsonb_object_agg(fl.k, round(fl.v)) from fl where fl.ym=b.ym),'{}'::jsonb)
     )) from b where b.dim='all'),'{}'::jsonb),
-  /* 記録：log＝月ごとの［記録日, 採用式, 予測, 受付済み売上］。logd＝その月の同じ日付（以前で最も近い日）の記録の全体 */
-  'log', coalesce((select jsonb_object_agg(ym, a) from (select l.ym, jsonb_agg(jsonb_build_array(to_char(l.snap_date,'YYYY-MM-DD'), l.d->>'best', (l.d->'fc'->>(l.d->>'best'))::numeric, (l.d->'all'->>1)::numeric) order by l.snap_date) a from mtg_fc_log l, t where l.store=p_store and l.snap_date<=t.td group by l.ym) z),'{}'::jsonb),
+  /* 記録：log＝月ごとの［記録日, 採用式, 予測, 受付済み売上, 予約外売上, キャンセル率の前提, 後から入る件数の見込み, 単価の前提, トレンド係数, 進捗率の前提, 空き枠］。logd＝その月の同じ日付（以前で最も近い日）の記録の全体 */
+  'log', coalesce((select jsonb_object_agg(ym, a) from (select l.ym, jsonb_agg(jsonb_build_array(to_char(l.snap_date,'YYYY-MM-DD'), l.d->>'best', (l.d->'fc'->>(l.d->>'best'))::numeric, (l.d->'all'->>1)::numeric, (l.d->>'ext')::numeric, (l.d->'as'->>'chat')::numeric, (l.d->'as'->>'nhat')::numeric, (l.d->'as'->>'u')::numeric, (l.d->'as'->>'tm')::numeric, (l.d->'as'->>'sh')::numeric, (l.d->>'free')::numeric) order by l.snap_date) a from mtg_fc_log l, t where l.store=p_store and l.snap_date<=t.td group by l.ym) z),'{}'::jsonb),
   'logd', coalesce((select jsonb_object_agg(pm.ym, (select l.d||jsonb_build_object('snap',to_char(l.snap_date,'YYYY-MM-DD')) from mtg_fc_log l where l.store=p_store and l.ym=pm.ym and l.snap_date<=pm.dm order by l.snap_date desc limit 1)) from pm
       where exists (select 1 from mtg_fc_log l where l.store=p_store and l.ym=pm.ym and l.snap_date<=pm.dm)),'{}'::jsonb)
 );

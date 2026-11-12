@@ -29,3 +29,11 @@ select to_char(g,'YYYY-MM'), coalesce(nullif(x.type,''),'未配車'), count(*)::
   group by 1,2;
 $function$;
 revoke all on function public.mtg_fc_cap(text) from public, anon, authenticated;
+
+/* 予約外売上（月別・bt_mtg_h2 の ext_r と同じ定義） */
+create or replace function public.mtg_fc_ext(p_store text)
+returns table(ym text, amt numeric) language sql stable security definer set search_path to 'public' as $function$
+select to_char(a.date,'YYYY-MM'), sum(coalesce(a.amount,0))::numeric from bt_accounting a
+  where p_store='bt' and a.type='extra_sales' and to_char(a.date,'YYYY-MM')>='2026-08' group by 1;
+$function$;
+revoke all on function public.mtg_fc_ext(text) from public, anon, authenticated;
