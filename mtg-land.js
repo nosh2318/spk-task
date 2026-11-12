@@ -111,7 +111,7 @@ function draw(){var el=document.getElementById("land");if(!el||!landVisible())re
    +'<b>着地見込み</b>＝Σクラス別着地＋予約外・未配車（その月の実績）。クラス別着地＝今の予約売上＋これから入る見込み日数×見込み単価。<br>'
    +'<b>これから入る見込み日数</b>＝今日〜月末の各日について「その日の今の予約台数 ÷ 過去（3〜9月）の予約で、貸出日の◯日前までに入っていた割合」で最終予約台数を推計し、今の予約を引いたもの（空き台数が上限）。まだ半分も入っていない遠い日は、今の予約＋（まだ入っていない割合×目標稼働率）で控えめに見込む。<br>'
    +'<b>見込み単価</b>＝予約済みの1日単価と内訳（目標）単価を、予約済み日数：見込み日数で加重平均。<br>'
-   +'<b>目標</b>＝各店ページの月目標（札幌'+'・那覇・高松の各ページの定数）。クラス別の目標は🎯設計比較タブと同じ配分。<br>'
+   +'<b>目標</b>＝各店ページの月目標（札幌・那覇・高松の各ページの定数。高松は10月から）。全店の目標＝目標のある店の合計。クラス別の目標は🎯設計比較タブと同じ配分。<br>'
    +'<b>当月推移</b>＝今入っている予約を受付日の順に積み上げた売上（キャンセル済みは除く）。前の月と同じ日付時点の比較で、今月の予約の入り方が早いか遅いかを見る。</div>';
   el.innerHTML=H;}
 function card(nm,col,t,a,L,rd,f,ad,cap,cls){var pa=t?Math.min(100,a/t*100):0,pl=t?Math.min(100,L/t*100):0;
@@ -137,11 +137,11 @@ function why(S0,x,m){var v=mv(x,m);if(!v)return '';var H='<div class="why"><h5>�
   return H+'</div>';}
 /* 当月推移：返却月ごとの予約売上を受付日で積み上げ（今月＋前3か月を同じ日付軸で重ねる） */
 function trend(S0,x){var T=TR[S0.k],cur=x.cur;var H='<div class="lh">📈 '+S0.nm+' 当月推移（予約売上の積み上がり）</div>';
-  if(!T)return H+'<div class="muted">読み込み中…</div>';if(T.err)return H+'<div class="wait">推移データ（'+S0.rpc+'）を読めませんでした。</div>';
+  if(!T)return H+'<div class="muted">読み込み中…</div>';if(T.err)return H+'<div class="wait">推移データ（DB関数 '+S0.rpc+'）を読めませんでした。</div>';
   var td=T.today||jstNow().toISOString().slice(0,10),dm=dimOf(cur),tOff=Math.round((new Date(td+"T00:00:00Z")-new Date(cur+"-01T00:00:00Z"))/864e5);
   function addM(m,n){var d=new Date(Date.UTC(+m.slice(0,4),+m.slice(5,7)-1+n,1));return d.toISOString().slice(0,7);}
   var list=[addM(cur,-3),addM(cur,-2),addM(cur,-1),cur],cols=["#cbd5e1","#94a3b8","#64748b",S0.col],X0=-45,X1=31;
-  function cum(m){var a=(T.mon||{})[m]||[],out=[],s=0,i=0;for(var o=X0;o<=X1;o++){while(i<a.length&&a[i][0]<=o){s+=a[i][1];i++;}out.push([o,s]);}var pre=0;a.forEach(function(e){if(e[0]<X0)pre+=e[1];});return out.map(function(p){return [p[0],p[1]+(p[0]>=X0?pre:0)];});}
+  function cum(m){var a=(T.mon||{})[m]||[],out=[],s=0,i=0;for(var o=X0;o<=X1;o++){while(i<a.length&&a[i][0]<=o){s+=a[i][1];i++;}out.push([o,s]);}return out;}  /* X0(−45日)より前の受付分は最初の点に含める */
   var z=x.mon[cur],tg=z?z.t:0,L=z?z.L:0,S={},mx=Math.max(tg,L);list.forEach(function(m){S[m]=cum(m);S[m].forEach(function(p){if(m!=cur||p[0]<=tOff)mx=Math.max(mx,p[1]);});});
   // 予約外は受付日が無いので推移には入れない（予約売上だけ）。着地・目標の線は予約外を含む店の値
   var W=760,Hh=230,pl=56,pr=10,pt=10,pb=26,iw=W-pl-pr,ih=Hh-pt-pb;function sx(o){return pl+(o-X0)/(X1-X0)*iw;}function sy(v){return pt+ih-(mx?v/mx*ih:0);}
@@ -157,7 +157,7 @@ function trend(S0,x){var T=TR[S0.k],cur=x.cur;var H='<div class="lh">📈 '+S0.n
   // 同じ日付時点の比較表
   var rows='';list.forEach(function(m,ix){var s=S[m],at=s.filter(function(p){return p[0]<=tOff;}).pop(),fin=s[s.length-1];var h=x.hist[m];var fm=h?h.r:(m==cur&&z?z.ar+0:fin[1]);
     rows+='<tr'+(m==cur?' class="cur"':'')+'><td class="l"><i style="display:inline-block;width:10px;height:10px;background:'+cols[ix]+';border-radius:2px"></i> '+MN(m)+'</td><td>'+y(at?at[1]:0)+'</td><td>'+(m==cur?'<span class="muted">進行中</span>':y(fin[1]))+'</td><td>'+(m==cur||!fin[1]?'–':P(at?at[1]:0,fin[1]))+'</td></tr>';});
-  H+='<div class="lw" style="max-width:560px"><table><thead><tr><th class="l">返却月</th><th>同じ日付時点（月の'+(tOff+1)+'日目）の予約売上</th><th>最終の予約売上</th><th>その時点で入っていた割合</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+  H+='<div class="lw" style="max-width:760px"><table><thead><tr><th class="l">返却月</th><th>同じ日付時点（月の'+(tOff+1)+'日目）の予約売上</th><th>最終の予約売上</th><th>その時点で入っていた割合</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
   H+='<div class="lsub">線＝その返却月の予約売上を受付日の順に積み上げたもの（今残っている予約だけ・キャンセル済みは除く・予約外売上は含まない）。横軸＝月初からの日数（マイナス＝前月までに受付）。前の月と同じ日付時点で比べると、今月の入り方が早いか遅いかが分かる。</div>';
   return H;}
 window.landSel=function(k,scroll){SEL=k;draw();if(scroll){var e=document.getElementById("landDet");if(e)e.scrollIntoView({behavior:"smooth",block:"start"});}};
