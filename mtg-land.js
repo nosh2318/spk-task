@@ -232,17 +232,22 @@ function nx(x,m){var G=FN[selfKey()||"spk"],z=x&&x.mon[m];if(!G||G.err||!G.k||!z
   /* 確定月が3か月に満たない、または一番良い式でも外れが25%を超える店（開店直後で伸びている最中）は、直前の月の増え方×直近の入り方 を仮採用（幅±20%） */
   var thin=!cand.length||nm<3||cand[0].mae>0.25,best=thin?(pick("anap")||pick("ana")||pick("f0.5")||M[0]):cand[0],F=best.F;
   /* 幅＝採用した式の過去の平均の外れ。答え合わせの月数が少ないうちは小さく出すぎるので、来月は最低8%・再来月は最低14% */
+  /* 2026-11-12 外れの差が3ポイント以内＝過去の答え合わせでは優劣がつかない2つの読み方（「これから入る台数」系と「対象月そのものの今の予約から伸ばす」系）が25%以上食い違う時は、対象月自身の予約を使う方を採る。
+     先の月ほど「これから入る台数」系は過去の平均的な月（夏を含む）をなぞるだけになり、対象月の予約の少なさ・多さが効かないため。幅は2つの読みの中間まで広げる */
+  function famOf(k){var q=k.replace("*","");return (q=="ratio"||q=="ana"||q=="anap")?"L":(q=="ens"||q=="wt")?"M":"P";}
+  var alt=null;if(!thin&&famOf(best.k)!="L"){var lv=cand.filter(function(q){return famOf(q.k)=="L";})[0];if(lv&&lv.mae-best.mae<=0.03&&Math.abs(Math.log(best.F/lv.F))>Math.log(1.25)){alt=best;best=lv;F=best.F;}}
   var wd=thin?0.2:Math.max(best.mae,+kk==1?0.08:0.14),lo=F*(1-wd),hi=F*(1+wd);
+  if(alt){var mid=Math.sqrt(F*alt.F);if(mid>hi)hi=mid;if(mid<lo)lo=mid;}
   var ref=pv(T,"f0.5")||T[8][0],ru=(+ref[3]-ob)>0?(+ref[4]-obr)/(+ref[3]-ob):(ob?obr/ob:0),fd=best.fd||(ru>0?Math.max(ob*0.9,ob+(F-obr)/ru):+ref[3]);
   var lg=(G.log||[]).filter(function(q){return q[0]==m&&q[3];});
-  return {m:m,kk:+kk,T:T,past:P0,np:PA.length,nm:nm,M:M,cand:cand,best:best,thin:thin,F:F,wd:wd,L:z.a+(F-obr),lo:z.a+(lo-obr),hi:z.a+(hi-obr),cap:cap,ob:ob,obr:obr,fd:Math.min(fd,cap),c:+T[7],seg:G.k[kk].seg||[],s:T[1],z:z,log:lg};}
+  return {m:m,kk:+kk,T:T,past:P0,np:PA.length,nm:nm,M:M,cand:cand,best:best,thin:thin,alt:alt,F:F,wd:wd,L:z.a+(F-obr),lo:z.a+(lo-obr),hi:z.a+(hi-obr),cap:cap,ob:ob,obr:obr,fd:Math.min(fd,cap),c:+T[7],seg:G.k[kk].seg||[],s:T[1],z:z,log:lg};}
 function nmOf(key){var c=key.slice(-1)=="*",b=c?key.slice(0,-1):key;return (NT[b]||b)+(c?"＋偏り補正":"");}
 function nxHtml(S0,x,N){var z=N.z,m=N.m,b=N.best,pm=N.past.map(function(r){return r[0];}),SG=["","1〜10日","11〜20日","21〜26日","27日〜月末"];
   var H='<div class="why" id="landNx"><h5>🧮 '+S0.nm+' '+MN(m)+'の着地見込み（'+(N.kk==1?'来月':'再来月')+'）— 稼働率 × 単価で読む</h5>';
   H+='<div class="eq">着地見込み <b>'+y(N.L)+'</b>（幅 '+y(N.lo)+'〜'+y(N.hi)+'）＝ 現在実績 '+y(z.a)+' ＋ これから増える見込み '+sg(N.F-N.obr,y)+'</div>';
   H+='<div class="eq">予約売上の着地 '+y(N.F)+' ＝ 稼働可能 '+k(N.cap)+'日 × 着地稼働率 '+P(N.fd,N.cap)+'（'+k(N.fd)+'日）× 1日単価 '+(N.fd?y(N.F/N.fd):'–')+'</div>';
   H+='<div>今（'+N.s.slice(5).replace("-","/")+'時点）：貸出 '+k(N.ob)+'日＝稼働率 '+P(N.ob,N.cap)+'・1日単価 '+(N.ob?y(N.obr/N.ob):'–')+'・予約売上 '+y(N.obr)+'（貸出日で日割り）。これから +'+k(Math.max(0,N.fd-N.ob))+'日。'+(z.t?'目標 '+y(z.t)+' に対して '+sg(N.L-z.t,y)+'（'+P(N.L,z.t)+'）。':'')+'</div>';
-  H+='<div>直近28日の入り方＝過去の同じ時期（同じ何日前）の <b>'+(Math.round(N.c*100)/100).toFixed(2)+'倍</b>'+(N.c>=1.15?'（強い）':N.c<=0.85?'（弱い）':'（ほぼ同じ）')+'。採用した式＝<b>'+nmOf(b.k)+'</b>'+(N.thin?'（仮採用：比べられる確定月が足りない、または過去の外れが大きいため、いちばん近い直前の月をお手本にしています。幅は±20%）':'（過去'+N.nm+'か月・'+b.n+'時点の答え合わせで平均の外れ '+pcs(b.mae).replace(/^[+−]/,'')+'・偏り '+pcs(b.bias)+'）')+'</div>';
+  H+='<div>直近28日の入り方＝過去の同じ時期（同じ何日前）の <b>'+(Math.round(N.c*100)/100).toFixed(2)+'倍</b>'+(N.c>=1.15?'（強い）':N.c<=0.85?'（弱い）':'（ほぼ同じ）')+'。採用した式＝<b>'+nmOf(b.k)+'</b>'+(N.thin?'（仮採用：比べられる確定月が足りない、または過去の外れが大きいため、いちばん近い直前の月をお手本にしています。幅は±20%）':'（過去'+N.nm+'か月・'+b.n+'時点の答え合わせで平均の外れ '+pcs(b.mae).replace(/^[+−]/,'')+'・偏り '+pcs(b.bias)+'）')+(N.alt?'<br>※ 過去の答え合わせでは「'+nmOf(N.alt.k)+'」（'+yen(N.alt.F)+'）と優劣がつきませんが、読みが大きく食い違うため、'+(+m.slice(5))+'月そのものの今の予約から伸ばす式を採用しています（先の月ほど、これから入る台数の式は過去の平均的な月をなぞるだけになるため）。幅はその中間まで広げています。':'')+'</div>';
   if(N.seg.length){H+='<div class="lw" style="margin-top:6px"><table><thead><tr><th class="l">月内の区間</th><th>稼働可能</th><th>今の予約</th><th>今の稼働率</th><th>着地の見込み</th><th>着地稼働率</th><th>これから</th></tr></thead><tbody>';
     N.seg.forEach(function(g){H+='<tr><td class="l">'+SG[g[0]]+'</td><td>'+k(g[1])+'日</td><td>'+k(g[2])+'日</td><td>'+P(g[2],g[1])+'</td><td>'+k(g[3])+'日</td><td>'+P(g[3],g[1])+'</td><td>+'+k(Math.max(0,g[3]-g[2]))+'日</td></tr>';});
     H+='</tbody></table></div><div class="lsub">区間別は「空き台数が埋まる率」の式での内訳（どこが埋まっていて、どこに伸びしろがあるか）。</div>';}
