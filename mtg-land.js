@@ -112,7 +112,11 @@ function draw(){var el=document.getElementById("land");if(!el||!landVisible())re
    +'<b>見込み単価</b>＝予約済みの1日単価と内訳（目標）単価を、予約済み日数：見込み日数で加重平均。<br>'
    +'<b>目標</b>＝このページの月目標（高松は10月から）。クラス別の目標は🎯設計比較タブと同じ配分。<br>'
    +'<b>当月推移</b>＝今入っている予約を受付日の順に積み上げた売上（キャンセル済みは除く）。前の月と同じ日付時点の比較で、今月の予約の入り方が早いか遅いかを見る。</div>';
-  el.innerHTML=H;}
+  el.innerHTML=H;
+  /* 2026-11-12 オーナー「TOURISM進行管理のサマリに着地予測を・直近3ヶ月同じ数値を出す」：?landpost=1 で開かれた時（高松アプリのサマリが隠し iframe で開く）、このタブと同じ着地の数字を親ページへ渡す */
+  if(POST_O&&x){try{var out={};Object.keys(x.hist).concat(Object.keys(x.mon)).forEach(function(m){var w=mv(x,m);if(!w)return;var L=w.L;if(m==cur&&SC)L=SC.L;if(m==cur&&FX)L=FX.L;out[m]={st:w.st,t:Math.round(w.t||0),a:Math.round(w.a||0),L:Math.round(L||0)};});
+    window.parent.postMessage({type:"hdm-land",store:S0.k,cur:cur,ready:!!(rdy&&(FX||(FC[S0.k]&&FR[S0.k]))),fx:!!FX,lo:FX?Math.round(FX.lo):null,hi:FX?Math.round(FX.hi):null,mae:FX?+FX.bm.mae:null,mon:out},POST_O);}catch(e){}}}
+var POST_O=(function(){if((location.search.indexOf("landpost=1")<0&&!window.LAND_POST_FORCE)||window.parent===window)return "";var OK=["https://buddica-touring.github.io","https://nosh2318.github.io"],o="";try{o=location.ancestorOrigins&&location.ancestorOrigins.length?location.ancestorOrigins[0]:new URL(document.referrer).origin;}catch(e){}return OK.indexOf(o)>=0?o:"";})();
 var MT={share:"進捗率式",add:"積み上げ式",blend:"進捗率式と積み上げ式の平均",addtr:"積み上げ式×受付トレンド",free:"積み上げ式（空き枠あたり＝稼働率を加味）",cls:"クラス別の積み上げ",ch:"経路別（OTA・公式）の積み上げ×経路のトレンド",io:"国内・海外別の積み上げ×トレンド",share3:"進捗率式（直近3か月だけ）",yoy:"前年同月の進捗率"};
 var MTd={share:"受付済み売上 ÷ 過去の同じ日付時点の進捗率",add:"受付済み×（1−キャンセル率）＋ 後から入る売上（過去の実績：台数×残り日数あたり）",blend:"上の2つの平均",addtr:"積み上げ式の「後から入る」に、受付件数の直近28日÷前28日（0.7〜1.3倍）を掛ける",free:"後から入る売上を、空き枠（台数×残り日数−予約済み）あたりで見る",cls:"後から入る売上をクラスごとの率×クラスの残り枠で積む（人気クラス・動かないクラスを分ける）",ch:"後から入る売上を OTA・公式・その他に分け、経路ごとの受付トレンドを掛ける",io:"後から入る売上を国内・海外に分け、それぞれの受付トレンドを掛ける",share3:"進捗率式を直近3か月の実績だけで",yoy:"前年の同じ月の進捗率を使う（データが1年分たまると自動で候補に入る）"};
 /* 今月の着地（mtg_fc）：採用式＝過去月の答え合わせで平均誤差が最小の式。着地＝現在実績（サマリと同じ）−キャンセル見込み＋これから入る見込み。提供できる上限（fc() の②）を超える分は切る */
