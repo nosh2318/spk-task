@@ -121,7 +121,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1223';
+var CV='spk-v1224';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=1059').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -1839,7 +1839,9 @@ function cleanPlace(p){
   return s;
 }
 // 🔴 場所未確定アラート: DEL/COL で場所が空欄＝①LINE未登録 ②フォーム未回答 ③予約番号不一致 のいずれか。LINE確認・回答催促が必要。
-function taskPlaceResolved(t){if(!t)return"";return cleanPlace((t._placeSource==="manual"?t.place:(t._ssPlace||t.place))||"");}
+// ★2026-11-12 回収場所が「同じ」「お届け場所と同じ」等の時は、予約のお届け場所(del_place)の住所に読み替えて表示＝地図リンクが住所に飛ぶ（R0****Q5）。表示だけ・DBは書き換えない。数字を含む(住所入り)・20字超は読み替えない
+function isSamePlaceText(p){const s=String(p||"").trim();return !!s&&s.length<=20&&!/[0-9０-９]/.test(s)&&/(同じ|同上|おなじ|^同$|same)/i.test(s);}
+function taskPlaceResolved(t){if(!t)return"";const p=cleanPlace((t._placeSource==="manual"?t.place:(t._ssPlace||t.place))||"");if(p&&["COL","BD","BDB","返却"].includes(t.type)&&isSamePlaceText(p)){const r=(t.reservationId&&DB._resIdx)?DB._resIdx[t.reservationId]:null;const dp=r?cleanPlace(r.delPlace):"";if(dp&&!isSamePlaceText(dp))return dp;}return p;}
 function isPlaceMissing(t){return !!(t&&(t.type==="DEL"||t.type==="COL")&&!t.done&&!taskPlaceResolved(t));}
 // 変更マーカー（誰が・いつ 場所/時間を変更したか）＝初期値と区別できるようにする
 function fmtChgAt(iso){if(!iso)return"";const d=new Date(iso);if(isNaN(d.getTime()))return"";return (d.getMonth()+1)+"/"+d.getDate()+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");}
@@ -17951,7 +17953,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
                 {t.vehicle&&<span>{t.vehicle}</span>}
                 {t.insurance&&<span style={{color:t.insurance==="NOC"?"#dc2626":"#059669",fontWeight:600}}>{t.insurance}</span>}
                 <OtaPayBadge ota={t.ota} rid={t.reservationId||t.reservation_id} isJPaidFn={(isJPaidFn||((id)=>((jalanPay&&jalanPay[id]||{}).payStatus==="完了")))} size={9}/>{(()=>{const ep=extraPayFn&&extraPayFn(t.reservationId||t.reservation_id);if(!ep)return null;const pd=ep.status==="paid";return <span title="オプション/補償の追加分" style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:4,marginLeft:3,background:pd?"#dbeafe":"#fef9c3",color:pd?"#1d4ed8":"#a16207"}}>{pd?"追加済":"追加未"}</span>;})()}
-                {(()=>{const rP=cleanPlace((t._placeSource==="manual"?t.place:(t._ssPlace||t.place))||"");if(!rP)return isPlaceMissing(t)?<PlaceAlert/>:null;const mu="https://www.google.com/maps/search/"+encodeURIComponent(rP);return <a href={mu} target="_blank" rel="noopener" style={{color:"#dc2626",textDecoration:"none",fontWeight:600}}>📍{rP}</a>;})()}
+                {(()=>{const rP=taskPlaceResolved(t);if(!rP)return isPlaceMissing(t)?<PlaceAlert/>:null;const mu="https://www.google.com/maps/search/"+encodeURIComponent(rP);return <a href={mu} target="_blank" rel="noopener" style={{color:"#dc2626",textDecoration:"none",fontWeight:600}}>📍{rP}</a>;})()}
                 <ChgTag info={chgInfo(t,"place")}/>
                 <ChgTag info={chgInfo(t,"time")}/>
                 <SeatLoadBadge plate={(vh&&vh.no)||t.plateNo} type={t.type}/>
@@ -18261,7 +18263,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
             {allSchedule.map(t=>{
               const ppl=parseInt(t.people)||0;
               const resolvedT=t.timeChange||t._ssTime||t.time||"--:--";
-              const resolvedP=cleanPlace((t._placeSource==="manual"?t.place:(t._ssPlace||t.place))||"");
+              const resolvedP=taskPlaceResolved(t);
               const ts=typeStyle(t.type);
               const vn=t.assignedVehicle?vehicles.find(v=>v.code===t.assignedVehicle):null;
               const fleetVc=!vn&&t.reservationId?fleet[t.reservationId]:null;
@@ -18346,7 +18348,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       {/* ★ マスター表（参照専用+行タップ遷移） */}
       {sheetFilter==="master"&&(()=>{
         const resolvedT=(t)=>t.timeChange||t._ssTime||t.time;
-        const resolvedP=(t)=>cleanPlace(t._placeSource==="manual"?t.place:(t._ssPlace||t.place));
+        const resolvedP=(t)=>taskPlaceResolved(t);
         // ★2026-08-02 その他タスク(手入力=manual)はマスター表からも内容/時間/車両/場所を編集可（担当/メモは元から可）。leg(DEL/COL)ではないのでSTEP2/3導出の対象外＝マーカー保護に影響しない。保存は確定値パターンのupdateOtherTaskで発火。
         const _isOM=(t)=>t.manual===true||String(t._id||"").startsWith("other_");
         // ★ 返却→洗車リンク: 同日・同ナンバーで「返却(COL/BD/BDB/返却)」と「洗車」が両方ある車両を検出。洗車は返却時間以降に必要。
@@ -18453,7 +18455,7 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
       {/* ★ 編集タブ（3階層UI） */}
       {sheetFilter==="edit"&&(()=>{
         const resolvedT=(t)=>t.timeChange||t._ssTime||t.time;
-        const resolvedP=(t)=>cleanPlace(t._placeSource==="manual"?t.place:(t._ssPlace||t.place));
+        const resolvedP=(t)=>taskPlaceResolved(t);
         /* ---- ナビバー ---- */
         const navBar=<div style={{padding:"8px 12px",background:"#1e293b",display:"flex",alignItems:"center",gap:8}}>
           <button onClick={()=>{if(editBlock!==null){setEditBlock(null);}else if(editResId!==null){setEditResId(null);}else{setSheetFilter("master");}}} style={{padding:"4px 12px",background:"#334155",color:"#fff",border:"none",borderRadius:6,fontSize:11,fontWeight:700,cursor:"pointer"}}>← 戻る</button>
@@ -25053,7 +25055,7 @@ function App(){
                             const toggleDone=async(e)=>{e.stopPropagation();/* ★2026-09-13 最新doneをrefから読む＝stale closureで「解除したのにtrueを書き直す」を根治 */const _cur=(topDoneRef.current&&(t._id in topDoneRef.current))?!!topDoneRef.current[t._id]:!!t.done;const becomingDone=!_cur;if(becomingDone&&t.type==="洗車"&&!(await spkWashInspGuard(t)))return;/* ★2026-10-23 3店統一：洗車は出発前点検11/11まで完了不可 */recentToggleRef.current[t._id]={done:becomingDone,at:Date.now()};if(becomingDone)celebrateDone();/* 楽観更新: タップで即このリストのdoneを反転。refresh失敗でも画面は必ず反映＝完了↔解除が常に効く */const _flip=arr=>arr.map(x=>x._id===t._id?{...x,done:becomingDone}:x);setTodayTasks(_flip);setTomorrowTasks(_flip);try{if(sb){await sb.from("tasks").update({done:becomingDone}).eq("_id",t._id);const rid=t.reservationId||t.reservation_id;if(rid&&becomingDone&&(isDel||isCOL)){const ks=isDel?"active":"completed";try{await sb.from("reservations").update({kd_status:ks,kd_status_at:new Date().toISOString()}).eq("id",rid);}catch(_){}}}refreshTopTasks();}catch(err){console.error("[TOP toggleDone]",err);}};
                             const isWashCard=t.type==="洗車";const _wLinked=!!(isWashCard&&t.plateNo&&_wLinkedPlates.has(t.plateNo));const _wRet=_wLinked?_wRetByPlate[t.plateNo]:null;
                             const _wGray=isNextDayType(t)&&t._nextDayWashGray;const _wToday=isNextDayType(t)&&t._nextDayWashShown;
-                            const _isFirst=!t.done&&t._id===((tasks.find(x=>!x.done)||{})._id);const _rP=cleanPlace((t._placeSource==="manual"?t.place:(t._ssPlace||t.place))||"");
+                            const _isFirst=!t.done&&t._id===((tasks.find(x=>!x.done)||{})._id);const _rP=taskPlaceResolved(t);
                             /* ★2026-11-07 バイトURLと同じ形：閉じた行＝時間・種類・車両・お客様(小)・完了。タップで 場所／お客様／札1段／ボタン */
                             return <div key={t._id} className={"tsc"+(_isFirst?" open":"")+(t.done?" done":"")} onClick={e=>{if(e.target.closest("button,a,input,select,textarea,label"))return;e.currentTarget.classList.toggle("open");}} style={{padding:"7px 9px",border:"1px solid #e2e8f0",borderLeft:"4px solid "+(_wGray?"#cbd5e1":(tm.c||"#cbd5e1")),borderRadius:8,marginBottom:6,boxShadow:"0 1px 2px rgba(0,0,0,0.04)",background:_wGray?"#f1f5f9":_wToday?"#eff6ff":(_wLinked?"#ecfdf5":"#fff"),opacity:_wGray?.6:(t.done?.5:1)}}>
                               <div className="tsc-tm">{(()=>{const rT=t.timeChange||t._ssTime||t.time||"--:--";const orig=t.time||"";const changed=rT!==orig;return <span style={{fontSize:15,fontWeight:800,color:changed?"#dc2626":"#0f172a",flexShrink:0,fontFamily:"monospace"}}>{rT}{changed&&orig&&<span style={{fontSize:8,color:"#9ca3af",marginLeft:2}}>({orig})</span>}</span>;})()}</div>
@@ -25091,7 +25093,7 @@ function App(){
                                 {isDel&&(t.reservationId||t.reservation_id)&&(()=>{const _rid0=t.reservationId||t.reservation_id;const _pd=actionDoneOf(_rid0,"advance_park")||actionDoneOf(_rid0,"advance_park_place");return <button onClick={e=>{e.stopPropagation();setParkSumTask(t);}} title={_pd?"事前駐車(無人貸出)依頼：送信済 "+actionDoneLabel(_pd.at):"事前に停めてもらう案内（無人貸出）"} style={{fontSize:8,fontWeight:600,padding:"3px 8px",borderRadius:6,background:_pd?"#dcfce7":"#eef2ff",color:_pd?"#15803d":"#4338ca",border:"1px solid "+(_pd?"#86efac":"#c7d2fe"),cursor:"pointer"}}>🅿️無人貸出{_pd?actionDoneLabel(_pd.at):""}</button>;})()}
                                 {t.ota==="KEYDROP"&&isCOL&&(()=>{const _rid0=t.reservationId||t.reservation_id;const _done=actionDoneOf(_rid0,"col_arrival");return <button onClick={async(e)=>{e.stopPropagation();const rid=t.reservationId||t.reservation_id;if(window._pressTooEarly&&window._pressTooEarly(t))return;if(!confirmRedo(actionDoneOf(rid,"col_arrival")))return;const cn=(t.name||"")+"様";const msg=`【ご返却場所到着のお知らせ】\n${cn}\n\n回収スタッフがご返却場所に到着致しました。\nご準備できましたら対応のほどお願い申しあげます。\n何卒よろしくお願いいたします。`;const _reg=!!(window._lineLinkMap||{})[rid];const kd=(t.ota==="KEYDROP");let _sent=false;if(kd&&rid){if(!window.confirm(cn+" に「返却場所到着のお知らせ」メールを送信します。よろしいですか？"))return;try{const _rk=await sb.rpc("keydrop_enqueue_button",{p_resv:rid,p_kind:"arrive_col"});if(_rk.error||_rk.data!=="ok")throw new Error(String((_rk.data)||(_rk.error&&_rk.error.message)||"ng"));alert("✅ 回収到着をメールで送信しました（KEYDROP）");_sent=true;}catch(_ke){alert("⚠️メール送信失敗("+(_ke.message||"")+")。手動でご連絡ください");}}else if(_reg&&rid){if(!window.confirm(cn+" に「返却場所到着のお知らせ」LINEを送信します。よろしいですか？"))return;try{const{data:_s}=await sb.auth.getSession();const _tk=_s&&_s.session&&_s.session.access_token;const _r=await fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/line-send",{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+_tk},body:JSON.stringify({store:"spk",resv_no:rid,action:"col_arrival",message:msg})});const _j=await _r.json();if(_j.ok){alert("✅ 回収到着をLINEに自動送信しました");_sent=true;}else{await navigator.clipboard.writeText(msg);alert("⚠️自動送信不可("+(_j.reason||"")+")。コピーしました→手動で送信してください");_sent=true;}}catch(_e){await navigator.clipboard.writeText(msg);alert("⚠️送信エラー。コピーしました→手動で送信してください");_sent=true;}}else{if(await mailFallback("spk",rid,"col_arrival",msg)){alert("✉️ LINE未登録のため、メールで送信しました（マイページのURL付き）");}else{await navigator.clipboard.writeText(msg);alert("📋 LINE未登録(📱手動)。コピーしました→エルメ/LINEに貼り付けて送信してください");}_sent=true;}if(_sent&&rid){await recordActionDone(sb,rid,"col_arrival");refreshTopTasks();}}} style={{fontSize:8,fontWeight:600,padding:"3px 8px",borderRadius:6,background:_done?"#f1f5f9":"#dcfce7",color:_done?"#64748b":"#15803d",border:"1px solid "+(_done?"#cbd5e1":"#86efac"),cursor:"pointer"}}>📱到着{_done?actionDoneLabel(_done.at):""}</button>;})()}
                                 {t.ota==="KEYDROP"&&isCOL&&(()=>{const _rid0=t.reservationId||t.reservation_id;const _done=actionDoneOf(_rid0,"dropoff");return <button onClick={async(e)=>{e.stopPropagation();const rid=t.reservationId||t.reservation_id;if(!confirmRedo(actionDoneOf(rid,"dropoff")))return;const cn=(t.name||"")+"様";const msg=`【乗り捨て対応のお願い】\n${cn}\n\nご返却時刻の混雑により、大変お手数ではございますが返却予定場所近隣駐車場に乗り捨て駐車いただきたく、ご連絡させていただきました。\nお待たせする時間回避の目的のためご協力の程何卒よろしくお願いいたします。\n\n✅駐車完了しましたら"鍵と駐車券"をダッシュボード内に格納し、鍵を開けた状態でそのままお降りくださいませ。\n✅燃料の給油とお忘れ物（ETCカード等）のないようご注意ください。\n✅駐車場所が確定しましたら詳細場所をご連絡いただけますと幸いです。\n例：駐車場看板写真/GoogleマップURL/住所/駐車場名/●階等\n\n駐車後の車両トラブルに関しては一切の責任は問いませんのでご安心くださいませ。\n万一の盗難等の際にも弊社セキュリティにて追跡可能となっております。`;const _reg=!!(window._lineLinkMap||{})[rid];const kd=(t.ota==="KEYDROP");let _sent=false;if(kd&&rid){if(!window.confirm(cn+" に「乗り捨て対応のお願い」メールを送信します。よろしいですか？"))return;try{const _rk=await sb.rpc("keydrop_enqueue_button",{p_resv:rid,p_kind:"dropoff"});if(_rk.error||_rk.data!=="ok")throw new Error(String((_rk.data)||(_rk.error&&_rk.error.message)||"ng"));alert("✅ 乗り捨て依頼をメールに送信しました（KEYDROP）");_sent=true;}catch(_ke){await navigator.clipboard.writeText(msg);alert("⚠️メール送信失敗("+(_ke.message||"")+")。コピーしました→手動で送信してください");_sent=true;}}else if(_reg&&rid){if(!window.confirm(cn+" に「乗り捨て対応のお願い」LINEを送信します。よろしいですか？"))return;try{const{data:_s}=await sb.auth.getSession();const _tk=_s&&_s.session&&_s.session.access_token;const _r=await fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/line-send",{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+_tk},body:JSON.stringify({store:"spk",resv_no:rid,action:"dropoff",message:msg})});const _j=await _r.json();if(_j.ok){alert("✅ 乗り捨て依頼をLINEに自動送信しました");_sent=true;}else{await navigator.clipboard.writeText(msg);alert("⚠️自動送信不可("+(_j.reason||"")+")。コピーしました→手動で送信してください");_sent=true;}}catch(_e){await navigator.clipboard.writeText(msg);alert("⚠️送信エラー。コピーしました→手動で送信してください");_sent=true;}}else{if(await mailFallback("spk",rid,"dropoff",msg)){alert("✉️ LINE未登録のため、メールで送信しました（マイページのURL付き）");}else{await navigator.clipboard.writeText(msg);alert("📋 LINE未登録(📱手動)。コピーしました→エルメ/LINEに貼り付けて送信してください");}_sent=true;}if(_sent&&rid){await recordActionDone(sb,rid,"dropoff");refreshTopTasks();}}} style={{fontSize:8,fontWeight:600,padding:"3px 8px",borderRadius:6,background:_done?"#f1f5f9":"#fef2f2",color:_done?"#64748b":"#b91c1c",border:"1px solid "+(_done?"#cbd5e1":"#fca5a5"),cursor:"pointer"}}>📱乗捨{_done?actionDoneLabel(_done.at):""}</button>;})()}
-                                {(()=>{const rP=cleanPlace((t._placeSource==="manual"?t.place:(t._ssPlace||t.place))||"");if(!rP)return null;return <button onClick={(e)=>{e.stopPropagation();window.open(mapsUrl(rP),"_blank");}} title={"地図で開く: "+rP} style={{fontSize:8,fontWeight:800,padding:"3px 8px",borderRadius:6,background:"#ecfdf5",color:"#047857",border:"1px solid #6ee7b7",cursor:"pointer"}}>🗺️地図</button>;})()}
+                                {(()=>{const rP=taskPlaceResolved(t);if(!rP)return null;return <button onClick={(e)=>{e.stopPropagation();window.open(mapsUrl(rP),"_blank");}} title={"地図で開く: "+rP} style={{fontSize:8,fontWeight:800,padding:"3px 8px",borderRadius:6,background:"#ecfdf5",color:"#047857",border:"1px solid #6ee7b7",cursor:"pointer"}}>🗺️地図</button>;})()}
                                 <button onClick={(e)=>{e.stopPropagation();window.open("https://web.carmon.alpine-srv.net/","_blank");}} style={{fontSize:8,fontWeight:600,padding:"3px 8px",borderRadius:6,background:"#f1f5f9",color:"#475569",border:"none",cursor:"pointer"}}>📍CARMON</button>
                                 {(t.reservationId||t.reservation_id)&&<button onClick={(e)=>{e.stopPropagation();window.open("license.html?id="+encodeURIComponent(t.reservationId||t.reservation_id)+_licTokQ(t.reservationId||t.reservation_id)+"&name="+encodeURIComponent(t.name||""),"_blank");}} style={{fontSize:8,fontWeight:600,padding:"3px 8px",borderRadius:6,background:"#f1f5f9",color:"#475569",border:"none",cursor:"pointer"}}>🪪免許証</button>}
                                 </React.Fragment>}
@@ -25144,7 +25146,7 @@ function App(){
                     {allSchedule.map(t=>{
                       const ppl=parseInt(t.people)||0;
                       const resolvedT=t.timeChange||t._ssTime||t.time||"--:--";
-                      const resolvedP=cleanPlace((t._placeSource==="manual"?t.place:(t._ssPlace||t.place))||"");
+                      const resolvedP=taskPlaceResolved(t);
                       const ts=typeStyle(t.type);
                       const vn=t.assignedVehicle?vehicles.find(v=>v.code===t.assignedVehicle):null;
                       const fleetVc=!vn&&t.reservationId?fleet[t.reservationId]:null;
@@ -26183,7 +26185,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.724";
+const APP_VERSION="v4.7.725";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
