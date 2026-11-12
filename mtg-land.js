@@ -111,7 +111,7 @@ function draw(){var el=document.getElementById("land");if(!el||!landVisible())re
    +'<b>現在実績</b>＝返却日がその月の予約の売上合計（基本料金＋オプション−割引。キャンセル・テスト除外）＋予約外売上（会計の予約外）。KPIタブ・サマリと同じ。<br>'
    +'<b>今月の着地見込み</b>＝現在実績−キャンセル見込み＋これから入る見込み。式は1つに決め打ちしない：複数の予測式を、過去の全部の月の「同じ日付時点」で答え合わせし、平均誤差が一番小さい式をその店で自動採用（毎日やり直す）。前提（進捗率・キャンセル率・後から入る率・単価）は確定した月が増えるたびに自動で更新。毎日23:55にその日の予測と前提を記録し、月が締まったら「どの指標が外れたか」を分解して表示。提供できる上限（下のクラス別の表の②）を超える分は見込まない。<br>'
    +'<b>クラス別の積み上げ（参考・供給の確認）</b>＝現在実績＋Σクラス（見込み日数×見込み単価）。見込み日数＝①需要（過去3か月の「同じ日付より後に入った率」×残り枠×受付件数のトレンド）と ②提供できる上限（配車表の日別の空きに平均泊数の予約が入る日数）の小さい方。空きがあるだけでは見込まない。<br>'
-   +'<b>来月・再来月の着地見込み</b>＝現在実績＋（着地の予約売上−今の予約売上）。着地の予約売上は、その月の1日ごとに「今の予約×（1−キャンセル率）＋これから入る台数」を積み、台数の95%を上限にして、単価を掛けたもの＝稼働可能日数×着地稼働率×単価。これから入る台数は、過去の同じリードタイム（何日前か）・平日/土日での入り方（台数あたり／空き台数あたり）に、直近28日の入り方の強さを掛ける。前月の同じ日付時点からの伸び率の式も並べ、過去の月を同じ日付時点に戻して全部の式を答え合わせし、外れが一番小さい式を店ごとに採用。幅＝その式の過去の平均の外れ（来月は最低8%・再来月は最低14%）。<br>'
+   +'<b>来月・再来月の着地見込み</b>＝現在実績＋（着地の予約売上−今の予約売上）。着地の予約売上は、その月の1日ごとに「今の予約×（1−キャンセル率）＋これから入る台数」を積み、台数の95%を上限にして、単価を掛けたもの＝稼働可能日数×着地稼働率×単価。これから入る台数は、過去の同じリードタイム（何日前か）・平日/土日での入り方（台数あたり／空き台数あたり）に、直近28日の入り方の強さを掛ける。前月の同じ日付時点からの伸び率の式も並べ、過去の月を同じ日付時点とその前後7日に戻して全部の式を答え合わせし、外れが一番小さい式を店ごとに採用（偏り補正・重み付き平均も候補）。毎日23:55に予測を記録し、月が締まったら実績と突き合わせる。幅＝その式の過去の平均の外れ（来月は最低8%・再来月は最低14%）。<br>'
    +'<b>それより先の月</b>＝サマリと同じリードタイム式：Σクラス別着地＋予約外・未配車（その月の実績）。クラス別着地＝今の予約売上＋これから入る見込み日数×見込み単価。<br>'
    +'<b>これから入る見込み日数</b>＝今日〜月末の各日について「その日の今の予約台数 ÷ 過去（3〜9月）の予約で、貸出日の◯日前までに入っていた割合」で最終予約台数を推計し、今の予約を引いたもの（空き台数が上限）。まだ半分も入っていない遠い日は、今の予約＋（まだ入っていない割合×目標稼働率）で控えめに見込む。<br>'
    +'<b>見込み単価</b>＝予約済みの1日単価と内訳（目標）単価を、予約済み日数：見込み日数で加重平均。<br>'
@@ -190,54 +190,71 @@ function fxHtml(S0,x,X){var G=X.G,cur=x.cur,M=X.M,as=X.as,ms=Object.keys(G.month
    +'<div class="lsub">仕組み：毎日その日の予測・前提・全式の値を記録 → 月が締まったら④で答え合わせ（どの指標が外れたか）→ 確定月が前提と③の採用式に自動で入る＝修正と学習が同時に回る。</div>';
   return H+'</div>';}
 /* 2026-11-12 オーナー「読めないのをどう読み切るか」「設定単価と稼働率で読むべき」「前月の今ぐらいで翌月がどのくらい本数・売上あったかのパターン」「当月予約率も合わせる」：
-   来月・再来月の着地（mtg_fc_next）。式の候補＝日別の積み上げ5案（p＝台数あたり／f＝空き台数あたり × 直近28日の入り方を 0・半分・全部 反映）＋同じ時点からの伸び率（中央値）＋直前の月と同じ伸び率＋直前の月の増え方×直近28日の入り方の比＋全部の中央値。
+   来月・再来月の着地（mtg_fc_next）。式の候補＝日別の積み上げ5案（p＝台数あたり／f＝空き台数あたり × 直近28日の入り方を 0・半分・全部 反映）＋同じ時点からの伸び率（中央値）＋直前の月と同じ伸び率＋直前の月の増え方×直近28日の入り方の比＋全部の中央値＋外れの小ささで重み付けした平均、それぞれの偏り補正版。
    過去の月を同じ日付時点に戻した予測と実績の差（平均）が最小の式を採用。確定月が3か月に満たない／外れが25%超の店は「直前の月の増え方×直近の入り方」を仮採用し、幅は±20% */
-var NT={"p0":"台数あたりの入り方","p0.5":"台数あたりの入り方×直近の入り方（半分反映）","f0":"空き台数が埋まる率","f0.5":"空き台数が埋まる率×直近の入り方（半分反映）","f1":"空き台数が埋まる率×直近の入り方（全部反映）",ratio:"同じ時点からの伸び率（過去月の中央値）",ana:"直前の月と同じ伸び率",anap:"直前の月の増え方 × 直近28日の入り方の比",ens:"全部の式の中央値"};
+var NT={"p0":"台数あたりの入り方","p0.5":"台数あたりの入り方×直近の入り方（半分反映）","f0":"空き台数が埋まる率","f0.5":"空き台数が埋まる率×直近の入り方（半分反映）","f1":"空き台数が埋まる率×直近の入り方（全部反映）",ratio:"同じ時点からの伸び率（過去月の中央値）",ana:"直前の月と同じ伸び率",anap:"直前の月の増え方 × 直近28日の入り方の比",ens:"全部の式の中央値",wt:"外れの小ささで重み付けした平均"};
 function avgA(a){var s=0;a.forEach(function(v){s+=v;});return a.length?s/a.length:0;}
 function medA(a){var b=a.slice().sort(function(p,q){return p-q;}),n=b.length;return n?(n%2?b[(n-1)/2]:(b[n/2-1]+b[n/2])/2):0;}
 function nx(x,m){var G=FN[selfKey()||"spk"],z=x&&x.mon[m];if(!G||G.err||!G.k||!z||m<=x.cur)return null;
   var kk=null;Object.keys(G.k).forEach(function(q){if(G.k[q]&&G.k[q].ym==m)kk=q;});if(!kk)return null;
-  var rows=G.k[kk].rows||[],T=null,past=[],C=null;rows.forEach(function(r){if(r[0]==m)T=r;else if(r[0]==x.cur)C=r;else if(r[0]<x.cur&&+r[4]>0&&+r[6]>0)past.push(r);});
+  var rows=G.k[kk].rows||[],T=null,C=null,PA=[];rows.forEach(function(r){var o=+r[10]||0;if(r[0]==m)T=r;else if(r[0]==x.cur){if(!o)C=r;}else if(r[0]<x.cur&&+r[4]>0&&+r[6]>0)PA.push(r);});
   if(!T||!T[8])return null;
-  var cap=+T[2],ob=+T[3],obr=+T[4];
+  var P0=PA.filter(function(r){return !(+r[10]);}),cap=+T[2],ob=+T[3],obr=+T[4],nm={};PA.forEach(function(r){nm[r[0]]=1;});nm=Object.keys(nm).length;
   function pv(r,key){var o=null;(r[8]||[]).forEach(function(v){if(v[0]==key)o=v;});return o;}
-  function mk(key,F,pr,fd){var e=[],b=0;pr.forEach(function(p,i){if(p===null)return;var d=(p-+past[i][6])/+past[i][6];e.push(Math.abs(d));b+=d;});return {k:key,F:F,fd:fd,pr:pr,n:e.length,mae:e.length?avgA(e):null,bias:e.length?b/e.length:null};}
-  var M=[];T[8].forEach(function(v){M.push(mk(v[0],+v[4],past.map(function(r){var q=pv(r,v[0]);return q?+q[4]:null;}),+v[3]));});
-  var rt=past.map(function(r){return +r[6]/+r[4];});
-  if(rt.length>=2){M.push(mk("ratio",obr*medA(rt),past.map(function(r,i){return +r[4]*medA(rt.filter(function(_,j){return j!=i;}));})));
-  }
-  /* 直前の月をお手本にする2式。対象月の「直前の月」は今月（まだ締まっていない）なので、今月の最終は今月の着地見込み÷現在実績で伸ばして置く */
+  function pace(a28,cp,b28,cq){if(!(a28>0)||!(b28>0)||!cp||!cq)return 1;return Math.max(0.5,Math.min(2,(a28/cp)/(b28/cq)));}
+  /* 直前の月（お手本）：過去の行は1つ前の確定月。対象月は、来月なら今月（最終は今月の着地見込み÷現在実績で伸ばす）、再来月なら来月（最終は来月の着地） */
+  function prevOf(r){var q=null;P0.forEach(function(u){if(u[0]<r[0])q=u;});return q?[+q[4],+q[6],+q[9]||0,+q[2]]:null;}
   var zc=x.mon[x.cur],fxc=null;try{fxc=fx(x,fc(x,x.cur));}catch(e){}
   var pr0=null;if(C&&+C[4]>0&&+C[6]>0){var g=(fxc&&zc&&zc.a>0)?Math.max(1,fxc.L/zc.a):1;pr0=[+C[4],+C[6]*g,+C[9]||0,+C[2]];}
-  /* 再来月の「直前の月」は来月。来月の最終は、来月の着地（この関数の来月分）で置く */
   if(+kk==2){var m1=null,R1=null;rows.forEach(function(r){if(r[0]>x.cur&&r[0]<m){m1=r[0];R1=r;}});var N1=m1?nx(x,m1):null;if(N1&&R1&&+R1[4]>0)pr0=[+R1[4],Math.max(N1.F,+R1[6]),+R1[9]||0,+R1[2]];}
-  if(!pr0&&past.length){var lp=past[past.length-1];pr0=[+lp[4],+lp[6],+lp[9]||0,+lp[2]];}
-  function pace(a28,cp,b28,cq){if(!(a28>0)||!(b28>0)||!cp||!cq)return 1;return Math.max(0.5,Math.min(2,(a28/cp)/(b28/cq)));}
-  if(pr0){M.push(mk("ana",obr*pr0[1]/pr0[0],past.map(function(r,i){return i?+r[4]*rt[i-1]:null;})));
-    M.push(mk("anap",obr+(pr0[1]-pr0[0])*(cap/pr0[3])*pace(+T[9],cap,pr0[2],pr0[3]),past.map(function(r,i){if(!i)return null;var q=past[i-1];return +r[4]+(+q[6]-+q[4])*(+r[2]/+q[2])*pace(+r[9],+r[2],+q[9],+q[2]);})));}
-  M.push(mk("ens",medA(M.map(function(q){return q.F;})),past.map(function(r,i){var a=[];M.forEach(function(q){if(q.pr[i]!==null)a.push(q.pr[i]);});return a.length?medA(a):null;})));
-  var cand=M.filter(function(q){return q.mae!==null&&q.n>=2;}).sort(function(a,b){return a.mae-b.mae;});
+  if(!pr0&&P0.length){var lp=P0[P0.length-1];pr0=[+lp[4],+lp[6],+lp[9]||0,+lp[2]];}
+  /* 基本の式：r＝行、ex＝率の計算から除く月（その行自身の月）、pq＝お手本の月 */
+  var BASE=T[8].map(function(v){return v[0];}).concat(["ratio","ana","anap"]);
+  function base(key,r,ex,pq){var o=+r[4];
+    if(key=="ratio"){var a=[];P0.forEach(function(u){if(u[0]!=ex)a.push(+u[6]/+u[4]);});return a.length>=2?o*medA(a):null;}
+    if(key=="ana")return pq&&pq[0]>0?o*pq[1]/pq[0]:null;
+    if(key=="anap")return pq&&pq[0]>0?o+(pq[1]-pq[0])*(+r[2]/pq[3])*pace(+r[9],+r[2],pq[2],pq[3]):null;
+    var v=pv(r,key);return v?+v[4]:null;}
+  var PR={},FT={};BASE.forEach(function(key){PR[key]=PA.map(function(r){return base(key,r,r[0],prevOf(r));});FT[key]=base(key,T,m,pr0);});
+  function errs(pr,ex){var e=[];pr.forEach(function(p,i){if(p===null||PA[i][0]==ex)return;e.push((p-+PA[i][6])/+PA[i][6]);});return e;}
+  function maeOf(e){return e.length?avgA(e.map(Math.abs)):null;}
+  /* 全部の中央値／偏り補正（その式が過去に平均で何%高かったか低かったかを戻す）／外れの小ささで重み付けした平均。どれも、当てる月自身は使わずに作る */
+  function ensAt(i){var a=[];BASE.forEach(function(key){var p=i<0?FT[key]:PR[key][i];if(p!==null&&isFinite(p))a.push(p);});return a.length?medA(a):null;}
+  PR.ens=PA.map(function(_,i){return ensAt(i);});FT.ens=ensAt(-1);
+  function wtAt(i){var ex=i<0?null:PA[i][0],sw=0,sp=0;BASE.forEach(function(key){var p=i<0?FT[key]:PR[key][i];if(p===null||!isFinite(p))return;var e=errs(PR[key],ex);if(e.length<3)return;var w=1/Math.pow(maeOf(e)+0.02,2);sw+=w;sp+=w*p;});return sw?sp/sw:null;}
+  PR.wt=PA.map(function(_,i){return wtAt(i);});FT.wt=wtAt(-1);
+  BASE.concat(["ens","wt"]).forEach(function(key){function bc(i){var ex=i<0?null:PA[i][0],p=i<0?FT[key]:PR[key][i];if(p===null)return null;var e=errs(PR[key],ex);if(e.length<4)return null;var b=Math.max(-0.3,Math.min(0.3,avgA(e)));return p/(1+b);}
+    PR[key+"*"]=PA.map(function(_,i){return bc(i);});FT[key+"*"]=bc(-1);});
+  var M=[];Object.keys(PR).forEach(function(key){if(FT[key]===null||!isFinite(FT[key]))return;var e=errs(PR[key],null),v=pv(T,key);
+    M.push({k:key,F:FT[key],fd:v?+v[3]:0,n:e.length,mae:maeOf(e),bias:e.length?avgA(e):null,pr0:P0.map(function(r){return PR[key][PA.indexOf(r)];})});});
+  function pick(key){return M.filter(function(q){return q.k==key;})[0];}
+  var cand=M.filter(function(q){return q.mae!==null&&q.n>=Math.max(4,Math.ceil(PA.length*0.6));}).sort(function(a,b){return a.mae-b.mae;});
   /* 確定月が3か月に満たない、または一番良い式でも外れが25%を超える店（開店直後で伸びている最中）は、直前の月の増え方×直近の入り方 を仮採用（幅±20%） */
-  var thin=!cand.length||past.length<3||cand[0].mae>0.25,pick=function(key){return M.filter(function(q){return q.k==key;})[0];};
-  var best=thin?(pick("anap")||pick("ana")||pick("f0.5")||M[0]):cand[0],F=best.F,lo,hi;
+  var thin=!cand.length||nm<3||cand[0].mae>0.25,best=thin?(pick("anap")||pick("ana")||pick("f0.5")||M[0]):cand[0],F=best.F;
   /* 幅＝採用した式の過去の平均の外れ。答え合わせの月数が少ないうちは小さく出すぎるので、来月は最低8%・再来月は最低14% */
-  var wd=thin?0.2:Math.max(best.mae,+kk==1?0.08:0.14);lo=F*(1-wd);hi=F*(1+wd);
+  var wd=thin?0.2:Math.max(best.mae,+kk==1?0.08:0.14),lo=F*(1-wd),hi=F*(1+wd);
   var ref=pv(T,"f0.5")||T[8][0],ru=(+ref[3]-ob)>0?(+ref[4]-obr)/(+ref[3]-ob):(ob?obr/ob:0),fd=best.fd||(ru>0?Math.max(ob*0.9,ob+(F-obr)/ru):+ref[3]);
-  return {m:m,kk:+kk,T:T,past:past,M:M,cand:cand,best:best,thin:thin,F:F,L:z.a+(F-obr),lo:z.a+(lo-obr),hi:z.a+(hi-obr),cap:cap,ob:ob,obr:obr,fd:Math.min(fd,cap),c:+T[7],seg:G.k[kk].seg||[],s:T[1],z:z};}
+  var lg=(G.log||[]).filter(function(q){return q[0]==m&&q[3];});
+  return {m:m,kk:+kk,T:T,past:P0,np:PA.length,nm:nm,M:M,cand:cand,best:best,thin:thin,F:F,wd:wd,L:z.a+(F-obr),lo:z.a+(lo-obr),hi:z.a+(hi-obr),cap:cap,ob:ob,obr:obr,fd:Math.min(fd,cap),c:+T[7],seg:G.k[kk].seg||[],s:T[1],z:z,log:lg};}
+function nmOf(key){var c=key.slice(-1)=="*",b=c?key.slice(0,-1):key;return (NT[b]||b)+(c?"＋偏り補正":"");}
 function nxHtml(S0,x,N){var z=N.z,m=N.m,b=N.best,pm=N.past.map(function(r){return r[0];}),SG=["","1〜10日","11〜20日","21〜26日","27日〜月末"];
   var H='<div class="why" id="landNx"><h5>🧮 '+S0.nm+' '+MN(m)+'の着地見込み（'+(N.kk==1?'来月':'再来月')+'）— 稼働率 × 単価で読む</h5>';
   H+='<div class="eq">着地見込み <b>'+y(N.L)+'</b>（幅 '+y(N.lo)+'〜'+y(N.hi)+'）＝ 現在実績 '+y(z.a)+' ＋ これから増える見込み '+sg(N.F-N.obr,y)+'</div>';
   H+='<div class="eq">予約売上の着地 '+y(N.F)+' ＝ 稼働可能 '+k(N.cap)+'日 × 着地稼働率 '+P(N.fd,N.cap)+'（'+k(N.fd)+'日）× 1日単価 '+(N.fd?y(N.F/N.fd):'–')+'</div>';
   H+='<div>今（'+N.s.slice(5).replace("-","/")+'時点）：貸出 '+k(N.ob)+'日＝稼働率 '+P(N.ob,N.cap)+'・1日単価 '+(N.ob?y(N.obr/N.ob):'–')+'・予約売上 '+y(N.obr)+'（貸出日で日割り）。これから +'+k(Math.max(0,N.fd-N.ob))+'日。'+(z.t?'目標 '+y(z.t)+' に対して '+sg(N.L-z.t,y)+'（'+P(N.L,z.t)+'）。':'')+'</div>';
-  H+='<div>直近28日の入り方＝過去の同じ時期（同じ何日前）の <b>'+(Math.round(N.c*100)/100).toFixed(2)+'倍</b>'+(N.c>=1.15?'（強い）':N.c<=0.85?'（弱い）':'（ほぼ同じ）')+'。採用した式＝<b>'+(NT[b.k]||b.k)+'</b>'+(N.thin?'（仮採用：比べられる確定月が足りない、または過去の外れが大きいため、いちばん近い直前の月をお手本にしています。幅は±20%）':'（過去'+b.n+'か月の答え合わせで平均の外れ '+pcs(b.mae).replace(/^[+−]/,'')+'・偏り '+pcs(b.bias)+'）')+'</div>';
+  H+='<div>直近28日の入り方＝過去の同じ時期（同じ何日前）の <b>'+(Math.round(N.c*100)/100).toFixed(2)+'倍</b>'+(N.c>=1.15?'（強い）':N.c<=0.85?'（弱い）':'（ほぼ同じ）')+'。採用した式＝<b>'+nmOf(b.k)+'</b>'+(N.thin?'（仮採用：比べられる確定月が足りない、または過去の外れが大きいため、いちばん近い直前の月をお手本にしています。幅は±20%）':'（過去'+N.nm+'か月・'+b.n+'時点の答え合わせで平均の外れ '+pcs(b.mae).replace(/^[+−]/,'')+'・偏り '+pcs(b.bias)+'）')+'</div>';
   if(N.seg.length){H+='<div class="lw" style="margin-top:6px"><table><thead><tr><th class="l">月内の区間</th><th>稼働可能</th><th>今の予約</th><th>今の稼働率</th><th>着地の見込み</th><th>着地稼働率</th><th>これから</th></tr></thead><tbody>';
     N.seg.forEach(function(g){H+='<tr><td class="l">'+SG[g[0]]+'</td><td>'+k(g[1])+'日</td><td>'+k(g[2])+'日</td><td>'+P(g[2],g[1])+'</td><td>'+k(g[3])+'日</td><td>'+P(g[3],g[1])+'</td><td>+'+k(Math.max(0,g[3]-g[2]))+'日</td></tr>';});
     H+='</tbody></table></div><div class="lsub">区間別は「空き台数が埋まる率」の式での内訳（どこが埋まっていて、どこに伸びしろがあるか）。</div>';}
   H+='<div class="lw" style="margin-top:6px"><table><thead><tr><th class="l">式（過去月を同じ日付時点に戻して答え合わせ）</th>'+pm.map(function(q){return '<th>'+MNy(q)+'<br><small>予測→実績との差</small></th>';}).join('')+'<th>平均の外れ</th><th>偏り</th><th class="g">'+MN(m)+'の予約売上</th><th class="g">着地見込み</th></tr></thead><tbody>';
-  N.M.slice().sort(function(p,q){return (p.mae===null?9:p.mae)-(q.mae===null?9:q.mae);}).forEach(function(q){
-    H+='<tr'+(q===b?' class="cur"':'')+'><td class="l">'+(q===b?'✅ ':'')+(NT[q.k]||q.k)+'</td>'+q.pr.map(function(p,i){return '<td>'+(p===null?'–':man(p)+' <small>'+pcs((p-+N.past[i][6])/+N.past[i][6])+'</small>')+'</td>';}).join('')+'<td>'+(q.mae===null?'–':pcs(q.mae).replace(/^[+−]/,''))+'</td><td>'+(q.bias===null?'–':pcs(q.bias))+'</td><td>'+y(q.F)+'</td><td><b>'+y(z.a+q.F-N.obr)+'</b></td></tr>';});
+  N.M.slice().sort(function(p,q){return (p.mae===null?9:p.mae)-(q.mae===null?9:q.mae);}).filter(function(q,i){return i<8||q===b;}).forEach(function(q){
+    H+='<tr'+(q===b?' class="cur"':'')+'><td class="l">'+(q===b?'✅ ':'')+nmOf(q.k)+'</td>'+q.pr0.map(function(p,i){return '<td>'+(p===null?'–':man(p)+' <small>'+pcs((p-+N.past[i][6])/+N.past[i][6])+'</small>')+'</td>';}).join('')+'<td>'+(q.mae===null?'–':pcs(q.mae).replace(/^[+−]/,''))+'</td><td>'+(q.bias===null?'–':pcs(q.bias))+'</td><td>'+y(q.F)+'</td><td><b>'+y(z.a+q.F-N.obr)+'</b></td></tr>';});
   H+='<tr class="tot"><td class="l">その時点の予約売上 → 実績</td>'+N.past.map(function(r){return '<td>'+man(+r[4])+' → '+man(+r[6])+' <small>×'+(Math.round(+r[6]/+r[4]*100)/100).toFixed(2)+'</small></td>';}).join('')+'<td></td><td></td><td>今 '+y(N.obr)+'</td><td></td></tr></tbody></table></div>';
-  H+='<div class="lsub">各式は、その月自身のデータを使わずに予測しています。月が締まるたびに答え合わせの月が1つ増え、採用する式と幅が自動で更新されます。前年の同じ月のデータが無いため、季節の違い（年末年始・冬）は「直近28日の入り方」と「今の予約の位置」からしか読めていません。下は参考：以前のリードタイム式（サマリの「まとめ 着地」）の内訳です。</div>';
+  if(N.log.length){H+='<div class="lw" style="margin-top:6px"><table><thead><tr><th class="l">毎日の記録（23:55）</th><th>時点</th><th>貸出日数</th><th>稼働率</th><th>予約売上</th><th>直近28日の入り方</th><th>予測：空き台数が埋まる率×半分反映</th><th>予測：5案の中央値</th></tr></thead><tbody>';
+    N.log.slice(-21).forEach(function(q){var r=q[3],a=(r[8]||[]).map(function(v){return +v[4];}),h=null;(r[8]||[]).forEach(function(v){if(v[0]=="f0.5")h=+v[4];});
+      H+='<tr><td class="l">'+q[1].slice(5).replace("-","/")+'</td><td>'+(+q[2]==1?'来月':'再来月')+'</td><td>'+k(+r[3])+'日</td><td>'+P(+r[3],+r[2])+'</td><td>'+y(+r[4])+'</td><td>'+(Math.round(+r[7]*100)/100).toFixed(2)+'倍</td><td>'+(h===null?'–':y(h))+'</td><td>'+(a.length?y(medA(a)):'–')+'</td></tr>';});
+    H+='</tbody></table></div><div class="lsub">毎日23:55に、その日に見えていた予約と全部の案の予測を記録しています。'+MN(m)+'が締まったら、どの時点の予測がどれだけ合っていたかを実績と突き合わせます。</div>';}
+  H+='<div class="lsub">答え合わせは、過去の各月を「同じ日付」と「その前後7日」の3時点に戻して行っています（外れが一番小さい上位8式を表示）。各式は、その月自身のデータを使わずに予測しています。月が締まるたびに答え合わせの月が1つ増え、採用する式と幅が自動で更新されます。前年の同じ月のデータが無いため、季節の違い（年末年始・冬）は「直近28日の入り方」と「今の予約の位置」からしか読めていません。下は参考：以前のリードタイム式（サマリの「まとめ 着地」）の内訳です。</div>';
   return H+'</div>';}
 function card(nm,col,t,a,L,rd,f,ad,cap,cls){var pa=t?Math.min(100,a/t*100):0,pl=t?Math.min(100,L/t*100):0;
   return '<div class="lc '+cls+'" style="--c:'+col+'"><h4>'+nm+'</h4><div class="row"><span>着地見込み</span><span class="'+(L>=t?'lpos':'lneg')+'">'+P(L,t)+'</span></div><div class="big">'+man(L)+'</div>'
