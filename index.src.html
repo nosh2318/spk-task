@@ -121,7 +121,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1224';
+var CV='spk-v1225';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=1059').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -1487,13 +1487,25 @@ function spkInspKind(t){if(!t)return null;if(t.type==="COL"&&String(t.assignee||
 function spkInspItems(kind){return kind==="post"?SPK_INSP_POST:SPK_INSP_PRE;}
 async function spkInspRows(taskId,kind){await sbAuthPromise;if(!sb)throw new Error("DB未接続");const r=await sb.from("spk_inspection_checks").select("item_key,checked,note,checked_by,updated_at").eq("task_id",taskId).eq("kind",kind||"pre");if(r.error)throw r.error;return r.data||[];}
 function spkInspCount(rows,kind){const ks=spkInspItems(kind).map(function(x){return x[0];});return (rows||[]).filter(function(x){return x.checked&&ks.indexOf(x.item_key)>=0;}).length;}
-// 完了にしてよいか（洗車以外は常にOK）。読めなかった時は安全側＝完了させない
+// 完了にしてよいか（点検対象＝洗車・返却系だけ。それ以外は常にOK）。読めなかった時は安全側＝完了させない
+// ★2026-11-12 札幌：返却系（COL・乗捨回収・BD・BDB・返却）も点検が終わるまで完了不可。止めた時は「点検をおこなってください」＋🔧点検ボタン
 async function spkWashInspGuard(t){
-  if(!t||t.type!=="洗車")return true;
-  let n=-1;try{n=spkInspCount(await spkInspRows(t._id));}catch(e){n=-1;}
-  if(n>=SPK_INSP_PRE.length)return true;
-  alert(n<0?"⚠️ 点検の状態を確認できませんでした。\n電波を確認して、もう一度押してください。":"⚠️ 先に点検を行ってください（出発前の点検 "+n+"/"+SPK_INSP_PRE.length+"）。\n点検が終わるまで完了にできません。\n洗車の「🔧点検」から入力できます。");
+  const kind=spkInspKind(t); if(!kind||!t._id)return true;
+  const its=spkInspItems(kind);
+  let n=-1;try{n=spkInspCount(await spkInspRows(t._id,kind),kind);}catch(e){n=-1;}
+  if(n>=its.length)return true;
+  if(n<0){alert("⚠️ 点検の状態を確認できませんでした。\n電波を確認して、もう一度押してください。");return false;}
+  spkInspAsk((kind==="post"?"返却後の点検 ":"出発前の点検 ")+n+"/"+its.length,function(){window._spkInspOpenTid=t._id;try{window.dispatchEvent(new CustomEvent("spk-insp-open",{detail:t._id}));}catch(_e){}});
   return false;
+}
+function spkInspAsk(sub,onOpen){
+  const old=document.getElementById("spk-insp-ask");if(old)old.remove();
+  const ov=document.createElement("div");ov.id="spk-insp-ask";
+  ov.style.cssText="position:fixed;inset:0;z-index:10001;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;padding:20px";
+  ov.innerHTML='<div style="background:#fff;border-radius:16px;padding:20px 18px 16px;width:100%;max-width:340px;text-align:center;box-sizing:border-box"><div style="font-size:18px;font-weight:900;color:#b91c1c">⚠️ 点検をおこなってください</div><div style="font-size:13px;font-weight:700;color:#64748b;margin:6px 0 16px"></div><div style="display:flex;gap:8px"><button data-k="x" style="flex:1;border:none;background:#e2e8f0;color:#0f172a;border-radius:10px;padding:12px;font-size:15px;font-weight:900;cursor:pointer">閉じる</button><button data-k="o" style="flex:2;border:none;background:#1d4ed8;color:#fff;border-radius:10px;padding:12px;font-size:16px;font-weight:900;cursor:pointer">🔧 点検</button></div></div>';
+  ov.querySelector("div div:nth-child(2)").textContent=sub;
+  ov.addEventListener("click",function(e){e.stopPropagation();const k=e.target&&e.target.getAttribute&&e.target.getAttribute("data-k");if(e.target===ov||k==="x")ov.remove();else if(k==="o"){ov.remove();onOpen();}});
+  document.body.appendChild(ov);
 }
 function SpkWashInspBtn({t}){
   const [n,setN]=React.useState(null);
@@ -1501,6 +1513,7 @@ function SpkWashInspBtn({t}){
   const kind=spkInspKind(t), its=spkInspItems(kind);
   const load=React.useCallback(function(){if(!kind)return;spkInspRows(t._id,kind).then(function(rows){setN(spkInspCount(rows,kind));}).catch(function(){setN(null);});},[t._id,kind]);
   React.useEffect(function(){load();const h=function(e){if(!e.detail||e.detail===t._id)load();};window.addEventListener("spk-insp-changed",h);return function(){window.removeEventListener("spk-insp-changed",h);};},[load]);
+  React.useEffect(function(){const h=function(e){if(e.detail===t._id&&window._spkInspOpenTid===t._id){window._spkInspOpenTid=null;setOpen(true);}};window.addEventListener("spk-insp-open",h);return function(){window.removeEventListener("spk-insp-open",h);};},[t._id]);   /* 完了ガードの「🔧点検」から開く（同じタスクが2か所にあっても1つだけ開く） */
   if(!t||!kind||!t._id)return null;
   const full=n!==null&&n>=its.length;
   return <>
@@ -25052,7 +25065,7 @@ function App(){
                             const isDel=t.type==="DEL";const isCOL=t.type==="COL";
                             const veh=(t.assignedVehicle||t.assigned_vehicle)?vehicles.find(v=>v.code===(t.assignedVehicle||t.assigned_vehicle)):null;
                             const vehName=veh?veh.name+" "+veh.no:"";
-                            const toggleDone=async(e)=>{e.stopPropagation();/* ★2026-09-13 最新doneをrefから読む＝stale closureで「解除したのにtrueを書き直す」を根治 */const _cur=(topDoneRef.current&&(t._id in topDoneRef.current))?!!topDoneRef.current[t._id]:!!t.done;const becomingDone=!_cur;if(becomingDone&&t.type==="洗車"&&!(await spkWashInspGuard(t)))return;/* ★2026-10-23 3店統一：洗車は出発前点検11/11まで完了不可 */recentToggleRef.current[t._id]={done:becomingDone,at:Date.now()};if(becomingDone)celebrateDone();/* 楽観更新: タップで即このリストのdoneを反転。refresh失敗でも画面は必ず反映＝完了↔解除が常に効く */const _flip=arr=>arr.map(x=>x._id===t._id?{...x,done:becomingDone}:x);setTodayTasks(_flip);setTomorrowTasks(_flip);try{if(sb){await sb.from("tasks").update({done:becomingDone}).eq("_id",t._id);const rid=t.reservationId||t.reservation_id;if(rid&&becomingDone&&(isDel||isCOL)){const ks=isDel?"active":"completed";try{await sb.from("reservations").update({kd_status:ks,kd_status_at:new Date().toISOString()}).eq("id",rid);}catch(_){}}}refreshTopTasks();}catch(err){console.error("[TOP toggleDone]",err);}};
+                            const toggleDone=async(e)=>{e.stopPropagation();/* ★2026-09-13 最新doneをrefから読む＝stale closureで「解除したのにtrueを書き直す」を根治 */const _cur=(topDoneRef.current&&(t._id in topDoneRef.current))?!!topDoneRef.current[t._id]:!!t.done;const becomingDone=!_cur;if(becomingDone&&spkInspKind(t)&&!(await spkWashInspGuard(t)))return;/* ★2026-10-23 3店統一：洗車は出発前点検まで完了不可／★2026-11-12 返却系も返却後点検まで完了不可 */recentToggleRef.current[t._id]={done:becomingDone,at:Date.now()};if(becomingDone)celebrateDone();/* 楽観更新: タップで即このリストのdoneを反転。refresh失敗でも画面は必ず反映＝完了↔解除が常に効く */const _flip=arr=>arr.map(x=>x._id===t._id?{...x,done:becomingDone}:x);setTodayTasks(_flip);setTomorrowTasks(_flip);try{if(sb){await sb.from("tasks").update({done:becomingDone}).eq("_id",t._id);const rid=t.reservationId||t.reservation_id;if(rid&&becomingDone&&(isDel||isCOL)){const ks=isDel?"active":"completed";try{await sb.from("reservations").update({kd_status:ks,kd_status_at:new Date().toISOString()}).eq("id",rid);}catch(_){}}}refreshTopTasks();}catch(err){console.error("[TOP toggleDone]",err);}};
                             const isWashCard=t.type==="洗車";const _wLinked=!!(isWashCard&&t.plateNo&&_wLinkedPlates.has(t.plateNo));const _wRet=_wLinked?_wRetByPlate[t.plateNo]:null;
                             const _wGray=isNextDayType(t)&&t._nextDayWashGray;const _wToday=isNextDayType(t)&&t._nextDayWashShown;
                             const _isFirst=!t.done&&t._id===((tasks.find(x=>!x.done)||{})._id);const _rP=taskPlaceResolved(t);
@@ -26185,7 +26198,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.725";
+const APP_VERSION="v4.7.726";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
