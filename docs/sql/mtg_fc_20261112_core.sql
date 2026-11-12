@@ -108,7 +108,7 @@ grant execute on function public.mtg_fc(text, date) to anon, authenticated;
 /* 毎日の記録（pg_cron から呼ぶ。anon からは呼べない） */
 create or replace function public.mtg_fc_snap(p_stores text[])
 returns int language plpgsql security definer set search_path to 'public' as $function$
-declare s text; j jsonb; v_ym text; v_td date; n int := 0;
+declare s text; j jsonb; v_ym text; v_td date; n int := 0; jn jsonb; kk text;
 begin
   foreach s in array p_stores loop
     j := mtg_fc(s); v_td := (j->>'today')::date; v_ym := to_char(v_td,'YYYY-MM');
@@ -117,6 +117,17 @@ begin
       values (s, v_ym, v_td, (j->'months'->v_ym) || jsonb_build_object('best', j->'best', 'methods', j->'methods'))
       on conflict (store, ym, snap_date) do update set d = excluded.d, created_at = now();
     n := n + 1;
+    /* 来月・再来月の予測（mtg_fc_next）も記録。store に #n を付けて当月の記録と分ける。失敗しても当月の記録は残す */
+    begin
+      jn := mtg_fc_next(s);
+      for kk in select jsonb_object_keys(jn->'k') loop
+        if jn->'k'->kk->>'ym' is null then continue; end if;
+        insert into mtg_fc_log(store, ym, snap_date, d)
+          values (s||'#n', jn->'k'->kk->>'ym', v_td, jsonb_build_object('k', kk::int, 'next', (select r from jsonb_array_elements(jn->'k'->kk->'rows') r where r->>0 = jn->'k'->kk->>'ym' limit 1)))
+          on conflict (store, ym, snap_date) do update set d = excluded.d, created_at = now();
+      end loop;
+    exception when others then null;
+    end;
   end loop;
   return n;
 end $function$;
