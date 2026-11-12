@@ -52,7 +52,7 @@ input.pv.b{background:#fbf5ee;border-color:#e0bf9c}
 .histbl td.cls{text-align:left;font-weight:800;background:#fbfdff}
 .histbl td.knd{text-align:left;white-space:nowrap}
 /* 08 承認制（2026-11-12）：案のマスは背景色・上げ=赤系／下げ=青系 */
-.histbl td.pv{text-align:left;min-width:118px}.pv input{width:84px;padding:3px 5px;border:1px solid #cbd5e1;border-radius:4px;text-align:right;font-size:13px}.histbl tr td.pv.pu{background:#fbe0de}.histbl tr td.pv.pd{background:#dbe6f5}.pvk{font-size:10px;color:#64748b;white-space:nowrap}.pok{background:#2f7a4a;color:#fff;padding:2px 9px;margin:3px 3px 0 0;font-size:11px}.pno{background:#e2e8f0;color:#0f172a;padding:2px 9px;margin-top:3px;font-size:11px}.alm{font-size:10px;color:#b42318;font-weight:700;white-space:normal;max-width:170px}.pcnt{display:inline-block;min-width:16px;margin-left:4px;padding:0 4px;border-radius:8px;background:#b42318;color:#fff;font-size:10px;line-height:16px;text-align:center}
+.histbl td.pv{text-align:left;min-width:118px}.pv input{width:84px;padding:3px 5px;border:1px solid #cbd5e1;border-radius:4px;text-align:right;font-size:13px}.histbl tr td.pv.pu{background:#fbe0de}.histbl tr td.pv.pd{background:#dbe6f5}.pvk{font-size:10px;color:#64748b;white-space:nowrap}.pok{background:#2f7a4a;color:#fff;padding:2px 9px;margin:3px 3px 0 0;font-size:11px}.pno{background:#e2e8f0;color:#0f172a;padding:2px 9px;margin-top:3px;font-size:11px}.fxb{font-size:10px;line-height:15px;padding:0 5px;margin-left:5px;border:1px solid #cbd5e1;border-radius:3px;background:#fff;color:#64748b;cursor:pointer}.fxb.on{background:#334155;color:#fff;border-color:#334155}.alm{font-size:10px;color:#b42318;font-weight:700;white-space:normal;max-width:170px}.pcnt{display:inline-block;min-width:16px;margin-left:4px;padding:0 4px;border-radius:8px;background:#b42318;color:#fff;font-size:10px;line-height:16px;text-align:center}
 .histbl th{background:#f1f5f9;color:#334155;font-weight:800}
 .histbl th.rev{background:#2f3b55;color:#fff}
 .histbl th.rev.cur{background:#3f7a72}
@@ -615,6 +615,17 @@ function skyFloorBad(s){var P=PRICE[s],fd=((FLOOR_DEF[s]||{}).skyticket)||{},ch=
     chk('',(ch.price||{})[cl]);chk('',(ch.tiers||{})[cl]);Object.keys(ch.months||{}).forEach(function(ym){chk(ym,(ch.months[ym]||{})[cl]);});});
   return bad;}
 function skyBlock(ota,cl,v){if(STORE!=='nha'||ota!=='skyticket')return null;var f=floorDay(ota,cl);return (f&&v<f)?f:null;}
+// 固定（ロボが案を出さない所）を価格調整タブの行から付け外し（2026-11-12 ユーザー「固定ボタンも価格調整の各月各クラスのとこに出せない？」）
+function rowSeg(P,ym,sg){var mo=+ym.slice(5);if(sg==='low')return LOW_NAME[mo];if(sg==='base')return TN(tierOf(ym));
+  var hs=(P.high_dates||[]).filter(function(d){return d.slice(0,7)===ym;});if(!hs.length)return '';var h=highName(hs[0]);return h==='HX'?'HX'+mo:h;}
+function fixedOf(P,cl,seg){return (P.fixed||[]).filter(function(f){return (!f.ota||f.ota===CHAN)&&(!f.cls||f.cls===cl)&&(!f.seg||f.seg===seg);});}
+function togFix(cl,sg){var P=PRICE[STORE],seg=rowSeg(P,adjYM,sg);if(!seg)return;
+  var fx=fixedOf(P,cl,seg),own=fx.filter(function(f){return f.ota===CHAN&&f.cls===cl&&f.seg===seg;});
+  if(fx.length&&!own.length){toast('ルールのタブの固定（'+escH(fx[0].memo||'')+'）で止めています');return;}
+  if(own.length){P.fixed=P.fixed.filter(function(f){return own.indexOf(f)<0;});saveNow('固定を外しました');return;}
+  P.fixed=(P.fixed||[]).concat([{ota:CHAN,cls:cl,seg:seg,memo:nowStr()+' 価格調整タブで固定'}]);
+  var q=propAt(P,cl,adjYM,sg);if(q){q.status='見送り';q.decided_at=nowStr();}
+  saveNow('固定しました');}
 function adjSet(cl,sg,val){var n=parseInt(val,10),ym=adjYM;if(isNaN(n))return;
   var f=skyBlock(CHAN,cl,n);if(f){toast('⛔ スカイの下限ライン ¥'+f.toLocaleString()+' より下にはできません');render();return;}
   applyVal(CHAN,cl,sg==='low'?LOW_NAME[+ym.slice(5)]:sg==='base'?TN(tierOf(ym)):'H',sg==='high'?highYms(PRICE[STORE],ym):[ym],n);
@@ -668,9 +679,9 @@ function adjTab(){
     +NIGHTS.map(function(n){return '<th>'+n[0]+'</th>';}).join('')+(isOta?NIGHTS.map(function(n){return '<th style="background:#f4e4e2;color:#a5524c">'+n[0]+'</th>';}).join(''):'')+'</tr>';
   // 入力待ち＝前回「入力済み」にした値と違う段（OTAのみ）
   var pend=function(cl,name,v,n0){if(!isOta||!n0)return null;var a=(eV[cl]||{})[name];return a===v?null:(a==null?'未登録':'¥'+(+a).toLocaleString());};
-  var lbl=function(icon,name,n0,cl,sg){var cb='',al=n0?alertsAt(P,cl,ym,sg):[];
+  var lbl=function(icon,name,n0,cl,sg){var cb='',al=n0?alertsAt(P,cl,ym,sg):[],sgn=n0&&!refOf(cl)&&!inactAt(cl,ym)?rowSeg(P,ym,sg):'',fon=sgn&&fixedOf(P,cl,sgn).length;
     if(chk&&n0&&!inactAt(cl,ym)){var d=segDone(P,CHAN,ym,cl,sg),on=!segPending(P,CHAN,ym,cl,sg);cb='<input type="checkbox" style="width:16px;height:16px;vertical-align:middle;margin:0;accent-color:#4f8a5b" title="'+(on&&d?'入力済み '+d.ts:'未入力')+'"'+(on?' checked':'')+' onchange="togSeg(\''+ym+'\',\''+cl+'\',\''+sg+'\',this.checked)">';}
-    return (chk?'<td style="text-align:center;width:28px">'+cb+'</td>':'')+'<td class="knd">'+icon+' '+name+(n0?cnt(n0):'')+(al.length?'<div class="alm">⚠ '+al.map(function(a){return escH(a.msg);}).join('／')+'</div>':'')+'</td>';};
+    return (chk?'<td style="text-align:center;width:28px">'+cb+'</td>':'')+'<td class="knd">'+icon+' '+name+(n0?cnt(n0):'')+(sgn?'<button class="fxb'+(fon?' on':'')+'" onclick="togFix(\''+cl+'\',\''+sg+'\')">'+(fon?'固定中':'固定')+'</button>':'')+(al.length?'<div class="alm">⚠ '+al.map(function(a){return escH(a.msg);}).join('／')+'</div>':'')+'</td>';};
   var body=classes.map(function(cl){
     var rf=refOf(cl),sc=rf?rf.from:cl,dd=rf?rf.diff:0;
     var pc=P.price[sc]||{},mm=(P.months[ym]||{})[sc]||{};
