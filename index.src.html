@@ -121,7 +121,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1225';
+var CV='spk-v1226';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=1059').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -21754,10 +21754,10 @@ function SpkPaymentHistoryPanel(){
 /* ==========================================
    過去タスク
    ========================================== */
-function PastTasksTable({today}){
+function PastTasksTable({today,vehicles,isJPaidFn,extraPayFn}){
   const[tasks,setTasks]=useState([]);const[loading,setLoading]=useState(false);
   const[search,setSearch]=useState("");const[typeFilter,setTypeFilter]=useState("all");
-  const[sortKey,setSortKey]=useState("order");// order(既定=OP順)/time(時間)/assignee(担当)
+  const[sortKey,setSortKey]=useState("time");// ★2026-11-13 既定=時間昇順（オーナー指示）。order(OP保存順)/time(時間)/assignee(担当)
   // デフォルト: 過去7日
   const[fromDate,setFromDate]=useState(()=>{const d=new Date();d.setDate(d.getDate()-7);return toLD(d);});
   const[toDate,setToDate]=useState(()=>{const d=new Date();d.setDate(d.getDate()-1);return toLD(d);});
@@ -21773,7 +21773,7 @@ function PastTasksTable({today}){
   const grouped=useMemo(()=>{const m={};filtered.forEach(t=>{const d=t._date||"不明";if(!m[d])m[d]=[];m[d].push(t);});
     // 日ごとに並べ替え。order=OPシート保存順(既定) / time=時間 / assignee=担当
     if(sortKey!=="order"){Object.values(m).forEach(items=>{items.sort((a,b)=>{
-      if(sortKey==="time"){const ta=(a.timeChange||a._ssTime||a.time||"99:99"),tb=(b.timeChange||b._ssTime||b.time||"99:99");if(ta!==tb)return ta.localeCompare(tb);}
+      if(sortKey==="time"){const _tk=(x)=>{const v=String(x.timeChange||x._ssTime||x.time||"").trim();const mm=v.match(/^(\d{1,2})[:：](\d{2})/);return mm?(mm[1].padStart(2,"0")+":"+mm[2]):"99:99";};const ta=_tk(a),tb=_tk(b);if(ta!==tb)return ta.localeCompare(tb);}
       if(sortKey==="assignee"){const aa=(a.assignee||"～"),ba=(b.assignee||"～");if(aa!==ba)return aa.localeCompare(ba,"ja");}
       return (a._sortOrder||0)-(b._sortOrder||0);
     });});}
@@ -21788,24 +21788,34 @@ function PastTasksTable({today}){
       <input type="date" value={toDate} onChange={e=>setToDate(e.target.value)} style={{fontSize:11,padding:"2px 6px",borderRadius:6,border:"1px solid #d1d5db"}}/>
       <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="検索（名前/予約番号）" className="input-s" style={{width:140}}/>
       <div className="flex gap-1"><button onClick={()=>setTypeFilter("all")} className={`px-2 py-1 rounded text-xs font-semibold ${typeFilter==="all"?"bg-gray-800 text-white":"bg-gray-100 text-gray-600"}`}>All</button>{types.map(tp=><button key={tp} onClick={()=>setTypeFilter(tp)} className="px-2 py-1 rounded text-xs font-semibold" style={{background:typeFilter===tp?(TASK_META[tp]||{}).c||"#6b7280":"#f3f4f6",color:typeFilter===tp?"#fff":(TASK_META[tp]||{}).c||"#6b7280"}}>{tp}</button>)}</div>
-      <div className="flex items-center gap-1"><span style={{fontSize:11,color:"#9ca3af"}}>並び:</span>{[["order","既定"],["time","時間"],["assignee","担当"]].map(([k,l])=><button key={k} onClick={()=>setSortKey(k)} className="px-2 py-1 rounded text-xs font-semibold" style={{background:sortKey===k?"#2563eb":"#f3f4f6",color:sortKey===k?"#fff":"#6b7280"}}>{l}</button>)}</div>
+      <div className="flex items-center gap-1"><span style={{fontSize:11,color:"#9ca3af"}}>並び:</span>{[["time","時間"],["assignee","担当"],["order","OP順"]].map(([k,l])=><button key={k} onClick={()=>setSortKey(k)} className="px-2 py-1 rounded text-xs font-semibold" style={{background:sortKey===k?"#2563eb":"#f3f4f6",color:sortKey===k?"#fff":"#6b7280"}}>{l}</button>)}</div>
       <span className="ml-auto text-xs text-gray-500">{loading?"読込中...":filtered.length+"件"}</span>
     </div>
     <div style={{overflowX:"auto",maxHeight:"70vh"}}>
       {grouped.map(([date,items])=><div key={date}>
         <div style={{background:"#f8fafc",padding:"4px 10px",borderBottom:"1px solid #e5e7eb",fontWeight:700,fontSize:12,color:"#374151",position:"sticky",top:0,zIndex:1}}>{fmtDate(date)} <span style={{fontWeight:400,color:"#9ca3af",fontSize:10}}>— {items.length}件</span></div>
-        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}><thead className="bg-gray-50"><tr>{["種別","時間","予約者","車種","ナンバー","担当","場所","メモ","完了"].map(h=><th key={h} className="px-2 py-1 text-left font-semibold text-gray-600 border-b border-gray-200" style={{fontSize:10}}>{h}</th>)}</tr></thead><tbody>
-          {items.map((t,i)=><tr key={t._id||i} className="border-b border-gray-100 hover:bg-blue-50" style={{opacity:t.done?0.5:1}}>
-            <td className="px-2 py-1"><span style={{background:(TASK_META[t.type]||{}).bg||"#f3f4f6",color:(TASK_META[t.type]||{}).c||"#374151",padding:"1px 5px",borderRadius:4,fontSize:10,fontWeight:600}}>{t.type}</span></td>
-            <td className="px-2 py-1" style={{fontSize:10}}>{(t.timeChange||t._ssTime||t.time)||"-"}</td>
-            <td className="px-2 py-1 font-medium">{t.name||"-"}</td>
-            <td className="px-2 py-1">{t.vehicle||"-"}</td>
-            <td className="px-2 py-1 font-mono" style={{fontSize:9}}>{t.plateNo||"-"}</td>
-            <td className="px-2 py-1">{t.assignee||"-"}</td>
-            <td className="px-2 py-1" style={{fontSize:9,maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{taskPlaceResolved(t)||cleanPlace(t.colPlace)||"-"}</td>
-            <td className="px-2 py-1" style={{fontSize:9,color:"#6b7280",maxWidth:100,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.memo||"-"}</td>
-            <td className="px-2 py-1 text-center">{t.done?"✅":"—"}</td>
-          </tr>)}
+        {/* ★2026-11-13 オーナー指示: 過去タスクの項目をマスター表と同じ20列に（見るだけ・DB書込なし） */}
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:10,whiteSpace:"nowrap"}}><thead><tr style={{background:"#f1f5f9"}}>{["#","✓","担当","時間","内容","予約者","場所","クラス","車種","No.","B","C","J","補償","メモ","OTA","予約番号","変更","決済","TEL"].map((h,hi)=><th key={hi} style={{padding:"4px 4px",textAlign:"center",fontWeight:600,fontSize:9,color:"#475569",borderBottom:"2px solid #cbd5e1",borderRight:"1px solid #e2e8f0"}}>{h}</th>)}</tr></thead><tbody>
+          {items.map((t,i)=>{const cs={padding:"3px 4px",borderBottom:"1px solid #f1f5f9",borderRight:"1px solid #f1f5f9",verticalAlign:"middle",opacity:t.done?0.6:1};const tm=TASK_META[t.type]||TASK_META["その他"]||{};const op=t.opts||{};const _vac=(t.vehicle==="空いてる車両"||t.vehicle==="全車両");const vn=t.assignedVehicle&&Array.isArray(vehicles)?vehicles.find(x=>x.code===t.assignedVehicle):null;const pl=taskPlaceResolved(t)||cleanPlace(t.colPlace)||"";const rid=t.reservationId;return <tr key={t._id||i} className="hover:bg-blue-50" style={{background:i%2?"#fafbfc":"#fff"}}>
+            <td style={{...cs,textAlign:"center",fontSize:8,color:"#94a3b8"}}>{i+1}</td>
+            <td style={{...cs,textAlign:"center"}}>{t.done?"✅":"⬜"}</td>
+            <td style={{...cs,fontWeight:600}}>{t.assignee||"-"}</td>
+            <td style={{...cs,fontWeight:700,color:"#1d4ed8"}}>{(t.timeChange||t._ssTime||t.time)||"-"}</td>
+            <td style={{...cs,fontWeight:700,color:tm.c}}>{t.type||""}{t.typeChange?<span style={{fontSize:7,color:"#f59e0b",marginLeft:2}}>*</span>:null}</td>
+            <td style={{...cs,fontWeight:600,color:"#0f172a",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis"}} title={t.name||""}>{t.name||"-"}</td>
+            <td style={{...cs,fontSize:9,maxWidth:160,overflow:"hidden",textOverflow:"ellipsis"}} title={pl}>{pl?<a href={"https://www.google.com/maps/search/?api=1&query="+encodeURIComponent(pl)} target="_blank" rel="noopener noreferrer" style={{color:"#2563eb",textDecoration:"underline"}}>{pl}</a>:"-"}</td>
+            <td style={{...cs,fontWeight:700,color:"#64748b",textAlign:"center"}}>{_vac?"-":(t.vehicle||"-")}</td>
+            <td style={{...cs,fontWeight:700,color:vn?"#1e40af":"#64748b"}}>{vn?vn.name:(_vac?t.vehicle:"-")}</td>
+            <td style={{...cs,fontFamily:"monospace",fontWeight:700,color:t.plateNo?"#2563eb":"#ccc"}}>{t.plateNo||"-"}</td>
+            {["b","c","j"].map(k=><td key={k} style={{...cs,textAlign:"center",fontWeight:700,color:+(op[k]||0)>0?"#dc2626":"#ccc"}}>{+(op[k]||0)||"-"}</td>)}
+            <td style={{...cs,fontWeight:600,color:t.insurance==="NOC"?"#b45309":"#64748b"}}>{t.insurance||"-"}</td>
+            <td style={{...cs,fontSize:9,color:"#1e293b",maxWidth:220,overflow:"hidden",textOverflow:"ellipsis"}} title={t.memo||""}>{t.memo||"-"}</td>
+            <td style={cs}>{t.ota?<OBadge ota={t.ota} rid={rid}/>:""}</td>
+            <td style={{...cs,fontFamily:"monospace",fontSize:9}}>{rid?<a href={"license.html?id="+encodeURIComponent(rid)+_licTokQ(rid)+"&name="+encodeURIComponent(t.name||"")} target="_blank" rel="noopener noreferrer" style={{color:"#3b82f6",textDecoration:"underline"}}>{rid}</a>:"-"}</td>
+            <td style={{...cs,fontSize:8,color:"#f59e0b"}}>{t.typeChange||""}</td>
+            <td style={{...cs,textAlign:"center"}}>{t.ota==="J"&&rid&&isJPaidFn?(()=>{const d=isJPaidFn(rid);return <span style={{fontSize:8,fontWeight:700,padding:"1px 4px",borderRadius:3,background:d?"#dcfce7":"#fef2f2",color:d?"#16a34a":"#dc2626"}}>{d?"決済":"未決済"}</span>;})():""}{(()=>{const ep=rid&&extraPayFn&&extraPayFn(rid);if(!ep)return null;const pd=ep.status==="paid";return <span style={{fontSize:8,fontWeight:700,padding:"1px 4px",borderRadius:3,marginLeft:3,background:pd?"#dbeafe":"#fef9c3",color:pd?"#1d4ed8":"#a16207"}}>{pd?"追加済":"追加未"}</span>;})()}</td>
+            <td style={{...cs,fontFamily:"monospace",fontSize:9}}>{t.tel?<a href={"tel:"+String(t.tel).replace(/[-\s()]/g,"")} style={{color:"#2563eb",textDecoration:"underline"}}>{t.tel}</a>:<span style={{color:"#cbd5e1"}}>-</span>}</td>
+          </tr>;})}
         </tbody></table>
       </div>)}
       {!loading&&grouped.length===0&&<div style={{padding:24,textAlign:"center",color:"#9ca3af",fontSize:13}}>該当する過去タスクがありません</div>}
@@ -25364,7 +25374,7 @@ function App(){
           {tab==="foreign"&&<ForeignVisitorAnalysis data={data}/>}
           {tab==="marketing_hp"&&<MarketingHpTab data={data}/>}
           {tab==="analytics"&&<AnalyticsTab data={data} sheetPlaces={sheetPlaces}/>}
-          {tab==="history"&&<PastTasksTable today={today}/>}
+          {tab==="history"&&<PastTasksTable today={today} vehicles={vehicles} isJPaidFn={isJPaidFn} extraPayFn={extraPayFn}/>}
           {tab==="notices"&&<NoticesPage store="SPK"/>}
           {tab==="budget_pl"&&(()=>{
             window.location.href='./monthly.html?store=spk&v='+APP_VERSION+'&t='+Date.now();
@@ -26198,7 +26208,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.726";
+const APP_VERSION="v4.7.727";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
