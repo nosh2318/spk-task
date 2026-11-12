@@ -41,7 +41,11 @@ var FC={};  /* 2026-11-12 mtg_fc：指標・複数の予測式の答え合わせ
 function loadFc(){STORES.filter(function(s){return s.k==(selfKey()||"spk");}).forEach(function(s){var c=sbOf(s.k);if(!c)return;
   if(window.LAND_FC_TEST){FC[s.k]=window.LAND_FC_TEST;landSoon();return;}
   fetch(c[0]+"/rest/v1/rpc/mtg_fc",{method:"POST",headers:{apikey:c[1],Authorization:"Bearer "+c[1],"Content-Type":"application/json"},body:JSON.stringify({p_store:s.k})}).then(function(r){return r.ok?r.json():null;}).then(function(j){FC[s.k]=j&&j.months?j:{err:1};landSoon();}).catch(function(){FC[s.k]={err:1};landSoon();});});}
-function loadTrend(){loadFree();loadFc();STORES.filter(function(s){return s.k==(selfKey()||"spk");}).forEach(function(s){var c=sbOf(s.k);if(!c){setTimeout(loadTrend,1500);return;}
+var FN={};  /* 2026-11-12 mtg_fc_next：翌月・翌々月を日別の埋まり方×リードタイム×直近の入り方で読む（docs/sql/mtg_fc_next_20261112.sql） */
+function loadNext(){STORES.filter(function(s){return s.k==(selfKey()||"spk");}).forEach(function(s){var c=sbOf(s.k);if(!c)return;
+  if(window.LAND_FN_TEST){FN[s.k]=window.LAND_FN_TEST;landSoon();return;}
+  fetch(c[0]+"/rest/v1/rpc/mtg_fc_next",{method:"POST",headers:{apikey:c[1],Authorization:"Bearer "+c[1],"Content-Type":"application/json"},body:JSON.stringify({p_store:s.k})}).then(function(r){return r.ok?r.json():null;}).then(function(j){FN[s.k]=j&&j.k?j:{err:1};landSoon();}).catch(function(){FN[s.k]={err:1};landSoon();});});}
+function loadTrend(){loadFree();loadFc();loadNext();STORES.filter(function(s){return s.k==(selfKey()||"spk");}).forEach(function(s){var c=sbOf(s.k);if(!c){setTimeout(loadTrend,1500);return;}
   fetch(c[0]+"/rest/v1/rpc/"+s.rpc,{method:"POST",headers:{apikey:c[1],Authorization:"Bearer "+c[1],"Content-Type":"application/json"},body:"{}"}).then(function(r){return r.ok?r.json():null;}).then(function(j){TR[s.k]=j&&j.mon?j:{err:1};landSoon();}).catch(function(){TR[s.k]={err:1};landSoon();});});}
 var started=0,poll=null;
 window.landOpen=function(){if(!started){started=1;setTimeout(loadTrend,300);}
@@ -80,7 +84,7 @@ function draw(){var el=document.getElementById("land");if(!el||!landVisible())re
   var sk=selfKey()||"spk",S0=STORES.filter(function(s){return s.k==sk;})[0]||STORES[0],x=getX(S0.k),rdy=ready(S0.k);
   var cur=jstNow().toISOString().slice(0,7),today=jstNow().toISOString().slice(0,10),day=+today.slice(8),dim=dimOf(cur);
   var H='<div class="lh">📈 着地見込み（'+S0.nm+'）</div>';
-  H+='<div class="lsub">現在実績＝今入っている予約の売上（返却月で計上・キャンセル/テスト除外）＋予約外売上。着地見込み＝現在実績＋これから入る見込みの売上（今月＝下の試算根拠の計算／来月以降＝サマリの「まとめ 着地」と同じ値）。確定月は実績＝着地。DBライブ（開いている間は5分ごとに更新）。'+(x&&x.gen?' 最終取得 '+x.gen.slice(5):'')+'</div>';
+  H+='<div class="lsub">現在実績＝今入っている予約の売上（返却月で計上・キャンセル/テスト除外）＋予約外売上。着地見込み＝現在実績＋これから入る見込みの売上（今月・来月・再来月＝下の試算根拠の計算。過去月で答え合わせして外れが一番小さい式を採用／それより先＝サマリの「まとめ 着地」と同じ値）。確定月は実績＝着地。DBライブ（開いている間は5分ごとに更新）。'+(x&&x.gen?' 最終取得 '+x.gen.slice(5):'')+'</div>';
   if(!rdy)H+='<div class="wait">⏳ 計算を読み込み中…（設計・予約ペースを読み込んで計算しています）</div>';
   var v=mv(x,cur);
   // ① 今月
@@ -95,10 +99,10 @@ function draw(){var el=document.getElementById("land");if(!el||!landVisible())re
   // ② 月別推移
   if(x){var ms=Object.keys(x.hist).concat(Object.keys(x.mon)).sort();
     H+='<div class="lh">📊 月別 現在実績／着地見込み</div><div class="lw"><table><thead><tr><th class="l">月</th><th class="l">状態</th><th>台数</th><th>稼働可能日数</th><th>予約済み日数</th><th>稼働率</th><th>見込み日数</th><th>着地稼働率</th><th>1日単価</th><th class="g">目標</th><th class="g">現在実績</th><th class="g">着地見込み</th><th class="g">差</th><th class="g">達成</th></tr></thead><tbody>';
-    ms.forEach(function(m){var w=mv(x,m);if(!w)return;if(SC&&m==cur){w.L=SC.L;w.f=w.rd+SC.pk;}if(FX&&m==cur)w.L=FX.L;var pk=w.st?w.f-w.rd:0,ur=w.st?(w.z.ar&&w.rd?w.z.ar/w.rd:0):(w.h.r&&w.rd?w.h.r/w.rd:0);
+    ms.forEach(function(m){var w=mv(x,m);if(!w)return;if(SC&&m==cur){w.L=SC.L;w.f=w.rd+SC.pk;}if(FX&&m==cur)w.L=FX.L;var NX=m>cur?nx(x,m):null;if(NX){w.L=NX.L;w.f=w.rd+Math.max(0,NX.fd-NX.ob);}var pk=w.st?w.f-w.rd:0,ur=w.st?(w.z.ar&&w.rd?w.z.ar/w.rd:0):(w.h.r&&w.rd?w.h.r/w.rd:0);
       H+='<tr class="clk'+(w.st==1?' cur':'')+(MSEL==m?' sel':'')+'" onclick="landMon(\''+m+'\')"><td class="l"><b>'+MNy(m)+'</b></td><td class="l">'+stl(w.st)+'</td><td>'+w.n+'台</td><td>'+k(w.ad)+'</td><td>'+k(w.rd)+'</td><td>'+P(w.rd,w.ad)+'</td><td>'+(w.st?'+'+k(pk):'<span class="muted">–</span>')+'</td><td>'+P(w.f,w.ad)+'</td><td>'+(ur?y(ur):'–')+'</td><td>'+(w.t?y(w.t):'–')+'</td><td>'+y(w.a)+'</td><td><b>'+y(w.L)+'</b></td><td>'+(w.t?sg(w.L-w.t,y):'')+'</td><td class="'+(w.L>=w.t?'lpos':'lneg')+'">'+(w.t?P(w.L,w.t):'–')+'</td></tr>';});
     H+='</tbody></table></div><div class="lsub">確定＝過去の月（実績で確定）／進行中＝今月／受付中＝来月以降（今の予約＋これから入る見込み）。月の行をクリックで、その月の試算根拠（クラス別）。</div>';
-    var mm=MSEL&&mv(x,MSEL)?MSEL:cur;H+='<div id="landDet"></div>'+(mm==cur&&SC?'':why(S0,x,mm));
+    var mm=MSEL&&mv(x,MSEL)?MSEL:cur;var NM=mm>cur?nx(x,mm):null;H+='<div id="landDet"></div>'+(mm==cur&&SC?'':(NM?nxHtml(S0,x,NM):'')+why(S0,x,mm));
     if(mm==cur&&FX)H+=fxHtml(S0,x,FX);
     if(mm==cur)H+=SC?fcHtml(S0,x,SC,FX):'<div class="wait">今月の試算に使う実績データ（DB関数 '+S0.k+'_mtg_free）を読み込み中、または読めませんでした。それまでは上の数字はサマリの着地（リードタイム式）です。</div>';
     H+=trend(S0,x);}
@@ -107,15 +111,16 @@ function draw(){var el=document.getElementById("land");if(!el||!landVisible())re
    +'<b>現在実績</b>＝返却日がその月の予約の売上合計（基本料金＋オプション−割引。キャンセル・テスト除外）＋予約外売上（会計の予約外）。KPIタブ・サマリと同じ。<br>'
    +'<b>今月の着地見込み</b>＝現在実績−キャンセル見込み＋これから入る見込み。式は1つに決め打ちしない：複数の予測式を、過去の全部の月の「同じ日付時点」で答え合わせし、平均誤差が一番小さい式をその店で自動採用（毎日やり直す）。前提（進捗率・キャンセル率・後から入る率・単価）は確定した月が増えるたびに自動で更新。毎日23:55にその日の予測と前提を記録し、月が締まったら「どの指標が外れたか」を分解して表示。提供できる上限（下のクラス別の表の②）を超える分は見込まない。<br>'
    +'<b>クラス別の積み上げ（参考・供給の確認）</b>＝現在実績＋Σクラス（見込み日数×見込み単価）。見込み日数＝①需要（過去3か月の「同じ日付より後に入った率」×残り枠×受付件数のトレンド）と ②提供できる上限（配車表の日別の空きに平均泊数の予約が入る日数）の小さい方。空きがあるだけでは見込まない。<br>'
-   +'<b>来月以降の着地見込み</b>＝サマリと同じリードタイム式：Σクラス別着地＋予約外・未配車（その月の実績）。クラス別着地＝今の予約売上＋これから入る見込み日数×見込み単価。<br>'
+   +'<b>来月・再来月の着地見込み</b>＝現在実績＋（着地の予約売上−今の予約売上）。着地の予約売上は、その月の1日ごとに「今の予約×（1−キャンセル率）＋これから入る台数」を積み、台数の95%を上限にして、単価を掛けたもの＝稼働可能日数×着地稼働率×単価。これから入る台数は、過去の同じリードタイム（何日前か）・平日/土日での入り方（台数あたり／空き台数あたり）に、直近28日の入り方の強さを掛ける。前月の同じ日付時点からの伸び率の式も並べ、過去の月を同じ日付時点に戻して全部の式を答え合わせし、外れが一番小さい式を店ごとに採用。幅＝その式の過去の平均の外れ。<br>'
+   +'<b>それより先の月</b>＝サマリと同じリードタイム式：Σクラス別着地＋予約外・未配車（その月の実績）。クラス別着地＝今の予約売上＋これから入る見込み日数×見込み単価。<br>'
    +'<b>これから入る見込み日数</b>＝今日〜月末の各日について「その日の今の予約台数 ÷ 過去（3〜9月）の予約で、貸出日の◯日前までに入っていた割合」で最終予約台数を推計し、今の予約を引いたもの（空き台数が上限）。まだ半分も入っていない遠い日は、今の予約＋（まだ入っていない割合×目標稼働率）で控えめに見込む。<br>'
    +'<b>見込み単価</b>＝予約済みの1日単価と内訳（目標）単価を、予約済み日数：見込み日数で加重平均。<br>'
    +'<b>目標</b>＝このページの月目標（高松は10月から）。クラス別の目標は🎯設計比較タブと同じ配分。<br>'
    +'<b>当月推移</b>＝今入っている予約を受付日の順に積み上げた売上（キャンセル済みは除く）。前の月と同じ日付時点の比較で、今月の予約の入り方が早いか遅いかを見る。</div>';
   el.innerHTML=H;
   /* 2026-11-12 オーナー「TOURISM進行管理のサマリに着地予測を・直近3ヶ月同じ数値を出す」：?landpost=1 で開かれた時（高松アプリのサマリが隠し iframe で開く）、このタブと同じ着地の数字を親ページへ渡す */
-  if(POST_O&&x){try{var out={};Object.keys(x.hist).concat(Object.keys(x.mon)).forEach(function(m){var w=mv(x,m);if(!w)return;var L=w.L;if(m==cur&&SC)L=SC.L;if(m==cur&&FX)L=FX.L;out[m]={st:w.st,t:Math.round(w.t||0),a:Math.round(w.a||0),L:Math.round(L||0)};});
-    window.parent.postMessage({type:"hdm-land",store:S0.k,cur:cur,ready:!!(rdy&&(FX||(FC[S0.k]&&FR[S0.k]))),fx:!!FX,lo:FX?Math.round(FX.lo):null,hi:FX?Math.round(FX.hi):null,mae:FX?+FX.bm.mae:null,mon:out},POST_O);}catch(e){}}}
+  if(POST_O&&x){try{var out={};Object.keys(x.hist).concat(Object.keys(x.mon)).forEach(function(m){var w=mv(x,m);if(!w)return;var L=w.L;if(m==cur&&SC)L=SC.L;if(m==cur&&FX)L=FX.L;var o={st:w.st,t:Math.round(w.t||0),a:Math.round(w.a||0),L:Math.round(L||0)};var N=m>cur?nx(x,m):null;if(N){o.L=Math.round(N.L);o.lo=Math.round(N.lo);o.hi=Math.round(N.hi);o.nx=1;o.thin=N.thin?1:0;}if(m==cur&&FX){o.lo=Math.round(FX.lo);o.hi=Math.round(FX.hi);}out[m]=o;});
+    window.parent.postMessage({type:"hdm-land",store:S0.k,cur:cur,ready:!!(rdy&&(FX||(FC[S0.k]&&FR[S0.k]))&&FN[S0.k]),fx:!!FX,lo:FX?Math.round(FX.lo):null,hi:FX?Math.round(FX.hi):null,mae:FX?+FX.bm.mae:null,mon:out},POST_O);}catch(e){}}}
 var POST_O=(function(){if((location.search.indexOf("landpost=1")<0&&!window.LAND_POST_FORCE)||window.parent===window)return "";var OK=["https://buddica-touring.github.io","https://nosh2318.github.io"],o="";try{o=location.ancestorOrigins&&location.ancestorOrigins.length?location.ancestorOrigins[0]:new URL(document.referrer).origin;}catch(e){}return OK.indexOf(o)>=0?o:"";})();
 var MT={share:"進捗率式",add:"積み上げ式",blend:"進捗率式と積み上げ式の平均",addtr:"積み上げ式×受付トレンド",free:"積み上げ式（空き枠あたり＝稼働率を加味）",cls:"クラス別の積み上げ",ch:"経路別（OTA・公式）の積み上げ×経路のトレンド",io:"国内・海外別の積み上げ×トレンド",share3:"進捗率式（直近3か月だけ）",yoy:"前年同月の進捗率"};
 var MTd={share:"受付済み売上 ÷ 過去の同じ日付時点の進捗率",add:"受付済み×（1−キャンセル率）＋ 後から入る売上（過去の実績：台数×残り日数あたり）",blend:"上の2つの平均",addtr:"積み上げ式の「後から入る」に、受付件数の直近28日÷前28日（0.7〜1.3倍）を掛ける",free:"後から入る売上を、空き枠（台数×残り日数−予約済み）あたりで見る",cls:"後から入る売上をクラスごとの率×クラスの残り枠で積む（人気クラス・動かないクラスを分ける）",ch:"後から入る売上を OTA・公式・その他に分け、経路ごとの受付トレンドを掛ける",io:"後から入る売上を国内・海外に分け、それぞれの受付トレンドを掛ける",share3:"進捗率式を直近3か月の実績だけで",yoy:"前年の同じ月の進捗率を使う（データが1年分たまると自動で候補に入る）"};
@@ -183,6 +188,44 @@ function fxHtml(S0,x,X){var G=X.G,cur=x.cur,M=X.M,as=X.as,ms=Object.keys(G.month
   H+='<div class="lh" style="font-size:13px">⑤ 毎日の記録（'+MN(cur)+'・その日の予測と試算根拠＝月末の答え合わせの元）</div>'+(lg.length?'<div class="lw"><table><thead><tr><th class="l">記録日</th><th class="l">採用式</th><th class="g">着地見込み<br>（予約＋予約外）</th><th>予約売上<br>の予測</th><th>受付済み<br>予約売上</th><th>予約外<br>売上</th><th>進捗率<br>の前提</th><th>キャンセル率<br>の前提</th><th>後から入る<br>件数の見込み</th><th>後から入る<br>単価の前提</th><th>受付トレンド<br>係数</th><th>残りの<br>空き枠</th></tr></thead><tbody>'+lg.map(function(r){var has=r.length>4&&r[4]!=null;return '<tr><td class="l">'+r[0].slice(5)+'</td><td class="l">'+(MT[r[1]]||r[1]||'–')+'</td><td><b>'+(r[2]!=null&&has?y(+r[2]+(+r[4])):'–')+'</b></td><td>'+(r[2]!=null?y(r[2]):'–')+'</td><td>'+y(r[3])+'</td><td>'+(has?y(r[4]):'–')+'</td><td>'+(r[9]!=null?pc1(+r[9]):'–')+'</td><td>'+(r[5]!=null?pc1(+r[5]):'–')+'</td><td>'+(r[6]!=null?d1(+r[6])+'件':'–')+'</td><td>'+(r[7]!=null?y(r[7]):'–')+'</td><td>'+(r[8]!=null?'×'+(+r[8]).toFixed(2):'–')+'</td><td>'+(r[10]!=null?k(r[10])+'日':'–')+'</td></tr>';}).join('')+'</tbody></table></div>':'<div class="lsub">まだ記録がありません（毎日23:55に自動で1行ずつ貯まります）。</div>')
    +'<div class="lsub">各行＝その日（23:55）に保存した予測と前提。このほかクラス別・経路別・国内海外別の見込み件数と、全部の式の予測値も一緒に保存している（④の振り返りで使う）。着地見込み（予約＋予約外）＝予約売上の予測＋その日の予約外売上（画面上部の着地は、提供できる上限の確認後の値）。</div>'
    +'<div class="lsub">仕組み：毎日その日の予測・前提・全式の値を記録 → 月が締まったら④で答え合わせ（どの指標が外れたか）→ 確定月が前提と③の採用式に自動で入る＝修正と学習が同時に回る。</div>';
+  return H+'</div>';}
+/* 2026-11-12 オーナー「読めないのをどう読み切るか」「設定単価と稼働率で読むべき」「前月の今ぐらいで翌月がどのくらい本数・売上あったかのパターン」「当月予約率も合わせる」：
+   来月・再来月の着地（mtg_fc_next）。式の候補＝日別の積み上げ5案（p＝台数あたり／f＝空き台数あたり × 直近28日の入り方を 0・半分・全部 反映）＋同じ時点からの伸び率（中央値）＋直前の確定月と同じ伸び率＋全部の中央値。
+   過去の月を同じ日付時点に戻した予測と実績の差（平均）が最小の式を採用。確定月が2か月に満たない店は「空き台数あたり×半分反映」を仮採用し、幅は式の間の最小〜最大 */
+var NT={"p0":"台数あたりの入り方","p0.5":"台数あたりの入り方×直近の入り方（半分反映）","f0":"空き台数が埋まる率","f0.5":"空き台数が埋まる率×直近の入り方（半分反映）","f1":"空き台数が埋まる率×直近の入り方（全部反映）",ratio:"同じ時点からの伸び率（過去月の中央値）",ana:"直前の確定月と同じ伸び率",ens:"全部の式の中央値"};
+function avgA(a){var s=0;a.forEach(function(v){s+=v;});return a.length?s/a.length:0;}
+function medA(a){var b=a.slice().sort(function(p,q){return p-q;}),n=b.length;return n?(n%2?b[(n-1)/2]:(b[n/2-1]+b[n/2])/2):0;}
+function nx(x,m){var G=FN[selfKey()||"spk"],z=x&&x.mon[m];if(!G||G.err||!G.k||!z||m<=x.cur)return null;
+  var kk=null;Object.keys(G.k).forEach(function(q){if(G.k[q]&&G.k[q].ym==m)kk=q;});if(!kk)return null;
+  var rows=G.k[kk].rows||[],T=null,past=[];rows.forEach(function(r){if(r[0]==m)T=r;else if(r[0]<x.cur&&+r[4]>0&&+r[6]>0)past.push(r);});
+  if(!T||!T[8])return null;
+  var cap=+T[2],ob=+T[3],obr=+T[4];
+  function pv(r,key){var o=null;(r[8]||[]).forEach(function(v){if(v[0]==key)o=v;});return o;}
+  function mk(key,F,pr,fd){var e=[],b=0;pr.forEach(function(p,i){if(p===null)return;var d=(p-+past[i][6])/+past[i][6];e.push(Math.abs(d));b+=d;});return {k:key,F:F,fd:fd,pr:pr,n:e.length,mae:e.length?avgA(e):null,bias:e.length?b/e.length:null};}
+  var M=[];T[8].forEach(function(v){M.push(mk(v[0],+v[4],past.map(function(r){var q=pv(r,v[0]);return q?+q[4]:null;}),+v[3]));});
+  var rt=past.map(function(r){return +r[6]/+r[4];});
+  if(rt.length>=2){M.push(mk("ratio",obr*medA(rt),past.map(function(r,i){return +r[4]*medA(rt.filter(function(_,j){return j!=i;}));})));
+    M.push(mk("ana",obr*rt[rt.length-1],past.map(function(r,i){return i?+r[4]*rt[i-1]:null;})));}
+  M.push(mk("ens",medA(M.map(function(q){return q.F;})),past.map(function(r,i){var a=[];M.forEach(function(q){if(q.pr[i]!==null)a.push(q.pr[i]);});return a.length?medA(a):null;})));
+  var cand=M.filter(function(q){return q.mae!==null&&q.n>=2;}).sort(function(a,b){return a.mae-b.mae;});
+  var thin=!cand.length,best=cand[0]||M.filter(function(q){return q.k=="f0.5";})[0]||M[0],F=best.F,lo,hi;
+  if(!thin){lo=F*(1-best.mae);hi=F*(1+best.mae);}else{var Fs=M.map(function(q){return q.F;});lo=Math.min.apply(null,Fs);hi=Math.max.apply(null,Fs);}
+  var ref=pv(T,"f0.5")||T[8][0],ru=(+ref[3]-ob)>0?(+ref[4]-obr)/(+ref[3]-ob):(ob?obr/ob:0),fd=best.fd||(ru>0?Math.max(ob*0.9,ob+(F-obr)/ru):+ref[3]);
+  return {m:m,kk:+kk,T:T,past:past,M:M,cand:cand,best:best,thin:thin,F:F,L:z.a+(F-obr),lo:z.a+(lo-obr),hi:z.a+(hi-obr),cap:cap,ob:ob,obr:obr,fd:Math.min(fd,cap),c:+T[7],seg:G.k[kk].seg||[],s:T[1],z:z};}
+function nxHtml(S0,x,N){var z=N.z,m=N.m,b=N.best,pm=N.past.map(function(r){return r[0];}),SG=["","1〜10日","11〜20日","21〜26日","27日〜月末"];
+  var H='<div class="why" id="landNx"><h5>🧮 '+S0.nm+' '+MN(m)+'の着地見込み（'+(N.kk==1?'来月':'再来月')+'）— 稼働率 × 単価で読む</h5>';
+  H+='<div class="eq">着地見込み <b>'+y(N.L)+'</b>（幅 '+y(N.lo)+'〜'+y(N.hi)+'）＝ 現在実績 '+y(z.a)+' ＋ これから増える見込み '+sg(N.F-N.obr,y)+'</div>';
+  H+='<div class="eq">予約売上の着地 '+y(N.F)+' ＝ 稼働可能 '+k(N.cap)+'日 × 着地稼働率 '+P(N.fd,N.cap)+'（'+k(N.fd)+'日）× 1日単価 '+(N.fd?y(N.F/N.fd):'–')+'</div>';
+  H+='<div>今（'+N.s.slice(5).replace("-","/")+'時点）：貸出 '+k(N.ob)+'日＝稼働率 '+P(N.ob,N.cap)+'・1日単価 '+(N.ob?y(N.obr/N.ob):'–')+'・予約売上 '+y(N.obr)+'（貸出日で日割り）。これから +'+k(Math.max(0,N.fd-N.ob))+'日。'+(z.t?'目標 '+y(z.t)+' に対して '+sg(N.L-z.t,y)+'（'+P(N.L,z.t)+'）。':'')+'</div>';
+  H+='<div>直近28日の入り方＝過去の同じ時期（同じ何日前）の <b>'+(Math.round(N.c*100)/100).toFixed(2)+'倍</b>'+(N.c>=1.15?'（強い）':N.c<=0.85?'（弱い）':'（ほぼ同じ）')+'。採用した式＝<b>'+(NT[b.k]||b.k)+'</b>'+(N.thin?'（仮採用：確定月が足りず答え合わせ前。幅は式の間の最小〜最大）':'（過去'+b.n+'か月の答え合わせで平均の外れ '+pcs(b.mae).replace(/^[+−]/,'')+'・偏り '+pcs(b.bias)+'）')+'</div>';
+  if(N.seg.length){H+='<div class="lw" style="margin-top:6px"><table><thead><tr><th class="l">月内の区間</th><th>稼働可能</th><th>今の予約</th><th>今の稼働率</th><th>着地の見込み</th><th>着地稼働率</th><th>これから</th></tr></thead><tbody>';
+    N.seg.forEach(function(g){H+='<tr><td class="l">'+SG[g[0]]+'</td><td>'+k(g[1])+'日</td><td>'+k(g[2])+'日</td><td>'+P(g[2],g[1])+'</td><td>'+k(g[3])+'日</td><td>'+P(g[3],g[1])+'</td><td>+'+k(Math.max(0,g[3]-g[2]))+'日</td></tr>';});
+    H+='</tbody></table></div><div class="lsub">区間別は「空き台数が埋まる率」の式での内訳（どこが埋まっていて、どこに伸びしろがあるか）。</div>';}
+  H+='<div class="lw" style="margin-top:6px"><table><thead><tr><th class="l">式（過去月を同じ日付時点に戻して答え合わせ）</th>'+pm.map(function(q){return '<th>'+MNy(q)+'<br><small>予測→実績との差</small></th>';}).join('')+'<th>平均の外れ</th><th>偏り</th><th class="g">'+MN(m)+'の予約売上</th><th class="g">着地見込み</th></tr></thead><tbody>';
+  N.M.slice().sort(function(p,q){return (p.mae===null?9:p.mae)-(q.mae===null?9:q.mae);}).forEach(function(q){
+    H+='<tr'+(q===b?' class="cur"':'')+'><td class="l">'+(q===b?'✅ ':'')+(NT[q.k]||q.k)+'</td>'+q.pr.map(function(p,i){return '<td>'+(p===null?'–':man(p)+' <small>'+pcs((p-+N.past[i][6])/+N.past[i][6])+'</small>')+'</td>';}).join('')+'<td>'+(q.mae===null?'–':pcs(q.mae).replace(/^[+−]/,''))+'</td><td>'+(q.bias===null?'–':pcs(q.bias))+'</td><td>'+y(q.F)+'</td><td><b>'+y(z.a+q.F-N.obr)+'</b></td></tr>';});
+  H+='<tr class="tot"><td class="l">その時点の予約売上 → 実績</td>'+N.past.map(function(r){return '<td>'+man(+r[4])+' → '+man(+r[6])+' <small>×'+(Math.round(+r[6]/+r[4]*100)/100).toFixed(2)+'</small></td>';}).join('')+'<td></td><td></td><td>今 '+y(N.obr)+'</td><td></td></tr></tbody></table></div>';
+  H+='<div class="lsub">各式は、その月自身のデータを使わずに予測しています。月が締まるたびに答え合わせの月が1つ増え、採用する式と幅が自動で更新されます。前年の同じ月のデータが無いため、季節の違い（年末年始・冬）は「直近28日の入り方」と「今の予約の位置」からしか読めていません。下は参考：以前のリードタイム式（サマリの「まとめ 着地」）の内訳です。</div>';
   return H+'</div>';}
 function card(nm,col,t,a,L,rd,f,ad,cap,cls){var pa=t?Math.min(100,a/t*100):0,pl=t?Math.min(100,L/t*100):0;
   return '<div class="lc '+cls+'" style="--c:'+col+'"><h4>'+nm+'</h4><div class="row"><span>着地見込み</span><span class="'+(L>=t?'lpos':'lneg')+'">'+P(L,t)+'</span></div><div class="big">'+man(L)+'</div>'
