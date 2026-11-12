@@ -49,3 +49,14 @@ select to_char(g,'YYYY-MM'), coalesce(nullif(x.type,''),'未配車'), count(*)::
   group by 1,2;
 $function$;
 revoke all on function public.mtg_fc_cap(text) from public, anon, authenticated;
+
+/* 予約外売上（月別・*_mtg_h2 の ext_r と同じ定義）。毎日の記録に残す＝月末の答え合わせで「予約外の変化」を追える */
+create or replace function public.mtg_fc_ext(p_store text)
+returns table(ym text, amt numeric) language sql stable security definer set search_path to 'public' as $function$
+select substr(a.date,1,7), sum(coalesce(a.amount,0))::numeric from spk_accounting a
+  where p_store='spk' and a.type='extra_sales' and coalesce(a.description,'') not like 'じゃらん事前決済%' and substr(a.date,1,7)>='2026-04' group by 1
+union all
+select substr(a.date,1,7), sum(coalesce(a.amount,0))::numeric from nha_accounting a
+  where p_store='nha' and a.type='extra_sales' and substr(a.date,1,7)>='2026-04' group by 1;
+$function$;
+revoke all on function public.mtg_fc_ext(text) from public, anon, authenticated;
