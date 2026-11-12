@@ -38,12 +38,12 @@ ctx as (select ks.k, g::date ms, (g+interval '1 month'-interval '1 day')::date m
 cx as (select * from ctx where s >= date '2026-04-20'),
 /* 対象月の各日：その時点の予約（ob）・直近28日に入った分（a28）・最終（fin） */
 td as (select cx.k, cx.ym, cx.s, cx.tgt, cal.d, cal.ty, cal.cap, (cal.d-cx.s) l,
-    (select count(*) from rd where rd.d=cal.d and rd.cd<=cx.s and (rd.xd is null or rd.xd>cx.s)) ob,
-    (select coalesce(sum(rd.dr),0) from rd where rd.d=cal.d and rd.cd<=cx.s and (rd.xd is null or rd.xd>cx.s)) obr,
-    (select count(*) from rd where rd.d=cal.d and rd.cd<=cx.s and rd.cd>cx.s-28 and (rd.xd is null or rd.xd>cx.s)) a28,
-    (select count(*) from rd where rd.d=cal.d and rd.xd is null) fin,
-    (select coalesce(sum(rd.dr),0) from rd where rd.d=cal.d and rd.xd is null) finr
-  from cx join cal on cal.d between cx.ms and cx.me),
+    count(rd.d) filter (where rd.cd<=cx.s and (rd.xd is null or rd.xd>cx.s)) ob,
+    coalesce(sum(rd.dr) filter (where rd.cd<=cx.s and (rd.xd is null or rd.xd>cx.s)),0) obr,
+    count(rd.d) filter (where rd.cd<=cx.s and rd.cd>cx.s-28 and (rd.xd is null or rd.xd>cx.s)) a28,
+    count(rd.d) filter (where rd.xd is null) fin,
+    coalesce(sum(rd.dr) filter (where rd.xd is null),0) finr
+  from cx join cal on cal.d between cx.ms and cx.me left join rd on rd.d=cal.d group by cx.k, cx.ym, cx.s, cx.tgt, cal.d, cal.ty, cal.cap),
 /* 各日のリードタイムに対応する過去の率（対象月自身の日は除く） */
 tp as (select td.*, hh.pn, hh.q, hh.g, hh.rho, coalesce(hh.cr, (select c0 from call)) cr
   from td left join lateral (select sum(h.nw)/nullif(sum(h.cap),0) pn, sum(h.nw)/nullif(sum(h.cap-h.oba),0) q, sum(h.g28)/nullif(sum(h.cap),0) g,
