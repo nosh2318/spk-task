@@ -50,6 +50,7 @@ input{font-family:inherit;font-size:15px;padding:9px 10px;border:1px solid var(-
 .toast{position:fixed;bottom:calc(130px + env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);background:#0a1f44;color:#fff;padding:10px 16px;border-radius:10px;font-weight:800;z-index:20;opacity:0;transition:.2s;pointer-events:none}.toast.on{opacity:1}
 .ota{font-size:11px;font-weight:900;padding:2px 8px;border-radius:6px;color:#fff;white-space:nowrap}
 .l2{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:5px}
+.l2.stf{gap:12px;font-size:13px;font-weight:700;margin:4px 0 2px}
 .nm{overflow-wrap:anywhere}
 @media(max-width:420px){.d{font-size:10px}.it{padding:9px 8px}.tile .num{font-size:19px}}
 .dots{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;margin-top:7px}
@@ -236,7 +237,16 @@ function beforeOf(x){if(/^mp_/.test(String(x.field||"")))return x.oldv||"";const
   if(!r)return"";
   return f==="del_place"?(r.del_place||""):f==="col_place"?(r.col_place||""):f==="lend_time"?(md(r.sd)+" "+(r.st||"")):f==="return_time"?(md(r.ed)+" "+(r.et||"")):"";}
 async function rpc(base,anon,fn){try{const r=await fetch(base+"/rest/v1/rpc/"+fn,{method:"POST",headers:{apikey:anon,Authorization:"Bearer "+anon,"Content-Type":"application/json"},body:"{}"});if(!r.ok)return[];const j=await r.json();return Array.isArray(j)?j:[];}catch(e){return[];}}
-async function loadReq(){const [a,b]=await Promise.all([rpc(MAIN,MAIN_ANON,"mpadmin_pending"),rpc(BT,BT_ANON,"mpadmin_pending_bt")]);REQ={};a.concat(b).forEach(x=>{const k=x.bucket+"|"+x.rid;(REQ[k]=REQ[k]||[]).push(x);});}
+/* ★2026-11-12 nosh「担当者 車両 の情報を追加」：依頼カードに今の車両と担当（タスクの d-＝貸出側／c-＝返却側）。予約・タスク・配車表の今の値を読むだけ（3店） */
+let STF={},STF_OK=false;
+async function rpcObj(base,anon,fn){try{const r=await fetch(base+"/rest/v1/rpc/"+fn,{method:"POST",headers:{apikey:anon,Authorization:"Bearer "+anon,"Content-Type":"application/json"},body:"{}"});if(!r.ok)return null;const j=await r.json();return j&&typeof j==="object"&&!Array.isArray(j)?j:null;}catch(e){return null;}}
+async function loadStf(){const [a,b]=await Promise.all([rpcObj(MAIN,MAIN_ANON,"mpadmin_pending_staff"),rpcObj(BT,BT_ANON,"mpadmin_pending_staff_bt")]);STF=Object.assign({},a||{},b||{});STF_OK=!!(a||b);}
+const GO_F=/^(del_place|lend_time|lend_date|method|del_method|mp_pickup|mp_visit|option|insurance|received)$/,BACK_F=/^(col_place|return_time|return_date|ready|col_method|mp_dropoff|mp_store_return|extend)$/;
+function stfHtml(x){if(!STF_OK)return"";const o=STF[x.bucket+"|"+x.rid]||{},f=String(x.field||""),side=GO_F.test(f)?"d":BACK_F.test(f)?"c":"";
+  const nm=v=>v?esc(v):'<span class="mut">担当未定</span>';
+  const tn=side==="d"?"貸出 "+nm(o.d):side==="c"?"返却 "+nm(o.c):(o.d&&o.d===o.c)?"貸出・返却 "+nm(o.d):"貸出 "+nm(o.d)+"／返却 "+nm(o.c);
+  return `<div class="l2 stf"><span>🚗 ${o.car?esc(o.car):'<span class="mut">車両 未定</span>'}</span><span>👷 ${tn}</span></div>`;}
+async function loadReq(){const [a,b]=await Promise.all([rpc(MAIN,MAIN_ANON,"mpadmin_pending"),rpc(BT,BT_ANON,"mpadmin_pending_bt"),loadStf()]);REQ={};a.concat(b).forEach(x=>{const k=x.bucket+"|"+x.rid;(REQ[k]=REQ[k]||[]).push(x);});}
 const reqOf=r=>REQ[r.bucket+"|"+r.rid]||[];
 const pendOf=r=>reqOf(r).filter(x=>x.status==="requested");
 function reqHtml(r,act){const L=reqOf(r).slice().sort((a,b)=>String(b.at||"").localeCompare(String(a.at||"")));if(!L.length)return'<div class="mut">依頼はありません</div>';return L.map(x=>reqItem(x,act)).join("");}
@@ -511,6 +521,7 @@ function actCard(x,pend){const B=BUCK[x.bucket]||{n:x.bucket,c:"#334155"},r=rowO
   return `<div class="it ${foc?"hl":""}" data-a="${esc(x.bucket+"|"+x.rid)}" style="cursor:default${ABF&&x.bucket!==ABF?";opacity:.3":""}">
     <div class="top">${pend?leftHtml(x):""}<b class="ty">${tyLabel(x)}</b><span style="flex:1"></span><span class="bk" style="background:${B.c}">${B.n}</span></div>
     <div class="l2"><span class="nm">${esc(x.name||"-")} 様</span>${otaBadge(x.ota)}<span class="mut">${md(x.sd)}〜${md(x.ed)}${r?" ・ "+(String(r.vt||"").trim()?MLB[r.j.m]:"受け取り方法 未設定"):""}</span></div>
+    ${stfHtml(x)}
     ${reqItem(x,pend)}
     <div class="acts" style="justify-content:space-between">${r?`<button class="jump" onclick="goList('${x.bucket}','${esc(x.rid)}')">← リストで見る</button>`:'<span class="mut">（リストの期間外の予約）</span>'}<span class="mut">${esc(x.rid)}</span></div></div>`;}
 // 11/7 nosh 確定の変更締切（3店共通・目安）。期限後でも依頼は受け付け、カードに「期限後」と出す。
