@@ -20,7 +20,8 @@ h1{font-size:20px;margin:2px 0}
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:14px}
 .ct{font-size:16px;font-weight:900;margin-bottom:4px}
 .grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
-@media (max-width:820px){.grid3{grid-template-columns:1fr}}
+.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+@media (max-width:820px){.grid3,.grid2{grid-template-columns:1fr}}
 .st{border:1px solid var(--line);border-radius:14px;padding:12px}
 .sn{font-weight:900;font-size:15px;display:flex;align-items:center;gap:8px;margin-bottom:6px}
 .dot{width:10px;height:10px;border-radius:50%}
@@ -51,6 +52,7 @@ input{font-size:15px;padding:8px;border:1px solid var(--line);border-radius:8px;
 <div class="sub">成功＝<b>マイページを開く人が増える → LINEの問い合わせが減る → 「スタッフに聞く」（チャット）が増える</b>。3店とも、昨日までの毎日の数字です。赤い線＝新マイページに切り替えた日（11/9）。</div>
 <div class="row"><span id="days"></span><button class="chip" onclick="load(true)">🔄 更新</button><span class="mut" id="upd"></span></div>
 <div id="pin" class="card" style="display:none"><div class="ct">PINを入れてください</div><div class="mut" style="margin-bottom:8px">マイページ管理と同じPINです（一度入れれば次から不要）</div><input id="pinIn" type="password" inputmode="numeric"> <button class="btn" onclick="savePin()">表示</button></div>
+<div id="base"></div>
 <div id="top"></div>
 <div id="tbl"></div>
 <div class="card"><div class="ct">数え方</div><div class="mut" style="line-height:1.8">
@@ -86,6 +88,7 @@ function chips(){document.getElementById("days").innerHTML=[7,14,30].map(functio
 function load(force){
   chips();var pin=getPin();
   if(!pin){document.getElementById("pin").style.display="block";return;}
+  loadBase(pin);
   if(LOADING)return;LOADING=true;
   if(!DATA)document.getElementById("top").innerHTML='<div class="card"><div class="empty">読み込み中…（20秒ほどかかることがあります）</div></div>';
   Promise.all([ef(MAIN,MAIN_ANON,{admin_pin:pin,days:7,kpi_days:DAYS}),ef(BT,BT_ANON,{admin_pin:pin,days:7,kpi_days:DAYS}).catch(function(e){return {err:String(e.message||e)};})])
@@ -152,5 +155,34 @@ function render(){
   var t='<div class="card"><div class="ct">3店×日ごと</div><div class="mut" style="margin-bottom:6px">新しい日が上。赤い点線より上が切替後。チャット利用率の横の小さい数字＝チャットの人数</div><div class="tw"><table>'+h1+h2+rows+'</table></div></div>';
   document.getElementById("tbl").innerHTML=t;
 }
+/* 2026-11-12 nosh「マイページ前の平均を出しておいて、マイページ後は毎日の日々の積み立て」「マイページ対応に常にデータ出して」
+   LINE問い合わせ：切替前90日の平均（固定）と、切替後の毎日の数＋その日までの積み上げ平均。期間ボタンに関係なく常に出す（line-kpi） */
+var BASE=null,BLOAD=false;
+function loadBase(pin){if(BLOAD)return;BLOAD=true;
+  if(!BASE)document.getElementById("base").innerHTML='<div class="card"><div class="empty">LINE問い合わせ（マイページ前と後）を読み込み中…</div></div>';
+  fetch(MAIN+"/functions/v1/line-kpi",{method:"POST",headers:{apikey:MAIN_ANON,Authorization:"Bearer "+MAIN_ANON,"Content-Type":"application/json"},body:JSON.stringify({admin_pin:pin})})
+  .then(function(r){return r.json();}).then(function(j){if(!j.ok)throw new Error(j.error||"error");BASE=j;renderBase();})
+  .catch(function(e){if(!BASE)document.getElementById("base").innerHTML='<div class="card"><div class="empty">LINE問い合わせを読み込めませんでした（'+esc(e.message||e)+'）</div></div>';})
+  .finally(function(){BLOAD=false;});}
+function renderBase(){var B=BASE;if(!B)return;
+  var S=[["nha","🏝 那覇","var(--nha)"],["spk","❄️ 札幌","var(--spk)"]].filter(function(s){return !SC||s[0]===SC;});
+  if(!S.length){document.getElementById("base").innerHTML="";return;}
+  var cmp=function(pre,cur){if(pre==null||cur==null)return '<span class="pl na">比べる数字なし</span>';var d=Math.round((cur-pre)/pre*100);
+    return cur<pre?'<span class="pl ok">↓ '+Math.abs(d)+'% 減った</span>':cur>pre?'<span class="pl ng">↑ '+d+'% 増えた</span>':'<span class="pl na">同じ</span>';};
+  var box=S.map(function(s){var X=B.stores[s[0]];if(!X)return "";var P=X.pre,L=X.post,last=L.length?L[L.length-1]:null;
+    var line=function(name,pre,cur,u,note){return '<div class="k"><div class="kh"><span class="kn">'+name+'</span>'+cmp(pre,cur)+'</div>'+
+      '<div class="kh"><span class="kv">'+fm(cur,u)+'</span><span class="mut">切替後の積み上げ平均（'+L.length+'日）</span></div>'+
+      '<div class="ka">マイページ前の平均 '+fm(pre,u)+(note?'　'+note:'')+'</div></div>';};
+    var rows=L.slice().reverse().map(function(x){return '<tr><td>'+md(x.d)+'（'+wd(x.d)+'）</td><td>'+x.b+'人</td><td>'+x.all+'人</td><td class="mut">'+x.cars+'台</td><td><b>'+x.cum_b+'</b></td><td><b>'+x.cum_all+'</b></td></tr>';}).join("");
+    return '<div class="st"><div class="sn"><span class="dot" style="background:'+s[2]+'"></span>'+s[1]+'</div>'+
+      line("LINE問い合わせ（予約済み）人/日",P.b,last?last.cum_b:null,"人","")+
+      line("LINE問い合わせ（全員）人/日",P.all,last?last.cum_all:null,"人","")+
+      line("貸出中100台あたり（全員）",P.per100,last?last.cum_per100:null,"人","季節の増減をならした数")+
+      '<div class="tw"><table><tr><th>日付</th><th>予約済み</th><th>全員</th><th>貸出中</th><th>積み上げ平均<br>予約済み</th><th>積み上げ平均<br>全員</th></tr>'+
+      '<tr class="mut"><td>前の平均</td><td>'+P.b+'人</td><td>'+P.all+'人</td><td></td><td></td><td></td></tr>'+rows+'</table></div></div>';}).join("");
+  document.getElementById("base").innerHTML='<div class="card"><div class="ct">LINE問い合わせ：マイページ前の平均 → 切替後の毎日の積み上げ</div>'+
+    '<div class="mut" style="margin-bottom:8px">マイページ前＝'+md(B.pre_from)+'〜'+md(B.pre_to)+'（切替前の90日）の1日平均。切替後＝'+md(B.cut)+'からの毎日の人数と、その日までの平均。下がれば成功。LINEは毎朝5時ごろの取り込みで、前日分まで入ります（今は '+md(B.line_through)+' の途中まで取り込み済み）。</div>'+
+    '<div class="'+(S.length>1?"grid2":"")+'">'+box+'</div></div>';}
+
 chips();load();setInterval(function(){if(DATA)load(true);},300000);
 </script></body></html>
