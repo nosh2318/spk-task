@@ -14,7 +14,10 @@ function jstNow(){return new Date(Date.now()+9*3600000);}
 window.landX0=function(D,pace,cur){var o=D.data||{},h={};
   (D.months||[]).forEach(function(m){if(m<"2026-03"||m>=cur)return;var x=o[m]||{},u=x.util||{},rd=0,ad=0;Object.keys(u).forEach(function(c){rd+=u[c].rd||0;ad+=u[c].ad||0;});
     h[m]={t:(typeof hasT=="function"?hasT(m):true)&&typeof revT=="function"?revT(m):0,a:x.tot_r||0,r:x.resv_r||0,x:x.ext_r||0,c:x.tot_c||0,rd:rd,ad:ad,n:x.nveh||0};});
-  window.LAND_X={st:selfKey(),gen:D.generated||"",pace:!!pace,cur:cur,hist:h,mon:{},ts:Date.now()};};
+  /* 2026-11-12 平均泊数（クラス別・直近3か月＝貸出日数÷返却件数）と予約ペースの日別予約台数（fut）：空きの実数と「平均泊数で取れるか」の検証用 */
+  var an={},ms3=(D.months||[]).filter(function(m){return m<=cur;}).slice(-3);ms3.forEach(function(m){var x=o[m]||{},u=x.util||{},c=x.cls||{};Object.keys(u).forEach(function(k){var a=an[k]=an[k]||{rd:0,c:0};a.rd+=u[k].rd||0;a.c+=(c[k]&&c[k].c)||0;});});
+  var PC=window.DSG_PACE||null;
+  window.LAND_X={st:selfKey(),gen:D.generated||"",pace:!!pace,cur:cur,hist:h,mon:{},ts:Date.now(),an:an,an3:ms3,fut:PC&&PC.fut||null,today:PC&&PC.today||null};};
 window.landX=function(m,X,A,dcl,TG,OX,EX,labS){var L=window.LAND_X;if(!L)return;var cl=[];
   dcl.forEach(function(c){var q=X.C[c],a=A[c];if(!q)return;var x=q.x;if(!x.n&&!x.rd&&!x.ar)return;var on=!!(a&&x.td);
     cl.push({c:c,lb:String(labS(c)).replace(/<[^>]+>/g,""),n:x.n,ad:x.ad,rd:x.rd,ar:x.ar,td:x.td,tg:on?q.tg:0,pk:on?a.pk:0,cap:on?a.cap:Math.max(0,x.ad-x.rd),L:on?a.L:x.ar,on:on,u:x.rd&&x.ar>0?x.ar/x.rd:0});});
@@ -75,11 +78,12 @@ function draw(){var el=document.getElementById("land");if(!el||!landVisible())re
   var v=mv(x,cur);
   // ① 今月
   H+='<div class="lh">🗓 今月（'+MN(cur)+'）　'+day+'日目／'+dim+'日・経過 '+(day-1)+'日・残り '+(dim-day+1)+'日（今日を含む）</div>';
-  if(v){var z=v.z,cap=0,pk=0;z.cls.forEach(function(c){cap+=c.cap;pk+=c.pk;});
+  var SC=v?sell(x,cur):null;
+  if(v){var z=v.z,cap=0,pk=0;z.cls.forEach(function(c){cap+=c.cap;pk+=c.pk;});if(SC)cap=SC.free;
     H+='<div class="lcards" style="grid-template-columns:minmax(0,320px)">'+card(S0.nm,S0.col,v.t,v.a,v.L,v.rd,v.f,v.ad,cap,"")+'</div>';
     H+='<div class="lh">📋 今月の進み具合（日数・進捗・空き）</div><div class="lw"><table><thead><tr><th class="l">店</th><th>台数</th><th>稼働可能<br>日数</th><th>予約済み<br>日数</th><th>予約<br>稼働率</th><th>残りの<br>空き日数</th><th>これから入る<br>見込み日数</th><th>着地<br>稼働率</th><th class="g">目標</th><th class="g">現在実績</th><th class="g">見込み<br>追加</th><th class="g">着地見込み</th><th class="g">着地−目標</th><th class="g">達成<br>見込み</th><th>目標まで<br>あと</th><th>あと1日<br>あたり</th></tr></thead><tbody>'
       +prow(S0.nm,v.n,v.ad,v.rd,cap,pk,v.f,v.t,v.a,v.L,z.left,"")+'</tbody></table></div>';
-    H+='<div class="lsub">予約済み日数＝今月の貸出日数（今日より前の分を含む）／残りの空き日数＝今日以降の空き（台数×残り日数−今日以降の予約）／見込み日数＝残りの各日の「今の予約÷例年その日までに入っている割合」から今の予約を引いた分（空きが上限）／あと1日あたり＝（目標−現在実績）÷残り日数。</div>';}
+    H+='<div class="lsub">予約済み日数＝今月の貸出日数（今日より前の分を含む）／残りの空き日数＝今日〜月末の各日の（配車表の台数−その日に貸出中の予約）の合計（実数・整備日は下の検証表で別に引く）／見込み日数＝残りの各日の「今の予約÷例年その日までに入っている割合」から今の予約を引いた分（空きが上限）／あと1日あたり＝（目標−現在実績）÷残り日数。</div>';}
   else H+='<div class="muted">読み込み中…</div>';
   // ② 月別推移
   if(x){var ms=Object.keys(x.hist).concat(Object.keys(x.mon)).sort();
@@ -88,6 +92,7 @@ function draw(){var el=document.getElementById("land");if(!el||!landVisible())re
       H+='<tr class="clk'+(w.st==1?' cur':'')+(MSEL==m?' sel':'')+'" onclick="landMon(\''+m+'\')"><td class="l"><b>'+MNy(m)+'</b></td><td class="l">'+stl(w.st)+'</td><td>'+w.n+'台</td><td>'+k(w.ad)+'</td><td>'+k(w.rd)+'</td><td>'+P(w.rd,w.ad)+'</td><td>'+(w.st?'+'+k(pk):'<span class="muted">–</span>')+'</td><td>'+P(w.f,w.ad)+'</td><td>'+(ur?y(ur):'–')+'</td><td>'+(w.t?y(w.t):'–')+'</td><td>'+y(w.a)+'</td><td><b>'+y(w.L)+'</b></td><td>'+(w.t?sg(w.L-w.t,y):'')+'</td><td class="'+(w.L>=w.t?'lpos':'lneg')+'">'+(w.t?P(w.L,w.t):'–')+'</td></tr>';});
     H+='</tbody></table></div><div class="lsub">確定＝過去の月（実績で確定）／進行中＝今月／受付中＝来月以降（今の予約＋これから入る見込み）。月の行をクリックで、その月の試算根拠（クラス別）。</div>';
     var mm=MSEL&&mv(x,MSEL)?MSEL:cur;H+='<div id="landDet"></div>'+why(S0,x,mm);
+    if(SC)H+=sellHtml(S0,x,SC);
     H+=trend(S0,x);}
   // ⑤ 計算方法
   H+='<div class="lh">📐 計算方法（3店共通）</div><div class="lsub" style="font-size:12px;color:#334155">'
@@ -120,6 +125,28 @@ function why(S0,x,m){var v=mv(x,m);if(!v)return '';var H='<div class="why"><h5>�
   if(!x.pace)H+='<div class="wait">予約ペースが読めなかったため、見込み日数は目標日数までの仮置きです。</div>';
   return H+'</div>';}
 /* 当月推移：返却月ごとの予約売上を受付日で積み上げ（今月＋前3か月を同じ日付軸で重ねる） */
+
+/* 2026-11-12 オーナー「空いている枠 エビデンスは？」「平均泊数で取れるのか？提供できるのか？」：
+   空きの実数＝今日〜月末の各日の（クラスの台数−その日に貸出中の予約台数（予約ペースRPCの日別））。整備日（配車表の整備）は日別が無いので、月の整備日数を残り日数で按分して別に引く。
+   平均泊数で取れるか＝明日〜月末の日別の空き台数に、クラスの平均泊数（直近3か月の 貸出日数÷件数・四捨五入）の予約を左から詰めて入れた本数×泊数（月末を越える予約は翌月計上なので入れない）。
+   見込み日数がこれを超える分は「取れない見込み」＝見込み単価で金額にして、補正後の着地を出す（サマリの着地は変えない） */
+function addD(s,n){var t=new Date(s+"T00:00:00Z");t.setUTCDate(t.getUTCDate()+n);return t.toISOString().slice(0,10);}
+function sell(x,m){var z=x.mon[m];if(!z||!x.fut||!x.today)return null;var td=x.today,dm=dimOf(m),e=m+"-"+(dm<10?"0":"")+dm;if(td.slice(0,7)!=m)return null;
+  var R={rows:[],free:0,mt:0,sd:0,pk:0,ng:0,ngY:0};
+  z.cls.forEach(function(c){var fu=x.fut[c.c]||{},n=c.n,days=[],fr=0;for(var dt=td;dt<=e;dt=addD(dt,1)){var f=Math.max(0,n-(+fu[dt]||0));days.push(f);fr+=f;}
+    var left=days.length,mt=Math.round(Math.max(0,n*dm-c.ad)*left/dm),a=x.an[c.c]||{rd:0,c:0},avg=a.c?a.rd/a.c:0,L=Math.max(1,Math.round(avg||3)),f2=days.slice(1),nb=0,i=0;
+    var mtl=mt;for(var j=f2.length-1;j>=0&&mtl>0;j--){var t=Math.min(f2[j],1);f2[j]-=t;mtl-=t;}  /* 整備日は月末側から1日1台ずつ引く（日別が無いので仮置き） */
+    while(i<=f2.length-L){var ok=1;for(var q=i;q<i+L;q++)if(f2[q]<1){ok=0;break;}if(ok){for(q=i;q<i+L;q++)f2[q]--;nb++;}else i++;}
+    var sd=nb*L,up=c.pk?(c.L-c.ar)/c.pk:0,ng=Math.max(0,c.pk-sd);
+    R.rows.push({c:c.c,lb:c.lb,n:n,days:days,fr:fr,mt:mt,avg:avg,L:L,nb:nb,sd:sd,pk:c.pk,up:up,ng:ng,ngY:ng*up,on:c.on});R.free+=fr;R.mt+=mt;R.sd+=sd;R.pk+=c.pk;R.ng+=ng;R.ngY+=ng*up;});
+  R.L=z.L;R.L2=z.L-R.ngY;R.t=z.t;R.left=Math.round((new Date(e+"T00:00:00Z")-new Date(td+"T00:00:00Z"))/864e5)+1;return R;}
+function sellHtml(S0,x,R){var H='<div class="lh">🔍 空きの実数と、平均泊数で取れるか（'+MN(x.cur)+'・今日〜月末 '+R.left+'日）</div>';
+  H+='<div class="lw"><table><thead><tr><th class="l">クラス</th><th>台数</th><th class="l">日別の空き台数（今日→月末）</th><th>空き<br>（実数）</th><th>整備<br>（按分）</th><th>平均泊数<br>（直近3か月）</th><th>平均泊数で<br>取れる本数</th><th>取れる<br>日数</th><th class="g">着地の<br>見込み日数</th><th class="g">取れない<br>見込み</th><th class="g">見込み<br>単価</th><th class="g">取れない<br>金額</th></tr></thead><tbody>';
+  R.rows.forEach(function(r){H+='<tr><td class="l"><b>'+r.c+'</b> <small class="muted">'+r.lb.replace(/^\S+\s*/,'')+'</small></td><td>'+r.n+'台</td><td class="l" style="font-family:ui-monospace,monospace;font-size:11px;letter-spacing:1px">'+r.days.map(function(d,i){return '<span style="color:'+(d?'#0f172a':'#cbd5e1')+(i==0?';text-decoration:underline':'')+'">'+d+'</span>';}).join('')+'</td><td>'+k(r.fr)+'日</td><td>'+(r.mt?'−'+k(r.mt)+'日':'–')+'</td><td>'+(r.avg?r.avg.toFixed(1)+'泊→'+r.L:'– →'+r.L)+'</td><td>'+r.nb+'本</td><td>'+k(r.sd)+'日</td><td>+'+k(r.pk)+'日</td><td class="'+(r.ng?'lneg':'lpos')+'">'+(r.ng?'−'+k(r.ng)+'日':'取れる')+'</td><td>'+(r.up?y(r.up):'–')+'</td><td>'+(r.ng?'<span class="lneg">−'+y(r.ngY)+'</span>':'')+'</td></tr>';});
+  H+='<tr class="tot"><td class="l">計</td><td></td><td></td><td>'+k(R.free)+'日</td><td>'+(R.mt?'−'+k(R.mt)+'日':'')+'</td><td></td><td></td><td>'+k(R.sd)+'日</td><td>+'+k(R.pk)+'日</td><td class="'+(R.ng?'lneg':'lpos')+'">'+(R.ng?'−'+k(R.ng)+'日':'取れる')+'</td><td></td><td>'+(R.ng?'<span class="lneg">−'+y(R.ngY)+'</span>':'')+'</td></tr></tbody></table></div>';
+  H+='<div class="eq">平均泊数で取れる分に抑えた着地 '+y(R.L2)+' ＝ 着地見込み '+y(R.L)+' − 取れない見込み '+y(R.ngY)+'　→ 目標 '+y(R.t)+' に対して '+sg(R.L2-R.t,y)+'（'+P(R.L2,R.t)+'）</div>';
+  H+='<div class="lsub">日別の空き台数＝その日の（配車表のクラス台数−その日に貸出中の予約台数）。先頭（下線）が今日。整備は日別が無いため、月の整備日数（台数×月の日数−稼働可能日数）を残り日数で按分し、月末側から引いて計算。取れる本数＝明日以降の日別の空きに、平均泊数の予約を左から詰めて入れた本数（月末を越える予約は返却月＝翌月の売上なので入れない）。取れない見込み＝着地の見込み日数−取れる日数（見込み単価で金額に）。</div>';
+  return H;}
 function trend(S0,x){var T=TR[S0.k],cur=x.cur;var H='<div class="lh">📈 '+S0.nm+' 当月推移（予約売上の積み上がり）</div>';
   if(!T)return H+'<div class="muted">読み込み中…</div>';if(T.err)return H+'<div class="wait">推移データ（DB関数 '+S0.rpc+'）を読めませんでした。</div>';
   var td=T.today||jstNow().toISOString().slice(0,10),dm=dimOf(cur),tOff=Math.round((new Date(td+"T00:00:00Z")-new Date(cur+"-01T00:00:00Z"))/864e5);
