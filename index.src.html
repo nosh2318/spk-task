@@ -121,7 +121,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1226';
+var CV='spk-v1227';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=1059').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -14189,6 +14189,8 @@ function PunchClock({staff}){
 function spkIsNonWorkSym(sym){const s=String(sym||"").trim();if(!s)return false;return ["公","希","有","欠","休","×","✕","公休","有休","代休","休み"].some(x=>s.indexOf(x)>=0);}
 // spk_attendance行が「システム生成の計画行(実打刻でない)」か＝未承認 かつ 欠勤でない かつ 協議中でない かつ 打刻メモでない かつ 打刻休憩なし
 function spkIsBarePlanAtt(a){return !!a&&!a.approved&&!a.absent&&!(a.memo&&a.memo.startsWith("協議中"))&&!(a.memo&&["打刻","打刻中","仮申請"].includes(a.memo))&&!(Array.isArray(a.breaks)&&a.breaks.some(b=>b&&(b.start||b.end)));}
+// 打刻漏れ（出勤 or 退勤が空）。欠勤・協議中は対象外。承認は時刻がそろってから（2026-11-13 退勤未打刻のまま承認済になっていた件）
+function spkMissPunch(a){return !!a&&!a.absent&&!(a.memo&&a.memo.startsWith("協議中"))&&(!a.start||!a.end);}
 function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
   const WK=["日","月","火","水","木","金","土"];
   const todayYM=toYM(today);
@@ -14532,8 +14534,9 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
   React.useEffect(()=>{genAttFromShifts(attendance);},[shifts,viewYM]);
 
   const approve=async(date,name)=>{
-    if(!window.confirm("この日の実績を承認して確定しますか？"))return;
     const key=date+"_"+name;const cur=attendance[key];if(!cur)return;
+    if(spkMissPunch(cur)){alert((!cur.start?"出勤":"退勤")+"の打刻がありません。\n「編集」で実際の時刻を入れてから承認してください。");return;}
+    if(!window.confirm("この日の実績を承認して確定しますか？"))return;
     const updated={...cur,approved:true};
     onAttendanceChange({...attendance,[key]:updated});
     try{await DB.saveAttendance(updated);}catch(e){console.error("[approve] save error:",e);}
@@ -14550,7 +14553,7 @@ function AttendanceManager({shifts,staff,today,attendance,onAttendanceChange}){
     const d=allStaffData[name];if(!d)return;
     const next={...attendance};const batch=[];
     d.days.forEach(day=>{
-      if(day.att&&!day.att.approved&&day.date<=todayJST){
+      if(day.att&&!day.att.approved&&day.date<=todayJST&&!spkMissPunch(day.att)){
         const key=day.date+"_"+name;
         const updated={...day.att,approved:true};
         next[key]=updated;batch.push(updated);
@@ -14709,7 +14712,9 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
       {(()=>{
         const sd=allStaffData[selStaff];if(!sd)return null;
         // 非出勤(希/公/有/欠)の計画行は承認対象に含めない（v_real判定）
-        const unapproved=sd.days.filter(d=>d.shift&&d.att&&!d.att.approved&&d.date<=todayJST&&!(spkIsNonWorkSym(d.shift.symbol)&&spkIsBarePlanAtt(d.att))).length;
+        const unapproved=sd.days.filter(d=>d.shift&&d.att&&!d.att.approved&&d.date<=todayJST&&!(spkIsNonWorkSym(d.shift.symbol)&&spkIsBarePlanAtt(d.att))&&!spkMissPunch(d.att)).length;
+        // 打刻漏れ（出勤/退勤が空）の日数＝承認できない。承認済でも空のまま確定している日を含めて数える
+        const missCnt=sd.days.filter(d=>d.att&&d.date<=todayJST&&spkMissPunch(d.att)&&!(d.shift&&spkIsNonWorkSym(d.shift.symbol)&&spkIsBarePlanAtt(d.att))).length;
         // タイムカード: この月×このスタッフの pending 修正申請（日付→配列）
         const myReqs=(timecardReqs||[]).filter(r=>r.staff_name===selStaff&&(r.date||"").slice(0,7)===viewYM);
         const pendReqsByDate={};myReqs.filter(r=>r.status==="pending").forEach(r=>{(pendReqsByDate[r.date]=pendReqsByDate[r.date]||[]).push(r);});
@@ -14720,6 +14725,7 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
             <div style={{fontSize:13,fontWeight:700}}>{selStaff} ー {ymLabel(viewYM)}</div>
             {unapproved>0?
               <button onClick={()=>approveAll(selStaff)} style={{padding:"5px 14px",borderRadius:8,background:"#059669",color:"#fff",border:"none",fontSize:11,fontWeight:700,cursor:"pointer"}}>まとめて承認 ({unapproved}件)</button>:
+              missCnt>0?<span style={{padding:"5px 14px",borderRadius:8,background:"#fef2f2",color:"#dc2626",fontSize:11,fontWeight:700}}>打刻漏れ {missCnt}件</span>:
               <span style={{padding:"5px 14px",borderRadius:8,background:"#f0fdf4",color:"#059669",fontSize:11,fontWeight:700}}>全て承認済 ✅</span>
             }
           </div>
@@ -14754,20 +14760,21 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS monthly_salary INTEGER DEFAULT 0;`}
             const planBrkMin=sd.breakMin||0;
             const hasPunch=att&&!isAbsent&&(att.start||att.end||brkArr.length>0);
             const hasReqToday=(pendReqsByDate[d.date]||[]).length>0;
+            const miss=spkMissPunch(att);
             return <div key={d.date} style={{borderBottom:"1px solid #f1f5f9",background:hasReqToday?"#fffbeb":isKyogi?"#fffbeb":isAbsent?"#fef2f2":rowBg}}>
               <div style={{display:"flex",alignItems:"center",padding:"8px 12px",gap:8}}>
                 <div style={{width:30,textAlign:"center"}}>
                   <div style={{fontSize:14,fontWeight:800,color:dayColor}}>{d.day}</div>
                   <div style={{fontSize:9,color:dayColor,fontWeight:600}}>{WK[d.dow]}</div>
                 </div>
-                <div style={{flex:1,fontSize:13,color:isKyogi?"#92400e":isAbsent?"#dc2626":hasShift?"#374151":"#d1d5db",fontWeight:hasShift?600:400}}>{timeStr}{hasShift&&sd.hasDailyWage&&<span style={{fontSize:8,fontWeight:700,marginLeft:4,padding:"1px 4px",borderRadius:3,background:d.fixed?"#dbeafe":"#fef3c7",color:d.fixed?"#1d4ed8":"#92400e"}}>{d.fixed?"日給":"時給"}</span>}{hasReqToday&&<span style={{fontSize:8,fontWeight:800,marginLeft:4,padding:"1px 5px",borderRadius:3,background:"#fef3c7",color:"#b45309"}}>✏️修正申請中</span>}</div>
+                <div style={{flex:1,fontSize:13,color:isKyogi?"#92400e":isAbsent?"#dc2626":hasShift?"#374151":"#d1d5db",fontWeight:hasShift?600:400}}>{timeStr}{hasShift&&sd.hasDailyWage&&<span style={{fontSize:8,fontWeight:700,marginLeft:4,padding:"1px 4px",borderRadius:3,background:d.fixed?"#dbeafe":"#fef3c7",color:d.fixed?"#1d4ed8":"#92400e"}}>{d.fixed?"日給":"時給"}</span>}{hasReqToday&&<span style={{fontSize:8,fontWeight:800,marginLeft:4,padding:"1px 5px",borderRadius:3,background:"#fef3c7",color:"#b45309"}}>✏️修正申請中</span>}{miss&&<span style={{fontSize:9,fontWeight:800,marginLeft:4,padding:"1px 5px",borderRadius:3,background:"#fee2e2",color:"#dc2626"}}>{!att.start?"出勤未打刻":"退勤未打刻"}</span>}</div>
                 {!isFuture&&(hasShift||hasPunch)&&<div style={{display:"flex",gap:6}}>
                   {isKyogi&&<span style={{padding:"4px 8px",borderRadius:6,background:"#f59e0b",color:"#fff",fontSize:10,fontWeight:700}}>協議中</span>}
                   {!isKyogi&&isAbsent&&<span style={{padding:"4px 8px",borderRadius:6,background:"#dc2626",color:"#fff",fontSize:10,fontWeight:700}}>欠勤</span>}
                   {/* 承認＝実績を確定（統一・承認済は「✓承認済」）。欠勤/協議中は各ステータスで扱う */}
                   {!isKyogi&&!isAbsent&&(isApproved?
                     <button onClick={()=>unapprove(d.date,selStaff)} title="タップで承認を取り消し" style={{padding:"4px 10px",borderRadius:6,background:"#059669",color:"#fff",border:"1px solid #059669",fontSize:10,fontWeight:700,cursor:"pointer"}}>✓承認済</button>:
-                    <button onClick={()=>approve(d.date,selStaff)} style={{padding:"4px 10px",borderRadius:6,background:"#dcfce7",color:"#059669",border:"1px solid #bbf7d0",fontSize:10,fontWeight:700,cursor:"pointer"}}>承認</button>
+                    <button onClick={()=>approve(d.date,selStaff)} title={miss?"打刻がそろっていないため承認できません（編集で時刻を入れてください）":""} style={{padding:"4px 10px",borderRadius:6,background:miss?"#f1f5f9":"#dcfce7",color:miss?"#94a3b8":"#059669",border:miss?"1px solid #e2e8f0":"1px solid #bbf7d0",fontSize:10,fontWeight:700,cursor:"pointer"}}>承認</button>
                   )}
                   {/* 編集＝店舗が実績時刻を直接手直し（打刻が無い日は代理入力もここに集約）。協議中は解決 */}
                   <button onClick={()=>setEditDay({date:d.date,name:selStaff,start:att?.start||d.shift?.start||"09:00",end:att?.end||d.shift?.end||"18:00",memo:att?.memo||"",absent:att?.absent||false})} style={{padding:"4px 10px",borderRadius:6,background:isKyogi?"#f59e0b":"#f1f5f9",color:isKyogi?"#fff":"#64748b",border:isKyogi?"none":"1px solid #e2e8f0",fontSize:10,fontWeight:700,cursor:"pointer"}}>{isKyogi?"解決":"編集"}</button>
@@ -26208,7 +26215,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.727";
+const APP_VERSION="v4.7.728";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
