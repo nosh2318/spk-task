@@ -1,7 +1,7 @@
 /* 2026-11-12 📈着地見込みタブ「指標を決めて追い続け、精度を上げる仕組み」（3店共通・main と BT の両方に同じものを作る）。
    mtg_fc(店, 基準日)＝読み取り専用。開始月（札幌・那覇 2026-04／高松 2026-08）〜今月の各月について、同じ日付（基準日の「日」）時点の
      受付済み[件数 an, 売上 a]・そのうち後でキャンセル[cn, c]・後から入った[pn, p]・最終[fn, f]・平均リードタイム lt を、全体／クラス／経路(OTA・公式・その他)／国内・海外 で返す。
-     売上＝返却月計上（*_mtg_h2 と同じ）。受付日＝created_at(JST)。キャンセル日＝キャンセル台帳(cancel)の日、無ければ updated_at。
+     売上＝返却月計上（*_mtg_h2 と同じ）。受付日＝created_at(JST)。キャンセル日＝キャンセル台帳(cancel)の日、無ければ updated_at（台帳は 2026-09-17 から。それより前の月は更新日で代用＝不正確なので、キャンセル率の前提 chat は台帳がそろった月（同じ日付が 9/18 以降）だけで計算し、無ければ全月）。
      予測式（fc）＝その月より前の月だけを使って計算（＝過去月は答え合わせができる）。methods＝式ごとの過去月の誤差。best＝誤差が最小の式。
    mtg_fc_log＝毎日の予測の記録（その日に見えていた受付済み・前提・全式の予測）。mtg_fc_snap が pg_cron で毎日 23:55 JST に書く。月末締め後の振り返りに使う。 */
 create table if not exists public.mtg_fc_log (store text not null, ym text not null, snap_date date not null, d jsonb not null, created_at timestamptz not null default now(), primary key (store, ym, snap_date));
@@ -9,10 +9,10 @@ alter table public.mtg_fc_log enable row level security;
 
 create or replace function public.mtg_fc(p_store text, p_td date default null)
 returns jsonb language sql stable security definer set search_path to 'public' as $function$
-with t as (select coalesce(p_td,(now() at time zone 'Asia/Tokyo')::date) td, (case p_store when 'bt' then date '2026-08-01' else date '2026-04-01' end) s0),
+with t as (select coalesce(p_td,(now() at time zone 'Asia/Tokyo')::date) td, (case p_store when 'bt' then date '2026-08-01' else date '2026-04-01' end) s0, date '2026-09-18' s1),
 pm as (select to_char(g,'YYYY-MM') ym, g::date ms, (g+interval '1 month'-interval '1 day')::date me,
     least((g+interval '1 month'-interval '1 day')::date, g::date+(extract(day from t.td)::int-1)) dm,
-    to_char(g-interval '3 month','YYYY-MM') ym3, to_char(g-interval '12 month','YYYY-MM') ymy, t.s0,
+    to_char(g-interval '3 month','YYYY-MM') ym3, to_char(g-interval '12 month','YYYY-MM') ymy, t.s0, t.s1,
     (g::date=date_trunc('month',t.td)::date) cur
   from t, generate_series(t.s0::timestamp, date_trunc('month',t.td)::timestamp, interval '1 month') g),
 r as (select * from mtg_fc_res(p_store)),
@@ -45,7 +45,7 @@ b as (select pm.ym, pm.cur, pm.ym3, pm.ymy, ks.dim, ks.key, (pm.me-pm.dm) rest, 
     coalesce(cc.n,0) n, (coalesce(cc.n,0)*(pm.me-pm.dm))::numeric cap, (ca.n*(pm.me-pm.dm))::numeric scap,
     greatest(0, coalesce(cc.n,0)*(pm.me-pm.dm)-coalesce(bd.br,0))::numeric free,
     coalesce(bd.br,0) br, coalesce(bd.ba,0) ba, coalesce(bd.bf,0) bf,
-    coalesce(tr.ta,0) ta, coalesce(tr.tb,0) tb, (pm.dm-56>=pm.s0) tv
+    coalesce(tr.ta,0) ta, coalesce(tr.tb,0) tb, (pm.dm-56>=pm.s0) tv, (pm.dm>=pm.s1) ck
   from pm cross join ks
   left join x on x.ym=pm.ym and x.dim=ks.dim and x.key=ks.key
   left join tr on tr.ym=pm.ym and tr.dim=ks.dim and tr.key=ks.key
@@ -53,12 +53,12 @@ b as (select pm.ym, pm.cur, pm.ym3, pm.ymy, ks.dim, ks.key, (pm.me-pm.dm) rest, 
   left join cc on cc.ym=pm.ym and cc.dim=ks.dim and cc.key=ks.key
   left join cc ca on ca.ym=pm.ym and ca.dim='all'),
 /* その月より前の月の実績（hh）＝予測の前提。scap＝店全体の（台数×残り日数） */
-hh as (select m.ym, h.dim, h.key, count(*) hn, sum(h.a) ha, sum(h.c) hc, sum(h.pn)::numeric hpn, sum(h.p) hp, sum(h.f) hf, sum(h.cap) hcap, sum(h.scap) hscap, sum(h.free) hfree,
+hh as (select m.ym, h.dim, h.key, count(*) hn, sum(h.a) ha, sum(h.c) hc, sum(h.a) filter (where h.ck) hca, sum(h.c) filter (where h.ck) hcc, sum(h.pn)::numeric hpn, sum(h.p) hp, sum(h.f) hf, sum(h.cap) hcap, sum(h.scap) hscap, sum(h.free) hfree,
     sum(h.a) filter (where h.ym>=m.ym3) ha3, sum(h.f) filter (where h.ym>=m.ym3) hf3,
     sum(h.a) filter (where h.ym=m.ymy) hay, sum(h.f) filter (where h.ym=m.ymy) hfy
   from pm m join b h on h.ym<m.ym group by 1,2,3),
 s as (select b.ym, b.cur, b.a, b.f, b.cap, b.free, b.rest, coalesce(hh.hn,0) hn,
-    coalesce(hh.hc/nullif(hh.ha,0),0) chat, coalesce(hh.hpn/nullif(hh.hcap,0),0) rate, hh.hp/nullif(hh.hpn,0) u,
+    coalesce(hh.hcc/nullif(hh.hca,0), hh.hc/nullif(hh.ha,0),0) chat, coalesce(hh.hpn/nullif(hh.hcap,0),0) rate, hh.hp/nullif(hh.hpn,0) u,
     coalesce(hh.hp/nullif(hh.hcap,0),0) rr, coalesce(hh.hp/nullif(hh.hfree,0),0) rf,
     hh.hf/nullif(hh.ha,0) sh, hh.hf3/nullif(hh.ha3,0) sh3, hh.hfy/nullif(hh.hay,0) shy,
     (case when b.tv and b.tb>=20 then least(1.3,greatest(0.7,b.ta::numeric/b.tb)) else 1 end)::numeric tm
@@ -121,3 +121,8 @@ begin
   return n;
 end $function$;
 revoke all on function public.mtg_fc_snap(text[]) from public, anon, authenticated;
+
+/* 毎日 23:55 JST（14:55 UTC）に記録。main： */
+-- select cron.schedule('mtg_fc_snap', '55 14 * * *', $$select public.mtg_fc_snap(array['spk','nha'])$$);
+/* BT： */
+-- select cron.schedule('mtg_fc_snap', '55 14 * * *', $$select public.mtg_fc_snap(array['bt'])$$);
