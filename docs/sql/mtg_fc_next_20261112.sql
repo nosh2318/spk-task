@@ -2,7 +2,7 @@
    これから入る分＝過去の同じリードタイム（何日前か）・平日/土日での入り方。p＝台数あたりの率、f＝空き台数が埋まる率。
    直近28日の入り方が過去の同じ時期より強い/弱い分を c（0.4〜2.5）として 0乗・0.5乗・1乗で掛けた案を全部返す（採用は画面側で過去月の外れが最小の案）。
    キャンセル率＝台帳（2026-09-18〜）以降の実績。単価＝その日の今の予約単価×（後から入る予約の単価÷先に入った予約の単価）。上限＝台数の95%。
-   rows＝[対象月, 基準日, 稼働可能日数, 今の貸出日数, 今の売上, 最終の貸出日数, 最終の売上, c, [[案, キャンセル見込み日数, これから入る日数, 着地日数, 着地売上]…]]（売上＝貸出日で日割り）。
+   rows＝[対象月, 基準日, 稼働可能日数, 今の貸出日数, 今の売上, 最終の貸出日数, 最終の売上, c, [[案, キャンセル見込み日数, これから入る日数, 着地日数, 着地売上]…], 直近28日に入った貸出日数]（売上＝貸出日で日割り）。
    過去月は同じ日付時点に戻して同じ計算をした結果（その月自身の日は率の計算から除く）。seg＝対象月の上旬/中旬/21〜26日/27日〜の[区分, 稼働可能日数, 今, 着地（f0）] */
 create or replace function public.mtg_fc_next(p_store text, p_td date default null)
 returns jsonb language sql stable security definer set search_path to 'public' as $function$
@@ -51,11 +51,11 @@ tp as (select td.*, hh.pn, hh.q, hh.g, hh.rho, coalesce(hh.cr, (select c0 from c
       case when sum(h.obn)>=150 then sum(h.obc)::numeric/sum(h.obn) end cr
     from h where h.l=least(greatest(td.l,10),85) and h.ty=td.ty and h.ym<>td.ym) hh on true),
 mc as (select k, ym, greatest(0.4, least(2.5, coalesce(sum(a28)/nullif(sum(cap*g),0),1))) c, sum(obr)/nullif(sum(ob),0) mu from tp group by 1,2),
-fc as (select tp.k, tp.ym, tp.s, tp.tgt, tp.d, tp.cap, tp.ob, tp.obr, tp.fin, tp.finr, tp.cr, mc.c, a.al, a.mt,
+fc as (select tp.k, tp.ym, tp.s, tp.tgt, tp.d, tp.cap, tp.ob, tp.obr, tp.fin, tp.finr, tp.a28, tp.cr, mc.c, a.al, a.mt,
     least((case a.mt when 'p' then coalesce(tp.cap*tp.pn,0) else coalesce(greatest(0,tp.cap-tp.ob)*tp.q,0) end)*power(mc.c,a.al), greatest(0, tp.cap*0.95 - tp.ob*(1-tp.cr))) nw,
     coalesce(tp.rho,1) * (case when tp.ob>=3 then tp.obr/tp.ob else coalesce(mc.mu,0) end) up
   from tp join mc on mc.k=tp.k and mc.ym=tp.ym cross join (values ('p',0::numeric),('p',0.5),('f',0),('f',0.5),('f',1)) a(mt,al)),
-ms as (select k, ym, s, tgt, mt||al::text al, sum(cap) cap, sum(ob) ob, round(sum(obr)) obr, sum(fin) fin, round(sum(finr)) finr, max(c) c,
+ms as (select k, ym, s, tgt, mt||al::text al, sum(cap) cap, sum(ob) ob, round(sum(obr)) obr, sum(fin) fin, round(sum(finr)) finr, sum(a28) a28, max(c) c,
     round(sum(ob*cr),1) cx, round(sum(nw),1) nw, round(sum(ob*(1-cr)+nw),1) fd, round(sum(obr*(1-cr)+nw*up)) fr
   from fc group by 1,2,3,4,5),
 sg as (select k, ym, case when extract(day from d)<=10 then 1 when extract(day from d)<=20 then 2 when extract(day from d)<=26 then 3 else 4 end sgn,
@@ -64,7 +64,7 @@ select jsonb_build_object('today',(select to_char(td,'YYYY-MM-DD') from t),
   'k', (select jsonb_object_agg(k, jsonb_build_object(
       'ym', (select max(ym) from ms m2 where m2.k=z.k and m2.tgt),
       'rows', (select jsonb_agg(jsonb_build_array(m.ym, to_char(m.s,'YYYY-MM-DD'), m.cap, m.ob, m.obr, m.fin, m.finr, round(m.c,3),
-          (select jsonb_agg(jsonb_build_array(q.al, q.cx, q.nw, q.fd, q.fr) order by q.al) from ms q where q.k=m.k and q.ym=m.ym)) order by m.ym)
+          (select jsonb_agg(jsonb_build_array(q.al, q.cx, q.nw, q.fd, q.fr) order by q.al) from ms q where q.k=m.k and q.ym=m.ym), m.a28) order by m.ym)
         from ms m where m.k=z.k and m.al='p0'),
       'seg', (select jsonb_agg(jsonb_build_array(sgn, cap, ob, fd) order by sgn) from sg where sg.k=z.k))) from ks z));
 $function$;
