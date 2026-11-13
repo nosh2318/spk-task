@@ -501,7 +501,7 @@ async function loadAll(){
   document.getElementById("hdr").textContent="読み込み中…";
   try{
     /* 2026-11-09 速度：依頼一覧・高松の閲覧集計を、那覇/札幌の一覧と同時に取る（以前は順番待ちで3往復） */
-    const reqP=loadReq();loadRef();loadUnp();loadLineHero(pin);
+    const reqP=loadReq();loadRef();loadUnp();loadLate();loadLineHero(pin);
     const btP=ef(BT,BT_ANON,"mypage-active-bt",{admin_pin:pin,from,to}).catch(e=>{if(e.message==="pin")throw e;console.warn(e);return {rows:[]};}).then(async b=>{
       const tk=b.rows.map(r=>r.token).filter(Boolean);
       if(tk.length){const g=await ef(MAIN,MAIN_ANON,"mypage-active",{admin_pin:pin,action:"agg",tokens:tk});b.rows.forEach(r=>{r.ev=r.token&&g.agg[r.token]||null;});}
@@ -656,8 +656,11 @@ function renderUnp(){renderAct();}
 /* ★2026-11-14 nosh「やること」：通知の種類（Slack の【店｜種類】と同じ6つ）で数え、1件ずつ「すること・この先の手順・進み具合」を並べる */
 const YK=[["req","依頼に返事","#d97706"],["voice","お客様の知らせ","#2563eb"],["late","タスクの遅れ","#dc2626"],["prep","準備が足りない","#7c3aed"],["money","お金","#0f766e"],["fleet","配車・取込","#475569"]];
 /* この画面にまだ元の記録がない種類（Slack 通知だけで届くもの）：選んだ時に出す説明 */
-const YK_NONE={late:"スタッフ画面の「大丈夫ですか？」の返事（目安・相談）がここに入ります（スタッフ側の更新後）。",fleet:"配車・取込の知らせは今は Slack だけです。この画面にはまだ出ません。"};
+const YK_NONE={late:"いまタスクの遅れはありません（スタッフ画面の「大丈夫ですか？」の返事・「サポート」の連絡がここに入ります）。",fleet:"配車・取込の知らせは今は Slack だけです。この画面にはまだ出ません。"};
 let YF="all";
+/* ★2026-11-14 タスクの遅れ：スタッフ画面の「大丈夫ですか？」（予定から20分過ぎても未完了）と「サポートが必要な場合はお知らせ下さい！」の連絡（EF staff-task-check press_board・直近3時間） */
+let LATE=[];
+async function loadLate(){const pin=getPin();if(!pin){LATE=[];return;}try{const j=await ef(MAIN,MAIN_ANON,"staff-task-check",{admin_pin:pin,action:"press_board"});LATE=j.rows||[];}catch(e){LATE=[];}renderAct();}
 const SNB={nha:"hdm_nha",spk:"hdm_spk",tkm:"hdm_tkm"};
 const hmOf=t=>{t=typeof t==="number"?t:Date.parse(t||"");if(!t||isNaN(t))return"";const j=new Date(t+324e5);return (j.getUTCMonth()+1)+"/"+j.getUTCDate()+" "+String(j.getUTCHours()).padStart(2,"0")+":"+String(j.getUTCMinutes()).padStart(2,"0");};
 const agoOf=v=>{const t=Date.parse(v||"");if(isNaN(t))return"";const m=Math.round((Date.now()-t)/60e3);return m<60?m+"分前":m<1440?Math.round(m/60)+"時間前":Math.round(m/1440)+"日前";};
@@ -667,6 +670,8 @@ function yItems(){
   ROWS.forEach(r=>{const a=(r.T||[])[0];if(a&&a.lv===0&&a.go!=="req")I.push({c:"prep",bk:r.bucket,rid:r.rid,name:r.name,r,a,due:+r.j.deadline});});
   REF.filter(x=>x.status==="refund_pending").forEach(x=>I.push({c:"money",bk:SNB[x.st]||"",rid:x.reservation_id,ref:x,at:x.created_at,due:0}));
   UNP.filter(x=>x.status!=="paid").forEach(x=>I.push({c:"money",bk:SNB[x.store]||"",rid:x.reservation_id,name:(x.res||{}).name,unp:x,at:x.created_at,due:({overdue:0,link_failed:1,due_soon:2})[x.status]??3}));
+  const since=Date.now()-3*3600e3;
+  LATE.filter(x=>Date.parse(x.created_at)>since&&x.eta_min!==0).forEach(x=>I.push({c:"late",bk:"hdm_"+x.store,rid:x.resv||"",late:x,at:x.created_at,due:x.eta_at?Date.parse(x.eta_at):Date.parse(x.created_at)}));
   return I.filter(it=>hitQ(it.name,it.rid));}
 function yCard(it){const C=YK.find(y=>y[0]===it.c),B=BUCK[it.bk]||{n:"",c:"#334155"},foc=FOCUS===it.bk+"|"+it.rid;
   let ttl="",meta=[],doH="",next=[],prog=[];
@@ -689,6 +694,12 @@ function yCard(it){const C=YK.find(y=>y[0]===it.c),B=BUCK[it.bk]||{n:"",c:"#3341
     doH=`<div>${esc(x.detail||"")}</div><div class="acts"><button class="btn ok" onclick="refDone('${esc(x.fn)}','${esc(String(x.id))}')">返しました</button></div>`;
     next=["Squareで払った分はSquareから、予約サイトで払った分は予約サイトから返す","返したら「返しました」で消える"];
     prog=[[hmOf(x.created_at),"返金が必要になった"],["","返金待ち",1]];
+  }else if(it.late){const x=it.late,self=x.src==="self",eta=x.eta_at?hmOf(x.eta_at):"";
+    ttl=`<b class="ty">${self?"🆘 サポートの連絡":"⏰ "+esc(x.title||"")}</b>`;
+    meta=[x.task_txt?"📋 "+esc(x.task_txt):"","👷 "+esc(x.staff_name||"")];
+    doH=`<div>${self?"担当から「サポートが必要」と連絡がありました。":x.ok_at?"担当が返事しました。":"<b>担当からまだ返事がありません。</b>"}</div>`+(eta?`<div style="margin-top:4px"><b>目安 ${esc(eta.slice(-5))}ごろ</b>（+${+x.eta_min||0}分）</div>`:"")+(x.note?`<div class="mut" style="margin-top:4px">「${esc(x.note)}」</div>`:"");
+    next=self?["担当に連絡して状況を聞く（必要なら人を足す）","済んだらそのまま（3時間で消える）"]:["担当の目安を待つ","目安を過ぎたらスタッフ画面でもう一度だけ聞く","返事がなければ本部から担当に連絡"];
+    prog=[[hmOf(x.created_at),self?"サポートの連絡":"20分過ぎても未完了 → 担当に「大丈夫ですか？」"],[x.ok_at&&!self?hmOf(x.ok_at):"",x.ok_at&&!self?"担当が返事":""],[eta?hmOf(x.eta_at):"",eta?"目安":"",1],[x.ans2_at?hmOf(x.ans2_at):"",x.ans2_at?"2回目の返事":""]];
   }else if(it.unp){const x=it.unp,r=x.res||{},st=x.status==="overdue"?"🔴 期限切れ":x.status==="due_soon"?"🟠 期限まで24時間":x.status==="link_failed"?"⚠️ リンクなし":"未入金";
     ttl=`<b class="ty">💳 未払い（${esc(x.kind_jp||"追加")}） ¥${(+x.amount||0).toLocaleString()}</b>`;
     meta=[r.start_date?"📅 "+md(r.start_date)+" 出発":"","👤 "+esc(r.name||"-")+" 様","👷 本部"];
@@ -741,7 +752,7 @@ function goList(bk,rid){const k=bk+"|"+rid;BACK={tab:TAB,y:window.scrollY};HL=k;
 function tog(k){OPEN[k]=!OPEN[k];render();}
 function setB(b){BF=BF===b?"":b;try{localStorage.setItem("mpact_bucket",BF);}catch(e){}render();}
 function setF(f){FL=f;try{localStorage.setItem("mpact_filter",FL);}catch(e){}render();}
-(function(){try{const u=new URLSearchParams(location.search);const b=u.get("bucket");if(b&&BUCK[b]){if(u.get("tab")==="action"||u.get("rid"))FOCUSB=b;else BF=b;}const f=u.get("f");if(f&&FILTERS.some(x=>x[0]===f))FL=f;}catch(e){}if(!FILTERS.some(x=>x[0]===FL))FL="now";})();
+(function(){try{const u=new URLSearchParams(location.search);if(u.get("f")==="late")YF="late";const b=u.get("bucket");if(b&&BUCK[b]){if(u.get("tab")==="action"||u.get("rid"))FOCUSB=b;else BF=b;}const f=u.get("f");if(f&&FILTERS.some(x=>x[0]===f))FL=f;}catch(e){}if(!FILTERS.some(x=>x[0]===FL))FL="now";})();
 (function(){let t=(location.hash||"").slice(1);try{const u=new URLSearchParams(location.search);if(u.get("tab"))t=u.get("tab");const rid=u.get("rid"),bk=u.get("bucket");
   /* 2026-11-10 nosh「管理ページリンクない」：Slack の ?tab=list&bucket=&rid= はリストの該当予約を開いて表示（読み込み後にスクロール）。それ以外の rid は従来どおりアクション */
   if(rid&&bk&&t==="list"&&BUCK[bk]){DEEP=bk+"|"+rid;HL=DEEP;OPEN[DEEP]=true;FL="all";FOCUSB="";}
