@@ -156,7 +156,7 @@ a.myp{background:#065f46;color:#fff;font-size:11px;font-weight:800;border-radius
 <script>
 var SB="https://ckrxttbnawkclshczsia.supabase.co";
 var ANON="sb_publishable_aTVhlY0YD-5BBfI03ZNnsg_MzO_vsIe";
-var VER="staff-v3.77";
+var VER="staff-v3.78";
 var TOKEN=new URLSearchParams(location.search).get("t")||"";
 // ===== 📊 個別URL利用計測 (staff_url_events) — 前方記録・既存挙動に非干渉 =====
 var SUE=(function(){
@@ -298,9 +298,10 @@ function taskCard(x){
   var btns='<div class="r3">';
   var etm=esc(tm||"");
   if(rid&&isDel){
-    var _dn=!actedOf(rid,'depart')?'depart':(!actedOf(rid,'arrival')?'arrival':'');
-    btns+=_ab('dep',rid,'depart',"saAction('"+rid+"','depart')",'出発',1,_dn==='depart');
-    btns+=_ab('arr',rid,'arrival',"saAction('"+rid+"','arrival')",'到着',2,_dn==='arrival');
+    var _dn=actedOf(rid,'depart')?(!actedOf(rid,'arrival')?'arrival':''):(!optChkDone(rid)?'opt':'depart');
+    btns+=optChkBtn(rid,_dn==='opt');   // ★2026-11-13 オーナー依頼：出発の前に「オプション確認」（チャイルドシート等の積み忘れ防止）
+    btns+=_ab('dep',rid,'depart',"saAction('"+rid+"','depart')",'出発',2,_dn==='depart');
+    btns+=_ab('arr',rid,'arrival',"saAction('"+rid+"','arrival')",'到着',3,_dn==='arrival');
     btns+=_ab('dly',rid,'delay_del',"saDelay('"+rid+"','delay_del','"+etm+"')",'⏳遅延');
     btns+=saJamBtn(rid,'delay_del',etm);
   }else if(rid&&isCol){
@@ -761,10 +762,25 @@ function pressLoad(cb){
     .then(function(d){try{if(d&&d.ok&&d.acts){var nx={};Object.keys(d.acts).forEach(function(rid){var m=d.acts[rid]||{};Object.keys(m).forEach(function(k){if(m[k]&&m[k].at)nx[rid+"|"+k]={at:m[k].at};});});Object.keys(ACTED).forEach(function(k){if(!nx[k])nx[k]=ACTED[k];});ACTED=nx;}}catch(e){}fin();})
     .catch(fin);
 }
+/* ★2026-11-13 オーナー依頼（札幌・那覇）：お届けの「出発」の前に「オプション確認」。チャイルドシート等の積み忘れを現地で気づく事故を防ぐ。
+   記録はこの端末だけ（DB に書かない・お客様へ何も送らない）。オプションありで未確認のまま「出発」を押すと先に確認を出す。中身はカードの札（opt_*）と同じ */
+function optChkTask(rid){return ((LASTD&&LASTD.tasks)||[]).filter(function(y){return String(y.resv||"")===String(rid)&&(y.type==="DEL"||y.type==="PU"||y.type==="PUB"||y.type==="来店"||y.type==="PUB来店");})[0]||null;}
+function optChkList(x){var o=[];if(!x)return o;if(+x.opt_b>0)o.push('ベビーシート×'+x.opt_b);if(+x.opt_c>0)o.push('チャイルドシート×'+x.opt_c);if(+x.opt_j>0)o.push('ジュニアシート×'+x.opt_j);if(+x.opt_usb>0)o.push('USB');if(+x.opt_parasol>0)o.push('日傘×'+x.opt_parasol);return o;}
+function optChkKey(rid){return "optchk|spk|"+rid;}
+function optChkDone(rid){try{var v=rid&&localStorage.getItem(optChkKey(rid));return v?{at:v}:null;}catch(e){return null;}}
+function optChkBtn(rid,isNext){var d=optChkDone(rid);var st=d?STEP_DONE:(isNext?STEP_NEXT:STEP_LATER);return '<button class="abtn opt'+(d?' acted':'')+'" onclick="optChkAsk(\''+rid+'\',false)"'+st+'>'+STEP_NO[1]+'オプション確認'+(d?'<br><span style="font-size:11px">'+actedLabel(d.at)+'</span>':'')+'</button>';}
+window.optChkAsk=function(rid,warn){var a=optChkList(optChkTask(rid));
+  if(!a.length)alert("📋 この予約のオプションはありません");
+  else if(!confirm((warn?"⚠️ まだオプション確認をしていません\n\n":"📋 オプション確認\n\n")+a.map(function(x){return "・"+x;}).join("\n")+"\n\n車に積みましたか？"))return false;
+  try{localStorage.setItem(optChkKey(rid),new Date().toISOString());}catch(e){}
+  if(!warn&&LASTD)setContent(tasksContent(LASTD));
+  return true;};
+function optChkGate(rid){if(optChkDone(rid)||!optChkList(optChkTask(rid)).length)return true;return optChkAsk(rid,true);}
 window.saAction=function(rid,action){
   var lbl={depart:"出発",collect:"回収に向かう",arrival:"到着",col_arrival:"到着",dropoff:"乗り捨て依頼"}[action]||action;
   var isDrv=(action==="depart"||action==="collect");
   if(action!=="dropoff"){var _tt=((action==="depart"||action==="arrival")?"DEL":"COL"),_tk=((LASTD&&LASTD.tasks)||[]).filter(function(y){return String(y.resv||"")===String(rid)&&y.type===_tt;})[0];if(_tk&&saTooEarly(_tk))return;}
+  if(action==="depart"&&!optChkGate(rid))return;
   if(!confirm(lbl+"しますか？\n"+(isDrv?"（お客様へマイページ案内を送ります：LINE／なければメール／楽天の方は楽天から）":"（お客様へ「"+lbl+"」を送ります：LINE／なければメール／楽天の方は楽天から）")))return;
   fetch(SAEF,{method:"POST",headers:{"apikey":ANON,"Authorization":"Bearer "+ANON,"Content-Type":"application/json"},body:JSON.stringify({token:TOKEN,resv_no:rid,action:action})})
     .then(function(r){return r.json();})
