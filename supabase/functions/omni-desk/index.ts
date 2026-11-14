@@ -162,6 +162,8 @@ async function dayTasks(store: string, date: string) {
   return ts.filter((t: any) => /^[dc]-/.test(t._id)).map((t: any) => { const r: any = rm.get(t["予約番号"]) || {}; const back = t._id.startsWith("c-"); return { id: t._id, rid: t["予約番号"], who: String(t["担当"] || "").trim(), t: hm(t["時間"]) || hm(back ? r.end_time : r.start_time), back, car: t.assigned_vehicle || "", kind: String(t["内容"] || "") }; });
 }
 
+// 締切を過ぎただけの依頼：データで対応できれば言い切って提案し、理由を添える（nosh 11/14「ゴールに向かう前提で最適解」）
+const lateNote = (why: string[], who: string) => why.some((w) => w.startsWith("締切（")) ? `（締切は過ぎていますが、${who ? who + "さんの予定と重ならない" : "担当の予定に重なりがない"}ので対応できます）` : "";
 async function chgSuggest(c: any) {
   const store = String(c.store), rid = String(c.reservation_id), f = String(c.field), pl = c.payload || {}, tg = pl.target || {};
   if (!["spk", "nha"].includes(store) || !CHG_F.includes(f)) return null;
@@ -187,9 +189,10 @@ async function chgSuggest(c: any) {
   // 締切
   const due = back ? atJst(ed, et) - 2 * 3600e3 : atJst(sd, st) - 24 * 3600e3;
   if (isReady) { /* 早め回収は締切なし（返却準備ができた知らせ） */ }
-  else if (!isNaN(due) && Date.parse(c.created_at) > due) why.push(`⚠️ 締切（${back ? "返却2時間前" : "出発24時間前"}）を過ぎた依頼`);
+  else if (!isNaN(due) && Date.parse(c.created_at) > due) why.push(`締切（${back ? "返却2時間前" : "出発24時間前"}）は過ぎた依頼 → データで対応できるかで決める`);
   else why.push(`締切内（${back ? "返却2時間前" : "出発24時間前"}まで）`);
   if (!date || !t) return { verdict: "human", ask: "", why: why.concat(["日付か時刻が読めない"]), date, t };
+  if (!isReady && atJst(date, t) < Date.now()) why.push(`⚠️ 希望の ${t} はもう過ぎている`);
   // 担当の予定
   const D = await dayTasks(store, date);
   const mine = D.find((x: any) => x.rid === rid && x.back === back);
@@ -215,7 +218,7 @@ async function chgSuggest(c: any) {
     else why.push("場所の地図の位置なし（エリアは人が見る）");
   }
   const bad = why.filter((w) => w.startsWith("⚠️"));
-  if (!bad.length) return { verdict: "ok", ask: `${what}で承認していいですか？`, why, date, t, who };
+  if (!bad.length) return { verdict: "ok", ask: `${what}で承認していいですか？${lateNote(why, who)}`, why, date, t, who };
   if (bad.length === 1 && hit.length && alt && !isReady) return { verdict: "alt", ask: `${t}は担当の予定と重なります。代わりに「${alt}」を提案していいですか？`, why, reason: "full_slot", alt, date, t, who };
   return { verdict: "human", ask: "", why, date, t, who };
 }
@@ -239,9 +242,10 @@ async function chgSuggestTkm(c: any) {
   const leg = back ? "空港へお送り" : "空港お迎え";
   const why: string[] = [];
   const due = back ? atJst(ed, hm(R.end_time)) - 2 * 3600e3 : atJst(sd, hm(R.start_time)) - 24 * 3600e3;
-  if (!isNaN(due) && Date.parse(c.changed_at) > due) why.push(`⚠️ 締切（${back ? "返却2時間前" : "出発24時間前"}）を過ぎた依頼`);
+  if (!isNaN(due) && Date.parse(c.changed_at) > due) why.push(`締切（${back ? "返却2時間前" : "出発24時間前"}）は過ぎた依頼 → データで対応できるかで決める`);
   else why.push(`締切内（${back ? "返却2時間前" : "出発24時間前"}まで）`);
   if (!date || !t) return { verdict: "human", ask: "", why: why.concat(["日付か時刻が読めない"]) };
+  if (atJst(date, t) < Date.now()) why.push(`⚠️ 希望の ${t} はもう過ぎている`);
   // 担当の予定：その日の行き・帰りのタスク（時刻は各予約の送迎時刻）
   const ts = await getB("bt_tasks", `date=eq.${date}&deleted=not.is.true&select=_id,${encodeURIComponent("担当")},${encodeURIComponent("予約番号")}`);
   const L = ts.filter((x: any) => /^[dc]-/.test(x._id));
@@ -259,7 +263,7 @@ async function chgSuggestTkm(c: any) {
   if (oldT) why.push(`いまの予約は ${oldT}`);
   const what = `「${mdj(date)} ${t}」の${leg}`;
   const bad = why.filter((w) => w.startsWith("⚠️"));
-  if (!bad.length) return { verdict: "ok", ask: `${what}で承認していいですか？`, why, who };
+  if (!bad.length) return { verdict: "ok", ask: `${what}で承認していいですか？${lateNote(why, who)}`, why, who };
   if (bad.length === 1 && hit.length && alt) return { verdict: "alt", ask: `${t}は担当の予定と重なります。代わりに「${alt}」を提案していいですか？`, why, reason: "full_slot", alt, who };
   return { verdict: "human", ask: "", why, who };
 }
