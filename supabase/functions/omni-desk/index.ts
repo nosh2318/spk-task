@@ -64,9 +64,20 @@ async function resvOf(store: string, rid: string, th: any) {
   return null;
 }
 
+// ★2026-11-14 Mac mini のオムニ（予約データ＋学習で判断）が conf・理由を cs_chat_drafts に書いたらそれを使う。
+//   ただし決まり（事故・返金・「担当より確認」・言語ちがい）で「人に回す」になるものは、必ず人へ（安全の網）
+function confPick(d: any): { conf: string; why: string[] } {
+  const r = confOf(String(d.question || ""), String(d.draft || ""));
+  if (!d.conf || !["go", "look", "human"].includes(String(d.conf))) return r;
+  const why = String(d.conf_reason || "").split(/\s*\/\s*|\n/).map((x) => x.trim()).filter(Boolean);
+  if (r.conf === "human" && d.conf !== "human") return { conf: "human", why: r.why.concat(why) };
+  if (!String(d.draft || "").trim() && d.conf === "go") return { conf: "look", why: why.length ? why : ["返事はいらない（オムニの判断）"] };
+  return { conf: String(d.conf), why: why.length ? why : r.why };
+}
+
 async function chatList() {
   const since = new Date(Date.now() - 14 * 864e5).toISOString();
-  const ds = await get("cs_chat_drafts", `status=eq.pending&created_at=gte.${since}&order=id.desc&select=id,store,thread_id,reservation_id,cust_name,question,draft,orig_draft,created_at`);
+  const ds = await get("cs_chat_drafts", `status=eq.pending&created_at=gte.${since}&order=id.desc&select=id,store,thread_id,reservation_id,cust_name,question,draft,orig_draft,created_at,conf,conf_reason,omni_action`);
   const latest = new Map<string, any>(); for (const d of ds) if (!latest.has(d.thread_id)) latest.set(d.thread_id, d);
   const L = [...latest.values()]; if (!L.length) return [];
   const ths = await get("cs_chat_threads", `id=in.${inList(L.map((d) => d.thread_id))}&select=id,store,reservation_id,work_status,status,resv_snapshot`);
@@ -77,8 +88,8 @@ async function chatList() {
     if (!th || th.work_status === "完了" || th.status === "closed") continue; // もう終わったチャットは出さない
     const ms = await get("cs_chat_messages", `thread_id=eq.${d.thread_id}&order=id.desc&limit=8&select=sender,body,image_url,created_at`);
     if (ms.some((m: any) => m.sender === "staff" && m.body !== AUTO_ACK && m.created_at > d.created_at)) continue; // 人がもう返した
-    const c = confOf(String(d.question || ""), String(d.draft || ""));
-    out.push({ id: d.id, store: d.store, rid: d.reservation_id, name: d.cust_name, q: d.question, draft: d.draft, edited_in_slack: !!d.orig_draft && d.orig_draft !== d.draft, at: d.created_at, lang: langOf(d.question), conf: c.conf, why: c.why, resv: await resvOf(d.store, d.reservation_id, th), msgs: ms.reverse().filter((m: any) => m.body !== AUTO_ACK).map((m: any) => ({ s: m.sender, b: m.body, img: !!m.image_url, at: m.created_at })) });
+    const c = confPick(d);
+    out.push({ action: d.omni_action || "", id: d.id, store: d.store, rid: d.reservation_id, name: d.cust_name, q: d.question, draft: d.draft, edited_in_slack: !!d.orig_draft && d.orig_draft !== d.draft, at: d.created_at, lang: langOf(d.question), conf: c.conf, why: c.why, resv: await resvOf(d.store, d.reservation_id, th), msgs: ms.reverse().filter((m: any) => m.body !== AUTO_ACK).map((m: any) => ({ s: m.sender, b: m.body, img: !!m.image_url, at: m.created_at })) });
   }
   return out.sort((a, b) => (a.at < b.at ? -1 : 1));
 }
@@ -96,7 +107,7 @@ async function chatDecide(p: any) {
   if (d.status !== "pending") return { ok: false, error: "もう決まっています（Slack などで）", status: d.status };
   const text = oc === "same" ? String(d.draft || "") : oc === "edited" ? String(p.text || "").trim() : "";
   if (oc !== "rejected" && !text) return { ok: false, error: "送る文が空です" };
-  const c = confOf(String(d.question || ""), String(d.draft || ""));
+  const c = confPick(d);
   const now = new Date().toISOString();
   // 先に案を「決まった」にする（status=pending の時だけ）→ Slack の OK と同時に押しても二重に送らない
   const up = await patch("cs_chat_drafts", `id=eq.${id}&status=eq.pending`, { status: oc === "rejected" ? "rejected" : "approved", final_answer: oc === "rejected" ? null : text, decided_by: "admin:マイページ管理", decided_at: now, conf: c.conf, conf_reason: c.why.join(" / "), ...(d.orig_draft ? {} : { orig_draft: d.draft }) });
