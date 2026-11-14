@@ -506,7 +506,7 @@ async function loadAll(){
   document.getElementById("hdr").textContent="読み込み中…";
   try{
     /* 2026-11-09 速度：依頼一覧・高松の閲覧集計を、那覇/札幌の一覧と同時に取る（以前は順番待ちで3往復） */
-    const reqP=loadReq();loadRef();loadUnp();loadLate();loadLineHero(pin);
+    const reqP=loadReq();loadRef();loadUnp();loadLate();loadNudge();loadLineHero(pin);
     const btP=ef(BT,BT_ANON,"mypage-active-bt",{admin_pin:pin,from,to}).catch(e=>{if(e.message==="pin")throw e;console.warn(e);return {rows:[]};}).then(async b=>{
       const tk=b.rows.map(r=>r.token).filter(Boolean);
       if(tk.length){const g=await ef(MAIN,MAIN_ANON,"mypage-active",{admin_pin:pin,action:"agg",tokens:tk});b.rows.forEach(r=>{r.ev=r.token&&g.agg[r.token]||null;});}
@@ -665,6 +665,9 @@ const YK_NONE={late:"いまスタッフの未確認・未完了・サポート�
 let YF="all";
 /* ★2026-11-14 タスクの遅れ：スタッフ画面の「大丈夫ですか？」（予定から20分過ぎても未完了）と「サポートが必要な場合はお知らせ下さい！」の連絡（EF staff-task-check press_board・直近3時間） */
 let LATE=[];
+/* ★2026-11-14 お客様の知らせ（着きました・遅れます・見つからない・停めました）でまだスタッフが確認していないもの（EF staff-task-check nudge_board）。5分過ぎ（late5）は赤 */
+let NUD=[];
+async function loadNudge(){const pin=getPin();if(!pin){NUD=[];return;}try{const j=await ef(MAIN,MAIN_ANON,"staff-task-check",{admin_pin:pin,action:"nudge_board"});NUD=j.rows||[];}catch(e){NUD=[];}renderAct();}
 async function loadLate(){const pin=getPin();if(!pin){LATE=[];return;}try{const j=await ef(MAIN,MAIN_ANON,"staff-task-check",{admin_pin:pin,action:"press_board"});LATE=j.rows||[];}catch(e){LATE=[];}renderAct();}
 const SNB={nha:"hdm_nha",spk:"hdm_spk",tkm:"hdm_tkm"};
 const hmOf=t=>{t=typeof t==="number"?t:Date.parse(t||"");if(!t||isNaN(t))return"";const j=new Date(t+324e5);return (j.getUTCMonth()+1)+"/"+j.getUTCDate()+" "+String(j.getUTCHours()).padStart(2,"0")+":"+String(j.getUTCMinutes()).padStart(2,"0");};
@@ -676,11 +679,18 @@ function yItems(){
   REF.filter(x=>x.status==="refund_pending").forEach(x=>I.push({c:"money",bk:SNB[x.st]||"",rid:x.reservation_id,ref:x,at:x.created_at,due:0}));
   UNP.filter(x=>x.status!=="paid").forEach(x=>I.push({c:"money",bk:SNB[x.store]||"",rid:x.reservation_id,name:(x.res||{}).name,unp:x,at:x.created_at,due:({overdue:0,link_failed:1,due_soon:2})[x.status]??3}));
   const since=Date.now()-3*3600e3;
+  NUD.forEach(x=>I.push({c:"voice",bk:"hdm_"+x.store,rid:x.resv||"",nud:x,at:x.created_at,due:Date.parse(x.created_at)+5*60e3}));
   LATE.filter(x=>x.src==="unconf"?!x.confirmed_at:(Date.parse(x.created_at)>since&&x.eta_min!==0&&!x.done_at)).forEach(x=>I.push({c:"late",bk:"hdm_"+x.store,rid:x.resv||"",late:x,at:x.created_at,due:x.eta_at?Date.parse(x.eta_at):Date.parse(x.created_at)}));
   return I.filter(it=>hitQ(it.name,it.rid));}
 function yCard(it){const C=YK.find(y=>y[0]===it.c),B=BUCK[it.bk]||{n:"",c:"#334155"},foc=FOCUS===it.bk+"|"+it.rid;
   let ttl="",meta=[],doH="",next=[],prog=[];
-  if(it.x){const x=it.x,o=STF[x.bucket+"|"+x.rid]||{},f=String(x.field||""),side=GO_F.test(f)?"d":BACK_F.test(f)?"c":"",via=x.line?"LINE":"メール";
+  if(it.nud){const x=it.nud,o=STF[it.bk+"|"+it.rid]||{},w=x.late5||x.warned_at;
+    ttl=`<b class="ty">${w?"⚠️ 5分未確認：":"🙋 "}お客様から「${esc(x.label||"")}」</b>`;
+    meta=[o.car?"🚗 "+esc(o.car):"",x.leg?(x.leg==="back"?"↩️ 帰り":"➡️ 行き"):"","👷 "+esc((x.leg==="back"?o.c:o.d)||"担当")];
+    doH=`<div>${w?"<b>5分たってもスタッフが確認していません。</b>":"スタッフの確認待ちです。"}</div>`+(x.note?`<div class="mut" style="margin-top:4px">「${esc(x.note)}」</div>`:"");
+    next=["担当がスタッフ画面で確認する（確認するとここから消える）",w?"返事がなければ本部から担当に連絡":"5分たっても未確認なら Slack の投稿に ⚠️ が付く"];
+    prog=[[hmOf(x.created_at),"お客様が押した"],[x.warned_at?hmOf(x.warned_at):"",x.warned_at?"5分未確認 → Slack に ⚠️":""],["","確認待ち",1]];
+  }else if(it.x){const x=it.x,o=STF[x.bucket+"|"+x.rid]||{},f=String(x.field||""),side=GO_F.test(f)?"d":BACK_F.test(f)?"c":"",via=x.line?"LINE":"メール";
     ttl=`${leftHtml(x)} <b class="ty">${tyLabel(x)}</b>`;
     meta=["📅 "+md(x.sd)+"〜"+md(x.ed),o.car?"🚗 "+esc(o.car):"","👤 "+esc(x.name||"-")+" 様","👷 "+esc((side==="c"?o.c:side==="d"?o.d:(o.d||o.c))||"本部")];
     doH=reqItem(x,true);
@@ -720,7 +730,7 @@ function yCard(it){const C=YK.find(y=>y[0]===it.c),B=BUCK[it.bk]||{n:"",c:"#3341
     prog=[[hmOf(x.created_at),"未払いを検知"],["",st,1]];
   }
   const P=prog.filter(p=>p[1]).map(([t,l,now])=>`<li class="${now?"now":""}"><span class="tm">${esc(t||"")}</span>${esc(l)}</li>`).join("");
-  return `<div class="yi ${foc?"hl":""}" data-a="${esc(it.bk+"|"+it.rid)}" style="--yc:${C[2]}">
+  return `<div class="yi ${foc?"hl":""}" data-a="${esc(it.bk+"|"+it.rid)}" style="--yc:${it.nud&&(it.nud.late5||it.nud.warned_at)?"#dc2626":C[2]}">
     <div class="yh"><span class="ytag" style="background:${C[2]}">${C[1]}</span>${ttl}${B.n?`<span class="bk" style="background:${B.c}">${B.n}</span>`:""}<span class="age">${agoOf(it.at)}</span></div>
     <div class="ym">${meta.filter(Boolean).map(m=>`<span>${m}</span>`).join("")}</div>
     <div class="ycols"><div class="ycol"><h4>すること</h4>${doH}</div><div class="ycol"><h4>この先の手順</h4><ol>${next.map(t=>`<li>${t}</li>`).join("")}</ol></div><div class="ycol"><h4>進み具合</h4><ul class="yp">${P}</ul></div></div>
