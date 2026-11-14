@@ -295,6 +295,55 @@ async function chgList(ids?: number[]) {
   return out;
 }
 
+// ════ 見張り（2026-11-14 nosh「２重３重で対策を　OMNI止まったらスタッフは動きを把握できなくなる」）════
+//   ① 依頼を受けた関数：オムニが8秒で答えなければ、元の文（⚠️オムニ未判断）で社員の部屋へ必ず出す
+//   ② ここ（5分ごと・Supabase の cron から。Mac mini が止まっても動く）：オムニの案が付かないまま5分たった時間・場所の依頼を社員の部屋へ
+//   ③ ここ：Mac mini のオムニ（チャットの案）の心拍が15分止まったら、開発と店の部屋へ「オムニが止まっている・チャットは人が返事を」
+//   同じものは1回だけ（omni_watch_sent）。お客様には何も送らない
+const OPS_CH: Record<string, string> = { spk: "C0AS5K1JZNJ", nha: "C06L91W6T08", tkm: "C07B5G3PV7C" }; // 高松の部屋は別のSlack（BUDDICA）なので、届く開発の部屋へ
+const DEV_CH = "C07B5G3PV7C";
+const ST_JP: Record<string, string> = { spk: "札幌", nha: "那覇", tkm: "高松" };
+async function post(ch: string, text: string) {
+  if (!SLACK) return false;
+  try { const r = await fetch("https://slack.com/api/chat.postMessage", { method: "POST", headers: { Authorization: `Bearer ${SLACK}`, "Content-Type": "application/json; charset=utf-8" }, body: JSON.stringify({ channel: ch, text }) }); return (await r.json()).ok === true; } catch (_) { return false; }
+}
+async function markSent(refs: string[]): Promise<string[]> { // まだ送っていないものだけ返す（入れられたもの＝新しいもの）
+  if (!refs.length) return [];
+  const r = await fetch(`${SB}/rest/v1/omni_watch_sent?on_conflict=ref`, { method: "POST", headers: { ...H, Prefer: "resolution=ignore-duplicates,return=representation" }, body: JSON.stringify(refs.map((ref) => ({ ref }))) });
+  if (!r.ok) return [];
+  return (await r.json()).map((x: any) => String(x.ref));
+}
+async function watch() {
+  const now = Date.now(), t5 = new Date(now - 5 * 60e3).toISOString(), t24 = new Date(now - 24 * 3600e3).toISOString();
+  const out: Record<string, number> = { chg: 0, tkm: 0, bot: 0 };
+  // ② 時間・場所の依頼（札幌・那覇）
+  const C = await get("mypage_changes", `status=eq.requested&field=in.(${CHG_F.join(",")})&created_at=lt.${t5}&created_at=gt.${t24}&select=id,store,reservation_id,field,new_value&order=id.asc&limit=100`);
+  const T = await getB("bt_reservation_changes", `status=eq.requested&change_type=in.(${TKM_F.join(",")})&changed_at=lt.${t5}&changed_at=gt.${t24}&select=id,reservation_id,change_type,new_value&order=id.asc&limit=100`);
+  const keys = [...C.map((c: any) => String(c.id)), ...T.map((c: any) => "tkm:" + c.id)];
+  const has = new Set(keys.length ? (await get("omni_suggestions", `kind=eq.chg&ref_id=in.${inList(keys)}&select=ref_id`)).map((x: any) => String(x.ref_id)) : []);
+  const miss = [...C.filter((c: any) => !has.has(String(c.id))).map((c: any) => ({ key: String(c.id), store: c.store, rid: c.reservation_id })), ...T.filter((c: any) => !has.has("tkm:" + c.id)).map((c: any) => ({ key: "tkm:" + c.id, store: "tkm", rid: c.reservation_id }))];
+  const fresh = new Set(await markSent(miss.map((m) => "chg:" + m.key)));
+  const by: Record<string, any[]> = {};
+  for (const m of miss) if (fresh.has("chg:" + m.key)) (by[m.store] = by[m.store] || []).push(m);
+  for (const [st, L] of Object.entries(by)) {
+    const bk = st === "tkm" ? "hdm_tkm" : "hdm_" + st;
+    await post(OPS_CH[st] || DEV_CH, [`【${ST_JP[st] || st}｜依頼に返事／時間・場所】⚠️ オムニが判断していない依頼 ${L.length}件`, "オムニの案が5分たっても付きません。社員が本部で承認・お断りしてください（担当の画面には「社員の承認待ち」で出ています）", "👷 本部", `🔗 https://nosh2318.github.io/spk-task/mypage-active.html?tab=action&bucket=${bk}`].join("\n"));
+    out[st === "tkm" ? "tkm" : "chg"] += L.length;
+  }
+  // ③ Mac mini のオムニ（チャットの案）の心拍
+  const hb = (await get("cli_heartbeat", `id=eq.omni_bot&select=beat_at&limit=1`))[0];
+  if (hb && now - Date.parse(hb.beat_at) > 15 * 60e3) {
+    const hour = new Date(now + 9 * 3600e3).toISOString().slice(0, 13);
+    if ((await markSent(["bot:" + hour])).length) {
+      const mins = Math.round((now - Date.parse(hb.beat_at)) / 60e3);
+      const txt = [`【本部｜システム／ボット・サーバー】⚠️ オムニ（チャットの案）が${mins}分止まっています`, "お客様のチャットにオムニの案が付きません。チャットは人が本部のチャット管理から返事してください。Mac mini のボットを確かめてください", "👷 本部", "🔗 https://nosh2318.github.io/spk-task/hq.html#mypage"].join("\n");
+      await post(DEV_CH, txt); await post(OPS_CH.spk, txt); await post(OPS_CH.nha, txt);
+      out.bot = mins;
+    }
+  }
+  return out;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   try {
@@ -309,6 +358,8 @@ Deno.serve(async (req) => {
       const m = ids.length ? await chgList(ids) : {};
       return J({ ok: true, map: Object.fromEntries(Object.entries(m).filter(([, v]: any) => v)) });
     }
+    // 見張りは cron から（返すのは件数だけ・同じものは1回しか送らない）
+    if (p.action === "watch") return J({ ok: true, ...(await watch()) });
     const PIN = Deno.env.get("ADMIN_PIN") || "";
     if (!PIN || String(p.admin_pin || "") !== PIN) return J({ ok: false, error: "pin" }, 401);
     if (p.action === "chat_list") return J({ ok: true, rows: await chatList() });

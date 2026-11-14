@@ -559,7 +559,7 @@ function jstMdHm(iso: string): string { const j = new Date(Date.parse(iso) + 9 *
 async function omniAsk(store: string, ids: (number | string)[]): Promise<any[]> {
   try {
     const base = /ggqugvyskyiblxiycpci/.test(String(Deno.env.get("SUPABASE_URL") || "")) ? (Deno.env.get("MAIN_URL") || "https://ckrxttbnawkclshczsia.supabase.co") : String(Deno.env.get("SUPABASE_URL") || "");
-    const r = await fetch(`${base}/functions/v1/omni-desk`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "chg_ask", admin_pin: Deno.env.get("ADMIN_PIN") || "", store, ids: ids.map(Number).filter(Boolean) }) });
+    const r = await fetch(`${base}/functions/v1/omni-desk`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "chg_ask", admin_pin: Deno.env.get("ADMIN_PIN") || "", store, ids: ids.map(Number).filter(Boolean) }), signal: AbortSignal.timeout(8000) }); // ★2026-11-14 nosh「OMNI止まったらスタッフは動きを把握できなくなる」：8秒で打ち切り、元の文で必ず社員へ出す
     const j = await r.json().catch(() => null); return j && j.ok ? Object.values(j.map || {}) : [];
   } catch { return []; }
 }
@@ -1233,7 +1233,7 @@ Deno.serve(async (req) => {
     if (_chg(colPlace, curColPlace)) aLines.push(`📍 *回収先*（希望）　${curColPlace || "（未設定）"} → *${colPlace}*`);
     if (_chg(returnTime, curReturnTime)) aLines.push(`🕐 *回収時間*（希望）　${curReturnTime || "（未設定）"} → *${returnTime}*`);
     const _om = omniText(await omniAsk("spk", (await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.spk&status=eq.requested&field=in.(lend_time,return_time,del_place,col_place)&select=id`)).map((x: any) => x.id)));
-    await notifySlackCard({ side: touchesDel && touchesCol ? "" : touchesDel ? "go" : "back", emoji: "🟡", title: _om ? _om.title : "場所・時間変更の承認待ち", name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: _om ? [...aLines, ..._om.lines] : aLines, action: "⚠️ *要承認*：管理コンソール →「🔔変更依頼」で承認（承認で反映＋顧客へLINE通知）" });
+    await notifySlackCard({ side: touchesDel && touchesCol ? "" : touchesDel ? "go" : "back", emoji: "🟡", title: _om ? _om.title : "場所・時間変更の承認待ち（⚠️オムニ未判断・社員が決めてください）", name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: _om ? [...aLines, ..._om.lines] : aLines, action: "⚠️ *要承認*：管理コンソール →「🔔変更依頼」で承認（承認で反映＋顧客へLINE通知）" });
     return json({ ok: true, pendingApproval: true, requested: reqLabels }, 200, origin);
   }
 

@@ -505,7 +505,7 @@ async function tkmApply(resId: string, ctype: string, val: string, flight: strin
 async function omniAsk(store: string, ids: (number | string)[]): Promise<any[]> {
   try {
     const base = /ggqugvyskyiblxiycpci/.test(String(Deno.env.get("SUPABASE_URL") || "")) ? (Deno.env.get("MAIN_URL") || "https://ckrxttbnawkclshczsia.supabase.co") : String(Deno.env.get("SUPABASE_URL") || "");
-    const r = await fetch(`${base}/functions/v1/omni-desk`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "chg_ask", admin_pin: Deno.env.get("ADMIN_PIN") || "", store, ids: ids.map(Number).filter(Boolean) }) });
+    const r = await fetch(`${base}/functions/v1/omni-desk`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "chg_ask", admin_pin: Deno.env.get("ADMIN_PIN") || "", store, ids: ids.map(Number).filter(Boolean) }), signal: AbortSignal.timeout(8000) }); // ★2026-11-14 nosh「OMNI止まったらスタッフは動きを把握できなくなる」：8秒で打ち切り、元の文で必ず社員へ出す
     const j = await r.json().catch(() => null); return j && j.ok ? Object.values(j.map || {}) : [];
   } catch { return []; }
 }
@@ -983,7 +983,7 @@ Deno.serve(async (req) => {
     else await sbPost("bt_reservation_changes", { reservation_id: resId, ...row, status: "requested", changed_by: "customer", source: "mypage" });
     const lbl = FLD_JP[ctype];
     const _om = want ? omniText(await omniAsk("tkm", (await sbGet("bt_reservation_changes", `reservation_id=eq.${encodeURIComponent(resId)}&source=eq.mypage&change_type=eq.${ctype}&status=eq.requested&select=id`)).map((x: any) => x.id))) : null;
-    { const m = await hdmMsg({ emoji: "🟡", store: "tkm", title: _om ? _om.title : `送迎の変更依頼（承認待ち）`, cat: "依頼に返事／受け取り方・送迎", rid: resId, side: go ? "go" : "back", url: actUrl(resId), // ★2026-11-10 共通の型
+    { const m = await hdmMsg({ emoji: "🟡", store: "tkm", title: _om ? _om.title : want ? `送迎の変更依頼（承認待ち・⚠️オムニ未判断）` : `送迎の変更依頼（承認待ち）`, cat: "依頼に返事／受け取り方・送迎", rid: resId, side: go ? "go" : "back", url: actUrl(resId), // ★2026-11-10 共通の型
       body: [dateLine(r.start_date, r.end_date, go ? "go" : "back"), `${lbl}　${oldV || "（未選択）"} → ${newV}`, flight ? `✈️ ご搭乗便 ${flight}` : "", ...(_om ? _om.lines : ["⚠️ 要承認：承認＝予約・OPシートへ反映＋お客様へメール／できない時は「代わりの案」"])], buttons: [{ text: "✅ 承認画面を開く", url: actUrl(resId) }] });
     await slackPost(m.text, m.blocks); }
     return json({ ok: true, pendingApproval: true, requested: ctype }, 200, origin);

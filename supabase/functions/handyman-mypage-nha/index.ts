@@ -501,7 +501,7 @@ const FLD_JP: Record<string, string> = { del_place: "お届け場所", col_place
 async function omniAsk(store: string, ids: (number | string)[]): Promise<any[]> {
   try {
     const base = /ggqugvyskyiblxiycpci/.test(String(Deno.env.get("SUPABASE_URL") || "")) ? (Deno.env.get("MAIN_URL") || "https://ckrxttbnawkclshczsia.supabase.co") : String(Deno.env.get("SUPABASE_URL") || "");
-    const r = await fetch(`${base}/functions/v1/omni-desk`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "chg_ask", admin_pin: Deno.env.get("ADMIN_PIN") || "", store, ids: ids.map(Number).filter(Boolean) }) });
+    const r = await fetch(`${base}/functions/v1/omni-desk`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "chg_ask", admin_pin: Deno.env.get("ADMIN_PIN") || "", store, ids: ids.map(Number).filter(Boolean) }), signal: AbortSignal.timeout(8000) }); // ★2026-11-14 nosh「OMNI止まったらスタッフは動きを把握できなくなる」：8秒で打ち切り、元の文で必ず社員へ出す
     const j = await r.json().catch(() => null); return j && j.ok ? Object.values(j.map || {}) : [];
   } catch { return []; }
 }
@@ -889,7 +889,7 @@ Deno.serve(async (req) => {
     if (!lines.length) return json({ ok: true, pendingApproval: true, already: true, requested: Object.keys(vals) }, 200, origin);
     { const ks = Object.keys(vals), sd = ks.every((f) => /^(del_place|lend_time)$/.test(f)) ? "go" : ks.every((f) => /^(col_place|return_time)$/.test(f)) ? "back" : "";
     const _om = omniText(await omniAsk("nha", (await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.nha&status=eq.requested&field=in.(lend_time,return_time,del_place,col_place)&select=id`)).map((x: any) => x.id)));
-    const m = await hdmMsg({ emoji: "🟡", store: "nha", title: _om ? _om.title : "場所・時間の変更依頼（承認待ち）", cat: "依頼に返事／時間・場所", rid: resId, side: sd, url: actUrl(resId), body: [dateLine(r.start_date, r.end_date, sd), ...lines, ...(_om ? _om.lines : ["⚠️ 要承認：承認で反映＋お客様へ連絡"])], buttons: [{ text: "✅ 承認画面を開く", url: actUrl(resId) }] }); // ★2026-11-10 共通の型
+    const m = await hdmMsg({ emoji: "🟡", store: "nha", title: _om ? _om.title : "場所・時間の変更依頼（承認待ち・⚠️オムニ未判断）", cat: "依頼に返事／時間・場所", rid: resId, side: sd, url: actUrl(resId), body: [dateLine(r.start_date, r.end_date, sd), ...lines, ...(_om ? _om.lines : ["⚠️ 要承認：承認で反映＋お客様へ連絡"])], buttons: [{ text: "✅ 承認画面を開く", url: actUrl(resId) }] }); // ★2026-11-10 共通の型
     await slackResv(m.text, m.blocks); }
     return json({ ok: true, pendingApproval: true, requested: Object.keys(vals) }, 200, origin);
   }
