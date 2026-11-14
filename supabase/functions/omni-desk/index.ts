@@ -9,6 +9,7 @@
 // POST {admin_pin, action:"chg_swap", id, actor_name} → {ok}  担当替えつきの案を承認した後、タスクの担当を替える
 // POST {admin_pin, action:"prep_ask", items:[{store,rid,need[]}]} → {ok, map:{"store|rid":{verdict, ask, why[], via, text}}}  準備が足りないカードへの提案
 // POST {admin_pin, action:"prep_decide", store, rid, need[], outcome:"same"|"rejected", actor_name} → はい＝お客様へお願いを送る
+// POST {action:"thread"}（cron 1分ごと）→ 店の部屋のオムニのカードへの社員のスレッド返信を読み、承認・お断り・別の案まで決める（2026-11-15）
 // POST {admin_pin, action:"stats", days?} → {ok, rows:[{kind, store, same, edited, rejected}]}  種類ごとの「そのまま採用率」
 // 自動送信・自動承認はしない（nosh の言葉まで）。記録は cs_chat_drafts のトリガー → omni_decisions（Slack の OK も同じく記録）。
 function __newKey(env: string, name: string): string { try { return (JSON.parse(Deno.env.get(env) || "{}") as Record<string, string>)[name] || ""; } catch { return ""; } }
@@ -691,6 +692,236 @@ async function prepDecide(p: any) {
   return { ok: true, sent: ch };
 }
 
+// ════ Slack のスレッド返信で決める（2026-11-15 nosh「スレッドにスタッフが返信し完結できる手段がほしい」）════
+//   店の部屋のオムニのカード（【店｜依頼に返事…】＋「予約 ID」）に社員が返信 → ここ（1分ごと・cron）が読み、承認・お断り・別の案まで決める。
+//   ・「はい／OK／👍」（返信でもリアクションでも）＝オムニの案どおり。カードが「〜で承認していいですか？」の確認なので、そのまま実行
+//   ・「いいえ 理由・代わり」「13時なら」など＝オムニが読み取り「〜を送っていいですか？」と聞き返す → 「はい」で送る（ボタンと同じく必ず確認を挟む）
+//   ・決められるのは omni_slack_staff の社員だけ。返信はすべて omni_slack_replies に残す。承認者は「名前（Slack）」で予約の変更の記録へ
+//   ・実行は本部の承認画面と同じ decide（反映・お客様への知らせ・担当の画面は今のまま）。終わったら読み直して、ずれがないかをスレッドに返す
+const BT_SLACK = Deno.env.get("BT_SLACK_TOKEN") || Deno.env.get("BT_SLACK_BOT_TOKEN") || "";
+const TH_WS: Record<string, string> = { spk: "H", nha: "H", tkm: "B" };
+const TH_LBL: Record<string, Record<string, string>> = {
+  spk: { lend_time: "お届けの時間", return_time: "回収の時間", del_place: "お届けの場所", col_place: "回収の場所", method: "受け取り方", ready: "早め回収" },
+  nha: { lend_time: "貸出の時間", return_time: "返却の時間", del_place: "お届けの場所", col_place: "回収の場所", method: "受け取り方", ready: "早め回収" },
+  tkm: { mp_pickup: "空港のお迎えの時間", mp_dropoff: "空港へのお送りの時間" },
+};
+// 別の案の文（本部の承認画面の型と同じ）
+const TH_TPL: Record<string, string> = { lend_time: "{x}でしたらお届けできます", return_time: "{x}でしたら回収に伺えます", ready: "{x}前後でしたら回収に伺えます", mp_pickup: "{x}でしたら空港へお迎えに伺えます", mp_dropoff: "{x}でしたら空港までお送りできます" };
+const TH_TIME = new Set(Object.keys(TH_TPL));
+const TH_PLACE = new Set(["del_place", "col_place"]);
+const TH_YES = /^(はい|ok|ｏｋ|おk|おけ|承認|了解|りょうかい|それで|その案で|この案で|go|ゴー|いいよ|いいです|大丈夫|お願いします|おねがいします|👍|🆗|:\+1:|:thumbsup:|:ok:)[\s。．！!、]*(です|します|でお願いします)?[\s。．！!]*$/i;
+const TH_NO = /^(いいえ|いや|ng|ＮＧ|だめ|ダメ|無理|むり|お断り|断る|断って|却下|やめ)[\s。．、,:：！!]*/i;
+const TH_REACT = new Set(["+1", "thumbsup", "ok", "ok_hand", "white_check_mark", "heavy_check_mark"]);
+
+async function sapi(st: string, method: string, params: Record<string, string>): Promise<any> {
+  const tok = st === "tkm" ? BT_SLACK : SLACK; if (!tok) return { ok: false, error: "no_token" };
+  try { const r = await fetch(`https://slack.com/api/${method}?` + new URLSearchParams(params), { headers: { Authorization: `Bearer ${tok}` } }); return await r.json(); } catch (e) { return { ok: false, error: String((e as Error).message || e) }; }
+}
+async function sreply(st: string, ch: string, ts: string, text: string) {
+  const tok = st === "tkm" ? BT_SLACK : SLACK; if (!tok) return false;
+  try { const r = await fetch("https://slack.com/api/chat.postMessage", { method: "POST", headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json; charset=utf-8" }, body: JSON.stringify({ channel: ch, thread_ts: ts, text }) }); return (await r.json()).ok === true; } catch (_) { return false; }
+}
+async function claim(row: Record<string, unknown>): Promise<boolean> { // 先に記録できた1回だけ処理する（cron が重なっても二重に決めない）
+  const r = await fetch(`${SB}/rest/v1/omni_slack_replies?on_conflict=channel,reply_key`, { method: "POST", headers: { ...H, Prefer: "resolution=ignore-duplicates,return=representation" }, body: JSON.stringify(row) });
+  if (!r.ok) return false; return (await r.json()).length > 0;
+}
+async function noteReply(ch: string, key: string, b: Record<string, unknown>) { try { await patch("omni_slack_replies", `channel=eq.${ch}&reply_key=eq.${encodeURIComponent(key)}`, b); } catch (_) { /* 記録だけ */ } }
+async function thSave(ch: string, ts: string, b: Record<string, unknown>) { try { await patch("omni_slack_threads", `channel=eq.${ch}&ts=eq.${ts}`, { ...b, updated_at: new Date().toISOString() }); } catch (_) { /* 次の回 */ } }
+
+type ThChg = { id: number; key: string; field: string; newv: string; oldv: string; status: string; at: number };
+async function thChgs(st: string, rid: string, cardTs: string): Promise<ThChg[]> {
+  const t = Number(cardTs) * 1000, lo = new Date(t - 3 * 86400e3).toISOString(), hi = new Date(t + 20e3).toISOString(); // カードを出す直前までに来た依頼だけ（同じ予約の後のカードの件は含めない）
+  if (st === "tkm") {
+    const T = await getB("bt_reservation_changes", `reservation_id=eq.${encodeURIComponent(rid)}&change_type=in.(${TKM_F.join(",")})&changed_at=gte.${lo}&changed_at=lte.${hi}&select=id,change_type,new_value,old_value,status,changed_at&order=id.asc`);
+    return T.map((c: any) => ({ id: Number(c.id), key: "tkm:" + c.id, field: String(c.change_type), newv: String(c.new_value || ""), oldv: String(c.old_value || ""), status: String(c.status), at: Date.parse(c.changed_at) }));
+  }
+  const C = await get("mypage_changes", `store=eq.${st}&reservation_id=eq.${encodeURIComponent(rid)}&field=in.(${CHG_F.join(",")})&created_at=gte.${lo}&created_at=lte.${hi}&select=id,field,new_value,old_value,status,created_at&order=id.asc`);
+  return C.map((c: any) => ({ id: Number(c.id), key: String(c.id), field: String(c.field), newv: String(c.new_value || ""), oldv: String(c.old_value || ""), status: String(c.status), at: Date.parse(c.created_at) }));
+}
+const thLbl = (st: string, f: string) => (TH_LBL[st] || {})[f] || f;
+function thTime(t: string): string { // 「13時」「13時半」「13:30」「13：00」→ 13:30
+  const m = String(t).replace(/[０-９]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 0xFEE0)).match(/(\d{1,2})\s*(?:[:：]\s*(\d{2})|時\s*(半|(\d{1,2})\s*分?)?)/);
+  if (!m) return ""; const h = +m[1], mi = m[2] ? +m[2] : m[3] === "半" ? 30 : m[4] ? +m[4] : 0;
+  return h >= 5 && h <= 23 && mi < 60 ? `${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}` : "";
+}
+function thPick(open: ThChg[], t: string): { list: ThChg[]; rest: string } { // 「① …」「2 …」で1件だけ選べる
+  const m = t.match(/^\s*([①②③④]|[1-4])[\s.．、)）:：]+/);
+  if (!m) return { list: open, rest: t };
+  const i = "①②③④".includes(m[1]) ? "①②③④".indexOf(m[1]) : +m[1] - 1;
+  return { list: open[i] ? [open[i]] : [], rest: t.slice(m[0].length) };
+}
+const thList = (st: string, open: ThChg[]) => open.map((c, i) => `${"①②③④"[i] || i + 1} ${thLbl(st, c.field)}（希望 ${c.newv.slice(0, 40) || "—"}）`).join("\n");
+
+// オムニの案をそのまま実行できる形に（できない件があれば null と理由）
+function thFromOmni(st: string, open: ThChg[], S: Record<string, any>): { items: any[]; why: string } {
+  const items: any[] = [];
+  for (const c of open) {
+    const s = S[c.key];
+    if (!s || s.verdict === "human" || !s.ask) return { items: [], why: `${thLbl(st, c.field)}はオムニの案がありません` };
+    if (s.verdict === "ok") { items.push({ id: c.id, key: c.key, field: c.field, say: `${thLbl(st, c.field)}：承認（${c.newv.slice(0, 40)}）`, body: { decision: "approved" }, swap: s.reason === "swap" ? String(s.alt || "") : "" }); continue; }
+    const tm = /^\d{1,2}:\d{2}$/.test(String(s.alt || "")) ? String(s.alt) : thTime(String(s.alt || ""));
+    if (s.verdict === "alt" && tm && TH_TIME.has(c.field)) { const pt = TH_TPL[c.field].replace("{x}", tm); items.push({ id: c.id, key: c.key, field: c.field, say: `${thLbl(st, c.field)}：別の案「${pt}」`, body: { decision: "proposed", reject_reason: s.reason || "full_slot", proposal_text: pt, proposal_value: tm } }); continue; }
+    return { items: [], why: `${thLbl(st, c.field)}の案（${String(s.ask).slice(0, 60)}）は文を選ぶ必要があります` };
+  }
+  return { items, why: "" };
+}
+
+async function thDecide(st: string, id: number, b: Record<string, unknown>): Promise<{ ok: boolean; err: string }> {
+  const pin = Deno.env.get("ADMIN_PIN") || "";
+  const url = st === "tkm" ? `${Deno.env.get("BT_URL") || ""}/functions/v1/handyman-mypage-tkm` : `${SB}/functions/v1/handyman-mypage${st === "nha" ? "-nha" : ""}`;
+  const key = st === "tkm" ? (Deno.env.get("BT_ANON_KEY") || Deno.env.get("BT_SERVICE_KEY") || "") : (Deno.env.get("SUPABASE_ANON_KEY") || SR);
+  try {
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", apikey: key, Authorization: `Bearer ${key}` }, body: JSON.stringify({ action: "decide", admin_pin: pin, change_id: id, ...b }), signal: AbortSignal.timeout(50000) });
+    const j: any = await r.json().catch(() => ({}));
+    return r.ok && !j.error ? { ok: true, err: "" } : { ok: false, err: String(j.error || r.status).slice(0, 120) };
+  } catch (e) { return { ok: false, err: String((e as Error).message || e).slice(0, 120) }; }
+}
+
+async function thRun(st: string, rid: string, items: any[], name: string): Promise<string> {
+  const actor = `${name}（Slack）`, out: string[] = [], bad: string[] = [];
+  for (const it of items) {
+    const r = await thDecide(st, it.id, { ...it.body, actor_name: actor });
+    if (!r.ok) { bad.push(`${it.say} → できませんでした（${r.err}）`); continue; }
+    out.push(it.say);
+    if (it.swap && st !== "tkm") { const w: any = await chgSwap({ id: it.id, actor_name: actor, expect: it.swap }).catch((e) => ({ ok: false, error: String(e) })); if (w.ok) out.push(`担当を ${w.from}さん → ${w.to}さん に替えました`); else bad.push(`担当を替えられませんでした（${w.error || w.result}）。タスク画面で替えてください`); }
+  }
+  // 読み直し：依頼の状態がそのとおりか・予約とタスクの値がそろっているか
+  const want: Record<string, string> = { approved: "approved", proposed: "proposed", rejected: "rejected" };
+  try {
+    const ids = items.map((i) => i.id);
+    const now = st === "tkm" ? await getB("bt_reservation_changes", `id=in.(${ids.join(",")})&select=id,status`) : await get("mypage_changes", `id=in.(${ids.join(",")})&select=id,status`);
+    for (const it of items) { const n = now.find((x: any) => Number(x.id) === it.id); if (n && n.status !== want[String(it.body.decision)] && !bad.some((b) => b.startsWith(it.say))) bad.push(`${thLbl(st, it.field)}の状態が「${n.status}」のまま`); }
+    if (items.some((i) => i.body.decision === "approved")) {
+      const V = st === "tkm" ? JSON.parse(await rpcB("hdm_one_value_check", {}) || "[]") : await rpcMain("hdm_one_value_check", {});
+      for (const x of (Array.isArray(V) ? V : []).filter((x: any) => String(x.res_id) === rid)) bad.push(`ずれ：タスク ${x.task_id} の${x.field === "time" ? "時間" : "場所"}が ${x.task_v || "空"}（予約は ${x.res_v || "空"}）`);
+    }
+  } catch (e) { bad.push(`読み直しができませんでした：${String((e as Error).message || e).slice(0, 80)}`); }
+  const head = !bad.length ? `✅ 決めました（${actor}）` : out.length ? `⚠️ 一部だけ決まりました（${actor}）。残りは承認画面でお願いします` : `⚠️ 決められませんでした（${actor}）。承認画面でお願いします`;
+  const tail = !bad.length ? (items.some((i) => i.body.decision === "approved") ? "予約・タスク・マイページに反映し、お客様へ知らせました。読み直して、ずれはありません。" : "お客様へ送りました。") : "";
+  return [head, ...out.map((x) => "・" + x), ...bad.map((x) => "⚠️ " + x), tail].filter(Boolean).join("\n");
+}
+
+async function thOne(st: string, ch: string, thr: any, card: any, msg: { key: string; user: string; text: string; react?: boolean }, staff: Map<string, string>): Promise<void> {
+  const name = staff.get(msg.user) || "";
+  const t = String(msg.text || "").replace(/<@[A-Z0-9]+>/g, "").replace(/\s+/g, " ").trim();
+  const yes = !!msg.react || TH_YES.test(t), no = !yes && TH_NO.test(t);
+  if (!(await claim({ channel: ch, reply_key: msg.key, thread_ts: card.ts, store: st, reservation_id: thr.reservation_id, slack_user: msg.user, name: name || null, is_staff: !!name, text: t.slice(0, 500), action: msg.react ? "react" : yes ? "yes" : no ? "no" : "free" }))) return;
+  if (!name) { // 社員でない人：決めずに、1回だけ知らせる
+    if (msg.react) return;
+    const prev = await get("omni_slack_replies", `channel=eq.${ch}&thread_ts=eq.${card.ts}&slack_user=eq.${msg.user}&action=eq.not_staff&select=reply_key&limit=1`);
+    await noteReply(ch, msg.key, { action: "not_staff", result: "社員でないので決めない" });
+    if (!prev.length) await sreply(st, ch, card.ts, "ℹ️ ここで決められるのは社員だけです（返信は記録しました）。社員の方が「はい」で返すか、承認画面で決めてください。");
+    return;
+  }
+  const all = await thChgs(st, thr.reservation_id, card.ts), open = all.filter((c) => c.status === "requested");
+  if (!open.length) {
+    await noteReply(ch, msg.key, { result: "もう決まっている" }); await thSave(ch, card.ts, { done: true, pending: null });
+    if (!msg.react) await sreply(st, ch, card.ts, `ℹ️ この依頼はもう決まっています（${[...new Set(all.map((c) => c.status))].join("・") || "見つかりません"}）。`);
+    return;
+  }
+  const pend = thr.pending && thr.pending.items ? thr.pending : null;
+  // 聞き返し中の案への「はい」（リアクションはカードの案への答えとして扱う）
+  if (yes && pend && !msg.react) {
+    const items = pend.items.filter((i: any) => open.some((c) => c.id === i.id));
+    await thSave(ch, card.ts, { pending: null });
+    const res = items.length ? await thRun(st, thr.reservation_id, items, name) : "ℹ️ 聞き返していた件はもう決まっています。";
+    await noteReply(ch, msg.key, { result: res.slice(0, 500) }); await sreply(st, ch, card.ts, res);
+    if (!(await thChgs(st, thr.reservation_id, card.ts)).some((c) => c.status === "requested")) await thSave(ch, card.ts, { done: true });
+    return;
+  }
+  if (yes) { // カードの案どおり
+    const S = Object.fromEntries((await get("omni_suggestions", `kind=eq.chg&ref_id=in.${inList(open.map((c) => c.key))}&select=ref_id,verdict,ask,alt,reason`)).map((x: any) => [String(x.ref_id), x]));
+    const plan = thFromOmni(st, open, S);
+    if (!plan.items.length || (/^承認/.test(t) && plan.items.some((i) => i.body.decision !== "approved"))) { // 「承認」は希望どおりの意味。オムニの案が別の案の時は聞き返す
+      if (/^承認/.test(t)) { // オムニの案がない時の「承認」＝お客様の希望どおり。必ず聞き返す
+        const items = open.map((c) => ({ id: c.id, key: c.key, field: c.field, say: `${thLbl(st, c.field)}：承認（希望どおり ${c.newv.slice(0, 40)}）`, body: { decision: "approved" } }));
+        await thSave(ch, card.ts, { pending: { items, by: name, at: new Date().toISOString() } });
+        await noteReply(ch, msg.key, { result: "聞き返し（希望どおり承認）" });
+        await sreply(st, ch, card.ts, `❓ お客様の希望どおり承認していいですか？\n${items.map((i) => "・" + i.say).join("\n")}\n「はい」で決めます。やめる時は「いいえ」。`);
+        return;
+      }
+      await noteReply(ch, msg.key, { result: "案なし：" + plan.why });
+      await sreply(st, ch, card.ts, `❓ ${plan.why}。どうするか返信してください。\n・希望どおりでよい →「承認」\n・お断り →「いいえ 理由と代わりにできること」\n・別の時間 →「13時なら」${open.length > 1 ? "\n件が複数ある時は番号を付けてください：\n" + thList(st, open) : ""}`);
+      return;
+    }
+    await thSave(ch, card.ts, { pending: null });
+    const res = await thRun(st, thr.reservation_id, plan.items, name);
+    await noteReply(ch, msg.key, { result: res.slice(0, 500) }); await sreply(st, ch, card.ts, res);
+    if (!(await thChgs(st, thr.reservation_id, card.ts)).some((c) => c.status === "requested")) await thSave(ch, card.ts, { done: true });
+    return;
+  }
+  if (msg.react) return;
+  if (no && pend && !t.replace(TH_NO, "").trim()) { await thSave(ch, card.ts, { pending: null }); await noteReply(ch, msg.key, { result: "聞き返しを取り消し" }); await sreply(st, ch, card.ts, "わかりました。取り消しました（まだ何も送っていません）。もう一度返信してください。"); return; }
+  const { list, rest } = thPick(open, no ? t.replace(TH_NO, "") : t);
+  const body = rest.trim();
+  if (!list.length) { await noteReply(ch, msg.key, { result: "番号が合わない" }); await sreply(st, ch, card.ts, `❓ 番号が合いません。この中から選んでください：\n${thList(st, open)}`); return; }
+  const S = Object.fromEntries((await get("omni_suggestions", `kind=eq.chg&ref_id=in.${inList(list.map((c) => c.key))}&select=ref_id,reason`)).map((x: any) => [String(x.ref_id), x]));
+  let items: any[] = [], ask = "";
+  const tm = no ? "" : thTime(body);
+  if (no) {
+    if (!body) { await noteReply(ch, msg.key, { result: "お断りの理由なし" }); await sreply(st, ch, card.ts, "❓ お断りする理由と、代わりにできることを書いてください（例：いいえ 手配ができないため。13時ならできます）"); return; }
+    items = list.map((c) => ({ id: c.id, key: c.key, field: c.field, say: `${thLbl(st, c.field)}：お断り「代わりに、${body}」`, body: { decision: "rejected", reject_reason: (S[c.key] || {}).reason || "other", reject_text: "", alt_text: body } }));
+    ask = `❓ お客様へ、次の内容でお断りを送っていいですか？\n${items.map((i) => "・" + i.say).join("\n")}`;
+  } else if (tm) {
+    const tl = list.filter((c) => TH_TIME.has(c.field));
+    if (tl.length !== 1) { await noteReply(ch, msg.key, { result: "時間の件が選べない" }); await sreply(st, ch, card.ts, tl.length ? `❓ どの件の時間ですか？番号を付けて返信してください（例：1 ${body}）\n${thList(st, open)}` : "❓ この依頼は時間の件ではありません。お断りなら「いいえ 理由と代わりにできること」で返信してください。"); return; }
+    const c = tl[0], pt = TH_TPL[c.field].replace("{x}", tm);
+    items = [{ id: c.id, key: c.key, field: c.field, say: `${thLbl(st, c.field)}：別の案「${pt}」`, body: { decision: "proposed", reject_reason: (S[c.key] || {}).reason || "full_slot", proposal_text: pt, proposal_value: tm } }];
+    ask = `❓ お客様へ、別の案「${pt}」を送っていいですか？（お客様がマイページで「この案でOK」を押すと確定します）`;
+  } else if (body && list.every((c) => TH_PLACE.has(c.field))) {
+    items = list.map((c) => ({ id: c.id, key: c.key, field: c.field, say: `${thLbl(st, c.field)}：今の希望はお受けできず「代わりに、${body}」`, body: { decision: "rejected", reject_reason: (S[c.key] || {}).reason || "other", reject_text: "", alt_text: body } }));
+    ask = `❓ お客様へ、次の内容で返していいですか？\n${items.map((i) => "・" + i.say).join("\n")}`;
+  } else {
+    await noteReply(ch, msg.key, { result: "読み取れない" });
+    await sreply(st, ch, card.ts, `❓ 読み取れませんでした。次のどれかで返信してください。\n・オムニの案でよい →「はい」\n・希望どおり →「承認」\n・お断り →「いいえ 理由と代わりにできること」\n・別の時間 →「13時なら」${open.length > 1 ? "\n件が複数ある時は番号を付けてください：\n" + thList(st, open) : ""}`);
+    return;
+  }
+  await thSave(ch, card.ts, { pending: { items, by: name, at: new Date().toISOString() } });
+  await noteReply(ch, msg.key, { result: "聞き返し：" + ask.slice(0, 300) });
+  await sreply(st, ch, card.ts, `${ask}\n「はい」で送ります。やめる時は「いいえ」。`);
+}
+
+async function threadWatch() {
+  const out: Record<string, number> = { cards: 0, replies: 0 };
+  const SR_ = await get("omni_slack_staff", "active=eq.true&select=ws,slack_user,name");
+  const since = String(Math.floor(Date.now() / 1000) - 3 * 86400);
+  for (const st of ["spk", "nha", "tkm"]) {
+    const ch = OPS_CH[st];
+    const staff = new Map<string, string>(SR_.filter((x: any) => x.ws === TH_WS[st]).map((x: any) => [String(x.slack_user), String(x.name)]));
+    const h = await sapi(st, "conversations.history", { channel: ch, oldest: since, limit: "200" });
+    if (!h.ok) { out["err_" + st] = 1; continue; }
+    const cards = (h.messages || []).filter((m: any) => m.bot_id && /^【[^｜】\n]+｜依頼に返事/.test(String(m.text || "")) && /予約\s+([A-Za-z0-9_-]+)/.test(String(m.text || "")));
+    if (!cards.length) continue;
+    const known = new Map((await get("omni_slack_threads", `channel=eq.${ch}&ts=in.${inList(cards.map((m: any) => String(m.ts)))}&select=ts,reservation_id,seen_reply,pending,done`)).map((x: any) => [String(x.ts), x]));
+    for (const m of cards) {
+      const ts = String(m.ts), rid = String(m.text).match(/予約\s+([A-Za-z0-9_-]+)/)![1];
+      let thr: any = known.get(ts);
+      const reacts = (m.reactions || []).filter((r: any) => TH_REACT.has(String(r.name).replace(/::skin-tone-\d$/, ""))).flatMap((r: any) => (r.users || []).map(String));
+      const latest = String(m.latest_reply || "");
+      if (!thr) {
+        if (!latest && !reacts.length) continue; // 返信もリアクションもないカードは記録しない
+        thr = { reservation_id: rid, seen_reply: null, pending: null, done: false };
+        await fetch(`${SB}/rest/v1/omni_slack_threads?on_conflict=channel,ts`, { method: "POST", headers: { ...H, Prefer: "resolution=ignore-duplicates,return=minimal" }, body: JSON.stringify({ channel: ch, ts, store: st, reservation_id: rid }) });
+      }
+      if (thr.done) continue;
+      out.cards++;
+      for (const u of [...new Set(reacts as string[])]) { if (!staff.has(u)) continue; out.replies++; await thOne(st, ch, thr, m, { key: `${ts}:r:${u}`, user: u, text: "👍", react: true }, staff); }
+      if (latest && latest !== thr.seen_reply) {
+        const R = await sapi(st, "conversations.replies", { channel: ch, ts, oldest: thr.seen_reply || ts, limit: "100" });
+        for (const r of (R.messages || [])) {
+          if (String(r.ts) === ts || r.bot_id || r.subtype || !r.user) continue;
+          if (thr.seen_reply && Number(r.ts) <= Number(thr.seen_reply)) continue;
+          out.replies++;
+          thr = (await get("omni_slack_threads", `channel=eq.${ch}&ts=eq.${ts}&select=reservation_id,seen_reply,pending,done&limit=1`))[0] || thr; // 聞き返しの状態を毎回読み直す
+          await thOne(st, ch, thr, m, { key: String(r.ts), user: String(r.user), text: String(r.text || "") }, staff);
+        }
+        if (R.ok) await thSave(ch, ts, { seen_reply: latest });
+      }
+    }
+  }
+  return out;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   try {
@@ -709,6 +940,8 @@ Deno.serve(async (req) => {
     if (p.action === "chat_apply") { const au = req.headers.get("authorization") || ""; const pin = Deno.env.get("ADMIN_PIN") || ""; if (!(pin && String(p.admin_pin || "") === pin) && !(await isServiceKey(au))) return J({ ok: false, error: "auth" }, 401); return J(await chatApply(p)); }
     // 見張りは cron から（返すのは件数だけ・同じものは1回しか送らない）
     if (p.action === "watch") return J({ ok: true, ...(await watch()) });
+    // Slack のスレッド返信で決める（cron から1分ごと。決めるのは omni_slack_staff の社員の返信だけ）
+    if (p.action === "thread") return J({ ok: true, ...(await threadWatch()) });
     const PIN = Deno.env.get("ADMIN_PIN") || "";
     if (!PIN || String(p.admin_pin || "") !== PIN) return J({ ok: false, error: "pin" }, 401);
     if (p.action === "chat_list") return J({ ok: true, rows: await chatList() });
