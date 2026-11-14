@@ -121,6 +121,12 @@ details.defs summary{cursor:pointer;font-weight:800;font-size:13px}
 .ycat.on{outline:2px solid var(--navy);outline-offset:-2px}.ycat .bn{font-size:11px;font-weight:900}.ycat .num{font-size:20px;font-weight:900;font-variant-numeric:tabular-nums}
 .yi{border:1px solid var(--line);border-left:5px solid var(--yc,#16243f);border-radius:10px;padding:10px;margin-bottom:10px;background:var(--card)}
 .yi.hl{outline:3px solid var(--y);outline-offset:1px}
+.yarc-ok{background:#eef6ff;border:1px solid #b9d4f5;border-radius:8px;padding:8px;font-size:12.5px;margin-top:6px}
+.yarc{margin-top:12px;border:1px dashed var(--line);border-radius:10px;padding:8px 10px;background:var(--card)}
+.yarc summary{cursor:pointer;font-weight:800;font-size:13px}
+.yarc-r{display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;padding:7px 0;border-top:1px solid var(--line);font-size:12.5px}
+.yarc-r .t{flex:1;min-width:180px}
+.yarc-r .w{white-space:nowrap}
 .yh{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.yh .age{margin-left:auto;font-size:12px;color:var(--mut)}
 .ytag{font-size:11px;font-weight:900;color:#fff;border-radius:4px;padding:1px 7px;white-space:nowrap}
 .ym{display:flex;flex-wrap:wrap;gap:2px 14px;font-size:13px;margin-top:4px}
@@ -180,7 +186,7 @@ details.defs summary{cursor:pointer;font-weight:800;font-size:13px}
   <!-- ★2026-11-14 nosh「店舗選択 → 店舗に関連するカードを出す じゃないと混乱する」：先に店を選ぶ→その店の種類の件数とカードだけ -->
   <div class="ystep">① 店を選ぶ</div>
   <div class="tiles" id="aTiles"></div>
-  <div class="ynest" id="yNest" hidden><div class="ystep" id="yNestH"></div><div class="ycats" id="yCats"></div><div class="ystep" id="yListH" style="margin-top:10px"></div><div id="aList"><div class="empty">読み込み中…</div></div></div>
+  <div class="ynest" id="yNest" hidden><div class="ystep" id="yNestH"></div><div class="ycats" id="yCats"></div><div class="ystep" id="yListH" style="margin-top:10px"></div><div id="aList"><div class="empty">読み込み中…</div></div><div id="yArch"></div></div>
   <div id="yPick" class="empty" style="margin-top:10px">👆 先に店を選んでください。選んだ店の中のやることだけが出ます。</div>
   <div class="filt" id="aFilt" hidden></div>
 </div>
@@ -567,7 +573,7 @@ async function loadAll(){
   document.getElementById("hdr").textContent="読み込み中…";
   try{
     /* 2026-11-09 速度：依頼一覧・高松の閲覧集計を、那覇/札幌の一覧と同時に取る（以前は順番待ちで3往復） */
-    const reqP=loadReq();loadRef();loadUnp();loadLate();loadNudge();loadChatCnt();loadOmni();loadLineHero(pin);
+    const reqP=loadReq();loadRef();loadUnp();loadLate();loadNudge();loadChatCnt();loadOmni();loadArch();loadLineHero(pin);
     const btP=ef(BT,BT_ANON,"mypage-active-bt",{admin_pin:pin,from,to}).catch(e=>{if(e.message==="pin")throw e;console.warn(e);return {rows:[]};}).then(async b=>{
       const tk=b.rows.map(r=>r.token).filter(Boolean);
       if(tk.length){const g=await ef(MAIN,MAIN_ANON,"mypage-active",{admin_pin:pin,action:"agg",tokens:tk});b.rows.forEach(r=>{r.ev=r.token&&g.agg[r.token]||null;});}
@@ -810,7 +816,59 @@ function yItems(){
   OMNI.forEach(x=>I.push({c:"omni",bk:OM_ST[x.store]||"",rid:x.rid||"",name:x.name,om:x,at:x.at,due:Date.parse(x.at)+30*60e3}));
   NUD.forEach(x=>I.push({c:"voice",bk:"hdm_"+x.store,rid:x.resv||"",nud:x,at:x.created_at,due:Date.parse(x.created_at)+5*60e3}));
   LATE.filter(x=>x.src==="unconf"?!x.confirmed_at:(Date.parse(x.created_at)>since&&x.eta_min!==0&&!x.done_at)).forEach(x=>I.push({c:"late",bk:"hdm_"+x.store,rid:x.resv||"",late:x,at:x.created_at,due:x.eta_at?Date.parse(x.eta_at):Date.parse(x.created_at)}));
-  return I.filter(it=>hitQ(it.name,it.rid));}
+  YHID=[];
+  return I.filter(it=>hitQ(it.name,it.rid)).filter(it=>{it.k=itKey(it);const a=it.k&&ARCH[it.k],w=autoWhy(it);if(a||w){YHID.push({it,a,w});return false;}return true;});}
+/* ★2026-11-14 nosh「確認済/アーカイブ機能を追加」「永遠にたまる」：
+   ・カードに「✓ 確認済」→ 画面の中で「よろしいですか？」→ 一覧と件数から外れてアーカイブへ（押した人・時刻を yaru_archive に残す。予約・タスクの値は変えない）
+   ・終わった分は自動でアーカイブ：出発日を過ぎた「準備が足りない」／前の日の「今日のタスクが未確認」／前の日のお客様の知らせ
+   ・お客様の依頼（依頼に返事・お知らせの依頼）は今まで通り中身を見て「アーカイブ」（自動では消さない）
+   ・アーカイブは種類の下に畳んで出す。「戻す」で一覧に戻る */
+let ARCH={},ARCH_ROWS=[],ARCH_ASK="",ARCH_OPEN=false,YHID=[],YMETA={};
+const jstDay=t=>{t=typeof t==="number"?t:Date.parse(t||"");return t&&!isNaN(t)?ymd(new Date(t+324e5)):"";};
+function itKey(it){
+  if(it.om)return "om:"+it.om.id;
+  if(it.nud)return "nud:"+(it.nud.id||it.nud.created_at)+":"+it.rid;
+  if(it.r)return "prep:"+it.bk+":"+it.rid+":"+((it.a||{}).t||"");
+  if(it.ref)return "ref:"+it.ref.fn+":"+it.ref.id;
+  if(it.unp)return "unp:"+it.bk+":"+it.rid+":"+(it.unp.id||((it.unp.kind_jp||"")+":"+(it.unp.amount||"")));
+  if(it.late)return "late:"+(it.late.src||"")+":"+(it.late.id||it.late.created_at)+":"+(it.late.staff||it.late.staff_name||"");
+  return "";}  /* 依頼（it.x）は元の「アーカイブ」を使う */
+function autoWhy(it){const td=ymd(jstNow());
+  if(it.r&&it.r.sd&&it.r.sd<td)return "出発日を過ぎた";
+  if(it.late&&it.late.src==="unconf"){const d=jstDay(it.late.created_at);if(d&&d<td)return "前の日のタスク";}
+  if(it.nud){const d=jstDay(it.nud.created_at);if(d&&d<td)return "前の日のお知らせ";}
+  return "";}
+async function loadArch(){const pin=getPin();if(!pin)return;
+  try{const j=await ef(MAIN,MAIN_ANON,"mypage-active",{admin_pin:pin,action:"arch_list",days:30});ARCH_ROWS=j.rows||[];const m={};ARCH_ROWS.forEach(r=>{if(!r.restored_at)m[r.key]=r;});ARCH=m;}catch(e){console.warn("arch",e);}
+  renderAct();}
+function archAsk(k){ARCH_ASK=ARCH_ASK===k?"":k;renderAct();}
+async function archGo(k,undo){const who=getActor();if(!who){toast("押した人の名前を入れてください");return;}
+  const m=YMETA[k]||ARCH_ROWS.find(r=>r.key===k)||{};ARCH_ASK="";
+  if(undo){delete ARCH[k];}else{ARCH[k]={key:k,bucket:m.bucket,kind:m.kind,rid:m.rid,title:m.title,archived_by:who,archived_at:new Date().toISOString()};}
+  renderAct();
+  try{await ef(MAIN,MAIN_ANON,"mypage-active",{admin_pin:getPin(),action:"arch_set",key:k,bucket:m.bucket||"",kind:m.kind||"",rid:m.rid||"",title:m.title||"",actor_name:who,undo:!!undo});toast(undo?"一覧に戻しました":"確認済にしました（アーカイブに入りました）");}
+  catch(e){toast("保存できませんでした。もう一度押してください");}
+  loadArch();}
+const plainOf=h=>{const d=document.createElement("div");d.innerHTML=String(h||"");return (d.textContent||"").replace(/\s+/g," ").trim().slice(0,200);};
+function archBtnHtml(it){if(!it.k)return"";const k=esc(it.k);
+  if(ARCH_ASK===it.k)return `<div class="yarc-ok">このカードを一覧から外して<b>アーカイブ</b>に入れます。${it.unp?"（支払いが済んだわけではありません。入金は自動で確認され続けます）":it.om?"（お客様には何も送りません。チャットは未対応のままです）":it.ref?"（返金済みにはなりません）":"（予約・タスクは変わりません）"}よろしいですか？<div class="acts"><button class="btn ok" onclick="archGo('${k}')">はい、確認済</button><button class="btn" onclick="archAsk('${k}')">やめる</button></div></div>`;
+  return `<button class="jump" style="border-color:#64748b;color:#334155" onclick="archAsk('${k}')">✓ 確認済（アーカイブへ）</button>`;}
+function archTitle(it){
+  if(it.r)return ((it.a||{}).ic||"")+" "+((it.a||{}).t||"準備が足りない")+(it.r.name?"（"+it.r.name+" 様・出発 "+md(it.r.sd)+"）":"");
+  if(it.late)return (it.late.src==="unconf"?"👀 今日のタスクが未確認":"⏰ "+(it.late.title||""))+(it.late.staff_name?"（"+it.late.staff_name+"）":"");
+  if(it.nud)return "🙋 お客様から「"+(it.nud.label||"")+"」";
+  return it.name||"";}
+function yArchHtml(){if(!ABF||YF==="all")return"";
+  const L=[],seen=new Set();
+  YHID.filter(h=>h.it.bk===ABF&&h.it.c===YF).forEach(h=>{seen.add(h.it.k);const m=YMETA[h.it.k]||{};L.push({k:h.it.k,t:(h.a&&h.a.title)||m.title||archTitle(h.it),rid:h.it.rid,a:h.a,w:h.w,at:h.a?h.a.archived_at:(h.it.at||"")});});
+  Object.values(ARCH).filter(r=>r.bucket===ABF&&r.kind===YF&&!seen.has(r.key)).forEach(r=>L.push({k:r.key,t:r.title,rid:r.rid,a:r,w:"",at:r.archived_at}));
+  if(!L.length)return"";
+  L.sort((x,y)=>String(y.at||"").localeCompare(String(x.at||"")));
+  return `<details class="yarc" ${ARCH_OPEN?"open":""} ontoggle="ARCH_OPEN=this.open"><summary>📦 アーカイブ（確認済・自動） ${L.length}件</summary><div class="mut" style="margin:4px 0 2px">確認済にしたカードと、終わって自動で入ったカード（出発日を過ぎた・前の日の分）。確認済は直近30日。</div>`+
+    L.slice(0,200).map(x=>{const k=esc(x.k),ask=ARCH_ASK==="undo:"+x.k;
+      const who=x.a?`✓ 確認済 ${esc(x.a.archived_by||"")} ${esc(hmOf(x.a.archived_at))}`:`🕒 自動：${esc(x.w)}`;
+      const btn=!x.a?"":x.w?`<span class="mut">（終わった分なので戻しても出ません）</span>`:ask?`<span class="yarc-ok" style="margin:0">一覧に戻します。よろしいですか？ <button class="btn ok" onclick="archGo('${k}',true)">はい、戻す</button> <button class="btn" onclick="archAsk('undo:${k}')">やめる</button></span>`:`<button class="jump" onclick="archAsk('undo:${k}')">↩ 戻す</button>`;
+      return `<div class="yarc-r"><div class="t">${esc(x.t||"")} <span class="mut">${esc(x.rid||"")}</span></div><span class="w mut">${who}</span>${btn}</div>`;}).join("")+`</details>`;}
 function yCard(it){const C=YK.find(y=>y[0]===it.c),B=BUCK[it.bk]||{n:"",c:"#334155"},foc=FOCUS===it.bk+"|"+it.rid;
   let ttl="",meta=[],doH="",next=[],prog=[];
   if(it.om){const x=it.om,cf=OM_CONF[x.conf]||OM_CONF.look,st=OMS[x.id]||"",r=x.resv||{};
@@ -874,12 +932,13 @@ function yCard(it){const C=YK.find(y=>y[0]===it.c),B=BUCK[it.bk]||{n:"",c:"#3341
     next=["お客様のマイページに「支払う」ボタンが出ている","入金は自動で確認（済むとここから消える）"];
     prog=[[hmOf(x.created_at),"未払いを検知"],["",st,1]];
   }
+  if(it.k)YMETA[it.k]={bucket:it.bk,kind:it.c,rid:it.rid||"",title:plainOf(ttl+" "+meta.filter(Boolean).slice(0,3).join(" "))};
   const P=prog.filter(p=>p[1]).map(([t,l,now])=>`<li class="${now?"now":""}"><span class="tm">${esc(t||"")}</span>${esc(l)}</li>`).join("");
   return `<div class="yi ${foc?"hl":""}" data-a="${esc(it.bk+"|"+it.rid)}" style="--yc:${it.nud&&(it.nud.late5||it.nud.warned_at)?"#dc2626":C[2]}">
     <div class="yh"><span class="ytag" style="background:${C[2]}">${C[1]}</span>${ttl}${B.n?`<span class="bk" style="background:${B.c}">${B.n}</span>`:""}<span class="age">${agoOf(it.at)}</span></div>
     <div class="ym">${meta.filter(Boolean).map(m=>`<span>${m}</span>`).join("")}</div>
     <div class="ycols"><div class="ycol"><h4>すること</h4>${doH}</div><div class="ycol"><h4>${it.om?"オムニの判断と見た材料":"この先の手順"}</h4><ol>${next.map(t=>`<li>${t}</li>`).join("")}</ol></div><div class="ycol"><h4>進み具合</h4><ul class="yp">${P}</ul></div></div>
-    <div class="acts" style="justify-content:space-between">${it.bk&&rowOf(it.bk,it.rid)?`<button class="jump" onclick="goList('${it.bk}','${esc(it.rid)}')">← リストで見る</button>`:"<span></span>"}<span class="mut">${esc(it.rid||"")}</span></div></div>`;}
+    <div class="acts" style="justify-content:space-between">${it.bk&&rowOf(it.bk,it.rid)?`<button class="jump" onclick="goList('${it.bk}','${esc(it.rid)}')">← リストで見る</button>`:"<span></span>"}<span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end">${ARCH_ASK===it.k?"":archBtnHtml(it)}<span class="mut">${esc(it.rid||"")}</span></span></div>${ARCH_ASK===it.k?archBtnHtml(it):""}</div>`;}
 function renderYaru(){
   const I=yItems();
   /* ★2026-11-14 nosh「出てこない」：検索中は、選んだ店・種類に当たる件がなければ、当たった件の店と種類に自動で切り替える */
@@ -896,7 +955,8 @@ function renderYaru(){
   const L=I.filter(it=>inB(it)&&(YF==="all"||it.c===YF)).sort((a,b)=>fo(a)-fo(b)||ord(a.c)-ord(b.c)||(a.due||0)-(b.due||0));
   const pend=I.filter(it=>it.x&&inB(it));const hot=pend.filter(it=>it.due-Date.now()<=15*60e3).length;
   document.getElementById("aHot").innerHTML=hot?`<div class="hot">⏰ 返事の目安まで15分を切った依頼が ${hot} 件あります。先に返事してください。</div>`:"";
-  document.getElementById("aList").innerHTML=(YF==="omni"?omRateHtml("chat"):YF==="req"?omRateHtml("chg"):YF==="prep"?omRateHtml("prep"):"")+(YF==="all"?`<div class="empty">👆 種類を選んでください。選んだ種類のカードだけが出ます。</div>`:L.length?L.map(yCard).join(""):`<div class="empty">${YK_NONE[YF]?esc(YK_NONE[YF]):"✅ やることはありません"}</div>`);}
+  document.getElementById("aList").innerHTML=(YF==="omni"?omRateHtml("chat"):YF==="req"?omRateHtml("chg"):YF==="prep"?omRateHtml("prep"):"")+(YF==="all"?`<div class="empty">👆 種類を選んでください。選んだ種類のカードだけが出ます。</div>`:L.length?L.map(yCard).join(""):`<div class="empty">${YK_NONE[YF]?esc(YK_NONE[YF]):"✅ やることはありません"}</div>`);
+  document.getElementById("yArch").innerHTML=yArchHtml();}
 /* ★2026-11-14 nosh「未確認・未完了はここからスタッフページに問いかけできるといい 大丈夫ボタン発動」：本部→担当のスタッフ画面に「大丈夫ですか？」を今すぐ出す（EF staff-task-check action ask_now）。返事は同じカードに戻る */
 async function askStaff(b){const [store,staff,resv,id]=String(b.dataset.ask||"").split("|");b.disabled=true;b.textContent="送っています…";
   try{const j=await ef(MAIN,MAIN_ANON,"staff-task-check",{admin_pin:getPin(),action:"ask_now",store,staff,resv,id});if(j&&j.ok===false)throw new Error(j.error||"ng");b.textContent="✅ スタッフ画面に出しました（返事はこのカードに戻ります）";setTimeout(loadLate,1500);}
