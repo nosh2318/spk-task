@@ -193,6 +193,12 @@ async function chgSuggest(c: any) {
     ? (await get("reservations", `id=eq.${encodeURIComponent(rid)}&select=lend_date,lend_time,return_date,return_time,del_place,col_place&limit=1`))[0]
     : (await get("nha_reservations", `id=eq.${encodeURIComponent(rid)}&select=start_date,start_time,end_date,end_time,del_place,col_place&limit=1`))[0];
   if (!R) return { verdict: "human", ask: "", why: ["予約が見つからない"] };
+  // 受け取り方の変更：時刻・場所の値が無い（札幌の自由文）／受け取り方そのものを変える（料金が変わる）ものは人へ。時刻・場所だけの変更はふつうの時間・場所の依頼として判断
+  if (f === "method") {
+    const T0 = pl.target && typeof pl.target === "object" ? pl.target : {};
+    if (!["lend_time", "return_time", "del_place", "col_place"].some((k) => String(T0[k] || "").trim())) return { verdict: "human", ask: "", why: [`受け取り方の変更（「${String(c.new_value || "").slice(0, 40)}」）は時刻・場所の値が無いので、中身を人が読んで決める`] };
+    if ((T0.visit_type || T0.return_type) && store === "nha") { const R0 = (await get("nha_reservations", `id=eq.${encodeURIComponent(rid)}&select=visit_type,return_type&limit=1`))[0] || {}; if ((T0.visit_type && T0.visit_type !== R0.visit_type) || (T0.return_type && T0.return_type !== R0.return_type)) return { verdict: "human", ask: "", why: [`受け取り方そのものを変える依頼（${String(c.new_value || "").slice(0, 40)}）→ 料金・送迎の手配が変わるので人が決める`] }; }
+  }
   const sd = String(R.lend_date || R.start_date || "").slice(0, 10), st = hm(R.lend_time || R.start_time), ed = String(R.return_date || R.end_date || "").slice(0, 10), et = hm(R.return_time || R.end_time);
   const isReady = f === "ready";
   const back = /^(return_time|col_place|ready)$/.test(f) || (f === "method" && ("return_time" in tg || "col_place" in tg || /^帰り/.test(String(c.new_value || ""))));
@@ -534,18 +540,40 @@ async function watch() {
   const now = Date.now(), t5 = new Date(now - 5 * 60e3).toISOString(), t24 = new Date(now - 24 * 3600e3).toISOString();
   const out: Record<string, number> = { chg: 0, tkm: 0, bot: 0 };
   // ② 時間・場所の依頼（札幌・那覇）
-  const C = await get("mypage_changes", `status=eq.requested&field=in.(${CHG_F.join(",")})&created_at=lt.${t5}&created_at=gt.${t24}&select=id,store,reservation_id,field,new_value&order=id.asc&limit=100`);
-  const T = await getB("bt_reservation_changes", `status=eq.requested&change_type=in.(${TKM_F.join(",")})&changed_at=lt.${t5}&changed_at=gt.${t24}&select=id,reservation_id,change_type,new_value&order=id.asc&limit=100`);
+  const C = await get("mypage_changes", `status=eq.requested&field=in.(${CHG_F.join(",")})&created_at=lt.${t5}&created_at=gt.${t24}&select=id,store,reservation_id,field,old_value,new_value&order=id.asc&limit=100`);
+  const T = await getB("bt_reservation_changes", `status=eq.requested&change_type=in.(${TKM_F.join(",")})&changed_at=lt.${t5}&changed_at=gt.${t24}&select=id,reservation_id,change_type,old_value,new_value&order=id.asc&limit=100`);
+  // 札幌の「受け取り方」は自由文で、受けた時に元の知らせが出ている（オムニに回さない種類）→ 見張りの対象外（二重に出さない）
+  for (let i = C.length - 1; i >= 0; i--) if (C[i].store === "spk" && C[i].field === "method") C.splice(i, 1);
   const keys = [...C.map((c: any) => String(c.id)), ...T.map((c: any) => "tkm:" + c.id)];
   const has = new Set(keys.length ? (await get("omni_suggestions", `kind=eq.chg&ref_id=in.${inList(keys)}&select=ref_id`)).map((x: any) => String(x.ref_id)) : []);
   const miss = [...C.filter((c: any) => !has.has(String(c.id))).map((c: any) => ({ key: String(c.id), store: c.store, rid: c.reservation_id })), ...T.filter((c: any) => !has.has("tkm:" + c.id)).map((c: any) => ({ key: "tkm:" + c.id, store: "tkm", rid: c.reservation_id }))];
   const fresh = new Set(await markSent(miss.map((m) => "chg:" + m.key)));
-  const by: Record<string, any[]> = {};
-  for (const m of miss) if (fresh.has("chg:" + m.key)) (by[m.store] = by[m.store] || []).push(m);
-  for (const [st, L] of Object.entries(by)) {
-    const bk = st === "tkm" ? "hdm_tkm" : "hdm_" + st;
-    await post(OPS_CH[st] || DEV_CH, [`【${ST_JP[st] || st}｜依頼に返事／時間・場所】⚠️ オムニが判断していない依頼 ${L.length}件`, "オムニの案が5分たっても付きません。社員が本部で承認・お断りしてください（担当の画面には「社員の承認待ち」で出ています）", "👷 本部", `🔗 https://nosh2318.github.io/spk-task/mypage-active.html?tab=action&bucket=${bk}`].join("\n"));
-    out[st === "tkm" ? "tkm" : "chg"] += L.length;
+  // ★2026-11-15 nosh「意味不明」：まとめて「判断していない依頼 N件」ではなく、1件ずつ「だれの・何の依頼か／案が遅れた理由／見張りが代わりに出した案／人がやること」を出す
+  for (const m of miss) {
+    if (!fresh.has("chg:" + m.key)) continue;
+    const st = m.store, bk = st === "tkm" ? "hdm_tkm" : "hdm_" + st;
+    const c = st === "tkm" ? T.find((x: any) => "tkm:" + x.id === m.key) : C.find((x: any) => String(x.id) === m.key);
+    let S: any = null, err = "";
+    try {
+      const full = st === "tkm" ? (await getB("bt_reservation_changes", `id=eq.${c.id}&select=id,reservation_id,change_type,new_value,old_value,payload,status,changed_at&limit=1`))[0] : (await get("mypage_changes", `id=eq.${c.id}&select=id,store,reservation_id,field,old_value,new_value,payload,status,note,created_at&limit=1`))[0];
+      S = st === "tkm" ? await chgSuggestTkm(full) : await chgSuggest(full);
+      if (S) await saveSug(m.key, st, String(m.rid), S);
+    } catch (e) { err = String((e as Error).message || e).slice(0, 80); }
+    const R = st === "spk" ? (await get("reservations", `id=eq.${encodeURIComponent(m.rid)}&select=name&limit=1`).catch(() => []))[0] : st === "nha" ? (await get("nha_reservations", `id=eq.${encodeURIComponent(m.rid)}&select=name&limit=1`).catch(() => []))[0] : (await getB("bt_reservations", `id=eq.${encodeURIComponent(m.rid)}&select=name&limit=1`).catch(() => []))[0];
+    const FJ: Record<string, string> = { lend_time: st === "spk" ? "お届けの時間" : "貸出の時間", return_time: st === "spk" ? "回収の時間" : "返却の時間", del_place: "お届けの場所", col_place: "回収の場所", method: "受け取り方", ready: "早め回収", mp_pickup: "空港お迎えの時刻", mp_dropoff: "空港へお送りの時刻" };
+    const fld = String(c.field || c.change_type || "");
+    const same = st !== "tkm" ? C.filter((x: any) => x.reservation_id === m.rid && String(x.id) !== m.key) : [];
+    const ok = S && S.verdict !== "human" && S.ask;
+    await post(OPS_CH[st] || DEV_CH, [
+      `【${ST_JP[st] || st}｜依頼に返事／時間・場所】${ok ? "🤖" : "⚠️"} 予約 ${m.rid}（${String((R || {}).name || "お客様")}様）`,
+      `🙋 依頼：${FJ[fld] || fld}　${String(c.old_value || "").slice(0, 40) ? String(c.old_value).slice(0, 40) + " → " : ""}${String(c.new_value || "").slice(0, 60)}`,
+      ...(same.length ? [`ℹ️ 同じお客様の依頼がほかに${same.length}件（${same.map((x: any) => FJ[x.field] || x.field).join("・")}）。同じ内容なら片方の承認で反映されます`] : []),
+      `⏱ 受けた時にオムニの案が付かなかったので、見張りが代わりに判断しました`,
+      ok ? `🤖 オムニの案：${String(S.ask).slice(0, 200)}` : `🤖 オムニ：決められません（${err ? "判断の途中で止まった：" + err : (S && Array.isArray(S.why) ? S.why.slice(-2).join("／") : "理由不明")}）`,
+      ok ? "👷 人がやること：本部で「はい」を押すだけ（押すと予約・タスク・お客様へ自動で反映）" : "👷 人がやること：本部で承認かお断りを選ぶ",
+      `🔗 https://nosh2318.github.io/spk-task/mypage-active.html?tab=action&bucket=${bk}`,
+    ].join("\n"));
+    out[st === "tkm" ? "tkm" : "chg"] += 1;
   }
   // ③ Mac mini のオムニ（チャットの案）の心拍
   const hb = (await get("cli_heartbeat", `id=eq.omni_bot&select=beat_at&limit=1`))[0];
