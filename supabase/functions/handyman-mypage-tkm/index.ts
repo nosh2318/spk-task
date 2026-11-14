@@ -509,14 +509,48 @@ async function omniAsk(store: string, ids: (number | string)[]): Promise<any[]> 
     const j = await r.json().catch(() => null); return j && j.ok ? Object.values(j.map || {}) : [];
   } catch { return []; }
 }
-function omniText(S: any[]): { title: string; lines: string[] } | null {
+function omniText(S: any[]): { title: string; lines: string[]; S: any[] } | null {
   if (!S.length) return null;
   const asks = S.map((s: any) => s.verdict === "human" || !s.ask ? "" : String(s.ask)).filter(Boolean);
   const human = S.some((s: any) => s.verdict === "human" || !s.ask);
   const who = String((S.find((s: any) => s.who) || {}).who || "");
   const title = human ? "🤖 オムニ：迷うので社員が決めてください" : "🤖 " + asks.join("／");
   const why = [...new Set(S.flatMap((s: any) => Array.isArray(s.why) ? s.why : []))].slice(0, 6).map((w) => "・" + w);
-  return { title, lines: [...why, `👷 担当${who ? " " + who + "さん" : "なし"}の個別URLにも「社員の承認待ち」で出ています`, "✅ 社員が承認画面で「はい」→ 予約・タスク・お客様へ自動で反映"] };
+  return { title, S, lines: [...why, `👷 担当${who ? " " + who + "さん" : "なし"}の個別URLにも「社員の承認待ち」で出ています`, "✅ 社員が承認画面で「はい」→ 予約・タスク・お客様へ自動で反映"] };
+}
+
+// ★2026-11-14 nosh「内容はしっかり ユーザー名 車両 日程 提案内容 判断内容など みてわかるものに」：オムニの提案は1行ずつの形で出す
+async function omniMsg(store: string, rid: string, S: any[], req: string[], url: string, cat: string): Promise<{ text: string; blocks: unknown[] }> {
+  const st = HDM_ST[store] || HDM_ST.spk;
+  const [lb, dt, tt] = await Promise.all([hdmLabel(store, rid), hdmDates(store, rid), hdmTanto(store, rid, "")]);
+  const P = String(lb || "").split("｜").map((x) => x.trim());
+  const nm = (P.find((x) => /^👤/.test(x)) || "").replace(/^👤\s*/, "") || "（名前なし）";
+  const car = (P.find((x) => /^🚗/.test(x)) || "").replace(/^🚗\s*/, "") || "未割当";
+  const asks = S.map((s: any) => s.verdict === "human" || !s.ask ? "" : String(s.ask)).filter(Boolean);
+  const human = S.some((s: any) => s.verdict === "human" || !s.ask);
+  const alt = S.some((s: any) => s.verdict === "alt");
+  const why = [...new Set(S.flatMap((s: any) => Array.isArray(s.why) ? s.why.map(String) : []))].slice(0, 6);
+  const head = human ? `【${st.jp}｜${cat}】🙋 社員が決めてください：${(why.find((w) => /⚠️|重な|読めない|見つからない|できなかった|外/.test(w)) || why[0] || "オムニが決められない").replace(/^⚠️\s*/, "")}`
+    : `【${st.jp}｜${cat}】🤖 ${asks.join("／")}`; // 【店｜種類】で始める＝送る直前の形の整え・店の部屋への振り分けがそのまま効く
+  const conf = human ? "人に回す" : alt ? "人が見る（代わりの案）" : "任せてよい";
+  const strip = (s: string) => String(s || "").replace(/\*/g, "").trim();
+  const lines = [
+    head,
+    `👤 お客様：${nm}　📄 予約 ${rid}`,
+    `🚗 車両：${car}`,
+    `📅 日程：${String(dt || "").replace(/^📅\s*/, "") || "—"}`,
+    `👷 担当：${String(tt || "").replace(/^👷\s*/, "") || "未定"}`,
+    "――――",
+    `💬 お客様の依頼：${req.map(strip).filter(Boolean).join("／") || "—"}`,
+    `🤖 オムニの案：${human ? "決められないので社員へ" : asks.join("／")}（自信：${conf}）`,
+    "🔎 判断の理由（見たデータ）",
+    ...(why.length ? why.map((w) => " ・" + w) : [" ・—"]),
+    "✅ 承認すると：予約・タスク・マイページが変わり、お客様へ知らせます",
+    "👷 担当がすること：承認のあと、新しい時間・場所で準備（担当の画面には「社員の承認待ち」で出ています）",
+    `🔗 ${url}`,
+  ];
+  const text = lines.join("\n").slice(0, 2900);
+  return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }, { type: "actions", elements: [{ type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, url, style: "primary" }] }] };
 }
 
 Deno.serve(async (req) => {
@@ -983,7 +1017,7 @@ Deno.serve(async (req) => {
     else await sbPost("bt_reservation_changes", { reservation_id: resId, ...row, status: "requested", changed_by: "customer", source: "mypage" });
     const lbl = FLD_JP[ctype];
     const _om = want ? omniText(await omniAsk("tkm", (await sbGet("bt_reservation_changes", `reservation_id=eq.${encodeURIComponent(resId)}&source=eq.mypage&change_type=eq.${ctype}&status=eq.requested&select=id`)).map((x: any) => x.id))) : null;
-    { const m = await hdmMsg({ emoji: "🟡", store: "tkm", title: _om ? _om.title : want ? `送迎の変更依頼（承認待ち・⚠️オムニ未判断）` : `送迎の変更依頼（承認待ち）`, cat: "依頼に返事／受け取り方・送迎", rid: resId, side: go ? "go" : "back", url: actUrl(resId), // ★2026-11-10 共通の型
+    { const m = _om ? await omniMsg("tkm", resId, _om.S, [`${lbl}　${oldV || "（未選択）"} → ${newV}`, flight ? `✈️ ご搭乗便 ${flight}` : ""], actUrl(resId), "依頼に返事／受け取り方・送迎") : await hdmMsg({ emoji: "🟡", store: "tkm", title: _om ? _om.title : want ? `送迎の変更依頼（承認待ち・⚠️オムニ未判断）` : `送迎の変更依頼（承認待ち）`, cat: "依頼に返事／受け取り方・送迎", rid: resId, side: go ? "go" : "back", url: actUrl(resId), // ★2026-11-10 共通の型
       body: [dateLine(r.start_date, r.end_date, go ? "go" : "back"), `${lbl}　${oldV || "（未選択）"} → ${newV}`, flight ? `✈️ ご搭乗便 ${flight}` : "", ...(_om ? _om.lines : ["⚠️ 要承認：承認＝予約・OPシートへ反映＋お客様へメール／できない時は「代わりの案」"])], buttons: [{ text: "✅ 承認画面を開く", url: actUrl(resId) }] });
     await slackPost(m.text, m.blocks); }
     return json({ ok: true, pendingApproval: true, requested: ctype }, 200, origin);
