@@ -695,7 +695,7 @@ async function prepDecide(p: any) {
 // ════ Slack のスレッド返信で決める（2026-11-15 nosh「スレッドにスタッフが返信し完結できる手段がほしい」）════
 //   店の部屋のオムニのカード（【店｜依頼に返事…】＋「予約 ID」）に社員が返信 → ここ（1分ごと・cron）が読み、承認・お断り・別の案まで決める。
 //   ・「はい／OK／👍」（返信でもリアクションでも）＝オムニの案どおり。カードが「〜で承認していいですか？」の確認なので、そのまま実行
-//   ・「いいえ 理由・代わり」「13時なら」など＝オムニが読み取り「〜を送っていいですか？」と聞き返す → 「はい」で送る（ボタンと同じく必ず確認を挟む）
+//   ・「13時なら」＝オムニが読み取り「〜を送っていいですか？」と聞き返す → 「はい」で送る（ボタンと同じく必ず確認を挟む）
 //   ・決められるのは omni_slack_staff の社員だけ。返信はすべて omni_slack_replies に残す。承認者は「名前（Slack）」で予約の変更の記録へ
 //   ・実行は本部の承認画面と同じ decide（反映・お客様への知らせ・担当の画面は今のまま）。終わったら読み直して、ずれがないかをスレッドに返す
 const BT_SLACK = Deno.env.get("BT_SLACK_TOKEN") || Deno.env.get("BT_SLACK_BOT_TOKEN") || "";
@@ -708,7 +708,6 @@ const TH_LBL: Record<string, Record<string, string>> = {
 // 別の案の文（本部の承認画面の型と同じ）
 const TH_TPL: Record<string, string> = { lend_time: "{x}でしたらお届けできます", return_time: "{x}でしたら回収に伺えます", ready: "{x}前後でしたら回収に伺えます", mp_pickup: "{x}でしたら空港へお迎えに伺えます", mp_dropoff: "{x}でしたら空港までお送りできます" };
 const TH_TIME = new Set(Object.keys(TH_TPL));
-const TH_PLACE = new Set(["del_place", "col_place"]);
 // レビュー 11/15：「了解」「👍」は見た合図で日常に使うので、決めるのは はい／OK／承認／この案で／その案で だけ。リアクションでは決めない
 const TH_YES = /^(はい|ok|ｏｋ|承認|その案で|この案で)[\s。．！!、]*(です|します|でお願いします)?[\s。．！!]*$/i;
 const TH_NO = /^(いいえ|いや|ng|ＮＧ|だめ|ダメ|無理|むり|お断り|断る|断って|却下|やめ)[\s。．、,:：！!]*/i;
@@ -804,6 +803,8 @@ async function thRun(st: string, rid: string, items: any[], name: string): Promi
   return [head, ...out.map((x) => "・" + x), ...bad.map((x) => "⚠️ " + x), tail].filter(Boolean).join("\n");
 }
 
+// ★2026-11-15 nosh「テキストを修正したい場合は管理ツールから」：お客様へ送る文（お断りの理由・代わりの案の文）は Slack では書かせず、承認画面へ案内する
+const thAdmin = (st: string, rid: string) => `https://nosh2318.github.io/spk-task/mypage-active.html?tab=action&bucket=hdm_${st}&rid=${encodeURIComponent(rid)}`;
 async function thOne(st: string, ch: string, thr: any, card: any, msg: { key: string; user: string; text: string; react?: boolean }, staff: Map<string, string>): Promise<void> {
   const name = staff.get(msg.user) || "";
   const t = String(msg.text || "").replace(/<@[A-Z0-9]+>/g, "").replace(/\s+/g, " ").trim();
@@ -844,7 +845,7 @@ async function thOne(st: string, ch: string, thr: any, card: any, msg: { key: st
         return;
       }
       await noteReply(ch, msg.key, { result: "案なし：" + plan.why });
-      await sreply(st, ch, card.ts, `❓ ${plan.why}。どうするか返信してください。\n・希望どおりでよい →「承認」\n・お断り →「いいえ 理由と代わりにできること」\n・別の時間 →「13時なら」${open.length > 1 ? "\n件が複数ある時は番号を付けてください：\n" + thList(st, open) : ""}`);
+      await sreply(st, ch, card.ts, `❓ ${plan.why}。どうするか返信してください。\n・希望どおりでよい →「承認」\n・お断り・文を直す → 承認画面で ${thAdmin(st, thr.reservation_id)}\n・別の時間 →「13時なら」${open.length > 1 ? "\n件が複数ある時は番号を付けてください：\n" + thList(st, open) : ""}`);
       return;
     }
     await thSave(ch, card.ts, { pending: null });
@@ -861,22 +862,19 @@ async function thOne(st: string, ch: string, thr: any, card: any, msg: { key: st
   const S = Object.fromEntries((await get("omni_suggestions", `kind=eq.chg&ref_id=in.${inList(list.map((c) => c.key))}&select=ref_id,reason`)).map((x: any) => [String(x.ref_id), x]));
   let items: any[] = [], ask = "";
   const tm = no ? "" : thTime(body);
-  if (no) {
-    if (!body) { await noteReply(ch, msg.key, { result: "お断りの理由なし" }); await sreply(st, ch, card.ts, "❓ お断りする理由と、代わりにできることを書いてください（例：いいえ 手配ができないため。13時ならできます）"); return; }
-    items = list.map((c) => ({ id: c.id, key: c.key, field: c.field, say: `${thLbl(st, c.field)}：お断り「代わりに、${body}」`, body: { decision: "rejected", reject_reason: (S[c.key] || {}).reason || "other", reject_text: "", alt_text: body } }));
-    ask = `❓ お客様へ、次の内容でお断りを送っていいですか？\n${items.map((i) => "・" + i.say).join("\n")}`;
+  if (no) { // お断りは文を書くので承認画面で（Slack の文はお客様へ送らない）
+    await noteReply(ch, msg.key, { result: "お断り→承認画面へ案内" });
+    await sreply(st, ch, card.ts, `✏️ お断りや、お客様へ送る文を直す時は承認画面でお願いします（理由・代わりの案を選んで送れます）。\n🔗 ${thAdmin(st, thr.reservation_id)}`);
+    return;
   } else if (tm) {
     const tl = list.filter((c) => TH_TIME.has(c.field));
-    if (tl.length !== 1) { await noteReply(ch, msg.key, { result: "時間の件が選べない" }); await sreply(st, ch, card.ts, tl.length ? `❓ どの件の時間ですか？番号を付けて返信してください（例：1 ${body}）\n${thList(st, open)}` : "❓ この依頼は時間の件ではありません。お断りなら「いいえ 理由と代わりにできること」で返信してください。"); return; }
+    if (tl.length !== 1) { await noteReply(ch, msg.key, { result: "時間の件が選べない" }); await sreply(st, ch, card.ts, tl.length ? `❓ どの件の時間ですか？番号を付けて返信してください（例：1 ${body}）\n${thList(st, open)}` : `❓ この依頼は時間の件ではありません。お断りや文を直す時は承認画面でお願いします：${thAdmin(st, thr.reservation_id)}`); return; }
     const c = tl[0], pt = TH_TPL[c.field].replace("{x}", tm);
     items = [{ id: c.id, key: c.key, field: c.field, say: `${thLbl(st, c.field)}：別の案「${pt}」`, body: { decision: "proposed", reject_reason: (S[c.key] || {}).reason || "full_slot", proposal_text: pt, proposal_value: tm } }];
     ask = `❓ お客様へ、別の案「${pt}」を送っていいですか？（お客様がマイページで「この案でOK」を押すと確定します）`;
-  } else if (body && list.every((c) => TH_PLACE.has(c.field))) {
-    items = list.map((c) => ({ id: c.id, key: c.key, field: c.field, say: `${thLbl(st, c.field)}：今の希望はお受けできず「代わりに、${body}」`, body: { decision: "rejected", reject_reason: (S[c.key] || {}).reason || "other", reject_text: "", alt_text: body } }));
-    ask = `❓ お客様へ、次の内容で返していいですか？\n${items.map((i) => "・" + i.say).join("\n")}`;
   } else {
     await noteReply(ch, msg.key, { result: "読み取れない" });
-    await sreply(st, ch, card.ts, `❓ 読み取れませんでした。次のどれかで返信してください。\n・オムニの案でよい →「はい」\n・希望どおり →「承認」\n・お断り →「いいえ 理由と代わりにできること」\n・別の時間 →「13時なら」${open.length > 1 ? "\n件が複数ある時は番号を付けてください：\n" + thList(st, open) : ""}`);
+    await sreply(st, ch, card.ts, `❓ 読み取れませんでした。次のどれかで返信してください。\n・オムニの案でよい →「はい」\n・希望どおり →「承認」\n・お断り・文を直す → 承認画面で ${thAdmin(st, thr.reservation_id)}\n・別の時間 →「13時なら」${open.length > 1 ? "\n件が複数ある時は番号を付けてください：\n" + thList(st, open) : ""}`);
     return;
   }
   await thSave(ch, card.ts, { pending: { items, by: name, at: new Date().toISOString() } });
