@@ -398,6 +398,8 @@ const REJ_JP: Record<string, string> = {  // 11/7 nosh「理由は明確に（�
   out_of_area: "ご希望の場所は、お届け・回収の対象エリア外のため、伺うことができません。",
   out_of_stock: "誠に恐れ入りますが、在庫状況により、ご希望のオプションをご用意できる数がございません。",
   past_deadline: "変更の受付締切を過ぎているため、ご変更を承ることができません。",
+  bus_full: "誠に恐れ入りますが、ご希望のお時間の送迎バスは満席です。",
+  bus_hours: "ご希望のお時間は、送迎バスの運行時間外です（空港発 9:00〜19:00・店舗発 9:30〜18:30、毎時1本）。",
   other: "",
 };
 function staffOf(field: string): string { return ["del_place", "lend_time"].includes(field) ? "お届けスタッフ" : ["col_place", "return_time", "ready"].includes(field) ? "回収スタッフ" : "担当スタッフ"; }

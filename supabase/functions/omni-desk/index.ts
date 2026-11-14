@@ -154,13 +154,13 @@ async function dayTasks(store: string, date: string) {
     const ids = [...new Set(ts.map((t: any) => t.reservation_id).filter(Boolean))];
     const rs = ids.length ? await get("reservations", `id=in.${inList(ids as string[])}&select=id,lend_time,return_time,lend_date,return_date`) : [];
     const rm = new Map(rs.map((r: any) => [r.id, r]));
-    return ts.filter((t: any) => /^[dc]-/.test(t._id)).map((t: any) => { const r: any = rm.get(t.reservation_id) || {}; const back = t._id.startsWith("c-"); return { id: t._id, rid: t.reservation_id, who: String(t.assignee || "").trim(), t: hm(t.time) || hm(back ? r.return_time : r.lend_time), back, car: t.assigned_vehicle || "", kind: String(t.type || ""), place: String((back ? t.col_place || t.place : t.place) || "").trim() }; });
+    return ts.filter((t: any) => /^[dcs]-/.test(t._id)).map((t: any) => { const r: any = rm.get(t.reservation_id) || {}; const back = t._id.startsWith("c-"); return { id: t._id, rid: t.reservation_id, who: String(t.assignee || "").trim(), t: hm(t.time) || hm(back ? r.return_time : r.lend_time), back, car: t.assigned_vehicle || "", kind: String(t.type || ""), place: String((back ? t.col_place || t.place : t.place) || "").trim() }; });
   }
-  const ts = await get("nha_tasks", `date=eq.${date}&deleted=not.is.true&select=_id,${encodeURIComponent("内容")},${encodeURIComponent("時間")},${encodeURIComponent("担当")},${encodeURIComponent("予約番号")},assigned_vehicle,${encodeURIComponent("送迎場所")}`);
+  const ts = await get("nha_tasks", `date=eq.${date}&deleted=not.is.true&select=_id,${encodeURIComponent("内容")},${encodeURIComponent("時間")},${encodeURIComponent("担当")},${encodeURIComponent("予約番号")},assigned_vehicle,${encodeURIComponent("送迎場所")},${encodeURIComponent("人数")},${encodeURIComponent("変更")}`);
   const ids = [...new Set(ts.map((t: any) => t["予約番号"]).filter(Boolean))];
   const rs = ids.length ? await get("nha_reservations", `id=in.${inList(ids as string[])}&select=id,start_time,end_time`) : [];
   const rm = new Map(rs.map((r: any) => [r.id, r]));
-  return ts.filter((t: any) => /^[dc]-/.test(t._id)).map((t: any) => { const r: any = rm.get(t["予約番号"]) || {}; const back = t._id.startsWith("c-"); return { id: t._id, rid: t["予約番号"], who: String(t["担当"] || "").trim(), t: hm(t["時間"]) || hm(back ? r.end_time : r.start_time), back, car: t.assigned_vehicle || "", kind: String(t["内容"] || ""), place: String(t["送迎場所"] || "").trim() }; });
+  return ts.filter((t: any) => /^[dcs]-/.test(t._id)).map((t: any) => { const r: any = rm.get(t["予約番号"]) || {}; const back = t._id.startsWith("c-"); return { id: t._id, rid: t["予約番号"], who: String(t["担当"] || "").trim(), t: hm(t["時間"]) || hm(back ? r.end_time : r.start_time), back, car: t.assigned_vehicle || "", kind: String(t["内容"] || ""), place: String(t["送迎場所"] || "").trim(), pax: parseInt(t["人数"]) || 1, busT: hm(t["変更"]) || hm(t["時間"]) || hm(back ? r.end_time : r.start_time) }; });
 }
 
 // その日の出勤（時刻があって、公休・希望休・休み・有休でない人）。札幌は shifts、那覇は nha_shifts
@@ -169,6 +169,19 @@ async function shiftsOf(store: string, date: string): Promise<{ name: string; s:
     const rows = await get(store === "nha" ? "nha_shifts" : "shifts", `date=eq.${date}&select=staff_name,symbol,start_time,end_time`);
     return rows.filter((r: any) => hm(r.start_time) && hm(r.end_time) && !/公|希|休|有/.test(String(r.symbol || ""))).map((r: any) => ({ name: String(r.staff_name).trim(), s: hm(r.start_time), e: hm(r.end_time) }));
   } catch (_) { return []; }
+}
+// 那覇の送迎バス（時刻表・定員）：行き PUB＝空港11-B 毎時00分 9〜19時、帰り BDB＝店 毎時30分 9〜18時、定員20名。
+// 便は「時刻の時台」で決まる（OPシートのバス運行表・bus.html と同じ決め方）。人数は nha_tasks の人数（無ければ1名）
+const BUS = { go: { m: 0, first: 9, last: 19 }, back: { m: 30, first: 9, last: 18 } }, BUS_CAP = 20;
+const NO_BUS = /^(来店|店舗|店頭|ヤード|営業所|PU発|BD発)$/;
+function busPick(D: any[], rid: string, back: boolean, t: string, pax: number, date: string) {
+  const B = back ? BUS.back : BUS.go, kind = back ? /BDB|^BD$/ : /PUB|^PU$/;
+  const load = (h: number) => D.filter((x: any) => x.rid !== rid && kind.test(x.kind) && !NO_BUS.test(x.place || "") && x.busT && +x.busT.split(":")[0] === h).reduce((a: number, x: any) => a + (x.pax || 1), 0);
+  const slot = (h: number) => tOf(h * 60 + B.m), want = Math.min(B.last, Math.max(B.first, back ? Math.ceil((mins(t) - B.m) / 60) : +t.split(":")[0])); // 行き＝その時台の便、帰り＝返却の後に出る一番早い便
+  const order: number[] = [want]; for (let d = 1; d <= 10; d++) { const a = back ? want - d : want + d, b = back ? want + d : want - d; for (const h of [a, b]) if (h >= B.first && h <= B.last) order.push(h); }
+  const tried: string[] = [], want0 = back ? Math.ceil((mins(t) - B.m) / 60) : +t.split(":")[0];
+  for (const h of order) { if (atJst(date, slot(h)) < Date.now()) continue; const n = load(h); if (n + pax <= BUS_CAP) return { h, bus: slot(h), n, same: h === want0, tried }; tried.push(`${slot(h)} 発は満席（${n}名/定員${BUS_CAP}名）`); }
+  return { h: -1, bus: "", n: 0, same: false, tried };
 }
 // 締切を過ぎただけの依頼：データで対応できれば言い切って提案し、理由を添える（nosh 11/14「ゴールに向かう前提で最適解」）
 const lateNote = (why: string[], who: string) => why.some((w) => w.startsWith("締切（")) ? `（締切は過ぎていますが、${who ? who + "さんの予定と重ならない" : "担当の予定に重なりがない"}ので対応できます）` : "";
@@ -218,11 +231,23 @@ async function chgSuggest(c: any) {
   const dayLine = (nm: string, n: number) => {
     const L = D.filter((x: any) => x.who === nm && x.rid !== rid && x.t).sort((p: any, q: any) => mins(p.t) - mins(q.t));
     const pv = L.filter((x: any) => mins(x.t) <= n).slice(-1)[0], nx = L.find((x: any) => mins(x.t) > n), h = shOf(nm);
-    return `${nm}さん${h ? `（出勤 ${h.s}〜${h.e}）` : ""}：前 ${pv ? lbl(pv) + `・${n - mins(pv.t)}分あく` : "なし"}／次 ${nx ? lbl(nx) + `・${mins(nx.t) - n}分あく` : "なし"}／この日 ${L.length + 1}件`;
+    return `${nm}さん${h ? `（出勤 ${h.s}〜${h.e}）` : ""}：前 ${pv ? lbl(pv) + `・${n - mins(pv.t)}分あく` : "なし"}／次 ${nx ? lbl(nx) + `・${mins(nx.t) - n}分あく` : "なし"}／この日ほかに ${L.length}件`;
   };
   const n0 = mins(t); let alt = "", swap = "";
   const hit = isNaN(n0) ? [] : busy(n0);
   const off = !!who && !isNaN(n0) && !meBus && offAt(who, n0);
+  // 送迎バス：お客様の希望時刻そのままではなく、時刻表の便（空きのある、希望に一番近い便）で言い切る
+  let bus: any = null;
+  if (meBus && !isNaN(n0) && !isReady) {
+    bus = busPick(D, rid, back, t, mine.pax || 1, date);
+    const from = back ? "店" : "空港11-B";
+    if (bus.bus) why.push(`送迎バス：${bus.bus} ${from}発の便（乗車 ${bus.n}名＋この予約${mine.pax || 1}名／定員${BUS_CAP}名）`);
+    why.push(...bus.tried);
+    if (!bus.bus) why.push(`⚠️ この日の送迎バスはどの便も満席か、もう出発済み`);
+    else if (!bus.same) { const B0 = BUS[back ? "back" : "go"], w0 = back ? Math.ceil((mins(t) - B0.m) / 60) : +t.split(":")[0], outH = w0 < B0.first || w0 > B0.last; why.push(outH ? `⚠️ ${t} は送迎バスの運行時間外（${back ? "店発 9:30〜18:30" : "空港発 9:00〜19:00"}）` : `⚠️ ${t} の時台の便は満席`); }
+  }
+  // 送迎バスは「時刻表に沿う」「その便の人数」の2つが見られない時は提案を出さない（nosh 11/14 必須）
+  if (meBus && !isReady && !bus) return { verdict: "human", ask: "", why: why.concat(["送迎バスの時刻表と便の人数を見られない → 人が決める"]), date, t, who };
   if (meBus) why.push("送迎バス（まとめてお送りするので担当の予定は重ならない）");
   else if (!who) why.push(mine ? "担当なし（だれでも行ける）" : "お届け・回収のタスクがない予約（送迎・来店）");
   else {
@@ -263,7 +288,13 @@ async function chgSuggest(c: any) {
     else why.push("場所の地図の位置なし（エリアは人が見る）");
   }
   const bad = why.filter((w) => w.startsWith("⚠️"));
+  if (!bad.length && bus && bus.bus) return { verdict: "ok", ask: `${what}で承認していいですか？送迎バスは ${bus.bus} ${back ? "店" : "空港11-B"}発の便です（乗車 ${bus.n + (mine.pax || 1)}名／定員${BUS_CAP}名）${why.some((w) => w.startsWith("締切（")) ? "。締切は過ぎていますが対応できます" : ""}`, why, date, t, who };
   if (!bad.length) return { verdict: "ok", ask: `${what}で承認していいですか？${lateNote(why, who)}`, why, date, t, who };
+  // 送迎バスの便が希望の時台と違う（満席・運行時間外）→ 空いている便の時刻を代わりに言い切る
+  if (bus && bus.bus && !bus.same && bad.every((w) => /満席|運行時間外/.test(w))) {
+    const btime = bus.bus; // 便の出発時刻で言い切る（行き＝空港 HH:00 発・帰り＝店 HH:30 発。OPシートの「変更」と同じ値）
+    return { verdict: "alt", ask: `${t}の送迎バスは${bad.some((w) => /運行時間外/.test(w)) ? "運行時間外" : "満席"}のため、代わりに「${btime}」（${bus.bus} ${back ? "店" : "空港11-B"}発の便、乗車 ${bus.n}名／定員${BUS_CAP}名）を提案していいですか？`, why, reason: bad.some((w) => /運行時間外/.test(w)) ? "bus_hours" : "bus_full", alt: btime, date, t, who };
+  }
   const fixable = bad.every((w) => / と重なる|勤務外|準備の60分/.test(w));
   const r0 = [hit.length ? `${who}さんは ${hit.map((x: any) => x.t).join("・")} の予定と重なる` : "", off ? `${who}さんは勤務外` : ""].filter(Boolean).join("・");
   // ① お客様の希望どおり＋担当替え（車の問題がない時）
