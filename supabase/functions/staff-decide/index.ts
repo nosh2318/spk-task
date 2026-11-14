@@ -198,41 +198,7 @@ async function nudPlan(store: string, nid: number): Promise<any> {
     if (bus) { for (let h = Math.max(my + 1, B.first); h <= B.last && out.options.length < 2; h++) if (busAt(h) >= now) add("late_bus", busAt(h), "次の便でご案内します（{t}発）"); }
     else for (let k = 1; k <= 3; k++) add("late_wait", Math.max(due, up15(now)) + k * 15 * 60e3, "{t}までお待ちします");
   }
-  if (out.options.length) { try { (out as any).omni = await nudPick(store, String(n.reservation_id), back, d, out); } catch (_) { /* おすすめが無くても返事はできる */ } }
   return out;
-}
-// ★2026-11-14 nosh「オムニの案を残りのカードへ」（担当が押す・おすすめ表示）：オムニが返事を1つ選んで担当の画面の一番上に出す。
-//   決め方：見つからない＝今から声をかける／遅れます＝バスは次の便・ほかは一番短い待ち／着きました（早め）＝バスは前の便・ほかは担当のほかのタスクと重ならない一番早い時刻。
-//   担当が押した返事とくらべて omni_decisions（kind=nudge）に残す＝採用率。お客様に送るのは今までどおり担当が押した時だけ
-async function nudPick(store: string, rid: string, back: boolean, d: string, out: any) {
-  const O = out.options as any[], why: string[] = [];
-  const mins = (t: string) => { const m = String(t || "").match(/(\d{1,2}):(\d{2})/); return m ? +m[1] * 60 + +m[2] : NaN; };
-  if (out.kind === "lost") return { ...O[0], why: ["見つからない時は、まず担当から声をかける"] };
-  if (/bus$/.test(O[0].reply)) return { ...O[0], why: [out.kind === "late" ? "バスは定刻発：次の便へご案内" : "バスは定刻発：早く着いた方は前の便でお送りできる"] };
-  // 担当と、その人のこの日のほかのタスクの時刻
-  let who = "", busy: number[] = [];
-  if (store !== "tkm") {
-    const T = store === "nha"
-      ? await get(`nha_tasks?${encodeURIComponent("予約番号")}=eq.${encodeURIComponent(rid)}&deleted=not.is.true&select=_id,${encodeURIComponent("担当")}`)
-      : await get(`tasks?reservation_id=eq.${encodeURIComponent(rid)}&deleted=not.is.true&select=_id,assignee`);
-    const me = T.find((x: any) => String(x._id || "").startsWith(back ? "c-" : "d-")) || T[0];
-    who = String((me && (me.assignee ?? me["担当"])) || "").trim();
-    if (who && !/無人|乗り?捨|^[（(]/.test(who)) {
-      const L = store === "nha"
-        ? await get(`nha_tasks?date=eq.${d}&${encodeURIComponent("担当")}=eq.${encodeURIComponent(who)}&deleted=not.is.true&select=_id,${encodeURIComponent("時間")},${encodeURIComponent("予約番号")}`)
-        : await get(`tasks?date=eq.${d}&assignee=eq.${encodeURIComponent(who)}&deleted=not.is.true&done=not.is.true&select=_id,time,reservation_id`);
-      busy = L.filter((x: any) => String(x.reservation_id ?? x["予約番号"] ?? "") !== rid).map((x: any) => mins(x.time ?? x["時間"])).filter((v: number) => !isNaN(v));
-    } else who = "";
-  }
-  const free = (o: any) => !busy.some((b) => Math.abs(b - mins(o.time)) < 20);
-  const pick = O.find(free) || O[O.length - 1];
-  if (out.kind === "late") why.push("お待ちする時間は一番短いものから");
-  else why.push("早く着いた方には、できるだけ早く伺う");
-  if (store === "tkm") why.push("高松は担当の予定を見ていない（一番早い時刻）");
-  else if (!who) why.push("担当が決まっていない（一番早い時刻）");
-  else if (busy.length) why.push(pick === O.find(free) ? `${who}さんのほかのタスク（${busy.length}件）と20分以上離れた時刻` : `${who}さんのほかのタスクと重なる：一番遅い時刻`);
-  else why.push(`${who}さんのこの日のほかのタスクは無い`);
-  return { ...pick, why };
 }
 async function withNud(store: string, inbox: any[]) {
   for (const x of inbox) { const m = String(x.ref || "").match(/^nud:(\d+)$/); if (m) x.nud = await nudPlan(store, Number(m[1])).catch(() => null); }
@@ -486,9 +452,6 @@ Deno.serve(async (req) => {
     const w = await r.json().catch(() => []); if (!w.length) return j({ ok: false, error: "ほかの担当がもう返事をしました。画面を読み直してください" }, 409);
     await fetch(`${SB}/rest/v1/mypage_nudges?id=eq.${nid}&store=eq.${store}&acked_at=is.null`, { method: "PATCH", headers: { ...H, Prefer: "return=minimal" }, body: JSON.stringify({ acked_at: now }) });
     await fetch(`${SB}/rest/v1/staff_inbox?ref=eq.nud:${nid}&store=eq.${store}&seen_at=is.null`, { method: "PATCH", headers: { ...H, Prefer: "return=minimal" }, body: JSON.stringify({ seen_at: now }) });
-    // ★2026-11-14 オムニのおすすめと担当が押した返事をくらべて残す（採用率）
-    const om = p.omni;
-    if (om) await fetch(`${SB}/rest/v1/omni_decisions`, { method: "POST", headers: { ...H, Prefer: "return=minimal" }, body: JSON.stringify({ kind: "nudge", store, ref_id: "nud:" + nid, reservation_id: String(w[0].reservation_id || ""), proposal: om.label, final: o.label, outcome: om.reply === o.reply && om.time === o.time ? "same" : "edited", conf: "go", conf_reason: (om.why || []).join("／").slice(0, 300), via: "staff", decided_by: "staff:" + name, proposed_at: now, decided_at: now }) }).catch(() => {});
     return j({ ok: true, reply: o });
   }
   if (b.action === "decide" && store === "tkm") return j({ ok: false, error: "高松の変更依頼は本部が返します" }, 403);
