@@ -402,6 +402,12 @@ async function legPeople(store: string, rid: string, back: boolean): Promise<str
   else { for (const t of await getB("bt_tasks", `_id=in.${inList([k + rid, "s-" + k + rid])}&deleted=not.is.true&select=_id,${encodeURIComponent("担当")}`)) add(String(t._id).startsWith("s-") ? "送迎" : back ? "お送り" : "お迎え", t["担当"]); }
   return out;
 }
+// サービスキー（古い形の service_role も新しい形の secret も）かどうかを、管理だけが通る入口に聞いて確かめる（鍵の文字は比べない＝形が違っても通る）
+async function isServiceKey(au: string): Promise<boolean> {
+  const k = au.replace(/^Bearer\s+/i, "").trim(); if (!k || k.length < 30) return false;
+  if (k === SR || k === (Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "")) return true;
+  try { const r = await fetch(`${SB}/auth/v1/admin/users?per_page=1`, { headers: { apikey: k, Authorization: `Bearer ${k}` } }); return r.ok; } catch (_) { return false; }
+}
 async function chatApply(p: any) {
   const store = String(p.store || ""), rid = String(p.rid || "").trim(), by = String(p.actor_name || "").trim().slice(0, 30);
   const ch = (Array.isArray(p.changes) ? p.changes : []).filter((c: any) => CA_F.includes(String(c && c.field)) && String(c.value || "").trim()).slice(0, 4);
@@ -627,7 +633,7 @@ Deno.serve(async (req) => {
       return J({ ok: true, map: Object.fromEntries(Object.entries(m).filter(([, v]: any) => v)) });
     }
     // チャットの返事で約束した変更を反映（Mac mini のオムニから・サービスキーで呼ぶ／本部からは PIN）
-    if (p.action === "chat_apply") { const au = req.headers.get("authorization") || ""; const pin = Deno.env.get("ADMIN_PIN") || ""; const LEG = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || ""; if (au !== `Bearer ${SR}` && !(LEG && au === `Bearer ${LEG}`) && !(pin && String(p.admin_pin || "") === pin)) return J({ ok: false, error: "auth" }, 401); return J(await chatApply(p)); }
+    if (p.action === "chat_apply") { const au = req.headers.get("authorization") || ""; const pin = Deno.env.get("ADMIN_PIN") || ""; if (!(pin && String(p.admin_pin || "") === pin) && !(await isServiceKey(au))) return J({ ok: false, error: "auth" }, 401); return J(await chatApply(p)); }
     // 見張りは cron から（返すのは件数だけ・同じものは1回しか送らない）
     if (p.action === "watch") return J({ ok: true, ...(await watch()) });
     const PIN = Deno.env.get("ADMIN_PIN") || "";
