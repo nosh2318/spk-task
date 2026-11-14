@@ -110,14 +110,15 @@ async function chatDecide(p: any) {
   const c = confPick(d);
   const now = new Date().toISOString();
   // 先に案を「決まった」にする（status=pending の時だけ）→ Slack の OK と同時に押しても二重に送らない
-  const up = await patch("cs_chat_drafts", `id=eq.${id}&status=eq.pending`, { status: oc === "rejected" ? "rejected" : "approved", final_answer: oc === "rejected" ? null : text, decided_by: "admin:マイページ管理", decided_at: now, conf: c.conf, conf_reason: c.why.join(" / "), ...(d.orig_draft ? {} : { orig_draft: d.draft }) });
+  const up = await patch("cs_chat_drafts", `id=eq.${id}&status=eq.pending`, { status: oc === "rejected" ? "rejected" : "approved", final_answer: oc === "rejected" ? null : text, decided_by: "admin:" + (String(p.actor_name || "").replace(/[\s:]+/g, " ").trim().slice(0, 30) || "マイページ管理"), decided_at: now, conf: c.conf, conf_reason: c.why.join(" / "), ...(d.orig_draft ? {} : { orig_draft: d.draft }) });
   if (!up.length) return { ok: false, error: "もう決まっています（Slack などで）" };
-  if (oc === "rejected") { await slackNote(d.slack_ts, "🚫 マイページ管理で「却下（送らない）」になりました。返事はチャット管理から人が送ります。"); return { ok: true }; }
+  if (oc === "rejected") { await slackNote(d.slack_ts, `🚫 マイページ管理で「却下（送らない）」になりました（${String(p.actor_name || "").trim().slice(0, 30) || "本部"}）。返事はチャット管理から人が送ります。`); return { ok: true }; }
   await ins("cs_chat_messages", { thread_id: d.thread_id, sender: "staff", body: text, image_url: null });
   const th = (await get("cs_chat_threads", `id=eq.${d.thread_id}&select=unread_cust,work_status&limit=1`))[0] || {};
   await patch("cs_chat_threads", `id=eq.${d.thread_id}`, { unread_cust: (th.unread_cust || 0) + 1, last_msg: text.slice(0, 120), last_msg_at: now, ...(th.work_status === "完了" ? {} : { work_status: "対応中" }) });
   try { await ins("cs_chat_qa", { store: d.store, reservation_id: d.reservation_id, question: d.question, answer: text, source: oc === "same" ? "approved" : "corrected" }); } catch (_) { /* 学び */ }
-  await slackNote(d.slack_ts, oc === "same" ? "✅ マイページ管理から「このまま」送りました。" : "✏️ マイページ管理で直して送りました：\n" + text);
+  const who = String(p.actor_name || "").trim().slice(0, 30) || "本部";
+  await slackNote(d.slack_ts, oc === "same" ? `✅ マイページ管理から「このまま」送りました（${who}）。` : `✏️ マイページ管理で直して送りました（${who}）：\n` + text);
   return { ok: true };
 }
 
@@ -200,13 +201,13 @@ async function chgSuggest(c: any) {
   // 札幌のエリア（地図の位置がある時だけ）
   if (store === "spk" && newP) {
     const la = +(pl.del_lat ?? pl.col_lat ?? tg.del_lat ?? tg.col_lat), ln = +(pl.del_lng ?? pl.col_lng ?? tg.del_lng ?? tg.col_lng);
-    if (la && ln) { const km = kmFrom(la, ln, 43.0687, 141.3508); why.push(km > 20 ? `⚠️ 札幌駅から ${km.toFixed(1)}km（エリア外）` : `エリア内（札幌駅から ${km.toFixed(1)}km）`); if (km > 20) return { verdict: "alt", ask: `${newP.slice(0, 24)} はエリア外です。「対象エリア内の別の場所」を代わりの案として送っていいですか？`, why, reason: "out_of_area", date, t }; }
+    if (la && ln) { const km = kmFrom(la, ln, 43.0687, 141.3508); why.push(km > 20 ? `⚠️ 札幌駅から ${km.toFixed(1)}km（エリア外）` : `エリア内（札幌駅から ${km.toFixed(1)}km）`); if (km > 20) return { verdict: "alt", ask: `${newP.slice(0, 24)} はエリア外です。「対象エリア内の別の場所」を代わりの案として送っていいですか？`, why, reason: "out_of_area", date, t, who }; }
     else why.push("場所の地図の位置なし（エリアは人が見る）");
   }
   const bad = why.filter((w) => w.startsWith("⚠️"));
-  if (!bad.length) return { verdict: "ok", ask: `${what}で承認していいですか？`, why, date, t };
-  if (bad.length === 1 && hit.length && alt) return { verdict: "alt", ask: `${t}は担当の予定と重なります。代わりに「${alt}」を提案していいですか？`, why, reason: "full_slot", alt, date, t };
-  return { verdict: "human", ask: "", why, date, t };
+  if (!bad.length) return { verdict: "ok", ask: `${what}で承認していいですか？`, why, date, t, who };
+  if (bad.length === 1 && hit.length && alt) return { verdict: "alt", ask: `${t}は担当の予定と重なります。代わりに「${alt}」を提案していいですか？`, why, reason: "full_slot", alt, date, t, who };
+  return { verdict: "human", ask: "", why, date, t, who };
 }
 
 // ════ ②' 高松（BT の bt_reservation_changes・送迎の時間 mp_pickup / mp_dropoff）════ 2026-11-14 nosh「高松も統一せよ」
@@ -248,9 +249,9 @@ async function chgSuggestTkm(c: any) {
   if (oldT) why.push(`いまの予約は ${oldT}`);
   const what = `「${mdj(date)} ${t}」の${leg}`;
   const bad = why.filter((w) => w.startsWith("⚠️"));
-  if (!bad.length) return { verdict: "ok", ask: `${what}で承認していいですか？`, why };
-  if (bad.length === 1 && hit.length && alt) return { verdict: "alt", ask: `${t}は担当の予定と重なります。代わりに「${alt}」を提案していいですか？`, why, reason: "full_slot", alt };
-  return { verdict: "human", ask: "", why };
+  if (!bad.length) return { verdict: "ok", ask: `${what}で承認していいですか？`, why, who };
+  if (bad.length === 1 && hit.length && alt) return { verdict: "alt", ask: `${t}は担当の予定と重なります。代わりに「${alt}」を提案していいですか？`, why, reason: "full_slot", alt, who };
+  return { verdict: "human", ask: "", why, who };
 }
 // 高松の提案のうち、まだ記録していないもの → BT の今の状態を見て決まっていれば omni_decisions へ（札幌・那覇のトリガーと同じ数え方）
 async function tkmReconcile() {
@@ -265,7 +266,7 @@ async function tkmReconcile() {
     const pv = String(c.payload?.proposal?.value || "");
     const oc = s.verdict === "ok" ? (c.status === "approved" ? "same" : "rejected")
       : s.verdict === "alt" ? (c.status === "proposed" ? (!s.alt || hm(pv) === s.alt ? "same" : "edited") : "rejected") : "human";
-    try { await ins("omni_decisions", { kind: "chg", store: "tkm", ref_id: s.ref_id, reservation_id: s.reservation_id, proposal: s.ask, final: c.status + (pv ? " " + pv : ""), outcome: oc, conf: s.verdict === "human" ? "human" : "go", conf_reason: (s.why || []).join(" / "), via: /admin_pin/.test(String(c.decided_by || "")) ? "admin" : "staff", decided_by: c.decided_by, proposed_at: s.created_at, decided_at: c.decided_at || new Date().toISOString() }); } catch (_) { /* 次の読み込みでもう一度 */ }
+    try { await ins("omni_decisions", { kind: "chg", store: "tkm", ref_id: s.ref_id, reservation_id: s.reservation_id, proposal: s.ask, final: c.status + (pv ? " " + pv : ""), outcome: oc, conf: s.verdict === "human" ? "human" : "go", conf_reason: (s.why || []).join(" / "), via: "admin", decided_by: c.decided_by, proposed_at: s.created_at, decided_at: c.decided_at || new Date().toISOString() }); } catch (_) { /* 次の読み込みでもう一度 */ }
   }
 }
 async function saveSug(key: string, store: string, rid: string, s: any) {
@@ -312,6 +313,17 @@ Deno.serve(async (req) => {
     if (!PIN || String(p.admin_pin || "") !== PIN) return J({ ok: false, error: "pin" }, 401);
     if (p.action === "chat_list") return J({ ok: true, rows: await chatList() });
     if (p.action === "chat_decide") return J(await chatDecide(p));
+    // ★2026-11-14 nosh「一次判断をOMNI→共有①社員＝Slack 共有②担当者＝個別URL→社員承認」：依頼が来た時に、受けた関数（札幌・那覇・高松）がこれを呼んで Slack の文にする
+    if (p.action === "chg_ask") {
+      const out: Record<string, any> = {};
+      if (p.store === "tkm") {
+        const ids = (Array.isArray(p.ids) ? p.ids : []).map(Number).filter(Boolean).slice(0, 10);
+        const T = ids.length ? await getB("bt_reservation_changes", `id=in.(${ids.join(",")})&select=id,reservation_id,change_type,new_value,old_value,payload,status,changed_at`) : [];
+        for (const c of T) { if (c.status !== "requested" || !TKM_F.includes(c.change_type)) continue; let s: any = null; try { s = await chgSuggestTkm(c); } catch (e) { s = { verdict: "human", ask: "", why: ["オムニが判断できなかった：" + String((e as Error).message || e).slice(0, 80)] }; } out[String(c.id)] = s; await saveSug("tkm:" + c.id, "tkm", String(c.reservation_id), s); }
+        return J({ ok: true, map: out });
+      }
+      return J({ ok: true, map: await chgList(Array.isArray(p.ids) ? p.ids : []) });
+    }
     if (p.action === "chg_list") return J({ ok: true, map: await chgList(Array.isArray(p.ids) ? p.ids : undefined) });
     if (p.action === "stats") { try { await tkmReconcile(); } catch (_) { /* */ } } if (p.action === "stats") return J({ ok: true, rows: await stats(Math.min(90, Math.max(1, +p.days || 14))) });
     return J({ ok: false, error: "action" }, 400);
