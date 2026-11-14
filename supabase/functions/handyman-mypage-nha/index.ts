@@ -398,6 +398,8 @@ const REJ_JP: Record<string, string> = {  // 11/7 nosh「理由は明確に（�
   out_of_area: "ご希望の場所は、お届け・回収の対象エリア外のため、伺うことができません。",
   out_of_stock: "誠に恐れ入りますが、在庫状況により、ご希望のオプションをご用意できる数がございません。",
   past_deadline: "変更の受付締切を過ぎているため、ご変更を承ることができません。",
+  bus_full: "誠に恐れ入りますが、ご希望のお時間の送迎バスは満席です。",
+  bus_hours: "ご希望のお時間は、送迎バスの運行時間外です（空港発 9:00〜19:00・店舗発 9:30〜18:30、毎時1本）。",
   other: "",
 };
 function staffOf(field: string): string { return ["del_place", "lend_time"].includes(field) ? "お届けスタッフ" : ["col_place", "return_time", "ready"].includes(field) ? "回収スタッフ" : "担当スタッフ"; }
@@ -525,7 +527,8 @@ async function omniMsg(store: string, rid: string, S: any[], req: string[], url:
   const asks = S.map((s: any) => s.verdict === "human" || !s.ask ? "" : String(s.ask)).filter(Boolean);
   const human = S.some((s: any) => s.verdict === "human" || !s.ask);
   const alt = S.some((s: any) => s.verdict === "alt");
-  const why = [...new Set(S.flatMap((s: any) => Array.isArray(s.why) ? s.why.map(String) : []))].slice(0, 6);
+  const why = [...new Set(S.flatMap((s: any) => Array.isArray(s.why) ? s.why.map(String) : []))].slice(0, 9);
+  const sw = S.find((s: any) => s.reason === "swap" && /→/.test(String(s.alt || ""))), [swF, swT] = sw ? String(sw.alt).split("→") : ["", ""];
   const head = human ? `【${st.jp}｜${cat}】🙋 社員が決めてください：${(why.find((w) => /⚠️|重な|読めない|見つからない|できなかった|外/.test(w)) || why[0] || "オムニが決められない").replace(/^⚠️\s*/, "")}`
     : `【${st.jp}｜${cat}】🤖 ${asks.join("／")}`; // 【店｜種類】で始める＝送る直前の形の整え・店の部屋への振り分けがそのまま効く
   const conf = human ? "人に回す" : alt ? "人が見る（代わりの案）" : "任せてよい";
@@ -541,8 +544,8 @@ async function omniMsg(store: string, rid: string, S: any[], req: string[], url:
     `🤖 オムニの案：${human ? "決められないので社員へ" : asks.join("／")}（自信：${conf}）`,
     "🔎 判断の理由（見たデータ）",
     ...(why.length ? why.map((w) => " ・" + w) : [" ・—"]),
-    "✅ 承認すると：予約・タスク・マイページが変わり、お客様へ知らせます",
-    "👷 担当がすること：承認のあと、新しい時間・場所で準備（担当の画面には「社員の承認待ち」で出ています）",
+    `✅ 承認すると：予約・タスク・マイページが変わり、お客様へ知らせます${sw ? `。タスクの担当を ${swF}さん → ${swT}さん に替えます` : ""}`,
+    sw ? `👷 担当がすること：承認のあと、${swT}さんが新しい時間・場所で準備（${swF}さんはこの件から外れます）` : "👷 担当がすること：承認のあと、新しい時間・場所で準備（担当の画面には「社員の承認待ち」で出ています）",
     `🔗 ${url}`,
   ];
   const text = lines.join("\n").slice(0, 2900);
