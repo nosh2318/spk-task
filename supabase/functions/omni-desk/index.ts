@@ -726,6 +726,16 @@ Deno.serve(async (req) => {
     }
     if (p.action === "prep_ask") return J({ ok: true, map: await prepAsk(Array.isArray(p.items) ? p.items : []) });
     if (p.action === "prep_decide") return J(await prepDecide(p));
+    // ★2026-11-15 nosh「回答が明確になっていないものをスタッフに提案→解決に誘導」：お客様の答えが未確定の予約（今は那覇の営業所返却後の送迎）
+    if (p.action === "undecided") { const v = await rpcMain("hdm_undecided", { p_store: "all" }); return J({ ok: true, rows: Array.isArray(v) ? v : [] }); }
+    if (p.action === "undecided_ask") {
+      const name = String(p.actor_name || "").replace(/[\s:]+/g, " ").trim().slice(0, 30);
+      if (!name) return J({ ok: false, error: "承認する人の名前を入れてください" });
+      const store = String(p.store || ""), rid = String(p.rid || ""), kind = String(p.kind || "");
+      const v = await rpcMain("hdm_mp_ask", { p_store: store, p_rid: rid, p_kind: kind, p_actor: "admin:" + name });
+      if (v && v.ok && !v.already) { try { await ins("omni_decisions", { kind: "ask", store, ref_id: `ask:${store}:${rid}:${kind}`, reservation_id: rid, proposal: "マイページで聞く：" + kind, final: kind, outcome: "same", conf: "go", via: "admin", decided_by: "admin:" + name }); } catch (_) { /* 記録だけ */ } }
+      return J(v || { ok: false, error: "できませんでした" });
+    }
     if (p.action === "chg_swap") return J(await chgSwap(p));
     if (p.action === "chg_list") return J({ ok: true, map: await chgList(Array.isArray(p.ids) ? p.ids : undefined) });
     if (p.action === "stats") { try { await tkmReconcile(); } catch (_) { /* */ } } if (p.action === "stats") return J({ ok: true, rows: await stats(Math.min(90, Math.max(1, +p.days || 14))) });
