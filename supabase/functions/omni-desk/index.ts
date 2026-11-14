@@ -5,6 +5,8 @@
 //      rejected＝送らない（チャットは未対応のまま、人がチャット管理で返す）
 // POST {admin_pin, action:"chg_list", ids?} → {ok, map:{change_id（高松は "tkm:<id>"）:{verdict:"ok"|"alt"|"human", ask, why[], alt?, reason?}}}  変更依頼へのオムニの提案
 // POST {token, store, action:"chg_for_staff", ids} → {ok, map}  スタッフ画面用（個別URLの share_token）
+// POST {admin_pin, action:"prep_ask", items:[{store,rid,need[]}]} → {ok, map:{"store|rid":{verdict, ask, why[], via, text}}}  準備が足りないカードへの提案
+// POST {admin_pin, action:"prep_decide", store, rid, need[], outcome:"same"|"rejected", actor_name} → はい＝お客様へお願いを送る
 // POST {admin_pin, action:"stats", days?} → {ok, rows:[{kind, store, same, edited, rejected}]}  種類ごとの「そのまま採用率」
 // 自動送信・自動承認はしない（nosh の言葉まで）。記録は cs_chat_drafts のトリガー → omni_decisions（Slack の OK も同じく記録）。
 function __newKey(env: string, name: string): string { try { return (JSON.parse(Deno.env.get(env) || "{}") as Record<string, string>)[name] || ""; } catch { return ""; } }
@@ -348,6 +350,107 @@ async function watch() {
   return out;
 }
 
+// ════ ⑤ 準備が足りない：オムニの提案「〇〇様に〜のお願いを送っていいですか？」（2026-11-14 nosh「オムニの案を残りのカードへ広げる」）════
+//   本部の「やること」の準備が足りないカード（期限を過ぎても免許証・場所・便名・決済が足りない等）に、オムニが送る文と送り先まで決めて聞く。
+//   社員が「はい」→ その場でお客様へ送る（那覇・札幌＝LINE→なければメール→楽天は楽天の画面／高松＝メール→楽天は楽天の画面）。
+//   今の通知・カードはそのまま（並べて出し、採用率が上がってから元を止める）。記録は omni_decisions（kind=prep）
+const FUNC_SECRET = Deno.env.get("FUNC_SECRET") || "";
+const RESEND_KEY = Deno.env.get("HDM_RESEND_API_KEY") || Deno.env.get("RESEND_API_KEY") || "";
+const MY_URL: Record<string, string> = { spk: "https://nosh2318.github.io/spk-task/my.html?t=", nha: "https://nosh2318.github.io/naha-project/my-nha.html?t=", tkm: "https://nosh2318.github.io/spk-task/my-tkm.html?t=" };
+const BRAND: Record<string, string> = { spk: "HANDYMAN札幌", nha: "HANDYMAN那覇", tkm: "HANDYMAN高松空港店" };
+const MAIL_OK = (m: string) => /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(m) && !/@(.*\.)?(rakuten\.co\.jp|rakuten\.com)$/i.test(m);
+const PREP_NEED = new Set(["免許証", "じゃらん決済", "到着便名", "お届け場所", "マイページを開く"]);
+const jmd = (d: string) => { const m = String(d || "").match(/^\d{4}-(\d{2})-(\d{2})/); if (!m) return ""; const t = new Date(d.slice(0, 10) + "T00:00:00Z"); return `${+m[1]}/${+m[2]}(${"日月火水木金土"[t.getUTCDay()]})`; };
+async function prepResv(store: string, rid: string): Promise<any> {
+  const sel = "id,name,status,tel,mail,ota,mypage_token";
+  if (store === "tkm") return (await getB("bt_reservations", `id=eq.${encodeURIComponent(rid)}&select=${sel},start_date&limit=1`))[0] || null;
+  const r = (await get(store === "nha" ? "nha_reservations" : "reservations", `id=eq.${encodeURIComponent(rid)}&select=${sel},${store === "nha" ? "start_date" : "lend_date"}&limit=1`))[0];
+  return r ? { ...r, start_date: r.start_date || r.lend_date } : null;
+}
+function prepText(store: string, R: any, need: string[], url: string): string {
+  const open = need.includes("マイページを開く"), items = need.filter((n) => n !== "マイページを開く");
+  const nm = String(R.name || "").trim() ? `${String(R.name).trim()}様` : "お客様";
+  const body = open && !items.length
+    ? `ご出発（${jmd(R.start_date)}）の前に、マイページでご準備のご確認をお願いいたします。まだ一度も開かれていないようです。`
+    : `ご出発（${jmd(R.start_date)}）のご準備で、まだ「${items.join("・")}」をいただいておりません。お手数ですが、下記のマイページからご対応をお願いいたします。`;
+  return `【${BRAND[store]}】${nm}\n${body}\n${url}`;
+}
+async function prepSuggest(store: string, rid: string, need0: string[]) {
+  const need = [...new Set(need0.map(String).filter((n) => PREP_NEED.has(n)))];
+  const R = await prepResv(store, rid);
+  if (!R) return { verdict: "human", ask: "", why: ["予約が見つからない"] };
+  if (/cancel|キャンセル/i.test(String(R.status || ""))) return { verdict: "human", ask: "", why: ["キャンセル済みの予約"] };
+  if (!need.length) return { verdict: "human", ask: "", why: ["足りない物が読めない"] };
+  const why: string[] = [`足りない：${need.join("・")}`, `出発 ${jmd(R.start_date)}`];
+  const today = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+  const days = Math.round((Date.parse(String(R.start_date).slice(0, 10)) - Date.parse(today)) / 864e5);
+  if (days < 0) return { verdict: "human", ask: "", why: why.concat(["出発日を過ぎている"]) };
+  // 24時間以内にオムニから送った催促があれば、重ねて送らない
+  const since = new Date(Date.now() - 24 * 3600e3).toISOString();
+  const prev = await get("omni_decisions", `kind=eq.prep&store=eq.${store}&reservation_id=eq.${encodeURIComponent(rid)}&outcome=eq.same&decided_at=gte.${since}&select=decided_at&limit=1`).catch(() => []);
+  if (prev.length) return { verdict: "human", ask: "", why: why.concat(["24時間以内にお願いを送ったばかり → 電話か受け渡しで確認"]) };
+  if (!R.mypage_token) return { verdict: "human", ask: "", why: why.concat(["マイページのURLが無い"]) };
+  const mail = String(R.mail || "").trim().toLowerCase(), rak = /楽天/.test(String(R.ota || ""));
+  let via = "";
+  if (store !== "tkm") via = "LINE（つないでいなければメール）";
+  else if (MAIL_OK(mail)) via = "メール";
+  else if (rak) via = "楽天の画面からのメール";
+  if (!via) return { verdict: "human", ask: "", why: why.concat([R.tel ? "メールもLINEも無い → 電話で聞いてカルテに入力" : "連絡先が無い → 受け渡しで確認"]) };
+  if (days <= 1 && R.tel) why.push("出発が明日以内：送っても見ない時は電話");
+  const text = prepText(store, R, need, MY_URL[store] + R.mypage_token);
+  const nm = String(R.name || "").trim() || "お客様";
+  return { verdict: "ok", ask: `${nm}様に、${via}で「${need.join("・")}」のお願いを送っていいですか？`, why, via, text };
+}
+async function sendGuest(store: string, rid: string, action: string, text: string): Promise<string> {
+  if (store === "spk" || store === "nha") {
+    const x = await fetch(`${SB}/functions/v1/line-push`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ secret: FUNC_SECRET, store, resv_no: rid, action, message: text }) });
+    const j: any = await x.json().catch(() => null);
+    if (j && j.ok) return String(j.channel || "line");
+    throw new Error("送れませんでした（" + (j ? (j.reason || j.error || "ng") : "http" + x.status) + "）");
+  }
+  const b = (await getB("bt_reservations", `id=eq.${encodeURIComponent(rid)}&select=id,mail,ota&limit=1`))[0];
+  if (!b) throw new Error("予約が見つからない");
+  const subject = "【HANDYMAN】ご出発前のご準備のお願い", to = String(b.mail || "").trim().toLowerCase();
+  const body = text + "\n\n――――――――\nHANDYMAN 高松空港店\n※このメールは送信専用です。ご質問はマイページの「聞く」からどうぞ。";
+  if (MAIL_OK(to)) {
+    if (!RESEND_KEY) throw new Error("メールの鍵が無い");
+    const r = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${RESEND_KEY}`, "content-type": "application/json" }, body: JSON.stringify({ from: "HANDYMAN 高松空港店 <reserve@rent-handyman.com>", to: [to], reply_to: "reserve@rent-handyman.com", subject, text: body }) });
+    const ok = r.ok, err = ok ? null : (await r.text()).slice(0, 300);
+    await ins("hdm_notifications", { store: "tkm", resv_no: rid, action, to_email: to, subject, body, is_test: false, sent: ok, sent_at: ok ? new Date().toISOString() : null, error: err }).catch(() => {});
+    if (!ok) throw new Error("メールが送れませんでした");
+    return "mail";
+  }
+  if (/楽天/.test(String(b.ota || ""))) { await ins("rax_outbox", { store: "tkm", resv_no: rid, kind: action, subject, body }); return "rakuten"; }
+  throw new Error("連絡先が無い");
+}
+const prepKey = (store: string, rid: string) => `prep:${store}:${rid}:${new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10)}`;
+async function prepAsk(items: any[]) {
+  const out: Record<string, any> = {};
+  for (const it of items.slice(0, 40)) {
+    const store = ["spk", "nha", "tkm"].includes(it.store) ? it.store : "", rid = String(it.rid || "");
+    if (!store || !rid) continue;
+    let s: any; try { s = await prepSuggest(store, rid, Array.isArray(it.need) ? it.need : []); } catch (e) { s = { verdict: "human", ask: "", why: ["オムニが判断できなかった：" + String((e as Error).message || e).slice(0, 80)] }; }
+    out[store + "|" + rid] = s;
+    try { await fetch(`${SB}/rest/v1/omni_suggestions?on_conflict=kind,ref_id`, { method: "POST", headers: { ...H, Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ kind: "prep", ref_id: prepKey(store, rid), store, reservation_id: rid, verdict: s.verdict, ask: s.ask, why: s.why, alt: s.text || null, reason: s.via || null, updated_at: new Date().toISOString() }) }); } catch (_) { /* 提案は出す */ }
+  }
+  return out;
+}
+// 社員の「はい／いいえ」。はい＝その場で作り直した文（画面に出したものと同じ決まり）を送る。押した人の名前を残す
+async function prepDecide(p: any) {
+  const store = ["spk", "nha", "tkm"].includes(p.store) ? p.store : "", rid = String(p.rid || "");
+  const name = String(p.actor_name || "").replace(/[\s:]+/g, " ").trim().slice(0, 30);
+  if (!store || !rid) return { ok: false, error: "予約が分かりません" };
+  if (!name) return { ok: false, error: "承認する人の名前を入れてください" };
+  const s: any = await prepSuggest(store, rid, Array.isArray(p.need) ? p.need : []);
+  const yes = p.outcome === "same";
+  if (yes && (s.verdict !== "ok" || !s.text)) return { ok: false, error: "いまは送れません：" + (s.why || []).slice(-1).join("") };
+  let ch = "";
+  if (yes) ch = await sendGuest(store, rid, "mypage_prep", s.text);
+  const now = new Date().toISOString();
+  await ins("omni_decisions", { kind: "prep", store, ref_id: prepKey(store, rid), reservation_id: rid, proposal: s.ask ? s.ask + "\n" + (s.text || "") : (s.why || []).join("／"), final: yes ? s.text : null, outcome: yes ? "same" : "rejected", conf: s.verdict === "ok" ? "go" : "human", conf_reason: (s.why || []).join("／").slice(0, 300), via: "admin", decided_by: "admin:" + name, proposed_at: now, decided_at: now });
+  return { ok: true, sent: ch };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   try {
@@ -379,6 +482,8 @@ Deno.serve(async (req) => {
       }
       return J({ ok: true, map: await chgList(Array.isArray(p.ids) ? p.ids : []) });
     }
+    if (p.action === "prep_ask") return J({ ok: true, map: await prepAsk(Array.isArray(p.items) ? p.items : []) });
+    if (p.action === "prep_decide") return J(await prepDecide(p));
     if (p.action === "chg_list") return J({ ok: true, map: await chgList(Array.isArray(p.ids) ? p.ids : undefined) });
     if (p.action === "stats") { try { await tkmReconcile(); } catch (_) { /* */ } } if (p.action === "stats") return J({ ok: true, rows: await stats(Math.min(90, Math.max(1, +p.days || 14))) });
     return J({ ok: false, error: "action" }, 400);
