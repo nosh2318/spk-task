@@ -371,7 +371,7 @@ const PREP_NEED = new Set(["免許証", "じゃらん決済", "到着便名", "�
 const jmd = (d: string) => { const m = String(d || "").match(/^\d{4}-(\d{2})-(\d{2})/); if (!m) return ""; const t = new Date(d.slice(0, 10) + "T00:00:00Z"); return `${+m[1]}/${+m[2]}(${"日月火水木金土"[t.getUTCDay()]})`; };
 async function prepResv(store: string, rid: string): Promise<any> {
   const sel = "id,name,status,tel,mail,ota,mypage_token";
-  if (store === "tkm") return (await getB("bt_reservations", `id=eq.${encodeURIComponent(rid)}&select=${sel},start_date&limit=1`))[0] || null;
+  if (store === "tkm") return (await getB("bt_reservations", `id=eq.${encodeURIComponent(rid)}&select=${sel},start_date,brand&limit=1`))[0] || null;
   const r = (await get(store === "nha" ? "nha_reservations" : "reservations", `id=eq.${encodeURIComponent(rid)}&select=${sel},${store === "nha" ? "start_date" : "lend_date"}&limit=1`))[0];
   return r ? { ...r, start_date: r.start_date || r.lend_date } : null;
 }
@@ -388,6 +388,7 @@ async function prepSuggest(store: string, rid: string, need0: string[]) {
   const R = await prepResv(store, rid);
   if (!R) return { verdict: "human", ask: "", why: ["予約が見つからない"] };
   if (/cancel|キャンセル/i.test(String(R.status || ""))) return { verdict: "human", ask: "", why: ["キャンセル済みの予約"] };
+  if (store === "tkm" && R.brand !== "HDM") return { verdict: "human", ask: "", why: ["BUDDICA の予約（HANDYMAN 名では送らない）"] };
   if (!need.length) return { verdict: "human", ask: "", why: ["足りない物が読めない"] };
   const why: string[] = [`足りない：${need.join("・")}`, `出発 ${jmd(R.start_date)}`];
   const today = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
