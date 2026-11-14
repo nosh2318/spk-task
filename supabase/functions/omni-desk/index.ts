@@ -5,6 +5,7 @@
 //      rejected＝送らない（チャットは未対応のまま、人がチャット管理で返す）
 // POST {admin_pin, action:"chg_list", ids?} → {ok, map:{change_id（高松は "tkm:<id>"）:{verdict:"ok"|"alt"|"human", ask, why[], alt?, reason?}}}  変更依頼へのオムニの提案
 // POST {token, store, action:"chg_for_staff", ids} → {ok, map}  スタッフ画面用（個別URLの share_token）
+// POST {action:"chat_apply", store, rid, changes:[{field,value}], actor_name}（Authorization: Bearer サービスキー か admin_pin）→ 予約・タスク・マイページへ反映し、店の部屋へ「変更しました」＋関係する担当
 // POST {admin_pin, action:"chg_swap", id, actor_name} → {ok}  担当替えつきの案を承認した後、タスクの担当を替える
 // POST {admin_pin, action:"prep_ask", items:[{store,rid,need[]}]} → {ok, map:{"store|rid":{verdict, ask, why[], via, text}}}  準備が足りないカードへの提案
 // POST {admin_pin, action:"prep_decide", store, rid, need[], outcome:"same"|"rejected", actor_name} → はい＝お客様へお願いを送る
@@ -387,6 +388,53 @@ async function chgSwap(p: any) {
   return { ok: out === "ok", result: out, from, to };
 }
 
+// ★2026-11-14 nosh「タスク時間はあなたが変えるべき」「あなたが送信したならあなたが変える」「最後通知 変更しましたをSlackと関連担当に（送迎者も）」
+// チャットの返事で時間・場所を約束した時：社員が 👍/OK を押してオムニが返事を送ったら、オムニがここを呼んで予約・タスク・マイページを同じ値に変え、
+// 最後に店の部屋へ「変更しました」と、関係する担当（お届け・回収の担当＋送迎の担当）の名前を出す。反映は変更依頼の承認と同じ DB 関数。
+const CA_F = ["lend_time", "return_time", "del_place", "col_place"];
+async function rpcMain(fn: string, b: unknown) { const r = await fetch(`${SB}/rest/v1/rpc/${fn}`, { method: "POST", headers: H, body: JSON.stringify(b) }); const tx = await r.text(); if (!r.ok) { let m = tx; try { m = JSON.parse(tx).message || tx; } catch (_) { /* */ } throw new Error(String(m).slice(0, 200)); } try { return JSON.parse(tx); } catch (_) { return tx; } }
+async function rpcB(fn: string, b: unknown) { const u = Deno.env.get("BT_URL"), k = Deno.env.get("BT_SERVICE_KEY"); if (!u || !k) throw new Error("高松のDBに入れない"); const r = await fetch(`${u}/rest/v1/rpc/${fn}`, { method: "POST", headers: { apikey: k, Authorization: `Bearer ${k}`, "Content-Type": "application/json" }, body: JSON.stringify(b) }); const tx = await r.text(); if (!r.ok) { let m = tx; try { m = JSON.parse(tx).message || tx; } catch (_) { /* */ } throw new Error(String(m).slice(0, 200)); } return tx; }
+async function legPeople(store: string, rid: string, back: boolean): Promise<string[]> {
+  const k = back ? "c-" : "d-", out: string[] = [];
+  const add = (role: string, w: unknown) => { const n = String(w || "").trim(); if (n && !NOT_PERSON.test(n) && !out.some((x) => x.endsWith(" " + n + "さん"))) out.push(`${role} ${n}さん`); };
+  if (store === "spk") { for (const t of await get("tasks", `reservation_id=eq.${encodeURIComponent(rid)}&deleted=not.is.true&select=_id,type,assignee`)) if (String(t._id).startsWith(k) || String(t._id).startsWith("s-" + k)) add(String(t._id).startsWith("s-") ? "送迎" : back ? "回収" : "お届け", t.assignee); }
+  else if (store === "nha") { for (const t of await get("nha_tasks", `_id=in.${inList([k + rid, "s-" + k + rid])}&deleted=not.is.true&select=_id,${encodeURIComponent("担当")}`)) add(String(t._id).startsWith("s-") ? "送迎" : back ? "回収" : "お届け", t["担当"]); }
+  else { for (const t of await getB("bt_tasks", `_id=in.${inList([k + rid, "s-" + k + rid])}&deleted=not.is.true&select=_id,${encodeURIComponent("担当")}`)) add(String(t._id).startsWith("s-") ? "送迎" : back ? "お送り" : "お迎え", t["担当"]); }
+  return out;
+}
+async function chatApply(p: any) {
+  const store = String(p.store || ""), rid = String(p.rid || "").trim(), by = String(p.actor_name || "").trim().slice(0, 30);
+  const ch = (Array.isArray(p.changes) ? p.changes : []).filter((c: any) => CA_F.includes(String(c && c.field)) && String(c.value || "").trim()).slice(0, 4);
+  if (!["spk", "nha", "tkm"].includes(store) || !rid || !ch.length) return { ok: false, error: "店・予約・変える値がない" };
+  if (store === "tkm" && ch.some((c: any) => /_place$/.test(c.field))) return { ok: false, error: "高松の場所はチャットからは変えない（送迎の行き先はマイページで）" };
+  const actor = "omni:chat" + (by ? "/" + by : ""), done: string[] = [], err: string[] = [];
+  const R = store === "spk" ? (await get("reservations", `id=eq.${encodeURIComponent(rid)}&select=name,lend_time,return_time,del_place,col_place&limit=1`))[0]
+    : store === "nha" ? (await get("nha_reservations", `id=eq.${encodeURIComponent(rid)}&select=name,start_time,end_time,del_place,col_place&limit=1`))[0]
+    : (await getB("bt_reservations", `id=eq.${encodeURIComponent(rid)}&select=name,start_time,end_time,pickup_time,dropoff_time&limit=1`))[0];
+  if (!R) return { ok: false, error: "予約が見つからない" };
+  const JP: Record<string, string> = store === "spk" ? { lend_time: "お届けの時間", return_time: "回収の時間", del_place: "お届けの場所", col_place: "回収の場所" } : store === "nha" ? { lend_time: "貸出の時間", return_time: "返却の時間", del_place: "お届けの場所", col_place: "回収の場所" } : { lend_time: "お迎えの時間", return_time: "お送りの時間" };
+  const oldOf = (f: string) => String(f === "lend_time" ? (R.lend_time ?? R.pickup_time ?? R.start_time) : f === "return_time" ? (R.return_time ?? R.dropoff_time ?? R.end_time) : R[f] ?? "").trim();
+  let back = false;
+  for (const c of ch) {
+    const f = String(c.field), v = /_time$/.test(f) ? hm(c.value) : String(c.value).trim().slice(0, 120);
+    if (!v) { err.push(`${JP[f]}：値が読めない（${String(c.value).slice(0, 20)}）`); continue; }
+    if (/^(return_time|col_place)$/.test(f)) back = true;
+    try {
+      if (store === "spk") await rpcMain("spk_apply_mypage_change", { p_res: rid, p_field: f, p_val: v, p_actor: actor, p_change_id: null, p_lat: null, p_lng: null });
+      else if (store === "nha") await rpcMain("nha_apply_mypage_change", { p_res: rid, p_field: f, p_val: v, p_actor: actor, p_change_id: null });
+      else await rpcB("bt_apply_mypage_change", { p_res: rid, p_field: f === "lend_time" ? "pickup" : "dropoff", p_val: v, p_actor: actor, p_change_id: null, p_flight: null });
+      done.push(`${JP[f]}：${oldOf(f) || "—"} → ${v}`);
+    } catch (e) { err.push(`${JP[f]}：${String((e as Error).message || e)}`); }
+  }
+  const people = await legPeople(store, rid, back).catch(() => [] as string[]);
+  const head = `【${ST_JP[store]}｜変更しました】${done.length && !err.length ? "✅" : "⚠️"} チャットの返事どおり、予約・タスク・マイページを変えました`;
+  const lines = [err.length && !done.length ? `【${ST_JP[store]}｜変更できません】⚠️ チャットで約束した変更を予約に反映できませんでした（人が直してください）` : head,
+    `📄 予約 ${rid}（${String(R.name || "お客様")}様）`, ...done.map((d) => "🔁 " + d), ...err.map((d) => "⚠️ " + d),
+    `👷 知らせる人：${people.length ? people.join("／") : "担当なし（割り当てる人に確認）"}`, `🙋 承認：${by || "—"}（オムニが返事を送り、反映しました）`];
+  await post(OPS_CH[store], lines.join("\n"));
+  return { ok: !err.length, done, err, people };
+}
+
 async function chgList(ids?: number[]) {
   const q = ids && ids.length ? `id=in.(${ids.map(Number).filter(Boolean).join(",")})` : `status=eq.requested&store=in.(spk,nha)&field=in.(${CHG_F.join(",")})`;
   const rows = await get("mypage_changes", `${q}&select=id,store,reservation_id,field,old_value,new_value,payload,status,created_at&order=id.asc&limit=60`);
@@ -578,6 +626,8 @@ Deno.serve(async (req) => {
       const m = ids.length ? await chgList(ids) : {};
       return J({ ok: true, map: Object.fromEntries(Object.entries(m).filter(([, v]: any) => v)) });
     }
+    // チャットの返事で約束した変更を反映（Mac mini のオムニから・サービスキーで呼ぶ／本部からは PIN）
+    if (p.action === "chat_apply") { const au = req.headers.get("authorization") || ""; const pin = Deno.env.get("ADMIN_PIN") || ""; const LEG = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || ""; if (au !== `Bearer ${SR}` && !(LEG && au === `Bearer ${LEG}`) && !(pin && String(p.admin_pin || "") === pin)) return J({ ok: false, error: "auth" }, 401); return J(await chatApply(p)); }
     // 見張りは cron から（返すのは件数だけ・同じものは1回しか送らない）
     if (p.action === "watch") return J({ ok: true, ...(await watch()) });
     const PIN = Deno.env.get("ADMIN_PIN") || "";
