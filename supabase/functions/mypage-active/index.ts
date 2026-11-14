@@ -1,6 +1,7 @@
 // マイページアクティブ管理（main）: 那覇・札幌の予約一覧＋全店の閲覧集計
 // POST {admin_pin, action:"list", from, to}  → {ok, rows:[...]}  （那覇 HDM/KEY・札幌 HDM/KEY）
 // POST {admin_pin, action:"agg", tokens:[...]} → {ok, agg:{token:{...}}}（高松の行を BT 側から取った後に使う）
+// POST {admin_pin, action:"arch_list", days} / {admin_pin, action:"arch_set", key, bucket, kind, rid, title, actor_name, undo} → やることカードの確認済（yaru_archive）
 // 判定（段階・6項目）は画面側の1か所で行う。ここは事実だけ返す。
 function __newKey(env: string, name: string): string { try { return (JSON.parse(Deno.env.get(env) || "{}") as Record<string, string>)[name] || ""; } catch { return ""; } }
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
@@ -48,6 +49,32 @@ serve(async (req) => {
     if (p.action === "agg") {
       const tokens = (Array.isArray(p.tokens) ? p.tokens : []).map(String).filter(Boolean).slice(0, 3000);
       return J({ ok: true, agg: await agg(sb, tokens) });
+    }
+
+    /* ★2026-11-14 nosh「確認済/アーカイブ機能を追加」「永遠にたまる」：やることカードの確認済（表示だけ。予約・タスクの値は変えない） */
+    if (p.action === "arch_list") {
+      const days = Math.min(Math.max(Number(p.days) || 30, 1), 90);
+      const { data, error } = await sb.from("yaru_archive").select("key,bucket,kind,rid,title,archived_by,archived_at,restored_by,restored_at")
+        .gte("archived_at", new Date(Date.now() - days * 864e5).toISOString()).order("archived_at", { ascending: false }).limit(1000);
+      if (error) throw error;
+      return J({ ok: true, rows: data || [] });
+    }
+    if (p.action === "arch_set") {
+      const key = String(p.key || "").slice(0, 200), actor = String(p.actor_name || "").trim().slice(0, 30);
+      if (!key) return J({ ok: false, error: "key" }, 400);
+      if (!actor) return J({ ok: false, error: "actor" }, 400);
+      const now = new Date().toISOString();
+      if (p.undo) {
+        const { error } = await sb.from("yaru_archive").update({ restored_by: actor, restored_at: now }).eq("key", key);
+        if (error) throw error;
+      } else {
+        const { error } = await sb.from("yaru_archive").upsert({
+          key, bucket: String(p.bucket || "").slice(0, 20), kind: String(p.kind || "").slice(0, 20), rid: String(p.rid || "").slice(0, 60),
+          title: String(p.title || "").slice(0, 200), archived_by: actor, archived_at: now, restored_by: null, restored_at: null,
+        }, { onConflict: "key" });
+        if (error) throw error;
+      }
+      return J({ ok: true });
     }
 
     const from = String(p.from || "").slice(0, 10), to = String(p.to || "").slice(0, 10);
