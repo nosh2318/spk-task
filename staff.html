@@ -1871,6 +1871,20 @@ a.myp{font-size:12px !important;padding:4px 9px !important;border-radius:8px !im
   function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];});}
   function post(o){o.token=TOKEN;return fetch(EF,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(o)}).then(function(r){return r.json();});}
   function md(d){var m=String(d||"").match(/^\d{4}-(\d{2})-(\d{2})/);return m?(+m[1])+"/"+(+m[2]):String(d||"");}
+  /* ★2026-11-14 nosh「自動承認は提案型からスタート、スタッフに」「聞くではなく 〜で承認していいか？で 確率をここで測ろう」：
+     オムニが「〜で承認していいですか？」（締切・担当の予定・車・エリアで判断）。「はい」で承認、「いいえ」でいつものボタン。
+     予定が重なる時は「代わりに〜を提案していいですか？」→「はい」で代わりの案を埋めて開く（文を見てから送る）。どちらでも採用率に入る（本部の記録） */
+  var OMNO={},OMC={};
+  function omLoad(){ITEMS.forEach(function(x){if(OMC[x.id])x.omni=OMC[x.id];});if(!ITEMS.length)return;
+    fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/omni-desk",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"chg_for_staff",token:TOKEN,store:"spk",ids:ITEMS.map(function(x){return x.id;})})})
+      .then(function(r){return r.json();}).then(function(d){if(!d||!d.ok)return;var m=d.map||{},ch=false;ITEMS.forEach(function(x){if(m[x.id]){if(!OMC[x.id])ch=true;OMC[x.id]=m[x.id];x.omni=m[x.id];}});if(ch&&!busy&&!(ALT&&document.activeElement&&document.activeElement.tagName==="TEXTAREA"))draw();}).catch(function(){});}
+  function omAsk(x){var o=x.omni;return !!(o&&o.ask&&o.verdict!=="human"&&!OMNO[x.id]&&!(ALT&&ALT.id===x.id));}
+  function omBox(x){var o=x.omni;if(!o||OMNO[x.id]||(ALT&&ALT.id===x.id))return "";
+    var why=(o.why||[]).map(function(w){return '<li'+(/^⚠️/.test(w)?' style="color:#b4232c"':'')+'>'+esc(w)+'</li>';}).join("");
+    if(o.verdict==="human"||!o.ask)return '<div style="margin:8px 0;padding:8px 10px;border-radius:10px;background:#FDECEC;border:1px solid #F3B4B4;font-size:13px"><b>🤖 オムニ：迷うので自分で決めてください</b><ul style="margin:4px 0 0;padding-left:1.2em">'+why+'</ul></div>';
+    return '<div style="margin:8px 0;padding:10px;border-radius:10px;background:#EEFBF3;border:1px solid #B7E4C7"><div style="font-weight:800;font-size:15px;color:#11683A">🤖 '+esc(o.ask)+'</div><ul style="margin:4px 0 8px;padding-left:1.2em;font-size:13px">'+why+'</ul>'
+      +(o.verdict==="ok"?'<button class="bt ok" data-omyes="'+x.id+'">はい、承認する</button>':'<button class="bt ok" data-omalt="'+x.id+'">はい、この案で文を作る</button>')
+      +'<button class="bt" style="background:#fff;color:#002063;border:1px solid #C9CED6" data-omno="'+x.id+'">いいえ（自分で決める）</button></div>';}
   function draw(){
     var b=document.getElementById("mpReq");if(!b)return;
     var h="";
@@ -1892,8 +1906,8 @@ a.myp{font-size:12px !important;padding:4px 9px !important;border-radius:8px !im
       return '<div class="rq"><span class="tag">お客様から変更の依頼</span>'
         +'<div class="who">'+esc(md(x.date))+' '+esc(x.kind)+'　'+esc(x.cust||"お客様")+'様'+(x.mine?'':'　<b>（担当なし）</b>')+'</div>'
         +'<div class="chg">'+esc(x.label)+'<br><span class="old">'+esc(x.old||"（なし）")+'</span> → <span class="new">'+esc(x.new)+'</span></div>'
-        +'<button class="bt ok" data-a="approved" data-id="'+x.id+'">受けられる（承認）</button>'
-        +'<button class="bt ng" data-alt="'+x.id+'">できない → 代わりの案…</button>'
+        +omBox(x)+(omAsk(x)?'':'<button class="bt ok" data-a="approved" data-id="'+x.id+'">受けられる（承認）</button>'
+        +'<button class="bt ng" data-alt="'+x.id+'">できない → 代わりの案…</button>')
         +(ALT&&ALT.id===x.id?altHtml(x):'')
         +'<div class="mut" style="margin-top:6px">承認すると、お客様への通知とOPシートの変更まで自動で行います。迷う時は <a href="#" data-a="consult" data-id="'+x.id+'" style="color:#002063;font-weight:700">社員に相談</a></div></div>';
     }
@@ -1908,6 +1922,10 @@ a.myp{font-size:12px !important;padding:4px 9px !important;border-radius:8px !im
     }
     b.innerHTML=h;
     var ub=b.querySelector("[data-ubox]");if(ub)ub.onclick=function(){UOPEN=!(UOPEN||(ALT&&UN.some(function(x){return x.id===ALT.id;})));if(!UOPEN&&ALT&&UN.some(function(x){return x.id===ALT.id;}))ALT=null;draw();};
+    Array.prototype.forEach.call(b.querySelectorAll("[data-omyes]"),function(c){c.onclick=function(){act("approved",+c.getAttribute("data-omyes"),true);};});
+    Array.prototype.forEach.call(b.querySelectorAll("[data-omno]"),function(c){c.onclick=function(){OMNO[+c.getAttribute("data-omno")]=1;draw();};});
+    Array.prototype.forEach.call(b.querySelectorAll("[data-omalt]"),function(c){c.onclick=function(){var id=+c.getAttribute("data-omalt"),x=ITEMS.filter(function(i){return i.id===id;})[0],o=x&&x.omni;if(!o)return;
+      ALT={id:id,code:o.reason||"full_slot",ti:-1,sv:"",msg:null,exp:""};var T=TPL[x.field]||[];for(var j=0;j<T.length;j++)if(T[j].s==="time"&&o.alt){ALT.ti=j;ALT.sv=o.alt;break;}draw();};});
     Array.prototype.forEach.call(b.querySelectorAll("[data-a]"),function(btn){btn.onclick=function(e){e.preventDefault();act(btn.getAttribute("data-a"),+btn.getAttribute("data-id"));};});
     Array.prototype.forEach.call(b.querySelectorAll("[data-alt]"),function(btn){btn.onclick=function(){var id=+btn.getAttribute("data-alt");ALT=ALT&&ALT.id===id?null:{id:id,code:"",ti:-1,sv:"",msg:null,exp:""};draw();};});
     Array.prototype.forEach.call(b.querySelectorAll("[data-rsn]"),function(c){c.onclick=function(){ALT.code=c.getAttribute("data-rsn");ALT.msg=null;draw();};});
@@ -1923,7 +1941,7 @@ a.myp{font-size:12px !important;padding:4px 9px !important;border-radius:8px !im
     Array.prototype.forEach.call(b.querySelectorAll("button[data-seen]"),function(btn){btn.onclick=function(){var id=+btn.getAttribute("data-seen");btn.disabled=true;btn.textContent="…";post({action:"seen",id:id}).then(function(){INBOX=INBOX.filter(function(n){return n.id!==id;});draw();}).catch(function(){btn.disabled=false;btn.textContent="確認しました";});};});
     try{var c=INBOX.length+ITEMS.filter(function(x){return x.mine;}).length;/* 担当なしはバッジに数えない */if(navigator.setAppBadge){if(c)navigator.setAppBadge(c);else navigator.clearAppBadge();}}catch(e){}
   }
-  function load(){if(!TOKEN)return;post({action:"list"}).then(function(d){if(d&&d.ok){ITEMS=d.items||[];INBOX=(d.inbox||[]).filter(function(n){return !(n.kind==="task_today"&&/付きました|割り当て|変更/.test(n.title||""));});/* ★2026-11-11 今日のタスクの付いた・変更は上の確認カードで */if(ALT&&!curX())ALT=null;var ta=document.querySelector("#mpReq textarea[data-msg]");if(ALT&&ta&&document.activeElement===ta)return;draw();}}).catch(function(){});}
+  function load(){if(!TOKEN)return;post({action:"list"}).then(function(d){if(d&&d.ok){ITEMS=d.items||[];omLoad();INBOX=(d.inbox||[]).filter(function(n){return !(n.kind==="task_today"&&/付きました|割り当て|変更/.test(n.title||""));});/* ★2026-11-11 今日のタスクの付いた・変更は上の確認カードで */if(ALT&&!curX())ALT=null;var ta=document.querySelector("#mpReq textarea[data-msg]");if(ALT&&ta&&document.activeElement===ta)return;draw();}}).catch(function(){});}
   /* ★2026-11-10 nosh「代わりの案も個別URLに」：アクションタブと同じ「できない → 代わりの案」。
      理由・案・時間はタップで選ぶだけ。お客様に届く文を見せて、直せる。お客様がマイページで「この案でOK／やめる」 */
   var ALT=null;
@@ -1983,10 +2001,10 @@ a.myp{font-size:12px !important;padding:4px 9px !important;border-radius:8px !im
       else DONE="⚠️ "+esc((d&&d.error)||"送れませんでした");
       load();setTimeout(function(){DONE=null;draw();},15000);
     }).catch(function(){busy=false;DONE="⚠️ 通信できませんでした。もう一度押してください";draw();});}
-  function act(a,id){
+  function act(a,id,omYes){
     if(busy)return;var x=ITEMS.filter(function(i){return i.id===id;})[0];if(!x)return;
     var q=a==="approved"?("この変更を承認しますか？\n"+x.label+"："+(x.old||"（なし）")+" → "+x.new+"\n（お客様に通知されます）"):"社員に相談しますか？\n（Slackに「難しい」と流れ、社員が返事します）";
-    if(!confirm(q))return;
+    if(!omYes&&!confirm(q))return; /* オムニの「承認していいですか？」に「はい」＝確認済み */
     var note="";if(a==="consult"){note=prompt("ひとこと（任意）：例「その時間は別のお届けがある」")||"";}
     busy=true;var b=document.getElementById("mpReq");if(b)b.innerHTML='<div class="done" style="background:#fff;color:#002063;border-color:#C9CED6">送信中…</div>';
     post({action:"decide",change_id:id,decision:a,note:note}).then(function(d){
