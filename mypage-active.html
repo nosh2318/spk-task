@@ -180,6 +180,11 @@ details.defs summary{cursor:pointer;font-weight:800;font-size:13px}
 </div>
 </section>
 <section id="tab-action" hidden>
+<!-- ★2026-11-15 nosh「回答が明確になっていないものをスタッフに提案→解決に誘導」：お客様の答えが未確定の予約。ボタン1つでマイページに質問→答えはその場で予約・OP・タスクへ（スタッフは判断も連絡もしない） -->
+<div class="card" id="udC" hidden>
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b>🤔 お客様の答えが未確定</b><span class="mut" id="udN"></span><span class="mut">質問を出すと、お客様がマイページで選んだ答えがそのまま予約・送迎の予定に入ります</span></div>
+  <div id="udL"></div>
+</div>
 <!-- ★2026-11-14 nosh「アクション → やること」：種類ごとの件数＋1件ずつ「すること・この先の手順・進み具合」。読むものは今までのアクションと同じ（依頼・返金待ち・未払い・予約一覧） -->
 <div class="card">
   <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b>やること</b><span class="mut" id="ySum"></span><span class="mut">依頼の返事の目安：受付から30分（9:00〜19:00）、夜間は翌9:30</span></div><div id="aHot"></div>
@@ -582,7 +587,7 @@ async function loadAll(){
     await reqP;
     ROWS=a.rows.concat(b.rows).map(r=>Object.assign(r,{j:judge(r)}));
     const seen=new Set(ROWS.map(r=>r.bucket+"|"+r.rid));REQ_OUT=Object.entries(REQ).filter(([k,l])=>!seen.has(k)&&l.some(x=>x.status==="requested")).length;
-    render();loadHO();loadPrep();
+    render();loadHO();loadPrep();loadUd();
     if(DEEP){const k=DEEP;DEEP="";if(ROWS.some(r=>r.bucket+"|"+r.rid===k))focusEl('[data-k="'+CSS.escape(k)+'"]');else{const rid=k.slice(k.indexOf("|")+1);Q=rid;const qi=document.getElementById("q");if(qi)qi.value=rid;render();}}
   }catch(e){
     if(e.message==="pin"){try{localStorage.removeItem("mpa_pin");}catch(_){}document.getElementById("pinCard").style.display="block";document.getElementById("hdr").textContent="PINが違います";return;}
@@ -791,6 +796,25 @@ async function prepGo(k,outcome){const i=k.indexOf("|"),store=k.slice(0,i),rid=k
     OMPS[k]=outcome==="same"?"done":"no";toast(outcome==="same"?"お客様に送りました（"+({line:"LINE",mail:"メール",rakuten:"楽天の画面"}[j.sent]||j.sent||"")+"）":"オムニの案は使わない、にしました");}
   catch(e){OMPS[k]="";toast("できませんでした："+e.message);}renderAct();}
 
+/* ★2026-11-15 未確定の一覧（omni-desk undecided）と「マイページで聞く」（undecided_ask）。今は那覇の「営業所へ返却後の送迎」 */
+let UD=[],UDS={};
+async function loadUd(){const pin=getPin();if(!pin)return;try{const j=await ef(MAIN,MAIN_ANON,"omni-desk",{admin_pin:pin,action:"undecided"});UD=(j&&j.rows)||[];}catch(e){UD=[];}renderUd();}
+function renderUd(){const c=document.getElementById("udC");if(!c)return;c.hidden=!UD.length;document.getElementById("udN").textContent=UD.length+"件";
+  const ST={nha:"HDM 那覇",spk:"HDM 札幌",tkm:"HDM 高松"};
+  document.getElementById("udL").innerHTML=UD.map(x=>{const k=x.store+"|"+x.rid+"|"+x.kind,kk=esc(k).replace(/'/g,""),q=x.q||{},ps=UDS[k]||"";
+    const why=(x.why||[]).map(w=>`<li>${esc(w)}</li>`).join("");
+    const md=String(x.date||"").slice(5).replace("-","/");
+    let st;
+    if(q.status==="asked")st=`<div class="om-ok" style="background:#eefbf3;border-color:#b7e4c7">📨 マイページに質問を出しています（${esc(String(q.asked_at||"").slice(5,16).replace("T"," "))}・${esc(q.asked_by||"")}）。お客様が選ぶと自動で反映されます。</div>`;
+    else if(q.status==="other")st=`<div class="om-ok" style="background:#fff8e1;border-color:#ffe08a">✏️ お客様のほかの希望：「${esc((q.answer||{}).text||"")}」→ チャットに届いています（オムニが返事の案を出します）</div>`;
+    else if(ps==="cf")st=`<div class="om-ok">${esc(x.name||"")}様のマイページに質問を出します。よろしいですか？<div class="acts"><button class="btn ok" onclick="udAsk('${kk}')">はい、出す</button><button class="btn" onclick="UDS['${kk}']='';renderUd()">やめる</button></div></div>`;
+    else if(ps==="busy")st=`<div class="om-ok">出しています…</div>`;
+    else st=`<div class="acts" style="margin-top:0"><button class="btn ok" onclick="UDS['${kk}']='cf';renderUd()">はい、マイページで聞く</button></div>`;
+    return `<div class="om-ok" style="margin:8px 0;background:#fff;border-color:#e5e7eb"><div><b>${esc(ST[x.store]||x.store)}</b> ${esc(x.name||"")}様 ・ 返却 ${esc(md)} ${esc(x.time||"")} <a href="?tab=list&bucket=hdm_${esc(x.store)}&rid=${encodeURIComponent(x.rid)}">予約を見る</a></div><div style="margin-top:4px">🤖 <b>オムニ：${esc(x.ask||x.title||"")}</b></div><ul style="margin:4px 0 6px;padding-left:1.2em;font-weight:500">${why}</ul><div class="mut">お客様が選べる答え：那覇空港までバス（便を選ぶ）／赤嶺駅までバス（便を選ぶ）／送迎いらない／ほかの希望を書く</div>${st}</div>`;}).join("");}
+async function udAsk(k){const [store,rid,kind]=k.split("|");const ACT0=getActor();if(!ACT0){toast("承認する人の名前を入れてください");return;}
+  UDS[k]="busy";renderUd();
+  try{const j=await ef(MAIN,MAIN_ANON,"omni-desk",{admin_pin:getPin(),action:"undecided_ask",store,rid,kind,actor_name:ACT0});if(!j||j.ok===false)throw new Error((j&&j.error)||"ng");
+    UDS[k]="";toast("マイページに質問を出しました");}catch(e){UDS[k]="";toast("できませんでした："+e.message);}loadUd();}
 function omRateHtml(kind){kind=kind||"chat";const by={};OMRATE.filter(r=>r.kind===kind).forEach(r=>{const o=by[r.store]=by[r.store]||{same:0,edited:0,rejected:0};o.same+=r.same||0;o.edited+=r.edited||0;o.rejected+=r.rejected||0;});
   const nm={nha:"那覇",spk:"札幌",tkm:"高松"};const L=["nha","spk","tkm"].map(k=>{const o=by[k];if(!o)return `<span><b>${nm[k]}</b> まだ記録なし</span>`;const n=o.same+o.edited+o.rejected;return `<span><b>${nm[k]}</b> そのまま ${Math.round(o.same*100/n)}%（${o.same}/${n}件・直した${o.edited}・却下${o.rejected}）</span>`;});
   return `<div class="om-rate"><b>${kind==="chg"?"オムニの「承認していいですか？」の採用":kind==="prep"?"オムニの「お願いを送っていいですか？」の採用":"オムニの案の採用"}（14日）</b>${L.join("")}<span class="mut">2週間 95%以上の種類だけ、次の段階を nosh に聞きます</span></div>`;}
