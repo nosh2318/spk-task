@@ -121,7 +121,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1231';
+var CV='spk-v1232';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=1059').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -162,6 +162,48 @@ const {useState,useMemo,useCallback,useEffect,useRef}=React;
 const SUPABASE_URL = "https://ckrxttbnawkclshczsia.supabase.co";
 const SUPABASE_KEY = "sb_publishable_aTVhlY0YD-5BBfI03ZNnsg_MzO_vsIe"; // anon key（RLSで保護）
 const SB_ENABLED = !!(SUPABASE_URL && SUPABASE_KEY);
+/* ★2026-11-15 エラー見張り 第3段（nosh「エラーを拾ってくれ」「全部」）：保存（DB への書込）と EF の呼び出しが失敗したら、本部の見張りに1件記録する
+   見るだけ：通信の中身・結果は変えない。読み込み（GET）は数えない。送るのは 表/EF の名前・状態番号・エラー番号だけ（お客様の情報は送らない）
+   同じ失敗は1分に1回・1時間に20件まで。記録の送信が失敗しても何もしない。Slack に出すかは DB の ops_watch が決める（15分に3件以上など） */
+(function(){
+  if(typeof window==="undefined"||!window.fetch||window.__hdmErrRep||!SB_ENABLED)return;
+  window.__hdmErrRep=1;
+  var APP="spk",base=SUPABASE_URL,f0=window.fetch.bind(window),last={},hour=[],dev="x";
+  try{dev=localStorage.getItem("hdm_dev")||"";if(!dev){dev=Math.random().toString(36).slice(2,12);localStorage.setItem("hdm_dev",dev);}}catch(e){}
+  function clean(s){return String(s||"").replace(/\(.*\)/g,"(…)").replace(/[\w.+-]+@[\w.-]+/g,"(mail)").replace(/\d{6,}/g,"(n)").slice(0,120);}
+  function send(o){
+    var t=Date.now(),kk=o.target+"|"+o.status;
+    if(last[kk]&&t-last[kk]<60000)return;last[kk]=t;
+    hour=hour.filter(function(x){return t-x<3600000;});if(hour.length>=20)return;hour.push(t);
+    o.app=APP;o.dev=dev;
+    try{f0(base+"/rest/v1/rpc/report_client_error",{method:"POST",keepalive:true,headers:{"apikey":SUPABASE_KEY,"Authorization":"Bearer "+SUPABASE_KEY,"Content-Type":"application/json"},body:JSON.stringify({p:o})}).catch(function(){});}catch(e){}
+  }
+  window.fetch=function(input,init){
+    var p=f0(input,init),target="",url="",method="GET";
+    try{
+      url=typeof input==="string"?input:(input&&input.url)||String(input||"");
+      method=String((init&&init.method)||(input&&input.method)||"GET").toUpperCase();
+      if(url.indexOf(base)===0){
+        var m;
+        if((m=/\/functions\/v1\/([A-Za-z0-9_\-]+)/.exec(url)))target="ef:"+m[1];
+        else if((m=/\/rest\/v1\/rpc\/([A-Za-z0-9_]+)/.exec(url)))target="rpc:"+m[1];
+        else if((m=/\/rest\/v1\/([A-Za-z0-9_]+)/.exec(url))&&method!=="GET"&&method!=="HEAD")target="rest:"+m[1];
+      }
+    }catch(e){}
+    if(!target||target==="rpc:report_client_error")return p;
+    return p.then(function(r){
+      try{
+        if(r&&r.status>=400&&r.status!==401){
+          r.clone().json().then(function(j){send({target:target,method:method,status:r.status,code:j&&j.code?String(j.code):"",msg:clean(j&&(j.message||j.error||j.msg))});},function(){send({target:target,method:method,status:r.status,code:"",msg:""});});
+        }
+      }catch(e){}
+      return r;
+    },function(err){
+      try{if(!(err&&err.name==="AbortError"))send({target:target,method:method,status:0,code:"net",msg:clean(err&&err.message)});}catch(e){}
+      throw err;
+    });
+  };
+})();
 // ★ sb は同期的に作成（APP本体の useEffect が早期に sb を参照しても null にならないように）
 /* 古い画面の上書き止め（画面側）2026-11-12
    nosh「何回やるんだ」「他にパターンあるだろ？全部潰して」
@@ -13069,7 +13111,7 @@ function SqFailedModal({onClose,onResolved,preloadedItems}){
               <option value="現金">現金</option>
               <option value="その他">その他</option>
             </select></label>
-            <label style={{fontSize:11,fontWeight:700,color:"#374151"}}>予約番号（任意）<input value={form.resvNo} onChange={e=>setForm({...form,resvNo:e.target.value})} placeholder="例: R0IPN7SD" className="input-s" style={{marginTop:3}}/></label>
+            <label style={{fontSize:11,fontWeight:700,color:"#374151"}}>予約番号（任意）<input value={form.resvNo} onChange={e=>setForm({...form,resvNo:e.target.value})} placeholder="例: R0******" className="input-s" style={{marginTop:3}}/></label>
             <label style={{fontSize:11,fontWeight:700,color:"#374151"}}>担当スタッフ<input value={form.staffName} onChange={e=>setForm({...form,staffName:e.target.value})} placeholder="例: 大下" className="input-s" style={{marginTop:3}}/></label>
             <label style={{fontSize:11,fontWeight:700,color:"#374151",gridColumn:"span 2"}}>摘要 <span style={{color:"#dc2626"}}>*</span><input value={form.description} onChange={e=>setForm({...form,description:e.target.value})} placeholder="例: ガソリン代 / 延長料金1日分 / オプション追加" className="input-s" style={{marginTop:3,border:form.description?"1px solid #d1d5db":"2px solid #dc2626",background:form.description?"#fff":"#fef2f2"}}/></label>
             <label style={{fontSize:11,fontWeight:700,color:"#374151",gridColumn:"span 2"}}>補足メモ<input value={form.memo} onChange={e=>setForm({...form,memo:e.target.value})} placeholder="（任意）" className="input-s" style={{marginTop:3}}/></label>
@@ -13137,7 +13179,7 @@ function SqFailedModal({onClose,onResolved,preloadedItems}){
                <option value="income">収入</option>
                <option value="expense">支出</option>
              </select></label>
-             <label style={{fontSize:11,fontWeight:700,color:"#374151"}}>予約番号（任意）<input value={form.resvNo} onChange={e=>setForm({...form,resvNo:e.target.value})} placeholder="例: R0IPN7SD（なしで空白）" className="input-s" style={{marginTop:3}}/></label>
+             <label style={{fontSize:11,fontWeight:700,color:"#374151"}}>予約番号（任意）<input value={form.resvNo} onChange={e=>setForm({...form,resvNo:e.target.value})} placeholder="例: R0******（なしで空白）" className="input-s" style={{marginTop:3}}/></label>
              <label style={{fontSize:11,fontWeight:700,color:"#374151",gridColumn:"span 2"}}>摘要 <span style={{color:"#dc2626"}}>*</span><input value={form.description} onChange={e=>setForm({...form,description:e.target.value})} placeholder="ガソリン代 / 延長料金1日分 など" className="input-s" style={{marginTop:3}}/></label>
              <label style={{fontSize:11,fontWeight:700,color:"#374151"}}>担当スタッフ<input value={form.staffName} onChange={e=>setForm({...form,staffName:e.target.value})} placeholder="例: 大下" className="input-s" style={{marginTop:3}}/></label>
              <label style={{fontSize:11,fontWeight:700,color:"#374151"}}>補足メモ<input value={form.memo} onChange={e=>setForm({...form,memo:e.target.value})} placeholder="（任意）" className="input-s" style={{marginTop:3}}/></label>
@@ -26240,7 +26282,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.732";
+const APP_VERSION="v4.7.733";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
