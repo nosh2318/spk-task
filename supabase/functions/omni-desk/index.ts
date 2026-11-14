@@ -3,7 +3,7 @@
 // POST {admin_pin, action:"chat_decide", id, outcome:"same"|"edited"|"rejected", text?} → {ok}
 //      same/edited＝お客様に送る（cs_chat_messages に staff として入れる → 既存トリガーでお客様に「お返事が届きました」）
 //      rejected＝送らない（チャットは未対応のまま、人がチャット管理で返す）
-// POST {admin_pin, action:"chg_list", ids?} → {ok, map:{change_id:{verdict:"ok"|"alt"|"human", ask, why[], alt?, reason?}}}  変更依頼へのオムニの提案
+// POST {admin_pin, action:"chg_list", ids?} → {ok, map:{change_id（高松は "tkm:<id>"）:{verdict:"ok"|"alt"|"human", ask, why[], alt?, reason?}}}  変更依頼へのオムニの提案
 // POST {token, store, action:"chg_for_staff", ids} → {ok, map}  スタッフ画面用（個別URLの share_token）
 // POST {admin_pin, action:"stats", days?} → {ok, rows:[{kind, store, same, edited, rejected}]}  種類ごとの「そのまま採用率」
 // 自動送信・自動承認はしない（nosh の言葉まで）。記録は cs_chat_drafts のトリガー → omni_decisions（Slack の OK も同じく記録）。
@@ -198,6 +198,69 @@ async function chgSuggest(c: any) {
   return { verdict: "human", ask: "", why, date, t };
 }
 
+// ════ ②' 高松（BT の bt_reservation_changes・送迎の時間 mp_pickup / mp_dropoff）════ 2026-11-14 nosh「高松も統一せよ」
+//   同じ決まり（締切・担当の予定・重なる時は代わりの時刻）。時刻は予約の送迎時刻（pickup_time / dropoff_time）。
+//   キーは "tkm:<id>"（札幌・那覇の依頼番号と重ならないように）。決めた結果は BT 側にトリガーがないので、ここで照らし合わせて omni_decisions に入れる
+const TKM_F = ["mp_pickup", "mp_dropoff"];
+async function getB(t: string, q: string): Promise<any[]> {
+  const u = Deno.env.get("BT_URL"), k = Deno.env.get("BT_SERVICE_KEY"); if (!u || !k) return [];
+  const hd: Record<string, string> = { apikey: k }; if (k.startsWith("eyJ")) hd.Authorization = `Bearer ${k}`;
+  const r = await fetch(`${u}/rest/v1/${t}?${q}`, { headers: hd }); return r.ok ? await r.json() : [];
+}
+async function chgSuggestTkm(c: any) {
+  const rid = String(c.reservation_id), back = c.change_type === "mp_dropoff";
+  const R = (await getB("bt_reservations", `id=eq.${encodeURIComponent(rid)}&select=start_date,start_time,pickup_time,end_date,end_time,dropoff_time&limit=1`))[0];
+  if (!R) return { verdict: "human", ask: "", why: ["予約が見つからない"] };
+  const sd = String(R.start_date || "").slice(0, 10), ed = String(R.end_date || "").slice(0, 10);
+  const date = back ? ed : sd, oldT = hm(back ? (R.dropoff_time || R.end_time) : (R.pickup_time || R.start_time));
+  const t = hm(c.payload?.time) || hm(c.new_value);
+  const leg = back ? "空港へお送り" : "空港お迎え";
+  const why: string[] = [];
+  const due = back ? atJst(ed, hm(R.end_time)) - 2 * 3600e3 : atJst(sd, hm(R.start_time)) - 24 * 3600e3;
+  if (!isNaN(due) && Date.parse(c.changed_at) > due) why.push(`⚠️ 締切（${back ? "返却2時間前" : "出発24時間前"}）を過ぎた依頼`);
+  else why.push(`締切内（${back ? "返却2時間前" : "出発24時間前"}まで）`);
+  if (!date || !t) return { verdict: "human", ask: "", why: why.concat(["日付か時刻が読めない"]) };
+  // 担当の予定：その日の行き・帰りのタスク（時刻は各予約の送迎時刻）
+  const ts = await getB("bt_tasks", `date=eq.${date}&deleted=not.is.true&select=_id,${encodeURIComponent("担当")},${encodeURIComponent("予約番号")}`);
+  const L = ts.filter((x: any) => /^[dc]-/.test(x._id));
+  const ids = [...new Set(L.map((x: any) => x["予約番号"]).filter(Boolean))] as string[];
+  const rs = ids.length ? await getB("bt_reservations", `id=in.${inList(ids)}&select=id,start_time,pickup_time,end_time,dropoff_time`) : [];
+  const rm = new Map(rs.map((r: any) => [r.id, r]));
+  const D = L.map((x: any) => { const r: any = rm.get(x["予約番号"]) || {}; const b = x._id.startsWith("c-"); return { rid: x["予約番号"], who: String(x["担当"] || "").trim(), back: b, t: hm(b ? (r.dropoff_time || r.end_time) : (r.pickup_time || r.start_time)) }; });
+  const mine = D.find((x: any) => x.rid === rid && x.back === back);
+  const who = mine && !NOT_PERSON.test(mine.who) ? mine.who : "";
+  const busy = (n: number) => who ? D.filter((x: any) => x.who === who && x.rid !== rid && x.t && Math.abs(mins(x.t) - n) < 30) : [];
+  const n0 = mins(t), hit = isNaN(n0) ? [] : busy(n0); let alt = "";
+  if (!who) why.push(mine ? "担当なし（だれでも行ける）" : "行き・帰りのタスクがまだない");
+  else if (hit.length) { why.push(`⚠️ ${who}さんは ${hit.map((x: any) => x.t + " " + (x.back ? "お送り" : "お迎え")).join("・")} と重なる`); for (const d of [15, -15, 30, -30, 45, -45, 60, -60]) { const n = n0 + d; if (n >= 9 * 60 && n <= 18 * 60 + 50 && !busy(n).length) { alt = tOf(n); break; } } }
+  else why.push(`${who}さんの予定と重ならない（前後30分）`);
+  if (oldT) why.push(`いまの予約は ${oldT}`);
+  const what = `「${mdj(date)} ${t}」の${leg}`;
+  const bad = why.filter((w) => w.startsWith("⚠️"));
+  if (!bad.length) return { verdict: "ok", ask: `${what}で承認していいですか？`, why };
+  if (bad.length === 1 && hit.length && alt) return { verdict: "alt", ask: `${t}は担当の予定と重なります。代わりに「${alt}」を提案していいですか？`, why, reason: "full_slot", alt };
+  return { verdict: "human", ask: "", why };
+}
+// 高松の提案のうち、まだ記録していないもの → BT の今の状態を見て決まっていれば omni_decisions へ（札幌・那覇のトリガーと同じ数え方）
+async function tkmReconcile() {
+  const S = await get("omni_suggestions", `kind=eq.chg&store=eq.tkm&select=ref_id,reservation_id,verdict,ask,why,alt,created_at&order=created_at.desc&limit=200`);
+  if (!S.length) return;
+  const done = new Set((await get("omni_decisions", `kind=eq.chg&store=eq.tkm&ref_id=in.${inList(S.map((s: any) => s.ref_id))}&select=ref_id`)).map((x: any) => x.ref_id));
+  const todo = S.filter((s: any) => !done.has(s.ref_id)); if (!todo.length) return;
+  const cs = await getB("bt_reservation_changes", `id=in.(${todo.map((s: any) => Number(String(s.ref_id).slice(4))).filter(Boolean).join(",")})&select=id,status,payload,decided_by,decided_at`);
+  for (const c of cs) {
+    if (!["approved", "proposed", "rejected"].includes(c.status)) continue;
+    const s: any = todo.find((x: any) => x.ref_id === "tkm:" + c.id); if (!s) continue;
+    const pv = String(c.payload?.proposal?.value || "");
+    const oc = s.verdict === "ok" ? (c.status === "approved" ? "same" : "rejected")
+      : s.verdict === "alt" ? (c.status === "proposed" ? (!s.alt || hm(pv) === s.alt ? "same" : "edited") : "rejected") : "human";
+    try { await ins("omni_decisions", { kind: "chg", store: "tkm", ref_id: s.ref_id, reservation_id: s.reservation_id, proposal: s.ask, final: c.status + (pv ? " " + pv : ""), outcome: oc, conf: s.verdict === "human" ? "human" : "go", conf_reason: (s.why || []).join(" / "), via: /admin_pin/.test(String(c.decided_by || "")) ? "admin" : "staff", decided_by: c.decided_by, proposed_at: s.created_at, decided_at: c.decided_at || new Date().toISOString() }); } catch (_) { /* 次の読み込みでもう一度 */ }
+  }
+}
+async function saveSug(key: string, store: string, rid: string, s: any) {
+  try { await fetch(`${SB}/rest/v1/omni_suggestions?on_conflict=kind,ref_id`, { method: "POST", headers: { ...H, Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ kind: "chg", ref_id: key, store, reservation_id: rid, verdict: s.verdict, ask: s.ask, why: s.why, alt: s.alt || null, reason: s.reason || null, updated_at: new Date().toISOString() }) }); } catch (_) { /* 提案は出す */ }
+}
+
 async function chgList(ids?: number[]) {
   const q = ids && ids.length ? `id=in.(${ids.map(Number).filter(Boolean).join(",")})` : `status=eq.requested&store=in.(spk,nha)&field=in.(${CHG_F.join(",")})`;
   const rows = await get("mypage_changes", `${q}&select=id,store,reservation_id,field,old_value,new_value,payload,status,created_at&order=id.asc&limit=60`);
@@ -207,7 +270,15 @@ async function chgList(ids?: number[]) {
     let s: any = null; try { s = await chgSuggest(c); } catch (e) { s = { verdict: "human", ask: "", why: ["オムニが判断できなかった：" + String((e as Error).message || e).slice(0, 80)] }; }
     if (!s) continue;
     out[c.id] = s;
-    try { await fetch(`${SB}/rest/v1/omni_suggestions?on_conflict=kind,ref_id`, { method: "POST", headers: { ...H, Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ kind: "chg", ref_id: String(c.id), store: c.store, reservation_id: c.reservation_id, verdict: s.verdict, ask: s.ask, why: s.why, alt: s.alt || null, reason: s.reason || null, updated_at: new Date().toISOString() }) }); } catch (_) { /* 提案は出す */ }
+    await saveSug(String(c.id), c.store, c.reservation_id, s);
+  }
+  if (!ids) { // 本部の一覧だけ：高松も
+    try { await tkmReconcile(); } catch (_) { /* 記録は次の読み込みで */ }
+    const T = await getB("bt_reservation_changes", `status=eq.requested&change_type=in.(${TKM_F.join(",")})&select=id,reservation_id,change_type,new_value,old_value,payload,status,changed_at&order=id.asc&limit=60`);
+    for (const c of T) {
+      let s: any = null; try { s = await chgSuggestTkm(c); } catch (e) { s = { verdict: "human", ask: "", why: ["オムニが判断できなかった：" + String((e as Error).message || e).slice(0, 80)] }; }
+      out["tkm:" + c.id] = s; await saveSug("tkm:" + c.id, "tkm", String(c.reservation_id), s);
+    }
   }
   return out;
 }
@@ -231,7 +302,7 @@ Deno.serve(async (req) => {
     if (p.action === "chat_list") return J({ ok: true, rows: await chatList() });
     if (p.action === "chat_decide") return J(await chatDecide(p));
     if (p.action === "chg_list") return J({ ok: true, map: await chgList(Array.isArray(p.ids) ? p.ids : undefined) });
-    if (p.action === "stats") return J({ ok: true, rows: await stats(Math.min(90, Math.max(1, +p.days || 14))) });
+    if (p.action === "stats") { try { await tkmReconcile(); } catch (_) { /* */ } } if (p.action === "stats") return J({ ok: true, rows: await stats(Math.min(90, Math.max(1, +p.days || 14))) });
     return J({ ok: false, error: "action" }, 400);
   } catch (e) { return J({ ok: false, error: String((e as Error).message || e) }, 500); }
 });
