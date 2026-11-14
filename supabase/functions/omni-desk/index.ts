@@ -375,6 +375,7 @@ async function chgSwap(p: any) {
   if (!id || !name) return { ok: false, error: "id か名前がない" };
   const S = (await get("omni_suggestions", `kind=eq.chg&ref_id=eq.${id}&select=reason,alt&limit=1`))[0];
   if (!S || S.reason !== "swap" || !/→/.test(String(S.alt || ""))) return { ok: false, error: "担当替えの案ではない" };
+  if (p.expect && String(p.expect) !== String(S.alt)) return { ok: false, error: `案が変わりました（画面：${p.expect}／今：${S.alt}）。タスク画面で決めてください` };
   const [from, to] = String(S.alt).split("→");
   const c = (await get("mypage_changes", `id=eq.${id}&select=store,reservation_id,field,new_value,payload,status&limit=1`))[0];
   if (!c || c.status !== "approved") return { ok: false, error: "まだ承認されていない" };
