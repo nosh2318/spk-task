@@ -495,6 +495,26 @@ function expOverride(p: any, fallback: string): string { const e = Date.parse(St
 function jstMdHm(iso: string): string { const j = new Date(Date.parse(iso) + 9 * 3600e3); return `${j.getUTCMonth() + 1}/${j.getUTCDate()} ${String(j.getUTCHours()).padStart(2, "0")}:${String(j.getUTCMinutes()).padStart(2, "0")}`; }
 const FLD_JP: Record<string, string> = { del_place: "お届け場所", col_place: "回収場所", lend_time: "貸出の時間", return_time: "返却の時間", ready: "早めの回収", option: "子ども用シート", insurance: "補償", cancel: "キャンセル", method: "受け取り・返却の方法", extend: "日を延ばす" };
 
+// ★2026-11-14 nosh「一次判断をOMNI→共有①社員＝Slack 共有②担当者＝個別URL（承認待ち）→社員承認→全体反映＝通知」
+//   時間・場所の依頼が来たら、まずオムニ（omni-desk chg_ask）に判断させ、Slack には「〜で承認していいですか？」として出す（元の「承認待ち」の文の代わり）。
+//   オムニが答えられない時は今までの文のまま
+async function omniAsk(store: string, ids: (number | string)[]): Promise<any[]> {
+  try {
+    const base = /ggqugvyskyiblxiycpci/.test(String(Deno.env.get("SUPABASE_URL") || "")) ? (Deno.env.get("MAIN_URL") || "https://ckrxttbnawkclshczsia.supabase.co") : String(Deno.env.get("SUPABASE_URL") || "");
+    const r = await fetch(`${base}/functions/v1/omni-desk`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "chg_ask", admin_pin: Deno.env.get("ADMIN_PIN") || "", store, ids: ids.map(Number).filter(Boolean) }) });
+    const j = await r.json().catch(() => null); return j && j.ok ? Object.values(j.map || {}) : [];
+  } catch { return []; }
+}
+function omniText(S: any[]): { title: string; lines: string[] } | null {
+  if (!S.length) return null;
+  const asks = S.map((s: any) => s.verdict === "human" || !s.ask ? "" : String(s.ask)).filter(Boolean);
+  const human = S.some((s: any) => s.verdict === "human" || !s.ask);
+  const who = String((S.find((s: any) => s.who) || {}).who || "");
+  const title = human ? "🤖 オムニ：迷うので社員が決めてください" : "🤖 " + asks.join("／");
+  const why = [...new Set(S.flatMap((s: any) => Array.isArray(s.why) ? s.why : []))].slice(0, 6).map((w) => "・" + w);
+  return { title, lines: [...why, `👷 担当${who ? " " + who + "さん" : "なし"}の個別URLにも「社員の承認待ち」で出ています`, "✅ 社員が承認画面で「はい」→ 予約・タスク・お客様へ自動で反映"] };
+}
+
 Deno.serve(async (req) => {
   const origin = req.headers.get("origin");
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors(origin) });
@@ -512,7 +532,7 @@ Deno.serve(async (req) => {
     const ADMIN_PIN = Deno.env.get("ADMIN_PIN") || "";
     const adminPin = String(p.admin_pin || "");
     let actor = "";
-    if (ADMIN_PIN && adminPin && adminPin === ADMIN_PIN) { actor = "staff:admin_pin"; }
+    if (ADMIN_PIN && adminPin && adminPin === ADMIN_PIN) { actor = "staff:" + (String(p.actor_name || "").replace(/[\s:]+/g, " ").trim().slice(0, 30) || "admin_pin"); } // ★2026-11-14 承認した人の名前を残す
     else {
       const staffToken = String(p.staff_token || "").trim();
       if (!staffToken) return json({ error: "スタッフ認証（PIN）が必要です" }, 401, origin);
@@ -868,7 +888,8 @@ Deno.serve(async (req) => {
     }
     if (!lines.length) return json({ ok: true, pendingApproval: true, already: true, requested: Object.keys(vals) }, 200, origin);
     { const ks = Object.keys(vals), sd = ks.every((f) => /^(del_place|lend_time)$/.test(f)) ? "go" : ks.every((f) => /^(col_place|return_time)$/.test(f)) ? "back" : "";
-    const m = await hdmMsg({ emoji: "🟡", store: "nha", title: "場所・時間の変更依頼（承認待ち）", rid: resId, side: sd, url: actUrl(resId), body: [dateLine(r.start_date, r.end_date, sd), ...lines, "⚠️ 要承認：承認で反映＋お客様へ連絡"], buttons: [{ text: "✅ 承認画面を開く", url: actUrl(resId) }] }); // ★2026-11-10 共通の型
+    const _om = omniText(await omniAsk("nha", (await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.nha&status=eq.requested&field=in.(lend_time,return_time,del_place,col_place)&select=id`)).map((x: any) => x.id)));
+    const m = await hdmMsg({ emoji: "🟡", store: "nha", title: _om ? _om.title : "場所・時間の変更依頼（承認待ち）", cat: "依頼に返事／時間・場所", rid: resId, side: sd, url: actUrl(resId), body: [dateLine(r.start_date, r.end_date, sd), ...lines, ...(_om ? _om.lines : ["⚠️ 要承認：承認で反映＋お客様へ連絡"])], buttons: [{ text: "✅ 承認画面を開く", url: actUrl(resId) }] }); // ★2026-11-10 共通の型
     await slackResv(m.text, m.blocks); }
     return json({ ok: true, pendingApproval: true, requested: Object.keys(vals) }, 200, origin);
   }

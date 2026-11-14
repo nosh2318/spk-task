@@ -499,6 +499,26 @@ async function tkmApply(resId: string, ctype: string, val: string, flight: strin
   return { ok: true };
 }
 
+// ★2026-11-14 nosh「一次判断をOMNI→共有①社員＝Slack 共有②担当者＝個別URL（承認待ち）→社員承認→全体反映＝通知」
+//   時間・場所の依頼が来たら、まずオムニ（omni-desk chg_ask）に判断させ、Slack には「〜で承認していいですか？」として出す（元の「承認待ち」の文の代わり）。
+//   オムニが答えられない時は今までの文のまま
+async function omniAsk(store: string, ids: (number | string)[]): Promise<any[]> {
+  try {
+    const base = /ggqugvyskyiblxiycpci/.test(String(Deno.env.get("SUPABASE_URL") || "")) ? (Deno.env.get("MAIN_URL") || "https://ckrxttbnawkclshczsia.supabase.co") : String(Deno.env.get("SUPABASE_URL") || "");
+    const r = await fetch(`${base}/functions/v1/omni-desk`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "chg_ask", admin_pin: Deno.env.get("ADMIN_PIN") || "", store, ids: ids.map(Number).filter(Boolean) }) });
+    const j = await r.json().catch(() => null); return j && j.ok ? Object.values(j.map || {}) : [];
+  } catch { return []; }
+}
+function omniText(S: any[]): { title: string; lines: string[] } | null {
+  if (!S.length) return null;
+  const asks = S.map((s: any) => s.verdict === "human" || !s.ask ? "" : String(s.ask)).filter(Boolean);
+  const human = S.some((s: any) => s.verdict === "human" || !s.ask);
+  const who = String((S.find((s: any) => s.who) || {}).who || "");
+  const title = human ? "🤖 オムニ：迷うので社員が決めてください" : "🤖 " + asks.join("／");
+  const why = [...new Set(S.flatMap((s: any) => Array.isArray(s.why) ? s.why : []))].slice(0, 6).map((w) => "・" + w);
+  return { title, lines: [...why, `👷 担当${who ? " " + who + "さん" : "なし"}の個別URLにも「社員の承認待ち」で出ています`, "✅ 社員が承認画面で「はい」→ 予約・タスク・お客様へ自動で反映"] };
+}
+
 Deno.serve(async (req) => {
   const origin = req.headers.get("origin");
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors(origin) });
@@ -516,7 +536,7 @@ Deno.serve(async (req) => {
     const ADMIN_PIN = Deno.env.get("ADMIN_PIN") || "";
     const adminPin = String(p.admin_pin || "");
     let actor = "";
-    if (ADMIN_PIN && adminPin && adminPin === ADMIN_PIN) { actor = "staff:admin_pin"; }
+    if (ADMIN_PIN && adminPin && adminPin === ADMIN_PIN) { actor = "staff:" + (String(p.actor_name || "").replace(/[\s:]+/g, " ").trim().slice(0, 30) || "admin_pin"); } // ★2026-11-14 承認した人の名前を残す
     else {
       const staffToken = String(p.staff_token || "").trim();
       if (!staffToken) return json({ error: "スタッフ認証（PIN）が必要です" }, 401, origin);
@@ -962,8 +982,9 @@ Deno.serve(async (req) => {
     if (req0) await sbPatch("bt_reservation_changes", `id=eq.${req0.id}`, row);
     else await sbPost("bt_reservation_changes", { reservation_id: resId, ...row, status: "requested", changed_by: "customer", source: "mypage" });
     const lbl = FLD_JP[ctype];
-    { const m = await hdmMsg({ emoji: "🟡", store: "tkm", title: `送迎の変更依頼（承認待ち）`, rid: resId, side: go ? "go" : "back", url: actUrl(resId), // ★2026-11-10 共通の型
-      body: [dateLine(r.start_date, r.end_date, go ? "go" : "back"), `${lbl}　${oldV || "（未選択）"} → ${newV}`, flight ? `✈️ ご搭乗便 ${flight}` : "", "⚠️ 要承認：承認＝予約・OPシートへ反映＋お客様へメール／できない時は「代わりの案」"], buttons: [{ text: "✅ 承認画面を開く", url: actUrl(resId) }] });
+    const _om = want ? omniText(await omniAsk("tkm", (await sbGet("bt_reservation_changes", `reservation_id=eq.${encodeURIComponent(resId)}&source=eq.mypage&change_type=eq.${ctype}&status=eq.requested&select=id`)).map((x: any) => x.id))) : null;
+    { const m = await hdmMsg({ emoji: "🟡", store: "tkm", title: _om ? _om.title : `送迎の変更依頼（承認待ち）`, cat: "依頼に返事／受け取り方・送迎", rid: resId, side: go ? "go" : "back", url: actUrl(resId), // ★2026-11-10 共通の型
+      body: [dateLine(r.start_date, r.end_date, go ? "go" : "back"), `${lbl}　${oldV || "（未選択）"} → ${newV}`, flight ? `✈️ ご搭乗便 ${flight}` : "", ...(_om ? _om.lines : ["⚠️ 要承認：承認＝予約・OPシートへ反映＋お客様へメール／できない時は「代わりの案」"])], buttons: [{ text: "✅ 承認画面を開く", url: actUrl(resId) }] });
     await slackPost(m.text, m.blocks); }
     return json({ ok: true, pendingApproval: true, requested: ctype }, 200, origin);
   }

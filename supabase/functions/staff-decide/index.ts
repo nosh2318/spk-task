@@ -466,6 +466,9 @@ Deno.serve(async (req) => {
     const sd = TT(c.field) === "DEL" ? "go" : "back", rid0 = String(c.reservation_id), ACT = hdmUrl(store, rid0).replace("tab=list", "tab=action"); // ★2026-11-10 共通の型
     const chg = `${e.label}：${e.old || "（なし）"} → ${e.new}`;
     const EF = `${SB}/functions/v1/${SD[store].ef}`;
+    // ★2026-11-14 nosh「一次判断をOMNI→共有①社員＝Slack 共有②担当者＝個別URL→社員承認→全体反映＝通知」：
+    //   いまは社員だけが承認・代わりの案・お断りを決める。担当の個別URLは見るだけ（オムニの案を「社員の承認待ち」で出す）。相談は今までどおり
+    if (b.decision === "approved" || b.decision === "proposed" || b.decision === "rejected") return j({ ok: false, error: "いまは社員が承認します。この画面では見るだけです（迷う時は「社員に相談」）" }, 403);
     if (b.decision === "approved") {
       const r = await fetch(EF, { method: "POST", headers: H, body: JSON.stringify({ action: "decide", admin_pin: Deno.env.get("ADMIN_PIN") || "", actor_name: name, change_id: cid, decision: "approved" }) });
       const jr = await r.json().catch(() => ({}));
