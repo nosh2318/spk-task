@@ -1010,6 +1010,9 @@ Deno.serve(async (req) => {
       const payload = { target: t, amount: amt, unit };
       if (ex[0]) await sbPatch("mypage_changes", `id=eq.${ex[0].id}`, { new_value: detail, payload });
       else await sbPost("mypage_changes", { reservation_id: resId, store: "nha", field: "method", old_value: oldV, new_value: detail, source: "customer", status: "requested", note: "受け取り方・返し方の変更（承認制）", payload });
+      // ★2026-11-15 nosh「意味不明」：受け取り方の変更もオムニに先に判断させる（今までは回しておらず、5分後に見張りの「判断していない依頼」が出ていた）
+      const _omM = omniText(await omniAsk("nha", (await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.nha&status=eq.requested&field=eq.method&select=id`)).map((x: any) => x.id)));
+      if (_omM) { const m = await omniMsg("nha", resId, _omM.S, [`受け取り方　今 ${oldV}`, `希望　${detail}`], actUrl(resId), "依頼に返事／受け取り方"); await slackPost(m.text, m.blocks); return json({ ok: true, requested: true, amount: amt }, 200, origin); }
       { const m = await hdmMsg({ emoji: "🟡", store: "nha", title: "受け取り方の変更（承認待ち）", rid: resId, url: actUrl(resId), body: [dateLine(r.start_date, r.end_date), `今　${oldV}`, `希望　${detail}`, "⚠️ 要承認：承認で反映・差額はSquareリンク"], buttons: [{ text: "✅ 承認／お断りを開く", url: actUrl(resId) }] }); // ★2026-11-10 共通の型
       await slackPost(m.text, m.blocks); }
       return json({ ok: true, requested: true, amount: amt }, 200, origin);
