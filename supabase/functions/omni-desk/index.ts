@@ -414,12 +414,12 @@ async function chatApply(p: any) {
   if (!["spk", "nha", "tkm"].includes(store) || !rid || !ch.length) return { ok: false, error: "店・予約・変える値がない" };
   if (store === "tkm" && ch.some((c: any) => /_place$/.test(c.field))) return { ok: false, error: "高松の場所はチャットからは変えない（送迎の行き先はマイページで）" };
   const actor = "omni:chat" + (by ? "/" + by : ""), done: string[] = [], err: string[] = [];
-  const R = store === "spk" ? (await get("reservations", `id=eq.${encodeURIComponent(rid)}&select=name,lend_time,return_time,del_place,col_place&limit=1`))[0]
+  const R = store === "spk" ? (await get("reservations", `id=eq.${encodeURIComponent(rid)}&select=name,lend_time,return_time,del_time,col_time,del_place,col_place&limit=1`))[0]
     : store === "nha" ? (await get("nha_reservations", `id=eq.${encodeURIComponent(rid)}&select=name,start_time,end_time,del_place,col_place&limit=1`))[0]
     : (await getB("bt_reservations", `id=eq.${encodeURIComponent(rid)}&select=name,start_time,end_time,pickup_time,dropoff_time,visit_type,return_type&limit=1`))[0];
   if (!R) return { ok: false, error: "予約が見つからない" };
   const JP: Record<string, string> = store === "spk" ? { lend_time: "お届けの時間", return_time: "回収の時間", del_place: "お届けの場所", col_place: "回収の場所" } : store === "nha" ? { lend_time: "貸出の時間", return_time: "返却の時間", del_place: "お届けの場所", col_place: "回収の場所" } : { lend_time: "空港お迎えの時刻", return_time: "空港へお送りの時刻" };
-  const oldOf = (f: string) => String(f === "lend_time" ? (R.lend_time ?? R.pickup_time ?? R.start_time) : f === "return_time" ? (R.return_time ?? R.dropoff_time ?? R.end_time) : R[f] ?? "").trim();
+  const oldOf = (f: string) => String(f === "lend_time" ? ((R.del_time || null) ?? R.lend_time ?? R.pickup_time ?? R.start_time) : f === "return_time" ? ((R.col_time || null) ?? R.return_time ?? R.dropoff_time ?? R.end_time) : R[f] ?? "").trim();
   let back = false;
   for (const c of ch) {
     const f = String(c.field), v = /_time$/.test(f) ? hm(c.value) : String(c.value).trim().slice(0, 120);
@@ -435,7 +435,7 @@ async function chatApply(p: any) {
           if (H2.length >= 2 && H2.every((x: number[]) => kmFrom(x[0], x[1], H2[0][0], H2[0][1]) <= 0.2)) { la = H2[0][0]; ln = H2[0][1]; }
         } catch (_) { /* 位置なし */ } }
         await rpcMain("spk_apply_mypage_change", { p_res: rid, p_field: f, p_val: v, p_actor: actor, p_change_id: null, p_lat: la, p_lng: ln });
-        if (/_place$/.test(f)) { const k = f === "del_place" ? "del" : "col"; if (la == null) { await patch("reservations", `id=eq.${encodeURIComponent(rid)}`, { [k + "_lat"]: null, [k + "_lng"]: null }).catch(() => null); done.push(`地図：同じ場所の位置が見つからないので古いピンを消した（お客様にマイページでピンをお願い）`); } else done.push(`地図：過去の予約で同じ場所の位置が一致していたので、その位置にした`); }
+        if (/_place$/.test(f)) { const k = f === "del_place" ? "del" : "col"; if (la == null) { const okPin = await patch("reservations", `id=eq.${encodeURIComponent(rid)}`, { [k + "_lat"]: null, [k + "_lng"]: null }).then(() => true).catch(() => false); if (!okPin) err.push(`地図：古いピンを消せなかった（場所は変わったのにピンが古いまま＝人がピンを直してください）`); else done.push(`地図：同じ場所の位置が見つからないので古いピンを消した（お客様にマイページでピンをお願い）`); } else done.push(`地図：過去の予約で同じ場所の位置が一致していたので、その位置にした`); }
       }
       else if (store === "nha") await rpcMain("nha_apply_mypage_change", { p_res: rid, p_field: f, p_val: v, p_actor: actor, p_change_id: null });
       else {
@@ -448,8 +448,37 @@ async function chatApply(p: any) {
       done.push(`${JP[f]}：${oldOf(f) || "—"} → ${v}`);
     } catch (e) { err.push(`${JP[f]}：${String((e as Error).message || e)}`); }
   }
+  // ════ ずれの確かめ（2026-11-14 nosh「情報乖離の防止は必須」）════
+  //   ① 札幌：送迎タスク（s-d-／s-c-）は予約番号を持たない写しなので、ここで同じ時間・場所にそろえる（変更前と同じ値の時だけ）
+  //   ② 3店：変えた後に読み直し、予約の値＝変えた値、タスクの実際の値＝予約の値（hdm_one_value_check）を確かめる。1つでも違えば ✅ を出さず人へ
+  const chk: string[] = [];
+  if (store === "spk") for (const c of ch) {
+    const f = String(c.field); if (!done.some((d) => d.startsWith(JP[f] + "："))) continue;
+    const kind = /^(lend_time|del_place)$/.test(f) ? "d" : "c", fld = /_time$/.test(f) ? "time" : "place";
+    try {
+      const r = String(await rpcMain("omni_shuttle_sync", { p_rid: rid, p_kind: kind, p_field: fld, p_old: oldOf(f), p_actor: actor })).replace(/"/g, "");
+      if (r === "ok") done.push(`送迎タスク：${JP[f]}を同じ値にそろえた`);
+      else if (r === "custom") chk.push(`送迎タスクの${fld === "time" ? "時間" : "場所"}が元から別の値（人が決めた値）なので変えていない＝送迎の担当と確認してください`);
+      else if (r !== "none") chk.push(`送迎タスクの${fld === "time" ? "時間" : "場所"}をそろえられなかった（${r}）`);
+    } catch (e) { chk.push(`送迎タスクをそろえられなかった：${String((e as Error).message || e).slice(0, 80)}`); }
+  }
+  if (done.length) try {
+    const want = (f: string) => { const c = ch.find((x: any) => String(x.field) === f); return c ? (/_time$/.test(f) ? hm(c.value) : String(c.value).trim().slice(0, 120)) : null; };
+    const R2 = store === "spk" ? (await get("reservations", `id=eq.${encodeURIComponent(rid)}&select=lend_time,return_time,del_time,col_time,del_place,col_place&limit=1`))[0]
+      : store === "nha" ? (await get("nha_reservations", `id=eq.${encodeURIComponent(rid)}&select=start_time,end_time,del_time,col_time,del_place,col_place&limit=1`))[0]
+      : (await getB("bt_reservations", `id=eq.${encodeURIComponent(rid)}&select=pickup_time,dropoff_time&limit=1`))[0];
+    // 予約の置き場所を全部見る（札幌 del_time と lend_time、那覇 del_time と start_time … のどれか1つでも違えばずれ）
+    const cols = (f: string) => store === "tkm" ? [f === "lend_time" ? "pickup_time" : "dropoff_time"] : f === "lend_time" ? ["del_time", store === "spk" ? "lend_time" : "start_time"] : f === "return_time" ? ["col_time", store === "spk" ? "return_time" : "end_time"] : [f];
+    for (const c of ch) {
+      const f = String(c.field), w = want(f); if (w == null || !done.some((d) => d.startsWith(JP[f] + "："))) continue;
+      for (const k of cols(f)) { const got = /_time$/.test(f) ? hm(R2[k]) : String(R2[k] ?? "").trim(); if (got !== w) chk.push(`予約の${JP[f]}（${k}）が ${got || "空"}（${w} になっていない）`); }
+    }
+    const V = store === "tkm" ? JSON.parse(await rpcB("hdm_one_value_check", {}) || "[]") : await rpcMain("hdm_one_value_check", {});
+    for (const x of (Array.isArray(V) ? V : []).filter((x: any) => String(x.res_id) === rid)) chk.push(`タスク ${x.task_id} の${x.field === "time" ? "時間" : "場所"}が ${x.task_v || "空"}（予約は ${x.res_v || "空"}）`);
+  } catch (e) { chk.push(`変えた後の確かめができなかった：${String((e as Error).message || e).slice(0, 80)}`); }
+  for (const x of chk) err.push("ずれ：" + x);
   const people = await legPeople(store, rid, back).catch(() => [] as string[]);
-  const head = `【${ST_JP[store]}｜変更しました】${done.length && !err.length ? "✅" : "⚠️"} チャットの返事どおり、予約・タスク・マイページを変えました`;
+  const head = !err.length ? `【${ST_JP[store]}｜変更しました】✅ チャットの返事どおり、予約・タスク・マイページを変え、全部同じ値になっているのを確かめました` : `【${ST_JP[store]}｜変更しました・要確認】⚠️ 変えましたが、下の「⚠️」が残っています。人が確かめて直してください`;
   const lines = [err.length && !done.length ? `【${ST_JP[store]}｜変更できません】⚠️ チャットで約束した変更を予約に反映できませんでした（人が直してください）` : head,
     `📄 予約 ${rid}（${String(R.name || "お客様")}様）`, ...done.map((d) => "🔁 " + d), ...err.map((d) => "⚠️ " + d),
     `👷 知らせる人：${people.length ? people.join("／") : "担当なし（割り当てる人に確認）"}`, `🙋 承認：${by || "—"}（オムニが返事を送り、反映しました）`];
