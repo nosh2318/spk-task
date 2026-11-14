@@ -429,15 +429,19 @@ async function chatApply(p: any) {
       if (store === "spk") {
         // 地図の位置：同じ名前の場所が過去の予約に位置つきで残っていればそれを使う。無ければ古いピンを消す（場所未登録→お客様にピンのお願い）
         let la: number | null = null, ln: number | null = null;
-        if (/_place$/.test(f)) { const k = f === "del_place" ? "del" : "col"; try { const h = (await get("reservations", `${k}_place=eq.${encodeURIComponent(v)}&${k}_lat=not.is.null&select=${k}_lat,${k}_lng&order=lend_date.desc&limit=1`))[0]; if (h && +h[k + "_lat"] && +h[k + "_lng"]) { la = +h[k + "_lat"]; ln = +h[k + "_lng"]; } } catch (_) { /* 位置なし */ } }
+        if (/_place$/.test(f)) { const k = f === "del_place" ? "del" : "col"; try {
+          // 間違いを出さない：同じ名前の場所の過去の位置が2件以上あり、全部が200m以内に集まっている時だけ使う（1件だけ・ばらつく時は使わない）
+          const H2 = (await get("reservations", `${k}_place=eq.${encodeURIComponent(v)}&${k}_lat=not.is.null&id=neq.${encodeURIComponent(rid)}&select=${k}_lat,${k}_lng&order=lend_date.desc&limit=10`)).map((h: any) => [+h[k + "_lat"], +h[k + "_lng"]]).filter((x: number[]) => x[0] && x[1]);
+          if (H2.length >= 2 && H2.every((x: number[]) => kmFrom(x[0], x[1], H2[0][0], H2[0][1]) <= 0.2)) { la = H2[0][0]; ln = H2[0][1]; }
+        } catch (_) { /* 位置なし */ } }
         await rpcMain("spk_apply_mypage_change", { p_res: rid, p_field: f, p_val: v, p_actor: actor, p_change_id: null, p_lat: la, p_lng: ln });
-        if (/_place$/.test(f)) { const k = f === "del_place" ? "del" : "col"; if (la == null) { await patch("reservations", `id=eq.${encodeURIComponent(rid)}`, { [k + "_lat"]: null, [k + "_lng"]: null }).catch(() => null); done.push(`地図：同じ場所の位置が見つからないので古いピンを消した（お客様にマイページでピンをお願い）`); } else done.push(`地図：過去の同じ場所の位置を使った`); }
+        if (/_place$/.test(f)) { const k = f === "del_place" ? "del" : "col"; if (la == null) { await patch("reservations", `id=eq.${encodeURIComponent(rid)}`, { [k + "_lat"]: null, [k + "_lng"]: null }).catch(() => null); done.push(`地図：同じ場所の位置が見つからないので古いピンを消した（お客様にマイページでピンをお願い）`); } else done.push(`地図：過去の予約で同じ場所の位置が一致していたので、その位置にした`); }
       }
       else if (store === "nha") await rpcMain("nha_apply_mypage_change", { p_res: rid, p_field: f, p_val: v, p_actor: actor, p_change_id: null });
       else {
         // 高松：受け取り方で変える時刻を決める。空港送迎（行き PU・帰り BD）の時だけ、送迎の時刻（9:00〜18:50）を変える。来店・店舗返却は人へ
-        const go = f === "lend_time", pu = go ? String(R.visit_type || "") === "PU" || !!R.pickup_time : String(R.return_type || "") === "BD" || !!R.dropoff_time;
-        if (!pu) throw new Error(`${go ? "来店" : "店舗返却"}の予約なので、チャットからは時刻を変えない（人が変える）`);
+        const go = f === "lend_time", pu = go ? String(R.visit_type || "") === "PU" : String(R.return_type || "") === "BD"; // 受け取り方がはっきり「空港送迎」の時だけ（時刻だけ入っていて種類が空のものは人へ）
+        if (!pu) throw new Error(`${go ? "行き" : "帰り"}の受け取り方が「空港送迎」になっていない予約（${String((go ? R.visit_type : R.return_type) || "未登録")}）なので、チャットからは時刻を変えない（人が変える）`);
         if (mins(v) < 9 * 60 || mins(v) > 18 * 60 + 50) throw new Error(`${v} は送迎の時間外（9:00〜18:50）`);
         await rpcB("bt_apply_mypage_change", { p_res: rid, p_field: go ? "pickup" : "dropoff", p_val: v, p_actor: actor, p_change_id: null, p_flight: null });
       }
