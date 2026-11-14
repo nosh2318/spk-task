@@ -300,10 +300,14 @@ async function chgList(ids?: number[]) {
 //   ② ここ（5分ごと・Supabase の cron から。Mac mini が止まっても動く）：オムニの案が付かないまま5分たった時間・場所の依頼を社員の部屋へ
 //   ③ ここ：Mac mini のオムニ（チャットの案）の心拍が15分止まったら、開発と店の部屋へ「オムニが止まっている・チャットは人が返事を」
 //   同じものは1回だけ（omni_watch_sent）。お客様には何も送らない
-const OPS_CH: Record<string, string> = { spk: "C0AS5K1JZNJ", nha: "C06L91W6T08", tkm: "C07B5G3PV7C" }; // 高松の部屋は別のSlack（BUDDICA）なので、届く開発の部屋へ
+const OPS_CH: Record<string, string> = { spk: "C0AS5K1JZNJ", nha: "C06L91W6T08", tkm: "C0BFMBLEJGZ" }; // 高松＝BUDDICA の #operation-高松空港店（DB関数 mpremind_slack_post_buddica で送る）
 const DEV_CH = "C07B5G3PV7C";
 const ST_JP: Record<string, string> = { spk: "札幌", nha: "那覇", tkm: "高松" };
 async function post(ch: string, text: string) {
+  if (ch === OPS_CH.tkm) { // 高松は別のSlack（BUDDICA）。届かなければ開発の部屋へ
+    try { const r = await fetch(`${SB}/rest/v1/rpc/mpremind_slack_post_buddica`, { method: "POST", headers: H, body: JSON.stringify({ p_channel: ch, p_text: text }) }); if (r.ok) return true; } catch (_) { /* 下へ */ }
+    ch = DEV_CH;
+  }
   if (!SLACK) return false;
   try { const r = await fetch("https://slack.com/api/chat.postMessage", { method: "POST", headers: { Authorization: `Bearer ${SLACK}`, "Content-Type": "application/json; charset=utf-8" }, body: JSON.stringify({ channel: ch, text }) }); return (await r.json()).ok === true; } catch (_) { return false; }
 }
@@ -337,7 +341,7 @@ async function watch() {
     if ((await markSent(["bot:" + hour])).length) {
       const mins = Math.round((now - Date.parse(hb.beat_at)) / 60e3);
       const txt = [`【本部｜システム／ボット・サーバー】⚠️ オムニ（チャットの案）が${mins}分止まっています`, "お客様のチャットにオムニの案が付きません。チャットは人が本部のチャット管理から返事してください。Mac mini のボットを確かめてください", "👷 本部", "🔗 https://nosh2318.github.io/spk-task/hq.html#mypage"].join("\n");
-      await post(DEV_CH, txt); await post(OPS_CH.spk, txt); await post(OPS_CH.nha, txt);
+      await post(DEV_CH, txt); await post(OPS_CH.spk, txt); await post(OPS_CH.nha, txt); await post(OPS_CH.tkm, txt);
       out.bot = mins;
     }
   }
