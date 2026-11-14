@@ -1342,7 +1342,11 @@ Deno.serve(async (req) => {
     const rdyTasks = await sbGet(store.tasks, `reservation_id=eq.${encodeURIComponent(resId)}&deleted=not.is.true&select=_id,place,time,insurance,changed_json`);
     const rdyCTask = rdyTasks.find((t: any) => String(t._id || "").startsWith("c-"));
     const schedCol = resolveTaskTime(rdyCTask) || r.return_time || r.col_time || "-";
-    await notifySlackCard({ side: "back", emoji: "🟢", title: "早め回収OK（返却準備完了）", name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: [`🕐 *予定回収*　${schedCol}`, `🕒 *お客様の希望*　${rdyTime ? `*${rdyTime}〜*` : "指定なし"}`], action: "💡 スケジュールに余裕があれば早めに回収をご検討ください（お客様には「確認中」と表示中）" });
+    // ★2026-11-14 nosh「承認提案事案」：早め回収もオムニが先に判断し「〜で承認していいですか？」の形で社員へ（答えが無ければ元の文＋⚠️オムニ未判断）
+    const _rq = (await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.spk&field=eq.ready&status=eq.requested&select=id&order=id.desc&limit=1`))[0];
+    const _om = _rq ? omniText(await omniAsk("spk", [_rq.id])) : null;
+    if (_om) { if (Deno.env.get("MYPAGE_SILENT") !== "1") { const m = await omniMsg(String(r.ota || "") === "KEYDROP" ? "kd_spk" : "spk", resId, _om.S, [`早め回収　予定 ${schedCol} → 希望 ${rdyTime ? rdyTime + "〜" : "指定なし"}`], actUrl(resId), "依頼に返事／早め回収"); await slackPost(m.text, m.blocks); } }
+    else await notifySlackCard({ side: "back", emoji: "🟢", title: "早め回収OK（返却準備完了・⚠️オムニ未判断）", name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: [`🕐 *予定回収*　${schedCol}`, `🕒 *お客様の希望*　${rdyTime ? `*${rdyTime}〜*` : "指定なし"}`], action: "💡 スケジュールに余裕があれば早めに回収をご検討ください（お客様には「確認中」と表示中）" });
     return json({ ok: true, requested: true }, 200, origin);
   }
 
