@@ -135,7 +135,7 @@ async function stats(days: number) {
 // ════ ② 時間・場所の変更依頼：オムニの提案「〜で承認していいですか？」（nosh 11/14「聞くではなく 〜で承認していいか？で 確率をここで測ろう」）════
 //   決まり：締切（行き＝出発24時間前／帰り＝返却2時間前）・担当の予定（同じ日の別のお届け・回収・送迎と前後30分で重ならない）・
 //          車（帰りを遅らせる時、同じ車の次の貸出まで60分あるか）・札幌のエリア（札幌駅から20km、地図の位置がある時）。
-//   重なる時は、前後60分で空いている15分刻みの時刻を「代わりに〜を提案していいですか？」にする。わからない時は人へ（ask は出さない）。
+//   締切を過ぎただけでは人へ回さない（理由を添えて言い切る）。重なる・車が間に合わない時は、前後2時間で決まりを全部満たす15分刻みの時刻を「代わりに〜を提案していいですか？」にする。本当に決められない時だけ人へ（理由つき）。
 //   提案は omni_suggestions に残し、承認・代わりの案・お断りになった時にトリガーで omni_decisions へ（スタッフ画面・本部どちらで押しても）。
 const CHG_F = ["lend_time", "return_time", "del_place", "col_place", "method", "ready"]; // ready＝早め回収（2026-11-14 nosh「承認提案事案」）
 const NOT_PERSON = /無人|乗り?捨|洗車|^[（(]|^$/;
@@ -204,12 +204,18 @@ async function chgSuggest(c: any) {
   const hit = isNaN(n0) ? [] : busy(n0);
   if (meBus) why.push("送迎バス（まとめてお送りするので担当の予定は重ならない）");
   else if (!who) why.push(mine ? "担当なし（だれでも行ける）" : "お届け・回収のタスクがない予約（送迎・来店）");
-  else if (hit.length) { why.push(`⚠️ ${who}さんは ${hit.map((x: any) => x.t + " " + (x.back ? "回収" : "お届け")).join("・")} と重なる`); for (const d of [15, -15, 30, -30, 45, -45, 60, -60]) { const n = n0 + d; if (n >= 7 * 60 && n <= 21 * 60 && !busy(n).length) { alt = tOf(n); break; } } }
+  else if (hit.length) why.push(`⚠️ ${who}さんは ${hit.map((x: any) => x.t + " " + (x.back ? "回収" : "お届け")).join("・")} と重なる`);
   else why.push(`${who}さんの予定と重ならない（前後30分）`);
   // 車：帰りを遅らせる時、同じ車の次の貸出
+  let carLim = Infinity, carBad = false;
   if (back && newT && et && mins(newT) > mins(et) && mine && mine.car) {
     const nx = D.filter((x: any) => !x.back && x.car === mine.car && x.rid !== rid && x.t && mins(x.t) >= mins(et) - 30).sort((a: any, b: any) => mins(a.t) - mins(b.t))[0];
-    if (nx && mins(nx.t) < mins(newT) + 60) why.push(`⚠️ 同じ車の次の貸出 ${nx.t}（60分あかない）`); else why.push("車：次の貸出まで間に合う");
+    if (nx && mins(nx.t) < mins(newT) + 60) { carBad = true; carLim = mins(nx.t) - 60; why.push(`⚠️ 同じ車の次の貸出 ${nx.t}（60分あかない）`); } else why.push("車：次の貸出まで間に合う");
+  }
+  // 重なる・車が間に合わない時は、決まりを全部満たす一番近い時刻（15分刻み・前後2時間）を代わりに言い切る
+  if ((hit.length || carBad) && !isNaN(n0) && !isReady) {
+    const base = Math.round(n0 / 15) * 15;
+    for (const d of [0, 15, -15, 30, -30, 45, -45, 60, -60, 75, -75, 90, -90, 105, -105, 120, -120]) { const n = base + d; if (n === n0 || (carBad && et && n <= mins(et)) || n < 7 * 60 || n > 21 * 60 || n > carLim || busy(n).length || atJst(date, tOf(n)) < Date.now()) continue; alt = tOf(n); break; }
   }
   // 札幌のエリア（地図の位置がある時だけ）
   if (store === "spk" && newP) {
@@ -219,8 +225,9 @@ async function chgSuggest(c: any) {
   }
   const bad = why.filter((w) => w.startsWith("⚠️"));
   if (!bad.length) return { verdict: "ok", ask: `${what}で承認していいですか？${lateNote(why, who)}`, why, date, t, who };
-  if (bad.length === 1 && hit.length && alt && !isReady) return { verdict: "alt", ask: `${t}は担当の予定と重なります。代わりに「${alt}」を提案していいですか？`, why, reason: "full_slot", alt, date, t, who };
-  return { verdict: "human", ask: "", why, date, t, who };
+  const fixable = bad.every((w) => / と重なる$|60分あかない/.test(w));
+  if (fixable && alt && !isReady) { const r = [hit.length ? `${who}さんの予定と重なる` : "", carBad ? "同じ車の次の貸出に間に合わない" : ""].filter(Boolean).join("・"); return { verdict: "alt", ask: `${t}は${r}ため、代わりに「${alt}」を提案していいですか？（${alt}なら${who ? who + "さんも空いていて" : ""}${carBad ? "車も間に合い" : ""}対応できます）`, why, reason: carBad && !hit.length ? "no_vehicle" : "full_slot", alt, date, t, who }; }
+  return { verdict: "human", ask: "", why: why.concat([alt ? "" : "前後2時間で決まりを全部満たす時刻がない → 人が決める"].filter(Boolean)), date, t, who };
 }
 
 // ════ ②' 高松（BT の bt_reservation_changes・送迎の時間 mp_pickup / mp_dropoff）════ 2026-11-14 nosh「高松も統一せよ」
@@ -258,14 +265,14 @@ async function chgSuggestTkm(c: any) {
   const busy = (n: number) => who ? D.filter((x: any) => x.who === who && x.rid !== rid && x.t && Math.abs(mins(x.t) - n) < 30) : [];
   const n0 = mins(t), hit = isNaN(n0) ? [] : busy(n0); let alt = "";
   if (!who) why.push(mine ? "担当なし（だれでも行ける）" : "行き・帰りのタスクがまだない");
-  else if (hit.length) { why.push(`⚠️ ${who}さんは ${hit.map((x: any) => x.t + " " + (x.back ? "お送り" : "お迎え")).join("・")} と重なる`); for (const d of [15, -15, 30, -30, 45, -45, 60, -60]) { const n = n0 + d; if (n >= 9 * 60 && n <= 18 * 60 + 50 && !busy(n).length) { alt = tOf(n); break; } } }
+  else if (hit.length) { why.push(`⚠️ ${who}さんは ${hit.map((x: any) => x.t + " " + (x.back ? "お送り" : "お迎え")).join("・")} と重なる`); const base = Math.round(n0 / 15) * 15; for (const d of [0, 15, -15, 30, -30, 45, -45, 60, -60, 75, -75, 90, -90, 105, -105, 120, -120]) { const n = base + d; if (n !== n0 && n >= 9 * 60 && n <= 18 * 60 + 50 && !busy(n).length && atJst(date, tOf(n)) >= Date.now()) { alt = tOf(n); break; } } }
   else why.push(`${who}さんの予定と重ならない（前後30分）`);
   if (oldT) why.push(`いまの予約は ${oldT}`);
   const what = `「${mdj(date)} ${t}」の${leg}`;
   const bad = why.filter((w) => w.startsWith("⚠️"));
   if (!bad.length) return { verdict: "ok", ask: `${what}で承認していいですか？${lateNote(why, who)}`, why, who };
-  if (bad.length === 1 && hit.length && alt) return { verdict: "alt", ask: `${t}は担当の予定と重なります。代わりに「${alt}」を提案していいですか？`, why, reason: "full_slot", alt, who };
-  return { verdict: "human", ask: "", why, who };
+  if (bad.length === 1 && hit.length && alt) return { verdict: "alt", ask: `${t}は${who}さんの予定と重なるため、代わりに「${alt}」を提案していいですか？（${alt}なら${who}さんも空いていて対応できます）`, why, reason: "full_slot", alt, who };
+  return { verdict: "human", ask: "", why: why.concat(hit.length && !alt ? ["前後2時間で空いている時刻がない → 人が決める"] : []), who };
 }
 // 高松の提案のうち、まだ記録していないもの → BT の今の状態を見て決まっていれば omni_decisions へ（札幌・那覇のトリガーと同じ数え方）
 async function tkmReconcile() {
