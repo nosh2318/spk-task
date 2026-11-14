@@ -505,7 +505,7 @@ async function tkmApply(resId: string, ctype: string, val: string, flight: strin
 async function omniAsk(store: string, ids: (number | string)[]): Promise<any[]> {
   try {
     const base = /ggqugvyskyiblxiycpci/.test(String(Deno.env.get("SUPABASE_URL") || "")) ? (Deno.env.get("MAIN_URL") || "https://ckrxttbnawkclshczsia.supabase.co") : String(Deno.env.get("SUPABASE_URL") || "");
-    const r = await fetch(`${base}/functions/v1/omni-desk`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "chg_ask", admin_pin: Deno.env.get("ADMIN_PIN") || "", store, ids: ids.map(Number).filter(Boolean) }) });
+    const r = await fetch(`${base}/functions/v1/omni-desk`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "chg_ask", admin_pin: Deno.env.get("ADMIN_PIN") || "", store, ids: ids.map(Number).filter(Boolean) }), signal: AbortSignal.timeout(8000) });   // 8秒で打ち切り→元の「承認待ち」の文
     const j = await r.json().catch(() => null); return j && j.ok ? Object.values(j.map || {}) : [];
   } catch { return []; }
 }
