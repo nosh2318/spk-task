@@ -58,6 +58,8 @@ begin
              and h.headers ? 'x-slack-req-id'  -- Slack の返事だけ（EF の {"ok":false} は見ない）
              and not exists (select 1 from private.cron_calls c where c.request_id = h.id)
              and h.content !~ '"error"\s*:\s*"(already_reacted|message_not_found|thread_not_found)"'
+             -- ★11/15 読む権限の不足（users:read 等）は調べもので出る。システムの送信は書く権限（chat:write・files:write）だけなので、それ以外の不足は数えない
+             and not (h.content ~ '"error"\s*:\s*"missing_scope"' and h.content !~ '"needed"\s*:\s*"[^"]*(chat:write|files:write)')
            group by 1 loop
     if private.watch_say(p_ch, p_sys, 'slack:' || r.err, 'Slack への通知が送れていません（直近10分 ' || r.n || '件・' || r.err || '）',
          case r.err when 'not_in_channel' then 'ボットが部屋に入っていない' when 'channel_not_found' then '部屋が見つからない（消えた・名前が変わった）'
