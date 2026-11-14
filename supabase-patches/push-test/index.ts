@@ -215,6 +215,9 @@ Deno.serve(async (req) => {
     const ch = await get(`mypage_changes?id=gt.${+c.last_chg || 0}&select=id,store,reservation_id,field,old_value,new_value,status,source,actor&order=id.asc&limit=50`);
     for (const x of ch) {
       if (x.source === "staff" || (x.status === "applied" && x.actor)) continue; // スタッフ側の記録・承認後の反映記録は通知しない
+      // ★2026-11-14 nosh「関連する通知は止めて 意味なくなる 混乱する」：時間・場所などの依頼（承認制）は社員がSlack・本部で承認する。
+      //   担当は個別URLで「社員の承認待ち」を見るだけなので、担当への「お客様から変更の依頼」のプッシュ・未確認の箱・追いかけは出さない
+      if (x.status !== "applied") continue;
       const direct = x.status === "applied"; const tt = /^(lend_time|del_place)$/.test(x.field) ? "DEL" : "COL"; const tg = x.store === "spk" ? await assignee(x.reservation_id, tt) : "";
       msgs.push({ title: `【${ST[x.store] || x.store}】${direct ? "お客様が変更しました（反映済み）" : "お客様から変更の依頼"}`, body: `${FLD[x.field] || x.field}：${cut(x.old_value) || "（なし）"} → ${cut(x.new_value)}\n予約 ${x.reservation_id}${tg ? `（担当 ${tg}）` : ""}`, store: x.store, target: tg, kind: "change", resv: x.reservation_id, ref: `chg:${x.id}` }); }
     const nd = await get(`mypage_nudges?id=gt.${+c.last_nudge || 0}&select=id,store,reservation_id,kind,leg,note&order=id.asc&limit=50`);
