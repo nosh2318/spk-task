@@ -5,6 +5,7 @@
 //      rejected＝送らない（チャットは未対応のまま、人がチャット管理で返す）
 // POST {admin_pin, action:"chg_list", ids?} → {ok, map:{change_id（高松は "tkm:<id>"）:{verdict:"ok"|"alt"|"human", ask, why[], alt?, reason?}}}  変更依頼へのオムニの提案
 // POST {token, store, action:"chg_for_staff", ids} → {ok, map}  スタッフ画面用（個別URLの share_token）
+// POST {admin_pin, action:"chg_swap", id, actor_name} → {ok}  担当替えつきの案を承認した後、タスクの担当を替える
 // POST {admin_pin, action:"prep_ask", items:[{store,rid,need[]}]} → {ok, map:{"store|rid":{verdict, ask, why[], via, text}}}  準備が足りないカードへの提案
 // POST {admin_pin, action:"prep_decide", store, rid, need[], outcome:"same"|"rejected", actor_name} → はい＝お客様へお願いを送る
 // POST {admin_pin, action:"stats", days?} → {ok, rows:[{kind, store, same, edited, rejected}]}  種類ごとの「そのまま採用率」
@@ -149,19 +150,26 @@ function kmFrom(lat: number, lng: number, la0: number, ln0: number) { const R = 
 // その店のその日の担当のタスク（行き・帰り・送迎）と、時刻（タスクに無ければ予約の時刻）
 async function dayTasks(store: string, date: string) {
   if (store === "spk") {
-    const ts = await get("tasks", `date=eq.${date}&deleted=not.is.true&select=_id,type,time,assignee,reservation_id,assigned_vehicle`);
+    const ts = await get("tasks", `date=eq.${date}&deleted=not.is.true&select=_id,type,time,assignee,reservation_id,assigned_vehicle,place,col_place`);
     const ids = [...new Set(ts.map((t: any) => t.reservation_id).filter(Boolean))];
     const rs = ids.length ? await get("reservations", `id=in.${inList(ids as string[])}&select=id,lend_time,return_time,lend_date,return_date`) : [];
     const rm = new Map(rs.map((r: any) => [r.id, r]));
-    return ts.filter((t: any) => /^[dc]-/.test(t._id)).map((t: any) => { const r: any = rm.get(t.reservation_id) || {}; const back = t._id.startsWith("c-"); return { id: t._id, rid: t.reservation_id, who: String(t.assignee || "").trim(), t: hm(t.time) || hm(back ? r.return_time : r.lend_time), back, car: t.assigned_vehicle || "", kind: String(t.type || "") }; });
+    return ts.filter((t: any) => /^[dc]-/.test(t._id)).map((t: any) => { const r: any = rm.get(t.reservation_id) || {}; const back = t._id.startsWith("c-"); return { id: t._id, rid: t.reservation_id, who: String(t.assignee || "").trim(), t: hm(t.time) || hm(back ? r.return_time : r.lend_time), back, car: t.assigned_vehicle || "", kind: String(t.type || ""), place: String((back ? t.col_place || t.place : t.place) || "").trim() }; });
   }
-  const ts = await get("nha_tasks", `date=eq.${date}&deleted=not.is.true&select=_id,${encodeURIComponent("内容")},${encodeURIComponent("時間")},${encodeURIComponent("担当")},${encodeURIComponent("予約番号")},assigned_vehicle`);
+  const ts = await get("nha_tasks", `date=eq.${date}&deleted=not.is.true&select=_id,${encodeURIComponent("内容")},${encodeURIComponent("時間")},${encodeURIComponent("担当")},${encodeURIComponent("予約番号")},assigned_vehicle,${encodeURIComponent("送迎場所")}`);
   const ids = [...new Set(ts.map((t: any) => t["予約番号"]).filter(Boolean))];
   const rs = ids.length ? await get("nha_reservations", `id=in.${inList(ids as string[])}&select=id,start_time,end_time`) : [];
   const rm = new Map(rs.map((r: any) => [r.id, r]));
-  return ts.filter((t: any) => /^[dc]-/.test(t._id)).map((t: any) => { const r: any = rm.get(t["予約番号"]) || {}; const back = t._id.startsWith("c-"); return { id: t._id, rid: t["予約番号"], who: String(t["担当"] || "").trim(), t: hm(t["時間"]) || hm(back ? r.end_time : r.start_time), back, car: t.assigned_vehicle || "", kind: String(t["内容"] || "") }; });
+  return ts.filter((t: any) => /^[dc]-/.test(t._id)).map((t: any) => { const r: any = rm.get(t["予約番号"]) || {}; const back = t._id.startsWith("c-"); return { id: t._id, rid: t["予約番号"], who: String(t["担当"] || "").trim(), t: hm(t["時間"]) || hm(back ? r.end_time : r.start_time), back, car: t.assigned_vehicle || "", kind: String(t["内容"] || ""), place: String(t["送迎場所"] || "").trim() }; });
 }
 
+// その日の出勤（時刻があって、公休・希望休・休み・有休でない人）。札幌は shifts、那覇は nha_shifts
+async function shiftsOf(store: string, date: string): Promise<{ name: string; s: string; e: string }[]> {
+  try {
+    const rows = await get(store === "nha" ? "nha_shifts" : "shifts", `date=eq.${date}&select=staff_name,symbol,start_time,end_time`);
+    return rows.filter((r: any) => hm(r.start_time) && hm(r.end_time) && !/公|希|休|有/.test(String(r.symbol || ""))).map((r: any) => ({ name: String(r.staff_name).trim(), s: hm(r.start_time), e: hm(r.end_time) }));
+  } catch (_) { return []; }
+}
 // 締切を過ぎただけの依頼：データで対応できれば言い切って提案し、理由を添える（nosh 11/14「ゴールに向かう前提で最適解」）
 const lateNote = (why: string[], who: string) => why.some((w) => w.startsWith("締切（")) ? `（締切は過ぎていますが、${who ? who + "さんの予定と重ならない" : "担当の予定に重なりがない"}ので対応できます）` : "";
 async function chgSuggest(c: any) {
@@ -193,29 +201,60 @@ async function chgSuggest(c: any) {
   else why.push(`締切内（${back ? "返却2時間前" : "出発24時間前"}まで）`);
   if (!date || !t) return { verdict: "human", ask: "", why: why.concat(["日付か時刻が読めない"]), date, t };
   if (!isReady && atJst(date, t) < Date.now()) why.push(`⚠️ 希望の ${t} はもう過ぎている`);
-  // 担当の予定
-  const D = await dayTasks(store, date);
+  // 担当の予定：その日のタスク（時刻・場所）と出勤時間を見て、前後のあきを具体的に出す
+  const [D, SH] = await Promise.all([dayTasks(store, date), shiftsOf(store, date)]);
   const mine = D.find((x: any) => x.rid === rid && x.back === back);
   const who = mine && !NOT_PERSON.test(mine.who) ? mine.who : "";
   const isBus = (k: string) => /PUB|BDB/i.test(k), meBus = store === "nha" && mine && isBus(mine.kind);
+  const myPlace = newP || (mine && mine.place) || "";
+  // 移動を見込んだあき：場所が分かっていて違う場所なら60分、同じ場所か分からなければ30分
+  const gapOf = (x: any) => (myPlace && x.place && x.place !== myPlace && !isBus(x.kind)) ? 60 : 30;
+  const shOf = (nm: string) => SH.find((h: any) => h.name === nm);
+  const offAt = (nm: string, n: number) => { const h = shOf(nm); return !!h && (n < mins(h.s) || n > mins(h.e)); };
   // 那覇の送迎バス（PUB・BDB）はまとめてお送りするので、バス同士は重ならない扱い
-  const busy = (n: number) => who && !meBus ? D.filter((x: any) => x.who === who && x.rid !== rid && x.t && Math.abs(mins(x.t) - n) < 30) : [];
-  const n0 = mins(t); let alt = "";
+  const busyOf = (nm: string, n: number) => nm && !meBus ? D.filter((x: any) => x.who === nm && x.rid !== rid && x.t && Math.abs(mins(x.t) - n) < gapOf(x)) : [];
+  const busy = (n: number) => busyOf(who, n);
+  const lbl = (x: any) => `${x.t} ${x.kind || (x.back ? "回収" : "お届け")}${x.place ? "（" + String(x.place).slice(0, 14) + "）" : ""}${x.car ? " " + x.car : ""}`;
+  const dayLine = (nm: string, n: number) => {
+    const L = D.filter((x: any) => x.who === nm && x.rid !== rid && x.t).sort((p: any, q: any) => mins(p.t) - mins(q.t));
+    const pv = L.filter((x: any) => mins(x.t) <= n).slice(-1)[0], nx = L.find((x: any) => mins(x.t) > n), h = shOf(nm);
+    return `${nm}さん${h ? `（出勤 ${h.s}〜${h.e}）` : ""}：前 ${pv ? lbl(pv) + `・${n - mins(pv.t)}分あく` : "なし"}／次 ${nx ? lbl(nx) + `・${mins(nx.t) - n}分あく` : "なし"}／この日 ${L.length + 1}件`;
+  };
+  const n0 = mins(t); let alt = "", swap = "";
   const hit = isNaN(n0) ? [] : busy(n0);
+  const off = !!who && !isNaN(n0) && !meBus && offAt(who, n0);
   if (meBus) why.push("送迎バス（まとめてお送りするので担当の予定は重ならない）");
   else if (!who) why.push(mine ? "担当なし（だれでも行ける）" : "お届け・回収のタスクがない予約（送迎・来店）");
-  else if (hit.length) why.push(`⚠️ ${who}さんは ${hit.map((x: any) => x.t + " " + (x.back ? "回収" : "お届け")).join("・")} と重なる`);
-  else why.push(`${who}さんの予定と重ならない（前後30分）`);
-  // 車：帰りを遅らせる時、同じ車の次の貸出
-  let carLim = Infinity, carBad = false;
-  if (back && newT && et && mins(newT) > mins(et) && mine && mine.car) {
-    const nx = D.filter((x: any) => !x.back && x.car === mine.car && x.rid !== rid && x.t && mins(x.t) >= mins(et) - 30).sort((a: any, b: any) => mins(a.t) - mins(b.t))[0];
-    if (nx && mins(nx.t) < mins(newT) + 60) { carBad = true; carLim = mins(nx.t) - 60; why.push(`⚠️ 同じ車の次の貸出 ${nx.t}（60分あかない）`); } else why.push("車：次の貸出まで間に合う");
+  else {
+    if (!isNaN(n0)) why.push(dayLine(who, n0));
+    if (hit.length) why.push(`⚠️ ${who}さんは ${hit.map(lbl).join("・")} と重なる（移動を見て${Math.max(...hit.map(gapOf))}分あかない）`);
+    else if (off) why.push(`⚠️ ${who}さんは ${t} は勤務外`);
+    else why.push(`${who}さんの予定と重ならない（移動を見たあきあり）`);
   }
-  // 重なる・車が間に合わない時は、決まりを全部満たす一番近い時刻（15分刻み・前後2時間）を代わりに言い切る
-  if ((hit.length || carBad) && !isNaN(n0) && !isReady) {
+  // 担当替え：重なる・勤務外なら、その時間に出勤していて空いている人（この日のタスクが少ない順）
+  if ((hit.length || off) && !isNaN(n0) && !isReady) {
+    const names = SH.length ? SH.map((h: any) => h.name) : [...new Set(D.map((x: any) => x.who).filter((w: string) => w && !NOT_PERSON.test(w)))] as string[];
+    const cand = names.filter((nm) => nm !== who && !offAt(nm, n0) && !busyOf(nm, n0).length)
+      .map((nm) => ({ nm, k: D.filter((x: any) => x.who === nm).length })).sort((p, q) => p.k - q.k);
+    if (cand.length) { swap = cand[0].nm; why.push(`替われる人：${dayLine(swap, n0)}`); }
+    else why.push("その時間に出勤していて空いている人がいない");
+  }
+  // 車：帰りを遅らせる時は同じ車の次の貸出、行きを早める時は同じ車の前の返却（準備60分）
+  let carLim = Infinity, carMin = -Infinity, carBad = false;
+  if (back && newT && et && mins(newT) > mins(et) && mine && mine.car) {
+    const nx = D.filter((x: any) => !x.back && x.car === mine.car && x.rid !== rid && x.t && mins(x.t) >= mins(et) - 30).sort((p: any, q: any) => mins(p.t) - mins(q.t))[0];
+    if (nx && mins(nx.t) < mins(newT) + 60) { carBad = true; carLim = mins(nx.t) - 60; why.push(`⚠️ 車 ${mine.car}：次の貸出 ${nx.t}（準備の60分がとれない）`); }
+    else why.push(`車 ${mine.car}：${nx ? `次の貸出 ${nx.t} まで ${mins(nx.t) - mins(newT)}分あく` : "この日の次の貸出なし"}`);
+  }
+  if (!back && newT && st && mins(newT) < mins(st) && mine && mine.car) {
+    const pv = D.filter((x: any) => x.back && x.car === mine.car && x.rid !== rid && x.t && mins(x.t) <= mins(st)).sort((p: any, q: any) => mins(q.t) - mins(p.t))[0];
+    if (pv && mins(pv.t) + 60 > mins(newT)) { carBad = true; carMin = mins(pv.t) + 60; why.push(`⚠️ 車 ${mine.car}：前の返却 ${pv.t}（準備の60分がとれない）`); }
+    else why.push(`車 ${mine.car}：${pv ? `前の返却 ${pv.t} から ${mins(newT) - mins(pv.t)}分あく` : "この日の前の返却なし"}`);
+  }
+  // 担当替えでも直らない時（車・替われる人なし）は、決まりを全部満たす一番近い時刻（15分刻み・前後2時間）を言い切る
+  if ((hit.length || off || carBad) && !isNaN(n0) && !isReady && !(swap && !carBad)) {
     const base = Math.round(n0 / 15) * 15;
-    for (const d of [0, 15, -15, 30, -30, 45, -45, 60, -60, 75, -75, 90, -90, 105, -105, 120, -120]) { const n = base + d; if (n === n0 || (carBad && et && n <= mins(et)) || n < 7 * 60 || n > 21 * 60 || n > carLim || busy(n).length || atJst(date, tOf(n)) < Date.now()) continue; alt = tOf(n); break; }
+    for (const d of [0, 15, -15, 30, -30, 45, -45, 60, -60, 75, -75, 90, -90, 105, -105, 120, -120]) { const n = base + d; if (n === n0 || (carBad && back && et && n <= mins(et)) || (carBad && !back && st && n >= mins(st)) || n < 7 * 60 || n > 21 * 60 || n > carLim || n < carMin || busy(n).length || (who && offAt(who, n)) || atJst(date, tOf(n)) < Date.now()) continue; alt = tOf(n); break; }
   }
   // 札幌のエリア（地図の位置がある時だけ）
   if (store === "spk" && newP) {
@@ -225,9 +264,13 @@ async function chgSuggest(c: any) {
   }
   const bad = why.filter((w) => w.startsWith("⚠️"));
   if (!bad.length) return { verdict: "ok", ask: `${what}で承認していいですか？${lateNote(why, who)}`, why, date, t, who };
-  const fixable = bad.every((w) => / と重なる$|60分あかない/.test(w));
-  if (fixable && alt && !isReady) { const r = [hit.length ? `${who}さんの予定と重なる` : "", carBad ? "同じ車の次の貸出に間に合わない" : ""].filter(Boolean).join("・"); return { verdict: "alt", ask: `${t}は${r}ため、代わりに「${alt}」を提案していいですか？（${alt}なら${who ? who + "さんも空いていて" : ""}${carBad ? "車も間に合い" : ""}対応できます）`, why, reason: carBad && !hit.length ? "no_vehicle" : "full_slot", alt, date, t, who }; }
-  return { verdict: "human", ask: "", why: why.concat([alt ? "" : "前後2時間で決まりを全部満たす時刻がない → 人が決める"].filter(Boolean)), date, t, who };
+  const fixable = bad.every((w) => / と重なる|勤務外|準備の60分/.test(w));
+  const r0 = [hit.length ? `${who}さんは ${hit.map((x: any) => x.t).join("・")} の予定と重なる` : "", off ? `${who}さんは勤務外` : ""].filter(Boolean).join("・");
+  // ① お客様の希望どおり＋担当替え（車の問題がない時）
+  if (fixable && swap && !carBad) return { verdict: "ok", ask: `${what}で承認し、担当を${who}さんから${swap}さんに替えていいですか？（${r0}ため。${swap}さんはこの時間空いています${why.some((w) => w.startsWith("締切（")) ? "。締切は過ぎていますが対応できます" : ""}）`, why, reason: "swap", alt: `${who}→${swap}`, swap, swapFrom: who, date, t, who };
+  // ② 別の時刻（同じ担当・車も間に合う）
+  if (fixable && alt && !isReady) { const r = [r0, carBad ? "車の準備の60分がとれない" : ""].filter(Boolean).join("・"); return { verdict: "alt", ask: `${t}は${r}ため、代わりに「${alt}」を提案していいですか？（${alt}なら${who ? who + "さんも空いていて" : ""}${carBad ? "車の準備も間に合い" : ""}対応できます）`, why, reason: carBad && !hit.length && !off ? "no_vehicle" : "full_slot", alt, date, t, who }; }
+  return { verdict: "human", ask: "", why: why.concat([fixable ? "担当替えも、前後2時間の別の時刻も、決まりを全部満たすものがない → 人が決める" : ""].filter(Boolean)), date, t, who };
 }
 
 // ════ ②' 高松（BT の bt_reservation_changes・送迎の時間 mp_pickup / mp_dropoff）════ 2026-11-14 nosh「高松も統一せよ」
@@ -292,6 +335,24 @@ async function tkmReconcile() {
 }
 async function saveSug(key: string, store: string, rid: string, s: any) {
   try { await fetch(`${SB}/rest/v1/omni_suggestions?on_conflict=kind,ref_id`, { method: "POST", headers: { ...H, Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ kind: "chg", ref_id: key, store, reservation_id: rid, verdict: s.verdict, ask: s.ask, why: s.why, alt: s.alt || null, reason: s.reason || null, updated_at: new Date().toISOString() }) }); } catch (_) { /* 提案は出す */ }
+}
+
+// 担当替えつきの承認：社員が「はい、承認する」を押した後に本部の画面から呼ぶ。承認済みで、オムニの案が担当替えの時だけ、
+// タスクの担当を案の人に替える（今の担当が案の時と同じ時だけ・DB関数 omni_swap_assignee で記録つき）
+async function chgSwap(p: any) {
+  const id = Number(p.id), name = String(p.actor_name || "").trim().slice(0, 30);
+  if (!id || !name) return { ok: false, error: "id か名前がない" };
+  const S = (await get("omni_suggestions", `kind=eq.chg&ref_id=eq.${id}&select=reason,alt&limit=1`))[0];
+  if (!S || S.reason !== "swap" || !/→/.test(String(S.alt || ""))) return { ok: false, error: "担当替えの案ではない" };
+  const [from, to] = String(S.alt).split("→");
+  const c = (await get("mypage_changes", `id=eq.${id}&select=store,reservation_id,field,new_value,payload,status&limit=1`))[0];
+  if (!c || c.status !== "approved") return { ok: false, error: "まだ承認されていない" };
+  const f = String(c.field), tg = (c.payload || {}).target || {};
+  const back = /^(return_time|col_place|ready)$/.test(f) || (f === "method" && ("return_time" in tg || "col_place" in tg || /^帰り/.test(String(c.new_value || ""))));
+  const r = await fetch(`${SB}/rest/v1/rpc/omni_swap_assignee`, { method: "POST", headers: H, body: JSON.stringify({ p_store: c.store, p_task: (back ? "c-" : "d-") + c.reservation_id, p_from: from, p_to: to, p_actor: "admin:" + name }) });
+  const out = await r.json().catch(() => null);
+  if (!r.ok) return { ok: false, error: "担当を替えられない：" + JSON.stringify(out).slice(0, 120) };
+  return { ok: out === "ok", result: out, from, to };
 }
 
 async function chgList(ids?: number[]) {
@@ -504,6 +565,7 @@ Deno.serve(async (req) => {
     }
     if (p.action === "prep_ask") return J({ ok: true, map: await prepAsk(Array.isArray(p.items) ? p.items : []) });
     if (p.action === "prep_decide") return J(await prepDecide(p));
+    if (p.action === "chg_swap") return J(await chgSwap(p));
     if (p.action === "chg_list") return J({ ok: true, map: await chgList(Array.isArray(p.ids) ? p.ids : undefined) });
     if (p.action === "stats") { try { await tkmReconcile(); } catch (_) { /* */ } } if (p.action === "stats") return J({ ok: true, rows: await stats(Math.min(90, Math.max(1, +p.days || 14))) });
     return J({ ok: false, error: "action" }, 400);
