@@ -720,8 +720,11 @@ async function sapi(st: string, method: string, params: Record<string, string>):
   const tok = st === "tkm" ? BT_SLACK : SLACK; if (!tok) return { ok: false, error: "no_token" };
   try { const r = await fetch(`https://slack.com/api/${method}?` + new URLSearchParams(params), { headers: { Authorization: `Bearer ${tok}` } }); return await r.json(); } catch (e) { return { ok: false, error: String((e as Error).message || e) }; }
 }
+// ★2026-11-15 nosh「提案時に返信ルールを必ず全メッセに添えて」：決まった（✅）以外の返事には必ず返信のしかたを付ける
+const TH_RULE = "💬 返信のしかた（社員だけ）：「はい」＝この内容で／「承認」＝お客様の希望どおり／「いいえ 理由と代わり」＝お断り／「13時なら」＝別の時間／文を直す時は、直した文をそのまま返信（「はい」までお客様には送りません）";
 async function sreply(st: string, ch: string, ts: string, text: string) {
   const tok = st === "tkm" ? BT_SLACK : SLACK; if (!tok) return false;
+  if (!text.startsWith("✅")) text = `${text}\n\n${TH_RULE}`;
   try { const r = await fetch("https://slack.com/api/chat.postMessage", { method: "POST", headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json; charset=utf-8" }, body: JSON.stringify({ channel: ch, thread_ts: ts, text }) }); return (await r.json()).ok === true; } catch (_) { return false; }
 }
 async function claim(row: Record<string, unknown>): Promise<boolean> { // 先に記録できた1回だけ処理する（cron が重なっても二重に決めない）
