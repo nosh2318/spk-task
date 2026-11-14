@@ -683,7 +683,7 @@ function reqItem(x,act){const k=x.bucket+"|"+x.id,p=x.status==="requested",bf=be
     :`<div class="chg">${bf?`<span class="bf">${esc(bf)}</span><span class="ar">→</span>`:""}<b>${esc(x.newv||"（内容なし）")}</b></div>`;
   return `<div class="rq ${p?"pend":""}">${st?`<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${st}<span class="mut">${act?"":tyLabel(x)} ${esc(x.at&&!isNaN(Date.parse(x.at))?new Date(Date.parse(x.at)+9*3600e3).toISOString().slice(5,16).replace("T"," "):"")}</span></div>`:""}
     ${late?`<div>${late}</div>`:""}${ch}${x.note?`<div class="mut">📝 ${esc(x.note)}</div>`:""}${extra}
-    ${p&&act?`<div class="acts">${btn("approved","✅ 承認（反映＋"+(x.line?"LINE":"メール")+"で通知）","ok")}${x.bucket==="but_tkm"?"":`<button class="btn" style="background:#dbeafe;color:#1d4ed8" onclick="altOpen('${esc(k)}')">できない → 代わりの案…</button>`}</div>${altHtml(x,k)}
+    ${p&&act&&!(ALT&&ALT.key===k)?omChgHtml(x,k):""}${p&&act&&!omAsking(x,k)?`<div class="acts">${btn("approved","✅ 承認（反映＋"+(x.line?"LINE":"メール")+"で通知）","ok")}${x.bucket==="but_tkm"?"":`<button class="btn" style="background:#dbeafe;color:#1d4ed8" onclick="altOpen('${esc(k)}')">できない → 代わりの案…</button>`}</div>${altHtml(x,k)}
       <div style="margin-top:6px"><button class="lnk" onclick="decide('${esc(k)}','acknowledged')">${ARM===k+"|acknowledged"?"もう一度押すとアーカイブ":"アーカイブ（反映・通知なし。重複や取り下げ用）"}</button></div>`:""}</div>`;}
 /* ★2026-11-10 nosh「はい」：返金待ちの一覧。減った分（シート・補償・受け取り方）は手で返す → 返したら「返しました」を押すと消える（3店） */
 let REF=[];
@@ -712,13 +712,30 @@ let LATE=[];
 let NUD=[];
 /* ★2026-11-14 nosh「オムニを管理ツールに（一歩手前まで）」段階1：返事待ちのチャットにオムニの案。人は「このまま送る／直して送る／却下」を1回押すだけ（押す前に画面の中で「よろしいですか？」）。
    自動送信はしない。押した結果は omni_decisions に残り、種類ごとの「そのまま採用率」になる（EF omni-desk） */
-let OMNI=[],OMRATE=[];const OMS={},OM_ST={nha:"hdm_nha",spk:"hdm_spk",tkm:"hdm_tkm"};
+let OMNI=[],OMRATE=[];/* OMCHG は下 */const OMS={},OM_ST={nha:"hdm_nha",spk:"hdm_spk",tkm:"hdm_tkm"};
 const OM_CONF={go:["任せてよい","om-go"],look:["人が見る","om-look"],human:["人に回す","om-human"]};
 async function loadOmni(){const pin=getPin();if(!pin){OMNI=[];return;}
-  try{const [a,b]=await Promise.all([ef(MAIN,MAIN_ANON,"omni-desk",{admin_pin:pin,action:"chat_list"}),ef(MAIN,MAIN_ANON,"omni-desk",{admin_pin:pin,action:"stats",days:14}).catch(()=>({rows:[]}))]);OMNI=a.rows||[];OMRATE=b.rows||[];}catch(e){OMNI=[];}renderAct();}
-function omRateHtml(){const by={};OMRATE.filter(r=>r.kind==="chat").forEach(r=>{const o=by[r.store]=by[r.store]||{same:0,edited:0,rejected:0};o.same+=r.same||0;o.edited+=r.edited||0;o.rejected+=r.rejected||0;});
+  try{const [a,b,c]=await Promise.all([ef(MAIN,MAIN_ANON,"omni-desk",{admin_pin:pin,action:"chat_list"}),ef(MAIN,MAIN_ANON,"omni-desk",{admin_pin:pin,action:"stats",days:14}).catch(()=>({rows:[]})),ef(MAIN,MAIN_ANON,"omni-desk",{admin_pin:pin,action:"chg_list"}).catch(()=>({map:{}}))]);OMNI=a.rows||[];OMRATE=b.rows||[];OMCHG=c.map||{};}catch(e){OMNI=[];}renderAct();}
+/* ★2026-11-14 nosh「自動承認は提案型からスタート」「聞くではなく 〜で承認していいか？で 確率をここで測ろう」：
+   時間・場所の変更依頼に、オムニが「〜で承認していいですか？」（締切・担当の予定・車・エリアで判断）。人は「はい」か「いいえ（自分で決める）」。
+   重なる時は「代わりに〜を提案していいですか？」→ はい で代わりの案の画面を埋めて開く（文を見てから送る）。どちらで決めても採用率に入る（DB の記録） */
+let OMCHG={};const OMNO={};
+function omChgHtml(x,k){const o=OMCHG[x.id];if(!o||!/^hdm_(spk|nha)$/.test(x.bucket)||OMNO[k])return"";
+  const why=(o.why||[]).map(w=>`<li${/^⚠️/.test(w)?' style="color:#b4232c"':""}>${esc(w)}</li>`).join("");
+  if(o.verdict==="human"||!o.ask)return `<div class="om-ok" style="background:#fdecec;border-color:#f3b4b4"><b>🤖 オムニ：人が判断してください</b><ul style="margin:4px 0 0;padding-left:1.2em;font-weight:500">${why}</ul></div>`;
+  const yes=o.verdict==="ok"?`<button class="btn ok" onclick="omChgYes('${esc(k)}')">はい、承認する</button>`:`<button class="btn pri" onclick="omChgAlt('${esc(k)}')">はい、この案で文を作る</button>`;
+  return `<div class="om-ok" style="background:#eefbf3;border-color:#b7e4c7"><div>🤖 <b>オムニ：${esc(o.ask)}</b></div><ul style="margin:4px 0 6px;padding-left:1.2em;font-weight:500">${why}</ul><div class="acts" style="margin-top:0">${yes}<button class="btn" onclick="OMNO['${esc(k)}']=1;render()">いいえ（自分で決める）</button></div><div class="mut" style="font-weight:500">${o.verdict==="ok"?"「はい」でこのまま承認し、予約に反映してお客様に知らせます。":"「はい」で代わりの案の画面を埋めて開きます。お客様に届く文を見てから送ります。"}</div></div>`;}
+/* オムニが「はい／いいえ」を聞いている間は、いつものボタンを隠す（「いいえ」で出る） */
+function omAsking(x,k){const o=OMCHG[x.id];return !!o&&/^hdm_(spk|nha)$/.test(x.bucket)&&!OMNO[k]&&o.verdict!=="human"&&!!o.ask&&!(ALT&&ALT.key===k);}
+function omChgYes(k){ARM=k+"|approved";decide(k,"approved");}
+function omChgAlt(k){const bk=k.split("|")[0],id=k.slice(bk.length+1),o=OMCHG[id];let x=null;Object.values(REQ).forEach(l=>l.forEach(i=>{if(i.bucket===bk&&String(i.id)===id)x=i;}));if(!o||!x)return;
+  ALT={key:k,code:o.reason||"full_slot",text:"",alt:"",val:"",ti:-1,sv:"",cf:""};ALT.x={field:x.field,bucket:x.bucket,newv:x.newv,rid:x.rid};
+  if(o.alt){const f=typeOf(x.field)==="cancel"?"cancel":x.field,T=tplsOf(f),j=T.findIndex(t=>t.s==="time"&&tplOk(t,x.bucket));if(j>=0){ALT.ti=j;ALT.sv=o.alt;altFill();}}
+  render();}
+
+function omRateHtml(kind){kind=kind||"chat";const by={};OMRATE.filter(r=>r.kind===kind).forEach(r=>{const o=by[r.store]=by[r.store]||{same:0,edited:0,rejected:0};o.same+=r.same||0;o.edited+=r.edited||0;o.rejected+=r.rejected||0;});
   const nm={nha:"那覇",spk:"札幌",tkm:"高松"};const L=["nha","spk","tkm"].map(k=>{const o=by[k];if(!o)return `<span><b>${nm[k]}</b> まだ記録なし</span>`;const n=o.same+o.edited+o.rejected;return `<span><b>${nm[k]}</b> そのまま ${Math.round(o.same*100/n)}%（${o.same}/${n}件・直した${o.edited}・却下${o.rejected}）</span>`;});
-  return `<div class="om-rate"><b>オムニの案の採用（14日）</b>${L.join("")}<span class="mut">2週間 95%以上の種類だけ、次の段階を nosh に聞きます</span></div>`;}
+  return `<div class="om-rate"><b>${kind==="chg"?"オムニの「承認していいですか？」の採用":"オムニの案の採用"}（14日）</b>${L.join("")}<span class="mut">2週間 95%以上の種類だけ、次の段階を nosh に聞きます</span></div>`;}
 function omStep(id,step){OMS[id]=step;renderAct();}
 async function omGo(id,outcome){const ta=document.getElementById("omt"+id),text=ta?ta.value:"";OMS[id]="busy";renderAct();
   try{const j=await ef(MAIN,MAIN_ANON,"omni-desk",{admin_pin:getPin(),action:"chat_decide",id,outcome,text});if(!j||j.ok===false)throw new Error((j&&j.error)||"ng");
@@ -824,7 +841,7 @@ function renderYaru(){
   const L=I.filter(it=>inB(it)&&(YF==="all"||it.c===YF)).sort((a,b)=>fo(a)-fo(b)||ord(a.c)-ord(b.c)||(a.due||0)-(b.due||0));
   const pend=I.filter(it=>it.x&&inB(it));const hot=pend.filter(it=>it.due-Date.now()<=15*60e3).length;
   document.getElementById("aHot").innerHTML=hot?`<div class="hot">⏰ 返事の目安まで15分を切った依頼が ${hot} 件あります。先に返事してください。</div>`:"";
-  document.getElementById("aList").innerHTML=(YF==="omni"?omRateHtml():"")+(YF==="all"?`<div class="empty">👆 種類を選んでください。選んだ種類のカードだけが出ます。</div>`:L.length?L.map(yCard).join(""):`<div class="empty">${YK_NONE[YF]?esc(YK_NONE[YF]):"✅ やることはありません"}</div>`);}
+  document.getElementById("aList").innerHTML=(YF==="omni"?omRateHtml("chat"):YF==="req"?omRateHtml("chg"):"")+(YF==="all"?`<div class="empty">👆 種類を選んでください。選んだ種類のカードだけが出ます。</div>`:L.length?L.map(yCard).join(""):`<div class="empty">${YK_NONE[YF]?esc(YK_NONE[YF]):"✅ やることはありません"}</div>`);}
 /* ★2026-11-14 nosh「未確認・未完了はここからスタッフページに問いかけできるといい 大丈夫ボタン発動」：本部→担当のスタッフ画面に「大丈夫ですか？」を今すぐ出す（EF staff-task-check action ask_now）。返事は同じカードに戻る */
 async function askStaff(b){const [store,staff,resv,id]=String(b.dataset.ask||"").split("|");b.disabled=true;b.textContent="送っています…";
   try{const j=await ef(MAIN,MAIN_ANON,"staff-task-check",{admin_pin:getPin(),action:"ask_now",store,staff,resv,id});if(j&&j.ok===false)throw new Error(j.error||"ng");b.textContent="✅ スタッフ画面に出しました（返事はこのカードに戻ります）";setTimeout(loadLate,1500);}
