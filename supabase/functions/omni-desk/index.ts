@@ -137,7 +137,7 @@ async function stats(days: number) {
 //          車（帰りを遅らせる時、同じ車の次の貸出まで60分あるか）・札幌のエリア（札幌駅から20km、地図の位置がある時）。
 //   重なる時は、前後60分で空いている15分刻みの時刻を「代わりに〜を提案していいですか？」にする。わからない時は人へ（ask は出さない）。
 //   提案は omni_suggestions に残し、承認・代わりの案・お断りになった時にトリガーで omni_decisions へ（スタッフ画面・本部どちらで押しても）。
-const CHG_F = ["lend_time", "return_time", "del_place", "col_place", "method"];
+const CHG_F = ["lend_time", "return_time", "del_place", "col_place", "method", "ready"]; // ready＝早め回収（2026-11-14 nosh「承認提案事案」）
 const NOT_PERSON = /無人|乗り?捨|洗車|^[（(]|^$/;
 const hm = (v: unknown) => { const m = String(v || "").match(/(\d{1,2}):(\d{2})/); return m ? String(+m[1]).padStart(2, "0") + ":" + m[2] : ""; };
 const mins = (t: string) => { const m = t.match(/^(\d{2}):(\d{2})$/); return m ? +m[1] * 60 + +m[2] : NaN; };
@@ -170,16 +170,24 @@ async function chgSuggest(c: any) {
     : (await get("nha_reservations", `id=eq.${encodeURIComponent(rid)}&select=start_date,start_time,end_date,end_time,del_place,col_place&limit=1`))[0];
   if (!R) return { verdict: "human", ask: "", why: ["予約が見つからない"] };
   const sd = String(R.lend_date || R.start_date || "").slice(0, 10), st = hm(R.lend_time || R.start_time), ed = String(R.return_date || R.end_date || "").slice(0, 10), et = hm(R.return_time || R.end_time);
-  const back = /^(return_time|col_place)$/.test(f) || (f === "method" && ("return_time" in tg || "col_place" in tg || /^帰り/.test(String(c.new_value || ""))));
+  const isReady = f === "ready";
+  const back = /^(return_time|col_place|ready)$/.test(f) || (f === "method" && ("return_time" in tg || "col_place" in tg || /^帰り/.test(String(c.new_value || ""))));
   const date = back ? ed : sd, oldT = back ? et : st;
-  const newT = /_time$/.test(f) ? hm(c.new_value) : hm(back ? tg.return_time : tg.lend_time) || "";
+  const newT = isReady ? hm(String(c.new_value || "") + " " + String(c.note || "")) : /_time$/.test(f) ? hm(c.new_value) : hm(back ? tg.return_time : tg.lend_time) || "";
   const newP = /_place$/.test(f) ? String(c.new_value || "") : String((back ? tg.col_place : tg.del_place) || "");
   const t = newT || oldT, leg = back ? (store === "spk" ? "回収" : "返却") : (store === "spk" ? "お届け" : "貸出");
-  const what = `「${mdj(date)} ${t}${newP ? "・" + newP.slice(0, 24) : ""}」の${leg}`;
+  const what = isReady ? `「${mdj(date)} ${t}〜」の早め回収` : `「${mdj(date)} ${t}${newP ? "・" + newP.slice(0, 24) : ""}」の${leg}`;
   const why: string[] = [];
+  if (isReady) { // 早め回収：お客様の希望時刻が無い・予定より遅い時は人へ
+    if (!newT) return { verdict: "human", ask: "", why: ["お客様の希望時刻の指定なし（予定どおりか、何時に行けるかを人が決める）"], date, t };
+    if (et && mins(newT) >= mins(et)) return { verdict: "human", ask: "", why: [`希望 ${newT} が予定 ${et} より早くない`], date, t };
+    if (atJst(date, newT) < Date.now()) why.push(`⚠️ 希望 ${newT} はもう過ぎている`);
+    else why.push(`予定 ${et || "?"} → 希望 ${newT}〜（${et ? mins(et) - mins(newT) : "?"}分早め）`);
+  }
   // 締切
   const due = back ? atJst(ed, et) - 2 * 3600e3 : atJst(sd, st) - 24 * 3600e3;
-  if (!isNaN(due) && Date.parse(c.created_at) > due) why.push(`⚠️ 締切（${back ? "返却2時間前" : "出発24時間前"}）を過ぎた依頼`);
+  if (isReady) { /* 早め回収は締切なし（返却準備ができた知らせ） */ }
+  else if (!isNaN(due) && Date.parse(c.created_at) > due) why.push(`⚠️ 締切（${back ? "返却2時間前" : "出発24時間前"}）を過ぎた依頼`);
   else why.push(`締切内（${back ? "返却2時間前" : "出発24時間前"}まで）`);
   if (!date || !t) return { verdict: "human", ask: "", why: why.concat(["日付か時刻が読めない"]), date, t };
   // 担当の予定
@@ -208,7 +216,7 @@ async function chgSuggest(c: any) {
   }
   const bad = why.filter((w) => w.startsWith("⚠️"));
   if (!bad.length) return { verdict: "ok", ask: `${what}で承認していいですか？`, why, date, t, who };
-  if (bad.length === 1 && hit.length && alt) return { verdict: "alt", ask: `${t}は担当の予定と重なります。代わりに「${alt}」を提案していいですか？`, why, reason: "full_slot", alt, date, t, who };
+  if (bad.length === 1 && hit.length && alt && !isReady) return { verdict: "alt", ask: `${t}は担当の予定と重なります。代わりに「${alt}」を提案していいですか？`, why, reason: "full_slot", alt, date, t, who };
   return { verdict: "human", ask: "", why, date, t, who };
 }
 

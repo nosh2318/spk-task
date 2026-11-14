@@ -1036,7 +1036,11 @@ Deno.serve(async (req) => {
     const newVal = rdyTime ? `返却準備完了(早め回収OK) 希望時間 ${rdyTime}〜` : "返却準備完了(早め回収OK)";
     await sbPost("mypage_changes", { reservation_id: resId, store: "nha", field: "ready", old_value: "", new_value: newVal, source: "customer", status: "requested", note: rdyTime ? `希望回収時間の目安 ${rdyTime}〜` : "予定時間より早い回収OK" });
     const planned = r.col_time || r.end_time || "-";
-    { const m = await hdmMsg({ emoji: "🟢", store: "nha", title: "早め回収リクエスト（承認待ち）", rid: resId, side: "back", url: actUrl(resId), // ★2026-11-10 共通の型
+    // ★2026-11-14 nosh「承認提案事案」：早め回収もオムニが先に判断し「〜で承認していいですか？」の形で社員へ（答えが無ければ元の文＋⚠️オムニ未判断）
+    const _rq = (await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.nha&field=eq.ready&status=eq.requested&select=id&order=id.desc&limit=1`))[0];
+    const _om = _rq ? omniText(await omniAsk("nha", [_rq.id])) : null;
+    if (_om) { const m = await omniMsg("nha", resId, _om.S, [`早め回収　予定 ${planned} → 希望 ${rdyTime ? rdyTime + "〜" : "指定なし"}`], actUrl(resId), "依頼に返事／早め回収"); await slackPost(m.text, m.blocks); }
+    else { const m = await hdmMsg({ emoji: "🟢", store: "nha", title: "早め回収リクエスト（承認待ち・⚠️オムニ未判断）", rid: resId, side: "back", url: actUrl(resId), // ★2026-11-10 共通の型
       body: [dateLine(r.start_date, r.end_date, "back"), `🕐 予定の回収 ${planned} → 希望 ${rdyTime ? `${rdyTime}〜` : "指定なし"}`, "⚠️ 要承認：承認でお客様へメール通知"], buttons: [{ text: "✅ 承認画面を開く", url: actUrl(resId) }] });
     await slackPost(m.text, m.blocks); }
     return json({ ok: true }, 200, origin);
