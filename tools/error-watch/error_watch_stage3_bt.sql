@@ -24,12 +24,14 @@ returns void language plpgsql security definer set search_path = public, extensi
 declare _app text := left(coalesce(p->>'app', ''), 8);
 begin
   if _app not in ('nha', 'spk', 'bt') then return; end if;
+  -- 第三者が anon キーで送れるので、形の決まったものだけ受ける（Slack に出すのは target と状態番号・エラー番号だけ。msg は表に残すだけ）
+  if coalesce(p->>'target', '') !~ '^(rest|rpc|ef):[A-Za-z0-9_\-]{1,50}$' then return; end if;
   -- 送りすぎ止め：同じ画面から10分に200件まで
   if (select count(*) from private.client_errors where app = _app and at > now() - interval '10 minutes') >= 200 then return; end if;
   insert into private.client_errors (app, dev, target, method, status, code, msg)
-  values (_app, left(p->>'dev', 24), left(coalesce(p->>'target', '?'), 60), left(p->>'method', 8),
+  values (_app, case when p->>'dev' ~ '^[A-Za-z0-9]{1,24}$' then p->>'dev' end, left(coalesce(p->>'target', '?'), 60), left(p->>'method', 8),
           case when (p->>'status') ~ '^[0-9]{1,3}$' then (p->>'status')::int end,
-          left(p->>'code', 16), left(regexp_replace(coalesce(p->>'msg', ''), '\(.*\)', '(…)', 'g'), 120));
+          case when p->>'code' ~ '^[A-Za-z0-9_]{1,16}$' then p->>'code' end, left(regexp_replace(coalesce(p->>'msg', ''), '\(.*\)', '(…)', 'g'), 120));
 end $$;
 revoke all on function public.report_client_error(jsonb) from public;
 grant execute on function public.report_client_error(jsonb) to anon, authenticated;
@@ -49,18 +51,18 @@ revoke all on public.ops_watch_events from anon, authenticated;
 
 create or replace function private.ops_watch(p_ch text, p_sys text)
 returns jsonb language plpgsql security definer set search_path = public, extensions as $$
-declare r record; n_note int := 0; _hr int := extract(hour from (now() at time zone 'Asia/Tokyo')); _t timestamptz; _c timestamptz;
+declare r record; n_note int := 0; _hr int := extract(hour from (now() at time zone 'Asia/Tokyo')); _t timestamptz; _c timestamptz; _h text;
 begin
   begin
   -- E) 画面の保存の失敗
-  --   ・DB/EF がエラーを返した（status>0）：同じ表/EF で15分に3件以上
+  --   ・DB/EF がエラーを返した（status>0）：同じ表/EF で15分に3件以上（2台以上か、500番台）
   --   ・通信そのものが失敗（status=0）：10分に3台以上（1台だけなら、その端末の回線＝知らせない）
-  for r in select app, target, max(status) st, max(code) cd, max(msg) m, count(*) n, count(distinct dev) d, max(at) last
+  for r in select app, target, max(status) st, max(code) cd, count(*) n, count(distinct dev) d, max(at) last
            from private.client_errors where at > now() - interval '15 minutes' and status > 0
-           group by 1, 2 having count(*) >= 3 loop
+           group by 1, 2 having count(*) >= 3 and (count(distinct dev) >= 2 or max(status) >= 500) loop   -- 1人が同じ入力の誤りを繰り返しただけでは出さない
     if private.watch_say(p_ch, p_sys, 'screen:' || r.app || ':' || r.target,
          '画面の保存が失敗しています（' || r.target || '・15分で' || r.n || '件・' || r.d || '台）',
-         'DB/EF がエラーを返した（' || r.st || coalesce('・' || r.cd, '') || '）' || coalesce('：' || nullif(r.m, ''), ''),
+         'DB/EF がエラーを返した（' || r.st || coalesce('・' || r.cd, '') || '）',
          'なし（画面に赤い印で本人に知らせています。二重に書かないため自動のやり直しはしません）',
          '保存できなかった操作は、画面を読み込み直してからもう一度してください。続く時は本部（オムニ）へ',
          r.n || '@' || r.last) then n_note := n_note + 1; end if;
@@ -81,9 +83,9 @@ begin
   begin
   -- F) 取込 GAS（那覇・札幌（高松 HANDYMAN を含む）・問い合わせ）：7〜23時に心拍が3時間止まったら。GAS は15分ごとのトリガーで自動で動き直す
   for r in select * from (values
-             ('nha_gas_email', '那覇の予約取込', 'Apps Script「那覇店 予約取込」', (select (value::jsonb->>'last_run')::timestamptz from nha_app_settings where key = 'heartbeat_nha_gas_email')),
-             ('spk_gas_email', '札幌・高松 HANDYMAN の予約取込', 'Apps Script「札幌予約メール自動配車」', (select (value::jsonb->>'last_run')::timestamptz from app_settings where key = 'heartbeat_spk_gas_email')),
-             ('inquiry_import', '問い合わせの取込', 'Apps Script「HANDYMAN 問い合わせ管理」', (select (value::jsonb->>'last_run')::timestamptz from nha_app_settings where key = 'heartbeat_inquiry_import'))
+             ('nha_gas_email', '那覇の予約取込', 'Apps Script「那覇店 予約取込」', (select case when value::text ~ '^\s*\{' then (value::jsonb->>'last_run')::timestamptz end from nha_app_settings where key = 'heartbeat_nha_gas_email')),
+             ('spk_gas_email', '札幌・高松 HANDYMAN の予約取込', 'Apps Script「札幌予約メール自動配車」', (select case when value::text ~ '^\s*\{' then (value::jsonb->>'last_run')::timestamptz end from app_settings where key = 'heartbeat_spk_gas_email')),
+             ('inquiry_import', '問い合わせの取込', 'Apps Script「HANDYMAN 問い合わせ管理」', (select case when value::text ~ '^\s*\{' then (value::jsonb->>'last_run')::timestamptz end from nha_app_settings where key = 'heartbeat_inquiry_import'))
            ) v(k, label, gas, last) loop
     if _hr between 7 and 23 and r.last is not null and r.last < now() - interval '3 hours' then
       if private.watch_say(p_ch, p_sys, 'gas:' || r.k,
@@ -97,19 +99,22 @@ begin
   exception when others then perform private.watch_say(p_ch, p_sys, 'watch:F', '取込の見張り（F）が止まりました', left(sqlerrm, 150), 'なし', '本部（オムニ）が直します。現場の対応は不要です'); end;
 
   begin
-  -- G) Mac mini：①Mac そのものが止まった（心拍 cli が10分止まった）②Mac の見張り（ops_beat）が止まった ③Mac が書いた問題（常駐の失敗・オムニの失敗）
-  select beat_at into _c from cli_heartbeat where id = 'cli';
-  select beat_at into _t from cli_heartbeat where id = 'ops_beat';
-  if _c < now() - interval '10 minutes' then
-    if private.watch_say(p_ch, p_sys, 'mac:down', 'Mac mini が止まっています（最後の合図 ' || to_char(_c at time zone 'Asia/Tokyo', 'MM-DD HH24:MI') || '）',
+  -- G) Mac mini：①Mac そのものが止まった ②Mac の見張り（ops_beat）だけが止まった ③Mac が書いた問題（常駐の失敗・オムニの失敗）
+  --   ops_beat は当番かどうかに関係なく5分ごとに心拍を書く（host 付き）。それが12分止まり、同じ機械の cli 心拍も止まっていれば①、cli だけ動いていれば②
+  select beat_at, host into _t, _h from cli_heartbeat where id = 'ops_beat';
+  select beat_at into _c from cli_heartbeat where id = 'cli' and host = _h;
+  if _t is null then null;   -- 見張りがまだ入っていない
+  elsif _t < now() - interval '12 minutes' and (_c is null or _c < now() - interval '12 minutes') then
+    if private.watch_say(p_ch, p_sys, 'mac:down', 'Mac mini が止まっています（' || coalesce(split_part(_h, '.', 1), '?') || '・最後の合図 ' || to_char(_t at time zone 'Asia/Tokyo', 'MM-DD HH24:MI') || '）',
          '電源・回線・スリープのどれかで、Mac から合図が来ていない',
          'なし（Mac が止まると自分では立ち上げ直せません。止まっている間はオムニ・在庫ロボ・自動登録ロボも止まります）',
-         '本部が Mac mini の電源と回線を確認してください', _c::text) then n_note := n_note + 1; end if;
-  elsif _t is not null and _t < now() - interval '20 minutes' then
+         '本部が Mac mini の電源と回線を確認してください', _t::text) then n_note := n_note + 1; end if;
+  elsif _t < now() - interval '20 minutes' then
     if private.watch_say(p_ch, p_sys, 'mac:ops_beat', 'Mac の常駐の見張りが止まっています（最後 ' || to_char(_t at time zone 'Asia/Tokyo', 'MM-DD HH24:MI') || '）',
          'Mac は動いているが、見張り（com.handyman.ops-beat）が動いていない',
          'なし', '本部（オムニ）が直します。現場の対応は不要です', _t::text) then n_note := n_note + 1; end if;
   end if;
+  delete from public.ops_watch_events where seen_at < now() - interval '1 day';   -- Mac が消し損ねた古い行
   for r in select * from public.ops_watch_events where seen_at > now() - interval '15 minutes' loop
     if private.watch_say(p_ch, p_sys, r.key, r.title, r.why, r.auto, r.todo, r.mark) then n_note := n_note + 1; end if;
   end loop;

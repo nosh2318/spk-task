@@ -139,12 +139,23 @@ def check_omni(st, events, now):
             }
 
 
+def beat(note):
+    # 心拍は当番かどうかに関係なく毎回書く（DB が「休止中」と「Mac が止まった」を見分けるため）。events が書けなくても心拍は別に書く
+    try:
+        rest("POST", "/cli_heartbeat?on_conflict=id", {"id": "ops_beat", "beat_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+             "host": os.uname().nodename, "note": note}, "resolution=merge-duplicates,return=minimal")
+    except Exception as e:
+        log("beat err %s %s" % (type(e).__name__, str(e)[:80]))
+
+
 def main(dry):
     try:
         sys.path.insert(0, os.path.expanduser("~/omni_bot"))
         import host_gate
         if not host_gate.is_my_turn():
             log("not on duty")
+            if not dry:
+                beat("当番外")
             return
     except Exception as e:
         log("gate err %s" % type(e).__name__)
@@ -160,18 +171,22 @@ def main(dry):
             print(k, "→", v["title"])
         print("問題 %d 件（書き込みなし）" % len(events))
         return
-    try:
-        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        for k, v in events.items():
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    still = set(st.get("open", []))   # 書いた・消せていない行（失敗した分は次の回にもう一度）
+    for k, v in events.items():
+        try:
             rest("POST", "/ops_watch_events?on_conflict=key", dict(v, key=k, seen_at=stamp), "resolution=merge-duplicates,return=minimal")
-        for k in st.get("open", []):
-            if k not in events:   # 直った → 消す
-                rest("DELETE", "/ops_watch_events?key=eq." + urllib.request.quote(k, safe=""), prefer="return=minimal")
-        st["open"] = sorted(events)
-        rest("POST", "/cli_heartbeat?on_conflict=id", {"id": "ops_beat", "beat_at": stamp, "host": os.uname().nodename,
-             "note": "%d件" % len(events)}, "resolution=merge-duplicates,return=minimal")
-    except Exception as e:
-        log("db err %s %s" % (type(e).__name__, str(e)[:80]))
+            still.add(k)
+        except Exception as e:
+            log("event err %s %s" % (k, type(e).__name__))
+    for k in sorted(still - set(events)):   # 直った → 消す
+        try:
+            rest("DELETE", "/ops_watch_events?key=eq." + urllib.request.quote(k, safe=""), prefer="return=minimal")
+            still.discard(k)
+        except Exception as e:
+            log("delete err %s %s" % (k, type(e).__name__))
+    st["open"] = sorted(still)
+    beat("%d件" % len(events))
     if events:
         log("open " + ",".join(sorted(events)))
     try:
