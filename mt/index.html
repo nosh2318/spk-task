@@ -1054,8 +1054,9 @@ async function licUpload(){if(LIC_BUSY||!DATA)return;const r=DATA.reservation,pp
   /* ★2026-11-15 写真は届いたのに登録0件になる不具合（那覇ワタナベ様）：記録の送信が他の送信中・通信切れで黙って捨てられていた。call()（同時送信の抑止あり）を通さず直接送り、届くまで最大3回やり直す */
   let LR=null;const lbody=JSON.stringify({action:"license_uploaded",token:TOKEN,count:ok,drivers:ppl.length,names:ppl.map(p=>String(p.nm||"").trim())});
   for(let t=0;t<3&&!(LR&&LR.ok);t++){if(t)await new Promise(r=>setTimeout(r,1500*t));try{const rr=await fetch(FN,{method:"POST",headers:{"Content-Type":"application/json"},body:lbody});LR=await rr.json().catch(()=>null);}catch(_){LR=null;}}
-  if(!(LR&&LR.ok)){licPaint();st().style.color="var(--r)";st().textContent="写真は届きましたが、登録の記録に失敗しました。電波の良い場所でもう一度「登録する」を押してください";return;}
-  try{const g=await acqCall("lic_get_acquired",{});let base=0;Object.keys((g&&g.drivers)||{}).forEach(k=>base=Math.max(base,+k||0));const map={};ppl.forEach((p,i)=>map[String(base+i+1)]=p.acq);await acqCall("lic_report_acquired",{p_drivers:map});}catch(_){}
+  /* 3回とも届かなくても、写真は届いているので取得日の記録を送る→サーバー（lic_upload_autofix・5分ごと）が登録済みに直し、店のSlackに知らせる */
+  let ACQ_OK=false;for(let t=0;t<3&&!ACQ_OK;t++){if(t)await new Promise(r=>setTimeout(r,1500*t));try{const g=await acqCall("lic_get_acquired",{});let base=0;Object.keys((g&&g.drivers)||{}).forEach(k=>base=Math.max(base,+k||0));const map={};ppl.forEach((p,i)=>map[String(base+i+1)]=p.acq);const a=await acqCall("lic_report_acquired",{p_drivers:map});ACQ_OK=!!(a&&a.ok);}catch(_){}}
+  if(!(LR&&LR.ok)&&!ACQ_OK){licPaint();st().style.color="var(--r)";st().textContent="写真は届きましたが、登録の記録に失敗しました。電波の良い場所でもう一度「登録する」を押してください";return;}
   const L0=DATA.license||{},nw=ppl.map(p=>({n:String(p.nm||"").trim()}));
   LIC=[];DATA.license=(LR&&LR.license&&LR.license.cnt)?LR.license:{cnt:(L0.cnt||0)+ok,drivers:(L0.drivers||0)+ppl.length,names:licNames(L0).concat(nw)};
   closeSheet();toast("免許証を登録しました");render();}
