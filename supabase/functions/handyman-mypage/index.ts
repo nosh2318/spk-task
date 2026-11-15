@@ -170,8 +170,9 @@ function cors(o: string | null) {
 function json(b: unknown, s: number, o: string | null) { return new Response(JSON.stringify(b), { status: s, headers: { ...cors(o), "content-type": "application/json" } }); }
 
 // x-hdm-actor: 監査ログ(_audit_actor)が「誰が書いたか」を区別するためのヘッダ。customer:<予約番号> / staff:<email> を載せる。
-// ★2026-11-15 承認者の名前（日本語）がヘッダーに入ると fetch が TypeError（ByteString でない）で止まり、承認が反映できなかった → ASCII 以外は %エンコードして載せる
-function withActor(actor?: string): Record<string, string> { return actor ? { ...H, "x-hdm-actor": /^[\x20-\x7e]*$/.test(actor) ? actor : encodeURIComponent(actor) } : H; }
+// ★2026-11-15 ヘッダには日本語（承認した人の名前＝本部 等）を入れられない（fetch が TypeError: not a valid ByteString で落ち、承認が毎回失敗していた）。
+//   英数字以外だけ %エンコードする（"staff:本部" → "staff:%E6%9C%AC%E9%83%A8"・"staff:" の接頭はそのまま）。
+function withActor(actor?: string): Record<string, string> { return actor ? { ...H, "x-hdm-actor": actor.replace(/[^\x20-\x7e]+/g, (s) => encodeURIComponent(s)) } : H; }
 async function sbGet(t: string, q: string): Promise<any[]> { const r = await fetch(`${SB_URL}/rest/v1/${t}?${q}`, { headers: H }); if (!r.ok) { console.error(`GET ${t}`, await r.text()); return []; } return await r.json(); }
 async function sbPatch(t: string, q: string, b: unknown, actor?: string): Promise<boolean> { const r = await fetch(`${SB_URL}/rest/v1/${t}?${q}`, { method: "PATCH", headers: { ...withActor(actor), Prefer: "return=representation" }, body: JSON.stringify(b) }); if (!r.ok) { console.error(`PATCH ${t}`, await r.text()); return false; } const d = await r.json(); return Array.isArray(d) && d.length > 0; }
 async function sbPost(t: string, b: unknown, actor?: string): Promise<void> { const r = await fetch(`${SB_URL}/rest/v1/${t}`, { method: "POST", headers: { ...withActor(actor), Prefer: "return=minimal" }, body: JSON.stringify(b) }); if (!r.ok) console.error(`POST ${t}`, await r.text()); }
