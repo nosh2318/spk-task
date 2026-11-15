@@ -55,6 +55,14 @@ function hdmNorm(text: string, d: { store?: string; url?: string } = {}): string
   const b = bk ? bk[1] : "";
   if (!url) url = rid && b ? `https://nosh2318.github.io/spk-task/mypage-active.html?tab=${/^依頼に返事/.test(hdmnCat(title)) ? "action" : "list"}&bucket=${b}&rid=${encodeURIComponent(rid)}` : (d.url || "https://nosh2318.github.io/spk-task/hq.html");
   const c0 = hdmnCat(title), cat = c0 === "システム／ボット・サーバー" ? hdmnCat(title + " " + det.join(" ")) : c0;
+  if (/^依頼に返事/.test(cat)) { // ★2026-11-15 nosh「依頼ごとは全て同じ感じで」：依頼カードと同じ短い形（1行1つ・承認画面リンク1つ）
+    const mt = (re: RegExp) => (meta.find((x) => re.test(x)) || "").replace(re, "").trim();
+    const nm = mt(/^👤\s*/), tt = mt(/^👷\s*/), dd = mt(/^📅\s*/), car = mt(/^🚗\s*/);
+    return [`【${storeJp}｜${cat.replace(/^依頼に返事／?/, "") || "依頼"}】${title}`,
+      ...(rid ? [`${nm || "お客様"} ${rid}${tt && !/^(未定|本部|—|-)$/.test(tt) ? `（担当 ${tt}）` : ""}${dd ? `　${dd}` : ""}${car ? `（${car}）` : ""}`] : []),
+      ...det.filter((x) => !/^(開く|承認画面|管理画面|こちら|リンク|APP)$/.test(x)).slice(0, 6).map((x) => x.slice(0, 200)),
+      `🔗 <${url}|${/tab=action/.test(url) ? "承認画面" : "開く"}>`].join("\n").slice(0, 2900);
+  }
   return [`【${storeJp}｜${cat}】${title}`, (det.join("／").slice(0, 700) || "—"), meta.join("｜"), `🔗 ${url}`].join("\n").slice(0, 2900);
 }
 // ===== ここまで送る直前の形 =====
@@ -298,6 +306,27 @@ async function hdmMsg(m: HdmMsg): Promise<{ text: string; blocks: unknown[] }> {
   const title = String(m.title || "").trim();
   const cat = m.cat || hdmCat(title);
   const tab = m.tab || (/^依頼に返事/.test(cat) ? "action" : "list");
+  if (/^依頼に返事/.test(cat)) { // ★2026-11-15 nosh「依頼ごとは全て同じ感じで」：時間・場所のカード（omniMsg）と同じ短い形。ボタンなし・承認画面リンク1つ
+    const kind = cat.replace(/^依頼に返事／?/, "") || "依頼";
+    let nm = "", car = "", who = "", dd = "";
+    if (rid) {
+      const [lb, tt, dt] = await Promise.all([m.label || hdmLabel(String(m.store), rid), hdmTanto(String(m.store), rid, m.side || ""), hdmDates(String(m.store), rid)]);
+      const P = String(lb || "").split("｜").map((x) => x.trim());
+      nm = (P.find((x) => /^👤/.test(x)) || "").replace(/^👤\s*/, "").trim();
+      car = (P.find((x) => /^🚗/.test(x)) || "").replace(/^🚗\s*/, "").trim();
+      const t = String(tt || "").replace(/^👷\s*(担当\s*)?/, "").trim(); if (t && !/^(未定|本部|—|-)$/.test(t)) who = `（担当 ${t}）`;
+      dd = String(dt || "").replace(/^📅\s*/, "").trim();
+    }
+    const B = (m.body || []).filter(Boolean).map((b) => hdmScrub(String(b), rid).replace(/\*/g, "").trim()).filter((b) => b && !/^⚠️\s*要承認/.test(b)).slice(0, 6);
+    const S = [
+      `【${st.jp}｜${kind}】${title}`, // 1行目の題は今のまま（店の部屋への振り分けが題の言葉を見ている）
+      ...(rid ? [`${nm || "お客様"} ${rid}${who}${dd ? `　${dd}` : ""}${car ? `（${car}）` : ""}`] : []),
+      ...B,
+      `🔗 <${m.url || (rid ? hdmUrl(String(m.store), rid, tab) : (HDM_APP[st.db] || "https://nosh2318.github.io/spk-task/hq.html"))}|${tab === "action" ? "承認画面" : "開く"}>`,
+    ];
+    const st2 = S.join("\n").slice(0, 2900);
+    return { text: st2, blocks: [{ type: "section", text: { type: "mrkdwn", text: st2 } }] };
+  }
   const lines: string[] = [`【${st.jp}｜${cat}】${title}`];
   const detail = (m.body || []).filter(Boolean).map((b) => hdmScrub(String(b), rid)).filter((b) => b && !/^⚠️\s*要承認/.test(b)).join("／");
   lines.push(detail || "—");
