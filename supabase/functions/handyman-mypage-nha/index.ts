@@ -524,40 +524,37 @@ function omniText(S: any[]): { title: string; lines: string[]; S: any[] } | null
   return { title, S, lines: [...why, `👷 担当${who ? " " + who + "さん" : "なし"}の個別URLにも「社員の承認待ち」で出ています`, "✅ 社員が承認画面で「はい」→ 予約・タスク・お客様へ自動で反映"] };
 }
 
-// ★2026-11-14 nosh「内容はしっかり ユーザー名 車両 日程 提案内容 判断内容など みてわかるものに」：オムニの提案は1行ずつの形で出す
+// ★2026-11-15 nosh「テキスト長い。シンプルに必要情報だけ」「判断理由は必要」→ 案に「はい」：
+//   1行目＝【店｜種類】お客様 予約番号（担当が決まっていれば名前）／2行目＝何から何へ（車両）／🤖 案／🔎 判断理由／💬 返信のしかた／🔗 承認画面
+//   消したもの：同じ文のくり返し・担当未定・承認するとどうなるか・担当がすること・自信の表示
 async function omniMsg(store: string, rid: string, S: any[], req: string[], url: string, cat: string): Promise<{ text: string; blocks: unknown[] }> {
   const st = HDM_ST[store] || HDM_ST.spk;
   const [lb, dt, tt] = await Promise.all([hdmLabel(store, rid), hdmDates(store, rid), hdmTanto(store, rid, "")]);
   const P = String(lb || "").split("｜").map((x) => x.trim());
-  const nm = (P.find((x) => /^👤/.test(x)) || "").replace(/^👤\s*/, "") || "（名前なし）";
-  const car = (P.find((x) => /^🚗/.test(x)) || "").replace(/^🚗\s*/, "") || "未割当";
+  const nm = (P.find((x) => /^👤/.test(x)) || "").replace(/^👤\s*/, "").trim() || "お客様";
+  const car = (P.find((x) => /^🚗/.test(x)) || "").replace(/^🚗\s*/, "").trim();
   const asks = S.map((s: any) => s.verdict === "human" || !s.ask ? "" : String(s.ask)).filter(Boolean);
   const human = S.some((s: any) => s.verdict === "human" || !s.ask);
-  const alt = S.some((s: any) => s.verdict === "alt");
-  const why = [...new Set(S.flatMap((s: any) => Array.isArray(s.why) ? s.why.map(String) : []))].slice(0, 9);
+  const why = [...new Set(S.flatMap((s: any) => Array.isArray(s.why) ? s.why.map((w: unknown) => String(w).replace(/^⚠️\s*/, "⚠️")) : []))].slice(0, 5);
   const sw = S.find((s: any) => s.reason === "swap" && /→/.test(String(s.alt || ""))), [swF, swT] = sw ? String(sw.alt).split("→") : ["", ""];
-  const head = human ? `【${st.jp}｜${cat}】🙋 社員が決めてください：${(why.find((w) => /⚠️|重な|読めない|見つからない|できなかった|外/.test(w)) || why[0] || "オムニが決められない").replace(/^⚠️\s*/, "")}`
-    : `【${st.jp}｜${cat}】🤖 ${asks.join("／")}`; // 【店｜種類】で始める＝送る直前の形の整え・店の部屋への振り分けがそのまま効く
-  const conf = human ? "人に回す" : alt ? "人が見る（代わりの案）" : "任せてよい";
-  const strip = (s: string) => String(s || "").replace(/\*/g, "").trim();
+  const strip = (s: string) => String(s || "").replace(/\*/g, "").replace(/[\s　]+/g, " ").trim();
+  const R = req.map(strip).filter(Boolean);
+  const kind = [...new Set(R.map((r) => r.split(" ")[0]).filter((k) => k && k.length <= 8))].join("・") || String(cat || "").replace(/^依頼に返事／?/, "") || "依頼";
+  const tanto = String(tt || "").replace(/^👷\s*/, "").trim();
+  const who = tanto && !/^(未定|本部|—|-)$/.test(tanto) ? `（担当 ${tanto}）` : "";
+  const D = String(dt || "").replace(/^📅\s*/, "").match(/(\d{1,2}\/\d{1,2})[^〜~]*[〜~]\s*(\d{1,2}\/\d{1,2})/);
+  const day = (r: string) => D ? (/貸出|お届け|お迎え|行き|受け取り|lend|del|pickup/i.test(r) ? D[1] : D[2]) + " " : "";
   const lines = [
-    head,
-    `👤 お客様：${nm}　📄 予約 ${rid}`,
-    `🚗 車両：${car}`,
-    `📅 日程：${String(dt || "").replace(/^📅\s*/, "") || "—"}`,
-    `👷 担当：${String(tt || "").replace(/^👷\s*/, "") || "未定"}`,
-    "――――",
-    `💬 お客様の依頼：${req.map(strip).filter(Boolean).join("／") || "—"}`,
-    `🤖 オムニの案：${human ? "決められないので社員へ" : asks.join("／")}（自信：${conf}）`,
-    "🔎 判断の理由（見たデータ）",
-    ...(why.length ? why.map((w) => " ・" + w) : [" ・—"]),
-    `✅ 承認すると：予約・タスク・マイページが変わり、お客様へ知らせます${sw ? `。タスクの担当を ${swF}さん → ${swT}さん に替えます` : ""}`,
-    sw ? `👷 担当がすること：承認のあと、${swT}さんが新しい時間・場所で準備（${swF}さんはこの件から外れます）` : "👷 担当がすること：承認のあと、新しい時間・場所で準備（担当の画面には「社員の承認待ち」で出ています）",
-    "💬 このスレッドに返信でも決められます（社員だけ）：「はい」＝この案で／「承認」＝希望どおり／「いいえ 理由と代わり」＝お断り／「13時なら」＝別の時間／文を直す時は直した文をそのまま返信", // ★2026-11-15 nosh「スレッドに返信し完結」「返信ルールを全メッセに」（omni-desk thread が読む）
-    `🔗 ${url}`,
+    `【${st.jp}｜${kind}】${nm} ${rid}${who}`, // 【店｜…】で始める＝送る直前の形の整え・店の部屋への振り分けがそのまま効く
+    ...R.map((r, i) => `${day(r)}${r}${i === 0 && car ? `（${car}）` : ""}`),
+    human ? "🙋 オムニは決められません。社員が決めてください" : `🤖 ${asks.join("／")}${sw ? `（担当を ${swF}さん → ${swT}さん に替えます）` : ""}`,
+    "🔎 判断理由",
+    ...(why.length ? why.map((w) => "・" + w) : ["・—"]),
+    "💬 返信「はい」＝この案で／「承認」＝希望どおり／「いいえ 理由」＝お断り／「14時なら」＝別の時間（社員だけ）",
+    `🔗 <${url}|承認画面>`,
   ];
   const text = lines.join("\n").slice(0, 2900);
-  return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }, { type: "actions", elements: [{ type: "button", text: { type: "plain_text", text: "✅ 承認画面を開く", emoji: true }, url, style: "primary" }] }] };
+  return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
 }
 
 Deno.serve(async (req) => {

@@ -565,14 +565,19 @@ async function watch() {
     const fld = String(c.field || c.change_type || "");
     const same = st !== "tkm" ? C.filter((x: any) => x.reservation_id === m.rid && String(x.id) !== m.key) : [];
     const ok = S && S.verdict !== "human" && S.ask;
+    // ★2026-11-15 nosh「シンプルに必要情報だけ」「判断理由は必要」：依頼カードと同じ短い形
+    const nm0 = String((R || {}).name || "お客様").trim();
     await post(OPS_CH[st] || DEV_CH, [
-      `【${ST_JP[st] || st}｜依頼に返事／時間・場所】${ok ? "🤖" : "⚠️"} 予約 ${m.rid}（${String((R || {}).name || "お客様")}様）`,
-      `🙋 依頼：${FJ[fld] || fld}　${String(c.old_value || "").slice(0, 40) ? String(c.old_value).slice(0, 40) + " → " : ""}${String(c.new_value || "").slice(0, 60)}`,
-      ...(same.length ? [`ℹ️ 同じお客様の依頼がほかに${same.length}件（${same.map((x: any) => FJ[x.field] || x.field).join("・")}）。同じ内容なら片方の承認で反映されます`] : []),
-      `⏱ 受けた時にオムニの案が付かなかったので、見張りが代わりに判断しました`,
-      ok ? `🤖 オムニの案：${String(S.ask).slice(0, 200)}` : `🤖 オムニ：決められません（${err ? "判断の途中で止まった：" + err : (S && Array.isArray(S.why) ? S.why.slice(-2).join("／") : "理由不明")}）`,
-      ok ? "👷 人がやること：本部で「はい」を押すだけ（押すと予約・タスク・お客様へ自動で反映）" : "👷 人がやること：本部で承認かお断りを選ぶ",
-      `🔗 https://nosh2318.github.io/spk-task/mypage-active.html?tab=action&bucket=${bk}`,
+      `【${ST_JP[st] || st}｜${FJ[fld] || fld}】${/様$/.test(nm0) ? nm0 : nm0 + " 様"} ${m.rid}`,
+      `${String(c.old_value || "").slice(0, 40) ? String(c.old_value).slice(0, 40) + " → " : ""}${String(c.new_value || "").slice(0, 60)}`,
+      ok ? `🤖 ${String(S.ask).slice(0, 200)}` : `🙋 オムニは決められません。社員が決めてください`,
+      "🔎 判断理由",
+      ...((S && Array.isArray(S.why) ? S.why.slice(0, 4).map((w: unknown) => "・" + String(w)) : []) as string[]),
+      ...(err ? [`・判断の途中で止まった：${err}`] : []),
+      "・受けた時に案が付かず、見張りが代わりに判断",
+      ...(same.length ? [`・同じお客様の依頼がほかに${same.length}件（${same.map((x: any) => FJ[x.field] || x.field).join("・")}）`] : []),
+      TH_RULE,
+      `🔗 <https://nosh2318.github.io/spk-task/mypage-active.html?tab=action&bucket=${bk}&rid=${encodeURIComponent(m.rid)}|承認画面>`,
     ].join("\n"));
     out[st === "tkm" ? "tkm" : "chg"] += 1;
   }
@@ -721,7 +726,7 @@ async function sapi(st: string, method: string, params: Record<string, string>):
   try { const r = await fetch(`https://slack.com/api/${method}?` + new URLSearchParams(params), { headers: { Authorization: `Bearer ${tok}` } }); return await r.json(); } catch (e) { return { ok: false, error: String((e as Error).message || e) }; }
 }
 // ★2026-11-15 nosh「提案時に返信ルールを必ず全メッセに添えて」：決まった（✅）以外の返事には必ず返信のしかたを付ける
-const TH_RULE = "💬 返信のしかた（社員だけ）：「はい」＝この内容で／「承認」＝お客様の希望どおり／「いいえ 理由と代わり」＝お断り／「13時なら」＝別の時間／文を直す時は、直した文をそのまま返信（「はい」までお客様には送りません）";
+const TH_RULE = "💬 返信「はい」＝この案で／「承認」＝希望どおり／「いいえ 理由」＝お断り／「14時なら」＝別の時間（社員だけ・文を直す時は直した文をそのまま返信）";
 async function sreply(st: string, ch: string, ts: string, text: string) {
   const tok = st === "tkm" ? BT_SLACK : SLACK; if (!tok) return false;
   if (!text.startsWith("✅")) text = `${text}\n\n${TH_RULE}`;
@@ -897,11 +902,13 @@ async function threadWatch() {
     if (!staff.size) continue; // 決めてよい社員がいない店（高松はオーナー確認待ち）は読まない
     const h = await sapi(st, "conversations.history", { channel: ch, oldest: since, limit: "200" });
     if (!h.ok) { out["err_" + st] = 1; continue; }
-    const cards = (h.messages || []).filter((m: any) => m.bot_id && Number(m.ts) >= TH_FROM && /^【[^｜】\n]+｜依頼に返事/.test(String(m.text || "")) && /予約\s+([A-Za-z0-9_-]+)/.test(String(m.text || "")));
+    const ridOf = (t: string) => { const x = t.match(/[?&](?:amp;)?rid=([A-Za-z0-9_-]+)/) || t.match(/予約\s+([A-Za-z0-9_-]+)/); return x ? x[1] : ""; };
+    // ★2026-11-15 カードを短い形にした（【店｜種類】…🔎 判断理由…承認画面の rid）。前の形（【店｜依頼に返事…】予約 ID）も読む
+    const cards = (h.messages || []).filter((m: any) => { const t = String(m.text || ""); return m.bot_id && Number(m.ts) >= TH_FROM && /^【[^｜】\n]+｜/.test(t) && (/^【[^｜】\n]+｜依頼に返事/.test(t) || (/^(🤖|🙋)/m.test(t) && /🔎 判断理由/.test(t))) && !!ridOf(t); });
     if (!cards.length) continue;
     const known = new Map((await get("omni_slack_threads", `channel=eq.${ch}&ts=in.${inList(cards.map((m: any) => String(m.ts)))}&select=ts,reservation_id,seen_reply,pending,done`)).map((x: any) => [String(x.ts), x]));
     for (const m of cards) {
-      const ts = String(m.ts), rid = String(m.text).match(/予約\s+([A-Za-z0-9_-]+)/)![1];
+      const ts = String(m.ts), rid = ridOf(String(m.text));
       let thr: any = known.get(ts);
       const reacts = (m.reactions || []).filter((r: any) => TH_REACT.has(String(r.name).replace(/::skin-tone-\d$/, ""))).flatMap((r: any) => (r.users || []).map(String));
       const latest = String(m.latest_reply || "");
