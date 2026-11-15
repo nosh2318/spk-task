@@ -84,6 +84,13 @@ function hdmrPick(text: string, ch: string): { ws: string; ch: string } | null {
   const store = m[1], sys = /^システム/.test(m[2]);
   if (sys && HDMR_SYSONLY_KEEP.has(ch)) return null;
   const tkm = /高松|BUDDICA/.test(store);
+  // ★2026-11-15 nosh「札幌・那覇の新規予約取り込み・キャンセル・キャンセル完了・新規予約受付は店の予約の部屋（札幌C08TDTPEB36・那覇C06KZ56NTDF）／システムと配車は C07B5G3PV7C」：高松はこの下の今まで通り
+  if (!tkm && !sys && HDMR_H.includes(ch)) {
+    const hm = String(text || "").match(/^【[^｜】\n]+｜([^】\n]+)】([^\n]*)/), kind = hm ? hm[1] : m[2], title = hm ? hm[2] : "";
+    const nha = /那覇|沖縄/.test(store) || (!/札幌/.test(store) && /KEYDROP/i.test(store) && ch === "C06KZ56NTDF"), spk = !nha && /札幌|KEYDROP/i.test(store);
+    if ((nha || spk) && (/^取込 (✅成功|❌失敗)$/.test(kind) || /^配車・取込／取込漏れ/.test(kind) || /新規予約|予約受付|予約登録|キャンセル(申請|承認|確定|完了|処理|受付|を?反映|通知|しました)/.test(title))) return { ws: "H", ch: nha ? "C06KZ56NTDF" : "C08TDTPEB36" };
+    if ((nha || spk) && /^配車・取込/.test(kind)) return { ws: "H", ch: "C07B5G3PV7C" };
+  }
   if (sys) return tkm ? { ws: "B", ch: "C0BFD7U097V" } : { ws: "H", ch: "C07B5G3PV7C" };
   if (tkm) return { ws: "B", ch: "C0BFMBLEJGZ" };
   if (/那覇|沖縄/.test(store)) return { ws: "H", ch: "C06L91W6T08" };
