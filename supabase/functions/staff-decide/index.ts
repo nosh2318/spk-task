@@ -61,6 +61,7 @@ function hdmNorm(text: string, d: { store?: string; url?: string } = {}): string
     return [`【${storeJp}｜${cat.replace(/^依頼に返事／?/, "") || "依頼"}】${title}`,
       ...(rid ? [`${nm || "お客様"} ${rid}${tt && !/^(未定|本部|—|-)$/.test(tt) ? `（担当 ${tt}）` : ""}${dd ? `　${dd}` : ""}${car ? `（${car}）` : ""}`] : []),
       ...det.filter((x) => !/^(開く|承認画面|管理画面|こちら|リンク|APP)$/.test(x)).slice(0, 6).map((x) => x.slice(0, 200)),
+      "",
       `🔗 <${url}|${/tab=action/.test(url) ? "承認画面" : "開く"}>`].join("\n").slice(0, 2900);
   }
   return [`【${storeJp}｜${cat}】${title}`, (det.join("／").slice(0, 700) || "—"), meta.join("｜"), `🔗 ${url}`].join("\n").slice(0, 2900);
@@ -342,6 +343,7 @@ async function hdmMsg(m: HdmMsg): Promise<{ text: string; blocks: unknown[] }> {
       `【${st.jp}｜${kind}】${title}`, // 1行目の題は今のまま（店の部屋への振り分けが題の言葉を見ている）
       ...(rid ? [`${nm || "お客様"} ${rid}${who}${dd ? `　${dd}` : ""}${car ? `（${car}）` : ""}`] : []),
       ...B,
+      "",
       `🔗 <${m.url || (rid ? hdmUrl(String(m.store), rid, tab) : (HDM_APP[st.db] || "https://nosh2318.github.io/spk-task/hq.html"))}|${tab === "action" ? "承認画面" : "開く"}>`,
     ];
     const st2 = S.join("\n").slice(0, 2900);
