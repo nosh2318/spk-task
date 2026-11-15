@@ -930,6 +930,33 @@ async function threadWatch() {
   return out;
 }
 
+// ★2026-11-15 nosh「エラーになったものは全て再投稿　事実を再投稿」：反映できなかった承認を、承認した人の名前でもう一度通す（サービスキーだけ）。
+//   依頼が requested のままの時だけ。結果と読み直し（ずれ）を店の部屋へ1件ずつ出す
+async function redoApprove(items: any[]) {
+  const out: any[] = [];
+  for (const it of items.slice(0, 20)) {
+    const st = String(it.store || ""), id = Number(it.id), who = String(it.actor_name || "").trim().slice(0, 30);
+    if (!["spk", "nha"].includes(st) || !id || !who) { out.push({ id, ok: false, error: "店・id・名前が要る" }); continue; }
+    const c = (await get("mypage_changes", `id=eq.${id}&store=eq.${st}&select=id,reservation_id,field,new_value,status&limit=1`))[0];
+    if (!c) { out.push({ id, ok: false, error: "見つからない" }); continue; }
+    if (c.status !== "requested") { out.push({ id, ok: false, error: "もう " + c.status }); continue; }
+    const r = await thDecide(st, id, { decision: "approved", actor_name: who });
+    const now = (await get("mypage_changes", `id=eq.${id}&select=status&limit=1`))[0] || {};
+    const R = st === "spk" ? (await get("reservations", `id=eq.${encodeURIComponent(c.reservation_id)}&select=del_place,col_place,lend_time,return_time&limit=1`))[0] : (await get("nha_reservations", `id=eq.${encodeURIComponent(c.reservation_id)}&select=del_place,col_place,start_time,end_time&limit=1`))[0];
+    const f = String(c.field), got = R && f in R ? String(R[f] ?? "").trim() : null;
+    const V = await rpcMain("hdm_one_value_check", {}).catch(() => []);
+    const gap = (Array.isArray(V) ? V : []).filter((x: any) => String(x.res_id) === String(c.reservation_id)).map((x: any) => `タスク ${x.task_id} の${x.field === "time" ? "時間" : "場所"}が ${x.task_v || "空"}（予約は ${x.res_v || "空"}）`);
+    const same = got == null || got === String(c.new_value || "").trim();
+    const ok = r.ok && now.status === "approved" && same && !gap.length;
+    out.push({ id, rid: c.reservation_id, field: f, ok, status: now.status, err: r.err, same, gap });
+    await post(OPS_CH[st], [`【${ST_JP[st]}｜依頼に返事】${ok ? "✅" : "⚠️"} エラーで止まっていた承認を反映し直しました${ok ? "" : "（一部できていません）"}`,
+      `📄 予約 ${c.reservation_id}　${f === "del_place" ? "お届け先" : f === "col_place" ? "回収先" : f}：${String(c.new_value || "").slice(0, 60)}`,
+      `🙋 承認：${who}（9時前後に押した承認。エラーで止まっていたものを同じ内容で通しました）`,
+      ok ? "🔎 予約・タスク・マイページを読み直し、ずれはありません。お客様へも知らせました" : `⚠️ ${[r.err, now.status !== "approved" ? "状態 " + now.status : "", !same ? `予約の値が ${got}` : "", ...gap].filter(Boolean).join("／")}`].join("\n"));
+  }
+  return out;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   try {
@@ -950,6 +977,7 @@ Deno.serve(async (req) => {
     if (p.action === "watch") return J({ ok: true, ...(await watch()) });
     // Slack のスレッド返信で決める（cron から1分ごと。決めるのは omni_slack_staff の社員の返信だけ）
     if (p.action === "thread") return J({ ok: true, ...(await threadWatch()) });
+    if (p.action === "redo_approve") { const au = req.headers.get("authorization") || ""; if (!(await isServiceKey(au))) return J({ ok: false, error: "auth" }, 401); return J({ ok: true, rows: await redoApprove(Array.isArray(p.items) ? p.items : []) }); }
     const PIN = Deno.env.get("ADMIN_PIN") || "";
     if (!PIN || String(p.admin_pin || "") !== PIN) return J({ ok: false, error: "pin" }, 401);
     if (p.action === "chat_list") return J({ ok: true, rows: await chatList() });
