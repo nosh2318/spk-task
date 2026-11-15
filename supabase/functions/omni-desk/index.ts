@@ -904,7 +904,7 @@ async function threadWatch() {
     if (!h.ok) { out["err_" + st] = 1; continue; }
     const ridOf = (t: string) => { const x = t.match(/[?&](?:amp;)?rid=([A-Za-z0-9_-]+)/) || t.match(/予約\s+([A-Za-z0-9_-]+)/); return x ? x[1] : ""; };
     // ★2026-11-15 カードを短い形にした（【店｜種類】…🔎 判断理由…承認画面の rid）。前の形（【店｜依頼に返事…】予約 ID）も読む
-    const cards = (h.messages || []).filter((m: any) => { const t = String(m.text || ""); return m.bot_id && Number(m.ts) >= TH_FROM && /^【[^｜】\n]+｜/.test(t) && (/^【[^｜】\n]+｜依頼に返事/.test(t) || (/^(🤖|🙋)/m.test(t) && /🔎 判断理由/.test(t))) && !!ridOf(t); });
+    const cards = (h.messages || []).filter((m: any) => { const t = String(m.text || ""); return m.bot_id && Number(m.ts) >= TH_FROM && /^【[^｜】\n]+｜/.test(t) && (/^【[^｜】\n]+｜依頼に返事/.test(t) || (/^(🤖|🙋)/m.test(t) && /🔎 判断理由/.test(t)) || /mypage-active\.html\?tab=action&(?:amp;)?bucket=/.test(t)) && !!ridOf(t); });
     if (!cards.length) continue;
     const known = new Map((await get("omni_slack_threads", `channel=eq.${ch}&ts=in.${inList(cards.map((m: any) => String(m.ts)))}&select=ts,reservation_id,seen_reply,pending,done`)).map((x: any) => [String(x.ts), x]));
     for (const m of cards) {
