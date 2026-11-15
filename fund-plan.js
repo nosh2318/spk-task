@@ -1,6 +1,7 @@
 // 資金計画（hq 車両 > 資金計画）
 // 2026-10-24 新設：正本＝配車表の整備ブロック（maintenance / nha_maintenance / bt_maintenance）を開くたびに読む。
 // 2026-11-08 改修：予算と実費（予実）を分けて表示・予算の基準（那覇 オーナー確定）・余剰・単価の中央値・登録漏れ一覧。
+// 2026-11-15：札幌・高松の基準をオーナー確定値に（車検 120,000／点検 30,000）・余剰は保留（RESERVE=0 で非表示）。
 // 書くのは「カードで払う日」だけ（hq_maint_pay・1整備＝1行）。他は読むだけ。設計メモ docs/設計_資金計画_車検点検修理_2026-10-24.md
 // 引き継ぎ ~/Desktop/HANDYMAN/引き継ぎ_資金計画_車検点検_2026-11-08.md
 const MAIN_URL='https://ckrxttbnawkclshczsia.supabase.co',MAIN_ANON='sb_publishable_aTVhlY0YD-5BBfI03ZNnsg_MzO_vsIe';
@@ -11,14 +12,15 @@ const TY={sk:{l:'車検',s:'車検',c:'var(--sk)'},tk:{l:'点検',s:'点検',c:'
 
 // ===== 予算の基準 =====
 // 配車表の予算（cost）＞ 車両マスタ（shaken_cost / tenken_cost）＞ 下の店舗基準 の順で使う。実費が入ればそれが優先。
+// over:true の店は 店舗基準 を 車両マスタ より優先（配車表の予算は常に最優先）。
 // 那覇＝オーナー確定 2026-11-08（車検 85,000・Fのみ 75,000／半年点検 30,000・Fのみ 25,000）。
-// 札幌＝仮（車両マスタに入っている値）。高松＝実績なし・仮（那覇基準）。決まったらここを書き換える。
+// 札幌・高松＝オーナー確定 2026-11-15（車検 120,000／点検 30,000・F区別なし）。札幌の車両マスタ点検 25,000 より優先。
 const STD={
   nha:{sk:{F:75000,x:85000},tk:{F:25000,x:30000},kari:false,src:'那覇基準'},
-  spk:{sk:{F:120000,x:120000},tk:{F:25000,x:25000},kari:true,src:'仮（札幌マスタ値）'},
-  bt :{sk:{F:75000,x:85000},tk:{F:25000,x:30000},kari:true,src:'仮（那覇基準）'}
+  spk:{sk:{F:120000,x:120000},tk:{F:30000,x:30000},kari:false,over:true,src:'札幌基準'},
+  bt :{sk:{F:120000,x:120000},tk:{F:30000,x:30000},kari:false,over:true,src:'高松基準'}
 };
-const RESERVE=0.05;           // 余剰見積もり（年数による修理増）。仮値 5%・オーナー確認待ち（2026-11-08）
+const RESERVE=0;              // 余剰見積もり（年数による修理増）。オーナー判断 2026-11-15「ややこしくなるので一旦保留」→0＝余剰の表示を出さない。再開時は率を入れる
 const EXCL_LABEL=['清掃','安全在庫']; // 費用の対象外（安全在庫＝在庫止めのブロックで整備ではない）
 const MIN_N=10;               // 中央値を予算に使ってよい目安の件数（かつ出庫済みの8割以上に実費）
 
@@ -49,7 +51,7 @@ function norm(store,r,v){v=v||{};const act=+r.actual_cost||0,cost=+r.cost||0,ty=
   let bud=cost,src=cost>0?'配車表':'',bkari=false;
   if(!bud&&(ty==='sk'||ty==='tk')){
     const m=ty==='sk'?(+v.shaken_cost||0):(+v.tenken_cost||0);
-    if(m>0){bud=m;src='車両マスタ';}
+    if(m>0&&!STD[store].over){bud=m;src='車両マスタ';}
     else{const s=STD[store];bud=s[ty][F?'F':'x'];src=s.src;bkari=s.kari;}
   }
   return {store,id:String(r.id),key:store+':'+r.id,code:r.vehicle_code,name:r.name||v.name||r.vehicle_code||'（車両不明）',plate:r.plate||v.plate_no||'',cls,F,
@@ -116,8 +118,9 @@ function renderSum(){
     (x.no?'<div class="w">予算未入力 '+x.no+'件</div>':'')+(x.bk?'<div class="w">うち仮予算 '+x.bk+'件</div>':'')+(extra||'')+'</div>';
   document.getElementById('sum').innerHTML='<h2>これから払う分 <small>'+(storeSel==='all'?'全店':ST[storeSel])+'・引落日が今日以降。金額＝実費があれば実費、無ければ予算</small></h2><div class="tiles">'+
     TYS.map(t=>tile(TY[t].c,TY[t].l,g[t])).join('')+
-    '<div class="tile" style="--c:#fbbf24"><div class="t">余剰（予算の'+Math.round(RESERVE*100)+'%）</div><div class="v">'+yen(rs)+'</div><div class="n">年数による修理増への備え</div><div class="w">'+Math.round(RESERVE*100)+'%は仮値</div></div>'+
-    '<div class="tile" style="--c:#e2e8f0"><div class="t">合計（余剰込み）</div><div class="v">'+yen(g.amt+rs)+'</div><div class="n">'+g.n+'件・余剰なし '+yen(g.amt)+'</div></div></div>';
+    (RESERVE?'<div class="tile" style="--c:#fbbf24"><div class="t">余剰（予算の'+Math.round(RESERVE*100)+'%）</div><div class="v">'+yen(rs)+'</div><div class="n">年数による修理増への備え</div></div>'+
+    '<div class="tile" style="--c:#e2e8f0"><div class="t">合計（余剰込み）</div><div class="v">'+yen(g.amt+rs)+'</div><div class="n">'+g.n+'件・余剰なし '+yen(g.amt)+'</div></div>'
+    :'<div class="tile" style="--c:#e2e8f0"><div class="t">合計</div><div class="v">'+yen(g.amt)+'</div><div class="n">'+g.n+'件</div></div>')+'</div>';
 }
 
 // ② 予実：入庫月ごとに「予算」と「実費」を分ける（今日までに入庫したもの）
@@ -134,7 +137,7 @@ function renderYJ(){
 
 // ③ 単価の基準：店×車検/点検×(Fクラス/それ以外)。今の予算と、実費の中央値（＝次の予算の候補）
 function renderStd(){
-  let h='<table class="pay"><tr><th>店・種別</th><th>クラス</th><th>今の予算</th><th>予算の出所</th><th>実費 件数</th><th>実費 中央値</th><th>平均</th><th>最小〜最大</th><th>中央値＋余剰'+Math.round(RESERVE*100)+'%</th><th>判定</th></tr>';
+  let h='<table class="pay"><tr><th>店・種別</th><th>クラス</th><th>今の予算</th><th>予算の出所</th><th>実費 件数</th><th>実費 中央値</th><th>平均</th><th>最小〜最大</th>'+(RESERVE?'<th>中央値＋余剰'+Math.round(RESERVE*100)+'%</th>':'')+'<th>判定</th></tr>';
   storesIn().forEach(s=>['sk','tk'].forEach(t=>[['F','Fクラス'],['x','F以外']].forEach(([f,fl])=>{
     const a=ITEMS.filter(i=>i.store===s&&i.ty===t&&(f==='F')===i.F),acts=a.filter(i=>i.act).map(i=>i.act);
     if(!a.length&&!acts.length)return;
@@ -144,7 +147,7 @@ function renderStd(){
     // 入力率が低いと「入れた分だけ」の偏った中央値になる → 出庫済みの8割以上に実費が入るまでは参考
     const done=a.filter(i=>i.end<today()).length,rate=done?acts.length/done:0;
     const j=!acts.length?'<span class="wtxt">実績なし</span>':acts.length<MIN_N?'<span class="wtxt">件数が少ない（参考）</span>':rate<0.8?'<span class="wtxt">入力率'+Math.round(rate*100)+'%（参考）</span>':'<span class="oktxt">使える</span>';
-    h+='<tr><td>'+ST[s]+'　'+TY[t].l+'</td><td>'+fl+'</td><td>'+(bud?yen(bud):'—')+'</td><td>'+esc(src)+'</td><td>'+acts.length+' / '+a.length+'</td><td>'+(md?yen(md):'—')+'</td><td>'+(avg?yen(avg):'—')+'</td><td>'+(acts.length?yen(Math.min(...acts))+'〜'+yen(Math.max(...acts)):'—')+'</td><td>'+(md?yen(sug):'—')+'</td><td>'+j+'</td></tr>';
+    h+='<tr><td>'+ST[s]+'　'+TY[t].l+'</td><td>'+fl+'</td><td>'+(bud?yen(bud):'—')+'</td><td>'+esc(src)+'</td><td>'+acts.length+' / '+a.length+'</td><td>'+(md?yen(md):'—')+'</td><td>'+(avg?yen(avg):'—')+'</td><td>'+(acts.length?yen(Math.min(...acts))+'〜'+yen(Math.max(...acts)):'—')+'</td>'+(RESERVE?'<td>'+(md?yen(sug):'—')+'</td>':'')+'<td>'+j+'</td></tr>';
   })));
   document.getElementById('std').innerHTML=h+'</table>';
 }
@@ -199,7 +202,7 @@ function renderPay(){
   wds.forEach(w=>{const a=V.filter(i=>i.wd===w),g=agg(a),k='w|'+w;
     h+='<tr class="r'+(w<td?' past':'')+(sel===k?' sel':'')+'" onclick="pick(\'w\',\''+w+'\')"><td>'+w.replace(/-/g,'/')+(w<td?' 済':'')+'</td><td>'+a[0].close.slice(5).replace('-','/')+'</td><td>'+g.n+'</td>'+TYS.map(t=>'<td>'+(g[t].amt?yen(g[t].amt):'—')+'</td>').join('')+'<td><b>'+yen(g.amt)+'</b></td><td>'+(g.nAct?yen(g.act)+'（'+g.nAct+'件）':'')+'</td><td>'+(g.kari||'')+'</td></tr>';});
   h+='<tr class="tot"><td>今後の合計</td><td></td><td>'+tot.n+'</td>'+TYS.map(t=>'<td>'+yen(tot[t].amt)+'</td>').join('')+'<td>'+yen(tot.amt)+'</td><td>'+(tot.nAct?yen(tot.act):'')+'</td><td>'+(tot.kari||'')+'</td></tr>'+
-    '<tr class="tot"><td>＋余剰 '+Math.round(RESERVE*100)+'%</td><td></td><td></td>'+TYS.map(()=>'<td></td>').join('')+'<td>'+yen(tot.amt+rs)+'</td><td colspan="2" style="text-align:left;font-weight:600">余剰 '+yen(rs)+'</td></tr></table>';
+    (!RESERVE?'</table>':'<tr class="tot"><td>＋余剰 '+Math.round(RESERVE*100)+'%</td><td></td><td></td>'+TYS.map(()=>'<td></td>').join('')+'<td>'+yen(tot.amt+rs)+'</td><td colspan="2" style="text-align:left;font-weight:600">余剰 '+yen(rs)+'</td></tr></table>');
   document.getElementById('pay').innerHTML=wds.length?h:'<div class="msg">対象なし</div>';
 }
 
