@@ -180,7 +180,7 @@ const jhm = (ms: number) => new Date(ms + 9 * 3600e3).toISOString().slice(11, 16
 const atJ = (d: string, t: string) => Date.parse(`${d}T${t}:00+09:00`);
 const up5 = (ms: number) => Math.ceil(ms / 300e3) * 300e3, up15 = (ms: number) => Math.ceil(ms / 900e3) * 900e3;
 async function nudPlan(store: string, nid: number): Promise<any> {
-  const n = (await get(`mypage_nudges?id=eq.${nid}&store=eq.${store}&select=id,kind,leg,reservation_id`))[0]; if (!n) return null;
+  const n = (await get(`mypage_nudges?id=eq.${nid}&store=eq.${store}&select=id,kind,leg,reservation_id,note`))[0]; if (!n) return null;
   const back = n.leg === "back", rid = encodeURIComponent(String(n.reservation_id));
   let d = "", t = "", vt = "", rt = "", shuttle = false;
   if (store === "tkm") {
@@ -212,7 +212,12 @@ async function nudPlan(store: string, nid: number): Promise<any> {
   } else if (n.kind === "lost") add("lost_go", now, "今から声をかけます");
   else if (n.kind === "late") {
     if (bus) { for (let h = Math.max(my + 1, B.first); h <= B.last && out.options.length < 2; h++) if (busAt(h) >= now) add("late_bus", busAt(h), "次の便でご案内します（{t}発）"); }
-    else for (let k = 1; k <= 3; k++) add("late_wait", Math.max(due, up15(now)) + k * 15 * 60e3, "{t}までお待ちします");
+    else {
+      for (let k = 1; k <= 3; k++) add("late_wait", Math.max(due, up15(now)) + k * 15 * 60e3, "{t}までお待ちします");
+      // ★2026-11-15 nosh「営業時間(9:00〜19:00)外になる遅れは何もなく受け入れない」：予定＋遅れが19:00を超える時だけ「お受けできません」を選べる。お客様のマイページに丁寧な文が出る（記録は mypage_nudges.reply のみ）
+      const nt = String(n.note || ""), mm = nt.match(/(\d+)\s*(分|時間)ほど/), dl = mm ? (mm[2] === "時間" ? +mm[1] * 60 : +mm[1]) : /まだ分からない/.test(nt) ? 10 : NaN;
+      if (!isNaN(dl) && due + dl * 60e3 > atJ(d, "19:00")) add("late_ng", atJ(d, "19:00"), "お受けできません（営業時間外）");
+    }
   }
   return out;
 }
