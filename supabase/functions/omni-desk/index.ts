@@ -815,10 +815,10 @@ async function thRun(st: string, rid: string, items: any[], name: string): Promi
   return [head, ...out.map((x) => "・" + x), ...bad.map((x) => "⚠️ " + x), tail].filter(Boolean).join("\n");
 }
 
-// ★2026-11-15 nosh「高松のスレッド返信は特定人物にする必要ない」：高松は部屋の人なら誰の返信でも決める（名前は Slack の表示名、なければ「高松スタッフ」）
-const TH_OPEN = new Set(["tkm"]);
+// ★2026-11-15 nosh「高松のスレッド返信は特定人物にする必要ない」：部屋の人なら誰の返信でも決める（名前は社員表→Slack の表示名→「スタッフ」）
+const TH_OPEN = new Set(["spk", "nha", "tkm"]); // ★nosh「高松 那覇 札幌 全て運用方法は統一して」＝3店とも部屋の人なら誰でも
 async function thOne(st: string, ch: string, thr: any, card: any, msg: { key: string; user: string; text: string; react?: boolean; who?: string }, staff: Map<string, string>): Promise<void> {
-  const name = staff.get(msg.user) || (TH_OPEN.has(st) ? (String(msg.who || "").trim() || "高松スタッフ") : "");
+  const name = staff.get(msg.user) || (TH_OPEN.has(st) ? (String(msg.who || "").trim() || "スタッフ") : "");
   const t = String(msg.text || "").replace(/<@[A-Z0-9]+>/g, "").replace(/\s+/g, " ").trim();
   const yes = !!msg.react || TH_YES.test(t), no = !yes && TH_NO.test(t);
   if (!(await claim({ channel: ch, reply_key: msg.key, thread_ts: card.ts, store: st, reservation_id: thr.reservation_id, slack_user: msg.user, name: name || null, is_staff: !!name, text: t.slice(0, 500), action: msg.react ? "react" : yes ? "yes" : no ? "no" : "free" }))) return;

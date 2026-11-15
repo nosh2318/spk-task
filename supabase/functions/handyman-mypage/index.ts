@@ -642,7 +642,7 @@ async function omniMsg(store: string, rid: string, S: any[], req: string[], url:
     "🔎 判断理由",
     ...(why.length ? why.map((w) => "・" + w) : ["・—"]),
     "",
-    "💬 返信「はい」＝この案で／「承認」＝希望どおり／「いいえ 理由」＝お断り／「14時なら」＝別の時間（社員だけ）",
+    "💬 返信「はい」＝この案で／「承認」＝希望どおり／「いいえ 理由」＝お断り／「14時なら」＝別の時間",
     `🔗 <${url}|承認画面>`,
   ];
   const text = lines.join("\n").slice(0, 2900);
