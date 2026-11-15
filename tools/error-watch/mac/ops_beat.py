@@ -4,8 +4,8 @@
 # launchd（com.handyman.ops-beat）が5分ごとに起動する。やること：
 #   1) Mac の自動処理（com.handyman.* / jp.rent-handyman.* / com.buddica.*）が「続けて2回」失敗で終わったら、main の ops_watch_events に1行書く
 #      やり直しは launchd が次の予定の時刻にする（ここで立ち上げ直さない：送信系を二重に動かさないため）
-#   2) オムニの常駐（omni-bridge 等）のエラーログに例外（Traceback）が30分で3回以上出たら、同じく1行書く
-#      常駐が止まった時の立ち上げ直しは mini の自己回復（omni_selfheal）の仕事。ここは触らない
+#   2) オムニの部屋で、受けた依頼に40分たっても返事が出ていなければ、その部屋のオムニを立ち上げ直して続きをやらせる。
+#      5分後もまだ返事が出ていない時だけ1行書く（自分で直せた時は知らせない）
 #   3) 自分の心拍を cli_heartbeat の ops_beat に書く（見張りが止まったことを DB 側で拾うため）
 #   直ったら行を消す。Slack に出すのは DB の ops_watch（①原因②自動でやったこと③人がやること・1時間に1回）だけ
 #   --dry：判定を表示するだけ（何も書かない）。鍵の値は表示しない
@@ -17,18 +17,16 @@ LOG = os.path.join(D, "ops_beat.log")
 URL = "https://ckrxttbnawkclshczsia.supabase.co/rest/v1"
 LABEL_RE = re.compile(r"^(com\.handyman|jp\.rent-handyman|com\.buddica)\.")
 SELF = "com.handyman.ops-beat"
-OMNI = {   # オムニの常駐（launchd の名前 → 画面に出す名前）
-    "com.handyman.omni-bridge": "オムニ本体",
-    "com.handyman.operation-bridge": "オペレーション",
-    "com.handyman.mikuni-bridge": "ミクニ",
-    "com.handyman.cs-autoreply": "お客様の自動返信",
-    "com.handyman.cli-responder": "CLI 応答",
-    "com.handyman.reconcile-staff-bot": "照合ボット",
-    "com.handyman.invctl-slack-relay": "在庫ロボの Slack 中継",
-    "com.buddica.maint-bridge": "高松 保守",
-    "com.buddica.newdev-bridge": "高松 新規開発",
+# オムニの部屋（launchd の名前 → 部屋の呼び名・受けた依頼の記録）
+# ★11/15 nosh「意味不明」：エラーの行を数えるのはやめた（返事を出した後のエラーまで数えていた）。見るのは「受けた依頼に返事が出ているか」だけ
+OMNI = {
+    "com.handyman.omni-bridge": ("オムニの部屋", "~/omni_bot/.bridge_state.json"),
+    "com.handyman.operation-bridge": ("オペレーションの部屋", "~/omni_bot/.bridge_state_operation.json"),
+    "com.handyman.mikuni-bridge": ("ミクニの部屋", "~/omni_bot/.bridge_state_mikuni.json"),
+    "com.buddica.maint-bridge": ("高松 保守の部屋", "~/omni_bot/.bridge_state_btmaint.json"),
+    "com.buddica.newdev-bridge": ("高松 新規開発の部屋", "~/omni_bot/.bridge_state_btnewdev.json"),
 }
-TB_N, TB_WIN = 3, 30 * 60
+STUCK_SEC = 40 * 60   # オムニは1件30分で打ち切る決まり。40分たっても返事待ちの印が残る＝途中で止まった
 
 
 def log(msg):
@@ -105,38 +103,41 @@ def check_jobs(st, events, now):
             s["runs"] = runs
         if s["fails"] >= 2:
             events["mac:" + lb] = {
-                "title": "Mac の自動処理が続けて失敗しています：%s（%d回）" % (short(lb), s["fails"]),
-                "why": "終了コード %d で終わった（ログは Mac の %s の記録）" % (code, short(lb)),
-                "auto": "launchd が次の予定の時刻に自動でもう一度動かした → また失敗",
+                "title": "Mac の自動処理「%s」が続けて失敗しています（%d回）" % (short(lb), s["fails"]),
+                "why": "処理がエラーで終わった（番号 %d）" % code,
+                "auto": "次の予定の時刻に自動でもう一度動いた → また失敗",
                 "todo": "本部（オムニ）がログを見て直します。現場の対応は不要です",
                 "mark": str(int(s["since"])),
             }
 
 
 def check_omni(st, events, now):
-    for lb, name in OMNI.items():
-        path = field(lc_print(lb), "stderr path")
-        if not path or not os.path.exists(path):
+    # 1回目：止まった依頼を見つけたら、その部屋のオムニを立ち上げ直す（オムニは立ち上がる時に、止まった依頼を自分で続きからやり直す）
+    # 2回目（5分後）：まだ返事待ちのまま → その時だけ知らせる。直っていれば知らせない
+    for lb, (room, path) in OMNI.items():
+        try:
+            th = json.load(open(os.path.expanduser(path))).get("threads", {})
+        except Exception:
             continue
-        s = st.setdefault("tb|" + lb, {"off": None, "ts": []})
-        size = os.path.getsize(path)
-        if s["off"] is None or size < s["off"]:   # 初回・ログが切り替わった：今の末尾から数える
-            s["off"] = size
-        n = 0
-        if size > s["off"]:
-            with open(path, "rb") as f:
-                f.seek(s["off"])
-                n = f.read(size - s["off"]).count(b"Traceback (most recent call last)")
-            s["off"] = size
-        s["ts"] = [x for x in s["ts"] if now - x < TB_WIN] + [now] * n
-        if len(s["ts"]) >= TB_N:
-            events["omni:" + lb] = {
-                "title": "オムニ（%s）でエラーが続いています（30分で%d回）" % (name, len(s["ts"])),
-                "why": "処理の途中で例外が出た（ログは Mac の %s）" % os.path.basename(path),
-                "auto": "常駐は動き続けています（止まった時は mini の自己回復が立ち上げ直します）",
-                "todo": "本部（オムニ）がログを見て直します。返事が来ない依頼は、もう一度送ってください",
-                "mark": time.strftime("%m%d%H", time.localtime(s["ts"][0])),
-            }
+        stuck = sorted(k for k, v in th.items() if v.get("pending") and now - float(v.get("last_reply_ts") or k) > STUCK_SEC)
+        s = st.setdefault("omni|" + lb, {"kicked": None, "keys": []})
+        if not stuck:
+            s["kicked"], s["keys"] = None, []
+            continue
+        if not s["kicked"] or s["keys"] != stuck:
+            r = subprocess.run(["launchctl", "kickstart", "-k", "gui/%d/%s" % (os.getuid(), lb)], capture_output=True, text=True, timeout=30)
+            s["kicked"], s["keys"] = now, stuck
+            log("omni stuck %s n=%d kickstart rc=%d" % (short(lb), len(stuck), r.returncode))
+            continue
+        if now - s["kicked"] < 4 * 60:
+            continue
+        events["omni:" + lb] = {
+            "title": "%sの依頼%d件に、オムニの返事が出ていません" % (room, len(stuck)),
+            "why": "オムニが依頼の途中で止まった",
+            "auto": "オムニを立ち上げ直して続きをやり直した → まだ返事が出ていない",
+            "todo": "依頼したスタッフに、同じ内容をもう一度送ってもらってください",
+            "mark": ",".join(stuck),
+        }
 
 
 def beat(note):
