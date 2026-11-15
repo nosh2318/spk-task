@@ -257,7 +257,12 @@ async function chgSuggest(c: any) {
   // 送迎バスは「時刻表に沿う」「その便の人数」の2つが見られない時は提案を出さない（nosh 11/14 必須）
   if (meBus && !isReady && !bus) return { verdict: "human", ask: "", why: why.concat(["送迎バスの時刻表と便の人数を見られない → 人が決める"]), date, t, who };
   if (meBus) why.push("送迎バス（まとめてお送りするので担当の予定は重ならない）");
-  else if (!who) why.push(mine ? "担当なし（だれでも行ける）" : "お届け・回収のタスクがない予約（送迎・来店）");
+  else if (!who) { // ★2026-11-15 nosh「この意図は？」：中の状態ではなく、人が読んで分かる結論で書く
+    const dd = Math.round((Date.parse(String(date) + "T00:00:00+09:00") - Date.now()) / 86400000);
+    if (mine) why.push("担当はまだ決まっていない＝だれの予定とも重ならない");
+    else if (isNaN(dd) || dd > 3) why.push(`担当を決めるのはまだ先（${isNaN(dd) ? "" : dd + "日後の"}予約）＝今はだれの予定とも重ならない`);
+    else why.push("⚠️ 近い日なのにお届け・回収の作業がまだない（作り忘れかも）＝担当の予定は見られない");
+  }
   else {
     if (!isNaN(n0)) why.push(dayLine(who, n0));
     if (hit.length) why.push(`⚠️ ${who}さんは ${hit.map(lbl).join("・")} と重なる（移動を見て${Math.max(...hit.map(gapOf))}分あかない）`);
@@ -346,7 +351,12 @@ async function chgSuggestTkm(c: any) {
   const who = mine && !NOT_PERSON.test(mine.who) ? mine.who : "";
   const busy = (n: number) => who ? D.filter((x: any) => x.who === who && x.rid !== rid && x.t && Math.abs(mins(x.t) - n) < 30) : [];
   const n0 = mins(t), hit = isNaN(n0) ? [] : busy(n0); let alt = "";
-  if (!who) why.push(mine ? "担当なし（だれでも行ける）" : "行き・帰りのタスクがまだない");
+  if (!who) { // ★2026-11-15 3店同じ言葉（人が読んで分かる結論で）
+    const dd = Math.round((Date.parse(String(date) + "T00:00:00+09:00") - Date.now()) / 86400000);
+    if (mine) why.push("担当はまだ決まっていない＝だれの予定とも重ならない");
+    else if (isNaN(dd) || dd > 3) why.push(`担当を決めるのはまだ先（${isNaN(dd) ? "" : dd + "日後の"}予約）＝今はだれの予定とも重ならない`);
+    else why.push("⚠️ 近い日なのにお届け・回収の作業がまだない（作り忘れかも）＝担当の予定は見られない");
+  }
   else if (hit.length) { why.push(`⚠️ ${who}さんは ${hit.map((x: any) => x.t + " " + (x.back ? "お送り" : "お迎え")).join("・")} と重なる`); const base = Math.round(n0 / 15) * 15; for (const d of [0, 15, -15, 30, -30, 45, -45, 60, -60, 75, -75, 90, -90, 105, -105, 120, -120]) { const n = base + d; if (n !== n0 && n >= 9 * 60 && n <= 18 * 60 + 50 && !busy(n).length && atJst(date, tOf(n)) >= Date.now()) { alt = tOf(n); break; } } }
   else why.push(`${who}さんの予定と重ならない（前後30分）`);
   if (oldT) why.push(`いまの予約は ${oldT}`);
