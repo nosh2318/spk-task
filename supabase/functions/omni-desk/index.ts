@@ -570,12 +570,15 @@ async function watch() {
     await post(OPS_CH[st] || DEV_CH, [
       `【${ST_JP[st] || st}｜${FJ[fld] || fld}】${/様$/.test(nm0) ? nm0 : nm0 + " 様"} ${m.rid}`,
       `${String(c.old_value || "").slice(0, 40) ? String(c.old_value).slice(0, 40) + " → " : ""}${String(c.new_value || "").slice(0, 60)}`,
+      "", // ★2026-11-15 nosh「カテゴリごとに空白=段落をつけて」
       ok ? `🤖 ${String(S.ask).slice(0, 200)}` : `🙋 オムニは決められません。社員が決めてください`,
+      "",
       "🔎 判断理由",
       ...((S && Array.isArray(S.why) ? S.why.slice(0, 4).map((w: unknown) => "・" + String(w)) : []) as string[]),
       ...(err ? [`・判断の途中で止まった：${err}`] : []),
       "・受けた時に案が付かず、見張りが代わりに判断",
       ...(same.length ? [`・同じお客様の依頼がほかに${same.length}件（${same.map((x: any) => FJ[x.field] || x.field).join("・")}）`] : []),
+      "",
       TH_RULE,
       `🔗 <https://nosh2318.github.io/spk-task/mypage-active.html?tab=action&bucket=${bk}&rid=${encodeURIComponent(m.rid)}|承認画面>`,
     ].join("\n"));

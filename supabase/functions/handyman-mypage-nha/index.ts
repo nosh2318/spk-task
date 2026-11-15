@@ -61,6 +61,7 @@ function hdmNorm(text: string, d: { store?: string; url?: string } = {}): string
     return [`【${storeJp}｜${cat.replace(/^依頼に返事／?/, "") || "依頼"}】${title}`,
       ...(rid ? [`${nm || "お客様"} ${rid}${tt && !/^(未定|本部|—|-)$/.test(tt) ? `（担当 ${tt}）` : ""}${dd ? `　${dd}` : ""}${car ? `（${car}）` : ""}`] : []),
       ...det.filter((x) => !/^(開く|承認画面|管理画面|こちら|リンク|APP)$/.test(x)).slice(0, 6).map((x) => x.slice(0, 200)),
+      "",
       `🔗 <${url}|${/tab=action/.test(url) ? "承認画面" : "開く"}>`].join("\n").slice(0, 2900);
   }
   return [`【${storeJp}｜${cat}】${title}`, (det.join("／").slice(0, 700) || "—"), meta.join("｜"), `🔗 ${url}`].join("\n").slice(0, 2900);
@@ -322,6 +323,7 @@ async function hdmMsg(m: HdmMsg): Promise<{ text: string; blocks: unknown[] }> {
       `【${st.jp}｜${kind}】${title}`, // 1行目の題は今のまま（店の部屋への振り分けが題の言葉を見ている）
       ...(rid ? [`${nm || "お客様"} ${rid}${who}${dd ? `　${dd}` : ""}${car ? `（${car}）` : ""}`] : []),
       ...B,
+      "",
       `🔗 <${m.url || (rid ? hdmUrl(String(m.store), rid, tab) : (HDM_APP[st.db] || "https://nosh2318.github.io/spk-task/hq.html"))}|${tab === "action" ? "承認画面" : "開く"}>`,
     ];
     const st2 = S.join("\n").slice(0, 2900);
@@ -567,8 +569,8 @@ async function omniMsg(store: string, rid: string, S: any[], req: string[], url:
   const why = [...new Set(S.flatMap((s: any) => Array.isArray(s.why) ? s.why.map((w: unknown) => String(w).replace(/^⚠️\s*/, "⚠️")) : []))].slice(0, 5);
   const sw = S.find((s: any) => s.reason === "swap" && /→/.test(String(s.alt || ""))), [swF, swT] = sw ? String(sw.alt).split("→") : ["", ""];
   const strip = (s: string) => String(s || "").replace(/\*/g, "").replace(/[\s　]+/g, " ").trim();
-  const R = req.map(strip).filter(Boolean);
-  const kind = [...new Set(R.map((r) => r.split(" ")[0]).filter((k) => k && k.length <= 8))].join("・") || String(cat || "").replace(/^依頼に返事／?/, "") || "依頼";
+  const R = req.map((r) => strip(r).replace(/^[^\p{L}\p{N}]+/u, "").trim()).filter(Boolean);
+  const kind = [...new Set(R.map((r) => r.replace(/^[^\p{L}\p{N}]+/u, "").split(" ")[0].replace(/（.*$/, "")).filter((k) => k && k.length <= 8))].join("・") || String(cat || "").replace(/^依頼に返事／?/, "") || "依頼";
   const tanto = String(tt || "").replace(/^👷\s*/, "").trim();
   const who = tanto && !/^(未定|本部|—|-)$/.test(tanto) ? `（担当 ${tanto}）` : "";
   const D = String(dt || "").replace(/^📅\s*/, "").match(/(\d{1,2}\/\d{1,2})[^〜~]*[〜~]\s*(\d{1,2}\/\d{1,2})/);
@@ -576,9 +578,12 @@ async function omniMsg(store: string, rid: string, S: any[], req: string[], url:
   const lines = [
     `【${st.jp}｜${kind}】${nm} ${rid}${who}`, // 【店｜…】で始める＝送る直前の形の整え・店の部屋への振り分けがそのまま効く
     ...R.map((r, i) => `${day(r)}${r}${i === 0 && car ? `（${car}）` : ""}`),
+    "", // ★2026-11-15 nosh「カテゴリごとに空白=段落をつけて」：①題と変更 ②案 ③判断理由 ④返信のしかたとリンク
     human ? "🙋 オムニは決められません。社員が決めてください" : `🤖 ${asks.join("／")}${sw ? `（担当を ${swF}さん → ${swT}さん に替えます）` : ""}`,
+    "",
     "🔎 判断理由",
     ...(why.length ? why.map((w) => "・" + w) : ["・—"]),
+    "",
     "💬 返信「はい」＝この案で／「承認」＝希望どおり／「いいえ 理由」＝お断り／「14時なら」＝別の時間（社員だけ）",
     `🔗 <${url}|承認画面>`,
   ];
