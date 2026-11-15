@@ -732,7 +732,7 @@ async function sapi(st: string, method: string, params: Record<string, string>):
 const TH_RULE = "💬 返信「はい」＝この案で／「承認」＝希望どおり／「いいえ 理由」＝お断り／「14時なら」＝別の時間（社員だけ・文を直す時は直した文をそのまま返信）";
 async function sreply(st: string, ch: string, ts: string, text: string) {
   const tok = st === "tkm" ? BT_SLACK : SLACK; if (!tok) return false;
-  if (!text.startsWith("✅")) text = `${text}\n\n${TH_RULE}`;
+  if (!text.startsWith("✅")) text = `${text}\n\n${TH_OPEN.has(st) ? TH_RULE.replace("社員だけ・", "") : TH_RULE}`;
   try { const r = await fetch("https://slack.com/api/chat.postMessage", { method: "POST", headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json; charset=utf-8" }, body: JSON.stringify({ channel: ch, thread_ts: ts, text }) }); return (await r.json()).ok === true; } catch (_) { return false; }
 }
 async function claim(row: Record<string, unknown>): Promise<boolean> { // 先に記録できた1回だけ処理する（cron が重なっても二重に決めない）
@@ -815,8 +815,10 @@ async function thRun(st: string, rid: string, items: any[], name: string): Promi
   return [head, ...out.map((x) => "・" + x), ...bad.map((x) => "⚠️ " + x), tail].filter(Boolean).join("\n");
 }
 
-async function thOne(st: string, ch: string, thr: any, card: any, msg: { key: string; user: string; text: string; react?: boolean }, staff: Map<string, string>): Promise<void> {
-  const name = staff.get(msg.user) || "";
+// ★2026-11-15 nosh「高松のスレッド返信は特定人物にする必要ない」：部屋の人なら誰の返信でも決める（名前は社員表→Slack の表示名→「スタッフ」）
+const TH_OPEN = new Set(["spk", "nha", "tkm"]); // ★nosh「高松 那覇 札幌 全て運用方法は統一して」＝3店とも部屋の人なら誰でも
+async function thOne(st: string, ch: string, thr: any, card: any, msg: { key: string; user: string; text: string; react?: boolean; who?: string }, staff: Map<string, string>): Promise<void> {
+  const name = staff.get(msg.user) || (TH_OPEN.has(st) ? (String(msg.who || "").trim() || "スタッフ") : "");
   const t = String(msg.text || "").replace(/<@[A-Z0-9]+>/g, "").replace(/\s+/g, " ").trim();
   const yes = !!msg.react || TH_YES.test(t), no = !yes && TH_NO.test(t);
   if (!(await claim({ channel: ch, reply_key: msg.key, thread_ts: card.ts, store: st, reservation_id: thr.reservation_id, slack_user: msg.user, name: name || null, is_staff: !!name, text: t.slice(0, 500), action: msg.react ? "react" : yes ? "yes" : no ? "no" : "free" }))) return;
@@ -902,7 +904,7 @@ async function threadWatch() {
   for (const st of ["spk", "nha", "tkm"]) {
     const ch = OPS_CH[st];
     const staff = new Map<string, string>(SR_.filter((x: any) => x.ws === TH_WS[st]).map((x: any) => [String(x.slack_user), String(x.name)]));
-    if (!staff.size) continue; // 決めてよい社員がいない店（高松はオーナー確認待ち）は読まない
+    if (!staff.size && !TH_OPEN.has(st)) continue; // 決めてよい社員がいない店は読まない（高松は誰でも決められる）
     const h = await sapi(st, "conversations.history", { channel: ch, oldest: since, limit: "200" });
     if (!h.ok) { out["err_" + st] = 1; continue; }
     const ridOf = (t: string) => { const x = t.match(/[?&](?:amp;)?rid=([A-Za-z0-9_-]+)/) || t.match(/予約\s+([A-Za-z0-9_-]+)/); return x ? x[1] : ""; };
@@ -922,7 +924,7 @@ async function threadWatch() {
       }
       if (thr.done) continue;
       out.cards++;
-      for (const u of [...new Set(reacts as string[])]) { if (!staff.has(u)) continue; out.replies++; await thOne(st, ch, thr, m, { key: `${ts}:r:${u}`, user: u, text: "👍", react: true }, staff); }
+      for (const u of [...new Set(reacts as string[])]) { if (!staff.has(u) && !TH_OPEN.has(st)) continue; out.replies++; await thOne(st, ch, thr, m, { key: `${ts}:r:${u}`, user: u, text: "👍", react: true }, staff); }
       if (latest && latest !== thr.seen_reply) {
         const R = await sapi(st, "conversations.replies", { channel: ch, ts, oldest: thr.seen_reply || ts, limit: "100" });
         for (const r of (R.messages || [])) {
@@ -930,7 +932,7 @@ async function threadWatch() {
           if (thr.seen_reply && Number(r.ts) <= Number(thr.seen_reply)) continue;
           out.replies++;
           thr = (await get("omni_slack_threads", `channel=eq.${ch}&ts=eq.${ts}&select=reservation_id,seen_reply,pending,done&limit=1`))[0] || thr; // 聞き返しの状態を毎回読み直す
-          try { await thOne(st, ch, thr, m, { key: String(r.ts), user: String(r.user), text: String(r.text || "") }, staff); }
+          try { await thOne(st, ch, thr, m, { key: String(r.ts), user: String(r.user), text: String(r.text || ""), who: String(r.user_profile?.display_name || r.user_profile?.real_name || "") }, staff); }
           catch (e) { await noteReply(ch, String(r.ts), { result: "エラー：" + String((e as Error).message || e).slice(0, 200) }); await sreply(st, ch, ts, "⚠️ できませんでした。承認画面でお願いします。"); }
         }
         if (R.ok) await thSave(ch, ts, { seen_reply: latest });
