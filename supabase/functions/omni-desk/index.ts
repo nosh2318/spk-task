@@ -888,6 +888,14 @@ async function thOne(st: string, ch: string, thr: any, card: any, msg: { key: st
 }
 
 async function threadWatch() {
+  // ★2026-11-15 承認のやり直し待ち（omni_redo_queue にサービスロールで入れた行だけ）を毎分ここで通す。鍵を持たない所からも安全に頼める
+  try {
+    const Q = await get("omni_redo_queue", "done_at=is.null&select=id,store,change_id,actor_name&order=id.asc&limit=10");
+    for (const q of Q) {
+      const [r] = await redoApprove([{ store: q.store, id: q.change_id, actor_name: q.actor_name }]);
+      await patch("omni_redo_queue", `id=eq.${q.id}&done_at=is.null`, { done_at: new Date().toISOString(), result: r || null });
+    }
+  } catch (_) { /* 表がまだ無い時など。次の回 */ }
   const out: Record<string, number> = { cards: 0, replies: 0 };
   const SR_ = await get("omni_slack_staff", "active=eq.true&select=ws,slack_user,name");
   const since = String(Math.floor(Date.now() / 1000) - 3 * 86400);
