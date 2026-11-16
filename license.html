@@ -141,7 +141,24 @@ if (LIC_TOKEN) { licAcqCall('lic_get_acquired').then(function(j){ LIC_REG = (j &
 //   記録・6か月以内の判定・各店オペへの通知は DB関数 lic_report_acquired が行う（失敗してもアップロードには影響しない）。
 function onAcq(idx, val) { var p = persons.find(function(x){ return x.idx === idx; }); if (p) p.acq = val; checkReady(); }
 // ★2026-10-12 外国の免許証・国際免許（取得日の欄がない）＝取得日の入力を省ける。記録は 'foreign'（判定・通知の対象外・配車表は「要目視確認」）
-function onAcqForeign(idx, on) { var p = persons.find(function(x){ return x.idx === idx; }); if (!p) return; var el = document.getElementById('acq' + idx); if (el) { el.disabled = on; if (on) el.value = ''; } p.acq = on ? 'foreign' : ((el && el.value) || ''); checkReady(); }
+function onAcqForeign(idx, on) { var p = persons.find(function(x){ return x.idx === idx; }); if (!p) return; var ids=['acy','acm','acd'], vals=[]; ids.forEach(function(k){ var el = document.getElementById(k + idx); if (el) { el.disabled = on; if (on) el.value = ''; vals.push(el.value); } }); var ok = vals.length === 3 && vals.every(Boolean); p.acq = on ? 'foreign' : (ok ? vals[0] + '-' + ('0' + vals[1]).slice(-2) + '-' + ('0' + vals[2]).slice(-2) : ''); checkReady(); }
+/* 免許の取得日＝年・月・日の3つの選択（日本語画面は年を「西暦(和暦)」表記。免許証が和暦のため選択中から見える。m/ と同じ仕様） */
+function acqEra(y){var r=y>=2019?'令和'+(y===2019?'元':y-2018):'',h=(y>=1989&&y<=2019)?'平成'+(y===1989?'元':y-1988):'',s=(y>=1926&&y<=1989)?'昭和'+(y===1926?'元':y-1925):'';return [r,h,s].filter(Boolean).join('/');}
+function acqSelHtml(idx, v, dis){
+  var m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(v||''),Y=m?+m[1]:0,M=m?+m[2]:0,D=m?+m[3]:0,cy=new Date().getFullYear(),ja=!inbound;
+  var st='padding:10px 4px;border:2px solid #e0e0e0;border-radius:10px;font-size:15px;background:#fff;min-width:0',ph=ja?['年','月','日']:['Year','Month','Day'];
+  var ys='<option value="">'+ph[0]+'</option>',ms='<option value="">'+ph[1]+'</option>',ds='<option value="">'+ph[2]+'</option>',k;
+  for(k=cy;k>=1930;k--)ys+='<option value="'+k+'"'+(k===Y?' selected':'')+'>'+(ja?k+'('+acqEra(k)+')':k)+'</option>';
+  for(k=1;k<=12;k++)ms+='<option value="'+k+'"'+(k===M?' selected':'')+'>'+(ja?k+'月':k)+'</option>';
+  for(k=1;k<=31;k++)ds+='<option value="'+k+'"'+(k===D?' selected':'')+'>'+(ja?k+'日':k)+'</option>';
+  var d=dis?' disabled':'',oc=' onchange="acqPick('+idx+')"';
+  return '<div style="display:flex;gap:6px"><select id="acy'+idx+'"'+d+oc+' style="flex:2.4;'+st+'">'+ys+'</select><select id="acm'+idx+'"'+d+oc+' style="flex:1;'+st+'">'+ms+'</select><select id="acd'+idx+'"'+d+oc+' style="flex:1;'+st+'">'+ds+'</select></div><div id="acw'+idx+'" style="font-size:12px;color:#b91c1c;min-height:1.2em"></div>';}
+function acqPick(idx){
+  var g=function(k){return +document.getElementById(k+idx).value;},y=g('acy'),mo=g('acm'),d=g('acd'),w=document.getElementById('acw'+idx);if(w)w.textContent='';
+  if(y&&mo&&d){var dim=new Date(y,mo,0).getDate();if(d>dim){d=dim;document.getElementById('acd'+idx).value=d;}
+    var ymd=y+'-'+('0'+mo).slice(-2)+'-'+('0'+d).slice(-2);
+    if(ymd>_todayYmd()){onAcq(idx,'');if(w)w.textContent=inbound?'Future dates cannot be selected':'今日より先の日付は選べません';return;}
+    onAcq(idx,ymd);}else onAcq(idx,'');}
 function _todayYmd() { var d = new Date(); return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); }
 
 var persons = []; // [{front:File|null, back:File|null}]
@@ -227,7 +244,7 @@ function renderPersons() {
     div.insertAdjacentHTML('beforeend',
       '<div style="margin-top:12px">' +
         '<div class="side-label">' + (inbound ? 'Date you obtained your driver\'s license (required)' : '免許の取得年月日（必須）') + '</div>' +
-        '<input type="date" id="acq' + p.idx + '" max="' + _todayYmd() + '" value="' + (p.acq && p.acq !== 'foreign' ? p.acq : '') + '"' + (p.acq === 'foreign' ? ' disabled' : '') + ' onchange="onAcq(' + p.idx + ',this.value)" style="width:100%;padding:10px;border:2px solid #e0e0e0;border-radius:10px;font-size:15px;background:#fff">' +
+        acqSelHtml(p.idx, p.acq, p.acq === 'foreign') +
         '<label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:14px;font-weight:600;cursor:pointer;line-height:1.4"><input type="checkbox" id="acqF' + p.idx + '"' + (p.acq === 'foreign' ? ' checked' : '') + ' onchange="onAcqForeign(' + p.idx + ',this.checked)" style="width:20px;height:20px;flex-shrink:0">' + (inbound ? 'Foreign license / International Driving Permit (no date box)' : '<span>外国の免許証・国際免許（取得日の欄がない）<br><span style="font-size:12px;color:#888;font-weight:400">Foreign license / International Driving Permit</span></span>') + '</label>' +
         '<div style="font-size:12px;color:#888;margin-top:4px;line-height:1.5">' + (inbound ? 'Japanese license: the date in the 「他」 box at the bottom left. Other licenses: the date first issued.' : '免許証の左下の日付です。普通免許は「他」の欄を入力してください。') + '</div>' +
       '</div>');
