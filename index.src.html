@@ -121,9 +121,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1233';
+var CV='spk-v1234';
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=1060').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
+  navigator.serviceWorker.register('./sw.js?v=1061').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
 </script>
 <script>
@@ -22399,10 +22399,19 @@ function confirmRedo(done){
 async function recordActionDone(sb,resv,action){
   if(!sb||!resv||!action)return;
   try{
+    if(action==="dropoff")await activateDropoffReturn(sb,{reservationId:resv});
     await sb.from("spk_line_sends").insert({resv_no:resv,action:action,status:"manual_done",message:"アクションボタン押下"});
     const m=window._actionDoneMap||{}; if(!m[resv])m[resv]={}; m[resv][action]={at:new Date().toISOString(),status:"manual_done"};
     window._actionDoneMap=m; window.dispatchEvent(new Event("actionDoneUpdate"));
-  }catch(e){console.warn("[recordActionDone]",e&&e.message);}
+  }catch(e){console.warn("[recordActionDone]",e&&e.message);if(action==="dropoff"){alert("⚠️ 乗り捨て発動に失敗しました。\n"+(e&&e.message||"再度お試しください"));throw e;}}
+}
+async function activateDropoffReturn(sb,task){
+  const rid=task&&(task.reservationId||task.reservation_id);
+  if(!sb||!rid)throw new Error("予約番号がありません");
+  const{data:s}=await sb.auth.getSession();const tk=s&&s.session&&s.session.access_token;if(!tk)throw new Error("スタッフ認証がありません");
+  const r=await fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/handyman-mypage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"dropoff_activate",reservation_id:rid,staff_token:tk})});
+  const j=await r.json().catch(()=>({}));if(!r.ok||!j.ok)throw new Error(j.error||"乗り捨てを発動できませんでした");
+  return true;
 }
 /* ★ LINE送信(line-push)成功時に即座に「送信済み」表示へ反映（DBには line-push が status="sent" で既に記録済み＝二重insertしない） */
 function markLineSent(resv,action){
@@ -26305,7 +26314,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.735";
+const APP_VERSION="v4.7.736";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
