@@ -1530,7 +1530,7 @@ Deno.serve(async (req) => {
     const now = new Date().toISOString();
     const ok = await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(row.id))}&status=eq.applied&payload->>state=eq.requested`, { new_value: "無人貸出に同意", payload: { ...up, state: "accepted", accepted_at: now, accepted_by: "customer" } }, "customer:" + resId);
     if (!ok) return json({ error: "受け付けできませんでした。もう一度お試しください" }, 409, origin);
-    await notifySlackCard({ emoji: "🅿️", title: "お客様が無人貸出に同意", name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: [up.placed_at ? "停車場所：登録済み（マイページに表示中）" : "停車場所：未登録（OPの🅿️事前駐車依頼から②を送ってください）"], action: "🚗 OPシートでお届けタスクの担当を「無人」にし、事前駐車タスクを作成してください", side: "go" });
+    await notifySlackCard({ emoji: "🅿️", title: "お客様が無人での受け取り方に同意", name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: [up.placed_at ? "停車場所：登録済み（マイページに表示中）" : "停車場所：未登録（OPの🅿️事前駐車依頼から②を送ってください）"], action: "🚗 OPシートでお届けタスクの担当を「無人」にし、事前駐車タスクを作成してください", side: "go" });
     return json({ ok: true, state: "accepted" }, 200, origin);
   }
 
