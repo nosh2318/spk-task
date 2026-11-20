@@ -562,6 +562,12 @@ const DB = {
   /* ★2026-11-02 prev（変更前の画面の配車）を渡すと「変えた予約だけ」保存。画面が古くても、触っていない予約を古い車で上書きしない（自動組み替えの移動が戻る対策） */
   async upsertFleet(fleet,prev){DB._fleetLsSave(fleet);if(!sb)return;const rows=Object.entries(fleet).filter(([k,v])=>!prev||prev[k]!==v).map(([k,v])=>({reservation_id:k,vehicle_code:v}));if(rows.length){await DB._retryOp(async()=>{const{error}=await sb.from("fleet").upsert(rows,{onConflict:"reservation_id"});if(error)throw new Error(error.message);dbLog("upsertFleet",true,rows.length+"件");},"upsertFleet");}},
   async upsertFleetRows(rows){if(!sb||!rows||!rows.length)return;await DB._retryOp(async()=>{const{error}=await sb.from("fleet").upsert(rows,{onConflict:"reservation_id"});if(error)throw new Error(error.message);dbLog("upsertFleetRows",true,rows.length+"件");},"upsertFleetRows");},
+  /* 期間入れ替え用: 書込後に fleet を読み戻して期待値と照合。ずれ/読めない=false。不一致時は revertFleetRows で戻す */
+  async verifyFleetRows(rows){if(!sb)return true;try{const ids=rows.map(r=>r.reservation_id);const{data,error}=await sb.from("fleet").select("reservation_id,vehicle_code").in("reservation_id",ids);if(error||!Array.isArray(data))return false;const m={};data.forEach(r=>m[r.reservation_id]=r.vehicle_code);return rows.every(r=>m[r.reservation_id]===r.vehicle_code);}catch(e){return false;}},
+  /* 戻し: fleet を変更前へ→関連タスク(非完了・未削除で入替後の車になっているもの)も変更前の車・ナンバーへ。戻せなければ false */
+  async revertFleetRows(prevRows,movedRows,plateOf){let ok=true;try{await DB.upsertFleetRows(prevRows);}catch(e){ok=false;}
+    for(let i=0;i<prevRows.length;i++){try{const p=prevRows[i],mv=movedRows[i];const{error}=await sb.from("tasks").update({assigned_vehicle:p.vehicle_code,plate_no:plateOf(p.vehicle_code)||""}).eq("reservation_id",p.reservation_id).eq("assigned_vehicle",mv.vehicle_code).neq("deleted",true).neq("done",true);if(error)ok=false;}catch(e){ok=false;}}
+    return ok;},
   async updateFleetOne(resId,code){if(!sb)return;const{error}=await sb.from("fleet").upsert({reservation_id:resId,vehicle_code:code},{onConflict:"reservation_id"});if(error)dbLog("updateFleet1",false,error.message);},
   async deleteFleetOne(resId){if(!sb)return;const{error}=await sb.from("fleet").delete().eq("reservation_id",resId);if(error)dbLog("deleteFleet1",false,error.message);},
   // --- タスク（localStorage併用で確実に保存） ---
@@ -24662,6 +24668,14 @@ function App(){
     // 先にDBへ1回で書く(失敗なら画面・タスクは一切触らない=変更なし)。成功してから画面状態を更新する。
     try{await DB.upsertFleetRows(plan.moves.map(m=>({reservation_id:m.res.id,vehicle_code:m.to})));}
     catch(e){console.error("swap upsertFleet error:",e);alert("⚠️ 保存に失敗したため、入れ替えは行っていません（変更なし）。");return false;}
+    // 書込後に読み戻して照合（DBトリガーがキャンセル済み等で黙ってスキップした行が無いか）。ずれていれば fleet と関連タスクを変更前へ戻して中止。
+    const _moved=plan.moves.map(m=>({reservation_id:m.res.id,vehicle_code:m.to}));
+    if(!(await DB.verifyFleetRows(_moved))){
+      const _prev=plan.moves.map(m=>({reservation_id:m.res.id,vehicle_code:m.from}));
+      const _rv=await DB.revertFleetRows(_prev,_moved,(c)=>{const v=vehicles.find(x=>x.code===c);return v?v.no:"";});
+      alert(_rv?"⚠️ 保存内容の照合が合わなかったため、入れ替えを取り消して元に戻しました（変更なし）。":"⚠️ 保存内容の照合が合わず、元に戻す処理も完了できませんでした。配車表を確認し、管理者に連絡してください。");
+      return false;
+    }
     DB._fleetLsSave(nextFleet);fleetRefApp.current=nextFleet;setFleet(nextFleet);markLocalChange("fleet");markDbSync("fleet");
     for(const m of plan.moves){try{await reassignVehicle(m.res.id,m.to,{skipFleet:true});}catch(e){console.error("swap side effects error:",m.res.id,e);}}
     return true;
@@ -26389,7 +26403,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.737";
+const APP_VERSION="v4.7.738";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{
