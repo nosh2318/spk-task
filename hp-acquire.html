@@ -83,6 +83,12 @@
     <div class="lg">🌐HP＝広告費を入力→CPA/効果/判定が計算。🏨OTA＝手数料18%は自動。判定🛑＝コストが売上を上回る（赤字）。</div>
   </div>
 
+  <!-- 🌐 HP(自社) サイト別 内訳 -->
+  <div class="card" id="cardH">
+    <h2>🌐 HP（自社）サイト別 内訳（発生月ベース）</h2>
+    <div class="scroll"><table id="brkH"></table></div>
+  </div>
+
   <!-- 🏨 OTA別 内訳 -->
   <div class="card">
     <h2>🏨 OTA別 内訳（累計・手数料18%）</h2>
@@ -146,6 +152,9 @@ const FEE=0.18; // OTA手数料
 const OTA_CODES=['J','R','S','O','RC','G'];
 const OTANAME={J:'じゃらん',R:'楽天トラベル',S:'skyticket',O:'エアトリ',RC:'レンタカードットコム',G:'GoGoOut'};
 function isHP(r){return C.hpMode==='source'?(String(r.source||'')!=='ota'):(r.ota==='HP'||r.ota==='HANDYMAN'||r.ota==='SP'||r.ota==='KEYDROP'||r.ota==='direct');}  // 自社獲得＝HP直販+HANDYMAN(新公式サイトrent-handyman.com直販/HDMS・HDMN・HDMT)+SP+KEYDROP(自社ブランド)+direct(手動)。OTA(J/R/S/O/RC/G)以外の自社流入を計上(2026-08-12 KEYDROP/direct取りこぼし修正／2026-10-05 新サイトHANDYMAN追加)
+// HP(自社)の流入サイト別（2026-11-20）：旧公式=HP／新公式rent-handyman.com=HANDYMAN／KEYDROP／電話・手動=SP+direct
+const HPSITES=[['HP','旧公式サイト'],['HANDYMAN','新公式サイト（rent-handyman.com）'],['KEYDROP','KEYDROP'],['TEL','電話・手動登録']];
+function siteOf(r){return (r.ota==='SP'||r.ota==='direct')?'TEL':r.ota;}
 function isOTA(r){return C.hpMode==='source'?(String(r.source||'')==='ota'):(OTA_CODES.indexOf(r.ota)>=0);}
 function chOf(r){return C.hpMode==='source'?(r.ota||'その他'):(OTANAME[r.ota]||r.ota||'その他');}
 let VIEW=(()=>{try{return localStorage.getItem('hp_view_'+STORE)==='ota'?'ota':'hp';}catch(e){return 'hp';}})();
@@ -180,7 +189,7 @@ async function saveAd(){
 function build(resv){
   const now=new Date();const curYM=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
   const occMonths=months(START,curYM);
-  const M={},MO={};occMonths.forEach(m=>{M[m]={count:0,rev:0,dep:{},nSum:0,nCnt:0};MO[m]={count:0,rev:0,dep:{},nSum:0,nCnt:0};});
+  const M={},MO={};occMonths.forEach(m=>{M[m]={count:0,rev:0,dep:{},nSum:0,nCnt:0,site:{}};MO[m]={count:0,rev:0,dep:{},nSum:0,nCnt:0};});
   const OTAby={};
   let depMin=curYM,depMax=START;
   resv.forEach(r=>{
@@ -192,6 +201,7 @@ function build(resv){
     if(isHP(r)&&M[o]){                                               // 🌐 自社獲得(HP)
       M[o].count++;M[o].rev+=rev;if(nt!=null){M[o].nSum+=nt;M[o].nCnt++;}
       if(!M[o].dep[dm])M[o].dep[dm]={count:0,rev:0};M[o].dep[dm].count++;M[o].dep[dm].rev+=rev;
+      const s=siteOf(r);if(!M[o].site[s])M[o].site[s]={count:0,rev:0};M[o].site[s].count++;M[o].site[s].rev+=rev;
     }else if(isOTA(r)&&MO[o]){                                       // 🏨 OTA
       MO[o].count++;MO[o].rev+=rev;if(nt!=null){MO[o].nSum+=nt;MO[o].nCnt++;}
       if(!MO[o].dep[dm])MO[o].dep[dm]={count:0,rev:0};MO[o].dep[dm].count++;MO[o].dep[dm].rev+=rev;
@@ -243,6 +253,18 @@ function render(){
     +'<td style="border-left:2px solid #bfdbfe">'+oC+'件</td><td>'+yen(oR)+'</td><td>'+(oC?yen(oR/oC):'—')+'</td><td class="stay">'+avgN(oNS,oNC)+'</td><td class="fee">'+yen(oFee)+'</td><td class="cpa">'+(oC?yen(oFee/oC):'—')+'</td><td class="net">'+yen(oNet)+'</td>'
     +'<td style="border-left:2px solid #fde68a">'+(hC+oC)+'件</td><td>'+yen(hR+oR)+'</td><td class="net" style="color:'+colP(gaNet)+'">'+fmtP(gaNet)+'</td></tr></tfoot>';
   document.getElementById('cmpMonth').innerHTML=mh;
+  // 🌐 HP(自社) サイト別（実績のあるサイトだけ列に出す・高松(source判定)は対象外）
+  const cardH=document.getElementById('cardH');
+  if(C.hpMode!=='ota'){cardH.style.display='none';}else{
+    const sT={};HPSITES.forEach(([k])=>{sT[k]={count:0,rev:0};occMonths.forEach(m=>{const x=M[m].site[k];if(x){sT[k].count+=x.count;sT[k].rev+=x.rev;}});});
+    const ss=HPSITES.filter(([k])=>sT[k].count>0);
+    let sh='<thead><tr><th class="l" rowspan="2">発生月</th>'+ss.map(([k,l])=>'<th colspan="2" style="text-align:center;background:#f5f3ff;color:#4c1d95;border-left:2px solid #ddd6fe">'+l+'</th>').join('')+'</tr><tr>'
+      +ss.map(()=>'<th style="border-left:2px solid #ddd6fe">件数</th><th>売上</th>').join('')+'</tr></thead><tbody>';
+    vis.forEach(m=>{sh+='<tr><td class="l num">'+m+'</td>'+ss.map(([k])=>{const x=M[m].site[k]||{count:0,rev:0};return '<td class="num" style="border-left:2px solid #ddd6fe">'+(x.count?x.count+'件':'—')+'</td><td class="yen">'+(x.count?yen(x.rev):'—')+'</td>';}).join('')+'</tr>';});
+    sh+='</tbody><tfoot><tr><td class="l">合計</td>'+ss.map(([k])=>'<td style="border-left:2px solid #ddd6fe">'+sT[k].count+'件</td><td>'+yen(sT[k].rev)+'</td>').join('')+'</tr>'
+      +'<tr><td class="l">構成比（件数）</td>'+ss.map(([k])=>'<td colspan="2" style="border-left:2px solid #ddd6fe">'+(hC?Math.round(sT[k].count/hC*100):0)+'%</td>').join('')+'</tr></tfoot>';
+    document.getElementById('brkH').innerHTML=sh;
+  }
   // 🏨 OTA別内訳
   const chs=Object.keys(OTAby).sort((a,b)=>OTAby[b].rev-OTAby[a].rev);
   let b='<thead><tr><th class="l">OTA</th><th>本数</th><th>売上(グロス)</th><th>客単価</th><th>平均泊数</th><th>手数料(18%)</th><th>CPA(手数料/件)</th><th>手取り(82%)</th><th>構成比</th></tr></thead><tbody>';
