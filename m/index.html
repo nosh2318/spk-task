@@ -406,7 +406,7 @@ async function call(action,body){
 function spkMethod(j){if(SID!=="spk"||!j||!j.reservation)return;const r=j.reservation;
   if(!String(r.visit_type||"").trim())r.visit_type="DEL";if(!String(r.return_type||"").trim())r.return_type="COL";}
 async function load(quiet){
-  if(DEMO){DATA=demoData(DEMO);if(Q.get("ret")==="1")DATA.returned=true;{const ua=Q.get("ua");if(ua)DATA.unattended={active:true,accepted:ua!=="req",placed:ua==="placed"||ua==="req2",place:(ua==="placed"||ua==="req2")?{parking_name:"〇〇パーキング",address:"札幌市中央区北5条西2丁目",map_url:"https://maps.app.goo.gl/",floor:"1階 12番",plate:"3381",landmark:"入口から右奥・青い看板"}:null,key_place:ua==="placed"?"運転席ドアポケット（鍵）・助手席ダッシュボード（駐車券）":"",photos:[]};}if(Q.get("ng"))NG={kind:Q.get("ng"),leg:"back",created_at:new Date().toISOString(),acked_at:Q.get("ack")==="1"?new Date().toISOString():null};loadRcpt();loadCN();render();return;}
+  if(DEMO){DATA=demoData(DEMO);if(Q.get("ret")==="1")DATA.returned=true;{const ua=Q.get("ua");if(ua)DATA.unattended={active:true,accepted:ua!=="req",placed:ua==="placed"||ua==="req2"||ua==="done",place:(ua==="placed"||ua==="req2")?{parking_name:"〇〇パーキング",address:"札幌市中央区北5条西2丁目",map_url:"https://maps.app.goo.gl/",floor:"1階 12番",plate:"3381",landmark:"入口から右奥・青い看板"}:null,key_place:ua==="placed"||ua==="done"?"運転席ドアポケット（鍵）・助手席ダッシュボード（駐車券）":"",photos:[]};if(ua==="done"){DATA.unattended.accepted=true;DATA.received=true;DATA.received_at=new Date().toISOString();}}if(Q.get("ng"))NG={kind:Q.get("ng"),leg:"back",created_at:new Date().toISOString(),acked_at:Q.get("ack")==="1"?new Date().toISOString():null};loadRcpt();loadCN();render();return;}
   if(!TOKEN){{const b=document.querySelector(".rld");if(b)b.style.display="none";}$("#app").innerHTML=`<div class="center">ご予約のURLから開いてください。<br>URLが分からないときは <a href="${ST.site}" target="_blank">公式サイト</a> の「マイページを開く」から探せます。</div>`;$("#ttl").textContent="マイページ";return;}
   /* ★2026-11-09 速く（nosh「読み込みが遅い 重い」）：予約の読み込みと同時にほかの読み込みも始める（前は予約→ほか8つを順番待ち）。
      最初の画面に要る支払い・登録内容・メールは必ず待つ。ほかは1.2秒まで待ち、遅れた分は届いたら描き直す */
@@ -470,6 +470,11 @@ function dropoffReady(){const address=String((document.querySelector("#do-addres
 async function submitDropoff(){dropoffReady();const b=document.querySelector("#do-submit");if(!b||b.disabled)return;b.disabled=true;b.textContent="送信しています…";const checks={};document.querySelectorAll(".do-check").forEach(x=>checks[x.dataset.key]=x.checked);const j=await call("dropoff_submit",{address:String($("#do-address").value||"").trim(),map_url:String($("#do-map").value||"").trim(),parking_name:String($("#do-parking").value||"").trim(),parking_detail:String($("#do-detail").value||"").trim(),checks,images:DROP_IMAGES});if(j&&j.ok){DATA.dropoff={...(DATA.dropoff||{}),active:true,state:"parked"};render();scrollTo(0,0);return;}b.textContent="駐車情報を送信して返却を完了";const e=document.querySelector("#do-error");if(e)e.textContent=(j&&j.error)||"送信できませんでした。もう一度お試しください。";dropoffReady();}
 /* ★2026-11-20 nosh 無人貸出（事前駐車）：運営がフォームで依頼した予約だけ（お客様側に入口なし）。内容・場所・写真を見て「同意する」→停めた場所へ行き「お車に乗りました」で貸出完了。札幌のみ */
 function uaOn(d){return SID==="spk"&&!!(d&&d.unattended&&d.unattended.active)&&!d.received;}
+/* ★2026-11-20 nosh モック②：「お車に乗りました」を押した後は、お届け待ちの画面に戻さず「受け取り完了」を出す（受け取った日だけ） */
+function uaAny(d){return SID==="spk"&&!!(d&&d.unattended&&d.unattended.active);}
+function uaDone(d){if(!uaAny(d)||!d.received)return false;const a=d.received_at?new Date(d.received_at):null;return !a||isNaN(+a)||new Date(+a+9*3600e3).toISOString().slice(0,10)===new Date(Date.now()+9*3600e3).toISOString().slice(0,10);}
+function uaDoneCard(d){const a=d.received_at?new Date(d.received_at):null,t=a&&!isNaN(+a)?new Date(+a+9*3600e3).toISOString().slice(11,16):"";
+  return `<section class="card" style="border:2px solid var(--g,#16a34a);text-align:center"><div style="font-size:40px;line-height:1;color:var(--g,#16a34a)">✓</div><div class="big">お車の受け取りが完了しました</div>${t?`<div class="sub" translate="no">${t}</div>`:""}<div class="sub">いってらっしゃいませ。</div></section>`;}
 function uaCard(d){const u=d.unattended||{},p=u.place||null;
   const rows=p?[["駐車場",p.parking_name],["住所",p.address],["階・区画",p.floor],["ナンバー",p.plate],["目印",p.landmark]].filter(x=>x[1]):[];
   if(u.key_place)rows.push(["鍵の場所",u.key_place]);
@@ -579,12 +584,12 @@ function viewNow(d,st){
     h+=clsCard(r);
     if(d.damage&&d.damage.ready)h+=dmgCard(d);
     if(isPub(r.visit_type))h+=busCard("go");
-    if(st==="eve"&&isDel(r.visit_type)&&!uaOn(d))h+=`<section class="card"><div class="h">当日の流れ</div><div class="tl"><div><b>1</b>スタッフが出発すると、ここに到着予定が出ます</div><div><b>2</b>着いたら、車のナンバーと停めた場所がこの画面とLINE（またはメール）に届きます</div><div><b>3</b>免許証を見せて、鍵を受け取って出発</div></div><div class="sub">持ち物：運転する人の免許証</div><div class="sub">ご家族の受け取りもOK。運転する方全員の免許証を、先に「予約・変更」→「免許証の登録」から登録してください。</div></section>`;
+    if(st==="eve"&&isDel(r.visit_type)&&!uaAny(d))h+=`<section class="card"><div class="h">当日の流れ</div><div class="tl"><div><b>1</b>スタッフが出発すると、ここに到着予定が出ます</div><div><b>2</b>着いたら、車のナンバーと停めた場所がこの画面とLINE（またはメール）に届きます</div><div><b>3</b>免許証を見せて、鍵を受け取って出発</div></div><div class="sub">持ち物：運転する人の免許証</div><div class="sub">ご家族の受け取りもOK。運転する方全員の免許証を、先に「予約・変更」→「免許証の登録」から登録してください。</div></section>`;
     if(st==="eve"&&!isDel(r.visit_type))h+=`<section class="card"><div class="h">受け取り方</div><div class="txt">${isPub(r.visit_type)?ST.pickHow:"ご予約の時間に"+ST.shop+"へお越しください。運転する方の免許証をお持ちください。"}</div><div class="sub">ご家族の受け取りもOK。運転する方全員の免許証を、先に「予約・変更」→「免許証の登録」から登録してください。</div></section>`;
   }else if(st==="go_day"||st==="go_soon"||st==="go_live"){
     const live=st==="go_live";
-    h+=`<section class="card hero"><div class="h">本日の${g}</div><div class="big">${hm(r.lend_time)||""} ・ ${esc(goPlace)}</div>${isDel(r.visit_type)?westLoc(r.del_place):""}${isPub(r.visit_type)?busLink():""}${live?`<span class="live" style="color:#fff">自動更新 ・ ${nowHM()}</span>`:isDel(r.visit_type)&&!uaOn(d)?`<div class="sub">スタッフが出発すると、この画面が自動で切り替わります。</div>`:isPub(r.visit_type)?`<div class="sub">送迎車が出発すると、この画面が自動で切り替わります。</div>`:""}</section>`;
-    if(uaOn(d)){h+=uaCard(d)+ttCard(d)+dmgCard(d);}else{
+    h+=`<section class="card hero"><div class="h">本日の${g}</div><div class="big">${hm(r.lend_time)||""} ・ ${esc(goPlace)}</div>${isDel(r.visit_type)?westLoc(r.del_place):""}${isPub(r.visit_type)?busLink():""}${live?`<span class="live" style="color:#fff">自動更新 ・ ${nowHM()}</span>`:isDel(r.visit_type)&&!uaAny(d)?`<div class="sub">スタッフが出発すると、この画面が自動で切り替わります。</div>`:isPub(r.visit_type)?`<div class="sub">送迎車が出発すると、この画面が自動で切り替わります。</div>`:""}</section>`;
+    if(uaOn(d)){h+=uaCard(d)+ttCard(d)+dmgCard(d);}else if(uaAny(d)&&d.received){h+=(uaDone(d)?uaDoneCard(d):"")+ttCard(d)+dmgCard(d);}else{
     h+=nudge("go");/* ★2026-11-09 nosh「着きましたボタンはもっと上」：スタッフに知らせるを本日のカードのすぐ下へ */
     h+=ttCard(d);
     if(isDel(r.visit_type))h+=live?dvCard(d):waitNote(r,0,goPlace);
@@ -592,7 +597,7 @@ function viewNow(d,st){
     h+=`<section class="card"><div class="h">受け取り方</div><div class="txt">${isDel(r.visit_type)?"スタッフが車を停めて「到着」を押すと、ナンバーと停めた場所がこの画面に出て、LINE（またはメール）にも届きます。その場所で免許証を見せて、鍵を受け取ってください。":isPub(r.visit_type)?ST.pickHow:"ご予約の時間に"+ST.shop+"へお越しください。運転する方の免許証をお持ちください。"}</div><div class="sub">ご家族の受け取りもOK。運転する方全員の免許証を、先に「予約・変更」→「免許証の登録」から登録してください。</div></section>`;
     h+=dmgCard(d);}
   }else if(st==="using"){
-    if(uaOn(d))h+=uaCard(d);
+    if(uaOn(d))h+=uaCard(d);else if(uaDone(d))h+=uaDoneCard(d);
     h+=`<section class="card hero"><div class="h">${b}</div><div class="big">${mdw(r.return_date)} ${hm(r.return_time)||""}</div><div class="sub">${esc(backPlace)}</div>${isBdb(r.return_type)?busLink():""}${!isCol(r.return_type)?yardLink():""}</section>`;
     h+=ttCard(d);
     h+=`<section class="card"><div class="h">${b}を変えたいとき</div><button class="row" onclick="openReq('return_time')"><span class="l"><span class="n">${b}の時間</span><span class="v">${hm(r.return_time)||"未定"}</span></span><span class="pill p-o">確認あり</span></button>`+
@@ -1968,6 +1973,7 @@ const D={
 "同意する":["I agree","同意","동의합니다"],
 "お車に乗りました":["I've got the car","已取車","차를 받았습니다"],
 "鍵とお車を受け取ったら押してください。これで貸出の手続きは完了です。":["Tap this once you have the key and the car. This completes the pickup.","取得鑰匙與車輛後請按此鍵，即完成取車手續。","열쇠와 차를 받으면 눌러 주세요. 이것으로 대여 절차가 완료됩니다."],
+"お車の受け取りが完了しました":["Car pickup complete","已完成取車","차량 수령이 완료되었습니다"],"いってらっしゃいませ。":["Have a safe trip!","祝您旅途愉快。","즐거운 여행 되세요."],
 "同意を受け付けました":["Thank you, we received your agreement","已收到您的同意","동의를 접수했습니다"],
 "受け付けました。いってらっしゃいませ":["Received. Have a safe trip!","已收到。祝您旅途愉快","접수했습니다. 즐거운 여행 되세요"],
 "駐車場":["Car park","停車場","주차장"],"階・区画":["Floor / bay","樓層／車位","층・구획"],"ナンバー":["Plate","車牌","번호판"],"目印":["Landmark","標的物","표시"],"鍵の場所":["Key location","鑰匙位置","열쇠 위치"],"地図で見る":["Open map","查看地圖","지도 보기"],

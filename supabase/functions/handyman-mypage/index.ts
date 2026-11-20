@@ -1070,6 +1070,8 @@ Deno.serve(async (req) => {
     const anyPlace = Object.values(place).some(Boolean);
     let photoPaths: string[] = Array.isArray(old.photo_paths) ? old.photo_paths : [];
     const images = Array.isArray(p.images) ? p.images.filter(Boolean).slice(0, 3) : [];
+    // 2026-11-20 nosh「写真を必須に」：停車場所を送る時は実車の写真が1枚以上必要（前に登録した写真があればそれでよい）。①に場所を入れて送る経路も同じ（レビュー条件4）
+    if ((op === "place" || hasPlace) && !images.length && !(Array.isArray(old.photo_paths) && old.photo_paths.length)) return json({ error: "停車場所の写真（実車）を1枚以上入れてください" }, 400, origin);
     if (images.length) {
       try { photoPaths = await Promise.all(images.map((x: string, i: number) => saveDropoffPhoto(rid, x, i + 1, "unattended"))); }
       catch (e) { return json({ error: String((e as Error)?.message || e) }, 400, origin); }
@@ -1263,6 +1265,7 @@ Deno.serve(async (req) => {
     const pendingCancel = chg.some((c: any) => c.field === "cancel" && c.status === "requested");
     const readyPending = chg.some((c: any) => c.field === "ready" && c.status === "requested");
     const receivedDone = chg.some((c: any) => c.field === "received" && c.status === "applied");
+    const receivedAt = String((chg.find((c: any) => c.field === "received" && c.status === "applied") || {}).created_at || "");
     // 2026-11-20 無人貸出：別に1件引く（直近20件に頼らない）。場所・写真＝登録後、鍵の位置＝同意済＋登録済＋未受取の間だけ
     const uaRow = (await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.unattended&status=eq.applied&order=created_at.desc&limit=1&select=payload`))[0];
     let uaView: any = null;
@@ -1319,7 +1322,7 @@ Deno.serve(async (req) => {
       tracking: { active: r.kd_status === "delivering" || r.kd_status === "collecting", kd_status: r.kd_status || null, token: r.kd_track_token || null },
       license: { cnt: licCnt, drivers: licDrivers, names: (licRows[0] && Array.isArray(licRows[0].names)) ? licRows[0].names.map((x: any) => ({ n: String((x && x.n) || "") })).filter((x: any) => x.n) : [] },
       car: carInfo,
-      received: receivedDone,
+      received: receivedDone, received_at: receivedAt || null,
       // 2026-11-20 nosh: 札幌の通常回収は「車を停めました」ではなく、スタッフが回収タスク(c-)を完了した時に返却完了（読取のみ）
       returned: !!(cTask && cTask.done === true),
       pendingCancel, readyPending, recentChanges: chgPub, history: historyTop,
@@ -1353,7 +1356,7 @@ Deno.serve(async (req) => {
     // 監査ログ（受取完了を正本記録）
     await sbPost("mypage_changes", { reservation_id: resId, store: "spk", field: "received", old_value: "", new_value: "受取完了", source: "customer", status: "applied", note: "お客様がマイページで受け取り完了を報告→お届けタスクを完了(済)化" }, cAct);
     // Slack通知（#sapporo_user_action）
-    const m = await hdmMsg({ emoji: "✅", store: String(r.ota || "") === "KEYDROP" ? "kd_spk" : "spk", title: "お客様が受け取り完了", rid: resId, side: "go", body: [`📍 ${recvPlace}`, "OPシートのお届けタスクを完了(済)にしました"] }); // ★2026-11-10 共通の型
+    const m = await hdmMsg({ emoji: "✅", store: String(r.ota || "") === "KEYDROP" ? "kd_spk" : "spk", title: uaR ? "お客様が受け取り完了（無人貸出）" : "お客様が受け取り完了", rid: resId, side: "go", body: [`📍 ${uaR ? ([uaR.payload?.place?.parking_name, uaR.payload?.place?.floor].filter(Boolean).join(" ") || recvPlace) : recvPlace}`, "OPシートのお届けタスクを完了(済)にしました"] }); // ★2026-11-10 共通の型
     await slackPost(m.text, m.blocks);
     return json({ ok: true, received: true }, 200, origin);
   }

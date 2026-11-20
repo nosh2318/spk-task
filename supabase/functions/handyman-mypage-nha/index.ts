@@ -912,6 +912,8 @@ Deno.serve(async (req) => {
     const anyPlace = Object.values(place).some(Boolean);
     let photoPaths: string[] = Array.isArray(old.photo_paths) ? old.photo_paths : [];
     const images = Array.isArray(p.images) ? p.images.filter(Boolean).slice(0, 3) : [];
+    // 2026-11-20 nosh「写真を必須に」：停車場所を送る時は実車の写真が1枚以上必要（前に登録した写真があればそれでよい）。①に場所を入れて送る経路も同じ（レビュー条件4）
+    if ((op === "place" || hasPlace) && !images.length && !(Array.isArray(old.photo_paths) && old.photo_paths.length)) return json({ error: "停車場所の写真（実車）を1枚以上入れてください" }, 400, origin);
     if (images.length) {
       try { photoPaths = await Promise.all(images.map((x: string, i: number) => saveUaPhoto(rid, x, i + 1))); }
       catch (e) { return json({ error: String((e as Error)?.message || e) }, 400, origin); }
@@ -1305,7 +1307,8 @@ Deno.serve(async (req) => {
   }
 
   // 2026-11-20 無人貸出：別に1件引く（直近10件に頼らない）。場所・写真＝登録後、鍵の位置＝同意済＋登録済＋未受取の間だけ
-  const receivedDone = (await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.nha&field=eq.received&status=eq.applied&select=id&limit=1`)).length > 0;
+  const rcvRow = (await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.nha&field=eq.received&status=eq.applied&select=id,created_at&limit=1`))[0];
+  const receivedDone = !!rcvRow;
   const uaRow = (await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.nha&field=eq.unattended&status=eq.applied&order=created_at.desc&limit=1&select=payload`))[0];
   let uaView: any = null;
   if (uaRow && String(r.ota || "") !== "KEYDROP") {
@@ -1364,7 +1367,7 @@ Deno.serve(async (req) => {
     car: carInfo,
     pendingCancel: chg.some((c: any) => c.field === "cancel" && c.status === "requested"), readyPending: chg.some((c: any) => c.field === "ready" && c.status === "requested"),
     recentChanges: chgPub, history: historyTop,
-    unattended: uaView, received: receivedDone,
+    unattended: uaView, received: receivedDone, received_at: rcvRow ? String(rcvRow.created_at || "") : null,
     seat_stock: seatLeft,
     at: nowJst(),
   }, 200, origin);

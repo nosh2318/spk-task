@@ -321,6 +321,66 @@ async function resvLabel(store: string, id: unknown): Promise<string> {
   } catch { return fb; }
 }
 
+// ★2026-11-20 nosh「押し忘れても何も起きない→それはだめ」「スラック通知は必須」：無人貸出（札幌・那覇）で貸出時刻を30分過ぎても
+//   「お車に乗りました」が押されていない予約を店の部屋に1回だけ知らせる（同意がまだ・停車場所の登録がまだ も同じ1回で知らせる）。
+//   重複防止は mypage_request_reminders（bucket=hdm_spk/hdm_nha・change_id=ua-<無人行id>・stage=1）。新しい cron は作らない（この見回りに相乗り）
+const UA_MIN = 30;
+// レビュー条件（11/20 omni-review）：①分類は明示（題名の「受け取り完了」で済んだこと扱いにしない）②時刻はマイページと同じ順（札幌＝お届けタスク→適用済み変更→予約／那覇＝適用済み変更→お届けタスク→予約）
+//   ③読めなかった時は「未受取・未通知」とみなさず、その回は見送る ④状態ごとに1回（1=停車場所が未登録・2=同意がまだ・3=押されていない）＝前の状態で鳴っても押し忘れは別に鳴る
+//   ⑤お届けタスクが済（スタッフが手渡し等）なら鳴らさない
+async function sbGetR(path: string): Promise<any[] | null> { try { const r = await fetch(`${SB_URL}/rest/v1/${path}`, { headers: H }); if (!r.ok) { console.error("[ua get]", path.split("?")[0], r.status); return null; } const j = await r.json(); return Array.isArray(j) ? j : null; } catch (e) { console.error("[ua get]", String(e)); return null; } }
+const uaCj = (v: unknown): any => { if (v && typeof v === "object") return v; try { return JSON.parse(String(v || "{}")) || {}; } catch { return {}; } };
+const uaHm = (v: unknown): string => { const m = String(v || "").match(/(\d{1,2}):(\d{2})/); return m ? m[1].padStart(2, "0") + ":" + m[2] : ""; };
+async function uaRemind(now: number, dry: boolean): Promise<{ hot: number; sent: number; skipped: number; out?: unknown[] }> {
+  const rows = await sbGetR(`mypage_changes?field=eq.unattended&status=eq.applied&created_at=gte.${encodeURIComponent(new Date(now - 120 * 864e5).toISOString())}&select=id,reservation_id,store,payload&order=created_at.desc&limit=1000`);
+  if (!rows) return { hot: 0, sent: 0, skipped: -1 };
+  if (!rows.length) return { hot: 0, sent: 0, skipped: 0 };
+  const dn = await sbGetR(`mypage_request_reminders?change_id=like.ua-*&select=bucket,change_id,stage`);
+  if (!dn) return { hot: 0, sent: 0, skipped: -1 }; // 通知済みが読めない回は送らない（再送の嵐を防ぐ）
+  const done = new Set(dn.map((r: any) => r.bucket + "|" + r.change_id + "|" + r.stage));
+  const out: unknown[] = []; let hot = 0, sent = 0, skipped = 0;
+  for (const u of rows) {
+    const nha = u.store === "nha", bucket = nha ? "hdm_nha" : "hdm_spk", cid = "ua-" + u.id, rid = String(u.reservation_id || "");
+    const py = u.payload || {}, stage = !py.placed_at ? 1 : !py.accepted_at ? 2 : 3;
+    if (!rid || done.has(bucket + "|" + cid + "|" + stage)) continue;
+    const q = encodeURIComponent(rid);
+    const rr = await sbGetR(nha ? `nha_reservations?id=eq.${q}&select=id,status,ota,start_date,start_time` : `reservations?id=eq.${q}&select=id,status,ota,lend_date,lend_time`);
+    if (!rr) { skipped++; continue; }
+    const r = rr[0]; if (!r || /cancel|キャンセル/i.test(String(r.status || ""))) continue;
+    const d = String((nha ? r.start_date : r.lend_date) || "").slice(0, 10);
+    if (!d || now < Date.parse(`${d}T00:00:00+09:00`) - 864e5 || now > Date.parse(`${d}T00:00:00+09:00`) + 4 * 864e5) continue; // 貸出日の前日〜3日後だけ細かく読む
+    const [tk, lc, rcv] = await Promise.all([
+      sbGetR(nha ? `nha_tasks?${encodeURIComponent("予約番号")}=eq.${q}&_id=like.d-*&deleted=not.is.true&select=_id,${encodeURIComponent("確認")},${encodeURIComponent("時間")},${encodeURIComponent("変更")},changed_json&limit=1`
+                 : `tasks?reservation_id=eq.${q}&_id=like.d-*&deleted=not.is.true&select=_id,done,time,changed_json&limit=1`),
+      sbGetR(`mypage_changes?reservation_id=eq.${q}&field=eq.lend_time&status=eq.applied${nha ? "&store=eq.nha" : ""}&order=created_at.desc&limit=1&select=new_value`),
+      sbGetR(`mypage_changes?reservation_id=eq.${q}&field=eq.received&status=eq.applied${nha ? "&store=eq.nha" : "&store=eq.spk"}&select=id&limit=1`),
+    ]);
+    if (!tk || !lc || !rcv) { skipped++; continue; }
+    if (rcv.length) continue;
+    const t = tk[0], cj = t ? uaCj(t.changed_json) : {};
+    if (t && (nha ? String(t["確認"]) === "true" : t.done === true)) continue; // お届けタスクが済＝受け渡し済み
+    const taskTime = t ? uaHm(nha ? (t["変更"] || cj._timeChange || cj._ssTime || t["時間"]) : (cj._timeChange || cj._ssTime || t.time)) : "";
+    const chgTime = uaHm(lc[0] && lc[0].new_value), resvTime = uaHm(nha ? r.start_time : r.lend_time);
+    const hm = nha ? (chgTime || taskTime || resvTime) : (taskTime || chgTime || resvTime);
+    if (!hm) { skipped++; continue; } // 時刻が分からない予約は鳴らさない（09:00 扱いにしない）
+    const at = Date.parse(`${d}T${hm}:00+09:00`); if (isNaN(at)) continue;
+    if (now < at + UA_MIN * 60e3 || now > at + 3 * 864e5) continue;
+    hot++;
+    const pl = py.place || {}, spot = [pl.parking_name, pl.floor].filter(Boolean).join(" ");
+    const title = stage === 1 ? "無人貸出：貸出時刻を過ぎても停車場所が登録されていません" : stage === 2 ? "無人貸出：貸出時刻を過ぎてもお客様の同意がありません" : "無人貸出：お客様が「お車に乗りました」をまだ押していません";
+    const ask = stage === 1 ? "👉 停めた場所を「②停車場所」で送ってください" : "👉 お客様に受け取れたか確認してください（LINE・電話）";
+    const link = `${PAGE}?bucket=${bucket}&rid=${encodeURIComponent(rid)}`;
+    const store = nha ? "nha" : (String(r.ota || "") === "KEYDROP" ? "kd_spk" : "spk");
+    const text = (await hdmMsg({ emoji: "🟡", store, cat: "タスクの遅れ／ボタンの押し忘れ", title, rid, side: "go", url: link, body: [spot ? `🅿️ ${spot}（${hm} からお受け取り）` : `貸出 ${hm}`, ask] })).text;
+    if (dry) { out.push({ bucket, cid, stage, text }); continue; }
+    if (await slack(CH[bucket], text)) {
+      sent++;
+      await fetch(`${SB_URL}/rest/v1/mypage_request_reminders`, { method: "POST", headers: { ...H, Prefer: "resolution=ignore-duplicates" }, body: JSON.stringify([{ bucket, change_id: cid, stage }]) });
+    }
+  }
+  return { hot, sent, skipped, out: dry ? out : undefined };
+}
+
 Deno.serve(async (req) => {
   if (req.headers.get("x-cron-secret") !== CRON_SECRET) return new Response("unauthorized", { status: 401 });
   let dry = false, check = false; try { const b = await req.json(); dry = !!(b && b.dry); check = !!(b && b.check); } catch { /* none */ }
@@ -333,8 +393,9 @@ Deno.serve(async (req) => {
     return json({ ok: true, channels: res });
   }
 
-  const [a, b] = await Promise.all([rpc(SB_URL, SB_KEY, "mpadmin_pending"), rpc(BT_URL, BT_ANON, "mpadmin_pending_bt")]);
   const now = Date.now();
+  let ua: unknown = null; try { ua = await uaRemind(now, dry); } catch (e) { console.error("[ua remind]", String(e)); ua = { error: String(e) }; }
+  const [a, b] = await Promise.all([rpc(SB_URL, SB_KEY, "mpadmin_pending"), rpc(BT_URL, BT_ANON, "mpadmin_pending_bt")]);
   const hot: { x: any; st: number; el: number }[] = [];
   for (const x of a.concat(b)) {
     if (!x || x.status !== "requested") continue;
@@ -349,7 +410,7 @@ Deno.serve(async (req) => {
     if (el > 3 * 24 * 60) continue; // 3日より前の放置分は対象外（初回起動時の一斉通知を防ぐ）
     const st = STAGES.filter((s) => el >= s.min).pop(); if (st) hot.push({ x, st: st.n, el });
   }
-  if (!hot.length) return json({ ok: true, hot: 0, sent: 0 });
+  if (!hot.length) return json({ ok: true, hot: 0, sent: 0, ua });
 
   const done = new Set<string>();
   const r0 = await fetch(`${SB_URL}/rest/v1/mypage_request_reminders?select=bucket,change_id,stage&reminded_at=gte.${encodeURIComponent(new Date(now - 14 * 864e5).toISOString())}`, { headers: H });
@@ -374,5 +435,5 @@ Deno.serve(async (req) => {
       await fetch(`${SB_URL}/rest/v1/mypage_request_reminders`, { method: "POST", headers: { ...H, Prefer: "resolution=ignore-duplicates" }, body: JSON.stringify(recs) });
     }
   }
-  return json({ ok: true, hot: hot.length, sent, dry: dry ? out : undefined });
+  return json({ ok: true, hot: hot.length, sent, ua, dry: dry ? out : undefined });
 });
