@@ -217,13 +217,17 @@ function applyPriceToAll(){if(CHAN==='official')return;
 // 📋 選択中のOTAの価格を公式（HDM）へコピー（2026-11-12 ユーザー「公式にもコピーボタンほしい」）。
 //  店の決まりの差を付けて写す：那覇＝A・A2・B・B2・Dは−500・ほかは−200／札幌＝A・A2・B・B2は−500・ほかは−200／高松・BUDDICA＝−免責（OTAは免責込み）。公式に無いクラス（那覇A2・B2など）は写さない
 function offDiff(c){if(STORE==='nha')return ['A','A2','B','B2','D'].indexOf(c)>=0?-500:-200; // 11/12 那覇も じゃらん−500/−200（A・A2・B・B2・Dは−500）
-  if(STORE==='spk')return ['A','A2','B','B2'].indexOf(c)>=0?-500:-200;if(STORE==='tkm'||STORE==='bdc')return -((((PRICE[STORE]||{}).insurance||{}).cdw)||1100)-(['A','C'].indexOf(c)>=0?500:200);return 0;} // 11/12 高松・BUDDICA：OTA−免責−500(A・C)/−200
+  if(STORE==='spk')return ['A','A2','B','B2'].indexOf(c)>=0?-500:-200;if(STORE==='tkm'||STORE==='bdc')return -insOf(c)-(['A','C'].indexOf(c)>=0?500:200);return 0;}
+// ★2026-11-20 ハイエンド（ウルス・G400d・Eクラスカブリオレ・イヴォーク）の免責補償は1日3,300円（一般車は1,100円・正本＝context_ALL「補償・オプション_ALL」）。
+//   公式にコピーで一般車と同じ1,100円を引いていた（ウルス 105,000→103,700 になる）→ハイエンドは3,300円を引く（ユーザー「ハイエンドは補償額違うよ」）
+var HIGH_END=['ECB','EVQ','G4D','URS','P911'];
+function insOf(c){var ins=((PRICE[STORE]||{}).insurance||{});return HIGH_END.indexOf(c)>=0?(+ins.cdw_high||3300):(+ins.cdw||1100);} // 11/12 高松・BUDDICA：OTA−免責−500(A・C)/−200
 // コピーした窓口（元も含む）の、まだ判断していない案は見送りにする＝人が値段を決めた（2026-11-12 ユーザー「JLN更新しコピーして保存したのにRKTに承認見送りが生きてる」）
 //  見送った案と同じ値段の案はロボが次から出さない。基本料金だけのコピーなら基本の段(TL/TR/TH)の案だけ
 function skipProps(chs,onlyBase){var n=0;(PRICE[STORE].decide_queue||[]).forEach(function(q){if(q.status||chs.indexOf(q.ota)<0)return;if(onlyBase&&sgOf(q.seg)!=='base')return;q.status='見送り';q.decided_at=nowStr();q.note='コピーで値段を決めた';n++;});return n;}
 function applyToOfficial(){if(CHAN==='official')return;
   var P=PRICE[STORE],src=P.channels[CHAN]||{},d=P.channels.official,onlyBase=(subtab==='base'),cls=Object.keys(d.price||{});
-  var dl=STORE==='nha'?'（A・B・Dは−500、ほかは−200）':STORE==='spk'?'（A・A2・B・B2は−500、ほかは−200）':(STORE==='tkm'||STORE==='bdc')?'（免責を引いて、A・Cは−500、ほかは−200）':'（同じ値段）';
+  var dl=STORE==='nha'?'（A・B・Dは−500、ほかは−200）':STORE==='spk'?'（A・A2・B・B2は−500、ほかは−200）':(STORE==='tkm'||STORE==='bdc')?'（免責（一般車1,100・ハイエンド3,300）を引いて、A・Cは−500、ほかは−200）':'（同じ値段）';
   if(!confirm('「'+chanName(CHAN)+'」の'+(onlyBase?'基本料金（TL・TR・TH）':'価格（基本料金・安い日/高い日・月別）')+'を公式（HDM）にコピーします'+dl+'。\nコピーしてすぐ保存します（公式サイトの値段が変わります）。'))return;
   var sh=function(o,c,keys){var r={};Object.keys(o||{}).forEach(function(k){if(keys&&keys.indexOf(k)<0)return;var v=o[k];if(typeof v==='number')r[k]=v+offDiff(c);});return r;};
   cls.forEach(function(c){
@@ -1031,6 +1035,11 @@ async function realSave(s){
   var db=DBOF[s],tbl=TBLOF[s],P=r.payload;
   var ch=r.site.concat(r.ota);
   var items=changeItems(normCopy(ORIG_RAW[s],s),PRICE[s]);
+  // ★2026-11-20 OTAの安い日・高い日だけを変えた保存が「0件」・変更の文が空・通知なしになっていた（ch は公式の日と OTAの基本3段だけ）。
+  //   OTAの値段の変更（items）を文にして、変更の文・通知・件数に入れる。公式は site（日ごと）で出すので重ねない（ユーザー「保存しました0件はどういうこと？」）
+  var yenT=function(v){return v==null||v===''||isNaN(+v)?'空':(+v).toLocaleString();};
+  var itemTxt=items.filter(function(x){return x.ch!=='official';}).map(function(x){return chanName(x.ch)+' '+x.c+' '+segJp(x.t)+' '+yenT(x.a)+'→'+yenT(x.b);});
+  ch=r.site.concat(itemTxt);
   if(ch.length||items.length){P.history=P.history||[];P.history.unshift({ts:nowStr(),items:items,changes:ch.slice(0,30).join(' / ')+(ch.length>30?' ほか'+(ch.length-30)+'件':''),snap:{channels:JSON.parse(JSON.stringify(P.channels||{})),high:(P.high_dates||[]).length}});keepHist(P);}
   // ★2026-11-11 ルール・確認待ち・固定・販売だけを変えた保存も変更履歴に残す
   var o0=JSON.parse(ORIG_RAW[s]||'{}'),rk=function(x){return JSON.stringify([x.rules||null,x.decide_queue||null,x.fixed||null]);};
@@ -1044,9 +1053,15 @@ async function realSave(s){
   obj[s]=P;
   var w=exists?await req(db,'PATCH',tbl+'?key=eq.'+KEYOF[s],{value:JSON.stringify(obj)}):await req(db,'POST',tbl,{key:KEYOF[s],value:JSON.stringify(obj)});
   if(!w.ok)return {ok:false,msg:'保存に失敗しました（'+w.status+'）。何も変わっていません。'};
-  ORIG_RAW[s]=JSON.stringify(P);SAVED[s]=psnap(PRICE[s]);
+  ORIG_RAW[s]=JSON.stringify(P);
+  // ★2026-11-20 画面の中の履歴も保存した中身にそろえる。そろえないと、同じ画面で次に保存したときに
+  //   この回の履歴が古い履歴で上書きされて消えていた（3店の調整のOTA分がほぼ履歴に残らなかった）
+  PRICE[s].history=JSON.parse(JSON.stringify(P.history||[]));
+  SAVED[s]=psnap(PRICE[s]);
   if(ch.length&&s!=='bdc'){try{fetch(MAIN.url+'/functions/v1/price-notify',{method:'POST',headers:{'Authorization':'Bearer '+MAIN.anon,'apikey':MAIN.anon,'Content-Type':'application/json'},body:JSON.stringify({store:s,changes:ch.slice(0,30)})}).catch(function(){});}catch(e){}}
-  return {ok:true,msg:'✅ 保存しました（'+ch.length+'件）'};
+  // 何を保存したかを出す（値段の件数だけだと、ルール・固定・販売だけの保存が「0件」に見える 2026-11-15）
+  var what=[];var nPrice=items.length||r.site.length;if(nPrice)what.push('値段 '+nPrice+'か所');if(rk(o0)!==rk(P))what.push('ルール・固定・確認待ち');if(sk(o0)!==sk(P))what.push('販売');
+  return {ok:true,msg:'✅ 保存しました（'+(what.length?what.join('・'):'変更なし')+'）'};
 }
 
 // ===================== OTAの「段ごとの値段」（入力リスト・比較で共通） =====================
