@@ -186,13 +186,13 @@ async function sbGet(t: string, q: string): Promise<any[]> { const r = await fet
 async function sbPatch(t: string, q: string, b: unknown, actor?: string): Promise<boolean> { const r = await fetch(`${SB_URL}/rest/v1/${t}?${q}`, { method: "PATCH", headers: { ...withActor(actor), Prefer: "return=representation" }, body: JSON.stringify(b) }); if (!r.ok) { console.error(`PATCH ${t}`, await r.text()); return false; } const d = await r.json(); return Array.isArray(d) && d.length > 0; }
 async function sbPost(t: string, b: unknown, actor?: string): Promise<void> { const r = await fetch(`${SB_URL}/rest/v1/${t}`, { method: "POST", headers: { ...withActor(actor), Prefer: "return=minimal" }, body: JSON.stringify(b) }); if (!r.ok) console.error(`POST ${t}`, await r.text()); }
 
-async function saveDropoffPhoto(resId: string, dataUrl: string, index: number): Promise<string> {
+async function saveDropoffPhoto(resId: string, dataUrl: string, index: number, dir = "dropoff"): Promise<string> {
   const m = String(dataUrl || "").match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
   if (!m) throw new Error("画像形式が不正です");
   const raw = Uint8Array.from(atob(m[2]), c => c.charCodeAt(0));
   if (raw.byteLength > 5 * 1024 * 1024) throw new Error("画像は1枚5MB以内にしてください");
   const ext = m[1] === "image/png" ? "png" : m[1] === "image/webp" ? "webp" : "jpg";
-  const path = `dropoff/${resId}/${Date.now()}-${index}.${ext}`;
+  const path = `${dir}/${resId}/${Date.now()}-${index}.${ext}`;
   const up = await fetch(`${SB_URL}/storage/v1/object/cs-chat/${path}`, { method: "POST", headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "content-type": m[1], "x-upsert": "false" }, body: raw });
   if (!up.ok) throw new Error("画像を保存できませんでした");
   return path;
@@ -1029,6 +1029,64 @@ Deno.serve(async (req) => {
     return json({ ok: true, state: "activated", task_id: ts[0]._id }, 200, origin);
   }
 
+  // ==== 2026-11-20 nosh 無人貸出（事前駐車）：運営だけが依頼・停車場所の登録・取消。お客様はマイページで内容を見て「同意する」 ====
+  //   mypage_changes field='unattended' の1行（status=applied 進行中／cancelled 取消のみ・source=staff）。omni-review 11/20 条件付き。
+  //   タスクは触らない（案B）。状態は payload.state＝requested→accepted。場所は payload.place（登録で placed_at）。受取は received 行から導出。
+  if (action === "unattended_staff") {
+    const staffToken = String(p.staff_token || "").trim();
+    if (!staffToken) return json({ error: "スタッフ認証がありません" }, 401, origin);
+    const who = await staffUser(staffToken);
+    if (!who) return json({ error: "スタッフ認証に失敗しました" }, 401, origin);
+    const actor = `staff:${String(who.email || who.id || "staff")}`;
+    const op = String(p.op || "");
+    if (!["request", "place", "accept", "cancel"].includes(op)) return json({ error: "操作が不正です" }, 400, origin);
+    const rid = String(p.reservation_id || "").trim();
+    if (!rid) return json({ error: "予約番号がありません" }, 400, origin);
+    const rr = (await sbGet(STORES.spk.resv, `id=eq.${encodeURIComponent(rid)}&select=id,name,ota,vehicle,lend_date,return_date,status`))[0];
+    if (!rr) return json({ error: "予約が見つかりません" }, 404, origin);
+    const rst = String(rr.status || "");
+    if (/cancel/i.test(rst) || rst.indexOf("キャンセル") >= 0) return json({ error: "キャンセル済みの予約です" }, 409, origin);
+    if (String(rr.ota || "") === "KEYDROP") return json({ error: "KEYDROP の予約は対象外です" }, 409, origin);
+    const ex = (await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(rid)}&field=eq.unattended&status=eq.applied&order=created_at.desc&limit=1&select=id,payload`))[0];
+    const old: any = (ex?.payload && typeof ex.payload === "object") ? ex.payload : {};
+    const now = new Date().toISOString();
+    const rowQ = ex ? `id=eq.${encodeURIComponent(String(ex.id))}&status=eq.applied` : "";
+    if (op === "cancel") {
+      if (!ex) return json({ ok: true, already: true }, 200, origin);
+      const ok = await sbPatch("mypage_changes", rowQ, { status: "cancelled", new_value: "無人貸出を取り消し", payload: { ...old, state: "cancelled", cancelled_at: now, cancelled_by: actor } }, actor);
+      return ok ? json({ ok: true, state: "cancelled" }, 200, origin) : json({ error: "取り消せませんでした" }, 409, origin);
+    }
+    if (op === "accept") {  // LINE・電話などで了承をもらった時、スタッフが代わりに同意済にする
+      if (!ex) return json({ error: "先に無人貸出の依頼を送ってください" }, 409, origin);
+      if (old.accepted_at) return json({ ok: true, already: true, state: "accepted" }, 200, origin);
+      const ok = await sbPatch("mypage_changes", `${rowQ}&payload->>state=eq.requested`, { new_value: "無人貸出に同意（スタッフ記録）", payload: { ...old, state: "accepted", accepted_at: now, accepted_by: actor } }, actor);
+      return ok ? json({ ok: true, state: "accepted" }, 200, origin) : json({ error: "同意済にできませんでした（状態が変わっています）" }, 409, origin);
+    }
+    const s = (k: string, n: number) => String(p[k] || "").trim().slice(0, n);
+    const place = { parking_name: s("parking_name", 200), address: s("address", 300), map_url: s("map_url", 500), floor: s("floor", 200), plate: s("plate", 50), landmark: s("landmark", 300), key_place: s("key_place", 300) };
+    if (place.map_url && !/^https:\/\//i.test(place.map_url)) return json({ error: "地図リンクは https:// から入力してください" }, 400, origin);
+    const hasPlace = !!(place.parking_name && (place.address || place.map_url));
+    if (op === "place" && !hasPlace) return json({ error: "駐車場名と、住所または地図リンクを入力してください" }, 400, origin);
+    const anyPlace = Object.values(place).some(Boolean);
+    let photoPaths: string[] = Array.isArray(old.photo_paths) ? old.photo_paths : [];
+    const images = Array.isArray(p.images) ? p.images.filter(Boolean).slice(0, 3) : [];
+    if (images.length) {
+      try { photoPaths = await Promise.all(images.map((x: string, i: number) => saveDropoffPhoto(rid, x, i + 1, "unattended"))); }
+      catch (e) { return json({ error: String((e as Error)?.message || e) }, 400, origin); }
+    }
+    const payload: any = { ...old, state: old.accepted_at ? "accepted" : "requested", requested_at: old.requested_at || now, requested_by: old.requested_by || actor, photo_paths: photoPaths, updated_at: now, updated_by: actor };
+    if (anyPlace) { payload.place = place; if (hasPlace) payload.placed_at = now; }
+    const nv = (hasPlace || old.placed_at) ? "無人貸出：停車場所をご案内" : "無人貸出のご相談中";
+    if (ex) {
+      // 同意済みを requested に戻さない（state は old.accepted_at から決める）。行が取消されていたら書かない
+      const ok = await sbPatch("mypage_changes", rowQ, { new_value: nv, payload }, actor);
+      if (!ok) return json({ error: "マイページに反映できませんでした" }, 409, origin);
+    } else {
+      await sbPost("mypage_changes", { reservation_id: rid, store: "spk", field: "unattended", old_value: "", new_value: nv, source: "staff", status: "applied", actor, note: "運営が無人貸出（事前駐車）を依頼", payload }, actor);
+    }
+    return json({ ok: true, state: payload.state, placed: !!payload.placed_at }, 200, origin);
+  }
+
   const token = String(p.token || "").trim();
   if (!token || token.length < 20) return json({ error: "アクセスキーが不正です" }, 400, origin);
 
@@ -1205,12 +1263,25 @@ Deno.serve(async (req) => {
     const pendingCancel = chg.some((c: any) => c.field === "cancel" && c.status === "requested");
     const readyPending = chg.some((c: any) => c.field === "ready" && c.status === "requested");
     const receivedDone = chg.some((c: any) => c.field === "received" && c.status === "applied");
+    // 2026-11-20 無人貸出：別に1件引く（直近20件に頼らない）。場所・写真＝登録後、鍵の位置＝同意済＋登録済＋未受取の間だけ
+    const uaRow = (await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.unattended&status=eq.applied&order=created_at.desc&limit=1&select=payload`))[0];
+    let uaView: any = null;
+    if (uaRow && String(r.ota || "") !== "KEYDROP") {
+      const up: any = (uaRow.payload && typeof uaRow.payload === "object") ? uaRow.payload : {};
+      const pl: any = up.place || {};
+      const placed = !!up.placed_at, accepted = !!up.accepted_at;
+      const photos = placed && !receivedDone && Array.isArray(up.photo_paths) ? (await Promise.all(up.photo_paths.map((x: string) => signedDropoffPhoto(x)))).filter(Boolean) : [];
+      uaView = { active: true, state: accepted ? "accepted" : "requested", accepted, placed,
+        place: placed ? { parking_name: pl.parking_name || "", address: pl.address || "", map_url: pl.map_url || "", floor: pl.floor || "", plate: pl.plate || "", landmark: pl.landmark || "" } : null,
+        key_place: (placed && accepted && !receivedDone) ? (pl.key_place || "") : "", photos };
+    }
     const dropoffRow = chg.find((c: any) => c.field === "dropoff" && (c.status === "applied" || c.status === "completed"));
     const dropoffPayload = (dropoffRow?.payload && typeof dropoffRow.payload === "object") ? dropoffRow.payload : {};
     const dropoffPhotos = Array.isArray(dropoffPayload.photo_paths) ? await Promise.all(dropoffPayload.photo_paths.map((x: string) => signedDropoffPhoto(x))) : [];
     // 履歴：mypage_changes（依頼/承認/マイページ即時）＋ OPタスク由来（フォーム回答・担当編集の場所/時間）を統合。
+    const chgPub = chg.filter((c: any) => c.field !== "unattended"); // 2026-11-20 無人貸出の行（鍵の位置など）は履歴に出さない
     const history: any[] = [];
-    for (const c of chg) history.push({ field: c.field, value: c.new_value, old: c.old_value, at: c.created_at, source: c.source === "staff" ? "staff" : "customer_mypage", status: c.status, actor: c.actor });
+    for (const c of chgPub) history.push({ field: c.field, value: c.new_value, old: c.old_value, at: c.created_at, source: c.source === "staff" ? "staff" : "customer_mypage", status: c.status, actor: c.actor });
     const pushTaskHist = (task: any, placeField: string, timeField: string) => {
       if (!task) return;
       let cj: any = task.changed_json; if (typeof cj === "string") { try { cj = JSON.parse(cj); } catch { cj = {}; } } cj = cj || {};
@@ -1251,7 +1322,8 @@ Deno.serve(async (req) => {
       received: receivedDone,
       // 2026-11-20 nosh: 札幌の通常回収は「車を停めました」ではなく、スタッフが回収タスク(c-)を完了した時に返却完了（読取のみ）
       returned: !!(cTask && cTask.done === true),
-      pendingCancel, readyPending, recentChanges: chg, history: historyTop,
+      pendingCancel, readyPending, recentChanges: chgPub, history: historyTop,
+      unattended: uaView,
       dropoff: dropoffRow ? { active: true, state: dropoffPayload.state || (dropoffRow.status === "completed" ? "parked" : "activated"), address: dropoffPayload.address || "", map_url: dropoffPayload.map_url || "", parking_name: dropoffPayload.parking_name || "", parking_detail: dropoffPayload.parking_detail || "", submitted_at: dropoffPayload.submitted_at || "", photos: dropoffPhotos.filter(Boolean) } : { active: false, state: "off" },
       delLocked: delHandedOver(r, dTask, receivedDone),
       seat_stock: seatLeft,
@@ -1268,9 +1340,12 @@ Deno.serve(async (req) => {
     // 二重報告ガード（既に受取完了なら何もせず成功を返す）
     const prev = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.received&status=eq.applied&select=id&limit=1`);
     if (prev[0]) return json({ ok: true, received: true, already: true }, 200, origin);
+    // 2026-11-20 無人貸出中は、同意済み・停車場所登録済みの時だけ受け付け、お届け(d-)タスクだけを済にする（先頭タスクへの代替をしない）
+    const uaR = (await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.unattended&status=eq.applied&order=created_at.desc&limit=1&select=payload`))[0];
+    if (uaR && !(uaR.payload?.accepted_at && uaR.payload?.placed_at)) return json({ error: "お車の停車場所のご案内のあとに押してください" }, 409, origin);
     // お届け(d-)タスクを済(完了)に。無ければ先頭タスク。
     const tks = await sbGet(store.tasks, `reservation_id=eq.${encodeURIComponent(resId)}&deleted=not.is.true&select=_id,done,place,changed_json`);
-    const delT = tks.find((t: any) => String(t._id || "").startsWith("d-")) || tks[0];
+    const delT = tks.find((t: any) => String(t._id || "").startsWith("d-")) || (uaR ? undefined : tks[0]);
     if (delT && delT.done !== true) await sbPatch(store.tasks, `_id=eq.${encodeURIComponent(String(delT._id))}`, { done: true }, cAct);
     // 受け取り場所（お届け場所）を解決：OPタスク→予約→受付フォーム(spk_line_links)の順
     const linkRD = await sbGet("spk_line_links", `resv_no=eq.${encodeURIComponent(resId)}&select=del_place&limit=1`);
@@ -1443,6 +1518,22 @@ Deno.serve(async (req) => {
   }
 
   // ---- dropoff_submit: 運営が発動済みの予約だけ、駐車完了情報を受付 ----
+  // ---- unattended_accept: 運営が無人貸出を依頼した予約だけ、お客様が「同意する」 ----
+  if (action === "unattended_accept") {
+    if (cancelled) return json({ error: "キャンセル済みの予約です" }, 409, origin);
+    const row = (await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.unattended&status=eq.applied&order=created_at.desc&limit=1&select=id,payload`))[0];
+    if (!row || String(r.ota || "") === "KEYDROP") return json({ error: "無人でのお受け取りは、運営からご案内した場合のみ選べます" }, 403, origin);
+    const up: any = (row.payload && typeof row.payload === "object") ? row.payload : {};
+    if (up.accepted_at) return json({ ok: true, already: true }, 200, origin);
+    const rcv = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.received&status=eq.applied&select=id&limit=1`);
+    if (rcv[0]) return json({ error: "すでにお受け取り済みです" }, 409, origin);
+    const now = new Date().toISOString();
+    const ok = await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(row.id))}&status=eq.applied&payload->>state=eq.requested`, { new_value: "無人貸出に同意", payload: { ...up, state: "accepted", accepted_at: now, accepted_by: "customer" } }, "customer:" + resId);
+    if (!ok) return json({ error: "受け付けできませんでした。もう一度お試しください" }, 409, origin);
+    await notifySlackCard({ emoji: "🅿️", title: "お客様が無人貸出に同意", name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: [up.placed_at ? "停車場所：登録済み（マイページに表示中）" : "停車場所：未登録（OPの🅿️事前駐車依頼から②を送ってください）"], action: "🚗 OPシートでお届けタスクの担当を「無人」にし、事前駐車タスクを作成してください", side: "go" });
+    return json({ ok: true, state: "accepted" }, 200, origin);
+  }
+
   if (action === "dropoff_submit") {
     if (cancelled) return json({ error: "キャンセル済みの予約です" }, 409, origin);
     const rows = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&field=eq.dropoff&status=in.(applied,completed)&order=created_at.desc&limit=1&select=id,status,payload`);
