@@ -1016,13 +1016,16 @@ Deno.serve(async (req) => {
     const rr = (await sbGet(STORES.spk.resv, `id=eq.${encodeURIComponent(rid)}&select=id,name,ota,vehicle,lend_date,return_date`))[0];
     if (!rr) return json({ error: "予約が見つかりません" }, 404, origin);
     const now = new Date().toISOString();
-    const ex = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(rid)}&field=eq.dropoff&order=created_at.desc&limit=1&select=id,payload`);
+    const ex = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(rid)}&field=eq.dropoff&order=created_at.desc&limit=1&select=id,status,payload`);
+    if (ex[0] && ex[0].status === "completed") return json({ ok: true, already: true, state: "parked" }, 200, origin); // 2026-11-20 お客様が送信済み＝開き直さない
     const payload = { ...((ex[0]?.payload && typeof ex[0].payload === "object") ? ex[0].payload : {}), state: "activated", activated_at: now, activated_by: actor };
     if (ex[0]) await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(ex[0].id))}`, { status: "applied", new_value: "乗り捨て返却のご案内中", payload }, `staff:${actor}`);
     else await sbPost("mypage_changes", { reservation_id: rid, store: "spk", field: "dropoff", old_value: "COL", new_value: "乗り捨て返却のご案内中", source: "staff", status: "applied", actor, note: "運営が乗り捨て返却を発動", payload }, `staff:${actor}`);
     const ts = await sbGet(STORES.spk.tasks, `reservation_id=eq.${encodeURIComponent(rid)}&deleted=not.is.true&type=in.(COL,返却,乗り捨て,乗捨回収)&limit=1&select=_id,type,changed_json`);
     if (!ts[0]) return json({ error: "切替対象の回収タスクが見つかりません" }, 409, origin);
     let cj: any = ts[0].changed_json; if (typeof cj === "string") { try { cj = JSON.parse(cj || "{}"); } catch { cj = {}; } }
+    // 2026-11-20 2回目以降の押下では回収タスクを触らない（あとからスタッフが決めた担当を消さない）
+    if (cj && cj._dropoffActivatedAt) return json({ ok: true, state: "activated", task_id: ts[0]._id, already: true }, 200, origin);
     cj = { ...(cj || {}), _dropoffActivatedAt: now, _dropoffOriginalType: ts[0].type || "COL" };
     const ok = await sbPatch(STORES.spk.tasks, `_id=eq.${encodeURIComponent(String(ts[0]._id))}`, { type: "乗捨回収", assignee: "", changed_json: cj }, `staff:${actor}`);
     if (!ok) return json({ error: "乗捨回収タスクへ切り替えできませんでした" }, 500, origin);
@@ -1560,7 +1563,7 @@ Deno.serve(async (req) => {
     const submittedAt = new Date().toISOString();
     const payload = { ...(row.payload || {}), state: "parked", address, map_url: mapUrl, parking_name: parkingName, parking_detail: parkingDetail, checks, photo_paths: photoPaths, submitted_at: submittedAt };
     await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(String(row.id))}`, { status: "completed", new_value: "駐車完了・回収待ち", payload }, "customer:" + resId);
-    await notifySlackCard({ emoji: "🅿️", title: "乗り捨て駐車完了・回収待ち", name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: [`📍 *住所* ${address || "（Googleマップ参照）"}`, `🗺 *Googleマップ* ${mapUrl || "-"}`, `🅿️ *駐車場* ${parkingName}`, `🔎 *階・区画・目印* ${parkingDetail}`], action: "🚛 乗捨回収タスクを確認し、車両を回収してください。" });
+    await notifySlackCard({ emoji: "🅿️", title: "お客様から「乗り捨てで停めました」（回収待ち）", /* 2026-11-20 旧題名はシステムの部屋に分類されていた→店の部屋へ */ name: r.name, resId, ota: r.ota, period: `${r.lend_date}〜${r.return_date}`, vehicle: r.vehicle, lines: [`📍 *住所* ${address || "（Googleマップ参照）"}`, `🗺 *Googleマップ* ${mapUrl || "-"}`, `🅿️ *駐車場* ${parkingName}`, `🔎 *階・区画・目印* ${parkingDetail}`], action: "🚛 乗捨回収タスクを確認し、車両を回収してください。" });
     return json({ ok: true, state: "parked", submitted_at: submittedAt }, 200, origin);
   }
 

@@ -304,6 +304,29 @@ async function sbPatch(path: string, body: unknown) {
   const r = await fetch(`${SB_URL}/rest/v1/${path}`, { method: "PATCH", headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify(body) });
   return r.ok;
 }
+// ★2026-11-20 nosh「乗り捨て 札幌 那覇で統一」「UIUX含め統一」：乗捨ボタンは、押した場所（APP・バイトURL）や LINE の成否に関係なく必ず乗り捨てフォームを発動する
+//   handyman-mypage / handyman-mypage-nha の dropoff_activate と同じ書込（mypage_changes field=dropoff＋回収タスクの印）。書いた人は x-hdm-actor で残す
+async function sbW(method: string, path: string, body: unknown, actor: string) {
+  const r = await fetch(`${SB_URL}/rest/v1/${path}`, { method, headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=representation", "x-hdm-actor": actor.replace(/[^\x20-\x7e]+/g, (x) => encodeURIComponent(x)) }, body: JSON.stringify(body) });
+  if (!r.ok) return false; const j = await r.json().catch(() => null); return Array.isArray(j) ? j.length > 0 : !!j;
+}
+async function activateDropoffSA(store: string, resv: string, who: string): Promise<string> {
+  const nha = store === "nha", actor = `staff:${who || "staff"}`, now = new Date().toISOString(), q = encodeURIComponent(resv);
+  const ts = await sbGet(nha ? `nha_tasks?${encodeURIComponent("予約番号")}=eq.${q}&_id=like.c-*&deleted=not.is.true&limit=1&select=_id,changed_json`
+                             : `tasks?reservation_id=eq.${q}&deleted=not.is.true&type=in.(COL,返却,乗り捨て,乗捨回収)&limit=1&select=_id,type,changed_json`);
+  if (!ts[0]) return "切替対象の回収タスクが見つかりません";
+  const ex = await sbGet(`mypage_changes?reservation_id=eq.${q}&store=eq.${store}&field=eq.dropoff&order=created_at.desc&limit=1&select=id,status,payload`);
+  if (ex[0] && ex[0].status === "completed") return ""; // お客様が送信済み＝そのまま
+  const payload = { ...((ex[0]?.payload && typeof ex[0].payload === "object") ? ex[0].payload : {}), state: "activated", activated_at: now, activated_by: who };
+  const okC = ex[0] ? await sbW("PATCH", `mypage_changes?id=eq.${encodeURIComponent(String(ex[0].id))}`, { status: "applied", new_value: "乗り捨て返却のご案内中", payload }, actor)
+    : await sbW("POST", "mypage_changes", { reservation_id: resv, store, field: "dropoff", old_value: "COL", new_value: "乗り捨て返却のご案内中", source: "staff", status: "applied", actor: who, note: "運営が乗り捨て返却を発動", payload }, actor);
+  if (!okC) return "乗り捨てを記録できませんでした";
+  let cj: any = ts[0].changed_json; if (typeof cj === "string") { try { cj = JSON.parse(cj || "{}"); } catch { cj = {}; } }
+  if (cj && cj._dropoffActivatedAt) return ""; // 2回目以降は回収タスクを触らない（あとから決めた担当を消さない）
+  cj = { ...(cj || {}), _dropoffActivatedAt: now, _dropoffOriginalType: nha ? "COL" : (ts[0].type || "COL") };
+  const ok = await sbW("PATCH", `${nha ? "nha_tasks" : "tasks"}?_id=eq.${encodeURIComponent(String(ts[0]._id))}`, nha ? { "担当": "", changed_json: cj } : { type: "乗捨回収", assignee: "", changed_json: cj }, actor);
+  return ok ? "" : "乗捨回収タスクへ切り替えできませんでした";
+}
 function uuid() { return (crypto.randomUUID ? crypto.randomUUID() : (Date.now() + "-" + Math.random())).replace(/-/g, ""); }
 const TYPE: Record<string, string> = { DEL: "🚚お届け", COL: "🧭回収", "洗車": "🧽洗車", PU: "🚐送迎お迎え", PUB: "🚌バスお迎え", BD: "🚐お見送り", BDB: "🚌バスお見送り", "返却": "🔑返却", "来店": "🏠来店" };
 
@@ -633,9 +656,11 @@ Deno.serve(async (req) => {
     msg = `${head}\n${cn}\n\nこの度はHANDYMANをご利用いただき、誠にありがとうございます。\nただいま道路状況・混雑状況により、${midMsg}。\nご迷惑をおかけし誠に申し訳ございません。\n到着は「${t}」前後（目安）を見込んでおります。\nお手数をおかけいたしますが、もう暫しお待ちくださいませ。`;
   } else if (action === "dropoff") {
     pushAction = "dropoff";
-    // ★2026-11-09 nosh「乗り捨てボタン発動から何が送信されどうなるのか 画面も」：マイページを「乗り捨てでのご返却」に切り替える目印
+    if (store === "spk" || store === "nha") { const er = await activateDropoffSA(store, resv_no, staffName); if (er) return json({ ok: false, error: er }, 409); }
+    // ★2026-11-09 マイページを「乗り捨てでのご返却」に切り替える目印（今まで通り）
     await sbPatch(`${CFG.resvTbl}?id=eq.${encodeURIComponent(resv_no)}`, { kd_status: "dropoff", kd_status_at: new Date().toISOString() });
-    msg = `【乗り捨て対応のお願い】\n${cn}\n\nご返却時刻の混雑により、大変お手数ではございますが返却予定場所近隣駐車場に乗り捨て駐車いただきたく、ご連絡させていただきました。\nお待たせする時間回避の目的のためご協力の程何卒よろしくお願いいたします。\n\n✅駐車完了しましたら"鍵と駐車券"をダッシュボード内に格納し、鍵を開けた状態でそのままお降りくださいませ。\n✅燃料の給油とお忘れ物（ETCカード等）のないようご注意ください。\n✅停めたら、マイページの「車を停めました」から駐車場の名前か写真をお送りください。\n例：駐車場の看板の写真／駐車場名／●階など\n\n駐車後の車両トラブルに関しては一切の責任は問いませんのでご安心くださいませ。\n万一の盗難等の際にも弊社セキュリティにて追跡可能となっております。`;
+    // ★2026-11-20 nosh「簡潔に シンプルに」「セキュリティ体制を説明 過失なども」：短く・マイページで停めた場所と写真2枚を送ってもらう
+    msg = `【乗り捨てでのご返却のお願い】\n${cn}\n\nご返却の時間が混み合うため、ご返却場所の近くのコインパーキングに停めて、そのままお帰りください。\n\n✅鍵と駐車券はダッシュボードの中へ。鍵は開けたまま降りてください。\n✅給油と忘れ物（ETCカード等）をご確認ください。\n✅停めたら、マイページから停めた場所と写真2枚を送ってください。\n${myUrl}\n\n🔒降車後は当社のセキュリティで管理・追跡します。停めた後の傷・盗難などは、お客様の責任になりません。`;
   } else {
     return json({ ok: false, error: "unknown_action" }, 400);
   }

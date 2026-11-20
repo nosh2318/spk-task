@@ -190,13 +190,13 @@ async function sbDelete(t: string, q: string): Promise<void> { const r = await f
 function withActor(actor?: string): Record<string, string> { return actor ? { ...H, "x-hdm-actor": actor.replace(/[^\x20-\x7e]+/g, (s) => encodeURIComponent(s)) } : H; }
 async function uaPatch(t: string, q: string, b: unknown, actor?: string): Promise<boolean> { const r = await fetch(`${SB_URL}/rest/v1/${t}?${q}`, { method: "PATCH", headers: { ...withActor(actor), Prefer: "return=representation" }, body: JSON.stringify(b) }); if (!r.ok) { console.error(`PATCH ${t}`, await r.text()); return false; } const d = await r.json(); return Array.isArray(d) && d.length > 0; }
 async function uaPost(t: string, b: unknown, actor?: string): Promise<boolean> { const r = await fetch(`${SB_URL}/rest/v1/${t}`, { method: "POST", headers: { ...withActor(actor), Prefer: "return=minimal" }, body: JSON.stringify(b) }); if (!r.ok) { console.error(`POST ${t}`, await r.text()); return false; } return true; }
-async function saveUaPhoto(resId: string, dataUrl: string, index: number): Promise<string> {
+async function saveUaPhoto(resId: string, dataUrl: string, index: number, dir = "unattended"): Promise<string> {
   const m = String(dataUrl || "").match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
   if (!m) throw new Error("画像形式が不正です");
   const raw = Uint8Array.from(atob(m[2]), c => c.charCodeAt(0));
   if (raw.byteLength > 5 * 1024 * 1024) throw new Error("画像は1枚5MB以内にしてください");
   const ext = m[1] === "image/png" ? "png" : m[1] === "image/webp" ? "webp" : "jpg";
-  const path = `unattended/${resId}/${Date.now()}-${index}.${ext}`;
+  const path = `${dir}/${resId}/${Date.now()}-${index}.${ext}`;
   const up = await fetch(`${SB_URL}/storage/v1/object/cs-chat/${path}`, { method: "POST", headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "content-type": m[1], "x-upsert": "false" }, body: raw });
   if (!up.ok) throw new Error("画像を保存できませんでした");
   return path;
@@ -871,7 +871,38 @@ Deno.serve(async (req) => {
     return json({ ok: true, checked: rows.length, paid: n, unpaid_new: unpNew, unpaid_drop: unpDrop }, 200, origin);
   }
 
-  if (action !== "lookup" && action !== "request" && action !== "license_uploaded" && action !== "ready" && action !== "cancel_request" && action !== "proposal_reply" && action !== "update" && action !== "extend_quote" && action !== "unattended_staff" && action !== "unattended_accept" && action !== "unattended_received") return json({ error: "unsupported action" }, 400, origin);
+  if (action !== "lookup" && action !== "request" && action !== "license_uploaded" && action !== "ready" && action !== "cancel_request" && action !== "proposal_reply" && action !== "update" && action !== "extend_quote" && action !== "unattended_staff" && action !== "unattended_accept" && action !== "unattended_received" && action !== "dropoff_activate" && action !== "dropoff_submit") return json({ error: "unsupported action" }, 400, origin);
+
+  // ==== 2026-11-20 nosh「乗り捨て 事前 ともに 札幌 那覇で条件を変える必要ない 統一」「UIUX含め統一」：乗り捨て返却の発動（札幌 handyman-mypage と同じ仕様） ====
+  //   mypage_changes store=nha field=dropoff を作る（applied＝ご案内中／completed＝駐車完了）。回収(c-)タスクは type 列が無いので changed_json に印を付け、担当を空に（回収の担当はスタッフが割り当て直す）
+  if (action === "dropoff_activate") {
+    const staffToken = String(p.staff_token || "").trim();
+    if (!staffToken) return json({ error: "スタッフ認証がありません" }, 401, origin);
+    const who = await staffUser(staffToken);
+    if (!who) return json({ error: "スタッフ認証に失敗しました" }, 401, origin);
+    const actor = String(who.email || who.id || "staff");
+    const rid = String(p.reservation_id || "").trim();
+    if (!rid) return json({ error: "予約番号がありません" }, 400, origin);
+    const rr = (await sbGet("nha_reservations", `id=eq.${encodeURIComponent(rid)}&select=id,status,ota`))[0];
+    if (!rr) return json({ error: "予約が見つかりません" }, 404, origin);
+    if (isCancelled(rr.status)) return json({ error: "キャンセル済みの予約です" }, 409, origin);
+    const now = new Date().toISOString();
+    const ts = await sbGet("nha_tasks", `${encodeURIComponent("予約番号")}=eq.${encodeURIComponent(rid)}&_id=like.c-*&deleted=not.is.true&limit=1&select=_id,changed_json`);
+    if (!ts[0]) return json({ error: "切替対象の回収タスクが見つかりません" }, 409, origin);
+    const ex = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(rid)}&store=eq.nha&field=eq.dropoff&order=created_at.desc&limit=1&select=id,status,payload`);
+    if (ex[0] && ex[0].status === "completed") return json({ ok: true, already: true, state: "parked" }, 200, origin);
+    const payload = { ...((ex[0]?.payload && typeof ex[0].payload === "object") ? ex[0].payload : {}), state: "activated", activated_at: now, activated_by: actor };
+    const okC = ex[0] ? await uaPatch("mypage_changes", `id=eq.${encodeURIComponent(String(ex[0].id))}`, { status: "applied", new_value: "乗り捨て返却のご案内中", payload }, `staff:${actor}`)
+      : await uaPost("mypage_changes", { reservation_id: rid, store: "nha", field: "dropoff", old_value: "COL", new_value: "乗り捨て返却のご案内中", source: "staff", status: "applied", actor, note: "運営が乗り捨て返却を発動", payload }, `staff:${actor}`);
+    if (!okC) return json({ error: "乗り捨てを記録できませんでした" }, 500, origin);
+    let cj: any = ts[0].changed_json; if (typeof cj === "string") { try { cj = JSON.parse(cj || "{}"); } catch { cj = {}; } }
+    // 2026-11-20 2回目以降の押下では回収タスクを触らない（あとからスタッフが決めた担当を消さない）
+    if (cj && cj._dropoffActivatedAt) return json({ ok: true, state: "activated", task_id: ts[0]._id, already: true }, 200, origin);
+    cj = { ...(cj || {}), _dropoffActivatedAt: now, _dropoffOriginalType: "COL" };
+    const ok = await uaPatch("nha_tasks", `_id=eq.${encodeURIComponent(String(ts[0]._id))}`, { "担当": "", changed_json: cj }, `staff:${actor}`);
+    if (!ok) return json({ error: "乗捨回収タスクへ切り替えできませんでした" }, 500, origin);
+    return json({ ok: true, state: "activated", task_id: ts[0]._id }, 200, origin);
+  }
 
   // ==== 2026-11-20 nosh 無人貸出（事前駐車）・札幌と同じ仕様：運営だけが依頼・停車場所の登録・同意済の記録・取消 ====
   //   mypage_changes store=nha field=unattended の1行（status=applied 進行中／cancelled 取消のみ・source=staff）。タスクは自動で変えない。
@@ -950,6 +981,34 @@ Deno.serve(async (req) => {
     const _msg = _cd ? `${+_cd.slice(5, 7)}月${+_cd.slice(8, 10)}日にキャンセル済みです` : "キャンセル済みです";
     return json({ ok: false, cancelled: true, cancel_date: _cd, error: _msg }, 200, origin);
   } }
+
+  // ---- 2026-11-20 乗り捨て返却：お客様が停めた場所・写真2枚・確認5項目を送る（札幌 dropoff_submit と同じ） ----
+  if (action === "dropoff_submit") {
+    const row = (await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.nha&field=eq.dropoff&status=in.(applied,completed)&order=created_at.desc&limit=1&select=id,status,payload`))[0];
+    if (!row) return json({ error: "乗り捨ては運営からご案内した場合のみ利用できます" }, 403, origin);
+    if (row.status === "completed") return json({ ok: true, already: true }, 200, origin);
+    const address = String(p.address || "").trim().slice(0, 300);
+    const mapUrl = String(p.map_url || "").trim().slice(0, 500);
+    const parkingName = String(p.parking_name || "").trim().slice(0, 200);
+    const parkingDetail = String(p.parking_detail || "").trim().slice(0, 300);
+    const checks = p.checks && typeof p.checks === "object" ? p.checks : {};
+    if (!address && !/^https?:\/\/(?:www\.)?(?:google\.[^/]+\/maps|maps\.app\.goo\.gl)\//i.test(mapUrl)) return json({ error: "住所またはGoogleマップリンクを入力してください" }, 400, origin);
+    if (!parkingName) return json({ error: "駐車場名を入力してください" }, 400, origin);
+    if (!parkingDetail) return json({ error: "階・区画番号・目印を入力してください" }, 400, origin);
+    if (!["safe", "fuel", "belongings", "key", "unlocked"].every(k => checks[k] === true)) return json({ error: "すべての確認項目にチェックしてください" }, 400, origin);
+    const images = Array.isArray(p.images) ? p.images.slice(0, 2) : [];
+    if (images.length !== 2) return json({ error: "写真を2枚登録してください" }, 400, origin);
+    let photoPaths: string[];
+    try { photoPaths = await Promise.all(images.map((x: string, i: number) => saveUaPhoto(resId, x, i + 1, "dropoff"))); }
+    catch (e) { return json({ error: String((e as Error)?.message || e) }, 400, origin); }
+    const submittedAt = new Date().toISOString();
+    const payload = { ...(row.payload || {}), state: "parked", address, map_url: mapUrl, parking_name: parkingName, parking_detail: parkingDetail, checks, photo_paths: photoPaths, submitted_at: submittedAt };
+    const ok = await uaPatch("mypage_changes", `id=eq.${encodeURIComponent(String(row.id))}&status=eq.applied`, { status: "completed", new_value: "駐車完了・回収待ち", payload }, "customer:" + resId);
+    if (!ok) return json({ error: "送信できませんでした。もう一度お試しください" }, 409, origin);
+    const m = await hdmMsg({ emoji: "🅿️", store: "nha", title: "お客様から「乗り捨てで停めました」（回収待ち）", rid: resId, side: "back", body: [`📍 ${parkingName} ${parkingDetail}（${address || "地図リンク"}）`, "📷 写真2枚・地図はマイページの状況から見られます", "👉 乗捨回収タスクの担当を決めて回収してください"] });
+    await slackPost(m.text, m.blocks);
+    return json({ ok: true, state: "parked", submitted_at: submittedAt }, 200, origin);
+  }
 
   // ---- license_uploaded: お客様がマイページから免許証をアップした完了通知（Slack・那覇） ----
   // ---- 2026-11-20 無人貸出：お客様の「同意する」「お車に乗りました」（運営が依頼した予約だけ） ----
@@ -1309,6 +1368,9 @@ Deno.serve(async (req) => {
   // 2026-11-20 無人貸出：別に1件引く（直近10件に頼らない）。場所・写真＝登録後、鍵の位置＝同意済＋登録済＋未受取の間だけ
   const rcvRow = (await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.nha&field=eq.received&status=eq.applied&select=id,created_at&limit=1`))[0];
   const receivedDone = !!rcvRow;
+  const dropoffRow = (await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.nha&field=eq.dropoff&status=in.(applied,completed)&order=created_at.desc&limit=1&select=status,payload`))[0];
+  const dropoffPayload: any = (dropoffRow?.payload && typeof dropoffRow.payload === "object") ? dropoffRow.payload : {};
+  const dropoffPhotos = Array.isArray(dropoffPayload.photo_paths) ? await Promise.all(dropoffPayload.photo_paths.map((x: string) => signedUaPhoto(x))) : [];
   const uaRow = (await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(resId)}&store=eq.nha&field=eq.unattended&status=eq.applied&order=created_at.desc&limit=1&select=payload`))[0];
   let uaView: any = null;
   if (uaRow && String(r.ota || "") !== "KEYDROP") {
@@ -1368,6 +1430,7 @@ Deno.serve(async (req) => {
     pendingCancel: chg.some((c: any) => c.field === "cancel" && c.status === "requested"), readyPending: chg.some((c: any) => c.field === "ready" && c.status === "requested"),
     recentChanges: chgPub, history: historyTop,
     unattended: uaView, received: receivedDone, received_at: rcvRow ? String(rcvRow.created_at || "") : null,
+    dropoff: dropoffRow ? { active: true, state: dropoffPayload.state || (dropoffRow.status === "completed" ? "parked" : "activated"), address: dropoffPayload.address || "", map_url: dropoffPayload.map_url || "", parking_name: dropoffPayload.parking_name || "", parking_detail: dropoffPayload.parking_detail || "", submitted_at: dropoffPayload.submitted_at || "", photos: dropoffPhotos.filter(Boolean) } : { active: false, state: "off" },
     seat_stock: seatLeft,
     at: nowJst(),
   }, 200, origin);
