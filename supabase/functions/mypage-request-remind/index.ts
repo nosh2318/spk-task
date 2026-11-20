@@ -383,7 +383,7 @@ async function uaRemind(now: number, dry: boolean): Promise<{ hot: number; sent:
 
 // ★2026-11-20 nosh「乗り捨て 札幌 那覇 統一」：乗り捨てを発動したのに、返却時刻＋30分を過ぎてもお客様の「停めました」（dropoff_submit）が無ければ店の部屋に1回だけ知らせる（無人貸出と同じ見回り・新しい定期処理なし）
 async function doRemind(now: number, dry: boolean): Promise<{ hot: number; sent: number; skipped: number; out?: unknown[] }> {
-  const rows = await sbGetR(`mypage_changes?field=eq.dropoff&status=eq.applied&created_at=gte.${encodeURIComponent(new Date(now - 120 * 864e5).toISOString())}&select=id,reservation_id,store&order=created_at.desc&limit=1000`);
+  const rows = await sbGetR(`mypage_changes?field=eq.dropoff&status=eq.applied&created_at=gte.${encodeURIComponent(new Date(now - 120 * 864e5).toISOString())}&select=id,reservation_id,store,payload&order=created_at.desc&limit=1000`);
   if (!rows) return { hot: 0, sent: 0, skipped: -1 };
   if (!rows.length) return { hot: 0, sent: 0, skipped: 0 };
   const dn = await sbGetR(`mypage_request_reminders?change_id=like.do-*&select=bucket,change_id`);
@@ -411,8 +411,9 @@ async function doRemind(now: number, dry: boolean): Promise<{ hot: number; sent:
     const chgTime = uaHm(lc[0] && lc[0].new_value), resvTime = uaHm(nha ? r.end_time : r.return_time);
     const hm = nha ? (chgTime || taskTime || resvTime) : (taskTime || chgTime || resvTime);
     if (!hm) { skipped++; continue; }
-    const at = Date.parse(`${d}T${hm}:00+09:00`); if (isNaN(at)) continue;
-    if (now < at + UA_MIN * 60e3 || now > at + 3 * 864e5) continue;
+    const at0 = Date.parse(`${d}T${hm}:00+09:00`); if (isNaN(at0)) continue;
+    const actAt = Date.parse(String((u.payload && u.payload.activated_at) || "")); const at = isNaN(actAt) ? at0 : Math.max(at0, actAt); // 返却時刻より後に発動した時は、発動から30分
+    if (now < at + UA_MIN * 60e3 || now > at0 + 3 * 864e5) continue;
     hot++;
     const link = `${PAGE}?bucket=${bucket}&rid=${encodeURIComponent(rid)}`;
     const store = nha ? "nha" : (String(r.ota || "") === "KEYDROP" ? "kd_spk" : "spk");

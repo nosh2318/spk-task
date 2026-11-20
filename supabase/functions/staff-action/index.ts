@@ -310,22 +310,31 @@ async function sbW(method: string, path: string, body: unknown, actor: string) {
   const r = await fetch(`${SB_URL}/rest/v1/${path}`, { method, headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=representation", "x-hdm-actor": actor.replace(/[^\x20-\x7e]+/g, (x) => encodeURIComponent(x)) }, body: JSON.stringify(body) });
   if (!r.ok) return false; const j = await r.json().catch(() => null); return Array.isArray(j) ? j.length > 0 : !!j;
 }
-async function activateDropoffSA(store: string, resv: string, who: string): Promise<string> {
+async function sbGetR(path: string): Promise<any[] | null> {
+  try { const r = await fetch(`${SB_URL}/rest/v1/${path}`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` } }); return r.ok ? await r.json() : null; } catch { return null; }
+}
+// ★2026-11-20 レビュー反映：回収タスクは「印」だけ付ける（種類・担当は変えない＝人が決めた担当を消さない・札幌の一覧から消えない）。KEYDROP は対象外（今まで通り）。読めない時は止める
+async function activateDropoffSA(store: string, resv: string, who: string, ota: string): Promise<string> {
+  if (ota === "KEYDROP") return "";
   const nha = store === "nha", actor = `staff:${who || "staff"}`, now = new Date().toISOString(), q = encodeURIComponent(resv);
-  const ts = await sbGet(nha ? `nha_tasks?${encodeURIComponent("予約番号")}=eq.${q}&_id=like.c-*&deleted=not.is.true&limit=1&select=_id,changed_json`
-                             : `tasks?reservation_id=eq.${q}&deleted=not.is.true&type=in.(COL,返却,乗り捨て,乗捨回収)&limit=1&select=_id,type,changed_json`);
+  const ts = await sbGetR(nha ? `nha_tasks?${encodeURIComponent("予約番号")}=eq.${q}&_id=like.c-*&deleted=not.is.true&limit=1&select=_id,changed_json`
+                              : `tasks?reservation_id=eq.${q}&deleted=not.is.true&type=in.(COL,返却,乗り捨て,乗捨回収)&limit=1&select=_id,type,changed_json`);
+  if (!ts) return "回収タスクを読めませんでした。もう一度押してください";
   if (!ts[0]) return "切替対象の回収タスクが見つかりません";
-  const ex = await sbGet(`mypage_changes?reservation_id=eq.${q}&store=eq.${store}&field=eq.dropoff&order=created_at.desc&limit=1&select=id,status,payload`);
-  if (ex[0] && ex[0].status === "completed") return ""; // お客様が送信済み＝そのまま
-  const payload = { ...((ex[0]?.payload && typeof ex[0].payload === "object") ? ex[0].payload : {}), state: "activated", activated_at: now, activated_by: who };
-  const okC = ex[0] ? await sbW("PATCH", `mypage_changes?id=eq.${encodeURIComponent(String(ex[0].id))}`, { status: "applied", new_value: "乗り捨て返却のご案内中", payload }, actor)
-    : await sbW("POST", "mypage_changes", { reservation_id: resv, store, field: "dropoff", old_value: "COL", new_value: "乗り捨て返却のご案内中", source: "staff", status: "applied", actor: who, note: "運営が乗り捨て返却を発動", payload }, actor);
-  if (!okC) return "乗り捨てを記録できませんでした";
+  const ex = await sbGetR(`mypage_changes?reservation_id=eq.${q}&store=eq.${store}&field=eq.dropoff&order=created_at.desc&limit=1&select=id,status,payload`);
+  if (!ex) return "乗り捨ての記録を読めませんでした。もう一度押してください";
+  if (ex[0] && ex[0].status === "completed") return ""; // お客様が送信済み＝開き直さない
+  if (!(ex[0] && ex[0].status === "applied")) { // ご案内中なら書かない（お客様の送信と競合させない）
+    const payload = { ...((ex[0]?.payload && typeof ex[0].payload === "object") ? ex[0].payload : {}), state: "activated", activated_at: now, activated_by: who };
+    const okC = ex[0] ? await sbW("PATCH", `mypage_changes?id=eq.${encodeURIComponent(String(ex[0].id))}`, { status: "applied", new_value: "乗り捨て返却のご案内中", payload }, actor)
+      : await sbW("POST", "mypage_changes", { reservation_id: resv, store, field: "dropoff", old_value: "COL", new_value: "乗り捨て返却のご案内中", source: "staff", status: "applied", actor: who, note: "運営が乗り捨て返却を発動", payload }, actor);
+    if (!okC) return "乗り捨てを記録できませんでした";
+  }
   let cj: any = ts[0].changed_json; if (typeof cj === "string") { try { cj = JSON.parse(cj || "{}"); } catch { cj = {}; } }
-  if (cj && cj._dropoffActivatedAt) return ""; // 2回目以降は回収タスクを触らない（あとから決めた担当を消さない）
+  if (cj && cj._dropoffActivatedAt) return "";
   cj = { ...(cj || {}), _dropoffActivatedAt: now, _dropoffOriginalType: nha ? "COL" : (ts[0].type || "COL") };
-  const ok = await sbW("PATCH", `${nha ? "nha_tasks" : "tasks"}?_id=eq.${encodeURIComponent(String(ts[0]._id))}`, nha ? { "担当": "", changed_json: cj } : { type: "乗捨回収", assignee: "", changed_json: cj }, actor);
-  return ok ? "" : "乗捨回収タスクへ切り替えできませんでした";
+  const ok = await sbW("PATCH", `${nha ? "nha_tasks" : "tasks"}?_id=eq.${encodeURIComponent(String(ts[0]._id))}`, { changed_json: cj }, actor);
+  return ok ? "" : "回収タスクに印を付けられませんでした";
 }
 function uuid() { return (crypto.randomUUID ? crypto.randomUUID() : (Date.now() + "-" + Math.random())).replace(/-/g, ""); }
 const TYPE: Record<string, string> = { DEL: "🚚お届け", COL: "🧭回収", "洗車": "🧽洗車", PU: "🚐送迎お迎え", PUB: "🚌バスお迎え", BD: "🚐お見送り", BDB: "🚌バスお見送り", "返却": "🔑返却", "来店": "🏠来店" };
@@ -656,7 +665,7 @@ Deno.serve(async (req) => {
     msg = `${head}\n${cn}\n\nこの度はHANDYMANをご利用いただき、誠にありがとうございます。\nただいま道路状況・混雑状況により、${midMsg}。\nご迷惑をおかけし誠に申し訳ございません。\n到着は「${t}」前後（目安）を見込んでおります。\nお手数をおかけいたしますが、もう暫しお待ちくださいませ。`;
   } else if (action === "dropoff") {
     pushAction = "dropoff";
-    if (store === "spk" || store === "nha") { const er = await activateDropoffSA(store, resv_no, staffName); if (er) return json({ ok: false, error: er }, 409); }
+    if (store === "spk" || store === "nha") { const er = await activateDropoffSA(store, resv_no, staffName, String(r.ota || "")); if (er) return json({ ok: false, error: er }, 409); }
     // ★2026-11-09 マイページを「乗り捨てでのご返却」に切り替える目印（今まで通り）
     await sbPatch(`${CFG.resvTbl}?id=eq.${encodeURIComponent(resv_no)}`, { kd_status: "dropoff", kd_status_at: new Date().toISOString() });
     // ★2026-11-20 nosh「簡潔に シンプルに」「セキュリティ体制を説明 過失なども」：短く・マイページで停めた場所と写真2枚を送ってもらう
