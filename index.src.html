@@ -561,6 +561,7 @@ const DB = {
   async fetchFleet(){if(!sb){return DB._fleetLsLoad();}const{data,error}=await sb.from("fleet").select("*");if(error){dbLog("fetchFleet",false,error.message);return DB._fleetLsLoad();}const f={};(data||[]).forEach(r=>f[r.reservation_id]=r.vehicle_code);dbLog("fetchFleet",true,Object.keys(f).length+"件");DB._fleetLsSave(f);return f;},
   /* ★2026-11-02 prev（変更前の画面の配車）を渡すと「変えた予約だけ」保存。画面が古くても、触っていない予約を古い車で上書きしない（自動組み替えの移動が戻る対策） */
   async upsertFleet(fleet,prev){DB._fleetLsSave(fleet);if(!sb)return;const rows=Object.entries(fleet).filter(([k,v])=>!prev||prev[k]!==v).map(([k,v])=>({reservation_id:k,vehicle_code:v}));if(rows.length){await DB._retryOp(async()=>{const{error}=await sb.from("fleet").upsert(rows,{onConflict:"reservation_id"});if(error)throw new Error(error.message);dbLog("upsertFleet",true,rows.length+"件");},"upsertFleet");}},
+  async upsertFleetRows(rows){if(!sb||!rows||!rows.length)return;await DB._retryOp(async()=>{const{error}=await sb.from("fleet").upsert(rows,{onConflict:"reservation_id"});if(error)throw new Error(error.message);dbLog("upsertFleetRows",true,rows.length+"件");},"upsertFleetRows");},
   async updateFleetOne(resId,code){if(!sb)return;const{error}=await sb.from("fleet").upsert({reservation_id:resId,vehicle_code:code},{onConflict:"reservation_id"});if(error)dbLog("updateFleet1",false,error.message);},
   async deleteFleetOne(resId){if(!sb)return;const{error}=await sb.from("fleet").delete().eq("reservation_id",resId);if(error)dbLog("deleteFleet1",false,error.message);},
   // --- タスク（localStorage併用で確実に保存） ---
@@ -24658,9 +24659,10 @@ function App(){
     const plan=planFleetSwap(vcA,vcB,start,end,data,prevFleet,maintenance,vehicles);
     if(plan.errors.length||!plan.moves.length){alert("⚠️ 入れ替えできません。\n\n"+(plan.errors.length?plan.errors.join("\n"):"対象の予約がありません。"));return false;}
     const nextFleet={...prevFleet};plan.moves.forEach(m=>{nextFleet[m.res.id]=m.to;});
-    fleetRefApp.current=nextFleet;setFleet(nextFleet);markLocalChange("fleet");
-    try{await DB.upsertFleet(nextFleet,prevFleet);markDbSync("fleet");}
-    catch(e){console.error("swap upsertFleet error:",e);fleetRefApp.current=prevFleet;setFleet(prevFleet);try{DB._fleetLsSave(prevFleet);}catch(_e){}alert("⚠️ 保存に失敗したため、入れ替えは行っていません（変更なし）。");return false;}
+    // 先にDBへ1回で書く(失敗なら画面・タスクは一切触らない=変更なし)。成功してから画面状態を更新する。
+    try{await DB.upsertFleetRows(plan.moves.map(m=>({reservation_id:m.res.id,vehicle_code:m.to})));}
+    catch(e){console.error("swap upsertFleet error:",e);alert("⚠️ 保存に失敗したため、入れ替えは行っていません（変更なし）。");return false;}
+    DB._fleetLsSave(nextFleet);fleetRefApp.current=nextFleet;setFleet(nextFleet);markLocalChange("fleet");markDbSync("fleet");
     for(const m of plan.moves){try{await reassignVehicle(m.res.id,m.to,{skipFleet:true});}catch(e){console.error("swap side effects error:",m.res.id,e);}}
     return true;
   },[data,maintenance,vehicles,reassignVehicle]);
