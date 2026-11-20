@@ -406,7 +406,7 @@ async function call(action,body){
 function spkMethod(j){if(SID!=="spk"||!j||!j.reservation)return;const r=j.reservation;
   if(!String(r.visit_type||"").trim())r.visit_type="DEL";if(!String(r.return_type||"").trim())r.return_type="COL";}
 async function load(quiet){
-  if(DEMO){DATA=demoData(DEMO);if(Q.get("ret")==="1")DATA.returned=true;if(Q.get("ng"))NG={kind:Q.get("ng"),leg:"back",created_at:new Date().toISOString(),acked_at:Q.get("ack")==="1"?new Date().toISOString():null};loadRcpt();loadCN();render();return;}
+  if(DEMO){DATA=demoData(DEMO);if(Q.get("ret")==="1")DATA.returned=true;{const ua=Q.get("ua");if(ua)DATA.unattended={active:true,accepted:ua!=="req",placed:ua==="placed"||ua==="req2",place:(ua==="placed"||ua==="req2")?{parking_name:"〇〇パーキング",address:"札幌市中央区北5条西2丁目",map_url:"https://maps.app.goo.gl/",floor:"1階 12番",plate:"3381",landmark:"入口から右奥・青い看板"}:null,key_place:ua==="placed"?"運転席ドアポケット（鍵）・助手席ダッシュボード（駐車券）":"",photos:[]};}if(Q.get("ng"))NG={kind:Q.get("ng"),leg:"back",created_at:new Date().toISOString(),acked_at:Q.get("ack")==="1"?new Date().toISOString():null};loadRcpt();loadCN();render();return;}
   if(!TOKEN){{const b=document.querySelector(".rld");if(b)b.style.display="none";}$("#app").innerHTML=`<div class="center">ご予約のURLから開いてください。<br>URLが分からないときは <a href="${ST.site}" target="_blank">公式サイト</a> の「マイページを開く」から探せます。</div>`;$("#ttl").textContent="マイページ";return;}
   /* ★2026-11-09 速く（nosh「読み込みが遅い 重い」）：予約の読み込みと同時にほかの読み込みも始める（前は予約→ほか8つを順番待ち）。
      最初の画面に要る支払い・登録内容・メールは必ず待つ。ほかは1.2秒まで待ち、遅れた分は届いたら描き直す */
@@ -462,12 +462,22 @@ document.addEventListener("visibilitychange",()=>{if(document.visibilityState===
 /* ---- 画面 ---- */
 function go(t){TAB=t;["now","chg","wal","ask"].forEach(k=>$("#nv-"+k).classList.toggle("on",k===t));render();scrollTo(0,0);}
 let DROP_IMAGES=[null,null];
-function dropoffActive(d){return SID==="spk"&&d&&d.dropoff&&d.dropoff.active;}
+function dropoffActive(d){return SID==="spk"&&d&&d.dropoff&&d.dropoff.active&&!uaOn(d);}/* 受取前は無人貸出を優先 */
 function dropoffCompleteHtml(d){return `<section class="card dropoff-card" style="text-align:center;padding:28px 18px"><div style="font-size:42px">✓</div><div class="big">返却手続きは完了しました</div><div class="txt">スタッフが車両を回収します。店舗へお戻しいただく必要はありません。</div><div class="dropoff-note"><b>降車後は弊社セキュリティシステムにより車両を管理・確認します。</b><br>追加の操作は必要ありません。そのままお帰りください。</div></section>`;}
 function dropoffFormHtml(){const checks=[["safe","安全に駐車し、通行や他の車両の妨げになっていません"],["fuel","燃料・充電残量と車内の状態を確認しました"],["belongings","忘れ物がないことを確認しました"],["key","鍵を指定の場所へ格納しました"],["unlocked","ドアを施錠せず、スタッフが回収できる状態です"]];return `<section class="card dropoff-card"><span class="pill p-o" style="align-self:flex-start">運営からのご案内</span><div class="big">乗り捨てでのご返却</div><div class="txt">ご案内した予約のみ利用できる返却方法です。安全な駐車場所へ停車後、下記を登録してください。</div><div class="dropoff-note">お手数を最小限にするため、位置情報の取得操作はありません。<b>住所またはGoogleマップリンク</b>のどちらかを入力してください。</div><label>住所</label><input id="do-address" type="text" placeholder="例：札幌市中央区南4条西5丁目"><div class="sub" style="text-align:center">または</div><label>Googleマップリンク</label><input id="do-map" type="url" placeholder="https://maps.app.goo.gl/..."><label>駐車場名（必須）</label><input id="do-parking" type="text" placeholder="例：〇〇ホテル第2駐車場"><label>階・区画番号・目印（必須）</label><input id="do-detail" type="text" placeholder="例：2階 B-15、精算機の右側"><div class="h" style="margin-top:8px">停車位置の写真（2枚必須）</div><div class="dropoff-photo">写真1：車両と周囲が分かる写真<input id="do-photo-1" type="file" accept="image/*" capture="environment" onchange="dropoffPhoto(0,this)"></div><div class="dropoff-photo">写真2：区画番号や目印が分かる写真<input id="do-photo-2" type="file" accept="image/*" capture="environment" onchange="dropoffPhoto(1,this)"></div><div class="h" style="margin-top:8px">降車前の確認（すべて必須）</div>${checks.map(([k,v])=>`<label class="dropoff-check"><input class="do-check" data-key="${k}" type="checkbox" onchange="dropoffReady()"><span>${v}</span></label>`).join("")}<button id="do-submit" class="btn" disabled onclick="submitDropoff()">駐車情報を送信して返却を完了</button><div id="do-error" class="sub" style="color:var(--r);text-align:center"></div></section>`;}
 function dropoffPhoto(i,el){const f=el.files&&el.files[0];DROP_IMAGES[i]=null;if(!f){dropoffReady();return;}if(f.size>5*1024*1024){el.value="";toast("写真は1枚5MB以内にしてください");dropoffReady();return;}const rd=new FileReader();rd.onload=()=>{DROP_IMAGES[i]=String(rd.result||"");dropoffReady();};rd.onerror=()=>{toast("写真を読み込めませんでした");dropoffReady();};rd.readAsDataURL(f);}
 function dropoffReady(){const address=String((document.querySelector("#do-address")||{}).value||"").trim(),map=String((document.querySelector("#do-map")||{}).value||"").trim(),parking=String((document.querySelector("#do-parking")||{}).value||"").trim(),detail=String((document.querySelector("#do-detail")||{}).value||"").trim(),checks=[...document.querySelectorAll(".do-check")],ok=(address||map)&&parking&&detail&&DROP_IMAGES.every(Boolean)&&checks.length===5&&checks.every(x=>x.checked),b=document.querySelector("#do-submit");if(b)b.disabled=!ok;}
 async function submitDropoff(){dropoffReady();const b=document.querySelector("#do-submit");if(!b||b.disabled)return;b.disabled=true;b.textContent="送信しています…";const checks={};document.querySelectorAll(".do-check").forEach(x=>checks[x.dataset.key]=x.checked);const j=await call("dropoff_submit",{address:String($("#do-address").value||"").trim(),map_url:String($("#do-map").value||"").trim(),parking_name:String($("#do-parking").value||"").trim(),parking_detail:String($("#do-detail").value||"").trim(),checks,images:DROP_IMAGES});if(j&&j.ok){DATA.dropoff={...(DATA.dropoff||{}),active:true,state:"parked"};render();scrollTo(0,0);return;}b.textContent="駐車情報を送信して返却を完了";const e=document.querySelector("#do-error");if(e)e.textContent=(j&&j.error)||"送信できませんでした。もう一度お試しください。";dropoffReady();}
+/* ★2026-11-20 nosh 無人貸出（事前駐車）：運営がフォームで依頼した予約だけ（お客様側に入口なし）。内容・場所・写真を見て「同意する」→停めた場所へ行き「お車に乗りました」で貸出完了。札幌のみ */
+function uaOn(d){return SID==="spk"&&!!(d&&d.unattended&&d.unattended.active)&&!d.received;}
+function uaCard(d){const u=d.unattended||{},p=u.place||null;
+  const rows=p?[["駐車場",p.parking_name],["住所",p.address],["階・区画",p.floor],["ナンバー",p.plate],["目印",p.landmark]].filter(x=>x[1]):[];
+  if(u.key_place)rows.push(["鍵の場所",u.key_place]);
+  const place=p?`<div class="h" style="margin-top:6px">お車を停める場所</div><dl class="kv">${rows.map(x=>`<dt>${x[0]}</dt><dd>${esc(x[1])}</dd>`).join("")}</dl>${/^https:\/\//.test(p.map_url||"")?`<a class="btn o" href="${esc(p.map_url)}" target="_blank" rel="noopener">地図で見る</a>`:""}${(u.photos||[]).map(x=>`<img src="${esc(x)}" alt="停める場所の写真" style="width:100%;border-radius:10px;border:1px solid var(--line)">`).join("")}`:`<div class="sub">お車を停める場所は、決まりしだいここに出ます。LINE またはメールでもお知らせします。</div>`;
+  const btn=!u.accepted?`<button class="btn" onclick="uaAccept()">同意する</button>`:p?`<button class="btn" onclick="uaReceived()">お車に乗りました</button><div class="sub">鍵とお車を受け取ったら押してください。これで貸出の手続きは完了です。</div>`:`<div class="row"><span class="l"><span class="n">同意</span><span class="v">ありがとうございます</span></span><span class="pill p-g">済</span></div>`;
+  return `<section class="card" style="border:2px solid var(--yel)"><span class="pill p-o" style="align-self:flex-start">運営からのご案内</span><div class="big">無人でのお受け取り</div><div class="txt">ご希望の時間帯が混み合っているため、スタッフがお車を先に停めておき、お客様に取りに行っていただく方法をご案内しています。</div>${place}${btn}</section>`;}
+async function uaAccept(){const j=await call("unattended_accept",{});if(j.dropped)return;if(j&&j.ok){toast("同意を受け付けました");await load(true);}else toast((j&&j.error)||"送れませんでした");}
+async function uaReceived(){const j=await call("receive_done",{});if(j.dropped)return;if(j&&j.ok){toast("受け付けました。いってらっしゃいませ");await load(true);}else toast((j&&j.error)||"送れませんでした");}
 function render(){
   if(!DATA)return;const d=DATA,r=d.reservation,st=stageOf(d);
   if(dropoffActive(d)){document.querySelector("nav").style.display="none";$("#strip").innerHTML=`<div class="on">札幌店</div>`;$("#ttl").textContent=d.dropoff.state==="parked"?"返却完了":"乗り捨て返却";$("#tbadge").textContent=d.dropoff.state==="parked"?"完了":"入力必須";$("#app").innerHTML=d.dropoff.state==="parked"?dropoffCompleteHtml(d):dropoffFormHtml();if(d.dropoff.state!=="parked")["do-address","do-map","do-parking","do-detail"].forEach(id=>$("#"+id).addEventListener("input",dropoffReady));return;}else document.querySelector("nav").style.display="grid";
@@ -565,21 +575,24 @@ function viewNow(d,st){
     h+=`<section class="card">${ringHead(M)}`+
       M.map(x=>`<div class="must"><span>${esc(x.n)}<br><span class="sub">${esc(x.v)}</span></span>${x.ok?`<span class="pill p-g">済</span>`:x.k==="save"?`<button class="pill p-o" style="border:0;cursor:pointer" onclick="saveHelp()">保存する</button>`:`<button class="pill p-r" style="border:0;cursor:pointer" onclick="fixMust('${x.k}')">${x.k==="pay"?"支払う":x.k==="conf"?"確認する":"登録する"}</button>`}</div>`).join("")+
       `<div class="sub">${left.length?"足りない項目があるあいだ、お知らせが届きます。":(isDel(r.visit_type)||isPub(r.visit_type)?"当日はこの画面に、スタッフの出発・到着が出ます。":"")}</div></section>`;
+    if(uaOn(d))h+=uaCard(d);
     h+=clsCard(r);
     if(d.damage&&d.damage.ready)h+=dmgCard(d);
     if(isPub(r.visit_type))h+=busCard("go");
-    if(st==="eve"&&isDel(r.visit_type))h+=`<section class="card"><div class="h">当日の流れ</div><div class="tl"><div><b>1</b>スタッフが出発すると、ここに到着予定が出ます</div><div><b>2</b>着いたら、車のナンバーと停めた場所がこの画面とLINE（またはメール）に届きます</div><div><b>3</b>免許証を見せて、鍵を受け取って出発</div></div><div class="sub">持ち物：運転する人の免許証</div><div class="sub">ご家族の受け取りもOK。運転する方全員の免許証を、先に「予約・変更」→「免許証の登録」から登録してください。</div></section>`;
+    if(st==="eve"&&isDel(r.visit_type)&&!uaOn(d))h+=`<section class="card"><div class="h">当日の流れ</div><div class="tl"><div><b>1</b>スタッフが出発すると、ここに到着予定が出ます</div><div><b>2</b>着いたら、車のナンバーと停めた場所がこの画面とLINE（またはメール）に届きます</div><div><b>3</b>免許証を見せて、鍵を受け取って出発</div></div><div class="sub">持ち物：運転する人の免許証</div><div class="sub">ご家族の受け取りもOK。運転する方全員の免許証を、先に「予約・変更」→「免許証の登録」から登録してください。</div></section>`;
     if(st==="eve"&&!isDel(r.visit_type))h+=`<section class="card"><div class="h">受け取り方</div><div class="txt">${isPub(r.visit_type)?ST.pickHow:"ご予約の時間に"+ST.shop+"へお越しください。運転する方の免許証をお持ちください。"}</div><div class="sub">ご家族の受け取りもOK。運転する方全員の免許証を、先に「予約・変更」→「免許証の登録」から登録してください。</div></section>`;
   }else if(st==="go_day"||st==="go_soon"||st==="go_live"){
     const live=st==="go_live";
     h+=`<section class="card hero"><div class="h">本日の${g}</div><div class="big">${hm(r.lend_time)||""} ・ ${esc(goPlace)}</div>${isDel(r.visit_type)?westLoc(r.del_place):""}${isPub(r.visit_type)?busLink():""}${live?`<span class="live" style="color:#fff">自動更新 ・ ${nowHM()}</span>`:isDel(r.visit_type)?`<div class="sub">スタッフが出発すると、この画面が自動で切り替わります。</div>`:isPub(r.visit_type)?`<div class="sub">送迎車が出発すると、この画面が自動で切り替わります。</div>`:""}</section>`;
+    if(uaOn(d)){h+=uaCard(d)+ttCard(d)+dmgCard(d);}else{
     h+=nudge("go");/* ★2026-11-09 nosh「着きましたボタンはもっと上」：スタッフに知らせるを本日のカードのすぐ下へ */
     h+=ttCard(d);
     if(isDel(r.visit_type))h+=live?dvCard(d):waitNote(r,0,goPlace);
     else if(isPub(r.visit_type))h+=(shCur()?shCard():shWait("go"))+busCard("go");
     h+=`<section class="card"><div class="h">受け取り方</div><div class="txt">${isDel(r.visit_type)?"スタッフが車を停めて「到着」を押すと、ナンバーと停めた場所がこの画面に出て、LINE（またはメール）にも届きます。その場所で免許証を見せて、鍵を受け取ってください。":isPub(r.visit_type)?ST.pickHow:"ご予約の時間に"+ST.shop+"へお越しください。運転する方の免許証をお持ちください。"}</div><div class="sub">ご家族の受け取りもOK。運転する方全員の免許証を、先に「予約・変更」→「免許証の登録」から登録してください。</div></section>`;
-    h+=dmgCard(d);
+    h+=dmgCard(d);}
   }else if(st==="using"){
+    if(uaOn(d))h+=uaCard(d);
     h+=`<section class="card hero"><div class="h">${b}</div><div class="big">${mdw(r.return_date)} ${hm(r.return_time)||""}</div><div class="sub">${esc(backPlace)}</div>${isBdb(r.return_type)?busLink():""}${!isCol(r.return_type)?yardLink():""}</section>`;
     h+=ttCard(d);
     h+=`<section class="card"><div class="h">${b}を変えたいとき</div><button class="row" onclick="openReq('return_time')"><span class="l"><span class="n">${b}の時間</span><span class="v">${hm(r.return_time)||"未定"}</span></span><span class="pill p-o">確認あり</span></button>`+
@@ -1948,6 +1961,16 @@ const D={
 "スタッフがお伺いしますので、そのままお待ちください":["Our staff will come to you. Please wait there.","工作人員會前往，請在原地稍候。","직원이 찾아뵙겠습니다. 그대로 기다려 주세요."],
 "スタッフが車と鍵を受け取るまで、車の近くでお待ちください":["Please wait near the car until our staff receive the car and key","在工作人員收到車輛與鑰匙前，請在車旁等候","직원이 차와 열쇠를 받을 때까지 차 근처에서 기다려 주세요"],
 "待っている場所（分かる範囲で）":["Where you are waiting (if you can)","您等候的位置（盡量描述）","기다리는 장소(아는 범위에서)"],
+"無人でのお受け取り":["Self pickup (no staff on site)","無人取車","무인 수령"],
+"ご希望の時間帯が混み合っているため、スタッフがお車を先に停めておき、お客様に取りに行っていただく方法をご案内しています。":["Your requested time is busy, so our staff will park the car in advance and you pick it up yourself.","您希望的時段較為繁忙，因此由工作人員先將車輛停好，請您自行前往取車。","희망 시간대가 혼잡하여 직원이 차를 미리 세워 두고 고객님이 직접 가지러 가시는 방법을 안내드립니다."],
+"お車を停める場所":["Where the car will be parked","車輛停放位置","차량 주차 장소"],
+"お車を停める場所は、決まりしだいここに出ます。LINE またはメールでもお知らせします。":["The parking spot will appear here once decided. We will also notify you by LINE or email.","停車位置確定後會顯示在這裡，也會以 LINE 或電子郵件通知您。","주차 장소가 정해지면 여기에 표시되며 LINE 또는 이메일로도 알려 드립니다."],
+"同意する":["I agree","同意","동의합니다"],
+"お車に乗りました":["I've got the car","已取車","차를 받았습니다"],
+"鍵とお車を受け取ったら押してください。これで貸出の手続きは完了です。":["Tap this once you have the key and the car. This completes the pickup.","取得鑰匙與車輛後請按此鍵，即完成取車手續。","열쇠와 차를 받으면 눌러 주세요. 이것으로 대여 절차가 완료됩니다."],
+"同意を受け付けました":["Thank you, we received your agreement","已收到您的同意","동의를 접수했습니다"],
+"受け付けました。いってらっしゃいませ":["Received. Have a safe trip!","已收到。祝您旅途愉快","접수했습니다. 즐거운 여행 되세요"],
+"駐車場":["Car park","停車場","주차장"],"階・区画":["Floor / bay","樓層／車位","층・구획"],"ナンバー":["Plate","車牌","번호판"],"目印":["Landmark","標的物","표시"],"鍵の場所":["Key location","鑰匙位置","열쇠 위치"],"地図で見る":["Open map","查看地圖","지도 보기"],
 "鍵は手元に持っている":["I have the key with me","鑰匙在我手上","열쇠를 가지고 있다"],
 "確認してください（全部チェックで送信できます）":["Please check (send when all are checked)","請確認（全部勾選後即可送出）","확인해 주세요(모두 체크하면 보낼 수 있습니다)"],
 "スタッフが車と鍵を受け取り、返却が完了しました。ご利用ありがとうございました。":["Our staff received the car and key. Your return is complete. Thank you.","工作人員已收到車輛與鑰匙，還車完成。感謝您的使用。","직원이 차와 열쇠를 받아 반납이 완료되었습니다. 이용해 주셔서 감사합니다."],
