@@ -1249,6 +1249,8 @@ Deno.serve(async (req) => {
       license: { cnt: licCnt, drivers: licDrivers, names: (licRows[0] && Array.isArray(licRows[0].names)) ? licRows[0].names.map((x: any) => ({ n: String((x && x.n) || "") })).filter((x: any) => x.n) : [] },
       car: carInfo,
       received: receivedDone,
+      // 2026-11-20 nosh: 札幌の通常回収は「車を停めました」ではなく、スタッフが回収タスク(c-)を完了した時に返却完了（読取のみ）
+      returned: !!(cTask && cTask.done === true),
       pendingCancel, readyPending, recentChanges: chg, history: historyTop,
       dropoff: dropoffRow ? { active: true, state: dropoffPayload.state || (dropoffRow.status === "completed" ? "parked" : "activated"), address: dropoffPayload.address || "", map_url: dropoffPayload.map_url || "", parking_name: dropoffPayload.parking_name || "", parking_detail: dropoffPayload.parking_detail || "", submitted_at: dropoffPayload.submitted_at || "", photos: dropoffPhotos.filter(Boolean) } : { active: false, state: "off" },
       delLocked: delHandedOver(r, dTask, receivedDone),
