@@ -45,7 +45,7 @@ const HD = { url: 'https://ckrxttbnawkclshczsia.supabase.co', key: 'sb_publishab
 const BTDB = { url: 'https://ggqugvyskyiblxiycpci.supabase.co', key: 'sb_publishable_fI8HYYDFn3Soa4kOMbNCAA_oOxGPPKV' };
 let VER = null, VERR = [];
 const rpc = (db, fn, body) => fetch(db.url + '/rest/v1/rpc/' + fn, { method: 'POST', headers: { apikey: db.key, Authorization: 'Bearer ' + db.key, 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
-const SN = { nha: '那覇', spk: '札幌', takh: '高松 HANDYMAN', takb: '高松 BUDDICA' }, ON = { ART: 'エアトリ', JLN: 'じゃらん', RKT: '楽天', SKT: 'スカイチケット', RDC: 'レンタカードットコム', TAB: 'たびらい' };
+const SN = { nha: '那覇', spk: '札幌', takh: '高松 HANDYMAN', takb: '高松 BUDDICA' }, ON = { ART: 'エアトリ', JLN: 'じゃらん', RKT: '楽天', SKT: 'スカイチケット', RDC: 'レンタカードットコム', TAB: 'たびらい', ADMIN: 'admin（公式）' };
 const STORES = ['nha', 'spk', 'takh', 'takb'], esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 let DATA = null;
 async function load() {
@@ -55,18 +55,18 @@ async function load() {
     DATA = await r.json();
     /* 答え合わせ：お客様画面チェッカー（main＝那覇・札幌／BT＝高松）。読めない店は「答え合わせできず」と出す */
     VER = []; VERR = [];
-    for (const [nm, db] of [['那覇・札幌', HD], ['高松', BTDB]]) { try { const v = await rpc(db, 'price_match_verify', { p_hours: 6 }); VER.push(...(v.rows || [])); } catch (e) { VERR.push(nm); } }
+    for (const [nm, db] of [['那覇・札幌', HD], ['高松', BTDB]]) { try { const v = await rpc(db, 'price_match_verify', { p_hours: 6 }); VER.push(...(v.rows || []).map(x => x.ota === 'OFFICIAL' ? { ...x, ota: 'ADMIN' } : x)); /* 公式＝admin */ } catch (e) { VERR.push(nm); } }
     render();
   } catch (e) { document.getElementById('meta').innerHTML = '<span class="err">読めませんでした（' + esc(e.message) + '）。1分後にもう一度読みます</span>'; }
 }
 function render() {
   const rows = (DATA.rows || []).map(x => { let n = {}; try { n = JSON.parse(x.note || '{}'); } catch {} return { ...x, u: +n.u || 0, read: n.read, ex: n.ex || [] }; });
-  const links = DATA.links || {}, on = (s, o) => links[s + '|' + o] === true;
+  const links = DATA.links || {}, on = (s, o) => o === 'ADMIN' || links[s + '|' + o] === true; /* admin（公式）は常に連携 */
   const live = rows.filter(x => on(x.store, x.ota));
   const T = live.reduce((a, x) => ({ s: a.s + (+x.same || 0), d: a.d + (+x.diff || 0), u: a.u + x.u }), { s: 0, d: 0, u: 0 });
   const age = DATA.seen ? Math.round((Date.now() - new Date(DATA.seen.replace(' ', 'T') + ':00+09:00')) / 60000) : null;
   document.getElementById('meta').textContent = `ロボの最終集計 ${DATA.seen || 'なし'}${age != null ? `（${age}分前）` : ''}・この画面を読んだ時刻 ${DATA.at}`;
-  const stale = age == null || age > 360, missing = Object.keys(links).filter(k => links[k] === true && !rows.some(x => x.store + '|' + x.ota === k));
+  const stale = age == null || age > 360, missing = [...Object.keys(links).filter(k => links[k] === true), 'nha|ADMIN', 'spk|ADMIN', 'takb|ADMIN'].filter(k => !rows.some(x => x.store + '|' + x.ota === k));
   const allOk = !stale && !missing.length && T.d === 0 && T.u === 0 && live.length > 0;
   document.getElementById('big').innerHTML = stale ? `<div class="big ng">⚠️ ロボの集計が止まっています（最終 ${esc(DATA.seen || 'なし')}）。下の数は古い可能性があります</div>`
     : `<div class="big ${allOk ? 'ok' : 'ng'}">${allOk ? '✅ 連動ONの全OTA・全クラスがマスターと同じ' : `⚠️ まだ揃っていません：違う ${T.d}欄・読めていない ${T.u}欄${missing.length ? `・集計が届いていない組 ${missing.map(k => { const [s, o] = k.split('|'); return (SN[s] || s) + (ON[o] || o); }).join('、')}` : ''}`}</div>`;
@@ -91,7 +91,7 @@ function render() {
   let h = '';
   for (const st of STORES) {
     const R = rows.filter(x => x.store === st); if (!R.length) continue;
-    const otas = [...new Set(R.map(x => x.ota))], clss = [...new Set(R.map(x => x.cls))].sort((a, b) => a.localeCompare(b, 'ja', { numeric: true }));
+    const otas = [...new Set(R.map(x => x.ota))].sort((a, b) => (a === 'ADMIN') - (b === 'ADMIN')), clss = [...new Set(R.map(x => x.cls))].sort((a, b) => a.localeCompare(b, 'ja', { numeric: true }));
     const sd = R.filter(x => on(st, x.ota)).reduce((a, x) => a + (+x.diff || 0), 0), su = R.filter(x => on(st, x.ota)).reduce((a, x) => a + x.u, 0);
     h += `<div class="card"><h2>${SN[st] || st}　<span style="font-weight:400;color:var(--sub)">違う ${sd}欄・読めていない ${su}欄</span></h2><table><tr><th>OTA</th>${clss.map(c => `<th>${esc(c)}</th>`).join('')}</tr>`;
     for (const o of otas) {
