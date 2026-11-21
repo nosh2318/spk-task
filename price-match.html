@@ -25,6 +25,8 @@ th{font-size:12px;color:var(--sub);font-weight:600}
 #det{position:fixed;inset:auto 0 0 0;max-height:60vh;overflow:auto;background:var(--card);border-top:1px solid var(--line);padding:12px 16px;display:none;box-shadow:0 -6px 20px rgba(0,0,0,.15)}
 #det h3{margin:0 0 6px;font-size:15px}#det table td{white-space:normal;text-align:left;font-size:12px}#det .x{float:right;cursor:pointer;color:var(--sub)}
 .err{color:var(--ng)}
+.v{display:block;font-size:10px;font-weight:600;margin-top:2px}.v.ok{color:var(--ok)}.v.ng{color:var(--ng)}.v.na{color:var(--un)}
+.big.warn{background:#fff4e5;color:#b54708}
 </style>
 </head>
 <body>
@@ -32,13 +34,17 @@ th{font-size:12px;color:var(--sub);font-weight:600}
   <h1>価格の一致（マスター × 全OTA × 全クラス）</h1>
   <div class="meta" id="meta">読み込み中…</div>
   <div id="big"></div>
+  <div id="ver"></div>
   <div class="sum" id="sum"></div>
-  <div class="legend">緑＝同じ／赤＝違う（数＝欄数）／灰＝26時間以上読めていない（同じか不明）／—＝連動OFF。マスをタップで中身。1分ごとに自動で読み直し。</div>
+  <div class="legend">緑＝同じ／赤＝違う（数＝欄数）／灰＝26時間以上読めていない（同じか不明）／—＝連動OFF。マスの下の小さい字＝答え合わせ（お客様の画面の値段をマスターと比べた結果・直近6時間）。マスをタップで中身。1分ごとに自動で読み直し。</div>
   <div id="out"></div>
 </div>
 <div id="det"></div>
 <script>
 const HD = { url: 'https://ckrxttbnawkclshczsia.supabase.co', key: 'sb_publishable_aTVhlY0YD-5BBfI03ZNnsg_MzO_vsIe' };
+const BTDB = { url: 'https://ggqugvyskyiblxiycpci.supabase.co', key: 'sb_publishable_fI8HYYDFn3Soa4kOMbNCAA_oOxGPPKV' };
+let VER = null, VERR = [];
+const rpc = (db, fn, body) => fetch(db.url + '/rest/v1/rpc/' + fn, { method: 'POST', headers: { apikey: db.key, Authorization: 'Bearer ' + db.key, 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
 const SN = { nha: '那覇', spk: '札幌', takh: '高松 HANDYMAN', takb: '高松 BUDDICA' }, ON = { ART: 'エアトリ', JLN: 'じゃらん', RKT: '楽天', SKT: 'スカイチケット', RDC: 'レンタカードットコム', TAB: 'たびらい' };
 const STORES = ['nha', 'spk', 'takh', 'takb'], esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 let DATA = null;
@@ -46,7 +52,11 @@ async function load() {
   try {
     const r = await fetch(HD.url + '/rest/v1/rpc/price_match_status', { method: 'POST', headers: { apikey: HD.key, Authorization: 'Bearer ' + HD.key, 'Content-Type': 'application/json' }, body: '{}' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    DATA = await r.json(); render();
+    DATA = await r.json();
+    /* 答え合わせ：お客様画面チェッカー（main＝那覇・札幌／BT＝高松）。読めない店は「答え合わせできず」と出す */
+    VER = []; VERR = [];
+    for (const [nm, db] of [['那覇・札幌', HD], ['高松', BTDB]]) { try { const v = await rpc(db, 'price_match_verify', { p_hours: 6 }); VER.push(...(v.rows || [])); } catch (e) { VERR.push(nm); } }
+    render();
   } catch (e) { document.getElementById('meta').innerHTML = '<span class="err">読めませんでした（' + esc(e.message) + '）。1分後にもう一度読みます</span>'; }
 }
 function render() {
@@ -60,6 +70,23 @@ function render() {
   const allOk = !stale && !missing.length && T.d === 0 && T.u === 0 && live.length > 0;
   document.getElementById('big').innerHTML = stale ? `<div class="big ng">⚠️ ロボの集計が止まっています（最終 ${esc(DATA.seen || 'なし')}）。下の数は古い可能性があります</div>`
     : `<div class="big ${allOk ? 'ok' : 'ng'}">${allOk ? '✅ 連動ONの全OTA・全クラスがマスターと同じ' : `⚠️ まだ揃っていません：違う ${T.d}欄・読めていない ${T.u}欄${missing.length ? `・集計が届いていない組 ${missing.map(k => { const [s, o] = k.split('|'); return (SN[s] || s) + (ON[o] || o); }).join('、')}` : ''}`}</div>`;
+  { const vk = x => `${x.store}|${x.ota}|${x.cls}`, VM = Object.fromEntries((VER || []).map(v => [vk(v), v]));
+    const vOn = (VER || []).filter(v => on(v.store, v.ota)), vok = vOn.reduce((a, v) => a + (+v.ok || 0), 0), vng = vOn.reduce((a, v) => a + (+v.ng || 0), 0);
+    /* お客様画面の確認が、ロボが管理画面を読んだ時刻より後のものだけで答え合わせする（前の確認は書く前の値段を見ている） */
+    const vT = s => new Date(`${new Date().getFullYear()}-${String(s).slice(0, 2)}-${String(s).slice(3, 5)}T${String(s).slice(6)}:00+09:00`).getTime();
+    const fresh = x => { const v = VM[vk(x)]; return v && v.last && (!x.read || vT(v.last) >= new Date(x.read).getTime()); };
+    const clash = live.filter(x => !(+x.diff) && !x.u && fresh(x) && +VM[vk(x)].ng > 0), stale = live.filter(x => !(+x.diff) && !x.u && VM[vk(x)] && !fresh(x)).length;
+    const noVer = live.filter(x => !VM[vk(x)]).length;
+    let msg, cl;
+    if (!vok && !vng) { msg = '答え合わせ：直近6時間にお客様画面の確認がありません（チェッカーが止まっている間は答え合わせできません）'; cl = 'warn'; }
+    else if (clash.length) { msg = `答え合わせ：⚠️ 上の表で「同じ」なのに、お客様の画面ではマスターと違う組が ${clash.length} 組（${clash.slice(0, 6).map(x => (SN[x.store] || x.store) + (ON[x.ota] || x.ota) + x.cls).join('、')}${clash.length > 6 ? '…' : ''}）`; cl = 'ng'; }
+    else if (vng) { msg = `答え合わせ：お客様の画面でマスターと違う ${vng}件・同じ ${vok}件（違う件は上の表でも「違う／読めていない」の組だけ＝表の数字と食い違いなし）`; cl = 'warn'; }
+    else { msg = `答え合わせ：✅ お客様の画面 ${vok}件すべてマスターと同じ＝表の数字は正確`; cl = 'ok'; }
+    if (VERR.length) msg += `（${VERR.join('・')}は答え合わせを読めませんでした）`;
+    if (noVer) msg += `／お客様画面の確認が無い組×クラス ${noVer}`;
+    if (stale) msg += `／お客様画面の確認がロボの書き込みより前の組×クラス ${stale}（次の確認待ち）`;
+    document.getElementById('ver').innerHTML = `<div class="big ${cl}" style="font-size:14px">${esc(msg)}</div>`;
+    globalThis.__VM = VM; }
   document.getElementById('sum').innerHTML = `<div class="pill ok">同じ<b>${T.s}</b></div><div class="pill ng">違う<b>${T.d}</b></div><div class="pill un">読めていない<b>${T.u}</b></div>`;
   let h = '';
   for (const st of STORES) {
@@ -73,9 +100,10 @@ function render() {
         if (!x) { h += '<td><span class="c off">·</span></td>'; continue; }
         if (!on(st, o)) { h += '<td><span class="c off">—</span></td>'; continue; }
         const k = `${st}|${o}|${c}`;
-        if (+x.diff > 0) h += `<td><span class="c ng" data-k="${esc(k)}">違${x.diff}</span></td>`;
-        else if (x.u > 0) h += `<td><span class="c un" data-k="${esc(k)}">?${x.u}</span></td>`;
-        else h += `<td><span class="c ok" data-k="${esc(k)}">同</span></td>`; }
+        const vv = (globalThis.__VM || {})[k], vt = !vv ? '' : +vv.ng > 0 ? `<span class="v ng">客✗${vv.ng}</span>` : +vv.ok > 0 ? `<span class="v ok">客✓${vv.ok}</span>` : `<span class="v na">客?</span>`;
+        if (+x.diff > 0) h += `<td><span class="c ng" data-k="${esc(k)}">違${x.diff}</span>${vt}</td>`;
+        else if (x.u > 0) h += `<td><span class="c un" data-k="${esc(k)}">?${x.u}</span>${vt}</td>`;
+        else h += `<td><span class="c ok" data-k="${esc(k)}">同</span>${vt}</td>`; }
       h += '</tr>';
     }
     h += '</table></div>';
@@ -89,6 +117,10 @@ function show(x) {
   d.innerHTML = `<span class="x" onclick="this.parentNode.style.display='none'">閉じる ✕</span><h3>${esc(SN[x.store] || x.store)}・${esc(ON[x.ota] || x.ota)}・${esc(x.cls)}</h3>
     <div style="color:var(--sub);font-size:12px;margin-bottom:6px">同じ ${x.same}欄・違う ${x.diff}欄・読めていない ${x.u}欄／OTAの値段を読んだ時刻（いちばん古い）${rd}</div>` +
     (x.ex.length ? `<table><tr><th>プラン・期間</th><th>欄</th><th>マスター</th><th>OTA</th></tr>${x.ex.map(e => `<tr><td>${esc(e.l)}</td><td>${esc(e.k)}</td><td>${Number.isFinite(+e.w) ? (+e.w).toLocaleString() : esc(e.w)}円</td><td>${e.g == null ? '読めず' : e.g.toLocaleString() + '円'}</td></tr>`).join('')}</table>${x.diff > x.ex.length ? `<div style="color:var(--sub);font-size:12px">ほか ${x.diff - x.ex.length}欄</div>` : ''}` : '<div>違う欄はありません</div>');
+  { const vv = (globalThis.__VM || {})[`${x.store}|${x.ota}|${x.cls}`];
+    d.innerHTML += !vv ? '<div style="margin-top:8px;color:var(--sub);font-size:12px">答え合わせ：直近6時間にお客様画面の確認なし</div>'
+      : `<div style="margin-top:8px;font-size:12px"><b>答え合わせ（お客様の画面）</b> 同じ ${vv.ok}件・違う ${vv.ng}件・確認できず ${vv.na}件／最終 ${esc(vv.last)}</div>` +
+        ((vv.ex || []).length ? `<table><tr><th>利用日</th><th>日数</th><th>マスター</th><th>お客様の画面</th></tr>${vv.ex.map(e => `<tr><td>${esc(e.d)}</td><td>${esc(e.n)}日</td><td>${Number.isFinite(+e.w) ? (+e.w).toLocaleString() : esc(e.w)}円</td><td>${Number.isFinite(+e.g) ? (+e.g).toLocaleString() : esc(e.g)}円</td></tr>`).join('')}</table>` : ''); }
   d.style.display = 'block';
 }
 load(); setInterval(load, 60000);
