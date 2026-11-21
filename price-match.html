@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>価格の一致</title>
+<!-- 11/21 オーナー「マスタとどのOTAのどのクラスがあってないのか全店分わかりやすく可視化」。開くたび・1分ごとに DB（price_match_status＝ロボが送る 店×OTA×クラス の数）から読む。書き込みはしない -->
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1d2330;--sub:#667085;--line:#e4e7ec;--ok:#12b76a;--okbg:#e7f8ef;--ng:#d92d20;--ngbg:#fdecea;--un:#98a2b3;--unbg:#f0f2f5;--off:#c8ccd4}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111418;--card:#1a1f26;--ink:#e6e9ee;--sub:#98a2b3;--line:#2a313b;--okbg:#0f2e20;--ngbg:#3a1714;--unbg:#232a33;--off:#3a414c}}
+:root[data-theme="dark"]{--bg:#111418;--card:#1a1f26;--ink:#e6e9ee;--sub:#98a2b3;--line:#2a313b;--okbg:#0f2e20;--ngbg:#3a1714;--unbg:#232a33;--off:#3a414c}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Hiragino Sans",sans-serif}
+.wrap{max-width:1100px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:0 0 4px}.meta{color:var(--sub);font-size:12px;margin-bottom:12px}
+.sum{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}.pill{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 12px;min-width:110px}
+.pill b{display:block;font-size:22px}.pill.ok b{color:var(--ok)}.pill.ng b{color:var(--ng)}.pill.un b{color:var(--un)}
+.big{font-size:16px;font-weight:700;margin:0 0 12px;padding:10px 12px;border-radius:10px}.big.ok{background:var(--okbg);color:var(--ok)}.big.ng{background:var(--ngbg);color:var(--ng)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px;overflow-x:auto}
+.card h2{font-size:15px;margin:0 0 8px}
+table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid var(--line);padding:6px;text-align:center;white-space:nowrap}th:first-child,td:first-child{text-align:left}
+th{font-size:12px;color:var(--sub);font-weight:600}
+.c{display:inline-block;min-width:44px;border-radius:6px;padding:2px 6px;font-size:12px;font-weight:700;cursor:pointer}
+.c.ok{background:var(--okbg);color:var(--ok)}.c.ng{background:var(--ngbg);color:var(--ng)}.c.un{background:var(--unbg);color:var(--un)}.c.off{color:var(--off);cursor:default}
+.legend{color:var(--sub);font-size:12px;margin:-4px 0 12px}
+#det{position:fixed;inset:auto 0 0 0;max-height:60vh;overflow:auto;background:var(--card);border-top:1px solid var(--line);padding:12px 16px;display:none;box-shadow:0 -6px 20px rgba(0,0,0,.15)}
+#det h3{margin:0 0 6px;font-size:15px}#det table td{white-space:normal;text-align:left;font-size:12px}#det .x{float:right;cursor:pointer;color:var(--sub)}
+.err{color:var(--ng)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>価格の一致（マスター × 全OTA × 全クラス）</h1>
+  <div class="meta" id="meta">読み込み中…</div>
+  <div id="big"></div>
+  <div class="sum" id="sum"></div>
+  <div class="legend">緑＝同じ／赤＝違う（数＝欄数）／灰＝26時間以上読めていない（同じか不明）／—＝連動OFF。マスをタップで中身。1分ごとに自動で読み直し。</div>
+  <div id="out"></div>
+</div>
+<div id="det"></div>
+<script>
+const HD = { url: 'https://ckrxttbnawkclshczsia.supabase.co', key: 'sb_publishable_aTVhlY0YD-5BBfI03ZNnsg_MzO_vsIe' };
+const SN = { nha: '那覇', spk: '札幌', takh: '高松 HANDYMAN', takb: '高松 BUDDICA' }, ON = { ART: 'エアトリ', JLN: 'じゃらん', RKT: '楽天', SKT: 'スカイチケット', RDC: 'レンタカードットコム', TAB: 'たびらい' };
+const STORES = ['nha', 'spk', 'takh', 'takb'], esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+let DATA = null;
+async function load() {
+  try {
+    const r = await fetch(HD.url + '/rest/v1/rpc/price_match_status', { method: 'POST', headers: { apikey: HD.key, Authorization: 'Bearer ' + HD.key, 'Content-Type': 'application/json' }, body: '{}' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    DATA = await r.json(); render();
+  } catch (e) { document.getElementById('meta').innerHTML = '<span class="err">読めませんでした（' + esc(e.message) + '）。1分後にもう一度読みます</span>'; }
+}
+function render() {
+  const rows = (DATA.rows || []).map(x => { let n = {}; try { n = JSON.parse(x.note || '{}'); } catch {} return { ...x, u: +n.u || 0, read: n.read, ex: n.ex || [] }; });
+  const links = DATA.links || {}, on = (s, o) => links[s + '|' + o] === true;
+  const live = rows.filter(x => on(x.store, x.ota));
+  const T = live.reduce((a, x) => ({ s: a.s + (+x.same || 0), d: a.d + (+x.diff || 0), u: a.u + x.u }), { s: 0, d: 0, u: 0 });
+  const age = DATA.seen ? Math.round((Date.now() - new Date(DATA.seen.replace(' ', 'T') + ':00+09:00')) / 60000) : null;
+  document.getElementById('meta').textContent = `ロボの最終集計 ${DATA.seen || 'なし'}${age != null ? `（${age}分前）` : ''}・この画面を読んだ時刻 ${DATA.at}`;
+  const stale = age == null || age > 360, missing = Object.keys(links).filter(k => links[k] === true && !rows.some(x => x.store + '|' + x.ota === k));
+  const allOk = !stale && !missing.length && T.d === 0 && T.u === 0 && live.length > 0;
+  document.getElementById('big').innerHTML = stale ? `<div class="big ng">⚠️ ロボの集計が止まっています（最終 ${esc(DATA.seen || 'なし')}）。下の数は古い可能性があります</div>`
+    : `<div class="big ${allOk ? 'ok' : 'ng'}">${allOk ? '✅ 連動ONの全OTA・全クラスがマスターと同じ' : `⚠️ まだ揃っていません：違う ${T.d}欄・読めていない ${T.u}欄${missing.length ? `・集計が届いていない組 ${missing.map(k => { const [s, o] = k.split('|'); return (SN[s] || s) + (ON[o] || o); }).join('、')}` : ''}`}</div>`;
+  document.getElementById('sum').innerHTML = `<div class="pill ok">同じ<b>${T.s}</b></div><div class="pill ng">違う<b>${T.d}</b></div><div class="pill un">読めていない<b>${T.u}</b></div>`;
+  let h = '';
+  for (const st of STORES) {
+    const R = rows.filter(x => x.store === st); if (!R.length) continue;
+    const otas = [...new Set(R.map(x => x.ota))], clss = [...new Set(R.map(x => x.cls))].sort((a, b) => a.localeCompare(b, 'ja', { numeric: true }));
+    const sd = R.filter(x => on(st, x.ota)).reduce((a, x) => a + (+x.diff || 0), 0), su = R.filter(x => on(st, x.ota)).reduce((a, x) => a + x.u, 0);
+    h += `<div class="card"><h2>${SN[st] || st}　<span style="font-weight:400;color:var(--sub)">違う ${sd}欄・読めていない ${su}欄</span></h2><table><tr><th>OTA</th>${clss.map(c => `<th>${esc(c)}</th>`).join('')}</tr>`;
+    for (const o of otas) {
+      h += `<tr><td>${esc(ON[o] || o)}${on(st, o) ? '' : '（連動OFF）'}</td>`;
+      for (const c of clss) { const x = R.find(y => y.ota === o && y.cls === c);
+        if (!x) { h += '<td><span class="c off">·</span></td>'; continue; }
+        if (!on(st, o)) { h += '<td><span class="c off">—</span></td>'; continue; }
+        const k = `${st}|${o}|${c}`;
+        if (+x.diff > 0) h += `<td><span class="c ng" data-k="${esc(k)}">違${x.diff}</span></td>`;
+        else if (x.u > 0) h += `<td><span class="c un" data-k="${esc(k)}">?${x.u}</span></td>`;
+        else h += `<td><span class="c ok" data-k="${esc(k)}">同</span></td>`; }
+      h += '</tr>';
+    }
+    h += '</table></div>';
+  }
+  document.getElementById('out').innerHTML = h || '<div class="card">ロボの集計がまだ届いていません</div>';
+  document.querySelectorAll('.c[data-k]').forEach(el => el.onclick = () => show(rows.find(x => `${x.store}|${x.ota}|${x.cls}` === el.dataset.k)));
+}
+function show(x) {
+  const d = document.getElementById('det'); if (!x) return;
+  const rd = x.read ? new Date(x.read).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }) : 'なし';
+  d.innerHTML = `<span class="x" onclick="this.parentNode.style.display='none'">閉じる ✕</span><h3>${esc(SN[x.store] || x.store)}・${esc(ON[x.ota] || x.ota)}・${esc(x.cls)}</h3>
+    <div style="color:var(--sub);font-size:12px;margin-bottom:6px">同じ ${x.same}欄・違う ${x.diff}欄・読めていない ${x.u}欄／OTAの値段を読んだ時刻（いちばん古い）${rd}</div>` +
+    (x.ex.length ? `<table><tr><th>プラン・期間</th><th>欄</th><th>マスター</th><th>OTA</th></tr>${x.ex.map(e => `<tr><td>${esc(e.l)}</td><td>${esc(e.k)}</td><td>${Number.isFinite(+e.w) ? (+e.w).toLocaleString() : esc(e.w)}円</td><td>${e.g == null ? '読めず' : e.g.toLocaleString() + '円'}</td></tr>`).join('')}</table>${x.diff > x.ex.length ? `<div style="color:var(--sub);font-size:12px">ほか ${x.diff - x.ex.length}欄</div>` : ''}` : '<div>違う欄はありません</div>');
+  d.style.display = 'block';
+}
+load(); setInterval(load, 60000);
+</script>
+</body>
+</html>
