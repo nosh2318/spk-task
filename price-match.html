@@ -71,22 +71,28 @@ function render() {
   document.getElementById('big').innerHTML = stale ? `<div class="big ng">⚠️ ロボの集計が止まっています（最終 ${esc(DATA.seen || 'なし')}）。下の数は古い可能性があります</div>`
     : `<div class="big ${allOk ? 'ok' : 'ng'}">${allOk ? '✅ 連動ONの全OTA・全クラスがマスターと同じ' : `⚠️ まだ揃っていません：違う ${T.d}欄・読めていない ${T.u}欄${missing.length ? `・集計が届いていない組 ${missing.map(k => { const [s, o] = k.split('|'); return (SN[s] || s) + (ON[o] || o); }).join('、')}` : ''}`}</div>`;
   { const vk = x => `${x.store}|${x.ota}|${x.cls}`, VM = Object.fromEntries((VER || []).map(v => [vk(v), v]));
-    const vOn = (VER || []).filter(v => on(v.store, v.ota)), vok = vOn.reduce((a, v) => a + (+v.ok || 0), 0), vng = vOn.reduce((a, v) => a + (+v.ng || 0), 0);
+    const vOn = (VER || []).filter(v => on(v.store, v.ota)), vok = vOn.reduce((a, v) => a + (+v.ok || 0), 0);
     /* お客様画面の確認が、ロボが管理画面を読んだ時刻より後のものだけで答え合わせする（前の確認は書く前の値段を見ている） */
     const vT = s => new Date(`${new Date().getFullYear()}-${String(s).slice(0, 2)}-${String(s).slice(3, 5)}T${String(s).slice(6)}:00+09:00`).getTime();
     const fresh = x => { const v = VM[vk(x)]; return v && v.last && (!x.read || vT(v.last) >= new Date(x.read).getTime()); };
-    const clash = live.filter(x => !(+x.diff) && !x.u && fresh(x) && +VM[vk(x)].ng > 0), stale = live.filter(x => !(+x.diff) && !x.u && VM[vk(x)] && !fresh(x)).length;
+    /* 11/21 違う欄は1欄ずつの確認時刻（ngt）で見る。クラスの最新時刻で見ると、ほかの日の新しい確認につられて、書く前の「違う」まで数えてしまう。公式（ADMIN）は読みが30分ごとに進むので今まで通り */
+    const ngF = x => { const v = VM[vk(x)]; if (!v) return 0; const rd = x.read ? new Date(x.read).getTime() : 0; if (x.ota !== 'ADMIN' && Array.isArray(v.ngt)) return v.ngt.filter(t => !rd || !(new Date(t).getTime() < rd)).length; return fresh(x) ? +v.ng || 0 : 0; };
+    const ngOld = x => Math.max(0, (+(VM[vk(x)] || {}).ng || 0) - ngF(x));
+    const liveK = new Set(live.map(vk));
+    const vng = live.reduce((a, x) => a + ngF(x), 0) + vOn.filter(v => !liveK.has(vk(v))).reduce((a, v) => a + (+v.ng || 0), 0);
+    const clash = live.filter(x => !(+x.diff) && !x.u && ngF(x) > 0), stale = live.filter(x => !(+x.diff) && !x.u && VM[vk(x)] && (!fresh(x) || ngOld(x) > 0)).length;
     const noVer = live.filter(x => !VM[vk(x)]).length;
     let msg, cl;
     if (!vok && !vng) { msg = '答え合わせ：直近6時間にお客様画面の確認がありません（チェッカーが止まっている間は答え合わせできません）'; cl = 'warn'; }
     else if (clash.length) { msg = `答え合わせ：⚠️ 上の表で「同じ」なのに、お客様の画面ではマスターと違う組が ${clash.length} 組（${clash.slice(0, 6).map(x => (SN[x.store] || x.store) + (ON[x.ota] || x.ota) + x.cls).join('、')}${clash.length > 6 ? '…' : ''}）`; cl = 'ng'; }
     else if (vng) { msg = `答え合わせ：お客様の画面でマスターと違う ${vng}件・同じ ${vok}件（違う件は上の表でも「違う／読めていない」の組だけ＝表の数字と食い違いなし）`; cl = 'warn'; }
+    else if (stale) { msg = `答え合わせ：お客様の画面で確かめた ${vok}件はマスターと同じ。書いた後にまだ確かめていない所があります`; cl = 'warn'; }
     else { msg = `答え合わせ：✅ お客様の画面 ${vok}件すべてマスターと同じ＝表の数字は正確`; cl = 'ok'; }
     if (VERR.length) msg += `（${VERR.join('・')}は答え合わせを読めませんでした）`;
     if (noVer) msg += `／お客様画面の確認が無い組×クラス ${noVer}`;
     if (stale) msg += `／お客様画面の確認がロボの書き込みより前の組×クラス ${stale}（次の確認待ち）`;
     document.getElementById('ver').innerHTML = `<div class="big ${cl}" style="font-size:14px">${esc(msg)}</div>`;
-    globalThis.__VM = VM; }
+    globalThis.__VM = VM; globalThis.__NGF = ngF; }
   document.getElementById('sum').innerHTML = `<div class="pill ok">同じ<b>${T.s}</b></div><div class="pill ng">違う<b>${T.d}</b></div><div class="pill un">読めていない<b>${T.u}</b></div>`;
   let h = '';
   for (const st of STORES) {
@@ -100,7 +106,7 @@ function render() {
         if (!x) { h += '<td><span class="c off">·</span></td>'; continue; }
         if (!on(st, o)) { h += '<td><span class="c off">—</span></td>'; continue; }
         const k = `${st}|${o}|${c}`;
-        const vv = (globalThis.__VM || {})[k], vt = !vv ? '' : +vv.ng > 0 ? `<span class="v ng">客✗${vv.ng}</span>` : +vv.ok > 0 ? `<span class="v ok">客✓${vv.ok}</span>` : `<span class="v na">客?</span>`;
+        const vv = (globalThis.__VM || {})[k], nf = vv && globalThis.__NGF ? globalThis.__NGF(x) : 0, no = vv ? Math.max(0, (+vv.ng || 0) - nf) : 0, vt = !vv ? '' : nf > 0 ? `<span class="v ng">客✗${nf}</span>` : no > 0 ? `<span class="v na">客待${no}</span>` : +vv.ok > 0 ? `<span class="v ok">客✓${vv.ok}</span>` : `<span class="v na">客?</span>`;
         if (+x.diff > 0) h += `<td><span class="c ng" data-k="${esc(k)}">違${x.diff}</span>${vt}</td>`;
         else if (x.u > 0) h += `<td><span class="c un" data-k="${esc(k)}">?${x.u}</span>${vt}</td>`;
         else h += `<td><span class="c ok" data-k="${esc(k)}">同</span>${vt}</td>`; }
