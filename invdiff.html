@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>在庫の一致</title>
+<!-- 11/21 オーナー「常に配車表とどこのOTAのどのクラスが在庫あってないのかを可視化・シンプルに一発で見てわかるもの」。
+     開くたび・1分ごとに DB から読む（invctl_dashboard＝配車表から出すべき数とOTAの数／高松は OTA の数を invctl_snap から・invctl_modes＝最後に読んだ時刻）。書き込みはしない -->
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1d2330;--sub:#667085;--line:#e4e7ec;--ok:#12b76a;--okbg:#e7f8ef;--ng:#d92d20;--ngbg:#fdecea;--lo:#b54708;--lobg:#fef0c7;--un:#98a2b3;--unbg:#f0f2f5;--off:#c8ccd4}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111418;--card:#1a1f26;--ink:#e6e9ee;--sub:#98a2b3;--line:#2a313b;--okbg:#0f2e20;--ngbg:#3a1714;--lobg:#3a2a0c;--lo:#fdb022;--unbg:#232a33;--off:#3a414c}}
+:root[data-theme="dark"]{--bg:#111418;--card:#1a1f26;--ink:#e6e9ee;--sub:#98a2b3;--line:#2a313b;--okbg:#0f2e20;--ngbg:#3a1714;--lobg:#3a2a0c;--lo:#fdb022;--unbg:#232a33;--off:#3a414c}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Hiragino Sans",sans-serif}
+.wrap{max-width:1100px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:0 0 4px}.meta{color:var(--sub);font-size:12px;margin-bottom:12px}
+.big{font-size:18px;font-weight:800;margin:0 0 14px;padding:12px 14px;border-radius:10px}
+.big.ok{background:var(--okbg);color:var(--ok)}.big.ng{background:var(--ngbg);color:var(--ng)}.big.lo{background:var(--lobg);color:var(--lo)}.big.un{background:var(--unbg);color:var(--sub)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px;overflow-x:auto}
+.card h2{font-size:15px;margin:0 0 8px}
+table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid var(--line);padding:6px;text-align:center;white-space:nowrap}th:first-child,td:first-child{text-align:left}
+th{font-size:12px;color:var(--sub);font-weight:600}
+.c{display:inline-block;min-width:64px;border-radius:6px;padding:3px 8px;font-size:13px;font-weight:800}
+.c.ok{background:var(--okbg);color:var(--ok)}.c.ng{background:var(--ngbg);color:var(--ng)}.c.lo{background:var(--lobg);color:var(--lo)}.c.un{background:var(--unbg);color:var(--un)}.c.off{color:var(--off)}
+.t{display:block;font-size:11px;color:var(--sub);font-weight:400}
+.legend{color:var(--sub);font-size:12px;margin:-6px 0 12px}
+.list td{text-align:left;white-space:normal}.list td:first-child{white-space:nowrap}
+.tag{font-weight:800}.tag.ng{color:var(--ng)}.tag.lo{color:var(--lo)}
+.err{color:var(--ng);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>在庫の一致（配車表 × OTA）</h1>
+<div class="meta" id="meta">読み込み中…</div>
+<div id="big" class="big un">読み込み中…</div>
+<div class="legend">正しい数＝配車表の空き − 安全在庫。🔴 多い＝売りすぎの恐れ／🟡 少ない＝売り逃し／✅ 合っている（数は合っていない「クラス×日」の数）</div>
+<div class="card"><table id="mx"></table></div>
+<div class="card"><h2>合っていない所</h2><table class="list" id="ls"></table></div>
+</div>
+<script>
+const DB = {
+  hd: { url: 'https://ckrxttbnawkclshczsia.supabase.co', key: 'sb_publishable_aTVhlY0YD-5BBfI03ZNnsg_MzO_vsIe' },
+  bt: { url: 'https://ggqugvyskyiblxiycpci.supabase.co', key: 'sb_publishable_fI8HYYDFn3Soa4kOMbNCAA_oOxGPPKV' },
+};
+const STORES = [
+  { id: 'nha', name: '那覇', db: 'hd', otas: ['RKT', 'JLN', 'SKT', 'ART', 'RDC'] },
+  { id: 'spk', name: '札幌', db: 'hd', otas: ['RKT', 'JLN', 'SKT', 'ART', 'RDC'] },
+  { id: 'takh', name: '高松 HDM', db: 'bt', otas: ['RKT', 'JLN'] },
+  { id: 'takb', name: '高松 BUDDICA', db: 'bt', otas: ['ART', 'TAB', 'RDC'] },
+];
+const OTAS = ['RKT', 'JLN', 'SKT', 'ART', 'RDC', 'TAB'];
+const ON = { RKT: '楽天', JLN: 'じゃらん', SKT: 'skyticket', ART: 'エアトリ', RDC: 'レンタカー.com', TAB: 'たびらい' };
+// 在庫チェック（invcheck.html）と同じ対応表：たびらいのクラス番号→配車表のクラス、高松 BUDDICA の AA は1台ずつ
+const TABMAP = { 7343: 'A', 7344: 'C', 7345: 'E', 7346: 'D', 7347: 'F', 7348: 'G', 7349: 'H', 7473: 'I', 7474: 'J', 7475: 'K' };
+const AAV = { 'AA:783': 'G400d', 'AA:row13': 'G400d', 'AA:7350': 'G400d', 'AA:784': 'Eクラス カブリオレ', 'AA:row11': 'Eクラス カブリオレ', 'AA:7351': 'Eクラス カブリオレ',
+  'AA:785': 'イヴォーク', 'AA:row12': 'イヴォーク', 'AA:7352': 'イヴォーク', 'AA:786': 'ポルシェ 911', 'AA:row14': 'ポルシェ 911', 'AA:7354': 'ポルシェ 911', 'AA:787': 'ウルス', 'AA:row15': 'ウルス', 'AA:7353': 'ウルス' };
+const DAYS = 180;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const hm = t => t ? new Date(t).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+const md = d => `${+d.slice(5, 7)}/${+d.slice(8, 10)}`;
+const rpc = (db, fn, body) => fetch(`${db.url}/rest/v1/rpc/${fn}`, { method: 'POST', cache: 'no-store', headers: { apikey: db.key, Authorization: `Bearer ${db.key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+async function chunks(db, fn, body, pre) { // 1回で返るのは1000行まで。30日ずつ取る
+  const d0 = new Date(Date.now() + 9 * 3600e3), day = k => new Date(d0.getTime() + k * 86400e3).toISOString().slice(0, 10);
+  const one = async k => { for (let i = 0; i < 3; i++) { const r = await rpc(db, `${fn}?${pre}dd=gte.${day(k * 30)}&dd=lt.${day(k * 30 + 30)}`, body); if (r.ok) return r.json(); await new Promise(w => setTimeout(w, 800)); } throw new Error('OTA の数が読めない'); };
+  return (await Promise.all([0, 1, 2, 3, 4, 5, 6].map(one))).flat();
+}
+async function fetchStore(s) {
+  const r = await rpc(DB[s.db], 'invctl_dashboard', { p_store: s.id, p_days: DAYS });
+  if (!r.ok) throw new Error('配車表が読めない ' + r.status);
+  const d = await r.json(); let cells = d.cells || [];
+  const read = {};
+  if (s.db === 'bt') { // 高松：ロボが読んだ OTA の数は那覇・札幌の DB にある
+    const on = {};
+    for (const o of s.otas) for (const x of await chunks(DB.hd, 'invctl_snap', { p_store: s.id, p_days: DAYS }, 'ota=eq.' + o + '&')) {
+      const c = x.ota === 'TAB' ? (TABMAP[x.cls] || (+x.cls >= 7350 && +x.cls <= 7354 ? 'AA:' + x.cls : null)) : x.cls; if (c) on[c + '|' + x.dd + '|' + x.ota] = x.qty; if (!read[x.ota] || x.read_at > read[x.ota]) read[x.ota] = x.read_at; }
+    cells = cells.map(([c, dd, o, sb, v]) => [c, dd, o, sb, on[c + '|' + dd + '|' + o] ?? v]);
+  }
+  else for (let i = 0; i < 2; i++) { try { const q = await rpc(DB.hd, 'invctl_modes', { p_store: s.id }); if (q.ok) { for (const y of await q.json()) read[y.ota] = y.last_read; break; } } catch {} }
+  const per = {}, bad = [];
+  for (const o of s.otas) per[o] = { ng: 0, lo: 0, ok: 0, un: 0 };
+  for (const [c0, dd, o, sb, v] of cells) {
+    if (!per[o] || (s.id === 'takb' && c0 === 'AA')) continue; // AA はクラスでまとめず1台ずつ
+    const c = AAV[c0] ? 'AA ' + AAV[c0] : c0;
+    if (v == null || sb == null) { per[o].un++; continue; }
+    if (+v > +sb) { per[o].ng++; bad.push({ s, o, c, dd, v: +v, sb: +sb, k: 'ng' }); }
+    else if (+v < +sb) { per[o].lo++; bad.push({ s, o, c, dd, v: +v, sb: +sb, k: 'lo' }); }
+    else per[o].ok++;
+  }
+  return { per, bad, read };
+}
+// 同じ 店×OTA×クラス×向き で続いた日をまとめる（1/22〜1/23 OTA 7・正しい 6）
+function group(bad) {
+  const m = {}; for (const x of bad) (m[[x.s.id, x.o, x.c, x.k].join('|')] ||= []).push(x);
+  const out = [];
+  for (const xs of Object.values(m)) {
+    xs.sort((a, b) => a.dd < b.dd ? -1 : 1); let cur = null;
+    for (const x of xs) {
+      const next = cur && new Date(new Date(cur.to + 'T12:00:00Z').getTime() + 86400e3).toISOString().slice(0, 10);
+      if (cur && x.dd === next) { cur.to = x.dd; cur.n++; cur.vs.add(x.v); cur.sbs.add(x.sb); }
+      else { if (cur) out.push(cur); cur = { ...x, from: x.dd, to: x.dd, n: 1, vs: new Set([x.v]), sbs: new Set([x.sb]) }; }
+    }
+    if (cur) out.push(cur);
+  }
+  return out.sort((a, b) => (a.k === b.k ? 0 : a.k === 'ng' ? -1 : 1) || (a.from < b.from ? -1 : a.from > b.from ? 1 : 0));
+}
+const rng = set => { const a = [...set].sort((x, y) => x - y); return a.length === 1 ? a[0] : `${a[0]}〜${a[a.length - 1]}`; };
+async function load() {
+  // 配車表の数の作り直しの最中に読むと、一瞬だけ大量にずれて見えることがある（11/21 14:22 那覇 A2 で確認）→ ずれがあった店は数秒おいて読み直し、2回とも同じずれの所だけ出す
+  const kb = x => [x.o, x.c, x.dd, x.k].join('|');
+  const get = async s => { try { let r = await fetchStore(s); if (r.bad.length) { await new Promise(w => setTimeout(w, 4000)); const r2 = await fetchStore(s), keep = new Set(r2.bad.map(kb));
+      r.bad = r.bad.filter(x => keep.has(kb(x))); for (const o of s.otas) { r.per[o].ng = r.bad.filter(x => x.o === o && x.k === 'ng').length; r.per[o].lo = r.bad.filter(x => x.o === o && x.k === 'lo').length; } }
+    return { s, ...r }; } catch (e) { return { s, err: e.message }; } };
+  const hd = await Promise.all(STORES.filter(s => s.db === 'hd').map(get)), bt = []; for (const s of STORES.filter(s => s.db === 'bt')) bt.push(await get(s));
+  const res = STORES.map(s => [...hd, ...bt].find(r => r.s === s));
+  let ng = 0, lo = 0, errs = 0; const bad = [];
+  for (const r of res) { if (r.err) { errs++; continue; } for (const o of r.s.otas) { ng += r.per[o].ng; lo += r.per[o].lo; } bad.push(...r.bad); }
+  $('big').className = 'big ' + (ng ? 'ng' : lo ? 'lo' : errs ? 'un' : 'ok');
+  $('big').textContent = ng ? `🔴 売りすぎの恐れ ${ng}マス（ほかに少ない ${lo}マス）` : lo ? `🟡 売りすぎなし・少ない（売り逃し）${lo}マス` : errs ? '読めない店があります' : '✅ 全店・全 OTA が配車表と合っています';
+  $('mx').innerHTML = '<tr><th>店</th>' + OTAS.map(o => `<th>${ON[o]}</th>`).join('') + '</tr>' + res.map(r => '<tr><td><b>' + esc(r.s.name) + '</b>' + (r.err ? ` <span class="err">${esc(r.err)}</span>` : '') + '</td>' + OTAS.map(o => {
+    if (!r.s.otas.includes(o) || r.err) return '<td><span class="c off">—</span></td>';
+    const p = r.per[o], t = r.read[o] ? `<span class="t">読 ${hm(r.read[o])}</span>` : '';
+    if (p.ng) return `<td><span class="c ng">🔴 多い ${p.ng}</span>${p.lo ? `<span class="t">少ない ${p.lo}</span>` : ''}${t}</td>`;
+    if (p.lo) return `<td><span class="c lo">🟡 少ない ${p.lo}</span>${t}</td>`;
+    if (!p.ok) return `<td><span class="c un">未読</span>${t}</td>`;
+    return `<td><span class="c ok">✅</span>${t}</td>`;
+  }).join('') + '</tr>').join('');
+  const g = group(bad);
+  $('ls').innerHTML = g.length ? '<tr><th>店・OTA</th><th>クラス</th><th>日付</th><th>OTA の数 → 正しい数</th></tr>' + g.map(x =>
+    `<tr><td>${esc(x.s.name)}・${ON[x.o]}</td><td><b>${esc(x.c)}</b></td><td>${x.from === x.to ? md(x.from) : md(x.from) + '〜' + md(x.to)}（${x.n}日）</td><td><span class="tag ${x.k}">${x.k === 'ng' ? '🔴 多い' : '🟡 少ない'}</span>　${rng(x.vs)} → ${rng(x.sbs)}</td></tr>`).join('')
+    : '<tr><td>ありません</td></tr>';
+  $('meta').textContent = `${hm(Date.now())} 時点（1分ごとに自動で読み直し）`;
+}
+load(); setInterval(load, 60e3);
+</script>
+</body>
+</html>
