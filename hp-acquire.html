@@ -93,6 +93,15 @@
     <div class="scroll"><table id="ltMedia"></table></div>
   </div>
 
+  <!-- 🌏 インバウンド（札幌のみ・2026-11-23） -->
+  <div class="card" id="cardIB" style="display:none">
+    <h2>🌏 インバウンド（新規獲得・発生月ベース・2026-10〜）</h2>
+    <div class="sub" style="margin-bottom:6px">開くたびに予約データから計算。インバウンド＝電話が海外の番号（+81以外）または名前がローマ字だけ／国内＝それ以外。OTAは名前がカナ・漢字で届くため、海外のお客様でも国内に入ることがあります（OTAの数字は少なめに出ます）。</div>
+    <div class="scroll"><table id="ibMonth"></table></div>
+    <div class="sub" style="margin:10px 0 3px;font-weight:800;color:#1d4ed8">媒体別（2026-10〜 合計）</div>
+    <div class="scroll"><table id="ibMedia"></table></div>
+  </div>
+
   <!-- 🌐 HP(自社) サイト別 内訳 -->
   <div class="card" id="cardH">
     <h2>🌐 HP（自社）サイト別 内訳（発生月ベース）</h2>
@@ -174,7 +183,7 @@ let AD={}, ROWS=[], BUILT=null, PLACES=null;
 
 async function fetchAll(){
   let out=[],off=0;
-  const cols='id,ota,base_price,option_price,discount,price,'+C.occ.join(',')+','+C.lend+','+C.ret+',status'+(C.hpMode==='source'?',source':',site')+(C.lt?',del_place,col_place':'');
+  const cols='id,ota,base_price,option_price,discount,price,'+C.occ.join(',')+','+C.lend+','+C.ret+',status'+(C.hpMode==='source'?',source':',site')+(C.lt?',del_place,col_place,name,tel':'');
   // 全件取得→クライアントでHP(自社)/OTAを分類。取消は英/日ともクライアント除外
   let q='select='+cols+'&order=id';
   while(true){
@@ -211,6 +220,13 @@ function ltOne(s){
 // 1予約：お届け・回収のどちらかが観光なら観光、どちらかが地元なら地元、それ以外は不明（場所未入力も不明）
 function ltOf(dp,cp){const a=ltOne(dp),b=ltOne(cp);if(a==='tour'||b==='tour')return 'tour';if(a==='local'||b==='local')return 'local';return 'unk';}
 
+// 🌏 インバウンド判定（電話の国番号・名前の書き方だけ。表示は件数のみ）
+function isInbound(r){
+  const t=String(r.tel||'').normalize('NFKC').replace(/[\s()\-]/g,'');
+  if((/^\+/.test(t)&&!/^\+81/.test(t))||(/^00/.test(t)&&!/^0081/.test(t)))return true;
+  const n=String(r.name||'').normalize('NFKC').trim();
+  return n.length>1&&/^[A-Za-z][A-Za-z .,'-]*$/.test(n);
+}
 async function loadAd(){
   try{const r=await fetch(C.sb+'/rest/v1/'+C.st+'?key=eq.'+C.adk+'&select=value',{headers:H()});const d=await r.json();if(d&&d[0]&&d[0].value){AD=JSON.parse(d[0].value)||{};}}catch(e){AD={};}
 }
@@ -230,7 +246,7 @@ function build(resv){
   const occMonths=months(START,curYM);
   const M={},MO={};occMonths.forEach(m=>{M[m]={count:0,rev:0,dep:{},nSum:0,nCnt:0,site:{}};MO[m]={count:0,rev:0,dep:{},nSum:0,nCnt:0};});
   const OTAby={};
-  const LT={mon:{},med:{}},LTSTART='2026-10';const ltAdd=(o,k,c)=>{o[k]=o[k]||{local:0,tour:0,unk:0};o[k][c]++;};
+  const LT={mon:{},med:{}},IB={mon:{},med:{}},LTSTART='2026-10';const ltAdd=(o,k,c)=>{o[k]=o[k]||{local:0,tour:0,unk:0};o[k][c]++;};
   let depMin=curYM,depMax=START;
   resv.forEach(r=>{
     if(/cancel|キャンセル/i.test(r.status||''))return;               // 取消(英/日)は除外
@@ -251,9 +267,10 @@ function build(resv){
       const p=(PLACES&&PLACES[r.id])||{};const c=ltOf(String(p.del_place||'').trim()||r.del_place,String(p.col_place||'').trim()||r.col_place);
       const g=isHP(r)?'hp':'ota';ltAdd(LT.mon,o+'|'+g,c);ltAdd(LT.mon,o+'|all',c);
       ltAdd(LT.med,g==='hp'?'公式サイト':chOf(r),c);ltAdd(LT.med,'__'+g,c);ltAdd(LT.med,'__all',c);
+      const ib=isInbound(r)?'inb':'dom';[[IB.mon,o+'|'+g],[IB.mon,o+'|all'],[IB.med,g==='hp'?'公式サイト':chOf(r)],[IB.med,'__'+g],[IB.med,'__all']].forEach(a=>{a[0][a[1]]=a[0][a[1]]||{inb:0,dom:0};a[0][a[1]][ib]++;});
     }
   });
-  return {occMonths,M,MO,OTAby,LT,LTSTART,depMonths:months(depMin<START?START:depMin, depMax<curYM?curYM:depMax)};
+  return {occMonths,M,MO,OTAby,LT,IB,LTSTART,depMonths:months(depMin<START?START:depMin, depMax<curYM?curYM:depMax)};
 }
 function render(){
   if(!ROWS.length&&!BUILT)return;
@@ -317,7 +334,7 @@ function render(){
     b+='<tr><td class="l num">'+ch+'</td><td class="num">'+o.count+'件</td><td class="yen">'+yen(o.rev)+'</td><td>'+yen(adr)+'</td><td class="stay">'+avgN(o.nSum,o.nCnt)+'</td><td class="fee">'+yen(fee)+'</td><td class="cpa">'+yen(cpa)+'</td><td class="net">'+yen(net)+'</td><td>'+pct+'%</td></tr>';});
   b+='</tbody><tfoot><tr><td class="l">合計</td><td>'+oC+'件</td><td>'+yen(oR)+'</td><td>'+(oC?yen(oR/oC):'—')+'</td><td class="stay">'+avgN(oNS,oNC)+'</td><td class="fee">'+yen(oFee)+'</td><td class="cpa">'+(oC?yen(oFee/oC):'—')+'</td><td class="net">'+yen(oNet)+'</td><td>100%</td></tr></tfoot>';
   document.getElementById('brkO').innerHTML=b;
-  if(C.lt)renderLocal(BUILT);
+  if(C.lt){renderLocal(BUILT);renderInb(BUILT);}
   renderLT('lt',M,vis);
   renderLT('ltO',MO,vis);
 }
@@ -343,6 +360,29 @@ function renderLocal(B){
   t+='</tbody><tfoot>'+row('🧮 全体',md.__all)+'</tfoot>';
   document.getElementById('ltMedia').innerHTML=t;
   document.getElementById('cardLT').style.display='';
+}
+// 🌏 インバウンドの表（地元・観光と同じ形）
+function renderInb(B){
+  const z={inb:0,dom:0},pc=(a,b)=>b?Math.round(a/b*100):null;
+  const cell=x=>{x=x||z;const j=x.inb+x.dom,p=pc(x.inb,j);
+    return '<td class="num" style="border-left:2px solid #bfdbfe">'+x.inb+'</td><td class="num">'+x.dom+'</td>'
+      +'<td style="white-space:nowrap">'+(p==null?'—':'<b style="color:#1d4ed8">インバウンド '+p+'%</b>・<b style="color:#475569">国内 '+(100-p)+'%</b>')+'</td>';};
+  const G=[['hp','🌐 公式サイト'],['ota','🏨 OTA'],['all','🧮 全体']];
+  const ms=B.occMonths.filter(m=>m>=B.LTSTART);
+  let h='<thead><tr><th class="l" rowspan="2">発生月</th>'+G.map(g=>'<th colspan="3" style="text-align:center;background:#eff6ff;color:#1e3a8a;border-left:2px solid #bfdbfe">'+g[1]+'</th>').join('')+'</tr><tr>'
+    +G.map(()=>'<th style="border-left:2px solid #bfdbfe">インバウンド</th><th>国内</th><th>構成比</th>').join('')+'</tr></thead><tbody>';
+  const tot={};G.forEach(g=>{tot[g[0]]={inb:0,dom:0};});
+  ms.forEach(m=>{h+='<tr><td class="l num">'+m+'</td>'+G.map(g=>{const x=B.IB.mon[m+'|'+g[0]]||z;tot[g[0]].inb+=x.inb;tot[g[0]].dom+=x.dom;return cell(x);}).join('')+'</tr>';});
+  h+='</tbody><tfoot><tr><td class="l">合計</td>'+G.map(g=>cell(tot[g[0]])).join('')+'</tr></tfoot>';
+  document.getElementById('ibMonth').innerHTML=h;
+  const md=B.IB.med,n=x=>(x||z).inb+(x||z).dom;
+  const ks=Object.keys(md).filter(k=>k.indexOf('__')!==0&&k!=='公式サイト').sort((a,b)=>n(md[b])-n(md[a]));
+  const row=(l,x,b)=>'<tr'+(b?' style="font-weight:800;background:#f8fafc"':'')+'><td class="l num">'+l+'</td><td class="num">'+n(x)+'件</td>'+cell(x)+'</tr>';
+  let t='<thead><tr><th class="l">媒体</th><th>件数</th><th style="border-left:2px solid #bfdbfe">インバウンド</th><th>国内</th><th>構成比</th></tr></thead><tbody>';
+  t+=row('🌐 公式サイト',md['公式サイト'],true);ks.forEach(k=>{t+=row('　'+k,md[k]);});t+=row('🏨 OTA 計',md.__ota,true);
+  t+='</tbody><tfoot>'+row('🧮 全体',md.__all)+'</tfoot>';
+  document.getElementById('ibMedia').innerHTML=t;
+  document.getElementById('cardIB').style.display='';
 }
 // ⏱ リードタイム分解（共通：HP/OTAで再利用）
 function renderLT(elId,Md,occMonths){
