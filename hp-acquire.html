@@ -83,6 +83,15 @@
     <div class="lg">🌐HP＝広告費を入力→CPA/効果/判定が計算。🏨OTA＝手数料18%は自動。判定🛑＝コストが売上を上回る（赤字）。</div>
   </div>
 
+  <!-- 🏠 地元・観光（札幌のみ・2026-11-23） -->
+  <div class="card" id="cardLT" style="display:none">
+    <h2>🏠 地元・観光（新規獲得・発生月ベース・2026-10〜）</h2>
+    <div class="sub" style="margin-bottom:6px">お届け・回収の場所で判定（開くたびに予約データから計算）。観光＝ホテル・宿・空港／地元＝住まい（部屋番号・寮・社宅・集合住宅）や郊外の住所／不明＝駅・待合せ・中心部の住所だけ・場所未入力。構成比は不明を除いた地元：観光。場所が入ると自動で反映されます。</div>
+    <div class="scroll"><table id="ltMonth"></table></div>
+    <div class="sub" style="margin:10px 0 3px;font-weight:800;color:#0f766e">媒体別（2026-10〜 合計）</div>
+    <div class="scroll"><table id="ltMedia"></table></div>
+  </div>
+
   <!-- 🌐 HP(自社) サイト別 内訳 -->
   <div class="card" id="cardH">
     <h2>🌐 HP（自社）サイト別 内訳（発生月ベース）</h2>
@@ -112,7 +121,7 @@ const MAIN_ANON='sb_publishable_aTVhlY0YD-5BBfI03ZNnsg_MzO_vsIe';
 const BT_SB='https://ggqugvyskyiblxiycpci.supabase.co';
 const BT_ANON='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdncXVndnlza3lpYmx4aXljcGNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxMDc3NjksImV4cCI6MjA5MzY4Mzc2OX0.uNhWcBd_Dl5nzemZDQfJ8mQV6iY73MwystGGpTRPC18';
 const CFG={
-  spk:{sb:MAIN,anon:MAIN_ANON,resv:'reservations',    lend:'lend_date', ret:'return_date',occ:['created_at'],             st:'app_settings',    adk:'hp_adspend_spk',lbl:'❄️札幌店',hpMode:'ota'},
+  spk:{sb:MAIN,anon:MAIN_ANON,resv:'reservations',    lend:'lend_date', ret:'return_date',occ:['created_at'],             st:'app_settings',    adk:'hp_adspend_spk',lbl:'❄️札幌店',hpMode:'ota',lt:true},
   nha:{sb:MAIN,anon:MAIN_ANON,resv:'nha_reservations',lend:'start_date',ret:'end_date',   occ:['booked_at','created_at'], st:'nha_app_settings',adk:'hp_adspend_nha',lbl:'🏝️那覇店',hpMode:'ota'},
   bt: {sb:BT_SB,anon:BT_ANON, resv:'bt_reservations', lend:'start_date',ret:'end_date',   occ:['booked_at','created_at'], st:'bt_app_settings', adk:'hp_adspend_bt', lbl:'🚐高松店',hpMode:'source'},
 };
@@ -158,11 +167,11 @@ function siteOf(r){if(r.ota==='SP'||r.ota==='direct')return 'TEL';if(r.ota==='HA
 function isOTA(r){return C.hpMode==='source'?(String(r.source||'')==='ota'):(OTA_CODES.indexOf(r.ota)>=0);}
 function chOf(r){return C.hpMode==='source'?(r.ota||'その他'):(OTANAME[r.ota]||r.ota||'その他');}
 let VIEW=(()=>{try{return localStorage.getItem('hp_view_'+STORE)==='ota'?'ota':'hp';}catch(e){return 'hp';}})();
-let AD={}, ROWS=[], BUILT=null;
+let AD={}, ROWS=[], BUILT=null, PLACES=null;
 
 async function fetchAll(){
   let out=[],off=0;
-  const cols='id,ota,base_price,option_price,discount,price,'+C.occ.join(',')+','+C.lend+','+C.ret+',status'+(C.hpMode==='source'?',source':',site');
+  const cols='id,ota,base_price,option_price,discount,price,'+C.occ.join(',')+','+C.lend+','+C.ret+',status'+(C.hpMode==='source'?',source':',site')+(C.lt?',del_place,col_place':'');
   // 全件取得→クライアントでHP(自社)/OTAを分類。取消は英/日ともクライアント除外
   let q='select='+cols+'&order=id';
   while(true){
@@ -172,6 +181,33 @@ async function fetchAll(){
   }
   return out;
 }
+// 🏠 地元・観光：スタッフが入れた場所（places）を優先（データ画面と同じ順）。読むだけ
+async function fetchPlaces(){
+  let out=[],off=0;
+  while(true){
+    const r=await fetch(C.sb+'/rest/v1/places?select=reservation_id,del_place,col_place&order=reservation_id&limit=1000&offset='+off,{headers:H()});
+    if(!r.ok)throw new Error('場所の取得失敗 '+r.status);
+    const d=await r.json();out=out.concat(d);if(d.length<1000)break;off+=1000;
+  }
+  const m={};out.forEach(p=>{m[p.reservation_id]=p;});return m;
+}
+// 地元/観光 判定（お届け・回収場所の文字だけで判定・DBに書かない）
+// 観光＝ホテル・宿・空港など泊まる/着く場所／地元＝住まい（部屋番号・寮・社宅・集合住宅名）や郊外の住所・郊外の大型店／不明＝駅・待合せ・中心部の住所だけ・場所未入力
+const LT_TOUR=/ホテル|hotel|旅館|ryokan|ホステル|hostel|ユース|ゲストハウス|guest ?house|民泊|airbnb|stay|ステイ|ヴィラ|villa|リゾート|resort|酒店|飯店|ドーミー|dormy|マリオット|marriott|ヴィアイン|ベッセル|オータニ|ホリデイ|ルートイン|リブマックス|livemax|グランベル|プレリア|クインテッサ|エミシア|ポールスター|モントレ|ワシントン|プリンス|プリンセス|メルキュール|ロイヤルパーク|萬怡|knot|ウィークリー|マンスリー|inn\b|イン(札幌|すすきの|大通)|空港|airport|新千歳|丘珠|ロープウェイ/i;
+const LT_HOME=/号室|\d{3,4}号|寮|寄宿舎|社宅|住宅|団地|号棟|[A-Z]?棟|レオパレス|マンション|ハイツ|コーポ|アパート|メゾン|パレス|ハウス|レジデンス|[-ー]\d{3,4}(号)?(\s|$)|\D[1-9]\d{2,3}\s*$|大学|コープ|トライアル|スーパーセンター/i;
+// 札幌市の中央区以外の区・札幌近郊の市町の住所（駅を除く）は地元
+const LT_SUBURB=/(北区|東区|白石区|厚別区|豊平区|清田区|南区|西区|手稲区)[^駅]*(条|丁目|\d)|北広島|江別|石狩|恵庭|千歳市|小樽|当別|北(1[5-9]|[2-9]\d)条|南(1[6-9]|[2-9]\d)条|西(1[5-9]|[2-9]\d)丁目/;
+// ↑中心部から離れた住宅地（北15条以北・南16条以南・西15丁目以西）も地元
+function ltOne(s){
+  s=String(s||'').normalize('NFKC').replace(/〒?\s*\d{3}-?\d{4}/g,' ').replace(/[－−‐ｰ]/g,'-').trim(); // 郵便番号は部屋番号と紛れるので消す
+  if(!s)return '';
+  if(LT_TOUR.test(s))return 'tour';
+  if(LT_HOME.test(s)||LT_SUBURB.test(s))return 'local';
+  return 'unk';
+}
+// 1予約：お届け・回収のどちらかが観光なら観光、どちらかが地元なら地元、それ以外は不明（場所未入力も不明）
+function ltOf(dp,cp){const a=ltOne(dp),b=ltOne(cp);if(a==='tour'||b==='tour')return 'tour';if(a==='local'||b==='local')return 'local';return 'unk';}
+
 async function loadAd(){
   try{const r=await fetch(C.sb+'/rest/v1/'+C.st+'?key=eq.'+C.adk+'&select=value',{headers:H()});const d=await r.json();if(d&&d[0]&&d[0].value){AD=JSON.parse(d[0].value)||{};}}catch(e){AD={};}
 }
@@ -191,6 +227,7 @@ function build(resv){
   const occMonths=months(START,curYM);
   const M={},MO={};occMonths.forEach(m=>{M[m]={count:0,rev:0,dep:{},nSum:0,nCnt:0,site:{}};MO[m]={count:0,rev:0,dep:{},nSum:0,nCnt:0};});
   const OTAby={};
+  const LT={mon:{},med:{}},LTSTART='2026-10';const ltAdd=(o,k,c)=>{o[k]=o[k]||{local:0,tour:0,unk:0};o[k][c]++;};
   let depMin=curYM,depMax=START;
   resv.forEach(r=>{
     if(/cancel|キャンセル/i.test(r.status||''))return;               // 取消(英/日)は除外
@@ -207,8 +244,13 @@ function build(resv){
       if(!MO[o].dep[dm])MO[o].dep[dm]={count:0,rev:0};MO[o].dep[dm].count++;MO[o].dep[dm].rev+=rev;
       const ch=chOf(r);if(!OTAby[ch])OTAby[ch]={count:0,rev:0,nSum:0,nCnt:0};OTAby[ch].count++;OTAby[ch].rev+=rev;if(nt!=null){OTAby[ch].nSum+=nt;OTAby[ch].nCnt++;}
     }
+    if(C.lt&&o>=LTSTART&&(isHP(r)||isOTA(r))){                        // 🏠 地元・観光
+      const p=(PLACES&&PLACES[r.id])||{};const c=ltOf(String(p.del_place||'').trim()||r.del_place,String(p.col_place||'').trim()||r.col_place);
+      const g=isHP(r)?'hp':'ota';ltAdd(LT.mon,o+'|'+g,c);ltAdd(LT.mon,o+'|all',c);
+      ltAdd(LT.med,g==='hp'?'公式サイト':chOf(r),c);ltAdd(LT.med,'__'+g,c);ltAdd(LT.med,'__all',c);
+    }
   });
-  return {occMonths,M,MO,OTAby,depMonths:months(depMin<START?START:depMin, depMax<curYM?curYM:depMax)};
+  return {occMonths,M,MO,OTAby,LT,LTSTART,depMonths:months(depMin<START?START:depMin, depMax<curYM?curYM:depMax)};
 }
 function render(){
   if(!ROWS.length&&!BUILT)return;
@@ -272,8 +314,32 @@ function render(){
     b+='<tr><td class="l num">'+ch+'</td><td class="num">'+o.count+'件</td><td class="yen">'+yen(o.rev)+'</td><td>'+yen(adr)+'</td><td class="stay">'+avgN(o.nSum,o.nCnt)+'</td><td class="fee">'+yen(fee)+'</td><td class="cpa">'+yen(cpa)+'</td><td class="net">'+yen(net)+'</td><td>'+pct+'%</td></tr>';});
   b+='</tbody><tfoot><tr><td class="l">合計</td><td>'+oC+'件</td><td>'+yen(oR)+'</td><td>'+(oC?yen(oR/oC):'—')+'</td><td class="stay">'+avgN(oNS,oNC)+'</td><td class="fee">'+yen(oFee)+'</td><td class="cpa">'+(oC?yen(oFee/oC):'—')+'</td><td class="net">'+yen(oNet)+'</td><td>100%</td></tr></tfoot>';
   document.getElementById('brkO').innerHTML=b;
+  if(C.lt)renderLocal(BUILT);
   renderLT('lt',M,vis);
   renderLT('ltO',MO,vis);
+}
+// 🏠 地元・観光の表（構成比は不明を除いた 地元：観光）
+function renderLocal(B){
+  const z={local:0,tour:0,unk:0},pc=(a,b)=>b?Math.round(a/b*100):null;
+  const cell=x=>{x=x||z;const j=x.local+x.tour,p=pc(x.local,j);
+    return '<td class="num" style="border-left:2px solid #99f6e4">'+x.local+'</td><td class="num">'+x.tour+'</td><td style="color:#94a3b8">'+x.unk+'</td>'
+      +'<td style="white-space:nowrap">'+(p==null?'—':'<b style="color:#0f766e">地元 '+p+'%</b>・<b style="color:#b45309">観光 '+(100-p)+'%</b>')+'</td>';};
+  const G=[['hp','🌐 公式サイト'],['ota','🏨 OTA'],['all','🧮 全体']];
+  const ms=B.occMonths.filter(m=>m>=B.LTSTART);
+  let h='<thead><tr><th class="l" rowspan="2">発生月</th>'+G.map(g=>'<th colspan="4" style="text-align:center;background:#f0fdfa;color:#115e59;border-left:2px solid #99f6e4">'+g[1]+'</th>').join('')+'</tr><tr>'
+    +G.map(()=>'<th style="border-left:2px solid #99f6e4">地元</th><th>観光</th><th>不明</th><th>構成比</th>').join('')+'</tr></thead><tbody>';
+  const tot={};G.forEach(g=>{tot[g[0]]={local:0,tour:0,unk:0};});
+  ms.forEach(m=>{h+='<tr><td class="l num">'+m+'</td>'+G.map(g=>{const x=B.LT.mon[m+'|'+g[0]]||z;['local','tour','unk'].forEach(k=>{tot[g[0]][k]+=x[k];});return cell(x);}).join('')+'</tr>';});
+  h+='</tbody><tfoot><tr><td class="l">合計</td>'+G.map(g=>cell(tot[g[0]])).join('')+'</tr></tfoot>';
+  document.getElementById('ltMonth').innerHTML=h;
+  const md=B.LT.med,n=x=>(x||z).local+(x||z).tour+(x||z).unk;
+  const ks=Object.keys(md).filter(k=>k.indexOf('__')!==0&&k!=='公式サイト').sort((a,b)=>n(md[b])-n(md[a]));
+  const row=(l,x,b)=>'<tr'+(b?' style="font-weight:800;background:#f8fafc"':'')+'><td class="l num">'+l+'</td><td class="num">'+n(x)+'件</td>'+cell(x)+'</tr>';
+  let t='<thead><tr><th class="l">媒体</th><th>件数</th><th style="border-left:2px solid #99f6e4">地元</th><th>観光</th><th>不明</th><th>構成比</th></tr></thead><tbody>';
+  t+=row('🌐 公式サイト',md['公式サイト'],true);ks.forEach(k=>{t+=row('　'+k,md[k]);});t+=row('🏨 OTA 計',md.__ota,true);
+  t+='</tbody><tfoot>'+row('🧮 全体',md.__all)+'</tfoot>';
+  document.getElementById('ltMedia').innerHTML=t;
+  document.getElementById('cardLT').style.display='';
 }
 // ⏱ リードタイム分解（共通：HP/OTAで再利用）
 function renderLT(elId,Md,occMonths){
@@ -298,7 +364,7 @@ function renderLT(elId,Md,occMonths){
   const st=document.getElementById('status');
   await ensureFreshToken();
   if(!_sbToken()){st.style.display='block';st.textContent='⚠️ 管理APPにログインしてからこのページを開いてください（データはログイン必須）。';return;}
-  try{await loadAd();const resv=await fetchAll();ROWS=resv;BUILT=build(resv);render();}
+  try{await loadAd();const [resv,pl]=await Promise.all([fetchAll(),C.lt?fetchPlaces():Promise.resolve(null)]);PLACES=pl;ROWS=resv;BUILT=build(resv);render();}
   catch(e){st.style.display='block';st.textContent='⚠️ 読み込みエラー: '+(e.message||e);}
 })();
 </script>
