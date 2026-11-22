@@ -140,6 +140,9 @@ const $ = id => document.getElementById(id);
 const P = new URLSearchParams(location.search);
 let store = STORES.some(s => s.id === P.get('store')) ? P.get('store') : 'nha';
 const data = {}, logs = {}, pauses = {}, links = {}, applies = {};
+/* 11/22 オーナー「価格の一致と情報が違う。そろえて」：ちがう／同じの判定は、価格の一致ページと同じロボの判定（price_sync_status＝sync_rows.mjs が月ごとのマスターで比べたずれの欄）を使う。この画面で別に判定しない。ROBO=null＝読めなかった（その時は今までの比べ方で出し、上に注意を出す） */
+let ROBO = null;
+async function loadRobo() { try { const j = await rpc('price_sync_status', {}); const m = {}; for (const r of j.rows || []) { const p = String(r.note || '').split('｜'); if (p.length < 3 || r.want == null) continue; m[`${r.store}|${r.site}|${p[0]}|${p[p.length - 1]}`] = r.want; } ROBO = m; } catch { ROBO = null; } }
 const yen = v => v == null ? '—' : Number(v).toLocaleString('ja-JP');
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const ago = t => { if (!t) return ''; const m = Math.round((Date.now() - Date.parse(t)) / 60000); return m < 60 ? `${m}分前` : m < 1440 ? `${Math.round(m / 60)}時間前` : new Date(t).toLocaleDateString('ja-JP'); };
@@ -151,6 +154,7 @@ async function load(st) {
   try { pauses[st] = await rpc('invctl_price_pause_list', { p_store: st }); } catch { pauses[st] = []; }
   try { links[st] = await rpc('invctl_price_link', { p_store: st }); } catch { links[st] = []; }
   try { applies[st] = await rpc('invctl_price_apply_list', { p_store: st }); } catch { applies[st] = []; }
+  await loadRobo();
 }
 // OTA連携（オーナー 11/1「OTA連携ボタンがあるべき」「マスターが変わるとOTAとadminも変わる連結最終型」）：店×OTAのスイッチ（invctl.price_link）。
 // ON にできるのは書いて戻すテスト（各クラス10回）が済んだ組だけ（DB 側でも止める）。「OTAに反映」＝連携ONの組だけ、価格表どおりの値段を invctl_price_want_set に入れる→ロボが在庫の後・次の見回りで書く（安全策はロボ側 priceguard）
@@ -250,7 +254,7 @@ function draw() {
   $('goAll').textContent = `${s.name}：全OTAを価格表どおりに変更（本番許可まで使えません）`;
   $('lastw').textContent = last ? `最後に読んだ時刻：${new Date(last).toLocaleString('ja-JP')}（${ago(last)}）` : 'まだ読めていません';
   const cls = [...s.cls, ...new Set(rows.map(r => r.cls).filter(c => c && !s.cls.includes(c)))];
-  let h = ''; const CNT = { ok: 0, ng: 0, na: 0 };
+  let h = ''; const CNT = { ok: 0, ng: 0, na: 0, end: 0, off: 0 };
   const otaRows = (list, onlyFound) => {
     let q = '';
     for (const o of s.otas) {
@@ -258,14 +262,19 @@ function draw() {
       if (!mine.length && onlyFound) continue;
       if (!mine.length) { q += `<tr><td class="lbl">${OTA[o]}</td><td class="n" colspan="6">${esc(NOTE[o + '_' + store] || NOTE[o] || 'まだ読めていない')}</td><td></td></tr>`; continue; }
       for (const x of mine) for (const ln of lines(x)) {
-        const w = wantOf(store, x, ln.n), why = w.why, fixed = x.ota === 'SKT' && ln.sub.startsWith('通常（');
-        let bad = 0;
-        const cells = ln.vals.map(([l, v, k]) => { const t = w.want ? w.want[k] : undefined;
+        /* 11/22 オーナー「価格の一致と情報が違う」→ ロボ（sync_rows.mjs）と同じ決まり：販売を終えたプラン（site_close_date か valid_close_date が今日より前）はお客様が買えないので比べない・数えない */
+        const ends = [...String(x.label || '').matchAll(/(?:site|valid)_close_date=(\d{4}\/\d{2}\/\d{2})/g)].map(m => m[1]), today = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10).replace(/-/g, '/');
+        if (ends.some(e => e < today)) { CNT.end++; q += `<tr><td class="lbl">${OTA[o]}<small title="${esc(x.label)}">${esc((x.label || '').slice(0, 40))}${ln.sub ? ' ' + ln.sub : ''}</small><small>販売終了（${esc(ends.filter(e => e < today).sort()[0])}）・お客様は買えないので比べない</small></td>${ln.vals.map(([l, v]) => `<td class="n"><small>${l}</small>${yen(v)}</td>`).join('')}${'<td></td>'.repeat(Math.max(0, 6 - ln.vals.length))}<td></td></tr>`; continue; }
+        const stale = !!ROBO && (!x.read_at || Date.now() - Date.parse(x.read_at) > 26 * 3600e3); /* ロボと同じ：26時間より古い読みは同じか分からない */
+        const w0 = wantOf(store, x, ln.n), w = stale && !w0.why ? { ...w0, want: null } : w0, why = w0.why || (stale ? '26時間以上読めていない（同じか不明）' : undefined), fixed = x.ota === 'SKT' && ln.sub.startsWith('通常（');
+        let bad = 0; const off = !((links[store] || []).find(z => z.ota === o) || {}).enabled;
+        const cells = ln.vals.map(([l, v, k]) => { let t = w.want ? w.want[k] : undefined;
+          if (ROBO && t !== undefined && v != null) { const rk = `${store}|${o}|${x.item}|${k}`; t = rk in ROBO ? ROBO[rk] : v; } /* ロボの判定にそろえる：ロボがずれと言った欄だけ赤・正＝ロボの正しい値段 */
           if (v == null) return `<td class="n"><small>${l}</small>—</td>`;
           if (fixed || t === undefined) return `<td class="w"><small>${l}</small>${yen(v)}</td>`;
           if (t === v) return `<td class="g"><small>${l}</small>${yen(v)}</td>`;
           bad++; return `<td class="r" title="価格表 ${yen(t)}"><small>${l}・正 ${yen(t)}</small>${yen(v)}</td>`; }).join('');
-        CNT.ok += !why && !bad && !fixed && w.want ? 1 : 0; CNT.ng += bad ? 1 : 0; CNT.na += (why && !fixed) ? 1 : 0;
+        CNT.ok += !why && !bad && !fixed && w.want ? 1 : 0; CNT.ng += bad && !off ? 1 : 0; CNT.off += bad && off ? 1 : 0; CNT.na += (why && !fixed) ? 1 : 0; /* 連動OFF の組のずれは価格の一致ページと同じく「ちがう」に数えず別に出す */
         q += `<tr><td class="lbl">${OTA[o]}<small title="${esc(x.label)}">${esc((x.label || '').slice(0, 40))}${ln.sub ? ' ' + ln.sub : ''}</small>`
           + (w.seg && !fixed && x.ota !== 'SKT' ? `<small>価格表の段：<b>${esc(w.seg)}</b>${w.note ? '・' + esc(w.note) : ''}</small>` : '')
           + (why && !fixed ? `<small class="y" style="border-radius:4px;padding:1px 4px">比べられない：${esc(why)}</small>` : '') + `</td>`
@@ -285,7 +294,7 @@ function draw() {
   const unk = rows.filter(r => !r.cls || !cls.includes(r.cls));
   if (unk.length) { h += `<tr><td class="cls" colspan="8">クラス不明（ロボがクラスを読み取れなかった分）</td></tr>`; h += otaRows(unk, true); }
   $('grid').innerHTML = h;
-  if (PC.win && PC_STORE[store]) $('big').innerHTML = `<div class="big ${CNT.ng ? 'ng' : 'ok'}">${s.name}：価格表とちがう ${CNT.ng} 件／一致 ${CNT.ok} 件<small>比べられない ${CNT.na} 件（理由は各行に表示）・OTAの料金 ${rows.length} 件を${last ? ago(last) : ''}に読みました</small></div>`;
+  if (PC.win && PC_STORE[store]) $('big').innerHTML = `<div class="big ${CNT.ng ? 'ng' : 'ok'}">${s.name}：価格表とちがう ${CNT.ng} 件／一致 ${CNT.ok} 件<small>比べられない ${CNT.na} 件（理由は各行に表示）${CNT.end ? `・販売終了で比べない ${CNT.end} 件` : ''}${CNT.off ? `・連動OFF（ロボは書かない）でちがう ${CNT.off} 件` : ''}${ROBO ? '・判定は価格の一致と同じロボの判定' : '・⚠️ロボの判定を読めなかったのでこの画面の比べ方で表示'}・OTAの料金 ${rows.length} 件を${last ? ago(last) : ''}に読みました</small></div>`;
   drawSafe(s);
   drawLink(s);
 }
