@@ -52,10 +52,11 @@
   .net{color:#0e7a3b;font-weight:800}
   .stay{color:#7c3aed;font-weight:800}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 </head>
 <body>
 <div class="wrap">
-  <h1>🌐 獲得サマリ（HP／OTA） <span id="storelbl" style="font-size:11px;color:#64748b"></span> <a href="index.html">🏠 管理APP</a></h1>
+  <h1>🌐 獲得サマリ（HP／OTA） <span id="storelbl" style="font-size:11px;color:#64748b"></span> <span id="upd" style="font-size:10px;color:#94a3b8">予約が増減すると自動で更新</span> <a href="index.html">🏠 管理APP</a></h1>
   <div class="note">
     <b>流通（発生月）ベース</b>＝予約が<b>入った月</b>で集計。<b>「HP」＝自社獲得（公式サイト・直販＝OTA以外）</b>。札幌/那覇＝ota:HP・SP／高松＝公式site＋SP。キャンセル（英/日）除外。<br>
     ・獲得数/売上＝その月に発生したHP予約。CPA＝広告費÷獲得数／ROAS＝売上÷広告費。<br>
@@ -155,7 +156,9 @@ const yen=n=>'¥'+Math.round(+n||0).toLocaleString();
 const ym=s=>s?String(s).slice(0,7):'';
 function months(a,b){const out=[];let[y,m]=a.split('-').map(Number);const[Y,M]=b.split('-').map(Number);while(y<Y||(y===Y&&m<=M)){out.push(y+'-'+String(m).padStart(2,'0'));m++;if(m>12){m=1;y++;}}return out;}
 function revOf(r){const bp=+r.base_price||0,op=+r.option_price||0,d=+r.discount||0;return (bp>0||op>0)?Math.max(0,bp+op-d):(+r.price||0);}
-function occYM(r){for(const col of C.occ){const v=r[col];if(v&&String(v).length>=7)return ym(v);}return '';}
+// 発生月は日本時間（2026-11-23：UTCのままだと毎月1日0〜9時の予約が前月に入っていた）
+function jstYM(v){const t=Date.parse(v);return isNaN(t)?ym(v):new Date(t+9*3600e3).toISOString().slice(0,7);}
+function occYM(r){for(const col of C.occ){const v=r[col];if(v&&String(v).length>=7)return jstYM(v);}return '';}
 function nights(r){const a=r[C.lend],b=r[C.ret];if(!a||!b)return null;const d=Math.round((new Date(String(b).slice(0,10)+'T00:00:00')-new Date(String(a).slice(0,10)+'T00:00:00'))/86400000);return d>=0?d:null;} // 泊数(=稼働日数)
 const FEE=0.18; // OTA手数料
 const OTA_CODES=['J','R','S','O','RC','G'];
@@ -360,11 +363,37 @@ function renderLT(elId,Md,occMonths){
   lh+='<td class="num"><b>'+colT.reduce((a,b)=>a+b,0)+'件</b></td><td class="lt">'+(gCnt?(gLtSum/gCnt).toFixed(1)+'ヶ月':'—')+'</td></tr></tfoot>';
   document.getElementById(elId).innerHTML=lh;
 }
+// 予約が増減・変更されるたびに読み直して数字を更新（2026-11-23）。広告費を入力中は入力が終わってから描き直す
+let RT_T=null,RT_BUSY=false,RT_SB=null;
+async function reloadAll(){
+  if(RT_BUSY){clearTimeout(RT_T);RT_T=setTimeout(reloadAll,2000);return;}
+  const ae=document.activeElement;if(ae&&ae.classList&&ae.classList.contains('ad')){clearTimeout(RT_T);RT_T=setTimeout(reloadAll,3000);return;}
+  RT_BUSY=true;
+  try{await ensureFreshToken();const [resv,pl]=await Promise.all([fetchAll(),C.lt?fetchPlaces():Promise.resolve(null)]);PLACES=pl;ROWS=resv;BUILT=build(resv);render();
+    const u=document.getElementById('upd');if(u){const d=new Date(Date.now()+9*3600e3).toISOString();u.textContent='最終更新 '+d.slice(11,19);}}
+  catch(e){}
+  finally{RT_BUSY=false;}
+}
+function queueReload(){clearTimeout(RT_T);RT_T=setTimeout(reloadAll,1500);}
+function startLive(){
+  try{
+    if(!window.supabase||RT_SB)return;
+    RT_SB=window.supabase.createClient(C.sb,C.anon,{auth:{persistSession:false,autoRefreshToken:false}});
+    const tk=_sbToken();if(tk)RT_SB.realtime.setAuth(tk);
+    let ch=RT_SB.channel('hp-acquire-'+STORE).on('postgres_changes',{event:'*',schema:'public',table:C.resv},queueReload);
+    if(C.lt)ch=ch.on('postgres_changes',{event:'*',schema:'public',table:'places'},queueReload);
+    ch.subscribe();
+    // ログインの期限切れで通知が止まらないよう、10分ごとに新しいトークンを渡す
+    setInterval(async()=>{await ensureFreshToken();const t=_sbToken();if(t)RT_SB.realtime.setAuth(t);},600000);
+  }catch(e){}
+  // 画面を開き直した時（スリープ明け等）は取りこぼしがないよう読み直す
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)queueReload();});
+}
 (async function(){
   const st=document.getElementById('status');
   await ensureFreshToken();
   if(!_sbToken()){st.style.display='block';st.textContent='⚠️ 管理APPにログインしてからこのページを開いてください（データはログイン必須）。';return;}
-  try{await loadAd();const [resv,pl]=await Promise.all([fetchAll(),C.lt?fetchPlaces():Promise.resolve(null)]);PLACES=pl;ROWS=resv;BUILT=build(resv);render();}
+  try{await loadAd();const [resv,pl]=await Promise.all([fetchAll(),C.lt?fetchPlaces():Promise.resolve(null)]);PLACES=pl;ROWS=resv;BUILT=build(resv);render();startLive();}
   catch(e){st.style.display='block';st.textContent='⚠️ 読み込みエラー: '+(e.message||e);}
 })();
 </script>
