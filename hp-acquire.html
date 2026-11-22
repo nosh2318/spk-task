@@ -111,7 +111,7 @@
   <!-- 🏠 地元・観光（札幌のみ・2026-11-23） -->
   <div class="card" id="cardLT" style="display:none">
     <h2>🏠 地元・観光（新規獲得・発生月ベース・2026-10〜）</h2>
-    <details class="sxhow"><summary>判定のしかた</summary><p>お届け・回収の場所で判定（開くたびに予約データから計算）。観光＝ホテル・宿・空港／地元＝住まい（部屋番号・寮・社宅・集合住宅）や郊外の住所／不明＝駅・待合せ・中心部の住所だけ・場所未入力。構成比は不明を除いた地元：観光。場所が入ると自動で反映されます。</p></details>
+    <details class="sxhow"><summary>判定のしかた</summary><p>お届け・回収の場所で判定（開くたびに予約データから計算）。観光＝ホテル・宿・空港／地元＝住まい（部屋番号・寮・社宅・集合住宅）や郊外の住所／不明＝駅・待合せ・中心部の住所だけ・場所未入力。構成比は不明を除いた地元：観光。場所が入ると自動で反映されます。那覇は、空港送迎の予約を観光、那覇市以外の沖縄の住所を地元とします（那覇市内の住所だけ・来店は不明）。</p></details>
     <div id="ltBody"></div>
   </div>
 
@@ -151,8 +151,8 @@ const MAIN_ANON='sb_publishable_aTVhlY0YD-5BBfI03ZNnsg_MzO_vsIe';
 const BT_SB='https://ggqugvyskyiblxiycpci.supabase.co';
 const BT_ANON='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdncXVndnlza3lpYmx4aXljcGNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxMDc3NjksImV4cCI6MjA5MzY4Mzc2OX0.uNhWcBd_Dl5nzemZDQfJ8mQV6iY73MwystGGpTRPC18';
 const CFG={
-  spk:{sb:MAIN,anon:MAIN_ANON,resv:'reservations',    lend:'lend_date', ret:'return_date',occ:['created_at'],             st:'app_settings',    adk:'hp_adspend_spk',lbl:'❄️札幌店',hpMode:'ota',lt:true},
-  nha:{sb:MAIN,anon:MAIN_ANON,resv:'nha_reservations',lend:'start_date',ret:'end_date',   occ:['booked_at','created_at'], st:'nha_app_settings',adk:'hp_adspend_nha',lbl:'🏝️那覇店',hpMode:'ota'},
+  spk:{sb:MAIN,anon:MAIN_ANON,resv:'reservations',    lend:'lend_date', ret:'return_date',occ:['created_at'],             st:'app_settings',    adk:'hp_adspend_spk',lbl:'❄️札幌店',hpMode:'ota',lt:true,ltPlaces:'places'},
+  nha:{sb:MAIN,anon:MAIN_ANON,resv:'nha_reservations',lend:'start_date',ret:'end_date',   occ:['booked_at','created_at'], st:'nha_app_settings',adk:'hp_adspend_nha',lbl:'🏝️那覇店',hpMode:'ota',lt:true,ltPlaces:'nha_places'},
   bt: {sb:BT_SB,anon:BT_ANON, resv:'bt_reservations', lend:'start_date',ret:'end_date',   occ:['booked_at','created_at'], st:'bt_app_settings', adk:'hp_adspend_bt', lbl:'🚐高松店',hpMode:'source'},
 };
 // hpMode: 'ota'＝ota in(HP,SP)で公式判定（札幌/那覇）／'source'＝OTA以外(source≠ota)を公式扱い（高松＝公式siteはota空・SPも含む）
@@ -203,7 +203,7 @@ let AD={}, ROWS=[], BUILT=null, PLACES=null;
 
 async function fetchAll(){
   let out=[],off=0;
-  const cols='id,ota,base_price,option_price,discount,price,'+C.occ.join(',')+','+C.lend+','+C.ret+',status'+(C.hpMode==='source'?',source':',site')+(C.lt?',del_place,col_place,name,tel':'');
+  const cols='id,ota,base_price,option_price,discount,price,'+C.occ.join(',')+','+C.lend+','+C.ret+',status'+(C.hpMode==='source'?',source':',site')+(C.lt?',del_place,col_place,name,tel'+(STORE==='nha'?',visit_type':''):'');
   // 全件取得→クライアントでHP(自社)/OTAを分類。取消は英/日ともクライアント除外
   let q='select='+cols+'&order=id';
   while(true){
@@ -217,7 +217,7 @@ async function fetchAll(){
 async function fetchPlaces(){
   let out=[],off=0;
   while(true){
-    const r=await fetch(C.sb+'/rest/v1/places?select=reservation_id,del_place,col_place&order=reservation_id&limit=1000&offset='+off,{headers:H()});
+    const r=await fetch(C.sb+'/rest/v1/'+C.ltPlaces+'?select=reservation_id,del_place,col_place&order=reservation_id&limit=1000&offset='+off,{headers:H()});
     if(!r.ok)throw new Error('場所の取得失敗 '+r.status);
     const d=await r.json();out=out.concat(d);if(d.length<1000)break;off+=1000;
   }
@@ -225,16 +225,19 @@ async function fetchPlaces(){
 }
 // 地元/観光 判定（お届け・回収場所の文字だけで判定・DBに書かない）
 // 観光＝ホテル・宿・空港など泊まる/着く場所／地元＝住まい（部屋番号・寮・社宅・集合住宅名）や郊外の住所・郊外の大型店／不明＝駅・待合せ・中心部の住所だけ・場所未入力
-const LT_TOUR=/ホテル|hotel|旅館|ryokan|ホステル|hostel|ユース|ゲストハウス|guest ?house|民泊|airbnb|stay|ステイ|ヴィラ|villa|リゾート|resort|酒店|飯店|ドーミー|dormy|マリオット|marriott|ヴィアイン|ベッセル|オータニ|ホリデイ|ルートイン|リブマックス|livemax|グランベル|プレリア|クインテッサ|エミシア|ポールスター|モントレ|ワシントン|プリンス|プリンセス|メルキュール|ロイヤルパーク|萬怡|knot|ウィークリー|マンスリー|inn\b|イン(札幌|すすきの|大通)|空港|airport|新千歳|丘珠|ロープウェイ/i;
+const LT_TOUR=/ホテル|hotel|旅館|ryokan|ホステル|hostel|ユース|ゲストハウス|guest ?house|民泊|airbnb|stay|ステイ|ヴィラ|villa|リゾート|resort|酒店|飯店|ドーミー|dormy|マリオット|marriott|ヴィアイン|ベッセル|オータニ|ホリデイ|ルートイン|リブマックス|livemax|グランベル|プレリア|クインテッサ|エミシア|ポールスター|モントレ|ワシントン|プリンス|プリンセス|メルキュール|ロイヤルパーク|萬怡|knot|ネスト|nest|グレスリー|コンドミニ|condo|ロイネット|ナハテラス|リーガ|レンブラント|ロワジール|逸之彩|ヒルトン|hilton|ハイアット|hyatt|かりゆし|東横|ダブルツリー|オリエンタル|ラグナ|ハーバービュー|サザンビーチ|ザ・ビーチタワー|ビーチタワー|ウィークリー|マンスリー|inn\b|イン(札幌|すすきの|大通)|空港|airport|新千歳|丘珠|ロープウェイ/i;
 const LT_HOME=/号室|\d{3,4}号|寮|寄宿舎|社宅|住宅|団地|号棟|[A-Z]?棟|レオパレス|マンション|ハイツ|コーポ|アパート|メゾン|パレス|ハウス|レジデンス|[-ー]\d{3,4}(号)?(\s|$)|\D[1-9]\d{2,3}\s*$|大学|コープ|トライアル|スーパーセンター/i;
 // 札幌市の中央区以外の区・札幌近郊の市町の住所（駅を除く）は地元
 const LT_SUBURB=/(北区|東区|白石区|厚別区|豊平区|清田区|南区|西区|手稲区)[^駅]*(条|丁目|\d)|北広島|江別|石狩|恵庭|千歳市|小樽|当別|北(1[5-9]|[2-9]\d)条|南(1[6-9]|[2-9]\d)条|西(1[5-9]|[2-9]\d)丁目/;
 // ↑中心部から離れた住宅地（北15条以北・南16条以南・西15丁目以西）も地元
+const LT_SUBURB_NHA=/(浦添|宜野湾|豊見城|糸満|南城|沖縄市|うるま|名護|南風原|与那原|西原|八重瀬|北谷|嘉手納|読谷|北中城|中城|宜野座|金武|恩納|本部|今帰仁)[^空港駅]*(\d|丁目|番地|字)/;
+const LT_PORT=/ふ頭|埠頭|フェリー|クルーズ|ターミナル|港$/;   // 船で着く＝観光
 function ltOne(s){
-  s=String(s||'').normalize('NFKC').replace(/〒?\s*\d{3}-?\d{4}/g,' ').replace(/[－−‐ｰ]/g,'-').trim(); // 郵便番号は部屋番号と紛れるので消す
+  s=String(s||'').normalize('NFKC');if(/場所未確定|未定/.test(s))return '';s=s.replace(/〒?\s*\d{3}-?\d{4}/g,' ').replace(/[－−‐ｰ]/g,'-').trim(); // 郵便番号は部屋番号と紛れるので消す
   if(!s)return '';
   if(LT_TOUR.test(s))return 'tour';
-  if(LT_HOME.test(s)||LT_SUBURB.test(s))return 'local';
+  if(LT_PORT.test(s))return 'tour';
+  if(LT_HOME.test(s)||(STORE==='nha'?LT_SUBURB_NHA:LT_SUBURB).test(s))return 'local';
   return 'unk';
 }
 // 1予約：お届け・回収のどちらかが観光なら観光、どちらかが地元なら地元、それ以外は不明（場所未入力も不明）
@@ -293,7 +296,7 @@ function build(resv){
       const ch=chOf(r);if(!OTAby[ch])OTAby[ch]={count:0,rev:0,nSum:0,nCnt:0};OTAby[ch].count++;OTAby[ch].rev+=rev;if(nt!=null){OTAby[ch].nSum+=nt;OTAby[ch].nCnt++;}
     }
     if(C.lt&&o>=LTSTART&&(isHP(r)||isOTA(r))){                        // 🏠 地元・観光
-      const p=(PLACES&&PLACES[r.id])||{};const c=ltOf(String(p.del_place||'').trim()||r.del_place,String(p.col_place||'').trim()||r.col_place);
+      const p=(PLACES&&PLACES[r.id])||{};const c=(STORE==='nha'&&/^PUB?$/.test(String(r.visit_type||'')))?'tour':ltOf(String(p.del_place||'').trim()||r.del_place,String(p.col_place||'').trim()||r.col_place);   // 那覇の空港送迎＝飛行機で来る＝観光
       const g=isHP(r)?'hp':'ota',sub=g==='hp'?((HPSITES.find(x=>x[0]===siteOf(r))||[0,siteOf(r)])[1]):chOf(r);
       [[LT,c],[IB,isInbound(r)?'inb':'dom']].forEach(([A,v])=>{ltAdd(A.mon,o+'|'+g,v);ltAdd(A.mon,o+'|all',v);ltAdd(A.med,g+'|'+sub,v);});
     }
@@ -429,7 +432,7 @@ function startLive(){
     RT_SB=window.supabase.createClient(C.sb,C.anon,{auth:{persistSession:false,autoRefreshToken:false}});
     const tk=_sbToken();if(tk)RT_SB.realtime.setAuth(tk);
     let ch=RT_SB.channel('hp-acquire-'+STORE).on('postgres_changes',{event:'*',schema:'public',table:C.resv},queueReload);
-    if(C.lt)ch=ch.on('postgres_changes',{event:'*',schema:'public',table:'places'},queueReload);
+    if(C.lt)ch=ch.on('postgres_changes',{event:'*',schema:'public',table:C.ltPlaces},queueReload);
     ch.subscribe();
     // ログインの期限切れで通知が止まらないよう、10分ごとに新しいトークンを渡す
     setInterval(async()=>{await ensureFreshToken();const t=_sbToken();if(t)RT_SB.realtime.setAuth(t);},600000);
