@@ -164,15 +164,8 @@ const PT_NEED = 10;
 const KEY_LS = 'invctl_price_opkey';
 const opKey = () => { try { return localStorage.getItem(KEY_LS) || ''; } catch { return ''; } };
 const rpcKey = (fn, body) => { const k = opKey(); if (!k) return Promise.reject(new Error('bad_key')); return rpc(fn, { ...body, p_key: k }); };
-function wantsFor(o) {
-  const out = {};
-  for (const x of (data[store] || []).filter(r => r.ota === o)) for (const ln of lines(x)) {
-    if (x.ota === 'SKT' && ln.sub.startsWith('通常（')) continue;
-    const w = wantOf(store, x, ln.n); if (w.why || !w.want) continue; const it = out[x.item] || (out[x.item] = {});
-    for (const [, , k] of ln.vals) { const t = w.want[k]; if (Number.isInteger(t) && t >= 1000) it[k] = t; }
-  }
-  return Object.entries(out).filter(([, w]) => Object.keys(w).length).map(([item, want]) => ({ item, want }));
-}
+/* 11/22 オーナー「はい、直して」：OTA の「書く値段」はロボ（push_batch）がマスターの月ごとの値段で自動で入れる（マスター保存ですぐ・ほかは3時間ごと）。
+   この画面の段ごとの計算で上書きするボタン（wantsFor＋invctl_price_want_set）は外した＝12月に4月の値段を入れるおそれを無くす。戻し＝git revert */
 /* 11/2 オーナー「価格変更適用ボタン（admin と OTA は分ける）を押すと公式・OTA・admin が全て連携」。公式はマスター保存で変わる。admin は押した記録（invctl.price_apply）をロボが拾って書く */
 const ADM_OK = { nha: 'HDM admin（那覇）', spk: 'HDM admin（札幌）', takb: 'BUDDICA admin' };
 const jst = t => t ? new Date(t).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
@@ -191,7 +184,7 @@ function drawLink(s) {
     if (r.test_done) return `<span class="off">${OTA[o]} 連携OFF<small>テスト済み</small><button class="go sm" data-link="${o}" data-on="1">ONにする</button></span>`;
     return `<span class="tst">${OTA[o]} テスト中<small>${t.length ? `10回済み ${done}/${t.length}クラス` : 'まだ結果なし'}</small></span>`; }).join('') + `</div>`;
   const on = s.otas.filter(o => { const r = L.find(z => z.ota === o) || {}; return !na(o) && r.enabled && r.test_done; });
-  h += `<button class="go" id="linkGo" ${on.length && PC.win ? '' : 'disabled'}>${on.length ? `OTA に価格変更を適用（${on.map(o => OTA[o]).join('・')}）` : 'OTA に価格変更を適用（連携ONの組がまだありません）'}</button>${ADM_OK[store] ? admBtn() : ''}<div class="msg" id="linkMsg">在庫の書き込みが先です。ロボは在庫の後、次の見回りで書き、読み直して確かめます。1回に変えるのは1組20マスまでです。</div><div class="msg">操作キー：${opKey() ? 'この端末に入っています <button class="go sm" id="keyDel">消す</button>' : '<input id="keyIn" type="password" placeholder="操作キー" style="padding:6px;border:1px solid #cbd5e1;border-radius:6px"> <button class="go sm" id="keySet">この端末に入れる</button> <button class="go sm" id="keyNew">この端末でキーを作る</button>'}（切り替え・反映に使います。1回入れれば次から不要）</div><div class="msg" id="keyCode"></div>`;
+  h += `<div class="msg"><b>OTA：</b>${on.length ? `${on.map(o => OTA[o]).join('・')} はロボがマスター（月ごと）の値段を自動で書きます（マスター保存ですぐ・ほかは3時間ごと）。押すボタンはありません。` : '連携ONの組がまだありません。'}</div>${ADM_OK[store] ? admBtn() : ''}<div class="msg" id="linkMsg">在庫の書き込みが先です。ロボは在庫の後に書き、読み直して確かめます。1回に変えるのは1組20マスまでです。</div><div class="msg">操作キー：${opKey() ? 'この端末に入っています <button class="go sm" id="keyDel">消す</button>' : '<input id="keyIn" type="password" placeholder="操作キー" style="padding:6px;border:1px solid #cbd5e1;border-radius:6px"> <button class="go sm" id="keySet">この端末に入れる</button> <button class="go sm" id="keyNew">この端末でキーを作る</button>'}（切り替え・反映に使います。1回入れれば次から不要）</div><div class="msg" id="keyCode"></div>`;
   $('link').innerHTML = h;
   $('link').querySelectorAll('[data-link]').forEach(b => b.onclick = async () => { const o = b.dataset.link, v = b.dataset.on === '1';
     if (!confirm(`${s.name}・${OTA[o]}の連携を${v ? 'ON' : 'OFF'}にします。よろしいですか？`)) return; b.disabled = true;
@@ -208,11 +201,6 @@ function drawLink(s) {
     if (!confirm(`${s.name}：${ADM_OK[store]} に、価格コントローラーの公式の値段を書きます（ロボが次の見回りで書き、読み直して確かめます。合わなければ元に戻します）。よろしいですか？`)) return; ag.disabled = true;
     try { applies[store] = await rpcKey('invctl_price_apply_request', { p_store: store, p_target: 'ADM' }); drawLink(s); $('linkMsg').textContent = `${ADM_OK[store]} への適用を受け付けました。ロボが次の見回りで書きます。`; }
     catch (e) { drawLink(s); $('linkMsg').textContent = opKey() ? '受け付けられませんでした（操作キーちがい）' : '先に操作キーを入れてください'; } };
-  const go = $('linkGo'); if (go) go.onclick = async () => {
-    const plan = on.map(o => [o, wantsFor(o)]);
-    if (!confirm(`${s.name}：${plan.map(([o, w]) => `${OTA[o]} ${w.length}件`).join('・')} を価格表どおりにします（ロボが次の見回りで書きます）。よろしいですか？`)) return; go.disabled = true;
-    const res = []; for (const [o, w] of plan) { try { res.push(`${OTA[o]} ${await rpcKey('invctl_price_want_set', { p_store: store, p_ota: o, p_rows: w })}件`); } catch (e) { res.push(`${OTA[o]} 失敗${opKey() ? '' : '（操作キーが要ります）'}`); } }
-    $('linkMsg').textContent = `入れました：${res.join('・')}。ロボが次の見回りで書き、下の「ロボの書き込みと安全策」に記録が出ます。`; };
 }
 // 安全策（オーナー 10/28「間違った数字を入れない・防げる・即修正」）：ロボの書き込み記録・止めたマスの OK・元に戻す・再開
 const ST = { written: ['g', '✅ 書いて読み直し一致'], hold: ['y', '🟡 止めた（確認待ち）'], reject: ['x', '⛔ 書かなかった'], failed: ['r', '🔴 読み直しが合わない'], stopall: ['y', '🟡 全部止めた'] };
