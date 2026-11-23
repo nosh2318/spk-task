@@ -405,19 +405,28 @@ async function call(action,body){
    画面が「店舗で受け取り・店舗へ返す・送迎車」と出ていた。札幌で区分が空なら お届け(DEL)・回収(COL) とみなす */
 function spkMethod(j){if(SID!=="spk"||!j||!j.reservation)return;const r=j.reservation;
   if(!String(r.visit_type||"").trim())r.visit_type="DEL";if(!String(r.return_type||"").trim())r.return_type="COL";}
+/* 2026-11-23 通信異常の原因切り分け：失敗した段階（fetch=通信 / lookup=予約取得NG / loaders=付随読込 / render=表示の例外）を開発者向けに記録する。
+   お客様の画面の文言は変えない。記録は ux-track(click・action=load_error:段階・meta.ro=1＝開封率に数えない)。送れない時は端末に残して次回送る */
+const UXEF="https://ckrxttbnawkclshczsia.supabase.co/functions/v1/ux-track";
+function uxSend(row){try{return fetch(UXEF,{method:"POST",headers:{"Content-Type":"application/json"},keepalive:true,body:JSON.stringify(row)}).then(r=>{if(r&&r.ok)try{localStorage.removeItem("hdm_load_err");}catch(_){}}).catch(()=>{});}catch(_){}}
+function dbgErr(stage,e,hs,extra){try{console.error("[mypage load]",stage,e);const m={ro:1,stage:stage,name:String(e&&e.name||"").slice(0,30),msg:String((e&&e.message)||extra||e||"").slice(0,160),http:hs||null,online:navigator.onLine,sa:STANDALONE?1:0,roq:RO?1:0,ref:(document.referrer||"").replace(/[?#].*/,"").slice(0,60),stk:String(e&&e.stack||"").split("\n").slice(0,2).join("|").slice(0,200)};
+  const row={store:SID,page:"mypage",action:"load_error:"+stage,event:"click",value:null,token:TOKEN,session:"le"+Date.now().toString(36),lang:"",meta:m};try{localStorage.setItem("hdm_load_err",JSON.stringify(row));}catch(_){}uxSend(row);}catch(_){}}
+function dbgFlush(){try{const p=localStorage.getItem("hdm_load_err");if(p)uxSend(JSON.parse(p));}catch(_){}}
 async function load(quiet){
+  dbgFlush();
   if(DEMO){DATA=demoData(DEMO);if(Q.get("ret")==="1")DATA.returned=true;{const ua=Q.get("ua");if(ua)DATA.unattended={active:true,accepted:ua!=="req",placed:ua==="placed"||ua==="req2"||ua==="done",place:(ua==="placed"||ua==="req2")?{parking_name:"〇〇パーキング",address:"札幌市中央区北5条西2丁目",map_url:"https://maps.app.goo.gl/",floor:"1階 12番",plate:"3381",landmark:"入口から右奥・青い看板"}:null,key_place:ua==="placed"||ua==="done"?"運転席ドアポケット（鍵）・助手席ダッシュボード（駐車券）":"",photos:[]};if(ua==="done"){DATA.unattended.accepted=true;DATA.received=true;DATA.received_at=new Date().toISOString();}}if(Q.get("ng"))NG={kind:Q.get("ng"),leg:"back",created_at:new Date().toISOString(),acked_at:Q.get("ack")==="1"?new Date().toISOString():null};loadRcpt();loadCN();render();return;}
   if(!TOKEN){{const b=document.querySelector(".rld");if(b)b.style.display="none";}$("#app").innerHTML=`<div class="center">ご予約のURLから開いてください。<br>URLが分からないときは <a href="${ST.site}" target="_blank">公式サイト</a> の「マイページを開く」から探せます。</div>`;$("#ttl").textContent="マイページ";return;}
   /* ★2026-11-09 速く（nosh「読み込みが遅い 重い」）：予約の読み込みと同時にほかの読み込みも始める（前は予約→ほか8つを順番待ち）。
      最初の画面に要る支払い・登録内容・メールは必ず待つ。ほかは1.2秒まで待ち、遅れた分は届いたら描き直す */
   let gotD;const dP=new Promise(res=>gotD=res);const need=[loadPay(),loadINFO(),loadMAIL()],rest=Promise.all([loadDV(dP),loadSH(),loadCN(),loadChat(),loadNG(),loadRcpt()]);
+  let stage="fetch",hs=0;
   try{const r=await fetch(FN,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"lookup",token:TOKEN,...(RO?{ro:1}:{})})});
-    const j=await r.json().catch(()=>({}));spkMethod(j);sameColFix(j);gotD(j&&j.ok?j:null);
+    hs=r.status;stage="lookup";const j=await r.json().catch(()=>({}));spkMethod(j);sameColFix(j);gotD(j&&j.ok?j:null);
     if(j.cancelled){$("#ttl").textContent="キャンセル済み";$("#app").innerHTML=`<div class="center">${esc(j.error||"キャンセル済みです")}</div>`;return;}
-    if(!j.ok){if(!quiet){$("#ttl").textContent="マイページ";$("#app").innerHTML=`<div class="center">${esc(j.error||"読み込めませんでした")}<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}return;}
-    DATA=j;let late=false;await Promise.all([...need,Promise.race([rest,new Promise(res=>setTimeout(()=>{late=true;res();},1200))])]);render();
+    if(!j.ok){dbgErr("lookup_ng",null,hs,j.error);if(!quiet){$("#ttl").textContent="マイページ";$("#app").innerHTML=`<div class="center">${esc(j.error||"読み込めませんでした")}<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}return;}
+    DATA=j;stage="loaders";let late=false;await Promise.all([...need,Promise.race([rest,new Promise(res=>setTimeout(()=>{late=true;res();},1200))])]);stage="render";render();
     if(late)rest.then(()=>{if(DATA===j)render();});
-  }catch(e){gotD(null);if(!quiet)$("#app").innerHTML=`<div class="center">通信できませんでした。<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}
+  }catch(e){gotD(null);dbgErr(stage,e,hs);if(!quiet)$("#app").innerHTML=`<div class="center">通信できませんでした。<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}
 }
 const SH_TX={pu_depart:["送迎車が空港へ向かっています","p-o"],pu_at_stop:["送迎車が乗り場に着きました","p-g","お手荷物を受け取ったら、乗り場へお越しください"],pu_met:["合流しました。お店へ向かっています","p-x"],bd_depart:["空港へ向かっています","p-o"],bd_at_airport:["空港に着きました。ご利用ありがとうございました","p-x"]};
 const SH_ORD={pu_depart:1,pu_at_stop:2,pu_met:3,bd_depart:1,bd_at_airport:2};
