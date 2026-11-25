@@ -308,6 +308,8 @@ const Q=new URLSearchParams(location.search);
 let TOKEN=Q.get("t")||"";
 try{ if(TOKEN) localStorage.setItem("hdm_"+SID+"_t",TOKEN); else TOKEN=localStorage.getItem("hdm_"+SID+"_t")||""; }catch(_){}
 const RO=Q.get("ro")==="1", DEMO=Q.get("demo");
+/* ★2026-11-23 LINE連携（設計_LINE連携_マイページLINEログイン_2026-11-23.md）：LINEから戻ったら code・state をすぐURLから消し、押した時のマイページを開き直す */
+const LLR=(()=>{const c=Q.get("code"),s=Q.get("state"),e=Q.get("error");if(!c&&!s&&!e)return null;try{history.replaceState(null,"",location.pathname);}catch(_){}let t="";try{t=localStorage.getItem("hdm_"+SID+"_llt")||"";localStorage.removeItem("hdm_"+SID+"_llt");}catch(_){}TOKEN=t;if(t){try{localStorage.setItem("hdm_"+SID+"_t",t);}catch(_){}}return e?{cancel:true}:{code:c||"",state:s||""};})();
 let DATA=null, TAB="now", SENDING=false, TIMER=null, FIRST_DONE=false;
 const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -719,6 +721,30 @@ function carCard(d){const c=d.car||{};
   if(!c.etc_image)return"";
   return `<section class="card"><div class="h">ETCの場所</div><img src="${esc(c.etc_image)}" alt="" loading="lazy" style="display:block;width:100%;border-radius:12px;margin-top:8px"></section>`;}
 
+/* ★2026-11-23 LINE連携：未連携の札幌・那覇の予約だけボタンを出す。返す状態だけで文言を決める（LINEのIDや名前は受け取らない） */
+const LL_MSG={linked:"LINEの連携ができました。これからのお知らせはLINEに届きます。",already:"このご予約はLINEと連携済みです。",other_line:"このご予約は別のLINEと連携済みです。変更はスタッフにお問い合わせください。",not_friend:"公式LINEを友だち追加してから、もう一度「LINEで通知を受け取る」を押してください。",expired:"時間が経ったため連携できませんでした。マイページからもう一度お試しください。",unavailable:"いまLINE連携はご利用いただけません。お知らせはメールでお届けします。",failed:"LINEの連携ができませんでした。もう一度お試しください。"};
+function llShow(d){const r=(d&&d.reservation)||{};return ["spk","nha"].includes(SID)&&!RO&&!DEMO&&Q.get("staff")!=="1"&&String(r.ota||"")!=="KEYDROP"&&!d.returned&&!!r.lend_date&&stageOf(d)!=="after";}
+function llCard(d){if(!llShow(d))return"";
+  if(d.line_linked===true)return `<section class="card"><div class="h">LINEのお知らせ</div><div class="sub">✓ LINEで通知中</div></section>`;
+  if(d.line_linked!==false)return"";
+  return `<section class="card"><div class="h">LINEのお知らせ</div>`+row("LINEで通知を受け取る","","到着や時間の変更などのお知らせを、LINEですぐ受け取れます（任意）","登録","p-b","llStart()")+`</section>`;}
+async function llStart(){if(RO||DEMO||SENDING||Q.get("staff")==="1")return;
+  if(!confirm("LINEで通知を受け取りますか？\nLINEの画面に移ります。公式LINEの友だち追加もお願いします。"))return;
+  try{localStorage.setItem("hdm_"+SID+"_llt",TOKEN);}catch(_){}
+  const j=await call("line_link_start",{ru:location.pathname.indexOf("/m/")>=0?1:0});
+  if(j&&j.ok&&typeof j.url==="string"&&j.url.indexOf("https://access.line.me/")===0){location.href=j.url;return;}
+  try{localStorage.removeItem("hdm_"+SID+"_llt");}catch(_){}
+  if(j&&j.status==="already"){toast(LL_MSG.already);load(true);return;}
+  if(j&&j.dropped)return;
+  toast((j&&LL_MSG[j.status])||(j&&j.error)||LL_MSG.failed);}
+async function llDone(){let j={};
+  try{const r=await fetch(FN,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"line_link_finish",code:LLR.code,state:LLR.state})});j=await r.json().catch(()=>({}));}catch(_){j={status:"failed"};}
+  const st=LL_MSG[j&&j.status]?j.status:"failed",m=LL_MSG[st];
+  if(!TOKEN){$("#ttl").textContent="マイページ";$("#app").innerHTML=`<div class="center">${esc(st==="linked"||st==="already"?"LINEの連携ができました。マイページはご予約メールのURLからいつでも開けます。":m)}${st==="not_friend"&&typeof j.friend_url==="string"&&j.friend_url.indexOf("https://lin.ee/")===0?`<br><br><a class="btn o" href="${esc(j.friend_url)}" target="_blank" rel="noopener">友だち追加する</a>`:""}<br><br>${esc("マイページはご予約メールのURLから開いてください。")}</div>`;return;}
+  await load();
+  if(st==="linked"||st==="already"){if(window.hdmDone)window.hdmDone(m);else toast(m);}
+  else if(st==="not_friend"&&typeof j.friend_url==="string"&&j.friend_url.indexOf("https://lin.ee/")===0)sheet(`<h3>LINEの友だち追加</h3><div class="sub">${esc(m)}</div><a class="btn o" href="${esc(j.friend_url)}" target="_blank" rel="noopener">友だち追加する</a><button class="btn" onclick="closeSheet()">閉じる</button>`);
+  else sheet(`<h3>LINEのお知らせ</h3><div class="sub">${esc(m)}</div><button class="btn" onclick="closeSheet()">閉じる</button>`);}
 function row(n,v,rule,tag,cls,onclick,dim){return `<button class="row${dim?" dim":""}" ${onclick&&!dim?`onclick="${onclick}"`:"disabled"}><span class="l"><span class="n">${n}</span>${v?`<span class="v">${esc(v)}</span>`:""}<span class="r">${rule}</span></span><span style="display:flex;align-items:center;gap:6px"><span class="pill ${cls}">${tag}</span><span class="chev">›</span></span></button>`;}
 /* ★2026-11-09 nosh「領収書や追加決済などブレない機能を常に1か所に」「ウォレットみたいに」：状態に関係なく使うものを下のタブ「ウォレット」に1枚ずつのカードで常設。
    「今の状態」はいま必要なことだけ。シート・補償のカードは walletSeat(r,st)（別スレッドの seatCard があればそれを使う） */
@@ -737,7 +763,9 @@ function wCurLang(){const h=(document.documentElement.lang||"ja").slice(0,2);ret
 /* 登録内容（初期設定）：必須項目を1枚に。未登録は上・黄色で「登録する」、登録済みは「✓ 登録済み」＋「変更」（nosh 11/9「変える＝謎。登録済み/変更だろ」） */
 function wSetup(d){const M=musts(d).filter(x=>x.k!=="pay"),ng=M.filter(x=>!x.ok),ok=M.filter(x=>x.ok);if(!M.length)return"";
   const rowH=(x)=>`<button class="row" onclick="fixMust('${x.k}')"><span class="l"><span class="n">${esc(x.n)}</span><span class="v">${esc(x.v)}</span></span>${x.ok&&x.k==="dmg"?'<span class="pill p-g">✓ 承認済み</span>':x.ok?'<span style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0"><span class="pill p-g">✓ 登録済み</span><span class="pill p-x">変更</span></span>':x.k==="dmg"?'<span class="pill p-o">承認する</span>':'<span class="pill p-o">登録する</span>'}</button>`;
-  return `<section class="card wcard${ng.length?" warn":""}"><div class="wtop"><span class="wic">📝</span><div style="min-width:0"><div class="h" style="margin:0">登録内容（初期設定）</div><div class="wv">${ng.length?`未登録 ${ng.length}件`:"すべて登録済み"}</div></div></div>${ng.map(rowH).join("")}${ok.map(rowH).join("")}</section>`;}
+  return `<section class="card wcard${ng.length?" warn":""}"><div class="wtop"><span class="wic">📝</span><div style="min-width:0"><div class="h" style="margin:0">登録内容（初期設定）</div><div class="wv">${ng.length?`未登録 ${ng.length}件`:"すべて登録済み"}</div></div></div>${ng.map(rowH).join("")}${llShow(d)&&d.line_linked===false?llSetRow(false):""}${ok.map(rowH).join("")}${llShow(d)&&d.line_linked===true?llSetRow(true):""}</section>`;}
+/* ★2026-11-26 nosh「あくまで任意で促す・理由を明確に（通知が受けられる）」：LINE通知は任意。未登録の件数には数えない */
+function llSetRow(on){return on?`<div class="row"><span class="l"><span class="n">LINEで通知を受け取る</span><span class="v">LINEで通知中</span></span><span class="pill p-g">✓ 登録済み</span></div>`:`<button class="row" onclick="llStart()"><span class="l"><span class="n">LINEで通知を受け取る</span><span class="v">到着や時間の変更などのお知らせを、LINEですぐ受け取れます（任意）</span></span><span class="pill p-b">登録</span></button>`;}
 function wLang(){const c=wCurLang();return `<section class="card wcard"><div class="wtop"><span class="wic">🌐</span><div><div class="h" style="margin:0">言語 / Language</div></div></div><div class="grid2" translate="no">${[["ja","日本語"],["en","English"],["zh","中文"],["ko","한국어"]].map(([v,t])=>`<button class="btn ${v===c?"":"o"}" onclick="wSetLang('${v}')">${t}</button>`).join("")}</div></section>`;}
 function viewWallet(d,st){const r=d.reservation,M=musts(d),mp=M.find(x=>x.k==="pay"),ml=M.find(x=>x.k==="lic");let h=`<div class="sub" style="margin:0 2px 4px">いつでもここから使えます。中身はご予約の状況に合わせて自動で変わります。</div>`;
   h+=wSetup(d);
@@ -772,6 +800,7 @@ function viewChg(d,st){
   h+=`<section class="card"><div class="h">運転者・書類</div>`+
     row("免許証の登録",(d.license&&d.license.cnt)?`${d.license.drivers||1}人分・${d.license.cnt}枚 登録済`:"未登録","受け渡しまで","登録","p-b","openLicense()",st==="after")+
     (()=>{const g=d.damage||{};return row("傷の確認",dmgApproved(d)?"確認・承認済み":g.url?"写真が見られます":"準備中",SID==="tkm"?"ご出発前日の20:00から":"ご出発日の8:00から",dmgCanSign(d)?"承認する":"写真を見る","p-b","openDmg()",!g.url);})()+`</section>`;
+  h+=llCard(d);
   h+=`<section class="card"><div class="h">そのほかのご依頼</div><div class="sub">次の項目は「スタッフに聞く」から送ってください。依頼として受け付けます。</div>`+
     [SID!=="tkm"?"日程の変更":"日程の変更・延長","クラスの変更","欠航・大幅な遅れ","忘れ物"].map(x=>row(x,"","","確認あり","p-o","go('ask')")).join("")+
     (isHP?row("キャンセル","","キャンセル料はお申し込み後にご案内","確認あり","p-o","openCancel()",st!=="prep"&&st!=="eve"):row("キャンセル","","OTA（じゃらん等）のご予約は、ご予約したサイトから","OTAで","p-x","",true))+`</section>`;
@@ -1319,7 +1348,7 @@ function demoData0(s){PAY=s==="prep"?{state:"unpaid",amount:24800,url:"https://e
     damage:{ready:false,url:null},tracking:{active:false,kd_status:null,token:null},license:{cnt:s==="prep"?0:1,drivers:1},
     recentChanges:s==="prep"?[{id:1,field:"del_place",status:"requested",old_value:"[ホテルA]",new_value:"[ホテルB]",created_at:ago(10)},{id:2,field:"return_time",status:"proposed",old_value:"17:00",new_value:"19:00",created_at:ago(300),payload:{proposal:{text:"19:00はご用意できませんでした。18:00でしたら伺えます。",value:"18:00",expires_at:new Date(Date.now()+20*3600e3).toISOString()}}},{id:3,field:"lend_time",status:"rejected",old_value:"10:00",new_value:"8:00",created_at:ago(900),payload:{reject:{reason:"full_slot",alt:"9:00でしたら伺えます"}}}]:[],history:[]};}
 
-load();
+if(LLR&&LLR.code&&LLR.state)llDone();else load();
 </script>
 <script>
 /* ★2026-11-08 多言語（nosh「多言語やって」・3店共通）。日本語で描いた画面を、表示の直前に英語・中国語（繁體）・韓国語へ置き換える。
@@ -1816,6 +1845,24 @@ const D={
 "今すぐ話す必要があるものだけ":["Only for urgent matters","僅限需要立即通話的事項","지금 바로 통화가 필요한 것만"],
 "ご利用中に・確約ではありません":["During rental · not guaranteed","使用期間・無法保證","이용 중・확약 아님"],
 "運転者・書類":["Drivers & documents","駕駛人・文件","운전자・서류"],
+"LINEのお知らせ":["LINE notifications","LINE 通知","LINE 알림"],
+"LINEで通知を受け取る":["Get notifications on LINE","用 LINE 接收通知","LINE으로 알림 받기"],
+"ご予約のお知らせがLINEに届きます":["Booking updates will be sent to LINE","預約通知會傳送到 LINE","예약 알림이 LINE으로 전송됩니다"],
+"到着や時間の変更などのお知らせを、LINEですぐ受け取れます（任意）":["Get arrival and time-change updates instantly on LINE (optional)","抵達、時間變更等通知可立即透過 LINE 接收（自由選擇）","도착・시간 변경 등의 알림을 LINE으로 바로 받을 수 있습니다 (선택)"],
+"LINEで通知中":["Notifications on LINE","已透過 LINE 通知","LINE으로 알림 중"],
+"✓ LINEで通知中":["✓ Notifications on LINE","✓ 已透過 LINE 通知","✓ LINE으로 알림 중"],
+"LINEで通知を受け取りますか？\nLINEの画面に移ります。公式LINEの友だち追加もお願いします。":["Receive notifications on LINE?\nYou will be taken to LINE. Please also add our official account as a friend.","要用 LINE 接收通知嗎？\n將前往 LINE 畫面，也請將官方帳號加為好友。","LINE으로 알림을 받으시겠습니까?\nLINE 화면으로 이동합니다. 공식 계정을 친구로 추가해 주세요."],
+"LINEの連携ができました。これからのお知らせはLINEに届きます。":["Linked with LINE. Updates will now be sent to LINE.","已與 LINE 連結，之後的通知會傳送到 LINE。","LINE 연동이 완료되었습니다. 앞으로 알림은 LINE으로 전송됩니다."],
+"このご予約はLINEと連携済みです。":["This booking is already linked with LINE.","此預約已與 LINE 連結。","이 예약은 이미 LINE과 연동되어 있습니다."],
+"このご予約は別のLINEと連携済みです。変更はスタッフにお問い合わせください。":["This booking is linked with a different LINE account. Please contact staff to change it.","此預約已與其他 LINE 帳號連結。如需變更請聯絡工作人員。","이 예약은 다른 LINE 계정과 연동되어 있습니다. 변경은 직원에게 문의해 주세요."],
+"公式LINEを友だち追加してから、もう一度「LINEで通知を受け取る」を押してください。":["Please add our official LINE account as a friend, then tap \"Get notifications on LINE\" again.","請先將官方 LINE 加為好友，再按一次「用 LINE 接收通知」。","공식 LINE을 친구로 추가한 후 'LINE으로 알림 받기'를 다시 눌러 주세요."],
+"時間が経ったため連携できませんでした。マイページからもう一度お試しください。":["The link timed out. Please try again from My Page.","因逾時無法連結，請從我的頁面再試一次。","시간이 지나 연동하지 못했습니다. 마이페이지에서 다시 시도해 주세요."],
+"いまLINE連携はご利用いただけません。お知らせはメールでお届けします。":["LINE linking is not available right now. Updates will be sent by email.","目前無法使用 LINE 連結，通知將以電子郵件寄送。","현재 LINE 연동을 이용할 수 없습니다. 알림은 이메일로 보내드립니다."],
+"LINEの連携ができませんでした。もう一度お試しください。":["Could not link with LINE. Please try again.","無法與 LINE 連結，請再試一次。","LINE 연동에 실패했습니다. 다시 시도해 주세요."],
+"LINEの連携ができました。マイページはご予約メールのURLからいつでも開けます。":["Linked with LINE. You can open My Page anytime from the link in your booking email.","已與 LINE 連結。隨時可從預約郵件中的網址開啟我的頁面。","LINE 연동이 완료되었습니다. 마이페이지는 예약 메일의 URL에서 언제든지 열 수 있습니다."],
+"マイページはご予約メールのURLから開いてください。":["Please open My Page from the link in your booking email.","請從預約郵件中的網址開啟我的頁面。","마이페이지는 예약 메일의 URL에서 열어 주세요."],
+"LINEの友だち追加":["Add us on LINE","加 LINE 好友","LINE 친구 추가"],
+"友だち追加する":["Add friend","加入好友","친구 추가"],
 "免許証の登録":["Register license","登錄駕照","면허증 등록"],
 "受け渡しまで":["Until handover","交車前","인도 전까지"],
 "そのほかのご依頼":["Other requests","其他申請","기타 요청"],

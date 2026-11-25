@@ -613,6 +613,129 @@ async function omniMsg(store: string, rid: string, S: any[], req: string[], url:
   return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
 }
 
+// ==== 2026-11-23 LINE 連携（マイページの LINE ログイン）====
+// 設計：spk-task docs/設計_LINE連携_マイページLINEログイン_2026-11-23.md（omni-review 条件付き→条件を反映）
+// ・その予約の {store}_line_links に1件だけ書く。既に行があれば書かない（v1）。友だちでなければ書かない。
+// ・state は「10分間の mypage_token と同格」：HMAC 署名を最初に検証し、店・予約を読み直してから LINE と通信する。
+// ・返すのは状態だけ（linked / already / other_line / not_friend / expired / unavailable / failed）。token・userId・LINE名は返さない。
+// ・state・code・LINE のトークンはログに出さない。
+const LL_STORE = "nha";
+const LL_TABLE = "nha_line_links";
+const LL_RESV = "nha_reservations";
+const LL_END_COL = "end_date";
+const LL_REDIRECTS = ["https://nosh2318.github.io/naha-project/my-nha.html", "https://nosh2318.github.io/naha-project/m/"];
+const LL_FRIEND_URL = "https://lin.ee/jMU6xdJ";
+const LL_TTL_SEC = 600;
+const LL_SUB_RE = /^U[0-9a-f]{32}$/;
+const llEnv = (k: string) => (Deno.env.get(k) || "").trim();
+const llEnc = new TextEncoder();
+function llB64u(b: Uint8Array): string { let s = ""; for (const x of b) s += String.fromCharCode(x); return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+function llFromB64u(s: string): Uint8Array<ArrayBuffer> { const t = s.replace(/-/g, "+").replace(/_/g, "/"); const p = t + "===".slice((t.length + 3) % 4); const bin = atob(p); const o = new Uint8Array(new ArrayBuffer(bin.length)); for (let i = 0; i < bin.length; i++) o[i] = bin.charCodeAt(i); return o; }
+function llRand(n = 16): string { return llB64u(crypto.getRandomValues(new Uint8Array(n))); }
+async function llKey(): Promise<CryptoKey | null> {
+  const s = llEnv("LINE_LINK_STATE_SECRET");
+  if (s.length < 32) return null; // 未設定・短い鍵では必ず失敗させる
+  return await crypto.subtle.importKey("raw", llEnc.encode(s), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+}
+async function llSign(o: Record<string, unknown>): Promise<string | null> {
+  const k = await llKey(); if (!k) return null;
+  const body = llB64u(llEnc.encode(JSON.stringify(o)));
+  const sig = new Uint8Array(await crypto.subtle.sign("HMAC", k, llEnc.encode(body)));
+  return body + "." + llB64u(sig);
+}
+async function llVerify(state: string): Promise<{ s: string; ri: string; e: number; n: string; u: number } | null> {
+  try {
+    const k = await llKey(); if (!k) return null;
+    const parts = String(state || "").split("."); if (parts.length !== 2 || !parts[0] || !parts[1] || state.length > 1000) return null;
+    const ok = await crypto.subtle.verify("HMAC", k, llFromB64u(parts[1]), llEnc.encode(parts[0]));
+    if (!ok) return null;
+    const o = JSON.parse(new TextDecoder().decode(llFromB64u(parts[0])));
+    if (!o || o.s !== LL_STORE || typeof o.ri !== "string" || !o.ri || typeof o.n !== "string" || !o.n) return null;
+    if (typeof o.e !== "number" || o.e < Math.floor(Date.now() / 1000)) return null;
+    if (o.u !== 0 && o.u !== 1) return null;
+    return o;
+  } catch (_) { return null; }
+}
+function llJstToday(): string { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10); }
+// 連携できる予約か（存在・キャンセルでない・KEYDROP でない・返却日を過ぎていない）
+function llBlock(r: any): string {
+  if (!r) return "expired";
+  const st = String(r.status || "");
+  if (/cancel/i.test(st) || st.indexOf("キャンセル") >= 0) return "expired";
+  if (String(r.ota || "") === "KEYDROP") return "unavailable";
+  const end = String(r[LL_END_COL] || "").slice(0, 10);
+  if (end && end < llJstToday()) return "expired";
+  return "";
+}
+async function llGetResv(resId: string): Promise<any> {
+  const rows = await sbGet(LL_RESV, `id=eq.${encodeURIComponent(resId)}&select=id,ota,name,status,${LL_END_COL}&limit=1`);
+  return rows[0] || null;
+}
+async function llExisting(resId: string): Promise<string | null> {
+  const rows = await sbGet(LL_TABLE, `resv_no=eq.${encodeURIComponent(resId)}&select=line_user_id&limit=1`);
+  return rows[0] ? String(rows[0].line_user_id || "") : null;
+}
+// 開始：mypage_token で特定済みの予約 r について、LINE ログインの URL を返す
+async function llStart(r: any, ruIdx: number): Promise<Record<string, unknown>> {
+  const why = llBlock(r); if (why) return { ok: false, status: why };
+  if ((await llExisting(String(r.id))) !== null) return { ok: true, status: "already" };
+  const cid = llEnv("NHA_LINE_LOGIN_CHANNEL_ID");
+  if (!cid || !llEnv("NHA_LINE_LOGIN_CHANNEL_SECRET")) return { ok: false, status: "unavailable" };
+  const u = ruIdx === 1 ? 1 : 0;
+  const nonce = llRand();
+  const state = await llSign({ s: LL_STORE, ri: String(r.id), e: Math.floor(Date.now() / 1000) + LL_TTL_SEC, n: nonce, u });
+  if (!state) return { ok: false, status: "unavailable" };
+  const q = new URLSearchParams({ response_type: "code", client_id: cid, redirect_uri: LL_REDIRECTS[u], state, scope: "openid profile", nonce, bot_prompt: "aggressive" });
+  return { ok: true, url: "https://access.line.me/oauth2/v2.1/authorize?" + q.toString() };
+}
+// 完了：mypage_token なし。state の署名を最初に確かめる
+async function llFinish(code: string, state: string): Promise<Record<string, unknown>> {
+  const st = await llVerify(state);
+  if (!st) return { ok: false, status: "expired" };
+  const r = await llGetResv(st.ri);
+  const why = llBlock(r); if (why) return { ok: false, status: why };
+  const cid = llEnv("NHA_LINE_LOGIN_CHANNEL_ID"), csec = llEnv("NHA_LINE_LOGIN_CHANNEL_SECRET");
+  if (!cid || !csec) return { ok: false, status: "unavailable" };
+  if (!code || code.length > 512) return { ok: false, status: "failed" };
+  // code → トークン（redirect_uri は state に入れた番号のサーバ固定値）
+  let tok: any = null;
+  try {
+    const tr = await fetch("https://api.line.me/oauth2/v2.1/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: LL_REDIRECTS[st.u], client_id: cid, client_secret: csec }).toString() });
+    if (!tr.ok) { console.error("[line_link] token", tr.status); return (await llExisting(String(r.id))) !== null ? { ok: true, status: "already" } : { ok: false, status: "failed" }; }
+    tok = await tr.json();
+  } catch (e) { console.error("[line_link] token err", String(e).slice(0, 120)); return { ok: false, status: "failed" }; }
+  // id_token を LINE で検証（nonce 一致）
+  let sub = "", name = "";
+  try {
+    const vr = await fetch("https://api.line.me/oauth2/v2.1/verify", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ id_token: String(tok?.id_token || ""), client_id: cid, nonce: st.n }).toString() });
+    if (!vr.ok) { console.error("[line_link] verify", vr.status); return { ok: false, status: "failed" }; }
+    const v = await vr.json(); sub = String(v?.sub || ""); name = String(v?.name || "").slice(0, 100);
+  } catch (e) { console.error("[line_link] verify err", String(e).slice(0, 120)); return { ok: false, status: "failed" }; }
+  if (!LL_SUB_RE.test(sub)) return { ok: false, status: "failed" };
+  // 友だちでなければ書かない（書くとメールの案内が止まり、LINE も届かなくなる）
+  try {
+    const fr = await fetch("https://api.line.me/friendship/v1/status", { headers: { Authorization: `Bearer ${String(tok?.access_token || "")}` } });
+    const f = fr.ok ? await fr.json() : null;
+    if (!f || f.friendFlag !== true) return { ok: false, status: "not_friend", friend_url: LL_FRIEND_URL };
+  } catch (_) { return { ok: false, status: "not_friend", friend_url: LL_FRIEND_URL }; }
+  // 既に行があれば書かない（v1）
+  const ex = await llExisting(String(r.id));
+  if (ex !== null) return ex === sub ? { ok: true, status: "already" } : { ok: false, status: "other_line" };
+  const now = new Date().toISOString();
+  const row = { resv_no: String(r.id), line_user_id: sub, line_name: name || null, cust_name: r.name || null, media: r.ota || null, answered_at: now, source: "line_login", updated_at: now };
+  try {
+    const ir = await fetch(`${SB_URL}/rest/v1/${LL_TABLE}`, { method: "POST", headers: { ...withActor(`customer:${String(r.id)}`), Prefer: "return=representation" }, body: JSON.stringify(row) });
+    if (ir.status === 409) return { ok: true, status: "already" }; // 同時押し
+    if (!ir.ok) { console.error("[line_link] insert", ir.status); return { ok: false, status: "failed" }; }
+    const d = await ir.json().catch(() => []);
+    if (!Array.isArray(d) || d.length !== 1) return { ok: false, status: "failed" };
+  } catch (e) { console.error("[line_link] insert err", String(e).slice(0, 120)); return { ok: false, status: "failed" }; }
+  return { ok: true, status: "linked" };
+}
+// ==== /LINE 連携 ====
+
 Deno.serve(async (req) => {
   const origin = req.headers.get("origin");
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors(origin) });
@@ -623,6 +746,9 @@ Deno.serve(async (req) => {
 
   // ==== keep-warm ping（DB不使用・即応答）====
   if (action === "ping") return json({ ok: true, warm: true, store: "nha" }, 200, origin);
+
+  // ==== 2026-11-23 LINE 連携の完了（mypage_token なし・署名つき state で確認。返すのは状態だけ）====
+  if (action === "line_link_finish") return json(await llFinish(String(p.code || ""), String(p.state || "")), 200, origin);
 
   // ==== 承認/却下（スタッフ操作・早め回収リクエスト等）＝📲マイページ利用状況から呼ぶ ====
   if (action === "decide") {
@@ -773,6 +899,68 @@ Deno.serve(async (req) => {
 
   // ==== 2026-11-09 追加分の入金確認（cron）：那覇の未入金を Square で照合 → 入金済みにしてお礼を送る ====
   // ==== 2026-11-10 返金待ちの一覧（アクションタブ）：減った分は手で返す → 返したらスタッフが押す（refund_pending → refunded） ====
+  // ==== 2026-11-22 現地で受領（スタッフが現金等で受け取った追加分）：Square リンクを先に消してから「支払い済」にする。消せなければ支払い済にしない ====
+  if (action === "received_onsite" || action === "received_selftest") {
+    const sqTk = Deno.env.get("SQUARE_ACCESS_TOKEN") || "";
+    if (!sqTk) return json({ error: "SQUARE未設定" }, 503, origin);
+    const SQH = { Authorization: `Bearer ${sqTk}`, "Square-Version": "2024-06-04", "content-type": "application/json" };
+    // order_id から payment_link.id を引く（表には order_id と url しか無い）
+    const findLinkId = async (orderId: string): Promise<{ id: string | null; scanned: number; err?: string }> => {
+      let cursor = "", scanned = 0;
+      for (let i = 0; i < 30; i++) {
+        const r = await fetch(`https://connect.squareup.com/v2/online-checkout/payment-links?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, { headers: SQH });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) return { id: null, scanned, err: `一覧取得 ${r.status}` };
+        for (const l of (d.payment_links || [])) { scanned++; if (String(l.order_id || "") === orderId) return { id: String(l.id), scanned }; }
+        cursor = d.cursor || ""; if (!cursor) break;
+      }
+      return { id: null, scanned };
+    };
+    const delLink = async (id: string): Promise<boolean> => { const r = await fetch(`https://connect.squareup.com/v2/online-checkout/payment-links/${encodeURIComponent(id)}`, { method: "DELETE", headers: SQH }); if (!r.ok) console.error("[square del]", r.status, await r.text()); return r.ok; };
+    if (action === "received_selftest") {
+      // 動作確認用：1円のテストリンクを作って→探して→消すだけ。DB には何も書かない（CRON_SECRET 必須）
+      const cs = Deno.env.get("CRON_SECRET");
+      if (!cs || String(p.secret || "") !== cs) return json({ error: "認証がありません" }, 401, origin);
+      if (p.delete_order_id) { const oid = String(p.delete_order_id); const pr = await sbGet("mypage_extra_payments", `square_order_id=eq.${encodeURIComponent(oid)}&select=id,status`); if (pr.length !== 1 || pr[0].status !== "paid") return json({ error: "DBで支払い済みの行だけ消せます" }, 400, origin); const f1 = await findLinkId(oid); if (!f1.id) return json({ ok: false, found: false, scanned: f1.scanned }, 200, origin); return json({ ok: await delLink(f1.id), found: true, deleted_one: true }, 200, origin); }
+      if (p.find_order_id) { const f0 = await findLinkId(String(p.find_order_id)); return json({ find_only: true, found: !!f0.id, scanned: f0.scanned, err: f0.err || null }, 200, origin); }
+      const lk = await squareLinkNha("テスト", 1, "SELFTEST");
+      if (!lk) return json({ ok: false, step: "create" }, 200, origin);
+      const f = await findLinkId(lk.orderId);
+      const deleted = f.id ? await delLink(f.id) : false;
+      return json({ ok: !!deleted, created: true, found: !!f.id, scanned: f.scanned, deleted, err: f.err || null }, 200, origin);
+    }
+    const staffToken = String(p.staff_token || "").trim();
+    if (!staffToken) return json({ error: "スタッフ認証がありません" }, 401, origin);
+    const who = await staffUser(staffToken);
+    if (!who) return json({ error: "スタッフ認証に失敗しました" }, 401, origin);
+    const rid = String(p.reservation_id || "").trim();
+    const rcpt = String(p.receipt_no || "").trim().slice(0, 40);
+    const via = ["cash", "square_terminal", "other"].includes(String(p.via || "")) ? String(p.via) : "cash";
+    if (!rid) return json({ error: "予約番号がありません" }, 400, origin);
+    if (!rcpt) return json({ error: "レシート番号を入れてください" }, 400, origin);
+    const rowsR = await sbGet("mypage_extra_payments", `reservation_id=eq.${encodeURIComponent(rid)}&store=eq.nha&direction=eq.charge&status=in.(unpaid,link_failed)&select=id,kind,detail,amount,status,square_order_id&order=created_at.asc`);
+    if (!rowsR.length) return json({ error: "未払いの追加分が見つかりません（もう支払い済みかもしれません）" }, 404, origin);
+    const want = String(p.id || "").trim();
+    if (rowsR.length > 1 && !want) return json({ ok: false, choose: rowsR.map((x: any) => ({ id: x.id, detail: x.detail, amount: x.amount })) }, 200, origin);
+    const row = want ? rowsR.find((x: any) => String(x.id) === want) : rowsR[0];
+    if (!row) return json({ error: "指定の行が見つかりません" }, 404, origin);
+    // ① Square リンクを消す（消せなければここで止める＝支払い済にしない）
+    let linkNote = "リンクなし";
+    if (row.square_order_id) {
+      const f = await findLinkId(String(row.square_order_id));
+      if (f.err) return json({ error: `Squareのリンクを確認できませんでした（${f.err}）。支払い済みにはしていません` }, 502, origin);
+      if (f.id) { if (!(await delLink(f.id))) return json({ error: "Squareのリンクを消せませんでした。支払い済みにはしていません" }, 502, origin); linkNote = "リンク削除済み"; }
+      else linkNote = "リンクは既に無し";
+    }
+    // ② 条件つきで支払い済にする（status=unpaid/link_failed の行だけ・返ってきた行数で確認）
+    const nowIso = new Date().toISOString();
+    const pr = await fetch(`${SB_URL}/rest/v1/mypage_extra_payments?id=eq.${encodeURIComponent(String(row.id))}&status=in.(unpaid,link_failed)`, { method: "PATCH", headers: { ...H, Prefer: "return=representation" }, body: JSON.stringify({ status: "paid", paid_at: nowIso, updated_at: nowIso, received_by: String(who.email || who.id || "staff"), receipt_no: rcpt, received_via: via }) });
+    const pj = pr.ok ? await pr.json().catch(() => []) : [];
+    if (!Array.isArray(pj) || pj.length !== 1) return json({ error: "支払い済みに書けませんでした（他の操作と重なった可能性）。もう一度確認してください" }, 409, origin);
+    await slackPost(`💴 現地で受領 [那覇] ${rid}：${row.detail} ¥${Number(row.amount).toLocaleString()}／レシート ${rcpt}／${String(who.email || "staff")}／${linkNote}`);
+    return json({ ok: true, id: row.id, link: linkNote }, 200, origin);
+  }
+
   if (action === "refunds" || action === "refund_done") {
     const ADMIN_PIN_R = Deno.env.get("ADMIN_PIN") || "";
     if (!ADMIN_PIN_R || String(p.admin_pin || "") !== ADMIN_PIN_R) return json({ error: "PINが違います" }, 401, origin);
@@ -864,14 +1052,17 @@ Deno.serve(async (req) => {
     let n = 0;
     for (const row of rows) {
       if (!paid.has(String(row.square_order_id))) continue;
-      await sbPatch("mypage_extra_payments", `id=eq.${encodeURIComponent(String(row.id))}`, { status: "paid", paid_at: new Date().toISOString() });
+      // 2026-11-22 スタッフが「現地で受領」で先に支払い済にした行は触らない（paid_at上書き・お礼の二重送信を防ぐ）
+      const upr = await fetch(`${SB_URL}/rest/v1/mypage_extra_payments?id=eq.${encodeURIComponent(String(row.id))}&status=eq.unpaid`, { method: "PATCH", headers: { ...H, Prefer: "return=representation" }, body: JSON.stringify({ status: "paid", paid_at: new Date().toISOString() }) });
+      const upj = upr.ok ? await upr.json().catch(() => []) : [];
+      if (!Array.isArray(upj) || upj.length !== 1) continue;
       await notifyCust(String(row.reservation_id), `【HANDYMAN那覇空港店】ご予約 ${row.reservation_id} 追加分のご入金確認`, `【HANDYMAN 那覇】追加分（${row.detail}）¥${Number(row.amount).toLocaleString()} のご入金を確認いたしました。ありがとうございます。\n\nHANDYMAN那覇空港店\nreserve@rent-handyman.com`);
       n++;
     }
     return json({ ok: true, checked: rows.length, paid: n, unpaid_new: unpNew, unpaid_drop: unpDrop }, 200, origin);
   }
 
-  if (action !== "lookup" && action !== "request" && action !== "license_uploaded" && action !== "ready" && action !== "cancel_request" && action !== "proposal_reply" && action !== "update" && action !== "extend_quote" && action !== "unattended_staff" && action !== "unattended_accept" && action !== "unattended_received" && action !== "dropoff_activate" && action !== "dropoff_submit") return json({ error: "unsupported action" }, 400, origin);
+  if (action !== "lookup" && action !== "request" && action !== "license_uploaded" && action !== "ready" && action !== "cancel_request" && action !== "proposal_reply" && action !== "update" && action !== "extend_quote" && action !== "unattended_staff" && action !== "unattended_accept" && action !== "unattended_received" && action !== "dropoff_activate" && action !== "dropoff_submit" && action !== "line_link_start") return json({ error: "unsupported action" }, 400, origin);
 
   // ==== 2026-11-20 nosh「乗り捨て 事前 ともに 札幌 那覇で条件を変える必要ない 統一」「UIUX含め統一」：乗り捨て返却の発動（札幌 handyman-mypage と同じ仕様） ====
   //   mypage_changes store=nha field=dropoff を作る（applied＝ご案内中／completed＝駐車完了）。回収(c-)タスクは type 列が無いので changed_json に印を付け、担当を空に（回収の担当はスタッフが割り当て直す）
@@ -984,6 +1175,9 @@ Deno.serve(async (req) => {
     const _msg = _cd ? `${+_cd.slice(5, 7)}月${+_cd.slice(8, 10)}日にキャンセル済みです` : "キャンセル済みです";
     return json({ ok: false, cancelled: true, cancel_date: _cd, error: _msg }, 200, origin);
   } }
+
+  // ---- 2026-11-23 LINE 連携の開始：LINE ログインの URL を返す（連携済み・KEYDROP・返却日過ぎは返さない）----
+  if (action === "line_link_start") return json(await llStart(r, Number(p.ru) === 1 ? 1 : 0), 200, origin);
 
   // ---- 2026-11-20 乗り捨て返却：お客様が停めた場所・写真2枚・確認5項目を送る（札幌 dropoff_submit と同じ） ----
   if (action === "dropoff_submit") {
@@ -1409,6 +1603,9 @@ Deno.serve(async (req) => {
   // 2026-11-09 シートの残り台数（この予約の期間・この予約の分は除く）。取れなければ出さない
   let seatLeft: any = null;
   seatLeft = await seatP;
+  // 2026-11-23 LINE 連携ボタンの出し分け（真偽だけ返す）
+  let lineLinked = false;
+  try { lineLinked = (await llExisting(resId)) !== null; } catch (_) { /* 表示用・失敗は未連携扱い */ }
 
   // 札幌 my.html と同一の応答形（flat reservation）＝同一レンダラで表示統一。
   // 受け渡し区分(visit_type/return_type)を追加返却＝ページ側で PUB/BDB→バス時刻表 の分岐に使う。
@@ -1435,6 +1632,7 @@ Deno.serve(async (req) => {
     unattended: uaView, received: receivedDone, received_at: rcvRow ? String(rcvRow.created_at || "") : null,
     dropoff: dropoffRow ? { active: true, state: dropoffPayload.state || (dropoffRow.status === "completed" ? "parked" : "activated"), address: dropoffPayload.address || "", map_url: dropoffPayload.map_url || "", parking_name: dropoffPayload.parking_name || "", parking_detail: dropoffPayload.parking_detail || "", submitted_at: dropoffPayload.submitted_at || "", photos: dropoffPhotos.filter(Boolean) } : { active: false, state: "off" },
     seat_stock: seatLeft,
+    line_linked: lineLinked,
     at: nowJst(),
   }, 200, origin);
 });
