@@ -426,7 +426,7 @@ async function load(quiet){
     hs=r.status;stage="lookup";const j=await r.json().catch(()=>({}));spkMethod(j);sameColFix(j);gotD(j&&j.ok?j:null);
     if(j.cancelled){$("#ttl").textContent="キャンセル済み";$("#app").innerHTML=`<div class="center">${esc(j.error||"キャンセル済みです")}</div>`;return;}
     if(!j.ok){dbgErr("lookup_ng",null,hs,j.error);if(!quiet){$("#ttl").textContent="マイページ";$("#app").innerHTML=`<div class="center">${esc(j.error||"読み込めませんでした")}<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}return;}
-    DATA=j;stage="loaders";let late=false;await Promise.all([...need,Promise.race([rest,new Promise(res=>setTimeout(()=>{late=true;res();},1200))])]);stage="render";render();
+    DATA=j;stage="loaders";let late=false;await Promise.all([...need,Promise.race([rest,new Promise(res=>setTimeout(()=>{late=true;res();},1200))])]);stage="render";render();llAuto(j);
     if(late)rest.then(()=>{if(DATA===j)render();});
   }catch(e){gotD(null);dbgErr(stage,e,hs);if(!quiet)$("#app").innerHTML=`<div class="center">通信できませんでした。<br><br><button class="btn" style="max-width:220px;margin:0 auto" onclick="load()">もう一度読み込む</button></div>`;}
 }
@@ -724,12 +724,19 @@ function carCard(d){const c=d.car||{};
 /* ★2026-11-23 LINE連携：未連携の札幌・那覇の予約だけボタンを出す。返す状態だけで文言を決める（LINEのIDや名前は受け取らない） */
 const LL_MSG={linked:"LINEの連携ができました。これからのお知らせはLINEに届きます。",already:"このご予約はLINEと連携済みです。",other_line:"このご予約は別のLINEと連携済みです。変更はスタッフにお問い合わせください。",not_friend:"公式LINEを友だち追加してから、もう一度「LINEで通知を受け取る」を押してください。",expired:"時間が経ったため連携できませんでした。マイページからもう一度お試しください。",unavailable:"いまLINE連携はご利用いただけません。お知らせはメールでお届けします。",failed:"LINEの連携ができませんでした。もう一度お試しください。"};
 function llShow(d){const r=(d&&d.reservation)||{};return ["spk","nha"].includes(SID)&&!RO&&!DEMO&&Q.get("staff")!=="1"&&String(r.ota||"")!=="KEYDROP"&&!d.returned&&!!r.lend_date&&stageOf(d)!=="after";}
+/* LL_1126 公式LINEのあいさつ→予約番号→ここ（?ll=1）：確認なしでLINEの許可画面へ1回だけ進む */
+let LL_AUTO=Q.get("ll")==="1";
+if(LL_AUTO){try{const u=new URL(location.href);u.searchParams.delete("ll");history.replaceState(null,"",u.pathname+u.search+u.hash);}catch(_){}}
+function llAuto(d){if(!LL_AUTO)return;LL_AUTO=false;
+  if(!llShow(d)){toast(LL_MSG.unavailable);return;}
+  if(d.line_linked===true){toast(LL_MSG.already);return;}
+  if(d.line_linked===false)llStart(true);}
 function llCard(d){if(!llShow(d))return"";
   if(d.line_linked===true)return `<section class="card"><div class="h">LINEのお知らせ</div><div class="sub">✓ LINEで通知中</div></section>`;
   if(d.line_linked!==false)return"";
   return `<section class="card"><div class="h">LINEのお知らせ</div>`+row("LINEで通知を受け取る","","到着や時間の変更などのお知らせを、LINEですぐ受け取れます（任意）","登録","p-b","llStart()")+`</section>`;}
-async function llStart(){if(RO||DEMO||SENDING||Q.get("staff")==="1")return;
-  if(!confirm("LINEで通知を受け取りますか？\nLINEの画面に移ります。公式LINEの友だち追加もお願いします。"))return;
+async function llStart(auto){if(RO||DEMO||SENDING||Q.get("staff")==="1")return;
+  if(auto!==true&&!confirm("LINEで通知を受け取りますか？\nLINEの画面に移ります。公式LINEの友だち追加もお願いします。"))return;
   try{localStorage.setItem("hdm_"+SID+"_llt",TOKEN);}catch(_){}
   const j=await call("line_link_start",{ru:location.pathname.indexOf("/m/")>=0?1:0});
   if(j&&j.ok&&typeof j.url==="string"&&j.url.indexOf("https://access.line.me/")===0){location.href=j.url;return;}
