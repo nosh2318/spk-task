@@ -1269,7 +1269,7 @@ Deno.serve(async (req) => {
     const live = open.filter((c: any) => !(c.status === "proposed" && c.payload?.proposal?.expires_at && Date.parse(c.payload.proposal.expires_at) < Date.now()));
     if (live.length) return json({ error: live[0].status === "requested" ? `お客様からお届け時間の変更依頼（${live[0].new_value}）が届いています。先にそちらに返事してください` : `お届け時間のお願い（${live[0].payload?.proposal?.value || live[0].new_value}）の返事待ちです`, pending_staff: live[0].status === "proposed" && live[0].payload?.proposal?.kind === "staff_request" }, 409, origin);
     const exp = proposalExpires("lend_time", rr.lend_date, nz(cur), rr.return_date, rr.return_time);
-    const text = "ご希望の時間帯が大変混み合っているため、お受け取りの時間の変更をお願いしております。";
+    const text = "ご希望の時間帯は配車が大変混み合っており、お届けまでお待たせしてしまう可能性がございます。お待ち時間なくスムーズにご出発いただくため、お受け取りの時間の変更をお願いしております。"; // マイページ m/ の SR_WHY と同じ文（表示は m/ 側の決まった文）
     const now = new Date().toISOString();
     const ins = await fetch(`${SB_URL}/rest/v1/mypage_changes`, { method: "POST", headers: { ...withActor(actor), Prefer: "return=representation" }, body: JSON.stringify({ reservation_id: rid, store: "spk", field: "lend_time", old_value: nz(cur), new_value: tm, source: "staff", status: "proposed", actor, note: "運営からお届け時間の変更のお願い", payload: { lend_time: tm, proposal: { kind: "staff_request", value: tm, text, expires_at: exp, by: "staff", at: now } } }) });
     if (!ins.ok) { console.error("[staff_time_request]", await ins.text()); return json({ error: "マイページに反映できませんでした" }, 500, origin); }
