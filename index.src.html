@@ -18947,25 +18947,36 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
         const close=()=>setTimeReqTask(null);
         const buildMsg=(tm)=>msgTimeAdjust(t.name,tm,timeReqLang);
         const msg=buildMsg(timeReqTime||"08:30");
-        const copy=async()=>{try{await navigator.clipboard.writeText(msg);alert("📋 本文をコピーしました");}catch(_){alert("コピーに失敗しました");}};
-        /* ★2026-11-27 nosh「通知後のマイページのアクションが必須」「LINE・メールどちらでも」：送る前にマイページへ「お届け時間の変更のお願い」（変更する／今のまま）を出す。LINE にもマイページの URL を付ける（メールは送信側で付く） */
-        const toMypage=async()=>{try{const{data:_s}=await sb.auth.getSession();const _tk=_s&&_s.session&&_s.session.access_token;if(!_tk)return {ok:false,error:"スタッフ認証がありません"};
-          const _r=await fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/handyman-mypage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"staff_time_request",reservation_id:String(rid),time:timeReqTime||"08:30",staff_token:_tk})});
+        /* ★2026-11-27 nosh「通知後のマイページのアクションが必須」「LINE・メールどちらでも」：送る前（コピーでも）にマイページへ「お届けの時間の変更のお願い」（変更する／今のまま）を1件出す。
+           出せない時は送らない。LINE・コピーの本文にもマイページの URL を付ける（メールは送信側で付く）。二度押し防止。返事待ちがあれば取り消して出し直せる（omni-review 11/27 条件付き） */
+        const sAPI=async(body)=>{try{const{data:_s}=await sb.auth.getSession();const _tk=_s&&_s.session&&_s.session.access_token;if(!_tk)return {ok:false,error:"スタッフ認証がありません"};
+          const _r=await fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/handyman-mypage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"staff_time_request",reservation_id:String(rid),staff_token:_tk,...body})});
           return await _r.json().catch(()=>({ok:false,error:"応答なし"}));}catch(_e){return {ok:false,error:"通信エラー"};}};
-        const send=async()=>{
+        const toMypage=async()=>{let m=await sAPI({time:timeReqTime||"08:30"});
+          if(!m.ok&&m.pending_staff){if(!window.confirm("⚠️ "+(m.error||"返事待ちのお願いがあります")+"\n前のお願いを取り消して、"+(timeReqTime||"08:30")+" で出し直しますか？"))return null;const c=await sAPI({op:"cancel"});if(!c.ok){alert("⚠️ 取り消せませんでした\n"+(c.error||""));return null;}m=await sAPI({time:timeReqTime||"08:30"});}
+          if(!m.ok){alert("⚠️ マイページにボタンを出せなかったため、送っていません\n"+(m.error||""));return null;}return m;};
+        const withUrl=(m,via)=>msg+(m&&m.my_url?"\n\n▼マイページ（ボタンでお知らせください）\n"+m.my_url+"&via="+via:"");
+        const busy=()=>{if(window._timeReqBusy)return true;window._timeReqBusy=true;setTimeout(()=>{window._timeReqBusy=false;},8000);return false;};
+        const done=()=>{window._timeReqBusy=false;};
+        const copy=async()=>{if(busy())return;try{
+          if(!window.confirm("マイページに［変更する／今のまま］のボタンを出してから、本文（マイページのURL付き）をコピーします。よろしいですか？"))return;
+          const _m=await toMypage();if(!_m)return;
+          try{await navigator.clipboard.writeText(withUrl(_m,"line"));markLineSent(rid,"time_adjust");alert("📋 マイページにボタンを出し、本文をコピーしました→手動で送ってください");close();}catch(_){alert("マイページにボタンは出ましたが、コピーに失敗しました");}
+        }finally{done();}};
+        const cancelReq=async()=>{if(busy())return;try{if(!window.confirm("返事待ちの「お届けの時間の変更のお願い」をマイページから取り消しますか？"))return;const c=await sAPI({op:"cancel"});alert(c.ok?(c.already?"取り消すお願いはありません":"✅ 取り消しました（マイページから消えます）"):"⚠️ 取り消せませんでした\n"+(c.error||""));}finally{done();}};
+        const send=async()=>{if(busy())return;try{
           if(!window.confirm(cn+" に「お届け時間の調整依頼（"+(timeReqTime||"08:30")+"）」を"+(linked?"LINE":"メール")+"で送り、マイページに［変更する／今のまま］を出します。よろしいですか？"))return;
-          const _m=await toMypage();
-          if(!_m.ok&&!_m.skip){alert("⚠️ マイページに出せなかったため、送っていません\n"+(_m.error||""));return;}
-          if(!linked){if(await mailFallback("spk",rid,"time_adjust",msg)){markLineSent(rid,"time_adjust");alert(_m.ok?"✉️ メールで送り、マイページにボタンを出しました":"✉️ メールで送りました（"+(_m.error||"")+"）");close();return;}await copy();alert("📱 LINE・メールとも送れないため、本文をコピーしました→手動で送ってください"+(_m.ok?"（マイページのボタンは出ています）":""));return;}
-          const _mt=(window._mypageTokenMap||{})[rid];const lmsg=msg+(_mt?"\n\n▼マイページ（ボタンでお知らせください）\nhttps://nosh2318.github.io/spk-task/my.html?t="+_mt+"&via=line":"");
+          const _m=await toMypage();if(!_m)return;
+          if(!linked){if(await mailFallback("spk",rid,"time_adjust",msg)){markLineSent(rid,"time_adjust");alert("✉️ メールで送り、マイページにボタンを出しました");close();return;}try{await navigator.clipboard.writeText(withUrl(_m,"line"));}catch(_){}alert("📱 LINE・メールとも送れないため、本文（マイページのURL付き）をコピーしました→手動で送ってください（マイページのボタンは出ています）");return;}
+          const lmsg=withUrl(_m,"line");
           try{
             const{data:_s}=await sb.auth.getSession();const _tk=_s&&_s.session&&_s.session.access_token;
             const _r=await fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/line-send",{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+_tk},body:JSON.stringify({store:"spk",resv_no:rid,action:"time_adjust",message:lmsg})});
             const _j=await _r.json();
-            if(_j.ok){markLineSent(rid,"time_adjust");alert("✅ お届け時間の調整依頼をLINEに自動送信しました");close();}
-            else{await navigator.clipboard.writeText(msg);alert("⚠️自動送信できませんでした("+(_j.reason||"")+")。\n本文をコピーしました→手動で送信してください");}
-          }catch(_e){await navigator.clipboard.writeText(msg);alert("⚠️送信エラー。本文をコピーしました→手動で送信してください");}
-        };
+            if(_j.ok){markLineSent(rid,"time_adjust");alert("✅ LINEで送り、マイページにボタンを出しました");close();}
+            else{try{await navigator.clipboard.writeText(lmsg);}catch(_){}alert("⚠️自動送信できませんでした("+(_j.reason||"")+")。\n本文をコピーしました→手動で送信してください（マイページのボタンは出ています）");}
+          }catch(_e){try{await navigator.clipboard.writeText(lmsg);}catch(_){}alert("⚠️送信エラー。本文をコピーしました→手動で送信してください（マイページのボタンは出ています）");}
+        }finally{done();}};
         return <div onClick={close} style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,.5)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
           <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:16,padding:20,width:"100%",maxWidth:400,maxHeight:"90vh",overflowY:"auto",boxShadow:"0 20px 60px rgba(0,0,0,.25)"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
@@ -18985,7 +18996,8 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
               <button onClick={copy} style={{padding:"12px",background:"#eff6ff",border:"2px solid #93c5fd",borderRadius:10,fontSize:14,fontWeight:800,color:"#1d4ed8",cursor:"pointer"}}>📋 コピー</button>
               <button onClick={send} style={{padding:"12px",background:"#16a34a",border:"none",borderRadius:10,fontSize:14,fontWeight:800,color:"#fff",cursor:"pointer"}}>📤 LINEまたはメールで送信</button>
             </div>
-            <div style={{fontSize:10,color:"#94a3b8",marginTop:6,textAlign:"center"}}>LINE連携があればLINE、無ければメールで送ります（どちらも無い時はコピー）</div>
+            <div style={{fontSize:10,color:"#94a3b8",marginTop:6,textAlign:"center"}}>LINE連携があればLINE、無ければメールで送ります（どちらも無い時はコピー）。お客様のマイページに［変更する／今のまま］が出ます</div>
+            <button onClick={cancelReq} style={{display:"block",margin:"8px auto 0",background:"none",border:"none",fontSize:11,color:"#64748b",textDecoration:"underline",cursor:"pointer"}}>送ったお願いを取り消す</button>
           </div>
         </div>;
       })()}
