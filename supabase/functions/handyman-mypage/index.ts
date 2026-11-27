@@ -969,11 +969,18 @@ Deno.serve(async (req) => {
 
     // 顧客へLINE通知は「予約が有効なうち」に先に送る（キャンセル確定で cancelled になる前）。場所・時間・早め回収は上の反映が成功した後
     let msg: string;
+    // 2026-11-27 nosh「全機能 翻訳必須」：スタッフのお願いの確定連絡は、お客様がマイページで最後に選んだ言語で送る（mypage_events.lang・無ければ日本語）
+    let srLang = "ja";
+    if (pl.proposal && pl.proposal.kind === "staff_request") { try { const ev = await sbGet("mypage_events", `reservation_id=eq.${encodeURIComponent(resId2)}&lang=not.is.null&order=created_at.desc&limit=1&select=lang`); const lg = String(ev[0]?.lang || "ja").toLowerCase(); srLang = lg.startsWith("zh") ? "zh" : lg.startsWith("ko") ? "ko" : lg.startsWith("en") ? "en" : "ja"; } catch (_e) { /* 日本語 */ } }
     if (decision === "approved") {
       if (c.field === "cancel") msg = `【HANDYMAN 札幌デリバリー】ご予約 ${resId2} のキャンセルを承りました。\n担当より別途ご連絡いたします。ご利用ありがとうございました。`;
       else if (c.field === "ready") msg = rdyHM ? `【HANDYMAN 札幌デリバリー】早めのご返却（回収）を承りました。\n回収予定時間を ${rdyHM} に調整いたしました。マイページよりご確認ください。\n${myUrl}` : `【HANDYMAN 札幌デリバリー】早めのご返却（回収）を承りました。\nスケジュールを調整し、回収時間が早まる場合は改めてご連絡いたします。`;
       else if (c.field === "extend") msg = `【HANDYMAN 札幌デリバリー】ご依頼の延長を承り、反映いたしました。\n${extraRes?.detail || ""}${Number(extraRes?.amount) > 0 ? "\n追加のお支払いは、マイページの「お支払い」からお願いいたします。" : ""}\n${myUrl}`;
-      else if (pl.proposal && pl.proposal.kind === "staff_request") msg = `【HANDYMAN 札幌デリバリー】${label}を ${String(pl[String(c.field)] || c.new_value || "")} に変更いたしました。ご協力いただき、誠にありがとうございます。\nマイページよりご確認ください。\n${myUrl}`;
+      else if (pl.proposal && pl.proposal.kind === "staff_request") { const v = String(pl[String(c.field)] || c.new_value || "");
+        msg = srLang === "en" ? `[HANDYMAN Sapporo Delivery] Your delivery time has been changed to ${v}. Thank you very much for your cooperation.\nPlease check your My Page.\n${myUrl}`
+          : srLang === "zh" ? `【HANDYMAN 札幌送車】送車時間已變更為 ${v}。衷心感謝您的配合。\n請於「我的頁面」確認。\n${myUrl}`
+          : srLang === "ko" ? `[HANDYMAN 삿포로 딜리버리] 배달 시간을 ${v}(으)로 변경했습니다. 협조해 주셔서 진심으로 감사드립니다.\n마이페이지에서 확인해 주세요.\n${myUrl}`
+          : `【HANDYMAN 札幌デリバリー】${label}を ${v} に変更いたしました。ご協力いただき、誠にありがとうございます。\nマイページよりご確認ください。\n${myUrl}`; }
       else msg = `【HANDYMAN 札幌デリバリー】ご依頼の${label}変更を承り、反映いたしました。\nマイページよりご確認ください。\n${myUrl}`;
     } else {
       if (c.field === "ready" && (keep || !altText)) msg = `【HANDYMAN 札幌デリバリー】ご連絡ありがとうございます。誠に申し訳ございませんが、今回は予定のお時間での回収とさせていただきます。${rejLine ? "\n" + rejLine : ""}\n何卒ご理解いただけますと幸いです。`;
