@@ -445,11 +445,11 @@ function resolveTaskTime(t: any): string {
 // 2026-11-27 今の実際のお届け時間（lookup の lendTimeR と同じ順：applied（今の実効値）> OPタスク > 予約）。スタッフのお願いの作成と返事の両方で使う（札幌と同じ）
 const hmNz = (s: unknown) => { const m = String(s ?? "").trim().match(/^(\d{1,2}):(\d{2})/); return m ? m[1].padStart(2, "0") + ":" + m[2] : String(s ?? "").trim(); };
 async function nhaCurLend(rid: string): Promise<{ cur: string; dT: any; r: any }> {
-  const ts = await sbGet("nha_tasks", `${encodeURIComponent("予約番号")}=eq.${encodeURIComponent(rid)}&deleted=not.is.true&select=_id,${encodeURIComponent("時間")},${encodeURIComponent("変更")},changed_json`);
+  const ts = await sbGet("nha_tasks", `${encodeURIComponent("予約番号")}=eq.${encodeURIComponent(rid)}&deleted=not.is.true&select=_id,${encodeURIComponent("内容")},${encodeURIComponent("時間")},${encodeURIComponent("変更")},changed_json`);
   const d0: any = ts.find((t: any) => String(t._id || "").startsWith("d-"));
-  const dT = d0 ? { _id: d0._id, time: d0["時間"], timeChange: d0["変更"], changed_json: d0.changed_json } : null;
+  const dT = d0 ? { _id: d0._id, kind: String(d0["内容"] || ""), time: d0["時間"], timeChange: d0["変更"], changed_json: d0.changed_json } : null;
   const ap = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(rid)}&store=eq.nha&field=eq.lend_time&status=eq.applied&order=created_at.desc&limit=1&select=new_value`);
-  const r = (await sbGet("nha_reservations", `id=eq.${encodeURIComponent(rid)}&select=id,ota,status,start_date,start_time,end_date,end_time,del_time,mypage_token`))[0] || {};
+  const r = (await sbGet("nha_reservations", `id=eq.${encodeURIComponent(rid)}&select=id,ota,status,start_date,start_time,end_date,end_time,del_time,kd_status,mypage_token`))[0] || {};
   let cur = "";
   if (ap[0]) { try { const er = await fetch(`${SB_URL}/rest/v1/rpc/nha_res_effective`, { method: "POST", headers: H, body: JSON.stringify({ p_res: rid }) }); const ej: any = er.ok ? await er.json() : null; cur = String((ej && ej.lend_time) || "").trim(); } catch (_e) { /* */ } if (!cur) cur = String(ap[0].new_value || "").trim(); }
   if (!cur) cur = resolveTaskTime(dT) || String(r.start_time || r.del_time || "");
@@ -916,7 +916,7 @@ Deno.serve(async (req) => {
     const hopeM = String(c.new_value || "").match(/(\d{1,2}:\d{2})/);
     const staffName = hdmWho(actor, p.actor_name);
     const ok2 = decision === "approved";
-    { const m = await hdmMsg({ emoji: ok2 ? "✅" : "🚫", store: "nha", title: ok2 ? "早め回収を承認しました" : "早め回収を見送りました", rid: resId2, side: "back", // ★2026-11-10 共通の型
+    if (c.field === "ready") { const m = await hdmMsg({ emoji: ok2 ? "✅" : "🚫", store: "nha", title: ok2 ? "早め回収を承認しました" : "早め回収を見送りました", rid: resId2, side: "back", // ★2026-11-10 共通の型
       body: [`🕐 予定の回収 ${dr.col_time || dr.end_time || "-"} → 希望 ${hopeM ? `${hopeM[1]}〜` : "指定なし"}`, ok2 ? "📩 お客様へ「早めの回収を承りました」と送信済み" : "📩 お客様へ「予定のお時間で回収します」と送信済み", `👤 対応 ${staffName}`] });
     await slackPost(m.text, m.blocks); }
     return json({ ok: true, decided: decision }, 200, origin);
@@ -1111,11 +1111,13 @@ Deno.serve(async (req) => {
     if (!rr.id) return json({ error: "予約が見つかりません" }, 404, origin);
     const rst = String(rr.status || "");
     if (/cancel/i.test(rst) || rst.indexOf("キャンセル") >= 0) return json({ error: "キャンセル済みの予約です" }, 409, origin);
+    if (String(rr.ota || "") === "KEYDROP") return json({ error: "KEYDROP の予約は対象外です", skip: true }, 409, origin);
     if (!rr.mypage_token) return json({ error: "マイページがまだありません", skip: true }, 409, origin);
-    if (!dT) return json({ error: "お届け（デリバリー）の予約ではありません", skip: true }, 409, origin);
+    // レビュー 11/27：那覇は空港送迎・来店にも d- タスクがある → 内容=DEL の時だけ
+    if (!dT || dT.kind !== "DEL") return json({ error: "お届け（デリバリー）の予約ではありません", skip: true }, 409, origin);
     const rcv = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(rid)}&store=eq.nha&field=eq.received&status=eq.applied&select=id&limit=1`);
     const goAt = rr.start_date ? Date.parse(`${rr.start_date}T${cur && /^\d{2}:\d{2}$/.test(cur) ? cur : "00:00"}:00+09:00`) : NaN;
-    if (rcv[0] || (!isNaN(goAt) && goAt < Date.now())) return json({ error: "お届けが済んでいるため送れません" }, 409, origin);
+    if (rcv[0] || ["delivering", "active", "collecting", "completed"].includes(String(rr.kd_status || "")) || (!isNaN(goAt) && goAt < Date.now())) return json({ error: "お届けが済んでいるため送れません" }, 409, origin);
     if (cur === tm) return json({ error: `今のお届け時間（${cur}）と同じです` }, 400, origin);
     const open = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(rid)}&store=eq.nha&field=eq.lend_time&status=in.(requested,proposed)&select=id,status,new_value,payload`);
     const live = open.filter((c: any) => !(c.status === "proposed" && c.payload?.proposal?.expires_at && Date.parse(c.payload.proposal.expires_at) < Date.now()));
