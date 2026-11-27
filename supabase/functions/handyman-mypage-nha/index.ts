@@ -442,6 +442,19 @@ function resolveTaskTime(t: any): string {
   const cj = parseCj(t);
   return String(t.timeChange || cj._timeChange || cj._ssTime || t.time || "");  // OPシートと同じ優先(OPの「変更」列=timeChangeを最優先)
 }
+// 2026-11-27 今の実際のお届け時間（lookup の lendTimeR と同じ順：applied（今の実効値）> OPタスク > 予約）。スタッフのお願いの作成と返事の両方で使う（札幌と同じ）
+const hmNz = (s: unknown) => { const m = String(s ?? "").trim().match(/^(\d{1,2}):(\d{2})/); return m ? m[1].padStart(2, "0") + ":" + m[2] : String(s ?? "").trim(); };
+async function nhaCurLend(rid: string): Promise<{ cur: string; dT: any; r: any }> {
+  const ts = await sbGet("nha_tasks", `${encodeURIComponent("予約番号")}=eq.${encodeURIComponent(rid)}&deleted=not.is.true&select=_id,${encodeURIComponent("時間")},${encodeURIComponent("変更")},changed_json`);
+  const d0: any = ts.find((t: any) => String(t._id || "").startsWith("d-"));
+  const dT = d0 ? { _id: d0._id, time: d0["時間"], timeChange: d0["変更"], changed_json: d0.changed_json } : null;
+  const ap = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(rid)}&store=eq.nha&field=eq.lend_time&status=eq.applied&order=created_at.desc&limit=1&select=new_value`);
+  const r = (await sbGet("nha_reservations", `id=eq.${encodeURIComponent(rid)}&select=id,ota,status,start_date,start_time,end_date,end_time,del_time,mypage_token`))[0] || {};
+  let cur = "";
+  if (ap[0]) { try { const er = await fetch(`${SB_URL}/rest/v1/rpc/nha_res_effective`, { method: "POST", headers: H, body: JSON.stringify({ p_res: rid }) }); const ej: any = er.ok ? await er.json() : null; cur = String((ej && ej.lend_time) || "").trim(); } catch (_e) { /* */ } if (!cur) cur = String(ap[0].new_value || "").trim(); }
+  if (!cur) cur = resolveTaskTime(dT) || String(r.start_time || r.del_time || "");
+  return { cur: hmNz(cur), dT, r };
+}
 function taskOptNum(t: any, key: string): number {
   if (!t) return 0;
   const cj = parseCj(t);
@@ -879,6 +892,18 @@ Deno.serve(async (req) => {
       msg = c.field === "ready"
         ? `【HANDYMAN 那覇】早めのご返却（回収）を承りました。\nスケジュールを調整し、回収時間が早まる場合は改めてご連絡いたします。`
         : `【HANDYMAN 那覇】ご依頼を承り、反映いたしました。マイページよりご確認ください。`;
+      // 2026-11-27 スタッフのお願いへのOK：お礼つき・お客様がマイページで最後に選んだ言語（mypage_events.lang・無ければ日本語）
+      const plS: any = (c.payload && typeof c.payload === "object") ? c.payload : {};
+      if (plS.proposal && plS.proposal.kind === "staff_request") {
+        let lg = "ja"; try { const ev = await sbGet("mypage_events", `reservation_id=eq.${encodeURIComponent(resId2)}&lang=not.is.null&order=created_at.desc&limit=1&select=lang`); const l0 = String(ev[0]?.lang || "ja").toLowerCase(); lg = l0.startsWith("zh") ? "zh" : l0.startsWith("ko") ? "ko" : l0.startsWith("en") ? "en" : "ja"; } catch (_e) { /* 日本語 */ }
+        const v = String(plS[String(c.field)] || c.new_value || "");
+        const rvS = (await sbGet("nha_reservations", `id=eq.${encodeURIComponent(resId2)}&select=mypage_token`))[0] || {};
+        const uS = rvS.mypage_token ? `\nhttps://nosh2318.github.io/naha-project/my-nha.html?t=${rvS.mypage_token}` : "";
+        msg = lg === "en" ? `[HANDYMAN Naha] Your delivery time has been changed to ${v}. Thank you very much for your cooperation.\nPlease check your My Page.${uS}`
+          : lg === "zh" ? `【HANDYMAN 那霸】送車時間已變更為 ${v}。衷心感謝您的配合。\n請於「我的頁面」確認。${uS}`
+          : lg === "ko" ? `[HANDYMAN 나하] 배달 시간을 ${v}(으)로 변경했습니다. 협조해 주셔서 진심으로 감사드립니다.\n마이페이지에서 확인해 주세요.${uS}`
+          : `【HANDYMAN 那覇】お届け時間を ${v} に変更いたしました。ご協力いただき、誠にありがとうございます。\nマイページよりご確認ください。${uS}`;
+      }
     } else {
       if (c.field === "ready" && (keep || !altText)) msg = `【HANDYMAN 那覇】ご連絡ありがとうございます。誠に申し訳ございませんが、今回は予定のお時間での回収とさせていただきます。${rejLine ? "\n" + rejLine : ""}\n何卒ご理解いただけますと幸いです。`;
       else { const rv2 = (await sbGet("nha_reservations", `id=eq.${encodeURIComponent(resId2)}&select=mypage_token`))[0] || {}; msg = declineMsg("【HANDYMAN 那覇】", lbl, String(c.field), String(c.new_value || ""), String(c.old_value || ""), rejLine, keep ? "" : altText, keep ? "" : "こちらでよろしければ、マイページから改めてご依頼ください。", rv2.mypage_token ? `https://nosh2318.github.io/naha-project/my-nha.html?t=${rv2.mypage_token}` : ""); if (keep) msg = msg.replace(/はそのままです。/, "のままでのご利用をお願いできますでしょうか。"); }
@@ -1060,6 +1085,48 @@ Deno.serve(async (req) => {
       n++;
     }
     return json({ ok: true, checked: rows.length, paid: n, unpaid_new: unpNew, unpaid_drop: unpDrop }, 200, origin);
+  }
+
+  // ==== 2026-11-27 nosh「札幌 那覇 同じ（デリバリ）」：スタッフ→お客様の「お届け時間の変更のお願い」（札幌 handyman-mypage と同じ仕様） ====
+  //   mypage_changes に field=lend_time・status=proposed・source=staff の1行だけ作る（既存行は書き換えない。前のお願いが残っていれば作らない）。
+  //   お客様の返事は既存 proposal_reply（accept＝反映・decline＝そのまま・期限は mypage_expire_proposals）。LINE/メールどちらで送っても同じ。
+  if (action === "staff_time_request") {
+    const staffToken = String(p.staff_token || "").trim();
+    if (!staffToken) return json({ error: "スタッフ認証がありません" }, 401, origin);
+    const who = await staffUser(staffToken);
+    if (!who) return json({ error: "スタッフ認証に失敗しました" }, 401, origin);
+    const actor = `staff:${String(who.email || who.id || "staff")}`;
+    const rid = String(p.reservation_id || "").trim();
+    const tm = String(p.time || "").trim();
+    if (!rid) return json({ error: "予約番号がありません" }, 400, origin);
+    if (String(p.op || "") === "cancel") {
+      const pv = (await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(rid)}&store=eq.nha&field=eq.lend_time&status=eq.proposed&source=eq.staff&order=created_at.desc&limit=1&select=id,payload`))[0];
+      if (!pv) return json({ ok: true, already: true }, 200, origin);
+      const pp: any = (pv.payload && typeof pv.payload === "object") ? pv.payload : {};
+      const ok = await uaPatch("mypage_changes", `id=eq.${encodeURIComponent(String(pv.id))}&status=eq.proposed`, { status: "cancelled", payload: { ...pp, proposal: { ...(pp.proposal || {}), answer: "cancelled_by_staff", answered_at: new Date().toISOString() } } }, actor);
+      return ok ? json({ ok: true, cancelled: true }, 200, origin) : json({ error: "取り消せませんでした（状態が変わっています）" }, 409, origin);
+    }
+    if (!/^([01]\d|2[0-2]):[0-5]\d$/.test(tm) || tm < "06:00" || tm > "22:00") return json({ error: "時間は 6:00〜22:00 で選んでください" }, 400, origin);
+    const { cur, dT, r: rr } = await nhaCurLend(rid);
+    if (!rr.id) return json({ error: "予約が見つかりません" }, 404, origin);
+    const rst = String(rr.status || "");
+    if (/cancel/i.test(rst) || rst.indexOf("キャンセル") >= 0) return json({ error: "キャンセル済みの予約です" }, 409, origin);
+    if (!rr.mypage_token) return json({ error: "マイページがまだありません", skip: true }, 409, origin);
+    if (!dT) return json({ error: "お届け（デリバリー）の予約ではありません", skip: true }, 409, origin);
+    const rcv = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(rid)}&store=eq.nha&field=eq.received&status=eq.applied&select=id&limit=1`);
+    const goAt = rr.start_date ? Date.parse(`${rr.start_date}T${cur && /^\d{2}:\d{2}$/.test(cur) ? cur : "00:00"}:00+09:00`) : NaN;
+    if (rcv[0] || (!isNaN(goAt) && goAt < Date.now())) return json({ error: "お届けが済んでいるため送れません" }, 409, origin);
+    if (cur === tm) return json({ error: `今のお届け時間（${cur}）と同じです` }, 400, origin);
+    const open = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(rid)}&store=eq.nha&field=eq.lend_time&status=in.(requested,proposed)&select=id,status,new_value,payload`);
+    const live = open.filter((c: any) => !(c.status === "proposed" && c.payload?.proposal?.expires_at && Date.parse(c.payload.proposal.expires_at) < Date.now()));
+    if (live.length) return json({ error: live[0].status === "requested" ? `お客様からお届け時間の変更依頼（${live[0].new_value}）が届いています。先にそちらに返事してください` : `お届け時間のお願い（${live[0].payload?.proposal?.value || live[0].new_value}）の返事待ちです`, pending_staff: live[0].status === "proposed" && live[0].payload?.proposal?.kind === "staff_request" }, 409, origin);
+    const exp = proposalExpires("lend_time", rr.start_date, cur, rr.end_date, rr.end_time);
+    const text = "ご希望の時間帯は配車が大変混み合っており、お届けまでお待たせしてしまう可能性がございます。お待ち時間なくスムーズにご出発いただくため、お受け取りの時間の変更をお願いしております。"; // マイページ m/ の SR_WHY と同じ文
+    const now = new Date().toISOString();
+    const ins = await fetch(`${SB_URL}/rest/v1/mypage_changes`, { method: "POST", headers: { ...withActor(actor), Prefer: "return=representation" }, body: JSON.stringify({ reservation_id: rid, store: "nha", field: "lend_time", old_value: cur, new_value: tm, source: "staff", status: "proposed", actor, note: "運営からお届け時間の変更のお願い", payload: { lend_time: tm, proposal: { kind: "staff_request", value: tm, text, expires_at: exp, by: "staff", at: now } } }) });
+    if (!ins.ok) { console.error("[staff_time_request]", await ins.text()); return json({ error: "マイページに反映できませんでした" }, 500, origin); }
+    const insRow = ((await ins.json().catch(() => [])) as any[])[0] || {};
+    return json({ ok: true, change_id: insRow.id ?? null, expires_at: exp, from: cur, to: tm, my_url: `https://nosh2318.github.io/naha-project/my-nha.html?t=${rr.mypage_token}` }, 200, origin);
   }
 
   if (action !== "lookup" && action !== "request" && action !== "license_uploaded" && action !== "ready" && action !== "cancel_request" && action !== "proposal_reply" && action !== "update" && action !== "extend_quote" && action !== "unattended_staff" && action !== "unattended_accept" && action !== "unattended_received" && action !== "dropoff_activate" && action !== "dropoff_submit" && action !== "line_link_start") return json({ error: "unsupported action" }, 400, origin);
@@ -1273,7 +1340,7 @@ Deno.serve(async (req) => {
   if (action === "proposal_reply") {
     const cid = String(p.change_id || ""); const ans = String(p.answer || "");
     if (!cid || (ans !== "accept" && ans !== "decline")) return json({ error: "パラメータ不正" }, 400, origin);
-    const pc = (await sbGet("mypage_changes", `id=eq.${encodeURIComponent(cid)}&store=eq.nha&reservation_id=eq.${encodeURIComponent(resId)}&select=id,field,new_value,status,payload`))[0];
+    const pc = (await sbGet("mypage_changes", `id=eq.${encodeURIComponent(cid)}&store=eq.nha&reservation_id=eq.${encodeURIComponent(resId)}&select=id,field,old_value,new_value,status,payload`))[0];
     if (!pc) return json({ error: "ご提案が見つかりません" }, 404, origin);
     if (pc.status !== "proposed") return json({ ok: true, already: pc.status }, 200, origin);
     const ppl: any = (pc.payload && typeof pc.payload === "object") ? pc.payload : {}; const pr: any = ppl.proposal || {};
@@ -1283,9 +1350,18 @@ Deno.serve(async (req) => {
       return json({ ok: false, expired: true, error: "ご提案の期限が過ぎました。今のご予約のままです。" }, 200, origin);
     }
     const _pm = (emoji: string, title: string, body: string[]) => hdmMsg({ emoji, ...(/自動反映に失敗/.test(title) ? { cat: "依頼に返事／反映できない" } : {}), store: "nha", title, rid: resId, side: sideOf(pc.field), body }); // ★2026-11-10 共通の型
+    // 2026-11-27 スタッフのお願いは、送った後にお届け時間が変わっていたら反映しない（人の入力が勝つ・札幌と同じ）
+    if (ans === "accept" && pr.kind === "staff_request" && pc.field === "lend_time") {
+      const { cur: now0 } = await nhaCurLend(resId);
+      if (hmNz(pc.old_value) !== now0) {
+        await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(cid)}&status=eq.proposed`, { status: "expired", payload: { ...ppl, proposal: { ...pr, answer: "stale", stale_now: now0, answered_at: new Date().toISOString() } } });
+        try { const m = await hdmMsg({ emoji: "⚠️", cat: "依頼に返事／反映できない", store: "nha", title: "お客様が時間変更のお願いにOK→時間が既に変わっていたため反映していません", rid: resId, side: "go", body: [`お願いを送った時 ${pc.old_value || ""} → 今 ${now0}（お願いの値 ${pr.value || ""}）`, "必要ならお客様に確認してください"] }); await slackPost(m.text, m.blocks); } catch (_e) { /* */ }
+        return json({ ok: false, stale: true, error: `お届けの時間が既に ${now0} に変わっているため、このお願いは終了しました。今のご予約（${now0}）のままです。` }, 200, origin);
+      }
+    }
     if (ans === "decline") {
       await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(cid)}`, { status: "declined_by_guest", payload: { ...ppl, proposal: { ...pr, answer: "decline", answered_at: new Date().toISOString() } } });
-      { const m = await _pm("↩️", `お客様が別の案を見送りました（${fj}）`, ["今の予約のまま"]); await slackPost(m.text, m.blocks); }
+      { const m = await _pm("↩️", pr.kind === "staff_request" ? `お客様が時間変更のお願いを見送りました（${fj}）` : `お客様が別の案を見送りました（${fj}）`, [pr.kind === "staff_request" ? `今の時間のまま（${pc.old_value || ""}）` : "今の予約のまま"]); await slackPost(m.text, m.blocks); }
       return json({ ok: true, answered: "decline" }, 200, origin);
     }
     // accept：値を差し替えて requested に戻し、スタッフ承認と同じ decide を内部で呼ぶ（反映＋承認通知）
@@ -1295,7 +1371,7 @@ Deno.serve(async (req) => {
     const dr2 = await fetch(`${SB_URL}/functions/v1/handyman-mypage-nha`, { method: "POST", headers: { "content-type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` }, body: JSON.stringify({ action: "decide", admin_pin: ADMIN_PIN2, change_id: Number(cid) || cid, decision: "approved" }) });
     const dj: any = await dr2.json().catch(() => ({}));
     if (!dr2.ok || !dj.ok) { console.error("[proposal accept]", dr2.status, JSON.stringify(dj)); { const m = await _pm("⚠️", `お客様が別の案にOK→自動反映に失敗（${fj}）`, [dateLine(r.start_date, r.end_date, sideOf(pc.field)), "⚠️ 要承認：アクションタブで承認してください"]); await slackPost(m.text, m.blocks); } return json({ ok: true, answered: "accept", pending: true }, 200, origin); }
-    { const m = await _pm("✅", `お客様が別の案にOK→確定しました（${fj}）`, [`🔁 ${pr.text || nv}`]); await slackPost(m.text, m.blocks); }
+    { const m = await _pm("✅", pr.kind === "staff_request" ? `お客様が時間変更のお願いにOK→確定しました（${fj}）` : `お客様が別の案にOK→確定しました（${fj}）`, [pr.kind === "staff_request" ? `🔁 ${pc.old_value || ""} → ${nv}` : `🔁 ${pr.text || nv}`]); await slackPost(m.text, m.blocks); }
     return json({ ok: true, answered: "accept" }, 200, origin);
   }
 
