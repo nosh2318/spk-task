@@ -964,6 +964,7 @@ Deno.serve(async (req) => {
       if (c.field === "cancel") msg = `【HANDYMAN 札幌デリバリー】ご予約 ${resId2} のキャンセルを承りました。\n担当より別途ご連絡いたします。ご利用ありがとうございました。`;
       else if (c.field === "ready") msg = rdyHM ? `【HANDYMAN 札幌デリバリー】早めのご返却（回収）を承りました。\n回収予定時間を ${rdyHM} に調整いたしました。マイページよりご確認ください。\n${myUrl}` : `【HANDYMAN 札幌デリバリー】早めのご返却（回収）を承りました。\nスケジュールを調整し、回収時間が早まる場合は改めてご連絡いたします。`;
       else if (c.field === "extend") msg = `【HANDYMAN 札幌デリバリー】ご依頼の延長を承り、反映いたしました。\n${extraRes?.detail || ""}${Number(extraRes?.amount) > 0 ? "\n追加のお支払いは、マイページの「お支払い」からお願いいたします。" : ""}\n${myUrl}`;
+      else if (pl.proposal && pl.proposal.kind === "staff_request") msg = `【HANDYMAN 札幌デリバリー】${label}を ${String(pl[String(c.field)] || c.new_value || "")} に変更いたしました。ご協力いただき、誠にありがとうございます。\nマイページよりご確認ください。\n${myUrl}`;
       else msg = `【HANDYMAN 札幌デリバリー】ご依頼の${label}変更を承り、反映いたしました。\nマイページよりご確認ください。\n${myUrl}`;
     } else {
       if (c.field === "ready" && (keep || !altText)) msg = `【HANDYMAN 札幌デリバリー】ご連絡ありがとうございます。誠に申し訳ございませんが、今回は予定のお時間での回収とさせていただきます。${rejLine ? "\n" + rejLine : ""}\n何卒ご理解いただけますと幸いです。`;
@@ -1221,6 +1222,47 @@ Deno.serve(async (req) => {
     return json({ ok: true, state: payload.state, placed: !!payload.placed_at }, 200, origin);
   }
 
+  // ==== 2026-11-27 nosh「時間調整 通知後のマイページのアクションが必須」：スタッフ→お客様の「お届け時間の変更のお願い」 ====
+  //   mypage_changes に field=lend_time・status=proposed・source=staff の1行だけ作る（既存行は書き換えない。前のスタッフのお願いが残っていれば作らない）。
+  //   お客様の返事は既存 proposal_reply（accept＝反映・decline＝そのまま・期限は mypage_expire_proposals）。LINE/メールどちらで送っても同じ。
+  if (action === "staff_time_request") {
+    const staffToken = String(p.staff_token || "").trim();
+    if (!staffToken) return json({ error: "スタッフ認証がありません" }, 401, origin);
+    const who = await staffUser(staffToken);
+    if (!who) return json({ error: "スタッフ認証に失敗しました" }, 401, origin);
+    const actor = `staff:${String(who.email || who.id || "staff")}`;
+    const rid = String(p.reservation_id || "").trim();
+    const tm = String(p.time || "").trim();
+    if (!rid) return json({ error: "予約番号がありません" }, 400, origin);
+    // スタッフのお願いは営業時間の前後も選べる（APP の選択肢 6:00〜22:00 と同じ。既定 08:30）。お客様からの依頼の 9〜19時・30分刻みとは別
+    if (!/^([01]\d|2[0-2]):[0-5]\d$/.test(tm) || tm < "06:00" || tm > "22:00") return json({ error: "時間は 6:00〜22:00 で選んでください" }, 400, origin);
+    const rr = (await sbGet(STORES.spk.resv, `id=eq.${encodeURIComponent(rid)}&select=id,ota,status,lend_date,lend_time,return_date,return_time,del_time,kd_status,mypage_token`))[0];
+    if (!rr) return json({ error: "予約が見つかりません" }, 404, origin);
+    const rst = String(rr.status || "");
+    if (/cancel/i.test(rst) || rst.indexOf("キャンセル") >= 0) return json({ error: "キャンセル済みの予約です" }, 409, origin);
+    if (String(rr.ota || "") === "KEYDROP") return json({ error: "KEYDROP の予約は対象外です", skip: true }, 409, origin);
+    if (!rr.mypage_token) return json({ error: "マイページがまだありません", skip: true }, 409, origin);
+    const ts = await sbGet(STORES.spk.tasks, `reservation_id=eq.${encodeURIComponent(rid)}&deleted=not.is.true&select=_id,done,place,time,changed_json`);
+    const dT = ts.find((t: any) => String(t._id || "").startsWith("d-"));
+    const rcv = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(rid)}&field=eq.received&status=eq.applied&select=id&limit=1`);
+    if (delHandedOver(rr, dT, !!rcv[0])) return json({ error: "お届けが済んでいるため送れません" }, 409, origin);
+    const ap = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(rid)}&field=eq.lend_time&status=eq.applied&order=created_at.desc&limit=1&select=new_value`);
+    const cur = resolveTaskTime(dT) || String(ap[0]?.new_value || "").trim() || String(rr.lend_time || rr.del_time || "");
+    const nz = (s: string) => { const m = String(s || "").match(/^(\d{1,2}):(\d{2})/); return m ? m[1].padStart(2, "0") + ":" + m[2] : String(s || ""); };
+    if (nz(cur) === tm) return json({ error: `今のお届け時間（${nz(cur)}）と同じです` }, 400, origin);
+    // お客様の依頼・前のお願いが返事待ちなら作らない（人の入力が勝つ・1件だけ）
+    const open = await sbGet("mypage_changes", `reservation_id=eq.${encodeURIComponent(rid)}&store=eq.spk&field=eq.lend_time&status=in.(requested,proposed)&select=id,status,new_value,payload`);
+    const live = open.filter((c: any) => !(c.status === "proposed" && c.payload?.proposal?.expires_at && Date.parse(c.payload.proposal.expires_at) < Date.now()));
+    if (live.length) return json({ error: live[0].status === "requested" ? `お客様からお届け時間の変更依頼（${live[0].new_value}）が届いています。先にそちらに返事してください` : `お届け時間のお願い（${live[0].payload?.proposal?.value || live[0].new_value}）の返事待ちです` }, 409, origin);
+    const exp = proposalExpires("lend_time", rr.lend_date, nz(cur), rr.return_date, rr.return_time);
+    const text = "ご希望の時間帯が大変混み合っているため、お受け取りの時間の変更をお願いしております。";
+    const now = new Date().toISOString();
+    const ins = await fetch(`${SB_URL}/rest/v1/mypage_changes`, { method: "POST", headers: { ...withActor(actor), Prefer: "return=representation" }, body: JSON.stringify({ reservation_id: rid, store: "spk", field: "lend_time", old_value: nz(cur), new_value: tm, source: "staff", status: "proposed", actor, note: "運営からお届け時間の変更のお願い", payload: { lend_time: tm, proposal: { kind: "staff_request", value: tm, text, expires_at: exp, by: actor, at: now } } }) });
+    if (!ins.ok) { console.error("[staff_time_request]", await ins.text()); return json({ error: "マイページに反映できませんでした" }, 500, origin); }
+    const insRow = ((await ins.json().catch(() => [])) as any[])[0] || {};
+    return json({ ok: true, change_id: insRow.id ?? null, expires_at: exp, from: nz(cur), to: tm }, 200, origin);
+  }
+
   const token = String(p.token || "").trim();
   if (!token || token.length < 20) return json({ error: "アクセスキーが不正です" }, 400, origin);
 
@@ -1248,7 +1290,7 @@ Deno.serve(async (req) => {
   if (action === "proposal_reply") {
     const cid = String(p.change_id || ""); const ans = String(p.answer || "");
     if (!cid || (ans !== "accept" && ans !== "decline")) return json({ error: "パラメータ不正" }, 400, origin);
-    const pc = (await sbGet("mypage_changes", `id=eq.${encodeURIComponent(cid)}&store=eq.spk&reservation_id=eq.${encodeURIComponent(resId)}&select=id,field,new_value,status,payload`))[0];
+    const pc = (await sbGet("mypage_changes", `id=eq.${encodeURIComponent(cid)}&store=eq.spk&reservation_id=eq.${encodeURIComponent(resId)}&select=id,field,old_value,new_value,status,payload`))[0];
     if (!pc) return json({ error: "ご提案が見つかりません" }, 404, origin);
     if (pc.status !== "proposed") return json({ ok: true, already: pc.status }, 200, origin);
     const ppl: any = (pc.payload && typeof pc.payload === "object") ? pc.payload : {}; const pr: any = ppl.proposal || {};
@@ -1261,7 +1303,7 @@ Deno.serve(async (req) => {
     const _pm = (emoji: string, title: string, body: string[]) => hdmMsg({ emoji, ...(/自動反映に失敗/.test(title) ? { cat: "依頼に返事／反映できない" } : {}), store: "spk", title, rid: resId, side: sideOf(pc.field), body }); // ★2026-11-10 共通の型
     if (ans === "decline") {
       await sbPatch("mypage_changes", `id=eq.${encodeURIComponent(cid)}`, { status: "declined_by_guest", payload: { ...ppl, proposal: { ...pr, answer: "decline", answered_at: new Date().toISOString() } } }, "customer");
-      { const m = await _pm("↩️", `お客様が別の案を見送りました（${lb}）`, ["今の予約のまま"]); await slackPost(m.text, m.blocks); }
+      { const m = await _pm("↩️", pr.kind === "staff_request" ? `お客様が時間変更のお願いを見送りました（${lb}）` : `お客様が別の案を見送りました（${lb}）`, [pr.kind === "staff_request" ? `今の時間のまま（${pc.old_value || ""}）` : "今の予約のまま"]); await slackPost(m.text, m.blocks); }
       return json({ ok: true, answered: "decline" }, 200, origin);
     }
     // accept：値を差し替えて requested に戻し、スタッフ承認と同じ decide を内部で呼ぶ（反映＋承認通知）
@@ -1275,7 +1317,7 @@ Deno.serve(async (req) => {
       { const m = await _pm("⚠️", `お客様が別の案にOK→自動反映に失敗（${lb}）`, [await dateLine(resId, sideOf(pc.field)), dj && dj.apply_failed ? "何も変更していません：" + String(dj.error || "").slice(0, 200) : "", "⚠️ 要承認：アクションタブで承認してください"]); await slackPost(m.text, m.blocks); }
       return json({ ok: false, answered: "accept", pending: true, error: "ご返事を受け付けました。まだ確定していません。スタッフが確認のうえ、ご連絡いたします。" }, 200, origin);
     }
-    { const m = await _pm("✅", `お客様が別の案にOK→確定しました（${lb}）`, [`🔁 ${pr.text || nv}`]); await slackPost(m.text, m.blocks); }
+    { const m = await _pm("✅", pr.kind === "staff_request" ? `お客様が時間変更のお願いにOK→確定しました（${lb}）` : `お客様が別の案にOK→確定しました（${lb}）`, [pr.kind === "staff_request" ? `🔁 ${pc.old_value || ""} → ${nv}` : `🔁 ${pr.text || nv}`]); await slackPost(m.text, m.blocks); }
     return json({ ok: true, answered: "accept" }, 200, origin);
   }
 

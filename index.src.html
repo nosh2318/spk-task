@@ -121,7 +121,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Hiragino Kaku Goth
 //    - index.html(このローダー)は絶対キャッシュしない = 常にネットワークで最新版を取得
 //    - sw.js は SW_V(=?v値)を含むキャッシュキーで、版が上がれば旧キャッシュを自動掃除
 //    - sw.js?v=<版> を上げれば .update() で確実に新SWへ入替 → activateで旧キャッシュ全削除
-var CV='spk-v1238';
+var CV='spk-v1239';
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('./sw.js?v=1061').then(function(r){try{r.update();}catch(e){}}).catch(function(){});
 }
@@ -16752,7 +16752,7 @@ Your requested time slot is currently very busy, and delivery may take longer th
 To help you depart smoothly with minimal waiting, we would be very grateful if you could kindly change your pick-up time to "${t}".
 
 We sincerely apologize for this sudden request and any inconvenience caused.
-We would appreciate it if you could check your schedule and reply to us.
+Please check your schedule and let us know with the buttons on your My Page.
 Thank you very much for your understanding and cooperation.`;
   if(lang==="ko")return `[차량 전달 시간 안내]
 ${n} 님
@@ -16764,7 +16764,7 @@ ${n} 님
 가능한 한 기다리시지 않고 원활하게 출발하실 수 있도록, 대단히 죄송하지만 수령 시간을 "${t}"(으)로 변경해 주실 수 있으실까요?
 
 갑작스러운 부탁으로 불편을 끼쳐 드려 진심으로 사과드립니다.
-번거로우시겠지만 일정을 확인하신 후 회신해 주시면 감사하겠습니다.
+번거로우시겠지만 일정을 확인하신 후 마이페이지의 버튼으로 알려 주시면 감사하겠습니다.
 아무쪼록 이해와 협조를 부탁드립니다.`;
   if(lang==="zh")return `【關於車輛交付時間】
 ${n} 您好
@@ -16776,7 +16776,7 @@ ${n} 您好
 為了讓您盡量無需久候、順利出發，冒昧向您提出請求，是否方便將取車時間變更為「${t}」呢？
 
 臨時提出請求造成您的不便，我們深表歉意。
-敬請您確認行程後回覆我們，將不勝感激。
+敬請您確認行程後，透過「我的頁面」的按鈕告知我們，將不勝感激。
 懇請您的理解與協助，謝謝。`;
   return `【お届け時間について】
 ${n} 様
@@ -16788,7 +16788,7 @@ ${n} 様
 できる限りお待たせすることなく、スムーズにご出発いただくため、誠に勝手なお願いではございますが、お受け取り時間を「${t}」へご変更いただくことは可能でしょうか？
 
 急なお願いとなり、ご不便をおかけいたしますことを心よりお詫び申し上げます。
-お手数をおかけいたしますが、ご都合をご確認のうえ、ご返信いただけますと幸いです。
+お手数をおかけいたしますが、ご都合をご確認のうえ、マイページのボタン（変更する／今のまま）でお知らせください。
 何卒ご理解とご協力のほど、よろしくお願い申し上げます。`;
 }
 function msgParkGreet(name,myUrl,lang){
@@ -18948,12 +18948,19 @@ function OPScreen({reservations,today,shifts,fleet,onFleetChange,onClose,onGoFle
         const buildMsg=(tm)=>msgTimeAdjust(t.name,tm,timeReqLang);
         const msg=buildMsg(timeReqTime||"08:30");
         const copy=async()=>{try{await navigator.clipboard.writeText(msg);alert("📋 本文をコピーしました");}catch(_){alert("コピーに失敗しました");}};
+        /* ★2026-11-27 nosh「通知後のマイページのアクションが必須」「LINE・メールどちらでも」：送る前にマイページへ「お届け時間の変更のお願い」（変更する／今のまま）を出す。LINE にもマイページの URL を付ける（メールは送信側で付く） */
+        const toMypage=async()=>{try{const{data:_s}=await sb.auth.getSession();const _tk=_s&&_s.session&&_s.session.access_token;if(!_tk)return {ok:false,error:"スタッフ認証がありません"};
+          const _r=await fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/handyman-mypage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"staff_time_request",reservation_id:String(rid),time:timeReqTime||"08:30",staff_token:_tk})});
+          return await _r.json().catch(()=>({ok:false,error:"応答なし"}));}catch(_e){return {ok:false,error:"通信エラー"};}};
         const send=async()=>{
-          if(!linked){if(await mailFallback("spk",rid,"time_adjust",msg)){markLineSent(rid,"time_adjust");alert("✉️ LINE未登録のため、メールで送信しました（マイページのURL付き）");close();return;}await copy();alert("📱 LINE・メールとも送れないため、本文をコピーしました→手動で送ってください");return;}
-          if(!window.confirm(cn+" に「お届け時間の調整依頼」をLINEで自動送信します。よろしいですか？"))return;
+          if(!window.confirm(cn+" に「お届け時間の調整依頼（"+(timeReqTime||"08:30")+"）」を"+(linked?"LINE":"メール")+"で送り、マイページに［変更する／今のまま］を出します。よろしいですか？"))return;
+          const _m=await toMypage();
+          if(!_m.ok&&!_m.skip){alert("⚠️ マイページに出せなかったため、送っていません\n"+(_m.error||""));return;}
+          if(!linked){if(await mailFallback("spk",rid,"time_adjust",msg)){markLineSent(rid,"time_adjust");alert(_m.ok?"✉️ メールで送り、マイページにボタンを出しました":"✉️ メールで送りました（"+(_m.error||"")+"）");close();return;}await copy();alert("📱 LINE・メールとも送れないため、本文をコピーしました→手動で送ってください"+(_m.ok?"（マイページのボタンは出ています）":""));return;}
+          const _mt=(window._mypageTokenMap||{})[rid];const lmsg=msg+(_mt?"\n\n▼マイページ（ボタンでお知らせください）\nhttps://nosh2318.github.io/spk-task/my.html?t="+_mt+"&via=line":"");
           try{
             const{data:_s}=await sb.auth.getSession();const _tk=_s&&_s.session&&_s.session.access_token;
-            const _r=await fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/line-send",{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+_tk},body:JSON.stringify({store:"spk",resv_no:rid,action:"time_adjust",message:msg})});
+            const _r=await fetch("https://ckrxttbnawkclshczsia.supabase.co/functions/v1/line-send",{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+_tk},body:JSON.stringify({store:"spk",resv_no:rid,action:"time_adjust",message:lmsg})});
             const _j=await _r.json();
             if(_j.ok){markLineSent(rid,"time_adjust");alert("✅ お届け時間の調整依頼をLINEに自動送信しました");close();}
             else{await navigator.clipboard.writeText(msg);alert("⚠️自動送信できませんでした("+(_j.reason||"")+")。\n本文をコピーしました→手動で送信してください");}
@@ -26424,7 +26431,7 @@ function VehicleRankingTab({vehicles,data,fleet,store}){
     </details>
   </div>;
 }
-const APP_VERSION="v4.7.747";
+const APP_VERSION="v4.7.748";
 // ★ 2026-05-11: APP起動時にDBへ現在バージョンを記録（GAS監視→Slack通知用）
 setTimeout(async function(){
   try{

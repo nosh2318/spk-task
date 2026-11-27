@@ -502,7 +502,7 @@ function render0(){
   if(!DATA)return;const d=DATA,r=d.reservation,st=stageOf(d);
   if(dropoffActive(d)){document.querySelector("nav").style.display="none";$("#strip").innerHTML=`<div class="on">${SID==="nha"?"那覇空港店":"札幌店"}</div>`;$("#ttl").textContent=d.dropoff.state==="parked"?"返却完了":"乗り捨て返却";$("#tbadge").textContent=d.dropoff.state==="parked"?"完了":"入力必須";$("#app").innerHTML=d.dropoff.state==="parked"?dropoffCompleteHtml(d):dropoffFormHtml();if(d.dropoff.state!=="parked")["do-address","do-map","do-parking","do-detail"].forEach(id=>$("#"+id).addEventListener("input",dropoffReady));return;}else document.querySelector("nav").style.display="grid";
   /* ★2026-11-09 nosh「案Aを本番に入れて」：開いた最初の画面は、未登録が残っていればウォレット。お返事待ちの「別の案」・受け渡し中・完了後は「今の状態」 */
-  if(!FIRST_DONE){FIRST_DONE=true;if(walLeft(d)>0&&!reqs(d).some(c=>c.status==="proposed")&&!["go_live","back_live","after"].includes(st)){TAB="wal";["now","chg","wal","ask"].forEach(k=>$("#nv-"+k).classList.toggle("on",k===TAB));}}
+  if(!FIRST_DONE){FIRST_DONE=true;if(walLeft(d)>0&&!reqs(d).some(c=>c.status==="proposed")&&!uaOn(d)&&!["go_live","back_live","after"].includes(st)){TAB="wal";["now","chg","wal","ask"].forEach(k=>$("#nv-"+k).classList.toggle("on",k===TAB));}}
   $("#strip").innerHTML=["nha","spk","tkm"].map(k=>`<div class="${k===SID?"on":""}">${STORES[k].name}</div>`).join("");
   /* 2026-11-09 本公開：試験公開の帯は出さない */$("#oldlink").href=OLD+"?old=1&t="+encodeURIComponent(TOKEN)+(RO?"&ro=1":"");
   $("#tsub").textContent=`HANDYMAN ${ST.name} ・ ${MT[(r.visit_type||"").toUpperCase()]||"ご予約"}`;
@@ -520,9 +520,16 @@ function render0(){
 function headline(d,st){const r=d.reservation,g=goWord(r),b=backWord(r);
   return {prep:`${g}まであと ${Math.max(1,Math.round((Date.parse(r.lend_date+"T00:00:00+09:00")-Date.parse(todayStr()+"T00:00:00+09:00"))/864e5))}日`,eve:(g==="受け取り"?"明日はお受け取りの日です":`明日${g}します`),go_day:(g==="受け取り"?"本日お受け取りです":`本日${g}です`),go_soon:`まもなく${g}です`,go_live:(isDel(r.visit_type)?`スタッフが向かっています`:((SH_TX[(shCur()||{}).a]||[])[0]||"本日のお迎え")),using:"ご利用中",back_day:`本日${b}です`,back_live:(isCol(r.return_type)?`回収スタッフが向かっています`:((SH_TX[(shCur()||{}).a]||[])[0]||"本日の返却")),after:"ご利用ありがとうございました"}[st];}
 
-function proposalCards(d){
-  return reqs(d).filter(c=>c.status==="proposed").map(c=>{const p=(c.payload&&c.payload.proposal)||{};const exp=p.expires_at&&Date.parse(p.expires_at)<Date.now();
+/* ★2026-11-27 nosh「時間調整 通知後のマイページのアクションが必須」：スタッフからのお願い（kind=staff_request）は一番上に、答えるボタン2つで出す。sr=true→お願いだけ／false→それ以外の別の案だけ */
+const isSR=c=>!!(c&&c.payload&&c.payload.proposal&&c.payload.proposal.kind==="staff_request");
+function proposalCards(d,sr){
+  return reqs(d).filter(c=>c.status==="proposed"&&(sr===undefined||isSR(c)===!!sr)).map(c=>{const p=(c.payload&&c.payload.proposal)||{};const exp=p.expires_at&&Date.parse(p.expires_at)<Date.now();
     if(exp)return"";
+    if(isSR(c)){const v=esc(p.value||c.new_value||""),o=esc(c.old_value||"");
+      return `<section class="card" style="border:2px solid var(--yel)"><span class="pill p-o" style="align-self:flex-start">スタッフからのお願い</span><div class="big">${esc(FLD[c.field]||c.field)}を ${v} に変更していただけますか？</div>
+      ${p.text?`<div class="txt">${esc(p.text)}</div>`:""}${o?`<div class="sub">今の${esc(FLD[c.field]||c.field)}：${o}</div>`:""}
+      ${p.expires_at?`<div class="sub" style="color:var(--o);font-weight:700">お返事の期限：${clock(p.expires_at)}</div>`:""}
+      <div class="grid2"><button class="btn" onclick="propReply('${esc(c.id)}','accept','${v} に変更します。よろしいですか？')">${v} に変更する</button><button class="btn g" onclick="propReply('${esc(c.id)}','decline','${o?o+" のままにします":"今のままにします"}。よろしいですか？')">${o?o+" のまま":"今のまま"}にする</button></div></section>`;}
     return `<section class="card" style="border:2px solid var(--yel)"><div class="h" style="color:var(--o)">別の案があります ・ ${esc(FLD[c.field]||c.field)}</div>
       <div class="txt" style="white-space:pre-wrap">${esc(p.text||"")}</div>
       ${p.expires_at?`<div class="sub" style="color:var(--o);font-weight:700">お返事の期限：${clock(p.expires_at)}</div>`:""}
@@ -586,7 +593,7 @@ function walLeft(d){try{return musts(d).filter(x=>!x.ok&&x.k!=="pay").length;}ca
 function walletEntry(d){const n=walLeft(d);return `<button class="card wentry" onclick="go('wal')"><span class="wi"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="20" height="14" rx="3"/><path d="M2 10h20M16 15h2"/></svg></span><span class="wt"><b>ウォレット</b><span>登録内容・お支払い・領収書・免許証・返却場所</span></span>${n?`<span class="wn">未登録 ${n}件</span>`:`<span class="chev">›</span>`}</button>`;}
 function viewNow(d,st){
   const r=d.reservation,g=goWord(r),b=backWord(r),M=musts(d),left=M.filter(x=>!x.ok&&x.k!=="save");
-  let h=journeyCard(d,st)+proposalCards(d)+mailCard(st)+(st!=="after"?walletEntry(d):"");
+  let h=(uaOn(d)?uaCard(d):"")+proposalCards(d,true)+journeyCard(d,st)+proposalCards(d,false)+mailCard(st)+(st!=="after"?walletEntry(d):"");
   const goPlace=isDel(r.visit_type)?(placeSet(r.del_place)?r.del_place:"（お届け場所 未登録）"):isPub(r.visit_type)?ST.pickup:ST.shop;
   const backPlace=isCol(r.return_type)?(placeSet(r.col_place)?r.col_place:"（回収場所 未登録）"):ST.shop+(isBdb(r.return_type)?(/赤嶺/.test(r.col_place||"")?"（赤嶺駅までお送りします）":"（空港までお送りします）"):"");
   const trk=(type)=>`https://keydrop.jp/${type==="col"?"handyman-collection-guide.html":"handyman-delivery-guide.html"}?r=${encodeURIComponent(r.id)}${d.tracking&&d.tracking.token?"&t="+encodeURIComponent(d.tracking.token):""}`;
@@ -595,7 +602,6 @@ function viewNow(d,st){
     h+=`<section class="card">${ringHead(M)}`+
       M.map(x=>`<div class="must"><span>${esc(x.n)}<br><span class="sub">${esc(x.v)}</span></span>${x.ok?`<span class="pill p-g">済</span>`:x.k==="save"?`<button class="pill p-o" style="border:0;cursor:pointer" onclick="saveHelp()">保存する</button>`:`<button class="pill p-r" style="border:0;cursor:pointer" onclick="fixMust('${x.k}')">${x.k==="pay"?"支払う":x.k==="conf"?"確認する":"登録する"}</button>`}</div>`).join("")+
       `<div class="sub">${left.length?"足りない項目があるあいだ、お知らせが届きます。":(isDel(r.visit_type)||isPub(r.visit_type)?"当日はこの画面に、スタッフの出発・到着が出ます。":"")}</div></section>`;
-    if(uaOn(d))h+=uaCard(d);
     h+=clsCard(r);
     if(d.damage&&d.damage.ready)h+=dmgCard(d);
     if(isPub(r.visit_type))h+=busCard("go");
@@ -604,7 +610,7 @@ function viewNow(d,st){
   }else if(st==="go_day"||st==="go_soon"||st==="go_live"){
     const live=st==="go_live";
     h+=`<section class="card hero"><div class="h">本日の${g}</div><div class="big">${hm(r.lend_time)||""} ・ ${esc(goPlace)}</div>${isDel(r.visit_type)?westLoc(r.del_place):""}${isPub(r.visit_type)?busLink():""}${live?`<span class="live" style="color:#fff">自動更新 ・ ${nowHM()}</span>`:isDel(r.visit_type)&&!uaAny(d)?`<div class="sub">スタッフが出発すると、この画面が自動で切り替わります。</div>`:isPub(r.visit_type)?`<div class="sub">送迎車が出発すると、この画面が自動で切り替わります。</div>`:""}</section>`;
-    if(uaOn(d)){h+=uaCard(d)+ttCard(d)+dmgCard(d);}else if(uaAny(d)&&d.received){h+=(uaDone(d)?uaDoneCard(d):"")+ttCard(d)+dmgCard(d);}else{
+    if(uaOn(d)){h+=ttCard(d)+dmgCard(d);}else if(uaAny(d)&&d.received){h+=(uaDone(d)?uaDoneCard(d):"")+ttCard(d)+dmgCard(d);}else{
     h+=nudge("go");/* ★2026-11-09 nosh「着きましたボタンはもっと上」：スタッフに知らせるを本日のカードのすぐ下へ */
     h+=ttCard(d);
     if(isDel(r.visit_type))h+=live?dvCard(d):waitNote(r,0,goPlace);
@@ -612,7 +618,7 @@ function viewNow(d,st){
     h+=`<section class="card"><div class="h">受け取り方</div><div class="txt">${isDel(r.visit_type)?"スタッフが車を停めて「到着」を押すと、ナンバーと停めた場所がこの画面に出て、LINE（またはメール）にも届きます。その場所で免許証を見せて、鍵を受け取ってください。":isPub(r.visit_type)?ST.pickHow:"ご予約の時間に"+ST.shop+"へお越しください。運転する方の免許証をお持ちください。"}</div><div class="sub">ご家族の受け取りもOK。運転する方全員の免許証を、先に「予約・変更」→「免許証の登録」から登録してください。</div></section>`;
     h+=dmgCard(d);}
   }else if(st==="using"){
-    if(uaOn(d))h+=uaCard(d);else if(uaDone(d))h+=uaDoneCard(d);
+    if(!uaOn(d)&&uaDone(d))h+=uaDoneCard(d);
     h+=`<section class="card hero"><div class="h">${b}</div><div class="big">${mdw(r.return_date)} ${hm(r.return_time)||""}</div><div class="sub">${esc(backPlace)}</div>${isBdb(r.return_type)?busLink():""}${!isCol(r.return_type)?yardLink():""}</section>`;
     h+=ttCard(d);
     h+=`<section class="card"><div class="h">${b}を変えたいとき</div><button class="row" onclick="openReq('return_time')"><span class="l"><span class="n">${b}の時間</span><span class="v">${hm(r.return_time)||"未定"}</span></span><span class="pill p-o">確認あり</span></button>`+
@@ -816,7 +822,7 @@ function viewChg(d,st){
 }
 function reqCard(c){
   const n=FLD[c.field]||c.field,p=c.payload||{},rj=p.reject||{};
-  const S={requested:["確認中","p-o",2],proposed:["別の案","p-b",3],approved:["確定","p-g",3],rejected:["お断り","p-r",3],expired:["期限切れ","p-x",3],declined_by_guest:["見送り","p-x",3]}[c.status];
+  const S={requested:["確認中","p-o",2],proposed:[isSR(c)?"お願い":"別の案","p-b",3],approved:["確定","p-g",3],rejected:["お断り","p-r",3],expired:["期限切れ","p-x",3],declined_by_guest:["見送り","p-x",3]}[c.status];
   const last=c.status==="requested"?"結果":S[0];
   const steps=`<div class="steps">${["受付","確認中",last].map((l,i)=>`<div class="${i<S[2]?"on":""} ${i===S[2]-1&&c.status==="requested"?"cur":""}"><i></i>${l}</div>`).join("")}</div>`;
   let body=`依頼 ${clock(c.created_at)}`;
@@ -1340,7 +1346,7 @@ function openReady(){if(!DATA)return;const r=DATA.reservation;const opts=Array.f
 async function sendReady(){const j=await call("ready",{time:$("#rt").value});if(j.dropped)return;if(j.ok){closeSheet();toast("承りました。確認中です");await load();}else toast(j.error||"送れませんでした");}
 function openCancel(){sheet(`<h3>キャンセルの申し込み</h3><div class="sub">スタッフが確認してお返事します。キャンセル料は規定（7日前まで無料／6〜3日前20%／2日前・前日30%／当日50%）に沿ってご案内します。</div><label>理由（任意）</label><textarea id="cr" rows="3"></textarea><button class="btn red" onclick="sendCancel()">キャンセルを申し込む</button><button class="btn g" onclick="closeSheet()">やめる</button>`);}
 async function sendCancel(){const j=await call("cancel_request",{reason:$("#cr").value});if(j.dropped)return;if(j.ok){closeSheet();toast("申し込みを受け付けました");await load();go("chg");}else toast(j.error||"送れませんでした");}
-async function propReply(id,ans){if(!confirm(ans==="accept"?"この案で確定します。よろしいですか？":"この案をやめます。今のご予約のままになります。よろしいですか？"))return;
+async function propReply(id,ans,q){if(!confirm(q||(ans==="accept"?"この案で確定します。よろしいですか？":"この案をやめます。今のご予約のままになります。よろしいですか？")))return;
   const j=await call("proposal_reply",{change_id:id,answer:ans});if(j.dropped)return;if(j.ok)toast(ans==="accept"?"確定しました":"お伝えしました");else toast(j.error||"送れませんでした");await load();}
 
 /* ---- お試し表示（?demo=prep|eve|go|live|using|back|after） ---- */
