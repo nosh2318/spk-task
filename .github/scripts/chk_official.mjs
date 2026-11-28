@@ -76,9 +76,19 @@ async function tryHard(fn) {
 }
 const BLOCK = /googletagmanager|google-analytics|googleads|doubleclick|facebook|clarity\.ms|kd-track\.js|\/rest\/v1\/kd_events/;
 
+// 11/28 DB が混んで時間切れ（57014）・5xx・通信失敗の時は、待ちを延ばして最大4回まで自分でやり直す
 const rpc = async (db, fn, body) => {
-  const r = await fetch(`${db.url}/rest/v1/rpc/${fn}`, { method: 'POST', headers: { apikey: db.key, Authorization: `Bearer ${db.key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  const t = await r.text(); if (!r.ok) throw new Error(`${fn} ${r.status} ${t.slice(0, 200)}`); return t ? JSON.parse(t) : null;
+  for (let i = 0; ; i++) {
+    let r, t;
+    try {
+      r = await fetch(`${db.url}/rest/v1/rpc/${fn}`, { method: 'POST', headers: { apikey: db.key, Authorization: `Bearer ${db.key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      t = await r.text();
+    } catch (e) { if (i >= 3) throw e; await new Promise((ok) => setTimeout(ok, 5000 * (i + 1))); continue; }
+    if (r.ok) return t ? JSON.parse(t) : null;
+    if (i >= 3 || !(r.status >= 500 || /57014/.test(t))) throw new Error(`${fn} ${r.status} ${t.slice(0, 200)}`);
+    console.log(`${fn} ${r.status} やり直し ${i + 1}/3`);
+    await new Promise((ok) => setTimeout(ok, 5000 * (i + 1)));
+  }
 };
 const ymd = (d) => d.toISOString().slice(0, 10);
 const addDays = (s, n) => { const d = new Date(s + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return ymd(d); };
