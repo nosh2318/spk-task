@@ -1,3 +1,4 @@
+// 【絶対ルール 11/28 オーナー】直す＝新しい仕組みを作る。ずれは自動で見つけ・直し・確かめ・直らない時だけ知らせる仕組みにし、再現して人手なしで通って完了。再発は仕組みの穴として仕組みを直す（全文 ~/handyman-invctl/AGENTS.md 先頭）
 // 独立チェッカー 第2段：公式サイトをお客様と同じ画面で読む（ログインしない・予約/決済ボタンは押さない）。
 // 書き込みロボ（readers.mjs）とは別プログラム。読んだ「表示金額」「予約できるか」を DB へ渡すだけ。判定は DB 側。
 // 使い方：CHK_OUT=latest.json node chk_official.mjs [対象名…]   （対象名なし＝全部）
@@ -9,13 +10,14 @@ import { writeFileSync } from 'node:fs';
 const MAIN = { url: 'https://ckrxttbnawkclshczsia.supabase.co', key: 'sb_publishable_aTVhlY0YD-5BBfI03ZNnsg_MzO_vsIe' };
 const BT = { url: 'https://ggqugvyskyiblxiycpci.supabase.co', key: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdncXVndnlza3lpYmx4aXljcGNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxMDc3NjksImV4cCI6MjA5MzY4Mzc2OX0.uNhWcBd_Dl5nzemZDQfJ8mQV6iY73MwystGGpTRPC18' };
 // 公式サイトの車カードは「総額÷日数を100円で丸めた1日あたり」(avg100)、KEYDROP は「初日の1日料金」(first)
+// 11/28 旧サイト rent-handyman.com/official-flow.html は 404（ページが無い）。OFFICIAL_OLD は照合の対象から外した（点検表にも「照合対象外」と出す）
 const TARGETS = [
   { name: 'hdm-nha', store: 'nha', site: 'OFFICIAL', db: MAIN, page: 'https://hdm-rentacar.jp/official-flow.html', area: 'naha', method: 'delivery', unit: 'avg100' },
   { name: 'hdm-spk', store: 'spk', site: 'OFFICIAL', db: MAIN, page: 'https://hdm-rentacar.jp/official-flow.html', area: 'sapporo', method: 'delivery', unit: 'avg100' },
   { name: 'hdm-tkm', store: 'takh', site: 'OFFICIAL', db: BT, page: 'https://hdm-rentacar.jp/official-flow.html', area: 'takamatsu', method: 'airport', unit: 'avg100' },
-  { name: 'old-nha', store: 'nha', site: 'OFFICIAL_OLD', db: MAIN, page: 'https://rent-handyman.com/official-flow.html', area: 'naha', method: 'delivery', unit: 'avg100' },
-  { name: 'old-spk', store: 'spk', site: 'OFFICIAL_OLD', db: MAIN, page: 'https://rent-handyman.com/official-flow.html', area: 'sapporo', method: 'delivery', unit: 'avg100' },
-  { name: 'old-tkm', store: 'takh', site: 'OFFICIAL_OLD', db: BT, page: 'https://rent-handyman.com/official-flow.html', area: 'takamatsu', method: 'airport', unit: 'avg100' },
+  //{ name: 'old-nha', store: 'nha', site: 'OFFICIAL_OLD', db: MAIN, page: 'https://rent-handyman.com/official-flow.html', area: 'naha', method: 'delivery', unit: 'avg100' },
+  //{ name: 'old-spk', store: 'spk', site: 'OFFICIAL_OLD', db: MAIN, page: 'https://rent-handyman.com/official-flow.html', area: 'sapporo', method: 'delivery', unit: 'avg100' },
+  //{ name: 'old-tkm', store: 'takh', site: 'OFFICIAL_OLD', db: BT, page: 'https://rent-handyman.com/official-flow.html', area: 'takamatsu', method: 'airport', unit: 'avg100' },
   { name: 'kd-nha', store: 'nha', site: 'KEYDROP', db: MAIN, page: 'https://keydrop.jp/v3/keydrop-flow.html', area: 'naha', method: 'delivery', unit: 'first' },
   { name: 'kd-spk', store: 'spk', site: 'KEYDROP', db: MAIN, page: 'https://keydrop.jp/v3/keydrop-flow.html', area: 'sapporo', method: 'delivery', unit: 'first' },
   // 11/9 BUDDICA 公式（tourism.buddica.jp）：検索（POST /reserve_class）の結果ページの「基本料金（期間の合計）」を読む。予約に進むは押さない。
@@ -24,10 +26,11 @@ const TARGETS = [
 ];
 const BDC_CODE = n => { const m = n.match(/_\(([A-Z]{1,2})\)\s*$/); if (m) return m[1];
   return /G400d/i.test(n) ? 'G4D' : /Cabriolet/i.test(n) ? 'ECB' : /Evoque/i.test(n) ? 'EVQ' : /Urus/i.test(n) ? 'URS' : /911/.test(n) ? '911' : null; };
-async function readBdc(ctx, t, pd, days, want) {
+async function readBdc(ctx, t, pd, days, want) { return tryHard((w, k) => readBdc1(ctx, t, pd, days, want, k)); }
+async function readBdc1(ctx, t, pd, days, want, k) {
   const rd = addDays(pd, days - 1), p = await ctx.newPage();
   try {
-    await p.goto(t.page, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await p.goto(t.page, { waitUntil: 'domcontentloaded', timeout: 45000 + k * 30000 });
     const r = await p.evaluate(async ([pd, rd]) => { const f = document.form_index; if (!f) return { err: '検索の欄が無い' }; const fd = new FormData(f);
       fd.set('borrowing_date', pd); fd.set('return_date', rd); fd.set('borrowing_time', '10:00'); fd.set('return_time', pd === rd ? '18:00' : '10:00');  // 2日物は readPage と同じく返却10:00
       const res = await fetch(f.action, { method: 'POST', body: fd }); return { s: res.status, h: await res.text() }; }, [pd.replace(/-/g, '/'), rd.replace(/-/g, '/')]);
@@ -59,6 +62,18 @@ const put = async (t, payload) => {
 const PAR = +process.env.CHK_PAR || 3;           // 同時に開くページ数（相手に負担をかけない）
 const NEAR = +process.env.CHK_NEAR || 15;        // 今日〜14日は毎回
 const FAR = 61;                                  // 60日先まで。残り（15〜60日）は30分ごとに1日ずつ回す＝1日で一巡
+const WAITS = [20000, 40000, 60000];           // 時間切れなら待ちを延ばしてやり直す（最大3回）
+const T0 = Date.now(), BUDGET = 19 * 60000;     // Actions は25分で切れる。19分を過ぎたらやり直しはしない
+const late = () => Date.now() - T0 > BUDGET;
+const isTimeout = e => /Timeout|timeout|net::ERR|Navigation|Target closed|HTTP 5\d\d|HTTP 419/.test(String(e && e.message || e));
+async function tryHard(fn) {
+  let last;
+  for (let k = 0; k < WAITS.length; k++) {
+    try { return await fn(WAITS[k], k); }
+    catch (e) { last = e; if (!isTimeout(e) || late()) break; }
+  }
+  throw last;
+}
 const BLOCK = /googletagmanager|google-analytics|googleads|doubleclick|facebook|clarity\.ms|kd-track\.js|\/rest\/v1\/kd_events/;
 
 const rpc = async (db, fn, body) => {
@@ -68,13 +83,14 @@ const rpc = async (db, fn, body) => {
 const ymd = (d) => d.toISOString().slice(0, 10);
 const addDays = (s, n) => { const d = new Date(s + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return ymd(d); };
 
-async function readPage(ctx, t, pd, days) {
+async function readPage(ctx, t, pd, days) { return tryHard((w, k) => readPage1(ctx, t, pd, days, w, k)); }
+async function readPage1(ctx, t, pd, days, w, k) {
   const rd = addDays(pd, days - 1);
   const url = `${t.page}?area=${t.area}&method=${t.method}&pd=${pd}&pt=10:00&rd=${rd}&rt=${days === 1 ? '18:00' : '10:00'}`;
   const p = await ctx.newPage();
   try {
-    await p.goto(url, { waitUntil: 'networkidle', timeout: 45000 });
-    await p.waitForSelector('#vgrid [data-k]', { timeout: 20000 });
+    await p.goto(url, { waitUntil: 'networkidle', timeout: 45000 + k * 30000 });
+    await p.waitForSelector('#vgrid [data-k]', { timeout: w });
     await p.waitForTimeout(1500); // 料金表・空きの読み込み後の描き直しを待つ
     return await p.$$eval('#vgrid [data-k]', els => els.map(e => {
       const pr = (e.querySelector('.pc,.pr') || {}).innerText || '';
@@ -86,6 +102,10 @@ async function readPage(ctx, t, pd, days) {
 
 async function runTarget(browser, t) {
   const runId = `off-${t.name}-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '')}`;
+  if (late()) {                                   // 時間切れ：新しい対象は始めず「時間切れ」として記録（次の回で読む）
+    await put(t, { run: { run_id: runId, src: 'official', store: t.store, site: t.site, expected: null, got: 0, canary_ok: null, err: '時間切れ（この回は未着手）' }, obs: [] });
+    console.log(`${t.name}: 時間切れで未着手`); return 1;
+  }
   const plan = TOKEN ? await rpc(t.db, 'invctl_chk_plan', { p_token: TOKEN, p_store: t.store, p_site: t.site })
                      : await rpc(t.db, 'invctl_chk_plan_pub', { p_store: t.store, p_site: t.site });
   const want = new Set(plan.classes.map(c => c.cls));
@@ -97,18 +117,24 @@ async function runTarget(browser, t) {
   const jobs = []; for (const d of dates) for (const days of [1, 2]) jobs.push({ d, days });
   const ctx = await browser.newContext({ locale: 'ja-JP', timezoneId: 'Asia/Tokyo', userAgent: undefined });
   await ctx.route('**/*', r => BLOCK.test(r.request().url()) ? r.abort() : r.continue());
-  const obs = [], errs = []; let i = 0;
+  const obs = [], errs = [], failed = []; let i = 0;
+  const readJob = async j => {
+    const cards = t.kind === 'bdc' ? await readBdc(ctx, t, j.d, j.days, want) : await readPage(ctx, t, j.d, j.days);
+    for (const c of cards) if (want.has(c.cls)) obs.push({ cls: c.cls, dd: j.d, days: j.days, shown: c.shown, bookable: c.bookable, raw: c.raw, unit: t.unit });
+    const seen = new Set(cards.map(c => c.cls));
+    for (const c of want) if (!seen.has(c)) obs.push({ cls: c, dd: j.d, days: j.days, shown: null, bookable: null, raw: 'カードなし', unit: t.unit });
+  };
   await Promise.all(Array.from({ length: t.par || PAR }, async () => {
-    while (i < jobs.length) {
+    while (i < jobs.length && !late()) {
       const j = jobs[i++];
-      try {
-        const cards = t.kind === 'bdc' ? await readBdc(ctx, t, j.d, j.days, want) : await readPage(ctx, t, j.d, j.days);
-        for (const c of cards) if (want.has(c.cls)) obs.push({ cls: c.cls, dd: j.d, days: j.days, shown: c.shown, bookable: c.bookable, raw: c.raw, unit: t.unit });
-        const seen = new Set(cards.map(c => c.cls));
-        for (const c of want) if (!seen.has(c)) obs.push({ cls: c, dd: j.d, days: j.days, shown: null, bookable: null, raw: 'カードなし', unit: t.unit });
-      } catch (e) { errs.push(`${j.d}/${j.days}日: ${String(e.message || e).slice(0, 120)}`); }
+      try { await readJob(j); } catch (e) { failed.push({ j, e }); }
     }
   }));
+  for (; i < jobs.length; i++) errs.push(`${jobs[i].d}/${jobs[i].days}日: 時間切れ（未着手）`);
+  for (const f of failed) {                       // 取りこぼした日は、最後に1つずつもう一度（時間内だけ）
+    if (!late()) { try { await readJob(f.j); continue; } catch (e) { f.e = e; } }
+    errs.push(`${f.j.d}/${f.j.days}日: ${String(f.e.message || f.e).slice(0, 120)}`);
+  }
   await ctx.close();
   let canaryOk = null;
   if (canary) { const o = obs.find(x => x.cls === canary.cls && x.dd === canary.dd && x.days === 1); canaryOk = o ? o.bookable === false : false; }
