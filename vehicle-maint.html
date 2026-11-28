@@ -49,17 +49,18 @@ async function tok(){const{data}=await SBC().auth.getSession();return data&&data
 async function sb(path,method,body,prefer){const t=await tok();if(!t)throw new Error('LOGIN');const r=await fetch(URL_()+'/rest/v1/'+tp(path),{method:method||'GET',headers:{apikey:ANON(),Authorization:'Bearer '+t,'Content-Type':'application/json',Prefer:prefer||'return=representation'},body:body?JSON.stringify(body):undefined});if(!r.ok)throw new Error('HTTP '+r.status+' '+(await r.text()).slice(0,200));const x=await r.text();return x?JSON.parse(x):null;}
 async function sbAll(p){let a=[];for(let o=0;o<50000;o+=1000){const x=await sb(p+'&limit=1000&offset='+o);a=a.concat(x||[]);if(!x||x.length<1000)break;}return a;}
 const pick=(o,ks)=>{for(const k of ks)if(o[k])return String(o[k]).slice(0,10);return '';};
+async function mileage(){const r=await fetch(URL_()+'/rest/v1/rpc/'+(store==='bt'?'bt_company_mileage':'company_mileage'),{method:'POST',headers:{apikey:ANON(),Authorization:'Bearer '+ANON(),'Content-Type':'application/json'},body:JSON.stringify(store==='bt'?{}:{p_store:store})});if(!r.ok)throw new Error('走行距離を読めません HTTP '+r.status);const a=await r.json();return Array.isArray(a)?a:[];}
 async function load(){
-  const [vs,mts,vd,lg,st]=await Promise.all([
+  const [vs,mts,vd,lg,mi]=await Promise.all([
     sbAll(C().vt+'?select=*&order=code.asc'),
     sbAll(C().mt+'?select=id,vehicle_code,start_date,end_date,label,workshop,work_detail,actual_cost,status&order=start_date.desc,id.asc'),
     sbAll('maint_vehicle_docs?select=*&deleted=eq.false&order=created_at.desc'),
     sbAll('maint_service_log?select=*&deleted=eq.false&order=done_date.desc,created_at.desc'),
-    store==='bt'?Promise.resolve([]):sbAll('maint_vehicle_state?select=*')]);
+    mileage()]);
   // 売却・抹消など非稼働の車は一覧に出さない（active=false）。列が無い店はそのまま全車
-  VEHS=vs.filter(v=>v.active!==false&&v.deleted!==true);MTS=mts;VDOCS=vd;LOGS=lg;STATE={};st.forEach(s=>STATE[s.vehicle_code]=s);
-  // 高松の走行距離の正本は bt_vehicles.current_mileage（APPが返却時に更新）。ここでは読むだけ
-  if(store==='bt')VEHS.forEach(v=>{if(v.current_mileage!=null)STATE[v.code]={odometer_km:v.current_mileage};});
+  VEHS=vs.filter(v=>v.active!==false&&v.deleted!==true);MTS=mts;VDOCS=vd;LOGS=lg;STATE={};
+  // 走行距離の正本＝各店の既存 RPC（hq「走行距離」と同じ）。ここでは読むだけで書かない
+  mi.forEach(m=>{if(m.code)STATE[m.code]={odometer_km:m.km,odometer_at:m.date};});
   // 請求書（整備案件ごとの書類 kind=invoice）
   const ds=await sbAll('maint_case_docs?select=*&store=eq.'+store+'&kind=eq.invoice&deleted=eq.false&order=created_at.asc');
   INV={};ds.forEach(d=>(INV[d.maint_id]=INV[d.maint_id]||[]).push(d));}
@@ -68,6 +69,8 @@ function alerts(v){const A=[],T=today(),code=v.code,odo=(STATE[code]||{}).odomet
   if(!VDOCS.some(d=>d.vehicle_code===code&&d.kind==='shaken_cert'))A.push({lv:1,t:'車検証が未登録'});
   const due=pick(v,['inspection_due_date','inspectionDueDate','shaken_due','shaken_date']);
   if(!due)A.push({lv:1,t:'車検期日が未登録'});else{const n=dd(due,T);if(n<0)A.push({lv:2,t:'車検期日 超過（'+due+'）'});else if(n<=DAYS_WARN)A.push({lv:1,t:'車検期日まで'+n+'日（'+due+'）'});}
+  const td=pick(v,['tenken_due_date','tenkenDueDate']);
+  if(!td)A.push({lv:0,t:'半年点検の期限が未登録'});else{const n=dd(td,T);if(n<0)A.push({lv:2,t:'半年点検 期限超過（'+td+'）'});else if(n<=DAYS_WARN)A.push({lv:1,t:'半年点検まで'+n+'日（'+td+'）'});}
   for(const it of Object.keys(ITEMS)){if(it==='other')continue;
     const last=LOGS.find(l=>l.vehicle_code===code&&l.item===it);if(!last)continue;
     if(last.next_due_date){const n=dd(last.next_due_date,T);if(n<0)A.push({lv:2,t:ITEMS[it]+' 期限超過（'+last.next_due_date+'）'});else if(n<=DAYS_WARN)A.push({lv:1,t:ITEMS[it]+' まであと'+n+'日'});}
@@ -92,7 +95,7 @@ function detail(v){const code=v.code,A=alerts(v),st=STATE[code]||{};
   const docRow=(d,del)=>'<div class="doc"><a href="#" onclick="openDoc(\''+d.path+'\');return false">'+esc(d.filename||d.path)+'</a><span class="s">'+esc((d.created_at||'').slice(0,10))+'</span>'+(del?'<button onclick="'+del+'(\''+d.id+'\')">外す</button>':'')+'</div>';
   let h='<button onclick="cur=\'\';render()">← 一覧へ</button><div class="card"><div class="t">'+esc(v.name||code)+' '+esc(v.plate_no||'')+'</div><div>'+(A.length?A.map(lvTag).join(''):'<span class="tag ok">問題なし</span>')+'</div></div>';
   h+='<div class="card"><div class="t">車検証</div>'+(vd.map(d=>docRow(d,'delVDoc')).join('')||'<div class="s">未登録</div>')+'<div class="s" style="margin-top:6px">差し替える時は新しい画像/PDFを追加してください（古いものは外すまで残ります）</div><input type="file" id="vf" accept="image/*,application/pdf"> <button class="pri" onclick="upVDoc(\''+esc(code)+'\')">追加</button></div>';
-  h+=store==='bt'?'<div class="card"><div class="t">現在の走行距離</div><div>'+(st.odometer_km==null?'未登録':st.odometer_km+' km')+' <span class="s">（高松APPの返却処理で更新される値を表示）</span></div></div>':'<div class="card"><div class="t">現在の走行距離</div><div class="g2"><div><label>km</label><input id="odo" type="number" min="0" value="'+esc(st.odometer_km==null?'':st.odometer_km)+'"></div><div><label>確認日</label><input id="odoat" type="date" value="'+esc(st.odometer_at||today())+'"></div></div><button class="pri" style="margin-top:6px" onclick="saveOdo(\''+esc(code)+'\')">保存</button></div>';
+  h+='<div class="card"><div class="t">現在の走行距離</div><div>'+(st.odometer_km==null?'未登録':Number(st.odometer_km).toLocaleString()+' km')+(st.odometer_at?' <span class="s">（'+esc(st.odometer_at)+' 更新）</span>':'')+'</div><div class="s">各店の走行距離の記録から自動で表示します（ここでは入力しません）</div></div>';
   h+='<div class="card"><div class="t">整備履歴（オイル・タイヤなど）</div>'+(lg.map(l=>'<div class="doc"><span class="tag">'+esc(ITEMS[l.item]||l.item)+'</span><span>'+esc(l.done_date)+(l.odometer_km!=null?' / '+l.odometer_km+'km':'')+(l.next_due_date||l.next_due_km!=null?' → 次回 '+esc(l.next_due_date||'')+(l.next_due_km!=null?' '+l.next_due_km+'km':''):'')+(l.note?' / '+esc(l.note):'')+'</span><button onclick="delLog(\''+l.id+'\')">外す</button></div>').join('')||'<div class="s">記録なし</div>')
    +'<div class="g2" style="margin-top:8px"><div><label>項目</label><select id="l_item">'+Object.keys(ITEMS).map(k=>'<option value="'+k+'">'+ITEMS[k]+'</option>').join('')+'</select></div><div><label>実施日</label><input id="l_date" type="date" value="'+today()+'"></div><div><label>その時の走行距離 km</label><input id="l_km" type="number" min="0"></div><div><label>メモ</label><input id="l_note"></div><div><label>次回の目安（日付）</label><input id="l_nd" type="date"></div><div><label>次回の目安（km）</label><input id="l_nk" type="number" min="0"></div></div><button class="pri" style="margin-top:6px" onclick="addLog(\''+esc(code)+'\')">履歴を追加</button></div>';
   h+='<div class="card"><div class="t">車検・点検ごとの請求書</div>'+(mts.map(m=>{const ds=INV[m.id]||[];return '<div style="border-bottom:1px solid #eee;padding:6px 0"><div><b>'+esc(m.start_date)+'</b> '+esc(m.label||'')+' '+esc(m.workshop||'')+(m.actual_cost?' / '+m.actual_cost+'円':'')+' '+(ds.length?'':'<span class="tag warn">請求書なし</span>')+'</div>'+(m.work_detail?'<div class="s">整備内容：'+esc(m.work_detail)+'</div>':'')+ds.map(d=>docRow(d,'delInv')).join('')+'<input type="file" id="if_'+esc(m.id)+'" accept="image/*,application/pdf"> <button onclick="upInv(\''+esc(m.id)+'\')">請求書を追加</button></div>';}).join('')||'<div class="s">整備案件なし</div>')+'<div class="s" style="margin-top:6px">請求書に書かれたオイル・タイヤ等の内容は、上の「整備履歴」に転記してください</div></div>';
@@ -108,8 +111,6 @@ async function upInv(mid){try{const f=$('#if_'+mid).files[0];const path=store+'/
   const x=await sb('maint_case_docs','POST',{store,maint_id:mid,kind:'invoice',path,filename:f.name});(INV[mid]=INV[mid]||[]).push(x[0]);msg('登録しました');render();}catch(e){msg(e.message);}}
 async function delInv(id){if(!confirm('この請求書を一覧から外しますか？（ファイルは残ります）'))return;try{await sb('maint_case_docs?id=eq.'+id,'PATCH',{deleted:true,deleted_at:new Date().toISOString()});for(const k in INV)INV[k]=INV[k].filter(d=>d.id!==id);render();}catch(e){msg(e.message);}}
 async function openDoc(path){try{const t=await tok();const r=await fetch(URL_()+'/storage/v1/object/sign/maint-docs/'+path,{method:'POST',headers:{apikey:ANON(),Authorization:'Bearer '+t,'Content-Type':'application/json'},body:JSON.stringify({expiresIn:300})});const j=await r.json();if(!j.signedURL)throw new Error('開けません');window.open(URL_()+'/storage/v1'+j.signedURL,'_blank');}catch(e){msg(e.message);}}
-async function saveOdo(code){try{const km=$('#odo').value,at=$('#odoat').value;if(km==='')return msg('km を入れてください');
-  const x=await sb('maint_vehicle_state?on_conflict=store,vehicle_code','POST',{store,vehicle_code:code,odometer_km:+km,odometer_at:at||today()},'resolution=merge-duplicates,return=representation');STATE[code]=x[0];msg('保存しました');render();}catch(e){msg(e.message);}}
 async function addLog(code){try{const b={store,vehicle_code:code,item:$('#l_item').value,done_date:$('#l_date').value};if(!b.done_date)return msg('実施日を入れてください');
   const km=$('#l_km').value,nd=$('#l_nd').value,nk=$('#l_nk').value,nt=$('#l_note').value.trim();if(km!=='')b.odometer_km=+km;if(nd)b.next_due_date=nd;if(nk!=='')b.next_due_km=+nk;if(nt)b.note=nt;
   const x=await sb('maint_service_log','POST',b);LOGS.unshift(x[0]);LOGS.sort((a,b2)=>(b2.done_date>a.done_date)-(b2.done_date<a.done_date));msg('追加しました');render();}catch(e){msg(e.message);}}
