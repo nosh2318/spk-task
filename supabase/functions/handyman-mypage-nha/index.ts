@@ -1690,7 +1690,7 @@ Deno.serve(async (req) => {
   return json({
     ok: true, store: "nha", label: "那覇",
     reservation: {
-      id: r.id, vehicle: r.vehicle_class, ota: r.ota,
+      id: r.id, vehicle: r.vehicle_class, vehicle_name: r.vehicle_name || "", ota: r.ota,
       lend_date: r.start_date, return_date: r.end_date, lend_time: lendTimeR, return_time: returnTimeR,
       name: r.name, people: r.people, status: r.status, insurance: insR,
       del_place: delPlaceR, col_place: colPlaceR,
